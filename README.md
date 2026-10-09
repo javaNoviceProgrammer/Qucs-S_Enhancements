@@ -758,15 +758,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   right-click menu (or a double click on it) names the conversation in
   place - the name its tab, the status bar and an export use - and
   *Reset Name* gives it back its first prompt. A conversation can be
-  **pinned to a schematic** - your choice, off by default: the pin
-  beside the document chip pins the schematic in front, *⋯ → Pin to a
-  Schematic* any open one. Pinned, the conversation's prompts name that
-  schematic (not the tab in front), Claude's Qucs-S tools act on it when
-  given no document - so two conversations can work on two schematics
-  side by side, whichever tab is in front - and a menu action Claude uses
+  **pinned to a document** - your choice, off by default: the pin
+  beside the document chip (or `/pin`) pins the document in front,
+  whatever it is, *⋯ → Pin to a Schematic* any open schematic and *⋯ →
+  Pin to a File* any other open document - a text, a Python script, a
+  data file. Pinned, the conversation's prompts name that document (not
+  the tab in front), Claude's Qucs-S tools act on it when given no
+  document - so two conversations can work on two schematics side by
+  side, whichever tab is in front - and a menu action Claude uses
   brings it to the front first. The chip turns into a filled pin with
-  the schematic's name (a click unpins it), the tab's tool tip says it,
-  and a *Save As* of the schematic keeps it pinned. *⋯ → Export
+  the document's name (a click unpins it), the tab's tool tip says it,
+  and a *Save As* of the document keeps it pinned. *⋯ → Export
   Conversation* saves the whole conversation - every prompt, reply and
   tool with its input and output - as a **PDF** (drawn as in the dock,
   on paper, math typeset), **Markdown** (the replies as Claude wrote
