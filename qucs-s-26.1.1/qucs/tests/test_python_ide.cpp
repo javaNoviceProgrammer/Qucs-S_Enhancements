@@ -654,7 +654,9 @@ private slots:
             const QImage shown = margin->grab().toImage();
             const int room = std::clamp(py->fontMetrics().height(), 12, 18) + 2;
             const auto red = [](const QColor& c) { return c.red() > 150 && c.green() < 110; };
-            const QColor dot = shown.pixelColor(5, yOf(py, margin, 3));
+            // (Above the bar across it: red whatever the font's size.)
+            const int size = std::min(room, py->fontMetrics().height()) - 4;
+            const QColor dot = shown.pixelColor(room / 2, yOf(py, margin, 3) - size / 3);
             QVERIFY2(red(dot), qPrintable(dot.name()));
             const QColor bar = shown.pixelColor(room / 2, yOf(py, margin, 3) - 1);
             QVERIFY2(!red(shown.pixelColor(room / 2, yOf(py, margin, 3) - 1)) || !red(shown.pixelColor(room / 2, yOf(py, margin, 3) + 2)),
