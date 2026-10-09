@@ -600,6 +600,29 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     writes each line's first message after its text, faintly. With no
     Python to check with, the status bar says so once, and the Problems
     tab says the script was not checked.
+  - **Completed as you type.** After two letters of a name, or after a
+    dot, a list of the words that complete it opens below the cursor.
+    Each word has a letter for what it is: function, class, module,
+    keyword, value. Typing narrows the list, Return or Tab takes the word
+    chosen, and Escape closes it. Nothing is offered in a string, in a
+    comment, or after a number's dot. *Simulation → Python → Show
+    Completions* (Ctrl+Space, ⌃Space on a Mac) asks for the list
+    anywhere, even after one letter. *Complete as You Type* (on by
+    default) turns the automatic list off.
+    - **The words** come from the script's own Python. When it has jedi,
+      jedi supplies them: the attributes of anything, arguments, imports.
+      This is what IPython, Spyder and Jupyter use, and it reads code
+      without running it.
+    - **Without jedi**, the list has Python's keywords and builtins, the
+      script's names and the modules after `import`. After a module's name
+      and a dot it lists that module's members: a standard module is
+      imported, and any other module, such as one beside the script, is
+      read without being run. After any other `name.` it lists the names
+      that follow `name.` elsewhere in the script.
+    - **The completer** runs once for each open script, in a folder of its
+      own, and is started again when the script's Python changes. An
+      answer that comes after the cursor has moved on to another word is
+      not shown.
   - **Indented as Python is.** Return indents one level after a line
     ending in `:`, and one less after `return`, `pass`, `break`,
     `continue` or `raise`; one undo takes the new line back. Tab indents

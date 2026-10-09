@@ -18,7 +18,9 @@
 #include <QString>
 #include <QStringList>
 
+class QCompleter;
 class QProcess;
+class QStandardItemModel;
 class QTimer;
 
 namespace qucs_s::python {
@@ -70,6 +72,39 @@ struct Interpreter {
 /// the PATH, and \a chosen (those picked with Browse). Its default is the
 /// first.
 QList<Interpreter> interpretersFor(const QString& script, const QString& project, const QStringList& chosen);
+
+/// A word that completes the one at the cursor: the whole of it, what it
+/// is (module, class, function, keyword, instance, statement, param,
+/// path...: jedi's types) and a line about it.
+struct Completion {
+    QString name;
+    QString type;
+    QString description;
+};
+/// An answer of the completer: the request it answers, what made it
+/// ("jedi 0.19.2"; empty: the completer's own names), the words.
+struct Completions {
+    int id = -1;
+    QString engine;
+    QList<Completion> items;
+};
+/// The program that completes (python -u -c <it>), running while the
+/// script is open: a request a line on standard input - {"id", "source",
+/// "line" (from 1), "column" (from 0), "path"} -, its answer a line on
+/// standard output. jedi when the interpreter has it; otherwise Python's
+/// keywords and builtins and the script's names, the modules after import,
+/// the members of a module the script imports (a standard one imported,
+/// another read without running it), and after name. the names that follow
+/// name. elsewhere in the script.
+const QString& completerProgram();
+/// A line of its answers read (id -1: none).
+Completions readCompletions(const QByteArray& line);
+/// The start of the name being typed in \a text (the text before the
+/// cursor), \a text's length when there is none.
+int wordStart(const QString& text);
+/// Whether the cursor after \a text (its line before it) is in a string or
+/// a comment: as one types there, nothing is offered.
+bool inStringOrComment(const QString& text);
 
 /// One level of indentation in \a text: a tab when its first indented line
 /// begins with one, else four spaces (PEP 8).
@@ -131,13 +166,41 @@ public:
     /// The delay between the last edit and the check, in milliseconds.
     static constexpr int kCheckDelay = 500;
 
+    /// Asks for what completes the name at the cursor, shown in a list
+    /// below it when it comes (Return or Tab takes one, Escape closes it,
+    /// typing narrows it). \a asked: Simulation > Python > Show Completions
+    /// (Ctrl+Space) - anywhere, after a single letter too; otherwise as one
+    /// types (completeAsYouType()).
+    void complete(bool asked);
+    QCompleter* completer() const { return a_completer; }
+    /// Whether the list is shown.
+    bool completing() const;
+    /// The words of the last answer, as listed.
+    QStringList completionNames() const;
+    /// What completed it last ("jedi 0.19.2"; empty: the completer's own
+    /// names), and how the toolbar says it.
+    QString completionEngine() const { return a_completionEngine; }
+    QString completedBy() const;
+    /// The list offered as one types, after two letters of a name or a
+    /// dot - a setting (PythonCompleteAsYouType; on by default).
+    static bool completeAsYouType();
+    static void setCompleteAsYouType(bool on);
+    /// The delay between a letter typed and the question, in milliseconds.
+    static constexpr int kCompleteDelay = 120;
+
 signals:
     /// A check answered (or failed): lastCheck() and the diagnostics are
     /// its.
     void checkFinished();
+    /// An answer of the completer came (shown, or not: the cursor moved
+    /// on).
+    void completionsAnswered();
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    /// The list's keys are its own while it is shown, not the window's
+    /// shortcuts (Escape is the window's too).
+    bool event(QEvent* event) override;
 
 private:
     void scheduleCheck();
@@ -146,6 +209,19 @@ private:
     /// Indents (\a by 1) or takes a level away (-1) from the lines the
     /// cursor's selection touches.
     void shiftLines(int by);
+    /// The completer's process: started for the first question, again when
+    /// the interpreter changes.
+    bool startCompleter();
+    void stopCompleter();
+    void readCompleter();
+    void showCompletions(const qucs_s::python::Completions& answer);
+    /// The list shown below the word \a word typed so far, sized to its
+    /// words.
+    void placeList(const QString& word);
+    /// The word at the cursor replaced by \a name.
+    void insertCompletion(const QString& name);
+    /// After a key typed: the list narrowed, closed, or asked for.
+    void afterTyping(const QString& typed);
 
     QTimer* a_delay = nullptr;
     QTimer* a_limit = nullptr;   // a check that takes too long is stopped
@@ -155,6 +231,17 @@ private:
     QString a_interpreter;         // chosen; empty: the default
     qucs_s::python::Check a_check;
     bool a_hasCheck = false;
+
+    QCompleter* a_completer = nullptr;
+    QStandardItemModel* a_completions = nullptr;
+    QProcess* a_completerProcess = nullptr;
+    QString a_completerInterpreter;   // the one it runs
+    QByteArray a_completerOutput;     // a line not yet whole
+    QTimer* a_completeDelay = nullptr;
+    int a_request = 0;                // the last question's id
+    int a_requestBlock = -1;          // where its word began: an answer for another word is not shown
+    int a_requestStart = -1;
+    QString a_completionEngine;
 };
 
 #endif // QUCS_PYTHONDOC_H
