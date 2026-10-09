@@ -153,6 +153,7 @@ private:
     QToolButton* a_problems;
     QToolButton* a_run;
     QToolButton* a_simulator;
+    QToolButton* a_git;
     QToolButton* a_saved;
     QToolButton* a_claude;
     QToolButton* a_theme;
@@ -190,6 +191,7 @@ private:
     void updateRun();
     void updateSimulator();
     void updateSaved();
+    void updateGit();
     void updateClaude();
     void updateTheme();
     QString modeHint(Schematic* doc) const;

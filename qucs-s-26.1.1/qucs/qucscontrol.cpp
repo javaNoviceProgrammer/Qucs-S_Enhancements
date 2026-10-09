@@ -785,7 +785,105 @@ const char* const kTools = R"JSON([
  "description": "Tells which commands ngspice has and how to write them: the analyses (op, dc, ac, tran, noise, pz, sens, tf, disto; sp, pss, hb, stb, loadpull and the rest of the RF set), measurements (meas, fft, fourier, eye, track), vectors and expressions (let, print, set, option), plots and data files (wrdata, write, pyplot, wrsnp), the circuit (alter, altermod, show, save), compiled models (pre_osdi, snp), statistics and optimization (montecarlo, corners, sweep, optimize), breakpoints and the .control language (if, foreach, dowhile) - each summed up in a line, by category. It asks the ngspice of the settings for its own list (help all), so the answer says which of them it has, which it lacks and any others it has; * marks those stock ngspice lacks (the enhanced build's). Without arguments: every command in a line, by category, and how Qucs-S uses them - a Nutmeg script block (.CUSTOMSIM) holds any commands, a NutmegEq computes let expressions, the simulation blocks write theirs. 'command' names one or several (tran, .tran, pre_osdi, meas) for the syntax, what it does, this ngspice's own help line, how Qucs-S writes it and an example; 'search' finds commands by what they do (stability, touchstone, monte carlo, eye); 'category' lists a category's commands with their syntax. Use it before writing a Nutmeg script or NutmegEq, or to answer whether ngspice can do something.",
  "inputSchema": {"type": "object", "properties": {"command": {"description": "A command's name, or a list of names: tran, .tran (a dot-card's command), pre_osdi, [\"meas\", \"fft\"]"},
    "search": {"type": "string", "description": "Words for what a command does: stability, touchstone, noise figure, monte carlo"},
-   "category": {"type": "string", "enum": ["analysis", "rf", "measure", "vectors", "output", "circuit", "models", "statistics", "reliability", "debug", "script", "digital", "utility"], "description": "One category's commands, each with its syntax"}}}}
+   "category": {"type": "string", "enum": ["analysis", "rf", "measure", "vectors", "output", "circuit", "models", "statistics", "reliability", "debug", "script", "digital", "utility"], "description": "One category's commands, each with its syntax"}}}},
+{"name": "git_status",
+ "description": "Where the git repository of a file or folder stands - of 'path', else of the document in front, else of the File Browser's folder, the project's: its top folder; the branch (or the commit HEAD is detached at), its upstream and how many commits it is ahead and behind; a merge, rebase, cherry-pick or revert under way; the files staged, not staged, untracked and in conflict, each with its state; the stashes; and the state of 'path' itself. As the File Browser, the Git menu and the status bar show it. Not in a repository: says so (git_init makes one).",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder in the repository: a path, relative to the open project's folder (else the workspace); the document in front's when not given"}}}},
+{"name": "git_diff",
+ "description": "The changes not committed as a unified diff - of 'path' (a file or a folder) or of the whole repository: 'of' head (the default: everything since the last commit, staged or not), staged (what the next commit takes) or unstaged (what is not staged yet). An untracked file comes as all added. git_show gives a commit's changes.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder; the whole repository (the document in front's) when not given"},
+   "of": {"type": "string", "enum": ["head", "staged", "unstaged"], "description": "What against what: head (all since the last commit; the default), staged, unstaged"}}}},
+{"name": "git_log",
+ "description": "The commits of the branch checked out (or of 'ref'), newest first - those that changed 'path' when given (a file followed through renames): each one's hash, author, date, subject and the refs at it (branches, tags). 'max' of them (50 by default), after 'skip'.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder: only the commits that changed it; the repository is the document in front's when not given"},
+   "max": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many, 50 by default"},
+   "skip": {"type": "integer", "minimum": 0, "description": "Commits skipped first (the next page)"},
+   "ref": {"type": "string", "description": "A branch, tag or commit instead of HEAD (origin/main)"}}}},
+{"name": "git_show",
+ "description": "A commit: its author, dates and whole message, the files it changed, and its changes as a diff - of 'path' alone when given.",
+ "inputSchema": {"type": "object", "properties": {"commit": {"type": "string", "description": "Its hash (short or whole), a branch, a tag, HEAD~1"},
+   "path": {"type": "string", "description": "A file: its changes alone; also says which repository when the document in front is in another"}}, "required": ["commit"]}},
+{"name": "git_blame",
+ "description": "Who last changed each line of a file, and in which commit (hash, author, date, the commit's subject) - lines not committed yet marked so; 'from' and 'to' (from 1) for a part of it.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"},
+   "from": {"type": "integer", "minimum": 1, "description": "The first line wanted"},
+   "to": {"type": "integer", "minimum": 1, "description": "The last line wanted"}}, "required": ["path"]}},
+{"name": "git_stage",
+ "description": "Stages files - their changes go into the next commit; a new file becomes known to git, a deleted one is staged as deleted: 'paths' (files or folders), or 'all' the changes. Returns where the repository stands then.",
+ "inputSchema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "Files or folders: relative to the repository given as 'path', else to the open project's folder (else the workspace)"},
+   "all": {"type": "boolean", "description": "Every change, new files too"},
+   "path": {"type": "string", "description": "The repository: a file or folder of it; the first of the paths, else the document in front's, when not given"}}}},
+{"name": "git_unstage",
+ "description": "Takes files out of what is staged (their changes stay in the files): 'paths', or 'all'. Returns where the repository stands then.",
+ "inputSchema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "Files or folders"},
+   "all": {"type": "boolean", "description": "Everything staged"},
+   "path": {"type": "string", "description": "The repository: a file or folder of it; the first of the paths, else the document in front's, when not given"}}}},
+{"name": "git_discard",
+ "description": "Throws away the changes not committed of 'paths' (or 'all'): a file git knows goes back to its last commit - what was changed in it is lost; a new file (untracked, or only added) goes to the system's trash. The open documents of those files are loaded again. Asked about each time.",
+ "inputSchema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "Files or folders"},
+   "all": {"type": "boolean", "description": "Every change in the repository"},
+   "path": {"type": "string", "description": "The repository: a file or folder of it; the first of the paths, else the document in front's, when not given"}}}},
+{"name": "git_commit",
+ "description": "Commits what is staged with 'message' - or 'paths' alone, staged first (new files too) -; 'amend': in place of the last commit (one not pushed yet); 'push': then pushed, as git_remote push does. The repository's hooks run, as git commit runs them. Returns the commit's hash and where the repository stands. Nothing staged and no 'paths': refused (git_stage first, or 'paths').",
+ "inputSchema": {"type": "object", "properties": {"message": {"type": "string", "description": "The commit message: what it does in its first line; a blank line, then why"},
+   "paths": {"type": "array", "items": {"type": "string"}, "description": "Commit these files alone (staged first), not all that is staged"},
+   "amend": {"type": "boolean", "description": "In place of the last commit"},
+   "push": {"type": "boolean", "description": "Push the branch after"},
+   "path": {"type": "string", "description": "The repository: a file or folder of it; the first of the paths, else the document in front's, when not given"}}, "required": ["message"]}},
+{"name": "git_branch",
+ "description": "The branches: 'action' list (local and remote ones, each with its last commit, its upstream and how far ahead and behind - the default), create ('name', from 'start' or the commit checked out, checked out then unless 'switch' is false), switch ('name': a local branch, or a remote's - origin/feature - as a local branch following it; 'stash': changes in the way are stashed first), rename ('name' to 'to'; the branch checked out when 'name' is not given), delete ('name'; 'force' for one not merged) or merge ('name' into the branch checked out; conflicts are said, git_abort gives the merge up).",
+ "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "create", "switch", "rename", "delete", "merge"], "description": "What to do; list when not given"},
+   "name": {"type": "string", "description": "The branch"},
+   "to": {"type": "string", "description": "rename: its new name"},
+   "start": {"type": "string", "description": "create: the commit, branch or tag it starts at"},
+   "switch": {"type": "boolean", "description": "create: checked out then (true by default)"},
+   "stash": {"type": "boolean", "description": "switch: stash the changes that would be overwritten first"},
+   "force": {"type": "boolean", "description": "delete: one whose commits no other branch has"},
+   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+{"name": "git_remote",
+ "description": "The remotes and the network: 'action' list (the remotes and their URLs - the default), fetch (what the remotes have, 'remote' or all of them; the files unchanged), pull (the branch's upstream merged in), push (the branch to its upstream - the first time to the only remote or origin, made its upstream; asked about each time: it publishes), add ('name' and 'url') or remove ('name'). Fetch, pull and push wait up to 'timeout' seconds; git asks for no password - one it needs comes from the system's credential helper or ssh agent, else it fails and says so.",
+ "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "fetch", "pull", "push", "add", "remove"], "description": "What to do; list when not given"},
+   "remote": {"type": "string", "description": "fetch: that remote alone"},
+   "name": {"type": "string", "description": "add, remove: the remote's name"},
+   "url": {"type": "string", "description": "add: its URL"},
+   "tags": {"type": "boolean", "description": "push: the annotated tags of the commits pushed too"},
+   "timeout": {"type": "integer", "minimum": 5, "maximum": 1800, "description": "Seconds fetch, pull or push may take, 300 by default"},
+   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+{"name": "git_stash",
+ "description": "Stashes: 'action' list (the default), push (every change put aside - untracked files too unless 'untracked' is false - the files back to the last commit; 'message'), apply or pop (stash 'index' - 0, the latest, by default - back; pop drops it then), show (its changes as a diff) or drop (thrown away; asked about each time).",
+ "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "push", "apply", "pop", "show", "drop"], "description": "What to do; list when not given"},
+   "message": {"type": "string", "description": "push: a note for it"},
+   "index": {"type": "integer", "minimum": 0, "description": "apply, pop, show, drop: which (0: the latest)"},
+   "untracked": {"type": "boolean", "description": "push: new files too (true by default)"},
+   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+{"name": "git_tag",
+ "description": "Tags: 'action' list (newest first; the default), create ('name' on 'commit' or the commit checked out; with 'message' an annotated tag) or delete ('name', here only).",
+ "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "create", "delete"], "description": "What to do; list when not given"},
+   "name": {"type": "string", "description": "The tag"},
+   "message": {"type": "string", "description": "create: its message (an annotated tag)"},
+   "commit": {"type": "string", "description": "create: the commit it goes on"},
+   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+{"name": "git_commit_action",
+ "description": "Does something with a commit of the history: 'action' revert (a new commit that undoes it), cherry_pick (its changes committed on the branch checked out), check_out (it checked out alone: no branch, HEAD detached) or reset (the branch moved to it - 'mode' soft keeps the changes staged, mixed (the default) keeps them not staged, hard throws them away and is asked about each time). Conflicts are said; git_abort gives a revert or cherry-pick up.",
+ "inputSchema": {"type": "object", "properties": {"commit": {"type": "string", "description": "Its hash, a branch, a tag, HEAD~2"},
+   "action": {"type": "string", "enum": ["revert", "cherry_pick", "check_out", "reset"], "description": "What to do with it"},
+   "mode": {"type": "string", "enum": ["soft", "mixed", "hard"], "description": "reset: what becomes of the changes (mixed by default)"},
+   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}, "required": ["commit", "action"]}},
+{"name": "git_abort",
+ "description": "Gives up the merge, rebase, cherry-pick or revert under way (a bisect is ended): the files and the branch back to how they were before it.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+{"name": "git_init",
+ "description": "Makes a folder a git repository (git init): 'path', else the open project's folder. Nothing is committed: git_stage and git_commit do that.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The folder, relative to the workspace; the open project's when not given"}}}},
+{"name": "git_clone",
+ "description": "Clones a repository from 'url' into the folder 'path' (made; it must not be there, or be empty), waiting up to 'timeout' seconds. Git asks for no password: a private repository needs the system's credential helper or an ssh agent. Returns the folder; open_project opens it, the File Browser shows it.",
+ "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "https://github.com/owner/repo.git, git@host:owner/repo.git, or a local folder"},
+   "path": {"type": "string", "description": "The folder it goes into, relative to the workspace; there the repository's name when not given"},
+   "timeout": {"type": "integer", "minimum": 5, "maximum": 3600, "description": "Seconds it may take, 600 by default"}}, "required": ["url"]}},
+{"name": "git_ignore",
+ "description": "Adds a file or folder to the repository's .gitignore (at its top folder, as /path, a folder ending in /), so git leaves it out; 'untrack': git also stops following it if it did (the file stays).",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file or folder"},
+   "untrack": {"type": "boolean", "description": "Also stop following it, if git does (git rm --cached; the file stays)"}}, "required": ["path"]}}
 ])JSON";
 
 const struct {
@@ -857,6 +955,19 @@ const struct {
     {"synthesize_attenuator", QT_TRANSLATE_NOOP("QucsControl", "design an attenuator into a schematic in Qucs-S")},
     {"synthesize_matching", QT_TRANSLATE_NOOP("QucsControl", "design a matching circuit into a schematic in Qucs-S")},
     {"synthesize_power_combiner", QT_TRANSLATE_NOOP("QucsControl", "design a power combiner into a schematic in Qucs-S")},
+    {"git_stage", QT_TRANSLATE_NOOP("QucsControl", "stage files in git from Qucs-S")},
+    {"git_unstage", QT_TRANSLATE_NOOP("QucsControl", "unstage files in git from Qucs-S")},
+    {"git_discard", QT_TRANSLATE_NOOP("QucsControl", "throw away changes not committed in git from Qucs-S")},
+    {"git_commit", QT_TRANSLATE_NOOP("QucsControl", "make a git commit from Qucs-S")},
+    {"git_branch", QT_TRANSLATE_NOOP("QucsControl", "work with git branches from Qucs-S")},
+    {"git_remote", QT_TRANSLATE_NOOP("QucsControl", "fetch, pull or push with git from Qucs-S")},
+    {"git_stash", QT_TRANSLATE_NOOP("QucsControl", "stash changes in git from Qucs-S")},
+    {"git_tag", QT_TRANSLATE_NOOP("QucsControl", "work with git tags from Qucs-S")},
+    {"git_commit_action", QT_TRANSLATE_NOOP("QucsControl", "revert, cherry-pick, check out or reset to a git commit from Qucs-S")},
+    {"git_abort", QT_TRANSLATE_NOOP("QucsControl", "give up a git merge from Qucs-S")},
+    {"git_init", QT_TRANSLATE_NOOP("QucsControl", "make a git repository from Qucs-S")},
+    {"git_clone", QT_TRANSLATE_NOOP("QucsControl", "clone a git repository from Qucs-S")},
+    {"git_ignore", QT_TRANSLATE_NOOP("QucsControl", "add a file to .gitignore from Qucs-S")},
 };
 
 // Tools that only look (or move the view): used without asking.
@@ -866,7 +977,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
                                  "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
-                                 "find_shapes"};
+                                 "find_shapes", "git_status", "git_diff", "git_log", "git_show", "git_blame"};
 
 // Tools that only add (MCP's destructiveHint false): nothing there is
 // changed or taken away - a simulation writes its dataset anew, which it
@@ -874,7 +985,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
 const char* const kAdditive[] = {"add_component", "add_wire", "connect", "set_label", "add_diagram", "add_trace", "add_marker",
                                  "add_painting", "add_analysis", "new_document", "open_document", "new_project", "open_project",
                                  "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner",
-                                 "show_layout"};
+                                 "show_layout", "git_init", "git_clone"};
 
 // Each tool's description in the tool list: a summary (the list is in
 // every turn); describe_tool gives the whole of it.
@@ -998,6 +1109,24 @@ const struct {
     const char* hint;
 } kSearchHints[] = {
     {"new_document", "new schematic text document data display dpl report"},
+    {"git_status", "git status branch changes modified staged untracked repository version control vcs"},
+    {"git_diff", "git diff changes patch modified uncommitted compare"},
+    {"git_log", "git log history commits who when version control"},
+    {"git_show", "git show commit changes patch message"},
+    {"git_blame", "git blame annotate who changed line author"},
+    {"git_stage", "git stage add index commit files"},
+    {"git_unstage", "git unstage reset index remove from staged"},
+    {"git_discard", "git discard revert restore checkout changes throw away undo edits"},
+    {"git_commit", "git commit save version message amend push"},
+    {"git_branch", "git branch switch checkout create delete rename merge"},
+    {"git_remote", "git remote fetch pull push origin upstream sync github gitlab"},
+    {"git_stash", "git stash put aside changes apply pop"},
+    {"git_tag", "git tag release version label"},
+    {"git_commit_action", "git revert cherry-pick reset checkout commit undo history"},
+    {"git_abort", "git abort merge rebase cherry-pick conflict give up"},
+    {"git_init", "git init create repository version control start"},
+    {"git_clone", "git clone download repository github url"},
+    {"git_ignore", "git ignore gitignore exclude untrack"},
     {"show_document", "bring document to front tab"},
     {"close_document", "close tab discard unsaved"},
     {"describe_format", "sch file line fields format component wire diagram painting"},
@@ -3696,6 +3825,10 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     else if (tool == QLatin1String("copy_document")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path")) + QStringLiteral(" → ") + s("to");
     else if (tool == QLatin1String("rename_file")) subject = s("path") + QStringLiteral(" → ") + s("to");
     else if (tool == QLatin1String("trash_file")) subject = s("path");
+    else if (tool.startsWith(QLatin1String("git_")))
+        subject = (QStringList{s("action"), s("message").section(QLatin1Char('\n'), 0, 0), s("commit"), s("name"), s("url"), s("path")}
+                       .filter(QRegularExpression(QStringLiteral("\\S"))))
+                      .join(QStringLiteral(" \u00b7 "));
     else if (tool == QLatin1String("clean_scratch")) subject = (s("path").isEmpty() ? tr("the schematic in front") : s("path"))
                                                                + (a.value(QLatin1String("datasets")).toBool() ? tr(", datasets too") : QString());
     else if (tool == QLatin1String("edit_text") || tool == QLatin1String("get_text") || tool == QLatin1String("goto_line")) {
@@ -4373,7 +4506,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
-        QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes")};
+        QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("git_status"),
+        QStringLiteral("git_diff"), QStringLiteral("git_log"), QStringLiteral("git_show"), QStringLiteral("git_blame")};
     // (send_input with 'target' dialog: the dialog's own clicks and keys.)
     const bool intoTheDialog = tool == QLatin1String("send_input")
                                && args.value(QLatin1String("target")).toString().trimmed().compare(QLatin1String("dialog"), Qt::CaseInsensitive) == 0;
@@ -4526,6 +4660,21 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("synthesize_power_combiner")) return synthesizePowerCombiner(args);
     if (tool == QLatin1String("line_calc")) return lineCalc(args);
     if (tool == QLatin1String("receiver_budget")) return receiverBudget(args);
+    if (tool == QLatin1String("git_status")) return gitStatus(args);
+    if (tool == QLatin1String("git_diff")) return gitDiff(args);
+    if (tool == QLatin1String("git_log")) return gitLog(args);
+    if (tool == QLatin1String("git_show")) return gitShow(args);
+    if (tool == QLatin1String("git_blame")) return gitBlame(args);
+    if (tool == QLatin1String("git_stage")) return gitStage(args);
+    if (tool == QLatin1String("git_unstage")) return gitUnstage(args);
+    if (tool == QLatin1String("git_discard")) return gitDiscard(args);
+    if (tool == QLatin1String("git_branch")) return gitBranch(args);
+    if (tool == QLatin1String("git_stash")) return gitStash(args);
+    if (tool == QLatin1String("git_tag")) return gitTag(args);
+    if (tool == QLatin1String("git_commit_action")) return gitCommitAction(args);
+    if (tool == QLatin1String("git_abort")) return gitAbort(args);
+    if (tool == QLatin1String("git_init")) return gitInit(args);
+    if (tool == QLatin1String("git_ignore")) return gitIgnore(args);
     async = true;
     if (tool == QLatin1String("batch")) runBatch(args, done);
     else if (tool == QLatin1String("trigger_action")) triggerAction(args, done);
@@ -4544,6 +4693,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     else if (tool == QLatin1String("get_layout")) getLayout(args, done);
     else if (tool == QLatin1String("find_shapes")) findShapes(args, done);
     else if (tool == QLatin1String("show_layout")) showLayout(args, done);
+    else if (tool == QLatin1String("git_commit")) gitCommit(args, done);
+    else if (tool == QLatin1String("git_remote")) gitRemote(args, done);
+    else if (tool == QLatin1String("git_clone")) gitClone(args, done);
     else {
         async = false;
         return errorResult(tr("There is no tool %1.").arg(tool));

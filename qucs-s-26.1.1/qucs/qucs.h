@@ -418,6 +418,16 @@ public:
   QToolBar *pythonToolbarWidget() const { return pythonToolbar; }
   /// The Python menu: a menu of its own, right of View.
   QMenu *pythonMenu() const { return a_pythonMenu; }
+  /// The Git menu, left of Help (qucs_git.cpp): on gitRoot().
+  QMenu *gitMenuWidget() const { return gitMenu; }
+  /// What the Git menu works on: the document in front's file (empty when
+  /// it has none); its folder - else the File Browser's, the project's,
+  /// the workspace; the git repository that is in.
+  QString gitFile();
+  QString gitFolder();
+  QString gitRoot();
+  /// The Git menu's commands enabled as they apply now.
+  void updateGitMenu();
   QComboBox *pythonInterpreterList() const { return pythonInterpreters; }
   /// The console of a script's run (Run, F2), and its dock.
   PythonRunConsole *pythonRunConsole() const { return pythonRun; }
@@ -881,6 +891,8 @@ private:
   QAction *pythonFormatOnSaveAction = nullptr;
   QActionGroup *pythonTypeCheckers = nullptr;
   QMenu *a_pythonMenu = nullptr;
+  QMenu *gitMenu = nullptr;
+  void initGitMenu();
   PythonPlotsPane *a_pythonPlots = nullptr;
   QDockWidget *a_pythonPlotsDock = nullptr;
   PythonVariablesPane *a_pythonVariables = nullptr;
