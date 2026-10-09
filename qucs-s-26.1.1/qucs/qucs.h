@@ -678,6 +678,8 @@ private slots:
   void slotPythonSymbols();
   void slotPythonRunToCursor();
   void slotPythonEditBreakpoint();
+  void slotPythonRunSettings();
+  void slotPythonQuickFix();
   void slotAfterSimulation(int, SimMessage *);
   void slotDCbias();
   void slotChangePage(const QString &, const QString &);
@@ -854,6 +856,13 @@ private:
   QAction *pythonUnfoldAllAction = nullptr;
   QAction *pythonAutoCloseAction = nullptr;
   QAction *pythonInlinePlotsAction = nullptr;
+  QAction *pythonRunSettingsAction = nullptr;
+  QAction *pythonInterruptAction = nullptr;
+  QAction *pythonLibraryAction = nullptr;
+  QAction *pythonQuickFixAction = nullptr;
+  QAction *pythonImportsAction = nullptr;
+  QAction *pythonFormatSelectionAction = nullptr;
+  QAction *pythonFormatOnSaveAction = nullptr;
   QActionGroup *pythonTypeCheckers = nullptr;
   QMenu *a_pythonMenu = nullptr;
   PythonPlotsPane *a_pythonPlots = nullptr;

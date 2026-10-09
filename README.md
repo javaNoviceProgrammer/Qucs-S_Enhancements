@@ -708,10 +708,28 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     value is shown, as the shell shows one. These keys act in a script
     only, not in the shell's own line.
   - **Format Document** (Shift+Alt+F) formats the script with ruff (or
-    black) installed for its Python, with the project's settings; **Fix
-    Problems** fixes what ruff can of what it finds, such as imports not
-    used. Each is one edit that Undo takes back; the status bar says what
-    was done, and a script that changed meanwhile is left as it is.
+    black) installed for its Python, with the project's settings; **Format
+    Selection** (Ctrl+Alt+F) formats the lines selected, or the cursor's
+    line, and leaves the rest as it is (ruff's `--range`, black's
+    `--line-ranges`); **Organize Imports** (Shift+Alt+O) sorts and groups
+    the imports with ruff's isort rules, else isort; **Fix Problems** fixes
+    what ruff can of what it finds, such as imports not used. Each is one
+    edit that Undo takes back; the status bar says what was done, and a
+    script that changed meanwhile is left as it is. **Format on Save** (off
+    by default) formats a script each time it is saved, waiting a few
+    seconds at most; when it cannot, the script is saved as it is and the
+    status bar says why.
+  - **Quick Fix.** On the cursor's line with a problem, a light bulb in the
+    margin (where breakpoints go) opens its fixes - so does *Quick Fix*
+    (Alt+Shift+Return): ruff's own fix of each problem (*Remove unused
+    import*, marked when it may change what the code does), offered while
+    the check's answer is of the text as it is; for a name not defined, an
+    import that would define it (`import numpy as np`, `from math import
+    sqrt`, a function of a module beside the script), placed after the
+    imports at the top; and each problem ignored on its line - `# noqa:
+    F401`, `# type: ignore[assignment]` for mypy, `# pyright:
+    ignore[rule]` - added to a comment of its kind already there. Each fix
+    is one edit.
   - **Indented as Python is.** Return indents one level after a line
     ending in `:`, and one less after `return`, `pass`, `break`,
     `continue` or `raise`; one undo takes the new line back. Tab indents
@@ -756,8 +774,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     on one line; a long call into Python's library or C finishes first.
     *Run to Cursor* (Ctrl+Shift+F10) goes on to the cursor's line, once -
     a breakpoint before it still stops it - and starts debugging when it
-    is not. Breakpoints set or taken away while it runs take effect at
-    once. *Stop* ends it.
+    is not. *Interrupt* raises a KeyboardInterrupt in the script, in a long
+    call too, and the debugger stops where it was. Breakpoints set or taken
+    away while it runs take effect at once. *Stop* ends it. *Debug Library
+    Code* (off by default) has Step Into go into Python's library and
+    installed packages - opened read-only - instead of over them.
 
     While it is stopped, the mouse on a name (`total`, `self.gain`) shows
     its value in the frame looked at, and an array, a list, a dictionary
@@ -797,14 +818,24 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
       one; the one Application Settings name; `python3` and `python` on
       `PATH`; or another, chosen with *Browse...*.
     - **Run (F2):** the script is saved, then run with that Python in its
-      folder. Its output appears in the *Python Run* dock as it comes,
+      folder (or as its *Run Settings* say, below). Its output appears in the *Python Run* dock as it comes,
       then its exit code and how long it took. A traceback's
       `File "...", line N` is a link to that line. What `input()` reads
       is typed in the line below the output and sent with Return, echoed
       after its prompt (debugging too); *End Input* (Ctrl+D) ends the
       script's input, so `input()` then reads the end of the file.
     - **Debug (Ctrl+F2):** the script run under the debugger (above).
-    - **Stop:** ends the script that is running.
+    - **Stop:** ends the script that is running. *Interrupt* (in
+      *Simulation → Python*, and beside Stop in the *Python Run* dock; not
+      on Windows) raises a KeyboardInterrupt in it instead, as Ctrl+C in a
+      terminal does - in a long call too.
+    - **Run Settings...** (*Simulation → Python*): the script's command-line
+      arguments (split as a shell splits them: `--points 101 "a file.dat"`
+      gives `sys.argv[1:]`), its working folder, environment variables
+      (`NAME=value` lines, `${OTHER}` the value of another) and a `.env`
+      file of more, kept for each script and used by Run and Debug; the
+      *Run* tooltip and the first line of the output say them. A folder or
+      a `.env` file that is not there is said, and nothing is run.
     - **Run in Shell:** runs the script in the Python Shell, in its
       folder, so its variables are still there afterwards.
     - **Continue (or Pause), Step Over, Step Into, Step Out, Run to

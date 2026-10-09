@@ -12,6 +12,7 @@
 #include "pythonrun.h"
 
 #include "main.h"
+#include "processconsole.h"
 #include "pythondoc.h"
 
 #include <QDir>
@@ -44,6 +45,10 @@
 #include <QVBoxLayout>
 
 #include <functional>
+
+#ifndef Q_OS_WIN
+#include <signal.h>
+#endif
 
 namespace {
 
@@ -80,12 +85,20 @@ PythonRunConsole::PythonRunConsole(QWidget* parent)
     a_stop->setToolTip(tr("Ends the script that is running."));
     a_clear = new QPushButton(tr("Clear"), this);
     a_clear->setToolTip(tr("Clears the output."));
+    a_interrupt = new QPushButton(tr("Interrupt"), this);
+    a_interrupt->setObjectName(QStringLiteral("pythonRunInterrupt"));
+    a_interrupt->setEnabled(false);
+    a_interrupt->setVisible(canInterrupt());
+    a_interrupt->setToolTip(tr("A KeyboardInterrupt in the script, as Ctrl+C in a terminal: in a long call too; debugged, it "
+                               "stops where it was"));
+    connect(a_interrupt, &QPushButton::clicked, this, &PythonRunConsole::interrupt);
     connect(a_stop, &QPushButton::clicked, this, &PythonRunConsole::stop);
     connect(a_clear, &QPushButton::clicked, this, &PythonRunConsole::clear);
 
     auto* row = new QHBoxLayout;
     row->setContentsMargins(4, 0, 4, 2);
     row->addWidget(a_status, 1);
+    row->addWidget(a_interrupt);
     row->addWidget(a_stop);
     row->addWidget(a_clear);
 
@@ -231,7 +244,8 @@ QString PythonRunConsole::outputText() const
 
 bool PythonRunConsole::run(const QString& interpreter, const QString& script)
 {
-    return start(interpreter, script, {QStringLiteral("-u"), QFileInfo(script).absoluteFilePath()}, false);
+    const qucs_s::python::RunPlan plan = qucs_s::python::runPlanFor(script);
+    return start(interpreter, script, QStringList{QStringLiteral("-u"), QFileInfo(script).absoluteFilePath()} + plan.arguments, false, plan);
 }
 
 bool PythonRunConsole::debug(const QString& interpreter, const QString& script, const QHash<QString, QList<int>>& breakpoints)
@@ -250,8 +264,11 @@ bool PythonRunConsole::debug(const QString& interpreter, const QString& script,
                              const QHash<QString, QList<qucs_s::python::Breakpoint>>& breakpoints, bool raised,
                              const std::pair<QString, int>& runTo)
 {
+    const qucs_s::python::RunPlan plan = qucs_s::python::runPlanFor(script);
     if (!start(interpreter, script,
-               {QStringLiteral("-u"), QStringLiteral("-c"), qucs_s::python::debuggerProgram(), QFileInfo(script).absoluteFilePath()}, true))
+               QStringList{QStringLiteral("-u"), QStringLiteral("-c"), qucs_s::python::debuggerProgram(), QFileInfo(script).absoluteFilePath()}
+                   + plan.arguments,
+               true, plan))
         return false;
     QJsonArray list;
     for (auto it = breakpoints.cbegin(); it != breakpoints.cend(); ++it)
@@ -261,14 +278,15 @@ bool PythonRunConsole::debug(const QString& interpreter, const QString& script,
             list.append(o);
         }
     QJsonObject first{{QStringLiteral("command"), QStringLiteral("start")}, {QStringLiteral("breakpoints"), list},
-                      {QStringLiteral("raised"), raised}};
+                      {QStringLiteral("raised"), raised}, {QStringLiteral("library"), a_library}};
     if (!runTo.first.isEmpty())
         first.insert(QStringLiteral("run_to"), QJsonObject{{QStringLiteral("file"), runTo.first}, {QStringLiteral("line"), runTo.second}});
     command(first);
     return true;
 }
 
-bool PythonRunConsole::start(const QString& interpreter, const QString& script, const QStringList& arguments, bool debugging)
+bool PythonRunConsole::start(const QString& interpreter, const QString& script, const QStringList& arguments, bool debugging,
+                             const qucs_s::python::RunPlan& plan)
 {
     if (a_process != nullptr) {   // the one going, ended at once
         disconnect(a_process, nullptr, this, nullptr);
@@ -290,17 +308,27 @@ bool PythonRunConsole::start(const QString& interpreter, const QString& script, 
     a_stopped = false;
     a_decoder.resetState();
     const QFileInfo info(script);
-    note(tr("%1 %2   (in %3)").arg(QFileInfo(interpreter).fileName(), info.fileName(), QDir::toNativeSeparators(info.absolutePath())));
+    QString said = QFileInfo(interpreter).fileName() + QLatin1Char(' ') + info.fileName();
+    for (const QString& a : plan.arguments)   // (its arguments as a shell would take them)
+        said += QLatin1Char(' ') + (a.isEmpty() || a.contains(QRegularExpression(QStringLiteral("[\\s'\"\\\\$]"))) ? ProcessConsole::quotedForShell(a) : a);
+    note(tr("%1   (in %2)").arg(said, QDir::toNativeSeparators(plan.folder.isEmpty() ? info.absolutePath() : plan.folder)));
+    a_interrupted = false;
+    if (!plan.failure.isEmpty()) {
+        note(plan.failure);
+        setStatus(tr("%1 was not run: its Run Settings (Simulation > Python > Run Settings...)").arg(info.fileName()));
+        emit finished(-1);
+        return false;
+    }
 
     a_process = new QProcess(this);
     // Debugged: the script's output on standard output, the debugger's
     // word on standard error (the script's own error output goes with its
     // output).
     a_process->setProcessChannelMode(debugging ? QProcess::SeparateChannels : QProcess::MergedChannels);
-    QProcessEnvironment environment = qucs_s::python::scriptEnvironment();   // (the qucs module on its path)
+    QProcessEnvironment environment = plan.environment.isEmpty() ? qucs_s::python::scriptEnvironment() : plan.environment;   // (the qucs module on its path)
     environment.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
     a_process->setProcessEnvironment(environment);
-    a_process->setWorkingDirectory(info.absolutePath());
+    a_process->setWorkingDirectory(plan.folder.isEmpty() ? info.absolutePath() : plan.folder);
     connect(a_process, &QProcess::readyReadStandardOutput, this, &PythonRunConsole::readOutput);
     if (debugging) connect(a_process, &QProcess::readyReadStandardError, this, &PythonRunConsole::readEvents);
     connect(a_process, &QProcess::finished, this, &PythonRunConsole::runFinished);
@@ -379,7 +407,13 @@ void PythonRunConsole::runFinished()
     process->deleteLater();
     const QString seconds = QString::number(a_clock.elapsed() / 1000.0, 'f', 2);
     const QString name = QFileInfo(a_script).fileName();
-    if (a_stopped) {
+    if (a_interrupted && !a_stopped) {
+        // (A KeyboardInterrupt no one catches ends Python by SIGINT itself.)
+        const bool normal = process->exitStatus() == QProcess::NormalExit;
+        a_exitCode = normal ? process->exitCode() : -1;
+        note(normal ? tr("Interrupted: exit code %1 after %2 s.").arg(a_exitCode).arg(seconds) : tr("Interrupted after %1 s.").arg(seconds));
+        setStatus(tr("%1 was interrupted after %2 s.").arg(name, seconds));
+    } else if (a_stopped) {
         a_exitCode = -1;
         note(tr("Stopped after %1 s.").arg(seconds));
         setStatus(tr("%1 was stopped after %2 s.").arg(name, seconds));
@@ -393,6 +427,7 @@ void PythonRunConsole::runFinished()
         setStatus(tr("%1: exit code %2 after %3 s.").arg(name).arg(a_exitCode).arg(seconds));
     }
     a_stop->setEnabled(false);
+    a_interrupt->setEnabled(false);
     setInputOpen(false);
     a_pausing = false;
     const bool debugged = a_debugging;
@@ -438,6 +473,8 @@ void PythonRunConsole::setPaused(bool paused)
     a_paused = paused;
     for (QToolButton* b : {a_continue, a_stepOver, a_stepInto, a_stepOut}) b->setEnabled(paused);
     a_pause->setEnabled(a_debugging && !paused && a_process != nullptr);
+    // (Stopped in the debugger: an interrupt would land in it, not the script.)
+    a_interrupt->setEnabled(a_process != nullptr && !paused);
     a_continue->setVisible(paused || !a_debugging);
     a_pause->setVisible(!a_continue->isVisible());
     a_evaluate->setEnabled(paused);
@@ -497,6 +534,32 @@ void PythonRunConsole::setBreakOnRaised(bool on)
     command({{QStringLiteral("command"), QStringLiteral("raised")}, {QStringLiteral("on"), on}});
 }
 
+void PythonRunConsole::setDebugLibrary(bool on)
+{
+    a_library = on;
+    command({{QStringLiteral("command"), QStringLiteral("library")}, {QStringLiteral("on"), on}});
+}
+
+bool PythonRunConsole::canInterrupt()
+{
+#ifdef Q_OS_WIN
+    return false;   // (a console's Ctrl+C reaches no process started so)
+#else
+    return true;
+#endif
+}
+
+void PythonRunConsole::interrupt()
+{
+    if (a_process == nullptr || a_paused || !canInterrupt()) return;
+#ifndef Q_OS_WIN
+    if (::kill(pid_t(a_process->processId()), SIGINT) != 0) return;
+    a_interrupted = true;
+    a_pausing = false;
+    setStatus(tr("Interrupting %1 (KeyboardInterrupt)...").arg(QFileInfo(a_script).fileName()));
+#endif
+}
+
 int PythonRunConsole::inspect(const QString& expression)
 {
     if (!a_paused) return 0;
@@ -527,7 +590,7 @@ void PythonRunConsole::handleEvent(const QJsonObject& event)
         for (const QJsonValue& v : event.value(QStringLiteral("stack")).toArray()) {
             const QJsonObject f = v.toObject();
             a_stack.append({f.value(QStringLiteral("file")).toString(), f.value(QStringLiteral("line")).toInt(),
-                            f.value(QStringLiteral("function")).toString()});
+                            f.value(QStringLiteral("function")).toString(), f.value(QStringLiteral("library")).toBool()});
         }
         a_frame = 0;
         a_reason = event.value(QStringLiteral("reason")).toString();
