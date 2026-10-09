@@ -564,6 +564,11 @@ bool PythonDoc::applyFix(int index)
     return true;
 }
 
+QMenu* PythonDoc::fixMenu() const
+{
+    return a_fixMenu.data();
+}
+
 void PythonDoc::showFixMenu()
 {
     const QPoint at = a_fixAt;
@@ -574,9 +579,6 @@ void PythonDoc::showFixMenu()
     a_fixMenu->setAttribute(Qt::WA_DeleteOnClose);
     if (a_fixes.isEmpty()) a_fixMenu->addAction(tr("No fixes for line %1").arg(a_fixLine))->setEnabled(false);
     for (int k = 0; k < a_fixes.size(); ++k) a_fixMenu->addAction(a_fixes.at(k).title, this, [this, k] { applyFix(k); });
-    connect(a_fixMenu, &QObject::destroyed, this, [this, menu = a_fixMenu] {
-        if (a_fixMenu == menu) a_fixMenu = nullptr;
-    });
     a_fixMenu->popup(at);
 }
 
