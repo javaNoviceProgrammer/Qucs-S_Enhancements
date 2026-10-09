@@ -199,7 +199,12 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     setMode(defaultMode());
 }
 
-MarkdownDoc::~MarkdownDoc() = default;
+MarkdownDoc::~MarkdownDoc()
+{
+    // TextDoc's destructor moves the text's scroll bar as it lets the
+    // highlighter go: not followed by a MarkdownDoc that is no more.
+    disconnect(verticalScrollBar(), nullptr, this, nullptr);
+}
 
 MarkdownDoc::Mode MarkdownDoc::defaultMode()
 {
