@@ -2905,7 +2905,7 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
   else if (isPythonFile(Name)) {
     // Checked as it is typed, run from the Python toolbar (pythondoc.h).
     auto *py = new PythonDoc(this, Name);
-    connect(py, &PythonDoc::checkFinished, this, [this, py] { pythonChecked(py); });
+    connectPythonDoc(py);
     d = py;
     i = addDocumentTab(py, Info.fileName());
   }
@@ -4113,8 +4113,11 @@ QString QucsApp::pythonProgram()
 void QucsApp::updateConsolePrograms()
 {
   terminal->setProgram(shellProgram(), shellArguments());
+  // (The qucs module on its path, and the runner of Run Selection and Run
+  // Cell: pythondoc.h.)
   pythonShell->setProgram(pythonProgram(), {QStringLiteral("-i"), QStringLiteral("-u")},
-                          {QStringLiteral("PYTHON_BASIC_REPL=1"), QStringLiteral("PYTHONIOENCODING=utf-8")});
+                          QStringList{QStringLiteral("PYTHON_BASIC_REPL=1"), QStringLiteral("PYTHONIOENCODING=utf-8")}
+                              + qucs_s::python::shellEnvironment());
 }
 
 // --------------------------------------------------------------

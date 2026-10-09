@@ -168,6 +168,10 @@ private slots:
         QucsVersion = VersionTriplet(PACKAGE_VERSION);
         Module::registerModules();
         python = QStandardPaths::findExecutable("python3");
+        // The completer's own words, whether or not this machine's Python
+        // has jedi (a case that wants jedi puts a stand-in first).
+        write("nojedi/jedi/__init__.py", "raise ImportError('hidden for the test')\n");
+        qputenv("PYTHONPATH", QFile::encodeName(dir.filePath("nojedi")));
         app = new QucsApp(false);
         QucsMain = app;
         app->resize(1200, 800);
@@ -967,7 +971,14 @@ private slots:
         const QString actions = QucsControl::textOf(control->callNow("list_actions", {}, 20000));
         for (const char* path : {"Simulation > Python > Run", "Simulation > Python > Stop", "Simulation > Python > Run in Shell",
                                  "Simulation > Python > Check", "Simulation > Python > Messages at Line Ends",
-                                 "Simulation > Python > Show Completions", "Simulation > Python > Complete as You Type"})
+                                 "Simulation > Python > Show Completions", "Simulation > Python > Complete as You Type",
+                                 "Simulation > Python > Debug", "Simulation > Python > Continue", "Simulation > Python > Step Over",
+                                 "Simulation > Python > Step Into", "Simulation > Python > Step Out",
+                                 "Simulation > Python > Toggle Breakpoint", "Simulation > Python > Run Selection or Line",
+                                 "Simulation > Python > Run Cell", "Simulation > Python > Run Cell and Advance",
+                                 "Simulation > Python > Format Document", "Simulation > Python > Fix Problems",
+                                 "Simulation > Python > Show Signature", "Simulation > Python > Go to Definition",
+                                 "Simulation > Python > Go Back"})
             QVERIFY2(actions.contains(path), path);
         if (python.isEmpty()) QSKIP("no python3 here: not run");
         PythonDoc* py = open(write("claude/c.py", "print('from claude')\n"));

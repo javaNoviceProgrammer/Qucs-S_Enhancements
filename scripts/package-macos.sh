@@ -89,6 +89,10 @@ cp -p "$src"/library/XyceDigital/*.sym "$res/library/XyceDigital/"
 cp -pR "$src/library/symbols/." "$res/symbols/"
 cp -pR "$src/library/spicelibrary/." "$res/spicelibrary/"
 cp -p  "$build"/translations/*.qm "$res/lang/" 2>/dev/null || echo "    warning: no translations found" >&2
+# The qucs module, for a Python outside Qucs-S (inside, the program writes
+# its own copy on the scripts' path): python/CMakeLists.txt installs it so.
+mkdir -p "$res/python"
+cp -p  "$src/qucs/python/module/qucs.py" "$res/python/"
 
 echo "==> Bundling Qt (macdeployqt)"
 # Once, into the main app: the tool apps' executables along, so that what
@@ -272,7 +276,7 @@ done)"
 # The resources main.cpp looks for next to the executable; a component
 # whose netlist includes one of the spicelibrary files fails in the
 # simulator when it is missing.
-for want in examples/ngspice library/Ideal.lib library/BJT_Darlington library/XyceDigital/NAND2.sym symbols \
+for want in examples/ngspice library/Ideal.lib library/BJT_Darlington library/XyceDigital/NAND2.sym symbols python/qucs.py \
             spicelibrary/xfmr.cir spicelibrary/spdt.cir spicelibrary/spdt_xyce.cir \
             spicelibrary/coax.cir spicelibrary/core.cir spicelibrary/winding.cir; do
   [ -e "$res/$want" ] || { echo "error: share/qucs-s/$want is missing from the bundle" >&2; exit 1; }

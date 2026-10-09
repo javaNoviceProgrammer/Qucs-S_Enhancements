@@ -19,6 +19,7 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 #define TEXTDOC_H
 
 #include <QPlainTextEdit>
+#include <QTextBlock>
 #include <QFont>
 #include <QMargins>
 #include <QColor>
@@ -36,6 +37,8 @@ Copyright (C) 2014 by Guilherme Brondani Torri <guitorri@gmail.com>
 class SyntaxHighlighter;
 class QString;
 class LineNumberArea;
+class QMouseEvent;
+class QPainter;
 
 // device type flags
 #define DEV_BJT      0x0001
@@ -58,7 +61,7 @@ public:
 
   void  setName (const QString&);
   bool  load ();
-  bool  reload ();
+  virtual bool reload ();   // (PythonDoc keeps its breakpoints)
   bool  hasFileChangedOnDisk() const;
   int   save ();
   bool  writeTo(const QString& path) override;
@@ -162,6 +165,7 @@ public:
   QMenu* createStandardContextMenu();
 
   void lineNumberAreaPaintEvent(QPaintEvent *event);
+  void lineNumberAreaPressed(QMouseEvent *event);
   int lineNumberAreaWidth() const;
 
 signals:
@@ -188,6 +192,17 @@ protected:
       virtual QMargins extraMargins() const { return {}; }
       /// The text's margins set again (after extraMargins() changed).
       void updateMargins() { updateLineNumberAreaWidth(0); }
+      /// Room at the left of the line numbers' margin for a subclass's
+      /// marks (PythonDoc: its breakpoints and the debugger's line), drawn
+      /// by paintMark() for each line shown, in \a box (the line's height,
+      /// markRoom() wide); a press there is marginPressed()'s.
+      virtual int markRoom() const { return 0; }
+      virtual void paintMark(QPainter &painter, const QTextBlock &block, const QRect &box) { Q_UNUSED(painter) Q_UNUSED(block) Q_UNUSED(box) }
+      virtual void marginPressed(const QTextBlock &block) { Q_UNUSED(block) }
+      /// Lines marked besides the current one and the diagnostics.
+      virtual QList<QTextEdit::ExtraSelection> moreSelections() const { return {}; }
+      /// The marks drawn again (after they changed).
+      void refreshMarks();
 
 private:
   SyntaxHighlighter * syntaxHighlight = nullptr;
@@ -240,6 +255,7 @@ protected:
     }
     // A line's diagnostics over its dot.
     bool event(QEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override { codeEditor->lineNumberAreaPressed(event); }
 
 private:
     TextDoc *codeEditor;
