@@ -101,6 +101,24 @@ void QucsApp::initPythonToolbar()
   connect(pythonLineEndsAction, &QAction::toggled, this, &QucsApp::slotPythonLineEnds);
   pythonToolbar->addAction(pythonLineEndsAction);
 
+  // Completion: asked for (Ctrl+Space - the Control key on a Mac, the
+  // Command key's being Spotlight's), and as one types.
+  pythonCompleteAction = new QAction(tr("Show Completions"), this);
+  pythonCompleteAction->setObjectName(QStringLiteral("pythonComplete"));
+#ifdef Q_OS_MACOS
+  pythonCompleteAction->setShortcuts({QKeySequence(Qt::META | Qt::Key_Space), QKeySequence(Qt::CTRL | Qt::Key_Space)});
+#else
+  pythonCompleteAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Space));
+#endif
+  connect(pythonCompleteAction, &QAction::triggered, this, &QucsApp::slotPythonComplete);
+  pythonAsYouTypeAction = new QAction(tr("Complete as You Type"), this);
+  pythonAsYouTypeAction->setObjectName(QStringLiteral("pythonCompleteAsYouType"));
+  pythonAsYouTypeAction->setCheckable(true);
+  pythonAsYouTypeAction->setChecked(PythonDoc::completeAsYouType());
+  pythonAsYouTypeAction->setToolTip(tr("The words that complete a name offered as you type it: after two letters, or a "
+                                       "dot. Off: when asked for (Show Completions)."));
+  connect(pythonAsYouTypeAction, &QAction::toggled, this, [](bool on) { PythonDoc::setCompleteAsYouType(on); });
+
   // The same in Simulation > Python, above the simulators' settings: for
   // the keyboard, and for Claude's trigger_action (it runs menu actions).
   auto *pythonMenu = new QMenu(tr("&Python"), simMenu);
@@ -110,6 +128,9 @@ void QucsApp::initPythonToolbar()
   pythonMenu->addSeparator();
   pythonMenu->addAction(pythonCheckAction);
   pythonMenu->addAction(pythonLineEndsAction);
+  pythonMenu->addSeparator();
+  pythonMenu->addAction(pythonCompleteAction);
+  pythonMenu->addAction(pythonAsYouTypeAction);
   simMenu->insertMenu(simSettings, pythonMenu);
   simMenu->insertSeparator(simSettings);
 
@@ -169,6 +190,9 @@ void QucsApp::updatePythonToolbar()
   pythonRunAction->setEnabled(py != nullptr);
   pythonShellAction->setEnabled(py != nullptr);
   pythonCheckAction->setEnabled(py != nullptr);
+  pythonCompleteAction->setEnabled(py != nullptr);
+  pythonCompleteAction->setToolTip(tr("Show Completions: the words that complete the name at the cursor") +
+                                   (py != nullptr ? QStringLiteral("\n") + py->completedBy() : QString()));
   pythonStopAction->setEnabled(pythonRun != nullptr && pythonRun->isRunning());
   pythonCheckAction->setToolTip(tr("Check: the script checked now, and the Problems tab brought up") +
                                 (py != nullptr ? QStringLiteral("\n") + py->checkedBy() : QString()));
@@ -263,6 +287,11 @@ void QucsApp::slotPythonInterpreterChosen(int index)
 void QucsApp::slotPythonLineEnds(bool on)
 {
   PythonDoc::setMessagesAtLineEnds(on);
+}
+
+void QucsApp::slotPythonComplete()
+{
+  if (PythonDoc *py = currentPythonDoc()) py->complete(true);
 }
 
 void QucsApp::showTextPlace(QWidget *document, const QString &path, int line, int column)

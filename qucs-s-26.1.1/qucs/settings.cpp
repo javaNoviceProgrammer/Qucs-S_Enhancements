@@ -95,6 +95,7 @@ void settingsManager::initDefaults()
     m_Defaults["ComponentSymbols"] = 0;   // qucs_s::symbols::US
     m_Defaults["PythonToolbar"] = true;              // shown while a Python script is in front
     m_Defaults["PythonMessagesAtLineEnds"] = false;  // PythonDoc::messagesAtLineEnds()
+    m_Defaults["PythonCompleteAsYouType"] = true;    // PythonDoc::completeAsYouType()
     m_Defaults["PythonInterpreters"] = QStringList();   // chosen with Browse on the Python toolbar
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;

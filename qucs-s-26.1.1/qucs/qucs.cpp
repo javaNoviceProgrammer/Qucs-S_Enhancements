@@ -3597,7 +3597,9 @@ void QucsApp::slotChangeView()
     magSel->setDisabled(true);
     if(cursorLeft->isEnabled())
       switchSchematicDoc (false);
-    insEntity->setEnabled(true);   // after a PDF, too
+    // After a PDF, too - not for a Python script: it has no skeleton, and
+    // its Ctrl+Space is the completions' (Simulation > Python).
+    insEntity->setEnabled(qobject_cast<PythonDoc *>(w) == nullptr);
     buildModule->setEnabled(true);
   }
   // for PDF documents: read; View All fits a page, Zoom to Selection the
