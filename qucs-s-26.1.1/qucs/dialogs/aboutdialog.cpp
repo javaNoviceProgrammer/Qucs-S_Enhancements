@@ -229,8 +229,12 @@ void AboutDialog::currentChangedSlot(int index) {
 
 void AboutDialog::setAuthorsText() {
 
-  QString authorsText;
-  authorsText = tr("Qucs-S project team:");
+  // This build's team first, in its order (the others are shuffled).
+  QString authorsText = tr("Enhanced Qucs-S project team:") + "<ul>";
+  for (const QString &name : {QStringLiteral("Meisam Bahadori"), QStringLiteral("Claude Code")})
+    authorsText += ("<li>" + name + "</li>");
+  authorsText += "</ul>";
+  authorsText += tr("Qucs-S project team:");
   authorsText += "<ul>";
   for(const auto& tStr : qucs_sDevs) {
     authorsText += ("<li>" + tStr + "</li>");
