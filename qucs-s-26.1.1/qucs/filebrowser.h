@@ -34,6 +34,7 @@ class QMenu;
 class QModelIndex;
 class QStackedWidget;
 class QStandardItemModel;
+class QTabBar;
 class QTimer;
 class QToolButton;
 class QTreeView;
@@ -95,8 +96,12 @@ QLineEdit* nameFilterEdit(QWidget* parent);
  * row, the folder shown, a button of the path) they move there - copied
  * with Option (Ctrl elsewhere), or to another disk; onto the document area
  * they open; from the Finder or the Explorer they are copied in. A folder
- * held under a drag opens. The folder, the view and the options are kept
- * for the next start.
+ * held under a drag opens. Tabs: a folder opened in a new tab (its menu's
+ * Open in New Tab, a middle click, Command - Ctrl elsewhere - with the
+ * double-click), each with its own folder, steps back and forward, view,
+ * filter and selection; the tab bar shows while there are two or more.
+ * The folder, the view, the tabs and the options are kept for the next
+ * start.
  */
 class FileBrowser : public QWidget
 {
@@ -151,6 +156,18 @@ public:
     void setGitShown(bool on);
     /// The entries selected in the view, in its order.
     QStringList selectedPaths() const;
+
+    /// Tabs: \a path (a folder; a file's folder, with it selected) in a
+    /// new tab after the one in front - brought to the front with \a
+    /// makeCurrent. Returns its index.
+    int openInNewTab(const QString& path, bool makeCurrent = true);
+    int tabCount() const { return int(a_tabs.size()); }
+    int currentTab() const { return a_tab; }
+    void setCurrentTab(int index);
+    /// Closes tab \a index (not the last one).
+    void closeTab(int index);
+    /// The tabs' folders, in order.
+    QStringList tabLocations() const;
 
     bool canGoBack() const { return !a_back.isEmpty(); }
     bool canGoForward() const { return !a_forward.isEmpty(); }
@@ -209,6 +226,9 @@ public:
     QLineEdit* filterEdit() const { return a_filter; }
     QLabel* statusLabel() const { return a_status; }
     QMenu* contextMenuFor(const QString& path);
+    QTabBar* tabBar() const { return a_tabBar; }
+    /// The menu of tab \a index.
+    QMenu* tabMenuFor(int index);
 
 public slots:
     void back();
@@ -268,6 +288,23 @@ private:
     void springOpen();
     /// Whether \a path is in what the view shows (under the folder shown).
     bool inView(const QString& path) const;
+    /// A tab: where it is, what it shows - the tab in front's kept in the
+    /// members, put in its record when another comes to the front.
+    struct Tab {
+        QString location;
+        QStringList back;
+        QStringList forward;
+        View view = View::List;
+        QString selected;
+        QString filter;
+        QStringList expanded;   // the Tree's folders open
+        int scroll = 0;
+    };
+    /// The tab in front as it stands.
+    Tab currentState() const;
+    void stashTab();
+    void loadTab(const Tab& tab);
+    void updateTabs();
 
     QString a_location;
     QString a_home;
@@ -285,6 +322,11 @@ private:
     bool a_qucsOnly = false;
     bool a_gitShown = true;
     QString a_selected;   // kept across the views
+    QList<Tab> a_tabs;    // (one at least)
+    int a_tab = 0;
+    bool a_switching = false;   // a tab being brought to the front
+    QStringList a_expandPending;   // a tab's Tree folders to open once loaded
+    bool a_selectPending = false;  // its selection, once its folder is loaded
 
     qucs_s::files::IconProvider* a_icons = nullptr;
     QFileSystemModel* a_model = nullptr;
@@ -305,6 +347,7 @@ private:
     QAction* a_qucsAction = nullptr;
     QAction* a_gitAction = nullptr;
     QAction* a_documentAction = nullptr;
+    QTabBar* a_tabBar = nullptr;
     // The path.
     QStackedWidget* a_pathStack = nullptr;
     QWidget* a_crumbBar = nullptr;

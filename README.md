@@ -1552,8 +1552,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   opens it with the system, shows it in the file manager, copies its
   path, renames it in place, makes a folder or a new ZIP archive (*New
   Zip…*, below) or moves it to the trash (documents open from it close;
-  not while one has unsaved changes). The folder, the view and the
-  options are kept for the next start.
+  not while one has unsaved changes). The folder, the view, the tabs and
+  the options are kept for the next start.
+  **Tabs**: a folder's right-click menu has *Open in New Tab* under
+  *Open*; a middle click on a folder opens it in a tab behind, and
+  ⌘-double-click (Ctrl on Windows and Linux) in a tab in front. The ⋯
+  menu's *New Tab* (and the empty area's right-click menu) opens the
+  folder shown again. Each tab has its own folder, back and forward
+  steps, view, filter, selection and the Tree's open folders. The tab bar
+  appears while there are two or more: a click brings a tab to the front,
+  its ✕ or a middle click closes it, tabs are dragged to reorder them,
+  and a tab's right-click menu has *New Tab*, *Close Tab*, *Close Other
+  Tabs*, *Close Tabs to the Right*, the folder shown in the file manager
+  and its path copied. In the *Recent Documents* view a file's menu has
+  *Show in a New Tab*. A tab whose folder was deleted while it was behind
+  shows the nearest folder above it. The tabs are reopened at the next
+  start (not in a run given `--workspace`).
   **Drag and drop**: select one or several entries (⌘/Ctrl-click,
   Shift-click) and drag them.
   - **Where they go:** onto a folder's row, into that folder. Beside the
