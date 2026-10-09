@@ -233,9 +233,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   stay three; a hierarchical subcircuit's model is read whole, as are
   libraries made before; and a library whose file was renamed still
   works. A library is replaced only once the new one is made: the old
-  one is read while it is made (a subcircuit may place its parts) and
-  goes to the trash then, and one that cannot be made leaves it as it
-  was. Claude's `import_library` brings a SPICE library with the files it
+  one is read while it is made (a subcircuit may place its parts) and is
+  deleted then, its folder of models with it (not merged into), and one
+  that cannot be made or put in its place leaves it as it was. It is
+  deleted, not moved to the trash: a trash that would not take it (a
+  share, a system that refused) kept a library from being exported again.
+  Claude's `import_library` brings a SPICE library with the files it
   includes beside it into a folder of its own, `NAME/`, its include lines
   rewritten to name them there — two libraries' `models/params.inc` stay
   two, and bringing in one never changes another's results (one included
@@ -441,7 +444,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   library of the open project's subcircuits, as *Create Library* does -
   those chosen, each with a description, into `user_lib`, the project or a
   folder of the library search paths, Verilog-A embedded or not, a library
-  of that name replaced only when asked (the old one to the trash), never
+  of that name replaced only when asked (the old one deleted), never
   of a schematic with unsaved changes - and answers with each part's
   `add_component`. `import_library` brings a library file in - a Qucs-S
   library with its folder of models, or a SPICE library of subcircuits -

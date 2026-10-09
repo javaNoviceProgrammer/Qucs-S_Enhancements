@@ -350,9 +350,9 @@ void LibraryDialog::slotCreateNext()
 
   LibFile.setFileName(LibDir.absoluteFilePath(NameEdit->text()) + ".lib");
   if(LibFile.exists()) {
-    auto ans = QMessageBox::question(this, tr("Error"),
+    auto ans = QMessageBox::question(this, tr("Create Library"),
                           tr("A library with this name already exists! Rewrite?") + QLatin1Char('\n')
-                              + tr("(It goes to the trash once the new one is made, and stays as it is if that cannot be made.)"),
+                              + tr("(It is deleted once the new one is made, and stays as it is if that cannot be made.)"),
                           QMessageBox::Yes, QMessageBox::No);
     if (ans == QMessageBox::No) return;
     // Each part's description the library had, to keep or change.
@@ -852,7 +852,7 @@ void LibraryDialog::slotSave()
   const QString name = NameEdit->text();
   libSaveName->setText(name + ".lib");
   a_made = false;
-  a_trashed.clear();
+  a_replaced.clear();
 
   ErrText->insertPlainText(tr("Saving library..."));
 
@@ -1195,34 +1195,36 @@ void LibraryDialog::slotSave()
     return;
   }
 
-  // In place: what was there (the library, its folder) to the trash first.
-  // A folder of its name with no library of it (one whose .lib was taken
-  // away, someone's own) is not taken away: the library's files go into it,
-  // as they always did.
+  // In place: what was there (the library, its folder) deleted - moved
+  // aside first (.NAME.qucs-old), deleted once the new one is in its place,
+  // and put back when that cannot be done. Not to the trash: a trash that
+  // would not take it (a share, a system that refused) kept a library from
+  // being made again. A folder of its name with no library of it (one whose
+  // .lib was taken away, someone's own) is not taken away: the library's
+  // files go into it, as they always did.
   const bool replacing = there(finalLib);
-  QStringList removed;
-  for (const QString &old : {finalLib, finalModels}) {
-    if (!there(old) || (old == finalModels && !replacing)) continue;
-    QString where;
-    if (misc::moveToTrash(old, &where)) {
-      a_trashed << where;
-      removed << old;
-      continue;
+  const QString aside = LibDir.absoluteFilePath(QStringLiteral(".%1.qucs-old").arg(name));
+  QDir(aside).removeRecursively();   // (one left by a run that ended)
+  QStringList movedFrom, movedTo;
+  const auto putBack = [&] {
+    for (qsizetype k = movedTo.size() - 1; k >= 0; --k) QDir().rename(movedTo.at(k), movedFrom.at(k));
+    QDir(aside).removeRecursively();
+  };
+  if (replacing) {
+    for (const QString &old : {finalLib, finalModels}) {
+      if (!there(old)) continue;
+      const QString to = QDir(aside).filePath(QFileInfo(old).fileName());
+      if (!QDir().mkpath(aside) || !QDir().rename(old, to)) {
+        putBack();
+        QDir(a_staging).removeRecursively();
+        ErrText->appendPlainText(tr("Error: %1 could not be replaced (it cannot be moved): the library there is as it was.")
+                                     .arg(QDir::toNativeSeparators(old)));
+        ErrText->appendPlainText(tr("Error creating library."));
+        return;
+      }
+      movedFrom << old;
+      movedTo << to;
     }
-    // No trash there (a share): the old library written over, as Rewrite
-    // asked - unless asked to keep it then (create()'s replace).
-    if (!a_mustTrash && (QFileInfo(old).isDir() && !QFileInfo(old).isSymLink() ? QDir(old).removeRecursively() : QFile::remove(old))) {
-      ErrText->appendPlainText(tr("%1 could not be moved to the trash: it was written over.").arg(QDir::toNativeSeparators(old)));
-      removed << old;
-      continue;
-    }
-    // Put back what went already; the new one is not put in place.
-    for (int k = 0; k < a_trashed.size(); ++k) QDir().rename(a_trashed.at(k), removed.at(k));
-    a_trashed.clear();
-    QDir(a_staging).removeRecursively();
-    ErrText->appendPlainText(tr("Error: %1 could not be moved to the trash: the library there is as it was.").arg(QDir::toNativeSeparators(old)));
-    ErrText->appendPlainText(tr("Error creating library."));
-    return;
   }
   bool placed = QDir().rename(staged.fileName(), finalLib);
   if (placed && QFileInfo(stagedModels).isDir() && !QDir(stagedModels).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden)) {
@@ -1251,14 +1253,25 @@ void LibraryDialog::slotSave()
   }
   QDir(a_staging).removeRecursively();
   if (!placed) {
+    // What was put in place of the old one goes; the old one comes back.
+    if (replacing) {
+      QFile::remove(finalLib);
+      if (movedFrom.contains(finalModels)) QDir(finalModels).removeRecursively();
+      putBack();
+    }
     ErrText->appendPlainText(tr("Error: the library could not be put in %1.").arg(QDir::toNativeSeparators(LibDir.absolutePath())));
+    if (replacing && there(finalLib))
+      ErrText->appendPlainText(tr("The library %1 there is as it was.").arg(QDir::toNativeSeparators(finalLib)));
     ErrText->appendPlainText(tr("Error creating library."));
     return;
   }
+  // The old one deleted.
+  a_replaced = movedFrom;
+  QDir(aside).removeRecursively();
   a_made = true;
 
   ErrText->appendPlainText(tr("Successfully created library."));
-  if (!a_trashed.isEmpty()) ErrText->appendPlainText(tr("The library it replaced is in the trash."));
+  if (!a_replaced.isEmpty()) ErrText->appendPlainText(tr("The library it replaced was deleted."));
   // Another library of its name: a part placed by the name could be either's.
   if (const QStringList others = LibComp::librariesNamedLike(LibFile.fileName()); !others.isEmpty()) {
     QStringList shown;
@@ -1271,7 +1284,7 @@ void LibraryDialog::slotSave()
 }
 
 // ---------------------------------------------------------------
-bool LibraryDialog::create(const Request &request, QString *log, QString *error, QStringList *trashed)
+bool LibraryDialog::create(const Request &request, QString *log, QString *error, QStringList *replaced)
 {
   const auto fail = [error](const QString &why) {
     if (error != nullptr) *error = why;
@@ -1305,13 +1318,11 @@ bool LibraryDialog::create(const Request &request, QString *log, QString *error,
   const bool embed = QucsSettings.EmbedVerilogAInLibraries, ground = QucsSettings.LibraryGroundPin;
   QucsSettings.EmbedVerilogAInLibraries = request.embedVerilogA;
   QucsSettings.LibraryGroundPin = request.groundPin;
-  a_mustTrash = true;   // (a replaced library is said to be in the trash)
   slotSave();
-  a_mustTrash = false;
   QucsSettings.EmbedVerilogAInLibraries = embed;
   QucsSettings.LibraryGroundPin = ground;
   if (log != nullptr) *log = ErrText->toPlainText();
-  if (trashed != nullptr) *trashed = a_trashed;
+  if (replaced != nullptr) *replaced = a_replaced;
   if (!a_made)
     return fail(LibFile.exists() ? tr("the library was not made (its messages say why); the one there is as it was")
                                  : tr("the library was not made (its messages say why)"));
