@@ -101,32 +101,29 @@ void QucsApp::initPythonToolbar()
 
   // The debugger's steps, while it is stopped.
   pythonToolbar->addSeparator();
+  // (Each to slotPythonDebugStep(), which tells them apart: no lambda in a
+  // lambda calling through a pointer to a member - GCC's UBSan takes the
+  // inner one's captured this for the closure.)
   const auto debugAction = [this](QAction *&action, const char *name, const QString &text, const QString &icon,
-                                  const QKeySequence &key, const QString &tip, void (PythonRunConsole::*step)()) {
+                                  const QKeySequence &key, const QString &tip) {
     action = new QAction(QIcon(icon), text, this);
     action->setObjectName(QLatin1String(name));
     action->setShortcut(key);
     action->setToolTip(tip);
     action->setEnabled(false);
-    connect(action, &QAction::triggered, this, [this, step] {
-      if (pythonRun != nullptr) (pythonRun->*step)();
-    });
+    connect(action, &QAction::triggered, this, &QucsApp::slotPythonDebugStep);
     pythonToolbar->addAction(action);
   };
   debugAction(pythonContinueAction, "pythonContinue", tr("Continue"), QStringLiteral(":/bitmaps/svg/python_continue.svg"),
-              QKeySequence(Qt::CTRL | Qt::Key_F2), tr("Continue (Ctrl+F2): on to the next breakpoint"),
-              &PythonRunConsole::continueRun);
+              QKeySequence(Qt::CTRL | Qt::Key_F2), tr("Continue (Ctrl+F2): on to the next breakpoint"));
   debugAction(pythonStepOverAction, "pythonStepOver", tr("Step Over"), QStringLiteral(":/bitmaps/svg/python_stepover.svg"),
-              QKeySequence(Qt::CTRL | Qt::Key_F10), tr("Step Over (Ctrl+F10): to the next line, a call on this one made whole"),
-              &PythonRunConsole::stepOver);
+              QKeySequence(Qt::CTRL | Qt::Key_F10), tr("Step Over (Ctrl+F10): to the next line, a call on this one made whole"));
   debugAction(pythonStepIntoAction, "pythonStepInto", tr("Step Into"), QStringLiteral(":/bitmaps/svg/python_stepinto.svg"),
               QKeySequence(Qt::CTRL | Qt::Key_F11), tr("Step Into (Ctrl+F11): into the call on the line - one of the script's, "
-                                                          "not Python's library"),
-              &PythonRunConsole::stepInto);
+                                                          "not Python's library"));
   debugAction(pythonStepOutAction, "pythonStepOut", tr("Step Out"), QStringLiteral(":/bitmaps/svg/python_stepout.svg"),
               QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F11), tr("Step Out (Ctrl+Shift+F11): out of the function, to the line "
-                                                                     "that called it"),
-              &PythonRunConsole::stepOut);
+                                                                     "that called it"));
   pythonBreakpointAction = new QAction(tr("Toggle Breakpoint"), this);
   pythonBreakpointAction->setObjectName(QStringLiteral("pythonBreakpoint"));
   pythonBreakpointAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F9));
@@ -490,6 +487,16 @@ void QucsApp::pythonDefinitionFound(PythonDoc *py)
 void QucsApp::slotPythonRun() { runPython(currentPythonDoc()); }
 
 void QucsApp::slotPythonDebug() { debugPython(currentPythonDoc()); }
+
+void QucsApp::slotPythonDebugStep()
+{
+  if (pythonRun == nullptr) return;
+  const QObject *from = sender();
+  if (from == pythonContinueAction) pythonRun->continueRun();
+  else if (from == pythonStepOverAction) pythonRun->stepOver();
+  else if (from == pythonStepIntoAction) pythonRun->stepInto();
+  else if (from == pythonStepOutAction) pythonRun->stepOut();
+}
 
 void QucsApp::slotPythonRunSelection()
 {
