@@ -69,10 +69,10 @@ public:
   /// fillSchematicList was given them), into \a folder; each subcircuit's
   /// description by its name; analog only, or with Verilog and VHDL models;
   /// Verilog-A embedded or not; a library of that name there replaced only
-  /// when \a replace - moved to the trash once the new one is made, and
-  /// the new one not put in its place when it cannot be (\a trashed: where
-  /// it went). False and why in \a error (nothing written, a library there
-  /// as it was); what it said in \a log.
+  /// when \a replace - deleted (its folder too) once the new one is made,
+  /// and left as it was when the new one cannot be made or put in its
+  /// place (\a replaced: what was deleted). False and why in \a error
+  /// (nothing written, a library there as it was); what it said in \a log.
   struct Request {
     QString name;
     QStringList subcircuits;
@@ -83,7 +83,7 @@ public:
     bool groundPin = false;   ///< each .SUBCKT's first pin gnd (QucsSettings.LibraryGroundPin)
     bool replace = false;
   };
-  bool create(const Request &request, QString *log, QString *error, QStringList *trashed = nullptr);
+  bool create(const Request &request, QString *log, QString *error, QStringList *replaced = nullptr);
 
   /// The part a subcircuit file becomes in a library: its file's name
   /// without ".sch" - div.v2 of div.v2.sch, deep of sub/deep.sch.
@@ -163,8 +163,7 @@ private:
   QHash<QString, QString> a_spiceRoots;   // a SPICE file taken in this time -> what it is attached as
   QString a_staging;       // .NAME.qucs-new beside the library: where it is made
   bool a_made = false;     // the last slotSave() put a library in place
-  bool a_mustTrash = false;   // a library there replaced only when it can go to the trash (create())
-  QStringList a_trashed;   // where what it replaced went
+  QStringList a_replaced;   // what the library replaced (deleted): its file, its folder
   QRegularExpression Expr;
   QRegularExpressionValidator *Validator;
 };

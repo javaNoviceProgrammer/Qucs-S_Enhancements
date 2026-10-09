@@ -8,7 +8,7 @@
  * subcircuit uses taken in under names of their own, with the files they
  * include, a .inc and a .mod included where the part is used; a library
  * part placed in a library subcircuit in its Qucs model too; a library
- * replaced only when the new one is made, the old one to the trash; a
+ * replaced only when the new one is made, the old one deleted; a
  * folder of the library's name that is no library's left alone; the dialog
  * choosing its subcircuits afresh, and saving one with changes first; the
  * commands of a library part's SPICE text found; the converter's library of
@@ -511,11 +511,15 @@ private slots:
     // Replaced, a library stays there until the new one is made: read while
     // it is made (a subcircuit of it placing one of its parts - that part's
     // model was left empty), there as it was when the new one cannot be
-    // made (it was deleted, by the dialog for good), and to the trash once
-    // the new one is in place. A library not made leaves no folder.
+    // made, and deleted - its folder too, not merged into - once the new
+    // one is in place: not moved to the trash, which a share or a system
+    // could refuse, and the library could not be made again. A library not
+    // made leaves no folder.
     void aLibraryIsReplacedOnlyByOneMade()
     {
-        const QString p = project("rep", {{"div.sch", divider("1k", "3k")}, {"outer.sch", wrapper("gone.sch")}});
+        const QString p = project("rep", {{"div.sch", divider("1k", "3k")}, {"outer.sch", wrapper("gone.sch")},
+                                          {"spice.sch", schematic(kPorts + spLib("X1", "dev.lib", "DEV", 300, 200))},
+                                          {"dev.lib", subckt("DEV", "1k")}});
         QucsApp app(false);
         MainGuard guard(&app);
         app.ProjName = "rep";
@@ -523,10 +527,12 @@ private slots:
         write(p + "/wrap.sch", schematic(kPorts + libPart("X1", "Kept", "div", 300, 200)));
         const int before = trashed();
         QStringList went;
+        QDir().mkpath(userLib + "/.Kept.qucs-old/left");   // (a run that ended halfway)
         QString log = make(app, "Kept", {"div.sch", "wrap.sch"}, userLib, true, &went);
-        QVERIFY2(log.contains("Successfully") && log.contains("The library it replaced is in the trash."), qPrintable(log));
-        QCOMPARE(went.size(), 1);
-        QCOMPARE(trashed(), before + 1);
+        QVERIFY2(log.contains("Successfully") && log.contains("The library it replaced was deleted."), qPrintable(log));
+        QCOMPARE(went, QStringList{QDir(userLib).absoluteFilePath("Kept.lib")});
+        QCOMPARE(trashed(), before);   // nothing to the trash
+        QVERIFY(!QFileInfo::exists(userLib + "/.Kept.qucs-old"));
         const QString lib = read(userLib + "/Kept.lib");
         const qsizetype wrap = lib.indexOf("<Component wrap>");
         QVERIFY2(wrap > 0 && lib.mid(wrap).contains(".SUBCKT Kept_div"), qPrintable(lib));
@@ -535,21 +541,34 @@ private slots:
         log = make(app, "Kept", {"div.sch", "outer.sch"}, userLib, true);
         QVERIFY2(log.startsWith("not made") && log.contains("the one there is as it was"), qPrintable(log));
         QCOMPARE(read(userLib + "/Kept.lib"), lib);
-        QCOMPARE(trashed(), before + 1);
+        QCOMPARE(trashed(), before);
         QVERIFY(!QFileInfo::exists(userLib + "/.Kept.qucs-new"));
+        QVERIFY(!QFileInfo::exists(userLib + "/.Kept.qucs-old"));
         log = make(app, "Fresh", {"outer.sch"}, userLib);
         QVERIFY(log.startsWith("not made"));
         QVERIFY(!QFileInfo::exists(userLib + "/Fresh.lib") && !QFileInfo::exists(userLib + "/Fresh"));
 
-        // No trash to move it to: create_library's replace is not made (it
-        // says the old one is in the trash), the old one as it was.
+        // No trash to move it to: replaced all the same (it was refused).
         const QByteArray trashWas = qgetenv("QUCS_TRASH_DIR");
         write(dir.filePath("not-a-folder"), "a file");
         qputenv("QUCS_TRASH_DIR", dir.filePath("not-a-folder/trash").toUtf8());
-        log = make(app, "Kept", {"div.sch"}, userLib, true);
+        log = make(app, "Kept", {"div.sch", "wrap.sch"}, userLib, true);
         qputenv("QUCS_TRASH_DIR", trashWas);
-        QVERIFY2(log.startsWith("not made") && log.contains("could not be moved to the trash"), qPrintable(log));
+        QVERIFY2(log.contains("Successfully") && log.contains("was deleted"), qPrintable(log));
         QCOMPARE(read(userLib + "/Kept.lib"), lib);
+
+        // Its folder of models deleted with it: a file only the old one had
+        // is gone, the new one's there.
+        QVERIFY(make(app, "Folded", {"spice.sch"}, userLib).contains("Successfully"));
+        QVERIFY(QFileInfo::exists(userLib + "/Folded/dev.lib"));
+        write(userLib + "/Folded/stale.txt", "the old one's");
+        went.clear();
+        log = make(app, "Folded", {"spice.sch"}, userLib, true, &went);
+        QVERIFY2(log.contains("Successfully") && log.contains("was deleted"), qPrintable(log));
+        QCOMPARE(went.size(), 2);
+        QVERIFY(!QFileInfo::exists(userLib + "/Folded/stale.txt"));
+        QVERIFY(QFileInfo::exists(userLib + "/Folded/dev.lib"));
+        QCOMPARE(trashed(), before);
 
         // The dialog's Rewrite? Yes, and it cannot be made: the same.
         LibraryDialog dialog(&app);
@@ -571,8 +590,28 @@ private slots:
         QMetaObject::invokeMethod(&dialog, "slotCreateNext");
         yes.stop();
         QVERIFY2(asked.size() == 1 && asked.first().contains("Rewrite?"), qPrintable(asked.join(" | ")));   // (no load error box)
+        QVERIFY2(asked.first().contains("It is deleted once the new one is made"), qPrintable(asked.first()));
         QCOMPARE(read(userLib + "/Kept.lib"), lib);
         QVERIFY(dialog.findChild<QPlainTextEdit*>()->toPlainText().contains("there is as it was"));
+
+        // Rewrite? Yes, and it can be made: in the old one's place, which
+        // is deleted - a library exported again.
+        LibraryDialog again(&app);
+        again.fillSchematicList({"div.sch"});
+        again.findChild<QComboBox*>("destination")->setCurrentIndex(0);
+        for (QCheckBox* box : again.findChildren<QCheckBox*>())
+            if (box->text() == "Add subcircuit description") box->setChecked(false);
+        again.findChild<QLineEdit*>()->setText("Kept");
+        yes.start(30);
+        QMetaObject::invokeMethod(&again, "slotCreateNext");
+        yes.stop();
+        const QString said = again.findChild<QPlainTextEdit*>()->toPlainText();
+        QVERIFY2(said.contains("Successfully created library.") && said.contains("The library it replaced was deleted."), qPrintable(said));
+        QVERIFY(!said.contains("rror"));
+        QVERIFY(!read(userLib + "/Kept.lib").contains("<Component wrap>"));
+        QVERIFY(read(userLib + "/Kept.lib").contains("<Component div>"));
+        QCOMPARE(trashed(), before);
+        QVERIFY(!QFileInfo::exists(userLib + "/.Kept.qucs-old") && !QFileInfo::exists(userLib + "/.Kept.qucs-new"));
         app.ProjName.clear();
     }
 
