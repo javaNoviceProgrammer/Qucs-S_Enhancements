@@ -93,6 +93,11 @@ cp -p  "$build"/translations/*.qm "$res/lang/" 2>/dev/null || echo "    warning:
 # its own copy on the scripts' path): python/CMakeLists.txt installs it so.
 mkdir -p "$res/python"
 cp -p  "$src/qucs/python/module/qucs.py" "$res/python/"
+# The Octave helpers (loadQucsDataSet and the rest), which the Octave dock
+# puts on Octave's path (OctaveDir, main.cpp): octave/CMakeLists.txt installs
+# its .m files so.
+mkdir -p "$res/octave"
+cp -p  "$src"/qucs/octave/*.m "$res/octave/"
 
 echo "==> Bundling Qt (macdeployqt)"
 # Once, into the main app: the tool apps' executables along, so that what
@@ -277,6 +282,7 @@ done)"
 # whose netlist includes one of the spicelibrary files fails in the
 # simulator when it is missing.
 for want in examples/ngspice library/Ideal.lib library/BJT_Darlington library/XyceDigital/NAND2.sym symbols python/qucs.py \
+            octave/loadQucsDataSet.m \
             spicelibrary/xfmr.cir spicelibrary/spdt.cir spicelibrary/spdt_xyce.cir \
             spicelibrary/coax.cir spicelibrary/core.cir spicelibrary/winding.cir; do
   [ -e "$res/$want" ] || { echo "error: share/qucs-s/$want is missing from the bundle" >&2; exit 1; }
