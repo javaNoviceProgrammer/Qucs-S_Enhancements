@@ -396,6 +396,63 @@ private slots:
     // menu, not a breakpoint -; ruff's fix (one edit, Undo takes it back),
     // only while the check is of the text as it is; an import for a name
     // not defined; a problem ignored on its line; Alt+Shift+Return.
+    // Cmd+/ (Ctrl+/ on Windows and Linux): the cursor's line, or the lines
+    // selected, made comments at their indentation - and back; one undo;
+    // the Python menu's Toggle Line Comment the same.
+    void linesAreCommentedAndBack()
+    {
+        PythonDoc* py = open(write("comment/c.py", "def f():\n    x = 1\n\n    if x:\n        return x\n"));
+        QVERIFY(py != nullptr);
+        QVERIFY(focused(py));
+        QAction* toggle = pythonAction("pythonComment");
+        QVERIFY(toggle != nullptr);
+        QCOMPARE(toggle->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_Slash));
+        QVERIFY(app->pythonMenu()->actions().contains(toggle));
+        const QString before = py->toPlainText();
+        // The cursor's line: commented where its text begins, the cursor
+        // kept on its word.
+        place(py, 2, 6);
+        QTest::keyClick(py, Qt::Key_Slash, Qt::ControlModifier);
+        QCOMPARE(lineText(py, 2), QStringLiteral("    # x = 1"));
+        QCOMPARE(py->textCursor().positionInBlock(), 8);
+        QTest::keyClick(py, Qt::Key_Slash, Qt::ControlModifier);
+        QCOMPARE(py->toPlainText(), before);
+        // Lines selected (down to the start of the next: not that one): at
+        // their least indentation, the blank one left; selected still.
+        QTextCursor lines(py->document()->findBlockByNumber(1));
+        lines.setPosition(py->document()->findBlockByNumber(4).position(), QTextCursor::KeepAnchor);
+        py->setTextCursor(lines);
+        toggle->trigger();
+        QCOMPARE(py->toPlainText(), QStringLiteral("def f():\n    # x = 1\n\n    # if x:\n        return x\n"));
+        QVERIFY(py->textCursor().hasSelection());
+        QCOMPARE(py->textCursor().selectedText(), QStringLiteral("    # x = 1\u2029\u2029    # if x:"));
+        // One undo.
+        py->undo();
+        QCOMPARE(py->toPlainText(), before);
+        // A comment among them: all made comments; then all of them taken
+        // back, "#" without its space too.
+        py->setPlainText(QStringLiteral("a = 1\n# b = 2\n#c = 3\n"));
+        py->selectAll();
+        toggle->trigger();
+        QCOMPARE(py->toPlainText(), QStringLiteral("# a = 1\n# # b = 2\n# #c = 3\n"));
+        toggle->trigger();
+        QCOMPARE(py->toPlainText(), QStringLiteral("a = 1\n# b = 2\n#c = 3\n"));
+        py->setPlainText(QStringLiteral("# b = 2\n#c = 3\n"));
+        py->selectAll();
+        toggle->trigger();
+        QCOMPARE(py->toPlainText(), QStringLiteral("b = 2\nc = 3\n"));
+        // A blank line: a comment begun on it.
+        py->setPlainText(QStringLiteral("    \n"));
+        place(py, 1, 4);
+        QTest::keyClick(py, Qt::Key_Slash, Qt::ControlModifier);
+        QCOMPARE(py->toPlainText(), QStringLiteral("    # \n"));
+        // Only read: nothing.
+        py->setReadOnly(true);
+        QVERIFY(!py->toggleLineComment());
+        QCOMPARE(py->toPlainText(), QStringLiteral("    # \n"));
+        py->setReadOnly(false);
+    }
+
     void quickFixesOfALine()
     {
         if (python.isEmpty()) QSKIP("no python3 here");

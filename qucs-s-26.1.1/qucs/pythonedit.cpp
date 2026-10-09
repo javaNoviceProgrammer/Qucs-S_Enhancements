@@ -76,6 +76,71 @@ bool PythonDoc::autoClose() { return _settings::Get().item<bool>("PythonAutoClos
 
 void PythonDoc::setAutoClose(bool on) { _settings::Get().setItem<bool>("PythonAutoClose", on); }
 
+bool PythonDoc::toggleLineComment()
+{
+    if (isReadOnly()) return false;
+    const QTextCursor cursor = textCursor();
+    const bool selected = cursor.hasSelection();
+    // The lines, as blocks of the document; a selection down to the start
+    // of a line does not take that line (lines selected the usual way).
+    const QTextBlock first = document()->findBlock(cursor.selectionStart());
+    QTextBlock last = document()->findBlock(cursor.selectionEnd());
+    if (last != first && cursor.selectionEnd() == last.position()) last = last.previous();
+    const auto indentOf = [](const QString& line) {
+        qsizetype i = 0;
+        while (i < line.size() && (line.at(i) == QLatin1Char(' ') || line.at(i) == QLatin1Char('\t'))) ++i;
+        return int(i);
+    };
+    // Comments all of them (but blank lines) - else made so, at the least
+    // indentation: the block keeps its shape.
+    int indent = -1;
+    bool comments = true;
+    for (QTextBlock b = first; b.isValid(); b = b.next()) {
+        const QString line = b.text();
+        if (!line.trimmed().isEmpty()) {
+            const int i = indentOf(line);
+            indent = indent < 0 ? i : std::min(indent, i);
+            if (!QStringView(line).mid(i).startsWith(QLatin1Char('#'))) comments = false;
+        }
+        if (b == last) break;
+    }
+    QTextCursor edit(document());
+    edit.beginEditBlock();
+    if (indent < 0) {
+        // Blank lines alone: a comment begun at the cursor's line's end.
+        edit.setPosition(cursor.block().position() + cursor.block().length() - 1);
+        edit.insertText(QStringLiteral("# "));
+    } else {
+        for (QTextBlock b = first; b.isValid(); b = b.next()) {
+            const QString line = b.text();
+            if (!line.trimmed().isEmpty()) {
+                if (comments) {
+                    // Its mark taken away, and the space after it.
+                    const int at = indentOf(line);
+                    const int mark = line.mid(at).startsWith(QLatin1String("# ")) ? 2 : 1;
+                    edit.setPosition(b.position() + at);
+                    edit.setPosition(b.position() + at + mark, QTextCursor::KeepAnchor);
+                    edit.removeSelectedText();
+                } else {
+                    edit.setPosition(b.position() + indent);
+                    edit.insertText(QStringLiteral("# "));
+                }
+            }
+            if (b == last) break;
+        }
+    }
+    edit.endEditBlock();
+    // Lines selected stay selected, whole, for another go; the cursor alone
+    // stays where it was in its text.
+    if (selected) {
+        QTextCursor lines(document());
+        lines.setPosition(first.position());
+        lines.setPosition(last.position() + last.length() - 1, QTextCursor::KeepAnchor);
+        setTextCursor(lines);
+    }
+    return true;
+}
+
 bool PythonDoc::closePair(QKeyEvent* event)
 {
     const Qt::KeyboardModifiers modifiers = event->modifiers() & ~(Qt::ShiftModifier | Qt::KeypadModifier);
