@@ -704,7 +704,24 @@ private slots:
         QVERIFY(list->isVisible());
         QVERIFY(list->parentWidget()->geometry().bottom() < py->viewport()->geometry().top());   // (above the text)
         QCOMPARE(list->count(), 3);
-        QCOMPARE(list->itemText(2), QString("    def gain"));
+        QCOMPARE(list->itemText(1), QString("Amp"));
+        QCOMPARE(list->itemText(2), QString("gain"));
+        // Each with its letter, as its completion has it, set in by how deep it is.
+        QCOMPARE(list->itemData(0, PythonDoc::kOutlineKindRole).toString(), QString("module"));
+        QCOMPARE(list->itemData(1, PythonDoc::kOutlineKindRole).toString(), QString("class"));
+        QCOMPARE(list->itemData(2, PythonDoc::kOutlineKindRole).toString(), QString("function"));
+        {
+            const QImage amp = list->itemIcon(1).pixmap(list->iconSize(), 1.0).toImage();
+            const QImage gain = list->itemIcon(2).pixmap(list->iconSize(), 1.0).toImage();
+            QCOMPARE(amp.size(), list->iconSize());
+            QVERIFY(list->iconSize().width() > list->iconSize().height());   // (room for one level in)
+            QCOMPARE(amp.pixelColor(8, 8), qucs_s::python::completionIcon("class").pixmap(QSize(16, 16), 1.0).toImage().pixelColor(8, 8));
+            QCOMPARE(gain.pixelColor(4, 8).alpha(), 0);   // (set in a level)
+            QCOMPARE(gain.pixelColor(list->iconSize().width() - 8, 8),
+                     qucs_s::python::completionIcon("function").pixmap(QSize(16, 16), 1.0).toImage().pixelColor(8, 8));
+            QVERIFY(qucs_s::python::completionIcon("class").pixmap(QSize(16, 16), 1.0).toImage().pixelColor(8, 8)
+                    != qucs_s::python::completionIcon("function").pixmap(QSize(16, 16), 1.0).toImage().pixelColor(8, 8));
+        }
         place(py, 5, 8);
         QCOMPARE(list->currentIndex(), 2);
         place(py, 7, 0);
@@ -715,7 +732,8 @@ private slots:
         py->moveCursor(QTextCursor::End);
         py->insertPlainText("def more():\n    pass\n");
         QTRY_COMPARE_WITH_TIMEOUT(list->count(), 4, 3000);
-        QCOMPARE(list->itemText(3), QString("def more"));
+        QCOMPARE(list->itemText(3), QString("more"));
+        QCOMPARE(list->itemData(3, PythonDoc::kOutlineKindRole).toString(), QString("function"));
     }
 
     // Cells: # %% and its kin begin one; each runs in the Python Shell, in

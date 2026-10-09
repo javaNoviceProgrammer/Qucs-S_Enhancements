@@ -492,20 +492,6 @@ QString nextIndent(const QString& line, const QString& step)
     return indent.chopped(spaces);
 }
 
-} // namespace qucs_s::python
-
-namespace {
-
-// The Python scripts open: a setting reaches each.
-QSet<PythonDoc*>& openScripts()
-{
-    static QSet<PythonDoc*> scripts;
-    return scripts;
-}
-
-constexpr int kCheckLimit = 15000;   // ms
-
-// A completion's icon: a letter for what it is, on a colour of its own.
 QIcon completionIcon(const QString& type)
 {
     static QHash<QString, QIcon> icons;
@@ -554,6 +540,20 @@ QIcon completionIcon(const QString& type)
     icons.insert(type, icon);
     return icon;
 }
+
+} // namespace qucs_s::python
+
+namespace {
+
+// The Python scripts open: a setting reaches each.
+QSet<PythonDoc*>& openScripts()
+{
+    static QSet<PythonDoc*> scripts;
+    return scripts;
+}
+
+constexpr int kCheckLimit = 15000;   // ms
+
 
 } // namespace
 
@@ -1131,7 +1131,7 @@ void PythonDoc::showCompletions(const qucs_s::python::Completions& answer)
     }
     a_completions->clear();
     for (const qucs_s::python::Completion& c : answer.items) {
-        auto* item = new QStandardItem(completionIcon(c.type), c.name);
+        auto* item = new QStandardItem(qucs_s::python::completionIcon(c.type), c.name);
         item->setEditable(false);
         item->setToolTip(c.description.isEmpty() ? c.type : c.description);
         item->setData(c.type, Qt::UserRole);

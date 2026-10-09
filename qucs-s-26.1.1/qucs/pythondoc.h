@@ -24,6 +24,7 @@
 
 class QComboBox;
 class QCompleter;
+class QIcon;
 class QLabel;
 class QProcess;
 class QStandardItemModel;
@@ -105,6 +106,10 @@ struct Completions {
 const QString& completerProgram();
 /// A line of its answers read (id -1: none).
 Completions readCompletions(const QByteArray& line);
+/// What a name is, as its completion and the outline show it: a letter on
+/// a colour of its own - f a function or method, C a class, m a module, k a
+/// keyword, p a parameter, v anything else.
+QIcon completionIcon(const QString& type);
 
 /// The call the cursor is in (the completer's "signature"): its name, its
 /// parameters as written ("b=2", "*args"), which of them the argument being
@@ -326,6 +331,9 @@ public:
     /// The outline above the text: its functions and classes, the one the
     /// cursor is in chosen; one chosen goes there.
     QComboBox* outlineList() const { return a_outline; }
+    /// An entry's kind, as its letter says it ("class", "function",
+    /// "module" for the top level): the outline's item data.
+    static constexpr int kOutlineKindRole = Qt::UserRole + 1;
     QList<qucs_s::python::OutlineEntry> outline() const { return a_outlineEntries; }
 
     /// The breakpoints: lines (from 1), each once, in order. A click in the
