@@ -603,7 +603,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     modules beside the script; pyright with its `pyrightconfig.json` or
     `pyproject.toml` settings - and its findings join the others as
     warnings (`... (mypy: assignment)`), moving with the text until its
-    next answer. One runs at a time. *Simulation → Python → Type Checker*:
+    next answer. One runs at a time. *Python → Type Checker*:
     *Automatic* (mypy, else pyright; the default), *mypy*, *pyright* or
     *Off*. The *Check* tooltip names the one that checked it.
   - **Shown where they are.** A red or amber wavy line under each
@@ -618,7 +618,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     Each word has a letter for what it is: function, class, module,
     keyword, value. Typing narrows the list, Return or Tab takes the word
     chosen, and Escape closes it. Nothing is offered in a string, in a
-    comment, or after a number's dot. *Simulation → Python → Show
+    comment, or after a number's dot. *Python → Show
     Completions* (Ctrl+Space, ⌃Space on a Mac) asks for the list
     anywhere, even after one letter. *Complete as You Type* (on by
     default) turns the automatic list off.
@@ -829,8 +829,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     The module is plain Python 3 (numpy is used when it is there);
     outside Qucs-S it is `share/qucs-s/python/qucs.py`.
   - **The Python toolbar**, shown while a script is in front (hidden from
-    the Toolbars menu, it stays hidden), and the same in *Simulation →
-    Python*:
+    the Toolbars menu, it stays hidden), and the same in the *Python*
+    menu — a menu of its own, right of *View* (Alt+Y):
     - **Interpreter:** a virtual environment's (`.venv`, `venv`) beside
       the script or in the project, which is the default when there is
       one; the one Application Settings name; `python3` and `python` on
@@ -844,10 +844,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
       script's input, so `input()` then reads the end of the file.
     - **Debug (Ctrl+F2):** the script run under the debugger (above).
     - **Stop:** ends the script that is running. *Interrupt* (in
-      *Simulation → Python*, and beside Stop in the *Python Run* dock; not
+      the *Python* menu, and beside Stop in the *Python Run* dock; not
       on Windows) raises a KeyboardInterrupt in it instead, as Ctrl+C in a
       terminal does - in a long call too.
-    - **Run Settings...** (*Simulation → Python*): the script's command-line
+    - **Run Settings...** (the *Python* menu): the script's command-line
       arguments (split as a shell splits them: `--points 101 "a file.dat"`
       gives `sys.argv[1:]`), its working folder, environment variables
       (`NAME=value` lines, `${OTHER}` the value of another) and a `.env`
@@ -871,7 +871,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     does. The newest is shown fitted to the dock (*Fit* off: at its own
     size), with a strip of all of them below. *Save As...* writes it as
     PNG, JPEG or BMP; *Copy*, *Remove* and *Remove All* do what they say;
-    Left and Right move between them. *Simulation → Python → Plots in
+    Left and Right move between them. *Python → Plots in
     Qucs-S* (on by default) gives the figures their own windows again:
     for scripts run from then on, and for the Python Shell once it is
     started again.

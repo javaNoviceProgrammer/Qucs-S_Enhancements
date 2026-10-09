@@ -538,7 +538,7 @@ private slots:
     {
         QVERIFY(app->gotoPage(file));
         auto* closer = new DialogCloser(this);
-        const QStringList menus = {"Edit", "Positioning", "Insert", "Simulation", "View"};
+        const QStringList menus = {"Edit", "Positioning", "Insert", "Simulation", "View", "Python"};
         const QStringList skip = {"Terminal", "Python", "Octave", "Claude", "Full Screen", "Exit", "Quit"};
         QList<QAction*> actions;
         std::function<void(QMenu*)> walk = [&](QMenu* menu) {

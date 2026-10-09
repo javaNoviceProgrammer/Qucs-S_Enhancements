@@ -1528,7 +1528,7 @@ bool PythonDoc::event(QEvent* event)
             event->accept();
             return true;
         }
-        // Shift+Return runs the selection or the line (Simulation > Python):
+        // Shift+Return runs the selection or the line (the Python menu):
         // the action's, not a line break - which the text would take.
         if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
             && (key->modifiers() & ~Qt::KeypadModifier) == Qt::ShiftModifier) {
