@@ -17,6 +17,7 @@
 
 #include <QHash>
 #include <QList>
+#include <QPointer>
 #include <QProcessEnvironment>
 #include <QString>
 #include <QStringList>
@@ -536,7 +537,7 @@ public:
     /// Those of the last quickFix(), by their titles; one made (one edit).
     QStringList fixTitles() const;
     bool applyFix(int index);
-    QMenu* fixMenu() const { return a_fixMenu; }
+    QMenu* fixMenu() const;
     /// The line the light bulb is on - the cursor's, when it has a problem
     /// (0: none).
     int bulbLine() const;
@@ -785,7 +786,7 @@ private:
     int a_fixRequest = 0;       // the imports asked for
     int a_fixLine = 0;
     QPoint a_fixAt;             // where its menu goes (null: none)
-    QMenu* a_fixMenu = nullptr;
+    QPointer<QMenu> a_fixMenu;   // (cleared as it goes: closed, or with this editor)
     int a_bulbLine = 0;         // where the bulb was drawn
 
     QWidget* a_outlineBar = nullptr;
