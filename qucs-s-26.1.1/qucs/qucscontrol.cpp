@@ -2023,6 +2023,7 @@ QString kindOf(QucsDoc* doc)
     if (QucsApp::isSheetDocument(QucsApp::documentWidget(doc))) return QStringLiteral("spreadsheet");
     if (QucsApp::isArchiveDocument(QucsApp::documentWidget(doc))) return QStringLiteral("archive");
     if (QucsApp::isLayoutDocument(QucsApp::documentWidget(doc))) return QStringLiteral("layout");
+    if (QucsApp::isImageDocument(QucsApp::documentWidget(doc))) return QStringLiteral("picture");
     const QString suffix = QFileInfo(doc->getDocName()).suffix().toLower();
     if (suffix == QLatin1String("dpl")) return QStringLiteral("data display");
     if (suffix == QLatin1String("sym")) return QStringLiteral("symbol");

@@ -473,6 +473,15 @@ public:
   /// Whether a file of that name is a layout opened in a LayoutDoc (.gds,
   /// .gds2, .gdsii, .gds.gz, .oas, .oasis).
   static bool isLayoutFile(const QString &name);
+  /// Whether \a w is a picture in a tab (imagedoc.h).
+  static bool isImageDocument(QWidget *);
+  /// Whether a file of that name is a picture opened in an ImageDoc (.png,
+  /// .jpg, .svg, .gif... what this Qt reads; imagedoc.h's suffixes()).
+  static bool isImageFile(const QString &name);
+  /// Opens \a path in the text editor whatever its kind - an SVG's text -
+  /// in place of its picture's tab when that is open. False when it could
+  /// not be read.
+  bool openAsText(const QString &path);
   /// The schematic (or data display, or symbol) a tab holds; nullptr for
   /// a text or a PDF document.
   static Schematic *schematicIn(QWidget *);

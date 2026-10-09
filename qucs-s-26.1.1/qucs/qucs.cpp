@@ -64,6 +64,7 @@
 #include "pdfdoc.h"
 #include "zipdoc.h"
 #include "layoutdoc.h"
+#include "imagedoc.h"
 #endif
 #include "autosave.h"
 #include "crashhandler.h"
@@ -233,6 +234,7 @@ QucsApp::QucsApp(bool netlist2Console) :
     tr("PDF Documents") + " (*.pdf);;" +
 #endif
     tr("Layouts") + " (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;" +
+    tr("Images") + " (*." + qucs_s::image::suffixes().join(" *.") + ");;" +
     tr("Any File")+" (*)";
 
   //updateSchNameHash();
@@ -2898,6 +2900,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     i = addDocumentTab(layout, Info.fileName());
     is_pdf = true;   // (no word about simulating a read-only one)
   }
+  else if (isImageFile(Name)) {
+    // A picture: shown, zoomed, read (imagedoc.h).
+    auto *image = new ImageDoc(this, Name);
+    d = image;
+    i = addDocumentTab(image, Info.fileName());
+    is_pdf = true;   // (no word about simulating a read-only one)
+  }
   else if (isSheetFile(Name)) {
     // Its cells in a table (sheetdoc.h).
     auto *sheet = new SheetDoc(this, Name);
@@ -3094,6 +3103,16 @@ bool QucsApp::saveAs()
     } else if (isLayoutDocument (w)) {
       Filter = tr("Layouts") + " (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)";
       selfilter = Filter;
+    } else if (isImageDocument (w)) {
+      // Its own kind first (a copy); the others it is converted to.
+      const QString own = Info.suffix().toLower();
+      const QString same = tr("%1 Images").arg(own.toUpper()) + " (*." + own + ")";
+      QStringList others = qucs_s::image::writableSuffixes();
+      others.removeAll(own);
+      Filter = same;
+      if (!others.isEmpty())
+        Filter += ";;" + tr("Converted") + " (*." + others.join(" *.") + ")";
+      selfilter = same;
     } else if (isSheetDocument (w)) {
       const QString csv = tr("CSV Files") + " (*.csv)";
       const QString tsv = tr("Tab-Separated Files") + " (*.tsv)";
@@ -3145,6 +3164,10 @@ bool QucsApp::saveAs()
     }
     else if (isArchiveDocument (w)) {
       if (ext.compare("zip", Qt::CaseInsensitive) != 0) s += ".zip";
+    }
+    else if (isImageDocument (w)) {
+      // A picture: of its kind unless the name says another.
+      if (!isImageFile(s)) s += "." + QFileInfo(Doc->getDocName()).suffix();
     }
     else if (isLayoutDocument (w)) {
       // A copy of the file: of its kind, as it is named.
@@ -3322,7 +3345,7 @@ void QucsApp::slotFileSaveAll()
     for (int i = 0; i < pane->count(); ++i) {
       QWidget *w = pane->widget(i);
       QucsDoc *Doc = docIn(w);
-      if (Doc == nullptr || isPdfDocument(w) || isLayoutDocument(w)) continue;   // a PDF, a layout: only read
+      if (Doc == nullptr || isPdfDocument(w) || isLayoutDocument(w) || isImageDocument(w)) continue;   // a PDF, a layout, a picture: only read
       if(Doc->getDocName().isEmpty()) {  // make document the current ?
         setActivePane(pane);
         pane->setCurrentIndex(i);
@@ -3610,16 +3633,22 @@ void QucsApp::slotChangeView()
     // its Ctrl+Space is the completions' (the Python menu).
     insEntity->setEnabled(qobject_cast<PythonDoc *>(w) == nullptr);
     buildModule->setEnabled(true);
+    editCopyImage->setEnabled(false);   // (after a picture)
+    filePrintFit->setEnabled(false);
   }
   // for PDF documents: read; View All fits a page, Zoom to Selection the
-  // width; for spreadsheets: cells
-  else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)) {
+  // width; for spreadsheets: cells; for a picture: Copy as Image copies
+  // it, Print Fit prints it as large as the page goes
+  else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
+           || isImageDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
       switchSchematicDoc (false);
     insEntity->setEnabled(false);
     buildModule->setEnabled(false);
+    editCopyImage->setEnabled(isImageDocument(w));
+    filePrintFit->setEnabled(isImageDocument(w));
   }
   // for schematic documents
   else if (Schematic *d = schematicIn(w)) {
@@ -3668,7 +3697,8 @@ void QucsApp::slotFileSettings ()
   editText->setHidden (true); // disable text edit of component property
 
   QWidget * w = DocumentTab->currentWidget ();
-  if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)) return;   // nothing to set
+  if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
+      || isImageDocument (w)) return;   // nothing to set
   if (qobject_cast<PythonDoc *> (w)) {
     statusBar()->showMessage(tr("A Python script has no document settings: the Python toolbar chooses the Python it "
                                 "runs with."), 5000);
@@ -4016,6 +4046,8 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
     loaded = zip->load();
   } else if (auto *layout = dynamic_cast<LayoutDoc *>(doc)) {
     loaded = layout->reload();   // (in the background, the cell and view kept)
+  } else if (auto *image = dynamic_cast<ImageDoc *>(doc)) {
+    loaded = image->reload();   // (the zoom, the turns, the frame kept)
   }
   return loaded;
 }
@@ -4591,6 +4623,10 @@ void QucsApp::slotSimulate(QWidget *w)
       statusBar()->showMessage(tr("A layout is not simulated."), 3000);
       return;
   }
+  if (isImageDocument(w)) {
+      statusBar()->showMessage(tr("A picture is not simulated."), 3000);
+      return;
+  }
   if (isArchiveDocument(w)) {
       statusBar()->showMessage(tr("An archive is not simulated: open a schematic of it."), 3000);
       return;
@@ -4895,7 +4931,8 @@ void QucsApp::slotToPage()
   if (d == nullptr || isPdfDocument(DocumentTab->currentWidget())
       || isSheetDocument(DocumentTab->currentWidget())
       || isArchiveDocument(DocumentTab->currentWidget())
-      || isLayoutDocument(DocumentTab->currentWidget())) return;   // no data display
+      || isLayoutDocument(DocumentTab->currentWidget())
+      || isImageDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
     return;
@@ -4996,11 +5033,12 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     return;
   }
 
-  // Spreadsheets (CSV files, Excel workbooks), Markdown and Python: in
-  // tabs of their own (sheetdoc.h, markdowndoc.h, pythondoc.h), whatever
-  // the text editor of the settings.
+  // Spreadsheets (CSV files, Excel workbooks), Markdown, Python, archives,
+  // layouts and pictures: in tabs of their own (sheetdoc.h, markdowndoc.h,
+  // pythondoc.h, zipdoc.h, layoutdoc.h, imagedoc.h), whatever the text
+  // editor of the settings.
   if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath)
-      || isArchiveFile(absolutePath) || isLayoutFile(absolutePath)) {
+      || isArchiveFile(absolutePath) || isLayoutFile(absolutePath) || isImageFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
@@ -5105,6 +5143,32 @@ void QucsApp::openTextOrSchematicTab(const QString &absolutePath)
   gotoPage(absolutePath);
   updateRecentFilesList(absolutePath);
   slotUpdateRecentFiles();
+}
+
+bool QucsApp::openAsText(const QString &path)
+{
+  const QString file = QFileInfo(path).absoluteFilePath();
+  QWidget *before = nullptr;
+  if (QucsDoc *open = findDoc(file)) {
+    if (qobject_cast<TextDoc *>(documentWidget(open)) != nullptr) return gotoPage(file);   // its text already
+    if (open->getDocChanged()) return false;   // (a picture never is)
+    before = documentWidget(open);
+  }
+  // Beside the picture's tab, which goes once the text is there.
+  if (before != nullptr) activatePaneOf(before);
+  auto *text = new TextDoc(this, file);
+  DocumentTab->setCurrentIndex(addDocumentTab(text, QFileInfo(file).fileName()));
+  if (!text->load()) {
+    delete text;
+    if (before != nullptr) DocumentTab->setCurrentIndex(DocumentTab->indexOf(before));
+    return false;
+  }
+  if (before != nullptr) closeFile(DocumentTab->indexOf(before));
+  DocumentTab->setCurrentIndex(DocumentTab->indexOf(text));
+  slotChangeView();
+  updateRecentFilesList(file);
+  slotUpdateRecentFiles();
+  return true;
 }
 
 // Starts a user-registered program ("prog arg arg") on a file.
@@ -5212,6 +5276,7 @@ void QucsApp::openDroppedFile(const QString &file)
   const QString ext = info.suffix().toLower();
   const bool known = ext == "sch" || ext == "dpl" || ext == "sym" || ext == "dat"
                      || textDocumentSuffixes().contains(ext) || textFileSuffixes().contains(ext)
+                     || isImageFile(file)   // (an SVG is text: its picture all the same)
                      || !userProgramFor(ext).isEmpty();
   if (known || !misc::isTextFile(info.absoluteFilePath()))
     openFileFromProjectView(info, QString());   // its viewer, the user's or the system's handler
@@ -5495,6 +5560,14 @@ bool QucsApp::isLayoutDocument(QWidget *w) {
 
 bool QucsApp::isLayoutFile(const QString &name) {
   return qucs_s::layout::isLayoutFile(name);
+}
+
+bool QucsApp::isImageDocument(QWidget *w) {
+  return w != nullptr && w->inherits("ImageDoc");
+}
+
+bool QucsApp::isImageFile(const QString &name) {
+  return qucs_s::image::isImageFile(name);
 }
 
 bool QucsApp::isMarkdownFile(const QString &name) {
@@ -6050,6 +6123,11 @@ qucs_s::graphicsexport::Options clipboardOptions()
 
 void QucsApp::slotEditCopyImage()
 {
+  // A picture: itself (or its selection).
+  if (auto *image = qobject_cast<ImageDoc *>(DocumentTab->currentWidget())) {
+    image->copyImage();
+    return;
+  }
   Schematic *doc = currentSchematic();
   if (doc == nullptr)
     return;

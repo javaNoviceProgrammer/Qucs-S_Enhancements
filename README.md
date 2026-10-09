@@ -1594,6 +1594,61 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   written again it is read again where you were. *Save As* copies it;
   *Print* prints its pages. Built with Qt's PDF module (all the release
   bundles have it); without it PDFs open in the system's viewer as before.
+- **Image viewer**: a picture — a PNG, JPEG, SVG, GIF, BMP, WebP, TIFF,
+  HEIC, an icon or a portable map: whatever the build's Qt reads — opens in
+  a tab of its own from the File Browser, the Content panel, *File → Open*
+  (*Images*), a drop, a link in a Markdown or PDF document, an archive, or
+  Claude's `open_document` (whose answers call it a *picture*), not in the
+  system's viewer; a program registered for its suffix in *Application
+  Settings → File Types* still wins.
+  - **Shown whole at first** (*Best Fit*: a bitmap is never enlarged for
+    that, an SVG is), in the middle of the view. The toolbar's zoom box
+    has *Best Fit*, *Fit Window*, *Fit Width* and scales from 10% to
+    3200%, or a typed one; zoom in and out go through the usual scales
+    (100%, 125%, 150%, 200%...), as do *View → Zoom In/Out*; *View All*
+    fits the window, *View 1:1* is 100%, Ctrl+wheel or a pinch zooms about
+    the pointer, and a double click goes between 100% there and the whole
+    picture. A drag, the arrow keys or the scroll bars move it.
+  - **Drawn as it is**: made smaller, a bitmap is drawn smoothly (a large
+    photo from halves of itself, so scrolling stays quick); made larger,
+    its pixels stay sharp, with their grid from 800% (on by default). An
+    SVG is drawn again at every scale, sharp at any, the part in sight
+    alone at a scale that would be too large whole. Transparent parts
+    show over a checkerboard, white or black (the background button,
+    remembered).
+  - **Read**: the bar under it says the format, the size in pixels, the
+    colours (RGB, RGBA, grey, indexed, 16 bits), the colour profile and the
+    file's size; and the pixel under the pointer, in the file's
+    coordinates, with its colour (`#3A6EA5 (58, 110, 165)`, its alpha when
+    not opaque). The context menu copies that colour.
+  - **Selected and copied**: Shift and a drag — or a drag with the
+    selection button on — selects a rectangle of whole pixels, its size and
+    place in the bar; *Edit → Copy* (or *Copy as Image*) copies it, or the
+    whole picture; *Zoom to Selection* (Z) shows it; Escape lets go. An SVG
+    is copied drawn at twice its size, with its own text for programs that
+    take SVG.
+  - **Turned** a quarter left or right — the view, and what is copied and
+    printed, not the file. A photo is shown upright as its camera said
+    (its Exif orientation).
+  - **Animations and files of several pictures**: an animated GIF or WebP
+    plays as it opens, each frame for its own time; Play/Pause (Space), the
+    frame before and after (Page Up, Page Down) and the frame count are in
+    the toolbar. A multi-page TIFF or an icon of several sizes goes through
+    its pictures the same way, an icon starting at its largest.
+  - **Followed**: when its file is written again — a plot a script saves
+    anew — it is read again, the zoom, the turn and the frame kept; deleted
+    and written again, it is still followed; a file half written shows why
+    it cannot be read until it is whole.
+  - *Save As* copies the file, or converts it when the new name's suffix
+    is another format's (PNG, JPEG, BMP, TIFF, WebP...; a JPEG's
+    transparency on white), and the tab then shows what was written.
+    *Print* puts it on the page at its own size (96 pixels to the inch, or
+    what the file says), or as large as the page goes with *Print Fit*; an
+    SVG is drawn on the paper itself. The menu opens it with the system's
+    viewer, shows it in the file manager, copies its path, reloads it, and
+    for an SVG *Edit as Text* opens its text in the editor in its place.
+  - The File Browser's *Columns* view shows a picture itself, small, with
+    its size in pixels.
 - **Tuner in a dock**: *Simulation → Tune* shows the tuner in a dock of
   the main window — at the bottom beside the simulation output the first
   time, where you left it after that, or floated as a window of its own —
