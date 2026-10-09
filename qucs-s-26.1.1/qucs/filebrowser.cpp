@@ -63,6 +63,7 @@
 #include <QStandardPaths>
 #include <QStorageInfo>
 #include <QStyledItemDelegate>
+#include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
@@ -87,6 +88,9 @@ const QString kView = QStringLiteral("FileBrowser/view");
 const QString kHidden = QStringLiteral("FileBrowser/showHidden");
 const QString kQucsOnly = QStringLiteral("FileBrowser/qucsFilesOnly");
 const QString kGit = QStringLiteral("FileBrowser/gitStatus");
+const QString kTabs = QStringLiteral("FileBrowser/tabs");
+const QString kTabViews = QStringLiteral("FileBrowser/tabViews");
+const QString kTab = QStringLiteral("FileBrowser/currentTab");
 
 QString trf(const char* text)
 {
@@ -1205,6 +1209,7 @@ FileBrowser::FileBrowser(QWidget* parent)
         a_statusTimer->start();
     });
 
+    a_tabs.append(Tab());   // (the one in front: its state in the members)
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 4, 0, 0);
     layout->setSpacing(3);
@@ -1252,6 +1257,31 @@ FileBrowser::FileBrowser(QWidget* parent)
     setView(view >= int(View::Tree) && view <= int(View::Recent) ? View(view) : View::List);
     const QString where = settings.value(kLocation).toString();
     if (QFileInfo(where).isDir()) go(where, false);
+    // The tabs (those whose folders are still there; not in a run given a
+    // workspace of its own).
+    const QStringList tabs = settings.value(kTabs).toStringList();
+    const QStringList tabViews = settings.value(kTabViews).toStringList();
+    const int front = settings.value(kTab, 0).toInt();
+    if (tabs.size() > 1 && QucsSettings.workspaceOfRun.isEmpty()) {
+        QList<Tab> kept;
+        int keptFront = 0;
+        for (int i = 0; i < tabs.size(); ++i) {
+            if (!QFileInfo(tabs[i]).isDir()) continue;
+            Tab t;
+            t.location = QDir::cleanPath(QFileInfo(tabs[i]).absoluteFilePath());
+            const int v = tabViews.value(i, QString::number(int(View::List))).toInt();
+            t.view = v >= int(View::Tree) && v <= int(View::Recent) ? View(v) : View::List;
+            if (i == front) keptFront = int(kept.size());
+            kept << t;
+        }
+        if (kept.size() > 1) {
+            a_tabs = kept;
+            a_tab = keptFront;
+            const Tab tab = a_tabs[a_tab];
+            loadTab(tab);
+        }
+    }
+    updateTabs();
     a_loaded = true;
     restyle();
 }
@@ -1345,6 +1375,7 @@ void FileBrowser::buildToolbar()
         if (a_view == View::Recent) setView(a_fileView);
         go(doc, true);
     });
+    menu->addAction(tr("New Tab"), this, [this] { openInNewTab(a_location); })->setObjectName(QStringLiteral("fbNewTab"));
     menu->addAction(tr("New Folder…"), this, [this] {
         const QString made = createFolder(a_location);
         if (!made.isEmpty()) rename(made);
@@ -1369,6 +1400,42 @@ void FileBrowser::buildToolbar()
     top->addWidget(a_viewButton);
     top->addWidget(a_menuButton);
     layout->addLayout(top);
+
+    // The tabs: shown while there are two or more.
+    a_tabBar = new QTabBar(this);
+    a_tabBar->setObjectName(QStringLiteral("fbTabs"));
+    a_tabBar->setDocumentMode(true);
+    a_tabBar->setTabsClosable(true);
+    a_tabBar->setMovable(true);
+    a_tabBar->setExpanding(false);
+    a_tabBar->setElideMode(Qt::ElideMiddle);
+    a_tabBar->setUsesScrollButtons(true);
+    a_tabBar->setDrawBase(false);
+    a_tabBar->setFocusPolicy(Qt::NoFocus);
+    a_tabBar->setContextMenuPolicy(Qt::CustomContextMenu);
+    a_tabBar->hide();
+    connect(a_tabBar, &QTabBar::currentChanged, this, [this](int index) {
+        if (index >= 0) setCurrentTab(index);
+    });
+    connect(a_tabBar, &QTabBar::tabCloseRequested, this, &FileBrowser::closeTab);
+    connect(a_tabBar, &QTabBar::tabMoved, this, [this](int from, int to) {
+        if (from < 0 || to < 0 || from >= a_tabs.size() || to >= a_tabs.size()) return;
+        a_tabs.move(from, to);
+        if (a_tab == from) a_tab = to;
+        else if (from < a_tab && to >= a_tab) --a_tab;
+        else if (from > a_tab && to <= a_tab) ++a_tab;
+        save();
+    });
+    connect(a_tabBar, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        const int index = a_tabBar->tabAt(pos);
+        if (index < 0) return;
+        QMenu* menu = tabMenuFor(index);
+        menu->exec(a_tabBar->mapToGlobal(pos));
+        menu->deleteLater();
+    });
+    // A middle click on a tab closes it.
+    a_tabBar->installEventFilter(this);
+    layout->addWidget(a_tabBar);
 
     // The path: a button for each folder on the way, or a line to type one.
     a_pathStack = new QStackedWidget(this);
@@ -1581,6 +1648,23 @@ void FileBrowser::buildViews()
     connect(a_proxy, &QAbstractItemModel::layoutChanged, this, later);
     connect(a_proxy, &QAbstractItemModel::modelReset, this, later);
     connect(a_model, &QFileSystemModel::directoryLoaded, this, later);
+    // A tab brought to the front: its Tree's folders opened, its entry
+    // selected, as their folders load.
+    connect(a_model, &QFileSystemModel::directoryLoaded, this, [this](const QString& path) {
+        if (!a_expandPending.isEmpty() && a_view == View::Tree) {
+            QStringList still;
+            for (const QString& p : std::as_const(a_expandPending)) {
+                const QModelIndex index = indexOf(p);
+                if (index.isValid()) a_tree->expand(index);
+                else still << p;
+            }
+            a_expandPending = still;
+        }
+        if (a_selectPending && QDir::cleanPath(path) == QFileInfo(a_selected).absolutePath()) {
+            a_selectPending = false;
+            selectPath(a_selected);
+        }
+    });
     connect(a_model, &QFileSystemModel::directoryLoaded, this, [this](const QString& path) {
         if (!a_columnsPending || QDir::cleanPath(path) != a_location) return;
         a_columnsPending = false;
@@ -1614,6 +1698,7 @@ void FileBrowser::go(const QString& path, bool remember)
         refilter();
         applyRoot();
         rebuildCrumbs();
+        updateTabs();
         emit locationChanged(folder);
         save();
     }
@@ -1862,6 +1947,7 @@ void FileBrowser::setView(View view)
     selectPath(keep);
     updateButtons();
     updateStatus();
+    updateTabs();
     save();
 }
 
@@ -2047,6 +2133,8 @@ void FileBrowser::fitDetails()
 
 void FileBrowser::onActivated(const QModelIndex& index)
 {
+    // (Command - Ctrl - with the double-click: eventFilter(), by the
+    // click's own keys.)
     activate(pathOf(index));
 }
 
@@ -2498,6 +2586,7 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
     const QFileInfo info(path);
     if (path.isEmpty() || !info.exists()) {
         // The folder shown.
+        menu->addAction(tr("New Tab"), this, [this] { openInNewTab(a_location); });
         menu->addAction(tr("New Folder…"), this, [this] {
             const QString made = createFolder(a_location);
             if (!made.isEmpty()) rename(made);
@@ -2515,6 +2604,8 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
             go(path, true);
         });
         menu->setDefaultAction(open);
+        menu->addAction(tr("Open in New Tab"), this, [this, path] { openInNewTab(path); })
+            ->setObjectName(QStringLiteral("fbOpenInNewTab"));
         menu->addSeparator();
         menu->addAction(tr("New Folder…"), this, [this, path] {
             const QString made = createFolder(path);
@@ -2529,11 +2620,14 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
         menu->addAction(tr("Open with the System's Application"), this, [path] {
             QDesktopServices::openUrl(QUrl::fromLocalFile(path));
         });
-        if (a_view == View::Recent)
+        if (a_view == View::Recent) {
             menu->addAction(tr("Show in the Folder"), this, [this, path] {
                 setView(a_fileView);
                 go(path, true);
             });
+            menu->addAction(tr("Show in a New Tab"), this, [this, path] { openInNewTab(path); })
+                ->setObjectName(QStringLiteral("fbShowInNewTab"));
+        }
         // A new archive beside it.
         menu->addAction(tr("New Zip…"), this, [this, info] { emit newArchiveRequested(info.absolutePath()); });
     }
@@ -2599,6 +2693,194 @@ void FileBrowser::showContextMenu(QAbstractItemView* view, const QPoint& pos)
 }
 
 // ----------------------------------------------------------------------
+// Tabs.
+
+namespace {
+
+QString tabTitle(const QString& location, FileBrowser::View view)
+{
+    if (view == FileBrowser::View::Recent) return FileBrowser::tr("Recent Documents");
+    const QString name = QFileInfo(location).fileName();
+    return name.isEmpty() ? QDir::toNativeSeparators(location) : name;
+}
+
+} // namespace
+
+FileBrowser::Tab FileBrowser::currentState() const
+{
+    Tab t;
+    t.location = a_location;
+    t.back = a_back;
+    t.forward = a_forward;
+    t.view = a_view;
+    t.selected = a_selected;
+    t.filter = a_filter->text();
+    if (a_view == View::Tree) {
+        const std::function<void(const QModelIndex&)> walk = [&](const QModelIndex& parent) {
+            for (int r = 0; r < a_proxy->rowCount(parent); ++r) {
+                const QModelIndex index = a_proxy->index(r, 0, parent);
+                if (!a_tree->isExpanded(index)) continue;
+                t.expanded << pathOf(index);
+                walk(index);
+            }
+        };
+        walk(a_tree->rootIndex());
+    }
+    if (QAbstractItemView* v = currentView()) t.scroll = v->verticalScrollBar()->value();
+    return t;
+}
+
+void FileBrowser::stashTab()
+{
+    if (a_tab >= 0 && a_tab < a_tabs.size()) a_tabs[a_tab] = currentState();
+}
+
+void FileBrowser::loadTab(const Tab& tab)
+{
+    a_switching = true;
+    a_selected = tab.selected;
+    {
+        const QSignalBlocker block(a_filter);
+        a_filter->setText(tab.filter);
+    }
+    if (tab.view != a_view) setView(tab.view);
+    // Its folder gone (moved, deleted while it was behind): the nearest
+    // one above it still there.
+    QString folder = tab.location;
+    while (!folder.isEmpty() && !QFileInfo(folder).isDir()) {
+        const QString above = QDir::cleanPath(QFileInfo(folder).absolutePath());
+        folder = above == folder ? QString() : above;
+    }
+    if (folder.isEmpty()) folder = a_home.isEmpty() ? QDir::homePath() : a_home;
+    go(folder, false);
+    // (After go(): a tab's own steps, not the step to it.)
+    a_back = tab.back;
+    a_forward = tab.forward;
+    refilter();
+    a_expandPending.clear();
+    if (a_view == View::Tree) {
+        a_tree->collapseAll();
+        for (const QString& p : tab.expanded) {
+            const QModelIndex index = indexOf(p);
+            if (index.isValid()) a_tree->expand(index);
+            else a_expandPending << p;
+        }
+    }
+    a_selected = tab.selected;
+    if (QAbstractItemView* v = currentView(); v != nullptr && v->selectionModel() != nullptr) v->selectionModel()->clear();
+    a_selectPending = !tab.selected.isEmpty() && !indexOf(tab.selected).isValid();
+    selectPath(tab.selected);
+    // Where it was scrolled to, once laid out.
+    const int scroll = tab.scroll;
+    QPointer<QAbstractItemView> view = currentView();
+    QTimer::singleShot(0, this, [view, scroll] {
+        if (!view.isNull()) view->verticalScrollBar()->setValue(scroll);
+    });
+    a_switching = false;
+    updateButtons();
+    updateStatus();
+}
+
+int FileBrowser::openInNewTab(const QString& path, bool makeCurrent)
+{
+    const QFileInfo info(path);
+    if (path.isEmpty() || !info.exists()) return -1;
+    const QString folder = QDir::cleanPath(info.isDir() ? info.absoluteFilePath() : info.absolutePath());
+    if (!QFileInfo(folder).isDir()) return -1;
+    Tab tab;
+    tab.location = folder;
+    tab.view = a_view == View::Recent ? a_fileView : a_view;
+    if (info.isFile()) tab.selected = QDir::cleanPath(info.absoluteFilePath());
+    const int at = a_tab + 1;
+    a_tabs.insert(at, tab);
+    updateTabs();
+    if (makeCurrent) setCurrentTab(at);
+    save();
+    return at;
+}
+
+void FileBrowser::setCurrentTab(int index)
+{
+    if (a_switching || index < 0 || index >= a_tabs.size() || index == a_tab) {
+        updateTabs();
+        return;
+    }
+    stashTab();
+    a_tab = index;
+    const Tab tab = a_tabs[index];
+    loadTab(tab);
+    updateTabs();
+    save();
+}
+
+void FileBrowser::closeTab(int index)
+{
+    if (a_tabs.size() < 2 || index < 0 || index >= a_tabs.size()) return;
+    if (index == a_tab) {
+        // The one after it comes to the front (the one before, for the last).
+        const int next = index + 1 < a_tabs.size() ? index + 1 : index - 1;
+        a_tab = next;
+        const Tab tab = a_tabs[next];
+        loadTab(tab);
+    }
+    a_tabs.removeAt(index);
+    if (a_tab > index) --a_tab;
+    updateTabs();
+    save();
+}
+
+QStringList FileBrowser::tabLocations() const
+{
+    QStringList out;
+    for (int i = 0; i < a_tabs.size(); ++i) out << (i == a_tab ? a_location : a_tabs[i].location);
+    return out;
+}
+
+void FileBrowser::updateTabs()
+{
+    if (a_tabBar == nullptr || a_tabs.isEmpty()) return;
+    const QSignalBlocker block(a_tabBar);
+    while (a_tabBar->count() < a_tabs.size()) a_tabBar->addTab(QString());
+    while (a_tabBar->count() > a_tabs.size()) a_tabBar->removeTab(a_tabBar->count() - 1);
+    for (int i = 0; i < a_tabs.size(); ++i) {
+        const QString location = i == a_tab ? a_location : a_tabs[i].location;
+        const View view = i == a_tab ? a_view : a_tabs[i].view;
+        a_tabBar->setTabText(i, tabTitle(location, view));
+        a_tabBar->setTabToolTip(i, view == View::Recent ? tr("The documents opened last") : QDir::toNativeSeparators(location));
+    }
+    a_tabBar->setCurrentIndex(a_tab);
+    a_tabBar->setVisible(a_tabs.size() > 1);
+}
+
+QMenu* FileBrowser::tabMenuFor(int index)
+{
+    auto* menu = new QMenu(this);
+    menu->setObjectName(QStringLiteral("fbTabMenu"));
+    const QString location = index == a_tab ? a_location : a_tabs.value(index).location;
+    menu->addAction(tr("New Tab"), this, [this, location] { openInNewTab(location); });
+    menu->addSeparator();
+    menu->addAction(revealLabel(false), this, [location] { QDesktopServices::openUrl(QUrl::fromLocalFile(location)); });
+    menu->addAction(tr("Copy Path"), this, [location] { QApplication::clipboard()->setText(QDir::toNativeSeparators(location)); });
+    menu->addSeparator();
+    QAction* close = menu->addAction(tr("Close Tab"), this, [this, index] { closeTab(index); });
+    close->setObjectName(QStringLiteral("fbCloseTab"));
+    QAction* others = menu->addAction(tr("Close Other Tabs"), this, [this, index] {
+        setCurrentTab(index);
+        while (a_tabs.size() > 1) closeTab(a_tab == 0 ? 1 : 0);
+    });
+    others->setObjectName(QStringLiteral("fbCloseOtherTabs"));
+    QAction* right = menu->addAction(tr("Close Tabs to the Right"), this, [this, index] {
+        if (a_tab > index) setCurrentTab(index);
+        while (a_tabs.size() > index + 1) closeTab(int(a_tabs.size()) - 1);
+    });
+    right->setObjectName(QStringLiteral("fbCloseTabsRight"));
+    close->setEnabled(a_tabs.size() > 1);
+    others->setEnabled(a_tabs.size() > 1);
+    right->setEnabled(index + 1 < a_tabs.size());
+    return menu;
+}
+
+// ----------------------------------------------------------------------
 
 void FileBrowser::updateButtons()
 {
@@ -2647,7 +2929,14 @@ void FileBrowser::save() const
     QucsSettingsFile settings;
     // (Not a folder of a workspace one run was given - qucs-s --workspace:
     // the next start opens where the user was.)
-    if (QucsSettings.workspaceOfRun.isEmpty()) settings.setValue(kLocation, a_location);
+    if (QucsSettings.workspaceOfRun.isEmpty()) {
+        settings.setValue(kLocation, a_location);
+        QStringList views;
+        for (int i = 0; i < a_tabs.size(); ++i) views << QString::number(int(i == a_tab ? a_view : a_tabs[i].view));
+        settings.setValue(kTabs, tabLocations());
+        settings.setValue(kTabViews, views);
+        settings.setValue(kTab, a_tab);
+    }
     settings.setValue(kView, int(a_view));
     settings.setValue(kHidden, a_showHidden);
     settings.setValue(kQucsOnly, a_qucsOnly);
@@ -2712,6 +3001,37 @@ bool FileBrowser::eventFilter(QObject* watched, QEvent* event)
         break;
     default:
         break;
+    }
+    // Command (Ctrl elsewhere) with a double-click: a folder in a new tab.
+    if (event->type() == QEvent::MouseButtonDblClick && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton
+        && (static_cast<QMouseEvent*>(event)->modifiers() & Qt::ControlModifier)) {
+        auto* widget = qobject_cast<QWidget*>(watched);
+        auto* view = widget != nullptr && a_stack->isAncestorOf(widget) ? qobject_cast<QAbstractItemView*>(widget->parentWidget()) : nullptr;
+        if (view != nullptr) {
+            const QString path = pathOf(view->indexAt(static_cast<QMouseEvent*>(event)->position().toPoint()));
+            if (QFileInfo(path).isDir()) {
+                openInNewTab(path);
+                return true;
+            }
+        }
+    }
+    // A middle click: a folder opens in a new tab behind; a tab closes.
+    if (event->type() == QEvent::MouseButtonRelease && static_cast<QMouseEvent*>(event)->button() == Qt::MiddleButton) {
+        const QPoint at = static_cast<QMouseEvent*>(event)->position().toPoint();
+        if (watched == a_tabBar) {
+            if (const int index = a_tabBar->tabAt(at); index >= 0 && a_tabs.size() > 1) {
+                closeTab(index);
+                return true;
+            }
+        } else if (auto* widget = qobject_cast<QWidget*>(watched); widget != nullptr && a_stack->isAncestorOf(widget)) {
+            if (auto* view = qobject_cast<QAbstractItemView*>(widget->parentWidget())) {
+                const QString path = pathOf(view->indexAt(at));
+                if (QFileInfo(path).isDir()) {
+                    openInNewTab(path, false);
+                    return true;
+                }
+            }
+        }
     }
     if (a_details != nullptr && watched == a_details->viewport() && event->type() == QEvent::Resize) {
         fitDetails();
