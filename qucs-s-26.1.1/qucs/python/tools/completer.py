@@ -13,6 +13,9 @@
 #   rename       the name at the place renamed "new_name" wherever it is the
 #                same name ("changes": [{"file", "text" (the file after)}],
 #                "name", "count") - or "refusal": why not
+#   imports      the imports that would define "name", not defined in the
+#                script ("imports": [{"title", "line" (from 1: the line it
+#                goes before), "text"}])
 # jedi answers when the interpreter has it; otherwise this program, from the
 # script, Python's builtins and keywords, the standard modules it imports
 # (imported) and the modules beside it (read, not run).
@@ -999,10 +1002,89 @@ def jedi_rename(source, line, column, path, new_name):
     return {'name': names[0].name, 'count': len(names), 'changes': changes}
 
 
+# ----------------------------------------------------------------------
+# Imports that would define a name (Quick Fix)
+
+ALIASES = {'np': ('numpy', 'np'), 'pd': ('pandas', 'pd'), 'plt': ('matplotlib.pyplot', 'plt'), 'mpl': ('matplotlib', 'mpl'),
+           'sp': ('scipy', 'sp'), 'sns': ('seaborn', 'sns'), 'tf': ('tensorflow', 'tf'), 'nx': ('networkx', 'nx'),
+           'sym': ('sympy', 'sym'), 'skrf': ('skrf', None), 'rf': ('skrf', 'rf')}
+COMMON = ['math', 'cmath', 'os', 'os.path', 'sys', 're', 'json', 'time', 'datetime', 'itertools', 'functools', 'collections',
+          'pathlib', 'typing', 'dataclasses', 'random', 'statistics', 'glob', 'shutil', 'subprocess', 'csv', 'fractions',
+          'decimal', 'copy', 'pprint', 'textwrap', 'string', 'operator', 'enum', 'io', 'struct', 'numpy', 'scipy.constants',
+          'qucs']
+
+def has_module(name, folders):
+    try:
+        if source_of(name, folders, path=False):
+            return True
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+def import_line(source):
+    """The line (from 1) an import goes before: after the imports at the top
+    (and a docstring, comments, from __future__), else at the start."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return 1
+    after = 0
+    for k, node in enumerate(tree.body):
+        if k == 0 and isinstance(node, ast.Expr) and isinstance(getattr(node, 'value', None), ast.Constant) \
+                and isinstance(node.value.value, str):
+            after = node.end_lineno
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            after = node.end_lineno
+        else:
+            break
+    if after == 0:   # (past a #! line and a coding line)
+        lines = source.split('\n')
+        while after < len(lines) and lines[after].startswith('#') and (after == 0 or 'coding' in lines[after]):
+            after += 1
+    return after + 1
+
+def imports_for(name, source, folders):
+    found = []
+    def add(text):
+        if text not in found:
+            found.append(text)
+    if name in ALIASES:
+        module, alias = ALIASES[name]
+        if has_module(module.split('.')[0], folders):
+            add('import %s as %s' % (module, alias) if alias else 'import %s' % module)
+    if has_module(name, folders):
+        add('import %s' % name)
+    import warnings
+    for module in COMMON:
+        try:
+            if module.split('.')[0] in STDLIB or has_module(module.split('.')[0], folders):
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    value = importlib.import_module(module)
+                public = getattr(value, '__all__', None)
+                if not name.startswith('_') and hasattr(value, name) and (public is None or name in public) \
+                        and not inspect.ismodule(getattr(value, name)):
+                    add('from %s import %s' % (module, name))
+        except Exception:
+            pass
+    # A module beside the script that defines it.
+    for folder in folders:
+        try:
+            for m in pkgutil.iter_modules([folder]):
+                path = source_of(m.name, [folder], path=False)
+                if path and read_members(path).get(name) in ('function', 'class', 'statement'):
+                    add('from %s import %s' % (m.name, name))
+        except Exception:
+            pass
+    at = import_line(source)
+    return [{'title': t, 'line': at, 'text': t + '\n'} for t in found[:12]]
+
 def answer(request):
     kind = request.get('kind') or 'complete'
     source, line, column, path = request.get('source', ''), int(request.get('line', 1)), int(request.get('column', 0)), request.get('path') or None
     folders = [os.path.dirname(os.path.abspath(path))] if path else []
+    if kind == 'imports':
+        return '', {'imports': imports_for(request.get('name') or '', source, folders)}
     if kind in ('references', 'rename'):
         new_name = request.get('new_name') or ''
         if kind == 'rename' and (not new_name.isidentifier() or keyword.iskeyword(new_name)):

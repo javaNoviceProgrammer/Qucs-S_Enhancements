@@ -47,6 +47,9 @@ namespace qucs_s::python {
 /// message, on or off (\a field focused: 0, 1, 2). False when cancelled.
 /// \a existing: it is there already (the dialog says Edit, not Add).
 bool editBreakpointDialog(QWidget* parent, Breakpoint* b, int field, bool existing);
+/// A script's Run Settings edited in a dialog: its arguments, working
+/// folder, environment variables and .env file. False when cancelled.
+bool editRunSettingsDialog(QWidget* parent, const QString& script, RunSettings* settings);
 
 /*!
  * \brief The folders of moduleFolder() through which scripts reach Qucs-S,

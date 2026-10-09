@@ -185,6 +185,7 @@ target_compile_definitions(test_python_tools PRIVATE QUCS_BINARY="$<TARGET_FILE:
   QUCS_PYTHON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/../python")
 add_dependencies(test_python_tools ${QUCS_NAME})
 qucs_add_test(test_python_ide)
+qucs_add_test(test_python_extras)
 target_compile_definitions(test_system_open PRIVATE QUCS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(APPLE)
   target_compile_definitions(test_system_open PRIVATE

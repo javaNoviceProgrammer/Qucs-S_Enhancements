@@ -34,6 +34,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPainter>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -105,6 +106,75 @@ bool editBreakpointDialog(QWidget* parent, Breakpoint* b, int field, bool existi
     b->hit = hit->text().trimmed();
     b->log = log->text();
     b->enabled = enabled->isChecked();
+    return true;
+}
+
+// ----------------------------------------------------------------------
+// A script's Run Settings
+
+bool editRunSettingsDialog(QWidget* parent, const QString& script, RunSettings* settings)
+{
+    const QFileInfo info(script);
+    QDialog dialog(parent);
+    dialog.setObjectName(QStringLiteral("pythonRunSettingsDialog"));
+    dialog.setWindowTitle(tr("Run Settings - %1").arg(info.fileName()));
+    auto* arguments = new QLineEdit(settings->arguments, &dialog);
+    arguments->setObjectName(QStringLiteral("runArguments"));
+    arguments->setPlaceholderText(tr("--points 101 \"a file.dat\"  (as a shell splits them: sys.argv[1:])"));
+    auto* folder = new QLineEdit(settings->folder, &dialog);
+    folder->setObjectName(QStringLiteral("runFolder"));
+    folder->setPlaceholderText(tr("its own folder (relative: to it)"));
+    auto* browseFolder = new QPushButton(QObject::tr("Browse..."), &dialog);
+    QObject::connect(browseFolder, &QPushButton::clicked, &dialog, [&] {
+        const QString chosen = QFileDialog::getExistingDirectory(&dialog, tr("Working folder"), info.absolutePath());
+        if (!chosen.isEmpty()) folder->setText(QDir(info.absolutePath()).relativeFilePath(chosen));
+    });
+    auto* environment = new QPlainTextEdit(settings->environment, &dialog);
+    environment->setObjectName(QStringLiteral("runEnvironment"));
+    environment->setPlaceholderText(tr("NAME=value, a line each (${OTHER}: its value)"));
+    environment->setTabChangesFocus(true);
+    environment->setFixedHeight(environment->fontMetrics().height() * 5 + 12);
+    auto* envFile = new QLineEdit(settings->envFile, &dialog);
+    envFile->setObjectName(QStringLiteral("runEnvFile"));
+    envFile->setPlaceholderText(tr("a .env file of NAME=value lines (relative: to its folder)"));
+    auto* browseFile = new QPushButton(QObject::tr("Browse..."), &dialog);
+    QObject::connect(browseFile, &QPushButton::clicked, &dialog, [&] {
+        const QString chosen = QFileDialog::getOpenFileName(&dialog, tr(".env file"), info.absolutePath(), tr("Environment files (*.env .env);;All files (*)"));
+        if (!chosen.isEmpty()) envFile->setText(QDir(info.absolutePath()).relativeFilePath(chosen));
+    });
+    auto* folderRow = new QHBoxLayout;
+    folderRow->addWidget(folder, 1);
+    folderRow->addWidget(browseFolder);
+    auto* fileRow = new QHBoxLayout;
+    fileRow->addWidget(envFile, 1);
+    fileRow->addWidget(browseFile);
+    auto* form = new QFormLayout;
+    form->addRow(tr("Arguments:"), arguments);
+    form->addRow(tr("Working folder:"), folderRow);
+    form->addRow(tr("Environment:"), environment);
+    form->addRow(tr(".env file:"), fileRow);
+    auto* note = new QLabel(tr("Run and Debug use these for %1; the Python Shell does not.").arg(info.fileName()), &dialog);
+    note->setEnabled(false);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Reset, &dialog);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QObject::connect(buttons->button(QDialogButtonBox::Reset), &QPushButton::clicked, &dialog, [&] {
+        arguments->clear();
+        folder->clear();
+        environment->clear();
+        envFile->clear();
+    });
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addLayout(form);
+    layout->addWidget(note);
+    layout->addWidget(buttons);
+    dialog.resize(std::max(dialog.sizeHint().width(), 520), dialog.sizeHint().height());
+    arguments->setFocus();
+    if (dialog.exec() != QDialog::Accepted) return false;
+    settings->arguments = arguments->text().trimmed();
+    settings->folder = folder->text().trimmed();
+    settings->environment = environment->toPlainText().trimmed();
+    settings->envFile = envFile->text().trimmed();
     return true;
 }
 

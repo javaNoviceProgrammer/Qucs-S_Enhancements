@@ -323,10 +323,66 @@ void PythonDoc::format() { runFormatter(QStringLiteral("format")); }
 
 void PythonDoc::fixProblems() { runFormatter(QStringLiteral("fix")); }
 
-void PythonDoc::runFormatter(const QString& mode)
+void PythonDoc::organizeImports() { runFormatter(QStringLiteral("imports")); }
+
+void PythonDoc::formatSelection()
+{
+    // The lines the selection touches (one ending at a line's start not
+    // that line), or the cursor's.
+    const QTextCursor cursor = textCursor();
+    const QTextBlock first = document()->findBlock(cursor.selectionStart());
+    QTextBlock last = document()->findBlock(cursor.selectionEnd());
+    if (cursor.hasSelection() && last != first && cursor.selectionEnd() == last.position()) last = last.previous();
+    runFormatter(QStringLiteral("format"), QStringLiteral("%1-%2").arg(first.blockNumber() + 1).arg(last.blockNumber() + 1));
+}
+
+bool PythonDoc::formatOnSave() { return _settings::Get().item<bool>("PythonFormatOnSave"); }
+
+void PythonDoc::setFormatOnSave(bool on) { _settings::Get().setItem<bool>("PythonFormatOnSave", on); }
+
+int PythonDoc::save()
+{
+    // Formatted first, waited for (a few seconds at most): saved as it is
+    // when it cannot be - said, the file saved all the same.
+    if (formatOnSave() && !isReadOnly() && !a_library) {
+        QProcess process;
+        QProcessEnvironment environment = qucs_s::python::scriptEnvironment();
+        environment.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
+        process.setProcessEnvironment(environment);
+        process.setWorkingDirectory(qucs_s::python::neutralFolder());
+        const QString name = getDocName().isEmpty() ? QStringLiteral("script.py") : QFileInfo(getDocName()).absoluteFilePath();
+        process.start(interpreter(), {QStringLiteral("-c"), qucs_s::python::formatterProgram(), QStringLiteral("format"), name});
+        QString said;
+        if (!process.waitForStarted(5000)) {
+            said = tr("Format on Save: no Python at %1.").arg(interpreter());
+        } else {
+            process.write(toPlainText().toUtf8());
+            process.closeWriteChannel();
+            if (!process.waitForFinished(8000)) {
+                process.kill();
+                process.waitForFinished(1000);
+                said = tr("Format on Save: the formatter took too long - saved as it was.");
+            } else {
+                const QJsonObject o = QJsonDocument::fromJson(process.readAllStandardOutput()).object();
+                const QString failure = o.value(QStringLiteral("failure")).toString();
+                const QString text = o.value(QStringLiteral("text")).toString();
+                if (!failure.isEmpty()) said = tr("Format on Save: %1 - saved as it was.").arg(failure);
+                else if (o.contains(QStringLiteral("text")) && text != toPlainText()) {
+                    replaceText(text);
+                    said = tr("Formatted by %1 and saved.").arg(o.value(QStringLiteral("tool")).toString());
+                }
+            }
+        }
+        if (!said.isEmpty()) emit formatted(said);
+    }
+    return TextDoc::save();
+}
+
+void PythonDoc::runFormatter(const QString& mode, const QString& lines)
 {
     if (a_formatProcess != nullptr || isReadOnly()) return;
     a_formatMode = mode;
+    a_formatLines = lines;
     a_formatRevision = document()->revision();
     a_formatProcess = new QProcess(this);
     QProcessEnvironment environment = qucs_s::python::scriptEnvironment();
@@ -340,7 +396,9 @@ void PythonDoc::runFormatter(const QString& mode)
         if (error == QProcess::FailedToStart) finishFormat();
     });
     const QString name = getDocName().isEmpty() ? QStringLiteral("script.py") : QFileInfo(getDocName()).absoluteFilePath();
-    a_formatProcess->start(interpreter(), {QStringLiteral("-c"), qucs_s::python::formatterProgram(), mode, name});
+    QStringList arguments{QStringLiteral("-c"), qucs_s::python::formatterProgram(), mode, name};
+    if (!lines.isEmpty()) arguments << lines;
+    a_formatProcess->start(interpreter(), arguments);
     a_formatProcess->write(toPlainText().toUtf8());
     a_formatProcess->closeWriteChannel();
 }
@@ -353,6 +411,8 @@ void PythonDoc::finishFormat()
     disconnect(process, nullptr, this, nullptr);
     process->deleteLater();
     const bool fix = a_formatMode == QLatin1String("fix");
+    const bool imports = a_formatMode == QLatin1String("imports");
+    const bool selection = !a_formatLines.isEmpty();
     QString said;
     if (process->error() == QProcess::FailedToStart) {
         said = tr("No Python at %1 to format it with.").arg(interpreter());
@@ -366,14 +426,132 @@ void PythonDoc::finishFormat()
             const QString text = o.value(QStringLiteral("text")).toString();
             const QString tool = o.value(QStringLiteral("tool")).toString();
             if (text == toPlainText()) {
-                said = fix ? tr("Nothing for %1 to fix.").arg(tool) : tr("Already formatted as %1 has it.").arg(tool);
+                said = fix ? tr("Nothing for %1 to fix.").arg(tool)
+                       : imports ? tr("The imports are in order as %1 has them.").arg(tool)
+                       : selection ? tr("Lines %1 already formatted as %2 has them.").arg(a_formatLines, tool)
+                                   : tr("Already formatted as %1 has it.").arg(tool);
             } else {
                 replaceText(text);
-                said = fix ? tr("Fixed by %1 (Undo takes it back).").arg(tool) : tr("Formatted by %1 (Undo takes it back).").arg(tool);
+                said = fix ? tr("Fixed by %1 (Undo takes it back).").arg(tool)
+                       : imports ? tr("Imports organized by %1 (Undo takes it back).").arg(tool)
+                       : selection ? tr("Lines %1 formatted by %2 (Undo takes it back).").arg(a_formatLines, tool)
+                                   : tr("Formatted by %1 (Undo takes it back).").arg(tool);
             }
         }
     }
     emit formatted(said);
+}
+
+// ----------------------------------------------------------------------
+// Quick Fix
+
+namespace {
+// A message's code as it is shown: "... (F401)", "... (mypy: assignment)".
+std::pair<QString, QString> codeOf(const TextDoc::Diagnostic& d)
+{
+    static const QRegularExpression typed(QStringLiteral("\\((mypy|pyright): ([\\w-]+)\\)$"));
+    static const QRegularExpression checked(QStringLiteral("\\(([A-Z]+[0-9]+)\\)$"));
+    if (const QRegularExpressionMatch m = typed.match(d.message); m.hasMatch()) return {m.captured(1), m.captured(2)};
+    if (const QRegularExpressionMatch m = checked.match(d.message); m.hasMatch()) return {QString(), m.captured(1)};
+    return {d.source, QString()};
+}
+} // namespace
+
+int PythonDoc::bulbLine() const
+{
+    if (isReadOnly()) return 0;
+    const int line = textCursor().blockNumber() + 1;
+    for (const Diagnostic& d : diagnostics())
+        if (d.line == line) return line;
+    return 0;
+}
+
+void PythonDoc::quickFix(int line, const QPoint& showAt)
+{
+    a_fixes.clear();
+    a_fixLine = line;
+    a_fixAt = showAt;
+    a_fixesRevision = document()->revision();
+    a_fixRequest = 0;
+    const QTextBlock block = document()->findBlockByNumber(line - 1);
+    if (!block.isValid() || isReadOnly()) {
+        emit fixesAnswered();
+        return;
+    }
+    // The checker's own fixes (ruff's): of the text the check had.
+    if (a_checkRevision == document()->revision()) {
+        for (const qucs_s::python::Problem& p : std::as_const(a_check.problems)) {
+            if (p.line != line || p.fixEdits.isEmpty()) continue;
+            QString title = p.fixMessage.isEmpty() ? tr("Fix: %1").arg(p.message) : tr("Fix: %1").arg(p.fixMessage);
+            if (!p.code.isEmpty()) title += QStringLiteral(" (%1)").arg(p.code);
+            if (p.fixApplicability == QLatin1String("unsafe")) title += tr(" - may change what it does");
+            a_fixes.append({title, p.fixEdits});
+        }
+    }
+    // Each ignored on the line - once for each code.
+    QSet<QString> ignored;
+    QString name;
+    QString text = block.text();
+    for (const Diagnostic& d : diagnostics()) {
+        if (d.line != line) continue;
+        if (name.isEmpty()) name = qucs_s::python::undefinedName(d.message);
+        if (d.error) continue;   // (a syntax error is no checker's to ignore)
+        const auto [source, code] = codeOf(d);
+        const QString key = source + QLatin1Char(':') + code;
+        if (ignored.contains(key)) continue;
+        ignored.insert(key);
+        const QString after = qucs_s::python::ignoredOnLine(text, code, source);
+        if (after == text) continue;
+        const QString what = code.isEmpty() ? (source.isEmpty() ? tr("the check's warnings") : source) : code;
+        a_fixes.append({tr("Ignore %1 on this line").arg(what), {{line, 1, line, int(text.size()) + 1, after}}});
+    }
+    // An import for a name not defined: the completer's.
+    if (!name.isEmpty() && startCompleter()) {
+        const int id = ++a_questions;
+        const QJsonObject question{{QStringLiteral("id"), id},
+                                   {QStringLiteral("kind"), QStringLiteral("imports")},
+                                   {QStringLiteral("name"), name},
+                                   {QStringLiteral("source"), toPlainText()},
+                                   {QStringLiteral("line"), line},
+                                   {QStringLiteral("column"), 0},
+                                   {QStringLiteral("path"), getDocName().isEmpty() ? QString() : QFileInfo(getDocName()).absoluteFilePath()}};
+        a_completerProcess->write(QJsonDocument(question).toJson(QJsonDocument::Compact) + '\n');
+        a_fixRequest = id;
+        return;   // (the list whole when it answers)
+    }
+    emit fixesAnswered();
+    if (!a_fixAt.isNull()) showFixMenu();
+}
+
+QStringList PythonDoc::fixTitles() const
+{
+    QStringList titles;
+    for (const Fix& f : a_fixes) titles << f.title;
+    return titles;
+}
+
+bool PythonDoc::applyFix(int index)
+{
+    if (index < 0 || index >= a_fixes.size() || a_fixesRevision != document()->revision() || isReadOnly()) return false;
+    replaceText(qucs_s::python::applyEdits(toPlainText(), a_fixes.at(index).edits));
+    a_fixes.clear();
+    return true;
+}
+
+void PythonDoc::showFixMenu()
+{
+    const QPoint at = a_fixAt;
+    a_fixAt = QPoint();
+    if (a_fixMenu != nullptr) a_fixMenu->deleteLater();
+    a_fixMenu = new QMenu(this);
+    a_fixMenu->setObjectName(QStringLiteral("pythonQuickFixes"));
+    a_fixMenu->setAttribute(Qt::WA_DeleteOnClose);
+    if (a_fixes.isEmpty()) a_fixMenu->addAction(tr("No fixes for line %1").arg(a_fixLine))->setEnabled(false);
+    for (int k = 0; k < a_fixes.size(); ++k) a_fixMenu->addAction(a_fixes.at(k).title, this, [this, k] { applyFix(k); });
+    connect(a_fixMenu, &QObject::destroyed, this, [this, menu = a_fixMenu] {
+        if (a_fixMenu == menu) a_fixMenu = nullptr;
+    });
+    a_fixMenu->popup(at);
 }
 
 void PythonDoc::replaceText(const QString& text)
@@ -615,9 +793,15 @@ int PythonDoc::markRoom() const
     return std::clamp(fontMetrics().height(), 12, 18) + 2;
 }
 
-void PythonDoc::marginPressed(const QTextBlock& block)
+void PythonDoc::marginPressed(const QTextBlock& block, int x, const QPoint& global)
 {
-    toggleBreakpoint(block.blockNumber() + 1);
+    // The light bulb: its fixes; anywhere else, a breakpoint.
+    const int line = block.blockNumber() + 1;
+    if (x < markRoom() && line == bulbLine()) {
+        quickFix(line, global);
+        return;
+    }
+    toggleBreakpoint(line);
 }
 
 void PythonDoc::paintMark(QPainter& painter, const QTextBlock& block, const QRect& box)
@@ -626,6 +810,19 @@ void PythonDoc::paintMark(QPainter& painter, const QTextBlock& block, const QRec
     const qreal size = std::min(box.width(), box.height()) - 4;
     const QRectF square(box.left() + (box.width() - size) / 2.0, box.top() + (box.height() - size) / 2.0, size, size);
     const qucs_s::python::Breakpoint b = breakpointAt(block.blockNumber() + 1);
+    // The light bulb, on the cursor's line with a problem (no breakpoint or
+    // the debugger's arrow there): a click its fixes.
+    if (block.blockNumber() + 1 == bulbLine() && b.line == 0 && (a_execution.isNull() || a_execution.blockNumber() != block.blockNumber())) {
+        const QColor glass(0xf2, 0xc2, 0x1b);
+        painter.setPen(QPen(glass.darker(150), 1));
+        painter.setBrush(glass);
+        const QRectF bulb(square.left() + size * 0.18, square.top(), size * 0.64, size * 0.64);
+        painter.drawEllipse(bulb);
+        painter.setBrush(QColor(0x7a, 0x7f, 0x88));
+        painter.setPen(Qt::NoPen);
+        painter.drawRect(QRectF(square.left() + size * 0.34, square.top() + size * 0.66, size * 0.32, size * 0.3));
+        return;
+    }
     if (b.line > 0) {
         // A dot; a logpoint a diamond; with a condition or hits, a bar
         // across; off, hollow and grey.
