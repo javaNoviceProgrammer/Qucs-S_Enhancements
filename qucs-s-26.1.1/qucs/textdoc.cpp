@@ -886,9 +886,15 @@ void TextDoc::refreshMarks()
 
 void TextDoc::lineNumberAreaPressed(QMouseEvent *event)
 {
-    if (event->button() != Qt::LeftButton) return;
     const QTextBlock block = cursorForPosition(QPoint(0, int(event->position().y()))).block();
-    if (block.isValid()) marginPressed(block);
+    if (!block.isValid()) return;
+    if (event->button() == Qt::RightButton) {
+        marginMenu(block, event->globalPosition().toPoint());
+        return;
+    }
+    if (event->button() != Qt::LeftButton) return;
+    if (foldRoom() > 0 && event->position().x() >= lineNumberArea->width() - foldRoom()) foldPressed(block);
+    else marginPressed(block);
 }
 
 void TextDoc::setDiagnostics(const QList<Diagnostic> &list)
@@ -1075,7 +1081,7 @@ int TextDoc::lineNumberAreaWidth() const
 
     int space = 3 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
     if (!a_diagnostics.isEmpty()) space += dotRoom(fontMetrics().height());   // their dots
-    return space + markRoom();
+    return space + markRoom() + foldRoom();
 }
 
 void TextDoc::updateLineNumberAreaWidth(int /* newBlockCount */)
@@ -1122,11 +1128,16 @@ void TextDoc::lineNumberAreaPaintEvent(QPaintEvent *event)
         if (block.isVisible() && bottom >= event->rect().top()) {
             QString number = QString::number(blockNumber + 1);
             painter.setPen(a_marginText);
-            painter.drawText(0, top, lineNumberArea->width(), fontMetrics().height(),
+            painter.drawText(0, top, lineNumberArea->width() - foldRoom(), fontMetrics().height(),
                 Qt::AlignRight, number);
             if (markRoom() > 0) {
                 painter.save();
                 paintMark(painter, block, QRect(0, top, markRoom(), fontMetrics().height()));
+                painter.restore();
+            }
+            if (foldRoom() > 0) {
+                painter.save();
+                paintFold(painter, block, QRect(lineNumberArea->width() - foldRoom(), top, foldRoom(), fontMetrics().height()));
                 painter.restore();
             }
             // A diagnostic's dot, at the left: red for an error, amber

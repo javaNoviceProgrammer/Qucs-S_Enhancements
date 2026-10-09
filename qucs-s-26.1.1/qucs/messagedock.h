@@ -31,6 +31,7 @@ class QPlainTextEdit;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QLineEdit;
+class QLabel;
 
 /*!
  * \file messagedock.h
@@ -103,6 +104,24 @@ public:
    */
   QPlainTextEdit *cppOutput;
 
+  /// A Python name's references (Find All References): \a title above
+  /// them, a row each - grouped by file, its line's number and text - and
+  /// the tab and the dock brought up. A click on a row goes
+  /// there (placeRequested(), or lineRequested() for one of \a document,
+  /// the script itself - a file empty).
+  struct Reference {
+    QString file;   ///< empty: \a document's
+    int line = 0;
+    int column = 0;   ///< from 0
+    int end = 0;
+    QString text;
+    bool definition = false;
+  };
+  void showReferences(const QString &title, TextDoc *document, const QList<Reference> &references);
+  QTreeWidget *references = nullptr;
+  /// The References tab's rows: "file:line: text" each.
+  QStringList referenceRows() const;
+
   void reset();
   /// The build's output (OpenVAF's, admsXml's) in front: its tab chosen,
   /// the dock shown and raised over the docks it shares the bottom of the
@@ -118,6 +137,9 @@ signals:
   /// A row of the Operating Point tab was chosen: the component of that
   /// name in operatingPointDocument() is to be shown.
   void componentRequested(const QString &component);
+  /// A row of the References tab of another file was chosen: \a line,
+  /// \a column (1-based) of \a file are to be shown.
+  void placeRequested(const QString &file, int line, int column);
 
 
 private slots:
@@ -141,6 +163,9 @@ private:
   QPointer<QObject> a_problemsText;   // textProblemsDocument()
   QMetaObject::Connection a_problemsTextGone;
   QList<TextDoc::Diagnostic> a_textProblems;
+  QLabel *a_referencesTitle = nullptr;
+  QPointer<QObject> a_referencesDoc;   // the script whose rows have no file
+  int a_referencesTab = -1;
   /// The Problems tab's title and icon for \a errors and \a count.
   void titleProblems(int errors, int count);
 

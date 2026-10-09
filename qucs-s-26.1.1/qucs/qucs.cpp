@@ -922,7 +922,8 @@ void QucsApp::initView()
       if (schematicIn(documentWidget(doc)) == nullptr && !doc->getDocName().isEmpty()) files << doc->getDocName();
     return files;
   });
-  claudeTabs->setToolHost(new QucsControl(this));
+  a_control = new QucsControl(this);
+  claudeTabs->setToolHost(a_control);
   // The conversations open when Qucs-S last closed, each going on where it
   // was (unless ⋯ > Reopen Conversations at Start is off).
   claudeTabs->restoreConversations();

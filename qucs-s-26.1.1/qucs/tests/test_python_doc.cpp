@@ -17,6 +17,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QLineEdit>
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QCompleter>
@@ -172,6 +173,9 @@ private slots:
         // has jedi (a case that wants jedi puts a stand-in first).
         write("nojedi/jedi/__init__.py", "raise ImportError('hidden for the test')\n");
         qputenv("PYTHONPATH", QFile::encodeName(dir.filePath("nojedi")));
+        // (Brackets and quotes typed as typed: test_python_ide has them
+        // closed.)
+        PythonDoc::setAutoClose(false);
         app = new QucsApp(false);
         QucsMain = app;
         app->resize(1200, 800);
@@ -639,8 +643,9 @@ private slots:
 
     // Run (F2, Simulate's key, with a script in front): saved first, run in
     // its folder, its output and its exit code; a traceback's place a link
-    // that goes there; input() gets the end of the file; Stop ends one
-    // that does not; Stop only while one runs.
+    // that goes there; input() reads what is typed below the output, the
+    // end of the file after End Input; Stop ends one that does not; Stop
+    // only while one runs.
     void runShowsTheOutputAndTheExitCode()
     {
         if (python.isEmpty()) QSKIP("no python3 here");
@@ -692,9 +697,21 @@ private slots:
         QCOMPARE(app->DocumentTab->currentWidget(), static_cast<QWidget*>(boom));
         QCOMPARE(boom->textCursor().blockNumber(), 3);
 
-        // input(): the end of the file, not a wait.
+        // input(): what is typed below the output (echoed after its
+        // prompt); the end of the file after End Input (Ctrl+D).
+        PythonDoc* greet = open(write("run/greet.py", "name = input('name? ')\nprint('hello', name)\n"));
+        QVERIFY(app->runPython(greet));
+        QLineEdit* typed = console->inputLine();
+        QVERIFY(typed->isEnabled() && console->inputOpen());
+        QTRY_VERIFY_WITH_TIMEOUT(console->outputText().contains("name? "), 20000);
+        QTest::keyClicks(typed, "Ada");
+        QTest::keyClick(typed, Qt::Key_Return);
+        QVERIFY(done.wait(20000));
+        QVERIFY2(console->outputText().contains("name? Ada\nhello Ada"), qPrintable(console->outputText()));
+        QVERIFY(!typed->isEnabled());
         PythonDoc* ask = open(write("run/ask.py", "try:\n    input()\nexcept EOFError:\n    print('no input')\n"));
         QVERIFY(app->runPython(ask));
+        QTest::keyClick(typed, Qt::Key_D, Qt::ControlModifier);   // End Input
         QVERIFY(done.wait(20000));
         QCOMPARE(console->exitCode(), 0);
         QVERIFY(console->outputText().contains("no input"));
@@ -714,6 +731,7 @@ private slots:
         QVERIFY(app->runPython(first));
         QTRY_VERIFY_WITH_TIMEOUT(console->outputText().contains("long"), 20000);
         QVERIFY(app->runPython(ask));
+        console->endInput();
         QVERIFY(done.wait(20000));
         QCOMPARE(console->script(), ask->getDocName());
         QVERIFY(console->outputText().contains("no input"));
