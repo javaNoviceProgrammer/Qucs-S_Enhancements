@@ -5680,7 +5680,8 @@ private slots:
         for (int i = 0; i < app->librariesTree()->topLevelItemCount(); ++i)
             shown = shown || app->librariesTree()->topLevelItem(i)->text(0) == "TestAmps";
         QVERIFY(shown);   // in the panel at once
-        // Not again unless replaced; replaced, the old one in the trash.
+        // Not again unless replaced; replaced, the old one deleted (not to
+        // the trash: one that would not take it kept it from being made).
         r = call("create_library", {{"name", "TestAmps"}});
         QVERIFY2(failed(r) && text(r).contains("is there already"), qPrintable(text(r)));
         const auto inTrash = [](const QString& name) {
@@ -5691,8 +5692,8 @@ private slots:
         };
         const int trashedBefore = inTrash("TestAmps.lib");
         r = call("create_library", {{"name", "TestAmps"}, {"replace", true}});
-        QVERIFY2(!failed(r) && text(r).contains("in the trash"), qPrintable(text(r)));
-        QCOMPARE(inTrash("TestAmps.lib"), trashedBefore + 1);
+        QVERIFY2(!failed(r) && text(r).contains("The library it replaced was deleted."), qPrintable(text(r)));
+        QCOMPARE(inTrash("TestAmps.lib"), trashedBefore);
         QCOMPARE(json(r).toObject().value("parts").toArray().size(), 2);   // all the project's: amp and buf
         // Into the project.
         r = call("create_library", {{"name", "LocalAmps"}, {"subcircuits", QJsonArray{"buf.sch"}}, {"destination", "project"}});

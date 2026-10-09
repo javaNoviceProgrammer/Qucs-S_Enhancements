@@ -428,15 +428,15 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
     request.embedVerilogA = args.value(QLatin1String("embed_verilog_a")).toBool(QucsSettings.EmbedVerilogAInLibraries);
     request.groundPin = args.value(QLatin1String("ground_pin")).toBool(QucsSettings.LibraryGroundPin);
     request.replace = args.value(QLatin1String("replace")).toBool();
-    // (Replaced: the old one goes to the trash once the new one is made -
-    // read while it is made, when a subcircuit places its parts - and stays
-    // as it was when the new one cannot be.)
+    // (Replaced: the old one is deleted once the new one is made - read
+    // while it is made, when a subcircuit places its parts - and stays as it
+    // was when the new one cannot be.)
     const QString file = QDir(folder).filePath(name + QStringLiteral(".lib"));
     LibraryDialog dialog(a_app);
     dialog.fillSchematicList(available);
     QString log;
-    QStringList trashed;
-    const bool made = dialog.create(request, &log, &error, &trashed);
+    QStringList replaced;
+    const bool made = dialog.create(request, &log, &error, &replaced);
     a_app->fillLibrariesTreeView();
     const QStringList messages = log.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     if (!made && messages.isEmpty()) return errorResult(error + QLatin1Char('.'));
@@ -455,7 +455,7 @@ QJsonObject QucsControl::createLibrary(const QJsonObject& args)
         result.insert(QStringLiteral("models"), files);
     }
     result.insert(QStringLiteral("note"), tr("It is in the Libraries panel; each part's 'place' is its add_component.%1")
-                                              .arg(trashed.isEmpty() ? QString() : tr(" The library it replaced is in the trash.")));
+                                              .arg(replaced.isEmpty() ? QString() : tr(" The library it replaced was deleted.")));
     addNamedLike(result, file);
     // What the messages warn of, where it is seen: only among the lines,
     // "Successfully created library." read as all was well.
