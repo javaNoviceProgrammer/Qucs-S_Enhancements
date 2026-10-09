@@ -91,21 +91,26 @@ public:
     /// The document in front changed.
     void refreshDocument();
     /// What names the open schematics a conversation can be pinned to
-    /// (their files).
+    /// (their files): ⋯ > Pin to a Schematic.
     void setSchematicsProvider(std::function<QStringList()> provider);
-    /// The schematic the conversation is pinned to (its file), or empty:
+    /// What names the other open documents a conversation can be pinned
+    /// to (their files: text, a script, a data file...): ⋯ > Pin to a
+    /// File. Without one, only a schematic is pinned.
+    void setFilesProvider(std::function<QStringList()> provider);
+    /// The document the conversation is pinned to (its file), or empty:
     /// none, it follows the document in front - as at first. Pinned, its
-    /// prompts name that schematic, not the document in front, and
-    /// Qucs-S's tools act on it when Claude names no document
+    /// prompts name that document, not the one in front, and Qucs-S's
+    /// tools act on it when Claude names no document
     /// (Session::setDocument()). Chosen by the user: the pin by the
-    /// composer, or ⋯ > Pin to a Schematic.
+    /// composer (the document in front), ⋯ > Pin to a Schematic, or ⋯ >
+    /// Pin to a File.
     QString pinnedDocument() const { return a_pinned; }
     /// Pins the conversation to \a path; empty: unpins it.
     void pinDocument(const QString& path);
     /// Whether it is pinned to the file \a path.
     bool isPinnedTo(const QString& path) const;
-    /// The schematic in front, when it has a file (what the pin pins), or
-    /// empty.
+    /// The document in front, when it has a file and is one the providers
+    /// name (what the pin pins), or empty.
     QString pinnableDocument() const;
 
     /// A line in the conversation from the application (a document
@@ -227,6 +232,7 @@ public:
     /// The commands matching what is typed, as the composer offers them.
     QListWidget* commandList() const { return a_commandList; }
     QMenu* pinMenu() const { return a_pinMenu; }
+    QMenu* pinFileMenu() const { return a_pinFileMenu; }
     QFrame* permissionCard() const { return a_card; }
     /// Where an MCP server's question for the user is shown (elicitation).
     QFrame* askCard() const { return a_askCard; }
@@ -268,7 +274,7 @@ signals:
     /// The title changed (the first prompt was sent, the conversation was
     /// named, or it began again).
     void titleChanged();
-    /// The conversation was pinned to a schematic, or unpinned.
+    /// The conversation was pinned to a document, or unpinned.
     void pinChanged();
     /// What it holds changed: to be kept again.
     void conversationChanged();
@@ -318,6 +324,13 @@ private:
     void buildPermissionCard();
     void buildMenu();
     void fillPinMenu();
+    void fillPinFileMenu();
+    /// \a menu: \a open, each to pin, the one pinned checked - and the
+    /// one pinned when it is of the menu's kind (\a schematics or not) and
+    /// open nowhere -, then Unpin; \a none when there is nothing to list.
+    void fillPinMenu(QMenu* menu, const QStringList& open, bool schematics, const QString& none);
+    /// Every document a conversation can be pinned to.
+    QStringList pinnableFiles() const;
     /// The commands matching what the composer holds, offered above it.
     void updateCommandList();
     /// The command chosen in the list put in the composer; \a send: and
@@ -414,7 +427,8 @@ private:
     QString a_projectDir;      // the project open in Qucs-S, or empty
     std::function<QString()> a_document;
     std::function<QStringList()> a_schematics;
-    QString a_pinned;          // the schematic pinned (its file), or empty
+    std::function<QStringList()> a_files;   // the other documents open
+    QString a_pinned;          // the document pinned (its file), or empty
     QString a_conversationId;  // where it is kept
 
     qucs_s::claude::ModelQuery* a_modelQuery;
@@ -483,8 +497,9 @@ private:
     QFrame* a_composer;
     QPlainTextEdit* a_input;
     QToolButton* a_attach;
-    QToolButton* a_pin;        // pins the schematic in front; pinned, names it
+    QToolButton* a_pin;        // pins the document in front; pinned, names it
     QMenu* a_pinMenu;          // ⋯ > Pin to a Schematic
+    QMenu* a_pinFileMenu;      // ⋯ > Pin to a File
     QListWidget* a_commandList = nullptr;   // the commands matching what is typed
     QLabel* a_hint;
     QToolButton* a_send;

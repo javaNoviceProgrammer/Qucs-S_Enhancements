@@ -117,6 +117,7 @@ public:
     void setProjectDirectory(const QString& dir);
     void setDocumentProvider(std::function<QString()> provider);
     void setSchematicsProvider(std::function<QStringList()> provider);
+    void setFilesProvider(std::function<QStringList()> provider);
     /// A document was saved under another name (Save As): a conversation
     /// pinned to \a from is pinned to \a to.
     void documentRenamed(const QString& from, const QString& to);
@@ -167,6 +168,7 @@ private:
     QString a_projectDir;
     std::function<QString()> a_document;
     std::function<QStringList()> a_schematics;
+    std::function<QStringList()> a_files;
     qucs_s::claude::ToolHost* a_host = nullptr;
     ClaudeCodePanel* a_reporting = nullptr;   // whose files are loaded again
     QSet<ClaudeCodePanel*> a_unsaved;         // changed since kept
