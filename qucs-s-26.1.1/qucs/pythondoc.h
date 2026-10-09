@@ -608,6 +608,13 @@ public:
     /// them - a setting (PythonAutoClose; on by default).
     static bool autoClose();
     static void setAutoClose(bool on);
+    /// Cmd+/ (Ctrl+/ on Windows and Linux): the lines selected - the
+    /// cursor's, without a selection - made comments, "# " at the least
+    /// indentation of those with text; or, when every one of them is a
+    /// comment already, their marks taken away. One step to undo; a
+    /// selection of lines stays on them. False when nothing changed (a
+    /// script that is only read).
+    bool toggleLineComment();
     /// The bracket at the cursor and its partner, marked (-1, -1: none;
     /// the second -1 alone: one unmatched).
     std::pair<int, int> bracketMarks() const { return a_bracketMarks; }

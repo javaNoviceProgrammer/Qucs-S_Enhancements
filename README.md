@@ -739,6 +739,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     to the next level and Shift+Tab takes one away, on a line or on every
     line selected. A level is four spaces, or a tab in a file indented
     with tabs.
+  - **Lines made comments.** Cmd+/ (Ctrl+/ on Windows and Linux; *Python
+    → Toggle Line Comment*) puts `# ` before the cursor's line, or the
+    lines selected, at their least indentation so the block keeps its
+    shape; blank lines are left alone. When every line already is a
+    comment, the marks (and the space after them) are taken away instead.
+    One undo takes it back, and the lines stay selected for another go.
   - **Breakpoints and the debugger.** A click in the line numbers'
     margin (or *Toggle Breakpoint*, Ctrl+F9) sets a breakpoint, a red dot,
     or takes it away; breakpoints move with the text and stay through a
