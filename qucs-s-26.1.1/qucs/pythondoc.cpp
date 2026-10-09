@@ -108,6 +108,7 @@ for w in caught:
         continue
     seen.add((w.lineno, str(w.message)))
     add(w.lineno, 0, 0, 0, False, w.message)
+compiled = len(out['problems'])   # (the compiler's, before ruff's or pyflakes')
 if ok:
     import importlib.util, shutil, subprocess
     ruff = None
@@ -150,6 +151,19 @@ if ok:
             out['checker'] = ('pyflakes ' + getattr(pyflakes, '__version__', '')).strip()
         except Exception:
             pass
+# One thing said twice - by the compiler and by ruff or pyflakes, on one
+# line: "is" with a literal, an assert of a tuple. The checker's kept, with
+# its code (and ruff's fix); the compiler's warning goes.
+import re
+SAME = [(r'^"is( not)?" with ', r'compare constant literals|^F632$'),
+        (r'^assertion is always true', r'^assertion is always true|^F631$')]
+def said_again(p):
+    for mine, theirs in SAME:
+        if re.search(mine, p['message']):
+            return any(q['line'] == p['line'] and (re.search(theirs, q['message']) or re.search(theirs, q['code']))
+                       for q in out['problems'][compiled:])
+    return False
+out['problems'] = [p for i, p in enumerate(out['problems']) if i >= compiled or p['error'] or not said_again(p)]
 sys.stdout.write(json.dumps(out))
 )PY");
     return program;
