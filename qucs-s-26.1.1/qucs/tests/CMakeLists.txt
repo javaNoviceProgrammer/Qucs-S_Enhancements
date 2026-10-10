@@ -38,6 +38,12 @@ if(QUCS_SHARED_TEST_CORE)
   find_package(ZLIB REQUIRED)
   target_link_libraries(qucs-test-core PUBLIC ZLIB::ZLIB)
   target_include_directories(qucs-test-core SYSTEM INTERFACE $<TARGET_PROPERTY:gdstk,INTERFACE_INCLUDE_DIRECTORIES>)
+  # (The multiphysics engine's headers likewise: a window's test reads them.)
+  target_include_directories(qucs-test-core SYSTEM INTERFACE
+    $<TARGET_PROPERTY:fem,INTERFACE_INCLUDE_DIRECTORIES>
+    $<TARGET_PROPERTY:eigen,INTERFACE_INCLUDE_DIRECTORIES>
+    $<TARGET_PROPERTY:cdt,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_compile_definitions(qucs-test-core INTERFACE $<TARGET_PROPERTY:fem,INTERFACE_COMPILE_DEFINITIONS>)
   set(QUCS_TEST_CORE_OBJECTS "")
   set(QUCS_TEST_LINK_LIBRARIES qucs-test-core)
 else()
