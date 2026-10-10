@@ -1,0 +1,48 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A heat sink drawn in SVG",
+    "description": "An aluminium heat sink's profile read from heatsink.svg (Import: its path's lines and arcs), a 20 W device under it, cooled by air and by radiation (Newton's method for its T⁴): the temperature, the hottest point and the thermal resistance. Change the drawing and the geometry is read again.",
+    "parameters": [
+        {"name": "P", "expression": "20[W]", "description": "the device's power"},
+        {"name": "depth", "expression": "50[mm]", "description": "the heat sink's length, out of the plane"},
+        {"name": "hc", "expression": "8[W/(m^2*K)]", "description": "the air's heat transfer coefficient"},
+        {"name": "Tair", "expression": "25[degC]", "description": "the air's temperature"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "thickness": "depth",
+        "geometry": [
+            {"type": "import", "label": "heatsink", "file": "heatsink.svg", "position": ["0", "26"]},
+            {"type": "rectangle", "label": "device", "position": ["15", "0"], "size": ["10", "1"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Aluminium", "selection": {"only": ["heatsink"]}},
+            {"material": "Silicon", "selection": {"only": ["device"]}}
+        ],
+        "physics": [{
+            "type": "heat", "tag": "ht",
+            "features": [
+                {"type": "source", "label": "Device", "kind": "power", "P0": "P", "selection": {"only": ["device"]}},
+                {"type": "flux", "label": "Air", "kind": "convective", "h": "hc", "Text": "Tair",
+                 "selection": {"exterior": true, "except": {"of": ["device"], "side": "bottom"}}},
+                {"type": "radiation", "label": "Radiation", "epsilon": "0.85", "Tamb": "Tair",
+                 "selection": {"exterior": true, "except": {"of": ["device"], "side": "bottom"}}}
+            ]
+        }],
+        "mesh": {"size": "normal"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Temperature", "plots": [
+                {"type": "surface", "expression": "T", "unit": "degC", "colors": "thermal"},
+                {"type": "contour", "expression": "T", "unit": "degC", "levels": 10}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Hottest", "expression": "ht.Tmax", "unit": "degC"},
+            {"type": "global", "label": "Thermal resistance", "expression": "ht.Rth"}
+        ]
+    }
+}

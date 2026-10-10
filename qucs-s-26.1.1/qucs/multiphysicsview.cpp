@@ -451,6 +451,13 @@ void GraphicsView::paintEvent(QPaintEvent*)
     }
 }
 
+void GraphicsView::setAxisymmetric(bool on)
+{
+    if (a_axisymmetric == on) return;
+    a_axisymmetric = on;
+    update();
+}
+
 void GraphicsView::paintGrid(QPainter& p, const Colors& c) const
 {
     const double step = niceStep(70 / a_scale);
@@ -479,9 +486,17 @@ void GraphicsView::paintGrid(QPainter& p, const Colors& c) const
         p.setPen(label);
         p.drawText(QRectF(3, py - 15, 80, 14), Qt::AlignLeft | Qt::AlignVCenter, formatNumber(std::abs(y) < step * 1e-9 ? 0 : y, 6));
     }
+    if (a_axisymmetric) {
+        // The axis, as COMSOL draws it.
+        const double px = toPixel(QPointF(0, 0)).x();
+        QPen axis(QColor(c.ink.red(), c.ink.green(), c.ink.blue(), 170), 1.2, Qt::DashDotLine);
+        p.setPen(axis);
+        p.drawLine(QPointF(px, 0), QPointF(px, height()));
+    }
     if (a_topology && !a_topology->unitName.isEmpty()) {
         // The unit, in the lower left corner, over the labels there.
-        const QString unit = a_topology->unitName == QLatin1String("um") ? QStringLiteral("µm") : a_topology->unitName;
+        QString unit = a_topology->unitName == QLatin1String("um") ? QStringLiteral("µm") : a_topology->unitName;
+        if (a_axisymmetric) unit = tr("r, z in %1").arg(unit);
         const QRectF box(0, height() - 16, p.fontMetrics().horizontalAdvance(unit) + 10, 16);
         p.fillRect(box, c.background);
         p.setPen(label);

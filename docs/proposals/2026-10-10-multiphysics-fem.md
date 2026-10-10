@@ -1,7 +1,7 @@
 # Proposal: a 2D multiphysics finite element solver, with a Multiphysics panel
 
-*10 October 2026 - Qucs-S 26.1.7. A proposal; its phase 1 is built (see "Phase 1, as
-built" at the end). It answers "I'd like to
+*10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1 and 2 are built (see "Phase 1,
+as built" and "Phase 2, as built" at the end). It answers "I'd like to
 build a 2D finite element solver in Qucs similar to what COMSOL Multiphysics has. Add a
 new panel to the left called Multiphysics that has a tree and allows the user to build
 the multiphysics project: geometry, material properties, FEM mesher, solver engine...".
@@ -480,4 +480,75 @@ window), and `qucscontrol_fem` (Claude's tools).
 **Checked:** `test_fem_engine` (22 tests, the engine alone) and `test_multiphysics_doc`
 (13, the window and Claude's tools) pass in Release and under AddressSanitizer and
 UBSan.
+
+## Phase 2, as built
+
+Built on 10 October 2026, Qucs-S 26.1.8, as phase 2 above says: time-dependent heat;
+Joule heating, temperature-dependent materials, thermal expansion; solid mechanics in
+plane stress, plane strain and about an axis; 2D axisymmetric for every physics;
+parametric sweeps; cut lines and 1D results as Qucs datasets; DXF and SVG import.
+
+The solver is now in four files: `fem_solver` (the solution, its variables and
+snapshots, the sparse systems, the studies), `fem_scalar` (electrostatics, currents,
+heat), `fem_elastic` (solid mechanics) and `fem_import` (the drawings). Each physics is
+solved for an increment of its field from the residual F - K u (+ the mass terms): once
+when it is linear, again and again by Newton's method when it reads its own field.
+
+**How it is done:**
+- **Time:** heat's ρ Cp ∂T/∂t by BDF2 with a variable step (Euler for its first two
+  steps), each step's error estimated against a predictor of its own order - Milne's
+  device with variable-step BDF2's error constant (1+ω)²/(6ω(1+2ω)) - and held under
+  the relative tolerance of how much the field has changed. The steps land on the
+  output times. The physics without a time derivative are solved at rest at each step,
+  in turn with heat until they agree. Fixed steps and Euler are there to choose.
+- **Newton:** a coefficient's or source's derivative in the field's value, taken
+  numerically at each integration point (k(T), Q(T), ρCp(T), a film's h(T)): the
+  Jacobian is not symmetric, so LU. Radiation is εσ(Tamb² + T²)(Tamb + T)(Tamb - T), a
+  film of T itself.
+- **Mechanics:** σ = D(ε - ε0), ε0 the free thermal strain α(T - Tref) - (1+ν)αΔT in
+  the plane for plane strain. About the axis the hoop strain u/r, and u = 0 on the
+  axis. A Roller on a boundary along x or y fixes that component; on any other, a
+  stiff spring along its normal.
+- **About an axis:** every integral weighs 2πr in place of the thickness; terminals'
+  charges and currents, powers, energies are of the whole body.
+- **Sweeps:** each point's parameters evaluated anew; the geometry and mesh made again
+  only when a parameter that changed is named in the geometry, the mesh or a function.
+- **Results:** a solution keeps its fields and globals at each output time. A plot
+  group shows one time and parameter value; a 1D plot group writes a Qucs dataset
+  (time, the swept parameter, a cut line's x or arc length as its independents) and
+  opens a data display through the same path as the Python editor's `qucs.display()`.
+- **Drawings:** a Bézier or spline is a curve of its own kind, a polyline whose
+  parameter counts its points (so an affine map keeps it), not many curves: one
+  boundary.
+
+**Where it differs from the plan above:**
+- **Newton is within each physics; physics in turn between them** (segregated), not
+  one Newton over all of them. The derivative is in the field's value, not its
+  gradient: a coefficient of |E| converges as Picard's iterations do.
+- **Only heat changes in time.** Electric currents' and solid mechanics' time
+  derivatives (charge relaxation, inertia) are not there: they are solved at rest at
+  each step.
+- **Eigenfrequencies of solids** come with the mode solver and Spectra (phase 4).
+- **Point loads and springs** of solids are not there.
+- **A sweep's points are solved one after another**, not in parallel.
+- **Solutions are still not saved** beside the model.
+
+**Checked:** `test_fem_physics` against closed forms:
+- a slab's mode decaying in time within 5 mK of 10 K;
+- BDF2's error 4.1 times smaller with the step halved, Euler's 1.96;
+- k(T) against Kirchhoff's transform, and Newton's solution equal to Picard's to 10⁻⁸ K;
+- radiation against the balance it solves;
+- a cantilever within 0.21 % of Timoshenko, its root stress within 2 % of beam theory;
+- Lamé's thick cylinder about its axis to 10⁻⁴;
+- thermal expansion free (no stress) and held (σ = -EαΔT);
+- a spherical capacitor about its axis to 1.1 × 10⁻⁵;
+- sweeps that mesh again or not;
+- cut lines; DXF and SVG drawings;
+- the new examples: a heater in time, a bimetal strip (0.584 mm against Timoshenko's
+  0.582 mm), a through-silicon via (124 fF; its liner alone 114 fF), Z0 against a
+  microstrip's width, a heat sink drawn in SVG.
+
+`test_multiphysics_doc` (20) adds the window's: times and sweep points shown, 1D plot
+groups as Qucs data displays, a solid drawn deformed, an axisymmetric model, a drawing
+read again when it changes, and Claude's tools at times and sweep points.
 

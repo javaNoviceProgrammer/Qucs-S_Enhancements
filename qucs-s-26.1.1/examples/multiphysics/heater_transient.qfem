@@ -1,0 +1,62 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A heater warming up a board",
+    "description": "A copper pad dissipating 1 W on an FR-4 board that sits on a 20 °C cold plate, its top cooled by air: the temperature in time, from 20 °C, for a minute - the Time Dependent step's adaptive BDF2 - and the hottest point over time as a graph in a Qucs data display.",
+    "parameters": [
+        {"name": "W", "expression": "40[mm]", "description": "the board's width"},
+        {"name": "H", "expression": "1.6[mm]", "description": "the board's thickness"},
+        {"name": "wp", "expression": "4[mm]", "description": "the heater pad's width"},
+        {"name": "tp", "expression": "70[um]", "description": "the pad's copper"},
+        {"name": "P", "expression": "1[W]", "description": "the heater's power"},
+        {"name": "depth", "expression": "20[mm]", "description": "how long the pad is, out of the plane"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "thickness": "depth",
+        "geometry": [
+            {"type": "rectangle", "label": "board", "position": ["-W/2", "0"], "size": ["W", "H"]},
+            {"type": "rectangle", "label": "pad", "position": ["-wp/2", "H"], "size": ["wp", "tp"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "FR-4", "selection": {"only": ["board"]}},
+            {"material": "Copper", "selection": {"only": ["pad"]}}
+        ],
+        "physics": [{
+            "type": "heat", "tag": "ht",
+            "features": [
+                {"type": "init", "default": true, "T0": "20[degC]", "selection": {"all": true}},
+                {"type": "source", "label": "Heater", "kind": "power", "P0": "P", "selection": {"only": ["pad"]}},
+                {"type": "temperature", "label": "Cold plate", "T0": "20[degC]", "selection": {"of": ["board"], "side": "bottom"}},
+                {"type": "flux", "label": "Air", "kind": "convective", "h": "15[W/(m^2*K)]", "Text": "20[degC]",
+                 "selection": {"exterior": true, "except": {"of": ["board"], "side": "bottom"}}}
+            ]
+        }],
+        "mesh": {"size": "normal", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["pad"]}, "hmax": "0.05"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "transient", "times": "range(0, 2[s], 60[s])"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Temperature", "plots": [
+                {"type": "surface", "expression": "T", "unit": "degC", "colors": "thermal"},
+                {"type": "contour", "expression": "T", "unit": "degC", "levels": 12}
+            ]},
+            {"type": "cutpoint", "tag": "cpt1", "label": "Under the heater", "coordinates": [["0", "H/2"], ["W/4", "H/2"]]},
+            {"type": "cutline", "tag": "cln1", "label": "Through the board", "start": ["-W/2", "H/2"], "end": ["W/2", "H/2"], "points": 200},
+            {"type": "plotgroup1d", "label": "Temperature in Time", "plots": [
+                {"type": "globalgraph", "expression": "ht.Tmax", "unit": "degC"},
+                {"type": "pointgraph", "data": "cpt1", "expression": "T", "unit": "degC"}
+            ]},
+            {"type": "plotgroup1d", "label": "Along the Board", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "T", "unit": "degC", "xaxis": "x"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Hottest", "expression": "ht.Tmax", "unit": "degC", "solutions": "selected"}
+        ]
+    }
+}

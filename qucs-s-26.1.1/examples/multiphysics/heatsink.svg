@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A heat sink's profile: a 40 x 5 mm base, six fins 2 mm wide and 20 mm tall with
+     rounded tips. heatsink_import.qfem reads it (Import), in mm as its width says. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="25mm" viewBox="0 0 40 25">
+  <path fill="#b0b8c0" stroke="#404850" stroke-width="0.1"
+        d="M 0 25 H 40 V 20 H 38.5 V 1 A 1 1 0 0 0 36.5 1 V 20 H 31.5 V 1 A 1 1 0 0 0 29.5 1 V 20
+           H 24.5 V 1 A 1 1 0 0 0 22.5 1 V 20 H 17.5 V 1 A 1 1 0 0 0 15.5 1 V 20 H 10.5 V 1
+           A 1 1 0 0 0 8.5 1 V 20 H 3.5 V 1 A 1 1 0 0 0 1.5 1 V 20 H 0 Z"/>
+</svg>

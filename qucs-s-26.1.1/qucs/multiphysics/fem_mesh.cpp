@@ -155,11 +155,21 @@ public:
     {
         if (b.curve >= 0) {
             a_curve = &t.curves[std::size_t(b.curve)];
-            const int n = a_curve->kind == Curve::Line ? 1 : std::max(16, int(std::ceil(std::abs(b.t1 - b.t0) / (M_PI / 720))));
-            for (int i = 0; i <= n; ++i) {
-                const double tt = b.t0 + (b.t1 - b.t0) * i / n;
-                a_t.push_back(tt);
-                a_pts.push_back(a_curve->at(tt));
+            if (a_curve->kind == Curve::Polyline) {
+                // At its own points between the ends, either way.
+                const double dir = b.t1 >= b.t0 ? 1 : -1;
+                a_t.push_back(b.t0);
+                for (double tt = dir > 0 ? std::floor(b.t0) + 1 : std::ceil(b.t0) - 1; dir > 0 ? tt < b.t1 - 1e-9 : tt > b.t1 + 1e-9; tt += dir)
+                    if (std::abs(tt - b.t0) > 1e-9) a_t.push_back(tt);
+                a_t.push_back(b.t1);
+                for (double tt : a_t) a_pts.push_back(a_curve->at(tt));
+            } else {
+                const int n = a_curve->kind == Curve::Line ? 1 : std::max(16, int(std::ceil(std::abs(b.t1 - b.t0) / (M_PI / 720))));
+                for (int i = 0; i <= n; ++i) {
+                    const double tt = b.t0 + (b.t1 - b.t0) * i / n;
+                    a_t.push_back(tt);
+                    a_pts.push_back(a_curve->at(tt));
+                }
             }
             // Its ends exactly at the topology's vertices.
             a_pts.front() = t.vertices[std::size_t(b.start)];
@@ -473,7 +483,7 @@ private:
             // A curve, or a boundary not straight, in two pieces at least
             // (two boundaries between the same two points are not one edge);
             // a closed one in three.
-            if (path.onCurve() && a_t.curves[std::size_t(bd.curve)].kind == Curve::Arc) n = std::max(n, 2);
+            if (path.onCurve() && a_t.curves[std::size_t(bd.curve)].kind != Curve::Line) n = std::max(n, 2);
             if (!path.onCurve()) n = std::max(n, 2);
             if (bd.start == bd.end) n = std::max(n, 3);
             std::vector<int> nodes{nodeOf(bd.start)};

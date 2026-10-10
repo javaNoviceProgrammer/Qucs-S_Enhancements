@@ -224,15 +224,20 @@ QList<NodeKind> makeKinds()
              tr("A function of one argument given by a table: linear between its points, constant beyond them.")});
     }
     add({QStringLiteral("component"), tr("Component (2D)"), QString(), QStringLiteral("component"), Level::None,
-         {choice(QStringLiteral("unit"), tr("Length unit"),
+         {choice(QStringLiteral("space"), tr("Space"), {QStringLiteral("2D"), QStringLiteral("axisymmetric")},
+                 {tr("2D, in the plane"), tr("2D axisymmetric: about the y axis (r, z)")}, QStringLiteral("2D"),
+                 tr("Axisymmetric: x is the distance r from the axis, y is z along it; what is integrated is integrated "
+                    "round the axis (2πr)")),
+          choice(QStringLiteral("unit"), tr("Length unit"),
                  {QStringLiteral("m"), QStringLiteral("cm"), QStringLiteral("mm"), QStringLiteral("um"), QStringLiteral("nm"),
                   QStringLiteral("in"), QStringLiteral("mil")},
                  {tr("m"), tr("cm"), tr("mm"), tr("µm"), tr("nm"), tr("in"), tr("mil")}, QStringLiteral("mm"),
                  tr("The geometry's unit: a plain number in it is in this unit")),
-          expr(QStringLiteral("thickness"), tr("Out-of-plane thickness"), QStringLiteral("m"), QStringLiteral("1[m]"),
-               tr("What a charge, a current or a power of the 2D model is for: per this length out of the plane"))},
-         {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat")}, {}, true, true, QString(),
-         tr("The model's 2D space: its geometry, materials, physics and mesh.")});
+          shownIf(expr(QStringLiteral("thickness"), tr("Out-of-plane thickness"), QStringLiteral("m"), QStringLiteral("1[m]"),
+                       tr("What a charge, a current, a power or a force of the 2D model is for: per this length out of the plane")),
+                  QStringLiteral("space=2D"))},
+         {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid")}, {}, true, true,
+         QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
     add({QStringLiteral("selection"), tr("Selection"), QStringLiteral("selection"), QStringLiteral("selection"), Level::Domain,
@@ -246,7 +251,7 @@ QList<NodeKind> makeKinds()
         QStringLiteral("rectangle"), QStringLiteral("circle"), QStringLiteral("ellipse"), QStringLiteral("polygon"),
         QStringLiteral("point"), QStringLiteral("move"), QStringLiteral("rotate"), QStringLiteral("scale"),
         QStringLiteral("mirror"), QStringLiteral("array"), QStringLiteral("union"), QStringLiteral("difference"),
-        QStringLiteral("intersection")};
+        QStringLiteral("intersection"), QStringLiteral("import")};
     add({QStringLiteral("geometry"), tr("Geometry"), QString(), QStringLiteral("geometry"), Level::None, {}, geometryFeatures,
          {QStringLiteral("form union")}, true, true, QString(),
          tr("A sequence of features, built in order: each makes objects of the parameters. Form Union makes them one: "
@@ -318,6 +323,34 @@ QList<NodeKind> makeKinds()
          {}, {}, false, false, QStringLiteral("dif"), tr("Objects with others cut out of them.")});
     add({QStringLiteral("intersection"), tr("Intersection"), QStringLiteral("geometry"), QStringLiteral("intersection"), Level::None,
          {input, keep}, {}, {}, false, false, QStringLiteral("isc"), tr("What objects have in common.")});
+    {
+        P file;
+        file.key = QStringLiteral("file");
+        file.label = tr("File");
+        file.kind = P::File;
+        file.defaultValue = QString();
+        file.tooltip = tr("A DXF or SVG drawing, its path relative to the model's folder");
+        add({QStringLiteral("import"), tr("Import"), QStringLiteral("geometry"), QStringLiteral("import"), Level::None,
+             {file,
+              choice(QStringLiteral("format"), tr("Format"), {QStringLiteral("auto"), QStringLiteral("dxf"), QStringLiteral("svg")},
+                     {tr("By its suffix"), tr("DXF (AutoCAD)"), tr("SVG")}, QStringLiteral("auto")),
+              shownIf(text(QStringLiteral("layers"), tr("Layers"), QString(), tr("A DXF's layers to read, split by commas (empty: all)")),
+                      QStringLiteral("format!=svg")),
+              choice(QStringLiteral("unit"), tr("The file's unit"),
+                     {QStringLiteral("auto"), QStringLiteral("m"), QStringLiteral("cm"), QStringLiteral("mm"), QStringLiteral("um"),
+                      QStringLiteral("nm"), QStringLiteral("in"), QStringLiteral("mil"), QStringLiteral("px")},
+                     {tr("As it says (else the geometry's)"), tr("m"), tr("cm"), tr("mm"), tr("µm"), tr("nm"), tr("in"), tr("mil"),
+                      tr("px (1/96 in)")},
+                     QStringLiteral("auto")),
+              expr(QStringLiteral("scale"), tr("Scale"), QString(), QStringLiteral("1"), tr("Its coordinates times this")),
+              pair(QStringLiteral("position"), tr("Displacement"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
+              choice(QStringLiteral("curves"), tr("Closed curves"), {QStringLiteral("solids"), QStringLiteral("curves")},
+                     {tr("Solids (inner ones holes)"), tr("Curves only")}, QStringLiteral("solids"))},
+             {}, {}, false, false, QStringLiteral("imp"),
+             tr("A drawing's lines, arcs, circles, ellipses, polylines and splines (DXF), or its paths, rectangles, circles, "
+                "ellipses, polygons and lines (SVG): its closed curves solids - one inside another a hole - the others "
+                "curves. Read again when the file changes.")});
+    }
     add({QStringLiteral("form union"), tr("Form Union"), QStringLiteral("geometry"), QStringLiteral("formunion"), Level::None,
          {expr(QStringLiteral("tolerance"), tr("Repair tolerance"), QString(), QStringLiteral("1e-6"),
                tr("Relative to the geometry's size: points nearer than this are one"))},
@@ -440,15 +473,31 @@ QList<NodeKind> makeKinds()
          {selectionProp(),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                  QStringLiteral("2"))},
-         {QStringLiteral("heat/solid"), QStringLiteral("heat/source"), QStringLiteral("heat/insulation"), QStringLiteral("heat/temperature"),
-          QStringLiteral("heat/flux"), QStringLiteral("heat/linesource")},
-         {QStringLiteral("heat/solid"), QStringLiteral("heat/insulation")}, false, false, QStringLiteral("ht"),
-         tr("The temperature T of conduction at steady state: -∇·(k ∇T) = Q.")});
+         {QStringLiteral("heat/solid"), QStringLiteral("heat/init"), QStringLiteral("heat/source"), QStringLiteral("heat/insulation"),
+          QStringLiteral("heat/temperature"), QStringLiteral("heat/flux"), QStringLiteral("heat/radiation"), QStringLiteral("heat/linesource")},
+         {QStringLiteral("heat/solid"), QStringLiteral("heat/insulation"), QStringLiteral("heat/init")}, false, false, QStringLiteral("ht"),
+         tr("The temperature T of conduction: ρ Cp ∂T/∂t - ∇·(k ∇T) = Q (at steady state without its first term).")});
     add({QStringLiteral("heat/solid"), tr("Solid"), QStringLiteral("ht"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(), source,
           shownIf(spatial(QStringLiteral("k"), tr("Thermal conductivity k"), QStringLiteral("W/(m*K)"), QStringLiteral("1[W/(m*K)]")),
+                  QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("rho"), tr("Density ρ"), QStringLiteral("kg/m^3"), QStringLiteral("1000[kg/m^3]")),
+                  QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("Cp"), tr("Heat capacity Cp"), QStringLiteral("J/(kg*K)"), QStringLiteral("1000[J/(kg*K)]")),
                   QStringLiteral("source=user"))},
-         {}, {}, false, false, QStringLiteral("sld"), tr("q = -k ∇T on its domains, k from their material or as given.")});
+         {}, {}, false, false, QStringLiteral("sld"),
+         tr("q = -k ∇T on its domains; k (and for a study in time ρ and Cp) from their material or as given.")});
+    add({QStringLiteral("heat/init"), tr("Initial Values"), QStringLiteral("ht"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(), spatial(QStringLiteral("T0"), tr("Temperature T"), QStringLiteral("K"), QStringLiteral("293.15[K]"),
+                                   tr("Of x and y: where a study in time starts, and Newton's first guess"))},
+         {}, {}, false, false, QStringLiteral("init"), tr("The temperature at the start.")});
+    add({QStringLiteral("heat/radiation"), tr("Surface-to-Ambient Radiation"), QStringLiteral("ht"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none), spatial(QStringLiteral("epsilon"), tr("Surface emissivity ε"), QString(), QStringLiteral("0.9")),
+          spatial(QStringLiteral("Tamb"), tr("Ambient temperature"), QStringLiteral("K"), QStringLiteral("293.15[K]"))},
+         {}, {}, false, false, QStringLiteral("rad"),
+         tr("Heat radiated to surroundings at Tamb: -n·q = εσ(Tamb⁴ - T⁴). It makes the problem nonlinear: solved by Newton's "
+            "method.")});
     add({QStringLiteral("heat/source"), tr("Heat Source"), QStringLiteral("ht"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(none),
           choice(QStringLiteral("kind"), tr("Given as"), {QStringLiteral("density"), QStringLiteral("power")},
@@ -478,6 +527,61 @@ QList<NodeKind> makeKinds()
          Level::Boundary,
          {selectionProp(none), spatial(QStringLiteral("Qb"), tr("Heat source per area Qb"), QStringLiteral("W/m^2"), QStringLiteral("0"))},
          {}, {}, false, false, QStringLiteral("bhs"), tr("Heat made on a boundary: a thin heater.")});
+
+    // Solid mechanics.
+    add({QStringLiteral("solid"), tr("Solid Mechanics"), QStringLiteral("physics"), QStringLiteral("solid"), Level::Domain,
+         {selectionProp(),
+          shownIf(choice(QStringLiteral("model"), tr("2D approximation"), {QStringLiteral("planestrain"), QStringLiteral("planestress")},
+                         {tr("Plane strain (long in z: no strain out of the plane)"), tr("Plane stress (thin in z: no stress out of the plane)")},
+                         QStringLiteral("planestrain")),
+                  QString()),
+          choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
+                 QStringLiteral("2"))},
+         {QStringLiteral("solid/elastic"), QStringLiteral("solid/free"), QStringLiteral("solid/fixed"), QStringLiteral("solid/displacement"),
+          QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload")},
+         {QStringLiteral("solid/elastic"), QStringLiteral("solid/free")}, false, false, QStringLiteral("solid"),
+         tr("The displacement (u, v) of a linear elastic solid: -∇·σ = f, σ = D (ε - ε0), ε0 a thermal strain. In the plane, "
+            "in plane strain or plane stress; about an axis, axisymmetric (the component's space).")});
+    add({QStringLiteral("solid/elastic"), tr("Linear Elastic Material"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(), source,
+          shownIf(spatial(QStringLiteral("E"), tr("Young's modulus E"), QStringLiteral("Pa"), QStringLiteral("200[GPa]")), QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("nu"), tr("Poisson's ratio ν"), QString(), QStringLiteral("0.3")), QStringLiteral("source=user")),
+          flag(QStringLiteral("thermal"), tr("Thermal expansion"), false, tr("A strain α (T - Tref), T from a heat physics or as given")),
+          shownIf(spatial(QStringLiteral("alpha"), tr("Coefficient of thermal expansion α"), QStringLiteral("1/K"), QStringLiteral("1e-5[1/K]")),
+                  QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("T"),
+                          tr("An expression: T (a heat physics' field), ht.T, or a value")),
+                  QStringLiteral("thermal=true")),
+          shownIf(spatial(QStringLiteral("Tref"), tr("Strain-free temperature Tref"), QStringLiteral("K"), QStringLiteral("293.15[K]")),
+                  QStringLiteral("thermal=true"))},
+         {}, {}, false, false, QStringLiteral("lemm"), tr("Hooke's law on its domains: E and ν (and α) from their material or as given.")});
+    add({QStringLiteral("solid/free"), tr("Free"), QStringLiteral("solid"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp()}, {}, {}, false, false, QStringLiteral("free"), tr("No load, no constraint: where no other condition is.")});
+    add({QStringLiteral("solid/fixed"), tr("Fixed Constraint"), QStringLiteral("solid"), QStringLiteral("ground"), Level::Boundary,
+         {selectionProp(none)}, {}, {}, false, false, QStringLiteral("fix"), tr("u = v = 0.")});
+    add({QStringLiteral("solid/displacement"), tr("Prescribed Displacement"), QStringLiteral("solid"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none), flag(QStringLiteral("x"), tr("Prescribed in x (r)"), true),
+          shownIf(spatial(QStringLiteral("u0"), tr("Displacement u0"), QStringLiteral("m"), QStringLiteral("0[m]")), QStringLiteral("x=true")),
+          flag(QStringLiteral("y"), tr("Prescribed in y (z)"), true),
+          shownIf(spatial(QStringLiteral("v0"), tr("Displacement v0"), QStringLiteral("m"), QStringLiteral("0[m]")), QStringLiteral("y=true"))},
+         {}, {}, false, false, QStringLiteral("disp"), tr("A displacement given, in x, in y or both: of x, y and t.")});
+    add({QStringLiteral("solid/roller"), tr("Roller"), QStringLiteral("solid"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none)}, {}, {}, false, false, QStringLiteral("rol"),
+         tr("No displacement across the boundary, free along it: a symmetry plane.")});
+    add({QStringLiteral("solid/load"), tr("Boundary Load"), QStringLiteral("solid"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none),
+          choice(QStringLiteral("kind"), tr("Load"), {QStringLiteral("force"), QStringLiteral("pressure")},
+                 {tr("Force per area (Fx, Fy)"), tr("Pressure (pushing in)")}, QStringLiteral("force")),
+          shownIf(spatial(QStringLiteral("Fx"), tr("Fx"), QStringLiteral("N/m^2"), QStringLiteral("0[N/m^2]")), QStringLiteral("kind=force")),
+          shownIf(spatial(QStringLiteral("Fy"), tr("Fy"), QStringLiteral("N/m^2"), QStringLiteral("0[N/m^2]")), QStringLiteral("kind=force")),
+          shownIf(spatial(QStringLiteral("p"), tr("Pressure p"), QStringLiteral("Pa"), QStringLiteral("0[Pa]")), QStringLiteral("kind=pressure"))},
+         {}, {}, false, false, QStringLiteral("bndl"), tr("A force on the boundary, per area (per length times the thickness).")});
+    add({QStringLiteral("solid/bodyload"), tr("Body Load"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(none), spatial(QStringLiteral("fx"), tr("fx"), QStringLiteral("N/m^3"), QStringLiteral("0[N/m^3]")),
+          spatial(QStringLiteral("fy"), tr("fy"), QStringLiteral("N/m^3"), QStringLiteral("0[N/m^3]"),
+                  tr("Its weight: -rho*g_const, with rho a parameter or a value"))},
+         {}, {}, false, false, QStringLiteral("bl"), tr("A force per volume: weight, an inertial force.")});
 
     // Mesh.
     const QStringList presets = {QStringLiteral("extremely fine"), QStringLiteral("extra fine"), QStringLiteral("finer"),
@@ -509,8 +613,8 @@ QList<NodeKind> makeKinds()
 
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
-         {QStringLiteral("stationary")}, {QStringLiteral("stationary")}, false, false, QStringLiteral("std"),
-         tr("What is solved, and how: its steps in order.")});
+         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("sweep")}, {QStringLiteral("stationary")}, false, false,
+         QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
         P physics;
         physics.key = QStringLiteral("physics");
@@ -518,21 +622,64 @@ QList<NodeKind> makeKinds()
         physics.kind = P::Physics;
         physics.defaultValue = QJsonArray();
         physics.tooltip = tr("None chosen: all of them");
+        const P solver = choice(QStringLiteral("solver"), tr("Linear solver"), {QStringLiteral("auto"), QStringLiteral("direct"), QStringLiteral("iterative")},
+                                {tr("Automatic"), tr("Direct (sparse Cholesky, LU)"), tr("Iterative (conjugate gradients)")}, QStringLiteral("auto"));
+        const P nonlinear = choice(QStringLiteral("nonlinear"), tr("Nonlinear method"),
+                                   {QStringLiteral("auto"), QStringLiteral("newton"), QStringLiteral("picard")},
+                                   {tr("Automatic (Newton within a physics, in turn between them)"), tr("Newton"),
+                                    tr("Picard: each physics in turn, again and again")},
+                                   QStringLiteral("auto"),
+                                   tr("A physics that reads its own field (k(T), radiation): Newton's method converges in a few "
+                                      "steps; physics that read each other's are solved in turn till they agree"));
         add({QStringLiteral("stationary"), tr("Stationary"), QStringLiteral("step"), QStringLiteral("stationary"), Level::None,
-             {physics,
-              choice(QStringLiteral("solver"), tr("Linear solver"), {QStringLiteral("auto"), QStringLiteral("direct"), QStringLiteral("iterative")},
-                     {tr("Automatic"), tr("Direct (sparse Cholesky, LU)"), tr("Iterative (conjugate gradients)")}, QStringLiteral("auto")),
+             {physics, solver, nonlinear,
               flag(QStringLiteral("sweep"), tr("Terminal sweep (capacitance, conductance matrices)"), true),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the nonlinear iterations, and of an iterative solver")),
               integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50,
                       tr("Of the nonlinear iterations: a material that depends on a field"))},
              {}, {}, false, false, QStringLiteral("stat"), tr("The fields at rest: the steady state.")});
+        add({QStringLiteral("transient"), tr("Time Dependent"), QStringLiteral("step"), QStringLiteral("transient"), Level::None,
+             {physics,
+              text(QStringLiteral("times"), tr("Output times"), QStringLiteral("range(0, 0.1, 1)"),
+                   tr("In seconds, or with a unit: range(start, step, stop), linspace(start, stop, count), or values split by "
+                      "commas - range(0[s], 10[ms], 1[s])")),
+              choice(QStringLiteral("method"), tr("Method"), {QStringLiteral("bdf2"), QStringLiteral("euler")},
+                     {tr("BDF of order 2"), tr("Backward Euler (order 1)")}, QStringLiteral("bdf2")),
+              choice(QStringLiteral("stepping"), tr("Steps"), {QStringLiteral("adaptive"), QStringLiteral("fixed")},
+                     {tr("Adaptive: as the tolerance asks"), tr("Fixed")}, QStringLiteral("adaptive")),
+              expr(QStringLiteral("rtol"), tr("Relative tolerance"), QString(), QStringLiteral("0.001"),
+                   tr("Of each step's error, against how much the fields have changed")),
+              expr(QStringLiteral("dt"), tr("Time step"), QStringLiteral("s"), QString(),
+                   tr("Fixed: the step; adaptive: the first one (empty: a thousandth of the first output interval)")),
+              solver, nonlinear,
+              expr(QStringLiteral("tolerance"), tr("Nonlinear tolerance"), QString(), QStringLiteral("1e-6"),
+                   tr("Of a step's nonlinear iterations")),
+              integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 25, tr("Of a step's nonlinear iterations"))},
+             {}, {}, false, false, QStringLiteral("time"),
+             tr("The fields in time: heat with its ρ Cp ∂T/∂t, the other physics at rest at each step, from the initial "
+                "values; kept at the output times.")});
+        P rows;
+        rows.key = QStringLiteral("parameters");
+        rows.label = tr("Parameters swept");
+        rows.kind = P::Rows;
+        rows.choiceLabels = {tr("Parameter"), tr("Values"), tr("Unit")};
+        rows.defaultValue = QJsonArray();
+        rows.tooltip = tr("Each a parameter's values: 1, 2, 5 or range(start, step, stop) or linspace(start, stop, count); "
+                          "plain numbers in the unit given");
+        add({QStringLiteral("sweep"), tr("Parametric Sweep"), QStringLiteral("step"), QStringLiteral("sweep"), Level::None,
+             {rows,
+              choice(QStringLiteral("combination"), tr("Sweep type"), {QStringLiteral("all"), QStringLiteral("specified")},
+                     {tr("All combinations"), tr("Specified combinations (the n-th values together)")}, QStringLiteral("all"))},
+             {}, {}, false, true, QStringLiteral("param"),
+             tr("The study's steps solved again for each value of its parameters - the geometry and the mesh made again "
+                "where they change. Results show one point of it, or all of them along a 1D plot.")});
     }
 
     // Results.
     add({QStringLiteral("results"), tr("Results"), QString(), QStringLiteral("results"), Level::None, {},
-         {QStringLiteral("plotgroup")}, {QStringLiteral("derived")}, true, true, QString(), QString()});
+         {QStringLiteral("plotgroup"), QStringLiteral("plotgroup1d"), QStringLiteral("cutline"), QStringLiteral("cutpoint")},
+         {QStringLiteral("derived")}, true, true, QString(), QString()});
     {
         P study;
         study.key = QStringLiteral("study");
@@ -540,10 +687,78 @@ QList<NodeKind> makeKinds()
         study.kind = P::Study;
         study.defaultValue = QString();
         study.tooltip = tr("Empty: the first");
+        P point;
+        point.key = QStringLiteral("point");
+        point.label = tr("Parameter value");
+        point.kind = P::SweepPoint;
+        point.defaultValue = 0;
+        point.tooltip = tr("Of a study with a sweep: which of its solutions (0: the last)");
+        P time;
+        time.key = QStringLiteral("time");
+        time.label = tr("Time");
+        time.kind = P::Instant;
+        time.defaultValue = QString();
+        time.tooltip = tr("Of a study in time: the output time shown (empty: the last)");
         add({QStringLiteral("plotgroup"), tr("2D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup"), Level::None,
-             {study, text(QStringLiteral("title"), tr("Title"), QString())},
-             {QStringLiteral("surface"), QStringLiteral("contour"), QStringLiteral("arrow"), QStringLiteral("meshplot")}, {}, false, false,
-             QStringLiteral("pg"), tr("Plots shown together in the Graphics view.")});
+             {study, point, time, text(QStringLiteral("title"), tr("Title"), QString())},
+             {QStringLiteral("surface"), QStringLiteral("contour"), QStringLiteral("arrow"), QStringLiteral("meshplot"), QStringLiteral("deformation")},
+             {}, false, false, QStringLiteral("pg"), tr("Plots shown together in the Graphics view.")});
+        add({QStringLiteral("deformation"), tr("Deformation"), QStringLiteral("plot"), QStringLiteral("deformation"), Level::None,
+             {spatial(QStringLiteral("x"), tr("x component"), QStringLiteral("m"), QStringLiteral("solid.u")),
+              spatial(QStringLiteral("y"), tr("y component"), QStringLiteral("m"), QStringLiteral("solid.v")),
+              choice(QStringLiteral("scaling"), tr("Scale"), {QStringLiteral("auto"), QStringLiteral("manual")},
+                     {tr("Automatic: the largest a tenth of the model"), tr("Manual")}, QStringLiteral("auto")),
+              shownIf(expr(QStringLiteral("scale"), tr("Scale factor"), QString(), QStringLiteral("1")), QStringLiteral("scaling=manual"))},
+             {}, {}, false, true, QStringLiteral("def"),
+             tr("The plot group's plots drawn where the solid has moved, its displacement scaled to be seen.")});
+        P dataset;
+        dataset.key = QStringLiteral("data");
+        dataset.label = tr("Dataset");
+        dataset.kind = P::Dataset;
+        dataset.defaultValue = QString();
+        dataset.tooltip = tr("A cut line (a line graph) or cut point (a point graph) of the results");
+        const P solutions = choice(QStringLiteral("solutions"), tr("Solutions"), {QStringLiteral("all"), QStringLiteral("selected")},
+                                   {tr("All: each output time, each parameter value"), tr("The plot group's time and parameter value")},
+                                   QStringLiteral("all"));
+        add({QStringLiteral("cutline"), tr("Cut Line 2D"), QStringLiteral("dataset"), QStringLiteral("cutline"), Level::None,
+             {pair(QStringLiteral("start"), tr("Start"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
+              pair(QStringLiteral("end"), tr("End"), QStringLiteral("length"), QStringLiteral("1"), QStringLiteral("0")),
+              integer(QStringLiteral("points"), tr("Points"), 200, tr("Where it is evaluated, evenly along it"))},
+             {}, {}, false, false, QStringLiteral("cln"), tr("A line across the model: what a Line Graph shows its values along.")});
+        P coordinates0;
+        coordinates0.key = QStringLiteral("coordinates");
+        coordinates0.label = tr("Coordinates (x, y)");
+        coordinates0.kind = P::Points;
+        coordinates0.unit = QStringLiteral("length");
+        QJsonArray origin0;
+        origin0.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
+        coordinates0.defaultValue = origin0;
+        add({QStringLiteral("cutpoint"), tr("Cut Point 2D"), QStringLiteral("dataset"), QStringLiteral("cutpoint"), Level::None, {coordinates0},
+             {}, {}, false, false, QStringLiteral("cpt"), tr("Points of the model: what a Point Graph shows values at, in time or along a sweep.")});
+        add({QStringLiteral("plotgroup1d"), tr("1D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup1d"), Level::None,
+             {study, point, time, text(QStringLiteral("title"), tr("Title"), QString()),
+              choice(QStringLiteral("diagram"), tr("Diagram"), {QStringLiteral("rect"), QStringLiteral("tab")},
+                     {tr("Cartesian"), tr("Table")}, QStringLiteral("rect"))},
+             {QStringLiteral("linegraph"), QStringLiteral("globalgraph"), QStringLiteral("pointgraph")}, {}, false, false,
+             QStringLiteral("pg1d"),
+             tr("Graphs of the solution - along a cut line, at points or of global values over time or a sweep - written as a "
+                "Qucs dataset (model_tag.dat beside the model) and shown in a data display, with its markers and exports.")});
+        const P unit1 = text(QStringLiteral("unit"), tr("Unit"), QString(), tr("Shown in this unit: mV, degC, kV/mm... (empty: SI)"));
+        add({QStringLiteral("linegraph"), tr("Line Graph"), QStringLiteral("graph"), QStringLiteral("linegraph"), Level::None,
+             {dataset, spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("V")), unit1,
+              choice(QStringLiteral("xaxis"), tr("x-axis"), {QStringLiteral("arc"), QStringLiteral("x"), QStringLiteral("y")},
+                     {tr("The distance along the line"), tr("x"), tr("y")}, QStringLiteral("arc")),
+              solutions},
+             {}, {}, false, false, QStringLiteral("lngr"), tr("An expression along a cut line: a curve for each solution.")});
+        add({QStringLiteral("globalgraph"), tr("Global"), QStringLiteral("graph"), QStringLiteral("globalgraph"), Level::None,
+             {text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("ht.Tmax"),
+                   tr("Split by ';': ht.Tmax; ec.P... - or a Derived Values node's tag: lp1 (each of its values), lp1.Z0 (one)")),
+              unit1},
+             {}, {}, false, false, QStringLiteral("glbg"),
+             tr("Global values - or a Derived Values node's - over the output times, or the sweep's parameter.")});
+        add({QStringLiteral("pointgraph"), tr("Point Graph"), QStringLiteral("graph"), QStringLiteral("pointgraph"), Level::None,
+             {dataset, spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("T")), unit1},
+             {}, {}, false, false, QStringLiteral("ptgr"), tr("An expression at a cut point's points over the output times, or the sweep's parameter.")});
         const QStringList tables = {QStringLiteral("rainbow"), QStringLiteral("viridis"), QStringLiteral("thermal"),
                                     QStringLiteral("coolwarm"), QStringLiteral("gray")};
         const QStringList tableLabels = {tr("Rainbow"), tr("Viridis"), tr("Thermal"), tr("Cool to warm"), tr("Gray")};
@@ -581,7 +796,7 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("global"), tr("Global Evaluation"), QStringLiteral("derived"), QStringLiteral("global"), Level::None,
              {study, text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("es.C11"),
                           tr("Split by ';': es.C11; ec.R; ht.Rth...")),
-              unit},
+              unit, solutions},
              {}, {}, false, false, QStringLiteral("gev"), tr("Values of the whole model: a capacitance matrix, a resistance.")});
         const P level = choice(QStringLiteral("level"), tr("Over"), {QStringLiteral("domain"), QStringLiteral("boundary")},
                                {tr("Domains"), tr("Boundaries")}, QStringLiteral("domain"));
@@ -590,7 +805,10 @@ QList<NodeKind> makeKinds()
         const QStringList overPrefix = {QStringLiteral("int"), QStringLiteral("av"), QStringLiteral("max"), QStringLiteral("min")};
         for (int i = 0; i < over.size(); ++i)
             add({over[i], overTitles[i], QStringLiteral("derived"), over[i], Level::Domain,
-                 {study, level, selectionProp(), spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("1")), unit},
+                 {study, level, selectionProp(), spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("1")), unit,
+                  flag(QStringLiteral("revolved"), tr("Round the axis (2πr), about one"), true,
+                       tr("An axisymmetric model's integral: of the volume (surface) it sweeps round the axis, not of the plane's area (length)")),
+                  solutions},
                  {}, {}, false, false, overPrefix[i], QString()});
         P coordinates;
         coordinates.key = QStringLiteral("coordinates");
@@ -606,7 +824,7 @@ QList<NodeKind> makeKinds()
               choice(QStringLiteral("where"), tr("At"), {QStringLiteral("points"), QStringLiteral("coordinates")},
                      {tr("Points of the geometry"), tr("Coordinates")}, QStringLiteral("coordinates")),
               shownIf(selectionProp(none), QStringLiteral("where=points")), coordinates,
-              spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("V")), unit},
+              spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("V")), unit, solutions},
              {}, {}, false, false, QStringLiteral("pev"), QString()});
         P terminal;
         terminal.key = QStringLiteral("terminal");
@@ -659,7 +877,7 @@ QList<const NodeKind*> nodeKinds()
 
 QStringList physicsTypes()
 {
-    return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat")};
+    return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid")};
 }
 
 // ------------------------------------------------------------------ Node
@@ -894,11 +1112,11 @@ Node Model::make(const QString& type) const
         n.tag = newTag(k->prefix);
     }
     if (k->group == QLatin1String("geometry")) n.label = n.tag;   // the object's name
-    if (type == QLatin1String("study") || type == QLatin1String("plotgroup")) {
+    if (type == QLatin1String("study") || type == QLatin1String("plotgroup") || type == QLatin1String("plotgroup1d")) {
         // Study 1, 2D Plot Group 2: numbered as COMSOL's.
         int count = 1;
         for (const Node& c : root.children) count += c.type == type ? 1 : 0;
-        if (type == QLatin1String("plotgroup"))
+        if (type != QLatin1String("study"))
             for (const Node& c : root.child(QStringLiteral("results"))->children) count += c.type == type ? 1 : 0;
         n.label = k->title + QLatin1Char(' ') + QString::number(count);
     }
@@ -980,6 +1198,8 @@ Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
     if (!last.isEmpty())
         for (int i = 0; i < int(list.size()); ++i)
             if (list[std::size_t(i)].type == last && at > i) at = i;
+    // A study's sweep before its steps.
+    if (node.type == QLatin1String("sweep")) at = 0;
     list.insert(list.begin() + at, std::move(node));
     return &list[std::size_t(at)];
 }
@@ -1255,7 +1475,11 @@ void Model::normalise()
         int at = 0;
         for (const QString& d : k->defaults) {
             auto it = std::find_if(p.children.begin(), p.children.end(), [&](const Node& c) { return c.type == d && c.isDefault; });
-            if (it != p.children.end()) continue;
+            if (it != p.children.end()) {
+                // (The next one made after it: the defaults in their order.)
+                at = std::max(at, int(it - p.children.begin()) + 1);
+                continue;
+            }
             Node c;
             c.type = d;
             const NodeKind* ck = nodeKind(d);
@@ -1310,8 +1534,12 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     comp.label = c.value(QStringLiteral("label")).toString();
     for (const char* key : {"unit", "thickness"})
         if (c.contains(QString::fromLatin1(key))) comp.props.insert(QString::fromLatin1(key), c.value(QString::fromLatin1(key)));
-    if (c.contains(QStringLiteral("space")) && c.value(QStringLiteral("space")).toString() != QLatin1String("2D"))
-        problems << tr("the space %1 is not built yet: 2D is").arg(c.value(QStringLiteral("space")).toString());
+    if (c.contains(QStringLiteral("space"))) {
+        // "2D", or about an axis: "axisymmetric" ("2D axisymmetric", "2Daxi").
+        const QString space = c.value(QStringLiteral("space")).toString().trimmed().toLower();
+        if (space.contains(QLatin1String("axi"))) comp.props.insert(QStringLiteral("space"), QStringLiteral("axisymmetric"));
+        else if (space != QLatin1String("2d")) problems << tr("the space %1 is not built yet: 2D and 2D axisymmetric are").arg(space);
+    }
     Node selections;
     selections.type = QStringLiteral("selections");
     selections.tag = QStringLiteral("selections");

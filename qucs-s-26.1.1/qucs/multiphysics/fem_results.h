@@ -50,9 +50,18 @@ struct DisplayUnit {
 /// SI and why in \a warning.
 DisplayUnit displayUnit(const QString& text, const Dim& dim, QString* warning = nullptr);
 
+/// Where a plot is drawn: each point moved by a displacement (x, y: its
+/// expressions, in metres) times a scale.
+struct Deformation {
+    QString x, y;
+    double scale = 1;        ///< 0: automatic - the largest a tenth of the model's size
+    double used = 0;         ///< the scale it was drawn with
+    double largest = 0;      ///< the largest displacement (m)
+};
+
 /// An expression over the domains: each element in triangles (in four for
 /// a quadratic field), its value at their corners. Points in the
-/// geometry's unit, values as shown.
+/// geometry's unit (moved, deformed), values as shown.
 struct SurfaceData {
     std::vector<QPointF> points;   ///< three a triangle
     std::vector<double> values;    ///< one a point (NaN: not defined there)
@@ -61,7 +70,19 @@ struct SurfaceData {
     DisplayUnit unit;
     QString error, warning;
 };
-SurfaceData surfaceData(const Solution& solution, const QString& expression, const QString& unit = {});
+SurfaceData surfaceData(const Solution& solution, const QString& expression, const QString& unit = {}, Deformation* deformation = nullptr);
+
+/// An expression along a line from \a a to \a b (the geometry's unit), at
+/// \a count points: where (and how far along, in metres), and its value
+/// (SI; NaN outside the domains).
+struct LineData {
+    std::vector<QPointF> points;
+    std::vector<double> along;
+    std::vector<double> values;
+    Dim dim;
+    QString error;
+};
+LineData lineData(const Solution& solution, const Locator& locator, const QString& expression, QPointF a, QPointF b, int count);
 
 /// The lines where a surface's values are each of \a levels values,
 /// evenly between its least and greatest.
@@ -97,8 +118,28 @@ struct DerivedResult {
     QString error;
 };
 /// Evaluates a Derived Values node (global, integral, average, maximum,
-/// minimum, pointeval, lineparams) on \a solution.
+/// minimum, pointeval, lineparams) on \a solution (its snapshot selected).
 DerivedResult evaluateDerived(const Solution& solution, const Node& node);
+
+/// A study's solutions as results take them: each of its sweep's (one
+/// without a sweep), and of each, each output time (none at rest).
+struct SolutionSet {
+    std::vector<std::shared_ptr<Solution>> solutions;
+    QStringList swept;   ///< the parameters swept
+};
+/// One solution of a set: its sweep point and its snapshot (-1: as it is).
+struct Instance {
+    int point = 0;
+    int snapshot = -1;
+    double time = 0;
+    QString label;       ///< "t = 0.5 s", "w = 2 mm", "w = 2 mm, t = 0.5 s"; empty: the only one
+};
+/// Every instance of \a set (each point, each time), or those \a which
+/// picks: the point \a point (from 1; 0 the last) and the time \a time
+/// (empty: the last).
+std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0, const QString& time = {});
+/// The solution of \a instance, its snapshot selected.
+Solution* select(const SolutionSet& set, const Instance& instance);
 
 } // namespace qucs_s::fem
 

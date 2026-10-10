@@ -76,6 +76,9 @@ public:
     void setMesh(std::shared_ptr<const Mesh> mesh);
     std::shared_ptr<const Mesh> mesh() const { return a_mesh; }
     void setPlot(std::shared_ptr<const PlotScene> plot);
+    /// About the y axis: the axis drawn (dash-dot at x = 0), the unit r, z.
+    void setAxisymmetric(bool on);
+    bool axisymmetric() const { return a_axisymmetric; }
     std::shared_ptr<const PlotScene> plot() const { return a_plot; }
 
     /// The entities of \a level shown as chosen (the node's selection).
@@ -138,6 +141,7 @@ private:
     QTransform modelToPixel() const;
 
     Show a_show = Show::Geometry;
+    bool a_axisymmetric = false;
     std::shared_ptr<const Topology> a_topology;
     std::shared_ptr<const Mesh> a_mesh;
     std::shared_ptr<const PlotScene> a_plot;

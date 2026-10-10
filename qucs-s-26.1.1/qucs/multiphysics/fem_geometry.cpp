@@ -11,10 +11,15 @@
  */
 #include "fem_geometry.h"
 
+#include "fem_import.h"
+
 #include <CDT.h>
 #include <clipper/clipper.hpp>
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 
 #include <algorithm>
@@ -68,6 +73,14 @@ constexpr double ArcStep = M_PI / 180;   // an arc's pieces: a degree each, for 
 QPointF Curve::at(double t) const
 {
     if (kind == Line) return c + a * t;
+    if (kind == Polyline) {
+        if (pts.empty()) return c;
+        const int last = int(pts.size()) - 1;
+        const int i = std::clamp(int(std::floor(t)), 0, std::max(0, last - 1));
+        const double u = std::clamp(t - i, 0.0, 1.0);
+        if (last == 0) return pts[0];
+        return pts[std::size_t(i)] + (pts[std::size_t(i) + 1] - pts[std::size_t(i)]) * u;
+    }
     return c + a * std::cos(t) + b * std::sin(t);
 }
 
@@ -76,6 +89,20 @@ double Curve::paramOf(QPointF p) const
     if (kind == Line) {
         const double len2 = dot(a, a);
         return len2 > 0 ? dot(p - c, a) / len2 : 0;
+    }
+    if (kind == Polyline) {
+        // The nearest point, on the segments between t0 and t1.
+        const int lo = int(std::floor(std::min(t0, t1))), hi = int(std::ceil(std::max(t0, t1)));
+        double best = INFINITY, bt = t0;
+        for (int i = std::max(0, lo); i < hi && i + 1 < int(pts.size()); ++i) {
+            double along = 0;
+            const double d = segmentDistance(p, pts[std::size_t(i)], pts[std::size_t(i) + 1], &along);
+            if (d < best) {
+                best = d;
+                bt = i + std::clamp(along, 0.0, 1.0);
+            }
+        }
+        return std::clamp(bt, std::min(t0, t1), std::max(t0, t1));
     }
     // [cos t, sin t] = M^-1 (p - c), M = [a b].
     const double det = cross(a, b);
@@ -99,6 +126,17 @@ double Curve::paramOf(QPointF p) const
 double Curve::radiusAt(double t) const
 {
     if (kind == Line) return std::numeric_limits<double>::infinity();
+    if (kind == Polyline) {
+        // At its nearest inner point: the mean of the two segments over the
+        // angle they turn by.
+        const int n = int(pts.size());
+        if (n < 3) return std::numeric_limits<double>::infinity();
+        const int i = std::clamp(int(std::lround(t)), 1, n - 2);
+        const QPointF d1 = pts[std::size_t(i)] - pts[std::size_t(i) - 1], d2 = pts[std::size_t(i) + 1] - pts[std::size_t(i)];
+        const double l1 = norm(d1), l2 = norm(d2);
+        const double turn = std::abs(std::atan2(cross(d1, d2), dot(d1, d2)));
+        return turn > 1e-12 && l1 > 0 && l2 > 0 ? (l1 + l2) / 2 / turn : std::numeric_limits<double>::infinity();
+    }
     const QPointF d1 = -a * std::sin(t) + b * std::cos(t);
     const QPointF d2 = -a * std::cos(t) - b * std::sin(t);
     const double k = std::abs(cross(d1, d2));
@@ -109,6 +147,16 @@ double Curve::radiusAt(double t) const
 double Curve::length() const
 {
     if (kind == Line) return norm(a) * std::abs(t1 - t0);
+    if (kind == Polyline) {
+        const double lo = std::min(t0, t1), hi = std::max(t0, t1);
+        double len = 0;
+        QPointF prev = at(lo);
+        for (int i = int(std::floor(lo)) + 1; i < hi; ++i) {
+            len += norm(pts[std::size_t(i)] - prev);
+            prev = pts[std::size_t(i)];
+        }
+        return len + norm(at(hi) - prev);
+    }
     const int n = std::max(8, int(std::ceil(std::abs(t1 - t0) / ArcStep)) * 4);
     double len = 0;
     QPointF prev = at(t0);
@@ -286,6 +334,10 @@ public:
                 break;
             }
             feature(f);
+            if (!a_file.isEmpty()) {
+                out.files << a_file;
+                a_file.clear();
+            }
             if (!a_warning.isEmpty()) out.warnings.insert(f.tag, a_warning);
             if (!a_error.isEmpty()) {
                 out.errors.insert(f.tag, a_error);
@@ -367,10 +419,25 @@ private:
         a_curves.push_back(c);
         return int(a_curves.size()) - 1;
     }
-    /// A curve in pieces: one for a line, a degree each for an arc.
+    /// A curve in pieces: one for a line, a degree each for an arc, a
+    /// polyline's own.
     std::vector<GEdge> pieces(int curve) const
     {
         const Curve& c = a_curves[std::size_t(curve)];
+        if (c.kind == Curve::Polyline) {
+            // Its points between t0 and t1, either way.
+            std::vector<double> ts{c.t0};
+            const double dir = c.t1 >= c.t0 ? 1 : -1;
+            for (double t = dir > 0 ? std::floor(c.t0) + 1 : std::ceil(c.t0) - 1; dir > 0 ? t < c.t1 - 1e-9 : t > c.t1 + 1e-9; t += dir)
+                if (std::abs(t - c.t0) > 1e-9) ts.push_back(t);
+            ts.push_back(c.t1);
+            std::vector<GEdge> out;
+            for (std::size_t i = 0; i + 1 < ts.size(); ++i) {
+                const QPointF a = c.at(ts[i]), b = c.at(ts[i + 1]);
+                if (a != b) out.push_back({a, b, curve, ts[i], ts[i + 1]});
+            }
+            return out;
+        }
         const int n = c.kind == Curve::Line ? 1 : std::max(1, int(std::ceil(std::abs(c.t1 - c.t0) / ArcStep - 1e-9)));
         std::vector<GEdge> out;
         QPointF prev = c.at(c.t0);
@@ -425,6 +492,7 @@ private:
             transform(f);
         else if (t == QLatin1String("union") || t == QLatin1String("difference") || t == QLatin1String("intersection"))
             boolean(f);
+        else if (t == QLatin1String("import")) importDrawing(f);
         else fail(tr("%1 is not a geometry feature").arg(t));
     }
     void addObject(GObject o, const Node& f)
@@ -553,6 +621,92 @@ private:
         addObject(std::move(o), f);
     }
 
+    void importDrawing(const Node& f)
+    {
+        const QString given = f.text(QStringLiteral("file")).trimmed();
+        if (given.isEmpty()) return fail(tr("no file: name a DXF or SVG drawing"));
+        QString path = given;
+        if (QFileInfo(given).isRelative()) {
+            if (a_model.fileName.isEmpty()) return fail(tr("%1 is relative to the model's folder: save the model first, or give its whole path").arg(given));
+            path = QFileInfo(a_model.fileName).absoluteDir().absoluteFilePath(given);
+        }
+        a_file = QFileInfo(path).absoluteFilePath();
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) return fail(tr("%1 cannot be read: %2").arg(QDir::toNativeSeparators(path), file.errorString()));
+        const QByteArray data = file.readAll();
+        QString format = f.text(QStringLiteral("format"));
+        if (format.isEmpty() || format == QLatin1String("auto")) {
+            const QString suffix = QFileInfo(path).suffix().toLower();
+            format = suffix == QLatin1String("svg") ? QStringLiteral("svg")
+                     : suffix == QLatin1String("dxf") ? QStringLiteral("dxf")
+                     : data.left(4096).contains("<svg")      ? QStringLiteral("svg")
+                                                              : QStringLiteral("dxf");
+        }
+        QStringList layers;
+        for (const QString& l : f.text(QStringLiteral("layers")).split(QLatin1Char(','), Qt::SkipEmptyParts)) layers << l.trimmed();
+        const ImportedDrawing drawing = format == QLatin1String("svg") ? readSvg(data) : readDxf(data, layers);
+        if (!drawing.error.isEmpty()) return fail(tr("%1: %2").arg(QFileInfo(path).fileName(), drawing.error));
+        for (const QString& w : drawing.warnings) warn(w);
+        // Its unit: as given, else as it says, else the geometry's.
+        double unit = a_scale;
+        const QString unitText = f.text(QStringLiteral("unit"));
+        if (unitText == QLatin1String("px")) unit = 0.0254 / 96;
+        else if (!unitText.isEmpty() && unitText != QLatin1String("auto")) {
+            const std::optional<Unit> u = parseUnit(unitText);
+            if (u && u->dim == Dim::length()) unit = u->scale;
+        } else if (drawing.unit > 0) {
+            unit = drawing.unit;
+        }
+        const double scale = number(f.text(QStringLiteral("scale")), 1);
+        const QPointF offset = lengths(f.pair(QStringLiteral("position")));
+        if (!a_error.isEmpty()) return;
+        if (scale == 0) return fail(tr("a scale of 0"));
+        Affine m;
+        m.m11 = m.m22 = unit / a_scale * scale;
+        m.dx = offset.x();
+        m.dy = offset.y();
+        const bool solids = f.text(QStringLiteral("curves")) != QLatin1String("curves");
+        GObject o;
+        std::vector<std::vector<GEdge>> loops;
+        for (const ImportedPath& path0 : drawing.paths) {
+            std::vector<GEdge> edges;
+            for (const Curve& c0 : path0.curves) {
+                Curve c = c0;
+                c.c = m.map(c.c);
+                c.a = m.vec(c.a);
+                c.b = m.vec(c.b);
+                for (QPointF& p : c.pts) p = m.map(p);
+                for (const GEdge& e : pieces(addCurve(c))) edges.push_back(e);
+            }
+            if (edges.empty()) continue;
+            if (path0.closed && solids && edges.size() >= 2) {
+                // (The last piece's end is the first's start, exactly.)
+                edges.back().b = edges.front().a;
+                if (std::abs(signedArea(edges)) > 0) {
+                    loops.push_back(edges);
+                    continue;
+                }
+            }
+            for (const GEdge& e : edges) o.open.push_back(e);
+        }
+        // One inside an odd number of others is a hole: turned clockwise.
+        for (std::size_t i = 0; i < loops.size(); ++i) {
+            GObject probe;
+            int depth = 0;
+            const QPointF inside = (loops[i].front().a + loops[i].front().b) / 2;
+            for (std::size_t j = 0; j < loops.size(); ++j) {
+                if (i == j) continue;
+                probe.loops = {loops[j]};
+                if (probe.contains(inside) && std::abs(signedArea(loops[j])) > std::abs(signedArea(loops[i]))) ++depth;
+            }
+            const bool hole = depth % 2 == 1;
+            if ((signedArea(loops[i]) < 0) != hole) reverse(loops[i]);
+            o.loops.push_back(loops[i]);
+        }
+        if (o.loops.empty() && o.open.empty()) return fail(tr("%1 has nothing to draw").arg(QFileInfo(path).fileName()));
+        addObject(std::move(o), f);
+    }
+
     /// The objects named in \a key, taken out of the list (when \a take)
     /// or copied; an error when one is not there.
     std::vector<GObject> inputs(const Node& f, const QString& key, bool take)
@@ -592,6 +746,7 @@ private:
             c.c = m.map(c.c);
             c.a = m.vec(c.a);
             c.b = m.vec(c.b);
+            for (QPointF& p : c.pts) p = m.map(p);
             const int n = addCurve(c);
             curveMap.insert(id, n);
             return n;
@@ -827,6 +982,7 @@ private:
     QString a_unitName;
     QString a_tag;
     QString a_error, a_warning;
+    QString a_file;   // a drawing read by the feature
     std::vector<Curve> a_curves;
     std::vector<GObject> a_objects;
 };

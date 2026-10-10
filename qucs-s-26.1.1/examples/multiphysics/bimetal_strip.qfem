@@ -1,0 +1,51 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A bimetal strip, warmed",
+    "description": "Aluminium on silicon, held at one end and warmed 100 K: the aluminium on top grows more and the strip curls down, the aluminium outside - solid mechanics with thermal expansion, in plane stress, drawn deformed. Timoshenko's bimetal formula puts its free end 0.58 mm down.",
+    "parameters": [
+        {"name": "L", "expression": "20[mm]", "description": "the strip's length"},
+        {"name": "t1", "expression": "0.5[mm]", "description": "the aluminium's thickness"},
+        {"name": "t2", "expression": "0.5[mm]", "description": "the silicon's thickness"},
+        {"name": "dT", "expression": "100[K]", "description": "how much it is warmed"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "thickness": "2[mm]",
+        "geometry": [
+            {"type": "rectangle", "label": "silicon", "size": ["L", "t2"]},
+            {"type": "rectangle", "label": "aluminium", "position": ["0", "t2"], "size": ["L", "t1"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["silicon"]}},
+            {"material": "Aluminium", "selection": {"only": ["aluminium"]}}
+        ],
+        "physics": [{
+            "type": "solid", "tag": "solid", "model": "planestress",
+            "features": [
+                {"type": "elastic", "default": true, "thermal": true, "T": "293.15[K] + dT", "Tref": "293.15[K]", "selection": {"all": true}},
+                {"type": "fixed", "label": "Clamped", "selection": {"box": [-0.01, -0.01, 0.01, 1.01]}}
+            ]
+        }],
+        "mesh": {"size": "fine", "features": [
+            {"type": "size", "level": "domain", "selection": {"all": true}, "hmax": "0.2"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Stress", "plots": [
+                {"type": "surface", "expression": "solid.mises", "unit": "MPa"},
+                {"type": "deformation", "x": "solid.u", "y": "solid.v"}
+            ]},
+            {"type": "plotgroup", "label": "Displacement", "plots": [
+                {"type": "surface", "expression": "solid.v", "unit": "um", "colors": "viridis"},
+                {"type": "deformation", "x": "solid.u", "y": "solid.v"}
+            ]}
+        ],
+        "derived": [
+            {"type": "pointeval", "label": "Tip", "coordinates": [["L", "t2"]], "expression": "solid.v", "unit": "mm"},
+            {"type": "global", "label": "Largest", "expression": "solid.dmax", "unit": "mm"}
+        ]
+    }
+}
