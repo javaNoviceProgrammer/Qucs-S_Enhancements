@@ -1637,12 +1637,32 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     with *Amend the last commit* and *Commit and Push*. When nothing is
     staged it offers to stage everything; a merge under way is committed
     with nothing staged (its conflicts resolved as the branch had them).
-    *History* lists the commits,
-    newest first, with their branches and tags, author, date and hash; a
-    commit's changes show below it, and its menu copies the hash, checks
-    it out, makes a branch or a tag there, reverts or cherry-picks it, or
-    resets the branch to it (soft, mixed, or hard after asking). *Blame*
-    shows who last changed each line, in which commit and when.
+    *History* draws every branch's commits as a **graph**, as VS Code's
+    and Eclipse's history do: newest first, each commit a dot in its
+    branch's lane and colour, the lines to its parents — a merge curving
+    in from its other branch, a fork out to it —, HEAD's dot a ring; the
+    branches and tags at a commit as labels (the branch checked out with a
+    dot, a remote's outlined, a tag in amber); its subject, its author with
+    a badge of initials, its date and hash. The changes not committed are
+    a row above HEAD, a dashed line down to it (a double-click commits
+    them). Above: every branch's commits, the branch checked out's or one
+    branch's or tag's; *View* takes the remotes' branches and the tags in
+    or out, or a merge's first parent alone; *Find* finds a commit by its
+    subject, author, hash, branch or tag (`Enter` the next one); *Refresh*
+    and *Fetch*. Below, the commit chosen: its message, author and
+    committer, parents (a click goes there) and what is at it; its files
+    with their lines added and removed — a click shows that file's
+    changes, a double-click opens a copy of it as the commit has it
+    (`name (1a2b3c4).sch`, to look at or simulate); its changes, a
+    schematic's part by part first, a merge's against its first parent.
+    Its menu copies the hash or subject, checks it — or a branch at it —
+    out, makes a branch or a tag there, merges it, compares it with the
+    files as they are, reverts or cherry-picks it, resets the branch to it
+    (soft, mixed, or hard after asking), deletes a branch or tag at it.
+    It is read again when the repository changes (only the changes row
+    when a file is saved); 500 commits at a time, *Show More* the next.
+    A file's *History* is its commits in one line. *Blame* shows who last
+    changed each line, in which commit and when.
   - **Schematics, part by part**: the changes of a schematic, a data
     display or a symbol are told part by part before git's lines — parts
     added, removed, moved, turned, mirrored, their type or properties
@@ -1682,7 +1702,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     and again when git changes the index or a branch, from Qucs-S or
     elsewhere; a slow repository is polled less often.
   - **Claude's git tools**: `git_status`, `git_diff` (head, staged or
-    unstaged), `git_log`, `git_show` and `git_blame` only look.
+    unstaged), `git_log` (`all`: every branch's commits, each with its
+    parents; `graph`: git's drawing of the lines; `show`: the History
+    window at the first one), `git_show` and `git_blame` only look.
     `git_stage`, `git_unstage`, `git_discard`, `git_commit` (with `paths`,
     `amend`, `push`), `git_branch` (list, create, switch — `stash` first
     —, rename, delete, merge), `git_remote` (list, fetch, pull, push, add,

@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "gitui.h"
+#include "githistory.h"
 #include "schematicdiff.h"
 
 #include "ink.h"
@@ -462,150 +463,6 @@ void CommitDialog::commitNow(bool push)
 }
 
 // ----------------------------------------------------------------------
-// HistoryDialog
-
-HistoryDialog::HistoryDialog(const QString& root, const QString& path, QWidget* parent)
-    : QDialog(parent), a_root(root), a_path(path)
-{
-    setObjectName(QStringLiteral("gitHistoryDialog"));
-    setWindowTitle(path.isEmpty() ? tr("History — %1").arg(QFileInfo(root).fileName())
-                                  : tr("History of %1").arg(QFileInfo(path).fileName()));
-    auto* layout = new QVBoxLayout(this);
-    auto* split = new QSplitter(Qt::Vertical, this);
-    a_commits = new QTreeWidget(split);
-    a_commits->setObjectName(QStringLiteral("gitCommits"));
-    a_commits->setRootIsDecorated(false);
-    a_commits->setUniformRowHeights(true);
-    a_commits->setHeaderLabels({tr("Subject"), tr("Author"), tr("Date"), tr("Commit")});
-    a_commits->header()->setStretchLastSection(false);
-    a_commits->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    a_commits->setContextMenuPolicy(Qt::CustomContextMenu);
-    a_details = new QPlainTextEdit(split);
-    a_details->setObjectName(QStringLiteral("gitCommitDetails"));
-    a_details->setReadOnly(true);
-    a_details->setLineWrapMode(QPlainTextEdit::NoWrap);
-    a_details->setFont(fixedFont());
-    new DiffHighlighter(a_details->document());
-    split->setStretchFactor(0, 1);
-    split->setStretchFactor(1, 1);
-    layout->addWidget(split, 1);
-    auto* bottom = new QHBoxLayout;
-    a_more = new QPushButton(tr("Show More"), this);
-    a_more->setObjectName(QStringLiteral("gitMoreCommits"));
-    bottom->addWidget(a_more);
-    bottom->addStretch(1);
-    auto* close = new QPushButton(tr("Close"), this);
-    bottom->addWidget(close);
-    layout->addLayout(bottom);
-    connect(close, &QPushButton::clicked, this, &QDialog::reject);
-    connect(a_more, &QPushButton::clicked, this, &HistoryDialog::loadMore);
-    connect(a_commits, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
-        if (item == nullptr) return;
-        const QString commit = item->data(0, Qt::UserRole).toString();
-        const QString parts = schematicChangesIn(a_root, commit, a_path);
-        const QString text = git::show(a_root, commit, a_path);
-        a_details->setPlainText(parts.isEmpty() ? text : parts + QLatin1Char('\n') + text);
-    });
-    connect(a_commits, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
-        QTreeWidgetItem* item = a_commits->itemAt(pos);
-        if (item == nullptr) return;
-        QMenu* menu = menuFor(a_commits->indexOfTopLevelItem(item));
-        menu->exec(a_commits->viewport()->mapToGlobal(pos));
-        menu->deleteLater();
-    });
-    reload();
-    resize(980, 720);
-}
-
-void HistoryDialog::reload()
-{
-    a_commits->clear();
-    a_loaded = 0;
-    loadMore();
-    if (a_commits->topLevelItemCount() > 0) a_commits->setCurrentItem(a_commits->topLevelItem(0));
-}
-
-void HistoryDialog::loadMore()
-{
-    constexpr int page = 200;
-    const QList<Commit> commits = log(a_root, a_path, page, {}, a_loaded);
-    for (const Commit& c : commits) {
-        QString subject = c.subject;
-        if (!c.refs.isEmpty()) subject = QStringLiteral("[%1]  %2").arg(c.refs.join(QStringLiteral("] [")), subject);
-        auto* item = new QTreeWidgetItem(a_commits, {subject, c.author, dateText(c.date), c.shortHash});
-        item->setData(0, Qt::UserRole, c.hash);
-        item->setToolTip(0, c.subject);
-        if (!c.refs.isEmpty()) {
-            QFont bold = item->font(0);
-            bold.setBold(true);
-            item->setFont(0, bold);
-        }
-    }
-    a_loaded += int(commits.size());
-    a_more->setEnabled(commits.size() == page);
-    // The author, the date and the hash whole; the subject the rest.
-    for (int c = 1; c < a_commits->columnCount(); ++c) a_commits->resizeColumnToContents(c);
-}
-
-QMenu* HistoryDialog::menuFor(int row)
-{
-    auto* menu = new QMenu(this);
-    menu->setObjectName(QStringLiteral("gitCommitMenu"));
-    QTreeWidgetItem* item = a_commits->topLevelItem(row);
-    if (item == nullptr) return menu;
-    const QString hash = item->data(0, Qt::UserRole).toString();
-    const QString shortHash = item->text(3);
-    Commands* commands = Commands::instance();
-    const QString root = a_root;
-    QPointer<HistoryDialog> self(this);
-    const auto after = [self](const Result& r, const QString& what) {
-        if (!r.ok()) misc::reportError(what + QStringLiteral(":\n") + r.error());
-        Tracker::instance()->refresh(self.isNull() ? QString() : self->a_root);
-        if (!self.isNull()) self->reload();
-    };
-    menu->addAction(tr("Copy the Commit's Hash"), menu, [hash] { QApplication::clipboard()->setText(hash); })
-        ->setObjectName(QStringLiteral("gitCopyHash"));
-    menu->addAction(tr("Show Its Changes"), menu, [this, hash, shortHash] {
-        auto* d = new TextDialog(tr("Commit %1").arg(shortHash), git::show(a_root, hash), this);
-        d->setAttribute(Qt::WA_DeleteOnClose);
-        d->show();
-    });
-    menu->addSeparator();
-    menu->addAction(tr("Check Out This Commit…"), menu, [this, root, hash, shortHash, after] {
-        if (QMessageBox::question(this, tr("Check Out"),
-                                  tr("Check %1 out? No branch is checked out then (HEAD is detached): a commit made there belongs to "
-                                     "no branch until you make one (New Branch).").arg(shortHash))
-            != QMessageBox::Yes)
-            return;
-        after(checkOutCommit(root, hash), tr("Check Out"));
-    })->setObjectName(QStringLiteral("gitCheckOutCommit"));
-    menu->addAction(tr("New Branch Here…"), menu, [commands, root, hash] { commands->newBranch(root, hash); })
-        ->setObjectName(QStringLiteral("gitBranchHere"));
-    menu->addAction(tr("New Tag Here…"), menu, [commands, root, hash] { commands->newTag(root, hash); })
-        ->setObjectName(QStringLiteral("gitTagHere"));
-    menu->addSeparator();
-    menu->addAction(tr("Revert This Commit"), menu, [root, hash, after] { after(revert(root, hash), tr("Revert")); })
-        ->setObjectName(QStringLiteral("gitRevertCommit"));
-    menu->addAction(tr("Cherry-Pick into the Current Branch"), menu, [root, hash, after] { after(cherryPick(root, hash), tr("Cherry-Pick")); })
-        ->setObjectName(QStringLiteral("gitCherryPick"));
-    QMenu* reset = menu->addMenu(tr("Reset the Current Branch Here"));
-    reset->setObjectName(QStringLiteral("gitResetMenu"));
-    reset->addAction(tr("Soft: Keep the Changes Staged"), reset, [root, hash, after] { after(git::reset(root, hash, QStringLiteral("soft")), tr("Reset")); });
-    reset->addAction(tr("Mixed: Keep the Changes, Not Staged"), reset,
-                     [root, hash, after] { after(git::reset(root, hash, QStringLiteral("mixed")), tr("Reset")); });
-    reset->addAction(tr("Hard: Throw the Changes Away…"), reset, [this, root, hash, shortHash, after] {
-        if (QMessageBox::warning(this, tr("Reset"),
-                                 tr("Move the branch to %1 and throw away every change not committed, and the commits after it?")
-                                     .arg(shortHash),
-                                 QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel)
-            != QMessageBox::Discard)
-            return;
-        after(git::reset(root, hash, QStringLiteral("hard")), tr("Reset"));
-    });
-    return menu;
-}
-
-// ----------------------------------------------------------------------
 // BlameDialog
 
 BlameDialog::BlameDialog(const QString& root, const QString& path, QWidget* parent) : QDialog(parent), a_root(root)
@@ -996,9 +853,21 @@ void Commands::showDiff(const QString& root, const QString& path, DiffOf of)
                         text, window()));
 }
 
-void Commands::showHistory(const QString& root, const QString& path)
+HistoryDialog* Commands::showHistory(const QString& root, const QString& path)
 {
-    keep(new HistoryDialog(root, path, window()));
+    // One window a repository (a file), as an IDE has one history view.
+    const QString wanted = QDir::cleanPath(HistoryDialog::historyPath(root, path));
+    for (const QPointer<QDialog>& w : std::as_const(a_windows))
+        if (auto* h = qobject_cast<HistoryDialog*>(w.data());
+            h != nullptr && h->isVisible() && QDir::cleanPath(h->root()) == QDir::cleanPath(root) && QDir::cleanPath(h->path()) == wanted) {
+            h->refresh();
+            h->raise();
+            h->activateWindow();
+            return h;
+        }
+    auto* h = new HistoryDialog(root, path, window());
+    keep(h);
+    return h;
 }
 
 void Commands::showBlame(const QString& root, const QString& path)

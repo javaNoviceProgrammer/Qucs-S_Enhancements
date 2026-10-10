@@ -123,7 +123,8 @@ void QucsApp::initGitMenu()
   add("gitDiscardAll", tr("Discard All Changes..."), onRoot([git](const QString &r) { git->discard(r, {}); }));
   gitMenu->addSeparator();
   add("gitHistory", tr("History"), onRoot([git](const QString &r) { git->showHistory(r); }),
-      tr("The commits, newest first: check one out, branch or tag there, revert, cherry-pick, reset"));
+      tr("Every branch's commits as a graph - their branches, tags, authors and dates - the one chosen with its files and "
+         "changes: check one out, branch or tag there, merge, revert, cherry-pick, reset"));
   gitMenu->addSeparator();
   add("gitFetch", tr("Fetch"), onRoot([git](const QString &r) { git->fetch(r); }), tr("What the remotes have, without changing your files"));
   add("gitPull", tr("Pull"), onRoot([git](const QString &r) { git->pull(r); }), tr("The branch's upstream merged into it"));

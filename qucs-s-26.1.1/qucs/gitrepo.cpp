@@ -195,9 +195,34 @@ QProcessEnvironment environment()
     return env;
 }
 
+namespace {
+
+// What git wrote, as bytes (a file's: not read as text).
+struct Raw {
+    int exitCode = -1;
+    QByteArray out;
+    QString err;
+};
+
+Raw runRaw(const QString& dir, const QStringList& args, bool readOnly, int timeoutMs, const QByteArray& input = {});
+
+} // namespace
+
 Result run(const QString& dir, const QStringList& args, bool readOnly, int timeoutMs, const QByteArray& input)
 {
+    const Raw raw = runRaw(dir, args, readOnly, timeoutMs, input);
     Result r;
+    r.exitCode = raw.exitCode;
+    r.out = QString::fromUtf8(raw.out);
+    r.err = raw.err;
+    return r;
+}
+
+namespace {
+
+Raw runRaw(const QString& dir, const QStringList& args, bool readOnly, int timeoutMs, const QByteArray& input)
+{
+    Raw r;
     const QString git = program();
     if (git.isEmpty()) {
         r.err = tr("git is not installed");
@@ -228,10 +253,12 @@ Result run(const QString& dir, const QStringList& args, bool readOnly, int timeo
         return r;
     }
     r.exitCode = p.exitStatus() == QProcess::NormalExit ? p.exitCode() : -1;
-    r.out = QString::fromUtf8(p.readAllStandardOutput());
+    r.out = p.readAllStandardOutput();
     r.err = QString::fromUtf8(p.readAllStandardError());
     return r;
 }
+
+} // namespace
 
 QString topLevel(const QString& path)
 {
@@ -832,11 +859,82 @@ QString showStash(const QString& root, int index)
 // ----------------------------------------------------------------------
 // History
 
+namespace {
+
+// A commit a line: its fields between unit separators, the refs' names
+// whole (refs/heads/..., refs/remotes/...: a branch "feature/x" is not a
+// remote's).
+const QString kCommitFormat = QStringLiteral("--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%D%x1f%P%x1f%cn%x1f%ce%x1f%cI%x1e");
+
+// %D's names whole, as git log --decorate=full gives them: each with its
+// kind, and as the short names git gives without it ("HEAD -> main",
+// "origin/main", "tag: v1.0").
+void readRefs(const QString& decoration, Commit& c)
+{
+    const QString heads = QStringLiteral("refs/heads/"), remotes = QStringLiteral("refs/remotes/"), tags = QStringLiteral("refs/tags/");
+    for (QString item : decoration.split(QStringLiteral(", "), Qt::SkipEmptyParts)) {
+        item = item.trimmed();
+        bool current = false;
+        if (item.startsWith(QLatin1String("HEAD -> "))) {
+            current = true;
+            item = item.mid(8);
+        }
+        Ref ref;
+        QString shortName;
+        if (item == QLatin1String("HEAD")) {
+            ref.kind = Ref::Head;
+            ref.name = shortName = item;
+        } else if (item.startsWith(QLatin1String("tag: "))) {
+            ref.kind = Ref::Tag;
+            ref.name = item.mid(5).startsWith(tags) ? item.mid(5 + tags.size()) : item.mid(5);
+            shortName = QStringLiteral("tag: ") + ref.name;
+        } else if (item.startsWith(heads)) {
+            ref.kind = Ref::Branch;
+            ref.name = shortName = item.mid(heads.size());
+        } else if (item.startsWith(remotes)) {
+            ref.kind = Ref::Remote;
+            ref.name = shortName = item.mid(remotes.size());
+        } else {
+            shortName = item.startsWith(QLatin1String("refs/")) ? item.mid(5) : item;
+            ref.name.clear();   // (the stash, notes: no label)
+        }
+        ref.current = current;
+        c.refs << (current ? QStringLiteral("HEAD -> ") + shortName : shortName);
+        // (A remote's HEAD names its default branch: no label of its own.)
+        if (!ref.name.isEmpty() && !(ref.kind == Ref::Remote && ref.name.endsWith(QLatin1String("/HEAD")))) c.refList << ref;
+    }
+}
+
+QList<Commit> readCommits(const QString& text)
+{
+    QList<Commit> out;
+    for (const QString& record : text.split(QChar(0x1e), Qt::SkipEmptyParts)) {
+        const QStringList f = record.trimmed().split(QChar(0x1f));
+        if (f.size() < 11) continue;
+        Commit c;
+        c.hash = f.at(0);
+        c.shortHash = f.at(1);
+        c.author = f.at(2);
+        c.email = f.at(3);
+        c.date = QDateTime::fromString(f.at(4), Qt::ISODate);
+        c.subject = f.at(5);
+        readRefs(f.at(6), c);
+        c.parents = f.at(7).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        c.committer = f.at(8);
+        c.committerEmail = f.at(9);
+        c.committed = QDateTime::fromString(f.at(10), Qt::ISODate);
+        out << c;
+    }
+    return out;
+}
+
+} // namespace
+
 QList<Commit> log(const QString& root, const QString& path, int max, const QString& ref, int skip)
 {
     QList<Commit> out;
-    QStringList args{QStringLiteral("log"), QStringLiteral("--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%D%x1f%P%x1e"),
-                     QStringLiteral("-n"), QString::number(std::max(1, max))};
+    QStringList args{QStringLiteral("log"), QStringLiteral("--decorate=full"), kCommitFormat, QStringLiteral("-n"),
+                     QString::number(std::max(1, max))};
     if (skip > 0) args << QStringLiteral("--skip=%1").arg(skip);
     if (optionLike(ref)) return out;
     if (!ref.isEmpty()) args << ref;
@@ -852,22 +950,139 @@ QList<Commit> log(const QString& root, const QString& path, int max, const QStri
         }
     }
     const Result r = run(root, args, true, 30000);
-    if (!r.ok()) return out;
-    for (const QString& record : r.out.split(QChar(0x1e), Qt::SkipEmptyParts)) {
-        const QStringList f = record.trimmed().split(QChar(0x1f));
-        if (f.size() < 8) continue;
-        Commit c;
-        c.hash = f.at(0);
-        c.shortHash = f.at(1);
-        c.author = f.at(2);
-        c.email = f.at(3);
-        c.date = QDateTime::fromString(f.at(4), Qt::ISODate);
-        c.subject = f.at(5);
-        if (!f.at(6).trimmed().isEmpty()) c.refs = f.at(6).split(QStringLiteral(", "), Qt::SkipEmptyParts);
-        c.parents = f.at(7).split(QLatin1Char(' '), Qt::SkipEmptyParts);
-        out << c;
+    return r.ok() ? readCommits(r.out) : out;
+}
+
+QList<Commit> history(const QString& root, const HistoryQuery& query)
+{
+    QStringList args{QStringLiteral("log"), QStringLiteral("--decorate=full"), kCommitFormat, QStringLiteral("--date-order"),
+                     QStringLiteral("-n"), QString::number(std::max(1, query.max))};
+    if (query.skip > 0) args << QStringLiteral("--skip=%1").arg(query.skip);
+    if (query.firstParent) args << QStringLiteral("--first-parent");
+    switch (query.scope) {
+    case HistoryQuery::All:
+        args << QStringLiteral("--branches");
+        if (query.remotes) args << QStringLiteral("--remotes");
+        if (query.tags) args << QStringLiteral("--tags");
+        args << QStringLiteral("HEAD");
+        break;
+    case HistoryQuery::Current: args << QStringLiteral("HEAD"); break;
+    case HistoryQuery::OneRef:
+        if (query.ref.isEmpty() || optionLike(query.ref)) return {};
+        args << query.ref;
+        break;
+    }
+    if (!query.path.isEmpty()) {
+        const QStringList rel = relative(root, {query.path});
+        if (rel.isEmpty()) return {};
+        if (rel.first() != QLatin1String(".")) {
+            if (!QFileInfo(QDir(root).filePath(rel.first())).isDir()) args << QStringLiteral("--follow");
+            args << QStringLiteral("--") << rel;
+        }
+    }
+    const Result r = run(root, args, true, 60000);
+    return r.ok() ? readCommits(r.out) : QList<Commit>();
+}
+
+namespace {
+
+// What diff-tree compares \a commit with: its first parent (a merge's:
+// what it brought into its branch - "-m --first-parent" gives one diff a
+// parent), a first commit with nothing.
+QStringList againstFirstParent(const QString& root, const QString& commit)
+{
+    const Result parent = run(root, {QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("-q"), commit + QStringLiteral("^1")},
+                              true, 15000);
+    if (parent.ok() && !parent.out.trimmed().isEmpty()) return {parent.out.trimmed(), commit};
+    return {QStringLiteral("--root"), commit};
+}
+
+} // namespace
+
+QList<ChangedFile> changedFiles(const QString& root, const QString& commit)
+{
+    if (commit.isEmpty() || optionLike(commit)) return {};
+    // NUL between the names: any name read whole.
+    const QStringList trees = againstFirstParent(root, commit);
+    const QStringList common{QStringLiteral("diff-tree"), QStringLiteral("-r"), QStringLiteral("-M"), QStringLiteral("--no-commit-id"),
+                             QStringLiteral("-z")};
+    const Result names = run(root, common + QStringList{QStringLiteral("--name-status")} + trees, true, 30000);
+    if (!names.ok()) return {};
+    QList<ChangedFile> out;
+    QHash<QString, int> byPath;
+    const QStringList n = names.out.split(QChar(0), Qt::KeepEmptyParts);
+    for (int i = 0; i + 1 < n.size();) {
+        const QString status = n.at(i);
+        if (status.isEmpty()) {
+            ++i;
+            continue;
+        }
+        ChangedFile f;
+        f.status = status.at(0);
+        if ((f.status == QLatin1Char('R') || f.status == QLatin1Char('C')) && i + 2 < n.size()) {
+            f.from = n.at(i + 1);
+            f.path = n.at(i + 2);
+            i += 3;
+        } else {
+            f.path = n.at(i + 1);
+            i += 2;
+        }
+        byPath.insert(f.path, int(out.size()));
+        out << f;
+    }
+    // The lines: "added<TAB>removed<TAB>path", a rename's names after it.
+    const Result counts = run(root, common + QStringList{QStringLiteral("--numstat")} + trees, true, 30000);
+    const QStringList c = counts.out.split(QChar(0), Qt::KeepEmptyParts);
+    for (int i = 0; i < c.size(); ++i) {
+        const QStringList parts = c.at(i).split(QLatin1Char('\t'));
+        if (parts.size() < 3) continue;
+        QString path = parts.at(2);
+        if (path.isEmpty() && i + 2 < c.size()) {   // a rename: its names follow
+            path = c.at(i + 2);
+            i += 2;
+        }
+        const int at = byPath.value(path, -1);
+        if (at < 0) continue;
+        bool okA = false, okR = false;
+        const int added = parts.at(0).toInt(&okA), removed = parts.at(1).toInt(&okR);
+        out[at].added = okA ? added : -1;
+        out[at].removed = okR ? removed : -1;
     }
     return out;
+}
+
+QString commitMessage(const QString& root, const QString& commit)
+{
+    if (commit.isEmpty() || optionLike(commit)) return {};
+    const Result r = run(root, {QStringLiteral("show"), QStringLiteral("-s"), QStringLiteral("--format=%B"), commit}, true, 15000);
+    return r.ok() ? r.out.trimmed() : QString();
+}
+
+QString commitDiff(const QString& root, const QString& commit, const QString& path)
+{
+    if (commit.isEmpty() || optionLike(commit)) return optionRefused(commit).error();
+    QStringList args = QStringList{QStringLiteral("diff-tree"), QStringLiteral("-p"), QStringLiteral("-M"), QStringLiteral("--no-commit-id"),
+                                   QStringLiteral("--no-color")}
+                       + againstFirstParent(root, commit);
+    if (!path.isEmpty()) {
+        const QStringList rel = relative(root, {path});
+        if (rel.isEmpty()) return {};
+        args << QStringLiteral("--") << rel;
+    }
+    const Result r = run(root, args, true, 30000);
+    return r.ok() ? r.out : r.error();
+}
+
+QByteArray fileAt(const QString& root, const QString& commit, const QString& path, bool* ok)
+{
+    if (ok != nullptr) *ok = false;
+    if (commit.isEmpty() || optionLike(commit) || path.isEmpty()) return {};
+    const QStringList rel = relative(root, {path});
+    if (rel.isEmpty() || rel.first() == QLatin1String(".")) return {};
+    const Raw r = runRaw(root, {QStringLiteral("cat-file"), QStringLiteral("blob"), commit + QLatin1Char(':') + rel.first()}, true, 30000);
+    if (r.exitCode != 0) return {};
+    if (ok != nullptr) *ok = true;
+    return r.out;
 }
 
 QString show(const QString& root, const QString& commit, const QString& path)

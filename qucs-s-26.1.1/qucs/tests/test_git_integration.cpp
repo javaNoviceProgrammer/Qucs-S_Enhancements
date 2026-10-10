@@ -14,6 +14,7 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QClipboard>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -26,6 +27,9 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
+#include <QSignalSpy>
+#include <QTextBrowser>
+#include <QTreeView>
 #include <QSaveFile>
 #include <QProcess>
 #include <QPushButton>
@@ -37,9 +41,12 @@
 #include "config.h"
 #include "extsimkernels/spicecompat.h"
 #include "filebrowser.h"
+#include "gitgraph.h"
+#include "githistory.h"
 #include "gitrepo.h"
 #include "gitstatus.h"
 #include "gitui.h"
+#include "ink.h"
 #include "isolated_settings.h"
 #include "main.h"
 #include "misc.h"
@@ -248,6 +255,65 @@ class TestGitIntegration : public QObject
         if (!write(path + "/a.txt", "one\ntwo\nthree\n") || !write(path + "/b.txt", "bee\n")) return {};
         if (gitIn(path, {"add", "."}).isNull() || gitIn(path, {"commit", "-q", "-m", "first"}).isNull()) return {};
         return path;
+    }
+
+    // A repository of branches: main (first, second, third, a merge of
+    // feature/x), feature/x (f1, f2), topic from second (t1), origin/main
+    // at second, origin/wip with a commit of its own, a commit only the
+    // tag only-tag has; tags v1.0 (annotated, at third) and light (at f1);
+    // a.txt changed, not committed. The commits by subject: \a hashes.
+    QString makeGraphRepo(const QString& name, QHash<QString, QString>* hashes = nullptr)
+    {
+        const QString repo = makeRepo(name);
+        if (repo.isEmpty()) return {};
+        const auto put = [&](const QString& file, const QByteArray& text, const QString& message) {
+            return write(repo + "/" + file, text) && !gitIn(repo, {"add", file}).isNull() && !gitIn(repo, {"commit", "-q", "-m", message}).isNull();
+        };
+        const auto git = [&](const QStringList& args) { return !gitIn(repo, args).isNull(); };
+        if (!put("a.txt", "one\ntwo\nthree\nsecond\n", "second") || !git({"checkout", "-q", "-b", "feature/x"})
+            || !put("f.txt", "f1\n", "f1") || !put("f.txt", "f1\nf2\n", "f2") || !git({"tag", "light", "HEAD~1"})
+            || !git({"checkout", "-q", "main"}) || !put("b.txt", "bee\nthird\n", "third") || !git({"tag", "-a", "v1.0", "-m", "one"})
+            || !git({"merge", "-q", "--no-ff", "--no-edit", "feature/x"}) || !git({"branch", "topic", "HEAD^1^1"})
+            || !git({"checkout", "-q", "topic"}))
+            return {};
+        // t1 made with a clock years behind: git's own order would put it
+        // after its parent; the graph's may not.
+        qputenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00");
+        qputenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00");
+        const bool behind = put("t.txt", "t1\n", "t1");
+        qunsetenv("GIT_COMMITTER_DATE");
+        qunsetenv("GIT_AUTHOR_DATE");
+        if (!behind || !git({"checkout", "-q", "-b", "wip"})
+            || !put("w.txt", "wip\n", "wip") || !git({"update-ref", "refs/remotes/origin/wip", "HEAD"})
+            || !git({"checkout", "-q", "main"}) || !git({"branch", "-D", "wip"}) || !git({"update-ref", "refs/remotes/origin/main", "HEAD^1^1"})
+            || !git({"checkout", "-q", "-b", "tagged"}) || !put("g.txt", "tagged\n", "tagged") || !git({"tag", "only-tag"})
+            || !git({"checkout", "-q", "main"}) || !git({"branch", "-D", "tagged"}))
+            return {};
+        if (!write(repo + "/a.txt", "one\ntwo\nthree\nsecond\nnot committed\n")) return {};
+        if (hashes != nullptr)
+            for (const QString& line : gitIn(repo, {"log", "--all", "--format=%H %s"}).split('\n', Qt::SkipEmptyParts))
+                hashes->insert(line.section(' ', 1), line.section(' ', 0, 0));
+        return repo;
+    }
+
+    // Row i's lines out at its bottom are row i+1's in at its top, each
+    // lane's colour going on: no line broken. Empty, or where one is.
+    static QString brokenLine(const QVector<GraphRow>& rows)
+    {
+        for (int i = 0; i + 1 < rows.size(); ++i) {
+            QSet<int> out, in;
+            QHash<int, int> passing;
+            for (const GraphLine& l : rows.at(i).below) {
+                out.insert(l.to);
+                if (l.from == l.to && l.from != rows.at(i).lane) passing.insert(l.to, l.colour);
+            }
+            for (const GraphLine& l : rows.at(i + 1).above) {
+                in.insert(l.from);
+                if (passing.contains(l.from) && passing.value(l.from) != l.colour) return QStringLiteral("row %1: lane %2's colour").arg(i).arg(l.from);
+            }
+            if (out != in) return QStringLiteral("row %1: out %2, in %3").arg(i).arg(out.size()).arg(in.size());
+        }
+        return {};
     }
 
     static const Entry* entry(const Repository& r, const QString& path)
@@ -1098,10 +1164,11 @@ private slots:
         QVERIFY(write(repo + "/a.txt", "one\ntwo\nthree\nfour\n"));
         QVERIFY(commit(repo, "four", false, {repo + "/a.txt"}).ok());
         HistoryDialog history(repo);
-        QCOMPARE(history.commits()->topLevelItemCount(), 2);
-        QVERIFY(history.commits()->topLevelItem(0)->text(0).endsWith("four"));
-        QVERIFY(history.commits()->topLevelItem(0)->text(0).contains("HEAD -> main"));   // its refs
-        history.commits()->setCurrentItem(history.commits()->topLevelItem(0));
+        QCOMPARE(history.model()->rowCount(), 2);
+        QCOMPARE(history.model()->row(0).commit.subject, QStringLiteral("four"));
+        QVERIFY(history.model()->row(0).commit.refs.contains("HEAD -> main"));   // its refs
+        QVERIFY(history.model()->row(0).head);
+        history.selectRow(0);
         QTRY_VERIFY_WITH_TIMEOUT(history.details()->toPlainText().contains("+four"), 5000);
         QMenu* menu = history.menuFor(1);
         QVERIFY(menu != nullptr);
@@ -1115,17 +1182,488 @@ private slots:
         menu->findChild<QAction*>("gitRevertCommit")->trigger();
         QCOMPARE(log(repo).first().subject.left(6), QStringLiteral("Revert"));
         QCOMPARE(readAll(repo + "/a.txt"), QByteArray("one\ntwo\nthree\n"));
-        QCOMPARE(history.commits()->topLevelItemCount(), 3);   // read again
+        QCOMPARE(history.model()->rowCount(), 3);   // read again
         delete menu;
         QVERIFY(!gitIn(repo, {"reset", "-q", "--hard", "HEAD~1"}).isNull());
 
         HistoryDialog fileHistory(repo, repo + "/b.txt");
-        QCOMPARE(fileHistory.commits()->topLevelItemCount(), 1);
+        QCOMPARE(fileHistory.model()->rowCount(), 1);
 
         BlameDialog blamed(repo, repo + "/a.txt");
         QCOMPARE(blamed.lines()->topLevelItemCount(), 4);
         QCOMPARE(blamed.lines()->topLevelItem(3)->text(4), QStringLiteral("four"));
         QCOMPARE(blamed.lines()->topLevelItem(0)->text(2), QStringLiteral("Tester"));
+    }
+
+    // The graph's lanes: a line straight down, a fork into a lane of its
+    // own and back, a merge out to its second parent, the changes not
+    // committed dashed to HEAD; rows added a page at a time as at once;
+    // the lanes' colours standing out from a light and a dark base.
+    void theGraphsLanes()
+    {
+        GraphLayout g;
+        // Straight: one lane.
+        QVector<GraphRow> rows{g.next("c3", {"c2"}), g.next("c2", {"c1"}), g.next("c1", {})};
+        for (const GraphRow& r : rows) {
+            QCOMPARE(r.lane, 0);
+            QCOMPARE(r.width, 1);
+        }
+        QVERIFY(rows.at(0).tip && !rows.at(1).tip);
+        QCOMPARE(rows.at(0).colour, rows.at(2).colour);
+        QCOMPARE(brokenLine(rows), QString());
+        QCOMPARE(g.openLanes(), 0);
+        // Two tips on one parent: the second in lane 1, a colour of its
+        // own, ending in lane 0 at the parent.
+        g.clear();
+        rows = {g.next("b", {"a"}), g.next("c", {"a"}), g.next("a", {})};
+        QCOMPARE(rows.at(1).lane, 1);
+        QVERIFY(rows.at(1).tip);
+        QVERIFY(rows.at(1).colour != rows.at(0).colour);
+        QCOMPARE(rows.at(2).lane, 0);
+        QCOMPARE(rows.at(2).width, 2);
+        bool converges = false;
+        for (const GraphLine& l : rows.at(2).above) converges = converges || (l.from == 1 && l.to == 0);
+        QVERIFY(converges);
+        QCOMPARE(brokenLine(rows), QString());
+        // A merge: out to its second parent in a lane of its own, back at
+        // their parent.
+        g.clear();
+        rows = {g.next("m", {"p1", "p2"}), g.next("p1", {"q"}), g.next("p2", {"q"}), g.next("q", {})};
+        QVERIFY(rows.at(0).merge);
+        QCOMPARE(rows.at(0).below.size(), 2);
+        QCOMPARE(rows.at(0).below.at(0).to, 0);
+        QCOMPARE(rows.at(0).below.at(1).to, 1);
+        QCOMPARE(rows.at(2).lane, 1);
+        QCOMPARE(rows.at(3).lane, 0);
+        QCOMPARE(brokenLine(rows), QString());
+        // A merge's second parent another lane waits for: its line ends in
+        // that lane, no lane of its own.
+        g.clear();
+        rows = {g.next("a", {"b"}), g.next("m", {"c", "b"}), g.next("c", {"b"}), g.next("b", {})};
+        QCOMPARE(rows.at(1).lane, 1);
+        QCOMPARE(rows.at(1).below.size(), 2);
+        QCOMPARE(rows.at(1).below.at(1).to, 0);
+        QCOMPARE(rows.at(1).width, 2);
+        QCOMPARE(brokenLine(rows), QString());
+        // The changes not committed: dashed down to HEAD, not after it.
+        g.clear();
+        rows = {g.next("uncommitted", {"h"}, true), g.next("h", {"g"}), g.next("g", {})};
+        QVERIFY(rows.at(0).below.first().dashed);
+        QVERIFY(rows.at(1).above.first().dashed);
+        QVERIFY(!rows.at(1).below.first().dashed);
+        QCOMPARE(rows.at(1).colour, rows.at(0).colour);
+        // A page at a time: the same rows.
+        const QList<QPair<QString, QStringList>> commits{{"m", {"p1", "p2"}}, {"x", {"p2"}}, {"p1", {"q"}}, {"p2", {"q"}}, {"q", {}}};
+        g.clear();
+        QVector<GraphRow> once;
+        for (const auto& [h, p] : commits) once << g.next(h, p);
+        g.clear();
+        QVector<GraphRow> paged;
+        for (int i = 0; i < 2; ++i) paged << g.next(commits.at(i).first, commits.at(i).second);
+        QCOMPARE(g.openLanes(), 3);   // p1; p2 twice (m's second parent, x's first: they meet at p2)
+        for (int i = 2; i < commits.size(); ++i) paged << g.next(commits.at(i).first, commits.at(i).second);
+        for (int i = 0; i < once.size(); ++i) {
+            QCOMPARE(paged.at(i).lane, once.at(i).lane);
+            QCOMPARE(paged.at(i).below.size(), once.at(i).below.size());
+        }
+        QCOMPARE(brokenLine(once), QString());
+        // Ten colours, each 3:1 at least on white and on a dark base.
+        QPalette light, dark;
+        light.setColor(QPalette::Base, Qt::white);
+        dark.setColor(QPalette::Base, QColor(30, 30, 30));
+        QCOMPARE(laneColourCount(), 10);
+        QSet<QRgb> seen;
+        for (int i = 0; i < laneColourCount(); ++i) {
+            QVERIFY2(qucs_s::ink::contrast(laneColour(i, light), Qt::white) >= 3.0, qPrintable(laneColour(i, light).name()));
+            QVERIFY2(qucs_s::ink::contrast(laneColour(i, dark), QColor(30, 30, 30)) >= 3.0, qPrintable(laneColour(i, dark).name()));
+            seen.insert(laneColour(i, light).rgb());
+        }
+        QCOMPARE(seen.size(), 10);
+        QCOMPARE(laneColour(10, light), laneColour(0, light));
+    }
+
+    // Every branch's commits as a graph: git's order (each after its
+    // children), the branches, the remotes' and the tags at each - a
+    // branch "feature/x" no remote's -, which commits each scope takes.
+    void everyBranchsHistory()
+    {
+        QHash<QString, QString> h;
+        const QString repo = makeGraphRepo("graph", &h);
+        QVERIFY(!repo.isEmpty());
+        QList<Commit> all = history(repo, {});
+        QStringList subjects;
+        for (const Commit& c : all) subjects << c.subject;
+        QCOMPARE(all.size(), 9);
+        for (const char* s : {"first", "second", "f1", "f2", "third", "Merge branch 'feature/x'", "t1", "wip", "tagged"})
+            QVERIFY2(subjects.contains(QLatin1String(s)), s);
+        // Each after all of its children.
+        for (int i = 0; i < all.size(); ++i)
+            for (const QString& p : all.at(i).parents)
+                for (int j = 0; j <= i; ++j) QVERIFY2(all.at(j).hash != p, qPrintable(all.at(i).subject));
+        const auto refsAt = [&](const QString& subject) {
+            for (const Commit& c : all)
+                if (c.subject == subject) return c.refList;
+            return QList<Ref>();
+        };
+        const auto has = [&](const QString& subject, Ref::Kind kind, const QString& name, bool current = false) {
+            for (const Ref& r : refsAt(subject))
+                if (r.kind == kind && r.name == name && r.current == current) return true;
+            return false;
+        };
+        QVERIFY(has("Merge branch 'feature/x'", Ref::Branch, "main", true));
+        QVERIFY(has("f2", Ref::Branch, "feature/x"));   // (not a remote's "feature")
+        QVERIFY(has("second", Ref::Remote, "origin/main"));
+        QVERIFY(has("wip", Ref::Remote, "origin/wip"));
+        QVERIFY(has("third", Ref::Tag, "v1.0"));
+        QVERIFY(has("f1", Ref::Tag, "light"));
+        QVERIFY(has("t1", Ref::Branch, "topic"));
+        // The short names, as before.
+        for (const Commit& c : all)
+            if (c.subject.startsWith("Merge")) QVERIFY(c.refs.contains("HEAD -> main"));
+        // Which commits.
+        HistoryQuery q;
+        q.remotes = false;
+        QCOMPARE(history(repo, q).size(), 8);   // (no wip)
+        q.remotes = true;
+        q.tags = false;
+        QCOMPARE(history(repo, q).size(), 8);   // (no tagged)
+        q = {};
+        q.scope = HistoryQuery::Current;
+        QCOMPARE(history(repo, q).size(), 6);
+        q.firstParent = true;
+        QCOMPARE(history(repo, q).size(), 4);   // merge, third, second, first
+        q = {};
+        q.scope = HistoryQuery::OneRef;
+        q.ref = "topic";
+        QCOMPARE(history(repo, q).size(), 3);
+        q.ref = "--all";
+        QVERIFY(history(repo, q).isEmpty());
+        q = {};
+        q.max = 4;
+        q.skip = 4;
+        QCOMPARE(history(repo, q).size(), 4);
+        QCOMPARE(history(repo, q).first().hash, all.at(4).hash);
+        // Laid out: no line broken, a few lanes.
+        GraphLayout layout;
+        QVector<GraphRow> rows;
+        int widest = 0;
+        for (const Commit& c : all) {
+            rows << layout.next(c.hash, c.parents);
+            widest = std::max(widest, rows.last().width);
+        }
+        QCOMPARE(brokenLine(rows), QString());
+        QVERIFY2(widest >= 2 && widest <= 5, qPrintable(QString::number(widest)));
+        // A merge's files: what it brought in (against its first parent).
+        const QList<ChangedFile> merged = changedFiles(repo, h.value("Merge branch 'feature/x'"));
+        QCOMPARE(merged.size(), 1);
+        QCOMPARE(merged.first().path, QStringLiteral("f.txt"));
+        QCOMPARE(merged.first().status, QChar('A'));
+        QCOMPARE(merged.first().added, 2);
+        // A first commit's: every file added; a rename's former name.
+        QCOMPARE(changedFiles(repo, h.value("first")).size(), 2);
+        QVERIFY(!gitIn(repo, {"mv", "b.txt", "bee.txt"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "renamed", "--", "b.txt", "bee.txt"}).isNull());
+        const QList<ChangedFile> renamed = changedFiles(repo, "HEAD");
+        QCOMPARE(renamed.size(), 1);
+        QCOMPARE(renamed.first().status, QChar('R'));
+        QCOMPARE(renamed.first().from, QStringLiteral("b.txt"));
+        QCOMPARE(renamed.first().path, QStringLiteral("bee.txt"));
+        QCOMPARE(renamed.first().added, 0);
+        QVERIFY(commitDiff(repo, h.value("Merge branch 'feature/x'")).contains("+f2"));
+        QVERIFY(!commitDiff(repo, h.value("Merge branch 'feature/x'")).contains("third"));
+        QCOMPARE(commitMessage(repo, h.value("third")), QStringLiteral("third"));
+        bool ok = false;
+        QCOMPARE(fileAt(repo, h.value("f1"), repo + "/f.txt", &ok), QByteArray("f1\n"));
+        QVERIFY(ok);
+        QVERIFY(fileAt(repo, h.value("first"), "f.txt", &ok).isEmpty());
+        QVERIFY(!ok);
+        QVERIFY(changedFiles(repo, "--output=x").isEmpty());
+    }
+
+    // The History window: the graph of every branch, the changes not
+    // committed above HEAD's commit, the commit chosen below - its
+    // parents a click away, its files and their changes, a file as it was
+    // opened -; which commits, Find, a commit's menu, read again as the
+    // repository changes, a page at a time; painted in the lanes' colours.
+    void theHistoryGraphWindow()
+    {
+        QHash<QString, QString> h;
+        const QString repo = makeGraphRepo("graphwindow", &h);
+        QVERIFY(!repo.isEmpty());
+        HistoryDialog d(repo);
+        d.resize(1300, 900);
+        d.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&d));
+        HistoryModel* m = d.model();
+        QCOMPARE(d.scope(), QStringLiteral("all"));
+        QCOMPARE(m->rowCount(), 10);
+        QVERIFY(m->row(0).uncommitted);
+        QCOMPARE(m->row(0).commit.subject, QStringLiteral("Uncommitted changes (1 file)"));
+        QVERIFY(m->row(0).graph.below.first().dashed);
+        const int head = m->rowOf(h.value("Merge branch 'feature/x'"));
+        QVERIFY(head > 0);
+        QVERIFY(m->row(head).head);
+        QVERIFY(m->row(head).graph.merge);
+        QCOMPARE(d.currentRow(), head);   // HEAD's chosen first
+        QVector<GraphRow> rows;
+        for (int i = 0; i < m->rowCount(); ++i) rows << m->row(i).graph;
+        QCOMPARE(brokenLine(rows), QString());
+        QVERIFY(m->lanes() >= 2);
+        // The merge chosen: its parents, its file, its changes.
+        QVERIFY(d.info()->toPlainText().contains("Parents"));
+        QVERIFY(d.info()->toHtml().contains("commit:" + h.value("third")));
+        QCOMPARE(d.files()->topLevelItemCount(), 1);
+        QCOMPARE(d.files()->topLevelItem(0)->text(0), QStringLiteral("f.txt"));
+        QCOMPARE(d.files()->topLevelItem(0)->text(1), QStringLiteral("+2"));
+        QVERIFY(d.details()->toPlainText().contains("+f2"));
+        emit d.info()->anchorClicked(QUrl("commit:" + h.value("third")));
+        QCOMPARE(m->row(d.currentRow()).commit.subject, QStringLiteral("third"));
+        QVERIFY(d.info()->toPlainText().contains("tag v1.0"));
+        QVERIFY(d.details()->toPlainText().contains("+third"));
+        // A file chosen: its changes alone.
+        QVERIFY(d.select(h.value("f2")));
+        QCOMPARE(d.files()->topLevelItemCount(), 1);
+        d.files()->setCurrentItem(d.files()->topLevelItem(0));
+        QVERIFY(d.details()->toPlainText().contains("+f2"));
+        // ...a copy opened as the commit has it: "f (abc1234).txt"; again,
+        // the same file.
+        QSignalSpy opened(Commands::instance(), &Commands::openVersionRequested);
+        QMenu* fileMenu = d.fileMenuFor(0);
+        QVERIFY(fileMenu->findChild<QAction*>("gitOpenVersion") != nullptr);
+        fileMenu->findChild<QAction*>("gitOpenVersion")->trigger();
+        delete fileMenu;
+        QCOMPARE(opened.count(), 1);
+        const QString version = opened.first().first().toString();
+        QCOMPARE(QFileInfo(version).fileName(), QStringLiteral("f (%1).txt").arg(h.value("f2").left(7)));
+        QCOMPARE(readAll(version), QByteArray("f1\nf2\n"));
+        const QDateTime written = QFileInfo(version).lastModified();
+        fileMenu = d.fileMenuFor(0);
+        fileMenu->findChild<QAction*>("gitOpenVersion")->trigger();
+        delete fileMenu;
+        QCOMPARE(opened.count(), 2);
+        QCOMPARE(opened.last().first().toString(), version);
+        QCOMPARE(QFileInfo(version).lastModified(), written);   // (not written again)
+        // The first commit's b.txt: b.txt's lines alone.
+        QVERIFY(d.select(h.value("first")));
+        QCOMPARE(d.files()->topLevelItemCount(), 2);
+        for (int i = 0; i < 2; ++i)
+            if (d.files()->topLevelItem(i)->text(0) == "b.txt") d.files()->setCurrentItem(d.files()->topLevelItem(i));
+        QVERIFY(d.details()->toPlainText().contains("+bee"));
+        QVERIFY(!d.details()->toPlainText().contains("+one"));
+        // The changes not committed: the whole diff, the file listed.
+        d.selectRow(0);
+        QVERIFY(d.details()->toPlainText().contains("+not committed"));
+        QCOMPARE(d.files()->topLevelItemCount(), 1);
+        QCOMPARE(d.files()->topLevelItem(0)->text(0), QStringLiteral("a.txt"));
+
+        // Which commits: the list, a branch's, the one checked out (its
+        // first parents only), every branch without the remotes'.
+        QStringList scopes;
+        for (int i = 0; i < d.scopeBox()->count(); ++i) scopes << d.scopeBox()->itemData(i).toString();
+        for (const char* s : {"all", "current", "main", "feature/x", "topic", "origin/main", "origin/wip", "refs/tags/v1.0"})
+            QVERIFY2(scopes.contains(QLatin1String(s)), s);
+        QCOMPARE(d.scopeBox()->itemText(1), QStringLiteral("Current Branch (main)"));
+        d.setScope("topic");
+        d.reload();
+        QCOMPARE(m->rowCount(), 3);   // t1, second, first: no changes row
+        QCOMPARE(m->row(0).commit.subject, QStringLiteral("t1"));
+        d.setScope("current");
+        d.reload();
+        QCOMPARE(m->rowCount(), 1 + 6);
+        QMenu* view = d.viewButton()->menu();
+        QAction* firstParent = view->findChild<QAction*>("gitHistoryFirstParent");
+        firstParent->trigger();
+        QCOMPARE(m->rowCount(), 1 + 4);
+        QCOMPARE(QucsSettingsFile().value("Git/historyFirstParent").toBool(), true);
+        firstParent->trigger();
+        d.setScope("all");
+        view->findChild<QAction*>("gitHistoryRemotes")->trigger();
+        QCOMPARE(m->rowCount(), 1 + 8);
+        QCOMPARE(m->rowOf(h.value("wip")), -1);
+        view->findChild<QAction*>("gitHistoryRemotes")->trigger();
+        QCOMPARE(m->rowCount(), 1 + 9);
+
+        // Find: a subject, a tag, an author (the next one with Enter).
+        d.findField()->setText("f2");
+        QCOMPARE(m->row(d.currentRow()).commit.subject, QStringLiteral("f2"));
+        QCOMPARE(d.findLabel()->text(), QStringLiteral("1 of 1"));
+        QVERIFY(m->isFound(d.currentRow()));
+        d.findField()->setText("v1.0");
+        QCOMPARE(m->row(d.currentRow()).commit.subject, QStringLiteral("third"));
+        d.selectRow(0);
+        d.findField()->setText("tester");
+        QCOMPARE(d.findLabel()->text(), QStringLiteral("1 of 9"));
+        const int first = d.currentRow();
+        QTest::keyClick(d.findField(), Qt::Key_Return);
+        QVERIFY(d.currentRow() > first);
+        QCOMPARE(d.findLabel()->text(), QStringLiteral("2 of 9"));
+        QTest::keyClick(d.findField(), Qt::Key_Return, Qt::ShiftModifier);
+        QCOMPARE(d.currentRow(), first);
+        QVERIFY(d.select(h.value("f2")));
+        d.findField()->setText("f");   // (f2 has it: it stays chosen)
+        QCOMPARE(m->row(d.currentRow()).commit.subject, QStringLiteral("f2"));
+        d.findField()->setText(h.value("t1").left(8));
+        QCOMPARE(m->row(d.currentRow()).commit.subject, QStringLiteral("t1"));
+        d.findField()->setText("no such thing");
+        QCOMPARE(d.findLabel()->text(), QStringLiteral("none"));
+        d.findField()->clear();
+
+        // A commit's menu: the branches and tags at it.
+        const auto names = [](QMenu* menu) {
+            QStringList out;
+            for (QAction* a : menu->findChildren<QAction*>())
+                if (!a->objectName().isEmpty()) out << a->objectName() + "=" + a->text();
+            return out.join(" | ");
+        };
+        QMenu* menu = d.menuFor(m->rowOf(h.value("f2")));
+        QString said = names(menu);
+        for (const char* s : {"gitCheckOutBranch=Check Out feature/x", "gitMergeHere=Merge feature/x into main…", "gitDeleteBranchHere=Delete Branch feature/x…",
+                              "gitCopyHash", "gitCopySubject", "gitCompareWorkTree", "gitBranchHere", "gitTagHere", "gitRevertCommit", "gitCherryPick"})
+            QVERIFY2(said.contains(QString::fromUtf8(s)), qPrintable(QString::fromUtf8(s) + " in " + said));
+        menu->findChild<QAction*>("gitCopySubject")->trigger();
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("f2"));
+        delete menu;
+        menu = d.menuFor(m->rowOf(h.value("second")));
+        QVERIFY(names(menu).contains("gitCheckOutRemote=Check Out origin/main as a Local Branch"));
+        delete menu;
+        menu = d.menuFor(head);
+        QVERIFY(!names(menu).contains("gitMergeHere"));   // (HEAD itself)
+        QVERIFY(!names(menu).contains("gitDeleteBranchHere"));   // (checked out)
+        delete menu;
+        menu = d.menuFor(0);
+        QVERIFY(names(menu).contains("gitCommitChanges"));
+        delete menu;
+        // A tag deleted there (asked): gone, the graph read again.
+        menu = d.menuFor(m->rowOf(h.value("f1")));
+        QVERIFY(names(menu).contains("gitDeleteTagHere=Delete Tag light…"));
+        {
+            BoxCounter yes(QStringLiteral("Yes"));
+            menu->findChild<QAction*>("gitDeleteTagHere")->trigger();
+            QCOMPARE(yes.texts().size(), 1);
+        }
+        delete menu;
+        QVERIFY(!tags(repo).contains("light"));
+        QVERIFY(m->row(m->rowOf(h.value("f1"))).commit.refList.isEmpty());
+
+        // Read again as the repository changes: a file saved - the changes
+        // row alone; a commit - all of it, the commit chosen kept.
+        QVERIFY(d.select(h.value("t1")));
+        QSignalSpy resets(m, &QAbstractItemModel::modelReset);
+        QVERIFY(write(repo + "/c.txt", "new\n"));
+        Tracker::instance()->refresh(repo);
+        QTRY_COMPARE_WITH_TIMEOUT(m->row(0).commit.subject, QStringLiteral("Uncommitted changes (2 files)"), 15000);
+        QCOMPARE(m->rowCount(), 10);
+        QCOMPARE(resets.count(), 0);   // (the graph not read again)
+        QCOMPARE(m->row(d.currentRow()).commit.subject, QStringLiteral("t1"));
+        QVERIFY(!gitIn(repo, {"add", "c.txt"}).isNull());
+        QVERIFY(!gitIn(repo, {"commit", "-q", "-m", "fourth", "--", "c.txt"}).isNull());
+        Tracker::instance()->refresh(repo);
+        QTRY_COMPARE_WITH_TIMEOUT(m->rowCount(), 11, 15000);
+        QCOMPARE(m->row(1).commit.subject, QStringLiteral("fourth"));
+        QVERIFY(m->row(1).head);
+        QCOMPARE(m->row(d.currentRow()).commit.subject, QStringLiteral("t1"));
+
+        // Painted: HEAD's ring in its lane's colour, a tag's label.
+        d.selectRow(0);
+        QApplication::processEvents();
+        const QImage shot = d.commits()->viewport()->grab().toImage();
+        const qreal ratio = shot.devicePixelRatio();
+        const int headRow = 1;
+        const QRect r = d.commits()->visualRect(m->index(headRow, 0));
+        const QPointF centre(r.left() + 6 + m->row(headRow).graph.lane * GraphDelegate::LaneWidth + GraphDelegate::LaneWidth / 2.0 - 3, r.center().y() + 0.5);
+        const QColor lane = laneColour(m->row(headRow).graph.colour, d.commits()->palette());
+        bool ring = false;
+        for (int dy = -1; dy <= 1 && !ring; ++dy)
+            for (int dx = -1; dx <= 1 && !ring; ++dx) {
+                const QColor c = shot.pixelColor(QPoint(int((centre.x() + dx) * ratio), int((centre.y() + dy) * ratio)));
+                ring = qAbs(c.red() - lane.red()) < 30 && qAbs(c.green() - lane.green()) < 30 && qAbs(c.blue() - lane.blue()) < 30;
+            }
+        QVERIFY2(ring, qPrintable(lane.name()));
+        const QRect tagRow = d.commits()->visualRect(m->index(m->rowOf(h.value("third")), 0));
+        const bool dark = qucs_s::ink::isDark(d.commits()->palette().color(QPalette::Base));
+        const QColor tagFill = dark ? QColor(0x5c, 0x4a, 0x12) : QColor(0xfb, 0xe7, 0xa8);
+        int tagPixels = 0;
+        for (int y = int(tagRow.top() * ratio); y < int(tagRow.bottom() * ratio); ++y)
+            for (int x = int(tagRow.left() * ratio); x < int(tagRow.right() * ratio); ++x) tagPixels += shot.pixelColor(x, y).rgb() == tagFill.rgb();
+        QVERIFY2(tagPixels > 20, qPrintable(QString::number(tagPixels)));
+        d.close();
+
+        // A page at a time: Show More, the lanes going on as at once.
+        HistoryDialog paged(repo);
+        paged.setPageSize(3);
+        paged.reload();
+        QCOMPARE(paged.model()->rowCount(), 1 + 3);
+        QVERIFY(paged.moreButton()->isEnabled());
+        while (paged.moreButton()->isEnabled()) paged.loadMore();
+        QCOMPARE(paged.model()->rowCount(), m->rowCount());
+        for (int i = 0; i < m->rowCount(); ++i) {
+            QCOMPARE(paged.model()->row(i).commit.hash, m->row(i).commit.hash);
+            QCOMPARE(paged.model()->row(i).graph.lane, m->row(i).graph.lane);
+        }
+
+        // A file's history: its commits in one line (third's parent is
+        // second, which did not change b.txt).
+        HistoryDialog fileHistory(repo, repo + "/b.txt");
+        QCOMPARE(fileHistory.scope(), QStringLiteral("current"));
+        QCOMPARE(fileHistory.model()->rowCount(), 2);
+        for (int i = 0; i < 2; ++i) {
+            QCOMPARE(fileHistory.model()->row(i).graph.lane, 0);
+            QCOMPARE(fileHistory.model()->row(i).graph.width, 1);
+        }
+        QCOMPARE(fileHistory.model()->row(0).commit.subject, QStringLiteral("third"));
+        QCOMPARE(fileHistory.model()->row(1).commit.subject, QStringLiteral("first"));
+    }
+
+    // Claude's git_log: every branch ('all'), each commit's parents, git's
+    // drawing of the lines ('graph'), the History window opened ('show').
+    void claudeReadsTheGraph()
+    {
+        QHash<QString, QString> h;
+        const QString repo = makeGraphRepo("graphclaude", &h);
+        QVERIFY(!repo.isEmpty());
+        QJsonObject r = call("git_log", {{"path", repo}, {"all", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject j = json(r);
+        QJsonArray commits = j.value("commits").toArray();
+        QCOMPARE(commits.size(), 9);
+        QStringList subjects;
+        for (const QJsonValue& c : commits) subjects << c.toObject().value("subject").toString();
+        QVERIFY(subjects.contains("wip") && subjects.contains("tagged") && subjects.contains("t1"));
+        for (const QJsonValue& c : commits)
+            if (c.toObject().value("subject").toString().startsWith("Merge")) {
+                QCOMPARE(c.toObject().value("parents").toArray().size(), 2);
+                QVERIFY(c.toObject().value("merge").toBool());
+            }
+        QCOMPARE(json(call("git_log", {{"path", repo}})).value("commits").toArray().size(), 6);
+        QVERIFY(failed(call("git_log", {{"path", repo}, {"all", true}, {"ref", "topic"}})));
+        r = call("git_log", {{"path", repo}, {"all", true}, {"graph", true}});
+        const QJsonArray graph = json(r).value("graph").toArray();
+        QStringList lines;
+        for (const QJsonValue& l : graph) lines << l.toString();
+        QVERIFY2(lines.join("\n").contains("Merge branch 'feature/x'") && lines.join("\n").contains("|"), qPrintable(lines.join("\n")));
+        QVERIFY(lines.first().startsWith("*"));
+        // Shown: the window, at the first commit listed.
+        r = call("git_log", {{"path", repo}, {"ref", "topic"}, {"show", true}});
+        QVERIFY2(json(r).contains("shown"), qPrintable(text(r)));
+        HistoryDialog* shown = nullptr;
+        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
+            if (auto* d = qobject_cast<HistoryDialog*>(w.data()); d != nullptr && d->root() == repo) shown = d;
+        QVERIFY(shown != nullptr);
+        QCOMPARE(shown->scope(), QStringLiteral("topic"));
+        QCOMPARE(shown->model()->row(shown->currentRow()).commit.subject, QStringLiteral("t1"));
+        QVERIFY(shown->path().isEmpty());   // (the repository's folder: its whole history, not a file's)
+        // Again, every branch: the same window.
+        r = call("git_log", {{"path", repo}, {"all", true}, {"show", true}});
+        QVERIFY(json(r).contains("shown"));
+        int windows = 0;
+        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
+            if (auto* d = qobject_cast<HistoryDialog*>(w.data()); d != nullptr && d->root() == repo && d->isVisible()) ++windows;
+        QCOMPARE(windows, 1);
+        QCOMPARE(shown->scope(), QStringLiteral("all"));
+        QCOMPARE(Commands::instance()->showHistory(repo), shown);
+        QVERIFY(Commands::instance()->showHistory(repo, repo + "/b.txt") != shown);   // (a file's: its own)
+        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
+            if (auto* d = qobject_cast<HistoryDialog*>(w.data()); d != nullptr && d->root() == repo) d->close();
     }
 
     // A merge in conflict over a schematic open in a tab: git's file has
@@ -1759,7 +2297,7 @@ private slots:
         QVERIFY2(shown.startsWith("Schematic changes, part by part:") && shown.contains("\"33nF\""), qPrintable(shown.left(300)));
         QVERIFY(text(call("git_show", {{"path", repo}, {"commit", "HEAD~1"}})).contains("new: 8 parts"));
         HistoryDialog history(repo);
-        history.commits()->setCurrentItem(history.commits()->topLevelItem(0));
+        QVERIFY(history.select(log(repo).first().hash));
         QTRY_VERIFY(history.details()->toPlainText().startsWith("Schematic changes, part by part:"));
         QVERIFY(write(repo + "/RC_filter_FFT.sch", QString(base).replace("\"10nF\"", "\"47nF\"").toUtf8()));
         Commands::instance()->commit(repo);
