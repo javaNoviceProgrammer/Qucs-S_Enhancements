@@ -169,6 +169,10 @@ MultiphysicsDoc::MultiphysicsDoc(QucsApp* app, const QString& name) : QFrame(), 
 
 MultiphysicsDoc::~MultiphysicsDoc()
 {
+    // Its undo stack goes with it, emitting its clean and can-undo changes:
+    // not to this, half gone (a cast UBSan calls undefined), nor to the
+    // window, which may be going too.
+    disconnect(a_undo, nullptr, this, nullptr);
     if (a_job && a_job->thread) {
         a_job->cancel = true;
         a_job->thread->wait();
