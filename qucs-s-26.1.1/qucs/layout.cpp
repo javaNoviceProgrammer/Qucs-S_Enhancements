@@ -780,6 +780,56 @@ LayerStyle paletteStyle(int index)
 
 namespace {
 
+// A colour's relative luminance (WCAG): its channels made linear, weighed
+// as the eye weighs them.
+double luminance(const QColor& colour)
+{
+    const auto linear = [](double c) { return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4); };
+    const QColor c = colour.toRgb();
+    return 0.2126 * linear(c.redF()) + 0.7152 * linear(c.greenF()) + 0.0722 * linear(c.blueF());
+}
+
+} // namespace
+
+double contrastRatio(const QColor& a, const QColor& b)
+{
+    const double la = luminance(a), lb = luminance(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
+QColor standingOut(const QColor& colour, const QColor& background, double ratio)
+{
+    if (!colour.isValid() || !background.isValid() || contrastRatio(colour, background) >= ratio) return colour;
+    // Towards black or white, whichever is further from the background;
+    // the lightness that is just enough found by halving.
+    const bool darker = contrastRatio(QColor(Qt::black), background) >= contrastRatio(QColor(Qt::white), background);
+    float h = 0, s = 0, l = 0, a = 1;
+    colour.toHsl().getHslF(&h, &s, &l, &a);
+    float lo = darker ? 0.0f : l, hi = darker ? l : 1.0f;
+    for (int i = 0; i < 24; ++i) {
+        const float mid = (lo + hi) / 2;
+        const bool enough = contrastRatio(QColor::fromHslF(h, s, mid, a), background) >= ratio;
+        (enough == darker ? lo : hi) = mid;
+    }
+    // In the 8 bits a channel is drawn in, still enough.
+    float found = darker ? lo : hi;
+    QColor shown = QColor::fromRgba(QColor::fromHslF(h, s, found, a).rgba());
+    while (contrastRatio(shown, background) < ratio && found > 0 && found < 1) {
+        found = std::clamp(found + (darker ? -0.002f : 0.002f), 0.0f, 1.0f);
+        shown = QColor::fromRgba(QColor::fromHslF(h, s, found, a).rgba());
+    }
+    return shown;
+}
+
+LayerStyle standingOut(LayerStyle style, const QColor& background)
+{
+    style.frame = standingOut(style.frame, background, LayerContrast);
+    style.fill = standingOut(style.fill, background, LayerContrast);
+    return style;
+}
+
+namespace {
+
 // KLayout's dither patterns, as near as Qt's patterns come.
 Qt::BrushStyle patternOf(const QString& dither)
 {
@@ -1067,7 +1117,7 @@ public:
         p.setRenderHint(QPainter::Antialiasing, false);
         for (int i = 0; i < polygons.size(); ++i) {
             if (polygons[i].isEmpty() && dots[i].isEmpty()) continue;
-            const LayerStyle style = O.styles != nullptr && i < O.styles->size() ? O.styles->at(i) : paletteStyle(i);
+            const LayerStyle style = standingOut(O.styles != nullptr && i < O.styles->size() ? O.styles->at(i) : paletteStyle(i), O.background);
             QPen pen(style.frame, 0);
             pen.setCosmetic(true);
             p.setPen(pen);

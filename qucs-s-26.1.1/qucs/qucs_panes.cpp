@@ -14,6 +14,7 @@
 #include "ink.h"
 #include "main.h"
 #include "schematic.h"
+#include "layoutdoc.h"
 #include "textdoc.h"
 #include "misc.h"
 #include "statusbar.h"
@@ -270,6 +271,12 @@ void QucsApp::applyGridSetting()
 void QucsApp::updateGridAction()
 {
   if (showGrid == nullptr) return;
+  if (auto *layout = qobject_cast<LayoutDoc *>(DocumentTab->currentWidget())) {
+    showGrid->setText(tr("Show Grid (all layouts)"));
+    showGrid->setStatusTip(tr("Show or hide the grid behind every GDSII or OASIS layout."));
+    showGrid->setChecked(layout->view()->gridShown());
+    return;
+  }
   if (QucsSettings.GridMode != 0) {
     showGrid->setText(tr("Show Grid (all schematics)"));
     showGrid->setStatusTip(tr("Show or hide the grid of every schematic (Application Settings > Appearance)."));
