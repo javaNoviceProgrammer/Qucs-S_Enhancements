@@ -25,6 +25,8 @@
 #include <stdlib.h>
 
 #include <QAction>
+#include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDockWidget>
@@ -79,6 +81,7 @@
 #include "sheetdoc.h"
 #include "zipdoc.h"
 #include "layoutdoc.h"
+#include "multiphysicsdoc.h"
 #include "imagedoc.h"
 #include "wire.h"
 #include "wirelabel.h"
@@ -466,7 +469,7 @@ void QucsApp::slotMoveText(bool on) {
 void QucsApp::slotZoomIn(bool on) {
   QWidget *w = DocumentTab->currentWidget();
   if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w) || isArchiveDocument(w) || isLayoutDocument(w)
-      || isImageDocument(w)) {
+      || isImageDocument(w) || isMultiphysicsDocument(w)) {
     docIn(w)->zoomBy(1.5f);
     magPlus->blockSignals(true);
     magPlus->setChecked(false);
@@ -493,7 +496,7 @@ void QucsApp::slotEscape() {
 void QucsApp::slotSelect(bool on) {
   QWidget *w = DocumentTab->currentWidget();
   if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w) || isArchiveDocument(w) || isLayoutDocument(w)
-      || isImageDocument(w)) {
+      || isImageDocument(w) || isMultiphysicsDocument(w)) {
     if (auto *text = qobject_cast<TextDoc *>(w)) text->viewport()->setFocus();
     else w->setFocus();
     select->blockSignals(true);
@@ -558,6 +561,8 @@ void QucsApp::slotEditCopy() {
     sheet->copy();
   } else if (auto *image = qobject_cast<ImageDoc *>(Doc)) {
     image->copyImage();   // the selection, or the whole picture
+  } else if (auto *model = qobject_cast<MultiphysicsDoc *>(Doc)) {
+    QApplication::clipboard()->setImage(model->view()->picture());   // the Graphics view
   } else if (Schematic *sch = schematicIn(Doc)) {
     sch->copy();
   }
@@ -571,7 +576,7 @@ void QucsApp::slotEditPaste(bool on) {
   QWidget *Doc = DocumentTab->currentWidget();
 
   // Nothing is pasted into a PDF document, a layout or a picture.
-  if (Doc == nullptr || isPdfDocument(Doc) || isLayoutDocument(Doc) || isImageDocument(Doc)) {
+  if (Doc == nullptr || isPdfDocument(Doc) || isLayoutDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc)) {
     editPaste->blockSignals(true);
     editPaste->setChecked(false);
     editPaste->blockSignals(false);
@@ -761,6 +766,10 @@ void QucsApp::slotEditUndo() {
     sheet->undo();
     return;
   }
+  if (auto *model = qobject_cast<MultiphysicsDoc *>(DocumentTab->currentWidget())) {
+    model->undo();
+    return;
+  }
   if (auto *zip = qobject_cast<ZipDoc *>(DocumentTab->currentWidget())) {
     zip->undo();
     return;
@@ -785,6 +794,10 @@ void QucsApp::slotEditUndo() {
 void QucsApp::slotEditRedo() {
   if (auto *sheet = qobject_cast<SheetDoc *>(DocumentTab->currentWidget())) {
     sheet->redo();
+    return;
+  }
+  if (auto *model = qobject_cast<MultiphysicsDoc *>(DocumentTab->currentWidget())) {
+    model->redo();
     return;
   }
   if (auto *zip = qobject_cast<ZipDoc *>(DocumentTab->currentWidget())) {
@@ -1395,7 +1408,7 @@ void QucsApp::slotEditFind() {
     QMetaObject::invokeMethod(Doc, "showSearch");   // its own find bar (a layout's: its cells)
     return;
   }
-  if (isSheetDocument(Doc) || isImageDocument(Doc)) return;   // not searched (yet); a picture has no text
+  if (isSheetDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc)) return;   // not searched (yet); a picture has no text
   if (auto *zip = qobject_cast<ZipDoc *>(Doc)) {   // its names filtered
     zip->focusFilter();
     return;
@@ -1418,7 +1431,7 @@ void QucsApp::slotChangeProps() {
     QMetaObject::invokeMethod(Doc, "showSearch");   // nothing to replace in it
     return;
   }
-  if (isSheetDocument(Doc) || isArchiveDocument(Doc) || isImageDocument(Doc)) return;
+  if (isSheetDocument(Doc) || isArchiveDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc)) return;
   if (isTextDocument(Doc)) {
     ((TextDoc *)Doc)->viewport()->setFocus();
 
@@ -2060,7 +2073,8 @@ void QucsApp::slotBuildModule() {
   // A Verilog-A (or Verilog) source is built: not a PDF document.
   if (getDoc() == nullptr || isPdfDocument(DocumentTab->currentWidget())
       || isSheetDocument(DocumentTab->currentWidget()) || isArchiveDocument(DocumentTab->currentWidget())
-      || isLayoutDocument(DocumentTab->currentWidget()) || isImageDocument(DocumentTab->currentWidget())) return;
+      || isLayoutDocument(DocumentTab->currentWidget()) || isImageDocument(DocumentTab->currentWidget())
+      || isMultiphysicsDocument(DocumentTab->currentWidget())) return;
 
   // reset message dock on entry
   messageDock->reset();

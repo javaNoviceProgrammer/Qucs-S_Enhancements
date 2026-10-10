@@ -281,7 +281,7 @@ done)"
 # The resources main.cpp looks for next to the executable; a component
 # whose netlist includes one of the spicelibrary files fails in the
 # simulator when it is missing.
-for want in examples/ngspice library/Ideal.lib library/BJT_Darlington library/XyceDigital/NAND2.sym symbols python/qucs.py \
+for want in examples/ngspice examples/multiphysics/microstrip.qfem library/Ideal.lib library/BJT_Darlington library/XyceDigital/NAND2.sym symbols python/qucs.py \
             octave/loadQucsDataSet.m \
             spicelibrary/xfmr.cir spicelibrary/spdt.cir spicelibrary/spdt_xyce.cir \
             spicelibrary/coax.cir spicelibrary/core.cir spicelibrary/winding.cir; do

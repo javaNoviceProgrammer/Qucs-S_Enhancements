@@ -141,6 +141,7 @@ const KindRow kKinds[] = {
     {"png jpg jpeg gif bmp svg tif tiff webp ico icns", QT_TRANSLATE_NOOP("FileBrowser", "Image"), "", 0xd45d9c,
      Kind::Image, false},
     {"gds gds2 gdsii oas oasis", QT_TRANSLATE_NOOP("FileBrowser", "Layout (GDSII, OASIS)"), "", 0x2f8f9d, Kind::Layout, true},
+    {"qfem", QT_TRANSLATE_NOOP("FileBrowser", "Qucs-S multiphysics model"), "FEM", 0x7b4fbf, Kind::Mesh, true},
     {"zip tar gz tgz bz2 xz 7z rar", QT_TRANSLATE_NOOP("FileBrowser", "Archive"), "", 0x8a6d3b, Kind::Archive, false},
 };
 
@@ -290,6 +291,16 @@ void drawGlyph(QPainter& p, const QRectF& art, Kind::Glyph glyph, const QColor& 
         p.setBrush(colour);
         p.setPen(Qt::NoPen);
         p.drawEllipse(QPointF(l + w * 0.76, t + h * 0.26), h * 0.12, h * 0.12);
+        break;
+    }
+    case Kind::Mesh: {
+        // A triangle cut in triangles: a finite element mesh.
+        const QPointF a(l, t + h), b(l + w, t + h), c(l + w / 2, t);
+        const QPointF ab = (a + b) / 2, bc = (b + c) / 2, ca = (c + a) / 2;
+        p.setBrush(QColor(colour.red(), colour.green(), colour.blue(), 70));
+        p.drawPolygon(QPolygonF{a, b, c});
+        p.setBrush(Qt::NoBrush);
+        p.drawPolygon(QPolygonF{ab, bc, ca});
         break;
     }
     case Kind::Layout: {
