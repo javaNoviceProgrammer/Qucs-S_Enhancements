@@ -876,6 +876,15 @@ const char* const kTools = R"JSON([
  "description": "A file in conflict - a merge, a cherry-pick, a revert or a stash brought back left git's conflict marks in it, which no schematic reads (its open tab keeps the version from before): 'action' show (the default: its versions - mine, the branch's as before; theirs, the one merged in; base, where both started - and for a schematic what each side changed, part by part), take_ours or take_theirs (the file becomes that version whole, staged as resolved: the other side's changes, and any edit made in the file, are gone from it - asked about each time), or open (both versions written beside it as 'name (mine).sch' and 'name (theirs).sch', untracked, and opened). A file resolved by hand - its marks edited out, or a schematic's tab saved over it with save_document's 'replace' - is marked resolved with git_stage; then git_commit ends the merge, or git_abort gives it up.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file in conflict - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository)"},
    "action": {"type": "string", "enum": ["show", "take_ours", "take_theirs", "open"], "description": "What to do; show when not given"}}, "required": ["path"]}},
+{"name": "xml",
+ "description": "An XML file (.xml, .xsd, .xsl, .plist, .ui, .qrc...) as Qucs-S's XML editor reads it, in its tab (opened when it is not): 'action' outline (the default: its elements to 'depth' levels and 'max' nodes, each with its path, line, attributes and text; comments and instructions), check (whether it is well formed, else the first error's line, column and message; its count of elements and encoding), get (the node at 'node' - its kind, value and its text in the file), set (an attribute's, a text's, a CDATA's or a comment's value at 'node' set to 'value', escaped as it must be), rename ('node', an element - both its tags - or an attribute, to 'value'), add_attribute ('name' = 'value' on the element at 'node'), add_element (an empty element 'name' in the one at 'node', on a line of its own; the root when the document has none), delete ('node'), format (each element on a line, indented; text kept as it is) or minify. A node is named by its path as outline gives it: /catalog/book[2]/@id, /catalog/book[2]/title/text(). Each change is one step of Edit > Undo and is not saved: save_document saves it.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The XML file, relative to the open project's folder (else the workspace), or its tab's title"},
+   "action": {"type": "string", "enum": ["outline", "check", "get", "set", "rename", "add_attribute", "add_element", "delete", "format", "minify"], "description": "What to do; outline when not given"},
+   "node": {"type": "string", "description": "The node's path, as outline gives it (/root/item[2]/@name)"},
+   "name": {"type": "string", "description": "add_attribute, add_element: the new one's name"},
+   "value": {"type": "string", "description": "set: the new value; rename: the new name; add_attribute: its value"},
+   "depth": {"type": "integer", "minimum": 1, "maximum": 64, "description": "outline: how many levels of elements (3 by default)"},
+   "max": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "outline: how many nodes at most (200 by default)"}}, "required": ["path"]}},
 {"name": "git_init",
  "description": "Makes a folder a git repository (git init): 'path', else the open project's folder. Nothing is committed: git_stage and git_commit do that.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The folder, relative to the workspace; the open project's when not given"}}}},
@@ -970,6 +979,7 @@ const struct {
     {"git_commit_action", QT_TRANSLATE_NOOP("QucsControl", "revert, cherry-pick, check out or reset to a git commit from Qucs-S")},
     {"git_abort", QT_TRANSLATE_NOOP("QucsControl", "give up a git merge from Qucs-S")},
     {"git_resolve", QT_TRANSLATE_NOOP("QucsControl", "resolve a git conflict from Qucs-S")},
+    {"xml", QT_TRANSLATE_NOOP("QucsControl", "read or change an XML file in Qucs-S")},
     {"git_init", QT_TRANSLATE_NOOP("QucsControl", "make a git repository from Qucs-S")},
     {"git_clone", QT_TRANSLATE_NOOP("QucsControl", "clone a git repository from Qucs-S")},
     {"git_ignore", QT_TRANSLATE_NOOP("QucsControl", "add a file to .gitignore from Qucs-S")},
@@ -1130,6 +1140,7 @@ const struct {
     {"git_commit_action", "git revert cherry-pick reset checkout commit undo history"},
     {"git_abort", "git abort merge rebase cherry-pick conflict give up"},
     {"git_resolve", "git conflict resolve merge ours theirs mine markers both versions"},
+    {"xml", "xml xsd xsl plist ui qrc element attribute xpath tree outline format pretty print minify well formed"},
     {"git_init", "git init create repository version control start"},
     {"git_clone", "git clone download repository github url"},
     {"git_ignore", "git ignore gitignore exclude untrack"},
@@ -4683,6 +4694,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("git_commit_action")) return gitCommitAction(args);
     if (tool == QLatin1String("git_abort")) return gitAbort(args);
     if (tool == QLatin1String("git_resolve")) return gitResolve(args);
+    if (tool == QLatin1String("xml")) return xmlDocument(args);
     if (tool == QLatin1String("git_init")) return gitInit(args);
     if (tool == QLatin1String("git_ignore")) return gitIgnore(args);
     async = true;
