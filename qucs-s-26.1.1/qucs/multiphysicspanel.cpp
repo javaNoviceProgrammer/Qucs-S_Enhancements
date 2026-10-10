@@ -367,7 +367,15 @@ void MultiphysicsPanel::setDocument(MultiphysicsDoc* doc)
     a_connections << connect(doc, &MultiphysicsDoc::focusChanged, this, [this](const QString& tag) {
         if (currentTag() != tag) selectNode(tag);
     });
-    a_connections << connect(doc, &QObject::destroyed, this, [this] { setDocument(nullptr); });
+    // Closed: let go without comparing it (a QPointer's comparison casts what
+    // is by now only a QWidget, which UBSan says is undefined).
+    a_connections << connect(doc, &QObject::destroyed, this, [this] {
+        for (const QMetaObject::Connection& c : a_connections) disconnect(c);
+        a_connections.clear();
+        a_doc.clear();
+        fillStart();
+        a_pages->setCurrentWidget(a_start);
+    });
     a_pages->setCurrentWidget(a_splitter);
     a_shownTag.clear();
     rebuildTree();
