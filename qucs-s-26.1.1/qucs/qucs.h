@@ -65,6 +65,8 @@ namespace qucs_s::python { class Exchange; }
 class ClaudeCodeTabs;
 class FileBrowser;
 class ZipDoc;
+class MultiphysicsDoc;
+class MultiphysicsPanel;
 class StatusPanel;
 
 class QLabel;
@@ -300,6 +302,9 @@ public:
   /// Code, a tab each, in the workspace folder unless another is chosen.
   ClaudeCodeTabs *claudeCode() const { return claudeTabs; }
   FileBrowser *fileBrowserPanel() const { return fileBrowser; }
+  /// The Multiphysics tab of the left dock (multiphysicspanel.h).
+  MultiphysicsPanel *multiphysicsPanel() const { return a_multiphysicsPanel; }
+  QMenu *multiphysicsMenu() const { return a_multiphysicsMenu; }
   QDockWidget *claudeDockWidget() const { return claudeDock; }
   /// The dock the tuner is shown in while tuning is on (made the first time).
   QDockWidget *tunerDockWidget() const { return tunerDock; }
@@ -506,6 +511,15 @@ public:
   /// Whether a file of that name is a picture opened in an ImageDoc (.png,
   /// .jpg, .svg, .gif... what this Qt reads; imagedoc.h's suffixes()).
   static bool isImageFile(const QString &name);
+  /// Whether \a w is a multiphysics model in a tab (multiphysicsdoc.h).
+  static bool isMultiphysicsDocument(QWidget *);
+  /// Whether a file of that name is a multiphysics model (.qfem).
+  static bool isMultiphysicsFile(const QString &name);
+  /// A new multiphysics model in a tab, untitled; the Multiphysics panel
+  /// shown.
+  MultiphysicsDoc *newMultiphysicsModel();
+  /// The left dock's Multiphysics tab brought to the front.
+  void showMultiphysicsPanel();
   /// Opens \a path in the text editor whatever its kind - an SVG's text -
   /// in place of its picture's tab when that is open. False when it could
   /// not be read.
@@ -911,6 +925,10 @@ private:
   QMenu *a_pythonMenu = nullptr;
   QMenu *gitMenu = nullptr;
   void initGitMenu();
+  MultiphysicsPanel *a_multiphysicsPanel = nullptr;   // the left dock's Multiphysics tab
+  QMenu *a_multiphysicsMenu = nullptr;
+  void initMultiphysics();   // its tab and menu (qucs_multiphysics.cpp)
+  void updateMultiphysicsMenu();
   PythonPlotsPane *a_pythonPlots = nullptr;
   QDockWidget *a_pythonPlotsDock = nullptr;
   PythonVariablesPane *a_pythonVariables = nullptr;

@@ -171,6 +171,7 @@ INCLUDE_DIRECTORIES(
 ADD_SUBDIRECTORY( qt3_compat )
 ADD_SUBDIRECTORY( components )
 ADD_SUBDIRECTORY( magnetics )
+ADD_SUBDIRECTORY( multiphysics )
 ADD_SUBDIRECTORY( diagrams )
 ADD_SUBDIRECTORY( dialogs )
 ADD_SUBDIRECTORY( geometry )
@@ -182,8 +183,8 @@ ADD_SUBDIRECTORY( spicecomponents )
 
 SET(QUCS_SRCS
   element.cpp	octave_window.cpp	qucsdoc.cpp
-  textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  qucs_git.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp  zipdoc.cpp  layout.cpp  layoutdoc.cpp  imagedoc.cpp  main.cpp	schematic.cpp
-  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitgraph.cpp githistory.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
+  textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  qucs_git.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp  zipdoc.cpp  layout.cpp  layoutdoc.cpp  multiphysicsview.cpp  multiphysicsdoc.cpp  multiphysicspanel.cpp  qucs_multiphysics.cpp  imagedoc.cpp  main.cpp	schematic.cpp
+  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitgraph.cpp githistory.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_fem.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp qucs_workspace.cpp workspacesession.cpp schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
@@ -269,6 +270,9 @@ sheetdoc.h
 zipdoc.h
 layout.h
 layoutdoc.h
+multiphysicsview.h
+multiphysicsdoc.h
+multiphysicspanel.h
 imagedoc.h
 spreadsheet.h
 zipfile.h
@@ -301,6 +305,9 @@ SET(QUCS_MOC_HDRS
   sheetdoc.h
   zipdoc.h
   layoutdoc.h
+  multiphysicsview.h
+  multiphysicsdoc.h
+  multiphysicspanel.h
   imagedoc.h
   gitrepo.h
   githistory.h
@@ -394,7 +401,7 @@ list(REMOVE_ITEM QUCS_CORE_SRCS main.cpp)
 add_library(qucs-core OBJECT ${QUCS_HDRS} ${QUCS_CORE_SRCS} ${QUCS_MOC_SRCS})
 set(QUCS_LINK_LIBRARIES
     components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat
-    gdstk
+    fem gdstk
     Qt6::Core  Qt6::Gui  Qt6::Widgets Qt6::Svg  Qt6::SvgWidgets Qt6::Xml  Qt6::PrintSupport )
 if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
   list(APPEND QUCS_LINK_LIBRARIES Qt6::Pdf)

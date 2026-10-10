@@ -1,0 +1,51 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A 50 Ω microstrip on FR-4",
+    "description": "The cross-section of a microstrip line: its potential, field and quasi-TEM parameters (C, L, Z0, εeff) - the Line Parameters derived value, against qucs-transcalc's 50.26 Ω and 3.29.",
+    "parameters": [
+        {"name": "w", "expression": "3[mm]", "description": "the strip's width"},
+        {"name": "h", "expression": "1.6[mm]", "description": "the substrate's height"},
+        {"name": "t", "expression": "35[um]", "description": "the copper's thickness"},
+        {"name": "box", "expression": "30*h", "description": "the air box's width and height"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["-box/2", "0"], "size": ["box", "box/2"]},
+            {"type": "rectangle", "label": "substrate", "position": ["-box/2", "0"], "size": ["box", "h"]},
+            {"type": "rectangle", "label": "trace", "position": ["-w/2", "h"], "size": ["w", "t"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"all": true}},
+            {"material": "FR-4", "selection": {"only": ["substrate"]}},
+            {"material": "Copper", "selection": {"only": ["trace"]}}
+        ],
+        "physics": [{
+            "type": "electrostatics", "tag": "es",
+            "selection": {"all": true, "except": {"only": ["trace"]}},
+            "features": [
+                {"type": "terminal", "label": "Strip", "name": "1", "V0": "1[V]", "selection": {"of": ["trace"]}},
+                {"type": "ground", "label": "Ground plane", "selection": {"of": ["substrate"], "side": "bottom"}}
+            ]
+        }],
+        "mesh": {"size": "normal"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electric Potential", "study": "", "plots": [
+                {"type": "surface", "expression": "V"},
+                {"type": "contour", "expression": "V", "levels": 20}
+            ]},
+            {"type": "plotgroup", "label": "Electric Field", "study": "", "plots": [
+                {"type": "surface", "expression": "es.normE", "unit": "V/m", "range": "manual", "min": "0", "max": "1500", "colors": "thermal"},
+                {"type": "arrow", "x": "es.Ex", "y": "es.Ey", "points": ["40", "25"], "scaling": "normalized", "color": "white"}
+            ]}
+        ],
+        "derived": [
+            {"type": "lineparams", "label": "Line Parameters", "terminal": "1"},
+            {"type": "global", "label": "Capacitance", "expression": "es.C11; es.W"}
+        ]
+    }
+}

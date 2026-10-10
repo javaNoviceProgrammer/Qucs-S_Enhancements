@@ -282,6 +282,7 @@ private slots:
         QCOMPARE(rankOf.value("sym"), QStringLiteral("Default"));
         QCOMPARE(rankOf.value("cir"), QStringLiteral("Alternate"));
         QCOMPARE(rankOf.value("va"), QStringLiteral("Alternate"));
+        QCOMPARE(rankOf.value("qfem"), QStringLiteral("Owner"));
         QVERIFY(!rankOf.contains("?"));
     }
 #endif
@@ -297,7 +298,7 @@ private slots:
         for (const QString& line : desktop.split('\n'))
             if (line.startsWith("MimeType="))
                 types = line.mid(9).split(';', Qt::SkipEmptyParts);
-        QCOMPARE(types.size(), 3);
+        QCOMPARE(types.size(), 4);
 
         QFile xml(QUCS_SOURCE_DIR "/qucs/qucs-s-mime.xml");
         QVERIFY(xml.open(QIODevice::ReadOnly));
@@ -315,6 +316,7 @@ private slots:
         QCOMPARE(globOf.value("application/x-qucs-schematic"), QStringLiteral("*.sch"));
         QCOMPARE(globOf.value("application/x-qucs-data-display"), QStringLiteral("*.dpl"));
         QCOMPARE(globOf.value("application/x-qucs-symbol"), QStringLiteral("*.sym"));
+        QCOMPARE(globOf.value("application/x-qucs-multiphysics"), QStringLiteral("*.qfem"));
 
         // The first line is what the files really start with.
         QStringList samples;

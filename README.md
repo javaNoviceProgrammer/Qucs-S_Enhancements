@@ -1954,6 +1954,75 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   ([docs/proposals](docs/proposals/2026-10-06-gds-oasis-layout-viewer.md)).
   A damaged file is refused, not a crash: gdstk's readers were hardened
   for it (`third_party/gdstk/README.qucs.md`).
+- **Multiphysics: a 2D finite element solver, as COMSOL's** (phase 1 of
+  [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
+  (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
+  in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
+  Model*, or the tab's *New Model* and its examples). The tree is the
+  order of work. **Global Definitions**: parameters, each shown with its
+  value and unit, and analytic or interpolated functions. **A 2D
+  component**: its length unit and out-of-plane thickness, and named
+  selections. **Geometry**: rectangles, circles, ellipses, polygons and
+  polylines, and points; move, rotate, scale, mirror, array; union,
+  difference, intersection; *Form Union* makes them one, and numbers its
+  domains, boundaries and points as COMSOL does. **Materials**: from a
+  library of metals, board dielectrics, semiconductors and their
+  insulators, air and water, or your own (*Add to My Materials*).
+  **Physics**:
+  - *Electrostatics*: terminals give the capacitance matrix; floating
+    potentials, surface and space charges.
+  - *Electric Currents*: terminals at a voltage or fed a current give
+    the conductance matrix, the resistance and the Joule power.
+  - *Heat Transfer in Solids*: temperatures, convective and general
+    fluxes, heat sources as a density or a total power.
+
+  **Mesh**: Delaunay triangles, refined till their angles are good. A
+  preset from extremely fine to extremely coarse, or customised; smaller
+  on chosen domains, boundaries or points, or a number of elements on a
+  boundary. Finer on curves and across narrow gaps, growing no faster
+  than a rate. **Studies**, and **results**: 2D plot groups (a colour
+  map, contours, arrows, the mesh), and derived values (globals,
+  integrals, averages, maxima and minima over domains or boundaries,
+  values at points, a transmission line's quasi-TEM C, L, Z0 and εeff).
+
+  Selections are rules where they can be — "the boundaries of *trace*
+  facing down", "between *substrate* and *air*", "the domains of
+  *film*" — so they survive the geometry's changes. Clicks in the
+  Graphics view pick numbers. The settings of the node chosen are under
+  the tree, an expression checked as it is typed: its value and unit in
+  its tooltip, red when it does not compile. A node's menu adds, renames
+  (a geometry object in every rule that names it too), duplicates,
+  disables, moves and deletes. Every change is a step of *Edit → Undo*.
+
+  **Expressions** take units (`3[mm]`, `20[degC]`, `W/(m*K)`), Qucs's
+  suffixes (`10u`, `2.2k`), functions and constants. In the geometry a
+  plain number is in its unit, so `L/2 - 0.6` with `L = 2[mm]` is 0.4 mm.
+  A material or a source may read x, y and the fields (a σ(T), a heat
+  source `ec.Qrh`). Physics that read each other's fields are solved in
+  turn until they agree: a resistor's Joule heating.
+
+  *Compute* (or Simulate, F2) meshes and solves in the background, with
+  progress and *Cancel*. Linear or quadratic elements, the quadratic
+  ones curved on arcs, assembled in parallel and solved by a sparse
+  Cholesky ([Eigen](third_party/eigen/README.qucs.md)): 200,000 unknowns
+  mesh and solve in about 1.5 s on an M-series Mac. Above 400,000
+  unknowns, conjugate gradients. The Graphics view shows the geometry
+  (the chosen node's selection highlighted), the mesh (its smallest
+  angle and quality) or a plot group, panned and zoomed as the layout
+  viewer, the value under the pointer below it. *Image…* saves it, *Edit
+  → Copy* copies it. A model changed after it was solved keeps its old
+  results on show, marked so.
+
+  Examples in *examples/multiphysics*: a microstrip (Z0 50.3 Ω, against
+  qucs-transcalc's 50.26 Ω), a coax, and a thin-film resistor that heats.
+  Claude builds and solves models with `fem_describe`, `fem_model`,
+  `fem_edit`, `fem_build`, `fem_solve`, `fem_evaluate` and `fem_plot`.
+  `test_fem_engine` checks the engine against closed forms on CI, under
+  the sanitizers too: a coax's capacitance (its error falling as h² and
+  h⁴), a capacitor, a floating plate, a bar's resistance, a slab with
+  convection, a pipe, heat sources, Joule heating, and a microstrip
+  against qucs-transcalc. Time-dependent studies, mechanics, magnetics,
+  waves and the circuits' side come in the next phases.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

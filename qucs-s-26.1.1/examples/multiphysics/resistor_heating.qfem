@@ -1,0 +1,64 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A thin-film resistor that heats",
+    "description": "A resistive film between two copper pads on alumina, a current through it: its resistance, the heat its current makes (ec.Qrh, the heat source) and the temperature it rises to - cooled under the substrate and in air above. Electric currents and heat, solved in turn until they agree.",
+    "parameters": [
+        {"name": "L", "expression": "2[mm]", "description": "the film's length between the pads"},
+        {"name": "tf", "expression": "50[um]", "description": "the film's thickness"},
+        {"name": "sigmaf", "expression": "2e5[S/m]", "description": "the film's conductivity"},
+        {"name": "V0", "expression": "0.5[V]", "description": "the voltage across it"},
+        {"name": "hair", "expression": "15[W/(m^2*K)]", "description": "cooling by the air above"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "thickness": "1[mm]",
+        "geometry": [
+            {"type": "rectangle", "label": "substrate", "position": ["-3", "-0.635"], "size": ["6", "0.635"]},
+            {"type": "rectangle", "label": "film", "position": ["-L/2", "0"], "size": ["L", "tf"]},
+            {"type": "rectangle", "label": "padL", "position": ["-L/2-0.6", "0"], "size": ["0.6", "0.035"]},
+            {"type": "rectangle", "label": "padR", "position": ["L/2", "0"], "size": ["0.6", "0.035"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Alumina (96%)", "selection": {"only": ["substrate"]}},
+            {"label": "Resistive film", "sigma": "sigmaf", "k": "2[W/(m*K)]", "epsilonr": "10", "selection": {"only": ["film"]}},
+            {"material": "Copper", "selection": {"only": ["padL", "padR"]}}
+        ],
+        "physics": [
+            {
+                "type": "currents", "tag": "ec",
+                "selection": {"only": ["film", "padL", "padR"]},
+                "features": [
+                    {"type": "terminal", "name": "1", "V0": "V0", "selection": {"of": ["padL"], "side": "left"}},
+                    {"type": "ground", "selection": {"of": ["padR"], "side": "right"}}
+                ]
+            },
+            {
+                "type": "heat", "tag": "ht",
+                "features": [
+                    {"type": "source", "label": "Joule heating", "Q0": "ec.Qrh", "selection": {"only": ["film", "padL", "padR"]}},
+                    {"type": "temperature", "label": "Heat sink", "T0": "25[degC]", "selection": {"of": ["substrate"], "side": "bottom"}},
+                    {"type": "flux", "label": "Air", "kind": "convective", "h": "hair", "Text": "25[degC]", "selection": {"exterior": true, "except": {"of": ["substrate"], "side": "bottom"}}}
+                ]
+            }
+        ],
+        "mesh": {"size": "fine"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Temperature", "study": "", "plots": [
+                {"type": "surface", "expression": "T", "unit": "degC", "colors": "thermal"},
+                {"type": "contour", "expression": "T", "unit": "degC", "levels": 12, "color": "white"}
+            ]},
+            {"type": "plotgroup", "label": "Current density", "study": "", "plots": [
+                {"type": "surface", "expression": "ec.normJ", "unit": "A/mm^2"},
+                {"type": "arrow", "x": "ec.Jx", "y": "ec.Jy", "points": ["30", "8"], "scaling": "normalized"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Resistance, power", "expression": "ec.R; ec.P; ht.P"},
+            {"type": "maximum", "label": "Hottest", "level": "domain", "selection": {"only": ["film"]}, "expression": "T", "unit": "degC"}
+        ]
+    }
+}

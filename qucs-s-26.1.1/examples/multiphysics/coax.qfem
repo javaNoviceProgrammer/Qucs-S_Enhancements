@@ -1,0 +1,36 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A coaxial line",
+    "description": "Two circles: the capacitance per metre of a coax, 2π ε0 εr / ln(b/a) - the benchmark of the solver's quadratic elements, curved on the arcs.",
+    "parameters": [
+        {"name": "a", "expression": "0.45[mm]", "description": "the inner conductor's radius"},
+        {"name": "b", "expression": "1.5[mm]", "description": "the outer conductor's inner radius"},
+        {"name": "epsr", "expression": "2.1", "description": "PTFE between them"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "circle", "label": "shield", "radius": "b"},
+            {"type": "circle", "label": "core", "radius": "a"},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "PTFE", "selection": {"all": true}}],
+        "physics": [{
+            "type": "electrostatics", "tag": "es",
+            "selection": {"only": ["shield"]},
+            "features": [
+                {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["core"]}},
+                {"type": "ground", "selection": {"of": ["shield"]}}
+            ]
+        }],
+        "mesh": {"size": "fine"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [],
+        "derived": [
+            {"type": "global", "label": "Capacitance, and its closed form", "expression": "es.C11; 2*pi*eps0*epsr/log(b/a)*1[m]"},
+            {"type": "lineparams", "label": "Line Parameters", "terminal": "1"}
+        ]
+    }
+}

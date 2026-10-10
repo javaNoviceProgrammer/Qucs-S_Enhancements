@@ -64,6 +64,8 @@
 #include "pdfdoc.h"
 #include "zipdoc.h"
 #include "layoutdoc.h"
+#include "multiphysicsdoc.h"
+#include "multiphysicspanel.h"
 #include "imagedoc.h"
 #include "gitrepo.h"
 #include "gitui.h"
@@ -253,6 +255,7 @@ QucsApp::QucsApp(bool netlist2Console) :
   initActions();
   initMenuBar();
   initGitMenu();
+  initMultiphysics();
   fillSimulatorsComboBox();
   initToolBar();
   initStatusBar();
@@ -2920,6 +2923,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     is_pdf = true;
   }
 #endif
+  else if (isMultiphysicsFile(Name)) {
+    // A multiphysics model: its view, its tree in the Multiphysics panel
+    // (multiphysicsdoc.h).
+    auto *model = new MultiphysicsDoc(this, Name);
+    d = model;
+    i = addDocumentTab(model, Info.fileName());
+  }
   else if (isLayoutFile(Name)) {
     // A GDSII or OASIS layout, read in the background (layoutdoc.h).
     auto *layout = new LayoutDoc(this, Name);
@@ -2991,6 +3001,8 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     return false;
   }
   slotChangeView();
+  // A multiphysics model: its tree in front.
+  if (isMultiphysicsDocument(documentWidget(d))) showMultiphysicsPanel();
   if (Info.suffix() == "sym") {
     // We dealing with a file containing *only* a symbol definition.
     // Because of that we want to switch straight to symbol editing mode
@@ -3162,6 +3174,9 @@ bool QucsApp::saveAs()
     } else if (isLayoutDocument (w)) {
       Filter = tr("Layouts") + " (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)";
       selfilter = Filter;
+    } else if (isMultiphysicsDocument (w)) {
+      Filter = tr("Multiphysics models") + " (*.qfem)";
+      selfilter = Filter;
     } else if (isImageDocument (w)) {
       // Its own kind first (a copy); the others it is converted to.
       const QString own = Info.suffix().toLower();
@@ -3223,6 +3238,9 @@ bool QucsApp::saveAs()
     }
     else if (isArchiveDocument (w)) {
       if (ext.compare("zip", Qt::CaseInsensitive) != 0) s += ".zip";
+    }
+    else if (isMultiphysicsDocument (w)) {
+      if (ext.compare("qfem", Qt::CaseInsensitive) != 0) s += ".qfem";
     }
     else if (isImageDocument (w)) {
       // A picture: of its kind unless the name says another.
@@ -3682,6 +3700,8 @@ void QucsApp::slotChangeView()
     messageDock->showTextProblems(py, py->diagnostics(), py->checkedBy(), false, py->lastCheck().failure);
   if (auto *xml = qobject_cast<XmlDoc *>(w))
     messageDock->showTextProblems(xml, xml->diagnostics(), tr("XML"), false);
+  // The Multiphysics panel: the tree of the model in front, if one is.
+  if (a_multiphysicsPanel != nullptr) a_multiphysicsPanel->setDocument(qobject_cast<MultiphysicsDoc *>(w));
   QucsDoc * Doc = docIn(w);
   if(w==nullptr || Doc==nullptr)return;
   // for text documents
@@ -3702,7 +3722,7 @@ void QucsApp::slotChangeView()
   // width; for spreadsheets: cells; for a picture: Copy as Image copies
   // it, Print Fit prints it as large as the page goes
   else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-           || isImageDocument (w)) {
+           || isImageDocument (w) || isMultiphysicsDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
@@ -3759,7 +3779,7 @@ void QucsApp::slotFileSettings ()
 
   QWidget * w = DocumentTab->currentWidget ();
   if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-      || isImageDocument (w)) return;   // nothing to set
+      || isImageDocument (w) || isMultiphysicsDocument (w)) return;   // nothing to set
   if (qobject_cast<PythonDoc *> (w)) {
     statusBar()->showMessage(tr("A Python script has no document settings: the Python toolbar chooses the Python it "
                                 "runs with."), 5000);
@@ -4109,6 +4129,8 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
   } else if (auto *zip = dynamic_cast<ZipDoc *>(doc)) {
     misc::ErrorCapture quiet;   // (half written: no box - it is read when it is whole)
     loaded = zip->load();
+  } else if (auto *model = dynamic_cast<MultiphysicsDoc *>(doc)) {
+    loaded = model->reload();   // (its view kept; the steps of Undo gone)
   } else if (auto *layout = dynamic_cast<LayoutDoc *>(doc)) {
     loaded = layout->reload();   // (in the background, the cell and view kept)
   } else if (auto *image = dynamic_cast<ImageDoc *>(doc)) {
@@ -4158,7 +4180,8 @@ void QucsApp::watchDocuments()
     // (A PDF follows its file itself.)
     if (!doc->getDocName().isEmpty()
         && (dynamic_cast<Schematic *>(doc) != nullptr || dynamic_cast<TextDoc *>(doc) != nullptr
-            || dynamic_cast<SheetDoc *>(doc) != nullptr || dynamic_cast<ZipDoc *>(doc) != nullptr)
+            || dynamic_cast<SheetDoc *>(doc) != nullptr || dynamic_cast<ZipDoc *>(doc) != nullptr
+            || dynamic_cast<MultiphysicsDoc *>(doc) != nullptr)
         && QFileInfo::exists(doc->getDocName()))
       wanted.insert(doc->getDocName());
   const QStringList watched = a_docWatcher->files();
@@ -4737,6 +4760,10 @@ void QucsApp::slotSimulate(QWidget *w)
       statusBar()->showMessage(tr("A layout is not simulated."), 3000);
       return;
   }
+  if (auto *model = qobject_cast<MultiphysicsDoc *>(w)) {
+      model->compute();   // its first study (Multiphysics > Compute)
+      return;
+  }
   if (isImageDocument(w)) {
       statusBar()->showMessage(tr("A picture is not simulated."), 3000);
       return;
@@ -5048,7 +5075,8 @@ void QucsApp::slotToPage()
       || isSheetDocument(DocumentTab->currentWidget())
       || isArchiveDocument(DocumentTab->currentWidget())
       || isLayoutDocument(DocumentTab->currentWidget())
-      || isImageDocument(DocumentTab->currentWidget())) return;   // no data display
+      || isImageDocument(DocumentTab->currentWidget())
+      || isMultiphysicsDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
     return;
@@ -5154,7 +5182,8 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   // markdowndoc.h, pythondoc.h, xmldoc.h, zipdoc.h, layoutdoc.h,
   // imagedoc.h), whatever the text editor of the settings.
   if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath) || qucs_s::xml::isXmlFile(absolutePath)
-      || isArchiveFile(absolutePath) || isLayoutFile(absolutePath) || isImageFile(absolutePath)) {
+      || isArchiveFile(absolutePath) || isLayoutFile(absolutePath) || isImageFile(absolutePath)
+      || isMultiphysicsFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
