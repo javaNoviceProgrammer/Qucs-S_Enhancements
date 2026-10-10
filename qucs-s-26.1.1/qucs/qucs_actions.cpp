@@ -432,6 +432,11 @@ void QucsApp::slotResetDiagramLimits() {
 // -----------------------------------------------------------------------
 // Is called, when "show grid" action is triggered.
 void QucsApp::slotShowGrid() {
+  // A layout's grid: every layout tab's alike.
+  if (auto *layout = qobject_cast<LayoutDoc *>(DocumentTab->currentWidget())) {
+    layout->setGridShown(!layout->view()->gridShown());
+    return;
+  }
   // The settings show or hide the grid of every schematic: the action
   // turns that over (and the files stay as they are).
   if (QucsSettings.GridMode != 0) {

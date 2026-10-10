@@ -1152,7 +1152,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   and `show_layout` read a GDSII or OASIS layout (below): its cells,
   layers and units; its shapes at a point, in a region or on a layer,
   each with its points in µm; and a cell, region or layers of it shown
-  in its tab for a `screenshot`. `import_netlist` makes a
+  in its tab for a `screenshot`, its grid shown or hidden and its step
+  said. `import_netlist` makes a
   schematic of a SPICE netlist, and `make_symbol` draws a subcircuit's
   symbol with its pins on four sides. `ngspice_commands` tells Claude
   which commands ngspice has: all 165, each in a line by category (the
@@ -1902,10 +1903,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   sixteen colours and eight hatches (*⋯ → Load Layer Properties…* reads
   another). *⋯ → Background* draws the canvas light or dark whatever
   Qucs-S's theme (or like it, the default), in every layout tab, kept for
-  the next time. Pan with a drag, the arrow keys or two fingers; zoom with
-  the wheel (or Ctrl+wheel, as *Settings → Mouse wheel* says), a pinch,
-  `+`/`−`, or a box dragged with the right button, about the pointer;
-  `F` shows the whole cell. *Levels* is how deep the hierarchy is drawn,
+  the next time; its *Colours in Contrast to It* (on at first) darkens a
+  layer's colours on a light canvas and lightens them on a dark one, the
+  hue kept, till they stand out from it by 3.5:1 — the palette's
+  pastels, made for KLayout's black, are clear on white, a `.lyp`'s pale
+  gold is still gold — and the layer list's swatches and a print show
+  them so. A **grid** is behind the layout, as KLayout has it: a dot
+  every step — 1, 2 or 5 times a power of ten µm, at least 16 pixels
+  apart — stronger on each power of ten, and in the lower left a scale
+  of it; the grid button, `G`, *View → Show Grid* (Alt+G) or *⋯ → Grid*
+  shows or hides it, and *Grid* draws it as dots, lines or crosses, in
+  every layout tab, kept for the next time. Pan with a drag, the arrow
+  keys or two fingers; zoom with the wheel (or Ctrl+wheel, as *Settings →
+  Mouse wheel* says), a pinch, `+`/`−`, or a box dragged with the right
+  button, about the pointer; `F` shows the whole cell. *Levels* is how deep the hierarchy is drawn,
   the cells below as their frames; shapes too small to see are a pixel
   each, and arrays of them where they are. A **click**
   selects the shape or text under the pointer (again: the next one

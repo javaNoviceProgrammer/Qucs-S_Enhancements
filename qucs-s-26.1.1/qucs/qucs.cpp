@@ -3726,9 +3726,8 @@ void QucsApp::slotChangeView()
       switchSchematicDoc(true);
       changeSchematicSymbolMode(d);
     }
-
-    updateGridAction();
   }
+  updateGridAction();   // (a schematic's, the layouts', or none)
   updateCursorValuesAction();
 
   Doc->becomeCurrent(true);

@@ -341,6 +341,7 @@ void QucsControl::getLayout(const QJsonObject& args, const Done& done)
                 if (!v->styles().at(i).visible) hidden << layout->layers.at(i).key.text();
             if (!hidden.isEmpty()) shown.insert(QStringLiteral("hidden layers"), QJsonArray::fromStringList(hidden));
             if (!doc->layerPropertiesFile().isEmpty()) shown.insert(QStringLiteral("layer properties"), QDir::toNativeSeparators(doc->layerPropertiesFile()));
+            if (v->gridShown()) shown.insert(QStringLiteral("grid"), micrometres(*layout, v->gridStep()) + QStringLiteral(" µm"));
             result.insert(QStringLiteral("tab"), shown);
         }
         done(jsonResult(result));
@@ -483,6 +484,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
     const QJsonValue depth = args.value(QLatin1String("depth"));
     const bool textsGiven = args.contains(QLatin1String("texts"));
     const bool texts = args.value(QLatin1String("texts")).toBool();
+    const QJsonValue grid = args.value(QLatin1String("grid"));
     withLayout(args, true, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         if (doc == nullptr) {
             done(errorResult(tr("%1 is not open as a layout.").arg(QFileInfo(layout->file).fileName())));
@@ -510,6 +512,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (depth.isDouble()) doc->setDepth(depth.toInt());
         else if (depth.toString() == QLatin1String("all")) doc->setDepth(-1);
         if (textsGiven) view->setLabelsShown(texts);
+        if (grid.isBool()) doc->setGridShown(grid.toBool());
         if (region.size() == 4) {
             const QRectF r = QRectF(QPointF(region.at(0).toDouble(), region.at(1).toDouble()), QPointF(region.at(2).toDouble(), region.at(3).toDouble()))
                                  .normalized();
@@ -531,6 +534,9 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                                                                  {QStringLiteral("cells as frames"), double(view->lastStats().frames)},
                                                                  {QStringLiteral("texts"), double(view->lastStats().labels)}}},
                            {QStringLiteral("note"), tr("screenshot shows the tab as the user sees it.")}};
+        if (view->gridShown())
+            result.insert(QStringLiteral("grid"), tr("a point every %1 µm, stronger every %2 µm; a scale in the lower left")
+                                                      .arg(micrometres(*layout, view->gridStep()), micrometres(*layout, view->gridMajorStep())));
         if (view->lastStats().incomplete) result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
         done(jsonResult(result));
     }, done);
