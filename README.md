@@ -1800,6 +1800,51 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   shipped with a project would run: another file is only shown in the
   Finder or the Explorer once you say so, and a link of another kind
   opens only once you agree, the link named in the question.
+- **XML viewer and editor**: an XML file — `.xml`, `.xsd`, `.xsl`,
+  `.xslt`, `.xhtml`, `.plist`, `.qrc`, `.ui`, `.kml`, `.gpx`, `.xmi`,
+  `.xaml`, `.wsdl`, `.rss`, `.atom`, `.xlf`, `.resx`, `.csproj` — opens in
+  a tab of its own (from anywhere a file opens, whatever text editor the
+  settings name):
+  - **Text and tree**: its text, highlighted and edited as any text
+    document (undo, find and replace, save in the encoding it was read in),
+    and beside it its tree: each element with its attributes (`@id`), text,
+    CDATA, comments and instructions, a badge for each kind, and a value
+    column (an attribute's value, a short element's text). A bar at the top
+    chooses *Text*, *Split* (a handle sharing the width) or *Tree*; the
+    choice is kept for the next file.
+  - **Each follows the other**: the tree selects the node at the cursor,
+    and a node chosen in the tree selects it in the text. The bar shows the
+    path of the cursor's element (`catalog › book › @id`), and a click on a
+    step selects it.
+  - **Checked as it is typed**: *Well formed · 8 elements*, or the first
+    error (*Line 8, column 10: Opening and ending tag mismatch*), which a
+    click goes to. The error is also underlined in the text and listed on
+    the Problems tab.
+  - **Edited in the tree**: a value is edited in place — an attribute's
+    (escaped for its own quotes), a text's, a comment's — and an element
+    (both its tags) or an attribute is renamed. Its menu copies a node's
+    path (`/catalog/book[2]/@id`) or value, adds an attribute or an element
+    (on a line of its own, an empty element opened), deletes it, and
+    expands or collapses everything. A filter keeps the nodes whose name or
+    value has a text. Each change is one step to undo.
+  - **Typing helps**: `>` after a start tag writes its end tag after the
+    cursor. `</` writes the end tag of the element open there, or steps over
+    the one just written. Return between a start and an end tag puts the
+    cursor indented between them. ⌘/ (Ctrl+/) comments out the lines
+    selected, or uncomments the comment the cursor is in.
+  - **Folding**: an element on several lines folds at its start tag (a
+    triangle in the margin).
+  - **Format and Minify**: *Format* puts each element on a line, indented
+    as the file indents. Text, mixed content and `xml:space="preserve"` are
+    kept as written, as are comments, instructions and the declaration.
+    *Minify* takes the whitespace between elements away. Both refuse a file
+    that is not well formed, saying why.
+  - **Claude's `xml` tool**: reads the file as the editor does, in its tab
+    (opened when it is not). *outline* gives the elements to a depth, each
+    with its path, line, attributes and text; *check*, *get*, *set*,
+    *rename*, *add_attribute*, *add_element*, *delete*, *format* and
+    *minify* each take a node by its path. A change is one step to undo and
+    is saved by `save_document`.
 - **CSV and Excel workbooks**: `.csv`, `.tsv` and `.xlsx` files open in a
   table, read and written by Qucs-S itself (no Excel, no library). Above
   the table, the cell in front — its name, its value or formula — is
