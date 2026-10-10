@@ -14,6 +14,7 @@
  *   (at your option) any later version.                                   *
  *                                                                         *
  ***************************************************************************/
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <stdlib.h>
@@ -2236,8 +2237,24 @@ void Schematic::insertRawComponent(Component *c, bool noOptimize)
     }
 }
 
+Schematic::ComponentPlace::ComponentPlace(Schematic* doc, Component* c) : m_list(doc->a_Components), m_component(c)
+{
+    const auto it = std::find(m_list->begin(), m_list->end(), c);
+    if (it != m_list->end() && std::next(it) != m_list->end()) m_next = *std::next(it);
+}
+
+Schematic::ComponentPlace::~ComponentPlace()
+{
+    if (m_next == nullptr || m_component == nullptr) return;
+    const auto at = std::find(m_list->begin(), m_list->end(), m_component);
+    const auto before = std::find(m_list->begin(), m_list->end(), m_next);
+    if (at == m_list->end() || before == m_list->end() || std::next(at) == before) return;
+    m_list->splice(before, *m_list, at);
+}
+
 void Schematic::recreateComponent(Component* comp)
 {
+    const ComponentPlace keep(this, comp);
     auto qpoint_hash = [](const QPoint& p) { return std::hash<int>{}(p.x()) ^ std::hash<int>{}(p.y()); };
     std::unordered_map<QPoint,std::unique_ptr<WireLabel>,decltype(qpoint_hash)> saved_labels(10, qpoint_hash);
     for (auto* port : comp->Ports) {

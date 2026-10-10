@@ -1604,12 +1604,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     submenu: *Commit…*, *Stage*, *Unstage*, *Discard Changes…*, *Show
     Changes*, *Show History*, *Show Blame*, *Add to .gitignore*, *Stop
     Tracking, Keep the File*, *Fetch*, *Pull*, *Push*, *Switch to
-    Branch*, *New Branch…*, *Stash Changes…*. Outside a repository it
-    offers *Create Repository Here…* and *Clone a Repository Here…*.
+    Branch*, *New Branch…*, *Stash Changes…* — and, for a file in
+    conflict, *Resolve Conflict* (below). Outside a repository it offers
+    *Create Repository Here…* and *Clone a Repository Here…*.
   - **The Git menu** (left of *Help*) works on the repository of the
     document in front (else the File Browser's folder, else the
     project's). It has *Commit…* and *Show All Changes*; the document's
-    *Show Changes*, *Stage*, *Unstage*, *Discard*, *History* and *Blame*;
+    *Show Changes*, *Stage*, *Unstage*, *Discard*, *History*, *Blame* and,
+    in conflict, *Resolve Conflict*;
     *Stage All*, *Unstage All*, *Discard All Changes…* and *History*;
     *Fetch*, *Pull* and *Push* (the first push of a branch sets its
     upstream); *Switch to Branch* (a remote's branch becomes a local one
@@ -1624,19 +1626,47 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     front and its file's letter (`⎇ main ↑1 · M`). It turns red when the
     file is in conflict and amber while a merge is under way; its tool
     tip gives the repository, the upstream, the file's state and the
-    count of changes. A click opens a menu with the file's state and what
+    count of changes, and says when the tab shows the version from before a
+    merge in conflict. A click opens a menu with the file's state and what
     can be done with it and its repository.
   - **Windows**: *Commit* lists the changes not staged and those staged
     side by side, with the selected file's diff. Files move between the
     lists (*Stage*, *Unstage* and their *All*; a double-click opens a
     file), *Discard…* throws a change away, and the message box commits,
     with *Amend the last commit* and *Commit and Push*. When nothing is
-    staged it offers to stage everything. *History* lists the commits,
+    staged it offers to stage everything; a merge under way is committed
+    with nothing staged (its conflicts resolved as the branch had them).
+    *History* lists the commits,
     newest first, with their branches and tags, author, date and hash; a
     commit's changes show below it, and its menu copies the hash, checks
     it out, makes a branch or a tag there, reverts or cherry-picks it, or
     resets the branch to it (soft, mixed, or hard after asking). *Blame*
     shows who last changed each line, in which commit and when.
+  - **Schematics, part by part**: the changes of a schematic, a data
+    display or a symbol are told part by part before git's lines — parts
+    added, removed, moved, turned, mirrored, their type or properties
+    changed (by name, an equation's by its variable), wires and labels,
+    diagrams, paintings, the settings — in *Show Changes*, the *Commit*
+    window's diff, *History* and Claude's `git_diff`, `git_show` and
+    `git_resolve`. A part changed keeps its place in the file (a property,
+    a move, a turn, a replacement, its dialog), and the `View=` line is
+    written as the file had it (a schematic opens fitted to the window, so
+    it restored nothing): a save after an edit changes the edit's lines
+    alone, and two branches that change different parts merge cleanly.
+  - **Conflicts**: a merge, cherry-pick, revert or stash brought back in
+    conflict leaves git's marks in a file, which no schematic reads. An
+    open schematic, data display or symbol whose file has them is *kept*
+    as it was — whole, nothing asked — and the status bar, the chip and
+    Claude say so; a Save asks before writing it over the merge (Claude's
+    `save_document` needs `replace`, asked about each time). A text or
+    Python tab is read again with the marks in sight, to edit out. *Resolve
+    Conflict* has *Keep Mine*, *Take Theirs* (asked first; that side whole,
+    staged), *Open Both Versions* (`name (mine).sch` and `name
+    (theirs).sch` written beside it and opened) and *Mark Resolved*.
+    Opening a schematic with marks offers *Open Both Versions* or *Open as
+    Text*. Any schematic that fails to be read again — a part refused, a
+    file half written — gets back what it held, and is asked about once
+    per state of its file.
   - **Safe by default**: a file git knows is put back as last committed
     when discarded, while a new file goes to the trash, not deleted. What
     goes over the network, and commits, run without blocking the window,
@@ -1656,15 +1686,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     `amend`, `push`), `git_branch` (list, create, switch — `stash` first
     —, rename, delete, merge), `git_remote` (list, fetch, pull, push, add,
     remove), `git_stash`, `git_tag`, `git_commit_action` (revert,
-    cherry_pick, check_out, reset), `git_abort`, `git_init`, `git_clone`
-    and `git_ignore` change things. Each tool takes the repository as
-    `path` (a file or folder of it; `paths` are relative to it), else the
-    document in front's. They answer with where the repository stands:
+    cherry_pick, check_out, reset), `git_abort`, `git_resolve` (show the
+    sides, take one, open both), `git_init`, `git_clone` and `git_ignore`
+    change things. Each tool takes the repository as `path` (a file or
+    folder of it; `paths` are relative to it), else the document in front's;
+    a relative path is taken from the open project's folder, the workspace,
+    or the document's or File Browser's folder — the first where it is, or,
+    for one not made yet, the first in a repository. They answer with where the repository stands:
     branch, upstream, ahead and behind, what is staged, not staged,
     untracked and in conflict. A merge in conflict is reported, not an
     error. What loses work or publishes it — a discard, a hard reset, a
-    forced branch delete, a dropped stash, a push — is asked about every
-    time. Open documents whose files git changed are loaded again.
+    forced branch delete, a dropped stash, a push, a side taken whole — is
+    asked about every time. Open documents whose files git changed are
+    loaded again before a tool answers, and the answer says which (and
+    which were kept, in conflict).
 - **PDF viewer**: a PDF document — a datasheet, an application note, a
   report written by a script — opens in a tab of its own, from the File
   Browser, the Content panel, *File → Open*, a drop, or Claude's

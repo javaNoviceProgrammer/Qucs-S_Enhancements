@@ -25,6 +25,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <optional>
+
 class QFileSystemWatcher;
 class QTimer;
 
@@ -260,6 +262,31 @@ Result cherryPick(const QString& root, const QString& commit);
 /// Moves the branch to \a commit: "soft" (the changes kept staged),
 /// "mixed" (kept, not staged) or "hard" (thrown away).
 Result reset(const QString& root, const QString& commit, const QString& mode);
+
+// ----------------------------------------------------------------------
+// Conflicts.
+
+/// Whether \a path holds the marks a merge (a rebase, a cherry-pick, a
+/// revert, a stash brought back) in conflict leaves in a file - a line
+/// "<<<<<<< ...", then "=======", then ">>>>>>> ..." - which no schematic
+/// reads. Reads the file; runs nothing.
+bool hasConflictMarkers(const QString& path);
+
+/// The versions of a file in conflict: the one both sides started from
+/// (base), HEAD's side (ours: the branch checked out, in a merge) and the
+/// other (theirs: the one merged in). A side that deleted the file, or a
+/// file added on one side alone: that version absent.
+struct ConflictVersions {
+    bool inConflict = false;
+    std::optional<QString> base;
+    std::optional<QString> ours;
+    std::optional<QString> theirs;
+};
+ConflictVersions conflictVersions(const QString& root, const QString& path);
+/// \a path's conflict resolved with one side whole - "ours" or "theirs" -
+/// and staged as resolved (a side that deleted it: deleted). What else was
+/// in the file - the other side, an edit made in it - is gone from it.
+Result resolve(const QString& root, const QString& path, const QString& side);
 
 // ----------------------------------------------------------------------
 

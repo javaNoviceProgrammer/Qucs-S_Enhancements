@@ -830,16 +830,27 @@ void Schematic::writeDocumentTo(QTextStream& stream)
   }
 
   stream << "<Properties>\n";
-  if(a_symbolMode) {
-    stream << "  <View=" << a_tmpViewX1<<","<<a_tmpViewY1<<","
-      << a_tmpViewX2<<","<<a_tmpViewY2<< ",";
-    stream <<a_tmpScale<<","<<a_tmpPosX<<","<<a_tmpPosY << ">\n";
+  // The view - the scroll and zoom - as the file had it: a schematic opens
+  // fitted to the window (showAll()), so what it held of the view was not
+  // used, and it changed with every save - a diff's noise, a merge's
+  // conflict. One with none yet: the view now, kept from then on.
+  if (a_fileView.isEmpty()) {
+    QString view;
+    QTextStream line(&view);
+    if(a_symbolMode) {
+      line << "<View=" << a_tmpViewX1<<","<<a_tmpViewY1<<","
+        << a_tmpViewX2<<","<<a_tmpViewY2<< ",";
+      line <<a_tmpScale<<","<<a_tmpPosX<<","<<a_tmpPosY << ">";
+    }
+    else {
+      line << "<View=" << a_ViewX1<<","<<a_ViewY1<<","
+        << a_ViewX2<<","<<a_ViewY2<< ",";
+      line << a_Scale <<","<<contentsX()<<","<<contentsY() << ">";
+    }
+    line.flush();
+    a_fileView = view;
   }
-  else {
-    stream << "  <View=" << a_ViewX1<<","<<a_ViewY1<<","
-      << a_ViewX2<<","<<a_ViewY2<< ",";
-    stream << a_Scale <<","<<contentsX()<<","<<contentsY() << ">\n";
-  }
+  stream << "  " << a_fileView << "\n";
   stream << "  <Grid=" << a_GridX<<","<<a_GridY<<","
     << a_GridOn << ">\n";
   stream << "  <DataSet=" << a_DataSet << ">\n";
@@ -1165,6 +1176,7 @@ bool Schematic::loadProperties(QTextStream *stream)
     cstr = Line.section('=',0,0);    // property type
     nstr = Line.section('=',1,1);    // property value
     if(cstr == "View") {
+      a_fileView = QLatin1Char('<') + Line + QLatin1Char('>');   // (written back as it is)
       a_ViewX1 = nstr.section(',',0,0).toInt(&ok); if(ok) {
       a_ViewY1 = nstr.section(',',1,1).toInt(&ok); if(ok) {
       a_ViewX2 = nstr.section(',',2,2).toInt(&ok); if(ok) {
@@ -1517,16 +1529,28 @@ bool Schematic::loadDocument()
 
   // Keep reference to source file (the schematic file)
   setFileInfo(a_DocName);
+  QTextStream stream(&file);
+  return readDocument(stream);
+}
+
+bool Schematic::loadDocumentText(const QString& text)
+{
+  QString copy = text;
+  QTextStream stream(&copy, QIODevice::ReadOnly);
+  return readDocument(stream);
+}
+
+bool Schematic::readDocument(QTextStream& stream)
+{
   a_loadNotes.clear();
   a_loadShortNotes.clear();
+  a_fileView.clear();
 
   QString Line;
-  QTextStream stream(&file);
 
   // read header **************************
   do {
     if(stream.atEnd()) {
-      file.close();
       return true;
     }
 
@@ -1534,7 +1558,6 @@ bool Schematic::loadDocument()
   } while(Line.isEmpty());
 
   if(Line.left(16) != "<Qucs Schematic ") {  // wrong file type ?
-    file.close();
     misc::reportError(QObject::tr("Wrong document type: ")+a_DocName);
     return false;
   }
@@ -1561,7 +1584,6 @@ bool Schematic::loadDocument()
                                     QMessageBox::Yes|QMessageBox::No);
 
       if (result==QMessageBox::No) {
-          file.close();
           return false;
       }
     }
@@ -1577,31 +1599,29 @@ bool Schematic::loadDocument()
 
     if(Line == "<Symbol>") {
       if (!loadPaintings(&stream, &a_SymbolPaints)) {
-        file.close();
         return false;
       }
     }
     else
     if(Line == "<Properties>") {
-      if(!loadProperties(&stream)) { file.close(); return false; } }
+      if(!loadProperties(&stream)) return false; }
     else
     if(Line == "<Components>") {
-      if(!loadComponents(&stream)) { file.close(); return false; } }
+      if(!loadComponents(&stream)) return false; }
     else
     if(Line == "<Wires>") {
-      if(!loadWires(&stream)) { file.close(); return false; } }
+      if(!loadWires(&stream)) return false; }
     else
     if(Line == "<Diagrams>") {
-      if (!loadDiagrams(&stream, &a_DocDiags)) { file.close(); return false; }
+      if (!loadDiagrams(&stream, &a_DocDiags)) return false;
     }
     else
     if(Line == "<Paintings>") {
-      if (!loadPaintings(&stream, &a_DocPaints)) { file.close(); return false; }
+      if (!loadPaintings(&stream, &a_DocPaints)) return false;
     }
     else {
        qDebug() << Line;
        misc::reportError(QObject::tr("File Format Error:\nUnknown field!"));
-      file.close();
       return false;
     }
   }
@@ -1618,7 +1638,6 @@ bool Schematic::loadDocument()
   // one saved so): the part holds them.
   settleLibrarySettings();
 
-  file.close();
   return true;
 }
 

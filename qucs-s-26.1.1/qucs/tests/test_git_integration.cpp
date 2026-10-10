@@ -25,6 +25,8 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
+#include <QSaveFile>
 #include <QProcess>
 #include <QPushButton>
 #include <QStandardPaths>
@@ -44,7 +46,11 @@
 #include "module.h"
 #include "qucs.h"
 #include "qucscontrol.h"
+#include "components/component.h"
+#include "mouseactions.h"
 #include "qucsdoc.h"
+#include "schematic.h"
+#include "schematicdiff.h"
 #include "settings.h"
 #include "textdoc.h"
 
@@ -60,6 +66,14 @@ bool write(const QString& path, const QByteArray& bytes)
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile f(path);
     return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+}
+
+// Written as git writes a file: a new one put in its place (a watch on
+// the old one ends).
+bool replaceFile(const QString& path, const QByteArray& bytes)
+{
+    QSaveFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size() && f.commit();
 }
 
 QByteArray readAll(const QString& path)
@@ -151,6 +165,43 @@ void answerInput(const QString& text)
     });
     timer->start();
 }
+
+// The message boxes that come up while it lives: their texts, each
+// answered with \a button (else closed).
+class BoxCounter
+{
+public:
+    /// (Boxes named in \a others are left to their own answerers.)
+    explicit BoxCounter(const QString& button = QStringLiteral("No"), const QStringList& others = {})
+        : a_button(button), a_others(others)
+    {
+        a_timer.setInterval(20);
+        QObject::connect(&a_timer, &QTimer::timeout, [this] {
+            for (QWidget* w : QApplication::topLevelWidgets()) {
+                auto* box = qobject_cast<QMessageBox*>(w);
+                if (box == nullptr || !box->isVisible() || a_answered.contains(box) || a_others.contains(box->objectName())) continue;
+                a_answered << box;
+                a_texts << box->text();
+                QAbstractButton* chosen = nullptr;
+                for (QAbstractButton* b : box->buttons())
+                    if (b->text().remove(QLatin1Char('&')) == a_button) chosen = b;
+                if (chosen != nullptr) chosen->click();
+                else box->reject();
+            }
+        });
+        a_timer.start();
+    }
+    QStringList texts() const { return a_texts; }
+    /// Those so far, forgotten.
+    QStringList take() { return std::exchange(a_texts, {}); }
+
+private:
+    QString a_button;
+    QStringList a_others;
+    QTimer a_timer;
+    QList<QPointer<QMessageBox>> a_answered;
+    QStringList a_texts;
+};
 
 QStringList pathsIn(const QJsonArray& array)
 {
@@ -1076,6 +1127,653 @@ private slots:
         QCOMPARE(blamed.lines()->topLevelItem(3)->text(4), QStringLiteral("four"));
         QCOMPARE(blamed.lines()->topLevelItem(0)->text(2), QStringLiteral("Tester"));
     }
+
+    // A merge in conflict over a schematic open in a tab: git's file has
+    // its markers, which no schematic reads - the tab keeps the version it
+    // had, whole and saved as it was, asking nothing; a Save says what it
+    // would write over; Claude's save is refused; once resolved, the tab
+    // reads the file again. (Reloading it broke the tab: half its parts, no
+    // wires or diagrams, clean - a Save would have written that over the
+    // merge; and a question twice.)
+    void aMergeConflictKeepsTheOpenSchematic()
+    {
+        const QString repo = makeRepo("conflict");
+        QVERIFY(!repo.isEmpty());
+        const QString example = QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/General Electronics/RC_filter_FFT.sch";
+        QByteArray source = readAll(example);
+        QVERIFY(source.contains("\"10nF\""));
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", source));
+        QVERIFY(commit(repo, "filter", false, {repo + "/RC_filter_FFT.sch"}).ok());
+        QVERIFY(createBranch(repo, "feature").ok());
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", QByteArray(source).replace("\"10nF\"", "\"22nF\"")));
+        QVERIFY(commit(repo, "22nF", false, {repo + "/RC_filter_FFT.sch"}).ok());
+        QVERIFY(switchTo(repo, "main").ok());
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", QByteArray(source).replace("\"10nF\"", "\"33nF\"")));
+        QVERIFY(commit(repo, "33nF", false, {repo + "/RC_filter_FFT.sch"}).ok());
+
+        QVERIFY(app->gotoPage(repo + "/RC_filter_FFT.sch"));
+        auto* sch = dynamic_cast<Schematic*>(app->getDoc());
+        QVERIFY(sch != nullptr);
+        const auto counts = [sch] {
+            return QList<qsizetype>{qsizetype(sch->a_DocComps.size()), qsizetype(sch->a_DocWires.size()), qsizetype(sch->a_DocDiags.size())};
+        };
+        const QList<qsizetype> whole = counts();
+        QVERIFY(whole.at(0) == 8 && whole.at(1) > 4 && whole.at(2) == 2);
+        QVERIFY(sch->documentText().contains("\"33nF\""));
+
+        BoxCounter boxes(QStringLiteral("No"), {QStringLiteral("gitResolveQuestion")});
+        QVERIFY(!merge(repo, "feature").ok());
+        QVERIFY(readAll(repo + "/RC_filter_FFT.sch").contains("<<<<<<< HEAD"));
+        QTest::qWait(3500);   // (the window's watch: its timers)
+        QVERIFY2(boxes.texts().isEmpty(), qPrintable(boxes.texts().join(" | ")));
+        QCOMPARE(dynamic_cast<Schematic*>(app->getDoc()), sch);
+        QCOMPARE(counts(), whole);
+        QVERIFY(sch->documentText().contains("\"33nF\""));
+        QVERIFY(!sch->getDocChanged());
+        QVERIFY(app->keptInConflict(repo + "/RC_filter_FFT.sch"));
+        QVERIFY(app->statusBar()->currentMessage().contains("conflict"));
+        QVERIFY(readAll(repo + "/RC_filter_FFT.sch").contains("<<<<<<< HEAD"));   // (nothing written)
+        // Said once: a watch's next look at the same file asks nothing.
+        QTest::qWait(2000);
+        QVERIFY(boxes.texts().isEmpty());
+        QCOMPARE(counts(), whole);
+
+        // The chip says so; its menu resolves it.
+        auto* chip = app->findChild<QToolButton*>("statusGit");
+        Tracker::instance()->refresh(repo);
+        QTRY_VERIFY_WITH_TIMEOUT(chip->toolTip().contains("version from before the merge"), 10000);
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("error"));
+        QMenu menu;
+        Commands::instance()->fillFileMenu(&menu, repo + "/RC_filter_FFT.sch");
+        QMenu* resolve = submenuNamed(&menu, "gitResolveMenu");
+        QVERIFY(resolve != nullptr);
+        for (const char* name : {"gitKeepMine", "gitTakeTheirs", "gitOpenBoth"})
+            QVERIFY2(resolve->findChild<QAction*>(QLatin1String(name)) != nullptr, name);
+        QVERIFY(!resolve->findChild<QAction*>("gitMarkResolved")->isEnabled());   // (marks in it)
+        // The Git menu's too, for the document in front.
+        emit app->gitMenuWidget()->aboutToShow();
+        QVERIFY(app->gitMenuWidget()->findChild<QMenu*>("gitResolveFileMenu")->menuAction()->isEnabled());
+
+        // A Save asks, saying what it writes over; no (Cancel): nothing written.
+        QVERIFY(!app->saveFile(sch));
+        const QStringList asked = boxes.take();
+        QCOMPARE(asked.size(), 1);
+        QVERIFY2(asked.first().contains("in conflict"), qPrintable(asked.first()));
+        // Asked though the file's date says nothing (one kept from before).
+        {
+            QFile f(repo + "/RC_filter_FFT.sch");
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            QVERIFY(f.setFileTime(sch->getLastSaved().addSecs(-60), QFileDevice::FileModificationTime));
+        }
+        QVERIFY(!app->saveFile(sch));
+        QCOMPARE(boxes.take().size(), 1);
+        QVERIFY(readAll(repo + "/RC_filter_FFT.sch").contains("<<<<<<< HEAD"));
+        QVERIFY(readAll(repo + "/RC_filter_FFT.sch").contains("<<<<<<< HEAD"));
+        // Claude's save: refused, unless 'replace'.
+        QJsonObject r = call("save_document", {{"path", repo + "/RC_filter_FFT.sch"}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("in conflict") && text(r).contains("replace"), qPrintable(text(r)));
+        QVERIFY(control->irreversible("save_document", {{"replace", true}}));
+        QVERIFY(!control->irreversible("save_document", {}));
+        // git_status names the tab kept.
+        const QJsonObject state = json(call("git_status", {{"path", repo}}));
+        QCOMPARE(state.value("conflicts").toArray(), QJsonArray({"RC_filter_FFT.sch"}));
+        QCOMPARE(state.value("kept in their tabs").toObject().value("files").toArray().size(), 1);
+
+        // Take Theirs, from the menu (asked): the file theirs, the tab read again.
+        answerBox("gitResolveQuestion", "Take Theirs");
+        resolve->findChild<QAction*>("gitTakeTheirs")->trigger();
+        QVERIFY(!app->keptInConflict(repo + "/RC_filter_FFT.sch"));   // (its marks gone, before the tab is read again)
+        QVERIFY(!readAll(repo + "/RC_filter_FFT.sch").contains("<<<<<<<"));
+        QVERIFY(readAll(repo + "/RC_filter_FFT.sch").contains("\"22nF\""));
+        QVERIFY(read(repo).conflictCount() == 0);
+        QTRY_VERIFY_WITH_TIMEOUT(sch->documentText().contains("\"22nF\""), 10000);
+        QCOMPARE(counts(), whole);
+        QVERIFY(!app->keptInConflict(repo + "/RC_filter_FFT.sch"));
+        QVERIFY(commit(repo, "merged").ok());
+        // Theirs whole, the merge's tree is theirs: still in the history
+        // of the repository's folder.
+        QCOMPARE(log(repo, repo, 1).first().subject, QStringLiteral("merged"));
+        QCOMPARE(log(repo, repo, 1).first().parents.size(), 2);
+        QVERIFY(boxes.texts().isEmpty());
+        sch->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // Claude meets the conflict: the merge's answer names the tab kept;
+    // git_resolve shows the sides (a schematic's, part by part), opens both
+    // versions beside it, takes one; a revert in conflict the same.
+    void claudeResolvesAConflict()
+    {
+        const QString repo = makeRepo("claude-conflict");
+        QVERIFY(!repo.isEmpty());
+        const QString example = QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/General Electronics/RC_filter_FFT.sch";
+        const QByteArray source = readAll(example);
+        const QString file = repo + "/RC_filter_FFT.sch";
+        QVERIFY(write(file, source));
+        QVERIFY(commit(repo, "filter", false, {file}).ok());
+        QVERIFY(createBranch(repo, "feature").ok());
+        QVERIFY(write(file, QByteArray(source).replace("\"10nF\"", "\"22nF\"")));
+        QVERIFY(commit(repo, "22nF", false, {file}).ok());
+        QVERIFY(switchTo(repo, "main").ok());
+        QVERIFY(write(file, QByteArray(source).replace("\"10nF\"", "\"33nF\"").replace("\"100k\"", "\"47k\"")));
+        QVERIFY(commit(repo, "33nF", false, {file}).ok());
+        QVERIFY(app->gotoPage(file));
+        auto* sch = dynamic_cast<Schematic*>(app->getDoc());
+        QVERIFY(sch != nullptr);
+        BoxCounter boxes;
+
+        QJsonObject r = call("git_branch", {{"path", repo}, {"action", "merge"}, {"name", "feature"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r);
+        QCOMPARE(o.value("conflicts").toArray(), QJsonArray({"RC_filter_FFT.sch"}));
+        QVERIFY(o.value("merge").toString().contains("git_resolve"));
+        QCOMPARE(o.value("kept in their tabs").toObject().value("files").toArray().size(), 1);
+        QVERIFY(sch->documentText().contains("\"33nF\""));
+        QCOMPARE(qsizetype(sch->a_DocComps.size()), qsizetype(8));
+
+        // show: the sides, and what each changed by part.
+        r = call("git_resolve", {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        o = json(r);
+        QVERIFY(o.value("mine").toString().contains("\"33nF\""));
+        QVERIFY(o.value("theirs").toString().contains("\"22nF\""));
+        QVERIFY(o.value("base").toString().contains("\"10nF\""));
+        QVERIFY(o.value("marks in the file").toBool());
+        const QString changes = o.value("changes").toString();
+        QVERIFY2(changes.contains("C1 (C): C \"10nF\" \u2192 \"33nF\"") && changes.contains("R1 (R): R \"100k\" \u2192 \"47k\"")
+                     && changes.contains("C1 (C): C \"10nF\" \u2192 \"22nF\""),
+                 qPrintable(changes));
+        QVERIFY(o.value("tab").toString().contains("mine"));
+        QVERIFY(!control->irreversible("git_resolve", {{"path", file}}));
+        QVERIFY(control->irreversible("git_resolve", {{"path", file}, {"action", "take_ours"}}));
+        QVERIFY(failed(call("git_resolve", {{"path", repo + "/a.txt"}})));   // not in conflict
+        QVERIFY(failed(call("git_resolve", {{"path", file}, {"action", "merge"}})));
+
+        // open: both versions beside it, opened as schematics (no question).
+        r = call("git_resolve", {{"path", file}, {"action", "open"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray opened = json(r).value("opened").toArray();
+        QCOMPARE(opened.size(), 2);
+        QVERIFY(QFileInfo::exists(repo + "/RC_filter_FFT (mine).sch") && QFileInfo::exists(repo + "/RC_filter_FFT (theirs).sch"));
+        QVERIFY(readAll(repo + "/RC_filter_FFT (theirs).sch").contains("\"22nF\""));
+        QVERIFY(app->findDoc(repo + "/RC_filter_FFT (theirs).sch") != nullptr);
+        QVERIFY(boxes.texts().isEmpty());
+        for (const QString& v : {QStringLiteral("mine"), QStringLiteral("theirs")}) {
+            const QString copy = repo + "/RC_filter_FFT (" + v + ").sch";
+            QVERIFY(!failed(call("close_document", {{"path", copy}, {"unsaved", "discard"}})));
+            QVERIFY(QFile::remove(copy));
+        }
+
+        // take_ours: mine, staged; the tab as it was (its file the same now).
+        r = call("git_resolve", {{"path", file}, {"action", "take_ours"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!json(r).contains("conflicts"));
+        QVERIFY(readAll(file).contains("\"33nF\"") && !readAll(file).contains("<<<<<<<"));
+        QVERIFY(sch->documentText().contains("\"33nF\""));
+        QCOMPARE(qsizetype(sch->a_DocComps.size()), qsizetype(8));
+        r = call("git_commit", {{"path", repo}, {"message", "merged, mine"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        // The repository's history, given as its folder: the merge in it.
+        QJsonObject top = json(call("git_log", {{"path", repo}, {"max", 1}})).value("commits").toArray().first().toObject();
+        QCOMPARE(top.value("subject").toString(), QStringLiteral("merged, mine"));
+        QVERIFY(top.value("merge").toBool());
+        QVERIFY(boxes.texts().isEmpty());
+        sch->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // The other kinds of document open through a merge in conflict: a
+    // symbol and a data display (schematics both) are kept as they were;
+    // a text and a Python script are read again, the marks in sight to be
+    // edited out - and the status bar says so.
+    void otherDocumentsInAConflict()
+    {
+        const QString repo = makeRepo("kinds");
+        QVERIFY(!repo.isEmpty());
+        const QString version = QStringLiteral(PACKAGE_VERSION);
+        const auto symbol = [&](const char* colour) {
+            return QStringLiteral("<Qucs Schematic %1>\n<Symbol>\n  <Line -20 -10 40 0 %2 2 1>\n  <.PortSym -30 0 1 0 P1>\n</Symbol>\n")
+                .arg(version, QLatin1String(colour)).toUtf8();
+        };
+        const auto display = [&](const char* words) {
+            return QStringLiteral("<Qucs Schematic %1>\n<Properties>\n  <View=0,0,800,600,1,0,0>\n</Properties>\n<Symbol>\n"
+                                  "</Symbol>\n<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n"
+                                  "  <Text 100 100 12 #000000 0 \"%2\">\n  <Text 100 200 12 #000000 0 \"kept\">\n</Paintings>\n")
+                .arg(version, QLatin1String(words)).toUtf8();
+        };
+        QVERIFY(write(repo + "/part.sym", symbol("#000080")));
+        QVERIFY(write(repo + "/plot.dpl", display("first")));
+        QVERIFY(write(repo + "/notes.txt", "first\n"));
+        QVERIFY(write(repo + "/run.py", "x = 1\n"));
+        QVERIFY(stage(repo, {}).ok() && commit(repo, "kinds").ok());
+        QVERIFY(createBranch(repo, "feature").ok());
+        QVERIFY(write(repo + "/part.sym", symbol("#ff0000")));
+        QVERIFY(write(repo + "/plot.dpl", display("theirs")));
+        QVERIFY(write(repo + "/notes.txt", "theirs\n"));
+        QVERIFY(write(repo + "/run.py", "x = 2\n"));
+        QVERIFY(stage(repo, {}).ok() && commit(repo, "theirs").ok());
+        QVERIFY(switchTo(repo, "main").ok());
+        QVERIFY(write(repo + "/part.sym", symbol("#00ff00")));
+        QVERIFY(write(repo + "/plot.dpl", display("mine")));
+        QVERIFY(write(repo + "/notes.txt", "mine\n"));
+        QVERIFY(write(repo + "/run.py", "x = 3\n"));
+        QVERIFY(stage(repo, {}).ok() && commit(repo, "mine").ok());
+        for (const char* f : {"part.sym", "plot.dpl", "notes.txt", "run.py"}) QVERIFY2(app->gotoPage(repo + "/" + f), f);
+        auto* sym = dynamic_cast<Schematic*>(app->findDoc(repo + "/part.sym"));
+        auto* dpl = dynamic_cast<Schematic*>(app->findDoc(repo + "/plot.dpl"));
+        auto* txt = dynamic_cast<TextDoc*>(app->findDoc(repo + "/notes.txt"));
+        auto* py = dynamic_cast<TextDoc*>(app->findDoc(repo + "/run.py"));
+        QVERIFY(sym != nullptr && dpl != nullptr && txt != nullptr && py != nullptr);
+        const QString symBefore = sym->documentText(), dplBefore = dpl->documentText();
+        QVERIFY(symBefore.contains("#00ff00") && dplBefore.contains("\"mine\""));
+
+        BoxCounter boxes;
+        const QJsonObject r = call("git_branch", {{"path", repo}, {"action", "merge"}, {"name", "feature"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("conflicts").toArray().size(), 4);
+        const QJsonArray kept = json(r).value("kept in their tabs").toObject().value("files").toArray();
+        QCOMPARE(kept.size(), 2);
+        QCOMPARE(json(r).value("loaded again").toArray().size(), 2);
+        QCOMPARE(sym->documentText(), symBefore);
+        QCOMPARE(dpl->documentText(), dplBefore);
+        QVERIFY(app->keptInConflict(repo + "/part.sym") && app->keptInConflict(repo + "/plot.dpl"));
+        QVERIFY(txt->toPlainText().contains("<<<<<<< HEAD") && txt->toPlainText().contains(">>>>>>> feature"));
+        QVERIFY(py->toPlainText().contains("<<<<<<< HEAD"));
+        QVERIFY(!app->keptInConflict(repo + "/notes.txt"));
+        QTest::qWait(1500);   // (the window's watch: nothing more)
+        QVERIFY2(boxes.texts().isEmpty(), qPrintable(boxes.texts().join(" | ")));
+        QCOMPARE(sym->documentText(), symBefore);
+        // The text resolved by hand, staged: resolved.
+        txt->setPlainText("mine and theirs\n");
+        QVERIFY(app->saveFile(txt));
+        QVERIFY(!failed(call("git_stage", {{"path", repo}, {"paths", QJsonArray{"notes.txt"}}})));
+        QVERIFY(!json(call("git_status", {{"path", repo}})).value("conflicts").toArray().contains("notes.txt"));
+        QVERIFY(!failed(call("git_abort", {{"path", repo}})));
+        QTRY_VERIFY_WITH_TIMEOUT(txt->toPlainText() == "mine\n" && sym->documentText().contains("#00ff00"), 10000);
+        QVERIFY(boxes.texts().isEmpty());
+        for (QucsDoc* d : app->allDocuments()) d->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // A merge whose conflicts were resolved as the branch had them -
+    // nothing staged: the Commit window still records it (it said there
+    // was nothing to commit); a stash brought back in conflict is said,
+    // not an error, and kept.
+    void aMergeResolvedAsMineIsCommitted()
+    {
+        const QString repo = makeRepo("merge-mine");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(createBranch(repo, "feature").ok());
+        QVERIFY(write(repo + "/a.txt", "one\nfeature\nthree\n"));
+        QVERIFY(commit(repo, "feature", false, {repo + "/a.txt"}).ok());
+        QVERIFY(switchTo(repo, "main").ok());
+        QVERIFY(write(repo + "/a.txt", "one\nmain\nthree\n"));
+        QVERIFY(commit(repo, "main", false, {repo + "/a.txt"}).ok());
+        QVERIFY(!merge(repo, "feature").ok());
+        QVERIFY(resolve(repo, repo + "/a.txt", "ours").ok());
+        QCOMPARE(read(repo).stagedCount(), 0);
+        QCOMPARE(read(repo).operation, QStringLiteral("merge"));
+        Commands::instance()->commit(repo);
+        CommitDialog* d = nullptr;
+        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
+            if (auto* c = qobject_cast<CommitDialog*>(w.data()); c != nullptr && c->root() == repo) d = c;
+        QVERIFY(d != nullptr);
+        QVERIFY(d->headerLabel()->text().contains("merge under way"));
+        QSignalSpy committed(d, &CommitDialog::committed);
+        d->messageEdit()->setPlainText("Merge feature, mine kept");
+        QVERIFY(d->commitButton()->isEnabled());
+        d->commitNow(false);
+        QVERIFY(committed.wait(30000));
+        QCOMPARE(log(repo).first().parents.size(), 2);
+        QVERIFY(read(repo).operation.isEmpty());
+        d->close();
+
+        // A stash brought back over a change of its lines: in conflict, said.
+        QVERIFY(write(repo + "/a.txt", "one\nstashed\nthree\n"));
+        QVERIFY(stash(repo, "aside").ok());
+        QVERIFY(write(repo + "/a.txt", "one\nin the way\nthree\n"));
+        QVERIFY(commit(repo, "in the way", false, {repo + "/a.txt"}).ok());
+        const QJsonObject r = call("git_stash", {{"path", repo}, {"action", "pop"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("stash").toString().contains("in conflict"));
+        QCOMPARE(json(r).value("conflicts").toArray(), QJsonArray({"a.txt"}));
+        QCOMPARE(stashes(repo).size(), 1);   // (kept)
+    }
+
+    // A file that does not read, loaded again (here: answered No to its
+    // unknown part): the tab gets back what it held, asked once - not a
+    // document half read that looks saved.
+    void aFailedReloadPutsTheDocumentBack()
+    {
+        const QString dir2 = canonical(dir.path()) + "/unreadable";
+        QVERIFY(QDir().mkpath(dir2));
+        const QString file = dir2 + "/RC_filter_FFT.sch";
+        const QByteArray source = readAll(QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/General Electronics/RC_filter_FFT.sch");
+        QVERIFY(write(file, source));
+        QVERIFY(app->gotoPage(file));
+        auto* sch = dynamic_cast<Schematic*>(app->getDoc());
+        QVERIFY(sch != nullptr);
+        const QString before = sch->documentText();
+        BoxCounter boxes;   // (No to "load anyway?")
+        QTest::qWait(1100);   // (a newer date than its load)
+        QVERIFY(replaceFile(file, QByteArray(source).replace("<Components>\n", "<Components>\n  <Bogus X1 1 0 0 0 0 0 0 \"1\" 1>\n")));
+        QTRY_VERIFY_WITH_TIMEOUT(!boxes.texts().isEmpty(), 10000);
+        QTest::qWait(3500);   // (and the watch's next look: set again, the file new)
+        QCOMPARE(boxes.texts().size(), 1);
+        // Told of again, the file as it was (another notice of one change,
+        // Claude's edit of it): not read, nor asked about, again.
+        app->reloadChangedFiles({file});
+        QTest::qWait(300);
+        QCOMPARE(boxes.texts().size(), 1);
+        QVERIFY(boxes.texts().first().contains("Unknown component"));
+        QCOMPARE(dynamic_cast<Schematic*>(app->getDoc()), sch);
+        QCOMPARE(qsizetype(sch->a_DocComps.size()), qsizetype(8));
+        QCOMPARE(sch->documentText(), before);
+        QVERIFY(!sch->getDocChanged());
+        QVERIFY(app->statusBar()->currentMessage().contains("could not be read"));
+        // A Save asks before writing over the file (Cancel).
+        boxes.take();
+        QVERIFY(!app->saveFile(sch));
+        QCOMPARE(boxes.take().size(), 1);
+        // Readable again: read.
+        QTest::qWait(1100);
+        QVERIFY(write(file, QByteArray(source).replace("\"10nF\"", "\"47nF\"")));
+        QTRY_VERIFY_WITH_TIMEOUT(sch->documentText().contains("\"47nF\""), 10000);
+        QVERIFY(boxes.texts().isEmpty());
+        // Its symbol being edited: a file that does not read leaves it so.
+        app->slotSymbolEdit();
+        QVERIFY(sch->getSymbolMode());
+        QVERIFY(app->saveFile(sch));   // (its symbol, drawn as it opened, saved)
+        QVERIFY(!sch->getDocChanged());
+        QTest::qWait(1100);
+        QVERIFY(replaceFile(file, QByteArray(source).replace("<Components>\n", "<Components>\n  <Bogus X2 1 0 0 0 0 0 0 \"1\" 1>\n")));
+        QTRY_VERIFY_WITH_TIMEOUT(boxes.texts().size() == 1, 10000);
+        QTest::qWait(500);
+        QVERIFY(sch->getSymbolMode());
+        QVERIFY(sch->documentText().contains("\"47nF\""));
+        QCOMPARE(qsizetype(sch->a_DocComps.size()), qsizetype(8));
+        app->slotSymbolEdit();
+        QVERIFY(!sch->getSymbolMode());
+        sch->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // A schematic with git's conflict marks, opened: said, with Open Both
+    // Versions and Open as Text - not read as one (unknown parts asked
+    // about); Claude's open_document says the same and how to go on.
+    void aConflictedSchematicIsNotOpenedAsOne()
+    {
+        const QString repo = makeRepo("open-conflict");
+        QVERIFY(!repo.isEmpty());
+        const QString file = repo + "/RC_filter_FFT.sch";
+        const QByteArray source = readAll(QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/General Electronics/RC_filter_FFT.sch");
+        QVERIFY(write(file, source));
+        QVERIFY(commit(repo, "filter", false, {file}).ok());
+        QVERIFY(createBranch(repo, "feature").ok());
+        QVERIFY(write(file, QByteArray(source).replace("\"10nF\"", "\"22nF\"")));
+        QVERIFY(commit(repo, "22nF", false, {file}).ok());
+        QVERIFY(switchTo(repo, "main").ok());
+        QVERIFY(write(file, QByteArray(source).replace("\"10nF\"", "\"33nF\"")));
+        QVERIFY(commit(repo, "33nF", false, {file}).ok());
+        QVERIFY(!merge(repo, "feature").ok());
+        QVERIFY(hasConflictMarkers(file));
+        QVERIFY(!hasConflictMarkers(repo + "/a.txt"));
+
+        {
+            BoxCounter open(QStringLiteral("Open Both Versions"));
+            QVERIFY(!app->gotoPage(file));
+            QCOMPARE(open.texts().size(), 1);
+            QVERIFY(open.texts().first().contains("is in conflict"));
+        }
+        QVERIFY(app->findDoc(file) == nullptr);
+        QVERIFY(app->findDoc(repo + "/RC_filter_FFT (mine).sch") != nullptr);
+        QVERIFY(app->findDoc(repo + "/RC_filter_FFT (theirs).sch") != nullptr);
+        for (QucsDoc* d : app->allDocuments()) d->setDocChanged(false);
+        app->closeAllFiles();
+        {
+            BoxCounter asText(QStringLiteral("Open as Text"));
+            QVERIFY(!app->gotoPage(file));
+            QCOMPARE(asText.texts().size(), 1);
+        }
+        QTRY_VERIFY(app->getDoc() != nullptr && dynamic_cast<TextDoc*>(app->getDoc()) != nullptr);
+        QVERIFY(dynamic_cast<TextDoc*>(app->getDoc())->toPlainText().contains("<<<<<<< HEAD"));
+        for (QucsDoc* d : app->allDocuments()) d->setDocChanged(false);
+        app->closeAllFiles();
+        const QJsonObject r = call("open_document", {{"path", file}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("in conflict") && text(r).contains("git_resolve"), qPrintable(text(r)));
+        // A side whole; the copies were made for looking.
+        QVERIFY(resolve(repo, file, "theirs").ok());
+        QVERIFY(!hasConflictMarkers(file));
+        QVERIFY(readAll(file).contains("\"22nF\""));
+        QVERIFY(!resolve(repo, file, "theirs").ok());   // (not in conflict now)
+        QVERIFY(!resolve(repo, file, "mine").ok());
+    }
+
+    // A relative path, the same for every git tool: from the open project's
+    // folder, the workspace, the document's folder - the first where it is,
+    // or, not made yet, the first in a repository (git_ignore looked in the
+    // project alone). A file in .gitignore staged: said which and why.
+    void relativePathsAreFoundAlike()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString repo = ws + "/_git_smoke";
+        QVERIFY(QDir().mkpath(repo));
+        QVERIFY(init(repo).ok());
+        QVERIFY(write(repo + "/a.txt", "a\n"));
+        const QString project = ws + "/gds_demo_prj";
+        QVERIFY(QDir().mkpath(project));
+        const QDir was = QucsSettings.QucsWorkDir;
+        QucsSettings.QucsWorkDir.setPath(project);   // (a project open elsewhere)
+        for (QucsDoc* d : app->allDocuments()) d->setDocChanged(false);
+        app->closeAllFiles();
+        const QString elsewhere = canonical(dir.path()) + "/browsed-elsewhere";
+        QVERIFY(QDir().mkpath(elsewhere));
+        app->fileBrowserPanel()->setLocation(elsewhere);   // (in no repository)
+        QJsonObject r = call("git_ignore", {{"path", "_git_smoke/run.dat.ngspice"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(readAll(repo + "/.gitignore").contains("/run.dat.ngspice"));
+        r = call("git_status", {{"path", "_git_smoke/a.txt"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("path").toObject().value("path").toString(), QStringLiteral("a.txt"));
+        r = call("git_stage", {{"paths", QJsonArray{"_git_smoke/a.txt"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("staged").toArray().size(), 1);
+        r = call("git_diff", {{"path", "_git_smoke"}, {"of", "staged"}});
+        QVERIFY(text(r).contains("+a"));
+        // In the project too: the project's first.
+        QVERIFY(QDir().mkpath(project + "/_git_smoke"));
+        QVERIFY(write(project + "/_git_smoke/a.txt", "p\n"));
+        r = call("git_status", {{"path", "_git_smoke/a.txt"}});
+        QVERIFY(failed(r));   // (the project's folder is in no repository)
+        QVERIFY(QDir(project + "/_git_smoke").removeRecursively());
+
+        // In .gitignore: said.
+        QVERIFY(write(repo + "/run.dat.ngspice", "0\n"));
+        r = call("git_stage", {{"paths", QJsonArray{"_git_smoke/run.dat.ngspice"}}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("in .gitignore") && text(r).contains("run.dat.ngspice"), qPrintable(text(r)));
+        QucsSettings.QucsWorkDir = was;
+    }
+
+    // A part changed - a property, a move, a turn, replaced, edited in
+    // its dialog - stays where it was among the parts: the file keeps its
+    // order (it went last: a diff of the whole line, two branches'
+    // edits in conflict at the list's end).
+    void partsKeepTheirPlace()
+    {
+        const QString file = canonical(dir.path()) + "/order/order.sch";
+        QVERIFY(QDir().mkpath(QFileInfo(file).absolutePath()));
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        for (const auto& [type, x] : std::initializer_list<std::pair<const char*, int>>{{"R", 100}, {"C", 200}, {"L", 300}, {"R", 400}})
+            QVERIFY(!failed(call("add_component", {{"type", type}, {"x", x}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {{"as", file}})));
+        auto* sch = dynamic_cast<Schematic*>(app->getDoc());
+        QVERIFY(sch != nullptr);
+        const auto order = [sch] {
+            QStringList names;
+            for (const Component* c : sch->a_DocComps) names << c->Name;
+            return names;
+        };
+        const QStringList start{"R1", "C1", "L1", "R2"};
+        QCOMPARE(order(), start);
+        QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "2k"}}}})));
+        QCOMPARE(order(), start);
+        QVERIFY(!failed(call("edit_component", {{"name", "C1"}, {"x", 220}, {"y", 160}})));
+        QCOMPARE(order(), start);
+        QVERIFY(!failed(call("edit_component", {{"name", "L1"}, {"rotation", 1}})));
+        QCOMPARE(order(), start);
+        QVERIFY(!failed(call("replace_component", {{"name", "C1"}, {"type", "C"}})));
+        QCOMPARE(order().size(), 4);
+        QCOMPARE(order().at(1).left(1), QStringLiteral("C"));
+        // Its properties' dialog, OK'd.
+        Component* r1 = sch->getComponentByName("R1");
+        QVERIFY(r1 != nullptr);
+        auto* timer = new QTimer(this);
+        timer->setInterval(20);
+        connect(timer, &QTimer::timeout, this, [timer] {
+            for (QWidget* w : QApplication::topLevelWidgets())
+                if (auto* d = qobject_cast<QDialog*>(w); d != nullptr && d->isVisible() && QString(d->metaObject()->className()) == "ComponentDialog") {
+                    timer->stop();
+                    d->accept();
+                }
+        });
+        timer->start();
+        app->view->focusElement = r1;
+        QMouseEvent click(QEvent::MouseButtonDblClick, QPointF(10, 10), QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        app->view->editElement(sch, &click);
+        timer->deleteLater();
+        QCOMPARE(order().first(), QStringLiteral("R1"));
+        // And as saved.
+        QVERIFY(!failed(call("save_document", {})));
+        QStringList saved;
+        for (const QString& l : QString::fromUtf8(readAll(file)).split('\n'))
+            if (l.startsWith("  <") && l.split(' ', Qt::SkipEmptyParts).size() > 8) saved << l.split(' ', Qt::SkipEmptyParts).at(1);
+        QCOMPARE(saved.first(), QStringLiteral("R1"));
+        QCOMPARE(saved.last(), QStringLiteral("R2"));
+        sch->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // The view (View=: scroll and zoom, which an opened schematic does not
+    // use - it is fitted to the window) is written as the file had it: a
+    // save after a change changes the change's lines alone.
+    void theViewLineStaysAsTheFileHasIt()
+    {
+        const QString file = canonical(dir.path()) + "/view/RC_filter_FFT.sch";
+        QVERIFY(write(file, readAll(QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/General Electronics/RC_filter_FFT.sch")));
+        const QRegularExpression view(QStringLiteral("<View=[^>]*>"));
+        const QString original = view.match(QString::fromUtf8(readAll(file))).captured(0);
+        QVERIFY(!original.isEmpty());
+        QVERIFY(app->gotoPage(file));
+        auto* sch = dynamic_cast<Schematic*>(app->getDoc());
+        QVERIFY(sch != nullptr);
+        // Saved once by this version (the old file's header grows), the
+        // view as it had it.
+        sch->zoomBy(0.8);
+        QVERIFY(!failed(call("save_document", {})));
+        const QByteArray source = readAll(file);
+        QCOMPARE(view.match(QString::fromUtf8(source)).captured(0), original);
+        sch->zoomBy(1.7);
+        QVERIFY(!failed(call("edit_component", {{"name", "C1"}, {"properties", QJsonObject{{"C", "33nF"}}}})));
+        QVERIFY(!failed(call("save_document", {})));
+        const QString saved = QString::fromUtf8(readAll(file));
+        QCOMPARE(view.match(saved).captured(0), original);
+        // The diff: the value's line alone.
+        QStringList changed;
+        const QStringList a = QString::fromUtf8(source).split('\n'), b = saved.split('\n');
+        QCOMPARE(a.size(), b.size());
+        for (qsizetype i = 0; i < a.size(); ++i)
+            if (a.at(i) != b.at(i)) changed << b.at(i);
+        QCOMPARE(changed.size(), 1);
+        QVERIFY(changed.at(0).contains("\"33nF\""));
+        sch->setDocChanged(false);
+        app->closeAllFiles();
+        // A new one: its view written once, then as it is.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        const QString fresh = canonical(dir.path()) + "/view/fresh.sch";
+        QVERIFY(!failed(call("save_document", {{"as", fresh}})));
+        const QString first = view.match(QString::fromUtf8(readAll(fresh))).captured(0);
+        QVERIFY(!first.isEmpty());
+        dynamic_cast<Schematic*>(app->getDoc())->zoomBy(0.5);
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"x", 300}, {"y", 100}})));
+        QVERIFY(!failed(call("save_document", {})));
+        QCOMPARE(view.match(QString::fromUtf8(readAll(fresh))).captured(0), first);
+        app->getDoc()->setDocChanged(false);
+        app->closeAllFiles();
+    }
+
+    // What changed in a schematic, part by part: the parts added, removed,
+    // moved, turned, their properties by name; the wires and labels, the
+    // diagrams, the settings - not the view. In git_diff, git_show, the
+    // Show Changes, Commit and History windows.
+    void schematicChangesPartByPart()
+    {
+        const QString base = QString::fromUtf8(readAll(QStringLiteral(QUCS_EXAMPLES_DIR) + "/ngspice/General Electronics/RC_filter_FFT.sch"));
+        QString changed = base;
+        changed.replace("\"10nF\"", "\"33nF\"");
+        changed.replace(QRegularExpression("<View=[^>]*>"), "<View=-1,-2,3,4,0.5,7,8>");   // (left out)
+        changed.replace("<R R1 1 140 150", "<R R1 1 160 150");
+        changed.replace("<Components>\n", "<Components>\n  <L L9 1 500 500 10 -26 0 1 \"1 uH\" 1 \"\" 0>\n");
+        changed.replace("<Wires>\n", "<Wires>\n  <500 470 600 470 \"probe\" 560 440 0 \"\">\n");
+        QStringList lines = schematicChanges(base, changed);
+        QVERIFY2(lines.contains("C1 (C): C \"10nF\" \u2192 \"33nF\""), qPrintable(lines.join(" | ")));
+        QVERIFY2(lines.contains("R1 (R): moved from 140,150 to 160,150"), qPrintable(lines.join(" | ")));
+        QVERIFY2(lines.contains("L9 (L) added at 500,500"), qPrintable(lines.join(" | ")));
+        QVERIFY2(lines.contains("wires: 1 added"), qPrintable(lines.join(" | ")));
+        QVERIFY2(lines.contains("labels: probe added"), qPrintable(lines.join(" | ")));
+        QVERIFY(!lines.join(' ').contains("View"));
+        QVERIFY(schematicChanges(base, QString(base).replace(QRegularExpression("<View=[^>]*>"), "<View=1,2,3,4,1,0,0>")).isEmpty());
+        QCOMPARE(schematicChanges(std::nullopt, base).first().left(4), QStringLiteral("new:"));
+        QCOMPARE(schematicChanges(base, std::nullopt), QStringList({"deleted"}));
+        // An equation's variables by name.
+        const QString eqn = "<Qucs Schematic 26.1.7>\n<Components>\n  <Eqn Eqn1 1 0 0 0 0 0 0 \"a=1\" 1 \"b=2\" 1 \"yes\" 0>\n</Components>\n";
+        lines = schematicChanges(eqn, QString(eqn).replace("\"a=1\" 1 \"b=2\"", "\"b=3\" 1 \"c=4\""));
+        QVERIFY2(lines.size() == 1 && lines.first().contains("a removed") && lines.first().contains("b \"2\" \u2192 \"3\"")
+                     && lines.first().contains("c added"),
+                 qPrintable(lines.join(" | ")));
+
+        // In a repository: Claude's git_diff and git_show, the windows.
+        const QString repo = makeRepo("sch-diff");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", base.toUtf8()));
+        QVERIFY(commit(repo, "filter", false, {repo + "/RC_filter_FFT.sch"}).ok());
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", QString(base).replace("\"10nF\"", "\"33nF\"").toUtf8()));
+        QString diffText = text(call("git_diff", {{"path", repo}}));
+        QVERIFY2(diffText.startsWith("Schematic changes, part by part:\nRC_filter_FFT.sch:\n  C1 (C): C \"10nF\" \u2192 \"33nF\""), qPrintable(diffText.left(300)));
+        QVERIFY(diffText.contains("-  <C C1"));   // (git's lines after)
+        QVERIFY(schematicChangesOf(repo, {}, DiffOf::Staged).isEmpty());
+        QVERIFY(stage(repo, {repo + "/RC_filter_FFT.sch"}).ok());
+        QVERIFY(schematicChangesOf(repo, {}, DiffOf::Staged).contains("33nF"));
+        QVERIFY(schematicChangesOf(repo, {}, DiffOf::Unstaged).isEmpty());
+        // Changed again after it was staged: staged, the index's; not staged, the file's.
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", QString(base).replace("\"10nF\"", "\"68nF\"").toUtf8()));
+        QVERIFY2(schematicChangesOf(repo, {}, DiffOf::Staged).contains("\"10nF\" \u2192 \"33nF\""), qPrintable(schematicChangesOf(repo, {}, DiffOf::Staged)));
+        QVERIFY(!schematicChangesOf(repo, {}, DiffOf::Staged).contains("68nF"));
+        QVERIFY(schematicChangesOf(repo, {}, DiffOf::Unstaged).contains("\"33nF\" \u2192 \"68nF\""));
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", QString(base).replace("\"10nF\"", "\"33nF\"").toUtf8()));
+        QVERIFY(commit(repo, "33nF").ok());
+        const QString shown = text(call("git_show", {{"path", repo}, {"commit", "HEAD"}}));
+        QVERIFY2(shown.startsWith("Schematic changes, part by part:") && shown.contains("\"33nF\""), qPrintable(shown.left(300)));
+        QVERIFY(text(call("git_show", {{"path", repo}, {"commit", "HEAD~1"}})).contains("new: 8 parts"));
+        HistoryDialog history(repo);
+        history.commits()->setCurrentItem(history.commits()->topLevelItem(0));
+        QTRY_VERIFY(history.details()->toPlainText().startsWith("Schematic changes, part by part:"));
+        QVERIFY(write(repo + "/RC_filter_FFT.sch", QString(base).replace("\"10nF\"", "\"47nF\"").toUtf8()));
+        Commands::instance()->commit(repo);
+        CommitDialog* d = nullptr;
+        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
+            if (auto* c = qobject_cast<CommitDialog*>(w.data()); c != nullptr && c->root() == repo) d = c;
+        QVERIFY(d != nullptr);
+        d->unstagedList()->setCurrentRow(0);
+        emit d->unstagedList()->itemClicked(d->unstagedList()->currentItem());
+        QVERIFY2(d->diffView()->toPlainText().contains("C1 (C): C \"33nF\" \u2192 \"47nF\""), qPrintable(d->diffView()->toPlainText().left(300)));
+        d->close();
+    }
+
+    // Claude's tools: the state, the changes, the history, blame; stage,
 
     // Claude's tools: the state, the changes, the history, blame; stage,
     // unstage, discard, commit (and push), branches, the remotes, stashes,

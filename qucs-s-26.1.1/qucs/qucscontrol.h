@@ -455,11 +455,17 @@ private:
     QJsonObject gitAbort(const QJsonObject& args);
     QJsonObject gitInit(const QJsonObject& args);
     QJsonObject gitIgnore(const QJsonObject& args);
+    QJsonObject gitResolve(const QJsonObject& args);
+    /// A path a git tool names: relative, from the open project's folder,
+    /// the workspace, the document's folder or the File Browser's - the
+    /// first where it is, else the first in a repository.
+    QString gitPath(const QString& path) const;
     void gitCommit(const QJsonObject& args, const Done& done);
     void gitRemote(const QJsonObject& args, const Done& done);
     void gitClone(const QJsonObject& args, const Done& done);
-    /// The open documents of \a root whose files git changed: loaded again.
-    void reloadGitChanged(const QString& root);
+    /// The open documents of \a root whose files git changed: loaded again
+    /// - a schematic in conflict kept as it was -, said in \a answer.
+    void reloadGitChanged(const QString& root, QJsonObject* answer);
     /// \a args of git run in \a root without waiting, its answer \a then's
     /// (after \a timeoutMs it is stopped).
     void gitJob(const QString& root, const QStringList& args, int timeoutMs, const QByteArray& input,

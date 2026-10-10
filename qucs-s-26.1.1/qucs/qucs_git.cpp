@@ -101,6 +101,22 @@ void QucsApp::initGitMenu()
   add("gitFileHistory", tr("History of This File"), onFile([git](const QString &r, const QString &f) { git->showHistory(r, f); }));
   add("gitBlame", tr("Blame This File"), onFile([git](const QString &r, const QString &f) { git->showBlame(r, f); }),
       tr("Who last changed each line, and in which commit"));
+  QMenu *resolve = gitMenu->addMenu(tr("Resolve Conflict"));
+  resolve->setObjectName(QStringLiteral("gitResolveFileMenu"));
+  resolve->setToolTip(tr("This file is in conflict: keep your version, take theirs, or open both"));
+  connect(resolve, &QMenu::aboutToShow, this, [this, resolve] {
+    resolve->clear();
+    const QString file = gitFile();
+    const QString root = file.isEmpty() ? QString() : qucs_s::git::topLevel(file);
+    if (root.isEmpty()) return;
+    // (The entries of its own menu, in this one.)
+    QMenu scratch;
+    if (QMenu *made = Commands::instance()->addResolveMenu(&scratch, root, file))
+      for (QAction *a : made->actions()) {
+        a->setParent(resolve);
+        resolve->addAction(a);
+      }
+  });
   gitMenu->addSeparator();
   add("gitStageAll", tr("Stage All"), onRoot([git](const QString &r) { git->stage(r, {}); }));
   add("gitUnstageAll", tr("Unstage All"), onRoot([git](const QString &r) { git->unstage(r, {}); }));
@@ -168,6 +184,7 @@ void QucsApp::initGitMenu()
 
   // What the commands ask of the window.
   connect(git, &Commands::openRequested, this, [this](const QString &path) { gotoPage(path); });
+  connect(git, &Commands::openVersionRequested, this, [this](const QString &path) { gotoPage(path, false, false); });
   connect(git, &Commands::showFolderRequested, this, [this](const QString &path) {
     if (fileBrowser == nullptr) return;
     fileBrowser->setLocation(path);
@@ -194,6 +211,8 @@ void QucsApp::updateGitMenu()
   };
   for (QAction *a : gitMenu->actions())
     if (a->menu() != nullptr) a->setEnabled(inRepo);
+  if (QMenu *resolve = gitMenu->findChild<QMenu *>(QStringLiteral("gitResolveFileMenu")))
+    resolve->menuAction()->setEnabled(fileIn && e != nullptr && e->conflicted);
   set("gitCommit", inRepo);
   set("gitShowAllChanges", inRepo && r.changedCount() > 0);
   set("gitFileChanges", fileChanged);

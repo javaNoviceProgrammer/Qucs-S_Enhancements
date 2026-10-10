@@ -1953,9 +1953,13 @@ void MouseActions::editElement(Schematic *Doc, QMouseEvent *Event)
             if (cd->exec() != 1)
                 break; // dialog is WDestructiveClose
 
-            Doc->a_Components->remove(c);
-            Doc->setComponentNumber(c); // for ports/power sources
-            Doc->a_Components->push_back(c);
+            {
+                // (Numbered among the others; then back in its place.)
+                const Schematic::ComponentPlace keep(Doc, c);
+                Doc->a_Components->remove(c);
+                Doc->setComponentNumber(c); // for ports/power sources
+                Doc->a_Components->push_back(c);
+            }
         }
 
         Doc->setChanged(true, true);
