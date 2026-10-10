@@ -21,6 +21,7 @@
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -123,6 +124,26 @@ QIcon glyph(const QString& icon)
     else if (icon == QLatin1String("es")) letters(QStringLiteral("es"), blue, true);
     else if (icon == QLatin1String("ec")) letters(QStringLiteral("ec"), orange, true);
     else if (icon == QLatin1String("ht")) letters(QStringLiteral("ht"), red, true);
+    else if (icon == QLatin1String("solid")) letters(QStringLiteral("sm"), dark ? QColor(90, 200, 200) : QColor(0, 121, 121), true);
+    else if (icon == QLatin1String("import")) letters(QStringLiteral("⇩"), green);
+    else if (icon == QLatin1String("transient")) letters(QStringLiteral("t"), gray, true);
+    else if (icon == QLatin1String("sweep")) letters(QStringLiteral("P"), gray, true);
+    else if (icon == QLatin1String("deformation")) letters(QStringLiteral("⤳"), gray);
+    else if (icon == QLatin1String("cutline")) {
+        p.setPen(QPen(gray, 1.4));
+        p.drawLine(QPointF(2, 13), QPointF(14, 3));
+        p.setBrush(gray);
+        p.drawEllipse(QPointF(2.5, 12.5), 1.6, 1.6);
+        p.drawEllipse(QPointF(13.5, 3.5), 1.6, 1.6);
+    } else if (icon == QLatin1String("cutpoint")) letters(QStringLiteral("·"), gray);
+    else if (icon == QLatin1String("plotgroup1d") || icon == QLatin1String("linegraph") || icon == QLatin1String("globalgraph")
+             || icon == QLatin1String("pointgraph")) {
+        p.setPen(QPen(gray, 1));
+        p.drawLine(QPointF(2, 14), QPointF(14.5, 14));
+        p.drawLine(QPointF(2, 14), QPointF(2, 1.5));
+        p.setPen(QPen(icon == QLatin1String("plotgroup1d") ? blue : red, 1.5));
+        p.drawPolyline(QPolygonF{QPointF(3, 12), QPointF(6, 6), QPointF(9, 9), QPointF(14, 3)});
+    }
     else if (icon == QLatin1String("materials") || icon == QLatin1String("material")) letters(QStringLiteral("M"), brown);
     else if (icon == QLatin1String("mesh") || icon == QLatin1String("meshplot")) {
         p.setPen(QPen(purple, 1.1));
@@ -232,9 +253,10 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
         v->setContentsMargins(10, 10, 10, 10);
         auto* title = new QLabel(tr("<b>Multiphysics</b>"), a_start);
         v->addWidget(title);
-        auto* about = new QLabel(tr("A 2D finite element model: its geometry, materials and physics - electrostatics, "
-                                    "electric currents, heat - its mesh, studies and results, in a tree as COMSOL's. "
-                                    "Open a model (.qfem) to see its tree here."),
+        auto* about = new QLabel(tr("A 2D finite element model, in the plane or about an axis: its geometry (drawn, or "
+                                    "imported from DXF and SVG), materials and physics - electrostatics, electric currents, "
+                                    "heat at rest and in time, solid mechanics - its mesh, studies (swept too) and results, in "
+                                    "a tree as COMSOL's. Open a model (.qfem) to see its tree here."),
                                  a_start);
         about->setWordWrap(true);
         v->addWidget(about);
@@ -1026,6 +1048,82 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         connect(box, &QComboBox::activated, this, [this, key, box](int) { commit(key, box->currentData().toString()); });
         return box;
     }
+    case PropertyDef::File: {
+        auto* w = new QWidget(a_form);
+        auto* h = new QHBoxLayout(w);
+        h->setContentsMargins(0, 0, 0, 0);
+        auto* edit = new QLineEdit(node.text(key), w);
+        edit->setObjectName(QStringLiteral("mpEdit_") + key);
+        edit->setPlaceholderText(tr("a DXF or SVG file, beside the model"));
+        auto* browse = new QToolButton(w);
+        browse->setText(QStringLiteral("…"));
+        browse->setObjectName(QStringLiteral("mpBrowse_") + key);
+        h->addWidget(edit, 1);
+        h->addWidget(browse);
+        connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
+        connect(browse, &QToolButton::clicked, this, [this, key, edit] {
+            const QString model = a_doc ? a_doc->getDocName() : QString();
+            const QDir dir = model.isEmpty() ? QDir::home() : QFileInfo(model).absoluteDir();
+            const QString chosen = QFileDialog::getOpenFileName(this, tr("Import a Drawing"), dir.absolutePath(),
+                                                                tr("Drawings (*.dxf *.svg);;DXF (*.dxf);;SVG (*.svg);;All files (*)"));
+            if (chosen.isEmpty()) return;
+            // Relative to the model, when it is saved: the two move together.
+            const QString relative = dir.relativeFilePath(chosen);
+            const QString value = model.isEmpty() ? chosen : relative;
+            edit->setText(value);
+            commit(key, value);
+        });
+        return w;
+    }
+    case PropertyDef::Instant:
+    case PropertyDef::SweepPoint: {
+        // Of the study's solutions, as computed.
+        auto* box = new QComboBox(a_form);
+        box->setObjectName(QStringLiteral("mpEdit_") + key);
+        const std::shared_ptr<SolutionSet> set = a_doc ? a_doc->solutions(node.text(QStringLiteral("study"))) : nullptr;
+        if (p.kind == PropertyDef::SweepPoint) {
+            box->addItem(tr("(the last)"), 0);
+            if (set && set->solutions.size() > 1)
+                for (std::size_t i = 0; i < set->solutions.size(); ++i)
+                    box->addItem(set->solutions[i]->label.isEmpty() ? tr("Solution %1").arg(i + 1) : set->solutions[i]->label, int(i) + 1);
+            const int at = box->findData(node.integer(key));
+            box->setCurrentIndex(std::max(0, at));
+            if (at < 0 && node.integer(key) > 0) box->addItem(tr("Solution %1 (not computed)").arg(node.integer(key)), node.integer(key));
+            connect(box, &QComboBox::activated, this, [this, key, box](int) { commit(key, box->currentData().toInt()); });
+        } else {
+            box->setEditable(true);
+            box->addItem(tr("(the last)"), QString());
+            if (set && !set->solutions.empty()) {
+                const Solution& s = *set->solutions.front();
+                for (int k = 0; k < s.snapshotCount(); ++k)
+                    box->addItem(formatQuantity(s.snapshotTime(k), Dim::of(0, 0, 1)), QString::number(s.snapshotTime(k), 'g', 17));
+            }
+            const QString now = node.text(key);
+            const int at = box->findData(now);
+            if (at >= 0) box->setCurrentIndex(at);
+            else if (now.isEmpty()) box->setCurrentIndex(0);
+            else box->setEditText(now);
+            connect(box, &QComboBox::activated, this, [this, key, box](int) { commit(key, box->currentData().toString()); });
+            connect(box->lineEdit(), &QLineEdit::editingFinished, this, [this, key, box] {
+                const QString text = box->currentText().trimmed();
+                const int at = box->findText(text);
+                commit(key, at >= 0 ? box->itemData(at).toString() : text);
+            });
+        }
+        if (!set) box->setToolTip(tr("Compute the study to choose among its solutions"));
+        return box;
+    }
+    case PropertyDef::Dataset: {
+        auto* box = new QComboBox(a_form);
+        box->setObjectName(QStringLiteral("mpEdit_") + key);
+        box->addItem(tr("(none)"), QString());
+        for (const Node& r : a_doc->model().results().children)
+            if (r.type == QLatin1String("cutline") || r.type == QLatin1String("cutpoint"))
+                box->addItem(QStringLiteral("%1 (%2)").arg(r.name(), r.tag), r.tag);
+        box->setCurrentIndex(std::max(0, box->findData(node.text(key))));
+        connect(box, &QComboBox::activated, this, [this, key, box](int) { commit(key, box->currentData().toString()); });
+        return box;
+    }
     }
     return nullptr;
 }
@@ -1190,7 +1288,9 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
     auto* table = new QTableWidget(w);
     table->setObjectName(QStringLiteral("mpRows"));
     const QStringList headers = parameters ? QStringList{tr("Name"), tr("Expression"), tr("Value"), tr("Description")}
-                                           : QStringList{QStringLiteral("x"), QStringLiteral("f(x)")};
+                                : p.choiceLabels.isEmpty() ? QStringList{QStringLiteral("x"), QStringLiteral("f(x)")}
+                                                           : p.choiceLabels;
+    const int columns = int(headers.size());
     table->setColumnCount(int(headers.size()));
     table->setHorizontalHeaderLabels(headers);
     table->verticalHeader()->hide();
@@ -1219,15 +1319,14 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
             table->setItem(r, 2, shown);
             table->setItem(r, 3, new QTableWidgetItem(o.value(QStringLiteral("description")).toString()));
         } else {
-            const QJsonArray pair = rows.at(r).toArray();
-            table->setItem(r, 0, new QTableWidgetItem(text(pair.at(0))));
-            table->setItem(r, 1, new QTableWidgetItem(text(pair.at(1))));
+            const QJsonArray cells = rows.at(r).toArray();
+            for (int c = 0; c < columns; ++c) table->setItem(r, c, new QTableWidgetItem(text(cells.at(c))));
         }
     }
     table->resizeColumnsToContents();
     table->setMinimumHeight(std::min(320, 30 + 26 * std::max(3, int(rows.size()) + 1)));
     v->addWidget(table);
-    auto collect = [table, parameters]() {
+    auto collect = [table, parameters, columns]() {
         QJsonArray out;
         for (int r = 0; r < table->rowCount(); ++r) {
             auto cell = [&](int c) { return table->item(r, c) ? table->item(r, c)->text().trimmed() : QString(); };
@@ -1238,7 +1337,9 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
                 out.append(o);
             } else {
                 if (cell(0).isEmpty() && cell(1).isEmpty()) continue;
-                out.append(QJsonArray{cell(0), cell(1)});
+                QJsonArray row;
+                for (int c = 0; c < columns; ++c) row.append(cell(c));
+                out.append(row);
             }
         }
         return out;
@@ -1265,6 +1366,17 @@ QWidget* MultiphysicsPanel::parametersEditor(const Node& node, const PropertyDef
             QString name = QStringLiteral("p1");
             for (int i = 2; names.contains(name); ++i) name = QStringLiteral("p%1").arg(i);
             rows2.append(QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("expression"), QStringLiteral("1")}});
+        } else if (node.type == QLatin1String("sweep")) {
+            // The first parameter not swept yet, its value as it is.
+            QStringList swept;
+            for (const QJsonValue& r : rows2) swept << r.toArray().at(0).toString();
+            QString name;
+            for (const Model::Parameter& par : a_doc->model().parameters())
+                if (!swept.contains(par.name)) {
+                    name = par.name;
+                    break;
+                }
+            rows2.append(QJsonArray{name, QStringLiteral("1, 2, 3"), QString()});
         } else {
             rows2.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
         }
@@ -1399,7 +1511,7 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
         const QString studyTag = study ? study->tag : QString();
         action(tr("Compute"), "mpComputeButton", [this, studyTag] { a_doc->compute(studyTag); });
     }
-    if (node.type == QLatin1String("plotgroup")) action(tr("Plot"), "mpPlotButton", [this, tag] {
+    if (node.type == QLatin1String("plotgroup") || node.type == QLatin1String("plotgroup1d")) action(tr("Plot"), "mpPlotButton", [this, tag] {
             QString why;
             if (!a_doc->showPlotGroup(tag, &why)) QMessageBox::information(this, tr("Plot"), why);
         });

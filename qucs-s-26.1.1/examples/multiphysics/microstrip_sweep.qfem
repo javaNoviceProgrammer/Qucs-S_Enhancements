@@ -1,0 +1,55 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A microstrip's Z0 against its width",
+    "description": "The 50 Ω microstrip's cross-section, its strip's width swept from 1 to 5 mm (its geometry and mesh made again for each): the Line Parameters at each width, and Z0 and εeff against the width as graphs in a Qucs data display.",
+    "parameters": [
+        {"name": "w", "expression": "3[mm]", "description": "the strip's width"},
+        {"name": "h", "expression": "1.6[mm]", "description": "the substrate's height"},
+        {"name": "t", "expression": "35[um]", "description": "the copper's thickness"},
+        {"name": "box", "expression": "30*h", "description": "the air box's width and height"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["-box/2", "0"], "size": ["box", "box/2"]},
+            {"type": "rectangle", "label": "substrate", "position": ["-box/2", "0"], "size": ["box", "h"]},
+            {"type": "rectangle", "label": "trace", "position": ["-w/2", "h"], "size": ["w", "t"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"all": true}},
+            {"material": "FR-4", "selection": {"only": ["substrate"]}},
+            {"material": "Copper", "selection": {"only": ["trace"]}}
+        ],
+        "physics": [{
+            "type": "electrostatics", "tag": "es",
+            "selection": {"all": true, "except": {"only": ["trace"]}},
+            "features": [
+                {"type": "terminal", "label": "Strip", "name": "1", "V0": "1[V]", "selection": {"of": ["trace"]}},
+                {"type": "ground", "label": "Ground plane", "selection": {"of": ["substrate"], "side": "bottom"}}
+            ]
+        }],
+        "mesh": {"size": "normal"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["w", "range(1, 0.5, 5)", "mm"]]},
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electric Potential", "plots": [
+                {"type": "surface", "expression": "V"},
+                {"type": "contour", "expression": "V", "levels": 20}
+            ]},
+            {"type": "plotgroup1d", "label": "Z0 against the Width", "plots": [
+                {"type": "globalgraph", "expression": "lp1.Z0"}
+            ]},
+            {"type": "plotgroup1d", "label": "εeff against the Width", "plots": [
+                {"type": "globalgraph", "expression": "lp1.epsilon_eff"}
+            ]}
+        ],
+        "derived": [
+            {"type": "lineparams", "tag": "lp1", "label": "Line Parameters", "terminal": "1"}
+        ]
+    }
+}

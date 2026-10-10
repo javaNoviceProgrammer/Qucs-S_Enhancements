@@ -1,5 +1,7 @@
 /*
- * fem_solver.cpp - the multiphysics solver: assembly, solution, sweeps
+ * fem_solver.cpp - the multiphysics solver: solutions, their variables and
+ *                  snapshots, the sparse systems, studies in steps (at
+ *                  rest, in time) and their sweeps
  *
  * This file is part of Qucs-S.
  *
@@ -11,14 +13,12 @@
 #include "fem_solver.h"
 
 #include "fem_materials.h"
-
-#include <Eigen/Dense>
-#include <Eigen/IterativeLinearSolvers>
-#include <Eigen/SparseCholesky>
-#include <Eigen/SparseLU>
+#include "fem_problem.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSet>
 
 #include <algorithm>
@@ -29,17 +29,13 @@
 
 namespace qucs_s::fem {
 
-namespace {
+namespace detail {
 
 QString tr(const char* text)
 {
     return QCoreApplication::translate("qucs_s::fem::Solver", text);
 }
 
-constexpr double Eps0 = 8.8541878188e-12;
-const double NaN = std::numeric_limits<double>::quiet_NaN();
-
-/// Runs \a work(begin, end) on parts of [0, n) in threads.
 void parallelFor(int n, const std::function<void(int, int)>& work)
 {
     const int threads = std::clamp(int(std::thread::hardware_concurrency()), 1, 16);
@@ -57,9 +53,245 @@ void parallelFor(int n, const std::function<void(int, int)>& work)
     for (std::thread& t : pool) t.join();
 }
 
-} // namespace
+// ------------------------------------------------------------------ LinearSystem
+
+void LinearSystem::setPattern(int neq, const std::function<void(const std::function<void(const int*, int)>&)>& elements)
+{
+    a_n = neq;
+    std::vector<std::vector<int>> rows(static_cast<std::size_t>(neq));
+    elements([&](const int* eqs, int n) {
+        for (int i = 0; i < n; ++i) {
+            if (eqs[i] < 0) continue;
+            std::vector<int>& row = rows[std::size_t(eqs[i])];
+            for (int j = 0; j < n; ++j)
+                if (eqs[j] >= 0) row.push_back(eqs[j]);
+        }
+    });
+    std::vector<int> outer(std::size_t(neq) + 1, 0);
+    for (int r = 0; r < neq; ++r) {
+        std::vector<int>& row = rows[std::size_t(r)];
+        std::sort(row.begin(), row.end());
+        row.erase(std::unique(row.begin(), row.end()), row.end());
+        if (!std::binary_search(row.begin(), row.end(), r)) row.insert(std::lower_bound(row.begin(), row.end(), r), r);
+        outer[std::size_t(r) + 1] = outer[std::size_t(r)] + int(row.size());
+    }
+    // (Its pattern is symmetric: column j holds row j's columns.)
+    a_A = Eigen::SparseMatrix<double>(neq, neq);
+    a_A.resizeNonZeros(outer.back());
+    std::copy(outer.begin(), outer.end(), a_A.outerIndexPtr());
+    int* inner = a_A.innerIndexPtr();
+    for (int r = 0; r < neq; ++r) {
+        std::copy(rows[std::size_t(r)].begin(), rows[std::size_t(r)].end(), inner + outer[std::size_t(r)]);
+        std::vector<int>().swap(rows[std::size_t(r)]);
+    }
+    clear();
+    a_ldlt.reset();
+    a_lu.reset();
+    a_cg.reset();
+    a_ldltAnalyzed = a_luAnalyzed = false;
+}
+
+void LinearSystem::clear()
+{
+    std::fill(a_A.valuePtr(), a_A.valuePtr() + a_A.nonZeros(), 0.0);
+}
+
+void LinearSystem::add(int i, int j, double v)
+{
+    const int* inner = a_A.innerIndexPtr();
+    const int* outer = a_A.outerIndexPtr();
+    const int* begin = inner + outer[j];
+    const int* end = inner + outer[j + 1];
+    const int* at = std::lower_bound(begin, end, i);
+    a_A.valuePtr()[at - inner] += v;
+}
+
+bool LinearSystem::factorize(bool symmetric, const QString& solver, double tolerance, const QString& name, QStringList* log, QString* error)
+{
+    const bool iterative = symmetric && (solver == QLatin1String("iterative") || (solver != QLatin1String("direct") && a_n > 400000));
+    a_cg.reset();
+    if (iterative) {
+        a_ldlt.reset();
+        a_lu.reset();
+        a_cg = std::make_unique<std::remove_reference_t<decltype(*a_cg)>>();
+        a_cg->setTolerance(std::min(1e-9, tolerance * 1e-3));
+        a_cg->setMaxIterations(std::max(1000, 4 * int(std::sqrt(double(a_n))) * 50));
+        a_cg->compute(a_A);
+        if (a_cg->info() == Eigen::Success) return true;
+        if (log) *log << tr("%1: the incomplete Cholesky factorization failed; the direct solver instead").arg(name);
+        a_cg.reset();
+    }
+    if (symmetric) {
+        if (!a_ldlt) {
+            a_ldlt = std::make_unique<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>();
+            a_ldltAnalyzed = false;
+        }
+        if (!a_ldltAnalyzed) {
+            a_ldlt->analyzePattern(a_A);
+            a_ldltAnalyzed = true;
+        }
+        a_ldlt->factorize(a_A);
+        if (a_ldlt->info() == Eigen::Success) {
+            // A Cholesky of a matrix not positive definite: a pivot of 0 or less.
+            const auto dvec = a_ldlt->vectorD();
+            if ((dvec.array() > 0).all()) {
+                a_lu.reset();
+                return true;
+            }
+        }
+        a_ldlt.reset();
+        a_ldltAnalyzed = false;
+    } else {
+        a_ldlt.reset();
+        a_ldltAnalyzed = false;
+    }
+    if (!a_lu) {
+        a_lu = std::make_unique<Eigen::SparseLU<Eigen::SparseMatrix<double>>>();
+        a_luAnalyzed = false;
+    }
+    if (!a_luAnalyzed) {
+        a_lu->analyzePattern(a_A);
+        a_luAnalyzed = true;
+    }
+    a_lu->factorize(a_A);
+    if (a_lu->info() != Eigen::Success) {
+        *error = tr("%1: the matrix is singular - %2").arg(name, QString::fromStdString(a_lu->lastErrorMessage()));
+        a_lu.reset();
+        a_luAnalyzed = false;
+        return false;
+    }
+    return true;
+}
+
+bool LinearSystem::solve(const Eigen::VectorXd& rhs, Eigen::VectorXd& x, const QString& name, QString* error) const
+{
+    if (a_ldlt) x = a_ldlt->solve(rhs);
+    else if (a_lu) x = a_lu->solve(rhs);
+    else if (a_cg) {
+        x = a_cg->solve(rhs);
+        if (a_cg->info() != Eigen::Success) {
+            *error = tr("%1: the conjugate gradients did not converge in %2 iterations (error %3): try the direct solver")
+                         .arg(name)
+                         .arg(a_cg->iterations())
+                         .arg(a_cg->error());
+            return false;
+        }
+    } else {
+        *error = tr("%1: nothing is factorized").arg(name);
+        return false;
+    }
+    if (!x.allFinite()) {
+        *error = tr("%1: the solution is not finite").arg(name);
+        return false;
+    }
+    return true;
+}
+
+// ------------------------------------------------------------------ Problem
+
+Problem::Problem(Solution& solution, int field) : a_s(solution), a_fi(field)
+{
+    const QString tag = solution.fields()[std::size_t(field)].tag;
+    for (const Node* p : solution.model().physics())
+        if (p->tag == tag) a_node = p;
+}
+
+Expression Problem::compile(const QString& text, const Node& feature, const QString& key, bool spatial)
+{
+    const Expression e = Expression::compile(text, a_s.pointScope());
+    const QString where = tr("%1 of %2").arg(feature.kind() && feature.kind()->property(key) ? feature.kind()->property(key)->label : key,
+                                              feature.name());
+    if (!e.isValid()) {
+        problem(tr("%1: %2").arg(where, e.error()));
+        return e;
+    }
+    for (int slot : e.variables()) {
+        const Solution::VariableDef& d = a_s.definitions()[std::size_t(slot)];
+        if (d.field >= 0) a_reads.insert(d.field);
+        if (!spatial && d.field >= 0) problem(tr("%1 may not read a field (%2) here").arg(where, d.info.name));
+    }
+    const PropertyDef* p = feature.kind() ? feature.kind()->property(key) : nullptr;
+    if (p && !e.dim().isNone() && !(e.dim() == p->dim()))
+        a_s.log << tr("Warning: %1 is in %2, where %3 is expected").arg(where, dimName(e.dim()), dimName(p->dim()));
+    return e;
+}
+
+std::vector<const Node*> Problem::materials()
+{
+    const Topology& topo = a_s.topology();
+    std::vector<const Node*> material(topo.domains.size(), nullptr);
+    QString why;
+    for (const Node& m : a_s.model().materials().children) {
+        if (!m.enabled) continue;
+        const QVector<int> on = resolveSelection(topo, a_s.model(), Level::Domain, m.selection(), &why);
+        if (!why.isEmpty()) problem(tr("%1: %2").arg(m.name(), why));
+        for (int d : on) material[std::size_t(d)] = &m;
+    }
+    return material;
+}
+
+QString Problem::materialProperty(const Node& m, const QString& key)
+{
+    QString text = m.text(key);
+    // Not given: its library entry's ({"material": "FR-4"} in a file).
+    if (text.trimmed().isEmpty() && !m.text(QStringLiteral("library")).isEmpty())
+        if (const std::optional<MaterialEntry> entry = findMaterial(m.text(QStringLiteral("library"))))
+            text = entry->properties.value(key).toString();
+    return text;
+}
+
+std::unique_ptr<Problem> makeScalarProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeElasticProblem(Solution& solution, int field);
+
+std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
+{
+    if (solution.fields()[std::size_t(field)].type == QLatin1String("solid")) return makeElasticProblem(solution, field);
+    return makeScalarProblem(solution, field);
+}
+
+} // namespace detail
+
+using detail::NaN;
+using detail::tr;
 
 // ------------------------------------------------------------------ Solution
+
+namespace {
+
+/// A physics as its variables need it.
+struct FieldInfo {
+    QString tag, type, variable;
+    QStringList components;
+    Dim dim;
+    bool planeStress = false;   // (solid)
+};
+
+FieldInfo infoOf(const Node& p)
+{
+    FieldInfo f;
+    f.tag = p.tag;
+    f.type = p.type;
+    if (p.type == QLatin1String("heat")) {
+        f.variable = QStringLiteral("T");
+        f.dim = Dim::temperature();
+    } else if (p.type == QLatin1String("solid")) {
+        f.variable = QStringLiteral("u");
+        f.dim = Dim::length();
+        f.planeStress = p.text(QStringLiteral("model")) == QLatin1String("planestress");
+    } else {
+        f.variable = QStringLiteral("V");
+        f.dim = Dim::voltage();
+    }
+    f.components = p.type == QLatin1String("solid") ? QStringList{QStringLiteral("u"), QStringLiteral("v")} : QStringList{f.variable};
+    return f;
+}
+
+bool axisymmetricModel(const Model& model)
+{
+    return model.component().text(QStringLiteral("space")) == QLatin1String("axisymmetric");
+}
+
+} // namespace
 
 Solution::Solution(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh> mesh)
     : a_model(model), a_params(std::move(parameters)), a_mesh(std::move(mesh))
@@ -68,21 +300,23 @@ Solution::Solution(const Model& model, std::shared_ptr<ParameterScope> parameter
     const std::optional<double> d = evaluateConstant(a_model.component().text(QStringLiteral("thickness")), a_params->scope,
                                                      Dim::length(), &why);
     a_thickness = d && *d > 0 ? *d : 1.0;
+    a_axisymmetric = axisymmetricModel(a_model);
     std::map<int, std::shared_ptr<const Space>> spaces;
     for (const Node* p : a_model.physics()) {
         if (!p->enabled) continue;
+        const FieldInfo info = infoOf(*p);
         Field f;
-        f.tag = p->tag;
-        f.type = p->type;
-        const bool heat = p->type == QLatin1String("heat");
-        f.variable = heat ? QStringLiteral("T") : QStringLiteral("V");
-        f.dim = heat ? Dim::temperature() : Dim::voltage();
-        f.initial = heat ? 293.15 : 0.0;
+        f.tag = info.tag;
+        f.type = info.type;
+        f.variable = info.variable;
+        f.components = info.components;
+        f.dim = info.dim;
+        f.initial = p->type == QLatin1String("heat") ? 293.15 : 0.0;
         const int order = p->text(QStringLiteral("order")) == QLatin1String("1") ? 1 : 2;
         auto it = spaces.find(order);
         if (it == spaces.end()) it = spaces.emplace(order, std::make_shared<Space>(a_mesh, order)).first;
         f.space = it->second;
-        f.values.assign(std::size_t(f.space->size()), f.initial);
+        f.values.assign(std::size_t(f.space->size()) * std::size_t(f.count()), f.initial);
         f.domains.assign(a_mesh->topology->domains.size(), 0);
         a_fields.push_back(std::move(f));
     }
@@ -101,6 +335,9 @@ int Solution::define(const QString& name, const Dim& dim, const QString& descrip
                      std::function<double(PointEvaluator&)> derived)
 {
     if (a_pointScope->variable(name) >= 0) return a_pointScope->variable(name);
+    // A parameter of a plain name (t, h, x, T...) keeps it: no such variable
+    // (es.V, ht.T are the fields' still).
+    if (!name.contains(QLatin1Char('.')) && a_params->scope.constant(name)) return -1;
     const int slot = a_pointScope->addVariable(name, dim);
     if (int(a_defs.size()) <= slot) a_defs.resize(std::size_t(slot) + 1);
     VariableDef& d = a_defs[std::size_t(slot)];
@@ -113,33 +350,148 @@ int Solution::define(const QString& name, const Dim& dim, const QString& descrip
 
 namespace {
 
-/// A physics as its variables need it.
-struct FieldInfo {
-    QString tag, type, variable;
-    Dim dim;
+using K = Solution::VariableDef::Kind;
+
+/// How a variable is declared: its name, unit, what it is, its kind, its
+/// field and component, a coefficient's name, a derived one's function.
+using DefineFunction = std::function<int(const QString& name, const Dim& dim, const QString& description, K kind, int field,
+                                         int component, const QString& coefficient, std::function<double(PointEvaluator&)> derived)>;
+
+/// The stress state of a solid at a point: strains, stresses (SI).
+struct StressState {
+    double e1 = 0, e2 = 0, e3 = 0, g12 = 0;   // εx, εy, εz (εθ about the axis), γxy (engineering)
+    double s1 = 0, s2 = 0, s3 = 0, s12 = 0;   // σx, σy, σz (σθ), τxy
+    double elastic = 0;                        // strain energy density
 };
 
-using DefineFunction = std::function<int(const QString&, const Dim&, const QString&, Solution::VariableDef::Kind, int,
-                                         std::function<double(PointEvaluator&)>)>;
-
-/// The variables of a solution of \a fields, each to \a defineVariable:
-/// x, y, the fields and what follows from them.
-void declareVariables(const std::vector<FieldInfo>& fields, const DefineFunction& defineVariable)
+StressState stressAt(PointEvaluator& e, int field, bool planeStress, bool axisymmetric, int sE, int sNu, int sAlpha, int sDT)
 {
-    using K = Solution::VariableDef::Kind;
+    StressState st;
+    double u = 0, ux = 0, uy = 0, v = 0, vx = 0, vy = 0;
+    e.component(field, 0, u, ux, uy);
+    e.component(field, 1, v, vx, vy);
+    const double E = e.value(sE), nu = e.value(sNu);
+    const double a = e.value(sAlpha), dT = e.value(sDT);
+    const double th = (std::isfinite(a) ? a : 0) * (std::isfinite(dT) ? dT : 0);   // the free thermal strain
+    st.e1 = ux;
+    st.e2 = vy;
+    st.g12 = uy + vx;
+    const double mu = E / (2 * (1 + nu));
+    if (axisymmetric) {
+        const double r = e.point().x();
+        st.e3 = r > 0 ? u / r : ux;
+        const double lambda = E * nu / ((1 + nu) * (1 - 2 * nu));
+        const double tr = st.e1 + st.e2 + st.e3;
+        const double t = (3 * lambda + 2 * mu) * th;
+        st.s1 = lambda * tr + 2 * mu * st.e1 - t;
+        st.s2 = lambda * tr + 2 * mu * st.e2 - t;
+        st.s3 = lambda * tr + 2 * mu * st.e3 - t;
+    } else if (planeStress) {
+        const double f = E / (1 - nu * nu);
+        st.s1 = f * ((st.e1 - th) + nu * (st.e2 - th));
+        st.s2 = f * (nu * (st.e1 - th) + (st.e2 - th));
+        st.s3 = 0;
+        st.e3 = -nu / (1 - nu) * (st.e1 + st.e2 - 2 * th) + th;
+    } else {
+        const double lambda = E * nu / ((1 + nu) * (1 - 2 * nu));
+        const double tr = st.e1 + st.e2;
+        const double t = (3 * lambda + 2 * mu) * th;
+        st.s1 = lambda * tr + 2 * mu * st.e1 - t;
+        st.s2 = lambda * tr + 2 * mu * st.e2 - t;
+        st.s3 = lambda * tr - t;
+        st.e3 = 0;
+    }
+    st.s12 = mu * st.g12;
+    st.elastic = 0.5 * (st.s1 * (st.e1 - th) + st.s2 * (st.e2 - th) + st.s3 * (st.e3 - th) + st.s12 * st.g12);
+    return st;
+}
+
+/// The variables of a solution of \a fields, each to \a define: x, y (r, z
+/// about the axis), t, the fields and what follows from them.
+void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, const DefineFunction& defineVariable)
+{
     auto define = [&](const QString& name, const Dim& dim, const QString& description, K kind, int field = -1,
                       std::function<double(PointEvaluator&)> derived = {}) {
-        return defineVariable(name, dim, description, kind, field, std::move(derived));
+        return defineVariable(name, dim, description, kind, field, 0, QString(), std::move(derived));
     };
-    define(QStringLiteral("x"), Dim::length(), tr("x coordinate"), K::X);
-    define(QStringLiteral("y"), Dim::length(), tr("y coordinate"), K::Y);
+    auto component = [&](const QString& name, const Dim& dim, const QString& description, K kind, int field, int c) {
+        return defineVariable(name, dim, description, kind, field, c, QString(), {});
+    };
+    auto coefficient = [&](const QString& name, const Dim& dim, const QString& description, int field, const QString& which) {
+        return defineVariable(name, dim, description, K::Coefficient, field, 0, which, {});
+    };
+    define(QStringLiteral("x"), Dim::length(), axisymmetric ? tr("x coordinate (r)") : tr("x coordinate"), K::X);
+    define(QStringLiteral("y"), Dim::length(), axisymmetric ? tr("y coordinate (z)") : tr("y coordinate"), K::Y);
+    if (axisymmetric) {
+        define(QStringLiteral("r"), Dim::length(), tr("the distance from the axis"), K::X);
+        define(QStringLiteral("z"), Dim::length(), tr("the position along the axis"), K::Y);
+    }
+    define(QStringLiteral("t"), Dim::of(0, 0, 1), tr("time"), K::Time);
+    define(QStringLiteral("time"), Dim::of(0, 0, 1), tr("time (as t; where a parameter is named t)"), K::Time);
     define(QStringLiteral("dom"), Dim(), tr("the domain's number"), K::DomainNumber);
     define(QStringLiteral("h"), Dim::length(), tr("the mesh element's size"), K::Size);
     const Dim efield = Dim::of(1, 1, -3, -1), dfield = Dim::of(-2, 0, 1, 1), jfield = Dim::of(-2, 0, 0, 1);
     const Dim power = Dim::of(-1, 1, -3), gradT = Dim::of(-1, 0, 0, 0, 1), heatFlux = Dim::of(0, 1, -3);
+    const Dim pressure = Dim::of(-1, 1, -2), energyDensity = Dim::of(-1, 1, -2);
     for (int f = 0; f < int(fields.size()); ++f) {
         const FieldInfo& field = fields[std::size_t(f)];
         const QString p = field.tag + QLatin1Char('.');
+        if (field.type == QLatin1String("solid")) {
+            const QString a = axisymmetric ? tr("radial") : tr("x");
+            const QString b = axisymmetric ? tr("axial") : tr("y");
+            component(p + QStringLiteral("u"), Dim::length(), tr("displacement, %1 component").arg(a), K::Value, f, 0);
+            component(p + QStringLiteral("v"), Dim::length(), tr("displacement, %1 component").arg(b), K::Value, f, 1);
+            component(QStringLiteral("u"), Dim::length(), tr("displacement, %1 component (%2)").arg(a, field.tag), K::Value, f, 0);
+            component(QStringLiteral("v"), Dim::length(), tr("displacement, %1 component (%2)").arg(b, field.tag), K::Value, f, 1);
+            const int su = component(p + QStringLiteral("u"), Dim::length(), QString(), K::Value, f, 0);
+            const int sv = component(p + QStringLiteral("v"), Dim::length(), QString(), K::Value, f, 1);
+            define(p + QStringLiteral("disp"), Dim::length(), tr("displacement, magnitude"), K::Derived, f,
+                   [su, sv](PointEvaluator& e) { return std::hypot(e.value(su), e.value(sv)); });
+            const int sE = coefficient(p + QStringLiteral("E"), pressure, tr("Young's modulus"), f, QStringLiteral("E"));
+            const int sNu = coefficient(p + QStringLiteral("nu"), Dim(), tr("Poisson's ratio"), f, QStringLiteral("nu"));
+            const int sA = coefficient(p + QStringLiteral("alpha"), Dim::of(0, 0, 0, 0, -1), tr("coefficient of thermal expansion"), f,
+                                       QStringLiteral("alpha"));
+            const int sT = coefficient(p + QStringLiteral("dT"), Dim::temperature(), tr("temperature above the strain-free one"), f,
+                                       QStringLiteral("dT"));
+            const bool ps = field.planeStress;
+            auto st = [f, ps, axisymmetric, sE, sNu, sA, sT](PointEvaluator& e) { return stressAt(e, f, ps, axisymmetric, sE, sNu, sA, sT); };
+            struct Out {
+                const char* plane;
+                const char* axi;
+                Dim dim;
+                QString what;
+                double StressState::*member;
+                double factor;
+            };
+            const Out outs[] = {
+                {"ex", "er", Dim(), tr("strain, %1 component").arg(a), &StressState::e1, 1},
+                {"ey", "ez", Dim(), tr("strain, %1 component").arg(b), &StressState::e2, 1},
+                {"ez", "ephi", Dim(), axisymmetric ? tr("strain, hoop component") : tr("strain, out of the plane"), &StressState::e3, 1},
+                {"exy", "erz", Dim(), tr("shear strain (tensor: half the engineering shear)"), &StressState::g12, 0.5},
+                {"sx", "sr", pressure, tr("stress, %1 component").arg(a), &StressState::s1, 1},
+                {"sy", "sz", pressure, tr("stress, %1 component").arg(b), &StressState::s2, 1},
+                {"sz", "sphi", pressure, axisymmetric ? tr("stress, hoop component") : tr("stress, out of the plane"), &StressState::s3, 1},
+                {"sxy", "srz", pressure, tr("shear stress"), &StressState::s12, 1},
+                {"Ws", "Ws", energyDensity, tr("strain energy density"), &StressState::elastic, 1},
+            };
+            for (const Out& o : outs) {
+                const QString name = QString::fromLatin1(axisymmetric ? o.axi : o.plane);
+                const auto member = o.member;
+                const double factor = o.factor;
+                define(p + name, o.dim, o.what, K::Derived, f, [st, member, factor](PointEvaluator& e) { return factor * (st(e).*member); });
+            }
+            define(p + QStringLiteral("mises"), pressure, tr("von Mises stress"), K::Derived, f, [st](PointEvaluator& e) {
+                const StressState s = st(e);
+                return std::sqrt(0.5 * ((s.s1 - s.s2) * (s.s1 - s.s2) + (s.s2 - s.s3) * (s.s2 - s.s3) + (s.s3 - s.s1) * (s.s3 - s.s1))
+                                 + 3 * s.s12 * s.s12);
+            });
+            define(p + QStringLiteral("p"), pressure, tr("pressure: minus the mean of the normal stresses"), K::Derived, f,
+                   [st](PointEvaluator& e) {
+                       const StressState s = st(e);
+                       return -(s.s1 + s.s2 + s.s3) / 3;
+                   });
+            continue;
+        }
         define(p + field.variable, field.dim, tr("the dependent variable"), K::Value, f, {});
         // Its plain name too (V, T), when no physics before has it.
         define(field.variable, field.dim, tr("the dependent variable of %1").arg(field.tag), K::Value, f, {});
@@ -148,20 +500,20 @@ void declareVariables(const std::vector<FieldInfo>& fields, const DefineFunction
             const int ey = define(p + QStringLiteral("Ey"), efield, tr("electric field, y component"), K::GradY, f);
             const int ne = define(p + QStringLiteral("normE"), efield, tr("electric field, norm"), K::GradNorm, f);
             if (field.type == QLatin1String("electrostatics")) {
-                const int er = define(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity"), K::Coefficient, f);
+                const int er = coefficient(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity"), f, QString());
                 const int dx = define(p + QStringLiteral("Dx"), dfield, tr("electric displacement, x component"), K::Derived, f,
-                                      [er, ex](PointEvaluator& e) { return Eps0 * e.value(er) * e.value(ex); });
+                                      [er, ex](PointEvaluator& e) { return detail::Eps0 * e.value(er) * e.value(ex); });
                 const int dy = define(p + QStringLiteral("Dy"), dfield, tr("electric displacement, y component"), K::Derived, f,
-                                      [er, ey](PointEvaluator& e) { return Eps0 * e.value(er) * e.value(ey); });
+                                      [er, ey](PointEvaluator& e) { return detail::Eps0 * e.value(er) * e.value(ey); });
                 define(p + QStringLiteral("normD"), dfield, tr("electric displacement, norm"), K::Derived, f,
                        [dx, dy](PointEvaluator& e) { return std::hypot(e.value(dx), e.value(dy)); });
                 define(p + QStringLiteral("We"), Dim::of(-1, 1, -2), tr("electric energy density"), K::Derived, f,
                        [er, ne](PointEvaluator& e) {
                            const double n = e.value(ne);
-                           return 0.5 * Eps0 * e.value(er) * n * n;
+                           return 0.5 * detail::Eps0 * e.value(er) * n * n;
                        });
             } else {
-                const int sg = define(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity"), K::Coefficient, f);
+                const int sg = coefficient(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity"), f, QString());
                 const int jx = define(p + QStringLiteral("Jx"), jfield, tr("current density, x component"), K::Derived, f,
                                       [sg, ex](PointEvaluator& e) { return e.value(sg) * e.value(ex); });
                 const int jy = define(p + QStringLiteral("Jy"), jfield, tr("current density, y component"), K::Derived, f,
@@ -178,7 +530,7 @@ void declareVariables(const std::vector<FieldInfo>& fields, const DefineFunction
             const int gx = define(p + QStringLiteral("gradTx"), gradT, tr("temperature gradient, x component"), K::GradX, f);
             const int gy = define(p + QStringLiteral("gradTy"), gradT, tr("temperature gradient, y component"), K::GradY, f);
             define(p + QStringLiteral("gradT"), gradT, tr("temperature gradient, norm"), K::GradNorm, f);
-            const int k = define(p + QStringLiteral("k"), Dim::of(1, 1, -3, 0, -1), tr("thermal conductivity"), K::Coefficient, f);
+            const int k = coefficient(p + QStringLiteral("k"), Dim::of(1, 1, -3, 0, -1), tr("thermal conductivity"), f, QString());
             // (gradients' signs: Ex is -dV/dx; gradTx is +dT/dx)
             const int qx = define(p + QStringLiteral("qx"), heatFlux, tr("conductive heat flux, x component"), K::Derived, f,
                                   [k, gx](PointEvaluator& e) { return -e.value(k) * e.value(gx); });
@@ -193,11 +545,8 @@ void declareVariables(const std::vector<FieldInfo>& fields, const DefineFunction
 std::vector<FieldInfo> fieldInfos(const Model& model)
 {
     std::vector<FieldInfo> out;
-    for (const Node* p : model.physics()) {
-        if (!p->enabled) continue;
-        const bool heat = p->type == QLatin1String("heat");
-        out.push_back({p->tag, p->type, heat ? QStringLiteral("T") : QStringLiteral("V"), heat ? Dim::temperature() : Dim::voltage()});
-    }
+    for (const Node* p : model.physics())
+        if (p->enabled) out.push_back(infoOf(*p));
     return out;
 }
 
@@ -207,14 +556,15 @@ QList<Variable> modelVariables(const Model& model)
 {
     QList<Variable> out;
     QSet<QString> names;
-    declareVariables(fieldInfos(model), [&](const QString& name, const Dim& dim, const QString& description, Solution::VariableDef::Kind,
-                                            int, std::function<double(PointEvaluator&)>) {
-        if (!names.contains(name)) {
-            names.insert(name);
-            out << Variable{name, dim, description};
-        }
-        return int(out.size()) - 1;
-    });
+    declareVariables(fieldInfos(model), axisymmetricModel(model),
+                     [&](const QString& name, const Dim& dim, const QString& description, K, int, int, const QString&,
+                         std::function<double(PointEvaluator&)>) {
+                         if (!names.contains(name)) {
+                             names.insert(name);
+                             out << Variable{name, dim, description};
+                         }
+                         return int(out.size()) - 1;
+                     });
     return out;
 }
 
@@ -223,12 +573,46 @@ void Solution::defineVariables()
     a_pointScope = std::make_unique<Scope>(&a_params->scope);
     a_defs.clear();
     std::vector<FieldInfo> fields;
-    for (const Field& f : a_fields) fields.push_back({f.tag, f.type, f.variable, f.dim});
-    declareVariables(fields, [this](const QString& name, const Dim& dim, const QString& description, VariableDef::Kind kind, int field,
-                                    std::function<double(PointEvaluator&)> derived) {
-        return define(name, dim, description, kind, field, std::move(derived));
-    });
+    for (const Field& f : a_fields) {
+        FieldInfo info;
+        info.tag = f.tag;
+        info.type = f.type;
+        info.variable = f.variable;
+        info.components = f.components;
+        info.dim = f.dim;
+        for (const Node* p : a_model.physics())
+            if (p->tag == f.tag) info.planeStress = p->text(QStringLiteral("model")) == QLatin1String("planestress");
+        fields.push_back(info);
+    }
+    declareVariables(fields, a_axisymmetric,
+                     [this](const QString& name, const Dim& dim, const QString& description, VariableDef::Kind kind, int field,
+                            int component, const QString& coefficient, std::function<double(PointEvaluator&)> derived) {
+                         const bool known = a_pointScope->variable(name) >= 0;
+                         const int slot = define(name, dim, description, kind, field, std::move(derived));
+                         if (!known && slot >= 0) {
+                             a_defs[std::size_t(slot)].component = component;
+                             a_defs[std::size_t(slot)].coefficient = coefficient;
+                         }
+                         return slot;
+                     });
     a_globalScope = std::make_unique<Scope>(a_pointScope.get());
+}
+
+bool Solution::varies(const Expression& e) const
+{
+    for (int slot : e.variables()) {
+        const VariableDef& d = a_defs[std::size_t(slot)];
+        if (d.kind != VariableDef::X && d.kind != VariableDef::Y && d.kind != VariableDef::DomainNumber && d.kind != VariableDef::Size)
+            return true;
+    }
+    return false;
+}
+
+bool Solution::reads(const Expression& e, int f) const
+{
+    for (int slot : e.variables())
+        if (a_defs[std::size_t(slot)].field == f) return true;
+    return false;
 }
 
 QList<Variable> Solution::variables() const
@@ -249,7 +633,7 @@ void Solution::setGlobal(const QString& name, double value, const Dim& dim, cons
     for (Variable& v : a_globals)
         if (v.name == name) {
             v.dim = dim;
-            v.description = description;
+            if (!description.isEmpty()) v.description = description;
             return;
         }
     a_globals << Variable{name, dim, description};
@@ -262,6 +646,49 @@ std::optional<double> Solution::global(const QString& name) const
     return std::nullopt;
 }
 
+void Solution::addSnapshot()
+{
+    Snapshot s;
+    s.time = a_time;
+    for (const Field& f : a_fields) {
+        s.values.push_back(f.values);
+        s.terminals.push_back(f.terminals);
+    }
+    for (const Variable& v : a_globals) s.globals.push_back(a_globalScope->constant(v.name)->value);
+    a_snapshots.push_back(std::move(s));
+    a_selected = int(a_snapshots.size()) - 1;
+}
+
+void Solution::select(int i)
+{
+    if (a_snapshots.empty()) return;
+    if (i < 0 || i >= int(a_snapshots.size())) i = int(a_snapshots.size()) - 1;
+    if (i == a_selected) return;
+    const Snapshot& s = a_snapshots[std::size_t(i)];
+    for (std::size_t f = 0; f < a_fields.size() && f < s.values.size(); ++f) {
+        a_fields[f].values = s.values[f];
+        a_fields[f].terminals = s.terminals[f];
+    }
+    a_time = s.time;
+    for (int g = 0; g < int(a_globals.size()) && g < int(s.globals.size()); ++g)
+        a_globalScope->setConstant(a_globals[g].name, s.globals[std::size_t(g)], a_globals[g].dim);
+    a_selected = i;
+}
+
+int Solution::snapshotAt(double t) const
+{
+    int best = -1;
+    double gap = INFINITY;
+    for (int i = 0; i < int(a_snapshots.size()); ++i) {
+        const double d = std::abs(a_snapshots[std::size_t(i)].time - t);
+        if (d < gap) {
+            gap = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
 // ------------------------------------------------------------------ PointEvaluator
 
 PointEvaluator::PointEvaluator(const Solution& solution) : a_s(solution)
@@ -269,6 +696,7 @@ PointEvaluator::PointEvaluator(const Solution& solution) : a_s(solution)
     a_slots.assign(std::size_t(solution.pointScope().slotCount()), NaN);
     a_done.assign(a_slots.size(), 0);
     a_fields.resize(solution.fields().size());
+    a_offset.assign(solution.fields().size(), 0);
 }
 
 void PointEvaluator::moveTo(int t, double xi, double eta)
@@ -279,6 +707,13 @@ void PointEvaluator::moveTo(int t, double xi, double eta)
     std::fill(a_done.begin(), a_done.end(), 0);
     for (FieldCache& c : a_fields) c.done = false;
     a_mapped = false;
+}
+
+void PointEvaluator::perturb(int f, double du)
+{
+    if (f < 0 || f >= int(a_offset.size())) return;
+    a_offset[std::size_t(f)] = du;
+    std::fill(a_done.begin(), a_done.end(), 0);
 }
 
 QPointF PointEvaluator::point()
@@ -301,35 +736,59 @@ QPointF PointEvaluator::point()
     return a_x;
 }
 
-void PointEvaluator::field(int f, double& u, double& gx, double& gy)
+void PointEvaluator::component(int f, int comp, double& u, double& gx, double& gy)
 {
     FieldCache& c = a_fields[std::size_t(f)];
+    const Field& field = a_s.fields()[std::size_t(f)];
     if (!c.done) {
-        const Field& field = a_s.fields()[std::size_t(f)];
         const Space& sp = *field.space;
         const int d = a_s.mesh().domain[std::size_t(a_t)];
         if (field.solved && (d < 0 || !field.domains[std::size_t(d)])) {
-            c.u = c.gx = c.gy = NaN;
+            for (int k = 0; k < 2; ++k) c.u[k] = c.gx[k] = c.gy[k] = NaN;
         } else {
             Shape s;
             shapeAt(sp.order(), a_xi, a_eta, s);
             const Space::Map m = sp.map(a_t, a_xi, a_eta);
             const int* dofs = sp.dofs(a_t);
-            double uu = 0, rx = 0, ry = 0;
-            for (int k = 0; k < s.count; ++k) {
-                const double v = field.values[std::size_t(dofs[k])];
-                uu += s.n[k] * v;
-                rx += s.dxi[k] * v;
-                ry += s.deta[k] * v;
+            const std::size_t n = std::size_t(sp.size());
+            for (int k = 0; k < std::min(2, field.count()); ++k) {
+                double uu = 0, rx = 0, ry = 0;
+                for (int i = 0; i < s.count; ++i) {
+                    const double v = field.values[std::size_t(k) * n + std::size_t(dofs[i])];
+                    uu += s.n[i] * v;
+                    rx += s.dxi[i] * v;
+                    ry += s.deta[i] * v;
+                }
+                c.u[k] = uu;
+                Space::gradient(m, rx, ry, c.gx[k], c.gy[k]);
             }
-            c.u = uu;
-            Space::gradient(m, rx, ry, c.gx, c.gy);
         }
         c.done = true;
     }
-    u = c.u;
-    gx = c.gx;
-    gy = c.gy;
+    if (comp < 0 || comp > 1) {
+        u = gx = gy = NaN;
+        return;
+    }
+    u = c.u[comp] + (comp == 0 ? a_offset[std::size_t(f)] : 0.0);
+    gx = c.gx[comp];
+    gy = c.gy[comp];
+}
+
+double PointEvaluator::coefficient(int f, const QString& name)
+{
+    const int dom = a_s.mesh().domain[std::size_t(a_t)];
+    const Solution::Coefficients& coefs = a_s.coefficients()[std::size_t(f)];
+    const std::vector<Expression>* list = &coefs.c;
+    if (!name.isEmpty()) {
+        auto it = coefs.named.find(name);
+        if (it == coefs.named.end()) return NaN;
+        list = &it->second;
+    }
+    if (dom < 0 || dom >= int(list->size()) || !(*list)[std::size_t(dom)].isValid() || a_depth >= 8) return NaN;
+    ++a_depth;
+    const double v = eval((*list)[std::size_t(dom)]);
+    --a_depth;
+    return v;
 }
 
 double PointEvaluator::value(int slot)
@@ -338,10 +797,10 @@ double PointEvaluator::value(int slot)
     if (a_done[std::size_t(slot)]) return a_slots[std::size_t(slot)];
     const Solution::VariableDef& d = a_s.definitions()[std::size_t(slot)];
     double v = NaN;
-    using K = Solution::VariableDef::Kind;
     switch (d.kind) {
     case K::X: v = point().x(); break;
     case K::Y: v = point().y(); break;
+    case K::Time: v = a_s.time(); break;
     case K::DomainNumber: v = a_s.mesh().domain[std::size_t(a_t)] + 1; break;
     case K::Size: {
         const auto& t = a_s.mesh().triangles[std::size_t(a_t)];
@@ -352,23 +811,14 @@ double PointEvaluator::value(int slot)
     }
     case K::Value: case K::GradX: case K::GradY: case K::GradNorm: {
         double u = 0, gx = 0, gy = 0;
-        field(d.field, u, gx, gy);
+        component(d.field, d.component, u, gx, gy);
         // The electric field is minus the potential's gradient.
-        const bool electric = a_s.fields()[std::size_t(d.field)].type != QLatin1String("heat");
-        const double sign = electric ? -1 : 1;
+        const QString& type = a_s.fields()[std::size_t(d.field)].type;
+        const double sign = type == QLatin1String("electrostatics") || type == QLatin1String("currents") ? -1 : 1;
         v = d.kind == K::Value ? u : d.kind == K::GradX ? sign * gx : d.kind == K::GradY ? sign * gy : std::hypot(gx, gy);
         break;
     }
-    case K::Coefficient: {
-        const int dom = a_s.mesh().domain[std::size_t(a_t)];
-        const auto& coefs = a_s.coefficients()[std::size_t(d.field)].c;
-        if (dom >= 0 && dom < int(coefs.size()) && coefs[std::size_t(dom)].isValid() && a_depth < 8) {
-            ++a_depth;
-            v = eval(coefs[std::size_t(dom)]);
-            --a_depth;
-        }
-        break;
-    }
+    case K::Coefficient: v = coefficient(d.field, d.coefficient); break;
     case K::Derived:
         if (a_depth < 8) {
             ++a_depth;
@@ -389,915 +839,445 @@ double PointEvaluator::eval(const Expression& e)
     return e.eval(a_slots.data());
 }
 
-// ------------------------------------------------------------------ The problems
+// ------------------------------------------------------------------ Value lists
 
 namespace {
 
-/// What a boundary has: a condition of its own (the last feature's), and
-/// the fluxes features add.
-struct Condition {
-    enum Kind { None, Dirichlet, Group };
-    Kind kind = None;
-    int feature = -1;      // its order among the physics' features
-    Expression value;      // Dirichlet: the value
-    int group = -1;        // a terminal's or floating potential's
-    int terminal = -1;     // the terminal it is (voltage too)
-};
-
-struct Natural {
-    Expression g;          // inward flux
-    Expression q;          // q u: a Robin term (invalid: none)
-    bool made = true;      // g is heat (charge) made there, not exchanged (h Text)
-};
-
-struct Terminal {
-    QString name;
-    bool floating = false; // a group of one potential
-    Expression value;      // V0, or the charge (current) fed
-    QVector<int> boundaries;
-};
-
-class Problem
+/// \a text split at its commas outside brackets.
+QStringList topLevelItems(const QString& text)
 {
-public:
-    Problem(Solution& solution, int field, Field& target, bool vacuum = false)
-        : a_s(solution), a_fi(field), a_f(target), a_vacuum(vacuum)
-    {
-        for (const Node* p : solution.model().physics())
-            if (p->tag == target.tag) a_node = p;
-    }
-
-    bool setup(QString* error, QStringList* warnings);
-    /// Assembles and solves; the field's values set. With \a sweep its
-    /// terminals' matrix too.
-    bool solve(bool sweep, const QString& solver, double tolerance, QString* error);
-    /// Whether its coefficients read field \a f.
-    bool reads(int f) const { return a_reads.contains(f); }
-    double totalSource() const { return a_totalSource; }
-    /// u K u: twice the electric energy (es), the power dissipated (ec).
-    double energy() const { return a_energy; }
-    double sinkTemperature() const { return a_sink; }
-    /// The terminal sweep's matrix entry for terminal \a name alone.
-    double selfMatrix(const QString& name, QString* error);
-
-private:
-    void problem(const QString& what) { a_problems << what; }
-    Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true);
-    void elementMatrices(bool withSources);
-    bool buildEquations(QString* error);
-    bool factorize(const QString& solver, double tolerance, QString* error);
-    bool solveWith(const std::vector<double>& dirichlet, bool withSources, std::vector<double>& u, QString* error);
-    std::vector<double> reactions(const std::vector<double>& u, bool withSources) const;
-
-    Solution& a_s;
-    int a_fi;
-    Field& a_f;
-    bool a_vacuum;
-    const Node* a_node = nullptr;
-    QStringList a_problems;
-    QSet<int> a_reads;
-    double a_scale = 1;                       // eps0 for electrostatics
-    std::vector<Condition> a_conditions;      // by boundary
-    std::vector<std::vector<Natural>> a_natural;   // by boundary
-    std::vector<Terminal> a_terminals;
-    double a_totalSource = 0;
-    double a_energy = 0;
-    double a_sink = NaN;
-
-    // The equations.
-    std::vector<int> a_eq;                    // by dof: its equation, -1 none, -3 Dirichlet
-    std::vector<double> a_dirichlet;          // by dof
-    std::vector<int> a_dofTerminal;           // by dof: a Dirichlet or group dof's terminal
-    int a_neq = 0;
-    std::vector<int> a_groupEq;               // by terminal (floating): its equation
-    std::vector<double> a_K, a_F;             // element matrices, by element
-    std::vector<double> a_KF0;                // their sources' part of F alone (for sweeps: none)
-    struct EdgeTerm {
-        int edge;
-        double K[9], F[3];
-        double made = 0;   // what its sources make (not a film's exchange)
-    };
-    std::vector<EdgeTerm> a_edges;
-    Eigen::SparseMatrix<double> a_A;
-    std::unique_ptr<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>> a_ldlt;
-    std::unique_ptr<Eigen::SparseLU<Eigen::SparseMatrix<double>>> a_lu;
-    std::unique_ptr<Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper,
-                                             Eigen::IncompleteCholesky<double>>> a_cg;
-};
-
-Expression Problem::compile(const QString& text, const Node& feature, const QString& key, bool spatial)
-{
-    const Expression e = Expression::compile(text, a_s.pointScope());
-    const QString where = tr("%1 of %2").arg(feature.kind() && feature.kind()->property(key) ? feature.kind()->property(key)->label : key,
-                                              feature.name());
-    if (!e.isValid()) {
-        problem(tr("%1: %2").arg(where, e.error()));
-        return e;
-    }
-    for (int slot : e.variables()) {
-        const Solution::VariableDef& d = a_s.definitions()[std::size_t(slot)];
-        if (d.field >= 0) a_reads.insert(d.field);
-        if (!spatial && d.field >= 0) problem(tr("%1 may not read a field (%2) here").arg(where, d.info.name));
-    }
-    const PropertyDef* p = feature.kind() ? feature.kind()->property(key) : nullptr;
-    if (p && !e.dim().isNone() && !(e.dim() == p->dim()))
-        a_s.log << tr("Warning: %1 is in %2, where %3 is expected").arg(where, dimName(e.dim()), dimName(p->dim()));
-    return e;
-}
-
-bool Problem::setup(QString* error, QStringList* warnings)
-{
-    if (!a_node) {
-        *error = tr("there is no physics %1").arg(a_f.tag);
-        return false;
-    }
-    const Model& model = a_s.model();
-    const Topology& topo = a_s.topology();
-    const Mesh& mesh = a_s.mesh();
-    const QString type = a_node->type;
-    const bool es = type == QLatin1String("electrostatics"), ec = type == QLatin1String("currents");
-    a_scale = es ? Eps0 : 1.0;
-    QString why;
-    // Its domains.
-    const QVector<int> domains = resolveSelection(topo, model, Level::Domain, a_node->selection(), &why);
-    if (!why.isEmpty()) problem(tr("%1: %2").arg(a_node->name(), why));
-    a_f.domains.assign(topo.domains.size(), 0);
-    for (int d : domains) a_f.domains[std::size_t(d)] = 1;
-    if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
-    // Each domain's material: the last that has it.
-    std::vector<const Node*> material(topo.domains.size(), nullptr);
-    for (const Node& m : model.materials().children) {
-        if (!m.enabled) continue;
-        const QVector<int> on = resolveSelection(topo, model, Level::Domain, m.selection(), &why);
-        if (!why.isEmpty()) problem(tr("%1: %2").arg(m.name(), why));
-        for (int d : on) material[std::size_t(d)] = &m;
-    }
-    // The domain features: the model's (last wins), the sources (they add).
-    const QString modelFeature = es ? QStringLiteral("electrostatics/charge") : ec ? QStringLiteral("currents/conservation") : QStringLiteral("heat/solid");
-    const QString property = es ? QStringLiteral("epsilonr") : ec ? QStringLiteral("sigma") : QStringLiteral("k");
-    const QString propertyName = es ? tr("relative permittivity") : ec ? tr("electrical conductivity") : tr("thermal conductivity");
-    std::vector<const Node*> modelOf(topo.domains.size(), nullptr);
-    Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
-    coef.c.assign(topo.domains.size(), Expression());
-    coef.sources.assign(topo.domains.size(), {});
-    coef.sourceScale.assign(topo.domains.size(), 1.0);
-    a_conditions.assign(topo.boundaries.size(), Condition());
-    a_natural.assign(topo.boundaries.size(), {});
-    a_terminals.clear();
-    // The area of each domain (m²), for a total power spread over some.
-    std::vector<double> area(topo.domains.size(), 0);
-    for (std::size_t t = 0; t < mesh.triangles.size(); ++t) {
-        const auto& v = mesh.triangles[t];
-        const QPointF a = mesh.nodes[std::size_t(v[0])], b = mesh.nodes[std::size_t(v[1])], c = mesh.nodes[std::size_t(v[2])];
-        area[std::size_t(mesh.domain[t])] += ((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2
-                                             * mesh.unitScale * mesh.unitScale;
-    }
-    int order = 0;
-    std::vector<int> exclusiveOrder(topo.boundaries.size(), -1);
-    for (const Node& f : a_node->children) {
-        ++order;
-        if (!f.enabled) continue;
-        const NodeKind* k = f.kind();
-        if (!k) continue;
-        const QVector<int> picked = resolveSelection(topo, model, k->selection, f.selection(), &why);
-        if (!why.isEmpty()) problem(tr("%1: %2").arg(f.name(), why));
-        if (k->selection == Level::Domain) {
-            if (f.type == modelFeature) {
-                for (int d : picked) modelOf[std::size_t(d)] = &f;
-                continue;
-            }
-            // A source.
-            Expression e;
-            double scale = 1;
-            if (f.type == QLatin1String("heat/source") && f.text(QStringLiteral("kind")) == QLatin1String("power")) {
-                const std::optional<double> p = evaluateConstant(f.text(QStringLiteral("P0")), a_s.parameters().scope, Dim::power(), &why);
-                if (!p) {
-                    problem(tr("%1: %2").arg(f.name(), why));
-                    continue;
-                }
-                double total = 0;
-                for (int d : picked)
-                    if (a_f.domains[std::size_t(d)]) total += area[std::size_t(d)];
-                if (total <= 0) continue;
-                e = Expression::compile(QStringLiteral("1"), a_s.pointScope());
-                scale = *p / (total * a_s.thickness());
-            } else {
-                const QString key = es ? QStringLiteral("rho") : ec ? QStringLiteral("Qj") : QStringLiteral("Q0");
-                e = compile(f.text(key), f, key);
-            }
-            if (!e.isValid()) continue;
-            for (int d : picked) {
-                if (!a_f.domains[std::size_t(d)]) continue;
-                coef.sources[std::size_t(d)].push_back(e);
-                coef.sourceScale[std::size_t(d)] = scale;   // (one total power a domain)
-            }
-            continue;
-        }
-        if (k->selection != Level::Boundary) continue;
-        // Boundary features: those with a condition of their own (last wins),
-        // and fluxes (they add).
-        const QString t = f.type;
-        const bool exclusive = t.endsWith(QLatin1String("/zerocharge")) || t.endsWith(QLatin1String("/insulation"))
-                               || t.endsWith(QLatin1String("/ground")) || t.endsWith(QLatin1String("/potential"))
-                               || t.endsWith(QLatin1String("/terminal")) || t.endsWith(QLatin1String("/floating"))
-                               || t == QLatin1String("heat/temperature");
-        if (exclusive) {
-            Condition c;
-            c.feature = order;
-            if (t.endsWith(QLatin1String("/ground"))) {
-                c.kind = Condition::Dirichlet;
-                c.value = Expression::compile(QStringLiteral("0"), a_s.pointScope());
-            } else if (t.endsWith(QLatin1String("/potential"))) {
-                c.kind = Condition::Dirichlet;
-                c.value = compile(f.text(QStringLiteral("V0")), f, QStringLiteral("V0"), false);
-            } else if (t == QLatin1String("heat/temperature")) {
-                c.kind = Condition::Dirichlet;
-                c.value = compile(f.text(QStringLiteral("T0")), f, QStringLiteral("T0"), false);
-                if (c.value.isConstant()) a_sink = std::isnan(a_sink) ? c.value.constant() : std::min(a_sink, c.value.constant());
-            } else if (t.endsWith(QLatin1String("/terminal")) || t.endsWith(QLatin1String("/floating"))) {
-                Terminal term;
-                term.name = t.endsWith(QLatin1String("/terminal")) ? f.text(QStringLiteral("name")) : f.name();
-                term.floating = t.endsWith(QLatin1String("/floating"))
-                                || (t == QLatin1String("currents/terminal") && f.text(QStringLiteral("drive")) == QLatin1String("current"));
-                const QString key = !term.floating ? QStringLiteral("V0") : es ? QStringLiteral("Q0") : QStringLiteral("I0");
-                term.value = compile(f.text(key), f, key, false);
-                if (term.value.isValid() && !term.value.isConstant()) problem(tr("%1 of %2 must be a constant").arg(key, f.name()));
-                c.terminal = int(a_terminals.size());
-                if (term.floating) {
-                    c.kind = Condition::Group;
-                    c.group = c.terminal;
-                } else {
-                    c.kind = Condition::Dirichlet;
-                    c.value = term.value;
-                }
-                a_terminals.push_back(term);
-            }
-            for (int b : picked) {
-                a_conditions[std::size_t(b)] = c;
-                exclusiveOrder[std::size_t(b)] = order;
-            }
-            continue;
-        }
-        Natural n;
-        if (t == QLatin1String("electrostatics/surfacecharge")) n.g = compile(f.text(QStringLiteral("rhos")), f, QStringLiteral("rhos"));
-        else if (t == QLatin1String("currents/normalcurrent")) n.g = compile(f.text(QStringLiteral("Jn")), f, QStringLiteral("Jn"));
-        else if (t == QLatin1String("heat/linesource")) n.g = compile(f.text(QStringLiteral("Qb")), f, QStringLiteral("Qb"));
-        else if (t == QLatin1String("heat/flux")) {
-            if (f.text(QStringLiteral("kind")) == QLatin1String("general")) {
-                n.g = compile(f.text(QStringLiteral("q0")), f, QStringLiteral("q0"));
-            } else {
-                const Expression h = compile(f.text(QStringLiteral("h")), f, QStringLiteral("h"));
-                const Expression text = compile(f.text(QStringLiteral("Text")), f, QStringLiteral("Text"));
-                if (!h.isValid() || !text.isValid()) continue;
-                n.q = h;
-                n.made = false;
-                n.g = Expression::compile(QStringLiteral("(") + f.text(QStringLiteral("h")) + QStringLiteral(")*(")
-                                              + f.text(QStringLiteral("Text")) + QLatin1Char(')'),
-                                          a_s.pointScope());
-                if (text.isConstant()) a_sink = std::isnan(a_sink) ? text.constant() : std::min(a_sink, text.constant());
-            }
+    QStringList out;
+    int depth = 0;
+    QString current;
+    for (QChar c : text) {
+        if (c == QLatin1Char('(') || c == QLatin1Char('[')) ++depth;
+        else if (c == QLatin1Char(')') || c == QLatin1Char(']')) --depth;
+        if ((c == QLatin1Char(',') || c == QLatin1Char(';')) && depth == 0) {
+            out << current.trimmed();
+            current.clear();
         } else {
-            continue;
-        }
-        if (!n.g.isValid() && !n.q.isValid()) continue;
-        for (int b : picked) a_natural[std::size_t(b)].push_back(n);
-    }
-    // Each domain's coefficient: its feature's own, or its material's.
-    for (int d = 0; d < int(topo.domains.size()); ++d) {
-        if (!a_f.domains[std::size_t(d)]) continue;
-        const Node* f = modelOf[std::size_t(d)];
-        if (!f) {
-            problem(tr("domain %1 has no %2 feature").arg(d + 1).arg(modelFeature.section(QLatin1Char('/'), 1)));
-            continue;
-        }
-        QString text;
-        if (a_vacuum) {
-            text = QStringLiteral("1");
-        } else if (f->text(QStringLiteral("source")) == QLatin1String("user")) {
-            text = f->text(property);
-        } else {
-            const Node* m = material[std::size_t(d)];
-            const QString object = topo.objectNames.value(topo.domains[std::size_t(d)].owner);
-            if (!m) {
-                problem(tr("domain %1 (%2) has no material: its %3 is needed").arg(d + 1).arg(object, propertyName));
-                continue;
-            }
-            text = m->text(property);
-            // Not given: its library entry's ({"material": "FR-4"} in a file).
-            if (text.trimmed().isEmpty() && !m->text(QStringLiteral("library")).isEmpty())
-                if (const std::optional<MaterialEntry> entry = findMaterial(m->text(QStringLiteral("library"))))
-                    text = entry->properties.value(property).toString();
-            if (text.trimmed().isEmpty()) {
-                problem(tr("domain %1 (%2): its material, %3, has no %4").arg(d + 1).arg(object, m->name(), propertyName));
-                continue;
-            }
-        }
-        const Node& where = f->text(QStringLiteral("source")) == QLatin1String("user") || a_vacuum || !material[std::size_t(d)]
-                                ? *f
-                                : *material[std::size_t(d)];
-        Expression e = compile(text, where, property);
-        if (e.isValid() && e.isConstant() && !(e.constant() > 0) && !(es && e.constant() != 0))
-            problem(tr("domain %1: its %2 must be more than 0").arg(d + 1).arg(propertyName));
-        coef.c[std::size_t(d)] = e;
-    }
-    if (!a_problems.isEmpty()) {
-        *error = a_problems.join(QLatin1Char('\n'));
-        return false;
-    }
-    Q_UNUSED(warnings);
-    return true;
-}
-
-void Problem::elementMatrices(bool withSources)
-{
-    const Space& sp = *a_f.space;
-    const Mesh& mesh = a_s.mesh();
-    const Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
-    const int per = sp.perElement();
-    const int nt = sp.elements();
-    const double d = a_s.thickness();
-    a_K.assign(std::size_t(nt) * std::size_t(per * per), 0);
-    a_F.assign(std::size_t(nt) * std::size_t(per), 0);
-    parallelFor(nt, [&](int begin, int end) {
-        PointEvaluator ev(a_s);
-        for (int t = begin; t < end; ++t) {
-            const int dom = mesh.domain[std::size_t(t)];
-            if (dom < 0 || !a_f.domains[std::size_t(dom)]) continue;
-            const Expression& c = coef.c[std::size_t(dom)];
-            const std::vector<Expression>& sources = coef.sources[std::size_t(dom)];
-            const double sourceScale = coef.sourceScale[std::size_t(dom)];
-            bool constant = c.isConstant();
-            for (const Expression& s : sources) constant = constant && s.isConstant();
-            const int degree = sp.curved(t) ? 5 : constant ? (sp.order() == 1 ? 1 : 2) : (sp.order() == 1 ? 2 : 4);
-            const TriangleRule& rule = triangleRule(degree);
-            double* K = &a_K[std::size_t(t) * std::size_t(per * per)];
-            double* F = &a_F[std::size_t(t) * std::size_t(per)];
-            Shape s;
-            double gx[6], gy[6];
-            for (const auto& q : rule.points) {
-                shapeAt(sp.order(), q[0], q[1], s);
-                const Space::Map m = sp.map(t, q[0], q[1]);
-                const double w = q[2] * std::abs(m.det) * d;
-                double cv = 0, fv = 0;
-                if (constant) {
-                    cv = c.constant();
-                    for (const Expression& src : sources) fv += src.constant();
-                } else {
-                    ev.moveTo(t, q[0], q[1]);
-                    cv = ev.eval(c);
-                    for (const Expression& src : sources) fv += ev.eval(src);
-                }
-                cv *= a_scale;
-                fv *= sourceScale;
-                for (int i = 0; i < per; ++i) Space::gradient(m, s.dxi[i], s.deta[i], gx[i], gy[i]);
-                for (int i = 0; i < per; ++i) {
-                    for (int j = i; j < per; ++j) {
-                        const double v = w * cv * (gx[i] * gx[j] + gy[i] * gy[j]);
-                        K[i * per + j] += v;
-                        if (j != i) K[j * per + i] += v;
-                    }
-                    if (withSources) F[i] += w * fv * s.n[i];
-                }
-            }
-        }
-    });
-    // The boundaries' fluxes and Robin terms, edge by edge.
-    a_edges.clear();
-    PointEvaluator ev(a_s);
-    const int lineN = sp.order() + 1;
-    for (int e = 0; e < int(mesh.edges.size()); ++e) {
-        const Mesh::Edge& me = mesh.edges[std::size_t(e)];
-        const std::vector<Natural>& nat = a_natural[std::size_t(me.boundary)];
-        if (nat.empty()) continue;
-        // On a domain of this physics.
-        int tri = -1;
-        for (int side : {me.left, me.right})
-            if (side >= 0 && a_f.domains[std::size_t(mesh.domain[std::size_t(side)])]) {
-                tri = side;
-                break;
-            }
-        if (tri < 0) continue;
-        const std::array<int, 3>& tv = mesh.triangles[std::size_t(tri)];
-        const int k = Space::localEdge(tv, me.a, me.b);
-        const bool same = tv[std::size_t(k)] == me.a;
-        EdgeTerm term{e, {}, {}};
-        const int ne = sp.order() == 1 ? 2 : 3;
-        for (const auto& q : lineRule(lineN)) {
-            double jac = 0;
-            sp.edgePoint(e, q[0], &jac);
-            // Its reference point in the triangle, for fields there.
-            const double s = same ? q[0] : 1 - q[0];
-            double xi = 0, eta = 0;
-            if (k == 0) {
-                xi = s;
-                eta = 0;
-            } else if (k == 1) {
-                xi = 1 - s;
-                eta = s;
-            } else {
-                xi = 0;
-                eta = 1 - s;
-            }
-            ev.moveTo(tri, xi, eta);
-            double g = 0, qq = 0, made = 0;
-            for (const Natural& n : nat) {
-                if (n.g.isValid()) {
-                    const double v = ev.eval(n.g);
-                    g += v;
-                    if (n.made) made += v;
-                }
-                if (n.q.isValid()) qq += ev.eval(n.q);
-            }
-            const double sq = q[0];
-            double N[3];
-            if (ne == 2) {
-                N[0] = 1 - sq;
-                N[1] = sq;
-            } else {
-                N[0] = (1 - sq) * (1 - 2 * sq);
-                N[1] = sq * (2 * sq - 1);
-                N[2] = 4 * sq * (1 - sq);
-            }
-            const double w = q[1] * jac * d;
-            if (withSources) term.made += w * made;
-            for (int i = 0; i < ne; ++i) {
-                if (withSources) term.F[i] += w * g * N[i];
-                for (int j = 0; j < ne; ++j) term.K[i * 3 + j] += w * qq * N[i] * N[j];
-            }
-        }
-        a_edges.push_back(term);
-    }
-}
-
-bool Problem::buildEquations(QString* error)
-{
-    const Space& sp = *a_f.space;
-    const Mesh& mesh = a_s.mesh();
-    const int nd = sp.size();
-    const int per = sp.perElement();
-    a_eq.assign(std::size_t(nd), -1);
-    a_dirichlet.assign(std::size_t(nd), NaN);
-    a_dofTerminal.assign(std::size_t(nd), -1);
-    std::vector<int> group(std::size_t(nd), -1);
-    for (int t = 0; t < sp.elements(); ++t) {
-        const int dom = mesh.domain[std::size_t(t)];
-        if (dom < 0 || !a_f.domains[std::size_t(dom)]) continue;
-        for (int i = 0; i < per; ++i) a_eq[std::size_t(sp.dofs(t)[i])] = -2;
-    }
-    // The boundaries' own conditions, the latest feature's last: a point
-    // two share takes the later's.
-    std::vector<int> byOrder;
-    for (int b = 0; b < int(a_conditions.size()); ++b)
-        if (a_conditions[std::size_t(b)].kind != Condition::None) byOrder.push_back(b);
-    std::stable_sort(byOrder.begin(), byOrder.end(), [&](int a, int b) {
-        return a_conditions[std::size_t(a)].feature < a_conditions[std::size_t(b)].feature;
-    });
-    std::vector<std::vector<int>> edgesOf(a_conditions.size());
-    for (int e = 0; e < int(mesh.edges.size()); ++e) edgesOf[std::size_t(mesh.edges[std::size_t(e)].boundary)].push_back(e);
-    bool anyFixed = false;
-    for (int b : byOrder) {
-        const Condition& c = a_conditions[std::size_t(b)];
-        for (int e : edgesOf[std::size_t(b)]) {
-            const std::array<int, 3> dofs = sp.edgeDofs(e);
-            for (int dof : dofs) {
-                if (dof < 0 || a_eq[std::size_t(dof)] == -1) continue;
-                if (c.kind == Condition::Dirichlet) {
-                    double v = NaN;
-                    if (c.value.isConstant()) v = c.value.constant();
-                    else if (c.value.isValid()) {
-                        // Of x and y alone.
-                        std::vector<double> values(std::size_t(a_s.pointScope().slotCount()), NaN);
-                        values[std::size_t(a_s.pointScope().variable(QStringLiteral("x")))] = sp.point(dof).x();
-                        values[std::size_t(a_s.pointScope().variable(QStringLiteral("y")))] = sp.point(dof).y();
-                        v = c.value.eval(values.data());
-                    }
-                    a_eq[std::size_t(dof)] = -3;
-                    a_dirichlet[std::size_t(dof)] = v;
-                    group[std::size_t(dof)] = -1;
-                    anyFixed = true;
-                } else {
-                    a_eq[std::size_t(dof)] = -4;
-                    group[std::size_t(dof)] = c.group;
-                    a_dirichlet[std::size_t(dof)] = NaN;
-                }
-                a_dofTerminal[std::size_t(dof)] = c.terminal;
-            }
+            current += c;
         }
     }
-    bool robin = false;
-    for (const auto& list : a_natural)
-        for (const Natural& n : list) robin = robin || n.q.isValid();
-    if (!anyFixed && !robin) {
-        const QString type = a_node->type;
-        *error = type == QLatin1String("heat")
-                     ? tr("%1: no temperature is set and no heat leaves (no Temperature, no convective Heat Flux): the "
-                          "temperature is not determined").arg(a_node->name())
-                     : tr("%1: no potential is set (no Ground, Electric Potential or Terminal at a voltage): the "
-                          "potential is not determined").arg(a_node->name());
-        return false;
-    }
-    // Numbered: the free degrees of freedom, then one for each group.
-    a_neq = 0;
-    for (int dof = 0; dof < nd; ++dof)
-        if (a_eq[std::size_t(dof)] == -2) a_eq[std::size_t(dof)] = a_neq++;
-    a_groupEq.assign(a_terminals.size(), -1);
-    for (int g = 0; g < int(a_terminals.size()); ++g)
-        if (a_terminals[std::size_t(g)].floating) a_groupEq[std::size_t(g)] = a_neq++;
-    for (int dof = 0; dof < nd; ++dof)
-        if (a_eq[std::size_t(dof)] == -4) a_eq[std::size_t(dof)] = a_groupEq[std::size_t(group[std::size_t(dof)])];
-    // (a group none of whose dofs is left: drop it)
-    if (a_neq == 0) {
-        *error = tr("%1: nothing to solve - every value is set").arg(a_node->name());
-        return false;
-    }
-    return true;
-}
-
-bool Problem::factorize(const QString& solver, double tolerance, QString* error)
-{
-    const Space& sp = *a_f.space;
-    const int per = sp.perElement();
-    // The matrix's pattern, row by row.
-    std::vector<std::vector<int>> rows(static_cast<std::size_t>(a_neq));
-    std::vector<int> local(6);
-    for (int t = 0; t < sp.elements(); ++t) {
-        const int dom = a_s.mesh().domain[std::size_t(t)];
-        if (dom < 0 || !a_f.domains[std::size_t(dom)]) continue;
-        local.clear();
-        for (int i = 0; i < per; ++i) {
-            const int q = a_eq[std::size_t(sp.dofs(t)[i])];
-            if (q >= 0) local.push_back(q);
-        }
-        for (int i : local)
-            for (int j : local) rows[std::size_t(i)].push_back(j);
-    }
-    std::vector<int> outer(std::size_t(a_neq) + 1, 0);
-    for (int r = 0; r < a_neq; ++r) {
-        std::vector<int>& row = rows[std::size_t(r)];
-        std::sort(row.begin(), row.end());
-        row.erase(std::unique(row.begin(), row.end()), row.end());
-        if (row.empty() || !std::binary_search(row.begin(), row.end(), r)) row.insert(std::lower_bound(row.begin(), row.end(), r), r);
-        outer[std::size_t(r) + 1] = outer[std::size_t(r)] + int(row.size());
-    }
-    a_A = Eigen::SparseMatrix<double>(a_neq, a_neq);
-    a_A.resizeNonZeros(outer.back());
-    std::copy(outer.begin(), outer.end(), a_A.outerIndexPtr());
-    int* inner = a_A.innerIndexPtr();
-    double* values = a_A.valuePtr();
-    for (int r = 0; r < a_neq; ++r) {
-        std::copy(rows[std::size_t(r)].begin(), rows[std::size_t(r)].end(), inner + outer[std::size_t(r)]);
-        std::vector<int>().swap(rows[std::size_t(r)]);
-    }
-    std::fill(values, values + outer.back(), 0.0);
-    auto add = [&](int i, int j, double v) {
-        const int* begin = inner + outer[std::size_t(j)];
-        const int* end = inner + outer[std::size_t(j) + 1];
-        const int* at = std::lower_bound(begin, end, i);
-        values[at - inner] += v;
-    };
-    for (int t = 0; t < sp.elements(); ++t) {
-        const int dom = a_s.mesh().domain[std::size_t(t)];
-        if (dom < 0 || !a_f.domains[std::size_t(dom)]) continue;
-        const double* K = &a_K[std::size_t(t) * std::size_t(per * per)];
-        const int* dofs = sp.dofs(t);
-        for (int i = 0; i < per; ++i) {
-            const int qi = a_eq[std::size_t(dofs[i])];
-            if (qi < 0) continue;
-            for (int j = 0; j < per; ++j) {
-                const int qj = a_eq[std::size_t(dofs[j])];
-                if (qj >= 0) add(qi, qj, K[i * per + j]);
-            }
-        }
-    }
-    for (const EdgeTerm& et : a_edges) {
-        const std::array<int, 3> dofs = sp.edgeDofs(et.edge);
-        const int ne = sp.order() == 1 ? 2 : 3;
-        for (int i = 0; i < ne; ++i) {
-            const int qi = a_eq[std::size_t(dofs[std::size_t(i)])];
-            if (qi < 0) continue;
-            for (int j = 0; j < ne; ++j) {
-                const int qj = a_eq[std::size_t(dofs[std::size_t(j)])];
-                if (qj >= 0) add(qi, qj, et.K[i * 3 + j]);
-            }
-        }
-    }
-    const bool iterative = solver == QLatin1String("iterative") || (solver != QLatin1String("direct") && a_neq > 400000);
-    a_ldlt.reset();
-    a_lu.reset();
-    a_cg.reset();
-    if (iterative) {
-        a_cg = std::make_unique<std::remove_reference_t<decltype(*a_cg)>>();
-        a_cg->setTolerance(std::min(1e-9, tolerance * 1e-3));
-        a_cg->setMaxIterations(std::max(1000, 4 * int(std::sqrt(double(a_neq))) * 50));
-        a_cg->compute(a_A);
-        if (a_cg->info() == Eigen::Success) return true;
-        a_s.log << tr("%1: the incomplete Cholesky factorization failed; the direct solver instead").arg(a_node->name());
-        a_cg.reset();
-    }
-    a_ldlt = std::make_unique<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>();
-    a_ldlt->compute(a_A);
-    if (a_ldlt->info() == Eigen::Success) {
-        // A Cholesky of a matrix not positive definite: a pivot of 0 or less.
-        const auto dvec = a_ldlt->vectorD();
-        if ((dvec.array() > 0).all()) return true;
-    }
-    a_ldlt.reset();
-    a_lu = std::make_unique<Eigen::SparseLU<Eigen::SparseMatrix<double>>>();
-    a_lu->analyzePattern(a_A);
-    a_lu->factorize(a_A);
-    if (a_lu->info() != Eigen::Success) {
-        *error = tr("%1: the matrix is singular - %2").arg(a_node->name(), QString::fromStdString(a_lu->lastErrorMessage()));
-        a_lu.reset();
-        return false;
-    }
-    return true;
-}
-
-bool Problem::solveWith(const std::vector<double>& dirichlet, bool withSources, std::vector<double>& u, QString* error)
-{
-    const Space& sp = *a_f.space;
-    const int per = sp.perElement();
-    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(a_neq);
-    for (int t = 0; t < sp.elements(); ++t) {
-        const int dom = a_s.mesh().domain[std::size_t(t)];
-        if (dom < 0 || !a_f.domains[std::size_t(dom)]) continue;
-        const double* K = &a_K[std::size_t(t) * std::size_t(per * per)];
-        const double* F = &a_F[std::size_t(t) * std::size_t(per)];
-        const int* dofs = sp.dofs(t);
-        for (int i = 0; i < per; ++i) {
-            const int qi = a_eq[std::size_t(dofs[i])];
-            if (qi < 0) continue;
-            if (withSources) rhs[qi] += F[i];
-            for (int j = 0; j < per; ++j)
-                if (a_eq[std::size_t(dofs[j])] == -3) rhs[qi] -= K[i * per + j] * dirichlet[std::size_t(dofs[j])];
-        }
-    }
-    for (const EdgeTerm& et : a_edges) {
-        const std::array<int, 3> dofs = sp.edgeDofs(et.edge);
-        const int ne = sp.order() == 1 ? 2 : 3;
-        for (int i = 0; i < ne; ++i) {
-            const int qi = a_eq[std::size_t(dofs[std::size_t(i)])];
-            if (qi < 0) continue;
-            if (withSources) rhs[qi] += et.F[i];
-            for (int j = 0; j < ne; ++j)
-                if (a_eq[std::size_t(dofs[std::size_t(j)])] == -3) rhs[qi] -= et.K[i * 3 + j] * dirichlet[std::size_t(dofs[std::size_t(j)])];
-        }
-    }
-    if (withSources)
-        for (int g = 0; g < int(a_terminals.size()); ++g)
-            if (a_groupEq[std::size_t(g)] >= 0 && a_terminals[std::size_t(g)].value.isConstant())
-                rhs[a_groupEq[std::size_t(g)]] += a_terminals[std::size_t(g)].value.constant();
-    Eigen::VectorXd x;
-    if (a_ldlt) x = a_ldlt->solve(rhs);
-    else if (a_lu) x = a_lu->solve(rhs);
-    else if (a_cg) {
-        x = a_cg->solve(rhs);
-        if (a_cg->info() != Eigen::Success) {
-            *error = tr("%1: the conjugate gradients did not converge in %2 iterations (error %3): try the direct solver")
-                         .arg(a_node->name())
-                         .arg(a_cg->iterations())
-                         .arg(a_cg->error());
-            return false;
-        }
-    }
-    if (!x.allFinite()) {
-        *error = tr("%1: the solution is not finite").arg(a_node->name());
-        return false;
-    }
-    u.assign(std::size_t(sp.size()), NaN);
-    for (int dof = 0; dof < sp.size(); ++dof) {
-        const int q = a_eq[std::size_t(dof)];
-        if (q >= 0) u[std::size_t(dof)] = x[q];
-        else if (q == -3) u[std::size_t(dof)] = dirichlet[std::size_t(dof)];
-    }
-    return true;
-}
-
-std::vector<double> Problem::reactions(const std::vector<double>& u, bool withSources) const
-{
-    // K u - F at the fixed degrees of freedom: what flows out there.
-    const Space& sp = *a_f.space;
-    const int per = sp.perElement();
-    std::vector<double> r(std::size_t(sp.size()), 0);
-    for (int t = 0; t < sp.elements(); ++t) {
-        const int dom = a_s.mesh().domain[std::size_t(t)];
-        if (dom < 0 || !a_f.domains[std::size_t(dom)]) continue;
-        const double* K = &a_K[std::size_t(t) * std::size_t(per * per)];
-        const double* F = &a_F[std::size_t(t) * std::size_t(per)];
-        const int* dofs = sp.dofs(t);
-        for (int i = 0; i < per; ++i) {
-            if (a_eq[std::size_t(dofs[i])] != -3) continue;
-            double v = withSources ? -F[i] : 0;
-            for (int j = 0; j < per; ++j) v += K[i * per + j] * u[std::size_t(dofs[j])];
-            r[std::size_t(dofs[i])] += v;
-        }
-    }
-    for (const EdgeTerm& et : a_edges) {
-        const std::array<int, 3> dofs = sp.edgeDofs(et.edge);
-        const int ne = sp.order() == 1 ? 2 : 3;
-        for (int i = 0; i < ne; ++i) {
-            if (a_eq[std::size_t(dofs[std::size_t(i)])] != -3) continue;
-            double v = withSources ? -et.F[i] : 0;
-            for (int j = 0; j < ne; ++j) v += et.K[i * 3 + j] * u[std::size_t(dofs[std::size_t(j)])];
-            r[std::size_t(dofs[std::size_t(i)])] += v;
-        }
-    }
-    return r;
-}
-
-bool Problem::solve(bool sweep, const QString& solver, double tolerance, QString* error)
-{
-    elementMatrices(true);
-    if (!buildEquations(error)) return false;
-    if (!factorize(solver, tolerance, error)) return false;
-    std::vector<double> u;
-    if (!solveWith(a_dirichlet, true, u, error)) return false;
-    // What flows out of each terminal: its charge (current).
-    const std::vector<double> r = reactions(u, true);
-    a_f.terminals.clear();
-    for (int g = 0; g < int(a_terminals.size()); ++g) {
-        const Terminal& term = a_terminals[std::size_t(g)];
-        Field::Terminal out;
-        out.name = term.name;
-        out.floating = term.floating;
-        double charge = 0, potential = NaN;
-        for (int dof = 0; dof < int(u.size()); ++dof) {
-            if (a_dofTerminal[std::size_t(dof)] != g) continue;
-            if (term.floating) potential = u[std::size_t(dof)];
-            else {
-                charge += r[std::size_t(dof)];
-                potential = u[std::size_t(dof)];
-            }
-        }
-        if (term.floating) charge = term.value.isConstant() ? term.value.constant() : NaN;
-        out.charge = charge;
-        out.potential = potential;
-        a_f.terminals.push_back(out);
-    }
-    a_f.values = u;
-    // Not solved: its initial value there (another physics may read it).
-    for (double& v : a_f.values)
-        if (std::isnan(v)) v = a_f.initial;
-    a_f.solved = true;
-    // Where it is not solved, NaN for the plots (PointEvaluator masks).
-    // The terminal sweep: each voltage terminal at 1 V, the others and
-    // every other fixed value at 0, no sources.
-    a_f.matrix.clear();
-    std::vector<int> voltage;
-    for (int g = 0; g < int(a_terminals.size()); ++g)
-        if (!a_terminals[std::size_t(g)].floating) voltage.push_back(g);
-    if (sweep && !voltage.empty()) {
-        const int n = int(voltage.size());
-        a_f.matrix.assign(std::size_t(n), std::vector<double>(std::size_t(n), 0));
-        for (int j = 0; j < n; ++j) {
-            std::vector<double> dir(a_dirichlet.size(), 0);
-            for (int dof = 0; dof < int(dir.size()); ++dof)
-                if (a_eq[std::size_t(dof)] == -3) dir[std::size_t(dof)] = a_dofTerminal[std::size_t(dof)] == voltage[std::size_t(j)] ? 1 : 0;
-            std::vector<double> uj;
-            if (!solveWith(dir, false, uj, error)) return false;
-            const std::vector<double> rj = reactions(uj, false);
-            for (int i = 0; i < n; ++i) {
-                double q = 0;
-                for (int dof = 0; dof < int(rj.size()); ++dof)
-                    if (a_dofTerminal[std::size_t(dof)] == voltage[std::size_t(i)] && a_eq[std::size_t(dof)] == -3) q += rj[std::size_t(dof)];
-                a_f.matrix[std::size_t(i)][std::size_t(j)] = q;
-            }
-        }
-        // Its terminals' names in the matrix's order.
-        std::vector<Field::Terminal> ordered;
-        for (int g : voltage) ordered.push_back(a_f.terminals[std::size_t(g)]);
-        for (int g = 0; g < int(a_terminals.size()); ++g)
-            if (a_terminals[std::size_t(g)].floating) ordered.push_back(a_f.terminals[std::size_t(g)]);
-        a_f.terminals = ordered;
-    }
-    // The energy (es), the power (ec): u K u over the elements.
-    double energy = 0;
-    const Space& sp = *a_f.space;
-    const int per = sp.perElement();
-    for (int t = 0; t < sp.elements(); ++t) {
-        const int dom = a_s.mesh().domain[std::size_t(t)];
-        if (dom < 0 || !a_f.domains[std::size_t(dom)]) continue;
-        const double* K = &a_K[std::size_t(t) * std::size_t(per * per)];
-        const int* dofs = sp.dofs(t);
-        for (int i = 0; i < per; ++i)
-            for (int j = 0; j < per; ++j) energy += u[std::size_t(dofs[i])] * K[i * per + j] * u[std::size_t(dofs[j])];
-    }
-    a_energy = energy;
-    // The heat made: the sources' integral (F's sum) and the boundaries'
-    // (not what a film exchanges with the outside).
-    double total = 0;
-    for (double f : a_F) total += f;
-    for (const EdgeTerm& et : a_edges) total += et.made;
-    a_totalSource = total;
-    return true;
-}
-
-double Problem::selfMatrix(const QString& name, QString* error)
-{
-    // Assembled without sources; one terminal at 1 V, every other fixed
-    // value at 0; its charge.
-    elementMatrices(false);
-    if (!buildEquations(error)) return NaN;
-    if (!factorize(QStringLiteral("direct"), 1e-9, error)) return NaN;
-    int g = -1;
-    for (int i = 0; i < int(a_terminals.size()); ++i)
-        if (a_terminals[std::size_t(i)].name == name && !a_terminals[std::size_t(i)].floating) g = i;
-    if (g < 0) {
-        *error = tr("%1 has no terminal %2 at a voltage").arg(a_node->name(), name);
-        return NaN;
-    }
-    std::vector<double> dir(a_dirichlet.size(), 0);
-    for (int dof = 0; dof < int(dir.size()); ++dof)
-        if (a_eq[std::size_t(dof)] == -3) dir[std::size_t(dof)] = a_dofTerminal[std::size_t(dof)] == g ? 1 : 0;
-    std::vector<double> u;
-    if (!solveWith(dir, false, u, error)) return NaN;
-    const std::vector<double> r = reactions(u, false);
-    double q = 0;
-    for (int dof = 0; dof < int(r.size()); ++dof)
-        if (a_dofTerminal[std::size_t(dof)] == g && a_eq[std::size_t(dof)] == -3) q += r[std::size_t(dof)];
-    return q;
+    if (!current.trimmed().isEmpty() || !out.isEmpty()) out << current.trimmed();
+    out.removeAll(QString());
+    return out;
 }
 
 } // namespace
+
+std::optional<std::vector<double>> valueList(const QString& text, const Scope& scope, Dim* dimOut, QString* error)
+{
+    std::vector<double> out;
+    std::optional<Dim> dim;
+    auto fail = [&](const QString& why) -> std::optional<std::vector<double>> {
+        if (error) *error = why;
+        return std::nullopt;
+    };
+    auto value = [&](const QString& t, double* v, Dim* d) {
+        const Expression e = Expression::compile(t, scope);
+        if (!e.isValid()) {
+            if (error) *error = tr("%1: %2").arg(t, e.error());
+            return false;
+        }
+        if (!e.isConstant()) {
+            if (error) *error = tr("%1 is not a constant").arg(t);
+            return false;
+        }
+        *v = e.constant();
+        *d = e.dim();
+        return true;
+    };
+    // (A plain 0 is 0 in whatever unit the others have.)
+    auto agree = [&](const Dim& d, const QString& t, double v) {
+        if (d.isNone() && v == 0) return true;
+        if (!dim) {
+            dim = d;
+            return true;
+        }
+        if (!(*dim == d)) {
+            if (error) *error = tr("%1 is in %2, where the others are in %3").arg(t, dimName(d), dimName(*dim));
+            return false;
+        }
+        return true;
+    };
+    static const QRegularExpression call(QStringLiteral("^\\s*(range|linspace)\\s*\\((.*)\\)\\s*$"));
+    for (const QString& item : topLevelItems(text)) {
+        const QRegularExpressionMatch m = call.match(item);
+        if (m.hasMatch()) {
+            const QStringList args = topLevelItems(m.captured(2));
+            if (args.size() != 3) return fail(tr("%1(...) takes three values: %2").arg(m.captured(1), item));
+            double a = 0, b = 0, c = 0;
+            Dim da, db, dc;
+            if (!value(args[0], &a, &da) || !value(args[1], &b, &db) || !value(args[2], &c, &dc)) return std::nullopt;
+            if (m.captured(1) == QLatin1String("range")) {
+                // range(start, step, stop)
+                if (!agree(da, args[0], a) || !agree(db, args[1], b) || !agree(dc, args[2], c)) return std::nullopt;
+                if (b == 0 || (c - a) / b < 0) return fail(tr("%1: its step does not lead from its start to its stop").arg(item));
+                const double n = std::floor((c - a) / b + 1e-9);
+                if (n > 1e6) return fail(tr("%1: more than a million values").arg(item));
+                for (int i = 0; i <= int(n); ++i) out.push_back(a + i * b);
+            } else {
+                // linspace(start, stop, count)
+                if (!agree(da, args[0], a) || !agree(db, args[1], b)) return std::nullopt;
+                const int n = int(std::lround(c));
+                if (n < 1 || n > 1000000) return fail(tr("%1: from 1 to a million values").arg(item));
+                for (int i = 0; i < n; ++i) out.push_back(n == 1 ? a : a + (b - a) * i / (n - 1));
+            }
+            continue;
+        }
+        double v = 0;
+        Dim d;
+        if (!value(item, &v, &d)) return std::nullopt;
+        if (!agree(d, item, v)) return std::nullopt;
+        out.push_back(v);
+    }
+    if (out.empty()) return fail(tr("no values"));
+    if (dimOut) *dimOut = dim.value_or(Dim());
+    return out;
+}
 
 // ------------------------------------------------------------------ Studies
 
 namespace {
 
-QString matrixName(const QString& tag, const QString& letter, const QString& a, const QString& b)
+using detail::Problem;
+using detail::SolveOptions;
+
+struct Step {
+    Solution& s;
+    const Node& node;
+    std::vector<std::unique_ptr<Problem>> problems;
+    std::vector<int> which;   // the fields, by problem
+    SolveOptions options;
+    int maxIterations = 50;
+    double tolerance = 1e-6;
+};
+
+/// The problems of \a step: its physics (all of them when it names none).
+bool setupStep(Step& st, QString* error)
 {
-    return tag + QLatin1Char('.') + letter + QLatin1Char('_') + a + QLatin1Char('_') + b;
+    QStringList tags = st.node.list(QStringLiteral("physics"));
+    if (tags.isEmpty())
+        for (const Field& f : st.s.fields()) tags << f.tag;
+    QStringList errors;
+    for (const QString& t : tags) {
+        const int fi = st.s.fieldIndex(t);
+        if (fi < 0) {
+            *error = tr("%1: there is no physics %2 (enabled) to solve").arg(st.node.name(), t);
+            return false;
+        }
+        st.which.push_back(fi);
+        auto p = detail::makeProblem(st.s, fi);
+        QString why;
+        if (!p->setup(&why)) errors << why;
+        st.problems.push_back(std::move(p));
+    }
+    if (!errors.isEmpty()) {
+        *error = errors.join(QLatin1Char('\n'));
+        return false;
+    }
+    st.options.solver = st.node.text(QStringLiteral("solver"));
+    st.options.nonlinear = st.node.text(QStringLiteral("nonlinear"));
+    if (st.options.nonlinear.isEmpty()) st.options.nonlinear = QStringLiteral("auto");
+    if (const std::optional<double> t = evaluateConstant(st.node.text(QStringLiteral("tolerance")), st.s.parameters().scope, Dim()); t && *t > 0)
+        st.tolerance = *t;
+    st.options.tolerance = st.tolerance;
+    st.maxIterations = std::clamp(st.node.integer(QStringLiteral("maxiter")), 1, 1000);
+    st.options.maxIterations = st.maxIterations;
+    return true;
 }
 
-void setGlobals(Solution& s, Field& f, double energy, double source, double sink)
+/// Whether the step's physics must be solved in turn till they agree:
+/// one reads another's field (or its own, when not by Newton).
+bool coupled(const Step& st, const std::vector<int>& subset)
 {
-    const QString p = f.tag + QLatin1Char('.');
-    const bool es = f.type == QLatin1String("electrostatics"), ec = f.type == QLatin1String("currents");
-    const Dim charge = es ? Dim::charge() : Dim::current();
-    const QString q = es ? QStringLiteral("Q") : QStringLiteral("I");
-    for (const Field::Terminal& t : f.terminals) {
-        s.setGlobal(p + QStringLiteral("V_") + t.name, t.potential, Dim::voltage(), QCoreApplication::translate("qucs_s::fem::Solver", "terminal %1's potential").arg(t.name));
-        s.setGlobal(p + q + QLatin1Char('_') + t.name, t.charge, charge,
-                    es ? QCoreApplication::translate("qucs_s::fem::Solver", "terminal %1's charge").arg(t.name)
-                       : QCoreApplication::translate("qucs_s::fem::Solver", "the current out of terminal %1").arg(t.name));
+    for (int i : subset)
+        for (int j : subset) {
+            if (i == j && st.options.nonlinear != QLatin1String("picard")) continue;
+            if (st.problems[std::size_t(i)]->reads(st.which[std::size_t(j)])) return true;
+        }
+    return false;
+}
+
+/// Solves the problems \a subset of \a st, in turn till they agree. \a
+/// optionsOf gives each one's options; \a iterationsUsed how many rounds.
+bool solveTogether(Step& st, const std::vector<int>& subset, const std::function<SolveOptions(int)>& optionsOf, bool log, QString* error,
+                   int* iterationsUsed = nullptr)
+{
+    const bool loop = coupled(st, subset);
+    const int iterations = loop ? st.maxIterations : 1;
+    for (int it = 0; it < iterations; ++it) {
+        double change = 0;
+        for (int i : subset) {
+            Field& f = st.s.fields()[std::size_t(st.which[std::size_t(i)])];
+            const std::vector<double> before = f.values;
+            if (!st.problems[std::size_t(i)]->solve(optionsOf(i), error)) return false;
+            double num = 0, den = 0;
+            for (std::size_t k = 0; k < f.values.size() && k < before.size(); ++k) {
+                const double d = f.values[k] - before[k];
+                num += d * d;
+                den += f.values[k] * f.values[k];
+            }
+            change = std::max(change, den > 0 ? std::sqrt(num / den) : std::sqrt(num));
+        }
+        if (iterationsUsed) *iterationsUsed = it + 1;
+        if (!loop) return true;
+        if (log) st.s.log << tr("%1, iteration %2: relative change %3").arg(st.node.name()).arg(it + 1).arg(change, 0, 'g', 3);
+        if (change < st.tolerance && it > 0) return true;
     }
-    const int n = int(f.matrix.size());
-    if (n > 0) {
-        const QString letter = es ? QStringLiteral("C") : QStringLiteral("G");
-        const Dim dim = es ? Dim::capacitance() : Dim::conductance();
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) {
-                const QString a = f.terminals[std::size_t(i)].name, b = f.terminals[std::size_t(j)].name;
-                const double v = f.matrix[std::size_t(i)][std::size_t(j)];
-                const QString what = es ? QCoreApplication::translate("qucs_s::fem::Solver", "capacitance matrix, %1 %2").arg(a, b)
-                                        : QCoreApplication::translate("qucs_s::fem::Solver", "conductance matrix, %1 %2").arg(a, b);
-                s.setGlobal(matrixName(f.tag, letter, a, b), v, dim, what);
-                if (a.size() == 1 && b.size() == 1) s.setGlobal(p + letter + a + b, v, dim, what);
-            }
-        if (ec) {
-            // The resistance of the first terminal to the others and the
-            // grounds; the matrix's inverse.
-            s.setGlobal(p + QStringLiteral("R"), 1.0 / f.matrix[0][0], Dim::resistance(),
-                        QCoreApplication::translate("qucs_s::fem::Solver", "resistance from terminal %1 to the others and the grounds")
-                            .arg(f.terminals[0].name));
-            Eigen::MatrixXd g(n, n);
-            for (int i = 0; i < n; ++i)
-                for (int j = 0; j < n; ++j) g(i, j) = f.matrix[std::size_t(i)][std::size_t(j)];
-            Eigen::FullPivLU<Eigen::MatrixXd> lu(g);
-            if (lu.isInvertible()) {
-                const Eigen::MatrixXd r = lu.inverse();
-                for (int i = 0; i < n; ++i)
-                    for (int j = 0; j < n; ++j) {
-                        const QString a = f.terminals[std::size_t(i)].name, b = f.terminals[std::size_t(j)].name;
-                        s.setGlobal(matrixName(f.tag, QStringLiteral("R"), a, b), r(i, j), Dim::resistance(),
-                                    QCoreApplication::translate("qucs_s::fem::Solver", "resistance matrix, %1 %2").arg(a, b));
-                        if (a.size() == 1 && b.size() == 1) s.setGlobal(p + QStringLiteral("R") + a + b, r(i, j), Dim::resistance());
-                    }
-            }
+    *error = tr("%1: the coupled physics did not converge in %2 iterations").arg(st.node.name()).arg(st.maxIterations);
+    return false;
+}
+
+bool stationaryStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    // A field not solved before starts from its initial values (a step
+    // before leaves its own as the next one's start).
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    const bool sweep = node.flag(QStringLiteral("sweep"));
+    std::vector<int> all;
+    for (int i = 0; i < int(st.problems.size()); ++i) all.push_back(i);
+    if (!tell(0.1, tr("Solving %1").arg(node.name()))) {
+        *error = tr("cancelled");
+        return false;
+    }
+    QString why;
+    if (!solveTogether(st, all, [&](int) { return st.options; }, true, &why)) {
+        if (why.contains(QLatin1String("did not converge"))) *warnings << why;
+        else {
+            *error = why;
+            return false;
         }
     }
-    if (es) s.setGlobal(p + QStringLiteral("W"), 0.5 * energy, Dim::of(2, 1, -2), QCoreApplication::translate("qucs_s::fem::Solver", "electric energy"));
-    if (ec) s.setGlobal(p + QStringLiteral("P"), energy, Dim::power(), QCoreApplication::translate("qucs_s::fem::Solver", "power dissipated"));
-    if (f.type == QLatin1String("heat")) {
-        double tmax = -INFINITY, tmin = INFINITY;
-        const Mesh& mesh = s.mesh();
-        for (int t = 0; t < f.space->elements(); ++t) {
-            const int d = mesh.domain[std::size_t(t)];
-            if (d < 0 || !f.domains[std::size_t(d)]) continue;
-            for (int i = 0; i < f.space->perElement(); ++i) {
-                const double v = f.values[std::size_t(f.space->dofs(t)[i])];
-                tmax = std::max(tmax, v);
-                tmin = std::min(tmin, v);
+    if (sweep) {
+        // Once more with the terminals swept.
+        SolveOptions o = st.options;
+        o.sweep = true;
+        for (auto& p : st.problems)
+            if (p->field().type == QLatin1String("electrostatics") || p->field().type == QLatin1String("currents"))
+                if (!p->solve(o, error)) return false;
+    }
+    for (auto& p : st.problems) p->setGlobals();
+    return true;
+}
+
+bool transientStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    Dim dim;
+    QString why;
+    std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("times")), s.parameters().scope, &dim, &why);
+    if (!listed) {
+        *error = tr("%1: the output times: %2").arg(node.name(), why);
+        return false;
+    }
+    std::vector<double> times = *listed;
+    if (!dim.isNone() && !(dim == Dim::of(0, 0, 1))) {
+        *error = tr("%1: the output times are in %2, not in seconds").arg(node.name(), dimName(dim));
+        return false;
+    }
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    if (times.size() < 2) {
+        *error = tr("%1: give two output times at least (a start and an end)").arg(node.name());
+        return false;
+    }
+    const double t0 = times.front(), range = times.back() - t0;
+    std::vector<int> stepped, quasi;
+    for (int i = 0; i < int(st.problems.size()); ++i) (st.problems[std::size_t(i)]->hasMass() ? stepped : quasi).push_back(i);
+    if (stepped.empty())
+        *warnings << tr("%1: none of its physics changes in time (only heat does): each output time is solved at rest").arg(node.name());
+    double rtol = 1e-3;
+    if (const std::optional<double> r = evaluateConstant(node.text(QStringLiteral("rtol")), s.parameters().scope, Dim()); r && *r > 0) rtol = *r;
+    const bool euler = node.text(QStringLiteral("method")) == QLatin1String("euler");
+    const bool fixed = node.text(QStringLiteral("stepping")) == QLatin1String("fixed");
+    double h = 0;
+    if (!node.text(QStringLiteral("dt")).trimmed().isEmpty()) {
+        const std::optional<double> d = evaluateConstant(node.text(QStringLiteral("dt")), s.parameters().scope, Dim::of(0, 0, 1), &why);
+        if (!d || !(*d > 0)) {
+            *error = tr("%1: the time step: %2").arg(node.name(), d ? tr("it must be more than 0") : why);
+            return false;
+        }
+        h = *d;
+    } else if (fixed) {
+        *error = tr("%1: a fixed step needs its time step").arg(node.name());
+        return false;
+    } else {
+        h = 1e-3 * (times[1] - times[0]);
+    }
+    const double fixedStep = h;
+    const double hmin = 1e-12 * range;
+    // The start: initial values; what is at rest solved with them.
+    s.setTime(t0);
+    for (auto& p : st.problems) p->initialize();
+    if (!quasi.empty() && !solveTogether(st, quasi, [&](int) { return st.options; }, false, error)) return false;
+    for (auto& p : st.problems) p->setGlobals();
+    s.addSnapshot();
+    s.timeDependent = true;
+    // History of the stepped fields: (time, values) newest first.
+    struct History {
+        std::vector<double> t;
+        std::vector<std::vector<double>> u;
+    };
+    std::vector<History> hist(st.problems.size());
+    for (int i : stepped) {
+        hist[std::size_t(i)].t.push_back(t0);
+        hist[std::size_t(i)].u.push_back(st.problems[std::size_t(i)]->field().values);
+    }
+    std::vector<std::vector<double>> u0(st.problems.size());
+    for (int i : stepped) u0[std::size_t(i)] = st.problems[std::size_t(i)]->field().values;
+    double t = t0, hPrev = 0;
+    int accepted = 0, rejected = 0;
+    std::size_t out = 1;
+    std::vector<std::vector<double>> histories(st.problems.size());
+    std::vector<double> masses(st.problems.size(), 0);
+    const int maxSteps = 1000000;
+    while (out < times.size()) {
+        if (accepted + rejected > maxSteps) {
+            *error = tr("%1: more than a million steps; stopped at t = %2").arg(node.name(), formatQuantity(t, Dim::of(0, 0, 1)));
+            return false;
+        }
+        const double target = times[out];
+        if (fixed) h = fixedStep;
+        // To the output time exactly, no sliver left before it: what is left
+        // of it taken in one step, or in two halves (never a longer step than
+        // asked, so a step made smaller stays so).
+        if (t + h >= target - 1e-9 * range) h = target - t;
+        else if (target - (t + h) < 0.2 * h) h = (target - t) / 2;
+        const int order = euler || accepted < 2 ? 1 : 2;
+        const double omega = hPrev > 0 ? h / hPrev : 1;
+        // Saved, to step again from here.
+        std::vector<std::vector<double>> saved;
+        for (const Field& f : s.fields()) saved.push_back(f.values);
+        s.setTime(t + h);
+        for (int i : stepped) {
+            const History& hi = hist[std::size_t(i)];
+            const std::vector<double>& un = hi.u[0];
+            std::vector<double>& hv = histories[std::size_t(i)];
+            hv.resize(un.size());
+            if (order == 1) {
+                masses[std::size_t(i)] = 1 / h;
+                for (std::size_t k = 0; k < un.size(); ++k) hv[k] = un[k] / h;
+            } else {
+                const std::vector<double>& um = hi.u[1];
+                masses[std::size_t(i)] = (1 + 2 * omega) / ((1 + omega) * h);
+                const double a1 = (1 + omega), a2 = omega * omega / (1 + omega);
+                for (std::size_t k = 0; k < un.size(); ++k) hv[k] = (a1 * un[k] - a2 * um[k]) / h;
             }
         }
-        s.setGlobal(p + QStringLiteral("Tmax"), tmax, Dim::temperature(), QCoreApplication::translate("qucs_s::fem::Solver", "highest temperature"));
-        s.setGlobal(p + QStringLiteral("Tmin"), tmin, Dim::temperature(), QCoreApplication::translate("qucs_s::fem::Solver", "lowest temperature"));
-        s.setGlobal(p + QStringLiteral("P"), source, Dim::power(), QCoreApplication::translate("qucs_s::fem::Solver", "heat made by the sources"));
-        if (!std::isnan(sink) && source != 0)
-            s.setGlobal(p + QStringLiteral("Rth"), (tmax - sink) / source, Dim::of(-2, -1, 3, 0, 1),
-                        QCoreApplication::translate("qucs_s::fem::Solver",
-                                                    "thermal resistance: (Tmax - the coolest boundary temperature) / P"));
+        QString failed;
+        const bool ok = solveTogether(st, [&] {
+            std::vector<int> all;
+            for (int i = 0; i < int(st.problems.size()); ++i) all.push_back(i);
+            return all;
+        }(), [&](int i) {
+            SolveOptions o = st.options;
+            if (st.problems[std::size_t(i)]->hasMass()) {
+                o.mass = masses[std::size_t(i)];
+                o.history = &histories[std::size_t(i)];
+            }
+            return o;
+        }, false, &failed);
+        auto restore = [&] {
+            for (std::size_t f = 0; f < saved.size(); ++f) s.fields()[f].values = saved[f];
+            s.setTime(t);
+        };
+        if (!ok) {
+            if (!fixed && h > 4 * hmin && failed.contains(QLatin1String("did not converge"))) {
+                restore();
+                ++rejected;
+                h /= 4;
+                continue;
+            }
+            *error = failed;
+            return false;
+        }
+        // The error of the step: the solution against a predictor of its
+        // order (Milne's device).
+        double err = 0;
+        if (!fixed && accepted >= 1) {
+            for (int i : stepped) {
+                const History& hi = hist[std::size_t(i)];
+                const std::vector<double>& uc = st.problems[std::size_t(i)]->field().values;
+                const double h1 = hi.t[0] - hi.t[1];
+                double ratio = 0;
+                std::vector<double> pred(uc.size());
+                if (order == 1 || hi.u.size() < 3) {
+                    // Linear through the last two; BE's error h/(2h + h1) of the gap.
+                    const double w = h / h1;
+                    for (std::size_t k = 0; k < uc.size(); ++k) pred[k] = hi.u[0][k] + w * (hi.u[0][k] - hi.u[1][k]);
+                    ratio = order == 1 ? h / (2 * h + h1) : 1.0 / 3;
+                } else {
+                    // Quadratic through the last three (Lagrange at t + h).
+                    const double ta = hi.t[0], tb = hi.t[1], tc = hi.t[2], x = t + h;
+                    const double la = (x - tb) * (x - tc) / ((ta - tb) * (ta - tc));
+                    const double lb = (x - ta) * (x - tc) / ((tb - ta) * (tb - tc));
+                    const double lc = (x - ta) * (x - tb) / ((tc - ta) * (tc - tb));
+                    for (std::size_t k = 0; k < uc.size(); ++k) pred[k] = la * hi.u[0][k] + lb * hi.u[1][k] + lc * hi.u[2][k];
+                    // BDF2's error constant over the predictor's and its own.
+                    const double h2 = hi.t[1] - hi.t[2];
+                    const double cc = (1 + omega) * (1 + omega) / (6 * omega * (1 + 2 * omega));
+                    const double cp = (h + h1) * (h + h1 + h2) / (6 * h * h);
+                    ratio = cc / (cp + cc);
+                }
+                double gap = 0, change = 0, size = 0;
+                const std::vector<double>& first = u0[std::size_t(i)];
+                for (std::size_t k = 0; k < uc.size(); ++k) {
+                    gap = std::max(gap, std::abs(uc[k] - pred[k]));
+                    change = std::max(change, std::abs(uc[k] - first[k]));
+                    size = std::max(size, std::abs(uc[k]));
+                }
+                const double scale = std::max(change, 1e-9 * size + 1e-300);
+                err = std::max(err, ratio * gap / (rtol * scale));
+            }
+        }
+        if (!fixed && err > 1 && h > 4 * hmin) {
+            restore();
+            ++rejected;
+            h *= std::max(0.1, 0.9 * std::pow(err, -1.0 / (order + 1)));
+            continue;
+        }
+        // Taken.
+        for (int i : stepped) {
+            History& hi = hist[std::size_t(i)];
+            hi.t.insert(hi.t.begin(), t + h);
+            hi.u.insert(hi.u.begin(), st.problems[std::size_t(i)]->field().values);
+            if (hi.t.size() > 3) {
+                hi.t.pop_back();
+                hi.u.pop_back();
+            }
+        }
+        t += h;
+        hPrev = h;
+        ++accepted;
+        if (std::abs(t - target) <= 1e-9 * range) {
+            t = target;
+            s.setTime(t);
+            for (auto& p : st.problems) p->setGlobals();
+            s.addSnapshot();
+            ++out;
+        }
+        if (!fixed) h *= err > 0 ? std::clamp(0.9 * std::pow(err, -1.0 / (order + 1)), 0.2, 2.0) : 2.0;
+        if (h < hmin) {
+            *error = tr("%1: the time step became too small at t = %2").arg(node.name(), formatQuantity(t, Dim::of(0, 0, 1)));
+            return false;
+        }
+        if (!tell(0.05 + 0.9 * (t - t0) / range, tr("%1: t = %2").arg(node.name(), formatQuantity(t, Dim::of(0, 0, 1))))) {
+            *error = tr("cancelled");
+            return false;
+        }
     }
+    s.log << tr("%1: %2 steps taken, %3 taken again with a smaller one; %4 output times")
+                 .arg(node.name())
+                 .arg(accepted)
+                 .arg(rejected)
+                 .arg(times.size());
+    return true;
 }
 
 } // namespace
@@ -1331,108 +1311,262 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         out.error = tr("the model has no physics to solve");
         return out;
     }
-    auto tell = [&](double f, const QString& what) { return !progress || progress(f, what); };
-    const int steps = std::max<int>(1, int(study->children.size()));
-    int stepIndex = 0;
-    for (const Node& step : study->children) {
-        if (!step.enabled) continue;
-        if (step.type != QLatin1String("stationary")) {
-            out.error = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
+    if (solution->axisymmetric()) {
+        const QRectF b = mesh->bounds();
+        if (b.left() < -1e-9 * std::max(b.width(), b.height())) {
+            out.error = tr("an axisymmetric model lies where r ≥ 0: its geometry reaches x = %1").arg(formatNumber(b.left(), 6));
             return out;
         }
-        QStringList tags = step.list(QStringLiteral("physics"));
-        if (tags.isEmpty())
-            for (const Field& f : solution->fields()) tags << f.tag;
-        std::vector<int> which;
-        for (const QString& t : tags) {
-            const int fi = solution->fieldIndex(t);
-            if (fi < 0) {
-                out.error = tr("%1: there is no physics %2 (enabled) to solve").arg(step.name(), t);
-                return out;
-            }
-            which.push_back(fi);
-        }
-        const QString solver = step.text(QStringLiteral("solver"));
-        const bool sweep = step.flag(QStringLiteral("sweep"));
-        double tolerance = 1e-6;
-        if (const std::optional<double> t = evaluateConstant(step.text(QStringLiteral("tolerance")), parameters->scope, Dim()); t && *t > 0)
-            tolerance = *t;
-        const int maxIter = std::clamp(step.integer(QStringLiteral("maxiter")), 1, 1000);
-        std::vector<std::unique_ptr<Problem>> problems;
-        QStringList errors;
-        for (int fi : which) {
-            auto p = std::make_unique<Problem>(*solution, fi, solution->fields()[std::size_t(fi)]);
-            QString why;
-            QStringList warnings;
-            if (!p->setup(&why, &warnings)) errors << why;
-            problems.push_back(std::move(p));
-        }
-        if (!errors.isEmpty()) {
-            out.error = errors.join(QLatin1Char('\n'));
+    }
+    std::vector<const Node*> steps;
+    for (const Node& step : study->children)
+        if (step.enabled && step.type != QLatin1String("sweep")) steps.push_back(&step);
+    if (steps.empty()) {
+        out.error = tr("%1 has no step to solve").arg(study->name());
+        return out;
+    }
+    for (std::size_t k = 0; k < steps.size(); ++k) {
+        const Node& step = *steps[k];
+        auto tell = [&](double f, const QString& what) {
+            return !progress || progress((double(k) + std::clamp(f, 0.0, 1.0)) / double(steps.size()), what);
+        };
+        QString why;
+        bool ok = false;
+        if (step.type == QLatin1String("stationary")) ok = stationaryStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("transient")) ok = transientStep(*solution, step, tell, &out.warnings, &why);
+        else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
+        if (!ok) {
+            out.error = why;
             return out;
         }
-        // Coupled: a physics reads its own field or another solved here.
-        bool coupled = false;
-        for (std::size_t i = 0; i < problems.size(); ++i)
-            for (int fj : which) coupled = coupled || problems[i]->reads(fj);
-        const int iterations = coupled ? maxIter : 1;
-        std::vector<double> energies(problems.size(), 0);
-        bool converged = !coupled;
-        for (int it = 0; it < iterations; ++it) {
-            double change = 0;
-            for (std::size_t i = 0; i < problems.size(); ++i) {
-                Field& f = solution->fields()[std::size_t(which[i])];
-                const double base = (stepIndex + double(it * problems.size() + i) / double(iterations * problems.size())) / steps;
-                if (!tell(0.05 + 0.9 * base, tr("Solving %1").arg(f.tag))) {
-                    out.error = tr("cancelled");
-                    return out;
-                }
-                const std::vector<double> before = f.values;
-                QString why;
-                if (!problems[i]->solve(sweep && (!coupled || it + 1 == iterations), solver, tolerance, &why)) {
-                    out.error = why;
-                    return out;
-                }
-                double num = 0, den = 0;
-                for (std::size_t k = 0; k < f.values.size(); ++k) {
-                    const double d = f.values[k] - before[k];
-                    num += d * d;
-                    den += f.values[k] * f.values[k];
-                }
-                change = std::max(change, den > 0 ? std::sqrt(num / den) : std::sqrt(num));
-            }
-            if (coupled) {
-                solution->log << tr("%1, iteration %2: relative change %3").arg(step.name()).arg(it + 1).arg(change, 0, 'g', 3);
-                if (change < tolerance && it > 0) {
-                    converged = true;
-                    // Once more with the sweeps, when asked.
-                    if (sweep)
-                        for (auto& p : problems) {
-                            QString why;
-                            if (!p->solve(true, solver, tolerance, &why)) {
-                                out.error = why;
-                                return out;
-                            }
-                        }
-                    break;
-                }
-            }
-        }
-        if (!converged) out.warnings << tr("%1: the coupled physics did not converge in %2 iterations").arg(step.name()).arg(maxIter);
-        for (std::size_t i = 0; i < problems.size(); ++i) {
-            Field& f = solution->fields()[std::size_t(which[i])];
-            setGlobals(*solution, f, problems[i]->energy(), problems[i]->totalSource(), problems[i]->sinkTemperature());
-        }
-        ++stepIndex;
     }
     solution->seconds = timer.elapsed() / 1000.0;
     int dofs = 0;
     for (const Field& f : solution->fields())
-        if (f.solved) dofs += f.space->size();
+        if (f.solved) dofs += f.space->size() * f.count();
     solution->log << tr("Solved %1 degrees of freedom in %2 s").arg(dofs).arg(solution->seconds, 0, 'f', 2);
-    tell(1.0, tr("Done"));
+    if (progress) progress(1.0, tr("Done"));
     out.solution = solution;
     return out;
+}
+
+namespace {
+
+/// Whether a parameter named one of \a names is in \a node (an identifier in
+/// any of its texts).
+bool mentions(const QJsonValue& value, const QSet<QString>& names)
+{
+    if (names.isEmpty()) return false;
+    const QString text = value.isObject() ? QString::fromUtf8(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact))
+                         : value.isArray() ? QString::fromUtf8(QJsonDocument(value.toArray()).toJson(QJsonDocument::Compact))
+                                           : value.toVariant().toString();
+    static const QRegularExpression identifier(QStringLiteral("[A-Za-z_][A-Za-z0-9_]*"));
+    auto it = identifier.globalMatch(text);
+    while (it.hasNext())
+        if (names.contains(it.next().captured(0))) return true;
+    return false;
+}
+
+/// A value as a parameter's expression: in SI, its unit after it.
+QString valueText(double v, const Dim& dim)
+{
+    const QString number = QString::number(v, 'g', 17);
+    return dim.isNone() ? number : number + QLatin1Char('[') + dimName(dim) + QLatin1Char(']');
+}
+
+} // namespace
+
+StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
+                  std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress)
+{
+    StudyRun run;
+    run.mesh = mesh;
+    const Node* study = nullptr;
+    for (const Node* s : model.studies())
+        if (studyTag.isEmpty() ? !study : s->tag == studyTag) study = s;
+    if (!study) {
+        run.error = studyTag.isEmpty() ? tr("the model has no study") : tr("there is no study %1").arg(studyTag);
+        return run;
+    }
+    const Node* sweep = nullptr;
+    for (const Node& c : study->children)
+        if (c.type == QLatin1String("sweep") && c.enabled) sweep = &c;
+    auto meshOf = [&](const ParameterScope& ps, std::shared_ptr<const Topology> topo, const Progress& p,
+                      std::shared_ptr<const Mesh>* out) {
+        if (!topo) {
+            const GeometryBuild g = buildGeometry(model, ps);
+            if (!g.ok()) {
+                const Node* n = model.find(g.failedAt);
+                run.error = tr("the geometry: %1: %2").arg(n ? n->name() : g.failedAt, g.errors.value(g.failedAt));
+                return false;
+            }
+            topo = g.topology;
+        }
+        const MeshBuild m = buildMesh(model, ps, topo, p);
+        if (!m.mesh) {
+            run.error = tr("the mesh: %1").arg(m.error);
+            return false;
+        }
+        run.warnings << m.warnings;
+        *out = m.mesh;
+        return true;
+    };
+    if (!sweep) {
+        if (!run.mesh && !meshOf(*parameters, topology, [&](double f, const QString& w) { return !progress || progress(0.3 * f, w); }, &run.mesh))
+            return run;
+        const double from = mesh ? 0 : 0.3;
+        const StudyResult r = solveStudy(model, parameters, run.mesh, study->tag,
+                                         [&](double f, const QString& w) { return !progress || progress(from + (1 - from) * f, w); });
+        run.warnings << r.warnings;
+        if (!r.solution) {
+            run.error = r.error;
+            return run;
+        }
+        run.log = r.solution->log;
+        run.solutions.push_back(r.solution);
+        return run;
+    }
+    // The sweep's points.
+    struct Swept {
+        QString name;
+        std::vector<double> values;
+        Dim dim;
+    };
+    std::vector<Swept> lists;
+    QStringList known;
+    for (const Model::Parameter& p : model.parameters()) known << p.name.trimmed();
+    for (const QJsonValue& row : sweep->value(QStringLiteral("parameters")).toArray()) {
+        const QJsonArray r = row.toArray();
+        const QString name = r.at(0).toString().trimmed();
+        if (name.isEmpty()) continue;
+        if (!known.contains(name)) {
+            run.error = tr("%1: there is no parameter %2").arg(sweep->name(), name);
+            return run;
+        }
+        QString why;
+        Dim dim;
+        std::optional<std::vector<double>> values = valueList(r.at(1).toString(), parameters->scope, &dim, &why);
+        if (!values) {
+            run.error = tr("%1: %2's values: %3").arg(sweep->name(), name, why);
+            return run;
+        }
+        // Plain numbers in the unit given, else in the parameter's own.
+        const QString unitText = r.at(2).toString().trimmed();
+        const Dim own = parameters->dims.value(name);
+        if (dim.isNone() && !unitText.isEmpty()) {
+            const std::optional<Unit> u = parseUnit(unitText, &why);
+            if (!u) {
+                run.error = tr("%1: %2's unit: %3").arg(sweep->name(), name, why);
+                return run;
+            }
+            for (double& v : *values) v = v * u->scale + u->offset;
+            dim = u->dim;
+        } else if (dim.isNone() && !own.isNone()) {
+            run.error = tr("%1: %2 is in %3: give its values a unit (2[mm]), or the row one").arg(sweep->name(), name, dimName(own));
+            return run;
+        }
+        lists.push_back({name, *values, dim});
+        run.swept << name;
+    }
+    if (lists.empty()) {
+        run.error = tr("%1 sweeps no parameter: name one and its values").arg(sweep->name());
+        return run;
+    }
+    std::vector<std::vector<double>> points;   // each a value of each list
+    if (sweep->text(QStringLiteral("combination")) == QLatin1String("specified")) {
+        const std::size_t n = lists.front().values.size();
+        for (const Swept& l : lists)
+            if (l.values.size() != n) {
+                run.error = tr("%1: in specified combinations every parameter has as many values (%2 has %3, %4 has %5)")
+                                .arg(sweep->name(), lists.front().name)
+                                .arg(n)
+                                .arg(l.name)
+                                .arg(l.values.size());
+                return run;
+            }
+        for (std::size_t k = 0; k < n; ++k) {
+            std::vector<double> p;
+            for (const Swept& l : lists) p.push_back(l.values[k]);
+            points.push_back(p);
+        }
+    } else {
+        // Every combination; the last parameter changes fastest.
+        std::size_t total = 1;
+        for (const Swept& l : lists) total *= l.values.size();
+        if (total > 10000) {
+            run.error = tr("%1: %2 combinations; 10000 at most").arg(sweep->name()).arg(total);
+            return run;
+        }
+        for (std::size_t k = 0; k < total; ++k) {
+            std::vector<double> p(lists.size());
+            std::size_t rest = k;
+            for (int i = int(lists.size()) - 1; i >= 0; --i) {
+                const std::size_t n = lists[std::size_t(i)].values.size();
+                p[std::size_t(i)] = lists[std::size_t(i)].values[rest % n];
+                rest /= n;
+            }
+            points.push_back(p);
+        }
+    }
+    // What shapes the geometry and the mesh.
+    const QJsonObject whole = model.toObject();
+    const QJsonObject component = whole.value(QStringLiteral("components")).toArray().first().toObject();
+    QJsonObject shaping;
+    shaping.insert(QStringLiteral("geometry"), component.value(QStringLiteral("geometry")));
+    shaping.insert(QStringLiteral("mesh"), component.value(QStringLiteral("mesh")));
+    shaping.insert(QStringLiteral("functions"), whole.value(QStringLiteral("functions")));
+    std::shared_ptr<const Mesh> base = mesh;
+    for (std::size_t k = 0; k < points.size(); ++k) {
+        QHash<QString, QString> overrides;
+        QStringList label;
+        QHash<QString, double> values;
+        for (std::size_t i = 0; i < lists.size(); ++i) {
+            overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
+            label << QStringLiteral("%1 = %2").arg(lists[i].name, formatQuantity(points[k][i], lists[i].dim));
+            values.insert(lists[i].name, points[k][i]);
+        }
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(model, overrides);
+        if (!ps->errors.isEmpty()) {
+            QStringList list;
+            for (auto it = ps->errors.cbegin(); it != ps->errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
+            run.error = tr("%1: the parameters: %2").arg(label.join(QLatin1String(", ")), list.join(QLatin1String("; ")));
+            return run;
+        }
+        // The parameters it changes, and whether they shape the geometry.
+        QSet<QString> changed;
+        for (auto it = ps->values.cbegin(); it != ps->values.cend(); ++it)
+            if (!parameters->values.contains(it.key()) || parameters->values.value(it.key()) != it.value()) changed.insert(it.key());
+        const double from = double(k) / double(points.size()), span = 1.0 / double(points.size());
+        const QString where = label.join(QLatin1String(", "));
+        auto sub = [&](double a, double b) {
+            return Progress([&, a, b](double f, const QString& w) {
+                return !progress || progress(from + span * (a + (b - a) * f), QStringLiteral("%1: %2").arg(where, w));
+            });
+        };
+        std::shared_ptr<const Mesh> m;
+        if (mentions(shaping, changed)) {
+            if (!meshOf(*ps, nullptr, sub(0, 0.3), &m)) {
+                run.error = tr("%1: %2").arg(where, run.error);
+                return run;
+            }
+        } else {
+            if (!base && !meshOf(*parameters, topology, sub(0, 0.3), &base)) return run;
+            run.mesh = base;
+            m = base;
+        }
+        const StudyResult r = solveStudy(model, ps, m, study->tag, sub(0.3, 1));
+        run.warnings << r.warnings;
+        if (!r.solution) {
+            run.error = tr("%1: %2").arg(where, r.error);
+            return run;
+        }
+        r.solution->label = where;
+        r.solution->sweptValues = values;
+        run.log << QStringLiteral("%1: %2").arg(where, r.solution->log.join(QLatin1String("; ")));
+        run.solutions.push_back(r.solution);
+    }
+    if (!run.mesh) run.mesh = base;
+    return run;
 }
 
 double vacuumCapacitance(const Solution& solution, const QString& tag, const QString& terminal, QString* error)
@@ -1443,17 +1577,7 @@ double vacuumCapacitance(const Solution& solution, const QString& tag, const QSt
         if (error) *error = tr("there is no physics %1").arg(tag);
         return NaN;
     }
-    // A field of its own, on the same space; the coefficients put back after.
-    Field scratch = s.fields()[std::size_t(fi)];
-    const Solution::Coefficients saved = s.coefficients()[std::size_t(fi)];
-    Problem p(s, fi, scratch, true);
-    QString why;
-    QStringList warnings;
-    double c = NaN;
-    if (p.setup(&why, &warnings)) c = p.selfMatrix(terminal, &why);
-    s.coefficients()[std::size_t(fi)] = saved;
-    if (std::isnan(c) && error) *error = why;
-    return c;
+    return detail::scalarVacuumCapacitance(s, fi, terminal, error);
 }
 
 } // namespace qucs_s::fem

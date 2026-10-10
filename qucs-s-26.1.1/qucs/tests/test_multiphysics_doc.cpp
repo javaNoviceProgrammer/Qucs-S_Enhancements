@@ -27,10 +27,12 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
 #include "config.h"
@@ -41,8 +43,12 @@
 #include "module.h"
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
+#include "dataset.h"
+#include "diagrams/diagram.h"
+#include "diagrams/graph.h"
 #include "qucs.h"
 #include "qucscontrol.h"
+#include "schematic.h"
 
 using namespace qucs_s::fem;
 
@@ -142,11 +148,10 @@ private slots:
 
     void cleanup()
     {
-        for (QucsDoc* d : app->allDocuments())
-            if (auto* m = dynamic_cast<MultiphysicsDoc*>(d)) {
-                m->waitForJob(120000);
-                m->setDocChanged(false);
-            }
+        for (QucsDoc* d : app->allDocuments()) {
+            if (auto* m = dynamic_cast<MultiphysicsDoc*>(d)) m->waitForJob(120000);
+            d->setDocChanged(false);   // (a data display too: no Save dialog)
+        }
         app->closeAllFiles();
     }
 
@@ -620,6 +625,254 @@ private slots:
         QVERIFY(doc->solution() == nullptr);
         QVERIFY(doc->lastError().contains(QStringLiteral("cancelled")));
         QVERIFY(!doc->cancelButton()->isVisible());
+    }
+
+    // ---- Phase 2: time, sweeps, mechanics, axisymmetry, drawings, graphs
+
+    /// The tag of the node of type \a type labelled \a label.
+    static QString tagOf(const Model& m, const QString& type, const QString& label)
+    {
+        std::function<QString(const qucs_s::fem::Node&)> find = [&](const qucs_s::fem::Node& n) -> QString {
+            if (n.type == type && n.name() == label) return n.tag;
+            for (const qucs_s::fem::Node& c : n.children)
+                if (const QString t = find(c); !t.isEmpty()) return t;
+            return QString();
+        };
+        return find(m.root);
+    }
+
+    // A study in time: its plot at the last output time, a box to choose
+    // another (the plot group's setting, a step of Undo), Derived Values at
+    // the time it asks for.
+    void aStudyInTimeIsShownAtItsTimes()
+    {
+        MultiphysicsDoc* doc = open(copyOf("heater_transient.qfem"));
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QCOMPARE(doc->solution()->snapshotCount(), 31);
+        QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
+        QVERIFY2(doc->plotScene()->title.contains("t = 60 s"), qPrintable(doc->plotScene()->title));
+        QVERIFY(doc->instanceBox()->isVisible());
+        QCOMPARE(doc->instanceBox()->count(), 31);
+        // Another time, chosen in the box.
+        const int at = doc->instanceBox()->findText(QStringLiteral("t = 10 s"));
+        QVERIFY(at >= 0);
+        doc->instanceBox()->setCurrentIndex(at);
+        emit doc->instanceBox()->activated(at);
+        QVERIFY2(doc->plotScene()->title.contains("t = 10 s"), qPrintable(doc->plotScene()->title));
+        const double max10 = doc->plotScene()->values.max;
+        doc->undo();
+        QVERIFY(doc->plotScene()->title.contains("t = 60 s"));
+        QVERIFY(doc->plotScene()->values.max > max10);
+        shoot(app, "11-heater-in-time");
+        // "Hottest" at the time it asks for: the last, one row.
+        int rows = 0;
+        for (int r = 0; r < doc->table()->rowCount(); ++r)
+            if (doc->table()->item(r, 0)->text() == QLatin1String("Hottest")) ++rows;
+        QCOMPARE(rows, 1);
+        // The plot group's settings: its times to choose from.
+        panel()->selectNode(tagOf(doc->model(), "plotgroup", "Temperature"));
+        auto* times = qobject_cast<QComboBox*>(panel()->editorFor("time"));
+        QVERIFY(times != nullptr);
+        QCOMPARE(times->count(), 32);   // (the last, and each)
+    }
+
+    // A 1D Plot Group: a Qucs dataset beside the model and a data display of
+    // it, read as Qucs reads it.
+    void graphsGoToAQucsDataDisplay()
+    {
+        MultiphysicsDoc* doc = open(copyOf("heater_transient.qfem"));
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Temperature in Time"), &why);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        QCOMPARE(QFileInfo(display).fileName(), QStringLiteral("heater_transient_%1.dpl").arg(tagOf(doc->model(), "plotgroup1d", "Temperature in Time")));
+        QVERIFY(QFileInfo::exists(display));
+        // The display in front, a diagram of the graphs.
+        auto* shown = qobject_cast<Schematic*>(app->DocumentTab->currentWidget());
+        QVERIFY(shown != nullptr);
+        QCOMPARE(shown->a_DocDiags.size(), 1);
+        QCOMPARE(int(shown->a_DocDiags.front()->Graphs.size()), 3);
+        shoot(app, "12-heater-graph");
+        // The dataset: time, the hottest point over it, each cut point's.
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* time = data.find(QStringLiteral("time"));
+        const qucs_s::dataset::Variable* tmax = data.find(QStringLiteral("ht.Tmax"));
+        QVERIFY(time && tmax && data.find(QStringLiteral("T_1")) && data.find(QStringLiteral("T_2")));
+        QCOMPARE(time->size(), 31);
+        QCOMPARE(tmax->dependencies, QStringList{QStringLiteral("time")});
+        QVERIFY(std::abs(tmax->re.first() - 20) < 1e-9);   // (degC, as it asks)
+        QVERIFY(tmax->re.last() > 40);
+        // Along the board: x, and T at each time.
+        app->gotoPage(doc->getDocName());
+        const QString along = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Along the Board"), &why, false);
+        QVERIFY2(!along.isEmpty(), qPrintable(why));
+        QVERIFY(data.read(along.left(along.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* t = data.find(QStringLiteral("T"));
+        QVERIFY(t != nullptr);
+        QCOMPARE(t->dependencies, (QStringList{QStringLiteral("x"), QStringLiteral("time")}));
+        QCOMPARE(t->size(), 200 * 31);
+    }
+
+    // A sweep: each width solved (meshed again), shown one at a time, its
+    // Derived Values at each, Z0 against the width as a graph.
+    void aSweepSolvesEachPoint()
+    {
+        MultiphysicsDoc* doc = open(copyOf("microstrip_sweep.qfem"));
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(300000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QCOMPARE(int(doc->solutions()->solutions.size()), 9);
+        QCOMPARE(doc->instanceBox()->count(), 9);
+        QVERIFY2(doc->plotScene()->title.contains("w = 5 mm"), qPrintable(doc->plotScene()->title));
+        int z0 = 0;
+        for (int r = 0; r < doc->table()->rowCount(); ++r)
+            if (doc->table()->item(r, 1)->text().endsWith(QLatin1String(": Z0"))) ++z0;
+        QCOMPARE(z0, 9);
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Z0 against the Width"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* w = data.find(QStringLiteral("w"));
+        const qucs_s::dataset::Variable* z = data.find(QStringLiteral("Z0"));
+        QVERIFY(w && z);
+        QCOMPARE(w->size(), 9);
+        QVERIFY(std::abs(w->re.first() - 1e-3) < 1e-12);
+        QVERIFY(z->re.first() > z->re.last());
+        shoot(app, "13-microstrip-sweep");
+        // The sweep's settings: a parameter, its values, their unit.
+        int at = -1;
+        Model m = doc->model();
+        const qucs_s::fem::Node* study = m.studies().front();
+        QString sweepTag;
+        for (const qucs_s::fem::Node& c : study->children)
+            if (c.type == QLatin1String("sweep")) sweepTag = c.tag;
+        Q_UNUSED(at);
+        panel()->selectNode(sweepTag);
+        auto* rows = panel()->settingsArea()->findChild<QTableWidget*>("mpRows");
+        QVERIFY(rows != nullptr);
+        QCOMPARE(rows->columnCount(), 3);
+        QCOMPARE(rows->item(0, 1)->text(), QStringLiteral("range(1, 0.5, 5)"));
+        shoot(app, "13b-sweep-settings");
+    }
+
+    // Solid mechanics: drawn where it has moved.
+    void aSolidIsDrawnDeformed()
+    {
+        MultiphysicsDoc* doc = open(copyOf("bimetal_strip.qfem"));
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QVERIFY2(doc->plotScene()->title.contains("deformed"), qPrintable(doc->plotScene()->title));
+        // The plot's points below where the strip was (it curls down).
+        double low = 0;
+        for (QPointF p : doc->plotScene()->values.points) low = std::min(low, p.y());
+        QVERIFY2(low < -0.5, qPrintable(QString::number(low)));
+        const double tip = doc->solution()->global(QStringLiteral("solid.dmax")).value_or(0);
+        QVERIFY2(std::abs(tip - 5.84e-4) < 3e-5, qPrintable(QString::number(tip)));
+        shoot(app, "14-bimetal");
+    }
+
+    // About an axis: the via's capacitance, round it whole.
+    void anAxisymmetricModelSolves()
+    {
+        MultiphysicsDoc* doc = open(copyOf("tsv_axisymmetric.qfem"));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->model().axisymmetric());
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        const double c = doc->solution()->global(QStringLiteral("es.C11")).value_or(0);
+        QVERIFY2(c > 110e-15 && c < 140e-15, qPrintable(QString::number(c)));
+        shoot(app, "15-via");
+        // The component's settings: its space, the thickness hidden.
+        panel()->selectNode(doc->model().component().tag);
+        QVERIFY(panel()->editorFor("space") != nullptr);
+        QVERIFY(panel()->editorFor("thickness") == nullptr);
+    }
+
+    // A drawing imported, and read again when it changes.
+    void anImportIsReadAgainWhenItsFileChanges()
+    {
+        QFile::remove(path("heatsink.svg"));
+        QVERIFY(QFile::copy(examples() + "heatsink.svg", path("heatsink.svg")));
+        QFile(path("heatsink.svg")).setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        MultiphysicsDoc* doc = open(copyOf("heatsink_import.qfem"));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->geometry().ok());
+        const double before = doc->geometry().topology->domains.front().area + doc->geometry().topology->domains.back().area;
+        // Its settings: the file, with a button to choose one.
+        panel()->selectNode(tagOf(doc->model(), "import", "heatsink"));
+        QVERIFY(panel()->editorFor("file") != nullptr);
+        QVERIFY(panel()->settingsArea()->findChild<QToolButton*>("mpBrowse_file") != nullptr);
+        // Its fins half as tall.
+        QFile f(path("heatsink.svg"));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QByteArray svg = f.readAll();
+        f.close();
+        QString text = QString::fromUtf8(svg);
+        text.replace(QRegularExpression(QStringLiteral("V 1(\\s)")), QStringLiteral("V 11\\1"));
+        text.replace(QRegularExpression(QStringLiteral("(A 1 1 0 0 0 [0-9.]+) 1(\\s)")), QStringLiteral("\\1 11\\2"));
+        svg = text.toUtf8();
+        QCOMPARE(svg.count("V 11"), 6);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(svg);
+        f.close();
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->geometryStale() && doc->geometry().topology
+                                     && std::abs(doc->geometry().topology->domains.front().area + doc->geometry().topology->domains.back().area - before) > 50,
+                                 10000);
+        QVERIFY(doc->messages().join('\n').contains("heatsink.svg changed"));
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        shoot(app, "16-heatsink");
+    }
+
+    // Claude's tools: a study in time and a sweep - times, points, all of
+    // them, graphs.
+    void claudesToolsInTimeAndSweeps()
+    {
+        open(copyOf("heater_transient.qfem"));
+        QJsonObject r = call("fem_solve");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject solved = json(r);
+        QCOMPARE(solved.value("times").toObject().value("outputs").toInt(), 31);
+        QJsonArray points;   // (appended: a braced list of one list is a copy to some compilers)
+        points.append(QJsonArray{0, 0.8});
+        r = call("fem_evaluate", {{"expression", "T"}, {"at", points}, {"all", true}, {"unit", "degC"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("values").toArray().size(), 31);
+        r = call("fem_evaluate", {{"expression", "ht.Tmax"}, {"time", "10[s]"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("solutions").toString().contains("t = 10 s"), qPrintable(text(r)));
+        r = call("fem_plot", {{"plot", tagOf(open(path("heater_transient.qfem"))->model(), "plotgroup", "Temperature")}, {"time", "20"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("solution").toString().contains("t = 20 s"), qPrintable(text(r)));
+        r = call("fem_plot", {{"plot", tagOf(open(path("heater_transient.qfem"))->model(), "plotgroup1d", "Temperature in Time")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("display").toString().endsWith(".dpl"));
+        // A sweep's points.
+        open(copyOf("microstrip_sweep.qfem"));
+        r = call("fem_solve", {{"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("sweep").toObject().value("solutions").toInt(), 9);
+        r = call("fem_evaluate", {{"expression", "es.C11"}, {"point", 1}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("solutions").toString().contains("w = 1 mm"));
+        // The new kinds, described.
+        r = call("fem_describe", {{"what", "format"}});
+        QStringList types;
+        for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
+        for (const char* t : {"solid", "solid/load", "transient", "sweep", "import", "plotgroup1d", "linegraph", "heat/radiation"})
+            QVERIFY2(types.contains(QString::fromLatin1(t)), t);
     }
 };
 

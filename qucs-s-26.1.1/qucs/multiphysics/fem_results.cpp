@@ -178,7 +178,7 @@ DisplayUnit displayUnit(const QString& text, const Dim& dim, QString* warning)
 
 // ------------------------------------------------------------------ Surfaces
 
-SurfaceData surfaceData(const Solution& solution, const QString& expression, const QString& unit)
+SurfaceData surfaceData(const Solution& solution, const QString& expression, const QString& unit, Deformation* deformation)
 {
     SurfaceData out;
     const Expression e = Expression::compile(expression, solution.scope());
@@ -186,6 +186,16 @@ SurfaceData surfaceData(const Solution& solution, const QString& expression, con
         out.error = e.error();
         return out;
     }
+    Expression dx, dy;
+    if (deformation) {
+        dx = Expression::compile(deformation->x, solution.scope());
+        dy = Expression::compile(deformation->y, solution.scope());
+        if (!dx.isValid() || !dy.isValid()) {
+            out.error = tr("the deformation: %1").arg(dx.isValid() ? dy.error() : dx.error());
+            return out;
+        }
+    }
+    std::vector<QPointF> moved;   // each point's displacement (m)
     out.dim = e.dim();
     out.unit = displayUnit(unit, e.dim(), &out.warning);
     if (!e.warnings().isEmpty()) out.warning += (out.warning.isEmpty() ? QString() : QStringLiteral("; ")) + e.warnings().join(QLatin1String("; "));
@@ -200,10 +210,11 @@ SurfaceData surfaceData(const Solution& solution, const QString& expression, con
     const int perTri = split ? 12 : 3;
     out.points.resize(std::size_t(nt) * std::size_t(perTri));
     out.values.resize(out.points.size());
+    if (deformation) moved.assign(out.points.size(), QPointF());
     const double s = mesh.unitScale;
     parallel(nt, [&](int begin, int end) {
         PointEvaluator ev(solution);
-        QPointF pts[6];
+        QPointF pts[6], disp[6];
         double vals[6];
         for (int t = begin; t < end; ++t) {
             const int n = split ? 6 : 3;
@@ -212,22 +223,40 @@ SurfaceData surfaceData(const Solution& solution, const QString& expression, con
                 if (sp) pts[k] = sp->map(t, ref[k][0], ref[k][1]).x / s;
                 else pts[k] = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])];
                 vals[k] = (ev.eval(e) - out.unit.offset) / out.unit.scale;
+                if (deformation) {
+                    disp[k] = QPointF(ev.eval(dx), ev.eval(dy));
+                    if (!std::isfinite(disp[k].x()) || !std::isfinite(disp[k].y())) disp[k] = QPointF();
+                }
             }
             const std::size_t base = std::size_t(t) * std::size_t(perTri);
             if (!split) {
                 for (int k = 0; k < 3; ++k) {
                     out.points[base + std::size_t(k)] = pts[k];
                     out.values[base + std::size_t(k)] = vals[k];
+                    if (deformation) moved[base + std::size_t(k)] = disp[k];
                 }
             } else {
                 for (int q = 0; q < 4; ++q)
                     for (int k = 0; k < 3; ++k) {
                         out.points[base + std::size_t(q * 3 + k)] = pts[four[q][k]];
                         out.values[base + std::size_t(q * 3 + k)] = vals[four[q][k]];
+                        if (deformation) moved[base + std::size_t(q * 3 + k)] = disp[four[q][k]];
                     }
             }
         }
     });
+    if (deformation) {
+        // Moved: the largest displacement a tenth of the model, or as given.
+        double largest = 0;
+        for (QPointF d : moved) largest = std::max(largest, std::hypot(d.x(), d.y()));
+        const QRectF b = mesh.bounds();
+        const double size = std::max(b.width(), b.height()) * s;
+        double scale = deformation->scale;
+        if (!(scale > 0)) scale = largest > 0 ? 0.1 * size / largest : 1;
+        deformation->used = scale;
+        deformation->largest = largest;
+        for (std::size_t i = 0; i < moved.size(); ++i) out.points[i] += moved[i] * (scale / s);
+    }
     double lo = INFINITY, hi = -INFINITY;
     for (double v : out.values)
         if (std::isfinite(v)) {
@@ -305,6 +334,38 @@ ArrowData arrowData(const Solution& solution, const QString& x, const QString& y
     return out;
 }
 
+LineData lineData(const Solution& solution, const Locator& locator, const QString& expression, QPointF a, QPointF b, int count)
+{
+    LineData out;
+    const Expression e = Expression::compile(expression, solution.scope());
+    if (!e.isValid()) {
+        out.error = e.error();
+        return out;
+    }
+    out.dim = e.dim();
+    count = std::clamp(count, 2, 100000);
+    const double s = solution.mesh().unitScale;
+    const double length = std::hypot(b.x() - a.x(), b.y() - a.y()) * s;
+    PointEvaluator ev(solution);
+    for (int i = 0; i < count; ++i) {
+        const double u = double(i) / (count - 1);
+        const QPointF p = a + (b - a) * u;
+        out.points.push_back(p);
+        out.along.push_back(u * length);
+        int t = -1;
+        double xi = 0, eta = 0;
+        double v = std::numeric_limits<double>::quiet_NaN();
+        if (e.isConstant()) v = e.constant();
+        else if (locator.locate(p, &t, &xi, &eta)) {
+            refine(solution, t, p, xi, eta);
+            ev.moveTo(t, xi, eta);
+            v = ev.eval(e);
+        }
+        out.values.push_back(std::isfinite(v) ? v : std::numeric_limits<double>::quiet_NaN());
+    }
+    return out;
+}
+
 std::optional<double> evaluateAt(const Solution& solution, const Locator& locator, const QString& expression, QPointF p,
                                  QString* error, Dim* dim)
 {
@@ -341,7 +402,7 @@ struct Over {
     bool any = false;
 };
 
-Over overDomains(const Solution& s, const Expression& e, const QVector<int>& domains)
+Over overDomains(const Solution& s, const Expression& e, const QVector<int>& domains, bool revolved)
 {
     Over o;
     const Mesh& mesh = s.mesh();
@@ -356,7 +417,8 @@ Over overDomains(const Solution& s, const Expression& e, const QVector<int>& dom
             ev.moveTo(t, q[0], q[1]);
             const double v = ev.eval(e);
             if (!std::isfinite(v)) continue;
-            const double det = sp ? std::abs(sp->map(t, q[0], q[1]).det) : 0;
+            const Space::Map m = sp ? sp->map(t, q[0], q[1]) : Space::Map();
+            const double det = std::abs(m.det) * (revolved ? 2 * M_PI * m.x.x() : 1);
             o.integral += q[2] * det * v;
             o.measure += q[2] * det;
             o.max = std::max(o.max, v);
@@ -374,7 +436,7 @@ Over overDomains(const Solution& s, const Expression& e, const QVector<int>& dom
     return o;
 }
 
-Over overBoundaries(const Solution& s, const Expression& e, const QVector<int>& boundaries)
+Over overBoundaries(const Solution& s, const Expression& e, const QVector<int>& boundaries, bool revolved)
 {
     Over o;
     const Mesh& mesh = s.mesh();
@@ -386,7 +448,9 @@ Over overBoundaries(const Solution& s, const Expression& e, const QVector<int>& 
         if (!set.contains(me.boundary)) continue;
         for (const auto& q : lineRule(3)) {
             double jac = 0;
-            if (sp) sp->edgePoint(ei, q[0], &jac);
+            QPointF x;
+            if (sp) x = sp->edgePoint(ei, q[0], &jac);
+            if (revolved) jac *= 2 * M_PI * x.x();
             // Its value: the average of the two sides' where both have one.
             double sum = 0;
             int sides = 0;
@@ -464,12 +528,13 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             out.error = why;
             return out;
         }
-        const Over o = level == Level::Boundary ? overBoundaries(solution, e, picked) : overDomains(solution, e, picked);
+        const bool revolved = solution.axisymmetric() && node.flag(QStringLiteral("revolved"));
+        const Over o = level == Level::Boundary ? overBoundaries(solution, e, picked, revolved) : overDomains(solution, e, picked, revolved);
         if (!o.any) {
             out.error = tr("%1 is defined on none of them").arg(text);
             return out;
         }
-        const Dim measure = level == Level::Boundary ? Dim::length() : Dim::area();
+        const Dim measure = level == Level::Boundary ? (revolved ? Dim::area() : Dim::length()) : (revolved ? Dim::of(3) : Dim::area());
         if (type == QLatin1String("integral")) add(text, o.integral, e.dim() * measure);
         else if (type == QLatin1String("average")) add(text, o.integral / o.measure, e.dim());
         else if (type == QLatin1String("maximum")) add(text, o.max, e.dim());
@@ -522,6 +587,10 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         return out;
     }
     if (type == QLatin1String("lineparams")) {
+        if (solution.axisymmetric()) {
+            out.error = tr("a line's parameters are per metre of a 2D cross-section in the plane: not about an axis");
+            return out;
+        }
         QStringList tags = node.list(QStringLiteral("physics"));
         QString tag = tags.isEmpty() ? QStringLiteral("es") : tags.first();
         const int fi = solution.fieldIndex(tag);
@@ -558,6 +627,41 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
     }
     out.error = tr("%1 is not a derived value").arg(node.name());
     return out;
+}
+
+std::vector<Instance> instances(const SolutionSet& set, bool all, int point, const QString& time)
+{
+    std::vector<Instance> out;
+    const int n = int(set.solutions.size());
+    if (n == 0) return out;
+    const int chosen = point <= 0 || point > n ? n - 1 : point - 1;
+    for (int p = 0; p < n; ++p) {
+        if (!all && p != chosen) continue;
+        const Solution& s = *set.solutions[std::size_t(p)];
+        const int snaps = s.snapshotCount();
+        if (snaps == 0) {
+            out.push_back({p, -1, s.time(), s.label});
+            continue;
+        }
+        int pick = snaps - 1;
+        if (!all && !time.trimmed().isEmpty()) {
+            if (const std::optional<double> t = evaluateConstant(time, s.parameters().scope, Dim::of(0, 0, 1)); t) pick = s.snapshotAt(*t);
+        }
+        for (int k = 0; k < snaps; ++k) {
+            if (!all && k != pick) continue;
+            const QString when = QStringLiteral("t = %1").arg(formatQuantity(s.snapshotTime(k), Dim::of(0, 0, 1)));
+            out.push_back({p, k, s.snapshotTime(k), s.label.isEmpty() ? when : s.label + QStringLiteral(", ") + when});
+        }
+    }
+    return out;
+}
+
+Solution* select(const SolutionSet& set, const Instance& instance)
+{
+    if (instance.point < 0 || instance.point >= int(set.solutions.size())) return nullptr;
+    Solution* s = set.solutions[std::size_t(instance.point)].get();
+    if (instance.snapshot >= 0) s->select(instance.snapshot);
+    return s;
 }
 
 } // namespace qucs_s::fem

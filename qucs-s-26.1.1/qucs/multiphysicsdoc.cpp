@@ -10,6 +10,7 @@
  */
 #include "multiphysicsdoc.h"
 
+#include "dataimport.h"
 #include "ink.h"
 #include "misc.h"
 #include "qucs.h"
@@ -19,8 +20,10 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -118,7 +121,7 @@ struct MultiphysicsDoc::Job {
     std::shared_ptr<const Mesh> mesh;
     bool meshIt = false;
     QString study;
-    std::shared_ptr<Solution> solution;
+    StudyRun run;
     QString error;
     QStringList warnings;
     std::function<void(Job&)> done;
@@ -162,6 +165,18 @@ MultiphysicsDoc::MultiphysicsDoc(QucsApp* app, const QString& name) : QFrame(), 
             if (a_view->show() != GraphicsView::Show::Results || a_plotGroup.isEmpty()) showGeometry();
             updateHighlight();
         }
+    });
+    // A drawing an Import reads, changed: the geometry made again.
+    a_watcher = new QFileSystemWatcher(this);
+    connect(a_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString& path) {
+        if (QFileInfo::exists(path) && !a_watcher->files().contains(path)) a_watcher->addPath(path);   // (written anew)
+        say(tr("%1 changed: the geometry is built again").arg(QFileInfo(path).fileName()));
+        a_geometryStale = true;
+        a_meshStale = true;
+        for (auto& [tag, stale] : a_stale) stale = true;
+        a_geometryTimer->start();
+        updateState();
+        emit stateChanged();
     });
     buildUi();
     if (app != nullptr) connect(this, SIGNAL(signalFileChanged(bool)), app, SLOT(slotFileChanged(bool)));
@@ -240,6 +255,24 @@ void MultiphysicsDoc::buildUi()
     connect(a_plotBox, &QComboBox::activated, this, [this](int) {
         QString why;
         if (!showPlotGroup(a_plotBox->currentData().toString(), &why)) say(why, true);
+    });
+    // The time and parameter value the plot group shows (a study in time,
+    // a sweep): its settings changed, a step of Undo.
+    a_instanceBox = new QComboBox(bar);
+    a_instanceBox->setObjectName(QStringLiteral("mpInstance"));
+    a_instanceBox->setMinimumContentsLength(12);
+    a_instanceBox->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    a_instanceBox->setToolTip(tr("The output time and parameter value the plot group shows"));
+    a_instanceBox->hide();
+    row->addWidget(a_instanceBox);
+    connect(a_instanceBox, &QComboBox::activated, this, [this](int index) {
+        const QStringList v = a_instanceBox->itemData(index).toStringList();
+        const QString group = a_plotGroup;
+        if (group.isEmpty() || v.size() < 2) return;
+        editNode(group, [v](Node& n) {
+            n.props.insert(QStringLiteral("point"), v[0].toInt());
+            n.props.insert(QStringLiteral("time"), v[1]);
+        }, tr("Show %1").arg(a_instanceBox->itemText(index)));
     });
     row->addSpacing(10);
     a_fit = button(tr("Zoom Extents"), tr("Show it all (F)"), "mpFit");
@@ -482,6 +515,7 @@ void MultiphysicsDoc::applyModel(const Model& model)
     a_model = model;
     a_model.fileName = a_DocName;
     a_paramsStale = true;
+    a_view->setAxisymmetric(a_model.axisymmetric());
     invalidate(before, a_model);
     edited();
     fillPlotBox();
@@ -565,9 +599,22 @@ bool MultiphysicsDoc::buildGeometry(QString* error)
     }
     a_view->setTopology(a_geometry.topology);
     if (a_view->show() == GraphicsView::Show::Mesh) a_view->setMesh(nullptr);
+    watchFiles();
     updateState();
     updateHighlight();
     return ok;
+}
+
+void MultiphysicsDoc::watchFiles()
+{
+    const QStringList now = a_watcher->files();
+    QStringList wanted;
+    for (const QString& f : a_geometry.files)
+        if (QFileInfo::exists(f)) wanted << f;
+    for (const QString& f : now)
+        if (!wanted.contains(f)) a_watcher->removePath(f);
+    for (const QString& f : wanted)
+        if (!now.contains(f)) a_watcher->addPath(f);
 }
 
 void MultiphysicsDoc::startJob(const QString& what, std::function<void(Job&)> work, std::function<void(Job&)> done)
@@ -684,33 +731,26 @@ void MultiphysicsDoc::compute(const QString& study)
     const bool meshIt = a_meshStale || !a_mesh;
     startJob(tr("Computing"), [meshIt, tag](Job& job) {
         job.study = tag;
-        if (meshIt) {
-            const MeshBuild m = qucs_s::fem::buildMesh(job.model, *job.parameters, job.topology, job.progress(0, 0.3));
-            if (!m.mesh) {
-                job.error = QCoreApplication::translate("MultiphysicsDoc", "The mesh failed: %1").arg(m.error);
-                return;
-            }
-            job.mesh = m.mesh;
-            job.meshIt = true;
-            job.warnings << m.warnings;
-        }
-        const StudyResult r = solveStudy(job.model, job.parameters, job.mesh, tag, job.progress(meshIt ? 0.3 : 0, 1));
-        job.warnings << r.warnings;
-        if (!r.solution) {
-            job.error = QCoreApplication::translate("MultiphysicsDoc", "The study failed: %1").arg(r.error);
-            return;
-        }
-        job.solution = r.solution;
+        // (Its mesh made first when it is old: runStudy makes it.)
+        job.run = runStudy(job.model, job.parameters, job.topology, meshIt ? nullptr : job.mesh, tag, job.progress(0, 1));
+        job.meshIt = meshIt;
+        job.warnings << job.run.warnings;
+        if (!job.run.ok())
+            job.error = QCoreApplication::translate("MultiphysicsDoc", "The study failed: %1").arg(job.run.error);
     }, [this](Job& job) {
-        if (job.meshIt && job.mesh) {
-            a_mesh = job.mesh;
+        if (job.meshIt && job.run.mesh) {
+            a_mesh = job.run.mesh;
             a_meshStale = false;
             a_locator.reset();
         }
-        if (!job.solution) return;
-        a_solutions[job.study] = job.solution;
+        if (!job.run.ok()) return;
+        auto set = std::make_shared<SolutionSet>();
+        set->solutions = job.run.solutions;
+        set->swept = job.run.swept;
+        a_solutions[job.study] = set;
         a_stale[job.study] = false;
-        for (const QString& line : job.solution->log) say(line);
+        for (const QString& line : job.run.log) say(line);
+        if (set->solutions.size() > 1) say(tr("Swept %1: %2 solutions").arg(set->swept.join(QLatin1String(", "))).arg(set->solutions.size()));
         addDefaultPlots(job.study);
         evaluateAll(job.study);
         // Its first plot group shown.
@@ -738,6 +778,12 @@ void MultiphysicsDoc::clearSolutions()
 }
 
 std::shared_ptr<Solution> MultiphysicsDoc::solution(const QString& study) const
+{
+    auto it = a_solutions.find(studyTag(study));
+    return it == a_solutions.end() || it->second->solutions.empty() ? nullptr : it->second->solutions.back();
+}
+
+std::shared_ptr<SolutionSet> MultiphysicsDoc::solutions(const QString& study) const
 {
     auto it = a_solutions.find(studyTag(study));
     return it == a_solutions.end() ? nullptr : it->second;
@@ -829,7 +875,7 @@ void MultiphysicsDoc::fillPlotBox()
     a_plotBox->blockSignals(true);
     a_plotBox->clear();
     for (const Node& g : a_model.results().children)
-        if (g.type == QLatin1String("plotgroup")) a_plotBox->addItem(g.name(), g.tag);
+        if (g.type == QLatin1String("plotgroup") || g.type == QLatin1String("plotgroup1d")) a_plotBox->addItem(g.name(), g.tag);
     const int at = a_plotBox->findData(a_plotGroup.isEmpty() ? current : a_plotGroup);
     if (at >= 0) a_plotBox->setCurrentIndex(at);
     a_plotBox->blockSignals(false);
@@ -839,25 +885,47 @@ void MultiphysicsDoc::fillPlotBox()
 bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
 {
     const Node* g = a_model.find(tag);
+    if (g && g->type == QLatin1String("plotgroup1d")) return !showGraphs(tag, error).isEmpty();
     if (!g || g->type != QLatin1String("plotgroup")) {
         if (error) *error = tr("there is no plot group %1").arg(tag);
         return false;
     }
     const QString study = studyTag(g->text(QStringLiteral("study")));
-    const std::shared_ptr<Solution> sol = solution(study);
-    if (!sol) {
+    const std::shared_ptr<SolutionSet> set = solutions(study);
+    if (!set || set->solutions.empty()) {
         if (error) *error = tr("%1: its study is not computed yet - Compute it").arg(g->name());
         return false;
     }
+    // The solution it shows: its time and parameter value.
+    const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")));
+    if (chosen.empty()) {
+        if (error) *error = tr("%1: no solution to show").arg(g->name());
+        return false;
+    }
+    Solution* sol = select(*set, chosen.front());
+    const QString label = chosen.front().label;
     auto scene = std::make_shared<PlotScene>();
     scene->title = g->text(QStringLiteral("title")).isEmpty() ? g->name() : g->text(QStringLiteral("title"));
     const QRectF region = sol->topology().bounds;
     const QColor ink = palette().color(QPalette::Text);
+    // Its plots moved by a displacement.
+    std::optional<Deformation> deformation;
+    for (const Node& p : g->children)
+        if (p.type == QLatin1String("deformation") && p.enabled) {
+            Deformation d;
+            d.x = p.text(QStringLiteral("x"));
+            d.y = p.text(QStringLiteral("y"));
+            d.scale = 0;
+            if (p.text(QStringLiteral("scaling")) == QLatin1String("manual"))
+                d.scale = evaluateConstant(p.text(QStringLiteral("scale")), sol->parameters().scope, Dim()).value_or(1);
+            deformation = d;
+        }
+    Deformation* deform = deformation ? &*deformation : nullptr;
     for (const Node& p : g->children) {
         if (!p.enabled) continue;
         if (p.type == QLatin1String("surface")) {
             const QString expr = p.text(QStringLiteral("expression"));
-            scene->values = surfaceData(*sol, expr, p.text(QStringLiteral("unit")));
+            scene->values = surfaceData(*sol, expr, p.text(QStringLiteral("unit")), deform);
             if (!scene->values.error.isEmpty()) {
                 scene->problems << tr("%1: %2").arg(p.name(), scene->values.error);
                 continue;
@@ -879,7 +947,7 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
             scene->surfaceLabel = scene->values.dim.isNone() && scene->values.unit.name.isEmpty() ? expr : tr("%1 (%2)").arg(expr, unit);
             if (scene->title == g->name()) scene->title = tr("%1: %2").arg(g->name(), scene->surfaceLabel);
         } else if (p.type == QLatin1String("contour")) {
-            const SurfaceData values = surfaceData(*sol, p.text(QStringLiteral("expression")), p.text(QStringLiteral("unit")));
+            const SurfaceData values = surfaceData(*sol, p.text(QStringLiteral("expression")), p.text(QStringLiteral("unit")), deform);
             if (!values.error.isEmpty()) {
                 scene->problems << tr("%1: %2").arg(p.name(), values.error);
                 continue;
@@ -911,18 +979,42 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
             scene->quality = p.flag(QStringLiteral("quality"));
         }
     }
+    if (!label.isEmpty()) scene->title += QStringLiteral(" - ") + label;
+    if (deform && deform->used > 0) scene->title += tr(" (deformed %1×)").arg(formatNumber(deform->used, 3));
     if (solutionStale(study)) scene->title += tr(" (an old solution)");
     a_scene = scene;
     a_plotGroup = tag;
+    a_instanceLabel = label;
     a_view->setTopology(sol->meshPtr()->topology);
     a_view->setMesh(sol->meshPtr());
     a_view->setPlot(scene);
     a_view->setShow(GraphicsView::Show::Results);
     a_locator.reset();
     fillPlotBox();
+    fillInstanceBox();
     updateState();
     updateHighlight();
     return true;
+}
+
+void MultiphysicsDoc::fillInstanceBox()
+{
+    a_instanceBox->blockSignals(true);
+    a_instanceBox->clear();
+    const Node* g = a_plotGroup.isEmpty() ? nullptr : a_model.find(a_plotGroup);
+    const std::shared_ptr<SolutionSet> set = g ? solutions(g->text(QStringLiteral("study"))) : nullptr;
+    if (set && a_view->show() == GraphicsView::Show::Results) {
+        const std::vector<Instance> all = instances(*set, true);
+        if (all.size() > 1)
+            for (const Instance& in : all) {
+                // (Its settings: the point from 1, the time in seconds.)
+                const QString time = in.snapshot >= 0 ? QString::number(in.time, 'g', 17) : QString();
+                a_instanceBox->addItem(in.label, QStringList{QString::number(in.point + 1), time});
+                if (in.label == a_instanceLabel) a_instanceBox->setCurrentIndex(a_instanceBox->count() - 1);
+            }
+    }
+    a_instanceBox->blockSignals(false);
+    a_instanceBox->setVisible(a_instanceBox->count() > 1);
 }
 
 void MultiphysicsDoc::focusNode(const QString& tag)
@@ -1028,12 +1120,23 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
         out.error = tr("there is no node %1").arg(tag);
         return out;
     }
-    const std::shared_ptr<Solution> sol = solution(n->text(QStringLiteral("study")));
-    if (!sol) {
+    const std::shared_ptr<SolutionSet> set = solutions(n->text(QStringLiteral("study")));
+    if (!set || set->solutions.empty()) {
         out.error = tr("%1: its study is not computed yet").arg(n->name());
         return out;
     }
-    out = evaluateDerived(*sol, *n);
+    // At each solution it asks for: each output time, each parameter value.
+    const bool all = n->text(QStringLiteral("solutions")) != QLatin1String("selected");
+    for (const Instance& in : instances(*set, all)) {
+        Solution* sol = select(*set, in);
+        if (!sol) continue;
+        DerivedResult one = evaluateDerived(*sol, *n);
+        for (DerivedValue v : one.values) {
+            if (!in.label.isEmpty()) v.name = in.label + QStringLiteral(": ") + v.name;
+            out.values << v;
+        }
+        if (out.error.isEmpty() && !one.error.isEmpty()) out.error = in.label.isEmpty() ? one.error : in.label + QStringLiteral(": ") + one.error;
+    }
     // Its rows in the table, in place of its last.
     for (int r = a_table->rowCount() - 1; r >= 0; --r)
         if (a_table->item(r, 0) && a_table->item(r, 0)->data(Qt::UserRole).toString() == tag) a_table->removeRow(r);
@@ -1049,6 +1152,262 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
     if (!out.error.isEmpty()) say(tr("%1: %2").arg(n->name(), out.error), out.values.isEmpty());
     a_table->resizeColumnsToContents();
     return out;
+}
+
+namespace {
+
+/// A coordinate of the geometry: an expression in its unit (a plain number
+/// is one), of the parameters.
+std::optional<double> coordinate(const QJsonValue& v, const Solution& s, QString* why)
+{
+    const QString text = v.isDouble() ? formatNumber(v.toDouble(), 15) : v.toString();
+    Expression::Options options;
+    options.lengthUnit = s.topology().unitScale;
+    options.numbersAreLengths = true;
+    const Expression e = Expression::compile(text, s.parameters().scope, options);
+    if (!e.isValid() || !e.isConstant()) {
+        *why = QCoreApplication::translate("MultiphysicsDoc", "the coordinate %1: %2").arg(text, e.isValid() ? QCoreApplication::translate("MultiphysicsDoc", "not a constant") : e.error());
+        return std::nullopt;
+    }
+    return e.constant();
+}
+
+} // namespace
+
+QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool open)
+{
+    auto fail = [&](const QString& why) {
+        if (error) *error = why;
+        return QString();
+    };
+    const Node* g = a_model.find(tag);
+    if (!g || g->type != QLatin1String("plotgroup1d")) return fail(tr("there is no 1D plot group %1").arg(tag));
+    const std::shared_ptr<SolutionSet> set = solutions(g->text(QStringLiteral("study")));
+    if (!set || set->solutions.empty()) return fail(tr("%1: its study is not computed yet - Compute it").arg(g->name()));
+    using qucs_s::dataset::Variable;
+    QList<Variable> vars;
+    QSet<QString> names;
+    QStringList traces;
+    auto unique = [&](const QString& wanted) {
+        const QString base = qucs_s::dataimport::safeName(wanted);
+        QString n = base;
+        for (int i = 2; names.contains(n); ++i) n = base + QLatin1Char('_') + QString::number(i);
+        names.insert(n);
+        return n;
+    };
+    // What the graphs run over: the output times, the sweep (time the faster).
+    const std::vector<Instance> every = instances(*set, true);
+    QStringList outer;
+    const Solution& first = *set->solutions.front();
+    if (first.snapshotCount() > 0) {
+        Variable t;
+        t.name = unique(QStringLiteral("time"));
+        t.independent = true;
+        for (int k = 0; k < first.snapshotCount(); ++k) t.re << first.snapshotTime(k);
+        outer << t.name;
+        vars << t;
+    }
+    if (set->solutions.size() > 1) {
+        Variable p;
+        const bool one = set->swept.size() == 1;
+        p.name = unique(one ? set->swept.front() : QStringLiteral("sweep"));
+        p.independent = true;
+        for (std::size_t i = 0; i < set->solutions.size(); ++i)
+            p.re << (one ? set->solutions[i]->sweptValues.value(set->swept.front()) : double(i + 1));
+        outer << p.name;
+        vars << p;
+    }
+    // (Of one solution at rest: an index of one.)
+    auto outerOrIndex = [&]() {
+        if (!outer.isEmpty()) return outer;
+        if (!names.contains(QStringLiteral("solution"))) {
+            Variable i;
+            i.name = unique(QStringLiteral("solution"));
+            i.independent = true;
+            i.re << 1;
+            vars << i;
+        }
+        return QStringList{QStringLiteral("solution")};
+    };
+    const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")));
+    QStringList problems;
+    for (const Node& graph : g->children) {
+        if (!graph.enabled) continue;
+        const QString unitText = graph.text(QStringLiteral("unit"));
+        if (graph.type == QLatin1String("globalgraph")) {
+            const QStringList exprs = graph.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
+            const QStringList deps = outerOrIndex();
+            for (const QString& raw : exprs) {
+                const QString text = raw.trimmed();
+                // A Derived Values node: each of its values (tag), or one (tag.name).
+                const Node* derivedNode = a_model.find(text.section(QLatin1Char('.'), 0, 0));
+                if (derivedNode && derivedNode->kind() && derivedNode->kind()->group == QLatin1String("derived")) {
+                    const QString only = text.section(QLatin1Char('.'), 1);
+                    QMap<QString, Variable> byName;
+                    QStringList order;
+                    for (const Instance& in : every) {
+                        Solution* sol = select(*set, in);
+                        const DerivedResult r = evaluateDerived(*sol, *derivedNode);
+                        if (!r.error.isEmpty()) problems << tr("%1: %2").arg(derivedNode->name(), r.error);
+                        QSet<QString> seen;
+                        for (const DerivedValue& dv : r.values) {
+                            if (!only.isEmpty() && dv.name != only) continue;
+                            if (!byName.contains(dv.name)) {
+                                Variable v;
+                                v.name = unique(dv.name);
+                                v.dependencies = deps;
+                                for (int k = 0; k < int(&in - &every.front()); ++k) v.re << std::numeric_limits<double>::quiet_NaN();
+                                byName.insert(dv.name, v);
+                                order << dv.name;
+                            }
+                            const DisplayUnit du = displayUnit(unitText, dv.dim);
+                            byName[dv.name].re << (dv.value - du.offset) / du.scale;
+                            seen.insert(dv.name);
+                        }
+                        for (const QString& n : order)
+                            if (!seen.contains(n)) byName[n].re << std::numeric_limits<double>::quiet_NaN();
+                    }
+                    if (order.isEmpty()) problems << tr("%1 has no value %2").arg(derivedNode->name(), only);
+                    for (const QString& n : order) {
+                        vars << byName[n];
+                        traces << byName[n].name;
+                    }
+                    continue;
+                }
+                Variable v;
+                v.name = unique(text);
+                v.dependencies = deps;
+                for (const Instance& in : every) {
+                    Solution* sol = select(*set, in);
+                    const Expression e = Expression::compile(text, sol->scope());
+                    double value = std::numeric_limits<double>::quiet_NaN();
+                    if (!e.isValid()) problems << tr("%1: %2").arg(text, e.error());
+                    else if (!e.isConstant()) problems << tr("%1 varies over the model: a Point Graph shows it at a point").arg(text);
+                    else value = (e.constant() - displayUnit(unitText, e.dim()).offset) / displayUnit(unitText, e.dim()).scale;
+                    v.re << value;
+                }
+                vars << v;
+                traces << v.name;
+            }
+        } else if (graph.type == QLatin1String("pointgraph") || graph.type == QLatin1String("linegraph")) {
+            const Node* data = a_model.find(graph.text(QStringLiteral("data")));
+            const bool line = graph.type == QLatin1String("linegraph");
+            if (!data || data->type != QLatin1String(line ? "cutline" : "cutpoint")) {
+                problems << tr("%1: choose its dataset, a %2").arg(graph.name(), line ? tr("Cut Line 2D") : tr("Cut Point 2D"));
+                continue;
+            }
+            const QString text = graph.text(QStringLiteral("expression"));
+            const bool all = !line || graph.text(QStringLiteral("solutions")) != QLatin1String("selected");
+            const std::vector<Instance>& over = all ? every : chosen;
+            if (line) {
+                QString why;
+                const QStringList a = data->pair(QStringLiteral("start")), b = data->pair(QStringLiteral("end"));
+                const int count = std::clamp(data->integer(QStringLiteral("points")), 2, 100000);
+                Variable axis;
+                const QString xaxis = graph.text(QStringLiteral("xaxis"));
+                axis.name = unique(xaxis == QLatin1String("x") ? QStringLiteral("x") : xaxis == QLatin1String("y") ? QStringLiteral("y") : QStringLiteral("s_") + data->tag);
+                axis.independent = true;
+                Variable v;
+                v.name = unique(text);
+                v.dependencies = QStringList{axis.name} + (all ? outer : QStringList());
+                bool axisMade = false;
+                for (const Instance& in : over) {
+                    Solution* sol = select(*set, in);
+                    const std::optional<double> x0 = coordinate(a.value(0), *sol, &why), y0 = coordinate(a.value(1), *sol, &why);
+                    const std::optional<double> x1 = coordinate(b.value(0), *sol, &why), y1 = coordinate(b.value(1), *sol, &why);
+                    if (!x0 || !y0 || !x1 || !y1) {
+                        problems << tr("%1: %2").arg(data->name(), why);
+                        break;
+                    }
+                    const Locator locator(sol->mesh());
+                    const LineData ld = lineData(*sol, locator, text, {*x0, *y0}, {*x1, *y1}, count);
+                    if (!ld.error.isEmpty()) {
+                        problems << tr("%1: %2").arg(text, ld.error);
+                        break;
+                    }
+                    if (!axisMade) {
+                        for (int i = 0; i < count; ++i)
+                            axis.re << (xaxis == QLatin1String("x")   ? ld.points[std::size_t(i)].x() * sol->topology().unitScale
+                                        : xaxis == QLatin1String("y") ? ld.points[std::size_t(i)].y() * sol->topology().unitScale
+                                                                      : ld.along[std::size_t(i)]);
+                        axisMade = true;
+                    }
+                    const DisplayUnit du = displayUnit(unitText, ld.dim);
+                    for (double value : ld.values) v.re << (value - du.offset) / du.scale;
+                }
+                if (!axisMade) continue;
+                vars << axis << v;
+                traces << v.name;
+            } else {
+                // Each point's value over the solutions.
+                const QJsonArray points = data->value(QStringLiteral("coordinates")).toArray();
+                const QStringList deps = outerOrIndex();
+                int index = 0;
+                for (const QJsonValue& pv : points) {
+                    ++index;
+                    Variable v;
+                    v.name = unique(points.size() > 1 ? text + QStringLiteral("_") + QString::number(index) : text);
+                    v.dependencies = deps;
+                    for (const Instance& in : every) {
+                        Solution* sol = select(*set, in);
+                        QString why;
+                        const std::optional<double> x = coordinate(pv.toArray().at(0), *sol, &why), y = coordinate(pv.toArray().at(1), *sol, &why);
+                        double value = std::numeric_limits<double>::quiet_NaN();
+                        Dim dim;
+                        if (x && y) {
+                            const Locator locator(sol->mesh());
+                            if (const std::optional<double> got = evaluateAt(*sol, locator, text, {*x, *y}, &why, &dim)) {
+                                const DisplayUnit du = displayUnit(unitText, dim);
+                                value = (*got - du.offset) / du.scale;
+                            }
+                        }
+                        if (std::isnan(value) && !why.isEmpty() && problems.size() < 10) problems << why;
+                        v.re << value;
+                    }
+                    vars << v;
+                    traces << v.name;
+                }
+            }
+        }
+    }
+    problems.removeDuplicates();
+    if (traces.isEmpty()) return fail(problems.isEmpty() ? tr("%1 has no graph: add a Line Graph, a Global or a Point Graph").arg(g->name())
+                                                         : problems.join(QLatin1String("; ")));
+    for (const QString& p : problems) say(tr("%1: %2").arg(g->name(), p), true);
+    // Beside the model (in the cache while it is not saved).
+    QString base;
+    if (getDocName().isEmpty()) {
+        const QString dir = misc::cacheDir() + QStringLiteral("/multiphysics");
+        QDir().mkpath(dir);
+        base = dir + QStringLiteral("/untitled");
+    } else {
+        const QFileInfo fi(getDocName());
+        base = fi.absoluteDir().filePath(fi.completeBaseName());
+    }
+    const QString dat = base + QLatin1Char('_') + tag + QStringLiteral(".dat");
+    const QString dpl = base + QLatin1Char('_') + tag + QStringLiteral(".dpl");
+    qucs_s::dataimport::Data data;
+    data.variables = vars;
+    qucs_s::dataimport::Origin origin;
+    origin.source = getDocName().isEmpty() ? tr("(a model not saved)") : getDocName();
+    origin.format = tr("Qucs-S multiphysics model");
+    origin.imported = QDateTime::currentDateTime();
+    QString why;
+    if (!qucs_s::dataimport::writeDataset(dat, data, origin, &why)) return fail(why);
+    say(tr("%1: %2 written (%3)").arg(g->name(), QFileInfo(dat).fileName(), traces.join(QLatin1String(", "))));
+    if (open && a_App != nullptr) {
+        const QString title = g->text(QStringLiteral("title")).isEmpty() ? g->name() : g->text(QStringLiteral("title"));
+        const QString shown = a_App->showPythonDisplay(QJsonObject{{QStringLiteral("display"), dpl},
+                                                                   {QStringLiteral("dataset"), dat},
+                                                                   {QStringLiteral("traces"), QJsonArray::fromStringList(traces)},
+                                                                   {QStringLiteral("type"), g->text(QStringLiteral("diagram"))},
+                                                                   {QStringLiteral("title"), title}});
+        if (!shown.isEmpty()) return fail(shown);
+        // Its diagram kept: the display saved as it is now.
+        for (QucsDoc* d : a_App->allDocuments())
+            if (QFileInfo(d->getDocName()) == QFileInfo(dpl) && d->getDocChanged()) d->save();
+    }
+    return dpl;
 }
 
 void MultiphysicsDoc::evaluateAll(const QString& study)
@@ -1103,6 +1462,40 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normq")}, {"colors", QStringLiteral("thermal")}});
             plot(g2, QStringLiteral("arrow"), {{"x", t + QStringLiteral(".qx")}, {"y", t + QStringLiteral(".qy")}, {"scaling", QStringLiteral("normalized")}});
             m.add(m.results().tag, g2);
+        } else if (f.type == QLatin1String("solid")) {
+            // Its stress and displacement, drawn where it has moved.
+            const bool axi = sol->axisymmetric();
+            Node g = group(tr("Stress (%1)").arg(t));
+            plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".mises")}, {"unit", QStringLiteral("MPa")}});
+            plot(g, QStringLiteral("deformation"), {{"x", t + QStringLiteral(".u")}, {"y", t + QStringLiteral(".v")}});
+            m.add(m.results().tag, g);
+            Node g2 = group(tr("Displacement (%1)").arg(t));
+            plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".disp")}, {"colors", QStringLiteral("viridis")}});
+            plot(g2, QStringLiteral("deformation"), {{"x", t + QStringLiteral(".u")}, {"y", t + QStringLiteral(".v")}});
+            m.add(m.results().tag, g2);
+            Q_UNUSED(axi);
+        }
+    }
+    // In time, or swept: the chief globals over it, as a graph.
+    const std::shared_ptr<SolutionSet> set = solutions(study);
+    if (set && (sol->snapshotCount() > 1 || set->solutions.size() > 1)) {
+        QStringList globals;
+        for (const Field& f : sol->fields()) {
+            if (!f.solved) continue;
+            const QString t = f.tag + QLatin1Char('.');
+            for (const QString& name : {t + QStringLiteral("Tmax"), t + QStringLiteral("C11"), t + QStringLiteral("R"), t + QStringLiteral("P"),
+                                        t + QStringLiteral("dmax")})
+                if (sol->global(name)) {
+                    globals << name;
+                    break;
+                }
+        }
+        if (!globals.isEmpty()) {
+            Node g = m.make(QStringLiteral("plotgroup1d"));
+            g.label = sol->snapshotCount() > 1 ? tr("Over Time") : tr("Over the Sweep");
+            g.props.insert(QStringLiteral("study"), study);
+            plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}});
+            m.add(m.results().tag, g);
         }
     }
     setModel(m, tr("Default Plots"));
@@ -1123,7 +1516,12 @@ void MultiphysicsDoc::pointerMoved(QPointF point, bool inside)
     }
     if (a_view->show() == GraphicsView::Show::Results && a_scene && a_scene->surface && !a_plotGroup.isEmpty()) {
         const Node* g = a_model.find(a_plotGroup);
-        const std::shared_ptr<Solution> sol = g ? solution(g->text(QStringLiteral("study"))) : nullptr;
+        const std::shared_ptr<SolutionSet> set = g ? solutions(g->text(QStringLiteral("study"))) : nullptr;
+        Solution* sol = nullptr;
+        if (set) {
+            const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")));
+            if (!chosen.empty()) sol = select(*set, chosen.front());
+        }
         const Node* surface = nullptr;
         if (g)
             for (const Node& p : g->children)

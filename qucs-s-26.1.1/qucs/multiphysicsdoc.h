@@ -27,6 +27,7 @@
 #include <memory>
 
 class QComboBox;
+class QFileSystemWatcher;
 class QLabel;
 class QPlainTextEdit;
 class QProgressBar;
@@ -89,8 +90,12 @@ public:
     bool geometryStale() const { return a_geometryStale; }
     std::shared_ptr<const qucs_s::fem::Mesh> mesh() const { return a_mesh; }
     bool meshStale() const { return a_meshStale || a_geometryStale; }
-    /// The solution of study \a study (empty: the first), or null.
+    /// The solution of study \a study (empty: the first) - its sweep's last
+    /// point's - or null.
     std::shared_ptr<qucs_s::fem::Solution> solution(const QString& study = {}) const;
+    /// Every solution of study \a study: each point of its sweep (each with
+    /// its output times), or null.
+    std::shared_ptr<qucs_s::fem::SolutionSet> solutions(const QString& study = {}) const;
     /// Whether the model changed since \a study was solved.
     bool solutionStale(const QString& study = {}) const;
     /// Builds the geometry now; false and its error when it fails.
@@ -129,8 +134,18 @@ public:
     /// (on: \a pick), each toggled in it.
     void setPicking(bool pick);
     bool picking() const { return a_picking; }
-    /// Evaluates the Derived Values node \a tag; its values in the table.
+    /// Evaluates the Derived Values node \a tag - at each solution it asks
+    /// for (each time, each parameter value) - its values in the table, each
+    /// value's name with its solution's ("t = 0.5 s: T at (1, 2)").
     qucs_s::fem::DerivedResult evaluate(const QString& tag);
+    /// A 1D Plot Group's graphs: written as a Qucs dataset beside the model
+    /// (name_tag.dat; in the cache when it is not saved), shown in a data
+    /// display (name_tag.dpl). The display's path; empty and why on failure.
+    QString showGraphs(const QString& tag, QString* error = nullptr, bool open = true);
+    /// The time and parameter value the shown plot group's study is shown
+    /// at ("w = 2 mm, t = 0.5 s"), empty for one of one solution.
+    QString shownInstance() const { return a_instanceLabel; }
+    QComboBox* instanceBox() const { return a_instanceBox; }
     /// The values of the table, as shown.
     QTableWidget* table() const { return a_table; }
     QTabWidget* bottomTabs() const { return a_bottom; }
@@ -169,6 +184,8 @@ private:
     void addDefaultPlots(const QString& study);
     void evaluateAll(const QString& study);
     void fillPlotBox();
+    void fillInstanceBox();
+    void watchFiles();
     void pointerMoved(QPointF point, bool inside);
     void picked(qucs_s::fem::Level level, int entity);
     QString studyTag(const QString& study) const;
@@ -181,7 +198,9 @@ private:
     bool a_geometryStale = true;
     std::shared_ptr<const qucs_s::fem::Mesh> a_mesh;
     bool a_meshStale = true;
-    std::map<QString, std::shared_ptr<qucs_s::fem::Solution>> a_solutions;
+    std::map<QString, std::shared_ptr<qucs_s::fem::SolutionSet>> a_solutions;
+    QString a_instanceLabel;
+    QFileSystemWatcher* a_watcher = nullptr;
     std::map<QString, bool> a_stale;
     std::unique_ptr<qucs_s::fem::Locator> a_locator;
     std::shared_ptr<Job> a_job;
@@ -199,6 +218,7 @@ private:
     QToolButton* a_compute = nullptr;
     QComboBox* a_showBox = nullptr;
     QComboBox* a_plotBox = nullptr;
+    QComboBox* a_instanceBox = nullptr;
     QToolButton* a_fit = nullptr;
     QToolButton* a_image = nullptr;
     QProgressBar* a_progress = nullptr;
