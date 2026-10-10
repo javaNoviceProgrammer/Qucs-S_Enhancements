@@ -17,6 +17,7 @@
 #include "gitrepo.h"
 #include "filebrowser.h"
 #include "gitstatus.h"
+#include "githistory.h"
 #include "gitui.h"
 #include "main.h"
 #include "qucs.h"
@@ -85,6 +86,9 @@ QJsonObject commitJson(const git::Commit& c)
                   {QStringLiteral("date"), c.date.toString(Qt::ISODate)},
                   {QStringLiteral("subject"), c.subject}};
     if (!c.refs.isEmpty()) o.insert(QStringLiteral("refs"), QJsonArray::fromStringList(c.refs));
+    QStringList parents;
+    for (const QString& p : c.parents) parents << p.left(7);
+    if (!parents.isEmpty()) o.insert(QStringLiteral("parents"), QJsonArray::fromStringList(parents));
     if (c.parents.size() > 1) o.insert(QStringLiteral("merge"), true);
     return o;
 }
@@ -284,10 +288,48 @@ QJsonObject QucsControl::gitLog(const QJsonObject& args)
     const int skip = std::max(0, args.value(QLatin1String("skip")).toInt(0));
     const QString ref = args.value(QLatin1String("ref")).toString().trimmed();
     if (ref.startsWith(QLatin1Char('-'))) return errorResult(tr("%1 is no ref (it begins with '-').").arg(ref));
+    const bool all = args.value(QLatin1String("all")).toBool();
+    if (all && !ref.isEmpty()) return errorResult(tr("'all' (every branch) or 'ref' (one), not both."));
+    const QString file = path.isEmpty() ? QString() : gitPath(path);
+    QList<git::Commit> found;
+    if (all) {
+        git::HistoryQuery q;
+        q.path = file;
+        q.max = max;
+        q.skip = skip;
+        found = git::history(root, q);
+    } else {
+        found = git::log(root, file, max, ref, skip);
+    }
     QJsonArray commits;
-    for (const git::Commit& c : git::log(root, path.isEmpty() ? QString() : gitPath(path), max, ref, skip)) commits.append(commitJson(c));
+    for (const git::Commit& c : found) commits.append(commitJson(c));
     QJsonObject o{{QStringLiteral("repository"), native(root)}, {QStringLiteral("commits"), commits}};
+    if (all) o.insert(QStringLiteral("of"), tr("every branch, the remotes' and the tags, newest first (each after its children)"));
     if (commits.size() == max) o.insert(QStringLiteral("more"), tr("there may be more: 'skip' %1").arg(skip + max));
+    // git's own drawing of the lines, a commit a line.
+    if (args.value(QLatin1String("graph")).toBool()) {
+        QStringList a{QStringLiteral("log"), QStringLiteral("--graph"), QStringLiteral("--format=%h%d %s"), QStringLiteral("-n"), QString::number(max)};
+        if (skip > 0) a << QStringLiteral("--skip=%1").arg(skip);
+        if (all) a << QStringLiteral("--date-order") << QStringLiteral("--branches") << QStringLiteral("--remotes") << QStringLiteral("--tags") << QStringLiteral("HEAD");
+        else if (!ref.isEmpty()) a << ref;
+        if (!file.isEmpty()) {
+            const QString rel = git::relativePath(root, file);
+            if (!rel.isEmpty()) a << QStringLiteral("--") << rel;
+        }
+        const git::Result drawn = git::run(root, a, true, 30000);
+        if (drawn.ok()) o.insert(QStringLiteral("graph"), QJsonArray::fromStringList(drawn.out.split(QLatin1Char('\n'), Qt::SkipEmptyParts).mid(0, max * 4)));
+    }
+    // The History window: the graph as the user sees it.
+    if (args.value(QLatin1String("show")).toBool()) {
+        if (git::HistoryDialog* d = git::Commands::instance()->showHistory(root, file)) {
+            if (!ref.isEmpty() || all) {
+                d->setScope(all ? QStringLiteral("all") : ref);
+                d->reload();
+            }
+            if (!found.isEmpty()) d->select(found.first().hash);
+            o.insert(QStringLiteral("shown"), tr("the History window shows it: a graph of the commits, the one listed first chosen (screenshot takes a picture)"));
+        }
+    }
     return jsonResult(o);
 }
 

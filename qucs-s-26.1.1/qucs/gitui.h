@@ -1,8 +1,8 @@
 /*
  * gitui.h - git in the windows: the commit dialog (what is staged and what
- *           is not, a file's changes, the message), the history, the blame,
- *           a diff; and what the File Browser's, the Git menu's and the
- *           status bar's git commands do
+ *           is not, a file's changes, the message), the blame, a diff (the
+ *           history: githistory.h); and what the File Browser's, the Git
+ *           menu's and the status bar's git commands do
  *
  * This file is part of Qucs-S.
  *
@@ -32,6 +32,8 @@ class QPushButton;
 class QTreeWidget;
 
 namespace qucs_s::git {
+
+class HistoryDialog;
 
 /// The colour of a file's name in the File Browser and the lists: changed
 /// (amber), staged (green), new (green), in conflict (red), ignored
@@ -126,35 +128,6 @@ private:
     bool a_merging = false;   // a merge under way: committed with nothing staged
 };
 
-/*!
- * The history of a repository, or of a file: its commits, newest first -
- * their refs, their author and date -, the commit chosen with its changes.
- * A commit's menu: copy its hash, check it out, a branch or a tag there,
- * revert or cherry-pick it, reset the branch to it.
- */
-class HistoryDialog : public QDialog
-{
-    Q_OBJECT
-
-public:
-    HistoryDialog(const QString& root, const QString& path = {}, QWidget* parent = nullptr);
-    QTreeWidget* commits() const { return a_commits; }
-    QPlainTextEdit* details() const { return a_details; }
-    /// The commit menu of row \a row.
-    QMenu* menuFor(int row);
-    void reload();
-
-private:
-    void loadMore();
-
-    QString a_root;
-    QString a_path;
-    QTreeWidget* a_commits;
-    QPlainTextEdit* a_details;
-    QPushButton* a_more;
-    int a_loaded = 0;
-};
-
 /// Who last changed each line of a file, and in which commit.
 class BlameDialog : public QDialog
 {
@@ -199,7 +172,9 @@ public:
     /// Asks first.
     void discard(const QString& root, const QStringList& paths);
     void showDiff(const QString& root, const QString& path = {}, DiffOf of = DiffOf::Head);
-    void showHistory(const QString& root, const QString& path = {});
+    /// The History window of \a root (\a path's when given): the one open
+    /// brought to the front and read again, else a new one.
+    HistoryDialog* showHistory(const QString& root, const QString& path = {});
     void showBlame(const QString& root, const QString& path);
     void ignore(const QString& root, const QString& path);
     void untrack(const QString& root, const QStringList& paths);

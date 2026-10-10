@@ -216,6 +216,15 @@ QString showStash(const QString& root, int index);
 // ----------------------------------------------------------------------
 // Its history.
 
+/// A name at a commit: HEAD (detached), a local branch, a remote's branch
+/// or a tag.
+struct Ref {
+    enum Kind { Head, Branch, Remote, Tag };
+    Kind kind = Branch;
+    QString name;          ///< "main", "origin/main", "v1.0"; "HEAD"
+    bool current = false;  ///< the branch checked out (HEAD -> it)
+};
+
 struct Commit {
     QString hash;
     QString shortHash;
@@ -225,10 +234,52 @@ struct Commit {
     QString subject;
     QStringList refs;      ///< "HEAD -> main", "origin/main", "tag: v1.0"
     QStringList parents;
+    QList<Ref> refList;    ///< the same, each its kind
+    QString committer;     ///< who committed it (a rebase, a cherry-pick: not the author)
+    QString committerEmail;
+    QDateTime committed;
 };
 /// The commits of \a ref (HEAD when empty) - those that changed \a path
 /// when given (a file followed through renames) -, newest first.
 QList<Commit> log(const QString& root, const QString& path = {}, int max = 200, const QString& ref = {}, int skip = 0);
+
+/// Which commits a history shows: every branch's (the remotes' and the
+/// tags' too, as asked), the branch checked out's, or one ref's; a
+/// file's (followed through renames).
+struct HistoryQuery {
+    enum Scope { All, Current, OneRef };
+    Scope scope = All;
+    QString ref;              ///< OneRef's: "main", "origin/feature", "v1.0"
+    bool remotes = true;      ///< All: the remotes' branches too
+    bool tags = true;         ///< All: the tags too
+    bool firstParent = false; ///< a merge's first parent alone (the branch's own line)
+    QString path;             ///< a file or folder: the commits that changed it
+    int max = 500;
+    int skip = 0;
+};
+/// The commits \a query asks for, newest first, each after all of its
+/// children (as a graph draws them: by date where that leaves a choice).
+QList<Commit> history(const QString& root, const HistoryQuery& query);
+
+/// A file a commit changed, against its first parent (a first commit:
+/// every file added): git's letter (A, M, D, R, C, T), its path (a
+/// rename's former one), the lines added and removed (-1: a binary file).
+struct ChangedFile {
+    QChar status;
+    QString path;
+    QString from;
+    int added = -1;
+    int removed = -1;
+};
+QList<ChangedFile> changedFiles(const QString& root, const QString& commit);
+/// A commit's whole message (its subject, a blank line, its body).
+QString commitMessage(const QString& root, const QString& commit);
+/// A commit's changes against its first parent as a unified diff (of \a
+/// path alone when given): a merge's, what it brought into its branch.
+QString commitDiff(const QString& root, const QString& commit, const QString& path = {});
+/// \a path (from the top folder) as \a commit has it; empty and \a ok
+/// false when it has none.
+QByteArray fileAt(const QString& root, const QString& commit, const QString& path, bool* ok = nullptr);
 /// A commit: what git show says - its message, its files, its diff (of
 /// \a path alone when given).
 QString show(const QString& root, const QString& commit, const QString& path = {});

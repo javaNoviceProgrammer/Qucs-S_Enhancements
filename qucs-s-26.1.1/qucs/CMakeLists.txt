@@ -183,7 +183,7 @@ ADD_SUBDIRECTORY( spicecomponents )
 SET(QUCS_SRCS
   element.cpp	octave_window.cpp	qucsdoc.cpp
   textdoc.cpp  markdowndoc.cpp  pythondoc.cpp  pythonassist.cpp  pythonedit.cpp  pythonrun.cpp  pythonviews.cpp  qucs_python.cpp  qucs_git.cpp  sheetdoc.cpp  spreadsheet.cpp  zipfile.cpp  zipdoc.cpp  layout.cpp  layoutdoc.cpp  imagedoc.cpp  main.cpp	schematic.cpp
-  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
+  mnemo.cpp	qucs.cpp healer.cpp conductor_index.cpp claudecode.cpp mcpserver.cpp mcpstdio.cpp claudecodepanel.cpp claudegitbar.cpp gitstatus.cpp gitrepo.cpp gitgraph.cpp githistory.cpp gitui.cpp schematicdiff.cpp xmlmodel.cpp xmldoc.cpp claudecodetabs.cpp claudehistory.cpp mathtypeset.cpp qucscontrol.cpp qucscontrol_results.cpp qucscontrol_paintings.cpp qucscontrol_design.cpp qucscontrol_resources.cpp qucscontrol_text.cpp qucscontrol_ui.cpp qucscontrol_console.cpp qucscontrol_settings.cpp qucscontrol_watch.cpp qucscontrol_input.cpp qucscontrol_help.cpp qucscontrol_script.cpp qucscontrol_ngspice.cpp qucscontrol_libraries.cpp qucscontrol_git.cpp qucscontrol_xml.cpp qucscontrol_synthesis.cpp qucscontrol_layout.cpp dataset.cpp datasetfile.cpp eyeanalysis.cpp prbssource.cpp textplacement.cpp dataimport.cpp dataexport.cpp simulatorlog.cpp filebrowser.cpp namefilter.cpp
   module.cpp	schematic_element.cpp	wire.cpp schematic_render.cpp
   mouseactions.cpp qucs_actions.cpp	qucs_panes.cpp qucs_workspace.cpp workspacesession.cpp schematic_file.cpp
   wirelabel.cpp node.cpp qucs_init.cpp
@@ -219,6 +219,8 @@ oppoint.h
 workspace.h
 gitstatus.h
 gitrepo.h
+gitgraph.h
+githistory.h
 schematicdiff.h
 gitui.h
 xmlmodel.h
@@ -301,6 +303,7 @@ SET(QUCS_MOC_HDRS
   layoutdoc.h
   imagedoc.h
   gitrepo.h
+  githistory.h
   gitui.h
   xmldoc.h
   messagedock.h
