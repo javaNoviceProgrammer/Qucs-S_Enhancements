@@ -126,14 +126,14 @@ const char* const kTools = R"JSON([
  "description": "Brings an open document to the front.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "Its file, or its tab's title"}}, "required": ["path"]}},
 {"name": "save_document",
- "description": "Saves a document (the one in front unless 'path' names another). With 'as' it saves under that file name, which the document keeps from then on; an untitled document needs 'as'. Saving over an existing file with 'as' needs 'replace', otherwise the user is asked. When a subcircuit is saved, its instances in open schematics take the new symbol: the result lists which were refreshed, each pin that moved, and whether it still meets its wiring.",
+ "description": "Saves a document (the one in front unless 'path' names another). With 'as' it saves under that file name, which the document keeps from then on; an untitled document needs 'as'. Saving over an existing file with 'as' needs 'replace', otherwise the user is asked. A schematic whose file holds git's conflict marks (its tab kept the version from before a merge in conflict) is written over it only with 'replace'. When a subcircuit is saved, its instances in open schematics take the new symbol: the result lists which were refreshed, each pin that moved, and whether it still meets its wiring.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "as": {"type": "string", "description": "A new file name"},
-   "replace": {"type": "boolean", "description": "With 'as': write over a file that is there (else the user is asked, or it is refused)"}}}},
+   "replace": {"type": "boolean", "description": "With 'as': write over a file that is there (else the user is asked, or it is refused); without: write a schematic over its file in conflict (else refused)"}}}},
 {"name": "close_document",
  "description": "Closes a document's tab (the one in front unless 'path' names another). For a document with unsaved changes, 'unsaved' says whether to save or discard them; without it the user is asked to save, discard or keep the document open.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "unsaved": {"type": "string", "enum": ["save", "discard"], "description": "For a document with unsaved changes: save them, or discard them; not given, the user is asked"}}}},
 {"name": "get_schematic",
- "description": "Reads a schematic as it is in Qucs-S now, including unsaved changes. Format 'summary' (the default) lists: the components (name, type, position, rotation, mirroring, whether active, properties, each pin's position with whether anything is connected and its net - a label's name, gnd, or net1, net2, ... (numbered in order, so a label or a new part may renumber them: read again before using one) - and the boxes of its texts); the nets with the pins on each (those with two or more pins, or a name); the wires, net labels and paintings (numbered as the painting tools expect, each with its type and fields by name); the settings (dataset, data display, frame); a subcircuit's parameters, with their defaults ('subcircuit parameters', as set_subcircuit_parameters takes them); and the diagrams, numbered as the diagram tools expect, with their axes, traces (each trace's variable, style, and points or the reason it shows no data) and markers. 'properties' chooses which properties are listed: non_default (those shown or not at the type's default; the default), shown, or all. 'texts' gives each part's name and shown properties with their box [x1, y1, x2, y2], to move one clear of a wire or label with edit_component's text_at. 'components' (names; a ground by its ref, GND#2) or 'region' ([x1, y1, x2, y2]) limits the list to those components with their nets and wires - the nets named as in a full read, net1 being the same net in both; its net labels are those on their pins and wires (or in the region) - a label elsewhere on one of their nets is left out, its name given in 'nets'; a list longer than 200 is cut short and says what was left out. Read whole, a schematic of more than 200 parts lists the first 50 of each kind (parts, nets, wires, labels): read it in parts with 'region' or 'components', or at a glance with format 'overview'. 'symbol' also lists the paintings of its symbol (its ports and name text among them), as does a document that is showing its symbol. Format 'overview' summarizes it at a glance - parts counted by type, analyses, named nets, extent and diagrams - in a few hundred bytes even for thousands of parts: start there with a large schematic. Format 'text' returns the text its .sch file would have, and 'json' the parts and wires in the form set_schematic accepts. Coordinates are in schematic units; the grid is usually 10.",
+ "description": "Reads a schematic as it is in Qucs-S now, including unsaved changes. Format 'summary' (the default) lists: the components (name, type, position, rotation, mirroring, whether active, properties, each pin's position with whether anything is connected and its net - a label's name, gnd, or net1, net2, ... (numbered in order, so a label or a new part may renumber them: read again before using one) - and the boxes of its texts); the nets with the pins on each (those with two or more pins, or a name); the wires, net labels and paintings (numbered as the painting tools expect, each with its type and fields by name); the settings (dataset, data display, frame); a subcircuit's parameters, with their defaults ('subcircuit parameters', as set_subcircuit_parameters takes them); and the diagrams, numbered as the diagram tools expect, with their axes, traces (each trace's variable, style, and points or the reason it shows no data) and markers. 'properties' chooses which properties are listed: non_default (those shown or not at the type's default; the default), shown, or all. 'texts' gives each part's name and shown properties with their box [x1, y1, x2, y2], to move one clear of a wire or label with edit_component's text_at. 'components' (names; a ground by its ref, GND#2) or 'region' ([x1, y1, x2, y2]) limits the list to those components with their nets and wires - the nets named as in a full read, net1 being the same net in both; its net labels are those on their pins and wires (or in the region) - a label elsewhere on one of their nets is left out, its name given in 'nets'; a list longer than 200 is cut short and says what was left out. Read whole, a schematic of more than 200 parts lists the first 50 of each kind (parts, nets, wires, labels): read it in parts with 'region' or 'components', or at a glance with format 'overview'. 'symbol' also lists the paintings of its symbol (its ports and name text among them), as does a document that is showing its symbol. Format 'overview' summarizes it at a glance - parts counted by type, analyses, named nets, extent and diagrams - in a few hundred bytes even for thousands of parts: start there with a large schematic. Format 'text' returns the text its .sch file would have, and 'json' the parts and wires in the form set_schematic accepts - with 'components' or 'region', those parts alone. Coordinates are in schematic units; the grid is usually 10.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given"}, "format": {"type": "string", "enum": ["summary", "overview", "text", "json"], "description": "json: its parts and wires as set_schematic's 'components' and 'wires' take them back"}, "symbol": {"type": "boolean", "description": "Also list its symbol's paintings (its ports and name text among them)"},
    "properties": {"type": "string", "enum": ["non_default", "shown", "all"], "description": "Which properties each part lists: non_default (shown, or not at the type's default; the default), shown, or all"},
    "components": {"type": "array", "items": {"type": "string"}, "description": "Only these parts, by name - a ground by its ref (GND when there is one, GND#2 the second of several, as get_schematic gives it) - with their nets and wires; the nets keep the names a full read gives them, and names that match nothing come back under 'not found'"},
@@ -788,7 +788,7 @@ const char* const kTools = R"JSON([
    "category": {"type": "string", "enum": ["analysis", "rf", "measure", "vectors", "output", "circuit", "models", "statistics", "reliability", "debug", "script", "digital", "utility"], "description": "One category's commands, each with its syntax"}}}},
 {"name": "git_status",
  "description": "Where the git repository of a file or folder stands - of 'path', else of the document in front, else of the File Browser's folder, the project's: its top folder; the branch (or the commit HEAD is detached at), its upstream and how many commits it is ahead and behind; a merge, rebase, cherry-pick or revert under way; the files staged, not staged, untracked and in conflict, each with its state; the stashes; and the state of 'path' itself. As the File Browser, the Git menu and the status bar show it. Not in a repository: says so (git_init makes one).",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder in the repository: a path, relative to the open project's folder (else the workspace); the document in front's when not given"}}}},
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder in the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}}},
 {"name": "git_diff",
  "description": "The changes not committed as a unified diff - of 'path' (a file or a folder) or of the whole repository: 'of' head (the default: everything since the last commit, staged or not), staged (what the next commit takes) or unstaged (what is not staged yet). An untracked file comes as all added. git_show gives a commit's changes.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder; the whole repository (the document in front's) when not given"},
@@ -810,7 +810,7 @@ const char* const kTools = R"JSON([
    "to": {"type": "integer", "minimum": 1, "description": "The last line wanted"}}, "required": ["path"]}},
 {"name": "git_stage",
  "description": "Stages files - their changes go into the next commit; a new file becomes known to git, a deleted one is staged as deleted: 'paths' (files or folders), or 'all' the changes. Returns where the repository stands then.",
- "inputSchema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "Files or folders: relative to the repository given as 'path', else to the open project's folder (else the workspace)"},
+ "inputSchema": {"type": "object", "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "Files or folders: relative to the repository given as 'path', else from the open project's folder, the workspace or the document's folder, the first where each is"},
    "all": {"type": "boolean", "description": "Every change, new files too"},
    "path": {"type": "string", "description": "The repository: a file or folder of it; the first of the paths, else the document in front's, when not given"}}}},
 {"name": "git_unstage",
@@ -839,7 +839,7 @@ const char* const kTools = R"JSON([
    "switch": {"type": "boolean", "description": "create: checked out then (true by default)"},
    "stash": {"type": "boolean", "description": "switch: stash the changes that would be overwritten first"},
    "force": {"type": "boolean", "description": "delete: one whose commits no other branch has"},
-   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+   "path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}}},
 {"name": "git_remote",
  "description": "The remotes and the network: 'action' list (the remotes and their URLs - the default), fetch (what the remotes have, 'remote' or all of them; the files unchanged), pull (the branch's upstream merged in), push (the branch to its upstream - the first time to the only remote or origin, made its upstream; asked about each time: it publishes), add ('name' and 'url') or remove ('name'). Fetch, pull and push wait up to 'timeout' seconds; git asks for no password - one it needs comes from the system's credential helper or ssh agent, else it fails and says so.",
  "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "fetch", "pull", "push", "add", "remove"], "description": "What to do; list when not given"},
@@ -848,30 +848,34 @@ const char* const kTools = R"JSON([
    "url": {"type": "string", "description": "add: its URL"},
    "tags": {"type": "boolean", "description": "push: the annotated tags of the commits pushed too"},
    "timeout": {"type": "integer", "minimum": 5, "maximum": 1800, "description": "Seconds fetch, pull or push may take, 300 by default"},
-   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+   "path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}}},
 {"name": "git_stash",
  "description": "Stashes: 'action' list (the default), push (every change put aside - untracked files too unless 'untracked' is false - the files back to the last commit; 'message'), apply or pop (stash 'index' - 0, the latest, by default - back; pop drops it then), show (its changes as a diff) or drop (thrown away; asked about each time).",
  "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "push", "apply", "pop", "show", "drop"], "description": "What to do; list when not given"},
    "message": {"type": "string", "description": "push: a note for it"},
    "index": {"type": "integer", "minimum": 0, "description": "apply, pop, show, drop: which (0: the latest)"},
    "untracked": {"type": "boolean", "description": "push: new files too (true by default)"},
-   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+   "path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}}},
 {"name": "git_tag",
  "description": "Tags: 'action' list (newest first; the default), create ('name' on 'commit' or the commit checked out; with 'message' an annotated tag) or delete ('name', here only).",
  "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "create", "delete"], "description": "What to do; list when not given"},
    "name": {"type": "string", "description": "The tag"},
    "message": {"type": "string", "description": "create: its message (an annotated tag)"},
    "commit": {"type": "string", "description": "create: the commit it goes on"},
-   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+   "path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}}},
 {"name": "git_commit_action",
  "description": "Does something with a commit of the history: 'action' revert (a new commit that undoes it), cherry_pick (its changes committed on the branch checked out), check_out (it checked out alone: no branch, HEAD detached) or reset (the branch moved to it - 'mode' soft keeps the changes staged, mixed (the default) keeps them not staged, hard throws them away and is asked about each time). Conflicts are said; git_abort gives a revert or cherry-pick up.",
  "inputSchema": {"type": "object", "properties": {"commit": {"type": "string", "description": "Its hash, a branch, a tag, HEAD~2"},
    "action": {"type": "string", "enum": ["revert", "cherry_pick", "check_out", "reset"], "description": "What to do with it"},
    "mode": {"type": "string", "enum": ["soft", "mixed", "hard"], "description": "reset: what becomes of the changes (mixed by default)"},
-   "path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}, "required": ["commit", "action"]}},
+   "path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}, "required": ["commit", "action"]}},
 {"name": "git_abort",
  "description": "Gives up the merge, rebase, cherry-pick or revert under way (a bisect is ended): the files and the branch back to how they were before it.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder of the repository; the document in front's when not given"}}}},
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "A file or folder of the repository - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository); the document in front's when not given"}}}},
+{"name": "git_resolve",
+ "description": "A file in conflict - a merge, a cherry-pick, a revert or a stash brought back left git's conflict marks in it, which no schematic reads (its open tab keeps the version from before): 'action' show (the default: its versions - mine, the branch's as before; theirs, the one merged in; base, where both started - and for a schematic what each side changed, part by part), take_ours or take_theirs (the file becomes that version whole, staged as resolved: the other side's changes, and any edit made in the file, are gone from it - asked about each time), or open (both versions written beside it as 'name (mine).sch' and 'name (theirs).sch', untracked, and opened). A file resolved by hand - its marks edited out, or a schematic's tab saved over it with save_document's 'replace' - is marked resolved with git_stage; then git_commit ends the merge, or git_abort gives it up.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file in conflict - relative: from the open project's folder, the workspace or the document's folder, the first where it is (or, not made yet, in a repository)"},
+   "action": {"type": "string", "enum": ["show", "take_ours", "take_theirs", "open"], "description": "What to do; show when not given"}}, "required": ["path"]}},
 {"name": "git_init",
  "description": "Makes a folder a git repository (git init): 'path', else the open project's folder. Nothing is committed: git_stage and git_commit do that.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The folder, relative to the workspace; the open project's when not given"}}}},
@@ -965,6 +969,7 @@ const struct {
     {"git_tag", QT_TRANSLATE_NOOP("QucsControl", "work with git tags from Qucs-S")},
     {"git_commit_action", QT_TRANSLATE_NOOP("QucsControl", "revert, cherry-pick, check out or reset to a git commit from Qucs-S")},
     {"git_abort", QT_TRANSLATE_NOOP("QucsControl", "give up a git merge from Qucs-S")},
+    {"git_resolve", QT_TRANSLATE_NOOP("QucsControl", "resolve a git conflict from Qucs-S")},
     {"git_init", QT_TRANSLATE_NOOP("QucsControl", "make a git repository from Qucs-S")},
     {"git_clone", QT_TRANSLATE_NOOP("QucsControl", "clone a git repository from Qucs-S")},
     {"git_ignore", QT_TRANSLATE_NOOP("QucsControl", "add a file to .gitignore from Qucs-S")},
@@ -1124,6 +1129,7 @@ const struct {
     {"git_tag", "git tag release version label"},
     {"git_commit_action", "git revert cherry-pick reset checkout commit undo history"},
     {"git_abort", "git abort merge rebase cherry-pick conflict give up"},
+    {"git_resolve", "git conflict resolve merge ours theirs mine markers both versions"},
     {"git_init", "git init create repository version control start"},
     {"git_clone", "git clone download repository github url"},
     {"git_ignore", "git ignore gitignore exclude untrack"},
@@ -3241,6 +3247,7 @@ Component* turnAndMove(Schematic* sch, const QString& name, const QJsonObject& a
         placeOf.push_back(n != nullptr ? n->center() : c->center() + QPoint(p->x, p->y));
         labels.push_back(n != nullptr && n->conn_count() == 1 ? n->releaseLabel() : nullptr);
     }
+    const Schematic::ComponentPlace keep(sch, c);   // (put down where it was in the list)
     sch->detachComp(c);
     for (Port* p : c->Ports) p->Connection = nullptr;   // (a turn or move moves a port's node)
 
@@ -3398,10 +3405,12 @@ Component* replaceWith(Schematic* sch, const QString& name, Component* fresh, co
         labelFrom.insert(pins.value(i), n->center());
         labels[pins.value(i)] = n->releaseLabel();
     }
+    Schematic::ComponentPlace keep(sch, old);   // (the new one in its place in the list)
     sch->detachComp(old);
     delete old;
 
     Component* c = fresh;
+    keep.setComponent(c);
     c->moveCenter(centre.x() - c->cx, centre.y() - c->cy);
     c->Name = newName;
     std::vector<Wire*> doomed;
@@ -4673,6 +4682,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("git_tag")) return gitTag(args);
     if (tool == QLatin1String("git_commit_action")) return gitCommitAction(args);
     if (tool == QLatin1String("git_abort")) return gitAbort(args);
+    if (tool == QLatin1String("git_resolve")) return gitResolve(args);
     if (tool == QLatin1String("git_init")) return gitInit(args);
     if (tool == QLatin1String("git_ignore")) return gitIgnore(args);
     async = true;
@@ -5590,7 +5600,8 @@ QJsonObject QucsControl::saveDocument(const QJsonObject& args)
     if (doc->getDocName().isEmpty()) return errorResult(tr("%1 has no file yet: give 'as'.").arg(titleOf(doc)));
     const QList<Instance> instances = instancesOf(a_app, doc, doc->getDocName(), [this](QucsDoc* d) { return titleOf(d); });
     if (const QString no = aboutToWrite(doc->getDocName()); !no.isEmpty()) return errorResult(no);
-    if (!a_app->saveFile(doc)) return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(doc->getDocName())));
+    if (!a_app->saveFile(doc, args.value(QLatin1String("replace")).toBool()))
+        return errorResult(tr("%1 could not be saved.").arg(QDir::toNativeSeparators(doc->getDocName())));
     const QString refreshed = refreshedInstances(instances);
     return textResult(tr("Saved %1.").arg(QDir::toNativeSeparators(doc->getDocName())) + (refreshed.isEmpty() ? QString() : QLatin1Char(' ') + refreshed)
                       + librariesLinked(doc));
@@ -5659,10 +5670,12 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
     QString error;
     Schematic* sch = schematic(args, &error, false);
     if (sch == nullptr) return errorResult(error);
-    if (args.value(QLatin1String("format")).toString() == QLatin1String("text")) return textResult(sch->documentText());
+    // Some parts' text or JSON: theirs alone (below, once they are found).
+    const bool some = !args.value(QLatin1String("components")).toArray().isEmpty() || args.contains(QLatin1String("region"));
+    if (args.value(QLatin1String("format")).toString() == QLatin1String("text") && !some) return textResult(sch->documentText());
     // The JSON form set_schematic takes back: its parts by named
     // properties, its wires and labels.
-    if (args.value(QLatin1String("format")).toString() == QLatin1String("json")) {
+    if (args.value(QLatin1String("format")).toString() == QLatin1String("json") && !some) {
         QJsonArray components, wires;
         for (Component* c : sch->a_DocComps) components.append(componentModel(c));
         for (Wire* w : sch->a_DocWires) {
@@ -5840,6 +5853,36 @@ QJsonObject QucsControl::getSchematic(const QJsonObject& args)
         }
         return !region.isValid() || region.contains(c->cx, c->cy);
     };
+    // Their lines alone, as the file has them (or their JSON form): a
+    // <Components> section set_schematic or replace takes back.
+    if (const QString format = args.value(QLatin1String("format")).toString(); format == QLatin1String("text") || format == QLatin1String("json")) {
+        QString lines;
+        QJsonArray parts;
+        for (Component* c : sch->a_DocComps)
+            if (wanted(c)) {
+                lines += QStringLiteral("  ") + c->save() + QLatin1Char('\n');
+                parts.append(componentModel(c));
+            }
+        QJsonArray notFound;
+        for (const QString& n : std::as_const(wantedNames))
+            if (!namesFound.contains(n)) notFound.append(n);
+        if (format == QLatin1String("json")) {
+            QJsonObject o{{QStringLiteral("document"), titleOf(sch)}, {QStringLiteral("components"), parts},
+                          {QStringLiteral("how"), tr("those parts alone, as set_schematic's 'components' takes them (their wires: "
+                                                     "get_schematic's summary of them, or the whole json)")}};
+            if (!notFound.isEmpty()) o.insert(QStringLiteral("not found"), notFound);
+            return jsonResult(o);
+        }
+        const QString text = QStringLiteral("<Components>\n") + lines + QStringLiteral("</Components>\n");
+        QStringList said{tr("Those parts' lines alone, as the file has them (their wires and the rest: get_schematic without "
+                            "'components' or 'region').")};
+        if (!notFound.isEmpty()) {
+            QStringList names;
+            for (const QJsonValue& v : notFound) names << v.toString();
+            said << tr("Not found: %1.").arg(names.join(QStringLiteral(", ")));
+        }
+        return textResult(text + QLatin1Char('\n') + said.join(QLatin1Char(' ')));
+    }
     // The pins on each net: of every component (a net's pins are all of
     // them, whichever are listed), and the nets' names - net1, net2 ... in
     // the order of every part, listed or not, so that a name from a read of

@@ -23,6 +23,7 @@
 #include "namefilter.h"
 #include "projectlibraries.h"
 #include <QFileSystemModel>
+#include <QDateTime>
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
@@ -175,6 +176,10 @@ public:
   /// Saves a document (the current one by default) to its file; Save As
   /// for one without.
   bool saveFile(QucsDoc *Doc = 0);
+  /// The same; a schematic whose file holds git's conflict marks (kept in
+  /// its tab as it was) written over its file only with \a writeOverConflict
+  /// when nobody can be asked (Claude's save_document's 'replace').
+  bool saveFile(QucsDoc *Doc, bool writeOverConflict);
   bool saveAs();
   /// Saves \a Doc under \a fileName from now on (Save As without its
   /// dialogs: the caller checked the name).
@@ -307,6 +312,19 @@ public:
   /// it (a text document keeps its cursor and scroll). False when it could
   /// not be read.
   bool reloadDocument(QucsDoc *doc);
+  /// How reloadFromDisk() went.
+  enum class Reloaded { Yes, Failed, InConflict, AsBefore };
+  /// \a doc read again from its file (reloadDocument()), unless it cannot
+  /// be: a schematic, data display or symbol whose file holds git's
+  /// conflict marks (a merge in conflict) is kept as it is (InConflict),
+  /// and one whose file did not read has what it held put back (Failed).
+  /// Either is tried, and said, once a state of the file: not again until
+  /// the file changes (AsBefore).
+  Reloaded reloadFromDisk(QucsDoc *doc);
+  /// Whether the tab of \a file was kept as it was, its file in conflict.
+  bool keptInConflict(const QString &file) const;
+  /// What is said of a tab kept so.
+  static QString keptInConflictText(const QString &name);
   /// The files of the open documents changed on disk by another program
   /// (a script, a shell command, OpenVAF): each without unsaved changes is
   /// loaded again, as Claude's changes are; one with them is left, and
@@ -931,6 +949,7 @@ private:
   ClaudeCodeTabs *claudeTabs = nullptr;
   QFileSystemWatcher *a_docWatcher = nullptr;   // the open documents' files
   QSet<QString> a_changedOnDisk;                // changed, waiting for the files to settle
+  QHash<QString, std::pair<QDateTime, Reloaded>> a_notReloaded;   // a file's state that was not read, and why
   QTimer *a_changedTimer = nullptr;
   void watchDocuments();                        // the watched files: the open documents
   void tellClaudeNotLoaded(const QString &name); // a file changed on disk, not loaded: Claude told

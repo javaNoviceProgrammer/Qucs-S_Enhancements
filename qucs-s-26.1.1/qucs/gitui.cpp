@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "gitui.h"
+#include "schematicdiff.h"
 
 #include "ink.h"
 #include "misc.h"
@@ -294,6 +295,8 @@ void CommitDialog::reload()
     const Repository repo = found != nullptr ? *found : Repository();
     a_header->setText(repo.valid ? tr("%1  ·  on %2").arg(QDir::toNativeSeparators(a_root), repo.branchText())
                                  : tr("%1 is no git repository").arg(QDir::toNativeSeparators(a_root)));
+    a_merging = repo.operation == QLatin1String("merge");
+    if (a_merging) a_header->setText(a_header->text() + QStringLiteral("  ·  ") + tr("a merge under way: Commit records it"));
     const auto keepSelection = [](QListWidget* list) {
         QStringList chosen;
         for (QListWidgetItem* item : list->selectedItems()) chosen << item->data(Qt::UserRole).toString();
@@ -342,7 +345,7 @@ void CommitDialog::updateButtons()
     a_stage->setEnabled(!busy && !selectedPaths(a_unstaged).isEmpty());
     a_discard->setEnabled(!busy && !selectedPaths(a_unstaged).isEmpty());
     a_unstage->setEnabled(!busy && !selectedPaths(a_staged).isEmpty());
-    const bool something = a_staged->count() > 0 || a_unstaged->count() > 0 || a_amend->isChecked();
+    const bool something = a_staged->count() > 0 || a_unstaged->count() > 0 || a_amend->isChecked() || a_merging;
     const bool ready = !busy && something && !a_message->toPlainText().trimmed().isEmpty();
     a_commit->setEnabled(ready);
     a_commitPush->setEnabled(ready);
@@ -350,7 +353,12 @@ void CommitDialog::updateButtons()
 
 void CommitDialog::showDiffOf(QListWidgetItem* item, bool staged)
 {
-    a_diff->setPlainText(diff(a_root, item->data(Qt::UserRole).toString(), staged ? DiffOf::Staged : DiffOf::Unstaged));
+    const QString path = item->data(Qt::UserRole).toString();
+    const DiffOf of = staged ? DiffOf::Staged : DiffOf::Unstaged;
+    // A schematic: what changed in it part by part, before git's lines.
+    const QString parts = isSchematicFile(path) ? schematicChangesOf(a_root, QDir(a_root).filePath(path), of) : QString();
+    const QString text = diff(a_root, path, of);
+    a_diff->setPlainText(parts.isEmpty() ? text : parts + QLatin1Char('\n') + text);
 }
 
 void CommitDialog::stageSelected()
@@ -401,7 +409,9 @@ void CommitDialog::commitNow(bool push)
         return;
     }
     const bool amend = a_amend->isChecked();
-    if (a_staged->count() == 0 && !amend) {
+    // (A merge's commit records it with nothing staged: each file resolved
+    // as the branch had it.)
+    if (a_staged->count() == 0 && !amend && !a_merging) {
         if (a_unstaged->count() == 0) {
             misc::reportError(tr("There is nothing to commit."));
             return;
@@ -490,7 +500,11 @@ HistoryDialog::HistoryDialog(const QString& root, const QString& path, QWidget* 
     connect(close, &QPushButton::clicked, this, &QDialog::reject);
     connect(a_more, &QPushButton::clicked, this, &HistoryDialog::loadMore);
     connect(a_commits, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
-        if (item != nullptr) a_details->setPlainText(git::show(a_root, item->data(0, Qt::UserRole).toString(), a_path));
+        if (item == nullptr) return;
+        const QString commit = item->data(0, Qt::UserRole).toString();
+        const QString parts = schematicChangesIn(a_root, commit, a_path);
+        const QString text = git::show(a_root, commit, a_path);
+        a_details->setPlainText(parts.isEmpty() ? text : parts + QLatin1Char('\n') + text);
     });
     connect(a_commits, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
         QTreeWidgetItem* item = a_commits->itemAt(pos);
@@ -765,6 +779,7 @@ void Commands::fillEntryMenu(QMenu* menu, const QStringList& paths)
     }
     const QString one = paths.size() == 1 ? first : QString();
     const bool oneFile = !one.isEmpty() && QFileInfo(one).isFile();
+    if (oneFile && addResolveMenu(menu, root, one) != nullptr) menu->addSeparator();
     menu->addAction(tr("Commit…"), this, [this, root] { commit(root); })->setObjectName(QStringLiteral("gitCommit"));
     menu->addSeparator();
     QAction* a = menu->addAction(tr("Stage"), this, [this, root, paths] { stage(root, paths); });
@@ -835,6 +850,7 @@ void Commands::fillFileMenu(QMenu* menu, const QString& file)
         op->setEnabled(false);
     }
     menu->addSeparator();
+    if (addResolveMenu(menu, root, file) != nullptr) menu->addSeparator();
     menu->addAction(tr("Commit…"), this, [this, root] { commit(root); })->setObjectName(QStringLiteral("gitCommit"));
     QAction* a = menu->addAction(tr("Show Changes in This File"), this, [this, root, file] { showDiff(root, file, DiffOf::Head); });
     a->setObjectName(QStringLiteral("gitShowChanges"));
@@ -968,7 +984,9 @@ void Commands::discard(const QString& root, const QStringList& paths)
 
 void Commands::showDiff(const QString& root, const QString& path, DiffOf of)
 {
-    const QString text = diff(root, path, of);
+    const QString lines = diff(root, path, of);
+    const QString parts = lines.trimmed().isEmpty() ? QString() : schematicChangesOf(root, path, of);
+    const QString text = parts.isEmpty() ? lines : parts + QLatin1Char('\n') + lines;
     if (text.trimmed().isEmpty()) {
         emit message(tr("No changes"));
         return;
@@ -1190,6 +1208,81 @@ void Commands::abortOperation(const QString& root)
         != QMessageBox::Yes)
         return;
     if (report(git::abort(root, repo.operation), tr("Abort"))) done(root, tr("The %1 is given up").arg(repo.operation));
+}
+
+void Commands::resolveConflict(const QString& root, const QString& path, const QString& side)
+{
+    const QString name = QFileInfo(path).fileName();
+    const bool mine = side == QLatin1String("ours");
+    QMessageBox box(QMessageBox::Warning, tr("Resolve Conflict"),
+                    mine ? tr("Keep your version of %1 - the branch's, as it was before the merge?").arg(name)
+                         : tr("Take the version of %1 that was merged in?").arg(name),
+                    QMessageBox::NoButton, window());
+    box.setObjectName(QStringLiteral("gitResolveQuestion"));
+    box.setInformativeText(tr("The file becomes that version whole, staged as resolved: the other side's changes to it, and "
+                              "any edit made in the file since, are gone from it."));
+    QPushButton* yes = box.addButton(mine ? tr("Keep Mine") : tr("Take Theirs"), QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() != yes) return;
+    if (report(git::resolve(root, path, side), tr("Resolve Conflict")))
+        done(root, mine ? tr("%1: your version kept").arg(name) : tr("%1: theirs taken").arg(name));
+}
+
+QStringList Commands::openConflictVersions(const QString& root, const QString& path)
+{
+    const ConflictVersions v = conflictVersions(root, path);
+    const QFileInfo info(path);
+    if (!v.inConflict) {
+        misc::reportError(tr("%1 is not in conflict.").arg(info.fileName()));
+        return {};
+    }
+    // Beside it - its subcircuits, its dataset found as from it - named
+    // for what they are (untracked: delete them once it is resolved).
+    QStringList written;
+    const auto put = [&](const std::optional<QString>& text, const QString& which) {
+        if (!text.has_value()) return;
+        const QString base = info.completeBaseName() + QStringLiteral(" (%1)").arg(which);
+        QString target = info.dir().filePath(base + QLatin1Char('.') + info.suffix());
+        for (int n = 2; QFileInfo::exists(target); ++n)
+            target = info.dir().filePath(QStringLiteral("%1 (%2 %3).%4").arg(info.completeBaseName(), which).arg(n).arg(info.suffix()));
+        QFile f(target);
+        if (!f.open(QIODevice::WriteOnly) || f.write(text->toUtf8()) < 0) {
+            misc::reportError(tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(target), f.errorString()));
+            return;
+        }
+        written << QDir::cleanPath(target);
+    };
+    put(v.ours, tr("mine"));
+    put(v.theirs, tr("theirs"));
+    for (const QString& w : std::as_const(written)) emit openVersionRequested(w);
+    if (!v.ours.has_value() || !v.theirs.has_value())
+        emit message(!v.ours.has_value() ? tr("Your side deleted %1: theirs opened").arg(info.fileName())
+                                         : tr("Their side deleted %1: yours opened").arg(info.fileName()));
+    Tracker::instance()->refresh(root);
+    return written;
+}
+
+QMenu* Commands::addResolveMenu(QMenu* menu, const QString& root, const QString& path)
+{
+    const Repository* repo = Tracker::instance()->fresh(path);
+    const Entry* e = repo != nullptr ? repo->entryOf(relativePath(root, path)) : nullptr;
+    if (e == nullptr || !e->conflicted) return nullptr;
+    QMenu* resolve = menu->addMenu(tr("Resolve Conflict"));
+    resolve->setObjectName(QStringLiteral("gitResolveMenu"));
+    resolve->addAction(tr("Keep Mine"), this, [this, root, path] { resolveConflict(root, path, QStringLiteral("ours")); })
+        ->setObjectName(QStringLiteral("gitKeepMine"));
+    resolve->addAction(tr("Take Theirs"), this, [this, root, path] { resolveConflict(root, path, QStringLiteral("theirs")); })
+        ->setObjectName(QStringLiteral("gitTakeTheirs"));
+    resolve->addAction(tr("Open Both Versions"), this, [this, root, path] { openConflictVersions(root, path); })
+        ->setObjectName(QStringLiteral("gitOpenBoth"));
+    resolve->addSeparator();
+    QAction* resolved = resolve->addAction(tr("Mark Resolved (Stage)"), this, [this, root, path] { stage(root, {path}); });
+    resolved->setObjectName(QStringLiteral("gitMarkResolved"));
+    resolved->setEnabled(!hasConflictMarkers(path));
+    resolved->setToolTip(tr("Once the file holds what it should, with no conflict marks left"));
+    return resolve;
 }
 
 void Commands::editRemotes(const QString& root)

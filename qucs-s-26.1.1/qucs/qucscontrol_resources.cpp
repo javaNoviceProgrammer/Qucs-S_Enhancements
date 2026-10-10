@@ -264,6 +264,9 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
     if (tool == QLatin1String("git_stash")) return a.value(QLatin1String("action")).toString() == QLatin1String("drop");
     if (tool == QLatin1String("git_remote")) return a.value(QLatin1String("action")).toString() == QLatin1String("push");
     if (tool == QLatin1String("git_commit")) return a.value(QLatin1String("push")).toBool();
+    // A side taken whole: the other's changes, an edit made in the file, gone.
+    if (tool == QLatin1String("git_resolve"))
+        return a.value(QLatin1String("action")).toString().startsWith(QLatin1String("take_"));
     // Raw input, the last resort: what it clicks or types is anything the
     // window does.
     if (tool == QLatin1String("send_input")) return true;
@@ -290,7 +293,9 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
     if (tool == QLatin1String("get_netlist")) return exists(a.value(QLatin1String("save_as")).toString());
     if (tool == QLatin1String("save_document")) {
         const QString as = a.value(QLatin1String("as")).toString();
-        return !as.isEmpty() && exists(as);
+        // (Without 'as', 'replace' writes a schematic over its file in
+        // conflict: the merge's other side gone from it.)
+        return (!as.isEmpty() && exists(as)) || (as.isEmpty() && a.value(QLatin1String("replace")).toBool());
     }
     return false;
 }
