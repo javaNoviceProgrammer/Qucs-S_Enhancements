@@ -36,6 +36,7 @@ class QucsDoc;
 class Schematic;
 class TextDoc;
 class LayoutDoc;
+class MultiphysicsDoc;
 namespace qucs_s::layout {
 struct Layout;
 }
@@ -459,6 +460,18 @@ private:
     // XML (qucscontrol_xml.cpp): a file as the XML editor reads it, changed
     // node by node in its tab.
     QJsonObject xmlDocument(const QJsonObject& args);
+    // Multiphysics (qucscontrol_fem.cpp): a model read, made, changed node
+    // by node, built, solved, evaluated, shown - as the panel does.
+    /// The model 'path' names (opened when it is not), else the one in
+    /// front, else the only one open.
+    MultiphysicsDoc* femDocument(const QJsonObject& args, QString* error);
+    QJsonObject femDescribe(const QJsonObject& args);
+    QJsonObject femModel(const QJsonObject& args);
+    QJsonObject femEdit(const QJsonObject& args);
+    QJsonObject femBuild(const QJsonObject& args);
+    QJsonObject femSolve(const QJsonObject& args);
+    QJsonObject femEvaluate(const QJsonObject& args);
+    QJsonObject femPlot(const QJsonObject& args);
     /// A path a git tool names: relative, from the open project's folder,
     /// the workspace, the document's folder or the File Browser's - the
     /// first where it is, else the first in a repository.

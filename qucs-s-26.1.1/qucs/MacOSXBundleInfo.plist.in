@@ -83,6 +83,20 @@
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>Qucs-S multiphysics model</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.qucs.multiphysics-model</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>SPICE netlist</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
@@ -159,6 +173,23 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>sym</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.qucs.multiphysics-model</string>
+			<key>UTTypeDescription</key>
+			<string>Qucs-S multiphysics model</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>qfem</string>
 				</array>
 			</dict>
 		</dict>

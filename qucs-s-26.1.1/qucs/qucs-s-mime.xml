@@ -30,4 +30,10 @@
     </magic>
     <glob pattern="*.sym"/>
   </mime-type>
+  <mime-type type="application/x-qucs-multiphysics">
+    <comment>Qucs-S multiphysics model</comment>
+    <sub-class-of type="application/json"/>
+    <icon name="qucs-s"/>
+    <glob pattern="*.qfem"/>
+  </mime-type>
 </mime-info>

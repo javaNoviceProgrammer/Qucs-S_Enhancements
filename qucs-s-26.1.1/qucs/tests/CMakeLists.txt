@@ -24,7 +24,7 @@ if(QUCS_SHARED_TEST_CORE)
   endif()
   # The project's static libraries whole (a test calls what the core does
   # not), the others - Qt, zlib through gdstk, util - as they are.
-  set(QUCS_OWN_LIBRARIES components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat gdstk)
+  set(QUCS_OWN_LIBRARIES components diagrams dialogs geometry paintings extsimkernels spicecomponents magnetics qt3_compat fem gdstk)
   set(QUCS_OTHER_LIBRARIES ${QUCS_LINK_LIBRARIES})
   list(REMOVE_ITEM QUCS_OTHER_LIBRARIES ${QUCS_OWN_LIBRARIES})
   string(JOIN "," QUCS_OWN_LIBRARIES_LIST ${QUCS_OWN_LIBRARIES})
@@ -65,6 +65,19 @@ function(qucs_add_test name)
     TIMEOUT 300)
 endfunction()
 
+# qucs_add_fem_test(<name>) : a test of the multiphysics engine alone
+# (multiphysics/, Qt Core): no window, no core of the application - quick to
+# build, under the sanitizers too.
+function(qucs_add_fem_test name)
+  add_executable(${name} ${name}.cpp)
+  target_link_libraries(${name} fem Qt6::Test)
+  add_test(NAME ${name} COMMAND ${name})
+  set_tests_properties(${name} PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
+    TIMEOUT 600)
+endfunction()
+
+qucs_add_fem_test(test_fem_engine)
 qucs_add_test(test_schematic_lifetime)
 qucs_add_test(test_crash_reports)
 qucs_add_test(test_build_commit)
@@ -96,6 +109,7 @@ qucs_add_test(test_spreadsheet)
 qucs_add_test(test_sheet_doc)
 qucs_add_test(test_zip_doc)
 qucs_add_test(test_layout_doc)
+qucs_add_test(test_multiphysics_doc)
 # (a layout KLayout wrote, data/klayout_sample.oas: another program's OASIS)
 target_compile_definitions(test_layout_doc PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 qucs_add_test(test_keyboard_move)
