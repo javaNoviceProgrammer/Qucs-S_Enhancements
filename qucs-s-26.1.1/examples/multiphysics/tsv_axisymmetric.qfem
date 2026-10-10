@@ -1,0 +1,60 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A through-silicon via, about its axis",
+    "description": "A copper via through silicon in an oxide liner, its landing pad on the top oxide: 2D axisymmetric electrostatics (x is r, y is z), the silicon a ground. Its capacitance, round the axis whole: the liner's 2πε0εr H / ln(r2/r1), about 114 fF, and the pad's to the silicon besides.",
+    "parameters": [
+        {"name": "rv", "expression": "5[um]", "description": "the via's radius"},
+        {"name": "tl", "expression": "0.5[um]", "description": "the liner's thickness"},
+        {"name": "H", "expression": "50[um]", "description": "the silicon's thickness"},
+        {"name": "tox", "expression": "1[um]", "description": "the top oxide's thickness"},
+        {"name": "rp", "expression": "10[um]", "description": "the pad's radius"},
+        {"name": "tp", "expression": "1[um]", "description": "the pad's thickness"},
+        {"name": "R", "expression": "30[um]", "description": "how far it is modelled"}
+    ],
+    "components": [{
+        "unit": "um",
+        "space": "axisymmetric",
+        "geometry": [
+            {"type": "rectangle", "label": "silicon", "size": ["R", "H"]},
+            {"type": "rectangle", "label": "liner", "position": ["rv", "0"], "size": ["tl", "H"]},
+            {"type": "rectangle", "label": "topoxide", "position": ["0", "H"], "size": ["R", "tox"]},
+            {"type": "rectangle", "label": "air", "position": ["0", "H + tox"], "size": ["R", "30"]},
+            {"type": "rectangle", "label": "via", "size": ["rv", "H + tox"]},
+            {"type": "rectangle", "label": "pad", "position": ["0", "H + tox"], "size": ["rp", "tp"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["silicon"]}},
+            {"material": "Silicon dioxide", "selection": {"only": ["liner", "topoxide"]}},
+            {"material": "Air", "selection": {"only": ["air"]}},
+            {"material": "Copper", "selection": {"only": ["via", "pad"]}}
+        ],
+        "physics": [{
+            "type": "electrostatics", "tag": "es",
+            "selection": {"only": ["liner", "topoxide", "air"]},
+            "features": [
+                {"type": "terminal", "label": "Via", "name": "1", "V0": "1[V]", "selection": {"between": [["via", "pad"], ["liner", "topoxide", "air"]]}},
+                {"type": "ground", "label": "Silicon", "selection": {"between": [["silicon"], ["liner", "topoxide"]]}}
+            ]
+        }],
+        "mesh": {"size": "fine", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["liner"]}, "hmax": "0.25"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electric Potential", "plots": [
+                {"type": "surface", "expression": "V"},
+                {"type": "contour", "expression": "V", "levels": 15}
+            ]},
+            {"type": "plotgroup", "label": "Electric Field", "plots": [
+                {"type": "surface", "expression": "es.normE", "unit": "V/um", "colors": "thermal"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Capacitance", "expression": "es.C11", "unit": "fF"},
+            {"type": "integral", "label": "Energy", "expression": "es.We", "unit": "J", "selection": {"all": true}}
+        ]
+    }
+}

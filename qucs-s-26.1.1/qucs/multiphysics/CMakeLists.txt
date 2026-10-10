@@ -1,5 +1,6 @@
-# The multiphysics solver's engine (fem_*.cpp): the model, its geometry,
-# mesh, elements, solver, results and materials - Qt Core only, no widgets;
+# The multiphysics solver's engine (fem_*.cpp): the model, its geometry
+# (drawings imported too), mesh, elements, solver - its scalar physics and
+# solid mechanics - results and materials - Qt Core only, no widgets;
 # on Eigen and CDT (header-only, third_party/) and the Clipper inside gdstk.
 # The window's part (the Multiphysics panel, a model's tab) is in qucs-core.
 
@@ -10,6 +11,9 @@ set(FEM_SRCS
   fem_mesh.cpp
   fem_fe.cpp
   fem_solver.cpp
+  fem_scalar.cpp
+  fem_elastic.cpp
+  fem_import.cpp
   fem_results.cpp
   fem_materials.cpp
 )

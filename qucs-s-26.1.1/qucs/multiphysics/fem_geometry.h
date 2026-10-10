@@ -33,13 +33,16 @@
 namespace qucs_s::fem {
 
 /// A curve of the geometry: a straight segment from c to c + a (t from 0
-/// to 1), or an arc of an ellipse - a circle's too - c + a cos t + b sin t,
-/// t from t0 to t1. Affine maps keep it what it is.
+/// to 1), an arc of an ellipse - a circle's too - c + a cos t + b sin t,
+/// t from t0 to t1, or a polyline through pts (a spline's or a Bézier's
+/// points, as imported): t from 0 at the first to pts.size() - 1 at the
+/// last, straight between. Affine maps keep it what it is.
 struct Curve {
-    enum Kind { Line, Arc };
+    enum Kind { Line, Arc, Polyline };
     Kind kind = Line;
     QPointF c, a, b;
     double t0 = 0, t1 = 1;
+    std::vector<QPointF> pts;
 
     QPointF at(double t) const;
     /// The parameter of the curve's point nearest \a p.
@@ -141,6 +144,8 @@ struct GeometryBuild {
     QHash<QString, QString> warnings;
     /// The feature the build stopped at, or empty.
     QString failedAt;
+    /// The drawings its Import features read (absolute paths).
+    QStringList files;
     bool ok() const { return failedAt.isEmpty() && topology != nullptr; }
 };
 

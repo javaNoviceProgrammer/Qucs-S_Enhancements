@@ -48,8 +48,12 @@ struct PropertyDef {
         Points,       ///< a polygon's corners: pairs of expressions
         Physics,      ///< physics interfaces by tag
         Study,        ///< a study by tag
-        Rows,         ///< a table (the parameters: name, expression, description)
+        Rows,         ///< a table (the parameters: name, expression, description; others: columns as choiceLabels)
         Terminal,     ///< a terminal of a physics, by its name
+        File,         ///< a file, relative to the model's folder
+        Instant,      ///< a time of a solution's (s; empty: the last)
+        SweepPoint,   ///< a point of a study's sweep, from 1 (0: the last)
+        Dataset,      ///< a cut line or cut point of the results, by tag
     };
     QString key;
     QString label;
@@ -59,7 +63,7 @@ struct PropertyDef {
     QString unit;
     QJsonValue defaultValue;
     QStringList choices;        // as written in the file
-    QStringList choiceLabels;   // as shown
+    QStringList choiceLabels;   // as shown (a table's: its columns)
     Level level = Level::None;  // a Selection's, when the kind's own is not meant
     QString tooltip;
     /// Shown only when another property is so: "key=value" (or "key!=value",
@@ -173,6 +177,8 @@ public:
     void setParameters(const QList<Parameter>& parameters);
     /// The physics interfaces of the component.
     std::vector<const Node*> physics() const;
+    /// About an axis (2D axisymmetric): x is r, y is z.
+    bool axisymmetric() const { return component().text(QStringLiteral("space")) == QLatin1String("axisymmetric"); }
     std::vector<const Node*> studies() const;
 
     Node* find(const QString& tag);

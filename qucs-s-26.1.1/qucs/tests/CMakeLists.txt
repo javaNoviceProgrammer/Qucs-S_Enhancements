@@ -77,6 +77,7 @@ endfunction()
 function(qucs_add_fem_test name)
   add_executable(${name} ${name}.cpp)
   target_link_libraries(${name} fem Qt6::Test)
+  target_compile_definitions(${name} PRIVATE QUCS_EXAMPLES_DIR="${QUCS_EXAMPLES_DIR}")
   add_test(NAME ${name} COMMAND ${name})
   set_tests_properties(${name} PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
@@ -84,6 +85,7 @@ function(qucs_add_fem_test name)
 endfunction()
 
 qucs_add_fem_test(test_fem_engine)
+qucs_add_fem_test(test_fem_physics)
 qucs_add_test(test_schematic_lifetime)
 qucs_add_test(test_crash_reports)
 qucs_add_test(test_build_commit)

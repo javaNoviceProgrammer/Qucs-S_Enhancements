@@ -1954,18 +1954,26 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   ([docs/proposals](docs/proposals/2026-10-06-gds-oasis-layout-viewer.md)).
   A damaged file is refused, not a crash: gdstk's readers were hardened
   for it (`third_party/gdstk/README.qucs.md`).
-- **Multiphysics: a 2D finite element solver, as COMSOL's** (phase 1 of
-  [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
+- **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1 and
+  2 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
   (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
   in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
   Model*, or the tab's *New Model* and its examples). The tree is the
   order of work. **Global Definitions**: parameters, each shown with its
   value and unit, and analytic or interpolated functions. **A 2D
-  component**: its length unit and out-of-plane thickness, and named
+  component**, in the plane or **about an axis** (2D axisymmetric: x is r,
+  y is z, what is integrated integrated round the axis, the axis drawn
+  dash-dot): its length unit and out-of-plane thickness, and named
   selections. **Geometry**: rectangles, circles, ellipses, polygons and
   polylines, and points; move, rotate, scale, mirror, array; union,
-  difference, intersection; *Form Union* makes them one, and numbers its
-  domains, boundaries and points as COMSOL does. **Materials**: from a
+  difference, intersection; **drawings imported** - a DXF's lines, arcs,
+  circles, ellipses, polylines with their bulges and splines (its layers
+  chosen, its blocks where inserted), an SVG's paths (Béziers, arcs),
+  rectangles, circles, ellipses, polygons and lines - their closed curves
+  solids, one in another a hole, in the unit the file says, scaled and
+  moved, read again when the file changes; *Form Union* makes them one,
+  and numbers its domains, boundaries and points as COMSOL does.
+  **Materials**: from a
   library of metals, board dielectrics, semiconductors and their
   insulators, air and water, or your own (*Add to My Materials*).
   **Physics**:
@@ -1974,16 +1982,34 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   - *Electric Currents*: terminals at a voltage or fed a current give
     the conductance matrix, the resistance and the Joule power.
   - *Heat Transfer in Solids*: temperatures, convective and general
-    fluxes, heat sources as a density or a total power.
+    fluxes, radiation to the surroundings (εσ(Tamb⁴ - T⁴)), heat sources
+    as a density or a total power, initial values; at rest or in time
+    (ρ Cp ∂T/∂t).
+  - *Solid Mechanics*: linear elasticity in plane strain, plane stress or
+    about an axis; fixed, prescribed and rolling boundaries, loads (a
+    force per area or a pressure) and body loads, a thermal strain α(T -
+    Tref) from a heat physics' T. Its displacement, strains, stresses, von
+    Mises', the reactions where it is held, its strain energy.
 
   **Mesh**: Delaunay triangles, refined till their angles are good. A
   preset from extremely fine to extremely coarse, or customised; smaller
   on chosen domains, boundaries or points, or a number of elements on a
   boundary. Finer on curves and across narrow gaps, growing no faster
-  than a rate. **Studies**, and **results**: 2D plot groups (a colour
-  map, contours, arrows, the mesh), and derived values (globals,
-  integrals, averages, maxima and minima over domains or boundaries,
-  values at points, a transmission line's quasi-TEM C, L, Z0 and εeff).
+  than a rate. **Studies**: steps at rest or **in time** - output times
+  as `range(0, 0.1, 1)`, adaptive BDF2 (or Euler, or fixed steps), the
+  physics without a time derivative at rest at each step - and a
+  **Parametric Sweep** of parameters (every combination or specified
+  ones), the geometry and mesh made again where a parameter swept shapes
+  them. **Results**: 2D plot groups (a colour map, contours, arrows, the
+  mesh, drawn **deformed** by a displacement), shown at a time and a
+  parameter value chosen beside them; cut lines and cut points; **1D plot
+  groups** - an expression along a cut line, at points or a global value
+  (or a Derived Values node's: Z0 against a swept width) over the times
+  or the sweep - written as a Qucs dataset beside the model and shown in
+  a **Qucs data display**, with its markers and exports; and derived
+  values (globals, integrals, averages, maxima and minima over domains or
+  boundaries, values at points, a transmission line's quasi-TEM C, L, Z0
+  and εeff) at each time and parameter value.
 
   Selections are rules where they can be — "the boundaries of *trace*
   facing down", "between *substrate* and *air*", "the domains of
@@ -1997,9 +2023,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   **Expressions** take units (`3[mm]`, `20[degC]`, `W/(m*K)`), Qucs's
   suffixes (`10u`, `2.2k`), functions and constants. In the geometry a
   plain number is in its unit, so `L/2 - 0.6` with `L = 2[mm]` is 0.4 mm.
-  A material or a source may read x, y and the fields (a σ(T), a heat
-  source `ec.Qrh`). Physics that read each other's fields are solved in
-  turn until they agree: a resistor's Joule heating.
+  A material or a source may read x, y, t and the fields (a σ(T), a heat
+  source `ec.Qrh`); a parameter keeps its name (a `t` for a thickness:
+  time is then `time`). Physics that read each other's fields are solved
+  in turn until they agree: a resistor's Joule heating; one that reads its
+  own (a k(T), radiation) by Newton's method, in a few steps.
 
   *Compute* (or Simulate, F2) meshes and solves in the background, with
   progress and *Cancel*. Linear or quadratic elements, the quadratic
@@ -2014,15 +2042,26 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   results on show, marked so.
 
   Examples in *examples/multiphysics*: a microstrip (Z0 50.3 Ω, against
-  qucs-transcalc's 50.26 Ω), a coax, and a thin-film resistor that heats.
+  qucs-transcalc's 50.26 Ω) and its Z0 against the strip's width (a
+  sweep), a coax, a thin-film resistor that heats, a heater warming a
+  board in time, a bimetal strip that curls (0.584 mm, Timoshenko's
+  0.582 mm), a through-silicon via about its axis, and a heat sink drawn
+  in SVG, cooled by air and radiation.
   Claude builds and solves models with `fem_describe`, `fem_model`,
-  `fem_edit`, `fem_build`, `fem_solve`, `fem_evaluate` and `fem_plot`.
-  `test_fem_engine` checks the engine against closed forms on CI, under
-  the sanitizers too: a coax's capacitance (its error falling as h² and
-  h⁴), a capacitor, a floating plate, a bar's resistance, a slab with
-  convection, a pipe, heat sources, Joule heating, and a microstrip
-  against qucs-transcalc. Time-dependent studies, mechanics, magnetics,
-  waves and the circuits' side come in the next phases.
+  `fem_edit`, `fem_build`, `fem_solve`, `fem_evaluate` (at a time, a
+  sweep's point, or all of them) and `fem_plot` (a 1D group's data
+  display too). `test_fem_engine` and `test_fem_physics` check the
+  engine against closed forms on CI, under the sanitizers too: a coax's
+  capacitance (its error falling as h² and h⁴), a capacitor, a floating
+  plate, a bar's resistance, a slab with convection, a pipe, heat
+  sources, Joule heating, a microstrip against qucs-transcalc; a slab's
+  mode decaying in time (BDF2's error 4 times smaller when the step is
+  halved, Euler's 2), k(T) against Kirchhoff's transform (Newton's
+  solution Picard's to 10⁻⁸ K), radiation, a cantilever against
+  Timoshenko (0.2 %), Lamé's thick cylinder about its axis (10⁻⁴), a
+  bar's thermal expansion free and held, a spherical capacitor about its
+  axis (10⁻⁵), sweeps, cut lines, DXF and SVG drawings, and the examples.
+  Magnetics, waves and the circuits' side come in the next phases.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,
