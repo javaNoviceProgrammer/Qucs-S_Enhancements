@@ -1290,6 +1290,32 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"path", path}, {"unsaved", "discard"}})));
     }
 
+    // The text and JSON forms of some parts - named, or in a region: their
+    // lines alone (the whole file came back, the names left out), those
+    // not found said.
+    void theTextOfSomeParts()
+    {
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "C"}, {"x", 300}, {"y", 100}})));
+        QVERIFY(!failed(call("add_component", {{"type", "L"}, {"x", 500}, {"y", 100}})));
+        QString t = text(call("get_schematic", {{"format", "text"}, {"components", QJsonArray{"R1", "L1"}}}));
+        QVERIFY2(t.startsWith("<Components>\n  <R R1 ") && t.contains("\n  <L L1 ") && !t.contains("<C C1") && !t.contains("<Properties>"),
+                 qPrintable(t));
+        QVERIFY(t.contains("Those parts' lines alone"));
+        t = text(call("get_schematic", {{"format", "text"}, {"components", QJsonArray{"C1", "X9"}}}));
+        QVERIFY2(t.contains("<C C1 ") && !t.contains("<R R1") && t.contains("Not found: X9."), qPrintable(t));
+        t = text(call("get_schematic", {{"format", "text"}, {"region", QJsonArray{250, 50, 550, 150}}}));
+        QVERIFY2(t.contains("<C C1 ") && t.contains("<L L1 ") && !t.contains("<R R1"), qPrintable(t));
+        QJsonObject o = json(call("get_schematic", {{"format", "json"}, {"components", QJsonArray{"C1"}}})).toObject();
+        QCOMPARE(o.value("components").toArray().size(), 1);
+        QCOMPARE(o.value("components").toArray().first().toObject().value("name").toString(), QStringLiteral("C1"));
+        // Whole, as before.
+        QVERIFY(text(call("get_schematic", {{"format", "text"}})).contains("<Properties>"));
+        QCOMPARE(json(call("get_schematic", {{"format", "json"}})).toObject().value("components").toArray().size(), 3);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // The summary lists what differs from the defaults (a JFET has 27
     // properties); asked, all of them, or the parts named or in a region;
     // a schematic of more than 200 parts in part, saying what is left out.

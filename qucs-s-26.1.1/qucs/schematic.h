@@ -855,6 +855,24 @@ public:
   void       recreateComponent(Component*);
   void       insertComponent(Component*);
 
+  // While one is alive, a component's place in the list of components is
+  // kept: taken out and put in again (a property changed, a turn, a move,
+  // replaced by another - setComponent()), it is where it was, not last -
+  // the file keeps its order, and a diff or a merge shows only what changed.
+  class ComponentPlace {
+  public:
+    ComponentPlace(Schematic* doc, Component* c);
+    ~ComponentPlace();
+    ComponentPlace(const ComponentPlace&) = delete;
+    ComponentPlace& operator=(const ComponentPlace&) = delete;
+    /// What is put back in its place (one that replaced it).
+    void setComponent(Component* c) { m_component = c; }
+  private:
+    std::list<Component*>* m_list;
+    Component* m_component;
+    Component* m_next = nullptr;   // the one after it (none: it was last)
+  };
+
   // While one is alive, insertComponent() numbers the name of a new
   // component from a table of the numbers in use for each name prefix, not
   // by going through every component (and every name to a number) for each:
@@ -903,6 +921,12 @@ private:
    *****  and their pointers. ("DocComps", "Components" etc.)     *****
    ******************************************************************** */
 
+private:
+  /// What loadDocument() and loadDocumentText() read.
+  bool readDocument(QTextStream& stream);
+  /// The file's <View=...> line, written back as it was read.
+  QString a_fileView;
+
 public:
   static int testFile(const QString &);
   bool createLibNetlist(QTextStream*, QPlainTextEdit*, int);
@@ -917,6 +941,8 @@ public:
   QString createNetlist(QTextStream&, int);
   bool isDigitalCircuit();
   bool loadDocument();
+  /// Reads \a text - a file's whole - as loadDocument() reads the file.
+  bool loadDocumentText(const QString& text);
   /// The document as its file would hold it: the one in memory, unsaved
   /// changes and all.
   QString documentText();

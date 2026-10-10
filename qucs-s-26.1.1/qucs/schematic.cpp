@@ -2159,6 +2159,12 @@ bool Schematic::load()
         switchPaintMode();   // the schematic's view back
         becomeCurrent(false);
     }
+    // What it holds now, read again: put back when the file does not read
+    // (a load turned down, a file half written) - a document half read
+    // that looks saved would be written over the file with its next Save.
+    const bool held = !a_DocComps.empty() || !a_DocWires.empty() || !a_DocDiags.empty() || !a_DocPaints.empty()
+                      || !a_SymbolPaints.empty();
+    const QString before = held ? documentText() : QString();
     deleteAllElements();
     deleteSymbolPaintings();
 
@@ -2167,6 +2173,14 @@ bool Schematic::load()
     // moment of its load for good, and loaded again as changed on disk.
     const QDateTime stamp = QFileInfo(a_DocName).lastModified();
     const bool loaded = loadDocument();
+    if (!loaded && held) {
+        deleteAllElements();
+        deleteSymbolPaintings();
+        misc::ErrorCapture quiet;   // (it read before)
+        loadDocumentText(before);
+        // (Its last save's date kept: a Save asks before writing over the
+        // file, which is not what the tab shows.)
+    }
     ++a_sceneGeneration;
     edited();
     emit signalDocumentRebuilt(this);

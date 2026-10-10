@@ -66,6 +66,7 @@
 #include "layoutdoc.h"
 #include "imagedoc.h"
 #include "gitrepo.h"
+#include "gitui.h"
 #endif
 #include "autosave.h"
 #include "crashhandler.h"
@@ -2880,6 +2881,28 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
   QFileInfo Info(Name);
   bool is_sch = false;
   bool is_pdf = false;
+  // git's conflict marks in a schematic: no schematic reads them (unknown
+  // components asked about, a document half made). What to do instead.
+  if ((Info.suffix() == "sch" || Info.suffix() == "dpl" || Info.suffix() == "sym") && qucs_s::git::hasConflictMarkers(Name)) {
+    const QString said = tr("%1 is in conflict: git left its conflict marks in it, which no schematic reads.").arg(Info.fileName());
+    if (misc::ErrorCapture::active()) {
+      misc::reportError(said + QLatin1Char(' ')
+                        + tr("Resolve it first - git_resolve takes one side whole, or opens both versions - or open it as text."));
+      return false;
+    }
+    QMessageBox box(QMessageBox::Warning, tr("Open"), said, QMessageBox::NoButton, this);
+    box.setObjectName(QStringLiteral("conflictOnOpen"));
+    box.setInformativeText(tr("Open both versions - yours and the one merged in - as schematics, or the file as text to "
+                              "resolve its marks by hand. Git > Resolve Conflict keeps one side whole."));
+    const QString root = qucs_s::git::topLevel(Name);
+    QPushButton *both = root.isEmpty() ? nullptr : box.addButton(tr("Open Both Versions"), QMessageBox::AcceptRole);
+    QPushButton *asText = box.addButton(tr("Open as Text"), QMessageBox::ActionRole);
+    box.addButton(QMessageBox::Cancel);
+    box.exec();
+    if (both != nullptr && box.clickedButton() == both) qucs_s::git::Commands::instance()->openConflictVersions(root, Name);
+    else if (box.clickedButton() == asText) openAsText(Name);
+    return false;
+  }
   if(Info.suffix() == "sch" || Info.suffix() == "dpl" ||
      Info.suffix() == "sym") {
     d = new Schematic(this, Name);
@@ -3005,23 +3028,44 @@ void QucsApp::slotFileOpen()
 // --------------------------------------------------------------
 bool QucsApp::saveFile(QucsDoc *Doc)
 {
+  return saveFile(Doc, false);
+}
+
+bool QucsApp::saveFile(QucsDoc *Doc, bool writeOverConflict)
+{
   if(!Doc)
     Doc = getDoc();
 
   if(Doc->getDocName().isEmpty())
     return saveAs();
 
+  // A schematic kept in its tab while git's merge left its conflict marks
+  // in the file: written over it, the merge's other side is gone from the
+  // file. Nobody to ask (Claude, a simulation's save under its tools):
+  // not written.
+  const QFileInfo onDisk(Doc->getDocName());
+  const bool conflict = dynamic_cast<Schematic *>(Doc) != nullptr && onDisk.exists()
+                        && qucs_s::git::hasConflictMarkers(onDisk.filePath());
+  if (conflict && misc::ErrorCapture::active() && !writeOverConflict) {
+    misc::reportError(tr("%1 is in conflict: git's merge left its conflict marks in the file, and this tab shows the version from "
+                         "before. Saving would write that over the merge - resolve it first (git_resolve), or save with "
+                         "'replace'.").arg(onDisk.fileName()));
+    return false;
+  }
   // Written by another program since it was loaded or saved here (Claude,
   // an editor) - its changes would be lost without a word: the user says.
   // (Claude's own save_document asks no one.)
-  const QFileInfo onDisk(Doc->getDocName());
-  if (!misc::ErrorCapture::active() && onDisk.exists() && Doc->getLastSaved().isValid()
-      && onDisk.lastModified() > Doc->getLastSaved()) {
+  if (!misc::ErrorCapture::active() && onDisk.exists()
+      && (conflict || (Doc->getLastSaved().isValid() && onDisk.lastModified() > Doc->getLastSaved()))) {
     QMessageBox box(QMessageBox::Warning, tr("Save"),
-                    tr("%1 was changed by another program since it was loaded here.").arg(onDisk.fileName()),
+                    conflict ? tr("%1 is in conflict: git's merge left its conflict marks in the file.").arg(onDisk.fileName())
+                             : tr("%1 was changed by another program since it was loaded here.").arg(onDisk.fileName()),
                     QMessageBox::NoButton, this);
     box.setObjectName(QStringLiteral("writeOverChanged"));
-    box.setInformativeText(tr("Saving writes over those changes."));
+    box.setInformativeText(conflict ? tr("This tab shows the version from before the merge. Saving writes it over the file: "
+                                         "the other side's changes are gone from it (git keeps them - Git > Resolve Conflict "
+                                         "> Take Theirs brings them back).")
+                                    : tr("Saving writes over those changes."));
     QPushButton *over = box.addButton(tr("Write Over It"), QMessageBox::DestructiveRole);
     box.addButton(QMessageBox::Cancel);
     box.setDefaultButton(QMessageBox::Cancel);
@@ -3987,10 +4031,14 @@ void QucsApp::reloadChangedFiles(const QStringList &files)
       const quint64 editor = QucsDoc::editor();
       const quint64 by = claudeTabs->reportingCaller();
       QucsDoc::setEditor(by != 0 ? by : QucsDoc::kOnDisk);
-      const bool loaded = reloadDocument(doc);
+      const Reloaded how = reloadFromDisk(doc);
       QucsDoc::setEditor(editor);
-      claudeTabs->addNote(loaded ? tr("%1 loaded again with Claude's changes.").arg(name)
-                                 : tr("%1 could not be loaded again.").arg(name));
+      if (how == Reloaded::Yes) claudeTabs->addNote(tr("%1 loaded again with Claude's changes.").arg(name));
+      else if (how == Reloaded::Failed) claudeTabs->addNote(tr("%1 could not be read again: the tab keeps what it had.").arg(name));
+      else if (how == Reloaded::InConflict) {
+        claudeTabs->addNote(keptInConflictText(name));
+        if (auto *control = findChild<QucsControl *>()) control->noteForConversations(keptInConflictText(name));
+      }
       break;
     }
   }
@@ -4019,7 +4067,7 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
     const bool current = schematic == currentSchematic();
     if (current) slotHideEdit();   // (the component edited goes)
     loaded = schematic->load();
-    if (loaded && symbol) {
+    if (symbol) {   // (also when the file did not read: what it held is back)
       schematic->switchPaintMode();
       if (current) changeSchematicSymbolMode(schematic);
       schematic->becomeCurrent(current);
@@ -4054,6 +4102,39 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
     loaded = image->reload();   // (the zoom, the turns, the frame kept)
   }
   return loaded;
+}
+
+QucsApp::Reloaded QucsApp::reloadFromDisk(QucsDoc *doc)
+{
+  const QFileInfo info(doc->getDocName());
+  const QString key = info.canonicalFilePath();
+  const QDateTime stamp = info.lastModified();
+  if (const auto it = a_notReloaded.constFind(key); it != a_notReloaded.cend() && it->first == stamp) return Reloaded::AsBefore;
+  a_notReloaded.remove(key);
+  // git's conflict marks read as a schematic: unknown components - asked
+  // about, then a document half read. Kept as it is.
+  if (dynamic_cast<Schematic *>(doc) != nullptr && qucs_s::git::hasConflictMarkers(info.filePath())) {
+    a_notReloaded.insert(key, {stamp, Reloaded::InConflict});
+    if (a_status != nullptr) a_status->scheduleRefresh();
+    return Reloaded::InConflict;
+  }
+  if (reloadDocument(doc)) return Reloaded::Yes;
+  a_notReloaded.insert(key, {stamp, Reloaded::Failed});
+  return Reloaded::Failed;
+}
+
+bool QucsApp::keptInConflict(const QString &file) const
+{
+  const auto it = a_notReloaded.constFind(QFileInfo(file).canonicalFilePath());
+  // (Until it is read again - its record gone - or its marks are.)
+  return it != a_notReloaded.cend() && it->second == Reloaded::InConflict && qucs_s::git::hasConflictMarkers(file);
+}
+
+QString QucsApp::keptInConflictText(const QString &name)
+{
+  return tr("%1 is in conflict: git left its conflict marks in the file, which no schematic reads. The tab keeps the version "
+            "it had, and does not write it over the file unless you say so. Resolve it with Git > Resolve Conflict: Keep "
+            "Mine, Take Theirs, or Open Both Versions.").arg(name);
 }
 
 void QucsApp::watchDocuments()
@@ -4113,11 +4194,27 @@ void QucsApp::documentsChangedOnDisk()
       // of Claude's, another program) is not known.
       const quint64 editor = QucsDoc::editor();
       QucsDoc::setEditor(QucsDoc::kOnDisk);
-      const bool loaded = reloadDocument(doc);
+      const Reloaded how = reloadFromDisk(doc);
       QucsDoc::setEditor(editor);
-      statusBar()->showMessage(loaded ? tr("%1 was changed by another program and is loaded again.").arg(name)
-                                      : tr("%1 was changed by another program and could not be loaded again.").arg(name),
-                               5000);
+      switch (how) {
+      case Reloaded::Yes:
+        statusBar()->showMessage(qucs_s::git::hasConflictMarkers(info.filePath())
+                                     ? tr("%1 was changed by another program and is loaded again - git's conflict marks are in it.").arg(name)
+                                     : tr("%1 was changed by another program and is loaded again.").arg(name),
+                                 5000);
+        break;
+      case Reloaded::Failed:
+        statusBar()->showMessage(tr("%1 was changed by another program and could not be read: the tab keeps what it had "
+                                    "(a Save asks before writing over the file).").arg(name),
+                                 10000);
+        break;
+      case Reloaded::InConflict:
+        statusBar()->showMessage(keptInConflictText(name), 20000);
+        if (auto *control = findChild<QucsControl *>()) control->noteForConversations(keptInConflictText(name));
+        break;
+      case Reloaded::AsBefore:
+        break;
+      }
       break;
     }
   }
@@ -4681,8 +4778,10 @@ void QucsApp::slotSimulate(QWidget *w)
                tr("The document was modified by another program !") + '\n' +
                tr("Do you want to reload or keep this version ?"),
                QMessageBox::Yes|QMessageBox::No);
-      if(No == QMessageBox::Yes)
-        Doc->load();
+      // (Read as a change on disk is: a schematic in conflict kept, a file
+      // that does not read put back.)
+      if (No == QMessageBox::Yes && reloadFromDisk(Doc) == Reloaded::InConflict)
+        statusBar()->showMessage(keptInConflictText(Info.fileName()), 20000);
     }
   }
 

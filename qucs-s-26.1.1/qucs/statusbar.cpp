@@ -962,6 +962,9 @@ void StatusPanel::updateGit()
                   + QLatin1Char(')');
     tip << tr("Branch: %1").arg(branch);
     tip << tr("This file: %1").arg(e == nullptr ? tr("as committed") : e->describe());
+    if (a_app->keptInConflict(file))
+        tip << tr("This tab shows the version from before the merge: the file holds git's conflict marks, which no schematic "
+                  "reads. Click: Resolve Conflict.");
     if (const int changed = repo->changedCount(); changed > 0)
         tip << tr("Changes not committed: %1 (%2 staged)").arg(changed).arg(repo->stagedCount());
     if (!repo->operation.isEmpty()) tip << tr("A %1 is under way").arg(repo->operation);

@@ -149,6 +149,16 @@ qint64 nowMs()
 
 QString Result::error() const
 {
+    // Paths git would not stage, being ignored: which, not the last line.
+    if (const qsizetype at = err.indexOf(QLatin1String("ignored by one of your .gitignore files")); at >= 0) {
+        QStringList names;
+        for (const QString& l : linesOf(err.mid(at)).mid(1)) {
+            if (l.startsWith(QLatin1String("hint:"))) break;
+            names << l.trimmed();
+        }
+        return tr("in .gitignore, so not staged: %1 (an ignored file is staged only once git follows it)")
+            .arg(names.join(QStringLiteral(", ")));
+    }
     QStringList said;
     for (const QString& l : linesOf(err + QLatin1Char('\n') + out)) {
         const QString t = l.trimmed();
@@ -833,8 +843,13 @@ QList<Commit> log(const QString& root, const QString& path, int max, const QStri
     if (!path.isEmpty()) {
         const QStringList rel = relative(root, {path});
         if (rel.isEmpty()) return out;
-        if (rel.first() != QLatin1String(".") && !QFileInfo(QDir(root).filePath(rel.first())).isDir()) args << QStringLiteral("--follow");
-        args << QStringLiteral("--") << rel;
+        // The top folder is the whole repository: no path (with one, git
+        // drops a merge whose tree is one side's - a conflict resolved
+        // with theirs).
+        if (rel.first() != QLatin1String(".")) {
+            if (!QFileInfo(QDir(root).filePath(rel.first())).isDir()) args << QStringLiteral("--follow");
+            args << QStringLiteral("--") << rel;
+        }
     }
     const Result r = run(root, args, true, 30000);
     if (!r.ok()) return out;
@@ -982,6 +997,63 @@ Result reset(const QString& root, const QString& commit, const QString& mode)
         return r;
     }
     return run(root, {QStringLiteral("reset"), QStringLiteral("--") + mode, commit});
+}
+
+// ----------------------------------------------------------------------
+// Conflicts
+
+bool hasConflictMarkers(const QString& path)
+{
+    QFile file(path);
+    if (file.size() > (qint64(64) << 20) || !file.open(QIODevice::ReadOnly)) return false;
+    // ("<<<<<<< ours", "=======", ">>>>>>> theirs" in that order; diff3's
+    // "||||||| base" between the first two.)
+    int stage = 0;
+    while (!file.atEnd()) {
+        const QByteArray line = file.readLine();
+        if (stage == 0 && line.startsWith("<<<<<<<") && (line.size() == 7 || line.at(7) == ' ' || line.at(7) == '\n' || line.at(7) == '\r'))
+            stage = 1;
+        else if (stage == 1 && (line == "=======\n" || line == "=======\r\n" || line == "======="))
+            stage = 2;
+        else if (stage == 2 && line.startsWith(">>>>>>>") && (line.size() == 7 || line.at(7) == ' ' || line.at(7) == '\n' || line.at(7) == '\r'))
+            return true;
+    }
+    return false;
+}
+
+ConflictVersions conflictVersions(const QString& root, const QString& path)
+{
+    ConflictVersions v;
+    const QStringList rel = relative(root, {path});
+    if (rel.isEmpty()) return v;
+    const Result stages = run(root, {QStringLiteral("ls-files"), QStringLiteral("-u"), QStringLiteral("--"), rel.first()}, true, 15000);
+    if (!stages.ok()) return v;
+    // "mode hash stage<TAB>path": 1 the base, 2 ours, 3 theirs.
+    for (const QString& l : linesOf(stages.out)) {
+        const int stage = l.section(QLatin1Char('\t'), 0, 0).section(QLatin1Char(' '), 2, 2).toInt();
+        if (stage < 1 || stage > 3) continue;
+        v.inConflict = true;
+        const Result text = run(root, {QStringLiteral("show"), QStringLiteral(":%1:%2").arg(stage).arg(rel.first())}, true, 30000);
+        if (!text.ok()) continue;
+        (stage == 1 ? v.base : stage == 2 ? v.ours : v.theirs) = text.out;
+    }
+    return v;
+}
+
+Result resolve(const QString& root, const QString& path, const QString& side)
+{
+    if (side != QLatin1String("ours") && side != QLatin1String("theirs"))
+        return failure(tr("error: a conflict is resolved with ours or theirs"));
+    const QStringList rel = relative(root, {path});
+    if (rel.isEmpty() || rel.first() == QLatin1String(".")) return outside();
+    const ConflictVersions v = conflictVersions(root, path);
+    if (!v.inConflict) return failure(tr("error: %1 is not in conflict").arg(rel.first()));
+    // That side deleted it: deleted.
+    if (!(side == QLatin1String("ours") ? v.ours : v.theirs).has_value())
+        return run(root, withPaths({QStringLiteral("rm"), QStringLiteral("-q"), QStringLiteral("--ignore-unmatch")}, rel));
+    const Result taken = run(root, withPaths({QStringLiteral("checkout"), QStringLiteral("--") + side}, rel));
+    if (!taken.ok()) return taken;
+    return run(root, withPaths({QStringLiteral("add"), QStringLiteral("-f")}, rel));
 }
 
 // ----------------------------------------------------------------------

@@ -123,6 +123,7 @@ private:
     QPushButton* a_unstage;
     QPushButton* a_discard;
     QPointer<Job> a_job;
+    bool a_merging = false;   // a merge under way: committed with nothing staged
 };
 
 /*!
@@ -217,6 +218,14 @@ public:
     void showStash(const QString& root, int index);
     void newTag(const QString& root, const QString& commit = {});
     void abortOperation(const QString& root);
+    /// \a path's conflict resolved with one side whole ("ours", "theirs"),
+    /// asked first.
+    void resolveConflict(const QString& root, const QString& path, const QString& side);
+    /// \a path's two versions in conflict written beside it - "name
+    /// (mine).sch", "name (theirs).sch" - and opened. Their paths.
+    QStringList openConflictVersions(const QString& root, const QString& path);
+    /// The Resolve Conflict menu of \a path (null when it is in none).
+    QMenu* addResolveMenu(QMenu* menu, const QString& root, const QString& path);
     void editRemotes(const QString& root);
     void createRepository(const QString& folder);
     void cloneRepository(const QString& folder);
@@ -233,6 +242,9 @@ public:
 signals:
     /// A file to open in Qucs-S.
     void openRequested(const QString& path);
+    /// A version of a file in conflict to open (its dataset's name left as
+    /// the file has it: no question).
+    void openVersionRequested(const QString& path);
     /// A folder to show in the File Browser (a repository cloned).
     void showFolderRequested(const QString& path);
     /// What happened, for the status bar.
