@@ -259,6 +259,10 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
                                     "a tree as COMSOL's. Open a model (.qfem) to see its tree here."),
                                  a_start);
         about->setWordWrap(true);
+        // (Wrapped to the dock's width: its length is not to widen the dock -
+        // and narrow the window's documents - nor to make it taller.)
+        about->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        about->setMinimumHeight(0);
         v->addWidget(about);
         a_newButton = new QPushButton(tr("New Model"), a_start);
         a_newButton->setObjectName(QStringLiteral("mpNewModel"));
