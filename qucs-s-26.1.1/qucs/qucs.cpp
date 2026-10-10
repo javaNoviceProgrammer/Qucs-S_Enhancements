@@ -120,6 +120,8 @@
 #include "qucscontrol.h"
 #include "dialogs/tuner.h"
 #include "markdowndoc.h"
+#include "xmldoc.h"
+#include "xmlmodel.h"
 #include "pythondoc.h"
 #include "pythonrun.h"
 #include "sheetdoc.h"
@@ -2958,6 +2960,16 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     d = md;
     i = addDocumentTab(md, Info.fileName());
   }
+  else if (qucs_s::xml::isXmlFile(Name)) {
+    // Its text and its tree, checked as it is typed (xmldoc.h).
+    auto *xml = new XmlDoc(this, Name);
+    connect(xml, &XmlDoc::checked, this, [this, xml] {
+      if (DocumentTab->currentWidget() == xml || messageDock->textProblemsDocument() == xml)
+        messageDock->showTextProblems(xml, xml->diagnostics(), tr("XML"), false);
+    });
+    d = xml;
+    i = addDocumentTab(xml, Info.fileName());
+  }
   else {
     d = new TextDoc(this, Name);
     i = addDocumentTab((TextDoc *)d, Info.fileName());
@@ -3668,6 +3680,8 @@ void QucsApp::slotChangeView()
   updatePythonToolbar();
   if (auto *py = qobject_cast<PythonDoc *>(w); py != nullptr && py->checked())
     messageDock->showTextProblems(py, py->diagnostics(), py->checkedBy(), false, py->lastCheck().failure);
+  if (auto *xml = qobject_cast<XmlDoc *>(w))
+    messageDock->showTextProblems(xml, xml->diagnostics(), tr("XML"), false);
   QucsDoc * Doc = docIn(w);
   if(w==nullptr || Doc==nullptr)return;
   // for text documents
@@ -5136,11 +5150,11 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
     return;
   }
 
-  // Spreadsheets (CSV files, Excel workbooks), Markdown, Python, archives,
-  // layouts and pictures: in tabs of their own (sheetdoc.h, markdowndoc.h,
-  // pythondoc.h, zipdoc.h, layoutdoc.h, imagedoc.h), whatever the text
-  // editor of the settings.
-  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath)
+  // Spreadsheets (CSV files, Excel workbooks), Markdown, Python, XML,
+  // archives, layouts and pictures: in tabs of their own (sheetdoc.h,
+  // markdowndoc.h, pythondoc.h, xmldoc.h, zipdoc.h, layoutdoc.h,
+  // imagedoc.h), whatever the text editor of the settings.
+  if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath) || qucs_s::xml::isXmlFile(absolutePath)
       || isArchiveFile(absolutePath) || isLayoutFile(absolutePath) || isImageFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;

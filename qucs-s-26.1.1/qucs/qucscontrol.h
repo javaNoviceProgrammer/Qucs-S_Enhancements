@@ -456,6 +456,9 @@ private:
     QJsonObject gitInit(const QJsonObject& args);
     QJsonObject gitIgnore(const QJsonObject& args);
     QJsonObject gitResolve(const QJsonObject& args);
+    // XML (qucscontrol_xml.cpp): a file as the XML editor reads it, changed
+    // node by node in its tab.
+    QJsonObject xmlDocument(const QJsonObject& args);
     /// A path a git tool names: relative, from the open project's folder,
     /// the workspace, the document's folder or the File Browser's - the
     /// first where it is, else the first in a repository.

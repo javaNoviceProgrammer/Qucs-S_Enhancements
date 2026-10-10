@@ -432,7 +432,8 @@ QList<Language> build()
     table.append(json);
   }
   {
-    Language xml{LANG_XML, "xml", QT_TRANSLATE_NOOP("SyntaxHighlighter", "XML"), {"xml", "xsd", "xsl", "xslt"},
+    Language xml{LANG_XML, "xml", QT_TRANSLATE_NOOP("SyntaxHighlighter", "XML"), {"xml", "xsd", "xsl", "xslt", "xhtml", "plist", "qrc", "ui", "kml", "gpx", "xmi", "xaml", "wsdl",
+                                                                              "rss", "atom", "xlf", "xliff", "resx", "csproj", "vcxproj"},
                  {{Style::Tag, nullptr}, {Style::Attribute, nullptr},
                   {Style::String, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Attribute value")},
                   {Style::Builtin, QT_TRANSLATE_NOOP("SyntaxHighlighter", "Entity")},
