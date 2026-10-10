@@ -69,6 +69,9 @@ namespace {
 const char* const kSidebarKey = "LayoutViewer/sidebar";
 const char* const kLabelsKey = "LayoutViewer/labels";
 const char* const kBackgroundKey = "LayoutViewer/background";   // app, light or dark
+const char* const kContrastKey = "LayoutViewer/contrast";       // the layers' colours adapted to it
+const char* const kGridKey = "LayoutViewer/grid";
+const char* const kGridStyleKey = "LayoutViewer/gridStyle";     // dots, lines or crosses
 
 LayoutView::Theme themeNamed(const QString& name)
 {
@@ -86,13 +89,31 @@ QString nameOf(LayoutView::Theme theme)
     }
     return QStringLiteral("app");
 }
+
+LayoutView::GridStyle gridStyleNamed(const QString& name)
+{
+    if (name == QLatin1String("lines")) return LayoutView::GridStyle::Lines;
+    if (name == QLatin1String("crosses")) return LayoutView::GridStyle::Crosses;
+    return LayoutView::GridStyle::Dots;
+}
+
+QString nameOf(LayoutView::GridStyle style)
+{
+    switch (style) {
+    case LayoutView::GridStyle::Lines: return QStringLiteral("lines");
+    case LayoutView::GridStyle::Crosses: return QStringLiteral("crosses");
+    case LayoutView::GridStyle::Dots: break;
+    }
+    return QStringLiteral("dots");
+}
+
 constexpr int AllLevels = 100;   // the depth box's "all"
 
 // The toolbar's icons, drawn in the text's colour of the moment.
 class GlyphIcon : public QIconEngine
 {
 public:
-    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Search, More, Close, Up, Down };
+    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Grid, Search, More, Close, Up, Down };
     explicit GlyphIcon(Kind kind) : a_kind(kind) {}
     QIconEngine* clone() const override { return new GlyphIcon(a_kind); }
     void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State) override
@@ -136,6 +157,12 @@ public:
         case Text:
             p->drawLine(QPointF(3, 3), QPointF(13, 3));
             p->drawLine(QPointF(8, 3), QPointF(8, 13));
+            break;
+        case Grid:
+            for (qreal at : {5.5, 10.5}) {
+                p->drawLine(QPointF(at, 2), QPointF(at, 14));
+                p->drawLine(QPointF(2, at), QPointF(14, at));
+            }
             break;
         case Search:
             p->drawEllipse(QPointF(7, 7), 4, 4);
@@ -313,6 +340,54 @@ void LayoutView::setTheme(Theme theme)
     if (theme == a_theme) return;
     a_theme = theme;
     invalidate();
+    emit colorsChanged();
+}
+
+void LayoutView::setColorsAdapted(bool adapted)
+{
+    if (adapted == a_adapted) return;
+    a_adapted = adapted;
+    invalidate();
+    emit colorsChanged();
+}
+
+LayerStyle LayoutView::shownStyle(const LayerStyle& style) const
+{
+    return a_adapted ? standingOut(style, colors().background) : style;
+}
+
+void LayoutView::setGridShown(bool shown)
+{
+    if (shown == a_grid) return;
+    a_grid = shown;
+    invalidate();
+}
+
+void LayoutView::setGridStyle(GridStyle style)
+{
+    if (style == a_gridStyle) return;
+    a_gridStyle = style;
+    invalidate();
+}
+
+double LayoutView::gridStep() const
+{
+    // The least of 1, 2 and 5 times a power of ten that is far enough
+    // apart.
+    const double least = MinGridPixels / a_scale;
+    const double decade = std::pow(10.0, std::floor(std::log10(least)));
+    double step = decade * 10;
+    for (double m : {1.0, 2.0, 5.0})
+        if (decade * m >= least * (1 - 1e-9)) {
+            step = decade * m;
+            break;
+        }
+    return a_layout ? std::max(step, a_layout->dbu) : step;
+}
+
+double LayoutView::gridMajorStep() const
+{
+    return std::pow(10.0, std::floor(std::log10(gridStep()) + 1e-9) + 1);
 }
 
 LayoutView::Colors LayoutView::colors() const
@@ -494,6 +569,7 @@ void LayoutView::paintEvent(QPaintEvent*)
         a_cache.fill(c.background);
         if (a_layout && a_cell >= 0) {
             QPainter p(&a_cache);
+            if (a_grid) paintGrid(p, c);
             RenderOptions o;
             o.cell = a_cell;
             o.depth = a_depth;
@@ -503,6 +579,7 @@ void LayoutView::paintEvent(QPaintEvent*)
             o.labels = a_labels;
             o.frames = c.frames;
             o.text = c.ink;
+            if (a_adapted) o.background = c.background;
             a_stats = qucs_s::layout::render(p, *a_layout, o);
             ++a_renders;
         }
@@ -511,6 +588,7 @@ void LayoutView::paintEvent(QPaintEvent*)
     QPainter p(this);
     p.drawImage(QPointF(0, 0), a_cache);
     p.setRenderHint(QPainter::Antialiasing);
+    if (a_grid && a_layout && a_cell >= 0) paintScale(p, c);
     // What is selected.
     if (!a_selectionOutline.isEmpty()) {
         QPen pen(c.highlight, 2);
@@ -553,6 +631,107 @@ void LayoutView::paintEvent(QPaintEvent*)
         p.setBrush(tint);
         p.drawRect(a_zoomBox);
     }
+}
+
+void LayoutView::paintGrid(QPainter& p, const Colors& c) const
+{
+    const double step = gridStep();
+    // Every n'th step on a power of ten (none when the step is the
+    // database unit, and that is not 1, 2 or 5 of one).
+    const double ratio = gridMajorStep() / step;
+    const qint64 n = std::abs(ratio - std::round(ratio)) < 1e-6 ? std::llround(ratio) : 0;
+    const auto major = [n](qint64 k) { return n > 0 && k % n == 0; };
+    const QRectF seen = visibleRegion();
+    const qint64 x0 = qint64(std::ceil(seen.left() / step)), x1 = qint64(std::floor(seen.right() / step));
+    const qint64 y0 = qint64(std::ceil(seen.top() / step)), y1 = qint64(std::floor(seen.bottom() / step));
+    if (x1 < x0 || y1 < y0 || (x1 - x0 + 1) * (y1 - y0 + 1) > 4000000) return;
+    // Whole pixels: each line, each point, as crisp as the screen has it.
+    QVector<double> xs, ys;
+    for (qint64 i = x0; i <= x1; ++i) xs << std::round(toPixel(QPointF(i * step, 0)).x());
+    for (qint64 j = y0; j <= y1; ++j) ys << std::round(toPixel(QPointF(0, j * step)).y());
+    const auto ink = [&c](int alpha) {
+        QColor ink = c.ink;
+        ink.setAlpha(alpha);
+        return ink;
+    };
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    switch (a_gridStyle) {
+    case GridStyle::Lines: {
+        QPen pen(ink(30), 0);
+        pen.setCosmetic(true);
+        for (bool strong : {false, true}) {
+            pen.setColor(ink(strong ? 70 : 30));
+            p.setPen(pen);
+            for (int i = 0; i < xs.size(); ++i)
+                if (major(x0 + i) == strong) p.drawLine(QPointF(xs[i] + 0.5, 0), QPointF(xs[i] + 0.5, height()));
+            for (int j = 0; j < ys.size(); ++j)
+                if (major(y0 + j) == strong) p.drawLine(QPointF(0, ys[j] + 0.5), QPointF(width(), ys[j] + 0.5));
+        }
+        break;
+    }
+    case GridStyle::Dots:
+    case GridStyle::Crosses: {
+        QVector<QPointF> weak, strong;
+        for (int i = 0; i < xs.size(); ++i)
+            for (int j = 0; j < ys.size(); ++j)
+                (major(x0 + i) && major(y0 + j) ? strong : weak) << QPointF(xs[i] + 0.5, ys[j] + 0.5);
+        if (a_gridStyle == GridStyle::Dots) {
+            p.setPen(QPen(ink(90), 1, Qt::SolidLine, Qt::SquareCap));
+            p.drawPoints(weak.constData(), int(weak.size()));
+            p.setPen(QPen(ink(170), 2, Qt::SolidLine, Qt::SquareCap));
+            p.drawPoints(strong.constData(), int(strong.size()));
+        } else {
+            for (const auto& [points, arm, alpha] : {std::tuple{&weak, 2.0, 80}, std::tuple{&strong, 4.0, 150}}) {
+                QPen pen(ink(alpha), 0);
+                pen.setCosmetic(true);
+                p.setPen(pen);
+                QVector<QLineF> lines;
+                lines.reserve(points->size() * 2);
+                for (const QPointF& at : *points) {
+                    lines << QLineF(at - QPointF(arm, 0), at + QPointF(arm, 0));
+                    lines << QLineF(at - QPointF(0, arm), at + QPointF(0, arm));
+                }
+                p.drawLines(lines);
+            }
+        }
+        break;
+    }
+    }
+    p.restore();
+}
+
+void LayoutView::paintScale(QPainter& p, const Colors& c) const
+{
+    // A step of the stronger grid, when it is short enough, its steps
+    // ticked; else one step.
+    const double step = gridStep(), major = gridMajorStep();
+    const bool whole = major * a_scale <= 200;
+    const double length = whole ? major : step;
+    const double pixels = length * a_scale;
+    const QString text = QCoreApplication::translate("LayoutDoc", "%1 µm").arg(micrometres(*a_layout, length));
+    QFont font = p.font();
+    font.setPixelSize(11);
+    p.save();
+    p.setFont(font);
+    const QFontMetricsF fm(font);
+    const QPointF from(12.5, height() - 10.5), to = from + QPointF(pixels, 0);
+    const QRectF label(from + QPointF(0, -8 - fm.height()), QSizeF(fm.horizontalAdvance(text) + 2, fm.height()));
+    QColor paper = c.background;
+    paper.setAlpha(200);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.fillRect(QRectF(QPointF(from.x() - 5, label.top() - 2), QPointF(std::max(to.x(), label.right()) + 5, from.y() + 5)), paper);
+    p.setPen(QPen(c.ink, 1));
+    p.drawLine(from, to);
+    p.drawLine(from + QPointF(0, -5), from + QPointF(0, 3));
+    p.drawLine(to + QPointF(0, -5), to + QPointF(0, 3));
+    if (whole && step * a_scale >= 4)
+        for (double at = step; at < length - step / 2; at += step) {
+            const QPointF tick = from + QPointF(std::round(at * a_scale), 0);
+            p.drawLine(tick + QPointF(0, -3), tick);
+        }
+    p.drawText(label, Qt::AlignLeft | Qt::AlignVCenter, text);
+    p.restore();
 }
 
 void LayoutView::resizeEvent(QResizeEvent*)
@@ -728,6 +907,13 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
     case Qt::Key_Minus: zoomBy(1 / 1.25); break;
     case Qt::Key_F:
     case Qt::Key_Home: fit(); break;
+    case Qt::Key_G:
+        if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) {
+            QWidget::keyPressEvent(event);
+            return;
+        }
+        emit gridToggleRequested();
+        break;
     case Qt::Key_Escape:
         // One thing at a time: the ruler being drawn, the selection, the
         // rulers, ruler mode.
@@ -856,6 +1042,8 @@ void LayoutDoc::buildUi()
     a_rulerButton->setCheckable(true);
     a_labelsButton = toolButton(a_toolbar, glyph(GlyphIcon::Text), tr("Show the texts"));
     a_labelsButton->setCheckable(true);
+    a_gridButton = toolButton(a_toolbar, glyph(GlyphIcon::Grid), tr("Show the grid (G, or View > Show Grid)"));
+    a_gridButton->setCheckable(true);
     a_findButton = toolButton(a_toolbar, glyph(GlyphIcon::Search), tr("Find a cell"));
     a_menuButton = toolButton(a_toolbar, glyph(GlyphIcon::More), tr("More"));
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
@@ -880,8 +1068,32 @@ void LayoutDoc::buildUi()
         a->setData(nameOf(theme));
         themes->addAction(a);
     }
-    connect(background, &QMenu::aboutToShow, this, [this, background] {
-        for (QAction* a : background->actions()) a->setChecked(a->data().toString() == nameOf(a_view->theme()));
+    background->addSeparator();
+    QAction* contrast = background->addAction(tr("Colours in Contrast to It"), this, [this](bool on) { setColorsAdapted(on); });
+    contrast->setCheckable(true);
+    contrast->setToolTip(tr("The layers' colours darkened on a light background, lightened on a dark one, till they stand out from it"));
+    connect(background, &QMenu::aboutToShow, this, [this, themes, contrast] {
+        for (QAction* a : themes->actions()) a->setChecked(a->data().toString() == nameOf(a_view->theme()));
+        contrast->setChecked(a_view->colorsAdapted());
+    });
+    // The grid: shown or not, and how.
+    QMenu* grid = menu->addMenu(tr("Grid"));
+    grid->setObjectName(QStringLiteral("layoutGrid"));
+    QAction* showGrid = grid->addAction(tr("Show the Grid"), this, [this](bool on) { setGridShown(on); });
+    showGrid->setCheckable(true);
+    grid->addSeparator();
+    auto* gridStyles = new QActionGroup(grid);
+    for (const auto& [style, text] : {std::pair{LayoutView::GridStyle::Dots, tr("Dots")},
+                                      std::pair{LayoutView::GridStyle::Lines, tr("Lines")},
+                                      std::pair{LayoutView::GridStyle::Crosses, tr("Crosses")}}) {
+        QAction* a = grid->addAction(text, this, [this, style = style] { setGridStyle(style); });
+        a->setCheckable(true);
+        a->setData(nameOf(style));
+        gridStyles->addAction(a);
+    }
+    connect(grid, &QMenu::aboutToShow, this, [this, showGrid, gridStyles] {
+        showGrid->setChecked(a_view->gridShown());
+        for (QAction* a : gridStyles->actions()) a->setChecked(a->data().toString() == nameOf(a_view->gridStyle()));
     });
     menu->addSeparator();
     menu->addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
@@ -901,6 +1113,7 @@ void LayoutDoc::buildUi()
     bar->addSpacing(12);
     bar->addWidget(a_rulerButton);
     bar->addWidget(a_labelsButton);
+    bar->addWidget(a_gridButton);
     bar->addStretch(1);
     bar->addWidget(a_findButton);
     bar->addWidget(a_menuButton);
@@ -1026,6 +1239,11 @@ void LayoutDoc::buildUi()
     const bool labels = settings.value(QLatin1String(kLabelsKey), true).toBool();
     a_labelsButton->setChecked(labels);
     a_view->setLabelsShown(labels);
+    a_view->setColorsAdapted(settings.value(QLatin1String(kContrastKey), true).toBool());
+    const bool gridShown = settings.value(QLatin1String(kGridKey), true).toBool();
+    a_gridButton->setChecked(gridShown);
+    a_view->setGridShown(gridShown);
+    a_view->setGridStyle(gridStyleNamed(settings.value(QLatin1String(kGridStyleKey)).toString()));
     connect(a_sidebarButton, &QToolButton::toggled, this, [this](bool on) {
         setSidebarShown(on);
         QucsSettingsFile().setValue(QLatin1String(kSidebarKey), on);
@@ -1034,6 +1252,9 @@ void LayoutDoc::buildUi()
         a_view->setLabelsShown(on);
         QucsSettingsFile().setValue(QLatin1String(kLabelsKey), on);
     });
+    connect(a_gridButton, &QToolButton::toggled, this, &LayoutDoc::setGridShown);
+    connect(a_view, &LayoutView::gridToggleRequested, this, [this] { setGridShown(!a_view->gridShown()); });
+    connect(a_view, &LayoutView::colorsChanged, this, &LayoutDoc::updateSwatches);
     connect(a_fitButton, &QToolButton::clicked, this, [this] { a_view->fit(); });
     connect(a_zoomOutButton, &QToolButton::clicked, this, [this] { a_view->zoomBy(1 / 1.25); });
     connect(a_zoomInButton, &QToolButton::clicked, this, [this] { a_view->zoomBy(1.25); });
@@ -1128,6 +1349,9 @@ void LayoutDoc::buildUi()
         QAction* ruler = menu.addAction(tr("Ruler"), this, [this](bool on) { a_rulerButton->setChecked(on); });
         ruler->setCheckable(true);
         ruler->setChecked(a_view->mode() == LayoutView::Mode::Ruler);
+        QAction* grid = menu.addAction(tr("Grid"), this, [this](bool on) { setGridShown(on); });
+        grid->setCheckable(true);
+        grid->setChecked(a_view->gridShown());
         if (!a_view->rulers().isEmpty()) menu.addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
         menu.addSeparator();
         menu.addAction(tr("Find a Cell…"), this, &LayoutDoc::showSearch);
@@ -1163,6 +1387,7 @@ void LayoutDoc::changeEvent(QEvent* event)
         QTimer::singleShot(0, this, [this] {
             restyle();
             a_view->setStyles(a_view->styles());   // (drawn again in the theme's colours)
+            updateSwatches();
         });
 }
 
@@ -1414,16 +1639,23 @@ void LayoutDoc::fillCellChildren(QTreeWidgetItem* item)
     }
 }
 
-QIcon LayoutDoc::swatch(const LayerStyle& style) const
+QIcon LayoutDoc::swatch(const LayerStyle& given) const
 {
+    // As the canvas draws it, on the canvas's background.
+    const LayerStyle style = a_view->shownStyle(given);
     QPixmap pm(QSize(16, 12) * devicePixelRatioF());
     pm.setDevicePixelRatio(devicePixelRatioF());
-    pm.fill(palette().color(QPalette::Base));
+    pm.fill(a_view->colors().background);
     QPainter p(&pm);
     p.setPen(QPen(style.frame, 1));
     p.setBrush(style.pattern == Qt::NoBrush ? QBrush(Qt::NoBrush) : QBrush(style.fill, style.pattern));
     p.drawRect(QRectF(0.5, 0.5, 15, 11));
     return QIcon(pm);
+}
+
+void LayoutDoc::updateSwatches()
+{
+    for (int i = 0; i < a_layers->topLevelItemCount(); ++i) updateLayerItem(i);
 }
 
 void LayoutDoc::fillLayers()
@@ -1491,14 +1723,41 @@ void LayoutDoc::usePalette()
     fillLayers();
 }
 
+void LayoutDoc::everyLayoutTab(const std::function<void(LayoutDoc*)>& apply)
+{
+    apply(this);
+    if (a_App != nullptr)
+        for (QucsDoc* doc : a_App->allDocuments())
+            if (auto* other = dynamic_cast<LayoutDoc*>(doc); other != nullptr && other != this) apply(other);
+}
+
 void LayoutDoc::setCanvasTheme(LayoutView::Theme theme)
 {
     QucsSettingsFile().setValue(QLatin1String(kBackgroundKey), nameOf(theme));
-    a_view->setTheme(theme);
-    // (every layout tab alike)
-    if (a_App != nullptr)
-        for (QucsDoc* doc : a_App->allDocuments())
-            if (auto* other = dynamic_cast<LayoutDoc*>(doc); other != nullptr && other != this) other->view()->setTheme(theme);
+    everyLayoutTab([theme](LayoutDoc* doc) { doc->a_view->setTheme(theme); });
+}
+
+void LayoutDoc::setColorsAdapted(bool adapted)
+{
+    QucsSettingsFile().setValue(QLatin1String(kContrastKey), adapted);
+    everyLayoutTab([adapted](LayoutDoc* doc) { doc->a_view->setColorsAdapted(adapted); });
+}
+
+void LayoutDoc::setGridShown(bool shown)
+{
+    QucsSettingsFile().setValue(QLatin1String(kGridKey), shown);
+    everyLayoutTab([shown](LayoutDoc* doc) {
+        doc->a_view->setGridShown(shown);
+        const QSignalBlocker block(doc->a_gridButton);
+        doc->a_gridButton->setChecked(shown);
+    });
+    if (a_App != nullptr) a_App->updateGridAction();   // View > Show Grid
+}
+
+void LayoutDoc::setGridStyle(LayoutView::GridStyle style)
+{
+    QucsSettingsFile().setValue(QLatin1String(kGridStyleKey), nameOf(style));
+    everyLayoutTab([style](LayoutDoc* doc) { doc->a_view->setGridStyle(style); });
 }
 
 void LayoutDoc::chooseLayerProperties()
@@ -1748,6 +2007,7 @@ void LayoutDoc::print(QPrinter*, QPainter* painter, bool, bool)
     o.labels = a_view->labelsShown();
     o.frames = QColor(90, 90, 90);
     o.text = Qt::black;
+    if (a_view->colorsAdapted()) o.background = Qt::white;
     qucs_s::layout::render(*painter, *a_layout, o);
     painter->restore();
 }

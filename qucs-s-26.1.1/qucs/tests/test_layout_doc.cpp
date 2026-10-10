@@ -5,8 +5,10 @@
  * names, GDSII gzipped too; a file that is none, or is damaged, said so;
  * a layout in a tab, its cells and layers beside it, a shape selected, a
  * distance measured, a cell found, its file written again and read again
- * where it was; a .lyp's colours; a million shapes read and drawn in time,
- * and a read cancelled; Claude's get_layout, find_shapes and show_layout.
+ * where it was; a .lyp's colours; the layers' colours in contrast to the
+ * canvas, light or dark; the grid behind the layout; a million shapes read
+ * and drawn in time, and a read cancelled; Claude's get_layout,
+ * find_shapes and show_layout.
  *
  * This file is part of Qucs-S.
  *
@@ -313,7 +315,14 @@ private slots:
         QucsMain = nullptr;
     }
 
-    void cleanup() { closeAll(); }
+    void cleanup()
+    {
+        closeAll();
+        // The canvas as it is at first, whatever a test left.
+        QucsSettingsFile settings;
+        for (const char* key : {"LayoutViewer/background", "LayoutViewer/contrast", "LayoutViewer/grid", "LayoutViewer/gridStyle"})
+            settings.remove(QLatin1String(key));
+    }
 
     // ---- Reading
 
@@ -916,11 +925,13 @@ private slots:
         QVERIFY(doc != nullptr);
         LayoutView* view = doc->view();
         QCOMPARE(view->theme(), LayoutView::Theme::Application);
+        doc->setGridShown(false);   // (the background alone)
         QMenu* background = doc->menuButton()->menu()->findChild<QMenu*>("layoutBackground");
         QVERIFY(background != nullptr);
         QStringList choices;
-        for (QAction* a : background->actions()) choices << a->text();
-        QCOMPARE(choices, QStringList({"Like the Application", "Light", "Dark"}));
+        for (QAction* a : background->actions())
+            if (!a->isSeparator()) choices << a->text();
+        QCOMPARE(choices, QStringList({"Like the Application", "Light", "Dark", "Colours in Contrast to It"}));
         const auto choose = [](QMenu* menu, const QString& text) {
             for (QAction* a : menu->actions())
                 if (a->text() == text) a->trigger();
@@ -945,12 +956,290 @@ private slots:
         QStringList checked;
         for (QAction* a : background->actions())
             if (a->isChecked()) checked << a->text();
-        QCOMPARE(checked, QStringList{"Light"});
+        QCOMPARE(checked, QStringList({"Light", "Colours in Contrast to It"}));
         // The application's again: its Base.
         choose(background, "Like the Application");
         QCOMPARE(view->theme(), LayoutView::Theme::Application);
         QCOMPARE(corner(), view->palette().color(QPalette::Base));
         QCOMPARE(QucsSettingsFile().value("LayoutViewer/background").toString(), QString("app"));
+        doc->setGridShown(true);
+    }
+
+    // The layers' colours on a light canvas darkened, on a dark one
+    // lightened, till they stand out from it by 3.5:1 - their hue kept,
+    // no more changed than it takes; as they were when they stood out
+    // already, or when the Background menu says not to. The layer list's
+    // swatches, and a print on white, alike.
+    void theLayersStandOutFromTheCanvas()
+    {
+        const QColor white(Qt::white), dark(22, 22, 24);
+        QVERIFY(qAbs(contrastRatio(Qt::black, Qt::white) - 21) < 1e-6);
+        QCOMPARE(contrastRatio(QColor("#ff80a8"), QColor("#ff80a8")), 1.0);
+        const auto hueDistance = [](const QColor& a, const QColor& b) {
+            const double d = qAbs(a.hslHueF() - b.hslHueF());
+            return std::min(d, 1 - d);
+        };
+        // The palette's sixteen and a .lyp's pastels, on white and on
+        // dark: each enough, in the 8 bits it is drawn in; a hue kept.
+        QStringList colours;
+        for (int i = 0; i < 16; ++i) colours << paletteStyle(i).frame.name();
+        colours << "#d6b656" << "#fdae6b" << "#9ecae1" << "#c7c7c7" << "#7f7f7f";
+        int darkened = 0, lightened = 0;
+        for (const QString& name : colours) {
+            const QColor c(name);
+            for (const QColor& bg : {white, dark}) {
+                const QColor shown = standingOut(c, bg, LayerContrast);
+                const QString what = name + " on " + bg.name() + ": " + shown.name();
+                QVERIFY2(contrastRatio(shown, bg) >= LayerContrast, qPrintable(what));
+                QCOMPARE(shown.rgba(), QColor::fromRgba(shown.rgba()).rgba());
+                if (contrastRatio(c, bg) >= LayerContrast) {
+                    QVERIFY2(shown == c, qPrintable(what));
+                    continue;
+                }
+                // Just enough: a step less would not be.
+                QVERIFY2(contrastRatio(shown, bg) < LayerContrast + 0.15, qPrintable(what));
+                if (c.hslSaturationF() > 0.05) QVERIFY2(hueDistance(shown, c) < 0.02, qPrintable(what));
+                else QVERIFY2(shown.red() == shown.green() && shown.green() == shown.blue(), qPrintable(what));
+                (bg == white ? darkened : lightened)++;
+                QVERIFY2(bg == white ? shown.lightnessF() < c.lightnessF() : shown.lightnessF() > c.lightnessF(), qPrintable(what));
+            }
+        }
+        QVERIFY2(darkened >= 10 && lightened >= 2, qPrintable(QString("%1 %2").arg(darkened).arg(lightened)));
+        // No background, or one in the middle: as it is, or as far as it goes.
+        QCOMPARE(standingOut(QColor("#ff80a8"), QColor(), LayerContrast), QColor("#ff80a8"));
+        QVERIFY(standingOut(QColor("#808080"), QColor("#777777"), LayerContrast).isValid());
+        LayerStyle style = paletteStyle(0);
+        style.fill = QColor("#fdae6b");
+        const LayerStyle shownStyle = standingOut(style, white);
+        QCOMPARE(shownStyle.frame, standingOut(style.frame, white, LayerContrast));
+        QCOMPARE(shownStyle.fill, standingOut(style.fill, white, LayerContrast));
+        QCOMPARE(shownStyle.pattern, style.pattern);
+
+        // A tab: its six layers in the palette's first six colours - the
+        // five pastels too pale for white, the red (10/0's, a text's: in
+        // ink) not.
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        doc->setGridShown(false);   // (the layers alone)
+        doc->setCanvasTheme(LayoutView::Theme::Light);
+        LayoutView* view = doc->view();
+        QVERIFY(view->colorsAdapted());
+        const auto drawn = [view] {
+            QSet<QRgb> set;
+            const QImage picture = view->picture().convertToFormat(QImage::Format_RGB32);
+            for (int y = 0; y < picture.height(); ++y)
+                for (int x = 0; x < picture.width(); ++x) set.insert(picture.pixel(x, y));
+            return set;
+        };
+        const auto swatchCorner = [doc](int layer) {
+            return doc->layerList()->topLevelItem(layer)->icon(0).pixmap(QSize(16, 12)).toImage().pixelColor(0, 0);
+        };
+        QCOMPARE(doc->layout()->layers.size(), 6);
+        QSet<QRgb> seen = drawn();
+        for (int i = 0; i < 6; ++i) {
+            const QColor pale = paletteStyle(i).frame, deeper = standingOut(pale, white, LayerContrast);
+            QCOMPARE(contrastRatio(pale, white) < LayerContrast, i < 5);
+            QCOMPARE(deeper == pale, i == 5);
+            if (i < 5) QVERIFY2(seen.contains(deeper.rgb()) && !seen.contains(pale.rgb()), qPrintable(pale.name() + " " + deeper.name()));
+            QCOMPARE(swatchCorner(i), deeper);
+        }
+        // Printed: on white, alike.
+        QImage page(600, 400, QImage::Format_RGB32);
+        {
+            QPainter painter(&page);
+            doc->print(nullptr, &painter, false, false);
+        }
+        QSet<QRgb> printed;
+        for (int y = 0; y < page.height(); ++y)
+            for (int x = 0; x < page.width(); ++x) printed.insert(page.pixel(x, y));
+        QVERIFY(printed.contains(standingOut(paletteStyle(0).frame, white, LayerContrast).rgb()));
+        QVERIFY(!printed.contains(paletteStyle(0).frame.rgb()));
+        // Dark: the pink stands out as it is; a blue given to 1/0, too
+        // dark there, lightened.
+        doc->setCanvasTheme(LayoutView::Theme::Dark);
+        QVERIFY(drawn().contains(paletteStyle(0).frame.rgb()));
+        QCOMPARE(swatchCorner(0), paletteStyle(0).frame);
+        // (a swatch on the canvas's background)
+        const QImage swatch = doc->layerList()->topLevelItem(0)->icon(0).pixmap(QSize(16, 12)).toImage();
+        int canvas = 0;
+        for (int y = 0; y < swatch.height(); ++y)
+            for (int x = 0; x < swatch.width(); ++x) canvas += swatch.pixelColor(x, y) == view->colors().background;
+        QVERIFY2(canvas > 20, qPrintable(QString::number(canvas)));
+        QVector<LayerStyle> styles = view->styles();
+        styles[0].frame = styles[0].fill = QColor(0, 0, 255);
+        view->setStyles(styles);
+        const QColor lighter = standingOut(QColor(0, 0, 255), view->colors().background, LayerContrast);
+        QVERIFY(lighter != QColor(0, 0, 255));
+        seen = drawn();
+        QVERIFY(seen.contains(lighter.rgb()) && !seen.contains(qRgb(0, 0, 255)));
+        // Not in contrast: the colours as their styles have them, in every
+        // layout tab, kept for the next.
+        QMenu* background = doc->menuButton()->menu()->findChild<QMenu*>("layoutBackground");
+        QAction* contrast = nullptr;
+        for (QAction* a : background->actions())
+            if (a->text() == "Colours in Contrast to It") contrast = a;
+        QVERIFY(contrast != nullptr && contrast->isCheckable());
+        emit background->aboutToShow();
+        QVERIFY(contrast->isChecked());
+        contrast->trigger();
+        QVERIFY(!view->colorsAdapted());
+        QCOMPARE(QucsSettingsFile().value("LayoutViewer/contrast").toBool(), false);
+        seen = drawn();
+        QVERIFY(seen.contains(qRgb(0, 0, 255)) && !seen.contains(lighter.rgb()));
+        QCOMPARE(swatchCorner(0), QColor(0, 0, 255));
+        LayoutDoc* other = open(path("sample.oas"));
+        QVERIFY(other != nullptr && other != doc);
+        QVERIFY(!other->view()->colorsAdapted());
+        other->setColorsAdapted(true);
+        QVERIFY(view->colorsAdapted());
+        QCOMPARE(swatchCorner(0), lighter);
+        doc->setCanvasTheme(LayoutView::Theme::Application);
+        doc->setGridShown(true);
+    }
+
+    // The grid behind the layout, as KLayout has it: a dot every step - 1,
+    // 2 or 5 times a power of ten µm, 16 pixels apart at least - those on
+    // a power of ten stronger, a scale in the lower left; lines or crosses
+    // instead; shown or hidden with its button, G or the ⋯ menu, in every
+    // layout tab, kept for the next.
+    void aGridIsBehindTheLayout()
+    {
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        QVERIFY(view->gridShown());
+        QVERIFY(doc->gridButton()->isChecked());
+        QCOMPARE(view->gridStyle(), LayoutView::GridStyle::Dots);
+        // Its step, at any scale.
+        const auto powerOfTen = [](double v) {
+            const double e = std::log10(v);
+            return qAbs(e - std::round(e)) < 1e-9;
+        };
+        for (double scale : {0.0123, 0.37, 1.0, 3.0, 16.0, 25.0, 160.0, 999.0, 12345.0}) {
+            view->setView(QPointF(), scale);
+            const double step = view->gridStep(), major = view->gridMajorStep();
+            const QString what = QString("%1 px/µm: %2, %3").arg(scale).arg(step).arg(major);
+            QVERIFY2(step * scale >= LayoutView::MinGridPixels - 1e-9 && step * scale < 2.5 * LayoutView::MinGridPixels + 1e-9, qPrintable(what));
+            QVERIFY2(powerOfTen(step) || powerOfTen(step / 2) || powerOfTen(step / 5), qPrintable(what));
+            QVERIFY2(powerOfTen(major) && major > step * (1 + 1e-9) && major <= 10 * step * (1 + 1e-9), qPrintable(what));
+        }
+        // Never finer than the database unit.
+        view->setView(QPointF(), 1e5);
+        QCOMPARE(view->gridStep(), doc->layout()->dbu);
+
+        // Where nothing is: a light canvas, 10 px a µm - a dot every 2 µm
+        // (20 px), stronger every 10.
+        doc->setCanvasTheme(LayoutView::Theme::Light);
+        view->setView(QPointF(-1000, -1000), 10);
+        QCOMPARE(view->gridStep(), 2.0);
+        QCOMPARE(view->gridMajorStep(), 10.0);
+        const auto at = [view](double x, double y) {
+            const QPointF p = view->toPixel(QPointF(x, y));
+            return QPoint(int(std::round(p.x())), int(std::round(p.y())));
+        };
+        // The darkest of the pixels about one.
+        const auto darkest = [](const QImage& picture, QPoint p) {
+            int least = 255;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) least = std::min(least, picture.pixelColor(p + QPoint(dx, dy)).lightness());
+            return least;
+        };
+        QImage picture = view->picture();
+        const QPoint strong = at(-1000, -1000), weak = at(-998, -1000), between = at(-999, -999);
+        QVERIFY2(darkest(picture, strong) < darkest(picture, weak), qPrintable(QString("%1 %2").arg(darkest(picture, strong)).arg(darkest(picture, weak))));
+        QVERIFY2(darkest(picture, weak) < 230, qPrintable(QString::number(darkest(picture, weak))));
+        QCOMPARE(darkest(picture, between), 255);
+        // The scale: its bar in the lower left, in ink.
+        const auto scaleDrawn = [view](const QImage& picture) {
+            for (int y = view->height() - 14; y < view->height() - 6; ++y)
+                for (int x = 14; x < 30; ++x)
+                    if (picture.pixelColor(x, y).lightness() < 90) return true;
+            return false;
+        };
+        QVERIFY(scaleDrawn(picture));
+        // G: hidden; the button, the setting, every tab alike.
+        QTest::keyClick(view, Qt::Key_G);
+        QVERIFY(!view->gridShown());
+        QVERIFY(!doc->gridButton()->isChecked());
+        QCOMPARE(QucsSettingsFile().value("LayoutViewer/grid").toBool(), false);
+        picture = view->picture();
+        QCOMPARE(darkest(picture, strong), 255);
+        QVERIFY(!scaleDrawn(picture));
+        LayoutDoc* other = open(path("sample.oas"));
+        QVERIFY(other != nullptr && other != doc);
+        QVERIFY(!other->view()->gridShown());
+        QVERIFY(!other->gridButton()->isChecked());
+        other->gridButton()->click();
+        QVERIFY(view->gridShown());
+        QVERIFY(doc->gridButton()->isChecked());
+        QTest::keyClick(view, Qt::Key_G, Qt::MetaModifier);   // (not G: no app's shortcut has it either)
+        QVERIFY(view->gridShown());
+        // View > Show Grid (Alt+G) too, when a layout is in front: it says
+        // so, and shows whether it is shown.
+        QCOMPARE(app->showGrid->text(), QString("Show Grid (all layouts)"));
+        QVERIFY(app->showGrid->isChecked());
+        app->showGrid->trigger();
+        QVERIFY(!view->gridShown() && !other->view()->gridShown());
+        QVERIFY(!app->showGrid->isChecked());
+        QVERIFY(!other->gridButton()->isChecked());
+        other->gridButton()->click();
+        QVERIFY(app->showGrid->isChecked());
+        // A schematic in front: its own grid again; the layout: the layouts'.
+        app->slotFileNew();
+        QCOMPARE(app->showGrid->text(), QString("Show Grid (current document)"));
+        app->DocumentTab->setCurrentWidget(doc);
+        QCOMPARE(app->showGrid->text(), QString("Show Grid (all layouts)"));
+        QVERIFY(app->showGrid->isChecked());
+        // The ⋯ menu's Grid: shown or not, and how.
+        QMenu* grid = doc->menuButton()->menu()->findChild<QMenu*>("layoutGrid");
+        QVERIFY(grid != nullptr);
+        QStringList items;
+        QHash<QString, QAction*> action;
+        for (QAction* a : grid->actions())
+            if (!a->isSeparator()) {
+                items << a->text();
+                action.insert(a->text(), a);
+            }
+        QCOMPARE(items, QStringList({"Show the Grid", "Dots", "Lines", "Crosses"}));
+        emit grid->aboutToShow();
+        QVERIFY(action["Show the Grid"]->isChecked());
+        QVERIFY(action["Dots"]->isChecked());
+        // Lines: a weak one through each step, a strong one through each
+        // power of ten; nothing between.
+        action["Lines"]->trigger();
+        QCOMPARE(view->gridStyle(), LayoutView::GridStyle::Lines);
+        QCOMPARE(other->view()->gridStyle(), LayoutView::GridStyle::Lines);
+        QCOMPARE(QucsSettingsFile().value("LayoutViewer/gridStyle").toString(), QString("lines"));
+        picture = view->picture();
+        const QPoint onWeak = at(-998, -999.3), onStrong = at(-1000, -999.3);
+        QVERIFY(darkest(picture, onWeak) < 255);
+        QVERIFY(darkest(picture, onStrong) < darkest(picture, onWeak));
+        QCOMPARE(darkest(picture, between), 255);
+        // Crosses: their arms, longer on a power of ten.
+        action["Crosses"]->trigger();
+        QCOMPARE(view->gridStyle(), LayoutView::GridStyle::Crosses);
+        picture = view->picture();
+        QVERIFY(picture.pixelColor(weak + QPoint(2, 0)).lightness() < 255);
+        QCOMPARE(picture.pixelColor(weak + QPoint(4, 0)).lightness(), 255);
+        QVERIFY(picture.pixelColor(strong + QPoint(4, 0)).lightness() < 255);
+        QCOMPARE(picture.pixelColor(strong + QPoint(3, 3)).lightness(), 255);
+        emit grid->aboutToShow();
+        QVERIFY(action["Crosses"]->isChecked() && !action["Dots"]->isChecked());
+        action["Show the Grid"]->trigger();
+        QVERIFY(!view->gridShown() && !other->view()->gridShown());
+        // Behind the layout: through a shape filled solid, none of it.
+        QVector<LayerStyle> solid = view->styles();
+        solid[0].pattern = Qt::SolidPattern;
+        view->setStyles(solid);
+        doc->setGridStyle(LayoutView::GridStyle::Lines);
+        doc->setGridShown(true);
+        view->setView(QPointF(11, 0.8), 200);   // in INV's rectangle on 1/0, placed at (10, 0)
+        QCOMPARE(view->gridStep(), 0.1);
+        picture = view->picture();
+        QCOMPARE(picture.pixelColor(at(11, 0.8)), view->shownStyle(solid[0]).fill);
+        QCOMPARE(picture.pixelColor(at(11.05, 0.85)), view->shownStyle(solid[0]).fill);
+        doc->setGridStyle(LayoutView::GridStyle::Dots);
+        doc->setCanvasTheme(LayoutView::Theme::Application);
     }
 
     // A KLayout .lyp beside the layout: its colours, fills, names and
@@ -1221,6 +1510,19 @@ private slots:
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"cell", "NOPE"}})));
         // get_state calls it a layout.
         QVERIFY2(text(call("get_state")).contains("\"layout\""), "get_state's kind");
+        // The grid: hidden, shown - its step said.
+        r = call("show_layout", {{"path", "sample.gds"}, {"grid", false}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!doc->view()->gridShown());
+        QVERIFY(!doc->gridButton()->isChecked());
+        QVERIFY(!json(r).contains("grid"));
+        r = call("show_layout", {{"path", "sample.gds"}, {"grid", true}});
+        QVERIFY(doc->view()->gridShown());
+        QVERIFY2(json(r).value("grid").toString().startsWith(QString("a point every %1 µm").arg(micrometres(*doc->layout(), doc->view()->gridStep()))),
+                 qPrintable(text(r)));
+        QCOMPARE(json(call("get_layout", {{"path", "sample.gds"}})).value("tab").toObject().value("grid").toString(),
+                 micrometres(*doc->layout(), doc->view()->gridStep()) + " µm");
+        QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"grid", "yes"}})));
     }
 };
 

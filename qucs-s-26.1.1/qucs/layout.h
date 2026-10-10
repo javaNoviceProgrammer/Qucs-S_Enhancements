@@ -206,6 +206,22 @@ struct LayerStyle {
 /// sixteen colours, and of eight patterns as the colours come round again.
 LayerStyle paletteStyle(int index);
 
+/// How far apart two colours are in lightness, as WCAG measures it: from
+/// 1 (alike) to 21 (black on white).
+double contrastRatio(const QColor& a, const QColor& b);
+/// \a colour standing out from \a background by \a ratio at least:
+/// darkened on a light background, lightened on a dark one - its hue and
+/// saturation kept, and no more than it takes; as it is when it stands out
+/// already.
+QColor standingOut(const QColor& colour, const QColor& background, double ratio);
+/// The contrast a layer is given on the canvas: between WCAG's 3 (for
+/// graphics) and 4.5 (for text) - the palette's pastels, made for
+/// KLayout's black, stand out on white, and a gold is still gold.
+constexpr double LayerContrast = 3.5;
+/// \a style with its frame and fill standing out from \a background by
+/// LayerContrast; as it is when \a background is none.
+LayerStyle standingOut(LayerStyle style, const QColor& background);
+
 /// A KLayout layer properties file (.lyp): each layer's style, by its
 /// layer and datatype (a source "1/0@1", "1/0" or "Metal1 1/0"). Empty, and
 /// why in \a error, when it cannot be read.
@@ -232,6 +248,7 @@ struct RenderOptions {
     bool labels = true;
     QColor frames;              ///< cells not drawn, and their names
     QColor text;                ///< the texts
+    QColor background;          ///< when given, each layer's colours made to stand out from it (standingOut())
     quint64 budget = 4000000;   ///< shapes at most; beyond them the drawing is incomplete
 };
 

@@ -21,6 +21,7 @@
 #include <QPointer>
 #include <QWidget>
 
+#include <functional>
 #include <optional>
 
 class QCheckBox;
@@ -46,7 +47,8 @@ namespace qucs_s::layout {
  * a box dragged with the right button), panned with a drag or the arrow
  * keys. A click selects the shape under the pointer (again: the one under
  * it); in ruler mode a drag measures, snapped to the shapes' corners and
- * edges.
+ * edges. Behind the layout a grid, when it is shown; the layers' colours
+ * made to stand out from the canvas, light or dark.
  */
 class LayoutView : public QWidget
 {
@@ -80,6 +82,28 @@ public:
         QColor background, ink, frames, highlight;
     };
     Colors colors() const;
+    /// The layers' colours darkened on a light canvas, lightened on a dark
+    /// one, till they stand out from it (standingOut()); else as their
+    /// styles have them.
+    bool colorsAdapted() const { return a_adapted; }
+    void setColorsAdapted(bool adapted);
+    /// \a style as the canvas draws it.
+    LayerStyle shownStyle(const LayerStyle& style) const;
+
+    /// The grid behind the layout, as KLayout has it: a point (a line, a
+    /// cross) every step - 1, 2 or 5 times a power of ten µm, MinGridPixels
+    /// apart at least - those on a power of ten stronger; in the lower left
+    /// a scale of it.
+    enum class GridStyle { Dots, Lines, Crosses };
+    bool gridShown() const { return a_grid; }
+    void setGridShown(bool shown);
+    GridStyle gridStyle() const { return a_gridStyle; }
+    void setGridStyle(GridStyle style);
+    /// The grid's step at the scale shown, µm (no finer than the database
+    /// unit), and its stronger one: the power of ten above it.
+    double gridStep() const;
+    double gridMajorStep() const;
+    static constexpr double MinGridPixels = 16;
 
     /// Pixels per µm, and the point (µm) in the middle.
     double scale() const { return a_scale; }
@@ -128,6 +152,10 @@ signals:
     /// A double click on a frame: show that cell.
     void cellRequested(int cell);
     void menuRequested(QPoint globalPos);
+    /// The canvas's colours changed: its theme, the layers' adapted or not.
+    void colorsChanged();
+    /// G pressed: the grid shown, or hidden.
+    void gridToggleRequested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -143,6 +171,8 @@ protected:
 
 private:
     void invalidate();
+    void paintGrid(QPainter& p, const Colors& c) const;
+    void paintScale(QPainter& p, const Colors& c) const;
     Query queryHere() const;
     double tolerance() const;   // µm: a few pixels
     QString rulerText(const QLineF& ruler) const;
@@ -153,6 +183,9 @@ private:
     int a_depth = 1 << 20;
     bool a_labels = true;
     Theme a_theme = Theme::Application;
+    bool a_adapted = true;
+    bool a_grid = true;
+    GridStyle a_gridStyle = GridStyle::Dots;
     QPointF a_center;
     double a_scale = 1;
     bool a_fitted = false;      // fitted since the layout or the cell came
@@ -229,6 +262,11 @@ public:
     void usePalette();
     /// The canvas's theme, here and in every layout tab, kept for the next.
     void setCanvasTheme(qucs_s::layout::LayoutView::Theme theme);
+    /// The layers' colours standing out from the canvas or not, the grid
+    /// shown or not and how: alike in every layout tab, kept for the next.
+    void setColorsAdapted(bool adapted);
+    void setGridShown(bool shown);
+    void setGridStyle(qucs_s::layout::LayoutView::GridStyle style);
 
     /// The cells whose names have \a text (a wildcard: * ?) listed in the
     /// cell panel; the first shown.
@@ -248,6 +286,7 @@ public:
     QSpinBox* depthBox() const { return a_depthBox; }
     QPushButton* cancelButton() const { return a_cancel; }
     QToolButton* menuButton() const { return a_menuButton; }
+    QToolButton* gridButton() const { return a_gridButton; }
     QWidget* sidebar() const;
 
 public slots:
@@ -279,6 +318,9 @@ private:
     void fillCellChildren(QTreeWidgetItem* item);
     void fillLayers();
     void updateLayerItem(int layer);
+    void updateSwatches();
+    /// \a apply to this tab and to every other layout tab.
+    void everyLayoutTab(const std::function<void(LayoutDoc*)>& apply);
     void updateInfo();
     void showProblem(const QString& text);
     QIcon swatch(const qucs_s::layout::LayerStyle& style) const;
@@ -305,6 +347,7 @@ private:
     QSpinBox* a_depthBox = nullptr;
     QToolButton* a_rulerButton = nullptr;
     QToolButton* a_labelsButton = nullptr;
+    QToolButton* a_gridButton = nullptr;
     QToolButton* a_findButton = nullptr;
     QToolButton* a_menuButton = nullptr;
     QLabel* a_cellLabel = nullptr;
