@@ -1233,6 +1233,10 @@ QList<NodeKind> makeKinds()
         adaptPhysics.defaultValue = QJsonArray();
         adaptPhysics.tooltip = tr("None chosen: the first physics solved");
         adaptPhysics.showIf = QStringLiteral("adaptive=true");
+        // What a step solves before its modes, states or eigenvalues: its
+        // physics at rest, by Newton's method.
+        const P before = integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50,
+                                 tr("Of the physics at rest it solves first (Newton's method, and in turn between them)"));
         add({QStringLiteral("stationary"), tr("Stationary"), QStringLiteral("step"), QStringLiteral("stationary"), Level::None,
              {physics, solver, nonlinear,
               flag(QStringLiteral("sweep"), tr("Terminal and coil sweep (capacitance, conductance, inductance matrices)"), true),
@@ -1268,7 +1272,7 @@ QList<NodeKind> makeKinds()
               text(QStringLiteral("frequencies"), tr("Frequencies"), QStringLiteral("logspace(1[kHz], 1[GHz], 31)"),
                    tr("In Hz, or with a unit: logspace(start, stop, count) - evenly in the logarithm -, range(start, step, stop), "
                       "linspace(start, stop, count) or values split by commas")),
-              flag(QStringLiteral("sweep"), tr("Coil sweep (impedance matrix)"), true), solver,
+              flag(QStringLiteral("sweep"), tr("Coil sweep (impedance matrix)"), true), solver, nonlinear,
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved in turn at each frequency")),
               integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50),
@@ -1286,8 +1290,17 @@ QList<NodeKind> makeKinds()
               integer(QStringLiteral("modes"), tr("Modes"), 4, tr("How many, nearest the effective index below")),
               expr(QStringLiteral("neff"), tr("Search about the effective index"), QString(), QString(),
                    tr("Empty: the largest refractive index of the model")),
+              [&] {
+                  P track = selectionProp(QJsonObject{{QStringLiteral("numbers"), QJsonArray()}}, Level::Domain);
+                  track.key = QStringLiteral("track");
+                  track.label = tr("Keep the modes most in");
+                  track.tooltip = tr("Domains: of the modes found about the index (more than asked), those with most of their |E|² "
+                                     "there - the core's, not a contact's or a substrate's; their share emw.Gamma. None: the nearest the index");
+                  return track;
+              }(),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
-                   tr("Of the physics solved before at each frequency"))},
+                   tr("Of the physics solved before at each frequency")),
+              before, nonlinear},
              {}, {}, false, false, QStringLiteral("mode"),
              tr("A cross-section's modes at each frequency: each a solution, as an output time is - its effective index, "
                 "loss, fields. Physics at rest in it (heat for a thermo-optic index) are solved first.")});
@@ -1295,14 +1308,16 @@ QList<NodeKind> makeKinds()
              {physics, integer(QStringLiteral("count"), tr("Eigenvalues"), 6, tr("Those nearest the shift")),
               expr(QStringLiteral("shift"), tr("Search about"), QString(), QStringLiteral("0")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
-                   tr("Of the physics solved before"))},
+                   tr("Of the physics solved before")),
+              before, nonlinear},
              {}, {}, false, false, QStringLiteral("eig"),
              tr("A PDE's eigenvalues λ - -λ da u + ∇·Γ = F linearized about where it is, its Dirichlet conditions 0 - and their "
                 "eigenfunctions: each a solution, as a mode is.")});
         add({QStringLiteral("states"), tr("Quantum States"), QStringLiteral("step"), QStringLiteral("states"), Level::None,
              {physics, integer(QStringLiteral("states"), tr("States of each carrier"), 4, tr("The lowest: electrons upward, holes downward")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
-                   tr("Of the physics solved before (a semiconductor's potential)"))},
+                   tr("Of the physics solved before (a semiconductor's potential)")),
+              before, nonlinear},
              {}, {}, false, false, QStringLiteral("qs"),
              tr("A quantum wells physics' states: each a solution, as a mode is - each carrier's energy and wavefunction; the "
                 "transitions' energies and overlaps. Physics at rest in it (a semiconductor's potential) are solved first.")});
@@ -1318,7 +1333,7 @@ QList<NodeKind> makeKinds()
                    tr("Electrons and holes alike, per volume of the wells (the domains of the smallest gap): gain where their "
                       "quasi-Fermi levels are far enough apart; 0, the wells' absorption")),
               expr(QStringLiteral("nr"), tr("Refractive index"), QString(), QString(), tr("Empty: the wells' material's")),
-              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"))},
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6")), before, nonlinear},
              {}, {}, false, false, QStringLiteral("spec"),
              tr("A quantum wells physics' absorption coefficient - TE (in the layers' plane) and TM - or gain over photon "
                 "energies: its states' transitions, k conserved, each broadened; each point a solution, as a frequency is.")});

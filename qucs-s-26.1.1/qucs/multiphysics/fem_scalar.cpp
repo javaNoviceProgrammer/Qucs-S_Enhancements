@@ -60,10 +60,12 @@ public:
     bool solve(const SolveOptions& options, QString* error) override;
     void setGlobals() override;
     bool hasMass() const override { return a_heat; }
+    bool converged() const override { return a_converged; }
     /// The terminal sweep's matrix entry for terminal \a name alone.
     double selfMatrix(const QString& name, QString* error);
 
 private:
+    bool a_converged = true;
     /// K, F, (mass) M and (jacobian) the rest of Newton's matrix, at the
     /// field as it is; \a mass the step's coefficient of M (0: none).
     void elementMatrices(bool jacobian, double mass, const std::vector<double>* history);
@@ -913,6 +915,7 @@ bool ScalarProblem::solve(const SolveOptions& o, QString* error)
         }
     }
     if (!converged) a_s.log << tr("Warning: %1: Newton's method did not converge in %2 steps").arg(a_node->name()).arg(iterations);
+    a_converged = converged;
     // Not solved: its initial value there (another physics may read it).
     for (double& v : fld.values)
         if (std::isnan(v)) v = fld.initial;

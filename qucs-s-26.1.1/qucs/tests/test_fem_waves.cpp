@@ -43,6 +43,8 @@ const std::complex<double> FineIrisS21(-0.29350589, 0.20824795);
 
 bool slowBuild()
 {
+    // (QUCS_TEST_SLOW: a slow build's path in any, to check it quickly.)
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
 #if defined(__SANITIZE_ADDRESS__)
     return true;
 #elif defined(__has_feature)
@@ -325,6 +327,91 @@ private slots:
         const double c = global(*cold.solution, QStringLiteral("emw.neff"));
         QVERIFY(std::abs(w - r) < 1e-9);
         QVERIFY(w - c > 1e-3 && w - c < 1.86e-3);
+    }
+
+    void modeStepSolvesWhatItReads()
+    {
+        // A core heated, its oxide's k(T) nonlinear, the mode thermo-optic:
+        // a mode step that solves the heat too takes Newton's method to the
+        // end (a step without a Maximum iterations had one Newton step) - the
+        // same as a stationary step before it; asked for one step, it fails.
+        auto model = [](const QString& steps) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "oxide", "position": ["-1", "-1.5"], "size": ["2.4", "3.22"]},
+                             {"type": "rectangle", "name": "core", "size": ["0.4", "0.22"]}],
+                "materials": [{"label": "oxide", "n": "1.444", "k": "1.4[W/(m*K)]*(T/293.15[K])^3", "selection": {"only": ["oxide"]}},
+                              {"label": "silicon", "n": "3.476", "dndT": "1.86e-4[1/K]", "k": "1.4[W/(m*K)]*(T/293.15[K])^3", "selection": {"only": ["core"]}}],
+                "physics": [{"type": "heat", "tag": "ht", "features": [
+                               {"type": "source", "Q0": "3e15[W/m^3]", "selection": {"only": ["core"]}},
+                               {"type": "temperature", "T0": "293.15[K]", "selection": {"exterior": true}}]},
+                            {"type": "modes", "tag": "emw", "features": [
+                               {"type": "wave", "thermooptic": true, "T": "ht.T", "selection": {"only": ["core"]}}]}],
+                "mesh": {"size": "normal", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "0.04"}]}}],
+              "studies": [{"type": "study", "steps": [%1]}]})json")
+                .arg(steps)
+                .toUtf8();
+        };
+        const QString mode = QStringLiteral(R"x({"type": "mode", "physics": ["ht", "emw"], "frequency": "1550[nm]", "modes": 1, "neff": "3" %1})x");
+        const Run inOne = run(modelOf(model(mode.arg(QString()))));
+        QVERIFY2(inOne.error.isEmpty(), qPrintable(inOne.error));
+        const Run before = run(modelOf(model(QStringLiteral(R"x({"type": "stationary", "physics": ["ht"], "maxiter": 100},
+            {"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 1, "neff": "3"})x"))));
+        QVERIFY2(before.error.isEmpty(), qPrintable(before.error));
+        inOne.solution->select(0);
+        before.solution->select(0);
+        const double t1 = global(*inOne.solution, QStringLiteral("ht.Tmax")), t2 = global(*before.solution, QStringLiteral("ht.Tmax"));
+        const double n1 = global(*inOne.solution, QStringLiteral("emw.neff")), n2 = global(*before.solution, QStringLiteral("emw.neff"));
+        qInfo("a mode step's heat: Tmax %.6f K (%.6f a step before), neff %.9f (%.9f); %s", t1, t2, n1, n2,
+              qPrintable(inOne.solution->log.filter(QStringLiteral("Newton")).join(QLatin1String("; "))));
+        QVERIFY(t1 > 330);
+        QVERIFY(std::abs(t1 - t2) < 1e-6 && std::abs(n1 - n2) < 1e-9);
+        QVERIFY(inOne.solution->log.filter(QStringLiteral("did not converge")).isEmpty());
+        QVERIFY(inOne.study.warnings.isEmpty());
+        // One Newton step asked for: the step fails, saying why.
+        const Run one = run(modelOf(model(mode.arg(QStringLiteral(R"(, "maxiter": 1)")))));
+        QVERIFY(!one.error.isEmpty());
+        QVERIFY2(one.error.contains(QLatin1String("did not converge")) && one.error.contains(QLatin1String("Maximum iterations")), qPrintable(one.error));
+        // A stationary step's: its study's warnings say it (not the log alone).
+        const Run rest = run(modelOf(model(QStringLiteral(R"x({"type": "stationary", "physics": ["ht"], "maxiter": 1})x"))));
+        QVERIFY2(rest.error.isEmpty(), qPrintable(rest.error));
+        QVERIFY2(rest.study.warnings.join(QLatin1String("; ")).contains(QLatin1String("did not converge")),
+                 qPrintable(rest.study.warnings.join(QLatin1String("; "))));
+    }
+
+    void trackingAMode()
+    {
+        // A wide block and a narrow wire of silicon 2 µm apart: about n 3
+        // the block's mode comes first; tracking the wire, the wire's - its
+        // effective index the wire's alone, its share of |E|² emw.Gamma.
+        auto model = [](bool block, const QString& track) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "oxide", "position": ["-2", "-1.5"], "size": ["5.8", "3.22"]},
+                             {"type": "rectangle", "name": "wire", "size": ["0.4", "0.22"]} %1],
+                "materials": [{"label": "oxide", "n": "1.444", "selection": {"all": true}},
+                              {"label": "silicon", "n": "3.476", "selection": {"objects": [%4]}}],
+                "physics": [{"type": "modes", "tag": "emw"}],
+                "mesh": {"size": "%5", "features": [{"type": "size", "level": "domain", "selection": {"objects": [%4]}, "hmax": "%3"}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "mode", "frequency": "1550[nm]", "modes": 1, "neff": "3" %2}]}]})json")
+                .arg(block ? QStringLiteral(R"(, {"type": "rectangle", "name": "block", "position": ["2.4", "0"], "size": ["1", "0.22"]})") : QString(),
+                     track, slowBuild() ? QStringLiteral("0.08") : QStringLiteral("0.04"),
+                     block ? QStringLiteral(R"("wire", "block")") : QStringLiteral(R"("wire")"),
+                     slowBuild() ? QStringLiteral("coarser") : QStringLiteral("normal"))
+                .toUtf8();
+        };
+        const Run plain = run(modelOf(model(true, QString())));
+        const Run tracked = run(modelOf(model(true, QStringLiteral(R"(, "track": {"only": ["wire"]})"))));
+        const Run alone = run(modelOf(model(false, QString())));
+        QVERIFY2(plain.error.isEmpty() && tracked.error.isEmpty() && alone.error.isEmpty(), qPrintable(plain.error + tracked.error + alone.error));
+        for (const Run* r : {&plain, &tracked, &alone}) r->solution->select(0);
+        const double np = global(*plain.solution, QStringLiteral("emw.neff")), nt = global(*tracked.solution, QStringLiteral("emw.neff"));
+        const double na = global(*alone.solution, QStringLiteral("emw.neff")), gamma = global(*tracked.solution, QStringLiteral("emw.Gamma"));
+        qInfo("tracking: about n 3 the block's mode %.6f; tracking the wire %.6f (the wire alone %.6f), its share %.3f", np, nt, na, gamma);
+        QVERIFY(np > nt + 0.05);
+        QVERIFY(std::abs(nt - na) < 2e-4);
+        QVERIFY(gamma > 0.5 && gamma < 1);
+        QVERIFY(!plain.solution->global(QStringLiteral("emw.Gamma")));
     }
 
     void parallelPlate()
