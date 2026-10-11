@@ -134,6 +134,7 @@ struct DerivedValue {
 struct DerivedResult {
     QList<DerivedValue> values;
     QString error;
+    QString note;   ///< what it is worth knowing (a number integrated: its unit the area's)
 };
 /// Evaluates a Derived Values node (global, integral, average, maximum,
 /// minimum, pointeval, lineparams) on \a solution (its snapshot selected).

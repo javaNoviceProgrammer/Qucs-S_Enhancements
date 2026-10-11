@@ -121,6 +121,9 @@ struct SolveOptions {
     /// one (harmonic()) solved there, others at rest.
     bool harmonic = false;
     double frequency = 0;
+    /// A mode analysis's: by domain, those whose modes are kept - the most
+    /// of |E|² there (its share emw.Gamma); empty: the nearest the index.
+    std::vector<char> track;
 };
 
 /// An optical spectrum of quantum states: at photon energies (J), from so
@@ -158,6 +161,9 @@ public:
     virtual void setGlobals() = 0;
     /// Whether it has a time derivative (heat), for a step in time.
     virtual bool hasMass() const { return false; }
+    /// Whether its last solve's Newton's method converged (one that did not
+    /// leaves its field as the last step had it, and says so in the log).
+    virtual bool converged() const { return true; }
     /// Whether it has a frequency domain (magnetic fields' eddy currents).
     virtual bool harmonic() const { return false; }
     /// Whether it is a mode analysis (its field a mode of the cross-section).

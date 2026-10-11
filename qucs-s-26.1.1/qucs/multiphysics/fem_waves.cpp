@@ -299,8 +299,10 @@ private:
     struct Mode {
         cd beta;
         Eigen::VectorXcd x;   // et then ez, by equation
+        double share = NaN;   // of its |E|² in the domains tracked
     };
     std::vector<Mode> a_modes;
+    bool a_tracking = false;
     double a_k0 = 0;
     int a_selected = -1;
 };
@@ -475,7 +477,8 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     for (std::size_t d = 0; d < a_media.domains.size(); ++d) layers = layers || (f.domains[d] && a_media.domains[d].pml);
     const int wanted = std::max(1, count);
     // The share of a mode's |E|² in the layers.
-    auto inLayers = [&](const Eigen::VectorXcd& x, cd beta) {
+    // A mode's share of |E|² in the domains \a in picks.
+    auto shareIn = [&](const Eigen::VectorXcd& x, cd beta, const std::function<bool(int)>& in) {
         double all = 0, there = 0;
         EdgeSpace::Basis eb;
         Shape sh;
@@ -502,13 +505,18 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
                 e2 += q[2] * std::abs(am.det) * ((std::norm(ex) + std::norm(ey)) / std::norm(beta) + std::norm(ez));
             }
             all += e2;
-            if (a_media.domains[std::size_t(d)].pml) there += e2;
+            if (in(d)) there += e2;
         }
         return all > 0 ? there / all : 0.0;
     };
+    auto inLayers = [&](const Eigen::VectorXcd& x, cd beta) { return shareIn(x, beta, [&](int d) { return a_media.domains[std::size_t(d)].pml; }); };
+    // Tracking domains: more modes found, those most in them kept.
+    a_tracking = false;
+    for (char c : o.track) a_tracking = a_tracking || c;
+    auto tracked = [&](int d) { return std::size_t(d) < o.track.size() && o.track[std::size_t(d)]; };
     // (As many again while too few are left, the layers' crowding the guess.)
     int dropped = 0, products = 0, restarts = 0;
-    for (int asked = layers ? 2 * wanted + 4 : wanted;; asked *= 2) {
+    for (int asked = a_tracking ? std::max(2 * wanted + 4, wanted + 6) : layers ? 2 * wanted + 4 : wanted;; asked *= 2) {
         asked = std::min(asked, std::max(1, a_n - 2));
         const EigenResult r = largestEigenvalues(a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(B * x); });
         if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
@@ -532,17 +540,23 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
             Eigen::Index largest = 0;
             if (a_nEdge > 0) x.head(a_nEdge).cwiseAbs().maxCoeff(&largest);
             if (std::abs(x(largest)) > 0) x *= std::conj(x(largest)) / std::abs(x(largest));
-            a_modes.push_back({beta, x});
+            a_modes.push_back({beta, x, a_tracking ? shareIn(x, beta, tracked) : NaN});
         }
         if (!layers || int(a_modes.size()) >= wanted || asked >= 96 || asked >= a_n - 2) break;
     }
     // By their effective index, the highest first; those nearest the guess
-    // as many as asked.
+    // as many as asked - or, tracking, those most in the domains tracked.
     if (int(a_modes.size()) > wanted) {
         std::sort(a_modes.begin(), a_modes.end(), [&](const Mode& a, const Mode& b) {
+            if (a_tracking) return a.share > b.share;
             return std::abs(a.beta * a.beta + sigma) < std::abs(b.beta * b.beta + sigma);
         });
         a_modes.resize(std::size_t(wanted));
+    }
+    if (a_tracking) {
+        QStringList shares;
+        for (const Mode& m : a_modes) shares << formatNumber(m.share, 3);
+        a_s.log << tr("%1: the modes most in the domains tracked: their shares of |E|² %2").arg(a_node->name(), shares.join(QLatin1String(", ")));
     }
     std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) { return a.beta.real() > b.beta.real(); });
     if (dropped) a_s.log << tr("%1: %2 modes of the absorbing layers left out").arg(a_node->name()).arg(dropped);
@@ -609,10 +623,13 @@ void ModeProblem::setGlobals()
     a_s.setGlobal(p + QStringLiteral("neff"), beta.real() / a_k0, Dim(), tr("effective index: β/k0"));
     a_s.setGlobal(p + QStringLiteral("beta"), beta.real(), perMetre, tr("propagation constant β"));
     a_s.setGlobal(p + QStringLiteral("alpha"), -beta.imag(), perMetre, tr("attenuation constant α (Np/m)"));
-    a_s.setGlobal(p + QStringLiteral("loss"), -beta.imag() * 20 / std::log(10.0), perMetre, tr("loss in dB per metre"));
+    a_s.setGlobal(p + QStringLiteral("loss"), -beta.imag() * 20 / std::log(10.0), perMetre, tr("loss in dB per metre"), QStringLiteral("dB/m"));
     a_s.setGlobal(p + QStringLiteral("neff_im"), -beta.imag() / a_k0, Dim(), tr("effective index's imaginary part, its loss (β = k0 (neff - j neff_im))"));
     a_s.setGlobal(p + QStringLiteral("lambda0"), 2 * M_PI / a_k0, Dim::length(), tr("free-space wavelength"));
     a_s.setGlobal(p + QStringLiteral("mode"), a_selected + 1, Dim(), tr("the mode's number, by effective index"));
+    if (a_tracking)
+        a_s.setGlobal(p + QStringLiteral("Gamma"), a_modes[std::size_t(a_selected)].share, Dim(),
+                      tr("the mode's share of |E|² in the domains its step tracks: a confinement factor"));
 }
 
 // ------------------------------------------------------------------ Waves in the plane

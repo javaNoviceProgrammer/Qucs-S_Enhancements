@@ -113,6 +113,10 @@ public:
     void cancelJob();
     /// The last job's error, or empty.
     QString lastError() const { return a_lastError; }
+    /// The last job's warnings: a Newton's method that did not converge...
+    QStringList lastWarnings() const { return a_lastWarnings; }
+    /// A study's tag, or (empty) the first study's.
+    QString studyTag(const QString& study) const;
     /// What was said: built, meshed, solved, failed.
     QStringList messages() const { return a_messages; }
 
@@ -196,7 +200,6 @@ private:
     void watchFiles();
     void pointerMoved(QPointF point, bool inside);
     void picked(qucs_s::fem::Level level, int entity);
-    QString studyTag(const QString& study) const;
 
     qucs_s::fem::Model a_model;
     QUndoStack* a_undo = nullptr;
@@ -213,6 +216,7 @@ private:
     std::unique_ptr<qucs_s::fem::Locator> a_locator;
     std::shared_ptr<Job> a_job;
     QString a_lastError;
+    QStringList a_lastWarnings;
     QStringList a_messages;
     QString a_focus;
     QString a_plotGroup;

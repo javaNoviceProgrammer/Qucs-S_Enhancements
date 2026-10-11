@@ -10,6 +10,8 @@
  */
 #include "fem_results.h"
 
+#include <QRegularExpression>
+
 #include <QCoreApplication>
 #include <QJsonArray>
 
@@ -615,7 +617,15 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
                 problems << tr("%1 varies over the model: evaluate it at a point, or integrate it").arg(text);
                 continue;
             }
-            add(text, e.constant(), e.dim(), exprs.size() == 1);
+            // A global of a unit its dimension cannot say (emw.loss, dB/m): in it.
+            bool own = false;
+            if (unitText.trimmed().isEmpty())
+                for (const Variable& g : solution.globals())
+                    if (g.name == text && !g.unit.isEmpty()) {
+                        out.values << DerivedValue{text, e.constant(), e.dim(), solution.globalText(text)};
+                        own = true;
+                    }
+            if (!own) add(text, e.constant(), e.dim(), exprs.size() == 1);
         }
         if (!problems.isEmpty()) out.error = problems.join(QLatin1String("; "));
         return out;
@@ -642,6 +652,22 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             return out;
         }
         const Dim measure = level == Level::Boundary ? (revolved ? Dim::area() : Dim::length()) : (revolved ? Dim::of(3) : Dim::area());
+        // A number integrated - a function of the model's without a unit:
+        // the integral's unit is the area's (length's) alone; said.
+        if (type == QLatin1String("integral") && e.dim().isNone())
+            if (const Node* defs = solution.model().root.child(QStringLiteral("definitions")))
+                for (const Node& fn : defs->children) {
+                    const QString name = fn.text(QStringLiteral("name")).trimmed();
+                    if ((fn.type != QLatin1String("analytic") && fn.type != QLatin1String("interpolation")) || name.isEmpty()
+                        || !fn.text(QStringLiteral("unit")).trimmed().isEmpty())
+                        continue;
+                    if (QRegularExpression(QStringLiteral("\\b%1\\s*\\(").arg(QRegularExpression::escape(name))).match(text).hasMatch()) {
+                        out.note = tr("%1 has no unit (its Function's unit): what is integrated is a number, the integral in %2 - the "
+                                      "%3's unit alone")
+                                       .arg(name, dimName(measure), level == Level::Boundary ? tr("length") : tr("area"));
+                        break;
+                    }
+                }
         if (type == QLatin1String("integral")) add(text, o.integral, e.dim() * measure);
         else if (type == QLatin1String("average")) add(text, o.integral / o.measure, e.dim());
         else if (type == QLatin1String("maximum")) add(text, o.max, e.dim());

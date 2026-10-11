@@ -337,7 +337,7 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         if (sol)
             for (const Variable& v : sol->globals())
                 globals.append(QJsonObject{{QStringLiteral("name"), v.name},
-                                           {QStringLiteral("value"), formatQuantity(sol->global(v.name).value_or(NAN), v.dim)},
+                                           {QStringLiteral("value"), sol->globalText(v.name)},
                                            {QStringLiteral("is"), v.description}});
         QJsonObject o{{QStringLiteral("at a point"), vars}};
         if (sol) o.insert(QStringLiteral("globals"), globals);
@@ -618,7 +618,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     const std::shared_ptr<Solution> sol = set->solutions.back();
     sol->select(-1);   // (its last output time)
     QJsonObject globals;
-    for (const Variable& v : sol->globals()) globals.insert(v.name, formatQuantity(sol->global(v.name).value_or(NAN), v.dim));
+    for (const Variable& v : sol->globals()) globals.insert(v.name, sol->globalText(v.name));
     // A sweep's solutions, each with its globals (at its last time).
     QJsonArray swept;
     if (set->solutions.size() > 1)
@@ -626,7 +626,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
             Solution& s = *set->solutions[i];
             s.select(-1);
             QJsonObject g;
-            for (const Variable& v : s.globals()) g.insert(v.name, formatQuantity(s.global(v.name).value_or(NAN), v.dim));
+            for (const Variable& v : s.globals()) g.insert(v.name, s.globalText(v.name));
             swept.append(QJsonObject{{QStringLiteral("point"), int(i) + 1}, {QStringLiteral("parameters"), s.label}, {QStringLiteral("globals"), g}});
         }
     QJsonArray derived;
@@ -639,6 +639,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
         for (int i = from; i < int(r.values.size()); ++i) values.insert(r.values[i].name, r.values[i].text);
         QJsonObject o{{QStringLiteral("tag"), d.tag}, {QStringLiteral("name"), d.name()}, {QStringLiteral("values"), values}};
         if (from > 0) o.insert(QStringLiteral("note"), tr("%1 values: the last 40 here; fem_evaluate with 'all' gives each").arg(r.values.size()));
+        else if (!r.note.isEmpty()) o.insert(QStringLiteral("note"), r.note);
         if (!r.error.isEmpty()) o.insert(QStringLiteral("error"), r.error);
         derived.append(o);
     }
@@ -666,7 +667,8 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                            : v.name.endsWith(QLatin1String(".neff")) || v.name.endsWith(QLatin1String(".loss"))
                                                  || v.name.endsWith(QLatin1String(".lambda"));
                 const std::optional<double> g = sol->global(v.name);
-                if (wanted && g && std::isfinite(*g)) m.insert(v.name, formatQuantity(*g / (states ? 1.602176634e-19 : 1.0), states ? Dim() : v.dim) + (states ? QStringLiteral(" eV") : QString()));
+                if (wanted && g && std::isfinite(*g))
+                    m.insert(v.name, states ? formatQuantity(*g / 1.602176634e-19, Dim()) + QStringLiteral(" eV") : sol->globalText(v.name));
             }
             modes.append(m);
         }
@@ -689,6 +691,9 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                   {QStringLiteral("derived values"), derived},
                                   {QStringLiteral("shown"), doc->shownPlotGroup().isEmpty() ? QString() : doc->model().find(doc->shownPlotGroup())->name()}};
     for (auto it = extra.begin(); it != extra.end(); ++it) result.insert(it.key(), it.value());
+    // (A Newton's method that did not converge, a coupling that did not
+    // agree: said here, not only in the log.)
+    if (!doc->lastWarnings().isEmpty()) result.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(doc->lastWarnings()));
     return jsonResult(result);
 }
 
@@ -698,73 +703,139 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
     const QString study = args.value(QLatin1String("study")).toString();
-    const std::shared_ptr<SolutionSet> set = doc->solutions(study);
+    std::shared_ptr<SolutionSet> set = doc->solutions(study);
+    QString usedStudy;
+    if ((!set || set->solutions.empty()) && study.trimmed().isEmpty())
+        // (No study given and the first not solved: the first that is.)
+        for (const Node* st : doc->model().studies())
+            if (const std::shared_ptr<SolutionSet> other = doc->solutions(st->tag); other && !other->solutions.empty()) {
+                set = other;
+                usedStudy = st->tag;
+                break;
+            }
     if (!set || set->solutions.empty()) return errorResult(tr("The study is not solved yet: fem_solve solves it."));
     const QString expression = args.value(QLatin1String("expression")).toString();
     if (expression.trimmed().isEmpty()) return errorResult(tr("What? ('expression': V, es.normE, T, es.C11...)"));
+    // Several, split by ';': each at each point, or each a global value.
+    QStringList items;
+    for (const QString& part : expression.split(QLatin1Char(';')))
+        if (!part.trimmed().isEmpty()) items << part.trimmed();
     const QString unit = args.value(QLatin1String("unit")).toString();
+    const QString over = args.value(QLatin1String("over")).toString();
+    if (!over.isEmpty()
+        && !QStringList{QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"), QStringLiteral("minimum")}.contains(
+            args.value(QLatin1String("kind")).toString(QStringLiteral("integral"))))
+        return errorResult(tr("'kind' is integral, average, maximum or minimum."));
     // Which solutions: a time, a sweep's point, or all of them.
     const bool all = args.value(QLatin1String("all")).toBool();
     QString time = args.value(QLatin1String("time")).toVariant().toString();
     const QString frequency = args.value(QLatin1String("frequency")).toVariant().toString();
-    const std::vector<Instance> which = instances(*set, all, args.value(QLatin1String("point")).toInt(0), time, frequency,
-                                                  args.value(QLatin1String("mode")).toInt(0));
-    if (which.empty()) return errorResult(tr("No such solution."));
-    QJsonObject o{{QStringLiteral("expression"), expression}};
-    if (doc->solutionStale(study)) o.insert(QStringLiteral("note"), tr("the model changed since it was solved"));
-    if (which.size() > 1 || !which.front().label.isEmpty())
-        o.insert(QStringLiteral("solutions"), which.size() > 1 ? tr("%1: each value's name says which").arg(which.size()) : which.front().label);
-    QJsonArray values;
-    QStringList errors;
-    for (const Instance& in : which) {
-        Solution* sol = qucs_s::fem::select(*set, in);
-        if (!sol) continue;
-        const QString prefix = which.size() > 1 && !in.label.isEmpty() ? in.label + QStringLiteral(": ") : QString();
-        if (args.contains(QLatin1String("at"))) {
-            const Locator locator(sol->mesh());
-            for (const QJsonValue& v : args.value(QLatin1String("at")).toArray()) {
-                const QJsonArray p = v.toArray();
-                const QPointF at(p.at(0).toDouble(), p.at(1).toDouble());
-                QString why;
-                Dim dim;
-                const std::optional<double> value = evaluateAt(*sol, locator, expression, at, &why, &dim);
-                QJsonObject vo{{QStringLiteral("at"), p}};
-                if (!prefix.isEmpty()) vo.insert(QStringLiteral("solution"), in.label);
-                if (value) {
-                    const DisplayUnit du = displayUnit(unit, dim);
-                    vo.insert(QStringLiteral("value"), du.name.isEmpty() ? formatQuantity(*value, dim)
-                                                                        : formatNumber((*value - du.offset) / du.scale, 6) + QLatin1Char(' ') + du.name);
-                    vo.insert(QStringLiteral("SI"), *value);
-                } else {
-                    vo.insert(QStringLiteral("error"), why);
+    struct Found {
+        QJsonArray values;
+        QStringList errors;
+        QString note, solutions;
+        bool any = false;
+    };
+    auto evaluateIn = [&](const SolutionSet& in) {
+        Found out;
+        const std::vector<Instance> which = instances(in, all, args.value(QLatin1String("point")).toInt(0), time, frequency,
+                                                      args.value(QLatin1String("mode")).toInt(0));
+        if (which.empty()) {
+            out.errors << tr("No such solution.");
+            return out;
+        }
+        out.any = true;
+        if (which.size() > 1 || !which.front().label.isEmpty())
+            out.solutions = which.size() > 1 ? tr("%1: each value's name says which").arg(which.size()) : which.front().label;
+        for (const Instance& at : which) {
+            Solution* sol = qucs_s::fem::select(in, at);
+            if (!sol) continue;
+            const QString prefix = which.size() > 1 && !at.label.isEmpty() ? at.label + QStringLiteral(": ") : QString();
+            if (args.contains(QLatin1String("at"))) {
+                const Locator locator(sol->mesh());
+                for (const QJsonValue& v : args.value(QLatin1String("at")).toArray()) {
+                    const QJsonArray p = v.toArray();
+                    const QPointF point(p.at(0).toDouble(), p.at(1).toDouble());
+                    for (const QString& item : items) {
+                        QString why;
+                        Dim dim;
+                        const std::optional<double> value = evaluateAt(*sol, locator, item, point, &why, &dim);
+                        QJsonObject vo{{QStringLiteral("at"), p}};
+                        if (items.size() > 1) vo.insert(QStringLiteral("name"), item);
+                        if (!prefix.isEmpty()) vo.insert(QStringLiteral("solution"), at.label);
+                        if (value) {
+                            const DisplayUnit du = displayUnit(unit, dim);
+                            vo.insert(QStringLiteral("value"), du.name.isEmpty() ? formatQuantity(*value, dim)
+                                                                                : formatNumber((*value - du.offset) / du.scale, 6) + QLatin1Char(' ') + du.name);
+                            vo.insert(QStringLiteral("SI"), *value);
+                        } else {
+                            vo.insert(QStringLiteral("error"), why);
+                            out.errors << why;
+                        }
+                        out.values.append(vo);
+                    }
                 }
-                values.append(vo);
+                continue;
             }
-            continue;
+            // Over domains or boundaries, or a global value.
+            FNode node;
+            if (over.isEmpty()) {
+                node.type = QStringLiteral("global");
+            } else {
+                node.type = args.value(QLatin1String("kind")).toString(QStringLiteral("integral"));
+                node.props.insert(QStringLiteral("level"), over);
+                node.props.insert(QStringLiteral("selection"), args.value(QLatin1String("selection")).toObject(QJsonObject{{QStringLiteral("all"), true}}));
+            }
+            node.props.insert(QStringLiteral("expression"), expression);
+            node.props.insert(QStringLiteral("unit"), unit);
+            const DerivedResult r = evaluateDerived(*sol, node);
+            for (const DerivedValue& v : r.values)
+                out.values.append(QJsonObject{{QStringLiteral("name"), prefix + v.name}, {QStringLiteral("value"), v.text}, {QStringLiteral("SI"), v.value}});
+            if (!r.error.isEmpty()) out.errors << prefix + r.error;
+            if (out.note.isEmpty()) out.note = r.note;
         }
-        // Over domains or boundaries, or a global value.
-        const QString over = args.value(QLatin1String("over")).toString();
-        FNode node;
-        if (over.isEmpty()) {
-            node.type = QStringLiteral("global");
-        } else {
-            node.type = args.value(QLatin1String("kind")).toString(QStringLiteral("integral"));
-            if (!QStringList{QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"), QStringLiteral("minimum")}.contains(node.type))
-                return errorResult(tr("'kind' is integral, average, maximum or minimum."));
-            node.props.insert(QStringLiteral("level"), over);
-            node.props.insert(QStringLiteral("selection"), args.value(QLatin1String("selection")).toObject(QJsonObject{{QStringLiteral("all"), true}}));
+        return out;
+    };
+    Found found = evaluateIn(*set);
+    // No study given and the first has not what it reads: the first
+    // computed study that has.
+    auto unknown = [](const Found& f) {
+        if (f.errors.isEmpty()) return false;
+        for (const QString& e : f.errors)
+            if (!e.contains(QLatin1String("is not a parameter, a variable or a function"))) return false;
+        for (const QJsonValue& v : f.values)
+            if (v.toObject().contains(QLatin1String("SI"))) return false;
+        return true;
+    };
+    if (study.trimmed().isEmpty() && unknown(found)) {
+        const QString first = usedStudy.isEmpty() ? doc->studyTag(QString()) : usedStudy;
+        bool replaced = false;
+        for (const Node* st : doc->model().studies()) {
+            if (st->tag == first) continue;
+            const std::shared_ptr<SolutionSet> other = doc->solutions(st->tag);
+            if (!other || other->solutions.empty()) continue;
+            Found f = evaluateIn(*other);
+            if (f.any && !unknown(f) && f.errors.isEmpty()) {
+                found = f;
+                usedStudy = st->tag;
+                replaced = true;
+                break;
+            }
         }
-        node.props.insert(QStringLiteral("expression"), expression);
-        node.props.insert(QStringLiteral("unit"), unit);
-        const DerivedResult r = evaluateDerived(*sol, node);
-        for (const DerivedValue& v : r.values)
-            values.append(QJsonObject{{QStringLiteral("name"), prefix + v.name}, {QStringLiteral("value"), v.text}, {QStringLiteral("SI"), v.value}});
-        if (!r.error.isEmpty()) errors << prefix + r.error;
+        if (!replaced) {
+            const Node* st = doc->model().find(first);
+            for (QString& e : found.errors) e += tr(" (in %1, the first study: give 'study')").arg(st ? st->name() : first);
+        }
     }
-    o.insert(QStringLiteral("values"), values);
-    errors.removeDuplicates();
-    if (!errors.isEmpty()) o.insert(QStringLiteral("error"), errors.join(QLatin1String("; ")));
-    if (values.isEmpty()) return errorResult(errors.join(QLatin1String("; ")));
+    QJsonObject o{{QStringLiteral("expression"), expression}};
+    if (doc->solutionStale(usedStudy.isEmpty() ? study : usedStudy)) o.insert(QStringLiteral("note"), tr("the model changed since it was solved"));
+    if (!usedStudy.isEmpty()) o.insert(QStringLiteral("study"), usedStudy);
+    if (!found.note.isEmpty()) o.insert(QStringLiteral("note"), found.note);
+    if (!found.solutions.isEmpty()) o.insert(QStringLiteral("solutions"), found.solutions);
+    o.insert(QStringLiteral("values"), found.values);
+    found.errors.removeDuplicates();
+    if (!found.errors.isEmpty()) o.insert(QStringLiteral("error"), found.errors.join(QLatin1String("; ")));
+    if (found.values.isEmpty()) return errorResult(found.errors.join(QLatin1String("; ")));
     return jsonResult(o);
 }
 

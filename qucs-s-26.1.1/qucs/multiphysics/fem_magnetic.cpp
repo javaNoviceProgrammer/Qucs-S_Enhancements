@@ -223,8 +223,10 @@ public:
     bool solve(const SolveOptions& options, QString* error) override;
     void setGlobals() override;
     bool harmonic() const override { return true; }
+    bool converged() const override { return a_converged; }
 
 private:
+    bool a_converged = true;
     /// Each element's terms at the field \a u (real; the stationary
     /// tangent and internal force at it): K (ν β·β, the tangent where a
     /// curve is), Fint (∫ H·β), Fext (∫ Je N, the magnets' in the frequency
@@ -982,6 +984,7 @@ bool MagneticProblem::solveStatic(const SolveOptions& o, QString* error)
         if (converged) a_s.log << tr("%1: Newton converged in %2 steps").arg(a_node->name()).arg(steps);
         else a_s.log << tr("Warning: %1: Newton's method did not converge in %2 steps").arg(a_node->name()).arg(iterations);
     }
+    a_converged = converged;
     std::copy(u.begin(), u.end(), fld.values.begin());
     std::fill(fld.values.begin() + nd, fld.values.end(), 0.0);
     // Each coil: its flux linkage, its voltage (its resistance's).

@@ -103,6 +103,7 @@ struct Variable {
     QString name;
     Dim dim;
     QString description;
+    QString unit;   ///< as shown, where its dimension cannot say it (dB/m); empty: its dimension's
 };
 
 class PointEvaluator;
@@ -151,7 +152,9 @@ public:
     /// The variables and the globals, for a menu and for Claude.
     QList<Variable> variables() const;
     QList<Variable> globals() const;
-    void setGlobal(const QString& name, double value, const Dim& dim, const QString& description = {});
+    void setGlobal(const QString& name, double value, const Dim& dim, const QString& description = {}, const QString& unit = {});
+    /// A global's value as it is shown: in its unit (dB/m) where it has one.
+    QString globalText(const QString& name) const;
     std::optional<double> global(const QString& name) const;
 
     /// Each physics' coefficient expressions, by domain (compiled in the
