@@ -157,6 +157,14 @@ QString formatText()
         "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step; "
         "\"exports\": touchstone (\"line\", \"length\", \"zref\"), spice (\"what\": line or matrix), qucspart (an RLCG subcircuit) - "
         "fem_export writes them.\n"
+        "Waves: \"modes\" (tag emw) - a waveguide cross-section's modes, a \"mode\" step {\"frequency\": \"1550[nm]\" (Hz or a "
+        "wavelength), \"modes\": 4, \"neff\": the index to search about}; features wave (\"constitutive\": \"n\" - n, kappa - or "
+        "\"epsilonr\"; \"anisotropy\": \"diagonal\" with nx, ny, nz; \"thermooptic\" with T, Tref and the material's dndT), pml, "
+        "pec (the outside by default), pmc; each mode a solution (\"mode\" picks one) with emw.neff, emw.loss (dB/m), emw.alpha, "
+        "and fields emw.Ex... emw.Sz. \"waves\" (tag ewfd) - waves in the plane (\"polarization\": \"ez\" or \"hz\") in a "
+        "frequency step; features wave, pml, pec, pmc, scattering (\"incident\": \"plane\" with E0, angle), port (\"name\", "
+        "\"excite\") - S-parameters ewfd.S21, S21_im, S21dB, S21_abs, S21_arg; a touchstone export \"of\": \"ports\" writes them. "
+        "A stationary or frequency step's \"adaptive\": true refines the mesh where the error is largest (\"adaptsteps\" times; in frequency, the last one's).\n"
         "Expressions: numbers (1.5e-3, Qucs's 10u 2.2k, 3mm, 1GHz), units in brackets (3[mm], 20[degC], W/(m*K)), + - * / ^, "
         "functions (sin, exp, sqrt, min, max, if(c,a,b)...), constants (pi, eps0, mu0, c0, kB, q0), the parameters. In the "
         "geometry and the mesh a plain number is in the component's unit and parameters are converted to it (L = 2[mm] "
@@ -599,6 +607,22 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                                           {QStringLiteral("solutions"), int(set->solutions.size())},
                                                           {QStringLiteral("each"), swept}});
     }
+    if (sol->modeAnalysis) {
+        // Each mode's effective index and loss.
+        QJsonArray modes;
+        const int was = sol->selected();
+        for (int k = 0; k < sol->snapshotCount() && k < 60; ++k) {
+            sol->select(k);
+            QJsonObject m{{QStringLiteral("mode"), sol->snapshotMode(k)},
+                          {QStringLiteral("frequency"), formatQuantity(sol->snapshotFrequency(k), Dim::of(0, 0, -1))}};
+            for (const Variable& v : sol->globals())
+                if (v.name.endsWith(QLatin1String(".neff")) || v.name.endsWith(QLatin1String(".loss")))
+                    m.insert(v.name, formatQuantity(sol->global(v.name).value_or(NAN), v.dim));
+            modes.append(m);
+        }
+        sol->select(was);
+        extra.insert(QStringLiteral("modes"), modes);
+    }
     if (sol->snapshotCount() > 0)
         extra.insert(sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
                      QJsonObject{{QStringLiteral("outputs"), sol->snapshotCount()},
@@ -632,7 +656,8 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     const bool all = args.value(QLatin1String("all")).toBool();
     QString time = args.value(QLatin1String("time")).toVariant().toString();
     const QString frequency = args.value(QLatin1String("frequency")).toVariant().toString();
-    const std::vector<Instance> which = instances(*set, all, args.value(QLatin1String("point")).toInt(0), time, frequency);
+    const std::vector<Instance> which = instances(*set, all, args.value(QLatin1String("point")).toInt(0), time, frequency,
+                                                  args.value(QLatin1String("mode")).toInt(0));
     if (which.empty()) return errorResult(tr("No such solution."));
     QJsonObject o{{QStringLiteral("expression"), expression}};
     if (doc->solutionStale(study)) o.insert(QStringLiteral("note"), tr("the model changed since it was solved"));
@@ -741,16 +766,19 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
         doc->setModel(m, tr("Add %1").arg(g.label));
     }
     // At a time, a sweep's point: the plot group's settings (one step of Undo).
-    if (args.contains(QLatin1String("time")) || args.contains(QLatin1String("point")) || args.contains(QLatin1String("frequency"))) {
+    if (args.contains(QLatin1String("time")) || args.contains(QLatin1String("point")) || args.contains(QLatin1String("frequency"))
+        || args.contains(QLatin1String("mode"))) {
         const QString time = args.value(QLatin1String("time")).toVariant().toString();
         const QString frequency = args.value(QLatin1String("frequency")).toVariant().toString();
         const int point = args.value(QLatin1String("point")).toInt(0);
         const bool hasTime = args.contains(QLatin1String("time")), hasPoint = args.contains(QLatin1String("point"));
-        const bool hasFrequency = args.contains(QLatin1String("frequency"));
+        const bool hasFrequency = args.contains(QLatin1String("frequency")), hasMode = args.contains(QLatin1String("mode"));
+        const int mode = args.value(QLatin1String("mode")).toInt(1);
         QString why;
         if (!doc->editNode(group, [&](FNode& n) {
                 if (hasTime) n.props.insert(QStringLiteral("time"), time);
                 if (hasFrequency) n.props.insert(QStringLiteral("frequency"), frequency);
+                if (hasMode) n.props.insert(QStringLiteral("mode"), mode);
                 if (hasPoint) n.props.insert(QStringLiteral("point"), point);
             }, tr("Show a Solution"), &why))
             return errorResult(why);

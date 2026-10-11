@@ -33,6 +33,8 @@
 
 namespace qucs_s::fem {
 
+class EdgeSpace;
+
 /// One physics solved: its field on its space, and what was found.
 struct Field {
     QString tag;           ///< es, ec, ht, solid
@@ -59,6 +61,11 @@ struct Field {
     std::vector<std::vector<double>> matrix;
     double initial = 0;           ///< its value before it is solved
     bool solved = false;
+    /// A mode's tangential field on edge elements (its values first in
+    /// values, Ez's after them); null for a field of nodes alone.
+    std::shared_ptr<const EdgeSpace> edges;
+    /// Numbers that go with the field and its snapshots (a mode's β).
+    std::vector<double> extra;
 
     int count() const { return int(components.size()); }
     double value(int component, int dof) const { return values[std::size_t(component) * std::size_t(space->size()) + std::size_t(dof)]; }
@@ -180,6 +187,11 @@ public:
     double snapshotFrequency(int i) const { return a_snapshots[std::size_t(i)].frequency; }
     /// A snapshot's time (s) or, in the frequency domain, frequency (Hz).
     double snapshotValue(int i) const { return frequencyDomain ? snapshotFrequency(i) : snapshotTime(i); }
+    /// A mode analysis's snapshot: its mode's number (from 1), else 0.
+    int snapshotMode(int i) const { return a_snapshots[std::size_t(i)].mode; }
+    /// The mode the fields are of (from 1; 0: none).
+    int mode() const { return a_mode; }
+    void setMode(int m) { a_mode = m; }
     /// Its unit (s or Hz), its name in a dataset ("time", "frequency") and
     /// in a label ("t", "f").
     Dim snapshotDim() const { return frequencyDomain ? Dim::of(0, 0, -1) : Dim::of(0, 0, 1); }
@@ -207,6 +219,7 @@ public:
     QHash<QString, double> sweptValues;   ///< SI, by parameter
     bool timeDependent = false;
     bool frequencyDomain = false;         ///< its snapshots are of frequencies
+    bool modeAnalysis = false;            ///< and of modes, at each frequency
 
 private:
     void defineVariables();
@@ -222,6 +235,7 @@ private:
     bool a_axisymmetric = false;
     double a_time = 0;
     double a_frequency = 0;
+    int a_mode = 0;
     std::unique_ptr<Scope> a_pointScope;
     std::unique_ptr<Scope> a_globalScope;
     std::vector<VariableDef> a_defs;
@@ -229,6 +243,8 @@ private:
     struct Snapshot {
         double time = 0;
         double frequency = 0;
+        int mode = 0;
+        std::vector<std::vector<double>> extra;    // by field
         std::vector<std::vector<double>> values;   // by field
         std::vector<std::vector<Field::Terminal>> terminals;
         std::vector<double> globals;               // by a_globals' order
@@ -248,6 +264,8 @@ public:
     /// To reference point (xi, eta) of triangle \a t.
     void moveTo(int t, double xi, double eta);
     int triangle() const { return a_t; }
+    double xi() const { return a_xi; }
+    double eta() const { return a_eta; }
     /// The domain of the triangle it is in (-1: none).
     int domain() const;
     const Solution& solution() const { return a_s; }
@@ -287,6 +305,12 @@ private:
 /// The variables a solution of \a model would have (x, y, V, es.normE,
 /// ht.qx, solid.mises...): to check an expression before it is solved.
 QList<Variable> modelVariables(const Model& model);
+
+/// Each triangle's error indicator of field \a field of \a solution
+/// (Zienkiewicz and Zhu's: its gradient against one recovered from its
+/// neighbours' in its domain, its L2 norm on the triangle); empty for a
+/// field of edge elements.
+std::vector<double> errorIndicators(const Solution& solution, int field);
 
 /// A study solved on one mesh with one set of parameters, or why not.
 struct StudyResult {

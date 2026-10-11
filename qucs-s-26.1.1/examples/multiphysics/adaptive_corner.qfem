@@ -1,0 +1,36 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A field at a sharp corner, its mesh adapted",
+    "description": "An L-shaped gap between two electrodes: at the electrode's re-entrant corner the field grows without bound. A coarse mesh is solved, made finer where the error estimated (Zienkiewicz and Zhu's) is largest, and solved again, four times: 174 triangles to 1168, the energy then within 0.1 % of that on a uniform mesh of ninety times as many, the finest triangles at the corner.",
+    "parameters": [{"name": "s", "expression": "1[mm]", "description": "the gap's size"}],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "rectangle", "label": "square", "size": ["2*s", "2*s"]},
+            {"type": "rectangle", "label": "electrode", "position": ["s", "s"], "size": ["s", "s"]},
+            {"type": "difference", "label": "gap", "input": ["square"], "tools": ["electrode"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Air", "selection": {"all": true}}],
+        "physics": [{
+            "type": "electrostatics", "tag": "es", "order": "1",
+            "features": [
+                {"type": "terminal", "label": "The corner's electrode", "name": "1", "V0": "1[V]",
+                 "selection": {"box": [0.99, 0.99, 2.01, 2.01]}},
+                {"type": "ground", "label": "The outer electrode", "selection": {"box": [-0.01, -0.01, 0.01, 2.01]}},
+                {"type": "ground", "label": "The outer electrode, below", "selection": {"box": [-0.01, -0.01, 2.01, 0.01]}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.25"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary", "adaptive": true, "adaptsteps": 4}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Field and Mesh", "plots": [
+                {"type": "surface", "expression": "es.normE", "unit": "V/mm"},
+                {"type": "meshplot"}
+            ]}
+        ],
+        "derived": [{"type": "global", "label": "Energy and capacitance", "expression": "es.W; es.C11"}]
+    }
+}

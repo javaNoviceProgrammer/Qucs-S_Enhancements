@@ -251,7 +251,7 @@ QList<NodeKind> makeKinds()
                        tr("What a charge, a current, a power or a force of the 2D model is for: per this length out of the plane")),
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-          QStringLiteral("magnetic")},
+          QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -418,7 +418,9 @@ QList<NodeKind> makeKinds()
           spatial(QStringLiteral("E"), tr("Young's modulus E"), QStringLiteral("Pa"), QString()),
           spatial(QStringLiteral("nu"), tr("Poisson's ratio ν"), QString(), QString()),
           spatial(QStringLiteral("alpha"), tr("Thermal expansion α"), QStringLiteral("1/K"), QString()),
-          spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QString())},
+          spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QString()),
+          spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QString(), tr("The refractive index's imaginary part: n - jκ")),
+          expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QString())},
          {}, {}, false, false, QStringLiteral("mat"),
          tr("Its properties, each an expression (of T too, for a temperature-dependent one). Those empty are not defined.")});
 
@@ -694,6 +696,99 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), spatial(QStringLiteral("Js"), tr("Surface current density Js"), QStringLiteral("A/m"), QStringLiteral("0[A/m]"))},
          {}, {}, false, false, QStringLiteral("scd"), tr("A current sheet on the boundary, out of the plane.")});
 
+    // Electromagnetic waves: a cross-section's modes, waves in the plane.
+    auto waveEquation = [&](const QString& physics, const QString& title) {
+        const QString p = physics + QLatin1Char('/');
+        add({p + QStringLiteral("wave"), title, physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+             QStringLiteral("domainfeature"), Level::Domain,
+             {selectionProp(),
+              choice(QStringLiteral("constitutive"), tr("Electric displacement"), {QStringLiteral("n"), QStringLiteral("epsilonr")},
+                     {tr("Refractive index (n - jκ)"), tr("Relative permittivity (loss tangent, conductivity)")}, QStringLiteral("n")),
+              source,
+              shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("diagonal")},
+                             {tr("Isotropic"), tr("Diagonal (x, y, z)")}, QStringLiteral("isotropic")),
+                      QStringLiteral("source=user")),
+              shownIf(spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QStringLiteral("1")),
+                      QStringLiteral("source=user&constitutive=n&anisotropy=isotropic")),
+              shownIf(spatial(QStringLiteral("nx"), tr("nx"), QString(), QStringLiteral("1")), QStringLiteral("source=user&constitutive=n&anisotropy=diagonal")),
+              shownIf(spatial(QStringLiteral("ny"), tr("ny"), QString(), QStringLiteral("1")), QStringLiteral("source=user&constitutive=n&anisotropy=diagonal")),
+              shownIf(spatial(QStringLiteral("nz"), tr("nz"), QString(), QStringLiteral("1")), QStringLiteral("source=user&constitutive=n&anisotropy=diagonal")),
+              shownIf(spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QStringLiteral("0")),
+                      QStringLiteral("source=user&constitutive=n")),
+              shownIf(spatial(QStringLiteral("epsilonr"), tr("Relative permittivity εr"), QString(), QStringLiteral("1")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=isotropic")),
+              shownIf(spatial(QStringLiteral("epsxx"), tr("εxx"), QString(), QStringLiteral("1")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal")),
+              shownIf(spatial(QStringLiteral("epsyy"), tr("εyy"), QString(), QStringLiteral("1")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal")),
+              shownIf(spatial(QStringLiteral("epszz"), tr("εzz"), QString(), QStringLiteral("1")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal")),
+              shownIf(spatial(QStringLiteral("tand"), tr("Loss tangent tan δ"), QString(), QStringLiteral("0")),
+                      QStringLiteral("source=user&constitutive=epsilonr")),
+              shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("0[S/m]")),
+                      QStringLiteral("source=user&constitutive=epsilonr")),
+              shownIf(spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QStringLiteral("1")), QStringLiteral("source=user")),
+              flag(QStringLiteral("thermooptic"), tr("Thermo-optic"), false,
+                   tr("n + dn/dT (T - Tref): T from a heat physics (as T) or as given")),
+              shownIf(expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QStringLiteral("1.86e-4[1/K]")),
+                      QStringLiteral("thermooptic=true&source=user")),
+              shownIf(spatial(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("T")), QStringLiteral("thermooptic=true")),
+              shownIf(expr(QStringLiteral("Tref"), tr("Reference temperature"), QStringLiteral("K"), QStringLiteral("293.15[K]")),
+                      QStringLiteral("thermooptic=true"))},
+             {}, {}, false, false, QStringLiteral("wee"),
+             tr("ε from a refractive index n - jκ (its square) or a permittivity εr (1 - j tan δ) - jσ/ωε0; µr; anisotropic along x, "
+                "y and z; warmed: n + dn/dT (T - Tref). From their material or as given.")});
+        add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+             QStringLiteral("pml"), Level::Domain, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pml"),
+             tr("Domains beside, above or round the others that take the waves in without reflecting them: their coordinates "
+                "stretched into the complex plane, more the deeper.")});
+        add({p + QStringLiteral("pec"), tr("Perfect Electric Conductor"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+             QStringLiteral("ground"), Level::Boundary, {selectionProp()}, {}, {}, false, false, QStringLiteral("pec"),
+             tr("n × E = 0. On the outside by default.")});
+        add({p + QStringLiteral("pmc"), tr("Perfect Magnetic Conductor"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+             QStringLiteral("boundaryfeature"), Level::Boundary, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pmc"),
+             tr("n × H = 0: a plane of symmetry of the fields.")});
+    };
+    add({QStringLiteral("modes"), tr("Electromagnetic Waves, Mode Analysis"), QStringLiteral("physics"), QStringLiteral("emw"), Level::Domain,
+         {selectionProp(),
+          choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")},
+                 {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2"))},
+         {QStringLiteral("modes/wave"), QStringLiteral("modes/pml"), QStringLiteral("modes/pec"), QStringLiteral("modes/pmc")},
+         {QStringLiteral("modes/wave"), QStringLiteral("modes/pec")}, false, false, QStringLiteral("emw"),
+         tr("The modes of a waveguide's cross-section - the fields E(x, y) e^-jβz along it, full-vector (Et on Nédélec's edge "
+            "elements, Ez on Lagrange's) - their effective index β/k0 and loss, at a frequency or a wavelength.")});
+    waveEquation(QStringLiteral("modes"), tr("Wave Equation, Electric"));
+    add({QStringLiteral("waves"), tr("Electromagnetic Waves, Frequency Domain"), QStringLiteral("physics"), QStringLiteral("ewfd"), Level::Domain,
+         {selectionProp(),
+          choice(QStringLiteral("polarization"), tr("Field out of the plane"), {QStringLiteral("ez"), QStringLiteral("hz")},
+                 {tr("Electric (Ez: E across the plane - TE of a parallel-plate guide)"), tr("Magnetic (Hz: E in the plane)")},
+                 QStringLiteral("ez")),
+          choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
+                 QStringLiteral("2"))},
+         {QStringLiteral("waves/wave"), QStringLiteral("waves/pml"), QStringLiteral("waves/pec"), QStringLiteral("waves/pmc"),
+          QStringLiteral("waves/scattering"), QStringLiteral("waves/port")},
+         {QStringLiteral("waves/wave"), QStringLiteral("waves/pec")}, false, false, QStringLiteral("ewfd"),
+         tr("Waves in the plane at each frequency, Ez or Hz: -∇·(P ∇u) - k0² q u = 0. Ports give the S-parameters "
+            "(ewfd.S21, ewfd.S21dB); scattering boundaries and PMLs let waves out.")});
+    waveEquation(QStringLiteral("waves"), tr("Wave Equation, Electric"));
+    add({QStringLiteral("waves/scattering"), tr("Scattering Boundary Condition"), QStringLiteral("ewfd"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none),
+          choice(QStringLiteral("incident"), tr("Incident field"), {QStringLiteral("none"), QStringLiteral("plane")},
+                 {tr("None: the waves leave"), tr("A plane wave, coming in")}, QStringLiteral("none")),
+          shownIf(expr(QStringLiteral("E0"), tr("Its amplitude (Ez or Hz)"), QString(), QStringLiteral("1")), QStringLiteral("incident=plane")),
+          shownIf(expr(QStringLiteral("angle"), tr("Its direction"), QStringLiteral("angle"), QStringLiteral("0"),
+                       tr("Degrees from the x axis: where it goes")),
+                  QStringLiteral("incident=plane"))},
+         {}, {}, false, false, QStringLiteral("sctr"),
+         tr("A boundary waves pass out of as into free space (first order: best at right angles), and a plane wave may come in by.")});
+    add({QStringLiteral("waves/port"), tr("Port"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
+          flag(QStringLiteral("excite"), tr("Fed"), true, tr("Swept: each port fed in turn, the others matched - the S-matrix"))},
+         {}, {}, false, false, QStringLiteral("port"),
+         tr("A port across a waveguide: its first mode (found on the port's line) fed at 1 W, and taken out matched; the "
+            "S-parameters ewfd.S<i><j> (real and imaginary parts), ewfd.S<i><j>dB.")});
+
     // Mesh.
     const QStringList presets = {QStringLiteral("extremely fine"), QStringLiteral("extra fine"), QStringLiteral("finer"),
                                  QStringLiteral("fine"), QStringLiteral("normal"), QStringLiteral("coarse"),
@@ -724,7 +819,7 @@ QList<NodeKind> makeKinds()
 
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
-         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("sweep")},
+         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("sweep")},
          {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
@@ -743,13 +838,25 @@ QList<NodeKind> makeKinds()
                                    QStringLiteral("auto"),
                                    tr("A physics that reads its own field (k(T), radiation): Newton's method converges in a few "
                                       "steps; physics that read each other's are solved in turn till they agree"));
+        // Adaptive mesh refinement: at rest, or by the last frequency.
+        auto adaptive = [&](const QString& tooltip) { return flag(QStringLiteral("adaptive"), tr("Adaptive mesh refinement"), false, tooltip); };
+        const P adaptSteps = shownIf(integer(QStringLiteral("adaptsteps"), tr("Refinements"), 3), QStringLiteral("adaptive=true"));
+        P adaptPhysics;
+        adaptPhysics.key = QStringLiteral("adaptphysics");
+        adaptPhysics.label = tr("Refined by the error of");
+        adaptPhysics.kind = P::Physics;
+        adaptPhysics.defaultValue = QJsonArray();
+        adaptPhysics.tooltip = tr("None chosen: the first physics solved");
+        adaptPhysics.showIf = QStringLiteral("adaptive=true");
         add({QStringLiteral("stationary"), tr("Stationary"), QStringLiteral("step"), QStringLiteral("stationary"), Level::None,
              {physics, solver, nonlinear,
               flag(QStringLiteral("sweep"), tr("Terminal and coil sweep (capacitance, conductance, inductance matrices)"), true),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the nonlinear iterations, and of an iterative solver")),
               integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50,
-                      tr("Of the nonlinear iterations: a material that depends on a field"))},
+                      tr("Of the nonlinear iterations: a material that depends on a field")),
+              adaptive(tr("Solved, the mesh made finer where the error is largest, solved again: the study's last solution on the finest")),
+              adaptSteps, adaptPhysics},
              {}, {}, false, false, QStringLiteral("stat"), tr("The fields at rest: the steady state.")});
         add({QStringLiteral("transient"), tr("Time Dependent"), QStringLiteral("step"), QStringLiteral("transient"), Level::None,
              {physics,
@@ -779,10 +886,26 @@ QList<NodeKind> makeKinds()
               flag(QStringLiteral("sweep"), tr("Coil sweep (impedance matrix)"), true), solver,
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved in turn at each frequency")),
-              integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50)},
+              integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50),
+              adaptive(tr("Solved at each frequency, the mesh made finer where the last frequency's error is largest, all solved "
+                          "again")),
+              adaptSteps, adaptPhysics},
              {}, {}, false, false, QStringLiteral("freq"),
-             tr("The fields at each frequency: magnetic fields with their eddy currents (complex: their real and imaginary "
-                "parts), the other physics at rest at each; kept at each frequency.")});
+             tr("The fields at each frequency: magnetic fields with their eddy currents, waves in the plane (complex: their "
+                "real and imaginary parts), the other physics at rest at each; kept at each frequency.")});
+        add({QStringLiteral("mode"), tr("Mode Analysis"), QStringLiteral("step"), QStringLiteral("mode"), Level::None,
+             {physics,
+              text(QStringLiteral("frequency"), tr("Frequency or wavelength"), QStringLiteral("1550[nm]"),
+                   tr("In Hz, or a free-space wavelength in m (1550[nm]); several as range(...), linspace(...), logspace(...) or "
+                      "values split by commas - a dispersion")),
+              integer(QStringLiteral("modes"), tr("Modes"), 4, tr("How many, nearest the effective index below")),
+              expr(QStringLiteral("neff"), tr("Search about the effective index"), QString(), QString(),
+                   tr("Empty: the largest refractive index of the model")),
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
+                   tr("Of the physics solved before at each frequency"))},
+             {}, {}, false, false, QStringLiteral("mode"),
+             tr("A cross-section's modes at each frequency: each a solution, as an output time is - its effective index, "
+                "loss, fields. Physics at rest in it (heat for a thermo-optic index) are solved first.")});
         P rows;
         rows.key = QStringLiteral("parameters");
         rows.label = tr("Parameters swept");
@@ -829,9 +952,11 @@ QList<NodeKind> makeKinds()
         frequency.kind = P::Instant;
         frequency.unit = QStringLiteral("Hz");
         frequency.defaultValue = QString();
-        frequency.tooltip = tr("Of a study in the frequency domain: the frequency shown (empty: the last)");
+        frequency.tooltip = tr("Of a study in the frequency domain: the frequency shown, or its wavelength (empty: the last)");
         add({QStringLiteral("plotgroup"), tr("2D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup"), Level::None,
-             {study, point, time, frequency, text(QStringLiteral("title"), tr("Title"), QString())},
+             {study, point, time, frequency,
+              integer(QStringLiteral("mode"), tr("Mode"), 1, tr("Of a mode analysis: which mode, from 1 (by effective index)")),
+              text(QStringLiteral("title"), tr("Title"), QString())},
              {QStringLiteral("surface"), QStringLiteral("contour"), QStringLiteral("arrow"), QStringLiteral("meshplot"), QStringLiteral("deformation")},
              {}, false, false, QStringLiteral("pg"), tr("Plots shown together in the Graphics view.")});
         add({QStringLiteral("deformation"), tr("Deformation"), QStringLiteral("plot"), QStringLiteral("deformation"), Level::None,
@@ -1013,9 +1138,19 @@ QList<NodeKind> makeKinds()
         file.defaultValue = QString();
         file.tooltip = tr("Where it is written, relative to the model's folder (empty: model_tag beside it)");
         const P name = text(QStringLiteral("name"), tr("Subcircuit name"), QString(), tr("Empty: the node's tag"));
+        P portsPhysics;
+        portsPhysics.key = QStringLiteral("physics");
+        portsPhysics.label = tr("Physics");
+        portsPhysics.kind = P::Physics;
+        portsPhysics.defaultValue = QJsonArray{QStringLiteral("ewfd")};
+        portsPhysics.showIf = QStringLiteral("of=ports");
         add({QStringLiteral("touchstone"), tr("Touchstone File"), QStringLiteral("export"), QStringLiteral("touchstone"), Level::None,
-             {study, point, line, length, expr(QStringLiteral("zref"), tr("Reference impedance"), QStringLiteral("ohm"), QStringLiteral("50[ohm]")),
-              file},
+             {study, point,
+              choice(QStringLiteral("of"), tr("Of"), {QStringLiteral("line"), QStringLiteral("ports")},
+                     {tr("A transmission line of a length"), tr("Waves' ports (their S-matrix)")}, QStringLiteral("line")),
+              shownIf(line, QStringLiteral("of=line")), shownIf(length, QStringLiteral("of=line")),
+              shownIf(expr(QStringLiteral("zref"), tr("Reference impedance"), QStringLiteral("ohm"), QStringLiteral("50[ohm]")), QStringLiteral("of=line")),
+              portsPhysics, file},
              {}, {}, false, false, QStringLiteral("ts"),
              tr("A line of its length as a two-port: its S-parameters at each frequency of the study, a Touchstone file (.s2p) "
                 "for a schematic's S-parameter file part.")});
@@ -1081,7 +1216,7 @@ QList<const NodeKind*> nodeKinds()
 QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-            QStringLiteral("magnetic")};
+            QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves")};
 }
 
 // ------------------------------------------------------------------ Node

@@ -1,0 +1,55 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "An SOI strip waveguide's modes",
+    "description": "A silicon wire 500 × 220 nm in oxide, the window round it ended by perfectly matched layers: its TE- and TM-like modes at 1500, 1550 and 1600 nm - full-vector, Nédélec's edge elements - their effective indices (TE0 2.445, TM0 1.770 at 1550 nm), their fields and power flow, and the effective index against the wavelength.",
+    "parameters": [
+        {"name": "w", "expression": "500[nm]", "description": "the wire's width"},
+        {"name": "h", "expression": "220[nm]", "description": "its height"},
+        {"name": "W", "expression": "3.4[um]", "description": "the window's width"},
+        {"name": "H", "expression": "3.2[um]", "description": "its height"},
+        {"name": "d", "expression": "0.6[um]", "description": "the layers' thickness"}
+    ],
+    "components": [{
+        "unit": "um",
+        "geometry": [
+            {"type": "rectangle", "label": "pml", "base": "center", "size": ["W + 2*d", "H + 2*d"]},
+            {"type": "rectangle", "label": "oxide", "base": "center", "size": ["W", "H"]},
+            {"type": "rectangle", "label": "core", "base": "center", "size": ["w", "h"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon dioxide", "selection": {"only": ["oxide", "pml"]}},
+            {"material": "Silicon", "selection": {"only": ["core"]}}
+        ],
+        "physics": [{
+            "type": "modes", "tag": "emw",
+            "features": [
+                {"type": "pml", "label": "Absorbing layers", "selection": {"only": ["pml"]}}
+            ]
+        }],
+        "mesh": {"size": "fine", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "0.03"},
+            {"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "0.12"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "mode", "frequency": "1500[nm], 1550[nm], 1600[nm]", "modes": 2, "neff": "2.2"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electric Field", "frequency": "1550[nm]", "mode": 1, "plots": [
+                {"type": "surface", "expression": "emw.normE", "unit": "V/m"},
+                {"type": "arrow", "x": "emw.Ex", "y": "emw.Ey", "points": ["24", "18"], "scaling": "normalized", "color": "white"}
+            ]},
+            {"type": "plotgroup", "label": "Power Flow", "frequency": "1550[nm]", "mode": 1, "plots": [
+                {"type": "surface", "expression": "emw.Sz", "colors": "thermal"}
+            ]},
+            {"type": "plotgroup1d", "label": "Effective Index against the Frequency", "plots": [
+                {"type": "globalgraph", "expression": "emw.neff"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Effective index and loss", "expression": "emw.neff; emw.loss; emw.lambda0"}
+        ]
+    }
+}

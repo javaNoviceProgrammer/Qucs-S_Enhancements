@@ -74,6 +74,8 @@ struct MeshSizes {
     std::vector<double> boundaryMax;   // by boundary
     std::vector<double> pointMax;      // by point
     std::vector<int> boundaryCount;    // elements on a boundary (0: by size)
+    /// Sizes asked for at points (x, y, h): an adaptive refinement's.
+    std::vector<std::array<double, 3>> points;
 };
 
 /// The sizes \a model's mesh node asks for on \a topology: its preset,
