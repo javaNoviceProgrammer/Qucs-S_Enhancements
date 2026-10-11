@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <vector>
@@ -284,6 +285,10 @@ public:
     /// Field \a f's first component taken as \a du more than it is (for a
     /// derivative of what reads it); 0 again: as it is.
     void perturb(int f, double du);
+    /// The frequency (Hz) expressions here are at - freq, lambda0 - in place
+    /// of the solution's (a ray's own); NaN: the solution's.
+    void setFrequency(double f);
+    double frequency() const;
 
 private:
     const Solution& a_s;
@@ -293,13 +298,14 @@ private:
     std::vector<char> a_done;
     struct FieldCache {
         bool done = false;
-        double u[2] = {0, 0}, gx[2] = {0, 0}, gy[2] = {0, 0};
+        double u[6] = {}, gx[6] = {}, gy[6] = {};   // (up to six components: a semiconductor's five)
     };
     std::vector<FieldCache> a_fields;
     std::vector<double> a_offset;
     bool a_mapped = false;
     QPointF a_x;
     int a_depth = 0;
+    double a_frequency = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// The variables a solution of \a model would have (x, y, V, es.normE,
@@ -321,9 +327,11 @@ struct StudyResult {
 
 /// Solves the study \a studyTag of \a model on \a mesh (built from its
 /// geometry) - its steps, not its sweep. \a progress is told how far;
-/// false from it cancels.
+/// false from it cancels. A semiconductor starts where it is in \a start
+/// (a sweep's point before, on the same mesh): its contacts' voltages
+/// raised from there.
 StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh> mesh,
-                       const QString& studyTag, const Progress& progress = {});
+                       const QString& studyTag, const Progress& progress = {}, const Solution* start = nullptr);
 
 /*!
  * A study run whole: once, or once for each point of its Parametric Sweep

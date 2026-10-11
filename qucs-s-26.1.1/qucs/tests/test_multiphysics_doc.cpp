@@ -1206,6 +1206,115 @@ private slots:
         for (const char* t : {"modes", "modes/wave", "modes/pml", "waves", "waves/port", "waves/scattering", "mode"})
             QVERIFY2(types.contains(QString::fromLatin1(t)), t);
     }
+
+    // A diode's sweep in the window: its carriers drawn, its I-V a dataset.
+    void aDiodeSwept()
+    {
+        const QString file = copyOf(QStringLiteral("pn_diode.qfem"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            text.replace(QStringLiteral("-2, -1, -0.5, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7"), QStringLiteral("-1, 0.3, 0.5"));
+            // (A slow build: a coarser junction.)
+            if (slowBuild()) text.replace(QStringLiteral("\"hmax\": \"0.02\""), QStringLiteral("\"hmax\": \"0.06\""));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(text.toUtf8());
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(300000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
+        QVERIFY2(doc->plotScene()->surface, qPrintable(doc->plotScene()->problems.join(QLatin1String("; "))));
+        QVERIFY(doc->plotScene()->problems.isEmpty());
+        shoot(app, "35-diode-electrons");
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Current against Voltage"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* va = data.find(QStringLiteral("Va"));
+        const qucs_s::dataset::Variable* ia = data.find(QStringLiteral("semi.I_a"));
+        QVERIFY(va && ia);
+        QCOMPARE(va->size(), 3);
+        QVERIFY(ia->re.at(2) > 100 * ia->re.at(1) && ia->re.at(1) > 0 && ia->re.at(0) < 0);
+        // The bands along the diode: a dataset over the cut line.
+        const QString bands = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Bands"), &why, false);
+        QVERIFY2(!bands.isEmpty(), qPrintable(why));
+    }
+
+    // Rays in the window: each drawn in its wavelength's color; a model of
+    // rays alone gets the trajectories as its default plot.
+    void raysDrawn()
+    {
+        MultiphysicsDoc* doc = open(copyOf(QStringLiteral("prism_dispersion.qfem")));
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
+        QCOMPARE(int(doc->plotScene()->rays.size()), 1);
+        const PlotScene::Rays& rays = doc->plotScene()->rays.front();
+        QVERIFY(rays.paths.size() >= 21);
+        QCOMPARE(rays.by, QStringLiteral("wavelength"));
+        shoot(app, "36-prism");
+        const QString file = path(QStringLiteral("bare_rays.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "mm",
+            "geometry": [{"type": "rectangle", "label": "air", "position": ["-10", "-10"], "size": ["40", "20"]},
+                         {"type": "circle", "label": "ball", "center": ["10", "0"], "radius": "5"}, {"type": "form union"}],
+            "materials": [{"material": "Air", "selection": {"all": true}}, {"material": "Glass (BK7)", "selection": {"only": ["ball"]}}],
+            "physics": [{"type": "rays", "tag": "gop", "features": [
+              {"type": "beam", "start": ["-5", "-4"], "end": ["-5", "4"], "angle": "0", "count": 9}]}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}]})json");
+        f.close();
+        MultiphysicsDoc* bare = open(file);
+        QVERIFY(bare != nullptr);
+        bare->compute();
+        QVERIFY(bare->waitForJob(120000));
+        QVERIFY2(bare->lastError().isEmpty(), qPrintable(bare->lastError()));
+        QVERIFY(!tagOf(bare->model(), "plotgroup", "Ray Trajectories (gop)").isEmpty());
+        QVERIFY(!bare->plotScene()->rays.empty());
+        shoot(app, "37-ball-lens");
+    }
+
+    // Claude's tools: a photodiode solved, its photocurrent read; the kinds described.
+    void claudesToolsForDevicesAndRays()
+    {
+        const QString file = copyOf(QStringLiteral("photodiode.qfem"));
+        if (slowBuild()) {
+            // (A slow build: a coarser mesh.)
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            text.replace(QStringLiteral("\"hmax\": \"0.8\""), QStringLiteral("\"hmax\": \"2\""));
+            text.replace(QStringLiteral("\"hmax\": \"0.1\""), QStringLiteral("\"hmax\": \"0.3\""));
+            text.replace(QStringLiteral("\"hmax\": \"0.15\""), QStringLiteral("\"hmax\": \"0.3\""));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(text.toUtf8());
+        }
+        open(file);
+        QJsonObject r = call("fem_solve", {{"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_evaluate", {{"expression", "semi.I_a"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("values").toArray().at(0).toObject().value("SI").toDouble() < -1e-4);
+        r = call("fem_evaluate", {{"expression", "gop.Pabs"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_describe", {{"what", "format"}});
+        QStringList types;
+        for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
+        for (const char* t : {"semiconductor", "semiconductor/ohmic", "semiconductor/doping", "rays", "rays/beam", "rays/detector", "rayplot"})
+            QVERIFY2(types.contains(QString::fromLatin1(t)), t);
+        QVERIFY(json(r).value("format").toString().contains("Semiconductors"));
+    }
 };
 
 QTEST_MAIN(TestMultiphysicsDoc)

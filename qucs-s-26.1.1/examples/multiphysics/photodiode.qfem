@@ -1,0 +1,63 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A silicon photodiode lit by rays",
+    "description": "A p⁺n silicon photodiode, its anode a pad at the top's corner, reversed by 1 V and lit from above by 1 mW at 633 nm (its surface coated). The rays are absorbed within a few µm (α = 4πκ/λ, κ 0.019); each photon absorbed makes an electron-hole pair - the semiconductor's generation, G = gop.Q λ/(hc) - and the junction's field collects them: the photocurrent 0.48 mA, a responsivity of 0.48 A/W - 95 % of the ideal q λ/(hc), 0.51 A/W (the rest recombines in the p⁺ layer).",
+    "parameters": [
+        {"name": "Va", "expression": "-1[V]", "description": "the anode's voltage"},
+        {"name": "P", "expression": "1[mW]", "description": "the light's power"},
+        {"name": "lambda", "expression": "633[nm]", "description": "its wavelength"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "1[mm]",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["0", "20"], "size": ["20", "8"]},
+            {"type": "rectangle", "label": "silicon", "size": ["20", "20"]},
+            {"type": "rectangle", "label": "pad", "position": ["0", "19.5"], "size": ["2", "0.5"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"only": ["air"]}},
+            {"material": "Silicon", "selection": {"only": ["silicon", "pad"]}}
+        ],
+        "physics": [
+            {"type": "rays", "tag": "gop", "selection": {"all": true}, "reflections": false,
+             "features": [
+                {"type": "medium", "label": "Silicon at 633 nm", "source": "user", "n": "3.88", "kappa": "0.019", "selection": {"only": ["silicon", "pad"]}},
+                {"type": "coating", "label": "Anti-reflection coating", "selection": {"between": [["air"], ["silicon"]]}},
+                {"type": "beam", "label": "The light", "start": ["4", "27"], "end": ["18", "27"], "angle": "-90", "count": 29,
+                 "P0": "P", "lambda0": "lambda"}
+             ]},
+            {"type": "semiconductor", "tag": "semi", "selection": {"only": ["silicon", "pad"]},
+             "features": [
+                {"type": "doping", "label": "n substrate", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"all": true}},
+                {"type": "doping", "label": "p⁺ layer", "dopant": "acceptor", "profile": "box", "N0": "1e19[1/cm^3]",
+                 "position": ["0", "19.8"], "size": ["20", "0.2"], "dj": "0.4[um]", "Nb": "1e15[1/cm^3]", "selection": {"all": true}},
+                {"type": "srh", "label": "Recombination", "selection": {"all": true}},
+                {"type": "generation", "label": "Light absorbed", "G": "gop.Q*lambda/(h_const*c0)", "selection": {"all": true}},
+                {"type": "ohmic", "label": "Anode", "name": "a", "V0": "Va", "selection": {"of": ["pad"], "side": "top"}},
+                {"type": "ohmic", "label": "Cathode", "name": "k", "V0": "0[V]", "selection": {"of": ["silicon"], "side": "bottom"}}
+             ]}
+        ],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.8", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["pad"]}, "hmax": "0.1"},
+            {"type": "size", "level": "boundary", "selection": {"between": [["air"], ["silicon"]]}, "hmax": "0.15"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Light Absorbed", "plots": [
+                {"type": "surface", "expression": "gop.Q", "colors": "thermal"},
+                {"type": "rayplot", "by": "single", "color": "red"}
+            ]},
+            {"type": "plotgroup", "label": "Holes", "plots": [
+                {"type": "surface", "expression": "log10(semi.p*1[cm^3])", "colors": "viridis"},
+                {"type": "arrow", "x": "semi.Jx", "y": "semi.Jy", "scaling": "normalized", "color": "white"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Photocurrent", "expression": "semi.I_a; gop.Pabs; -semi.I_a/P"}
+        ]
+    }
+}

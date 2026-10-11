@@ -251,7 +251,7 @@ QList<NodeKind> makeKinds()
                        tr("What a charge, a current, a power or a force of the 2D model is for: per this length out of the plane")),
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-          QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves")},
+          QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -420,7 +420,15 @@ QList<NodeKind> makeKinds()
           spatial(QStringLiteral("alpha"), tr("Thermal expansion α"), QStringLiteral("1/K"), QString()),
           spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QString()),
           spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QString(), tr("The refractive index's imaginary part: n - jκ")),
-          expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QString())},
+          expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QString()),
+          expr(QStringLiteral("Eg"), tr("Band gap Eg"), QStringLiteral("eV"), QString(), tr("A semiconductor's (an insulator has none)")),
+          expr(QStringLiteral("chi"), tr("Electron affinity χ"), QStringLiteral("eV"), QString()),
+          expr(QStringLiteral("Nc"), tr("Effective density of states Nc"), QStringLiteral("1/m^3"), QString()),
+          expr(QStringLiteral("Nv"), tr("Effective density of states Nv"), QStringLiteral("1/m^3"), QString()),
+          expr(QStringLiteral("mun"), tr("Electron mobility µn"), QStringLiteral("m^2/(V*s)"), QString()),
+          expr(QStringLiteral("mup"), tr("Hole mobility µp"), QStringLiteral("m^2/(V*s)"), QString()),
+          expr(QStringLiteral("taun"), tr("Electron lifetime τn"), QStringLiteral("s"), QString()),
+          expr(QStringLiteral("taup"), tr("Hole lifetime τp"), QStringLiteral("s"), QString())},
          {}, {}, false, false, QStringLiteral("mat"),
          tr("Its properties, each an expression (of T too, for a temperature-dependent one). Those empty are not defined.")});
 
@@ -734,10 +742,17 @@ QList<NodeKind> makeKinds()
                       QStringLiteral("thermooptic=true&source=user")),
               shownIf(spatial(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("T")), QStringLiteral("thermooptic=true")),
               shownIf(expr(QStringLiteral("Tref"), tr("Reference temperature"), QStringLiteral("K"), QStringLiteral("293.15[K]")),
-                      QStringLiteral("thermooptic=true"))},
+                      QStringLiteral("thermooptic=true")),
+              flag(QStringLiteral("plasma"), tr("Plasma dispersion (free carriers)"), false,
+                   tr("Silicon's free carriers: Δn = -(8.8e-22 N + 8.5e-18 P^0.8), Δα = 8.5e-18 N + 6.0e-18 P (cm⁻³, cm⁻¹; Soref and "
+                      "Bennett's at 1550 nm, as λ²) - N and P from a semiconductor physics")),
+              shownIf(spatial(QStringLiteral("Ncarriers"), tr("Electron concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.n")),
+                      QStringLiteral("plasma=true")),
+              shownIf(spatial(QStringLiteral("Pcarriers"), tr("Hole concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.p")),
+                      QStringLiteral("plasma=true"))},
              {}, {}, false, false, QStringLiteral("wee"),
              tr("ε from a refractive index n - jκ (its square) or a permittivity εr (1 - j tan δ) - jσ/ωε0; µr; anisotropic along x, "
-                "y and z; warmed: n + dn/dT (T - Tref). From their material or as given.")});
+                "y and z; warmed: n + dn/dT (T - Tref); free carriers' plasma dispersion. From their material or as given.")});
         add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
              QStringLiteral("pml"), Level::Domain, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pml"),
              tr("Domains beside, above or round the others that take the waves in without reflecting them: their coordinates "
@@ -788,6 +803,202 @@ QList<NodeKind> makeKinds()
          {}, {}, false, false, QStringLiteral("port"),
          tr("A port across a waveguide: its first mode (found on the port's line) fed at 1 W, and taken out matched; the "
             "S-parameters ewfd.S<i><j> (real and imaginary parts), ewfd.S<i><j>dB.")});
+
+    // Semiconductors.
+    add({QStringLiteral("semiconductor"), tr("Semiconductor"), QStringLiteral("physics"), QStringLiteral("semi"), Level::Domain,
+         {selectionProp(),
+          expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere"))},
+         {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
+          QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
+          QStringLiteral("semiconductor/insulation"), QStringLiteral("semiconductor/ohmic"), QStringLiteral("semiconductor/schottky"),
+          QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge")},
+         {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
+         tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
+            "p (Boltzmann's statistics), their currents Scharfetter and Gummel's along each edge of linear triangles. Domains "
+            "whose material has no band gap are insulators: the potential alone. Solved by Newton's method from equilibrium, the "
+            "contacts' voltages raised in steps; at rest, in time, or small-signal in a frequency step (the contacts' "
+            "conductance and capacitance matrices).")});
+    add({QStringLiteral("semiconductor/model"), tr("Semiconductor Material Model"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(), source,
+          shownIf(expr(QStringLiteral("epsilonr"), tr("Relative permittivity εr"), QString(), QStringLiteral("11.7")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("Eg"), tr("Band gap Eg"), QStringLiteral("eV"), QStringLiteral("1.12[eV]")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("chi"), tr("Electron affinity χ"), QStringLiteral("eV"), QStringLiteral("4.05[eV]")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("Nc"), tr("Conduction band's effective density of states Nc"), QStringLiteral("1/m^3"),
+                       QStringLiteral("2.8e19[1/cm^3]")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("Nv"), tr("Valence band's effective density of states Nv"), QStringLiteral("1/m^3"),
+                       QStringLiteral("1.04e19[1/cm^3]")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("mun"), tr("Electron mobility µn"), QStringLiteral("m^2/(V*s)"), QStringLiteral("1400[cm^2/(V*s)]")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("mup"), tr("Hole mobility µp"), QStringLiteral("m^2/(V*s)"), QStringLiteral("450[cm^2/(V*s)]")),
+                  QStringLiteral("source=user")),
+          choice(QStringLiteral("mobility"), tr("Mobility"), {QStringLiteral("constant"), QStringLiteral("doping")},
+                 {tr("Constant (the lattice's)"), tr("By doping (Caughey and Thomas)")}, QStringLiteral("constant"),
+                 tr("By doping: µmin + (µ - µmin)/(1 + (N/Nref)^α), N the donors and acceptors together")),
+          shownIf(expr(QStringLiteral("munmin"), tr("Electrons' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("68.5[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=doping")),
+          shownIf(expr(QStringLiteral("nrefn"), tr("Electrons' Nref"), QStringLiteral("1/m^3"), QStringLiteral("9.2e16[1/cm^3]")), QStringLiteral("mobility=doping")),
+          shownIf(expr(QStringLiteral("alphan"), tr("Electrons' α"), QString(), QStringLiteral("0.711")), QStringLiteral("mobility=doping")),
+          shownIf(expr(QStringLiteral("mupmin"), tr("Holes' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("44.9[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=doping")),
+          shownIf(expr(QStringLiteral("nrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("2.23e17[1/cm^3]")), QStringLiteral("mobility=doping")),
+          shownIf(expr(QStringLiteral("alphap"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=doping")),
+          flag(QStringLiteral("saturation"), tr("High-field velocity saturation"), false,
+               tr("µ / (1 + (µE/vsat)^β)^(1/β), β 2 for electrons and 1 for holes; E along each edge")),
+          shownIf(expr(QStringLiteral("vsatn"), tr("Electrons' saturation velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]")),
+                  QStringLiteral("saturation=true")),
+          shownIf(expr(QStringLiteral("vsatp"), tr("Holes' saturation velocity"), QStringLiteral("m/s"), QStringLiteral("8e6[cm/s]")),
+                  QStringLiteral("saturation=true"))},
+         {}, {}, false, false, QStringLiteral("smm"),
+         tr("A semiconductor's band gap, electron affinity, effective densities of states and mobilities, from its material or as "
+            "given; ni = √(Nc Nv) exp(-Eg/2kT).")});
+    add({QStringLiteral("semiconductor/doping"), tr("Analytic Doping Model"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none),
+          choice(QStringLiteral("dopant"), tr("Impurity"), {QStringLiteral("acceptor"), QStringLiteral("donor")},
+                 {tr("Acceptors (p-type)"), tr("Donors (n-type)")}, QStringLiteral("acceptor")),
+          choice(QStringLiteral("profile"), tr("Profile"), {QStringLiteral("uniform"), QStringLiteral("box"), QStringLiteral("expression")},
+                 {tr("Uniform"), tr("A box, Gaussian outside it"), tr("User defined")}, QStringLiteral("uniform")),
+          shownIf(expr(QStringLiteral("N0"), tr("Concentration N0"), QStringLiteral("1/m^3"), QStringLiteral("1e16[1/cm^3]"),
+                       tr("A box's inside")),
+                  QStringLiteral("profile=uniform|profile=box")),
+          shownIf(pair(QStringLiteral("position"), tr("Box's corner"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
+                  QStringLiteral("profile=box")),
+          shownIf(pair(QStringLiteral("size"), tr("Box's width, height"), QStringLiteral("length"), QStringLiteral("1"), QStringLiteral("1")),
+                  QStringLiteral("profile=box")),
+          shownIf(expr(QStringLiteral("dj"), tr("Junction depth"), QStringLiteral("m"), QStringLiteral("0.5[um]"),
+                       tr("How far outside the box it falls to the background")),
+                  QStringLiteral("profile=box")),
+          shownIf(expr(QStringLiteral("Nb"), tr("Background concentration"), QStringLiteral("1/m^3"), QStringLiteral("1e15[1/cm^3]")),
+                  QStringLiteral("profile=box")),
+          shownIf(spatial(QStringLiteral("N"), tr("Concentration N"), QStringLiteral("1/m^3"), QStringLiteral("1e16[1/cm^3]"),
+                          tr("Of x and y")),
+                  QStringLiteral("profile=expression"))},
+         {}, {}, false, false, QStringLiteral("dop"),
+         tr("Donors or acceptors on its domains: uniform, a box with a Gaussian fall outside it (N0 exp(-(d/σ)²), the "
+            "background reached at the junction depth), or an expression of x and y. Dopings add.")});
+    add({QStringLiteral("semiconductor/srh"), tr("Trap-Assisted Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(), source,
+          shownIf(expr(QStringLiteral("taun"), tr("Electron lifetime τn"), QStringLiteral("s"), QStringLiteral("10[us]")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("taup"), tr("Hole lifetime τp"), QStringLiteral("s"), QStringLiteral("10[us]")), QStringLiteral("source=user")),
+          expr(QStringLiteral("Et"), tr("Trap level above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("0[eV]"))},
+         {}, {}, false, false, QStringLiteral("srh"),
+         tr("Shockley-Read-Hall: R = (np - ni²) / (τp (n + n1) + τn (p + p1)).")});
+    add({QStringLiteral("semiconductor/auger"), tr("Auger Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(none), expr(QStringLiteral("Cn"), tr("Electrons' coefficient Cn"), QStringLiteral("m^6/s"), QStringLiteral("2.8e-31[cm^6/s]")),
+          expr(QStringLiteral("Cp"), tr("Holes' coefficient Cp"), QStringLiteral("m^6/s"), QStringLiteral("9.9e-32[cm^6/s]"))},
+         {}, {}, false, false, QStringLiteral("aug"), tr("R = (Cn n + Cp p)(np - ni²): heavy doping, high injection.")});
+    add({QStringLiteral("semiconductor/radiative"), tr("Direct Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none), expr(QStringLiteral("B"), tr("Coefficient B"), QStringLiteral("m^3/s"), QStringLiteral("1.1e-14[cm^3/s]"))},
+         {}, {}, false, false, QStringLiteral("rad"), tr("Band to band: R = B (np - ni²) (GaAs about 7e-10 cm³/s).")});
+    add({QStringLiteral("semiconductor/generation"), tr("User-Defined Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none), spatial(QStringLiteral("G"), tr("Generation rate G"), QStringLiteral("1/(m^3*s)"), QStringLiteral("0"),
+                                       tr("Pairs made per volume and time: of x, y, t, other physics' fields (light absorbed)"))},
+         {}, {}, false, false, QStringLiteral("gen"), tr("Electron-hole pairs made: optical generation, say.")});
+    add({QStringLiteral("semiconductor/insulation"), tr("Insulation"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp()}, {}, {}, false, false, QStringLiteral("ins"),
+         tr("No current and no charge through the boundary. Where no other condition is.")});
+    add({QStringLiteral("semiconductor/ohmic"), tr("Metal Contact"), QStringLiteral("semi"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("1")),
+          expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]"), tr("A parameter to sweep it; of t in time"))},
+         {}, {}, false, false, QStringLiteral("mc"),
+         tr("An ohmic contact: the carriers at equilibrium and charge neutrality, the quasi-Fermi levels at -q V0. Its current "
+            "semi.I_<name> (into the device), its charge semi.Q_<name>.")});
+    add({QStringLiteral("semiconductor/schottky"), tr("Schottky Contact"), QStringLiteral("semi"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("1")),
+          expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]")),
+          expr(QStringLiteral("phiB"), tr("Barrier height"), QStringLiteral("eV"), QStringLiteral("0.8[eV]"), tr("The metal's work function less χ")),
+          expr(QStringLiteral("vn"), tr("Electrons' recombination velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]"),
+               tr("A* T² / (q Nc): Richardson's")),
+          expr(QStringLiteral("vp"), tr("Holes' recombination velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]"))},
+         {}, {}, false, false, QStringLiteral("sc"), tr("A metal on the semiconductor with a barrier: thermionic emission over it.")});
+    add({QStringLiteral("semiconductor/gate"), tr("Gate Contact"), QStringLiteral("semi"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("g")),
+          expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]")),
+          expr(QStringLiteral("phim"), tr("Metal work function"), QStringLiteral("eV"), QStringLiteral("4.05[eV]"),
+               tr("n⁺ polysilicon 4.05 eV, aluminium 4.1 eV, p⁺ polysilicon 5.17 eV"))},
+         {}, {}, false, false, QStringLiteral("gc"),
+         tr("A metal on an insulator (the gate oxide drawn as a domain): its potential V0 less the work function's difference. "
+            "Its charge semi.Q_<name>; small-signal, its capacitance.")});
+    add({QStringLiteral("semiconductor/charge"), tr("Surface Charge Density"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none), spatial(QStringLiteral("rhos"), tr("Surface charge density"), QStringLiteral("C/m^2"), QStringLiteral("0"),
+                                       tr("Fixed charge at an interface: an oxide's, q times 1e10 to 1e11 per cm²"))},
+         {}, {}, false, false, QStringLiteral("scd"), tr("Charge fixed on a boundary.")});
+
+    // Geometrical optics.
+    add({QStringLiteral("rays"), tr("Geometrical Optics"), QStringLiteral("physics"), QStringLiteral("gop"), Level::Domain,
+         {selectionProp(),
+          integer(QStringLiteral("maxinteractions"), tr("Most boundaries a ray meets"), 100),
+          expr(QStringLiteral("threshold"), tr("Power threshold"), QString(), QStringLiteral("1e-4"),
+               tr("A ray ends below this part of its release's power")),
+          flag(QStringLiteral("reflections"), tr("Release reflected rays"), true,
+               tr("At each refracting boundary a reflected ray too, Fresnel's part of the power")),
+          integer(QStringLiteral("maxrays"), tr("Most rays traced from a release"), 20000)},
+         {QStringLiteral("rays/medium"), QStringLiteral("rays/point"), QStringLiteral("rays/beam"), QStringLiteral("rays/boundary"),
+          QStringLiteral("rays/mirror"), QStringLiteral("rays/absorber"), QStringLiteral("rays/coating"), QStringLiteral("rays/detector")},
+         {QStringLiteral("rays/medium")}, false, false, QStringLiteral("gop"),
+         tr("Rays traced through the domains, a Stationary step tracing them: straight where the refractive index is uniform, "
+            "bent by the ray equation where it varies; refracted by Snell's law and split by Fresnel's coefficients at each "
+            "boundary between media, wholly reflected past the critical angle; absorbed as they go where n - jκ has a κ, that "
+            "power gop.Q per volume (a heat source). They stop on the physics' outside.")});
+    add({QStringLiteral("rays/medium"), tr("Medium Properties"), QStringLiteral("gop"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(), source,
+          shownIf(spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QStringLiteral("1.5"),
+                          tr("Of x and y (a graded index), of lambda0 (dispersion), of another physics' field (T: a thermal lens)")),
+                  QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QStringLiteral("0"),
+                          tr("Its absorption: α = 4πκ/λ")),
+                  QStringLiteral("source=user"))},
+         {}, {}, false, false, QStringLiteral("mp"), tr("The refractive index the rays see: from the material, or as given.")});
+    const P wavelengths = text(QStringLiteral("lambda0"), tr("Wavelengths"), QStringLiteral("550[nm]"),
+                               tr("In vacuum; several split by commas, each released"));
+    const P raysCount = integer(QStringLiteral("count"), tr("Rays"), 21);
+    const P raysPower = expr(QStringLiteral("P0"), tr("Power"), QStringLiteral("W"), QStringLiteral("1[W]"),
+                             tr("Of all its rays, each wavelength's"));
+    const P polarization = choice(QStringLiteral("polarization"), tr("Polarization"),
+                                  {QStringLiteral("unpolarized"), QStringLiteral("s"), QStringLiteral("p")},
+                                  {tr("Unpolarized"), tr("s (E out of the plane)"), tr("p (E in the plane)")}, QStringLiteral("unpolarized"));
+    add({QStringLiteral("rays/point"), tr("Release from Point"), QStringLiteral("gop"), QStringLiteral("point"), Level::None,
+         {pair(QStringLiteral("position"), tr("Position"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
+          expr(QStringLiteral("angle"), tr("Direction"), QStringLiteral("angle"), QStringLiteral("0"), tr("Degrees from the x axis")),
+          expr(QStringLiteral("spread"), tr("Half-angle"), QStringLiteral("angle"), QStringLiteral("10"),
+               tr("Degrees each side of the direction (180: all round)")),
+          raysCount, raysPower, wavelengths, polarization},
+         {}, {}, false, false, QStringLiteral("relp"), tr("A fan of rays from a point, evenly in angle.")});
+    add({QStringLiteral("rays/beam"), tr("Release Beam"), QStringLiteral("gop"), QStringLiteral("beam"), Level::None,
+         {pair(QStringLiteral("start"), tr("From"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("-1")),
+          pair(QStringLiteral("end"), tr("To"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("1")),
+          expr(QStringLiteral("angle"), tr("Direction"), QStringLiteral("angle"), QStringLiteral("0"), tr("Degrees from the x axis")),
+          choice(QStringLiteral("profile"), tr("Intensity"), {QStringLiteral("uniform"), QStringLiteral("gaussian")},
+                 {tr("Uniform"), tr("Gaussian")}, QStringLiteral("uniform")),
+          shownIf(expr(QStringLiteral("waist"), tr("Beam radius w"), QStringLiteral("m"), QStringLiteral("1[mm]"),
+                       tr("Its intensity exp(-2r²/w²) about the line's middle")),
+                  QStringLiteral("profile=gaussian")),
+          raysCount, raysPower, wavelengths, polarization},
+         {}, {}, false, false, QStringLiteral("relb"), tr("Parallel rays released along a line: a collimated beam.")});
+    add({QStringLiteral("rays/boundary"), tr("Release from Boundary"), QStringLiteral("gop"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none), raysCount, raysPower, wavelengths, polarization},
+         {}, {}, false, false, QStringLiteral("relbd"), tr("Rays released evenly along boundaries, normal to them, into the physics.")});
+    add({QStringLiteral("rays/mirror"), tr("Mirror"), QStringLiteral("gop"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none), expr(QStringLiteral("R"), tr("Reflectance"), QString(), QStringLiteral("1"), tr("The rest absorbed"))},
+         {}, {}, false, false, QStringLiteral("mir"), tr("Specular reflection.")});
+    add({QStringLiteral("rays/absorber"), tr("Absorber"), QStringLiteral("gop"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none)}, {}, {}, false, false, QStringLiteral("abs"), tr("A wall that stops the rays.")});
+    add({QStringLiteral("rays/coating"), tr("Anti-Reflection Coating"), QStringLiteral("gop"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none)}, {}, {}, false, false, QStringLiteral("arc"),
+         tr("Refraction without reflection (but past the critical angle).")});
+    add({QStringLiteral("rays/detector"), tr("Detector"), QStringLiteral("gop"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Detector name"), QStringLiteral("1")),
+          flag(QStringLiteral("stop"), tr("Stops the rays"), false)},
+         {}, {}, false, false, QStringLiteral("det"),
+         tr("Counts the rays that cross it: gop.N_<name>, their power gop.P_<name>, centroid gop.x_<name>, gop.y_<name>, rms "
+            "spot gop.rms_<name>, mean optical path gop.opl_<name>.")});
 
     // Mesh.
     const QStringList presets = {QStringLiteral("extremely fine"), QStringLiteral("extra fine"), QStringLiteral("finer"),
@@ -957,7 +1168,8 @@ QList<NodeKind> makeKinds()
              {study, point, time, frequency,
               integer(QStringLiteral("mode"), tr("Mode"), 1, tr("Of a mode analysis: which mode, from 1 (by effective index)")),
               text(QStringLiteral("title"), tr("Title"), QString())},
-             {QStringLiteral("surface"), QStringLiteral("contour"), QStringLiteral("arrow"), QStringLiteral("meshplot"), QStringLiteral("deformation")},
+             {QStringLiteral("surface"), QStringLiteral("contour"), QStringLiteral("arrow"), QStringLiteral("meshplot"), QStringLiteral("deformation"),
+              QStringLiteral("rayplot")},
              {}, false, false, QStringLiteral("pg"), tr("Plots shown together in the Graphics view.")});
         add({QStringLiteral("deformation"), tr("Deformation"), QStringLiteral("plot"), QStringLiteral("deformation"), Level::None,
              {spatial(QStringLiteral("x"), tr("x component"), QStringLiteral("m"), QStringLiteral("solid.u")),
@@ -1045,6 +1257,15 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("meshplot"), tr("Mesh"), QStringLiteral("plot"), QStringLiteral("meshplot"), Level::None,
              {flag(QStringLiteral("quality"), tr("Colored by quality"), false)}, {}, {}, false, false, QStringLiteral("mp"),
              tr("The mesh's triangles.")});
+        add({QStringLiteral("rayplot"), tr("Ray Trajectories"), QStringLiteral("plot"), QStringLiteral("rayplot"), Level::None,
+             {text(QStringLiteral("physics"), tr("Of the physics"), QString(), tr("Its tag (empty: the first geometrical optics)")),
+              choice(QStringLiteral("by"), tr("Color by"),
+                     {QStringLiteral("wavelength"), QStringLiteral("power"), QStringLiteral("release"), QStringLiteral("single")},
+                     {tr("Wavelength (its color)"), tr("Power"), tr("Release"), tr("One color")}, QStringLiteral("wavelength")),
+              shownIf(choice(QStringLiteral("colors"), tr("Color table"), tables, tableLabels, QStringLiteral("rainbow")),
+                      QStringLiteral("by=power|by=release")),
+              shownIf(text(QStringLiteral("color"), tr("Color"), QStringLiteral("red")), QStringLiteral("by=single"))},
+             {}, {}, false, false, QStringLiteral("ray"), tr("The rays' paths, as traced.")});
         add({QStringLiteral("derived"), tr("Derived Values"), QString(), QStringLiteral("derived"), Level::None, {},
              {QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
               QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams")},
@@ -1216,7 +1437,7 @@ QList<const NodeKind*> nodeKinds()
 QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-            QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves")};
+            QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays")};
 }
 
 // ------------------------------------------------------------------ Node

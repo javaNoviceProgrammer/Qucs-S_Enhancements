@@ -390,10 +390,14 @@ std::unique_ptr<Problem> makeElasticProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeMagneticProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeModeProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeWaveProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeSemiconductorProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeRayProblem(Solution& solution, int field);
 
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
 {
     const QString& type = solution.fields()[std::size_t(field)].type;
+    if (type == QLatin1String("semiconductor")) return makeSemiconductorProblem(solution, field);
+    if (type == QLatin1String("rays")) return makeRayProblem(solution, field);
     if (type == QLatin1String("solid")) return makeElasticProblem(solution, field);
     if (type == QLatin1String("magnetic")) return makeMagneticProblem(solution, field);
     if (type == QLatin1String("modes")) return makeModeProblem(solution, field);
@@ -437,6 +441,14 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
     } else if (p.type == QLatin1String("modes")) {
         f.variable = QStringLiteral("E");
         f.dim = Dim::of(1, 1, -3, -1);
+    } else if (p.type == QLatin1String("rays")) {
+        // What the rays leave in the media: a power density.
+        f.variable = QStringLiteral("Q");
+        f.dim = Dim::of(-1, 1, -3);
+    } else if (p.type == QLatin1String("semiconductor")) {
+        // The potential; the carriers and the doping with it.
+        f.variable = QStringLiteral("V");
+        f.dim = Dim::voltage();
     } else if (p.type == QLatin1String("waves")) {
         // E or H out of the plane.
         const bool h = p.text(QStringLiteral("polarization")) == QLatin1String("hz");
@@ -451,6 +463,8 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
     else if (p.type == QLatin1String("magnetic") || p.type == QLatin1String("waves"))
         f.components = QStringList{f.variable, f.variable + QStringLiteral("_im")};
     else if (p.type == QLatin1String("modes")) f.components = QStringList{QStringLiteral("Et"), QStringLiteral("Ez")};
+    else if (p.type == QLatin1String("semiconductor"))
+        f.components = QStringList{QStringLiteral("V"), QStringLiteral("n"), QStringLiteral("p"), QStringLiteral("Nd"), QStringLiteral("Na")};
     else f.components = QStringList{f.variable};
     return f;
 }
@@ -481,7 +495,12 @@ Solution::Solution(const Model& model, std::shared_ptr<ParameterScope> parameter
         f.components = info.components;
         f.dim = info.dim;
         f.initial = p->type == QLatin1String("heat") ? 293.15 : 0.0;
-        const int order = p->text(QStringLiteral("order")) == QLatin1String("1") ? 1 : 2;
+        // (A semiconductor's elements are linear: Scharfetter and Gummel's
+        // currents along their edges.)
+        const int order = p->text(QStringLiteral("order")) == QLatin1String("1") || p->type == QLatin1String("semiconductor")
+                                  || p->type == QLatin1String("rays")
+                              ? 1
+                              : 2;
         auto it = spaces.find(order);
         if (it == spaces.end()) it = spaces.emplace(order, std::make_shared<Space>(a_mesh, order)).first;
         f.space = it->second;
@@ -692,6 +711,15 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
     define(QStringLiteral("freq"), Dim::of(0, 0, -1), tr("frequency (in the frequency domain; 0 at rest)"), K::Frequency);
     define(QStringLiteral("dom"), Dim(), tr("the domain's number"), K::DomainNumber);
     define(QStringLiteral("h"), Dim::length(), tr("the mesh element's size"), K::Size);
+    // A wavelength, of what waves and rays are at.
+    bool optical = false;
+    for (const FieldInfo& fi : fields)
+        optical = optical || fi.type == QLatin1String("rays") || fi.type == QLatin1String("modes") || fi.type == QLatin1String("waves");
+    if (optical)
+        define(QStringLiteral("lambda0"), Dim::length(), tr("free-space wavelength: c0/freq (a ray's, a mode's)"), K::Derived, -1, [](PointEvaluator& e) {
+            const double f = e.frequency();
+            return f > 0 ? 299792458.0 / f : NaN;
+        });
     const Dim efield = Dim::of(1, 1, -3, -1), dfield = Dim::of(-2, 0, 1, 1), jfield = Dim::of(-2, 0, 0, 1);
     const Dim power = Dim::of(-1, 1, -3), gradT = Dim::of(-1, 0, 0, 0, 1), heatFlux = Dim::of(0, 1, -3);
     const Dim pressure = Dim::of(-1, 1, -2), energyDensity = Dim::of(-1, 1, -2);
@@ -842,6 +870,110 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                 component(p + field.variable + im, field.dim, tr("the field out of the plane, its imaginary part"), K::Value, f, 1);
             }
             coefficient(p + QStringLiteral("n"), Dim(), tr("refractive index (as given)"), f, QString());
+            continue;
+        }
+        if (field.type == QLatin1String("rays")) {
+            component(p + QStringLiteral("Q"), Dim::of(-1, 1, -3), tr("power absorbed from the rays, per volume"), K::Value, f, 0);
+            coefficient(p + QStringLiteral("n"), Dim(), tr("refractive index"), f, QString());
+            continue;
+        }
+        if (field.type == QLatin1String("semiconductor")) {
+            const Dim conc = Dim::of(-3), energy = Dim::of(2, 1, -2), rate = Dim::of(-3, 0, -1), mobility = Dim::of(0, -1, 2, 1);
+            component(p + QStringLiteral("V"), Dim::voltage(), tr("electric potential (the intrinsic level's: Ei = -qV)"), K::Value, f, 0);
+            component(QStringLiteral("V"), Dim::voltage(), tr("electric potential (%1)").arg(field.tag), K::Value, f, 0);
+            component(p + QStringLiteral("Nd"), conc, tr("donor concentration"), K::Value, f, 3);
+            component(p + QStringLiteral("Na"), conc, tr("acceptor concentration"), K::Value, f, 4);
+            const int sd = component(p + QStringLiteral("Nd"), conc, QString(), K::Value, f, 3);
+            const int sa = component(p + QStringLiteral("Na"), conc, QString(), K::Value, f, 4);
+            define(p + QStringLiteral("Ndop"), conc, tr("net doping: donors less acceptors"), K::Derived, f,
+                   [sd, sa](PointEvaluator& e) { return e.value(sd) - e.value(sa); });
+            auto st = [f](PointEvaluator& e) { return detail::semiconductorAt(e, f); };
+            auto semi = [st](double (*get)(const detail::SemiconductorState&)) {
+                return [st, get](PointEvaluator& e) {
+                    const detail::SemiconductorState s = st(e);
+                    return s.semiconductor ? get(s) : NaN;
+                };
+            };
+            define(p + QStringLiteral("n"), conc, tr("electron concentration"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.n; }));
+            define(p + QStringLiteral("p"), conc, tr("hole concentration"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.p; }));
+            define(p + QStringLiteral("ni"), conc, tr("intrinsic carrier concentration"), K::Derived, f,
+                   semi([](const detail::SemiconductorState& s) { return s.ni; }));
+            const int sv = component(p + QStringLiteral("V"), Dim::voltage(), QString(), K::Value, f, 0);
+            define(p + QStringLiteral("Ex"), efield, tr("electric field, x component"), K::Derived, f, [f](PointEvaluator& e) {
+                double u = 0, gx = 0, gy = 0;
+                e.component(f, 0, u, gx, gy);
+                return -gx;
+            });
+            define(p + QStringLiteral("Ey"), efield, tr("electric field, y component"), K::Derived, f, [f](PointEvaluator& e) {
+                double u = 0, gx = 0, gy = 0;
+                e.component(f, 0, u, gx, gy);
+                return -gy;
+            });
+            define(p + QStringLiteral("normE"), efield, tr("electric field, norm"), K::Derived, f, [f](PointEvaluator& e) {
+                double u = 0, gx = 0, gy = 0;
+                e.component(f, 0, u, gx, gy);
+                return std::hypot(gx, gy);
+            });
+            define(p + QStringLiteral("rho"), Dim::of(-3, 0, 1, 1), tr("space charge density: q (p - n + Nd - Na)"), K::Derived, f,
+                   [st, sd, sa](PointEvaluator& e) {
+                       const detail::SemiconductorState s = st(e);
+                       return s.semiconductor ? 1.602176634e-19 * (s.p - s.n + e.value(sd) - e.value(sa)) : 0.0;
+                   });
+            // Band energies (J; shown in eV): Ei = -qV, Ec = Ei + (Ec - Ei).
+            const double q = 1.602176634e-19;
+            define(p + QStringLiteral("Ei"), energy, tr("intrinsic level"), K::Derived, f,
+                   [st, sv, q](PointEvaluator& e) { return st(e).semiconductor ? -q * e.value(sv) : NaN; });
+            define(p + QStringLiteral("Ec"), energy, tr("conduction band edge"), K::Derived, f, [st, q](PointEvaluator& e) {
+                const detail::SemiconductorState s = st(e);
+                return s.semiconductor ? -q * s.V + s.dEc : NaN;
+            });
+            define(p + QStringLiteral("Ev"), energy, tr("valence band edge"), K::Derived, f, [st, q](PointEvaluator& e) {
+                const detail::SemiconductorState s = st(e);
+                return s.semiconductor ? -q * s.V + s.dEc - s.Eg : NaN;
+            });
+            define(p + QStringLiteral("Efn"), energy, tr("electrons' quasi-Fermi level"), K::Derived, f, [st, q](PointEvaluator& e) {
+                const detail::SemiconductorState s = st(e);
+                return s.semiconductor ? -q * s.V + q * s.Vt * std::log(s.n / s.ni) : NaN;
+            });
+            define(p + QStringLiteral("Efp"), energy, tr("holes' quasi-Fermi level"), K::Derived, f, [st, q](PointEvaluator& e) {
+                const detail::SemiconductorState s = st(e);
+                return s.semiconductor ? -q * s.V - q * s.Vt * std::log(s.p / s.ni) : NaN;
+            });
+            define(p + QStringLiteral("phin"), Dim::voltage(), tr("electrons' quasi-Fermi potential"), K::Derived, f, [st](PointEvaluator& e) {
+                const detail::SemiconductorState s = st(e);
+                return s.semiconductor ? s.V - s.Vt * std::log(s.n / s.ni) : NaN;
+            });
+            define(p + QStringLiteral("phip"), Dim::voltage(), tr("holes' quasi-Fermi potential"), K::Derived, f, [st](PointEvaluator& e) {
+                const detail::SemiconductorState s = st(e);
+                return s.semiconductor ? s.V + s.Vt * std::log(s.p / s.ni) : NaN;
+            });
+            struct Cur {
+                const char* name;
+                QString what;
+                int kind;   // 0 electrons', 1 holes', 2 both
+                int axis;   // 0 x, 1 y, 2 norm
+            };
+            const Cur currents[] = {
+                {"Jnx", tr("electron current density, x component"), 0, 0}, {"Jny", tr("electron current density, y component"), 0, 1},
+                {"normJn", tr("electron current density, norm"), 0, 2},     {"Jpx", tr("hole current density, x component"), 1, 0},
+                {"Jpy", tr("hole current density, y component"), 1, 1},     {"normJp", tr("hole current density, norm"), 1, 2},
+                {"Jx", tr("current density, x component"), 2, 0},           {"Jy", tr("current density, y component"), 2, 1},
+                {"normJ", tr("current density, norm"), 2, 2},
+            };
+            for (const Cur& c : currents) {
+                const int kind = c.kind, axis = c.axis;
+                define(p + QString::fromLatin1(c.name), jfield, c.what, K::Derived, f, [st, kind, axis](PointEvaluator& e) {
+                    const detail::SemiconductorState s = st(e);
+                    if (!s.semiconductor) return NaN;
+                    double v[2];
+                    for (int k = 0; k < 2; ++k) v[k] = kind == 0 ? s.Jn[k] : kind == 1 ? s.Jp[k] : s.Jn[k] + s.Jp[k];
+                    return axis == 2 ? std::hypot(v[0], v[1]) : v[axis];
+                });
+            }
+            define(p + QStringLiteral("R"), rate, tr("net recombination rate"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.R; }));
+            define(p + QStringLiteral("mun"), mobility, tr("electron mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mun; }));
+            define(p + QStringLiteral("mup"), mobility, tr("hole mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mup; }));
+            coefficient(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity"), f, QString());
             continue;
         }
         if (field.type == QLatin1String("magnetic")) {
@@ -1166,6 +1298,17 @@ int PointEvaluator::domain() const
     return a_t < 0 ? -1 : a_s.mesh().domain[std::size_t(a_t)];
 }
 
+void PointEvaluator::setFrequency(double f)
+{
+    a_frequency = f;
+    std::fill(a_done.begin(), a_done.end(), 0);
+}
+
+double PointEvaluator::frequency() const
+{
+    return std::isnan(a_frequency) ? a_s.frequency() : a_frequency;
+}
+
 void PointEvaluator::perturb(int f, double du)
 {
     if (f < 0 || f >= int(a_offset.size())) return;
@@ -1201,14 +1344,14 @@ void PointEvaluator::component(int f, int comp, double& u, double& gx, double& g
         const Space& sp = *field.space;
         const int d = a_s.mesh().domain[std::size_t(a_t)];
         if (field.solved && (d < 0 || !field.domains[std::size_t(d)])) {
-            for (int k = 0; k < 2; ++k) c.u[k] = c.gx[k] = c.gy[k] = NaN;
+            for (std::size_t k = 0; k < std::size(c.u); ++k) c.u[k] = c.gx[k] = c.gy[k] = NaN;
         } else {
             Shape s;
             shapeAt(sp.order(), a_xi, a_eta, s);
             const Space::Map m = sp.map(a_t, a_xi, a_eta);
             const int* dofs = sp.dofs(a_t);
             const std::size_t n = std::size_t(sp.size());
-            for (int k = 0; k < std::min(2, field.count()); ++k) {
+            for (int k = 0; k < std::min(int(std::size(c.u)), field.count()); ++k) {
                 double uu = 0, rx = 0, ry = 0;
                 for (int i = 0; i < s.count; ++i) {
                     const double v = field.values[std::size_t(k) * n + std::size_t(dofs[i])];
@@ -1222,7 +1365,7 @@ void PointEvaluator::component(int f, int comp, double& u, double& gx, double& g
         }
         c.done = true;
     }
-    if (comp < 0 || comp > 1) {
+    if (comp < 0 || comp >= std::min(int(std::size(c.u)), field.count())) {
         u = gx = gy = NaN;
         return;
     }
@@ -1258,7 +1401,7 @@ double PointEvaluator::value(int slot)
     case K::X: v = point().x(); break;
     case K::Y: v = point().y(); break;
     case K::Time: v = a_s.time(); break;
-    case K::Frequency: v = a_s.frequency(); break;
+    case K::Frequency: v = frequency(); break;
     case K::DomainNumber: v = a_s.mesh().domain[std::size_t(a_t)] + 1; break;
     case K::Size: {
         const auto& t = a_s.mesh().triangles[std::size_t(a_t)];
@@ -1892,7 +2035,7 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
 } // namespace
 
 StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh> mesh,
-                       const QString& studyTag, const Progress& progress)
+                       const QString& studyTag, const Progress& progress, const Solution* start)
 {
     StudyResult out;
     QElapsedTimer timer;
@@ -1920,6 +2063,17 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         out.error = tr("the model has no physics to solve");
         return out;
     }
+    if (start && start->meshPtr() == mesh)
+        for (Field& f : solution->fields()) {
+            if (f.type != QLatin1String("semiconductor")) continue;
+            const int from = start->fieldIndex(f.tag);
+            if (from < 0) continue;
+            const Field& g = start->fields()[std::size_t(from)];
+            if (!g.solved || g.type != f.type || g.values.size() != f.values.size()) continue;
+            f.values = g.values;
+            f.terminals = g.terminals;
+            f.solved = true;
+        }
     if (solution->axisymmetric()) {
         const QRectF b = mesh->bounds();
         if (b.left() < -1e-9 * std::max(b.width(), b.height())) {
@@ -2046,7 +2200,7 @@ namespace {
 /// squared error, at half their size), and solved again, as often as that
 /// step asks. (In frequency: the last frequency's error.)
 StudyResult solveAdaptive(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh> mesh,
-                          const QString& studyTag, const Progress& progress)
+                          const QString& studyTag, const Progress& progress, const Solution* start = nullptr)
 {
     const Node* study = nullptr;
     for (const Node* s : model.studies())
@@ -2063,7 +2217,7 @@ StudyResult solveAdaptive(const Model& model, std::shared_ptr<ParameterScope> pa
             return !progress || progress((r + f) / (rounds + 1), rounds ? tr("mesh %1 of %2: %3").arg(r + 1).arg(rounds + 1).arg(w) : w);
         });
     };
-    StudyResult r = solveStudy(model, parameters, mesh, studyTag, part(0));
+    StudyResult r = solveStudy(model, parameters, mesh, studyTag, part(0), start);
     if (!adaptive || !r.solution) return r;
     QString why;
     MeshSizes sizes = meshSizes(model, *parameters, *mesh->topology, &why);
@@ -2285,6 +2439,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     shaping.insert(QStringLiteral("mesh"), component.value(QStringLiteral("mesh")));
     shaping.insert(QStringLiteral("functions"), whole.value(QStringLiteral("functions")));
     std::shared_ptr<const Mesh> base = mesh;
+    std::shared_ptr<const Solution> previous;
     for (std::size_t k = 0; k < points.size(); ++k) {
         QHash<QString, QString> overrides;
         QStringList label;
@@ -2323,12 +2478,13 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             run.mesh = base;
             m = base;
         }
-        const StudyResult r = solveAdaptive(model, ps, m, study->tag, sub(0.3, 1));
+        const StudyResult r = solveAdaptive(model, ps, m, study->tag, sub(0.3, 1), previous.get());
         run.warnings << r.warnings;
         if (!r.solution) {
             run.error = tr("%1: %2").arg(where, r.error);
             return run;
         }
+        previous = r.solution;
         r.solution->label = where;
         r.solution->sweptValues = values;
         run.log << QStringLiteral("%1: %2").arg(where, r.solution->log.join(QLatin1String("; ")));
