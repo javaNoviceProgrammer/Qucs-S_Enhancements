@@ -105,6 +105,19 @@ Sections sections(const Model& m)
     return s;
 }
 
+/// Each study by its tag, as it is solved (its label left out).
+std::map<QString, QByteArray> studiesOf(const Model& m)
+{
+    std::map<QString, QByteArray> out;
+    for (const QJsonValue& v : m.toObject().value(QStringLiteral("studies")).toArray()) {
+        QJsonObject o = v.toObject();
+        const QString tag = o.value(QStringLiteral("tag")).toString();
+        o.remove(QStringLiteral("label"));
+        out[tag] = compact(o);
+    }
+    return out;
+}
+
 QColor colorOf(const QString& text, const QColor& fallback)
 {
     const QColor c = QColor::fromString(text.trimmed());
@@ -536,7 +549,7 @@ void MultiphysicsDoc::invalidate(const Model& before, const Model& after)
     const Sections a = sections(before), b = sections(after);
     const bool geometry = a.parameters != b.parameters || a.geometry != b.geometry;
     const bool mesh = geometry || a.mesh != b.mesh;
-    const bool physics = mesh || a.physics != b.physics || a.studies != b.studies;
+    const bool physics = mesh || a.physics != b.physics;
     if (geometry && !a_geometryStale) {
         a_geometryStale = true;
         a_geometryTimer->start();
@@ -546,6 +559,15 @@ void MultiphysicsDoc::invalidate(const Model& before, const Model& after)
     if (mesh) a_meshStale = true;
     if (physics)
         for (auto& [tag, stale] : a_stale) stale = true;
+    else if (a.studies != b.studies) {
+        // A study changed: its solution old, not the others' (one added and
+        // deleted leaves them as they were).
+        const std::map<QString, QByteArray> was = studiesOf(before), now = studiesOf(after);
+        for (auto& [tag, stale] : a_stale) {
+            const auto i = was.find(tag), j = now.find(tag);
+            if (i == was.end() || j == now.end() || i->second != j->second) stale = true;
+        }
+    }
     // A plot changed: drawn again.
     if (a.results != b.results && !a_plotGroup.isEmpty() && a_view->show() == GraphicsView::Show::Results) {
         if (a_model.find(a_plotGroup)) {
@@ -1336,6 +1358,19 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         outer << p.name;
         vars << p;
     }
+    // An axis of one value last: a data display draws over a variable's first
+    // (a sweep's capacitance over its voltage, not its one frequency; its
+    // loss over the bias, not its one mode). The values' order is the same.
+    {
+        QStringList many, one;
+        for (const QString& name : outer) {
+            qsizetype size = 0;
+            for (const Variable& v : vars)
+                if (v.name == name) size = v.re.size();
+            (size > 1 ? many : one) << name;
+        }
+        outer = many + one;
+    }
     // (Of one solution at rest: an index of one.)
     auto outerOrIndex = [&]() {
         if (!outer.isEmpty()) return outer;
@@ -1358,7 +1393,10 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
             const QStringList exprs = graph.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
             const QStringList deps = outerOrIndex();
             for (const QString& raw : exprs) {
-                const QString text = raw.trimmed();
+                // (name = expression: the variable's name.)
+                const NamedExpression item = namedExpression(raw);
+                const bool named = item.name != item.expression;
+                const QString text = item.expression;
                 // A Derived Values node: each of its values (tag), or one (tag.name).
                 const Node* derivedNode = a_model.find(text.section(QLatin1Char('.'), 0, 0));
                 if (derivedNode && derivedNode->kind() && derivedNode->kind()->group == QLatin1String("derived")) {
@@ -1374,7 +1412,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                             if (!only.isEmpty() && dv.name != only) continue;
                             if (!byName.contains(dv.name)) {
                                 Variable v;
-                                v.name = unique(dv.name);
+                                v.name = unique(named && !only.isEmpty() ? item.name : dv.name);
                                 v.dependencies = deps;
                                 for (int k = 0; k < int(&in - &every.front()); ++k) v.re << std::numeric_limits<double>::quiet_NaN();
                                 byName.insert(dv.name, v);
@@ -1395,7 +1433,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     continue;
                 }
                 Variable v;
-                v.name = unique(text);
+                v.name = unique(item.name);
                 v.dependencies = deps;
                 for (const Instance& in : every) {
                     Solution* sol = select(*set, in);

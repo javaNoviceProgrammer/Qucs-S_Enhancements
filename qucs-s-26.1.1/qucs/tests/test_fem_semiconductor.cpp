@@ -191,6 +191,127 @@ private slots:
         }
     }
 
+    void contactCurrents()
+    {
+        // P+ P N N+ (1e19 and 1e17 cm⁻³; contacts on the 1e19), reversed
+        // from 0 V. At 0 V, its first point, from equilibrium: no current at
+        // all. Reversed: the depletion's generation, q ∫ R, to 1 % - a
+        // contact's rows give it only to the last digits of a 1e19 contact's
+        // fluxes (pA, the generation a few pA here). The two currents' sum
+        // nought; two terminals' small-signal G_aa = G_kk = -G_ak. (Fine
+        // across the junction, q ∫ R's triangles and the boxes' R agreeing.)
+        const QString hmax = QStringLiteral("0.01");
+        const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "Va", "expression": "0[V]"}],
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "pp", "size": ["0.25", "0.1"]},
+                         {"type": "rectangle", "name": "p", "position": ["0.25", "0"], "size": ["0.5", "0.1"]},
+                         {"type": "rectangle", "name": "n", "position": ["0.75", "0"], "size": ["0.5", "0.1"]},
+                         {"type": "rectangle", "name": "nn", "position": ["1.25", "0"], "size": ["0.25", "0.1"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pp"]}},
+              {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["p"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["n"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e19[1/cm^3]", "selection": {"only": ["nn"]}},
+              {"type": "srh", "selection": {"all": true}},
+              {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["pp"], "side": "left"}},
+              {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nn"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                     "features": [{"type": "size", "level": "domain", "hmax": "%1", "selection": {"only": ["p", "n"]}}]}}],
+          "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "0, -0.45, -0.5, -0.55", "V"]]},
+                                                  {"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz], 1[MHz]"}]}]})json")
+                                      .arg(hmax)
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(int(r.study.solutions.size()), 4);
+        Node generation;
+        generation.type = QStringLiteral("integral");
+        generation.props.insert(QStringLiteral("expression"), QStringLiteral("1.602176634e-19[C]*semi.R*1[m]"));
+        generation.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+        QStringList each;
+        double before = 0;
+        for (std::size_t i = 0; i < r.study.solutions.size(); ++i) {
+            Solution& s = *r.study.solutions[i];
+            s.select(-1);
+            const double Ia = global(s, QStringLiteral("semi.I_a")), Ik = global(s, QStringLiteral("semi.I_k"));
+            const double Gaa = global(s, QStringLiteral("semi.Gaa")), Gkk = global(s, QStringLiteral("semi.Gkk"));
+            const double Gak = global(s, QStringLiteral("semi.Gak")), Gka = global(s, QStringLiteral("semi.Gka"));
+            const DerivedResult d = evaluateDerived(s, generation);
+            QVERIFY2(d.error.isEmpty() && d.values.size() == 1, qPrintable(d.error));
+            const double qR = d.values[0].value;
+            each << QStringLiteral("%1: I_a %2, I_k %3 (q∫R %4); G %5 %6 %7 %8")
+                        .arg(s.label)
+                        .arg(Ia, 0, 'g', 5)
+                        .arg(Ik, 0, 'g', 5)
+                        .arg(qR, 0, 'g', 5)
+                        .arg(Gaa, 0, 'g', 7)
+                        .arg(Gkk, 0, 'g', 7)
+                        .arg(Gak, 0, 'g', 7)
+                        .arg(Gka, 0, 'g', 7);
+            const QByteArray said = each.join(QLatin1String("; ")).toUtf8();
+            if (i == 0) {
+                QVERIFY2(Ia == 0 && Ik == 0, said.constData());
+            } else {
+                QVERIFY2(std::abs(Ia + Ik) < 1e-6 * std::abs(Ia), said.constData());
+                QVERIFY2(std::abs(Ia / qR - 1) < 0.01, said.constData());
+                QVERIFY2(-Ia > before, said.constData());
+                before = -Ia;
+            }
+            QVERIFY2(Gaa > 0 && std::abs(Gkk / Gaa - 1) < 1e-4 && std::abs(Gak / Gaa + 1) < 1e-4 && std::abs(Gka / Gaa + 1) < 1e-4, said.constData());
+            // Its capacitance the depletion's, ε/W (0.1 µm by 1 m), W from Vbi - V - 2Vt.
+            const double va = std::vector<double>{0, -0.45, -0.5, -0.55}[i], vt = KB * 300 / Q, N = 1e23, es = 11.7 * Eps0, ni = siliconNi();
+            const double W = std::sqrt(2 * es * (vt * std::log(N * N / (ni * ni)) - va - 2 * vt) * 2 / (Q * N));
+            const double Caa = global(s, QStringLiteral("semi.Caa"));
+            QVERIFY2(std::abs(Caa / (es / W * 0.1e-6) - 1) < 0.03 && std::abs(global(s, QStringLiteral("semi.Cak")) / Caa + 1) < 1e-4,
+                     qPrintable(QStringLiteral("%1: C %2, ε/W %3").arg(s.label).arg(Caa).arg(es / W * 0.1e-6)));
+        }
+        // At 1 kHz, G the dc current's slope (at -0.5 V, from -0.45 and -0.55 V).
+        Solution& middle = *r.study.solutions[2];
+        middle.select(0);
+        const double Glow = global(middle, QStringLiteral("semi.Gaa"));
+        r.study.solutions[1]->select(-1);
+        r.study.solutions[3]->select(-1);
+        const double slope = (global(*r.study.solutions[3], QStringLiteral("semi.I_a")) - global(*r.study.solutions[1], QStringLiteral("semi.I_a"))) / -0.1;
+        each << QStringLiteral("at 1 kHz and -0.5 V: G %1 (dI/dV %2)").arg(Glow, 0, 'g', 5).arg(slope, 0, 'g', 5);
+        QVERIFY2(std::abs(Glow / slope - 1) < 0.01, qPrintable(each.last()));
+        qInfo("contact currents: %s", qPrintable(each.join(QLatin1String("; "))));
+        // An ohmic contact's charge: said to be about nought, its capacitance
+        // the small-signal's.
+        bool described = false;
+        for (const Variable& v : r.study.solutions.back()->globals())
+            if (v.name == QLatin1String("semi.Q_a")) described = v.description.contains(QLatin1String("about nought")) && v.description.contains(QLatin1String("semi.Caa"));
+        QVERIFY(described);
+    }
+
+    void currentsInTime()
+    {
+        // A junction (1e16 cm⁻³ each side) reversed by a ramp, -2 V in 1 µs:
+        // the current at -1 V its capacitance there times the ramp (the
+        // carriers' change in time weighs in the current where the contact's
+        // weight is), the cathode's the same out.
+        const QString hmax = slowBuild() ? QStringLiteral("0.25") : QStringLiteral("0.1");
+        Model m = modelOf(junction(QStringLiteral("5"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("0[V]"),
+                                   QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 0.25[us], 0.5[us])", "rtol": "1e-4"})x"),
+                                   QString(), hmax));
+        for (Node& f : m.find(QStringLiteral("semi"))->children)
+            if (f.text(QStringLiteral("name")) == QLatin1String("a")) f.props.insert(QStringLiteral("V0"), QStringLiteral("-2[V]*t/1[us]"));
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        QCOMPARE(s.snapshotCount(), 3);
+        s.select(2);
+        const double Ia = global(s, QStringLiteral("semi.I_a")), Ik = global(s, QStringLiteral("semi.I_k"));
+        const Run c = run(modelOf(junction(QStringLiteral("5"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("-1[V]"),
+                                           QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"})"), QString(), hmax)));
+        QVERIFY2(c.error.isEmpty(), qPrintable(c.error));
+        const double C = global(*c.solution, QStringLiteral("semi.Caa"));
+        const double expected = C * -2e6;
+        qInfo("in time: at -1 V I_a %.6g A, I_k %.6g (C dV/dt %.6g, C %.5g F); %s", Ia, Ik, expected, C, qPrintable(s.log.join(QLatin1String("; "))));
+        QVERIFY2(std::abs(Ia / expected - 1) < 0.01, qPrintable(QString::number(Ia / expected)));
+        QVERIFY2(std::abs(Ia + Ik) < 1e-3 * std::abs(Ia), qPrintable(QString::number(Ik / Ia)));
+    }
+
     void aShortDiodesCurrent()
     {
         // Lifetimes long: no recombination; forward 0.4 V - Shockley's
