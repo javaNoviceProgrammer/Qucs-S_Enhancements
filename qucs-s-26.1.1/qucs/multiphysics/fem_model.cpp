@@ -1440,7 +1440,8 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("lngr"), tr("An expression along a cut line: a curve for each solution.")});
         add({QStringLiteral("globalgraph"), tr("Global"), QStringLiteral("graph"), QStringLiteral("globalgraph"), Level::None,
              {text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("ht.Tmax"),
-                   tr("Split by ';': ht.Tmax; ec.P... - or a Derived Values node's tag: lp1 (each of its values), lp1.Z0 (one)")),
+                   tr("Split by ';': ht.Tmax; ec.P... - or a Derived Values node's tag: lp1 (each of its values), lp1.Z0 (one); each named "
+                      "if wanted: loss_dBcm = emw.loss/100")),
               unit1},
              {}, {}, false, false, QStringLiteral("glbg"),
              tr("Global values - or a Derived Values node's - over the output times, or the sweep's parameter.")});
@@ -1492,7 +1493,7 @@ QList<NodeKind> makeKinds()
              {}, true, true, QString(), tr("Numbers of the solution: integrals, averages, a capacitance, a resistance.")});
         add({QStringLiteral("global"), tr("Global Evaluation"), QStringLiteral("derived"), QStringLiteral("global"), Level::None,
              {study, text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("es.C11"),
-                          tr("Split by ';': es.C11; ec.R; ht.Rth...")),
+                          tr("Split by ';': es.C11; ec.R; ht.Rth... - each named if wanted: C_pF = es.C11/1[pF]")),
               unit, solutions},
              {}, {}, false, false, QStringLiteral("gev"), tr("Values of the whole model: a capacitance matrix, a resistance.")});
         const P level = choice(QStringLiteral("level"), tr("Over"), {QStringLiteral("domain"), QStringLiteral("boundary")},

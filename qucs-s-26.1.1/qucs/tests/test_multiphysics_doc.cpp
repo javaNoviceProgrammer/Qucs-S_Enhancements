@@ -1132,6 +1132,99 @@ private slots:
         QVERIFY(panel()->editorFor("mode") != nullptr);
     }
 
+    // A guide's one mode swept over its width: a global graph over the width
+    // (the one mode last - a data display draws over the first), named as
+    // asked; a study added and deleted leaves the others' solutions as they
+    // were, one changed is old alone.
+    void graphsOverASweepOfModes()
+    {
+        const QString file = path(QStringLiteral("guide_sweep.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "a", "expression": "22.86[mm]"}],
+          "components": [{"unit": "mm",
+            "geometry": [{"type": "rectangle", "label": "guide", "size": ["a/1[mm]", "10.16"]}, {"type": "form union"}],
+            "materials": [{"material": "Air", "selection": {"all": true}}],
+            "physics": [{"type": "modes", "tag": "emw", "order": "1"}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "tag": "std1", "label": "Over the width",
+                       "steps": [{"type": "sweep", "parameters": [["a", "20, 22.86, 25", "mm"]]},
+                                 {"type": "mode", "frequency": "20[GHz]", "modes": 1, "neff": "1"}]},
+                      {"type": "study", "tag": "std2", "label": "At 15 GHz", "steps": [{"type": "mode", "frequency": "15[GHz]", "modes": 1, "neff": "1"}]}],
+          "results": {"plots": [{"type": "plotgroup1d", "tag": "pgw", "label": "Index against Width", "study": "std1",
+                                 "plots": [{"type": "globalgraph", "expression": "neff_x100 = emw.neff*100; emw.neff"}]}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        for (const char* study : {"std1", "std2"}) {
+            doc->compute(QString::fromLatin1(study));
+            QVERIFY(doc->waitForJob(120000));
+            QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        }
+        QString why;
+        const QString display = doc->showGraphs(QStringLiteral("pgw"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* named = data.find(QStringLiteral("neff_x100"));
+        const qucs_s::dataset::Variable* neff = data.find(QStringLiteral("emw.neff"));
+        QVERIFY(named && neff);
+        QCOMPARE(named->dependencies, (QStringList{QStringLiteral("a"), QStringLiteral("mode")}));
+        QCOMPARE(neff->dependencies, (QStringList{QStringLiteral("a"), QStringLiteral("mode")}));
+        QCOMPARE(neff->size(), 3);
+        for (int i = 0; i < 3; ++i) {
+            const double a = std::vector<double>{20e-3, 22.86e-3, 25e-3}[std::size_t(i)];
+            const double te10 = std::sqrt(1 - std::pow(299792458.0 / (2 * a * 20e9), 2));
+            QVERIFY2(std::abs(neff->re.at(i) - te10) < 3e-3, qPrintable(QString::number(neff->re.at(i))));
+            QVERIFY(std::abs(named->re.at(i) - 100 * neff->re.at(i)) < 1e-9);
+        }
+        // Named in Claude's fem_evaluate too: a global's, at a point.
+        QJsonObject r = call("fem_evaluate", {{"study", "std2"}, {"expression", "twice = 2*emw.neff; emw.neff"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray values = json(r).value("values").toArray();
+        QCOMPARE(values.size(), 2);
+        QCOMPARE(values.at(0).toObject().value("name").toString(), QStringLiteral("twice"));
+        QVERIFY(std::abs(values.at(0).toObject().value("SI").toDouble() - 2 * values.at(1).toObject().value("SI").toDouble()) < 1e-12);
+        // (A comparison is no name: ==, >=.)
+        r = call("fem_evaluate", {{"study", "std2"}, {"expression", "same = emw.neff == emw.neff; a == a; emw.neff >= 0"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray compared = json(r).value("values").toArray();
+        QCOMPARE(compared.size(), 3);
+        int k = 0;
+        for (const char* name : {"same", "a == a", "emw.neff >= 0"}) {
+            QCOMPARE(compared.at(k).toObject().value("name").toString(), QString::fromLatin1(name));
+            QCOMPARE(compared.at(k++).toObject().value("SI").toDouble(), 1.0);
+        }
+        QJsonArray centre;
+        centre.append(QJsonArray{11.43, 5.08});
+        r = call("fem_evaluate", {{"study", "std2"}, {"expression", "E = emw.normE"}, {"at", centre}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("values").toArray().at(0).toObject().value("name").toString(), QStringLiteral("E"));
+        // A study added and deleted: no solution old.
+        QVERIFY(!doc->solutionStale(QStringLiteral("std1")) && !doc->solutionStale(QStringLiteral("std2")));
+        Model m = doc->model();
+        const QString parent = m.parentOf(QStringLiteral("std1"))->tag;
+        qucs_s::fem::Node added = m.make(QStringLiteral("study"));
+        added.tag = QStringLiteral("std9");
+        QVERIFY(m.add(parent, added) != nullptr);
+        QVERIFY(doc->setModel(m, QStringLiteral("a study added")));
+        QVERIFY(m.remove(QStringLiteral("std9")));
+        QVERIFY(doc->setModel(m, QStringLiteral("deleted")));
+        QVERIFY(!doc->solutionStale(QStringLiteral("std1")));
+        QVERIFY(!doc->solutionStale(QStringLiteral("std2")));
+        r = call("fem_evaluate", {{"study", "std2"}, {"expression", "emw.neff"}});
+        QVERIFY2(!json(r).contains("note"), qPrintable(text(r)));
+        // A study changed: its solution old, the other's not; renamed: neither.
+        m.find(QStringLiteral("std2"))->children.front().props.insert(QStringLiteral("frequency"), QStringLiteral("16[GHz]"));
+        m.find(QStringLiteral("std1"))->label = QStringLiteral("Over a");
+        QVERIFY(doc->setModel(m, QStringLiteral("changed")));
+        QVERIFY(doc->solutionStale(QStringLiteral("std2")));
+        QVERIFY(!doc->solutionStale(QStringLiteral("std1")));
+        r = call("fem_evaluate", {{"study", "std2"}, {"expression", "emw.neff"}});
+        QVERIFY2(json(r).value("note").toString().contains("changed"), qPrintable(text(r)));
+    }
+
     // The iris filter: its S-parameters over frequency, a Touchstone file of
     // its ports.
     void aFiltersSMatrix()
@@ -1241,6 +1334,15 @@ private slots:
         QVERIFY(va && ia);
         QCOMPARE(va->size(), 3);
         QVERIFY(ia->re.at(2) > 100 * ia->re.at(1) && ia->re.at(1) > 0 && ia->re.at(0) < 0);
+        // Over Va, not the frequency step's one frequency: a data display
+        // draws over a variable's first dependency.
+        QCOMPARE(ia->dependencies, (QStringList{QStringLiteral("Va"), QStringLiteral("frequency")}));
+        const QString cv = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Capacitance against Voltage"), &why, false);
+        QVERIFY2(!cv.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset cvData;
+        QVERIFY(cvData.read(cv.left(cv.size() - 4) + QStringLiteral(".dat"), &why));
+        QVERIFY(cvData.find(QStringLiteral("semi.Ckk")));
+        QCOMPARE(cvData.find(QStringLiteral("semi.Ckk"))->dependencies, (QStringList{QStringLiteral("Va"), QStringLiteral("frequency")}));
         // The bands along the diode: a dataset over the cut line.
         const QString bands = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Bands"), &why, false);
         QVERIFY2(!bands.isEmpty(), qPrintable(why));

@@ -756,12 +756,14 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                 for (const QJsonValue& v : args.value(QLatin1String("at")).toArray()) {
                     const QJsonArray p = v.toArray();
                     const QPointF point(p.at(0).toDouble(), p.at(1).toDouble());
-                    for (const QString& item : items) {
+                    for (const QString& text : items) {
+                        // (name = expression: named so.)
+                        const NamedExpression item = namedExpression(text);
                         QString why;
                         Dim dim;
-                        const std::optional<double> value = evaluateAt(*sol, locator, item, point, &why, &dim);
+                        const std::optional<double> value = evaluateAt(*sol, locator, item.expression, point, &why, &dim);
                         QJsonObject vo{{QStringLiteral("at"), p}};
-                        if (items.size() > 1) vo.insert(QStringLiteral("name"), item);
+                        if (items.size() > 1 || item.name != item.expression) vo.insert(QStringLiteral("name"), item.name);
                         if (!prefix.isEmpty()) vo.insert(QStringLiteral("solution"), at.label);
                         if (value) {
                             const DisplayUnit du = displayUnit(unit, dim);

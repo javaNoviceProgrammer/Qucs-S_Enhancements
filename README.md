@@ -2048,7 +2048,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     At rest (currents, charges; at equilibrium the gates' quasi-static
     capacitance, the low-frequency limit), in time, and **small-signal**
     in a frequency step: the contacts' conductance and capacitance
-    matrices - a MOS capacitor's high- and low-frequency C-V curves. The bands and
+    matrices - a MOS capacitor's high- and low-frequency C-V curves. A
+    contact's current is weighed over the device where the carriers' current
+    is resolved - a junction's dark current of fA through contacts on
+    10¹⁹ cm⁻³ silicon, nought at equilibrium; its charge (semi.Q_a) is its
+    metal's, about nought for an ohmic contact on neutral silicon: a
+    junction's capacitance is the small-signal semi.Caa. The bands and
     quasi-Fermi levels, carriers, currents and recombination as
     variables. A mode analysis reads its carriers through silicon's
     **plasma dispersion** (Soref and Bennett's): a carrier-depletion
@@ -2127,7 +2132,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   points; **1D plot groups** - an expression along a cut line, at points
   or a global value (or a Derived Values node's: Z0 against a swept width,
   R against frequency, the modes' effective indices) over the times,
-  frequencies, modes or the sweep - written
+  frequencies, modes or the sweep (an axis of one value last: a sweep's
+  C-V curve over its voltage, not its one frequency), each named if
+  asked (`loss_dBcm = emw.loss/100`) - written
   as a Qucs dataset beside the model and shown in a **Qucs data display**,
   with its markers and exports; and derived values (globals, integrals,
   averages, maxima and minima over domains or boundaries, values at
