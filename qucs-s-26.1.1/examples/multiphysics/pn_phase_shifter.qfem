@@ -63,7 +63,7 @@
                 {"type": "globalgraph", "expression": "emw.neff"}
             ]},
             {"type": "plotgroup1d", "label": "Loss against the Bias", "plots": [
-                {"type": "globalgraph", "expression": "emw.loss", "unit": "1/m"}
+                {"type": "globalgraph", "expression": "emw.loss", "unit": "dB/cm"}
             ]}
         ],
         "derived": [

@@ -178,6 +178,38 @@ DisplayUnit displayUnit(const QString& text, const Dim& dim, QString* warning)
     return u;
 }
 
+DisplayUnit displayUnitOf(const Solution& solution, const QString& expression, const QString& text, const Dim& dim, QString* warning)
+{
+    for (const Variable& g : solution.globals()) {
+        if (g.name != expression.trimmed() || g.unit.isEmpty()) continue;
+        const QString asked = text.trimmed();
+        if (asked.isEmpty()) {
+            DisplayUnit own;
+            own.name = g.unit;
+            return own;
+        }
+        // dB/m asked as dB/cm: 1/cm of 1/m's dimension, the dB kept.
+        const QString word = g.unit.section(QLatin1Char('/'), 0, 0);
+        if (asked.startsWith(word + QLatin1Char('/'))) {
+            DisplayUnit per = displayUnit(QStringLiteral("1/") + asked.mid(word.size() + 1), dim);
+            if (!per.name.isEmpty()) {
+                per.name = asked;
+                return per;
+            }
+        }
+        // A unit of its dimension (1/cm: the number per cm); else its own,
+        // and why - not its number under the dimension's SI unit.
+        QString why;
+        const DisplayUnit plain = displayUnit(asked, dim, &why);
+        if (!plain.name.isEmpty()) return plain;
+        if (warning) *warning = tr("%1 is not a unit of %2 (%3)").arg(asked, g.name, g.unit);
+        DisplayUnit own;
+        own.name = g.unit;
+        return own;
+    }
+    return displayUnit(text, dim, warning);
+}
+
 // ------------------------------------------------------------------ Surfaces
 
 SurfaceData surfaceData(const Solution& solution, const QString& expression, const QString& unit, Deformation* deformation)
@@ -637,15 +669,13 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
                 problems << tr("%1 varies over the model: evaluate it at a point, or integrate it").arg(text);
                 continue;
             }
-            // A global of a unit its dimension cannot say (emw.loss, dB/m): in it.
-            bool own = false;
-            if (unitText.trimmed().isEmpty())
-                for (const Variable& g : solution.globals())
-                    if (g.name == text && !g.unit.isEmpty()) {
-                        out.values << DerivedValue{item.name, e.constant(), e.dim(), solution.globalText(text)};
-                        own = true;
-                    }
-            if (!own) add(item.name, e.constant(), e.dim(), exprs.size() == 1);
+            // (The unit asked is of one expression alone. A global of a unit
+            // its dimension cannot say - emw.loss, dB/m - in it, or over
+            // another length: dB/cm.)
+            QString warning;
+            const DisplayUnit du = displayUnitOf(solution, text, exprs.size() == 1 ? unitText : QString(), e.dim(), &warning);
+            out.values << DerivedValue{item.name, e.constant(), e.dim(), shown(e.constant(), e.dim(), du)};
+            if (!warning.isEmpty() && out.error.isEmpty()) out.error = warning;
         }
         if (!problems.isEmpty()) out.error = problems.join(QLatin1String("; "));
         return out;

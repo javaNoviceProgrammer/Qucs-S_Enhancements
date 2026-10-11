@@ -1123,7 +1123,8 @@ private slots:
         QVERIFY(mode && frequency && neff);
         QCOMPARE(mode->size(), 2);
         QCOMPARE(frequency->size(), 2);
-        QCOMPARE(neff->dependencies, (QStringList{QStringLiteral("mode"), QStringLiteral("frequency")}));
+        // Against the frequency, a curve per mode (a dispersion).
+        QCOMPARE(neff->dependencies, (QStringList{QStringLiteral("frequency"), QStringLiteral("mode")}));
         const double te20 = std::sqrt(1 - std::pow(299792458.0 / (22.86e-3 * 20e9), 2));
         QVERIFY2(std::abs(neff->re.at(3) - te20) < 2e-3, qPrintable(QString::number(neff->re.at(3))));
         // A wavelength for the plot's frequency.
@@ -1132,9 +1133,10 @@ private slots:
         QVERIFY(panel()->editorFor("mode") != nullptr);
     }
 
-    // A guide's one mode swept over its width: a global graph over the width
-    // (the one mode last - a data display draws over the first), named as
-    // asked; a study added and deleted leaves the others' solutions as they
+    // A guide's two modes swept over its width: a global graph over the width,
+    // a curve per mode (its values in that order), named as asked or by its
+    // label, emw.loss in dB/cm; Plot against the modes; one mode no axis of
+    // it. A study added and deleted leaves the others' solutions as they
     // were, one changed is old alone.
     void graphsOverASweepOfModes()
     {
@@ -1145,42 +1147,90 @@ private slots:
           "parameters": [{"name": "a", "expression": "22.86[mm]"}],
           "components": [{"unit": "mm",
             "geometry": [{"type": "rectangle", "label": "guide", "size": ["a/1[mm]", "10.16"]}, {"type": "form union"}],
-            "materials": [{"material": "Air", "selection": {"all": true}}],
+            "materials": [{"label": "lossy air", "epsilonr": "1", "n": "1", "kappa": "1e-4", "selection": {"all": true}}],
             "physics": [{"type": "modes", "tag": "emw", "order": "1"}],
             "mesh": {"size": "coarse"}}],
           "studies": [{"type": "study", "tag": "std1", "label": "Over the width",
-                       "steps": [{"type": "sweep", "parameters": [["a", "20, 22.86, 25", "mm"]]},
-                                 {"type": "mode", "frequency": "20[GHz]", "modes": 1, "neff": "1"}]},
-                      {"type": "study", "tag": "std2", "label": "At 15 GHz", "steps": [{"type": "mode", "frequency": "15[GHz]", "modes": 1, "neff": "1"}]}],
+                       "steps": [{"type": "sweep", "parameters": [["a", "40, 45, 50", "mm"]]},
+                                 {"type": "mode", "frequency": "10[GHz]", "modes": 2, "neff": "1"}]},
+                      {"type": "study", "tag": "std2", "label": "At 15 GHz", "steps": [{"type": "mode", "frequency": "15[GHz]", "modes": 1, "neff": "1"}]},
+                      {"type": "study", "tag": "std3", "label": "One mode over the width",
+                       "steps": [{"type": "sweep", "parameters": [["a", "40, 45, 50", "mm"]]},
+                                 {"type": "mode", "frequency": "10[GHz]", "modes": 1, "neff": "1"}]}],
           "results": {"plots": [{"type": "plotgroup1d", "tag": "pgw", "label": "Index against Width", "study": "std1",
-                                 "plots": [{"type": "globalgraph", "expression": "neff_x100 = emw.neff*100; emw.neff"}]}]}})json");
+                                 "plots": [{"type": "globalgraph", "expression": "neff_x100 = emw.neff*100; emw.neff"},
+                                           {"type": "globalgraph", "label": "Index", "expression": "emw.neff"},
+                                           {"type": "globalgraph", "expression": "emw.loss", "unit": "dB/cm"}]},
+                                {"type": "plotgroup1d", "tag": "pgm", "label": "Against the modes", "study": "std1", "against": "steps",
+                                 "plots": [{"type": "globalgraph", "expression": "emw.neff"}]},
+                                {"type": "plotgroup1d", "tag": "pg1", "label": "One mode", "study": "std3",
+                                 "plots": [{"type": "globalgraph", "expression": "emw.neff"}]}]}})json");
         f.close();
         MultiphysicsDoc* doc = open(file);
         QVERIFY(doc != nullptr);
-        for (const char* study : {"std1", "std2"}) {
+        for (const char* study : {"std1", "std2", "std3"}) {
             doc->compute(QString::fromLatin1(study));
             QVERIFY(doc->waitForJob(120000));
             QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         }
         QString why;
-        const QString display = doc->showGraphs(QStringLiteral("pgw"), &why, false);
-        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        auto dataOf = [&](const QString& group, qucs_s::dataset::Dataset& data) {
+            const QString display = doc->showGraphs(group, &why, false);
+            return !display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why);
+        };
         qucs_s::dataset::Dataset data;
-        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        QVERIFY2(dataOf(QStringLiteral("pgw"), data), qPrintable(why));
         const qucs_s::dataset::Variable* named = data.find(QStringLiteral("neff_x100"));
         const qucs_s::dataset::Variable* neff = data.find(QStringLiteral("emw.neff"));
-        QVERIFY(named && neff);
-        QCOMPARE(named->dependencies, (QStringList{QStringLiteral("a"), QStringLiteral("mode")}));
-        QCOMPARE(neff->dependencies, (QStringList{QStringLiteral("a"), QStringLiteral("mode")}));
-        QCOMPARE(neff->size(), 3);
+        const qucs_s::dataset::Variable* labelled = data.find(QStringLiteral("Index"));
+        const qucs_s::dataset::Variable* loss = data.find(QStringLiteral("emw.loss"));
+        QVERIFY(named && neff && labelled && loss);
+        // Over the width, a curve per mode: the width the faster.
+        const QStringList overWidth{QStringLiteral("a"), QStringLiteral("mode")};
+        QCOMPARE(neff->dependencies, overWidth);
+        QCOMPARE(named->dependencies, overWidth);
+        QCOMPARE(labelled->dependencies, overWidth);
+        QCOMPARE(neff->size(), 6);
+        const std::vector<double> widths{40e-3, 45e-3, 50e-3};
         for (int i = 0; i < 3; ++i) {
-            const double a = std::vector<double>{20e-3, 22.86e-3, 25e-3}[std::size_t(i)];
-            const double te10 = std::sqrt(1 - std::pow(299792458.0 / (2 * a * 20e9), 2));
+            // TE10 at each width, then TE20.
+            const double te10 = std::sqrt(1 - std::pow(299792458.0 / (2 * widths[std::size_t(i)] * 10e9), 2));
+            const double te20 = std::sqrt(1 - std::pow(299792458.0 / (widths[std::size_t(i)] * 10e9), 2));
             QVERIFY2(std::abs(neff->re.at(i) - te10) < 3e-3, qPrintable(QString::number(neff->re.at(i))));
-            QVERIFY(std::abs(named->re.at(i) - 100 * neff->re.at(i)) < 1e-9);
+            QVERIFY2(std::abs(neff->re.at(3 + i) - te20) < 5e-3, qPrintable(QString::number(neff->re.at(3 + i))));
         }
+        for (int i = 0; i < 6; ++i) {
+            QVERIFY(std::abs(named->re.at(i) - 100 * neff->re.at(i)) < 1e-9);
+            QCOMPARE(labelled->re.at(i), neff->re.at(i));
+        }
+        // emw.loss (dB/m) in dB/cm: the second width's TE10.
+        Solution& second = *doc->solutions(QStringLiteral("std1"))->solutions[1];
+        second.select(0);
+        QVERIFY(std::abs(loss->re.at(1) - *second.global(QStringLiteral("emw.loss")) / 100) < 1e-12);
+        QVERIFY(loss->re.at(1) > 0);
+        // Plotted against the modes: as stored (TE20 at the first width second).
+        const QVector<double> overWidthValues = neff->re;
+        QVERIFY2(dataOf(QStringLiteral("pgm"), data), qPrintable(why));
+        QCOMPARE(data.find(QStringLiteral("emw.neff"))->dependencies, (QStringList{QStringLiteral("mode"), QStringLiteral("a")}));
+        QCOMPARE(data.find(QStringLiteral("emw.neff"))->re.at(1), overWidthValues.at(3));
+        // One mode: no axis of it.
+        QVERIFY2(dataOf(QStringLiteral("pg1"), data), qPrintable(why));
+        QCOMPARE(data.find(QStringLiteral("emw.neff"))->dependencies, QStringList{QStringLiteral("a")});
+        QVERIFY(data.find(QStringLiteral("mode")) == nullptr);
+        // emw.loss (dB/m) in dB/cm in Claude's fem_evaluate too, as a global
+        // and at a point; a unit it cannot take: its own, and why.
+        QJsonObject r = call("fem_evaluate", {{"study", "std1"}, {"expression", "emw.loss"}, {"unit", "dB/cm"}});
+        QVERIFY2(json(r).value("values").toArray().at(0).toObject().value("value").toString().endsWith(" dB/cm"), qPrintable(text(r)));
+        QJsonArray middle;
+        middle.append(QJsonArray{25, 5});
+        r = call("fem_evaluate", {{"study", "std1"}, {"expression", "emw.loss"}, {"unit", "dB/cm"}, {"at", middle}});
+        QVERIFY2(json(r).value("values").toArray().at(0).toObject().value("value").toString().endsWith(" dB/cm"), qPrintable(text(r)));
+        r = call("fem_evaluate", {{"study", "std1"}, {"expression", "emw.loss"}, {"unit", "dB/furlong"}});
+        QVERIFY2(json(r).value("values").toArray().at(0).toObject().value("value").toString().endsWith(" dB/m")
+                     && json(r).value("error").toString().contains("dB/furlong"),
+                 qPrintable(text(r)));
         // Named in Claude's fem_evaluate too: a global's, at a point.
-        QJsonObject r = call("fem_evaluate", {{"study", "std2"}, {"expression", "twice = 2*emw.neff; emw.neff"}});
+        r = call("fem_evaluate", {{"study", "std2"}, {"expression", "twice = 2*emw.neff; emw.neff"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         const QJsonArray values = json(r).value("values").toArray();
         QCOMPARE(values.size(), 2);
@@ -1223,6 +1273,74 @@ private slots:
         QVERIFY(!doc->solutionStale(QStringLiteral("std1")));
         r = call("fem_evaluate", {{"study", "std2"}, {"expression", "emw.neff"}});
         QVERIFY2(json(r).value("note").toString().contains("changed"), qPrintable(text(r)));
+    }
+
+    // A transient swept over its heat: its graph over the time, a curve per
+    // power (read over its own axis, not the sweep's); Plot against the sweep
+    // turns it, its values with it.
+    void graphsInTimeOverASweep()
+    {
+        const QString file = path(QStringLiteral("slab_sweep.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "P", "expression": "1e5[W/m^3]"}],
+          "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "slab", "size": ["10", "2"]}],
+            "materials": [{"label": "m", "k": "1[W/(m*K)]", "rho": "1000[kg/m^3]", "Cp": "1000[J/(kg*K)]", "selection": {"all": true}}],
+            "physics": [{"type": "heat", "tag": "ht", "features": [
+              {"type": "init", "T0": "300[K]", "selection": {"all": true}},
+              {"type": "source", "Q0": "P", "selection": {"all": true}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["slab"], "side": "left"}}]}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "sweep", "parameters": [["P", "1e5, 2e5", "W/m^3"]]},
+                                                                 {"type": "transient", "times": "0, 10, 20"}]}],
+          "results": {"plots": [{"type": "cutpoint", "tag": "cpt1", "coordinates": [["5", "1"]]},
+                                {"type": "cutline", "tag": "cln1", "start": ["0", "1"], "end": ["10", "1"], "points": 11},
+                                {"type": "plotgroup1d", "tag": "pgt", "label": "In time", "study": "std1",
+                                 "plots": [{"type": "globalgraph", "expression": "ht.Tmax"},
+                                           {"type": "pointgraph", "label": "Tmid", "data": "cpt1", "expression": "T"}]},
+                                {"type": "plotgroup1d", "tag": "pgp", "label": "Against the power", "study": "std1", "against": "sweep",
+                                 "plots": [{"type": "globalgraph", "expression": "ht.Tmax"},
+                                           {"type": "pointgraph", "label": "Tmid", "data": "cpt1", "expression": "T"}]},
+                                {"type": "plotgroup1d", "tag": "pgl", "label": "Along", "study": "std1",
+                                 "plots": [{"type": "linegraph", "label": "Tline", "data": "cln1", "expression": "T", "xaxis": "x"}]}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QString why;
+        qucs_s::dataset::Dataset data;
+        QString display = doc->showGraphs(QStringLiteral("pgt"), &why, false);
+        QVERIFY2(!display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why), qPrintable(why));
+        const qucs_s::dataset::Variable* tmax = data.find(QStringLiteral("ht.Tmax"));
+        QVERIFY(tmax != nullptr);
+        QCOMPARE(tmax->dependencies, (QStringList{QStringLiteral("time"), QStringLiteral("P")}));
+        // Rising in time, twice as fast at twice the power.
+        const QVector<double> inTime = tmax->re;
+        QVERIFY(std::abs(inTime.at(0) - 300) < 1e-9 && inTime.at(1) > inTime.at(0) + 0.1 && inTime.at(2) > inTime.at(1));
+        QVERIFY2(std::abs((inTime.at(4) - 300) / (inTime.at(1) - 300) - 2) < 1e-3, qPrintable(QString::number(inTime.at(4))));
+        // A point's, named by its graph's label, over the same.
+        const qucs_s::dataset::Variable* mid = data.find(QStringLiteral("Tmid"));
+        QVERIFY(mid != nullptr);
+        QCOMPARE(mid->dependencies, (QStringList{QStringLiteral("time"), QStringLiteral("P")}));
+        const QVector<double> midInTime = mid->re;
+        QVERIFY(std::abs(midInTime.at(0) - 300) < 1e-9 && midInTime.at(4) > midInTime.at(1));
+        display = doc->showGraphs(QStringLiteral("pgp"), &why, false);
+        QVERIFY2(!display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why), qPrintable(why));
+        tmax = data.find(QStringLiteral("ht.Tmax"));
+        QVERIFY(tmax != nullptr);
+        QCOMPARE(tmax->dependencies, (QStringList{QStringLiteral("P"), QStringLiteral("time")}));
+        QCOMPARE(tmax->re.at(2), inTime.at(1));   // (P 1e5, t 10 s)
+        QCOMPARE(tmax->re.at(3), inTime.at(4));   // (P 2e5, t 10 s)
+        QVERIFY(data.find(QStringLiteral("Tmid")));
+        QCOMPARE(data.find(QStringLiteral("Tmid"))->dependencies, (QStringList{QStringLiteral("P"), QStringLiteral("time")}));
+        QCOMPARE(data.find(QStringLiteral("Tmid"))->re.at(3), midInTime.at(4));
+        // A line's, named so, its axis first.
+        display = doc->showGraphs(QStringLiteral("pgl"), &why, false);
+        QVERIFY2(!display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why), qPrintable(why));
+        QVERIFY(data.find(QStringLiteral("Tline")));
+        QCOMPARE(data.find(QStringLiteral("Tline"))->dependencies, (QStringList{QStringLiteral("x"), QStringLiteral("time"), QStringLiteral("P")}));
     }
 
     // The iris filter: its S-parameters over frequency, a Touchstone file of
@@ -1334,15 +1452,18 @@ private slots:
         QVERIFY(va && ia);
         QCOMPARE(va->size(), 3);
         QVERIFY(ia->re.at(2) > 100 * ia->re.at(1) && ia->re.at(1) > 0 && ia->re.at(0) < 0);
-        // Over Va, not the frequency step's one frequency: a data display
-        // draws over a variable's first dependency.
-        QCOMPARE(ia->dependencies, (QStringList{QStringLiteral("Va"), QStringLiteral("frequency")}));
+        // Over Va alone, not the frequency step's one frequency (a data
+        // display draws over a variable's first dependency).
+        QCOMPARE(ia->dependencies, QStringList{QStringLiteral("Va")});
+        QVERIFY(data.find(QStringLiteral("frequency")) == nullptr);
         const QString cv = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Capacitance against Voltage"), &why, false);
         QVERIFY2(!cv.isEmpty(), qPrintable(why));
         qucs_s::dataset::Dataset cvData;
         QVERIFY(cvData.read(cv.left(cv.size() - 4) + QStringLiteral(".dat"), &why));
         QVERIFY(cvData.find(QStringLiteral("semi.Ckk")));
-        QCOMPARE(cvData.find(QStringLiteral("semi.Ckk"))->dependencies, (QStringList{QStringLiteral("Va"), QStringLiteral("frequency")}));
+        QCOMPARE(cvData.find(QStringLiteral("semi.Ckk"))->dependencies, QStringList{QStringLiteral("Va")});
+        QCOMPARE(cvData.find(QStringLiteral("semi.Ckk"))->size(), 3);
+        QVERIFY(cvData.find(QStringLiteral("frequency")) == nullptr);
         // The bands along the diode: a dataset over the cut line.
         const QString bands = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Bands"), &why, false);
         QVERIFY2(!bands.isEmpty(), qPrintable(why));

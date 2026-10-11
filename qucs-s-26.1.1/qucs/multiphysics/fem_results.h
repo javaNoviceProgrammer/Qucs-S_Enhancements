@@ -67,6 +67,11 @@ struct DisplayUnit {
 /// \a text for values of \a dim: empty, SI's own; one not of that unit,
 /// SI and why in \a warning.
 DisplayUnit displayUnit(const QString& text, const Dim& dim, QString* warning = nullptr);
+/// The unit a value of \a expression is shown in, \a text asked: as
+/// displayUnit, and for a global of a unit its dimension cannot say
+/// (emw.loss, dB/m) its own when none is asked, or that unit over another
+/// length (dB/cm).
+DisplayUnit displayUnitOf(const Solution& solution, const QString& expression, const QString& text, const Dim& dim, QString* warning = nullptr);
 
 /// Where a plot is drawn: each point moved by a displacement (x, y: its
 /// expressions, in metres) times a scale.
