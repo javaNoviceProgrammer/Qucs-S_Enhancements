@@ -30,7 +30,10 @@ const QStringList PropertyKeys = {QStringLiteral("epsilonr"), QStringLiteral("ta
                                   QStringLiteral("k"),        QStringLiteral("rho"),  QStringLiteral("Cp"),
                                   QStringLiteral("mur"),      QStringLiteral("BH"),   QStringLiteral("Br"),
                                   QStringLiteral("E"),        QStringLiteral("nu"),   QStringLiteral("alpha"),
-                                  QStringLiteral("n"),        QStringLiteral("kappa"), QStringLiteral("dndT")};
+                                  QStringLiteral("n"),        QStringLiteral("kappa"), QStringLiteral("dndT"),
+                                  QStringLiteral("Eg"),       QStringLiteral("chi"),  QStringLiteral("Nc"),
+                                  QStringLiteral("Nv"),       QStringLiteral("mun"),  QStringLiteral("mup"),
+                                  QStringLiteral("taun"),     QStringLiteral("taup")};
 
 /// A B-H curve's points: B (T), H (A/m).
 MaterialEntry withCurve(MaterialEntry e, std::initializer_list<std::pair<double, double>> points)
@@ -86,9 +89,20 @@ const QList<MaterialEntry>& builtinMaterials()
         entry("PTFE", "Dielectrics", "Polytetrafluoroethylene", {{"epsilonr", "2.1"}, {"tand", "0.0002"}, {"sigma", "1e-16[S/m]"}, {"k", "0.25[W/(m*K)]"},
               {"rho", "2200[kg/m^3]"}, {"Cp", "1000[J/(kg*K)]"}, {"mur", "1"}, {"E", "0.5[GPa]"}, {"nu", "0.46"}, {"alpha", "120e-6[1/K]"}}),
         // Semiconductors and their insulators (no conductivity: it depends on the doping).
-        entry("Silicon", "Semiconductors", "Crystalline silicon; n at 1550 nm. Its conductivity depends on its doping: give it",
+        entry("Silicon", "Semiconductors", "Crystalline silicon at 300 K; n at 1550 nm. Its conductivity depends on its doping: give it, or solve its carriers (Semiconductor)",
               {{"epsilonr", "11.7"}, {"k", "130[W/(m*K)]"}, {"rho", "2329[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"}, {"mur", "1"},
-               {"E", "170[GPa]"}, {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"n", "3.476"}, {"dndT", "1.86e-4[1/K]"}}),
+               {"E", "170[GPa]"}, {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"n", "3.476"}, {"dndT", "1.86e-4[1/K]"},
+               {"Eg", "1.12[eV]"}, {"chi", "4.05[eV]"}, {"Nc", "2.8e19[1/cm^3]"}, {"Nv", "1.04e19[1/cm^3]"}, {"mun", "1400[cm^2/(V*s)]"},
+               {"mup", "450[cm^2/(V*s)]"}, {"taun", "10[us]"}, {"taup", "10[us]"}}),
+        entry("Germanium", "Semiconductors", "Crystalline germanium; n at 1550 nm",
+              {{"epsilonr", "16.2"}, {"k", "60[W/(m*K)]"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
+               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"dndT", "4.2e-4[1/K]"}, {"Eg", "0.66[eV]"}, {"chi", "4.0[eV]"},
+               {"Nc", "1.04e19[1/cm^3]"}, {"Nv", "6.0e18[1/cm^3]"}, {"mun", "3900[cm^2/(V*s)]"}, {"mup", "1900[cm^2/(V*s)]"},
+               {"taun", "1[ms]"}, {"taup", "1[ms]"}}),
+        entry("Gallium nitride", "Semiconductors", "Wurtzite GaN (its polarization not modelled); n at 1550 nm",
+              {{"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"}, {"mur", "1"}, {"E", "295[GPa]"},
+               {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"}, {"n", "2.31"}, {"Eg", "3.4[eV]"}, {"chi", "4.1[eV]"}, {"Nc", "2.3e18[1/cm^3]"},
+               {"Nv", "4.6e19[1/cm^3]"}, {"mun", "1000[cm^2/(V*s)]"}, {"mup", "30[cm^2/(V*s)]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
         entry("Silicon dioxide", "Semiconductors", "SiO₂, thermal oxide or fused silica; n at 1550 nm",
               {{"epsilonr", "3.9"}, {"tand", "0.0001"}, {"sigma", "1e-15[S/m]"}, {"k", "1.4[W/(m*K)]"}, {"rho", "2200[kg/m^3]"}, {"Cp", "730[J/(kg*K)]"},
                {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.17"}, {"alpha", "0.5e-6[1/K]"}, {"n", "1.444"}, {"dndT", "9.5e-6[1/K]"}}),
@@ -96,12 +110,27 @@ const QList<MaterialEntry>& builtinMaterials()
               {{"epsilonr", "7.5"}, {"sigma", "1e-14[S/m]"}, {"k", "20[W/(m*K)]"}, {"rho", "3100[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"},
                {"mur", "1"}, {"E", "250[GPa]"}, {"nu", "0.23"}, {"alpha", "2.3e-6[1/K]"}, {"n", "1.996"}, {"dndT", "2.45e-5[1/K]"}}),
         entry("Indium phosphide", "Semiconductors", "InP; n at 1550 nm", {{"epsilonr", "12.4"}, {"k", "68[W/(m*K)]"},
-              {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"}, {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"n", "3.17"}, {"dndT", "2.0e-4[1/K]"}}),
+              {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"}, {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"n", "3.17"}, {"dndT", "2.0e-4[1/K]"},
+              {"Eg", "1.344[eV]"}, {"chi", "4.38[eV]"}, {"Nc", "5.7e17[1/cm^3]"}, {"Nv", "1.1e19[1/cm^3]"}, {"mun", "5400[cm^2/(V*s)]"},
+              {"mup", "200[cm^2/(V*s)]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
         entry("Gallium arsenide", "Semiconductors", "GaAs; n at 1550 nm", {{"epsilonr", "12.9"}, {"k", "55[W/(m*K)]"},
-              {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"}, {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"n", "3.37"}, {"dndT", "2.35e-4[1/K]"}}),
+              {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"}, {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"n", "3.37"}, {"dndT", "2.35e-4[1/K]"},
+              {"Eg", "1.424[eV]"}, {"chi", "4.07[eV]"}, {"Nc", "4.7e17[1/cm^3]"}, {"Nv", "9.0e18[1/cm^3]"}, {"mun", "8500[cm^2/(V*s)]"},
+              {"mup", "400[cm^2/(V*s)]"}, {"taun", "5[ns]"}, {"taup", "5[ns]"}}),
         entry("Lithium niobate", "Semiconductors", "LiNbO₃ along its optical axis (εr33, ne at 1550 nm): it is anisotropic",
               {{"epsilonr", "28"}, {"sigma", "1e-15[S/m]"}, {"k", "4.6[W/(m*K)]"}, {"rho", "4640[kg/m^3]"}, {"Cp", "630[J/(kg*K)]"},
                {"mur", "1"}, {"E", "170[GPa]"}, {"nu", "0.25"}, {"alpha", "7.5e-6[1/K]"}, {"n", "2.138"}, {"dndT", "3.3e-5[1/K]"}}),
+        // Optical glasses: n of the wavelength (Sellmeier's), for rays and modes.
+        entry("Glass (BK7)", "Optical", "Schott N-BK7: n 1.5168 at 587.6 nm (Sellmeier's), for lenses and prisms",
+              {{"epsilonr", "6.7"}, {"k", "1.114[W/(m*K)]"}, {"rho", "2510[kg/m^3]"}, {"Cp", "858[J/(kg*K)]"}, {"mur", "1"}, {"E", "82[GPa]"},
+               {"nu", "0.206"}, {"alpha", "7.1e-6[1/K]"}, {"dndT", "1.6e-6[1/K]"},
+               {"n", "sqrt(1 + 1.03961212*(lambda0/1[um])^2/((lambda0/1[um])^2 - 0.00600069867) + 0.231792344*(lambda0/1[um])^2/((lambda0/1[um])^2 - "
+                     "0.0200179144) + 1.01046945*(lambda0/1[um])^2/((lambda0/1[um])^2 - 103.560653))"}}),
+        entry("Fused silica", "Optical", "SiO₂ glass: n 1.4585 at 587.6 nm (Malitson's Sellmeier)",
+              {{"epsilonr", "3.8"}, {"k", "1.38[W/(m*K)]"}, {"rho", "2203[kg/m^3]"}, {"Cp", "740[J/(kg*K)]"}, {"mur", "1"}, {"E", "73[GPa]"},
+               {"nu", "0.17"}, {"alpha", "0.55e-6[1/K]"}, {"dndT", "1.0e-5[1/K]"},
+               {"n", "sqrt(1 + 0.6961663*(lambda0/1[um])^2/((lambda0/1[um])^2 - 0.0684043^2) + 0.4079426*(lambda0/1[um])^2/((lambda0/1[um])^2 - "
+                     "0.1162414^2) + 0.8974794*(lambda0/1[um])^2/((lambda0/1[um])^2 - 9.896161^2))"}}),
         // Magnetic materials: soft ones with a B-H curve (typical, not a datasheet's), permanent magnets.
         withCurve(entry("Iron (soft)", "Magnetic", "Low-carbon iron, annealed: a typical B-H curve; µr its first slope's",
                         {{"epsilonr", "1"}, {"sigma", "1.0e7[S/m]"}, {"mur", "4000"}, {"k", "80[W/(m*K)]"}, {"rho", "7870[kg/m^3]"},

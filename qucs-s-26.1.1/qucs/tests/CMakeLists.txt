@@ -79,9 +79,11 @@ function(qucs_add_fem_test name)
   target_link_libraries(${name} fem Qt6::Test)
   target_compile_definitions(${name} PRIVATE QUCS_EXAMPLES_DIR="${QUCS_EXAMPLES_DIR}")
   add_test(NAME ${name} COMMAND ${name})
+  # (A sanitized Debug build on CI's runners: the semiconductors' solves
+  # take minutes there.)
   set_tests_properties(${name} PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
-    TIMEOUT 600)
+    TIMEOUT 900)
 endfunction()
 
 qucs_add_fem_test(test_fem_engine)
@@ -89,6 +91,8 @@ qucs_add_fem_test(test_fem_physics)
 qucs_add_fem_test(test_fem_magnetics)
 qucs_add_fem_test(test_fem_layout)
 qucs_add_fem_test(test_fem_waves)
+qucs_add_fem_test(test_fem_semiconductor)
+qucs_add_fem_test(test_fem_rays)
 # (It writes a gzipped layout, and an OASIS one with gdstk, to read.)
 find_package(ZLIB REQUIRED)
 target_link_libraries(test_fem_layout gdstk ZLIB::ZLIB)

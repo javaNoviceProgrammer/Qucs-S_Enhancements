@@ -153,6 +153,31 @@ QIcon glyph(const QString& icon)
             p.setBrush(QColor(blue.red(), blue.green(), blue.blue(), 40 + 50 * i));
             p.drawRect(QRectF(1 + 3.5 * i, 2, 3.5, 12));
         }
+    } else if (icon == QLatin1String("semi")) {
+        letters(QStringLiteral("pn"), dark ? QColor(230, 190, 110) : QColor(150, 95, 10), true);
+    } else if (icon == QLatin1String("gop") || icon == QLatin1String("rayplot")) {
+        // Rays brought to a focus by a lens.
+        const QColor ray = icon == QLatin1String("rayplot") ? red : (dark ? QColor(255, 210, 90) : QColor(200, 130, 0));
+        if (icon == QLatin1String("gop")) {
+            p.setPen(QPen(blue, 1.1));
+            p.setBrush(QColor(blue.red(), blue.green(), blue.blue(), 50));
+            QPainterPath lens(QPointF(6, 2));
+            lens.quadTo(QPointF(9.5, 8), QPointF(6, 14));
+            lens.quadTo(QPointF(2.5, 8), QPointF(6, 2));
+            p.drawPath(lens);
+        }
+        p.setPen(QPen(ray, 1.2));
+        for (double y : {4.0, 8.0, 12.0}) {
+            p.drawLine(QPointF(0.5, y), QPointF(6, y));
+            p.drawLine(QPointF(6, y), QPointF(15, 8 + (8 - y) * 0.2));
+        }
+    } else if (icon == QLatin1String("beam")) {
+        p.setPen(QPen(dark ? QColor(255, 210, 90) : QColor(200, 130, 0), 1.3));
+        for (double y : {4.0, 8.0, 12.0}) {
+            p.drawLine(QPointF(2, y), QPointF(13, y));
+            p.drawLine(QPointF(13, y), QPointF(10.5, y - 2));
+            p.drawLine(QPointF(13, y), QPointF(10.5, y + 2));
+        }
     }
     else if (icon == QLatin1String("crosssection")) {
         // Layers cut across.
@@ -298,9 +323,10 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
         auto* about = new QLabel(tr("A 2D finite element model, in the plane or about an axis: its geometry (drawn, "
                                     "imported from DXF, SVG, GDSII and OASIS, or a layout's cross-section), materials and "
                                     "physics - electrostatics, electric currents, heat at rest and in time, solid mechanics, "
-                                    "magnetic fields at rest and in frequency, waveguides' modes and waves with their ports - "
-                                    "its mesh (adapted too), studies (swept too) and results, lines and terminals as parts of "
-                                    "circuits, in a tree as COMSOL's. Open a model (.qfem) to see its tree here."),
+                                    "magnetic fields at rest and in frequency, waveguides' modes and waves with their ports, "
+                                    "semiconductors' carriers (drift and diffusion), rays through lenses and prisms - its mesh "
+                                    "(adapted too), studies (swept too) and results, lines and terminals as parts of circuits, in a "
+                                    "tree as COMSOL's. Open a model (.qfem) to see its tree here."),
                                  a_start);
         about->setWordWrap(true);
         // (Wrapped to the dock's width: its length is not to widen the dock -

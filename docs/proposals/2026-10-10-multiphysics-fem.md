@@ -1,7 +1,8 @@
 # Proposal: a 2D multiphysics finite element solver, with a Multiphysics panel
 
-*10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1 to 4 are built (see "Phase 1,
-as built" to "Phase 4, as built" at the end). It answers "I'd like to
+*10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1 to 4 are built, and semiconductors
+and ray optics after them (see "Phase 1, as built" to "Semiconductors and ray optics, as
+built" at the end). It answers "I'd like to
 build a 2D finite element solver in Qucs similar to what COMSOL Multiphysics has. Add a
 new panel to the left called Multiphysics that has a tree and allows the user to build
 the multiphysics project: geometry, material properties, FEM mesher, solver engine...".
@@ -402,6 +403,7 @@ packaged as any other, and is tested on CI.
 | **2. Time, couplings, mechanics, sweeps** | time-dependent heat; Joule heating, temperature-dependent materials, thermal expansion; solid mechanics (plane stress, strain, axisymmetric); 2D axisymmetric for all; parametric sweeps; cut lines and 1D results to Qucs datasets; DXF and SVG import | 9,000 + 2,500 | 4 - 6 |
 | **3. Magnetics and lines into circuits** | magnetostatics with B-H curves (Newton); eddy currents (frequency domain); R, L, G, C per metre over frequency; export to `RLCG`, Touchstone and subcircuits; GDS/OASIS import and the layout cross-section | 8,000 + 2,000 | 4 - 6 |
 | **4. Waves** | the mode solver (Nédélec elements, PML, complex and anisotropic media, thermo-optic coupling); TE and TM frequency domain with ports, scattering boundaries and S-parameters; adaptive mesh refinement from error estimates | 9,000 + 2,500 | 5 - 8 |
+| **4b. Semiconductors and rays** (asked for after phase 4) | drift-diffusion: Poisson's equation and the carriers' continuity, Scharfetter-Gummel currents, contacts, recombination, at rest, in time and small-signal; the plasma dispersion into the modes; geometrical optics: rays refracted and reflected (Snell, Fresnel), graded media, absorption as a heat or generation source | 3,000 + 900, as built | 1 |
 | **5. Outward** (as wanted) | Gmsh as a second mesher; Elmer or GetDP as external engines; the Python module; a semantic diff of models; schematic-driven sweeps | 3,000 - 6,000 | as chosen |
 
 Phase 1 alone is the largest single feature yet: about three layout viewers. The
@@ -419,8 +421,8 @@ with its benchmarks the day it comes.
   scaled. The tests take on such cases from the start.
 - **Size:** direct solvers are right for 2D up to about a million unknowns. Beyond
   that, iterative solvers need good preconditioners (multigrid is not in Eigen).
-- **What it is not:** no 3D; no semiconductors (drift-diffusion is a project of its
-  own, and an external engine's job); no CFD; no ray optics.
+- **What it is not:** no 3D; no CFD. (Semiconductors and ray optics were left out here;
+  they were built after phase 4: "Semiconductors and ray optics, as built".)
 - **CI time:** the Linux job runs Debug with AddressSanitizer, 10-30× slower than
   Release. FEM tests keep their meshes small and check convergence rates, not fine
   answers.
@@ -795,3 +797,153 @@ plots and the panel did not have to change much.
   0.996) and is a Touchstone file of its two ports.
 - `adaptive_corner`: an electrode's re-entrant corner. Four refinements take it from 174
   to 1,168 triangles, within 0.07 % of a mesh ninety times as fine.
+
+## Semiconductors and ray optics, as built
+
+Built on 11 October 2026, Qucs-S 26.1.8, before phase 5, as asked ("before phase 5, let's
+add semiconductors (drift-diffusion) and ray optics"): two physics this proposal had left
+out. The drift-diffusion equations are in `fem_semiconductor`, the rays in `fem_rays`.
+About 3,000 lines and 900 of tests.
+
+**How semiconductors are done:**
+- **The equations:** Poisson's, -∇·(ε∇V) = q (p - n + Nd - Na), and the carriers'
+  continuity, ∇·Jn = q (R - G) + q ∂n/∂t and ∇·Jp = -q (R - G) - q ∂p/∂t. The unknowns are
+  V, n and p (Boltzmann's statistics) at the nodes of linear triangles; V is the
+  intrinsic level's (Ei = -qV), so equilibrium's Fermi level is 0.
+- **The currents:** each edge's is Scharfetter and Gummel's,
+  Jn = q µn Vt/h (n_j B(Δ) - n_i B(-Δ)) with B(x) = x/(e^x - 1) and Δ = (Vj - Vi)/Vt. It
+  is weighed by the edge's cotangent weights (half the cotangent of the angle opposite it
+  in each triangle): the edge-averaged finite elements of Xu and Zikatanov, which are the
+  box method's on a Delaunay mesh and keep the carriers positive. The few edges of a mesh
+  that are not Delaunay (negative weights) are left out of the currents, and said.
+- **Charge and recombination** are lumped at the nodes, on each node's share of its
+  semiconductor triangles: Shockley-Read-Hall, Auger and direct recombination, a
+  generation G of x, y, t or another field.
+- **Newton's method** solves V, n and p together, with a sparse LU. Its unknowns are in
+  units of Vt and the largest doping, and each row is divided by its largest entry. A step
+  moves V by 10 Vt at most and keeps the carriers above a twentieth of what they were.
+- **From equilibrium:** Poisson's equation alone, n = ni e^(V - φ)/Vt, p = ni e^(φ - V)/Vt,
+  is solved first. Then the contacts' voltages are raised in steps, doubled when Newton
+  takes them in a few iterations and quartered when it fails. A sweep's next point starts
+  from the last on the same mesh: a diode's I-V does not start again from 0 V.
+- **When no current can flow** (the contacts that hold carriers at one voltage, no
+  generation: a MOS capacitor, an unbiased junction), Poisson's equation alone is exact.
+  The edges' currents vanish identically there, and np = ni². It is solved alone: Newton
+  on all three was ill-conditioned in inversion, the minority carriers held only by
+  recombination.
+- **Contacts:**
+  - ohmic: the carriers at charge neutrality and equilibrium;
+  - Schottky: V = Va + (Ec - Ei - φB)/q, with thermionic emission q v (n - n_eq) over the
+    barrier;
+  - a gate on an insulator: V = Va - (Φm - χ - (Ec - Ei))/q.
+
+  The current into the device is the continuity rows' reaction at the contact, and the
+  metal's charge is Poisson's.
+- **In time:** BDF, the masses q A on n's and p's rows. The displacement current is the
+  contacts' charges' change, the same BDF formula applied to them.
+- **Small-signal:** in a frequency step after a stationary one, (J + jωM) δx = -∂F/∂V_k for
+  each contact k, solved in the quasi-Fermi potentials' changes: δn = n/Vt (δV - δφn),
+  δp = p/Vt (δφp - δV). In n and p, a current near nought is the difference of two large
+  terms, and that loses digits. The admittance matrix is Y = δI + jω δQ, giving semi.G and
+  semi.C. A minority carrier that cannot follow at 1 MHz gives the high-frequency C-V
+  curve.
+- **The low-frequency limit:** a MOS capacitor's inversion layer is held by almost nothing
+  (generation, and diffusion from the back contact through 10⁹ electrons per m³), so at
+  1 µHz the small-signal system is singular to within a double's digits. It gave 0.9 to 1.2
+  Cox on two meshes. At equilibrium the stationary step instead gives the gates'
+  quasi-static capacitance, semi.C0: Poisson's equation linearized with the carriers
+  following and their Fermi level held. That is the low-frequency limit, well conditioned,
+  and agrees with dQ/dV between solutions 10 mV apart.
+- **Into the modes:** a wave feature's plasma dispersion takes semi.n and semi.p:
+  Δn = -(8.8e-22 N + 8.5e-18 P^0.8) and Δα = 8.5e-18 N + 6.0e-18 P (cm⁻³, cm⁻¹), Soref
+  and Bennett's at 1550 nm, scaled as λ².
+
+**How rays are done:**
+- **Straight in a uniform medium:** a ray meets the domain's own boundary pieces - lines
+  exactly, arcs of ellipses (a circle's too) as a quadratic in the arc's frame, the
+  normal from the implicit form - not the mesh's facets. A lens's focus is the true
+  curve's.
+- **Graded media:** where n or κ reads x, y or a field, the ray equation d(n dr/ds)/ds = ∇n
+  is solved by RK4. The steps are a third of the mesh's mean size, ∇n is taken by central
+  differences, and a boundary is found on each step's chord. In the sech profile every
+  ray has one period, and a quarter-pitch GRIN lens focuses to 0.4 µm.
+- **At an interface:** Snell's law, and Fresnel's rs and rp on each ray's s and p powers.
+  The reflected part is released as a ray of its own (above the threshold), and total
+  internal reflection takes place beyond the critical angle. Mirrors reflect R, absorbers
+  and the physics' outside stop the ray, coatings let it through whole, and detectors
+  record it (stopping it or not).
+- **Absorption:** e^(-4πκ s/λ) along the path. The power lost is put in the triangles
+  along it, in pieces a quarter of the mesh's size, and becomes a nodal density gop.Q:
+  each node gets the mean of its absorbing triangles', by area. Its integral over the
+  absorbing media is the power absorbed exactly. Heat takes it as a source; a
+  semiconductor takes gop.Q λ/(hc) as its generation.
+- **Wavelengths:** each ray's is set on its point evaluator (its frequency c/λ), and an
+  index may read lambda0: BK7 and fused silica by Sellmeier's formula.
+- **Threads:** the releases are traced in threads, each with its own deposit, which are
+  summed at the end.
+- **Stopping:** a ray ends past its interactions or path length, or when its power falls
+  below the threshold.
+
+**Where they differ from what such tools have:**
+- **Boltzmann's statistics only:** no Fermi-Dirac, no incomplete ionization, no band-gap
+  narrowing.
+- **Heterojunctions are not modelled:** the carriers are continuous at a node between two
+  semiconductors. One semiconductor material per device, or several with the same bands.
+- **Isothermal:** the temperature is one constant (no hydrodynamic or thermal model of
+  the lattice), and there is no impact ionization or tunnelling.
+- **Velocity saturation lags a Newton step** (its field from the step before), and takes
+  the element's |E|, not the quasi-Fermi level's gradient.
+- **Rays are in the plane,** and no diffraction or interference; they are traced at rest
+  (not in time); a diffuse wall, gratings and ray-to-mode coupling are not there.
+
+**Fast enough** (M-series Mac, Release):
+- A pn diode at 11 voltages, with 1 kHz small-signal at each: 1 s.
+- A MOS capacitor's C-V at 25 gate voltages, quasi-static and at 1 MHz: 5 s.
+- The phase shifter (drift-diffusion, then the TE mode, at 5 biases): 12 s.
+- The ray examples, a photodiode lit by rays among them: under 1 s each.
+
+**Checked:**
+- `test_fem_semiconductor` (13):
+  - a bar's resistance against q n µ V A/L (1.2 × 10⁻⁴); by Caughey and Thomas's mobility
+    at 1e17 cm⁻³ (10⁻⁴); saturated at 10⁷ V/m against q n v(E) (exact - each element's
+    mobility by its own field; by the field along each edge it was 20 % high);
+  - a junction's built-in voltage (exact), and its small-signal capacitance against the
+    depletion approximation's ε/W at 0 and -2 V (0.14 %, 0.04 %);
+  - a short diode's current at 0.4 V against Shockley's (0.06 %);
+  - a MOS capacitor at flat band (0.1 %), in accumulation (0.98 Cox), and in inversion
+    at 1 MHz (Cmin, 2.3 %) and quasi-statically (0.97 Cox); C0 and 1 MHz agreeing where the
+    majority carriers alone respond;
+  - the plasma dispersion against the index given (10⁻⁷);
+  - doping of x (an expression), and direct recombination's G/(B n) under a generation
+    (0.2 %);
+  - a Schottky diode: its reverse current 12 % under thermionic emission's q vn Nc e^-φB/kT
+    (the drift through the depletion not infinitely fast), its ideality 1.006;
+  - a fixed oxide charge moving the flat band by -Qf/Cox (exact);
+  - carriers' rise under a generation switched on, G τ (1 - e^-t/τ) (0.3 %);
+  - the examples.
+- `test_fem_rays` (10):
+  - Snell's law and Fresnel's split, transmitted and reflected (10⁻¹²);
+  - total internal reflection;
+  - a plano-convex lens's paraxial focus (4 µm in 101.7 mm), its margin nearer;
+  - a graded-index rod's axis crossings (0.6 µm);
+  - absorption, transmitted and absorbed (10⁻⁹), gop.Q's integral the power absorbed;
+  - a prism's exit angles against Snell at both faces (10⁻⁹ rad);
+  - a mirror's reflectance, a detector that lets rays pass, a Gaussian beam's weights, a
+    point's fan and rays from a boundary (each exact);
+  - the examples (the thermal lens's heat equal to the power absorbed).
+- `test_multiphysics_doc` (29) adds:
+  - a diode swept in the window, its I-V and bands as datasets;
+  - rays drawn by wavelength, and a rays model's default plots;
+  - Claude's tools for a photodiode, and the new kinds described.
+
+**Examples:**
+- `pn_diode`: I-V from -2 to 0.7 V (ideality 1.005) and C-V.
+- `mos_capacitor`: C-V at low frequency (quasi-static) and 1 MHz.
+- `pn_phase_shifter`: a rib modulator reversed to -4 V, its TE mode's Δneff and loss;
+  Vπ·L 2.1 V·cm.
+- `lens_focus`: a plano-convex BK7 lens and its spherical aberration.
+- `prism_dispersion`: seven wavelengths through BK7, 1.81° apart.
+- `grin_lens`: a quarter-pitch sech rod focusing a beam to a point.
+- `thermal_lens`: rays and heat in turn; 0.01 to 10 W narrows the beam from 0.50 to
+  0.25 mm rms.
+- `photodiode`: rays absorbed in silicon making carriers; 0.48 A/W, 95 % of the ideal.

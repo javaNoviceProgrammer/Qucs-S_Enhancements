@@ -1,0 +1,46 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A lens's focus and its spherical aberration",
+    "description": "A plano-convex lens of BK7 (its curve of 50 mm radius to the light, 6 mm thick) and a collimated beam 30 mm wide at 587.6 nm: f = R/(n - 1) = 96.8 mm, the paraxial focus f - t/n behind its flat face. The rays far from the axis cross it nearer the lens - spherical aberration - and the spot at the paraxial focus is mm wide; a detector there counts them.",
+    "parameters": [
+        {"name": "R", "expression": "50[mm]", "description": "the curved face's radius"},
+        {"name": "t", "expression": "6[mm]", "description": "the lens's thickness on its axis"},
+        {"name": "D", "expression": "30[mm]", "description": "the beam's width"},
+        {"name": "screen", "expression": "96.6[mm]", "description": "the detector's distance behind the lens"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["-20", "-25"], "size": ["160", "50"]},
+            {"type": "circle", "label": "sphere", "center": ["R", "0"], "radius": "R"},
+            {"type": "rectangle", "label": "slab", "position": ["0", "-22"], "size": ["t", "44"]},
+            {"type": "intersection", "label": "lens", "input": ["sphere", "slab"]},
+            {"type": "rectangle", "label": "behind", "position": ["t + screen", "-25"], "size": ["140 - t - screen", "50"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"all": true}},
+            {"material": "Glass (BK7)", "selection": {"only": ["lens"]}}
+        ],
+        "physics": [{
+            "type": "rays", "tag": "gop", "reflections": false,
+            "features": [
+                {"type": "beam", "label": "Collimated beam", "start": ["-15", "-D/2"], "end": ["-15", "D/2"], "angle": "0", "count": 31,
+                 "P0": "1[W]", "lambda0": "587.6[nm]"},
+                {"type": "detector", "label": "Screen", "name": "screen", "selection": {"between": [["air"], ["behind"]]}}
+            ]
+        }],
+        "mesh": {"size": "coarse"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Rays", "plots": [
+                {"type": "rayplot", "by": "release", "colors": "viridis"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "At the screen", "expression": "gop.N_screen; gop.y_screen; gop.rms_screen"}
+        ]
+    }
+}

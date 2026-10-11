@@ -1,0 +1,53 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A MOS capacitor's C-V curves",
+    "description": "10 nm of oxide on p-type silicon (1e17 cm⁻³) under an n⁺ polysilicon gate: the gate's voltage swept from -3 to 3 V, its capacitance at low frequency (semi.C0gg: quasi-static, the carriers following - each point at equilibrium) and at 1 MHz (small-signal, semi.Cgg). Cox in accumulation; at flat band (-1.0 V) Cox in series with the Debye layer's; in depletion falling; in inversion the low-frequency curve back to Cox - the inversion electrons follow - and the high-frequency one at Cmin, about 0.22 Cox: they cannot.",
+    "parameters": [
+        {"name": "Vg", "expression": "0[V]", "description": "the gate's voltage"},
+        {"name": "tox", "expression": "10[nm]", "description": "the oxide's thickness"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "100[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "bulk", "position": ["0", "-1"], "size": ["0.1", "0.8"]},
+            {"type": "rectangle", "label": "surface", "position": ["0", "-0.2"], "size": ["0.1", "0.2"]},
+            {"type": "rectangle", "label": "oxide", "size": ["0.1", "tox"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["bulk", "surface"]}},
+            {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}
+        ],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "Substrate", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["bulk", "surface"]}},
+                {"type": "srh", "label": "Recombination", "selection": {"all": true}},
+                {"type": "gate", "label": "Gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+                {"type": "ohmic", "label": "Back contact", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.02", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "0.003"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["Vg", "range(-3, 0.25, 3)", "V"]]},
+        {"type": "stationary"},
+        {"type": "frequency", "frequencies": "1[MHz]"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electrons", "point": 25, "plots": [
+                {"type": "surface", "expression": "log10(semi.n*1[cm^3])", "colors": "viridis"}
+            ]},
+            {"type": "plotgroup1d", "label": "C-V", "plots": [
+                {"type": "globalgraph", "expression": "semi.C0gg; semi.Cgg", "unit": "fF"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Gate capacitance", "expression": "semi.C0gg; semi.Cgg", "solutions": "all"}
+        ]
+    }
+}
