@@ -52,6 +52,7 @@
 #include <QUndoStack>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <mutex>
 
 using namespace qucs_s::fem;
@@ -103,6 +104,30 @@ Sections sections(const Model& m)
     s.studies = compact(o.value(QStringLiteral("studies")));
     s.results = compact(o.value(QStringLiteral("results")));
     return s;
+}
+
+/// \a values over axes of \a sizes (the first the fastest), its axes taken
+/// in \a order instead (the first the fastest): each value where it then is.
+QVector<double> reordered(const QVector<double>& values, const QList<qsizetype>& sizes, const QList<int>& order)
+{
+    qsizetype count = 1;
+    for (qsizetype n : sizes) count *= n;
+    if (count != values.size() || order.size() != sizes.size()) return values;
+    QVector<double> out(values.size());
+    std::vector<qsizetype> at(std::size_t(sizes.size()), 0);   // along each axis as stored
+    for (qsizetype t = 0; t < values.size(); ++t) {
+        qsizetype s = 0, stride = 1;
+        for (qsizetype a = 0; a < sizes.size(); ++a) {
+            s += at[std::size_t(a)] * stride;
+            stride *= sizes[a];
+        }
+        out[t] = values[s];
+        for (int a : order) {
+            if (++at[std::size_t(a)] < sizes[a]) break;
+            at[std::size_t(a)] = 0;
+        }
+    }
+    return out;
 }
 
 /// Each study by its tag, as it is solved (its label left out).
@@ -1293,10 +1318,14 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         names.insert(n);
         return n;
     };
-    // What the graphs run over: the output times or frequencies, the sweep
-    // (time the faster).
+    // What the graphs run over: the output times or frequencies, the modes,
+    // the sweep (stored the time or the mode the faster) - each axis of more
+    // than one value: one of one says nothing, and a data display drawing
+    // over it draws nothing (a sweep's C-V curve at its one frequency).
     const std::vector<Instance> every = instances(*set, true);
     QStringList outer;
+    enum class Axis { Steps, Frequency, Mode, Sweep };   // (Steps: the output times, frequencies, energies)
+    QList<Axis> kinds;
     const Solution& first = *set->solutions.front();
     bool modesEven = false;
     if (first.modeAnalysis && first.snapshotCount() > 0) {
@@ -1313,23 +1342,27 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         modesEven = true;
         for (int c : counts) modesEven = modesEven && c == perFrequency;
         if (modesEven) {
-            Variable m;
-            m.name = unique(first.quantumStates ? QStringLiteral("state") : QStringLiteral("mode"));
-            m.independent = true;
-            for (int k = 1; k <= perFrequency; ++k) m.re << k;
-            outer << m.name;
-            vars << m;
+            if (perFrequency > 1) {
+                Variable m;
+                m.name = unique(first.quantumStates ? QStringLiteral("state") : QStringLiteral("mode"));
+                m.independent = true;
+                for (int k = 1; k <= perFrequency; ++k) m.re << k;
+                outer << m.name;
+                kinds << Axis::Mode;
+                vars << m;
+            }
             if (frequencies.size() > 1) {
                 Variable f;
                 f.name = unique(QStringLiteral("frequency"));
                 f.independent = true;
                 for (double v : frequencies) f.re << v;
                 outer << f.name;
+                kinds << Axis::Frequency;
                 vars << f;
             }
         }
     }
-    if (first.snapshotCount() > 0 && !modesEven) {
+    if (first.snapshotCount() > 1 && !modesEven) {
         Variable t;
         // (A spectrum's by the photon's energy in eV, or its wavelength.)
         const int photon = first.frequencyDomain ? first.photonAxis : 0;
@@ -1346,6 +1379,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                         : f);
         }
         outer << t.name;
+        kinds << (first.modeAnalysis ? Axis::Mode : Axis::Steps);   // (modes found unevenly: an index)
         vars << t;
     }
     if (set->solutions.size() > 1) {
@@ -1356,20 +1390,26 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         for (std::size_t i = 0; i < set->solutions.size(); ++i)
             p.re << (one ? set->solutions[i]->sweptValues.value(set->swept.front()) : double(i + 1));
         outer << p.name;
+        kinds << Axis::Sweep;
         vars << p;
     }
-    // An axis of one value last: a data display draws over a variable's first
-    // (a sweep's capacitance over its voltage, not its one frequency; its
-    // loss over the bias, not its one mode). The values' order is the same.
+    // The order a global's and a point's are shown in, a data display drawing
+    // over the first: the sweep, a mode analysis's frequencies, a frequency
+    // step's, the modes last - an index against the bias, a curve per mode;
+    // C against the voltage, a curve per frequency. A transient's times and
+    // a spectrum's energies first, read over their own axis (a curve per
+    // parameter value). The plot group's Plot against may choose otherwise.
+    QList<int> order;
     {
-        QStringList many, one;
-        for (const QString& name : outer) {
-            qsizetype size = 0;
-            for (const Variable& v : vars)
-                if (v.name == name) size = v.re.size();
-            (size > 1 ? many : one) << name;
-        }
-        outer = many + one;
+        const QString against = g->text(QStringLiteral("against"));
+        const bool ownAxis = !first.frequencyDomain || first.photonAxis > 0;
+        auto rank = [&](Axis a) {
+            if (against == QLatin1String("steps")) return a == Axis::Steps ? 0 : a == Axis::Frequency ? 1 : a == Axis::Mode ? 2 : 3;
+            if (against != QLatin1String("sweep") && ownAxis) return a == Axis::Steps ? 0 : a == Axis::Sweep ? 1 : a == Axis::Frequency ? 2 : 3;
+            return a == Axis::Sweep ? 0 : a == Axis::Frequency ? 1 : a == Axis::Steps ? 2 : 3;
+        };
+        for (int i = 0; i < int(outer.size()); ++i) order << i;
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return rank(kinds[a]) < rank(kinds[b]); });
     }
     // (Of one solution at rest: an index of one.)
     auto outerOrIndex = [&]() {
@@ -1393,8 +1433,10 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
             const QStringList exprs = graph.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
             const QStringList deps = outerOrIndex();
             for (const QString& raw : exprs) {
-                // (name = expression: the variable's name.)
-                const NamedExpression item = namedExpression(raw);
+                // (name = expression: the variable's name; else a graph's
+                // own label, of one expression.)
+                NamedExpression item = namedExpression(raw);
+                if (item.name == item.expression && !graph.label.trimmed().isEmpty() && exprs.size() == 1) item.name = graph.label.trimmed();
                 const bool named = item.name != item.expression;
                 const QString text = item.expression;
                 // A Derived Values node: each of its values (tag), or one (tag.name).
@@ -1441,7 +1483,10 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     double value = std::numeric_limits<double>::quiet_NaN();
                     if (!e.isValid()) problems << tr("%1: %2").arg(text, e.error());
                     else if (!e.isConstant()) problems << tr("%1 varies over the model: a Point Graph shows it at a point").arg(text);
-                    else value = (e.constant() - displayUnit(unitText, e.dim()).offset) / displayUnit(unitText, e.dim()).scale;
+                    else {
+                        const DisplayUnit du = displayUnitOf(*sol, text, unitText, e.dim());
+                        value = (e.constant() - du.offset) / du.scale;
+                    }
                     v.re << value;
                 }
                 vars << v;
@@ -1466,7 +1511,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 axis.name = unique(xaxis == QLatin1String("x") ? QStringLiteral("x") : xaxis == QLatin1String("y") ? QStringLiteral("y") : QStringLiteral("s_") + data->tag);
                 axis.independent = true;
                 Variable v;
-                v.name = unique(text);
+                v.name = unique(graph.label.trimmed().isEmpty() ? text : graph.label.trimmed());
                 v.dependencies = QStringList{axis.name} + (all ? outer : QStringList());
                 bool axisMade = false;
                 for (const Instance& in : over) {
@@ -1504,7 +1549,8 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 for (const QJsonValue& pv : points) {
                     ++index;
                     Variable v;
-                    v.name = unique(points.size() > 1 ? text + QStringLiteral("_") + QString::number(index) : text);
+                    const QString base = graph.label.trimmed().isEmpty() ? text : graph.label.trimmed();
+                    v.name = unique(points.size() > 1 ? base + QStringLiteral("_") + QString::number(index) : base);
                     v.dependencies = deps;
                     for (const Instance& in : every) {
                         Solution* sol = select(*set, in);
@@ -1526,6 +1572,22 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     traces << v.name;
                 }
             }
+        }
+    }
+    // The globals' and the points' over their axes as shown (stored the time
+    // or mode the faster).
+    QStringList shown;
+    for (int i : order) shown << outer[i];
+    if (shown != outer) {
+        QList<qsizetype> sizes;
+        for (const QString& name : outer)
+            for (const Variable& v : vars)
+                if (v.independent && v.name == name) sizes << v.re.size();
+        for (Variable& v : vars) {
+            if (v.independent || v.dependencies != outer) continue;
+            v.re = reordered(v.re, sizes, order);
+            if (!v.im.isEmpty()) v.im = reordered(v.im, sizes, order);
+            v.dependencies = shown;
         }
     }
     problems.removeDuplicates();
