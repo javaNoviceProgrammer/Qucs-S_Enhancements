@@ -130,6 +130,10 @@ qucs_add_test(test_sheet_doc)
 qucs_add_test(test_zip_doc)
 qucs_add_test(test_layout_doc)
 qucs_add_test(test_multiphysics_doc)
+# (The window's multiphysics end to end - every physics' examples solved:
+# five minutes and more under the sanitizers on CI's runners, as the
+# engine's tests.)
+set_tests_properties(test_multiphysics_doc PROPERTIES TIMEOUT 900)
 # (a layout KLayout wrote, data/klayout_sample.oas: another program's OASIS)
 target_compile_definitions(test_layout_doc PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 qucs_add_test(test_keyboard_move)
