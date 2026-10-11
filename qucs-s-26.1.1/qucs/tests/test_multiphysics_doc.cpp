@@ -742,6 +742,8 @@ private slots:
         QVERIFY(shown != nullptr);
         QCOMPARE(shown->a_DocDiags.size(), 1);
         QCOMPARE(int(shown->a_DocDiags.front()->Graphs.size()), 3);
+        // The y axis in the traces' unit (a global's and two points').
+        QCOMPARE(shown->a_DocDiags.front()->yAxis.Label, QStringLiteral("ht.Tmax (degC), T_1 (degC), T_2 (degC)"));
         shoot(app, "12-heater-graph");
         // The dataset: time, the hottest point over it, each cut point's.
         qucs_s::dataset::Dataset data;
@@ -1349,6 +1351,117 @@ private slots:
         QVERIFY2(!display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why), qPrintable(why));
         QVERIFY(data.find(QStringLiteral("Tline")));
         QCOMPARE(data.find(QStringLiteral("Tline"))->dependencies, (QStringList{QStringLiteral("x"), QStringLiteral("time"), QStringLiteral("P")}));
+    }
+
+    // A plot group shown again after its graph was renamed: its diagram
+    // replaced where it was, not left above the new one with its trace
+    // invalid; a diagram of the user's kept. Its y axis in the traces' units
+    // (a label's own, an SI one, none for a number), a legend for two.
+    void aPlotGroupShownAgain()
+    {
+        const QString file = path(QStringLiteral("guide_again.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "a", "expression": "22.86[mm]"}],
+          "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "label": "guide", "size": ["a/1[mm]", "10.16"]}, {"type": "form union"}],
+            "materials": [{"label": "lossy air", "epsilonr": "1", "n": "1", "kappa": "1e-4", "selection": {"all": true}}],
+            "physics": [{"type": "modes", "tag": "emw", "order": "1"}], "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "sweep", "parameters": [["a", "40, 45, 50", "mm"]]},
+                                                                 {"type": "mode", "frequency": "10[GHz]", "modes": 1, "neff": "1"}]}],
+          "results": {"plots": [{"type": "cutline", "tag": "cln1", "start": ["0", "5"], "end": ["a/1[mm]", "5"], "points": 21},
+                                {"type": "plotgroup1d", "tag": "pgl", "label": "Loss against width", "study": "std1",
+                                 "plots": [{"type": "globalgraph", "tag": "gg1", "expression": "emw.loss/100"}]},
+                                {"type": "plotgroup1d", "tag": "pga", "label": "Across", "study": "std1",
+                                 "plots": [{"type": "linegraph", "data": "cln1", "expression": "emw.normE"}]}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QString why;
+        auto showAgain = [&]() {
+            app->gotoPage(doc->getDocName());
+            const QString display = doc->showGraphs(QStringLiteral("pgl"), &why);
+            return display;
+        };
+        auto diagrams = [&](const QString& display) {
+            return json(call("get_schematic", {{"path", display}})).value("diagrams").toArray();
+        };
+        const QString display = showAgain();
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        QJsonArray d = diagrams(display);
+        QCOMPARE(d.size(), 1);
+        QCOMPARE(d.at(0).toObject().value("traces").toArray().at(0).toObject().value("variable").toString(), QStringLiteral("emw.loss_100"));
+        // (A dB/m global over 100: no SI unit to say, 1/m.)
+        QCOMPARE(d.at(0).toObject().value("y_axis").toObject().value("label").toString(), QString());
+        // (Moved and made larger by the user: kept so.)
+        QVERIFY(!failed(call("edit_diagram", {{"path", display}, {"diagram", 1}, {"x", 120}, {"y", 520}, {"width", 360}, {"height", 200}})));
+        // Renamed by a label, in dB/cm: one diagram, of Loss, its axis so.
+        Model m = doc->model();
+        m.find(QStringLiteral("gg1"))->label = QStringLiteral("Loss (dB/cm)");
+        m.find(QStringLiteral("gg1"))->props.insert(QStringLiteral("expression"), QStringLiteral("emw.loss"));
+        m.find(QStringLiteral("gg1"))->props.insert(QStringLiteral("unit"), QStringLiteral("dB/cm"));
+        QVERIFY(doc->setModel(m, QStringLiteral("relabelled")));
+        QCOMPARE(showAgain(), display);
+        d = diagrams(display);
+        QCOMPARE(d.size(), 1);
+        QJsonObject only = d.at(0).toObject();
+        QCOMPARE(only.value("traces").toArray().size(), 1);
+        QCOMPARE(only.value("traces").toArray().at(0).toObject().value("variable").toString(), QStringLiteral("Loss"));
+        QCOMPARE(only.value("y_axis").toObject().value("label").toString(), QStringLiteral("Loss (dB/cm)"));
+        QVERIFY2(only.value("x").toInt() == 120 && only.value("y").toInt() == 520 && only.value("width").toInt() == 360 && only.value("height").toInt() == 200,
+                 qPrintable(QJsonDocument(only).toJson(QJsonDocument::Compact)));
+        // As the paper check's display had it: another diagram of the plot
+        // group's title, of a trace since gone, beside the current one -
+        // gone when it is shown again, the current one kept.
+        QVERIFY(!failed(call("add_diagram", {{"path", display}, {"title", "Loss against width"}, {"x", 400}, {"y", 600},
+                                             {"traces", QJsonArray{"guide_again_pgl:Loss"}}})));
+        QCOMPARE(diagrams(display).size(), 2);
+        showAgain();
+        d = diagrams(display);
+        QCOMPARE(d.size(), 1);
+        QCOMPARE(d.at(0).toObject().value("traces").toArray().at(0).toObject().value("variable").toString(), QStringLiteral("Loss"));
+        QCOMPARE(d.at(0).toObject().value("x").toInt(), 120);
+        // A diagram of the user's beside it.
+        QVERIFY(!failed(call("add_diagram", {{"path", display}, {"title", "Mine"}, {"x", 400}, {"y", 240}, {"traces", QJsonArray{"guide_again_pgl:Loss"}}})));
+        // A second graph: the plot group's diagram replaced (two traces, a
+        // number's without a unit, a legend), the user's kept.
+        qucs_s::fem::Node neff = m.make(QStringLiteral("globalgraph"));
+        neff.props.insert(QStringLiteral("expression"), QStringLiteral("emw.neff"));
+        QVERIFY(m.add(QStringLiteral("pgl"), neff) != nullptr);
+        QVERIFY(doc->setModel(m, QStringLiteral("a graph added")));
+        showAgain();
+        d = diagrams(display);
+        QCOMPARE(d.size(), 2);
+        QStringList titles;
+        for (const QJsonValue& v : d) titles << v.toObject().value("title").toString();
+        QVERIFY2(titles.contains("Mine") && titles.contains("Loss against width"), qPrintable(titles.join(", ")));
+        for (const QJsonValue& v : d)
+            if (v.toObject().value("title").toString() == QLatin1String("Loss against width")) {
+                QCOMPARE(v.toObject().value("traces").toArray().size(), 2);
+                QCOMPARE(v.toObject().value("y_axis").toObject().value("label").toString(), QStringLiteral("Loss (dB/cm), emw.neff"));
+                QCOMPARE(v.toObject().value("legend").toString(), QStringLiteral("top_right"));
+            }
+        // Its unit changed, its traces not: the axis said anew.
+        m.find(QStringLiteral("gg1"))->label.clear();
+        QVERIFY(doc->setModel(m, QStringLiteral("unlabelled")));
+        showAgain();
+        m = doc->model();
+        m.find(QStringLiteral("gg1"))->label = QString();
+        m.find(QStringLiteral("gg1"))->props.insert(QStringLiteral("unit"), QStringLiteral("dB/m"));
+        QVERIFY(doc->setModel(m, QStringLiteral("in dB/m")));
+        showAgain();
+        bool said = false;
+        for (const QJsonValue& v : diagrams(display))
+            if (v.toObject().value("title").toString() == QLatin1String("Loss against width"))
+                said = v.toObject().value("y_axis").toObject().value("label").toString() == QLatin1String("emw.loss (dB/m), emw.neff");
+        QVERIFY(said);
+        // A line graph's in SI when it has no unit.
+        app->gotoPage(doc->getDocName());
+        const QString across = doc->showGraphs(QStringLiteral("pga"), &why);
+        QVERIFY2(!across.isEmpty(), qPrintable(why));
+        QCOMPARE(diagrams(across).at(0).toObject().value("y_axis").toObject().value("label").toString(), QStringLiteral("emw.normE (V/m)"));
     }
 
     // The iris filter: its S-parameters over frequency, a Touchstone file of
