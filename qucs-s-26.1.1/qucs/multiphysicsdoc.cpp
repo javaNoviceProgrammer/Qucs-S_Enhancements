@@ -1426,9 +1426,21 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
                                                      g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")));
     QStringList problems;
+    // The y axis's words: each trace's name and unit - "semi.Ckk (pF)", a
+    // label's own as it says it ("Loss (dB/cm)"); none when no trace has a
+    // unit (each then named in its colour, as before).
+    QStringList axisWords;
+    bool anyUnit = false;
+    auto axisWord = [&](const QString& name, const QString& unit) {
+        const QString u = unit.trimmed() == QLatin1String("1") ? QString() : unit.trimmed();
+        anyUnit = anyUnit || !u.isEmpty();
+        const bool told = name.contains(QLatin1Char('(') + u + QLatin1Char(')')) || name.contains(QLatin1Char('[') + u + QLatin1Char(']'));
+        axisWords << (u.isEmpty() || told ? name : name + QStringLiteral(" (") + u + QLatin1Char(')'));
+    };
     for (const Node& graph : g->children) {
         if (!graph.enabled) continue;
         const QString unitText = graph.text(QStringLiteral("unit"));
+        const QString label = graph.label.trimmed();
         if (graph.type == QLatin1String("globalgraph")) {
             const QStringList exprs = graph.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
             const QStringList deps = outerOrIndex();
@@ -1444,6 +1456,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 if (derivedNode && derivedNode->kind() && derivedNode->kind()->group == QLatin1String("derived")) {
                     const QString only = text.section(QLatin1Char('.'), 1);
                     QMap<QString, Variable> byName;
+                    QMap<QString, QString> unitOf;
                     QStringList order;
                     for (const Instance& in : every) {
                         Solution* sol = select(*set, in);
@@ -1461,6 +1474,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                 order << dv.name;
                             }
                             const DisplayUnit du = displayUnit(unitText, dv.dim);
+                            if (!unitOf.contains(dv.name)) unitOf.insert(dv.name, du.name.isEmpty() ? dimName(dv.dim) : du.name);
                             byName[dv.name].re << (dv.value - du.offset) / du.scale;
                             seen.insert(dv.name);
                         }
@@ -1471,12 +1485,15 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     for (const QString& n : order) {
                         vars << byName[n];
                         traces << byName[n].name;
+                        axisWord(named && !only.isEmpty() && item.name == label ? label : byName[n].name, unitOf.value(n));
                     }
                     continue;
                 }
                 Variable v;
                 v.name = unique(item.name);
                 v.dependencies = deps;
+                QString unitShown;
+                bool unitKnown = false;
                 for (const Instance& in : every) {
                     Solution* sol = select(*set, in);
                     const Expression e = Expression::compile(text, sol->scope());
@@ -1486,11 +1503,21 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     else {
                         const DisplayUnit du = displayUnitOf(*sol, text, unitText, e.dim());
                         value = (e.constant() - du.offset) / du.scale;
+                        if (!unitKnown) {
+                            unitKnown = true;
+                            unitShown = du.name.isEmpty() ? dimName(e.dim()) : du.name;
+                            // (Of a global in a unit its dimension cannot say -
+                            // emw.loss/100, dB/cm -: no SI unit to say.)
+                            if (du.name.isEmpty())
+                                for (const qucs_s::fem::Variable& gv : sol->globals())
+                                    if (!gv.unit.isEmpty() && text.contains(gv.name)) unitShown.clear();
+                        }
                     }
                     v.re << value;
                 }
                 vars << v;
                 traces << v.name;
+                axisWord(!label.isEmpty() && item.name == label ? label : v.name, unitShown);
             }
         } else if (graph.type == QLatin1String("pointgraph") || graph.type == QLatin1String("linegraph")) {
             const Node* data = a_model.find(graph.text(QStringLiteral("data")));
@@ -1511,9 +1538,10 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 axis.name = unique(xaxis == QLatin1String("x") ? QStringLiteral("x") : xaxis == QLatin1String("y") ? QStringLiteral("y") : QStringLiteral("s_") + data->tag);
                 axis.independent = true;
                 Variable v;
-                v.name = unique(graph.label.trimmed().isEmpty() ? text : graph.label.trimmed());
+                v.name = unique(label.isEmpty() ? text : label);
                 v.dependencies = QStringList{axis.name} + (all ? outer : QStringList());
                 bool axisMade = false;
+                QString unitShown;
                 for (const Instance& in : over) {
                     Solution* sol = select(*set, in);
                     const std::optional<double> x0 = coordinate(a.value(0), *sol, &why), y0 = coordinate(a.value(1), *sol, &why);
@@ -1536,11 +1564,13 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                         axisMade = true;
                     }
                     const DisplayUnit du = displayUnit(unitText, ld.dim);
+                    if (unitShown.isEmpty()) unitShown = du.name.isEmpty() ? dimName(ld.dim) : du.name;
                     for (double value : ld.values) v.re << (value - du.offset) / du.scale;
                 }
                 if (!axisMade) continue;
                 vars << axis << v;
                 traces << v.name;
+                axisWord(label.isEmpty() ? v.name : label, unitShown);
             } else {
                 // Each point's value over the solutions.
                 const QJsonArray points = data->value(QStringLiteral("coordinates")).toArray();
@@ -1549,9 +1579,10 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 for (const QJsonValue& pv : points) {
                     ++index;
                     Variable v;
-                    const QString base = graph.label.trimmed().isEmpty() ? text : graph.label.trimmed();
+                    const QString base = label.isEmpty() ? text : label;
                     v.name = unique(points.size() > 1 ? base + QStringLiteral("_") + QString::number(index) : base);
                     v.dependencies = deps;
+                    QString unitShown;
                     for (const Instance& in : every) {
                         Solution* sol = select(*set, in);
                         QString why;
@@ -1563,6 +1594,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                             if (const std::optional<double> got = evaluateAt(*sol, locator, text, {*x, *y}, &why, &dim)) {
                                 const DisplayUnit du = displayUnit(unitText, dim);
                                 value = (*got - du.offset) / du.scale;
+                                if (unitShown.isEmpty()) unitShown = du.name.isEmpty() ? dimName(dim) : du.name;
                             }
                         }
                         if (std::isnan(value) && !why.isEmpty() && problems.size() < 10) problems << why;
@@ -1570,6 +1602,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     }
                     vars << v;
                     traces << v.name;
+                    axisWord(points.size() == 1 && !label.isEmpty() ? label : v.name, unitShown);
                 }
             }
         }
@@ -1617,11 +1650,16 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     say(tr("%1: %2 written (%3)").arg(g->name(), QFileInfo(dat).fileName(), traces.join(QLatin1String(", "))));
     if (open && a_App != nullptr) {
         const QString title = g->text(QStringLiteral("title")).isEmpty() ? g->name() : g->text(QStringLiteral("title"));
+        // (Its own display: its diagram of other traces replaced; the y axis
+        // said in the traces' units.)
+        const bool rect = g->text(QStringLiteral("diagram")) == QLatin1String("rect");
         const QString shown = a_App->showPythonDisplay(QJsonObject{{QStringLiteral("display"), dpl},
                                                                    {QStringLiteral("dataset"), dat},
                                                                    {QStringLiteral("traces"), QJsonArray::fromStringList(traces)},
                                                                    {QStringLiteral("type"), g->text(QStringLiteral("diagram"))},
-                                                                   {QStringLiteral("title"), title}});
+                                                                   {QStringLiteral("title"), title},
+                                                                   {QStringLiteral("replace"), true},
+                                                                   {QStringLiteral("ylabel"), rect && anyUnit ? axisWords.join(QLatin1String(", ")) : QString()}});
         if (!shown.isEmpty()) return fail(shown);
         // Its diagram kept: the display saved as it is now.
         for (QucsDoc* d : a_App->allDocuments())
