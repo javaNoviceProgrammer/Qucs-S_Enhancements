@@ -29,7 +29,7 @@ namespace qucs_s::fem {
 /// A material of a library: its name, what kind it is, a word about it,
 /// its properties - each an expression with its unit, keyed as a material
 /// node's ("epsilonr", "tand", "sigma", "k", "rho", "Cp", "mur", "BH" - a
-/// table of B and H -, "Br", "E", "nu", "alpha", "n").
+/// table of B and H -, "Br", "E", "nu", "alpha", "n", "kappa", "dndT").
 struct MaterialEntry {
     QString name;
     QString category;

@@ -148,12 +148,15 @@ struct Instance {
     int point = 0;
     int snapshot = -1;
     double time = 0;     ///< its time (s), or its frequency (Hz) in the frequency domain
-    QString label;       ///< "t = 0.5 s", "f = 1 GHz", "w = 2 mm, t = 0.5 s"; empty: the only one
+    int mode = 0;        ///< a mode analysis's mode (from 1), else 0
+    QString label;       ///< "t = 0.5 s", "f = 1 GHz", "mode 2", "w = 2 mm, t = 0.5 s"; empty: the only one
 };
 /// Every instance of \a set (each point, each time or frequency), or those
 /// picked: the point \a point (from 1; 0 the last), the time \a time or (in
-/// the frequency domain) the frequency \a frequency (empty: the last).
-std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0, const QString& time = {}, const QString& frequency = {});
+/// the frequency domain) the frequency \a frequency (empty: the last), of a
+/// mode analysis the mode \a mode (from 1; 0: the first).
+std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0, const QString& time = {}, const QString& frequency = {},
+                                int mode = 0);
 /// The solution of \a instance, its snapshot selected.
 Solution* select(const SolutionSet& set, const Instance& instance);
 

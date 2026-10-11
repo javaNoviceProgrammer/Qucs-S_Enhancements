@@ -36,6 +36,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmapCache>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -138,6 +139,21 @@ QIcon glyph(const QString& icon)
         p.setBrush(blue);
         p.drawRect(QRectF(8, 4, 6.5, 8));
     } else if (icon == QLatin1String("frequency")) letters(QStringLiteral("f"), gray, true);
+    else if (icon == QLatin1String("mode")) letters(QStringLiteral("β"), gray, true);
+    else if (icon == QLatin1String("emw")) letters(QStringLiteral("emw"), dark ? QColor(240, 150, 210) : QColor(173, 20, 87), true);
+    else if (icon == QLatin1String("ewfd")) {
+        // A wave.
+        p.setPen(QPen(dark ? QColor(240, 150, 210) : QColor(173, 20, 87), 1.6));
+        QPainterPath path(QPointF(1, 8));
+        for (int i = 0; i < 4; ++i) path.quadTo(QPointF(2.75 + 3.5 * i, i % 2 ? 14 : 2), QPointF(4.5 + 3.5 * i, 8));
+        p.drawPath(path);
+    } else if (icon == QLatin1String("pml")) {
+        p.setPen(Qt::NoPen);
+        for (int i = 0; i < 4; ++i) {
+            p.setBrush(QColor(blue.red(), blue.green(), blue.blue(), 40 + 50 * i));
+            p.drawRect(QRectF(1 + 3.5 * i, 2, 3.5, 12));
+        }
+    }
     else if (icon == QLatin1String("crosssection")) {
         // Layers cut across.
         p.setPen(Qt::NoPen);
@@ -282,9 +298,9 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
         auto* about = new QLabel(tr("A 2D finite element model, in the plane or about an axis: its geometry (drawn, "
                                     "imported from DXF, SVG, GDSII and OASIS, or a layout's cross-section), materials and "
                                     "physics - electrostatics, electric currents, heat at rest and in time, solid mechanics, "
-                                    "magnetic fields at rest and in frequency - its mesh, studies (swept too) and results, "
-                                    "lines and terminals as parts of circuits, in a tree as COMSOL's. Open a model (.qfem) to "
-                                    "see its tree here."),
+                                    "magnetic fields at rest and in frequency, waveguides' modes and waves with their ports - "
+                                    "its mesh (adapted too), studies (swept too) and results, lines and terminals as parts of "
+                                    "circuits, in a tree as COMSOL's. Open a model (.qfem) to see its tree here."),
                                  a_start);
         about->setWordWrap(true);
         // (Wrapped to the dock's width: its length is not to widen the dock -

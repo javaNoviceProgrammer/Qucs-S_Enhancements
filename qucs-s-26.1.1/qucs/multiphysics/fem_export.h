@@ -33,6 +33,10 @@ LineSweep lineSweep(const SolutionSet& set, const Node& lineParameters, int poin
 /// \a zref (Ω) at each frequency, a Touchstone 1.1 file (.s2p: # Hz S RI R
 /// zref), \a comments first ("!" lines).
 QString touchstone(const LineSweep& sweep, double length, double zref, const QStringList& comments = {});
+/// The S-matrix of physics \a physics's ports (waves in the plane) at each
+/// frequency of a set's point, a Touchstone 1.1 file (.sNp: # Hz S RI R 50,
+/// each port normalized to its own mode); their count in \a ports.
+QString touchstonePorts(const SolutionSet& set, const QString& physics, int point, const QStringList& comments, int* ports, QString* error);
 /// S11, S21, S12, S22 of that line at one point.
 std::array<std::complex<double>, 4> lineSParameters(const LineRLGC& line, double length, double zref);
 

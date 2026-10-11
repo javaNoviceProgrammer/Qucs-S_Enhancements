@@ -30,7 +30,7 @@ const QStringList PropertyKeys = {QStringLiteral("epsilonr"), QStringLiteral("ta
                                   QStringLiteral("k"),        QStringLiteral("rho"),  QStringLiteral("Cp"),
                                   QStringLiteral("mur"),      QStringLiteral("BH"),   QStringLiteral("Br"),
                                   QStringLiteral("E"),        QStringLiteral("nu"),   QStringLiteral("alpha"),
-                                  QStringLiteral("n")};
+                                  QStringLiteral("n"),        QStringLiteral("kappa"), QStringLiteral("dndT")};
 
 /// A B-H curve's points: B (T), H (A/m).
 MaterialEntry withCurve(MaterialEntry e, std::initializer_list<std::pair<double, double>> points)
@@ -88,20 +88,20 @@ const QList<MaterialEntry>& builtinMaterials()
         // Semiconductors and their insulators (no conductivity: it depends on the doping).
         entry("Silicon", "Semiconductors", "Crystalline silicon; n at 1550 nm. Its conductivity depends on its doping: give it",
               {{"epsilonr", "11.7"}, {"k", "130[W/(m*K)]"}, {"rho", "2329[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"}, {"mur", "1"},
-               {"E", "170[GPa]"}, {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"n", "3.476"}}),
+               {"E", "170[GPa]"}, {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"n", "3.476"}, {"dndT", "1.86e-4[1/K]"}}),
         entry("Silicon dioxide", "Semiconductors", "SiO₂, thermal oxide or fused silica; n at 1550 nm",
               {{"epsilonr", "3.9"}, {"tand", "0.0001"}, {"sigma", "1e-15[S/m]"}, {"k", "1.4[W/(m*K)]"}, {"rho", "2200[kg/m^3]"}, {"Cp", "730[J/(kg*K)]"},
-               {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.17"}, {"alpha", "0.5e-6[1/K]"}, {"n", "1.444"}}),
+               {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.17"}, {"alpha", "0.5e-6[1/K]"}, {"n", "1.444"}, {"dndT", "9.5e-6[1/K]"}}),
         entry("Silicon nitride", "Semiconductors", "Si₃N₄, stoichiometric (a thin film conducts heat less); n at 1550 nm",
               {{"epsilonr", "7.5"}, {"sigma", "1e-14[S/m]"}, {"k", "20[W/(m*K)]"}, {"rho", "3100[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"},
-               {"mur", "1"}, {"E", "250[GPa]"}, {"nu", "0.23"}, {"alpha", "2.3e-6[1/K]"}, {"n", "1.996"}}),
+               {"mur", "1"}, {"E", "250[GPa]"}, {"nu", "0.23"}, {"alpha", "2.3e-6[1/K]"}, {"n", "1.996"}, {"dndT", "2.45e-5[1/K]"}}),
         entry("Indium phosphide", "Semiconductors", "InP; n at 1550 nm", {{"epsilonr", "12.4"}, {"k", "68[W/(m*K)]"},
-              {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"}, {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"n", "3.17"}}),
+              {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"}, {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"n", "3.17"}, {"dndT", "2.0e-4[1/K]"}}),
         entry("Gallium arsenide", "Semiconductors", "GaAs; n at 1550 nm", {{"epsilonr", "12.9"}, {"k", "55[W/(m*K)]"},
-              {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"}, {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"n", "3.37"}}),
+              {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"}, {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"n", "3.37"}, {"dndT", "2.35e-4[1/K]"}}),
         entry("Lithium niobate", "Semiconductors", "LiNbO₃ along its optical axis (εr33, ne at 1550 nm): it is anisotropic",
               {{"epsilonr", "28"}, {"sigma", "1e-15[S/m]"}, {"k", "4.6[W/(m*K)]"}, {"rho", "4640[kg/m^3]"}, {"Cp", "630[J/(kg*K)]"},
-               {"mur", "1"}, {"E", "170[GPa]"}, {"nu", "0.25"}, {"alpha", "7.5e-6[1/K]"}, {"n", "2.138"}}),
+               {"mur", "1"}, {"E", "170[GPa]"}, {"nu", "0.25"}, {"alpha", "7.5e-6[1/K]"}, {"n", "2.138"}, {"dndT", "3.3e-5[1/K]"}}),
         // Magnetic materials: soft ones with a B-H curve (typical, not a datasheet's), permanent magnets.
         withCurve(entry("Iron (soft)", "Magnetic", "Low-carbon iron, annealed: a typical B-H curve; µr its first slope's",
                         {{"epsilonr", "1"}, {"sigma", "1.0e7[S/m]"}, {"mur", "4000"}, {"k", "80[W/(m*K)]"}, {"rho", "7870[kg/m^3]"},

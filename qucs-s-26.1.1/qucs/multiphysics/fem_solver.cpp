@@ -12,6 +12,7 @@
  */
 #include "fem_solver.h"
 
+#include "fem_edge.h"
 #include "fem_materials.h"
 #include "fem_problem.h"
 
@@ -387,12 +388,16 @@ QJsonValue materialValue(const Node& m, const QString& key)
 std::unique_ptr<Problem> makeScalarProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeElasticProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeMagneticProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeModeProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeWaveProblem(Solution& solution, int field);
 
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
 {
     const QString& type = solution.fields()[std::size_t(field)].type;
     if (type == QLatin1String("solid")) return makeElasticProblem(solution, field);
     if (type == QLatin1String("magnetic")) return makeMagneticProblem(solution, field);
+    if (type == QLatin1String("modes")) return makeModeProblem(solution, field);
+    if (type == QLatin1String("waves")) return makeWaveProblem(solution, field);
     return makeScalarProblem(solution, field);
 }
 
@@ -429,13 +434,23 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
         // The magnetic vector potential out of the plane (round the axis).
         f.variable = axisymmetric ? QStringLiteral("Aphi") : QStringLiteral("Az");
         f.dim = Dim::of(1, 1, -2, -1);
+    } else if (p.type == QLatin1String("modes")) {
+        f.variable = QStringLiteral("E");
+        f.dim = Dim::of(1, 1, -3, -1);
+    } else if (p.type == QLatin1String("waves")) {
+        // E or H out of the plane.
+        const bool h = p.text(QStringLiteral("polarization")) == QLatin1String("hz");
+        f.variable = h ? QStringLiteral("Hz") : QStringLiteral("Ez");
+        f.dim = h ? Dim::of(-1, 0, 0, 1) : Dim::of(1, 1, -3, -1);
     } else {
         f.variable = QStringLiteral("V");
         f.dim = Dim::voltage();
     }
     if (p.type == QLatin1String("solid")) f.components = QStringList{QStringLiteral("u"), QStringLiteral("v")};
     // (Its real and imaginary parts: in the frequency domain it is complex.)
-    else if (p.type == QLatin1String("magnetic")) f.components = QStringList{f.variable, f.variable + QStringLiteral("_im")};
+    else if (p.type == QLatin1String("magnetic") || p.type == QLatin1String("waves"))
+        f.components = QStringList{f.variable, f.variable + QStringLiteral("_im")};
+    else if (p.type == QLatin1String("modes")) f.components = QStringList{QStringLiteral("Et"), QStringLiteral("Ez")};
     else f.components = QStringList{f.variable};
     return f;
 }
@@ -471,6 +486,12 @@ Solution::Solution(const Model& model, std::shared_ptr<ParameterScope> parameter
         if (it == spaces.end()) it = spaces.emplace(order, std::make_shared<Space>(a_mesh, order)).first;
         f.space = it->second;
         f.values.assign(std::size_t(f.space->size()) * std::size_t(f.count()), f.initial);
+        if (p->type == QLatin1String("modes")) {
+            // Et on edge elements of the order, Ez on the nodes: each complex.
+            f.edges = std::make_shared<EdgeSpace>(a_mesh, order);
+            f.values.assign(std::size_t(2 * f.edges->size() + 2 * f.space->size()), 0.0);
+            f.extra.assign(3, 0.0);
+        }
         f.domains.assign(a_mesh->topology->domains.size(), 0);
         a_fields.push_back(std::move(f));
     }
@@ -733,6 +754,96 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                    });
             continue;
         }
+        if (field.type == QLatin1String("modes") || field.type == QLatin1String("waves")) {
+            const bool modes = field.type == QLatin1String("modes");
+            const QString im = QStringLiteral("_im");
+            const Dim eDim = Dim::of(1, 1, -3, -1), hDim = Dim::of(-1, 0, 0, 1), sDim = Dim::of(0, 1, -3);
+            using FieldsAt = std::function<void(PointEvaluator&, std::complex<double>*, std::complex<double>*, bool*)>;
+            FieldsAt at;
+            if (modes)
+                at = [f](PointEvaluator& e, std::complex<double>* E, std::complex<double>* H, bool* ok) {
+                    const detail::ModeFields m = detail::modeFieldsAt(e, f);
+                    for (int k = 0; k < 3; ++k) {
+                        E[k] = m.E[k];
+                        H[k] = m.H[k];
+                    }
+                    *ok = m.defined;
+                };
+            else
+                at = [f](PointEvaluator& e, std::complex<double>* E, std::complex<double>* H, bool* ok) {
+                    const detail::WaveFields w = detail::waveFieldsAt(e, f);
+                    for (int k = 0; k < 3; ++k) {
+                        E[k] = w.E[k];
+                        H[k] = w.H[k];
+                    }
+                    *ok = w.defined;
+                };
+            const char* axes[3] = {"x", "y", "z"};
+            for (int k = 0; k < 3; ++k) {
+                const QString c = QString::fromLatin1(axes[k]);
+                for (int which = 0; which < 2; ++which) {
+                    const bool e = which == 0;
+                    const QString name = p + (e ? QStringLiteral("E") : QStringLiteral("H")) + c;
+                    auto part = [at, k, e](PointEvaluator& ev, bool imag) {
+                        std::complex<double> E[3], H[3];
+                        bool ok = false;
+                        at(ev, E, H, &ok);
+                        if (!ok) return NaN;
+                        const std::complex<double> v = e ? E[k] : H[k];
+                        return imag ? v.imag() : v.real();
+                    };
+                    define(name, e ? eDim : hDim,
+                           tr("%1 field, %2 component (its real part: at a phase of 0)").arg(e ? tr("electric") : tr("magnetic"), c), K::Derived, f,
+                           [part](PointEvaluator& ev) { return part(ev, false); });
+                    define(name + im, e ? eDim : hDim, tr("%1 field, %2 component, imaginary part").arg(e ? tr("electric") : tr("magnetic"), c),
+                           K::Derived, f, [part](PointEvaluator& ev) { return part(ev, true); });
+                }
+            }
+            for (int which = 0; which < 2; ++which) {
+                const bool e = which == 0;
+                define(p + (e ? QStringLiteral("normE") : QStringLiteral("normH")), e ? eDim : hDim,
+                       tr("%1 field, norm (its amplitude)").arg(e ? tr("electric") : tr("magnetic")), K::Derived, f, [at, e](PointEvaluator& ev) {
+                           std::complex<double> E[3], H[3];
+                           bool ok = false;
+                           at(ev, E, H, &ok);
+                           if (!ok) return NaN;
+                           const std::complex<double>* v = e ? E : H;
+                           return std::sqrt(std::norm(v[0]) + std::norm(v[1]) + std::norm(v[2]));
+                       });
+            }
+            // The power flow, its time average: ½ Re(E × H*).
+            for (int k = 0; k < 3; ++k) {
+                const QString c = QString::fromLatin1(axes[k]);
+                define(p + QStringLiteral("S") + c, sDim, tr("power flow, %1 component (a time average)").arg(c), K::Derived, f,
+                       [at, k](PointEvaluator& ev) {
+                           std::complex<double> E[3], H[3];
+                           bool ok = false;
+                           at(ev, E, H, &ok);
+                           if (!ok) return NaN;
+                           const int a = (k + 1) % 3, b = (k + 2) % 3;
+                           return 0.5 * (E[a] * std::conj(H[b]) - E[b] * std::conj(H[a])).real();
+                       });
+            }
+            define(p + QStringLiteral("normS"), sDim, tr("power flow, norm"), K::Derived, f, [at](PointEvaluator& ev) {
+                std::complex<double> E[3], H[3];
+                bool ok = false;
+                at(ev, E, H, &ok);
+                if (!ok) return NaN;
+                double s2 = 0;
+                for (int k = 0; k < 3; ++k) {
+                    const int a = (k + 1) % 3, b = (k + 2) % 3;
+                    const double v = 0.5 * (E[a] * std::conj(H[b]) - E[b] * std::conj(H[a])).real();
+                    s2 += v * v;
+                }
+                return std::sqrt(s2);
+            });
+            if (!modes) {
+                component(p + field.variable, field.dim, tr("the field out of the plane%1").arg(tr(" (its real part)")), K::Value, f, 0);
+                component(p + field.variable + im, field.dim, tr("the field out of the plane, its imaginary part"), K::Value, f, 1);
+            }
+            coefficient(p + QStringLiteral("n"), Dim(), tr("refractive index (as given)"), f, QString());
+            continue;
+        }
         if (field.type == QLatin1String("magnetic")) {
             const QString A = field.variable;
             const QString im = QStringLiteral("_im");
@@ -953,9 +1064,11 @@ void Solution::addSnapshot()
     Snapshot s;
     s.time = a_time;
     s.frequency = a_frequency;
+    s.mode = a_mode;
     for (const Field& f : a_fields) {
         s.values.push_back(f.values);
         s.terminals.push_back(f.terminals);
+        s.extra.push_back(f.extra);
     }
     for (const Variable& v : a_globals) s.globals.push_back(a_globalScope->constant(v.name)->value);
     a_snapshots.push_back(std::move(s));
@@ -971,9 +1084,11 @@ void Solution::select(int i)
     for (std::size_t f = 0; f < a_fields.size() && f < s.values.size(); ++f) {
         a_fields[f].values = s.values[f];
         a_fields[f].terminals = s.terminals[f];
+        if (f < s.extra.size()) a_fields[f].extra = s.extra[f];
     }
     a_time = s.time;
     a_frequency = s.frequency;
+    a_mode = s.mode;
     for (int g = 0; g < int(a_globals.size()) && g < int(s.globals.size()); ++g)
         a_globalScope->setConstant(a_globals[g].name, s.globals[std::size_t(g)], a_globals[g].dim);
     a_selected = i;
@@ -983,13 +1098,17 @@ void Solution::replaceLastSnapshot()
 {
     if (a_snapshots.empty()) return;
     const double t = a_snapshots.back().time, f = a_snapshots.back().frequency;
+    const int mode = a_snapshots.back().mode;
     a_snapshots.pop_back();
     const double nowT = a_time, nowF = a_frequency;
+    const int nowM = a_mode;
     a_time = t;
     a_frequency = f;
+    a_mode = mode;
     addSnapshot();
     a_time = nowT;
     a_frequency = nowF;
+    a_mode = nowM;
 }
 
 int Solution::snapshotAtFrequency(double f) const
@@ -1415,6 +1534,76 @@ bool stationaryStep(Solution& s, const Node& node, const std::function<bool(doub
     return true;
 }
 
+bool modeStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    // Frequencies, or free-space wavelengths.
+    Dim dim;
+    QString why;
+    const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("frequency")), s.parameters().scope, &dim, &why);
+    if (!listed) {
+        *error = tr("%1: the frequency: %2").arg(node.name(), why);
+        return false;
+    }
+    std::vector<double> frequencies;
+    for (double v : *listed) {
+        const double f = dim == Dim::length() ? (v > 0 ? 299792458.0 / v : 0) : v;
+        if (!(f > 0) || !std::isfinite(f)) {
+            *error = tr("%1: a frequency (or wavelength) of %2: it must be more than 0").arg(node.name(), formatNumber(v));
+            return false;
+        }
+        frequencies.push_back(f);
+    }
+    if (!dim.isNone() && !(dim == Dim::of(0, 0, -1)) && !(dim == Dim::length())) {
+        *error = tr("%1: the frequency is in %2: give Hz, or a wavelength in m").arg(node.name(), dimName(dim));
+        return false;
+    }
+    const int count = std::clamp(node.integer(QStringLiteral("modes")), 1, 200);
+    double guess = 0;
+    if (!node.text(QStringLiteral("neff")).trimmed().isEmpty()) {
+        const std::optional<double> g = evaluateConstant(node.text(QStringLiteral("neff")), s.parameters().scope, Dim(), &why);
+        if (!g || !(*g > 0)) {
+            *error = tr("%1: the effective index searched about: %2").arg(node.name(), g ? tr("it must be more than 0") : why);
+            return false;
+        }
+        guess = *g;
+    }
+    std::vector<int> modal, quasi;
+    for (int i = 0; i < int(st.problems.size()); ++i) (st.problems[std::size_t(i)]->modal() ? modal : quasi).push_back(i);
+    if (modal.empty()) {
+        *error = tr("%1: none of its physics has modes (Electromagnetic Waves, Mode Analysis has)").arg(node.name());
+        return false;
+    }
+    if (modal.size() > 1) *warnings << tr("%1: the modes of its first mode analysis only").arg(node.name());
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    s.frequencyDomain = true;
+    s.modeAnalysis = true;
+    detail::Problem& modes = *st.problems[std::size_t(modal.front())];
+    for (std::size_t k = 0; k < frequencies.size(); ++k) {
+        const double f = frequencies[k];
+        if (!tell(double(k) / double(frequencies.size()), tr("%1: modes at %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1))))) {
+            *error = tr("cancelled");
+            return false;
+        }
+        s.setFrequency(f);
+        if (!quasi.empty() && !solveTogether(st, quasi, [&](int) { return st.options; }, false, error)) return false;
+        SolveOptions o = st.options;
+        o.harmonic = true;
+        o.frequency = f;
+        const int found = modes.solveModes(o, count, guess, error);
+        if (found < 0) return false;
+        if (found == 0) *warnings << tr("%1: no mode found at %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1)));
+        for (int m = 0; m < found; ++m) {
+            modes.selectMode(m);
+            for (auto& p : st.problems) p->setGlobals();
+            s.addSnapshot();
+        }
+    }
+    return true;
+}
+
 bool frequencyStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
 {
     Step st{s, node, {}, {}, {}, 50, 1e-6};
@@ -1744,7 +1933,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         if (step.enabled && step.type != QLatin1String("sweep")) {
             steps.push_back(&step);
             inTime = inTime || step.type == QLatin1String("transient");
-            inFrequency = inFrequency || step.type == QLatin1String("frequency");
+            inFrequency = inFrequency || step.type == QLatin1String("frequency") || step.type == QLatin1String("mode");
         }
     if (steps.empty()) {
         out.error = tr("%1 has no step to solve").arg(study->name());
@@ -1764,6 +1953,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         if (step.type == QLatin1String("stationary")) ok = stationaryStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("transient")) ok = transientStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("frequency")) ok = frequencyStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("mode")) ok = modeStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
         if (!ok) {
             out.error = why;
@@ -1780,7 +1970,156 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
     return out;
 }
 
+std::vector<double> errorIndicators(const Solution& s, int fi)
+{
+    const Field& f = s.fields()[std::size_t(fi)];
+    if (f.edges || !f.space) return {};
+    const Space& sp = *f.space;
+    const Mesh& mesh = s.mesh();
+    const int nt = sp.elements();
+    const int nn = int(mesh.nodes.size());
+    const int comps = std::min(2, f.count());
+    const std::size_t n = std::size_t(sp.size());
+    // The gradient recovered at each corner node, by domain: the triangles'
+    // gradients there weighed by their areas.
+    std::map<std::pair<int, int>, std::array<double, 5>> recovered;   // (node, domain): Σ a gx, gy (each component), Σ a
+    auto gradientAt = [&](int t, double xi, double eta, int c, double& gx, double& gy) {
+        Shape sh;
+        shapeAt(sp.order(), xi, eta, sh);
+        const Space::Map m = sp.map(t, xi, eta);
+        double rx = 0, ry = 0;
+        for (int i = 0; i < sh.count; ++i) {
+            const double v = f.values[std::size_t(c) * n + std::size_t(sp.dofs(t)[i])];
+            rx += sh.dxi[i] * v;
+            ry += sh.deta[i] * v;
+        }
+        Space::gradient(m, rx, ry, gx, gy);
+    };
+    static const double corner[3][2] = {{0, 0}, {1, 0}, {0, 1}};
+    for (int t = 0; t < nt; ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        const double area = std::abs(sp.map(t, 1.0 / 3, 1.0 / 3).det) / 2;
+        for (int k = 0; k < 3; ++k) {
+            std::array<double, 5>& r = recovered[{mesh.triangles[std::size_t(t)][std::size_t(k)], d}];
+            for (int c = 0; c < comps; ++c) {
+                double gx = 0, gy = 0;
+                gradientAt(t, corner[k][0], corner[k][1], c, gx, gy);
+                r[std::size_t(2 * c)] += area * gx;
+                r[std::size_t(2 * c + 1)] += area * gy;
+            }
+            r[4] += area;
+        }
+    }
+    (void)nn;
+    std::vector<double> eta(std::size_t(nt), 0.0);
+    const TriangleRule& rule = triangleRule(4);
+    for (int t = 0; t < nt; ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        double e2 = 0;
+        const auto& tri = mesh.triangles[std::size_t(t)];
+        for (const auto& q : rule.points) {
+            const double lambda[3] = {1 - q[0] - q[1], q[0], q[1]};
+            const double w = q[2] * std::abs(sp.map(t, q[0], q[1]).det);
+            for (int c = 0; c < comps; ++c) {
+                double gx = 0, gy = 0;
+                gradientAt(t, q[0], q[1], c, gx, gy);
+                double Gx = 0, Gy = 0;
+                for (int k = 0; k < 3; ++k) {
+                    const std::array<double, 5>& r = recovered[{tri[std::size_t(k)], d}];
+                    Gx += lambda[k] * r[std::size_t(2 * c)] / r[4];
+                    Gy += lambda[k] * r[std::size_t(2 * c + 1)] / r[4];
+                }
+                e2 += w * ((gx - Gx) * (gx - Gx) + (gy - Gy) * (gy - Gy));
+            }
+        }
+        eta[std::size_t(t)] = std::sqrt(e2);
+    }
+    return eta;
+}
+
 namespace {
+
+/// A study solved, its mesh made finer where the error indicator of its
+/// adaptive step's physics is largest (the triangles that hold half of the
+/// squared error, at half their size), and solved again, as often as that
+/// step asks. (In frequency: the last frequency's error.)
+StudyResult solveAdaptive(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh> mesh,
+                          const QString& studyTag, const Progress& progress)
+{
+    const Node* study = nullptr;
+    for (const Node* s : model.studies())
+        if (studyTag.isEmpty() ? !study : s->tag == studyTag) study = s;
+    const Node* adaptive = nullptr;
+    if (study)
+        for (const Node& step : study->children)
+            if (step.enabled && (step.type == QLatin1String("stationary") || step.type == QLatin1String("frequency"))
+                && step.flag(QStringLiteral("adaptive")))
+                adaptive = &step;
+    const int rounds = adaptive ? std::clamp(adaptive->integer(QStringLiteral("adaptsteps")), 1, 20) : 0;
+    auto part = [&](int r) {
+        return Progress([&, r](double f, const QString& w) {
+            return !progress || progress((r + f) / (rounds + 1), rounds ? tr("mesh %1 of %2: %3").arg(r + 1).arg(rounds + 1).arg(w) : w);
+        });
+    };
+    StudyResult r = solveStudy(model, parameters, mesh, studyTag, part(0));
+    if (!adaptive || !r.solution) return r;
+    QString why;
+    MeshSizes sizes = meshSizes(model, *parameters, *mesh->topology, &why);
+    QStringList said;
+    for (int round = 1; round <= rounds; ++round) {
+        Solution& s = *r.solution;
+        // Its physics: the one named, else the first solved.
+        int fi = -1;
+        const QStringList names = adaptive->list(QStringLiteral("adaptphysics"));
+        for (int i = 0; i < int(s.fields().size()); ++i)
+            if (s.fields()[std::size_t(i)].solved && (names.isEmpty() ? fi < 0 : names.contains(s.fields()[std::size_t(i)].tag))) fi = i;
+        if (fi < 0) {
+            r.warnings << tr("%1: no physics to refine the mesh by").arg(adaptive->name());
+            break;
+        }
+        const std::vector<double> eta = errorIndicators(s, fi);
+        if (eta.empty()) {
+            r.warnings << tr("%1: %2's error is not estimated (edge elements): the mesh is not refined").arg(adaptive->name(), s.fields()[std::size_t(fi)].tag);
+            break;
+        }
+        const Mesh& m = s.mesh();
+        double total = 0;
+        std::vector<int> order;
+        for (int t = 0; t < int(eta.size()); ++t) {
+            total += eta[std::size_t(t)] * eta[std::size_t(t)];
+            if (eta[std::size_t(t)] > 0) order.push_back(t);
+        }
+        said << tr("%1 triangles, error %2").arg(m.triangles.size()).arg(std::sqrt(total), 0, 'g', 3);
+        std::sort(order.begin(), order.end(), [&](int a, int b) { return eta[std::size_t(a)] > eta[std::size_t(b)]; });
+        double marked = 0;
+        for (int t : order) {
+            if (marked >= 0.5 * total) break;
+            marked += eta[std::size_t(t)] * eta[std::size_t(t)];
+            const auto& tri = m.triangles[std::size_t(t)];
+            const QPointF a = m.nodes[std::size_t(tri[0])], b = m.nodes[std::size_t(tri[1])], c = m.nodes[std::size_t(tri[2])];
+            const double area = std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2;
+            const double h = std::sqrt(4 * area / std::sqrt(3.0));
+            const QPointF centre = (a + b + c) / 3.0;
+            sizes.points.push_back({centre.x(), centre.y(), h / 2});
+        }
+        const MeshBuild finer = buildMesh(m.topology, sizes, part(round));
+        if (!finer.mesh) {
+            r.warnings << tr("%1: the finer mesh: %2").arg(adaptive->name(), finer.error);
+            break;
+        }
+        StudyResult next = solveStudy(model, parameters, finer.mesh, studyTag, part(round));
+        if (!next.solution) {
+            r.warnings << tr("%1: on the finer mesh: %2").arg(adaptive->name(), next.error);
+            break;
+        }
+        r = next;
+    }
+    said << tr("%1 triangles at last").arg(r.solution->mesh().triangles.size());
+    r.solution->log << tr("Adaptive mesh refinement: %1").arg(said.join(QLatin1String("; ")));
+    return r;
+}
 
 /// Whether a parameter named one of \a names is in \a node (an identifier in
 /// any of its texts).
@@ -1845,7 +2184,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         if (!run.mesh && !meshOf(*parameters, topology, [&](double f, const QString& w) { return !progress || progress(0.3 * f, w); }, &run.mesh))
             return run;
         const double from = mesh ? 0 : 0.3;
-        const StudyResult r = solveStudy(model, parameters, run.mesh, study->tag,
+        const StudyResult r = solveAdaptive(model, parameters, run.mesh, study->tag,
                                          [&](double f, const QString& w) { return !progress || progress(from + (1 - from) * f, w); });
         run.warnings << r.warnings;
         if (!r.solution) {
@@ -1984,7 +2323,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             run.mesh = base;
             m = base;
         }
-        const StudyResult r = solveStudy(model, ps, m, study->tag, sub(0.3, 1));
+        const StudyResult r = solveAdaptive(model, ps, m, study->tag, sub(0.3, 1));
         run.warnings << r.warnings;
         if (!r.solution) {
             run.error = tr("%1: %2").arg(where, r.error);

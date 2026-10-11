@@ -437,6 +437,7 @@ private:
             }
             sources.insert(sources.end(), first.begin(), first.end());
         }
+        for (const auto& q : a_sizes.points) sources.push_back({q[0], q[1], std::max(q[2], a_sizes.hmin)});
         for (int p = 0; p < int(a_t.points.size()) && p < int(a_sizes.pointMax.size()); ++p)
             if (a_sizes.pointMax[std::size_t(p)] < Infinity) {
                 const QPointF q = a_t.vertices[std::size_t(a_t.points[std::size_t(p)].vertex)];

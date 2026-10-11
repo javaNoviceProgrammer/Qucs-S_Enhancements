@@ -1,0 +1,50 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A waveguide filter of two irises",
+    "description": "An H-plane cavity in X-band: two inductive irises 13.4 mm apart in a guide 22.86 mm wide - Ez across the plane, the guide's TE10 at a port at each end. Its S-parameters from 8 to 12 GHz, passing near 10 GHz and reflecting about it; |S11|² + |S21|² is 1 throughout. The S-matrix as a Touchstone file, for an S-parameter file part in a schematic.",
+    "parameters": [
+        {"name": "a", "expression": "22.86[mm]", "description": "the guide's width"},
+        {"name": "L", "expression": "13.4[mm]", "description": "the irises' spacing"},
+        {"name": "g", "expression": "9[mm]", "description": "an iris's opening"},
+        {"name": "t", "expression": "1[mm]", "description": "an iris's thickness"},
+        {"name": "lead", "expression": "25[mm]", "description": "the guide each side"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "rectangle", "label": "guide", "size": ["2*lead + L + 2*t", "a"]},
+            {"type": "rectangle", "label": "i1a", "position": ["lead", "0"], "size": ["t", "(a - g)/2"]},
+            {"type": "rectangle", "label": "i1b", "position": ["lead", "(a + g)/2"], "size": ["t", "(a - g)/2"]},
+            {"type": "rectangle", "label": "i2a", "position": ["lead + t + L", "0"], "size": ["t", "(a - g)/2"]},
+            {"type": "rectangle", "label": "i2b", "position": ["lead + t + L", "(a + g)/2"], "size": ["t", "(a - g)/2"]},
+            {"type": "difference", "label": "hollow", "input": ["guide"], "tools": ["i1a", "i1b", "i2a", "i2b"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Air", "selection": {"all": true}}],
+        "physics": [{
+            "type": "waves", "tag": "ewfd", "polarization": "ez",
+            "features": [
+                {"type": "port", "label": "Port 1", "name": "1", "selection": {"of": ["hollow"], "side": "left"}},
+                {"type": "port", "label": "Port 2", "name": "2", "selection": {"of": ["hollow"], "side": "right"}}
+            ]
+        }],
+        "mesh": {"size": "fine", "custom": true, "hmax": "1.2"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "frequency", "frequencies": "linspace(8[GHz], 12[GHz], 41)"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electric Field", "frequency": "10[GHz]", "plots": [
+                {"type": "surface", "expression": "ewfd.Ez", "colors": "coolwarm"}
+            ]},
+            {"type": "plotgroup1d", "label": "S-parameters", "plots": [
+                {"type": "globalgraph", "expression": "ewfd.S11dB; ewfd.S21dB"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Transmission", "expression": "ewfd.S21dB", "solutions": "selected"}
+        ],
+        "exports": [
+            {"type": "touchstone", "tag": "ts1", "label": "The filter's S-matrix", "of": "ports", "physics": ["ewfd"]}
+        ]
+    }
+}
