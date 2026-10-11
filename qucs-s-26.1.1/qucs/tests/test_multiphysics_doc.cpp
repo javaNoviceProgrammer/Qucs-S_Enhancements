@@ -88,6 +88,14 @@ bool slowBuild()
 #endif
 }
 
+/// How long a solve is waited for: a sanitized Debug build's dense eigen
+/// solves and Newton's steps are tens of times slower, more on CI's runners
+/// (ctest's 900 s guards the whole).
+int jobWait()
+{
+    return slowBuild() ? 600000 : 120000;
+}
+
 int countColors(const QImage& image)
 {
     QSet<QRgb> colors;
@@ -186,7 +194,7 @@ private slots:
     void cleanup()
     {
         for (QucsDoc* d : app->allDocuments()) {
-            if (auto* m = dynamic_cast<MultiphysicsDoc*>(d)) m->waitForJob(120000);
+            if (auto* m = dynamic_cast<MultiphysicsDoc*>(d)) m->waitForJob(jobWait());
             d->setDocChanged(false);   // (a data display too: no Save dialog)
         }
         app->closeAllFiles();
@@ -257,7 +265,7 @@ private slots:
         QVERIFY(doc != nullptr);
         doc->compute();
         QVERIFY(doc->isBusy() || doc->solution());
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QVERIFY(doc->solution() != nullptr);
         QVERIFY(doc->mesh() != nullptr);
@@ -304,7 +312,7 @@ private slots:
         MultiphysicsDoc* doc = open(examples() + "coax.qfem");
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY(doc->solution());
         QVERIFY(!doc->solutionStale());
         Model m = doc->model();
@@ -398,7 +406,7 @@ private slots:
         shoot(app, "05-built-in-panel");
         // Compute: the default plots made.
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QStringList groups;
         for (const qucs_s::fem::Node& g : doc->model().results().children)
@@ -527,7 +535,7 @@ private slots:
         MultiphysicsDoc* doc = open(examples() + "resistor_heating.qfem");
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         const double r = doc->solution()->global(QStringLiteral("ec.R")).value_or(0);
         QVERIFY2(std::abs(r - 0.2011) < 0.002, qPrintable(QString::number(r)));
@@ -658,7 +666,7 @@ private slots:
         QVERIFY(doc->isBusy());
         QVERIFY(doc->cancelButton()->isVisible());
         doc->cancelJob();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY(doc->solution() == nullptr);
         QVERIFY(doc->lastError().contains(QStringLiteral("cancelled")));
         QVERIFY(!doc->cancelButton()->isVisible());
@@ -686,7 +694,7 @@ private slots:
         MultiphysicsDoc* doc = open(copyOf("heater_transient.qfem"));
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QCOMPARE(doc->solution()->snapshotCount(), 31);
         QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
@@ -723,7 +731,7 @@ private slots:
         MultiphysicsDoc* doc = open(copyOf("heater_transient.qfem"));
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QString why;
         const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Temperature in Time"), &why);
         QVERIFY2(!display.isEmpty(), qPrintable(why));
@@ -806,7 +814,7 @@ private slots:
         MultiphysicsDoc* doc = open(copyOf("bimetal_strip.qfem"));
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QVERIFY2(doc->plotScene()->title.contains("deformed"), qPrintable(doc->plotScene()->title));
         // The plot's points below where the strip was (it curls down).
@@ -825,7 +833,7 @@ private slots:
         QVERIFY(doc != nullptr);
         QVERIFY(doc->model().axisymmetric());
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         const double c = doc->solution()->global(QStringLiteral("es.C11")).value_or(0);
         QVERIFY2(c > 110e-15 && c < 140e-15, qPrintable(QString::number(c)));
@@ -868,7 +876,7 @@ private slots:
                                  10000);
         QVERIFY(doc->messages().join('\n').contains("heatsink.svg changed"));
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         shoot(app, "16-heatsink");
     }
@@ -1089,7 +1097,7 @@ private slots:
         MultiphysicsDoc* doc = open(file);
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QVERIFY(doc->solution()->modeAnalysis);
         QCOMPARE(doc->solution()->snapshotCount(), 4);
@@ -1170,7 +1178,7 @@ private slots:
         QVERIFY(doc != nullptr);
         for (const char* study : {"std1", "std2", "std3"}) {
             doc->compute(QString::fromLatin1(study));
-            QVERIFY(doc->waitForJob(120000));
+            QVERIFY(doc->waitForJob(jobWait()));
             QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         }
         QString why;
@@ -1307,7 +1315,7 @@ private slots:
         MultiphysicsDoc* doc = open(file);
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QString why;
         qucs_s::dataset::Dataset data;
@@ -1476,7 +1484,7 @@ private slots:
         MultiphysicsDoc* doc = open(copyOf(QStringLiteral("prism_dispersion.qfem")));
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
         QCOMPARE(int(doc->plotScene()->rays.size()), 1);
@@ -1500,7 +1508,7 @@ private slots:
         MultiphysicsDoc* bare = open(file);
         QVERIFY(bare != nullptr);
         bare->compute();
-        QVERIFY(bare->waitForJob(120000));
+        QVERIFY(bare->waitForJob(jobWait()));
         QVERIFY2(bare->lastError().isEmpty(), qPrintable(bare->lastError()));
         QVERIFY(!tagOf(bare->model(), "plotgroup", "Ray Trajectories (gop)").isEmpty());
         QVERIFY(!bare->plotScene()->rays.empty());
@@ -1547,7 +1555,7 @@ private slots:
         MultiphysicsDoc* doc = open(copyOf(QStringLiteral("gaas_quantum_well.qfem")));
         QVERIFY(doc != nullptr);
         doc->compute(QStringLiteral("std1"));
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
         QString why;
@@ -1572,7 +1580,7 @@ private slots:
         QVERIFY(doc->plotScene()->problems.isEmpty());
         shoot(app, "38-quantum-well");
         doc->compute(QStringLiteral("std2"));
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         const QString spectrum = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Absorption"), &why, false);
         QVERIFY2(!spectrum.isEmpty(), qPrintable(why));
@@ -1595,14 +1603,14 @@ private slots:
                          {"type": "rectangle", "label": "well", "position": ["0", "10"], "size": ["10", "10"]}, {"type": "form union"}],
             "materials": [{"material": "Aluminium gallium arsenide", "selection": {"all": true}},
                           {"material": "Gallium arsenide", "selection": {"only": ["well"]}}],
-            "physics": [{"type": "quantum", "tag": "qw"}],
+            "physics": [{"type": "quantum", "tag": "qw", "h1d": "0.5[nm]"}],
             "mesh": {"size": "coarse"}}],
           "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "states", "states": 3}]}]})json");
         f.close();
         MultiphysicsDoc* bare = open(file);
         QVERIFY(bare != nullptr);
         bare->compute();
-        QVERIFY(bare->waitForJob(120000));
+        QVERIFY(bare->waitForJob(jobWait()));
         QVERIFY2(bare->lastError().isEmpty(), qPrintable(bare->lastError()));
         QVERIFY(!tagOf(bare->model(), "plotgroup", "Electron Probability (qw)").isEmpty());
         const QString diagram = tagOf(bare->model(), "plotgroup1d", "Band Diagram (qw)");
@@ -1656,7 +1664,7 @@ private slots:
         MultiphysicsDoc* doc = open(file);
         QVERIFY(doc != nullptr);
         doc->compute();
-        QVERIFY(doc->waitForJob(120000));
+        QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
         const QString solution = tagOf(doc->model(), "plotgroup1d", "Solution (c)");
         QVERIFY(!solution.isEmpty());
@@ -1672,7 +1680,7 @@ private slots:
         MultiphysicsDoc* drum = open(copyOf(QStringLiteral("drum_modes.qfem")));
         QVERIFY(drum != nullptr);
         drum->compute();
-        QVERIFY(drum->waitForJob(120000));
+        QVERIFY(drum->waitForJob(jobWait()));
         QVERIFY2(drum->lastError().isEmpty(), qPrintable(drum->lastError()));
         QCOMPARE(drum->view()->show(), GraphicsView::Show::Results);
         QVERIFY(drum->plotScene()->surface);
