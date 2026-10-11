@@ -410,6 +410,7 @@ std::unique_ptr<Problem> makeWaveProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeSemiconductorProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeRayProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeQuantumProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makePdeProblem(Solution& solution, int field);
 
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
 {
@@ -417,6 +418,7 @@ std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
     if (type == QLatin1String("semiconductor")) return makeSemiconductorProblem(solution, field);
     if (type == QLatin1String("rays")) return makeRayProblem(solution, field);
     if (type == QLatin1String("quantum")) return makeQuantumProblem(solution, field);
+    if (type == QLatin1String("pde")) return makePdeProblem(solution, field);
     if (type == QLatin1String("solid")) return makeElasticProblem(solution, field);
     if (type == QLatin1String("magnetic")) return makeMagneticProblem(solution, field);
     if (type == QLatin1String("modes")) return makeModeProblem(solution, field);
@@ -439,7 +441,8 @@ struct FieldInfo {
     QStringList components;
     Dim dim;
     bool planeStress = false;   // (solid)
-    bool line = false;          // (quantum: 1D along a line)
+    bool line = false;          // (quantum, pde: 1D along a line)
+    int pdeVars = 0;            // (pde: its variables, before their rates)
 };
 
 FieldInfo infoOf(const Node& p, bool axisymmetric)
@@ -469,6 +472,18 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
         // Each carrier's wavefunction (of the state selected).
         f.variable = QStringLiteral("psi");
         f.line = p.text(QStringLiteral("space")) != QLatin1String("2d");
+    } else if (p.type == QLatin1String("pde")) {
+        // Its variables (of their unit), and their rates when it is of the
+        // second order in time.
+        const QStringList names = detail::pdeVariables(p);
+        f.variable = names.front();
+        const QString unit = p.text(QStringLiteral("unit")).trimmed();
+        if (!unit.isEmpty() && unit != QLatin1String("1")) {
+            const Expression e = Expression::compile(QStringLiteral("1[%1]").arg(unit), Scope());
+            if (e.isValid()) f.dim = e.dim();
+        }
+        f.line = p.text(QStringLiteral("space")) == QLatin1String("1d");
+        f.pdeVars = int(names.size());
     } else if (p.type == QLatin1String("semiconductor")) {
         // The potential; the carriers and the doping with it.
         f.variable = QStringLiteral("V");
@@ -490,6 +505,11 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
     else if (p.type == QLatin1String("semiconductor"))
         f.components = QStringList{QStringLiteral("V"), QStringLiteral("n"), QStringLiteral("p"), QStringLiteral("Nd"), QStringLiteral("Na")};
     else if (p.type == QLatin1String("quantum")) f.components = QStringList{QStringLiteral("psi_e"), QStringLiteral("psi_hh"), QStringLiteral("psi_lh")};
+    else if (p.type == QLatin1String("pde")) {
+        f.components = detail::pdeVariables(p);
+        if (detail::pdeSecondOrder(p))
+            for (int k = 0, n = int(f.components.size()); k < n; ++k) f.components << f.components[k] + QLatin1Char('t');
+    }
     else f.components = QStringList{f.variable};
     return f;
 }
@@ -903,6 +923,47 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
             coefficient(p + QStringLiteral("n"), Dim(), tr("refractive index"), f, QString());
             continue;
         }
+        if (field.type == QLatin1String("pde")) {
+            // Each variable (and rate) by its own name and with the tag; its
+            // gradient; along a line, from the line's values.
+            const Dim length = Dim::length(), time = Dim::of(0, 0, 1);
+            for (int c = 0; c < int(field.components.size()); ++c) {
+                const QString name = field.components[c];
+                const bool rate = c >= field.pdeVars;
+                const Dim dim = rate ? field.dim / time : field.dim;
+                const QString what = rate ? tr("the rate of %1, ∂%1/∂t").arg(field.components[c - field.pdeVars]) : tr("dependent variable %1").arg(name);
+                if (field.line) {
+                    auto at = [f, c](PointEvaluator& e, int part) {
+                        double u = NaN, us = NaN;
+                        detail::pdeLineAt(e, f, c, &u, &us);
+                        if (part == 0) return u;
+                        if (part == 3) return us;
+                        // The gradient along the line's direction.
+                        const Field& fl = e.solution().fields()[std::size_t(f)];
+                        if (!fl.fixed || fl.fixed->size() < 5) return NaN;
+                        const std::vector<double>& fx = *fl.fixed;
+                        const double dx = fx[3] - fx[1], dy = fx[4] - fx[2], L = std::hypot(dx, dy);
+                        return L > 0 ? us * (part == 1 ? dx : dy) / L : NaN;
+                    };
+                    for (const QString& n : {p + name, name}) {
+                        define(n, dim, what, K::Derived, f, [at](PointEvaluator& e) { return at(e, 0); });
+                        define(n + QLatin1Char('x'), dim / length, tr("%1's derivative in x").arg(name), K::Derived, f,
+                               [at](PointEvaluator& e) { return at(e, 1); });
+                        define(n + QLatin1Char('y'), dim / length, tr("%1's derivative in y").arg(name), K::Derived, f,
+                               [at](PointEvaluator& e) { return at(e, 2); });
+                        define(n + QLatin1Char('s'), dim / length, tr("%1's derivative along the line").arg(name), K::Derived, f,
+                               [at](PointEvaluator& e) { return at(e, 3); });
+                    }
+                } else {
+                    for (const QString& n : {p + name, name}) {
+                        component(n, dim, what, K::Value, f, c);
+                        component(n + QLatin1Char('x'), dim / length, tr("%1's derivative in x").arg(name), K::GradX, f, c);
+                        component(n + QLatin1Char('y'), dim / length, tr("%1's derivative in y").arg(name), K::GradY, f, c);
+                    }
+                }
+            }
+            continue;
+        }
         if (field.type == QLatin1String("quantum")) {
             const Dim energy = Dim::of(2, 1, -2);
             const Dim density = field.line ? Dim::of(-1) : axisymmetric ? Dim::of(-3) : Dim::of(-2);
@@ -1197,7 +1258,9 @@ void Solution::defineVariables()
         for (const Node* p : a_model.physics())
             if (p->tag == f.tag) {
                 info.planeStress = p->text(QStringLiteral("model")) == QLatin1String("planestress");
-                info.line = p->type == QLatin1String("quantum") && p->text(QStringLiteral("space")) != QLatin1String("2d");
+                info.line = (p->type == QLatin1String("quantum") && p->text(QStringLiteral("space")) != QLatin1String("2d"))
+                            || (p->type == QLatin1String("pde") && p->text(QStringLiteral("space")) == QLatin1String("1d"));
+                if (p->type == QLatin1String("pde")) info.pdeVars = int(detail::pdeVariables(*p).size());
             }
         fields.push_back(info);
     }
@@ -1397,6 +1460,12 @@ void PointEvaluator::perturb(int f, double du)
     std::fill(a_done.begin(), a_done.end(), 0);
 }
 
+void PointEvaluator::shift(int f, int c, int which, double delta)
+{
+    a_shift = delta == 0 ? Shift() : Shift{f, c, which, delta};
+    std::fill(a_done.begin(), a_done.end(), 0);
+}
+
 QPointF PointEvaluator::point()
 {
     if (!a_mapped) {
@@ -1450,9 +1519,9 @@ void PointEvaluator::component(int f, int comp, double& u, double& gx, double& g
         u = gx = gy = NaN;
         return;
     }
-    u = c.u[comp] + (comp == 0 ? a_offset[std::size_t(f)] : 0.0);
-    gx = c.gx[comp];
-    gy = c.gy[comp];
+    u = c.u[comp] + (comp == 0 ? a_offset[std::size_t(f)] : 0.0) + shiftOf(f, comp, 0);
+    gx = c.gx[comp] + shiftOf(f, comp, 1);
+    gy = c.gy[comp] + shiftOf(f, comp, 2);
 }
 
 double PointEvaluator::coefficient(int f, const QString& name)
@@ -1824,6 +1893,45 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
             for (auto& p : st.problems) p->setGlobals();
             s.addSnapshot();
         }
+    }
+    return true;
+}
+
+bool eigenvalueStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    std::vector<int> pdes, others;
+    for (int i = 0; i < int(st.problems.size()); ++i)
+        (st.problems[std::size_t(i)]->field().type == QLatin1String("pde") ? pdes : others).push_back(i);
+    if (pdes.empty()) {
+        *error = tr("%1: none of its physics has eigenvalues (a PDE has)").arg(node.name());
+        return false;
+    }
+    if (pdes.size() > 1) *warnings << tr("%1: its first PDE's eigenvalues only").arg(node.name());
+    QString why;
+    const std::optional<double> shift = evaluateConstant(node.text(QStringLiteral("shift")), s.parameters().scope, Dim(), &why);
+    if (!shift) {
+        *error = tr("%1: what it searches about: %2").arg(node.name(), why);
+        return false;
+    }
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    if (!tell(0.1, tr("%1: the eigenvalues").arg(node.name()))) {
+        *error = tr("cancelled");
+        return false;
+    }
+    if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    s.frequencyDomain = true;
+    s.modeAnalysis = true;
+    detail::Problem& e = *st.problems[std::size_t(pdes.front())];
+    const int found = e.solveModes(st.options, std::clamp(node.integer(QStringLiteral("count")), 1, 200), *shift, error);
+    if (found < 0) return false;
+    if (found == 0) *warnings << tr("%1: no eigenvalue found").arg(node.name());
+    for (int k = 0; k < found; ++k) {
+        e.selectMode(k);
+        for (auto& p : st.problems) p->setGlobals();
+        s.addSnapshot();
     }
     return true;
 }
@@ -2295,7 +2403,8 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
             steps.push_back(&step);
             inTime = inTime || step.type == QLatin1String("transient");
             inFrequency = inFrequency || step.type == QLatin1String("frequency") || step.type == QLatin1String("mode")
-                          || step.type == QLatin1String("states") || step.type == QLatin1String("spectrum");
+                          || step.type == QLatin1String("states") || step.type == QLatin1String("spectrum")
+                          || step.type == QLatin1String("eigenvalue");
         }
     if (steps.empty()) {
         out.error = tr("%1 has no step to solve").arg(study->name());
@@ -2317,6 +2426,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         else if (step.type == QLatin1String("frequency")) ok = frequencyStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("mode")) ok = modeStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("states")) ok = statesStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("eigenvalue")) ok = eigenvalueStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("spectrum")) ok = spectrumStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
         if (!ok) {

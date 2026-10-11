@@ -405,6 +405,7 @@ packaged as any other, and is tested on CI.
 | **4. Waves** | the mode solver (Nédélec elements, PML, complex and anisotropic media, thermo-optic coupling); TE and TM frequency domain with ports, scattering boundaries and S-parameters; adaptive mesh refinement from error estimates | 9,000 + 2,500 | 5 - 8 |
 | **4b. Semiconductors and rays** (asked for after phase 4) | drift-diffusion: Poisson's equation and the carriers' continuity, Scharfetter-Gummel currents, contacts, recombination, at rest, in time and small-signal; the plasma dispersion into the modes; geometrical optics: rays refracted and reflected (Snell, Fresnel), graded media, absorption as a heat or generation source | 3,000 + 900, as built | 1 |
 | **4c. Quantum wells** (asked for after 4b) | the effective-mass Schrödinger equation of electrons, heavy and light holes in 1D along the growth axis and in 2D over the cross-section; III-V compounds and alloys with their band parameters, strain, a field or another physics' potential; the states, their transitions, absorption and gain spectra | 2,200 + 900, as built | 1 |
+| **4d. PDEs of your own** (asked for after 4c) | the coefficient and general form PDE, any number of variables, nonlinear by Newton's method, in 2D or along a line in 1D (ODEs); Dirichlet, flux and zero flux conditions; at rest, in time (first and second order) and its eigenvalues | 1,500 + 600, as built | 1 |
 | **5. Outward** (as wanted) | Gmsh as a second mesher; Elmer or GetDP as external engines; the Python module; a semantic diff of models; schematic-driven sweeps | 3,000 - 6,000 | as chosen |
 
 Phase 1 alone is the largest single feature yet: about three layout viewers. The
@@ -1077,3 +1078,82 @@ tests.
   absorption at 1e18 cm⁻³ to 1900 /cm at 3e18, TM absorbing.
 - `quantum_wire`: a 20 by 10 nm GaAs wire in Al0.3Ga0.7As; its states over the
   cross-section, the second 30 meV above the first with a node across its width.
+
+## PDEs and ODEs of your own, as built
+
+Built on 11 October 2026, as asked ("let's add support for solving any user-defined 1D ODE or
+2D PDE with user-defined boundary conditions"): a physics, *PDE (Coefficient and General
+Form)*, in `fem_pde`, and an *Eigenvalue* study step; the line a 1D physics is solved along
+(`fem_line`), now shared with the quantum wells. About 1,500 lines and 600 of tests.
+
+**How it is done:**
+- **The equation:** ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F for one or several dependent variables,
+  named as the user likes (u, or u and v: each with ux, uy, and c.u, c.ux). The general
+  form takes Γ (x, y) and F as written; the coefficient form builds them, Γ = -c∇u - αu + γ
+  and F = f - β·∇u - au, its c isotropic or a 2 × 2 matrix. A property holds one item for
+  each variable, split by ';'.
+- **Any expression:** a coefficient may read x, y, t, the variables, their gradients and
+  other physics' fields. The weak form, ∫ (Γ·∇φ + Fφ) + ∮ (g - qu) φ = 0, is solved by
+  **Newton's method**. Its Jacobian comes from the expressions themselves, by differences:
+  at each point of integration each component's value and each of its derivatives is
+  nudged in turn (the point evaluator's shift), and Γ and F are evaluated again. This is
+  exact for a linear coefficient up to rounding, and catches nonlinear ones (e^u, u(1 - u),
+  a c(u)) and couplings between variables. A step is halved while it makes F larger; the
+  first is taken whole (a linear problem's answer), as is one already within the
+  tolerance.
+- **2D:** the mesh's linear or quadratic triangles; about an axis the integrals are weighed
+  by 2πr, so ∇· is the cylinders' divergence.
+- **1D (an ODE):** a line along x or y through the physics' domains. The mesh's triangles
+  give its stretch in each domain exactly; it has its own quadratic elements (200 by
+  default), and its points of integration are placed in the mesh once. Its variables are
+  read along the line (u, ux, uy and us, the derivative along it) wherever a plot asks.
+- **Conditions:** Dirichlet (u = r, any of the variables), flux (-n·Γ = g - q u, Robin; g and
+  q may read the variables, their derivatives in the Jacobian too), zero flux by default.
+  In 1D they apply where the line meets the boundaries chosen - at its ends, or at an inner
+  boundary it crosses.
+- **In time:** the time stepper's BDF, da ∂u/∂t its mass. A second derivative (any ea not 0)
+  adds each variable's rate w = ∂u/∂t as a component of its own, with w - ∂u/∂t = 0. This is
+  integrated with the rest by the same BDF and shown as ut.
+- **Eigenvalues:** -λ da u + ∇·Γ = F linearized where it is (its Dirichlet conditions at 0),
+  A x = λ M x with A = -J and M the da mass (else ea's, else 1). These are solved by a shift
+  and invert about the shift asked and the Krylov-Schur solver; each eigenfunction is a
+  solution, with c.lambda (and its imaginary part when a convection makes it complex).
+
+**Where it differs from what such tools have:**
+- **Weak and time forms:** no weak form of the user's own, no point or edge PDEs, no
+  global (ODE) variables, no algebraic constraints of the variables (a DAE).
+- **Second derivatives:** none in the expressions (P2's are piecewise constant).
+- **Periodic conditions:** not there.
+- **Eigenproblems:** linear only (no quadratic one in λ with both ea and da); ∂u/∂t cannot be
+  read in a first-order equation's expressions.
+- **1D:** a 1D line lives inside a 2D geometry: an interval is drawn as a strip.
+
+**Fast enough** (M-series Mac, Release):
+- the Bratu ODE at four λ: 16 ms;
+- a drum's six modes on 3,000 quadratic triangles: 0.1 s;
+- Fisher's front over 500 elements and 140 steps in time: 1 to 2 s.
+
+**Checked:**
+- `test_fem_pde` (12):
+  - Poisson's equation's manufactured solution in a square, its error 13.6 times smaller
+    when h is halved;
+  - the Bratu ODE against its closed form (2 × 10⁻¹³), in 3 Newton iterations;
+  - convection and diffusion at a Péclet number of 20 (10⁻⁷);
+  - a Robin condition and two layers' flux continuity (10⁻¹⁰, exact);
+  - heat decaying as e^(-π² t) (10⁻⁴), and a standing wave a period later as it was (10⁻⁵);
+  - a string's eigenvalues n² held (10⁻⁸) and free (0, 1, 4), and a square membrane's
+    2π², 5π² twice, 8π² (10⁻⁵);
+  - two coupled variables (their coupling through F, 2 Newton iterations);
+  - the general form against the coefficient form (10⁻¹⁰);
+  - anisotropic diffusion;
+  - a disc about its axis (exact);
+  - the examples.
+- `test_multiphysics_doc` (33) adds a 1D ODE in the window (its default plot a line graph
+  along its line, a dataset), a drum's modes and eigenvalues, and Claude's tools for them.
+
+**Examples:**
+- `bratu_ode`: u'' + λ e^u = 0 swept toward thermal runaway; u(½) to 10⁻⁷ at each λ.
+- `drum_modes`: a circular membrane's six modes, λ = j² of Bessel's zeros (10⁻⁵).
+- `fisher_front`: Fisher's equation's front travelling at 1.995 (2√(rD) = 2).
+- `annulus_laplace`: Laplace's equation in a ring on curved elements, ln r / ln 2 and the flux
+  2π / ln 2 through the outer circle (3 × 10⁻⁴).

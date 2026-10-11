@@ -1,0 +1,32 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A drum's modes: a circular membrane's eigenvalues",
+    "description": "-Δu = λ u on a disc of radius 1 held at its rim: λ = j² for each zero j of a Bessel function - 5.7832 (j₀₁ = 2.4048), 14.682 twice (j₁₁, the mode with one nodal diameter, either way round), 26.375 twice, 30.471 (j₀₂: a nodal circle). An Eigenvalue step finds them, each eigenfunction a solution to show; a drum's frequencies are √λ c/(2πR).",
+    "components": [{
+        "unit": "m",
+        "geometry": [{"type": "circle", "label": "membrane", "radius": "1"}],
+        "physics": [{
+            "type": "pde", "tag": "c",
+            "features": [
+                {"type": "coefficient", "label": "-Δu = λ u", "f": "0", "selection": {"all": true}},
+                {"type": "dirichlet", "label": "Held at its rim", "r": "0", "selection": {"exterior": true}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.06"}
+    }],
+    "studies": [{"type": "study", "tag": "std1", "label": "Study 1", "steps": [
+        {"type": "eigenvalue", "count": 6, "shift": "0"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Mode 1", "mode": 1, "plots": [{"type": "surface", "expression": "u", "colors": "coolwarm"}]},
+            {"type": "plotgroup", "label": "Mode 2", "mode": 2, "plots": [{"type": "surface", "expression": "u", "colors": "coolwarm"}]},
+            {"type": "plotgroup", "label": "Mode 6", "mode": 6, "plots": [{"type": "surface", "expression": "u", "colors": "coolwarm"},
+                                                                    {"type": "contour", "expression": "u", "levels": 9}]},
+            {"type": "plotgroup1d", "label": "Eigenvalues", "plots": [{"type": "globalgraph", "expression": "c.lambda"}]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Eigenvalues", "expression": "c.lambda", "solutions": "all"}
+        ]
+    }
+}

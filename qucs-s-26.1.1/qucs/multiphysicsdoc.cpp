@@ -1659,6 +1659,40 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 plot(gc, QStringLiteral("surface"), {{"expression", QStringLiteral("log10(%1%2*1[cm^3])").arg(t, carrier)}, {"colors", QStringLiteral("viridis")}});
                 m.add(m.results().tag, gc);
             }
+        } else if (f.type == QLatin1String("pde")) {
+            // Each variable: over the domains, or (1D) along its line.
+            // (Its variables before their rates, u then ut, when it has them.)
+            int vars = int(f.components.size());
+            if (vars % 2 == 0) {
+                bool rates = vars > 0;
+                for (int k = 0; k < vars / 2; ++k) rates = rates && f.components[vars / 2 + k] == f.components[k] + QLatin1Char('t');
+                if (rates) vars /= 2;
+            }
+            const bool line = f.fixed && !f.fixed->empty() && (*f.fixed)[0] == 1;
+            if (line) {
+                const double u = sol->mesh().unitScale;
+                Node cut = m.make(QStringLiteral("cutline"));
+                cut.label = tr("Along the Line (%1)").arg(t);
+                auto num = [](double v) { return formatNumber(v, 12); };
+                cut.props.insert(QStringLiteral("start"), QJsonArray{num((*f.fixed)[1] / u), num((*f.fixed)[2] / u)});
+                cut.props.insert(QStringLiteral("end"), QJsonArray{num((*f.fixed)[3] / u), num((*f.fixed)[4] / u)});
+                cut.props.insert(QStringLiteral("points"), 500);
+                m.add(m.results().tag, cut);
+                Node g = m.make(QStringLiteral("plotgroup1d"));
+                g.label = tr("Solution (%1)").arg(t);
+                g.props.insert(QStringLiteral("study"), study);
+                for (int c = 0; c < vars && c < f.components.size(); ++c)
+                    plot(g, QStringLiteral("linegraph"), {{"data", cut.tag}, {"expression", t + QLatin1Char('.') + f.components[c]},
+                                                          {"solutions", QStringLiteral("all")}});
+                m.add(m.results().tag, g);
+            } else
+                for (int c = 0; c < vars && c < f.components.size(); ++c) {
+                    const QString e = t + QLatin1Char('.') + f.components[c];
+                    Node g = group(tr("%1 (%2)").arg(f.components[c], t));
+                    plot(g, QStringLiteral("surface"), {{"expression", e}});
+                    plot(g, QStringLiteral("contour"), {{"expression", e}, {"levels", 12}});
+                    m.add(m.results().tag, g);
+                }
         } else if (f.type == QLatin1String("quantum")) {
             // The states' probability densities; along the growth axis a band
             // diagram - the band edges with each state's level and |ψ|² on it.
@@ -1759,6 +1793,9 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                     }
                     chief << t + QStringLiteral("I_") + term.name;
                 }
+            } else if (f.type == QLatin1String("pde")) {
+                // Its eigenvalues.
+                chief = {t + QStringLiteral("lambda")};
             } else if (f.type == QLatin1String("quantum")) {
                 // The states' energies; a spectrum's absorption (gain).
                 const bool spectrum = sol->frequencyDomain && !sol->modeAnalysis;

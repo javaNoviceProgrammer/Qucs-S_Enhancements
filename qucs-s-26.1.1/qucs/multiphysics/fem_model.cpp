@@ -252,7 +252,7 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
           QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays"),
-          QStringLiteral("quantum")},
+          QStringLiteral("quantum"), QStringLiteral("pde")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -1089,6 +1089,90 @@ QList<NodeKind> makeKinds()
          {selectionProp(none)}, {}, {}, false, false, QStringLiteral("zf"),
          tr("∂ψ/∂n = 0 on the boundaries chosen (2D): a wide layer's sides, the states free across them.")});
 
+    // A PDE of the user's own.
+    {
+        auto spatialPair = [](const QString& key, const QString& label, const QString& tip) {
+            P p = pair(key, label, QString(), QStringLiteral("0"), QStringLiteral("0"), tip);
+            p.spatial = true;
+            return p;
+        };
+        const QString each = tr("Several variables: one for each, split by ';' (one alone: all alike)");
+        add({QStringLiteral("pde"), tr("PDE (Coefficient and General Form)"), QStringLiteral("physics"), QStringLiteral("pde"), Level::Domain,
+             {selectionProp(),
+              text(QStringLiteral("variables"), tr("Dependent variables"), QStringLiteral("u"),
+                   tr("Their names, split by commas (u, v): each with its gradient ux, uy (and the physics' tag before them, c.u, "
+                      "c.ux), along a line us")),
+              text(QStringLiteral("unit"), tr("Their unit"), QString(), tr("K, V, m... (empty: none)")),
+              choice(QStringLiteral("space"), tr("Solved"), {QStringLiteral("2d"), QStringLiteral("1d")},
+                     {tr("2D: on the mesh's domains"), tr("1D: along a line across them (an ODE)")}, QStringLiteral("2d"),
+                     tr("1D: a line along x (or y) through the domains, quadratic elements of its own; the conditions where it meets "
+                        "the boundaries chosen")),
+              shownIf(choice(QStringLiteral("axis"), tr("Line along"), {QStringLiteral("x"), QStringLiteral("y")}, {tr("x"), tr("y")}, QStringLiteral("x")),
+                      QStringLiteral("space=1d")),
+              shownIf(expr(QStringLiteral("at"), tr("Line through"), QStringLiteral("length"), QString(),
+                           tr("y (x for a line along y) where it runs; empty: the middle of the physics' domains")),
+                      QStringLiteral("space=1d")),
+              shownIf(integer(QStringLiteral("elements"), tr("Elements along the line"), 200, tr("Quadratic; each domain it crosses at least one")),
+                      QStringLiteral("space=1d")),
+              shownIf(choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
+                             QStringLiteral("2")),
+                      QStringLiteral("space=2d"))},
+             {QStringLiteral("pde/coefficient"), QStringLiteral("pde/general"), QStringLiteral("pde/init"), QStringLiteral("pde/dirichlet"),
+              QStringLiteral("pde/flux"), QStringLiteral("pde/zeroflux")},
+             {QStringLiteral("pde/coefficient"), QStringLiteral("pde/zeroflux"), QStringLiteral("pde/init")}, false, false, QStringLiteral("c"),
+             tr("An equation of your own, ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F, for one or several variables: in the coefficient form "
+                "(Γ = -c ∇u - α u + γ, F = f - β·∇u - a u) or the general one (Γ and F as you write them); its coefficients any "
+                "expressions of x, y, t, the variables and their gradients, other physics' fields - nonlinear, by Newton's "
+                "method. On the mesh (2D, about an axis too) or along a line (1D: an ODE). Dirichlet, flux (Robin) and zero "
+                "flux conditions; at rest, in time or its eigenvalues.")});
+        add({QStringLiteral("pde/coefficient"), tr("Coefficient Form PDE"), QStringLiteral("pde"), QStringLiteral("domainfeature"), Level::Domain,
+             {selectionProp(),
+              spatial(QStringLiteral("c"), tr("Diffusion coefficient c"), QString(), QStringLiteral("1"), each),
+              choice(QStringLiteral("diffusion"), tr("Diffusion"), {QStringLiteral("isotropic"), QStringLiteral("anisotropic")},
+                     {tr("Isotropic"), tr("Anisotropic (a matrix)")}, QStringLiteral("isotropic")),
+              shownIf(spatial(QStringLiteral("cxx"), tr("c, xx"), QString(), QStringLiteral("1")), QStringLiteral("diffusion=anisotropic")),
+              shownIf(spatial(QStringLiteral("cxy"), tr("c, xy"), QString(), QStringLiteral("0")), QStringLiteral("diffusion=anisotropic")),
+              shownIf(spatial(QStringLiteral("cyx"), tr("c, yx"), QString(), QStringLiteral("0")), QStringLiteral("diffusion=anisotropic")),
+              shownIf(spatial(QStringLiteral("cyy"), tr("c, yy"), QString(), QStringLiteral("1")), QStringLiteral("diffusion=anisotropic")),
+              spatial(QStringLiteral("a"), tr("Absorption coefficient a"), QString(), QStringLiteral("0"), each),
+              spatial(QStringLiteral("f"), tr("Source term f"), QString(), QStringLiteral("1"), each),
+              spatial(QStringLiteral("ea"), tr("Mass coefficient ea"), QString(), QStringLiteral("0"), tr("Of ∂²u/∂t²: a wave equation")),
+              spatial(QStringLiteral("da"), tr("Damping or mass coefficient da"), QString(), QStringLiteral("1"),
+                      tr("Of ∂u/∂t: a diffusion's; an eigenproblem's mass")),
+              spatialPair(QStringLiteral("alpha"), tr("Conservative flux convection α"), each),
+              spatialPair(QStringLiteral("beta"), tr("Convection coefficient β"), each),
+              spatialPair(QStringLiteral("gamma"), tr("Conservative flux source γ"), each)},
+             {}, {}, false, false, QStringLiteral("cfeq"),
+             tr("ea ∂²u/∂t² + da ∂u/∂t + ∇·(-c ∇u - α u + γ) + β·∇u + a u = f. Each coefficient may read x, y, t, the variables "
+                "and their gradients: nonlinear.")});
+        add({QStringLiteral("pde/general"), tr("General Form PDE"), QStringLiteral("pde"), QStringLiteral("domainfeature"), Level::Domain,
+             {selectionProp(),
+              spatial(QStringLiteral("Gx"), tr("Conservative flux Γ, x"), QString(), QStringLiteral("-ux"), each),
+              spatial(QStringLiteral("Gy"), tr("Conservative flux Γ, y"), QString(), QStringLiteral("-uy"), each),
+              spatial(QStringLiteral("F"), tr("Source term F"), QString(), QStringLiteral("1"), each),
+              spatial(QStringLiteral("ea"), tr("Mass coefficient ea"), QString(), QStringLiteral("0")),
+              spatial(QStringLiteral("da"), tr("Damping or mass coefficient da"), QString(), QStringLiteral("1"))},
+             {}, {}, false, false, QStringLiteral("gfeq"),
+             tr("ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F, Γ and F as you write them (along a line, Γ's component along it).")});
+        add({QStringLiteral("pde/init"), tr("Initial Values"), QStringLiteral("pde"), QStringLiteral("domainfeature"), Level::Domain,
+             {selectionProp(), spatial(QStringLiteral("u0"), tr("Initial value"), QString(), QStringLiteral("0"), each),
+              spatial(QStringLiteral("ut0"), tr("Initial time derivative"), QString(), QStringLiteral("0"), each)},
+             {}, {}, false, false, QStringLiteral("init"), tr("Where a step in time starts, and Newton's method's first guess.")});
+        add({QStringLiteral("pde/dirichlet"), tr("Dirichlet Boundary Condition"), QStringLiteral("pde"), QStringLiteral("boundaryfeature"),
+             Level::Boundary,
+             {selectionProp(none), spatial(QStringLiteral("r"), tr("Prescribed value r"), QString(), QStringLiteral("0"),
+                                           tr("u = r; several variables: one for each split by ';', an item left empty that variable free")),
+              text(QStringLiteral("which"), tr("Variables constrained"), QString(), tr("Their names (empty: each that has an r)"))},
+             {}, {}, false, false, QStringLiteral("dir"), tr("u = r on its boundaries (along a line: where the line meets them).")});
+        add({QStringLiteral("pde/flux"), tr("Flux/Source"), QStringLiteral("pde"), QStringLiteral("boundaryfeature"), Level::Boundary,
+             {selectionProp(none), spatial(QStringLiteral("g"), tr("Boundary flux or source g"), QString(), QStringLiteral("0"), each),
+              spatial(QStringLiteral("q"), tr("Boundary absorption q"), QString(), QStringLiteral("0"), each)},
+             {}, {}, false, false, QStringLiteral("flux"),
+             tr("-n·Γ = g - q u: a flux in, or (q) a Robin condition; g and q may read the variables.")});
+        add({QStringLiteral("pde/zeroflux"), tr("Zero Flux"), QStringLiteral("pde"), QStringLiteral("boundaryfeature"), Level::Boundary,
+             {selectionProp()}, {}, {}, false, false, QStringLiteral("zfl"), tr("-n·Γ = 0: where no other condition is.")});
+    }
+
     // Mesh.
     const QStringList presets = {QStringLiteral("extremely fine"), QStringLiteral("extra fine"), QStringLiteral("finer"),
                                  QStringLiteral("fine"), QStringLiteral("normal"), QStringLiteral("coarse"),
@@ -1120,7 +1204,7 @@ QList<NodeKind> makeKinds()
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
          {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("states"),
-          QStringLiteral("spectrum"), QStringLiteral("sweep")},
+          QStringLiteral("spectrum"), QStringLiteral("eigenvalue"), QStringLiteral("sweep")},
          {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
@@ -1207,6 +1291,14 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("mode"),
              tr("A cross-section's modes at each frequency: each a solution, as an output time is - its effective index, "
                 "loss, fields. Physics at rest in it (heat for a thermo-optic index) are solved first.")});
+        add({QStringLiteral("eigenvalue"), tr("Eigenvalue"), QStringLiteral("step"), QStringLiteral("eigenvalue"), Level::None,
+             {physics, integer(QStringLiteral("count"), tr("Eigenvalues"), 6, tr("Those nearest the shift")),
+              expr(QStringLiteral("shift"), tr("Search about"), QString(), QStringLiteral("0")),
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
+                   tr("Of the physics solved before"))},
+             {}, {}, false, false, QStringLiteral("eig"),
+             tr("A PDE's eigenvalues λ - -λ da u + ∇·Γ = F linearized about where it is, its Dirichlet conditions 0 - and their "
+                "eigenfunctions: each a solution, as a mode is.")});
         add({QStringLiteral("states"), tr("Quantum States"), QStringLiteral("step"), QStringLiteral("states"), Level::None,
              {physics, integer(QStringLiteral("states"), tr("States of each carrier"), 4, tr("The lowest: electrons upward, holes downward")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
@@ -1551,7 +1643,7 @@ QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
             QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays"),
-            QStringLiteral("quantum")};
+            QStringLiteral("quantum"), QStringLiteral("pde")};
 }
 
 // ------------------------------------------------------------------ Node

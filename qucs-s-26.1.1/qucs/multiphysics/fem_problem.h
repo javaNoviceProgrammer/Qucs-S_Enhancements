@@ -245,6 +245,14 @@ struct QuantumState {
 };
 QuantumState quantumAt(PointEvaluator& e, int field);
 
+/// A PDE's dependent variables (by name), and whether it is of the second
+/// order in time (their rates its components too, named <u>_t).
+QStringList pdeVariables(const Node& physics);
+bool pdeSecondOrder(const Node& physics);
+/// A PDE solved along a line: component \a c's value and its derivative
+/// along the line at the evaluator's point (NaN off it).
+void pdeLineAt(PointEvaluator& e, int field, int c, double* u, double* us);
+
 /// A mode's fields at a point (V/m, A/m), as found (a phase of 0 at z = 0).
 struct ModeFields {
     std::complex<double> E[3], H[3];
