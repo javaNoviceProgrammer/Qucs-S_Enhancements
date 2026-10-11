@@ -580,7 +580,7 @@ int Solution::define(const QString& name, const Dim& dim, const QString& descrip
     const int slot = a_pointScope->addVariable(name, dim);
     if (int(a_defs.size()) <= slot) a_defs.resize(std::size_t(slot) + 1);
     VariableDef& d = a_defs[std::size_t(slot)];
-    d.info = {name, dim, description};
+    d.info = {name, dim, description, QString()};
     d.kind = kind;
     d.field = field;
     d.derived = std::move(derived);
@@ -1236,7 +1236,7 @@ QList<Variable> modelVariables(const Model& model)
                          std::function<double(PointEvaluator&)>) {
                          if (!names.contains(name)) {
                              names.insert(name);
-                             out << Variable{name, dim, description};
+                             out << Variable{name, dim, description, QString()};
                          }
                          return int(out.size()) - 1;
                      });
@@ -1307,16 +1307,27 @@ QList<Variable> Solution::globals() const
     return a_globals;
 }
 
-void Solution::setGlobal(const QString& name, double value, const Dim& dim, const QString& description)
+void Solution::setGlobal(const QString& name, double value, const Dim& dim, const QString& description, const QString& unit)
 {
     a_globalScope->setConstant(name, value, dim);
     for (Variable& v : a_globals)
         if (v.name == name) {
             v.dim = dim;
             if (!description.isEmpty()) v.description = description;
+            v.unit = unit;
             return;
         }
-    a_globals << Variable{name, dim, description};
+    a_globals << Variable{name, dim, description, unit};
+}
+
+QString Solution::globalText(const QString& name) const
+{
+    for (const Variable& v : a_globals)
+        if (v.name == name) {
+            const double value = a_globalScope->constant(name)->value;
+            return v.unit.isEmpty() ? formatQuantity(value, v.dim) : formatNumber(value, 4) + QLatin1Char(' ') + v.unit;
+        }
+    return {};
 }
 
 std::optional<double> Solution::global(const QString& name) const
@@ -1742,7 +1753,10 @@ bool setupStep(Step& st, QString* error)
     if (const std::optional<double> t = evaluateConstant(st.node.text(QStringLiteral("tolerance")), st.s.parameters().scope, Dim()); t && *t > 0)
         st.tolerance = *t;
     st.options.tolerance = st.tolerance;
-    st.maxIterations = std::clamp(st.node.integer(QStringLiteral("maxiter")), 1, 1000);
+    // (A step without a Maximum iterations - a mode analysis's before it
+    // had one - keeps the default: not 0 clamped to 1, a single Newton step.)
+    if (st.node.kind() && st.node.kind()->property(QStringLiteral("maxiter")))
+        st.maxIterations = std::clamp(st.node.integer(QStringLiteral("maxiter")), 1, 1000);
     st.options.maxIterations = st.maxIterations;
     return true;
 }
@@ -1787,6 +1801,22 @@ bool solveTogether(Step& st, const std::vector<int>& subset, const std::function
     }
     *error = tr("%1: the coupled physics did not converge in %2 iterations").arg(st.node.name()).arg(st.maxIterations);
     return false;
+}
+
+/// Whether the problems \a subset of \a st converged; else why, for a step
+/// whose modes, states or eigenvalues would be of a field not solved.
+bool solvedBefore(const Step& st, const std::vector<int>& subset, QString* error)
+{
+    for (int i : subset)
+        if (!st.problems[std::size_t(i)]->converged()) {
+            detail::Problem& p = *st.problems[std::size_t(i)];
+            *error = tr("%1: %2 did not converge in %3 Newton steps - what it solves would be of a field not solved: raise the step's "
+                        "Maximum iterations, or solve it in a Stationary step before")
+                         .arg(st.node.name(), p.node() ? p.node()->name() : p.field().tag)
+                         .arg(st.maxIterations);
+            return false;
+        }
+    return true;
 }
 
 bool stationaryStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
@@ -1853,6 +1883,20 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         return false;
     }
     const int count = std::clamp(node.integer(QStringLiteral("modes")), 1, 200);
+    // The domains whose modes it keeps (none: those nearest the index).
+    std::vector<char> track;
+    {
+        QString trackWhy;
+        const QVector<int> picked = resolveSelection(s.topology(), s.model(), Level::Domain, node.value(QStringLiteral("track")).toObject(), &trackWhy);
+        if (!trackWhy.isEmpty()) {
+            *error = tr("%1: the domains it tracks: %2").arg(node.name(), trackWhy);
+            return false;
+        }
+        if (!picked.isEmpty()) {
+            track.assign(s.topology().domains.size(), 0);
+            for (int d : picked) track[std::size_t(d)] = 1;
+        }
+    }
     double guess = 0;
     if (!node.text(QStringLiteral("neff")).trimmed().isEmpty()) {
         const std::optional<double> g = evaluateConstant(node.text(QStringLiteral("neff")), s.parameters().scope, Dim(), &why);
@@ -1882,9 +1926,11 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         }
         s.setFrequency(f);
         if (!quasi.empty() && !solveTogether(st, quasi, [&](int) { return st.options; }, false, error)) return false;
+        if (!solvedBefore(st, quasi, error)) return false;
         SolveOptions o = st.options;
         o.harmonic = true;
         o.frequency = f;
+        o.track = track;
         const int found = modes.solveModes(o, count, guess, error);
         if (found < 0) return false;
         if (found == 0) *warnings << tr("%1: no mode found at %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1)));
@@ -1922,6 +1968,7 @@ bool eigenvalueStep(Solution& s, const Node& node, const std::function<bool(doub
         return false;
     }
     if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    if (!solvedBefore(st, others, error)) return false;
     s.frequencyDomain = true;
     s.modeAnalysis = true;
     detail::Problem& e = *st.problems[std::size_t(pdes.front())];
@@ -1963,6 +2010,7 @@ bool statesStep(Solution& s, const Node& node, const std::function<bool(double, 
     }
     // What the states read (a semiconductor's potential) first.
     if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    if (!solvedBefore(st, others, error)) return false;
     s.frequencyDomain = true;
     s.modeAnalysis = true;
     s.quantumStates = true;
@@ -2047,6 +2095,7 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
         return false;
     }
     if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    if (!solvedBefore(st, others, error)) return false;
     s.frequencyDomain = true;
     s.photonAxis = axis;
     detail::Problem& qp = *st.problems[std::size_t(quantum.front())];
@@ -2434,6 +2483,10 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
             return out;
         }
     }
+    // What the physics said in the log as warnings (a Newton's method that
+    // did not converge): the study's warnings too.
+    for (const QString& line : solution->log)
+        if (line.startsWith(QLatin1String("Warning: ")) && !out.warnings.contains(line.mid(9))) out.warnings << line.mid(9);
     solution->seconds = timer.elapsed() / 1000.0;
     int dofs = 0;
     for (const Field& f : solution->fields())

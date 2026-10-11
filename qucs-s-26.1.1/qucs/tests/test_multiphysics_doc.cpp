@@ -1477,6 +1477,70 @@ private slots:
         for (const char* t : {"pde", "pde/coefficient", "pde/general", "pde/dirichlet", "pde/flux", "eigenvalue"}) QVERIFY2(types.contains(QString::fromLatin1(t)), t);
         QVERIFY(json(r).value("format").toString().contains("Your own PDE"));
     }
+
+    // The pn-junction paper check's notes (2026-10-11): fem_solve says a
+    // Newton's method that did not converge; a global derived value without
+    // a study finds the study that has it; fem_evaluate splits ';' at points
+    // and, without a study, takes one that is solved; emw.loss in dB/m; an
+    // integral of a function without a unit says so.
+    void aPaperChecksNotes()
+    {
+        const QString file = path(QStringLiteral("paper_check.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "functions": [{"type": "analytic", "name": "fq", "arguments": "T", "argunits": "K", "expression": "T/293.15[K]"}],
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "oxide", "position": ["-1", "-1.5"], "size": ["2.4", "3.22"]},
+                         {"type": "rectangle", "name": "core", "size": ["0.4", "0.22"]}],
+            "materials": [{"label": "oxide", "n": "1.444", "k": "1.4[W/(m*K)]*(T/293.15[K])^3", "selection": {"only": ["oxide"]}},
+                          {"label": "silicon", "n": "3.476", "kappa": "1e-4", "dndT": "1.86e-4[1/K]", "k": "1.4[W/(m*K)]*(T/293.15[K])^3", "selection": {"only": ["core"]}}],
+            "physics": [{"type": "heat", "tag": "ht", "features": [
+                           {"type": "source", "Q0": "3e15[W/m^3]", "selection": {"only": ["core"]}},
+                           {"type": "temperature", "T0": "293.15[K]", "selection": {"exterior": true}}]},
+                        {"type": "modes", "tag": "emw", "features": [
+                           {"type": "wave", "thermooptic": true, "T": "ht.T", "selection": {"only": ["core"]}}]}],
+            "mesh": {"size": "normal", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "0.05"}]}}],
+          "studies": [{"type": "study", "tag": "std1", "label": "Heat", "steps": [{"type": "stationary", "physics": ["ht"], "maxiter": 1}]},
+                      {"type": "study", "tag": "std2", "label": "Modes", "steps": [{"type": "mode", "physics": ["ht", "emw"], "frequency": "1550[nm]", "modes": 1, "neff": "3"}]}],
+          "results": {"derived": [
+            {"type": "global", "tag": "gev1", "label": "neff", "expression": "emw.neff"},
+            {"type": "integral", "tag": "int1", "label": "fq", "study": "std1", "level": "domain", "selection": {"only": ["core"]}, "expression": "fq(T)"}]}})json");
+        f.close();
+        open(file);
+        // The modes first: their loss in dB/m; fem_evaluate without a study the modes' (the heat's unsolved).
+        QJsonObject r = call("fem_solve", {{"timeout", 120}, {"study", "std2"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("modes").toArray().at(0).toObject().value("emw.loss").toString().endsWith(QLatin1String(" dB/m")));
+        QVERIFY(json(r).value("globals").toObject().value("emw.loss").toString().endsWith(QLatin1String(" dB/m")));
+        QVERIFY(!json(r).contains(QLatin1String("warnings")));
+        r = call("fem_evaluate", {{"expression", "emw.neff"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("values").toArray().at(0).toObject().value("SI").toDouble() > 2);
+        // The heat in one Newton step: said among fem_solve's warnings.
+        r = call("fem_solve", {{"timeout", 120}, {"study", "std1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains(QLatin1String("did not converge")), qPrintable(text(r)));
+        QVERIFY(json(r).value("warnings").toArray().size() >= 1);
+        // The derived values: the global of the modes' study (the first has none), the integral's note.
+        QJsonObject neff, integral;
+        for (const QJsonValue& d : json(r).value("derived values").toArray())
+            (d.toObject().value("tag").toString() == QLatin1String("gev1") ? neff : integral) = d.toObject();
+        QVERIFY2(!neff.contains(QLatin1String("error")) && neff.value("note").toString().contains(QLatin1String("Modes")),
+                 qPrintable(QString::fromUtf8(QJsonDocument(neff).toJson())));
+        QVERIFY2(integral.value("note").toString().contains(QLatin1String("fq has no unit")), qPrintable(QString::fromUtf8(QJsonDocument(integral).toJson())));
+        // fem_evaluate: two expressions at two points; with no study, the first's (it has T).
+        r = call("fem_evaluate", {{"expression", "T; 2*T"}, {"at", QJsonArray{QJsonArray{0.2, 0.1}, QJsonArray{0.9, 1.0}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray values = json(r).value("values").toArray();
+        QCOMPARE(values.size(), 4);
+        QCOMPARE(values.at(0).toObject().value("name").toString(), QStringLiteral("T"));
+        QVERIFY(std::abs(values.at(1).toObject().value("SI").toDouble() - 2 * values.at(0).toObject().value("SI").toDouble()) < 1e-9);
+        // An expression no study has: the first study named.
+        r = call("fem_evaluate", {{"expression", "nothing.here"}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains(QLatin1String("the first study")), qPrintable(text(r)));
+    }
 };
 
 QTEST_MAIN(TestMultiphysicsDoc)

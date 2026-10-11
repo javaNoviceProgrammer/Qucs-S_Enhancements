@@ -628,6 +628,7 @@ void MultiphysicsDoc::startJob(const QString& what, std::function<void(Job&)> wo
 {
     if (a_job) return;
     a_lastError.clear();
+    a_lastWarnings.clear();
     auto job = std::make_shared<Job>();
     job->what = what;
     job->done = std::move(done);
@@ -658,6 +659,7 @@ void MultiphysicsDoc::jobFinished()
     if (!job) return;
     job->thread->deleteLater();
     for (const QString& w : job->warnings) say(w);
+    a_lastWarnings = job->run.warnings;
     if (!job->error.isEmpty()) {
         a_lastError = job->error;
         say(job->error, true);
@@ -1164,22 +1166,51 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
         out.error = tr("there is no node %1").arg(tag);
         return out;
     }
-    const std::shared_ptr<SolutionSet> set = solutions(n->text(QStringLiteral("study")));
+    const QString asked = n->text(QStringLiteral("study"));
+    std::shared_ptr<SolutionSet> set = solutions(asked);
     if (!set || set->solutions.empty()) {
         out.error = tr("%1: its study is not computed yet").arg(n->name());
         return out;
     }
     // At each solution it asks for: each output time, each parameter value.
     const bool all = n->text(QStringLiteral("solutions")) != QLatin1String("selected");
-    for (const Instance& in : instances(*set, all)) {
-        Solution* sol = select(*set, in);
-        if (!sol) continue;
-        DerivedResult one = evaluateDerived(*sol, *n);
-        for (DerivedValue v : one.values) {
-            if (!in.label.isEmpty()) v.name = in.label + QStringLiteral(": ") + v.name;
-            out.values << v;
+    auto evaluateIn = [&](const SolutionSet& in) {
+        DerivedResult r;
+        for (const Instance& at : instances(in, all)) {
+            Solution* sol = select(in, at);
+            if (!sol) continue;
+            DerivedResult one = evaluateDerived(*sol, *n);
+            for (DerivedValue v : one.values) {
+                if (!at.label.isEmpty()) v.name = at.label + QStringLiteral(": ") + v.name;
+                r.values << v;
+            }
+            if (r.note.isEmpty()) r.note = one.note;
+            if (r.error.isEmpty() && !one.error.isEmpty()) r.error = at.label.isEmpty() ? one.error : at.label + QStringLiteral(": ") + one.error;
         }
-        if (out.error.isEmpty() && !one.error.isEmpty()) out.error = in.label.isEmpty() ? one.error : in.label + QStringLiteral(": ") + one.error;
+        return r;
+    };
+    out = evaluateIn(*set);
+    // No study given and the first has not what it reads (a mode's emw.neff):
+    // the first computed study that has.
+    if (asked.trimmed().isEmpty() && out.values.isEmpty() && out.error.contains(QLatin1String("is not a parameter, a variable or a function"))) {
+        const QString first = studyTag(QString());
+        bool found = false;
+        for (const Node* st : a_model.studies()) {
+            if (st->tag == first) continue;
+            const std::shared_ptr<SolutionSet> other = solutions(st->tag);
+            if (!other || other->solutions.empty()) continue;
+            DerivedResult r = evaluateIn(*other);
+            if (!r.values.isEmpty() && r.error.isEmpty()) {
+                out = r;
+                out.note = tr("of %1: the first study has not what it reads").arg(st->name());
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            const Node* st = a_model.find(first);
+            out.error += tr(" (in %1, the first study: give it its Study)").arg(st ? st->name() : first);
+        }
     }
     // Its rows in the table, in place of its last.
     for (int r = a_table->rowCount() - 1; r >= 0; --r)
@@ -1194,6 +1225,7 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
         a_table->setItem(r, 2, new QTableWidgetItem(v.text));
     }
     if (!out.error.isEmpty()) say(tr("%1: %2").arg(n->name(), out.error), out.values.isEmpty());
+    else if (!out.note.isEmpty()) say(tr("%1: %2").arg(n->name(), out.note));
     a_table->resizeColumnsToContents();
     return out;
 }
