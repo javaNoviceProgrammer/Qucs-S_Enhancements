@@ -17,6 +17,8 @@
 
 #include "fem_solver.h"
 
+#include <array>
+
 #include <QLineF>
 
 #include <complex>
@@ -42,6 +44,20 @@ private:
     double a_cw = 1, a_ch = 1;
     std::vector<std::vector<int>> a_cells;
 };
+
+/// A ray's path as traced (geometrical optics): its points (x, y in m, its
+/// power in W, its optical path in m there), its wavelength, its release's
+/// number (from 1), how it ended (0 the most interactions or path, 1 a wall
+/// or absorber, 2 a detector that stops it, 3 out of the physics, 4 its power
+/// below the threshold).
+struct RayPath {
+    std::vector<std::array<double, 4>> points;
+    double lambda = 0;
+    int index = 0;
+    int status = 0;
+};
+/// A geometrical optics field's rays (its snapshot's, as selected).
+std::vector<RayPath> rayPaths(const Field& field);
 
 /// A unit a value is shown in: shown = (SI - offset) / scale.
 struct DisplayUnit {

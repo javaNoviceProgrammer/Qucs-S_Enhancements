@@ -57,6 +57,19 @@ struct PlotScene {
     std::vector<Arrows> arrows;
     bool mesh = false;
     bool quality = false;
+    /// Rays' paths (the geometry's unit), colored by their wavelength, their
+    /// power (at each point), their release, or in one color.
+    struct Rays {
+        std::vector<std::vector<QPointF>> paths;
+        std::vector<std::vector<double>> power;   // W, by point
+        std::vector<double> lambda;               // m
+        std::vector<int> release;
+        QString by = QStringLiteral("wavelength");
+        QString colors = QStringLiteral("rainbow");
+        QColor single = Qt::red;
+        double min = 0, max = 1;                  // power's or release's range
+    };
+    std::vector<Rays> rays;
     QStringList problems;
 };
 
@@ -137,6 +150,7 @@ private:
     void paintResults(QPainter& p, const Colors& c);
     void paintLegend(QPainter& p, const Colors& c, const QString& label, const QString& colors, double lo, double hi);
     void paintArrows(QPainter& p, const PlotScene::Arrows& arrows);
+    void paintRays(QPainter& p, const PlotScene::Rays& rays);
     void rasterize();
     QTransform modelToPixel() const;
 

@@ -16,6 +16,8 @@ set(FEM_SRCS
   fem_magnetic.cpp
   fem_edge.cpp
   fem_waves.cpp
+  fem_semiconductor.cpp
+  fem_rays.cpp
   fem_import.cpp
   fem_results.cpp
   fem_export.cpp

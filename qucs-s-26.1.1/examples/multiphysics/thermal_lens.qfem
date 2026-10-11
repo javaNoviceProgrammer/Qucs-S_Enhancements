@@ -1,0 +1,54 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A thermal lens",
+    "description": "A laser beam (1064 nm, Gaussian, 1 mm radius) through a slab of absorbing glass, its top and bottom cooled: what the glass absorbs heats it most on the beam's axis, and its index rises with the temperature (dn/dT 1e-5 /K) - a lens. The rays and the heat are solved in turn till they agree (each reads the other's): a third of the power absorbed, the glass 31 K warmer on the axis at 5 W and 62 K at 10 W, and the screen 150 mm on sees the beam narrowed from 0.50 mm rms to 0.37 and 0.25.",
+    "parameters": [
+        {"name": "P", "expression": "5[W]", "description": "the beam's power"},
+        {"name": "alpha", "expression": "20[1/m]", "description": "the glass's absorption"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "thickness": "4[mm]",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["-10", "-8"], "size": ["190", "16"]},
+            {"type": "rectangle", "label": "glass", "position": ["0", "-4"], "size": ["20", "8"]},
+            {"type": "rectangle", "label": "behind", "position": ["170", "-8"], "size": ["10", "16"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"all": true}},
+            {"material": "Fused silica", "selection": {"only": ["glass"]}}
+        ],
+        "physics": [
+            {"type": "rays", "tag": "gop", "reflections": false, "features": [
+                {"type": "medium", "label": "Warmed glass", "source": "user", "n": "1.45 + 1e-5[1/K]*(T - 293.15[K])",
+                 "kappa": "alpha*1064[nm]/(4*pi)", "selection": {"only": ["glass"]}},
+                {"type": "coating", "label": "Coated faces", "selection": {"between": [["air"], ["glass"]]}},
+                {"type": "beam", "label": "Laser", "start": ["-5", "-2.5"], "end": ["-5", "2.5"], "angle": "0", "count": 21, "P0": "P",
+                 "profile": "gaussian", "waist": "1[mm]", "lambda0": "1064[nm]"},
+                {"type": "detector", "label": "Screen", "name": "screen", "selection": {"between": [["air"], ["behind"]]}}
+            ]},
+            {"type": "heat", "tag": "ht", "selection": {"only": ["glass"]}, "features": [
+                {"type": "source", "label": "Light absorbed", "Q0": "gop.Q", "selection": {"all": true}},
+                {"type": "temperature", "label": "Cooled", "T0": "293.15[K]", "selection": {"of": ["glass"], "side": "top"}},
+                {"type": "temperature", "label": "Cooled below", "T0": "293.15[K]", "selection": {"of": ["glass"], "side": "bottom"}}
+            ]}
+        ],
+        "mesh": {"size": "normal", "features": [{"type": "size", "level": "domain", "selection": {"only": ["glass"]}, "hmax": "0.3"}]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["P", "0.01, 5, 10", "W"]]},
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Temperature and Rays", "plots": [
+                {"type": "surface", "expression": "T - 293.15[K]", "unit": "K", "colors": "thermal"},
+                {"type": "rayplot", "by": "power", "colors": "viridis"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "The beam at the screen", "expression": "gop.rms_screen; gop.Pabs; ht.Tmax", "solutions": "all"}
+        ]
+    }
+}

@@ -1955,7 +1955,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   A damaged file is refused, not a crash: gdstk's readers were hardened
   for it (`third_party/gdstk/README.qucs.md`).
 - **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1 to
-  4 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
+  4 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md), and
+  semiconductors and rays): a model
   (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
   in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
   Model*, or the tab's *New Model* and its examples). The tree is the
@@ -2028,6 +2029,37 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     port's line, the others matched - giving the **S-parameters** (S21,
     in dB, magnitude and phase); scattering boundaries that let waves out,
     or bring a plane wave in; PMLs; the same media.
+  - *Semiconductor*: the **drift and diffusion** of electrons and holes -
+    Poisson's equation for the potential, continuity for the carriers,
+    their currents Scharfetter and Gummel's along each edge - solved
+    together by Newton's method from equilibrium, the contacts' voltages
+    raised in steps (a sweep's next point starting from the last).
+    Silicon, germanium, GaAs, InP and GaN from the library (band gap,
+    affinity, densities of states, mobilities, lifetimes); domains without
+    a band gap are insulators. **Doping** uniform, a box with Gaussian
+    tails or an expression; mobility by doping (Caughey and Thomas) and
+    high-field saturation; Shockley-Read-Hall, Auger and direct
+    recombination, generation (light absorbed). **Ohmic, Schottky and
+    gate contacts** (a work function on an oxide), fixed surface charge.
+    At rest (currents, charges; at equilibrium the gates' quasi-static
+    capacitance, the low-frequency limit), in time, and **small-signal**
+    in a frequency step: the contacts' conductance and capacitance
+    matrices - a MOS capacitor's high- and low-frequency C-V curves. The bands and
+    quasi-Fermi levels, carriers, currents and recombination as
+    variables. A mode analysis reads its carriers through silicon's
+    **plasma dispersion** (Soref and Bennett's): a carrier-depletion
+    phase shifter's Vπ·L.
+  - *Geometrical Optics*: **rays** from points, beams (uniform or
+    Gaussian) and boundaries, at one or several wavelengths - straight
+    where the index is uniform, meeting the geometry's own curves (a lens
+    a true circle), bent by the ray equation where it varies (a GRIN lens,
+    a thermal lens); **Snell's law and Fresnel's coefficients** (s and p)
+    at each interface, reflected rays released, total internal
+    reflection; mirrors, absorbers, anti-reflection coatings, detectors
+    (their power, centroid, rms spot, optical path). The index may follow
+    the wavelength (BK7 and fused silica by Sellmeier's formula), x and y,
+    or another physics' field; what the media absorb is a power density on
+    the mesh, **gop.Q** - a heat source, or a semiconductor's generation.
 
   **Mesh**: Delaunay triangles, refined till their angles are good. A
   preset from extremely fine to extremely coarse, or customised; smaller
@@ -2046,7 +2078,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   frequency solved, the mesh made finer where the error estimated
   (Zienkiewicz and Zhu's) is largest, and solved again, as many times as
   asked. **Results**: 2D plot groups (a colour map, contours, arrows, the
-  mesh, drawn **deformed** by a displacement), shown at a time,
+  mesh, drawn **deformed** by a displacement, **rays' paths** colored by
+  their wavelength, power or release), shown at a time,
   frequency (or wavelength) or mode and a parameter value chosen beside
   them; cut lines and cut
   points; **1D plot groups** - an expression along a cut line, at points
@@ -2116,13 +2149,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   phase shifter's mode warmed by its heater (π at 24 mW), a filter of two
   irises in X-band (its S-parameters from 8 to 12 GHz, a Touchstone
   file), and a field at a sharp corner on a mesh made finer by its
-  error (within 0.1 % on about 1 % of the triangles).
+  error (within 0.1 % on about 1 % of the triangles); a silicon pn
+  diode's current and capacitance against its voltage (its ideality 1.005),
+  a MOS capacitor's C-V curves at 1 µHz and 1 MHz, a carrier-depletion
+  phase shifter (Vπ·L 2.1 V·cm), a lens's focus and its spherical
+  aberration, white light through a prism, a graded-index lens, a thermal
+  lens (rays and heat solved in turn), and a photodiode lit by rays (0.48
+  A/W, 95 % of the ideal).
   Claude builds and solves models with `fem_describe`, `fem_model`,
   `fem_edit`, `fem_build`, `fem_solve` (each mode's index), `fem_evaluate`
   (at a time, a frequency, a mode, a sweep's point, or all of them),
   `fem_plot` (a 1D group's data display too) and `fem_export`.
   `test_fem_engine`, `test_fem_physics`, `test_fem_magnetics`,
-  `test_fem_layout` and `test_fem_waves` check the
+  `test_fem_layout`, `test_fem_waves`, `test_fem_semiconductor` and
+  `test_fem_rays` check the
   engine against closed forms on CI, under the sanitizers too: a coax's
   capacitance (its error falling as h² and h⁴), a capacitor, a floating
   plate, a bar's resistance, a slab with convection, a pipe, heat
@@ -2143,7 +2183,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   a coax's TEM mode, a lossy and a warmed filling, a parallel-plate
   guide's S21 against e^-jβL, an iris that keeps the power, a PML that
   does not reflect (|S11| 10⁻⁴), meshes refined by their error at rest
-  and in frequency; and the examples.
+  and in frequency; a bar's resistance (10⁻³), by doping and saturated, a
+  junction's capacitance against the depletion approximation (0.2 %), a
+  short diode's current against Shockley's (0.1 %), a Schottky diode, a
+  MOS capacitor's flat-band, inversion and accumulation capacitances and
+  a fixed charge's shift, carriers' rise in time (0.3 %), direct
+  recombination, the plasma dispersion; Snell's law and Fresnel's split
+  (10⁻⁹), total reflection, a lens's paraxial focus, a graded-index rod's
+  period, absorption and the power it leaves (10⁻⁹), a prism's
+  dispersion, mirrors, beams and detectors; and the examples.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

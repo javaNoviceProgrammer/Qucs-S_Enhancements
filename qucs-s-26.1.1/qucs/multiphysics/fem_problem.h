@@ -190,6 +190,20 @@ protected:
 /// The problem of field \a field of \a solution (by its type).
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field);
 
+/// A semiconductor's state at a point: the potential, the carriers (their
+/// logarithms interpolated), the element's mobilities and band energies,
+/// the net recombination, the currents (Scharfetter and Gummel's along the
+/// element's edges, the vector agreeing best with the three).
+struct SemiconductorState {
+    bool defined = false;         ///< in the physics
+    bool semiconductor = false;   ///< not an insulator
+    double V = NaN, n = NaN, p = NaN, ni = NaN, Vt = NaN;
+    double mun = NaN, mup = NaN, dEc = NaN, Eg = NaN;   // (Ec - Ei and Eg in J)
+    double R = 0;
+    double Jn[2] = {0, 0}, Jp[2] = {0, 0};
+};
+SemiconductorState semiconductorAt(PointEvaluator& e, int field);
+
 /// A mode's fields at a point (V/m, A/m), as found (a phase of 0 at z = 0).
 struct ModeFields {
     std::complex<double> E[3], H[3];

@@ -1,0 +1,36 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "White light through a prism",
+    "description": "An equilateral prism of BK7, a narrow beam of seven wavelengths from 400 to 700 nm: Sellmeier's dispersion bends violet (n 1.531) about 1.8° more than red (n 1.513), a spectrum on the screen; each ray drawn in its color. Fresnel's reflections at the faces too.",
+    "parameters": [
+        {"name": "a", "expression": "20[mm]", "description": "the prism's side"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["-40", "-40"], "size": ["120", "80"]},
+            {"type": "polygon", "label": "prism", "points": [["-a/2", "-a/(2*sqrt(3))"], ["a/2", "-a/(2*sqrt(3))"], ["0", "a/sqrt(3)"]]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"all": true}},
+            {"material": "Glass (BK7)", "selection": {"only": ["prism"]}}
+        ],
+        "physics": [{
+            "type": "rays", "tag": "gop",
+            "features": [
+                {"type": "beam", "label": "White light", "start": ["-30", "-6.5"], "end": ["-30", "-5.5"], "angle": "13", "count": 3,
+                 "P0": "1[W]", "lambda0": "400[nm], 450[nm], 500[nm], 550[nm], 600[nm], 650[nm], 700[nm]"}
+            ]
+        }],
+        "mesh": {"size": "coarse"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "The Spectrum", "plots": [
+                {"type": "rayplot", "by": "wavelength"}
+            ]}
+        ]
+    }
+}

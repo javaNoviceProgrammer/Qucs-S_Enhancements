@@ -659,14 +659,80 @@ void GraphicsView::paintResults(QPainter& p, const Colors& c)
         p.drawPath(a_contourPaths[k]);
     }
     p.restore();
+    for (const PlotScene::Rays& r : a_plot->rays) paintRays(p, r);
     for (const PlotScene::Arrows& a : a_plot->arrows) paintArrows(p, a);
-    if (a_plot->surface) paintLegend(p, c, a_plot->surfaceLabel, a_plot->colors, a_plot->min, a_plot->max);
-    else
-        for (const PlotScene::Contours& k : a_plot->contours)
-            if (k.colors != QLatin1String("single")) {
-                paintLegend(p, c, QString(), k.colors, k.min, k.max);
-                break;
-            }
+    if (a_plot->surface) {
+        paintLegend(p, c, a_plot->surfaceLabel, a_plot->colors, a_plot->min, a_plot->max);
+        return;
+    }
+    for (const PlotScene::Contours& k : a_plot->contours)
+        if (k.colors != QLatin1String("single")) {
+            paintLegend(p, c, QString(), k.colors, k.min, k.max);
+            return;
+        }
+    for (const PlotScene::Rays& r : a_plot->rays)
+        if (r.by == QLatin1String("power") || r.by == QLatin1String("release")) {
+            paintLegend(p, c, r.by == QLatin1String("power") ? tr("power (W)") : tr("release"), r.colors, r.min, r.max);
+            return;
+        }
+}
+
+namespace {
+
+/// The color of light of a wavelength (m): the spectrum from violet to red,
+/// gray beyond it.
+QColor spectral(double lambda)
+{
+    const double nm = lambda * 1e9;
+    double r = 0, g = 0, b = 0;
+    if (nm >= 380 && nm < 440) {
+        r = -(nm - 440) / 60;
+        b = 1;
+    } else if (nm >= 440 && nm < 490) {
+        g = (nm - 440) / 50;
+        b = 1;
+    } else if (nm >= 490 && nm < 510) {
+        g = 1;
+        b = -(nm - 510) / 20;
+    } else if (nm >= 510 && nm < 580) {
+        r = (nm - 510) / 70;
+        g = 1;
+    } else if (nm >= 580 && nm < 645) {
+        r = 1;
+        g = -(nm - 645) / 65;
+    } else if (nm >= 645 && nm <= 780) {
+        r = 1;
+    } else {
+        return nm > 780 ? QColor(150, 40, 40) : QColor(120, 60, 160);   // infrared, ultraviolet
+    }
+    // (Dimmer at the spectrum's ends.)
+    const double f = nm < 420 ? 0.3 + 0.7 * (nm - 380) / 40 : nm > 700 ? 0.3 + 0.7 * (780 - nm) / 80 : 1.0;
+    return QColor::fromRgbF(float(r * f), float(g * f), float(b * f));
+}
+
+} // namespace
+
+void GraphicsView::paintRays(QPainter& p, const PlotScene::Rays& rays)
+{
+    const std::vector<QRgb>& table = colorTable(rays.colors);
+    const double span = rays.max > rays.min ? rays.max - rays.min : 1;
+    auto fromTable = [&](double v) { return QColor::fromRgb(table[std::size_t(std::clamp(int((v - rays.min) / span * 255 + 0.5), 0, 255))]); };
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    for (std::size_t k = 0; k < rays.paths.size(); ++k) {
+        const std::vector<QPointF>& path = rays.paths[k];
+        if (path.size() < 2) continue;
+        QColor color = rays.single;
+        if (rays.by == QLatin1String("wavelength")) color = spectral(rays.lambda[k]);
+        else if (rays.by == QLatin1String("release")) color = fromTable(rays.release[k]);
+        for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+            if (rays.by == QLatin1String("power")) color = fromTable(rays.power[k][i]);
+            QPen pen(color, 1.1);
+            p.setPen(pen);
+            p.drawLine(toPixel(path[i]), toPixel(path[i + 1]));
+        }
+    }
+    p.restore();
 }
 
 void GraphicsView::paintArrows(QPainter& p, const PlotScene::Arrows& arrows)

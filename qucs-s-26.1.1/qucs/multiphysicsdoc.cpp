@@ -985,6 +985,39 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
         } else if (p.type == QLatin1String("meshplot")) {
             scene->mesh = true;
             scene->quality = p.flag(QStringLiteral("quality"));
+        } else if (p.type == QLatin1String("rayplot")) {
+            const QString tag = p.text(QStringLiteral("physics"));
+            const Field* rf = nullptr;
+            for (const Field& f : sol->fields())
+                if (f.type == QLatin1String("rays") && (tag.isEmpty() || f.tag == tag) && !rf) rf = &f;
+            if (!rf) {
+                scene->problems << tr("%1: there is no geometrical optics %2 solved").arg(p.name(), tag);
+                continue;
+            }
+            PlotScene::Rays r;
+            r.by = p.text(QStringLiteral("by"));
+            r.colors = p.text(QStringLiteral("colors"));
+            r.single = colorOf(p.text(QStringLiteral("color")), QColor(Qt::red));
+            const double unit = sol->mesh().unitScale;
+            double most = 0;
+            int releases = 1;
+            for (const qucs_s::fem::RayPath& path : qucs_s::fem::rayPaths(*rf)) {
+                std::vector<QPointF> pts;
+                std::vector<double> power;
+                for (const auto& pt : path.points) {
+                    pts.emplace_back(pt[0] / unit, pt[1] / unit);
+                    power.push_back(pt[2]);
+                    most = std::max(most, pt[2]);
+                }
+                r.paths.push_back(std::move(pts));
+                r.power.push_back(std::move(power));
+                r.lambda.push_back(path.lambda);
+                r.release.push_back(path.index);
+                releases = std::max(releases, path.index);
+            }
+            r.min = r.by == QLatin1String("release") ? 1 : 0;
+            r.max = r.by == QLatin1String("release") ? releases : most;
+            scene->rays.push_back(std::move(r));
         }
     }
     if (!label.isEmpty()) scene->title += QStringLiteral(" - ") + label;
@@ -1601,6 +1634,30 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             Node g2 = group(tr("Power Flow (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".Sz")}, {"colors", QStringLiteral("thermal")}});
             m.add(m.results().tag, g2);
+        } else if (f.type == QLatin1String("semiconductor")) {
+            // The potential with the current's direction; the carriers on a
+            // logarithmic scale (per cm³).
+            Node g = group(tr("Electric Potential (%1)").arg(t));
+            plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".V")}});
+            plot(g, QStringLiteral("arrow"), {{"x", t + QStringLiteral(".Jx")}, {"y", t + QStringLiteral(".Jy")}, {"scaling", QStringLiteral("normalized")},
+                                              {"color", QStringLiteral("white")}});
+            m.add(m.results().tag, g);
+            for (const auto& [carrier, title] : {std::pair{QStringLiteral(".n"), tr("Electron Concentration (%1)")},
+                                                 std::pair{QStringLiteral(".p"), tr("Hole Concentration (%1)")}}) {
+                Node gc = group(title.arg(t));
+                plot(gc, QStringLiteral("surface"), {{"expression", QStringLiteral("log10(%1%2*1[cm^3])").arg(t, carrier)}, {"colors", QStringLiteral("viridis")}});
+                m.add(m.results().tag, gc);
+            }
+        } else if (f.type == QLatin1String("rays")) {
+            Node g = group(tr("Ray Trajectories (%1)").arg(t));
+            plot(g, QStringLiteral("rayplot"), {{"physics", t}});
+            m.add(m.results().tag, g);
+            if (sol->global(t + QStringLiteral(".Pabs")).value_or(0) > 0) {
+                Node g2 = group(tr("Absorbed Power (%1)").arg(t));
+                plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".Q")}, {"colors", QStringLiteral("thermal")}});
+                plot(g2, QStringLiteral("rayplot"), {{"physics", t}, {"by", QStringLiteral("single")}, {"color", QStringLiteral("white")}});
+                m.add(m.results().tag, g2);
+            }
         } else if (f.type == QLatin1String("waves")) {
             Node g = group(tr("Field (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QLatin1Char('.') + f.variable}, {"colors", QStringLiteral("coolwarm")}});
@@ -1639,6 +1696,19 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 chief << t + QStringLiteral("W");
             } else if (f.type == QLatin1String("modes")) {
                 chief = {t + QStringLiteral("neff")};
+            } else if (f.type == QLatin1String("semiconductor")) {
+                // Its first contact's current (its capacitance in frequency).
+                chief.clear();
+                for (const Field::Terminal& term : f.terminals) {
+                    if (sol->frequencyDomain) {
+                        const QString c = term.name.size() == 1 ? t + QStringLiteral("C") + term.name + term.name
+                                                                : t + QStringLiteral("C_") + term.name + QLatin1Char('_') + term.name;
+                        chief << c;
+                    }
+                    chief << t + QStringLiteral("I_") + term.name;
+                }
+            } else if (f.type == QLatin1String("rays")) {
+                chief = {t + QStringLiteral("Pabs"), t + QStringLiteral("Pin")};
             } else if (f.type == QLatin1String("waves")) {
                 // Each port's S-parameters from the first, in dB.
                 chief.clear();

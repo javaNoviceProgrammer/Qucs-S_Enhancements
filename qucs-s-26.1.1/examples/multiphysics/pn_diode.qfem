@@ -1,0 +1,64 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A silicon pn diode's current and capacitance",
+    "description": "An abrupt junction of silicon, 1e16 cm⁻³ each side, 5 µm of each, 100 µm deep: drift and diffusion of its electrons and holes, Shockley-Read-Hall recombination. Its voltage swept from -2 to 0.7 V: the current rising as exp(V/Vt) - the ideal short diode's - and its small-signal capacitance (1 kHz) the depletion layer's at reverse bias, rising with the stored charge forward. Its bands, quasi-Fermi levels and carriers at each bias.",
+    "parameters": [
+        {"name": "Va", "expression": "0.5[V]", "description": "the anode's voltage"},
+        {"name": "N", "expression": "1e16[1/cm^3]", "description": "each side's doping"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "100[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "pside", "size": ["5", "1"]},
+            {"type": "rectangle", "label": "nside", "position": ["5", "0"], "size": ["5", "1"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "p side", "dopant": "acceptor", "N0": "N", "selection": {"only": ["pside"]}},
+                {"type": "doping", "label": "n side", "dopant": "donor", "N0": "N", "selection": {"only": ["nside"]}},
+                {"type": "srh", "label": "Recombination", "selection": {"all": true}},
+                {"type": "ohmic", "label": "Anode", "name": "a", "V0": "Va", "selection": {"of": ["pside"], "side": "left"}},
+                {"type": "ohmic", "label": "Cathode", "name": "k", "V0": "0[V]", "selection": {"of": ["nside"], "side": "right"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.25", "features": [
+            {"type": "size", "level": "boundary", "selection": {"between": [["pside"], ["nside"]]}, "hmax": "0.02"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["Va", "-2, -1, -0.5, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7", "V"]]},
+        {"type": "stationary"},
+        {"type": "frequency", "frequencies": "1[kHz]"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electrons", "plots": [
+                {"type": "surface", "expression": "log10(semi.n*1[cm^3])", "colors": "viridis"}
+            ]},
+            {"type": "plotgroup", "label": "Potential", "plots": [
+                {"type": "surface", "expression": "semi.V"},
+                {"type": "arrow", "x": "semi.Jx", "y": "semi.Jy", "scaling": "normalized", "points": ["30", "6"], "color": "white"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Along the diode", "start": ["0", "0.5"], "end": ["10", "0.5"]},
+            {"type": "plotgroup1d", "label": "Bands", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ec", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ev", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Efn", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Efp", "unit": "eV"}
+            ]},
+            {"type": "plotgroup1d", "label": "Current against Voltage", "plots": [
+                {"type": "globalgraph", "expression": "semi.I_a", "unit": "A"}
+            ]},
+            {"type": "plotgroup1d", "label": "Capacitance against Voltage", "plots": [
+                {"type": "globalgraph", "expression": "semi.Ckk", "unit": "pF"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Current and capacitance", "expression": "semi.I_a; semi.Ckk", "solutions": "all"}
+        ]
+    }
+}

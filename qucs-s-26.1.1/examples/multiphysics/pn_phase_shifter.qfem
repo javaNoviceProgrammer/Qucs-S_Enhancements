@@ -1,0 +1,73 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A carrier-depletion phase shifter",
+    "description": "A silicon rib waveguide (500 × 220 nm on a 90 nm slab) across a pn junction, 3e17 cm⁻³ each side, contacts on heavily doped slab beyond: reversed from 0 to -4 V, the junction's depletion widens and takes carriers from the light. Drift-diffusion for the carriers, then the TE mode at 1550 nm with their plasma dispersion (Soref and Bennett's): its effective index rising with the reverse bias (5e-5 at 1 V), its loss falling from 7.4 to 4.8 dB/cm - Vπ·L about 2.1 V·cm.",
+    "parameters": [
+        {"name": "Va", "expression": "0[V]", "description": "the anode's voltage (reverse: negative)"},
+        {"name": "N", "expression": "3e17[1/cm^3]", "description": "the junction's doping, each side"},
+        {"name": "Ncontact", "expression": "1e20[1/cm^3]", "description": "the contacts' doping"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "1[mm]",
+        "geometry": [
+            {"type": "rectangle", "label": "box", "position": ["-3", "-1"], "size": ["6", "1"]},
+            {"type": "rectangle", "label": "cladding", "position": ["-3", "0"], "size": ["6", "1.3"]},
+            {"type": "rectangle", "label": "pplus", "position": ["-3", "0"], "size": ["1.5", "0.09"]},
+            {"type": "rectangle", "label": "pslab", "position": ["-1.5", "0"], "size": ["1.5", "0.09"]},
+            {"type": "rectangle", "label": "nslab", "position": ["0", "0"], "size": ["1.5", "0.09"]},
+            {"type": "rectangle", "label": "nplus", "position": ["1.5", "0"], "size": ["1.5", "0.09"]},
+            {"type": "rectangle", "label": "prib", "position": ["-0.25", "0.09"], "size": ["0.25", "0.13"]},
+            {"type": "rectangle", "label": "nrib", "position": ["0", "0.09"], "size": ["0.25", "0.13"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon dioxide", "selection": {"only": ["box", "cladding"]}},
+            {"material": "Silicon", "selection": {"only": ["pplus", "pslab", "nslab", "nplus", "prib", "nrib"]}}
+        ],
+        "physics": [
+            {"type": "semiconductor", "tag": "semi", "selection": {"only": ["pplus", "pslab", "nslab", "nplus", "prib", "nrib"]},
+             "features": [
+                {"type": "doping", "label": "p side", "dopant": "acceptor", "N0": "N", "selection": {"only": ["pslab", "prib"]}},
+                {"type": "doping", "label": "n side", "dopant": "donor", "N0": "N", "selection": {"only": ["nslab", "nrib"]}},
+                {"type": "doping", "label": "p⁺ contact", "dopant": "acceptor", "N0": "Ncontact", "selection": {"only": ["pplus"]}},
+                {"type": "doping", "label": "n⁺ contact", "dopant": "donor", "N0": "Ncontact", "selection": {"only": ["nplus"]}},
+                {"type": "srh", "label": "Recombination", "selection": {"all": true}},
+                {"type": "ohmic", "label": "Anode", "name": "a", "V0": "Va", "selection": {"of": ["pplus"], "side": "left"}},
+                {"type": "ohmic", "label": "Cathode", "name": "k", "V0": "0[V]", "selection": {"of": ["nplus"], "side": "right"}}
+            ]},
+            {"type": "modes", "tag": "emw", "features": [
+                {"type": "wave", "label": "Free carriers", "plasma": true, "selection": {"only": ["pplus", "pslab", "nslab", "nplus", "prib", "nrib"]}}
+            ]}
+        ],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.2", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["pslab", "nslab", "prib", "nrib"]}, "hmax": "0.02"},
+            {"type": "size", "level": "domain", "selection": {"only": ["pplus", "nplus"]}, "hmax": "0.04"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["Va", "0, -1, -2, -3, -4", "V"]]},
+        {"type": "stationary", "physics": ["semi"]},
+        {"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 1, "neff": "2.7"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Holes", "plots": [
+                {"type": "surface", "expression": "log10(semi.p*1[cm^3])", "colors": "viridis"}
+            ]},
+            {"type": "plotgroup", "label": "The Mode", "plots": [
+                {"type": "surface", "expression": "emw.normE"},
+                {"type": "contour", "expression": "log10(semi.n*1[cm^3])", "levels": 8, "colors": "single", "color": "white"}
+            ]},
+            {"type": "plotgroup1d", "label": "Effective Index against the Bias", "plots": [
+                {"type": "globalgraph", "expression": "emw.neff"}
+            ]},
+            {"type": "plotgroup1d", "label": "Loss against the Bias", "plots": [
+                {"type": "globalgraph", "expression": "emw.loss", "unit": "1/m"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Effective index, loss, current", "expression": "emw.neff; emw.loss; semi.I_a", "solutions": "all"}
+        ]
+    }
+}

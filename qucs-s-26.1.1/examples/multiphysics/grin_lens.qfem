@@ -1,0 +1,40 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A graded-index lens",
+    "description": "A rod whose index falls away from its axis as n0 sech(g r) (n0 1.6, g 0.2 /mm) - the profile whose rays, wherever they start, all oscillate with one period, 2π/g = 31.4 mm. A quarter of it long, the rod focuses a collimated beam to a point on its far face - a GRIN lens - the rays bent continuously (the ray equation, step by step), not at surfaces.",
+    "parameters": [
+        {"name": "g", "expression": "0.2[1/mm]", "description": "the gradient constant"},
+        {"name": "L", "expression": "pi/(2*g)", "description": "the rod's length: a quarter of the period"},
+        {"name": "r", "expression": "1.5[mm]", "description": "the rod's radius"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["-5", "-4"], "size": ["L + 15", "8"]},
+            {"type": "rectangle", "label": "rod", "position": ["0", "-r"], "size": ["L", "2*r"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Air", "selection": {"all": true}}],
+        "physics": [{
+            "type": "rays", "tag": "gop", "reflections": false,
+            "features": [
+                {"type": "medium", "label": "Graded index", "source": "user", "n": "1.6/cosh(g*y)", "selection": {"only": ["rod"]}},
+                {"type": "coating", "label": "Coated faces", "selection": {"between": [["air"], ["rod"]]}},
+                {"type": "beam", "label": "Collimated beam", "start": ["-3", "-1.2"], "end": ["-3", "1.2"], "angle": "0", "count": 13,
+                 "P0": "1[W]", "lambda0": "633[nm]"},
+                {"type": "detector", "label": "Far face", "name": "face", "selection": {"of": ["rod"], "side": "right"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.2"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Rays", "plots": [
+                {"type": "surface", "expression": "gop.n", "colors": "gray"},
+                {"type": "rayplot", "by": "single", "color": "red"}
+            ]}
+        ],
+        "derived": [{"type": "global", "label": "At the far face", "expression": "gop.N_face; gop.rms_face"}]
+    }
+}

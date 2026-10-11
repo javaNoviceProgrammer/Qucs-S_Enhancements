@@ -49,6 +49,7 @@ public:
         bool byIndex = true;
         Expression n[3], kappa, eps[3], tand, sigma, mur;
         Expression dndT, T, Tref;   // warmed: all three
+        Expression carriersN, carriersP;   // the plasma dispersion's (1/m³)
         bool pml = false;
         // A PML's stretching: along x where it is left or right of the inner
         // region [x0, x1], growing to its own edge there; along y likewise
@@ -78,9 +79,19 @@ public:
         const double mur = value(m.mur, 1.0);
         double warm = 0;
         if (m.dndT.isValid() && m.T.isValid()) warm = value(m.dndT, 0) * (value(m.T, 0) - value(m.Tref, 293.15));
+        // Free carriers (silicon): Soref and Bennett's at 1550 nm, as λ² (Drude's).
+        double plasma = 0, plasmaKappa = 0;
+        if (m.carriersN.isValid() || m.carriersP.isValid()) {
+            const double lambda = omega > 0 ? 2 * M_PI * 299792458.0 / omega : 1.55e-6;
+            const double scale = (lambda / 1.55e-6) * (lambda / 1.55e-6);
+            const double N = std::max(0.0, value(m.carriersN, 0)) * 1e-6, P = std::max(0.0, value(m.carriersP, 0)) * 1e-6;   // (cm⁻³)
+            plasma = -(8.8e-22 * N + 8.5e-18 * std::pow(P, 0.8)) * scale;
+            const double alpha = (8.5e-18 * N + 6.0e-18 * P) * scale * 100;   // (1/m)
+            plasmaKappa = alpha * lambda / (4 * M_PI);
+        }
         for (int k = 0; k < 3; ++k) {
             if (m.byIndex) {
-                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm, -value(m.kappa, 0.0));
+                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm + plasma, -value(m.kappa, 0.0) - plasmaKappa);
                 out.eps[k] = n * n;
             } else {
                 const double er = value(m.eps[k].isValid() ? m.eps[k] : m.eps[0], 1.0);
@@ -203,6 +214,11 @@ public:
             }
             const QString mur = text(QStringLiteral("mur"));
             if (!mur.trimmed().isEmpty()) m.mur = compile(mur, from, QStringLiteral("mur"));
+            if (feat->flag(QStringLiteral("plasma"))) {
+                if (!m.byIndex) problem(tr("%1: the plasma dispersion adds to a refractive index (its constitutive relation n)").arg(feat->name()));
+                m.carriersN = compile(feat->text(QStringLiteral("Ncarriers")), *feat, QStringLiteral("Ncarriers"));
+                m.carriersP = compile(feat->text(QStringLiteral("Pcarriers")), *feat, QStringLiteral("Pcarriers"));
+            }
             if (feat->flag(QStringLiteral("thermooptic"))) {
                 const QString dndT = user ? feat->text(QStringLiteral("dndT")) : property(*mat, QStringLiteral("dndT"));
                 if (dndT.trimmed().isEmpty()) problem(tr("domain %1 (%2): its material has no thermo-optic coefficient dn/dT").arg(d + 1).arg(object));
