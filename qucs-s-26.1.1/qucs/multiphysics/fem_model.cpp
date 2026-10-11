@@ -1428,10 +1428,11 @@ QList<NodeKind> makeKinds()
               choice(QStringLiteral("diagram"), tr("Diagram"), {QStringLiteral("rect"), QStringLiteral("tab")},
                      {tr("Cartesian"), tr("Table")}, QStringLiteral("rect")),
               // (A global's or a point's graph: what is along x - automatic: a
-              // sweep's parameter before a frequency step's frequencies, the
+              // sweep's parameter (of two of several values the last listed, a
+              // curve per the other's) before a frequency step's frequencies, the
               // modes last; a transient's times, a spectrum before the sweep.)
               choice(QStringLiteral("against"), tr("Plot against"), {QStringLiteral("auto"), QStringLiteral("sweep"), QStringLiteral("steps")},
-                     {tr("Automatic"), tr("The sweep's parameter"), tr("The times, frequencies or modes")}, QStringLiteral("auto"))},
+                     {tr("Automatic"), tr("The sweep's parameters"), tr("The times, frequencies or modes")}, QStringLiteral("auto"))},
              {QStringLiteral("linegraph"), QStringLiteral("globalgraph"), QStringLiteral("pointgraph")}, {}, false, false,
              QStringLiteral("pg1d"),
              tr("Graphs of the solution - along a cut line, at points or of global values over time or a sweep - written as a "
@@ -1450,10 +1451,10 @@ QList<NodeKind> makeKinds()
                       "if wanted: loss_dBcm = emw.loss/100")),
               unit1},
              {}, {}, false, false, QStringLiteral("glbg"),
-             tr("Global values - or a Derived Values node's - over the output times, or the sweep's parameter.")});
+             tr("Global values - or a Derived Values node's - over the output times, or the sweep's parameters.")});
         add({QStringLiteral("pointgraph"), tr("Point Graph"), QStringLiteral("graph"), QStringLiteral("pointgraph"), Level::None,
              {dataset, spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("T")), unit1},
-             {}, {}, false, false, QStringLiteral("ptgr"), tr("An expression at a cut point's points over the output times, or the sweep's parameter.")});
+             {}, {}, false, false, QStringLiteral("ptgr"), tr("An expression at a cut point's points over the output times, or the sweep's parameters.")});
         const QStringList tables = {QStringLiteral("rainbow"), QStringLiteral("viridis"), QStringLiteral("thermal"),
                                     QStringLiteral("coolwarm"), QStringLiteral("gray")};
         const QStringList tableLabels = {tr("Rainbow"), tr("Viridis"), tr("Thermal"), tr("Cool to warm"), tr("Gray")};
