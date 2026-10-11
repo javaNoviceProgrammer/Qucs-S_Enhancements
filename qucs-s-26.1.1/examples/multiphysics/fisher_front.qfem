@@ -1,0 +1,32 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "Fisher's equation: a travelling front",
+    "description": "∂u/∂t = D ∂²u/∂x² + r u (1 - u): a population spreading into empty ground (or a gene, or a flame). From a step at x = 10 the front settles into a wave travelling at 2√(rD), 2 here - less a correction that fades as ln t / t (Bramson's). Solved along a line (1D), in time, the reaction nonlinear (Newton at each step); zero flux at both ends.",
+    "parameters": [
+        {"name": "D", "expression": "1", "description": "the diffusion coefficient"},
+        {"name": "r", "expression": "1", "description": "the growth rate"}
+    ],
+    "components": [{
+        "unit": "m",
+        "geometry": [{"type": "rectangle", "label": "ground", "size": ["100", "1"]}],
+        "physics": [{
+            "type": "pde", "tag": "c", "space": "1d", "elements": 500,
+            "features": [
+                {"type": "coefficient", "label": "Fisher's equation", "c": "D", "f": "r*u*(1 - u)", "da": "1", "selection": {"all": true}},
+                {"type": "init", "label": "A step at x = 10", "u0": "0.5*(1 - tanh(x/1[m] - 10))", "selection": {"all": true}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "1"}
+    }],
+    "studies": [{"type": "study", "tag": "std1", "label": "Study 1", "steps": [
+        {"type": "transient", "times": "range(0, 5, 40)", "rtol": "1e-4"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "cutline", "tag": "cln1", "label": "The ground", "start": ["0", "0.5"], "end": ["100", "0.5"], "points": 1001},
+            {"type": "plotgroup1d", "label": "The front in time", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "u", "xaxis": "x"}
+            ]}
+        ]
+    }
+}

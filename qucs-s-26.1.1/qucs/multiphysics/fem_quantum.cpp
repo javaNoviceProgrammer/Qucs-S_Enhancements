@@ -21,6 +21,7 @@
  * (at your option) any later version.
  */
 #include "fem_edge.h"
+#include "fem_line.h"
 #include "fem_materials.h"
 #include "fem_problem.h"
 #include "fem_results.h"
@@ -410,107 +411,17 @@ void QuantumProblem::initialize()
 
 bool QuantumProblem::buildLine(QString* error)
 {
-    const Field& f = field();
-    const Topology& topo = a_s.topology();
-    const Mesh& mesh = a_s.mesh();
-    const double unit = mesh.unitScale;
-    QRectF box;
-    for (std::size_t d = 0; d < topo.domains.size(); ++d)
-        if (f.domains[d]) box = box.isNull() ? topo.domains[d].bounds : box.united(topo.domains[d].bounds);
-    double at = (a_axis == 1 ? box.center().x() : box.center().y()) * unit;
-    const QString atText = a_node->text(QStringLiteral("at")).trimmed();
-    if (!atText.isEmpty()) {
-        Expression::Options inUnit;
-        inUnit.lengthUnit = unit;
-        inUnit.numbersAreLengths = true;
-        const Expression e = Expression::compile(atText, a_s.parameters().scope, inUnit);
-        if (!e.isValid() || !e.isConstant()) {
-            *error = tr("%1: where its line runs: %2").arg(a_node->name(), e.isValid() ? tr("it must be a constant") : e.error());
-            return false;
-        }
-        at = e.constant() * unit;
-    }
-    if (a_axis == 1) {
-        a_S = QPointF(at, box.top() * unit);
-        a_E = QPointF(at, box.bottom() * unit);
-    } else {
-        a_S = QPointF(box.left() * unit, at);
-        a_E = QPointF(box.right() * unit, at);
-    }
-    a_L = std::hypot(a_E.x() - a_S.x(), a_E.y() - a_S.y());
-    if (!(a_L > 0)) {
-        *error = tr("%1: its domains have no extent along the axis").arg(a_node->name());
+    Line line;
+    QString why;
+    if (!detail::buildLine(a_s, field().domains, a_axis, a_node->text(QStringLiteral("at")), a_h1d, 0, &line, &why)) {
+        *error = tr("%1: %2").arg(a_node->name(), why);
         return false;
     }
-    const QPointF u = (a_E - a_S) / a_L;
-    // Each triangle's stretch of the line (its corners counter-clockwise).
-    struct Piece {
-        double lo, hi;
-        int d;
-    };
-    std::vector<Piece> pieces;
-    std::vector<double> cuts = {0, a_L};
-    const double eps = 1e-9 * a_L;
-    for (std::size_t t = 0; t < mesh.triangles.size(); ++t) {
-        QPointF p[3];
-        for (int k = 0; k < 3; ++k) p[k] = mesh.nodes[std::size_t(mesh.triangles[t][std::size_t(k)])] * unit;
-        double lo = 0, hi = a_L;
-        bool empty = false;
-        for (int k = 0; k < 3 && !empty; ++k) {
-            const QPointF a = p[k], e = p[(k + 1) % 3] - p[k];
-            const double alpha = e.x() * (a_S.y() - a.y()) - e.y() * (a_S.x() - a.x());
-            const double beta = e.x() * u.y() - e.y() * u.x();
-            const double scale = std::hypot(e.x(), e.y());
-            if (std::abs(beta) < 1e-12) {
-                if (alpha < -1e-12 * scale * a_L) empty = true;
-            } else if (beta > 0) lo = std::max(lo, -alpha / beta);
-            else hi = std::min(hi, -alpha / beta);
-        }
-        if (empty || hi - lo <= eps) continue;
-        pieces.push_back({lo, hi, mesh.domain[t]});
-        cuts.push_back(lo);
-        cuts.push_back(hi);
-    }
-    std::sort(cuts.begin(), cuts.end());
-    std::vector<double> breaks;
-    for (double c : cuts)
-        if (breaks.empty() || c - breaks.back() > eps) breaks.push_back(c);
-    // The layers: each stretch between two cuts in the domain at its middle.
-    struct Layer {
-        double s0, s1;
-        int d;
-    };
-    std::vector<Layer> layers;
-    for (std::size_t k = 0; k + 1 < breaks.size(); ++k) {
-        const double m = (breaks[k] + breaks[k + 1]) / 2;
-        int d = -1;
-        for (const Piece& p : pieces)
-            if (m > p.lo && m < p.hi) {
-                d = p.d;
-                break;
-            }
-        if (d >= 0 && !f.domains[std::size_t(d)]) d = -1;
-        if (!layers.empty() && layers.back().d == d) layers.back().s1 = breaks[k + 1];
-        else layers.push_back({breaks[k], breaks[k + 1], d});
-    }
-    // Quadratic elements: as many as the size asks in each layer, one across a gap.
-    a_z.assign(1, 0.0);
-    a_elemDomain.clear();
-    long total = 0;
-    for (const Layer& l : layers) total += l.d >= 0 ? long(std::ceil((l.s1 - l.s0) / a_h1d)) : 1;
-    if (total > 400000) {
-        *error = tr("%1: %2 elements along its line: a larger element size").arg(a_node->name()).arg(total);
-        return false;
-    }
-    for (const Layer& l : layers) {
-        const int n = l.d >= 0 ? std::max(1, int(std::ceil((l.s1 - l.s0) / a_h1d - 1e-9))) : 1;
-        for (int k = 0; k < n; ++k) {
-            const double z0 = l.s0 + (l.s1 - l.s0) * k / n, z1 = l.s0 + (l.s1 - l.s0) * (k + 1) / n;
-            a_z.push_back((z0 + z1) / 2);
-            a_z.push_back(z1);
-            a_elemDomain.push_back(l.d);
-        }
-    }
+    a_S = line.S;
+    a_E = line.E;
+    a_L = line.L;
+    a_z = line.z;
+    a_elemDomain = line.domain;
     // A node is free where it is inside the physics' run of elements.
     const int nn = int(a_z.size()), ne = int(a_elemDomain.size());
     std::vector<int> touching(std::size_t(nn), 0);
@@ -525,7 +436,7 @@ bool QuantumProblem::buildLine(QString* error)
     for (int i = 0; i < nn; ++i)
         if (touching[std::size_t(i)] >= 2) a_eq[std::size_t(i)] = a_neq++;
     if (a_neq == 0) {
-        *error = tr("%1: its line at %2 crosses none of its domains").arg(a_node->name(), formatQuantity(at, Dim::length()));
+        *error = tr("%1: its line crosses none of its domains").arg(a_node->name());
         return false;
     }
     return true;

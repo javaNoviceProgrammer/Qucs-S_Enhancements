@@ -1956,7 +1956,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   for it (`third_party/gdstk/README.qucs.md`).
 - **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1 to
   4 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md),
-  semiconductors and rays, and quantum wells): a model
+  semiconductors and rays, quantum wells, and PDEs and ODEs of your own): a model
   (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
   in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
   Model*, or the tab's *New Model* and its examples). The tree is the
@@ -2084,6 +2084,23 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     density of states, or a wire's 1D one, Lorentzian-broadened), or their
     **gain** with carriers injected - their quasi-Fermi levels found from
     the states, gain where the photon is below their separation.
+  - *PDE (Coefficient and General Form)*: an **equation of your own**,
+    ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F, for one or several dependent
+    variables (named as you like, each with its gradient) - in the
+    **coefficient form** (Γ = -c∇u - αu + γ, F = f - β·∇u - au, c
+    isotropic or a matrix) or the **general form** (Γ and F as you write
+    them). Every coefficient is any expression of x, y, t, the variables,
+    their gradients and other physics' fields: nonlinear equations are
+    solved by **Newton's method**, the Jacobian of the expressions found
+    by nudging each variable and gradient in turn. In **2D** on the mesh
+    (about an axis too: the divergence in cylinders) or in **1D** along
+    a line across the geometry - an **ODE** in x, quadratic elements of
+    its own. **Dirichlet** (u = r), **flux/Robin** (-n·Γ = g - q u, g and q
+    of the variables too) and zero flux conditions, on the boundaries
+    chosen (along a line: where it meets them); initial values. At rest,
+    **in time** (BDF; a second derivative through the variables' rates:
+    waves) and as an **eigenproblem**: an *Eigenvalue* step finds -λ da u
+    + ∇·Γ = F's eigenvalues nearest a shift, each eigenfunction a solution.
 
   **Mesh**: Delaunay triangles, refined till their angles are good. A
   preset from extremely fine to extremely coarse, or customised; smaller
@@ -2097,7 +2114,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   last frequency's fields - induction heating), a **Mode Analysis**
   (the modes nearest an effective index, at each frequency or
   wavelength), **Quantum States** and an **Optical Spectrum** over photon
-  energies or wavelengths, and a **Parametric Sweep** of parameters (every combination
+  energies or wavelengths, an **Eigenvalue** step, and a **Parametric Sweep** of parameters (every combination
   or specified ones), the geometry and mesh made again where a parameter
   swept shapes them. **Adaptive mesh refinement**: a step at rest or in
   frequency solved, the mesh made finer where the error estimated
@@ -2184,7 +2201,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   diagram and its absorption's staircase (e1-hh1 at 849 nm), an
   InGaAs/InAlAs multiple quantum well's Stark shift at 1.52 µm, a strained
   InGaAs laser well's gain at 986 nm (1900 /cm with 3e18 cm⁻³), and a
-  GaAs quantum wire's states.
+  GaAs quantum wire's states; the Bratu problem, a nonlinear ODE swept
+  toward thermal runaway, a drum's modes (Bessel's zeros squared, to
+  10⁻⁵), Fisher's equation's front travelling at 2√(rD), and Laplace's
+  equation in a ring (ln r/ln 2, its flux 2π/ln 2).
   Claude builds and solves models with `fem_describe`, `fem_model`,
   `fem_edit`, `fem_build`, `fem_solve` (each mode's index, each quantum
   state's energies), `fem_evaluate`
@@ -2192,7 +2212,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `fem_plot` (a 1D group's data display too) and `fem_export`.
   `test_fem_engine`, `test_fem_physics`, `test_fem_magnetics`,
   `test_fem_layout`, `test_fem_waves`, `test_fem_semiconductor`,
-  `test_fem_rays` and `test_fem_quantum` check the
+  `test_fem_rays`, `test_fem_quantum` and `test_fem_pde` check the
   engine against closed forms on CI, under the sanitizers too: a coax's
   capacitance (its error falling as h² and h⁴), a capacitor, a floating
   plate, a bar's resistance, a slab with convection, a pipe, heat
@@ -2227,7 +2247,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   oscillator (10⁻⁶), the second-order Stark shift (0.01 %), strain's
   shifts, the alloys' gaps against the literature, a 1D line against
   the 2D plane, absorption's steps against their closed form and gain's
-  zero at the quasi-Fermi levels' separation (0.6 meV); and the examples.
+  zero at the quasi-Fermi levels' separation (0.6 meV); Poisson's
+  equation's manufactured solution (its error falling as h³), the Bratu
+  ODE (10⁻¹³), convection and diffusion, a Robin condition and two layers
+  (exact), heat and a standing wave in time, a string's eigenvalues n²
+  (10⁻⁸) held and free, a square membrane's, a coupled system, the general
+  form against the coefficient form, anisotropic diffusion, a disc about
+  its axis (exact); and the examples.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

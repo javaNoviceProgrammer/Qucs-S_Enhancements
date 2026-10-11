@@ -1,0 +1,37 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "The Bratu problem: a nonlinear ODE",
+    "description": "u'' + λ e^u = 0 on (0, 1), u = 0 at both ends: a model of a slab that heats as it reacts, its solution growing with λ until, past λ ≈ 3.514, there is none (thermal runaway). Solved along a line across the interval (1D) by Newton's method, λ swept: at λ = 1, u(½) = 0.1405392, the closed form's 2 ln cosh(θ/4) with θ = √(2λ) cosh(θ/4).",
+    "parameters": [
+        {"name": "lam", "expression": "1", "description": "λ, the reaction's strength"}
+    ],
+    "components": [{
+        "unit": "m",
+        "geometry": [{"type": "rectangle", "label": "interval", "size": ["1", "0.05"]}],
+        "physics": [{
+            "type": "pde", "tag": "c", "space": "1d", "elements": 200,
+            "features": [
+                {"type": "coefficient", "label": "u'' + λ e^u = 0", "f": "lam*exp(u)", "selection": {"all": true}},
+                {"type": "dirichlet", "label": "u(0) = 0", "r": "0", "selection": {"of": ["interval"], "side": "left"}},
+                {"type": "dirichlet", "label": "u(1) = 0", "r": "0", "selection": {"of": ["interval"], "side": "right"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.025"}
+    }],
+    "studies": [{"type": "study", "tag": "std1", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["lam", "0.5, 1, 2, 3", ""]]},
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "cutline", "tag": "cln1", "label": "The interval", "start": ["0", "0.025"], "end": ["1", "0.025"], "points": 401},
+            {"type": "plotgroup1d", "label": "u(x) for each λ", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "u", "xaxis": "x"}
+            ]}
+        ],
+        "derived": [
+            {"type": "pointeval", "label": "u at the middle", "where": "coordinates", "coordinates": [["0.5", "0.025"]], "expression": "u", "solutions": "all"},
+            {"type": "global", "label": "Newton's iterations", "expression": "c.iterations", "solutions": "all"}
+        ]
+    }
+}
