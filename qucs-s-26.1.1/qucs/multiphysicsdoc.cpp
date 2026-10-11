@@ -1383,15 +1383,60 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         vars << t;
     }
     if (set->solutions.size() > 1) {
-        Variable p;
-        const bool one = set->swept.size() == 1;
-        p.name = unique(one ? set->swept.front() : QStringLiteral("sweep"));
-        p.independent = true;
-        for (std::size_t i = 0; i < set->solutions.size(); ++i)
-            p.re << (one ? set->solutions[i]->sweptValues.value(set->swept.front()) : double(i + 1));
-        outer << p.name;
-        kinds << Axis::Sweep;
-        vars << p;
+        // The sweep's axes: each parameter of more than one value, by its
+        // name - of all their combinations (the last the faster) an axis
+        // each, I_C over V_CE a curve per V_BE; of one parameter changing,
+        // its own (V_CE, a V_BE of one value beside it). Of several changing
+        // together (specified combinations): an index.
+        const std::size_t count = set->solutions.size();
+        struct Along {
+            QString name;
+            QList<double> values;   // each once, as first met
+            std::size_t stride = 1;
+        };
+        QList<Along> changing;
+        for (const QString& name : set->swept) {
+            Along a{name, {}, 1};
+            for (const auto& s : set->solutions) {
+                const double v = s->sweptValues.value(name);
+                if (!a.values.contains(v)) a.values << v;
+            }
+            if (a.values.size() > 1) changing << a;
+        }
+        bool grid = !changing.isEmpty();
+        if (changing.size() == 1) {
+            changing.front().values.clear();
+            for (const auto& s : set->solutions) changing.front().values << s->sweptValues.value(changing.front().name);
+        } else {
+            std::size_t stride = 1;
+            for (auto a = changing.rbegin(); a != changing.rend(); ++a) {
+                a->stride = stride;
+                stride *= std::size_t(a->values.size());
+            }
+            grid = grid && stride == count;
+            for (std::size_t i = 0; grid && i < count; ++i)
+                for (const Along& a : changing)
+                    if (set->solutions[i]->sweptValues.value(a.name) != a.values.at(qsizetype(i / a.stride % std::size_t(a.values.size())))) grid = false;
+        }
+        if (grid) {
+            for (auto a = changing.crbegin(); a != changing.crend(); ++a) {
+                Variable p;
+                p.name = unique(a->name);
+                p.independent = true;
+                for (double v : a->values) p.re << v;
+                outer << p.name;
+                kinds << Axis::Sweep;
+                vars << p;
+            }
+        } else {
+            Variable p;
+            p.name = unique(QStringLiteral("sweep"));
+            p.independent = true;
+            for (std::size_t i = 0; i < count; ++i) p.re << double(i + 1);
+            outer << p.name;
+            kinds << Axis::Sweep;
+            vars << p;
+        }
     }
     // The order a global's and a point's are shown in, a data display drawing
     // over the first: the sweep, a mode analysis's frequencies, a frequency

@@ -2132,8 +2132,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   points; **1D plot groups** - an expression along a cut line, at points
   or a global value (or a Derived Values node's: Z0 against a swept width,
   R against frequency, the modes' effective indices) over the times,
-  frequencies, modes or the sweep - along x the sweep's parameter before a
-  frequency step's frequencies, the frequency before the modes (a curve
+  frequencies, modes or the sweep - along x the sweep's parameter (of two
+  of several values the last listed, a curve per the other's: I_C over
+  V_CE, a curve per V_BE) before a frequency step's frequencies, the frequency before the modes (a curve
   per mode), a transient's time or a spectrum's energy before the sweep, as
   **Plot against** chooses; no axis of one value (a C-V curve over the
   voltage, not its one frequency) - each named if asked
