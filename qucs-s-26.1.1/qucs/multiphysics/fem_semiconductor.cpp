@@ -8,7 +8,9 @@
  *                         solved together by Newton's method from
  *                         equilibrium, the contacts' voltages raised in
  *                         steps; in time (BDF), and small-signal about a
- *                         solution (the contacts' admittance matrix)
+ *                         solution (the contacts' admittance matrix); a
+ *                         contact's current weighed over the device where
+ *                         it is resolved, not taken from its own rows
  *
  * This file is part of Qucs-S.
  *
@@ -21,6 +23,7 @@
 #include "fem_geometry.h"
 #include "fem_mesh.h"
 
+#include <Eigen/SparseCholesky>
 #include <Eigen/SparseLU>
 
 #include <algorithm>
@@ -148,7 +151,17 @@ private:
                            const std::vector<char>& fixed, bool keepContacts, Eigen::VectorXd& Fv, Eigen::SparseMatrix<double>& J) const;
     void store(const Eigen::VectorXd& x);
     Eigen::VectorXd stateVector() const;
-    void terminalValues(const Eigen::VectorXd& x, double mass, const std::vector<double>* history);
+    /// The contacts' currents and charges at \a x (at equilibrium, \a
+    /// still: no current, exactly).
+    void terminalValues(const Eigen::VectorXd& x, double mass, const std::vector<double>* history, bool still = false);
+    /// By contact (empty for a gate): a weight over the nodes, 1 on its own,
+    /// 0 on the other contacts' that hold carriers, between them as the
+    /// carriers' conductance at \a x has it - flat where they are many. A
+    /// contact's current is the edges' currents times the weight's change
+    /// along them: the same as its rows' reaction where the equations hold,
+    /// but not the difference of a 10^19 cm^-3 contact's two large fluxes
+    /// (each edge's ~100 A per metre, its last digits pA).
+    std::vector<std::vector<double>> currentWeights(const Eigen::VectorXd& x);
     /// The edge mobilities at the fields of \a x (high fields lower them).
     void updateMobilities(const Eigen::VectorXd& x);
 
@@ -195,6 +208,9 @@ private:
     // At equilibrium: the gates' quasi-static capacitance matrix (F), by gate.
     std::vector<std::vector<double>> a_C0;
     std::vector<int> a_gates;
+    // The weights' system (its pattern the mesh's: analysed once).
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> a_weightSolver;
+    int a_weightSize = -1;
 };
 
 /// A band energy (eV, or V as eV per electron, or a plain number in eV)
@@ -1240,25 +1256,126 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
     }
 }
 
-void SemiconductorProblem::terminalValues(const Eigen::VectorXd& x, double mass, const std::vector<double>* history)
+std::vector<std::vector<double>> SemiconductorProblem::currentWeights(const Eigen::VectorXd& x)
+{
+    const std::size_t nc = a_contacts.size();
+    std::vector<std::vector<double>> weight(nc);
+    // Held: each node of a contact that holds carriers (ohmic, Schottky);
+    // the semiconductor's other nodes free.
+    std::vector<int> held(std::size_t(a_n), -1), local(std::size_t(a_n), -1);
+    std::vector<int> columns(nc, -1);
+    int carriersHeld = 0;
+    for (std::size_t k = 0; k < nc; ++k) {
+        if (a_contacts[k].kind == Contact::Gate) continue;
+        columns[k] = carriersHeld++;
+        for (int i : a_contacts[k].nodes) held[std::size_t(i)] = int(k);
+    }
+    int free = 0;
+    for (int i = 0; i < a_n; ++i)
+        if (a_nodeDomain[std::size_t(i)] >= 0 && held[std::size_t(i)] < 0) local[std::size_t(i)] = free++;
+    // Each edge's conductance: its currents' change with the quasi-Fermi
+    // potentials' difference (n e^(..) B weighed), relative to the largest
+    // and at least 10^-12 of it (a junction's depletion has less: the
+    // weight's step is there all the same).
+    std::vector<double> g(a_edges.size(), 0.0);
+    double largest = 0;
+    for (std::size_t k = 0; k < a_edges.size(); ++k) {
+        const Edge& e = a_edges[k];
+        if (e.w <= 0) continue;
+        const int i = e.i, j = e.j;
+        const double d = (x(a_iV[std::size_t(j)]) - x(a_iV[std::size_t(i)])) / a_Vt;
+        const double bp = bern(d), bm = bern(-d);
+        const double ni = x(a_iN[std::size_t(i)]), nj = x(a_iN[std::size_t(j)]), pi = x(a_iP[std::size_t(i)]), pj = x(a_iP[std::size_t(j)]);
+        g[k] = e.wn * 0.5 * (ni * bm + nj * bp) + e.wp * 0.5 * (pi * bp + pj * bm);
+        if (std::isfinite(g[k])) largest = std::max(largest, g[k]);
+    }
+    for (double& v : g) v = largest > 0 && std::isfinite(v) ? std::max(v / largest, 1e-12) : 1e-12;
+    Eigen::MatrixXd rhs = Eigen::MatrixXd::Zero(free, std::max(carriersHeld, 1));
+    if (free > 0 && carriersHeld > 0) {
+        std::vector<Eigen::Triplet<double>> trip;
+        trip.reserve(4 * a_edges.size() + std::size_t(free));
+        for (std::size_t k = 0; k < a_edges.size(); ++k) {
+            const int i = a_edges[k].i, j = a_edges[k].j;
+            const int li = local[std::size_t(i)], lj = local[std::size_t(j)];
+            const double gk = g[k];
+            if (li >= 0) trip.emplace_back(li, li, gk);
+            if (lj >= 0) trip.emplace_back(lj, lj, gk);
+            if (li >= 0 && lj >= 0) {
+                trip.emplace_back(li, lj, -gk);
+                trip.emplace_back(lj, li, -gk);
+            } else if (li >= 0 && held[std::size_t(j)] >= 0) {
+                rhs(li, columns[std::size_t(held[std::size_t(j)])]) += gk;
+            } else if (lj >= 0 && held[std::size_t(i)] >= 0) {
+                rhs(lj, columns[std::size_t(held[std::size_t(i)])]) += gk;
+            }
+        }
+        // (A little to nought everywhere: a region no contact reaches is
+        // weighed nought, not singular.)
+        for (int k = 0; k < free; ++k) trip.emplace_back(k, k, 1e-14);
+        Eigen::SparseMatrix<double> L(free, free);
+        L.setFromTriplets(trip.begin(), trip.end());
+        if (a_weightSize != free) {
+            a_weightSolver.analyzePattern(L);
+            a_weightSize = free;
+        }
+        a_weightSolver.factorize(L);
+        if (a_weightSolver.info() == Eigen::Success) rhs = a_weightSolver.solve(rhs);
+        else rhs.setZero();
+    }
+    for (std::size_t k = 0; k < nc; ++k) {
+        if (columns[k] < 0) continue;
+        std::vector<double>& w = weight[k];
+        w.assign(std::size_t(a_n), 0.0);
+        for (int i = 0; i < a_n; ++i) {
+            if (held[std::size_t(i)] >= 0) w[std::size_t(i)] = held[std::size_t(i)] == int(k) ? 1.0 : 0.0;
+            else if (local[std::size_t(i)] >= 0) w[std::size_t(i)] = std::clamp(rhs(local[std::size_t(i)], columns[k]), 0.0, 1.0);
+        }
+    }
+    return weight;
+}
+
+void SemiconductorProblem::terminalValues(const Eigen::VectorXd& x, double mass, const std::vector<double>* history, bool still)
 {
     Eigen::VectorXd F;
     assemble(x, mass, history, F, nullptr);
     for (Contact& c : a_contacts) {
-        double I = 0, Qc = 0;
-        for (std::size_t k = 0; k < c.nodes.size(); ++k) {
-            const int i = c.nodes[k];
-            Qc -= F(a_iV[std::size_t(i)]);
-            if (c.kind == Contact::Ohmic) I += F(a_iN[std::size_t(i)]) + F(a_iP[std::size_t(i)]);
-            else if (c.kind == Contact::Schottky) {
-                // The current over the barrier into the device.
-                const Medium& m = a_media[std::size_t(a_nodeDomain[std::size_t(i)])];
-                const double neq = m.Nc * std::exp(-c.phiB / (KB * a_T)), peq = m.ni * m.ni / neq;
-                I += Q * c.vn * (x(a_iN[std::size_t(i)]) - neq) * c.length[k] - Q * c.vp * (x(a_iP[std::size_t(i)]) - peq) * c.length[k];
-            }
-        }
-        c.current = I;
+        double Qc = 0;
+        for (int i : c.nodes) Qc -= F(a_iV[std::size_t(i)]);
         c.charge = Qc;
+        c.current = 0;
+    }
+    // At equilibrium no current flows: nought, not the rounding of the
+    // contacts' fluxes (-291 pA on a 10^19 cm^-3 one).
+    if (still) return;
+    // Each contact's: Σ over the edges of their currents times its weight's
+    // change, and the carriers' change in time where it weighs (the
+    // recombination's share is the electrons' and the holes' alike: none).
+    const std::vector<std::vector<double>> weight = currentWeights(x);
+    const std::size_t N = std::size_t(a_n);
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        const std::vector<double>& w = weight[k];
+        if (w.empty()) continue;
+        double I = 0;
+        for (const Edge& e : a_edges) {
+            if (e.w <= 0) continue;
+            const double dw = w[std::size_t(e.i)] - w[std::size_t(e.j)];
+            if (dw == 0) continue;
+            const int i = e.i, j = e.j;
+            const double d = (x(a_iV[std::size_t(j)]) - x(a_iV[std::size_t(i)])) / a_Vt;
+            const double bp = bern(d), bm = bern(-d);
+            const double fn = e.wn * (x(a_iN[std::size_t(j)]) * bp - x(a_iN[std::size_t(i)]) * bm);
+            const double fp = e.wp * (x(a_iP[std::size_t(i)]) * bp - x(a_iP[std::size_t(j)]) * bm);
+            I += (fn + fp) * dw;
+        }
+        if (mass > 0 && history)
+            for (int i = 0; i < a_n; ++i) {
+                if (w[std::size_t(i)] == 0 || a_iN[std::size_t(i)] < 0) continue;
+                const double A = a_box[std::size_t(i)];
+                const double dn = mass * x(a_iN[std::size_t(i)]) - (*history)[N + std::size_t(i)];
+                const double dp = mass * x(a_iP[std::size_t(i)]) - (*history)[2 * N + std::size_t(i)];
+                I += w[std::size_t(i)] * Q * A * (dp - dn);
+            }
+        a_contacts[k].current = I;
     }
 }
 
@@ -1268,9 +1385,9 @@ bool SemiconductorProblem::stationary(QString* why)
     std::vector<double> goal;
     if (!targets(goal, why)) return false;
     Eigen::VectorXd x = stateVector();
-    auto finish = [&](const Eigen::VectorXd& solved) {
+    auto finish = [&](const Eigen::VectorXd& solved, bool still) {
         for (std::size_t k = 0; k < a_contacts.size(); ++k) a_contacts[k].applied = goal[k];
-        terminalValues(solved, 0, nullptr);
+        terminalValues(solved, 0, nullptr, still);
         store(solved);
     };
     double fermi = 0;
@@ -1278,7 +1395,7 @@ bool SemiconductorProblem::stationary(QString* why)
         // No current: Poisson's equation alone (a MOS capacitor, a junction
         // unbiased) - exact, the currents' equations hold at once.
         if (!equilibriumPoisson(x, fermi, goal, f.solved, why)) return false;
-        finish(x);
+        finish(x, true);
         quasiStatic(x, fermi, goal);
         return true;
     }
@@ -1320,7 +1437,7 @@ bool SemiconductorProblem::stationary(QString* why)
             }
         }
     }
-    finish(x);
+    finish(x, false);
     if (solves > 1) a_s.log << tr("%1: the contacts' voltages reached in %2 steps").arg(a_node->name()).arg(solves);
     return true;
 }
@@ -1402,11 +1519,13 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         *why = tr("%1: the small-signal matrix is singular").arg(a_node->name());
         return false;
     }
-    // The reactions' rows (each contact node's V, n, p rows as assembled).
+    // The reactions' rows (each contact node's V row as assembled: its
+    // charge); the currents weighed as at rest (currentWeights()).
     std::map<int, std::vector<std::pair<int, double>>> rows;
     for (const auto& t : trip)
-        if (fixed[std::size_t(t.row())]) rows[t.row()].emplace_back(t.col(), t.value());
+        if (fixed[std::size_t(t.row())] && colNode[std::size_t(t.row())] >= 0 && colKind[std::size_t(t.row())] == 0) rows[t.row()].emplace_back(t.col(), t.value());
     const std::size_t nc = a_contacts.size();
+    const std::vector<std::vector<double>> weight = currentWeights(x);
     a_Y.assign(nc, std::vector<cd>(nc, cd(0, 0)));
     for (std::size_t k = 0; k < nc; ++k) {
         Eigen::VectorXcd rhs = Eigen::VectorXcd::Zero(a_unknowns);
@@ -1433,15 +1552,34 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
             for (const auto& [c, v] : it->second) s += v * dx(c);
             return s;
         };
+        // Each edge's change of current (Scharfetter and Gummel's, linear).
+        std::vector<cd> df(a_edges.size(), cd(0, 0));
+        for (std::size_t m = 0; m < a_edges.size(); ++m) {
+            const Edge& e = a_edges[m];
+            if (e.w <= 0) continue;
+            const int i = e.i, j = e.j;
+            const double d = (x(a_iV[std::size_t(j)]) - x(a_iV[std::size_t(i)])) / a_Vt;
+            const double bp = bern(d), bm = bern(-d), dbp = dbern(d), dbm = dbern(-d);
+            const int ni = a_iN[std::size_t(i)], nj = a_iN[std::size_t(j)], pi = a_iP[std::size_t(i)], pj = a_iP[std::size_t(j)];
+            const cd dV = (dx(a_iV[std::size_t(j)]) - dx(a_iV[std::size_t(i)])) / a_Vt;
+            const cd dfn = e.wn * (bp * dx(nj) - bm * dx(ni) + (x(nj) * dbp + x(ni) * dbm) * dV);
+            const cd dfp = e.wp * (bp * dx(pi) - bm * dx(pj) + (x(pi) * dbp + x(pj) * dbm) * dV);
+            df[m] = dfn + dfp;
+        }
         for (std::size_t c = 0; c < nc; ++c) {
             const Contact& ct2 = a_contacts[c];
             cd dI(0, 0), dQ(0, 0);
-            for (std::size_t m = 0; m < ct2.nodes.size(); ++m) {
-                const int i = ct2.nodes[m];
-                dQ -= rowDot(a_iV[std::size_t(i)]);
-                if (ct2.kind == Contact::Ohmic) dI += rowDot(a_iN[std::size_t(i)]) + rowDot(a_iP[std::size_t(i)]);
-                else if (ct2.kind == Contact::Schottky)
-                    dI += Q * ct2.vn * dx(a_iN[std::size_t(i)]) * ct2.length[m] - Q * ct2.vp * dx(a_iP[std::size_t(i)]) * ct2.length[m];
+            for (int i : ct2.nodes) dQ -= rowDot(a_iV[std::size_t(i)]);
+            const std::vector<double>& w = weight[c];
+            if (!w.empty()) {
+                for (std::size_t m = 0; m < a_edges.size(); ++m) {
+                    const double dw = w[std::size_t(a_edges[m].i)] - w[std::size_t(a_edges[m].j)];
+                    if (dw != 0) dI += df[m] * dw;
+                }
+                // (The carriers' change, -qA δn and qA δp on their rows, at jω.)
+                for (int i = 0; i < a_n; ++i)
+                    if (w[std::size_t(i)] != 0 && a_iN[std::size_t(i)] >= 0)
+                        dI += w[std::size_t(i)] * cd(0, omega) * Q * a_box[std::size_t(i)] * (dx(a_iP[std::size_t(i)]) - dx(a_iN[std::size_t(i)]));
             }
             a_Y[c][k] = dI + cd(0, omega) * dQ;
         }
@@ -1548,7 +1686,13 @@ void SemiconductorProblem::setGlobals()
     for (const Contact& c : a_contacts) {
         a_s.setGlobal(p + QStringLiteral("I_") + c.name, c.current, Dim::current(), tr("current into the device at %1").arg(c.name));
         a_s.setGlobal(p + QStringLiteral("V_") + c.name, c.applied, Dim::voltage(), tr("voltage applied at %1").arg(c.name));
-        a_s.setGlobal(p + QStringLiteral("Q_") + c.name, c.charge, Dim::charge(), tr("charge on %1's metal").arg(c.name));
+        // (An ohmic contact on neutral silicon holds almost none: the
+        // junction's charge is balanced inside it.)
+        a_s.setGlobal(p + QStringLiteral("Q_") + c.name, c.charge, Dim::charge(),
+                      c.kind == Contact::Ohmic ? tr("charge on %1's metal - about nought on neutral silicon (a junction's charge is balanced "
+                                                    "inside it); its capacitance is the small-signal %2")
+                                                     .arg(c.name, matrixEntryName(field().tag, QStringLiteral("C"), c.name, c.name))
+                                               : tr("charge on %1's metal").arg(c.name));
     }
     for (std::size_t a = 0; a < a_C0.size(); ++a)
         for (std::size_t b = 0; b < a_C0.size(); ++b) {

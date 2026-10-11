@@ -591,6 +591,25 @@ LineRLGC lineRLGC(const Solution& solution, const Node& node)
     return out;
 }
 
+NamedExpression namedExpression(const QString& item)
+{
+    const QString text = item.trimmed();
+    // The first '=' that is no comparison's, a name before it (<=, >=, != have
+    // none: a name is a word).
+    for (int i = 0; i < text.size(); ++i) {
+        if (text[i] != QLatin1Char('=')) continue;
+        if (i + 1 < text.size() && text[i + 1] == QLatin1Char('=')) {
+            ++i;
+            continue;
+        }
+        static const QRegularExpression word(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        const QString name = text.left(i).trimmed();
+        if (!word.match(name).hasMatch()) break;
+        return {name, text.mid(i + 1).trimmed()};
+    }
+    return {text, text};
+}
+
 DerivedResult evaluateDerived(const Solution& solution, const Node& node)
 {
     DerivedResult out;
@@ -606,7 +625,8 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         const QStringList exprs = node.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
         QStringList problems;
         for (const QString& raw : exprs) {
-            const QString text = raw.trimmed();
+            const NamedExpression item = namedExpression(raw);
+            const QString text = item.expression;
             if (text.isEmpty()) continue;
             const Expression e = Expression::compile(text, solution.scope());
             if (!e.isValid()) {
@@ -622,10 +642,10 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             if (unitText.trimmed().isEmpty())
                 for (const Variable& g : solution.globals())
                     if (g.name == text && !g.unit.isEmpty()) {
-                        out.values << DerivedValue{text, e.constant(), e.dim(), solution.globalText(text)};
+                        out.values << DerivedValue{item.name, e.constant(), e.dim(), solution.globalText(text)};
                         own = true;
                     }
-            if (!own) add(text, e.constant(), e.dim(), exprs.size() == 1);
+            if (!own) add(item.name, e.constant(), e.dim(), exprs.size() == 1);
         }
         if (!problems.isEmpty()) out.error = problems.join(QLatin1String("; "));
         return out;

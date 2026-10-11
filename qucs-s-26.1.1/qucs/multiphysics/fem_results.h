@@ -131,6 +131,14 @@ struct DerivedValue {
     Dim dim;
     QString text;   ///< as shown, with its unit
 };
+/// One item of a list of globals: "name = expression" names it (a
+/// dataset's variable, a derived value - emw.loss/100 is otherwise
+/// emw.loss_100 in a dataset), else the expression is its own name.
+struct NamedExpression {
+    QString name, expression;
+};
+NamedExpression namedExpression(const QString& item);
+
 struct DerivedResult {
     QList<DerivedValue> values;
     QString error;
