@@ -1,0 +1,38 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "Laplace's equation in a ring",
+    "description": "Δu = 0 between circles of radius 1 (u = 0) and 2 (u = 1): u = ln r / ln 2, on curved quadratic elements. The flux through either circle, ∮ ∂u/∂n ds = 2π/ln 2 = 9.0647, the same through both. A general form PDE (Γ = -∇u, F = 0) with Dirichlet conditions on the two circles.",
+    "components": [{
+        "unit": "m",
+        "geometry": [
+            {"type": "circle", "label": "outer", "radius": "2"},
+            {"type": "circle", "label": "inner", "radius": "1"},
+            {"type": "difference", "label": "ring", "input": ["outer"], "tools": ["inner"]}
+        ],
+        "physics": [{
+            "type": "pde", "tag": "c",
+            "features": [
+                {"type": "general", "label": "Δu = 0", "Gx": "-ux", "Gy": "-uy", "F": "0", "selection": {"all": true}},
+                {"type": "dirichlet", "label": "u = 0 inside", "r": "0", "selection": {"box": [-1.1, -1.1, 1.1, 1.1]}},
+                {"type": "dirichlet", "label": "u = 1 outside", "r": "1", "selection": {"box": [-2.1, -2.1, 2.1, 2.1], "except": {"box": [-1.1, -1.1, 1.1, 1.1]}}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.15"}
+    }],
+    "studies": [{"type": "study", "tag": "std1", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "u", "plots": [
+                {"type": "surface", "expression": "u"},
+                {"type": "contour", "expression": "u", "levels": 10},
+                {"type": "arrow", "x": "-ux", "y": "-uy", "scaling": "normalized", "color": "white"}
+            ]}
+        ],
+        "derived": [
+            {"type": "pointeval", "label": "u at r = 1.5", "where": "coordinates", "coordinates": [["1.5", "0"]], "expression": "u"},
+            {"type": "integral", "label": "Flux through the outer circle", "level": "boundary",
+             "selection": {"box": [-2.1, -2.1, 2.1, 2.1], "except": {"box": [-1.1, -1.1, 1.1, 1.1]}},
+             "expression": "(x*ux + y*uy)/sqrt(x^2 + y^2)", "revolved": false}
+        ]
+    }
+}

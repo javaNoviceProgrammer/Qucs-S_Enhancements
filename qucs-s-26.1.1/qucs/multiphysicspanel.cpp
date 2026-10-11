@@ -180,7 +180,9 @@ QIcon glyph(const QString& icon)
         QPainterPath wave(QPointF(5, 10));
         wave.cubicTo(QPointF(6.5, 5.5), QPointF(9.5, 5.5), QPointF(11, 10));
         p.drawPath(wave);
-    } else if (icon == QLatin1String("states")) letters(QStringLiteral("ψ"), gray, true);
+    } else if (icon == QLatin1String("pde")) letters(QStringLiteral("∂u"), dark ? QColor(170, 210, 120) : QColor(60, 120, 20), true);
+    else if (icon == QLatin1String("eigenvalue")) letters(QStringLiteral("λ"), gray, true);
+    else if (icon == QLatin1String("states")) letters(QStringLiteral("ψ"), gray, true);
     else if (icon == QLatin1String("spectrum")) letters(QStringLiteral("α"), gray, true);
     else if (icon == QLatin1String("beam")) {
         p.setPen(QPen(dark ? QColor(255, 210, 90) : QColor(200, 130, 0), 1.3));
@@ -336,7 +338,7 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
                                     "physics - electrostatics, electric currents, heat at rest and in time, solid mechanics, "
                                     "magnetic fields at rest and in frequency, waveguides' modes and waves with their ports, "
                                     "semiconductors' carriers (drift and diffusion), rays through lenses and prisms, quantum "
-                                    "wells' states and their absorption and gain - its mesh "
+                                    "wells' states and their absorption and gain, and PDEs and ODEs of your own - its mesh "
                                     "(adapted too), studies (swept too) and results, lines and terminals as parts of circuits, in a "
                                     "tree as COMSOL's. Open a model (.qfem) to see its tree here."),
                                  a_start);
@@ -997,6 +999,16 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
             Scope local(&ps->scope);
             if (spatial)
                 for (const Variable& v : modelVariables(doc->model())) local.addVariable(v.name, v.dim);
+            // (Items split by ';': a PDE's, one for each variable - each checked.)
+            const QStringList items = text.split(QLatin1Char(';'));
+            for (int i = 0; items.size() > 1 && i < items.size(); ++i) {
+                const Expression part = Expression::compile(items[i].trimmed().isEmpty() ? QStringLiteral("0") : items[i], local);
+                if (!part.isValid()) {
+                    *bad = !(spatial && items[i].contains(QLatin1Char('.')));
+                    return part.error();
+                }
+            }
+            if (items.size() > 1) return QCoreApplication::translate("MultiphysicsPanel", "%1 items, one for each variable").arg(items.size());
             const Expression e = Expression::compile(text, local);
             if (!e.isValid()) {
                 // A global (es.C11) is known once solved.

@@ -199,6 +199,16 @@ QString formatText()
         "wavelengths), \"states\", \"linewidth\" (Lorentzian, eV), \"density\" (carriers in the wells: gain), \"nr\"} "
         "makes each photon energy a solution: qw.alphaTE, qw.alphaTM (1/m: unit 1/cm), qw.gTE, qw.gTM, qw.Fc, qw.Fv, qw.dF, "
         "qw.Lw.\n"
+        "Your own PDE: \"pde\" (tag c by default) - ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F; \"variables\": \"u\" or \"u, v\" (each "
+        "with ux, uy, and c.u, c.ux; along a line us; of the second order in time their rates ut), \"unit\"; \"space\": \"2d\" "
+        "(on the mesh, about an axis too) or \"1d\" (an ODE along a line: \"axis\" x or y, \"at\", \"elements\"). Features: "
+        "coefficient (the coefficient form: c - or \"diffusion\": \"anisotropic\" with cxx, cxy, cyx, cyy -, a, f, ea, da, "
+        "\"alpha\", \"beta\", \"gamma\" as [x, y]: Γ = -c∇u - αu + γ, F = f - β·∇u - au) or general (Gx, Gy, F, ea, da) - "
+        "any expressions of x, y, t, the variables, their gradients, other fields (nonlinear: Newton's method); several "
+        "variables, one item each split by ';' (\"f\": \"1; -v\"); init (u0, ut0); dirichlet (\"r\": u = r; along a line where "
+        "it meets the boundaries chosen), flux (g, q: -n·Γ = g - q u), zeroflux (the default). Steps stationary, transient, "
+        "and \"eigenvalue\" {\"count\": 6, \"shift\": 0}: -λ da u + ∇·Γ = F, each eigenvalue a solution with c.lambda; "
+        "c.iterations Newton's.\n"
         "Expressions: numbers (1.5e-3, Qucs's 10u 2.2k, 3mm, 1GHz), units in brackets (3[mm], 20[degC], W/(m*K)), + - * / ^, "
         "functions (sin, exp, sqrt, min, max, if(c,a,b)...), constants (pi, eps0, mu0, c0, kB, q0), the parameters. In the "
         "geometry and the mesh a plain number is in the component's unit and parameters are converted to it (L = 2[mm] "
@@ -653,7 +663,8 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
             for (const Variable& v : sol->globals()) {
                 const bool wanted = states ? v.name.endsWith(QLatin1String(".E_e")) || v.name.endsWith(QLatin1String(".E_hh"))
                                                  || v.name.endsWith(QLatin1String(".E_lh"))
-                                           : v.name.endsWith(QLatin1String(".neff")) || v.name.endsWith(QLatin1String(".loss"));
+                                           : v.name.endsWith(QLatin1String(".neff")) || v.name.endsWith(QLatin1String(".loss"))
+                                                 || v.name.endsWith(QLatin1String(".lambda"));
                 const std::optional<double> g = sol->global(v.name);
                 if (wanted && g && std::isfinite(*g)) m.insert(v.name, formatQuantity(*g / (states ? 1.602176634e-19 : 1.0), states ? Dim() : v.dim) + (states ? QStringLiteral(" eV") : QString()));
             }

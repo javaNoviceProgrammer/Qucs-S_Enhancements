@@ -295,6 +295,15 @@ public:
     /// Field \a f's first component taken as \a du more than it is (for a
     /// derivative of what reads it); 0 again: as it is.
     void perturb(int f, double du);
+    /// Component \a c of field \a f taken as \a delta more than it is - its
+    /// value (\a which 0), its x or y derivative (1, 2; a line's: 1 along it)
+    /// - for what reads it to be differentiated; delta 0: as it is.
+    void shift(int f, int c, int which, double delta);
+    /// The shift asked of that component and derivative (0: none).
+    double shiftOf(int f, int c, int which) const
+    {
+        return f == a_shift.f && c == a_shift.c && which == a_shift.which ? a_shift.delta : 0.0;
+    }
     /// The frequency (Hz) expressions here are at - freq, lambda0 - in place
     /// of the solution's (a ray's own); NaN: the solution's.
     void setFrequency(double f);
@@ -308,7 +317,7 @@ private:
     std::vector<char> a_done;
     struct FieldCache {
         bool done = false;
-        double u[6] = {}, gx[6] = {}, gy[6] = {};   // (up to six components: a semiconductor's five)
+        double u[12] = {}, gx[12] = {}, gy[12] = {};   // (up to twelve components: a PDE's variables and their rates)
     };
     std::vector<FieldCache> a_fields;
     std::vector<double> a_offset;
@@ -316,6 +325,10 @@ private:
     QPointF a_x;
     int a_depth = 0;
     double a_frequency = std::numeric_limits<double>::quiet_NaN();
+    struct Shift {
+        int f = -1, c = 0, which = 0;
+        double delta = 0;
+    } a_shift;
 };
 
 /// The variables a solution of \a model would have (x, y, V, es.normE,

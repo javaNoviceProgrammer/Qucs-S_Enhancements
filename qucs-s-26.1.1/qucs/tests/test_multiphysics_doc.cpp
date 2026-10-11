@@ -1411,6 +1411,72 @@ private slots:
         for (const char* t : {"quantum", "quantum/material", "quantum/flux", "states", "spectrum"}) QVERIFY2(types.contains(QString::fromLatin1(t)), t);
         QVERIFY(json(r).value("format").toString().contains("Quantum wells"));
     }
+
+    // A PDE of one's own in the window: a 1D ODE's default plot a line graph
+    // along its line (a dataset), a 2D one's a color map, an eigenproblem's
+    // eigenvalues a graph over the modes.
+    void aPdeOfOnesOwn()
+    {
+        const QString file = path(QStringLiteral("own_ode.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "m",
+            "geometry": [{"type": "rectangle", "label": "bar", "size": ["1", "0.1"]}],
+            "physics": [{"type": "pde", "tag": "c", "space": "1d", "features": [
+              {"type": "coefficient", "f": "exp(u)", "selection": {"all": true}},
+              {"type": "dirichlet", "r": "0", "selection": {"of": ["bar"], "side": "left"}},
+              {"type": "dirichlet", "r": "0", "selection": {"of": ["bar"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}}],
+          "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}]})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        const QString solution = tagOf(doc->model(), "plotgroup1d", "Solution (c)");
+        QVERIFY(!solution.isEmpty());
+        QString why;
+        const QString display = doc->showGraphs(solution, &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* u = data.find(QStringLiteral("c.u"));
+        QVERIFY(u && u->size() == 500);
+        QVERIFY(std::abs(*std::max_element(u->re.begin(), u->re.end()) - 0.1405392) < 1e-5);
+        // The drum: a color map of its first mode, its eigenvalues over the modes.
+        MultiphysicsDoc* drum = open(copyOf(QStringLiteral("drum_modes.qfem")));
+        QVERIFY(drum != nullptr);
+        drum->compute();
+        QVERIFY(drum->waitForJob(120000));
+        QVERIFY2(drum->lastError().isEmpty(), qPrintable(drum->lastError()));
+        QCOMPARE(drum->view()->show(), GraphicsView::Show::Results);
+        QVERIFY(drum->plotScene()->surface);
+        shoot(app, "41-drum-mode");
+        const QString eig = drum->showGraphs(tagOf(drum->model(), "plotgroup1d", "Eigenvalues"), &why, false);
+        QVERIFY2(!eig.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset lambdas;
+        QVERIFY(lambdas.read(eig.left(eig.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* l = lambdas.find(QStringLiteral("c.lambda"));
+        QVERIFY(l && l->size() == 6 && std::abs(l->re.front() - 5.7832) < 1e-3);
+    }
+
+    // Claude's tools: a drum's eigenvalues listed; the kinds described.
+    void claudesToolsForPdes()
+    {
+        open(copyOf(QStringLiteral("drum_modes.qfem")));
+        QJsonObject r = call("fem_solve", {{"timeout", 120}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray modes = json(r).value("modes").toArray();
+        QCOMPARE(modes.size(), 6);
+        QVERIFY(modes.at(0).toObject().value("c.lambda").toString().startsWith(QLatin1String("5.78")));
+        r = call("fem_describe", {{"what", "format"}});
+        QStringList types;
+        for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
+        for (const char* t : {"pde", "pde/coefficient", "pde/general", "pde/dirichlet", "pde/flux", "eigenvalue"}) QVERIFY2(types.contains(QString::fromLatin1(t)), t);
+        QVERIFY(json(r).value("format").toString().contains("Your own PDE"));
+    }
 };
 
 QTEST_MAIN(TestMultiphysicsDoc)
