@@ -1,0 +1,58 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "An inductor on a gapped core, saturating",
+    "description": "A winding of 100 turns round the left leg of a square steel core with a 1 mm gap, its current swept from 1 to 25 A: the core's B-H curve (electrical steel) solved by Newton's method at each. At small currents the gap rules - L near µ0 N² A / g, 3.8 mH and a little more for the gap's fringing - and as the core saturates past 1.5 T the inductance falls.",
+    "parameters": [
+        {"name": "N", "expression": "100", "description": "the winding's turns"},
+        {"name": "I", "expression": "1[A]", "description": "its current"},
+        {"name": "g", "expression": "1[mm]", "description": "the gap"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "thickness": "20[mm]",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "base": "center", "size": ["240", "240"]},
+            {"type": "rectangle", "label": "block", "base": "center", "size": ["60", "60"]},
+            {"type": "rectangle", "label": "window", "base": "center", "size": ["30", "30"]},
+            {"type": "rectangle", "label": "slot", "base": "center", "position": ["22.5", "0"], "size": ["15", "g"]},
+            {"type": "difference", "label": "core", "input": ["block"], "tools": ["window", "slot"]},
+            {"type": "rectangle", "label": "go", "position": ["-14", "-12"], "size": ["5", "24"]},
+            {"type": "rectangle", "label": "back", "position": ["-36", "-12"], "size": ["5", "24"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"all": true}},
+            {"material": "Electrical steel (M400-50A)", "selection": {"only": ["core"]}},
+            {"material": "Copper", "selection": {"only": ["go", "back"]}}
+        ],
+        "physics": [{
+            "type": "magnetic", "tag": "mf",
+            "features": [
+                {"type": "ampere", "label": "The core's B-H curve", "constitutive": "bh", "selection": {"only": ["core"]}},
+                {"type": "coil", "label": "The winding, going", "name": "go", "conductor": "multi", "N": "N", "I0": "I", "selection": {"only": ["go"]}},
+                {"type": "coil", "label": "The winding, coming back", "name": "back", "conductor": "multi", "N": "N", "I0": "-I", "selection": {"only": ["back"]}}
+            ]
+        }],
+        "mesh": {"size": "normal", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["core", "go", "back"]}, "hmax": "1.5"},
+            {"type": "size", "level": "boundary", "selection": {"of": ["slot"]}, "hmax": "0.25"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["I", "1, 4, 8, 12, 16, 20, 25", "A"]]},
+        {"type": "stationary", "sweep": false}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Flux Density", "plots": [
+                {"type": "surface", "expression": "mf.normB", "colors": "viridis"},
+                {"type": "contour", "expression": "mf.Az", "levels": 24}
+            ]},
+            {"type": "plotgroup1d", "label": "Inductance against the Current", "plots": [{"type": "globalgraph", "expression": "ind"}]}
+        ],
+        "derived": [
+            {"type": "global", "tag": "ind", "label": "Inductance", "expression": "mf.L_go + mf.L_back", "unit": "mH"},
+            {"type": "maximum", "label": "Largest B in the core", "expression": "mf.normB", "unit": "T", "selection": {"only": ["core"]}}
+        ]
+    }
+}

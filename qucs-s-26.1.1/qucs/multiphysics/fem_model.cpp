@@ -179,6 +179,20 @@ P shownIf(P p, const QString& condition)
     return p;
 }
 
+/// A B-H curve: rows of B and H.
+P bhRows()
+{
+    P p;
+    p.key = QStringLiteral("BH");
+    p.label = tr("B-H curve");
+    p.kind = P::Rows;
+    p.choiceLabels = {tr("B (T)"), tr("H (A/m)")};
+    p.defaultValue = QJsonArray();
+    p.tooltip = tr("A soft magnetic material's curve: B in T and H in A/m (or with units) from (0, 0), rising; "
+                   "beyond its last point H grows as in vacuum");
+    return p;
+}
+
 QList<NodeKind> makeKinds()
 {
     QList<NodeKind> k;
@@ -236,8 +250,9 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("thickness"), tr("Out-of-plane thickness"), QStringLiteral("m"), QStringLiteral("1[m]"),
                        tr("What a charge, a current, a power or a force of the 2D model is for: per this length out of the plane")),
                   QStringLiteral("space=2D"))},
-         {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid")}, {}, true, true,
-         QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
+         {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
+          QStringLiteral("magnetic")},
+         {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
     add({QStringLiteral("selection"), tr("Selection"), QStringLiteral("selection"), QStringLiteral("selection"), Level::Domain,
@@ -251,7 +266,7 @@ QList<NodeKind> makeKinds()
         QStringLiteral("rectangle"), QStringLiteral("circle"), QStringLiteral("ellipse"), QStringLiteral("polygon"),
         QStringLiteral("point"), QStringLiteral("move"), QStringLiteral("rotate"), QStringLiteral("scale"),
         QStringLiteral("mirror"), QStringLiteral("array"), QStringLiteral("union"), QStringLiteral("difference"),
-        QStringLiteral("intersection"), QStringLiteral("import")};
+        QStringLiteral("intersection"), QStringLiteral("import"), QStringLiteral("crosssection")};
     add({QStringLiteral("geometry"), tr("Geometry"), QString(), QStringLiteral("geometry"), Level::None, {}, geometryFeatures,
          {QStringLiteral("form union")}, true, true, QString(),
          tr("A sequence of features, built in order: each makes objects of the parameters. Form Union makes them one: "
@@ -329,13 +344,17 @@ QList<NodeKind> makeKinds()
         file.label = tr("File");
         file.kind = P::File;
         file.defaultValue = QString();
-        file.tooltip = tr("A DXF or SVG drawing, its path relative to the model's folder");
+        file.tooltip = tr("A DXF or SVG drawing, or a GDSII or OASIS layout, its path relative to the model's folder");
         add({QStringLiteral("import"), tr("Import"), QStringLiteral("geometry"), QStringLiteral("import"), Level::None,
              {file,
-              choice(QStringLiteral("format"), tr("Format"), {QStringLiteral("auto"), QStringLiteral("dxf"), QStringLiteral("svg")},
-                     {tr("By its suffix"), tr("DXF (AutoCAD)"), tr("SVG")}, QStringLiteral("auto")),
-              shownIf(text(QStringLiteral("layers"), tr("Layers"), QString(), tr("A DXF's layers to read, split by commas (empty: all)")),
+              choice(QStringLiteral("format"), tr("Format"),
+                     {QStringLiteral("auto"), QStringLiteral("dxf"), QStringLiteral("svg"), QStringLiteral("gds"), QStringLiteral("oasis")},
+                     {tr("By its suffix"), tr("DXF (AutoCAD)"), tr("SVG"), tr("GDSII layout"), tr("OASIS layout")}, QStringLiteral("auto")),
+              shownIf(text(QStringLiteral("layers"), tr("Layers"), QString(),
+                           tr("A DXF's layers to read, split by commas; a layout's as layer/datatype: 1/0, 2/0, 3/* (empty: all)")),
                       QStringLiteral("format!=svg")),
+              shownIf(text(QStringLiteral("cell"), tr("Cell"), QString(), tr("A layout's cell, flattened (empty: its largest top cell)")),
+                      QStringLiteral("format!=svg&format!=dxf")),
               choice(QStringLiteral("unit"), tr("The file's unit"),
                      {QStringLiteral("auto"), QStringLiteral("m"), QStringLiteral("cm"), QStringLiteral("mm"), QStringLiteral("um"),
                       QStringLiteral("nm"), QStringLiteral("in"), QStringLiteral("mil"), QStringLiteral("px")},
@@ -349,7 +368,30 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("imp"),
              tr("A drawing's lines, arcs, circles, ellipses, polylines and splines (DXF), or its paths, rectangles, circles, "
                 "ellipses, polygons and lines (SVG): its closed curves solids - one inside another a hole - the others "
-                "curves. Read again when the file changes.")});
+                "curves. A layout's cell seen from above (GDSII, OASIS; in µm): an object for each layer, name_layer_datatype, "
+                "its shapes made one. Read again when the file changes.")});
+        P layout = file;
+        layout.tooltip = tr("A GDSII or OASIS layout, its path relative to the model's folder");
+        P stack;
+        stack.key = QStringLiteral("stack");
+        stack.label = tr("Layer stack");
+        stack.kind = P::Rows;
+        stack.choiceLabels = {tr("Name"), tr("Layer"), tr("z (µm)"), tr("Thickness (µm)")};
+        stack.defaultValue = QJsonArray();
+        stack.tooltip = tr("Each row an object of that name: where its layer (as 1/0) is under the cut, from z to z + thickness; "
+                           "no layer: all along the cut (a substrate, an oxide, air). µm, or with units");
+        add({QStringLiteral("crosssection"), tr("Layout Cross-Section"), QStringLiteral("geometry"), QStringLiteral("crosssection"), Level::None,
+             {layout, text(QStringLiteral("cell"), tr("Cell"), QString(), tr("Flattened (empty: its largest top cell)")),
+              pair(QStringLiteral("start"), tr("Cut from (x, y)"), QString(), QStringLiteral("0"), QStringLiteral("0"),
+                   tr("In the layout's coordinates: µm, or with units")),
+              pair(QStringLiteral("end"), tr("Cut to (x, y)"), QString(), QStringLiteral("10"), QStringLiteral("0")), stack,
+              choice(QStringLiteral("origin"), tr("x = 0 at"), {QStringLiteral("start"), QStringLiteral("center")},
+                     {tr("The cut's start"), tr("Its middle")}, QStringLiteral("start")),
+              pair(QStringLiteral("position"), tr("Displacement"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0"))},
+             {}, {}, false, false, QStringLiteral("xs"),
+             tr("A slice of a layout along a cut line: x along the cut, y its layer stack's heights - each row of the stack a "
+                "rectangle where its layer lies under the cut (a row without a layer: all along it). Its objects are named as the "
+                "rows, for the materials and the physics. Read again when the layout changes.")});
     }
     add({QStringLiteral("form union"), tr("Form Union"), QStringLiteral("geometry"), QStringLiteral("formunion"), Level::None,
          {expr(QStringLiteral("tolerance"), tr("Repair tolerance"), QString(), QStringLiteral("1e-6"),
@@ -368,7 +410,11 @@ QList<NodeKind> makeKinds()
           spatial(QStringLiteral("k"), tr("Thermal conductivity k"), QStringLiteral("W/(m*K)"), QString()),
           spatial(QStringLiteral("rho"), tr("Density ρ"), QStringLiteral("kg/m^3"), QString()),
           spatial(QStringLiteral("Cp"), tr("Heat capacity Cp"), QStringLiteral("J/(kg*K)"), QString()),
+          spatial(QStringLiteral("tand"), tr("Loss tangent tan δ"), QString(), QString(),
+                  tr("Of a dielectric: a line's conductance per metre G = ω C tan δ")),
           spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QString()),
+          bhRows(),
+          expr(QStringLiteral("Br"), tr("Remanent flux density Br"), QStringLiteral("T"), QString(), tr("Of a permanent magnet")),
           spatial(QStringLiteral("E"), tr("Young's modulus E"), QStringLiteral("Pa"), QString()),
           spatial(QStringLiteral("nu"), tr("Poisson's ratio ν"), QString(), QString()),
           spatial(QStringLiteral("alpha"), tr("Thermal expansion α"), QStringLiteral("1/K"), QString()),
@@ -583,6 +629,71 @@ QList<NodeKind> makeKinds()
                   tr("Its weight: -rho*g_const, with rho a parameter or a value"))},
          {}, {}, false, false, QStringLiteral("bl"), tr("A force per volume: weight, an inertial force.")});
 
+    // Magnetic fields.
+    add({QStringLiteral("magnetic"), tr("Magnetic Fields"), QStringLiteral("physics"), QStringLiteral("mf"), Level::Domain,
+         {selectionProp(),
+          choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
+                 QStringLiteral("2"))},
+         {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/current"), QStringLiteral("magnetic/coil"),
+          QStringLiteral("magnetic/magnet"), QStringLiteral("magnetic/insulation"), QStringLiteral("magnetic/potential"),
+          QStringLiteral("magnetic/pmc"), QStringLiteral("magnetic/surfacecurrent")},
+         {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/insulation")}, false, false, QStringLiteral("mf"),
+         tr("The magnetic vector potential A out of the plane (round the axis): ∇×(µ⁻¹ ∇×A) = J, with B-H curves at rest "
+            "and eddy currents (jωσA) in the frequency domain. Coils give an inductance or impedance matrix.")});
+    add({QStringLiteral("magnetic/ampere"), tr("Ampère's Law"), QStringLiteral("mf"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(),
+          choice(QStringLiteral("constitutive"), tr("Magnetization model"), {QStringLiteral("mur"), QStringLiteral("bh")},
+                 {tr("Relative permeability"), tr("B-H curve")}, QStringLiteral("mur"),
+                 tr("A B-H curve is solved by Newton's method; at rest only")),
+          source,
+          shownIf(spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QStringLiteral("1")),
+                  QStringLiteral("source=user&constitutive=mur")),
+          shownIf(bhRows(), QStringLiteral("source=user&constitutive=bh")),
+          shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("0[S/m]")),
+                  QStringLiteral("source=user"))},
+         {}, {}, false, false, QStringLiteral("al"),
+         tr("H = B/(µ0 µr), or by a B-H curve; J = σ E where it conducts (eddy currents in the frequency domain). From "
+            "their material or as given.")});
+    add({QStringLiteral("magnetic/current"), tr("External Current Density"), QStringLiteral("mf"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none), spatial(QStringLiteral("Je"), tr("Current density Je"), QStringLiteral("A/m^2"), QStringLiteral("0[A/m^2]"),
+                                       tr("Out of the plane (round the axis)"))},
+         {}, {}, false, false, QStringLiteral("ecd"), tr("A current density given: out of the plane, or round the axis.")});
+    add({QStringLiteral("magnetic/coil"), tr("Coil"), QStringLiteral("mf"), QStringLiteral("coil"), Level::Domain,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Coil name"), QStringLiteral("1")),
+          choice(QStringLiteral("conductor"), tr("Conductor model"), {QStringLiteral("single"), QStringLiteral("multi")},
+                 {tr("Single conductor"), tr("Homogenized multi-turn")}, QStringLiteral("single"),
+                 tr("A single conductor: its current spread as its voltage drives it (the skin effect in the frequency domain); "
+                    "turns of thin wire: evenly, no eddy currents")),
+          expr(QStringLiteral("I0"), tr("Coil current"), QStringLiteral("A"), QStringLiteral("1[A]"),
+               tr("Its amplitude in the frequency domain; out of the plane (round the axis)")),
+          shownIf(expr(QStringLiteral("N"), tr("Number of turns"), QString(), QStringLiteral("10")), QStringLiteral("conductor=multi"))},
+         {}, {}, false, false, QStringLiteral("coil"),
+         tr("A conductor fed a current, its voltage found: mf.V_<name>, mf.R_<name>, mf.L_<name>; with coils swept, the "
+            "inductance (impedance) matrix mf.L_<i>_<j>, mf.R_<i>_<j>.")});
+    add({QStringLiteral("magnetic/magnet"), tr("Magnetization"), QStringLiteral("mf"), QStringLiteral("magnet"), Level::Domain,
+         {selectionProp(none), source,
+          shownIf(expr(QStringLiteral("Br"), tr("Remanent flux density Br"), QStringLiteral("T"), QStringLiteral("1[T]")),
+                  QStringLiteral("source=user")),
+          pair(QStringLiteral("direction"), tr("Direction (x, y)"), QString(), QStringLiteral("0"), QStringLiteral("1"),
+               tr("Its magnetization's direction: (r, z) about the axis"))},
+         {}, {}, false, false, QStringLiteral("mag"),
+         tr("A permanent magnet: B = µ0 µr H + Br, µr (its recoil permeability) from Ampère's Law.")});
+    add({QStringLiteral("magnetic/insulation"), tr("Magnetic Insulation"), QStringLiteral("mf"), QStringLiteral("ground"), Level::Boundary,
+         {selectionProp()}, {}, {}, false, false, QStringLiteral("mi"),
+         tr("A = 0: no flux crosses it (a perfect conductor). On the physics' outer boundaries.")});
+    add({QStringLiteral("magnetic/potential"), tr("Magnetic Potential"), QStringLiteral("mf"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none), spatial(QStringLiteral("A0"), tr("Magnetic vector potential A0"), QStringLiteral("Wb/m"), QStringLiteral("0[Wb/m]"))},
+         {}, {}, false, false, QStringLiteral("mp"), tr("A given: the flux between two boundaries is the difference of their A.")});
+    add({QStringLiteral("magnetic/pmc"), tr("Perfect Magnetic Conductor"), QStringLiteral("mf"), QStringLiteral("boundaryfeature"),
+         Level::Boundary, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pmc"),
+         tr("n × H = 0: the field meets it at right angles (a symmetry plane of the currents).")});
+    add({QStringLiteral("magnetic/surfacecurrent"), tr("Surface Current Density"), QStringLiteral("mf"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none), spatial(QStringLiteral("Js"), tr("Surface current density Js"), QStringLiteral("A/m"), QStringLiteral("0[A/m]"))},
+         {}, {}, false, false, QStringLiteral("scd"), tr("A current sheet on the boundary, out of the plane.")});
+
     // Mesh.
     const QStringList presets = {QStringLiteral("extremely fine"), QStringLiteral("extra fine"), QStringLiteral("finer"),
                                  QStringLiteral("fine"), QStringLiteral("normal"), QStringLiteral("coarse"),
@@ -613,7 +724,8 @@ QList<NodeKind> makeKinds()
 
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
-         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("sweep")}, {QStringLiteral("stationary")}, false, false,
+         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("sweep")},
+         {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
         P physics;
@@ -633,7 +745,7 @@ QList<NodeKind> makeKinds()
                                       "steps; physics that read each other's are solved in turn till they agree"));
         add({QStringLiteral("stationary"), tr("Stationary"), QStringLiteral("step"), QStringLiteral("stationary"), Level::None,
              {physics, solver, nonlinear,
-              flag(QStringLiteral("sweep"), tr("Terminal sweep (capacitance, conductance matrices)"), true),
+              flag(QStringLiteral("sweep"), tr("Terminal and coil sweep (capacitance, conductance, inductance matrices)"), true),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the nonlinear iterations, and of an iterative solver")),
               integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50,
@@ -659,6 +771,18 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("time"),
              tr("The fields in time: heat with its ρ Cp ∂T/∂t, the other physics at rest at each step, from the initial "
                 "values; kept at the output times.")});
+        add({QStringLiteral("frequency"), tr("Frequency Domain"), QStringLiteral("step"), QStringLiteral("frequency"), Level::None,
+             {physics,
+              text(QStringLiteral("frequencies"), tr("Frequencies"), QStringLiteral("logspace(1[kHz], 1[GHz], 31)"),
+                   tr("In Hz, or with a unit: logspace(start, stop, count) - evenly in the logarithm -, range(start, step, stop), "
+                      "linspace(start, stop, count) or values split by commas")),
+              flag(QStringLiteral("sweep"), tr("Coil sweep (impedance matrix)"), true), solver,
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
+                   tr("Of the physics solved in turn at each frequency")),
+              integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50)},
+             {}, {}, false, false, QStringLiteral("freq"),
+             tr("The fields at each frequency: magnetic fields with their eddy currents (complex: their real and imaginary "
+                "parts), the other physics at rest at each; kept at each frequency.")});
         P rows;
         rows.key = QStringLiteral("parameters");
         rows.label = tr("Parameters swept");
@@ -679,7 +803,7 @@ QList<NodeKind> makeKinds()
     // Results.
     add({QStringLiteral("results"), tr("Results"), QString(), QStringLiteral("results"), Level::None, {},
          {QStringLiteral("plotgroup"), QStringLiteral("plotgroup1d"), QStringLiteral("cutline"), QStringLiteral("cutpoint")},
-         {QStringLiteral("derived")}, true, true, QString(), QString()});
+         {QStringLiteral("derived"), QStringLiteral("exports")}, true, true, QString(), QString()});
     {
         P study;
         study.key = QStringLiteral("study");
@@ -699,8 +823,15 @@ QList<NodeKind> makeKinds()
         time.kind = P::Instant;
         time.defaultValue = QString();
         time.tooltip = tr("Of a study in time: the output time shown (empty: the last)");
+        P frequency;
+        frequency.key = QStringLiteral("frequency");
+        frequency.label = tr("Frequency");
+        frequency.kind = P::Instant;
+        frequency.unit = QStringLiteral("Hz");
+        frequency.defaultValue = QString();
+        frequency.tooltip = tr("Of a study in the frequency domain: the frequency shown (empty: the last)");
         add({QStringLiteral("plotgroup"), tr("2D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup"), Level::None,
-             {study, point, time, text(QStringLiteral("title"), tr("Title"), QString())},
+             {study, point, time, frequency, text(QStringLiteral("title"), tr("Title"), QString())},
              {QStringLiteral("surface"), QStringLiteral("contour"), QStringLiteral("arrow"), QStringLiteral("meshplot"), QStringLiteral("deformation")},
              {}, false, false, QStringLiteral("pg"), tr("Plots shown together in the Graphics view.")});
         add({QStringLiteral("deformation"), tr("Deformation"), QStringLiteral("plot"), QStringLiteral("deformation"), Level::None,
@@ -736,7 +867,7 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("cutpoint"), tr("Cut Point 2D"), QStringLiteral("dataset"), QStringLiteral("cutpoint"), Level::None, {coordinates0},
              {}, {}, false, false, QStringLiteral("cpt"), tr("Points of the model: what a Point Graph shows values at, in time or along a sweep.")});
         add({QStringLiteral("plotgroup1d"), tr("1D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup1d"), Level::None,
-             {study, point, time, text(QStringLiteral("title"), tr("Title"), QString()),
+             {study, point, time, frequency, text(QStringLiteral("title"), tr("Title"), QString()),
               choice(QStringLiteral("diagram"), tr("Diagram"), {QStringLiteral("rect"), QStringLiteral("tab")},
                      {tr("Cartesian"), tr("Table")}, QStringLiteral("rect"))},
              {QStringLiteral("linegraph"), QStringLiteral("globalgraph"), QStringLiteral("pointgraph")}, {}, false, false,
@@ -836,11 +967,83 @@ QList<NodeKind> makeKinds()
         physics.label = tr("Physics");
         physics.kind = P::Physics;
         physics.defaultValue = QJsonArray{QStringLiteral("es")};
-        add({QStringLiteral("lineparams"), tr("Line Parameters (quasi-TEM)"), QStringLiteral("derived"), QStringLiteral("lineparams"),
-             Level::None, {study, physics, terminal}, {}, {}, false, false, QStringLiteral("lp"),
-             tr("A transmission line's cross-section: its capacitance C and, with every εr 1, C0 - so εeff = C/C0, "
-                "Z0 = 1/(c0 √(C C0)) and L = 1/(c0² C0) per metre. The signal terminal at 1 V, the others and the "
-                "grounds at 0 V.")});
+        P magnetic;
+        magnetic.key = QStringLiteral("magnetic");
+        magnetic.label = tr("Magnetic fields");
+        magnetic.kind = P::Physics;
+        magnetic.defaultValue = QJsonArray{QStringLiteral("mf")};
+        magnetic.showIf = QStringLiteral("method=rlgc");
+        add({QStringLiteral("lineparams"), tr("Line Parameters"), QStringLiteral("derived"), QStringLiteral("lineparams"),
+             Level::None,
+             {study,
+              choice(QStringLiteral("method"), tr("Method"), {QStringLiteral("quasitem"), QStringLiteral("rlgc")},
+                     {tr("Quasi-TEM, from electrostatics alone"), tr("R, L, G, C over frequency: electrostatics and magnetic fields")},
+                     QStringLiteral("quasitem")),
+              physics, terminal, magnetic,
+              shownIf(text(QStringLiteral("conductor"), tr("Signal conductor (coil)"), QStringLiteral("1"),
+                           tr("The magnetic fields' coil that carries the line's current")),
+                      QStringLiteral("method=rlgc")),
+              shownIf(text(QStringLiteral("return"), tr("Return conductor (coil)"), QString(),
+                           tr("The coil the current comes back in (empty: the boundaries at A = 0, a perfect ground)")),
+                      QStringLiteral("method=rlgc")),
+              solutions},
+             {}, {}, false, false, QStringLiteral("lp"),
+             tr("A transmission line's cross-section, per metre. Quasi-TEM: its capacitance C and, with every εr 1, C0 - so "
+                "εeff = C/C0, Z0 = 1/(c0 √(C C0)) and L = 1/(c0² C0). R, L, G, C: C from electrostatics, G = ω C tan δ "
+                "(+ σ) from its dielectrics' losses, R and L from the magnetic fields' coils in the frequency domain (the "
+                "skin effect, internal inductance) - Z0, the attenuation α and β at each frequency.")});
+
+        // Exports.
+        add({QStringLiteral("exports"), tr("Export"), QString(), QStringLiteral("exports"), Level::None, {},
+             {QStringLiteral("touchstone"), QStringLiteral("spice"), QStringLiteral("qucspart")}, {}, true, true, QString(),
+             tr("Results as files and parts of circuits: a line's S-parameters (Touchstone), SPICE subcircuits, a Qucs "
+                "subcircuit - each written beside the model (model_tag.s2p, .cir, .sch).")});
+        P line;
+        line.key = QStringLiteral("line");
+        line.label = tr("Line");
+        line.kind = P::Reference;
+        line.choices = {QStringLiteral("lineparams")};
+        line.defaultValue = QStringLiteral("lp1");
+        line.tooltip = tr("A Line Parameters node of method \"R, L, G, C over frequency\"");
+        const P length = expr(QStringLiteral("length"), tr("Line length"), QStringLiteral("m"), QStringLiteral("10[mm]"));
+        P file;
+        file.key = QStringLiteral("file");
+        file.label = tr("File");
+        file.kind = P::File;
+        file.defaultValue = QString();
+        file.tooltip = tr("Where it is written, relative to the model's folder (empty: model_tag beside it)");
+        const P name = text(QStringLiteral("name"), tr("Subcircuit name"), QString(), tr("Empty: the node's tag"));
+        add({QStringLiteral("touchstone"), tr("Touchstone File"), QStringLiteral("export"), QStringLiteral("touchstone"), Level::None,
+             {study, point, line, length, expr(QStringLiteral("zref"), tr("Reference impedance"), QStringLiteral("ohm"), QStringLiteral("50[ohm]")),
+              file},
+             {}, {}, false, false, QStringLiteral("ts"),
+             tr("A line of its length as a two-port: its S-parameters at each frequency of the study, a Touchstone file (.s2p) "
+                "for a schematic's S-parameter file part.")});
+        P physicsMatrix;
+        physicsMatrix.key = QStringLiteral("physics");
+        physicsMatrix.label = tr("Physics");
+        physicsMatrix.kind = P::Physics;
+        physicsMatrix.defaultValue = QJsonArray{QStringLiteral("es")};
+        physicsMatrix.showIf = QStringLiteral("what=matrix");
+        add({QStringLiteral("spice"), tr("SPICE Subcircuit"), QStringLiteral("export"), QStringLiteral("spice"), Level::None,
+             {study, point, frequency,
+              choice(QStringLiteral("what"), tr("Of"), {QStringLiteral("line"), QStringLiteral("matrix")},
+                     {tr("A transmission line"), tr("Terminals' matrix: capacitances, conductances, inductances")}, QStringLiteral("line")),
+              shownIf(line, QStringLiteral("what=line")), shownIf(length, QStringLiteral("what=line")),
+              shownIf(choice(QStringLiteral("model"), tr("Line model"), {QStringLiteral("ladder"), QStringLiteral("ltra")},
+                             {tr("Sections of R, L, G, C"), tr("A lossy line (LTRA)")}, QStringLiteral("ladder")),
+                      QStringLiteral("what=line")),
+              shownIf(integer(QStringLiteral("sections"), tr("Sections"), 20, tr("Enough that each is short against a wavelength")),
+                      QStringLiteral("what=line&model=ladder")),
+              physicsMatrix, name, file},
+             {}, {}, false, false, QStringLiteral("sp"),
+             tr("A SPICE subcircuit (.cir): a line as sections of R, L, G, C or an LTRA line at a frequency, or a physics' "
+                "terminals as capacitors (es), resistors (ec) or coupled inductors (mf).")});
+        add({QStringLiteral("qucspart"), tr("Qucs Subcircuit (RLCG)"), QStringLiteral("export"), QStringLiteral("qucspart"), Level::None,
+             {study, point, frequency, line, length, name, file},
+             {}, {}, false, false, QStringLiteral("qp"),
+             tr("A Qucs subcircuit (.sch): an RLCG part of the line's values at a frequency and its length between ports 1 "
+                "and 2 - a part for a schematic (Subcircuit), or copied to paste.")});
     }
     return k;
 }
@@ -877,7 +1080,8 @@ QList<const NodeKind*> nodeKinds()
 
 QStringList physicsTypes()
 {
-    return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid")};
+    return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
+            QStringLiteral("magnetic")};
 }
 
 // ------------------------------------------------------------------ Node
@@ -1195,6 +1399,7 @@ Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
                          : parent->type == QLatin1String("model")     ? QStringLiteral("results")
                          : parent->type == QLatin1String("results")   ? QStringLiteral("derived")
                                                                       : QString();
+    // (Results: before Derived Values and Export.)
     if (!last.isEmpty())
         for (int i = 0; i < int(list.size()); ++i)
             if (list[std::size_t(i)].type == last && at > i) at = i;
@@ -1441,16 +1646,19 @@ void Model::normalise()
         }
         root.children.push_back(results);
         Node& r = root.children.back();
-        auto d = std::find_if(r.children.begin(), r.children.end(), [](const Node& n) { return n.type == QLatin1String("derived"); });
-        Node derived;
-        if (d != r.children.end()) {
-            derived = *d;
-            r.children.erase(d);
-        } else {
-            derived.type = QStringLiteral("derived");
-            derived.tag = QStringLiteral("derived");
+        // Derived Values, then Export, last of them.
+        for (const QString& type : {QStringLiteral("derived"), QStringLiteral("exports")}) {
+            auto d = std::find_if(r.children.begin(), r.children.end(), [&](const Node& n) { return n.type == type; });
+            Node fixed;
+            if (d != r.children.end()) {
+                fixed = *d;
+                r.children.erase(d);
+            } else {
+                fixed.type = type;
+                fixed.tag = type;
+            }
+            r.children.push_back(fixed);
         }
-        r.children.push_back(derived);
     }
     // Every node a tag, each its own.
     QSet<QString> tags;
@@ -1604,6 +1812,12 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     for (const QJsonValue& d : ro.value(QStringLiteral("derived")).toArray())
         if (std::optional<Node> n = nodeFrom(QStringLiteral("derived"), d, problems)) derived.children.push_back(*n);
     results.children.push_back(derived);
+    Node exports;
+    exports.type = QStringLiteral("exports");
+    exports.tag = QStringLiteral("exports");
+    for (const QJsonValue& e : ro.value(QStringLiteral("exports")).toArray())
+        if (std::optional<Node> n = nodeFrom(QStringLiteral("exports"), e, problems)) exports.children.push_back(*n);
+    results.children.push_back(exports);
     m.root.children.push_back(results);
 
     m.normalise();
@@ -1660,16 +1874,19 @@ QJsonObject Model::toObject() const
         if (s.type == QLatin1String("study")) studies.append(nodeObject(root, s, QStringLiteral("steps")));
     o.insert(QStringLiteral("studies"), studies);
     QJsonObject r;
-    QJsonArray plots, derived;
+    QJsonArray plots, derived, exports;
     for (const Node& p : results().children) {
         if (p.type == QLatin1String("derived")) {
             for (const Node& d : p.children) derived.append(nodeObject(p, d));
+        } else if (p.type == QLatin1String("exports")) {
+            for (const Node& e : p.children) exports.append(nodeObject(p, e));
         } else {
             plots.append(nodeObject(results(), p, QStringLiteral("plots")));
         }
     }
     r.insert(QStringLiteral("plots"), plots);
     r.insert(QStringLiteral("derived"), derived);
+    if (!exports.isEmpty()) r.insert(QStringLiteral("exports"), exports);
     o.insert(QStringLiteral("results"), r);
     return o;
 }

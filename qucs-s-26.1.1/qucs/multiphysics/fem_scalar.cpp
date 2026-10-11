@@ -148,6 +148,7 @@ bool ScalarProblem::setup(QString* error)
     coef.sources.assign(topo.domains.size(), {});
     coef.sourceScale.assign(topo.domains.size(), 1.0);
     coef.capacity.assign(topo.domains.size(), Expression());
+    coef.named.clear();
     a_conditions.assign(topo.boundaries.size(), Condition());
     a_natural.assign(topo.boundaries.size(), {});
     a_terminals.clear();
@@ -331,6 +332,16 @@ bool ScalarProblem::setup(QString* error)
         if (e.isValid() && e.isConstant() && !(e.constant() > 0) && !(a_es && e.constant() != 0))
             problem(tr("domain %1: its %2 must be more than 0").arg(d + 1).arg(propertyName));
         coef.c[std::size_t(d)] = e;
+        if (a_es && !a_vacuum) {
+            // A dielectric's losses, for a line's conductance per metre: its
+            // loss tangent and its conductivity (none given: none).
+            for (const QString& key : {QStringLiteral("tand"), QStringLiteral("sigma")}) {
+                const QString t = user ? QString() : (m ? materialProperty(*m, key) : QString());
+                std::vector<Expression>& list = coef.named[key];
+                list.resize(topo.domains.size());
+                if (!t.trimmed().isEmpty()) list[std::size_t(d)] = compile(t, *m, key);
+            }
+        }
         if (a_heat) {
             // ρ Cp, for a step in time (said only then: a stationary study
             // needs neither).

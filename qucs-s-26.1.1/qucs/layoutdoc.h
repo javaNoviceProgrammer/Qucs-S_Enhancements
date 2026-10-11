@@ -12,6 +12,7 @@
 #ifndef QUCS_LAYOUTDOC_H
 #define QUCS_LAYOUTDOC_H
 
+#include "fem_materials.h"
 #include "layout.h"
 #include "qucsdoc.h"
 
@@ -24,6 +25,7 @@
 #include <functional>
 #include <optional>
 
+class MultiphysicsDoc;
 class QCheckBox;
 class QFileSystemWatcher;
 class QLabel;
@@ -277,6 +279,11 @@ public:
     /// Reads the file again, the cell, view and layers kept.
     bool reload();
 
+    /// A new multiphysics model of the cell shown cut along \a cut (µm), in a
+    /// tab of its own: its layer stack \a rows, or (none) the one a dialog
+    /// asks for. Null, and why in \a error, when there is none.
+    MultiphysicsDoc* crossSection(const QLineF& cut, const QList<qucs_s::fem::StackRow>* rows = nullptr, QString* error = nullptr);
+
     // For the tests.
     QTreeWidget* cellTree() const { return a_cells; }
     QTreeWidget* layerList() const { return a_layers; }
@@ -297,6 +304,9 @@ public slots:
     void openInKLayout();
     void revealInFileManager();
     void copySelection();
+    /// A new multiphysics model of the cell shown cut along the last ruler
+    /// (its layer stack asked for).
+    void crossSectionFromRuler();
     void cancelLoading();
     void chooseLayerProperties();
 

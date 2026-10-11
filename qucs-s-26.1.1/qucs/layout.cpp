@@ -13,6 +13,8 @@
  */
 #include "layout.h"
 
+#include "fem_import.h"
+
 #include <QBitArray>
 #include <QCoreApplication>
 #include <QDir>
@@ -152,11 +154,10 @@ FILE* openFile(const QString& path, const char* mode)
 }
 
 // gdstk tells what it reads to one FILE* of its own (error_logger): one
-// read at a time, what it said kept.
+// read at a time, what it said kept - the multiphysics engine's reads too.
 QMutex& readLock()
 {
-    static QMutex lock;
-    return lock;
+    return qucs_s::fem::gdstkLock();
 }
 
 // ----------------------------------------------------------------------

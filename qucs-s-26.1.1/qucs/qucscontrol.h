@@ -472,6 +472,7 @@ private:
     QJsonObject femSolve(const QJsonObject& args);
     QJsonObject femEvaluate(const QJsonObject& args);
     QJsonObject femPlot(const QJsonObject& args);
+    QJsonObject femExport(const QJsonObject& args);
     /// A path a git tool names: relative, from the open project's folder,
     /// the workspace, the document's folder or the File Browser's - the
     /// first where it is, else the first in a repository.

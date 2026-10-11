@@ -13,8 +13,10 @@ set(FEM_SRCS
   fem_solver.cpp
   fem_scalar.cpp
   fem_elastic.cpp
+  fem_magnetic.cpp
   fem_import.cpp
   fem_results.cpp
+  fem_export.cpp
   fem_materials.cpp
 )
 

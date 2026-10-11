@@ -23,6 +23,7 @@
 
 #include <QSet>
 
+#include <complex>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -36,6 +37,13 @@ inline const double NaN = std::numeric_limits<double>::quiet_NaN();
 /// Runs \a work(begin, end) on parts of [0, n) in threads.
 void parallelFor(int n, const std::function<void(int, int)>& work);
 
+/// The elements of a system: called with a function each element gives
+/// its equations to (negative ones left out).
+using ElementPattern = std::function<void(const std::function<void(const int*, int)>&)>;
+/// A sparse matrix's compressed columns of \a neq equations, every pair
+/// of an element's (and the diagonal): \a outer (neq + 1) and \a inner.
+void buildPattern(int neq, const ElementPattern& elements, std::vector<int>& outer, std::vector<int>& inner);
+
 /*!
  * A sparse system A x = b: its pattern from the elements (the equations
  * each couples), its values added element by element, factorized - by a
@@ -48,7 +56,7 @@ class LinearSystem
 public:
     /// The equations: \a neq of them; \a elements called with a function
     /// each element gives its equations to (negative ones left out).
-    void setPattern(int neq, const std::function<void(const std::function<void(const int*, int)>&)>& elements);
+    void setPattern(int neq, const ElementPattern& elements);
     int size() const { return a_n; }
     /// Every value 0 (the pattern kept).
     void clear();
@@ -69,6 +77,35 @@ private:
     bool a_ldltAnalyzed = false, a_luAnalyzed = false;
 };
 
+/*!
+ * A sparse complex system A x = b (the frequency domain: K + jωM):
+ * factorized, solved as often as wanted. One complex symmetric whose real
+ * part is positive definite (\a quasiDefinite) is factorized as its real
+ * equivalent [K, -B; -B, -K] (for K + jB) - symmetric and quasi-definite, so
+ * an LDLT of it exists in any order - by a sparse Cholesky's LDLT, faster
+ * than a complex LU; else, or should that fail, by LU.
+ */
+class ComplexSystem
+{
+public:
+    using Matrix = Eigen::SparseMatrix<std::complex<double>>;
+    void setPattern(int neq, const ElementPattern& elements);
+    int size() const { return a_n; }
+    void clear();
+    void add(int i, int j, std::complex<double> v);
+    bool factorize(const QString& name, QString* error, bool quasiDefinite = false);
+    bool solve(const Eigen::VectorXcd& rhs, Eigen::VectorXcd& x, const QString& name, QString* error) const;
+
+private:
+    int a_n = 0;
+    Matrix a_A;
+    std::unique_ptr<Eigen::SparseLU<Matrix>> a_lu;
+    bool a_analyzed = false;
+    Eigen::SparseMatrix<double> a_real;
+    std::unique_ptr<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>> a_ldlt;
+    bool a_ldltAnalyzed = false;
+};
+
 /// How a physics is solved, once.
 struct SolveOptions {
     QString solver = QStringLiteral("auto");      ///< auto, direct, iterative
@@ -80,6 +117,10 @@ struct SolveOptions {
     /// (history by degree of freedom; mass 0: at rest).
     double mass = 0;
     const std::vector<double>* history = nullptr;
+    /// In the frequency domain, at this frequency (Hz): a physics that has
+    /// one (harmonic()) solved there, others at rest.
+    bool harmonic = false;
+    double frequency = 0;
 };
 
 /*!
@@ -104,6 +145,8 @@ public:
     virtual void setGlobals() = 0;
     /// Whether it has a time derivative (heat), for a step in time.
     virtual bool hasMass() const { return false; }
+    /// Whether it has a frequency domain (magnetic fields' eddy currents).
+    virtual bool harmonic() const { return false; }
     /// Whether what it reads (its coefficients, sources, conditions) reads
     /// field \a f.
     bool reads(int f) const { return a_reads.contains(f); }
@@ -131,6 +174,10 @@ protected:
 
 /// The problem of field \a field of \a solution (by its type).
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field);
+
+/// A material property's value as the node has it, else as its library
+/// entry has it (a table: an array).
+QJsonValue materialValue(const Node& m, const QString& key);
 
 /// Electrostatics' C0 (every εr 1) for a line's parameters.
 double scalarVacuumCapacitance(Solution& solution, int field, const QString& terminal, QString* error);

@@ -1,7 +1,7 @@
 # Proposal: a 2D multiphysics finite element solver, with a Multiphysics panel
 
-*10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1 and 2 are built (see "Phase 1,
-as built" and "Phase 2, as built" at the end). It answers "I'd like to
+*10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1, 2 and 3 are built (see "Phase 1,
+as built", "Phase 2, as built" and "Phase 3, as built" at the end). It answers "I'd like to
 build a 2D finite element solver in Qucs similar to what COMSOL Multiphysics has. Add a
 new panel to the left called Multiphysics that has a tree and allows the user to build
 the multiphysics project: geometry, material properties, FEM mesher, solver engine...".
@@ -552,3 +552,117 @@ when it is linear, again and again by Newton's method when it reads its own fiel
 groups as Qucs data displays, a solid drawn deformed, an axisymmetric model, a drawing
 read again when it changes, and Claude's tools at times and sweep points.
 
+## Phase 3, as built
+
+Built on 10 October 2026, Qucs-S 26.1.8, as phase 3 above says: magnetostatics with B-H
+curves (Newton); eddy currents in the frequency domain; R, L, G and C per metre over
+frequency; export to Touchstone, SPICE and Qucs subcircuits; GDSII and OASIS import and a
+layout's cross-section. The magnetic fields are in `fem_magnetic`, the exports in
+`fem_export`; the layouts are read in `fem_import` and cut in `fem_geometry`.
+
+**How it is done:**
+- **Magnetic fields:** the vector potential out of the plane, ∇×(ν ∇×A) = J, B = (∂A/∂y,
+  -∂A/∂x); about the axis Aφ, B = (-∂A/∂z, ∂A/∂r + A/r), and A = 0 on the axis. Magnetic
+  Insulation (A = 0) holds on the physics' outer boundaries only, not between its domains.
+  A magnet adds ∫ ν Br·∇×N to the right-hand side.
+- **B-H curves:** H(B) a monotone cubic through the curve's points (PCHIP's slopes), as in
+  vacuum beyond the last, its energy ∫ H dB exactly. Newton's tangent is ν I + (H' - ν)/|B|²
+  B Bᵀ: symmetric, and positive definite while H rises with B, so a sparse Cholesky solves
+  it. A step that makes the residual larger is halved. A ring round a wire saturating
+  converges in nine steps from nothing.
+- **The frequency domain:** K + jωM is complex symmetric with K positive definite. Its real
+  equivalent [K, -ωM; -ωM, -K] is symmetric and quasi-definite, so an LDLᵀ of it exists in
+  any order. A sparse LDLᵀ of it is faster than Eigen's complex LU, which stays as the fall-back.
+- **Conductors:** a single conductor's current flows as σ (g U - jωA), where g is 1 in the
+  plane and 1/2πr round the axis, and U is its voltage per metre (round the axis, its loop
+  voltage). Each U is eliminated: one solve per conductor and a small system for the U's.
+  A dense row for each U would have filled the factors (a coax took 9 s; it takes 1.3 s).
+  Turns of wire carry N I/A evenly, with no eddy currents in them. Each coil gives its
+  voltage, flux linkage, resistance and inductance; the coils, each at 1 A in turn, give the
+  inductance matrix (at rest) or the impedance matrix (in frequency).
+- **A line's R, L, G, C:**
+  - C from electrostatics' terminal;
+  - G = (ω ∫ ε0 εr tan δ |E|² + ∫ σ |E|²) / V0², the dielectrics' losses at the field as
+    solved;
+  - R and L from the signal coil's impedance less the return's (Z_ss - Z_sr - Z_rs + Z_rr;
+    with no return coil, a perfect ground at A = 0);
+  - from these, γ, Zc, α in dB/m, β and εeff.
+- **Exports:**
+  - Touchstone 1.1, S from the line's ABCD matrix at each frequency;
+  - SPICE: a line as sections of R, L, G and C, or ngspice's and Xyce's LTRA;
+    capacitance and conductance matrices as capacitors and resistors between the
+    terminals and to ref; an inductance matrix as inductors coupled by K, with their
+    resistances;
+  - a Qucs subcircuit: an RLCG part between ports 1 and 2 under a box symbol, its dataset
+    named after its file so Qucs opens it without asking, or the part alone on the
+    clipboard to paste.
+- **Layouts:**
+  - gdstk reads the cell and flattens it: placements, arrays, and paths as their outlines.
+    Clipper makes each layer's polygons one, in 0.1 nm integers.
+  - Seen from above, each layer is an object, `name_layer_datatype`.
+  - A cut along a line becomes, for each row of a layer stack, a rectangle for each
+    stretch where its layer lies under the cut, from its z to z + its thickness. A row
+    without a layer runs all along the cut.
+  - The layout viewer offers this on its last ruler, the layers under the cut as the
+    stack to begin with.
+  - gdstk's one log is guarded by one lock, shared with the viewer's reads.
+- **Studies:** a Frequency Domain step, its frequencies as `logspace(1[kHz], 1[GHz], 31)`
+  (evenly in their logarithm), range, linspace or values. The physics with no frequency
+  domain are at rest at each frequency, in turn with the magnetic fields when they read each
+  other. Each frequency is kept as a snapshot, and a plot group's Frequency picks one. A 1D
+  plot group's dataset runs over "frequency". A step at rest after one in time or frequency
+  updates its last snapshot, so heat may take a frequency's losses: induction heating.
+
+**Where it differs from the plan above:**
+- **B-H curves are at rest only.** In the frequency domain a relative permeability is
+  asked for; an effective curve for harmonic fields is not there.
+- **Coils are fed currents,** not voltages, and are not tied to a circuit. Forces and
+  torques (Maxwell's stress) are not there.
+- **A SPICE line has one frequency's R, L, G and C** (a ladder or LTRA): it does not
+  follow R(f) and L(f). The Touchstone file does; W-element tables are not written.
+- **A cross-section is rectangles:** sidewalls are vertical. Sloped etches and
+  conformal layers are not there.
+- **A study runs in time or in frequency, not both.**
+- **Skin depths are meshed by a size on the conductors' boundaries.** Boundary layers
+  (Gmsh, phase 5) are not there.
+
+**Fast enough:** the coax example, 81,699 unknowns, solved at nine frequencies with both of
+its coils swept at each, takes 1.8 s (M-series Mac, Release).
+
+**Checked:**
+- `test_fem_magnetics` (12):
+  - a B-H curve itself;
+  - a round wire's field inside and out, its inductance μ0/2π (ln(R/a) + 1/4) and
+    resistance to 10⁻³;
+  - a steel ring round a wire on its B-H curve (H = I/2πr), within 0.01 %, in nine
+    Newton steps from nothing;
+  - a magnet's Br/2 (1 - a²/R²);
+  - a thick solenoid's middle about its axis (2 × 10⁻⁵);
+  - a wire three skin depths thick against its Bessel-function impedance (R and L to
+    10⁻⁴);
+  - a two-wire line's inductance matrix, symmetric, its loop against the images' formula
+    (2 × 10⁻⁵);
+  - a coax's R and L against Bessel's, C, and G = ω C tan δ at two frequencies (each to
+    10⁻⁴);
+  - Touchstone, SPICE and Qucs exports, and SPICE's coupled inductors;
+  - the examples.
+- `test_fem_layout` (7): a GDSII cell, written record by record, read flattened (its
+  placements, a layer's overlapping boxes as one, gzipped too, layers and windows chosen);
+  an OASIS one as gdstk writes it; cut intervals; a layout from above; a cross-section,
+  its areas, and heat through it.
+- `test_multiphysics_doc` (23) adds the window's:
+  - a coax shown at its frequencies, chosen in the box and the plot group's settings;
+  - R against frequency as a Qucs dataset;
+  - a Touchstone file, a Qucs subcircuit that Qucs opens, the part on the clipboard;
+  - a layout's cross-section made in the viewer;
+  - Claude's tools in frequency, and `fem_export`.
+
+**Examples:**
+- `coax_rlgc`: a coax's R, L, G and C from 1 kHz to 10 MHz. R rises from its DC value to
+  the skin effect's; Z0 is 52 Ω.
+- `gapped_core_inductor`: an inductor on a gapped steel core, its current swept. It gives
+  4.7 mH falling to 2.3 mH as the steel saturates.
+- `induction_heating`: a stainless billet heated by eddy currents about its axis: 32 W,
+  125 °C.
+- `heater_crosssection`: a thermo-optic phase shifter cut from `thermo_optic_heater.gds`.
+  The waveguide warms by 3.2 K, giving π at 26 mW.

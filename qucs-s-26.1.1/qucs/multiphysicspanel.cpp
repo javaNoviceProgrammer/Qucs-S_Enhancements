@@ -125,6 +125,32 @@ QIcon glyph(const QString& icon)
     else if (icon == QLatin1String("ec")) letters(QStringLiteral("ec"), orange, true);
     else if (icon == QLatin1String("ht")) letters(QStringLiteral("ht"), red, true);
     else if (icon == QLatin1String("solid")) letters(QStringLiteral("sm"), dark ? QColor(90, 200, 200) : QColor(0, 121, 121), true);
+    else if (icon == QLatin1String("mf")) letters(QStringLiteral("mf"), purple, true);
+    else if (icon == QLatin1String("coil")) {
+        // Turns of a coil.
+        p.setPen(QPen(purple, 1.4));
+        p.setBrush(Qt::NoBrush);
+        for (int i = 0; i < 3; ++i) p.drawEllipse(QRectF(2 + 3.5 * i, 4, 5, 8));
+    } else if (icon == QLatin1String("magnet")) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(red);
+        p.drawRect(QRectF(1.5, 4, 6.5, 8));
+        p.setBrush(blue);
+        p.drawRect(QRectF(8, 4, 6.5, 8));
+    } else if (icon == QLatin1String("frequency")) letters(QStringLiteral("f"), gray, true);
+    else if (icon == QLatin1String("crosssection")) {
+        // Layers cut across.
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(green.red(), green.green(), green.blue(), 90));
+        p.drawRect(QRectF(1, 10, 14, 4));
+        p.setBrush(green);
+        p.drawRect(QRectF(6, 6.5, 4, 3.5));
+        p.setBrush(orange);
+        p.drawRect(QRectF(4.5, 2, 7, 2.5));
+    } else if (icon == QLatin1String("exports")) letters(QStringLiteral("⇪"), gray);
+    else if (icon == QLatin1String("touchstone")) letters(QStringLiteral("S"), blue);
+    else if (icon == QLatin1String("spice")) letters(QStringLiteral("cir"), orange);
+    else if (icon == QLatin1String("qucspart")) letters(QStringLiteral("Q"), green);
     else if (icon == QLatin1String("import")) letters(QStringLiteral("⇩"), green);
     else if (icon == QLatin1String("transient")) letters(QStringLiteral("t"), gray, true);
     else if (icon == QLatin1String("sweep")) letters(QStringLiteral("P"), gray, true);
@@ -253,10 +279,12 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
         v->setContentsMargins(10, 10, 10, 10);
         auto* title = new QLabel(tr("<b>Multiphysics</b>"), a_start);
         v->addWidget(title);
-        auto* about = new QLabel(tr("A 2D finite element model, in the plane or about an axis: its geometry (drawn, or "
-                                    "imported from DXF and SVG), materials and physics - electrostatics, electric currents, "
-                                    "heat at rest and in time, solid mechanics - its mesh, studies (swept too) and results, in "
-                                    "a tree as COMSOL's. Open a model (.qfem) to see its tree here."),
+        auto* about = new QLabel(tr("A 2D finite element model, in the plane or about an axis: its geometry (drawn, "
+                                    "imported from DXF, SVG, GDSII and OASIS, or a layout's cross-section), materials and "
+                                    "physics - electrostatics, electric currents, heat at rest and in time, solid mechanics, "
+                                    "magnetic fields at rest and in frequency - its mesh, studies (swept too) and results, "
+                                    "lines and terminals as parts of circuits, in a tree as COMSOL's. Open a model (.qfem) to "
+                                    "see its tree here."),
                                  a_start);
         about->setWordWrap(true);
         // (Wrapped to the dock's width: its length is not to widen the dock -
@@ -784,12 +812,17 @@ void MultiphysicsPanel::scheduleSettings()
 bool MultiphysicsPanel::visible(const Node& node, const PropertyDef& p) const
 {
     if (p.showIf.isEmpty()) return true;
-    for (const QString& cond : p.showIf.split(QLatin1Char('|'))) {
-        const bool negate = cond.contains(QLatin1String("!="));
-        const QStringList kv = cond.split(negate ? QStringLiteral("!=") : QStringLiteral("="));
-        if (kv.size() != 2) continue;
-        const bool equal = node.text(kv[0].trimmed()) == kv[1].trimmed();
-        if (negate ? !equal : equal) return true;
+    // Alternatives split by |, each conditions that all hold, split by &.
+    for (const QString& alternative : p.showIf.split(QLatin1Char('|'))) {
+        bool all = true;
+        for (const QString& cond : alternative.split(QLatin1Char('&'))) {
+            const bool negate = cond.contains(QLatin1String("!="));
+            const QStringList kv = cond.split(negate ? QStringLiteral("!=") : QStringLiteral("="));
+            if (kv.size() != 2) continue;
+            const bool equal = node.text(kv[0].trimmed()) == kv[1].trimmed();
+            all = all && (negate ? !equal : equal);
+        }
+        if (all) return true;
     }
     return false;
 }
@@ -1058,18 +1091,27 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         h->setContentsMargins(0, 0, 0, 0);
         auto* edit = new QLineEdit(node.text(key), w);
         edit->setObjectName(QStringLiteral("mpEdit_") + key);
-        edit->setPlaceholderText(tr("a DXF or SVG file, beside the model"));
+        const bool layout = node.type == QLatin1String("crosssection");
+        const bool written = node.kind() && node.kind()->group == QLatin1String("export");
+        edit->setPlaceholderText(layout    ? tr("a GDSII or OASIS layout, beside the model")
+                                 : written ? tr("empty: model_%1 beside the model").arg(node.tag)
+                                           : tr("a DXF, SVG, GDSII or OASIS file, beside the model"));
         auto* browse = new QToolButton(w);
         browse->setText(QStringLiteral("…"));
         browse->setObjectName(QStringLiteral("mpBrowse_") + key);
         h->addWidget(edit, 1);
         h->addWidget(browse);
         connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
-        connect(browse, &QToolButton::clicked, this, [this, key, edit] {
+        connect(browse, &QToolButton::clicked, this, [this, key, edit, layout, written] {
             const QString model = a_doc ? a_doc->getDocName() : QString();
             const QDir dir = model.isEmpty() ? QDir::home() : QFileInfo(model).absoluteDir();
-            const QString chosen = QFileDialog::getOpenFileName(this, tr("Import a Drawing"), dir.absolutePath(),
-                                                                tr("Drawings (*.dxf *.svg);;DXF (*.dxf);;SVG (*.svg);;All files (*)"));
+            const QString layouts = tr("Layouts (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)");
+            const QString chosen =
+                written ? QFileDialog::getSaveFileName(this, tr("Export to"), dir.absolutePath(), tr("All files (*)"))
+                : layout ? QFileDialog::getOpenFileName(this, tr("A Layout"), dir.absolutePath(), layouts + tr(";;All files (*)"))
+                         : QFileDialog::getOpenFileName(this, tr("Import a Drawing or a Layout"), dir.absolutePath(),
+                                                        tr("Drawings and layouts (*.dxf *.svg *.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;"
+                                                           "DXF (*.dxf);;SVG (*.svg);;") + layouts + tr(";;All files (*)"));
             if (chosen.isEmpty()) return;
             // Relative to the model, when it is saved: the two move together.
             const QString relative = dir.relativeFilePath(chosen);
@@ -1097,10 +1139,13 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         } else {
             box->setEditable(true);
             box->addItem(tr("(the last)"), QString());
+            // The solution's times, or (a "frequency") its frequencies.
+            const bool frequency = key == QLatin1String("frequency");
             if (set && !set->solutions.empty()) {
                 const Solution& s = *set->solutions.front();
-                for (int k = 0; k < s.snapshotCount(); ++k)
-                    box->addItem(formatQuantity(s.snapshotTime(k), Dim::of(0, 0, 1)), QString::number(s.snapshotTime(k), 'g', 17));
+                if (s.frequencyDomain == frequency)
+                    for (int k = 0; k < s.snapshotCount(); ++k)
+                        box->addItem(formatQuantity(s.snapshotValue(k), s.snapshotDim()), QString::number(s.snapshotValue(k), 'g', 17));
             }
             const QString now = node.text(key);
             const int at = box->findData(now);
@@ -1124,6 +1169,22 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         for (const Node& r : a_doc->model().results().children)
             if (r.type == QLatin1String("cutline") || r.type == QLatin1String("cutpoint"))
                 box->addItem(QStringLiteral("%1 (%2)").arg(r.name(), r.tag), r.tag);
+        box->setCurrentIndex(std::max(0, box->findData(node.text(key))));
+        connect(box, &QComboBox::activated, this, [this, key, box](int) { commit(key, box->currentData().toString()); });
+        return box;
+    }
+    case PropertyDef::Reference: {
+        // A node of the kinds it names, anywhere in the results.
+        auto* box = new QComboBox(a_form);
+        box->setObjectName(QStringLiteral("mpEdit_") + key);
+        box->addItem(tr("(none)"), QString());
+        std::function<void(const Node&)> walk = [&](const Node& n) {
+            if (p.choices.contains(n.type)) box->addItem(QStringLiteral("%1 (%2)").arg(n.name(), n.tag), n.tag);
+            for (const Node& c : n.children) walk(c);
+        };
+        walk(a_doc->model().results());
+        const int at = box->findData(node.text(key));
+        if (at < 0 && !node.text(key).isEmpty()) box->addItem(tr("%1 (not in the model)").arg(node.text(key)), node.text(key));
         box->setCurrentIndex(std::max(0, box->findData(node.text(key))));
         connect(box, &QComboBox::activated, this, [this, key, box](int) { commit(key, box->currentData().toString()); });
         return box;
@@ -1520,6 +1581,17 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
             if (!a_doc->showPlotGroup(tag, &why)) QMessageBox::information(this, tr("Plot"), why);
         });
     if (k && k->group == QLatin1String("derived")) action(tr("Evaluate"), "mpEvaluateButton", [this, tag] { a_doc->evaluate(tag); });
+    if (k && k->group == QLatin1String("export")) {
+        action(tr("Export"), "mpExportButton", [this, tag] {
+            QString why;
+            if (a_doc->runExport(tag, &why).isEmpty()) QMessageBox::information(this, tr("Export"), why);
+        });
+        if (node.type == QLatin1String("qucspart"))
+            action(tr("Copy Part"), "mpCopyPartButton", [this, tag] {
+                QString why;
+                if (!a_doc->copyPart(tag, &why)) QMessageBox::information(this, tr("Copy Part"), why);
+            });
+    }
     if (node.type == QLatin1String("component"))
         for (const QString& type : physicsTypes())
             if (const NodeKind* pk = nodeKind(type)) action(tr("Add %1").arg(pk->title), "mpAddPhysics", [this, tag, type] { addNode(tag, type); });

@@ -48,8 +48,10 @@ struct Field {
     struct Terminal {
         QString name;
         bool floating = false;    ///< of a charge (current) given, its potential found
-        double potential = 0;     ///< V
-        double charge = 0;        ///< C (es) or A (ec): over the out-of-plane thickness (all round the axis)
+        double potential = 0;     ///< V (a magnetic field's conductor: its voltage, V/m in the plane; about an axis V)
+        double charge = 0;        ///< C (es) or A (ec, mf): over the out-of-plane thickness (all round the axis)
+        /// In the frequency domain, their imaginary parts.
+        double potentialIm = 0, chargeIm = 0;
     };
     std::vector<Terminal> terminals;
     /// The terminals' matrix: each at 1 V in turn, the others at 0 V - a
@@ -60,6 +62,29 @@ struct Field {
 
     int count() const { return int(components.size()); }
     double value(int component, int dof) const { return values[std::size_t(component) * std::size_t(space->size()) + std::size_t(dof)]; }
+};
+
+/*!
+ * A magnetic material's B-H curve: H of B through points (B, H), monotone
+ * between them (Fritsch and Carlson's cubic, as PCHIP), beyond the last as
+ * in vacuum (dH/dB = 1/µ0); its energy density ∫ H dB.
+ */
+class BHCurve
+{
+public:
+    /// From points (T, A/m), B rising; (0, 0) added when not given. Null,
+    /// and why in \a error, when they do not rise or do not start at 0.
+    static std::shared_ptr<const BHCurve> make(std::vector<std::pair<double, double>> points, QString* error = nullptr);
+    double H(double b) const;
+    double slope(double b) const;    ///< dH/dB
+    double nu(double b) const;       ///< H/B (its first slope at 0): the reluctivity
+    double energy(double b) const;   ///< ∫ H dB from 0 to b (J/m³)
+    const std::vector<double>& B() const { return a_b; }
+    const std::vector<double>& Hs() const { return a_h; }
+
+private:
+    int segment(double b) const;
+    std::vector<double> a_b, a_h, a_m, a_w;   // the points, H's slopes there, the energy to them
 };
 
 /// A variable an expression may use where a solution is evaluated.
@@ -103,6 +128,9 @@ public:
     /// The time the fields are at (s); 0 for a stationary study.
     double time() const { return a_time; }
     void setTime(double t) { a_time = t; }
+    /// The frequency they are at (Hz) in the frequency domain; 0 at rest.
+    double frequency() const { return a_frequency; }
+    void setFrequency(double f) { a_frequency = f; }
 
     /// The scope of point expressions (x, y, t, the fields' variables).
     const Scope& pointScope() const { return *a_pointScope; }
@@ -122,14 +150,15 @@ public:
         std::vector<std::vector<Expression>> sources;   // by domain
         std::vector<double> sourceScale;  // by domain: a total power spread
         std::vector<Expression> capacity; // by domain: what multiplies du/dt (heat: rho Cp)
-        std::map<QString, std::vector<Expression>> named;   // others, by name (solid: E, nu, alpha, dT)
+        std::map<QString, std::vector<Expression>> named;   // others, by name (solid: E, nu, alpha, dT; mf: sigma, Je, Brx...)
+        std::vector<std::shared_ptr<const BHCurve>> curves;  // by domain: a magnetic field's B-H curve (none: linear)
     };
     std::vector<Coefficients>& coefficients() { return a_coefficients; }
     const std::vector<Coefficients>& coefficients() const { return a_coefficients; }
 
     // Variables by slot: how each is found at a point (PointEvaluator).
     struct VariableDef {
-        enum Kind { X, Y, Time, DomainNumber, Size, Value, GradX, GradY, GradNorm, Coefficient, Derived };
+        enum Kind { X, Y, Time, Frequency, DomainNumber, Size, Value, GradX, GradY, GradNorm, Coefficient, Derived };
         Variable info;
         Kind kind = X;
         int field = -1;
@@ -144,16 +173,31 @@ public:
     /// Whether \a e reads field \a f.
     bool reads(const Expression& e, int f) const;
 
-    // Snapshots: the fields and globals at the output times.
+    // Snapshots: the fields and globals at the output times, or at the
+    // frequencies of a study in the frequency domain.
     int snapshotCount() const { return int(a_snapshots.size()); }
     double snapshotTime(int i) const { return a_snapshots[std::size_t(i)].time; }
+    double snapshotFrequency(int i) const { return a_snapshots[std::size_t(i)].frequency; }
+    /// A snapshot's time (s) or, in the frequency domain, frequency (Hz).
+    double snapshotValue(int i) const { return frequencyDomain ? snapshotFrequency(i) : snapshotTime(i); }
+    /// Its unit (s or Hz), its name in a dataset ("time", "frequency") and
+    /// in a label ("t", "f").
+    Dim snapshotDim() const { return frequencyDomain ? Dim::of(0, 0, -1) : Dim::of(0, 0, 1); }
+    QString snapshotName() const { return frequencyDomain ? QStringLiteral("frequency") : QStringLiteral("time"); }
+    QString snapshotSymbol() const { return frequencyDomain ? QStringLiteral("f") : QStringLiteral("t"); }
     int selected() const { return a_selected; }
     /// The fields and globals of snapshot \a i (out of range: the last).
     void select(int i);
-    /// The fields and globals as they are now, kept as a snapshot at time().
+    /// The fields and globals as they are now, kept as a snapshot at time()
+    /// (frequency()).
     void addSnapshot();
+    /// The last snapshot made again of the fields as they are now (a step at
+    /// rest after one in time or frequency).
+    void replaceLastSnapshot();
     /// The snapshot nearest time \a t (s), or -1 when there is none.
     int snapshotAt(double t) const;
+    /// The snapshot nearest frequency \a f (Hz), or -1.
+    int snapshotAtFrequency(double f) const;
 
     QStringList log;
     QString studyTag;
@@ -162,6 +206,7 @@ public:
     QString label;
     QHash<QString, double> sweptValues;   ///< SI, by parameter
     bool timeDependent = false;
+    bool frequencyDomain = false;         ///< its snapshots are of frequencies
 
 private:
     void defineVariables();
@@ -176,12 +221,14 @@ private:
     double a_thickness = 1;
     bool a_axisymmetric = false;
     double a_time = 0;
+    double a_frequency = 0;
     std::unique_ptr<Scope> a_pointScope;
     std::unique_ptr<Scope> a_globalScope;
     std::vector<VariableDef> a_defs;
     QList<Variable> a_globals;
     struct Snapshot {
         double time = 0;
+        double frequency = 0;
         std::vector<std::vector<double>> values;   // by field
         std::vector<std::vector<Field::Terminal>> terminals;
         std::vector<double> globals;               // by a_globals' order
@@ -201,6 +248,9 @@ public:
     /// To reference point (xi, eta) of triangle \a t.
     void moveTo(int t, double xi, double eta);
     int triangle() const { return a_t; }
+    /// The domain of the triangle it is in (-1: none).
+    int domain() const;
+    const Solution& solution() const { return a_s; }
     /// The value of the variable in slot \a slot here.
     double value(int slot);
     /// \a e here (NaN where a variable it reads is not defined).
