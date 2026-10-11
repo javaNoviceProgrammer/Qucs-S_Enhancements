@@ -316,7 +316,7 @@ bool ScalarProblem::setup(QString* error)
                 problem(tr("domain %1 (%2) has no material: its %3 is needed").arg(d + 1).arg(object, name));
                 return nullptr;
             }
-            *text = materialProperty(*m, key);
+            *text = materialProperty(*m, key, &a_s.parameters().scope);
             if (text->trimmed().isEmpty()) {
                 problem(tr("domain %1 (%2): its material, %3, has no %4").arg(d + 1).arg(object, m->name(), name));
                 return nullptr;
@@ -336,7 +336,7 @@ bool ScalarProblem::setup(QString* error)
             // A dielectric's losses, for a line's conductance per metre: its
             // loss tangent and its conductivity (none given: none).
             for (const QString& key : {QStringLiteral("tand"), QStringLiteral("sigma")}) {
-                const QString t = user ? QString() : (m ? materialProperty(*m, key) : QString());
+                const QString t = user ? QString() : (m ? materialProperty(*m, key, &a_s.parameters().scope) : QString());
                 std::vector<Expression>& list = coef.named[key];
                 list.resize(topo.domains.size());
                 if (!t.trimmed().isEmpty()) list[std::size_t(d)] = compile(t, *m, key);
@@ -348,8 +348,8 @@ bool ScalarProblem::setup(QString* error)
             QString rho, cp;
             const Node* r = user ? feat : m;
             if (r) {
-                rho = user ? feat->text(QStringLiteral("rho")) : materialProperty(*m, QStringLiteral("rho"));
-                cp = user ? feat->text(QStringLiteral("Cp")) : materialProperty(*m, QStringLiteral("Cp"));
+                rho = user ? feat->text(QStringLiteral("rho")) : materialProperty(*m, QStringLiteral("rho"), &a_s.parameters().scope);
+                cp = user ? feat->text(QStringLiteral("Cp")) : materialProperty(*m, QStringLiteral("Cp"), &a_s.parameters().scope);
             }
             if (!rho.trimmed().isEmpty() && !cp.trimmed().isEmpty()) {
                 const Expression er = compile(rho, *r, QStringLiteral("rho"));

@@ -1260,7 +1260,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         for (int c : counts) modesEven = modesEven && c == perFrequency;
         if (modesEven) {
             Variable m;
-            m.name = unique(QStringLiteral("mode"));
+            m.name = unique(first.quantumStates ? QStringLiteral("state") : QStringLiteral("mode"));
             m.independent = true;
             for (int k = 1; k <= perFrequency; ++k) m.re << k;
             outer << m.name;
@@ -1277,9 +1277,20 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     }
     if (first.snapshotCount() > 0 && !modesEven) {
         Variable t;
-        t.name = unique(first.modeAnalysis ? QStringLiteral("solution") : first.snapshotName());
+        // (A spectrum's by the photon's energy in eV, or its wavelength.)
+        const int photon = first.frequencyDomain ? first.photonAxis : 0;
+        t.name = unique(first.modeAnalysis ? QStringLiteral("solution")
+                        : photon == 1     ? QStringLiteral("photon_energy")
+                        : photon == 2     ? QStringLiteral("wavelength")
+                                          : first.snapshotName());
         t.independent = true;
-        for (int k = 0; k < first.snapshotCount(); ++k) t.re << (first.modeAnalysis ? double(k + 1) : first.snapshotValue(k));
+        for (int k = 0; k < first.snapshotCount(); ++k) {
+            const double f = first.snapshotValue(k);
+            t.re << (first.modeAnalysis ? double(k + 1)
+                     : photon == 1      ? 6.62607015e-34 * f / 1.602176634e-19
+                     : photon == 2      ? (f > 0 ? 299792458.0 / f : 0)
+                                        : f);
+        }
         outer << t.name;
         vars << t;
     }
@@ -1648,6 +1659,47 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 plot(gc, QStringLiteral("surface"), {{"expression", QStringLiteral("log10(%1%2*1[cm^3])").arg(t, carrier)}, {"colors", QStringLiteral("viridis")}});
                 m.add(m.results().tag, gc);
             }
+        } else if (f.type == QLatin1String("quantum")) {
+            // The states' probability densities; along the growth axis a band
+            // diagram - the band edges with each state's level and |ψ|² on it.
+            for (const auto& [carrier, title] : {std::pair{QStringLiteral(".P_e"), tr("Electron Probability (%1)")},
+                                                 std::pair{QStringLiteral(".P_hh"), tr("Heavy Hole Probability (%1)")}}) {
+                Node g = group(title.arg(t));
+                plot(g, QStringLiteral("surface"), {{"expression", t + carrier}, {"colors", QStringLiteral("viridis")}});
+                m.add(m.results().tag, g);
+            }
+            if (!sol->frequencyDomain || sol->modeAnalysis) {
+                // The line: the 1D physics' own; in 2D through its middle.
+                const bool alongX = f.fixed && f.fixed->size() > 1 && (*f.fixed)[1] == 0;
+                QPointF a, b;
+                if (f.fixed && f.fixed->size() > 5 && (*f.fixed)[0] == 1) {
+                    const double u = sol->mesh().unitScale;
+                    a = QPointF((*f.fixed)[2], (*f.fixed)[3]) / u;
+                    b = QPointF((*f.fixed)[4], (*f.fixed)[5]) / u;
+                } else {
+                    QRectF box;
+                    for (std::size_t d = 0; d < f.domains.size(); ++d)
+                        if (f.domains[d]) box = box.isNull() ? sol->topology().domains[d].bounds : box.united(sol->topology().domains[d].bounds);
+                    a = alongX ? QPointF(box.left(), box.center().y()) : QPointF(box.center().x(), box.top());
+                    b = alongX ? QPointF(box.right(), box.center().y()) : QPointF(box.center().x(), box.bottom());
+                }
+                Node line = m.make(QStringLiteral("cutline"));
+                line.label = tr("Growth Axis (%1)").arg(t);
+                auto num = [](double v) { return formatNumber(v, 12); };
+                line.props.insert(QStringLiteral("start"), QJsonArray{num(a.x()), num(a.y())});
+                line.props.insert(QStringLiteral("end"), QJsonArray{num(b.x()), num(b.y())});
+                line.props.insert(QStringLiteral("points"), 1000);
+                m.add(m.results().tag, line);
+                Node g = m.make(QStringLiteral("plotgroup1d"));
+                g.label = tr("Band Diagram (%1)").arg(t);
+                g.props.insert(QStringLiteral("study"), study);
+                const QString axis = alongX ? QStringLiteral("x") : QStringLiteral("y");
+                for (const auto& [what, all] : {std::pair{QStringLiteral(".Ec"), false}, std::pair{QStringLiteral(".Ev"), false},
+                                                std::pair{QStringLiteral(".wave_e"), true}, std::pair{QStringLiteral(".wave_hh"), true}})
+                    plot(g, QStringLiteral("linegraph"), {{"data", line.tag}, {"expression", t + what}, {"unit", QStringLiteral("eV")},
+                                                          {"xaxis", axis}, {"solutions", all ? QStringLiteral("all") : QStringLiteral("selected")}});
+                m.add(m.results().tag, g);
+            }
         } else if (f.type == QLatin1String("rays")) {
             Node g = group(tr("Ray Trajectories (%1)").arg(t));
             plot(g, QStringLiteral("rayplot"), {{"physics", t}});
@@ -1707,6 +1759,13 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                     }
                     chief << t + QStringLiteral("I_") + term.name;
                 }
+            } else if (f.type == QLatin1String("quantum")) {
+                // The states' energies; a spectrum's absorption (gain).
+                const bool spectrum = sol->frequencyDomain && !sol->modeAnalysis;
+                const bool gain = sol->global(t + QStringLiteral("dF")).has_value();
+                globals << (spectrum ? (gain ? t + QStringLiteral("gTE; ") + t + QStringLiteral("gTM") : t + QStringLiteral("alphaTE; ") + t + QStringLiteral("alphaTM"))
+                                     : t + QStringLiteral("E_e; ") + t + QStringLiteral("E_hh; ") + t + QStringLiteral("E_lh"));
+                continue;
             } else if (f.type == QLatin1String("rays")) {
                 chief = {t + QStringLiteral("Pabs"), t + QStringLiteral("Pin")};
             } else if (f.type == QLatin1String("waves")) {
@@ -1731,7 +1790,11 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
         }
         if (!globals.isEmpty()) {
             Node g = m.make(QStringLiteral("plotgroup1d"));
-            g.label = sol->snapshotCount() > 1 ? (sol->modeAnalysis ? tr("The Modes") : sol->frequencyDomain ? tr("Over Frequency") : tr("Over Time"))
+            g.label = sol->snapshotCount() > 1 ? (sol->quantumStates  ? tr("The States")
+                                                  : sol->modeAnalysis ? tr("The Modes")
+                                                  : sol->photonAxis > 0 ? tr("The Spectrum")
+                                                  : sol->frequencyDomain ? tr("Over Frequency")
+                                                                          : tr("Over Time"))
                                                : tr("Over the Sweep");
             g.props.insert(QStringLiteral("study"), study);
             plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}});

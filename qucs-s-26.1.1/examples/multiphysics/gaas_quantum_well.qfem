@@ -1,0 +1,52 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A GaAs quantum well's states and absorption",
+    "description": "10 nm of GaAs between barriers of Al0.3Ga0.7As, 20 nm each, solved along the growth axis (1D): the electrons', heavy holes' and light holes' states (BenDaniel and Duke's matching at each heterojunction), drawn on the band diagram; the first transition near 1.46 eV (849 nm) at 300 K. Its absorption over photon energies: each transition a step of the 2D density of states, broadened by 6.6 meV - TE (light polarized in the well's plane) sees heavy and light holes, TM (along the growth axis) light holes alone. Sweep Lw to see the levels rise as the well narrows.",
+    "parameters": [
+        {"name": "Lw", "expression": "10[nm]", "description": "the well's width"},
+        {"name": "Lb", "expression": "20[nm]", "description": "each barrier's"}
+    ],
+    "components": [{
+        "unit": "nm",
+        "geometry": [
+            {"type": "rectangle", "label": "below", "size": ["10", "Lb"]},
+            {"type": "rectangle", "label": "well", "position": ["0", "Lb"], "size": ["10", "Lw"]},
+            {"type": "rectangle", "label": "above", "position": ["0", "Lb + Lw"], "size": ["10", "Lb"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Aluminium gallium arsenide", "x": "0.3", "selection": {"only": ["below", "above"]}},
+            {"material": "Gallium arsenide", "selection": {"only": ["well"]}}
+        ],
+        "physics": [{"type": "quantum", "tag": "qw"}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "2"}
+    }],
+    "studies": [
+        {"type": "study", "tag": "std1", "label": "States", "steps": [{"type": "states", "states": 4}]},
+        {"type": "study", "tag": "std2", "label": "Absorption", "steps": [
+            {"type": "spectrum", "energies": "linspace(1.45[eV], 1.85[eV], 201)", "states": 6, "linewidth": "6.6[meV]"}
+        ]}
+    ],
+    "results": {
+        "plots": [
+            {"type": "cutline", "tag": "cln1", "label": "Across the layers", "start": ["5", "0"], "end": ["5", "2*Lb + Lw"], "points": 1000},
+            {"type": "plotgroup1d", "label": "Band Diagram", "study": "std1", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Ec", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Ev", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_e", "unit": "eV", "xaxis": "y"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_hh", "unit": "eV", "xaxis": "y"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_lh", "unit": "eV", "xaxis": "y"}
+            ]},
+            {"type": "plotgroup", "label": "Electron Probability", "study": "std1", "plots": [
+                {"type": "surface", "expression": "qw.P_e", "colors": "viridis"}
+            ]},
+            {"type": "plotgroup1d", "label": "Absorption", "study": "std2", "plots": [
+                {"type": "globalgraph", "expression": "qw.alphaTE; qw.alphaTM", "unit": "1/cm"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Levels", "study": "std1", "expression": "qw.Ee1; qw.Ehh1; qw.Elh1; qw.Ee1hh1; qw.Ee1lh1", "unit": "eV"},
+            {"type": "global", "label": "Edge", "study": "std1", "expression": "qw.lambda; qw.Oe1hh1; qw.Oe1lh1"}
+        ]
+    }
+}

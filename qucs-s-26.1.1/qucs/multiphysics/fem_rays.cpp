@@ -239,8 +239,8 @@ bool RayProblem::setup(QString* error)
         const QString object = topo.objectNames.value(topo.domains[std::size_t(d)].owner);
         const QString where = tr("domain %1 (%2)").arg(d + 1).arg(object);
         const Node& from = user ? *mf : mat ? *mat : *a_node;
-        const QString nText = user ? mf->text(QStringLiteral("n")) : mat ? materialProperty(*mat, QStringLiteral("n")) : QString();
-        const QString kText = user ? mf->text(QStringLiteral("kappa")) : mat ? materialProperty(*mat, QStringLiteral("kappa")) : QString();
+        const QString nText = user ? mf->text(QStringLiteral("n")) : mat ? materialProperty(*mat, QStringLiteral("n"), &a_s.parameters().scope) : QString();
+        const QString kText = user ? mf->text(QStringLiteral("kappa")) : mat ? materialProperty(*mat, QStringLiteral("kappa"), &a_s.parameters().scope) : QString();
         if (nText.trimmed().isEmpty()) {
             problem(tr("%1: its material has no refractive index n").arg(where));
             continue;

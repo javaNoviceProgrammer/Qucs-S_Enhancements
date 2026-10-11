@@ -1315,6 +1315,102 @@ private slots:
             QVERIFY2(types.contains(QString::fromLatin1(t)), t);
         QVERIFY(json(r).value("format").toString().contains("Semiconductors"));
     }
+
+    // Quantum wells in the window: a well's states drawn on its band
+    // diagram (a dataset along the growth axis, a curve for each state), its
+    // absorption over the photon's energy; a bare model's default plots.
+    void quantumWells()
+    {
+        MultiphysicsDoc* doc = open(copyOf(QStringLiteral("gaas_quantum_well.qfem")));
+        QVERIFY(doc != nullptr);
+        doc->compute(QStringLiteral("std1"));
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Band Diagram"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* state = data.find(QStringLiteral("state"));
+        const qucs_s::dataset::Variable* wave = data.find(QStringLiteral("qw.wave_e"));
+        QStringList names;
+        for (const qucs_s::dataset::Variable& v : data.variables()) names << v.name;
+        QVERIFY2(state && wave, qPrintable(names.join(QLatin1String(", "))));
+        QCOMPARE(state->size(), 4);
+        QCOMPARE(wave->size(), 4 * 1000);
+        // (Each state's curve its level with |ψ|² on it, in eV.)
+        double least = 1e300;
+        for (double v : wave->re)
+            if (std::isfinite(v)) least = std::min(least, v);
+        QVERIFY(least > 0.5 && least < 1.0);
+        QVERIFY(doc->showPlotGroup(tagOf(doc->model(), "plotgroup", "Electron Probability")));
+        QVERIFY(doc->plotScene()->surface);
+        QVERIFY(doc->plotScene()->problems.isEmpty());
+        shoot(app, "38-quantum-well");
+        doc->compute(QStringLiteral("std2"));
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        const QString spectrum = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Absorption"), &why, false);
+        QVERIFY2(!spectrum.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset absorption;
+        QVERIFY(absorption.read(spectrum.left(spectrum.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* energy = absorption.find(QStringLiteral("photon_energy"));
+        const qucs_s::dataset::Variable* te = absorption.find(QStringLiteral("qw.alphaTE"));
+        QVERIFY(energy && te);
+        QCOMPARE(energy->size(), 201);
+        QVERIFY(std::abs(energy->re.front() - 1.45) < 1e-9 && std::abs(energy->re.back() - 1.85) < 1e-9);
+        QVERIFY(*std::max_element(te->re.begin(), te->re.end()) > 3000);   // (per cm)
+        // A model of a well alone: its default plots - the probability, the
+        // band diagram along the growth axis, the states' energies.
+        const QString file = path(QStringLiteral("bare_well.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "label": "barrier", "size": ["10", "30"]},
+                         {"type": "rectangle", "label": "well", "position": ["0", "10"], "size": ["10", "10"]}, {"type": "form union"}],
+            "materials": [{"material": "Aluminium gallium arsenide", "selection": {"all": true}},
+                          {"material": "Gallium arsenide", "selection": {"only": ["well"]}}],
+            "physics": [{"type": "quantum", "tag": "qw"}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "states", "states": 3}]}]})json");
+        f.close();
+        MultiphysicsDoc* bare = open(file);
+        QVERIFY(bare != nullptr);
+        bare->compute();
+        QVERIFY(bare->waitForJob(120000));
+        QVERIFY2(bare->lastError().isEmpty(), qPrintable(bare->lastError()));
+        QVERIFY(!tagOf(bare->model(), "plotgroup", "Electron Probability (qw)").isEmpty());
+        const QString diagram = tagOf(bare->model(), "plotgroup1d", "Band Diagram (qw)");
+        QVERIFY(!diagram.isEmpty());
+        QVERIFY(!tagOf(bare->model(), "plotgroup1d", "The States").isEmpty());
+        QVERIFY2(!bare->showGraphs(diagram, &why, false).isEmpty(), qPrintable(why));
+    }
+
+    // Claude's tools: a well's states listed, a transition read; the kinds described.
+    void claudesToolsForQuantumWells()
+    {
+        open(copyOf(QStringLiteral("gaas_quantum_well.qfem")));
+        QJsonObject r = call("fem_solve", {{"timeout", 120}, {"study", "std1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray states = json(r).value("states").toArray();
+        QCOMPARE(states.size(), 4);
+        QVERIFY(states.at(0).toObject().value("qw.E_e").toString().endsWith(QLatin1String(" eV")));
+        r = call("fem_evaluate", {{"expression", "qw.Ee1hh1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const double e = json(r).value("values").toArray().at(0).toObject().value("SI").toDouble() / 1.602176634e-19;
+        QVERIFY2(e > 1.44 && e < 1.48, qPrintable(QString::number(e)));
+        r = call("fem_solve", {{"timeout", 120}, {"study", "std2"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("spectrum").toObject().value("outputs").toInt(), 201);
+        QVERIFY(json(r).value("spectrum").toObject().value("from").toString().startsWith(QLatin1String("E = 1.45")));
+        r = call("fem_describe", {{"what", "format"}});
+        QStringList types;
+        for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
+        for (const char* t : {"quantum", "quantum/material", "quantum/flux", "states", "spectrum"}) QVERIFY2(types.contains(QString::fromLatin1(t)), t);
+        QVERIFY(json(r).value("format").toString().contains("Quantum wells"));
+    }
 };
 
 QTEST_MAIN(TestMultiphysicsDoc)

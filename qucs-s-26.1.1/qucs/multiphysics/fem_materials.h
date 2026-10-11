@@ -52,6 +52,44 @@ Node materialNode(const Model& model, const MaterialEntry& entry, const QJsonObj
 /// The entry a material node would make (to keep it in a library).
 MaterialEntry entryOf(const Node& material);
 
+/*!
+ * A zinc-blende III-V's band parameters, Vurgaftman, Meyer and Ram-Mohan's
+ * (J. Appl. Phys. 89, 5815, 2001): its Γ gap at a temperature (Varshni's),
+ * its valence band's top on one scale for all (InSb's at 0), the split-off
+ * energy, the electron's mass, Luttinger's parameters, Kane's energy, the
+ * lattice constant, deformation potentials (av in Chuang's sign: the gap
+ * opens by (ac - av) times the volume's change), elastic constants; and,
+ * roughly, its static permittivity and refractive index. An alloy's from
+ * its binaries': linear, with their bowing where they have one.
+ */
+struct BandParameters {
+    double Eg = 0;                          ///< eV
+    double VBO = 0;                         ///< eV
+    double Delta = 0;                       ///< eV
+    double me = 0;                          ///< m0
+    double gamma1 = 0, gamma2 = 0, gamma3 = 0;
+    double Ep = 0;                          ///< eV
+    double a0 = 0;                          ///< m
+    double ac = 0, av = 0, b = 0;           ///< eV
+    double C11 = 0, C12 = 0;                ///< Pa
+    double epsr = 0, n = 0;
+};
+/// The binaries (GaAs, AlAs, InAs, InP, GaP, GaSb, AlSb, InSb) and the
+/// alloys: AlGaAs (x of Al), InGaAs (x of In), InAlAs (x of In), GaInP (x of
+/// Ga), GaAsP, InAsP, GaAsSb (x of As), InGaAsP (In1-x Gax Asy P1-y),
+/// AlGaInAs (Alx Gay In1-x-y As).
+QStringList compounds();
+/// A compound's band parameters at composition \a x (and \a y) and
+/// temperature \a T (K); none, and why, when it is not known or its
+/// composition is out of range.
+std::optional<BandParameters> bandParameters(const QString& compound, double x, double y, double T, QString* error = nullptr);
+/// An alloy material's property \a key (Eg, chi, epsilonr, n, k, rho, Cp,
+/// Nc, Nv, mun, mup, taun, taup, me, gamma1..3, Ep, VBO, Delta, a0, ac, av,
+/// b, C11, C12) at 300 K as an expression with its unit: from its compound
+/// and composition (\a x, \a y). Empty for a key it has none of. Its
+/// transport and thermal values are rough.
+QString compoundProperty(const QString& compound, double x, double y, const QString& key);
+
 /// A row of a layout's layer stack: an object's name, the layer under the
 /// cut it is made of ("1/0"; empty: all along the cut), its bottom and
 /// thickness (µm), its material (a library entry's name; empty: none).

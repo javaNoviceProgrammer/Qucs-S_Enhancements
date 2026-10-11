@@ -1,0 +1,57 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "An InGaAs/InAlAs multiple quantum well's Stark effect",
+    "description": "Five wells of In0.53Ga0.47As, 8 nm each, between 6 nm barriers of In0.52Al0.48As, all on InP's lattice - an electroabsorption modulator's core at 1.55 µm. A field F along the growth axis (a reverse-biased pin's) tilts the bands: in each well the electrons and holes are pulled to its opposite sides, its own transition (qw.Edir) moves to lower energy - the quantum-confined Stark effect - and its overlap falls. Across the stack the states settle well by well, the lowest electron state in one well, the highest hole state in another: their transition (qw.Ee1hh1) is indirect and dark. Swept over 0, 50 and 100 kV/cm: the states, and the absorption of all the wells' transitions, TE.",
+    "parameters": [
+        {"name": "F", "expression": "0[V/m]", "description": "the field along the growth axis (1e7 V/m is 100 kV/cm)"},
+        {"name": "Lw", "expression": "8[nm]", "description": "each well's width"},
+        {"name": "Lb", "expression": "6[nm]", "description": "each barrier's"},
+        {"name": "Lc", "expression": "15[nm]", "description": "the outer barriers'"}
+    ],
+    "components": [{
+        "unit": "nm",
+        "geometry": [
+            {"type": "rectangle", "label": "stack", "size": ["10", "2*Lc + 5*Lw + 4*Lb"]},
+            {"type": "rectangle", "label": "well", "position": ["0", "Lc"], "size": ["10", "Lw"]},
+            {"type": "array", "label": "wells", "input": ["well"], "count": ["1", "5"], "displacement": ["0", "Lw + Lb"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Indium aluminium arsenide", "x": "0.52", "selection": {"all": true}},
+            {"material": "Indium gallium arsenide", "x": "0.53",
+             "selection": {"only": ["wells_1", "wells_2", "wells_3", "wells_4", "wells_5"]}}
+        ],
+        "physics": [{"type": "quantum", "tag": "qw", "F": "F", "substrate": "InP"}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "2"}
+    }],
+    "studies": [
+        {"type": "study", "tag": "std1", "label": "States", "steps": [
+            {"type": "sweep", "parameters": [["F", "0, 5e6, 1e7", "V/m"]]},
+            {"type": "states", "states": 12}
+        ]},
+        {"type": "study", "tag": "std2", "label": "Electroabsorption", "steps": [
+            {"type": "sweep", "parameters": [["F", "0, 5e6, 1e7", "V/m"]]},
+            {"type": "spectrum", "energies": "linspace(0.74[eV], 0.92[eV], 181)", "states": 24, "linewidth": "8[meV]"}
+        ]}
+    ],
+    "results": {
+        "plots": [
+            {"type": "cutline", "tag": "cln1", "label": "Across the layers", "start": ["5", "0"], "end": ["5", "2*Lc + 5*Lw + 4*Lb"], "points": 1500},
+            {"type": "plotgroup1d", "label": "Band Diagram", "study": "std1", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Ec", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Ev", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_e", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_hh", "unit": "eV", "xaxis": "y", "solutions": "selected"}
+            ]},
+            {"type": "plotgroup1d", "label": "The Stark Shift", "study": "std1", "plots": [
+                {"type": "globalgraph", "expression": "qw.Edir", "unit": "meV"}
+            ]},
+            {"type": "plotgroup1d", "label": "Absorption Edge", "study": "std2", "plots": [
+                {"type": "globalgraph", "expression": "qw.alphaTE", "unit": "1/cm"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "First transition", "study": "std1", "expression": "qw.Edir; qw.Odir; qw.Ee1hh1; qw.Oe1hh1", "solutions": "all"}
+        ]
+    }
+}
