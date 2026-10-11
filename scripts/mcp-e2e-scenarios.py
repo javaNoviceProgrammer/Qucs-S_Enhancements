@@ -14,9 +14,10 @@ app is tested with its own library (share/qucs-s/library beside its
 binary); the build tree's has none, so QUCS_LIBRARY_DIR is set to the
 source's - unless it is set already. Each run has a folder of its own under
 the root (QUCS_E2E_ROOT, /tmp/e2e by default), <date>-<time>-<pid>, with
-the server's workspace, settings and HOME in it: nothing is written to the
-user's workspace or caches, and a run does not meet the files of the last
-(save_document refused to write over them). The simulator is the first
+the server's workspace (its cache in it), settings, HOME and trash in it:
+nothing is written to the user's workspace, caches or Trash (the system's
+trash is not HOME's: trash_file's goes to QUCS_TRASH_DIR), and a run does
+not meet the files of the last (save_document refused to write over them). The simulator is the first
 ngspice on PATH. s7 copies a project (QUCS_E2E_PROJECT,
 ~/QucsWorkspace/project1_prj by default) and is skipped when there is none.
 QUCS_E2E_DATASET_LIMIT_MB=<n> keeps every run's dataset of more than n MB
@@ -27,7 +28,7 @@ import json, subprocess, os, sys, time, math, shutil, glob
 
 APP = os.environ.get('QUCS', '/Applications/qucs-s.app/Contents/MacOS/qucs-s')
 ROOT = os.path.join(os.environ.get('QUCS_E2E_ROOT', '/tmp/e2e'), time.strftime('%Y%m%d-%H%M%S') + '-%d' % os.getpid())
-WS = ROOT + '/ws'; SETTINGS = ROOT + '/settings'; HOME = ROOT + '/home'
+WS = ROOT + '/ws'; SETTINGS = ROOT + '/settings'; HOME = ROOT + '/home'; TRASH = ROOT + '/trash'
 
 def own_library(app):
     """The library an installed qucs-s has beside its binary (a packaged app's
@@ -43,12 +44,13 @@ SOURCE_LIBRARY = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 
 LIBRARY = os.environ.get('QUCS_LIBRARY_DIR') or (None if own_library(APP) else SOURCE_LIBRARY)
 PROJECT = os.environ.get('QUCS_E2E_PROJECT', os.path.expanduser('~/QucsWorkspace/project1_prj'))
 DATASET_LIMIT = os.environ.get('QUCS_E2E_DATASET_LIMIT_MB')
-for d in (WS, SETTINGS, HOME):
+for d in (WS, SETTINGS, HOME, TRASH):
     os.makedirs(d, exist_ok=True)
 
 class Server:
     def __init__(self):
-        env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=SETTINGS, QUCS_NO_SHELL_ENV='1', HOME=HOME)
+        env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QUCS_SETTINGS_DIR=SETTINGS, QUCS_NO_SHELL_ENV='1', HOME=HOME,
+                   QUCS_TRASH_DIR=TRASH)
         if LIBRARY and os.path.isfile(os.path.join(LIBRARY, 'OpAmps.lib')): env['QUCS_LIBRARY_DIR'] = os.path.abspath(LIBRARY)
         self.p = subprocess.Popen([APP, '--mcp-server', '--workspace', WS], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=open(ROOT + '/server.err', 'a'), env=env, text=True)
@@ -788,3 +790,4 @@ if __name__ == '__main__':
     bad = [r for r in RESULTS if not r[2]]
     print(f'\n{len(RESULTS)} checks, {len(bad)} failed')
     for r in bad: print('  FAIL', r[0], r[1], '<-', r[3])
+    sys.exit(1 if bad else 0)
