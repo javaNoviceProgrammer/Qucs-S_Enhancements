@@ -106,6 +106,77 @@ QString touchstone(const LineSweep& sweep, double length, double zref, const QSt
     return out;
 }
 
+QString touchstonePorts(const SolutionSet& set, const QString& physics, int point, const QStringList& comments, int* ports, QString* error)
+{
+    if (set.solutions.empty()) {
+        if (error) *error = tr("nothing is solved");
+        return {};
+    }
+    const int n = int(set.solutions.size());
+    Solution& s = *set.solutions[std::size_t(point <= 0 || point > n ? n - 1 : point - 1)];
+    const int fi = s.fieldIndex(physics);
+    if (fi < 0 || s.fields()[std::size_t(fi)].type != QLatin1String("waves")) {
+        if (error) *error = tr("there is no electromagnetic waves (frequency domain) %1 solved").arg(physics);
+        return {};
+    }
+    QStringList names;
+    for (const Field::Terminal& t : s.fields()[std::size_t(fi)].terminals) names << t.name;
+    const int np = int(names.size());
+    if (np == 0) {
+        if (error) *error = tr("%1 has no ports").arg(physics);
+        return {};
+    }
+    if (ports) *ports = np;
+    const QString p = physics + QLatin1Char('.');
+    auto entry = [&](const QString& a, const QString& b) -> std::optional<cd> {
+        const bool brief = a.size() == 1 && b.size() == 1;
+        const QString base = brief ? p + QStringLiteral("S") + a + b : p + QStringLiteral("S_") + a + QLatin1Char('_') + b;
+        const std::optional<double> re = s.global(base), im = s.global(base + QStringLiteral("_im"));
+        if (!re || !im || !std::isfinite(*re)) return std::nullopt;
+        return cd(*re, *im);
+    };
+    QString out = commentLines(comments, QStringLiteral("!"));
+    out += QStringLiteral("! The S-matrix of %1's ports %2, each normalized to its own mode's wave impedance\n").arg(physics, names.join(QStringLiteral(", ")));
+    out += QStringLiteral("# Hz S RI R 50\n");
+    const int was = s.selected();
+    const int snaps = std::max(1, s.snapshotCount());
+    for (int k = 0; k < snaps; ++k) {
+        if (s.snapshotCount() > 0) s.select(k);
+        QStringList cells;
+        // Two ports: S11 S21 S12 S22; else by rows.
+        std::vector<std::pair<int, int>> order;
+        if (np == 2) order = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+        else
+            for (int i = 0; i < np; ++i)
+                for (int j = 0; j < np; ++j) order.push_back({i, j});
+        QString line = num(s.frequency());
+        int onLine = 0;
+        for (const auto& [i, j] : order) {
+            const std::optional<cd> v = entry(names[i], names[j]);
+            if (!v) {
+                if (error) *error = tr("%1: the S-parameter %2 %3 is not there - feed each port (its Fed on)").arg(physics, names[i], names[j]);
+                if (s.snapshotCount() > 0) s.select(was);
+                return {};
+            }
+            if (np > 2 && onLine == 4) {
+                out += line + QLatin1Char('\n');
+                line = QString();
+                onLine = 0;
+            }
+            line += QLatin1Char(' ') + num(v->real()) + QLatin1Char(' ') + num(v->imag());
+            ++onLine;
+            if (np > 2 && j == np - 1) {
+                out += line + QLatin1Char('\n');
+                line = QString();
+                onLine = 0;
+            }
+        }
+        if (!line.isEmpty()) out += line + QLatin1Char('\n');
+    }
+    if (s.snapshotCount() > 0) s.select(was);
+    return out;
+}
+
 QString spiceLine(const LineRLGC& line, double length, const QString& name, int sections, bool ltra, const QStringList& comments)
 {
     QString out = commentLines(comments, QStringLiteral("*"));
@@ -297,6 +368,16 @@ ExportText exportText(const Model& model, const SolutionSet& set, const Node& no
         return select(set, inst.front());
     };
     const QString type = node.type;
+    if (type == QLatin1String("touchstone") && node.text(QStringLiteral("of")) == QLatin1String("ports")) {
+        const QStringList tags = node.list(QStringLiteral("physics"));
+        const QString tag = tags.isEmpty() ? QStringLiteral("ewfd") : tags.first();
+        int np = 0;
+        out.text = touchstonePorts(set, tag, point, comments, &np, &out.error);
+        if (!out.error.isEmpty()) return out;
+        out.suffix = QStringLiteral("s%1p").arg(np);
+        out.summary = tr("the S-matrix of %1's %2 ports").arg(tag).arg(np);
+        return out;
+    }
     if (type == QLatin1String("touchstone")) {
         const Node* l = lineNode();
         double len = 0;

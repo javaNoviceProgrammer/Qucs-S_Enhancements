@@ -1,0 +1,69 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A thermo-optic phase shifter's mode, warmed",
+    "description": "An SOI waveguide (500 × 220 nm) under a TiN heater 2 µm above it: heat from the heater's power, then the waveguide's TE mode at 1550 nm in the silicon and oxide as warmed - n + dn/dT (T - 293.15 K) - at 0 to 30 mW. Its effective index rises with the power; a millimetre of heater shifts the phase by π at about 24 mW.",
+    "parameters": [
+        {"name": "P", "expression": "20[mW]", "description": "the heater's power"},
+        {"name": "Lh", "expression": "1[mm]", "description": "the heater's length (the model's thickness)"},
+        {"name": "lambda0", "expression": "1550[nm]", "description": "the wavelength"},
+        {"name": "w", "expression": "0.5[um]", "description": "the waveguide's width"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "Lh",
+        "geometry": [
+            {"type": "rectangle", "label": "handle", "position": ["-20", "-6"], "size": ["40", "4"]},
+            {"type": "rectangle", "label": "box", "position": ["-20", "-2"], "size": ["40", "2"]},
+            {"type": "rectangle", "label": "cladding", "position": ["-20", "0"], "size": ["40", "3"]},
+            {"type": "rectangle", "label": "window", "position": ["-2", "-1.5"], "size": ["4", "3.2"]},
+            {"type": "rectangle", "label": "waveguide", "position": ["-w/2", "0"], "size": ["w", "0.22"]},
+            {"type": "rectangle", "label": "heater", "position": ["-1.5", "2"], "size": ["3", "0.12"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["handle", "waveguide"]}},
+            {"material": "Silicon dioxide", "selection": {"only": ["box", "cladding", "window"]}},
+            {"label": "TiN", "k": "20[W/(m*K)]", "rho": "5220[kg/m^3]", "Cp": "600[J/(kg*K)]", "sigma": "1e6[S/m]", "selection": {"only": ["heater"]}}
+        ],
+        "physics": [
+            {"type": "heat", "tag": "ht", "features": [
+                {"type": "source", "label": "The heater", "kind": "power", "P0": "P", "selection": {"only": ["heater"]}},
+                {"type": "temperature", "label": "The chip's back", "T0": "293.15[K]", "selection": {"of": ["handle"], "side": "bottom"}},
+                {"type": "flux", "label": "Air above", "kind": "convective", "h": "10[W/(m^2*K)]", "Text": "293.15[K]",
+                 "selection": {"of": ["cladding"], "side": "top"}}
+            ]},
+            {"type": "modes", "tag": "emw", "selection": {"only": ["window", "waveguide"]}, "features": [
+                {"type": "wave", "label": "Warmed", "thermooptic": true, "T": "T", "selection": {"all": true}}
+            ]}
+        ],
+        "mesh": {"size": "fine", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["waveguide"]}, "hmax": "0.03"},
+            {"type": "size", "level": "domain", "selection": {"only": ["window"]}, "hmax": "0.15"},
+            {"type": "size", "level": "domain", "selection": {"only": ["heater"]}, "hmax": "0.06"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "sweep", "parameters": [["P", "0, 10, 20, 30", "mW"]]},
+        {"type": "stationary", "physics": ["ht"]},
+        {"type": "mode", "physics": ["emw"], "frequency": "lambda0", "modes": 1, "neff": "2.5"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Temperature", "plots": [
+                {"type": "surface", "expression": "T - 293.15[K]", "unit": "K", "colors": "thermal"},
+                {"type": "contour", "expression": "T", "levels": 15}
+            ]},
+            {"type": "plotgroup", "label": "The Mode", "plots": [
+                {"type": "surface", "expression": "emw.normE"},
+                {"type": "arrow", "x": "emw.Ex", "y": "emw.Ey", "points": ["20", "16"], "scaling": "normalized", "color": "white"}
+            ]},
+            {"type": "plotgroup1d", "label": "Effective Index against the Power", "plots": [
+                {"type": "globalgraph", "expression": "emw.neff"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Effective index", "expression": "emw.neff", "solutions": "all"},
+            {"type": "pointeval", "label": "The waveguide's warming", "coordinates": [["0", "0.11"]], "expression": "T - 293.15[K]", "unit": "K"}
+        ]
+    }
+}

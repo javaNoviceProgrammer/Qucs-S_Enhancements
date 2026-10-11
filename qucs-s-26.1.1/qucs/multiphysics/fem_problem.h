@@ -147,6 +147,21 @@ public:
     virtual bool hasMass() const { return false; }
     /// Whether it has a frequency domain (magnetic fields' eddy currents).
     virtual bool harmonic() const { return false; }
+    /// Whether it is a mode analysis (its field a mode of the cross-section).
+    virtual bool modal() const { return false; }
+    /// A mode analysis at the solution's frequency: \a count modes nearest
+    /// the effective index \a guess (0: the largest index there is). How
+    /// many were found; -1 and why on failure.
+    virtual int solveModes(const SolveOptions& options, int count, double guess, QString* error)
+    {
+        (void)options;
+        (void)count;
+        (void)guess;
+        *error = tr("%1 has no modes").arg(field().tag);
+        return -1;
+    }
+    /// The field (and its globals, set after) of mode \a k found (from 0).
+    virtual void selectMode(int k) { (void)k; }
     /// Whether what it reads (its coefficients, sources, conditions) reads
     /// field \a f.
     bool reads(int f) const { return a_reads.contains(f); }
@@ -174,6 +189,21 @@ protected:
 
 /// The problem of field \a field of \a solution (by its type).
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field);
+
+/// A mode's fields at a point (V/m, A/m), as found (a phase of 0 at z = 0).
+struct ModeFields {
+    std::complex<double> E[3], H[3];
+    bool defined = false;
+};
+ModeFields modeFieldsAt(PointEvaluator& e, int field);
+/// The in-plane waves' field at a point: u (Ez or Hz), its gradient, the
+/// other field's in-plane components (Hx, Hy or Ex, Ey).
+struct WaveFields {
+    std::complex<double> u, ux, uy;
+    std::complex<double> E[3], H[3];
+    bool defined = false;
+};
+WaveFields waveFieldsAt(PointEvaluator& e, int field);
 
 /// A material property's value as the node has it, else as its library
 /// entry has it (a table: an array).

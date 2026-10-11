@@ -14,6 +14,8 @@ set(FEM_SRCS
   fem_scalar.cpp
   fem_elastic.cpp
   fem_magnetic.cpp
+  fem_edge.cpp
+  fem_waves.cpp
   fem_import.cpp
   fem_results.cpp
   fem_export.cpp

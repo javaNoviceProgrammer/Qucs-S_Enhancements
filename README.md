@@ -1954,8 +1954,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   ([docs/proposals](docs/proposals/2026-10-06-gds-oasis-layout-viewer.md)).
   A damaged file is refused, not a crash: gdstk's readers were hardened
   for it (`third_party/gdstk/README.qucs.md`).
-- **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1, 2
-  and 3 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
+- **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1 to
+  4 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
   (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
   in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
   Model*, or the tab's *New Model* and its examples). The tree is the
@@ -2012,6 +2012,22 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     linkage; the coils swept for the inductance (at rest) or impedance
     matrix; B, H, J, the losses and the energy density, the flux function
     about an axis (its contours are field lines).
+  - *Electromagnetic Waves, Mode Analysis*: a waveguide cross-section's
+    **modes**, full-vector - the transverse field on Nédélec's edge
+    elements, Ez on Lagrange's, linear or quadratic - at a frequency or a
+    free-space wavelength (`1550[nm]`), several for a dispersion. Media by
+    a refractive index n - jκ or a permittivity with its loss tangent and
+    conductivity, **anisotropic** along x, y and z, warmed by a heat
+    physics' T through their **dn/dT** (thermo-optic); perfect electric
+    and magnetic conductors; **perfectly matched layers** beside, above or
+    round the rest, their own modes left out. Each mode's effective index,
+    loss in dB/m, fields E and H, its power flow Sz, normalized to 1 W.
+  - *Electromagnetic Waves, Frequency Domain*: waves in the plane, Ez (E
+    across it: a waveguide's TE modes in the H-plane) or Hz (E in it),
+    with **ports** - each fed in turn with its first mode, found on the
+    port's line, the others matched - giving the **S-parameters** (S21,
+    in dB, magnitude and phase); scattering boundaries that let waves out,
+    or bring a plane wave in; PMLs; the same media.
 
   **Mesh**: Delaunay triangles, refined till their angles are good. A
   preset from extremely fine to extremely coarse, or customised; smaller
@@ -2022,15 +2038,21 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   physics without a time derivative at rest at each step - **in
   frequency** (`logspace(1[kHz], 1[GHz], 31)`: magnetic fields complex,
   the other physics at rest at each; a step at rest after it takes its
-  last frequency's fields - induction heating) and a
-  **Parametric Sweep** of parameters (every combination or specified
-  ones), the geometry and mesh made again where a parameter swept shapes
-  them. **Results**: 2D plot groups (a colour map, contours, arrows, the
-  mesh, drawn **deformed** by a displacement), shown at a time or
-  frequency and a parameter value chosen beside them; cut lines and cut
+  last frequency's fields - induction heating), a **Mode Analysis**
+  (the modes nearest an effective index, at each frequency or
+  wavelength) and a **Parametric Sweep** of parameters (every combination
+  or specified ones), the geometry and mesh made again where a parameter
+  swept shapes them. **Adaptive mesh refinement**: a step at rest or in
+  frequency solved, the mesh made finer where the error estimated
+  (Zienkiewicz and Zhu's) is largest, and solved again, as many times as
+  asked. **Results**: 2D plot groups (a colour map, contours, arrows, the
+  mesh, drawn **deformed** by a displacement), shown at a time,
+  frequency (or wavelength) or mode and a parameter value chosen beside
+  them; cut lines and cut
   points; **1D plot groups** - an expression along a cut line, at points
   or a global value (or a Derived Values node's: Z0 against a swept width,
-  R against frequency) over the times, frequencies or the sweep - written
+  R against frequency, the modes' effective indices) over the times,
+  frequencies, modes or the sweep - written
   as a Qucs dataset beside the model and shown in a **Qucs data display**,
   with its markers and exports; and derived values (globals, integrals,
   averages, maxima and minima over domains or boundaries, values at
@@ -2045,7 +2067,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   R, L, G, C or an LTRA line, or terminals' capacitance, conductance or
   coupled-inductance matrix; a **Qucs subcircuit** of an RLCG part between
   two ports (*Copy Part* puts the part on the clipboard, to paste into a
-  schematic).
+  schematic); the S-matrix of a wave physics' ports as a Touchstone file
+  (.s2p, .s3p...).
 
   Selections are rules where they can be — "the boundaries of *trace*
   facing down", "between *substrate* and *air*", "the domains of
@@ -2087,12 +2110,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Touchstone file and an RLCG part, an inductor on a gapped steel core
   saturating as its current is swept (4.7 mH falling to 2.3 mH), induction
   heating of a steel billet about its axis (32 W, 125 °C), and a
-  thermo-optic phase shifter cut from its GDSII layout (π at 26 mW).
+  thermo-optic phase shifter cut from its GDSII layout (π at 26 mW); the
+  modes of WR-90 at 20 GHz (each effective index to 10⁻⁴) and of a
+  silicon wire in oxide inside PMLs (TE0 2.445, TM0 1.770 at 1550 nm), a
+  phase shifter's mode warmed by its heater (π at 24 mW), a filter of two
+  irises in X-band (its S-parameters from 8 to 12 GHz, a Touchstone
+  file), and a field at a sharp corner on a mesh made finer by its
+  error (within 0.1 % on about 1 % of the triangles).
   Claude builds and solves models with `fem_describe`, `fem_model`,
-  `fem_edit`, `fem_build`, `fem_solve`, `fem_evaluate` (at a time, a
-  frequency, a sweep's point, or all of them), `fem_plot` (a 1D group's
-  data display too) and `fem_export`. `test_fem_engine`,
-  `test_fem_physics`, `test_fem_magnetics` and `test_fem_layout` check the
+  `fem_edit`, `fem_build`, `fem_solve` (each mode's index), `fem_evaluate`
+  (at a time, a frequency, a mode, a sweep's point, or all of them),
+  `fem_plot` (a 1D group's data display too) and `fem_export`.
+  `test_fem_engine`, `test_fem_physics`, `test_fem_magnetics`,
+  `test_fem_layout` and `test_fem_waves` check the
   engine against closed forms on CI, under the sanitizers too: a coax's
   capacitance (its error falling as h² and h⁴), a capacitor, a floating
   plate, a bar's resistance, a slab with convection, a pipe, heat
@@ -2107,8 +2137,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   a magnet's field inside it, a solenoid about its axis, a wire's skin
   effect against Bessel functions (10⁻⁴), a two-wire line's inductance
   matrix, a coax's R, L, G, C; Touchstone, SPICE and Qucs exports; GDSII
-  layouts read, cut and heated; and the examples. Waves (the mode solver,
-  ports and S-parameters) come in the next phase.
+  layouts read, cut and heated; a rectangular waveguide's five modes
+  (2 × 10⁻⁴), a dielectric slab's against its transcendental equation
+  (10⁻⁵),
+  a coax's TEM mode, a lossy and a warmed filling, a parallel-plate
+  guide's S21 against e^-jβL, an iris that keeps the power, a PML that
+  does not reflect (|S11| 10⁻⁴), meshes refined by their error at rest
+  and in frequency; and the examples.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

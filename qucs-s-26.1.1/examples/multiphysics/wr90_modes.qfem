@@ -1,0 +1,32 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "WR-90's modes at 20 GHz",
+    "description": "The X-band rectangular waveguide, 22.86 × 10.16 mm, at 20 GHz: its first five modes - TE10, TE20, TE01, then TE11 and TM11 at one cutoff - each effective index √(1 - (fc/f)²) to within 10⁻⁴, their fields; the conductor all round.",
+    "parameters": [
+        {"name": "a", "expression": "22.86[mm]", "description": "the broad wall"},
+        {"name": "b", "expression": "10.16[mm]", "description": "the narrow wall"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [{"type": "rectangle", "label": "guide", "size": ["a", "b"]}, {"type": "form union"}],
+        "materials": [{"material": "Air", "selection": {"all": true}}],
+        "physics": [{"type": "modes", "tag": "emw"}],
+        "mesh": {"size": "fine"}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "mode", "frequency": "20[GHz]", "modes": 5, "neff": "1"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electric Field", "mode": 1, "plots": [
+                {"type": "surface", "expression": "emw.normE"},
+                {"type": "arrow", "x": "emw.Ex", "y": "emw.Ey", "scaling": "normalized"}
+            ]},
+            {"type": "plotgroup", "label": "Magnetic Field", "mode": 1, "plots": [
+                {"type": "surface", "expression": "emw.normH", "colors": "viridis"},
+                {"type": "arrow", "x": "emw.Hx", "y": "emw.Hy", "scaling": "normalized"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Effective index", "expression": "emw.neff"}
+        ]
+    }
+}

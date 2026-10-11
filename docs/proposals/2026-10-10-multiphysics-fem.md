@@ -1,7 +1,7 @@
 # Proposal: a 2D multiphysics finite element solver, with a Multiphysics panel
 
-*10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1, 2 and 3 are built (see "Phase 1,
-as built", "Phase 2, as built" and "Phase 3, as built" at the end). It answers "I'd like to
+*10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1 to 4 are built (see "Phase 1,
+as built" to "Phase 4, as built" at the end). It answers "I'd like to
 build a 2D finite element solver in Qucs similar to what COMSOL Multiphysics has. Add a
 new panel to the left called Multiphysics that has a tree and allows the user to build
 the multiphysics project: geometry, material properties, FEM mesher, solver engine...".
@@ -666,3 +666,132 @@ its coils swept at each, takes 1.8 s (M-series Mac, Release).
   125 °C.
 - `heater_crosssection`: a thermo-optic phase shifter cut from `thermo_optic_heater.gds`.
   The waveguide warms by 3.2 K, giving π at 26 mW.
+
+## Phase 4, as built
+
+Built on 10 October 2026, Qucs-S 26.1.8, as phase 4 above says: the mode solver (Nédélec
+elements, PML, complex and anisotropic media, thermo-optic coupling); waves in the plane
+with ports, scattering boundaries and S-parameters; adaptive mesh refinement from error
+estimates. The edge elements and the eigensolver are in `fem_edge`, the two physics in
+`fem_waves`; the refinement is in `fem_solver`. It came to about 2,500 lines and 800 of
+tests, much less than the 9,000 planned: the mesh, the expressions, the studies, the
+plots and the panel did not have to change much.
+
+**How it is done:**
+- **Edge elements:** Nédélec's of the first kind on the triangles. Order 1 is Whitney's,
+  one on each edge. Order 2 is hierarchical, as Webb's: two on each edge (Whitney's and
+  ∇(λa λb)) and two inside (λ2 W01, λ0 W12). Each edge runs from its lower node to its
+  higher, so a function's sign is the same in both of its triangles.
+- **Modes:** E = (Et + ẑ Ez) e^-jβz, with Et on the edge elements and Ez on Lagrange's of
+  the same order. Lee's substitution (et = β Et, ez = -j Ez) makes it a linear eigenproblem
+  A x = -β² B x:
+  - A = [Stt - k0² Ttt, 0; 0, 0];
+  - B = [Ttt, Gtz; Gzt, Szz - k0² Tzz];
+  - with a diagonal µ, the x parts take 1/µyy and the y parts 1/µxx.
+
+  The modes nearest a guessed index come from a shift and invert about σ = -(k0 n)²: a
+  sparse LU of A - σB, then Krylov-Schur (Stewart's) on (A - σB)⁻¹B. The Arnoldi basis is
+  orthogonalized twice, and the Schur form is sorted by Givens rotations to restart.
+  - A breakdown is measured against the operator's own size. At 1550 nm it gives about
+    10⁻¹³.
+  - The null space (Ez alone, λ = 0) is no mode.
+  - Each mode is turned so its largest transverse value is real. It is normalized to 1 W
+    of Sz over the domains not in a PML.
+- **Media:** ε from n - jκ (its square) or εr (1 - j tan δ) - jσ/ωε0, each along x, y and z
+  when anisotropic, and µr. Warmed, n + dn/dT (T - Tref): T is an expression, by default a
+  heat physics' T. At each frequency the step solves the physics with no modes first.
+- **Perfectly matched layers:** the coordinates are stretched by s = 1 - jσ0 ξ², where ξ is
+  the depth into the layer. σ0 = 20.7/(k d) makes the reflection e^-13.8 at normal
+  incidence. ε and µ are multiplied by diag(sy/sx, sx/sy, sx sy). A layer stretches along x
+  where it lies left or right of the other domains, and along y above or below, so a frame
+  round them stretches in both at its corners.
+  - The layers have modes of their own, crowding round the guess. Those with more than
+    half their |E|² in the layers are left out.
+  - The solver asks for 2n + 4 modes, and twice as many while fewer than n are left (an
+    SOI wire about 2.6: 30 were left out; about 2.2: 6).
+- **Waves in the plane:** -∇·(P ∇u) - k0² q u = 0:
+  - Ez: P = diag(1/µyy, 1/µxx), q = εzz;
+  - Hz: P = diag(1/εyy, 1/εxx), q = µzz.
+
+  Perfect electric conductors fix Ez, or leave Hz natural, and the reverse for magnetic
+  ones. The outside is a conductor by default. A scattering boundary is first order (jk p
+  u), with a plane wave coming in through it if asked.
+- **Ports:**
+  - A port's first mode comes from its own line: -(p e')' - k0² q e = -β² p e on the
+    degrees of freedom along it. It is normalized as ∫ p e² = 1, its sign so that ∫ p e >
+    0 (without that, S21's sign followed the mesh).
+  - The port's condition is the mode's: a rank-one jβ c cᵀ (c = ∫ p e N_i), and 2jβ c to
+    feed it.
+  - Each port fed in turn gives a column: b_i = cᵀu less the incident wave at the fed
+    port, and S_ij = b_i √(β_i/β_j).
+  - The S-matrix is written as globals (S21, S21_im, S21dB, S21_abs, S21_arg) and as a
+    Touchstone file of N ports.
+- **Adaptive mesh refinement:**
+  - Zienkiewicz and Zhu's indicator: the gradient is recovered at each node, the
+    triangles' gradients there averaged by area, separately in each domain. Each triangle's
+    error is that gradient's difference from its own in L².
+  - Marking is Dörfler's: the largest triangles that hold half of the squared error.
+  - Each marked triangle adds a point to the size field, at its centroid with half its
+    size, and the mesh is made again from the geometry. Nothing is coarsened.
+  - A stationary step refines by its physics' error, a frequency step by the last
+    frequency's (real and imaginary parts). All the study is solved again each round.
+
+**Where it differs from the plan above:**
+- **A port carries its first mode only.** Higher modes are taken as matched, so a
+  discontinuity's evanescent modes must have decayed before a port.
+- **The scattering boundary is first order.** It reflects at grazing incidence; a PML
+  does not.
+- **A PML absorbs waves that propagate into it, not evanescent tails.** The complex
+  stretching turns an evanescent field's phase, not its size, so a mode's β moves by
+  about its tail's size there, either way. An SOI wire's TM0 with 1.4 µm of oxide to the
+  layers is lossy or gaining by 0.5 dB/m at most; with 1 µm, 13 dB/m.
+- **Anisotropy is diagonal,** along x, y and z. Off-diagonal and gyrotropic media, bent
+  guides (a conformal map), overlaps of modes and the group index are not there.
+- **Adaptive refinement is for Lagrange fields:** not for the modes' edge elements, and
+  not in time.
+- **The mode solver's cost is its complex LU.** Eigen's COLAMD ordering fills more than a
+  nested dissection would. AMD was tried and was slower, 50 times on WR-90. A wire's
+  three wavelengths take 7 s.
+- **Waves in time are not there.**
+
+**Fast enough** (M-series Mac, Release):
+- WR-90's five modes: 44 ms.
+- The iris filter, 14,680 unknowns at 41 frequencies: 2.5 s.
+- The SOI wire's two modes at three wavelengths, inside PMLs: 7 s.
+- The thermo-optic phase shifter, its heat and mode at four powers: 2.1 s.
+
+**Checked:**
+- `test_fem_waves` (14):
+  - the eigensolver against dense solvers, Hermitian and complex non-Hermitian (10⁻⁸);
+  - WR-90's five modes at 20 GHz (2 × 10⁻⁴; TE11 and TM11 at one cutoff), TE10's field
+    along y, real, carrying 1 W at its wave impedance, and linear elements coarser;
+  - a lossy filling's complex β (its α to 2 × 10⁻³);
+  - a dielectric slab's TE0 against its transcendental equation (2.847780 against
+    2.847782);
+  - a coax's TEM mode (n = 1.45 to 10⁻⁴);
+  - a warmed slab: its index raised by dn/dT ΔT, the same as one given;
+  - a parallel-plate guide's β (10⁻⁴), its S21 against e^-jβL (2 × 10⁻³) with |S11|
+    10⁻⁶, and Hz's TEM mode;
+  - an iris: |S11|² + |S21|² = 1 (10⁻³), S12 = S21;
+  - a PML ending a guide (|S11| 1.1 × 10⁻⁴);
+  - adaptive refinement at rest (an L-shaped plate's energy within 0.07 % of a mesh of
+    104,215 triangles, on 1,168, its smallest at the corner) and in frequency (an iris's
+    S21 63 times nearer a fine mesh's, on 3 % of its triangles);
+  - the examples.
+- `test_multiphysics_doc` (26) adds the window's:
+  - a guide's modes at two frequencies in the box, the plot group's mode and frequency;
+  - the default plots (the field, the power flow, the modes' indices);
+  - the indices as a Qucs dataset over mode and frequency;
+  - the iris filter's S-parameters in a data display, and its Touchstone file;
+  - Claude's tools for modes.
+
+**Examples:**
+- `wr90_modes`: WR-90 at 20 GHz, five modes, each index to 10⁻⁴.
+- `soi_waveguide_modes`: a 500 × 220 nm silicon wire in oxide inside PMLs at 1500, 1550 and
+  1600 nm. TE0 is 2.445 and TM0 1.770 at 1550 nm.
+- `thermo_optic_modes`: a heater above an SOI wire; heat, then the wire's mode as warmed,
+  at 0 to 30 mW: π at 24 mW over a millimetre (the cross-section of phase 3 said 26).
+- `iris_filter`: two inductive irises in WR-90, 8 to 12 GHz. It passes at 10.1 GHz (|S21|
+  0.996) and is a Touchstone file of its two ports.
+- `adaptive_corner`: an electrode's re-entrant corner. Four refinements take it from 174
+  to 1,168 triangles, within 0.07 % of a mesh ninety times as fine.

@@ -757,7 +757,7 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
     return out;
 }
 
-std::vector<Instance> instances(const SolutionSet& set, bool all, int point, const QString& time, const QString& frequency)
+std::vector<Instance> instances(const SolutionSet& set, bool all, int point, const QString& time, const QString& frequency, int mode)
 {
     std::vector<Instance> out;
     const int n = int(set.solutions.size());
@@ -768,19 +768,41 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         const Solution& s = *set.solutions[std::size_t(p)];
         const int snaps = s.snapshotCount();
         if (snaps == 0) {
-            out.push_back({p, -1, s.time(), s.label});
+            out.push_back({p, -1, s.time(), 0, s.label});
             continue;
         }
         int pick = snaps - 1;
         const QString& at = s.frequencyDomain ? frequency : time;
         if (!all && !at.trimmed().isEmpty()) {
-            if (const std::optional<double> v = evaluateConstant(at, s.parameters().scope, s.snapshotDim()); v)
-                pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
+            QString unlike;
+            std::optional<double> v = evaluateConstant(at, s.parameters().scope, s.snapshotDim(), nullptr, &unlike);
+            // (A frequency as a free-space wavelength, too.)
+            if (s.frequencyDomain && (!v || !unlike.isEmpty())) {
+                QString notLength;
+                const std::optional<double> lambda = evaluateConstant(at, s.parameters().scope, Dim::length(), nullptr, &notLength);
+                if (lambda && notLength.isEmpty() && *lambda > 0) v = 299792458.0 / *lambda;
+            }
+            if (v) pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
+        }
+        // Modes: at that frequency (the last when none is asked), the mode asked.
+        bool several = false;
+        if (s.modeAnalysis) {
+            for (int k = 1; k < snaps; ++k) several = several || s.snapshotFrequency(k) != s.snapshotFrequency(0);
+            const double f = s.snapshotFrequency(pick);
+            const int wanted = std::max(1, mode);
+            int first = -1;
+            for (int k = 0; k < snaps; ++k)
+                if (s.snapshotFrequency(k) == f) {
+                    if (first < 0) first = k;
+                    if (s.snapshotMode(k) == wanted) pick = k;
+                }
+            if (s.snapshotMode(pick) != wanted && first >= 0) pick = first;
         }
         for (int k = 0; k < snaps; ++k) {
             if (!all && k != pick) continue;
-            const QString when = s.snapshotSymbol() + QStringLiteral(" = ") + formatQuantity(s.snapshotValue(k), s.snapshotDim());
-            out.push_back({p, k, s.snapshotValue(k), s.label.isEmpty() ? when : s.label + QStringLiteral(", ") + when});
+            QString when = s.snapshotSymbol() + QStringLiteral(" = ") + formatQuantity(s.snapshotValue(k), s.snapshotDim());
+            if (s.modeAnalysis) when = several ? when + QStringLiteral(", mode %1").arg(s.snapshotMode(k)) : QStringLiteral("mode %1").arg(s.snapshotMode(k));
+            out.push_back({p, k, s.snapshotValue(k), s.snapshotMode(k), s.label.isEmpty() ? when : s.label + QStringLiteral(", ") + when});
         }
     }
     return out;

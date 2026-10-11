@@ -1070,6 +1070,142 @@ private slots:
             QVERIFY2(types.contains(QString::fromLatin1(t)), t);
         QVERIFY(json(r).value("format").toString().contains("Magnetic fields"));
     }
+
+    // A guide's modes at two frequencies: each in the box, the plot group's
+    // mode and frequency; its default plots; the modes as a dataset.
+    void aWaveguidesModes()
+    {
+        const QString file = path(QStringLiteral("guide_modes.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "mm",
+            "geometry": [{"type": "rectangle", "label": "guide", "size": ["22.86", "10.16"]}, {"type": "form union"}],
+            "materials": [{"material": "Air", "selection": {"all": true}}],
+            "physics": [{"type": "modes", "tag": "emw", "order": "1"}],
+            "mesh": {"size": "normal"}}],
+          "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "mode", "frequency": "15[GHz], 20[GHz]", "modes": 2, "neff": "1"}]}]})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(120000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QVERIFY(doc->solution()->modeAnalysis);
+        QCOMPARE(doc->solution()->snapshotCount(), 4);
+        // Its default plots: the field, the power, the modes.
+        const Model& m = doc->model();
+        for (const char* label : {"Electric Field (emw)", "Power Flow (emw)"})
+            QVERIFY2(!tagOf(m, "plotgroup", label).isEmpty(), label);
+        QVERIFY(!tagOf(m, "plotgroup1d", "The Modes").isEmpty());
+        QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
+        QVERIFY2(doc->plotScene()->title.contains("f = 20 GHz, mode 1"), qPrintable(doc->plotScene()->title));
+        // Each mode in the box; another chosen: the plot group's.
+        QCOMPARE(doc->instanceBox()->count(), 4);
+        const int at = doc->instanceBox()->findText(QStringLiteral("f = 15 GHz, mode 2"));
+        QVERIFY(at >= 0);
+        doc->instanceBox()->setCurrentIndex(at);
+        emit doc->instanceBox()->activated(at);
+        QVERIFY2(doc->plotScene()->title.contains("f = 15 GHz, mode 2"), qPrintable(doc->plotScene()->title));
+        const qucs_s::fem::Node* shown = doc->model().find(doc->shownPlotGroup());
+        QCOMPARE(shown->integer("mode"), 2);
+        QVERIFY(std::abs(shown->text("frequency").toDouble() - 15e9) < 1);
+        shoot(app, "33-guide-mode");
+        // TE20 at 20 GHz: its index, as the box shows it.
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "The Modes"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* mode = data.find(QStringLiteral("mode"));
+        const qucs_s::dataset::Variable* frequency = data.find(QStringLiteral("frequency"));
+        const qucs_s::dataset::Variable* neff = data.find(QStringLiteral("emw.neff"));
+        QVERIFY(mode && frequency && neff);
+        QCOMPARE(mode->size(), 2);
+        QCOMPARE(frequency->size(), 2);
+        QCOMPARE(neff->dependencies, (QStringList{QStringLiteral("mode"), QStringLiteral("frequency")}));
+        const double te20 = std::sqrt(1 - std::pow(299792458.0 / (22.86e-3 * 20e9), 2));
+        QVERIFY2(std::abs(neff->re.at(3) - te20) < 2e-3, qPrintable(QString::number(neff->re.at(3))));
+        // A wavelength for the plot's frequency.
+        panel()->selectNode(doc->shownPlotGroup());
+        QVERIFY(qobject_cast<QComboBox*>(panel()->editorFor("frequency")) != nullptr);
+        QVERIFY(panel()->editorFor("mode") != nullptr);
+    }
+
+    // The iris filter: its S-parameters over frequency, a Touchstone file of
+    // its ports.
+    void aFiltersSMatrix()
+    {
+        const QString file = copyOf(QStringLiteral("iris_filter.qfem"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            // (A slow build: three frequencies, on a coarser mesh.)
+            text.replace(QStringLiteral("linspace(8[GHz], 12[GHz], 41)"),
+                         slowBuild() ? QStringLiteral("linspace(8[GHz], 12[GHz], 3)") : QStringLiteral("linspace(8[GHz], 12[GHz], 5)"));
+            if (slowBuild()) text.replace(QStringLiteral("\"hmax\": \"1.2\""), QStringLiteral("\"hmax\": \"2.5\""));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(text.toUtf8());
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(300000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        const int count = slowBuild() ? 3 : 5;
+        QCOMPARE(doc->solution()->snapshotCount(), count);
+        QVERIFY2(doc->plotScene()->title.contains("f = 10 GHz"), qPrintable(doc->plotScene()->title));
+        shoot(app, "34-iris-filter");
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "S-parameters"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* s21 = data.find(QStringLiteral("ewfd.S21dB"));
+        QVERIFY(s21 && data.find(QStringLiteral("ewfd.S11dB")));
+        QCOMPARE(s21->dependencies, QStringList{QStringLiteral("frequency")});
+        QVERIFY2(s21->re.at(count / 2) > -1 && s21->re.at(0) < -6, qPrintable(QStringLiteral("%1 %2").arg(s21->re.at(count / 2)).arg(s21->re.at(0))));
+        const QString ts = doc->runExport(QStringLiteral("ts1"), &why);
+        QVERIFY2(!ts.isEmpty(), qPrintable(why));
+        QCOMPARE(QFileInfo(ts).fileName(), QStringLiteral("iris_filter_ts1.s2p"));
+        QFile tsFile(ts);
+        QVERIFY(tsFile.open(QIODevice::ReadOnly));
+        const QString tsText = QString::fromUtf8(tsFile.readAll());
+        QVERIFY(tsText.contains(QStringLiteral("# Hz S RI R 50")));
+        QCOMPARE(tsText.count(QRegularExpression(QStringLiteral("^[0-9]"), QRegularExpression::MultilineOption)), count);
+        // Its settings: of the ports, of this physics.
+        panel()->selectNode(QStringLiteral("ts1"));
+        auto* of = qobject_cast<QComboBox*>(panel()->editorFor("of"));
+        QVERIFY(of != nullptr);
+        QCOMPARE(of->currentData().toString(), QStringLiteral("ports"));
+        QVERIFY(panel()->editorFor("physics") != nullptr);
+    }
+
+    // Claude's tools: the modes solved, a mode evaluated and plotted.
+    void claudesToolsForModes()
+    {
+        open(copyOf(QStringLiteral("wr90_modes.qfem")));
+        QJsonObject r = call("fem_solve", {{"timeout", 120}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray modes = json(r).value("modes").toArray();
+        QCOMPARE(modes.size(), 5);
+        QCOMPARE(modes.at(0).toObject().value("mode").toInt(), 1);
+        QVERIFY(modes.at(0).toObject().contains("emw.neff"));
+        r = call("fem_evaluate", {{"expression", "emw.neff"}, {"mode", 2}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("solutions").toString().contains("mode 2"), qPrintable(text(r)));
+        QVERIFY(std::abs(json(r).value("values").toArray().at(0).toObject().value("SI").toDouble() - 0.75501) < 1e-3);
+        r = call("fem_plot", {{"plot", tagOf(open(path("wr90_modes.qfem"))->model(), "plotgroup", "Magnetic Field")}, {"mode", 3}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("solution").toString().contains("mode 3"), qPrintable(text(r)));
+        r = call("fem_describe", {{"what", "format"}});
+        QStringList types;
+        for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
+        for (const char* t : {"modes", "modes/wave", "modes/pml", "waves", "waves/port", "waves/scattering", "mode"})
+            QVERIFY2(types.contains(QString::fromLatin1(t)), t);
+    }
 };
 
 QTEST_MAIN(TestMultiphysicsDoc)
