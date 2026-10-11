@@ -1,0 +1,58 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A thermo-optic phase shifter, cut from its layout",
+    "description": "thermo_optic_heater.gds cut across its waveguide (1/0) and heater (11/0): a Layout Cross-Section of an SOI stack - a silicon handle, a buried oxide, the 220 nm waveguide in its cladding, a TiN heater 2 µm above it - and heat from 20 mW in the heater, a millimetre of it. The waveguide warms by about 3 K; silicon's dn/dT turns that into a phase shift at 1550 nm - 2.4 rad, π at about 26 mW, as heaters without trenches take.",
+    "parameters": [
+        {"name": "P", "expression": "20[mW]", "description": "the heater's power"},
+        {"name": "Lh", "expression": "1[mm]", "description": "the heater's length (the model's thickness)"},
+        {"name": "dndT", "expression": "1.86e-4[1/K]", "description": "silicon's thermo-optic coefficient"},
+        {"name": "lambda0", "expression": "1550[nm]", "description": "the wavelength"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "Lh",
+        "geometry": [
+            {"type": "crosssection", "label": "cut", "file": "thermo_optic_heater.gds", "cell": "PHASE_SHIFTER",
+             "start": ["-20", "0"], "end": ["20", "0"], "origin": "center",
+             "stack": [["handle", "", "-6", "4"], ["box", "", "-2", "2"], ["cladding", "", "0", "3"],
+                       ["waveguide", "1/0", "0", "0.22"], ["heater", "11/0", "2", "0.12"]]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["handle", "waveguide"]}},
+            {"material": "Silicon dioxide", "selection": {"only": ["box", "cladding"]}},
+            {"label": "TiN", "k": "20[W/(m*K)]", "rho": "5220[kg/m^3]", "Cp": "600[J/(kg*K)]", "sigma": "1e6[S/m]", "selection": {"only": ["heater"]}}
+        ],
+        "physics": [{
+            "type": "heat", "tag": "ht",
+            "features": [
+                {"type": "source", "label": "The heater", "kind": "power", "P0": "P", "selection": {"only": ["heater"]}},
+                {"type": "temperature", "label": "The chip's back", "T0": "293.15[K]", "selection": {"of": ["handle"], "side": "bottom"}},
+                {"type": "flux", "label": "Air above", "kind": "convective", "h": "10[W/(m^2*K)]", "Text": "293.15[K]",
+                 "selection": {"of": ["cladding"], "side": "top"}}
+            ]
+        }],
+        "mesh": {"size": "fine", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["waveguide", "heater"]}, "hmax": "0.05"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Temperature", "plots": [
+                {"type": "surface", "expression": "T - 293.15[K]", "unit": "K", "colors": "thermal"},
+                {"type": "contour", "expression": "T", "levels": 15}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Through the waveguide", "start": ["-20", "0.11"], "end": ["20", "0.11"]},
+            {"type": "plotgroup1d", "label": "Across the Chip", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "T", "unit": "degC"}
+            ]}
+        ],
+        "derived": [
+            {"type": "pointeval", "label": "The waveguide's warming", "coordinates": [["0", "0.11"]], "expression": "T - 293.15[K]", "unit": "K"},
+            {"type": "pointeval", "label": "Its phase shift", "coordinates": [["0", "0.11"]],
+             "expression": "2*pi/lambda0*dndT*(T - 293.15[K])*Lh", "unit": "rad"},
+            {"type": "global", "label": "Heater", "expression": "ht.Tmax; ht.P"}
+        ]
+    }
+}

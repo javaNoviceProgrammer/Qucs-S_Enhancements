@@ -16,6 +16,7 @@
  */
 #include <QtTest>
 #include <QAction>
+#include <QClipboard>
 #include <QComboBox>
 #include <QFontDatabase>
 #include <QJsonArray>
@@ -41,6 +42,7 @@
 #include "main.h"
 #include "misc.h"
 #include "module.h"
+#include "layoutdoc.h"
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
 #include "dataset.h"
@@ -66,6 +68,24 @@ void shoot(QWidget* w, const QString& name)
     if (dir.isEmpty()) return;
     QDir().mkpath(dir);
     w->grab().save(QDir(dir).filePath(name + QStringLiteral(".png")));
+}
+
+/// A Debug or sanitized build (CI's Linux): ten to thirty times slower -
+/// the coax solved at fewer frequencies there.
+bool slowBuild()
+{
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+#ifndef NDEBUG
+    return true;
+#else
+    return false;
+#endif
 }
 
 int countColors(const QImage& image)
@@ -100,6 +120,23 @@ class TestMultiphysicsDoc : public QObject
     static bool failed(const QJsonObject& r) { return r.value("isError").toBool(); }
     static QString text(const QJsonObject& r) { return QucsControl::textOf(r); }
     static QJsonObject json(const QJsonObject& r) { return QJsonDocument::fromJson(text(r).toUtf8()).object(); }
+    /// The coax example in the workspace: at 9 frequencies, or (a slow
+    /// build) 3 - 1 kHz, 100 kHz and 10 MHz.
+    int coaxFrequencies() const { return slowBuild() ? 3 : 9; }
+    QString coaxCopy()
+    {
+        const QString to = copyOf(QStringLiteral("coax_rlgc.qfem"));
+        if (slowBuild()) {
+            QFile f(to);
+            f.open(QIODevice::ReadOnly);
+            QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            text.replace(QStringLiteral("logspace(1[kHz], 10[MHz], 9)"), QStringLiteral("logspace(1[kHz], 10[MHz], 3)"));
+            f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            f.write(text.toUtf8());
+        }
+        return to;
+    }
     /// A copy of example \a name in the workspace, to change.
     QString copyOf(const QString& name)
     {
@@ -873,6 +910,165 @@ private slots:
         for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
         for (const char* t : {"solid", "solid/load", "transient", "sweep", "import", "plotgroup1d", "linegraph", "heat/radiation"})
             QVERIFY2(types.contains(QString::fromLatin1(t)), t);
+    }
+
+    // ---- Phase 3: magnetic fields in frequency, lines into circuits, layouts
+
+    // The coax's R, L, G, C: shown at each frequency, as graphs over it, as a
+    // Touchstone file and as a Qucs part.
+    void aLineOverFrequency()
+    {
+        MultiphysicsDoc* doc = open(coaxCopy());
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(300000));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        QVERIFY(doc->solution()->frequencyDomain);
+        const int n = coaxFrequencies();
+        QCOMPARE(doc->solution()->snapshotCount(), n);
+        QCOMPARE(doc->view()->show(), GraphicsView::Show::Results);
+        QVERIFY2(doc->plotScene()->title.contains("f = 10 MHz"), qPrintable(doc->plotScene()->title));
+        // Another frequency, chosen in the box: the plot group's "frequency".
+        QCOMPARE(doc->instanceBox()->count(), n);
+        const int at = doc->instanceBox()->findText(QStringLiteral("f = 100 kHz"));
+        QVERIFY(at >= 0);
+        doc->instanceBox()->setCurrentIndex(at);
+        emit doc->instanceBox()->activated(at);
+        QVERIFY2(doc->plotScene()->title.contains("f = 100 kHz"), qPrintable(doc->plotScene()->title));
+        QVERIFY(std::abs(doc->model().find(doc->shownPlotGroup())->text("frequency").toDouble() - 1e5) < 1);
+        shoot(app, "31-coax-current");
+        doc->undo();
+        QVERIFY(doc->plotScene()->title.contains("f = 10 MHz"));
+        // The plot group's settings: its frequencies to choose from, no times.
+        panel()->selectNode(doc->shownPlotGroup());
+        auto* frequencies = qobject_cast<QComboBox*>(panel()->editorFor("frequency"));
+        QVERIFY(frequencies != nullptr);
+        QCOMPARE(frequencies->count(), n + 1);   // (the last, and each)
+        QCOMPARE(qobject_cast<QComboBox*>(panel()->editorFor("time"))->count(), 1);
+        // R over frequency: a dataset of "frequency".
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), "plotgroup1d", "Resistance per metre"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        const qucs_s::dataset::Variable* f = data.find(QStringLiteral("frequency"));
+        const qucs_s::dataset::Variable* r = data.find(QStringLiteral("R"));
+        QVERIFY(f && r);
+        QCOMPARE(f->size(), n);
+        QCOMPARE(r->dependencies, QStringList{QStringLiteral("frequency")});
+        QVERIFY(r->re.last() > 5 * r->re.first());
+        // Its Derived Values at each frequency: ten each.
+        int rows = 0;
+        for (int i = 0; i < doc->table()->rowCount(); ++i)
+            if (doc->table()->item(i, 0)->text() == QLatin1String("Line Parameters")) ++rows;
+        QCOMPARE(rows, 10 * n);
+        // A metre of it as a Touchstone file, beside the model.
+        const QString ts = doc->runExport(QStringLiteral("ts1"), &why);
+        QVERIFY2(!ts.isEmpty(), qPrintable(why));
+        QCOMPARE(QFileInfo(ts).fileName(), QStringLiteral("coax_rlgc_ts1.s2p"));
+        QFile tsFile(ts);
+        QVERIFY(tsFile.open(QIODevice::ReadOnly));
+        const QString tsText = QString::fromUtf8(tsFile.readAll());
+        QVERIFY(tsText.contains(QStringLiteral("# Hz S RI R 50")));
+        // As a Qucs subcircuit, which Qucs reads: an RLCG part between ports.
+        const QString sch = doc->runExport(QStringLiteral("qp1"), &why);
+        QVERIFY2(!sch.isEmpty(), qPrintable(why));
+        // (Named as the subcircuit is; its dataset and display as it is, so
+        // Qucs opens it without asking.)
+        QCOMPARE(QFileInfo(sch).fileName(), QStringLiteral("coax_1m.sch"));
+        QFile schFile(sch);
+        QVERIFY(schFile.open(QIODevice::ReadOnly));
+        const QString schText = QString::fromUtf8(schFile.readAll());
+        QVERIFY(schText.contains(QStringLiteral("<DataSet=coax_1m.dat>")) && schText.contains(QStringLiteral("<DataDisplay=coax_1m.dpl>")));
+        QVERIFY(app->gotoPage(sch));
+        auto* part = qobject_cast<Schematic*>(app->DocumentTab->currentWidget());
+        QVERIFY(part != nullptr);
+        QStringList models;
+        for (Component* c : part->a_DocComps) models << c->Model;
+        QCOMPARE(models.count(QStringLiteral("RLCG")), 1);
+        QCOMPARE(models.count(QStringLiteral("Port")), 2);
+        // Copied, for a paste.
+        QVERIFY2(doc->copyPart(QStringLiteral("qp1"), &why), qPrintable(why));
+        QVERIFY(QApplication::clipboard()->text().startsWith(QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">")));
+        // The export's settings: its line among the Line Parameters; its buttons.
+        app->gotoPage(doc->getDocName());
+        panel()->selectNode(QStringLiteral("ts1"));
+        auto* line = qobject_cast<QComboBox*>(panel()->editorFor("line"));
+        QVERIFY(line != nullptr);
+        QVERIFY(line->findData(QStringLiteral("lp1")) >= 0);
+        QVERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mpExportButton")) != nullptr);
+        panel()->selectNode(QStringLiteral("qp1"));
+        QVERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mpCopyPartButton")) != nullptr);
+    }
+
+    // A layout cut across along a ruler: a model of its layer stack, its
+    // materials from the library.
+    void aLayoutsCrossSection()
+    {
+        const QString gds = copyOf("thermo_optic_heater.gds");
+        QVERIFY(app->gotoPage(gds));
+        auto* layout = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(layout != nullptr);
+        QVERIFY(layout->waitForLoaded());
+        const QLineF cut(-20, 0, 20, 0);
+        // The stack a cut suggests: the layers under it (the pads are not).
+        const LayoutShapes shapes = readLayoutShapes(gds);
+        const QList<StackRow> suggested = suggestedStack(shapes, cut);
+        QStringList names;
+        for (const StackRow& r : suggested) names << r.name;
+        QVERIFY2(names.contains("layer_1_0") && names.contains("layer_11_0") && !names.contains("layer_12_0"), qPrintable(names.join(' ')));
+        const QList<StackRow> rows = {{QStringLiteral("box"), QString(), -2, 2, QStringLiteral("Silicon dioxide")},
+                                      {QStringLiteral("cladding"), QString(), 0, 3, QStringLiteral("Silicon dioxide")},
+                                      {QStringLiteral("wg"), QStringLiteral("1/0"), 0, 0.22, QStringLiteral("Silicon")},
+                                      {QStringLiteral("heater"), QStringLiteral("11/0"), 2, 0.12, QString()}};
+        QString why;
+        MultiphysicsDoc* doc = layout->crossSection(cut, &rows, &why);
+        QVERIFY2(doc != nullptr, qPrintable(why));
+        QCOMPARE(app->DocumentTab->currentWidget(), doc);
+        const Model& m = doc->model();
+        QCOMPARE(m.component().text("unit"), QStringLiteral("um"));
+        const qucs_s::fem::Node& xs = m.geometry().children.front();
+        QCOMPARE(xs.type, QStringLiteral("crosssection"));
+        QCOMPARE(xs.text("file"), QFileInfo(gds).absoluteFilePath());
+        QCOMPARE(xs.text("cell"), QStringLiteral("PHASE_SHIFTER"));
+        // Two materials, each on its rows.
+        QCOMPARE(int(m.materials().children.size()), 2);
+        doc->showGeometry();
+        QTRY_VERIFY(doc->view()->topology() != nullptr);
+        const QStringList objects = doc->view()->topology()->objectNames;
+        for (const char* o : {"box", "cladding", "wg", "heater"}) QVERIFY2(objects.contains(QString::fromLatin1(o)), o);
+        shoot(app, "32-cross-section");
+    }
+
+    // Claude's tools in frequency, and fem_export.
+    void claudesToolsInFrequency()
+    {
+        open(coaxCopy());
+        QJsonObject r = call("fem_solve", {{"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(json(r).value("frequencies").toObject().value("outputs").toInt(), coaxFrequencies());
+        r = call("fem_evaluate", {{"expression", "mf.R_1_1"}, {"frequency", "100[kHz]"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("solutions").toString().contains("f = 100 kHz"), qPrintable(text(r)));
+        r = call("fem_plot", {{"plot", tagOf(open(path("coax_rlgc.qfem"))->model(), "plotgroup", "Current Density")}, {"frequency", "1e5"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("solution").toString().contains("f = 100 kHz"), qPrintable(text(r)));
+        r = call("fem_export", {{"export", "ts1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("written").toString().endsWith(".s2p"));
+        QVERIFY(json(r).value("begins").toString().contains("# Hz S RI R 50"));
+        r = call("fem_export", {{"export", "qp1"}, {"copy", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_export");
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("ts1"), qPrintable(text(r)));
+        // The new kinds, described.
+        r = call("fem_describe", {{"what", "format"}});
+        QStringList types;
+        for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
+        for (const char* t : {"magnetic", "magnetic/coil", "magnetic/magnet", "frequency", "crosssection", "touchstone", "spice", "qucspart"})
+            QVERIFY2(types.contains(QString::fromLatin1(t)), t);
+        QVERIFY(json(r).value("format").toString().contains("Magnetic fields"));
     }
 };
 

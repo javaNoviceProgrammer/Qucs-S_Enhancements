@@ -14,6 +14,7 @@
 
 #include "links.h"
 #include "misc.h"
+#include "multiphysicsdoc.h"
 #include "qucs.h"
 #include "settings.h"
 
@@ -25,6 +26,10 @@
 #include <QColorDialog>
 #include <QCoreApplication>
 #include <QDesktopServices>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QComboBox>
+#include <QTableWidget>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileDialog>
@@ -1352,7 +1357,10 @@ void LayoutDoc::buildUi()
         QAction* grid = menu.addAction(tr("Grid"), this, [this](bool on) { setGridShown(on); });
         grid->setCheckable(true);
         grid->setChecked(a_view->gridShown());
-        if (!a_view->rulers().isEmpty()) menu.addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
+        if (!a_view->rulers().isEmpty()) {
+            menu.addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
+            menu.addAction(tr("Cross-Section to Multiphysics…"), this, &LayoutDoc::crossSectionFromRuler);
+        }
         menu.addSeparator();
         menu.addAction(tr("Find a Cell…"), this, &LayoutDoc::showSearch);
         if (a_layout && shownCell() >= 0 && a_layout->cells.at(shownCell()).parents > 0) {
@@ -2010,4 +2018,124 @@ void LayoutDoc::print(QPrinter*, QPainter* painter, bool, bool)
     if (a_view->colorsAdapted()) o.background = Qt::white;
     qucs_s::layout::render(*painter, *a_layout, o);
     painter->restore();
+}
+
+// ----------------------------------------------------------------------
+// A cut across the layout as a multiphysics model
+
+namespace {
+
+/// The layer stack of a cross-section, as the user gives it: a row for each
+/// object - its name, its layer (or none: all along the cut), its bottom and
+/// thickness in µm, its material.
+bool askStack(QWidget* parent, const QString& title, QList<qucs_s::fem::StackRow>& rows)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(title);
+    auto* v = new QVBoxLayout(&dialog);
+    auto* about = new QLabel(QCoreApplication::translate(
+                                 "LayoutDoc", "Each row an object of the model: where its layer is under the cut (no layer: all along it), "
+                                              "from z to z + its thickness, in µm. A later row lies over an earlier one where they meet; "
+                                              "each named material goes on its rows."),
+                             &dialog);
+    about->setWordWrap(true);
+    v->addWidget(about);
+    auto* table = new QTableWidget(int(rows.size()), 5, &dialog);
+    table->setObjectName(QStringLiteral("crossSectionStack"));
+    table->setHorizontalHeaderLabels({QCoreApplication::translate("LayoutDoc", "Name"), QCoreApplication::translate("LayoutDoc", "Layer"),
+                                      QCoreApplication::translate("LayoutDoc", "z (µm)"),
+                                      QCoreApplication::translate("LayoutDoc", "Thickness (µm)"),
+                                      QCoreApplication::translate("LayoutDoc", "Material")});
+    table->horizontalHeader()->setStretchLastSection(true);
+    QStringList materials{QString()};
+    for (const qucs_s::fem::MaterialEntry& e : qucs_s::fem::builtinMaterials()) materials << e.name;
+    auto setRow = [&](int r, const qucs_s::fem::StackRow& row) {
+        table->setItem(r, 0, new QTableWidgetItem(row.name));
+        table->setItem(r, 1, new QTableWidgetItem(row.layer));
+        table->setItem(r, 2, new QTableWidgetItem(QString::number(row.z, 'g', 12)));
+        table->setItem(r, 3, new QTableWidgetItem(QString::number(row.thickness, 'g', 12)));
+        auto* box = new QComboBox(table);
+        box->setEditable(true);
+        box->addItems(materials);
+        box->setCurrentText(row.material);
+        table->setCellWidget(r, 4, box);
+    };
+    for (int r = 0; r < int(rows.size()); ++r) setRow(r, rows[r]);
+    table->resizeColumnsToContents();
+    v->addWidget(table, 1);
+    auto* buttons = new QHBoxLayout;
+    auto* add = new QPushButton(QCoreApplication::translate("LayoutDoc", "Add a Row"), &dialog);
+    auto* remove = new QPushButton(QCoreApplication::translate("LayoutDoc", "Remove the Row"), &dialog);
+    buttons->addWidget(add);
+    buttons->addWidget(remove);
+    buttons->addStretch(1);
+    v->addLayout(buttons);
+    QObject::connect(add, &QPushButton::clicked, &dialog, [&] {
+        const int r = table->rowCount();
+        table->insertRow(r);
+        setRow(r, {QStringLiteral("layer%1").arg(r + 1), QString(), 0, 1, QString()});
+    });
+    QObject::connect(remove, &QPushButton::clicked, &dialog, [&] {
+        if (table->currentRow() >= 0) table->removeRow(table->currentRow());
+    });
+    auto* box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    QObject::connect(box, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(box, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    v->addWidget(box);
+    dialog.resize(640, 420);
+    if (dialog.exec() != QDialog::Accepted) return false;
+    rows.clear();
+    for (int r = 0; r < table->rowCount(); ++r) {
+        auto cell = [&](int c) { return table->item(r, c) ? table->item(r, c)->text().trimmed() : QString(); };
+        qucs_s::fem::StackRow row;
+        row.name = cell(0);
+        if (row.name.isEmpty()) continue;
+        row.layer = cell(1);
+        row.z = cell(2).toDouble();
+        row.thickness = cell(3).toDouble();
+        if (auto* m = qobject_cast<QComboBox*>(table->cellWidget(r, 4))) row.material = m->currentText().trimmed();
+        rows << row;
+    }
+    return !rows.isEmpty();
+}
+
+} // namespace
+
+void LayoutDoc::crossSectionFromRuler()
+{
+    if (a_view->rulers().isEmpty()) {
+        QMessageBox::information(this, tr("Cross-Section"), tr("Draw a ruler across the layout first: the cut is along it."));
+        return;
+    }
+    QString why;
+    if (!crossSection(a_view->rulers().last(), nullptr, &why) && !why.isEmpty())
+        QMessageBox::warning(this, tr("Cross-Section"), why);
+}
+
+MultiphysicsDoc* LayoutDoc::crossSection(const QLineF& cut, const QList<qucs_s::fem::StackRow>* given, QString* error)
+{
+    auto fail = [&](const QString& why) -> MultiphysicsDoc* {
+        if (error) *error = why;
+        return nullptr;
+    };
+    if (!a_layout || shownCell() < 0) return fail(tr("the layout is not read yet"));
+    if (cut.length() <= 0) return fail(tr("the cut has no length"));
+    const QString cell = a_layout->cells.at(shownCell()).name;
+    QList<qucs_s::fem::StackRow> rows;
+    if (given) {
+        rows = *given;
+    } else {
+        // Its layers under the cut, as a stack to begin with.
+        const qucs_s::fem::LayoutShapes shapes = qucs_s::fem::readLayoutShapes(getDocName(), cell, QString(),
+                                                                               QRectF(cut.p1(), cut.p2()).normalized().adjusted(-1e-3, -1e-3, 1e-3, 1e-3));
+        if (!shapes.error.isEmpty()) return fail(shapes.error);
+        rows = qucs_s::fem::suggestedStack(shapes, cut);
+        if (!askStack(this, tr("Cross-Section of %1 to Multiphysics").arg(cell), rows)) return fail(QString());
+    }
+    if (a_App == nullptr) return fail(tr("no window to open the model in"));
+    const qucs_s::fem::Model model = qucs_s::fem::crossSectionModel(QFileInfo(getDocName()).absoluteFilePath(), cell, cut, rows);
+    MultiphysicsDoc* doc = a_App->newMultiphysicsModel();
+    if (!doc) return fail(tr("no model could be made"));
+    doc->setModel(model, tr("Cross-Section of %1").arg(cell));
+    return doc;
 }

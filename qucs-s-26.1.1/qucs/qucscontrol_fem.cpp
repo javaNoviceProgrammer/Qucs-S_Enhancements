@@ -126,6 +126,7 @@ FNode* parentNamed(Model& m, const QString& name)
     if (name == QLatin1String("results")) return &m.results();
     if (name == QLatin1String("definitions")) return &m.definitions();
     if (name == QLatin1String("derived")) return m.results().child(QStringLiteral("derived"));
+    if (name == QLatin1String("exports")) return m.results().child(QStringLiteral("exports"));
     if (name == QLatin1String("selections")) return m.component().child(QStringLiteral("selections"));
     return nullptr;
 }
@@ -140,10 +141,22 @@ QString formatText()
         "\"physics\": [{\"type\": \"electrostatics\", \"tag\": \"es\", \"features\": [...]}], \"mesh\": {\"size\": \"normal\", "
         "\"features\": [...]}}], \"studies\": [{\"type\": \"study\", \"steps\": [{\"type\": \"stationary\"}]}], \"results\": "
         "{\"plots\": [plot groups, each with \"plots\"; cut lines, cut points; 1D plot groups], \"derived\": [...]}}. A step in "
-        "time: {\"type\": \"transient\", \"times\": \"range(0, 0.1, 1)\"} (heat changes in time: its materials need rho, Cp); a "
-        "sweep, first among the steps: {\"type\": \"sweep\", \"parameters\": [[\"w\", \"1, 2, 3\", \"mm\"]]}. A node: {\"type\", \"tag\", \"label\", "
+        "time: {\"type\": \"transient\", \"times\": \"range(0, 0.1, 1)\"} (heat changes in time: its materials need rho, Cp); in "
+        "frequency: {\"type\": \"frequency\", \"frequencies\": \"logspace(1[kHz], 1[GHz], 31)\"} (magnetic fields' eddy currents; the "
+        "other physics at rest at each); a sweep, first among the steps: {\"type\": \"sweep\", \"parameters\": [[\"w\", \"1, 2, 3\", \"mm\"]]}. "
+        "A node: {\"type\", \"tag\", \"label\", "
         "\"enabled\", properties...}; a geometry object's name is its label. Under a physics a feature's type is short "
-        "(\"terminal\"). A material {\"material\": \"FR-4\"} takes the library's properties.\n"
+        "(\"terminal\"). A material {\"material\": \"FR-4\"} takes the library's properties (a soft magnetic one its \"BH\" "
+        "curve, [[B, H], ...] in T and A/m; a magnet its \"Br\"; a dielectric its loss tangent \"tand\").\n"
+        "Magnetic fields (\"magnetic\", tag mf): A out of the plane (round the axis); features ampere (\"constitutive\": \"mur\" or "
+        "\"bh\"), current (Je), coil (\"name\", \"conductor\": \"single\" - its current's distribution found, the skin effect - or "
+        "\"multi\" with \"N\" turns; \"I0\"), magnet (\"direction\", Br), insulation (A = 0, on the outside), potential, pmc, "
+        "surfacecurrent. A layout: an \"import\" of a .gds/.oas \"file\" (\"cell\", \"layers\": \"1/0, 2/0\") makes an object per "
+        "layer, name_layer_datatype; a \"crosssection\" cuts one from \"start\" to \"end\" (µm) into its \"stack\" rows [name, layer "
+        "(empty: all along the cut), z, thickness] - an object per row. A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
+        "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step; "
+        "\"exports\": touchstone (\"line\", \"length\", \"zref\"), spice (\"what\": line or matrix), qucspart (an RLCG subcircuit) - "
+        "fem_export writes them.\n"
         "Expressions: numbers (1.5e-3, Qucs's 10u 2.2k, 3mm, 1GHz), units in brackets (3[mm], 20[degC], W/(m*K)), + - * / ^, "
         "functions (sin, exp, sqrt, min, max, if(c,a,b)...), constants (pi, eps0, mu0, c0, kB, q0), the parameters. In the "
         "geometry and the mesh a plain number is in the component's unit and parameters are converted to it (L = 2[mm] "
@@ -155,10 +168,13 @@ QString formatText()
         "{\"interior\": true}, {\"adjacent\": {domain rule}}, {\"box\": [x0, y0, x1, y1]}, {\"named\": \"sel\"}; any with "
         "\"except\": {rule}. Numbers change when the geometry does: rules do not.\n"
         "Results: after solving, variables at a point (x, y, t, V, T, es.Ex, es.normE, es.Dx, es.We, ec.Jx, ec.normJ, ec.Qrh, "
-        "ht.qx, ht.normq, solid.u, solid.v, solid.disp, solid.sx, solid.mises...; about an axis r, z, solid.sr, solid.sphi) and "
-        "globals (es.C11, es.C_1_2, es.Q_1, es.V_1, es.W, ec.G11, ec.R, ec.I_1, ec.P, ht.Tmax, ht.Tmin, ht.P, ht.Rth, solid.dmax, "
-        "solid.Rx, solid.Ry, solid.W). A terminal named 1 at 1 V in turn gives the capacitance (es) or conductance (ec) "
-        "matrix. A parameter of a plain name (t, T, h) keeps it: time is then 'time'.");
+        "ht.qx, ht.normq, solid.u, solid.v, solid.disp, solid.sx, solid.mises, mf.Az, mf.Bx, mf.normB, mf.Hx, mf.Jz, mf.normJ, "
+        "mf.Qrh, mf.Wm, mf.mur...; about an axis r, z, solid.sr, solid.sphi, mf.Aphi, mf.Br, mf.Bz, mf.psi; in the frequency "
+        "domain the real part, and _im the imaginary: mf.Az_im, mf.Bx_im; freq) and globals (es.C11, es.C_1_2, es.Q_1, es.V_1, "
+        "es.W, ec.G11, ec.R, ec.I_1, ec.P, ht.Tmax, ht.Tmin, ht.P, ht.Rth, solid.dmax, solid.Rx, solid.Ry, solid.W, mf.L_1, "
+        "mf.R_1, mf.V_1, mf.Phi_1, mf.L11, mf.R_1_2, mf.W, mf.P). A terminal named 1 at 1 V in turn gives the capacitance (es) "
+        "or conductance (ec) matrix; coils at 1 A in turn the inductance (impedance) matrix (mf). A parameter of a plain name "
+        "(t, T, h) keeps it: time is then 'time'.");
 }
 
 } // namespace
@@ -214,8 +230,8 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             for (const PropertyDef& p : k->properties) {
                 // (As PropertyDef::Kind has them, in its order.)
                 static const char* kindNames[] = {"expression", "pair", "text", "choice", "bool", "integer", "selection", "objects",
-                                                  "points", "physics", "study", "rows", "terminal", "file", "time", "sweep point",
-                                                  "dataset"};
+                                                  "points", "physics", "study", "rows", "terminal", "file", "time or frequency",
+                                                  "sweep point", "dataset", "node tag"};
                 const int ki = int(p.kind);
                 QJsonObject po{{QStringLiteral("key"), p.key}, {QStringLiteral("label"), p.label},
                                {QStringLiteral("kind"), ki >= 0 && ki < int(std::size(kindNames)) ? QString::fromLatin1(kindNames[ki]) : QStringLiteral("value")}};
@@ -584,10 +600,11 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                                           {QStringLiteral("each"), swept}});
     }
     if (sol->snapshotCount() > 0)
-        extra.insert(QStringLiteral("times"), QJsonObject{{QStringLiteral("outputs"), sol->snapshotCount()},
-                                                          {QStringLiteral("from"), formatQuantity(sol->snapshotTime(0), Dim::of(0, 0, 1))},
-                                                          {QStringLiteral("to"), formatQuantity(sol->snapshotTime(sol->snapshotCount() - 1), Dim::of(0, 0, 1))},
-                                                          {QStringLiteral("globals at"), tr("the last")}});
+        extra.insert(sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
+                     QJsonObject{{QStringLiteral("outputs"), sol->snapshotCount()},
+                                 {QStringLiteral("from"), formatQuantity(sol->snapshotValue(0), sol->snapshotDim())},
+                                 {QStringLiteral("to"), formatQuantity(sol->snapshotValue(sol->snapshotCount() - 1), sol->snapshotDim())},
+                                 {QStringLiteral("globals at"), tr("the last")}});
     QJsonObject result{{QStringLiteral("study"), sol->studyTag},
                                   {QStringLiteral("seconds"), sol->seconds},
                                   {QStringLiteral("unknowns"), dofs},
@@ -614,7 +631,8 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     // Which solutions: a time, a sweep's point, or all of them.
     const bool all = args.value(QLatin1String("all")).toBool();
     QString time = args.value(QLatin1String("time")).toVariant().toString();
-    const std::vector<Instance> which = instances(*set, all, args.value(QLatin1String("point")).toInt(0), time);
+    const QString frequency = args.value(QLatin1String("frequency")).toVariant().toString();
+    const std::vector<Instance> which = instances(*set, all, args.value(QLatin1String("point")).toInt(0), time, frequency);
     if (which.empty()) return errorResult(tr("No such solution."));
     QJsonObject o{{QStringLiteral("expression"), expression}};
     if (doc->solutionStale(study)) o.insert(QStringLiteral("note"), tr("the model changed since it was solved"));
@@ -723,13 +741,16 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
         doc->setModel(m, tr("Add %1").arg(g.label));
     }
     // At a time, a sweep's point: the plot group's settings (one step of Undo).
-    if (args.contains(QLatin1String("time")) || args.contains(QLatin1String("point"))) {
+    if (args.contains(QLatin1String("time")) || args.contains(QLatin1String("point")) || args.contains(QLatin1String("frequency"))) {
         const QString time = args.value(QLatin1String("time")).toVariant().toString();
+        const QString frequency = args.value(QLatin1String("frequency")).toVariant().toString();
         const int point = args.value(QLatin1String("point")).toInt(0);
         const bool hasTime = args.contains(QLatin1String("time")), hasPoint = args.contains(QLatin1String("point"));
+        const bool hasFrequency = args.contains(QLatin1String("frequency"));
         QString why;
         if (!doc->editNode(group, [&](FNode& n) {
                 if (hasTime) n.props.insert(QStringLiteral("time"), time);
+                if (hasFrequency) n.props.insert(QStringLiteral("frequency"), frequency);
                 if (hasPoint) n.props.insert(QStringLiteral("point"), point);
             }, tr("Show a Solution"), &why))
             return errorResult(why);
@@ -755,4 +776,32 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
     if (!scene->problems.isEmpty()) o.insert(QStringLiteral("problems"), QJsonArray::fromStringList(scene->problems));
     o.insert(QStringLiteral("see it"), tr("screenshot takes a picture of the window"));
     return jsonResult(o);
+}
+
+QJsonObject QucsControl::femExport(const QJsonObject& args)
+{
+    QString error;
+    MultiphysicsDoc* doc = femDocument(args, &error);
+    if (doc == nullptr) return errorResult(error);
+    const QString tag = args.value(QLatin1String("export")).toString().trimmed();
+    const FNode* exports = doc->model().results().child(QStringLiteral("exports"));
+    if (tag.isEmpty()) {
+        QStringList list;
+        if (exports)
+            for (const FNode& e : exports->children) list << QStringLiteral("%1 (%2)").arg(e.name(), e.tag);
+        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (touchstone, spice, qucspart).")
+                               .arg(list.isEmpty() ? tr("none yet") : list.join(QStringLiteral(", "))));
+    }
+    if (args.value(QLatin1String("copy")).toBool()) {
+        QString why;
+        if (!doc->copyPart(tag, &why)) return errorResult(why);
+        return jsonResult(QJsonObject{{QStringLiteral("copied"), tr("the RLCG part is on the clipboard: paste it into a schematic")}});
+    }
+    QString why;
+    const QString path = doc->runExport(tag, &why);
+    if (path.isEmpty()) return errorResult(why);
+    QFile f(path);
+    QString head;
+    if (f.open(QIODevice::ReadOnly)) head = QString::fromUtf8(f.read(1500));
+    return jsonResult(QJsonObject{{QStringLiteral("written"), QDir::toNativeSeparators(path)}, {QStringLiteral("begins"), head}});
 }

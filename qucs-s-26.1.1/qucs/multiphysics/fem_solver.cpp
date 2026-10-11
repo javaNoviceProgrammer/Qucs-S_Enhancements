@@ -55,9 +55,8 @@ void parallelFor(int n, const std::function<void(int, int)>& work)
 
 // ------------------------------------------------------------------ LinearSystem
 
-void LinearSystem::setPattern(int neq, const std::function<void(const std::function<void(const int*, int)>&)>& elements)
+void buildPattern(int neq, const ElementPattern& elements, std::vector<int>& outer, std::vector<int>& inner)
 {
-    a_n = neq;
     std::vector<std::vector<int>> rows(static_cast<std::size_t>(neq));
     elements([&](const int* eqs, int n) {
         for (int i = 0; i < n; ++i) {
@@ -67,7 +66,7 @@ void LinearSystem::setPattern(int neq, const std::function<void(const std::funct
                 if (eqs[j] >= 0) row.push_back(eqs[j]);
         }
     });
-    std::vector<int> outer(std::size_t(neq) + 1, 0);
+    outer.assign(std::size_t(neq) + 1, 0);
     for (int r = 0; r < neq; ++r) {
         std::vector<int>& row = rows[std::size_t(r)];
         std::sort(row.begin(), row.end());
@@ -75,15 +74,23 @@ void LinearSystem::setPattern(int neq, const std::function<void(const std::funct
         if (!std::binary_search(row.begin(), row.end(), r)) row.insert(std::lower_bound(row.begin(), row.end(), r), r);
         outer[std::size_t(r) + 1] = outer[std::size_t(r)] + int(row.size());
     }
+    inner.resize(std::size_t(outer.back()));
+    for (int r = 0; r < neq; ++r) {
+        std::copy(rows[std::size_t(r)].begin(), rows[std::size_t(r)].end(), inner.begin() + outer[std::size_t(r)]);
+        std::vector<int>().swap(rows[std::size_t(r)]);
+    }
+}
+
+void LinearSystem::setPattern(int neq, const ElementPattern& elements)
+{
+    a_n = neq;
+    std::vector<int> outer, inner;
+    buildPattern(neq, elements, outer, inner);
     // (Its pattern is symmetric: column j holds row j's columns.)
     a_A = Eigen::SparseMatrix<double>(neq, neq);
     a_A.resizeNonZeros(outer.back());
     std::copy(outer.begin(), outer.end(), a_A.outerIndexPtr());
-    int* inner = a_A.innerIndexPtr();
-    for (int r = 0; r < neq; ++r) {
-        std::copy(rows[std::size_t(r)].begin(), rows[std::size_t(r)].end(), inner + outer[std::size_t(r)]);
-        std::vector<int>().swap(rows[std::size_t(r)]);
-    }
+    std::copy(inner.begin(), inner.end(), a_A.innerIndexPtr());
     clear();
     a_ldlt.reset();
     a_lu.reset();
@@ -187,6 +194,131 @@ bool LinearSystem::solve(const Eigen::VectorXd& rhs, Eigen::VectorXd& x, const Q
     return true;
 }
 
+// ------------------------------------------------------------------ ComplexSystem
+
+void ComplexSystem::setPattern(int neq, const ElementPattern& elements)
+{
+    a_n = neq;
+    std::vector<int> outer, inner;
+    buildPattern(neq, elements, outer, inner);
+    a_A = Matrix(neq, neq);
+    a_A.resizeNonZeros(outer.back());
+    std::copy(outer.begin(), outer.end(), a_A.outerIndexPtr());
+    std::copy(inner.begin(), inner.end(), a_A.innerIndexPtr());
+    clear();
+    a_lu.reset();
+    a_analyzed = false;
+    // Its real equivalent's pattern: each entry a 2 × 2 block.
+    std::vector<Eigen::Triplet<double>> t;
+    t.reserve(std::size_t(outer.back()) * 4);
+    for (int j = 0; j < neq; ++j)
+        for (int k = outer[std::size_t(j)]; k < outer[std::size_t(j) + 1]; ++k) {
+            const int i = inner[std::size_t(k)];
+            for (int a = 0; a < 2; ++a)
+                for (int b = 0; b < 2; ++b) t.emplace_back(2 * i + a, 2 * j + b, 1.0);
+        }
+    a_real = Eigen::SparseMatrix<double>(2 * neq, 2 * neq);
+    a_real.setFromTriplets(t.begin(), t.end());
+    a_ldlt.reset();
+    a_ldltAnalyzed = false;
+}
+
+void ComplexSystem::clear()
+{
+    std::fill(a_A.valuePtr(), a_A.valuePtr() + a_A.nonZeros(), std::complex<double>(0, 0));
+}
+
+void ComplexSystem::add(int i, int j, std::complex<double> v)
+{
+    const int* inner = a_A.innerIndexPtr();
+    const int* outer = a_A.outerIndexPtr();
+    const int* begin = inner + outer[j];
+    const int* end = inner + outer[j + 1];
+    const int* at = std::lower_bound(begin, end, i);
+    a_A.valuePtr()[at - inner] += v;
+}
+
+bool ComplexSystem::factorize(const QString& name, QString* error, bool quasiDefinite)
+{
+    if (quasiDefinite) {
+        // [Re, -Im; -Im, -Re] in each 2 × 2 block: its rows the real part's
+        // equation and minus the imaginary part's.
+        for (int j = 0; j < a_n; ++j)
+            for (Matrix::InnerIterator it(a_A, j); it; ++it) {
+                const int i = int(it.row());
+                const double re = it.value().real(), im = it.value().imag();
+                a_real.coeffRef(2 * i, 2 * j) = re;
+                a_real.coeffRef(2 * i, 2 * j + 1) = -im;
+                a_real.coeffRef(2 * i + 1, 2 * j) = -im;
+                a_real.coeffRef(2 * i + 1, 2 * j + 1) = -re;
+            }
+        if (!a_ldlt) {
+            a_ldlt = std::make_unique<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>();
+            a_ldltAnalyzed = false;
+        }
+        if (!a_ldltAnalyzed) {
+            a_ldlt->analyzePattern(a_real);
+            a_ldltAnalyzed = true;
+        }
+        a_ldlt->factorize(a_real);
+        if (a_ldlt->info() == Eigen::Success && (a_ldlt->vectorD().array() != 0).all()) {
+            a_lu.reset();
+            a_analyzed = false;
+            return true;
+        }
+        a_ldlt.reset();
+        a_ldltAnalyzed = false;
+    } else {
+        a_ldlt.reset();
+        a_ldltAnalyzed = false;
+    }
+    if (!a_lu) {
+        a_lu = std::make_unique<Eigen::SparseLU<Matrix>>();
+        a_analyzed = false;
+    }
+    if (!a_analyzed) {
+        a_lu->analyzePattern(a_A);
+        a_analyzed = true;
+    }
+    a_lu->factorize(a_A);
+    if (a_lu->info() != Eigen::Success) {
+        *error = tr("%1: the matrix is singular - %2").arg(name, QString::fromStdString(a_lu->lastErrorMessage()));
+        a_lu.reset();
+        a_analyzed = false;
+        return false;
+    }
+    return true;
+}
+
+bool ComplexSystem::solve(const Eigen::VectorXcd& rhs, Eigen::VectorXcd& x, const QString& name, QString* error) const
+{
+    if (a_ldlt) {
+        Eigen::VectorXd r(2 * a_n);
+        for (int i = 0; i < a_n; ++i) {
+            r[2 * i] = rhs[i].real();
+            r[2 * i + 1] = -rhs[i].imag();
+        }
+        const Eigen::VectorXd y = a_ldlt->solve(r);
+        x.resize(a_n);
+        for (int i = 0; i < a_n; ++i) x[i] = std::complex<double>(y[2 * i], y[2 * i + 1]);
+        if (!x.allFinite()) {
+            *error = tr("%1: the solution is not finite").arg(name);
+            return false;
+        }
+        return true;
+    }
+    if (!a_lu) {
+        *error = tr("%1: nothing is factorized").arg(name);
+        return false;
+    }
+    x = a_lu->solve(rhs);
+    if (!x.allFinite()) {
+        *error = tr("%1: the solution is not finite").arg(name);
+        return false;
+    }
+    return true;
+}
+
 // ------------------------------------------------------------------ Problem
 
 Problem::Problem(Solution& solution, int field) : a_s(solution), a_fi(field)
@@ -240,12 +372,27 @@ QString Problem::materialProperty(const Node& m, const QString& key)
     return text;
 }
 
+QJsonValue materialValue(const Node& m, const QString& key)
+{
+    const QJsonValue v = m.value(key);
+    if (v.isArray() && !v.toArray().isEmpty()) return v;
+    if (v.isString() && !v.toString().trimmed().isEmpty()) return v;
+    if (v.isDouble()) return v;
+    if (!m.text(QStringLiteral("library")).isEmpty())
+        if (const std::optional<MaterialEntry> entry = findMaterial(m.text(QStringLiteral("library"))))
+            return entry->properties.value(key);
+    return {};
+}
+
 std::unique_ptr<Problem> makeScalarProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeElasticProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeMagneticProblem(Solution& solution, int field);
 
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
 {
-    if (solution.fields()[std::size_t(field)].type == QLatin1String("solid")) return makeElasticProblem(solution, field);
+    const QString& type = solution.fields()[std::size_t(field)].type;
+    if (type == QLatin1String("solid")) return makeElasticProblem(solution, field);
+    if (type == QLatin1String("magnetic")) return makeMagneticProblem(solution, field);
     return makeScalarProblem(solution, field);
 }
 
@@ -266,7 +413,7 @@ struct FieldInfo {
     bool planeStress = false;   // (solid)
 };
 
-FieldInfo infoOf(const Node& p)
+FieldInfo infoOf(const Node& p, bool axisymmetric)
 {
     FieldInfo f;
     f.tag = p.tag;
@@ -278,11 +425,18 @@ FieldInfo infoOf(const Node& p)
         f.variable = QStringLiteral("u");
         f.dim = Dim::length();
         f.planeStress = p.text(QStringLiteral("model")) == QLatin1String("planestress");
+    } else if (p.type == QLatin1String("magnetic")) {
+        // The magnetic vector potential out of the plane (round the axis).
+        f.variable = axisymmetric ? QStringLiteral("Aphi") : QStringLiteral("Az");
+        f.dim = Dim::of(1, 1, -2, -1);
     } else {
         f.variable = QStringLiteral("V");
         f.dim = Dim::voltage();
     }
-    f.components = p.type == QLatin1String("solid") ? QStringList{QStringLiteral("u"), QStringLiteral("v")} : QStringList{f.variable};
+    if (p.type == QLatin1String("solid")) f.components = QStringList{QStringLiteral("u"), QStringLiteral("v")};
+    // (Its real and imaginary parts: in the frequency domain it is complex.)
+    else if (p.type == QLatin1String("magnetic")) f.components = QStringList{f.variable, f.variable + QStringLiteral("_im")};
+    else f.components = QStringList{f.variable};
     return f;
 }
 
@@ -304,7 +458,7 @@ Solution::Solution(const Model& model, std::shared_ptr<ParameterScope> parameter
     std::map<int, std::shared_ptr<const Space>> spaces;
     for (const Node* p : a_model.physics()) {
         if (!p->enabled) continue;
-        const FieldInfo info = infoOf(*p);
+        const FieldInfo info = infoOf(*p, a_axisymmetric);
         Field f;
         f.tag = info.tag;
         f.type = info.type;
@@ -406,6 +560,92 @@ StressState stressAt(PointEvaluator& e, int field, bool planeStress, bool axisym
     return st;
 }
 
+constexpr double Mu0 = 1.25663706127e-6;
+
+/// A magnetic field at a point: B and H (each component's real and
+/// imaginary parts), the current density out of the plane (round the
+/// axis), what is conducted of it, the energy and loss densities (time
+/// averages in the frequency domain).
+struct MagneticState {
+    double B[2][2] = {{0, 0}, {0, 0}};   // [x (r), y (z)][re, im]
+    double H[2][2] = {{0, 0}, {0, 0}};
+    double J[2] = {0, 0};
+    double Jc[2] = {0, 0};
+    double sigma = 0;
+    double mur = NaN;
+    double w = 0;
+    double q = 0;
+};
+
+MagneticState magneticAt(PointEvaluator& e, int f, bool axisymmetric)
+{
+    MagneticState st;
+    double a[2], ax[2], ay[2];
+    for (int c = 0; c < 2; ++c) e.component(f, c, a[c], ax[c], ay[c]);
+    if (!std::isfinite(a[0])) {
+        for (auto& b : st.B) b[0] = b[1] = NaN;
+        for (auto& h : st.H) h[0] = h[1] = NaN;
+        st.J[0] = st.J[1] = st.Jc[0] = st.Jc[1] = st.w = st.q = NaN;
+        return st;
+    }
+    const double r = axisymmetric ? e.point().x() : 1.0;
+    for (int c = 0; c < 2; ++c) {
+        if (axisymmetric) {
+            // B = curl(A φ): (-∂A/∂z, ∂A/∂r + A/r)
+            st.B[0][c] = -ay[c];
+            st.B[1][c] = ax[c] + (r > 0 ? a[c] / r : ax[c]);
+        } else {
+            st.B[0][c] = ay[c];
+            st.B[1][c] = -ax[c];
+        }
+    }
+    const Solution& s = e.solution();
+    const int dom = e.domain();
+    const Solution::Coefficients& coef = s.coefficients()[std::size_t(f)];
+    const BHCurve* curve = dom >= 0 && dom < int(coef.curves.size()) ? coef.curves[std::size_t(dom)].get() : nullptr;
+    auto orZero = [](double v) { return std::isfinite(v) ? v : 0.0; };
+    const double brx = orZero(e.coefficient(f, QStringLiteral("Brx"))), bry = orZero(e.coefficient(f, QStringLiteral("Bry")));
+    // (Time averages of a field that changes: none at 0 Hz.)
+    const bool harmonic = s.frequencyDomain && s.frequency() > 0;
+    double nu = NaN;
+    if (curve) {
+        const double b = std::sqrt(st.B[0][0] * st.B[0][0] + st.B[1][0] * st.B[1][0] + st.B[0][1] * st.B[0][1] + st.B[1][1] * st.B[1][1]);
+        nu = curve->nu(b);
+        st.mur = 1 / (Mu0 * nu);
+        st.w = harmonic ? 0.25 * nu * b * b : curve->energy(b);
+    } else {
+        st.mur = e.coefficient(f, QString());
+        nu = 1 / (Mu0 * st.mur);
+        const double dx = st.B[0][0] - brx, dy = st.B[1][0] - bry;
+        st.w = harmonic ? 0.25 * nu * (st.B[0][0] * st.B[0][0] + st.B[1][0] * st.B[1][0] + st.B[0][1] * st.B[0][1] + st.B[1][1] * st.B[1][1])
+                        : 0.5 * nu * (dx * dx + dy * dy);
+    }
+    st.H[0][0] = nu * (st.B[0][0] - brx);
+    st.H[1][0] = nu * (st.B[1][0] - bry);
+    st.H[0][1] = nu * st.B[0][1];
+    st.H[1][1] = nu * st.B[1][1];
+    st.sigma = orZero(e.coefficient(f, QStringLiteral("sigma")));
+    const double je = orZero(e.coefficient(f, QStringLiteral("Je")));
+    // A conductor's field from its voltage: U along the plane's normal (V/m),
+    // round the axis U/(2πr) (U its loop voltage); and -jωA.
+    double ure = 0, uim = 0;
+    const double coil = e.coefficient(f, QStringLiteral("coil"));
+    if (std::isfinite(coil) && coil >= 0 && coil < double(s.fields()[std::size_t(f)].terminals.size())) {
+        const Field::Terminal& t = s.fields()[std::size_t(f)].terminals[std::size_t(coil)];
+        ure = t.potential;
+        uim = t.potentialIm;
+    }
+    const double g = axisymmetric ? (r > 0 ? 1 / (2 * M_PI * r) : 0.0) : 1.0;
+    const double omega = 2 * M_PI * s.frequency();
+    const double ere = g * ure + omega * a[1], eim = g * uim - omega * a[0];
+    st.Jc[0] = st.sigma * ere;
+    st.Jc[1] = st.sigma * eim;
+    st.J[0] = je + st.Jc[0];
+    st.J[1] = st.Jc[1];
+    st.q = st.sigma * (ere * ere + eim * eim) * (harmonic ? 0.5 : 1.0);
+    return st;
+}
+
 /// The variables of a solution of \a fields, each to \a define: x, y (r, z
 /// about the axis), t, the fields and what follows from them.
 void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, const DefineFunction& defineVariable)
@@ -428,6 +668,7 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
     }
     define(QStringLiteral("t"), Dim::of(0, 0, 1), tr("time"), K::Time);
     define(QStringLiteral("time"), Dim::of(0, 0, 1), tr("time (as t; where a parameter is named t)"), K::Time);
+    define(QStringLiteral("freq"), Dim::of(0, 0, -1), tr("frequency (in the frequency domain; 0 at rest)"), K::Frequency);
     define(QStringLiteral("dom"), Dim(), tr("the domain's number"), K::DomainNumber);
     define(QStringLiteral("h"), Dim::length(), tr("the mesh element's size"), K::Size);
     const Dim efield = Dim::of(1, 1, -3, -1), dfield = Dim::of(-2, 0, 1, 1), jfield = Dim::of(-2, 0, 0, 1);
@@ -492,6 +733,64 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                    });
             continue;
         }
+        if (field.type == QLatin1String("magnetic")) {
+            const QString A = field.variable;
+            const QString im = QStringLiteral("_im");
+            const QString inFrequency = tr(" (in the frequency domain, its real part)");
+            const Dim bDim = Dim::of(0, 1, -2, -1), hDim = Dim::of(-1, 0, 0, 1), jDim = Dim::of(-2, 0, 0, 1);
+            const QString along = axisymmetric ? tr("round the axis") : tr("out of the plane");
+            component(p + A, field.dim, tr("magnetic vector potential, %1%2").arg(along, inFrequency), K::Value, f, 0);
+            component(A, field.dim, tr("magnetic vector potential (%1)").arg(field.tag), K::Value, f, 0);
+            component(p + A + im, field.dim, tr("magnetic vector potential, its imaginary part"), K::Value, f, 1);
+            const bool axi = axisymmetric;
+            auto st = [f, axi](PointEvaluator& e) { return magneticAt(e, f, axi); };
+            const QString b0 = axi ? QStringLiteral("r") : QStringLiteral("x"), b1 = axi ? QStringLiteral("z") : QStringLiteral("y");
+            for (int k = 0; k < 2; ++k) {
+                const QString c = k == 0 ? b0 : b1;
+                define(p + QStringLiteral("B") + c, bDim, tr("magnetic flux density, %1 component").arg(c), K::Derived, f,
+                       [st, k](PointEvaluator& e) { return st(e).B[k][0]; });
+                define(p + QStringLiteral("B") + c + im, bDim, tr("magnetic flux density, %1 component, imaginary part").arg(c), K::Derived, f,
+                       [st, k](PointEvaluator& e) { return st(e).B[k][1]; });
+                define(p + QStringLiteral("H") + c, hDim, tr("magnetic field, %1 component").arg(c), K::Derived, f,
+                       [st, k](PointEvaluator& e) { return st(e).H[k][0]; });
+                define(p + QStringLiteral("H") + c + im, hDim, tr("magnetic field, %1 component, imaginary part").arg(c), K::Derived, f,
+                       [st, k](PointEvaluator& e) { return st(e).H[k][1]; });
+            }
+            define(p + QStringLiteral("normB"), bDim, tr("magnetic flux density, norm (its amplitude in the frequency domain)"), K::Derived, f,
+                   [st](PointEvaluator& e) {
+                       const MagneticState m = st(e);
+                       return std::sqrt(m.B[0][0] * m.B[0][0] + m.B[0][1] * m.B[0][1] + m.B[1][0] * m.B[1][0] + m.B[1][1] * m.B[1][1]);
+                   });
+            define(p + QStringLiteral("normH"), hDim, tr("magnetic field, norm (its amplitude)"), K::Derived, f, [st](PointEvaluator& e) {
+                const MagneticState m = st(e);
+                return std::sqrt(m.H[0][0] * m.H[0][0] + m.H[0][1] * m.H[0][1] + m.H[1][0] * m.H[1][0] + m.H[1][1] * m.H[1][1]);
+            });
+            const QString J = axi ? QStringLiteral("Jphi") : QStringLiteral("Jz");
+            define(p + J, jDim, tr("current density, %1: the sources' and what is induced%2").arg(along, inFrequency), K::Derived, f,
+                   [st](PointEvaluator& e) { return st(e).J[0]; });
+            define(p + J + im, jDim, tr("current density, its imaginary part"), K::Derived, f, [st](PointEvaluator& e) { return st(e).J[1]; });
+            define(p + QStringLiteral("normJ"), jDim, tr("current density, its amplitude"), K::Derived, f,
+                   [st](PointEvaluator& e) { return std::hypot(st(e).J[0], st(e).J[1]); });
+            define(p + QStringLiteral("Jc"), jDim, tr("conducted current density (σ E): eddy currents, a conductor's own%1").arg(inFrequency),
+                   K::Derived, f, [st](PointEvaluator& e) { return st(e).Jc[0]; });
+            define(p + QStringLiteral("Qrh"), Dim::of(-1, 1, -3), tr("resistive losses (a time average in the frequency domain)"), K::Derived, f,
+                   [st](PointEvaluator& e) { return st(e).q; });
+            define(p + QStringLiteral("Wm"), Dim::of(-1, 1, -2), tr("magnetic energy density (a time average in the frequency domain)"), K::Derived,
+                   f, [st](PointEvaluator& e) { return st(e).w; });
+            define(p + QStringLiteral("mur"), Dim(), tr("relative permeability (B/µ0H on a B-H curve)"), K::Derived, f,
+                   [st](PointEvaluator& e) { return st(e).mur; });
+            coefficient(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity (0 in a coil of turns)"), f,
+                        QStringLiteral("sigma"));
+            coefficient(p + QStringLiteral("Je"), jDim, tr("external current density (a coil of turns' too)"), f, QStringLiteral("Je"));
+            if (axi) {
+                // The flux through the circle of radius r about the axis: its
+                // contours are the field lines.
+                const int sa = component(p + A, field.dim, QString(), K::Value, f, 0);
+                define(p + QStringLiteral("psi"), Dim::of(2, 1, -2, -1), tr("magnetic flux through the circle of radius r (2πr Aφ): its contours are field lines"),
+                       K::Derived, f, [sa](PointEvaluator& e) { return 2 * M_PI * e.point().x() * e.value(sa); });
+            }
+            continue;
+        }
         define(p + field.variable, field.dim, tr("the dependent variable"), K::Value, f, {});
         // Its plain name too (V, T), when no physics before has it.
         define(field.variable, field.dim, tr("the dependent variable of %1").arg(field.tag), K::Value, f, {});
@@ -501,6 +800,9 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
             const int ne = define(p + QStringLiteral("normE"), efield, tr("electric field, norm"), K::GradNorm, f);
             if (field.type == QLatin1String("electrostatics")) {
                 const int er = coefficient(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity"), f, QString());
+                coefficient(p + QStringLiteral("tand"), Dim(), tr("loss tangent (its material's)"), f, QStringLiteral("tand"));
+                coefficient(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity (its material's)"), f,
+                            QStringLiteral("sigma"));
                 const int dx = define(p + QStringLiteral("Dx"), dfield, tr("electric displacement, x component"), K::Derived, f,
                                       [er, ex](PointEvaluator& e) { return detail::Eps0 * e.value(er) * e.value(ex); });
                 const int dy = define(p + QStringLiteral("Dy"), dfield, tr("electric displacement, y component"), K::Derived, f,
@@ -546,7 +848,7 @@ std::vector<FieldInfo> fieldInfos(const Model& model)
 {
     std::vector<FieldInfo> out;
     for (const Node* p : model.physics())
-        if (p->enabled) out.push_back(infoOf(*p));
+        if (p->enabled) out.push_back(infoOf(*p, axisymmetricModel(model)));
     return out;
 }
 
@@ -650,6 +952,7 @@ void Solution::addSnapshot()
 {
     Snapshot s;
     s.time = a_time;
+    s.frequency = a_frequency;
     for (const Field& f : a_fields) {
         s.values.push_back(f.values);
         s.terminals.push_back(f.terminals);
@@ -670,9 +973,39 @@ void Solution::select(int i)
         a_fields[f].terminals = s.terminals[f];
     }
     a_time = s.time;
+    a_frequency = s.frequency;
     for (int g = 0; g < int(a_globals.size()) && g < int(s.globals.size()); ++g)
         a_globalScope->setConstant(a_globals[g].name, s.globals[std::size_t(g)], a_globals[g].dim);
     a_selected = i;
+}
+
+void Solution::replaceLastSnapshot()
+{
+    if (a_snapshots.empty()) return;
+    const double t = a_snapshots.back().time, f = a_snapshots.back().frequency;
+    a_snapshots.pop_back();
+    const double nowT = a_time, nowF = a_frequency;
+    a_time = t;
+    a_frequency = f;
+    addSnapshot();
+    a_time = nowT;
+    a_frequency = nowF;
+}
+
+int Solution::snapshotAtFrequency(double f) const
+{
+    int best = -1;
+    double gap = INFINITY;
+    for (int i = 0; i < int(a_snapshots.size()); ++i) {
+        // (Nearest on a logarithmic scale: a list of decades.)
+        const double v = a_snapshots[std::size_t(i)].frequency;
+        const double d = v > 0 && f > 0 ? std::abs(std::log(v / f)) : std::abs(v - f);
+        if (d < gap) {
+            gap = d;
+            best = i;
+        }
+    }
+    return best;
 }
 
 int Solution::snapshotAt(double t) const
@@ -707,6 +1040,11 @@ void PointEvaluator::moveTo(int t, double xi, double eta)
     std::fill(a_done.begin(), a_done.end(), 0);
     for (FieldCache& c : a_fields) c.done = false;
     a_mapped = false;
+}
+
+int PointEvaluator::domain() const
+{
+    return a_t < 0 ? -1 : a_s.mesh().domain[std::size_t(a_t)];
 }
 
 void PointEvaluator::perturb(int f, double du)
@@ -801,6 +1139,7 @@ double PointEvaluator::value(int slot)
     case K::X: v = point().x(); break;
     case K::Y: v = point().y(); break;
     case K::Time: v = a_s.time(); break;
+    case K::Frequency: v = a_s.frequency(); break;
     case K::DomainNumber: v = a_s.mesh().domain[std::size_t(a_t)] + 1; break;
     case K::Size: {
         const auto& t = a_s.mesh().triangles[std::size_t(a_t)];
@@ -901,7 +1240,7 @@ std::optional<std::vector<double>> valueList(const QString& text, const Scope& s
         }
         return true;
     };
-    static const QRegularExpression call(QStringLiteral("^\\s*(range|linspace)\\s*\\((.*)\\)\\s*$"));
+    static const QRegularExpression call(QStringLiteral("^\\s*(range|linspace|logspace)\\s*\\((.*)\\)\\s*$"));
     for (const QString& item : topLevelItems(text)) {
         const QRegularExpressionMatch m = call.match(item);
         if (m.hasMatch()) {
@@ -917,6 +1256,14 @@ std::optional<std::vector<double>> valueList(const QString& text, const Scope& s
                 const double n = std::floor((c - a) / b + 1e-9);
                 if (n > 1e6) return fail(tr("%1: more than a million values").arg(item));
                 for (int i = 0; i <= int(n); ++i) out.push_back(a + i * b);
+            } else if (m.captured(1) == QLatin1String("logspace")) {
+                // logspace(start, stop, count): evenly in their logarithms (the
+                // values themselves, not their exponents: logspace(1[kHz], 1[GHz], 61))
+                if (!agree(da, args[0], a) || !agree(db, args[1], b)) return std::nullopt;
+                const int n = int(std::lround(c));
+                if (n < 1 || n > 1000000) return fail(tr("%1: from 1 to a million values").arg(item));
+                if (!(a > 0) || !(b > 0)) return fail(tr("%1: its start and stop must be more than 0").arg(item));
+                for (int i = 0; i < n; ++i) out.push_back(n == 1 ? a : a * std::pow(b / a, double(i) / (n - 1)));
             } else {
                 // linspace(start, stop, count)
                 if (!agree(da, args[0], a) || !agree(db, args[1], b)) return std::nullopt;
@@ -1054,14 +1401,87 @@ bool stationaryStep(Solution& s, const Node& node, const std::function<bool(doub
         }
     }
     if (sweep) {
-        // Once more with the terminals swept.
+        // Once more with the terminals (coils) swept.
         SolveOptions o = st.options;
         o.sweep = true;
         for (auto& p : st.problems)
-            if (p->field().type == QLatin1String("electrostatics") || p->field().type == QLatin1String("currents"))
+            if (p->field().type == QLatin1String("electrostatics") || p->field().type == QLatin1String("currents")
+                || p->field().type == QLatin1String("magnetic"))
                 if (!p->solve(o, error)) return false;
     }
     for (auto& p : st.problems) p->setGlobals();
+    // After a step in time or frequency: its last solution with these.
+    if (s.snapshotCount() > 0) s.replaceLastSnapshot();
+    return true;
+}
+
+bool frequencyStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    Dim dim;
+    QString why;
+    const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("frequencies")), s.parameters().scope, &dim, &why);
+    if (!listed) {
+        *error = tr("%1: the frequencies: %2").arg(node.name(), why);
+        return false;
+    }
+    if (!dim.isNone() && !(dim == Dim::of(0, 0, -1))) {
+        *error = tr("%1: the frequencies are in %2, not in Hz").arg(node.name(), dimName(dim));
+        return false;
+    }
+    std::vector<double> frequencies = *listed;
+    for (double f : frequencies)
+        if (!(f >= 0) || !std::isfinite(f)) {
+            *error = tr("%1: a frequency of %2: they must be 0 or more").arg(node.name(), formatNumber(f));
+            return false;
+        }
+    if (frequencies.empty()) {
+        *error = tr("%1: give a frequency at least").arg(node.name());
+        return false;
+    }
+    bool any = false;
+    for (const auto& p : st.problems) any = any || p->harmonic();
+    if (!any)
+        *warnings << tr("%1: none of its physics has a frequency domain (magnetic fields have): each frequency is solved at rest")
+                         .arg(node.name());
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    s.frequencyDomain = true;
+    const bool sweep = node.flag(QStringLiteral("sweep"));
+    std::vector<int> all;
+    for (int i = 0; i < int(st.problems.size()); ++i) all.push_back(i);
+    for (std::size_t k = 0; k < frequencies.size(); ++k) {
+        const double f = frequencies[k];
+        if (!tell(double(k) / double(frequencies.size()), tr("%1: f = %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1))))) {
+            *error = tr("cancelled");
+            return false;
+        }
+        s.setFrequency(f);
+        auto optionsOf = [&](int i) {
+            SolveOptions o = st.options;
+            if (st.problems[std::size_t(i)]->harmonic()) {
+                o.harmonic = true;
+                o.frequency = f;
+                o.sweep = sweep;
+            }
+            return o;
+        };
+        QString failed;
+        if (!solveTogether(st, all, optionsOf, false, &failed)) {
+            if (failed.contains(QLatin1String("did not converge"))) *warnings << failed;
+            else {
+                *error = failed;
+                return false;
+            }
+        }
+        for (auto& p : st.problems) p->setGlobals();
+        s.addSnapshot();
+    }
+    s.log << tr("%1: %2 frequencies, from %3 to %4")
+                 .arg(node.name())
+                 .arg(frequencies.size())
+                 .arg(formatQuantity(frequencies.front(), Dim::of(0, 0, -1)), formatQuantity(frequencies.back(), Dim::of(0, 0, -1)));
     return true;
 }
 
@@ -1319,10 +1739,19 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         }
     }
     std::vector<const Node*> steps;
+    bool inTime = false, inFrequency = false;
     for (const Node& step : study->children)
-        if (step.enabled && step.type != QLatin1String("sweep")) steps.push_back(&step);
+        if (step.enabled && step.type != QLatin1String("sweep")) {
+            steps.push_back(&step);
+            inTime = inTime || step.type == QLatin1String("transient");
+            inFrequency = inFrequency || step.type == QLatin1String("frequency");
+        }
     if (steps.empty()) {
         out.error = tr("%1 has no step to solve").arg(study->name());
+        return out;
+    }
+    if (inTime && inFrequency) {
+        out.error = tr("%1 steps in time and in frequency: a study has one or the other").arg(study->name());
         return out;
     }
     for (std::size_t k = 0; k < steps.size(); ++k) {
@@ -1334,6 +1763,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         bool ok = false;
         if (step.type == QLatin1String("stationary")) ok = stationaryStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("transient")) ok = transientStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("frequency")) ok = frequencyStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
         if (!ok) {
             out.error = why;

@@ -482,6 +482,113 @@ Over overBoundaries(const Solution& s, const Expression& e, const QVector<int>& 
 
 } // namespace
 
+LineRLGC lineRLGC(const Solution& solution, const Node& node)
+{
+    LineRLGC out;
+    if (solution.axisymmetric()) {
+        out.error = tr("a line's parameters are per metre of a 2D cross-section in the plane: not about an axis");
+        return out;
+    }
+    const double d = solution.thickness();
+    out.frequency = solution.frequency();
+    const double omega = 2 * M_PI * out.frequency;
+    // C and G from electrostatics: the signal terminal at its voltage, the
+    // others at none.
+    const QStringList esTags = node.list(QStringLiteral("physics"));
+    const QString esTag = esTags.isEmpty() ? QStringLiteral("es") : esTags.first();
+    const int ei = solution.fieldIndex(esTag);
+    if (ei < 0 || solution.fields()[std::size_t(ei)].type != QLatin1String("electrostatics") || !solution.fields()[std::size_t(ei)].solved) {
+        out.error = tr("there is no electrostatics %1 solved (its C and G)").arg(esTag);
+        return out;
+    }
+    const Field& es = solution.fields()[std::size_t(ei)];
+    const QString terminal = node.text(QStringLiteral("terminal")).trimmed().isEmpty() ? QStringLiteral("1") : node.text(QStringLiteral("terminal")).trimmed();
+    double v0 = NAN, q = NAN;
+    for (const Field::Terminal& t : es.terminals) {
+        if (t.name == terminal) {
+            v0 = t.potential;
+            q = t.charge;
+        } else if (!t.floating && t.potential != 0) {
+            out.error = tr("%1's terminal %2 is at %3: a line's G and C want its other terminals at 0 V").arg(esTag, t.name, formatQuantity(t.potential, Dim::voltage()));
+            return out;
+        }
+    }
+    if (!std::isfinite(v0) || v0 == 0) {
+        out.error = tr("%1 has no terminal %2 at a voltage").arg(esTag, terminal);
+        return out;
+    }
+    out.C = q / v0 / d;
+    for (int i = 0; i < int(es.matrix.size()); ++i)
+        if (es.terminals[std::size_t(i)].name == terminal) out.C = es.matrix[std::size_t(i)][std::size_t(i)] / d;
+    {
+        // G = (ω ∫ ε0 εr tan δ |E|² + ∫ σ |E|²) / V0², over the plane (per metre).
+        QVector<int> domains;
+        for (int k = 0; k < int(es.domains.size()); ++k)
+            if (es.domains[std::size_t(k)]) domains << k;
+        const QString p = esTag + QLatin1Char('.');
+        // (tan δ or σ not given: that term none)
+        const Expression loss = Expression::compile(QStringLiteral("(%1*eps0*%2epsr*if(%2tand > 0, %2tand, 0))*%2normE^2").arg(QString::number(omega, 'g', 17), p),
+                                                    solution.scope());
+        const Expression cond = Expression::compile(QStringLiteral("if(%1sigma > 0, %1sigma, 0)*%1normE^2").arg(p), solution.scope());
+        if (!loss.isValid() || !cond.isValid()) {
+            out.error = loss.isValid() ? cond.error() : loss.error();
+            return out;
+        }
+        const Over a = overDomains(solution, loss, domains, false), b = overDomains(solution, cond, domains, false);
+        out.G = ((a.any ? a.integral : 0.0) + (b.any ? b.integral : 0.0)) / (v0 * v0);
+    }
+    // R and L from the magnetic fields' coils: the signal's and the return's,
+    // the loop's Z = Z_ss - Z_sr - Z_rs + Z_rr.
+    const QStringList mfTags = node.list(QStringLiteral("magnetic"));
+    const QString mfTag = mfTags.isEmpty() ? QStringLiteral("mf") : mfTags.first();
+    const int mi = solution.fieldIndex(mfTag);
+    if (mi < 0 || solution.fields()[std::size_t(mi)].type != QLatin1String("magnetic") || !solution.fields()[std::size_t(mi)].solved) {
+        out.error = tr("there is no magnetic fields %1 solved (its R and L)").arg(mfTag);
+        return out;
+    }
+    const QString s = node.text(QStringLiteral("conductor")).trimmed().isEmpty() ? QStringLiteral("1") : node.text(QStringLiteral("conductor")).trimmed();
+    const QString r = node.text(QStringLiteral("return")).trimmed();
+    const QString p = mfTag + QLatin1Char('.');
+    auto entry = [&](const QString& letter, const QString& a, const QString& b) -> std::optional<double> {
+        return solution.global(p + letter + QLatin1Char('_') + a + QLatin1Char('_') + b);
+    };
+    auto loop = [&](const QString& letter) -> std::optional<double> {
+        const std::optional<double> ss = entry(letter, s, s);
+        if (!ss) return std::nullopt;
+        if (r.isEmpty()) return *ss;
+        const std::optional<double> sr = entry(letter, s, r), rs = entry(letter, r, s), rr = entry(letter, r, r);
+        if (!sr || !rs || !rr) return std::nullopt;
+        return *ss - *sr - *rs + *rr;
+    };
+    std::optional<double> R = loop(QStringLiteral("R")), L = loop(QStringLiteral("L"));
+    if ((!R || !L) && r.isEmpty()) {
+        // No matrix (the coils not swept): the coil's own.
+        R = solution.global(p + QStringLiteral("R_") + s);
+        L = solution.global(p + QStringLiteral("L_") + s);
+    }
+    if (!R || !L) {
+        out.error = r.isEmpty() ? tr("%1 has no coil %2 (or its R and L): give the signal conductor a Coil, and keep the study's coil sweep on").arg(mfTag, s)
+                                : tr("%1 has no impedance matrix of coils %2 and %3: keep the study's coil sweep on").arg(mfTag, s, r);
+        return out;
+    }
+    out.R = *R / d;
+    out.L = *L / d;
+    // γ = √((R + jωL)(G + jωC)), Zc = √((R + jωL)/(G + jωC)).
+    const std::complex<double> z(out.R, omega * out.L), y(out.G, omega * out.C);
+    if (omega > 0) {
+        out.gamma = std::sqrt(z * y);
+        out.Zc = std::sqrt(z / y);
+    } else {
+        out.gamma = 0;
+        out.Zc = std::sqrt(out.L / out.C);
+    }
+    if (out.gamma.real() < 0) out.gamma = -out.gamma;
+    out.alphaDb = 20 / std::log(10.0) * out.gamma.real();
+    out.velocity = omega > 0 && out.gamma.imag() > 0 ? omega / out.gamma.imag() : 1 / std::sqrt(out.L * out.C);
+    out.epsEff = std::pow(299792458.0 / out.velocity, 2);
+    return out;
+}
+
 DerivedResult evaluateDerived(const Solution& solution, const Node& node)
 {
     DerivedResult out;
@@ -598,6 +705,27 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             out.error = tr("there is no electrostatics %1 solved").arg(tag);
             return out;
         }
+        if (node.text(QStringLiteral("method")) == QLatin1String("rlgc")) {
+            const LineRLGC l = lineRLGC(solution, node);
+            if (!l.error.isEmpty()) {
+                out.error = l.error;
+                return out;
+            }
+            const Dim perMetre = Dim::of(-1);
+            add(QStringLiteral("R"), l.R, Dim::resistance() * perMetre, false);
+            add(QStringLiteral("L"), l.L, Dim::of(2, 1, -2, -2) * perMetre, false);
+            add(QStringLiteral("G"), l.G, Dim::conductance() * perMetre, false);
+            add(QStringLiteral("C"), l.C, Dim::capacitance() * perMetre, false);
+            add(QStringLiteral("Z0"), l.Zc.real(), Dim::resistance(), false);
+            add(QStringLiteral("Z0_im"), l.Zc.imag(), Dim::resistance(), false);
+            add(QStringLiteral("alpha"), l.alphaDb, Dim::of(-1), false);
+            add(QStringLiteral("beta"), l.gamma.imag(), Dim::of(-1), false);
+            add(QStringLiteral("epsilon_eff"), l.epsEff, Dim(), false);
+            add(QStringLiteral("v"), l.velocity, Dim::of(1, 0, -1), false);
+            out.values[6].text = formatNumber(l.alphaDb, 4) + QStringLiteral(" dB/m");
+            out.values[7].text = formatNumber(l.gamma.imag(), 4) + QStringLiteral(" rad/m");
+            return out;
+        }
         const Field& f = solution.fields()[std::size_t(fi)];
         const QString terminal = node.text(QStringLiteral("terminal")).trimmed().isEmpty() ? QStringLiteral("1") : node.text(QStringLiteral("terminal")).trimmed();
         int index = -1;
@@ -629,7 +757,7 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
     return out;
 }
 
-std::vector<Instance> instances(const SolutionSet& set, bool all, int point, const QString& time)
+std::vector<Instance> instances(const SolutionSet& set, bool all, int point, const QString& time, const QString& frequency)
 {
     std::vector<Instance> out;
     const int n = int(set.solutions.size());
@@ -644,13 +772,15 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
             continue;
         }
         int pick = snaps - 1;
-        if (!all && !time.trimmed().isEmpty()) {
-            if (const std::optional<double> t = evaluateConstant(time, s.parameters().scope, Dim::of(0, 0, 1)); t) pick = s.snapshotAt(*t);
+        const QString& at = s.frequencyDomain ? frequency : time;
+        if (!all && !at.trimmed().isEmpty()) {
+            if (const std::optional<double> v = evaluateConstant(at, s.parameters().scope, s.snapshotDim()); v)
+                pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
         }
         for (int k = 0; k < snaps; ++k) {
             if (!all && k != pick) continue;
-            const QString when = QStringLiteral("t = %1").arg(formatQuantity(s.snapshotTime(k), Dim::of(0, 0, 1)));
-            out.push_back({p, k, s.snapshotTime(k), s.label.isEmpty() ? when : s.label + QStringLiteral(", ") + when});
+            const QString when = s.snapshotSymbol() + QStringLiteral(" = ") + formatQuantity(s.snapshotValue(k), s.snapshotDim());
+            out.push_back({p, k, s.snapshotValue(k), s.label.isEmpty() ? when : s.label + QStringLiteral(", ") + when});
         }
     }
     return out;
