@@ -1353,6 +1353,106 @@ private slots:
         QCOMPARE(data.find(QStringLiteral("Tline"))->dependencies, (QStringList{QStringLiteral("x"), QStringLiteral("time"), QStringLiteral("P")}));
     }
 
+    // A sweep of two parameters: of all their combinations an axis each, the
+    // last the faster (T over the conductivity, a curve per power); one of a
+    // value not an axis (T over the power, not over an index of the points);
+    // of specified combinations the one changing, an index of two changing.
+    void aSweepOfTwoParameters()
+    {
+        const QString file = path(QStringLiteral("slab_two.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "P", "expression": "1e5[W/m^3]"}, {"name": "kt", "expression": "1[W/(m*K)]"}],
+          "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "slab", "size": ["10", "2"]}],
+            "materials": [{"label": "m", "k": "kt", "selection": {"all": true}}],
+            "physics": [{"type": "heat", "tag": "ht", "features": [
+              {"type": "source", "Q0": "P", "selection": {"all": true}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["slab"], "side": "left"}}]}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "sweep", "tag": "swp", "parameters": []},
+                                                                 {"type": "stationary"}]}],
+          "results": {"plots": [{"type": "plotgroup1d", "tag": "pgs", "label": "Swept", "study": "std1",
+                                 "plots": [{"type": "globalgraph", "expression": "ht.Tmax"}]}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QString why;
+        qucs_s::dataset::Dataset data;
+        auto sweep = [&](const QJsonArray& rows, const QString& combination) {
+            Model m = doc->model();
+            m.find(QStringLiteral("swp"))->props.insert(QStringLiteral("parameters"), rows);
+            m.find(QStringLiteral("swp"))->props.insert(QStringLiteral("combination"), combination);
+            if (!doc->setModel(m, QStringLiteral("swept"))) return false;
+            doc->compute();
+            if (!doc->waitForJob(jobWait()) || !doc->lastError().isEmpty()) return false;
+            const QString display = doc->showGraphs(QStringLiteral("pgs"), &why, false);
+            return !display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why);
+        };
+        auto row = [](const char* name, const char* values, const char* unit) {
+            return QJsonArray{QString::fromLatin1(name), QString::fromLatin1(values), QString::fromLatin1(unit)};
+        };
+        auto axis = [&](const char* name) {
+            const qucs_s::dataset::Variable* v = data.find(QString::fromLatin1(name));
+            return v && v->independent ? v->re : QVector<double>();
+        };
+        // (Rows appended: a braced list of one list is a copy to some compilers.)
+        QJsonArray rows;
+        rows.append(row("kt", "2", "W/(m*K)"));
+        rows.append(row("P", "1e5, 2e5, 3e5", "W/m^3"));
+        QVERIFY2(sweep(rows, QStringLiteral("all")), qPrintable(why + doc->lastError()));
+        const qucs_s::dataset::Variable* tmax = data.find(QStringLiteral("ht.Tmax"));
+        QVERIFY(tmax != nullptr);
+        QCOMPARE(tmax->dependencies, QStringList{QStringLiteral("P")});
+        QCOMPARE(axis("P"), (QVector<double>{1e5, 2e5, 3e5}));
+        QVERIFY(!data.find(QStringLiteral("sweep")) && !data.find(QStringLiteral("kt")));
+        const QVector<double> byPower = tmax->re;
+        QVERIFY2(byPower.size() == 3 && byPower.at(0) > 300.1 && std::abs((byPower.at(2) - 300) / (byPower.at(0) - 300) - 3) < 1e-6,
+                 qPrintable(QString::number(byPower.value(2))));
+        // Both of several values: T over kt (the faster, along x), a curve per P.
+        rows = QJsonArray();
+        rows.append(row("P", "1e5, 2e5, 3e5", "W/m^3"));
+        rows.append(row("kt", "1, 2", "W/(m*K)"));
+        QVERIFY2(sweep(rows, QStringLiteral("all")), qPrintable(why + doc->lastError()));
+        tmax = data.find(QStringLiteral("ht.Tmax"));
+        QVERIFY(tmax != nullptr);
+        QCOMPARE(tmax->dependencies, (QStringList{QStringLiteral("kt"), QStringLiteral("P")}));
+        QCOMPARE(axis("kt"), (QVector<double>{1, 2}));
+        QCOMPARE(axis("P"), (QVector<double>{1e5, 2e5, 3e5}));
+        QCOMPARE(tmax->re.size(), 6);
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 2; ++j) {
+                // (T - 300 K as P/kt, each value where its axes say.)
+                const double expected = (byPower.at(0) - 300) * 2 * (i + 1) / (j + 1);
+                QVERIFY2(std::abs(tmax->re.at(j + 2 * i) - 300 - expected) < 1e-6 * expected,
+                         qPrintable(QStringLiteral("P %1 kt %2: %3").arg(i).arg(j).arg(tmax->re.at(j + 2 * i))));
+            }
+        // Specified combinations, the power alone changing: over it, as given.
+        rows = QJsonArray();
+        rows.append(row("kt", "2, 2, 2", "W/(m*K)"));
+        rows.append(row("P", "3e5, 1e5, 3e5", "W/m^3"));
+        QVERIFY2(sweep(rows, QStringLiteral("specified")), qPrintable(why + doc->lastError()));
+        QCOMPARE(data.find(QStringLiteral("ht.Tmax"))->dependencies, QStringList{QStringLiteral("P")});
+        QCOMPARE(axis("P"), (QVector<double>{3e5, 1e5, 3e5}));   // (as given, each its point)
+        QCOMPARE(data.find(QStringLiteral("ht.Tmax"))->re.at(0), byPower.at(2));
+        // Both changing together: an index of the points.
+        rows = QJsonArray();
+        rows.append(row("kt", "1, 2", "W/(m*K)"));
+        rows.append(row("P", "1e5, 2e5", "W/m^3"));
+        QVERIFY2(sweep(rows, QStringLiteral("specified")), qPrintable(why + doc->lastError()));
+        QCOMPARE(data.find(QStringLiteral("ht.Tmax"))->dependencies, QStringList{QStringLiteral("sweep")});
+        QCOMPARE(axis("sweep"), (QVector<double>{1, 2}));
+        // (Three of the four combinations; all four, the first the faster.)
+        for (const auto& [conductivities, powers] : {std::pair{"1, 1, 2", "1e5, 2e5, 1e5"}, std::pair{"1, 2, 1, 2", "1e5, 1e5, 2e5, 2e5"}}) {
+            rows = QJsonArray();
+            rows.append(row("kt", conductivities, "W/(m*K)"));
+            rows.append(row("P", powers, "W/m^3"));
+            QVERIFY2(sweep(rows, QStringLiteral("specified")), qPrintable(why + doc->lastError()));
+            QCOMPARE(data.find(QStringLiteral("ht.Tmax"))->dependencies, QStringList{QStringLiteral("sweep")});
+            QCOMPARE(axis("sweep").size(), QString::fromLatin1(powers).count(QLatin1Char(',')) + 1);
+        }
+    }
+
     // A plot group shown again after its graph was renamed: its diagram
     // replaced where it was, not left above the new one with its trace
     // invalid; a diagram of the user's kept. Its y axis in the traces' units
