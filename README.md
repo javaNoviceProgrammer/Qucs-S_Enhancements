@@ -2137,8 +2137,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   per mode), a transient's time or a spectrum's energy before the sweep, as
   **Plot against** chooses; no axis of one value (a C-V curve over the
   voltage, not its one frequency) - each named if asked
-  (`loss_dBcm = emw.loss/100`) or by its graph's label, emw.loss in dB/cm -
-  written
+  (`loss_dBcm = emw.loss/100`) or by its graph's label, emw.loss in dB/cm,
+  the y axis in the traces' units (`semi.Ckk (pF)`), shown again with its
+  diagram replaced where it was - written
   as a Qucs dataset beside the model and shown in a **Qucs data display**,
   with its markers and exports; and derived values (globals, integrals,
   averages, maxima and minima over domains or boundaries, values at

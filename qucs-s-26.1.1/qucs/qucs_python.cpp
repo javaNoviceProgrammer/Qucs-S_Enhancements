@@ -1208,16 +1208,48 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request)
   // (Its data, written anew, read again: gotoPage() has it become current.)
   auto *shown = qobject_cast<Schematic *>(DocumentTab->currentWidget());
   if (shown == nullptr) return tr("qucs.display(): %1 is no data display.").arg(QDir::toNativeSeparators(display));
-  // A diagram showing these traces already: shown again, no other added.
+  // A diagram showing these traces already: shown again, no other added
+  // (its y axis's label as asked: a unit changed, the values with it).
   QStringList traces;
   for (const QJsonValue &v : request.value(QStringLiteral("traces")).toArray()) traces << v.toString();
   QStringList sorted = traces;
   sorted.sort();
+  const QString title = request.value(QStringLiteral("title")).toString();
+  const bool own = request.value(QStringLiteral("replace")).toBool();
+  const QString yLabel = request.value(QStringLiteral("ylabel")).toString();
+  Diagram *same = nullptr;
   for (Diagram *d : shown->a_DocDiags) {
     QStringList vars;
     for (Graph *g : d->Graphs) vars << g->Var;
     vars.sort();
-    if (vars == sorted) return {};
+    if (vars == sorted && (same == nullptr || (own && d->title == title && same->title != title))) same = d;
+  }
+  // A display of its own (a multiphysics 1D plot group's): its other
+  // diagrams of its title - of traces renamed since (emw.loss_100
+  // <invalid>) - gone, the new one where the first was; the user's own kept.
+  QJsonObject at;
+  if (own && !title.isEmpty() && a_control != nullptr) {
+    QJsonArray gone;
+    int i = 0;
+    for (Diagram *d : shown->a_DocDiags) {
+      ++i;
+      if (d == same || d->title != title) continue;
+      if (gone.isEmpty()) at = QJsonObject{{QStringLiteral("x"), d->cx}, {QStringLiteral("y"), d->cy},
+                                           {QStringLiteral("width"), d->x2}, {QStringLiteral("height"), d->y2}};
+      gone.append(i);
+    }
+    if (!gone.isEmpty())
+      a_control->callTool(QStringLiteral("delete"), QJsonObject{{QStringLiteral("path"), display}, {QStringLiteral("diagrams"), gone}},
+                          [](const QJsonObject &) {});
+  }
+  if (same != nullptr) {
+    if (own && same->yAxis.Label != yLabel) {
+      same->yAxis.Label = yLabel;
+      same->updateGraphData();
+      shown->setChanged(true, true);
+      shown->viewport()->update();
+    }
+    return {};
   }
   if (a_control == nullptr || traces.isEmpty()) return {};
   // (Of a dataset of no simulator's: qucsator/ has add_diagram read the
@@ -1227,7 +1259,14 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request)
   QJsonObject args{{QStringLiteral("path"), display},
                    {QStringLiteral("type"), request.value(QStringLiteral("type")).toString(QStringLiteral("rect"))},
                    {QStringLiteral("traces"), named}};
-  if (const QString title = request.value(QStringLiteral("title")).toString(); !title.isEmpty()) args.insert(QStringLiteral("title"), title);
+  for (auto it = at.begin(); it != at.end(); ++it) args.insert(it.key(), it.value());
+  if (!title.isEmpty()) args.insert(QStringLiteral("title"), title);
+  // (Its traces' units on the y axis; a legend for several, the label no
+  // longer naming them in their colours.)
+  if (!yLabel.isEmpty()) {
+    args.insert(QStringLiteral("y_axis"), QJsonObject{{QStringLiteral("label"), yLabel}});
+    if (traces.size() > 1) args.insert(QStringLiteral("legend"), QStringLiteral("top_right"));
+  }
   a_control->callTool(QStringLiteral("add_diagram"), args, [this](const QJsonObject &result) {
     if (result.value(QLatin1String("isError")).toBool())
       statusBar()->showMessage(tr("qucs.display(): %1").arg(result.value(QStringLiteral("content")).toArray().at(0).toObject()

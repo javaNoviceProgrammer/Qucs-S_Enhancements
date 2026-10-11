@@ -143,3 +143,45 @@ The full ctest, the MCP scenario script and the DMG's checks pass.
 
 Separately, CI's Linux job (Debug, ASan and UBSan) now has 150 minutes, not 90
 (`138aba0`). The quantum wells' tests took it past 90 minutes on a busy runner.
+
+## Re-check on 45d857e and fc28dc0
+
+The reviewer re-checked those two commits on the reviewer's model, the bundled
+`pn_diode` and test copies.
+
+**Confirmed:**
+
+- the current at 0 V (0 A exactly);
+- the currents (I_a + I_k about 10⁻²² A, I_a within 1 % of q ∫ R);
+- G (symmetric to 8 digits);
+- `pn_diode`'s graphs (`<dep semi.Ckk Va>`, drawn);
+- the 1D plot groups' three fixes and dB/cm.
+
+**Withdrawn:** the slow mode step (25.6 s against 26.2 s, the 138 s most likely the
+machine busy). The per-study staleness and the help text were not re-tested.
+
+Two new notes, both done here:
+
+| Review | Now |
+|---|---|
+| Showing a plot group again keeps the old diagram in its `.dpl` and adds a new one under it. `corrugated_ps_dd_pg1d2.dpl` had the stale `emw.loss_100` diagram (traces `<invalid>`) above the working `Loss` one. Replace the stale one, or rename its traces with the variable. | **Replaced.** A plot group's display is its own: shown again, its diagrams of its title other than the one showing its traces now are deleted. A new one takes the first one's place and size, so one moved or resized by hand stays so. A diagram of the user's (another title) is kept. On a copy of the reviewer's display, shown again: one diagram, `Loss`, where it was (80, 510). Reproduced on fc28dc0 first: a graph relabelled and a second added left three diagrams there. |
+| A label's text in brackets is dropped from the variable's name ("Loss (dB/cm)" → `Loss`). Graphs have no unit on their y axis: `pn_diode`'s C–V shows `semi.Ckk` from 0 to 1, no "pF". Using the graph's unit in the axis label (`semi.Ckk (pF)`) would cover both. | **The y axis in the traces' units.** Each trace is named with its unit: the graph's own (`semi.Ckk (pF)`), a global's own (`emw.loss (dB/m)`), else its SI unit (`emw.normE (V/m)`), and none for a number (`emw.neff`). An expression of a global with a unit of its own has none (`emw.loss/100` is dB/cm, not the 1/m its dimension would say). A label that says its unit says it once (`Loss (dB/cm)`). With several traces the label names them all and a legend is on, since the axis no longer names them in their colours. Shown again with a unit changed and the traces not, the axis is said anew. The variable keeps its bracket-free name: a unit is the axis's, not the dataset's. |
+
+**Tests (`test_multiphysics_doc`):**
+
+- `aPlotGroupShownAgain`. Its checks:
+  - a guide's loss graph (`emw.loss/100`, its axis saying no unit) shown, then moved
+    and resized by hand;
+  - relabelled "Loss (dB/cm)" in dB/cm: one diagram, `Loss`, where it was and as
+    large, its axis "Loss (dB/cm)";
+  - another diagram of the title beside it, as the reviewer's display had: gone;
+  - a user's diagram kept;
+  - a second graph: two traces, "Loss (dB/cm), emw.neff", a legend;
+  - a unit changed: the axis said anew;
+  - a line graph without a unit: "emw.normE (V/m)".
+- `graphsGoToAQucsDataDisplay`: the heater's axis is "ht.Tmax (degC), T_1 (degC),
+  T_2 (degC)".
+
+Each of the 12 changes was broken in turn, and its test failed. Deleting the current
+diagram too crashes the test, since the display touches the diagram gone: the break
+script counts a crash as a failure now, where it read only "FAIL!".
