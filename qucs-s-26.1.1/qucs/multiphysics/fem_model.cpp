@@ -1426,12 +1426,18 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("plotgroup1d"), tr("1D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup1d"), Level::None,
              {study, point, time, frequency, text(QStringLiteral("title"), tr("Title"), QString()),
               choice(QStringLiteral("diagram"), tr("Diagram"), {QStringLiteral("rect"), QStringLiteral("tab")},
-                     {tr("Cartesian"), tr("Table")}, QStringLiteral("rect"))},
+                     {tr("Cartesian"), tr("Table")}, QStringLiteral("rect")),
+              // (A global's or a point's graph: what is along x - automatic: a
+              // sweep's parameter before a frequency step's frequencies, the
+              // modes last; a transient's times, a spectrum before the sweep.)
+              choice(QStringLiteral("against"), tr("Plot against"), {QStringLiteral("auto"), QStringLiteral("sweep"), QStringLiteral("steps")},
+                     {tr("Automatic"), tr("The sweep's parameter"), tr("The times, frequencies or modes")}, QStringLiteral("auto"))},
              {QStringLiteral("linegraph"), QStringLiteral("globalgraph"), QStringLiteral("pointgraph")}, {}, false, false,
              QStringLiteral("pg1d"),
              tr("Graphs of the solution - along a cut line, at points or of global values over time or a sweep - written as a "
                 "Qucs dataset (model_tag.dat beside the model) and shown in a data display, with its markers and exports.")});
-        const P unit1 = text(QStringLiteral("unit"), tr("Unit"), QString(), tr("Shown in this unit: mV, degC, kV/mm... (empty: SI)"));
+        const P unit1 = text(QStringLiteral("unit"), tr("Unit"), QString(),
+                             tr("Shown in this unit: mV, degC, kV/mm, dB/cm for emw.loss... (empty: SI, or a global's own: dB/m)"));
         add({QStringLiteral("linegraph"), tr("Line Graph"), QStringLiteral("graph"), QStringLiteral("linegraph"), Level::None,
              {dataset, spatial(QStringLiteral("expression"), tr("Expression"), QString(), QStringLiteral("V")), unit1,
               choice(QStringLiteral("xaxis"), tr("x-axis"), {QStringLiteral("arc"), QStringLiteral("x"), QStringLiteral("y")},

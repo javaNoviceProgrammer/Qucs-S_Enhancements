@@ -2132,9 +2132,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   points; **1D plot groups** - an expression along a cut line, at points
   or a global value (or a Derived Values node's: Z0 against a swept width,
   R against frequency, the modes' effective indices) over the times,
-  frequencies, modes or the sweep (an axis of one value last: a sweep's
-  C-V curve over its voltage, not its one frequency), each named if
-  asked (`loss_dBcm = emw.loss/100`) - written
+  frequencies, modes or the sweep - along x the sweep's parameter before a
+  frequency step's frequencies, the frequency before the modes (a curve
+  per mode), a transient's time or a spectrum's energy before the sweep, as
+  **Plot against** chooses; no axis of one value (a C-V curve over the
+  voltage, not its one frequency) - each named if asked
+  (`loss_dBcm = emw.loss/100`) or by its graph's label, emw.loss in dB/cm -
+  written
   as a Qucs dataset beside the model and shown in a **Qucs data display**,
   with its markers and exports; and derived values (globals, integrals,
   averages, maxima and minima over domains or boundaries, values at

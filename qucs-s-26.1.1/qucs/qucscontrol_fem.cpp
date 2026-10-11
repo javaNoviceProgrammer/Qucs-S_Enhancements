@@ -766,7 +766,7 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                         if (items.size() > 1 || item.name != item.expression) vo.insert(QStringLiteral("name"), item.name);
                         if (!prefix.isEmpty()) vo.insert(QStringLiteral("solution"), at.label);
                         if (value) {
-                            const DisplayUnit du = displayUnit(unit, dim);
+                            const DisplayUnit du = displayUnitOf(*sol, item.expression, unit, dim);
                             vo.insert(QStringLiteral("value"), du.name.isEmpty() ? formatQuantity(*value, dim)
                                                                                 : formatNumber((*value - du.offset) / du.scale, 6) + QLatin1Char(' ') + du.name);
                             vo.insert(QStringLiteral("SI"), *value);
