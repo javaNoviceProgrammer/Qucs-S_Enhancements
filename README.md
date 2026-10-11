@@ -1955,8 +1955,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   A damaged file is refused, not a crash: gdstk's readers were hardened
   for it (`third_party/gdstk/README.qucs.md`).
 - **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1 to
-  4 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md), and
-  semiconductors and rays): a model
+  4 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md),
+  semiconductors and rays, and quantum wells): a model
   (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
   in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
   Model*, or the tab's *New Model* and its examples). The tree is the
@@ -1984,7 +1984,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   boundaries and points as COMSOL does.
   **Materials**: from a
   library of metals, board dielectrics (with their loss tangents),
-  semiconductors and their insulators, magnetic materials (iron and
+  semiconductors and their insulators, **III-V compounds** (GaAs, AlAs,
+  InAs, InP, GaP, GaSb, AlSb, InSb with Vurgaftman's band parameters, and
+  their alloys - AlGaAs, InGaAs, InAlAs, GaInP, InGaAsP, AlGaInAs and
+  more - at the composition x, y given: each binary's gap at its
+  temperature, bowed), magnetic materials (iron and
   electrical steel with typical B-H curves, a ferrite, NdFeB, SmCo and
   ferrite magnets), air and water, or your own (*Add to My Materials*).
   **Physics**:
@@ -2060,6 +2064,26 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     the wavelength (BK7 and fused silica by Sellmeier's formula), x and y,
     or another physics' field; what the media absorb is a power density on
     the mesh, **gop.Q** - a heat source, or a semiconductor's generation.
+  - *Quantum Wells (Schrödinger)*: the **effective-mass states** of
+    electrons, heavy holes and light holes, BenDaniel and Duke's at each
+    heterojunction - **1D** along the growth axis through the layers (a
+    line of quadratic elements of its own, 0.1 nm: a part in 10⁶) or
+    **2D** over the cross-section (wires; dots about an axis), the heavy
+    and light holes' masses along and across the axis from Luttinger's
+    parameters. Their bands from the materials' compounds, **strained**
+    on a substrate (Bir and Pikus: the heavy holes lifted above the light
+    ones under compression), tilted by a **field** along the axis (the
+    quantum-confined Stark effect) or moved by another physics' potential
+    (`semi.V`). A **Quantum States** step makes each state a solution:
+    the levels, the transitions and their overlaps, the effective gap and
+    its wavelength, the direct transition (a well's own e1-hh1 where a
+    field puts the stack's lowest and highest states in different wells);
+    the band edges, |ψ|² and each level with its wave drawn on it - the
+    **band diagram** - as variables. An **Optical Spectrum** step: the
+    wells' **absorption**, TE and TM (each transition's step of the 2D
+    density of states, or a wire's 1D one, Lorentzian-broadened), or their
+    **gain** with carriers injected - their quasi-Fermi levels found from
+    the states, gain where the photon is below their separation.
 
   **Mesh**: Delaunay triangles, refined till their angles are good. A
   preset from extremely fine to extremely coarse, or customised; smaller
@@ -2072,7 +2096,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the other physics at rest at each; a step at rest after it takes its
   last frequency's fields - induction heating), a **Mode Analysis**
   (the modes nearest an effective index, at each frequency or
-  wavelength) and a **Parametric Sweep** of parameters (every combination
+  wavelength), **Quantum States** and an **Optical Spectrum** over photon
+  energies or wavelengths, and a **Parametric Sweep** of parameters (every combination
   or specified ones), the geometry and mesh made again where a parameter
   swept shapes them. **Adaptive mesh refinement**: a step at rest or in
   frequency solved, the mesh made finer where the error estimated
@@ -2155,14 +2180,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   phase shifter (Vπ·L 2.1 V·cm), a lens's focus and its spherical
   aberration, white light through a prism, a graded-index lens, a thermal
   lens (rays and heat solved in turn), and a photodiode lit by rays (0.48
-  A/W, 95 % of the ideal).
+  A/W, 95 % of the ideal); a GaAs quantum well's states on its band
+  diagram and its absorption's staircase (e1-hh1 at 849 nm), an
+  InGaAs/InAlAs multiple quantum well's Stark shift at 1.52 µm, a strained
+  InGaAs laser well's gain at 986 nm (1900 /cm with 3e18 cm⁻³), and a
+  GaAs quantum wire's states.
   Claude builds and solves models with `fem_describe`, `fem_model`,
-  `fem_edit`, `fem_build`, `fem_solve` (each mode's index), `fem_evaluate`
+  `fem_edit`, `fem_build`, `fem_solve` (each mode's index, each quantum
+  state's energies), `fem_evaluate`
   (at a time, a frequency, a mode, a sweep's point, or all of them),
   `fem_plot` (a 1D group's data display too) and `fem_export`.
   `test_fem_engine`, `test_fem_physics`, `test_fem_magnetics`,
-  `test_fem_layout`, `test_fem_waves`, `test_fem_semiconductor` and
-  `test_fem_rays` check the
+  `test_fem_layout`, `test_fem_waves`, `test_fem_semiconductor`,
+  `test_fem_rays` and `test_fem_quantum` check the
   engine against closed forms on CI, under the sanitizers too: a coax's
   capacitance (its error falling as h² and h⁴), a capacitor, a floating
   plate, a bar's resistance, a slab with convection, a pipe, heat
@@ -2191,7 +2221,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   recombination, the plasma dispersion; Snell's law and Fresnel's split
   (10⁻⁹), total reflection, a lens's paraxial focus, a graded-index rod's
   period, absorption and the power it leaves (10⁻⁹), a prism's
-  dispersion, mirrors, beams and detectors; and the examples.
+  dispersion, mirrors, beams and detectors; an infinite well's levels
+  (10⁻⁶), a finite GaAs/AlGaAs well's against BenDaniel and Duke's
+  matching (10⁻⁶), a 2D box with its holes' two masses (10⁻⁴), a harmonic
+  oscillator (10⁻⁶), the second-order Stark shift (0.01 %), strain's
+  shifts, the alloys' gaps against the literature, a 1D line against
+  the 2D plane, absorption's steps against their closed form and gain's
+  zero at the quasi-Fermi levels' separation (0.6 meV); and the examples.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

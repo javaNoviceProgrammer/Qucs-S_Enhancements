@@ -363,14 +363,31 @@ std::vector<const Node*> Problem::materials()
     return material;
 }
 
-QString Problem::materialProperty(const Node& m, const QString& key)
+QString Problem::materialProperty(const Node& m, const QString& key, const Scope* scope)
 {
     QString text = m.text(key);
     // Not given: its library entry's ({"material": "FR-4"} in a file).
-    if (text.trimmed().isEmpty() && !m.text(QStringLiteral("library")).isEmpty())
-        if (const std::optional<MaterialEntry> entry = findMaterial(m.text(QStringLiteral("library"))))
-            text = entry->properties.value(key).toString();
-    return text;
+    std::optional<MaterialEntry> entry;
+    if (!m.text(QStringLiteral("library")).isEmpty()) entry = findMaterial(m.text(QStringLiteral("library")));
+    if (text.trimmed().isEmpty() && entry) text = entry->properties.value(key).toString();
+    if (!text.trimmed().isEmpty() || key == QLatin1String("compound") || key == QLatin1String("x") || key == QLatin1String("y")) return text;
+    // A III-V alloy's: from its compound at its composition.
+    auto own = [&](const QString& k) {
+        const QString t = m.text(k);
+        return t.trimmed().isEmpty() && entry ? entry->properties.value(k).toString() : t;
+    };
+    const QString compound = own(QStringLiteral("compound"));
+    if (compound.trimmed().isEmpty()) return text;
+    const Scope none;
+    double xy[2] = {0, 0};
+    for (int i = 0; i < 2; ++i) {
+        const QString t = own(i == 0 ? QStringLiteral("x") : QStringLiteral("y"));
+        if (t.trimmed().isEmpty()) continue;
+        const std::optional<double> v = evaluateConstant(t, scope ? *scope : none, Dim());
+        if (!v) return text;
+        xy[i] = *v;
+    }
+    return compoundProperty(compound, xy[0], xy[1], key);
 }
 
 QJsonValue materialValue(const Node& m, const QString& key)
@@ -392,12 +409,14 @@ std::unique_ptr<Problem> makeModeProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeWaveProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeSemiconductorProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeRayProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeQuantumProblem(Solution& solution, int field);
 
 std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
 {
     const QString& type = solution.fields()[std::size_t(field)].type;
     if (type == QLatin1String("semiconductor")) return makeSemiconductorProblem(solution, field);
     if (type == QLatin1String("rays")) return makeRayProblem(solution, field);
+    if (type == QLatin1String("quantum")) return makeQuantumProblem(solution, field);
     if (type == QLatin1String("solid")) return makeElasticProblem(solution, field);
     if (type == QLatin1String("magnetic")) return makeMagneticProblem(solution, field);
     if (type == QLatin1String("modes")) return makeModeProblem(solution, field);
@@ -420,6 +439,7 @@ struct FieldInfo {
     QStringList components;
     Dim dim;
     bool planeStress = false;   // (solid)
+    bool line = false;          // (quantum: 1D along a line)
 };
 
 FieldInfo infoOf(const Node& p, bool axisymmetric)
@@ -445,6 +465,10 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
         // What the rays leave in the media: a power density.
         f.variable = QStringLiteral("Q");
         f.dim = Dim::of(-1, 1, -3);
+    } else if (p.type == QLatin1String("quantum")) {
+        // Each carrier's wavefunction (of the state selected).
+        f.variable = QStringLiteral("psi");
+        f.line = p.text(QStringLiteral("space")) != QLatin1String("2d");
     } else if (p.type == QLatin1String("semiconductor")) {
         // The potential; the carriers and the doping with it.
         f.variable = QStringLiteral("V");
@@ -465,6 +489,7 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
     else if (p.type == QLatin1String("modes")) f.components = QStringList{QStringLiteral("Et"), QStringLiteral("Ez")};
     else if (p.type == QLatin1String("semiconductor"))
         f.components = QStringList{QStringLiteral("V"), QStringLiteral("n"), QStringLiteral("p"), QStringLiteral("Nd"), QStringLiteral("Na")};
+    else if (p.type == QLatin1String("quantum")) f.components = QStringList{QStringLiteral("psi_e"), QStringLiteral("psi_hh"), QStringLiteral("psi_lh")};
     else f.components = QStringList{f.variable};
     return f;
 }
@@ -714,7 +739,8 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
     // A wavelength, of what waves and rays are at.
     bool optical = false;
     for (const FieldInfo& fi : fields)
-        optical = optical || fi.type == QLatin1String("rays") || fi.type == QLatin1String("modes") || fi.type == QLatin1String("waves");
+        optical = optical || fi.type == QLatin1String("rays") || fi.type == QLatin1String("modes") || fi.type == QLatin1String("waves")
+                  || fi.type == QLatin1String("quantum");
     if (optical)
         define(QStringLiteral("lambda0"), Dim::length(), tr("free-space wavelength: c0/freq (a ray's, a mode's)"), K::Derived, -1, [](PointEvaluator& e) {
             const double f = e.frequency();
@@ -875,6 +901,49 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
         if (field.type == QLatin1String("rays")) {
             component(p + QStringLiteral("Q"), Dim::of(-1, 1, -3), tr("power absorbed from the rays, per volume"), K::Value, f, 0);
             coefficient(p + QStringLiteral("n"), Dim(), tr("refractive index"), f, QString());
+            continue;
+        }
+        if (field.type == QLatin1String("quantum")) {
+            const Dim energy = Dim::of(2, 1, -2);
+            const Dim density = field.line ? Dim::of(-1) : axisymmetric ? Dim::of(-3) : Dim::of(-2);
+            auto st = [f](PointEvaluator& e) { return detail::quantumAt(e, f); };
+            const QString carriers[3] = {QStringLiteral("e"), QStringLiteral("hh"), QStringLiteral("lh")};
+            const QString names[3] = {tr("electron"), tr("heavy hole"), tr("light hole")};
+            for (int c = 0; c < 3; ++c) {
+                const QString n = carriers[c];
+                define(p + QStringLiteral("psi_") + n, Dim(), tr("the %1 state's wavefunction, its largest 1").arg(names[c]), K::Derived, f,
+                       [st, c](PointEvaluator& e) {
+                           const detail::QuantumState q = st(e);
+                           return q.defined && q.peak[c] > 0 ? q.psi[c] / std::sqrt(q.peak[c]) : NaN;
+                       });
+                define(p + QStringLiteral("P_") + n, density, tr("the %1 state's probability density |ψ|²").arg(names[c]), K::Derived, f,
+                       [st, c](PointEvaluator& e) {
+                           const detail::QuantumState q = st(e);
+                           return q.defined ? q.psi[c] * q.psi[c] : NaN;
+                       });
+                // A band diagram's picture: the state's level, its |ψ|² on it
+                // (a hole's hanging down).
+                define(p + QStringLiteral("wave_") + n, energy, tr("the %1 state's energy and its |ψ|² drawn on it").arg(names[c]), K::Derived,
+                       f, [st, c](PointEvaluator& e) {
+                           const detail::QuantumState q = st(e);
+                           if (!q.defined || !(q.peak[c] > 0)) return NaN;
+                           return q.E[c] + (c == 0 ? 1 : -1) * q.drawn * q.psi[c] * q.psi[c] / q.peak[c];
+                       });
+            }
+            define(p + QStringLiteral("Ec"), energy, tr("conduction band edge"), K::Derived, f, [st](PointEvaluator& e) { return st(e).Ec; });
+            define(p + QStringLiteral("Ehh"), energy, tr("heavy holes' band edge"), K::Derived, f, [st](PointEvaluator& e) { return st(e).Ehh; });
+            define(p + QStringLiteral("Elh"), energy, tr("light holes' band edge"), K::Derived, f, [st](PointEvaluator& e) { return st(e).Elh; });
+            define(p + QStringLiteral("Ev"), energy, tr("valence band edge: the heavy and light holes' higher"), K::Derived, f, [st](PointEvaluator& e) {
+                const detail::QuantumState q = st(e);
+                return std::max(q.Ehh, q.Elh);
+            });
+            define(p + QStringLiteral("me"), Dim(), tr("electron effective mass (m0)"), K::Derived, f, [st](PointEvaluator& e) { return st(e).me; });
+            define(p + QStringLiteral("mhh"), Dim(), tr("heavy hole mass along the growth axis (m0)"), K::Derived, f,
+                   [st](PointEvaluator& e) { return st(e).mhh; });
+            define(p + QStringLiteral("mlh"), Dim(), tr("light hole mass along the growth axis (m0)"), K::Derived, f,
+                   [st](PointEvaluator& e) { return st(e).mlh; });
+            define(p + QStringLiteral("strain"), Dim(), tr("strain in the plane of the layers: (a_substrate - a)/a"), K::Derived, f,
+                   [st](PointEvaluator& e) { return st(e).strain; });
             continue;
         }
         if (field.type == QLatin1String("semiconductor")) {
@@ -1126,7 +1195,10 @@ void Solution::defineVariables()
         info.components = f.components;
         info.dim = f.dim;
         for (const Node* p : a_model.physics())
-            if (p->tag == f.tag) info.planeStress = p->text(QStringLiteral("model")) == QLatin1String("planestress");
+            if (p->tag == f.tag) {
+                info.planeStress = p->text(QStringLiteral("model")) == QLatin1String("planestress");
+                info.line = p->type == QLatin1String("quantum") && p->text(QStringLiteral("space")) != QLatin1String("2d");
+            }
         fields.push_back(info);
     }
     declareVariables(fields, a_axisymmetric,
@@ -1189,6 +1261,15 @@ std::optional<double> Solution::global(const QString& name) const
     for (const Variable& v : a_globals)
         if (v.name == name) return a_globalScope->constant(name)->value;
     return std::nullopt;
+}
+
+QString Solution::snapshotText(int i) const
+{
+    const double v = snapshotValue(i);
+    if (frequencyDomain && photonAxis == 1)
+        return QStringLiteral("E = ") + formatQuantity(6.62607015e-34 * v / 1.602176634e-19, Dim()) + QStringLiteral(" eV");
+    if (frequencyDomain && photonAxis == 2) return QStringLiteral("λ = ") + formatQuantity(v > 0 ? 299792458.0 / v : 0, Dim::length());
+    return snapshotSymbol() + QStringLiteral(" = ") + formatQuantity(v, snapshotDim());
 }
 
 void Solution::addSnapshot()
@@ -1747,6 +1828,132 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
     return true;
 }
 
+/// A step's quantum wells physics (by problem) and the others, solved first.
+bool splitQuantum(const Step& st, std::vector<int>& quantum, std::vector<int>& others, QStringList* warnings, QString* error)
+{
+    for (int i = 0; i < int(st.problems.size()); ++i)
+        (st.problems[std::size_t(i)]->field().type == QLatin1String("quantum") ? quantum : others).push_back(i);
+    if (quantum.empty()) {
+        *error = tr("%1: none of its physics has quantum states (Quantum Wells has)").arg(st.node.name());
+        return false;
+    }
+    if (quantum.size() > 1) *warnings << tr("%1: its first quantum wells physics only").arg(st.node.name());
+    return true;
+}
+
+bool statesStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    std::vector<int> quantum, others;
+    if (!splitQuantum(st, quantum, others, warnings, error)) return false;
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    if (!tell(0.1, tr("%1: the states").arg(node.name()))) {
+        *error = tr("cancelled");
+        return false;
+    }
+    // What the states read (a semiconductor's potential) first.
+    if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    s.frequencyDomain = true;
+    s.modeAnalysis = true;
+    s.quantumStates = true;
+    detail::Problem& q = *st.problems[std::size_t(quantum.front())];
+    const int found = q.solveModes(st.options, std::clamp(node.integer(QStringLiteral("states")), 1, 100), 0, error);
+    if (found < 0) return false;
+    for (int k = 0; k < found; ++k) {
+        q.selectMode(k);
+        for (auto& p : st.problems) p->setGlobals();
+        s.addSnapshot();
+    }
+    return true;
+}
+
+bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    std::vector<int> quantum, others;
+    if (!splitQuantum(st, quantum, others, warnings, error)) return false;
+    constexpr double q = 1.602176634e-19, h = 6.62607015e-34, c0 = 299792458.0;
+    const Scope& scope = s.parameters().scope;
+    // Photon energies (eV, J), free-space wavelengths or frequencies.
+    Dim dim;
+    QString why;
+    const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("energies")), scope, &dim, &why);
+    if (!listed) {
+        *error = tr("%1: the photon energies: %2").arg(node.name(), why);
+        return false;
+    }
+    detail::SpectrumOptions o;
+    o.solve = st.options;
+    int axis = 1;
+    if (dim == Dim::length()) axis = 2;
+    else if (dim == Dim::of(0, 0, -1)) axis = 0;
+    else if (!dim.isNone() && !(dim == Dim::of(2, 1, -2))) {
+        *error = tr("%1: the photon energies are in %2: give eV, a wavelength in m or a frequency in Hz").arg(node.name(), dimName(dim));
+        return false;
+    }
+    for (double v : *listed) {
+        const double E = axis == 2 ? (v > 0 ? h * c0 / v : 0) : axis == 0 ? h * v : dim.isNone() ? v * q : v;
+        if (!(E > 0) || !std::isfinite(E)) {
+            *error = tr("%1: a photon energy of %2: they must be more than 0").arg(node.name(), formatNumber(v));
+            return false;
+        }
+        o.energies.push_back(E);
+    }
+    if (o.energies.empty()) {
+        *error = tr("%1: give a photon energy at least").arg(node.name());
+        return false;
+    }
+    // An energy: eV as a plain number or a voltage, J as such.
+    auto energy = [&](const QString& key, const QString& what, double* out) {
+        const Expression e = Expression::compile(node.text(key), scope);
+        if (!e.isValid() || !e.isConstant() || e.constant() < 0) {
+            *error = tr("%1: %2: %3").arg(node.name(), what, e.isValid() ? tr("it must be a constant of 0 or more") : e.error());
+            return false;
+        }
+        *out = e.dim() == Dim::of(2, 1, -2) ? e.constant() : e.constant() * q;
+        return true;
+    };
+    if (!energy(QStringLiteral("linewidth"), tr("its broadening"), &o.linewidth)) return false;
+    const std::optional<double> density = evaluateConstant(node.text(QStringLiteral("density")), scope, Dim::of(-3), &why);
+    if (!density || *density < 0) {
+        *error = tr("%1: the carriers: %2").arg(node.name(), density ? tr("they must be 0 or more") : why);
+        return false;
+    }
+    o.density = *density;
+    if (!node.text(QStringLiteral("nr")).trimmed().isEmpty()) {
+        const std::optional<double> n = evaluateConstant(node.text(QStringLiteral("nr")), scope, Dim(), &why);
+        if (!n || !(*n > 0)) {
+            *error = tr("%1: the refractive index: %2").arg(node.name(), n ? tr("it must be more than 0") : why);
+            return false;
+        }
+        o.index = *n;
+    }
+    o.states = std::clamp(node.integer(QStringLiteral("states")), 1, 50);
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    if (!tell(0.1, tr("%1: the spectrum").arg(node.name()))) {
+        *error = tr("cancelled");
+        return false;
+    }
+    if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    s.frequencyDomain = true;
+    s.photonAxis = axis;
+    detail::Problem& qp = *st.problems[std::size_t(quantum.front())];
+    const int points = qp.solveSpectrum(o, error);
+    if (points < 0) return false;
+    s.setMode(0);
+    for (int k = 0; k < points; ++k) {
+        s.setFrequency(o.energies[std::size_t(k)] / h);
+        qp.selectSpectrum(k);
+        for (auto& p : st.problems) p->setGlobals();
+        s.addSnapshot();
+    }
+    return true;
+}
+
 bool frequencyStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
 {
     Step st{s, node, {}, {}, {}, 50, 1e-6};
@@ -2087,7 +2294,8 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         if (step.enabled && step.type != QLatin1String("sweep")) {
             steps.push_back(&step);
             inTime = inTime || step.type == QLatin1String("transient");
-            inFrequency = inFrequency || step.type == QLatin1String("frequency") || step.type == QLatin1String("mode");
+            inFrequency = inFrequency || step.type == QLatin1String("frequency") || step.type == QLatin1String("mode")
+                          || step.type == QLatin1String("states") || step.type == QLatin1String("spectrum");
         }
     if (steps.empty()) {
         out.error = tr("%1 has no step to solve").arg(study->name());
@@ -2108,6 +2316,8 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         else if (step.type == QLatin1String("transient")) ok = transientStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("frequency")) ok = frequencyStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("mode")) ok = modeStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("states")) ok = statesStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("spectrum")) ok = spectrumStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
         if (!ok) {
             out.error = why;

@@ -404,6 +404,7 @@ packaged as any other, and is tested on CI.
 | **3. Magnetics and lines into circuits** | magnetostatics with B-H curves (Newton); eddy currents (frequency domain); R, L, G, C per metre over frequency; export to `RLCG`, Touchstone and subcircuits; GDS/OASIS import and the layout cross-section | 8,000 + 2,000 | 4 - 6 |
 | **4. Waves** | the mode solver (Nédélec elements, PML, complex and anisotropic media, thermo-optic coupling); TE and TM frequency domain with ports, scattering boundaries and S-parameters; adaptive mesh refinement from error estimates | 9,000 + 2,500 | 5 - 8 |
 | **4b. Semiconductors and rays** (asked for after phase 4) | drift-diffusion: Poisson's equation and the carriers' continuity, Scharfetter-Gummel currents, contacts, recombination, at rest, in time and small-signal; the plasma dispersion into the modes; geometrical optics: rays refracted and reflected (Snell, Fresnel), graded media, absorption as a heat or generation source | 3,000 + 900, as built | 1 |
+| **4c. Quantum wells** (asked for after 4b) | the effective-mass Schrödinger equation of electrons, heavy and light holes in 1D along the growth axis and in 2D over the cross-section; III-V compounds and alloys with their band parameters, strain, a field or another physics' potential; the states, their transitions, absorption and gain spectra | 2,200 + 900, as built | 1 |
 | **5. Outward** (as wanted) | Gmsh as a second mesher; Elmer or GetDP as external engines; the Python module; a semantic diff of models; schematic-driven sweeps | 3,000 - 6,000 | as chosen |
 
 Phase 1 alone is the largest single feature yet: about three layout viewers. The
@@ -947,3 +948,132 @@ About 3,000 lines and 900 of tests.
 - `thermal_lens`: rays and heat in turn; 0.01 to 10 W narrows the beam from 0.50 to
   0.25 mm rms.
 - `photodiode`: rays absorbed in silicon making carriers; 0.48 A/W, 95 % of the ideal.
+
+## Quantum wells, as built
+
+Built on 11 October 2026, Qucs-S 26.1.8, as asked ("let's add the 1D and 2D multi quantum
+well (MQW) analysis"): a physics, *Quantum Wells (Schrödinger)*, in `fem_quantum`; the III-V
+compounds and their alloys in `fem_materials`; two study steps. About 2,200 lines and 900 of
+tests.
+
+**How it is done:**
+- **The equation:** -∇·(ħ²/2m ∇ψ) + V ψ = E ψ for electrons (V = Ec), heavy holes and light
+  holes (V = -Ehh, -Elh: their energies counted downward), each carrier on its own. Its weak
+  form makes 1/m ∂ψ/∂n continuous across a heterojunction: BenDaniel and Duke's condition,
+  with nothing added. ψ = 0 where the physics ends (Zero Wavefunction), or free on the
+  boundaries a Zero Flux feature picks.
+- **1D** (the default): a line across the layers, along the growth axis through x = at (the
+  middle of the physics' domains unless given). The mesh's triangles give the stretches of
+  it in each domain exactly - where the line crosses a boundary between two layers is a node
+  - and each layer gets quadratic elements of its own (0.1 nm by default: a 10 nm well's
+  levels to a part in 10⁶, whatever the 2D mesh). A gap in the physics is a hard wall on
+  either side. The states are free in the plane of the layers.
+- **2D:** the mesh's own linear or quadratic triangles, the states free along z (a wire); about
+  an axis, the states of m = 0 round it (a dot), weighed by r.
+- **Masses:** the electron's from its compound (isotropic); the holes' from Luttinger's
+  parameters - heavy 1/(γ1 - 2γ2) along the growth axis and 1/(γ1 + γ2) across it, light
+  1/(γ1 + 2γ2) and 1/(γ1 - γ2). Along and across are the axis's and the plane's in 2D; in
+  1D the masses across set the densities of states in the plane.
+- **Bands:** a domain's Ev is its compound's valence band offset (Vurgaftman's common scale,
+  InSb's top at 0) and Ec = Ev + Eg(T), Varshni's. A material without a compound gives Eg and
+  VBO (or χ: the affinity's rule), me, γ1, γ2; a Quantum Well Material of its own gives Ec
+  and Ev as expressions of x and y (a parabolic well, a graded one) and the masses.
+- **Strain:** with a substrate (a material, a compound or a lattice constant), each layer
+  takes its lattice in the plane - ε∥ = (a_s - a)/a, ε⊥ = -2 C12/C11 ε∥ - and its bands move
+  by Bir and Pikus: Ec by ac (2ε∥ + ε⊥); the heavy holes by -P - Q, the light ones by
+  -P + (Q - Δ + √(Δ² + 2ΔQ + 9Q²))/2 with P = -av (2ε∥ + ε⊥), Q = -b (ε∥ - ε⊥) (Chuang's
+  signs; av positive, the gap opening by (ac - av) times the volume's change).
+- **A field and a potential:** F along the growth axis adds q F (s - s0) to every band (s0
+  the physics' middle); another physics' potential (semi.V, es.V) adds -q V.
+- **The states:** each carrier's lowest, by a shift and invert below the lowest potential -
+  (K - σM) positive definite, a sparse Cholesky - and the Krylov-Schur eigensolver the mode
+  solver uses; a degenerate pair comes out of it mixed and complex, so its vectors' real and
+  imaginary parts are made M-orthonormal and the states found again in their span (Rayleigh
+  and Ritz). Under 600 unknowns, a dense generalized eigensolver. A state is bound when it
+  lies inside the band edge where the physics ends.
+- **The compounds:** GaAs, AlAs, InAs, InP, GaP, GaSb, AlSb and InSb with Vurgaftman, Meyer
+  and Ram-Mohan's parameters (J. Appl. Phys. 89, 5815, 2001); ternaries linear with their
+  bowings (AlGaAs's gap bowing -0.127 + 1.310 x); InGaAsP from its four ternaries (their
+  (6.4)) and AlGaInAs from its three ((6.5)). On InP's lattice the ternaries alone leave
+  InGaAsP's gap up to 70 meV high; a bowing of its own, -0.36 (1 - x) y (1 - y) eV (nought on
+  its edges but InAsP's), brings it within 15 meV of Nahory's 1.35 - 0.72 y + 0.12 y². Other
+  physics read an alloy's gap, affinity (its conduction band against GaAs's), densities of
+  states, permittivity and index from its composition too - its mobilities and thermal
+  conductivity roughly (Matthiessen's rule; an alloy's disorder 0.3 m K/W).
+- **A Quantum States step** makes each state a solution, as a mode is: qw.Ee1, qw.Ehh1,
+  qw.Elh1..., the transitions qw.Ee1hh1 and overlaps qw.Oe1hh1 (the first four of each),
+  the effective gap qw.Eg and its wavelength qw.lambda, and the direct transition qw.Edir:
+  the lowest electron to heavy hole one of at least half the largest overlap. Under a field
+  a stack's lowest electron state and highest hole state lie in different wells, their
+  transition indirect and dark; Edir is each well's own e1-hh1, the quantum-confined Stark
+  effect's. Variables: |ψ|² (qw.P_e), ψ (its largest 1), the band edges, the masses, the
+  strain, and qw.wave_e - a level with its |ψ|² drawn on it, the band diagram's picture.
+  The bands are kept at each triangle's corners (each its own: the offsets stay sharp) once
+  for all the states.
+- **An Optical Spectrum step** at photon energies (or wavelengths): k∥ conserved, each
+  e_i to h_j transition weighed by its overlap and its polarization at the band edge (TE:
+  heavy 3/2, light 1/2 of |Mb|² = m0 Ep/6; TM: 0 and 2), α = π q² ħ/(n c ε0 m0² E) |ê·p|²
+  |<e|h>|² ρ_r / L_w - ρ_r the 2D reduced density of states m_r/πħ² (a wire's 1D one), L_w the
+  wells' thickness (the domains of the smallest gap). Broadened by a Lorentzian, in cells
+  whose integrals are exact; without carriers a step's is closed. With carriers each
+  quasi-Fermi level is found from the states (Σ m kT/πħ² ln(1 + e^((F - E)/kT)) per area),
+  the occupations f_v - f_c along each transition's dispersion; gain is -α.
+
+**Where it differs from what such tools have:**
+- **Decoupled bands:** electrons, heavy and light holes each by itself, parabolic; no k·p
+  (no valence bands' mixing, no nonparabolicity), no split-off band's states.
+- **No excitons:** the absorption edge is the free carriers' steps, and the Stark shift the
+  free pair's (without the exciton's binding, smaller than measured).
+- **No self-consistency of its own:** the carriers' charge does not act back on the
+  potential (Schrödinger and Poisson) - a doped well's bands come from another physics' V,
+  once.
+- **A 1D line's ends and gaps are hard walls;** there are no open boundaries (tunnelling out,
+  a superlattice's Bloch states).
+- **Spectra:** absorption and gain of the wells, not a waveguide's modal gain (Γ g: the
+  confinement factor from a mode is the user's); no spontaneous emission, no many-body
+  shrinkage of the gap; a dot's spectrum about an axis is not found.
+
+**Fast enough** (M-series Mac, Release):
+- A well's four states of each carrier along a 50 nm line (1,000 unknowns): 10 ms.
+- The five-well MQW's states at three fields, and its absorption from 24 states of each
+  carrier at 181 energies: 0.5 s.
+- A strained laser's gain at four densities and 161 wavelengths: 0.4 s.
+- A wire's states over its cross-section (quadratic triangles): 0.3 s.
+
+**Checked:**
+- `test_fem_quantum` (13):
+  - an infinite well's levels, electrons' and heavy holes', against n²π²ħ²/2mL² (10⁻⁶),
+    its density integrating to 1 and its overlaps 1 and 0;
+  - a 10 nm GaAs well in Al0.3Ga0.7As, its electrons' and heavy holes' first two levels
+    against BenDaniel and Duke's transcendental equations (10⁻⁶);
+  - a 10 by 6 nm box in 2D, four levels and the heavy holes' first with their two masses
+    (2 × 10⁻⁴);
+  - a harmonic oscillator's ħω(n + ½) (10⁻⁶);
+  - the second-order Stark shift of an infinite well, (15 - π²)/24π⁴ m q² F² L⁴/ħ²
+    (0.005 %);
+  - In0.2Ga0.8As strained on GaAs: ε∥, Ec, Ehh and Elh against Bir and Pikus (10⁻⁹ eV),
+    the heavy holes on top, the barriers unstrained, the well's emission at 997 nm;
+  - the alloys' gaps and lattices against the literature (InGaAs 0.74 eV on InP's lattice,
+    InGaAsP Q1.3 at 0.97 eV), their corners their binaries, compositions out of range
+    refused;
+  - a well across a strip in 2D, its sides free, against the 1D line (2 × 10⁻⁵ eV), the next
+    2D state the first with a node across the strip;
+  - absorption's steps against their closed form (10⁻⁴), and the cells' integral against
+    it with next to no carriers (2 × 10⁻³);
+  - gain: the carriers' count from the quasi-Fermi level found (10⁻⁶), and the gain's zero
+    at the levels' separation (0.6 meV);
+  - the examples.
+- `test_multiphysics_doc` (31) adds a well in the window - its band diagram a dataset of a
+  curve for each state, its absorption over the photon's energy, a bare model's default
+  plots - and Claude's tools for a well.
+
+**Examples:**
+- `gaas_quantum_well`: 10 nm of GaAs in Al0.3Ga0.7As; e1-hh1 at 1.461 eV (849 nm), the
+  absorption's staircase, TE and TM.
+- `ingaas_mqw_qcse`: five In0.53Ga0.47As wells in In0.52Al0.48As on InP at 1.52 µm; at 0,
+  50 and 100 kV/cm each well's transition moves down 2.4 and 9.7 meV and its overlap falls
+  from 0.98 to 0.75, while the stack's lowest and highest states go to different wells.
+- `strained_laser_gain`: 8 nm of In0.2Ga0.8As on GaAs; TE gain at 986 nm rising from
+  absorption at 1e18 cm⁻³ to 1900 /cm at 3e18, TM absorbing.
+- `quantum_wire`: a 20 by 10 nm GaAs wire in Al0.3Ga0.7As; its states over the
+  cross-section, the second 30 meV above the first with a node across its width.

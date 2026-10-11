@@ -171,7 +171,18 @@ QIcon glyph(const QString& icon)
             p.drawLine(QPointF(0.5, y), QPointF(6, y));
             p.drawLine(QPointF(6, y), QPointF(15, 8 + (8 - y) * 0.2));
         }
-    } else if (icon == QLatin1String("beam")) {
+    } else if (icon == QLatin1String("qw")) {
+        // A well's band edge with its level and wave.
+        const QColor band = dark ? QColor(150, 200, 255) : QColor(25, 90, 170);
+        p.setPen(QPen(band, 1.2));
+        p.drawPolyline(QPolygonF{QPointF(0.5, 3), QPointF(5, 3), QPointF(5, 13), QPointF(11, 13), QPointF(11, 3), QPointF(15.5, 3)});
+        p.setPen(QPen(red, 1.1));
+        QPainterPath wave(QPointF(5, 10));
+        wave.cubicTo(QPointF(6.5, 5.5), QPointF(9.5, 5.5), QPointF(11, 10));
+        p.drawPath(wave);
+    } else if (icon == QLatin1String("states")) letters(QStringLiteral("ψ"), gray, true);
+    else if (icon == QLatin1String("spectrum")) letters(QStringLiteral("α"), gray, true);
+    else if (icon == QLatin1String("beam")) {
         p.setPen(QPen(dark ? QColor(255, 210, 90) : QColor(200, 130, 0), 1.3));
         for (double y : {4.0, 8.0, 12.0}) {
             p.drawLine(QPointF(2, y), QPointF(13, y));
@@ -324,7 +335,8 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
                                     "imported from DXF, SVG, GDSII and OASIS, or a layout's cross-section), materials and "
                                     "physics - electrostatics, electric currents, heat at rest and in time, solid mechanics, "
                                     "magnetic fields at rest and in frequency, waveguides' modes and waves with their ports, "
-                                    "semiconductors' carriers (drift and diffusion), rays through lenses and prisms - its mesh "
+                                    "semiconductors' carriers (drift and diffusion), rays through lenses and prisms, quantum "
+                                    "wells' states and their absorption and gain - its mesh "
                                     "(adapted too), studies (swept too) and results, lines and terminals as parts of circuits, in a "
                                     "tree as COMSOL's. Open a model (.qfem) to see its tree here."),
                                  a_start);

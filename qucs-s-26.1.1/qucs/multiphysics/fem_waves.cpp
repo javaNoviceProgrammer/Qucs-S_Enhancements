@@ -321,7 +321,7 @@ bool ModeProblem::setup(QString* error)
     if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
     a_media.setup(*this, a_s, *a_node, f.domains, materials(),
                   [this](const QString& t, const Node& n, const QString& k) { return compile(t, n, k); },
-                  [](const Node& m, const QString& k) { return materialProperty(m, k); }, [this](const QString& w) { problem(w); });
+                  [this](const Node& m, const QString& k) { return materialProperty(m, k, &a_s.parameters().scope); }, [this](const QString& w) { problem(w); });
     // For the variables: the index (its real part, as asked) by domain.
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
@@ -682,7 +682,7 @@ bool WaveProblem::setup(QString* error)
     if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
     a_media.setup(*this, a_s, *a_node, f.domains, materials(),
                   [this](const QString& t, const Node& n, const QString& k) { return compile(t, n, k); },
-                  [](const Node& m, const QString& k) { return materialProperty(m, k); }, [this](const QString& w) { problem(w); });
+                  [this](const Node& m, const QString& k) { return materialProperty(m, k, &a_s.parameters().scope); }, [this](const QString& w) { problem(w); });
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
     std::vector<Expression> mur(topo.domains.size()), epsr(topo.domains.size());

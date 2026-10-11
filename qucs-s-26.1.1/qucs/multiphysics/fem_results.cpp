@@ -776,11 +776,13 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         if (!all && !at.trimmed().isEmpty()) {
             QString unlike;
             std::optional<double> v = evaluateConstant(at, s.parameters().scope, s.snapshotDim(), nullptr, &unlike);
-            // (A frequency as a free-space wavelength, too.)
+            // (A frequency as a free-space wavelength, or a photon's energy, too.)
             if (s.frequencyDomain && (!v || !unlike.isEmpty())) {
-                QString notLength;
+                QString notLength, notEnergy;
                 const std::optional<double> lambda = evaluateConstant(at, s.parameters().scope, Dim::length(), nullptr, &notLength);
+                const std::optional<double> energy = evaluateConstant(at, s.parameters().scope, Dim::of(2, 1, -2), nullptr, &notEnergy);
                 if (lambda && notLength.isEmpty() && *lambda > 0) v = 299792458.0 / *lambda;
+                else if (energy && notEnergy.isEmpty() && *energy > 0) v = *energy / 6.62607015e-34;
             }
             if (v) pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
         }
@@ -800,8 +802,9 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         }
         for (int k = 0; k < snaps; ++k) {
             if (!all && k != pick) continue;
-            QString when = s.snapshotSymbol() + QStringLiteral(" = ") + formatQuantity(s.snapshotValue(k), s.snapshotDim());
-            if (s.modeAnalysis) when = several ? when + QStringLiteral(", mode %1").arg(s.snapshotMode(k)) : QStringLiteral("mode %1").arg(s.snapshotMode(k));
+            QString when = s.snapshotText(k);
+            const QString mode = (s.quantumStates ? QStringLiteral("state %1") : QStringLiteral("mode %1")).arg(s.snapshotMode(k));
+            if (s.modeAnalysis) when = several ? when + QStringLiteral(", ") + mode : mode;
             out.push_back({p, k, s.snapshotValue(k), s.snapshotMode(k), s.label.isEmpty() ? when : s.label + QStringLiteral(", ") + when});
         }
     }
