@@ -34,7 +34,10 @@ jobs:
   linux-asan:
     name: Linux · Debug + ASan/UBSan · smoke tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # The build takes about half an hour and the unit tests under the
+    # sanitizers 40 to 55 minutes (the multiphysics tests most of it): with
+    # the smoke tests, past 90 minutes on a busy runner (October 2026).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
