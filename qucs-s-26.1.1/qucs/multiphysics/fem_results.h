@@ -19,6 +19,8 @@
 
 #include <QLineF>
 
+#include <complex>
+
 #include <optional>
 #include <vector>
 
@@ -121,6 +123,20 @@ struct DerivedResult {
 /// minimum, pointeval, lineparams) on \a solution (its snapshot selected).
 DerivedResult evaluateDerived(const Solution& solution, const Node& node);
 
+/// A transmission line's parameters per metre at a solution's frequency:
+/// C from electrostatics, G from its dielectrics' losses, R and L from the
+/// magnetic fields' coils (a Line Parameters node of method "rlgc"); its
+/// characteristic impedance and propagation constant.
+struct LineRLGC {
+    double frequency = 0;            ///< Hz
+    double R = 0, L = 0, G = 0, C = 0;
+    std::complex<double> Zc, gamma;  ///< Ω; 1/m (α + jβ)
+    double alphaDb = 0;              ///< dB/m
+    double epsEff = 0, velocity = 0;
+    QString error;
+};
+LineRLGC lineRLGC(const Solution& solution, const Node& node);
+
 /// A study's solutions as results take them: each of its sweep's (one
 /// without a sweep), and of each, each output time (none at rest).
 struct SolutionSet {
@@ -131,13 +147,13 @@ struct SolutionSet {
 struct Instance {
     int point = 0;
     int snapshot = -1;
-    double time = 0;
-    QString label;       ///< "t = 0.5 s", "w = 2 mm", "w = 2 mm, t = 0.5 s"; empty: the only one
+    double time = 0;     ///< its time (s), or its frequency (Hz) in the frequency domain
+    QString label;       ///< "t = 0.5 s", "f = 1 GHz", "w = 2 mm, t = 0.5 s"; empty: the only one
 };
-/// Every instance of \a set (each point, each time), or those \a which
-/// picks: the point \a point (from 1; 0 the last) and the time \a time
-/// (empty: the last).
-std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0, const QString& time = {});
+/// Every instance of \a set (each point, each time or frequency), or those
+/// picked: the point \a point (from 1; 0 the last), the time \a time or (in
+/// the frequency domain) the frequency \a frequency (empty: the last).
+std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0, const QString& time = {}, const QString& frequency = {});
 /// The solution of \a instance, its snapshot selected.
 Solution* select(const SolutionSet& set, const Instance& instance);
 

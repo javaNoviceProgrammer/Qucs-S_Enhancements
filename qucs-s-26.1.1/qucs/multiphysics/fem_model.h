@@ -54,6 +54,7 @@ struct PropertyDef {
         Instant,      ///< a time of a solution's (s; empty: the last)
         SweepPoint,   ///< a point of a study's sweep, from 1 (0: the last)
         Dataset,      ///< a cut line or cut point of the results, by tag
+        Reference,    ///< a node of the kinds in choices, by tag (a Line Parameters node)
     };
     QString key;
     QString label;
@@ -66,8 +67,8 @@ struct PropertyDef {
     QStringList choiceLabels;   // as shown (a table's: its columns)
     Level level = Level::None;  // a Selection's, when the kind's own is not meant
     QString tooltip;
-    /// Shown only when another property is so: "key=value" (or "key!=value",
-    /// several split by |).
+    /// Shown only when another property is so: "key=value" (or "key!=value";
+    /// alternatives split by |, conditions that all hold by &).
     QString showIf;
     /// An expression evaluated where the physics are: of x, y and fields.
     bool spatial = false;

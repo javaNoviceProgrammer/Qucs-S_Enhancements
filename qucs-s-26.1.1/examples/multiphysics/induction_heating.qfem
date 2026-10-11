@@ -1,0 +1,61 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "Induction heating of a steel billet, about its axis",
+    "description": "A stainless steel billet in a six-turn coil fed 100 A at 10 kHz: magnetic fields in the frequency domain (2D axisymmetric) give the eddy currents' losses mf.Qrh, crowded in a skin depth of about 4 mm, and heat at rest takes them as its source - the billet cooled by air and radiation. Its losses, a few tens of watts, and its temperature.",
+    "parameters": [
+        {"name": "R", "expression": "20[mm]", "description": "the billet's radius"},
+        {"name": "H", "expression": "60[mm]", "description": "its height"},
+        {"name": "Icoil", "expression": "100[A]", "description": "the coil's current, its amplitude"},
+        {"name": "f0", "expression": "10[kHz]", "description": "the frequency"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "space": "axisymmetric",
+        "geometry": [
+            {"type": "rectangle", "label": "air", "position": ["0", "-150"], "size": ["150", "300"]},
+            {"type": "rectangle", "label": "billet", "position": ["0", "-H/2"], "size": ["R", "H"]},
+            {"type": "rectangle", "label": "coil", "position": ["26", "-36"], "size": ["6", "72"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Air", "selection": {"all": true}},
+            {"material": "Stainless steel (304)", "selection": {"only": ["billet"]}},
+            {"material": "Copper", "selection": {"only": ["coil"]}}
+        ],
+        "physics": [
+            {"type": "magnetic", "tag": "mf", "features": [
+                {"type": "coil", "label": "The coil", "name": "c", "conductor": "multi", "N": "6", "I0": "Icoil", "selection": {"only": ["coil"]}}
+            ]},
+            {"type": "heat", "tag": "ht", "selection": {"only": ["billet"]}, "features": [
+                {"type": "source", "label": "Induced losses", "Q0": "mf.Qrh", "selection": {"only": ["billet"]}},
+                {"type": "flux", "label": "Air", "kind": "convective", "h": "25[W/(m^2*K)]", "Text": "293.15[K]",
+                 "selection": {"of": ["billet"], "except": {"box": [-0.01, -100, 0.01, 100]}}},
+                {"type": "radiation", "label": "Radiation", "epsilon": "0.6", "Tamb": "293.15[K]",
+                 "selection": {"of": ["billet"], "except": {"box": [-0.01, -100, 0.01, 100]}}}
+            ]}
+        ],
+        "mesh": {"size": "normal", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["billet"]}, "hmax": "1"},
+            {"type": "size", "level": "domain", "selection": {"only": ["coil"]}, "hmax": "2"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "frequency", "physics": ["mf"], "frequencies": "f0"},
+        {"type": "stationary", "physics": ["ht"]}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Induced Losses", "plots": [
+                {"type": "surface", "expression": "mf.Qrh", "unit": "W/cm^3", "colors": "thermal"},
+                {"type": "contour", "expression": "mf.psi", "levels": 16}
+            ]},
+            {"type": "plotgroup", "label": "Temperature", "plots": [
+                {"type": "surface", "expression": "T", "unit": "degC", "colors": "thermal"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Losses and temperature", "expression": "mf.P; ht.P; ht.Tmax"},
+            {"type": "integral", "label": "Losses in the billet", "expression": "mf.Qrh", "unit": "W", "selection": {"only": ["billet"]}}
+        ]
+    }
+}

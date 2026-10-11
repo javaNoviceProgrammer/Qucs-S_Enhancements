@@ -1954,8 +1954,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   ([docs/proposals](docs/proposals/2026-10-06-gds-oasis-layout-viewer.md)).
   A damaged file is refused, not a crash: gdstk's readers were hardened
   for it (`third_party/gdstk/README.qucs.md`).
-- **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1 and
-  2 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
+- **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1, 2
+  and 3 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md)): a model
   (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
   in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
   Model*, or the tab's *New Model* and its examples). The tree is the
@@ -1971,11 +1971,21 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   chosen, its blocks where inserted), an SVG's paths (Béziers, arcs),
   rectangles, circles, ellipses, polygons and lines - their closed curves
   solids, one in another a hole, in the unit the file says, scaled and
-  moved, read again when the file changes; *Form Union* makes them one,
-  and numbers its domains, boundaries and points as COMSOL does.
+  moved, read again when the file changes; **layouts** - a GDSII or OASIS
+  cell (gzipped too) seen from above, flattened, an object for each layer
+  with its shapes made one - and a **layout's cross-section**: a cut line
+  across a cell and a layer stack (each row a layer under the cut, or a
+  substrate or cladding all along it, from z to z + its thickness) making
+  the 2D slice. In the layout viewer, *Cross-Section to Multiphysics…* on
+  its canvas's menu makes a model of a cut along the last ruler, its
+  stack asked for (the layers under the cut offered), its materials from
+  the library. *Form Union* makes them one, and numbers its domains,
+  boundaries and points as COMSOL does.
   **Materials**: from a
-  library of metals, board dielectrics, semiconductors and their
-  insulators, air and water, or your own (*Add to My Materials*).
+  library of metals, board dielectrics (with their loss tangents),
+  semiconductors and their insulators, magnetic materials (iron and
+  electrical steel with typical B-H curves, a ferrite, NdFeB, SmCo and
+  ferrite magnets), air and water, or your own (*Add to My Materials*).
   **Physics**:
   - *Electrostatics*: terminals give the capacitance matrix; floating
     potentials, surface and space charges.
@@ -1990,26 +2000,52 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     force per area or a pressure) and body loads, a thermal strain α(T -
     Tref) from a heat physics' T. Its displacement, strains, stresses, von
     Mises', the reactions where it is held, its strain energy.
+  - *Magnetic Fields*: the vector potential out of the plane (round the
+    axis). Relative permeabilities or **B-H curves** (solved by Newton's
+    method, a monotone cubic through the curve's points, as in vacuum
+    beyond them), **magnets** (a remanent flux density along a direction),
+    current densities, **coils** - a single conductor fed a current, its
+    distribution found, or homogenized turns of wire - magnetic insulation
+    and potential, perfect magnetic conductors, surface currents. At rest
+    or in the **frequency domain**: eddy currents (jωσA), the skin and
+    proximity effects. Each coil's voltage, resistance, inductance and flux
+    linkage; the coils swept for the inductance (at rest) or impedance
+    matrix; B, H, J, the losses and the energy density, the flux function
+    about an axis (its contours are field lines).
 
   **Mesh**: Delaunay triangles, refined till their angles are good. A
   preset from extremely fine to extremely coarse, or customised; smaller
   on chosen domains, boundaries or points, or a number of elements on a
   boundary. Finer on curves and across narrow gaps, growing no faster
-  than a rate. **Studies**: steps at rest or **in time** - output times
+  than a rate. **Studies**: steps at rest, **in time** - output times
   as `range(0, 0.1, 1)`, adaptive BDF2 (or Euler, or fixed steps), the
-  physics without a time derivative at rest at each step - and a
+  physics without a time derivative at rest at each step - **in
+  frequency** (`logspace(1[kHz], 1[GHz], 31)`: magnetic fields complex,
+  the other physics at rest at each; a step at rest after it takes its
+  last frequency's fields - induction heating) and a
   **Parametric Sweep** of parameters (every combination or specified
   ones), the geometry and mesh made again where a parameter swept shapes
   them. **Results**: 2D plot groups (a colour map, contours, arrows, the
-  mesh, drawn **deformed** by a displacement), shown at a time and a
-  parameter value chosen beside them; cut lines and cut points; **1D plot
-  groups** - an expression along a cut line, at points or a global value
-  (or a Derived Values node's: Z0 against a swept width) over the times
-  or the sweep - written as a Qucs dataset beside the model and shown in
-  a **Qucs data display**, with its markers and exports; and derived
-  values (globals, integrals, averages, maxima and minima over domains or
-  boundaries, values at points, a transmission line's quasi-TEM C, L, Z0
-  and εeff) at each time and parameter value.
+  mesh, drawn **deformed** by a displacement), shown at a time or
+  frequency and a parameter value chosen beside them; cut lines and cut
+  points; **1D plot groups** - an expression along a cut line, at points
+  or a global value (or a Derived Values node's: Z0 against a swept width,
+  R against frequency) over the times, frequencies or the sweep - written
+  as a Qucs dataset beside the model and shown in a **Qucs data display**,
+  with its markers and exports; and derived values (globals, integrals,
+  averages, maxima and minima over domains or boundaries, values at
+  points) at each time, frequency and parameter value. A **transmission
+  line's parameters**: quasi-TEM (C, L, Z0, εeff from electrostatics), or
+  **R, L, G and C per metre over frequency** - C from electrostatics, G
+  from its dielectrics' loss tangents (and conductivities), R and L from
+  magnetic fields' coils in the frequency domain (a return conductor or a
+  perfect ground) - with Z0, the attenuation in dB/m, β and εeff.
+  **Export**: a line of its length as a **Touchstone** file (.s2p, for an
+  S-parameter file part); a **SPICE subcircuit** - a line as sections of
+  R, L, G, C or an LTRA line, or terminals' capacitance, conductance or
+  coupled-inductance matrix; a **Qucs subcircuit** of an RLCG part between
+  two ports (*Copy Part* puts the part on the clipboard, to paste into a
+  schematic).
 
   Selections are rules where they can be — "the boundaries of *trace*
   facing down", "between *substrate* and *air*", "the domains of
@@ -2046,11 +2082,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   sweep), a coax, a thin-film resistor that heats, a heater warming a
   board in time, a bimetal strip that curls (0.584 mm, Timoshenko's
   0.582 mm), a through-silicon via about its axis, and a heat sink drawn
-  in SVG, cooled by air and radiation.
+  in SVG, cooled by air and radiation; a coax's R, L, G and C from 1 kHz
+  to 10 MHz (R from its DC value to the skin effect's, Z0 52 Ω) as a
+  Touchstone file and an RLCG part, an inductor on a gapped steel core
+  saturating as its current is swept (4.7 mH falling to 2.3 mH), induction
+  heating of a steel billet about its axis (32 W, 125 °C), and a
+  thermo-optic phase shifter cut from its GDSII layout (π at 26 mW).
   Claude builds and solves models with `fem_describe`, `fem_model`,
   `fem_edit`, `fem_build`, `fem_solve`, `fem_evaluate` (at a time, a
-  sweep's point, or all of them) and `fem_plot` (a 1D group's data
-  display too). `test_fem_engine` and `test_fem_physics` check the
+  frequency, a sweep's point, or all of them), `fem_plot` (a 1D group's
+  data display too) and `fem_export`. `test_fem_engine`,
+  `test_fem_physics`, `test_fem_magnetics` and `test_fem_layout` check the
   engine against closed forms on CI, under the sanitizers too: a coax's
   capacitance (its error falling as h² and h⁴), a capacitor, a floating
   plate, a bar's resistance, a slab with convection, a pipe, heat
@@ -2060,8 +2102,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   solution Picard's to 10⁻⁸ K), radiation, a cantilever against
   Timoshenko (0.2 %), Lamé's thick cylinder about its axis (10⁻⁴), a
   bar's thermal expansion free and held, a spherical capacitor about its
-  axis (10⁻⁵), sweeps, cut lines, DXF and SVG drawings, and the examples.
-  Magnetics, waves and the circuits' side come in the next phases.
+  axis (10⁻⁵), sweeps, cut lines, DXF and SVG drawings; a round wire's
+  field and inductance, a B-H curve by Newton's method (in nine steps),
+  a magnet's field inside it, a solenoid about its axis, a wire's skin
+  effect against Bessel functions (10⁻⁴), a two-wire line's inductance
+  matrix, a coax's R, L, G, C; Touchstone, SPICE and Qucs exports; GDSII
+  layouts read, cut and heated; and the examples. Waves (the mode solver,
+  ports and S-parameters) come in the next phase.
 - **Editor panes** (*View → Panes*): documents side by side, up to a 2×2
   grid — a schematic next to its netlist, two schematics to compare.
   *Split Right* (Ctrl+\) and *Split Down* (Ctrl+Shift+\) open a new,

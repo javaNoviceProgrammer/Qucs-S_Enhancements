@@ -1,0 +1,63 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A coax's R, L, G and C over frequency",
+    "description": "A PTFE coax (inner 0.5 mm, outer conductor 1.75 to 2 mm, both copper): its capacitance and the dielectric's losses from electrostatics, its resistance and inductance from magnetic fields in the frequency domain - the skin effect raising R and lowering L as the current crowds to the conductors' facing surfaces - so Z0 (about 52 Ω), the attenuation in dB/m, a Touchstone file of a metre of it and an RLCG part.",
+    "parameters": [
+        {"name": "a", "expression": "0.5[mm]", "description": "the inner conductor's radius"},
+        {"name": "b", "expression": "1.75[mm]", "description": "the outer conductor's inner radius"},
+        {"name": "c", "expression": "2[mm]", "description": "its outer radius"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "geometry": [
+            {"type": "circle", "label": "outer", "radius": "c"},
+            {"type": "circle", "label": "dielectric", "radius": "b"},
+            {"type": "circle", "label": "inner", "radius": "a"},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "PTFE", "selection": {"only": ["dielectric"]}},
+            {"material": "Copper", "selection": {"only": ["inner", "outer"]}}
+        ],
+        "physics": [
+            {"type": "electrostatics", "tag": "es", "selection": {"only": ["dielectric"]}, "features": [
+                {"type": "terminal", "label": "Inner conductor", "name": "1", "V0": "1[V]", "selection": {"of": ["inner"]}},
+                {"type": "ground", "label": "Outer conductor", "selection": {"between": [["dielectric"], ["outer"]]}}
+            ]},
+            {"type": "magnetic", "tag": "mf", "features": [
+                {"type": "coil", "label": "Inner conductor", "name": "1", "I0": "1[A]", "selection": {"only": ["inner"]}},
+                {"type": "coil", "label": "Outer conductor", "name": "2", "I0": "-1[A]", "selection": {"only": ["outer"]}}
+            ]}
+        ],
+        "mesh": {"size": "normal", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["inner", "outer"]}, "hmax": "0.05"},
+            {"type": "size", "level": "boundary", "selection": {"of": ["inner"]}, "hmax": "0.025"},
+            {"type": "size", "level": "boundary", "selection": {"between": [["dielectric"], ["outer"]]}, "hmax": "0.025"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Study 1", "steps": [
+        {"type": "stationary", "physics": ["es"]},
+        {"type": "frequency", "physics": ["mf"], "frequencies": "logspace(1[kHz], 10[MHz], 9)"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Current Density", "plots": [
+                {"type": "surface", "expression": "mf.normJ", "colors": "thermal"}
+            ]},
+            {"type": "plotgroup", "label": "Electric Field", "plots": [
+                {"type": "surface", "expression": "es.normE", "unit": "V/mm"}
+            ]},
+            {"type": "plotgroup1d", "label": "Resistance per metre", "plots": [{"type": "globalgraph", "expression": "lp1.R"}]},
+            {"type": "plotgroup1d", "label": "Inductance per metre", "plots": [{"type": "globalgraph", "expression": "lp1.L"}]},
+            {"type": "plotgroup1d", "label": "Attenuation", "plots": [{"type": "globalgraph", "expression": "lp1.alpha"}]}
+        ],
+        "derived": [
+            {"type": "lineparams", "tag": "lp1", "label": "Line Parameters", "method": "rlgc", "physics": ["es"], "terminal": "1",
+             "magnetic": ["mf"], "conductor": "1", "return": "2"}
+        ],
+        "exports": [
+            {"type": "touchstone", "tag": "ts1", "label": "A metre of it", "line": "lp1", "length": "1[m]", "zref": "50[ohm]"},
+            {"type": "qucspart", "tag": "qp1", "label": "As an RLCG part", "line": "lp1", "length": "1[m]", "name": "coax_1m"}
+        ]
+    }
+}

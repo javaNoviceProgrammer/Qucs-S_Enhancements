@@ -10,11 +10,15 @@
  */
 #include "multiphysicsdoc.h"
 
+#include "config.h"
 #include "dataimport.h"
+#include "fem_export.h"
 #include "ink.h"
 #include "misc.h"
 #include "qucs.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -35,6 +39,7 @@
 #include <QPrinter>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSplitter>
 #include <QStatusBar>
@@ -271,7 +276,8 @@ void MultiphysicsDoc::buildUi()
         if (group.isEmpty() || v.size() < 2) return;
         editNode(group, [v](Node& n) {
             n.props.insert(QStringLiteral("point"), v[0].toInt());
-            n.props.insert(QStringLiteral("time"), v[1]);
+            // (a time, or in the frequency domain a frequency)
+            n.props.insert(v.value(2, QStringLiteral("time")), v[1]);
         }, tr("Show %1").arg(a_instanceBox->itemText(index)));
     });
     row->addSpacing(10);
@@ -897,7 +903,8 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
         return false;
     }
     // The solution it shows: its time and parameter value.
-    const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")));
+    const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
+                                                     g->text(QStringLiteral("frequency")));
     if (chosen.empty()) {
         if (error) *error = tr("%1: no solution to show").arg(g->name());
         return false;
@@ -1007,9 +1014,12 @@ void MultiphysicsDoc::fillInstanceBox()
         const std::vector<Instance> all = instances(*set, true);
         if (all.size() > 1)
             for (const Instance& in : all) {
-                // (Its settings: the point from 1, the time in seconds.)
+                // (Its settings: the point from 1, the time in seconds or the
+                // frequency in Hz.)
                 const QString time = in.snapshot >= 0 ? QString::number(in.time, 'g', 17) : QString();
-                a_instanceBox->addItem(in.label, QStringList{QString::number(in.point + 1), time});
+                const bool f = set->solutions[std::size_t(in.point)]->frequencyDomain;
+                a_instanceBox->addItem(in.label, QStringList{QString::number(in.point + 1), time,
+                                                             f ? QStringLiteral("frequency") : QStringLiteral("time")});
                 if (in.label == a_instanceLabel) a_instanceBox->setCurrentIndex(a_instanceBox->count() - 1);
             }
     }
@@ -1195,15 +1205,16 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         names.insert(n);
         return n;
     };
-    // What the graphs run over: the output times, the sweep (time the faster).
+    // What the graphs run over: the output times or frequencies, the sweep
+    // (time the faster).
     const std::vector<Instance> every = instances(*set, true);
     QStringList outer;
     const Solution& first = *set->solutions.front();
     if (first.snapshotCount() > 0) {
         Variable t;
-        t.name = unique(QStringLiteral("time"));
+        t.name = unique(first.snapshotName());
         t.independent = true;
-        for (int k = 0; k < first.snapshotCount(); ++k) t.re << first.snapshotTime(k);
+        for (int k = 0; k < first.snapshotCount(); ++k) t.re << first.snapshotValue(k);
         outer << t.name;
         vars << t;
     }
@@ -1229,7 +1240,8 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         }
         return QStringList{QStringLiteral("solution")};
     };
-    const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")));
+    const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
+                                                     g->text(QStringLiteral("frequency")));
     QStringList problems;
     for (const Node& graph : g->children) {
         if (!graph.enabled) continue;
@@ -1418,6 +1430,79 @@ void MultiphysicsDoc::evaluateAll(const QString& study)
         if (d.enabled && studyTag(d.text(QStringLiteral("study"))) == study) evaluate(d.tag);
 }
 
+QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
+{
+    auto fail = [&](const QString& why) {
+        if (error) *error = why;
+        say(why, true);
+        return QString();
+    };
+    const Node* n = a_model.find(tag);
+    if (!n || !n->kind() || n->kind()->group != QLatin1String("export")) return fail(tr("there is no export %1").arg(tag));
+    const std::shared_ptr<SolutionSet> set = solutions(n->text(QStringLiteral("study")));
+    if (!set || set->solutions.empty()) return fail(tr("%1: its study is not computed yet - Compute it").arg(n->name()));
+    const ExportText out = exportText(a_model, *set, *n, QStringLiteral(PACKAGE_VERSION));
+    if (!out.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), out.error));
+    // Where it says, else beside the model (in the cache while it is not
+    // saved): model_tag, a Qucs subcircuit by its name (as a Subcircuit part
+    // names its file).
+    QString path = n->text(QStringLiteral("file")).trimmed();
+    if (path.isEmpty()) {
+        QString dir, base;
+        if (getDocName().isEmpty()) {
+            dir = misc::cacheDir() + QStringLiteral("/multiphysics");
+            QDir().mkpath(dir);
+            base = QStringLiteral("untitled");
+        } else {
+            dir = QFileInfo(getDocName()).absolutePath();
+            base = QFileInfo(getDocName()).completeBaseName();
+        }
+        const QString name = n->text(QStringLiteral("name")).trimmed();
+        path = QDir(dir).filePath(out.suffix == QLatin1String("sch") && !name.isEmpty() ? name + QStringLiteral(".sch")
+                                                                                         : base + QLatin1Char('_') + tag + QLatin1Char('.') + out.suffix);
+    } else if (QFileInfo(path).isRelative()) {
+        if (getDocName().isEmpty()) return fail(tr("%1: %2 is relative to the model's folder - save the model first").arg(n->name(), path));
+        path = QFileInfo(getDocName()).absoluteDir().absoluteFilePath(path);
+    }
+    QString text = out.text;
+    if (out.suffix == QLatin1String("sch")) {
+        // A schematic's dataset and display are named as it is (Qucs asks
+        // otherwise).
+        const QString base = QFileInfo(path).completeBaseName();
+        static const QRegularExpression names(QStringLiteral("<(DataSet|DataDisplay|Script)=[^>]*\\.(dat|dpl|m)>"));
+        text.replace(names, QStringLiteral("<\\1=") + base + QStringLiteral(".\\2>"));
+    }
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(text.toUtf8()) < 0 || !file.commit())
+        return fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(path), file.errorString()));
+    say(tr("%1: %2 written - %3").arg(n->name(), QFileInfo(path).fileName(), out.summary));
+    return path;
+}
+
+bool MultiphysicsDoc::copyPart(const QString& tag, QString* error)
+{
+    auto fail = [&](const QString& why) {
+        if (error) *error = why;
+        return false;
+    };
+    const Node* n = a_model.find(tag);
+    if (!n || n->type != QLatin1String("qucspart")) return fail(tr("there is no Qucs Subcircuit (RLCG) node %1").arg(tag));
+    const std::shared_ptr<SolutionSet> set = solutions(n->text(QStringLiteral("study")));
+    if (!set || set->solutions.empty()) return fail(tr("%1: its study is not computed yet - Compute it").arg(n->name()));
+    const Node* line = a_model.find(n->text(QStringLiteral("line")));
+    if (!line || line->type != QLatin1String("lineparams")) return fail(tr("%1: choose its Line Parameters node").arg(n->name()));
+    const std::vector<Instance> chosen = instances(*set, false, n->integer(QStringLiteral("point")), QString(), n->text(QStringLiteral("frequency")));
+    Solution* s = chosen.empty() ? nullptr : select(*set, chosen.front());
+    if (!s) return fail(tr("%1: nothing is solved").arg(n->name()));
+    const LineRLGC l = lineRLGC(*s, *line);
+    if (!l.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), l.error));
+    const std::optional<double> length = evaluateConstant(n->text(QStringLiteral("length")), s->parameters().scope, Dim::length());
+    if (!length || !(*length > 0)) return fail(tr("%1: its length must be more than 0").arg(n->name()));
+    QApplication::clipboard()->setText(qucsLineSchematic(l, *length, QStringLiteral(PACKAGE_VERSION), n->tag, true));
+    say(tr("%1: an RLCG part of %2 copied - paste it into a schematic").arg(n->name(), formatQuantity(*length, Dim::length())));
+    return true;
+}
+
 void MultiphysicsDoc::addDefaultPlots(const QString& study)
 {
     for (const Node& g : a_model.results().children)
@@ -1474,6 +1559,20 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             plot(g2, QStringLiteral("deformation"), {{"x", t + QStringLiteral(".u")}, {"y", t + QStringLiteral(".v")}});
             m.add(m.results().tag, g2);
             Q_UNUSED(axi);
+        } else if (f.type == QLatin1String("magnetic")) {
+            // Its flux density, the field lines (A's contours; about an axis
+            // the flux function's), and where currents flow.
+            const bool axi = sol->axisymmetric();
+            Node g = group(tr("Magnetic Flux Density (%1)").arg(t));
+            plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normB")}, {"colors", QStringLiteral("viridis")}});
+            plot(g, QStringLiteral("contour"), {{"expression", t + (axi ? QStringLiteral(".psi") : QStringLiteral(".") + f.variable)},
+                                                {"levels", 20}});
+            m.add(m.results().tag, g);
+            if (!f.terminals.empty() || sol->frequencyDomain) {
+                Node g2 = group(tr("Current Density (%1)").arg(t));
+                plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normJ")}, {"colors", QStringLiteral("thermal")}});
+                m.add(m.results().tag, g2);
+            }
         }
     }
     // In time, or swept: the chief globals over it, as a graph.
@@ -1483,8 +1582,14 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
         for (const Field& f : sol->fields()) {
             if (!f.solved) continue;
             const QString t = f.tag + QLatin1Char('.');
-            for (const QString& name : {t + QStringLiteral("Tmax"), t + QStringLiteral("C11"), t + QStringLiteral("R"), t + QStringLiteral("P"),
-                                        t + QStringLiteral("dmax")})
+            QStringList chief = {t + QStringLiteral("Tmax"), t + QStringLiteral("C11"), t + QStringLiteral("R"), t + QStringLiteral("P"),
+                                 t + QStringLiteral("dmax")};
+            if (f.type == QLatin1String("magnetic")) {
+                chief.clear();
+                if (!f.terminals.empty()) chief << t + QStringLiteral("L_") + f.terminals.front().name;
+                chief << t + QStringLiteral("W");
+            }
+            for (const QString& name : chief)
                 if (sol->global(name)) {
                     globals << name;
                     break;
@@ -1492,11 +1597,25 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
         }
         if (!globals.isEmpty()) {
             Node g = m.make(QStringLiteral("plotgroup1d"));
-            g.label = sol->snapshotCount() > 1 ? tr("Over Time") : tr("Over the Sweep");
+            g.label = sol->snapshotCount() > 1 ? (sol->frequencyDomain ? tr("Over Frequency") : tr("Over Time")) : tr("Over the Sweep");
             g.props.insert(QStringLiteral("study"), study);
             plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}});
             m.add(m.results().tag, g);
         }
+        // A line's characteristic impedance and losses over frequency.
+        if (sol->frequencyDomain && sol->snapshotCount() > 1)
+            for (const Node& d : m.results().child(QStringLiteral("derived"))->children)
+                if (d.type == QLatin1String("lineparams") && d.text(QStringLiteral("method")) == QLatin1String("rlgc")
+                    && studyTag(d.text(QStringLiteral("study"))) == study) {
+                    for (const auto& [label, value] : {std::pair{tr("Z0 (%1)").arg(d.tag), QStringLiteral(".Z0")},
+                                                       std::pair{tr("Attenuation (%1)").arg(d.tag), QStringLiteral(".alpha")}}) {
+                        Node g = m.make(QStringLiteral("plotgroup1d"));
+                        g.label = label;
+                        g.props.insert(QStringLiteral("study"), study);
+                        plot(g, QStringLiteral("globalgraph"), {{"expression", d.tag + value}});
+                        m.add(m.results().tag, g);
+                    }
+                }
     }
     setModel(m, tr("Default Plots"));
 }
@@ -1519,7 +1638,8 @@ void MultiphysicsDoc::pointerMoved(QPointF point, bool inside)
         const std::shared_ptr<SolutionSet> set = g ? solutions(g->text(QStringLiteral("study"))) : nullptr;
         Solution* sol = nullptr;
         if (set) {
-            const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")));
+            const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
+                                                     g->text(QStringLiteral("frequency")));
             if (!chosen.empty()) sol = select(*set, chosen.front());
         }
         const Node* surface = nullptr;

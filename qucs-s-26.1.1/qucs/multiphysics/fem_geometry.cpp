@@ -493,6 +493,7 @@ private:
         else if (t == QLatin1String("union") || t == QLatin1String("difference") || t == QLatin1String("intersection"))
             boolean(f);
         else if (t == QLatin1String("import")) importDrawing(f);
+        else if (t == QLatin1String("crosssection")) crossSection(f);
         else fail(tr("%1 is not a geometry feature").arg(t));
     }
     void addObject(GObject o, const Node& f)
@@ -631,6 +632,11 @@ private:
             path = QFileInfo(a_model.fileName).absoluteDir().absoluteFilePath(given);
         }
         a_file = QFileInfo(path).absoluteFilePath();
+        {
+            const QString fmt = f.text(QStringLiteral("format"));
+            if (fmt == QLatin1String("gds") || fmt == QLatin1String("oasis") || ((fmt.isEmpty() || fmt == QLatin1String("auto")) && isLayoutPath(path)))
+                return importLayout(f, path);
+        }
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) return fail(tr("%1 cannot be read: %2").arg(QDir::toNativeSeparators(path), file.errorString()));
         const QByteArray data = file.readAll();
@@ -705,6 +711,164 @@ private:
         }
         if (o.loops.empty() && o.open.empty()) return fail(tr("%1 has nothing to draw").arg(QFileInfo(path).fileName()));
         addObject(std::move(o), f);
+    }
+
+    /// A file a feature names: relative to the model's folder.
+    QString featureFile(const Node& f)
+    {
+        const QString given = f.text(QStringLiteral("file")).trimmed();
+        if (given.isEmpty()) {
+            fail(tr("no file: name a layout (GDSII or OASIS)"));
+            return {};
+        }
+        QString path = given;
+        if (QFileInfo(given).isRelative()) {
+            if (a_model.fileName.isEmpty()) {
+                fail(tr("%1 is relative to the model's folder: save the model first, or give its whole path").arg(given));
+                return {};
+            }
+            path = QFileInfo(a_model.fileName).absoluteDir().absoluteFilePath(given);
+        }
+        a_file = QFileInfo(path).absoluteFilePath();
+        return path;
+    }
+    /// A loop of corners as edges, counterclockwise (\a hole: clockwise).
+    std::vector<GEdge> orientedLoop(std::vector<QPointF> corners, bool hole)
+    {
+        double area = 0;
+        for (std::size_t i = 0; i < corners.size(); ++i) {
+            const QPointF a = corners[i], b = corners[(i + 1) % corners.size()];
+            area += a.x() * b.y() - b.x() * a.y();
+        }
+        if ((area < 0) != hole) std::reverse(corners.begin(), corners.end());
+        return lineLoop(corners);
+    }
+    /// A layout's layer as an object's name: its feature's, _layer_datatype.
+    static QString layerObjectName(const QString& base, const LayoutLayer& key)
+    {
+        return QStringLiteral("%1_%2_%3").arg(base).arg(key.layer).arg(key.datatype);
+    }
+    void importLayout(const Node& f, const QString& path)
+    {
+        const LayoutShapes shapes = readLayoutShapes(path, f.text(QStringLiteral("cell")), f.text(QStringLiteral("layers")));
+        if (!shapes.error.isEmpty()) return fail(shapes.error);
+        for (const QString& w : shapes.warnings) warn(w);
+        // In µm, unless said; scaled and moved.
+        double unit = 1e-6;
+        const QString unitText = f.text(QStringLiteral("unit"));
+        if (!unitText.isEmpty() && unitText != QLatin1String("auto") && unitText != QLatin1String("px")) {
+            const std::optional<Unit> u = parseUnit(unitText);
+            if (u && u->dim == Dim::length()) unit = u->scale;
+        }
+        const double scale = number(f.text(QStringLiteral("scale")), 1);
+        const QPointF offset = lengths(f.pair(QStringLiteral("position")));
+        if (!a_error.isEmpty()) return;
+        if (scale == 0) return fail(tr("a scale of 0"));
+        const double k = unit / a_scale * scale;
+        const QString base = f.label.isEmpty() ? f.tag : f.label;
+        int made = 0;
+        for (const LayoutShapes::Layer& layer : shapes.layers) {
+            GObject o;
+            for (const auto& loop : layer.loops) {
+                double area = 0;
+                for (std::size_t i = 0; i < loop.size(); ++i) {
+                    const QPointF a = loop[i], b = loop[(i + 1) % loop.size()];
+                    area += a.x() * b.y() - b.x() * a.y();
+                }
+                std::vector<QPointF> corners;
+                for (const QPointF& p : loop) corners.push_back(QPointF(p.x() * k + offset.x(), p.y() * k + offset.y()));
+                // (A negative scale turns them: a hole is what was clockwise.)
+                o.loops.push_back(orientedLoop(corners, area < 0));
+            }
+            if (o.loops.empty()) continue;
+            o.name = layerObjectName(base, layer.key);
+            a_objects.push_back(std::move(o));
+            ++made;
+        }
+        if (made == 0) fail(tr("%1: cell %2 has nothing to draw on those layers").arg(QFileInfo(path).fileName(), shapes.cell));
+    }
+    /// A length in µm (a plain number), in the geometry's unit.
+    double micrometres(const QString& text)
+    {
+        Expression::Options options;
+        options.lengthUnit = 1e-6;
+        options.numbersAreLengths = true;
+        const Expression e = Expression::compile(text, a_ps.scope, options);
+        if (!e.isValid() || !e.isConstant()) {
+            fail(tr("%1: %2").arg(text, e.isValid() ? tr("not a constant") : e.error()));
+            return 0;
+        }
+        return e.constant() * 1e-6 / a_scale;
+    }
+    void crossSection(const Node& f)
+    {
+        const QString path = featureFile(f);
+        if (path.isEmpty()) return;
+        // The cut, in the layout's µm.
+        const QStringList s0 = f.pair(QStringLiteral("start")), s1 = f.pair(QStringLiteral("end"));
+        const double um = 1e-6 / a_scale;
+        const QPointF a(micrometres(s0.value(0)) / um, micrometres(s0.value(1)) / um);
+        const QPointF b(micrometres(s1.value(0)) / um, micrometres(s1.value(1)) / um);
+        if (!a_error.isEmpty()) return;
+        const double cut = std::hypot(b.x() - a.x(), b.y() - a.y());
+        if (!(cut > 0)) return fail(tr("the cut's start and end are the same point"));
+        struct Row {
+            QString name, layer;
+            double z = 0, thickness = 0;
+        };
+        std::vector<Row> rows;
+        QStringList layers;
+        for (const QJsonValue& v : f.value(QStringLiteral("stack")).toArray()) {
+            const QJsonArray r = v.toArray();
+            auto cell = [&](int i) { return r.at(i).isDouble() ? formatNumber(r.at(i).toDouble(), 15) : r.at(i).toString().trimmed(); };
+            Row row;
+            row.name = cell(0);
+            row.layer = cell(1);
+            row.z = micrometres(cell(2).isEmpty() ? QStringLiteral("0") : cell(2));
+            row.thickness = micrometres(cell(3).isEmpty() ? QStringLiteral("0") : cell(3));
+            if (!a_error.isEmpty()) return;
+            if (row.name.isEmpty()) return fail(tr("a row of the layer stack has no name"));
+            if (!(row.thickness > 0)) return fail(tr("%1: its thickness must be more than 0").arg(row.name));
+            if (!row.layer.isEmpty()) {
+                LayoutLayer key;
+                if (!parseLayoutLayer(row.layer, &key)) return fail(tr("%1: %2 is not a layer (as 1/0)").arg(row.name, row.layer));
+                if (!layers.contains(key.text())) layers << key.text();
+            }
+            rows.push_back(row);
+        }
+        if (rows.empty()) return fail(tr("the layer stack is empty: give its rows (name, layer, z, thickness)"));
+        LayoutShapes shapes;
+        if (!layers.isEmpty()) {
+            const QRectF window = QRectF(a, b).normalized().adjusted(-1e-3, -1e-3, 1e-3, 1e-3);
+            shapes = readLayoutShapes(path, f.text(QStringLiteral("cell")), layers.join(QLatin1String(", ")), window);
+            if (!shapes.error.isEmpty()) return fail(shapes.error);
+            for (const QString& w : shapes.warnings) warn(w);
+        }
+        const QPointF offset = lengths(f.pair(QStringLiteral("position")));
+        if (!a_error.isEmpty()) return;
+        const double shift = f.text(QStringLiteral("origin")) == QLatin1String("center") ? cut / 2 : 0;
+        for (const Row& row : rows) {
+            std::vector<std::pair<double, double>> spans;
+            if (row.layer.isEmpty()) {
+                spans.emplace_back(0, cut);
+            } else {
+                LayoutLayer key;
+                parseLayoutLayer(row.layer, &key);
+                if (const LayoutShapes::Layer* l = shapes.layer(key)) spans = cutIntervals(l->loops, a, b);
+                if (spans.empty()) {
+                    warn(tr("%1: the cut crosses nothing of layer %2").arg(row.name, row.layer));
+                    continue;
+                }
+            }
+            GObject o;
+            for (const auto& [x0, x1] : spans) {
+                const double left = (x0 - shift) * um + offset.x(), right = (x1 - shift) * um + offset.x();
+                const double bottom = row.z + offset.y(), top = row.z + row.thickness + offset.y();
+                o.loops.push_back(lineLoop({QPointF(left, bottom), QPointF(right, bottom), QPointF(right, top), QPointF(left, top)}));
+            }
+            o.name = row.name;
+            a_objects.push_back(std::move(o));
+        }
     }
 
     /// The objects named in \a key, taken out of the list (when \a take)

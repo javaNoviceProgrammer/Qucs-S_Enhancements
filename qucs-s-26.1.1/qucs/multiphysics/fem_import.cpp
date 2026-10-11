@@ -11,14 +11,23 @@
 #include "fem_import.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
+#include <QTemporaryFile>
 #include <QXmlStreamReader>
+
+#include <clipper/clipper.hpp>
+#include <gdstk/gdstk.hpp>
+#include <zlib.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 
 namespace qucs_s::fem {
@@ -963,6 +972,313 @@ ImportedDrawing readDxf(const QByteArray& data, const QStringList& layers)
 ImportedDrawing readSvg(const QByteArray& data)
 {
     return svg(data);
+}
+
+// ------------------------------------------------------------------ Layouts
+
+QMutex& gdstkLock()
+{
+    static QMutex lock;
+    return lock;
+}
+
+bool isLayoutPath(const QString& path)
+{
+    const QString p = path.toLower();
+    for (const char* suffix : {".gds", ".gds2", ".gdsii", ".gds.gz", ".oas", ".oasis"})
+        if (p.endsWith(QLatin1String(suffix))) return true;
+    return false;
+}
+
+bool parseLayoutLayer(const QString& text, LayoutLayer* layer, bool* anyDatatype)
+{
+    const QStringList parts = text.trimmed().split(QLatin1Char('/'));
+    if (parts.isEmpty() || parts.size() > 2) return false;
+    bool ok = false;
+    const uint l = parts[0].trimmed().toUInt(&ok);
+    if (!ok) return false;
+    layer->layer = l;
+    layer->datatype = 0;
+    if (anyDatatype) *anyDatatype = false;
+    if (parts.size() == 2) {
+        const QString d = parts[1].trimmed();
+        if (d == QLatin1String("*")) {
+            if (!anyDatatype) return false;
+            *anyDatatype = true;
+        } else {
+            const uint t = d.toUInt(&ok);
+            if (!ok) return false;
+            layer->datatype = t;
+        }
+    }
+    return true;
+}
+
+const LayoutShapes::Layer* LayoutShapes::layer(const LayoutLayer& key) const
+{
+    for (const Layer& l : layers)
+        if (l.key == key) return &l;
+    return nullptr;
+}
+
+namespace {
+
+/// A file's bytes inflated (a .gds.gz).
+bool gunzip(const QByteArray& in, QByteArray* out, QString* error)
+{
+    z_stream z{};
+    z.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.constData()));
+    z.avail_in = uInt(in.size());
+    if (inflateInit2(&z, 15 + 32) != Z_OK) {
+        *error = tr("zlib could not start");
+        return false;
+    }
+    char buffer[1 << 16];
+    int code = Z_OK;
+    while (code == Z_OK) {
+        z.next_out = reinterpret_cast<Bytef*>(buffer);
+        z.avail_out = sizeof buffer;
+        code = inflate(&z, Z_NO_FLUSH);
+        if (code != Z_OK && code != Z_STREAM_END) {
+            *error = tr("it is damaged (%1)").arg(QString::fromLatin1(z.msg ? z.msg : "zlib"));
+            inflateEnd(&z);
+            return false;
+        }
+        out->append(buffer, qsizetype(sizeof buffer - z.avail_out));
+    }
+    inflateEnd(&z);
+    return true;
+}
+
+FILE* openForWriting(const QString& path)
+{
+#ifdef Q_OS_WIN
+    return _wfopen(reinterpret_cast<const wchar_t*>(path.utf16()), L"w+");
+#else
+    return std::fopen(QFile::encodeName(path).constData(), "w+");
+#endif
+}
+
+} // namespace
+
+LayoutShapes readLayoutShapes(const QString& path, const QString& cellName, const QString& layerText, const QRectF& window)
+{
+    LayoutShapes out;
+    struct Want {
+        LayoutLayer key;
+        bool any = false;
+    };
+    std::vector<Want> wants;
+    static const QRegularExpression split(QStringLiteral("[,;\\s]+"));
+    for (const QString& t : layerText.split(split, Qt::SkipEmptyParts)) {
+        Want w;
+        if (!parseLayoutLayer(t, &w.key, &w.any)) {
+            out.error = tr("%1 is not a layer (as 1/0, 1 or 1/*)").arg(t);
+            return out;
+        }
+        wants.push_back(w);
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        out.error = tr("%1 cannot be read: %2").arg(QDir::toNativeSeparators(path), file.errorString());
+        return out;
+    }
+    QByteArray bytes = file.readAll();
+    file.close();
+    const bool gz = bytes.startsWith("\x1f\x8b");
+    if (gz) {
+        QByteArray inflated;
+        QString why;
+        if (!gunzip(bytes, &inflated, &why)) {
+            out.error = tr("%1 could not be uncompressed: %2").arg(QFileInfo(path).fileName(), why);
+            return out;
+        }
+        bytes = inflated;
+    }
+    const bool oasis = bytes.startsWith("%SEMI-OASIS");
+    if (!oasis && !(bytes.size() >= 4 && bytes.at(2) == 0x00 && bytes.at(3) == 0x02)) {
+        out.error = tr("%1 is not a GDSII or OASIS layout").arg(QFileInfo(path).fileName());
+        return out;
+    }
+    // What gdstk opens by name: the file, or a copy (inflated; a name of
+    // characters Windows' fopen() cannot take).
+    QString source = path;
+    bool plain = true;
+#ifdef Q_OS_WIN
+    for (QChar c : path)
+        if (c.unicode() > 127) plain = false;
+#endif
+    QTemporaryFile copy(QDir::tempPath() + QStringLiteral("/qucs-fem-layout-XXXXXX") + (oasis ? QStringLiteral(".oas") : QStringLiteral(".gds")));
+    if (gz || !plain) {
+        if (!copy.open() || copy.write(bytes) != bytes.size() || !copy.flush()) {
+            out.error = tr("no room for a copy to read: %1").arg(copy.errorString());
+            return out;
+        }
+        source = copy.fileName();
+    }
+    bytes.clear();
+    gdstk::Library library = {};
+    gdstk::ErrorCode code = gdstk::ErrorCode::NoError;
+    {
+        QMutexLocker locked(&gdstkLock());
+        QTemporaryFile log(QDir::tempPath() + QStringLiteral("/qucs-fem-layout-log-XXXXXX.txt"));
+        FILE* logFile = log.open() ? openForWriting(log.fileName()) : nullptr;
+        FILE* before = gdstk::error_logger;
+        // (never none: gdstk's debug build writes to it unasked)
+        if (logFile) gdstk::set_error_logger(logFile);
+        const QByteArray name = QFile::encodeName(source);
+        library = oasis ? gdstk::read_oas(name.constData(), 1e-6, 0, &code) : gdstk::read_gds(name.constData(), 1e-6, 0, nullptr, &code);
+        gdstk::set_error_logger(before);
+        if (logFile) {
+            std::fflush(logFile);
+            std::fseek(logFile, 0, SEEK_SET);
+            QByteArray text;
+            char buffer[4096];
+            std::size_t n;
+            while ((n = std::fread(buffer, 1, sizeof buffer, logFile)) > 0 && text.size() < 65536) text.append(buffer, qsizetype(n));
+            std::fclose(logFile);
+            for (const QString& line : QString::fromUtf8(text).split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                QString l = line.trimmed();
+                l.remove(QStringLiteral("[GDSTK] "));
+                if (!l.isEmpty() && !out.warnings.contains(l)) out.warnings << l;
+            }
+        }
+    }
+    if (code >= gdstk::ErrorCode::ChecksumError && library.cell_array.count == 0) {
+        library.free_all();
+        out.error = tr("%1 could not be read: it is damaged or not whole").arg(QFileInfo(path).fileName());
+        return out;
+    }
+    for (uint64_t i = 0; i < library.cell_array.count; ++i) out.cells << QString::fromUtf8(library.cell_array[i]->name);
+    gdstk::Cell* cell = nullptr;
+    if (!cellName.trimmed().isEmpty()) {
+        for (uint64_t i = 0; i < library.cell_array.count; ++i)
+            if (QString::fromUtf8(library.cell_array[i]->name) == cellName.trimmed()) cell = library.cell_array[i];
+        if (!cell) {
+            out.error = tr("%1 has no cell %2 (its cells: %3)").arg(QFileInfo(path).fileName(), cellName.trimmed(), out.cells.mid(0, 20).join(QLatin1String(", ")));
+            library.free_all();
+            return out;
+        }
+    } else {
+        // The largest of the cells no other places.
+        gdstk::Array<gdstk::Cell*> tops = {};
+        gdstk::Array<gdstk::RawCell*> raw = {};
+        library.top_level(tops, raw);
+        double best = -1;
+        for (uint64_t i = 0; i < tops.count; ++i) {
+            gdstk::Vec2 lo, hi;
+            tops[i]->bounding_box(lo, hi);
+            const double area = hi.x >= lo.x ? (hi.x - lo.x) * (hi.y - lo.y) : 0;
+            if (area > best) {
+                best = area;
+                cell = tops[i];
+            }
+        }
+        tops.clear();
+        raw.clear();
+        if (!cell && library.cell_array.count > 0) cell = library.cell_array[0];
+    }
+    if (!cell) {
+        out.error = tr("%1 has no cells").arg(QFileInfo(path).fileName());
+        library.free_all();
+        return out;
+    }
+    out.cell = QString::fromUtf8(cell->name);
+    gdstk::Array<gdstk::Polygon*> polygons = {};
+    cell->get_polygons(true, true, -1, false, 0, polygons);
+    // Each layer's polygons, in 0.1 nm (Clipper's integers).
+    const double scale = 1e4;
+    std::map<LayoutLayer, ClipperLib::Paths> byLayer;
+    for (uint64_t i = 0; i < polygons.count; ++i) {
+        gdstk::Polygon* p = polygons[i];
+        const LayoutLayer key{gdstk::get_layer(p->tag), gdstk::get_type(p->tag)};
+        bool wanted = wants.empty();
+        for (const Want& w : wants) wanted = wanted || (w.key.layer == key.layer && (w.any || w.key.datatype == key.datatype));
+        if (wanted && p->point_array.count >= 3) {
+            double x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+            ClipperLib::Path path;
+            for (uint64_t k = 0; k < p->point_array.count; ++k) {
+                const gdstk::Vec2 v = p->point_array[k];
+                x0 = std::min(x0, v.x);
+                x1 = std::max(x1, v.x);
+                y0 = std::min(y0, v.y);
+                y1 = std::max(y1, v.y);
+                path.emplace_back(ClipperLib::cInt(std::llround(v.x * scale)), ClipperLib::cInt(std::llround(v.y * scale)));
+            }
+            if (window.isEmpty() || QRectF(QPointF(x0, y0), QPointF(x1, y1)).intersects(window) || window.contains(QPointF(x0, y0)))
+                byLayer[key].push_back(std::move(path));
+        }
+        p->clear();
+        gdstk::free_allocation(p);
+    }
+    polygons.clear();
+    library.free_all();
+    for (auto& [key, paths] : byLayer) {
+        ClipperLib::Clipper clipper;
+        clipper.AddPaths(paths, ClipperLib::ptSubject, true);
+        ClipperLib::Paths merged;
+        clipper.Execute(ClipperLib::ctUnion, merged, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+        LayoutShapes::Layer layer;
+        layer.key = key;
+        for (const ClipperLib::Path& path : merged) {
+            std::vector<QPointF> loop;
+            for (const ClipperLib::IntPoint& q : path) {
+                const QPointF pt(double(q.X) / scale, double(q.Y) / scale);
+                loop.push_back(pt);
+                out.bounds = out.bounds.isNull() ? QRectF(pt, QSizeF(0, 0)) : out.bounds.united(QRectF(pt, QSizeF(0, 0)));
+            }
+            if (loop.size() >= 3) layer.loops.push_back(std::move(loop));
+        }
+        if (!layer.loops.empty()) out.layers.push_back(std::move(layer));
+    }
+    if (out.layers.empty())
+        out.warnings << (wants.empty() ? tr("cell %1 has no shapes").arg(out.cell)
+                                       : tr("cell %1 has no shapes on layers %2").arg(out.cell, layerText.trimmed()));
+    return out;
+}
+
+std::vector<std::pair<double, double>> cutIntervals(const std::vector<std::vector<QPointF>>& loops, QPointF a, QPointF b)
+{
+    std::vector<std::pair<double, double>> out;
+    const QPointF d = b - a;
+    const double length = std::hypot(d.x(), d.y());
+    if (length == 0) return out;
+    // Where the cut crosses an edge, as t along it (0 to 1).
+    std::vector<double> ts = {0.0, 1.0};
+    for (const auto& loop : loops)
+        for (std::size_t i = 0; i < loop.size(); ++i) {
+            const QPointF p = loop[i], q = loop[(i + 1) % loop.size()];
+            const QPointF e = q - p;
+            const double den = d.x() * e.y() - d.y() * e.x();
+            if (den == 0) continue;
+            const QPointF w = p - a;
+            const double t = (w.x() * e.y() - w.y() * e.x()) / den;
+            const double u = (w.x() * d.y() - w.y() * d.x()) / den;
+            if (t > 0 && t < 1 && u >= 0 && u <= 1) ts.push_back(t);
+        }
+    std::sort(ts.begin(), ts.end());
+    auto winding = [&](QPointF p) {
+        int w = 0;
+        for (const auto& loop : loops)
+            for (std::size_t i = 0; i < loop.size(); ++i) {
+                const QPointF u = loop[i], v = loop[(i + 1) % loop.size()];
+                const double cross = (v.x() - u.x()) * (p.y() - u.y()) - (p.x() - u.x()) * (v.y() - u.y());
+                if (u.y() <= p.y()) {
+                    if (v.y() > p.y() && cross > 0) ++w;
+                } else if (v.y() <= p.y() && cross < 0) {
+                    --w;
+                }
+            }
+        return w;
+    };
+    for (std::size_t i = 0; i + 1 < ts.size(); ++i) {
+        const double t0 = ts[i], t1 = ts[i + 1];
+        if (t1 - t0 < 1e-12) continue;
+        if (winding(a + d * ((t0 + t1) / 2)) == 0) continue;
+        if (!out.empty() && std::abs(out.back().second - t0 * length) < 1e-9 * length) out.back().second = t1 * length;
+        else out.emplace_back(t0 * length, t1 * length);
+    }
+    return out;
 }
 
 } // namespace qucs_s::fem

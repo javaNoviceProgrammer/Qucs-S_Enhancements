@@ -142,6 +142,14 @@ public:
     /// (name_tag.dat; in the cache when it is not saved), shown in a data
     /// display (name_tag.dpl). The display's path; empty and why on failure.
     QString showGraphs(const QString& tag, QString* error = nullptr, bool open = true);
+    /// Runs the Export node \a tag: its file written (a Touchstone file, a
+    /// SPICE or Qucs subcircuit) where it says, or beside the model as
+    /// model_tag.s2p, .cir, .sch (in the cache when it is not saved). The
+    /// path; empty and why on failure.
+    QString runExport(const QString& tag, QString* error = nullptr);
+    /// A Qucs Subcircuit (RLCG) node's part alone on the clipboard, to paste
+    /// into a schematic.
+    bool copyPart(const QString& tag, QString* error = nullptr);
     /// The time and parameter value the shown plot group's study is shown
     /// at ("w = 2 mm, t = 0.5 s"), empty for one of one solution.
     QString shownInstance() const { return a_instanceLabel; }
