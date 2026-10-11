@@ -251,7 +251,8 @@ QList<NodeKind> makeKinds()
                        tr("What a charge, a current, a power or a force of the 2D model is for: per this length out of the plane")),
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-          QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays")},
+          QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays"),
+          QStringLiteral("quantum")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -428,7 +429,31 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("mun"), tr("Electron mobility µn"), QStringLiteral("m^2/(V*s)"), QString()),
           expr(QStringLiteral("mup"), tr("Hole mobility µp"), QStringLiteral("m^2/(V*s)"), QString()),
           expr(QStringLiteral("taun"), tr("Electron lifetime τn"), QStringLiteral("s"), QString()),
-          expr(QStringLiteral("taup"), tr("Hole lifetime τp"), QStringLiteral("s"), QString())},
+          expr(QStringLiteral("taup"), tr("Hole lifetime τp"), QStringLiteral("s"), QString()),
+          text(QStringLiteral("compound"), tr("III-V compound"), QString(),
+               tr("GaAs, AlAs, InAs, InP, GaP, GaSb, AlSb, InSb or an alloy of them - AlGaAs, InGaAs, InAlAs, GaInP, GaAsP, InAsP, "
+                  "GaAsSb, InGaAsP, AlGaInAs: its band parameters (Vurgaftman's) at its composition, for quantum wells; an alloy's "
+                  "other properties from it where they are not given")),
+          expr(QStringLiteral("x"), tr("Composition x"), QString(), QString(),
+               tr("An alloy's: AlGaAs, Al's share; InGaAs, InAlAs, In's; GaInP, Ga's; GaAsP, InAsP, GaAsSb, As's; InGaAsP "
+                  "(In1-x Gax Asy P1-y), Ga's; AlGaInAs (Alx Gay In1-x-y As), Al's")),
+          expr(QStringLiteral("y"), tr("Composition y"), QString(), QString(), tr("InGaAsP, As's share; AlGaInAs, Ga's")),
+          expr(QStringLiteral("me"), tr("Electron effective mass (m0)"), QString(), QString()),
+          expr(QStringLiteral("gamma1"), tr("Luttinger parameter γ1"), QString(), QString(),
+               tr("The holes' masses: heavy 1/(γ1 - 2γ2) along the growth axis, 1/(γ1 + γ2) across it; light 1/(γ1 + 2γ2), 1/(γ1 - γ2)")),
+          expr(QStringLiteral("gamma2"), tr("Luttinger parameter γ2"), QString(), QString()),
+          expr(QStringLiteral("gamma3"), tr("Luttinger parameter γ3"), QString(), QString()),
+          expr(QStringLiteral("VBO"), tr("Valence band offset"), QStringLiteral("eV"), QString(),
+               tr("The valence band's top on one scale for all (Vurgaftman's: InSb's at 0); without it, the affinity's rule")),
+          expr(QStringLiteral("Ep"), tr("Kane energy Ep"), QStringLiteral("eV"), QString(), tr("The interband momentum's: 2 P²/m0")),
+          expr(QStringLiteral("Delta"), tr("Split-off energy Δ"), QStringLiteral("eV"), QString()),
+          expr(QStringLiteral("a0"), tr("Lattice constant"), QStringLiteral("m"), QString()),
+          expr(QStringLiteral("ac"), tr("Conduction band deformation potential ac"), QStringLiteral("eV"), QString()),
+          expr(QStringLiteral("av"), tr("Valence band deformation potential av"), QStringLiteral("eV"), QString(),
+               tr("Chuang's sign: the gap opens by (ac - av) times the volume's relative change")),
+          expr(QStringLiteral("b"), tr("Shear deformation potential b"), QStringLiteral("eV"), QString()),
+          expr(QStringLiteral("C11"), tr("Elastic constant C11"), QStringLiteral("Pa"), QString()),
+          expr(QStringLiteral("C12"), tr("Elastic constant C12"), QStringLiteral("Pa"), QString())},
          {}, {}, false, false, QStringLiteral("mat"),
          tr("Its properties, each an expression (of T too, for a temperature-dependent one). Those empty are not defined.")});
 
@@ -1000,6 +1025,70 @@ QList<NodeKind> makeKinds()
          tr("Counts the rays that cross it: gop.N_<name>, their power gop.P_<name>, centroid gop.x_<name>, gop.y_<name>, rms "
             "spot gop.rms_<name>, mean optical path gop.opl_<name>.")});
 
+    // Quantum wells.
+    add({QStringLiteral("quantum"), tr("Quantum Wells (Schrödinger)"), QStringLiteral("physics"), QStringLiteral("qw"), Level::Domain,
+         {selectionProp(),
+          choice(QStringLiteral("space"), tr("Solved"), {QStringLiteral("1d"), QStringLiteral("2d")},
+                 {tr("1D: along the growth axis, through the layers"), tr("2D: over the cross-section (wires; dots about an axis)")},
+                 QStringLiteral("1d"),
+                 tr("1D: a line across the layers, quadratic elements of its own, the states free in the plane of the layers; 2D: "
+                    "the mesh's, the states free along z")),
+          choice(QStringLiteral("axis"), tr("Growth axis"), {QStringLiteral("y"), QStringLiteral("x")}, {tr("y"), tr("x")}, QStringLiteral("y"),
+                 tr("The layers stack along it: the holes' masses along it and across it differ, the field F is along it")),
+          shownIf(expr(QStringLiteral("at"), tr("Line across the layers at"), QStringLiteral("length"), QString(),
+                       tr("x (y, the axis x) where the line runs; empty: the middle of the physics' domains")),
+                  QStringLiteral("space=1d")),
+          shownIf(expr(QStringLiteral("h1d"), tr("Element size along the line"), QStringLiteral("m"), QStringLiteral("0.1[nm]"),
+                       tr("Quadratic elements: 0.1 nm finds the states of nanometre layers to a part in 10⁶")),
+                  QStringLiteral("space=1d")),
+          shownIf(choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
+                         QStringLiteral("2")),
+                  QStringLiteral("space=2d")),
+          flag(QStringLiteral("electrons"), tr("Electrons"), true), flag(QStringLiteral("heavy"), tr("Heavy holes"), true),
+          flag(QStringLiteral("light"), tr("Light holes"), true),
+          expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"),
+               tr("Of the band gaps (Varshni's) and of the carriers in a spectrum")),
+          text(QStringLiteral("substrate"), tr("Substrate (strain)"), QString(),
+               tr("The layers take its lattice in their plane (pseudomorphic): a material (Gallium arsenide, Indium phosphide), a "
+                  "compound (GaAs) or a lattice constant (0.58697[nm]); empty: no strain")),
+          expr(QStringLiteral("F"), tr("Electric field along the axis"), QStringLiteral("V/m"), QStringLiteral("0[V/m]"),
+               tr("Uniform: the quantum-confined Stark effect (100 kV/cm is 1e7 V/m); its potential 0 at the physics' middle")),
+          spatial(QStringLiteral("V"), tr("Electric potential"), QStringLiteral("V"), QStringLiteral("0"),
+                  tr("Another physics' (semi.V, es.V): the bands move by -q V")),
+          expr(QStringLiteral("drawn"), tr("Waves drawn"), QStringLiteral("eV"), QStringLiteral("50[meV]"),
+               tr("qw.wave_e and the others: a state's energy with its |ψ|² on it, its largest this - a band diagram's picture"))},
+         {QStringLiteral("quantum/material"), QStringLiteral("quantum/zero"), QStringLiteral("quantum/flux")},
+         {QStringLiteral("quantum/material"), QStringLiteral("quantum/zero")}, false, false, QStringLiteral("qw"),
+         tr("The effective-mass Schrödinger equation of electrons, heavy holes and light holes, BenDaniel and Duke's at each "
+            "heterojunction; the bands from the materials' compounds (their alloys' at their composition), strained on a "
+            "substrate, tilted by a field or another physics' potential. A Quantum States step finds each carrier's lowest "
+            "states, an Optical Spectrum step their absorption, or gain with carriers in the wells.")});
+    add({QStringLiteral("quantum/material"), tr("Quantum Well Material"), QStringLiteral("qw"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(), source,
+          shownIf(spatial(QStringLiteral("Ec"), tr("Conduction band edge Ec"), QStringLiteral("eV"), QStringLiteral("0[eV]"), tr("Of x and y")),
+                  QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("Ev"), tr("Valence band edge Ev"), QStringLiteral("eV"), QStringLiteral("-1.5[eV]"),
+                          tr("The heavy and light holes' both")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("me"), tr("Electron mass (m0)"), QString(), QStringLiteral("0.067")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("mhh"), tr("Heavy hole mass along the axis (m0)"), QString(), QStringLiteral("0.35")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("mlh"), tr("Light hole mass along the axis (m0)"), QString(), QStringLiteral("0.09")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("mhhp"), tr("Heavy hole mass across the axis (m0)"), QString(), QString(), tr("Empty: as along it")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("mlhp"), tr("Light hole mass across the axis (m0)"), QString(), QString(), tr("Empty: as along it")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("Ep"), tr("Kane energy Ep"), QStringLiteral("eV"), QStringLiteral("25[eV]")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("nr"), tr("Refractive index"), QString(), QStringLiteral("3.5")), QStringLiteral("source=user"))},
+         {}, {}, false, false, QStringLiteral("qwm"),
+         tr("The bands and masses: from the material - its compound (GaAs, InGaAs at x...), or its Eg, VBO (or χ), me, γ1 and γ2 - "
+            "or as given.")});
+    add({QStringLiteral("quantum/zero"), tr("Zero Wavefunction"), QStringLiteral("qw"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp()}, {}, {}, false, false, QStringLiteral("zw"),
+         tr("ψ = 0 where the physics ends: hard walls - its outer layers barriers thick enough. In 1D, at both ends of the line.")});
+    add({QStringLiteral("quantum/flux"), tr("Zero Flux"), QStringLiteral("qw"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none)}, {}, {}, false, false, QStringLiteral("zf"),
+         tr("∂ψ/∂n = 0 on the boundaries chosen (2D): a wide layer's sides, the states free across them.")});
+
     // Mesh.
     const QStringList presets = {QStringLiteral("extremely fine"), QStringLiteral("extra fine"), QStringLiteral("finer"),
                                  QStringLiteral("fine"), QStringLiteral("normal"), QStringLiteral("coarse"),
@@ -1030,7 +1119,8 @@ QList<NodeKind> makeKinds()
 
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
-         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("sweep")},
+         {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("states"),
+          QStringLiteral("spectrum"), QStringLiteral("sweep")},
          {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
@@ -1117,6 +1207,29 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("mode"),
              tr("A cross-section's modes at each frequency: each a solution, as an output time is - its effective index, "
                 "loss, fields. Physics at rest in it (heat for a thermo-optic index) are solved first.")});
+        add({QStringLiteral("states"), tr("Quantum States"), QStringLiteral("step"), QStringLiteral("states"), Level::None,
+             {physics, integer(QStringLiteral("states"), tr("States of each carrier"), 4, tr("The lowest: electrons upward, holes downward")),
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
+                   tr("Of the physics solved before (a semiconductor's potential)"))},
+             {}, {}, false, false, QStringLiteral("qs"),
+             tr("A quantum wells physics' states: each a solution, as a mode is - each carrier's energy and wavefunction; the "
+                "transitions' energies and overlaps. Physics at rest in it (a semiconductor's potential) are solved first.")});
+        add({QStringLiteral("spectrum"), tr("Optical Spectrum"), QStringLiteral("step"), QStringLiteral("spectrum"), Level::None,
+             {physics,
+              text(QStringLiteral("energies"), tr("Photon energies or wavelengths"), QStringLiteral("linspace(1.4[eV], 1.8[eV], 201)"),
+                   tr("In eV, or free-space wavelengths in m (range(1.5[um], 1[nm], 1.6[um])), or Hz: linspace, range or values split "
+                      "by commas")),
+              integer(QStringLiteral("states"), tr("States of each carrier"), 6),
+              expr(QStringLiteral("linewidth"), tr("Broadening"), QStringLiteral("eV"), QStringLiteral("6.6[meV]"),
+                   tr("A Lorentzian's half width, ħ/τ: 6.6 meV for 0.1 ps")),
+              expr(QStringLiteral("density"), tr("Carriers in the wells"), QStringLiteral("1/m^3"), QStringLiteral("0[1/cm^3]"),
+                   tr("Electrons and holes alike, per volume of the wells (the domains of the smallest gap): gain where their "
+                      "quasi-Fermi levels are far enough apart; 0, the wells' absorption")),
+              expr(QStringLiteral("nr"), tr("Refractive index"), QString(), QString(), tr("Empty: the wells' material's")),
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"))},
+             {}, {}, false, false, QStringLiteral("spec"),
+             tr("A quantum wells physics' absorption coefficient - TE (in the layers' plane) and TM - or gain over photon "
+                "energies: its states' transitions, k conserved, each broadened; each point a solution, as a frequency is.")});
         P rows;
         rows.key = QStringLiteral("parameters");
         rows.label = tr("Parameters swept");
@@ -1437,7 +1550,8 @@ QList<const NodeKind*> nodeKinds()
 QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-            QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays")};
+            QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays"),
+            QStringLiteral("quantum")};
 }
 
 // ------------------------------------------------------------------ Node

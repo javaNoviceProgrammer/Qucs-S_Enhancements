@@ -284,7 +284,7 @@ bool SemiconductorProblem::setup(QString* error)
         const bool user = mf && mf->text(QStringLiteral("source")) == QLatin1String("user");
         auto text = [&](const QString& key) {
             if (user) return mf->text(key);
-            return mat ? materialProperty(*mat, key) : QString();
+            return mat ? materialProperty(*mat, key, &constants) : QString();
         };
         const QString where = tr("domain %1 (%2)").arg(d + 1).arg(object);
         if (!user && !mat) {
@@ -335,7 +335,7 @@ bool SemiconductorProblem::setup(QString* error)
         if (const Node* r = srhOf[std::size_t(d)]) {
             m.srh = true;
             const bool own = r->text(QStringLiteral("source")) == QLatin1String("user");
-            auto rt = [&](const QString& key) { return own ? r->text(key) : mat ? materialProperty(*mat, key) : QString(); };
+            auto rt = [&](const QString& key) { return own ? r->text(key) : mat ? materialProperty(*mat, key, &constants) : QString(); };
             const QString tn = rt(QStringLiteral("taun")), tp = rt(QStringLiteral("taup"));
             if (tn.trimmed().isEmpty() || tp.trimmed().isEmpty()) problem(tr("%1: its material has no carrier lifetimes (taun, taup)").arg(where));
             else {

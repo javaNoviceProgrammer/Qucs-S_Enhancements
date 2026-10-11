@@ -1,0 +1,50 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A GaAs quantum wire's states",
+    "description": "A GaAs wire 20 nm wide and 10 nm high buried in Al0.3Ga0.7As, solved over its cross-section (2D): its electrons and holes confined both ways, free along the wire. Each state a solution - the first with no node, the next with one across the wire's width, its levels closer than a 10 nm well's in the narrow direction; the heavy holes' masses along y (the growth axis) and across it differ. The absorption of the wires' 1D density of states, peaked at each transition.",
+    "parameters": [
+        {"name": "W", "expression": "20[nm]", "description": "the wire's width"},
+        {"name": "H", "expression": "10[nm]", "description": "its height"}
+    ],
+    "components": [{
+        "unit": "nm",
+        "geometry": [
+            {"type": "rectangle", "label": "barrier", "base": "center", "size": ["60", "40"]},
+            {"type": "rectangle", "label": "wire", "base": "center", "size": ["W", "H"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Aluminium gallium arsenide", "x": "0.3", "selection": {"all": true}},
+            {"material": "Gallium arsenide", "selection": {"only": ["wire"]}}
+        ],
+        "physics": [{"type": "quantum", "tag": "qw", "space": "2d"}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "3", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["wire"]}, "hmax": "1"}
+        ]}
+    }],
+    "studies": [
+        {"type": "study", "tag": "std1", "label": "States", "steps": [{"type": "states", "states": 4}]},
+        {"type": "study", "tag": "std2", "label": "Absorption", "steps": [
+            {"type": "spectrum", "energies": "linspace(1.48[eV], 1.75[eV], 136)", "states": 4, "linewidth": "6.6[meV]"}
+        ]}
+    ],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electron Probability", "study": "std1", "mode": 1, "plots": [
+                {"type": "surface", "expression": "qw.P_e", "colors": "viridis"}
+            ]},
+            {"type": "plotgroup", "label": "Second Electron State", "study": "std1", "mode": 2, "plots": [
+                {"type": "surface", "expression": "qw.psi_e", "colors": "coolwarm"}
+            ]},
+            {"type": "plotgroup", "label": "Heavy Hole Probability", "study": "std1", "mode": 1, "plots": [
+                {"type": "surface", "expression": "qw.P_hh", "colors": "viridis"}
+            ]},
+            {"type": "plotgroup1d", "label": "Absorption", "study": "std2", "plots": [
+                {"type": "globalgraph", "expression": "qw.alphaTE; qw.alphaTM", "unit": "1/cm"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Levels", "study": "std1", "expression": "qw.Ee1; qw.Ee2; qw.Ehh1; qw.Ee1hh1", "unit": "eV"}
+        ]
+    }
+}

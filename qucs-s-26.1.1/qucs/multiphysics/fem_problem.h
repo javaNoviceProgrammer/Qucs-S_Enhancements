@@ -123,6 +123,19 @@ struct SolveOptions {
     double frequency = 0;
 };
 
+/// An optical spectrum of quantum states: at photon energies (J), from so
+/// many states of each carrier, broadened (a Lorentzian's half width, J),
+/// with carriers in the wells (1/m³; 0: none - absorption) and a refractive
+/// index (0: the wells').
+struct SpectrumOptions {
+    std::vector<double> energies;
+    int states = 6;
+    double linewidth = 0;
+    double density = 0;
+    double index = 0;
+    SolveOptions solve;
+};
+
 /*!
  * One physics of a solution as the problem it is: set up from the model
  * (its domains, materials, conditions - what is wrong said), solved at the
@@ -162,6 +175,16 @@ public:
     }
     /// The field (and its globals, set after) of mode \a k found (from 0).
     virtual void selectMode(int k) { (void)k; }
+    /// Quantum states: their optical spectrum at \a o's photon energies.
+    /// How many points; -1 and why on failure.
+    virtual int solveSpectrum(const SpectrumOptions& o, QString* error)
+    {
+        (void)o;
+        *error = tr("%1 has no optical spectrum (Quantum Wells has)").arg(field().tag);
+        return -1;
+    }
+    /// The globals (set after) of the spectrum's point \a k.
+    virtual void selectSpectrum(int k) { (void)k; }
     /// Whether what it reads (its coefficients, sources, conditions) reads
     /// field \a f.
     bool reads(int f) const { return a_reads.contains(f); }
@@ -177,8 +200,10 @@ protected:
     Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true);
     /// The material of each domain: the last that has it (null: none).
     std::vector<const Node*> materials();
-    /// Property \a key of material \a m: its own, else its library entry's.
-    static QString materialProperty(const Node& m, const QString& key);
+    /// Property \a key of material \a m: its own, else its library entry's,
+    /// else (a III-V alloy's) its compound's at its composition - evaluated in
+    /// \a scope (the parameters'; none: a plain number).
+    static QString materialProperty(const Node& m, const QString& key, const Scope* scope = nullptr);
 
     Solution& a_s;
     int a_fi;
@@ -203,6 +228,22 @@ struct SemiconductorState {
     double Jn[2] = {0, 0}, Jp[2] = {0, 0};
 };
 SemiconductorState semiconductorAt(PointEvaluator& e, int field);
+
+/// A quantum wells physics at a point: the state selected - each carrier's
+/// wavefunction (1/√m along a 1D line, 1/m in the plane, 1/m^(3/2) about an
+/// axis: ∫|ψ|² = 1), its energy and its largest |ψ|² - and the bands there
+/// (J), the masses along the growth axis (m0), the strain in the plane, the
+/// height a wave is drawn (J).
+struct QuantumState {
+    bool defined = false;
+    double psi[3] = {NaN, NaN, NaN};
+    double E[3] = {NaN, NaN, NaN};
+    double peak[3] = {NaN, NaN, NaN};
+    double Ec = NaN, Ehh = NaN, Elh = NaN;
+    double me = NaN, mhh = NaN, mlh = NaN;
+    double strain = NaN, drawn = NaN;
+};
+QuantumState quantumAt(PointEvaluator& e, int field);
 
 /// A mode's fields at a point (V/m, A/m), as found (a phase of 0 at z = 0).
 struct ModeFields {

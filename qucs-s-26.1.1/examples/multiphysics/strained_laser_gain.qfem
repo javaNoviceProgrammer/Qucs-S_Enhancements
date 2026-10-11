@@ -1,0 +1,50 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A strained InGaAs quantum well laser's gain",
+    "description": "8 nm of In0.2Ga0.8As in GaAs, grown on GaAs: compressed 1.4% in its plane (strain lifts the heavy holes above the light ones and opens the gap), a well of a 980 nm pump laser. Its material gain over wavelength as electrons and holes are injected, 1 to 4e18 per cm³ of the well: gain where the photon's energy is below the quasi-Fermi levels' separation (Bernard and Duraffourg), absorption above it; TE (the laser's polarization) far above TM, the heavy holes on top.",
+    "parameters": [
+        {"name": "N", "expression": "3e18[1/cm^3]", "description": "electrons and holes in the well"},
+        {"name": "Lw", "expression": "8[nm]", "description": "the well's width"}
+    ],
+    "components": [{
+        "unit": "nm",
+        "geometry": [
+            {"type": "rectangle", "label": "below", "size": ["10", "20"]},
+            {"type": "rectangle", "label": "well", "position": ["0", "20"], "size": ["10", "Lw"]},
+            {"type": "rectangle", "label": "above", "position": ["0", "20 + Lw"], "size": ["10", "20"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Gallium arsenide", "selection": {"only": ["below", "above"]}},
+            {"material": "Indium gallium arsenide", "x": "0.2", "selection": {"only": ["well"]}}
+        ],
+        "physics": [{"type": "quantum", "tag": "qw", "substrate": "Gallium arsenide"}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "2"}
+    }],
+    "studies": [
+        {"type": "study", "tag": "std1", "label": "Gain", "steps": [
+            {"type": "sweep", "parameters": [["N", "1e18, 2e18, 3e18, 4e18", "1/cm^3"]]},
+            {"type": "spectrum", "energies": "range(900[nm], 1[nm], 1060[nm])", "states": 6, "linewidth": "6.6[meV]", "density": "N"}
+        ]},
+        {"type": "study", "tag": "std2", "label": "States", "steps": [{"type": "states", "states": 3}]}
+    ],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Gain", "study": "std1", "plots": [
+                {"type": "globalgraph", "expression": "qw.gTE; qw.gTM", "unit": "1/cm"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Across the layers", "start": ["5", "0"], "end": ["5", "40 + Lw"], "points": 800},
+            {"type": "plotgroup1d", "label": "Band Diagram", "study": "std2", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Ec", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Ehh", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Elh", "unit": "eV", "xaxis": "y", "solutions": "selected"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_e", "unit": "eV", "xaxis": "y"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_hh", "unit": "eV", "xaxis": "y"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Quasi-Fermi levels", "study": "std1", "expression": "qw.dF", "unit": "eV", "solutions": "all"},
+            {"type": "global", "label": "Emission", "study": "std2", "expression": "qw.lambda; qw.Ee1hh1"}
+        ]
+    }
+}

@@ -67,6 +67,9 @@ struct Field {
     std::shared_ptr<const EdgeSpace> edges;
     /// Numbers that go with the field and its snapshots (a mode's β).
     std::vector<double> extra;
+    /// Numbers that go with the field, the same in all its snapshots (a
+    /// quantum wells physics' bands).
+    std::shared_ptr<const std::vector<double>> fixed;
 
     int count() const { return int(components.size()); }
     double value(int component, int dof) const { return values[std::size_t(component) * std::size_t(space->size()) + std::size_t(dof)]; }
@@ -221,6 +224,13 @@ public:
     bool timeDependent = false;
     bool frequencyDomain = false;         ///< its snapshots are of frequencies
     bool modeAnalysis = false;            ///< and of modes, at each frequency
+    bool quantumStates = false;           ///< its modes are quantum states
+    /// A spectrum's snapshots, shown by: 0 their frequency, 1 the photon's
+    /// energy, 2 its wavelength in vacuum.
+    int photonAxis = 0;
+    /// Snapshot \a i as a label shows it: "t = 1 s", "f = 1 GHz", "E = 1.42 eV",
+    /// "λ = 870 nm".
+    QString snapshotText(int i) const;
 
 private:
     void defineVariables();

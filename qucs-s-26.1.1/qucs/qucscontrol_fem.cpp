@@ -183,6 +183,22 @@ QString formatText()
         "650[nm]\") - mirror (R), absorber, coating (no reflection), detector (\"name\", \"stop\"). Globals gop.N, gop.Pin, "
         "gop.Pabs (absorbed in the media; gop.Q per volume, a heat source), gop.P_<det>, gop.x_<det>, gop.y_<det>, gop.rms_<det>, "
         "gop.opl_<det>. A plot group's \"rayplot\" draws them (\"by\": wavelength, power, release, single).\n"
+        "Quantum wells: \"quantum\" (tag qw, Schrödinger's effective-mass equation of electrons, heavy and light holes) - "
+        "\"space\": \"1d\" (a line across the layers through \"at\", elements of \"h1d\"; free in the layers' plane) or "
+        "\"2d\" (the cross-section: wires; dots about an axis); \"axis\": the growth axis y or x; \"substrate\" (a material, "
+        "a compound or a lattice constant: biaxial strain); \"F\" (V/m along the axis: the Stark effect); \"V\" (another "
+        "physics' potential, semi.V); \"T\"; \"electrons\", \"heavy\", \"light\". Bands from each material's \"compound\" "
+        "(GaAs, AlAs, InAs, InP, GaP, GaSb, AlSb, InSb; alloys AlGaAs, InGaAs, InAlAs, GaInP, GaAsP, InAsP, GaAsSb with \"x\", "
+        "InGaAsP In1-xGaxAsyP1-y and AlGaInAs AlxGayIn1-x-yAs with \"x\", \"y\" - library entries such as Indium gallium "
+        "arsenide) or its Eg, VBO (or chi), me, gamma1, gamma2; a feature material with \"source\": \"user\" gives Ec, Ev (of x, "
+        "y), me, mhh, mlh, mhhp, mlhp, Ep, nr. Features zero (ψ = 0 where it ends) and flux (∂ψ/∂n = 0, 2D). A \"states\" step "
+        "{\"states\": 4} makes each state a solution (\"mode\" picks one): qw.Ee1, qw.Ehh1, qw.Elh1... (J; unit eV), "
+        "qw.E_e of the one selected, qw.Eg and qw.lambda (the effective gap), qw.Ee1hh1 and the overlap qw.Oe1hh1, qw.pos_e, "
+        "qw.bound_e; variables qw.P_e (|ψ|²), qw.psi_e, qw.wave_e (a level with its |ψ|²: a band diagram), qw.Ec, qw.Ehh, "
+        "qw.Elh, qw.Ev, qw.me, qw.strain. A \"spectrum\" step {\"energies\": \"linspace(0.75[eV], 0.95[eV], 201)\" (or "
+        "wavelengths), \"states\", \"linewidth\" (Lorentzian, eV), \"density\" (carriers in the wells: gain), \"nr\"} "
+        "makes each photon energy a solution: qw.alphaTE, qw.alphaTM (1/m: unit 1/cm), qw.gTE, qw.gTM, qw.Fc, qw.Fv, qw.dF, "
+        "qw.Lw.\n"
         "Expressions: numbers (1.5e-3, Qucs's 10u 2.2k, 3mm, 1GHz), units in brackets (3[mm], 20[degC], W/(m*K)), + - * / ^, "
         "functions (sin, exp, sqrt, min, max, if(c,a,b)...), constants (pi, eps0, mu0, c0, kB, q0), the parameters. In the "
         "geometry and the mesh a plain number is in the component's unit and parameters are converted to it (L = 2[mm] "
@@ -626,26 +642,32 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                                           {QStringLiteral("each"), swept}});
     }
     if (sol->modeAnalysis) {
-        // Each mode's effective index and loss.
+        // Each mode's effective index and loss; each quantum state's energies.
         QJsonArray modes;
+        const bool states = sol->quantumStates;
         const int was = sol->selected();
         for (int k = 0; k < sol->snapshotCount() && k < 60; ++k) {
             sol->select(k);
-            QJsonObject m{{QStringLiteral("mode"), sol->snapshotMode(k)},
-                          {QStringLiteral("frequency"), formatQuantity(sol->snapshotFrequency(k), Dim::of(0, 0, -1))}};
-            for (const Variable& v : sol->globals())
-                if (v.name.endsWith(QLatin1String(".neff")) || v.name.endsWith(QLatin1String(".loss")))
-                    m.insert(v.name, formatQuantity(sol->global(v.name).value_or(NAN), v.dim));
+            QJsonObject m{{states ? QStringLiteral("state") : QStringLiteral("mode"), sol->snapshotMode(k)}};
+            if (!states) m.insert(QStringLiteral("frequency"), formatQuantity(sol->snapshotFrequency(k), Dim::of(0, 0, -1)));
+            for (const Variable& v : sol->globals()) {
+                const bool wanted = states ? v.name.endsWith(QLatin1String(".E_e")) || v.name.endsWith(QLatin1String(".E_hh"))
+                                                 || v.name.endsWith(QLatin1String(".E_lh"))
+                                           : v.name.endsWith(QLatin1String(".neff")) || v.name.endsWith(QLatin1String(".loss"));
+                const std::optional<double> g = sol->global(v.name);
+                if (wanted && g && std::isfinite(*g)) m.insert(v.name, formatQuantity(*g / (states ? 1.602176634e-19 : 1.0), states ? Dim() : v.dim) + (states ? QStringLiteral(" eV") : QString()));
+            }
             modes.append(m);
         }
         sol->select(was);
-        extra.insert(QStringLiteral("modes"), modes);
+        extra.insert(states ? QStringLiteral("states") : QStringLiteral("modes"), modes);
     }
     if (sol->snapshotCount() > 0)
-        extra.insert(sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
+        extra.insert(sol->photonAxis > 0 ? QStringLiteral("spectrum") : sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
                      QJsonObject{{QStringLiteral("outputs"), sol->snapshotCount()},
-                                 {QStringLiteral("from"), formatQuantity(sol->snapshotValue(0), sol->snapshotDim())},
-                                 {QStringLiteral("to"), formatQuantity(sol->snapshotValue(sol->snapshotCount() - 1), sol->snapshotDim())},
+                                 {QStringLiteral("from"), sol->photonAxis > 0 ? sol->snapshotText(0) : formatQuantity(sol->snapshotValue(0), sol->snapshotDim())},
+                                 {QStringLiteral("to"), sol->photonAxis > 0 ? sol->snapshotText(sol->snapshotCount() - 1)
+                                                                            : formatQuantity(sol->snapshotValue(sol->snapshotCount() - 1), sol->snapshotDim())},
                                  {QStringLiteral("globals at"), tr("the last")}});
     QJsonObject result{{QStringLiteral("study"), sol->studyTag},
                                   {QStringLiteral("seconds"), sol->seconds},
