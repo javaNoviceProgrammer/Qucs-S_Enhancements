@@ -388,6 +388,77 @@ private slots:
         QVERIFY2(std::abs(Ia + Ik) < 1e-3 * std::abs(Ia), qPrintable(QString::number(Ik / Ia)));
     }
 
+    void aDiodesReverseRecovery()
+    {
+        // A long diode (1e16 cm⁻³ each side, 5 µm, lifetimes 0.1 and 0.3 ns:
+        // diffusion lengths below a micrometre) forward at 0.65 V, switched
+        // to -1 V in a picosecond: the minority carriers stored come out of
+        // the anode - a reverse current far above the steady one, for some
+        // tenths of a nanosecond. Between the two lifetimes the charge out
+        // differs as the charge stored at rest does (q∫ of the minority
+        // carriers beyond equilibrium's, each side): the depletion's charge,
+        // the same for both, cancels; what recombines while they come out is
+        // little: most come out in some tens of picoseconds, those far from
+        // the junction in a lifetime or so - 1.2 ns, four of the longer (a
+        // sanitized build: 0.6 ns, two; some of the tail not yet out).
+        // (A sanitized build: coarser in space and time.)
+        const bool slow = slowBuild();
+        const QString hmax = slow ? QStringLiteral("0.25") : QStringLiteral("0.1");
+        struct Out {
+            double stored = 0, moved = 0, forward = 0, peak = 0;
+        };
+        auto recover = [&](const QString& tau, Out* out) {
+            const QString srh = QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "%1", "taup": "%1", "selection": {"all": true}})").arg(tau);
+            const QString steps = slow ? QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 1[ps], 5[ps]), range(7[ps], 2[ps], 25[ps]), range(30[ps], 10[ps], 100[ps]), range(150[ps], 50[ps], 0.6[ns])", "rtol": "1e-3"})x")
+                                       : QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 0.5[ps], 5[ps]), range(6[ps], 1[ps], 30[ps]), range(35[ps], 5[ps], 100[ps]), range(120[ps], 20[ps], 300[ps]), range(350[ps], 50[ps], 1.2[ns])", "rtol": "1e-4"})x");
+            Model m = modelOf(junction(QStringLiteral("5"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("0.65[V]"), steps, srh, hmax));
+            for (Node& f : m.find(QStringLiteral("semi"))->children)
+                if (f.text(QStringLiteral("name")) == QLatin1String("a")) f.props.insert(QStringLiteral("V0"), QStringLiteral("0.65[V] - 1.65[V]*min(t/1[ps], 1)"));
+            const Run r = run(m);
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            Solution& s = *r.solution;
+            QVERIFY(s.snapshotCount() > 30);
+            s.select(0);
+            out->forward = global(s, QStringLiteral("semi.I_a"));
+            // Stored: q∫ (n - ni²/Na) over the p side, (p - ni²/Nd) over the n side (1 m thick).
+            for (const auto& [side, expression] : {std::pair{"pside", "1.602176634e-19[C]*(semi.n - semi.ni^2/1e22[1/m^3])*1[m]"},
+                                                   std::pair{"nside", "1.602176634e-19[C]*(semi.p - semi.ni^2/1e22[1/m^3])*1[m]"}}) {
+                Node integral;
+                integral.type = QStringLiteral("integral");
+                integral.props.insert(QStringLiteral("expression"), QString::fromLatin1(expression));
+                integral.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QString::fromLatin1(side)}}});
+                const DerivedResult d = evaluateDerived(s, integral);
+                QVERIFY2(d.error.isEmpty() && d.values.size() == 1, qPrintable(d.error));
+                out->stored += d.values[0].value;
+            }
+            // Out of the anode beyond the reverse current at the end.
+            const int last = s.snapshotCount() - 1;
+            s.select(last);
+            const double reverse = global(s, QStringLiteral("semi.I_a"));
+            double before = 0, tb = 0;
+            for (int k = 0; k <= last; ++k) {
+                s.select(k);
+                const double t = s.snapshotTime(k), I = global(s, QStringLiteral("semi.I_a")) - reverse;
+                if (k > 0) out->moved -= 0.5 * (I + before) * (t - tb);
+                out->peak = std::min(out->peak, I + reverse);
+                before = I;
+                tb = t;
+            }
+            qInfo("τ %s: forward %.5g A, stored %.5g C (I_F τ %.5g); out of the anode %.5g C, its reverse current at most %.5g A (steady %.4g)",
+                  qPrintable(tau), out->forward, out->stored, out->forward * (tau.startsWith(QLatin1String("0.1")) ? 1e-10 : 3e-10), out->moved, out->peak,
+                  reverse);
+        };
+        Out a, b;
+        recover(QStringLiteral("0.1[ns]"), &a);
+        if (QTest::currentTestFailed()) return;
+        recover(QStringLiteral("0.3[ns]"), &b);
+        if (QTest::currentTestFailed()) return;
+        const double k = (b.moved - a.moved) / (b.stored - a.stored);
+        qInfo("the charge out, between the lifetimes: %.4f of the charge stored's difference", k);
+        QVERIFY2(k > (slow ? 0.8 : 0.85) && k < (slow ? 1.05 : 1.02), qPrintable(QString::number(k)));
+        QVERIFY(a.peak < -10 * a.forward && b.peak < -10 * b.forward);
+    }
+
     void aShortDiodesCurrent()
     {
         // Lifetimes long: no recombination; forward 0.4 V - Shockley's
