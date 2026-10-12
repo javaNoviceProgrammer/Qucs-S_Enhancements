@@ -149,12 +149,50 @@ QColor colorOf(const QString& text, const QColor& fallback)
     return c.isValid() ? c : fallback;
 }
 
+// A job's stage beside its progress bar: one line, elided to the room it
+// has, whole in its tool tip. (In the bar itself Fusion wraps a text too
+// long and cuts it off, and macOS's style draws none.)
+class StageLabel : public QLabel
+{
+public:
+    explicit StageLabel(QWidget* parent) : QLabel(parent)
+    {
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextFormat(Qt::PlainText);
+    }
+
+    void setStage(const QString& stage)
+    {
+        if (stage == a_full) return;
+        a_full = stage;
+        setToolTip(stage);
+        elide();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QLabel::resizeEvent(event);
+        elide();
+    }
+
+private:
+    QString a_full;
+
+    void elide()
+    {
+        const int room = contentsRect().width();
+        QLabel::setText(room > 0 ? fontMetrics().elidedText(a_full, Qt::ElideRight, room) : a_full);
+    }
+};
+
 } // namespace
 
 struct MultiphysicsDoc::Job {
     QString what;
     std::atomic<bool> cancel{false};
     std::atomic<double> fraction{0};
+    QElapsedTimer started;
     std::mutex mutex;
     QString stage;
     QThread* thread = nullptr;
@@ -332,19 +370,32 @@ void MultiphysicsDoc::buildUi()
         if (!exportImage(path, &why)) QMessageBox::warning(this, tr("Save Image"), why);
     });
     row->addStretch(1);
-    a_progress = new QProgressBar(bar);
+    all->addWidget(bar);
+
+    // A job's progress in a row of its own below: its stage as whole as the
+    // window's width allows, the bar its percentage. Shown once the job has
+    // taken a quarter of a second, it never flashes up and away (a geometry
+    // is built in a millisecond).
+    a_progressRow = new QWidget(this);
+    a_progressRow->setObjectName(QStringLiteral("mpProgressRow"));
+    auto* progressRow = new QHBoxLayout(a_progressRow);
+    progressRow->setContentsMargins(8, 0, 6, 3);
+    progressRow->setSpacing(6);
+    a_stage = new StageLabel(a_progressRow);
+    a_stage->setObjectName(QStringLiteral("mpStage"));
+    progressRow->addWidget(a_stage, 1);
+    a_progress = new QProgressBar(a_progressRow);
     a_progress->setObjectName(QStringLiteral("mpProgress"));
     a_progress->setRange(0, 1000);
-    a_progress->setMaximumWidth(200);
+    a_progress->setFixedWidth(160);
     a_progress->setTextVisible(true);
-    a_progress->hide();
-    row->addWidget(a_progress);
-    a_cancel = new QPushButton(tr("Cancel"), bar);
+    progressRow->addWidget(a_progress);
+    a_cancel = new QPushButton(tr("Cancel"), a_progressRow);
     a_cancel->setObjectName(QStringLiteral("mpCancel"));
-    a_cancel->hide();
     connect(a_cancel, &QPushButton::clicked, this, &MultiphysicsDoc::cancelJob);
-    row->addWidget(a_cancel);
-    all->addWidget(bar);
+    progressRow->addWidget(a_cancel);
+    a_progressRow->hide();
+    all->addWidget(a_progressRow);
 
     a_banner = new QLabel(this);
     a_banner->setObjectName(QStringLiteral("mpBanner"));
@@ -392,8 +443,13 @@ void MultiphysicsDoc::buildUi()
     connect(a_progressTimer, &QTimer::timeout, this, [this] {
         if (!a_job) return;
         a_progress->setValue(int(a_job->fraction * 1000));
-        std::lock_guard<std::mutex> lock(a_job->mutex);
-        a_progress->setFormat(a_job->stage.isEmpty() ? a_job->what : a_job->stage + QStringLiteral(" %p%"));
+        QString stage;
+        {
+            std::lock_guard<std::mutex> lock(a_job->mutex);
+            stage = a_job->stage.isEmpty() ? a_job->what : a_job->stage;
+        }
+        static_cast<StageLabel*>(a_stage)->setStage(stage);
+        if (a_progressRow->isHidden() && a_job->started.elapsed() >= 250) a_progressRow->show();
     });
     updateState();
 }
@@ -687,9 +743,8 @@ void MultiphysicsDoc::startJob(const QString& what, std::function<void(Job&)> wo
     job->thread = QThread::create([job, work] { work(*job); });
     connect(job->thread, &QThread::finished, this, &MultiphysicsDoc::jobFinished);
     a_progress->setValue(0);
-    a_progress->setFormat(what);
-    a_progress->show();
-    a_cancel->show();
+    static_cast<StageLabel*>(a_stage)->setStage(what);
+    job->started.start();
     a_progressTimer->start();
     job->thread->start();
     updateState();
@@ -701,8 +756,7 @@ void MultiphysicsDoc::jobFinished()
     std::shared_ptr<Job> job = a_job;
     a_job.reset();
     a_progressTimer->stop();
-    a_progress->hide();
-    a_cancel->hide();
+    a_progressRow->hide();
     if (!job) return;
     job->thread->deleteLater();
     for (const QString& w : job->warnings) say(w);

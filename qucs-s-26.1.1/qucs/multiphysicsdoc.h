@@ -166,6 +166,10 @@ public:
     QComboBox* showBox() const { return a_showBox; }
     QComboBox* plotBox() const { return a_plotBox; }
     QPushButton* cancelButton() const { return a_cancel; }
+    /// A job's progress below the toolbar: its stage, its bar.
+    QWidget* progressRow() const { return a_progressRow; }
+    QLabel* stageLabel() const { return a_stage; }
+    QProgressBar* progressBar() const { return a_progress; }
     /// The Graphics view as a PNG file.
     bool exportImage(const QString& path, QString* error = nullptr);
 
@@ -233,6 +237,8 @@ private:
     QComboBox* a_instanceBox = nullptr;
     QToolButton* a_fit = nullptr;
     QToolButton* a_image = nullptr;
+    QWidget* a_progressRow = nullptr;
+    QLabel* a_stage = nullptr;
     QProgressBar* a_progress = nullptr;
     QPushButton* a_cancel = nullptr;
     QLabel* a_banner = nullptr;
