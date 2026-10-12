@@ -763,6 +763,17 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fb->shownNames().contains("new.txt"), 5000);
         QVERIFY(QFile::remove(live + "/new.txt"));
         QTRY_VERIFY_WITH_TIMEOUT(!fb->shownNames().contains("new.txt"), 5000);
+
+        // Edit > Copy and Paste while it has the focus: its files.
+        QApplication::clipboard()->clear();
+        fb->selectPath(live + "/a.txt");
+        fb->currentView()->setFocus();
+        QVERIFY(fb->hasEditFocus());
+        app.editCopy->trigger();
+        QCOMPARE(FileBrowser::clipboardFiles(), QStringList({live + "/a.txt"}));
+        app.editPaste->trigger();
+        QTRY_VERIFY(QFile::exists(live + "/a copy.txt"));
+        QVERIFY(!app.editPaste->isChecked());
     }
 };
 

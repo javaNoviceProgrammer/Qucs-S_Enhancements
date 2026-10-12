@@ -548,6 +548,12 @@ void QucsApp::slotEditCut() {
 
 // --------------------------------------------------------------------
 void QucsApp::slotEditCopy() {
+  // The File Browser's entries chosen, while it has the focus (as the
+  // Finder's Edit > Copy).
+  if (fileBrowser != nullptr && fileBrowser->hasEditFocus()) {
+    fileBrowser->copyChosen();
+    return;
+  }
   statusBar()->showMessage(tr("Copying selection to clipboard..."));
 
   QWidget *Doc = DocumentTab->currentWidget();
@@ -572,6 +578,14 @@ void QucsApp::slotEditCopy() {
 
 // -----------------------------------------------------------------------
 void QucsApp::slotEditPaste(bool on) {
+  // The files copied, into the File Browser while it has the focus.
+  if (fileBrowser != nullptr && fileBrowser->hasEditFocus()) {
+    fileBrowser->pasteChosen();
+    editPaste->blockSignals(true);
+    editPaste->setChecked(false);
+    editPaste->blockSignals(false);
+    return;
+  }
   // get the current document
   QWidget *Doc = DocumentTab->currentWidget();
 
