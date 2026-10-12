@@ -892,9 +892,12 @@ About 3,000 lines and 900 of tests.
 - **Heterojunctions are not modelled:** the carriers are continuous at a node between two
   semiconductors. One semiconductor material per device, or several with the same bands.
 - **Isothermal:** the temperature is one constant (no hydrodynamic or thermal model of
-  the lattice), and there is no impact ionization or tunnelling.
-- **Velocity saturation lags a Newton step** (its field from the step before), and takes
-  the element's |E|, not the quasi-Fermi level's gradient.
+  the lattice), and there is no tunnelling (impact ionization since 2026-10-12).
+- **Velocity saturation lags a Newton step** (its force from the step before). Since
+  2026-10-12 the force is each carrier's quasi-Fermi level's gradient, no more than |E|, by
+  default (the element's |E| is still a choice). The mobilities are held once the potential
+  settles, which leaves them about 1e-4 from the final carriers'. Lombardi's surface
+  scattering at an insulator was added the same day.
 - **Rays are in the plane,** and no diffraction or interference; they are traced at rest
   (not in time); a diffuse wall, gratings and ray-to-mode coupling are not there.
 
@@ -1276,12 +1279,15 @@ of tests.
 
 **Examples:**
 - `ge_photodiode`: a lateral p-i-n of germanium on a silicon waveguide, 15 µm long, at -1 V.
-  - Responsivity: 1.14 A/W at 1550 nm (92 % collected; 1.15 until the pairs were counted by
-    triangle, 2026-10-12: a node on the germanium's edge had taken its light over the silicon's
-    share too, 0.6 % more pairs than photons).
+  - Responsivity: 1.15 A/W at 1550 nm (92 % collected). The pairs counted by triangle
+    (2026-10-12) took it from 1.15 to 1.14: a node on the germanium's edge had taken its light
+    over the silicon's share too, 0.6 % more pairs than photons. Saturation driven by the force
+    along the current (2026-10-12), not the whole field, took it back to 1.149.
   - Dark current: 7.2 nA.
-  - Bandwidth: 27 GHz, transit and diffusion.
-  - Along the wavelength, the mode followed from 1500 nm: 1.10 to 1.14 A/W to 1580 nm, then
+  - Bandwidth: 29 GHz, transit and diffusion (27 while saturation was driven by the whole field:
+    the doped germanium's carriers, diffusing out, slowed by the heterojunction's field across
+    them).
+  - Along the wavelength, the mode followed from 1500 nm: 1.11 to 1.15 A/W to 1580 nm, then
     0.42 A/W at 1620 nm past the strained edge. (Until 2026-10-12 the sweep searched about
     neff 3.9 at each point and from 1580 nm took another branch, 3.956: 1.18 A/W there.)
   - Its heterojunction's bands: a 0.52 eV valence step keeps the holes in the germanium.

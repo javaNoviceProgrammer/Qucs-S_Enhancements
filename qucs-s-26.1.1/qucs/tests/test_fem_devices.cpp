@@ -1,7 +1,8 @@
 /*
  * test_fem_devices.cpp - semiconductor devices beyond drift and diffusion
  *                        at its simplest: impact ionization (breakdown,
- *                        avalanche gain)
+ *                        avalanche gain), a MOSFET's mobility (Lombardi's
+ *                        surface scattering, saturation along the current)
  *
  * This file is part of Qucs-S.
  *
@@ -107,6 +108,57 @@ QByteArray diode(const QString& N, const QString& L, const QString& features, co
       "studies": [{"type": "study", "steps": [%4]}]})json")
         .arg(N, L, features, steps, hmax)
         .toUtf8();
+}
+
+/// An n-channel MOSFET (µm), its sizes \a g's: a channel g.L long under 10
+/// nm of oxide on p-type \a Na, n⁺ 1e20 cm⁻³ source and drain g.w wide and
+/// 0.1 deep, an n⁺ polysilicon gate at Vg, the drain at Vd; \a model the
+/// semiconductor model's more, \a steps its study's; the channel's top
+/// g.layer (and the oxide) meshed at g.fine, the rest coarser.
+struct MosSizes {
+    double L, w, depth, layer, fine, near, far;
+};
+QByteArray mosfet(const QString& Na, const QString& model, const QString& steps, const MosSizes& g)
+{
+    auto n = [](double v) { return QString::number(v, 'g', 10); };
+    const double width = g.L + 2 * g.w;
+    return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "Vg", "expression": "0[V]"}, {"name": "Vd", "expression": "0.1[V]"}],
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "label": "src", "position": ["0", "-0.1"], "size": ["%5", "0.1"]},
+                     {"type": "rectangle", "label": "drn", "position": ["%6", "-0.1"], "size": ["%5", "0.1"]},
+                     {"type": "rectangle", "label": "chan", "position": ["%5", "-%8"], "size": ["%7", "%8"]},
+                     {"type": "rectangle", "label": "under", "position": ["%5", "-0.1"], "size": ["%7", "%9"]},
+                     {"type": "rectangle", "label": "bulk", "position": ["0", "-%10"], "size": ["%11", "%12"]},
+                     {"type": "rectangle", "label": "oxide", "position": ["0", "0"], "size": ["%11", "0.01"]}],
+        "materials": [{"material": "Silicon", "selection": {"only": ["src", "drn", "chan", "under", "bulk"]}},
+                      {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}],
+        "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+          {"type": "doping", "dopant": "acceptor", "N0": "%1", "selection": {"only": ["src", "drn", "chan", "under", "bulk"]}},
+          {"type": "doping", "dopant": "donor", "N0": "1e20[1/cm^3]", "selection": {"only": ["src", "drn"]}},
+          {"type": "model", "mobility": "doping" %2, "selection": {"all": true}},
+          {"type": "gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+          {"type": "ohmic", "name": "s", "V0": "0[V]", "selection": {"of": ["src"], "side": "left"}},
+          {"type": "ohmic", "name": "d", "V0": "Vd", "selection": {"of": ["drn"], "side": "right"}},
+          {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}}]}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "%14", "features": [
+          {"type": "size", "level": "domain", "selection": {"only": ["chan", "oxide"]}, "hmax": "%4"},
+          {"type": "size", "level": "domain", "selection": {"only": ["src", "drn", "under"]}, "hmax": "%13"}]}}],
+      "studies": [{"type": "study", "steps": [%3]}]})json")
+        .arg(Na, model, steps, n(g.fine), n(g.w), n(g.w + g.L), n(g.L), n(g.layer), n(0.1 - g.layer))
+        .arg(n(g.depth), n(width), n(g.depth - 0.1), n(g.near), n(g.far))
+        .toUtf8();
+}
+
+/// Lombardi's surface mobility (m²/(V s)) for silicon's electrons: µbulk
+/// with acoustic phonons and the surface's roughness at E⊥ (V/m), doping N
+/// (1/m³), d from the interface (m), lcrit 10 nm, 300 K.
+double lombardiElectrons(double bulk, double across, double N, double d)
+{
+    across = std::max(across, 100.0);
+    const double ac = 4.75e5 / across + 1e-4 * 1.74e5 * std::pow(std::max(N * 1e-6, 1.0), 0.125) / (300 * std::cbrt(across / 100));
+    const double sr = 5.82e14 / (across * across), D = std::exp(-d / 1e-8);
+    return 1 / (1 / bulk + D / ac + D / sr);
 }
 
 /// Silicon's ionization rates (van Overstraeten and de Man), 1/m at E V/m.
@@ -311,6 +363,103 @@ private slots:
         beyond.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-60[V]"})");
         const Run broken = run(modelOf(beyond));
         QVERIFY2(broken.error.contains(QLatin1String("no solution found")), qPrintable(broken.error));
+    }
+
+    void aMosfetsMobility()
+    {
+        // An n-channel MOSFET (1 µm, 10 nm of oxide, p-type 1e17 cm⁻³; a
+        // sanitized build's 0.5 µm, meshed more coarsely, at 1.5 V alone) at
+        // Vd 0.1 V, in its linear range:
+        // - Lombardi's surface scattering as solved: each triangle's mobility
+        //   (semi.mun) the formula's at its field across the interface - the
+        //   electrons' mean across the channel to 2 %;
+        // - saturated by the force along the current, the drain current the
+        //   unsaturated one's less the channel's own saturation, 1/√(1 + (µ
+        //   F/vsat)²) at its middle's mobility and force, to 0.3 % - the
+        //   gate's field across the channel (0.5 MV/cm, µE/vsat 20) heats
+        //   nothing; saturated by the whole field, cut to a fraction (the
+        //   review's run: some 20 times);
+        // - the effective mobility Id/(W Qinv F) - Qinv by Gauss's law, the
+        //   gate's charge less the depletion's, F the force along the
+        //   channel - on the universal curve's scale, 300-600 cm²/Vs at 0.3
+        //   to 0.7 MV/cm, falling as the effective field Eeff = (Qb +
+        //   Qinv/2)/εs rises.
+        const bool slow = slowBuild();
+        const MosSizes g = slow ? MosSizes{0.4, 0.1, 0.25, 0.02, 0.006, 0.04, 0.1} : MosSizes{1, 0.3, 0.6, 0.03, 0.003, 0.02, 0.05};
+        const double mid = g.w + g.L / 2, dx = g.L / 20;
+        const double Na = 1e23, es = 11.7 * Eps0;
+        const double bulk = 1e-4 * (68.5 + (1400 - 68.5) / (1 + std::pow(Na / 9.2e22, 0.711)));
+        auto solve = [&](const QString& volts, const QString& model) {
+            const QString sweep = QStringLiteral(R"({"type": "sweep", "parameters": [["Vg", "%1", "V"]]}, {"type": "stationary"})").arg(volts);
+            Run r = run(modelOf(mosfet(QStringLiteral("1e17[1/cm^3]"), model, sweep, g)));
+            if (!r.error.isEmpty()) qWarning("%s", qPrintable(r.error));
+            return r;
+        };
+        // (A sanitized build: 1.5 V alone - each solve there some 40 s.)
+        const Run lombardi = solve(slow ? QStringLiteral("1.5") : QStringLiteral("1.5, 3"), QStringLiteral(R"(, "surface": true, "saturation": true)"));
+        QVERIFY2(lombardi.error.isEmpty(), qPrintable(lombardi.error));
+        QCOMPARE(int(lombardi.study.solutions.size()), slow ? 1 : 2);
+        QStringList said;
+        double lastE = 0, lastMu = INFINITY, own = NAN;
+        for (const auto& point : lombardi.study.solutions) {
+            const Solution& s = *point;
+            const Locator locator(s.mesh());
+            auto at = [&](const QString& e, double x, double y) {
+                const std::optional<double> v = evaluateAt(s, locator, e, QPointF(x, y));
+                return v ? *v : NAN;
+            };
+            const double Id = std::abs(global(s, QStringLiteral("semi.I_d")));
+            // Across the channel at its middle (x 0.8 µm): the electrons'
+            // mobility as solved and as Lombardi's, by their numbers; the
+            // depletion's charge.
+            double stored = 0, formula = 0, weight = 0, Qb = 0;
+            const int n = 200;
+            for (int k = 0; k < n; ++k) {
+                const double y = -(k + 0.5) * 0.02 / n;
+                const double ne = at(QStringLiteral("semi.n"), mid, y);
+                stored += ne * at(QStringLiteral("semi.mun"), mid, y);
+                formula += ne * lombardiElectrons(bulk, std::abs(at(QStringLiteral("semi.Ey"), mid, y)), Na, -y * 1e-6);
+                weight += ne;
+            }
+            for (int k = 0; k < n; ++k) {
+                const double y = -(k + 0.5) * 0.25 / n;
+                Qb += Q * (Na - at(QStringLiteral("semi.p"), mid, y)) * 0.25e-6 / n;
+            }
+            const double Es = 3.9 / 11.7 * std::abs(at(QStringLiteral("semi.Ey"), mid, 0.005));
+            const double Qinv = es * Es - Qb, Eeff = (Qb + Qinv / 2) / es;
+            const double F = std::abs(at(QStringLiteral("semi.phin"), mid + dx, -0.001) - at(QStringLiteral("semi.phin"), mid - dx, -0.001)) / (2 * dx * 1e-6);
+            const double muEff = Id / (Qinv * F);
+            said << QStringLiteral("Vg %1 V: Id %2 A/m, the channel's mobility %3 cm²/Vs (Lombardi's %4), Qinv %5 C/m², Eeff %6 MV/cm, µeff %7 cm²/Vs")
+                        .arg(global(s, QStringLiteral("semi.V_g")))
+                        .arg(Id, 0, 'g', 5)
+                        .arg(stored / weight * 1e4, 0, 'f', 1)
+                        .arg(formula / weight * 1e4, 0, 'f', 1)
+                        .arg(Qinv, 0, 'g', 4)
+                        .arg(Eeff / 1e8, 0, 'f', 3)
+                        .arg(muEff * 1e4, 0, 'f', 1);
+            QVERIFY2(std::abs(stored / formula - 1) < 0.02, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(Eeff > 0.3e8 && Eeff < 0.8e8 && muEff > 300e-4 && muEff < 600e-4, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(Eeff > lastE && muEff < lastMu, qPrintable(said.join(QLatin1String("; "))));
+            lastE = Eeff;
+            lastMu = muEff;
+            // (The channel's own saturation at its mobility and force: 1/√(1 +
+            // (µ F/vsat)²).)
+            if (!std::isfinite(own)) own = 1 / std::sqrt(1 + std::pow(stored / weight * F / 1e5, 2));
+        }
+        // Saturation: by the force along the current, by the whole field.
+        const double along = std::abs(global(*lombardi.study.solutions.front(), QStringLiteral("semi.I_d")));
+        const Run unsaturated = solve(QStringLiteral("1.5"), QStringLiteral(R"(, "surface": true)"));
+        const Run whole = solve(QStringLiteral("1.5"), QStringLiteral(R"(, "surface": true, "saturation": true, "driving": "field")"));
+        QVERIFY2(unsaturated.error.isEmpty() && whole.error.isEmpty(), qPrintable(unsaturated.error + whole.error));
+        const double free = std::abs(global(*unsaturated.solution, QStringLiteral("semi.I_d")));
+        const double byField = std::abs(global(*whole.solution, QStringLiteral("semi.I_d")));
+        said << QStringLiteral("at 1.5 V saturated along the current %1 of the unsaturated current (the channel's own %2), by the whole field %3")
+                    .arg(along / free, 0, 'f', 4)
+                    .arg(own, 0, 'f', 4)
+                    .arg(byField / free, 0, 'f', 4);
+        qInfo("MOSFET: %s", qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(std::abs(along / free - own) < 3e-3, qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(byField / free < 0.3, qPrintable(said.join(QLatin1String("; "))));
     }
 };
 

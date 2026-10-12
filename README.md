@@ -2072,8 +2072,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     densities of states) - germanium on silicon's conduction band 0.05 eV
     and valence band 0.52 eV apart, a p-Ge n-Si diode's current the short
     diode's to 0.3 %. **Doping** uniform, a box with Gaussian
-    tails or an expression; mobility by doping (Caughey and Thomas) and
-    high-field saturation; Shockley-Read-Hall, Auger and direct
+    tails or an expression; mobility by doping (Caughey and Thomas),
+    **at an insulator's surface** (Lombardi's acoustic phonons and
+    roughness by the field across the nearest interface: a MOSFET's
+    channel 446 cm²/Vs at 0.33 MV/cm, 407 at 0.58 - the universal curve's)
+    and high-field saturation by the force along each carrier's current
+    (its quasi-Fermi level's gradient: the gate's field across a channel
+    heats nothing - the drain current at 0.1 V 0.999 of the unsaturated
+    one, where the whole field cut it to 0.09) or the whole field; semi.mun
+    and the current densities as solved, saturated; Shockley-Read-Hall, Auger and direct
     recombination, generation (light absorbed). **Impact ionization**
     (Chynoweth's α = a e^(-(b/E)^β), silicon's van Overstraeten and de
     Man's or your own): its pairs from each triangle's field and currents
@@ -2276,7 +2283,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   aberration, white light through a prism, a graded-index lens, a thermal
   lens (rays and heat solved in turn), and a photodiode lit by rays (0.48
   A/W, 95 % of the ideal); a germanium-on-silicon waveguide photodiode
-  (1.14 A/W at 1550 nm, 7 nA dark, 27 GHz, its response along the
+  (1.15 A/W at 1550 nm, 7 nA dark, 29 GHz, its response along the
   wavelength falling past the strained edge, the heterojunction's bands)
   and a germanium-silicon electroabsorption modulator (5.6 dB of
   extinction at -3 V for 0.65 dB inserted over 50 µm, its spectra at two

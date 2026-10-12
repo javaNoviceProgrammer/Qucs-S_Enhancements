@@ -547,7 +547,10 @@ private slots:
             s.select(k);
             if (std::abs(s.snapshotValue(k) - 24e9) < 1e8) h24 = global(s, QStringLiteral("semi.HopRL_k"));
         }
-        // At 24 GHz, still above 1/√2 of its own; its 3 dB about 27.
+        // At 24 GHz, still above 1/√2 of its own (0.757); its 3 dB about 29
+        // (27 while saturation was driven by the whole field: the doped
+        // germanium's carriers, diffusing out, slowed by the heterojunction's
+        // field across them).
         qInfo("Ge photodiode: neff %.4f, %.3f dB/µm; %.4g mA of q Gop %.4g (%.3f), %.4f A/W; modulated %.4f at 1 GHz, %.4f at 24 GHz "
               "through 50 Ω (%.3f of it); %lld ms",
               neff, loss * 1e-6, I * 1e3, Iop * 1e3, I / Iop, I / 1e-3, hLow, h24, h24 / hLow, timer.elapsed());
@@ -555,7 +558,7 @@ private slots:
         QVERIFY(std::abs(loss * 1e-6 - 1.9) < (slow ? 0.2 : 0.1));
         QVERIFY2(std::abs(I / 1e-3 - 1.143) < (slow ? 0.06 : 0.02), qPrintable(QString::number(I / 1e-3)));
         QVERIFY(std::abs(I / Iop - 0.92) < (slow ? 0.03 : 0.02));
-        QVERIFY2(h24 / hLow > (slow ? 0.65 : 0.70) && h24 / hLow < 0.78, qPrintable(QString::number(h24 / hLow)));
+        QVERIFY2(h24 / hLow > (slow ? 0.65 : 0.70) && h24 / hLow < 0.80, qPrintable(QString::number(h24 / hLow)));
         if (slow)
             only(m, QStringLiteral("std1"), QStringLiteral("sweep"), QStringLiteral("parameters"),
                  sweepOf(QStringLiteral("Va"), QStringLiteral("-1"), QStringLiteral("V")));

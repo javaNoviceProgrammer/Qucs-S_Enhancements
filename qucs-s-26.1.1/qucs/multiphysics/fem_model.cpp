@@ -902,11 +902,37 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("nrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("2.23e17[1/cm^3]")), QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("alphap"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=doping")),
           flag(QStringLiteral("saturation"), tr("High-field velocity saturation"), false,
-               tr("µ / (1 + (µE/vsat)^β)^(1/β), β 2 for electrons and 1 for holes; E along each edge")),
+               tr("µ / (1 + (µF/vsat)^β)^(1/β), β 2 for electrons and 1 for holes; F the force along each carrier's current or "
+                  "the whole field, each triangle's")),
           shownIf(expr(QStringLiteral("vsatn"), tr("Electrons' saturation velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]")),
                   QStringLiteral("saturation=true")),
           shownIf(expr(QStringLiteral("vsatp"), tr("Holes' saturation velocity"), QStringLiteral("m/s"), QStringLiteral("8e6[cm/s]")),
-                  QStringLiteral("saturation=true"))},
+                  QStringLiteral("saturation=true")),
+          shownIf(choice(QStringLiteral("driving"), tr("Driving force"), {QStringLiteral("current"), QStringLiteral("field")},
+                         {tr("Along the current"), tr("The whole field |E|")}, QStringLiteral("current"),
+                         tr("Along the current: each carrier's quasi-Fermi potential's gradient, J/(q n µ) - the field along its "
+                            "current where it drifts (E·J/|J|), nought at equilibrium, no more than |E| - so a MOSFET's gate field "
+                            "across its channel heats nothing. The whole field: as it was, right where field and current lie along "
+                            "each other (a diode, a bar)")),
+                  QStringLiteral("saturation=true")),
+          flag(QStringLiteral("surface"), tr("Surface scattering (Lombardi)"), false,
+               tr("At an insulator's surface - a MOSFET's channel - acoustic phonons and the surface's roughness scatter the "
+                  "carriers by the field across it: 1/µ = 1/µbulk + D/µac + D/µsr, µac = B/E⊥ + C (N/1 cm⁻³)^λ / (T E⊥^⅓), µsr = "
+                  "δ/E⊥², E⊥ the field across the nearest interface, D = e^(-d/lcrit) its distance's. Silicon's (Lombardi et "
+                  "al. 1988) by default")),
+          shownIf(expr(QStringLiteral("Bn"), tr("Electrons' B"), QStringLiteral("m/s"), QStringLiteral("4.75e7[cm/s]")), QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("Cn"), tr("Electrons' C (cm, V, s, K)"), QString(), QStringLiteral("1.74e5"),
+                       tr("In cm²/(V s) K (V/cm)^⅓: C/T 580 at 300 K")),
+                  QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("lambdan"), tr("Electrons' λ"), QString(), QStringLiteral("0.125")), QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("deltan"), tr("Electrons' δ"), QStringLiteral("V/s"), QStringLiteral("5.82e14[V/s]")), QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("Bp"), tr("Holes' B"), QStringLiteral("m/s"), QStringLiteral("9.925e6[cm/s]")), QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("Cp"), tr("Holes' C (cm, V, s, K)"), QString(), QStringLiteral("8.842e5")), QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("lambdap"), tr("Holes' λ"), QString(), QStringLiteral("0.0317")), QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("deltap"), tr("Holes' δ"), QStringLiteral("V/s"), QStringLiteral("2.0546e14[V/s]")), QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("lcrit"), tr("Depth lcrit"), QStringLiteral("m"), QStringLiteral("10[nm]"),
+                       tr("How far from the interface the surface's scattering reaches: e^(-d/lcrit)")),
+                  QStringLiteral("surface=true"))},
          {}, {}, false, false, QStringLiteral("smm"),
          tr("A semiconductor's band gap, electron affinity, effective densities of states and mobilities, from its material or as "
             "given; ni = √(Nc Nv) exp(-Eg/2kT).")});
