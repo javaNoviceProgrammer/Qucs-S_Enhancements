@@ -394,7 +394,9 @@ private:
     QLabel* a_status = nullptr;
     QTimer* a_statusTimer = nullptr;
     QTimer* a_rootTimer = nullptr;         // the views' root looked at after the model changed
-    qint64 a_goneSince = 0;                // when the folder shown was found gone (ms since the epoch), or 0
+    QString a_returnTo;                    // the folder shown before it was found gone,
+    QString a_returnFrom;                  // the one above it shown instead,
+    qint64 a_returnBy = 0;                 // and until when it is gone back into (ms since the epoch)
     // A drag over it.
     QPointer<QWidget> a_dropHighlight;     // the folder it would drop into, lit up
     QTimer* a_springTimer = nullptr;       // a folder held under the drag opens
