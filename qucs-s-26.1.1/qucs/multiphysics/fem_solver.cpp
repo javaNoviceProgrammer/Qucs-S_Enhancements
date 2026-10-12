@@ -2291,7 +2291,9 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
     std::vector<int> stepped, quasi;
     for (int i = 0; i < int(st.problems.size()); ++i) (st.problems[std::size_t(i)]->hasMass() ? stepped : quasi).push_back(i);
     if (stepped.empty())
-        *warnings << tr("%1: none of its physics changes in time (only heat does): each output time is solved at rest").arg(node.name());
+        *warnings << tr("%1: none of its physics changes in time (heat, a semiconductor's carriers and a PDE with a mass do): each "
+                        "output time is solved at rest")
+                         .arg(node.name());
     double rtol = 1e-3;
     if (const std::optional<double> r = evaluateConstant(node.text(QStringLiteral("rtol")), s.parameters().scope, Dim()); r && *r > 0) rtol = *r;
     const bool euler = node.text(QStringLiteral("method")) == QLatin1String("euler");
@@ -2312,6 +2314,15 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
     }
     const double fixedStep = h;
     const double hmin = 1e-12 * range;
+    // After a mode analysis whose light this step reads (a photodiode's
+    // pulse response): its times a series of their own, the mode's fields
+    // and globals as they are.
+    if (s.modeAnalysis) {
+        s.clearSnapshots();
+        s.modeAnalysis = s.quantumStates = s.frequencyDomain = false;
+        s.photonAxis = 0;
+        s.setMode(0);
+    }
     // The start: initial values; what is at rest solved with them.
     s.setTime(t0);
     for (auto& p : st.problems) p->initialize();
@@ -2535,10 +2546,12 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
     for (const Node& step : study->children)
         if (step.enabled && step.type != QLatin1String("sweep")) {
             steps.push_back(&step);
-            inTime = inTime || step.type == QLatin1String("transient");
-            inFrequency = inFrequency || step.type == QLatin1String("frequency") || step.type == QLatin1String("mode")
+            // (A mode analysis before a step in time is its light: a
+            // photodiode's pulse response. After one, it is a frequency's.)
+            inFrequency = inFrequency || step.type == QLatin1String("frequency") || (step.type == QLatin1String("mode") && inTime)
                           || step.type == QLatin1String("states") || step.type == QLatin1String("spectrum")
                           || step.type == QLatin1String("eigenvalue");
+            inTime = inTime || step.type == QLatin1String("transient");
         }
     if (steps.empty()) {
         out.error = tr("%1 has no step to solve").arg(study->name());
