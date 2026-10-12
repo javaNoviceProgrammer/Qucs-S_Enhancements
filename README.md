@@ -2095,10 +2095,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     and what the field adds, emw.dloss_EA). **Optical Generation** turns
     a mode's light fed into a **waveguide photodiode** into pairs - each
     photon it loses across the gap (emw.Qgap: not the free carriers'
-    loss), its power falling along the device - for the photocurrent and
-    responsivity (semi.Gop, semi.Iop, semi.Pin), and in a frequency step
-    the photocurrent modulated, its transit and RC through a load
-    (semi.Hop_k, semi.HopRL_k: its bandwidth).
+    loss), its power falling along the device, counted triangle by
+    triangle in each one's own medium: never more pairs than photons -
+    for the photocurrent and responsivity (semi.Gop, semi.Iop,
+    semi.Pin; R = semi.I_k/semi.Pin shown in A/W), and in a frequency
+    step the photocurrent modulated, its transit and RC through a load
+    (semi.Hop_k, semi.HopRL_k: its bandwidth); in time, its power of t
+    (a pulse). It is fed one mode, by number (1 the highest index; the
+    mode step leaves it selected): that mode is taken to carry all the
+    light, an assumption to state - from one mode to another a
+    photodiode's responsivity differs by several percent. A
+    semiconductor's mesh is kept Delaunay (edges flipped after
+    smoothing, a segment with an obtuse angle across it split): every
+    edge's current counted.
   - *Geometrical Optics*: **rays** from points, beams (uniform or
     Gaussian) and boundaries, at one or several wavelengths - straight
     where the index is uniform, meeting the geometry's own curves (a lens
@@ -2159,7 +2168,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the other physics at rest at each; a step at rest after it takes its
   last frequency's fields - induction heating), a **Mode Analysis**
   (the modes nearest an effective index, at each frequency or
-  wavelength), **Quantum States** and an **Optical Spectrum** over photon
+  wavelength; one mode asked for is followed from frequency to
+  frequency and from point to point of a sweep, not taken afresh
+  nearest the index - a wavelength sweep stays on its branch),
+  **Quantum States** and an **Optical Spectrum** over photon
   energies or wavelengths, an **Eigenvalue** step, and a **Parametric Sweep** of parameters (every combination
   or specified ones), the geometry and mesh made again where a parameter
   swept shapes them. **Adaptive mesh refinement**: a step at rest or in
@@ -2254,7 +2266,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   aberration, white light through a prism, a graded-index lens, a thermal
   lens (rays and heat solved in turn), and a photodiode lit by rays (0.48
   A/W, 95 % of the ideal); a germanium-on-silicon waveguide photodiode
-  (1.15 A/W at 1550 nm, 7 nA dark, 27 GHz, its response along the
+  (1.14 A/W at 1550 nm, 7 nA dark, 27 GHz, its response along the
   wavelength falling past the strained edge, the heterojunction's bands)
   and a germanium-silicon electroabsorption modulator (5.6 dB of
   extinction at -3 V for 0.65 dB inserted over 50 µm, its spectra at two

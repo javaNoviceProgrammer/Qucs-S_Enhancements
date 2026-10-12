@@ -16,6 +16,9 @@
  */
 #include "fem_optics.h"
 #include "fem_results.h"
+#include "fem_mesh.h"
+#include <set>
+#include <map>
 
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -245,7 +248,8 @@ private slots:
               loss / 100, lossGap / 100, Gop, expected, 2 * alpha * L, Idark * 1e9, Ilit * 1e3, Ilit / P, collected, hLow, hLowRL, hHigh, hHighRL,
               timer.elapsed());
         QVERIFY2(std::abs(lossGap / loss - 1) < 1e-6, qPrintable(QString::number(lossGap / loss - 1)));
-        QVERIFY2(std::abs(Gop / expected - 1) < 0.02, qPrintable(QString::number(Gop / expected)));
+        // (Each pair a photon lost across the gap: all the mode loses here.)
+        QVERIFY2(std::abs(Gop / expected - 1) < 1e-6, qPrintable(QString::number(Gop / expected - 1)));
         QVERIFY(std::abs(Iop / (Q * Gop) - 1) < 1e-12);
         QVERIFY(Idark > 0 && Idark < 1e-6);
         QVERIFY2(collected > 0.5 && collected < 1, qPrintable(QString::number(collected)));
@@ -253,6 +257,127 @@ private slots:
         QVERIFY(hLowRL <= hLow * (1 + 1e-9) && hLowRL > 0.99 * hLow);
         QVERIFY2(hHigh < 0.8 * hLow, qPrintable(QString::number(hHigh / hLow)));
         QVERIFY(hHighRL <= hHigh * (1 + 1e-9));
+    }
+
+    // The light from the mode asked for: a mode step finding three, the
+    // photodiode lit by mode 1 (the highest index), then by mode 3 - the
+    // step leaving it selected (it left the last lighting it whatever was
+    // asked), its pairs from that mode's own loss across the gap, never more
+    // than its photons; mode 4 of three refused.
+    void theModeThatLightsIt()
+    {
+        const auto lit = [](int number) {
+            const QString light = QStringLiteral(R"({"type": "optical", "mode": "emw", "number": %1, "P0": "P", "selection": {"only": ["pplus", "absorber", "nplus"]}},)")
+                                      .arg(number);
+            return run(modelOf(stripe(QStringLiteral("15[um]"), QStringLiteral(R"("material": "Germanium on silicon")"), QStringLiteral("0.7"), light,
+                                      QStringLiteral(R"({"type": "study", "steps": [{"type": "stationary", "physics": ["semi"]},
+                {"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 3, "neff": "3.9"},
+                {"type": "stationary", "physics": ["semi"]}]})"))));
+        };
+        const double L = 15e-6, P = 1e-3, photon = H * C0 / 1550e-9;
+        double neff[2] = {0, 0};
+        for (int k : {1, 3}) {
+            const Run r = lit(k);
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.solution;
+            QCOMPARE(global(s, QStringLiteral("emw.mode")), double(k));
+            const double alpha = global(s, QStringLiteral("emw.alpha")), loss = global(s, QStringLiteral("emw.loss"));
+            const double lossGap = global(s, QStringLiteral("emw.loss_gap")), Gop = global(s, QStringLiteral("semi.Gop"));
+            const double expected = P * -std::expm1(-2 * alpha * L) / photon * lossGap / loss;
+            neff[k == 1 ? 0 : 1] = global(s, QStringLiteral("emw.neff"));
+            qInfo("lit by mode %d: neff %.5f, %.1f dB/cm (%.1f across the gap); pairs %.6g /s (its photons lost across the gap %.6g); %.4f A/W", k,
+                  global(s, QStringLiteral("emw.neff")), loss / 100, lossGap / 100, Gop, expected, global(s, QStringLiteral("semi.I_k")) / P);
+            QVERIFY2(std::abs(Gop / expected - 1) < 1e-6, qPrintable(QString::number(Gop / expected - 1)));
+            QVERIFY(Gop <= P * -std::expm1(-2 * alpha * L) / photon * (1 + 1e-9));
+        }
+        QVERIFY(neff[0] > neff[1]);
+        const Run beyond = lit(4);
+        QVERIFY(!beyond.error.isEmpty());
+        QVERIFY2(beyond.error.contains(QLatin1String("mode 4")), qPrintable(beyond.error));
+    }
+
+    // A wavelength sweep's mode followed: each point searching about the
+    // mode the point before found, not about the index the step names - the
+    // photodiode example's spectrum, 1500 to 1640 nm by 20, its effective
+    // index falling all the way (at 1580 nm it jumped from 3.838 to another
+    // branch, 3.956, nearer 3.9).
+    void aSweepFollowsItsMode()
+    {
+        // (A sanitized build: 1560 to 1600 nm, its mode solves slow - and
+        // followed only.)
+        const bool slow = slowBuild();
+        const auto spectrum = [slow](bool follow) {
+            Model m = example(QStringLiteral("ge_photodiode.qfem"));
+            only(m, QStringLiteral("std3"), QStringLiteral("sweep"), QStringLiteral("parameters"),
+                 sweepOf(QStringLiteral("lambda"), slow ? QStringLiteral("1560, 1580, 1600") : QStringLiteral("range(1500, 20, 1640)"), QStringLiteral("nm")));
+            only(m, QStringLiteral("std3"), QStringLiteral("mode"), QStringLiteral("follow"), follow);
+            const Run r = run(m, QStringLiteral("std3"));
+            std::vector<double> neff;
+            if (!r.error.isEmpty()) qWarning("%s", qPrintable(r.error));
+            for (const auto& point : r.study.solutions) neff.push_back(global(*point, QStringLiteral("emw.neff")));
+            return neff;
+        };
+        const std::vector<double> followed = spectrum(true), not_ = slow ? std::vector<double>() : spectrum(false);
+        QStringList a, b;
+        for (double v : followed) a << QString::number(v, 'f', 4);
+        for (double v : not_) b << QString::number(v, 'f', 4);
+        qInfo("followed: %s; about 3.9 each: %s", qPrintable(a.join(' ')), qPrintable(b.join(' ')));
+        QCOMPARE(int(followed.size()), slow ? 3 : 8);
+        for (std::size_t k = 1; k < followed.size(); ++k)
+            QVERIFY2(followed[k] < followed[k - 1] && followed[k - 1] - followed[k] < 0.02, qPrintable(a.join(' ')));
+    }
+
+    // A semiconductor's mesh Delaunay: every edge in its domains weighed
+    // 0 or more by the box method (two angles opposite π at most, a
+    // segment's angle on their side 90° at most) - the smoothing had left
+    // 9 edges of the photodiode example's not, two segments had an obtuse
+    // angle across them: their currents left out, said in the log. A few
+    // triangles more. Solved, nothing said.
+    void aSemiconductorsMeshIsDelaunay()
+    {
+        for (const char* name : {"ge_photodiode.qfem", "gesi_eam.qfem"}) {
+            const Model m = example(QString::fromLatin1(name));
+            const auto ps = evaluateParameters(m);
+            const GeometryBuild g = buildGeometry(m, *ps);
+            QVERIFY(g.ok());
+            QString why;
+            const MeshSizes sizes = meshSizes(m, *ps, *g.topology, &why);
+            int flagged = 0;
+            for (char f : sizes.delaunay) flagged += f;
+            QCOMPARE(flagged, 4);   // (the semiconductor physics: slab, pplus, absorber, nplus - not the oxide)
+            const MeshBuild b = buildMesh(g.topology, sizes);
+            QVERIFY2(b.mesh, qPrintable(b.error));
+            const Mesh& mesh = *b.mesh;
+            std::map<std::pair<int, int>, double> weight;   // edge: Σ ½ cot of the angles opposite, in flagged triangles
+            std::set<std::pair<int, int>> inFlagged;
+            for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+                if (!sizes.delaunay[std::size_t(mesh.domain[std::size_t(t)])]) continue;
+                const auto& v = mesh.triangles[std::size_t(t)];
+                for (int k = 0; k < 3; ++k) {
+                    const int a = v[std::size_t(k)], c = v[std::size_t((k + 1) % 3)], o = v[std::size_t((k + 2) % 3)];
+                    const QPointF u = mesh.nodes[std::size_t(a)] - mesh.nodes[std::size_t(o)], w = mesh.nodes[std::size_t(c)] - mesh.nodes[std::size_t(o)];
+                    weight[{std::min(a, c), std::max(a, c)}] += 0.5 * (u.x() * w.x() + u.y() * w.y()) / std::abs(u.x() * w.y() - u.y() * w.x());
+                }
+            }
+            int bad = 0;
+            for (const auto& [edge, w] : weight)
+                if (w < -1e-12) ++bad;
+            qInfo("%s: %d triangles, %d edges in its semiconductors, %d of them weighed below 0", name, int(mesh.triangles.size()), int(weight.size()), bad);
+            QCOMPARE(bad, 0);
+            // Each segment's triangles where they are.
+            for (const Mesh::Edge& e : mesh.edges)
+                for (int t : {e.left, e.right}) {
+                    if (t < 0) continue;
+                    const auto& v = mesh.triangles[std::size_t(t)];
+                    QVERIFY(std::count(v.begin(), v.end(), e.a) == 1 && std::count(v.begin(), v.end(), e.b) == 1);
+                }
+        }
+        // Solved: no edge left out.
+        Model m = example(QStringLiteral("ge_photodiode.qfem"));
+        const Run r = run(m, QStringLiteral("std1"));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        for (const auto& point : r.study.solutions)
+            for (const QString& line : point->log) QVERIFY2(!line.contains(QLatin1String("not Delaunay")), qPrintable(line));
     }
 
     // A germanium-silicon modulator: its direct gap 20 meV above 1550 nm's
@@ -298,9 +423,10 @@ private slots:
     // sanitized build: a coarser mesh, fewer points - and wider bounds. On
     // its 0.1 µm the figures move with the mesh, whose points differ from
     // one platform to another: between 0.08 and 0.12 µm, and on CI's Linux,
-    // the modulator's loss at 0 V 0.62 to 0.77 dB, its photocurrents 150 to
-    // 221 µA and 0.92 to 1.02 mA, the photodiode's 1.139 to 1.191 A/W and
-    // 6.36 to 6.90 nA dark - the extinction 5.650 to 5.671 dB.)
+    // the modulator's loss at 0 V 0.62 to 0.77 dB, its photocurrents 160 to
+    // 188 µA and 0.92 to 0.95 mA, the photodiode's 1.132 to 1.147 A/W (1.139
+    // to 1.191 while its pairs were counted by node) and 6.36 to 6.87 nA
+    // dark - the extinction 5.650 to 5.671 dB.)
     void thePhotodiodeExample()
     {
         QElapsedTimer timer;
@@ -313,6 +439,33 @@ private slots:
         Solution& s = *r.solution;
         QCOMPARE(s.snapshotFrequency(0), 1e9);
         s.select(0);   // (the first frequency, 1 GHz)
+        // Its Derived Values as the example has them: R = semi.I_k/semi.Pin
+        // in A/W (a current over a power - its dimension's 1/V, its SI form
+        // s³·A/(m²·kg)); a sum, a product, a number over a power not named so.
+        {
+            const Node* derived = nullptr;
+            std::function<void(const Node&)> find = [&](const Node& n) {
+                if (n.type == QLatin1String("global") && n.text(QStringLiteral("expression")).contains(QLatin1String("semi.Pin"))) derived = &n;
+                for (const Node& c : n.children) find(c);
+            };
+            find(m.root);
+            QVERIFY(derived != nullptr);
+            const DerivedResult d = evaluateDerived(s, *derived);
+            QStringList shown;
+            for (const DerivedValue& v : d.values) shown << v.name + QStringLiteral(" = ") + v.text;
+            qInfo("its Derived Values: %s", qPrintable(shown.join(QLatin1String("; "))));
+            bool seen = false;
+            for (const DerivedValue& v : d.values)
+                if (v.name == QLatin1String("R")) seen = v.text.endsWith(QLatin1String(" A/W"));
+            QVERIFY2(seen, qPrintable(shown.join(QLatin1String("; "))));
+            Node other = *derived;
+            other.props.insert(QStringLiteral("expression"), QStringLiteral("semi.I_k/semi.Pin*2; 1/semi.Pin; semi.I_k/(semi.Pin*1)"));
+            const DerivedResult e = evaluateDerived(s, other);
+            QCOMPARE(int(e.values.size()), 3);
+            QVERIFY2(!e.values[0].text.contains(QLatin1String("A/W")) && !e.values[1].text.contains(QLatin1String("/W"))
+                         && e.values[2].text.endsWith(QLatin1String(" A/W")),
+                     qPrintable(e.values[0].text + QStringLiteral(" | ") + e.values[1].text + QStringLiteral(" | ") + e.values[2].text));
+        }
         const double I = global(s, QStringLiteral("semi.I_k")), Iop = global(s, QStringLiteral("semi.Iop"));
         const double neff = global(s, QStringLiteral("emw.neff")), loss = global(s, QStringLiteral("emw.loss"));
         const double hLow = global(s, QStringLiteral("semi.Hop_k"));
@@ -327,7 +480,7 @@ private slots:
               neff, loss * 1e-6, I * 1e3, Iop * 1e3, I / Iop, I / 1e-3, hLow, h24, h24 / hLow, timer.elapsed());
         QVERIFY(std::abs(neff - 3.84) < (slow ? 0.03 : 0.01));
         QVERIFY(std::abs(loss * 1e-6 - 1.9) < (slow ? 0.2 : 0.1));
-        QVERIFY2(std::abs(I / 1e-3 - 1.15) < (slow ? 0.06 : 0.02), qPrintable(QString::number(I / 1e-3)));
+        QVERIFY2(std::abs(I / 1e-3 - 1.143) < (slow ? 0.06 : 0.02), qPrintable(QString::number(I / 1e-3)));
         QVERIFY(std::abs(I / Iop - 0.92) < (slow ? 0.03 : 0.02));
         QVERIFY2(h24 / hLow > (slow ? 0.65 : 0.70) && h24 / hLow < 0.78, qPrintable(QString::number(h24 / hLow)));
         if (slow)
@@ -344,18 +497,29 @@ private slots:
                 seen = true;
             }
         QVERIFY(seen);
-        // The edge: at 1620 nm less than half of 1580 nm's. (Not in a
-        // sanitized build: two more modes.)
+        // Its spectrum as the example sweeps it, 1500 to 1640 nm by 20 - the
+        // mode followed from 1500 nm -, the strained edge's fall past 1580.
+        // (Not in a sanitized build: eight mode solves.)
         if (slow) return;
-        only(m, QStringLiteral("std3"), QStringLiteral("sweep"), QStringLiteral("parameters"),
-             sweepOf(QStringLiteral("lambda"), QStringLiteral("1580, 1620"), QStringLiteral("nm")));
         const Run spectral = run(m, QStringLiteral("std3"));
         QVERIFY2(spectral.error.isEmpty(), qPrintable(spectral.error));
-        QCOMPARE(int(spectral.study.solutions.size()), 2);
-        const double r1580 = global(*spectral.study.solutions.front(), QStringLiteral("semi.I_k")) / 1e-3;
-        const double r1620 = global(*spectral.study.solutions.back(), QStringLiteral("semi.I_k")) / 1e-3;
-        qInfo("its responsivity %.3f A/W at 1580 nm, %.3f at 1620", r1580, r1620);
-        QVERIFY(std::abs(r1580 - 1.18) < 0.02 && std::abs(r1620 - 0.45) < 0.03);
+        QCOMPARE(int(spectral.study.solutions.size()), 8);
+        std::vector<double> R, index;
+        for (const auto& point : spectral.study.solutions) {
+            R.push_back(global(*point, QStringLiteral("semi.I_k")) / 1e-3);
+            index.push_back(global(*point, QStringLiteral("emw.neff")));
+        }
+        QStringList said;
+        for (std::size_t k = 0; k < R.size(); ++k) said << QStringLiteral("%1 nm %2 A/W (neff %3)").arg(1500 + 20 * k).arg(R[k], 0, 'f', 3).arg(index[k], 0, 'f', 4);
+        qInfo("its spectrum: %s", qPrintable(said.join(QLatin1String(", "))));
+        // One mode throughout (its index falling by less than 0.02 a step);
+        // the most at 1560 nm, then the edge: 1580 its 1.10, 1620 less than
+        // half of it, as the example says.
+        for (std::size_t k = 1; k < index.size(); ++k) QVERIFY2(index[k] < index[k - 1] && index[k - 1] - index[k] < 0.02, qPrintable(said.join(' ')));
+        QCOMPARE(int(std::max_element(R.begin(), R.end()) - R.begin()), 3);
+        QVERIFY2(std::abs(R[4] - 1.10) < 0.02 && std::abs(R[5] - 0.89) < 0.02 && std::abs(R[6] - 0.42) < 0.02 && std::abs(R[7] - 0.16) < 0.02,
+                 qPrintable(said.join(' ')));
+        QVERIFY(R[6] < 0.5 * R[4]);
     }
 
     void theModulatorExample()
@@ -378,7 +542,7 @@ private slots:
         QVERIFY(std::abs(il - 0.65) < (slow ? 0.2 : 0.03));
         QVERIFY(std::abs(on - 6.29) < (slow ? 0.3 : 0.1));
         QVERIFY2(std::abs(on - il - 5.65) < (slow ? 0.05 : 0.02), qPrintable(QString::number(on - il)));
-        QVERIFY(std::abs(i0 * 1e3 - 0.16) < (slow ? 0.09 : 0.01) && std::abs(i3 * 1e3 - 0.95) < (slow ? 0.1 : 0.02));
+        QVERIFY(std::abs(i0 * 1e3 - 0.167) < (slow ? 0.09 : 0.01) && std::abs(i3 * 1e3 - 0.95) < (slow ? 0.1 : 0.02));
     }
 
 private:

@@ -1276,11 +1276,14 @@ of tests.
 
 **Examples:**
 - `ge_photodiode`: a lateral p-i-n of germanium on a silicon waveguide, 15 µm long, at -1 V.
-  - Responsivity: 1.15 A/W at 1550 nm (92 % collected).
+  - Responsivity: 1.14 A/W at 1550 nm (92 % collected; 1.15 until the pairs were counted by
+    triangle, 2026-10-12: a node on the germanium's edge had taken its light over the silicon's
+    share too, 0.6 % more pairs than photons).
   - Dark current: 7.2 nA.
   - Bandwidth: 27 GHz, transit and diffusion.
-  - Along the wavelength: 1.11 to 1.18 A/W to 1580 nm, then 0.45 A/W at 1620 nm past the
-    strained edge.
+  - Along the wavelength, the mode followed from 1500 nm: 1.10 to 1.14 A/W to 1580 nm, then
+    0.42 A/W at 1620 nm past the strained edge. (Until 2026-10-12 the sweep searched about
+    neff 3.9 at each point and from 1580 nm took another branch, 3.956: 1.18 A/W there.)
   - Its heterojunction's bands: a 0.52 eV valence step keeps the holes in the germanium.
 - `gesi_eam`: a germanium-silicon (Egd 0.82 eV, broadened 8 meV) stripe, 50 µm long.
   - At 1550 nm: 0.65 dB inserted at 0 V, 5.6 dB of extinction at -3 V and 7.3 dB at -4 V.

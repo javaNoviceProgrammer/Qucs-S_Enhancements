@@ -18,6 +18,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -870,6 +871,7 @@ private:
         for (int n : mesh->pointNode)
             if (n >= 0) fixedNode[std::size_t(n)] = 1;
         smooth(*mesh, fixedNode);
+        keepDelaunay(*mesh);
         mesh->sharpCorners = a_sharp;
         mesh->computeStatistics();
         return mesh;
@@ -923,6 +925,123 @@ private:
 
     /// The free nodes moved where their triangles' centroids are, weighted
     /// by area - a move kept only when no triangle round it gets worse.
+    // A semiconductor's domains Delaunay again (MeshSizes::delaunay): an
+    // edge inside them whose two angles opposite sum to more than π (the
+    // smoothing moved a node) flipped; a segment of the geometry - a
+    // boundary, an interface - whose angle across it on their side is
+    // obtuse split at its middle (on an arc, on the arc), then flipped
+    // about again; until none is left, or the segments are short.
+    void keepDelaunay(Mesh& mesh)
+    {
+        const std::vector<char>& flag = a_sizes.delaunay;
+        bool any = false;
+        for (char f : flag) any = any || f;
+        if (!any) return;
+        auto flagged = [&](int t) {
+            const int d = mesh.domain[std::size_t(t)];
+            return d >= 0 && d < int(flag.size()) && flag[std::size_t(d)];
+        };
+        const QRectF box = mesh.bounds();
+        const double shortest = std::max(a_sizes.hmin * 0.02, std::hypot(box.width(), box.height()) * 1e-9);
+        auto key = [](int a, int b) { return std::pair<int, int>(std::min(a, b), std::max(a, b)); };
+        auto area2 = [&](int a, int b, int c) { return cross(mesh.nodes[std::size_t(b)] - mesh.nodes[std::size_t(a)], mesh.nodes[std::size_t(c)] - mesh.nodes[std::size_t(a)]); };
+        // The angle at o across a-b: its cotangent.
+        auto cotAt = [&](int o, int a, int b) {
+            const QPointF u = mesh.nodes[std::size_t(a)] - mesh.nodes[std::size_t(o)], v = mesh.nodes[std::size_t(b)] - mesh.nodes[std::size_t(o)];
+            return (u.x() * v.x() + u.y() * v.y()) / std::abs(cross(u, v));
+        };
+        for (int round = 0; round < 30; ++round) {
+            // Flips, a pass at a time (each triangle at most once a pass).
+            int flipped = 0;
+            for (int pass = 0; pass < 50; ++pass) {
+                std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> around;   // edge: (triangle, its corner opposite)
+                for (int t = 0; t < int(mesh.triangles.size()); ++t)
+                    for (int k = 0; k < 3; ++k)
+                        around[key(mesh.triangles[std::size_t(t)][std::size_t(k)], mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)])].push_back({t, (k + 2) % 3});
+                std::set<std::pair<int, int>> segments;
+                for (const Mesh::Edge& e : mesh.edges) segments.insert(key(e.a, e.b));
+                std::vector<char> touched(mesh.triangles.size(), 0);
+                int now = 0;
+                for (const auto& [edge, list] : around) {
+                    if (list.size() != 2 || segments.count(edge)) continue;
+                    const auto [t1, k1] = list[0];
+                    const auto [t2, k2] = list[1];
+                    if (touched[std::size_t(t1)] || touched[std::size_t(t2)] || !flagged(t1) || !flagged(t2)) continue;
+                    const int a = edge.first, b = edge.second;
+                    const int c = mesh.triangles[std::size_t(t1)][std::size_t(k1)], d = mesh.triangles[std::size_t(t2)][std::size_t(k2)];
+                    if (cotAt(c, a, b) + cotAt(d, a, b) >= -1e-12) continue;
+                    // (A convex quadrilateral: c and d on either side of a-b, a and b of c-d.)
+                    if (!(area2(c, d, a) * area2(c, d, b) < 0)) continue;
+                    std::array<int, 3> n1{a, d, c}, n2{d, b, c};
+                    if (area2(n1[0], n1[1], n1[2]) < 0) std::swap(n1[1], n1[2]);
+                    if (area2(n2[0], n2[1], n2[2]) < 0) std::swap(n2[1], n2[2]);
+                    mesh.triangles[std::size_t(t1)] = n1;
+                    mesh.triangles[std::size_t(t2)] = n2;
+                    touched[std::size_t(t1)] = touched[std::size_t(t2)] = 1;
+                    ++now;
+                }
+                flipped += now;
+                if (now == 0) break;
+            }
+            // Segments with an obtuse angle across them, on a flagged side.
+            std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> around;
+            for (int t = 0; t < int(mesh.triangles.size()); ++t)
+                for (int k = 0; k < 3; ++k)
+                    around[key(mesh.triangles[std::size_t(t)][std::size_t(k)], mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)])].push_back({t, (k + 2) % 3});
+            std::vector<int> split;
+            for (int i = 0; i < int(mesh.edges.size()); ++i) {
+                const Mesh::Edge& e = mesh.edges[std::size_t(i)];
+                if (norm(mesh.nodes[std::size_t(e.b)] - mesh.nodes[std::size_t(e.a)]) < 2 * shortest) continue;
+                const auto it = around.find(key(e.a, e.b));
+                if (it == around.end()) continue;
+                for (const auto& [t, k] : it->second)
+                    if (flagged(t) && cotAt(mesh.triangles[std::size_t(t)][std::size_t(k)], e.a, e.b) < -1e-12) {
+                        split.push_back(i);
+                        break;
+                    }
+            }
+            if (split.empty()) break;
+            for (int i : split) {
+                Mesh::Edge e = mesh.edges[std::size_t(i)];
+                // Its middle - on an arc, the arc's.
+                QPointF m = (mesh.nodes[std::size_t(e.a)] + mesh.nodes[std::size_t(e.b)]) / 2;
+                const double tm = (e.ta + e.tb) / 2;
+                if (e.curve >= 0 && a_t.curves[std::size_t(e.curve)].kind == Curve::Arc) m = a_t.curves[std::size_t(e.curve)].at(tm);
+                const int mi = int(mesh.nodes.size());
+                mesh.nodes.push_back(m);
+                // Each triangle across it in two.
+                for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+                    std::array<int, 3>& v = mesh.triangles[std::size_t(t)];
+                    for (int k = 0; k < 3; ++k) {
+                        const int p = v[std::size_t(k)], q = v[std::size_t((k + 1) % 3)];
+                        if (key(p, q) != key(e.a, e.b)) continue;
+                        const int o = v[std::size_t((k + 2) % 3)];
+                        v = {p, mi, o};
+                        mesh.triangles.push_back({mi, q, o});
+                        mesh.domain.push_back(mesh.domain[std::size_t(t)]);
+                        break;
+                    }
+                }
+                Mesh::Edge second = e;
+                mesh.edges[std::size_t(i)].b = mi;
+                mesh.edges[std::size_t(i)].tb = tm;
+                second.a = mi;
+                second.ta = tm;
+                mesh.edges.push_back(second);
+            }
+            Q_UNUSED(flipped);
+        }
+        // Each segment's triangles again (on its left, its right).
+        std::map<std::pair<int, int>, int> directed;
+        for (int t = 0; t < int(mesh.triangles.size()); ++t)
+            for (int k = 0; k < 3; ++k) directed[{mesh.triangles[std::size_t(t)][std::size_t(k)], mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)]}] = t;
+        for (Mesh::Edge& e : mesh.edges) {
+            const auto l = directed.find({e.a, e.b}), r = directed.find({e.b, e.a});
+            e.left = l != directed.end() ? l->second : -1;
+            e.right = r != directed.end() ? r->second : -1;
+        }
+    }
+
     void smooth(Mesh& mesh, const std::vector<char>& fixedNode)
     {
         std::vector<std::vector<int>> around(mesh.nodes.size());
@@ -1102,6 +1221,14 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
             const int n = std::clamp(f.integer(QStringLiteral("count")), 1, 100000);
             for (int i : picked) s.boundaryCount[std::size_t(i)] = n;
         }
+    }
+    // A semiconductor's domains kept Delaunay.
+    s.delaunay.assign(topology.domains.size(), 0);
+    for (const Node* ph : model.physics()) {
+        if (!ph->enabled || ph->type != QLatin1String("semiconductor")) continue;
+        QString why;
+        for (int d : resolveSelection(topology, model, Level::Domain, ph->selection(), &why))
+            if (d >= 0 && d < int(s.delaunay.size())) s.delaunay[std::size_t(d)] = 1;
     }
     if (error) *error = problems.join(QLatin1String("; "));
     return s;
