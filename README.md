@@ -1954,7 +1954,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   ([docs/proposals](docs/proposals/2026-10-06-gds-oasis-layout-viewer.md)).
   A damaged file is refused, not a crash: gdstk's readers were hardened
   for it (`third_party/gdstk/README.qucs.md`).
-- **Multiphysics: a 2D finite element solver, as COMSOL's** (phases 1 to
+- **Multiphysics: a 2D finite element solver** (phases 1 to
   4 of [the proposal](docs/proposals/2026-10-10-multiphysics-fem.md),
   semiconductors and rays, quantum wells, and PDEs and ODEs of your own): a model
   (`.qfem`, JSON that git diffs) opens in a tab of its own, and its tree
@@ -1981,7 +1981,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   its canvas's menu makes a model of a cut along the last ruler, its
   stack asked for (the layers under the cut offered), its materials from
   the library. *Form Union* makes them one, and numbers its domains,
-  boundaries and points as COMSOL does.
+  boundaries and points (from the left, then from below).
   **Materials**: from a
   library of metals, board dielectrics (with their loss tangents),
   semiconductors and their insulators, **III-V compounds** (GaAs, AlAs,

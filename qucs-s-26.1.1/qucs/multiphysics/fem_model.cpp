@@ -1945,7 +1945,7 @@ Node Model::make(const QString& type) const
     }
     if (k->group == QLatin1String("geometry")) n.label = n.tag;   // the object's name
     if (type == QLatin1String("study") || type == QLatin1String("plotgroup") || type == QLatin1String("plotgroup1d")) {
-        // Study 1, 2D Plot Group 2: numbered as COMSOL's.
+        // Study 1, 2D Plot Group 2: numbered.
         int count = 1;
         for (const Node& c : root.children) count += c.type == type ? 1 : 0;
         if (type != QLatin1String("study"))

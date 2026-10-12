@@ -1,5 +1,5 @@
 /*
- * fem_model.h - a multiphysics model as COMSOL's Model Builder has it: a
+ * fem_model.h - a multiphysics model as a model builder has it: a
  *               tree that is also the order of work - parameters, a
  *               component's geometry, materials, physics and mesh, studies,
  *               results - each node of a kind that says what it holds; read
