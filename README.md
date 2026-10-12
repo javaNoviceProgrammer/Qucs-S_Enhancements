@@ -1612,8 +1612,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   the folder shown and in the Tree's open folders. On Linux a file's new
   size and date show only once its folder is read again: Qt's watcher
   there reports entries made, renamed and removed, not changes inside a
-  file. A folder that is removed is left for the nearest folder above
-  it, unless it is made again at once.
+  file. A folder that is removed is left at once for the nearest folder
+  above it, and gone back into if it is made again within two seconds (a
+  checkout that removes and remakes it).
 - **Git**, as Eclipse has it, for a project (or any folder) in a git
   repository:
   - **In the File Browser** (on by default; *Show Git Status* in its ⋯

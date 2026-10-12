@@ -31,20 +31,39 @@ The trace, on `f02c77f`:
 
 A new file never appeared. A removal was seen by the model but never shown.
 
-A second gap: a folder deleted while it was shown, with no folder above it watched, stayed
-as an empty folder that no longer existed.
+A second cause, found when CI's macOS runner failed an early version of the test: a
+folder removed while it was shown kept its entries. The watcher reports the removal, and
+`QFileInfoGatherer` lists the folder again. The folder is gone, so the listing is empty,
+and an empty listing is never sent (`if (!allFiles.isEmpty()) emit newListOfFiles(...)`).
+Only `directoryLoaded` comes. The model is told nothing, and the browser went on showing
+the folder's old files, a folder that no longer existed. A folder that is emptied but
+still there does report, since its listing holds `.` and `..`.
+
+Qt's watcher itself is not at fault. A small program watched a folder through
+`QFileSystemWatcher` (FSEvents), removed it, made it again and watched it again. Each
+step was reported, and the removed path was dropped from its list.
 
 ## Now
 
 | Case | Before | Now |
 |---|---|---|
-| The folder shown taken out of the model while it is still there (the race, or removed and made again at once) | "/" shown, never updated | Its root set again once the model is done with its change; its entries and their changes shown |
-| The folder shown removed for good | Left showing "/", or an empty folder that does not exist | The nearest folder above it still there, as a tab brought back already found it. It is left once it has been gone half a second, so a folder removed and made again at once (a script, a checkout) is kept. |
+| The folder shown taken out of the model while it is still there (the race) | "/" shown, never updated | Its root set again; its entries and their changes shown |
+| The folder shown removed | Its old entries shown, or "/", never updated | Left at once for the nearest folder above it still there, as a tab brought back already found it |
+| Removed and made again (a script, a checkout) | As above | Left for the folder above, then gone back into once it is there again, if that is within two seconds and the folder above is still the one shown |
 
-The views' root is looked at after each removal, reset or layout change of the browser's
-model. When it was lost and the folder is there, it is set again. When the folder is
-gone, it is checked every 100 ms and left after 500 ms. A tab brought back to a folder
-that is gone uses the same "nearest folder above it" code as before.
+The browser looks at its folder each time the model ends a listing. That happens after
+every change the watcher reports, including the empty listing of a folder that is gone.
+- If the views lost their root and the folder is there, the root is set again.
+- If the folder is gone, the browser shows the nearest folder above it.
+- For two seconds after that it checks every 100 ms, and goes back into the folder if it
+  is there again. Choosing another folder in the meantime ends the wait.
+
+An earlier version waited half a second before leaving a folder found gone, so that one
+made again at once would be kept. It failed on CI's macOS runner. The wait could start
+from an earlier change of the model's than the test's 200 ms counted from, and in the
+meantime the views showed the old entries. Leaving at once and going back is shown in
+the right place throughout and does not depend on that timing. Locally the earlier
+version passed 24 runs out of 24, eight at a time; only CI's runner showed the failure.
 
 ## Test
 
@@ -55,15 +74,20 @@ In `test_file_browser`:
   another tab, and from the folder above.
 - **`theFolderShownTakenAwayAndBack`**:
   - In the List, Tree and Details views, the folder shown is made again at the moment
-    the model takes it away. It is still the location, its root is valid and its own,
+    the model takes it away. It is the location again, its root is valid and its own,
     and a new file in it is shown.
-  - Removed, then made again 200 ms after the model saw it go: it is kept.
+  - Removed, then made again 200 ms after the model saw it go: the browser is back in
+    it, and its file is shown.
+  - Removed again, and the workspace chosen meanwhile: the workspace stays when the
+    folder is made again.
   - Removed for good, with the folder above watched or not: the folder above is shown,
-    and its root is valid.
+    and its root is valid. When the folder is not made again, the browser stays there,
+    even when the folder is made again after the two seconds.
 - **`theApplicationHasIt`**: in the application, a folder made and entered at once
   shows its file, then a new file, then that file's removal.
 
-They pass in Release (three runs in a row) and under ASan/UBSan (two).
+They pass in Release (three runs in a row, and 16 of 16 eight at a time) and under
+ASan/UBSan.
 
 On CI's Linux a file's new size was never shown. Qt's watcher there (inotify) watches a
 folder for entries made, renamed and removed, not for changes inside a file, so the
@@ -77,7 +101,9 @@ Each break was built and the tests run against it. All of them failed:
 
 | Break | Fails at |
 |---|---|
-| The root not looked at after the model changes | The root invalid after the folder is made again |
-| A folder gone not left while its root is valid | The location still the folder removed |
-| The root set again, the folder gone | The location still the folder removed |
-| No half second of grace | The folder made again 200 ms later was left for the one above |
+| The folder not looked at when a listing ends | The root invalid after the folder is made again |
+| The root not set again, the folder there | The root invalid |
+| A folder gone not left | The location still the folder removed |
+| Never gone back into | The location the folder above after the folder was made again |
+| Gone back into after another folder was chosen | The location the folder made again, not the workspace |
+| Gone back into at any time | The location the folder made again after two seconds |
