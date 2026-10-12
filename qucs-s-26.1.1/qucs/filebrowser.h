@@ -275,6 +275,8 @@ private:
     /// The Details view's name column: what the others leave of the width.
     void fitDetails();
     void showContextMenu(QAbstractItemView* view, const QPoint& pos);
+    /// The folder shown, the views' root again once the model lost it.
+    void keepRoot();
     /// The Git submenu of \a paths' context menu.
     void addGitMenu(QMenu* menu, const QStringList& paths);
     void rename(const QString& path);
@@ -371,6 +373,8 @@ private:
     QLabel* a_previewFacts = nullptr;
     QLabel* a_status = nullptr;
     QTimer* a_statusTimer = nullptr;
+    QTimer* a_rootTimer = nullptr;         // the views' root looked at after the model changed
+    qint64 a_goneSince = 0;                // when the folder shown was found gone (ms since the epoch), or 0
     // A drag over it.
     QPointer<QWidget> a_dropHighlight;     // the folder it would drop into, lit up
     QTimer* a_springTimer = nullptr;       // a folder held under the drag opens

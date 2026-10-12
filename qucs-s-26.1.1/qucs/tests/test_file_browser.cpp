@@ -534,6 +534,178 @@ private slots:
         QCOMPARE(fb->location(), top);
     }
 
+    // What changes on the disk is shown as it changes (QFileSystemModel's
+    // watcher, FSEvents on macOS): a file made, renamed, removed, a folder
+    // made, a file's new size, a change in a folder open in the Tree; after
+    // going away and back, under another tab, from the folder above - the
+    // folder named as it is or through a link (/var on macOS is
+    // /private/var).
+    void changesOnTheDiskAreShown_data()
+    {
+        QTest::addColumn<bool>("linked");
+        QTest::newRow("as it is") << false;
+        QTest::newRow("through a link") << true;
+    }
+    void changesOnTheDiskAreShown()
+    {
+        QFETCH(bool, linked);
+        const QString live = linked ? dir.path() + "/linked" : top + "/live";
+        QVERIFY(QDir().mkpath(live + "/sub"));
+        touch(live + "/a.txt");
+        touch(live + "/sub/inner.txt");
+        FileBrowser fb;
+        fb.resize(400, 600);
+        fb.setView(FileBrowser::View::Details);
+        fb.setLocation(live);
+        settled(fb, "a.txt");
+        const auto shown = [&](const QString& name) { return fb.shownNames().contains(name); };
+        touch(live + "/new.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(shown("new.txt"), 5000);
+        QVERIFY(QFile::rename(live + "/new.txt", live + "/renamed.txt"));
+        QTRY_VERIFY_WITH_TIMEOUT(shown("renamed.txt") && !shown("new.txt"), 5000);
+        QVERIFY(QFile::remove(live + "/renamed.txt"));
+        QTRY_VERIFY_WITH_TIMEOUT(!shown("renamed.txt"), 5000);
+        QVERIFY(QDir().mkpath(live + "/made"));
+        QTRY_VERIFY_WITH_TIMEOUT(shown("made"), 5000);
+        {
+            QFile f(live + "/a.txt");
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Append));
+            f.write(QByteArray(5000, 'y'));
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(fb.fileModel()->size(fb.fileModel()->index(live + "/a.txt")) == 5001, 5000);
+        fb.setView(FileBrowser::View::Tree);
+        static_cast<QTreeView*>(fb.currentView())->expand(fb.indexOf(live + "/sub"));
+        const auto inSub = [&] { return fb.fileModel()->rowCount(fb.fileModel()->index(live + "/sub")); };
+        QTRY_COMPARE_WITH_TIMEOUT(inSub(), 1, 5000);
+        touch(live + "/sub/second.txt");
+        QTRY_COMPARE_WITH_TIMEOUT(inSub(), 2, 5000);
+        QVERIFY(QFile::remove(live + "/sub/second.txt"));
+        QTRY_COMPARE_WITH_TIMEOUT(inSub(), 1, 5000);
+        // Away and back.
+        fb.setView(FileBrowser::View::Details);
+        fb.setLocation(root);
+        settled(fb, "amp.sch");
+        touch(live + "/while_away.txt");
+        QTest::qWait(700);
+        fb.setLocation(live);
+        QTRY_VERIFY_WITH_TIMEOUT(shown("while_away.txt"), 5000);
+        touch(live + "/after_back.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(shown("after_back.txt"), 5000);
+        // Another tab in front, then this one again.
+        fb.openInNewTab(root);
+        settled(fb, "amp.sch");
+        touch(live + "/other_tab.txt");
+        QTest::qWait(700);
+        fb.setCurrentTab(0);
+        QTRY_VERIFY_WITH_TIMEOUT(shown("other_tab.txt"), 5000);
+        touch(live + "/after_tab.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(shown("after_tab.txt"), 5000);
+        // From the folder above.
+        fb.setLocation(top);
+        settled(fb, linked ? "linked" : "live");
+        touch(live + "/sub/from_above.txt");
+        QTest::qWait(700);
+        fb.setLocation(live + "/sub");
+        QTRY_VERIFY_WITH_TIMEOUT(shown("from_above.txt"), 5000);
+    }
+
+    // The folder shown taken out of the model while it is there: a listing
+    // of the folder above, gathered before it was made, coming after it was
+    // entered - or the folder removed and made again (a git checkout). It
+    // is shown again, and what changes in it; the views showed the top of
+    // the file system ("/") from then on. Gone for good: the nearest folder
+    // above it still there.
+    void theFolderShownTakenAwayAndBack()
+    {
+        const QString parent = top + "/away";
+        const QString here = parent + "/here";
+        QVERIFY(QDir().mkpath(here));
+        touch(here + "/a.txt");
+        for (FileBrowser::View view : {FileBrowser::View::List, FileBrowser::View::Tree, FileBrowser::View::Details}) {
+            FileBrowser fb;
+            fb.resize(400, 600);
+            fb.setView(view);
+            // (The folder above seen first: its listing comes again.)
+            fb.setLocation(parent);
+            settled(fb, "here");
+            fb.setLocation(here);
+            settled(fb, "a.txt");
+            // Made again the moment the model takes it away.
+            QFileSystemModel* model = fb.fileModel();
+            bool remade = false;
+            const QMetaObject::Connection c = connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+                                                      [&](const QModelIndex& p, int first, int last) {
+                for (int r = first; r <= last; ++r)
+                    if (model->filePath(model->index(r, 0, p)) == here) {
+                        QVERIFY(QDir().mkpath(here));
+                        touch(here + "/a.txt");
+                        remade = true;
+                    }
+            });
+            QVERIFY(QDir(here).removeRecursively());
+            QTRY_VERIFY_WITH_TIMEOUT(remade, 5000);
+            disconnect(c);
+            QCOMPARE(fb.location(), here);
+            QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), 5000);
+            QCOMPARE(fb.pathOf(fb.currentView()->rootIndex()), here);
+            settled(fb, "a.txt");
+            touch(here + "/new.txt");
+            QTRY_VERIFY_WITH_TIMEOUT(fb.shownNames().contains("new.txt"), 5000);
+            QVERIFY(QFile::remove(here + "/new.txt"));
+        }
+        // Removed, and made again a moment after the model saw it go (a
+        // script, a checkout): kept, not left for the folder above.
+        {
+            FileBrowser fb;
+            fb.resize(400, 600);
+            fb.setView(FileBrowser::View::List);
+            fb.setLocation(parent);
+            settled(fb, "here");
+            fb.setLocation(here);
+            settled(fb, "a.txt");
+            QFileSystemModel* model = fb.fileModel();
+            bool seen = false, remade = false;
+            const QMetaObject::Connection c = connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+                                                      [&](const QModelIndex& p, int first, int last) {
+                bool it = model->filePath(p) == here;
+                for (int r = first; r <= last; ++r) it = it || model->filePath(model->index(r, 0, p)) == here;
+                if (!it || seen) return;
+                seen = true;
+                QTimer::singleShot(200, this, [&] {
+                    QVERIFY(QDir().mkpath(here));
+                    touch(here + "/a.txt");
+                    remade = true;
+                });
+            });
+            QVERIFY(QDir(here).removeRecursively());
+            QTRY_VERIFY_WITH_TIMEOUT(remade, 5000);
+            disconnect(c);
+            QTest::qWait(800);
+            QCOMPARE(fb.location(), here);
+            QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), 5000);
+            settled(fb, "a.txt");
+        }
+        // Gone for good: the folder above, shown - the model watching it,
+        // or only the folder gone and what was in it.
+        for (bool above : {true, false}) {
+            QVERIFY(QDir().mkpath(here));
+            touch(here + "/a.txt");
+            FileBrowser fb;
+            fb.resize(400, 600);
+            fb.setView(FileBrowser::View::List);
+            if (above) {
+                fb.setLocation(parent);
+                settled(fb, "here");
+            }
+            fb.setLocation(here);
+            settled(fb, "a.txt");
+            QVERIFY(QDir(here).removeRecursively());
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, 5000);
+            QVERIFY(fb.currentView()->rootIndex().isValid());
+            QTRY_VERIFY_WITH_TIMEOUT(!fb.shownNames().contains("here"), 5000);
+        }
+    }
+
     // In the application: the left dock's File Browser tab, from the
     // workspace; a schematic it opens is opened as from the Content tab,
     // and then among its recent documents.
@@ -577,6 +749,20 @@ private slots:
         doc->setChanged(false);
         app.closeAllFiles();
         QFile::remove(file);
+
+        // A folder made and entered at once: shown, and what changes in it
+        // (a listing of the workspace gathered before it was made took it
+        // out of the model, and the views showed "/" from then on).
+        const QString live = top + "/inapp";
+        QVERIFY(QDir().mkpath(live));
+        touch(live + "/a.txt");
+        app.show();
+        fb->setLocation(live);
+        QCOMPARE(settled(*fb, "a.txt"), QStringList({"a.txt"}));
+        touch(live + "/new.txt");
+        QTRY_VERIFY_WITH_TIMEOUT(fb->shownNames().contains("new.txt"), 5000);
+        QVERIFY(QFile::remove(live + "/new.txt"));
+        QTRY_VERIFY_WITH_TIMEOUT(!fb->shownNames().contains("new.txt"), 5000);
     }
 };
 
