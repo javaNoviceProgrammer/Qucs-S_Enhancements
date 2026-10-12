@@ -2074,7 +2074,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     diode's to 0.3 %. **Doping** uniform, a box with Gaussian
     tails or an expression; mobility by doping (Caughey and Thomas) and
     high-field saturation; Shockley-Read-Hall, Auger and direct
-    recombination, generation (light absorbed). **Ohmic, Schottky and
+    recombination, generation (light absorbed). **Impact ionization**
+    (Chynoweth's α = a e^(-(b/E)^β), silicon's van Overstraeten and de
+    Man's or your own): its pairs from each triangle's field and currents
+    - avalanche multiplication, an APD's gain - and the ionization
+    integrals along the field line through the highest field (semi.In,
+    semi.Ip, semi.Mn, semi.Mp): a breakdown voltage where they reach 1,
+    an abrupt junction's the depletion approximation's to 0.1 %. **Ohmic, Schottky and
     gate contacts** (a work function on an oxide), fixed surface charge.
     At rest (currents, charges; at equilibrium the gates' quasi-static
     capacitance, the low-frequency limit), **in time** (adaptive BDF2,
