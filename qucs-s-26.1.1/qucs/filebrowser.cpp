@@ -693,6 +693,17 @@ QString parentOf(const QString& path)
     return QDir::cleanPath(dir.absolutePath());
 }
 
+// The folder \a path, or the nearest one above it still there (empty: none).
+QString nearestFolder(const QString& path)
+{
+    QString folder = path;
+    while (!folder.isEmpty() && !QFileInfo(folder).isDir()) {
+        const QString above = QDir::cleanPath(QFileInfo(folder).absolutePath());
+        folder = above == folder ? QString() : above;
+    }
+    return folder;
+}
+
 // The size of a file in words ("12 KB").
 QString sizeText(qint64 bytes)
 {
@@ -1159,6 +1170,7 @@ FileBrowser::FileBrowser(QWidget* parent)
       a_proxy(new qucs_s::files::SortProxy(this)),
       a_recentModel(new QStandardItemModel(this)),
       a_statusTimer(new QTimer(this)),
+      a_rootTimer(new QTimer(this)),
       a_springTimer(new QTimer(this)),
       a_scrollTimer(new QTimer(this))
 {
@@ -1659,6 +1671,18 @@ void FileBrowser::buildViews()
     connect(a_proxy, &QAbstractItemModel::layoutChanged, this, later);
     connect(a_proxy, &QAbstractItemModel::modelReset, this, later);
     connect(a_model, &QFileSystemModel::directoryLoaded, this, later);
+    // The folder shown kept the views' root. QFileSystemModel takes a folder
+    // away when a listing of the one above it, gathered before the folder
+    // was made, comes after it was entered (and adds it again) - or when it
+    // is removed and made again (a git checkout); its views showed the top
+    // of the file system from then on, nothing in the folder changing.
+    a_rootTimer->setSingleShot(true);
+    a_rootTimer->setInterval(0);   // (once the model is done with its change)
+    connect(a_rootTimer, &QTimer::timeout, this, &FileBrowser::keepRoot);
+    const auto lookAtRoot = [this] { a_rootTimer->start(0); };
+    connect(a_proxy, &QAbstractItemModel::rowsRemoved, this, lookAtRoot);
+    connect(a_proxy, &QAbstractItemModel::modelReset, this, lookAtRoot);
+    connect(a_proxy, &QAbstractItemModel::layoutChanged, this, lookAtRoot);
     // A tab brought to the front: its Tree's folders opened, its entry
     // selected, as their folders load.
     connect(a_model, &QFileSystemModel::directoryLoaded, this, [this](const QString& path) {
@@ -1732,6 +1756,36 @@ void FileBrowser::applyRoot()
                                  static_cast<QAbstractItemView*>(a_grid), static_cast<QAbstractItemView*>(a_details),
                                  static_cast<QAbstractItemView*>(a_columns)})
         v->setRootIndex(root);
+}
+
+void FileBrowser::keepRoot()
+{
+    if (a_location.isEmpty() || a_view == View::Recent) return;
+    const bool there = QFileInfo(a_location).isDir();
+    if (there) a_goneSince = 0;
+    if (there && a_list->rootIndex().isValid()) return;
+    // Gone (moved, removed - its entries going with it; the model keeps
+    // the folder itself when it watched none above): left once it has been
+    // gone half a second, not when it is removed and made again at once.
+    if (!there) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (a_goneSince == 0) a_goneSince = now;
+        if (now - a_goneSince < 500) {
+            a_rootTimer->start(100);
+            return;
+        }
+        a_goneSince = 0;
+    }
+    // The nearest folder above it still there, as a tab brought back finds it.
+    QString folder = nearestFolder(a_location);
+    if (folder.isEmpty()) folder = a_home.isEmpty() ? QDir::homePath() : a_home;
+    if (folder != a_location) {
+        go(folder, false);
+        return;
+    }
+    applyRoot();
+    a_selectPending = !a_selected.isEmpty() && !indexOf(a_selected).isValid();
+    selectPath(a_selected);
 }
 
 void FileBrowser::back()
@@ -2757,11 +2811,7 @@ void FileBrowser::loadTab(const Tab& tab)
     if (tab.view != a_view) setView(tab.view);
     // Its folder gone (moved, deleted while it was behind): the nearest
     // one above it still there.
-    QString folder = tab.location;
-    while (!folder.isEmpty() && !QFileInfo(folder).isDir()) {
-        const QString above = QDir::cleanPath(QFileInfo(folder).absolutePath());
-        folder = above == folder ? QString() : above;
-    }
+    QString folder = nearestFolder(tab.location);
     if (folder.isEmpty()) folder = a_home.isEmpty() ? QDir::homePath() : a_home;
     go(folder, false);
     // (After go(): a tab's own steps, not the step to it.)
