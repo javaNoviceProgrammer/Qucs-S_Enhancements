@@ -63,7 +63,13 @@ In `test_file_browser`:
 - **`theApplicationHasIt`**: in the application, a folder made and entered at once
   shows its file, then a new file, then that file's removal.
 
-They pass in Release and under ASan/UBSan, three runs in a row.
+They pass in Release (three runs in a row) and under ASan/UBSan (two).
+
+On CI's Linux a file's new size was never shown. Qt's watcher there (inotify) watches a
+folder for entries made, renamed and removed, not for changes inside a file, so the
+Details view's size and date of a file changed by another program stay as they were
+until the folder is read again. The test checks a file's new size on macOS and Windows,
+whose watchers report it, and not on Linux. The README says so.
 
 ## Breaks
 
