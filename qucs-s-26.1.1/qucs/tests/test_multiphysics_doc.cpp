@@ -27,6 +27,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QStackedWidget>
@@ -664,12 +665,62 @@ private slots:
         }, QStringLiteral("fine")));
         doc->compute();
         QVERIFY(doc->isBusy());
-        QVERIFY(doc->cancelButton()->isVisible());
-        doc->cancelJob();
+        QTRY_VERIFY(doc->cancelButton()->isVisible());
+        doc->cancelButton()->click();
         QVERIFY(doc->waitForJob(jobWait()));
         QVERIFY(doc->solution() == nullptr);
         QVERIFY(doc->lastError().contains(QStringLiteral("cancelled")));
         QVERIFY(!doc->cancelButton()->isVisible());
+    }
+
+    // A job's progress in a row below the toolbar, once the job has taken a
+    // quarter of a second: its stage on one line, elided to the room it has
+    // and whole in its tool tip (in the bar, Fusion wrapped it to two lines
+    // and cut them off), the bar its percentage.
+    void aJobsStageInItsRow()
+    {
+        MultiphysicsDoc* doc = open(copyOf("gesi_eam.qfem"));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY(doc->progressRow()->isHidden());
+        QElapsedTimer clock;
+        clock.start();
+        doc->compute(QStringLiteral("std2"));
+        QVERIFY(doc->isBusy());
+        QTRY_VERIFY(doc->progressRow()->isVisible());
+        QVERIFY2(clock.elapsed() >= 250, qPrintable(QString::number(clock.elapsed())));
+        // At a point of the sweep: "Va = 0 V, lambda = 1.51 µm: ...".
+        QLabel* stage = doc->stageLabel();
+        QTRY_VERIFY_WITH_TIMEOUT(stage->text().contains(QStringLiteral("lambda = ")), jobWait());
+        const auto fits = [stage](bool whole) {
+            const QString shown = stage->text(), all = stage->toolTip();
+            const int room = stage->contentsRect().width();
+            const int needs = stage->fontMetrics().horizontalAdvance(all);
+            if (shown.contains(QLatin1Char('\n')) || stage->fontMetrics().horizontalAdvance(shown) > room) return false;
+            if (whole) return needs <= room && shown == all;
+            return needs > room && shown.endsWith(QChar(0x2026)) && all.startsWith(shown.chopped(1));
+        };
+        QTRY_VERIFY2(fits(true), qPrintable(stage->text()));
+        // The room of a narrow window (the toolbar's width leaves it more).
+        stage->setFixedWidth(100);
+        QTRY_VERIFY2(fits(false), qPrintable(stage->text()));
+        const QProgressBar* bar = doc->progressBar();
+        QVERIFY2(bar->text().endsWith(QLatin1Char('%')) && bar->fontMetrics().horizontalAdvance(bar->text()) < bar->contentsRect().width(),
+                 qPrintable(bar->text()));
+        QVERIFY(doc->isBusy());
+        doc->cancelButton()->click();
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY(doc->progressRow()->isHidden());
+        // Its stage the same, elided anew as its room changes.
+        doc->progressRow()->show();
+        stage->setMinimumWidth(0);
+        stage->setMaximumWidth(QWIDGETSIZE_MAX);
+        QTRY_VERIFY2(fits(true), qPrintable(stage->text()));
+        stage->setFixedWidth(100);
+        QTRY_VERIFY2(fits(false), qPrintable(stage->text()));
+        stage->setMinimumWidth(0);
+        stage->setMaximumWidth(QWIDGETSIZE_MAX);
+        doc->progressRow()->hide();
     }
 
     // ---- Phase 2: time, sweeps, mechanics, axisymmetry, drawings, graphs

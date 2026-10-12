@@ -2199,7 +2199,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   own (a k(T), radiation) by Newton's method, in a few steps.
 
   *Compute* (or Simulate, F2) meshes and solves in the background, with
-  progress and *Cancel*. Linear or quadratic elements, the quadratic
+  progress and *Cancel* in a row below the toolbar (the stage on one
+  line, elided with "…" when the window is narrow, whole in its tool
+  tip). Linear or quadratic elements, the quadratic
   ones curved on arcs, assembled in parallel and solved by a sparse
   Cholesky ([Eigen](third_party/eigen/README.qucs.md)): 200,000 unknowns
   mesh and solve in about 1.5 s on an M-series Mac. Above 400,000
