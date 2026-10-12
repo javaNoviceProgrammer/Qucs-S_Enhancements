@@ -213,6 +213,12 @@ public:
     /// The last snapshot made again of the fields as they are now (a step at
     /// rest after one in time or frequency).
     void replaceLastSnapshot();
+    /// No snapshots (a step's own series to come; the fields as they are).
+    void clearSnapshots()
+    {
+        a_snapshots.clear();
+        a_selected = -1;
+    }
     /// The snapshot nearest time \a t (s), or -1 when there is none.
     int snapshotAt(double t) const;
     /// The snapshot nearest frequency \a f (Hz), or -1.

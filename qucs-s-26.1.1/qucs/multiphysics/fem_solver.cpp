@@ -911,6 +911,40 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                 }
                 return std::sqrt(s2);
             });
+            if (modes) {
+                // What a mode carrying 1 W absorbs, per volume (W/m³): all of it,
+                // ½ ω ε0 Σ -Im εk |Ek|²; across a gap - the media's κ and a direct
+                // gap's, the electron-hole pairs a photodiode collects -, ω ε0 n κ |E|².
+                const Dim qDim = Dim::of(-1, 1, -3), perMetre = Dim::of(-1);   // (W/m³)
+                define(p + QStringLiteral("Qh"), qDim, tr("power absorbed per volume, the mode carrying 1 W"), K::Derived, f, [f](PointEvaluator& e) {
+                    const detail::MediumAt m = detail::modeMediumAt(e, f);
+                    const detail::ModeFields mf = detail::modeFieldsAt(e, f);
+                    if (!m.defined || !mf.defined) return NaN;
+                    double q = 0;
+                    for (int k = 0; k < 3; ++k) q += m.lossEps[k] * std::norm(mf.E[k]);
+                    return 0.5 * m.omega * detail::Eps0 * q;
+                });
+                define(p + QStringLiteral("Qgap"), qDim,
+                       tr("power absorbed per volume across a gap (the media's κ and a direct gap's, not the free carriers'), the mode "
+                          "carrying 1 W: the electron-hole pairs made, times ħω"),
+                       K::Derived, f, [f](PointEvaluator& e) {
+                           const detail::MediumAt m = detail::modeMediumAt(e, f);
+                           const detail::ModeFields mf = detail::modeFieldsAt(e, f);
+                           if (!m.defined || !mf.defined) return NaN;
+                           return m.omega * detail::Eps0 * m.n * m.kappaGap * (std::norm(mf.E[0]) + std::norm(mf.E[1]) + std::norm(mf.E[2]));
+                       });
+                define(p + QStringLiteral("alphagap"), perMetre, tr("absorption coefficient across a gap, 4πκ/λ (the power's)"), K::Derived, f,
+                       [f](PointEvaluator& e) {
+                           const detail::MediumAt m = detail::modeMediumAt(e, f);
+                           return m.defined ? 2 * m.omega / 299792458.0 * m.kappaGap : NaN;
+                       });
+                define(p + QStringLiteral("dalphaEA"), perMetre,
+                       tr("what the field adds to a direct gap's absorption coefficient (the Franz-Keldysh effect)"), K::Derived, f,
+                       [f](PointEvaluator& e) {
+                           const detail::MediumAt m = detail::modeMediumAt(e, f);
+                           return m.defined ? 2 * m.omega / 299792458.0 * (m.kappaEA - m.kappaEA0) : NaN;
+                       });
+            }
             if (!modes) {
                 component(p + field.variable, field.dim, tr("the field out of the plane%1").arg(tr(" (its real part)")), K::Value, f, 0);
                 component(p + field.variable + im, field.dim, tr("the field out of the plane, its imaginary part"), K::Value, f, 1);
@@ -1028,7 +1062,6 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
             define(p + QStringLiteral("p"), conc, tr("hole concentration"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.p; }));
             define(p + QStringLiteral("ni"), conc, tr("intrinsic carrier concentration"), K::Derived, f,
                    semi([](const detail::SemiconductorState& s) { return s.ni; }));
-            const int sv = component(p + QStringLiteral("V"), Dim::voltage(), QString(), K::Value, f, 0);
             define(p + QStringLiteral("Ex"), efield, tr("electric field, x component"), K::Derived, f, [f](PointEvaluator& e) {
                 double u = 0, gx = 0, gy = 0;
                 e.component(f, 0, u, gx, gy);
@@ -1049,33 +1082,36 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                        const detail::SemiconductorState s = st(e);
                        return s.semiconductor ? 1.602176634e-19 * (s.p - s.n + e.value(sd) - e.value(sa)) : 0.0;
                    });
-            // Band energies (J; shown in eV): Ei = -qV, Ec = Ei + (Ec - Ei).
+            // Band energies (J; shown in eV): Ei = -q (V + δ) - δ each
+            // semiconductor's offset across a heterojunction -, Ec = Ei + (Ec - Ei).
             const double q = 1.602176634e-19;
-            define(p + QStringLiteral("Ei"), energy, tr("intrinsic level"), K::Derived, f,
-                   [st, sv, q](PointEvaluator& e) { return st(e).semiconductor ? -q * e.value(sv) : NaN; });
+            define(p + QStringLiteral("Ei"), energy, tr("intrinsic level"), K::Derived, f, [st, q](PointEvaluator& e) {
+                const detail::SemiconductorState s = st(e);
+                return s.semiconductor ? -q * (s.V + s.delta) : NaN;
+            });
             define(p + QStringLiteral("Ec"), energy, tr("conduction band edge"), K::Derived, f, [st, q](PointEvaluator& e) {
                 const detail::SemiconductorState s = st(e);
-                return s.semiconductor ? -q * s.V + s.dEc : NaN;
+                return s.semiconductor ? -q * (s.V + s.delta) + s.dEc : NaN;
             });
             define(p + QStringLiteral("Ev"), energy, tr("valence band edge"), K::Derived, f, [st, q](PointEvaluator& e) {
                 const detail::SemiconductorState s = st(e);
-                return s.semiconductor ? -q * s.V + s.dEc - s.Eg : NaN;
+                return s.semiconductor ? -q * (s.V + s.delta) + s.dEc - s.Eg : NaN;
             });
             define(p + QStringLiteral("Efn"), energy, tr("electrons' quasi-Fermi level"), K::Derived, f, [st, q](PointEvaluator& e) {
                 const detail::SemiconductorState s = st(e);
-                return s.semiconductor ? -q * s.V + q * s.Vt * std::log(s.n / s.ni) : NaN;
+                return s.semiconductor ? -q * s.phin : NaN;
             });
             define(p + QStringLiteral("Efp"), energy, tr("holes' quasi-Fermi level"), K::Derived, f, [st, q](PointEvaluator& e) {
                 const detail::SemiconductorState s = st(e);
-                return s.semiconductor ? -q * s.V - q * s.Vt * std::log(s.p / s.ni) : NaN;
+                return s.semiconductor ? -q * s.phip : NaN;
             });
             define(p + QStringLiteral("phin"), Dim::voltage(), tr("electrons' quasi-Fermi potential"), K::Derived, f, [st](PointEvaluator& e) {
                 const detail::SemiconductorState s = st(e);
-                return s.semiconductor ? s.V - s.Vt * std::log(s.n / s.ni) : NaN;
+                return s.semiconductor ? s.phin : NaN;
             });
             define(p + QStringLiteral("phip"), Dim::voltage(), tr("holes' quasi-Fermi potential"), K::Derived, f, [st](PointEvaluator& e) {
                 const detail::SemiconductorState s = st(e);
-                return s.semiconductor ? s.V + s.Vt * std::log(s.p / s.ni) : NaN;
+                return s.semiconductor ? s.phip : NaN;
             });
             struct Cur {
                 const char* name;
@@ -2143,6 +2179,16 @@ bool frequencyStep(Solution& s, const Node& node, const std::function<bool(doubl
                          .arg(node.name());
     for (auto& p : st.problems)
         if (!p->field().solved) p->initialize();
+    // After a mode analysis whose light this step reads (a photodiode's,
+    // modulated): its frequencies a series of their own, each with the mode's
+    // fields and globals as they are - not after the mode's snapshot at the
+    // light's own frequency.
+    if (s.modeAnalysis) {
+        s.clearSnapshots();
+        s.modeAnalysis = s.quantumStates = false;
+        s.photonAxis = 0;
+        s.setMode(0);
+    }
     s.frequencyDomain = true;
     const bool sweep = node.flag(QStringLiteral("sweep"));
     std::vector<int> all;

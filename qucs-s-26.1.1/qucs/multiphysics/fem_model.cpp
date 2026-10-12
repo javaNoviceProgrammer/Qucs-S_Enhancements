@@ -430,6 +430,11 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("mup"), tr("Hole mobility µp"), QStringLiteral("m^2/(V*s)"), QString()),
           expr(QStringLiteral("taun"), tr("Electron lifetime τn"), QStringLiteral("s"), QString()),
           expr(QStringLiteral("taup"), tr("Hole lifetime τp"), QStringLiteral("s"), QString()),
+          expr(QStringLiteral("Egd"), tr("Direct gap Egd"), QStringLiteral("eV"), QString(),
+               tr("Of an indirect semiconductor: its direct gap, where light is absorbed strongly (germanium's 0.80 eV)")),
+          expr(QStringLiteral("mr"), tr("Direct gap's reduced mass µ (m0)"), QString(), QString(), tr("The Franz-Keldysh effect's")),
+          expr(QStringLiteral("Afk"), tr("Direct gap's strength A"), QStringLiteral("1/m"), QString(),
+               tr("α = A √((ħω - Egd)/1 eV) (1 eV/ħω) without a field")),
           text(QStringLiteral("compound"), tr("III-V compound"), QString(),
                tr("GaAs, AlAs, InAs, InP, GaP, GaSb, AlSb, InSb or an alloy of them - AlGaAs, InGaAs, InAlAs, GaInP, GaAsP, InAsP, "
                   "GaAsSb, InGaAsP, AlGaInAs: its band parameters (Vurgaftman's) at its composition, for quantum wells; an alloy's "
@@ -774,10 +779,34 @@ QList<NodeKind> makeKinds()
               shownIf(spatial(QStringLiteral("Ncarriers"), tr("Electron concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.n")),
                       QStringLiteral("plasma=true")),
               shownIf(spatial(QStringLiteral("Pcarriers"), tr("Hole concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.p")),
-                      QStringLiteral("plasma=true"))},
+                      QStringLiteral("plasma=true")),
+              flag(QStringLiteral("electroabsorption"), tr("Direct-gap absorption (Franz-Keldysh)"), false,
+                   tr("κ + αλ/4π, α a direct gap's: A √((ħω - Eg)/1 eV) (1 eV/ħω) without a field, and under one the Franz-Keldysh "
+                      "effect - A (ħθ/1 eV)^½ π (Ai'(β)² - β Ai(β)²) (1 eV/ħω), β = (Eg - ħω)/ħθ, ħθ = (q²ħ²F²/2µ)^⅓: a tail below "
+                      "the gap, an electroabsorption modulator's; germanium's absorption at 1550 nm, a photodiode's")),
+              shownIf(choice(QStringLiteral("easource"), tr("Gap, mass and strength"), {QStringLiteral("material"), QStringLiteral("user")},
+                             {tr("From the material (Egd, mr, Afk)"), tr("User defined")}, QStringLiteral("material")),
+                      QStringLiteral("electroabsorption=true")),
+              shownIf(expr(QStringLiteral("Egd"), tr("Direct gap Eg"), QStringLiteral("eV"), QStringLiteral("0.80[eV]"),
+                           tr("Germanium's 0.80 eV, 0.773 eV strained on silicon; each % of silicon in germanium about +33 meV")),
+                      QStringLiteral("electroabsorption=true&easource=user")),
+              shownIf(expr(QStringLiteral("mr"), tr("Reduced mass µ (m0)"), QString(), QStringLiteral("0.03"),
+                           tr("The electron's and hole's at the direct gap: 1/µ = 1/me + 1/mh")),
+                      QStringLiteral("electroabsorption=true&easource=user")),
+              shownIf(expr(QStringLiteral("Afk"), tr("Edge's strength A"), QStringLiteral("1/m"), QStringLiteral("2e4[1/cm]"),
+                           tr("α = A √((ħω - Eg)/1 eV) (1 eV/ħω) above the gap without a field")),
+                      QStringLiteral("electroabsorption=true&easource=user")),
+              shownIf(spatial(QStringLiteral("Fea"), tr("Electric field"), QStringLiteral("V/m"), QStringLiteral("semi.normE"),
+                              tr("A semiconductor physics' (semi.normE), or as given")),
+                      QStringLiteral("electroabsorption=true")),
+              shownIf(expr(QStringLiteral("Ebroad"), tr("Broadening σ"), QStringLiteral("eV"), QStringLiteral("0[eV]"),
+                           tr("The gap spread as a Gaussian's: a tail below the gap even without a field, as a real edge has "
+                              "(germanium's some meV); the ripples above it smoothed")),
+                      QStringLiteral("electroabsorption=true"))},
              {}, {}, false, false, QStringLiteral("wee"),
              tr("ε from a refractive index n - jκ (its square) or a permittivity εr (1 - j tan δ) - jσ/ωε0; µr; anisotropic along x, "
-                "y and z; warmed: n + dn/dT (T - Tref); free carriers' plasma dispersion. From their material or as given.")});
+                "y and z; warmed: n + dn/dT (T - Tref); free carriers' plasma dispersion; a direct gap's absorption and the "
+                "Franz-Keldysh effect on it. From their material or as given.")});
         add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
              QStringLiteral("pml"), Level::Domain, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pml"),
              tr("Domains beside, above or round the others that take the waves in without reflecting them: their coordinates "
@@ -835,14 +864,15 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere"))},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
-          QStringLiteral("semiconductor/insulation"), QStringLiteral("semiconductor/ohmic"), QStringLiteral("semiconductor/schottky"),
-          QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge")},
+          QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/insulation"), QStringLiteral("semiconductor/ohmic"),
+          QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
-            "p (Boltzmann's statistics), their currents Scharfetter and Gummel's along each edge of linear triangles. Domains "
-            "whose material has no band gap are insulators: the potential alone. Solved by Newton's method from equilibrium, the "
-            "contacts' voltages raised in steps; at rest, in time, or small-signal in a frequency step (the contacts' "
-            "conductance and capacitance matrices).")});
+            "p (Boltzmann's statistics), their currents Scharfetter and Gummel's along each edge of linear triangles - across "
+            "heterojunctions too, the bands' offsets by Anderson's rule (χ, Eg). Domains whose material has no band gap are "
+            "insulators: the potential alone. Solved by Newton's method from equilibrium, the contacts' voltages raised in steps; "
+            "at rest, in time, or small-signal in a frequency step (the contacts' conductance and capacitance matrices; lit, a "
+            "photodiode's response).")});
     add({QStringLiteral("semiconductor/model"), tr("Semiconductor Material Model"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(), source,
@@ -925,6 +955,19 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), spatial(QStringLiteral("G"), tr("Generation rate G"), QStringLiteral("1/(m^3*s)"), QStringLiteral("0"),
                                        tr("Pairs made per volume and time: of x, y, t, other physics' fields (light absorbed)"))},
          {}, {}, false, false, QStringLiteral("gen"), tr("Electron-hole pairs made: optical generation, say.")});
+    add({QStringLiteral("semiconductor/optical"), tr("Optical Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none), text(QStringLiteral("mode"), tr("Mode analysis"), QStringLiteral("emw"), tr("The Electromagnetic Waves, Mode Analysis whose mode is fed")),
+          expr(QStringLiteral("P0"), tr("Power fed"), QStringLiteral("W"), QStringLiteral("1[mW]"), tr("The mode's at the device's start")),
+          expr(QStringLiteral("eta"), tr("Internal quantum efficiency η"), QString(), QStringLiteral("1"), tr("Pairs made per photon absorbed across the gap")),
+          expr(QStringLiteral("RL"), tr("Load resistance"), QStringLiteral("Ohm"), QStringLiteral("50[Ohm]"),
+               tr("A frequency step's response through it: semi.HopRL_<contact>, the device's capacitance charged through it"))},
+         {}, {}, false, false, QStringLiteral("opg"),
+         tr("A waveguide photodiode's light: a mode fed P0, solved before (a Mode Analysis step) - each photon it loses across the gap "
+            "(emw.Qgap: the media's κ and a direct gap's, not the free carriers') a pair, its power falling along the device as "
+            "e^(-2αz), the mean over its length (the thickness). semi.Gop pairs per second, semi.Iop = q Gop, semi.Pin; in a "
+            "frequency step semi.Hop_<contact> - each contact's photocurrent per pair, the light modulated - and semi.HopRL_<contact> "
+            "through the load.")});
     add({QStringLiteral("semiconductor/insulation"), tr("Insulation"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp()}, {}, {}, false, false, QStringLiteral("ins"),
          tr("No current and no charge through the boundary. Where no other condition is.")});

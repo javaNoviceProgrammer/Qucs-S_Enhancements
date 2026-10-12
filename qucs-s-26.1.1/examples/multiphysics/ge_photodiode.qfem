@@ -1,0 +1,560 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A germanium-on-silicon waveguide photodiode",
+    "description": "A lateral p-i-n of germanium grown on a silicon waveguide - its tensile strain narrowing the direct gap to 0.773 eV - 0.45 µm thick, its intrinsic part 0.7 µm wide between p⁺ and n⁺ germanium, 15 µm long (the model's thickness), reversed by 1 V. The waveguide's light, 1 mW at 1550 nm, is drawn up into the germanium (neff 3.84), whose direct gap absorbs it: 1.9 dB per µm, all but all of it over the length. Each photon absorbed across the gap makes a pair (Optical Generation, from emw.Qgap): 7.8e15 per second; the field collects 92 % of them - 1.15 mA, a responsivity of 1.15 A/W (the ideal qλ/hc 1.25 A/W). Dark, 7.2 nA. Modulated, the photocurrent falls to 1/√2 of its own at about 27 GHz - the carriers' transit, and those made in the doped germanium diffusing out slowly; its 6.6 fF through 50 Ω hardly adds. Along the wavelength, 1.11 to 1.18 A/W to 1580 nm, then the strained edge: 0.92 A/W at 1600 nm, 0.45 at 1620, 0.16 at 1640 - the Franz-Keldysh effect's tail at the bias's field. Up through the germanium into the silicon, the heterojunction: the valence band 0.52 eV higher in the germanium (Anderson's rule), its holes kept there.",
+    "parameters": [
+        {
+            "name": "Va",
+            "expression": "-1[V]",
+            "description": "the anode's voltage (reverse: negative)"
+        },
+        {
+            "name": "P",
+            "expression": "1[mW]",
+            "description": "the light fed, in the silicon waveguide's mode"
+        },
+        {
+            "name": "lambda",
+            "expression": "1550[nm]",
+            "description": "its wavelength"
+        },
+        {
+            "name": "w",
+            "expression": "0.7[um]",
+            "description": "the intrinsic germanium's width"
+        }
+    ],
+    "components": [
+        {
+            "unit": "um",
+            "thickness": "15[um]",
+            "geometry": [
+                {
+                    "type": "rectangle",
+                    "label": "box",
+                    "position": [
+                        "-2",
+                        "-1"
+                    ],
+                    "size": [
+                        "4",
+                        "1"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "cladding",
+                    "position": [
+                        "-2",
+                        "0"
+                    ],
+                    "size": [
+                        "4",
+                        "1.6"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "slab",
+                    "position": [
+                        "-1.5",
+                        "0"
+                    ],
+                    "size": [
+                        "3",
+                        "0.22"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "pplus",
+                    "position": [
+                        "-w/2 - 0.2",
+                        "0.22"
+                    ],
+                    "size": [
+                        "0.2",
+                        "0.45"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "absorber",
+                    "position": [
+                        "-w/2",
+                        "0.22"
+                    ],
+                    "size": [
+                        "w",
+                        "0.45"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "nplus",
+                    "position": [
+                        "w/2",
+                        "0.22"
+                    ],
+                    "size": [
+                        "0.2",
+                        "0.45"
+                    ]
+                },
+                {
+                    "type": "form union"
+                }
+            ],
+            "materials": [
+                {
+                    "material": "Silicon dioxide",
+                    "selection": {
+                        "only": [
+                            "box",
+                            "cladding"
+                        ]
+                    }
+                },
+                {
+                    "material": "Silicon",
+                    "selection": {
+                        "only": [
+                            "slab"
+                        ]
+                    }
+                },
+                {
+                    "material": "Germanium on silicon",
+                    "selection": {
+                        "only": [
+                            "pplus",
+                            "absorber",
+                            "nplus"
+                        ]
+                    }
+                }
+            ],
+            "physics": [
+                {
+                    "type": "semiconductor",
+                    "tag": "semi",
+                    "selection": {
+                        "only": [
+                            "slab",
+                            "pplus",
+                            "absorber",
+                            "nplus"
+                        ]
+                    },
+                    "features": [
+                        {
+                            "type": "model",
+                            "label": "Germanium's saturated velocities",
+                            "saturation": true,
+                            "vsatn": "6e6[cm/s]",
+                            "vsatp": "6e6[cm/s]",
+                            "selection": {
+                                "only": [
+                                    "pplus",
+                                    "absorber",
+                                    "nplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "doping",
+                            "label": "p+ germanium",
+                            "dopant": "acceptor",
+                            "N0": "1e19[1/cm^3]",
+                            "selection": {
+                                "only": [
+                                    "pplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "doping",
+                            "label": "n+ germanium",
+                            "dopant": "donor",
+                            "N0": "1e19[1/cm^3]",
+                            "selection": {
+                                "only": [
+                                    "nplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "doping",
+                            "label": "Background",
+                            "dopant": "acceptor",
+                            "N0": "1e15[1/cm^3]",
+                            "selection": {
+                                "only": [
+                                    "slab",
+                                    "absorber"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "srh",
+                            "label": "Recombination",
+                            "selection": {
+                                "all": true
+                            }
+                        },
+                        {
+                            "type": "optical",
+                            "label": "The light",
+                            "mode": "emw",
+                            "P0": "P",
+                            "selection": {
+                                "only": [
+                                    "pplus",
+                                    "absorber",
+                                    "nplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "ohmic",
+                            "label": "Anode",
+                            "name": "a",
+                            "V0": "Va",
+                            "selection": {
+                                "of": [
+                                    "pplus"
+                                ],
+                                "side": "top"
+                            }
+                        },
+                        {
+                            "type": "ohmic",
+                            "label": "Cathode",
+                            "name": "k",
+                            "V0": "0[V]",
+                            "selection": {
+                                "of": [
+                                    "nplus"
+                                ],
+                                "side": "top"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "type": "modes",
+                    "tag": "emw",
+                    "features": [
+                        {
+                            "type": "wave",
+                            "label": "Germanium's direct gap",
+                            "electroabsorption": true,
+                            "selection": {
+                                "only": [
+                                    "pplus",
+                                    "absorber",
+                                    "nplus"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ],
+            "mesh": {
+                "size": "normal",
+                "custom": true,
+                "hmax": "0.25",
+                "features": [
+                    {
+                        "type": "size",
+                        "level": "domain",
+                        "selection": {
+                            "only": [
+                                "pplus",
+                                "absorber",
+                                "nplus",
+                                "slab"
+                            ]
+                        },
+                        "hmax": "0.04"
+                    }
+                ]
+            }
+        }
+    ],
+    "studies": [
+        {
+            "type": "study",
+            "tag": "std1",
+            "label": "Dark Current",
+            "steps": [
+                {
+                    "type": "sweep",
+                    "parameters": [
+                        [
+                            "Va",
+                            "0.2, 0.1, 0, -0.5, -1, -2, -3",
+                            "V"
+                        ]
+                    ]
+                },
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "study",
+            "tag": "std2",
+            "label": "Lit, Modulated",
+            "steps": [
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                },
+                {
+                    "type": "mode",
+                    "physics": [
+                        "emw"
+                    ],
+                    "frequency": "lambda",
+                    "modes": 1,
+                    "neff": "3.9"
+                },
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                },
+                {
+                    "type": "frequency",
+                    "physics": [
+                        "semi"
+                    ],
+                    "frequencies": "logspace(1[GHz], 200[GHz], 16)"
+                }
+            ]
+        },
+        {
+            "type": "study",
+            "tag": "std3",
+            "label": "Spectral Response",
+            "steps": [
+                {
+                    "type": "sweep",
+                    "parameters": [
+                        [
+                            "lambda",
+                            "range(1500, 20, 1640)",
+                            "nm"
+                        ]
+                    ]
+                },
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                },
+                {
+                    "type": "mode",
+                    "physics": [
+                        "emw"
+                    ],
+                    "frequency": "lambda",
+                    "modes": 1,
+                    "neff": "3.9"
+                },
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                }
+            ]
+        }
+    ],
+    "results": {
+        "plots": [
+            {
+                "type": "cutline",
+                "tag": "cln1",
+                "label": "Up through the germanium",
+                "start": [
+                    "0",
+                    "0.002"
+                ],
+                "end": [
+                    "0",
+                    "0.668"
+                ],
+                "points": 400
+            },
+            {
+                "type": "cutline",
+                "tag": "cln2",
+                "label": "Across the germanium",
+                "start": [
+                    "-w/2 - 0.2",
+                    "0.45"
+                ],
+                "end": [
+                    "w/2 + 0.2",
+                    "0.45"
+                ],
+                "points": 400
+            },
+            {
+                "type": "plotgroup",
+                "label": "The Mode",
+                "study": "std2",
+                "plots": [
+                    {
+                        "type": "surface",
+                        "expression": "emw.normE"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup",
+                "label": "Light Absorbed",
+                "study": "std2",
+                "plots": [
+                    {
+                        "type": "surface",
+                        "expression": "emw.Qgap",
+                        "colors": "thermal"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup",
+                "label": "Electrons Lit",
+                "study": "std2",
+                "plots": [
+                    {
+                        "type": "surface",
+                        "expression": "log10(semi.n*1[cm^3])",
+                        "colors": "viridis"
+                    },
+                    {
+                        "type": "arrow",
+                        "x": "semi.Jx",
+                        "y": "semi.Jy",
+                        "scaling": "normalized",
+                        "color": "white"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "The Heterojunction's Bands",
+                "study": "std2",
+                "plots": [
+                    {
+                        "type": "linegraph",
+                        "data": "cln1",
+                        "expression": "semi.Ec",
+                        "unit": "eV",
+                        "xaxis": "y",
+                        "solutions": "selected"
+                    },
+                    {
+                        "type": "linegraph",
+                        "data": "cln1",
+                        "expression": "semi.Ev",
+                        "unit": "eV",
+                        "xaxis": "y",
+                        "solutions": "selected"
+                    },
+                    {
+                        "type": "linegraph",
+                        "data": "cln1",
+                        "expression": "semi.Efn",
+                        "unit": "eV",
+                        "xaxis": "y",
+                        "solutions": "selected"
+                    },
+                    {
+                        "type": "linegraph",
+                        "data": "cln1",
+                        "expression": "semi.Efp",
+                        "unit": "eV",
+                        "xaxis": "y",
+                        "solutions": "selected"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "The Field Across",
+                "study": "std2",
+                "plots": [
+                    {
+                        "type": "linegraph",
+                        "data": "cln2",
+                        "expression": "semi.normE",
+                        "unit": "kV/cm",
+                        "xaxis": "x",
+                        "solutions": "selected"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "Dark Current",
+                "study": "std1",
+                "plots": [
+                    {
+                        "type": "globalgraph",
+                        "expression": "semi.I_k",
+                        "unit": "nA"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "Frequency Response",
+                "study": "std2",
+                "plots": [
+                    {
+                        "type": "globalgraph",
+                        "label": "Transit",
+                        "expression": "semi.Hop_k"
+                    },
+                    {
+                        "type": "globalgraph",
+                        "label": "Through RL",
+                        "expression": "semi.HopRL_k"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "Responsivity against Wavelength",
+                "study": "std3",
+                "plots": [
+                    {
+                        "type": "globalgraph",
+                        "expression": "R = semi.I_k/semi.Pin",
+                        "unit": "A/W"
+                    }
+                ]
+            }
+        ],
+        "derived": [
+            {
+                "type": "global",
+                "label": "Responsivity",
+                "study": "std2",
+                "expression": "semi.I_k; semi.Iop; R = semi.I_k/semi.Pin; emw.loss; emw.neff"
+            }
+        ]
+    }
+}

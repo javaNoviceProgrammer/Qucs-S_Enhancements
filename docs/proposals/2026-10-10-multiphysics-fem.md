@@ -1157,3 +1157,133 @@ Form)*, in `fem_pde`, and an *Eigenvalue* study step; the line a 1D physics is s
 - `fisher_front`: Fisher's equation's front travelling at 1.995 (2√(rD) = 2).
 - `annulus_laplace`: Laplace's equation in a ring on curved elements, ln r / ln 2 and the flux
   2π / ln 2 through the outer circle (3 × 10⁻⁴).
+
+## Photodiodes and electroabsorption modulators, as built
+
+Built on 12 October 2026, as asked ("let's add the physics for simulating photodiodes such
+as germanium on silicon; also add the physics for electro-absorption modulator (EAM)
+simulations"). It brings heterojunctions to the semiconductors, a direct gap's absorption
+and the Franz-Keldysh effect to the mode analysis (`fem_optics`), and an *Optical
+Generation* feature that feeds a mode's light into a photodiode. About 700 lines and 500
+of tests.
+
+**How it is done:**
+- **Heterojunctions:** a semiconductor's unknown V is the first semiconductor's intrinsic
+  level (Ei = -qV); another's is offset by δ = (χ + (Ec - Ei) - the first's)/q, so that
+  Ei = -q (V + δ) - Anderson's rule. Each carrier's Scharfetter-Gummel current steps over
+  its own band potential: V + θn for electrons and V + θp for holes, θ = δ ± Vt ln(ni/ni_ref)
+  (the densities of states in ni). This is exact at equilibrium (no current where the
+  quasi-Fermi level is flat), and so are the equilibrium's carriers, n = ni e^((V + δ - φ)/Vt).
+  Ohmic and Schottky contacts subtract δ. A node on an interface belongs to its first
+  semiconductor; the bands' step is taken along the edges into the other (an abrupt
+  junction graded over one element). The band edges plotted are each element's own (a step
+  at the interface); the quasi-Fermi levels are the nodes' own, linear between them (no
+  step). One semiconductor alone is as before (δ = θ = 0).
+- **A direct gap's absorption:** α = A √((ħω - Eg)/1 eV) (1 eV/ħω) without a field. Under one,
+  the Franz-Keldysh effect (Callaway, Tharmalingam):
+  α = A (ħθ/1 eV)^½ π (Ai'(β)² - β Ai(β)²) (1 eV/ħω), with β = (Eg - ħω)/ħθ and
+  ħθ = (q²ħ²F²/2µ)^⅓. This gives a tail below the gap and ripples above it. Airy's functions
+  are our own (libc++ has none): a power series near nought, Poincaré's expansions beyond
+  5.5 and -8 (6 × 10⁻⁹ against SciPy's).
+  - An optional Gaussian broadening σ of the gap stands for a real edge's tail. It is
+    integrated by Simpson's rule, in t = √(ħω - Eg - s) without a field, to smooth the
+    √ kink.
+  - A wave feature's *Direct-gap absorption* adds α λ/4π to κ, the field F read from an
+    expression (semi.normE). The gap, reduced mass and strength (Egd, mr, Afk) come from the
+    material: Germanium 0.80 eV, Germanium on silicon - 0.25 % tensile, a new entry - 0.773 eV;
+    both µ 0.03, A 2 × 10⁴ /cm, 8000 /cm at 1310 nm and 4100 /cm at 1550 nm on silicon.
+    They can also be given as the user's own.
+- **What a mode absorbs:** at each mode selected, each triangle's n, the κ absorbed across a
+  gap (the medium's own and the direct gap's, not the free carriers'), and the direct gap's
+  κ with and without a field are kept with the mode.
+  - Variables, the mode at 1 W: emw.Qh (all it absorbs, ½ ω ε0 Σ -Im εk |Ek|²), emw.Qgap
+    (ω ε0 n κ |E|² across the gap), emw.alphagap, emw.dalphaEA.
+  - Globals: emw.loss_gap (dB/m absorbed across the gap) and emw.dloss_EA (what the field
+    adds over none at all).
+  - emw.loss_gap equals emw.loss from Im β to 10⁻¹² when the gap absorbs all of it -
+    Poynting's theorem holding on the discrete fields.
+- **Optical Generation** (a semiconductor's domain feature: the mode analysis's tag, P0, η,
+  a load RL):
+  - Each photon the mode loses across the gap makes η pairs: G = η P0 emw.Qgap × mean / hν.
+  - The power falls along the device as e^(-2αz); mean = (1 - e^(-2αL))/2αL over its length
+    L, the model's thickness, so the semiconductor's current is the whole device's.
+  - Before the mode is solved (a dark step) there are none.
+  - Globals: semi.Gop (pairs per second), semi.Iop = q Gop, semi.Pin. A responsivity is
+    semi.I_k/semi.Pin.
+- **Its response, modulated:** a frequency step solves the small-signal system once more,
+  the light modulated wholly (δG = G), the contacts held. Each contact's current comes by
+  the same weights as the admittance's: semi.Hop_<c> = |δI_c|/(q Gop) - at low frequency the
+  share collected, falling with the carriers' transit.
+  - semi.HopRL_<c> puts the device's own Y_cc beside the load: × RL⁻¹/(RL⁻¹ + Y_cc).
+  - The 3 dB bandwidth is where it is 1/√2 of its low frequency's.
+- **Its study:** a stationary semi step (dark), a mode emw step (reading semi.normE), a
+  stationary semi step (lit: reading emw.Qgap), then a frequency step. Swept, each point
+  starts from the last. A frequency step after a mode analysis makes a series of its own,
+  each snapshot with the mode's fields and globals. It does not follow the mode's snapshot
+  at the light's 193 THz, which a 1D plot group would draw along the modulation's
+  frequencies.
+
+**Where it differs from what such tools have:**
+- **Heterojunctions:** graded over an element, not thermionic emission over an abrupt step
+  (no double nodes); Boltzmann's statistics, so a heavily doped heterojunction's degenerate
+  side is not exact; no band-to-band tunnelling.
+- **The Franz-Keldysh effect:** one reduced mass (germanium's heavy and light holes
+  together, µ 0.03); no excitons; no electrorefraction (Δn by Kramers and Kronig) - a
+  modulator's chirp is not given; germanium's indirect absorption is not modelled (small
+  at 1550 nm).
+- **The quantum-confined Stark effect:** the quantum wells physics gives its spectra (the
+  InGaAs/InAlAs example), but they do not feed the mode analysis yet: a multiple quantum
+  well modulator's loss against its bias is not modelled.
+- **Coupling:** the steps in turn, not iterated - a photocurrent's space charge is felt by
+  the next mode step only.
+- **Free carriers in germanium:** the plasma dispersion is silicon's (Soref and Bennett's),
+  so it is left off germanium.
+
+**Fast enough** (M-series Mac, Release):
+- a Ge-on-Si photodiode's dark, lit and 16 frequencies on 4,200 elements: 2 s;
+- its spectral response at 8 wavelengths: 13 s;
+- a modulator against 5 biases: 8 s; its 26 spectra points: 36 s.
+
+**Checked:**
+- `test_fem_optoelectronics` (5; 15 s, 4.5 minutes under the sanitizers on a coarser mesh):
+  - Airy's functions against SciPy's at 19 points (6 × 10⁻⁹), the Franz-Keldysh absorption
+    at five photon energies and fields (10⁻⁶), and broadened at four (2 × 10⁻³);
+  - a 15 µm photodiode:
+    - its mode's loss and ∫ ω ε0 n κ |E|² (10⁻⁶);
+    - the pairs against the photons it absorbs, P (1 - e^(-2αL))/hν (0.6 %);
+    - the photocurrent and 92 % collected;
+    - the 1 MHz response against the share collected (0.3 %), falling by 100 GHz;
+  - a 50 µm modulator from 0 to -3 V:
+    - its loss tenfold;
+    - the rise against dloss_EA's (10⁻²), the zero field's share the same at both;
+    - the local α against the formula at the semiconductor's field (10⁻⁵);
+  - the two examples against their descriptions.
+  - Fourteen deliberate breaks were run against it and the heterojunction's test, one at a
+    time; each fails at least one:
+    - in the heterojunctions: the currents without the bands' offsets, an ohmic contact
+      without δ, Ec without δ;
+    - in the absorption: the Franz-Keldysh formula without π, Airy's expansions from 3.5,
+      the broadening's t for t²;
+    - in the photodiode: no mean along the device, a photon's energy hc, the modulated
+      light without its holes;
+    - in the mode's absorption: loss_gap without n, κ across the gap without the direct
+      gap's, dloss_EA not less its zero field, no field read, no broadening read.
+- `test_fem_semiconductor` adds a heterojunction:
+  - n-Si beside n-Ge at equilibrium: each side's Ec - EF kT ln(Nc/Nd) to 0.1 meV, the steps
+    0.050 and 0.510 eV, the Fermi level flat to 10⁻¹⁶ eV, no current;
+  - a p-Ge n⁺-Si short diode's current, q Dn ni_Ge² / (Na W) (e^(V/Vt) - 1), forward and
+    reversed (0.3 %).
+
+**Examples:**
+- `ge_photodiode`: a lateral p-i-n of germanium on a silicon waveguide, 15 µm long, at -1 V.
+  - Responsivity: 1.15 A/W at 1550 nm (92 % collected).
+  - Dark current: 7.2 nA.
+  - Bandwidth: 27 GHz, transit and diffusion.
+  - Along the wavelength: 1.11 to 1.18 A/W to 1580 nm, then 0.45 A/W at 1620 nm past the
+    strained edge.
+  - Its heterojunction's bands: a 0.52 eV valence step keeps the holes in the germanium.
+- `gesi_eam`: a germanium-silicon (Egd 0.82 eV, broadened 8 meV) stripe, 50 µm long.
+  - At 1550 nm: 0.65 dB inserted at 0 V, 5.6 dB of extinction at -3 V and 7.3 dB at -4 V.
+  - Photocurrent: 0.95 mA at -3 V.
+  - Its spectra at 0 and -3 V (a curve per bias, the two-parameter sweep's axes): above the
+    gap the field lowers the absorption, below it raises it.

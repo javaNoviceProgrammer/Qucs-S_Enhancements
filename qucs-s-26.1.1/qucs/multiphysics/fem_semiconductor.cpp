@@ -40,6 +40,10 @@ namespace {
 constexpr double Q = 1.602176634e-19;    // C
 constexpr double KB = 1.380649e-23;      // J/K
 const double Inf = std::numeric_limits<double>::infinity();
+// The field's extra: Vt, T, ni_ref, then each triangle's µn, µp, Ec - Ei, Eg,
+// ni, τn, τp, Et, Cn, Cp, B, δ (NaN where it is no semiconductor); its values
+// V, n, p, Nd, Na, θn, θp by node.
+constexpr int ExtraHead = 3, PerTriangle = 12;
 
 /// Bernoulli's function x / (e^x - 1) and its derivative, safe at 0 and far
 /// from it.
@@ -75,7 +79,16 @@ struct Medium {
     double taun = Inf, taup = Inf, Et = 0;   // Et: the trap's level above the intrinsic one (J)
     double Cn = 0, Cp = 0, B = 0;
     std::vector<Expression> generation;
+    std::vector<int> optical;        // the Optical Generation features on it (a_optical's)
     double ni = 0, dEc = 0;          // the intrinsic density; Ec - Ei (J)
+};
+
+/// Light absorbed from a mode, made electron-hole pairs: the power fed P0,
+/// each photon absorbed across the gap a pair (η of them).
+struct OpticalSource {
+    QString mode;                    // the mode analysis's tag
+    Expression absorbed;             // its <tag>.Qgap (W/m³, the mode at 1 W)
+    double P0 = 0, eta = 1, RL = 50;
 };
 
 struct Contact {
@@ -164,6 +177,16 @@ private:
     std::vector<std::vector<double>> currentWeights(const Eigen::VectorXd& x);
     /// The edge mobilities at the fields of \a x (high fields lower them).
     void updateMobilities(const Eigen::VectorXd& x);
+    /// Along edge \a e at \a x: the electrons' and the holes' potential
+    /// steps in Vt - the potential's, and across a heterojunction the bands'
+    /// offsets (θn, θp: the intrinsic level's, and the densities of states'
+    /// as ni has them).
+    void edgeSteps(const Edge& e, const Eigen::VectorXd& x, double* dn, double* dp) const
+    {
+        const double dV = x(a_iV[std::size_t(e.j)]) - x(a_iV[std::size_t(e.i)]);
+        *dn = (dV + a_thetaN[std::size_t(e.j)] - a_thetaN[std::size_t(e.i)]) / a_Vt;
+        *dp = (dV + a_thetaP[std::size_t(e.j)] - a_thetaP[std::size_t(e.i)]) / a_Vt;
+    }
 
     int a_n = 0;                       // nodes (P1 degrees of freedom)
     double a_T = 300, a_Vt = 0.025852;
@@ -174,6 +197,12 @@ private:
     std::vector<int> a_nodeDomain;     // a node's semiconductor domain (-1: none)
     std::vector<double> a_box;         // by node: its share of semiconductor (m³)
     std::vector<double> a_Nd, a_Na, a_ni, a_n1, a_p1;
+    // By node, across heterojunctions: the intrinsic level's offset from the
+    // first semiconductor's (V: Ei = -q (V + δ)), and the electrons' and
+    // holes' band potentials θn = δ + Vt ln(ni/ni_ref), θp = δ - Vt ln(ni/ni_ref)
+    // - n = ni_ref exp((V + θn - φn)/Vt), p = ni_ref exp((φp - V - θp)/Vt).
+    std::vector<double> a_delta, a_thetaN, a_thetaP;
+    double a_refNi = 1;
     std::vector<std::array<double, 9>> a_K;   // by triangle: ε0 εr ∫∇φi·∇φj (weighted)
     std::vector<Edge> a_edges;
     // By triangle of a semiconductor: its low-field mobilities, its edges
@@ -198,6 +227,9 @@ private:
     std::vector<double> a_surfaceLength;                 // by entry: area (m²)
     std::vector<std::pair<int, std::array<double, 3>>> a_nodePoint;   // a node's triangle and reference point
     std::vector<double> a_generation;  // by node (1/(m³ s)), at the last solve
+    std::vector<OpticalSource> a_optical;
+    double a_Gop = 0, a_Pin = 0;       // the optical generation's pairs per second, the light fed (W)
+    std::vector<std::complex<double>> a_Hop;   // small-signal: each contact's current, the light modulated wholly (A)
     bool a_saturation = false;
     double a_refDEc = 0, a_refChi = 0; // the first semiconductor's: Ec - Ei, χ (J)
     QString a_initError;
@@ -272,6 +304,7 @@ bool SemiconductorProblem::setup(QString* error)
     };
     std::vector<DopingDef> dopings;
     std::vector<const Node*> boundaryFeatures;
+    a_optical.clear();
     for (const Node& feature : a_node->children) {
         if (!feature.enabled) continue;
         const NodeKind* k = feature.kind();
@@ -288,6 +321,25 @@ bool SemiconductorProblem::setup(QString* error)
             const Expression g = compile(feature.text(QStringLiteral("G")), feature, QStringLiteral("G"));
             if (g.isValid())
                 for (int d : picked) a_media[std::size_t(d)].generation.push_back(g);
+        } else if (t == QLatin1String("semiconductor/optical")) {
+            OpticalSource o;
+            o.mode = feature.text(QStringLiteral("mode")).trimmed();
+            if (o.mode.isEmpty()) o.mode = QStringLiteral("emw");
+            if (a_s.fieldIndex(o.mode) < 0 || a_s.fields()[std::size_t(a_s.fieldIndex(o.mode))].type != QLatin1String("modes")) {
+                problem(tr("%1: there is no mode analysis %2 (Electromagnetic Waves, Mode Analysis) to take its light from").arg(feature.name(), o.mode));
+                continue;
+            }
+            // (What it reads noted: the mode's field.)
+            o.absorbed = Expression::compile(o.mode + QStringLiteral(".Qgap"), a_s.pointScope());
+            for (int slot : o.absorbed.variables())
+                if (a_s.definitions()[std::size_t(slot)].field >= 0) a_reads.insert(a_s.definitions()[std::size_t(slot)].field);
+            o.P0 = number(feature.text(QStringLiteral("P0")), Dim::power(), feature.name());
+            o.eta = number(feature.text(QStringLiteral("eta")), Dim(), feature.name());
+            o.RL = number(feature.text(QStringLiteral("RL")), Dim::of(2, 1, -3, -2), feature.name());
+            if (!(o.P0 >= 0) || !(o.eta >= 0 && o.eta <= 1)) problem(tr("%1: its power at least 0, its efficiency between 0 and 1").arg(feature.name()));
+            const int index = int(a_optical.size());
+            a_optical.push_back(o);
+            for (int d : picked) a_media[std::size_t(d)].optical.push_back(index);
         } else if (k->selection == Level::Boundary) boundaryFeatures.push_back(&feature);
     }
     // Each domain's medium.
@@ -332,6 +384,7 @@ bool SemiconductorProblem::setup(QString* error)
         if (!referenced) {
             a_refDEc = m.dEc;
             a_refChi = m.chi;
+            a_refNi = m.ni;
             referenced = true;
         }
         if (mf && mf->text(QStringLiteral("mobility")) == QLatin1String("doping")) {
@@ -520,7 +573,11 @@ bool SemiconductorProblem::setup(QString* error)
     a_ni.assign(std::size_t(a_n), 0);
     a_n1.assign(std::size_t(a_n), 0);
     a_p1.assign(std::size_t(a_n), 0);
+    a_delta.assign(std::size_t(a_n), 0);
+    a_thetaN.assign(std::size_t(a_n), 0);
+    a_thetaP.assign(std::size_t(a_n), 0);
     a_scale = 0;
+    bool hetero = false;
     for (int i = 0; i < a_n; ++i) {
         const int d = a_nodeDomain[std::size_t(i)];
         if (d < 0) continue;
@@ -529,6 +586,19 @@ bool SemiconductorProblem::setup(QString* error)
         a_n1[std::size_t(i)] = m.ni * std::exp(m.Et / (KB * a_T));
         a_p1[std::size_t(i)] = m.ni * std::exp(-m.Et / (KB * a_T));
         a_scale = std::max({a_scale, std::abs(doping(i)), m.ni});
+        // (A node on a heterojunction is its first semiconductor's: the
+        // bands' step is taken along the edges into the other.)
+        const double delta = (m.chi + m.dEc - a_refChi - a_refDEc) / Q, spread = a_Vt * std::log(m.ni / a_refNi);
+        a_delta[std::size_t(i)] = delta;
+        a_thetaN[std::size_t(i)] = delta + spread;
+        a_thetaP[std::size_t(i)] = delta - spread;
+        hetero = hetero || std::abs(delta) > 1e-9 || std::abs(spread) > 1e-9;
+    }
+    if (hetero) {
+        const QString line = tr("%1: heterojunctions - the bands' offsets (Anderson's rule: the electron affinities, the band gaps) "
+                                "between its semiconductors")
+                                 .arg(a_node->name());
+        if (!a_s.log.contains(line)) a_s.log << line;
     }
     if (!(a_scale > 0)) a_scale = 1e16;
     // Mobilities by element (doping: the element's nodes' mean), then by edge.
@@ -658,20 +728,22 @@ bool SemiconductorProblem::setup(QString* error)
     a_bcN.assign(std::size_t(a_n), 0);
     a_bcP.assign(std::size_t(a_n), 0);
     // The field's constant parts: the doping; what the variables read.
-    f.values.resize(std::size_t(5) * std::size_t(a_n), 0.0);
+    f.values.resize(std::size_t(7) * std::size_t(a_n), 0.0);
     for (int i = 0; i < a_n; ++i) {
         f.values[std::size_t(3 * a_n + i)] = a_Nd[std::size_t(i)];
         f.values[std::size_t(4 * a_n + i)] = a_Na[std::size_t(i)];
+        f.values[std::size_t(5 * a_n + i)] = a_thetaN[std::size_t(i)];
+        f.values[std::size_t(6 * a_n + i)] = a_thetaP[std::size_t(i)];
     }
-    // extra: Vt, T, then each triangle's µn, µp, Ec - Ei, Eg, ni, τn, τp, Et, Cn, Cp, B
-    // (NaN where it is no semiconductor).
-    f.extra.assign(std::size_t(2 + 11 * nt), NaN);
+    // (The layout: ExtraHead's.)
+    f.extra.assign(std::size_t(ExtraHead + PerTriangle * nt), NaN);
     f.extra[0] = a_Vt;
     f.extra[1] = a_T;
+    f.extra[2] = a_refNi;
     for (int t = 0; t < nt; ++t) {
         if (!a_elemSemi[std::size_t(t)]) continue;
         const Medium& m = a_media[std::size_t(mesh.domain[std::size_t(t)])];
-        double* e = &f.extra[std::size_t(2 + 11 * t)];
+        double* e = &f.extra[std::size_t(ExtraHead + PerTriangle * t)];
         e[0] = mun[std::size_t(t)];
         e[1] = mup[std::size_t(t)];
         e[2] = m.dEc;
@@ -683,6 +755,7 @@ bool SemiconductorProblem::setup(QString* error)
         e[8] = m.Cn;
         e[9] = m.Cp;
         e[10] = m.B;
+        e[11] = (m.chi + m.dEc - a_refChi - a_refDEc) / Q;
     }
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
@@ -762,14 +835,14 @@ void SemiconductorProblem::contactValues(const std::vector<double>& applied)
             }
             const Medium& m = a_media[std::size_t(a_nodeDomain[std::size_t(i)])];
             if (c.kind == Contact::Schottky) {
-                a_bcV[std::size_t(i)] = va + (m.dEc - c.phiB) / Q;
+                a_bcV[std::size_t(i)] = va + (m.dEc - c.phiB) / Q - a_delta[std::size_t(i)];
                 continue;
             }
             double n = 0, p = 0;
             neutral(i, &n, &p);
             a_bcN[std::size_t(i)] = n;
             a_bcP[std::size_t(i)] = p;
-            a_bcV[std::size_t(i)] = va + a_Vt * std::log(n / a_ni[std::size_t(i)]);
+            a_bcV[std::size_t(i)] = va + a_Vt * std::log(n / a_ni[std::size_t(i)]) - a_delta[std::size_t(i)];
         }
     }
 }
@@ -847,15 +920,17 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             }
         }
     }
-    // The carriers' currents along the edges.
+    // The carriers' currents along the edges (each carrier's potential step
+    // the potential's and its band's offset).
     for (const Edge& e : a_edges) {
         if (e.w <= 0) continue;
         const int i = e.i, j = e.j;
-        const double d = (V(j) - V(i)) / a_Vt;
-        const double bp = bern(d), bm = bern(-d), dbp = dbern(d), dbm = dbern(-d);
+        double dN = 0, dP = 0;
+        edgeSteps(e, x, &dN, &dP);
         const int ni = a_iN[std::size_t(i)], nj = a_iN[std::size_t(j)], pi = a_iP[std::size_t(i)], pj = a_iP[std::size_t(j)];
         const int vi = a_iV[std::size_t(i)], vj = a_iV[std::size_t(j)];
         {
+            const double bp = bern(dN), bm = bern(-dN), dbp = dbern(dN), dbm = dbern(-dN);
             const double fn = e.wn * (nn(j) * bp - nn(i) * bm);
             F(ni) += fn;
             F(nj) -= fn;
@@ -869,6 +944,7 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             }
         }
         {
+            const double bp = bern(dP), bm = bern(-dP), dbp = dbern(dP), dbm = dbern(-dP);
             const double fp = e.wp * (pp(i) * bp - pp(j) * bm);
             F(pi) += fp;
             F(pj) -= fp;
@@ -1081,13 +1157,13 @@ bool SemiconductorProblem::atEquilibrium(const std::vector<double>& goal, double
 
 bool SemiconductorProblem::equilibriumPoisson(Eigen::VectorXd& x, double fermi, const std::vector<double>& applied, bool warm, QString* why)
 {
-    // V alone; n = ni exp((V - φ)/Vt), p = ni exp((φ - V)/Vt).
+    // V alone; n = ni exp((V + δ - φ)/Vt), p = ni exp((φ - V - δ)/Vt).
     contactValues(applied);
     if (!warm)
         for (int i = 0; i < a_n; ++i) {
             if (a_iV[std::size_t(i)] < 0) continue;
             double v = fermi;
-            if (a_nodeDomain[std::size_t(i)] >= 0) v += a_Vt * std::asinh(doping(i) / (2 * a_ni[std::size_t(i)]));
+            if (a_nodeDomain[std::size_t(i)] >= 0) v += a_Vt * std::asinh(doping(i) / (2 * a_ni[std::size_t(i)])) - a_delta[std::size_t(i)];
             x(a_iV[std::size_t(i)]) = v;
         }
     std::vector<int> vIndex;
@@ -1128,7 +1204,7 @@ bool SemiconductorProblem::equilibriumPoisson(Eigen::VectorXd& x, double fermi, 
         if (alpha == 1.0 && maxDV < 1e-10 * a_Vt) {
             for (int i = 0; i < a_n; ++i) {
                 if (a_iN[std::size_t(i)] < 0) continue;
-                const double v = (x(a_iV[std::size_t(i)]) - fermi) / a_Vt, ni = a_ni[std::size_t(i)];
+                const double v = (x(a_iV[std::size_t(i)]) + a_delta[std::size_t(i)] - fermi) / a_Vt, ni = a_ni[std::size_t(i)];
                 x(a_iN[std::size_t(i)]) = ni * std::exp(std::clamp(v, -600.0, 600.0));
                 x(a_iP[std::size_t(i)]) = ni * std::exp(std::clamp(-v, -600.0, 600.0));
             }
@@ -1148,7 +1224,7 @@ void SemiconductorProblem::equilibriumSystem(const Eigen::VectorXd& x0, double f
     Eigen::VectorXd x = x0;
     for (int i = 0; i < a_n; ++i) {
         if (a_iN[std::size_t(i)] < 0) continue;
-        const double v = (x(a_iV[std::size_t(i)]) - fermi) / a_Vt, ni = a_ni[std::size_t(i)];
+        const double v = (x(a_iV[std::size_t(i)]) + a_delta[std::size_t(i)] - fermi) / a_Vt, ni = a_ni[std::size_t(i)];
         x(a_iN[std::size_t(i)]) = ni * std::exp(std::clamp(v, -600.0, 600.0));
         x(a_iP[std::size_t(i)]) = ni * std::exp(std::clamp(-v, -600.0, 600.0));
     }
@@ -1283,10 +1359,10 @@ std::vector<std::vector<double>> SemiconductorProblem::currentWeights(const Eige
         const Edge& e = a_edges[k];
         if (e.w <= 0) continue;
         const int i = e.i, j = e.j;
-        const double d = (x(a_iV[std::size_t(j)]) - x(a_iV[std::size_t(i)])) / a_Vt;
-        const double bp = bern(d), bm = bern(-d);
+        double dN = 0, dP = 0;
+        edgeSteps(e, x, &dN, &dP);
         const double ni = x(a_iN[std::size_t(i)]), nj = x(a_iN[std::size_t(j)]), pi = x(a_iP[std::size_t(i)]), pj = x(a_iP[std::size_t(j)]);
-        g[k] = e.wn * 0.5 * (ni * bm + nj * bp) + e.wp * 0.5 * (pi * bp + pj * bm);
+        g[k] = e.wn * 0.5 * (ni * bern(-dN) + nj * bern(dN)) + e.wp * 0.5 * (pi * bern(dP) + pj * bern(-dP));
         if (std::isfinite(g[k])) largest = std::max(largest, g[k]);
     }
     for (double& v : g) v = largest > 0 && std::isfinite(v) ? std::max(v / largest, 1e-12) : 1e-12;
@@ -1361,10 +1437,10 @@ void SemiconductorProblem::terminalValues(const Eigen::VectorXd& x, double mass,
             const double dw = w[std::size_t(e.i)] - w[std::size_t(e.j)];
             if (dw == 0) continue;
             const int i = e.i, j = e.j;
-            const double d = (x(a_iV[std::size_t(j)]) - x(a_iV[std::size_t(i)])) / a_Vt;
-            const double bp = bern(d), bm = bern(-d);
-            const double fn = e.wn * (x(a_iN[std::size_t(j)]) * bp - x(a_iN[std::size_t(i)]) * bm);
-            const double fp = e.wp * (x(a_iP[std::size_t(i)]) * bp - x(a_iP[std::size_t(j)]) * bm);
+            double dN = 0, dP = 0;
+            edgeSteps(e, x, &dN, &dP);
+            const double fn = e.wn * (x(a_iN[std::size_t(j)]) * bern(dN) - x(a_iN[std::size_t(i)]) * bern(-dN));
+            const double fp = e.wp * (x(a_iP[std::size_t(i)]) * bern(dP) - x(a_iP[std::size_t(j)]) * bern(-dP));
             I += (fn + fp) * dw;
         }
         if (mass > 0 && history)
@@ -1526,18 +1602,10 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         if (fixed[std::size_t(t.row())] && colNode[std::size_t(t.row())] >= 0 && colKind[std::size_t(t.row())] == 0) rows[t.row()].emplace_back(t.col(), t.value());
     const std::size_t nc = a_contacts.size();
     const std::vector<std::vector<double>> weight = currentWeights(x);
-    a_Y.assign(nc, std::vector<cd>(nc, cd(0, 0)));
-    for (std::size_t k = 0; k < nc; ++k) {
-        Eigen::VectorXcd rhs = Eigen::VectorXcd::Zero(a_unknowns);
-        // (A fixed row reads Vt y = 1 V: y in units of Vt.)
-        for (int i : a_contacts[k].nodes) {
-            rhs(a_iV[std::size_t(i)]) = cd(1.0 / rowMax(a_iV[std::size_t(i)]), 0);
-            if (a_contacts[k].kind == Contact::Ohmic) {
-                rhs(a_iN[std::size_t(i)]) = cd(1.0 / rowMax(a_iN[std::size_t(i)]), 0);
-                rhs(a_iP[std::size_t(i)]) = cd(1.0 / rowMax(a_iP[std::size_t(i)]), 0);
-            }
-        }
-        const Eigen::VectorXcd dy = lu.solve(rhs);   // δV/Vt, δφn/Vt, δφp/Vt
+    // Each contact's current's change for a solution's change dy (δV/Vt,
+    // δφn/Vt, δφp/Vt): the edges' currents' and the carriers' at jω weighed,
+    // and its metal's charge's at jω.
+    auto terminals = [&](const Eigen::VectorXcd& dy) {
         Eigen::VectorXcd dx(a_unknowns);
         for (int j = 0; j < a_unknowns; ++j) {
             const int i = colNode[std::size_t(j)];
@@ -1558,14 +1626,15 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
             const Edge& e = a_edges[m];
             if (e.w <= 0) continue;
             const int i = e.i, j = e.j;
-            const double d = (x(a_iV[std::size_t(j)]) - x(a_iV[std::size_t(i)])) / a_Vt;
-            const double bp = bern(d), bm = bern(-d), dbp = dbern(d), dbm = dbern(-d);
+            double dN = 0, dP = 0;
+            edgeSteps(e, x, &dN, &dP);
             const int ni = a_iN[std::size_t(i)], nj = a_iN[std::size_t(j)], pi = a_iP[std::size_t(i)], pj = a_iP[std::size_t(j)];
             const cd dV = (dx(a_iV[std::size_t(j)]) - dx(a_iV[std::size_t(i)])) / a_Vt;
-            const cd dfn = e.wn * (bp * dx(nj) - bm * dx(ni) + (x(nj) * dbp + x(ni) * dbm) * dV);
-            const cd dfp = e.wp * (bp * dx(pi) - bm * dx(pj) + (x(pi) * dbp + x(pj) * dbm) * dV);
+            const cd dfn = e.wn * (bern(dN) * dx(nj) - bern(-dN) * dx(ni) + (x(nj) * dbern(dN) + x(ni) * dbern(-dN)) * dV);
+            const cd dfp = e.wp * (bern(dP) * dx(pi) - bern(-dP) * dx(pj) + (x(pi) * dbern(dP) + x(pj) * dbern(-dP)) * dV);
             df[m] = dfn + dfp;
         }
+        std::vector<cd> out(nc, cd(0, 0));
         for (std::size_t c = 0; c < nc; ++c) {
             const Contact& ct2 = a_contacts[c];
             cd dI(0, 0), dQ(0, 0);
@@ -1581,8 +1650,38 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
                     if (w[std::size_t(i)] != 0 && a_iN[std::size_t(i)] >= 0)
                         dI += w[std::size_t(i)] * cd(0, omega) * Q * a_box[std::size_t(i)] * (dx(a_iP[std::size_t(i)]) - dx(a_iN[std::size_t(i)]));
             }
-            a_Y[c][k] = dI + cd(0, omega) * dQ;
+            out[c] = dI + cd(0, omega) * dQ;
         }
+        return out;
+    };
+    a_Y.assign(nc, std::vector<cd>(nc, cd(0, 0)));
+    for (std::size_t k = 0; k < nc; ++k) {
+        Eigen::VectorXcd rhs = Eigen::VectorXcd::Zero(a_unknowns);
+        // (A fixed row reads Vt y = 1 V: y in units of Vt.)
+        for (int i : a_contacts[k].nodes) {
+            rhs(a_iV[std::size_t(i)]) = cd(1.0 / rowMax(a_iV[std::size_t(i)]), 0);
+            if (a_contacts[k].kind == Contact::Ohmic) {
+                rhs(a_iN[std::size_t(i)]) = cd(1.0 / rowMax(a_iN[std::size_t(i)]), 0);
+                rhs(a_iP[std::size_t(i)]) = cd(1.0 / rowMax(a_iP[std::size_t(i)]), 0);
+            }
+        }
+        const std::vector<cd> dI = terminals(lu.solve(rhs));
+        for (std::size_t c = 0; c < nc; ++c) a_Y[c][k] = dI[c];
+    }
+    // The light modulated wholly (δG = G), the contacts held: each one's
+    // current - a photodiode's response, its carriers' transit.
+    a_Hop.clear();
+    if (a_Gop > 0) {
+        Eigen::VectorXcd rhs = Eigen::VectorXcd::Zero(a_unknowns);
+        for (int i = 0; i < a_n; ++i) {
+            const double g = a_generation.empty() ? 0.0 : a_generation[std::size_t(i)];
+            if (g == 0 || a_iN[std::size_t(i)] < 0) continue;
+            const int rn = a_iN[std::size_t(i)], rp = a_iP[std::size_t(i)];
+            // (F's rows hold -qA (R - G) and qA (R - G): ∂F/∂G qA and -qA; J δx = -∂F/∂G δG.)
+            if (!fixed[std::size_t(rn)]) rhs(rn) = cd(-Q * a_box[std::size_t(i)] * g / rowMax(rn), 0);
+            if (!fixed[std::size_t(rp)]) rhs(rp) = cd(Q * a_box[std::size_t(i)] * g / rowMax(rp), 0);
+        }
+        a_Hop = terminals(lu.solve(rhs));
     }
     a_frequency = frequency;
     return true;
@@ -1607,10 +1706,28 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
     // Generation at the nodes, as it is now (it may read other fields, t).
     a_generation.assign(std::size_t(a_n), 0.0);
     {
+        // The light of each mode fed P0: its power absorbed across the gap
+        // (Qgap, for 1 W) made pairs, a photon each, η of them - along the
+        // device its power falls as e^(-2αz): over its length L (the
+        // thickness) the mean (1 - e^(-2αL))/2αL of what it starts with. A
+        // mode not solved yet (the dark current's step): none.
+        std::vector<double> perWatt(a_optical.size(), 0.0);
+        a_Pin = 0;
+        for (std::size_t k = 0; k < a_optical.size(); ++k) {
+            const OpticalSource& o = a_optical[k];
+            const std::optional<double> alpha = a_s.global(o.mode + QStringLiteral(".alpha"));
+            const std::optional<double> lambda = a_s.global(o.mode + QStringLiteral(".lambda0"));
+            if (!alpha || !lambda || !(*lambda > 0)) continue;
+            const double L = a_s.axisymmetric() ? 1.0 : a_s.thickness(), x = 2 * std::max(*alpha, 0.0) * L;
+            const double mean = x > 1e-9 ? -std::expm1(-x) / x : 1.0;
+            const double photon = 6.62607015e-34 * 299792458.0 / *lambda;
+            perWatt[k] = o.eta * o.P0 * mean / photon;
+            a_Pin += o.P0;
+        }
         PointEvaluator ev(a_s);
         for (int i = 0; i < a_n; ++i) {
             const int d = a_nodeDomain[std::size_t(i)];
-            if (d < 0 || a_media[std::size_t(d)].generation.empty()) continue;
+            if (d < 0 || (a_media[std::size_t(d)].generation.empty() && a_media[std::size_t(d)].optical.empty())) continue;
             const auto& [t, r] = a_nodePoint[std::size_t(i)];
             ev.moveTo(t, r[0], r[1]);
             double g = 0;
@@ -1618,8 +1735,15 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
                 const double v = ev.eval(e);
                 if (std::isfinite(v)) g += v;
             }
+            for (int k : a_media[std::size_t(d)].optical) {
+                if (perWatt[std::size_t(k)] == 0 || !a_optical[std::size_t(k)].absorbed.isValid()) continue;
+                const double q = ev.eval(a_optical[std::size_t(k)].absorbed);
+                if (std::isfinite(q) && q > 0) g += perWatt[std::size_t(k)] * q;
+            }
             a_generation[std::size_t(i)] = g;
         }
+        a_Gop = 0;
+        for (int i = 0; i < a_n; ++i) a_Gop += a_generation[std::size_t(i)] * a_box[std::size_t(i)];
     }
     if (o.harmonic && o.frequency > 0) {
         if (!field().solved && !stationary(error)) return false;
@@ -1711,6 +1835,36 @@ void SemiconductorProblem::setGlobals()
                               tr("small-signal capacitance, %1 from %2").arg(na, nb));
             }
     }
+    // Light: the pairs it makes, what they would carry each collected, the
+    // power fed; modulated, each contact's share of it - the carriers'
+    // transit, and with the load RL across the contact its RC too (the
+    // device's own admittance Y beside RL: H RL⁻¹/(RL⁻¹ + Y)).
+    if (!a_optical.empty() || a_Gop > 0) {
+        a_s.setGlobal(p + QStringLiteral("Gop"), a_Gop, Dim::of(0, 0, -1),
+                      tr("electron-hole pairs made per second - the light absorbed across the gap, and any generation given"));
+        a_s.setGlobal(p + QStringLiteral("Iop"), Q * a_Gop, Dim::current(), tr("their current, every pair collected: q Gop"));
+    }
+    if (!a_optical.empty())
+        a_s.setGlobal(p + QStringLiteral("Pin"), a_Pin, Dim::power(),
+                      tr("the light fed (W) - a responsivity |I|/Pin, an external quantum efficiency |I|/Pin hc/qλ"));
+    if (!a_Hop.empty() && a_frequency > 0 && a_Gop > 0) {
+        const double RL = a_optical.empty() ? 50.0 : a_optical.front().RL;
+        for (std::size_t c = 0; c < a_contacts.size(); ++c) {
+            const QString name = a_contacts[c].name;
+            const std::complex<double> h = a_Hop[c] / (Q * a_Gop);
+            a_s.setGlobal(p + QStringLiteral("Hop_") + name, std::abs(h), Dim(),
+                          tr("small-signal photocurrent at %1 per pair made, the light modulated (1 at low frequency, every pair "
+                             "collected): its transit's roll-off")
+                              .arg(name));
+            if (RL > 0 && a_Y.size() > c) {
+                const std::complex<double> yl = 1 / RL, loaded = h * yl / (yl + a_Y[c][c]);
+                a_s.setGlobal(p + QStringLiteral("HopRL_") + name, std::abs(loaded), Dim(),
+                              tr("the same through the load RL across %1 (the device's capacitance charged through it): a photodiode's "
+                                 "bandwidth, where it is 1/√2 of its low frequency's")
+                                  .arg(name));
+            }
+        }
+    }
 }
 
 } // namespace
@@ -1726,9 +1880,9 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     const Solution& sol = e.solution();
     const Field& field = sol.fields()[std::size_t(f)];
     const int t = e.triangle();
-    if (t < 0 || field.extra.size() < std::size_t(2 + 11 * (t + 1))) return s;
-    const double* ex = &field.extra[std::size_t(2 + 11 * t)];
-    const double Vt = field.extra[0];
+    if (t < 0 || field.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1))) return s;
+    const double* ex = &field.extra[std::size_t(ExtraHead + PerTriangle * t)];
+    const double Vt = field.extra[0], niRef = field.extra[2];
     const int d = sol.mesh().domain[std::size_t(t)];
     if (d < 0 || !field.domains[std::size_t(d)]) return s;
     const Space& sp = *field.space;
@@ -1736,11 +1890,14 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     const std::size_t N = std::size_t(sp.size());
     const double xi = e.xi(), eta = e.eta();
     const double w[3] = {1 - xi - eta, xi, eta};
-    double V[3], n[3], p[3];
+    double V[3], n[3], p[3], thn[3], thp[3];
     for (int k = 0; k < 3; ++k) {
         V[k] = field.values[std::size_t(dof[k])];
         n[k] = field.values[N + std::size_t(dof[k])];
         p[k] = field.values[2 * N + std::size_t(dof[k])];
+        const bool banded = field.values.size() >= 7 * N;
+        thn[k] = banded ? field.values[5 * N + std::size_t(dof[k])] : 0.0;
+        thp[k] = banded ? field.values[6 * N + std::size_t(dof[k])] : 0.0;
     }
     s.V = w[0] * V[0] + w[1] * V[1] + w[2] * V[2];
     s.defined = true;
@@ -1760,6 +1917,14 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     s.dEc = ex[2];
     s.Eg = ex[3];
     s.ni = ex[4];
+    s.delta = std::isfinite(ex[11]) ? ex[11] : 0.0;
+    // The quasi-Fermi potentials at the nodes (each its own bands'), linear
+    // between them: φn = V + θn - Vt ln(n/ni_ref), φp = V + θp + Vt ln(p/ni_ref).
+    s.phin = s.phip = 0;
+    for (int k = 0; k < 3; ++k) {
+        s.phin += w[k] * (V[k] + thn[k] - Vt * std::log(std::max(n[k], 1e-300) / niRef));
+        s.phip += w[k] * (V[k] + thp[k] + Vt * std::log(std::max(p[k], 1e-300) / niRef));
+    }
     const double taun = ex[5], taup = ex[6], Et = ex[7], Cn = ex[8], Cp = ex[9], B = ex[10];
     const double excess = s.n * s.p - s.ni * s.ni;
     if (std::isfinite(taun) && std::isfinite(taup)) {
@@ -1779,9 +1944,9 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
         const double hx = x[j].x() - x[i].x(), hy = x[j].y() - x[i].y(), h = std::hypot(hx, hy);
         if (!(h > 0)) continue;
         const double ux = hx / h, uy = hy / h;
-        const double dd = (V[j] - V[i]) / Vt;
-        const double jn = Q * s.mun * Vt / h * (n[j] * bern(dd) - n[i] * bern(-dd));
-        const double jp = Q * s.mup * Vt / h * (p[i] * bern(dd) - p[j] * bern(-dd));
+        const double dn = (V[j] + thn[j] - V[i] - thn[i]) / Vt, dp = (V[j] + thp[j] - V[i] - thp[i]) / Vt;
+        const double jn = Q * s.mun * Vt / h * (n[j] * bern(dn) - n[i] * bern(-dn));
+        const double jp = Q * s.mup * Vt / h * (p[i] * bern(dp) - p[j] * bern(-dp));
         a11 += ux * ux;
         a12 += ux * uy;
         a22 += uy * uy;
