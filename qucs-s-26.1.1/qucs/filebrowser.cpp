@@ -1671,18 +1671,18 @@ void FileBrowser::buildViews()
     connect(a_proxy, &QAbstractItemModel::layoutChanged, this, later);
     connect(a_proxy, &QAbstractItemModel::modelReset, this, later);
     connect(a_model, &QFileSystemModel::directoryLoaded, this, later);
-    // The folder shown kept the views' root. QFileSystemModel takes a folder
-    // away when a listing of the one above it, gathered before the folder
-    // was made, comes after it was entered (and adds it again) - or when it
-    // is removed and made again (a git checkout); its views showed the top
-    // of the file system from then on, nothing in the folder changing.
+    // The folder shown kept the views' root, looked at as each listing ends.
+    // QFileSystemModel takes a folder away when a listing of the one above
+    // it, gathered before the folder was made, comes after it was entered
+    // (and adds it again) - or when it is removed and made again (a git
+    // checkout); its views showed the top of the file system from then on,
+    // nothing in the folder changing. And a folder removed is listed again
+    // and found empty: the model is told nothing more, and keeps its
+    // entries.
     a_rootTimer->setSingleShot(true);
     a_rootTimer->setInterval(0);   // (once the model is done with its change)
     connect(a_rootTimer, &QTimer::timeout, this, &FileBrowser::keepRoot);
-    const auto lookAtRoot = [this] { a_rootTimer->start(0); };
-    connect(a_proxy, &QAbstractItemModel::rowsRemoved, this, lookAtRoot);
-    connect(a_proxy, &QAbstractItemModel::modelReset, this, lookAtRoot);
-    connect(a_proxy, &QAbstractItemModel::layoutChanged, this, lookAtRoot);
+    connect(a_model, &QFileSystemModel::directoryLoaded, this, [this] { a_rootTimer->start(0); });
     // A tab brought to the front: its Tree's folders opened, its entry
     // selected, as their folders load.
     connect(a_model, &QFileSystemModel::directoryLoaded, this, [this](const QString& path) {
@@ -1761,31 +1761,43 @@ void FileBrowser::applyRoot()
 void FileBrowser::keepRoot()
 {
     if (a_location.isEmpty() || a_view == View::Recent) return;
-    const bool there = QFileInfo(a_location).isDir();
-    if (there) a_goneSince = 0;
-    if (there && a_list->rootIndex().isValid()) return;
-    // Gone (moved, removed - its entries going with it; the model keeps
-    // the folder itself when it watched none above): left once it has been
-    // gone half a second, not when it is removed and made again at once.
-    if (!there) {
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (a_goneSince == 0) a_goneSince = now;
-        if (now - a_goneSince < 500) {
-            a_rootTimer->start(100);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // Left a moment ago for the folder above it: back in it once it is made
+    // again (removed and made again at once - a script, a checkout), while
+    // the folder above is still the one shown.
+    if (!a_returnTo.isEmpty()) {
+        if (now > a_returnBy || a_location != a_returnFrom) {
+            a_returnTo.clear();
+        } else if (QFileInfo(a_returnTo).isDir()) {
+            const QString to = a_returnTo;
+            a_returnTo.clear();
+            go(to, false);
+            a_selectPending = !a_selected.isEmpty() && !indexOf(a_selected).isValid();
+            selectPath(a_selected);
             return;
+        } else {
+            a_rootTimer->start(100);
         }
-        a_goneSince = 0;
     }
-    // The nearest folder above it still there, as a tab brought back finds it.
-    QString folder = nearestFolder(a_location);
-    if (folder.isEmpty()) folder = a_home.isEmpty() ? QDir::homePath() : a_home;
-    if (folder != a_location) {
-        go(folder, false);
+    const bool there = QFileInfo(a_location).isDir();
+    if (there && a_list->rootIndex().isValid()) return;
+    if (there) {
+        applyRoot();
+        a_selectPending = !a_selected.isEmpty() && !indexOf(a_selected).isValid();
+        selectPath(a_selected);
         return;
     }
-    applyRoot();
-    a_selectPending = !a_selected.isEmpty() && !indexOf(a_selected).isValid();
-    selectPath(a_selected);
+    // Gone (moved, removed - its entries going with it; the model keeps the
+    // folder itself when it watched none above): the nearest folder above
+    // it still there, as a tab brought back finds it - and this one again
+    // if it is made again within two seconds.
+    QString folder = nearestFolder(a_location);
+    if (folder.isEmpty()) folder = a_home.isEmpty() ? QDir::homePath() : a_home;
+    a_returnTo = a_location;
+    a_returnBy = now + 2000;
+    go(folder, false);
+    a_returnFrom = a_location;
+    a_rootTimer->start(100);
 }
 
 void FileBrowser::back()

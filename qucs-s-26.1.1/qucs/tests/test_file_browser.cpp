@@ -650,7 +650,7 @@ private slots:
             QVERIFY(QDir(here).removeRecursively());
             QTRY_VERIFY_WITH_TIMEOUT(remade, 5000);
             disconnect(c);
-            QCOMPARE(fb.location(), here);
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), here, 5000);
             QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), 5000);
             QCOMPARE(fb.pathOf(fb.currentView()->rootIndex()), here);
             settled(fb, "a.txt");
@@ -659,7 +659,7 @@ private slots:
             QVERIFY(QFile::remove(here + "/new.txt"));
         }
         // Removed, and made again a moment after the model saw it go (a
-        // script, a checkout): kept, not left for the folder above.
+        // script, a checkout): gone back into from the folder above.
         {
             FileBrowser fb;
             fb.resize(400, 600);
@@ -685,10 +685,17 @@ private slots:
             QVERIFY(QDir(here).removeRecursively());
             QTRY_VERIFY_WITH_TIMEOUT(remade, 5000);
             disconnect(c);
-            QTest::qWait(800);
-            QCOMPARE(fb.location(), here);
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), here, 5000);
             QTRY_VERIFY_WITH_TIMEOUT(fb.currentView()->rootIndex().isValid(), 5000);
             settled(fb, "a.txt");
+            // Gone, and another folder chosen meanwhile: that one stays.
+            QVERIFY(QDir(here).removeRecursively());
+            QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, 5000);
+            fb.setLocation(top);
+            QVERIFY(QDir().mkpath(here));
+            touch(here + "/a.txt");
+            QTest::qWait(1000);
+            QCOMPARE(fb.location(), top);
         }
         // Gone for good: the folder above, shown - the model watching it,
         // or only the folder gone and what was in it.
@@ -708,6 +715,16 @@ private slots:
             QTRY_COMPARE_WITH_TIMEOUT(fb.location(), parent, 5000);
             QVERIFY(fb.currentView()->rootIndex().isValid());
             QTRY_VERIFY_WITH_TIMEOUT(!fb.shownNames().contains("here"), 5000);
+            if (!above) {
+                // Not made again: the folder above stays - and made again
+                // once two seconds have gone by, it stays too.
+                QTest::qWait(2500);
+                QCOMPARE(fb.location(), parent);
+                QVERIFY(QDir().mkpath(here));
+                touch(here + "/a.txt");
+                QTest::qWait(1000);
+                QCOMPARE(fb.location(), parent);
+            }
         }
     }
 
