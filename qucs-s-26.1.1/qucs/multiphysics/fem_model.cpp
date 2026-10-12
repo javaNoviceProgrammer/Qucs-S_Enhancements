@@ -864,7 +864,8 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere"))},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
-          QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/insulation"), QStringLiteral("semiconductor/ohmic"),
+          QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/insulation"),
+          QStringLiteral("semiconductor/ohmic"),
           QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
@@ -950,6 +951,35 @@ QList<NodeKind> makeKinds()
          Level::Domain,
          {selectionProp(none), expr(QStringLiteral("B"), tr("Coefficient B"), QStringLiteral("m^3/s"), QStringLiteral("1.1e-14[cm^3/s]"))},
          {}, {}, false, false, QStringLiteral("rad"), tr("Band to band: R = B (np - ni²) (GaAs about 7e-10 cm³/s).")});
+    {
+        const QString user = QStringLiteral("model=user");
+        const QString perCm = QStringLiteral("1/m"), fieldUnit = QStringLiteral("V/m");
+        add({QStringLiteral("semiconductor/impact"), tr("Impact Ionization"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+             Level::Domain,
+             {selectionProp(none),
+              choice(QStringLiteral("model"), tr("Model"), {QStringLiteral("silicon"), QStringLiteral("user")},
+                     {tr("Silicon (van Overstraeten and de Man)"), tr("User-defined (Chynoweth's)")}, QStringLiteral("silicon")),
+              flag(QStringLiteral("currents"), tr("In the carriers' continuity"), true,
+                   tr("Its pairs in the equations - avalanche multiplication, an APD's gain, up to breakdown; off: the ionization "
+                      "integrals alone (a breakdown voltage swept to, the currents as they are without it)")),
+              shownIf(expr(QStringLiteral("an"), tr("Electrons' a"), perCm, QStringLiteral("7.03e5[1/cm]")), user),
+              shownIf(expr(QStringLiteral("bn"), tr("Electrons' b"), fieldUnit, QStringLiteral("1.231e6[V/cm]")), user),
+              shownIf(expr(QStringLiteral("ap"), tr("Holes' a"), perCm, QStringLiteral("1.582e6[1/cm]")), user),
+              shownIf(expr(QStringLiteral("bp"), tr("Holes' b"), fieldUnit, QStringLiteral("2.036e6[V/cm]")), user),
+              shownIf(expr(QStringLiteral("an2"), tr("Electrons' a above E0"), perCm, QStringLiteral("7.03e5[1/cm]")), user),
+              shownIf(expr(QStringLiteral("bn2"), tr("Electrons' b above E0"), fieldUnit, QStringLiteral("1.231e6[V/cm]")), user),
+              shownIf(expr(QStringLiteral("ap2"), tr("Holes' a above E0"), perCm, QStringLiteral("6.71e5[1/cm]")), user),
+              shownIf(expr(QStringLiteral("bp2"), tr("Holes' b above E0"), fieldUnit, QStringLiteral("1.693e6[V/cm]")), user),
+              shownIf(expr(QStringLiteral("E0"), tr("The ranges' field E0"), fieldUnit, QStringLiteral("4e5[V/cm]")), user),
+              shownIf(expr(QStringLiteral("betan"), tr("Electrons' exponent β"), QString(), QStringLiteral("1")), user),
+              shownIf(expr(QStringLiteral("betap"), tr("Holes' exponent β"), QString(), QStringLiteral("1")), user)},
+             {}, {}, false, false, QStringLiteral("ii"),
+             tr("Carriers a field accelerates make pairs: G = (αn |Jn| + αp |Jp|)/q, α = a e^(-(b/E)^β) (Chynoweth's; silicon's "
+                "van Overstraeten and de Man's, its holes' two ranges about 400 kV/cm), E each triangle's field, Jn and Jp its "
+                "currents - avalanche multiplication, an APD's gain. The ionization integrals along the field line through the highest field, "
+                "semi.In and semi.Ip (electrons', holes': breakdown where they reach 1) and their multiplications semi.Mn, "
+                "semi.Mp, the field semi.Emax: a breakdown voltage found by sweeping toward it, its currents in or not.")});
+    }
     add({QStringLiteral("semiconductor/generation"), tr("User-Defined Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), spatial(QStringLiteral("G"), tr("Generation rate G"), QStringLiteral("1/(m^3*s)"), QStringLiteral("0"),

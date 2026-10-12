@@ -81,7 +81,25 @@ struct Medium {
     std::vector<Expression> generation;
     std::vector<int> optical;        // the Optical Generation features on it (a_optical's)
     double ni = 0, dEc = 0;          // the intrinsic density; Ec - Ei (J)
+    // Impact ionization: Chynoweth's α = a e^(-(b/E)^β) (1/m, V/m), each
+    // carrier's below E0 and above it (van Overstraeten and de Man's holes).
+    bool ionization = false, ionizationCurrents = false;
+    double an = 0, bn = 0, an2 = 0, bn2 = 0, ap = 0, bp = 0, ap2 = 0, bp2 = 0, E0 = Inf, ionBetaN = 1, ionBetaP = 1;
 };
+
+/// Chynoweth's ionization rate at field \a E (V/m) in its range, and its
+/// change with E.
+void ionizationRate(double E, double a, double b, double a2, double b2, double E0, double beta, double* alpha, double* dalpha)
+{
+    if (!(E > 1e3)) {
+        *alpha = *dalpha = 0;
+        return;
+    }
+    const bool high = E > E0;
+    const double r = std::pow((high ? b2 : b) / E, beta);
+    *alpha = (high ? a2 : a) * std::exp(-r);
+    *dalpha = *alpha * beta * r / E;
+}
 
 /// Light absorbed from a mode, made electron-hole pairs: the power fed P0
 /// (of t in time), each photon absorbed across the gap a pair (η of them).
@@ -125,6 +143,8 @@ private:
         double w = 0;                // Σ cot weights (m², the thickness in)
         double wn = 0, wp = 0;       // times the elements' mobilities (the lattice's, by doping)
         double h = 0;                // its length (m)
+        int domain = -1;             // a semiconductor's it is in (one that ionizes, if one does)
+        double tx = 0, ty = 0;       // its direction, i to j
     };
     int nodes() const { return a_n; }
     double doping(int i) const { return a_Nd[std::size_t(i)] - a_Na[std::size_t(i)]; }
@@ -215,6 +235,7 @@ private:
         double cot[3] = {0, 0, 0};
         double gx[3] = {0, 0, 0}, gy[3] = {0, 0, 0};
         int domain = -1;
+        double volume = 0;           // its area times the thickness (m³)
     };
     std::vector<ElementMobility> a_elements;
     /// The edges' weights from the elements' mobilities - each saturated by
@@ -234,6 +255,14 @@ private:
     std::vector<std::complex<double>> a_Hop;   // small-signal: each contact's current, the light modulated wholly (A)
     bool a_saturation = false;
     double a_refDEc = 0, a_refChi = 0; // the first semiconductor's: Ec - Ei, χ (J)
+    // Impact ionization: whether its pairs are in the equations; the
+    // ionization integrals along the field line through the highest field
+    // (electrons', holes'), that field (V/m), the line's length (m).
+    bool a_ionization = false, a_ionizationAny = false;
+    double a_In = NaN, a_Ip = NaN, a_Emax = NaN, a_ionLength = NaN;
+    std::vector<std::array<int, 3>> a_neighbors;   // by triangle: across its edge k to k+1 (-1: none)
+    /// The ionization integrals at \a x (a_In, a_Ip...).
+    void ionizationIntegrals(const Eigen::VectorXd& x);
     QString a_initError;
     int a_clamped = 0;
     // Small-signal: the admittance matrix by contacts (S), at a frequency.
@@ -299,6 +328,7 @@ bool SemiconductorProblem::setup(QString* error)
     std::vector<const Node*> modelOf(topo.domains.size(), nullptr);
     std::vector<const Node*> srhOf(topo.domains.size(), nullptr);
     std::vector<const Node*> augerOf(topo.domains.size(), nullptr), radiativeOf(topo.domains.size(), nullptr);
+    std::vector<const Node*> impactOf(topo.domains.size(), nullptr);
     const Dim conc = Dim::of(-3), mobility = Dim::of(0, -1, 2, 1), velocity = Dim::of(1, 0, -1);
     struct DopingDef {
         const Node* node;
@@ -318,6 +348,7 @@ bool SemiconductorProblem::setup(QString* error)
         else if (t == QLatin1String("semiconductor/srh")) for (int d : picked) srhOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/auger")) for (int d : picked) augerOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/radiative")) for (int d : picked) radiativeOf[std::size_t(d)] = &feature;
+        else if (t == QLatin1String("semiconductor/impact")) for (int d : picked) impactOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/doping")) dopings.push_back({&feature, picked});
         else if (t == QLatin1String("semiconductor/generation")) {
             const Expression g = compile(feature.text(QStringLiteral("G")), feature, QStringLiteral("G"));
@@ -423,6 +454,35 @@ bool SemiconductorProblem::setup(QString* error)
             m.Cp = number(a->text(QStringLiteral("Cp")), Dim::of(6, 0, -1), where);
         }
         if (const Node* r = radiativeOf[std::size_t(d)]) m.B = number(r->text(QStringLiteral("B")), Dim::of(3, 0, -1), where);
+        if (const Node* ii = impactOf[std::size_t(d)]) {
+            m.ionization = a_ionizationAny = true;
+            m.ionizationCurrents = ii->flag(QStringLiteral("currents"));
+            a_ionization = a_ionization || m.ionizationCurrents;
+            if (ii->text(QStringLiteral("model")) == QLatin1String("user")) {
+                const Dim perMetre = Dim::of(-1), field = Dim::of(1, 1, -3, -1);
+                m.an = number(ii->text(QStringLiteral("an")), perMetre, ii->name());
+                m.bn = number(ii->text(QStringLiteral("bn")), field, ii->name());
+                m.an2 = number(ii->text(QStringLiteral("an2")), perMetre, ii->name());
+                m.bn2 = number(ii->text(QStringLiteral("bn2")), field, ii->name());
+                m.ap = number(ii->text(QStringLiteral("ap")), perMetre, ii->name());
+                m.bp = number(ii->text(QStringLiteral("bp")), field, ii->name());
+                m.ap2 = number(ii->text(QStringLiteral("ap2")), perMetre, ii->name());
+                m.bp2 = number(ii->text(QStringLiteral("bp2")), field, ii->name());
+                m.E0 = number(ii->text(QStringLiteral("E0")), field, ii->name());
+                m.ionBetaN = number(ii->text(QStringLiteral("betan")), Dim(), ii->name());
+                m.ionBetaP = number(ii->text(QStringLiteral("betap")), Dim(), ii->name());
+            } else {
+                // Silicon at 300 K (van Overstraeten and de Man, 1970).
+                m.an = m.an2 = 7.03e7;
+                m.bn = m.bn2 = 1.231e8;
+                m.ap = 1.582e8;
+                m.bp = 2.036e8;
+                m.ap2 = 6.71e7;
+                m.bp2 = 1.693e8;
+                m.E0 = 4e7;
+                m.ionBetaN = m.ionBetaP = 1;
+            }
+        }
     }
     if (!referenced && !domains.isEmpty()) problem(tr("%1: none of its domains is a semiconductor (a material with a band gap Eg)").arg(a_node->name()));
     // Elements and nodes.
@@ -477,6 +537,9 @@ bool SemiconductorProblem::setup(QString* error)
                 e.i = key.first;
                 e.j = key.second;
                 e.h = std::hypot(x[(k + 1) % 3].x() - x[k].x(), x[(k + 1) % 3].y() - x[k].y());
+                const QPointF along = (x[(k + 1) % 3] - x[k]) / e.h * (a == e.i ? 1.0 : -1.0);
+                e.tx = along.x();
+                e.ty = along.y();
                 a_edges.push_back(e);
             }
             // (Its weights: edgeWeights(), once the mobilities are known.)
@@ -632,9 +695,12 @@ bool SemiconductorProblem::setup(QString* error)
         for (int k = 0; k < 3; ++k) x[k] = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * scale;
         const double weight = a_s.weight((x[0] + x[1] + x[2]) / 3.0);
         const double det = (x[1].x() - x[0].x()) * (x[2].y() - x[0].y()) - (x[2].x() - x[0].x()) * (x[1].y() - x[0].y());
+        em.volume = std::abs(det) / 2 * weight;
         for (int k = 0; k < 3; ++k) {
             const auto key = std::minmax(dof[k], dof[(k + 1) % 3]);
             em.edge[k] = edgeIndex.at({key.first, key.second});
+            Edge& edge = a_edges[std::size_t(em.edge[k])];
+            if (edge.domain < 0 || (!a_media[std::size_t(edge.domain)].ionization && a_media[std::size_t(em.domain)].ionization)) edge.domain = em.domain;
             // The edge's cot weight from this triangle: half the cotangent of
             // the angle opposite it.
             const QPointF u = x[k] - x[(k + 2) % 3], v = x[(k + 1) % 3] - x[(k + 2) % 3];
@@ -646,10 +712,23 @@ bool SemiconductorProblem::setup(QString* error)
             em.gy[k] = (b.x() - a.x()) / det;
         }
     }
+    // Each triangle's neighbours (a field line followed across them).
+    a_neighbors.assign(std::size_t(nt), {-1, -1, -1});
+    {
+        std::map<std::pair<int, int>, std::pair<int, int>> side;   // an edge: (triangle, its edge k)
+        for (int t = 0; t < nt; ++t)
+            for (int k = 0; k < 3; ++k) {
+                const int a = mesh.triangles[std::size_t(t)][std::size_t(k)], b = mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)];
+                const auto key = std::minmax(a, b);
+                const auto it = side.find({key.first, key.second});
+                if (it == side.end()) side.emplace(std::pair{key.first, key.second}, std::pair{t, k});
+                else {
+                    a_neighbors[std::size_t(t)][std::size_t(k)] = it->second.first;
+                    a_neighbors[std::size_t(it->second.first)][std::size_t(it->second.second)] = t;
+                }
+            }
+    }
     edgeWeights(nullptr);
-    a_clamped = 0;
-    for (const Edge& e : a_edges)
-        if (e.w <= 0) ++a_clamped;
     // Contacts and surface charges.
     a_contacts.clear();
     a_nodeContact.assign(std::size_t(a_n), -1);
@@ -854,7 +933,7 @@ void SemiconductorProblem::contactValues(const std::vector<double>& applied)
 void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
 {
     for (Edge& e : a_edges) e.wn = e.wp = 0;
-    std::vector<double> geometric(a_edges.size(), 0.0);
+    std::vector<double> geometric(a_edges.size(), 0.0), magnitude(a_edges.size(), 0.0);
     const Space& sp = *a_s.fields()[std::size_t(a_fi)].space;
     for (int t = 0; t < int(a_elements.size()); ++t) {
         const ElementMobility& em = a_elements[std::size_t(t)];
@@ -881,12 +960,16 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
             e.wn += em.cot[k] * mun;
             e.wp += em.cot[k] * mup;
             geometric[std::size_t(em.edge[k])] += em.cot[k];
+            magnitude[std::size_t(em.edge[k])] += std::abs(em.cot[k]);
         }
     }
+    a_clamped = 0;
     for (std::size_t k = 0; k < a_edges.size(); ++k) {
         Edge& e = a_edges[k];
         // (Not Delaunay there: a negative weight would make the carriers
-        // oscillate; it is left out.)
+        // oscillate; it is left out. One of nought - a right angle across
+        // a boundary's edge - is as it should be.)
+        if (geometric[k] < -1e-9 * magnitude[k]) ++a_clamped;
         e.w = std::max(geometric[k], 0.0);
         e.wn = e.w > 0 ? std::max(e.wn, 0.0) * Q * a_Vt : 0.0;
         e.wp = e.w > 0 ? std::max(e.wp, 0.0) * Q * a_Vt : 0.0;
@@ -960,6 +1043,129 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
                 add(row, vj, sign * dvj);
                 add(row, vi, -sign * dvj);
             }
+        }
+    }
+    // Impact ionization, by triangle: its pairs (αn |Jn| + αp |Jp|)/q, the
+    // α's at its field |E| (each edge's field along it is that projected -
+    // a 45° edge's 0.71 E ionizes a seventh as much -, and each edge's
+    // current that along it), Jn and Jp its three edges' currents along
+    // them fitted (exact where the current is uniform); a third to each
+    // corner's box.
+    if (a_ionization) {
+        const Space& isp = *a_s.fields()[std::size_t(a_fi)].space;
+        // Each edge's current densities along it (A/m²) and their changes.
+        struct EdgeCurrent {
+            double jn = 0, jp = 0;
+            double dn[4] = {0, 0, 0, 0}, dp[4] = {0, 0, 0, 0};   // by (n or p at i, at j, V at i, at j)
+        };
+        std::vector<EdgeCurrent> ec(a_edges.size());
+        for (std::size_t k = 0; k < a_edges.size(); ++k) {
+            const Edge& e = a_edges[k];
+            if (e.w <= 0 || e.domain < 0 || !a_media[std::size_t(e.domain)].ionizationCurrents) continue;
+            double dN = 0, dP = 0;
+            edgeSteps(e, x, &dN, &dP);
+            const double face = e.w * e.h;   // the dual face's area (m²)
+            const double bnp = bern(dN), bnm = bern(-dN), bpp = bern(dP), bpm = bern(-dP);
+            EdgeCurrent& c = ec[k];
+            c.jn = e.wn * (nn(e.j) * bnp - nn(e.i) * bnm) / face;
+            c.jp = e.wp * (pp(e.i) * bpp - pp(e.j) * bpm) / face;
+            const double dnV = e.wn * (nn(e.j) * dbern(dN) + nn(e.i) * dbern(-dN)) / a_Vt / face;
+            const double dpV = e.wp * (pp(e.i) * dbern(dP) + pp(e.j) * dbern(-dP)) / a_Vt / face;
+            c.dn[0] = -e.wn * bnm / face;
+            c.dn[1] = e.wn * bnp / face;
+            c.dn[2] = -dnV;
+            c.dn[3] = dnV;
+            c.dp[0] = e.wp * bpp / face;
+            c.dp[1] = -e.wp * bpm / face;
+            c.dp[2] = -dpV;
+            c.dp[3] = dpV;
+        }
+        for (int t = 0; t < isp.elements(); ++t) {
+            if (!a_elemSemi[std::size_t(t)]) continue;
+            const ElementMobility& em = a_elements[std::size_t(t)];
+            const Medium& m = a_media[std::size_t(em.domain)];
+            if (!m.ionization || !m.ionizationCurrents) continue;
+            const int* dof = isp.dofs(t);
+            // Its field.
+            double Ex = 0, Ey = 0;
+            for (int k = 0; k < 3; ++k) {
+                Ex -= em.gx[k] * V(dof[k]);
+                Ey -= em.gy[k] * V(dof[k]);
+            }
+            const double Ef = std::hypot(Ex, Ey);
+            double an = 0, dan = 0, ap = 0, dap = 0;
+            ionizationRate(Ef, m.an, m.bn, m.an2, m.bn2, m.E0, m.ionBetaN, &an, &dan);
+            ionizationRate(Ef, m.ap, m.bp, m.ap2, m.bp2, m.E0, m.ionBetaP, &ap, &dap);
+            if (an == 0 && ap == 0) continue;
+            // Its currents: J = (Σ t tᵀ)⁻¹ Σ t j over its edges.
+            double M[3] = {0, 0, 0};   // xx, xy, yy
+            for (int k = 0; k < 3; ++k) {
+                const Edge& e = a_edges[std::size_t(em.edge[k])];
+                M[0] += e.tx * e.tx;
+                M[1] += e.tx * e.ty;
+                M[2] += e.ty * e.ty;
+            }
+            const double det = M[0] * M[2] - M[1] * M[1];
+            if (!(std::abs(det) > 1e-12)) continue;
+            // (A row of (Σ t tᵀ)⁻¹ t for edge k: how its j weighs in J.)
+            double wx[3], wy[3];
+            for (int k = 0; k < 3; ++k) {
+                const Edge& e = a_edges[std::size_t(em.edge[k])];
+                wx[k] = (M[2] * e.tx - M[1] * e.ty) / det;
+                wy[k] = (-M[1] * e.tx + M[0] * e.ty) / det;
+            }
+            double Jnx = 0, Jny = 0, Jpx = 0, Jpy = 0;
+            for (int k = 0; k < 3; ++k) {
+                const EdgeCurrent& c = ec[std::size_t(em.edge[k])];
+                Jnx += wx[k] * c.jn;
+                Jny += wy[k] * c.jn;
+                Jpx += wx[k] * c.jp;
+                Jpy += wy[k] * c.jp;
+            }
+            const double Jn = std::hypot(Jnx, Jny), Jp = std::hypot(Jpx, Jpy);
+            const double third = em.volume / 3;
+            const double g = (an * Jn + ap * Jp) * third;   // A, to each corner
+            for (int k = 0; k < 3; ++k) {
+                F(a_iN[std::size_t(dof[k])]) += g;
+                F(a_iP[std::size_t(dof[k])]) -= g;
+            }
+            if (!jac) continue;
+            // Its change: by the field (each corner's V), by the currents
+            // (each edge's ends' n, p, V).
+            // (Its corners' V, n and p: nine unknowns at most.)
+            std::array<std::pair<int, double>, 9> dg{};
+            int used = 0;
+            auto addTo = [&](int col, double d) {
+                for (int u = 0; u < used; ++u)
+                    if (dg[std::size_t(u)].first == col) {
+                        dg[std::size_t(u)].second += d;
+                        return;
+                    }
+                if (used < 9) dg[std::size_t(used++)] = {col, d};
+            };
+            if (Ef > 0)
+                for (int k = 0; k < 3; ++k) {
+                    const double dE = -(Ex * em.gx[k] + Ey * em.gy[k]) / Ef;
+                    addTo(a_iV[std::size_t(dof[k])], (dan * Jn + dap * Jp) * dE * third);
+                }
+            for (int k = 0; k < 3; ++k) {
+                const Edge& e = a_edges[std::size_t(em.edge[k])];
+                const EdgeCurrent& c = ec[std::size_t(em.edge[k])];
+                // d|J| = Ĵ·dJ, dJ = (wx, wy) dj.
+                const double sn = Jn > 0 ? an * (Jnx * wx[k] + Jny * wy[k]) / Jn : 0.0;
+                const double sp = Jp > 0 ? ap * (Jpx * wx[k] + Jpy * wy[k]) / Jp : 0.0;
+                const int cols[4][2] = {{a_iN[std::size_t(e.i)], a_iP[std::size_t(e.i)]}, {a_iN[std::size_t(e.j)], a_iP[std::size_t(e.j)]},
+                                        {a_iV[std::size_t(e.i)], a_iV[std::size_t(e.i)]}, {a_iV[std::size_t(e.j)], a_iV[std::size_t(e.j)]}};
+                for (int q = 0; q < 4; ++q) {
+                    addTo(cols[q][0], sn * c.dn[q] * third);
+                    addTo(cols[q][1], sp * c.dp[q] * third);
+                }
+            }
+            for (int k = 0; k < 3; ++k)
+                for (int u = 0; u < used; ++u) {
+                    add(a_iN[std::size_t(dof[k])], dg[std::size_t(u)].first, dg[std::size_t(u)].second);
+                    add(a_iP[std::size_t(dof[k])], dg[std::size_t(u)].first, -dg[std::size_t(u)].second);
+                }
         }
     }
     // At each semiconductor node: the space charge, recombination, generation,
@@ -1070,6 +1276,7 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
     std::vector<Eigen::Triplet<double>> trip;
     Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
     bool analyzed = false;
+    int crawling = 0;   // steps in a row damped to less than 2 %
     for (int it = 0; it < maxSteps; ++it) {
         carrierScales();
         updateMobilities(x);
@@ -1135,6 +1342,11 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             }
         }
         if (steps) *steps = it + 1;
+        // Ten steps in a row crawling: it is going nowhere - said at once,
+        // the voltage's step taken again smaller (its forty steps were a
+        // breakdown's diode's most time).
+        crawling = alpha < 0.02 ? crawling + 1 : 0;
+        if (crawling >= 10) break;
         // Converged: the potential still to 1e-8 Vt and the carriers to 1e-6
         // (or the potential to 1e-12 Vt: the carriers' last digits are noise).
         if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12)) return true;
@@ -1459,6 +1671,164 @@ void SemiconductorProblem::terminalValues(const Eigen::VectorXd& x, double mass,
     }
 }
 
+void SemiconductorProblem::ionizationIntegrals(const Eigen::VectorXd& x)
+{
+    a_In = a_Ip = a_Emax = a_ionLength = NaN;
+    const Space& sp = *field().space;
+    const Mesh& mesh = a_s.mesh();
+    const double unit = mesh.unitScale;
+    auto ionizes = [&](int t) {
+        if (t < 0 || !a_elemSemi[std::size_t(t)]) return false;
+        return a_media[std::size_t(mesh.domain[std::size_t(t)])].ionization;
+    };
+    // Each triangle's field, -∇V; recovered at the nodes (their triangles'
+    // by area, a domain's own), straight between them within a triangle: a
+    // junction's node on a boundary, its doping the mean of fewer
+    // triangles', makes one triangle's field a few percent high - the
+    // integrals go as the field to the fifth, and a line from there gave
+    // 37 % more.
+    auto fieldIn = [&](int t) {
+        const ElementMobility& em = a_elements[std::size_t(t)];
+        const int* dof = sp.dofs(t);
+        QPointF E(0, 0);
+        for (int k = 0; k < 3; ++k) {
+            const double v = x(a_iV[std::size_t(dof[k])]);
+            E -= QPointF(em.gx[k] * v, em.gy[k] * v);
+        }
+        return E;
+    };
+    auto corner = [&](int t, int k) { return mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * unit; };
+    // (Each domain's own at a node: across a junction one side's field is
+    // not the other's - a p⁺ side's depletion, thinner than a triangle,
+    // would pull the junction's node down.)
+    std::map<std::pair<int, int>, std::pair<QPointF, double>> recovered;   // (node, domain): Σ area E, Σ area
+    for (int t = 0; t < sp.elements(); ++t) {
+        if (!ionizes(t)) continue;
+        const QPointF a = corner(t, 0), b = corner(t, 1), c = corner(t, 2);
+        const double area = std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2;
+        const QPointF E = fieldIn(t);
+        const int* dof = sp.dofs(t);
+        for (int k = 0; k < 3; ++k) {
+            auto& [sum, w] = recovered[{dof[k], mesh.domain[std::size_t(t)]}];
+            sum += area * E;
+            w += area;
+        }
+    }
+    auto nodalIn = [&](int t, int k) {
+        const auto it = recovered.find({sp.dofs(t)[k], mesh.domain[std::size_t(t)]});
+        return it == recovered.end() || !(it->second.second > 0) ? QPointF(0, 0) : it->second.first / it->second.second;
+    };
+    auto barycentric = [&](int t, QPointF p, double l[3]) {
+        const QPointF a = corner(t, 0), b = corner(t, 1), c = corner(t, 2);
+        const double det = (b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y());
+        l[1] = ((p.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (p.y() - a.y())) / det;
+        l[2] = ((b.x() - a.x()) * (p.y() - a.y()) - (p.x() - a.x()) * (b.y() - a.y())) / det;
+        l[0] = 1 - l[1] - l[2];
+    };
+    auto fieldAt = [&](int t, QPointF p) {
+        double l[3];
+        barycentric(t, p, l);
+        QPointF E(0, 0);
+        for (int k = 0; k < 3; ++k) E += std::clamp(l[k], 0.0, 1.0) * nodalIn(t, k);
+        return E;
+    };
+    // The highest field where it ionizes: a node's, the line from it.
+    int start = -1, startNode = -1;
+    double Emax = 0;
+    for (int t = 0; t < sp.elements(); ++t) {
+        if (!ionizes(t)) continue;
+        for (int k = 0; k < 3; ++k) {
+            const QPointF E = nodalIn(t, k);
+            const double e = std::hypot(E.x(), E.y());
+            if (e > Emax) {
+                Emax = e;
+                start = t;
+                startNode = k;
+            }
+        }
+    }
+    if (start < 0 || !(Emax > 0)) return;
+    a_Emax = Emax;
+    // The triangle holding p, walked to from t (across the edge p is beyond).
+    auto locate = [&](int t, QPointF p) {
+        for (int walk = 0; walk < 2000 && t >= 0; ++walk) {
+            double l[3];
+            barycentric(t, p, l);
+            int worst = 0;
+            for (int k = 1; k < 3; ++k)
+                if (l[k] < l[worst]) worst = k;
+            if (l[worst] >= -1e-12) return t;
+            // (Beyond the edge opposite its corner 'worst': edge worst+1 to worst+2.)
+            t = a_neighbors[std::size_t(t)][std::size_t((worst + 1) % 3)];
+        }
+        return -1;
+    };
+    // Along the field (sign 1) or against it, from that node (nudged into
+    // its triangle): each step a fifth of its triangle's size, the field
+    // where it is, until it leaves what ionizes, the field turns back or
+    // falls to a thousandth of the highest.
+    struct Sample {
+        double s, E;
+        int t;
+    };
+    const QPointF from = 0.98 * corner(start, startNode) + 0.01 * (corner(start, (startNode + 1) % 3) + corner(start, (startNode + 2) % 3));
+    auto follow = [&](double sign) {
+        std::vector<Sample> out;
+        int t = start;
+        QPointF p = from;
+        double s = 0;
+        for (int step = 0; step < 200000; ++step) {
+            const QPointF E = fieldAt(t, p);
+            const double e = std::hypot(E.x(), E.y());
+            if (!(e > 1e-3 * Emax)) break;
+            const QPointF a = corner(t, 0), b = corner(t, 1), c = corner(t, 2);
+            const double size = std::sqrt(std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2);
+            const QPointF d = sign * E / e;
+            const QPointF q = p + d * (0.2 * size);
+            const int next = locate(t, q);
+            if (!ionizes(next)) break;
+            const QPointF En = fieldAt(next, q);
+            if ((En.x() * d.x() + En.y() * d.y()) * sign <= 0) break;   // (the field turned)
+            s += 0.2 * size;
+            out.push_back({s, std::hypot(En.x(), En.y()), next});
+            p = q;
+            t = next;
+        }
+        return out;
+    };
+    const std::vector<Sample> against = follow(-1), along = follow(1);
+    // Ordered along the field (x: where holes go): against reversed, the
+    // start, along.
+    std::vector<Sample> line;
+    for (auto it = against.rbegin(); it != against.rend(); ++it) line.push_back({-it->s, it->E, it->t});
+    line.push_back({0, Emax, start});
+    for (const Sample& sm : along) line.push_back(sm);
+    if (line.size() < 2) return;
+    const std::size_t n = line.size();
+    std::vector<double> xs(n), an(n), ap(n);
+    for (std::size_t k = 0; k < n; ++k) {
+        xs[k] = line[k].s - line.front().s;
+        const Medium& m = a_media[std::size_t(mesh.domain[std::size_t(line[k].t)])];
+        double d = 0;
+        ionizationRate(line[k].E, m.an, m.bn, m.an2, m.bn2, m.E0, m.ionBetaN, &an[k], &d);
+        ionizationRate(line[k].E, m.ap, m.bp, m.ap2, m.bp2, m.E0, m.ionBetaP, &ap[k], &d);
+    }
+    // Holes along x from 0: Ip = ∫ αp e^(-∫_0^x (αp - αn)) dx; electrons
+    // against it from W: In = ∫ αn e^(-∫_x^W (αn - αp)) dx.
+    std::vector<double> K(n, 0.0);   // ∫_0^x (αp - αn)
+    for (std::size_t k = 1; k < n; ++k) K[k] = K[k - 1] + 0.5 * ((ap[k] - an[k]) + (ap[k - 1] - an[k - 1])) * (xs[k] - xs[k - 1]);
+    double Ip = 0, In = 0;
+    for (std::size_t k = 1; k < n; ++k) {
+        const double dx = xs[k] - xs[k - 1];
+        Ip += 0.5 * (ap[k] * std::exp(-K[k]) + ap[k - 1] * std::exp(-K[k - 1])) * dx;
+        // ∫_x^W (αn - αp) = K(x) - K(W)... (αn - αp) = -(αp - αn): -(K(W) - K(x)).
+        In += 0.5 * (an[k] * std::exp(K[n - 1] - K[k]) + an[k - 1] * std::exp(K[n - 1] - K[k - 1])) * dx;
+    }
+    a_In = In;
+    a_Ip = Ip;
+    a_ionLength = xs.back();
+}
+
 bool SemiconductorProblem::stationary(QString* why)
 {
     Field& f = field();
@@ -1510,9 +1880,12 @@ bool SemiconductorProblem::stationary(QString* why)
         } else {
             step /= 4;
             if (step < 1e-5) {
-                // (Not "did not converge": a step at rest that fails is an error.)
-                *why = tr("%1: no solution found on the way to the contacts' voltages (steps down to 10 µV): %2")
-                           .arg(a_node->name(), failed.section(QLatin1String(": "), 1));
+                // (Not "did not converge", the cause's words too: a step at
+                // rest that fails is an error - said as a warning, its study
+                // went on with nothing solved, its currents nought.)
+                QString cause = failed.section(QLatin1String(": "), 1);
+                cause.replace(QLatin1String("did not converge"), QLatin1String("failed to converge"));
+                *why = tr("%1: no solution found on the way to the contacts' voltages (steps down to 10 µV): %2").arg(a_node->name(), cause);
                 return false;
             }
         }
@@ -1876,6 +2249,19 @@ QString matrixEntryName(const QString& tag, const QString& letter, const QString
 void SemiconductorProblem::setGlobals()
 {
     const QString p = field().tag + QLatin1Char('.');
+    if (a_ionizationAny && field().solved) {
+        ionizationIntegrals(stateVector());
+        const Dim field = Dim::of(1, 1, -3, -1);
+        a_s.setGlobal(p + QStringLiteral("In"), a_In, Dim(),
+                      tr("electrons' ionization integral along the field line through the highest field: breakdown where it reaches 1"));
+        a_s.setGlobal(p + QStringLiteral("Ip"), a_Ip, Dim(), tr("holes' ionization integral along that line: breakdown where it reaches 1"));
+        a_s.setGlobal(p + QStringLiteral("Mn"), a_In < 1 ? 1 / (1 - a_In) : Inf, Dim(),
+                      tr("multiplication of electrons entering the line at its end, 1/(1 - In) (infinite: past breakdown)"));
+        a_s.setGlobal(p + QStringLiteral("Mp"), a_Ip < 1 ? 1 / (1 - a_Ip) : Inf, Dim(),
+                      tr("multiplication of holes entering the line at its start, 1/(1 - Ip)"));
+        a_s.setGlobal(p + QStringLiteral("Emax"), a_Emax, field, tr("the highest field where it ionizes"));
+        a_s.setGlobal(p + QStringLiteral("Lion"), a_ionLength, Dim::length(), tr("the field line's length, where the integrals are taken"));
+    }
     for (const Contact& c : a_contacts) {
         a_s.setGlobal(p + QStringLiteral("I_") + c.name, c.current, Dim::current(), tr("current into the device at %1").arg(c.name));
         a_s.setGlobal(p + QStringLiteral("V_") + c.name, c.applied, Dim::voltage(), tr("voltage applied at %1").arg(c.name));
