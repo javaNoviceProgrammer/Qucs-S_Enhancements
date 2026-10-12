@@ -345,6 +345,13 @@ std::optional<Unit> parseUnit(const QString& text, QString* error)
     return UnitParser(t).parse(error);
 }
 
+QString unitName(const Dim& dim)
+{
+    for (const DisplayUnit& u : displayTable())
+        if (u.dim == dim) return QString::fromUtf8(u.name);
+    return {};
+}
+
 QString dimName(const Dim& dim)
 {
     if (dim.isNone()) return QStringLiteral("1");

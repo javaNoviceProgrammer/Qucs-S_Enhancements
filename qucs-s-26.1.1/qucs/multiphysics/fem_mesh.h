@@ -76,6 +76,11 @@ struct MeshSizes {
     std::vector<int> boundaryCount;    // elements on a boundary (0: by size)
     /// Sizes asked for at points (x, y, h): an adaptive refinement's.
     std::vector<std::array<double, 3>> points;
+    /// By domain: kept Delaunay - a semiconductor's (drift-diffusion's box
+    /// method weighs each edge as the Laplacian does, a weight below 0
+    /// making carriers oscillate): its edges flipped after smoothing, a
+    /// segment with an obtuse angle across it split.
+    std::vector<char> delaunay;
 };
 
 /// The sizes \a model's mesh node asks for on \a topology: its preset,

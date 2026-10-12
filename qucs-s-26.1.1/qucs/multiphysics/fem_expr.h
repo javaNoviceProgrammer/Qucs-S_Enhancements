@@ -67,6 +67,9 @@ struct Unit {
 std::optional<Unit> parseUnit(const QString& text, QString* error = nullptr);
 /// \a dim written as units: "V/m", "F", "W/(m*K)", "m^2"; "1" for none.
 QString dimName(const Dim& dim);
+/// The display table's name of \a dim's unit (V, A/m², W/(m·K)...), or
+/// empty when it has none of its own.
+QString unitName(const Dim& dim);
 /// A value in SI of \a dim as a reader wants it: with an SI prefix and the
 /// unit's name ("128.6 pF", "50.31 Ω", "3.3 mm"), \a digits significant.
 QString formatQuantity(double si, const Dim& dim, int digits = 4);
