@@ -524,7 +524,7 @@ private:
         GObject o;
         std::vector<GEdge> loop;
         if (sector >= 2 * M_PI - 1e-12) {
-            // Four quarters, as COMSOL's circle has.
+            // Four quarters: a circle's four boundaries.
             for (int q = 0; q < 4; ++q) {
                 Curve c;
                 c.kind = Curve::Arc;
@@ -1474,7 +1474,7 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
         partDomain[std::size_t(p)] = int(found.size());
         found.push_back({d, parts[std::size_t(p)]});
     }
-    // Numbered as COMSOL numbers them: from the left, then from below.
+    // Numbered from the left, then from below.
     std::vector<int> order(found.size());
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = int(i);
     std::sort(order.begin(), order.end(), [&](int a, int b) {

@@ -3,13 +3,13 @@
 *10 October 2026 - Qucs-S 26.1.7. A proposal; its phases 1 to 4 are built, and semiconductors
 and ray optics after them (see "Phase 1, as built" to "Semiconductors and ray optics, as
 built" at the end). It answers "I'd like to
-build a 2D finite element solver in Qucs similar to what COMSOL Multiphysics has. Add a
+build a 2D finite element solver in Qucs similar to the commercial multiphysics tools. Add a
 new panel to the left called Multiphysics that has a tree and allows the user to build
 the multiphysics project: geometry, material properties, FEM mesher, solver engine...".
 The facts about this tree were checked in it, those about the libraries on their own
 pages, on 10 October 2026. Sizes and days are estimates.*
 
-**In short:** a COMSOL-like 2D tool is a large project, but a feasible one, if it is
+**In short:** a 2D multiphysics tool is a large project, but a feasible one, if it is
 2D (and 2D axisymmetric) only and keeps to the physics that matter next to a circuit
 simulator:
 - electrostatics, electric currents and heat, with their couplings;
@@ -36,20 +36,20 @@ ties into the rest of Qucs-S:
 - a layout's cross-section becomes a model;
 - Claude can build and run models through tools.
 
-It is not COMSOL. COMSOL has 3D, about 30 modules and three decades of work. 3D is
+It is not a commercial multiphysics suite. Those have 3D, dozens of modules and decades of work. 3D is
 left out on purpose: it needs a solid modelling kernel and a 3D mesher, a project of
 its own.
 
-## What a model is (COMSOL's way, kept)
+## What a model is (the model builder's way, kept)
 
-COMSOL's *Model Builder* is a tree that is also the order of work: global parameters,
+A model builder's tree is also the order of work: global parameters,
 then a component's geometry (a sequence of features, rebuilt when a parameter
 changes), materials on its domains, physics with their domain and boundary
 conditions, multiphysics couplings, a mesh, studies (stationary, time dependent,
 frequency, eigenvalue, parametric sweeps) and results (datasets, plots, derived
 values, exports). Choosing a node shows its *Settings*; the *Graphics* window shows
 the geometry, lets the user pick domains, boundaries and points, and shows the mesh
-and the fields. That way of working is what users of COMSOL, ANSYS and Elmer expect,
+and the fields. That way of working is what users of the commercial tools, ANSYS and Elmer expect,
 and it is the right one to copy. The tree is the model.
 
 ## What there is
@@ -91,7 +91,7 @@ millions of times.
    back. The physics are there from the start. But each engine has its own model of
    the world, the user has to install it, the results come back as files, and every
    feature must be translated twice (Elmer's `.sif` alone has hundreds of keywords).
-   The tight loop of select, solve and evaluate that makes COMSOL pleasant is hard to
+   The tight loop of select, solve and evaluate that makes an integrated tool pleasant is hard to
    get through files.
 2. **Embed a large finite element library** - MFEM, deal.II - and build the
    physics on it. Powerful, but these are 3D-first, heavy to build on three
@@ -118,7 +118,7 @@ is the model's tree; its lower part, under a splitter, the settings of the node
 chosen. When a model's tab is in front, the panel shows its tree; otherwise it offers
 *New Model*, the recent models and the examples. Each node has a menu: add a
 child, disable, rename, duplicate, delete, *Build* (geometry, mesh) or *Compute*
-(study). A node that needs its parent built again shows a mark, as COMSOL's do.
+(study). A node that needs its parent built again shows a mark.
 
 ```
 ◆ microstrip.qfem
@@ -206,8 +206,8 @@ mesh and the solutions are not in it: they go beside it in `name.qfem.results`
 
 Selections are kept as **rules** where they can be: the domains of an object, the
 boundaries between two objects, those in a box. They do not depend on the numbers
-"Form Union" gives domains, which change when the geometry does: this is COMSOL's
-most common complaint. Picking domains in the view writes numbers; *Make a Rule*
+"Form Union" gives domains, which change when the geometry does: this is the most
+common complaint about such tools. Picking domains in the view writes numbers; *Make a Rule*
 turns them into one.
 
 ### Geometry
@@ -313,7 +313,7 @@ depths.
 
 ### Studies
 
-Each study is a list of steps, as COMSOL's:
+Each study is a list of steps:
 - **steps:** stationary; time dependent (output times, a tolerance); frequency domain
   (a list or a sweep); eigenvalue (how many, near what); parametric sweep
   (parameters × values, all combinations or in step);
@@ -439,7 +439,7 @@ with its benchmarks the day it comes.
 3. **The panel's name and the file:** *Multiphysics* (the request had
    "Mutliphysics", taken as a slip) and `.qfem`.
 4. **Where settings go:** under the tree in the panel (proposed), or in a dock of
-   their own on the right as COMSOL's *Settings* window.
+   their own on the right, a *Settings* window.
 
 ## Phase 1, as built
 
@@ -464,7 +464,7 @@ window), and `qucscontrol_fem` (Claude's tools).
   sizes on the boundaries (preset, per entity, curvature, narrow gaps) grown at the
   growth rate.
 - **Units in the geometry:** a geometry's and a mesh's expressions are evaluated with
-  lengths in the component's unit, as COMSOL does: `L/2 - 0.6` with `L = 2[mm]` is
+  lengths in the component's unit: `L/2 - 0.6` with `L = 2[mm]` is
   0.4 mm.
 - **Selections:** "only" (a domain's smallest object) and "between" use the smallest
   object that holds a domain, whatever the order in which the objects were drawn.

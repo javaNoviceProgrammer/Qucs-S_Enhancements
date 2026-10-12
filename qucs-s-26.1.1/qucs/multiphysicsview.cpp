@@ -62,7 +62,7 @@ double niceStep(double least)
 
 QColor domainColor(int d, bool dark)
 {
-    // Soft colors, one a domain, as COMSOL's materials appear.
+    // Soft colors, one a domain.
     static const QRgb light[] = {0xc9d9ec, 0xe8d5b5, 0xc8e3c8, 0xe6c8d6, 0xd6d0ea, 0xcfe6e4, 0xeedcc4, 0xd9e2c0};
     static const QRgb darkPalette[] = {0x38506b, 0x6b5733, 0x3d6640, 0x66435a, 0x4f4a72, 0x3f6663, 0x6e5b3c, 0x58643b};
     const int n = int(sizeof(light) / sizeof(light[0]));
@@ -487,7 +487,7 @@ void GraphicsView::paintGrid(QPainter& p, const Colors& c) const
         p.drawText(QRectF(3, py - 15, 80, 14), Qt::AlignLeft | Qt::AlignVCenter, formatNumber(std::abs(y) < step * 1e-9 ? 0 : y, 6));
     }
     if (a_axisymmetric) {
-        // The axis, as COMSOL draws it.
+        // The axis, dashed and dotted.
         const double px = toPixel(QPointF(0, 0)).x();
         QPen axis(QColor(c.ink.red(), c.ink.green(), c.ink.blue(), 170), 1.2, Qt::DashDotLine);
         p.setPen(axis);

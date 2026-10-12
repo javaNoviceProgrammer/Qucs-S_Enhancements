@@ -341,7 +341,7 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
                                     "absorb - photodiodes, electroabsorption modulators -, rays through lenses and prisms, quantum "
                                     "wells' states and their absorption and gain, and PDEs and ODEs of your own - its mesh "
                                     "(adapted too), studies (swept too) and results, lines and terminals as parts of circuits, in a "
-                                    "tree as COMSOL's. Open a model (.qfem) to see its tree here."),
+                                    "model tree. Open a model (.qfem) to see its tree here."),
                                  a_start);
         about->setWordWrap(true);
         // (Wrapped to the dock's width: its length is not to widen the dock -
@@ -520,7 +520,7 @@ void MultiphysicsPanel::selectNode(const QString& tag)
 
 void MultiphysicsPanel::addItems(QTreeWidgetItem* parent, const Node& node)
 {
-    // Those of a kind under one node numbered, as COMSOL's: Terminal 1, 2.
+    // Those of a kind under one node numbered: Terminal 1, 2.
     QHash<QString, int> ofType, seen;
     for (const Node& c : node.children)
         if (c.label.isEmpty()) ++ofType[c.type];
