@@ -409,7 +409,7 @@ private slots:
         };
         auto recover = [&](const QString& tau, Out* out) {
             const QString srh = QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "%1", "taup": "%1", "selection": {"all": true}})").arg(tau);
-            const QString steps = slow ? QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 1[ps], 5[ps]), range(7[ps], 2[ps], 25[ps]), range(30[ps], 10[ps], 100[ps]), range(150[ps], 50[ps], 0.6[ns])", "rtol": "1e-3"})x")
+            const QString steps = slow ? QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 1[ps], 5[ps]), range(7[ps], 2[ps], 25[ps]), range(30[ps], 10[ps], 100[ps]), range(150[ps], 50[ps], 0.6[ns])", "rtol": "3e-3"})x")
                                        : QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 0.5[ps], 5[ps]), range(6[ps], 1[ps], 30[ps]), range(35[ps], 5[ps], 100[ps]), range(120[ps], 20[ps], 300[ps]), range(350[ps], 50[ps], 1.2[ns])", "rtol": "1e-4"})x");
             Model m = modelOf(junction(QStringLiteral("5"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("0.65[V]"), steps, srh, hmax));
             for (Node& f : m.find(QStringLiteral("semi"))->children)
