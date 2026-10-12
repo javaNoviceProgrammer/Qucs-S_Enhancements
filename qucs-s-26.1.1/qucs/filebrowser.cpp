@@ -2644,10 +2644,82 @@ QStringList FileBrowser::transfer(const QStringList& sources, const QString& tar
     return done;
 }
 
+void FileBrowser::copyEntries(const QStringList& paths)
+{
+    QList<QUrl> urls;
+    QStringList shown;
+    for (const QString& path : paths) {
+        urls << QUrl::fromLocalFile(path);
+        shown << QDir::toNativeSeparators(path);
+    }
+    if (urls.isEmpty()) return;
+    // As files, and as their paths for what takes text.
+    auto* mime = new QMimeData;
+    mime->setUrls(urls);
+    mime->setText(shown.join(QLatin1Char('\n')));
+    QApplication::clipboard()->setMimeData(mime);
+}
+
+QStringList FileBrowser::clipboardFiles()
+{
+    QStringList files;
+    for (const QString& path : localPaths(QApplication::clipboard()->mimeData()))
+        if (exists(path)) files << path;
+    return files;
+}
+
+QStringList FileBrowser::pasteInto(const QString& folder)
+{
+    const QStringList files = clipboardFiles();
+    if (files.isEmpty() || !QFileInfo(folder).isDir()) return {};
+    return transfer(files, folder, Qt::CopyAction);
+}
+
+bool FileBrowser::hasEditFocus() const
+{
+    QWidget* focus = QApplication::focusWidget();
+    return qobject_cast<QAbstractItemView*>(focus) != nullptr && isAncestorOf(focus);
+}
+
+void FileBrowser::copyChosen()
+{
+    if (const QStringList chosen = selectedPaths(); !chosen.isEmpty()) copyEntries(chosen);
+}
+
+void FileBrowser::pasteChosen()
+{
+    const QString into = pasteTarget();
+    if (into.isEmpty()) return;
+    // (After the key or the menu: a name taken there is asked about.)
+    QTimer::singleShot(0, this, [this, into] { pasteInto(into); });
+}
+
+QString FileBrowser::pasteTarget() const
+{
+    if (a_view == View::Recent) return {};
+    // In the Tree the entry in focus among those chosen.
+    const QModelIndex current = a_tree->currentIndex();
+    if (a_view == View::Tree && current.isValid() && a_tree->selectionModel()->isSelected(current))
+        if (const QString chosen = pathOf(current); !chosen.isEmpty())
+            return QFileInfo(chosen).isDir() ? chosen : QFileInfo(chosen).absolutePath();
+    return a_location;
+}
+
 QMenu* FileBrowser::contextMenuFor(const QString& path)
 {
     auto* menu = new QMenu(this);
     menu->setObjectName(QStringLiteral("fbContextMenu"));
+    // Paste into \a folder: the files copied (here, or in the Finder). Its
+    // key shown where the key does the same.
+    const auto addPaste = [this, menu](const QString& folder, const QString& label) {
+        QAction* paste = menu->addAction(label, this, [this, folder] { pasteInto(folder); });
+        paste->setObjectName(QStringLiteral("fbPaste"));
+        paste->setEnabled(!clipboardFiles().isEmpty());
+        if (samePath(folder, pasteTarget())) {
+            paste->setShortcut(QKeySequence::Paste);
+            paste->setShortcutVisibleInContextMenu(true);
+        }
+    };
     const QFileInfo info(path);
     if (path.isEmpty() || !info.exists()) {
         // The folder shown.
@@ -2657,6 +2729,8 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
             if (!made.isEmpty()) rename(made);
         });
         menu->addAction(tr("New Zip…"), this, [this] { emit newArchiveRequested(a_location); });
+        menu->addSeparator();
+        addPaste(a_location, tr("Paste"));
         menu->addSeparator();
         menu->addAction(revealLabel(false), this, [this] { QDesktopServices::openUrl(QUrl::fromLocalFile(a_location)); });
         menu->addAction(tr("Copy Path"), this, [this] { QApplication::clipboard()->setText(QDir::toNativeSeparators(a_location)); });
@@ -2696,12 +2770,20 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
         // A new archive beside it.
         menu->addAction(tr("New Zip…"), this, [this, info] { emit newArchiveRequested(info.absolutePath()); });
     }
-    menu->addSeparator();
-    menu->addAction(revealLabel(true), this, [path] { revealItem(path); });
-    menu->addAction(tr("Copy Path"), this, [path] { QApplication::clipboard()->setText(QDir::toNativeSeparators(path)); });
     // The entries chosen (this one among them), or this one.
     QStringList chosen = selectedPaths();
     if (!chosen.contains(path)) chosen = {path};
+    menu->addSeparator();
+    QAction* copy = menu->addAction(chosen.size() > 1 ? tr("Copy %1 Items").arg(chosen.size()) : tr("Copy"), this,
+                                    [this, chosen] { copyEntries(chosen); });
+    copy->setObjectName(QStringLiteral("fbCopy"));
+    copy->setShortcut(QKeySequence::Copy);
+    copy->setShortcutVisibleInContextMenu(true);
+    if (info.isDir()) addPaste(path, tr("Paste into “%1”").arg(info.fileName()));
+    else addPaste(info.absolutePath(), tr("Paste"));
+    menu->addSeparator();
+    menu->addAction(revealLabel(true), this, [path] { revealItem(path); });
+    menu->addAction(tr("Copy Path"), this, [path] { QApplication::clipboard()->setText(QDir::toNativeSeparators(path)); });
     addGitMenu(menu, chosen);
     menu->addSeparator();
     menu->addAction(tr("Rename…"), this, [this, path] { rename(path); });
@@ -3112,6 +3194,16 @@ bool FileBrowser::eventFilter(QObject* watched, QEvent* event)
     } else if (qobject_cast<QAbstractItemView*>(watched) != nullptr
                && (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress)) {
         auto* key = static_cast<QKeyEvent*>(event);
+        // Copy and Paste: the files chosen, not the window's (a schematic's)
+        // Edit > Copy and Paste.
+        if (key->matches(QKeySequence::Copy) || key->matches(QKeySequence::Paste)) {
+            if (event->type() == QEvent::KeyPress) {
+                if (key->matches(QKeySequence::Copy)) copyChosen();
+                else pasteChosen();
+            }
+            event->accept();
+            return true;
+        }
         // Its keys before the window's shortcuts for them.
         if (event->type() == QEvent::ShortcutOverride && listKey(key)) {
             event->accept();

@@ -1596,6 +1596,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     or the open project.
   - **Open documents:** documents open from moved or renamed files or
     folders follow them; their tabs and names update.
+  **Copy and Paste**: an entry's right-click menu has *Copy* (*Copy 3
+  Items* when several are chosen) and *Paste* — beside a file, or *Paste
+  into “folder”* on a folder; the empty area's menu pastes into the
+  folder shown. ⌘C and ⌘V (Ctrl+C and Ctrl+V on Windows and Linux) do the
+  same in the browser, as do *Edit → Copy* and *Paste* while it has the
+  focus: the Tree pastes into the folder chosen (or the chosen file's
+  folder), the other views into the folder shown. What is copied goes on
+  the clipboard as files, so the Finder or the Explorer can paste it, and
+  files copied there paste here. A paste works as a copying drop: a name
+  that is taken is asked about, and a copy into its own folder is
+  `name copy`.
   **Changes on the disk** show as they happen (within about half a
   second): files made, renamed, changed or removed by other programs, in
   the folder shown and in the Tree's open folders. A folder that is

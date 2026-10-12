@@ -8,9 +8,13 @@
  * follow it.
  */
 #include <QtTest>
+#include <QAction>
+#include <QClipboard>
 #include <QFileSystemModel>
+#include <QMenu>
 #include <QSignalSpy>
 #include <QCheckBox>
+#include <QLineEdit>
 #include <QListView>
 #include <QMessageBox>
 #include <QMimeData>
@@ -19,6 +23,7 @@
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QTreeView>
+#include <QVBoxLayout>
 
 #include "config.h"
 #include "filebrowser.h"
@@ -409,6 +414,145 @@ private slots:
         QCOMPARE(moved.count(), 4);
         QCOMPARE(moved.last().at(0).toStringList(), QStringList{here + "/proj2/filter.sch"});
         QCOMPARE(moved.last().at(1).toStringList(), QStringList{here + "/proj2/filter2.sch"});
+    }
+
+    // Copy and Paste: the entries chosen on the clipboard as files (their
+    // paths as text, for what takes text), pasted into a folder as a
+    // copying drop puts them there - the originals stay, a name taken is
+    // asked about, into their own folder "name copy". From an entry's menu
+    // (into a folder, beside a file) and the folder's; Paste only when the
+    // clipboard has files.
+    void copiedAndPasted()
+    {
+        const QString here = fresh("clip");
+        FileBrowser fb;
+        fb.resize(400, 600);
+        fb.setView(FileBrowser::View::List);
+        fb.setLocation(here);
+        QVERIFY(shows(fb, "two.txt"));
+
+        fb.copyEntries({here + "/one.sch", here + "/a"});
+        const QMimeData* mime = QApplication::clipboard()->mimeData();
+        QCOMPARE(mime->urls(), QList<QUrl>({QUrl::fromLocalFile(here + "/one.sch"), QUrl::fromLocalFile(here + "/a")}));
+        QCOMPARE(mime->text(), QDir::toNativeSeparators(here + "/one.sch") + "\n" + QDir::toNativeSeparators(here + "/a"));
+        QCOMPARE(FileBrowser::clipboardFiles(), QStringList({here + "/one.sch", here + "/a"}));
+
+        // Into another folder: copied, a folder with what is in it.
+        QCOMPARE(fb.pasteInto(here + "/b"), QStringList({here + "/b/one.sch", here + "/b/a"}));
+        QCOMPARE(read(here + "/b/one.sch"), QByteArray("one"));
+        QCOMPARE(read(here + "/b/a/inner.txt"), QByteArray("inner"));
+        QCOMPARE(read(here + "/one.sch"), QByteArray("one"));
+        QCOMPARE(read(here + "/a/inner.txt"), QByteArray("inner"));
+        // There again: the names taken, asked about.
+        QString asked;
+        QStringList went;
+        answering([&] { went = fb.pasteInto(here + "/b"); }, clash("fbClashKeepBoth", true, &asked));
+        QVERIFY2(asked.contains("one.sch") && asked.contains("“b”"), qPrintable(asked));
+        QCOMPARE(went, QStringList({here + "/b/one 2.sch", here + "/b/a 2"}));
+        // Into their own folder: beside themselves.
+        QCOMPARE(fb.pasteInto(here), QStringList({here + "/one copy.sch", here + "/a copy"}));
+        QCOMPARE(read(here + "/a copy/inner.txt"), QByteArray("inner"));
+
+        // The menus. A file: Copy, and Paste beside it.
+        fb.copyEntries({here + "/two.txt"});
+        QMenu* menu = fb.contextMenuFor(here + "/one.sch");
+        QAction* copy = menu->findChild<QAction*>("fbCopy");
+        QAction* paste = menu->findChild<QAction*>("fbPaste");
+        QVERIFY(copy != nullptr && paste != nullptr);
+        QCOMPARE(copy->text(), QStringLiteral("Copy"));
+        QCOMPARE(paste->text(), QStringLiteral("Paste"));
+        QVERIFY(paste->isEnabled());
+        copy->trigger();
+        QCOMPARE(FileBrowser::clipboardFiles(), QStringList({here + "/one.sch"}));
+        delete menu;
+        // A folder: Paste into it.
+        menu = fb.contextMenuFor(here + "/b/deep");
+        paste = menu->findChild<QAction*>("fbPaste");
+        QCOMPARE(paste->text(), QStringLiteral("Paste into “deep”"));
+        paste->trigger();
+        QCOMPARE(read(here + "/b/deep/one.sch"), QByteArray("one"));
+        delete menu;
+        // The folder shown: Paste into it.
+        menu = fb.contextMenuFor(QString());
+        paste = menu->findChild<QAction*>("fbPaste");
+        QVERIFY(paste != nullptr && menu->findChild<QAction*>("fbCopy") == nullptr);
+        delete menu;
+        // Nothing to paste: text on the clipboard, or a file gone.
+        QApplication::clipboard()->setText(here + "/two.txt");
+        QVERIFY(FileBrowser::clipboardFiles().isEmpty());
+        menu = fb.contextMenuFor(here + "/one.sch");
+        QVERIFY(!menu->findChild<QAction*>("fbPaste")->isEnabled());
+        delete menu;
+        QVERIFY(fb.pasteInto(here + "/b").isEmpty());
+        write(here + "/gone.txt");
+        fb.copyEntries({here + "/gone.txt"});
+        QVERIFY(QFile::remove(here + "/gone.txt"));
+        QVERIFY(FileBrowser::clipboardFiles().isEmpty());
+        // Several chosen: Copy takes them all.
+        fb.selectPath(here + "/one.sch");
+        fb.currentView()->selectionModel()->select(fb.indexOf(here + "/two.txt"), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        menu = fb.contextMenuFor(here + "/two.txt");
+        copy = menu->findChild<QAction*>("fbCopy");
+        QCOMPARE(copy->text(), QStringLiteral("Copy 2 Items"));
+        copy->trigger();
+        QCOMPARE(FileBrowser::clipboardFiles().size(), 2);
+        delete menu;
+    }
+
+    // Their keys, in a view of it, before the window's Edit > Copy and
+    // Paste: the entries chosen copied; pasted into the folder shown, or
+    // in the Tree the folder chosen (the chosen file's).
+    void copiedAndPastedByKeys()
+    {
+        const QString here = fresh("keys");
+        QWidget window;
+        auto* layout = new QVBoxLayout(&window);
+        auto* fb = new FileBrowser;
+        layout->addWidget(fb);
+        auto* editCopy = new QAction(&window);
+        editCopy->setShortcut(QKeySequence::Copy);
+        auto* editPaste = new QAction(&window);
+        editPaste->setShortcut(QKeySequence::Paste);
+        window.addActions({editCopy, editPaste});
+        QSignalSpy copies(editCopy, &QAction::triggered), pastes(editPaste, &QAction::triggered);
+        window.resize(400, 600);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        fb->setView(FileBrowser::View::List);
+        fb->setLocation(here);
+        QVERIFY(shows(*fb, "two.txt"));
+        fb->selectPath(here + "/two.txt");
+        fb->currentView()->setFocus();
+        QVERIFY(fb->hasEditFocus());
+        QTest::keySequence(fb->currentView(), QKeySequence::Copy);
+        QCOMPARE(FileBrowser::clipboardFiles(), QStringList({here + "/two.txt"}));
+        // Into the folder shown, whatever is chosen (a folder too).
+        fb->selectPath(here + "/a");
+        QTest::keySequence(fb->currentView(), QKeySequence::Paste);
+        QTRY_VERIFY(QFile::exists(here + "/two copy.txt"));
+        QVERIFY(!QFile::exists(here + "/a/two.txt"));
+        // The Tree: into the folder chosen, or the chosen file's.
+        fb->setView(FileBrowser::View::Tree);
+        QVERIFY(shows(*fb, "b"));
+        static_cast<QTreeView*>(fb->currentView())->expand(fb->indexOf(here + "/b"));
+        QTRY_VERIFY(fb->indexOf(here + "/b/deep").isValid());
+        fb->selectPath(here + "/b/deep");
+        fb->currentView()->setFocus();
+        QTest::keySequence(fb->currentView(), QKeySequence::Paste);
+        QTRY_VERIFY(QFile::exists(here + "/b/deep/two.txt"));
+        fb->selectPath(here + "/a/inner.txt");
+        if (!fb->indexOf(here + "/a/inner.txt").isValid()) {
+            static_cast<QTreeView*>(fb->currentView())->expand(fb->indexOf(here + "/a"));
+            QTRY_VERIFY(fb->indexOf(here + "/a/inner.txt").isValid());
+            fb->selectPath(here + "/a/inner.txt");
+        }
+        QTest::keySequence(fb->currentView(), QKeySequence::Paste);
+        QTRY_VERIFY(QFile::exists(here + "/a/two.txt"));
+        QCOMPARE(copies.count(), 0);
+        QCOMPARE(pastes.count(), 0);
+        // Elsewhere (the filter's text) the keys are not its own.
+        fb->filterEdit()->setFocus();
+        QVERIFY(!fb->hasEditFocus());
     }
 
     // Dropped on the views: on a folder's row, into it; beside the rows,

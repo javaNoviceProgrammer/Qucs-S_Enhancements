@@ -189,6 +189,23 @@ public:
     /// both, skip); an entry copied into its own folder becomes "name
     /// copy". Returns where they went. Open documents moved follow (moved()).
     QStringList transfer(const QStringList& sources, const QString& target, Qt::DropAction action);
+    /// Puts \a paths on the clipboard as files: Paste copies them, here or
+    /// in the Finder (the Explorer, a file manager).
+    void copyEntries(const QStringList& paths);
+    /// Copies the files on the clipboard (copied here, or in the Finder)
+    /// into \a folder, as a drop copies them: a name it has already asked
+    /// about, into their own folder "name copy". Returns where they went.
+    QStringList pasteInto(const QString& folder);
+    /// The files on the clipboard (on this computer).
+    static QStringList clipboardFiles();
+    /// Whether one of its views has the focus: Copy and Paste (their keys,
+    /// Edit > Copy and Paste) are then its own.
+    bool hasEditFocus() const;
+    /// Copy: the entries chosen onto the clipboard as files.
+    void copyChosen();
+    /// Paste: the files on the clipboard copied into the folder chosen in
+    /// the Tree (the chosen file's), else into the folder shown.
+    void pasteChosen();
     /// Renames \a path to \a name in its folder, as File > Rename does. A
     /// name, not a path: "/" (and "\\" on Windows), "." and ".." are
     /// refused; another case of the name it has is a rename (the same file
@@ -275,6 +292,9 @@ private:
     /// The Details view's name column: what the others leave of the width.
     void fitDetails();
     void showContextMenu(QAbstractItemView* view, const QPoint& pos);
+    /// Where Paste (its key) copies to: in the Tree the folder chosen (in
+    /// focus), or the chosen file's; else the folder shown.
+    QString pasteTarget() const;
     /// The folder shown, the views' root again once the model lost it.
     void keepRoot();
     /// The Git submenu of \a paths' context menu.
