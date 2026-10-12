@@ -24,6 +24,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QCryptographicHash>
+#include <QDockWidget>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -456,9 +457,9 @@ void GraphDelegate::paint(QPainter* p, const QStyleOptionViewItem& option, const
 }
 
 // ----------------------------------------------------------------------
-// HistoryDialog
+// HistoryView
 
-QString HistoryDialog::historyPath(const QString& root, const QString& path)
+QString HistoryView::historyPath(const QString& root, const QString& path)
 {
     if (path.isEmpty()) return {};
     bool inside = false;
@@ -466,12 +467,12 @@ QString HistoryDialog::historyPath(const QString& root, const QString& path)
     return inside && rel.isEmpty() ? QString() : path;
 }
 
-HistoryDialog::HistoryDialog(const QString& root, const QString& path, QWidget* parent)
-    : QDialog(parent), a_root(root), a_path(historyPath(root, path))
+HistoryView::HistoryView(const QString& root, const QString& path, QWidget* parent)
+    : QWidget(parent), a_root(root), a_path(historyPath(root, path))
 {
-    setObjectName(QStringLiteral("gitHistoryDialog"));
+    setObjectName(QStringLiteral("gitHistoryView"));
+    // (Its dock's title.)
     setWindowTitle(a_path.isEmpty() ? tr("History — %1").arg(QFileInfo(root).fileName()) : tr("History of %1").arg(QFileInfo(a_path).fileName()));
-    setWindowFlag(Qt::WindowMaximizeButtonHint);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
 
@@ -578,6 +579,10 @@ HistoryDialog::HistoryDialog(const QString& root, const QString& path, QWidget* 
     a_details->setLineWrapMode(QPlainTextEdit::NoWrap);
     a_details->setFont(fixedFont());
     new DiffHighlighter(a_details->document());
+    // (Docked low, it may be short: each pane small at least, not as tall
+    // as its own hint - the documents above keep their room.)
+    a_view->setMinimumHeight(60);
+    for (QWidget* pane : {static_cast<QWidget*>(a_info), static_cast<QWidget*>(a_files), static_cast<QWidget*>(a_details)}) pane->setMinimumHeight(36);
     left->setStretchFactor(0, 1);
     left->setStretchFactor(1, 1);
     lower->setStretchFactor(0, 2);
@@ -592,8 +597,6 @@ HistoryDialog::HistoryDialog(const QString& root, const QString& path, QWidget* 
     a_status->setObjectName(QStringLiteral("gitHistoryStatus"));
     bottom->addWidget(a_more);
     bottom->addWidget(a_status, 1);
-    auto* close = new QPushButton(tr("Close"), this);
-    bottom->addWidget(close);
     layout->addLayout(bottom);
 
     a_showTimer = new QTimer(this);
@@ -603,17 +606,16 @@ HistoryDialog::HistoryDialog(const QString& root, const QString& path, QWidget* 
     a_reloadTimer = new QTimer(this);
     a_reloadTimer->setSingleShot(true);
     a_reloadTimer->setInterval(300);
-    connect(a_reloadTimer, &QTimer::timeout, this, &HistoryDialog::refresh);
+    connect(a_reloadTimer, &QTimer::timeout, this, &HistoryView::refresh);
     connect(Tracker::instance(), &Tracker::changed, this, [this](const QString& changed) {
         if (QDir::cleanPath(changed) == QDir::cleanPath(a_root)) a_reloadTimer->start();
     });
 
-    connect(close, &QPushButton::clicked, this, &QDialog::reject);
-    connect(a_more, &QPushButton::clicked, this, &HistoryDialog::loadMore);
-    connect(refresh, &QPushButton::clicked, this, &HistoryDialog::reload);
+    connect(a_more, &QPushButton::clicked, this, &HistoryView::loadMore);
+    connect(refresh, &QPushButton::clicked, this, &HistoryView::reload);
     connect(fetch, &QPushButton::clicked, this, [this] { Commands::instance()->fetch(a_root); });
     connect(a_scope, &QComboBox::activated, this, [this] { reload(); });
-    connect(a_find, &QLineEdit::textChanged, this, &HistoryDialog::find);
+    connect(a_find, &QLineEdit::textChanged, this, &HistoryView::find);
     connect(a_find, &QLineEdit::returnPressed, this, [this] { findNext(QApplication::keyboardModifiers() & Qt::ShiftModifier); });
     connect(previous, &QToolButton::clicked, this, [this] { findNext(true); });
     connect(next, &QToolButton::clicked, this, [this] { findNext(false); });
@@ -647,10 +649,14 @@ HistoryDialog::HistoryDialog(const QString& root, const QString& path, QWidget* 
     // (a file's: the branch checked out; reload() lists the others)
     if (!a_path.isEmpty()) setScope(QStringLiteral("current"));
     reload();
-    resize(1200, 820);
 }
 
-void HistoryDialog::fillScopes(const Repository& repo)
+QDockWidget* HistoryView::dock() const
+{
+    return qobject_cast<QDockWidget*>(parentWidget());
+}
+
+void HistoryView::fillScopes(const Repository& repo)
 {
     const QString was = a_scope->currentData().toString();
     a_scope->clear();
@@ -672,7 +678,7 @@ void HistoryDialog::fillScopes(const Repository& repo)
     a_scope->setCurrentIndex(at >= 0 ? at : 0);
 }
 
-void HistoryDialog::setScope(const QString& scope)
+void HistoryView::setScope(const QString& scope)
 {
     int at = a_scope->findData(scope);
     if (at < 0) {
@@ -682,12 +688,12 @@ void HistoryDialog::setScope(const QString& scope)
     a_scope->setCurrentIndex(at);
 }
 
-QString HistoryDialog::scope() const
+QString HistoryView::scope() const
 {
     return a_scope->currentData().toString();
 }
 
-HistoryQuery HistoryDialog::query() const
+HistoryQuery HistoryView::query() const
 {
     HistoryQuery q;
     const QString s = scope();
@@ -702,14 +708,14 @@ HistoryQuery HistoryDialog::query() const
     return q;
 }
 
-QString HistoryDialog::refsSignature() const
+QString HistoryView::refsSignature() const
 {
     const Result refs = run(a_root, {QStringLiteral("for-each-ref"), QStringLiteral("--format=%(objectname) %(refname)")}, true, 15000);
     const Result head = run(a_root, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")}, true, 15000);
     return head.out.trimmed() + QLatin1Char('\n') + refs.out;
 }
 
-void HistoryDialog::refresh()
+void HistoryView::refresh()
 {
     // The branches, tags and HEAD as they were: the changes not committed
     // alone, as they are now (a file saved); else all of it.
@@ -732,7 +738,7 @@ void HistoryDialog::refresh()
     }
 }
 
-int HistoryDialog::uncommittedChanges(const Repository& repo) const
+int HistoryView::uncommittedChanges(const Repository& repo) const
 {
     if (a_path.isEmpty()) return repo.changedCount();
     const QString rel = relativePath(a_root, a_path);
@@ -742,7 +748,7 @@ int HistoryDialog::uncommittedChanges(const Repository& repo) const
     return changes;
 }
 
-void HistoryDialog::reload()
+void HistoryView::reload()
 {
     a_reloadTimer->stop();
     a_signature = refsSignature();
@@ -780,7 +786,7 @@ void HistoryDialog::reload()
     if (!a_find->text().isEmpty()) updateFound();
 }
 
-void HistoryDialog::loadMore()
+void HistoryView::loadMore()
 {
     if (a_complete) return;
     const QList<Commit> commits = history(a_root, query());
@@ -811,7 +817,7 @@ void HistoryDialog::loadMore()
     if (!a_find->text().isEmpty()) updateFound();
 }
 
-void HistoryDialog::updateStatus()
+void HistoryView::updateStatus()
 {
     QSet<QString> branchNames, tagNames;
     for (int i = 0; i < a_model->rowCount(); ++i)
@@ -823,9 +829,9 @@ void HistoryDialog::updateStatus()
     a_status->setText(text);
 }
 
-void HistoryDialog::showEvent(QShowEvent* event)
+void HistoryView::showEvent(QShowEvent* event)
 {
-    QDialog::showEvent(event);
+    QWidget::showEvent(event);
     // Read before the window had its size: the commit chosen in sight now
     // (and the rows above it, when they fit).
     QTimer::singleShot(0, this, [this] {
@@ -833,13 +839,13 @@ void HistoryDialog::showEvent(QShowEvent* event)
     });
 }
 
-int HistoryDialog::currentRow() const
+int HistoryView::currentRow() const
 {
     const QModelIndex at = a_view->currentIndex();
     return at.isValid() ? at.row() : -1;
 }
 
-void HistoryDialog::selectRow(int row)
+void HistoryView::selectRow(int row)
 {
     if (row < 0 || row >= a_model->rowCount()) return;
     const QModelIndex at = a_model->index(row, 0);
@@ -849,7 +855,7 @@ void HistoryDialog::selectRow(int row)
     showRow(row);
 }
 
-bool HistoryDialog::select(const QString& hash)
+bool HistoryView::select(const QString& hash)
 {
     const int row = a_model->rowOf(hash);
     if (row < 0) return false;
@@ -857,7 +863,7 @@ bool HistoryDialog::select(const QString& hash)
     return true;
 }
 
-void HistoryDialog::showRow(int row)
+void HistoryView::showRow(int row)
 {
     if (row == a_shown && row >= 0) return;
     a_shown = row;
@@ -943,7 +949,7 @@ void HistoryDialog::showRow(int row)
     a_details->setPlainText(parts.isEmpty() ? text : parts + QLatin1Char('\n') + text);
 }
 
-void HistoryDialog::showFile(int fileRow)
+void HistoryView::showFile(int fileRow)
 {
     QTreeWidgetItem* item = a_files->topLevelItem(fileRow);
     const int row = currentRow();
@@ -961,7 +967,7 @@ void HistoryDialog::showFile(int fileRow)
     a_details->setPlainText(parts.isEmpty() ? text : parts + QLatin1Char('\n') + text);
 }
 
-void HistoryDialog::openVersion(int fileRow)
+void HistoryView::openVersion(int fileRow)
 {
     QTreeWidgetItem* item = a_files->topLevelItem(fileRow);
     const int row = currentRow();
@@ -1002,7 +1008,7 @@ void HistoryDialog::openVersion(int fileRow)
     emit Commands::instance()->openVersionRequested(file);
 }
 
-QMenu* HistoryDialog::fileMenuFor(int fileRow)
+QMenu* HistoryView::fileMenuFor(int fileRow)
 {
     auto* menu = new QMenu(this);
     menu->setObjectName(QStringLiteral("gitFileMenu"));
@@ -1023,7 +1029,7 @@ QMenu* HistoryDialog::fileMenuFor(int fileRow)
     return menu;
 }
 
-void HistoryDialog::find(const QString&)
+void HistoryView::find(const QString&)
 {
     updateFound();
     if (a_foundRows.isEmpty()) return;
@@ -1039,7 +1045,7 @@ void HistoryDialog::find(const QString&)
     a_findLabel->setText(tr("%1 of %2").arg(pick + 1).arg(a_foundRows.size()));
 }
 
-void HistoryDialog::updateFound()
+void HistoryView::updateFound()
 {
     a_foundRows.clear();
     const QString text = a_find->text().trimmed();
@@ -1064,7 +1070,7 @@ void HistoryDialog::updateFound()
         a_findLabel->setText(a_complete ? tr("none") : counted(a_loaded, QT_TRANSLATE_NOOP("GitHistory", "none in the %1 commit read"), QT_TRANSLATE_NOOP("GitHistory", "none in the %1 commits read")));
 }
 
-void HistoryDialog::findNext(bool backwards)
+void HistoryView::findNext(bool backwards)
 {
     if (a_foundRows.isEmpty()) return;
     const int now = currentRow();
@@ -1082,7 +1088,7 @@ void HistoryDialog::findNext(bool backwards)
     a_findLabel->setText(tr("%1 of %2").arg(pick + 1).arg(a_foundRows.size()));
 }
 
-QMenu* HistoryDialog::menuFor(int row)
+QMenu* HistoryView::menuFor(int row)
 {
     auto* menu = new QMenu(this);
     menu->setObjectName(QStringLiteral("gitCommitMenu"));
@@ -1098,7 +1104,7 @@ QMenu* HistoryDialog::menuFor(int row)
     }
     const QString hash = r.commit.hash;
     const QString shortHash = r.commit.shortHash;
-    QPointer<HistoryDialog> self(this);
+    QPointer<HistoryView> self(this);
     const auto after = [self](const Result& result, const QString& what) {
         if (!result.ok()) misc::reportError(what + QStringLiteral(":\n") + result.error());
         Tracker::instance()->refresh(self.isNull() ? QString() : self->a_root);

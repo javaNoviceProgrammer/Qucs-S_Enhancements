@@ -21,8 +21,10 @@
 #include <QBoxLayout>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDockWidget>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QHeaderView>
@@ -30,6 +32,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QLocale>
+#include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
@@ -523,7 +526,11 @@ Commands::Commands(QObject* parent) : QObject(parent) {}
 
 QWidget* Commands::window() const
 {
-    return QApplication::activeWindow();
+    // (A history floated as a window of its own: its dialogs the main
+    // window's, not gone with it when it is closed.)
+    QWidget* active = QApplication::activeWindow();
+    if (qobject_cast<QDockWidget*>(active) != nullptr && a_main != nullptr) return a_main;
+    return active;
 }
 
 bool Commands::report(const Result& result, const QString& what)
@@ -853,20 +860,58 @@ void Commands::showDiff(const QString& root, const QString& path, DiffOf of)
                         text, window()));
 }
 
-HistoryDialog* Commands::showHistory(const QString& root, const QString& path)
+void Commands::setMainWindow(QMainWindow* window)
 {
-    // One window a repository (a file), as an IDE has one history view.
-    const QString wanted = QDir::cleanPath(HistoryDialog::historyPath(root, path));
-    for (const QPointer<QDialog>& w : std::as_const(a_windows))
-        if (auto* h = qobject_cast<HistoryDialog*>(w.data());
-            h != nullptr && h->isVisible() && QDir::cleanPath(h->root()) == QDir::cleanPath(root) && QDir::cleanPath(h->path()) == wanted) {
+    a_main = window;
+}
+
+HistoryView* Commands::showHistory(const QString& root, const QString& path)
+{
+    // One a repository (a file), as an IDE has one history view.
+    const QString wanted = QDir::cleanPath(HistoryView::historyPath(root, path));
+    a_histories.removeAll(nullptr);
+    for (const QPointer<HistoryView>& h : std::as_const(a_histories))
+        if (QDir::cleanPath(h->root()) == QDir::cleanPath(root) && QDir::cleanPath(h->path()) == wanted) {
             h->refresh();
-            h->raise();
-            h->activateWindow();
+            if (QDockWidget* dock = h->dock()) {
+                dock->show();
+                dock->raise();
+                dock->activateWindow();
+            }
             return h;
         }
-    auto* h = new HistoryDialog(root, path, window());
-    keep(h);
+    auto* h = new HistoryView(root, path);
+    a_histories << h;
+    auto* dock = new QDockWidget(h->windowTitle(), a_main);
+    // (Its own name: the window's layout kept with the others'.)
+    dock->setObjectName(QStringLiteral("GitHistoryDock_%1").arg(QString::fromLatin1(
+        QCryptographicHash::hash((QDir::cleanPath(root) + QLatin1Char('|') + wanted).toUtf8(), QCryptographicHash::Sha1).toHex().left(12))));
+    dock->setAttribute(Qt::WA_DeleteOnClose);
+    dock->setWidget(h);
+    if (a_main != nullptr) {
+        // Below the documents: a tab beside the panels there (another
+        // history, the messages, the console), else the bottom's own.
+        QDockWidget* beside = nullptr;
+        for (QDockWidget* other : a_main->findChildren<QDockWidget*>(Qt::FindDirectChildrenOnly)) {
+            if (other == dock || other->isFloating() || other->isHidden() || a_main->dockWidgetArea(other) != Qt::BottomDockWidgetArea) continue;
+            if (beside == nullptr || other->objectName().startsWith(QLatin1String("GitHistoryDock_"))) beside = other;
+        }
+        a_main->addDockWidget(Qt::BottomDockWidgetArea, dock);
+        if (beside != nullptr) a_main->tabifyDockWidget(beside, dock);
+        dock->show();
+        dock->raise();
+        // Room for its graph: some 45 % of the window's height, once it is
+        // laid out (before, the request is lost).
+        QTimer::singleShot(0, dock, [main = a_main, dock] {
+            if (main != nullptr) main->resizeDocks({dock}, {main->height() * 45 / 100}, Qt::Vertical);
+        });
+    } else {
+        dock->setFloating(true);
+        dock->resize(1200, 820);
+        dock->show();
+        dock->raise();
+        dock->activateWindow();
+    }
     return h;
 }
 

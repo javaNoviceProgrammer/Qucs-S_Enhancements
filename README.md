@@ -1637,7 +1637,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     with *Amend the last commit* and *Commit and Push*. When nothing is
     staged it offers to stage everything; a merge under way is committed
     with nothing staged (its conflicts resolved as the branch had them).
-    *History* draws every branch's commits as a **graph**, as VS Code's
+    *History* is a **panel**, docked below the documents beside the
+    others there (each history a tab of them) - dragged to any side, or
+    floated as a window of its own and docked again, as any dock. It
+    draws every branch's commits as a **graph**, as VS Code's
     and Eclipse's history do: newest first, each commit a dot in its
     branch's lane and colour, the lines to its parents — a merge curving
     in from its other branch, a fork out to it —, HEAD's dot a ring; the
@@ -1704,7 +1707,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   - **Claude's git tools**: `git_status`, `git_diff` (head, staged or
     unstaged), `git_log` (`all`: every branch's commits, each with its
     parents; `graph`: git's drawing of the lines; `show`: the History
-    window at the first one), `git_show` and `git_blame` only look.
+    panel at the first one), `git_show` and `git_blame` only look.
     `git_stage`, `git_unstage`, `git_discard`, `git_commit` (with `paths`,
     `amend`, `push`), `git_branch` (list, create, switch — `stash` first
     —, rename, delete, merge), `git_remote` (list, fetch, pull, push, add,
