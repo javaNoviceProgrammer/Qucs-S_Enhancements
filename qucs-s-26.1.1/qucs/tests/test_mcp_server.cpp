@@ -729,6 +729,29 @@ private slots:
         QCOMPARE(answers.value(7).value("error").toObject().value("code").toInt(), -32601);
     }
 
+    // Its own name qucs-s - its caches', autosaves', crash reports' and
+    // conversations' folders - whatever its bundle is called on macOS:
+    // Physics Room there, the application menu's title and its About, Hide
+    // and Quit. (Qt takes the bundle's name for the application's unless
+    // told: the folders would move, and what is in them be found no more.)
+    void itsNameIsItsOwn()
+    {
+        const QString program = QStringLiteral(QUCS_BINARY);
+        if (!QFileInfo(program).isExecutable()) QSKIP("qucs-s is not built next to the tests");
+        QProcess p;
+        p.start(program, {QStringLiteral("--version")});
+        QVERIFY(p.waitForFinished(60000));
+        const QString version = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        QVERIFY2(version.startsWith(QLatin1String("qucs-s ")), qPrintable(version));
+#ifdef Q_OS_MACOS
+        QFile plist(QFileInfo(program).absoluteDir().filePath(QStringLiteral("../Info.plist")));
+        QVERIFY(plist.open(QIODevice::ReadOnly));
+        const QString text = QString::fromUtf8(plist.readAll()).simplified();
+        QVERIFY(text.contains(QLatin1String("<key>CFBundleName</key> <string>Physics Room</string>")));
+        QVERIFY(text.contains(QLatin1String("<key>CFBundleExecutable</key> <string>qucs-s</string>")));
+#endif
+    }
+
     // --workspace DIR: the run works there - not in the settings' workspace
     // (with none, ~/QucsWorkspace: a fuzzer's projects named "'" and {} went
     // there) - and the settings keep theirs.

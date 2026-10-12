@@ -371,7 +371,11 @@ IF(APPLE)
     SET(MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
     SET(MACOSX_BUNDLE_COPYRIGHT "${PROJECT_COPYRIGHT_YEAR} ${PROJECT_VENDOR}")
     SET(MACOSX_BUNDLE_GUI_IDENTIFIER "${PROJECT_DOMAIN_SECOND}.${PROJECT_DOMAIN_FIRST}")
-    SET(MACOSX_BUNDLE_BUNDLE_NAME "${PROJECT_NAME}")
+    # The name macOS shows: the application menu's title, its About, Hide
+    # and Quit, the Dock's. (The executable, the bundle's folder and the
+    # application's own name - its caches' and data's folders - stay
+    # qucs-s: main() sets it.)
+    SET(MACOSX_BUNDLE_BUNDLE_NAME "Physics Room")
     SET(MACOSX_BUNDLE_ICON_FILE qucs.icns)
 
     # set where in the bundle to put the icns file
