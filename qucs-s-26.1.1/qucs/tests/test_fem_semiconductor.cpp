@@ -559,9 +559,17 @@ private slots:
         QVERIFY2(fast.error.isEmpty(), qPrintable(fast.error));
         const double muE = 0.14 * 1e7, v = muE / std::sqrt(1 + (muE / 1e5) * (muE / 1e5));
         const double I2 = global(*fast.solution, QStringLiteral("semi.I_2")), expected2 = Q * 1e22 * v * 1e-6;
-        qInfo("mobility: by doping %.5g A (%.5g, µ %.1f cm²/Vs); saturated %.5g A (q n v %.5g)", I1, expected1, ct, I2, expected2);
+        // (What is read at a point the mobility as solved: the current
+        // density across the bar its current's, semi.mun saturated - both
+        // were the low-field mobility's, 14 times more.)
+        const double J2 = at(*fast.solution, QStringLiteral("semi.normJn"), {0.5, 0.5}) * 1e-6;
+        const double mu2 = at(*fast.solution, QStringLiteral("semi.mun"), {0.5, 0.5});
+        qInfo("mobility: by doping %.5g A (%.5g, µ %.1f cm²/Vs); saturated %.5g A (q n v %.5g; the density across %.5g, µ %.1f cm²/Vs)", I1,
+              expected1, ct, I2, expected2, J2, mu2 * 1e4);
         QVERIFY2(std::abs(I1 / expected1 - 1) < 3e-3, qPrintable(QString::number(I1 / expected1)));
         QVERIFY2(std::abs(I2 / expected2 - 1) < 0.03, qPrintable(QString::number(I2 / expected2)));
+        QVERIFY2(std::abs(J2 / std::abs(I2) - 1) < 0.03, qPrintable(QString::number(J2 / I2)));
+        QVERIFY2(std::abs(mu2 * 1e7 / v - 1) < 0.03, qPrintable(QString::number(mu2 * 1e7 / v)));
     }
 
     void dopingAndRecombination()
