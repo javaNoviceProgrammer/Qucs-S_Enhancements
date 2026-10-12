@@ -2077,7 +2077,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     recombination, generation (light absorbed). **Ohmic, Schottky and
     gate contacts** (a work function on an oxide), fixed surface charge.
     At rest (currents, charges; at equilibrium the gates' quasi-static
-    capacitance, the low-frequency limit), in time, and **small-signal**
+    capacitance, the low-frequency limit), **in time** (adaptive BDF2,
+    the contacts' voltages and a light's power of t: switching, a diode's
+    reverse recovery - its stored charge out of the anode -, a
+    photodiode's pulse response after a Mode Analysis of its light, its
+    step response the frequency step's response transformed), and **small-signal**
     in a frequency step: the contacts' conductance and capacitance
     matrices - a MOS capacitor's high- and low-frequency C-V curves. A
     contact's current is weighed over the device where the carriers' current

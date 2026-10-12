@@ -25,6 +25,7 @@
 #include <QtTest>
 
 #include <cmath>
+#include <complex>
 #include <vector>
 
 using namespace qucs_s::fem;
@@ -378,6 +379,78 @@ private slots:
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         for (const auto& point : r.study.solutions)
             for (const QString& line : point->log) QVERIFY2(!line.contains(QLatin1String("not Delaunay")), qPrintable(line));
+    }
+
+    // A photodiode's light switched on (Optical Generation's power of t:
+    // 1 µW in half a picosecond, small enough to be linear): its photocurrent
+    // in time rises to what it is at rest lit (its share of q Gop collected
+    // as the frequency step's at 1 MHz), and its step response, transformed
+    // - H(ω) = S + jω ∫ (s(t) - S) e^(-jωt) dt -, is the frequency step's
+    // response at 10 and 20 GHz.
+    void aPhotodiodesStepResponse()
+    {
+        const bool slow = slowBuild();
+        auto model = [](const QString& power, const QString& last) {
+            const QString light = QStringLiteral(R"({"type": "optical", "mode": "emw", "P0": "%1", "selection": {"only": ["pplus", "absorber", "nplus"]}},)").arg(power);
+            return modelOf(stripe(QStringLiteral("15[um]"), QStringLiteral(R"("material": "Germanium on silicon")"), QStringLiteral("0.7"), light,
+                                  QStringLiteral(R"x({"type": "study", "steps": [{"type": "stationary", "physics": ["semi"]},
+                {"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 1, "neff": "3.9"}, %1]})x").arg(last)));
+        };
+        // In time: outputs every quarter picosecond, then wider (the tail).
+        const QString times = slow ? QStringLiteral("range(0, 1[ps], 16[ps]), range(18[ps], 2[ps], 40[ps]), range(45[ps], 5[ps], 100[ps])")
+                                   : QStringLiteral("range(0, 0.25[ps], 20[ps]), range(20.5[ps], 0.5[ps], 60[ps]), range(61[ps], 1[ps], 150[ps]), range(155[ps], 5[ps], 300[ps])");
+        Run timed = run(model(QStringLiteral("1[uW]*min(t/0.5[ps], 1)"),
+                              QStringLiteral(R"x({"type": "transient", "physics": ["semi"], "times": "%1", "rtol": "%2"})x").arg(times, slow ? QStringLiteral("1e-3") : QStringLiteral("1e-5"))));
+        QVERIFY2(timed.error.isEmpty(), qPrintable(timed.error));
+        Solution& s = *timed.solution;
+        // (Its times a series of their own, not after the mode's snapshot.)
+        QVERIFY(s.timeDependent && !s.modeAnalysis && !s.frequencyDomain);
+        QCOMPARE(s.snapshotTime(0), 0.0);
+        QVERIFY2(s.snapshotText(0).startsWith(QLatin1String("t = ")), qPrintable(s.snapshotText(0)));
+        const int last = s.snapshotCount() - 1;
+        s.select(0);
+        const double dark = global(s, QStringLiteral("semi.I_k"));
+        s.select(last);
+        const double S = global(s, QStringLiteral("semi.I_k")) - dark, qGop = global(s, QStringLiteral("semi.Iop"));
+        std::vector<double> t, y;
+        for (int k = 0; k <= last; ++k) {
+            s.select(k);
+            t.push_back(s.snapshotTime(k));
+            y.push_back((global(s, QStringLiteral("semi.I_k")) - dark) / S - 1);
+        }
+        // At rest lit, and in frequency.
+        Run fixed = run(model(QStringLiteral("1[uW]"), QStringLiteral(R"x({"type": "stationary", "physics": ["semi"]},
+                {"type": "frequency", "physics": ["semi"], "frequencies": "1[MHz], 10[GHz], 20[GHz]"})x")));
+        QVERIFY2(fixed.error.isEmpty(), qPrintable(fixed.error));
+        Solution& f = *fixed.solution;
+        f.select(0);
+        const double rest = global(f, QStringLiteral("semi.I_k")) - dark, hLow = global(f, QStringLiteral("semi.Hop_k"));
+        QStringList said;
+        double worst = 0;
+        for (int k : {1, 2}) {
+            f.select(k);
+            const double hop = global(f, QStringLiteral("semi.Hop_k")) / hLow, w = 2 * M_PI * f.snapshotFrequency(k);
+            std::complex<double> integral = 0;
+            for (std::size_t i = 1; i < t.size(); ++i) {
+                const auto g = [&](std::size_t j) { return y[j] * std::exp(std::complex<double>(0, -w * t[j])); };
+                integral += 0.5 * (g(i) + g(i - 1)) * (t[i] - t[i - 1]);
+            }
+            const double h = std::abs(1.0 + std::complex<double>(0, w) * integral);
+            said << QStringLiteral("%1 GHz: from the step %2, the frequency step's %3").arg(f.snapshotFrequency(k) / 1e9).arg(h, 0, 'f', 4).arg(hop, 0, 'f', 4);
+            worst = std::max(worst, std::abs(h / hop - 1));
+        }
+        qInfo("step response: settled at %.5g A (at rest lit %.5g; %.4f of q Gop, the frequency step's %.4f at 1 MHz); %s", S, rest, S / qGop, hLow,
+              qPrintable(said.join(QLatin1String(", "))));
+        QVERIFY2(std::abs(S / rest - 1) < 1e-3, qPrintable(QString::number(S / rest)));
+        QVERIFY2(std::abs(S / qGop / hLow - 1) < 1e-3, qPrintable(QString::number(S / qGop / hLow)));
+        QVERIFY2(worst < (slow ? 0.03 : 0.005), qPrintable(said.join(QLatin1String(", "))));
+        // (A mode analysis before a step in time is its light; after one, or
+        // a step in frequency with one, a study has times or frequencies.)
+        for (const char* steps : {R"x({"type": "transient", "physics": ["semi"], "times": "range(0, 1[ps], 2[ps])"}, {"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 1})x",
+                                  R"x({"type": "transient", "physics": ["semi"], "times": "range(0, 1[ps], 2[ps])"}, {"type": "frequency", "physics": ["semi"], "frequencies": "1[GHz]"})x"}) {
+            const Run r = run(model(QStringLiteral("1[uW]"), QString::fromLatin1(steps)));
+            QVERIFY2(r.error.contains(QLatin1String("in time and in frequency")), qPrintable(r.error));
+        }
     }
 
     // A germanium-silicon modulator: its direct gap 20 meV above 1550 nm's
