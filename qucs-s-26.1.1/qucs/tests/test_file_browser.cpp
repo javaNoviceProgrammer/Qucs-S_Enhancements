@@ -536,10 +536,10 @@ private slots:
 
     // What changes on the disk is shown as it changes (QFileSystemModel's
     // watcher, FSEvents on macOS): a file made, renamed, removed, a folder
-    // made, a file's new size, a change in a folder open in the Tree; after
-    // going away and back, under another tab, from the folder above - the
-    // folder named as it is or through a link (/var on macOS is
-    // /private/var).
+    // made, a file's new size (not on Linux), a change in a folder open in
+    // the Tree; after going away and back, under another tab, from the
+    // folder above - the folder named as it is or through a link (/var on
+    // macOS is /private/var).
     void changesOnTheDiskAreShown_data()
     {
         QTest::addColumn<bool>("linked");
@@ -567,12 +567,17 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!shown("renamed.txt"), 5000);
         QVERIFY(QDir().mkpath(live + "/made"));
         QTRY_VERIFY_WITH_TIMEOUT(shown("made"), 5000);
+        // A file's new size - where the watcher tells of a file's content
+        // changing (FSEvents, Windows'). Linux's inotify watches a folder
+        // for entries made, renamed and removed only.
+#ifndef Q_OS_LINUX
         {
             QFile f(live + "/a.txt");
             QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Append));
             f.write(QByteArray(5000, 'y'));
         }
         QTRY_VERIFY_WITH_TIMEOUT(fb.fileModel()->size(fb.fileModel()->index(live + "/a.txt")) == 5001, 5000);
+#endif
         fb.setView(FileBrowser::View::Tree);
         static_cast<QTreeView*>(fb.currentView())->expand(fb.indexOf(live + "/sub"));
         const auto inSub = [&] { return fb.fileModel()->rowCount(fb.fileModel()->index(live + "/sub")); };
