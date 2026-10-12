@@ -707,6 +707,11 @@ void createListComponentEntry(){
 int main(int argc, char *argv[])
 {
     qInstallMessageHandler(qucsMessageOutput);
+    // Its own name, whatever the bundle's: macOS shows the bundle's
+    // (CFBundleName: Physics Room) in its menu, but Qt would take it for the
+    // application's too - and with it the folders of its caches, autosaves,
+    // crash reports and conversations (QStandardPaths), found no more.
+    QCoreApplication::setApplicationName(QStringLiteral("qucs-s"));
     // set the Qucs version string
     QucsVersion = VersionTriplet(PACKAGE_VERSION);
 

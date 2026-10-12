@@ -31,6 +31,10 @@ Every release carries one bundle per platform, built by the
 |---|---|---|
 | macOS, Apple Silicon | `qucs-s-<ver>-macos-apple-silicon.dmg` | ad-hoc signed, not notarised: on first launch right-click the app and choose *Open*, or `xattr -d com.apple.quarantine <app>` |
 | macOS, Intel | `qucs-s-<ver>-macos-intel.dmg` | same |
+
+On macOS the application is called **Physics Room** in its menu, the
+Dock and the Finder (its bundle's name); its program, `qucs-s.app`, and
+its settings, caches and data keep the name qucs-s.
 | Linux x86_64 | `qucs-s-<ver>-linux-intel.AppImage` | `chmod +x` and run; needs FUSE 2 (`libfuse2`) or `--appimage-extract` |
 | Linux arm64 | `qucs-s-<ver>-linux-arm.AppImage` | same; needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13) |
 | Windows x64 | `...-windows-intel.zip` and `...-windows-intel-setup.exe` | |
