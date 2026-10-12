@@ -2529,7 +2529,11 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
             const int from = start->fieldIndex(f.tag);
             if (from < 0) continue;
             const Field& g = start->fields()[std::size_t(from)];
-            if (!g.solved || g.type != f.type || g.values.size() != f.values.size()) continue;
+            // (The same space: a semiconductor's values, solved, are seven
+            // arrays by node - V, n, p, the doping, the bands' - a field
+            // made fresh has only its unknowns' room, and compared so none
+            // was taken: each point solved from equilibrium again.)
+            if (!g.solved || g.type != f.type || !g.space || !f.space || g.space->size() != f.space->size()) continue;
             f.values = g.values;
             f.terminals = g.terminals;
             f.solved = true;
