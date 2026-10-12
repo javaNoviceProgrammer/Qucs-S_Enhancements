@@ -2038,9 +2038,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     their currents Scharfetter and Gummel's along each edge - solved
     together by Newton's method from equilibrium, the contacts' voltages
     raised in steps (a sweep's next point starting from the last).
-    Silicon, germanium, GaAs, InP and GaN from the library (band gap,
-    affinity, densities of states, mobilities, lifetimes); domains without
-    a band gap are insulators. **Doping** uniform, a box with Gaussian
+    Silicon, germanium (and germanium grown on silicon, strained), GaAs,
+    InP and GaN from the library (band gap, affinity, densities of states,
+    mobilities, lifetimes); domains without a band gap are insulators.
+    **Heterojunctions** between them by Anderson's rule: each carrier's
+    current steps over its band's offset (the affinities, the gaps, the
+    densities of states) - germanium on silicon's conduction band 0.05 eV
+    and valence band 0.52 eV apart, a p-Ge n-Si diode's current the short
+    diode's to 0.3 %. **Doping** uniform, a box with Gaussian
     tails or an expression; mobility by doping (Caughey and Thomas) and
     high-field saturation; Shockley-Read-Hall, Auger and direct
     recombination, generation (light absorbed). **Ohmic, Schottky and
@@ -2057,7 +2062,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     quasi-Fermi levels, carriers, currents and recombination as
     variables. A mode analysis reads its carriers through silicon's
     **plasma dispersion** (Soref and Bennett's): a carrier-depletion
-    phase shifter's Vπ·L.
+    phase shifter's Vπ·L. And its field through a direct gap's
+    absorption with the **Franz-Keldysh effect** (Airy's functions,
+    broadened if asked): germanium's 4000 /cm at 1550 nm on silicon, an
+    **electroabsorption modulator**'s loss against its bias (emw.loss,
+    and what the field adds, emw.dloss_EA). **Optical Generation** turns
+    a mode's light fed into a **waveguide photodiode** into pairs - each
+    photon it loses across the gap (emw.Qgap: not the free carriers'
+    loss), its power falling along the device - for the photocurrent and
+    responsivity (semi.Gop, semi.Iop, semi.Pin), and in a frequency step
+    the photocurrent modulated, its transit and RC through a load
+    (semi.Hop_k, semi.HopRL_k: its bandwidth).
   - *Geometrical Optics*: **rays** from points, beams (uniform or
     Gaussian) and boundaries, at one or several wavelengths - straight
     where the index is uniform, meeting the geometry's own curves (a lens
@@ -2210,7 +2225,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   phase shifter (Vπ·L 2.1 V·cm), a lens's focus and its spherical
   aberration, white light through a prism, a graded-index lens, a thermal
   lens (rays and heat solved in turn), and a photodiode lit by rays (0.48
-  A/W, 95 % of the ideal); a GaAs quantum well's states on its band
+  A/W, 95 % of the ideal); a germanium-on-silicon waveguide photodiode
+  (1.15 A/W at 1550 nm, 7 nA dark, 27 GHz, its response along the
+  wavelength falling past the strained edge, the heterojunction's bands)
+  and a germanium-silicon electroabsorption modulator (5.6 dB of
+  extinction at -3 V for 0.65 dB inserted over 50 µm, its spectra at two
+  biases); a GaAs quantum well's states on its band
   diagram and its absorption's staircase (e1-hh1 at 849 nm), an
   InGaAs/InAlAs multiple quantum well's Stark shift at 1.52 µm, a strained
   InGaAs laser well's gain at 986 nm (1900 /cm with 3e18 cm⁻³), and a
@@ -2225,7 +2245,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `fem_plot` (a 1D group's data display too) and `fem_export`.
   `test_fem_engine`, `test_fem_physics`, `test_fem_magnetics`,
   `test_fem_layout`, `test_fem_waves`, `test_fem_semiconductor`,
-  `test_fem_rays`, `test_fem_quantum` and `test_fem_pde` check the
+  `test_fem_rays`, `test_fem_quantum`, `test_fem_pde` and
+  `test_fem_optoelectronics` check the
   engine against closed forms on CI, under the sanitizers too: a coax's
   capacitance (its error falling as h² and h⁴), a capacitor, a floating
   plate, a bar's resistance, a slab with convection, a pipe, heat
@@ -2251,7 +2272,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   short diode's current against Shockley's (0.1 %), a Schottky diode, a
   MOS capacitor's flat-band, inversion and accumulation capacitances and
   a fixed charge's shift, carriers' rise in time (0.3 %), direct
-  recombination, the plasma dispersion; Snell's law and Fresnel's split
+  recombination, the plasma dispersion, a heterojunction's bands and
+  current; Airy's functions (10⁻⁸) and the Franz-Keldysh absorption
+  against SciPy's, a photodiode's pairs against the photons it absorbs
+  and its mode's loss against ∫ ω ε0 n κ |E|² (Poynting's, 10⁻⁶), a
+  modulator's loss against the field's; Snell's law and Fresnel's split
   (10⁻⁹), total reflection, a lens's paraxial focus, a graded-index rod's
   period, absorption and the power it leaves (10⁻⁹), a prism's
   dispersion, mirrors, beams and detectors; an infinite well's levels

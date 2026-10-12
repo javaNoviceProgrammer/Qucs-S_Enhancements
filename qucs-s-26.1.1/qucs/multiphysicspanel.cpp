@@ -337,7 +337,8 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
                                     "imported from DXF, SVG, GDSII and OASIS, or a layout's cross-section), materials and "
                                     "physics - electrostatics, electric currents, heat at rest and in time, solid mechanics, "
                                     "magnetic fields at rest and in frequency, waveguides' modes and waves with their ports, "
-                                    "semiconductors' carriers (drift and diffusion), rays through lenses and prisms, quantum "
+                                    "semiconductors' carriers (drift and diffusion, across heterojunctions) and the light they "
+                                    "absorb - photodiodes, electroabsorption modulators -, rays through lenses and prisms, quantum "
                                     "wells' states and their absorption and gain, and PDEs and ODEs of your own - its mesh "
                                     "(adapted too), studies (swept too) and results, lines and terminals as parts of circuits, in a "
                                     "tree as COMSOL's. Open a model (.qfem) to see its tree here."),

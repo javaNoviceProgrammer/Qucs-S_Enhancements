@@ -230,6 +230,8 @@ struct SemiconductorState {
     bool semiconductor = false;   ///< not an insulator
     double V = NaN, n = NaN, p = NaN, ni = NaN, Vt = NaN;
     double mun = NaN, mup = NaN, dEc = NaN, Eg = NaN;   // (Ec - Ei and Eg in J)
+    double delta = 0;                 ///< the intrinsic level's offset here (V): Ei = -q (V + δ)
+    double phin = NaN, phip = NaN;    ///< the quasi-Fermi potentials (V), smooth across a heterojunction
     double R = 0;
     double Jn[2] = {0, 0}, Jp[2] = {0, 0};
 };
@@ -265,6 +267,19 @@ struct ModeFields {
     bool defined = false;
 };
 ModeFields modeFieldsAt(PointEvaluator& e, int field);
+
+/// A mode analysis's medium where the evaluator is (constant over a
+/// triangle, at its middle - kept with the mode selected): n, κ absorbed
+/// across a gap (the medium's own and a direct gap's, not the free
+/// carriers'), the direct gap's alone and its value without a field, -Im ε
+/// along x, y and z; the angular frequency.
+struct MediumAt {
+    static constexpr int PerTriangle = 7;
+    bool defined = false;
+    double omega = NaN, n = NaN, kappaGap = 0, kappaEA = 0, kappaEA0 = 0;
+    double lossEps[3] = {0, 0, 0};
+};
+MediumAt modeMediumAt(PointEvaluator& e, int field);
 /// The in-plane waves' field at a point: u (Ez or Hz), its gradient, the
 /// other field's in-plane components (Hx, Hy or Ex, Ey).
 struct WaveFields {

@@ -41,7 +41,8 @@ const QStringList PropertyKeys = {QStringLiteral("epsilonr"), QStringLiteral("ta
                                   QStringLiteral("gamma1"),   QStringLiteral("gamma2"), QStringLiteral("gamma3"),
                                   QStringLiteral("Ep"),       QStringLiteral("VBO"),  QStringLiteral("Delta"),
                                   QStringLiteral("a0"),       QStringLiteral("ac"),   QStringLiteral("av"),
-                                  QStringLiteral("b"),        QStringLiteral("C11"),  QStringLiteral("C12")};
+                                  QStringLiteral("b"),        QStringLiteral("C11"),  QStringLiteral("C12"),
+                                  QStringLiteral("Egd"),      QStringLiteral("mr"),   QStringLiteral("Afk")};
 
 constexpr double KB = 1.380649e-23, Hbar = 1.054571817e-34, M0 = 9.1093837015e-31;
 
@@ -275,11 +276,20 @@ const QList<MaterialEntry>& builtinMaterials()
                {"E", "170[GPa]"}, {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"n", "3.476"}, {"dndT", "1.86e-4[1/K]"},
                {"Eg", "1.12[eV]"}, {"chi", "4.05[eV]"}, {"Nc", "2.8e19[1/cm^3]"}, {"Nv", "1.04e19[1/cm^3]"}, {"mun", "1400[cm^2/(V*s)]"},
                {"mup", "450[cm^2/(V*s)]"}, {"taun", "10[us]"}, {"taup", "10[us]"}}),
-        entry("Germanium", "Semiconductors", "Crystalline germanium; n at 1550 nm",
+        entry("Germanium", "Semiconductors",
+              "Crystalline germanium; n at 1550 nm. Its direct gap's absorption (a Wave Equation's Direct-gap absorption): Egd 0.80 eV, "
+              "A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
               {{"epsilonr", "16.2"}, {"k", "60[W/(m*K)]"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
                {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"dndT", "4.2e-4[1/K]"}, {"Eg", "0.66[eV]"}, {"chi", "4.0[eV]"},
                {"Nc", "1.04e19[1/cm^3]"}, {"Nv", "6.0e18[1/cm^3]"}, {"mun", "3900[cm^2/(V*s)]"}, {"mup", "1900[cm^2/(V*s)]"},
-               {"taun", "1[ms]"}, {"taup", "1[ms]"}}),
+               {"taun", "1[ms]"}, {"taup", "1[ms]"}, {"Egd", "0.80[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
+        entry("Germanium on silicon", "Semiconductors",
+              "Germanium grown on silicon: 0.25 % tensile strain as it cools, its gaps narrowed - the direct one to 0.773 eV, "
+              "absorbing 4000 /cm at 1550 nm (a waveguide photodiode's). Its lifetimes the threading dislocations'",
+              {{"epsilonr", "16.2"}, {"k", "60[W/(m*K)]"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
+               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"dndT", "4.2e-4[1/K]"}, {"Eg", "0.65[eV]"}, {"chi", "4.0[eV]"},
+               {"Nc", "1.04e19[1/cm^3]"}, {"Nv", "6.0e18[1/cm^3]"}, {"mun", "3900[cm^2/(V*s)]"}, {"mup", "1900[cm^2/(V*s)]"},
+               {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"Egd", "0.773[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
         entry("Gallium nitride", "Semiconductors", "Wurtzite GaN (its polarization not modelled); n at 1550 nm",
               {{"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"}, {"mur", "1"}, {"E", "295[GPa]"},
                {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"}, {"n", "2.31"}, {"Eg", "3.4[eV]"}, {"chi", "4.1[eV]"}, {"Nc", "2.3e18[1/cm^3]"},
