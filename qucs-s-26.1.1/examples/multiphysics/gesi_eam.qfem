@@ -1,0 +1,463 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A germanium-silicon electroabsorption modulator",
+    "description": "A modulator's stripe of germanium with some 1.4 % silicon - its direct gap moved up to 0.82 eV, 20 meV above 1550 nm's photons - on a silicon waveguide: 0.45 µm thick, 0.6 µm of it intrinsic between p⁺ and n⁺ sides, 50 µm long. Reversed, the field across the stripe tilts the bands and light below the gap is absorbed - the Franz-Keldysh effect (Airy's functions, the edge broadened 8 meV). At 1550 nm the mode loses 0.65 dB over its length at 0 V and 6.29 dB at -3 V (some 70 kV/cm in the stripe): an extinction of 5.6 dB for 0.65 dB inserted, 7.3 dB at -4 V; its index all but still (the effect on n not modelled). What it absorbs comes out as photocurrent: 0.16 mA at 0 V, 0.95 mA at -3 V of the 1 mW fed. Its spectra from 1500 to 1620 nm at 0 and -3 V (a curve per bias): above the gap the field lowers the absorption, below it raises it - the most extinction near 1530 nm, its loss inserted high there too; the best of the two's ratio toward 1600 nm.",
+    "parameters": [
+        {
+            "name": "Va",
+            "expression": "0[V]",
+            "description": "the anode's voltage (reverse: negative)"
+        },
+        {
+            "name": "lambda",
+            "expression": "1550[nm]",
+            "description": "the light's wavelength"
+        },
+        {
+            "name": "P",
+            "expression": "1[mW]",
+            "description": "the light fed"
+        },
+        {
+            "name": "L",
+            "expression": "50[um]",
+            "description": "the modulator's length (the model's thickness)"
+        },
+        {
+            "name": "w",
+            "expression": "0.6[um]",
+            "description": "the intrinsic stripe's width"
+        }
+    ],
+    "components": [
+        {
+            "unit": "um",
+            "thickness": "L",
+            "geometry": [
+                {
+                    "type": "rectangle",
+                    "label": "box",
+                    "position": [
+                        "-2",
+                        "-1"
+                    ],
+                    "size": [
+                        "4",
+                        "1"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "cladding",
+                    "position": [
+                        "-2",
+                        "0"
+                    ],
+                    "size": [
+                        "4",
+                        "1.6"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "slab",
+                    "position": [
+                        "-1.5",
+                        "0"
+                    ],
+                    "size": [
+                        "3",
+                        "0.22"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "pplus",
+                    "position": [
+                        "-w/2 - 0.2",
+                        "0.22"
+                    ],
+                    "size": [
+                        "0.2",
+                        "0.45"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "absorber",
+                    "position": [
+                        "-w/2",
+                        "0.22"
+                    ],
+                    "size": [
+                        "w",
+                        "0.45"
+                    ]
+                },
+                {
+                    "type": "rectangle",
+                    "label": "nplus",
+                    "position": [
+                        "w/2",
+                        "0.22"
+                    ],
+                    "size": [
+                        "0.2",
+                        "0.45"
+                    ]
+                },
+                {
+                    "type": "form union"
+                }
+            ],
+            "materials": [
+                {
+                    "material": "Silicon dioxide",
+                    "selection": {
+                        "only": [
+                            "box",
+                            "cladding"
+                        ]
+                    }
+                },
+                {
+                    "material": "Silicon",
+                    "selection": {
+                        "only": [
+                            "slab"
+                        ]
+                    }
+                },
+                {
+                    "material": "Germanium on silicon",
+                    "label": "Ge with 1.4 % Si",
+                    "Egd": "0.82[eV]",
+                    "selection": {
+                        "only": [
+                            "pplus",
+                            "absorber",
+                            "nplus"
+                        ]
+                    }
+                }
+            ],
+            "physics": [
+                {
+                    "type": "semiconductor",
+                    "tag": "semi",
+                    "selection": {
+                        "only": [
+                            "slab",
+                            "pplus",
+                            "absorber",
+                            "nplus"
+                        ]
+                    },
+                    "features": [
+                        {
+                            "type": "model",
+                            "label": "Saturated velocities",
+                            "saturation": true,
+                            "vsatn": "6e6[cm/s]",
+                            "vsatp": "6e6[cm/s]",
+                            "selection": {
+                                "only": [
+                                    "pplus",
+                                    "absorber",
+                                    "nplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "doping",
+                            "label": "p+ side",
+                            "dopant": "acceptor",
+                            "N0": "1e19[1/cm^3]",
+                            "selection": {
+                                "only": [
+                                    "pplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "doping",
+                            "label": "n+ side",
+                            "dopant": "donor",
+                            "N0": "1e19[1/cm^3]",
+                            "selection": {
+                                "only": [
+                                    "nplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "doping",
+                            "label": "Background",
+                            "dopant": "acceptor",
+                            "N0": "1e15[1/cm^3]",
+                            "selection": {
+                                "only": [
+                                    "slab",
+                                    "absorber"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "srh",
+                            "label": "Recombination",
+                            "selection": {
+                                "all": true
+                            }
+                        },
+                        {
+                            "type": "optical",
+                            "label": "The light absorbed",
+                            "mode": "emw",
+                            "P0": "P",
+                            "selection": {
+                                "only": [
+                                    "pplus",
+                                    "absorber",
+                                    "nplus"
+                                ]
+                            }
+                        },
+                        {
+                            "type": "ohmic",
+                            "label": "Anode",
+                            "name": "a",
+                            "V0": "Va",
+                            "selection": {
+                                "of": [
+                                    "pplus"
+                                ],
+                                "side": "top"
+                            }
+                        },
+                        {
+                            "type": "ohmic",
+                            "label": "Cathode",
+                            "name": "k",
+                            "V0": "0[V]",
+                            "selection": {
+                                "of": [
+                                    "nplus"
+                                ],
+                                "side": "top"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "type": "modes",
+                    "tag": "emw",
+                    "features": [
+                        {
+                            "type": "wave",
+                            "label": "The Franz-Keldysh effect",
+                            "electroabsorption": true,
+                            "Ebroad": "8[meV]",
+                            "selection": {
+                                "only": [
+                                    "pplus",
+                                    "absorber",
+                                    "nplus"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ],
+            "mesh": {
+                "size": "normal",
+                "custom": true,
+                "hmax": "0.25",
+                "features": [
+                    {
+                        "type": "size",
+                        "level": "domain",
+                        "selection": {
+                            "only": [
+                                "pplus",
+                                "absorber",
+                                "nplus",
+                                "slab"
+                            ]
+                        },
+                        "hmax": "0.04"
+                    }
+                ]
+            }
+        }
+    ],
+    "studies": [
+        {
+            "type": "study",
+            "tag": "std1",
+            "label": "Against the Bias",
+            "steps": [
+                {
+                    "type": "sweep",
+                    "parameters": [
+                        [
+                            "Va",
+                            "0, -1, -2, -3, -4",
+                            "V"
+                        ]
+                    ]
+                },
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                },
+                {
+                    "type": "mode",
+                    "physics": [
+                        "emw"
+                    ],
+                    "frequency": "lambda",
+                    "modes": 1,
+                    "neff": "3.9"
+                },
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "study",
+            "tag": "std2",
+            "label": "Spectra",
+            "steps": [
+                {
+                    "type": "sweep",
+                    "parameters": [
+                        [
+                            "Va",
+                            "0, -3",
+                            "V"
+                        ],
+                        [
+                            "lambda",
+                            "range(1500, 10, 1620)",
+                            "nm"
+                        ]
+                    ]
+                },
+                {
+                    "type": "stationary",
+                    "physics": [
+                        "semi"
+                    ]
+                },
+                {
+                    "type": "mode",
+                    "physics": [
+                        "emw"
+                    ],
+                    "frequency": "lambda",
+                    "modes": 1,
+                    "neff": "3.9"
+                }
+            ]
+        }
+    ],
+    "results": {
+        "plots": [
+            {
+                "type": "plotgroup",
+                "label": "The Field",
+                "study": "std1",
+                "point": 4,
+                "plots": [
+                    {
+                        "type": "surface",
+                        "expression": "semi.normE",
+                        "unit": "kV/cm"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup",
+                "label": "The Mode",
+                "study": "std1",
+                "point": 4,
+                "plots": [
+                    {
+                        "type": "surface",
+                        "expression": "emw.normE"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup",
+                "label": "Absorption",
+                "study": "std1",
+                "point": 4,
+                "plots": [
+                    {
+                        "type": "surface",
+                        "expression": "emw.alphagap",
+                        "unit": "1/cm",
+                        "colors": "thermal"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "Loss against the Bias",
+                "study": "std1",
+                "plots": [
+                    {
+                        "type": "globalgraph",
+                        "expression": "emw.loss",
+                        "unit": "dB/cm"
+                    },
+                    {
+                        "type": "globalgraph",
+                        "expression": "emw.dloss_EA",
+                        "unit": "dB/cm"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "Photocurrent against the Bias",
+                "study": "std1",
+                "plots": [
+                    {
+                        "type": "globalgraph",
+                        "expression": "semi.I_k",
+                        "unit": "mA"
+                    }
+                ]
+            },
+            {
+                "type": "plotgroup1d",
+                "label": "Absorption Spectra",
+                "study": "std2",
+                "plots": [
+                    {
+                        "type": "globalgraph",
+                        "expression": "emw.loss",
+                        "unit": "dB/cm"
+                    }
+                ]
+            }
+        ],
+        "derived": [
+            {
+                "type": "global",
+                "label": "Over its length",
+                "study": "std1",
+                "expression": "loss_dB = emw.loss*L; emw.neff; semi.I_k",
+                "solutions": "all"
+            }
+        ]
+    }
+}

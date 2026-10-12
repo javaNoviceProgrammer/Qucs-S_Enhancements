@@ -191,6 +191,82 @@ private slots:
         }
     }
 
+    // Silicon beside germanium (the library's: χ 4.05 and 4.0 eV, Eg 1.12
+    // and 0.66). At equilibrium, n on both sides: each side's Ec - EF its
+    // own kT ln(Nc/Nd), the Fermi level flat, the bands' steps Anderson's -
+    // Ec by χSi - χGe, Ev by that and the gaps' difference. A p-Ge n⁺-Si
+    // diode, short: its current the electrons injected into the germanium,
+    // q Dn ni_Ge² / (Na W) (e^(V/Vt) - 1), forward and reversed.
+    void aHeterojunction()
+    {
+        const double vt = KB * 300 / Q;
+        const QString hmax = slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05");
+        auto twoMaterials = [&](const QString& leftMaterial, const QString& rightMaterial, const QString& leftDoping, const QString& rightDoping,
+                        const QString& leftWidth, const QString& rightWidth, const QString& va) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "%7"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "left", "size": ["%5", "1"]},
+                             {"type": "rectangle", "name": "right", "position": ["%5", "0"], "size": ["%6", "1"]}],
+                "materials": [{"material": "%1", "selection": {"only": ["left"]}}, {"material": "%2", "selection": {"only": ["right"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  %3, %4,
+                  {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["left"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["right"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%8"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(leftMaterial, rightMaterial, leftDoping, rightDoping, leftWidth, rightWidth, va, hmax)
+                               .toUtf8());
+        };
+        auto doping = [](const char* dopant, const char* N, const char* domain) {
+            return QStringLiteral(R"({"type": "doping", "dopant": "%1", "N0": "%2", "selection": {"only": ["%3"]}})")
+                .arg(QString::fromLatin1(dopant), QString::fromLatin1(N), QString::fromLatin1(domain));
+        };
+        {
+            const Run r = run(twoMaterials(QStringLiteral("Silicon"), QStringLiteral("Germanium"), doping("donor", "1e17[1/cm^3]", "left"),
+                                   doping("donor", "1e17[1/cm^3]", "right"), QStringLiteral("2"), QStringLiteral("2"), QStringLiteral("0[V]")));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.solution;
+            auto eV = [&](const char* what, double x) { return at(s, QStringLiteral("semi.") + QString::fromLatin1(what), {x, 0.5}) / Q; };
+            const double ecSi = eV("Ec", 0.3), ecGe = eV("Ec", 3.7);
+            const double dEc = eV("Ec", 2.0001) - eV("Ec", 1.9999), dEv = eV("Ev", 2.0001) - eV("Ev", 1.9999);
+            double fermi = 0;
+            for (double x : {0.3, 1.9, 1.9999, 2.0001, 2.1, 3.7}) fermi = std::max({fermi, std::abs(eV("Efn", x)), std::abs(eV("Efp", x))});
+            qInfo("n-Si n-Ge at equilibrium: Ec - EF %.4f eV in silicon (kT ln(Nc/Nd) %.4f), %.4f in germanium (%.4f); its steps: Ec %.4f eV "
+                  "(χSi - χGe 0.05), Ev %.4f (0.51); the Fermi level within %.2g eV of 0; I %g A; %s",
+                  ecSi, vt * std::log(2.8e19 / 1e17), ecGe, vt * std::log(1.04e19 / 1e17), dEc, dEv, fermi, global(s, QStringLiteral("semi.I_a")),
+                  qPrintable(s.log.filter(QStringLiteral("hetero")).join(QString())));
+            QVERIFY(std::abs(ecSi - vt * std::log(2.8e19 / 1e17)) < 1e-3);
+            QVERIFY(std::abs(ecGe - vt * std::log(1.04e19 / 1e17)) < 1e-3);
+            QVERIFY(std::abs(dEc - 0.05) < 1e-3);
+            QVERIFY(std::abs(dEv - 0.51) < 1e-3);
+            QVERIFY(fermi < 1e-9);
+            QCOMPARE(global(s, QStringLiteral("semi.I_a")), 0.0);
+        }
+        // The diode: p-Ge 1e17 over 4 µm, n⁺-Si 1e18 over 1 µm, no
+        // recombination - the electrons diffuse across the germanium to its
+        // contact (the holes' injection into the silicon ~(ni_Si/ni_Ge)² of it).
+        const double niGe = std::sqrt(1.04e25 * 6.0e24) * std::exp(-0.66 / (2 * vt));
+        const double Na = 1e23, Nd = 1e24, eGe = 16.2 * Eps0, eSi = 11.7 * Eps0;
+        // The built-in voltage: the vacuum levels' step, (χ + Eg - kT ln(Nv/Na))_Ge - (χ + kT ln(Nc/Nd))_Si.
+        const double vbi = (4.0 + 0.66 - vt * std::log(6.0e24 / Na)) - (4.05 + vt * std::log(2.8e25 / Nd));
+        for (double va : {0.2, -0.5}) {
+            const Run r = run(twoMaterials(QStringLiteral("Germanium"), QStringLiteral("Silicon"), doping("acceptor", "1e17[1/cm^3]", "left"),
+                                   doping("donor", "1e18[1/cm^3]", "right"), QStringLiteral("4"), QStringLiteral("1"), QStringLiteral("%1[V]").arg(va)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.solution;
+            const double Ia = global(s, QStringLiteral("semi.I_a")), Ik = global(s, QStringLiteral("semi.I_k"));
+            // The depletion in the germanium; the rest of it W.
+            const double xp = std::sqrt(2 * eGe * eSi * (vbi - va - 2 * vt) * Nd / (Q * Na * (eGe * Na + eSi * Nd)));
+            const double W = 4e-6 - xp;
+            const double expected = Q * 3900e-4 * vt * niGe * niGe / (Na * W) * std::expm1(va / vt) * 1e-6;
+            qInfo("p-Ge n-Si at %g V: I_a %.5g A (q Dn ni² / (Na W) (e^(V/Vt) - 1) %.5g, W %.3f µm), I_k %.5g; Vbi %.4f V", va, Ia, expected, W * 1e6,
+                  Ik, vbi);
+            QVERIFY2(std::abs(Ia / expected - 1) < 0.03, qPrintable(QString::number(Ia / expected)));
+            QVERIFY(std::abs(Ia + Ik) < 1e-6 * std::abs(Ia));
+        }
+    }
+
     void contactCurrents()
     {
         // P+ P N N+ (1e19 and 1e17 cm⁻³; contacts on the 1e19), reversed

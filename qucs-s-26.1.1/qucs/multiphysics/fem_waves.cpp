@@ -17,6 +17,7 @@
  * (at your option) any later version.
  */
 #include "fem_edge.h"
+#include "fem_optics.h"
 #include "fem_problem.h"
 
 #include <Eigen/Dense>
@@ -50,6 +51,15 @@ public:
         Expression n[3], kappa, eps[3], tand, sigma, mur;
         Expression dndT, T, Tref;   // warmed: all three
         Expression carriersN, carriersP;   // the plasma dispersion's (1/m³)
+        // Absorption across a direct gap and its change with a field (the
+        // Franz-Keldysh effect): the field (V/m, a semiconductor's), the gap
+        // (J, or eV as a number), the reduced mass (m0), the edge's strength (1/m).
+        bool electroabsorption = false;
+        Expression eaField, eaGap, eaMass, eaStrength, eaBroadening;
+        // (Its value without a field, the same wherever the photon, gap,
+        // mass, strength and broadening are: the last kept.)
+        mutable double eaZeroKey[5] = {NaN, NaN, NaN, NaN, NaN};
+        mutable double eaZero = 0;
         bool pml = false;
         // A PML's stretching: along x where it is left or right of the inner
         // region [x0, x1], growing to its own edge there; along y likewise
@@ -65,6 +75,10 @@ public:
         cd eps[3] = {1, 1, 1};
         cd mu[3] = {1, 1, 1};
         bool ok = false;
+        // (By index: n, and of κ what is absorbed across the gap - the
+        // medium's own and the direct gap's -, the direct gap's alone and
+        // its value without a field; not the free carriers'.)
+        double n = 1, kappaGap = 0, kappaEA = 0, kappaEA0 = 0;
     };
     At at(PointEvaluator& e, int d, double omega, double k0) const
     {
@@ -89,9 +103,34 @@ public:
             const double alpha = (8.5e-18 * N + 6.0e-18 * P) * scale * 100;   // (1/m)
             plasmaKappa = alpha * lambda / (4 * M_PI);
         }
+        // A direct gap's absorption at the field there.
+        if (m.electroabsorption && omega > 0) {
+            const double photon = 1.054571817e-34 * omega;
+            // (Energies in J, or eV as a number or in V.)
+            auto energy = [&](const Expression& x, double fallback) {
+                const double v = value(x, fallback);
+                return x.isValid() && x.dim() != Dim::of(2, 1, -2) ? v * 1.602176634e-19 : v;
+            };
+            const double gap = energy(m.eaGap, NaN), sigma = std::max(energy(m.eaBroadening, 0.0), 0.0);
+            const double mr = value(m.eaMass, NaN), A = value(m.eaStrength, NaN), F = value(m.eaField, 0.0);
+            if (std::isfinite(gap) && mr > 0 && A > 0) {
+                // κ = α λ/4π = α c/2ω.
+                out.kappaEA = franzKeldysh(photon, gap, F, mr, A, sigma) * C0 / (2 * omega);
+                const double key[5] = {photon, gap, mr, A, sigma};
+                if (!std::equal(key, key + 5, m.eaZeroKey)) {
+                    std::copy(key, key + 5, m.eaZeroKey);
+                    m.eaZero = franzKeldysh(photon, gap, 0, mr, A, sigma);
+                }
+                out.kappaEA0 = m.eaZero * C0 / (2 * omega);
+            }
+        }
+        if (m.byIndex) {
+            out.n = value(m.n[0], 1.0) + warm + plasma;
+            out.kappaGap = value(m.kappa, 0.0) + out.kappaEA;
+        }
         for (int k = 0; k < 3; ++k) {
             if (m.byIndex) {
-                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm + plasma, -value(m.kappa, 0.0) - plasmaKappa);
+                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm + plasma, -value(m.kappa, 0.0) - plasmaKappa - out.kappaEA);
                 out.eps[k] = n * n;
             } else {
                 const double er = value(m.eps[k].isValid() ? m.eps[k] : m.eps[0], 1.0);
@@ -219,6 +258,26 @@ public:
                 m.carriersN = compile(feat->text(QStringLiteral("Ncarriers")), *feat, QStringLiteral("Ncarriers"));
                 m.carriersP = compile(feat->text(QStringLiteral("Pcarriers")), *feat, QStringLiteral("Pcarriers"));
             }
+            if (feat->flag(QStringLiteral("electroabsorption"))) {
+                if (!m.byIndex) problem(tr("%1: a direct gap's absorption adds to a refractive index (its constitutive relation n)").arg(feat->name()));
+                // (The gap, mass and strength: the feature's own, or its material's.)
+                const bool own = feat->text(QStringLiteral("easource")) == QLatin1String("user");
+                for (const auto& [key, member] : {std::pair{QStringLiteral("Egd"), &Domain::eaGap}, std::pair{QStringLiteral("mr"), &Domain::eaMass},
+                                                  std::pair{QStringLiteral("Afk"), &Domain::eaStrength}}) {
+                    const QString t = own ? feat->text(key) : mat ? property(*mat, key) : QString();
+                    if (t.trimmed().isEmpty()) {
+                        problem(tr("domain %1 (%2): its material has no %3 for a direct gap's absorption (Germanium has: Egd, mr, Afk)")
+                                    .arg(d + 1)
+                                    .arg(object, key));
+                        continue;
+                    }
+                    m.*member = compile(t, own ? *feat : *mat, key);
+                }
+                m.eaField = compile(feat->text(QStringLiteral("Fea")), *feat, QStringLiteral("Fea"));
+                if (!feat->text(QStringLiteral("Ebroad")).trimmed().isEmpty())
+                    m.eaBroadening = compile(feat->text(QStringLiteral("Ebroad")), *feat, QStringLiteral("Ebroad"));
+                m.electroabsorption = true;
+            }
             if (feat->flag(QStringLiteral("thermooptic"))) {
                 const QString dndT = user ? feat->text(QStringLiteral("dndT")) : property(*mat, QStringLiteral("dndT"));
                 if (dndT.trimmed().isEmpty()) problem(tr("domain %1 (%2): its material has no thermo-optic coefficient dn/dT").arg(d + 1).arg(object));
@@ -305,6 +364,10 @@ private:
     bool a_tracking = false;
     double a_k0 = 0;
     int a_selected = -1;
+    // The mode selected: its power absorbed across the gap, and what the
+    // field adds to it, per metre (1/m); whether a medium has a direct gap's.
+    double a_absorbedGap = 0, a_absorbedField = 0;
+    bool a_electroabsorption = false;
 };
 
 bool ModeProblem::setup(QString* error)
@@ -324,6 +387,8 @@ bool ModeProblem::setup(QString* error)
     a_media.setup(*this, a_s, *a_node, f.domains, materials(),
                   [this](const QString& t, const Node& n, const QString& k) { return compile(t, n, k); },
                   [this](const Node& m, const QString& k) { return materialProperty(m, k, &a_s.parameters().scope); }, [this](const QString& w) { problem(w); });
+    a_electroabsorption = false;
+    for (const Media::Domain& m : a_media.domains) a_electroabsorption = a_electroabsorption || (m.defined && m.electroabsorption);
     // For the variables: the index (its real part, as asked) by domain.
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
@@ -591,26 +656,58 @@ void ModeProblem::selectMode(int k)
             f.values[std::size_t(2 * ne + dof)] = v.real();
             f.values[std::size_t(2 * ne + nn + dof)] = v.imag();
         }
-    f.extra = {md.beta.real(), md.beta.imag(), a_k0};
-    // Its power along z, 1 W: Sz = ½ Re(Ex Hy* - Ey Hx*) over the domains.
-    double power = 0, largest = 0;
+    // extra: β, k0, then by triangle what it absorbs (MediumAt's layout:
+    // at its middle - n, κ across the gap, the direct gap's κ and its value
+    // without a field, -Im ε along x, y, z).
+    const int nt = f.space->elements();
+    f.extra.assign(std::size_t(3 + MediumAt::PerTriangle * nt), NaN);
+    f.extra[0] = md.beta.real();
+    f.extra[1] = md.beta.imag();
+    f.extra[2] = a_k0;
+    const double omega = a_k0 * C0;
     const Mesh& mesh = a_s.mesh();
     PointEvaluator ev(a_s);
+    for (int t = 0; t < nt; ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)] || a_media.domains[std::size_t(d)].pml) continue;
+        ev.moveTo(t, 1.0 / 3, 1.0 / 3);
+        const Media::At m = a_media.at(ev, d, omega, a_k0);
+        if (!m.ok) continue;
+        double* e = &f.extra[std::size_t(3 + MediumAt::PerTriangle * t)];
+        e[0] = m.n;
+        e[1] = m.kappaGap;
+        e[2] = m.kappaEA;
+        e[3] = m.kappaEA0;
+        for (int c = 0; c < 3; ++c) e[4 + c] = -m.eps[c].imag();
+    }
+    // Its power along z, 1 W: Sz = ½ Re(Ex Hy* - Ey Hx*) over the domains;
+    // what it absorbs across the gap, ω ε0 n κ |E|² (the direct gap's, less
+    // its value without a field).
+    double power = 0, largest = 0, gap = 0, field = 0;
     const TriangleRule& rule = triangleRule(f.space->order() == 1 ? 2 : 4);
-    for (int t = 0; t < f.space->elements(); ++t) {
+    for (int t = 0; t < nt; ++t) {
         const int d = mesh.domain[std::size_t(t)];
         if (d < 0 || !f.domains[std::size_t(d)] || a_media.domains[std::size_t(d)].pml) continue;
         const AffineMap am = affineMap(*f.space, t);
+        const double* e = &f.extra[std::size_t(3 + MediumAt::PerTriangle * t)];
         for (const auto& q : rule.points) {
             ev.moveTo(t, q[0], q[1]);
             const ModeFields mf = modeFieldsAt(ev, a_fi);
             if (!mf.defined) continue;
-            power += q[2] * std::abs(am.det) * 0.5 * (mf.E[0] * std::conj(mf.H[1]) - mf.E[1] * std::conj(mf.H[0])).real();
-            largest = std::max(largest, std::sqrt(std::norm(mf.E[0]) + std::norm(mf.E[1]) + std::norm(mf.E[2])));
+            const double w = q[2] * std::abs(am.det);
+            power += w * 0.5 * (mf.E[0] * std::conj(mf.H[1]) - mf.E[1] * std::conj(mf.H[0])).real();
+            const double e2 = std::norm(mf.E[0]) + std::norm(mf.E[1]) + std::norm(mf.E[2]);
+            largest = std::max(largest, std::sqrt(e2));
+            if (std::isfinite(e[0])) {
+                gap += w * omega * Eps0 * e[0] * e[1] * e2;
+                field += w * omega * Eps0 * e[0] * (e[2] - e[3]) * e2;
+            }
         }
     }
     const double scale = power > 1e-300 ? 1 / std::sqrt(power) : largest > 0 ? 1 / largest : 1.0;
     for (double& v : f.values) v *= scale;
+    a_absorbedGap = gap * scale * scale;
+    a_absorbedField = field * scale * scale;
     a_s.setMode(k + 1);
 }
 
@@ -630,6 +727,17 @@ void ModeProblem::setGlobals()
     if (a_tracking)
         a_s.setGlobal(p + QStringLiteral("Gamma"), a_modes[std::size_t(a_selected)].share, Dim(),
                       tr("the mode's share of |E|² in the domains its step tracks: a confinement factor"));
+    // (Its power's, ∫ ω ε0 n κ |E|² over 1 W: a perturbation, as small losses are.)
+    const double dB = 10 / std::log(10.0);
+    a_s.setGlobal(p + QStringLiteral("loss_gap"), a_absorbedGap * dB, perMetre,
+                  tr("loss in dB per metre absorbed across a gap - the media's κ and a direct gap's, not the free carriers': what makes "
+                     "electron-hole pairs"),
+                  QStringLiteral("dB/m"));
+    if (a_electroabsorption)
+        a_s.setGlobal(p + QStringLiteral("dloss_EA"), a_absorbedField * dB, perMetre,
+                      tr("loss in dB per metre the field adds to the direct gap's absorption (the Franz-Keldysh effect): its "
+                         "electroabsorption over none at all"),
+                      QStringLiteral("dB/m"));
 }
 
 // ------------------------------------------------------------------ Waves in the plane
@@ -1143,6 +1251,24 @@ WaveFields waveFieldsAt(PointEvaluator& e, int f)
 std::unique_ptr<Problem> makeWaveProblem(Solution& solution, int field)
 {
     return std::make_unique<WaveProblem>(solution, field);
+}
+
+MediumAt modeMediumAt(PointEvaluator& e, int f)
+{
+    MediumAt m;
+    const Field& field = e.solution().fields()[std::size_t(f)];
+    const int t = e.triangle();
+    if (t < 0 || field.extra.size() < std::size_t(3 + MediumAt::PerTriangle * (t + 1))) return m;
+    const double* x = &field.extra[std::size_t(3 + MediumAt::PerTriangle * t)];
+    if (!std::isfinite(x[0])) return m;
+    m.defined = true;
+    m.omega = field.extra[2] * C0;
+    m.n = x[0];
+    m.kappaGap = x[1];
+    m.kappaEA = x[2];
+    m.kappaEA0 = x[3];
+    for (int c = 0; c < 3; ++c) m.lossEps[c] = x[4 + c];
+    return m;
 }
 
 ModeFields modeFieldsAt(PointEvaluator& e, int f)
