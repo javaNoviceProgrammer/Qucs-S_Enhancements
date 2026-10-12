@@ -84,6 +84,42 @@ QString shown(double si, const Dim& dim, const DisplayUnit& unit)
     return formatNumber((si - unit.offset) / unit.scale, 5) + QLatin1Char(' ') + unit.name;
 }
 
+/// A quotient's unit as it is written - semi.I_k/semi.Pin in A/W, not
+/// s³·A/(m²·kg) - when its dimension has no name of its own and each side's
+/// has (A/W is 1/V too: the expression says which); else none.
+DisplayUnit quotientUnit(const QString& text, const Dim& dim, const Scope& scope)
+{
+    DisplayUnit u;
+    if (!unitName(dim).isEmpty() || dim.isNone()) return u;
+    // One '/' outside brackets, nothing else between its two sides there
+    // (a sum, a product, a power: not a plain quotient).
+    int depth = 0, at = -1;
+    for (int i = 0; i < text.size(); ++i) {
+        const QChar c = text[i];
+        if (c == QLatin1Char('(') || c == QLatin1Char('[')) ++depth;
+        else if (c == QLatin1Char(')') || c == QLatin1Char(']')) --depth;
+        else if (depth > 0) continue;
+        else if (c == QLatin1Char('/')) {
+            if (at >= 0) return u;
+            at = i;
+        } else if (c == QLatin1Char('+') || c == QLatin1Char('*') || c == QLatin1Char('^')) {
+            // (An exponent's sign: 1e+3.)
+            if (!(c == QLatin1Char('+') && i > 1 && (text[i - 1] == QLatin1Char('e') || text[i - 1] == QLatin1Char('E')) && text[i - 2].isDigit()))
+                return u;
+        } else if (c == QLatin1Char('-') && i > 0
+                   && !(i > 1 && (text[i - 1] == QLatin1Char('e') || text[i - 1] == QLatin1Char('E')) && text[i - 2].isDigit())) {
+            return u;
+        }
+    }
+    if (at <= 0) return u;
+    const Expression top = Expression::compile(text.left(at), scope), bottom = Expression::compile(text.mid(at + 1), scope);
+    if (!top.isValid() || !bottom.isValid() || !(top.dim() / bottom.dim() == dim)) return u;
+    const QString a = unitName(top.dim()), b = unitName(bottom.dim());
+    if (a.isEmpty() || b.isEmpty()) return u;
+    u.name = a + QLatin1Char('/') + (b.contains(QLatin1Char('/')) || b.contains(QChar(0x00B7)) ? QLatin1Char('(') + b + QLatin1Char(')') : b);
+    return u;
+}
+
 } // namespace
 
 // ------------------------------------------------------------------ Locator
@@ -673,7 +709,8 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             // its dimension cannot say - emw.loss, dB/m - in it, or over
             // another length: dB/cm.)
             QString warning;
-            const DisplayUnit du = displayUnitOf(solution, text, exprs.size() == 1 ? unitText : QString(), e.dim(), &warning);
+            DisplayUnit du = displayUnitOf(solution, text, exprs.size() == 1 ? unitText : QString(), e.dim(), &warning);
+            if (du.name.isEmpty()) du = quotientUnit(text, e.dim(), solution.scope());
             out.values << DerivedValue{item.name, e.constant(), e.dim(), shown(e.constant(), e.dim(), du)};
             if (!warning.isEmpty() && out.error.isEmpty()) out.error = warning;
         }

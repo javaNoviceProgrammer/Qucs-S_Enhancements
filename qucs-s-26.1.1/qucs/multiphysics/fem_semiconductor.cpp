@@ -83,11 +83,13 @@ struct Medium {
     double ni = 0, dEc = 0;          // the intrinsic density; Ec - Ei (J)
 };
 
-/// Light absorbed from a mode, made electron-hole pairs: the power fed P0,
-/// each photon absorbed across the gap a pair (η of them).
+/// Light absorbed from a mode, made electron-hole pairs: the power fed P0
+/// (of t in time), each photon absorbed across the gap a pair (η of them).
 struct OpticalSource {
     QString mode;                    // the mode analysis's tag
+    int number = 1;                  // which of its modes (1: the highest index)
     Expression absorbed;             // its <tag>.Qgap (W/m³, the mode at 1 W)
+    Expression power;                // P0's
     double P0 = 0, eta = 1, RL = 50;
 };
 
@@ -333,7 +335,9 @@ bool SemiconductorProblem::setup(QString* error)
             o.absorbed = Expression::compile(o.mode + QStringLiteral(".Qgap"), a_s.pointScope());
             for (int slot : o.absorbed.variables())
                 if (a_s.definitions()[std::size_t(slot)].field >= 0) a_reads.insert(a_s.definitions()[std::size_t(slot)].field);
-            o.P0 = number(feature.text(QStringLiteral("P0")), Dim::power(), feature.name());
+            o.number = std::max(1, feature.integer(QStringLiteral("number")));
+            o.power = compile(feature.text(QStringLiteral("P0")), feature, QStringLiteral("P0"), false);
+            if (o.power.isValid() && o.power.isConstant()) o.P0 = o.power.constant();
             o.eta = number(feature.text(QStringLiteral("eta")), Dim(), feature.name());
             o.RL = number(feature.text(QStringLiteral("RL")), Dim::of(2, 1, -3, -2), feature.name());
             if (!(o.P0 >= 0) || !(o.eta >= 0 && o.eta <= 1)) problem(tr("%1: its power at least 0, its efficiency between 0 and 1").arg(feature.name()));
@@ -1714,34 +1718,99 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
         std::vector<double> perWatt(a_optical.size(), 0.0);
         a_Pin = 0;
         for (std::size_t k = 0; k < a_optical.size(); ++k) {
-            const OpticalSource& o = a_optical[k];
+            OpticalSource& o = a_optical[k];
             const std::optional<double> alpha = a_s.global(o.mode + QStringLiteral(".alpha"));
             const std::optional<double> lambda = a_s.global(o.mode + QStringLiteral(".lambda0"));
             if (!alpha || !lambda || !(*lambda > 0)) continue;
+            // The mode it asks for: the one its step left selected (else
+            // said - the light another mode's).
+            const std::optional<double> selected = a_s.global(o.mode + QStringLiteral(".mode"));
+            if (selected && int(std::lround(*selected)) != o.number) {
+                *error = tr("%1: its Optical Generation is lit by mode %2 of %3, and mode %4 is the one solved last (a mode step "
+                            "finds as many modes as it asks for: at least %2)")
+                             .arg(a_node->name())
+                             .arg(o.number)
+                             .arg(o.mode)
+                             .arg(int(std::lround(*selected)));
+                return false;
+            }
+            // The power fed now (of t in time).
+            if (o.power.isValid() && !o.power.isConstant()) {
+                PointEvaluator pe(a_s);
+                const auto& [t0, r0] = a_nodePoint[std::size_t(std::find_if(a_nodeDomain.begin(), a_nodeDomain.end(), [](int d) { return d >= 0; }) - a_nodeDomain.begin())];
+                pe.moveTo(t0, r0[0], r0[1]);
+                o.P0 = pe.eval(o.power);
+                if (!(std::isfinite(o.P0) && o.P0 >= 0)) {
+                    *error = tr("%1: the power fed its Optical Generation is %2, not a number of 0 or more").arg(a_node->name()).arg(o.P0);
+                    return false;
+                }
+            }
             const double L = a_s.axisymmetric() ? 1.0 : a_s.thickness(), x = 2 * std::max(*alpha, 0.0) * L;
             const double mean = x > 1e-9 ? -std::expm1(-x) / x : 1.0;
             const double photon = 6.62607015e-34 * 299792458.0 / *lambda;
             perWatt[k] = o.eta * o.P0 * mean / photon;
             a_Pin += o.P0;
         }
+        // By triangle, each its own medium's at its corners, a third of its
+        // volume to each (a node's box spans the media about it: a node on
+        // germanium's edge took the light germanium absorbs over its
+        // silicon's share too - more pairs than photons). Each mode's light
+        // then scaled to what the mode itself absorbs over those triangles
+        // (its own rule): a junction's corners do not take more or less.
+        const Space& sp = *field().space;
+        const Mesh& mesh = a_s.mesh();
+        const double unit = mesh.unitScale;
+        static const double ref[3][2] = {{0, 0}, {1, 0}, {0, 1}};
         PointEvaluator ev(a_s);
-        for (int i = 0; i < a_n; ++i) {
-            const int d = a_nodeDomain[std::size_t(i)];
-            if (d < 0 || (a_media[std::size_t(d)].generation.empty() && a_media[std::size_t(d)].optical.empty())) continue;
-            const auto& [t, r] = a_nodePoint[std::size_t(i)];
-            ev.moveTo(t, r[0], r[1]);
-            double g = 0;
-            for (const Expression& e : a_media[std::size_t(d)].generation) {
-                const double v = ev.eval(e);
-                if (std::isfinite(v)) g += v;
+        std::vector<double> amount(std::size_t(a_n), 0.0);
+        std::vector<std::vector<double>> lit(a_optical.size());   // by source: its pairs by node, before its scale
+        std::vector<double> exact(a_optical.size(), 0.0), discrete(a_optical.size(), 0.0);
+        const TriangleRule& rule = triangleRule(4);
+        for (int t = 0; t < sp.elements(); ++t) {
+            if (!a_elemSemi[std::size_t(t)]) continue;
+            const int d = mesh.domain[std::size_t(t)];
+            const Medium& m = a_media[std::size_t(d)];
+            if (m.generation.empty() && m.optical.empty()) continue;
+            const int* dof = sp.dofs(t);
+            QPointF x[3];
+            for (int k = 0; k < 3; ++k) x[k] = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * unit;
+            const double det = (x[1].x() - x[0].x()) * (x[2].y() - x[0].y()) - (x[2].x() - x[0].x()) * (x[1].y() - x[0].y());
+            const double third = std::abs(det) / 2 * a_s.weight((x[0] + x[1] + x[2]) / 3.0) / 3;
+            for (int k = 0; k < 3; ++k) {
+                ev.moveTo(t, ref[k][0], ref[k][1]);
+                double g = 0;
+                for (const Expression& e : m.generation) {
+                    const double v = ev.eval(e);
+                    if (std::isfinite(v)) g += v;
+                }
+                amount[std::size_t(dof[k])] += g * third;
+                for (int o : m.optical) {
+                    if (perWatt[std::size_t(o)] == 0 || !a_optical[std::size_t(o)].absorbed.isValid()) continue;
+                    const double q = ev.eval(a_optical[std::size_t(o)].absorbed);
+                    if (!(std::isfinite(q) && q > 0)) continue;
+                    std::vector<double>& to = lit[std::size_t(o)];
+                    if (to.empty()) to.assign(std::size_t(a_n), 0.0);
+                    to[std::size_t(dof[k])] += q * third;
+                    discrete[std::size_t(o)] += q * third;
+                }
             }
-            for (int k : a_media[std::size_t(d)].optical) {
-                if (perWatt[std::size_t(k)] == 0 || !a_optical[std::size_t(k)].absorbed.isValid()) continue;
-                const double q = ev.eval(a_optical[std::size_t(k)].absorbed);
-                if (std::isfinite(q) && q > 0) g += perWatt[std::size_t(k)] * q;
+            for (int o : m.optical) {
+                if (perWatt[std::size_t(o)] == 0 || !a_optical[std::size_t(o)].absorbed.isValid()) continue;
+                for (const auto& q : rule.points) {
+                    ev.moveTo(t, q[0], q[1]);
+                    const QPointF at = x[0] + q[0] * (x[1] - x[0]) + q[1] * (x[2] - x[0]);
+                    const double v = ev.eval(a_optical[std::size_t(o)].absorbed);
+                    if (std::isfinite(v) && v > 0) exact[std::size_t(o)] += q[2] * std::abs(det) * a_s.weight(at) * v;
+                }
             }
-            a_generation[std::size_t(i)] = g;
         }
+        for (std::size_t o = 0; o < a_optical.size(); ++o) {
+            if (lit[o].empty() || !(discrete[o] > 0)) continue;
+            const double scale = perWatt[o] * exact[o] / discrete[o];
+            for (int i = 0; i < a_n; ++i) amount[std::size_t(i)] += lit[o][std::size_t(i)] * scale;
+        }
+        for (int i = 0; i < a_n; ++i)
+            if (a_box[std::size_t(i)] > 0) a_generation[std::size_t(i)] = amount[std::size_t(i)] / a_box[std::size_t(i)];
         a_Gop = 0;
         for (int i = 0; i < a_n; ++i) a_Gop += a_generation[std::size_t(i)] * a_box[std::size_t(i)];
     }

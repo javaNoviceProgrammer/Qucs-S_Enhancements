@@ -230,6 +230,10 @@ public:
     /// Of a sweep: the parameters' values this solution is of ("w = 2 mm").
     QString label;
     QHash<QString, double> sweptValues;   ///< SI, by parameter
+    /// By mode analysis: the mean effective index of the modes its last
+    /// frequency found - where the next frequency, or a sweep's next point,
+    /// searches when its step asks for one mode (Follow the mode).
+    QHash<QString, double> modeCentres;
     bool timeDependent = false;
     bool frequencyDomain = false;         ///< its snapshots are of frequencies
     bool modeAnalysis = false;            ///< and of modes, at each frequency

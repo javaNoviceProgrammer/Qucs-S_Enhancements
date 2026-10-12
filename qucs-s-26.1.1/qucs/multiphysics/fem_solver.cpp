@@ -1893,6 +1893,22 @@ bool stationaryStep(Solution& s, const Node& node, const std::function<bool(doub
     return true;
 }
 
+/// The mode of mode analysis \a tag a semiconductor's Optical Generation
+/// is lit by (its number: 1 the highest index), 1 when none asks.
+int litMode(const Solution& s, const QString& tag)
+{
+    for (const Node* p : s.model().physics()) {
+        if (!p->enabled || p->type != QLatin1String("semiconductor")) continue;
+        for (const Node& f : p->children) {
+            if (!f.enabled || f.type != QLatin1String("semiconductor/optical")) continue;
+            QString mode = f.text(QStringLiteral("mode")).trimmed();
+            if (mode.isEmpty()) mode = QStringLiteral("emw");
+            if (mode == tag) return std::max(1, f.integer(QStringLiteral("number")));
+        }
+    }
+    return 1;
+}
+
 bool modeStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
 {
     Step st{s, node, {}, {}, {}, 50, 1e-6};
@@ -1954,6 +1970,11 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
     s.frequencyDomain = true;
     s.modeAnalysis = true;
     detail::Problem& modes = *st.problems[std::size_t(modal.front())];
+    const QString tag = modes.field().tag;
+    // (One mode asked for: it is the branch followed. Several are the set
+    // nearest the index - a dispersion's modes, kept as they are.)
+    const bool follow = node.flag(QStringLiteral("follow")) && count == 1;
+    if (follow && s.modeCentres.value(tag) > 0) guess = s.modeCentres.value(tag);
     for (std::size_t k = 0; k < frequencies.size(); ++k) {
         const double f = frequencies[k];
         if (!tell(double(k) / double(frequencies.size()), tr("%1: modes at %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1))))) {
@@ -1970,10 +1991,27 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         const int found = modes.solveModes(o, count, guess, error);
         if (found < 0) return false;
         if (found == 0) *warnings << tr("%1: no mode found at %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1)));
+        double centre = 0;
         for (int m = 0; m < found; ++m) {
             modes.selectMode(m);
             for (auto& p : st.problems) p->setGlobals();
             s.addSnapshot();
+            centre += s.global(tag + QStringLiteral(".neff")).value_or(0) / found;
+        }
+        // Where the next frequency (a sweep's next point) searches.
+        if (found > 0 && centre > 0) {
+            s.modeCentres.insert(tag, centre);
+            if (follow) guess = centre;
+        }
+        // Left selected for the steps after: the mode a semiconductor's
+        // Optical Generation asks for, else the first (each mode in turn
+        // left the last, the lowest index, lighting a photodiode).
+        if (found > 0) {
+            const int lit = std::clamp(litMode(s, modes.field().tag), 1, found);
+            if (lit < found) {
+                modes.selectMode(lit - 1);
+                for (auto& p : st.problems) p->setGlobals();
+            }
         }
     }
     return true;
@@ -2473,6 +2511,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         out.error = tr("the model has no physics to solve");
         return out;
     }
+    if (start) solution->modeCentres = start->modeCentres;
     if (start && start->meshPtr() == mesh)
         for (Field& f : solution->fields()) {
             if (f.type != QLatin1String("semiconductor")) continue;

@@ -958,16 +958,22 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("semiconductor/optical"), tr("Optical Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), text(QStringLiteral("mode"), tr("Mode analysis"), QStringLiteral("emw"), tr("The Electromagnetic Waves, Mode Analysis whose mode is fed")),
-          expr(QStringLiteral("P0"), tr("Power fed"), QStringLiteral("W"), QStringLiteral("1[mW]"), tr("The mode's at the device's start")),
+          integer(QStringLiteral("number"), tr("Mode number"), 1,
+                  tr("Which of the mode step's modes is fed: 1 the highest effective index, as emw.mode numbers them (the step "
+                     "leaves it selected; it must find that many)")),
+          expr(QStringLiteral("P0"), tr("Power fed"), QStringLiteral("W"), QStringLiteral("1[mW]"), tr("The mode's at the device's start; of t in time (a pulse)")),
           expr(QStringLiteral("eta"), tr("Internal quantum efficiency η"), QString(), QStringLiteral("1"), tr("Pairs made per photon absorbed across the gap")),
           expr(QStringLiteral("RL"), tr("Load resistance"), QStringLiteral("Ohm"), QStringLiteral("50[Ohm]"),
                tr("A frequency step's response through it: semi.HopRL_<contact>, the device's capacitance charged through it"))},
          {}, {}, false, false, QStringLiteral("opg"),
          tr("A waveguide photodiode's light: a mode fed P0, solved before (a Mode Analysis step) - each photon it loses across the gap "
             "(emw.Qgap: the media's κ and a direct gap's, not the free carriers') a pair, its power falling along the device as "
-            "e^(-2αz), the mean over its length (the thickness). semi.Gop pairs per second, semi.Iop = q Gop, semi.Pin; in a "
-            "frequency step semi.Hop_<contact> - each contact's photocurrent per pair, the light modulated - and semi.HopRL_<contact> "
-            "through the load.")});
+            "e^(-2αz), the mean over its length (the thickness). semi.Gop pairs per second - never more than the photons the mode "
+            "loses -, semi.Iop = q Gop, semi.Pin; in a frequency step semi.Hop_<contact> - each contact's photocurrent per pair, the "
+            "light modulated - and semi.HopRL_<contact> through the load. The cross-section's one mode is taken to carry all of P0: "
+            "how a waveguide's light divides among a section's modes (germanium butt-coupled to silicon) is a question for a 3D "
+            "or mode-expansion model, and responsivity can differ by several percent from one mode to another - the mode number "
+            "is an assumption to state.")});
     add({QStringLiteral("semiconductor/insulation"), tr("Insulation"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp()}, {}, {}, false, false, QStringLiteral("ins"),
          tr("No current and no charge through the boundary. Where no other condition is.")});
@@ -1308,8 +1314,10 @@ QList<NodeKind> makeKinds()
                    tr("Of a step's nonlinear iterations")),
               integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 25, tr("Of a step's nonlinear iterations"))},
              {}, {}, false, false, QStringLiteral("time"),
-             tr("The fields in time: heat with its ρ Cp ∂T/∂t, the other physics at rest at each step, from the initial "
-                "values; kept at the output times.")});
+             tr("The fields in time, from the initial values (a study's step before: its solution): heat with its ρ Cp ∂T/∂t, "
+                "semiconductors' carriers with ∂n/∂t and ∂p/∂t - a contact's current with its displacement current, contacts' "
+                "voltages and Optical Generation's power of t (switching, a diode's reverse recovery, a photodiode's pulse "
+                "response) -, PDEs with their mass; the other physics at rest at each step. Kept at the output times.")});
         add({QStringLiteral("frequency"), tr("Frequency Domain"), QStringLiteral("step"), QStringLiteral("frequency"), Level::None,
              {physics,
               text(QStringLiteral("frequencies"), tr("Frequencies"), QStringLiteral("logspace(1[kHz], 1[GHz], 31)"),
@@ -1333,6 +1341,10 @@ QList<NodeKind> makeKinds()
               integer(QStringLiteral("modes"), tr("Modes"), 4, tr("How many, nearest the effective index below")),
               expr(QStringLiteral("neff"), tr("Search about the effective index"), QString(), QString(),
                    tr("Empty: the largest refractive index of the model")),
+              flag(QStringLiteral("follow"), tr("Follow the mode"), true,
+                   tr("One mode asked for: each frequency after the first, and each point of a sweep, searches about the mode "
+                      "found before, not the index above - a wavelength sweep stays on its branch rather than taking whichever "
+                      "mode is nearest the index. (Several: the set nearest the index at each, or those most in the domains kept.)")),
               [&] {
                   P track = selectionProp(QJsonObject{{QStringLiteral("numbers"), QJsonArray()}}, Level::Domain);
                   track.key = QStringLiteral("track");
