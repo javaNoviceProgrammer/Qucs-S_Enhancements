@@ -16,6 +16,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QClipboard>
+#include <QDockWidget>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -362,6 +363,8 @@ private slots:
         if (app == nullptr) return;
         for (const QPointer<QDialog>& d : Commands::instance()->openWindows())
             if (!d.isNull()) d->close();
+        for (const QPointer<HistoryView>& h : Commands::instance()->histories())
+            if (!h.isNull() && h->dock() != nullptr) h->dock()->close();
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
         app->closeAllFiles();
         delete app;
@@ -1163,7 +1166,7 @@ private slots:
         QVERIFY(!repo.isEmpty());
         QVERIFY(write(repo + "/a.txt", "one\ntwo\nthree\nfour\n"));
         QVERIFY(commit(repo, "four", false, {repo + "/a.txt"}).ok());
-        HistoryDialog history(repo);
+        HistoryView history(repo);
         QCOMPARE(history.model()->rowCount(), 2);
         QCOMPARE(history.model()->row(0).commit.subject, QStringLiteral("four"));
         QVERIFY(history.model()->row(0).commit.refs.contains("HEAD -> main"));   // its refs
@@ -1186,13 +1189,60 @@ private slots:
         delete menu;
         QVERIFY(!gitIn(repo, {"reset", "-q", "--hard", "HEAD~1"}).isNull());
 
-        HistoryDialog fileHistory(repo, repo + "/b.txt");
+        HistoryView fileHistory(repo, repo + "/b.txt");
         QCOMPARE(fileHistory.model()->rowCount(), 1);
 
         BlameDialog blamed(repo, repo + "/a.txt");
         QCOMPARE(blamed.lines()->topLevelItemCount(), 4);
         QCOMPARE(blamed.lines()->topLevelItem(3)->text(4), QStringLiteral("four"));
         QCOMPARE(blamed.lines()->topLevelItem(0)->text(2), QStringLiteral("Tester"));
+    }
+
+    // The History a panel: docked in the main window below the documents,
+    // a tab beside the panels there; a file's history a tab beside the
+    // repository's; asked again, the same one in front; moved to the right,
+    // floated as a window of its own and docked again; closed, gone with
+    // its view.
+    void theHistoryDocks()
+    {
+        const QString repo = makeRepo("docked");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(write(repo + "/notes.txt", "docked\n"));
+        QVERIFY(commit(repo, "one", false, {repo + "/notes.txt"}).ok());
+        HistoryView* history = Commands::instance()->showHistory(repo);
+        QVERIFY(history != nullptr);
+        QDockWidget* dock = history->dock();
+        QVERIFY(dock != nullptr);
+        QCOMPARE(dock->parentWidget(), static_cast<QWidget*>(app));
+        QCOMPARE(app->dockWidgetArea(dock), Qt::BottomDockWidgetArea);
+        QVERIFY(!dock->isFloating() && dock->isVisible());
+        for (const auto feature : {QDockWidget::DockWidgetMovable, QDockWidget::DockWidgetFloatable, QDockWidget::DockWidgetClosable})
+            QVERIFY(dock->features().testFlag(feature));
+        QCOMPARE(dock->windowTitle(), QStringLiteral("History — docked"));
+        QCOMPARE(history->model()->row(0).commit.subject, QStringLiteral("one"));
+        // (Room for its graph: some 45 % of the window's height.)
+        QTRY_VERIFY2(std::abs(dock->height() - app->height() * 45 / 100) < app->height() / 10,
+                     qPrintable(QStringLiteral("%1 px of %2").arg(dock->height()).arg(app->height())));
+        HistoryView* file = Commands::instance()->showHistory(repo, repo + "/notes.txt");
+        QVERIFY(file != nullptr && file != history && file->dock() != nullptr);
+        QCOMPARE(file->dock()->windowTitle(), QStringLiteral("History of notes.txt"));
+        QVERIFY(app->tabifiedDockWidgets(file->dock()).contains(dock));
+        QCOMPARE(Commands::instance()->showHistory(repo), history);
+        QCOMPARE(Commands::instance()->histories().size(), 2);
+        app->addDockWidget(Qt::RightDockWidgetArea, dock);
+        QCOMPARE(app->dockWidgetArea(dock), Qt::RightDockWidgetArea);
+        dock->setFloating(true);
+        QVERIFY(dock->isFloating() && dock->isWindow());
+        history->selectRow(0);
+        QTRY_VERIFY_WITH_TIMEOUT(history->details()->toPlainText().contains("+docked"), 5000);
+        dock->setFloating(false);
+        QVERIFY(!dock->isFloating());
+        QPointer<HistoryView> gone = history;
+        QPointer<QDockWidget> goneDock = dock;
+        dock->close();
+        QTRY_VERIFY(gone.isNull() && goneDock.isNull());
+        file->dock()->close();
+        QTRY_COMPARE(Commands::instance()->histories().count(nullptr), Commands::instance()->histories().size());
     }
 
     // The graph's lanes: a line straight down, a fork into a lane of its
@@ -1390,7 +1440,7 @@ private slots:
         QHash<QString, QString> h;
         const QString repo = makeGraphRepo("graphwindow", &h);
         QVERIFY(!repo.isEmpty());
-        HistoryDialog d(repo);
+        HistoryView d(repo);
         d.resize(1300, 900);
         d.show();
         QVERIFY(QTest::qWaitForWindowExposed(&d));
@@ -1589,7 +1639,7 @@ private slots:
         d.close();
 
         // A page at a time: Show More, the lanes going on as at once.
-        HistoryDialog paged(repo);
+        HistoryView paged(repo);
         paged.setPageSize(3);
         paged.reload();
         QCOMPARE(paged.model()->rowCount(), 1 + 3);
@@ -1603,7 +1653,7 @@ private slots:
 
         // A file's history: its commits in one line (third's parent is
         // second, which did not change b.txt).
-        HistoryDialog fileHistory(repo, repo + "/b.txt");
+        HistoryView fileHistory(repo, repo + "/b.txt");
         QCOMPARE(fileHistory.scope(), QStringLiteral("current"));
         QCOMPARE(fileHistory.model()->rowCount(), 2);
         for (int i = 0; i < 2; ++i) {
@@ -1645,9 +1695,9 @@ private slots:
         // Shown: the window, at the first commit listed.
         r = call("git_log", {{"path", repo}, {"ref", "topic"}, {"show", true}});
         QVERIFY2(json(r).contains("shown"), qPrintable(text(r)));
-        HistoryDialog* shown = nullptr;
-        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
-            if (auto* d = qobject_cast<HistoryDialog*>(w.data()); d != nullptr && d->root() == repo) shown = d;
+        HistoryView* shown = nullptr;
+        for (const QPointer<HistoryView>& d : Commands::instance()->histories())
+            if (d != nullptr && d->root() == repo) shown = d;
         QVERIFY(shown != nullptr);
         QCOMPARE(shown->scope(), QStringLiteral("topic"));
         QCOMPARE(shown->model()->row(shown->currentRow()).commit.subject, QStringLiteral("t1"));
@@ -1656,14 +1706,14 @@ private slots:
         r = call("git_log", {{"path", repo}, {"all", true}, {"show", true}});
         QVERIFY(json(r).contains("shown"));
         int windows = 0;
-        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
-            if (auto* d = qobject_cast<HistoryDialog*>(w.data()); d != nullptr && d->root() == repo && d->isVisible()) ++windows;
+        for (const QPointer<HistoryView>& d : Commands::instance()->histories())
+            if (d != nullptr && d->root() == repo && d->isVisible()) ++windows;
         QCOMPARE(windows, 1);
         QCOMPARE(shown->scope(), QStringLiteral("all"));
         QCOMPARE(Commands::instance()->showHistory(repo), shown);
         QVERIFY(Commands::instance()->showHistory(repo, repo + "/b.txt") != shown);   // (a file's: its own)
-        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
-            if (auto* d = qobject_cast<HistoryDialog*>(w.data()); d != nullptr && d->root() == repo) d->close();
+        for (const QPointer<HistoryView>& d : Commands::instance()->histories())
+            if (d != nullptr && d->root() == repo) d->dock()->close();
     }
 
     // A merge in conflict over a schematic open in a tab: git's file has
@@ -2296,7 +2346,7 @@ private slots:
         const QString shown = text(call("git_show", {{"path", repo}, {"commit", "HEAD"}}));
         QVERIFY2(shown.startsWith("Schematic changes, part by part:") && shown.contains("\"33nF\""), qPrintable(shown.left(300)));
         QVERIFY(text(call("git_show", {{"path", repo}, {"commit", "HEAD~1"}})).contains("new: 8 parts"));
-        HistoryDialog history(repo);
+        HistoryView history(repo);
         QVERIFY(history.select(log(repo).first().hash));
         QTRY_VERIFY(history.details()->toPlainText().startsWith("Schematic changes, part by part:"));
         QVERIFY(write(repo + "/RC_filter_FFT.sch", QString(base).replace("\"10nF\"", "\"47nF\"").toUtf8()));

@@ -59,6 +59,8 @@ void QucsApp::initGitMenu()
   gitMenu->setObjectName(QStringLiteral("gitMenu"));
   gitMenu->setToolTipsVisible(true);
   Commands *git = Commands::instance();
+  // Its histories dock in this window, below the documents.
+  git->setMainWindow(this);
   // Each on the repository found as it is chosen: none, and it says how
   // to make one.
   const auto onRoot = [this](const std::function<void(const QString &)> &work) {

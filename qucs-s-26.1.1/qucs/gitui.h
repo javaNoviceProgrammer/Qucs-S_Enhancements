@@ -24,6 +24,7 @@
 
 class QCheckBox;
 class QLabel;
+class QMainWindow;
 class QListWidget;
 class QListWidgetItem;
 class QMenu;
@@ -33,7 +34,7 @@ class QTreeWidget;
 
 namespace qucs_s::git {
 
-class HistoryDialog;
+class HistoryView;
 
 /// The colour of a file's name in the File Browser and the lists: changed
 /// (amber), staged (green), new (green), in conflict (red), ignored
@@ -172,9 +173,13 @@ public:
     /// Asks first.
     void discard(const QString& root, const QStringList& paths);
     void showDiff(const QString& root, const QString& path = {}, DiffOf of = DiffOf::Head);
-    /// The History window of \a root (\a path's when given): the one open
-    /// brought to the front and read again, else a new one.
-    HistoryDialog* showHistory(const QString& root, const QString& path = {});
+    /// The History of \a root (\a path's when given), a dock: the one open
+    /// brought to the front and read again, else a new one - in the main
+    /// window, below the documents with the panels there (each history a
+    /// tab of them), to be moved, or floated as a window of its own.
+    HistoryView* showHistory(const QString& root, const QString& path = {});
+    /// The main window the histories dock in (none: each floats).
+    void setMainWindow(QMainWindow* window);
     void showBlame(const QString& root, const QString& path);
     void ignore(const QString& root, const QString& path);
     void untrack(const QString& root, const QStringList& paths);
@@ -213,6 +218,8 @@ public:
     Job* runningJob() const { return a_job; }
     /// The windows it opened lately (the tests close them).
     QList<QPointer<QDialog>> openWindows() const { return a_windows; }
+    /// The histories open, each in its dock.
+    QList<QPointer<HistoryView>> histories() const { return a_histories; }
 
 signals:
     /// A file to open in Qucs-S.
@@ -236,6 +243,8 @@ private:
 
     QPointer<Job> a_job;
     QList<QPointer<QDialog>> a_windows;
+    QList<QPointer<HistoryView>> a_histories;
+    QPointer<QMainWindow> a_main;
 };
 
 } // namespace qucs_s::git
