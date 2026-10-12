@@ -19,7 +19,7 @@
 #include "gitrepo.h"
 
 #include <QAbstractTableModel>
-#include <QDialog>
+#include <QWidget>
 #include <QHash>
 #include <QSet>
 #include <QStyledItemDelegate>
@@ -28,6 +28,7 @@
 
 class QAction;
 class QComboBox;
+class QDockWidget;
 class QLabel;
 class QLineEdit;
 class QMenu;
@@ -124,15 +125,21 @@ public:
  * reverts or cherry-picks it, resets the branch to it, compares it with
  * the files as they are; a label's branch or tag is deleted there. It is
  * read again when the repository changes.
+ *
+ * A panel: Commands::showHistory() docks it in the main window, below the
+ * documents beside the other panels there - moved to any side, or out as
+ * a window of its own, as a dock is.
  */
-class HistoryDialog : public QDialog
+class HistoryView : public QWidget
 {
     Q_OBJECT
 
 public:
-    HistoryDialog(const QString& root, const QString& path = {}, QWidget* parent = nullptr);
+    HistoryView(const QString& root, const QString& path = {}, QWidget* parent = nullptr);
 
     QString root() const { return a_root; }
+    /// The dock it is in (null: none).
+    QDockWidget* dock() const;
     /// The file whose history it is (empty: the repository's).
     QString path() const { return a_path; }
     /// \a path as a history takes it: empty for \a root itself (the
