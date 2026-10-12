@@ -75,6 +75,12 @@ struct Medium {
     double munMin = 0, nRefN = 1, alphaN = 1, mupMin = 0, nRefP = 1, alphaP = 1;
     bool saturation = false;         // high fields: Caughey and Thomas's too
     double vsatn = 1e5, vsatp = 8e4, betan = 2, betap = 1;
+    bool wholeField = false;         // saturated by |E|, not by the force along the current
+    // Lombardi's scattering at an insulator's surface: µac = B/E⊥ + C (N/1
+    // cm⁻³)^λ / (T E⊥^⅓) (C in cm, V, s and K), µsr = δ/E⊥², E⊥ the field
+    // across the nearest interface, each faded as e^(-d/lcrit) away from it.
+    bool surface = false;
+    double sBn = 0, sCn = 0, sLn = 0, sDn = 0, sBp = 0, sCp = 0, sLp = 0, sDp = 0, lcrit = 1e-8;
     bool srh = false;
     double taun = Inf, taup = Inf, Et = 0;   // Et: the trap's level above the intrinsic one (J)
     double Cn = 0, Cp = 0, B = 0;
@@ -236,10 +242,18 @@ private:
         double gx[3] = {0, 0, 0}, gy[3] = {0, 0, 0};
         int domain = -1;
         double volume = 0;           // its area times the thickness (m³)
+        double N = 0;                // its donors and acceptors (1/m³)
+        // Surface scattering's: the nearest interface's normal, e^(-d/lcrit).
+        double nx = 0, ny = 0, damp = 0;
     };
     std::vector<ElementMobility> a_elements;
-    /// The edges' weights from the elements' mobilities - each saturated by
-    /// its element's field at \a x when there is one (and the model asks).
+    /// Triangle \a t's mobilities at \a x (m²/(V s)): its low-field ones,
+    /// scattered at the nearest insulator's surface by the field across it,
+    /// saturated by the force along each carrier's current - the low-field
+    /// ones alone without \a x.
+    void elementMobilities(int t, const Eigen::VectorXd* x, double* mun, double* mup) const;
+    /// The edges' weights from the elements' mobilities at \a x (when there
+    /// is one, and the model asks).
     void edgeWeights(const Eigen::VectorXd* x);
     std::vector<int> a_iV, a_iN, a_iP; // by node: unknowns (-1 none)
     int a_unknowns = 0;
@@ -253,7 +267,8 @@ private:
     std::vector<OpticalSource> a_optical;
     double a_Gop = 0, a_Pin = 0;       // the optical generation's pairs per second, the light fed (W)
     std::vector<std::complex<double>> a_Hop;   // small-signal: each contact's current, the light modulated wholly (A)
-    bool a_saturation = false;
+    bool a_saturation = false, a_lombardi = false;
+    bool a_alongCurrent = false;       // a saturation driven by the force along the current
     double a_refDEc = 0, a_refChi = 0; // the first semiconductor's: Ec - Ei, χ (J)
     // Impact ionization: whether its pairs are in the equations; the
     // ionization integrals along the field line through the highest field
@@ -435,6 +450,23 @@ bool SemiconductorProblem::setup(QString* error)
             m.saturation = a_saturation = true;
             m.vsatn = number(mf->text(QStringLiteral("vsatn")), velocity, where);
             m.vsatp = number(mf->text(QStringLiteral("vsatp")), velocity, where);
+            m.wholeField = mf->text(QStringLiteral("driving")) == QLatin1String("field");
+            a_alongCurrent = a_alongCurrent || !m.wholeField;
+        }
+        if (mf && mf->flag(QStringLiteral("surface"))) {
+            m.surface = a_lombardi = true;
+            const Dim perSecond = Dim::voltage() / Dim::of(0, 0, 1);
+            m.sBn = number(mf->text(QStringLiteral("Bn")), velocity, where);
+            m.sCn = number(mf->text(QStringLiteral("Cn")), Dim(), where);
+            m.sLn = number(mf->text(QStringLiteral("lambdan")), Dim(), where);
+            m.sDn = number(mf->text(QStringLiteral("deltan")), perSecond, where);
+            m.sBp = number(mf->text(QStringLiteral("Bp")), velocity, where);
+            m.sCp = number(mf->text(QStringLiteral("Cp")), Dim(), where);
+            m.sLp = number(mf->text(QStringLiteral("lambdap")), Dim(), where);
+            m.sDp = number(mf->text(QStringLiteral("deltap")), perSecond, where);
+            m.lcrit = number(mf->text(QStringLiteral("lcrit")), Dim::length(), where);
+            if (!(m.sBn > 0) || !(m.sCn > 0) || !(m.sDn > 0) || !(m.sBp > 0) || !(m.sCp > 0) || !(m.sDp > 0) || !(m.lcrit > 0))
+                problem(tr("%1: its surface scattering's B, C, δ and lcrit must be more than 0").arg(where));
         }
         if (const Node* r = srhOf[std::size_t(d)]) {
             m.srh = true;
@@ -691,6 +723,7 @@ bool SemiconductorProblem::setup(QString* error)
         em.mup = mup[std::size_t(t)];
         em.domain = mesh.domain[std::size_t(t)];
         const int* dof = sp.dofs(t);
+        for (int k = 0; k < 3; ++k) em.N += (a_Nd[std::size_t(dof[k])] + a_Na[std::size_t(dof[k])]) / 3;
         QPointF x[3];
         for (int k = 0; k < 3; ++k) x[k] = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * scale;
         const double weight = a_s.weight((x[0] + x[1] + x[2]) / 3.0);
@@ -727,6 +760,51 @@ bool SemiconductorProblem::setup(QString* error)
                     a_neighbors[std::size_t(it->second.first)][std::size_t(it->second.second)] = t;
                 }
             }
+    }
+    // Surface scattering: each triangle's nearest interface with an
+    // insulator (a side shared with one), its normal and the distance to it
+    // from the triangle's centre.
+    if (a_lombardi) {
+        struct Side {
+            QPointF a, b;
+            double nx, ny;
+        };
+        std::vector<Side> sides;
+        for (int t = 0; t < nt; ++t) {
+            if (!a_elemSemi[std::size_t(t)]) continue;
+            for (int k = 0; k < 3; ++k) {
+                const int u = a_neighbors[std::size_t(t)][std::size_t(k)];
+                if (u < 0 || !a_elemOn[std::size_t(u)] || a_elemSemi[std::size_t(u)]) continue;
+                const QPointF a = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * scale;
+                const QPointF b = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)])] * scale;
+                const double h = std::hypot(b.x() - a.x(), b.y() - a.y());
+                if (h > 0) sides.push_back({a, b, -(b.y() - a.y()) / h, (b.x() - a.x()) / h});
+            }
+        }
+        if (sides.empty()) {
+            const QString line = tr("%1: surface scattering, but no semiconductor meets an insulator: none").arg(a_node->name());
+            if (!a_s.log.contains(line)) a_s.log << line;
+        }
+        for (int t = 0; t < nt && !sides.empty(); ++t) {
+            ElementMobility& em = a_elements[std::size_t(t)];
+            if (em.domain < 0 || !a_media[std::size_t(em.domain)].surface) continue;
+            QPointF c;
+            for (int k = 0; k < 3; ++k) c += mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * scale / 3.0;
+            double best = Inf;
+            const Side* nearest = nullptr;
+            for (const Side& side : sides) {
+                const double ux = side.b.x() - side.a.x(), uy = side.b.y() - side.a.y();
+                const double f = std::clamp(((c.x() - side.a.x()) * ux + (c.y() - side.a.y()) * uy) / (ux * ux + uy * uy), 0.0, 1.0);
+                const double d = std::hypot(c.x() - side.a.x() - f * ux, c.y() - side.a.y() - f * uy);
+                if (d < best) {
+                    best = d;
+                    nearest = &side;
+                }
+            }
+            em.nx = nearest->nx;
+            em.ny = nearest->ny;
+            em.damp = std::exp(-best / a_media[std::size_t(em.domain)].lcrit);
+        }
     }
     edgeWeights(nullptr);
     // Contacts and surface charges.
@@ -934,27 +1012,11 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
 {
     for (Edge& e : a_edges) e.wn = e.wp = 0;
     std::vector<double> geometric(a_edges.size(), 0.0), magnitude(a_edges.size(), 0.0);
-    const Space& sp = *a_s.fields()[std::size_t(a_fi)].space;
     for (int t = 0; t < int(a_elements.size()); ++t) {
         const ElementMobility& em = a_elements[std::size_t(t)];
         if (em.domain < 0) continue;
-        double mun = em.mun, mup = em.mup;
-        const Medium& m = a_media[std::size_t(em.domain)];
-        if (x && m.saturation) {
-            // µ(E) = µ0 / (1 + (µ0 E / vsat)^β)^(1/β), E the element's field
-            // (lagged a Newton step).
-            const int* dof = sp.dofs(t);
-            double ex = 0, ey = 0;
-            for (int k = 0; k < 3; ++k) {
-                const double v = (*x)(a_iV[std::size_t(dof[k])]);
-                ex += em.gx[k] * v;
-                ey += em.gy[k] * v;
-            }
-            const double E = std::hypot(ex, ey);
-            auto reduce = [&](double mu, double vsat, double beta) { return mu / std::pow(1 + std::pow(mu * E / vsat, beta), 1 / beta); };
-            mun = reduce(mun, m.vsatn, m.betan);
-            mup = reduce(mup, m.vsatp, m.betap);
-        }
+        double mun = 0, mup = 0;
+        elementMobilities(t, x, &mun, &mup);
         for (int k = 0; k < 3; ++k) {
             Edge& e = a_edges[std::size_t(em.edge[k])];
             e.wn += em.cot[k] * mun;
@@ -976,9 +1038,74 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
     }
 }
 
+void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, double* mun, double* mup) const
+{
+    const ElementMobility& em = a_elements[std::size_t(t)];
+    *mun = em.mun;
+    *mup = em.mup;
+    const Medium& m = a_media[std::size_t(em.domain)];
+    if (!x || (!m.saturation && !(m.surface && em.damp > 0))) return;
+    // (Lagged a Newton step: the field and the carriers at x.)
+    const int* dof = a_s.fields()[std::size_t(a_fi)].space->dofs(t);
+    double V[3], ex = 0, ey = 0;
+    for (int k = 0; k < 3; ++k) {
+        V[k] = (*x)(a_iV[std::size_t(dof[k])]);
+        ex -= em.gx[k] * V[k];
+        ey -= em.gy[k] * V[k];
+    }
+    if (m.surface && em.damp > 0) {
+        // 1/µ = 1/µbulk + D/µac + D/µsr (Matthiessen's rule), D = e^(-d/lcrit);
+        // E⊥ no less than 1 V/cm.
+        const double across = std::max(std::abs(ex * em.nx + ey * em.ny), 100.0);
+        const double perCm3 = std::max(em.N * 1e-6, 1.0), vPerCm = across / 100;
+        auto scatter = [&](double mu, double B, double C, double lambda, double delta) {
+            const double ac = B / across + 1e-4 * C * std::pow(perCm3, lambda) / (a_T * std::cbrt(vPerCm));
+            const double sr = delta / (across * across);
+            return 1 / (1 / mu + em.damp / ac + em.damp / sr);
+        };
+        *mun = scatter(*mun, m.sBn, m.sCn, m.sLn, m.sDn);
+        *mup = scatter(*mup, m.sBp, m.sCp, m.sLp, m.sDp);
+    }
+    if (m.saturation) {
+        // µ(F) = µ0 / (1 + (µ0 F / vsat)^β)^(1/β), F the force along each
+        // carrier's current: its quasi-Fermi potential's gradient, φn = V +
+        // θn - Vt ln(n/ni), φp = V + θp + Vt ln(p/ni) - J/(q n µ), the field
+        // along the current where it drifts, nought at equilibrium - no
+        // more than the field: the field's work heats a carrier, and one
+        // diffusing where there is little (a doped region's minority
+        // carriers, their gradient steep) keeps its mobility. (Uncapped, the
+        // photodiode example collected 98.5 % of its pairs, not 92.) Or the
+        // whole field.
+        // (E·J/|J| itself, J fitted to a triangle's three edge currents,
+        // took an inversion layer's drift and diffusion across it - each
+        // some 500 times the current along the channel, cancelling only in
+        // all - for current: the channel's mobility halved.)
+        const double whole = std::hypot(ex, ey);
+        double Fn = whole, Fp = whole;
+        if (!m.wholeField) {
+            double gn[2] = {0, 0}, gp[2] = {0, 0};
+            for (int k = 0; k < 3; ++k) {
+                const std::size_t i = std::size_t(dof[k]);
+                const double n = std::max((*x)(a_iN[i]), 1e-300), p = std::max((*x)(a_iP[i]), 1e-300);
+                const double phin = V[k] + a_thetaN[i] - a_Vt * std::log(n / a_refNi);
+                const double phip = V[k] + a_thetaP[i] + a_Vt * std::log(p / a_refNi);
+                gn[0] += em.gx[k] * phin;
+                gn[1] += em.gy[k] * phin;
+                gp[0] += em.gx[k] * phip;
+                gp[1] += em.gy[k] * phip;
+            }
+            Fn = std::min(whole, std::hypot(gn[0], gn[1]));
+            Fp = std::min(whole, std::hypot(gp[0], gp[1]));
+        }
+        auto reduce = [](double mu, double F, double vsat, double beta) { return mu / std::pow(1 + std::pow(mu * F / vsat, beta), 1 / beta); };
+        *mun = reduce(*mun, Fn, m.vsatn, m.betan);
+        *mup = reduce(*mup, Fp, m.vsatp, m.betap);
+    }
+}
+
 void SemiconductorProblem::updateMobilities(const Eigen::VectorXd& x)
 {
-    if (a_saturation) edgeWeights(&x);
+    if (a_saturation || a_lombardi) edgeWeights(&x);
 }
 
 void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const std::vector<double>* history, Eigen::VectorXd& F,
@@ -1277,9 +1404,16 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
     Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
     bool analyzed = false;
     int crawling = 0;   // steps in a row damped to less than 2 %
+    // (Mobilities saturated by the force along the current: lagged a step,
+    // they settle only as the carriers do - where generation sets a
+    // current, J/(q n µ), a lower µ a steeper force and a lower µ again, at
+    // (v/vsat)² a step; under a MOSFET's channel, carriers that carry
+    // nothing cycling about 1e-4. Held once the potential has settled to
+    // 1e-6 Vt, or after fifteen steps, Newton finishing with them.)
+    bool held = false;
     for (int it = 0; it < maxSteps; ++it) {
         carrierScales();
-        updateMobilities(x);
+        if (!held) updateMobilities(x);
         assemble(x, mass, history, F, &trip);
         // Dirichlet rows: x - target.
         std::vector<Eigen::Triplet<double>> kept;
@@ -1347,6 +1481,7 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         // breakdown's diode's most time).
         crawling = alpha < 0.02 ? crawling + 1 : 0;
         if (crawling >= 10) break;
+        held = held || (a_alongCurrent && alpha == 1.0 && (changeV < 1e-6 || it >= 15));
         // Converged: the potential still to 1e-8 Vt and the carriers to 1e-6
         // (or the potential to 1e-12 Vt: the carriers' last digits are noise).
         if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12)) return true;
@@ -1541,6 +1676,14 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
         f.values[2 * N + std::size_t(i)] = a_iP[std::size_t(i)] >= 0 ? x(a_iP[std::size_t(i)]) : 0.0;
     }
     f.solved = true;
+    // The mobilities as solved, for what is read at a point (semi.mun, the
+    // current densities).
+    if (a_saturation || a_lombardi)
+        for (int t = 0; t < int(a_elements.size()); ++t) {
+            if (a_elements[std::size_t(t)].domain < 0 || f.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1))) continue;
+            double* e = &f.extra[std::size_t(ExtraHead + PerTriangle * t)];
+            elementMobilities(t, &x, &e[0], &e[1]);
+        }
     for (std::size_t k = 0; k < a_contacts.size() && k < f.terminals.size(); ++k) {
         f.terminals[k].potential = a_contacts[k].applied;
         f.terminals[k].charge = a_contacts[k].current;
