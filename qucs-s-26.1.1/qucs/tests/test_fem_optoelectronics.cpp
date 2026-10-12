@@ -295,7 +295,12 @@ private slots:
     }
 
     // The examples, solved as they come, against what they say. (A
-    // sanitized build: a coarser mesh, fewer points - and nearer.)
+    // sanitized build: a coarser mesh, fewer points - and wider bounds. On
+    // its 0.1 µm the figures move with the mesh, whose points differ from
+    // one platform to another: between 0.08 and 0.12 µm, and on CI's Linux,
+    // the modulator's loss at 0 V 0.62 to 0.77 dB, its photocurrents 150 to
+    // 221 µA and 0.92 to 1.02 mA, the photodiode's 1.139 to 1.191 A/W and
+    // 6.36 to 6.90 nA dark - the extinction 5.650 to 5.671 dB.)
     void thePhotodiodeExample()
     {
         QElapsedTimer timer;
@@ -322,7 +327,7 @@ private slots:
               neff, loss * 1e-6, I * 1e3, Iop * 1e3, I / Iop, I / 1e-3, hLow, h24, h24 / hLow, timer.elapsed());
         QVERIFY(std::abs(neff - 3.84) < (slow ? 0.03 : 0.01));
         QVERIFY(std::abs(loss * 1e-6 - 1.9) < (slow ? 0.2 : 0.1));
-        QVERIFY2(std::abs(I / 1e-3 - 1.15) < (slow ? 0.04 : 0.02), qPrintable(QString::number(I / 1e-3)));
+        QVERIFY2(std::abs(I / 1e-3 - 1.15) < (slow ? 0.06 : 0.02), qPrintable(QString::number(I / 1e-3)));
         QVERIFY(std::abs(I / Iop - 0.92) < (slow ? 0.03 : 0.02));
         QVERIFY2(h24 / hLow > (slow ? 0.65 : 0.70) && h24 / hLow < 0.78, qPrintable(QString::number(h24 / hLow)));
         if (slow)
@@ -335,7 +340,7 @@ private slots:
             if (std::abs(point->sweptValues.value(QStringLiteral("Va")) + 1) < 1e-9) {
                 const double Idark = global(*point, QStringLiteral("semi.I_k"));
                 qInfo("its dark current at -1 V %.4g nA", Idark * 1e9);
-                QVERIFY(std::abs(Idark * 1e9 - 7.2) < (slow ? 1.0 : 0.5));
+                QVERIFY(std::abs(Idark * 1e9 - 7.2) < (slow ? 1.5 : 0.5));
                 seen = true;
             }
         QVERIFY(seen);
@@ -370,9 +375,10 @@ private slots:
         const double i0 = global(*r.study.solutions.front(), QStringLiteral("semi.I_k")), i3 = global(*r.study.solutions.back(), QStringLiteral("semi.I_k"));
         qInfo("GeSi modulator: %.3f dB over 50 µm at 0 V, %.3f at -3 V (extinction %.3f dB); photocurrent %.4g µA and %.4g mA; %lld ms", il, on,
               on - il, i0 * 1e6, i3 * 1e3, timer.elapsed());
-        QVERIFY(std::abs(il - 0.65) < (slow ? 0.06 : 0.03));
+        QVERIFY(std::abs(il - 0.65) < (slow ? 0.2 : 0.03));
         QVERIFY(std::abs(on - 6.29) < (slow ? 0.3 : 0.1));
-        QVERIFY(std::abs(i0 * 1e3 - 0.16) < (slow ? 0.06 : 0.01) && std::abs(i3 * 1e3 - 0.95) < (slow ? 0.04 : 0.02));
+        QVERIFY2(std::abs(on - il - 5.65) < (slow ? 0.05 : 0.02), qPrintable(QString::number(on - il)));
+        QVERIFY(std::abs(i0 * 1e3 - 0.16) < (slow ? 0.09 : 0.01) && std::abs(i3 * 1e3 - 0.95) < (slow ? 0.1 : 0.02));
     }
 
 private:
