@@ -1104,7 +1104,7 @@ private:
         case Op::Add: case Op::Sub:
             if (!(a.dim == b.dim)) {
                 // A number added to a length: a plain number is taken as in
-                // the other's unit - said, as COMSOL does; in a geometry, a
+                // the other's unit - said; in a geometry, a
                 // number is a length in its unit.
                 const bool length = (a.dim.isNone() && b.dim == Dim::length()) || (b.dim.isNone() && a.dim == Dim::length());
                 if (!(a_options.numbersAreLengths && length))

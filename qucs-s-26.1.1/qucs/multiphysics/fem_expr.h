@@ -95,7 +95,7 @@ struct ExpressionOptions {
  * units in brackets after a value (3[mm], T[1/K]), + - * / ^, comparisons
  * and && || ! (true is 1), parentheses, functions (sin cos tan asin acos
  * atan atan2 sinh cosh tanh exp log log10 sqrt abs sign min max pow floor
- * ceil round mod if), constants (pi, eps0, mu0, c0, kB, q0 and COMSOL's
+ * ceil round mod if), constants (pi, eps0, mu0, c0, kB, q0 and the long names
  * epsilon0_const, mu0_const, c_const, e_const, k_B_const, sigma_const,
  * N_A_const, h_const, R_const, g_const), the parameters, and the
  * variables of where it is evaluated.
@@ -211,8 +211,8 @@ private:
 };
 
 /// A value as a property wants it: \a text in \a scope, a constant of
-/// unit \a expected. A plain number is taken as in that unit (as COMSOL
-/// does: "1" for a voltage is 1 V). Its SI value; on an error none, and why
+/// unit \a expected. A plain number is taken as in that unit ("1" for a
+/// voltage is 1 V). Its SI value; on an error none, and why
 /// in \a error; a unit that does not agree in \a warning.
 std::optional<double> evaluateConstant(const QString& text, const Scope& scope, const Dim& expected,
                                        QString* error = nullptr, QString* warning = nullptr);

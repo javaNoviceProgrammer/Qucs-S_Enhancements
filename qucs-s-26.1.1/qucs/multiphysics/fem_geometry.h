@@ -3,7 +3,7 @@
  *                  order into objects (rectangles, circles, polygons; moved,
  *                  rotated, united, cut), then made one by Form Union - the
  *                  domains its edges close, its boundaries and points,
- *                  numbered as COMSOL numbers them; and the selections of
+ *                  numbered from the left, then from below; and the selections of
  *                  them, by rule ("the boundaries of trace") or by number
  *
  * This file is part of Qucs-S.
@@ -78,7 +78,7 @@ struct GObject {
  * (each a piece of a curve, between two vertices), the domains they close,
  * the boundaries (chains of segments between points, on one curve) and the
  * points. Coordinates in the geometry's unit. Numbers are indices here;
- * COMSOL's numbers (shown, and in the file) are one more.
+ * the numbers shown, and in the file, are one more.
  */
 struct Topology {
     std::vector<QPointF> vertices;
@@ -158,7 +158,7 @@ GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters
  * A selection resolved: the domains, boundaries or points of \a level that
  * \a rule picks in \a topology. A rule:
  *   {"all": true}                every one
- *   {"numbers": [1, 3]}          those (COMSOL's numbers, from 1)
+ *   {"numbers": [1, 3]}          those (the numbers shown, from 1)
  *   {"objects": ["air"]}         domains in any of these objects
  *   {"only": ["air"]}            domains whose smallest object is one of these
  *   {"of": ["trace"]}            boundaries (points) on the objects' edges;

@@ -1,5 +1,5 @@
 /*
- * multiphysicsview.h - a multiphysics model's Graphics view, as COMSOL's:
+ * multiphysicsview.h - a multiphysics model's Graphics view:
  *                      its geometry (domains, boundaries, points - picked
  *                      with a click, those of the node chosen shown), its
  *                      mesh, its results (a color map with its legend,

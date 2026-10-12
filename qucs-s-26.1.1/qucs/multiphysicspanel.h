@@ -1,6 +1,6 @@
 /*
  * multiphysicspanel.h - the Multiphysics panel, a tab of the left dock: the
- *                       model's tree as COMSOL's Model Builder shows it -
+ *                       model's tree as a model builder shows it -
  *                       parameters, geometry, materials, physics, mesh,
  *                       studies, results - and under it the settings of
  *                       the node chosen; each node's menu adds, renames,
