@@ -482,6 +482,7 @@ bool MultiphysicsDoc::load()
         return false;
     }
     if (!why.isEmpty()) say(tr("Read with notes: %1").arg(why));
+    a_readNotes = why;
     m->fileName = a_DocName;
     a_undo->clear();
     applyModel(*m);
@@ -503,6 +504,7 @@ bool MultiphysicsDoc::reload()
     QString why;
     std::optional<Model> m = Model::fromJson(file.readAll(), &why);
     if (!m) return false;
+    a_readNotes = why;
     m->fileName = a_DocName;
     const QString focus = a_focus;
     a_undo->clear();   // (its steps were of the model as it was)
@@ -997,7 +999,13 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
     const Node* g = a_model.find(tag);
     if (g && g->type == QLatin1String("plotgroup1d")) return !showGraphs(tag, error).isEmpty();
     if (!g || g->type != QLatin1String("plotgroup")) {
-        if (error) *error = tr("there is no plot group %1").arg(tag);
+        if (error) {
+            QStringList groups;
+            for (const Node& n : a_model.results().children)
+                if (n.type == QLatin1String("plotgroup") || n.type == QLatin1String("plotgroup1d")) groups << QStringLiteral("%1 (%2)").arg(n.tag, n.name());
+            *error = g ? tr("%1 is %2, not a plot group (the plot groups: %3)").arg(tag, g->name(), groups.join(QLatin1String(", ")))
+                       : tr("there is no plot group %1 (the plot groups: %2)").arg(tag, groups.isEmpty() ? tr("none") : groups.join(QLatin1String(", ")));
+        }
         return false;
     }
     const QString study = studyTag(g->text(QStringLiteral("study")));
@@ -2121,7 +2129,11 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                     }
                 }
     }
+    // (Made by the solve, not the user: a model as saved stays so - written
+    // again over it on disk, it is read again.)
+    const bool clean = a_undo->isClean();
     setModel(m, tr("Default Plots"));
+    if (clean) a_undo->setClean();
 }
 
 void MultiphysicsDoc::pointerMoved(QPointF point, bool inside)

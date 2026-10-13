@@ -206,7 +206,9 @@ public:
     QString fileName;
 
 private:
-    void normalise();
+    /// Its default nodes, tags each its own (one taken, said in \a notes),
+    /// selections in one form, each physics' default features.
+    void normalise(QStringList* notes = nullptr);
 };
 
 /// The scope of a model's parameters (and functions), on the built-in

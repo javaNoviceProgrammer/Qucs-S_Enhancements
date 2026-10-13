@@ -126,6 +126,43 @@ double slabTE0(double n1, double n2, double d, double lambda)
     return (lo + hi) / 2;
 }
 
+/// A symmetric slab's TM0: tan(κ d/2) = (n1/n2)² γ/κ.
+double slabTM0(double n1, double n2, double d, double lambda)
+{
+    const double k0 = 2 * M_PI / lambda;
+    double lo = n2 + 1e-9, hi = n1 - 1e-9;
+    for (int i = 0; i < 200; ++i) {
+        const double mid = (lo + hi) / 2;
+        const double kappa = k0 * std::sqrt(n1 * n1 - mid * mid), gamma = k0 * std::sqrt(mid * mid - n2 * n2);
+        if (kappa * d / 2 >= M_PI / 2 || std::tan(kappa * d / 2) - (n1 * n1) / (n2 * n2) * gamma / kappa > 0) lo = mid;
+        else hi = mid;
+    }
+    return (lo + hi) / 2;
+}
+
+/// A silicon slab 220 nm thick (its index \a core) in oxide across a window
+/// \a width µm wide, 1.5 µm of oxide above and below: its walls \a sides
+/// (none: metal), its mode step's more \a step; its core's confinement
+/// factors g1 (|E|²), g2 (Sz) and g3 (the index's).
+QByteArray slabWindow(const QString& sides, const QString& step, const QString& core, const QString& width = QStringLiteral("2"))
+{
+    return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "name": "oxide", "position": ["0", "-1.5"], "size": ["%6", "3.22"]},
+                     {"type": "rectangle", "name": "core", "size": ["%6", "0.22"]}],
+        "materials": [{"label": "oxide", "n": "1.444", "selection": {"only": ["oxide"]}},
+                      {"label": "silicon", "n": "%3", "selection": {"only": ["core"]}}],
+        "physics": [{"type": "modes", "tag": "emw", "features": [%1]}],
+        "mesh": {"size": "fine", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "%4"},
+                                              {"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "%5"}]}}],
+      "studies": [{"type": "study", "steps": [{"type": "mode", "frequency": "1550[nm]", "modes": 1, "neff": "3" %2}]}],
+      "results": {"derived": [{"type": "confinement", "tag": "g1", "selection": {"only": ["core"]}},
+                              {"type": "confinement", "tag": "g2", "selection": {"only": ["core"]}, "kind": "power"},
+                              {"type": "confinement", "tag": "g3", "selection": {"only": ["core"]}, "kind": "index"}]}})json")
+        .arg(sides, step, core, slowBuild() ? QStringLiteral("0.055") : QStringLiteral("0.02"), slowBuild() ? QStringLiteral("0.3") : QStringLiteral("0.08"), width)
+        .toUtf8();
+}
+
 /// A rectangular metal waveguide a × b (mm), its modes at \a f.
 QByteArray rectangular(const QString& f, int modes, const QString& fill = QStringLiteral("\"n\": \"1\""), int order = 2,
                        const QString& guess = QStringLiteral("1"))
@@ -276,6 +313,75 @@ private slots:
         // Its wavelength said back.
         QVERIFY(std::abs(global(s, QStringLiteral("emw.lambda0")) - 1.55e-6) < 1e-15);
         QVERIFY(std::abs(s.frequency() - C0 / 1.55e-6) < 1);
+    }
+
+    // A silicon slab 220 nm thick in oxide across a window 2 µm wide, its
+    // sides magnetic walls: a TE mode varying across the window (E along x)
+    // outranks the slab's TM0 - the one found about the index; asked for
+    // TM, the slab's TM0, its equation's, emw.TEfraction nought. 4 µm wide
+    // (Release builds only: a sanitized one's mode solves take a minute):
+    // some ten lateral TE modes above TM0, more than the first search finds
+    // - sought until there is a TM one.
+    void modesByPolarization()
+    {
+        const QString pmc = QStringLiteral(R"({"type": "pmc", "selection": {"of": ["oxide", "core"], "side": "left"}},
+                                              {"type": "pmc", "selection": {"of": ["oxide", "core"], "side": "right"}})");
+        const Run any = run(modelOf(slabWindow(pmc, QString(), QStringLiteral("3.476"))));
+        const Run tm = run(modelOf(slabWindow(pmc, QStringLiteral(R"(, "polarization": "tm")"), QStringLiteral("3.476"))));
+        QVERIFY2(any.error.isEmpty() && tm.error.isEmpty(), qPrintable(any.error + tm.error));
+        any.solution->select(0);
+        tm.solution->select(0);
+        const double nAny = global(*any.solution, QStringLiteral("emw.neff")), teAny = global(*any.solution, QStringLiteral("emw.TEfraction"));
+        const double nTM = global(*tm.solution, QStringLiteral("emw.neff")), teTM = global(*tm.solution, QStringLiteral("emw.TEfraction"));
+        const double tm0 = slabTM0(3.476, 1.444, 0.22e-6, 1.55e-6);
+        qInfo("magnetic sides: about n 3 a TE mode %.5f (TE fraction %.4f); asked for TM %.6f (%.4f), the slab's TM0 %.6f", nAny, teAny, nTM, teTM, tm0);
+        QVERIFY(teAny > 0.99 && nAny > tm0 + 0.5);
+        QVERIFY(teTM < 0.01);
+        QVERIFY2(std::abs(nTM - tm0) < (slowBuild() ? 3e-4 : 1e-4), qPrintable(QString::number(nTM - tm0)));
+        QVERIFY(tm.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("TE modes left out")));
+        if (slowBuild()) return;
+        const Run wide = run(modelOf(slabWindow(pmc, QStringLiteral(R"(, "polarization": "tm")"), QStringLiteral("3.476"), QStringLiteral("4"))));
+        QVERIFY2(wide.error.isEmpty(), qPrintable(wide.error));
+        wide.solution->select(0);
+        const double nWide = global(*wide.solution, QStringLiteral("emw.neff"));
+        qInfo("4 µm wide, asked for TM: %.6f (TE fraction %.4f)", nWide, global(*wide.solution, QStringLiteral("emw.TEfraction")));
+        QVERIFY(global(*wide.solution, QStringLiteral("emw.TEfraction")) < 0.01);
+        QVERIFY2(std::abs(nWide - tm0) < 1e-4, qPrintable(QString::number(nWide - tm0)));
+    }
+
+    // The slab's window with metal sides, TE asked: the TE0 slab mode (E
+    // along x meets them at right angles) and its confinement factors -
+    // - |E|² in the core: (a + sin 2κa/2κ)/(a + sin 2κa/2κ + cos²κa/γ), the
+    //   slab's (a half its thickness);
+    // - Sz's share the same (a TE mode's Sz is |Ex|²'s);
+    // - the index's, (c ε0/2) ∫ n |E|²/∫ Sz, n_core/neff times that, and
+    //   (Release builds) what neff moves for the core's index moved by 1e-3.
+    void confinementFactors()
+    {
+        const Model te = modelOf(slabWindow(QString(), QStringLiteral(R"(, "polarization": "te")"), QStringLiteral("3.476")));
+        const Run r = run(te);
+        const Run moved = slowBuild() ? Run() : run(modelOf(slabWindow(QString(), QStringLiteral(R"(, "polarization": "te")"), QStringLiteral("3.477"))));
+        QVERIFY2(r.error.isEmpty() && moved.error.isEmpty(), qPrintable(r.error + moved.error));
+        r.solution->select(0);
+        if (moved.solution) moved.solution->select(0);
+        const double neff = global(*r.solution, QStringLiteral("emw.neff")), te0 = slabTE0(3.476, 1.444, 0.22e-6, 1.55e-6);
+        auto derived = [&](const char* tag) {
+            const DerivedResult d = evaluateDerived(*r.solution, *te.find(QString::fromLatin1(tag)));
+            return d.values.isEmpty() ? NAN : d.values.front().value;
+        };
+        const double g1 = derived("g1"), g2 = derived("g2"), g3 = derived("g3");
+        const double k0 = 2 * M_PI / 1.55e-6, a = 0.11e-6;
+        const double kappa = k0 * std::sqrt(3.476 * 3.476 - te0 * te0), gamma = k0 * std::sqrt(te0 * te0 - 1.444 * 1.444);
+        const double inCore = a + std::sin(2 * kappa * a) / (2 * kappa), exact = inCore / (inCore + std::pow(std::cos(kappa * a), 2) / gamma);
+        const double slope = moved.solution ? (global(*moved.solution, QStringLiteral("emw.neff")) - neff) / 1e-3 : NAN;
+        qInfo("TE0 %.6f (the slab's %.6f), TE fraction %.5f; Γ %.5f (the slab's %.5f), of Sz %.5f, the index's %.5f (n/neff Γ %.5f, dneff/dn %.5f)", neff,
+              te0, global(*r.solution, QStringLiteral("emw.TEfraction")), g1, exact, g2, g3, 3.476 / neff * g1, slope);
+        QVERIFY2(std::abs(neff - te0) < (slowBuild() ? 1e-4 : 3e-5), qPrintable(QString::number(neff - te0)));
+        QVERIFY(global(*r.solution, QStringLiteral("emw.TEfraction")) > 0.999);
+        QVERIFY2(std::abs(g1 / exact - 1) < 1e-3, qPrintable(QString::number(g1 / exact)));
+        QVERIFY2(std::abs(g2 / g1 - 1) < 1e-3, qPrintable(QString::number(g2 / g1)));
+        QVERIFY2(std::abs(g3 / (3.476 / neff * g1) - 1) < 1e-3, qPrintable(QString::number(g3 / (3.476 / neff * g1))));
+        if (moved.solution) QVERIFY2(std::abs(slope / g3 - 1) < 3e-3, qPrintable(QString::number(slope / g3)));
     }
 
     void coaxTEM()

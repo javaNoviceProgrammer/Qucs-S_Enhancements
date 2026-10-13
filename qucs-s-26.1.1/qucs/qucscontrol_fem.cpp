@@ -26,6 +26,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUndoStack>
+#include <map>
 
 using namespace qucs_s::control;
 using namespace qucs_s::fem;
@@ -158,15 +159,21 @@ QString formatText()
         "\"exports\": touchstone (\"line\", \"length\", \"zref\"), spice (\"what\": line or matrix), qucspart (an RLCG subcircuit) - "
         "fem_export writes them.\n"
         "Waves: \"modes\" (tag emw) - a waveguide cross-section's modes, a \"mode\" step {\"frequency\": \"1550[nm]\" (Hz or a "
-        "wavelength), \"modes\": 4, \"neff\": the index to search about}; features wave (\"constitutive\": \"n\" - n, kappa - or "
+        "wavelength), \"modes\": 4, \"neff\": the index to search about, \"track\": a selection (those most in it, emw.Gamma), "
+        "\"polarization\": \"te\" or \"tm\" (one alone: emw.TEfraction, of the transverse |E|² the part along x, at 1/2 or "
+        "more is TE - a strip's lateral TE modes kept from outranking a slab's TM0)}; features wave (\"constitutive\": \"n\" - n, kappa - or "
         "\"epsilonr\"; \"anisotropy\": \"diagonal\" with nx, ny, nz; \"thermooptic\" with T, Tref and the material's dndT), pml, "
         "pec (the outside by default), pmc; each mode a solution (\"mode\" picks one) with emw.neff, emw.loss (dB/m), emw.alpha, "
-        "emw.loss_gap (dB/m absorbed across a gap: what a photodiode turns into pairs), and fields emw.Ex... emw.Sz, emw.Qh and "
+        "emw.loss_gap (dB/m absorbed across a gap: what a photodiode turns into pairs), emw.TEfraction, and fields emw.Ex... "
+        "emw.Sz, emw.n, emw.Qh and "
         "emw.Qgap (W/m³ absorbed, the mode at 1 W), emw.alphagap. A wave feature's \"electroabsorption\": true adds a direct "
         "gap's absorption and the Franz-Keldysh effect - its material's Egd, mr, Afk (Germanium, Germanium on silicon: 0.80 and "
         "0.773 eV; override Egd for GeSi) or \"easource\": \"user\" with them; \"Fea\" the field (semi.normE), \"Ebroad\" "
         "a Gaussian broadening (8[meV]) - and emw.dloss_EA, emw.dalphaEA what the field adds: an electroabsorption modulator's "
-        "loss against its bias (stationary semi then a mode step, swept). \"waves\" (tag ewfd) - waves in the plane (\"polarization\": \"ez\" or \"hz\") in a "
+        "loss against its bias (stationary semi then a mode step, swept). A derived value \"confinement\" (\"selection\" the "
+        "core's domains, \"kind\": e2 - |E|²'s share, the usual Γ -, power - Sz's -, or index - (c ε0/2) ∫ n |E|² there over "
+        "∫ Sz, ∂neff/∂n: a modal gain's Γ, a Δn there moving neff by Γ Δn) gives each mode's Γ without cut lines (a TM mode's "
+        "normal E jumps at an index step). \"waves\" (tag ewfd) - waves in the plane (\"polarization\": \"ez\" or \"hz\") in a "
         "frequency step; features wave, pml, pec, pmc, scattering (\"incident\": \"plane\" with E0, angle), port (\"name\", "
         "\"excite\") - S-parameters ewfd.S21, S21_im, S21dB, S21_abs, S21_arg; a touchstone export \"of\": \"ports\" writes them. "
         "A stationary or frequency step's \"adaptive\": true refines the mesh where the error is largest (\"adaptsteps\" times; in frequency, the last one's).\n"
@@ -289,16 +296,34 @@ MultiphysicsDoc* QucsControl::femDocument(const QJsonObject& args, QString* erro
         }
         auto* model = dynamic_cast<MultiphysicsDoc*>(doc);
         if (model == nullptr && doc != nullptr) *error = tr("%1 is not a multiphysics model.").arg(titleOf(doc));
+        if (model != nullptr) a_lastModel = model;
         return model;
     }
     if (a_app->DocumentTab->count() > 0)
-        if (auto* model = qobject_cast<MultiphysicsDoc*>(a_app->DocumentTab->currentWidget())) return model;
+        if (auto* model = qobject_cast<MultiphysicsDoc*>(a_app->DocumentTab->currentWidget())) {
+            a_lastModel = model;
+            return model;
+        }
     QList<MultiphysicsDoc*> open;
     for (QucsDoc* doc : a_app->allDocuments())
         if (auto* m = dynamic_cast<MultiphysicsDoc*>(doc)) open << m;
-    if (open.size() == 1) return open.first();
+    if (open.size() == 1) return a_lastModel = open.first();
+    // A plot group's display in front (<model>_<tag>.dpl beside it): its model.
+    if (a_app->DocumentTab->count() > 0)
+        if (auto* front = dynamic_cast<QucsDoc*>(a_app->DocumentTab->currentWidget()); front && front->getDocName().endsWith(QLatin1String(".dpl")))
+            for (MultiphysicsDoc* m : open) {
+                if (m->getDocName().isEmpty()) continue;
+                const QFileInfo fi(m->getDocName());
+                for (const FNode& g : m->model().results().children)
+                    if (QFileInfo(front->getDocName()) == QFileInfo(fi.absoluteDir().filePath(fi.completeBaseName() + QLatin1Char('_') + g.tag + QStringLiteral(".dpl"))))
+                        return a_lastModel = m;
+            }
+    // Else the one a tool last acted on (solved, plotted...), still open.
+    if (a_lastModel && open.contains(a_lastModel.data())) return a_lastModel.data();
+    QStringList names;
+    for (MultiphysicsDoc* m : open) names << (m->getDocName().isEmpty() ? tr("(not saved)") : QFileInfo(m->getDocName()).fileName());
     *error = open.isEmpty() ? tr("No multiphysics model is open: fem_model opens or makes one.")
-                            : tr("%1 models are open: which? ('path')").arg(open.size());
+                            : tr("%1 models are open: which? ('path': %2)").arg(open.size()).arg(names.join(QLatin1String(", ")));
     return nullptr;
 }
 
@@ -383,6 +408,7 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
     QJsonObject o{{QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
                   {QStringLiteral("tree"), nodeJson(m.root, depth)}};
     if (doc->getDocChanged()) o.insert(QStringLiteral("unsaved"), true);
+    if (!doc->readNotes().isEmpty()) o.insert(QStringLiteral("read with notes"), doc->readNotes());
     const std::shared_ptr<ParameterScope> ps = doc->parameters();
     QJsonArray params;
     for (const Model::Parameter& p : m.parameters()) {
@@ -760,8 +786,10 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
         && !QStringList{QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"), QStringLiteral("minimum")}.contains(
             args.value(QLatin1String("kind")).toString(QStringLiteral("integral"))))
         return errorResult(tr("'kind' is integral, average, maximum or minimum."));
-    // Which solutions: a time, a sweep's point, or all of them.
+    // Which solutions: a time, a sweep's point, or all of them; a mode (a
+    // state), all of them taking it alone.
     const bool all = args.value(QLatin1String("all")).toBool();
+    const int mode = args.contains(QLatin1String("state")) ? args.value(QLatin1String("state")).toInt(0) : args.value(QLatin1String("mode")).toInt(0);
     QString time = args.value(QLatin1String("time")).toVariant().toString();
     const QString frequency = args.value(QLatin1String("frequency")).toVariant().toString();
     struct Found {
@@ -770,10 +798,15 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
         QString note, solutions;
         bool any = false;
     };
+    struct Global {
+        int point;
+        QString name;
+        int index;   // in the values
+    };
     auto evaluateIn = [&](const SolutionSet& in) {
         Found out;
-        const std::vector<Instance> which = instances(in, all, args.value(QLatin1String("point")).toInt(0), time, frequency,
-                                                      args.value(QLatin1String("mode")).toInt(0));
+        std::vector<Global> global;
+        const std::vector<Instance> which = instances(in, all, args.value(QLatin1String("point")).toInt(0), time, frequency, mode);
         if (which.empty()) {
             out.errors << tr("No such solution.");
             return out;
@@ -825,10 +858,41 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
             node.props.insert(QStringLiteral("expression"), expression);
             node.props.insert(QStringLiteral("unit"), unit);
             const DerivedResult r = evaluateDerived(*sol, node);
-            for (const DerivedValue& v : r.values)
+            for (const DerivedValue& v : r.values) {
+                if (over.isEmpty() && at.snapshot >= 0) global.push_back({at.point, v.name, int(out.values.size())});
                 out.values.append(QJsonObject{{QStringLiteral("name"), prefix + v.name}, {QStringLiteral("value"), v.text}, {QStringLiteral("SI"), v.value}});
+            }
             if (!r.error.isEmpty()) out.errors << prefix + r.error;
             if (out.note.isEmpty()) out.note = r.note;
+        }
+        // A global the same at each mode (state) of a point - a states
+        // study's qw.Ee1, a mode step's wavelength - once per point.
+        if (all && which.size() > 1 && mode <= 0) {
+            std::map<std::pair<int, QString>, std::vector<int>> byPoint;
+            for (const Global& g : global) byPoint[{g.point, g.name}].push_back(g.index);
+            std::vector<char> dropped(std::size_t(out.values.size()), 0);
+            bool any = false;
+            for (const auto& [key, indices] : byPoint) {
+                if (indices.size() < 2) continue;
+                const double first = out.values[indices.front()].toObject().value(QStringLiteral("SI")).toDouble();
+                bool same = true;
+                for (int k : indices) same = same && out.values[k].toObject().value(QStringLiteral("SI")).toDouble() == first;
+                if (!same) continue;
+                QJsonObject one = out.values[indices.front()].toObject();
+                const QString label = in.solutions[std::size_t(key.first)]->label;
+                one.insert(QStringLiteral("name"), label.isEmpty() ? key.second : label + QStringLiteral(": ") + key.second);
+                out.values[indices.front()] = one;
+                for (std::size_t k = 1; k < indices.size(); ++k) dropped[std::size_t(indices[k])] = 1;
+                any = true;
+            }
+            if (any) {
+                QJsonArray kept;
+                for (int k = 0; k < out.values.size(); ++k)
+                    if (!dropped[std::size_t(k)]) kept.append(out.values[k]);
+                out.values = kept;
+                out.note = tr("a value the same at each %1 of a point is given once for the point; 'mode' (or 'state') takes one alone")
+                               .arg(in.solutions.front()->quantumStates ? tr("state") : tr("mode"));
+            }
         }
         return out;
     };

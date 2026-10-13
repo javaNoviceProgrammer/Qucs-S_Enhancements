@@ -2026,6 +2026,9 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         o.harmonic = true;
         o.frequency = f;
         o.track = track;
+        o.polarization = node.text(QStringLiteral("polarization")) == QLatin1String("te")   ? 1
+                         : node.text(QStringLiteral("polarization")) == QLatin1String("tm") ? 2
+                                                                                             : 0;
         const int found = modes.solveModes(o, count, guess, error);
         if (found < 0) return false;
         if (found == 0) *warnings << tr("%1: no mode found at %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1)));

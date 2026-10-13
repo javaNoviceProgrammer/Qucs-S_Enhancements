@@ -124,6 +124,9 @@ struct SolveOptions {
     /// A mode analysis's: by domain, those whose modes are kept - the most
     /// of |E|² there (its share emw.Gamma); empty: the nearest the index.
     std::vector<char> track;
+    /// A mode analysis's: 1 TE modes alone (their transverse E mostly along
+    /// x - in the plane of layers stacked along y), 2 TM (along y); 0 any.
+    int polarization = 0;
 };
 
 /// An optical spectrum of quantum states: at photon energies (J), from so
