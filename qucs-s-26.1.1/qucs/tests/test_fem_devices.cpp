@@ -1140,7 +1140,7 @@ private slots:
         // its mobility at that one's temperature (TL = ht.T: (T/300 K)^-2.5)
         // - the two solved in turn. Its current the one-dimensional
         // problem's, -k T'' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, V = J ∫ρ dx -
-        // to 0.5 %; some 13 % below the bar's at 300 K.
+        // to 0.5 %; some 15 % below the bar's at 300 K.
         const double L = 20e-6, A = 1e-6, k = 130, n = 1e23, mu = 0.14, V = 4;
         const double rho0 = 1 / (Q * n * mu);
         // The one-dimensional problem: T by finite differences (Picard's in
