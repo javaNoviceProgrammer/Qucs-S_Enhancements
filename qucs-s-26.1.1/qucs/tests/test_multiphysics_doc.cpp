@@ -2030,6 +2030,36 @@ private slots:
     // those it fits, qw.k in 1/nm, qw.rsp in 1/(s cm³ eV) converted, the
     // Kramers-Kronig warning's window in eV; a global the same at each
     // photon energy given once for its point.
+    // Claude stops a solve that goes on past fem_solve's timeout: fem_stop,
+    // as the tab's Cancel - asked, waited for, what it said returned; with
+    // nothing running, said so. The tab's own Cancel among get_ui's
+    // document controls while it solves (the areas say so), and set_ui
+    // presses it.
+    void claudeStopsASolve()
+    {
+        MultiphysicsDoc* doc = open(copyOf(QStringLiteral("diode_reverse_recovery.qfem")));
+        QVERIFY(doc != nullptr);
+        QJsonObject r = call("fem_stop");
+        QVERIFY2(!failed(r) && !json(r).value("stopped").toBool() && text(r).contains("Nothing is being built or solved"), qPrintable(text(r)));
+        r = call("fem_solve", {{"timeout", 1}});
+        QVERIFY2(failed(r) && text(r).contains("fem_stop stops it"), qPrintable(text(r)));
+        QVERIFY(doc->isBusy());
+        r = call("fem_stop");
+        QVERIFY2(!failed(r) && json(r).value("stopped").toBool() && text(r).contains("Cancelling"), qPrintable(text(r)));
+        QVERIFY(!doc->isBusy());
+        QVERIFY2(doc->lastError().contains("cancelled"), qPrintable(doc->lastError()));
+        // The tab's Cancel, by the UI tools.
+        QVERIFY(text(call("get_ui")).contains("its Cancel"));
+        r = call("fem_solve", {{"timeout", 1}});
+        QVERIFY(failed(r) && doc->isBusy());
+        r = call("get_ui", {{"area", "document"}});
+        QVERIFY2(text(r).contains("\"label\":\"Cancel\""), qPrintable(text(r)));
+        r = call("set_ui", {{"area", "document"}, {"press", "Cancel"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(doc->waitForJob(60000));
+        QVERIFY2(doc->lastError().contains("cancelled"), qPrintable(doc->lastError()));
+    }
+
     void claudesToolsShowTheWellsInEV()
     {
         const QString model = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
