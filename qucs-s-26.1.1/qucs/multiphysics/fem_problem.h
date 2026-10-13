@@ -227,9 +227,14 @@ public:
     int index() const { return a_fi; }
     Field& field() { return a_s.fields()[std::size_t(a_fi)]; }
     const Node* node() const { return a_node; }
+    /// Asked whether to stop (its step's: the model tab's Cancel, Claude's
+    /// fem_stop) - a long setup or solve, a semiconductor's way to its
+    /// contacts' voltages, looks between its steps.
+    void setCancelled(std::function<bool()> asked) { a_cancelled = std::move(asked); }
 
 protected:
     void problem(const QString& what) { a_problems << what; }
+    bool cancelled() const { return a_cancelled && a_cancelled(); }
     /// \a text of property \a key of \a feature compiled in the point
     /// scope, what it reads noted; a field read where \a spatial is not, an
     /// error.
@@ -250,6 +255,7 @@ protected:
     const Node* a_node = nullptr;
     QSet<int> a_reads;
     QStringList a_problems;
+    std::function<bool()> a_cancelled;
 };
 
 /// The problem of field \a field of \a solution (by its type).
