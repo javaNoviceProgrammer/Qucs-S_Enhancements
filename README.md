@@ -2167,7 +2167,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     wells' **absorption**, TE and TM (each transition's step of the 2D
     density of states, or a wire's 1D one, Lorentzian-broadened), or their
     **gain** with carriers injected - their quasi-Fermi levels found from
-    the states, gain where the photon is below their separation.
+    the states, gain where the photon is below their separation. Given
+    each carrier's Fermi level from its band (`semi.Efn - semi.Ec`), the
+    **carriers in the states** found, `qw.n` and `qw.p` (a flat well's
+    the subbands' sum to 1e-6); with a semiconductor's *Schrödinger-Poisson*
+    region and **Self-consistent** on the step, the two solved in turn to
+    rest - a quantum potential in each band, Vt ln(n_states/n), Anderson's
+    mixing: an inversion layer's electrons 2.0 nm from the oxide where
+    classically 1.0 (Fang and Howard's 1.8), none at it, its charge 2 %
+    less; holes likewise.
   - *PDE (Coefficient and General Form)*: an **equation of your own**,
     ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F, for one or several dependent
     variables (named as you like, each with its gradient) - in the
