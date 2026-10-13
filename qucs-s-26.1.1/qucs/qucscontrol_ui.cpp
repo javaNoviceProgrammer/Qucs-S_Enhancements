@@ -162,7 +162,9 @@ QJsonArray QucsControl::uiAreas() const
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("statusbar")}, {QStringLiteral("shown"), a_app->statusBar()->isVisible()}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("tabs")}, {QStringLiteral("note"), tr("the documents' tabs, in each pane")}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("document")},
-                            {QStringLiteral("note"), tr("the tab in front's own bar: a PDF's page field, find and zoom; a layout's, a picture's")}});
+                            {QStringLiteral("note"), tr("the tab in front's own bar: a PDF's page field, find and zoom; a layout's, a picture's; a "
+                                                        "multiphysics model's buttons (Build Geometry, Build Mesh, Compute, Show...) and, "
+                                                        "while it builds or solves, its Cancel")}});
     return list;
 }
 

@@ -2435,7 +2435,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   equation in a ring (ln r/ln 2, its flux 2π/ln 2).
   Claude builds and solves models with `fem_describe`, `fem_model`,
   `fem_edit`, `fem_build`, `fem_solve` (each mode's index, each quantum
-  state's energies), `fem_evaluate`
+  state's energies), `fem_stop` (a solve gone on past `fem_solve`'s
+  timeout stopped, as the model tab's *Cancel* - which `get_ui` and
+  `set_ui` reach too, while it solves), `fem_evaluate`
   (at a time, a frequency, a mode or state, a sweep's point, or all of
   them - a value the same at each mode or state of a point once for the
   point, a mode or state asked for alone at each),
