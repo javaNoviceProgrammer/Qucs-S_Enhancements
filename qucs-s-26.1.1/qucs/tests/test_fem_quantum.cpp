@@ -338,6 +338,95 @@ private slots:
         QVERIFY(compoundProperty(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("BH")).isEmpty());
     }
 
+    void theAlloysAt300K()
+    {
+        // The 300 K fit against what was measured there: InP 1.344 eV,
+        // In0.53Ga0.47As 0.750 (Goetz et al.), In0.52Al0.48As 1.46 (of 1.45
+        // to 1.47), InGaAsP on InP's lattice Nahory et al.'s 1.35 - 0.72 y +
+        // 0.12 y² (its ends InP's and InGaAs's: within 7 meV), the 1.3 µm
+        // AlGaInAs 0.954 - where Vurgaftman's are 9-16 meV off. Varshni's
+        // slope kept; the default still Vurgaftman's.
+        const BandSet fit = BandSet::Measured;
+        auto eg = [](const char* c, double x, double y, double T, BandSet set) { return bandParameters(QString::fromLatin1(c), x, y, T, nullptr, set)->Eg; };
+        struct Known {
+            const char* compound;
+            double x, y, measured, tolerance;
+        };
+        const Known known[] = {{"InP", 0, 0, 1.344, 1e-6},          {"GaAs", 0, 0, 1.424, 1e-6},         {"InAs", 0, 0, 0.354, 1e-6},
+                               {"InGaAs", 0.53, 0, 0.750, 1e-3},    {"InAlAs", 0.52, 0, 1.460, 1e-3},    {"InGaAsP", 0.28, 0.61, 0.9555, 7e-3},
+                               {"AlGaInAs", 0.165, 0.305, 0.954, 1e-3}};
+        for (const Known& k : known) {
+            const double v = eg(k.compound, k.x, k.y, 300, BandSet::Vurgaftman), m = eg(k.compound, k.x, k.y, 300, fit);
+            qInfo("%s (%g, %g): Vurgaftman's %.4f eV, the fit %.4f, measured %.4f", k.compound, k.x, k.y, v, m, k.measured);
+            QVERIFY2(std::abs(m - k.measured) < k.tolerance, k.compound);
+        }
+        QVERIFY(std::abs(eg("InP", 0, 0, 300, BandSet::Vurgaftman) - 1.3529) < 1e-4);
+        QCOMPARE(eg("InP", 0, 0, 300, BandSet::Vurgaftman), bandParameters(QStringLiteral("InP"), 0, 0, 300)->Eg);
+        double worst = 0;
+        for (int i = 1; i < 10; ++i) {
+            const double y = i / 10.0, x = 0.1894 * y / (0.4184 - 0.013 * y);
+            worst = std::max(worst, std::abs(eg("InGaAsP", x, y, 300, fit) - (1.35 - 0.72 * y + 0.12 * y * y)));
+        }
+        qInfo("InGaAsP on InP's lattice: within %.4f eV of Nahory's", worst);
+        QVERIFY(worst < 7.5e-3);
+        // At 77 K: Varshni's change from 300 K, either set.
+        for (const char* c : {"InP", "GaAs"})
+            QVERIFY(std::abs((eg(c, 0, 0, 77, fit) - eg(c, 0, 0, 300, fit)) - (eg(c, 0, 0, 77, BandSet::Vurgaftman) - eg(c, 0, 0, 300, BandSet::Vurgaftman))) < 1e-12);
+        // Only the gaps: the masses, offsets and lattice the same.
+        const BandParameters a = *bandParameters(QStringLiteral("InGaAs"), 0.53, 0, 300), b = *bandParameters(QStringLiteral("InGaAs"), 0.53, 0, 300, nullptr, fit);
+        QVERIFY(a.me == b.me && a.VBO == b.VBO && a.a0 == b.a0 && a.gamma1 == b.gamma1);
+        QCOMPARE(bandSetOf(QStringLiteral(" Measured ")), BandSet::Measured);
+        QCOMPARE(bandSetOf(QString()), BandSet::Vurgaftman);
+        QVERIFY(compoundProperty(QStringLiteral("InP"), 0, 0, QStringLiteral("Eg"), fit).startsWith(QLatin1String("1.344")));
+    }
+
+    void oneMaterialOneGap()
+    {
+        // One material, one gap in every physics: the semiconductor's and the
+        // quantum wells' band edges 20 nm into a slab of it, at 300 K -
+        // - the library's Indium phosphide: its measured 1.344 eV in both
+        //   (its compound's 1.353 had been the wells');
+        // - In0.53Ga0.47As with the 300 K fit: 0.750 in both;
+        // - a quaternary given by its gap's wavelength, 1.3 µm: hc/λg;
+        // - a gap given, the wells at 77 K: moved as the compound's moves.
+        struct Case {
+            const char* material;
+            const char* T;
+            double expected;   // eV
+        };
+        const double lambdaG = 6.62607015e-34 * 299792458.0 / 1.3e-6 / Q;
+        const double inP77 = 1.344 + bandParameters(QStringLiteral("InP"), 0, 0, 77)->Eg - bandParameters(QStringLiteral("InP"), 0, 0, 300)->Eg;
+        const Case cases[] = {{R"("material": "Indium phosphide")", "300[K]", 1.344},
+                              {R"("material": "m", "compound": "InGaAs", "x": "0.53", "bands": "measured")", "300[K]",
+                               bandParameters(QStringLiteral("InGaAs"), 0.53, 0, 300, nullptr, BandSet::Measured)->Eg},
+                              {R"("material": "q", "compound": "InGaAsP", "x": "0.28", "y": "0.61", "lambdag": "1.3[um]")", "300[K]", lambdaG},
+                              {R"("material": "Indium phosphide")", "77[K]", inP77}};
+        for (const Case& c : cases) {
+            const QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "label": "slab", "size": ["40", "40"]}],
+                "materials": [{%1, "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                              {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+                              {"type": "ohmic", "name": "l", "V0": "0[V]", "selection": {"of": ["slab"], "side": "left"}}]},
+                            {"type": "quantum", "tag": "qw", "at": "20[nm]", "T": "%2"}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "5"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary", "physics": ["semi"]},
+                                                      {"type": "states", "physics": ["qw"], "states": 1}]}]})json")
+                                         .arg(QLatin1String(c.material), QLatin1String(c.T))
+                                         .toUtf8();
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.solution;
+            const QPointF middle(20, 20);
+            const double semi = (at(s, QStringLiteral("semi.Ec"), middle) - at(s, QStringLiteral("semi.Ev"), middle)) / Q;
+            const double wells = (at(s, QStringLiteral("qw.Ec"), middle) - at(s, QStringLiteral("qw.Ev"), middle)) / Q;
+            qInfo("%s at %s: the semiconductor's gap %.6f eV, the wells' %.6f (%.6f)", c.material, c.T, semi, wells, c.expected);
+            QVERIFY2(std::abs(wells - c.expected) < 1e-6, c.material);
+            if (QLatin1String(c.T) == QLatin1String("300[K]")) QVERIFY2(std::abs(semi - c.expected) < 1e-6, c.material);
+        }
+    }
+
     void lineAgainstPlane()
     {
         // The GaAs well across a strip 20 nm wide, its sides free (zero
@@ -413,6 +502,149 @@ private slots:
             const double a = global(s, QStringLiteral("qw.alphaTE")), b = global(*few.solution, QStringLiteral("qw.alphaTE"));
             QVERIFY2(std::abs(b / a - 1) < 2e-3, qPrintable(QString::number(b / a)));
         }
+    }
+
+    void lineShapes()
+    {
+        // The infinite well's spectrum (absorption()'s) under each line
+        // shape, γ its half width at half maximum: each step broadened by the
+        // shape's cumulative - a Lorentzian's 1/2 + atan(x/γ)/π, a Gaussian's
+        // erfc(-x/σ√2)/2 (σ = γ/√(2 ln 2)), a sech's (2/π) atan(e^(x/w)) (w =
+        // γ/acosh 2) - all transitions summed. At the step's edge plus γ:
+        // 0.75, 0.8805, 0.8333 of its height.
+        const double gamma = 0.005 * Q, L = 10e-9, eps0 = 8.8541878188e-12, c0 = 299792458.0, Ep = 25 * Q;
+        const double sigma = gamma / std::sqrt(2 * std::log(2.0)), w = gamma / std::acosh(2.0);
+        const char* shapes[] = {"lorentzian", "gaussian", "sech"};
+        for (int shape = 0; shape < 3; ++shape) {
+            auto cdf = [&](double x) {
+                if (shape == 1) return 0.5 * std::erfc(-x / (sigma * std::sqrt(2.0)));
+                if (shape == 2) return 2 / M_PI * std::atan(std::exp(x / w));
+                return 0.5 + std::atan(x / gamma) / M_PI;
+            };
+            const Run r = run(modelOf(box(QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"),
+                                          QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.5[eV], 2.1[eV], 61)", "states": 3,
+                                                            "linewidth": "5[meV]", "lineshape": "%1"})x")
+                                              .arg(QLatin1String(shapes[shape])))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            Solution& s = *r.solution;
+            double worst = 0;
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                const double E = global(s, QStringLiteral("qw.Ephoton"));
+                double te = 0;
+                for (int n = 1; n <= 3; ++n) {
+                    const double ee = HB2M * n * n * M_PI * M_PI / (0.067 * 100);
+                    for (int c = 0; c < 2; ++c) {
+                        const double mz = c == 0 ? 0.35 : 0.09, mp = c == 0 ? 0.11 : 0.21;
+                        const double eh = -1.5 - HB2M * n * n * M_PI * M_PI / (mz * 100);
+                        const double Et = (ee - eh) * Q, mr = 1 / (1 / 0.067 + 1 / mp) * M0;
+                        te += M_PI * Q * Q * Hbar / (3.6 * c0 * eps0 * M0 * M0 * E) * (M0 * Ep / 6) * mr / (M_PI * Hbar * Hbar * L) * cdf(E - Et)
+                              * (c == 0 ? 1.5 : 0.5);
+                    }
+                }
+                if (te > 1e-3 * 1e4) worst = std::max(worst, std::abs(global(s, QStringLiteral("qw.alphaTE")) / te - 1));
+            }
+            qInfo("%s: the spectrum its steps' to %.2g; at the edge plus γ %.4f of the step", shapes[shape], worst, cdf(gamma));
+            QVERIFY2(worst < 1e-4, shapes[shape]);
+        }
+    }
+
+    void excitons()
+    {
+        // The infinite well (10 nm: me 0.067, the heavy hole's in-plane mass
+        // 0.11, εr 12.9), its e1-hh1 exciton, against the variational one
+        // found another way: sin² envelopes, their separation's distribution
+        // P(s), G(s, λ) = (4/λ²) ∫ ρ e^(-2ρ/λ)/√(ρ² + s²) dρ = (4s/λ²)
+        // ((π/2)(H1(2s/λ) - Y1(2s/λ)) - 1) in Struve's and Bessel's functions,
+        // the least of ħ²/(2µλ²) - q²/(4πε) ∫ P G ds (SciPy, its integrals to
+        // 1e-10): bound by 8.31602 meV, 12.60235 nm across. And:
+        // - with a Gaussian line, the peak below the edge K (2/πλ²) its
+        //   density - the 1s line's strength |F(0)|²;
+        // - above the edge the continuum raised by the 2D Sommerfeld factor
+        //   2/(1 + e^(-2π √(R/ε))), R = Eb/4;
+        // - pulled by 100 kV/cm (the quantum-confined Stark effect) less
+        //   bound, its line lower;
+        // - with carriers none (screened).
+        const double L = 10e-9, epsr = 12.9, mr = 1 / (1 / 0.067 + 1 / 0.11) * M0, eps0 = 8.8541878188e-12;
+        const double EbRef = 8.31602e-3 * Q, lambdaRef = 12.60235e-9;
+        const double ry = 13.605693 * (mr / M0) / (epsr * epsr);   // eV
+        // The edge: e1 + hh1 above the gap.
+        const double Et = (1.5 + HB2M * M_PI * M_PI / (0.067 * 100) + HB2M * M_PI * M_PI / (0.35 * 100)) * Q;
+        const double Ex = Et - EbRef;
+        auto spectrum = [&](const QString& energies, const QString& physics, const QString& more) {
+            return run(modelOf(box(QStringLiteral("20"), QStringLiteral("10"), physics, QStringLiteral("0[eV]"),
+                                   QString::fromUtf8(R"x({"type": "spectrum", "energies": "%1", "states": 2, "linewidth": "0.5[meV]",
+                                                     "lineshape": "gaussian", "excitons": true, "epsr": "12.9" %2})x")
+                                       .arg(energies, more))));
+        };
+        const QString around = QStringLiteral("linspace(%1[eV], %2[eV], 13)").arg(Ex / Q - 1.2e-3, 0, 'f', 7).arg(Ex / Q + 1.2e-3, 0, 'f', 7);
+        const Run r = spectrum(around, QString(), QString());
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        s.select(0);
+        const double Eb = global(s, QStringLiteral("qw.Eb")), radius = global(s, QStringLiteral("qw.aX")), ex = global(s, QStringLiteral("qw.Ex"));
+        qInfo("exciton: bound by %.4f meV (%.4f), %.4f nm across (%.4f); %.2f of the 3D Rydberg %.3f meV (2D's 4)", Eb / Q * 1e3, EbRef / Q * 1e3,
+              radius * 1e9, lambdaRef * 1e9, Eb / Q / ry, ry * 1e3);
+        QVERIFY2(std::abs(Eb / EbRef - 1) < 1e-4, qPrintable(QString::number(Eb / EbRef)));
+        QVERIFY2(std::abs(radius / lambdaRef - 1) < 1e-4, qPrintable(QString::number(radius / lambdaRef)));
+        QVERIFY(std::abs(ex - (Et - Eb)) < 1e-6 * Q);
+        QVERIFY(Eb / Q > ry && Eb / Q < 4 * ry);
+        // The 1s line: K (2/πλ²) its Gaussian's density, TE 3/2 of |Mb|².
+        const double c0 = 299792458.0, Ep = 25 * Q, sigma = 0.5e-3 * Q / std::sqrt(2 * std::log(2.0));
+        double worst = 0;
+        for (int k = 0; k < s.snapshotCount(); ++k) {
+            s.select(k);
+            const double E = global(s, QStringLiteral("qw.Ephoton"));
+            const double K = M_PI * Q * Q * Hbar / (3.6 * c0 * eps0 * M0 * M0 * E) * (M0 * Ep / 6) / L;
+            const double expected = K * 1.5 * 2 / (M_PI * radius * radius) * std::exp(-0.5 * std::pow((E - ex) / sigma, 2)) / (sigma * std::sqrt(2 * M_PI));
+            worst = std::max(worst, std::abs(global(s, QStringLiteral("qw.alphaTE")) - expected) / (K * 1.5 * 2 / (M_PI * radius * radius) / (sigma * std::sqrt(2 * M_PI))));
+        }
+        qInfo("the 1s line: within %.2g of its peak", worst);
+        QVERIFY2(worst < 1e-3, qPrintable(QString::number(worst)));
+        // Above the edge: the continuum the factor S(ε) times the step's.
+        const QString above = QStringLiteral("%1[eV], %2[eV]").arg((Et / Q) + 0.004, 0, 'f', 7).arg((Et / Q) + 0.008, 0, 'f', 7);
+        const Run with = spectrum(above, QString(), QString());
+        QString none = QString::fromUtf8(R"x({"type": "spectrum", "energies": "%1", "states": 2, "linewidth": "0.5[meV]", "lineshape": "gaussian"})x").arg(above);
+        const Run without = run(modelOf(box(QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"), none)));
+        QVERIFY2(with.error.isEmpty() && without.error.isEmpty(), qPrintable(with.error + without.error));
+        for (int k = 0; k < 2; ++k) {
+            with.solution->select(k);
+            without.solution->select(k);
+            const double eps = global(*with.solution, QStringLiteral("qw.Ephoton")) - Et;
+            const double S = 2 / (1 + std::exp(-2 * M_PI * std::sqrt(Eb / 4 / eps)));
+            const double ratio = global(*with.solution, QStringLiteral("qw.alphaTE")) / global(*without.solution, QStringLiteral("qw.alphaTE"));
+            qInfo("%.1f meV above the edge: %.5f times without excitons (S %.5f)", eps / Q * 1e3, ratio, S);
+            QVERIFY2(std::abs(ratio / S - 1) < 2e-3, qPrintable(QString::number(ratio / S)));
+        }
+        // The light holes' too: TM below the e1-lh1 edge, a line above the
+        // step's height where without excitons there is next to nothing.
+        const double EtLh = (1.5 + HB2M * M_PI * M_PI / (0.067 * 100) + HB2M * M_PI * M_PI / (0.09 * 100)) * Q;
+        const QString below = QStringLiteral("linspace(%1[eV], %2[eV], 57)").arg(EtLh / Q - 0.015, 0, 'f', 7).arg(EtLh / Q - 0.001, 0, 'f', 7);
+        const Run lh = spectrum(below, QString(), QString());
+        QVERIFY2(lh.error.isEmpty(), qPrintable(lh.error));
+        double peakTM = 0;
+        for (int k = 0; k < lh.solution->snapshotCount(); ++k) {
+            lh.solution->select(k);
+            peakTM = std::max(peakTM, global(*lh.solution, QStringLiteral("qw.alphaTM")));
+        }
+        const double mrLh = 1 / (1 / 0.067 + 1 / 0.21) * M0;
+        const double stepTM = M_PI * Q * Q * Hbar / (3.6 * c0 * eps0 * M0 * M0 * EtLh) * (M0 * Ep / 6) / L * 2 * mrLh / (M_PI * Hbar * Hbar);
+        qInfo("e1-lh1: TM below its edge at most %.4g /cm, its step %.4g", peakTM / 100, stepTM / 100);
+        QVERIFY(peakTM > 2 * stepTM);
+        // Pulled apart by a field: less bound, its line lower (the edge
+        // lower still).
+        const Run pulled = spectrum(around, QStringLiteral(R"(, "F": "1e7[V/m]")"), QString());
+        QVERIFY2(pulled.error.isEmpty(), qPrintable(pulled.error));
+        pulled.solution->select(0);
+        const double EbF = global(*pulled.solution, QStringLiteral("qw.Eb")), exF = global(*pulled.solution, QStringLiteral("qw.Ex"));
+        qInfo("at 100 kV/cm: bound by %.4f meV, its line %.3f meV lower", EbF / Q * 1e3, (ex - exF) / Q * 1e3);
+        QVERIFY(EbF < Eb && exF < ex);
+        // With carriers: screened, left out.
+        const Run screened = spectrum(around, QString(), QStringLiteral(R"(, "density": "1e17[1/cm^3]")"));
+        QVERIFY2(screened.error.isEmpty(), qPrintable(screened.error));
+        screened.solution->select(0);
+        QVERIFY(!screened.solution->global(QStringLiteral("qw.Eb")));
+        QVERIFY(screened.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("screen")));
     }
 
     void gain()
