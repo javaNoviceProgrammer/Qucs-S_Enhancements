@@ -681,6 +681,30 @@ QJsonObject QucsControl::femBuild(const QJsonObject& args)
                                                                           {QStringLiteral("tenths"), histogram}}}});
 }
 
+QJsonObject QucsControl::femStop(const QJsonObject& args)
+{
+    // As the model tab's Cancel: the job asked to stop, waited for - a step
+    // stops at its next check (a time step, a Newton step, a sweep's point).
+    QString error;
+    MultiphysicsDoc* doc = femDocument(args, &error);
+    if (doc == nullptr) return errorResult(error);
+    if (!doc->isBusy())
+        return jsonResult(QJsonObject{{QStringLiteral("stopped"), false},
+                                      {QStringLiteral("note"), tr("Nothing is being built or solved in %1.").arg(titleOf(doc))}});
+    const qsizetype before = doc->messages().size();
+    doc->cancelJob();
+    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(30), 1, 600);
+    if (!doc->waitForJob(timeout * 1000))
+        return errorResult(tr("Asked to stop, still at work after %1 s: a step stops at its next check (fem_stop again waits more).").arg(timeout));
+    QJsonObject o{{QStringLiteral("stopped"), true}};
+    // What it said as it stopped (the solutions it had kept stay).
+    QJsonArray said;
+    const QStringList messages = doc->messages();
+    for (qsizetype i = std::max<qsizetype>(0, std::min(before, messages.size()) - 1); i < messages.size(); ++i) said.append(messages.at(i));
+    if (!said.isEmpty()) o.insert(QStringLiteral("log"), said);
+    return jsonResult(o);
+}
+
 QJsonObject QucsControl::femSolve(const QJsonObject& args)
 {
     QString error;
@@ -691,7 +715,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     doc->compute(study);
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(600), 1, 7200);
     if (!doc->waitForJob(timeout * 1000))
-        return errorResult(tr("Still solving after %1 s: it goes on (fem_describe says when it is solved).").arg(timeout));
+        return errorResult(tr("Still solving after %1 s: it goes on (fem_describe says when it is solved; fem_stop stops it).").arg(timeout));
     if (!doc->lastError().isEmpty()) return errorResult(doc->lastError());
     const std::shared_ptr<SolutionSet> set = doc->solutions(study);
     if (!set || set->solutions.empty()) return errorResult(tr("It was not solved."));

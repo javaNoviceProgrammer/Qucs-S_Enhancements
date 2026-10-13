@@ -484,6 +484,7 @@ private:
     QJsonObject femEdit(const QJsonObject& args);
     QJsonObject femBuild(const QJsonObject& args);
     QJsonObject femSolve(const QJsonObject& args);
+    QJsonObject femStop(const QJsonObject& args);
     QJsonObject femEvaluate(const QJsonObject& args);
     QJsonObject femPlot(const QJsonObject& args);
     QJsonObject femExport(const QJsonObject& args);
