@@ -887,6 +887,9 @@ About 3,000 lines and 900 of tests.
   below the threshold.
 
 **Where they differ from what such tools have:**
+- **Doping is analytic or an expression:** no process simulation. (Since 2026-10-12 an implant
+  profile, annealed exactly while the diffusivity is the intrinsic one; a general diffusion in
+  time is a PDE physics' step, its u read as the doping.)
 - **Boltzmann's statistics only:** no Fermi-Dirac, no incomplete ionization, no band-gap
   narrowing. (Since 2026-10-12 all three are there, each a choice on the Semiconductor
   Material Model: Fermi-Dirac's ℱ1/2 through each carrier's band offset, Vt ln γ, as solved

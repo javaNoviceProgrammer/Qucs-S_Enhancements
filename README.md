@@ -2072,7 +2072,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     densities of states) - germanium on silicon's conduction band 0.05 eV
     and valence band 0.52 eV apart, a p-Ge n-Si diode's current the short
     diode's to 0.3 %. **Doping** uniform, a box with Gaussian
-    tails or an expression; mobility by doping (Caughey and Thomas),
+    tails, an **implant** (its dose about its range below the surface, a
+    mask's window's edges spread, **annealed**: σ² = ΔRp² + 2 D t, D = D0
+    e^(-Ea/kT), the dose kept - boron at 1000 °C for 30 minutes the PDE
+    physics' diffusion to 1e-4) or an expression (another physics' field:
+    a diffusion solved in time read as the doping); mobility by doping (Caughey and Thomas),
     **at an insulator's surface** (Lombardi's acoustic phonons and
     roughness by the field across the nearest interface: a MOSFET's
     channel 446 cm²/Vs at 0.33 MV/cm, 407 at 0.58 - the universal curve's)
