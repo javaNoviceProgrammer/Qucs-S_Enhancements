@@ -867,11 +867,12 @@ QList<NodeKind> makeKinds()
                      "material model's ζ); the carriers' statistics at T. Empty: none")) },
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
-          QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/quantum"),
+          QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/btbt"),
+          QStringLiteral("semiconductor/quantum"),
           QStringLiteral("semiconductor/insulation"),
           QStringLiteral("semiconductor/ohmic"),
           QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge"),
-          QStringLiteral("semiconductor/traps")},
+          QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/fn")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
             "p (Boltzmann's statistics), their currents Scharfetter and Gummel's along each edge of linear triangles - across "
@@ -1036,6 +1037,23 @@ QList<NodeKind> makeKinds()
                 "semi.In and semi.Ip (electrons', holes': breakdown where they reach 1) and their multiplications semi.Mn, "
                 "semi.Mp, the field semi.Emax: a breakdown voltage found by sweeping toward it, its currents in or not.")});
     }
+    add({QStringLiteral("semiconductor/btbt"), tr("Band-to-Band Tunnelling"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none),
+          choice(QStringLiteral("kind"), tr("Sign and size"), {QStringLiteral("hurkx"), QStringLiteral("generation")},
+                 {tr("Hurkx's (n p - ni²)/((n + ni)(p + ni))"), tr("Generation alone")}, QStringLiteral("hurkx"),
+                 tr("Hurkx's: nought at equilibrium, recombination forward - but small wherever either carrier is above ni, a "
+                    "junction's carriers spilling into its field (an i layer's edges some 10 nm at 0.6 MV/cm). Generation alone: "
+                    "A E^γ e^(-B/E) wherever the field is, a reversed tunnel junction's - not at equilibrium nought")),
+          expr(QStringLiteral("A"), tr("A (cm^-1/2 V^-5/2 s^-1 for γ 2.5)"), QString(), QStringLiteral("4e14"),
+               tr("In 1/(cm³ s) per (V/cm)^γ: silicon's 4e14 (Hurkx and Klaassen)")),
+          expr(QStringLiteral("B"), tr("B"), QStringLiteral("V/m"), QStringLiteral("1.9e7[V/cm]")),
+          expr(QStringLiteral("gamma"), tr("Exponent γ"), QString(), QStringLiteral("2.5"), tr("2.5 phonon-assisted (an indirect gap), 2 direct"))},
+         {}, {}, false, false, QStringLiteral("bbt"),
+         tr("Electrons tunnelling from the valence band to the conduction band where the field is strong - a Zener diode's "
+            "breakdown, a MOSFET's gate-induced drain leakage, a tunnel FET: Hurkx's R = A E^γ e^(-B/E) (n p - ni²)/((n + ni)(p "
+            "+ ni)), generation where the carriers are fewer than at equilibrium, each triangle's field. Local: the field at a "
+            "point stands for the tunnelling path's.")});
     add({QStringLiteral("semiconductor/quantum"), tr("Schrödinger-Poisson"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), flag(QStringLiteral("electrons"), tr("Electrons"), true), flag(QStringLiteral("holes"), tr("Holes"), false),
@@ -1104,6 +1122,16 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), spatial(QStringLiteral("rhos"), tr("Surface charge density"), QStringLiteral("C/m^2"), QStringLiteral("0"),
                                        tr("Fixed charge at an interface: an oxide's, q times 1e10 to 1e11 per cm²"))},
          {}, {}, false, false, QStringLiteral("scd"), tr("Charge fixed on a boundary.")});
+    add({QStringLiteral("semiconductor/fn"), tr("Fowler-Nordheim Tunnelling"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none),
+          expr(QStringLiteral("phiB"), tr("Barrier φB"), QStringLiteral("eV"), QStringLiteral("3.1[eV]"), tr("Silicon's conduction band to silicon dioxide's")),
+          expr(QStringLiteral("mox"), tr("Mass in the insulator (m0)"), QString(), QStringLiteral("0.42"))},
+         {}, {}, false, false, QStringLiteral("fn"),
+         tr("Electrons tunnelling through an insulator in a strong field - a gate oxide's leakage, a flash cell's writing: J = A "
+            "E² e^(-B/E), A = q³ m0/(8π h φB m_ox), B = 8π √(2 m_ox) φB^(3/2)/(3 q h) (Lenzlinger and Snow; SiO₂ on silicon about "
+            "1.2e-6 A/V² and 240 MV/cm), E the insulator's field across the boundary: semi.Ifn, its current after the solve - not "
+            "taken from the carriers (a leakage far below the device's own currents).")});
     {
         const QString level = QStringLiteral("distribution=level"), spread = QStringLiteral("distribution=uniform");
         add({QStringLiteral("semiconductor/traps"), tr("Interface Traps"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),

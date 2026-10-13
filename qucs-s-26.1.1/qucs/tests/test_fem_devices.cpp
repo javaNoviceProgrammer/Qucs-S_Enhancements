@@ -6,7 +6,8 @@
  *                        heavy doping (Fermi-Dirac, band gap narrowing,
  *                        dopants ionized in part), interface traps,
  *                        Schrödinger-Poisson, the carriers' heat and
- *                        self-heating
+ *                        self-heating, tunnelling (band to band,
+ *                        Fowler-Nordheim)
  *
  * This file is part of Qucs-S.
  *
@@ -1244,6 +1245,125 @@ private slots:
         const double I = std::abs(global(*r.solution, QStringLiteral("semi.I_2")));
         qInfo("one way: %.6g A (∫ρ's %.6g; at 300 K %.6g)", I, expected, V / (rho0 * L) * A);
         QVERIFY2(std::abs(I / expected - 1) < 5e-3, qPrintable(QStringLiteral("%1 %2").arg(I).arg(expected)));
+    }
+
+    void bandToBandTunnelling()
+    {
+        // A p⁺-i-n⁺ diode (1e20 cm⁻³, 50 nm of 1e15, 1e20; meshed at 2 nm, a
+        // sanitized build's 4), reversed by 2 and
+        // 2.3 V, its pairs made by band-to-band tunnelling alone (silicon's:
+        // A 4e14 cm^-1/2 V^-5/2 s^-1, B 1.9e7 V/cm, γ 2.5). Generation alone:
+        // - its current q Σ A E^γ e^(-B/E) over its triangles, each at its
+        //   field (0.63 MV/cm through its i layer, a little more at its edges:
+        //   24 % more current than the i layer's middle's alone), to 1 %;
+        // Hurkx's:
+        // - its current q ∫ G, G = -semi.R, to 1 %; 0.64 of generation
+        //   alone's (the junctions' carriers spilling some 10 nm into the
+        //   field: there (n p - ni²)/((n + ni)(p + ni)) about -ni/p);
+        // - none at 0 V; without the feature only the diode's own (its
+        //   contacts' minority carriers diffusing, 7e-17 A), under a
+        //   hundredth of it.
+        const double A = 4e14 * 1e6 * std::pow(1e-2, 2.5), B = 1.9e9, gamma = 2.5, W = 50e-9;
+        auto G = [&](double E) { return A * std::pow(E, gamma) * std::exp(-B / E); };
+        auto pin = [&](const QString& kind) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "0[V]"}],
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "name": "p", "position": ["-100", "0"], "size": ["100", "20"]},
+                             {"type": "rectangle", "name": "i", "size": ["50", "20"]},
+                             {"type": "rectangle", "name": "n", "position": ["50", "0"], "size": ["100", "20"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e20[1/cm^3]", "selection": {"only": ["p"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"only": ["i"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e20[1/cm^3]", "selection": {"only": ["n"]}} %1,
+                  {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%2"}}],
+              "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "0, -2, -2.3", "V"]]}, {"type": "stationary"}]}]})json")
+                .arg(kind.isEmpty() ? QString() : QStringLiteral(R"(, {"type": "btbt", "kind": "%1", "selection": {"all": true}})").arg(kind))
+                .arg(slowBuild() ? QStringLiteral("4") : QStringLiteral("2"))
+                .toUtf8();
+        };
+        QStringList said;
+        double alone[3] = {0, 0, 0};
+        for (const QString& kind : {QStringLiteral("generation"), QStringLiteral("hurkx")}) {
+            const bool hurkx = kind == QLatin1String("hurkx");
+            const Run r = run(modelOf(pin(kind)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            QCOMPARE(int(r.study.solutions.size()), 3);
+            double I[3], Emid[3];
+            for (int k = 0; k < 3; ++k) {
+                Solution& s = *r.study.solutions[std::size_t(k)];
+                I[k] = global(s, QStringLiteral("semi.I_k"));
+                Emid[k] = at1(s, QStringLiteral("semi.normE"), 25, 10);
+                if (k == 0) continue;
+                Node gen;
+                gen.type = QStringLiteral("integral");
+                gen.props.insert(QStringLiteral("expression"), QStringLiteral("-1.602176634e-19[C]*semi.R*1[m]"));
+                gen.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+                const DerivedResult d = evaluateDerived(s, gen);
+                QVERIFY2(!d.values.isEmpty(), qPrintable(d.error));
+                // (Its own G over the triangles, each at its field - the
+                // potential's linear in each: the field its own throughout.)
+                double along = 0;
+                const Locator locator(s.mesh());
+                for (const auto& tri : s.mesh().triangles) {
+                    if (hurkx) break;
+                    const QPointF a = s.mesh().nodes[std::size_t(tri[0])], b = s.mesh().nodes[std::size_t(tri[1])], c = s.mesh().nodes[std::size_t(tri[2])];
+                    const double area = std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2 * 1e-18;
+                    const std::optional<double> E = evaluateAt(s, locator, QStringLiteral("semi.normE"), (a + b + c) / 3.0);
+                    if (E) along += G(*E) * area;
+                }
+                const double qG = d.values.front().value, own = hurkx ? NAN : Q * along, middle = Q * G(Emid[k]) * W * 20e-9;
+                said << QStringLiteral("%1 at %2 V: %3 A (q ∫ G %4; its own G by triangle %5; the i layer's middle's, %6 MV/cm, %7)")
+                            .arg(kind)
+                            .arg(k == 1 ? -2 : -2.3)
+                            .arg(I[k], 0, 'g', 5)
+                            .arg(qG, 0, 'g', 5)
+                            .arg(own, 0, 'g', 5)
+                            .arg(Emid[k] / 1e8, 0, 'f', 3)
+                            .arg(middle, 0, 'g', 5);
+                QVERIFY2(I[k] > 0 && std::abs(I[k] / qG - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+                if (!hurkx) {
+                    QVERIFY2(std::abs(I[k] / own - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+                    alone[k] = I[k];
+                } else
+                    QVERIFY2(I[k] < 0.8 * alone[k] && I[k] > 0.5 * alone[k], qPrintable(said.join(QLatin1String("; "))));
+            }
+            if (hurkx) QCOMPARE(I[0], 0.0);
+        }
+        qInfo("band-to-band tunnelling: %s", qPrintable(said.join(QLatin1String("; "))));
+        const Run off = run(modelOf(pin(QString())));
+        QVERIFY2(off.error.isEmpty(), qPrintable(off.error));
+        const double without = std::abs(global(*off.study.solutions.back(), QStringLiteral("semi.I_k")));
+        qInfo("without tunnelling at -2.3 V: %.4g A", without);
+        QVERIFY(without < 0.01 * alone[2]);
+    }
+
+    void fowlerNordheim()
+    {
+        // The MOS capacitor (10 nm of oxide) at 10 V, its oxide's field some
+        // 10 MV/cm: the electrons tunnelling through it, semi.Ifn, J W at
+        // that field, J = A E² e^(-B/E), A = q³ m0/(8π h φB m_ox) and B = 8π
+        // √(2 m_ox) φB^(3/2)/(3 q h) (φB 3.1 eV, m_ox 0.42: 1.18e-6 A/V²,
+        // 242 MV/cm), to 1 % (the field read at one point; J (2 + B/E)
+        // times as sensitive) - a few mA/cm² at 10 MV/cm, as measured gate
+        // oxides have it.
+        constexpr double H = 6.62607015e-34, M0 = 9.1093837015e-31;
+        const double phiB = 3.1 * Q, mox = 0.42;
+        const double A = Q * Q * Q / (8 * M_PI * H * phiB * mox), B = 8 * M_PI * std::sqrt(2 * mox * M0) * std::pow(phiB, 1.5) / (3 * Q * H);
+        QByteArray json = mosCapacitor(QStringLiteral(R"(, {"type": "fn", "selection": {"of": ["surface"], "side": "top"}})"),
+                                       QStringLiteral(R"({"type": "stationary"})"));
+        json.replace(R"("expression": "0[V]")", R"("expression": "10[V]")");
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const double Eox = at1(*r.solution, QStringLiteral("semi.normE"), 0.05, 0.005);
+        const double J = A * Eox * Eox * std::exp(-B / Eox), I = global(*r.solution, QStringLiteral("semi.Ifn"));
+        qInfo("Fowler-Nordheim: A %.4g A/V², B %.4g MV/cm; the oxide at %.3f MV/cm, %.4g A/cm²: semi.Ifn %.6g A (J W %.6g)", A, B / 1e8, Eox / 1e8,
+              J * 1e-4, I, J * 0.1e-6);
+        QVERIFY(std::abs(A / 1.18e-6 - 1) < 0.01 && std::abs(B / 2.42e10 - 1) < 0.01);
+        QVERIFY2(Eox > 0.8e9 && std::abs(I / (J * 0.1e-6) - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(I).arg(J * 0.1e-6)));
     }
 
     void quantumCarriers()
