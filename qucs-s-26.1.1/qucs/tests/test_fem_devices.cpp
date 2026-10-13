@@ -29,6 +29,7 @@
 #include <QScopeGuard>
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -539,6 +540,124 @@ private slots:
             if (f > 0.9) QVERIFY2(said.isEmpty(), qPrintable(said));
             else QVERIFY2(said.contains(QLatin1String(": 1 of ")), qPrintable(said));
         }
+    }
+
+    void aHeterojunctionsNodesWhateverTheirOrder()
+    {
+        // A node between two semiconductors takes the narrower gap's medium,
+        // between equal gaps the lower domain's, whatever the order of its
+        // triangles: a silicon-germanium diode's current - its germanium in
+        // two domains, 1 ns lifetimes in its first 0.1 µm, germanium's own
+        // beyond - the same on its mesh with its triangles reversed, and by
+        // domain one way and the other (to 1e-9). The first triangle's
+        // medium, as it was, made the interface's nodes now silicon, now
+        // germanium as the mesh had them - a photodiode's step on CI's Linux
+        // mesh with a slow part of 4.5 %.
+        const QString json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "Va", "expression": "0.3[V]"}],
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "label": "si", "size": ["1", "0.2"]},
+                         {"type": "rectangle", "label": "ge", "position": ["1", "0"], "size": ["0.1", "0.2"]},
+                         {"type": "rectangle", "label": "ge2", "position": ["1.1", "0"], "size": ["0.9", "0.2"]}],
+            "materials": [{"material": "Silicon", "selection": {"only": ["si"]}}, {"material": "Germanium", "selection": {"only": ["ge", "ge2"]}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["si"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["ge", "ge2"]}},
+              {"type": "srh", "source": "user", "taun": "1[ns]", "taup": "1[ns]", "selection": {"only": ["ge"]}},
+              {"type": "srh", "selection": {"only": ["si", "ge2"]}},
+              {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["si"], "side": "left"}},
+              {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["ge2"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json");
+        const Model m = modelOf(json.toUtf8());
+        const auto ps = evaluateParameters(m);
+        const GeometryBuild g = buildGeometry(m, *ps);
+        QVERIFY(g.ok());
+        const MeshBuild built = buildMesh(m, *ps, g.topology);
+        QVERIFY2(built.mesh, qPrintable(built.error));
+        const int nt = int(built.mesh->triangles.size());
+        // The mesh with its triangles in another order (order[k]: the k-th's old index).
+        auto reordered = [&](const std::vector<int>& order) {
+            auto mesh = std::make_shared<Mesh>(*built.mesh);
+            std::vector<int> to(static_cast<std::size_t>(nt));
+            for (int k = 0; k < nt; ++k) {
+                mesh->triangles[std::size_t(k)] = built.mesh->triangles[std::size_t(order[std::size_t(k)])];
+                mesh->domain[std::size_t(k)] = built.mesh->domain[std::size_t(order[std::size_t(k)])];
+                to[std::size_t(order[std::size_t(k)])] = k;
+            }
+            for (Mesh::Edge& e : mesh->edges) {
+                if (e.left >= 0) e.left = to[std::size_t(e.left)];
+                if (e.right >= 0) e.right = to[std::size_t(e.right)];
+            }
+            return mesh;
+        };
+        // Reversed; and by domain, one way and the other (the two
+        // germaniums' nodes between them each taking the first triangle's
+        // otherwise).
+        std::vector<int> back(static_cast<std::size_t>(nt));
+        for (int k = 0; k < nt; ++k) back[std::size_t(k)] = nt - 1 - k;
+        std::vector<int> up = back;
+        std::stable_sort(up.begin(), up.end(), [&](int a, int b) { return built.mesh->domain[std::size_t(a)] < built.mesh->domain[std::size_t(b)]; });
+        std::vector<int> down = up;
+        std::stable_sort(down.begin(), down.end(), [&](int a, int b) { return built.mesh->domain[std::size_t(a)] > built.mesh->domain[std::size_t(b)]; });
+        const std::shared_ptr<const Mesh> meshes[] = {built.mesh, reordered(back), reordered(up), reordered(down)};
+        // (Its interface's nodes.)
+        std::map<int, std::set<int>> domains;
+        for (int t = 0; t < nt; ++t)
+            for (int v : built.mesh->triangles[std::size_t(t)]) domains[v].insert(built.mesh->domain[std::size_t(t)]);
+        int between = 0;
+        for (const auto& [node, ds] : domains) between += ds.size() > 1;
+        double I[4];
+        for (int k = 0; k < 4; ++k) {
+            const StudyResult r = solveStudy(m, ps, meshes[k], QString());
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            I[k] = global(*r.solution, QStringLiteral("semi.I_k"));
+        }
+        qInfo("Si/Ge diode at 0.3 V, %d nodes between two domains: %.12g A; its triangles reversed %.12g A, by domain %.12g and %.12g A", between, I[0], I[1],
+              I[2], I[3]);
+        QVERIFY(between > 3);
+        for (int k = 1; k < 4; ++k)
+            QVERIFY2(std::abs(I[k] / I[0] - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2 (%3)").arg(I[0], 0, 'g', 12).arg(I[k], 0, 'g', 12).arg(k)));
+        // Each of those nodes germanium's: at rest (0 V) Vt ln n - V, its
+        // electrons' band potential (the quasi-Fermi level nought), the
+        // germanium's at each, not the silicon's.
+        const Model rest = modelOf(QString(json).replace(QLatin1String("0.3[V]"), QLatin1String("0[V]")).toUtf8());
+        const StudyResult r0 = solveStudy(rest, evaluateParameters(rest), built.mesh, QString());
+        QVERIFY2(r0.error.isEmpty(), qPrintable(r0.error));
+        QCOMPARE(global(*r0.solution, QStringLiteral("semi.V_a")), 0.0);
+        const std::vector<double>& v = r0.solution->fields()[std::size_t(r0.solution->fieldIndex(QStringLiteral("semi")))].values;
+        const std::size_t N = built.mesh->nodes.size();
+        const double Vt = 1.380649e-23 * 300 / Q;
+        auto band = [&](std::size_t i) { return Vt * std::log(v[N + i]) - v[i]; };
+        auto nearest = [&](QPointF p) {
+            std::size_t best = 0;
+            for (std::size_t i = 1; i < N; ++i)
+                if (std::hypot(built.mesh->nodes[i].x() - p.x(), built.mesh->nodes[i].y() - p.y())
+                    < std::hypot(built.mesh->nodes[best].x() - p.x(), built.mesh->nodes[best].y() - p.y()))
+                    best = i;
+            return best;
+        };
+        const double ge = band(nearest({1.5, 0.1})), si = band(nearest({0.5, 0.1}));
+        qInfo("at rest Vt ln n - V: germanium %.9f V, silicon %.9f V", ge, si);
+        QVERIFY2(std::abs(ge - si) > 0.01, qPrintable(QStringLiteral("%1 %2").arg(ge).arg(si)));
+        // (The silicon's domain: its triangles' left of the germanium.)
+        const int siDomain = built.mesh->domain[std::size_t(std::find_if(built.mesh->triangles.begin(), built.mesh->triangles.end(), [&](const auto& t) {
+                                                         return built.mesh->nodes[std::size_t(t[0])].x() < 0.9999 && built.mesh->nodes[std::size_t(t[1])].x() < 0.9999
+                                                                && built.mesh->nodes[std::size_t(t[2])].x() < 0.9999;
+                                                     }) - built.mesh->triangles.begin())];
+        int checked = 0;
+        for (const auto& [node, ds] : domains)
+            if (ds.size() > 1 && ds.count(siDomain)) {
+                ++checked;
+                const double here = band(std::size_t(node));
+                QVERIFY2(std::abs(here - ge) < 1e-6, qPrintable(QStringLiteral("%1 V at (%2, %3): germanium's %4, silicon's %5")
+                                                                    .arg(here, 0, 'f', 9)
+                                                                    .arg(built.mesh->nodes[std::size_t(node)].x())
+                                                                    .arg(built.mesh->nodes[std::size_t(node)].y())
+                                                                    .arg(ge, 0, 'f', 9)
+                                                                    .arg(si, 0, 'f', 9)));
+            }
+        QVERIFY(checked > 3);
     }
 
     void aJunctionsBreakdown()
