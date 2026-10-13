@@ -875,10 +875,14 @@ QList<NodeKind> makeKinds()
           QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/fn")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
-            "p (Boltzmann's statistics), their currents Scharfetter and Gummel's along each edge of linear triangles - across "
-            "heterojunctions too, the bands' offsets by Anderson's rule (χ, Eg). Domains whose material has no band gap are "
-            "insulators: the potential alone. Solved by Newton's method from equilibrium, the contacts' voltages raised in steps; "
-            "at rest, in time, or small-signal in a frequency step (the contacts' conductance and capacitance matrices; lit, a "
+            "p (Boltzmann's statistics, or Fermi-Dirac's; band gap narrowing, dopants ionized in part, if the material model asks), "
+            "their currents Scharfetter and Gummel's along each edge of linear triangles - across heterojunctions too, the bands' "
+            "offsets by Anderson's rule (χ, Eg). Mobilities by doping, at an insulator's surface (Lombardi) and saturated, warmed "
+            "by a lattice temperature TL; recombination, impact ionization, band-to-band tunnelling, interface traps, light's "
+            "pairs; the carriers' heat semi.H for a heat physics; a quantum wells physics' states for its carriers "
+            "(Schrödinger-Poisson). Domains whose material has no band gap are insulators: the potential alone. Solved by "
+            "Newton's method from equilibrium, the contacts' voltages raised in steps (a sweep's next point from the last); at "
+            "rest, in time, or small-signal in a frequency step (the contacts' conductance and capacitance matrices; lit, a "
             "photodiode's response).")});
     add({QStringLiteral("semiconductor/model"), tr("Semiconductor Material Model"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
