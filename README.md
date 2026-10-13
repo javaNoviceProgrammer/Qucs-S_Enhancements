@@ -2221,7 +2221,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     **band diagram** - as variables. A well's holes may be the **k·p
     valence bands** (`"valence": "kp4"` or `"kp6"`: Luttinger and Kohn's
     4x4, or the 6x6 with the split-off band; γ1, γ2, γ3 and Δ from the
-    compounds, strain's Bir and Pikus on them) - heavy and light holes
+    compounds, strain's Bir and Pikus on them; `"kp8"` Kane's 8x8, the
+    conduction band coupled to them by Ep - the electrons non-parabolic,
+    their own masses and densities from it (a GaAs electron 0.6 /nm into
+    the plane at Kane's bulk band to 9 µeV, where a parabola is 26 meV
+    off) -, the remote bands' γ and the conduction band's term Foreman's
+    rest, Ep lowered where that term would be below a free electron's;
+    Lumerical's 8x8 benchmark, De Franceschi et al.'s GaAs/AlAs wells,
+    within 0.4, 0.4 and 1.3 meV of its tight binding) - heavy and light holes
     mixed as the in-plane k grows, solved at each k with Burt and
     Foreman's operator order across the interfaces (symmetrized, an
     InGaAs well in InP grows a spurious band into the gap), the in-plane

@@ -1302,12 +1302,17 @@ QList<NodeKind> makeKinds()
                      "qw.n - a Schrödinger-Poisson loop's. Empty: none counted")),
           spatial(QStringLiteral("etap"), tr("Holes' Fermi level below the band, Ev - Efp"), QStringLiteral("J"), QString(),
                   tr("A semiconductor's semi.Ev - semi.Efp: qw.p, the holes in the states found. Empty: none counted")),
-          choice(QStringLiteral("valence"), tr("Valence bands"), {QStringLiteral("parabolic"), QStringLiteral("kp4"), QStringLiteral("kp6")},
-                 {tr("Parabolic heavy and light holes"), tr("k·p 4x4 (Luttinger-Kohn)"), tr("k·p 6x6 (and the split-off band)")},
+          choice(QStringLiteral("valence"), tr("Valence bands"),
+                 {QStringLiteral("parabolic"), QStringLiteral("kp4"), QStringLiteral("kp6"), QStringLiteral("kp8")},
+                 {tr("Parabolic heavy and light holes"), tr("k·p 4x4 (Luttinger-Kohn)"), tr("k·p 6x6 (and the split-off band)"),
+                  tr("k·p 8x8 (Kane's: the conduction band too)")},
                  QStringLiteral("parabolic"),
                  tr("A spectrum's holes (1D wells): each parabolic in the plane, or the k·p bands - heavy and light holes mixed as "
                     "the in-plane k grows (γ1, γ2, γ3; the 6x6 the split-off band too, Δ), solved at each k: the gain's width and "
-                    "peak, the TE/TM ratio of strained wells. A Valence Bands step gives their dispersion")),
+                    "peak, the TE/TM ratio of strained wells. The 8x8 the electrons too, coupled to them by Kane's P (Ep): "
+                    "their non-parabolic bands and masses - narrow gaps (InAs, InSb) -, the remote bands' γ and the conduction "
+                    "band's term what is left (Foreman's), Ep lowered where that term would be below a free electron's (spurious states). A "
+                    "Valence Bands step gives their dispersion (the 8x8's conduction states' too, qw.Ec1...)")),
           choice(QStringLiteral("inplane"), tr("In-plane k"), {QStringLiteral("axial"), QStringLiteral("100"), QStringLiteral("110"), QStringLiteral("average")},
                  {tr("Axial approximation"), tr("Along [100]"), tr("Along [110]"), tr("Averaged over directions")}, QStringLiteral("axial"),
                  tr("The k·p bands' in-plane k: the axial approximation (the plane isotropic, R's γ2 and γ3 their mean - Chuang's, "
