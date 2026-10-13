@@ -401,6 +401,12 @@ std::optional<std::vector<double>> valueList(const QString& text, const Scope& s
 /// 1: the C0 of a line's quasi-TEM parameters. NaN and \a error on failure.
 double vacuumCapacitance(const Solution& solution, const QString& tag, const QString& terminal, QString* error = nullptr);
 
+/// For the tests alone: the semiconductor's Jacobian made inexact on purpose
+/// - band-to-band tunnelling's derivative by the field dropped -, its
+/// equations as they are, so that what Newton's method accepts is checked
+/// against a Jacobian not their own. Off unless a test sets it.
+void setSemiconductorJacobianFault(bool dropTunnellingField);
+
 } // namespace qucs_s::fem
 
 #endif // QUCS_FEM_SOLVER_H
