@@ -422,7 +422,13 @@ QList<NodeKind> makeKinds()
           spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QString()),
           spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QString(), tr("The refractive index's imaginary part: n - jκ")),
           expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QString()),
-          expr(QStringLiteral("Eg"), tr("Band gap Eg"), QStringLiteral("eV"), QString(), tr("A semiconductor's (an insulator has none)")),
+          expr(QStringLiteral("Eg"), tr("Band gap Eg"), QStringLiteral("eV"), QString(),
+               tr("A semiconductor's (an insulator has none). Given, it is the gap every physics uses, over its compound's - at "
+                  "300 K: quantum wells at another temperature move it as the compound's moves. With a compound, the valence band "
+                  "stays at the compound's VBO, so a gap given moves the conduction band (give VBO too to move the other)")),
+          expr(QStringLiteral("lambdag"), tr("Gap wavelength λg"), QStringLiteral("m"), QString(),
+               tr("Eg = hc/λg when Eg is not given: a quaternary named by its gap's wavelength (\"1.3Q\": 1.3[um]) - its masses "
+                  "and deformation potentials still its compound's")),
           expr(QStringLiteral("chi"), tr("Electron affinity χ"), QStringLiteral("eV"), QString()),
           expr(QStringLiteral("Nc"), tr("Effective density of states Nc"), QStringLiteral("1/m^3"), QString()),
           expr(QStringLiteral("Nv"), tr("Effective density of states Nv"), QStringLiteral("1/m^3"), QString()),
@@ -437,8 +443,14 @@ QList<NodeKind> makeKinds()
                tr("α = A √((ħω - Egd)/1 eV) (1 eV/ħω) without a field")),
           text(QStringLiteral("compound"), tr("III-V compound"), QString(),
                tr("GaAs, AlAs, InAs, InP, GaP, GaSb, AlSb, InSb or an alloy of them - AlGaAs, InGaAs, InAlAs, GaInP, GaAsP, InAsP, "
-                  "GaAsSb, InGaAsP, AlGaInAs: its band parameters (Vurgaftman's) at its composition, for quantum wells; an alloy's "
-                  "other properties from it where they are not given")),
+                  "GaAsSb, InGaAsP, AlGaInAs: its band parameters at its composition, for quantum wells and the semiconductor; "
+                  "each property given on the material (or its library entry) is used over the compound's, in every physics")),
+          choice(QStringLiteral("bands"), tr("Band gaps"), {QStringLiteral("vurgaftman"), QStringLiteral("measured")},
+                 {tr("Vurgaftman et al. (2001)"), tr("Fitted to gaps measured at 300 K")}, QStringLiteral("vurgaftman"),
+                 tr("Vurgaftman's: 0 K values and Varshni's law, 9-16 meV off at 300 K in the InP family (InP 1.353 eV, "
+                    "In0.53Ga0.47As 0.737). The fit: InP 1.344, In0.53Ga0.47As 0.750, In0.52Al0.48As 1.46, InGaAsP on InP's "
+                    "lattice within 7 meV of Nahory's, the 1.3 µm AlGaInAs 0.954 - Varshni's slope kept; the masses, offsets and "
+                    "deformation potentials Vurgaftman's either way")),
           expr(QStringLiteral("x"), tr("Composition x"), QString(), QString(),
                tr("An alloy's: AlGaAs, Al's share; InGaAs, InAlAs, In's; GaInP, Ga's; GaAsP, InAsP, GaAsSb, As's; InGaAsP "
                   "(In1-x Gax Asy P1-y), Ga's; AlGaInAs (Alx Gay In1-x-y As), Al's")),
@@ -1268,7 +1280,8 @@ QList<NodeKind> makeKinds()
                        tr("x (y, the axis x) where the line runs; empty: the middle of the physics' domains")),
                   QStringLiteral("space=1d")),
           shownIf(expr(QStringLiteral("h1d"), tr("Element size along the line"), QStringLiteral("m"), QStringLiteral("0.1[nm]"),
-                       tr("Quadratic elements: 0.1 nm finds the states of nanometre layers to a part in 10⁶")),
+                       tr("Quadratic elements, their energies' error as h⁴: 0.1 nm finds a 10 nm well's first states to 1 µeV, 0.5 nm "
+                          "to some 0.2 meV - fine for stacks hundreds of nm thick. A plain number is metres (0.1[nm])")),
                   QStringLiteral("space=1d")),
           shownIf(choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                          QStringLiteral("2")),
@@ -1312,13 +1325,18 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("mlhp"), tr("Light hole mass across the axis (m0)"), QString(), QString(), tr("Empty: as along it")),
                   QStringLiteral("source=user")),
           shownIf(expr(QStringLiteral("Ep"), tr("Kane energy Ep"), QStringLiteral("eV"), QStringLiteral("25[eV]")), QStringLiteral("source=user")),
-          shownIf(expr(QStringLiteral("nr"), tr("Refractive index"), QString(), QStringLiteral("3.5")), QStringLiteral("source=user"))},
+          shownIf(expr(QStringLiteral("nr"), tr("Refractive index"), QString(), QStringLiteral("3.5")), QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("epsilonr"), tr("Static permittivity εr"), QString(), QString(),
+                       tr("For the excitons' binding. Empty: nr²")),
+                  QStringLiteral("source=user"))},
          {}, {}, false, false, QStringLiteral("qwm"),
          tr("The bands and masses: from the material - its compound (GaAs, InGaAs at x...), or its Eg, VBO (or χ), me, γ1 and γ2 - "
             "or as given.")});
     add({QStringLiteral("quantum/zero"), tr("Zero Wavefunction"), QStringLiteral("qw"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp()}, {}, {}, false, false, QStringLiteral("zw"),
-         tr("ψ = 0 where the physics ends: hard walls - its outer layers barriers thick enough. In 1D, at both ends of the line.")});
+         tr("ψ = 0 where the physics ends: hard walls - its outer layers barriers thick enough. In 1D, at both ends of the line. "
+            "A state within a few meV of the barriers' top reaches the wall and is raised by it (a 5 nm well's e2, 2 meV below "
+            "the top, by 0.1 meV with 30 nm barriers): thicker barriers for those")});
     add({QStringLiteral("quantum/flux"), tr("Zero Flux"), QStringLiteral("qw"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp(none)}, {}, {}, false, false, QStringLiteral("zf"),
          tr("∂ψ/∂n = 0 on the boundaries chosen (2D): a wide layer's sides, the states free across them.")});
@@ -1573,7 +1591,20 @@ QList<NodeKind> makeKinds()
                       "by commas")),
               integer(QStringLiteral("states"), tr("States of each carrier"), 6),
               expr(QStringLiteral("linewidth"), tr("Broadening"), QStringLiteral("eV"), QStringLiteral("6.6[meV]"),
-                   tr("A Lorentzian's half width, ħ/τ: 6.6 meV for 0.1 ps")),
+                   tr("The line's half width at half maximum: a Lorentzian's ħ/τ, 6.6 meV for 0.1 ps")),
+              choice(QStringLiteral("lineshape"), tr("Line shape"), {QStringLiteral("lorentzian"), QStringLiteral("gaussian"), QStringLiteral("sech")},
+                     {tr("Lorentzian"), tr("Gaussian"), tr("Hyperbolic secant")}, QStringLiteral("lorentzian"),
+                     tr("Each transition's broadening. A Lorentzian's tails absorb far below the edge (an electroabsorption "
+                        "modulator's loss at 0 V); a Gaussian's (inhomogeneous: the wells' widths and alloy) and a sech's do not")),
+              flag(QStringLiteral("excitons"), tr("Excitons"), false,
+                   tr("Each transition's 1s exciton - its binding energy Bastard's variational one over the states' own envelopes "
+                      "(a field pulling them apart weakens it: the quantum-confined Stark effect's), its line |F(0)|² = 2/(πλ²) "
+                      "strong - and the continuum above it raised by the 2D Sommerfeld factor (2 at the edge). Absorption only: "
+                      "with carriers they are screened, left out")),
+              shownIf(expr(QStringLiteral("epsr"), tr("Excitons' permittivity εr"), QString(), QString(),
+                           tr("Static. Empty: the wells' material's (its epsilonr, else its compound's; a Quantum Well Material's "
+                              "own, else nr²)")),
+                      QStringLiteral("excitons=true")),
               expr(QStringLiteral("density"), tr("Carriers in the wells"), QStringLiteral("1/m^3"), QStringLiteral("0[1/cm^3]"),
                    tr("Electrons and holes alike, per volume of the wells (the domains of the smallest gap): gain where their "
                       "quasi-Fermi levels are far enough apart; 0, the wells' absorption")),
@@ -1581,7 +1612,9 @@ QList<NodeKind> makeKinds()
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6")), before, nonlinear},
              {}, {}, false, false, QStringLiteral("spec"),
              tr("A quantum wells physics' absorption coefficient - TE (in the layers' plane) and TM - or gain over photon "
-                "energies: its states' transitions, k conserved, each broadened; each point a solution, as a frequency is.")});
+                "energies: its states' transitions, k conserved, each broadened; each point a solution, as a frequency is. Each "
+                "transition's reduced mass is of its two states' own masses in the plane - each the inverse mass averaged over "
+                "its |ψ|² across the layers, not the well's alone (a state reaching into the barriers is heavier there).")});
         P rows;
         rows.key = QStringLiteral("parameters");
         rows.label = tr("Parameters swept");

@@ -2178,10 +2178,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   - *Quantum Wells (Schrödinger)*: the **effective-mass states** of
     electrons, heavy holes and light holes, BenDaniel and Duke's at each
     heterojunction - **1D** along the growth axis through the layers (a
-    line of quadratic elements of its own, 0.1 nm: a part in 10⁶) or
+    line of quadratic elements of its own, their error as h⁴: 0.1 nm a
+    10 nm well's first states to 1 µeV, 0.5 nm to 0.2 meV) or
     **2D** over the cross-section (wires; dots about an axis), the heavy
     and light holes' masses along and across the axis from Luttinger's
-    parameters. Their bands from the materials' compounds, **strained**
+    parameters. Their bands from the materials' compounds - a property
+    given on a material or its library entry used over its compound's in
+    every physics (the library's InP 1.344 eV in the wells and the
+    semiconductor alike; a gap given is the gap at 300 K, moving with the
+    temperature as the compound's), or a **gap wavelength** (`lambdag`:
+    "1.3Q" is 1.3 µm), and Vurgaftman's band gaps or a **fit to gaps
+    measured at 300 K** (`"bands": "measured"`: InP 1.344, In0.53Ga0.47As
+    0.750, In0.52Al0.48As 1.46, InGaAsP on InP within 7 meV of Nahory's,
+    the 1.3 µm AlGaInAs 0.954 eV - where Vurgaftman's are 9-16 meV off) -
+    **strained**
     on a substrate (Bir and Pikus: the heavy holes lifted above the light
     ones under compression), tilted by a **field** along the axis (the
     quantum-confined Stark effect) or moved by another physics' potential
@@ -2192,7 +2202,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     the band edges, |ψ|² and each level with its wave drawn on it - the
     **band diagram** - as variables. An **Optical Spectrum** step: the
     wells' **absorption**, TE and TM (each transition's step of the 2D
-    density of states, or a wire's 1D one, Lorentzian-broadened), or their
+    density of states, or a wire's 1D one, broadened by a Lorentzian, a
+    Gaussian or a sech; each its two states' own in-plane masses, the
+    inverse mass averaged over |ψ|²), with **excitons** if asked - each
+    transition's 1s exciton bound as Bastard's variational envelope over
+    its states has it (a 10 nm well's 8.32 meV, the exact integral's to
+    1e-5; less in a field: the QCSE's exciton), its line, and the
+    continuum's 2D Sommerfeld factor - or their
     **gain** with carriers injected - their quasi-Fermi levels found from
     the states, gain where the photon is below their separation. Given
     each carrier's Fermi level from its band (`semi.Efn - semi.Ec`), the

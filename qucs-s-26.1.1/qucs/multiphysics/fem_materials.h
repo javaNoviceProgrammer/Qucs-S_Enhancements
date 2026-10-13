@@ -74,6 +74,17 @@ struct BandParameters {
     double C11 = 0, C12 = 0;                ///< Pa
     double epsr = 0, n = 0;
 };
+/// Whose band gaps: Vurgaftman et al.'s (0 K, Varshni's law to the
+/// temperature; 9-16 meV off at 300 K in the InP family), or fitted to gaps
+/// measured at 300 K - InP 1.344, GaAs 1.424, InAs 0.354 eV (Varshni's slope
+/// kept, shifted there), In0.53Ga0.47As 0.750 (Goetz et al.'s bowing, 0.43),
+/// In0.52Al0.48As 1.46, InGaAsP on InP's lattice within 7 meV of Nahory et
+/// al.'s 1.35 - 0.72 y + 0.12 y², AlGaInAs's 1.3 µm quaternary (Al0.165
+/// Ga0.305 In0.53 As) 0.954 eV. Only the gaps differ (the valence band's
+/// offset is Vurgaftman's: a gap moved moves the conduction band).
+enum class BandSet { Vurgaftman, Measured };
+/// A material's "bands": "measured" (the 300 K fit), else Vurgaftman's.
+BandSet bandSetOf(const QString& text);
 /// The binaries (GaAs, AlAs, InAs, InP, GaP, GaSb, AlSb, InSb) and the
 /// alloys: AlGaAs (x of Al), InGaAs (x of In), InAlAs (x of In), GaInP (x of
 /// Ga), GaAsP, InAsP, GaAsSb (x of As), InGaAsP (In1-x Gax Asy P1-y),
@@ -82,13 +93,14 @@ QStringList compounds();
 /// A compound's band parameters at composition \a x (and \a y) and
 /// temperature \a T (K); none, and why, when it is not known or its
 /// composition is out of range.
-std::optional<BandParameters> bandParameters(const QString& compound, double x, double y, double T, QString* error = nullptr);
+std::optional<BandParameters> bandParameters(const QString& compound, double x, double y, double T, QString* error = nullptr,
+                                            BandSet set = BandSet::Vurgaftman);
 /// An alloy material's property \a key (Eg, chi, epsilonr, n, k, rho, Cp,
 /// Nc, Nv, mun, mup, taun, taup, me, gamma1..3, Ep, VBO, Delta, a0, ac, av,
 /// b, C11, C12) at 300 K as an expression with its unit: from its compound
 /// and composition (\a x, \a y). Empty for a key it has none of. Its
 /// transport and thermal values are rough.
-QString compoundProperty(const QString& compound, double x, double y, const QString& key);
+QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set = BandSet::Vurgaftman);
 
 /// A row of a layout's layer stack: an object's name, the layer under the
 /// cut it is made of ("1/0"; empty: all along the cut), its bottom and
