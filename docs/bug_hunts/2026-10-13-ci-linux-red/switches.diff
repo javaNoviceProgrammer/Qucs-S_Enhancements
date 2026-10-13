@@ -1,0 +1,31 @@
+--- a/qucs-s-26.1.1/qucs/multiphysics/fem_semiconductor.cpp
++++ b/qucs-s-26.1.1/qucs/multiphysics/fem_semiconductor.cpp
+@@ -2270,7 +2270,7 @@
+         // short of the solution: band-to-band tunnelling without its field's
+         // term took a reverse current 1e4 times too large for one. On then,
+         // till they are met (or no solution).
+-        if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12) && imbalance() < 1e-6) return true;
++        if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12) && (qEnvironmentVariableIsSet("PROBE_NO_IMBALANCE") || imbalance() < 1e-6)) return true;
+     }
+     *why = tr("%1: Newton's method did not converge in %2 steps").arg(a_node->name()).arg(maxSteps);
+     return false;
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_optoelectronics.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_optoelectronics.cpp
+@@ -103,7 +103,7 @@
+ QByteArray stripe(const QString& length, const QString& material, const QString& wide, const QString& features, const QString& studies)
+ {
+     // (A sanitized build: coarser - its mode solves take minutes there.)
+-    const QString hmax = slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.04");
++    const QString hmax = qEnvironmentVariableIsSet("PROBE_STRIPE_H") ? qEnvironmentVariable("PROBE_STRIPE_H") : slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.04");
+     return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+       "parameters": [{"name": "Va", "expression": "-1[V]"}, {"name": "P", "expression": "1[mW]"}, {"name": "w", "expression": "%3"}],
+       "components": [{"unit": "um", "thickness": "%1",
+@@ -794,7 +794,7 @@
+         m.fileName = file;
+         if (slowBuild()) {
+             Node* mesh = m.find(m.mesh().tag);
+-            for (Node& size : mesh->children) size.props.insert(QStringLiteral("hmax"), QStringLiteral("0.1"));
++            for (Node& size : mesh->children) size.props.insert(QStringLiteral("hmax"), qEnvironmentVariable("PROBE_EX_H", QStringLiteral("0.1")));
+         }
+         return m;
+     }
