@@ -465,6 +465,9 @@ private:
     /// The model 'path' names (opened when it is not), else the one in
     /// front, else the only one open.
     MultiphysicsDoc* femDocument(const QJsonObject& args, QString* error);
+    /// The model a multiphysics tool last acted on: the one a call without
+    /// 'path' means when the tab in front is no model (a plot's display).
+    QPointer<MultiphysicsDoc> a_lastModel;
     QJsonObject femDescribe(const QJsonObject& args);
     QJsonObject femModel(const QJsonObject& args);
     QJsonObject femEdit(const QJsonObject& args);

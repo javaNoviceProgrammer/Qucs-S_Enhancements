@@ -806,6 +806,44 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         }
         return out;
     }
+    if (type == QLatin1String("confinement")) {
+        // Γ: of a mode's |E|² (or Sz, or (c ε0/2) n |E|² over Sz) in the
+        // domains chosen, over the physics' all.
+        const QStringList tags = node.list(QStringLiteral("physics"));
+        const QString tag = tags.isEmpty() ? QStringLiteral("emw") : tags.first();
+        const int fi = solution.fieldIndex(tag);
+        if (fi < 0 || !solution.modeAnalysis) {
+            out.error = tr("there is no mode analysis %1 solved").arg(tag);
+            return out;
+        }
+        QString why;
+        const QVector<int> picked = resolveSelection(solution.topology(), solution.model(), Level::Domain, node.selection(), &why);
+        if (!why.isEmpty()) {
+            out.error = why;
+            return out;
+        }
+        QVector<int> every;
+        for (int d = 0; d < int(solution.topology().domains.size()); ++d) every << d;
+        const QString kind = node.text(QStringLiteral("kind"));
+        const QString e2 = tag + QStringLiteral(".normE^2"), sz = tag + QStringLiteral(".Sz");
+        const QString above = kind == QLatin1String("power") ? sz : kind == QLatin1String("index") ? tag + QStringLiteral(".n*") + e2 : e2;
+        const QString below = kind == QLatin1String("e2") || kind.isEmpty() ? e2 : sz;
+        const Expression ea = Expression::compile(above, solution.scope()), eb = Expression::compile(below, solution.scope());
+        if (!ea.isValid() || !eb.isValid()) {
+            out.error = ea.isValid() ? eb.error() : ea.error();
+            return out;
+        }
+        const Over there = overDomains(solution, ea, picked, false), all = overDomains(solution, eb, every, false);
+        if (!there.any || !all.any || !(std::abs(all.integral) > 0)) {
+            out.error = tr("%1's mode is not defined in them").arg(tag);
+            return out;
+        }
+        constexpr double c0eps0 = 299792458.0 * 8.8541878188e-12;
+        const double gamma = kind == QLatin1String("index") ? 0.5 * c0eps0 * there.integral / all.integral : there.integral / all.integral;
+        add(kind == QLatin1String("power") ? QStringLiteral("Gamma_power") : kind == QLatin1String("index") ? QStringLiteral("Gamma_index") : QStringLiteral("Gamma"),
+            gamma, Dim(), false);
+        return out;
+    }
     if (type == QLatin1String("lineparams")) {
         if (solution.axisymmetric()) {
             out.error = tr("a line's parameters are per metre of a 2D cross-section in the plane: not about an axis");
@@ -915,6 +953,8 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         }
         for (int k = 0; k < snaps; ++k) {
             if (!all && k != pick) continue;
+            // (All, a mode asked: that mode alone at each.)
+            if (all && mode > 0 && s.modeAnalysis && s.snapshotMode(k) != mode) continue;
             QString when = s.snapshotText(k);
             const QString mode = (s.quantumStates ? QStringLiteral("state %1") : QStringLiteral("mode %1")).arg(s.snapshotMode(k));
             if (s.modeAnalysis) when = several ? when + QStringLiteral(", ") + mode : mode;

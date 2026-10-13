@@ -69,6 +69,8 @@ public:
     void showNoZoom() override;
     /// Reads its file again (changed outside Qucs-S): the steps of Undo go.
     bool reload();
+    /// What reading its file last noted (a tag taken, a node unknown).
+    QString readNotes() const { return a_readNotes; }
 
     // The model.
     const qucs_s::fem::Model& model() const { return a_model; }
@@ -188,6 +190,7 @@ protected:
     void changeEvent(QEvent* event) override;
 
 private:
+    QString a_readNotes;
     struct Job;
     void buildUi();
     void applyModel(const qucs_s::fem::Model& model);

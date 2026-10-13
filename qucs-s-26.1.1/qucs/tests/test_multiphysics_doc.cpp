@@ -1907,6 +1907,93 @@ private slots:
         QVERIFY(json(r).value("format").toString().contains("Quantum wells"));
     }
 
+    // The MQW calibration's tool notes:
+    // - a plot group's tag a study's already: renamed, the reading said so,
+    //   and the plot groups there are named when the tag is asked for;
+    // - two models open, one's display in front: a call without 'path' is
+    //   that model's; something else in front, the model last acted on;
+    // - all the states of a sweep: a global the same at each state once per
+    //   point, 'state' (or 'mode') taking one alone;
+    // - solved (its default plots made), the model still as saved: written
+    //   anew on disk, read again.
+    void claudesToolsAfterTheCalibration()
+    {
+        auto write = [&](const QString& name, const QString& plotTag, const QString& title) {
+            const QString json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1", "title": "%3",
+              "parameters": [{"name": "F", "expression": "0[V/m]"}],
+              "components": [{"unit": "nm", "geometry": [{"type": "rectangle", "name": "well", "size": ["20", "10"]}],
+                "physics": [{"type": "quantum", "tag": "qw", "F": "F", "features": [
+                  {"type": "material", "source": "user", "Ec": "0[eV]", "Ev": "-1.5[eV]", "me": "0.067", "mhh": "0.35", "mlh": "0.09",
+                   "Ep": "25[eV]", "nr": "3.6", "selection": {"all": true}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+              "studies": [{"type": "study", "tag": "conv", "steps": [{"type": "sweep", "parameters": [["F", "0, 1e6", "V/m"]]},
+                                                                     {"type": "states", "states": 3}]}],
+              "results": {"plots": [{"type": "plotgroup1d", "tag": "%2", "label": "Levels", "study": "conv",
+                                     "plots": [{"type": "globalgraph", "expression": "qw.Ee1"}]}]}})json")
+                                     .arg(plotTag, title);
+            QFile f(path(name));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(json.toUtf8());
+        };
+        write(QStringLiteral("calib_a.qfem"), QStringLiteral("conv"), QStringLiteral("A"));
+        write(QStringLiteral("calib_b.qfem"), QStringLiteral("pg1"), QStringLiteral("B"));
+        MultiphysicsDoc* a = open(path(QStringLiteral("calib_a.qfem")));
+        QVERIFY(a != nullptr);
+        QJsonObject r = call("fem_describe", {{"path", "calib_a.qfem"}});
+        QVERIFY2(json(r).value("read with notes").toString().contains(QLatin1String("Levels's tag conv is another node's already: it is pg1d1")),
+                 qPrintable(text(r)));
+        r = call("fem_solve", {{"path", "calib_a.qfem"}, {"timeout", 120}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_plot", {{"path", "calib_a.qfem"}, {"plot", "conv"}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains(QLatin1String("conv is Study, not a plot group")) && text(r).contains(QLatin1String("pg1d1 (Levels)")), qPrintable(text(r)));
+        // B's display in front.
+        MultiphysicsDoc* b = open(path(QStringLiteral("calib_b.qfem")));
+        QVERIFY(b != nullptr);
+        r = call("fem_solve", {{"path", "calib_b.qfem"}, {"timeout", 120}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_plot", {{"path", "calib_b.qfem"}, {"plot", "pg1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget()) == nullptr);
+        // (A the one last acted on: the display in front says B all the same.)
+        QVERIFY(!failed(call("fem_describe", {{"path", "calib_a.qfem"}})));
+        QVERIFY(qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget()) == nullptr);
+        r = call("fem_describe", {});
+        QVERIFY2(!failed(r) && json(r).value("file").toString().endsWith(QLatin1String("calib_b.qfem")), qPrintable(text(r)));
+        // A global the same at each state: once per point.
+        r = call("fem_evaluate", {{"path", "calib_b.qfem"}, {"expression", "qw.Ee1"}, {"all", true}});
+        QJsonArray values = json(r).value("values").toArray();
+        QCOMPARE(values.size(), 2);
+        QCOMPARE(values.at(0).toObject().value("name").toString(), QStringLiteral("F = 0 V/m: qw.Ee1"));
+        QVERIFY(json(r).value("note").toString().contains(QLatin1String("once for the point")));
+        r = call("fem_evaluate", {{"path", "calib_b.qfem"}, {"expression", "qw.E_e"}, {"all", true}});
+        QCOMPARE(json(r).value("values").toArray().size(), 6);
+        r = call("fem_evaluate", {{"path", "calib_b.qfem"}, {"expression", "qw.E_e"}, {"all", true}, {"state", 2}});
+        values = json(r).value("values").toArray();
+        QCOMPARE(values.size(), 2);
+        QVERIFY(values.at(1).toObject().value("name").toString().contains(QLatin1String("state 2")));
+        const QJsonObject e2 = json(call("fem_evaluate", {{"path", "calib_b.qfem"}, {"expression", "qw.Ee2"}, {"point", 1}}));
+        QCOMPARE(values.at(0).toObject().value("SI").toDouble(), e2.value("values").toArray().at(0).toObject().value("SI").toDouble());
+        // A text file in front: the model last acted on - B, then A.
+        {
+            QFile t(path(QStringLiteral("calib_notes.txt")));
+            QVERIFY(t.open(QIODevice::WriteOnly));
+            t.write("notes\n");
+        }
+        QVERIFY(app->gotoPage(path(QStringLiteral("calib_notes.txt"))));
+        r = call("fem_describe", {});
+        QVERIFY2(!failed(r) && json(r).value("file").toString().endsWith(QLatin1String("calib_b.qfem")), qPrintable(text(r)));
+        QVERIFY(!failed(call("fem_describe", {{"path", "calib_a.qfem"}})));
+        QVERIFY(app->gotoPage(path(QStringLiteral("calib_notes.txt"))));
+        r = call("fem_describe", {});
+        QVERIFY2(!failed(r) && json(r).value("file").toString().endsWith(QLatin1String("calib_a.qfem")), qPrintable(text(r)));
+        // Solved, its default plots made: still as saved; written anew, read again.
+        QVERIFY(!b->getDocChanged());
+        QTest::qWait(1100);
+        write(QStringLiteral("calib_b.qfem"), QStringLiteral("pg1"), QStringLiteral("B changed on disk"));
+        QTRY_COMPARE_WITH_TIMEOUT(b->model().root.label, QStringLiteral("B changed on disk"), 10000);
+    }
+
     // A PDE of one's own in the window: a 1D ODE's default plot a line graph
     // along its line (a dataset), a 2D one's a color map, an eigenproblem's
     // eigenvalues a graph over the modes.

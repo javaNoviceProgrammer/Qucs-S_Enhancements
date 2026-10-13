@@ -2052,7 +2052,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     physics' T through their **dn/dT** (thermo-optic); perfect electric
     and magnetic conductors; **perfectly matched layers** beside, above or
     round the rest, their own modes left out. Each mode's effective index,
-    loss in dB/m, fields E and H, its power flow Sz, normalized to 1 W.
+    loss in dB/m, fields E and H, its power flow Sz, normalized to 1 W,
+    its **TE fraction** (of its transverse |E|², the part along x); the
+    step keeps the modes most in domains chosen, or of **one
+    polarization** (a strip's lateral TE modes no longer outrank a slab's
+    TM0). A **Confinement Factor** derived value: each mode's share of
+    the domains chosen - of |E|², of Sz, or ∂neff/∂n there (a modal
+    gain's Γ, the first-order Δneff of a Δn) - without cut lines.
   - *Electromagnetic Waves, Frequency Domain*: waves in the plane, Ez (E
     across it: a waveguide's TE modes in the H-plane) or Hz (E in it),
     with **ports** - each fed in turn with its first mode, found on the
@@ -2361,8 +2367,15 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   Claude builds and solves models with `fem_describe`, `fem_model`,
   `fem_edit`, `fem_build`, `fem_solve` (each mode's index, each quantum
   state's energies), `fem_evaluate`
-  (at a time, a frequency, a mode, a sweep's point, or all of them),
-  `fem_plot` (a 1D group's data display too) and `fem_export`.
+  (at a time, a frequency, a mode or state, a sweep's point, or all of
+  them - a value the same at each mode or state of a point once for the
+  point, a mode or state asked for alone at each),
+  `fem_plot` (a 1D group's data display too) and `fem_export`; without
+  a `path`, the model in front, or the one whose plot's display is in
+  front, or the one last acted on. A model read with a tag taken twice
+  (a plot group's a study's) says which it renamed. A model solved and
+  not edited - its default plots made by the solve keep it as saved -
+  is read again when its file changes on disk.
   `test_fem_engine`, `test_fem_physics`, `test_fem_magnetics`,
   `test_fem_layout`, `test_fem_waves`, `test_fem_semiconductor`,
   `test_fem_rays`, `test_fem_quantum`, `test_fem_pde` and

@@ -1556,6 +1556,10 @@ QList<NodeKind> makeKinds()
                                      "there - the core's, not a contact's or a substrate's; their share emw.Gamma. None: the nearest the index");
                   return track;
               }(),
+              choice(QStringLiteral("polarization"), tr("Polarization"), {QStringLiteral("any"), QStringLiteral("te"), QStringLiteral("tm")},
+                     {tr("Any"), tr("TE (E along x)"), tr("TM (E along y)")}, QStringLiteral("any"),
+                     tr("Those of one polarization alone - by emw.TEfraction, of the transverse |E|² the part along x: TE at 1/2 "
+                        "or more. A metal or magnetic wall's lateral modes (a 2 µm strip's TE01 above a slab's TM0) left out")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved before at each frequency")),
               before, nonlinear},
@@ -1774,7 +1778,7 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("ray"), tr("The rays' paths, as traced.")});
         add({QStringLiteral("derived"), tr("Derived Values"), QString(), QStringLiteral("derived"), Level::None, {},
              {QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
-              QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams")},
+              QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams"), QStringLiteral("confinement")},
              {}, true, true, QString(), tr("Numbers of the solution: integrals, averages, a capacitance, a resistance.")});
         add({QStringLiteral("global"), tr("Global Evaluation"), QStringLiteral("derived"), QStringLiteral("global"), Level::None,
              {study, text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("es.C11"),
@@ -1802,6 +1806,25 @@ QList<NodeKind> makeKinds()
         origin.append(QJsonArray{QStringLiteral("0"), QStringLiteral("0")});
         coordinates.defaultValue = origin;
         coordinates.showIf = QStringLiteral("where=coordinates");
+        {
+            P modes;
+            modes.key = QStringLiteral("physics");
+            modes.label = tr("Mode analysis");
+            modes.kind = P::Physics;
+            modes.defaultValue = QJsonArray{QStringLiteral("emw")};
+            add({QStringLiteral("confinement"), tr("Confinement Factor"), QStringLiteral("derived"), QStringLiteral("confinement"), Level::Domain,
+                 {study, selectionProp(), modes,
+                  choice(QStringLiteral("kind"), tr("Of"), {QStringLiteral("e2"), QStringLiteral("power"), QStringLiteral("index")},
+                         {tr("|E|²: its share in the domains"), tr("Power: Sz's share"), tr("Index: ∂neff/∂n there (modal gain's)")},
+                         QStringLiteral("e2"),
+                         tr("|E|²: ∫ |E|² there over ∫ |E|² - the usual Γ. Power: ∫ Sz there over ∫ Sz. Index: (c ε0/2) ∫ n |E|² "
+                            "there over ∫ Sz - how much neff moves for n moved there, a modal gain's Γ (above 1 in high contrast: "
+                            "Visser et al.); a Δn there moves neff by Γ Δn, to the first order")),
+                  solutions},
+                 {}, {}, false, false, QStringLiteral("conf"),
+                 tr("A mode's share of the domains chosen, for each mode solved: Γ without integrating cut lines (a TM mode's "
+                    "normal E jumps at an index step: a line samples one side of it).")});
+        }
         add({QStringLiteral("pointeval"), tr("Point Evaluation"), QStringLiteral("derived"), QStringLiteral("pointeval"), Level::Point,
              {study,
               choice(QStringLiteral("where"), tr("At"), {QStringLiteral("points"), QStringLiteral("coordinates")},
@@ -2456,7 +2479,7 @@ void normaliseSelections(Node& node)
 
 } // namespace
 
-void Model::normalise()
+void Model::normalise(QStringList* notes)
 {
     auto ensure = [](Node& parent, const QString& type, int at = -1) -> Node& {
         if (Node* n = parent.child(type)) return *n;
@@ -2531,6 +2554,10 @@ void Model::normalise()
             const QString prefix = k && !k->prefix.isEmpty() ? k->prefix : QStringLiteral("n");
             QString t = prefix + QLatin1Char('1');
             for (int i = 1; tags.contains(t); ++i) t = prefix + QString::number(i);
+            // (A tag of the file's taken by a node before it - a plot
+            // group's the same as a study's: said, with the one it has now.)
+            if (notes && !n.tag.isEmpty())
+                *notes << tr("%1's tag %2 is another node's already: it is %3 here").arg(n.label.isEmpty() ? n.type : n.label, n.tag, t);
             n.tag = t;
         }
         tags.insert(n.tag);
@@ -2683,7 +2710,7 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     results.children.push_back(exports);
     m.root.children.push_back(results);
 
-    m.normalise();
+    m.normalise(&problems);
     if (error) *error = problems.join(QLatin1String("; "));
     return m;
 }
