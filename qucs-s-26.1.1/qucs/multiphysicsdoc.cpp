@@ -1431,6 +1431,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         t.name = unique(first.modeAnalysis ? QStringLiteral("solution")
                         : photon == 1     ? QStringLiteral("photon_energy")
                         : photon == 2     ? QStringLiteral("wavelength")
+                        : photon == 3     ? QStringLiteral("k")
                                           : first.snapshotName());
         t.independent = true;
         for (int k = 0; k < first.snapshotCount(); ++k) {

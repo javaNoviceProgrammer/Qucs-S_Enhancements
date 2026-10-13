@@ -2216,17 +2216,40 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     its wavelength, the direct transition (a well's own e1-hh1 where a
     field puts the stack's lowest and highest states in different wells);
     the band edges, |ψ|² and each level with its wave drawn on it - the
-    **band diagram** - as variables. An **Optical Spectrum** step: the
+    **band diagram** - as variables. A well's holes may be the **k·p
+    valence bands** (`"valence": "kp4"` or `"kp6"`: Luttinger and Kohn's
+    4x4, or the 6x6 with the split-off band; γ1, γ2, γ3 and Δ from the
+    compounds, strain's Bir and Pikus on them) - heavy and light holes
+    mixed as the in-plane k grows, solved at each k with Burt and
+    Foreman's operator order across the interfaces (symmetrized, an
+    InGaAs well in InP grows a spurious band into the gap), the in-plane
+    k in the **axial approximation** (Chuang's and Lumerical's), along
+    [100] or [110], or **averaged** over the plane's directions; a
+    **Valence Bands** step gives their dispersion (`qw.k`, `qw.Ev1`...).
+    An **Optical Spectrum** step: the
     wells' **absorption**, TE and TM (each transition's step of the 2D
     density of states, or a wire's 1D one, broadened by a Lorentzian, a
-    Gaussian or a sech; each its two states' own in-plane masses, the
-    inverse mass averaged over |ψ|²), with **excitons** if asked - each
-    transition's 1s exciton bound as Bastard's variational envelope over
-    its states has it (a 10 nm well's 8.32 meV, the exact integral's to
-    1e-5; less in a field: the QCSE's exciton), its line, and the
+    Gaussian or a sech - wider with the **field** across the wells if
+    asked, `dlinewidth`, `qw.Fw`; each its two states' own in-plane masses, the
+    inverse mass averaged over |ψ|²; with the k·p bands, each pair of
+    states at each k, TE and TM from their X, Y and Z parts), with **excitons** if asked - each
+    transition's 1s exciton bound by a **two-parameter** variational
+    envelope, e^(-√(ρ² + γ²(ze - zh)²)/λ) (Khramtsov et al.'s exact
+    GaAs/AlGaAs binding to 1.2 % from 2 to 20 nm, their measured radiative
+    decay to 4 %), or Bastard's one-parameter one (a 10 nm well's 8.32
+    meV, the exact integral's to 1e-5) - less in a field: the QCSE's exciton -, its line, and the
     continuum's 2D Sommerfeld factor - or their
     **gain** with carriers injected - their quasi-Fermi levels found from
-    the states, gain where the photon is below their separation. Given
+    the states, gain where the photon is below their separation - and the
+    **spontaneous emission** (`qw.rsp` per energy, `qw.Rsp` in all, the
+    coefficients `qw.gspTE`, `qw.gspTM`). Above the barriers, the box's
+    states or (`"continuum": "bound"`) the transitions of states confined
+    by their own well's barriers (in a field too) and the barriers' **bulk
+    absorption**; the **index** the window's
+    absorption makes (Kramers and Kronig: `qw.dnTE`, `qw.dnTM` - between
+    two fields, electrorefraction's Δn; said when the window's top still
+    absorbs). At any temperature (`T`: the compounds' gaps Varshni's,
+    the carriers' statistics kT's). Given
     each carrier's Fermi level from its band (`semi.Efn - semi.Ec`), the
     **carriers in the states** found, `qw.n` and `qw.p` (a flat well's
     the subbands' sum to 1e-6); with a semiconductor's *Schrödinger-Poisson*

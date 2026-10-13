@@ -1,0 +1,49 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A strained laser well's gain with the k·p valence bands",
+    "description": "The 980 nm pump laser's well of strained_laser_gain.qfem - 8 nm of In0.2Ga0.8As in GaAs, compressed 1.4% (its barriers 10 nm here) - with its holes the 6x6 k·p bands: heavy and light holes mixed as the in-plane k grows (Luttinger's γ1, γ2, γ3 and the split-off band from the compounds; Burt and Foreman's operator order at the interfaces; the axial approximation). The Valence Bands step draws their dispersion - the heavy holes light near k = 0, then bending as they meet the light ones. The gain over wavelength at 3 and 5e18 per cm³: each pair of states at each k, its TE and TM weight from its X, Y and Z parts; the holes' quasi-Fermi level from the bands themselves; with them the spontaneous emission per energy. The parabolic holes of strained_laser_gain.qfem overstate the gain - at 2e18 per cm³ there they give gain, here the well still absorbs: mixing makes the holes' states denser.",
+    "parameters": [
+        {"name": "N", "expression": "3e18[1/cm^3]", "description": "electrons and holes in the well"},
+        {"name": "Lw", "expression": "8[nm]", "description": "the well's width"}
+    ],
+    "components": [{
+        "unit": "nm",
+        "geometry": [
+            {"type": "rectangle", "label": "below", "size": ["10", "10"]},
+            {"type": "rectangle", "label": "well", "position": ["0", "10"], "size": ["10", "Lw"]},
+            {"type": "rectangle", "label": "above", "position": ["0", "10 + Lw"], "size": ["10", "10"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Gallium arsenide", "selection": {"only": ["below", "above"]}},
+            {"material": "Indium gallium arsenide", "x": "0.2", "selection": {"only": ["well"]}}
+        ],
+        "physics": [{"type": "quantum", "tag": "qw", "substrate": "Gallium arsenide", "valence": "kp6", "h1d": "0.25[nm]"}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "2"}
+    }],
+    "studies": [
+        {"type": "study", "tag": "std1", "label": "Valence Bands", "steps": [
+            {"type": "bands", "kmax": "1.5[1/nm]", "points": 21, "states": 3}
+        ]},
+        {"type": "study", "tag": "std2", "label": "Gain", "steps": [
+            {"type": "sweep", "parameters": [["N", "3e18, 5e18", "1/cm^3"]]},
+            {"type": "spectrum", "energies": "range(920[nm], 2[nm], 1040[nm])", "states": 2, "linewidth": "6.6[meV]", "density": "N"}
+        ]}
+    ],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Valence Bands", "study": "std1", "plots": [
+                {"type": "globalgraph", "expression": "qw.Ev1; qw.Ev3; qw.Ev5", "unit": "eV"}
+            ]},
+            {"type": "plotgroup1d", "label": "Gain", "study": "std2", "plots": [
+                {"type": "globalgraph", "expression": "qw.gTE; qw.gTM", "unit": "1/cm"}
+            ]},
+            {"type": "plotgroup1d", "label": "Spontaneous Emission", "study": "std2", "plots": [
+                {"type": "globalgraph", "expression": "qw.rsp", "unit": "1/(s*cm^3*eV)"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Quasi-Fermi levels and emission", "study": "std2", "expression": "qw.dF; qw.Rsp", "solutions": "all"}
+        ]
+    }
+}
