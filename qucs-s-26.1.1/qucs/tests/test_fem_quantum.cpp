@@ -1421,15 +1421,20 @@ private slots:
         // window's top past the barriers' gap and the fade: above them the
         // bulk's absorption alone, the field's none (the review's -6.7e-3
         // to 2.0 eV and -11.2e-3 to 3.0 eV before).
+        // (A sanitized build: its line's elements 0.25 nm - six dense
+        // eigenproblems of 0.1 nm's take minutes there -, 0.02 eV, 4 states,
+        // a line 15 meV wide.)
         const double step = slowBuild() ? 0.02 : 0.01;
         auto spectrum = [&](double top, const char* F, const QString& fade = QString()) {
             const int n = qRound((top - 1.40) / step) + 1;
-            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("8"),
+            return run(modelOf(lighter(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("8"),
                                                QStringLiteral("10"), QStringLiteral(R"(, "F": "%1")").arg(QLatin1String(F)),
-                                               QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.40[eV], %1[eV], %2)", "states": 8, "linewidth": "6[meV]", "lineshape": "gaussian", "continuum": "bound"%3})x")
+                                               QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.40[eV], %1[eV], %2)", "states": %4, "linewidth": "%5", "lineshape": "gaussian", "continuum": "bound"%3})x")
                                                    .arg(top)
                                                    .arg(n)
-                                                   .arg(fade))));
+                                                   .arg(fade)
+                                                   .arg(slowBuild() ? 4 : 8)
+                                                   .arg(slowBuild() ? QStringLiteral("15[meV]") : QStringLiteral("6[meV]"))))));
         };
         auto at = [&](Solution& s, double E, const QString& name) {
             for (int k = 0; k < s.snapshotCount(); ++k) {
@@ -1554,7 +1559,9 @@ private slots:
             }
         }
         qInfo("faded at 77 K: the k·p spectrum the parabolic one's to %.2g", worst);
-        QVERIFY2(worst < 3e-5, qPrintable(QString::number(worst)));
+        // (A sanitized build's k grid of 41 values the k·p integral's own
+        // error some 1e-3: there the paths run, their agreement looser.)
+        QVERIFY2(worst < (slowBuild() ? 1e-2 : 3e-5), qPrintable(QString::number(worst)));
     }
 
     void valleyPresets()
