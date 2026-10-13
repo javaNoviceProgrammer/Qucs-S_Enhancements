@@ -826,8 +826,39 @@ bool SemiconductorProblem::setup(QString* error)
         for (int d : dd.domains) on[std::size_t(d)] = 1;
         Expression N;
         double N0 = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0, sigma = 0;
+        // An implant: its dose, range, spreads (annealed), surface and window.
+        double dose = 0, Rp = 0, sd = 0, sl = 0, ys = 0, w1 = -Inf, w2 = Inf;
         if (profile == QLatin1String("expression")) N = compile(df.text(QStringLiteral("N")), df, QStringLiteral("N"));
-        else {
+        else if (profile == QLatin1String("implant")) {
+            auto length = [&](const QString& text) {
+                if (text.trimmed().isEmpty()) return NaN;
+                const Expression e = Expression::compile(text, constants, inUnit);
+                if (!e.isValid() || !e.isConstant()) {
+                    problem(tr("%1: %2").arg(df.name(), e.isValid() ? tr("its surface and window must be constants") : e.error()));
+                    return NaN;
+                }
+                return e.constant() * topo.unitScale;
+            };
+            dose = number(df.text(QStringLiteral("dose")), Dim::of(-2), df.name());
+            Rp = number(df.text(QStringLiteral("Rp")), Dim::length(), df.name());
+            const double dRp = number(df.text(QStringLiteral("dRp")), Dim::length(), df.name());
+            const double dRl = number(df.text(QStringLiteral("dRl")), Dim::length(), df.name());
+            ys = length(df.text(QStringLiteral("surface")));
+            if (!std::isfinite(ys)) ys = 0;
+            const double a = length(df.text(QStringLiteral("x1"))), b = length(df.text(QStringLiteral("x2")));
+            if (std::isfinite(a)) w1 = a;
+            if (std::isfinite(b)) w2 = b;
+            if (w2 < w1) std::swap(w1, w2);
+            // The anneal: 2 D t, D = D0 e^(-Ea/kT).
+            const double D0 = number(df.text(QStringLiteral("D0")), Dim::of(2, 0, -1), df.name());
+            const double Ea = energyOf(df.text(QStringLiteral("Ea")), constants, &why);
+            const double Ta = number(df.text(QStringLiteral("Ta")), Dim::temperature(), df.name());
+            const double ta = number(df.text(QStringLiteral("ta")), Dim::of(0, 0, 1), df.name());
+            const double twoDt = ta > 0 && D0 > 0 && Ta > 0 && std::isfinite(Ea) ? 2 * D0 * std::exp(-Ea / (KB * Ta)) * ta : 0.0;
+            if (!(dose >= 0) || !(Rp >= 0) || !(dRp > 0) || !(dRl > 0) || !(ta >= 0)) problem(tr("%1: its dose, range and straggles").arg(df.name()));
+            sd = std::sqrt(dRp * dRp + twoDt);
+            sl = std::sqrt(dRl * dRl + twoDt);
+        } else {
             N0 = number(df.text(QStringLiteral("N0")), conc, df.name());
             if (profile == QLatin1String("box")) {
                 auto length = [&](const QJsonValue& v) {
@@ -869,6 +900,17 @@ bool SemiconductorProblem::setup(QString* error)
                 if (!N.isValid()) continue;
                 ev.moveTo(where->triangle, ref[where->corner][0], ref[where->corner][1]);
                 v = ev.eval(N);
+            } else if (profile == QLatin1String("implant")) {
+                // Below the surface: dose/(√(2π) σ) (e^(-(d - Rp)²/2σ²) + its
+                // image e^(-(d + Rp)²/2σ²)), its window's edges as erf's.
+                const QPointF p = sp.point(i);
+                const double d = ys - p.y();
+                if (d < 0 || !(sd > 0)) continue;
+                const double depth = dose / (std::sqrt(2 * M_PI) * sd)
+                                     * (std::exp(-(d - Rp) * (d - Rp) / (2 * sd * sd)) + std::exp(-(d + Rp) * (d + Rp) / (2 * sd * sd)));
+                const double across = 0.5 * ((std::isfinite(w1) ? std::erf((p.x() - w1) / (std::sqrt(2.0) * sl)) : 1.0)
+                                             - (std::isfinite(w2) ? std::erf((p.x() - w2) / (std::sqrt(2.0) * sl)) : -1.0));
+                v = depth * across;
             } else if (profile == QLatin1String("box")) {
                 const QPointF p = sp.point(i);
                 const double dx = std::max({x0 - p.x(), 0.0, p.x() - x1}), dy = std::max({y0 - p.y(), 0.0, p.y() - y1});

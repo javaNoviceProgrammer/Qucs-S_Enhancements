@@ -972,8 +972,28 @@ QList<NodeKind> makeKinds()
          {selectionProp(none),
           choice(QStringLiteral("dopant"), tr("Impurity"), {QStringLiteral("acceptor"), QStringLiteral("donor")},
                  {tr("Acceptors (p-type)"), tr("Donors (n-type)")}, QStringLiteral("acceptor")),
-          choice(QStringLiteral("profile"), tr("Profile"), {QStringLiteral("uniform"), QStringLiteral("box"), QStringLiteral("expression")},
-                 {tr("Uniform"), tr("A box, Gaussian outside it"), tr("User defined")}, QStringLiteral("uniform")),
+          choice(QStringLiteral("profile"), tr("Profile"),
+                 {QStringLiteral("uniform"), QStringLiteral("box"), QStringLiteral("implant"), QStringLiteral("expression")},
+                 {tr("Uniform"), tr("A box, Gaussian outside it"), tr("An implant, annealed"), tr("User defined")}, QStringLiteral("uniform")),
+          shownIf(expr(QStringLiteral("dose"), tr("Dose"), QStringLiteral("1/m^2"), QStringLiteral("1e14[1/cm^2]")), QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("Rp"), tr("Projected range Rp"), QStringLiteral("m"), QStringLiteral("0.1[um]"),
+                       tr("A range table's (SRIM's) for the ion, its energy and the target")),
+                  QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("dRp"), tr("Straggle ΔRp"), QStringLiteral("m"), QStringLiteral("0.03[um]")), QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("dRl"), tr("Lateral straggle"), QStringLiteral("m"), QStringLiteral("0.03[um]")), QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("surface"), tr("Surface at y"), QStringLiteral("length"), QStringLiteral("0"),
+                       tr("The ions enter here, downward (-y)")),
+                  QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("x1"), tr("Mask's window from x"), QStringLiteral("length"), QString(), tr("Empty: no mask")),
+                  QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("x2"), tr("Mask's window to x"), QStringLiteral("length"), QString()), QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("D0"), tr("Diffusivity's D0"), QStringLiteral("m^2/s"), QStringLiteral("0.76[cm^2/s]"),
+                       tr("D = D0 e^(-Ea/kT), the dopant's intrinsic diffusivity: boron's (Fair) by default")),
+                  QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("Ea"), tr("Diffusivity's Ea"), QStringLiteral("eV"), QStringLiteral("3.46[eV]")), QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("Ta"), tr("Anneal temperature"), QStringLiteral("K"), QStringLiteral("1273.15[K]")), QStringLiteral("profile=implant")),
+          shownIf(expr(QStringLiteral("ta"), tr("Anneal time"), QStringLiteral("s"), QStringLiteral("0[s]"), tr("Nought: as implanted")),
+                  QStringLiteral("profile=implant")),
           shownIf(expr(QStringLiteral("N0"), tr("Concentration N0"), QStringLiteral("1/m^3"), QStringLiteral("1e16[1/cm^3]"),
                        tr("A box's inside")),
                   QStringLiteral("profile=uniform|profile=box")),
@@ -991,7 +1011,10 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("profile=expression"))},
          {}, {}, false, false, QStringLiteral("dop"),
          tr("Donors or acceptors on its domains: uniform, a box with a Gaussian fall outside it (N0 exp(-(d/σ)²), the "
-            "background reached at the junction depth), or an expression of x and y. Dopings add.")});
+            "background reached at the junction depth), an implant - a Gaussian of its dose about its range below the surface, "
+            "its mask's window's edges spread by its lateral straggle, annealed as diffusion widens it: σ² = ΔRp² + 2 D t, the "
+            "surface reflecting (its image), the dose kept; exact while D is the intrinsic one, not a high concentration's -, or "
+            "an expression of x and y (another physics' field: a diffusion solved in time, a PDE's u). Dopings add.")});
     add({QStringLiteral("semiconductor/srh"), tr("Trap-Assisted Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(), source,
