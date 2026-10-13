@@ -1152,7 +1152,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `describe_component_type` gives a Verilog-A module's parameters and a
   `.model` card. `find_library_component` finds a part by its values (an
   NPN with Bf near 200) in the libraries and the project's SPICE models,
-  and `read_pdf` reads a datasheet's text. `get_layout`, `find_shapes`
+  and `read_pdf` reads a datasheet's text (its pages as pictures too),
+  `show_pdf` shows a page, a hit or a region of one in its tab. `get_layout`, `find_shapes`
   and `show_layout` read a GDSII or OASIS layout (below): its cells,
   layers and units; its shapes at a point, in a region or on a layer,
   each with its points in µm; and a cell, region or layers of it shown
@@ -1764,7 +1765,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   zooms, the middle button pans; *View
   All*, *View 1:1* and the zoom commands work on it. When its file is
   written again it is read again where you were. *Save As* copies it;
-  *Print* prints its pages. Built with Qt's PDF module (all the release
+  *Print* prints its pages. Claude shows a page of it with `show_pdf`: by
+  number, by a page's label as printed, by a destination of its outline,
+  or by text (`"find": "Figure 2.15:"` - every hit's page said, the first
+  shown and marked), zoomed, or a region of the page (in points, or as
+  fractions: a figure's panel) as large as the tab takes it;
+  `open_document` opens a PDF at a page or a hit. `screenshot` with a
+  page and a region draws it from the file, sharp, the tab left where the
+  user has it; `read_pdf` with `image` gives the pages as pictures too;
+  `get_ui` and `set_ui` reach the tab's own bar (area `document`: a page
+  typed into its field is shown). Built with Qt's PDF module (all the release
   bundles have it); without it PDFs open in the system's viewer as before.
 - **Image viewer**: a picture — a PNG, JPEG, SVG, GIF, BMP, WebP, TIFF,
   HEIC, an icon or a portable map: whatever the build's Qt reads — opens in

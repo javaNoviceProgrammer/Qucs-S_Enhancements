@@ -12,6 +12,7 @@
 #ifndef QUCS_QUCSCONTROL_P_H
 #define QUCS_QUCSCONTROL_P_H
 
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -50,6 +51,10 @@ QJsonObject textResult(const QString& text, bool error = false);
 QJsonObject jsonResult(const QJsonValue& value, bool indented = false);
 QJsonObject errorResult(const QString& text);
 bool sameFile(const QString& a, const QString& b);
+/// A picture as a tool's content: a PNG, base64.
+QJsonObject pngContent(const QImage& image);
+/// Not wider than a picture to look at needs to be (1800 pixels).
+QImage fitted(const QImage& image);
 /// Whether \a file is a document of Qucs-S (a schematic, symbol, data
 /// display or dataset - its first line <Qucs ...>, or its suffix says so),
 /// or Verilog-A or VHDL code: what a netlist or a picture must not replace.
