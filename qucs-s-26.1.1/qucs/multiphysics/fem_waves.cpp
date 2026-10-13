@@ -359,6 +359,7 @@ private:
         cd beta;
         Eigen::VectorXcd x;   // et then ez, by equation
         double share = NaN;   // of its |E|² in the domains tracked
+        double te = NaN;      // of its transverse |E|², the part along x
     };
     std::vector<Mode> a_modes;
     bool a_tracking = false;
@@ -575,13 +576,40 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
         return all > 0 ? there / all : 0.0;
     };
     auto inLayers = [&](const Eigen::VectorXcd& x, cd beta) { return shareIn(x, beta, [&](int d) { return a_media.domains[std::size_t(d)].pml; }); };
+    // A mode's TE fraction: of its transverse |E|² (outside the absorbing
+    // layers), the part along x - 1 a TE mode of layers along y, 0 a TM one.
+    auto teFraction = [&](const Eigen::VectorXcd& x) {
+        double along = 0, all = 0;
+        EdgeSpace::Basis eb;
+        const TriangleRule& q2 = triangleRule(2);
+        for (int t = 0; t < ns.elements(); ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (d < 0 || !f.domains[std::size_t(d)] || a_media.domains[std::size_t(d)].pml) continue;
+            const AffineMap am = affineMap(ns, t);
+            for (const auto& q : q2.points) {
+                es.basis(t, am, q[0], q[1], eb);
+                cd ex = 0, ey = 0;
+                for (int i = 0; i < pe; ++i) {
+                    const int k = a_edgeEq[std::size_t(es.dofs(t)[i])];
+                    if (k < 0) continue;
+                    ex += x(k) * eb.vx[i];
+                    ey += x(k) * eb.vy[i];
+                }
+                along += q[2] * std::abs(am.det) * std::norm(ex);
+                all += q[2] * std::abs(am.det) * (std::norm(ex) + std::norm(ey));
+            }
+        }
+        return all > 0 ? along / all : NaN;
+    };
     // Tracking domains: more modes found, those most in them kept.
     a_tracking = false;
     for (char c : o.track) a_tracking = a_tracking || c;
     auto tracked = [&](int d) { return std::size_t(d) < o.track.size() && o.track[std::size_t(d)]; };
-    // (As many again while too few are left, the layers' crowding the guess.)
-    int dropped = 0, products = 0, restarts = 0;
-    for (int asked = a_tracking ? std::max(2 * wanted + 4, wanted + 6) : layers ? 2 * wanted + 4 : wanted;; asked *= 2) {
+    // (As many again while too few are left, the layers' crowding the guess
+    // - or the other polarization's.)
+    const bool polarized = o.polarization == 1 || o.polarization == 2;
+    int dropped = 0, crossed = 0, products = 0, restarts = 0;
+    for (int asked = a_tracking ? std::max(2 * wanted + 4, wanted + 6) : layers || polarized ? 2 * wanted + 4 : wanted;; asked *= 2) {
         asked = std::min(asked, std::max(1, a_n - 2));
         const EigenResult r = largestEigenvalues(a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(B * x); });
         if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
@@ -589,6 +617,7 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
         restarts += r.restarts;
         a_modes.clear();
         dropped = 0;
+        crossed = 0;
         for (std::size_t i = 0; i < r.values.size(); ++i) {
             const cd lambda = sigma + 1.0 / r.values[i];
             // (The null space of A - its Ez alone, λ nought - is no mode.)
@@ -605,9 +634,14 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
             Eigen::Index largest = 0;
             if (a_nEdge > 0) x.head(a_nEdge).cwiseAbs().maxCoeff(&largest);
             if (std::abs(x(largest)) > 0) x *= std::conj(x(largest)) / std::abs(x(largest));
-            a_modes.push_back({beta, x, a_tracking ? shareIn(x, beta, tracked) : NaN});
+            const double te = teFraction(x);
+            if (polarized && (o.polarization == 1 ? !(te >= 0.5) : !(te < 0.5))) {
+                ++crossed;
+                continue;
+            }
+            a_modes.push_back({beta, x, a_tracking ? shareIn(x, beta, tracked) : NaN, te});
         }
-        if (!layers || int(a_modes.size()) >= wanted || asked >= 96 || asked >= a_n - 2) break;
+        if ((!layers && !polarized) || int(a_modes.size()) >= wanted || asked >= 96 || asked >= a_n - 2) break;
     }
     // By their effective index, the highest first; those nearest the guess
     // as many as asked - or, tracking, those most in the domains tracked.
@@ -625,6 +659,8 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     }
     std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) { return a.beta.real() > b.beta.real(); });
     if (dropped) a_s.log << tr("%1: %2 modes of the absorbing layers left out").arg(a_node->name()).arg(dropped);
+    if (crossed)
+        a_s.log << tr("%1: %2 %3 modes left out").arg(a_node->name()).arg(crossed).arg(o.polarization == 1 ? tr("TM") : tr("TE"));
     a_s.log << tr("%1: %2 modes at %3 about n = %4 (%5 products, %6 restarts)")
                    .arg(a_node->name())
                    .arg(a_modes.size())
@@ -724,6 +760,9 @@ void ModeProblem::setGlobals()
     a_s.setGlobal(p + QStringLiteral("neff_im"), -beta.imag() / a_k0, Dim(), tr("effective index's imaginary part, its loss (β = k0 (neff - j neff_im))"));
     a_s.setGlobal(p + QStringLiteral("lambda0"), 2 * M_PI / a_k0, Dim::length(), tr("free-space wavelength"));
     a_s.setGlobal(p + QStringLiteral("mode"), a_selected + 1, Dim(), tr("the mode's number, by effective index"));
+    a_s.setGlobal(p + QStringLiteral("TEfraction"), a_modes[std::size_t(a_selected)].te, Dim(),
+                  tr("of the mode's transverse |E|², the part along x: near 1 a TE mode (E in the plane of layers along y), near 0 a TM "
+                     "one"));
     if (a_tracking)
         a_s.setGlobal(p + QStringLiteral("Gamma"), a_modes[std::size_t(a_selected)].share, Dim(),
                       tr("the mode's share of |E|² in the domains its step tracks: a confinement factor"));
