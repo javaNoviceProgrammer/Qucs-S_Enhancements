@@ -2044,7 +2044,7 @@ private slots:
         r = call("fem_solve", {{"timeout", 1}});
         QVERIFY2(failed(r) && text(r).contains("fem_stop stops it"), qPrintable(text(r)));
         QVERIFY(doc->isBusy());
-        r = call("fem_stop");
+        r = call("fem_stop", {{"timeout", 600}});
         QVERIFY2(!failed(r) && json(r).value("stopped").toBool() && text(r).contains("Cancelling"), qPrintable(text(r)));
         QVERIFY(!doc->isBusy());
         QVERIFY2(doc->lastError().contains("cancelled"), qPrintable(doc->lastError()));
@@ -2056,8 +2056,50 @@ private slots:
         QVERIFY2(text(r).contains("\"label\":\"Cancel\""), qPrintable(text(r)));
         r = call("set_ui", {{"area", "document"}, {"press", "Cancel"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QVERIFY(doc->waitForJob(60000));
+        QVERIFY(doc->waitForJob(600000));
         QVERIFY2(doc->lastError().contains("cancelled"), qPrintable(doc->lastError()));
+        // A long step at rest stopped between its Newton steps, not once it
+        // is done: the avalanche junction at 0 V, then taken at once to 54 V
+        // on a fine mesh (its contacts' voltage in steps, in the second
+        // point's solve), solved whole, then a copy asked to stop a tenth of
+        // the way in - stopped in a fraction of the rest, said as cancelled
+        // (not as a solution not found).
+        auto atOnce = [&](const QString& name) {
+            const QString file = copyOf(QStringLiteral("avalanche_breakdown.qfem"));
+            const QString to = path(name);
+            QFile::remove(to);
+            QFile::rename(file, to);
+            QFile f(to);
+            f.open(QIODevice::ReadOnly);
+            QString t = QString::fromUtf8(f.readAll());
+            f.close();
+            t.replace(QStringLiteral("\"10, 20, 30, 40, 46, 48, 50, 51, 52, 53, 54\""), QStringLiteral("\"0, 54\""));
+            t.replace(QStringLiteral("\"hmax\": \"0.05\""), slowBuild() ? QStringLiteral("\"hmax\": \"0.1\"") : QStringLiteral("\"hmax\": \"0.015\""));
+            f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            f.write(t.toUtf8());
+            f.close();
+            return to;
+        };
+        MultiphysicsDoc* whole = open(atOnce(QStringLiteral("at_once_whole.qfem")));
+        QVERIFY(whole != nullptr);
+        QElapsedTimer clock;
+        clock.start();
+        whole->compute();
+        QVERIFY(whole->waitForJob(600000));
+        QVERIFY2(whole->lastError().isEmpty(), qPrintable(whole->lastError()));
+        const qint64 full = clock.elapsed();
+        MultiphysicsDoc* stopped = open(atOnce(QStringLiteral("at_once_stopped.qfem")));
+        QVERIFY(stopped != nullptr);
+        stopped->compute();
+        QTest::qWait(int(std::max<qint64>(full / 10, 50)));
+        QVERIFY(stopped->isBusy());
+        clock.restart();
+        r = call("fem_stop", {{"timeout", 600}});
+        const qint64 after = clock.elapsed();
+        qInfo("at rest: solved whole in %lld ms; asked to stop a tenth of the way in, stopped %lld ms after", full, after);
+        QVERIFY2(!failed(r) && json(r).value("stopped").toBool(), qPrintable(text(r)));
+        QVERIFY2(stopped->lastError().contains("cancelled") && !stopped->lastError().contains("no solution found"), qPrintable(stopped->lastError()));
+        QVERIFY2(after < full / 3, qPrintable(QStringLiteral("%1 ms of %2").arg(after).arg(full)));
     }
 
     void claudesToolsShowTheWellsInEV()

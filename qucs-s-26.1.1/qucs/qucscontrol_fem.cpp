@@ -683,8 +683,9 @@ QJsonObject QucsControl::femBuild(const QJsonObject& args)
 
 QJsonObject QucsControl::femStop(const QJsonObject& args)
 {
-    // As the model tab's Cancel: the job asked to stop, waited for - a step
-    // stops at its next check (a time step, a Newton step, a sweep's point).
+    // As the model tab's Cancel: the job asked to stop, waited for - it
+    // stops at its next check (a time step, a frequency, a sweep's point, a
+    // coupled loop's iteration, a semiconductor's Newton step).
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
@@ -695,7 +696,7 @@ QJsonObject QucsControl::femStop(const QJsonObject& args)
     doc->cancelJob();
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(30), 1, 600);
     if (!doc->waitForJob(timeout * 1000))
-        return errorResult(tr("Asked to stop, still at work after %1 s: a step stops at its next check (fem_stop again waits more).").arg(timeout));
+        return errorResult(tr("Asked to stop, still at work after %1 s: it stops at its next check (fem_stop again waits more).").arg(timeout));
     QJsonObject o{{QStringLiteral("stopped"), true}};
     // What it said as it stopped (the solutions it had kept stay).
     QJsonArray said;
