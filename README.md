@@ -2100,7 +2100,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     current steps over its band's offset (the affinities, the gaps, the
     densities of states) - germanium on silicon's conduction band 0.05 eV
     and valence band 0.52 eV apart, a p-Ge n-Si diode's current the short
-    diode's to 0.3 %. **Doping** uniform, a box with Gaussian
+    diode's to 0.3 %; a node on the interface takes the narrower gap's
+    material, whatever the mesh's order. **Doping** uniform, a box with Gaussian
     tails, an **implant** (its dose about its range below the surface, a
     mask's window's edges spread, **annealed**: σ² = ΔRp² + 2 D t, D = D0
     e^(-Ea/kT), the dose kept - boron at 1000 °C for 30 minutes the PDE
@@ -2454,10 +2455,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   aberration, white light through a prism, a graded-index lens, a thermal
   lens (rays and heat solved in turn), and a photodiode lit by rays (0.48
   A/W, 95 % of the ideal); a germanium-on-silicon waveguide photodiode
-  (1.15 A/W at 1550 nm, 7 nA dark, 29 GHz at 1 mW, its response along the
+  (1.16 A/W at 1550 nm, 7 nA dark, 29 GHz at 1 mW, its response along the
   wavelength falling past the strained edge, the heterojunction's bands)
   and a germanium-silicon electroabsorption modulator (5.6 dB of
-  extinction at -3 V for 0.65 dB inserted over 50 µm, its spectra at two
+  extinction at -3 V for 0.62 dB inserted over 50 µm, its spectra at two
   biases); a GaAs quantum well's states on its band
   diagram and its absorption's staircase (e1-hh1 at 849 nm), an
   InGaAs/InAlAs multiple quantum well's Stark shift at 1.52 µm, a strained
