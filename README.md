@@ -2131,6 +2131,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     **Fowler-Nordheim** tunnelling through an oxide after the solve
     (semi.Ifn: 3 mA/cm² at 10 MV/cm in SiO₂). **Ohmic, Schottky and
     gate contacts** (a work function on an oxide), fixed surface charge,
+    wurtzite's **polarization charge** at the interfaces between nitrides
+    (-ΔP·n, the spontaneous and piezoelectric parts on a substrate's
+    lattice: an Al0.3Ga0.7N barrier on GaN 0.024 C/m², its 2DEG),
     **interface traps** (acceptor- or donor-like, one level or a uniform
     Dit; Shockley-Read-Hall occupancy, their charge and the pairs they
     recombine: a MOS capacitor's C-V curve stretched as q² Dit (ψs - φB)/Cox
@@ -2235,6 +2238,20 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     k in the **axial approximation** (Chuang's and Lumerical's), along
     [100] or [110], or **averaged** over the plane's directions; a
     **Valence Bands** step gives their dispersion (`qw.k`, `qw.Ev1`...).
+    **Wurtzite** wells (c along the axis): the nitrides - GaN, AlN, InN
+    and AlGaN, InGaN, InAlN, Vurgaftman and Meyer's (Lumerical's stock
+    nitrides the same) - or a material of one's own (`"crystal":
+    "wurtzite"`: A1-A6, Δcr, Δso, D1-D6, a1, a2, Psp, e31, e33, its strain
+    given or its substrate's), the 6x6 Chuang and Chang's, the electron's
+    mass across c and TM's Ep∥ their own; Lumerical's 6x6 benchmark, their
+    strained GaN/Al0.2Ga0.8N well, within 1.3 meV for the first five
+    subbands; an AlN layer's edge TM (its crystal field below 0). The
+    **polarization** (`"polarization"`: periodic, or no field at the
+    ends; metal or nitrogen face): each layer's field from the interfaces'
+    bound charges - a periodic stack's well (Pb - Pw) Lb/(εw Lb + εb Lw),
+    2.1 MV/cm in GaN between Al0.3Ga0.7N - screened by a spectrum's
+    carriers (the states and their charge in turn: 1.03 MV/cm at 4e19
+    cm⁻³, e1-hh1 200 meV up).
     An **Optical Spectrum** step: the
     wells' **absorption**, TE and TM (each transition's step of the 2D
     density of states, or a wire's 1D one, broadened by a Lorentzian, a

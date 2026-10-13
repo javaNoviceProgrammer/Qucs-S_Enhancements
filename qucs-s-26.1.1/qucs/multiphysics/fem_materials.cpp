@@ -189,6 +189,103 @@ BandParameters ternaryAt(const Ternary& t, double x, double T, BandSet set = Ban
     return p;
 }
 
+/// A wurtzite binary: its parameters (Eg at 0 K), Varshni's α (eV/K) and β
+/// (K) of its gap. (Vurgaftman and Meyer's, J. Appl. Phys. 94, 3675 (2003) -
+/// Lumerical's stock GaN, AlN and InN carry the same k·p, strain and lattice
+/// values -; the valence bands' tops AlN 0.8 eV below GaN's (theirs), InN
+/// 1.05 above it (Martin et al.'s: measured ones spread 0.6-1.1); Psp
+/// Bernardini and Fiorentini's, e31 and e33 Bernardini, Fiorentini and
+/// Vanderbilt's; εr along c; n near the gap.)
+struct Nitride {
+    const char* name;
+    WurtziteParameters p;
+    double alpha, beta;
+};
+
+const std::vector<Nitride>& nitrides()
+{
+    // Eg Ev Δcr Δso me∥ me⊥ A1-6 D1-6 a1 a2 Ep a c (Å) C11 C12 C13 C33 (GPa) Psp e31 e33 εr n.
+    auto wp = [](double eg, double ev, double dcr, double dso, double mez, double mep, std::array<double, 6> A, std::array<double, 6> D,
+                 double a1, double a2, double ep, double a, double c, double c11, double c12, double c13, double c33, double psp, double e31,
+                 double e33, double epsr, double n) {
+        WurtziteParameters p;
+        p.Eg = eg;
+        p.Ev = ev;
+        p.dcr = dcr;
+        p.dso = dso;
+        p.mez = mez;
+        p.mep = mep;
+        for (int i = 0; i < 6; ++i) {
+            p.A[i] = A[std::size_t(i)];
+            p.D[i] = D[std::size_t(i)];
+        }
+        p.a1 = a1;
+        p.a2 = a2;
+        p.Ep = ep;
+        p.a = a * 1e-10;
+        p.c = c * 1e-10;
+        p.C11 = c11 * 1e9;
+        p.C12 = c12 * 1e9;
+        p.C13 = c13 * 1e9;
+        p.C33 = c33 * 1e9;
+        p.Psp = psp;
+        p.e31 = e31;
+        p.e33 = e33;
+        p.epsr = epsr;
+        p.n = n;
+        return p;
+    };
+    static const std::vector<Nitride> list = {
+        {"GaN",
+         wp(3.510, -2.64, 0.010, 0.017, 0.20, 0.20, {-7.21, -0.44, 6.68, -3.46, -3.40, -4.90}, {-3.7, 4.5, 8.2, -4.1, -4.0, -5.5}, -4.9, -11.3,
+            14.0, 3.189, 5.185, 390, 145, 106, 398, -0.034, -0.49, 0.73, 10.4, 2.5),
+         0.909e-3, 830},
+        {"AlN",
+         wp(6.25, -3.44, -0.169, 0.019, 0.32, 0.30, {-3.86, -0.25, 3.58, -1.32, -1.47, -1.64}, {-17.1, 7.9, 8.8, -3.9, -3.4, -3.4}, -3.4,
+            -11.8, 14.5, 3.112, 4.982, 396, 137, 108, 373, -0.090, -0.60, 1.46, 9.1, 2.15),
+         1.799e-3, 1462},
+        {"InN",
+         wp(0.78, -1.59, 0.040, 0.005, 0.07, 0.07, {-8.21, -0.68, 7.57, -5.23, -5.11, -5.96}, {-3.7, 4.5, 8.2, -4.1, -4.0, -5.5}, -3.5, -3.5,
+            14.6, 3.545, 5.703, 223, 115, 92, 224, -0.042, -0.57, 0.97, 15.3, 2.9),
+         0.245e-3, 624},
+    };
+    return list;
+}
+
+/// A nitride alloy A_x B_(1-x) N: its binaries and its gap's and
+/// spontaneous polarization's bowings (eV, C/m²; Psp's added: Psp = x Pa +
+/// (1 - x) Pb + b x (1 - x)).
+struct NitrideAlloy {
+    const char* name;
+    const char* a;
+    const char* b;
+    double bowEg, bowPsp;
+};
+
+const std::vector<NitrideAlloy>& nitrideAlloys()
+{
+    static const std::vector<NitrideAlloy> list = {
+        {"AlGaN", "AlN", "GaN", 0.8, 0.019},
+        {"InGaN", "InN", "GaN", 1.4, 0.038},
+        {"InAlN", "InN", "AlN", 2.5, 0.071},
+    };
+    return list;
+}
+
+const Nitride* nitride(const QString& name)
+{
+    for (const Nitride& n : nitrides())
+        if (name.compare(QLatin1String(n.name), Qt::CaseInsensitive) == 0) return &n;
+    return nullptr;
+}
+
+WurtziteParameters nitrideAt(const Nitride& n, double T)
+{
+    WurtziteParameters p = n.p;
+    p.Eg = n.p.Eg - n.alpha * T * T / (T + n.beta);
+    return p;
+}
+
 /// The binaries an alloy is of and their shares (for what has no bowing:
 /// thermal and transport values).
 std::vector<std::pair<const Binary*, double>> shares(const QString& compound, double x, double y)
@@ -307,8 +404,9 @@ const QList<MaterialEntry>& builtinMaterials()
                {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"dndT", "4.2e-4[1/K]"}, {"Eg", "0.65[eV]"}, {"chi", "4.0[eV]"},
                {"Nc", "1.04e19[1/cm^3]"}, {"Nv", "6.0e18[1/cm^3]"}, {"mun", "3900[cm^2/(V*s)]"}, {"mup", "1900[cm^2/(V*s)]"},
                {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"Egd", "0.773[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
-        entry("Gallium nitride", "Semiconductors", "Wurtzite GaN (its polarization not modelled); n at 1550 nm",
-              {{"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"}, {"mur", "1"}, {"E", "295[GPa]"},
+        entry("Gallium nitride", "Semiconductors",
+              "Wurtzite GaN: its bands for quantum wells (k·p 6x6, its polarization) its compound's; n at 1550 nm",
+              {{"compound", "GaN"}, {"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"}, {"mur", "1"}, {"E", "295[GPa]"},
                {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"}, {"n", "2.31"}, {"Eg", "3.4[eV]"}, {"chi", "4.1[eV]"}, {"Nc", "2.3e18[1/cm^3]"},
                {"Nv", "4.6e19[1/cm^3]"}, {"mun", "1000[cm^2/(V*s)]"}, {"mup", "30[cm^2/(V*s)]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
         entry("Silicon dioxide", "Semiconductors", "SiO₂, thermal oxide or fused silica; n at 1550 nm",
@@ -341,6 +439,15 @@ const QList<MaterialEntry>& builtinMaterials()
         compoundEntry("Indium gallium arsenide phosphide", "In₁₋ₓGaₓAsᵧP₁₋ᵧ: on InP's lattice y ≈ 2.2 x; x 0.28, y 0.6 is the 1.3 µm quaternary",
                       "InGaAsP", "0.28", "0.6"),
         compoundEntry("Aluminium gallium indium arsenide", "AlₓGaᵧIn₁₋ₓ₋ᵧAs: x + y 0.47 is InP's lattice", "AlGaInAs", "0.2", "0.27"),
+        // The nitrides (wurtzite): their bands, strain and polarization for
+        // quantum wells.
+        compoundEntry("Aluminium nitride", "AlN: wurtzite, the widest gap (6.2 eV at 300 K); its crystal field below 0 - its top band Z-like, "
+                      "its light TM", "AlN"),
+        compoundEntry("Indium nitride", "InN: wurtzite, a narrow gap (0.76 eV)", "InN"),
+        compoundEntry("Aluminium gallium nitride", "AlₓGa₁₋ₓN, x the aluminium's share (barriers to GaN; a bowing of 0.8 eV)", "AlGaN", "0.2"),
+        compoundEntry("Indium gallium nitride", "InₓGa₁₋ₓN, x the indium's share (blue and green wells on GaN; a bowing of 1.4 eV)", "InGaN",
+                      "0.15"),
+        compoundEntry("Indium aluminium nitride", "InₓAl₁₋ₓN, x the indium's share: 0.18 is GaN's lattice", "InAlN", "0.18"),
         entry("Lithium niobate", "Semiconductors", "LiNbO₃ along its optical axis (εr33, ne at 1550 nm): it is anisotropic",
               {{"epsilonr", "28"}, {"sigma", "1e-15[S/m]"}, {"k", "4.6[W/(m*K)]"}, {"rho", "4640[kg/m^3]"}, {"Cp", "630[J/(kg*K)]"},
                {"mur", "1"}, {"E", "170[GPa]"}, {"nu", "0.25"}, {"alpha", "7.5e-6[1/K]"}, {"n", "2.138"}, {"dndT", "3.3e-5[1/K]"}}),
@@ -510,7 +617,51 @@ QStringList compounds()
     for (const Binary& b : binaries()) out << QString::fromLatin1(b.name);
     for (const Ternary& t : ternaries()) out << QString::fromLatin1(t.name);
     out << QStringLiteral("InGaAsP") << QStringLiteral("AlGaInAs");
+    for (const Nitride& n : nitrides()) out << QString::fromLatin1(n.name);
+    for (const NitrideAlloy& a : nitrideAlloys()) out << QString::fromLatin1(a.name);
     return out;
+}
+
+bool isWurtzite(const QString& compound)
+{
+    const QString name = compound.trimmed();
+    if (nitride(name)) return true;
+    for (const NitrideAlloy& a : nitrideAlloys())
+        if (name.compare(QLatin1String(a.name), Qt::CaseInsensitive) == 0) return true;
+    return false;
+}
+
+std::optional<WurtziteParameters> wurtziteParameters(const QString& compound, double x, double T, QString* error)
+{
+    auto fail = [&](const QString& why) -> std::optional<WurtziteParameters> {
+        if (error) *error = why;
+        return std::nullopt;
+    };
+    const QString name = compound.trimmed();
+    if (!(T > 0)) return fail(tr("a temperature of %1 K").arg(T));
+    if (const Nitride* n = nitride(name)) return nitrideAt(*n, T);
+    for (const NitrideAlloy& al : nitrideAlloys()) {
+        if (name.compare(QLatin1String(al.name), Qt::CaseInsensitive) != 0) continue;
+        if (!(x >= -1e-12 && x <= 1 + 1e-12)) return fail(tr("%1: x = %2 is not between 0 and 1").arg(name).arg(x));
+        x = std::clamp(x, 0.0, 1.0);
+        const WurtziteParameters a = nitrideAt(*nitride(QLatin1String(al.a)), T), b = nitrideAt(*nitride(QLatin1String(al.b)), T);
+        WurtziteParameters p;
+        auto mix = [&](double WurtziteParameters::*m) { p.*m = x * (a.*m) + (1 - x) * (b.*m); };
+        for (auto m : {&WurtziteParameters::Eg, &WurtziteParameters::Ev, &WurtziteParameters::dcr, &WurtziteParameters::dso,
+                       &WurtziteParameters::mez, &WurtziteParameters::mep, &WurtziteParameters::a1, &WurtziteParameters::a2,
+                       &WurtziteParameters::Ep, &WurtziteParameters::a, &WurtziteParameters::c, &WurtziteParameters::C11,
+                       &WurtziteParameters::C12, &WurtziteParameters::C13, &WurtziteParameters::C33, &WurtziteParameters::Psp,
+                       &WurtziteParameters::e31, &WurtziteParameters::e33, &WurtziteParameters::epsr, &WurtziteParameters::n})
+            mix(m);
+        for (int i = 0; i < 6; ++i) {
+            p.A[i] = x * a.A[i] + (1 - x) * b.A[i];
+            p.D[i] = x * a.D[i] + (1 - x) * b.D[i];
+        }
+        p.Eg -= al.bowEg * x * (1 - x);
+        p.Psp += al.bowPsp * x * (1 - x);
+        return p;
+    }
+    return fail(tr("%1 is not a nitride known (GaN, AlN, InN, AlGaN, InGaN, InAlN)").arg(name));
 }
 
 BandSet bandSetOf(const QString& text)
@@ -527,6 +678,27 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
     const QString name = compound.trimmed();
     if (!(T > 0)) return fail(tr("a temperature of %1 K").arg(T));
     if (const Binary* b = binary(name)) return binaryAt(*b, T, set);
+    if (isWurtzite(name)) {
+        // A nitride's as zinc blende's would say it (other physics' gap,
+        // affinity, permittivity, index; a substrate's lattice in the plane):
+        // the holes' mass along c in γ1, γ2 0.
+        const std::optional<WurtziteParameters> w = wurtziteParameters(name, x, T, error);
+        if (!w) return std::nullopt;
+        BandParameters p;
+        p.Eg = w->Eg;
+        p.VBO = w->Ev;
+        p.Delta = w->dso;
+        p.me = w->mez;
+        p.gamma1 = -(w->A[0] + w->A[2]);
+        p.Ep = w->Ep;
+        p.a0 = w->a;
+        p.ac = w->a2;
+        p.C11 = w->C11;
+        p.C12 = w->C12;
+        p.epsr = w->epsr;
+        p.n = w->n;
+        return p;
+    }
     auto inRange = [](double v) { return v >= -1e-12 && v <= 1 + 1e-12; };
     if (const Ternary* t = ternary(name)) {
         if (!inRange(x)) return fail(tr("%1: x = %2 is not between 0 and 1").arg(name).arg(x));

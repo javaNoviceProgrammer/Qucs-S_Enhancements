@@ -68,6 +68,17 @@ struct Band {
     // (eV: 3 Qε, Chuang's Qε = -b (εxx - εzz)).
     double g1 = NaN, g2 = NaN, g3 = NaN, delta = NaN, dZ = 0;
     double strain = 0;                  // in the plane
+    // Wurtzite (c along the growth axis): Chuang and Chang's 6x6 - A1-A6
+    // (ħ²/2m0), Δ1 = Δcr, Δ2 = Δ3 = Δso/3, strain's λε and θε on its
+    // bands (eV); its heavy holes' and light holes' edges over the k·p's
+    // reference, the conduction band's strain shift (eV: a user's added to
+    // its Ec and Ev); the electron's mass across c and Kane's Ep along it
+    // (TM); its polarization along c (C/m²: spontaneous and piezoelectric).
+    bool wz = false;
+    double A[6] = {0, 0, 0, 0, 0, 0};
+    double dcr = 0, dso = 0, lambdaE = 0, thetaE = 0;
+    double hhOver = 0, lhOver = 0, ecShift = 0, kpRef = 0;
+    double meP = NaN, EpZ = NaN, P = 0;
     Expression userEc, userEv;          // (as given: of x and y)
     std::vector<ValleySet> valleys;     // the electrons' valley sets (none: one, me's)
 };
@@ -96,7 +107,7 @@ struct State {
     Eigen::VectorXd x;
     double pos = 0;
     bool bound = false;
-    double mPar = 0, Ep = 0, nr = 0;
+    double mPar = 0, Ep = 0, EpZ = 0, nr = 0;
     int valley = -1;     // an electron's valley set (-1: one valley, me's)
     double g = 1;        // its valleys (each with spin's two)
     bool top = false;    // its ladder's highest found
@@ -317,6 +328,30 @@ private:
     bool a_on[Carriers] = {true, true, true};
     int a_order = 2;
     double a_T = 300, a_F = 0, a_s0 = 0, a_drawn = 0.05, a_h1d = 1e-10;
+    // Wurtzite's polarization (1D): 0 none, 1 periodic (no drop across the
+    // physics), 2 no field at its ends; its sign along the axis (1 the metal
+    // face's, -1 the nitrogen face's); each point's element, and the energy
+    // (eV) it adds there.
+    int a_polarization = 0;
+    double a_polarity = 1;
+    std::vector<int> a_pointElement;
+    std::vector<double> a_Upol;
+    // The carriers' charge screening it (C/m³ at the points: a spectrum's),
+    // and whether a solve is in its loop (its field said once, after).
+    std::vector<double> a_rho;
+    bool a_screening = false;
+    /// A spectrum's carriers screen the polarization: the states and their
+    /// charge q(p - n) in turn with its potential, the charge mixed, till
+    /// the potential moves less than 0.1 meV (60 turns at most).
+    bool screen(const SpectrumOptions& o, QString* error);
+    /// The polarization's: each element's field F = (D - P)/ε0εr along the
+    /// axis - D the displacement, by the interfaces' bound charges -ΔP and
+    /// the free charges \a rho (C/m³ at the points; none: none) -, D such
+    /// that the potential drops nothing across the physics (periodic) or that
+    /// its first layer has none; the bands moved by ∫F from the physics'
+    /// middle (as the field's). The energy (eV) at each point; its field in
+    /// each domain (V/m, their mean) into \a fields when asked.
+    std::vector<double> polarizationEnergy(const std::vector<double>* rho, std::vector<double>* fields = nullptr) const;
     Expression a_V;
     std::vector<Band> a_bands;   // by domain
     std::vector<int> a_flux;     // boundaries whose wavefunction is free
@@ -407,7 +442,7 @@ double QuantumProblem::mass(int c, int d, bool along) const
             const ValleySet& v = b.valleys[std::size_t(a_set)];
             return along ? v.mz : v.md;
         }
-        return b.me;
+        return along || !std::isfinite(b.meP) ? b.me : b.meP;
     }
     if (c == 1) return along ? b.mhhZ : b.mhhP;
     return along ? b.mlhZ : b.mlhP;
@@ -478,6 +513,12 @@ bool QuantumProblem::setup(QString* error)
     if (!(a_T > 0)) problem(tr("%1: its temperature must be more than 0").arg(a_node->name()));
     a_F = number(a_node->text(QStringLiteral("F")), Dim::of(1, 1, -3, -1), tr("its field"));
     if (!std::isfinite(a_F)) a_F = 0;
+    {
+        const QString pol = a_node->text(QStringLiteral("polarization"));
+        a_polarization = pol == QLatin1String("periodic") ? 1 : pol == QLatin1String("ends") ? 2 : 0;
+        a_polarity = a_node->text(QStringLiteral("polarity")) == QLatin1String("nitrogen") ? -1 : 1;
+        if (a_polarization && !a_1d) problem(tr("%1: the polarization's field is a well's (1D)").arg(a_node->name()));
+    }
     a_drawn = energy(a_node->text(QStringLiteral("drawn")), tr("the height its waves are drawn"));
     if (!std::isfinite(a_drawn)) a_drawn = 0.05;
     if (a_1d) {
@@ -545,12 +586,66 @@ bool QuantumProblem::setup(QString* error)
         else if (feature.type == QLatin1String("quantum/flux"))
             for (int b : picked) a_flux.push_back(b);
     }
+    // A wurtzite layer's bands (Chuang and Chang's): at k = 0 the heavy
+    // holes' Δ1 + Δ2 + λε + θε over the k·p's reference, the light and
+    // crystal-field holes' the 2x2 of Δ1 - Δ2 + λε + θε and λε coupled by √2
+    // Δ3 (λε = D1 εzz + D2 (εxx + εyy), θε = D3 εzz + D4 (εxx + εyy)); the
+    // conduction band moved by a1 εzz + a2 (εxx + εyy); the polarization
+    // Psp + e31 (εxx + εyy) + e33 εzz. A library's Ev its top unstrained, a
+    // user's the reference (its edges' offsets added to its Ec and Ev). Its
+    // parabolic holes' masses (heavy and light alike): along c 1/(A1 + A3),
+    // across 1/(A2 + A4) - the 6x6 is the band's.
+    auto wurtzite = [&](Band& b, const WurtziteParameters& w, double exx, double ezz, bool library) {
+        b.wz = true;
+        std::copy(w.A, w.A + 6, b.A);
+        b.dcr = w.dcr;
+        b.dso = w.dso;
+        b.delta = w.dso;
+        b.lambdaE = w.D[0] * ezz + 2 * w.D[1] * exx;
+        b.thetaE = w.D[2] * ezz + 2 * w.D[3] * exx;
+        b.strain = exx;
+        const double d1 = w.dcr, d2 = w.dso / 3;
+        auto edges = [&](double lam, double th, double& hh, double& lh) {
+            hh = d1 + d2 + lam + th;
+            const double g = d1 - d2 + lam + th, m = 0.5 * (g + lam), h = 0.5 * (g - lam);
+            lh = m + std::sqrt(h * h + 2 * d2 * d2);
+        };
+        double hh0 = 0, lh0 = 0, hh = 0, lh = 0;
+        edges(0, 0, hh0, lh0);
+        edges(b.lambdaE, b.thetaE, hh, lh);
+        b.kpRef = hh;
+        b.ecShift = w.a1 * ezz + 2 * w.a2 * exx;
+        if (library) {
+            const double ref = w.Ev - std::max(hh0, lh0);
+            b.Ec = w.Ev + w.Eg + b.ecShift;
+            b.Ehh = ref + hh;
+            b.Elh = ref + lh;
+            b.me = w.mez;
+            b.meP = w.mep;
+            b.Ep = w.Ep;
+            b.EpZ = w.Ep;
+            b.epsr = w.epsr;
+            b.nr = w.n;
+            b.ecShift = 0;
+        } else {
+            b.hhOver = hh;
+            b.lhOver = lh;
+        }
+        b.mhhZ = b.mlhZ = -1 / (w.A[0] + w.A[2]);
+        b.mhhP = b.mlhP = -1 / (w.A[1] + w.A[3]);
+        b.P = w.Psp + 2 * w.e31 * exx + w.e33 * ezz;
+    };
     for (int d : domains) {
         Band& b = a_bands[std::size_t(d)];
         const Node* mf = modelOf[std::size_t(d)];
         const Node* mat = material[std::size_t(d)];
         const QString where = tr("domain %1 (%2)").arg(d + 1).arg(topo.objectNames.value(topo.domains[std::size_t(d)].owner));
         b.on = true;
+        // (Wurtzite's: the record, its strain in the plane and along c, its
+        // Ev the top's or the reference's.)
+        std::optional<WurtziteParameters> wz;
+        double wzExx = 0, wzEzz = 0;
+        bool wzLibrary = true;
         if (mf && mf->text(QStringLiteral("source")) == QLatin1String("user")) {
             b.user = true;
             b.userEc = compile(mf->text(QStringLiteral("Ec")), *mf, QStringLiteral("Ec"));
@@ -572,6 +667,50 @@ bool QuantumProblem::setup(QString* error)
             b.nr = number(mf->text(QStringLiteral("nr")), Dim(), tr("%1's refractive index").arg(where));
             const QString eps = mf->text(QStringLiteral("epsilonr")).trimmed();
             b.epsr = eps.isEmpty() ? b.nr * b.nr : number(eps, Dim(), tr("%1's permittivity").arg(where));
+            if (mf->text(QStringLiteral("crystal")) == QLatin1String("wurtzite")) {
+                WurtziteParameters w;
+                auto six = [&](const QString& key, double* out, bool need) {
+                    const QString t = mf->text(key).trimmed();
+                    if (t.isEmpty()) {
+                        if (need) problem(tr("%1: its wurtzite material wants %2 (six numbers)").arg(where, key));
+                        return !need;
+                    }
+                    const QStringList parts = t.split(QRegularExpression(QStringLiteral("[,;\\s]+")), Qt::SkipEmptyParts);
+                    bool ok = parts.size() == 6;
+                    for (int i = 0; ok && i < 6; ++i) out[i] = parts[i].toDouble(&ok);
+                    if (!ok) problem(tr("%1: its %2 must be six numbers").arg(where, key));
+                    return ok;
+                };
+                auto given = [&](const QString& key, double otherwise, const Dim& dim, bool eV) {
+                    const QString t = mf->text(key).trimmed();
+                    if (t.isEmpty()) return otherwise;
+                    return eV ? energy(t, tr("%1's %2").arg(where, key)) : number(t, dim, tr("%1's %2").arg(where, key));
+                };
+                const Dim pascal = Dim::of(-1, 1, -2), polarization = Dim::of(-2, 0, 1, 1);
+                if (!six(QStringLiteral("A"), w.A, true) || !six(QStringLiteral("D"), w.D, false)) continue;
+                w.dcr = given(QStringLiteral("Dcr"), 0, Dim(), true);
+                w.dso = given(QStringLiteral("Dso"), 0, Dim(), true);
+                w.mez = b.me;
+                w.mep = given(QStringLiteral("mep"), b.me, Dim(), false);
+                w.a1 = given(QStringLiteral("a1"), 0, Dim(), true);
+                w.a2 = given(QStringLiteral("a2"), 0, Dim(), true);
+                w.C13 = given(QStringLiteral("C13"), NaN, pascal, false);
+                w.C33 = given(QStringLiteral("C33"), NaN, pascal, false);
+                w.Psp = given(QStringLiteral("Psp"), 0, polarization, false);
+                w.e31 = given(QStringLiteral("e31"), 0, polarization, false);
+                w.e33 = given(QStringLiteral("e33"), 0, polarization, false);
+                b.meP = w.mep;
+                b.EpZ = given(QStringLiteral("Epz"), b.Ep, Dim(), true);
+                wzExx = given(QStringLiteral("exx"), 0, Dim(), false);
+                const QString ezz = mf->text(QStringLiteral("ezz")).trimmed();
+                if (!ezz.isEmpty()) wzEzz = number(ezz, Dim(), tr("%1's εzz").arg(where));
+                else if (wzExx != 0) {
+                    if (w.C33 > 0 && std::isfinite(w.C13)) wzEzz = -2 * w.C13 / w.C33 * wzExx;
+                    else problem(tr("%1: its strain along c wants εzz, or C13 and C33").arg(where));
+                }
+                wzLibrary = false;
+                wz = w;
+            }
         } else {
             if (!mat) {
                 problem(tr("%1 has no material").arg(where));
@@ -579,6 +718,25 @@ bool QuantumProblem::setup(QString* error)
             }
             auto text = [&](const QString& key) { return materialProperty(*mat, key, &constants); };
             const QString compound = materialProperty(*mat, QStringLiteral("compound")).trimmed();
+            if (!compound.isEmpty() && isWurtzite(compound)) {
+                // A nitride: its record (a gap given its 300 K one, moved with
+                // the temperature as its compound's), pseudomorphic on the
+                // substrate's lattice in the c-plane (εzz = -2 C13/C33 εxx).
+                const double x = evaluateConstant(materialProperty(*mat, QStringLiteral("x")), constants, Dim()).value_or(0);
+                wz = wurtziteParameters(compound, x, a_T, &why);
+                if (!wz) {
+                    problem(tr("%1: %2").arg(where, why));
+                    continue;
+                }
+                const QString eg = givenProperty(*mat, QStringLiteral("Eg"), &constants).trimmed();
+                if (!eg.isEmpty()) wz->Eg = energy(eg, tr("%1's Eg").arg(where)) + (wz->Eg - wurtziteParameters(compound, x, 300)->Eg);
+                const QString vbo = givenProperty(*mat, QStringLiteral("VBO"), &constants).trimmed();
+                if (!vbo.isEmpty()) wz->Ev = energy(vbo, tr("%1's VBO").arg(where));
+                if (std::isfinite(substrate)) {
+                    wzExx = (substrate - wz->a) / wz->a;
+                    wzEzz = -2 * wz->C13 / wz->C33 * wzExx;
+                }
+            }
             std::optional<BandParameters> p;
             double shift300 = 0;   // its gap at T less its gap at 300 K (Varshni's)
             if (!compound.isEmpty()) {
@@ -669,6 +827,7 @@ bool QuantumProblem::setup(QString* error)
                 b.Elh = VBO - P + 0.5 * (Qe - D + std::sqrt(D * D + 2 * D * Qe + 9 * Qe * Qe));
             }
         }
+        if (wz) wurtzite(b, *wz, wzExx, wzEzz, wzLibrary);
         if (!(b.me > 0) || !(b.mhhZ > 0) || !(b.mlhZ > 0) || !(b.mhhP > 0) || !(b.mlhP > 0))
             problem(tr("%1: its effective masses must be more than 0").arg(where));
         // The electrons' valleys (Si, Ge): the feature's, else the material's.
@@ -676,6 +835,17 @@ bool QuantumProblem::setup(QString* error)
         if (valleys.isEmpty() && mat) valleys = materialProperty(*mat, QStringLiteral("valleys"), &constants).trimmed();
         if (const std::optional<std::vector<ValleySet>> sets = valleySets(valleys, &why)) b.valleys = *sets;
         else problem(tr("%1: its valleys: %2").arg(where, why));
+    }
+    {
+        int wurtzites = 0, all = 0;
+        for (const Band& b : a_bands)
+            if (b.on) {
+                ++all;
+                wurtzites += b.wz ? 1 : 0;
+            }
+        if (wurtzites > 0 && wurtzites < all) problem(tr("%1: its layers are wurtzite and zinc blende both: one crystal").arg(a_node->name()));
+        if (wurtzites > 0 && (a_valence == 4 || a_valence == 8))
+            problem(tr("%1: the k·p 4x4 and 8x8 are zinc blende's: wurtzite's is the 6x6").arg(a_node->name()));
     }
     a_sets = 0;
     for (const Band& b : a_bands) a_sets = std::max(a_sets, int(b.valleys.size()));
@@ -727,6 +897,91 @@ bool QuantumProblem::buildLine(QString* error)
     return true;
 }
 
+std::vector<double> QuantumProblem::polarizationEnergy(const std::vector<double>* rho, std::vector<double>* fields) const
+{
+    std::vector<double> out(a_points.size(), 0.0);
+    // The physics' elements along the axis (its line may run either way):
+    // each one's span, polarization, permittivity and free charge (C/m²).
+    struct Element {
+        double lo = 0, hi = 0, P = 0, eps = 1, sigma = 0, D = 0, F = 0, U = 0;
+        int d = -1;
+    };
+    const QPointF u = (a_E - a_S) / a_L;
+    auto axisOf = [&](double z) {
+        const QPointF p = a_S + u * z;
+        return a_axis == 1 ? p.y() : p.x();
+    };
+    std::vector<Element> els;
+    std::vector<int> index(a_elemDomain.size(), -1);
+    for (std::size_t e = 0; e < a_elemDomain.size(); ++e) {
+        const int d = a_elemDomain[e];
+        if (d < 0 || !a_bands[std::size_t(d)].on) continue;
+        const Band& b = a_bands[std::size_t(d)];
+        Element el;
+        const double a0 = axisOf(a_z[2 * e]), a2 = axisOf(a_z[2 * e + 2]);
+        el.lo = std::min(a0, a2);
+        el.hi = std::max(a0, a2);
+        el.P = a_polarity * b.P;
+        el.eps = b.epsr > 0 ? b.epsr : (b.nr > 0 ? b.nr * b.nr : 10);
+        el.d = d;
+        index[e] = int(els.size());
+        els.push_back(el);
+    }
+    if (rho)
+        for (std::size_t i = 0; i < a_points.size() && i < a_pointElement.size(); ++i) {
+            const int k = index[std::size_t(a_pointElement[i])];
+            if (k >= 0) els[std::size_t(k)].sigma += (*rho)[i] * a_points[i].w * 1e-9;
+        }
+    std::vector<std::size_t> order(els.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return els[a].lo < els[b].lo; });
+    if (order.empty()) return out;
+    // D at each element (its own free charge half before it), less D0.
+    double q = 0, num = 0, den = 0;
+    for (std::size_t i : order) {
+        Element& el = els[i];
+        el.D = q + el.sigma / 2;
+        q += el.sigma;
+        num += (el.D - el.P) * (el.hi - el.lo) / el.eps;
+        den += (el.hi - el.lo) / el.eps;
+    }
+    const double D0 = a_polarization == 1 ? -num / den : els[order.front()].P - els[order.front()].D;
+    double U = 0;
+    for (std::size_t i : order) {
+        Element& el = els[i];
+        el.F = (el.D + D0 - el.P) / (Eps0 * el.eps);
+        el.U = U;   // (at its start)
+        U += el.F * (el.hi - el.lo);
+    }
+    // 0 at the middle.
+    double at0 = 0;
+    for (std::size_t i : order) {
+        const Element& el = els[i];
+        if (a_s0 >= el.lo && a_s0 <= el.hi) {
+            at0 = el.U + el.F * (a_s0 - el.lo);
+            break;
+        }
+        if (a_s0 > el.hi) at0 = el.U + el.F * (el.hi - el.lo);
+    }
+    for (std::size_t i = 0; i < a_points.size() && i < a_pointElement.size(); ++i) {
+        const int k = index[std::size_t(a_pointElement[i])];
+        if (k < 0) continue;
+        const Element& el = els[std::size_t(k)];
+        out[i] = el.U + el.F * (a_points[i].a - el.lo) - at0;
+    }
+    if (fields) {
+        fields->assign(a_bands.size(), 0.0);
+        std::vector<double> length(a_bands.size(), 0.0);
+        for (const Element& el : els) {
+            (*fields)[std::size_t(el.d)] += el.F * (el.hi - el.lo);
+            length[std::size_t(el.d)] += el.hi - el.lo;
+        }
+        for (std::size_t d = 0; d < fields->size(); ++d)
+            if (length[d] > 0) (*fields)[d] /= length[d];
+    }
+    return out;
+}
+
 void QuantumProblem::bandsAt(PointEvaluator& ev, int d, double a, double out[Carriers]) const
 {
     const Band& b = a_bands[std::size_t(d)];
@@ -736,8 +991,10 @@ void QuantumProblem::bandsAt(PointEvaluator& ev, int d, double a, double out[Car
             const double v = ev.eval(e);
             return e.dim() == Dim::of(2, 1, -2) ? v / Q : v;
         };
-        ec = eV(b.userEc);
+        ec = eV(b.userEc) + b.ecShift;
         ehh = elh = eV(b.userEv);
+        ehh += b.hhOver;
+        elh += b.lhOver;
     }
     double U = a_F * (a - a_s0);
     if (a_V.isValid()) {
@@ -757,6 +1014,8 @@ bool QuantumProblem::prepare(QString* error)
     const Space& sp = *f.space;
     PointEvaluator ev(a_s);
     a_points.clear();
+    a_pointElement.clear();
+    a_Upol.clear();
     // The middle of the physics along the axis: the field's potential 0 there.
     {
         double lo = Inf(), hi = -Inf();
@@ -821,6 +1080,26 @@ bool QuantumProblem::prepare(QString* error)
                 pt.pot[1] = -b[1];
                 pt.pot[2] = -b[2];
                 a_points.push_back(pt);
+                a_pointElement.push_back(int(e));
+            }
+        }
+        // The polarization's field: the bands moved by its potential.
+        a_Upol.assign(a_points.size(), 0.0);
+        if (a_polarization) {
+            std::vector<double> fields;
+            a_Upol = polarizationEnergy(a_rho.size() == a_points.size() ? &a_rho : nullptr, &fields);
+            QStringList said;
+            for (std::size_t d = 0; d < fields.size(); ++d)
+                if (a_bands[d].on)
+                    said << tr("%1 %2").arg(topo.objectNames.value(topo.domains[d].owner), formatQuantity(fields[d], Dim::of(1, 1, -3, -1)));
+            if (!a_screening)
+                a_s.log << tr("%1: the polarization's field (%2%3; along the axis): %4")
+                               .arg(a_node->name(), a_polarization == 1 ? tr("periodic") : tr("none at its ends"),
+                                    a_rho.size() == a_points.size() ? tr(", its carriers' screening") : QString(), said.join(QStringLiteral(", ")));
+            for (std::size_t i = 0; i < a_points.size(); ++i) {
+                a_points[i].pot[0] += a_Upol[i];
+                a_points[i].pot[1] -= a_Upol[i];
+                a_points[i].pot[2] -= a_Upol[i];
             }
         }
     } else {
@@ -1113,6 +1392,10 @@ bool QuantumProblem::ladder(int c, int count, QString* error)
         const double invM = integral(x, x, [&](int d, double) { return 1 / mass(c, d, false); });
         s.mPar = invM > 0 ? 1 / invM : NaN;
         s.Ep = integral(x, x, [&](int d, double) { return a_bands[std::size_t(d)].Ep; });
+        s.EpZ = integral(x, x, [&](int d, double) {
+            const Band& b = a_bands[std::size_t(d)];
+            return std::isfinite(b.EpZ) ? b.EpZ : b.Ep;
+        });
         s.nr = integral(x, x, [&](int d, double) {
             const double v = a_bands[std::size_t(d)].nr;
             return std::isfinite(v) ? v : 3.5;
@@ -1411,7 +1694,7 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
     // X↑ Y↑ Z↑ X↓ Y↓ Z↓ (orbital o, spin s: 3 s + o) - the 8x8's S↑ S↓ after
     // them. Spin and orbit: Δ ((σ·L) - 1)/3, L's (Lk)ij = -i εkij - the j =
     // 3/2 states at 0, j = 1/2 at -Δ.
-    Eigen::Matrix<cd, 6, 6> so = Eigen::Matrix<cd, 6, 6>::Zero();
+    Eigen::Matrix<cd, 6, 6> so = Eigen::Matrix<cd, 6, 6>::Zero(), sigmaL;
     {
         auto eps = [](int a, int b, int c) { return (a == b || b == c || a == c) ? 0 : ((b - a + 3) % 3 == 1 ? 1 : -1); };
         Eigen::Matrix2cd sigma[3];
@@ -1426,6 +1709,7 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
                         for (int k = 0; k < 3; ++k) v += sigma[k](s1, s2) * (-I * double(eps(k, o1, o2)));
                         so(3 * s1 + o1, 3 * s2 + o2) = v;
                     }
+        sigmaL = so;
         so = (so - Eigen::Matrix<cd, 6, 6>::Identity()) / 3.0;
     }
     // The basis: all six (eight), or the j = 3/2 four (so's eigenvalue 0) -
@@ -1452,7 +1736,9 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
     // or the warped bands averaged over the plane's directions (D2d: 0 to
     // 45°, Gauss and Legendre's four).
     std::vector<std::pair<double, double>> directions;   // θ, its share
-    if (a_inplane == 3) {
+    bool wurtzite = false;   // (its c-plane isotropic: one direction for the average)
+    for (const Band& b : a_bands) wurtzite = wurtzite || (b.on && b.wz);
+    if (a_inplane == 3 && !wurtzite) {
         const double xg[4] = {-0.8611363115940526, -0.3399810435848563, 0.3399810435848563, 0.8611363115940526};
         const double wg[4] = {0.3478548451374538, 0.6521451548625461, 0.6521451548625461, 0.3478548451374538};
         for (int g = 0; g < 4; ++g) directions.emplace_back(M_PI / 8 * (1 + xg[g]), wg[g] / 2);
@@ -1485,13 +1771,53 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
     // the elements' first derivatives leave S's of none at the band's edge:
     // A_c below 1 (a free electron's), Ep lowered to make it 1 (Foreman's
     // other choice; GaAs's 28.8 eV to 22.5).
+    // Wurtzite (c along the axis; Chuang and Chang's, Lumerical's): X L1 kx²
+    // + M1 ky² + M2 kz², Y M1 kx² + L1 ky² + M2 kz², Z M3 (kx² + ky²) + L2 kz²,
+    // X-Y N1 kx ky, X-Z and Y-Z N2 k kz - L1 = A2 + A4 + A5, M1 = A2 + A4 -
+    // A5, M2 = A1 + A3, L2 = A1, M3 = A2, N1 = 2 A5, N2 = √2 A6 (ħ²/2m0) -; at
+    // k = 0 Δ1 + λε + θε on X and Y, λε on Z, Δ2 Lz σz + Δ3 (Lx σx + Ly
+    // σy) (Δ2 = Δ3 = Δso/3: Δso/3 σ·L), from the reference: the heavy holes'
+    // edge less its Δ1 + Δ2 + λε + θε. N2 in Burt and Foreman's order: N2- the
+    // E1 remote bands' alone, which give M2's and M3's remote parts too -
+    // their geometric mean, zinc blende's M - ħ²/2m0 where the two are one.
     struct Terms {
         Eigen::MatrixXcd z2, x2, xz, d0, z1, x1;
+        double ref = 0;   // the k·p's reference under the heavy holes' edge
     };
     std::vector<Terms> terms(a_bands.size());
     for (std::size_t d = 0; d < a_bands.size(); ++d) {
         const Band& b = a_bands[d];
         if (!b.on) continue;
+        if (b.wz) {
+            const double* A = b.A;
+            const double L1 = (A[1] + A[3] + A[4]) * HB2M, M1 = (A[1] + A[3] - A[4]) * HB2M, M2 = (A[0] + A[2]) * HB2M, L2 = A[0] * HB2M,
+                         M3 = A[1] * HB2M, N1 = 2 * A[4] * HB2M, N2 = std::sqrt(2.0) * A[5] * HB2M;
+            const double remote = (M2 - HB2M) * (M3 - HB2M);
+            const double N2m = remote > 0 ? std::copysign(std::sqrt(remote), M2 - HB2M) : N2 / 2, N2p = N2 - N2m;
+            const double c = std::cos(theta), sn = std::sin(theta);
+            Eigen::MatrixXcd z2 = Eigen::MatrixXcd::Zero(6, 6), x2 = z2, xz = z2, d0 = z2, z1 = z2, x1 = z2;
+            for (int sp = 0; sp < 2; ++sp) {
+                const int o = 3 * sp;
+                z2(o, o) = M2;
+                z2(o + 1, o + 1) = M2;
+                z2(o + 2, o + 2) = L2;
+                x2(o, o) = c * c * L1 + sn * sn * M1;
+                x2(o + 1, o + 1) = sn * sn * L1 + c * c * M1;
+                x2(o + 2, o + 2) = M3;
+                x2(o, o + 1) = c * sn * N1;
+                x2(o + 1, o) = c * sn * N1;
+                xz(o, o + 2) = c * N2p;
+                xz(o + 2, o) = c * N2m;
+                xz(o + 1, o + 2) = sn * N2p;
+                xz(o + 2, o + 1) = sn * N2m;
+                d0(o, o) = b.dcr + b.lambdaE + b.thetaE;
+                d0(o + 1, o + 1) = b.dcr + b.lambdaE + b.thetaE;
+                d0(o + 2, o + 2) = b.lambdaE;
+            }
+            d0 += b.dso / 3 * sigmaL;
+            terms[d] = {z2, x2, xz, d0, z1, x1, b.kpRef};
+            continue;
+        }
         if (!std::isfinite(b.g1) || !std::isfinite(b.g2) || !std::isfinite(b.g3)) {
             *error = tr("%1: the k·p valence bands want each material's Luttinger parameters (γ1, γ2, γ3)").arg(a_node->name());
             return false;
@@ -1555,7 +1881,7 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
             }
         }
         if (nb >= 6) d0.topLeftCorner(6, 6) += b.delta * so;
-        terms[d] = {U.adjoint() * z2 * U, U.adjoint() * x2 * U, U.adjoint() * xz * U, U.adjoint() * d0 * U, U.adjoint() * z1 * U, U.adjoint() * x1 * U};
+        terms[d] = {U.adjoint() * z2 * U, U.adjoint() * x2 * U, U.adjoint() * xz * U, U.adjoint() * d0 * U, U.adjoint() * z1 * U, U.adjoint() * x1 * U, 0.0};
     }
     // H(k) = H0 + k H1 + k² H2 (k in 1/nm) and M, by component then equation.
     const int N6 = nb * n;
@@ -1579,7 +1905,7 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
                 for (int a = 0; a < nb; ++a) {
                     tm.emplace_back(a * n + pt.eq[i], a * n + pt.eq[j], mass);
                     for (int c = 0; c < nb; ++c) {
-                        const cd h0 = stiff * T.z2(a, c) + mass * (T.d0(a, c) + (a == c ? (a < 6 ? ev : pt.pot[0]) : 0.0))
+                        const cd h0 = stiff * T.z2(a, c) + mass * (T.d0(a, c) + (a == c ? (a < 6 ? ev - T.ref : pt.pot[0]) : 0.0))
                                       - I * (right * T.z1(a, c) - left * std::conj(T.z1(c, a)));
                         if (h0 != cd(0)) t0.emplace_back(a * n + pt.eq[i], c * n + pt.eq[j], h0);
                         const cd h1 = -I * (right * T.xz(a, c) - left * std::conj(T.xz(c, a))) + mass * T.x1(a, c);
@@ -1882,12 +2208,128 @@ QuantumProblem::Exciton QuantumProblem::exciton(const std::function<double(const
     return out;
 }
 
+bool QuantumProblem::screen(const SpectrumOptions& o, QString* error)
+{
+    // (The holes' k·p bands at 31 values of k to their reach; the levels as
+    // the spectrum finds them: each state's carriers its band's.)
+    const double kT = KB * a_T, scale = densityScale();
+    const bool kp = a_valence > 0;
+    const int count = (a_valence == 4 ? 2 : 3) * std::max(1, o.states);
+    auto softplus = [](double x) { return x > 30 ? x : std::log1p(std::exp(x)); };
+    double alpha = 0.3, last = Inf(), moved = Inf();
+    int turn = 0;
+    a_screening = true;
+    const auto done = qScopeGuard([&] { a_screening = false; });
+    std::vector<double> rho;
+    for (turn = 1; turn <= 60; ++turn) {
+        if (cancelled()) {
+            *error = tr("%1: cancelled").arg(a_node->name());
+            return false;
+        }
+        a_rho = rho;
+        if (solveModes(o.solve, std::max(1, o.states), 0, error) < 0) return false;
+        if (rho.empty()) rho.assign(a_points.size(), 0.0);
+        const double want = o.density * a_activeSize;
+        if (kp) {
+            const double kh = std::sqrt(2 * 0.5 * M0 * (0.15 * Q + 15 * kT)) / Hbar;
+            if (!kpBands(count, kh, 31, error, a_valence == 8 ? int(a_states[0].size()) : 0)) return false;
+        }
+        // Each band's carriers per area at a level F: a k·p band's over its
+        // intervals (each linear in k²), a parabola's at once.
+        auto kpSheet = [&](bool electrons, double F, const std::function<void(const KpBands&, std::size_t, std::size_t, double)>& each) {
+            double total = 0;
+            for (const KpBands& b : a_kps) {
+                const std::vector<std::vector<double>>& E = electrons ? b.C : b.E;
+                for (std::size_t j = 0; j < (E.empty() ? 0 : E[0].size()); ++j)
+                    for (std::size_t m = 1; m < b.k.size(); ++m) {
+                        const double Ea = E[m - 1][j] * Q, Eb = E[m][j] * Q, dk2 = b.k[m] * b.k[m] - b.k[m - 1] * b.k[m - 1];
+                        const double x = electrons ? (F - 0.5 * (Ea + Eb)) / kT : (0.5 * (Ea + Eb) - F) / kT;
+                        const double occ = std::abs(Eb - Ea) > 1e-6 * kT
+                                               ? (electrons ? kT * (softplus((F - Ea) / kT) - softplus((F - Eb) / kT)) / (Eb - Ea)
+                                                            : kT * (softplus((Eb - F) / kT) - softplus((Ea - F) / kT)) / (Eb - Ea))
+                                               : 1 / (1 + std::exp(-x));
+                        const double add = b.weight * dk2 / (4 * M_PI) * occ;
+                        total += add;
+                        if (each) each(b, j, m, add);
+                    }
+            }
+            return total;
+        };
+        auto parabolic = [&](int c, double F) {
+            double total = 0;
+            for (const State& st : a_states[c]) {
+                const double x = c == 0 ? (F - st.E * Q) / kT : (st.E * Q - F) / kT;
+                total += st.g * st.mPar * M0 * kT / (M_PI * Hbar * Hbar) * softplus(x);
+            }
+            return total;
+        };
+        auto electronsAt = [&](double F) { return a_valence == 8 ? kpSheet(true, F, {}) : parabolic(0, F); };
+        auto holesAt = [&](double F) { return kp ? kpSheet(false, F, {}) : parabolic(1, F) + parabolic(2, F); };
+        auto level = [&](bool electrons) {
+            double lo = -30 * Q, hi = 30 * Q;
+            for (int it = 0; it < 200; ++it) {
+                const double mid = (lo + hi) / 2;
+                if (((electrons ? electronsAt(mid) : holesAt(mid)) < want) == electrons) lo = mid;
+                else hi = mid;
+            }
+            return (lo + hi) / 2;
+        };
+        const double Fc = level(true), Fv = level(false);
+        // Their densities at the points (1/m³).
+        std::vector<double> n(a_points.size(), 0.0), p(a_points.size(), 0.0);
+        auto spinor = [&](std::vector<double>& into, const Eigen::VectorXcd& a, const Eigen::VectorXcd& b, int parts, double w) {
+            for (std::size_t i = 0; i < a_points.size(); ++i) {
+                double v = 0;
+                for (int c = 0; c < parts; ++c) v += std::norm(at(a_points[i], a, c * a_neq)) + std::norm(at(a_points[i], b, c * a_neq));
+                into[i] += w / 2 * v * scale;
+            }
+        };
+        if (a_valence == 8)
+            kpSheet(true, Fc, [&](const KpBands& b, std::size_t j, std::size_t m, double add) { spinor(n, b.xc[m - 1][j], b.xc[m][j], 8, add); });
+        else
+            for (const State& st : a_states[0]) {
+                const double sheet = st.g * st.mPar * M0 * kT / (M_PI * Hbar * Hbar) * softplus((Fc - st.E * Q) / kT);
+                for (std::size_t i = 0; i < a_points.size(); ++i) n[i] += sheet * std::pow(at(a_points[i], st.x), 2) * scale;
+            }
+        if (kp)
+            kpSheet(false, Fv, [&](const KpBands& b, std::size_t j, std::size_t m, double add) { spinor(p, b.x[m - 1][j], b.x[m][j], 6, add); });
+        else
+            for (int c = 1; c < Carriers; ++c)
+                for (const State& st : a_states[c]) {
+                    const double sheet = st.mPar * M0 * kT / (M_PI * Hbar * Hbar) * softplus((st.E * Q - Fv) / kT);
+                    for (std::size_t i = 0; i < a_points.size(); ++i) p[i] += sheet * std::pow(at(a_points[i], st.x), 2) * scale;
+                }
+        // The charge mixed (a third, less when it overshoots), and how far
+        // the potential would move.
+        std::vector<double> next(rho.size());
+        for (std::size_t i = 0; i < rho.size(); ++i) next[i] = rho[i] + alpha * (Q * (p[i] - n[i]) - rho[i]);
+        const std::vector<double> U = polarizationEnergy(&next);
+        moved = 0;
+        for (std::size_t i = 0; i < U.size(); ++i) moved = std::max(moved, std::abs(U[i] - a_Upol[i]));
+        rho = std::move(next);
+        if (moved < 1e-4) break;
+        if (moved > last) alpha = std::max(0.02, alpha / 2);
+        last = moved;
+    }
+    a_rho = rho;
+    a_screening = false;
+    if (!(moved < 1e-4))
+        a_s.log << tr("Warning: %1: the carriers' screening of the polarization still moves the bands by %2 after %3 turns")
+                       .arg(a_node->name(), electronVolts(moved * Q))
+                       .arg(turn - 1);
+    else
+        a_s.log << tr("%1: the polarization screened by the spectrum's carriers in %2 turns").arg(a_node->name()).arg(turn);
+    return true;
+}
+
 int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
 {
     if (a_sets > 0) {
         *error = tr("%1: its electrons in valleys (Si, Ge: an indirect gap) have no optical spectrum here").arg(a_node->name());
         return -1;
     }
+    a_rho.clear();
+    if (a_polarization && o.density > 0 && !screen(o, error)) return -1;
     if (solveModes(o.solve, std::max(1, o.states), 0, error) < 0) return -1;
     if (!a_on[0] || (!a_on[1] && !a_on[2])) {
         *error = tr("%1: a spectrum wants electrons and holes").arg(a_node->name());
@@ -2218,7 +2660,8 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 const double ov = integral(e.x, h.x, {});
                 t.overlap = ov * ov;
                 t.te = c == 1 ? 1.5 : 0.5;
-                t.tm = c == 1 ? 0.0 : 2.0;
+                // (TM by Kane's Ep along the axis: wurtzite's Ep∥.)
+                t.tm = (c == 1 ? 0.0 : 2.0) * (e.Ep > 0 ? e.EpZ / e.Ep : 1.0);
                 t.me = e.mPar * M0;
                 t.mh = h.mPar * M0;
                 t.mr = 1 / (1 / t.me + 1 / t.mh);
@@ -2466,7 +2909,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                         std::complex<double> ov[6];
                         for (int c = 0; c < 6; ++c) ov[c] = loadc.dot(x.segment(c * n, n));
                         const double wte = 1.5 * (std::norm(ov[0]) + std::norm(ov[1]) + std::norm(ov[3]) + std::norm(ov[4]));
-                        const double wtm = 3 * (std::norm(ov[2]) + std::norm(ov[5]));
+                        const double wtm = 3 * (std::norm(ov[2]) + std::norm(ov[5])) * (e.Ep > 0 ? e.EpZ / e.Ep : 1.0);
                         const double k = b.k[m];
                         const double Ec = e.E * Q + Hbar * Hbar * k * k / (2 * e.mPar * M0), Ev = b.E[m][j] * Q;
                         pr.eps.push_back(Ec - Ev);
@@ -2840,6 +3283,7 @@ void QuantumProblem::selectSpectrum(int k)
 
 int QuantumProblem::solveBands(const SpectrumOptions& o, QString* error)
 {
+    a_rho.clear();
     if (solveModes(o.solve, std::max(1, o.states), 0, error) < 0) return -1;
     if (!a_valence) {
         *error = tr("%1: a Valence Bands step wants the k·p valence bands (its physics' Valence bands: 4x4, 6x6 or 8x8)").arg(a_node->name());
