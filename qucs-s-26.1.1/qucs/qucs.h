@@ -852,6 +852,7 @@ public:
 
   QAction *exportAsImage;
   QAction *importLTspice = nullptr;   // File > Import LTspice Schematic
+  QAction *importLumerical = nullptr; // File > Import Lumerical MQW Project
   QAction *colourWires = nullptr;     // View > Colour Wires by Net
   QAction *exportDiagramAsImage;   // a diagram's context menu: the diagram alone
   QAction *exportGraphics;         // the canvas' context menu: the export dialog
@@ -1204,6 +1205,7 @@ public slots:
   void slotCursorValues(bool);
   void slotInsertBus();
   void slotImportLTspice();
+  void slotImportLumerical();
   void slotColourWires(bool on);   // every schematic's wires by their nets' kinds, or not   // an .asc made a schematic (as import_netlist makes it)   // a bus to draw: a thick line named for the nets it gathers   // the named nets' values where a marker is, on the schematic
   void slotSetDiagramLimits(bool);
   void slotResetDiagramLimits();
