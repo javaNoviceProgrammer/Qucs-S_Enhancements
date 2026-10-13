@@ -1077,10 +1077,20 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                 e.component(f, 0, u, gx, gy);
                 return std::hypot(gx, gy);
             });
-            define(p + QStringLiteral("rho"), Dim::of(-3, 0, 1, 1), tr("space charge density: q (p - n + Nd - Na)"), K::Derived, f,
+            define(p + QStringLiteral("rho"), Dim::of(-3, 0, 1, 1), tr("space charge density: q (p - n + Nd⁺ - Na⁻)"), K::Derived, f,
                    [st, sd, sa](PointEvaluator& e) {
                        const detail::SemiconductorState s = st(e);
-                       return s.semiconductor ? 1.602176634e-19 * (s.p - s.n + e.value(sd) - e.value(sa)) : 0.0;
+                       return s.semiconductor ? 1.602176634e-19 * (s.p - s.n + s.donors(e.value(sd)) - s.acceptors(e.value(sa))) : 0.0;
+                   });
+            define(p + QStringLiteral("Ndi"), conc, tr("ionized donors Nd⁺ (all of them unless ionized in part)"), K::Derived, f,
+                   [st, sd](PointEvaluator& e) {
+                       const detail::SemiconductorState s = st(e);
+                       return s.semiconductor ? s.donors(e.value(sd)) : NaN;
+                   });
+            define(p + QStringLiteral("Nai"), conc, tr("ionized acceptors Na⁻ (all of them unless ionized in part)"), K::Derived, f,
+                   [st, sa](PointEvaluator& e) {
+                       const detail::SemiconductorState s = st(e);
+                       return s.semiconductor ? s.acceptors(e.value(sa)) : NaN;
                    });
             // Band energies (J; shown in eV): Ei = -q (V + δ) - δ each
             // semiconductor's offset across a heterojunction -, Ec = Ei + (Ec - Ei).

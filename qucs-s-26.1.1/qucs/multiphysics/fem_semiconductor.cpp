@@ -41,9 +41,11 @@ constexpr double Q = 1.602176634e-19;    // C
 constexpr double KB = 1.380649e-23;      // J/K
 const double Inf = std::numeric_limits<double>::infinity();
 // The field's extra: Vt, T, ni_ref, then each triangle's µn, µp, Ec - Ei, Eg,
-// ni, τn, τp, Et, Cn, Cp, B, δ (NaN where it is no semiconductor); its values
-// V, n, p, Nd, Na, θn, θp by node.
-constexpr int ExtraHead = 3, PerTriangle = 12;
+// ni, τn, τp, Et, Cn, Cp, B, δ, incomplete ionization's n1d, gd, p1a, ga,
+// and Fermi-Dirac's Nc, Nv (0 for Boltzmann's) (NaN where it is no
+// semiconductor); its values V, n, p, Nd, Na, θn, θp by node (θ with
+// Fermi-Dirac's degeneracy in it, as solved).
+constexpr int ExtraHead = 3, PerTriangle = 18;
 
 /// Bernoulli's function x / (e^x - 1) and its derivative, safe at 0 and far
 /// from it.
@@ -81,6 +83,17 @@ struct Medium {
     // across the nearest interface, each faded as e^(-d/lcrit) away from it.
     bool surface = false;
     double sBn = 0, sCn = 0, sLn = 0, sDn = 0, sBp = 0, sCp = 0, sLp = 0, sDp = 0, lcrit = 1e-8;
+    // Slotboom's band gap narrowing: ΔEg = E (ln(N/Nref) + √(ln²(N/Nref) +
+    // C)) (J), N the donors and acceptors - ni raised by e^(ΔEg/2kT), the
+    // bands closing on the intrinsic level equally.
+    bool bgn = false;
+    double bgnE = 0, bgnN = 1, bgnC = 0.5;
+    // Incomplete ionization: Nd⁺ = Nd/(1 + gd n/n1d), n1d = Nc e^(-ΔEd/kT),
+    // Na⁻ = Na/(1 + ga p/p1a), p1a = Nv e^(-ΔEa/kT).
+    bool incomplete = false;
+    double n1d = Inf, gd = 2, p1a = Inf, ga = 4;
+    // Fermi-Dirac's statistics: n = Nc ℱ1/2(η), not Nc e^η.
+    bool fermi = false;
     bool srh = false;
     double taun = Inf, taup = Inf, Et = 0;   // Et: the trap's level above the intrinsic one (J)
     double Cn = 0, Cp = 0, B = 0;
@@ -92,6 +105,82 @@ struct Medium {
     bool ionization = false, ionizationCurrents = false;
     double an = 0, bn = 0, an2 = 0, bn2 = 0, ap = 0, bp = 0, ap2 = 0, bp2 = 0, E0 = Inf, ionBetaN = 1, ionBetaP = 1;
 };
+
+/// The Fermi-Dirac integral of order 1/2, normalized - ℱ(η) = (2/√π) ∫0^∞
+/// √ε/(1 + e^(ε-η)) dε, e^η where the carriers are few - and its derivative
+/// ℱ-1/2: tabulated once from 20 kT below the band's edge to 100 above at
+/// 1/32 (Simpson's rule in √ε), cubic between (ℱ to 2e-9, its derivative
+/// to 2e-7, against a quadrature a hundred times finer); Boltzmann's two
+/// terms below, Sommerfeld's above.
+struct FermiHalf {
+    static constexpr double Lo = -20, Hi = 100, Step = 1.0 / 32;
+    std::vector<double> f, d;
+    FermiHalf()
+    {
+        const int n = int((Hi - Lo) / Step + 0.5) + 1;
+        f.resize(std::size_t(n));
+        d.resize(std::size_t(n));
+        const double c = 2 / std::sqrt(M_PI);
+        for (int k = 0; k < n; ++k) {
+            const double eta = Lo + k * Step;
+            // t = √ε: ℱ = (4/√π) ∫ t²/(1 + e^(t²-η)) dt, ℱ' = (2/√π) ∫ dt/(1 + e^(t²-η)).
+            const double T = std::sqrt(std::max(eta, 0.0) + 60);
+            const int m = 4000;
+            const double h = T / m;
+            double sf = 0, sd = 0;
+            for (int j = 0; j <= m; ++j) {
+                const double t = j * h, w = (j == 0 || j == m) ? 1 : (j % 2 ? 4 : 2);
+                const double x = t * t - eta;
+                const double occupied = x > 0 ? std::exp(-x) / (1 + std::exp(-x)) : 1 / (1 + std::exp(x));
+                sf += w * t * t * occupied;
+                sd += w * occupied;
+            }
+            f[std::size_t(k)] = 2 * c * sf * h / 3;
+            d[std::size_t(k)] = c * sd * h / 3;
+        }
+    }
+    void at(double eta, double* F, double* dF) const
+    {
+        if (eta < Lo) {
+            const double e = std::exp(eta);
+            *F = e * (1 - e / (2 * std::sqrt(2.0)));
+            *dF = e * (1 - e / std::sqrt(2.0));
+            return;
+        }
+        if (eta >= Hi) {
+            const double c = 4 / (3 * std::sqrt(M_PI)), p2 = M_PI * M_PI;
+            *F = c * std::pow(eta, 1.5) * (1 + p2 / (8 * eta * eta) + 7 * p2 * p2 / (640 * std::pow(eta, 4)));
+            *dF = c * 1.5 * std::sqrt(eta) * (1 - p2 / (24 * eta * eta) - 7 * p2 * p2 / (384 * std::pow(eta, 4)));
+            return;
+        }
+        const double u = (eta - Lo) / Step;
+        const int k = std::min(int(u), int(f.size()) - 2);
+        const double s = u - k, h = Step;
+        const double f0 = f[std::size_t(k)], f1 = f[std::size_t(k + 1)], d0 = d[std::size_t(k)], d1 = d[std::size_t(k + 1)];
+        *F = (2 * s * s * s - 3 * s * s + 1) * f0 + (s * s * s - 2 * s * s + s) * h * d0 + (-2 * s * s * s + 3 * s * s) * f1 + (s * s * s - s * s) * h * d1;
+        *dF = (6 * s * s - 6 * s) / h * f0 + (3 * s * s - 4 * s + 1) * d0 + (-6 * s * s + 6 * s) / h * f1 + (3 * s * s - 2 * s) * d1;
+    }
+    /// η where ℱ(η) = \a u (Newton's in ln ℱ, from Joyce and Dixon's start
+    /// or Sommerfeld's).
+    double inverse(double u) const
+    {
+        double eta = u < 1 ? std::log(u) + u / std::sqrt(8.0) : std::pow(0.75 * std::sqrt(M_PI) * u, 2.0 / 3);
+        for (int k = 0; k < 60; ++k) {
+            double F = 0, dF = 0;
+            at(eta, &F, &dF);
+            const double step = (std::log(F) - std::log(u)) * F / dF;
+            eta -= step;
+            if (std::abs(step) < 1e-13 * std::max(1.0, std::abs(eta))) break;
+        }
+        return eta;
+    }
+};
+
+const FermiHalf& fermiHalf()
+{
+    static const FermiHalf table;
+    return table;
+}
 
 /// Chynoweth's ionization rate at field \a E (V/m) in its range, and its
 /// change with E.
@@ -154,8 +243,9 @@ private:
     };
     int nodes() const { return a_n; }
     double doping(int i) const { return a_Nd[std::size_t(i)] - a_Na[std::size_t(i)]; }
-    /// Equilibrium's carriers at a node of net doping \a C (no applied voltage).
-    void neutral(int i, double* n, double* p) const;
+    /// Equilibrium's carriers at a node of net doping \a C (no applied
+    /// voltage), and their potential in Vt above the Fermi level's, v.
+    void neutral(int i, double* n, double* p, double* v = nullptr) const;
     /// The contacts' voltages at the solution's time.
     bool targets(std::vector<double>& out, QString* error);
     /// The values a Dirichlet node takes (V, n, p) at the contacts' applied voltages.
@@ -208,12 +298,13 @@ private:
     /// Along edge \a e at \a x: the electrons' and the holes' potential
     /// steps in Vt - the potential's, and across a heterojunction the bands'
     /// offsets (θn, θp: the intrinsic level's, and the densities of states'
-    /// as ni has them).
+    /// as ni has them), and Fermi-Dirac's degeneracy (ln γ, last assembled).
     void edgeSteps(const Edge& e, const Eigen::VectorXd& x, double* dn, double* dp) const
     {
         const double dV = x(a_iV[std::size_t(e.j)]) - x(a_iV[std::size_t(e.i)]);
-        *dn = (dV + a_thetaN[std::size_t(e.j)] - a_thetaN[std::size_t(e.i)]) / a_Vt;
-        *dp = (dV + a_thetaP[std::size_t(e.j)] - a_thetaP[std::size_t(e.i)]) / a_Vt;
+        const std::size_t i = std::size_t(e.i), j = std::size_t(e.j);
+        *dn = (dV + a_thetaN[j] - a_thetaN[i]) / a_Vt + a_lgN[j] - a_lgN[i];
+        *dp = (dV + a_thetaP[j] - a_thetaP[i]) / a_Vt - a_lgP[j] + a_lgP[i];
     }
 
     int a_n = 0;                       // nodes (P1 degrees of freedom)
@@ -225,6 +316,25 @@ private:
     std::vector<int> a_nodeDomain;     // a node's semiconductor domain (-1: none)
     std::vector<double> a_box;         // by node: its share of semiconductor (m³)
     std::vector<double> a_Nd, a_Na, a_ni, a_n1, a_p1;
+    std::vector<double> a_gap;         // by node: the band gap's narrowing (J)
+    bool a_incomplete = false;
+    // Fermi-Dirac's statistics by node, at the carriers last assembled: ln γ
+    // (n = γ Nc e^η, γ = ℱ1/2(η)/e^η - 1 where they are few), its change
+    // with the carriers, and ℱ'/ℱ (δn = n ℱ'/ℱ δη); Boltzmann's 0, 0, 1. Each
+    // carrier's band offset θ takes Vt ln γ: the flux as Boltzmann's, its
+    // diffusion the generalized Einstein relation's.
+    bool a_fermi = false;
+    mutable std::vector<double> a_lgN, a_lgP, a_dlgN, a_dlgP, a_rN, a_rP;
+    void degeneracy(const Eigen::VectorXd& x) const;
+    /// Node \a i's carriers at v, the potential in Vt above its Fermi
+    /// level's (Boltzmann's n = ni e^v): Fermi-Dirac's where asked; their
+    /// changes with v.
+    void carriersAt(int i, double v, double* n, double* p, double* dn, double* dp) const;
+    /// Node \a i's ionized donors and acceptors at \a n, \a p (1/m³) - the
+    /// carriers' Boltzmann densities, n/γn and p/γp: the dopants filled by
+    /// the Fermi level whatever the carriers' statistics - and their changes
+    /// with them.
+    void ionized(int i, double n, double p, double* nd, double* dnd, double* na, double* dna) const;
     // By node, across heterojunctions: the intrinsic level's offset from the
     // first semiconductor's (V: Ei = -q (V + δ)), and the electrons' and
     // holes' band potentials θn = δ + Vt ln(ni/ni_ref), θp = δ - Vt ln(ni/ni_ref)
@@ -268,7 +378,7 @@ private:
     double a_Gop = 0, a_Pin = 0;       // the optical generation's pairs per second, the light fed (W)
     std::vector<std::complex<double>> a_Hop;   // small-signal: each contact's current, the light modulated wholly (A)
     bool a_saturation = false, a_lombardi = false;
-    bool a_alongCurrent = false;       // a saturation driven by the force along the current
+    bool a_alongCurrent = false;       // a saturation driven by the field along the current
     double a_refDEc = 0, a_refChi = 0; // the first semiconductor's: Ec - Ei, χ (J)
     // Impact ionization: whether its pairs are in the equations; the
     // ionization integrals along the field line through the highest field
@@ -467,6 +577,26 @@ bool SemiconductorProblem::setup(QString* error)
             m.lcrit = number(mf->text(QStringLiteral("lcrit")), Dim::length(), where);
             if (!(m.sBn > 0) || !(m.sCn > 0) || !(m.sDn > 0) || !(m.sBp > 0) || !(m.sCp > 0) || !(m.sDp > 0) || !(m.lcrit > 0))
                 problem(tr("%1: its surface scattering's B, C, δ and lcrit must be more than 0").arg(where));
+        }
+        if (mf && mf->flag(QStringLiteral("bgn"))) {
+            m.bgn = true;
+            m.bgnE = energyOf(mf->text(QStringLiteral("Ebgn")), constants, &why);
+            if (!std::isfinite(m.bgnE)) problem(tr("%1: its band gap narrowing's energy: %2").arg(where, why));
+            m.bgnN = number(mf->text(QStringLiteral("Nbgn")), conc, where);
+            m.bgnC = number(mf->text(QStringLiteral("Cbgn")), Dim(), where);
+            if (!(m.bgnN > 0) || !(m.bgnC >= 0)) problem(tr("%1: its band gap narrowing's Nref must be more than 0, C no less").arg(where));
+        }
+        if (mf && mf->flag(QStringLiteral("fermi"))) m.fermi = a_fermi = true;
+        if (mf && mf->flag(QStringLiteral("incomplete"))) {
+            m.incomplete = a_incomplete = true;
+            const double Ed = energyOf(mf->text(QStringLiteral("Ed")), constants, &why);
+            const double Ea = energyOf(mf->text(QStringLiteral("Ea")), constants, &why);
+            m.gd = number(mf->text(QStringLiteral("gd")), Dim(), where);
+            m.ga = number(mf->text(QStringLiteral("ga")), Dim(), where);
+            if (!std::isfinite(Ed) || !std::isfinite(Ea) || !(m.gd > 0) || !(m.ga > 0))
+                problem(tr("%1: its dopants' levels and degeneracies (more than 0)").arg(where));
+            m.n1d = m.Nc * std::exp(-Ed / (KB * a_T));
+            m.p1a = m.Nv * std::exp(-Ea / (KB * a_T));
         }
         if (const Node* r = srhOf[std::size_t(d)]) {
             m.srh = true;
@@ -676,22 +806,37 @@ bool SemiconductorProblem::setup(QString* error)
     a_thetaN.assign(std::size_t(a_n), 0);
     a_thetaP.assign(std::size_t(a_n), 0);
     a_scale = 0;
+    a_gap.assign(std::size_t(a_n), 0);
+    for (auto* v : {&a_lgN, &a_lgP, &a_dlgN, &a_dlgP}) v->assign(std::size_t(a_n), 0.0);
+    a_rN.assign(std::size_t(a_n), 1.0);
+    a_rP.assign(std::size_t(a_n), 1.0);
     bool hetero = false;
     for (int i = 0; i < a_n; ++i) {
         const int d = a_nodeDomain[std::size_t(i)];
         if (d < 0) continue;
         const Medium& m = a_media[std::size_t(d)];
-        a_ni[std::size_t(i)] = m.ni;
-        a_n1[std::size_t(i)] = m.ni * std::exp(m.Et / (KB * a_T));
-        a_p1[std::size_t(i)] = m.ni * std::exp(-m.Et / (KB * a_T));
-        a_scale = std::max({a_scale, std::abs(doping(i)), m.ni});
+        double gap = 0;
+        if (m.bgn) {
+            const double N = a_Nd[std::size_t(i)] + a_Na[std::size_t(i)];
+            if (N > 0) {
+                const double l = std::log(N / m.bgnN);
+                gap = m.bgnE * (l + std::sqrt(l * l + m.bgnC));
+            }
+        }
+        a_gap[std::size_t(i)] = gap;
+        const double ni = m.ni * std::exp(gap / (2 * KB * a_T));
+        a_ni[std::size_t(i)] = ni;
+        a_n1[std::size_t(i)] = ni * std::exp(m.Et / (KB * a_T));
+        a_p1[std::size_t(i)] = ni * std::exp(-m.Et / (KB * a_T));
+        a_scale = std::max({a_scale, std::abs(doping(i)), ni});
         // (A node on a heterojunction is its first semiconductor's: the
-        // bands' step is taken along the edges into the other.)
-        const double delta = (m.chi + m.dEc - a_refChi - a_refDEc) / Q, spread = a_Vt * std::log(m.ni / a_refNi);
+        // bands' step is taken along the edges into the other. The gap's
+        // narrowing a step of its own: its bands' edges, e^(ΔEg/2kT) in ni.)
+        const double delta = (m.chi + m.dEc - a_refChi - a_refDEc) / Q, spread = a_Vt * std::log(ni / a_refNi);
         a_delta[std::size_t(i)] = delta;
         a_thetaN[std::size_t(i)] = delta + spread;
         a_thetaP[std::size_t(i)] = delta - spread;
-        hetero = hetero || std::abs(delta) > 1e-9 || std::abs(spread) > 1e-9;
+        hetero = hetero || std::abs(delta) > 1e-9 || std::abs(m.ni / a_refNi - 1) > 1e-9;
     }
     if (hetero) {
         const QString line = tr("%1: heterojunctions - the bands' offsets (Anderson's rule: the electron affinities, the band gaps) "
@@ -905,11 +1050,14 @@ bool SemiconductorProblem::setup(QString* error)
         if (!a_elemSemi[std::size_t(t)]) continue;
         const Medium& m = a_media[std::size_t(mesh.domain[std::size_t(t)])];
         double* e = &f.extra[std::size_t(ExtraHead + PerTriangle * t)];
+        // (The gap's narrowing, its corners' mean: the bands closed by it.)
+        const int* tdof = sp.dofs(t);
+        const double gap = (a_gap[std::size_t(tdof[0])] + a_gap[std::size_t(tdof[1])] + a_gap[std::size_t(tdof[2])]) / 3;
         e[0] = mun[std::size_t(t)];
         e[1] = mup[std::size_t(t)];
-        e[2] = m.dEc;
-        e[3] = m.Eg;
-        e[4] = m.ni;
+        e[2] = m.dEc - gap / 2;
+        e[3] = m.Eg - gap;
+        e[4] = m.ni * std::exp(gap / (2 * KB * a_T));
         e[5] = m.srh ? m.taun : Inf;
         e[6] = m.srh ? m.taup : Inf;
         e[7] = m.Et;
@@ -917,6 +1065,12 @@ bool SemiconductorProblem::setup(QString* error)
         e[9] = m.Cp;
         e[10] = m.B;
         e[11] = (m.chi + m.dEc - a_refChi - a_refDEc) / Q;
+        e[12] = m.incomplete ? m.n1d : Inf;
+        e[13] = m.gd;
+        e[14] = m.incomplete ? m.p1a : Inf;
+        e[15] = m.ga;
+        e[16] = m.fermi ? m.Nc : 0.0;
+        e[17] = m.fermi ? m.Nv : 0.0;
     }
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
@@ -948,7 +1102,7 @@ bool SemiconductorProblem::setup(QString* error)
     return true;
 }
 
-void SemiconductorProblem::neutral(int i, double* n, double* p) const
+void SemiconductorProblem::neutral(int i, double* n, double* p, double* v) const
 {
     const double C = doping(i), ni = a_ni[std::size_t(i)];
     const double half = std::abs(C) / 2;
@@ -956,6 +1110,103 @@ void SemiconductorProblem::neutral(int i, double* n, double* p) const
     const double minor = ni * ni / major;
     *n = C >= 0 ? major : minor;
     *p = C >= 0 ? minor : major;
+    if (v) *v = std::log(*n / ni);
+    const int d = a_nodeDomain[std::size_t(i)];
+    if (d < 0 || (!a_media[std::size_t(d)].incomplete && !a_media[std::size_t(d)].fermi)) return;
+    // Fermi-Dirac's carriers, or the dopants ionized in part: p - n + Nd⁺ -
+    // Na⁻ = 0, falling as the potential v rises - halved to a double's
+    // digits. (The dopants' occupation by the Fermi level: by Boltzmann's
+    // ni e^v, whatever the carriers' statistics.)
+    auto charge = [&](double u) {
+        double nu = 0, pu = 0, dn = 0, dp = 0, nd = 0, dnd = 0, na = 0, dna = 0;
+        carriersAt(i, u, &nu, &pu, &dn, &dp);
+        ionized(i, ni * std::exp(std::clamp(u, -600.0, 600.0)), ni * std::exp(std::clamp(-u, -600.0, 600.0)), &nd, &dnd, &na, &dna);
+        return pu - nu + nd - na;
+    };
+    const double v0 = std::asinh(C / (2 * ni));
+    double lo = v0 - 1, hi = v0 + 1;
+    while (charge(lo) < 0 && lo > -600) lo -= 10;
+    while (charge(hi) > 0 && hi < 600) hi += 10;
+    for (int k = 0; k < 200 && hi - lo > 1e-15 * std::max(1.0, std::abs(lo)); ++k) {
+        const double mid = (lo + hi) / 2;
+        (charge(mid) > 0 ? lo : hi) = mid;
+    }
+    const double u = (lo + hi) / 2;
+    double dn = 0, dp = 0;
+    carriersAt(i, u, n, p, &dn, &dp);
+    if (v) *v = u;
+}
+
+void SemiconductorProblem::carriersAt(int i, double v, double* n, double* p, double* dn, double* dp) const
+{
+    const double ni = a_ni[std::size_t(i)];
+    v = std::clamp(v, -600.0, 600.0);
+    *n = ni * std::exp(v);
+    *p = ni * std::exp(-v);
+    *dn = *n;
+    *dp = -*p;
+    const int d = a_nodeDomain[std::size_t(i)];
+    if (d < 0 || !a_media[std::size_t(d)].fermi) return;
+    // n = Nc ℱ(η), Boltzmann's Nc e^η = ni e^v.
+    const Medium& m = a_media[std::size_t(d)];
+    const FermiHalf& fh = fermiHalf();
+    double F = 0, dF = 0;
+    fh.at(std::log(*n / m.Nc), &F, &dF);
+    *n = m.Nc * F;
+    *dn = m.Nc * dF;
+    fh.at(std::log(*p / m.Nv), &F, &dF);
+    *p = m.Nv * F;
+    *dp = -m.Nv * dF;
+}
+
+void SemiconductorProblem::degeneracy(const Eigen::VectorXd& x) const
+{
+    if (!a_fermi) return;
+    const FermiHalf& fh = fermiHalf();
+    // γ = u/e^η at u = n/Nc: ln γ = ln u - η, d ln γ/dn = (1/u - 1/ℱ')/Nc;
+    // few carriers, ln γ = -u/2^1.5 (Boltzmann's next term) - its derivative
+    // there not a difference of 1/u's.
+    auto one = [&](double c, double N, double* lg, double* dlg, double* r) {
+        const double u = std::max(c, 0.0) / N;
+        if (u < 1e-6) {
+            *lg = -u / std::sqrt(8.0);
+            *dlg = -1 / (std::sqrt(8.0) * N);
+            *r = 1 - u / std::sqrt(8.0);
+            return;
+        }
+        const double eta = fh.inverse(u);
+        double F = 0, dF = 0;
+        fh.at(eta, &F, &dF);
+        *lg = std::log(u) - eta;
+        *dlg = (1 / u - 1 / dF) / N;
+        *r = dF / F;
+    };
+    for (int i = 0; i < a_n; ++i) {
+        const int d = a_nodeDomain[std::size_t(i)];
+        if (d < 0 || !a_media[std::size_t(d)].fermi) continue;
+        const Medium& m = a_media[std::size_t(d)];
+        const std::size_t k = std::size_t(i);
+        one(x(a_iN[k]), m.Nc, &a_lgN[k], &a_dlgN[k], &a_rN[k]);
+        one(x(a_iP[k]), m.Nv, &a_lgP[k], &a_dlgP[k], &a_rP[k]);
+    }
+}
+
+void SemiconductorProblem::ionized(int i, double n, double p, double* nd, double* dnd, double* na, double* dna) const
+{
+    const double Nd = a_Nd[std::size_t(i)], Na = a_Na[std::size_t(i)];
+    const int d = a_nodeDomain[std::size_t(i)];
+    if (d < 0 || !a_media[std::size_t(d)].incomplete) {
+        *nd = Nd;
+        *na = Na;
+        *dnd = *dna = 0;
+        return;
+    }
+    const Medium& m = a_media[std::size_t(d)];
+    const double un = 1 + m.gd * n / m.n1d, up = 1 + m.ga * p / m.p1a;
+    *nd = Nd / un;
+    *dnd = -Nd * m.gd / m.n1d / (un * un);
+    *na = Na / up;
+    *dna = -Na * m.ga / m.p1a / (up * up);
 }
 
 bool SemiconductorProblem::targets(std::vector<double>& out, QString* error)
@@ -996,14 +1247,15 @@ void SemiconductorProblem::contactValues(const std::vector<double>& applied)
             }
             const Medium& m = a_media[std::size_t(a_nodeDomain[std::size_t(i)])];
             if (c.kind == Contact::Schottky) {
-                a_bcV[std::size_t(i)] = va + (m.dEc - c.phiB) / Q - a_delta[std::size_t(i)];
+                // (Its barrier to the band's edge as narrowed.)
+                a_bcV[std::size_t(i)] = va + (m.dEc - a_gap[std::size_t(i)] / 2 - c.phiB) / Q - a_delta[std::size_t(i)];
                 continue;
             }
-            double n = 0, p = 0;
-            neutral(i, &n, &p);
+            double n = 0, p = 0, v = 0;
+            neutral(i, &n, &p, &v);
             a_bcN[std::size_t(i)] = n;
             a_bcP[std::size_t(i)] = p;
-            a_bcV[std::size_t(i)] = va + a_Vt * std::log(n / a_ni[std::size_t(i)]) - a_delta[std::size_t(i)];
+            a_bcV[std::size_t(i)] = va + a_Vt * v - a_delta[std::size_t(i)];
         }
     }
 }
@@ -1087,8 +1339,8 @@ void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, do
             for (int k = 0; k < 3; ++k) {
                 const std::size_t i = std::size_t(dof[k]);
                 const double n = std::max((*x)(a_iN[i]), 1e-300), p = std::max((*x)(a_iP[i]), 1e-300);
-                const double phin = V[k] + a_thetaN[i] - a_Vt * std::log(n / a_refNi);
-                const double phip = V[k] + a_thetaP[i] + a_Vt * std::log(p / a_refNi);
+                const double phin = V[k] + a_thetaN[i] + a_Vt * a_lgN[i] - a_Vt * std::log(n / a_refNi);
+                const double phip = V[k] + a_thetaP[i] - a_Vt * a_lgP[i] + a_Vt * std::log(p / a_refNi);
                 gn[0] += em.gx[k] * phin;
                 gn[1] += em.gy[k] * phin;
                 gp[0] += em.gx[k] * phip;
@@ -1114,6 +1366,7 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
     const Space& sp = *a_s.fields()[std::size_t(a_fi)].space;
     F = Eigen::VectorXd::Zero(a_unknowns);
     if (jac) jac->clear();
+    degeneracy(x);
     auto add = [&](int r, int c, double v) {
         if (jac && r >= 0 && c >= 0) jac->emplace_back(r, c, v);
     };
@@ -1148,8 +1401,10 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             const double fn = e.wn * (nn(j) * bp - nn(i) * bm);
             F(ni) += fn;
             F(nj) -= fn;
-            const double dnj = e.wn * bp, dni = -e.wn * bm;
+            // (Fermi-Dirac's: the step takes ln γ at each end, its change with
+            // that end's n as the potential's, times Vt d ln γ/dn.)
             const double dvj = e.wn * (nn(j) * dbp + nn(i) * dbm) / a_Vt;
+            const double dnj = e.wn * bp + dvj * a_Vt * a_dlgN[std::size_t(j)], dni = -e.wn * bm - dvj * a_Vt * a_dlgN[std::size_t(i)];
             for (const auto& [row, sign] : {std::pair{ni, 1.0}, std::pair{nj, -1.0}}) {
                 add(row, nj, sign * dnj);
                 add(row, ni, sign * dni);
@@ -1162,8 +1417,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             const double fp = e.wp * (pp(i) * bp - pp(j) * bm);
             F(pi) += fp;
             F(pj) -= fp;
-            const double dpi = e.wp * bp, dpj = -e.wp * bm;
             const double dvj = e.wp * (pp(i) * dbp + pp(j) * dbm) / a_Vt;
+            const double dpi = e.wp * bp + dvj * a_Vt * a_dlgP[std::size_t(i)], dpj = -e.wp * bm - dvj * a_Vt * a_dlgP[std::size_t(j)];
             for (const auto& [row, sign] : {std::pair{pi, 1.0}, std::pair{pj, -1.0}}) {
                 add(row, pi, sign * dpi);
                 add(row, pj, sign * dpj);
@@ -1305,13 +1560,23 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
         const double A = a_box[std::size_t(i)];
         const int rv = a_iV[std::size_t(i)], rn = a_iN[std::size_t(i)], rp = a_iP[std::size_t(i)];
         const double n = nn(i), p = pp(i), ni = a_ni[std::size_t(i)];
-        F(rv) += Q * A * (p - n + doping(i));
-        add(rv, rn, -Q * A);
-        add(rv, rp, Q * A);
+        // (Fermi-Dirac's: γ = 1 for Boltzmann's.)
+        const double gn = std::exp(a_lgN[std::size_t(i)]), gp = std::exp(a_lgP[std::size_t(i)]);
+        if (m.incomplete) {
+            double nd = 0, dnd = 0, na = 0, dna = 0;
+            ionized(i, n / gn, p / gp, &nd, &dnd, &na, &dna);
+            F(rv) += Q * A * (p - n + nd - na);
+            add(rv, rn, Q * A * (dnd / gn - 1));
+            add(rv, rp, Q * A * (1 - dna / gp));
+        } else {
+            F(rv) += Q * A * (p - n + doping(i));
+            add(rv, rn, -Q * A);
+            add(rv, rp, Q * A);
+        }
         double R = 0, dRn = 0, dRp = 0;
-        const double excess = n * p - ni * ni;
+        const double excess = n * p - ni * ni * gn * gp;
         if (m.srh) {
-            const double D = m.taup * (n + a_n1[std::size_t(i)]) + m.taun * (p + a_p1[std::size_t(i)]);
+            const double D = m.taup * (n + gn * a_n1[std::size_t(i)]) + m.taun * (p + gp * a_p1[std::size_t(i)]);
             R += excess / D;
             dRn += (p * D - excess * m.taup) / (D * D);
             dRp += (n * D - excess * m.taun) / (D * D);
@@ -1361,7 +1626,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
         for (std::size_t k = 0; k < c.nodes.size(); ++k) {
             const int i = c.nodes[k];
             const Medium& m = a_media[std::size_t(a_nodeDomain[std::size_t(i)])];
-            const double neq = m.Nc * std::exp(-c.phiB / (KB * a_T)), peq = m.ni * m.ni / neq;
+            const double ni = a_ni[std::size_t(i)];
+            const double neq = m.Nc * std::exp(-c.phiB / (KB * a_T)), peq = ni * ni / neq;
             const double L = c.length[k];
             const int rn = a_iN[std::size_t(i)], rp = a_iP[std::size_t(i)];
             F(rn) -= Q * c.vn * (nn(i) - neq) * L;
@@ -1555,9 +1821,9 @@ bool SemiconductorProblem::equilibriumPoisson(Eigen::VectorXd& x, double fermi, 
         if (alpha == 1.0 && maxDV < 1e-10 * a_Vt) {
             for (int i = 0; i < a_n; ++i) {
                 if (a_iN[std::size_t(i)] < 0) continue;
-                const double v = (x(a_iV[std::size_t(i)]) + a_delta[std::size_t(i)] - fermi) / a_Vt, ni = a_ni[std::size_t(i)];
-                x(a_iN[std::size_t(i)]) = ni * std::exp(std::clamp(v, -600.0, 600.0));
-                x(a_iP[std::size_t(i)]) = ni * std::exp(std::clamp(-v, -600.0, 600.0));
+                const double v = (x(a_iV[std::size_t(i)]) + a_delta[std::size_t(i)] - fermi) / a_Vt;
+                double dn = 0, dp = 0;
+                carriersAt(i, v, &x(a_iN[std::size_t(i)]), &x(a_iP[std::size_t(i)]), &dn, &dp);
             }
             return true;
         }
@@ -1571,13 +1837,14 @@ void SemiconductorProblem::equilibriumSystem(const Eigen::VectorXd& x0, double f
                                              Eigen::SparseMatrix<double>& J) const
 {
     // The carriers from V; the full assembly's Poisson rows give F and ∂F/∂V
-    // (with ∂/∂n, ∂/∂p folded in through dn/dV = n/Vt, dp/dV = -p/Vt).
+    // (with ∂/∂n, ∂/∂p folded in through dn/dV, dp/dV: Boltzmann's n/Vt,
+    // -p/Vt; Fermi-Dirac's Nc ℱ'/Vt, -Nv ℱ'/Vt).
     Eigen::VectorXd x = x0;
+    std::vector<double> dnv(std::size_t(a_n), 0.0), dpv(std::size_t(a_n), 0.0);
     for (int i = 0; i < a_n; ++i) {
         if (a_iN[std::size_t(i)] < 0) continue;
-        const double v = (x(a_iV[std::size_t(i)]) + a_delta[std::size_t(i)] - fermi) / a_Vt, ni = a_ni[std::size_t(i)];
-        x(a_iN[std::size_t(i)]) = ni * std::exp(std::clamp(v, -600.0, 600.0));
-        x(a_iP[std::size_t(i)]) = ni * std::exp(std::clamp(-v, -600.0, 600.0));
+        const double v = (x(a_iV[std::size_t(i)]) + a_delta[std::size_t(i)] - fermi) / a_Vt;
+        carriersAt(i, v, &x(a_iN[std::size_t(i)]), &x(a_iP[std::size_t(i)]), &dnv[std::size_t(i)], &dpv[std::size_t(i)]);
     }
     Eigen::VectorXd F;
     std::vector<Eigen::Triplet<double>> trip;
@@ -1596,7 +1863,7 @@ void SemiconductorProblem::equilibriumSystem(const Eigen::VectorXd& x0, double f
             const int node = vIndex[std::size_t(r)];
             const bool isN = a_iN[std::size_t(node)] == t.col();
             if (!isN && a_iP[std::size_t(node)] != t.col()) continue;
-            v *= (isN ? 1 : -1) * x(t.col()) / a_Vt;
+            v *= (isN ? dnv[std::size_t(node)] : dpv[std::size_t(node)]) / a_Vt;
             c = r;
         }
         kept.emplace_back(r, c, v);
@@ -1670,10 +1937,17 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
 {
     Field& f = field();
     const std::size_t N = std::size_t(a_n);
+    degeneracy(x);
     for (int i = 0; i < a_n; ++i) {
         f.values[std::size_t(i)] = a_iV[std::size_t(i)] >= 0 ? x(a_iV[std::size_t(i)]) : 0.0;
         f.values[N + std::size_t(i)] = a_iN[std::size_t(i)] >= 0 ? x(a_iN[std::size_t(i)]) : 0.0;
         f.values[2 * N + std::size_t(i)] = a_iP[std::size_t(i)] >= 0 ? x(a_iP[std::size_t(i)]) : 0.0;
+        // (The bands' offsets with Fermi-Dirac's degeneracy in them: φn, φp
+        // and the currents read at a point as solved.)
+        if (a_fermi) {
+            f.values[5 * N + std::size_t(i)] = a_thetaN[std::size_t(i)] + a_Vt * a_lgN[std::size_t(i)];
+            f.values[6 * N + std::size_t(i)] = a_thetaP[std::size_t(i)] - a_Vt * a_lgP[std::size_t(i)];
+        }
     }
     f.solved = true;
     // The mobilities as solved, for what is read at a point (semi.mun, the
@@ -2056,7 +2330,7 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         }
     // J + jω M (M the carriers' boxes: -qA on n's rows, +qA on p's), solved in
     // the quasi-Fermi potentials' changes: δn = n/Vt (δV - δφn), δp = p/Vt
-    // (δφp - δV). In n and p a current near nought is the difference of two
+    // (δφp - δV) (Fermi-Dirac's n ℱ'/ℱ, p ℱ'/ℱ for n, p). In n and p a current near nought is the difference of two
     // large terms (a MOS capacitor's inversion electrons, 10^14 above the
     // bulk's): in φ its gradient, well conditioned.
     const double omega = 2 * M_PI * frequency;
@@ -2077,11 +2351,12 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         const int i = colNode[std::size_t(c)];
         if (colKind[std::size_t(c)] == 0) ct.emplace_back(r, c, v * a_Vt);
         else if (colKind[std::size_t(c)] == 1) {
-            const double s = x(c) / a_Vt * a_Vt;   // n/Vt, times Vt
+            // (n/Vt, times Vt; Fermi-Dirac's n ℱ'/ℱ.)
+            const double s = x(c) * a_rN[std::size_t(i)];
             ct.emplace_back(r, a_iV[std::size_t(i)], v * s);
             ct.emplace_back(r, c, -v * s);
         } else {
-            const double s = x(c) / a_Vt * a_Vt;
+            const double s = x(c) * a_rP[std::size_t(i)];
             ct.emplace_back(r, a_iV[std::size_t(i)], -v * s);
             ct.emplace_back(r, c, v * s);
         }
@@ -2129,9 +2404,10 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         Eigen::VectorXcd dx(a_unknowns);
         for (int j = 0; j < a_unknowns; ++j) {
             const int i = colNode[std::size_t(j)];
+            // (As the system's columns have it: Fermi-Dirac's n ℱ'/ℱ.)
             if (colKind[std::size_t(j)] == 0) dx(j) = dy(j) * a_Vt;
-            else if (colKind[std::size_t(j)] == 1) dx(j) = x(j) * (dy(a_iV[std::size_t(i)]) - dy(j));
-            else dx(j) = x(j) * (dy(j) - dy(a_iV[std::size_t(i)]));
+            else if (colKind[std::size_t(j)] == 1) dx(j) = x(j) * a_rN[std::size_t(i)] * (dy(a_iV[std::size_t(i)]) - dy(j));
+            else dx(j) = x(j) * a_rP[std::size_t(i)] * (dy(j) - dy(a_iV[std::size_t(i)]));
         }
         auto rowDot = [&](int r) {
             cd s(0, 0);
@@ -2150,8 +2426,12 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
             edgeSteps(e, x, &dN, &dP);
             const int ni = a_iN[std::size_t(i)], nj = a_iN[std::size_t(j)], pi = a_iP[std::size_t(i)], pj = a_iP[std::size_t(j)];
             const cd dV = (dx(a_iV[std::size_t(j)]) - dx(a_iV[std::size_t(i)])) / a_Vt;
-            const cd dfn = e.wn * (bern(dN) * dx(nj) - bern(-dN) * dx(ni) + (x(nj) * dbern(dN) + x(ni) * dbern(-dN)) * dV);
-            const cd dfp = e.wp * (bern(dP) * dx(pi) - bern(-dP) * dx(pj) + (x(pi) * dbern(dP) + x(pj) * dbern(-dP)) * dV);
+            // (Each step's change: the potential's, and Fermi-Dirac's ln γ at
+            // each end with its carriers.)
+            const cd dVn = dV + a_dlgN[std::size_t(j)] * dx(nj) - a_dlgN[std::size_t(i)] * dx(ni);
+            const cd dVp = dV - a_dlgP[std::size_t(j)] * dx(pj) + a_dlgP[std::size_t(i)] * dx(pi);
+            const cd dfn = e.wn * (bern(dN) * dx(nj) - bern(-dN) * dx(ni) + (x(nj) * dbern(dN) + x(ni) * dbern(-dN)) * dVn);
+            const cd dfp = e.wp * (bern(dP) * dx(pi) - bern(-dP) * dx(pj) + (x(pi) * dbern(dP) + x(pj) * dbern(-dP)) * dVp);
             df[m] = dfn + dfp;
         }
         std::vector<cd> out(nc, cd(0, 0));
@@ -2516,6 +2796,25 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     s.Eg = ex[3];
     s.ni = ex[4];
     s.delta = std::isfinite(ex[11]) ? ex[11] : 0.0;
+    if (std::isfinite(ex[12]) && std::isfinite(ex[14])) {
+        s.n1d = ex[12];
+        s.gd = ex[13];
+        s.p1a = ex[14];
+        s.ga = ex[15];
+    }
+    // Fermi-Dirac's: γ = ℱ(η)/e^η, the carriers' Boltzmann densities n/γ.
+    double gn = 1, gp = 1;
+    if (ex[16] > 0 && ex[17] > 0) {
+        const FermiHalf& fh = fermiHalf();
+        auto gamma = [&](double c, double N) {
+            const double u = c / N;
+            return u > 1e-6 ? u / std::exp(fh.inverse(u)) : 1 - u / std::sqrt(8.0);
+        };
+        gn = gamma(s.n, ex[16]);
+        gp = gamma(s.p, ex[17]);
+    }
+    s.nB = s.n / gn;
+    s.pB = s.p / gp;
     // The quasi-Fermi potentials at the nodes (each its own bands'), linear
     // between them: φn = V + θn - Vt ln(n/ni_ref), φp = V + θp + Vt ln(p/ni_ref).
     s.phin = s.phip = 0;
@@ -2524,11 +2823,11 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
         s.phip += w[k] * (V[k] + thp[k] + Vt * std::log(std::max(p[k], 1e-300) / niRef));
     }
     const double taun = ex[5], taup = ex[6], Et = ex[7], Cn = ex[8], Cp = ex[9], B = ex[10];
-    const double excess = s.n * s.p - s.ni * s.ni;
+    const double excess = s.n * s.p - s.ni * s.ni * gn * gp;
     if (std::isfinite(taun) && std::isfinite(taup)) {
         const double kT = Vt * Q;
         const double n1 = s.ni * std::exp(Et / kT), p1 = s.ni * std::exp(-Et / kT);
-        s.R += excess / (taup * (s.n + n1) + taun * (s.p + p1));
+        s.R += excess / (taup * (s.n + gn * n1) + taun * (s.p + gp * p1));
     }
     s.R += (Cn * s.n + Cp * s.p) * excess + B * excess;
     // The currents: each edge's Scharfetter-Gummel current, the vector that
