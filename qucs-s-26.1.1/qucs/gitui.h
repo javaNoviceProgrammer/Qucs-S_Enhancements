@@ -173,11 +173,18 @@ public:
     /// Asks first.
     void discard(const QString& root, const QStringList& paths);
     void showDiff(const QString& root, const QString& path = {}, DiffOf of = DiffOf::Head);
-    /// The History of \a root (\a path's when given), a dock: the one open
-    /// brought to the front and read again, else a new one - in the main
+    /// The History of \a root (\a path's when given): the one open brought
+    /// to the front and read again, else a new one - a window of its own
+    /// (the default), or, as Git > Settings... has it, a dock in the main
     /// window, below the documents with the panels there (each history a
     /// tab of them), to be moved, or floated as a window of its own.
     HistoryView* showHistory(const QString& root, const QString& path = {});
+    /// Whether a new History docks in the main window (else it is a window
+    /// of its own): Git > Settings...'s choice, kept with the settings.
+    static bool historyDocked();
+    static void setHistoryDocked(bool docked);
+    /// Git > Settings...: how the Git commands behave.
+    void editSettings();
     /// The main window the histories dock in (none: each floats).
     void setMainWindow(QMainWindow* window);
     void showBlame(const QString& root, const QString& path);
