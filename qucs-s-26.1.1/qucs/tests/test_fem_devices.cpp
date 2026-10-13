@@ -4,7 +4,7 @@
  *                        avalanche gain), a MOSFET's mobility (Lombardi's
  *                        surface scattering, saturation along the current),
  *                        heavy doping (Fermi-Dirac, band gap narrowing,
- *                        dopants ionized in part)
+ *                        dopants ionized in part), interface traps
  *
  * This file is part of Qucs-S.
  *
@@ -181,6 +181,30 @@ QByteArray siliconBar(const QString& geometry, const QString& doping, const QStr
         "mesh": {"size": "normal", "custom": true, "hmax": "%5"}}],
       "studies": [{"type": "study", "steps": [%4]}]})json")
         .arg(geometry, doping, model, steps, hmax)
+        .toUtf8();
+}
+
+/// A MOS capacitor (µm): 10 nm of oxide on p-type 1e17 cm⁻³ silicon 0.4
+/// deep, 0.1 wide, an n⁺ polysilicon gate g at Vg, the substrate b;
+/// \a traps its interface's features, \a steps its study's.
+QByteArray mosCapacitor(const QString& traps, const QString& steps)
+{
+    return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "Vg", "expression": "0[V]"}],
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "name": "bulk", "position": ["0", "-0.4"], "size": ["0.1", "0.38"]},
+                     {"type": "rectangle", "name": "surface", "position": ["0", "-0.02"], "size": ["0.1", "0.02"]},
+                     {"type": "rectangle", "name": "oxide", "size": ["0.1", "0.01"]}],
+        "materials": [{"material": "Silicon", "selection": {"only": ["bulk", "surface"]}},
+                      {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}],
+        "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+          {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["bulk", "surface"]}},
+          {"type": "gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+          {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}} %1]}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.02", "features": [
+          {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "0.002"}]}}],
+      "studies": [{"type": "study", "steps": [%2]}]})json")
+        .arg(traps, steps)
         .toUtf8();
 }
 
@@ -677,6 +701,178 @@ private slots:
             QVERIFY2(std::abs(gm / dc - 1) < 1e-5, qPrintable(said.join(QLatin1String("; "))));
         }
         qInfo("degenerate channel: %s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void interfaceTrapsStretchOut()
+    {
+        // The MOS capacitor at rest from flat band to weak inversion, with
+        // and without 5e11 cm⁻² eV⁻¹ of interface traps (acceptor-like above
+        // the intrinsic level, donor-like below, ±0.5 eV): each gate voltage
+        // Vfb + ψs - (Qs(ψs) + Qit(ψs))/Cox at the surface potential solved,
+        // Qs the exact one-dimensional charge, Qit = -q² Dit (ψs - φB) (the
+        // traps filled to the Fermi level, neutral where it meets the
+        // intrinsic one) - to 2 mV; the quasi-static capacitance Cox in
+        // series with Cs + q² Dit to 0.5 %. The C-V curve stretched: from
+        // -0.9 to 0 V the gate carries ψs 0.504 V, not 0.565.
+        constexpr double KB = 1.380649e-23;
+        const double Vt = KB * 300 / Q, Na = 1e23, es = 11.7 * Eps0, cox = 3.9 * Eps0 / 10e-9;
+        const double ni = std::sqrt(2.8e25 * 1.04e25) * std::exp(-1.12 / (2 * Vt));
+        const double dEc = 1.12 / 2 + Vt / 2 * std::log(2.8 / 1.04), phiB = Vt * std::log(Na / ni), vfb = -dEc - phiB;
+        const double Dit = 5e15 / Q;   // 1/(m² J)
+        auto Qs = [&](double psi) {    // C/m², the semiconductor's (exact, Boltzmann's)
+            const double b = psi / Vt, r = ni * ni / (Na * Na);
+            const double F = std::sqrt(std::max(std::exp(-b) + b - 1 + r * (std::exp(b) - b - 1), 0.0));
+            return -(psi >= 0 ? 1 : -1) * std::sqrt(2 * es * KB * 300 * Na) * F;
+        };
+        const QString traps = QStringLiteral(R"(, {"type": "traps", "kind": "acceptor", "distribution": "uniform", "Dit": "5e11[1/(cm^2*eV)]",
+            "Elow": "0[eV]", "Ehigh": "0.5[eV]", "levels": 32, "selection": {"of": ["surface"], "side": "top"}},
+          {"type": "traps", "kind": "donor", "distribution": "uniform", "Dit": "5e11[1/(cm^2*eV)]", "Elow": "-0.5[eV]", "Ehigh": "0[eV]",
+            "levels": 32, "selection": {"of": ["surface"], "side": "top"}})");
+        const QString steps = QStringLiteral(R"({"type": "sweep", "parameters": [["Vg", "-0.9, -0.6, -0.3, 0", "V"]]}, {"type": "stationary"},
+          {"type": "frequency", "frequencies": "1[MHz]"})");
+        QStringList said;
+        double reach[2] = {0, 0};
+        for (const bool with : {false, true}) {
+            const Run r = run(modelOf(mosCapacitor(with ? traps : QString(), steps)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            QCOMPARE(int(r.study.solutions.size()), 4);
+            for (std::size_t k = 0; k < r.study.solutions.size(); ++k) {
+                Solution& s = *r.study.solutions[k];
+                s.select(0);
+                const double C0 = global(s, QStringLiteral("semi.C0gg")) / 0.1e-6;   // F/m²
+                s.select(-1);
+                const Locator locator(s.mesh());
+                auto at = [&](double y) {
+                    const std::optional<double> v = evaluateAt(s, locator, QStringLiteral("semi.V"), QPointF(0.05, y));
+                    return v ? *v : NAN;
+                };
+                const double vg = std::vector<double>{-0.9, -0.6, -0.3, 0}[k];
+                const double psi = at(-1e-7) - at(-0.399);
+                const double Qit = with ? -Q * Dit * Q * (psi - phiB) : 0.0;
+                const double expected = vfb + psi - (Qs(psi) + Qit) / cox;
+                // Quasi-statically: Cox in series with Cs + Cit, Cs = -dQs/dψs,
+                // Cit = q² Dit.
+                const double Cs = -(Qs(psi + 1e-4) - Qs(psi - 1e-4)) / 2e-4, Cit = with ? Q * Q * Dit : 0.0;
+                const double Clf = 1 / (1 / cox + 1 / (Cs + Cit));
+                said << QStringLiteral("%1 at %2 V: ψs %3 V, the gate's %4 V by it; C0 %5 of Cox (%6)")
+                            .arg(with ? QStringLiteral("traps") : QStringLiteral("none"))
+                            .arg(vg)
+                            .arg(psi, 0, 'f', 4)
+                            .arg(expected, 0, 'f', 4)
+                            .arg(C0 / cox, 0, 'f', 4)
+                            .arg(Clf / cox, 0, 'f', 4);
+                QVERIFY2(std::abs(expected - vg) < 2e-3, qPrintable(said.join(QLatin1String("; "))));
+                QVERIFY2(std::abs(C0 / Clf - 1) < 5e-3, qPrintable(said.join(QLatin1String("; "))));
+                if (k == 0) reach[with] -= psi;
+                if (k == 3) reach[with] += psi;
+            }
+        }
+        said << QStringLiteral("ψs from -0.9 to 0 V: %1 V without, %2 V with").arg(reach[0], 0, 'f', 3).arg(reach[1], 0, 'f', 3);
+        qInfo("stretch-out: %s", qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY(reach[1] < 0.95 * reach[0]);
+    }
+
+    void interfaceTrapsConductance()
+    {
+        // The conductance method: one level at the intrinsic one, 1e11 cm⁻²,
+        // σ 1e-16 cm², vth 1e7 cm/s, the MOS capacitor depleted at -0.5 V.
+        // Gp/ω from the gate's admittance - ω Cox² G/(G² + ω² (Cox - C)²) -
+        // the level's Cit ωτ/(1 + ω²τ²) at a tenth, a third, once, three and
+        // ten times 1/2πτ: τ = 1/(cn (n + n1) + cp (p + p1)) and Cit = q N
+        // (cn (1 - f) n + cp f p)/(Vt/τ) at the surface's carriers - to 0.5 %;
+        // the substrate's admittance the gate's (the traps' charge in it); at
+        // 1e-4 of it the quasi-static capacitance.
+        constexpr double KB = 1.380649e-23;
+        const double Vt = KB * 300 / Q, ni = std::sqrt(2.8e25 * 1.04e25) * std::exp(-1.12 / (2 * Vt));
+        const double W = 0.1e-6, cox = 3.9 * Eps0 / 10e-9 * W, N = 1e15, c = 1e-20 * 1e5;
+        const QString trap = QStringLiteral(R"(, {"type": "traps", "kind": "acceptor", "distribution": "level", "Nit": "1e11[1/cm^2]", "Et": "0[eV]",
+            "sigman": "1e-16[cm^2]", "sigmap": "1e-16[cm^2]", "vth": "1e7[cm/s]", "selection": {"of": ["surface"], "side": "top"}})");
+        // First its surface at rest, for τ; then the admittance about 1/2πτ.
+        const Run rest = run(modelOf(mosCapacitor(trap, QStringLiteral(R"({"type": "stationary"})")).replace(R"("expression": "0[V]")", R"("expression": "-0.5[V]")")));
+        QVERIFY2(rest.error.isEmpty(), qPrintable(rest.error));
+        const Locator locator(rest.solution->mesh());
+        auto at = [&](const QString& e) {
+            const std::optional<double> v = evaluateAt(*rest.solution, locator, e, QPointF(0.05, -1e-7));
+            return v ? *v : NAN;
+        };
+        const double n = at(QStringLiteral("semi.n")), p = at(QStringLiteral("semi.p"));
+        const double D = c * (n + ni) + c * (p + ni), f = (c * n + c * ni) / D;
+        const double tau = 1 / D, Cit = Q * N * (c * (1 - f) * n + c * f * p) / (Vt * D) * W;
+        const double f0 = 1 / (2 * M_PI * tau);
+        const std::vector<double> times = {1e-4, 0.1, 0.3, 1, 3, 10};
+        QStringList list;
+        for (double k : times) list << QString::number(k * f0, 'g', 10);
+        const QString steps = QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "%1"})").arg(list.join(QLatin1String(", ")));
+        Run r = run(modelOf(mosCapacitor(trap, steps).replace(R"("expression": "0[V]")", R"("expression": "-0.5[V]")")));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        QStringList said;
+        said << QStringLiteral("surface n %1, p %2 m⁻³: τ %3 s (1/2πτ %4 Hz), Cit %5 F").arg(n, 0, 'g', 4).arg(p, 0, 'g', 4).arg(tau, 0, 'g', 4).arg(f0, 0, 'g', 4).arg(Cit, 0, 'g', 4);
+        // (At 1e-4 of 1/2πτ the traps follow: C the quasi-static C0, to 1e-4.)
+        s.select(0);
+        said << QStringLiteral("C %1, C0 %2 F at %3 Hz").arg(global(s, QStringLiteral("semi.Cgg")), 0, 'g', 7).arg(global(s, QStringLiteral("semi.C0gg")), 0, 'g', 7).arg(s.snapshotValue(0), 0, 'g', 3);
+        QVERIFY2(std::abs(global(s, QStringLiteral("semi.Cgg")) / global(s, QStringLiteral("semi.C0gg")) - 1) < 1e-4, qPrintable(said.join(QLatin1String("; "))));
+        for (int k = 1; k < s.snapshotCount(); ++k) {
+            s.select(k);
+            const double w = 2 * M_PI * s.snapshotValue(k), wt = w * tau;
+            const double C = global(s, QStringLiteral("semi.Cgg")), G = global(s, QStringLiteral("semi.Ggg"));
+            const double Gp = w * cox * cox * G / (G * G + w * w * (cox - C) * (cox - C));
+            const double expected = Cit * wt / (1 + wt * wt);
+            said << QStringLiteral("%1 Hz: Gp/ω %2 F (%3)").arg(s.snapshotValue(k), 0, 'g', 4).arg(Gp, 0, 'g', 5).arg(expected, 0, 'g', 5);
+            QVERIFY2(std::abs(Gp / expected - 1) < 5e-3, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(global(s, QStringLiteral("semi.Cbg")) / C + 1) < 1e-6 && std::abs(global(s, QStringLiteral("semi.Gbg")) / G + 1) < 1e-6,
+                     qPrintable(said.join(QLatin1String("; "))));
+        }
+        qInfo("conductance method: %s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void interfaceTrapsGenerate()
+    {
+        // A pn junction along a surface (1e17 cm⁻³ each side, 1 µm each),
+        // under oxide, its surface's traps one level at the intrinsic one
+        // (1e11 cm⁻², σ 1e-16 cm², vth 1e7 cm/s), none in its bulk; reversed
+        // by 1 V. Its current all the traps' generation: q ∫ U along the
+        // surface, U = N cn cp (n p - ni²)/(cn (n + n1) + cp (p + p1)) at the
+        // carriers solved - to 1 %.
+        constexpr double KB = 1.380649e-23;
+        const double Vt = KB * 300 / Q, ni = std::sqrt(2.8e25 * 1.04e25) * std::exp(-1.12 / (2 * Vt)), N = 1e15, c = 1e-15;
+        const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "p", "position": ["0", "-0.1"], "size": ["1", "0.1"]},
+                         {"type": "rectangle", "name": "n", "position": ["1", "-0.1"], "size": ["1", "0.1"]},
+                         {"type": "rectangle", "name": "oxide", "size": ["2", "0.01"]}],
+            "materials": [{"material": "Silicon", "selection": {"only": ["p", "n"]}},
+                          {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["p"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["n"]}},
+              {"type": "traps", "kind": "acceptor", "distribution": "level", "Nit": "1e11[1/cm^2]", "Et": "0[eV]", "sigman": "1e-16[cm^2]",
+               "sigmap": "1e-16[cm^2]", "vth": "1e7[cm/s]", "selection": {"of": ["p", "n"], "side": "top"}},
+              {"type": "ohmic", "name": "a", "V0": "-1[V]", "selection": {"of": ["p"], "side": "left"}},
+              {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.02"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Solution& s = *r.solution;
+        const Locator locator(s.mesh());
+        auto at = [&](const QString& e, double x) {
+            const std::optional<double> v = evaluateAt(s, locator, e, QPointF(x, -1e-7));
+            return v ? *v : NAN;
+        };
+        // ∫ U dx along the surface, Simpson's at 5 nm.
+        const int m = 400;
+        double sum = 0;
+        for (int k = 0; k <= m; ++k) {
+            const double x = 2.0 * k / m, w = (k == 0 || k == m) ? 1 : (k % 2 ? 4 : 2);
+            const double n = at(QStringLiteral("semi.n"), std::clamp(x, 1e-6, 2 - 1e-6)), p = at(QStringLiteral("semi.p"), std::clamp(x, 1e-6, 2 - 1e-6));
+            sum += w * N * c * c * (n * p - ni * ni) / (c * (n + ni) + c * (p + ni));
+        }
+        const double generated = Q * sum * (2e-6 / m) / 3;   // A (a metre deep)
+        const double Ia = global(s, QStringLiteral("semi.I_a")), Ik = global(s, QStringLiteral("semi.I_k"));
+        qInfo("surface generation: I_a %.5g A, I_k %.5g A; q ∫ U along the surface %.5g A", Ia, Ik, generated);
+        QVERIFY2(generated < 0 && std::abs(Ik / -generated - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(Ik).arg(generated)));
+        QVERIFY(std::abs(Ia + Ik) < 1e-9 * std::abs(Ik));
     }
 
     void dopantsIonizedInPart()

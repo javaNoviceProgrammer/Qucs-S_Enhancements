@@ -2095,7 +2095,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     integrals along the field line through the highest field (semi.In,
     semi.Ip, semi.Mn, semi.Mp): a breakdown voltage where they reach 1,
     an abrupt junction's the depletion approximation's to 0.1 %. **Ohmic, Schottky and
-    gate contacts** (a work function on an oxide), fixed surface charge.
+    gate contacts** (a work function on an oxide), fixed surface charge,
+    **interface traps** (acceptor- or donor-like, one level or a uniform
+    Dit; Shockley-Read-Hall occupancy, their charge and the pairs they
+    recombine: a MOS capacitor's C-V curve stretched as q² Dit (ψs - φB)/Cox
+    has it, to 1 mV; small-signal each level follows with its own time -
+    the conductance method's Gp/ω its Cit ωτ/(1 + ω²τ²) to 0.2 %).
     At rest (currents, charges; at equilibrium the gates' quasi-static
     capacitance, the low-frequency limit), **in time** (adaptive BDF2,
     the contacts' voltages and a light's power of t: switching, a diode's
