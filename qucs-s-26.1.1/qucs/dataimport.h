@@ -16,6 +16,7 @@
 #include "dataset.h"
 
 #include <QDateTime>
+#include <QJsonObject>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -96,6 +97,9 @@ struct Origin {
     QDateTime imported;
     int variables = 0;  ///< how many it holds
     int points = 0;     ///< x's values
+    /// Each variable's unit, by its name, as its values are written ("eV",
+    /// "1/nm"; none: a number, an index). Empty: not said.
+    QJsonObject units;
 };
 
 /// \a data as a dataset of Qucs-S at \a path, \a origin written in it (a

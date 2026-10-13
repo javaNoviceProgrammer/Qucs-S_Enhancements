@@ -780,13 +780,14 @@ const QByteArray kOriginTag = QByteArrayLiteral("<import ");
 
 QByteArray originLine(const Origin& o)
 {
-    const QJsonObject json{{QStringLiteral("source"), o.source},
+    QJsonObject json{{QStringLiteral("source"), o.source},
                            {QStringLiteral("format"), o.format},
                            {QStringLiteral("sheet"), o.options.sheet},
                            {QStringLiteral("x"), o.options.x},
                            {QStringLiteral("imported"), o.imported.toString(Qt::ISODate)},
                            {QStringLiteral("variables"), o.variables},
                            {QStringLiteral("points"), o.points}};
+    if (!o.units.isEmpty()) json[QStringLiteral("units")] = o.units;
     return kOriginTag + QJsonDocument(json).toJson(QJsonDocument::Compact).toBase64() + ">\n";
 }
 
@@ -993,6 +994,7 @@ bool originOf(const QString& path, Origin* origin)
     origin->options.x = json.value(QLatin1String("x")).toString();
     origin->imported = QDateTime::fromString(json.value(QLatin1String("imported")).toString(), Qt::ISODate);
     origin->variables = json.value(QLatin1String("variables")).toInt();
+    origin->units = json.value(QLatin1String("units")).toObject();
     origin->points = json.value(QLatin1String("points")).toInt();
     return true;
 }

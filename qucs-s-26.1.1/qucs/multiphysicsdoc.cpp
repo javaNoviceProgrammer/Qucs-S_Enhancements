@@ -1418,6 +1418,10 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     // over it draws nothing (a sweep's C-V curve at its one frequency).
     const std::vector<Instance> every = instances(*set, true);
     QStringList outer;
+    // Each variable's unit as its values are written - an axis's own (eV, a
+    // band's k in 1/nm as qw.k is shown, s, Hz, a sweep's parameter's SI
+    // one), a trace's as its graph shows it - said in the dataset.
+    QJsonObject unitsOf;
     enum class Axis { Steps, Frequency, Mode, Sweep };   // (Steps: the output times, frequencies, energies)
     QList<Axis> kinds;
     const Solution& first = *set->solutions.front();
@@ -1450,6 +1454,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 f.name = unique(QStringLiteral("frequency"));
                 f.independent = true;
                 for (double v : frequencies) f.re << v;
+                unitsOf.insert(f.name, QStringLiteral("Hz"));
                 outer << f.name;
                 kinds << Axis::Frequency;
                 vars << f;
@@ -1471,8 +1476,15 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
             t.re << (first.modeAnalysis ? double(k + 1)
                      : photon == 1      ? 6.62607015e-34 * f / 1.602176634e-19
                      : photon == 2      ? (f > 0 ? 299792458.0 / f : 0)
+                     : photon == 3      ? f * 1e-9   // (1/nm, as qw.k)
                                         : f);
         }
+        if (!first.modeAnalysis)
+            unitsOf.insert(t.name, photon == 1                ? QStringLiteral("eV")
+                                   : photon == 2              ? QStringLiteral("m")
+                                   : photon == 3              ? QStringLiteral("1/nm")
+                                   : first.frequencyDomain    ? QStringLiteral("Hz")
+                                                              : QStringLiteral("s"));
         outer << t.name;
         kinds << (first.modeAnalysis ? Axis::Mode : Axis::Steps);   // (modes found unevenly: an index)
         vars << t;
@@ -1519,6 +1531,8 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 p.name = unique(a->name);
                 p.independent = true;
                 for (double v : a->values) p.re << v;
+                const QString u = dimName(first.parameters().dims.value(a->name));
+                if (u != QLatin1String("1")) unitsOf.insert(p.name, u);
                 outer << p.name;
                 kinds << Axis::Sweep;
                 vars << p;
@@ -1625,6 +1639,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     for (const QString& n : order) {
                         vars << byName[n];
                         traces << byName[n].name;
+                        unitsOf.insert(byName[n].name, unitOf.value(n));
                         axisWord(named && !only.isEmpty() && item.name == label ? label : byName[n].name, unitOf.value(n));
                     }
                     continue;
@@ -1657,6 +1672,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 }
                 vars << v;
                 traces << v.name;
+                unitsOf.insert(v.name, unitShown);
                 axisWord(!label.isEmpty() && item.name == label ? label : v.name, unitShown);
             }
         } else if (graph.type == QLatin1String("pointgraph") || graph.type == QLatin1String("linegraph")) {
@@ -1710,6 +1726,8 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                 if (!axisMade) continue;
                 vars << axis << v;
                 traces << v.name;
+                unitsOf.insert(axis.name, QStringLiteral("m"));
+                unitsOf.insert(v.name, unitShown);
                 axisWord(label.isEmpty() ? v.name : label, unitShown);
             } else {
                 // Each point's value over the solutions.
@@ -1742,6 +1760,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     }
                     vars << v;
                     traces << v.name;
+                    unitsOf.insert(v.name, unitShown);
                     axisWord(points.size() == 1 && !label.isEmpty() ? label : v.name, unitShown);
                 }
             }
@@ -1785,11 +1804,22 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     origin.source = getDocName().isEmpty() ? tr("(a model not saved)") : getDocName();
     origin.format = tr("Qucs-S multiphysics model");
     origin.imported = QDateTime::currentDateTime();
+    // (A dimensionless trace's "1" said as none.)
+    for (auto it = unitsOf.begin(); it != unitsOf.end(); ++it)
+        if (it.value().toString() == QLatin1String("1")) it.value() = QString();
+    origin.units = unitsOf;
     QString why;
     if (!qucs_s::dataimport::writeDataset(dat, data, origin, &why)) return fail(why);
     say(tr("%1: %2 written (%3)").arg(g->name(), QFileInfo(dat).fileName(), traces.join(QLatin1String(", "))));
     if (open && a_App != nullptr) {
         const QString title = g->text(QStringLiteral("title")).isEmpty() ? g->name() : g->text(QStringLiteral("title"));
+        // The x axis: the first trace's first axis, with its unit ("k (1/nm)").
+        QString xWords;
+        for (const Variable& v : vars)
+            if (!v.independent && v.name == traces.front() && !v.dependencies.isEmpty()) {
+                const QString u = unitsOf.value(v.dependencies.front()).toString();
+                if (!u.isEmpty()) xWords = v.dependencies.front() + QStringLiteral(" (") + u + QLatin1Char(')');
+            }
         // (Its own display: its diagram of other traces replaced; the y axis
         // said in the traces' units.)
         const bool rect = g->text(QStringLiteral("diagram")) == QLatin1String("rect");
@@ -1799,7 +1829,8 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                                                    {QStringLiteral("type"), g->text(QStringLiteral("diagram"))},
                                                                    {QStringLiteral("title"), title},
                                                                    {QStringLiteral("replace"), true},
-                                                                   {QStringLiteral("ylabel"), rect && anyUnit ? axisWords.join(QLatin1String(", ")) : QString()}});
+                                                                   {QStringLiteral("ylabel"), rect && anyUnit ? axisWords.join(QLatin1String(", ")) : QString()},
+                                                                   {QStringLiteral("xlabel"), rect ? xWords : QString()}});
         if (!shown.isEmpty()) return fail(shown);
         // Its diagram kept: the display saved as it is now.
         for (QucsDoc* d : a_App->allDocuments())

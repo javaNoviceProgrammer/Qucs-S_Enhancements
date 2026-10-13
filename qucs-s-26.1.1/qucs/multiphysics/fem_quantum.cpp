@@ -29,6 +29,8 @@
 #include <Eigen/Dense>
 #include <Eigen/SparseCholesky>
 
+#include <QScopeGuard>
+
 #include <algorithm>
 #include <complex>
 #include <functional>
@@ -346,9 +348,10 @@ private:
         double Eb = NaN, Ex = NaN, radius = NaN, gammaX = NaN;
         // The field across the wells (V/m), the broadening (J); the
         // spontaneous emission (1/(m³ s J)) and its total over the window
-        // (1/(m³ s)); the Kramers-Kronig index of the window's absorption.
+        // (1/(m³ s)); the Kramers-Kronig index of the window's absorption;
+        // the absorption of the transitions well above each energy (1/m).
         double field = 0, gamma = 0, Rsp = NaN;
-        std::vector<double> rsp, gspTE, gspTM, dnTE, dnTM, dnTEtail, dnTMtail;
+        std::vector<double> rsp, gspTE, gspTM, dnTE, dnTM, dnTEtail, dnTMtail, farTE, farTM;
     };
     /// A 1s exciton (1D wells): bound by Eb, λ across (its decay in the plane), γ
     /// drawing the electron and hole together along the axis (0: Bastard's),
@@ -2172,6 +2175,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         double weight = 1;   // its direction's share
         std::vector<double> eps, wte, wtm, ec, ev;
         double Eb = 0, radius = NaN, F0 = NaN, Ep = 0, nr = 3.5;
+        double edge = 0;   // its least energy (J)
     };
     std::vector<KpPair> pairs;
     if (kp && !a_kps.empty() && !a_kps[0].E.empty()) {
@@ -2231,6 +2235,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                         most = std::max(most, wte + wtm);
                     }
                     if (!(most > 1e-10)) continue;
+                    pr.edge = *std::min_element(pr.eps.begin(), pr.eps.end());
                     if (a_spec.excitons && epsr > 0 && pr.wte[0] + pr.wtm[0] > 1e-10) {
                         if (!bound) {
                             bound = true;
@@ -2285,9 +2290,24 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         return E >= lo && E < hi ? 1 / (hi - lo) : 0.0;
     };
     std::vector<double> spTE, spTM;
+    // What the transitions well above each energy (their least 5 half widths
+    // above it) add there: their lines' tails alone - a Lorentzian's reach
+    // far, and with them the spectrum depends on how many states it takes.
+    const double far = 5 * gamma;
+    std::vector<double>& tailTE = a_spec.farTE;
+    std::vector<double>& tailTM = a_spec.farTM;
+    tailTE.clear();
+    tailTM.clear();
     for (double E : o.energies) {
-        double te = 0, tm = 0, ste = 0, stm = 0;
+        double te = 0, tm = 0, ste = 0, stm = 0, teTail = 0, tmTail = 0;
         for (const KpPair& pr : pairs) {
+            const double te0 = te, tm0 = tm;
+            const auto tally = qScopeGuard([&] {
+                if (pr.edge > E + far) {
+                    teTail += te - te0;
+                    tmTail += tm - tm0;
+                }
+            });
             // α = (π q² ħ / (n c ε0 m0² E)) |Mb|² Σ ∫ (k dk/2π) w (f_v - f_c) L / (the wells' size).
             // (Its direction's share of the plane.)
             const double C = M_PI * Q * Q * Hbar / (pr.nr * C0 * Eps0 * M0 * M0 * E) * (M0 * pr.Ep / 6) / a_activeSize * pr.weight;
@@ -2351,6 +2371,13 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             }
         }
         for (const Transition& t : transitions) {
+            const double te0 = te, tm0 = tm;
+            const auto tally = qScopeGuard([&] {
+                if (t.E > E + far) {
+                    teTail += te - te0;
+                    tmTail += tm - tm0;
+                }
+            });
             const double delta = E - t.E;
             double dos = 0, dosSp = 0;   // 1/(J m²) wells, 1/(J m) wires
             if (wells) {
@@ -2428,6 +2455,39 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         a_spec.tm.push_back(tm);
         spTE.push_back(ste);
         spTM.push_back(stm);
+        tailTE.push_back(teTail);
+        tailTM.push_back(tmTail);
+    }
+    // With carriers and a Lorentzian line: how much the transitions well
+    // above the gain's peak take off it, by their tails alone - so that the
+    // spectrum depends on how many states the step takes (a GaAs laser
+    // well's TE peak 394 /cm with 2 states, 304 with 4). Said when more than
+    // 10 %.
+    if (a_spec.carriers && o.lineshape == 0 && !a_spec.E.empty()) {
+        double worst = 0, at = NaN;
+        QString which;
+        for (int pol = 0; pol < 2; ++pol) {
+            const std::vector<double>& a = pol == 0 ? a_spec.te : a_spec.tm;
+            const std::vector<double>& tail = pol == 0 ? tailTE : tailTM;
+            std::size_t peak = 0;
+            for (std::size_t k = 1; k < a.size(); ++k)
+                if (a[k] < a[peak]) peak = k;
+            if (!(a[peak] < 0)) continue;   // (no gain)
+            // (Of the gain without them.)
+            const double share = std::abs(tail[peak]) / (std::abs(tail[peak]) - a[peak]);
+            if (share > worst) {
+                worst = share;
+                at = a_spec.E[peak];
+                which = pol == 0 ? QStringLiteral("TE") : QStringLiteral("TM");
+            }
+        }
+        if (worst > 0.1)
+            a_s.log << tr("Warning: %1: the transitions more than 5 half widths above the %2 gain's peak (%3) take %4 % off it by their "
+                          "Lorentzian tails alone (qw.alpha%2far): the spectrum depends on how many states the step takes. A Gaussian or "
+                          "a sech line's tails hardly reach; or take the states that matter (Lumerical's MQW keeps 2 conduction and 4 "
+                          "valence subbands)")
+                               .arg(a_node->name(), which, electronVolts(at))
+                               .arg(qRound(100 * worst));
     }
     // With carriers, the spontaneous emission per volume of the wells, per
     // energy and time: (n² E²/(π² ħ³ c²)) of the emission's α averaged over
@@ -2672,6 +2732,12 @@ void QuantumProblem::setGlobals()
                           tr("what the absorption above the window would add to qw.dnTE were it its top's all the way: between two "
                              "fields their difference what Δn leaves out"));
             a_s.setGlobal(p + QStringLiteral("dnTMtail"), a_spec.dnTMtail[k], Dim(), tr("the same of qw.dnTM"));
+        }
+        if (k < a_spec.farTE.size()) {
+            a_s.setGlobal(p + QStringLiteral("alphaTEfar"), a_spec.farTE[k], perMetre,
+                          tr("what the transitions more than 5 half widths above the photon add to qw.alphaTE: their lines' tails "
+                             "alone - a Lorentzian's reach far, a Gaussian's and a sech's hardly"));
+            a_s.setGlobal(p + QStringLiteral("alphaTMfar"), a_spec.farTM[k], perMetre, tr("the same of qw.alphaTM"));
         }
         a_s.setGlobal(p + QStringLiteral("Fw"), a_spec.field, Dim::of(1, 1, -3, -1), tr("the field across the wells (their band edge's slope)"));
         a_s.setGlobal(p + QStringLiteral("linewidth"), a_spec.gamma, energy, tr("the broadening: its half width at half maximum"), QStringLiteral("eV"));

@@ -1209,6 +1209,84 @@ private slots:
         QVERIFY2(c.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("at 41 values of k")), qPrintable(c.solution->log.join(QLatin1Char('\n'))));
     }
 
+    void lorentzianTailsUnderTheGain()
+    {
+        // A GaAs laser well's gain (10 nm in Al0.25GaAs, 3e18 cm⁻³ at 50
+        // kV/cm, a line 6.6 meV half wide): a Lorentzian's tails carry the
+        // absorption of the transitions well above the gain's peak under it
+        // (qw.alphaTEfar), the more the more states the step takes. From 2
+        // states to 4 the peak falls (the review's 394 /cm against 304 with
+        // the k·p bands): as a Gaussian line's does - the carriers spread
+        // over more states, the quasi-Fermi levels nearer - and more, those
+        // tails most of the more (77-89 %; the rest the tails of new
+        // transitions nearer than 5 half widths). Past 10 % of the gain
+        // warned, with how much; a Gaussian line's tails do not reach: none,
+        // and no warning.
+        struct Peak {
+            double g[2] = {0, 0}, far[2] = {0, 0};   // TE, TM: the gain at its peak and what those transitions take off it (1/m)
+            QString log;
+            double share(int pol) const { return far[pol] / (g[pol] + far[pol]); }
+        };
+        auto gainOf = [&](const char* valence, int states, const char* shape) {
+            const Run r = run(modelOf(lighter(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.25"), QStringLiteral("10"),
+                                                              QStringLiteral("10"), QStringLiteral(R"(, "F": "5e6[V/m]", "valence": "%1")").arg(QLatin1String(valence)),
+                                                              QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.40[eV], 1.70[eV], 151)", "states": %1, "linewidth": "6.6[meV]", "lineshape": "%2", "density": "3e18[1/cm^3]"})x")
+                                                                  .arg(states)
+                                                                  .arg(QLatin1String(shape))))));
+            Peak peak;
+            if (!r.error.isEmpty()) {
+                qWarning("%s", qPrintable(r.error));
+                return peak;
+            }
+            Solution& s = *r.solution;
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                for (int pol = 0; pol < 2; ++pol) {
+                    const QString P = pol == 0 ? QStringLiteral("TE") : QStringLiteral("TM");
+                    const double g = global(s, QStringLiteral("qw.g") + P);
+                    if (g > peak.g[pol]) {
+                        peak.g[pol] = g;
+                        peak.far[pol] = global(s, QStringLiteral("qw.alpha%1far").arg(P));
+                    }
+                }
+            }
+            peak.log = s.log.join(QLatin1Char('\n'));
+            qInfo("%s, %d states, %s: the TE peak %.0f /cm, %.0f /cm taken off it; TM %.0f and %.0f", valence, states, shape, peak.g[0] / 100,
+                  peak.far[0] / 100, peak.g[1] / 100, peak.far[1] / 100);
+            return peak;
+        };
+        for (const char* valence : {"parabolic", "kp4"}) {
+            if (slowBuild() && !std::strcmp(valence, "kp4")) continue;
+            const Peak two = gainOf(valence, 2, "lorentzian"), four = gainOf(valence, 4, "lorentzian");
+            const Peak two0 = gainOf(valence, 2, "gaussian"), four0 = gainOf(valence, 4, "gaussian");
+            for (int pol = 0; pol < 2; ++pol) {
+                QVERIFY(two.g[pol] > 0 && four.g[pol] > 0 && two.far[pol] > 0 && four.far[pol] > two.far[pol]);
+                // The peak's fall: the Lorentzian's, without those tails, a
+                // Gaussian's.
+                const double lorentzian = four.g[pol] / two.g[pol], without = (four.g[pol] + four.far[pol]) / (two.g[pol] + two.far[pol]),
+                             gaussian = four0.g[pol] / two0.g[pol];
+                QVERIFY2(lorentzian < gaussian - 0.03, qPrintable(QStringLiteral("%1 against %2").arg(lorentzian).arg(gaussian)));
+                QVERIFY2((without - lorentzian) / (gaussian - lorentzian) > 0.7 && without < gaussian + 0.005,
+                         qPrintable(QStringLiteral("%1, %2 without, %3 a Gaussian's").arg(lorentzian).arg(without).arg(gaussian)));
+            }
+            // Warned past 10 %: the worse polarization, its share.
+            for (const Peak& p : {two, four}) {
+                const int worse = p.share(1) > p.share(0) ? 1 : 0;
+                const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("above the (TE|TM) gain's peak \\([^)]*\\) take (\\d+) % off it")).match(p.log);
+                QVERIFY2(m.hasMatch() == (p.share(worse) > 0.1), qPrintable(p.log));
+                if (m.hasMatch()) {
+                    QCOMPARE(m.captured(1), worse == 0 ? QStringLiteral("TE") : QStringLiteral("TM"));
+                    QCOMPARE(m.captured(2).toInt(), qRound(100 * p.share(worse)));
+                }
+            }
+            QVERIFY2(four.log.contains(QLatin1String("by their Lorentzian tails alone")), qPrintable(four.log));
+            for (const Peak& p : {two0, four0}) {
+                QVERIFY2(std::abs(p.far[0]) < 1e-3 * p.g[0] && std::abs(p.far[1]) < 1e-3 * p.g[1], qPrintable(QString::number(p.far[0])));
+                QVERIFY2(!p.log.contains(QLatin1String("tails alone")), qPrintable(p.log));
+            }
+        }
+    }
+
     void spontaneousEmission()
     {
         // Unbroadened, each transition's emission f_c (1 - f_v) its
