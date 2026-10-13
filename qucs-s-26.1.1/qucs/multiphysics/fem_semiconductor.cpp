@@ -28,6 +28,7 @@
 #include <Eigen/SparseLU>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <map>
@@ -37,6 +38,9 @@
 namespace qucs_s::fem::detail {
 
 namespace {
+
+/// setSemiconductorJacobianFault's (the tests').
+std::atomic<bool> tunnellingFieldDropped{false};
 
 constexpr double Q = 1.602176634e-19;    // C
 constexpr double KB = 1.380649e-23;      // J/K
@@ -1804,7 +1808,7 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
                 add(rn, rp, -Q * rate * dDp * third);
                 add(rp, rn, Q * rate * dDn * third);
                 add(rp, rp, Q * rate * dDp * third);
-                for (int c = 0; c < 3; ++c) {
+                for (int c = 0; c < 3 && !tunnellingFieldDropped.load(); ++c) {
                     const int col = a_iV[std::size_t(dof[c])];
                     add(rn, col, -Q * drate * dEdV[c] * D * third);
                     add(rp, col, Q * drate * dEdV[c] * D * third);
@@ -2081,6 +2085,21 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
     // nothing cycling about 1e-4. Held once the potential has settled to
     // 1e-6 Vt, or after fifteen steps, Newton finishing with them.)
     bool held = false;
+    // The equations' own imbalance at x: each row's |F| against the gross
+    // flows through it - |J x| summed over its terms: a node's currents in
+    // and out, its charge -, the worst (the rows held to the contacts'
+    // values aside).
+    auto imbalance = [&]() {
+        Eigen::VectorXd G;
+        std::vector<Eigen::Triplet<double>> terms;
+        assemble(x, mass, history, G, &terms);
+        Eigen::VectorXd gross = Eigen::VectorXd::Zero(a_unknowns);
+        for (const auto& t : terms) gross(t.row()) += std::abs(t.value() * x(t.col()));
+        double worst = 0;
+        for (int k = 0; k < a_unknowns; ++k)
+            if (!fixed[std::size_t(k)] && gross(k) > 0) worst = std::max(worst, std::abs(G(k)) / gross(k));
+        return worst;
+    };
     for (int it = 0; it < maxSteps; ++it) {
         // (Asked to stop: between its steps.)
         if (cancelled()) {
@@ -2158,8 +2177,13 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         if (crawling >= 10) break;
         held = held || (a_alongCurrent && alpha == 1.0 && (changeV < 1e-6 || it >= 15));
         // Converged: the potential still to 1e-8 Vt and the carriers to 1e-6
-        // (or the potential to 1e-12 Vt: the carriers' last digits are noise).
-        if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12)) return true;
+        // (or the potential to 1e-12 Vt: the carriers' last digits are noise)
+        // - and the equations met, each node's to 1e-6 of the flows through
+        // it. A Jacobian not theirs (a term missing) makes the steps small
+        // short of the solution: band-to-band tunnelling without its field's
+        // term took a reverse current 1e4 times too large for one. On then,
+        // till they are met (or no solution).
+        if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12) && imbalance() < 1e-6) return true;
     }
     *why = tr("%1: Newton's method did not converge in %2 steps").arg(a_node->name()).arg(maxSteps);
     return false;
@@ -3431,3 +3455,12 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
 }
 
 } // namespace qucs_s::fem::detail
+
+namespace qucs_s::fem {
+
+void setSemiconductorJacobianFault(bool dropTunnellingField)
+{
+    detail::tunnellingFieldDropped.store(dropTunnellingField);
+}
+
+} // namespace qucs_s::fem

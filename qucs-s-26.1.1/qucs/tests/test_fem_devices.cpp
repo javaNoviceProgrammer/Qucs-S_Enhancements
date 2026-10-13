@@ -26,6 +26,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QtTest>
 
 #include <cmath>
@@ -1477,6 +1478,75 @@ private slots:
         const double without = std::abs(global(*off.study.solutions.back(), QStringLiteral("semi.I_k")));
         qInfo("without tunnelling at -2.3 V: %.4g A", without);
         QVERIFY(without < 0.01 * alone[2]);
+    }
+
+    void newtonStopsNotShortOfTheSolution()
+    {
+        // Newton's method on a Jacobian not its equations' own - band-to-band
+        // tunnelling's derivative by the field dropped (the tests' fault) -
+        // took steps grown small short of the solution for one: a p⁺-i-n⁺
+        // diode's reverse current at 2 V 2.36e-8 A where it is 1.85e-12. Its
+        // equations asked too - each node's imbalance against the flows
+        // through it, to 1e-6 -, it goes on to the solution (or finds none):
+        // never a wrong current. Its Jacobian whole, the same.
+        const QByteArray pin = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "Va", "expression": "0[V]"}],
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "name": "p", "position": ["-100", "0"], "size": ["100", "20"]},
+                         {"type": "rectangle", "name": "i", "size": ["50", "20"]},
+                         {"type": "rectangle", "name": "n", "position": ["50", "0"], "size": ["100", "20"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "acceptor", "N0": "1e20[1/cm^3]", "selection": {"only": ["p"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"only": ["i"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e20[1/cm^3]", "selection": {"only": ["n"]}},
+              {"type": "btbt", "kind": "generation", "selection": {"all": true}},
+              {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "left"}},
+              {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "%1"}}],
+          "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "0, -2", "V"]]}, {"type": "stationary"}]}]})json")
+                                   .arg(slowBuild() ? QStringLiteral("4") : QStringLiteral("2"))
+                                   .toUtf8();
+        // The current at -2 V and q ∫ G there (none: no solution found); its
+        // way to -2 V's steps in \a steps.
+        auto solve = [&](bool fault, QString* said, int* steps) -> std::pair<double, double> {
+            setSemiconductorJacobianFault(fault);
+            const auto back = qScopeGuard([] { setSemiconductorJacobianFault(false); });
+            const Run r = run(modelOf(pin));
+            static const QRegularExpression reached(QStringLiteral("reached in (\\d+) steps"));
+            *steps = 0;
+            if (!r.study.solutions.empty())
+                for (const QString& line : r.study.solutions.back()->log)
+                    if (const QRegularExpressionMatch m = reached.match(line); m.hasMatch()) *steps = m.captured(1).toInt();
+            if (!r.error.isEmpty()) {
+                *said = r.error;
+                return {NAN, NAN};
+            }
+            Solution& s = *r.study.solutions.back();
+            Node gen;
+            gen.type = QStringLiteral("integral");
+            gen.props.insert(QStringLiteral("expression"), QStringLiteral("-1.602176634e-19[C]*semi.R*1[m]"));
+            gen.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+            const DerivedResult d = evaluateDerived(s, gen);
+            const double I = global(s, QStringLiteral("semi.I_k")), qG = d.values.isEmpty() ? NAN : d.values.front().value;
+            *said = QStringLiteral("%1 A at -2 V (q ∫ G %2), the voltage reached in %3 steps").arg(I, 0, 'g', 6).arg(qG, 0, 'g', 6).arg(*steps);
+            return {I, qG};
+        };
+        QString said;
+        int brokenSteps = 0, wholeSteps = 0;
+        const auto [broken, brokenG] = solve(true, &said, &brokenSteps);
+        qInfo("its Jacobian without the field's term: %s", qPrintable(said));
+        const bool noSolution = std::isnan(broken) && said.contains(QLatin1String("no solution found"));
+        QVERIFY2(noSolution || std::abs(broken / brokenG - 1) < 0.01, qPrintable(said));
+        const auto [whole, wholeG] = solve(false, &said, &wholeSteps);
+        qInfo("its Jacobian whole: %s", qPrintable(said));
+        QVERIFY2(std::abs(whole / wholeG - 1) < 0.01, qPrintable(said));
+        if (!noSolution) {
+            QVERIFY2(std::abs(broken / whole - 1) < 1e-3, qPrintable(QStringLiteral("%1 %2").arg(broken).arg(whole)));
+            // (The fault at work: its way there harder - smaller steps of the
+            // voltage, its Newton's slower.)
+            QVERIFY2(brokenSteps > wholeSteps, qPrintable(QStringLiteral("%1 and %2 steps").arg(brokenSteps).arg(wholeSteps)));
+        }
     }
 
     void fowlerNordheim()
