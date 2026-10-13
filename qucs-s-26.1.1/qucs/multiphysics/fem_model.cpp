@@ -861,7 +861,10 @@ QList<NodeKind> makeKinds()
     // Semiconductors.
     add({QStringLiteral("semiconductor"), tr("Semiconductor"), QStringLiteral("physics"), QStringLiteral("semi"), Level::Domain,
          {selectionProp(),
-          expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere"))},
+          expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere")),
+          spatial(QStringLiteral("TL"), tr("Lattice temperature for the mobilities"), QStringLiteral("K"), QString(),
+                  tr("Where it varies - a heat physics' ht.T, its source semi.H: self-heating. The mobilities (TL/300 K)^-ζ there (each "
+                     "material model's ζ); the carriers' statistics at T. Empty: none")) },
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
           QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/quantum"),
@@ -903,6 +906,9 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("nrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("2.23e17[1/cm^3]")), QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("alphap"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=doping")),
+          expr(QStringLiteral("zetan"), tr("Electrons' mobility's temperature exponent ζ"), QString(), QStringLiteral("2.5"),
+               tr("µ(TL) = µ(300 K) (TL/300 K)^-ζ where the physics' lattice temperature TL is given")),
+          expr(QStringLiteral("zetap"), tr("Holes' mobility's temperature exponent ζ"), QString(), QStringLiteral("2.2")),
           flag(QStringLiteral("saturation"), tr("High-field velocity saturation"), false,
                tr("µ / (1 + (µF/vsat)^β)^(1/β), β 2 for electrons and 1 for holes; F the force along each carrier's current or "
                   "the whole field, each triangle's")),

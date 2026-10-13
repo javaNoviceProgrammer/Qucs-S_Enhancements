@@ -2087,7 +2087,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     quasi-static one), Slotboom's band gap narrowing and dopants ionized
     in part (1e18 cm⁻³ of phosphorus 76 %, of boron 48 %; semi.Ndi,
     semi.Nai) - an n⁺n step's potential and minority carriers the analytic
-    ones to 1e-6; Shockley-Read-Hall, Auger and direct
+    ones to 1e-6. **Electrothermal:** the heat its carriers leave,
+    `semi.H` - their Joule heat as solved, each edge's currents through
+    their quasi-Fermi potentials' drop, and the pairs' recombination heat
+    (a diode's the power it takes, I V, to 1e-5) - a heat physics' source,
+    and a lattice temperature for the mobilities (`ht.T`, (T/300 K)^-ζ):
+    the two solved in turn, a self-heated bar's current its
+    one-dimensional problem's to 1e-5 (15 % below its current at 300 K);
+    Shockley-Read-Hall, Auger and direct
     recombination, generation (light absorbed). **Impact ionization**
     (Chynoweth's α = a e^(-(b/E)^β), silicon's van Overstraeten and de
     Man's or your own): its pairs from each triangle's field and currents

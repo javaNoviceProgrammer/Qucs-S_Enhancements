@@ -1151,6 +1151,12 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
             }
             define(p + QStringLiteral("R"), rate, tr("net recombination rate"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.R; }));
             define(p + QStringLiteral("mun"), mobility, tr("electron mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mun; }));
+            // The heat the carriers leave: their Joule heat as solved (each
+            // edge's current times its quasi-Fermi potential's drop, by
+            // triangle) and the pairs' recombination's, q R (φp - φn) - a
+            // heat physics' source (the generation's share not in it).
+            define(p + QStringLiteral("H"), Dim::of(-1, 1, -3), tr("heat the carriers leave: their Joule heat, J·∇φ of each, and q R (φp - φn)"),
+                   K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.joule + 1.602176634e-19 * s.R * (s.phip - s.phin); }));
             define(p + QStringLiteral("mup"), mobility, tr("hole mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mup; }));
             coefficient(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity"), f, QString());
             continue;
