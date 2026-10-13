@@ -884,7 +884,7 @@ QList<NodeKind> makeKinds()
           QStringLiteral("semiconductor/insulation"),
           QStringLiteral("semiconductor/ohmic"),
           QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge"),
-          QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/fn")},
+          QStringLiteral("semiconductor/polarization"), QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/fn")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
             "p (Boltzmann's statistics, or Fermi-Dirac's; band gap narrowing, dopants ionized in part, if the material model asks), "
@@ -1161,6 +1161,19 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), spatial(QStringLiteral("rhos"), tr("Surface charge density"), QStringLiteral("C/m^2"), QStringLiteral("0"),
                                        tr("Fixed charge at an interface: an oxide's, q times 1e10 to 1e11 per cm²"))},
          {}, {}, false, false, QStringLiteral("scd"), tr("Charge fixed on a boundary.")});
+    add({QStringLiteral("semiconductor/polarization"), tr("Polarization Charge (wurtzite)"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none),
+          choice(QStringLiteral("axis"), tr("c axis along"), {QStringLiteral("y"), QStringLiteral("x")}, {tr("y"), tr("x")}, QStringLiteral("y")),
+          choice(QStringLiteral("polarity"), tr("Growth face"), {QStringLiteral("metal"), QStringLiteral("nitrogen")},
+                 {tr("Metal (Ga) face: c along the axis"), tr("Nitrogen face: c against it")}, QStringLiteral("metal")),
+          text(QStringLiteral("substrate"), tr("Substrate (strain)"), QString(),
+               tr("The layers' lattice in the c-plane: a nitride material or compound (GaN, AlGaN...: x its material's) or a "
+                  "lattice constant (0.3189[nm]); empty: relaxed"))},
+         {}, {}, false, false, QStringLiteral("pol"),
+         tr("Wurtzite's bound charge at the interfaces between nitrides (their materials' compounds): -ΔP·n, each side's P = Psp + "
+            "e31 (εxx + εyy) + e33 εzz (Vurgaftman and Meyer's, Bernardini and Fiorentini's) - an AlGaN barrier on GaN's 2DEG, an "
+            "LED's or laser's wells' field. The interfaces straight.")});
     add({QStringLiteral("semiconductor/fn"), tr("Fowler-Nordheim Tunnelling"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
          {selectionProp(none),
@@ -1295,6 +1308,14 @@ QList<NodeKind> makeKinds()
                   "compound (GaAs) or a lattice constant (0.58697[nm]); empty: no strain")),
           expr(QStringLiteral("F"), tr("Electric field along the axis"), QStringLiteral("V/m"), QStringLiteral("0[V/m]"),
                tr("Uniform: the quantum-confined Stark effect (100 kV/cm is 1e7 V/m); its potential 0 at the physics' middle")),
+          choice(QStringLiteral("polarization"), tr("Polarization (wurtzite)"), {QStringLiteral("none"), QStringLiteral("periodic"), QStringLiteral("ends")},
+                 {tr("None"), tr("Periodic (no drop across the stack)"), tr("No field at its ends")}, QStringLiteral("none"),
+                 tr("A wurtzite stack's spontaneous and piezoelectric polarization (Psp + e31 (εxx + εyy) + e33 εzz, c along the axis): "
+                    "its interfaces' bound charges -ΔP make each layer's field F = (D - P)/ε0εr, D such that the potential drops nothing "
+                    "across the physics (an MQW's period: a well's Fw = (Pb - Pw) Lb/(εw Lb + εb Lw)) or that its first layer has no field "
+                    "(thick barriers). A spectrum's carriers screen it: solved with the states in turn (1D)")),
+          choice(QStringLiteral("polarity"), tr("Growth face"), {QStringLiteral("metal"), QStringLiteral("nitrogen")},
+                 {tr("Metal (Ga) face: c along the axis"), tr("Nitrogen face: c against it")}, QStringLiteral("metal")),
           spatial(QStringLiteral("V"), tr("Electric potential"), QStringLiteral("V"), QStringLiteral("0"),
                   tr("Another physics' (semi.V, es.V): the bands move by -q V")),
           spatial(QStringLiteral("etan"), tr("Electrons' Fermi level above the band, Efn - Ec"), QStringLiteral("J"), QString(),
@@ -1350,6 +1371,47 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("source=user")),
           shownIf(expr(QStringLiteral("Delta"), tr("Split-off energy Δ"), QStringLiteral("eV"), QString(), tr("For the 6x6 k·p bands")),
                   QStringLiteral("source=user")),
+          shownIf(choice(QStringLiteral("crystal"), tr("Crystal"), {QStringLiteral("zincblende"), QStringLiteral("wurtzite")},
+                         {tr("Zinc blende"), tr("Wurtzite (c along the axis)")}, QStringLiteral("zincblende"),
+                         tr("Wurtzite: Chuang and Chang's 6x6 (the physics' Valence bands k·p 6x6), its holes' masses those of A1-A6; Ev the "
+                            "k·p's reference - the heavy holes' top Ev + Δcr + Δso/3 unstrained")),
+                  QStringLiteral("source=user")),
+          shownIf(text(QStringLiteral("A"), tr("A1-A6 (ħ²/2m0)"), QString(), tr("Six numbers: GaN's -7.21, -0.44, 6.68, -3.46, -3.40, -4.90")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("Dcr"), tr("Crystal field Δcr"), QStringLiteral("eV"), QStringLiteral("0.010[eV]")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("Dso"), tr("Spin-orbit Δso"), QStringLiteral("eV"), QStringLiteral("0.017[eV]")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("mep"), tr("Electron mass across the axis (m0)"), QString(), QString(), tr("Empty: as along it")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("Epz"), tr("Kane energy along the axis"), QStringLiteral("eV"), QString(),
+                       tr("Ep∥: TM's (the Z orbital's); Ep TE's. Empty: Ep")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("exx"), tr("Strain in the plane εxx"), QString(), QString(),
+                       tr("Given (the layer's on its substrate's lattice, (a_s - a)/a). Empty: none")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("ezz"), tr("Strain along the axis εzz"), QString(), QString(), tr("Empty: -2 C13/C33 εxx")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("C13"), tr("Stiffness C13"), QStringLiteral("Pa"), QStringLiteral("106[GPa]")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("C33"), tr("Stiffness C33"), QStringLiteral("Pa"), QStringLiteral("398[GPa]")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(text(QStringLiteral("D"), tr("D1-D6 (eV)"), QString(),
+                       tr("The valence bands' deformation potentials: six numbers (GaN's -3.7, 4.5, 8.2, -4.1, -4.0, -5.5). Empty: strain moves "
+                          "them not")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("a1"), tr("Conduction band's a1 (along c)"), QStringLiteral("eV"), QString(),
+                       tr("Ec moves by a1 εzz + a2 (εxx + εyy). Empty: 0")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("a2"), tr("Conduction band's a2 (across c)"), QStringLiteral("eV"), QString(), tr("Empty: 0")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("Psp"), tr("Spontaneous polarization Psp"), QStringLiteral("C/m^2"), QString(),
+                       tr("Along c (the metal face's: GaN -0.034). Empty: 0")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("e31"), tr("Piezoelectric e31"), QStringLiteral("C/m^2"), QString(), tr("Empty: 0")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
+          shownIf(expr(QStringLiteral("e33"), tr("Piezoelectric e33"), QStringLiteral("C/m^2"), QString(), tr("Empty: 0")),
+                  QStringLiteral("source=user&crystal=wurtzite")),
           text(QStringLiteral("valleys"), tr("Electron valleys"), QString(),
                tr("Si(100), Si(110), Si(111) (Δ valleys, ml 0.916, mt 0.190), Ge(100), Ge(110), Ge(111) (L valleys, ml 1.59, mt 0.0815) - "
                   "each followed by ml mt for other masses -, or sets of your own: g mz md [dE eV]; ... Each set a ladder of states "

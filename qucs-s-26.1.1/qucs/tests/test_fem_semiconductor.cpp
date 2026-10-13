@@ -12,6 +12,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#include "fem_materials.h"
 #include "fem_results.h"
 
 #include <QElapsedTimer>
@@ -197,6 +198,55 @@ private slots:
     // Ec by χSi - χGe, Ev by that and the gaps' difference. A p-Ge n⁺-Si
     // diode, short: its current the electrons injected into the germanium,
     // q Dn ni_Ge² / (Na W) (e^(V/Vt) - 1), forward and reversed.
+    // An Al0.3Ga0.7N barrier 25 nm on GaN (Ga face, c up): the interface's
+    // bound charge -ΔP its Polarization Charge's - the barrier stretched to
+    // GaN's lattice, its piezoelectric part with its spontaneous one, σ =
+    // P_GaN - P_AlGaN 0.024 C/m² (Ambacher et al.'s 1.5-1.7e13 q/cm²) -,
+    // the same solution as a Surface
+    // Charge of that σ, and a 2DEG under it in the GaN (above 1e18 cm⁻³);
+    // the nitrogen face's the opposite charge: no electrons gathered.
+    void wurtzitePolarizationCharge()
+    {
+        const std::optional<WurtziteParameters> g = wurtziteParameters(QStringLiteral("GaN"), 0, 300), b = wurtziteParameters(QStringLiteral("AlGaN"), 0.3, 300);
+        QVERIFY(g && b);
+        const double exx = (g->a - b->a) / b->a, ezz = -2 * b->C13 / b->C33 * exx;
+        const double sigma = g->Psp - (b->Psp + 2 * b->e31 * exx + b->e33 * ezz);
+        auto hemt = [&](const QString& interface, const QString& barrier = QStringLiteral("AlGaN")) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "name": "gan", "size": ["50", "200"]},
+                             {"type": "rectangle", "name": "barrier", "position": ["0", "200"], "size": ["50", "25"]}],
+                "materials": [{"material": "GaN", "compound": "GaN", "mun": "1000[cm^2/(V*s)]", "mup": "30[cm^2/(V*s)]", "selection": {"only": ["gan"]}},
+                              {"material": "AlGaN", "compound": "%3", "x": "0.3", "mun": "300[cm^2/(V*s)]", "mup": "10[cm^2/(V*s)]",
+                               "selection": {"only": ["barrier"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+                  %1,
+                  {"type": "ohmic", "name": "s", "V0": "0[V]", "selection": {"of": ["gan"], "side": "bottom"}},
+                  {"type": "ohmic", "name": "t", "V0": "0[V]", "selection": {"of": ["barrier"], "side": "top"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%2"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(interface, slowBuild() ? QStringLiteral("2") : QStringLiteral("1"), barrier)
+                               .toUtf8());
+        };
+        const QString at = QStringLiteral(R"("selection": {"of": ["barrier"], "side": "bottom"})");
+        const Run pol = run(hemt(QStringLiteral(R"({"type": "polarization", "substrate": "GaN", %1})").arg(at)));
+        const Run fixed = run(hemt(QStringLiteral(R"({"type": "charge", "rhos": "%1[C/m^2]", %2})").arg(sigma, 0, 'g', 17).arg(at)));
+        const Run nface = run(hemt(QStringLiteral(R"({"type": "polarization", "substrate": "GaN", "polarity": "nitrogen", %1})").arg(at)));
+        QVERIFY2(pol.error.isEmpty() && fixed.error.isEmpty() && nface.error.isEmpty(), qPrintable(pol.error + fixed.error + nface.error));
+        const double nPol = ::at(*pol.solution, QStringLiteral("semi.n"), {25, 199}), nFixed = ::at(*fixed.solution, QStringLiteral("semi.n"), {25, 199});
+        const double vPol = ::at(*pol.solution, QStringLiteral("semi.V"), {25, 200}), vFixed = ::at(*fixed.solution, QStringLiteral("semi.V"), {25, 200});
+        const double nN = ::at(*nface.solution, QStringLiteral("semi.n"), {25, 199});
+        qInfo("σ %.4f C/m² (%s); under it n %.3g cm⁻³ (a surface charge's %.3g), the nitrogen face's %.3g", sigma,
+              qPrintable(pol.solution->log.filter(QStringLiteral("polarization charge")).join(QLatin1Char(' '))), nPol * 1e-6, nFixed * 1e-6, nN * 1e-6);
+        QVERIFY2(sigma > 0.024 && sigma < 0.0272, qPrintable(QString::number(sigma)));
+        QVERIFY2(std::abs(nPol / nFixed - 1) < 1e-9 && std::abs(vPol - vFixed) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(nPol / nFixed).arg(vPol - vFixed)));
+        QVERIFY2(nPol > 1e24 && nN < 1e21, qPrintable(QStringLiteral("%1 %2").arg(nPol).arg(nN)));
+        // Not between two nitrides: refused.
+        const Run wrong = run(hemt(QStringLiteral(R"({"type": "polarization", %1})").arg(at), QStringLiteral("AlGaAs")));
+        QVERIFY2(wrong.error.contains(QLatin1String("is not between two nitrides")), qPrintable(wrong.error));
+    }
+
     void aHeterojunction()
     {
         const double vt = KB * 300 / Q;

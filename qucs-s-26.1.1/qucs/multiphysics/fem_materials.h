@@ -95,6 +95,35 @@ QStringList compounds();
 /// composition is out of range.
 std::optional<BandParameters> bandParameters(const QString& compound, double x, double y, double T, QString* error = nullptr,
                                             BandSet set = BandSet::Vurgaftman);
+/// A wurtzite nitride's bands (c-plane, c along the growth axis): its gap,
+/// the valence band's top (unstrained; eV), the crystal field's and the
+/// spin and orbit's splittings Δcr and Δso (Chuang and Chang's Δ1 = Δcr,
+/// Δ2 = Δ3 = Δso/3), the electron's mass along c and across it, A1-A6
+/// (ħ²/2m0), the deformation potentials D1-D6 and the conduction band's a1
+/// (along c) and a2 (across), Kane's Ep, the lattice a and c, the stiffness
+/// C11, C12, C13, C33, the spontaneous polarization Psp and the
+/// piezoelectric e31, e33 (C/m², along c: the metal face's), the static
+/// permittivity along c and the index near the gap.
+struct WurtziteParameters {
+    double Eg = 0, Ev = 0, dcr = 0, dso = 0;   ///< eV
+    double mez = 0, mep = 0;                   ///< m0
+    double A[6] = {0, 0, 0, 0, 0, 0};
+    double D[6] = {0, 0, 0, 0, 0, 0};          ///< eV
+    double a1 = 0, a2 = 0, Ep = 0;             ///< eV
+    double a = 0, c = 0;                       ///< m
+    double C11 = 0, C12 = 0, C13 = 0, C33 = 0; ///< Pa
+    double Psp = 0, e31 = 0, e33 = 0;          ///< C/m²
+    double epsr = 0, n = 0;
+};
+/// The nitrides: GaN, AlN, InN and AlGaN (x of Al), InGaN (x of In), InAlN
+/// (x of In): Vurgaftman and Meyer's (J. Appl. Phys. 94, 3675, 2003; their
+/// gaps' bowings 0.8, 1.4 and 2.5 eV), the spontaneous polarization's
+/// Bernardini and Fiorentini's (bowed), the piezoelectric constants
+/// Bernardini, Fiorentini and Vanderbilt's. Wurtzite: a compound of them.
+bool isWurtzite(const QString& compound);
+/// A nitride's parameters at composition \a x and temperature \a T (K);
+/// none, and why, when it is not one or x is out of range.
+std::optional<WurtziteParameters> wurtziteParameters(const QString& compound, double x, double T, QString* error = nullptr);
 /// A well's electron valley set (1D): its degeneracy (valleys alike, each
 /// with spin's two), its mass along the growth axis (the quantization's) and
 /// its density-of-states mass in the plane (m0), its edge above the band's

@@ -21,6 +21,7 @@
  */
 #include "fem_problem.h"
 #include "fem_geometry.h"
+#include "fem_materials.h"
 #include "fem_mesh.h"
 
 #include <Eigen/SparseCholesky>
@@ -1114,6 +1115,74 @@ bool SemiconductorProblem::setup(QString* error)
             if (!nodeOn[std::size_t(me.a)] && !nodeOn[std::size_t(me.b)]) continue;
             share[me.a] += len / 2;
             share[me.b] += len / 2;
+        }
+        if (t == QLatin1String("semiconductor/polarization")) {
+            // Wurtzite's polarization at its interfaces (c along the axis
+            // chosen; the metal face's or the nitrogen's): each one's bound
+            // charge -ΔP·n, n from its one side into the other - its sides'
+            // P = Psp + e31 (εxx + εyy) + e33 εzz, their nitride compounds'
+            // pseudomorphic on the substrate's lattice in the c-plane (none:
+            // relaxed). Its interfaces straight (their ends' line its normal).
+            const bool alongX = bf->text(QStringLiteral("axis")) == QLatin1String("x");
+            const double face = bf->text(QStringLiteral("polarity")) == QLatin1String("nitrogen") ? -1.0 : 1.0;
+            double lattice = NaN;
+            const QString sub = bf->text(QStringLiteral("substrate")).trimmed();
+            if (!sub.isEmpty()) {
+                QString compound = sub;
+                double sx = 0;
+                for (const Node& m : model.materials().children)
+                    if (m.name().compare(sub, Qt::CaseInsensitive) == 0 || m.text(QStringLiteral("library")).compare(sub, Qt::CaseInsensitive) == 0) {
+                        compound = materialProperty(m, QStringLiteral("compound"));
+                        sx = evaluateConstant(materialProperty(m, QStringLiteral("x")), constants, Dim()).value_or(0);
+                    }
+                if (const std::optional<MaterialEntry> e = findMaterial(sub); e && compound == sub) {
+                    compound = e->properties.value(QStringLiteral("compound")).toString();
+                    sx = evaluateConstant(e->properties.value(QStringLiteral("x")).toString(), constants, Dim()).value_or(0);
+                }
+                if (const std::optional<WurtziteParameters> w = wurtziteParameters(compound, sx, a_T)) lattice = w->a;
+                else lattice = number(sub, Dim::length(), tr("%1's substrate (a nitride or a lattice constant)").arg(bf->name()));
+            }
+            auto polarizationOf = [&](int d) -> std::optional<double> {
+                const Node* mat = d >= 0 ? material[std::size_t(d)] : nullptr;
+                if (!mat) return std::nullopt;
+                const QString compound = materialProperty(*mat, QStringLiteral("compound")).trimmed();
+                const double x = evaluateConstant(materialProperty(*mat, QStringLiteral("x")), constants, Dim()).value_or(0);
+                const std::optional<WurtziteParameters> w = isWurtzite(compound) ? wurtziteParameters(compound, x, a_T) : std::nullopt;
+                if (!w) return std::nullopt;
+                const double exx = std::isfinite(lattice) ? (lattice - w->a) / w->a : 0, ezz = -2 * w->C13 / w->C33 * exx;
+                return w->Psp + 2 * w->e31 * exx + w->e33 * ezz;
+            };
+            for (int b : picked) {
+                const Topology::Boundary& bd = topo.boundaries[std::size_t(b)];
+                const std::optional<double> pu = polarizationOf(bd.up), pd = polarizationOf(bd.down);
+                if (!pu || !pd) {
+                    problem(tr("%1: boundary %2 is not between two nitrides (their materials' compounds GaN, AlGaN, InGaN...)").arg(bf->name()).arg(b + 1));
+                    continue;
+                }
+                const std::vector<QPointF> line = bd.polyline(topo);
+                const QPointF dir = line.back() - line.front();
+                const double length = std::hypot(dir.x(), dir.y());
+                if (!(length > 0)) continue;
+                // (Into its up side - its left as walked - from its down side.)
+                const double nc = (alongX ? -dir.y() : dir.x()) / length;
+                const double sigma = face * (*pd - *pu) * nc;
+                std::map<int, double> own;
+                for (const Mesh::Edge& me : mesh.edges) {
+                    if (me.boundary != b) continue;
+                    const QPointF pa = mesh.nodes[std::size_t(me.a)] * scale, pb = mesh.nodes[std::size_t(me.b)] * scale;
+                    const double len = std::hypot(pb.x() - pa.x(), pb.y() - pa.y()) * a_s.weight((pa + pb) / 2.0);
+                    if (!nodeOn[std::size_t(me.a)] && !nodeOn[std::size_t(me.b)]) continue;
+                    own[me.a] += len / 2;
+                    own[me.b] += len / 2;
+                }
+                const Expression e = Expression::compile(QString::number(sigma, 'g', 17), constants);
+                for (const auto& [node, len] : own) {
+                    a_surface.emplace_back(node, e);
+                    a_surfaceLength.push_back(len);
+                }
+                a_s.log << tr("%1: boundary %2's polarization charge %3").arg(bf->name()).arg(b + 1).arg(formatQuantity(sigma, Dim::of(-2, 0, 1, 1)));
+            }
+            continue;
         }
         if (t == QLatin1String("semiconductor/charge")) {
             const Expression e = compile(bf->text(QStringLiteral("rhos")), *bf, QStringLiteral("rhos"));
