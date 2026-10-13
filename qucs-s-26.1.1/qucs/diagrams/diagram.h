@@ -234,11 +234,16 @@ public:
   virtual qucs_s::numberformat::Notation notationOf(const Axis*) const { return notation; }
 
   /// Where the legend (a colour/style sample and the variable of every
-  /// graph) is drawn: LegendOff, or a corner of the diagram.
+  /// graph) is drawn: LegendOff, a corner of the diagram, or outside it,
+  /// right of all it draws there (its right axis' numbers too), level with
+  /// its frame's top.
   enum LegendPosition { LegendOff = 0, LegendTopLeft, LegendTopRight,
-                        LegendBottomLeft, LegendBottomRight };
+                        LegendBottomLeft, LegendBottomRight, LegendOutside };
   int legendPos;
   void paintLegend(QPainter* painter, const Colors& colors);
+  /// The legend's box in the diagram's own coordinates (y downwards), with
+  /// \a metrics (those of the font it is drawn in); null when none is drawn.
+  QRectF legendRect(const QFontMetricsF& metrics) const;
 
   /// The colours of its parts (the dialog's Theme tab): its background,
   /// plot area, frame, grid, axes, title, legend. The grid's is GridPen's

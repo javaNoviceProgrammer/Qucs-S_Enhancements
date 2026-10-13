@@ -1,7 +1,8 @@
 /*
- * The diagram legend (#1719): a box in a chosen corner with a sample of
- * every graph's line and its variable. Off by default; the position is
- * saved with the diagram and read back, files without it load as before.
+ * The diagram legend (#1719): a box in a chosen corner, or outside on the
+ * right, with a sample of every graph's line and its variable. Off by
+ * default; the position is saved with the diagram and read back, files
+ * without it load as before.
  */
 #include <QtTest>
 #include <QImage>
@@ -33,10 +34,11 @@ RectDiagram* makeDiagram(const QString& rectLine)
     return d;
 }
 
-// Paints the diagram (box at [0,x2] x [0,y2] of the image) and returns it.
-QImage render(Diagram* d)
+// Paints the diagram (box at [0,x2] x [0,y2] of the image, \a wider room on
+// its right) and returns it.
+QImage render(Diagram* d, int wider = 0)
 {
-    QImage img(d->x2 + 1, d->y2 + 1, QImage::Format_RGB32);
+    QImage img(d->x2 + 1 + wider, d->y2 + 1, QImage::Format_RGB32);
     img.fill(Qt::white);
     QPainter p(&img);
     p.setFont(QFont("Helvetica", 12));
@@ -163,16 +165,57 @@ private slots:
         for (QComboBox* box : dialog->findChildren<QComboBox*>())
             if (box->findText("top right") >= 0 && box->findText("bottom left") >= 0) legend = box;
         QVERIFY(legend != nullptr);
-        QCOMPARE(legend->count(), 5);
+        QCOMPARE(legend->count(), 6);
+        QCOMPARE(legend->itemText(Diagram::LegendOutside), QStringLiteral("outside, on the right"));
         QCOMPARE(legend->currentIndex(), int(Diagram::LegendTopRight));   // shows the current position
 
         legend->setCurrentIndex(Diagram::LegendBottomRight);
         QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
         QCOMPARE(d->legendPos, int(Diagram::LegendBottomRight));
+        legend->setCurrentIndex(Diagram::LegendOutside);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
+        QCOMPARE(d->legendPos, int(Diagram::LegendOutside));
         legend->setCurrentIndex(Diagram::LegendOff);
         QVERIFY(QMetaObject::invokeMethod(dialog, "slotApply"));
         QCOMPARE(d->legendPos, int(Diagram::LegendOff));
         dialog->close();
+    }
+
+    // Outside: right of all the diagram draws there (its frame, the right
+    // axis' numbers), level with its frame's top - none of it inside the
+    // frame; within what it is said to draw (the schematic's repaints and
+    // scrolling, its card's background); saved and read back.
+    void outsideOnTheRight()
+    {
+        QScopedPointer<RectDiagram> d(makeDiagram(kRectLine));
+        QVERIFY(d);
+        d->legendPos = Diagram::LegendOutside;
+        // (Its axes numbered: the second graph's on the right, its numbers
+        // past the frame.)
+        d->updateGraphData();
+        const QFontMetricsF fm(QFont("Helvetica", 12));
+        qreal rightmost = d->x2;
+        for (const Text* t : d->Texts)
+            rightmost = std::max(rightmost, QTransform().translate(t->x, -t->y).rotate(t->angle()).mapRect(QRectF(0, -fm.ascent(), fm.horizontalAdvance(t->s), fm.height())).right());
+        QVERIFY2(rightmost > d->x3 + 10, qPrintable(QString::number(rightmost - d->x3)));
+        const QImage out = render(d.data(), 400);
+        const QRgb blue = qRgb(0, 0, 255), red = qRgb(255, 0, 0);
+        const QRect inside(0, 0, d->x2 + 1, d->y2 + 1), beside(d->x2 + 1, 0, 399, d->y2 + 1);
+        QVERIFY(!hasColor(out, inside, blue) && !hasColor(out, inside, red));
+        QVERIFY(hasColor(out, beside, blue) && hasColor(out, beside, red));
+        const QRectF box = d->legendRect(fm);
+        QVERIFY2(box.left() > rightmost, qPrintable(QStringLiteral("%1 %2").arg(box.left()).arg(rightmost)));
+        QCOMPARE(box.top(), qreal(-d->y2));
+        QVERIFY(d->paintedRect(fm).contains(box.translated(d->cx, d->cy)));
+        // A corner's is inside the frame.
+        d->legendPos = Diagram::LegendTopRight;
+        QVERIFY(d->legendRect(fm).right() < d->x2);
+        d->legendPos = Diagram::LegendOutside;
+        const QString line = d->save().section('\n', 0, 0);
+        QCOMPARE(line.section(' ', 27, 27), QString("5"));
+        QScopedPointer<RectDiagram> again(makeDiagram(line));
+        QVERIFY(again);
+        QCOMPARE(again->legendPos, int(Diagram::LegendOutside));
     }
 };
 

@@ -693,8 +693,8 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     gp->addWidget(DecimalsBox, Row, 1);
     Row++;
 
-    // The legend: off, or in one of the corners (the order of the entries
-    // is that of Diagram::LegendPosition).
+    // The legend: off, in one of the corners, or outside on the right (the
+    // order of the entries is that of Diagram::LegendPosition).
     gp->addWidget(new QLabel(tr("Legend: "), Tab2), Row, 0);
     LegendBox = new QComboBox(Tab2);
     LegendBox->addItem(tr("none"));
@@ -702,6 +702,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     LegendBox->addItem(tr("top right"));
     LegendBox->addItem(tr("bottom left"));
     LegendBox->addItem(tr("bottom right"));
+    LegendBox->addItem(tr("outside, on the right"));
     LegendBox->setCurrentIndex(Diag->legendPos);
     gp->addWidget(LegendBox, Row, 1);
     Row++;

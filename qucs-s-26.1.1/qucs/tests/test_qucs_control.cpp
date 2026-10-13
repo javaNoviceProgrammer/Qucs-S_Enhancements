@@ -836,6 +836,11 @@ private slots:
         QVERIFY(rect->yAxis.step > 0);
         QCOMPARE(rect->yAxis.Label, QStringLiteral("V(out)"));
         QCOMPARE(rect->legendPos, int(Diagram::LegendTopRight));
+        // Outside, on the right; and back.
+        QVERIFY(!failed(call("edit_diagram", {{"diagram", 1}, {"legend", "outside"}})));
+        QCOMPARE(rect->legendPos, int(Diagram::LegendOutside));
+        QVERIFY(!failed(call("edit_diagram", {{"diagram", 1}, {"legend", "top_right"}})));
+        QCOMPARE(rect->legendPos, int(Diagram::LegendTopRight));
         QVERIFY(failed(call("edit_diagram", {{"diagram", 1}, {"y_axis", QJsonObject{{"from", 2}, {"to", 1}}}})));
         QCOMPARE(rect->yAxis.limit_max, 1.2);   // refused: unchanged
         QVERIFY(failed(call("edit_diagram", {{"diagram", 7}})));

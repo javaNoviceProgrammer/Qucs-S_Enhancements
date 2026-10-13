@@ -254,32 +254,29 @@ Diagram::Part Diagram::partOf(const Axis *axis) const {
     return axis == &zAxis ? Part::RightAxis : Part::YAxis;
 }
 
-/*!
-   The legend: one row per graph with a sample of its line (colour,
-   thickness, style or symbol) and its variable, in a box in the corner
-   chosen by legendPos. Drawn in the diagram's own coordinates (origin at
-   the lower left corner, y downwards), after the graphs and the axis
-   texts, so it lies on top of them.
-*/
-void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
-    if (legendPos == LegendOff || Graphs.isEmpty()) return;
-    // (The samples' colours, fitted to the legend's paper.)
-    const qucs_s::ink::Paper paper(colors.legend);
+namespace {
 
-    // A row per graph; a graph in auto colors or markers has a row per
-    // curve, with the values of the parameters swept (at most a few
-    // dozen, then how many more there are).
-    struct Row {
-        QColor color;
-        graphstyle_t style = GRAPHSTYLE_SOLID;
-        int thick = 0;
-        QString text;
-        bool sample = true;
-        Graph::PointMarker marker = Graph::PointMarker::None;
-    };
+/// A legend's row: a graph's (or one of its curves') sample and name.
+struct LegendRow {
+    QColor color;
+    graphstyle_t style = GRAPHSTYLE_SOLID;
+    int thick = 0;
+    QString text;
+    bool sample = true;
+    Graph::PointMarker marker = Graph::PointMarker::None;
+};
+
+constexpr qreal legendPad = 4.0, legendSample = 20.0, legendGap = 6.0, legendMargin = 6.0;
+
+/// A row per graph; a graph in auto colors or markers has a row per curve,
+/// with the values of the parameters swept (at most a few dozen, then how
+/// many more there are).
+QList<LegendRow> legendRows(const QList<Graph*>& graphs)
+{
     constexpr int maxCurveRows = 24;
+    using Row = LegendRow;
     QList<Row> rows;
-    for (Graph *pg: Graphs) {
+    for (Graph *pg: graphs) {
         const qsizetype first = rows.size();
         if (pg->distinguishesCurves() && pg->countY > 1) {
             const int shown = std::min(pg->countY, maxCurveRows);
@@ -297,20 +294,54 @@ void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
             for (qsizetype i = first; i < rows.size(); ++i)
                 if (rows[i].color.isValid()) rows[i].color.setAlphaF(Graph::GhostOpacity);
     }
+    return rows;
+}
 
-    const QFontMetricsF fm(painter->font());
-    const qreal pad = 4.0, sample = 20.0, gap = 6.0, margin = 6.0;
-    const qreal rowHeight = fm.height();
+}
+
+QRectF Diagram::legendRect(const QFontMetricsF& fm) const {
+    if (legendPos == LegendOff || Graphs.isEmpty()) return {};
+    const QList<LegendRow> rows = legendRows(Graphs);
     qreal textWidth = 0.0;
-    for (const Row &row: rows)
+    for (const LegendRow &row: rows)
         textWidth = std::max(textWidth, fm.horizontalAdvance(row.text));
-    const qreal width = pad + sample + gap + textWidth + pad;
-    const qreal height = pad + rows.size() * rowHeight + pad;
-
+    const qreal width = legendPad + legendSample + legendGap + textWidth + legendPad;
+    const qreal height = legendPad + rows.size() * fm.height() + legendPad;
+    if (legendPos == LegendOutside) {
+        // Right of all it draws there - its frame, the right axis' numbers
+        // and label - level with its frame's top.
+        qreal right = std::max<qreal>(x2, x3);
+        for (const Text* text : Texts)
+            right = std::max(right, textRect(*text, fm).right());
+        return QRectF(right + 2 * legendMargin, -y2, width, height);
+    }
     const bool left = legendPos == LegendTopLeft || legendPos == LegendBottomLeft;
     const bool top = legendPos == LegendTopLeft || legendPos == LegendTopRight;
-    const qreal x = left ? margin : x2 - margin - width;
-    const qreal y = top ? -y2 + margin : -margin - height;
+    const qreal x = left ? legendMargin : x2 - legendMargin - width;
+    const qreal y = top ? -y2 + legendMargin : -legendMargin - height;
+    return QRectF(x, y, width, height);
+}
+
+/*!
+   The legend: one row per graph with a sample of its line (colour,
+   thickness, style or symbol) and its variable, in a box in the corner
+   chosen by legendPos, or outside the diagram on its right. Drawn in the
+   diagram's own coordinates (origin at the lower left corner, y
+   downwards), after the graphs and the axis texts, so it lies on top of
+   them.
+*/
+void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
+    if (legendPos == LegendOff || Graphs.isEmpty()) return;
+    // (The samples' colours, fitted to the legend's paper.)
+    const qucs_s::ink::Paper paper(colors.legend);
+    using Row = LegendRow;
+    const QList<Row> rows = legendRows(Graphs);
+
+    const QFontMetricsF fm(painter->font());
+    const qreal pad = legendPad, sample = legendSample, gap = legendGap;
+    const qreal rowHeight = fm.height();
+    const QRectF box = legendRect(fm);
+    const qreal x = box.x(), y = box.y(), width = box.width(), height = box.height();
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
@@ -2018,7 +2049,7 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
                     n = s.section(' ', 27, 27);   // legend position (absent in older files)
                     if (misc::charAt(n, 0, '"') != '"') {
                         const int pos = n.toInt(&ok);
-                        legendPos = ok && pos >= LegendOff && pos <= LegendBottomRight ? pos : LegendOff;
+                        legendPos = ok && pos >= LegendOff && pos <= LegendOutside ? pos : LegendOff;
                         n = s.section(' ', 28, 28);   // decimal places (absent in older files)
                         if (misc::charAt(n, 0, '"') != '"') {
                             const int places = n.toInt(&ok);
@@ -2708,6 +2739,10 @@ QRectF Diagram::paintedRect(const QFontMetricsF& metrics) const
     }
     for (const Text* text : Texts)
         drawn |= textRect(*text, metrics);
+    // A legend outside, beside it (one inside is within its frame); not a
+    // table's, which has none.
+    if (legendPos == LegendOutside && themeParts().contains(Part::LegendText))
+        drawn |= legendRect(metrics);
     if (!title.isEmpty()) {
         const QFontMetricsF titleMetrics(titleFont());
         const qreal w = titleMetrics.horizontalAdvance(title);
