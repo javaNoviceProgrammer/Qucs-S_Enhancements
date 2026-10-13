@@ -5,7 +5,8 @@
  *                        surface scattering, saturation along the current),
  *                        heavy doping (Fermi-Dirac, band gap narrowing,
  *                        dopants ionized in part), interface traps,
- *                        Schrödinger-Poisson
+ *                        Schrödinger-Poisson, the carriers' heat and
+ *                        self-heating
  *
  * This file is part of Qucs-S.
  *
@@ -209,6 +210,37 @@ QByteArray mosCapacitor(const QString& traps, const QString& steps, const QStrin
       "studies": [{"type": "study", "steps": [%2]}]})json")
         .arg(traps, steps, width, fine)
         .toUtf8();
+}
+
+/// A pn junction (µm): p 1e18 cm⁻³ and n 1e16, 1 µm each, 0.2 high, its
+/// mobilities by doping, lifetimes 10 ns, the anode a at \a va; meshed at
+/// \a hmax.
+QByteArray diodeHeat(const QString& va, const QString& hmax)
+{
+    return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "name": "p", "size": ["1", "0.2"]},
+                     {"type": "rectangle", "name": "n", "position": ["1", "0"], "size": ["1", "0.2"]}],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+          {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["p"]}},
+          {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["n"]}},
+          {"type": "model", "mobility": "doping", "selection": {"all": true}},
+          {"type": "srh", "source": "user", "taun": "10[ns]", "taup": "10[ns]", "selection": {"all": true}},
+          {"type": "ohmic", "name": "a", "V0": "%1", "selection": {"of": ["p"], "side": "left"}},
+          {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "%2"}}],
+      "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+        .arg(va, hmax)
+        .toUtf8();
+}
+
+/// \a expression at (x, y) (µm) of \a s.
+double at1(const Solution& s, const QString& expression, double x, double y)
+{
+    const Locator locator(s.mesh());
+    const std::optional<double> v = evaluateAt(s, locator, expression, QPointF(x, y));
+    return v ? *v : NAN;
 }
 
 /// Fermi-Dirac's integral of order 1/2, normalized (e^η where carriers are
@@ -1076,6 +1108,142 @@ private slots:
         }
         qInfo("Schrödinger-Poisson, holes: %s", qPrintable(said.join(QLatin1String("; "))));
         QVERIFY(sheet[1] < sheet[0] && sheet[1] > 0.5 * sheet[0]);
+    }
+
+    void theCarriersHeat()
+    {
+        // A pn junction (p 1e18 cm⁻³, n 1e16, 1 µm each, mobilities by doping,
+        // lifetimes 10 ns) forward at 0.6 V: the heat its carriers leave, ∫
+        // semi.H - their Joule heat, each edge's currents through their
+        // quasi-Fermi potentials' drop, and the pairs' q R (φp - φn) -, the
+        // power it takes, I V, to 1e-3.
+        // (A sanitized build's mesh 20 nm, not 10.)
+        const Run r = run(modelOf(diodeHeat(QStringLiteral("0.6[V]"), slowBuild() ? QStringLiteral("0.02") : QStringLiteral("0.01"))));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        Node heat;
+        heat.type = QStringLiteral("integral");
+        heat.props.insert(QStringLiteral("expression"), QStringLiteral("semi.H*1[m]"));
+        heat.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+        const DerivedResult d = evaluateDerived(s, heat);
+        QVERIFY2(!d.values.isEmpty(), qPrintable(d.error));
+        const double H = d.values.front().value, IV = global(s, QStringLiteral("semi.I_a")) * 0.6;
+        qInfo("the carriers' heat %.6g W, I V %.6g W", H, IV);
+        QVERIFY2(IV > 0 && std::abs(H / IV - 1) < 1e-3, qPrintable(QStringLiteral("%1 %2").arg(H).arg(IV)));
+    }
+
+    void selfHeating()
+    {
+        // A bar of n-type silicon (1e17 cm⁻³), 20 µm by 1 µm, 4 V across it,
+        // its ends held at 300 K; its heat (semi.H) a heat physics' source,
+        // its mobility at that one's temperature (TL = ht.T: (T/300 K)^-2.5)
+        // - the two solved in turn. Its current the one-dimensional
+        // problem's, -k T'' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, V = J ∫ρ dx -
+        // to 0.5 %; some 13 % below the bar's at 300 K.
+        const double L = 20e-6, A = 1e-6, k = 130, n = 1e23, mu = 0.14, V = 4;
+        const double rho0 = 1 / (Q * n * mu);
+        // The one-dimensional problem: T by finite differences (Picard's in
+        // ρ(T)), J by the secant's on V.
+        const int m = 2000;
+        const double h = L / m;
+        auto voltage = [&](double J) {
+            std::vector<double> T(m + 1, 300.0);
+            for (int it = 0; it < 200; ++it) {
+                // -k (T[i-1] - 2T[i] + T[i+1])/h² = J² ρ(T[i]) (the Thomas algorithm).
+                std::vector<double> a(m + 1, -1), b(m + 1, 2), c(m + 1, -1), d(m + 1, 0);
+                for (int i = 1; i < m; ++i) d[i] = J * J * rho0 * std::pow(T[i] / 300, 2.5) * h * h / k;
+                b[0] = b[m] = 1;
+                c[0] = a[m] = 0;
+                d[0] = d[m] = 300;
+                for (int i = 1; i <= m; ++i) {
+                    const double w = a[i] / b[i - 1];
+                    b[i] -= w * c[i - 1];
+                    d[i] -= w * d[i - 1];
+                }
+                std::vector<double> next(m + 1);
+                next[m] = d[m] / b[m];
+                for (int i = m - 1; i >= 0; --i) next[i] = (d[i] - c[i] * next[i + 1]) / b[i];
+                double change = 0;
+                for (int i = 0; i <= m; ++i) change = std::max(change, std::abs(next[i] - T[i]));
+                T = next;
+                if (change < 1e-10) break;
+            }
+            double sum = 0;
+            for (int i = 0; i < m; ++i) sum += 0.5 * (std::pow(T[i] / 300, 2.5) + std::pow(T[i + 1] / 300, 2.5)) * rho0 * h;
+            return std::pair{J * sum, T[m / 2]};
+        };
+        double J0 = V / (rho0 * L), J1 = 0.9 * J0;
+        double v0 = voltage(J0).first - V, v1 = voltage(J1).first - V;
+        for (int it = 0; it < 50 && std::abs(v1) > 1e-12; ++it) {
+            const double J2 = J1 - v1 * (J1 - J0) / (v1 - v0);
+            J0 = J1;
+            v0 = v1;
+            J1 = J2;
+            v1 = voltage(J1).first - V;
+        }
+        const double expected = J1 * A, cold = V / (rho0 * L) * A, peak = voltage(J1).second;
+        const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "left", "size": ["10", "1"]},
+                         {"type": "rectangle", "name": "right", "position": ["10", "0"], "size": ["10", "1"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "TL": "ht.T", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+              {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["left"], "side": "left"}},
+              {"type": "ohmic", "name": "2", "V0": "4[V]", "selection": {"of": ["right"], "side": "right"}}]},
+             {"type": "heat", "tag": "ht", "features": [
+              {"type": "source", "Q0": "semi.H", "selection": {"all": true}},
+              {"type": "init", "T0": "300[K]", "selection": {"all": true}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["left"], "side": "left"}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["right"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.25"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const double I = std::abs(global(*r.solution, QStringLiteral("semi.I_2")));
+        const double Tmid = at1(*r.solution, QStringLiteral("ht.T"), 10, 0.5);
+        qInfo("self-heating: %.6g A (the one-dimensional problem's %.6g, at 300 K %.6g); %.2f K at its middle (%.2f)", I, expected, cold, Tmid, peak);
+        QVERIFY2(std::abs(I / expected - 1) < 5e-3, qPrintable(QStringLiteral("%1 %2").arg(I).arg(expected)));
+        QVERIFY2(std::abs(Tmid - peak) < 0.01 * (peak - 300), qPrintable(QStringLiteral("%1 %2").arg(Tmid).arg(peak)));
+    }
+
+    void latticeTemperatureOneWay()
+    {
+        // The bar at 0.1 V, warmed by a heat source of its own (1e14 W/m³,
+        // its ends at 300 K: T = 300 K + Q x (L - x)/2k), its mobility at
+        // that temperature - the semiconductor reading the heat physics,
+        // not read by it: solved after it all the same. Its current V/∫ρ,
+        // ρ = ρ300 (T/300 K)^2.5, to 0.5 %.
+        const double L = 20e-6, A = 1e-6, k = 130, n = 1e23, mu = 0.14, V = 0.1, Qh = 1e14;
+        const double rho0 = 1 / (Q * n * mu);
+        double sum = 0;
+        const int m = 4000;
+        for (int i = 0; i < m; ++i) {
+            const double x = (i + 0.5) * L / m, T = 300 + Qh * x * (L - x) / (2 * k);
+            sum += rho0 * std::pow(T / 300, 2.5) * L / m;
+        }
+        const double expected = V / sum * A;
+        const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "left", "size": ["10", "1"]},
+                         {"type": "rectangle", "name": "right", "position": ["10", "0"], "size": ["10", "1"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "TL": "ht.T", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+              {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["left"], "side": "left"}},
+              {"type": "ohmic", "name": "2", "V0": "0.1[V]", "selection": {"of": ["right"], "side": "right"}}]},
+             {"type": "heat", "tag": "ht", "features": [
+              {"type": "source", "Q0": "1e14[W/m^3]", "selection": {"all": true}},
+              {"type": "init", "T0": "300[K]", "selection": {"all": true}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["left"], "side": "left"}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["right"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.25"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const double I = std::abs(global(*r.solution, QStringLiteral("semi.I_2")));
+        qInfo("one way: %.6g A (∫ρ's %.6g; at 300 K %.6g)", I, expected, V / (rho0 * L) * A);
+        QVERIFY2(std::abs(I / expected - 1) < 5e-3, qPrintable(QStringLiteral("%1 %2").arg(I).arg(expected)));
     }
 
     void quantumCarriers()

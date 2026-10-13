@@ -43,10 +43,10 @@ constexpr double KB = 1.380649e-23;      // J/K
 const double Inf = std::numeric_limits<double>::infinity();
 // The field's extra: Vt, T, ni_ref, then each triangle's µn, µp, Ec - Ei, Eg,
 // ni, τn, τp, Et, Cn, Cp, B, δ, incomplete ionization's n1d, gd, p1a, ga,
-// and Fermi-Dirac's Nc, Nv (0 for Boltzmann's) (NaN where it is no
-// semiconductor); its values V, n, p, Nd, Na, θn, θp by node (θ with
-// Fermi-Dirac's degeneracy in it, as solved).
-constexpr int ExtraHead = 3, PerTriangle = 18;
+// Fermi-Dirac's Nc, Nv (0 for Boltzmann's), and the carriers' Joule heat as
+// solved (W/m³) (NaN where it is no semiconductor); its values V, n, p, Nd,
+// Na, θn, θp by node (θ with Fermi-Dirac's degeneracy in it, as solved).
+constexpr int ExtraHead = 3, PerTriangle = 19;
 
 /// Bernoulli's function x / (e^x - 1) and its derivative, safe at 0 and far
 /// from it.
@@ -79,6 +79,7 @@ struct Medium {
     bool saturation = false;         // high fields: Caughey and Thomas's too
     double vsatn = 1e5, vsatp = 8e4, betan = 2, betap = 1;
     bool wholeField = false;         // saturated by |E|, not by the force along the current
+    double zetan = 2.5, zetap = 2.2;   // the mobilities' (TL/300 K)^-ζ
     // Lombardi's scattering at an insulator's surface: µac = B/E⊥ + C (N/1
     // cm⁻³)^λ / (T E⊥^⅓) (C in cm, V, s and K), µsr = δ/E⊥², E⊥ the field
     // across the nearest interface, each faded as e^(-d/lcrit) away from it.
@@ -336,6 +337,10 @@ private:
     std::vector<Eigen::VectorXd> a_andX, a_andG;   // Anderson's history: Λ/Vt and its steps
     bool a_quantumElectrons = false, a_quantumHoles = false;
     double quantumCorrection(QString* error) override;
+    // Electrothermal: the lattice temperature for the mobilities (another
+    // physics', ht.T), each triangle's factors from it at each solve.
+    Expression a_TL;
+    void latticeTemperature();
     void degeneracy(const Eigen::VectorXd& x) const;
     /// Node \a i's carriers at v, the potential in Vt above its Fermi
     /// level's (Boltzmann's n = ni e^v): Fermi-Dirac's where asked; their
@@ -366,6 +371,8 @@ private:
         double N = 0;                // its donors and acceptors (1/m³)
         // Surface scattering's: the nearest interface's normal, e^(-d/lcrit).
         double nx = 0, ny = 0, damp = 0;
+        // The lattice's temperature's: (TL/300 K)^-ζ of each carrier's.
+        double tn = 1, tp = 1;
     };
     std::vector<ElementMobility> a_elements;
     /// Triangle \a t's mobilities at \a x (m²/(V s)): its low-field ones,
@@ -467,6 +474,10 @@ bool SemiconductorProblem::setup(QString* error)
         else a_T = *t;
     }
     a_Vt = KB * a_T / Q;
+    {
+        const QString tl = a_node->text(QStringLiteral("TL")).trimmed();
+        a_TL = tl.isEmpty() ? Expression() : compile(tl, *a_node, QStringLiteral("TL"));
+    }
     auto number = [&](const QString& text, const Dim& dim, const QString& what) {
         const std::optional<double> v = evaluateConstant(text, constants, dim, &why);
         if (!v) {
@@ -592,6 +603,11 @@ bool SemiconductorProblem::setup(QString* error)
             m.mupMin = number(mf->text(QStringLiteral("mupmin")), mobility, where);
             m.nRefP = number(mf->text(QStringLiteral("nrefp")), conc, where);
             m.alphaP = number(mf->text(QStringLiteral("alphap")), Dim(), where);
+        }
+        if (mf) {
+            m.zetan = number(mf->text(QStringLiteral("zetan")), Dim(), where);
+            m.zetap = number(mf->text(QStringLiteral("zetap")), Dim(), where);
+            if (!std::isfinite(m.zetan) || !std::isfinite(m.zetap)) m.zetan = m.zetap = 0;
         }
         if (mf && mf->flag(QStringLiteral("saturation"))) {
             m.saturation = a_saturation = true;
@@ -1167,6 +1183,7 @@ bool SemiconductorProblem::setup(QString* error)
         e[15] = m.ga;
         e[16] = m.fermi ? m.Nc : 0.0;
         e[17] = m.fermi ? m.Nv : 0.0;
+        e[18] = 0;
     }
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
@@ -1499,8 +1516,8 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
 void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, double* mun, double* mup) const
 {
     const ElementMobility& em = a_elements[std::size_t(t)];
-    *mun = em.mun;
-    *mup = em.mup;
+    *mun = em.mun * em.tn;
+    *mup = em.mup * em.tp;
     const Medium& m = a_media[std::size_t(em.domain)];
     if (!x || (!m.saturation && !(m.surface && em.damp > 0))) return;
     // (Lagged a Newton step: the field and the carriers at x.)
@@ -2176,9 +2193,48 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
         }
     }
     f.solved = true;
+    // The carriers' Joule heat by triangle: each edge's currents times their
+    // quasi-Fermi potentials' drop along it - the edges' sum the contacts'
+    // I V less the pairs' recombination heat, exactly - shared among the
+    // edge's triangles as their conductances are, over each one's volume.
+    // (J²/(q n µ) at a point took a depletion region's drift and diffusion,
+    // cancelling, for current: its heat thousands of times too much.)
+    {
+        std::vector<double> phin(N, 0.0), phip(N, 0.0);
+        for (std::size_t i = 0; i < N; ++i) {
+            if (a_iN[i] < 0) continue;
+            phin[i] = x(a_iV[i]) + a_thetaN[i] + a_Vt * a_lgN[i] - a_Vt * std::log(std::max(x(a_iN[i]), 1e-300) / a_refNi);
+            phip[i] = x(a_iV[i]) + a_thetaP[i] - a_Vt * a_lgP[i] + a_Vt * std::log(std::max(x(a_iP[i]), 1e-300) / a_refNi);
+        }
+        std::vector<double> pn(a_edges.size(), 0.0), pp(a_edges.size(), 0.0);
+        for (std::size_t k = 0; k < a_edges.size(); ++k) {
+            const Edge& e = a_edges[k];
+            if (e.w <= 0) continue;
+            double dN = 0, dP = 0;
+            edgeSteps(e, x, &dN, &dP);
+            const std::size_t i = std::size_t(e.i), j = std::size_t(e.j);
+            const double fn = e.wn * (x(a_iN[j]) * bern(dN) - x(a_iN[i]) * bern(-dN));
+            const double fp = e.wp * (x(a_iP[i]) * bern(dP) - x(a_iP[j]) * bern(-dP));
+            pn[k] = fn * (phin[i] - phin[j]);
+            pp[k] = fp * (phip[i] - phip[j]);
+        }
+        for (int t = 0; t < int(a_elements.size()); ++t) {
+            const ElementMobility& em = a_elements[std::size_t(t)];
+            if (em.domain < 0 || f.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1)) || !(em.volume > 0)) continue;
+            double mun = 0, mup = 0;
+            elementMobilities(t, &x, &mun, &mup);
+            double heat = 0;
+            for (int k = 0; k < 3; ++k) {
+                const Edge& e = a_edges[std::size_t(em.edge[k])];
+                if (e.wn > 0) heat += em.cot[k] * mun * Q * a_Vt / e.wn * pn[std::size_t(em.edge[k])];
+                if (e.wp > 0) heat += em.cot[k] * mup * Q * a_Vt / e.wp * pp[std::size_t(em.edge[k])];
+            }
+            f.extra[std::size_t(ExtraHead + PerTriangle * t + 18)] = heat / em.volume;
+        }
+    }
     // The mobilities as solved, for what is read at a point (semi.mun, the
     // current densities).
-    if (a_saturation || a_lombardi)
+    if (a_saturation || a_lombardi || a_TL.isValid())
         for (int t = 0; t < int(a_elements.size()); ++t) {
             if (a_elements[std::size_t(t)].domain < 0 || f.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1))) continue;
             double* e = &f.extra[std::size_t(ExtraHead + PerTriangle * t)];
@@ -2769,12 +2825,32 @@ void SemiconductorProblem::initialize()
     if (!stationary(&why)) a_initError = why;
 }
 
+void SemiconductorProblem::latticeTemperature()
+{
+    if (!a_TL.isValid()) return;
+    // Each triangle's lattice temperature at its middle: its mobilities'
+    // factors (TL/300 K)^-ζ, the edges weighed again.
+    PointEvaluator ev(a_s);
+    for (int t = 0; t < int(a_elements.size()); ++t) {
+        ElementMobility& em = a_elements[std::size_t(t)];
+        if (em.domain < 0) continue;
+        ev.moveTo(t, 1.0 / 3, 1.0 / 3);
+        const double T = ev.eval(a_TL);
+        if (!(T > 0)) continue;
+        const Medium& m = a_media[std::size_t(em.domain)];
+        em.tn = std::pow(T / 300, -m.zetan);
+        em.tp = std::pow(T / 300, -m.zetap);
+    }
+    edgeWeights(nullptr);
+}
+
 bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
 {
     if (!a_initError.isEmpty()) {
         *error = a_initError;
         return false;
     }
+    latticeTemperature();
     // Generation at the nodes, as it is now (it may read other fields, t).
     a_generation.assign(std::size_t(a_n), 0.0);
     {
@@ -3076,6 +3152,7 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     }
     // Fermi-Dirac's: γ = ℱ(η)/e^η, the carriers' Boltzmann densities n/γ.
     double gn = 1, gp = 1;
+    s.joule = ex[18];
     if (ex[16] > 0 && ex[17] > 0) {
         const FermiHalf& fh = fermiHalf();
         auto gamma = [&](double c, double N) {

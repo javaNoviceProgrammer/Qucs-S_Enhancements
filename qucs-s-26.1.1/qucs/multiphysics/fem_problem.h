@@ -245,6 +245,8 @@ struct SemiconductorState {
     /// The carriers' Boltzmann densities: n/γ, p/γ with Fermi-Dirac's
     /// statistics (γ = ℱ1/2(η)/e^η), n and p with Boltzmann's.
     double nB = NaN, pB = NaN;
+    /// The carriers' Joule heat as solved, the triangle's (W/m³).
+    double joule = 0;
     /// Incomplete ionization's (0: the dopants all ionized): Nd⁺ = Nd/(1 +
     /// gd nB/n1d), Na⁻ = Na/(1 + ga pB/p1a) - filled by the Fermi level.
     double n1d = 0, gd = 0, p1a = 0, ga = 0;
