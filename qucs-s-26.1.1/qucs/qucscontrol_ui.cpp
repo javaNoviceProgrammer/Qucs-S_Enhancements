@@ -161,6 +161,8 @@ QJsonArray QucsControl::uiAreas() const
                                     {QStringLiteral("shown"), !bar->isHidden()}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("statusbar")}, {QStringLiteral("shown"), a_app->statusBar()->isVisible()}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("tabs")}, {QStringLiteral("note"), tr("the documents' tabs, in each pane")}});
+    list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("document")},
+                            {QStringLiteral("note"), tr("the tab in front's own bar: a PDF's page field, find and zoom; a layout's, a picture's")}});
     return list;
 }
 
@@ -190,6 +192,17 @@ QWidget* QucsControl::uiArea(const QString& area, QString* name, QString* error,
     if (a.compare(QLatin1String("statusbar"), Qt::CaseInsensitive) == 0) {
         *name = QStringLiteral("statusbar");
         return a_app->statusBar();
+    }
+    if (a.compare(QLatin1String("document"), Qt::CaseInsensitive) == 0) {
+        // The tab in front: its own bar's controls (a PDF's page field, find
+        // and zoom), its outline and pages at the side.
+        QWidget* w = a_app->DocumentTab->count() > 0 ? a_app->DocumentTab->currentWidget() : nullptr;
+        if (w == nullptr) {
+            *error = tr("No document is open.");
+            return nullptr;
+        }
+        *name = QStringLiteral("document");
+        return w;
     }
     if (a.startsWith(QLatin1String("toolbar:"), Qt::CaseInsensitive)) {
         const QString title = a.mid(8);
@@ -237,8 +250,8 @@ QWidget* QucsControl::uiArea(const QString& area, QString* name, QString* error,
         *error = tr("There is no dock or panel %1 (get_ui without 'area' lists them).").arg(wanted);
         return nullptr;
     }
-    *error = tr("'area' is dock:<title> (or a panel of one, dock:Content), toolbar:<title>, statusbar or tabs; get_ui without it "
-                "lists them.");
+    *error = tr("'area' is dock:<title> (or a panel of one, dock:Content), toolbar:<title>, statusbar, tabs or document; get_ui "
+                "without it lists them.");
     return nullptr;
 }
 
@@ -357,7 +370,10 @@ void QucsControl::setUi(const QJsonObject& args, const Done& done)
         return;
     }
     bringForward(root);
+    // (A document's bar: a field set is entered, as Enter would.)
+    a_uiEnter = name == QLatin1String("document");
     fillControls(root, args, done, true);
+    a_uiEnter = false;
 }
 
 // ----------------------------------------------------------------------

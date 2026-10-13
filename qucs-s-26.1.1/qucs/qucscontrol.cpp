@@ -26,6 +26,11 @@
 #include "node.h"
 #include "paintings/painting.h"
 #include "qucs.h"
+#ifdef QUCS_HAVE_QTPDF
+#include "pdfdoc.h"
+
+#include <QPdfDocument>
+#endif
 #include "schematic.h"
 #include "simulationconsole.h"
 #include "simulatorlog.h"
@@ -118,7 +123,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "pane": {"description": "A pane's number, or \"right\" or \"below\""}}, "required": ["pane"]}},
 {"name": "open_document",
  "description": "Opens a file in a Qucs-S tab, or brings it to the front if it is already open: a schematic (.sch), a symbol (.sym), a data display (.dpl), a netlist or any text file, or a PDF (shown in Qucs-S's own viewer, for example a datasheet or a report). A relative path is resolved against the open project's folder, otherwise the workspace folder; a bare file name finds an open document with that name. If a component line in a schematic has more values than its type has properties, the result says so: values are read in order, so one extra value shifts every value after it. A schematic whose dataset and data display are named after another file (copied outside Qucs-S) is pointed out: its runs and its diagrams would use that file; 'own_data_names' names them after this one.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"}, "own_data_names": {"type": "boolean", "description": "A schematic whose dataset and data display are named after another file (a copy made outside Qucs-S, which the answer points out): name them after this one, as the window offers when it opens such a file"}}, "required": ["path"]}},
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"}, "own_data_names": {"type": "boolean", "description": "A schematic whose dataset and data display are named after another file (a copy made outside Qucs-S, which the answer points out): name them after this one, as the window offers when it opens such a file"}, "page": {"description": "A PDF: opened at this page - a number, a page's label, or an outline destination's title (as show_pdf)"}, "find": {"type": "string", "description": "A PDF: opened at the first hit of this text, every hit's page returned (as show_pdf)"}}, "required": ["path"]}},
 {"name": "new_document",
  "description": "Creates a new, untitled document and brings it to the front: a schematic or a text document. An untitled schematic nothing was done in (the one Qucs-S opens at start) is closed, so there is one \"untitled\" to name. With kind data_display it opens a schematic's data display instead (its .dpl file, created if it has none; 'path' is the schematic, the one in front if not given). A data display holds diagrams and paintings for a report and keeps the schematic itself clean; export_image can write a picture of it.",
  "inputSchema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["schematic", "text", "data_display"], "description": "schematic (the default), text, or data_display: a schematic's data display (.dpl)"}, "path": {"type": "string", "description": "With data_display: the schematic whose data display opens; the one in front when not given"}}}},
@@ -281,9 +286,9 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to redo, 1 by default"},
    "to": {"type": "integer", "minimum": 0, "description": "A later step as undo_history lists them: the schematic as it was after it"}}}},
 {"name": "screenshot",
- "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document or a PDF, paper and screen show what its tab shows.",
+ "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document or a PDF, paper and screen show what its tab shows; for a PDF, 'page' and 'region' draw that page, or a part of it, from the file at a resolution to read it, the tab left as it is.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"], "description": "paper (or all): the whole schematic as printed, the default; screen (or visible): the canvas as the user sees it; window: the whole Qucs-S window and its dialogs"},
-   "diagram": {"type": "integer", "description": "Only this diagram, by its number, as printed"}, "region": {"type": "array", "items": {"type": "integer"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of the schematic, as printed"}}}},
+   "diagram": {"type": "integer", "description": "Only this diagram, by its number, as printed"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of the schematic, as printed; of a PDF's page, in points from its top left or as fractions of it"}, "page": {"type": "integer", "minimum": 1, "description": "A PDF: this page (from 1) drawn, all of it or 'region' of it, without moving its tab"}}}},
 {"name": "list_component_types",
  "description": "Lists the library's components: the type to give add_component, what it is, and its category. 'search' keeps only those whose type, name or category contains it. describe_component_type describes a type's properties.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Only types whose type, name or category contains it (resistor, BJT, source)"}}}},
@@ -343,10 +348,10 @@ const char* const kTools = R"JSON([
    "page": {"type": "string", "description": "One page of the manual whole, by its name (overview/simulation-types/index, as the sections found name them)"},
    "refresh": {"type": "boolean", "description": "Fetch the manual again"}}}},
 {"name": "get_ui",
- "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), or the documents' tabs (tabs). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open; the first 200 rows or items of each, and 'rows not shown' / 'items not shown' how many more), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
- "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar or tabs; none: the list"}}}},
+ "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), the documents' tabs (tabs), or the document in front's own bar (document: a PDF's page field, find and zoom; a layout's, a picture's). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open; the first 200 rows or items of each, and 'rows not shown' / 'items not shown' how many more), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
+ "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar, tabs or document (the tab in front's own bar); none: the list"}}}},
 {"name": "set_ui",
- "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row (its text, its number in get_ui's rows, or a tree's path \"Schematics > amp.sch\") is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button. Area tabs: 'value' a tab's title brings that document to the front. Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
+ "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row (its text, its number in get_ui's rows, or a tree's path \"Schematics > amp.sch\") is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button. Area tabs: 'value' a tab's title brings that document to the front. Area document: the tab in front's own bar - a field set is entered, as typing it and pressing Enter (a PDF's page field: that page). Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "As get_ui's"},
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate", "expand", "collapse"]}}, "required": ["control", "value"]}, "description": "[{\"control\": id or label, \"value\": ..., \"action\": for a view's row: select (the default), activate, expand or collapse}]"},
    "press": {"type": "string", "description": "A button pressed after, by its label or id"}}, "required": ["area"]}},
@@ -605,8 +610,8 @@ const char* const kTools = R"JSON([
  "description": "Brings a text document to the front with a line in the middle of its view and the cursor there - to show the user an error or a place in the text. The keyboard stays where it is.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "line": {"type": "integer", "description": "The line, from 1"}, "column": {"type": "integer", "description": "The column, from 1 (1 unless given)"}}, "required": ["line"]}},
 {"name": "read_pdf",
- "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. A scanned page has no text: a screenshot of its tab shows it.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}}}},
+ "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. 'image' draws the pages too, as pictures (a figure, a scanned page; 'region' a part of each). show_pdf shows a page in its tab.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}, "image": {"type": "boolean", "description": "The pages drawn as pictures too (four at most), at a resolution to read them"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "image: only [x1, y1, x2, y2] of each page, in points from its top left or as fractions of it"}}}},
 {"name": "get_layout",
  "description": "Reads a GDSII or OASIS layout (.gds, .gds2, .gdsii, .gds.gz, .oas, .oasis) - as its tab shows it when it is open, else from its file in the background: the format, the database unit, how many cells, shapes, texts and placements, the top cells with their bounds and size (µm) and how many levels they have, the tree of cells (each cell's cells and how often each is placed; 'depth' levels of it, 3 by default, from 'cell' or from the top cells), the layers (layer/datatype, a name from the file or a KLayout .lyp beside it, shapes and texts on each), cells placed that the file has not, what gdstk warned of, and, when it is open, what its tab shows (cell, region, levels, hidden layers). find_shapes finds its shapes, show_layout shows a part of it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The tree from this cell instead of the top cells"}, "depth": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Levels of the tree listed, 3 by default"}}}},
@@ -622,6 +627,11 @@ const char* const kTools = R"JSON([
    "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] in µm, shown as large as the tab takes it"}, "layers": {"description": "The layers shown, the others hidden: \"1/0\", \"1\", a name, a list of them, or \"all\""},
    "depth": {"description": "Levels of the hierarchy drawn: \"all\" or a number (0: the cell's own shapes, the cells it places as frames)"}, "texts": {"type": "boolean", "description": "The texts shown or not"},
    "grid": {"type": "boolean", "description": "The grid behind the layout shown or not (a point every 1, 2 or 5 times a power of ten µm, at least 16 pixels apart; a scale of it in the lower left)"}}}},
+{"name": "show_pdf",
+ "description": "Shows a PDF in its tab - opened when it is not, brought to the front - where it is asked: 'page' a number (1 the first), a page's label as printed (\"iv\"; a number is the page's number in the file), or a destination of its outline (a section's title, or its start: \"2.2.1 Modulation\"); 'find' text (\"Figure 2.15:\"): every hit's page returned, the first shown and marked (a figure or a table named, not its page); 'zoom' a percentage (150) or \"fit width\" / \"fit page\"; 'region' [x1, y1, x2, y2] of the page shown as large as the tab takes it - in points from its top left, or as fractions of it (all four between 0 and 1: [0.5, 0, 1, 0.5] its top right quarter). Returns the page shown, the pages there are, the zoom, the hits. screenshot of the PDF then takes a picture of it; screenshot with 'page' and 'region' draws a page or a part without moving the tab.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"},
+   "page": {"description": "A page number (from 1), a page's label as printed, or an outline destination's title (or its start)"}, "find": {"type": "string", "description": "Text found on every page: the hits' pages returned, the first shown"},
+   "zoom": {"description": "A percentage (150) or \"fit width\" / \"fit page\""}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] of the page (the one asked, the first hit's, or the one in sight): points from its top left, or fractions of it"}}}},
 {"name": "describe_part",
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
@@ -917,6 +927,7 @@ const struct {
 } kActions[] = {
     {"open_document", QT_TRANSLATE_NOOP("QucsControl", "open a document in Qucs-S")},
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "show a layout in Qucs-S")},
+    {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "show a PDF's page in Qucs-S")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "open a new document in Qucs-S")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "save a document in Qucs-S")},
     {"close_document", QT_TRANSLATE_NOOP("QucsControl", "close a document in Qucs-S")},
@@ -1018,7 +1029,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
 const char* const kAdditive[] = {"add_component", "add_wire", "connect", "set_label", "add_diagram", "add_trace", "add_marker",
                                  "add_painting", "add_analysis", "new_document", "open_document", "new_project", "open_project",
                                  "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner",
-                                 "show_layout", "git_init", "git_clone"};
+                                 "show_layout", "show_pdf", "git_init", "git_clone"};
 
 // Each tool's description in the tool list: a summary (the list is in
 // every turn); describe_tool gives the whole of it.
@@ -1102,6 +1113,7 @@ const struct {
     {"get_layout", QT_TRANSLATE_NOOP("QucsControl", "Reads a GDSII or OASIS layout: its units, top cells, tree of cells and layers with their shape counts.")},
     {"find_shapes", QT_TRANSLATE_NOOP("QucsControl", "Finds the shapes and texts of a GDSII or OASIS layout at a point, in a region or on a layer, with their points in µm.")},
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "Shows a cell, a region or some layers of a GDSII or OASIS layout in its tab, for a screenshot.")},
+    {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "Shows a PDF in its tab at a page, an outline's destination, the hits of a search, a zoom or a region of a page.")},
     {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
     {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
     {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
@@ -1195,6 +1207,7 @@ const struct {
     {"get_layout", "gds gdsii oasis oas layout chip mask cells hierarchy layers database unit klayout"},
     {"find_shapes", "gds gdsii oasis layout polygon path shape text label at point region layer measure width coordinates"},
     {"show_layout", "gds gdsii oasis layout view show cell region zoom layers hide depth hierarchy screenshot klayout grid"},
+    {"show_pdf", "pdf page go to figure table find search zoom fit region outline bookmark destination thesis paper datasheet show scroll"},
     {"synthesize_filter", "filter synthesis design lowpass highpass bandpass bandstop chebyshev butterworth bessel elliptic cauer lc ladder active sallen key"},
     {"synthesize_attenuator", "attenuator pad pi tee resistive synthesis design dB"},
     {"synthesize_matching", "matching network circuit impedance l-section stub quarter wave smith conjugate amplifier"},
@@ -3884,6 +3897,10 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
             subject += tr(": %n edit(s)", "", int(a.value(QLatin1String("edits")).toArray().size()));
         else if (tool == QLatin1String("goto_line")) subject += tr(", line %1").arg(a.value(QLatin1String("line")).toInt());
     } else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
+    else if (tool == QLatin1String("show_pdf"))
+        subject = (s("path").isEmpty() ? tr("the PDF in front") : s("path"))
+                  + (s("find").isEmpty() ? (a.value(QLatin1String("page")).isUndefined() ? QString() : tr(", page %1").arg(a.value(QLatin1String("page")).toVariant().toString()))
+                                         : tr(", %1").arg(s("find")));
     else if (tool == QLatin1String("get_layout") || tool == QLatin1String("find_shapes") || tool == QLatin1String("show_layout"))
         subject = s("cell").isEmpty() ? s("path") : tr("%1 in %2").arg(s("cell"), s("path").isEmpty() ? tr("the layout in front") : s("path"));
     else if (tool == QLatin1String("find_library_component")) subject = (s("type") + QLatin1Char(' ') + s("search")).trimmed();
@@ -4685,6 +4702,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("export_image")) return exportImage(args);
     if (tool == QLatin1String("set_simulator")) return setSimulator(args);
     if (tool == QLatin1String("read_pdf")) return readPdf(args);
+    if (tool == QLatin1String("show_pdf")) return showPdf(args);
     if (tool == QLatin1String("get_text")) return getText(args);
     if (tool == QLatin1String("edit_text")) return editText(args);
     if (tool == QLatin1String("goto_line")) return gotoLine(args);
@@ -5182,6 +5200,25 @@ QJsonObject QucsControl::openDocument(const QJsonObject& args)
     QucsDoc* doc = a_app->getDoc();
     closeUntouched(doc);
     QString text = tr("%1 is open, in front (%2).").arg(QDir::toNativeSeparators(path), doc != nullptr ? kindOf(doc) : QString());
+#ifdef QUCS_HAVE_QTPDF
+    // A PDF opened at a page, or at a text's first hit.
+    if (auto* pdf = dynamic_cast<PdfDoc*>(doc); pdf != nullptr && (args.contains(QLatin1String("page")) || args.contains(QLatin1String("find")))) {
+        QJsonObject at;
+        QString why;
+        if (!viewPdf(pdf, QJsonObject{{QStringLiteral("page"), args.value(QLatin1String("page"))}, {QStringLiteral("find"), args.value(QLatin1String("find"))}}, &at, &why))
+            return errorResult(text + QLatin1Char(' ') + why);
+        text += QLatin1Char(' ') + tr("At page %1 of %2.").arg(at.value(QStringLiteral("page")).toInt()).arg(at.value(QStringLiteral("pages")).toInt());
+        if (at.contains(QStringLiteral("destination"))) text += QLatin1Char(' ') + tr("(%1)").arg(at.value(QStringLiteral("destination")).toString());
+        if (at.contains(QStringLiteral("found"))) {
+            const QJsonObject f = at.value(QStringLiteral("found")).toObject();
+            QStringList pages;
+            for (const QJsonValue& v : f.value(QStringLiteral("pages")).toArray()) pages << QString::number(v.toInt());
+            text += QLatin1Char(' ') + (pages.isEmpty() ? tr("%1 is not in its text.").arg(f.value(QStringLiteral("text")).toString())
+                                                        : tr("%1: %2 hits, on pages %3 - the first shown.").arg(f.value(QStringLiteral("text")).toString())
+                                                              .arg(f.value(QStringLiteral("hits")).toInt()).arg(pages.join(QStringLiteral(", "))));
+        }
+    }
+#endif
     // (What the window says in a box - which would wait for no one here.)
     if (!QFileInfo(path).isWritable() && dynamic_cast<Schematic*>(doc) != nullptr)
         text += QLatin1Char(' ') + tr("It is read-only: it cannot be saved there, and its simulations cannot write their data "
@@ -10400,9 +10437,7 @@ QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
     return textResult(text);
 }
 
-namespace {
-
-QJsonObject pngContent(const QImage& image)
+QJsonObject qucs_s::control::pngContent(const QImage& image)
 {
     QByteArray png;
     QBuffer buffer(&png);
@@ -10415,12 +10450,10 @@ QJsonObject pngContent(const QImage& image)
 
 // Not wider than a picture to look at needs to be (a window on a Retina
 // screen is twice its size in pixels).
-QImage fitted(const QImage& image)
+QImage qucs_s::control::fitted(const QImage& image)
 {
     return image.width() > 1800 ? image.scaledToWidth(1800, Qt::SmoothTransformation) : image;
 }
-
-} // namespace
 
 QJsonObject QucsControl::screenshot(const QJsonObject& args)
 {
@@ -10448,6 +10481,41 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
     if (doc == nullptr) return errorResult(error);
     QImage image;
     auto* sch = dynamic_cast<Schematic*>(doc);
+#ifdef QUCS_HAVE_QTPDF
+    // A PDF's page, or a region of it: drawn from the file, its tab left as
+    // it is.
+    if (auto* pdf = dynamic_cast<PdfDoc*>(doc); pdf != nullptr && (args.contains(QLatin1String("page")) || args.contains(QLatin1String("region")))) {
+        const int count = pdf->pageCount();
+        const int page = args.contains(QLatin1String("page")) ? args.value(QLatin1String("page")).toInt() : pdf->view()->currentPage() + 1;
+        if (page < 1 || page > count) return errorResult(tr("%1 has pages 1 to %2.").arg(titleOf(doc)).arg(count));
+        const QSizeF size = pdf->document()->pagePointSize(page - 1);
+        QRectF region;
+        if (args.contains(QLatin1String("region"))) {
+            QList<double> c;
+            for (const QJsonValue& v : args.value(QLatin1String("region")).toArray()) c << v.toDouble();
+            region = qucs_s::pdf::regionOf(c, size).intersected(QRectF(QPointF(0, 0), size));
+            if (region.isEmpty())
+                return errorResult(tr("'region' is [x1, y1, x2, y2] of the page: points from its top left (it is %1 x %2), or fractions of it.")
+                                       .arg(size.width()).arg(size.height()));
+        }
+        // Sharp enough to read: a part's longer side some 1600 pixels (1 to
+        // 8 a point), a whole page's 2000 at most.
+        const QSizeF part = region.isEmpty() ? size : region.size();
+        const qreal longest = std::max(part.width(), part.height());
+        const qreal scale = region.isEmpty() ? std::clamp(2000.0 / longest, 0.5, 2.0) : std::clamp(1600.0 / longest, 1.0, 8.0);
+        image = pdf->render(page - 1, region, scale);
+        if (image.isNull()) return errorResult(tr("Page %1 of %2 could not be drawn.").arg(page).arg(titleOf(doc)));
+        const QString what = region.isEmpty() ? tr("page %1 of %2").arg(page).arg(count)
+                                              : tr("page %1 of %2, the region %3, %4 - %5, %6 points").arg(page).arg(count)
+                                                    .arg(region.left(), 0, 'f', 0).arg(region.top(), 0, 'f', 0).arg(region.right(), 0, 'f', 0).arg(region.bottom(), 0, 'f', 0);
+        return {{QStringLiteral("content"),
+                 QJsonArray{pngContent(fitted(image)),
+                            QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                        {QStringLiteral("text"), tr("%1, %2 - drawn at %3 dpi, %4 x %5 pixels; its tab left as it is.")
+                                                                     .arg(titleOf(doc), what).arg(qRound(scale * 72)).arg(image.width()).arg(image.height())}}}},
+                {QStringLiteral("isError"), false}};
+    }
+#endif
     // One diagram, or a region: that part of the paper picture.
     if (args.contains(QLatin1String("diagram")) || args.contains(QLatin1String("region"))) {
         if (sch == nullptr) return errorResult(tr("%1 is not a schematic: 'diagram' and 'region' are of a schematic.").arg(titleOf(doc)));
@@ -12317,6 +12385,7 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             e->setText(text);
             e->setModified(true);
             if (ui) emit e->textEdited(text);   // (as typed: a panel's search goes by it)
+            if (ui && a_uiEnter) emit e->returnPressed();   // (a document's bar: entered)
             commitEditor(e);
         } else if (auto* p = qobject_cast<QPlainTextEdit*>(w)) {
             p->setPlainText(text);

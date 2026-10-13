@@ -59,6 +59,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 
 namespace qucs_s::pdf {
@@ -340,6 +341,25 @@ void PageView::goToPage(int page, QPointF location)
     }
     // The page asked for is the current one, even when it cannot come to
     // the top (the last pages).
+    if (a_currentPage != page) {
+        a_currentPage = page;
+        emit currentPageChanged(page);
+    }
+    viewport()->update();
+}
+
+void PageView::showRegion(int page, const QRectF& region)
+{
+    if (a_pages.isEmpty() || region.isEmpty()) return;
+    page = std::clamp(page, 0, int(a_pages.size()) - 1);
+    // The zoom that fits it, with the margins; then its middle the view's.
+    const qreal dpi = logicalDpiX() / 72.0;
+    const qreal w = viewport()->width() - 2 * Margin, h = viewport()->height() - 2 * Margin;
+    setZoom(std::min(w / (region.width() * dpi), h / (region.height() * dpi)));
+    const QRectF r = a_pages.at(page);
+    const QPointF middle = r.topLeft() + region.center() * pixelsPerPoint();
+    horizontalScrollBar()->setValue(int(std::lround(middle.x() - viewport()->width() / 2.0)));
+    verticalScrollBar()->setValue(int(std::lround(middle.y() - viewport()->height() / 2.0)));
     if (a_currentPage != page) {
         a_currentPage = page;
         emit currentPageChanged(page);
@@ -1405,6 +1425,105 @@ void PdfDoc::find(const QString& text)
     a_search->setSearchString(text);
     a_view->setCurrentSearchResult(-1);
     updateSearchLabel();
+}
+
+QList<PdfDoc::Hit> PdfDoc::findAll(const QString& text)
+{
+    QList<Hit> hits;
+    a_searchBar->show();
+    find(text);
+    if (text.isEmpty()) return hits;
+    // (Each page searched now - the model would go through them in time.)
+    for (int p = 0; p < pageCount(); ++p)
+        for (const QPdfLink& link : a_search->resultsOnPage(p)) {
+            QRectF all;
+            for (const QRectF& r : link.rectangles()) all = all.isNull() ? r : all.united(r);
+            hits << Hit{p, all};
+        }
+    if (!hits.isEmpty())
+        for (int i = 0; i < a_search->rowCount(QModelIndex()); ++i)
+            if (a_search->resultAtIndex(i).page() == hits.first().page) {
+                a_view->setCurrentSearchResult(i);
+                break;
+            }
+    updateSearchLabel();
+    return hits;
+}
+
+int PdfDoc::destination(const QString& title, QPointF* location, QString* found) const
+{
+    const QString wanted = title.trimmed();
+    if (wanted.isEmpty()) return -1;
+    QList<QModelIndex> all;
+    std::function<void(const QModelIndex&)> walk = [&](const QModelIndex& parent) {
+        for (int r = 0; r < a_bookmarks->rowCount(parent); ++r) {
+            const QModelIndex i = a_bookmarks->index(r, 0, parent);
+            all << i;
+            walk(i);
+        }
+    };
+    walk(QModelIndex());
+    auto titleOf = [](const QModelIndex& i) { return i.data(int(QPdfBookmarkModel::Role::Title)).toString().simplified(); };
+    for (int how = 0; how < 3; ++how)
+        for (const QModelIndex& i : std::as_const(all)) {
+            const QString t = titleOf(i);
+            const bool match = how == 0 ? t.compare(wanted, Qt::CaseInsensitive) == 0
+                             : how == 1 ? t.startsWith(wanted, Qt::CaseInsensitive)
+                                        : t.contains(wanted, Qt::CaseInsensitive);
+            if (!match) continue;
+            if (location) *location = i.data(int(QPdfBookmarkModel::Role::Location)).toPointF();
+            if (found) *found = t;
+            return i.data(int(QPdfBookmarkModel::Role::Page)).toInt();
+        }
+    return -1;
+}
+
+QStringList PdfDoc::outlineTitles(int most) const
+{
+    QStringList out;
+    std::function<void(const QModelIndex&, int)> walk = [&](const QModelIndex& parent, int depth) {
+        for (int r = 0; r < a_bookmarks->rowCount(parent) && out.size() < most; ++r) {
+            const QModelIndex i = a_bookmarks->index(r, 0, parent);
+            out << QString(depth * 2, QLatin1Char(' ')) + i.data(int(QPdfBookmarkModel::Role::Title)).toString().simplified();
+            walk(i, depth + 1);
+        }
+    };
+    walk(QModelIndex(), 0);
+    return out;
+}
+
+QImage PdfDoc::render(int page, const QRectF& region, qreal scale) const
+{
+    return qucs_s::pdf::renderPage(a_pdf, page, region, scale);
+}
+
+QImage qucs_s::pdf::renderPage(QPdfDocument* a_pdf, int page, const QRectF& region, qreal scale)
+{
+    if (a_pdf == nullptr || page < 0 || page >= a_pdf->pageCount() || !(scale > 0)) return {};
+    const QSizeF size = a_pdf->pagePointSize(page) * scale;
+    QPdfDocumentRenderOptions options;
+    options.setRenderFlags(QPdfDocumentRenderOptions::RenderFlag::Annotations);
+    QImage image = a_pdf->render(page, size.toSize(), options);
+    if (image.isNull()) return image;
+    // On white: a page leaves what it does not paint transparent.
+    QImage paper(image.size(), QImage::Format_RGB32);
+    paper.fill(Qt::white);
+    {
+        QPainter painter(&paper);
+        painter.drawImage(0, 0, image);
+    }
+    if (region.isEmpty()) return paper;
+    const QRect part = QRectF(region.topLeft() * scale, region.size() * scale).toAlignedRect().intersected(paper.rect());
+    return part.isEmpty() ? QImage() : paper.copy(part);
+}
+
+QRectF qucs_s::pdf::regionOf(const QList<double>& c, const QSizeF& pageSize)
+{
+    if (c.size() != 4) return {};
+    bool fractions = true;
+    for (double v : c) fractions = fractions && v >= 0 && v <= 1;
+    const double sx = fractions ? pageSize.width() : 1, sy = fractions ? pageSize.height() : 1;
+    return QRectF(QPointF(std::min(c[0], c[2]) * sx, std::min(c[1], c[3]) * sy), QPointF(std::max(c[0], c[2]) * sx, std::max(c[1], c[3]) * sy));
 }
 
 int PdfDoc::searchResultCount() const

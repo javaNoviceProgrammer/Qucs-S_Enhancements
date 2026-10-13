@@ -37,6 +37,7 @@ class Schematic;
 class TextDoc;
 class LayoutDoc;
 class MultiphysicsDoc;
+class PdfDoc;
 namespace qucs_s::layout {
 struct Layout;
 }
@@ -400,6 +401,13 @@ private:
     double measureRun(const QJsonObject& spec, const QJsonObject& simulated, const QString& path, const QJsonObject& args,
                       QString* used, QString* why);
     QJsonObject readPdf(const QJsonObject& args);
+    /// A PDF's tab shown at a page, a hit, a zoom or a region
+    /// (qucscontrol_design.cpp).
+    QJsonObject showPdf(const QJsonObject& args);
+    /// \a pdf's view set as args asks - 'page' (a number, a page's label or
+    /// an outline's destination), 'find', 'zoom', 'region' - into \a out;
+    /// false, with \a error, when it cannot be.
+    bool viewPdf(PdfDoc* pdf, const QJsonObject& args, QJsonObject* out, QString* error);
     /// GDSII and OASIS layouts (qucscontrol_layout.cpp): the layout of
     /// args' 'path' (the tab in front's when not given) - its tab's, one
     /// read before and unchanged, or read now in the background - to
@@ -468,6 +476,9 @@ private:
     /// The model a multiphysics tool last acted on: the one a call without
     /// 'path' means when the tab in front is no model (a plot's display).
     QPointer<MultiphysicsDoc> a_lastModel;
+    /// set_ui on a document's own bar: a field set is entered, as typing it
+    /// and pressing Enter does (a PDF's page field).
+    bool a_uiEnter = false;
     QJsonObject femDescribe(const QJsonObject& args);
     QJsonObject femModel(const QJsonObject& args);
     QJsonObject femEdit(const QJsonObject& args);
