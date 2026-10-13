@@ -655,11 +655,12 @@ private slots:
     // The examples, solved as they come, against what they say. (A
     // sanitized build: a coarser mesh, fewer points - and wider bounds. On
     // its 0.1 µm the figures move with the mesh, whose points differ from
-    // one platform to another: between 0.08 and 0.12 µm, and on CI's Linux,
-    // the modulator's loss at 0 V 0.62 to 0.77 dB, its photocurrents 160 to
-    // 188 µA and 0.92 to 0.95 mA, the photodiode's 1.132 to 1.147 A/W (1.139
-    // to 1.191 while its pairs were counted by node) and 6.36 to 6.87 nA
-    // dark - the extinction 5.650 to 5.671 dB.)
+    // one platform to another: between 0.08 and 0.12 µm the modulator's loss
+    // at 0 V 0.602 to 0.610 dB, its photocurrents 157 to 159 µA and 0.944 to
+    // 0.947 mA, the photodiode's 1.148 to 1.156 A/W and 7.3 to 7.5 nA dark -
+    // the extinction 5.657 to 5.668 dB. While a node between germanium and
+    // silicon took its first triangle's medium, the loss 0.62 to 0.77 dB, the
+    // photocurrents 160 to 189 µA, Linux's and macOS's alike.)
     void thePhotodiodeExample()
     {
         QElapsedTimer timer;
@@ -707,7 +708,7 @@ private slots:
             s.select(k);
             if (std::abs(s.snapshotValue(k) - 24e9) < 1e8) h24 = global(s, QStringLiteral("semi.HopRL_k"));
         }
-        // At 24 GHz, still above 1/√2 of its own (0.757); its 3 dB about 29
+        // At 24 GHz, still above 1/√2 of its own (0.771); its 3 dB about 29
         // (27 while saturation was driven by the whole field: the doped
         // germanium's carriers, diffusing out, slowed by the heterojunction's
         // field across them).
@@ -716,8 +717,8 @@ private slots:
               neff, loss * 1e-6, I * 1e3, Iop * 1e3, I / Iop, I / 1e-3, hLow, h24, h24 / hLow, timer.elapsed());
         QVERIFY(std::abs(neff - 3.84) < (slow ? 0.03 : 0.01));
         QVERIFY(std::abs(loss * 1e-6 - 1.9) < (slow ? 0.2 : 0.1));
-        QVERIFY2(std::abs(I / 1e-3 - 1.143) < (slow ? 0.06 : 0.02), qPrintable(QString::number(I / 1e-3)));
-        QVERIFY(std::abs(I / Iop - 0.92) < (slow ? 0.03 : 0.02));
+        QVERIFY2(std::abs(I / 1e-3 - 1.155) < (slow ? 0.06 : 0.02), qPrintable(QString::number(I / 1e-3)));
+        QVERIFY(std::abs(I / Iop - 0.925) < (slow ? 0.03 : 0.02));
         QVERIFY2(h24 / hLow > (slow ? 0.65 : 0.70) && h24 / hLow < 0.80, qPrintable(QString::number(h24 / hLow)));
         if (slow)
             only(m, QStringLiteral("std1"), QStringLiteral("sweep"), QStringLiteral("parameters"),
@@ -729,7 +730,7 @@ private slots:
             if (std::abs(point->sweptValues.value(QStringLiteral("Va")) + 1) < 1e-9) {
                 const double Idark = global(*point, QStringLiteral("semi.I_k"));
                 qInfo("its dark current at -1 V %.4g nA", Idark * 1e9);
-                QVERIFY(std::abs(Idark * 1e9 - 7.2) < (slow ? 1.5 : 0.5));
+                QVERIFY(std::abs(Idark * 1e9 - 7.4) < (slow ? 1.5 : 0.5));
                 seen = true;
             }
         QVERIFY(seen);
@@ -749,11 +750,11 @@ private slots:
         for (std::size_t k = 0; k < R.size(); ++k) said << QStringLiteral("%1 nm %2 A/W (neff %3)").arg(1500 + 20 * k).arg(R[k], 0, 'f', 3).arg(index[k], 0, 'f', 4);
         qInfo("its spectrum: %s", qPrintable(said.join(QLatin1String(", "))));
         // One mode throughout (its index falling by less than 0.02 a step);
-        // the most at 1560 nm, then the edge: 1580 its 1.10, 1620 less than
+        // the most at 1560 nm, then the edge: 1580 its 1.12, 1620 less than
         // half of it, as the example says.
         for (std::size_t k = 1; k < index.size(); ++k) QVERIFY2(index[k] < index[k - 1] && index[k - 1] - index[k] < 0.02, qPrintable(said.join(' ')));
         QCOMPARE(int(std::max_element(R.begin(), R.end()) - R.begin()), 3);
-        QVERIFY2(std::abs(R[4] - 1.10) < 0.02 && std::abs(R[5] - 0.89) < 0.02 && std::abs(R[6] - 0.42) < 0.02 && std::abs(R[7] - 0.16) < 0.02,
+        QVERIFY2(std::abs(R[4] - 1.12) < 0.02 && std::abs(R[5] - 0.905) < 0.02 && std::abs(R[6] - 0.41) < 0.02 && std::abs(R[7] - 0.16) < 0.02,
                  qPrintable(said.join(' ')));
         QVERIFY(R[6] < 0.5 * R[4]);
     }
@@ -775,10 +776,10 @@ private slots:
         const double i0 = global(*r.study.solutions.front(), QStringLiteral("semi.I_k")), i3 = global(*r.study.solutions.back(), QStringLiteral("semi.I_k"));
         qInfo("GeSi modulator: %.3f dB over 50 µm at 0 V, %.3f at -3 V (extinction %.3f dB); photocurrent %.4g µA and %.4g mA; %lld ms", il, on,
               on - il, i0 * 1e6, i3 * 1e3, timer.elapsed());
-        QVERIFY(std::abs(il - 0.65) < (slow ? 0.2 : 0.03));
-        QVERIFY(std::abs(on - 6.29) < (slow ? 0.3 : 0.1));
+        QVERIFY(std::abs(il - 0.615) < (slow ? 0.2 : 0.03));
+        QVERIFY(std::abs(on - 6.26) < (slow ? 0.3 : 0.1));
         QVERIFY2(std::abs(on - il - 5.65) < (slow ? 0.05 : 0.02), qPrintable(QString::number(on - il)));
-        QVERIFY(std::abs(i0 * 1e3 - 0.167) < (slow ? 0.09 : 0.01) && std::abs(i3 * 1e3 - 0.95) < (slow ? 0.1 : 0.02));
+        QVERIFY(std::abs(i0 * 1e3 - 0.160) < (slow ? 0.09 : 0.01) && std::abs(i3 * 1e3 - 0.95) < (slow ? 0.1 : 0.02));
     }
 
 private:

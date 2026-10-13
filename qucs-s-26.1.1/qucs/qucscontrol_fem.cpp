@@ -181,7 +181,7 @@ QString formatText()
         "Semiconductors: \"semiconductor\" (tag semi, \"T\") - drift and diffusion of electrons and holes on linear elements; a "
         "domain whose material has a band gap Eg is a semiconductor (Silicon, Germanium, Gallium arsenide, Indium phosphide, "
         "Gallium nitride, Germanium on silicon), else an insulator (the potential alone); heterojunctions between them by "
-        "Anderson's rule (their chi, Eg, Nc, Nv: Ge on Si's bands step 0.05 and 0.52 eV); its \"TL\" a lattice temperature for "
+        "Anderson's rule (their chi, Eg, Nc, Nv: Ge on Si's bands step 0.05 and 0.52 eV; a node on one the narrower gap's); its \"TL\" a lattice temperature for "
         "the mobilities (a heat physics' ht.T, (TL/300 K)^-zeta; semi.H the carriers' heat, Joule and recombination's, for "
         "its source: solved in turn). Features: model (\"source\": material or user - epsilonr, Eg, "
         "chi, Nc, Nv, mun, mup; \"mobility\": \"doping\" for Caughey-Thomas; \"saturation\" with vsatn, vsatp, \"driving\": "

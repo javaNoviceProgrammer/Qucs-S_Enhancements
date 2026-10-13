@@ -776,7 +776,19 @@ bool SemiconductorProblem::setup(QString* error)
         a_elemSemi[std::size_t(t)] = 1;
         for (int k = 0; k < 3; ++k) {
             a_box[std::size_t(dof[k])] += area * weight / 3;
-            if (a_nodeDomain[std::size_t(dof[k])] < 0) a_nodeDomain[std::size_t(dof[k])] = d;
+            // A node between two semiconductors takes the narrower gap's
+            // medium - an absorber's, a well's, a channel's: their carriers
+            // on their own bands to its edge -, between equal gaps the lower
+            // domain's, whatever the order of its triangles. (The first
+            // triangle's, as it was, made a Ge/Si interface's nodes now one,
+            // now the other, as the mesh had them: a photodiode's step on
+            // Linux's mesh had a slow part of 4.5 %, on macOS's of 0.02 %.)
+            int& nd = a_nodeDomain[std::size_t(dof[k])];
+            if (nd < 0) nd = d;
+            else if (nd != d) {
+                const double g = a_media[std::size_t(d)].Eg, h = a_media[std::size_t(nd)].Eg;
+                if (g < h - 1e-9 * std::abs(h) || (std::abs(g - h) <= 1e-9 * std::abs(h) && d < nd)) nd = d;
+            }
         }
         for (int k = 0; k < 3; ++k) {
             const int a = dof[k], b = dof[(k + 1) % 3];
