@@ -28,6 +28,7 @@
 
 #include <Eigen/Dense>
 #include <Eigen/SparseCholesky>
+#include <Eigen/SparseLU>
 
 #include <QScopeGuard>
 
@@ -369,7 +370,7 @@ private:
     /// ψ at a point, of a real (complex) vector by equation (from \a offset).
     double at(const Point& pt, const Eigen::VectorXd& x) const;
     std::complex<double> at(const Point& pt, const Eigen::VectorXcd& x, int offset) const;
-    int a_valence = 0;   // 0: parabolic holes; 4 or 6: the k·p valence bands' size
+    int a_valence = 0;   // 0: parabolic holes; 4, 6 or 8: the k·p bands' size (8: Kane's, the conduction band's S too)
     int a_inplane = 0;   // the in-plane k: 0 axial, 1 along [100], 2 along [110], 3 averaged over directions
     /// The k·p valence bands (1D wells) along an in-plane direction (θ from
     /// [100]; its share of the average): at each in-plane k (1/m) the
@@ -380,12 +381,19 @@ private:
         std::vector<double> k;
         std::vector<std::vector<double>> E;
         std::vector<std::vector<Eigen::VectorXcd>> x;
+        // The 8x8's: the conduction states' energies (eV, from the lowest)
+        // and vectors (X↑ Y↑ Z↑ X↓ Y↓ Z↓ S↑ S↓, 8n), the valence states'
+        // S parts (S↑ S↓, 2n).
+        std::vector<std::vector<double>> C;
+        std::vector<std::vector<Eigen::VectorXcd>> xc, xs;
     };
     std::vector<KpBands> a_kps;   // each direction's: one, or the average's
     QString kpDirection() const;   // the in-plane k's, said
     /// Solves them at \a nk values of k from 0 to \a kmax (1/m): the
-    /// highest \a count states at each (Kramers' pairs both).
-    bool kpBands(int count, double kmax, int nk, QString* error);
+    /// highest \a count states at each (Kramers' pairs both); the 8x8's
+    /// lowest \a conduction conduction states too (Kramers' pairs both).
+    bool kpBands(int count, double kmax, int nk, QString* error, int conduction = 0);
+    QStringList a_kpRescaled;   // the 8x8's Ep rescaled, said once a solve
     Spectrum a_spec;
     int a_specSelected = -1;
     int a_bandsSelected = -1;   // a Valence Bands step's point
@@ -443,7 +451,7 @@ bool QuantumProblem::setup(QString* error)
     if (!a_on[0] && !a_on[1] && !a_on[2]) problem(tr("%1 solves no carrier").arg(a_node->name()));
     {
         const QString v = a_node->text(QStringLiteral("valence"));
-        a_valence = v == QLatin1String("kp6") ? 6 : v == QLatin1String("kp4") ? 4 : 0;
+        a_valence = v == QLatin1String("kp8") ? 8 : v == QLatin1String("kp6") ? 6 : v == QLatin1String("kp4") ? 4 : 0;
         const QString in = a_node->text(QStringLiteral("inplane"));
         a_inplane = in == QLatin1String("100") ? 1 : in == QLatin1String("110") ? 2 : in == QLatin1String("average") ? 3 : 0;
         if (a_valence && !a_1d) problem(tr("%1: the k·p valence bands are a well's (1D): a wire's holes stay parabolic").arg(a_node->name()));
@@ -1393,16 +1401,16 @@ QString QuantumProblem::kpDirection() const
     }
 }
 
-bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
+bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int conduction)
 {
     using cd = std::complex<double>;
     a_kps.clear();
     const int n = a_neq, nb = a_valence;
-    if (n <= 0 || (nb != 4 && nb != 6)) return true;
+    if (n <= 0 || (nb != 4 && nb != 6 && nb != 8)) return true;
     const cd I(0, 1);
-    // X↑ Y↑ Z↑ X↓ Y↓ Z↓ (orbital o, spin s: 3 s + o). Spin and orbit: Δ
-    // ((σ·L) - 1)/3, L's (Lk)ij = -i εkij - the j = 3/2 states at 0, j =
-    // 1/2 at -Δ.
+    // X↑ Y↑ Z↑ X↓ Y↓ Z↓ (orbital o, spin s: 3 s + o) - the 8x8's S↑ S↓ after
+    // them. Spin and orbit: Δ ((σ·L) - 1)/3, L's (Lk)ij = -i εkij - the j =
+    // 3/2 states at 0, j = 1/2 at -Δ.
     Eigen::Matrix<cd, 6, 6> so = Eigen::Matrix<cd, 6, 6>::Zero();
     {
         auto eps = [](int a, int b, int c) { return (a == b || b == c || a == c) ? 0 : ((b - a + 3) % 3 == 1 ? 1 : -1); };
@@ -1420,13 +1428,25 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
                     }
         so = (so - Eigen::Matrix<cd, 6, 6>::Identity()) / 3.0;
     }
-    // The basis: all six, or the j = 3/2 four (so's eigenvalue 0) - the 4x4
-    // Luttinger-Kohn bands, the split-off band left out.
-    Eigen::MatrixXcd U = Eigen::MatrixXcd::Identity(6, 6);
+    // The basis: all six (eight), or the j = 3/2 four (so's eigenvalue 0) -
+    // the 4x4 Luttinger-Kohn bands, the split-off band left out.
+    Eigen::MatrixXcd U = Eigen::MatrixXcd::Identity(nb == 8 ? 8 : 6, nb == 8 ? 8 : 6);
     if (nb == 4) {
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix<cd, 6, 6>> es(so);
         U = es.eigenvectors().rightCols(4);   // (eigenvalues -1, -1, 0, 0, 0, 0)
     }
+    // The 8x8: each domain's gap, its edges' difference at the points (the
+    // field's potential moves both).
+    std::vector<double> gapOf(a_bands.size(), 0.0), gapW(a_bands.size(), 0.0);
+    double cEdge = Inf();   // the conduction band's lowest edge
+    if (nb == 8)
+        for (const Point& pt : a_points) {
+            if (pt.d < 0 || std::size_t(pt.d) >= a_bands.size()) continue;
+            gapOf[std::size_t(pt.d)] += pt.w * (pt.pot[0] + pt.pot[1]);
+            gapW[std::size_t(pt.d)] += pt.w;
+            cEdge = std::min(cEdge, pt.pot[0]);
+        }
+    a_kpRescaled.clear();
     // The in-plane directions: one - the axial approximation's (Chuang's:
     // the plane isotropic, R's γ2 and γ3 their mean γ̄) or [100] or [110] -,
     // or the warped bands averaged over the plane's directions (D2d: 0 to
@@ -1454,8 +1474,19 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
     // (N kz + kz N)/2, an interface of InGaAs and InP grows a spurious band
     // into the gap. Its terms by kz's side: xz the coefficient of -i ψ_i ψ_j'
     // (the X-Z element N+, the Z-X N-), its adjoint of i ψ_i' ψ_j.
+    // The 8x8 (Kane's): S↑ S↓ coupled to the X, Y, Z of their spin by i P
+    // kα (P = √(Ep ħ²/2m0)), the kz's in Burt and Foreman's order, i P kz in
+    // S's row and -i kz P in Z's - the S band's part of N+ (kx N+ kz) - z1
+    // the coefficient of -i ψ_i ψ_j' as xz's, x1 of k in the plane -, S's own
+    // A_c ħ²k²/2m0 at the conduction band's edge; the valence bands' γ and
+    // A_c what the remote bands leave (Foreman's: γ1 - Ep/3Eg, γ2,3 -
+    // Ep/6Eg, A_c = 1/me - (Ep/3)(2/Eg + 1/(Eg + Δ))). A_c below 0 makes
+    // spurious states in the gap, and at 0 S has no stiffness of its own -
+    // the elements' first derivatives leave S's of none at the band's edge:
+    // A_c below 1 (a free electron's), Ep lowered to make it 1 (Foreman's
+    // other choice; GaAs's 28.8 eV to 22.5).
     struct Terms {
-        Eigen::MatrixXcd z2, x2, xz, d0;
+        Eigen::MatrixXcd z2, x2, xz, d0, z1, x1;
     };
     std::vector<Terms> terms(a_bands.size());
     for (std::size_t d = 0; d < a_bands.size(); ++d) {
@@ -1465,14 +1496,38 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
             *error = tr("%1: the k·p valence bands want each material's Luttinger parameters (γ1, γ2, γ3)").arg(a_node->name());
             return false;
         }
-        if (nb == 6 && !std::isfinite(b.delta)) {
-            *error = tr("%1: the 6x6 k·p bands want each material's split-off energy Delta").arg(a_node->name());
+        if (nb >= 6 && !std::isfinite(b.delta)) {
+            *error = tr("%1: the %2x%2 k·p bands want each material's split-off energy Delta").arg(a_node->name()).arg(nb);
             return false;
         }
-        const double L = -(b.g1 + 4 * b.g2) * HB2M, M = -(b.g1 - 2 * b.g2) * HB2M, N = -6 * b.g3 * HB2M;
+        double g1 = b.g1, g2 = b.g2, g3 = b.g3, Ac = 0, P = 0;
+        if (nb == 8) {
+            const double Eg = gapW[d] > 0 ? gapOf[d] / gapW[d] : NaN;
+            if (!(Eg > 0) || !(b.Ep > 0) || !(b.me > 0)) {
+                *error = tr("%1: the 8x8 k·p bands want each material's gap above 0, its Kane energy Ep and its electron mass (domain %2)")
+                             .arg(a_node->name())
+                             .arg(d + 1);
+                return false;
+            }
+            double Ep = b.Ep;
+            const double sum = 2 / Eg + 1 / (Eg + b.delta);
+            Ac = 1 / b.me - Ep / 3 * sum;
+            if (Ac < 1) {
+                Ep = std::max(0.0, 3 * (1 / b.me - 1) / sum);
+                Ac = 1 / b.me - Ep / 3 * sum;
+                if (theta == directions.front().first)
+                    a_kpRescaled << tr("domain %1's Ep %2 eV to %3 eV").arg(d + 1).arg(formatNumber(b.Ep, 4), formatNumber(Ep, 4));
+            }
+            g1 -= Ep / (3 * Eg);
+            g2 -= Ep / (6 * Eg);
+            g3 -= Ep / (6 * Eg);
+            P = std::sqrt(Ep * HB2M);
+        }
+        const double L = -(g1 + 4 * g2) * HB2M, M = -(g1 - 2 * g2) * HB2M, N = -6 * g3 * HB2M;
         const double Nm = M - HB2M, Np = N - Nm;
-        const double c = std::cos(theta), sn = std::sin(theta), dA = axial ? -3 * (0.5 * (b.g2 + b.g3) - b.g2) * HB2M : 0.0;
-        Eigen::Matrix<cd, 6, 6> z2 = Eigen::Matrix<cd, 6, 6>::Zero(), x2 = z2, xz = z2, d0 = z2;
+        const double c = std::cos(theta), sn = std::sin(theta), dA = axial ? -3 * (0.5 * (g2 + g3) - g2) * HB2M : 0.0;
+        const int nf = nb == 8 ? 8 : 6;
+        Eigen::MatrixXcd z2 = Eigen::MatrixXcd::Zero(nf, nf), x2 = z2, xz = z2, d0 = z2, z1 = z2, x1 = z2;
         for (int sp = 0; sp < 2; ++sp) {
             const int o = 3 * sp;
             z2(o, o) = M;
@@ -1488,9 +1543,19 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
             xz(o + 1, o + 2) = sn * Np;
             xz(o + 2, o + 1) = sn * Nm;
             d0(o + 2, o + 2) = b.dZ;
+            if (nb == 8) {
+                const int S = 6 + sp;
+                z2(S, S) = Ac * HB2M;
+                x2(S, S) = Ac * HB2M;
+                x1(S, o) = I * P * c;
+                x1(o, S) = -I * P * c;
+                x1(S, o + 1) = I * P * sn;
+                x1(o + 1, S) = -I * P * sn;
+                z1(S, o + 2) = I * P;
+            }
         }
-        if (nb == 6) d0 += b.delta * so;
-        terms[d] = {U.adjoint() * z2 * U, U.adjoint() * x2 * U, U.adjoint() * xz * U, U.adjoint() * d0 * U};
+        if (nb >= 6) d0.topLeftCorner(6, 6) += b.delta * so;
+        terms[d] = {U.adjoint() * z2 * U, U.adjoint() * x2 * U, U.adjoint() * xz * U, U.adjoint() * d0 * U, U.adjoint() * z1 * U, U.adjoint() * x1 * U};
     }
     // H(k) = H0 + k H1 + k² H2 (k in 1/nm) and M, by component then equation.
     const int N6 = nb * n;
@@ -1501,7 +1566,8 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
         if (pt.d < 0 || std::size_t(pt.d) >= terms.size() || terms[std::size_t(pt.d)].z2.size() == 0) continue;
         const Terms& T = terms[std::size_t(pt.d)];
         // (The heavy holes' edge here, the field's and potential's in: an
-        // electron's energy of the X and Y orbitals.)
+        // electron's energy of the X and Y orbitals; the 8x8's S the
+        // conduction band's.)
         const double ev = -pt.pot[1];
         edge = std::max(edge, std::max(ev, -pt.pot[2]));
         for (int i = 0; i < pt.n; ++i) {
@@ -1513,9 +1579,10 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
                 for (int a = 0; a < nb; ++a) {
                     tm.emplace_back(a * n + pt.eq[i], a * n + pt.eq[j], mass);
                     for (int c = 0; c < nb; ++c) {
-                        const cd h0 = stiff * T.z2(a, c) + mass * (T.d0(a, c) + (a == c ? ev : 0.0));
+                        const cd h0 = stiff * T.z2(a, c) + mass * (T.d0(a, c) + (a == c ? (a < 6 ? ev : pt.pot[0]) : 0.0))
+                                      - I * (right * T.z1(a, c) - left * std::conj(T.z1(c, a)));
                         if (h0 != cd(0)) t0.emplace_back(a * n + pt.eq[i], c * n + pt.eq[j], h0);
-                        const cd h1 = -I * (right * T.xz(a, c) - left * std::conj(T.xz(c, a)));
+                        const cd h1 = -I * (right * T.xz(a, c) - left * std::conj(T.xz(c, a))) + mass * T.x1(a, c);
                         if (h1 != cd(0)) t1.emplace_back(a * n + pt.eq[i], c * n + pt.eq[j], h1);
                         if (T.x2(a, c) != cd(0)) t2.emplace_back(a * n + pt.eq[i], c * n + pt.eq[j], mass * T.x2(a, c));
                     }
@@ -1531,111 +1598,159 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error)
     Mr.setFromTriplets(tm.begin(), tm.end());
     const Eigen::SparseMatrix<cd> Mc = Mr.cast<cd>();
     const int want = std::min(2 * std::max(1, count), N6);
+    const int wantC = nb == 8 ? std::min(2 * std::max(0, conduction), N6) : 0;
+    // (The 8x8: the valence states below the gap's middle, the conduction
+    // states above it.)
+    const double mid = nb == 8 ? 0.5 * (edge + cEdge) : Inf();
     for (int ik = 0; ik < nk; ++ik) {
         const double k = nk > 1 ? kmax * ik / (nk - 1) : 0;   // 1/m
         const double kn = k * 1e-9;                           // 1/nm
         Eigen::SparseMatrix<cd> H = H0 + kn * H1 + kn * kn * H2;
-        std::vector<std::pair<double, Eigen::VectorXcd>> found;
-        if (N6 <= 120 || 4 * want >= N6) {   // (dense: small, or most of it wanted)
+        std::vector<std::pair<double, Eigen::VectorXcd>> found, foundC;
+        if (N6 <= 120 || 4 * (want + wantC) >= N6) {   // (dense: small, or most of it wanted)
             const Eigen::MatrixXcd Hd(H), Md(Mc);
             Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXcd> es(Hd, Md);
             if (es.info() != Eigen::Success) {
                 *error = tr("%1: the k·p eigenproblem was not solved at k = %2").arg(a_node->name(), formatQuantity(k, Dim::of(-1)));
                 return false;
             }
-            for (int m = 0; m < want; ++m) found.emplace_back(es.eigenvalues()(N6 - 1 - m), es.eigenvectors().col(N6 - 1 - m));
+            for (int m = N6 - 1; m >= 0 && int(found.size()) < want; --m)
+                if (es.eigenvalues()(m) < mid) found.emplace_back(es.eigenvalues()(m), es.eigenvectors().col(m));
+            for (int m = 0; m < N6 && int(foundC.size()) < wantC; ++m)
+                if (es.eigenvalues()(m) > mid) foundC.emplace_back(es.eigenvalues()(m), es.eigenvectors().col(m));
         } else {
-            // Shift and invert above the highest edge: (σM - H) positive
-            // definite, its inverse's largest eigenvalues the highest states.
-            const double sigma = edge + 0.02 + 1e-3 * std::abs(edge);
-            Eigen::SparseMatrix<cd> A = sigma * Mc - H;
-            A.makeCompressed();
-            Eigen::SimplicialLDLT<Eigen::SparseMatrix<cd>> ldlt(A);
-            if (ldlt.info() != Eigen::Success) {
-                *error = tr("%1: the shifted k·p matrix is not positive definite (a spurious state?)").arg(a_node->name());
-                return false;
-            }
-            // Krylov and Schur's largest of (σM - H)⁻¹ M, then again on what
-            // is M-orthogonal to all found so far, till a search finds nothing
-            // as high as the lowest state wanted; Rayleigh and Ritz over all
-            // found. One vector's Krylov space holds one direction of each
-            // degenerate set - a Kramers pair's other only as rounding
-            // brings it -; the other lies in what is orthogonal to the found.
-            std::vector<Eigen::VectorXcd> basis, mbasis;   // M-orthonormal; M times each
-            auto add = [&](Eigen::VectorXcd v) {
-                const double before = std::sqrt(std::max(0.0, v.dot(Mc * v).real()));
-                for (int pass = 0; pass < 2; ++pass)
+            // Shift and invert at σ: above the highest valence edge, (σM - H)
+            // - positive definite but for the 8x8's conduction states -, its
+            // inverse's largest eigenvalues the highest states; below the
+            // 8x8's lowest conduction edge, (H - σM), the lowest.
+            auto states = [&](double sigma, bool above, int howManyWanted, std::vector<std::pair<double, Eigen::VectorXcd>>& into) {
+                Eigen::SparseMatrix<cd> A = above ? Eigen::SparseMatrix<cd>(H - sigma * Mc) : Eigen::SparseMatrix<cd>(sigma * Mc - H);
+                A.makeCompressed();
+                std::function<Eigen::VectorXcd(const Eigen::VectorXcd&)> solve;
+                Eigen::SimplicialLDLT<Eigen::SparseMatrix<cd>> ldlt;
+                Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
+                if (nb == 8) {
+                    lu.analyzePattern(A);
+                    lu.factorize(A);
+                    if (lu.info() != Eigen::Success) {
+                        *error = tr("%1: the shifted 8x8 k·p matrix is singular (a state at the shift?)").arg(a_node->name());
+                        return false;
+                    }
+                    solve = [&](const Eigen::VectorXcd& v) { return Eigen::VectorXcd(lu.solve(v)); };
+                } else {
+                    ldlt.compute(A);
+                    if (ldlt.info() != Eigen::Success) {
+                        *error = tr("%1: the shifted k·p matrix is not positive definite (a spurious state?)").arg(a_node->name());
+                        return false;
+                    }
+                    solve = [&](const Eigen::VectorXcd& v) { return Eigen::VectorXcd(ldlt.solve(v)); };
+                }
+                // Krylov and Schur's largest of the inverse times M, then again
+                // on what is M-orthogonal to all found so far, till a search
+                // finds nothing as high as the lowest state wanted; Rayleigh
+                // and Ritz over all found. One vector's Krylov space holds one
+                // direction of each degenerate set - a Kramers pair's other
+                // only as rounding brings it -; the other lies in what is
+                // orthogonal to the found. (The 8x8: the other side's states
+                // - θ below 0 - kept in the basis too, out of the searches'
+                // way, and left out after.)
+                std::vector<Eigen::VectorXcd> basis, mbasis;   // M-orthonormal; M times each
+                auto add = [&](Eigen::VectorXcd v) {
+                    const double before = std::sqrt(std::max(0.0, v.dot(Mc * v).real()));
+                    for (int pass = 0; pass < 2; ++pass)
+                        for (std::size_t c = 0; c < basis.size(); ++c) v -= basis[c] * mbasis[c].dot(v);
+                    const Eigen::VectorXcd mv = Mc * v;
+                    const double norm = std::sqrt(std::max(0.0, v.dot(mv).real()));
+                    if (norm > 1e-8 * std::max(before, 1e-300)) {
+                        basis.push_back(v / norm);
+                        mbasis.push_back(mv / norm);
+                    }
+                };
+                auto project = [&](Eigen::VectorXcd& v) {
                     for (std::size_t c = 0; c < basis.size(); ++c) v -= basis[c] * mbasis[c].dot(v);
-                const Eigen::VectorXcd mv = Mc * v;
-                const double norm = std::sqrt(std::max(0.0, v.dot(mv).real()));
-                if (norm > 1e-8 * std::max(before, 1e-300)) {
-                    basis.push_back(v / norm);
-                    mbasis.push_back(mv / norm);
+                };
+                // (After the first, a search of two, to 1e-5, checks the rest;
+                // finding one as high (to 1e-4), a search of the pairs' number
+                // follows. A state just below the wanted ones found so too is
+                // harmless: Rayleigh and Ritz keep the highest.)
+                double lowest = Inf();   // the lowest wanted state's θ = 1/(σ - E) so far
+                bool full = true;
+                for (int search = 0; search < 8; ++search) {
+                    const int howMany = std::min(search == 0 ? howManyWanted + 4 : full ? howManyWanted / 2 + 4 : 2, N6 - int(basis.size()) - 2);
+                    if (howMany <= 0) break;
+                    const bool check = search > 0 && !full;
+                    const EigenResult r = largestEigenvalues(
+                        N6, howMany,
+                        [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
+                            Eigen::VectorXcd v = x;
+                            project(v);
+                            y = solve(Mc * v);
+                            project(y);
+                        },
+                        0, check ? 1e-5 : 1e-10);
+                    if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
+                    bool higher = false;
+                    for (std::size_t c = 0; c < r.vectors.size(); ++c) {
+                        const bool other = r.values[c].real() < 0;
+                        if (search > 0 && !other && !(r.values[c].real() > lowest * (1 - 1e-4))) continue;
+                        higher = higher || (search > 0 && !other);
+                        if (!check || other) add(r.vectors[c]);
+                    }
+                    // The θ of the want-th highest found: the bar for another search.
+                    std::vector<double> thetas;
+                    for (const std::complex<double>& t : r.values)
+                        if (t.real() > 0) thetas.push_back(t.real());
+                    if (search == 0) {
+                        std::sort(thetas.rbegin(), thetas.rend());
+                        lowest = thetas.empty() ? Inf() : thetas[std::size_t(std::min<int>(howManyWanted, int(thetas.size())) - 1)];
+                        full = false;
+                    } else if (!higher && !full)
+                        break;
+                    else
+                        full = !full && higher;
                 }
+                const int m = int(basis.size());
+                Eigen::MatrixXcd B(N6, m);
+                for (int c = 0; c < m; ++c) B.col(c) = basis[std::size_t(c)];
+                const Eigen::MatrixXcd small = B.adjoint() * (H * B);
+                Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(0.5 * (small + small.adjoint()));
+                if (above) {
+                    for (int c = 0; c < m && int(into.size()) < howManyWanted; ++c)
+                        if (es.eigenvalues()(c) > mid) into.emplace_back(es.eigenvalues()(c), B * es.eigenvectors().col(c));
+                } else
+                    for (int c = m - 1; c >= 0 && int(into.size()) < howManyWanted; --c)
+                        if (es.eigenvalues()(c) < mid) into.emplace_back(es.eigenvalues()(c), B * es.eigenvectors().col(c));
+                return true;
             };
-            auto project = [&](Eigen::VectorXcd& v) {
-                for (std::size_t c = 0; c < basis.size(); ++c) v -= basis[c] * mbasis[c].dot(v);
-            };
-            // (After the first, a search of two, to 1e-5, checks the rest;
-            // finding one as high (to 1e-4), a search of the pairs' number
-            // follows. A state just below the wanted ones found so too is
-            // harmless: Rayleigh and Ritz keep the highest.)
-            double lowest = Inf();   // the lowest wanted state's θ = 1/(σ - E) so far
-            bool full = true;
-            for (int search = 0; search < 8; ++search) {
-                const int howMany = std::min(search == 0 ? want + 4 : full ? want / 2 + 4 : 2, N6 - int(basis.size()) - 2);
-                if (howMany <= 0) break;
-                const bool check = search > 0 && !full;
-                const EigenResult r = largestEigenvalues(
-                    N6, howMany,
-                    [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
-                        Eigen::VectorXcd v = x;
-                        project(v);
-                        y = ldlt.solve(Mc * v);
-                        project(y);
-                    },
-                    0, check ? 1e-5 : 1e-10);
-                if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
-                bool higher = false;
-                for (std::size_t c = 0; c < r.vectors.size(); ++c) {
-                    if (search > 0 && !(r.values[c].real() > lowest * (1 - 1e-4))) continue;
-                    higher = higher || search > 0;
-                    if (!check) add(r.vectors[c]);
-                }
-                // The θ of the want-th highest found: the bar for another search.
-                std::vector<double> thetas;
-                for (const std::complex<double>& t : r.values) thetas.push_back(t.real());
-                if (search == 0) {
-                    std::sort(thetas.rbegin(), thetas.rend());
-                    lowest = thetas.empty() ? Inf() : thetas[std::size_t(std::min<int>(want, int(thetas.size())) - 1)];
-                    full = false;
-                } else if (!higher && !full)
-                    break;
-                else
-                    full = !full && higher;
-            }
-            const int m = int(basis.size());
-            Eigen::MatrixXcd B(N6, m);
-            for (int c = 0; c < m; ++c) B.col(c) = basis[std::size_t(c)];
-            const Eigen::MatrixXcd small = B.adjoint() * (H * B);
-            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(0.5 * (small + small.adjoint()));
-            for (int c = 0; c < std::min(want, m); ++c) found.emplace_back(es.eigenvalues()(m - 1 - c), B * es.eigenvectors().col(m - 1 - c));
+            if (!states(edge + 0.02 + 1e-3 * std::abs(edge), false, want, found)) return false;
+            if (wantC > 0 && !states(cEdge - 0.02 - 1e-3 * std::abs(cEdge), true, wantC, foundC)) return false;
         }
-        std::vector<double> energies;
-        std::vector<Eigen::VectorXcd> vectors;
+        std::vector<double> energies, energiesC;
+        std::vector<Eigen::VectorXcd> vectors, vectorsC, sParts;
         for (auto& [E, x] : found) {
             x /= std::sqrt(std::max(1e-300, (x.adjoint() * (Mc * x))(0).real()));
-            // In X↑ Y↑ Z↑ X↓ Y↓ Z↓.
+            // In X↑ Y↑ Z↑ X↓ Y↓ Z↓ (the 8x8's S parts apart).
             Eigen::VectorXcd x6 = Eigen::VectorXcd::Zero(6 * n);
             for (int c = 0; c < 6; ++c)
                 for (int a = 0; a < nb; ++a)
                     if (U(c, a) != cd(0)) x6.segment(c * n, n) += U(c, a) * x.segment(a * n, n);
             energies.push_back(E);
             vectors.push_back(std::move(x6));
+            if (nb == 8) sParts.push_back(x.segment(6 * n, 2 * n));
+        }
+        for (auto& [E, x] : foundC) {
+            x /= std::sqrt(std::max(1e-300, (x.adjoint() * (Mc * x))(0).real()));
+            energiesC.push_back(E);
+            vectorsC.push_back(std::move(x));
         }
         out.k.push_back(k);
         out.E.push_back(std::move(energies));
         out.x.push_back(std::move(vectors));
+        if (nb == 8) {
+            out.C.push_back(std::move(energiesC));
+            out.xc.push_back(std::move(vectorsC));
+            out.xs.push_back(std::move(sParts));
+        }
     }
     a_kps.push_back(std::move(out));
     }
@@ -1876,16 +1991,59 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         double gap = Inf(), me = 1;
         if (!a_states[0].empty()) me = a_states[0].front().mPar;
         // (The states of each kind: heavy and light holes, the split-off
-        // ones in the 6x6 - each a Kramers pair.)
-        const int count = a_valence / 2 * std::max(1, o.states);
-        if (!kpBands(count, 0, 1, error)) return -1;
+        // ones in the 6x6 and 8x8 - each a Kramers pair; the 8x8's electrons
+        // its own, as many as the effective mass's found.)
+        const int count = (a_valence == 4 ? 2 : 3) * std::max(1, o.states);
+        const int electrons = a_valence == 8 ? int(a_states[0].size()) : 0;
+        // The 8x8's electrons: each state's energy its Kramers pair's at k =
+        // 0, its mass in the plane their curvature's there (over the
+        // directions, its inverse's mean) - not the effective mass's.
+        QStringList was;
+        auto kp8Electrons = [&](bool masses) {
+            for (std::size_t i = 0; i < a_states[0].size(); ++i) {
+                State& e = a_states[0][i];
+                const KpBands& b0 = a_kps.front();
+                if (b0.C.empty() || 2 * i + 1 >= b0.C[0].size()) continue;
+                if (!masses) {
+                    was << formatNumber(e.E, 5);
+                    e.E = 0.5 * (b0.C[0][2 * i] + b0.C[0][2 * i + 1]);
+                    continue;
+                }
+                double inverse = 0;
+                for (const KpBands& b : a_kps) {
+                    if (b.k.size() < 2 || 2 * i + 1 >= b.C[1].size()) {
+                        inverse = NaN;
+                        break;
+                    }
+                    const double k1 = b.k[1] * 1e-9;
+                    inverse += b.weight * (0.5 * (b.C[1][2 * i] + b.C[1][2 * i + 1]) - e.E) / (HB2M * k1 * k1);
+                }
+                if (inverse > 0) e.mPar = 1 / inverse;
+            }
+        };
+        if (!kpBands(count, 0, 1, error, electrons)) return -1;
+        if (a_valence == 8) kp8Electrons(false);
         if (!a_states[0].empty() && !a_kps.empty() && !a_kps[0].E.empty() && !a_kps[0].E[0].empty()) gap = (a_states[0].front().E - a_kps[0].E[0][0]) * Q;
         double reach = std::max(0.05 * Q, (std::isfinite(gap) ? topE - gap : 0.0) + 20 * gamma + 10 * kT);
         // (Fading, past the fade's end: the steps' tail beyond the grid none.)
         if (fading && std::isfinite(gap)) reach = std::max(reach, barrierGap + o.fade + 20 * gamma - gap);
         const double ke = std::sqrt(2 * me * M0 * reach) / Hbar, kh = std::sqrt(2 * 0.5 * M0 * (0.15 * Q + 15 * kT)) / Hbar;
-        if (!kpBands(count, std::max(ke, kh), o.kpoints > 1 ? o.kpoints : 121, error)) return -1;
+        if (!kpBands(count, std::max(ke, kh), o.kpoints > 1 ? o.kpoints : 121, error, electrons)) return -1;
         const KpBands& b0 = a_kps.front();
+        if (a_valence == 8) {
+            kp8Electrons(true);
+            QStringList now, masses;
+            for (std::size_t i = 0; i < std::min<std::size_t>(a_states[0].size(), 4); ++i) {
+                now << formatNumber(a_states[0][i].E, 5);
+                masses << formatNumber(a_states[0][i].mPar, 3);
+            }
+            a_s.log << tr("%1: the 8x8's electrons at k = 0 %2 eV (the effective mass's %3), their masses in the plane near it %4 m0%5")
+                           .arg(a_node->name(), now.join(QStringLiteral(", ")), was.mid(0, 4).join(QStringLiteral(", ")), masses.join(QStringLiteral(", ")),
+                                a_kpRescaled.isEmpty() ? QString()
+                                                       : tr("; Ep lowered where the conduction band's remote term would be below a free "
+                                                             "electron's (Foreman's): %1")
+                                                             .arg(a_kpRescaled.join(QStringLiteral(", "))));
+        }
         QStringList top, masses;
         for (std::size_t j = 0; j < std::min<std::size_t>(b0.E[0].size(), 8); j += 2) {
             top << formatNumber(b0.E[0][j], 6);
@@ -1904,6 +2062,22 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // Carriers of carrier c per area (wells) or length (wires) with a
     // quasi-Fermi level F (J).
     auto sheet = [&](int c, double F) {
+        if (a_valence == 8 && c == 0) {
+            // The 8x8's electrons (each state one: Kramers' pairs both), as
+            // the holes are counted (the grid's reach, the holes' at 0.5 m0,
+            // far past them).
+            double nn = 0;
+            for (const KpBands& b : a_kps)
+                for (std::size_t i = 0; i < (b.C.empty() ? 0 : b.C[0].size()); ++i) {
+                    for (std::size_t m = 1; m < b.k.size(); ++m) {
+                        const double Ea = b.C[m - 1][i] * Q, Eb = b.C[m][i] * Q, dk2 = b.k[m] * b.k[m] - b.k[m - 1] * b.k[m - 1];
+                        const double in = std::abs(Eb - Ea) > 1e-6 * kT ? kT * (softplus((F - Ea) / kT) - softplus((F - Eb) / kT)) / (Eb - Ea)
+                                                                       : fermi((0.5 * (Ea + Eb) - F) / kT);
+                        nn += b.weight * dk2 / (4 * M_PI) * in;
+                    }
+                }
+            return nn;
+        }
         if (kp && c > 0) {
             // The holes of the k·p bands (each state one: Kramers' pairs both),
             // each interval's energy linear in k²: ∫ (1 - f) dk² = Δk²/ΔE kT
@@ -2062,6 +2236,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // Excitons: each transition's 1s binding (in the wells' permittivity);
     // screened by carriers, none.
     a_spec.excitons = o.excitons && !a_spec.carriers;
+    if (a_spec.excitons && a_valence == 8) {
+        a_spec.excitons = false;
+        a_s.log << tr("Warning: %1: the 8x8 bands' excitons are not modelled: left out").arg(a_node->name());
+    }
     if (o.excitons && a_spec.carriers)
         a_s.log << tr("%1: the excitons are left out: carriers in the wells screen them").arg(a_node->name());
     if (a_spec.excitons) {
@@ -2184,6 +2362,80 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         if (a_spec.excitons && !(epsr > 0))
             for (std::size_t d = 0; d < a_bands.size() && !(epsr > 0); ++d)
                 if (d < a_active.size() && a_active[d] && a_bands[d].on) epsr = a_bands[d].epsr;
+        // A valence state's place (its mean along the axis, the heavy holes'
+        // edge at k = 0): the continuum "bound"'s.
+        auto boundHole = [&](std::size_t j) {
+            if (o.continuum != 1) return true;
+            double pos = 0, all = 0;
+            for (const Point& pt : a_points) {
+                double v = 0;
+                for (int c = 0; c < 6; ++c) v += std::norm(at(pt, a_kps[0].x[0][j], c * n));
+                pos += pt.w * pt.a * v;
+                all += pt.w * v;
+            }
+            return confined(3, a_kps[0].E[0][j], all > 0 ? pos / all : 0.0);
+        };
+        if (a_valence == 8 && !a_states[0].empty()) {
+            // The 8x8's: each conduction state (its own spin) with each
+            // valence state at each k - <c|p_α|v> = (i m0 P/ħ) Σs (<c_Ss|v_αs>
+            // - <c_αs|v_Ss>), TE (3/2)(|A_X|² + |A_Y|²) and TM 3 |A_Z|² of
+            // |Mb|² (a pure S↑ and heavy hole 3/2 and 0, as the 4x4's); the
+            // momentum's Ep the material's as given, the electron's.
+            std::vector<Eigen::Triplet<double>> tm;
+            for (const Point& pt : a_points)
+                for (int q = 0; q < pt.n; ++q)
+                    for (int r = 0; r < pt.n; ++r)
+                        if (pt.eq[q] >= 0 && pt.eq[r] >= 0) tm.emplace_back(pt.eq[q], pt.eq[r], pt.w * pt.N[q] * pt.N[r]);
+            Eigen::SparseMatrix<double> Mn(n, n);
+            Mn.setFromTriplets(tm.begin(), tm.end());
+            const Eigen::SparseMatrix<std::complex<double>> Mnc = Mn.cast<std::complex<double>>();
+            for (const KpBands& b : a_kps) {
+                if (b.C.empty()) continue;
+                const std::size_t nc = b.C[0].size();
+                for (std::size_t j = 0; j < b.E[0].size(); ++j) {
+                    if (!boundHole(j)) continue;
+                    std::vector<KpPair> prs(nc);
+                    for (std::size_t i = 0; i < nc; ++i) {
+                        const State& e = a_states[0][std::min(i / 2, a_states[0].size() - 1)];
+                        prs[i].bands = &b;
+                        prs[i].weight = b.weight;
+                        prs[i].Ep = e.Ep * Q;
+                        prs[i].nr = o.index > 0 ? o.index : e.nr;
+                    }
+                    for (std::size_t m = 0; m < b.k.size(); ++m) {
+                        if (j >= b.E[m].size() || nc > b.C[m].size()) break;
+                        // (M times the valence state's parts, once for every
+                        // conduction state.)
+                        Eigen::VectorXcd mv[8];
+                        for (int c = 0; c < 6; ++c) mv[c] = Mnc * b.x[m][j].segment(c * n, n);
+                        for (int sp = 0; sp < 2; ++sp) mv[6 + sp] = Mnc * b.xs[m][j].segment(sp * n, n);
+                        for (std::size_t i = 0; i < nc; ++i) {
+                            const Eigen::VectorXcd& c8 = b.xc[m][i];
+                            std::complex<double> A[3] = {0.0, 0.0, 0.0};
+                            for (int sp = 0; sp < 2; ++sp)
+                                for (int a = 0; a < 3; ++a)
+                                    A[a] += c8.segment((6 + sp) * n, n).dot(mv[3 * sp + a]) - c8.segment((3 * sp + a) * n, n).dot(mv[6 + sp]);
+                            KpPair& pr = prs[i];
+                            pr.wte.push_back(1.5 * (std::norm(A[0]) + std::norm(A[1])));
+                            pr.wtm.push_back(3 * std::norm(A[2]));
+                            pr.ec.push_back(b.C[m][i] * Q);
+                            pr.ev.push_back(b.E[m][j] * Q);
+                            pr.eps.push_back(pr.ec.back() - pr.ev.back());
+                        }
+                    }
+                    for (std::size_t i = 0; i < nc; ++i) {
+                        KpPair& pr = prs[i];
+                        if (pr.eps.size() != b.k.size()) continue;
+                        if (o.continuum == 1 && !confined(0, b.C[0][i], a_states[0][std::min(i / 2, a_states[0].size() - 1)].pos)) continue;
+                        double most = 0;
+                        for (std::size_t m = 0; m < pr.wte.size(); ++m) most = std::max(most, pr.wte[m] + pr.wtm[m]);
+                        if (!(most > 1e-10)) continue;
+                        pr.edge = *std::min_element(pr.eps.begin(), pr.eps.end());
+                        pairs.push_back(std::move(pr));
+                    }
+                }
+            }
+        } else
         for (std::size_t i = 0; i < a_states[0].size(); ++i) {
             const State& e = a_states[0][i];
             if (o.continuum == 1 && !confined(0, e.E, e.pos)) continue;
@@ -2198,17 +2450,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             }
             const Eigen::VectorXcd loadc = load.cast<std::complex<double>>();
             for (std::size_t j = 0; j < a_kps[0].E[0].size(); ++j) {
-                if (o.continuum == 1) {
-                    // (The hole's mean position at k = 0, its heavy holes' edge.)
-                    double pos = 0, all = 0;
-                    for (const Point& pt : a_points) {
-                        double v = 0;
-                        for (int c = 0; c < 6; ++c) v += std::norm(at(pt, a_kps[0].x[0][j], c * n));
-                        pos += pt.w * pt.a * v;
-                        all += pt.w * v;
-                    }
-                    if (!confined(3, a_kps[0].E[0][j], all > 0 ? pos / all : 0.0)) continue;
-                }
+                if (!boundHole(j)) continue;
                 bool bound = false;
                 Exciton xc;
                 for (const KpBands& b : a_kps) {
@@ -2600,10 +2842,11 @@ int QuantumProblem::solveBands(const SpectrumOptions& o, QString* error)
 {
     if (solveModes(o.solve, std::max(1, o.states), 0, error) < 0) return -1;
     if (!a_valence) {
-        *error = tr("%1: a Valence Bands step wants the k·p valence bands (its physics' Valence bands: 4x4 or 6x6)").arg(a_node->name());
+        *error = tr("%1: a Valence Bands step wants the k·p valence bands (its physics' Valence bands: 4x4, 6x6 or 8x8)").arg(a_node->name());
         return -1;
     }
-    if (!kpBands(std::max(1, o.states), o.kmax, std::max(2, o.kpoints), error)) return -1;
+    // (The 8x8's conduction states too: as many Kramers pairs.)
+    if (!kpBands(std::max(1, o.states), o.kmax, std::max(2, o.kpoints), error, a_valence == 8 ? std::max(1, o.states) : 0)) return -1;
     a_specSelected = -1;
     const KpBands& b0 = a_kps.front();
     QStringList top;
@@ -2711,6 +2954,12 @@ void QuantumProblem::setGlobals()
             for (const KpBands& b : a_kps) E += b.weight * (j < b.E[k].size() ? b.E[k][j] : NaN);
             a_s.setGlobal(p + QStringLiteral("Ev%1").arg(j + 1), E * Q, energy,
                           tr("the valence state %1's energy (k·p; from the highest, Kramers' pairs both)").arg(j + 1), QStringLiteral("eV"));
+        }
+        for (std::size_t i = 0; i < (a_kps[0].C.empty() ? 0 : a_kps[0].C[k].size()); ++i) {
+            double E = 0;
+            for (const KpBands& b : a_kps) E += b.weight * (i < b.C[k].size() ? b.C[k][i] : NaN);
+            a_s.setGlobal(p + QStringLiteral("Ec%1").arg(i + 1), E * Q, energy,
+                          tr("the conduction state %1's energy (the 8x8's; from the lowest, Kramers' pairs both)").arg(i + 1), QStringLiteral("eV"));
         }
     }
     if (a_specSelected >= 0 && a_specSelected < int(a_spec.E.size())) {
