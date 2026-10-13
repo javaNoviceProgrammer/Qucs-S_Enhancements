@@ -2150,8 +2150,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     (a pulse). It is fed one mode, by number (1 the highest index; the
     mode step leaves it selected): that mode is taken to carry all the
     light, an assumption to state - from one mode to another a
-    photodiode's responsivity differs by several percent. A
-    semiconductor's mesh is kept Delaunay (edges flipped after
+    photodiode's responsivity differs by several percent. Against
+    **published devices** (the tests' benchmarks): Virot et al.'s lateral
+    Si/Ge/Si photodiode (2017) - 1.25 A/W 40 µm long (1.16 measured), 35
+    GHz at -4 V (18 measured) and 96 GHz 0.3 µm wide (over 50); Liu
+    et al.'s GeSi modulator (2008), its direct gap 10 meV above the
+    composition law's 0.80 eV (there 1550 nm's photons sit on the edge,
+    18.5 dB lost at 0 V) - 6.5 dB of extinction at -2.5 V as measured,
+    2.8 dB/V (2.2), its window narrower than the device's (2 dB at 1530
+    nm, 5.2 or more measured); an abrupt junction's breakdown voltage
+    against its doping, Sze and Gibbons' (by van Overstraeten and de
+    Man's coefficients 52 V at 1e16 cm⁻³, 61.6 theirs; 13.9 at 1e17,
+    11.0). A semiconductor's mesh is kept Delaunay (edges flipped after
     smoothing, a segment with an obtuse angle across it split): every
     edge's current counted.
   - *Geometrical Optics*: **rays** from points, beams (uniform or
@@ -2320,7 +2330,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   aberration, white light through a prism, a graded-index lens, a thermal
   lens (rays and heat solved in turn), and a photodiode lit by rays (0.48
   A/W, 95 % of the ideal); a germanium-on-silicon waveguide photodiode
-  (1.15 A/W at 1550 nm, 7 nA dark, 29 GHz, its response along the
+  (1.15 A/W at 1550 nm, 7 nA dark, 29 GHz at 1 mW, its response along the
   wavelength falling past the strained edge, the heterojunction's bands)
   and a germanium-silicon electroabsorption modulator (5.6 dB of
   extinction at -3 V for 0.65 dB inserted over 50 µm, its spectra at two
