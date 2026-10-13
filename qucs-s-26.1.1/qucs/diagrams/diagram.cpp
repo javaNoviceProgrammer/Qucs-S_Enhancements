@@ -39,6 +39,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <climits>
 #include <limits>
@@ -66,6 +67,8 @@
 #include "qucs_assert.h"
 
 Diagram::Diagram(int _cx, int _cy) {
+    static std::atomic<quint64> serials{0};
+    a_serial = ++serials;
     cx = _cx;
     cy = _cy;
 

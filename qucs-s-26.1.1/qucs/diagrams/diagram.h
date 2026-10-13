@@ -136,6 +136,11 @@ public:
   Diagram(int _cx=0, int _cy=0);
   virtual ~Diagram();
 
+  /// This diagram's own number, never another's: an address is reused once
+  /// a diagram is deleted (a schematic closed, an undo), so what refers to
+  /// a diagram across edits holds this, not a pointer.
+  quint64 serial() const { return a_serial; }
+
   virtual Diagram* newOne();
   virtual int  calcDiagram() { return 0; };
   virtual void calcCoordinate
@@ -350,6 +355,7 @@ protected:
 private:
   Theme a_theme;
   QList<qucs_s::limits::Violation> a_violations;   // (the grid's colour is GridPen's, not in it)
+  quint64 a_serial;
 };
 
 #endif

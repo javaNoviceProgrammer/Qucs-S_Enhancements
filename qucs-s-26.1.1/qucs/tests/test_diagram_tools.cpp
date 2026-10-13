@@ -27,6 +27,7 @@
 
 #include "config.h"
 #include "diagrams/diagram.h"
+#include "diagrams/rectdiagram.h"
 #include "diagrams/marker.h"
 #include "diagrams/stackeddiagram.h"
 #include "mouseactions.h"
@@ -487,6 +488,7 @@ private slots:
         front()->a_DocDiags.back()->isSelected = false;
         QCOMPARE(json(call("probe", {{"what", "out"}, {"diagram", 1}})).value("diagram").toInt(), 1);   // not the last probed
         QCOMPARE(json(call("probe", {{"what", "out"}, {"diagram", 2}})).value("diagram").toInt(), 2);
+        QCOMPARE(json(call("probe", {{"what", "in"}})).value("diagram").toInt(), 2);   // the one probed last
         QVERIFY(failed(call("probe", {{"what", "out"}, {"diagram", 7}})));
 
         // The window's Probe: a click on a pin's end, as the tool.
@@ -505,6 +507,38 @@ private slots:
 
     // An unnamed net is labelled (one step to undo); ground is refused; a
     // probe into a stacked diagram goes into its bottom pane.
+    void aDiagramAtAProbedOnesAddress()
+    {
+        // The diagram probed last is kept by its serial, not its address: an
+        // address is reused once its diagram is deleted, and a schematic
+        // closed and opened again took its new diagram for the one probed
+        // into before (the allocator's choice: crossProbing failed one run in
+        // three under load). Here the reuse is forced - a diagram built in
+        // the probed one's memory - and the probe goes to the first diagram.
+        QJsonObject r = call("import_netlist", {{"text", "rc\nV1 in 0 DC 1\nR1 in out 1k\nC1 out 0 1u\n.tran 10u 1m\n.end"},
+                                                {"save_as", path("reuse.sch")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!failed(call("probe", {{"what", "out"}})));   // into a new diagram
+        QVERIFY(!failed(call("add_diagram", {{"type", "rect"}})));
+        Schematic* sch = front();
+        QCOMPARE(int(sch->a_DocDiags.size()), 2);
+        Diagram* probed = sch->a_DocDiags.front();
+        Diagram* other = sch->a_DocDiags.back();
+        QVERIFY(!probed->isSelected && !other->isSelected);
+        QCOMPARE(qucs_s::probe::frontDiagram(sch), probed);
+        QVERIFY(dynamic_cast<RectDiagram*>(probed));
+        const quint64 before = probed->serial();
+        sch->a_DocDiags.remove(probed);
+        void* memory = probed;
+        probed->~Diagram();
+        Diagram* again = new (memory) RectDiagram();
+        sch->a_DocDiags.push_back(again);
+        QCOMPARE(static_cast<void*>(again), memory);
+        QVERIFY(again->serial() != before);
+        QCOMPARE(qucs_s::probe::frontDiagram(sch), other);
+        closeAll();
+    }
+
     void probingAnUnnamedNet()
     {
         const QString sch = path("divider.sch");

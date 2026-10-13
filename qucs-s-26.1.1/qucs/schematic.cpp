@@ -137,6 +137,7 @@ Schematic::Schematic(QucsApp *App_, const QString &Name_) :
 
 Schematic::~Schematic()
 {
+    qucs_s::probe::forget(this);
     deleteAllElements();
     deleteSymbolPaintings();
     for (auto* pc : a_SymbolComps) delete pc;
