@@ -66,6 +66,7 @@ struct Band {
     double g1 = NaN, g2 = NaN, g3 = NaN, delta = NaN, dZ = 0;
     double strain = 0;                  // in the plane
     Expression userEc, userEv;          // (as given: of x and y)
+    std::vector<ValleySet> valleys;     // the electrons' valley sets (none: one, me's)
 };
 
 /// A point of integration: its domain, weight (nm, nm² or nm³ about an
@@ -74,6 +75,8 @@ struct Band {
 /// functions' values and gradients along and across the axis (1/nm).
 struct Point {
     int d = -1;
+    int t = -1;              // 1D: its triangle (-1 none found) and place in it
+    double rx = 0, ry = 0;
     double w = 0, a = 0;
     double pot[Carriers] = {0, 0, 0};
     int n = 0;
@@ -91,6 +94,9 @@ struct State {
     double pos = 0;
     bool bound = false;
     double mPar = 0, Ep = 0, nr = 0;
+    int valley = -1;     // an electron's valley set (-1: one valley, me's)
+    double g = 1;        // its valleys (each with spin's two)
+    bool top = false;    // its ladder's highest found
 };
 
 const char* const CarrierName[Carriers] = {"e", "hh", "lh"};
@@ -162,6 +168,15 @@ double excitonG(double u)
     const double f = (x - lo) / (hi - lo) * N;
     const int k = std::min(N - 1, int(f));
     return table[std::size_t(k)] + (f - k) * (table[std::size_t(k) + 1] - table[std::size_t(k)]);
+}
+
+/// An energy (J) as the log says it: in eV, meV or µeV - not volts.
+QString electronVolts(double joules)
+{
+    const double v = joules / 1.602176634e-19, a = std::abs(v);
+    if (a >= 1 || a == 0) return formatNumber(v, 5) + QStringLiteral(" eV");
+    if (a >= 1e-3) return formatNumber(v * 1e3, 4) + QStringLiteral(" meV");
+    return formatNumber(v * 1e6, 4) + QStringLiteral(" µeV");
 }
 
 /// E1(x) = ∫ e^(-t)/t dt from x to ∞ (x > 0): its series below 1, Lentz's
@@ -271,7 +286,15 @@ private:
     bool states(int c, int count, QString* error);
     /// ∫ ψa ψb f(domain, along the axis) over the points.
     double integral(const Eigen::VectorXd& a, const Eigen::VectorXd& b, const std::function<double(int, double)>& f) const;
+    /// Carrier \a c's mass in domain \a d along the axis or across it (an
+    /// electron's of the valley set being solved, a_set), and its band's
+    /// offset there (an electron's valley set's edge above the band's, eV).
     double mass(int c, int d, bool along) const;
+    double offset(int c, int d) const;
+    /// One ladder of carrier \a c's states (the valley set a_set's).
+    bool ladder(int c, int count, QString* error);
+    int a_sets = 0;    // the electrons' valley sets (0: one valley, me's)
+    int a_set = -1;    // the one solved
     /// |ψ|² in SI (1/m, 1/m², 1/m³) from the integration's units.
     double densityScale() const;
     /// The carriers in the states found, by degree of freedom (1/m³): each
@@ -281,6 +304,10 @@ private:
     void densities();
     Expression a_etaN, a_etaP;
     std::vector<double> a_density[2];   // electrons, holes
+    // A well's carriers per area (1/m²; along its line): each state's, by
+    // carrier, and the electrons' in each valley set.
+    std::vector<double> a_sheet[Carriers];
+    std::vector<double> a_sheetValley;
 
     bool a_1d = true;
     int a_axis = 1;   // 0 x, 1 y
@@ -321,7 +348,7 @@ private:
         // spontaneous emission (1/(m³ s J)) and its total over the window
         // (1/(m³ s)); the Kramers-Kronig index of the window's absorption.
         double field = 0, gamma = 0, Rsp = NaN;
-        std::vector<double> rsp, gspTE, gspTM, dnTE, dnTM;
+        std::vector<double> rsp, gspTE, gspTM, dnTE, dnTM, dnTEtail, dnTMtail;
     };
     /// A 1s exciton (1D wells): bound by Eb, λ across (its decay in the plane), γ
     /// drawing the electron and hole together along the axis (0: Bastard's),
@@ -364,9 +391,21 @@ private:
 double QuantumProblem::mass(int c, int d, bool along) const
 {
     const Band& b = a_bands[std::size_t(d)];
-    if (c == 0) return b.me;
+    if (c == 0) {
+        if (a_set >= 0 && std::size_t(a_set) < b.valleys.size()) {
+            const ValleySet& v = b.valleys[std::size_t(a_set)];
+            return along ? v.mz : v.md;
+        }
+        return b.me;
+    }
     if (c == 1) return along ? b.mhhZ : b.mhhP;
     return along ? b.mlhZ : b.mlhP;
+}
+
+double QuantumProblem::offset(int c, int d) const
+{
+    const Band& b = a_bands[std::size_t(d)];
+    return c == 0 && a_set >= 0 && std::size_t(a_set) < b.valleys.size() ? b.valleys[std::size_t(a_set)].dE : 0.0;
 }
 
 double QuantumProblem::densityScale() const
@@ -621,7 +660,15 @@ bool QuantumProblem::setup(QString* error)
         }
         if (!(b.me > 0) || !(b.mhhZ > 0) || !(b.mlhZ > 0) || !(b.mhhP > 0) || !(b.mlhP > 0))
             problem(tr("%1: its effective masses must be more than 0").arg(where));
+        // The electrons' valleys (Si, Ge): the feature's, else the material's.
+        QString valleys = mf ? mf->text(QStringLiteral("valleys")).trimmed() : QString();
+        if (valleys.isEmpty() && mat) valleys = materialProperty(*mat, QStringLiteral("valleys"), &constants).trimmed();
+        if (const std::optional<std::vector<ValleySet>> sets = valleySets(valleys, &why)) b.valleys = *sets;
+        else problem(tr("%1: its valleys: %2").arg(where, why));
     }
+    a_sets = 0;
+    for (const Band& b : a_bands) a_sets = std::max(a_sets, int(b.valleys.size()));
+    if (a_sets > 0 && !a_1d) problem(tr("%1: the electrons' valleys are a well's (1D): a wire's electrons one valley").arg(a_node->name()));
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
         return false;
@@ -748,6 +795,9 @@ bool QuantumProblem::prepare(QString* error)
                 if (located) {
                     ev.moveTo(t, rx, ry);
                     bandsAt(ev, d, pt.a, b);
+                    pt.t = t;
+                    pt.rx = rx;
+                    pt.ry = ry;
                 } else {
                     // Nowhere to evaluate an expression: the bands' constants and the field.
                     const Band& band = a_bands[std::size_t(d)];
@@ -931,6 +981,28 @@ double QuantumProblem::integral(const Eigen::VectorXd& a, const Eigen::VectorXd&
 
 bool QuantumProblem::states(int c, int count, QString* error)
 {
+    // The electrons' valley sets (Si, Ge) each a ladder of its own - its
+    // mass along the axis, its density of states' in the plane, its edge -,
+    // merged by energy.
+    if (c != 0 || a_sets == 0) return ladder(c, count, error);
+    std::vector<State> all;
+    for (int v = 0; v < a_sets; ++v) {
+        a_set = v;
+        const bool ok = ladder(c, count, error);
+        a_set = -1;
+        if (!ok) return false;
+        for (State& st : a_states[0]) {
+            st.valley = v;
+            all.push_back(std::move(st));
+        }
+    }
+    std::sort(all.begin(), all.end(), [](const State& a, const State& b) { return a.E < b.E; });
+    a_states[0] = std::move(all);
+    return true;
+}
+
+bool QuantumProblem::ladder(int c, int count, QString* error)
+{
     a_states[c].clear();
     if (!a_on[c]) return true;
     const int n = a_neq;
@@ -940,13 +1012,14 @@ bool QuantumProblem::states(int c, int count, QString* error)
     double lowest = Inf();
     for (const Point& pt : a_points) {
         const double along = HB2M / mass(c, pt.d, true), across = HB2M / mass(c, pt.d, false);
-        lowest = std::min(lowest, pt.pot[c]);
+        const double pot = pt.pot[c] + offset(c, pt.d);
+        lowest = std::min(lowest, pot);
         for (int i = 0; i < pt.n; ++i) {
             if (pt.eq[i] < 0) continue;
             for (int j = 0; j < pt.n; ++j) {
                 if (pt.eq[j] < 0) continue;
                 const double m = pt.w * pt.N[i] * pt.N[j];
-                tk.emplace_back(pt.eq[i], pt.eq[j], pt.w * (along * pt.ga[i] * pt.ga[j] + across * pt.gc[i] * pt.gc[j]) + pt.pot[c] * m);
+                tk.emplace_back(pt.eq[i], pt.eq[j], pt.w * (along * pt.ga[i] * pt.ga[j] + across * pt.gc[i] * pt.gc[j]) + pot * m);
                 tm.emplace_back(pt.eq[i], pt.eq[j], m);
             }
         }
@@ -1033,9 +1106,23 @@ bool QuantumProblem::states(int c, int count, QString* error)
             const double v = a_bands[std::size_t(d)].nr;
             return std::isfinite(v) ? v : 3.5;
         });
+        if (a_set >= 0) {
+            // Its valleys: where they are given (a barrier of one valley, me's,
+            // has none of its own), averaged over |ψ|² there.
+            auto has = [&](int d) { return std::size_t(a_set) < a_bands[std::size_t(d)].valleys.size(); };
+            const double in = integral(x, x, [&](int d, double) { return has(d) ? 1.0 : 0.0; });
+            if (in > 1e-12) s.g = integral(x, x, [&](int d, double) { return has(d) ? a_bands[std::size_t(d)].valleys[std::size_t(a_set)].g : 0.0; }) / in;
+            else
+                for (const Band& b : a_bands)
+                    if (std::size_t(a_set) < b.valleys.size()) {
+                        s.g = b.valleys[std::size_t(a_set)].g;
+                        break;
+                    }
+        }
         a_states[c].push_back(std::move(s));
     }
     std::sort(a_states[c].begin(), a_states[c].end(), [c](const State& a, const State& b) { return c == 0 ? a.E < b.E : a.E > b.E; });
+    if (!a_states[c].empty()) a_states[c].back().top = true;
     return true;
 }
 
@@ -1079,7 +1166,11 @@ int QuantumProblem::solveModes(const SolveOptions& options, int count, double gu
         if (!a_on[c]) continue;
         int bound = 0;
         for (const State& s : a_states[c]) bound += s.bound ? 1 : 0;
-        found << tr("%1 %2 (%3 bound)").arg(a_states[c].size()).arg(QLatin1String(CarrierName[c])).arg(bound);
+        found << tr("%1 %2 (%3 bound%4)")
+                     .arg(a_states[c].size())
+                     .arg(QLatin1String(CarrierName[c]))
+                     .arg(bound)
+                     .arg(c == 0 && a_sets > 0 ? tr("; in %1 valley sets, each a ladder of its own").arg(a_sets) : QString());
     }
     a_s.log << tr("%1: %2 states, %3 degrees of freedom%4")
                    .arg(a_node->name(), found.join(QLatin1String(", ")))
@@ -1097,6 +1188,8 @@ void QuantumProblem::densities()
     const Space& sp = *field().space;
     const int nd = sp.size();
     for (auto& v : a_density) v.assign(std::size_t(nd), 0.0);
+    for (int c = 0; c < Carriers; ++c) a_sheet[c].clear();
+    a_sheetValley.clear();
     if (!a_etaN.isValid() && !a_etaP.isValid()) return;
     const Mesh& mesh = a_s.mesh();
     const Field& f = field();
@@ -1119,8 +1212,8 @@ void QuantumProblem::densities()
     };
     // Each state's carriers per |ψ|² (1/m³ for |ψ|² in SI) at η = (the Fermi
     // level - the state) / kT: a well's states free in the plane (m kT/πħ²
-    // ln(1 + e^η)), a wire's along z (√(2 m kT/πħ²) ℱ-1/2(η)), a dot's none
-    // (2 f(η)).
+    // ln(1 + e^η), each valley's: g of them), a wire's along z (√(2 m kT/πħ²)
+    // ℱ-1/2(η)), a dot's none (2 f(η)).
     auto filled = [&](double mPar, double eta) {
         if (a_1d) return mPar * M0 * kT / (M_PI * Hbar * Hbar) * softplus(eta);
         if (a_s.axisymmetric()) return 2 * fermi(-eta);
@@ -1161,13 +1254,42 @@ void QuantumProblem::densities()
                     const State& st = a_states[c][j];
                     const double psi = psiAt(st, i);
                     const double eta = (electrons ? Ef - st.E : st.E - Ef) * Q / kT;
-                    const double add = psi * psi * scale * filled(st.mPar, eta);
+                    const double add = psi * psi * scale * st.g * filled(st.mPar, eta);
                     sum += add;
                     total[c] += add;
-                    if (j + 1 == a_states[c].size()) highest[c] += add;
+                    if (st.top) highest[c] += add;   // (each ladder's highest: each valley set's)
                 }
                 a_density[electrons ? 0 : 1][std::size_t(i)] += sum;
             }
+        }
+    }
+    // A well's carriers per area: each state's along its line, its |ψ|²
+    // filled to the Fermi level at each point.
+    if (a_1d) {
+        for (int c = 0; c < Carriers; ++c)
+            if (a_on[c] && (c == 0 ? a_etaN : a_etaP).isValid()) a_sheet[c].assign(a_states[c].size(), 0.0);
+        for (const Point& pt : a_points) {
+            if (pt.t < 0) continue;
+            ev.moveTo(pt.t, pt.rx, pt.ry);
+            auto eV = [&](const Expression& e) {
+                const double v = ev.eval(e);
+                return e.dim() == Dim::of(2, 1, -2) ? v / Q : v;
+            };
+            for (int c = 0; c < Carriers; ++c) {
+                if (a_sheet[c].empty()) continue;
+                const double Ef = c == 0 ? pt.pot[0] + eV(a_etaN) : std::max(-pt.pot[1], -pt.pot[2]) - eV(a_etaP);
+                if (!std::isfinite(Ef)) continue;
+                for (std::size_t j = 0; j < a_states[c].size(); ++j) {
+                    const State& st = a_states[c][j];
+                    const double psi = at(pt, st.x), eta = (c == 0 ? Ef - st.E : st.E - Ef) * Q / kT;
+                    a_sheet[c][j] += pt.w * psi * psi * st.g * filled(st.mPar, eta);
+                }
+            }
+        }
+        if (a_sets > 0 && !a_sheet[0].empty()) {
+            a_sheetValley.assign(std::size_t(a_sets), 0.0);
+            for (std::size_t j = 0; j < a_states[0].size(); ++j)
+                if (a_states[0][j].valley >= 0) a_sheetValley[std::size_t(a_states[0][j].valley)] += a_sheet[0][j];
         }
     }
     for (int c = 0; c < Carriers; ++c)
@@ -1644,6 +1766,10 @@ QuantumProblem::Exciton QuantumProblem::exciton(const std::function<double(const
 
 int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
 {
+    if (a_sets > 0) {
+        *error = tr("%1: its electrons in valleys (Si, Ge: an indirect gap) have no optical spectrum here").arg(a_node->name());
+        return -1;
+    }
     if (solveModes(o.solve, std::max(1, o.states), 0, error) < 0) return -1;
     if (!a_on[0] || (!a_on[1] && !a_on[2])) {
         *error = tr("%1: a spectrum wants electrons and holes").arg(a_node->name());
@@ -1712,6 +1838,23 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // The k·p valence bands: in-plane k from 0 to what the photons and the
     // holes' occupation reach - the electrons' parabola past the highest
     // photon (by 20 broadenings and 10 kT), a heavy mass's 0.15 eV and 15 kT.
+    // The continuum "bound": the barriers' own gap where the line ends (a
+    // field moves both edges alike), and the bound steps' fade above it -
+    // cos² over o.fade, into the bulk absorption: far enough above, the
+    // absorption the bulk's, the same in any field (Δn between fields
+    // converges as the window widens).
+    double barrierGap = NaN;
+    if (o.continuum == 1 && wells && !a_points.empty()) {
+        const Point& end = *std::min_element(a_points.begin(), a_points.end(), [](const Point& a, const Point& b) { return a.a < b.a; });
+        barrierGap = (end.pot[0] - std::max(-end.pot[1], -end.pot[2])) * Q;
+    }
+    const bool fading = std::isfinite(barrierGap);
+    auto fadeAt = [&](double x) {
+        if (!fading || x <= barrierGap) return 1.0;
+        if (!(o.fade > 0) || x >= barrierGap + o.fade) return 0.0;
+        const double c = std::cos(0.5 * M_PI * (x - barrierGap) / o.fade);
+        return c * c;
+    };
     const bool kp = a_valence > 0;
     // A k·p valence state's in-plane mass near k = 0 (m0: E = E0 - ħ²k²/2m;
     // over the directions, its inverse's mean).
@@ -1734,7 +1877,9 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         const int count = a_valence / 2 * std::max(1, o.states);
         if (!kpBands(count, 0, 1, error)) return -1;
         if (!a_states[0].empty() && !a_kps.empty() && !a_kps[0].E.empty() && !a_kps[0].E[0].empty()) gap = (a_states[0].front().E - a_kps[0].E[0][0]) * Q;
-        const double reach = std::max(0.05 * Q, (std::isfinite(gap) ? topE - gap : 0.0) + 20 * gamma + 10 * kT);
+        double reach = std::max(0.05 * Q, (std::isfinite(gap) ? topE - gap : 0.0) + 20 * gamma + 10 * kT);
+        // (Fading, past the fade's end: the steps' tail beyond the grid none.)
+        if (fading && std::isfinite(gap)) reach = std::max(reach, barrierGap + o.fade + 20 * gamma - gap);
         const double ke = std::sqrt(2 * me * M0 * reach) / Hbar, kh = std::sqrt(2 * 0.5 * M0 * (0.15 * Q + 15 * kT)) / Hbar;
         if (!kpBands(count, std::max(ke, kh), o.kpoints > 1 ? o.kpoints : 121, error)) return -1;
         const KpBands& b0 = a_kps.front();
@@ -1819,6 +1964,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     struct Stretch {
         double lo = 0, hi = 0;
         double edge[Carriers] = {Inf(), -Inf(), -Inf()};
+        bool walled = false;   // a barrier one side or both: a well (not a slab of one gap)
+        double size = 0;       // its thickness (m)
+        int domain = -1;       // its middle's
+        double gap = NaN;      // its own gap there (J)
     };
     std::vector<Stretch> stretches;
     if (o.continuum == 1 && wells) {
@@ -1837,6 +1986,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             Stretch st;
             st.lo = along[i]->a;
             st.hi = along[j]->a;
+            for (std::size_t k = i; k <= j; ++k) st.size += along[k]->w * 1e-9;
+            const Point* middle = along[(i + j) / 2];
+            st.domain = middle->d;
+            st.gap = (middle->pot[0] - std::max(-middle->pot[1], -middle->pot[2])) * Q;
             int sides = 0;
             for (const Point* side : {i > 0 ? along[i - 1] : nullptr, j + 1 < along.size() ? along[j + 1] : nullptr}) {
                 if (!side) continue;
@@ -1844,6 +1997,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 st.edge[0] = std::min(st.edge[0], side->pot[0]);
                 for (int c = 1; c < Carriers; ++c) st.edge[c] = std::max(st.edge[c], -side->pot[c]);
             }
+            st.walled = sides > 0;
             // (No barrier either side - a slab of one gap: nothing confined.)
             if (sides == 0) {
                 st.edge[0] = -Inf();
@@ -1971,23 +2125,41 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         // ∫_a^b L(delta - ε) dε, the line's shape L.
         return cdf(b - delta) - cdf(a - delta);
     };
-    // The barriers' bulk absorption (the continuum asked for so): their
-    // gap where the line ends, the 3D densities of states of their heavy
-    // and light holes with their electrons, over the line's length - per
-    // the wells' thickness, as the states' continuum is.
+    // The bulk absorption (continuum bound), per the wells' thickness as the
+    // states' was: the barriers' own over their thickness - the line less
+    // its walled wells -, and the wells' own over theirs, fading in as their
+    // bound steps fade out (the first well's material for all); a slab of one
+    // gap (no barrier, no well) its bulk whole. Each the 3D densities of
+    // states of its heavy and light holes with its electrons.
     struct Bulk {
-        double Eg = NaN, mrHH = 0, mrLH = 0, Ep = 0, nr = 3.5;
-    } bulk;
-    if (o.continuum == 1 && !a_points.empty()) {
+        double Eg = NaN, mrHH = 0, mrLH = 0, Ep = 0, nr = 3.5, weight = 0;
+        bool fadesIn = false;
+    };
+    std::vector<Bulk> bulks;
+    if (fading) {
+        auto of = [&](const Band& b, double gap, double weight, bool fadesIn) {
+            Bulk k;
+            const double mhh = std::cbrt(b.mhhZ * b.mhhP * b.mhhP), mlh = std::cbrt(b.mlhZ * b.mlhP * b.mlhP);
+            k.Eg = gap;
+            k.mrHH = 1 / (1 / b.me + 1 / mhh) * M0;
+            k.mrLH = 1 / (1 / b.me + 1 / mlh) * M0;
+            k.Ep = b.Ep * Q;
+            k.nr = o.index > 0 ? o.index : (std::isfinite(b.nr) ? b.nr : 3.5);
+            k.weight = weight;
+            k.fadesIn = fadesIn;
+            return k;
+        };
         const Point& end = *std::min_element(a_points.begin(), a_points.end(), [](const Point& a, const Point& b) { return a.a < b.a; });
-        const Band& b = a_bands[std::size_t(std::max(0, end.d))];
-        const double mhh = std::cbrt(b.mhhZ * b.mhhP * b.mhhP), mlh = std::cbrt(b.mlhZ * b.mlhP * b.mlhP);
-        // (Its own gap there: a field moves both edges alike.)
-        bulk.Eg = (end.pot[0] - std::max(-end.pot[1], -end.pot[2])) * Q;
-        bulk.mrHH = 1 / (1 / b.me + 1 / mhh) * M0;
-        bulk.mrLH = 1 / (1 / b.me + 1 / mlh) * M0;
-        bulk.Ep = b.Ep * Q;
-        bulk.nr = o.index > 0 ? o.index : (std::isfinite(b.nr) ? b.nr : 3.5);
+        double walled = 0;
+        const Stretch* well = nullptr;
+        for (const Stretch& st : stretches)
+            if (st.walled) {
+                walled += st.size;
+                if (!well) well = &st;
+            }
+        bulks.push_back(of(a_bands[std::size_t(std::max(0, end.d))], barrierGap, (a_L - walled) / a_activeSize, false));
+        if (well && well->domain >= 0 && std::isfinite(well->gap))
+            bulks.push_back(of(a_bands[std::size_t(well->domain)], well->gap, walled / a_activeSize, true));
     }
     // The k·p bands' transitions: each electron state with each valence
     // state at each k of each direction - its energy (J), its TE and TM
@@ -2144,9 +2316,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                         const double eps = mix(pr.eps) - pr.eps[0];
                         S = eps > 0 ? 2 / (1 + std::exp(-2 * M_PI * std::sqrt(pr.Eb / 4 / eps))) : 2.0;
                     }
-                    const double Ec = mix(pr.ec), Ev = mix(pr.ev);
-                    const double occ = (a_spec.carriers ? fermi((Ev - a_spec.Fv) / kT) - fermi((Ec - a_spec.Fc) / kT) : 1.0) * S;
-                    const double emi = a_spec.carriers ? fermi((Ec - a_spec.Fc) / kT) * (1 - fermi((Ev - a_spec.Fv) / kT)) : 0.0;
+                    const double Ec = mix(pr.ec), Ev = mix(pr.ev), f = fadeAt(mix(pr.eps));
+                    if (f == 0) continue;
+                    const double occ = (a_spec.carriers ? fermi((Ev - a_spec.Fv) / kT) - fermi((Ec - a_spec.Fc) / kT) : 1.0) * S * f;
+                    const double emi = (a_spec.carriers ? fermi((Ec - a_spec.Fc) / kT) * (1 - fermi((Ev - a_spec.Fv) / kT)) : 0.0) * f;
                     const double wte = mix(pr.wte), wtm = mix(pr.wtm);
                     te += C * wte * occ * l;
                     tm += C * wtm * occ * l;
@@ -2159,7 +2332,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             const std::size_t last = pr.eps.size() - 1;
             if (gamma > 0 && last >= 1 && pr.eps[last] - pr.eps[last - 1] > 1e-9 * Q) {
                 const double mu = (ks[last] * ks[last] - ks[last - 1] * ks[last - 1]) / (4 * M_PI);
-                const double l = mu / (pr.eps[last] - pr.eps[last - 1]) * (1 - cdf(pr.eps[last] - E));
+                const double l = mu / (pr.eps[last] - pr.eps[last - 1]) * (1 - cdf(pr.eps[last] - E)) * fadeAt(pr.eps[last]);
                 const double Ec = pr.ec[last], Ev = pr.ev[last];
                 const double occ = a_spec.carriers ? fermi((Ev - a_spec.Fv) / kT) - fermi((Ec - a_spec.Fc) / kT) : 1.0;
                 const double emi = a_spec.carriers ? fermi((Ec - a_spec.Fc) / kT) * (1 - fermi((Ev - a_spec.Fv) / kT)) : 0.0;
@@ -2183,18 +2356,24 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             if (wells) {
                 double sum = 0, sumSp = 0;
                 const bool enhanced = a_spec.excitons && t.Eb > 0;
-                if (gamma > 0 && !a_spec.carriers && !enhanced) sum = cdf(delta);   // (a step's, broadened: exact)
+                // (Fading: the step's cells past the fade's end, each cell's
+                // part its transition energy's fadeAt.)
+                const double reachT = fading ? std::max(top, barrierGap + o.fade + 20 * gamma - t.E) : top;
+                const int cellsT = fading ? std::clamp(int(std::ceil(reachT / step)), 50, 40000) : cells;
+                if (gamma > 0 && !a_spec.carriers && !enhanced && !fading) sum = cdf(delta);   // (a step's, broadened: exact)
                 else if (gamma > 0) {
-                    for (int k = 0; k < cells; ++k) {
-                        const double a = top * k / cells, b = top * (k + 1) / cells, l = line(a, b, delta);
-                        sum += occupation(t, (a + b) / 2) * sommerfeld(t, (a + b) / 2) * l;
-                        sumSp += emission(t, (a + b) / 2) * l;
+                    for (int k = 0; k < cellsT; ++k) {
+                        const double a = reachT * k / cellsT, b = reachT * (k + 1) / cellsT, l = line(a, b, delta), f = fadeAt(t.E + (a + b) / 2);
+                        if (f == 0) continue;
+                        sum += occupation(t, (a + b) / 2) * sommerfeld(t, (a + b) / 2) * l * f;
+                        sumSp += emission(t, (a + b) / 2) * l * f;
                     }
-                    sum += occupation(t, top) * sommerfeld(t, top) * (1 - cdf(top - delta));
-                    sumSp += emission(t, top) * (1 - cdf(top - delta));
+                    const double f = fadeAt(t.E + reachT);
+                    sum += occupation(t, reachT) * sommerfeld(t, reachT) * (1 - cdf(reachT - delta)) * f;
+                    sumSp += emission(t, reachT) * (1 - cdf(reachT - delta)) * f;
                 } else if (delta >= 0) {
-                    sum = occupation(t, delta);
-                    sumSp = emission(t, delta);
+                    sum = occupation(t, delta) * fadeAt(E);
+                    sumSp = emission(t, delta) * fadeAt(E);
                 }
                 dos = t.mr / (M_PI * Hbar * Hbar) * sum;
                 dosSp = t.mr / (M_PI * Hbar * Hbar) * sumSp;
@@ -2224,21 +2403,23 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             ste += C * t.te * dosSp;
             stm += C * t.tm * dosSp;
         }
-        if (std::isfinite(bulk.Eg)) {
-            // ∫ √ε L(δ - ε) dε in cells; (1/2π²)(2 m_r/ħ²)^(3/2) its density.
+        for (const Bulk& bulk : bulks) {
+            // ∫ √ε L(δ - ε) dε in cells (the wells' own as their steps fade,
+            // 1 - fadeAt); (1/2π²)(2 m_r/ħ²)^(3/2) its density.
             const double delta = E - bulk.Eg, reach = std::max(top, delta + top);
             const int n = std::clamp(int(std::ceil(reach / step)), 50, 40000);
+            auto in = [&](double eps) { return bulk.fadesIn ? 1 - fadeAt(bulk.Eg + eps) : 1.0; };
             double sum = 0;
             if (gamma > 0) {
                 for (int k = 0; k < n; ++k) {
                     const double a = reach * k / n, b = reach * (k + 1) / n;
-                    sum += std::sqrt((a + b) / 2) * line(a, b, delta);
+                    sum += std::sqrt((a + b) / 2) * line(a, b, delta) * in((a + b) / 2);
                 }
-                sum += std::sqrt(reach) * (1 - cdf(reach - delta));
-            } else if (delta > 0) sum = std::sqrt(delta);
+                sum += std::sqrt(reach) * (1 - cdf(reach - delta)) * in(reach);
+            } else if (delta > 0) sum = std::sqrt(delta) * in(delta);
             double rho = 0;
             for (double mr : {bulk.mrHH, bulk.mrLH}) rho += std::pow(2 * mr / (Hbar * Hbar), 1.5) / (2 * M_PI * M_PI) * sum;
-            const double C = M_PI * Q * Q * Hbar / (bulk.nr * C0 * Eps0 * M0 * M0 * E) * (M0 * bulk.Ep / 6) * rho * a_L / a_activeSize;
+            const double C = M_PI * Q * Q * Hbar / (bulk.nr * C0 * Eps0 * M0 * M0 * E) * (M0 * bulk.Ep / 6) * rho * bulk.weight;
             te += C;
             tm += C;
         }
@@ -2299,24 +2480,50 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             a_spec.dnTE[k] = kk(aTE, a_spec.E[k], a_spec.te[k]);
             a_spec.dnTM[k] = kk(aTM, a_spec.E[k], a_spec.tm[k]);
         }
+        // What the absorption above the window would add were it its top's
+        // all the way: (c ħ/π) α_top ln((top + E)/(top - E))/2E - between two
+        // fields their difference what Δn leaves out.
+        a_spec.dnTEtail.assign(a_spec.E.size(), 0.0);
+        a_spec.dnTMtail.assign(a_spec.E.size(), 0.0);
+        for (std::size_t k = 0; k < a_spec.E.size(); ++k) {
+            const double E = a_spec.E[k];
+            if (!(E > 0) || !(hi - E > 1e-12 * Q)) continue;
+            const double w = C0 * Hbar / M_PI * std::log((hi + E) / (hi - E)) / (2 * E);
+            a_spec.dnTEtail[k] = w * aTE.back();
+            a_spec.dnTMtail[k] = w * aTM.back();
+        }
         double most = 0;
         for (std::size_t k = 0; k < x.size(); ++k) most = std::max({most, std::abs(aTE[k]), std::abs(aTM[k])});
         const double atTop = std::max(std::abs(aTE.back()), std::abs(aTM.back()));
-        if (most > 0 && atTop > 0.05 * most)
-            a_s.log << tr("Warning: %1: the Kramers-Kronig index (qw.dnTE, qw.dnTM) of the absorption between %2 and %3: the window's "
-                          "top still absorbs %4 % of its most - what changes above it is left out, and near the window's ends the "
-                          "index is uncertain: widen the energies")
-                           .arg(a_node->name(), formatQuantity(lo / Q, Dim::voltage()), formatQuantity(hi / Q, Dim::voltage()))
-                           .arg(qRound(100 * atTop / most));
+        const std::size_t first = order.front();
+        const double tail = std::max(std::abs(a_spec.dnTEtail[first]), std::abs(a_spec.dnTMtail[first]));
+        if (most > 0 && atTop > 0.05 * most) {
+            if (fading && hi >= barrierGap + o.fade)
+                // (Above the barriers' gap and the fade the bulk's alone: the
+                // same in any field.)
+                a_s.log << tr("%1: the Kramers-Kronig index (qw.dnTE, qw.dnTM) of the absorption between %2 and %3: its top the bulk's "
+                              "alone (above the barriers' gap and the fade), the same in any field - Δn between fields leaves none of "
+                              "it out; the index itself what lies above would raise by some %4 at %2 (qw.dnTEtail)")
+                               .arg(a_node->name(), electronVolts(lo), electronVolts(hi), formatNumber(tail, 3));
+            else
+                a_s.log << tr("Warning: %1: the Kramers-Kronig index (qw.dnTE, qw.dnTM) of the absorption between %2 and %3: the window's "
+                              "top still absorbs %4 % of its most - what changes above it is left out (were it its top's all the way, "
+                              "some %5 at %2: qw.dnTEtail, qw.dnTMtail; between fields their difference what Δn misses), and near "
+                              "the window's ends the index is uncertain: widen the energies%6")
+                               .arg(a_node->name(), electronVolts(lo), electronVolts(hi))
+                               .arg(qRound(100 * atTop / most))
+                               .arg(formatNumber(tail, 3))
+                               .arg(fading ? tr(" past the barriers' gap and the fade, %1").arg(electronVolts(barrierGap + o.fade)) : QString());
+        }
     }
     a_s.log << tr("%1: a spectrum of %2 transitions at %3 photon energies, %4%5")
                    .arg(a_node->name())
                    .arg(transitions.size())
                    .arg(o.energies.size())
-                   .arg(a_spec.carriers ? tr("the quasi-Fermi levels %1 apart").arg(formatQuantity((a_spec.Fc - a_spec.Fv) / Q, Dim::voltage()))
+                   .arg(a_spec.carriers ? tr("the quasi-Fermi levels %1 apart").arg(electronVolts(a_spec.Fc - a_spec.Fv))
                                         : tr("no carriers"))
                    .arg(a_spec.excitons && std::isfinite(a_spec.Eb)
-                            ? tr("; the e1-hh1 exciton bound by %1, %2 across").arg(formatQuantity(a_spec.Eb / Q, Dim::voltage()),
+                            ? tr("; the e1-hh1 exciton bound by %1, %2 across").arg(electronVolts(a_spec.Eb),
                                                                                   formatQuantity(a_spec.radius, Dim::length()))
                             : QString());
     selectMode(0);
@@ -2366,29 +2573,56 @@ void QuantumProblem::setGlobals()
         const QString n = QLatin1String(CarrierName[c]);
         for (std::size_t k = 0; k < a_states[c].size(); ++k)
             a_s.setGlobal(p + QStringLiteral("E%1%2").arg(n).arg(k + 1), a_states[c][k].E * Q, energy,
-                          tr("the %1 state %2's energy").arg(carrier[c]).arg(k + 1));
+                          tr("the %1 state %2's energy").arg(carrier[c]).arg(k + 1), QStringLiteral("eV"));
         const bool has = a_selected >= 0 && a_selected < int(a_states[c].size());
         const State* s = has ? &a_states[c][std::size_t(a_selected)] : nullptr;
-        a_s.setGlobal(p + QStringLiteral("E_") + n, s ? s->E * Q : NaN, energy, tr("the %1 state's energy (the one selected)").arg(carrier[c]));
+        a_s.setGlobal(p + QStringLiteral("E_") + n, s ? s->E * Q : NaN, energy, tr("the %1 state's energy (the one selected)").arg(carrier[c]), QStringLiteral("eV"));
         a_s.setGlobal(p + QStringLiteral("pos_") + n, s ? s->pos : NaN, Dim::length(),
                       tr("where the %1 state is along the growth axis: its mean").arg(carrier[c]));
         a_s.setGlobal(p + QStringLiteral("bound_") + n, s ? (s->bound ? 1.0 : 0.0) : NaN, Dim(),
                       tr("1 when the %1 state is bound (inside the barriers' band edge)").arg(carrier[c]));
     }
     a_s.setGlobal(p + QStringLiteral("state"), a_selected + 1, Dim(), tr("the state's number, from the band edge"));
+    // The valley set of each electron state; the carriers per area in each
+    // state, in all and in each valley set (a well's, filled to the Fermi
+    // levels given).
+    if (a_sets > 0)
+        for (std::size_t k = 0; k < a_states[0].size(); ++k)
+            a_s.setGlobal(p + QStringLiteral("Ve%1").arg(k + 1), a_states[0][k].valley + 1, Dim(),
+                          tr("the electron state %1's valley set (from 1, as given)").arg(k + 1));
+    const Dim sheet = Dim::of(-2);
+    for (int c = 0; c < Carriers; ++c) {
+        if (a_sheet[c].empty()) continue;
+        double all = 0;
+        for (std::size_t k = 0; k < a_sheet[c].size(); ++k) {
+            a_s.setGlobal(p + QStringLiteral("N%1%2").arg(QLatin1String(CarrierName[c])).arg(k + 1), a_sheet[c][k], sheet,
+                          tr("the %1 state %2's carriers per area").arg(carrier[c]).arg(k + 1), QStringLiteral("1/cm^2"));
+            all += a_sheet[c][k];
+        }
+        if (c == 0) a_s.setGlobal(p + QStringLiteral("Ns"), all, sheet, tr("the electrons per area in the states found"), QStringLiteral("1/cm^2"));
+    }
+    if (!a_sheet[1].empty() || !a_sheet[2].empty()) {
+        double all = 0;
+        for (int c = 1; c < Carriers; ++c)
+            for (double v : a_sheet[c]) all += v;
+        a_s.setGlobal(p + QStringLiteral("Ps"), all, sheet, tr("the holes per area in the states found"), QStringLiteral("1/cm^2"));
+    }
+    for (std::size_t v = 0; v < a_sheetValley.size(); ++v)
+        a_s.setGlobal(p + QStringLiteral("Nv%1").arg(v + 1), a_sheetValley[v], sheet, tr("the electrons per area in valley set %1").arg(v + 1),
+                      QStringLiteral("1/cm^2"));
     // The gap the wells make, and the transitions with their overlaps.
     if (a_on[0] && !a_states[0].empty() && ((a_on[1] && !a_states[1].empty()) || (a_on[2] && !a_states[2].empty()))) {
         double top = -Inf();
         for (int c = 1; c < Carriers; ++c)
             if (a_on[c] && !a_states[c].empty()) top = std::max(top, a_states[c].front().E);
         const double gap = (a_states[0].front().E - top) * Q;
-        a_s.setGlobal(p + QStringLiteral("Eg"), gap, energy, tr("the effective gap: the first electron state to the highest hole state"));
+        a_s.setGlobal(p + QStringLiteral("Eg"), gap, energy, tr("the effective gap: the first electron state to the highest hole state"), QStringLiteral("eV"));
         a_s.setGlobal(p + QStringLiteral("lambda"), gap > 0 ? 2 * M_PI * Hbar * C0 / gap : NaN, Dim::length(),
                       tr("the wavelength of the effective gap: hc/Eg"));
         if (a_on[1]) {
             a_s.setGlobal(p + QStringLiteral("Edir"), a_directE * Q, energy,
                           tr("the direct transition: the lowest electron to heavy hole one of at least half the largest overlap (a well's "
-                             "own e1-hh1, where a field puts the stack's lowest and highest states in different wells)"));
+                             "own e1-hh1, where a field puts the stack's lowest and highest states in different wells)"), QStringLiteral("eV"));
             a_s.setGlobal(p + QStringLiteral("Odir"), a_directO, Dim(), tr("the direct transition's overlap"));
         }
         const std::size_t most = 4;
@@ -2398,7 +2632,7 @@ void QuantumProblem::setGlobals()
                 for (std::size_t j = 0; j < std::min(most, a_states[c].size()); ++j) {
                     const QString name = QStringLiteral("e%1%2%3").arg(i + 1).arg(QLatin1String(CarrierName[c])).arg(j + 1);
                     a_s.setGlobal(p + QStringLiteral("E") + name, (a_states[0][i].E - a_states[c][j].E) * Q, energy,
-                                  tr("the transition's energy, e%1 to %2%3").arg(i + 1).arg(QLatin1String(CarrierName[c])).arg(j + 1));
+                                  tr("the transition's energy, e%1 to %2%3").arg(i + 1).arg(QLatin1String(CarrierName[c])).arg(j + 1), QStringLiteral("eV"));
                     const bool known = i < a_overlap[c].size() && j < a_overlap[c][i].size();
                     a_s.setGlobal(p + QStringLiteral("O") + name, known ? a_overlap[c][i][j] : NaN, Dim(),
                                   tr("the overlap |<e%1|%2%3>|²").arg(i + 1).arg(QLatin1String(CarrierName[c])).arg(j + 1));
@@ -2416,7 +2650,7 @@ void QuantumProblem::setGlobals()
             double E = 0;
             for (const KpBands& b : a_kps) E += b.weight * (j < b.E[k].size() ? b.E[k][j] : NaN);
             a_s.setGlobal(p + QStringLiteral("Ev%1").arg(j + 1), E * Q, energy,
-                          tr("the valence state %1's energy (k·p; from the highest, Kramers' pairs both)").arg(j + 1));
+                          tr("the valence state %1's energy (k·p; from the highest, Kramers' pairs both)").arg(j + 1), QStringLiteral("eV"));
         }
     }
     if (a_specSelected >= 0 && a_specSelected < int(a_spec.E.size())) {
@@ -2426,7 +2660,7 @@ void QuantumProblem::setGlobals()
         a_s.setGlobal(p + QStringLiteral("alphaTM"), a_spec.tm[k], perMetre, tr("absorption coefficient of the wells, TM (along the growth axis)"));
         a_s.setGlobal(p + QStringLiteral("gTE"), -a_spec.te[k], perMetre, tr("material gain of the wells, TE"));
         a_s.setGlobal(p + QStringLiteral("gTM"), -a_spec.tm[k], perMetre, tr("material gain of the wells, TM"));
-        a_s.setGlobal(p + QStringLiteral("Ephoton"), a_spec.E[k], energy, tr("the photon's energy"));
+        a_s.setGlobal(p + QStringLiteral("Ephoton"), a_spec.E[k], energy, tr("the photon's energy"), QStringLiteral("eV"));
         a_s.setGlobal(p + QStringLiteral("Lw"), a_spec.size, a_1d ? Dim::length() : Dim::of(2),
                       a_1d ? tr("the wells' thickness: the domains of the smallest gap") : tr("the wires' area: the domains of the smallest gap"));
         if (k < a_spec.dnTE.size()) {
@@ -2434,9 +2668,13 @@ void QuantumProblem::setGlobals()
                           tr("the wells' index the absorption in the window makes, TE (Kramers-Kronig): between two fields, "
                              "electrorefraction's change"));
             a_s.setGlobal(p + QStringLiteral("dnTM"), a_spec.dnTM[k], Dim(), tr("the wells' index the absorption in the window makes, TM"));
+            a_s.setGlobal(p + QStringLiteral("dnTEtail"), a_spec.dnTEtail[k], Dim(),
+                          tr("what the absorption above the window would add to qw.dnTE were it its top's all the way: between two "
+                             "fields their difference what Δn leaves out"));
+            a_s.setGlobal(p + QStringLiteral("dnTMtail"), a_spec.dnTMtail[k], Dim(), tr("the same of qw.dnTM"));
         }
         a_s.setGlobal(p + QStringLiteral("Fw"), a_spec.field, Dim::of(1, 1, -3, -1), tr("the field across the wells (their band edge's slope)"));
-        a_s.setGlobal(p + QStringLiteral("linewidth"), a_spec.gamma, energy, tr("the broadening: its half width at half maximum"));
+        a_s.setGlobal(p + QStringLiteral("linewidth"), a_spec.gamma, energy, tr("the broadening: its half width at half maximum"), QStringLiteral("eV"));
         if (k < a_spec.rsp.size()) {
             a_s.setGlobal(p + QStringLiteral("rsp"), a_spec.rsp[k], Dim::of(-5, -1, 1), tr("spontaneous emission per volume of the wells, time and photon energy"),
                           QStringLiteral("1/(s*cm^3*eV)"));
@@ -2447,17 +2685,17 @@ void QuantumProblem::setGlobals()
             a_s.setGlobal(p + QStringLiteral("gspTM"), a_spec.gspTM[k], perMetre, tr("the spontaneous emission coefficient, TM"));
         }
         if (a_spec.excitons) {
-            a_s.setGlobal(p + QStringLiteral("Eb"), a_spec.Eb, energy, tr("the e1-hh1 exciton's binding energy (1s, variational)"));
-            a_s.setGlobal(p + QStringLiteral("Ex"), a_spec.Ex, energy, tr("the e1-hh1 exciton's line: the transition less its binding"));
+            a_s.setGlobal(p + QStringLiteral("Eb"), a_spec.Eb, energy, tr("the e1-hh1 exciton's binding energy (1s, variational)"), QStringLiteral("eV"));
+            a_s.setGlobal(p + QStringLiteral("Ex"), a_spec.Ex, energy, tr("the e1-hh1 exciton's line: the transition less its binding"), QStringLiteral("eV"));
             a_s.setGlobal(p + QStringLiteral("aX"), a_spec.radius, Dim::length(), tr("the e1-hh1 exciton's radius in the wells' plane, λ"));
             a_s.setGlobal(p + QStringLiteral("gX"), a_spec.gammaX, Dim(),
                           tr("the e1-hh1 exciton's γ: its electron and hole drawn together along the axis (0: Bastard's)"));
         }
         if (a_spec.carriers) {
-            a_s.setGlobal(p + QStringLiteral("Fc"), a_spec.Fc, energy, tr("the electrons' quasi-Fermi level"));
-            a_s.setGlobal(p + QStringLiteral("Fv"), a_spec.Fv, energy, tr("the holes' quasi-Fermi level"));
+            a_s.setGlobal(p + QStringLiteral("Fc"), a_spec.Fc, energy, tr("the electrons' quasi-Fermi level"), QStringLiteral("eV"));
+            a_s.setGlobal(p + QStringLiteral("Fv"), a_spec.Fv, energy, tr("the holes' quasi-Fermi level"), QStringLiteral("eV"));
             a_s.setGlobal(p + QStringLiteral("dF"), a_spec.Fc - a_spec.Fv, energy,
-                          tr("the quasi-Fermi levels' separation: gain below it (Bernard and Duraffourg)"));
+                          tr("the quasi-Fermi levels' separation: gain below it (Bernard and Duraffourg)"), QStringLiteral("eV"));
         }
     }
 }

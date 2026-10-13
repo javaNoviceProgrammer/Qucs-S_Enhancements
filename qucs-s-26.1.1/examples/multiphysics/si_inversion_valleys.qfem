@@ -1,0 +1,63 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "Silicon's inversion layer in its valleys",
+    "description": "A MOS capacitor - 10 nm of silicon dioxide on p-type silicon (1e17 cm⁻³) - in strong inversion, its top 20 nm's electrons the states of a Schrödinger equation (Schrödinger-Poisson): silicon on (100), its six Δ valleys two sets (\"valleys\": \"Si(100)\") - the two along the axis heavy there (0.916 m0) and light in the plane (0.190), the four the other way (0.190 along, 0.417 in the plane) -, each set a ladder of states of its own, their electrons summed in qw.n and solved in turn with the semiconductor to rest. At 2 V some two thirds in the two valleys' lower ladder (qw.Nv1, qw.Nv2: their electrons per area), none at the oxide where classically they would be most; their centroid 2.3 nm from it - each set's Fang and Howard's 3/b of its own mass along the axis, by their electrons, 2.2 nm -, where one valley of 0.916 m0 would put all of them at 2.0 nm. The semiconductor's electrons (semi.n) the states' (qw.n).",
+    "parameters": [
+        {"name": "Vg", "expression": "2[V]", "description": "the gate's voltage"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "100[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "bulk", "position": ["0", "-0.4"], "size": ["0.01", "0.38"]},
+            {"type": "rectangle", "label": "surface", "position": ["0", "-0.02"], "size": ["0.01", "0.02"]},
+            {"type": "rectangle", "label": "oxide", "size": ["0.01", "0.01"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["bulk", "surface"]}},
+            {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}
+        ],
+        "physics": [
+            {"type": "semiconductor", "tag": "semi",
+             "features": [
+                {"type": "doping", "label": "p", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["bulk", "surface"]}},
+                {"type": "gate", "label": "Gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+                {"type": "ohmic", "label": "Substrate", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}},
+                {"type": "quantum", "label": "Schrödinger-Poisson", "electrons": true, "selection": {"only": ["surface"]}}
+             ]},
+            {"type": "quantum", "tag": "qw", "space": "1d", "axis": "y", "at": "0.005[um]", "h1d": "0.1[nm]", "electrons": true, "heavy": false, "light": false,
+             "V": "semi.V", "etan": "semi.Efn - semi.Ec", "selection": {"only": ["surface"]},
+             "features": [
+                {"type": "material", "label": "Silicon (100)", "source": "user", "Ec": "0[eV]", "Ev": "-1.12[eV]", "me": "0.916", "valleys": "Si(100)", "selection": {"all": true}}
+             ]}
+        ],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.02", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "0.0005"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Inversion", "steps": [
+        {"type": "sweep", "parameters": [["Vg", "1, 1.5, 2", "V"]]},
+        {"type": "states", "states": 6, "consistent": true}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "cutline", "tag": "cln1", "label": "Down from the oxide", "start": ["0.005", "0"], "end": ["0.005", "-0.02"]},
+            {"type": "plotgroup1d", "label": "Electrons", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "qw.n", "unit": "1/cm^3"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.n", "unit": "1/cm^3"}
+            ]},
+            {"type": "plotgroup1d", "label": "Band diagram", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "qw.Ec", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "qw.wave_e", "unit": "eV"}
+            ]},
+            {"type": "plotgroup1d", "label": "Electrons per area", "plots": [
+                {"type": "globalgraph", "expression": "qw.Nv1", "unit": "1/cm^2"},
+                {"type": "globalgraph", "expression": "qw.Nv2", "unit": "1/cm^2"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Electrons per area", "expression": "qw.Ns; qw.Nv1; qw.Nv2", "unit": "1/cm^2", "solutions": "all"}
+        ]
+    }
+}

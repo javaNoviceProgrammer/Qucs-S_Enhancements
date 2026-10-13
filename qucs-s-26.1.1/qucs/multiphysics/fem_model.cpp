@@ -1344,7 +1344,12 @@ QList<NodeKind> makeKinds()
                        tr("For the k·p valence bands (γ1 and γ2 those the masses along the axis make). Empty: γ2")),
                   QStringLiteral("source=user")),
           shownIf(expr(QStringLiteral("Delta"), tr("Split-off energy Δ"), QStringLiteral("eV"), QString(), tr("For the 6x6 k·p bands")),
-                  QStringLiteral("source=user"))},
+                  QStringLiteral("source=user")),
+          text(QStringLiteral("valleys"), tr("Electron valleys"), QString(),
+               tr("Si(100), Si(110), Si(111) (Δ valleys, ml 0.916, mt 0.190), Ge(100), Ge(110), Ge(111) (L valleys, ml 1.59, mt 0.0815) - "
+                  "each followed by ml mt for other masses -, or sets of your own: g mz md [dE eV]; ... Each set a ladder of states "
+                  "of its own (mz along the axis, md its density of states in the plane, g its valleys), their carriers summed. "
+                  "Empty: one valley, me (a direct gap's)"))},
          {}, {}, false, false, QStringLiteral("qwm"),
          tr("The bands and masses: from the material - its compound (GaAs, InGaAs at x...), or its Eg, VBO (or χ), me, γ1 and γ2 - "
             "or as given.")});
@@ -1630,14 +1635,21 @@ QList<NodeKind> makeKinds()
                    tr("Added to the broadening per field across the wells (qw.Fw, their band edge's slope): 1[meV]/(1e7[V/m]) - "
                       "an electroabsorption edge broadens as the field pulls the states apart. Empty: none")),
               choice(QStringLiteral("continuum"), tr("Continuum"), {QStringLiteral("states"), QStringLiteral("bound")},
-                     {tr("The states found (a box's)"), tr("Bound states', and the barriers' bulk absorption")}, QStringLiteral("states"),
+                     {tr("The states found (a box's)"), tr("Bound states', and the bulk absorption")}, QStringLiteral("states"),
                      tr("The states found above the barriers are a box's - the line's ends hard walls -, moving with a field: a "
-                        "Kramers-Kronig index from them moves too. Bound: the transitions of states confined by their own well's barriers alone (in a field "
-                        "too: below its barriers' edges, not the line's far ends'), and above the barriers' gap their 3D absorption, over "
-                        "the line's length (per the wells' thickness, as the states' was)")),
+                        "Kramers-Kronig index from them moves too. Bound: the transitions of states confined by their own well's "
+                        "barriers alone (in a field too: below its barriers' edges, not the line's far ends'), their 2D steps fading "
+                        "above the barriers' gap into the wells' own 3D absorption, the barriers' 3D absorption over their thickness "
+                        "(per the wells' thickness, as the states' was): far enough above, the absorption the bulk's, the same in any "
+                        "field - Δn between fields converges as the window widens")),
+              shownIf(expr(QStringLiteral("fade"), tr("Fade above the barriers' gap"), QStringLiteral("eV"), QStringLiteral("0.1[eV]"),
+                           tr("Over this above the barriers' gap the bound states' 2D steps give way to the wells' 3D absorption (cos²)")),
+                      QStringLiteral("continuum=bound")),
               choice(QStringLiteral("lineshape"), tr("Line shape"), {QStringLiteral("lorentzian"), QStringLiteral("gaussian"), QStringLiteral("sech")},
                      {tr("Lorentzian"), tr("Gaussian"), tr("Hyperbolic secant")}, QStringLiteral("lorentzian"),
-                     tr("Each transition's broadening. A Lorentzian's tails absorb far below the edge (an electroabsorption "
+                     tr("Each transition's broadening. With carriers a Lorentzian's slow tails move the gain's zero below the "
+                        "quasi-Fermi levels' separation (some 10 meV at 6.6 meV) and part the emission from the gain: for gain "
+                        "spectra a Gaussian or a sech. A Lorentzian's tails absorb far below the edge (an electroabsorption "
                         "modulator's loss at 0 V); a Gaussian's (inhomogeneous: the wells' widths and alloy) and a sech's do not")),
               flag(QStringLiteral("excitons"), tr("Excitons"), false,
                    tr("Each transition's 1s exciton - its binding energy variational over the states' own envelopes (a field "

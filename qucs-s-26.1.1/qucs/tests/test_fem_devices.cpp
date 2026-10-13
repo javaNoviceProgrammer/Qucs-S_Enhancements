@@ -23,11 +23,13 @@
 #include "fem_solver.h"
 
 #include <QElapsedTimer>
+#include <QFile>
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QtTest>
 
 #include <cmath>
+#include <functional>
 #include <map>
 #include <set>
 #include <vector>
@@ -322,6 +324,85 @@ double triangleBreakdown(double N)
         (In < 1 ? lo : hi) = V;
     }
     return lo;
+}
+
+/// A bar of n-type silicon (1e17 cm⁻³, µ 0.14 m²/(V s)) \a L long, its ends
+/// at 300 K, \a V across it, heating itself: the one-dimensional problem,
+/// -k T'' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, V = J ∫ρ dx - T by finite
+/// differences (Picard's in ρ(T)), J by the secant's on V. Its current
+/// density (A/m²), its middle's temperature in \a Tmid.
+double selfHeated(double L, double V, double* Tmid)
+{
+    const double k = 130, n = 1e23, mu = 0.14;
+    const double rho0 = 1 / (Q * n * mu);
+    const int m = 2000;
+    const double h = L / m;
+    auto voltage = [&](double J) {
+        std::vector<double> T(m + 1, 300.0);
+        for (int it = 0; it < 200; ++it) {
+            // -k (T[i-1] - 2T[i] + T[i+1])/h² = J² ρ(T[i]) (the Thomas algorithm).
+            std::vector<double> a(m + 1, -1), b(m + 1, 2), c(m + 1, -1), d(m + 1, 0);
+            for (int i = 1; i < m; ++i) d[i] = J * J * rho0 * std::pow(T[i] / 300, 2.5) * h * h / k;
+            b[0] = b[m] = 1;
+            c[0] = a[m] = 0;
+            d[0] = d[m] = 300;
+            for (int i = 1; i <= m; ++i) {
+                const double w = a[i] / b[i - 1];
+                b[i] -= w * c[i - 1];
+                d[i] -= w * d[i - 1];
+            }
+            std::vector<double> next(m + 1);
+            next[m] = d[m] / b[m];
+            for (int i = m - 1; i >= 0; --i) next[i] = (d[i] - c[i] * next[i + 1]) / b[i];
+            double change = 0;
+            for (int i = 0; i <= m; ++i) change = std::max(change, std::abs(next[i] - T[i]));
+            T = next;
+            if (change < 1e-10) break;
+        }
+        double sum = 0;
+        for (int i = 0; i < m; ++i) sum += 0.5 * (std::pow(T[i] / 300, 2.5) + std::pow(T[i + 1] / 300, 2.5)) * rho0 * h;
+        return std::pair{J * sum, T[m / 2]};
+    };
+    double J0 = V / (rho0 * L), J1 = 0.9 * J0;
+    double v0 = voltage(J0).first - V, v1 = voltage(J1).first - V;
+    for (int it = 0; it < 50 && std::abs(v1) > 1e-12; ++it) {
+        const double J2 = J1 - v1 * (J1 - J0) / (v1 - v0);
+        J0 = J1;
+        v0 = v1;
+        J1 = J2;
+        v1 = voltage(J1).first - V;
+    }
+    if (Tmid) *Tmid = voltage(J1).second;
+    return J1;
+}
+
+/// Example \a name of the multiphysics examples, read as it is shipped.
+Model exampleModel(const QString& name)
+{
+    const QString dir = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+    QFile f(dir + name);
+    if (!f.open(QIODevice::ReadOnly)) qFatal("no example %s", qPrintable(name));
+    Model m = modelOf(f.readAll());
+    m.fileName = dir + name;
+    return m;
+}
+
+/// Every node of \a type in \a m given \a key's \a value.
+void setAll(Model& m, const QString& type, const QString& key, const QJsonValue& value)
+{
+    std::function<void(Node&)> walk = [&](Node& n) {
+        if (n.type == type) n.props.insert(key, value);
+        for (Node& c : n.children) walk(c);
+    };
+    for (Node& n : m.root.children) walk(n);
+}
+
+/// \a m's sweeps over \a name alone, at \a values (\a unit).
+void sweepOnly(Model& m, const QString& name, const QString& values, const QString& unit)
+{
+    QJsonArray rows;
+    rows.append(QJsonArray{name, values, unit});
+    setAll(m, QStringLiteral("sweep"), QStringLiteral("parameters"), rows);
 }
 
 } // namespace
@@ -1042,6 +1123,94 @@ private slots:
         QVERIFY(quantum < classical);
     }
 
+    void schrodingerPoissonValleys()
+    {
+        // The same MOS capacitor at 2 V, its electrons silicon's on (100):
+        // the two valleys 0.916 m0 along the axis (0.190 in the plane) and
+        // the four 0.190 (0.417) - two ladders, solved in turn with the
+        // semiconductor to rest:
+        // - its electrons the states' at its nodes to 1e-3, the two sets'
+        //   electrons per area their sum;
+        // - each set's centroid Fang and Howard's 3/b of its own mass along
+        //   the axis (the four valleys' lighter: farther out), and the
+        //   layer's their mean by the sets' electrons, to 15 %;
+        // - farther out than one valley of 0.916 makes it (the earlier
+        //   test's) - by 10 % or more.
+        constexpr double Hbar = 1.054571817e-34, M0 = 9.1093837015e-31;
+        const double Na = 1e23, es = 11.7 * Eps0;
+        const QString semi = QStringLiteral(R"(, {"type": "quantum", "electrons": true, "selection": {"only": ["surface"]}})");
+        QStringList said;
+        double centroid[2] = {NAN, NAN};
+        for (const bool valleys : {false, true}) {
+            const QString qw = QStringLiteral(R"(,
+              {"type": "quantum", "tag": "qw", "space": "1d", "axis": "y", "at": "0.005[um]", "h1d": "%1", "electrons": true, "heavy": false, "light": false,
+               "V": "semi.V", "etan": "semi.Efn - semi.Ec", "selection": {"only": ["surface"]}, "features": [
+                {"type": "material", "source": "user", "Ec": "0[eV]", "Ev": "-1.12[eV]", "me": "0.916", "valleys": "%2", "selection": {"all": true}}]})")
+                                   .arg(slowBuild() ? QStringLiteral("0.2[nm]") : QStringLiteral("0.1[nm]"), valleys ? QStringLiteral("Si(100)") : QString());
+            QByteArray json = mosCapacitor(semi, QStringLiteral(R"({"type": "states", "states": 6, "consistent": true})"), QStringLiteral("0.01"),
+                                           QStringLiteral("0.0005"));
+            json.replace(R"("expression": "0[V]")", R"("expression": "2[V]")");
+            json.replace(QByteArray("]}],\n        \"mesh\""), QByteArray("]}") + qw.toUtf8() + QByteArray("],\n        \"mesh\""));
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            Solution& s = *r.study.solutions.front();
+            QVERIFY2(s.log.join(QLatin1Char(' ')).contains(QStringLiteral("Schrödinger-Poisson in")), qPrintable(s.log.join(QLatin1String("; "))));
+            const Locator locator(s.mesh());
+            auto at = [&](const QString& e, double y) {
+                const std::optional<double> v = evaluateAt(s, locator, e, QPointF(0.005, y));
+                return v ? *v : NAN;
+            };
+            double most = 0;
+            std::vector<std::pair<QPointF, double>> nodes;
+            for (const QPointF& p : s.mesh().nodes)
+                if (p.y() < -1e-9 && p.y() > -0.02 + 1e-9)
+                    if (const std::optional<double> n = evaluateAt(s, locator, QStringLiteral("semi.n"), p)) {
+                        nodes.emplace_back(p, *n);
+                        most = std::max(most, *n);
+                    }
+            for (const auto& [p, n] : nodes) {
+                if (n < 1e-3 * most) continue;
+                const double states = evaluateAt(s, locator, QStringLiteral("qw.n"), p).value_or(NAN);
+                QVERIFY2(std::abs(n / states - 1) < 1e-3, qPrintable(QStringLiteral("at (%1, %2): semi.n %3, qw.n %4").arg(p.x()).arg(p.y()).arg(n).arg(states)));
+            }
+            const int k = slowBuild() ? 100 : 400;
+            double ninv = 0, moment = 0, Qd = 0;
+            for (int j = 0; j < k; ++j) {
+                const double y = -(j + 0.5) * 0.02 / k, n = at(QStringLiteral("qw.n"), y);
+                ninv += n * 0.02e-6 / k;
+                moment += n * -y * 1e-6 * 0.02e-6 / k;
+            }
+            for (int j = 0; j < k; ++j) Qd += (Na - at(QStringLiteral("semi.p"), -(j + 0.5) * 0.3 / k)) * 0.3e-6 / k;
+            centroid[valleys] = moment / ninv;
+            const double Nstar = Qd + 11.0 / 32 * ninv;
+            auto fangHoward = [&](double mz) { return 3 / std::cbrt(12 * mz * M0 * Q * Q * Nstar / (es * Hbar * Hbar)); };
+            s.select(0);
+            const double Ns = s.global(QStringLiteral("qw.Ns")).value_or(NAN);
+            if (!valleys) {
+                said << QStringLiteral("one valley: Ninv %1 cm⁻² (qw.Ns %2), its centroid %3 nm").arg(ninv * 1e-4, 0, 'g', 4).arg(Ns * 1e-4, 0, 'g', 4).arg(centroid[0] * 1e9, 0, 'f', 3);
+                continue;
+            }
+            const double N1 = s.global(QStringLiteral("qw.Nv1")).value_or(NAN), N2 = s.global(QStringLiteral("qw.Nv2")).value_or(NAN);
+            const double expected = (N1 * fangHoward(0.916) + N2 * fangHoward(0.190)) / (N1 + N2);
+            said << QStringLiteral("Si(100): Ninv %1 cm⁻² (qw.Ns %2), %3 % in the two valleys, %4 % in the four; its centroid %5 nm (Fang and Howard's "
+                                   "%6 and %7 by the sets' electrons: %8)")
+                        .arg(ninv * 1e-4, 0, 'g', 4)
+                        .arg(Ns * 1e-4, 0, 'g', 4)
+                        .arg(100 * N1 / Ns, 0, 'f', 1)
+                        .arg(100 * N2 / Ns, 0, 'f', 1)
+                        .arg(centroid[1] * 1e9, 0, 'f', 3)
+                        .arg(fangHoward(0.916) * 1e9, 0, 'f', 3)
+                        .arg(fangHoward(0.190) * 1e9, 0, 'f', 3)
+                        .arg(expected * 1e9, 0, 'f', 3);
+            QVERIFY2(std::abs((N1 + N2) / Ns - 1) < 1e-12, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(Ns / ninv - 1) < 0.02, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(N1 > N2 && N2 > 0.05 * Ns, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(centroid[1] / expected - 1) < 0.15, qPrintable(said.join(QLatin1String("; "))));
+        }
+        qInfo("Schrödinger-Poisson in valleys: %s", qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(centroid[1] > 1.1 * centroid[0], qPrintable(said.join(QLatin1String("; "))));
+    }
+
     void schrodingerPoissonHoles()
     {
         // n-type silicon (1e17 cm⁻³) under the gate at -2.5 V: holes
@@ -1068,7 +1237,7 @@ private slots:
             if (sp) json.replace(QByteArray("]}],\n        \"mesh\""), QByteArray("]}") + qw.toUtf8() + QByteArray("],\n        \"mesh\""));
             const Run r = run(modelOf(json));
             QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-            const Solution& s = *r.study.solutions.front();
+            Solution& s = *r.study.solutions.front();
             const Locator locator(s.mesh());
             auto at = [&](const QString& e, double y) {
                 const std::optional<double> v = evaluateAt(s, locator, e, QPointF(0.005, y));
@@ -1104,7 +1273,15 @@ private slots:
             }
             const double surface = at(sp ? QStringLiteral("qw.p") : QStringLiteral("semi.p"), -1e-5);
             said << QStringLiteral("%1: %2 holes /cm², at the oxide %3 of their most").arg(sp ? QStringLiteral("Schrödinger-Poisson") : QStringLiteral("classical")).arg(total * 1e-4, 0, 'g', 4).arg(surface / peak, 0, 'g', 3);
-            if (sp) QVERIFY2(surface < 0.05 * peak, qPrintable(said.join(QLatin1String("; "))));
+            if (sp) {
+                QVERIFY2(surface < 0.05 * peak, qPrintable(said.join(QLatin1String("; "))));
+                // The wells' holes per area (qw.Ps, along its line) the same, to
+                // 1 % (qw.p's interpolation on the mesh).
+                s.select(0);
+                const double Ps = global(s, QStringLiteral("qw.Ps"));
+                said << QStringLiteral("qw.Ps %1 /cm²").arg(Ps * 1e-4, 0, 'g', 4);
+                QVERIFY2(std::abs(Ps / total - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+            }
             sheet[sp] = total;
         }
         qInfo("Schrödinger-Poisson, holes: %s", qPrintable(said.join(QLatin1String("; "))));
@@ -1141,48 +1318,9 @@ private slots:
         // - the two solved in turn. Its current the one-dimensional
         // problem's, -k T'' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, V = J ∫ρ dx -
         // to 0.5 %; some 15 % below the bar's at 300 K.
-        const double L = 20e-6, A = 1e-6, k = 130, n = 1e23, mu = 0.14, V = 4;
-        const double rho0 = 1 / (Q * n * mu);
-        // The one-dimensional problem: T by finite differences (Picard's in
-        // ρ(T)), J by the secant's on V.
-        const int m = 2000;
-        const double h = L / m;
-        auto voltage = [&](double J) {
-            std::vector<double> T(m + 1, 300.0);
-            for (int it = 0; it < 200; ++it) {
-                // -k (T[i-1] - 2T[i] + T[i+1])/h² = J² ρ(T[i]) (the Thomas algorithm).
-                std::vector<double> a(m + 1, -1), b(m + 1, 2), c(m + 1, -1), d(m + 1, 0);
-                for (int i = 1; i < m; ++i) d[i] = J * J * rho0 * std::pow(T[i] / 300, 2.5) * h * h / k;
-                b[0] = b[m] = 1;
-                c[0] = a[m] = 0;
-                d[0] = d[m] = 300;
-                for (int i = 1; i <= m; ++i) {
-                    const double w = a[i] / b[i - 1];
-                    b[i] -= w * c[i - 1];
-                    d[i] -= w * d[i - 1];
-                }
-                std::vector<double> next(m + 1);
-                next[m] = d[m] / b[m];
-                for (int i = m - 1; i >= 0; --i) next[i] = (d[i] - c[i] * next[i + 1]) / b[i];
-                double change = 0;
-                for (int i = 0; i <= m; ++i) change = std::max(change, std::abs(next[i] - T[i]));
-                T = next;
-                if (change < 1e-10) break;
-            }
-            double sum = 0;
-            for (int i = 0; i < m; ++i) sum += 0.5 * (std::pow(T[i] / 300, 2.5) + std::pow(T[i + 1] / 300, 2.5)) * rho0 * h;
-            return std::pair{J * sum, T[m / 2]};
-        };
-        double J0 = V / (rho0 * L), J1 = 0.9 * J0;
-        double v0 = voltage(J0).first - V, v1 = voltage(J1).first - V;
-        for (int it = 0; it < 50 && std::abs(v1) > 1e-12; ++it) {
-            const double J2 = J1 - v1 * (J1 - J0) / (v1 - v0);
-            J0 = J1;
-            v0 = v1;
-            J1 = J2;
-            v1 = voltage(J1).first - V;
-        }
-        const double expected = J1 * A, cold = V / (rho0 * L) * A, peak = voltage(J1).second;
+        const double L = 20e-6, A = 1e-6, V = 4, rho0 = 1 / (Q * 1e23 * 0.14);
+        double peak = NAN;
+        const double expected = selfHeated(L, V, &peak) * A, cold = V / (rho0 * L) * A;
         const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
           "components": [{"unit": "um",
             "geometry": [{"type": "rectangle", "name": "left", "size": ["10", "1"]},
@@ -1576,6 +1714,379 @@ private slots:
             QVERIFY2(std::abs(sheet[c] / expected[c] - 1) < 1e-3, qPrintable(QString::number(sheet[c] / expected[c])));
             QVERIFY2(std::abs(middle[c] / atMiddle[c] - 1) < 1e-3, qPrintable(QString::number(middle[c] / atMiddle[c])));
         }
+    }
+
+    // The semiconductor features' examples (B4 of the MQW and semiconductor
+    // review), each solved as it comes - fewer points, a coarser mesh or
+    // coarser times in a sanitized build - against what its description
+    // says.
+    // Avalanche breakdown: where the ionization integral reaches 1 the
+    // depletion approximation's 51.7 V, to 2 % (4 a sanitized build's,
+    // its mesh coarser); the holes' integral 1 there too.
+    void exampleBreakdown()
+    {
+        const bool slow = slowBuild();
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        Model m = exampleModel(QStringLiteral("avalanche_breakdown.qfem"));
+        if (slow) {
+            sweepOnly(m, QStringLiteral("Vr"), QStringLiteral("46, 50, 52, 54"), QStringLiteral("V"));
+            m.find(m.mesh().tag)->props.insert(QStringLiteral("hmax"), QStringLiteral("0.1"));
+        }
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        std::vector<double> V, In, Ip;
+        for (const auto& point : r.study.solutions) {
+            V.push_back(-global(*point, QStringLiteral("semi.V_a")));
+            In.push_back(global(*point, QStringLiteral("semi.In")));
+            Ip.push_back(global(*point, QStringLiteral("semi.Ip")));
+        }
+        double BV = NAN, IpThere = NAN;
+        for (std::size_t k = 1; k < V.size(); ++k)
+            if (In[k - 1] < 1 && In[k] >= 1) {
+                const double f = -std::log(In[k - 1]) / (std::log(In[k]) - std::log(In[k - 1]));
+                BV = V[k - 1] + f * (V[k] - V[k - 1]);
+                IpThere = std::exp(std::log(Ip[k - 1]) + f * (std::log(Ip[k]) - std::log(Ip[k - 1])));
+            }
+        const double analytic = triangleBreakdown(1e22);
+        said << QStringLiteral("avalanche: breaks down at %1 V (the triangle's %2), Ip there %3; %4 ms")
+                    .arg(BV, 0, 'f', 2)
+                    .arg(analytic, 0, 'f', 2)
+                    .arg(IpThere, 0, 'f', 4)
+                    .arg(timer.elapsed());
+        QVERIFY2(std::abs(BV / analytic - 1) < (slow ? 0.04 : 0.02) && std::abs(IpThere - 1) < 0.02, qPrintable(said.join(QLatin1String("; "))));
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // Zener tunnelling (Hurkx's): from 2 V its current q ∫ G to 1 %
+    // and between 0.45 and 0.8 of Kane's generation alone at each
+    // triangle's field; nought at 0 V; five decades from 1.5 to 2.5 V.
+    void exampleZenerTunnelling()
+    {
+        const bool slow = slowBuild();
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        Model m = exampleModel(QStringLiteral("zener_tunnelling.qfem"));
+        if (slow) m.find(m.mesh().tag)->props.insert(QStringLiteral("hmax"), QStringLiteral("4"));
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(int(r.study.solutions.size()), 6);
+        const double A = 4e14 * 1e6 * std::pow(1e-2, 2.5), B = 1.9e9, depth = 1e-6;
+        QCOMPARE(global(*r.study.solutions.front(), QStringLiteral("semi.I_k")), 0.0);
+        std::vector<double> I;
+        for (std::size_t k = 1; k < r.study.solutions.size(); ++k) {
+            Solution& s = *r.study.solutions[k];
+            I.push_back(global(s, QStringLiteral("semi.I_k")));
+            Node gen;
+            gen.type = QStringLiteral("integral");
+            gen.props.insert(QStringLiteral("expression"), QStringLiteral("-1.602176634e-19[C]*semi.R*1[um]"));
+            gen.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+            const DerivedResult d = evaluateDerived(s, gen);
+            QVERIFY2(!d.values.isEmpty(), qPrintable(d.error));
+            double kane = 0;
+            const Locator locator(s.mesh());
+            for (const auto& tri : s.mesh().triangles) {
+                const QPointF a = s.mesh().nodes[std::size_t(tri[0])], b = s.mesh().nodes[std::size_t(tri[1])], c = s.mesh().nodes[std::size_t(tri[2])];
+                const double area = std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2 * 1e-18;
+                if (const std::optional<double> E = evaluateAt(s, locator, QStringLiteral("semi.normE"), (a + b + c) / 3.0); E && *E > 0)
+                    kane += A * std::pow(*E, 2.5) * std::exp(-B / *E) * area;
+            }
+            kane *= Q * depth;
+            said << QStringLiteral("zener at %1 V: %2 A (q ∫ G %3; %4 of Kane's alone)")
+                        .arg(-0.5 * double(k))
+                        .arg(I.back(), 0, 'g', 4)
+                        .arg(d.values.front().value, 0, 'g', 4)
+                        .arg(I.back() / kane, 0, 'f', 3);
+            // (Below 1.5 V the diode's own leakage, 1e-22 A, more than its
+            // tunnelling; at 1.5 V 4 % of it.)
+            if (k < 4) continue;
+            QVERIFY2(I.back() > 0 && std::abs(I.back() / d.values.front().value - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(I.back() / kane > 0.45 && I.back() / kane < 0.8, qPrintable(said.join(QLatin1String("; "))));
+        }
+        said << QStringLiteral("zener: from 1.5 to 2.5 V %1 times; %2 ms").arg(I[4] / I[2], 0, 'g', 3).arg(timer.elapsed());
+        QVERIFY2(I[4] / I[2] > 1e4 && I[4] / I[2] < 1e6, qPrintable(said.join(QLatin1String("; "))));
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // Fowler-Nordheim: at each gate voltage semi.Ifn the oxide's
+    // J = A E² e^(-B/E) over the gate (0.1 µm by 100 µm) to 1 %, its
+    // Fowler-Nordheim plot's slope -B to 1 %.
+    void exampleFowlerNordheim()
+    {
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        Model m = exampleModel(QStringLiteral("fowler_nordheim_oxide.qfem"));
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        constexpr double H = 6.62607015e-34, M0 = 9.1093837015e-31;
+        const double phiB = 3.1 * Q, mox = 0.42, area = 0.1e-6 * 100e-6;
+        const double A = Q * Q * Q / (8 * M_PI * H * phiB * mox), B = 8 * M_PI * std::sqrt(2 * mox * M0) * std::pow(phiB, 1.5) / (3 * Q * H);
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        int n = 0;
+        for (const auto& point : r.study.solutions) {
+            const double E = at1(*point, QStringLiteral("semi.normE"), 0.05, 0.005), I = global(*point, QStringLiteral("semi.Ifn"));
+            const double J = A * E * E * std::exp(-B / E);
+            said << QStringLiteral("FN at %1 MV/cm: %2 A/cm² (%3)").arg(E / 1e8, 0, 'f', 2).arg(I / area * 1e-4, 0, 'g', 4).arg(J * 1e-4, 0, 'g', 4);
+            QVERIFY2(std::abs(I / (J * area) - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+            const double x = 1 / E, y = std::log(I / (E * E));
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+            ++n;
+        }
+        const double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+        said << QStringLiteral("FN plot's slope %1 MV/cm (B %2); %3 ms").arg(-slope / 1e8, 0, 'f', 1).arg(B / 1e8, 0, 'f', 1).arg(timer.elapsed());
+        QVERIFY2(n == 7 && std::abs(-slope / B - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // Interface traps' C-V: through depletion each gate voltage Vfb +
+    // ψs - (Qs + Qit)/Cox at the surface potential solved, to 2 mV;
+    // quasi-statically Cox in series with Cs + q² Dit to 0.5 %; from
+    // -0.9 to 0 V ψs 0.504 V (without traps 0.565).
+    void exampleInterfaceTraps()
+    {
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        Model m = exampleModel(QStringLiteral("interface_traps_cv.qfem"));
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const double Vt = 1.380649e-23 * 300 / Q, Na = 1e23, es = 11.7 * Eps0, cox = 3.9 * Eps0 / 10e-9;
+        const double ni = std::sqrt(2.8e25 * 1.04e25) * std::exp(-1.12 / (2 * Vt));
+        const double dEc = 1.12 / 2 + Vt / 2 * std::log(2.8 / 1.04), phiB = Vt * std::log(Na / ni), vfb = -dEc - phiB;
+        const double Dit = 5e15 / Q;
+        auto Qs = [&](double psi) {
+            const double b = psi / Vt, ratio = ni * ni / (Na * Na);
+            const double F = std::sqrt(std::max(std::exp(-b) + b - 1 + ratio * (std::exp(b) - b - 1), 0.0));
+            return -(psi >= 0 ? 1 : -1) * std::sqrt(2 * es * 1.380649e-23 * 300 * Na) * F;
+        };
+        double from = NAN, to = NAN;
+        for (const auto& point : r.study.solutions) {
+            Solution& s = *point;
+            const double vg = s.sweptValues.value(QStringLiteral("Vg"));
+            s.select(0);
+            const double C0 = global(s, QStringLiteral("semi.C0gg")) / (0.1e-6 * 100e-6);
+            s.select(-1);
+            const double psi = at1(s, QStringLiteral("semi.V"), 0.05, -1e-7) - at1(s, QStringLiteral("semi.V"), 0.05, -0.399);
+            if (std::abs(vg + 0.9) < 1e-9) from = psi;
+            if (std::abs(vg) < 1e-9) to = psi;
+            if (vg < -0.8 || vg > 0.01) continue;
+            const double expected = vfb + psi - (Qs(psi) - Q * Dit * Q * (psi - phiB)) / cox;
+            const double Cs = -(Qs(psi + 1e-4) - Qs(psi - 1e-4)) / 2e-4, Clf = 1 / (1 / cox + 1 / (Cs + Q * Q * Dit));
+            said << QStringLiteral("traps at %1 V: ψs %2 V, the gate's %3 V by it; C0 %4 of Cox (%5)")
+                        .arg(vg)
+                        .arg(psi, 0, 'f', 4)
+                        .arg(expected, 0, 'f', 4)
+                        .arg(C0 / cox, 0, 'f', 4)
+                        .arg(Clf / cox, 0, 'f', 4);
+            QVERIFY2(std::abs(expected - vg) < 2e-3 && std::abs(C0 / Clf - 1) < 5e-3, qPrintable(said.join(QLatin1String("; "))));
+        }
+        said << QStringLiteral("traps: ψs from -0.9 to 0 V %1 V; %2 ms").arg(to - from, 0, 'f', 3).arg(timer.elapsed());
+        QVERIFY2(std::abs(to - from - 0.504) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // Silicon's inversion layer in its two valley sets at 2 V: the
+    // semiconductor's electrons the states' to 1e-3; some two thirds
+    // in the lower ladder; their centroid each set's Fang and Howard's
+    // by their electrons, to 15 %.
+    void exampleInversionInValleys()
+    {
+        const bool slow = slowBuild();
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        Model m = exampleModel(QStringLiteral("si_inversion_valleys.qfem"));
+        sweepOnly(m, QStringLiteral("Vg"), QStringLiteral("2"), QStringLiteral("V"));
+        if (slow) setAll(m, QStringLiteral("quantum"), QStringLiteral("h1d"), QStringLiteral("0.2[nm]"));
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.study.solutions.back();
+        const Locator locator(s.mesh());
+        double most = 0, worst = 0;
+        std::vector<std::pair<QPointF, double>> nodes;
+        for (const QPointF& p : s.mesh().nodes)
+            if (p.y() < -1e-9 && p.y() > -0.02 + 1e-9)
+                if (const std::optional<double> n = evaluateAt(s, locator, QStringLiteral("semi.n"), p)) {
+                    nodes.emplace_back(p, *n);
+                    most = std::max(most, *n);
+                }
+        for (const auto& [p, n] : nodes)
+            if (n > 1e-3 * most) worst = std::max(worst, std::abs(n / evaluateAt(s, locator, QStringLiteral("qw.n"), p).value_or(NAN) - 1));
+        double ninv = 0, moment = 0, Qd = 0;
+        const int k = 400;
+        for (int j = 0; j < k; ++j) {
+            const double y = -(j + 0.5) * 0.02 / k, n = at1(s, QStringLiteral("qw.n"), 0.005, y);
+            ninv += n * 0.02e-6 / k;
+            moment += n * -y * 1e-6 * 0.02e-6 / k;
+        }
+        for (int j = 0; j < k; ++j) Qd += (1e23 - at1(s, QStringLiteral("semi.p"), 0.005, -(j + 0.5) * 0.3 / k)) * 0.3e-6 / k;
+        constexpr double Hbar = 1.054571817e-34, M0 = 9.1093837015e-31;
+        const double Nstar = Qd + 11.0 / 32 * ninv, es = 11.7 * Eps0;
+        auto fangHoward = [&](double mz) { return 3 / std::cbrt(12 * mz * M0 * Q * Q * Nstar / (es * Hbar * Hbar)); };
+        s.select(0);
+        const double N1 = global(s, QStringLiteral("qw.Nv1")), N2 = global(s, QStringLiteral("qw.Nv2"));
+        const double centroid = moment / ninv, expected = (N1 * fangHoward(0.916) + N2 * fangHoward(0.190)) / (N1 + N2);
+        said << QStringLiteral("valleys: semi.n the states' to %1; %2 % in the two valleys; centroid %3 nm (Fang and Howard's %4); %5 ms")
+                    .arg(worst, 0, 'g', 2)
+                    .arg(100 * N1 / (N1 + N2), 0, 'f', 1)
+                    .arg(centroid * 1e9, 0, 'f', 2)
+                    .arg(expected * 1e9, 0, 'f', 2)
+                    .arg(timer.elapsed());
+        QVERIFY2(worst < 1e-3 && N1 / (N1 + N2) > 0.6 && N1 / (N1 + N2) < 0.72 && std::abs(centroid / expected - 1) < 0.15,
+                 qPrintable(said.join(QLatin1String("; "))));
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // Boron implanted and annealed through a window (0.3 to 0.7 µm):
+    // its dose 1e14 cm⁻² to 1e-3; down the window's middle at the range
+    // dose/(√(2π) σ) (1 + e^(-2Rp²/σ²)) times the window's erf's, to 1
+    // %; at an edge half the middle's, to 1 %; the junction there to 5
+    // nm.
+    void exampleImplantThroughAMask()
+    {
+        const bool slow = slowBuild();
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        Model m = exampleModel(QStringLiteral("boron_implant_anneal.qfem"));
+        if (slow) m.find(m.mesh().tag)->props.insert(QStringLiteral("hmax"), QStringLiteral("0.02"));
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        constexpr double KB_eV = 8.617333262e-5;
+        const double dose = 1e18, Rp = 1e-7, D = 0.76e-4 * std::exp(-3.46 / (KB_eV * 1273.15)), sd = std::sqrt(9e-16 + 2 * D * 1800);
+        auto across = [&](double x) { return 0.5 * (std::erf((x - 0.3e-6) / (std::sqrt(2.0) * sd)) - std::erf((x - 0.7e-6) / (std::sqrt(2.0) * sd))); };
+        auto depth = [&](double d) {
+            return dose / (std::sqrt(2 * M_PI) * sd) * (std::exp(-(d - Rp) * (d - Rp) / (2 * sd * sd)) + std::exp(-(d + Rp) * (d + Rp) / (2 * sd * sd)));
+        };
+        const DerivedResult total = evaluateDerived(s, m.results().child(QStringLiteral("derived"))->children.front());
+        QVERIFY2(!total.values.isEmpty(), qPrintable(total.error));
+        const double middle = at1(s, QStringLiteral("semi.Na"), 0.5, -0.1), edge = at1(s, QStringLiteral("semi.Na"), 0.3, -0.1);
+        const Locator locator(s.mesh());
+        double lo = 0.1, hi = 0.79;
+        for (int k = 0; k < 40; ++k) {
+            const double mid = (lo + hi) / 2;
+            (evaluateAt(s, locator, QStringLiteral("semi.Na"), QPointF(0.5, -mid)).value_or(0) > 1e21 ? lo : hi) = mid;
+        }
+        double jlo = Rp, jhi = 0.79e-6;
+        for (int k = 0; k < 100; ++k) {
+            const double mid = (jlo + jhi) / 2;
+            (depth(mid) * across(0.5e-6) > 1e21 ? jlo : jhi) = mid;
+        }
+        said << QStringLiteral("implant: dose %1 /cm² (1e14); at the range %2 /cm³ (%3); at the edge %4 of the middle (%5); junction %6 µm (%7); %8 ms")
+                    .arg(total.values.front().value * 1e-4, 0, 'g', 6)
+                    .arg(middle * 1e-6, 0, 'g', 5)
+                    .arg(depth(Rp) * across(0.5e-6) * 1e-6, 0, 'g', 5)
+                    .arg(edge / middle, 0, 'f', 4)
+                    .arg(across(0.3e-6) / across(0.5e-6), 0, 'f', 4)
+                    .arg((lo + hi) / 2, 0, 'f', 4)
+                    .arg((jlo + jhi) / 2 * 1e6, 0, 'f', 4)
+                    .arg(timer.elapsed());
+        QVERIFY2(std::abs(total.values.front().value / dose - 1) < 1e-3, qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(std::abs(middle / (depth(Rp) * across(0.5e-6)) - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(std::abs(edge / middle / (across(0.3e-6) / across(0.5e-6)) - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(std::abs((lo + hi) / 2 - (jlo + jhi) / 2 * 1e6) < 0.005, qPrintable(said.join(QLatin1String("; "))));
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // The resistor heating itself: at each voltage the one-dimensional
+    // problem's current to 0.5 %, its middle's temperature to 1 % of
+    // its rise.
+    void exampleSelfHeating()
+    {
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        const Run r = run(exampleModel(QStringLiteral("self_heating_resistor.qfem")));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(int(r.study.solutions.size()), 4);
+        for (const auto& point : r.study.solutions) {
+            const double V = point->sweptValues.value(QStringLiteral("V0"));
+            double Tmid = NAN;
+            const double expected = selfHeated(20e-6, V, &Tmid) * 1e-12, I = std::abs(global(*point, QStringLiteral("semi.I_2")));
+            const double T = at1(*point, QStringLiteral("ht.T"), 10, 0.5), cold = V * Q * 1e23 * 0.14 / 20e-6 * 1e-12;
+            said << QStringLiteral("heating at %1 V: %2 mA (%3; %4 % below Ohm's), its middle %5 K (%6)")
+                        .arg(V)
+                        .arg(I * 1e3, 0, 'g', 5)
+                        .arg(expected * 1e3, 0, 'g', 5)
+                        .arg(100 * (1 - I / cold), 0, 'f', 1)
+                        .arg(T, 0, 'f', 2)
+                        .arg(Tmid, 0, 'f', 2);
+            QVERIFY2(std::abs(I / expected - 1) < 5e-3 && std::abs(T - Tmid) < 0.01 * (Tmid - 300) + 1e-6, qPrintable(said.join(QLatin1String("; "))));
+        }
+        said << QStringLiteral("heating: %1 ms").arg(timer.elapsed());
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // The diode's reverse recovery at two lifetimes: its reverse current
+    // some 120 to 180 times the forward one; between the lifetimes the charge
+    // out (beyond the steady reverse current) differs as the charge
+    // stored at rest does - the depletion layer's change the same for
+    // both -, 0.85 to 1.02 of it (a sanitized build's, coarser, 0.8 to
+    // 1.05).
+    void exampleReverseRecovery()
+    {
+        const bool slow = slowBuild();
+        QElapsedTimer timer;
+        QStringList said;
+        timer.start();
+        Model m = exampleModel(QStringLiteral("diode_reverse_recovery.qfem"));
+        if (slow) {
+            m.find(m.mesh().tag)->props.insert(QStringLiteral("hmax"), QStringLiteral("0.25"));
+            setAll(m, QStringLiteral("transient"), QStringLiteral("times"),
+                QStringLiteral("range(0, 1[ps], 5[ps]), range(7[ps], 2[ps], 25[ps]), range(30[ps], 10[ps], 100[ps]), range(150[ps], 50[ps], 1.2[ns])"));
+            setAll(m, QStringLiteral("transient"), QStringLiteral("rtol"), QStringLiteral("3e-3"));
+        }
+        const Run r = run(m);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(int(r.study.solutions.size()), 2);
+        double stored[2] = {0, 0}, moved[2] = {0, 0};
+        for (int which = 0; which < 2; ++which) {
+            Solution& s = *r.study.solutions[std::size_t(which)];
+            s.select(0);
+            const double forward = global(s, QStringLiteral("semi.I_a"));
+            for (const auto& [side, expression] : {std::pair{"pside", "1.602176634e-19[C]*(semi.n - semi.ni^2/1e22[1/m^3])*100[um]"},
+                                                   std::pair{"nside", "1.602176634e-19[C]*(semi.p - semi.ni^2/1e22[1/m^3])*100[um]"}}) {
+                Node integral;
+                integral.type = QStringLiteral("integral");
+                integral.props.insert(QStringLiteral("expression"), QString::fromLatin1(expression));
+                integral.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QString::fromLatin1(side)}}});
+                const DerivedResult d = evaluateDerived(s, integral);
+                QVERIFY2(d.error.isEmpty() && d.values.size() == 1, qPrintable(d.error));
+                stored[which] += d.values[0].value;
+            }
+            const int last = s.snapshotCount() - 1;
+            s.select(last);
+            const double reverse = global(s, QStringLiteral("semi.I_a"));
+            double peak = 0, before = 0, tb = 0;
+            for (int k = 0; k <= last; ++k) {
+                s.select(k);
+                const double t = s.snapshotTime(k), I = global(s, QStringLiteral("semi.I_a")) - reverse;
+                if (k > 0) moved[which] -= 0.5 * (I + before) * (t - tb);
+                peak = std::min(peak, I + reverse);
+                before = I;
+                tb = t;
+            }
+            said << QStringLiteral("recovery at τ %1 ns: forward %2 mA, its reverse at most %3 mA (%4 times; steady %5 mA); stored %6 pC, out %7 pC")
+                        .arg(which ? 0.3 : 0.1)
+                        .arg(forward * 1e3, 0, 'g', 4)
+                        .arg(peak * 1e3, 0, 'g', 4)
+                        .arg(-peak / forward, 0, 'f', 0)
+                        .arg(reverse * 1e3, 0, 'g', 3)
+                        .arg(stored[which] * 1e12, 0, 'g', 4)
+                        .arg(moved[which] * 1e12, 0, 'g', 4);
+            QVERIFY2(peak < -100 * forward, qPrintable(said.join(QLatin1String("; "))));
+        }
+        const double k = (moved[1] - moved[0]) / (stored[1] - stored[0]);
+        said << QStringLiteral("recovery: the charge out between the lifetimes %1 of the charge stored's; %2 ms").arg(k, 0, 'f', 4).arg(timer.elapsed());
+        QVERIFY2(k > (slow ? 0.8 : 0.85) && k < (slow ? 1.05 : 1.02), qPrintable(said.join(QLatin1String("; "))));
+        qInfo("%s", qPrintable(said.join(QLatin1String("; "))));
     }
 
     void dopantsIonizedInPart()
