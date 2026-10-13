@@ -64,6 +64,12 @@ The spectrum step's `"excitons": true` adds, for each transition in 1D wells:
   e^(−ρ/λ) over the states' own envelopes. A field pulling them apart weakens it, which is
   the QCSE's exciton.
 - **Its line,** of strength |F(0)|² = 2/(πλ²).
+  *Corrected on 13 October 2026* (the Lumerical-gap round,
+  `2026-10-12-claude-mqw-feature-gap-against-lumerical.md`): the line counted one spin
+  pair where the continuum beneath it counts two. It is 2 |F(0)|² = 4/(πλ²) strong now:
+  Elliott's 2D limit (8 Eb of the continuum's step, approached as the well thins) and
+  Khramtsov et al.'s measured radiative decay both confirm it. The binding energies here
+  are unchanged.
 - **The continuum above it,** raised by the 2D Sommerfeld factor 2/(1 + e^(−2π√(R/ε))),
   with R = Eb/4.
 
