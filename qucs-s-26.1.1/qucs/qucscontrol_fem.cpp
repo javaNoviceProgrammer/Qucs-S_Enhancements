@@ -244,7 +244,7 @@ QString formatText()
         "qw.bound_e; variables qw.P_e (|ψ|²), qw.psi_e, qw.wave_e (a level with its |ψ|²: a band diagram), qw.Ec, qw.Ehh, "
         "qw.Elh, qw.Ev, qw.me, qw.strain. A \"spectrum\" step {\"energies\": \"linspace(0.75[eV], 0.95[eV], 201)\" (or "
         "wavelengths), \"states\", \"linewidth\" (half width at half maximum, eV), \"lineshape\" (lorentzian, gaussian, "
-        "sech; for gain gaussian or sech - a Lorentzian's tails move the gain's zero some 10 meV below qw.dF), \"dlinewidth\" (its growth with the field across the wells, eV per V/m: qw.Fw, qw.linewidth), "
+        "sech; for gain gaussian or sech - a Lorentzian's tails move the gain's zero some 10 meV below qw.dF, and the higher states' tails reach under the gain's peak: with a Lorentzian the peak depends on \"states\", 394 /cm with 2 against 304 with 4 in a 10 nm GaAs well - Lumerical's MQW keeps 2 conduction and 4 valence subbands, \"states\": 2 -, and the log warns past 10 %; qw.alphaTEfar, qw.alphaTMfar what the transitions more than 5 half widths above add by their tails), \"dlinewidth\" (its growth with the field across the wells, eV per V/m: qw.Fw, qw.linewidth), "
         "\"excitons\": true (each transition's 1s exciton - \"excitonmodel\" two, the default: e^(-√(ρ² + γ²(ze - zh)²)/λ), "
         "Khramtsov et al.'s exact GaAs/AlGaAs binding to 1.2 %, their measured radiative decay to 4 %; or bastard, γ 0, its "
         "line weaker in wide wells - a field weakens it -, and the continuum's 2D Sommerfeld factor; \"epsr\" its "

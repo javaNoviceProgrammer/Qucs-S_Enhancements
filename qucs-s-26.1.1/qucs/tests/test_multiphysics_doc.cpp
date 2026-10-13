@@ -46,6 +46,7 @@
 #include "layoutdoc.h"
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
+#include "dataimport.h"
 #include "dataset.h"
 #include "diagrams/diagram.h"
 #include "diagrams/graph.h"
@@ -2118,7 +2119,10 @@ private slots:
                          "linewidth": "5[meV]", "density": "3e18[1/cm^3]", "kpoints": 21}]},
                       {"type": "study", "tag": "bands", "steps": [{"type": "bands", "kmax": "1[1/nm]", "points": 3, "states": 2}]}],
           "results": {"derived": [{"type": "global", "tag": "gev1", "label": "Exciton", "study": "spec",
-                                   "expression": "qw.Eb; qw.Ex; qw.gX", "solutions": "all"}]}})json");
+                                   "expression": "qw.Eb; qw.Ex; qw.gX", "solutions": "all"}],
+                      "plots": [{"type": "plotgroup1d", "tag": "pgk", "study": "bands", "plots": [{"type": "globalgraph", "tag": "gk", "expression": "qw.Ev1"}]},
+                                {"type": "plotgroup1d", "tag": "pgg", "study": "gain", "plots": [{"type": "globalgraph", "tag": "gg", "expression": "qw.gTE; qw.Fc"}]},
+                                {"type": "plotgroup1d", "tag": "pgs", "study": "spec", "plots": [{"type": "globalgraph", "tag": "gs", "expression": "qw.alphaTE; qw.dnTE"}]}]}})json");
         QFile f(path(QStringLiteral("ev_wells.qfem")));
         QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
         f.write(model.toUtf8());
@@ -2172,6 +2176,50 @@ private slots:
         v = json(call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "bands"}, {"expression", "qw.k; qw.Ev1"}, {"frequency", "5e8"}})).value("values").toArray();
         QVERIFY2(v.at(0).toObject().value("value").toString() == QLatin1String("0.5 1/nm") && v.at(1).toObject().value("value").toString().endsWith(QLatin1String(" eV")),
                  qPrintable(QJsonDocument(v).toJson()));
+        // A plot group's dataset in the units its graphs show - its k axis in
+        // 1/nm as qw.k, the energies in eV - and each variable's unit said in
+        // it (the review's: eV beside k in 1/m); a display's x axis says its.
+        auto dataset = [&](const char* plot, qucs_s::dataset::Dataset& data, QJsonObject& units) {
+            const QJsonObject shown = call("fem_plot", {{"path", "ev_wells.qfem"}, {"plot", plot}});
+            if (failed(shown)) return text(shown);
+            const QString dat = path(QStringLiteral("ev_wells_%1.dat").arg(QLatin1String(plot)));
+            QString why;
+            if (!data.read(dat, &why)) return why;
+            qucs_s::dataimport::Origin origin;
+            if (!qucs_s::dataimport::originOf(dat, &origin)) return QStringLiteral("no origin");
+            units = origin.units;
+            return QString();
+        };
+        qucs_s::dataset::Dataset bands;
+        QJsonObject units;
+        QString why = dataset("pgk", bands, units);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        const qucs_s::dataset::Variable* k = bands.find(QStringLiteral("k"));
+        QVERIFY2(k && k->size() == 3 && std::abs(k->re.at(1) - 0.5) < 1e-12 && std::abs(k->re.at(2) - 1) < 1e-12,
+                 qPrintable(k ? QString::number(k->re.value(2)) : QStringLiteral("no k")));
+        QCOMPARE(units.value("k").toString(), QStringLiteral("1/nm"));
+        QCOMPARE(units.value("qw.Ev1").toString(), QStringLiteral("eV"));
+        const qucs_s::dataset::Variable* ev1 = bands.find(QStringLiteral("qw.Ev1"));
+        QVERIFY(ev1 && ev1->size() == 3 && ev1->dependencies == QStringList{QStringLiteral("k")} && std::abs(ev1->re.at(0)) < 2);   // (eV, not J)
+        QFile dpl(path(QStringLiteral("ev_wells_pgk.dpl")));
+        QVERIFY(dpl.open(QIODevice::ReadOnly));
+        QVERIFY2(QString::fromUtf8(dpl.readAll()).contains(QLatin1String("k (1/nm)")), "the display's x axis");
+        // The spectrum's: its photon energies in eV, a field swept in V/m,
+        // a gain per m and a quasi-Fermi level in eV.
+        qucs_s::dataset::Dataset gain;
+        why = dataset("pgg", gain, units);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        const qucs_s::dataset::Variable* E = gain.find(QStringLiteral("photon_energy"));
+        QVERIFY2(E && E->size() == 3 && std::abs(E->re.at(0) - 1.6) < 1e-9, E ? qPrintable(QString::number(E->re.value(0))) : "no E");
+        QCOMPARE(units.value("photon_energy").toString(), QStringLiteral("eV"));
+        QCOMPARE(units.value("qw.gTE").toString(), QStringLiteral("1/m"));
+        QCOMPARE(units.value("qw.Fc").toString(), QStringLiteral("eV"));
+        qucs_s::dataset::Dataset swept;
+        why = dataset("pgs", swept, units);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(units.value("F").toString(), QStringLiteral("V/m"));
+        QCOMPARE(units.value("photon_energy").toString(), QStringLiteral("eV"));
+        QVERIFY2(units.contains("qw.dnTE") && units.value("qw.dnTE").toString().isEmpty(), qPrintable(units.value("qw.dnTE").toString()));   // (a number: none)
     }
 
     // A PDE of one's own in the window: a 1D ODE's default plot a line graph
