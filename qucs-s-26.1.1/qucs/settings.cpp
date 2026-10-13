@@ -111,6 +111,7 @@ void settingsManager::initDefaults()
     m_Defaults["PythonWatches"] = QStringList();      // the debugger's watch list (PythonRunConsole::watches())
     m_Defaults["PythonInlineValues"] = true;         // PythonDoc::inlineValuesShown(): values at line ends while stopped
     m_Defaults["PythonBreakOnRaised"] = false;       // the debugger stops where an exception is raised, caught or not
+    m_Defaults["GitHistoryDocked"] = false;          // git::Commands::showHistory(): a panel docked in the window, else a window of its own
     m_Defaults["ShowPinNames"] = true;
     m_Defaults["ShowPinDirections"] = false;
     m_Defaults["EmbedVerilogAInLibraries"] = true;
