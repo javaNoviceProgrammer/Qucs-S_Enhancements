@@ -1625,7 +1625,12 @@ QList<NodeKind> makeKinds()
               text(QStringLiteral("energies"), tr("Photon energies or wavelengths"), QStringLiteral("linspace(1.4[eV], 1.8[eV], 201)"),
                    tr("In eV, or free-space wavelengths in m (range(1.5[um], 1[nm], 1.6[um])), or Hz: linspace, range or values split "
                       "by commas")),
-              integer(QStringLiteral("states"), tr("States of each carrier"), 6),
+              integer(QStringLiteral("states"), tr("States of each carrier"), 6,
+                      tr("How many states of each carrier are solved and enter the spectrum (with k·p valence bands, twice as many "
+                         "of those: Kramers' pairs). With a Lorentzian line each higher state's tail reaches under the gain's peak, "
+                         "which then depends on it - a 10 nm GaAs well's TE peak 394 /cm with 2, 304 with 4 (Lumerical's MQW keeps 2 "
+                         "conduction and 4 valence subbands: 2 here); the log warns when transitions more than 5 half widths above the "
+                         "peak take more than 10 % off it. A Gaussian or a sech line hardly depends on it")),
               integer(QStringLiteral("kpoints"), tr("k points (k·p)"), 121,
                       tr("The k·p valence bands' in-plane k from 0 past the highest photon and the holes' reach, at this many values: "
                          "fewer, quicker - each interval's occupations and the line's tail are integrated within it")),
@@ -1648,8 +1653,8 @@ QList<NodeKind> makeKinds()
               choice(QStringLiteral("lineshape"), tr("Line shape"), {QStringLiteral("lorentzian"), QStringLiteral("gaussian"), QStringLiteral("sech")},
                      {tr("Lorentzian"), tr("Gaussian"), tr("Hyperbolic secant")}, QStringLiteral("lorentzian"),
                      tr("Each transition's broadening. With carriers a Lorentzian's slow tails move the gain's zero below the "
-                        "quasi-Fermi levels' separation (some 10 meV at 6.6 meV) and part the emission from the gain: for gain "
-                        "spectra a Gaussian or a sech. A Lorentzian's tails absorb far below the edge (an electroabsorption "
+                        "quasi-Fermi levels' separation (some 10 meV at 6.6 meV) and part the emission from the gain, and the gain's peak "
+                        "depends on how many states the step takes: for gain spectra a Gaussian or a sech. A Lorentzian's tails absorb far below the edge (an electroabsorption "
                         "modulator's loss at 0 V); a Gaussian's (inhomogeneous: the wells' widths and alloy) and a sech's do not")),
               flag(QStringLiteral("excitons"), tr("Excitons"), false,
                    tr("Each transition's 1s exciton - its binding energy variational over the states' own envelopes (a field "

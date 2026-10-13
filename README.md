@@ -2233,7 +2233,12 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     density of states, or a wire's 1D one, broadened by a Lorentzian, a
     Gaussian or a sech - for gain a Gaussian or a sech: a Lorentzian's
     slow tails move the gain's zero some 10 meV below the quasi-Fermi
-    levels' separation -, wider with the **field** across the wells if
+    levels' separation, and carry the higher states' absorption under the
+    gain's peak: a 10 nm GaAs well's TE peak is 394 /cm with 2 states, 304
+    with 4 (Lumerical's MQW keeps 2 conduction and 4 valence subbands), and
+    the log warns when the transitions well above the peak take more than
+    10 % off it, `qw.alphaTEfar`, `qw.alphaTMfar` what they add at each
+    energy -, wider with the **field** across the wells if
     asked, `dlinewidth`, `qw.Fw`; each its two states' own in-plane masses, the
     inverse mass averaged over |ψ|²; with the k·p bands, each pair of
     states at each k, TE and TM from their X, Y and Z parts), with **excitons** if asked - each

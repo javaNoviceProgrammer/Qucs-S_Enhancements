@@ -1217,6 +1217,7 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request)
   const QString title = request.value(QStringLiteral("title")).toString();
   const bool own = request.value(QStringLiteral("replace")).toBool();
   const QString yLabel = request.value(QStringLiteral("ylabel")).toString();
+  const QString xLabel = request.value(QStringLiteral("xlabel")).toString();
   Diagram *same = nullptr;
   for (Diagram *d : shown->a_DocDiags) {
     QStringList vars;
@@ -1243,8 +1244,9 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request)
                           [](const QJsonObject &) {});
   }
   if (same != nullptr) {
-    if (own && same->yAxis.Label != yLabel) {
+    if (own && (same->yAxis.Label != yLabel || same->xAxis.Label != xLabel)) {
       same->yAxis.Label = yLabel;
+      same->xAxis.Label = xLabel;
       same->updateGraphData();
       shown->setChanged(true, true);
       shown->viewport()->update();
@@ -1267,6 +1269,8 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request)
     args.insert(QStringLiteral("y_axis"), QJsonObject{{QStringLiteral("label"), yLabel}});
     if (traces.size() > 1) args.insert(QStringLiteral("legend"), QStringLiteral("top_right"));
   }
+  // (Its axis' unit: "k (1/nm)".)
+  if (!xLabel.isEmpty()) args.insert(QStringLiteral("x_axis"), QJsonObject{{QStringLiteral("label"), xLabel}});
   a_control->callTool(QStringLiteral("add_diagram"), args, [this](const QJsonObject &result) {
     if (result.value(QLatin1String("isError")).toBool())
       statusBar()->showMessage(tr("qucs.display(): %1").arg(result.value(QStringLiteral("content")).toArray().at(0).toObject()
