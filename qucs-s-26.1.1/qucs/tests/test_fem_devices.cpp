@@ -247,6 +247,19 @@ double at1(const Solution& s, const QString& expression, double x, double y)
     return v ? *v : NAN;
 }
 
+/// \a expression's mean along y = \a y from x = \a x0 to \a x1, at the
+/// middles of \a n pieces.
+double meanAlong(const Solution& s, const QString& expression, double x0, double x1, double y, int n = 200)
+{
+    const Locator locator(s.mesh());
+    double sum = 0;
+    for (int i = 0; i < n; ++i) {
+        const std::optional<double> v = evaluateAt(s, locator, expression, QPointF(x0 + (x1 - x0) * (i + 0.5) / n, y));
+        sum += v ? *v : NAN;
+    }
+    return sum / n;
+}
+
 /// Fermi-Dirac's integral of order 1/2, normalized (e^η where carriers are
 /// few): Simpson's rule in t = √ε, fine.
 double fermiHalf(double eta)
@@ -439,6 +452,93 @@ private slots:
         QVERIFY2(second <= 5, qPrintable(QString::number(second)));
         for (const auto& point : r.study.solutions)
             for (const QString& line : point->log) QVERIFY2(!line.contains(QLatin1String("not Delaunay")), qPrintable(line));
+    }
+
+    void aRightAngleIsNoEdgeLeftOut()
+    {
+        // An edge of a semiconductor's boundary with a right angle across it
+        // weighs nought: no current along it, none left out. Its rounding -
+        // -3e-17 of a cotangent on Linux's diode at 0.1 µm, and 11 of 18
+        // meshes about that size here - was measured against the
+        // cotangents alone, nought there too, and said "not Delaunay". A
+        // node of the diode's mesh moved across from a boundary's edge:
+        // to make the angle there 90° and 1e-12 rad nothing is said; to
+        // make it 118° (its cotangent -0.6) the edge is left out, said.
+        const Model m = modelOf(diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QString(), QStringLiteral(R"({"type": "stationary"})"),
+                                      QStringLiteral("0.1")));
+        const auto ps = evaluateParameters(m);
+        const GeometryBuild g = buildGeometry(m, *ps);
+        QVERIFY(g.ok());
+        const MeshBuild built = buildMesh(m, *ps, g.topology);
+        QVERIFY2(built.mesh, qPrintable(built.error));
+        const Mesh& base = *built.mesh;
+        std::vector<char> onBoundary(base.nodes.size(), 0);
+        for (const Mesh::Edge& e : base.edges) onBoundary[std::size_t(e.a)] = onBoundary[std::size_t(e.b)] = 1;
+        auto cross = [](QPointF u, QPointF v) { return u.x() * v.y() - u.y() * v.x(); };
+        // Each edge's cotangents opposite, summed (the box method's weight
+        // over half the thickness).
+        auto weights = [&](const Mesh& mesh) {
+            std::map<std::pair<int, int>, double> w;
+            for (const auto& t : mesh.triangles)
+                for (int k = 0; k < 3; ++k) {
+                    const int a = t[std::size_t(k)], b = t[std::size_t((k + 1) % 3)], o = t[std::size_t((k + 2) % 3)];
+                    const QPointF u = mesh.nodes[std::size_t(a)] - mesh.nodes[std::size_t(o)], v = mesh.nodes[std::size_t(b)] - mesh.nodes[std::size_t(o)];
+                    w[{std::min(a, b), std::max(a, b)}] += (u.x() * v.x() + u.y() * v.y()) / std::abs(cross(u, v));
+                }
+            return w;
+        };
+        // The mesh with the node across a boundary's edge moved to depth
+        // f times the edge's half length from its middle: one whose other
+        // edges stay Delaunay and triangles turned as they were.
+        auto moved = [&](double f, std::pair<int, int>* target) -> std::shared_ptr<Mesh> {
+            for (const Mesh::Edge& e : base.edges) {
+                const int t = e.left >= 0 ? e.left : e.right;
+                if (t < 0 || (e.left >= 0 && e.right >= 0)) continue;
+                const auto& tri = base.triangles[std::size_t(t)];
+                int o = -1;
+                for (int c : tri)
+                    if (c != e.a && c != e.b) o = c;
+                if (o < 0 || onBoundary[std::size_t(o)]) continue;
+                const QPointF a = base.nodes[std::size_t(e.a)], b = base.nodes[std::size_t(e.b)], mid = (a + b) / 2;
+                const double half = std::hypot(b.x() - a.x(), b.y() - a.y()) / 2;
+                QPointF nrm(-(b.y() - a.y()) / (2 * half), (b.x() - a.x()) / (2 * half));
+                const QPointF to = base.nodes[std::size_t(o)] - mid;
+                if (to.x() * nrm.x() + to.y() * nrm.y() < 0) nrm = -nrm;
+                auto mesh = std::make_shared<Mesh>(base);
+                mesh->nodes[std::size_t(o)] = mid + nrm * (half * f);
+                bool fine = true;
+                for (std::size_t k = 0; k < base.triangles.size() && fine; ++k) {
+                    const auto& v = base.triangles[k];
+                    const double before = cross(base.nodes[std::size_t(v[1])] - base.nodes[std::size_t(v[0])], base.nodes[std::size_t(v[2])] - base.nodes[std::size_t(v[0])]);
+                    const double after = cross(mesh->nodes[std::size_t(v[1])] - mesh->nodes[std::size_t(v[0])], mesh->nodes[std::size_t(v[2])] - mesh->nodes[std::size_t(v[0])]);
+                    fine = before * after > 0;
+                }
+                const std::pair<int, int> key(std::min(e.a, e.b), std::max(e.a, e.b));
+                for (const auto& [edge, w] : weights(*mesh))
+                    if (edge != key && w < -1e-9) fine = false;
+                if (!fine) continue;
+                *target = key;
+                return mesh;
+            }
+            return nullptr;
+        };
+        for (const double f : {1 - 1e-12, 0.6}) {
+            std::pair<int, int> key;
+            const std::shared_ptr<Mesh> mesh = moved(f, &key);
+            QVERIFY2(mesh, "no node to move");
+            const double w = weights(*mesh)[key];
+            const StudyResult r = solveStudy(m, ps, mesh, QString());
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            QString said;
+            for (const QString& line : r.solution->log)
+                if (line.contains(QLatin1String("not Delaunay"))) said = line;
+            qInfo("the angle across (%g, %g)-(%g, %g) %.12f°, its cotangent %.3g: %s", mesh->nodes[std::size_t(key.first)].x(), mesh->nodes[std::size_t(key.first)].y(),
+                  mesh->nodes[std::size_t(key.second)].x(), mesh->nodes[std::size_t(key.second)].y(), std::atan2(1, w) * 180 / M_PI, w,
+                  said.isEmpty() ? "nothing said" : qPrintable(said));
+            QVERIFY(w < 0);
+            if (f > 0.9) QVERIFY2(said.isEmpty(), qPrintable(said));
+            else QVERIFY2(said.contains(QLatin1String(": 1 of ")), qPrintable(said));
+        }
     }
 
     void aJunctionsBreakdown()
@@ -1555,9 +1655,14 @@ private slots:
         // 10 MV/cm: the electrons tunnelling through it, semi.Ifn, J W at
         // that field, J = A E² e^(-B/E), A = q³ m0/(8π h φB m_ox) and B = 8π
         // √(2 m_ox) φB^(3/2)/(3 q h) (φB 3.1 eV, m_ox 0.42: 1.18e-6 A/V²,
-        // 242 MV/cm), to 1 % (the field read at one point; J (2 + B/E)
-        // times as sensitive) - a few mA/cm² at 10 MV/cm, as measured gate
-        // oxides have it.
+        // 242 MV/cm), to 0.3 % - a few mA/cm² at 10 MV/cm, as measured gate
+        // oxides have it. The field the oxide's along its middle (J 2 + B/E
+        // times as sensitive: at one point, 0.04 % from the next, 1 % in
+        // J). The inversion layer, thinner than the mesh, moves the
+        // interface's nodes' potentials 25 mV from node to node, the first
+        // triangles' fields ±1 %: the current through them was 1.5 % low and
+        // ±1.2 % from mesh to mesh (Linux's 3.8 % low), over the barrier
+        // (where the potential has moved by φB) within 0.07 % of 21 meshes'.
         constexpr double H = 6.62607015e-34, M0 = 9.1093837015e-31;
         const double phiB = 3.1 * Q, mox = 0.42;
         const double A = Q * Q * Q / (8 * M_PI * H * phiB * mox), B = 8 * M_PI * std::sqrt(2 * mox * M0) * std::pow(phiB, 1.5) / (3 * Q * H);
@@ -1566,12 +1671,42 @@ private slots:
         json.replace(R"("expression": "0[V]")", R"("expression": "10[V]")");
         const Run r = run(modelOf(json));
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-        const double Eox = at1(*r.solution, QStringLiteral("semi.normE"), 0.05, 0.005);
+        const double Eox = meanAlong(*r.solution, QStringLiteral("semi.normE"), 0, 0.1, 0.005);
         const double J = A * Eox * Eox * std::exp(-B / Eox), I = global(*r.solution, QStringLiteral("semi.Ifn"));
-        qInfo("Fowler-Nordheim: A %.4g A/V², B %.4g MV/cm; the oxide at %.3f MV/cm, %.4g A/cm²: semi.Ifn %.6g A (J W %.6g)", A, B / 1e8, Eox / 1e8,
+        qInfo("Fowler-Nordheim: A %.4g A/V², B %.4g MV/cm; the oxide at %.4f MV/cm, %.4g A/cm²: semi.Ifn %.6g A (J W %.6g)", A, B / 1e8, Eox / 1e8,
               J * 1e-4, I, J * 0.1e-6);
         QVERIFY(std::abs(A / 1.18e-6 - 1) < 0.01 && std::abs(B / 2.42e10 - 1) < 0.01);
-        QVERIFY2(Eox > 0.8e9 && std::abs(I / (J * 0.1e-6) - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(I).arg(J * 0.1e-6)));
+        QVERIFY2(Eox > 0.8e9 && std::abs(I / (J * 0.1e-6) - 1) < 0.003, qPrintable(QStringLiteral("%1 %2").arg(I).arg(J * 0.1e-6)));
+        // 2 nm of oxide at 2 V and -3 V (accumulated): the barrier (3.1 V)
+        // wider than it - the tunnelling direct -, each edge's field the
+        // potential's change across the oxide over its thickness, from its
+        // middle to the gate.
+        for (const char* volts : {"2", "-3"}) {
+            QByteArray thin = mosCapacitor(QStringLiteral(R"(, {"type": "fn", "selection": {"of": ["surface"], "side": "top"}})"),
+                                           QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.02"), QStringLiteral("0.001"));
+            QVERIFY(thin.contains(R"("name": "oxide", "size": ["0.02", "0.01"])"));
+            thin.replace(R"("name": "oxide", "size": ["0.02", "0.01"])", R"("name": "oxide", "size": ["0.02", "0.002"])");
+            thin.replace(R"("expression": "0[V]")", QStringLiteral(R"("expression": "%1[V]")").arg(QLatin1String(volts)).toUtf8());
+            const Run d = run(modelOf(thin));
+            QVERIFY2(d.error.isEmpty(), qPrintable(d.error));
+            const Mesh& mesh = d.solution->mesh();
+            const Locator locator(mesh);
+            auto V = [&](double x, double y) { return evaluateAt(*d.solution, locator, QStringLiteral("semi.V"), QPointF(x, y)).value_or(NAN); };
+            double across = 0, most = 0;
+            int edges = 0;
+            for (const Mesh::Edge& e : mesh.edges) {
+                const QPointF a = mesh.nodes[std::size_t(e.a)], b = mesh.nodes[std::size_t(e.b)];
+                if (std::abs(a.y()) > 1e-12 || std::abs(b.y()) > 1e-12) continue;
+                const double xm = (a.x() + b.x()) / 2, E = std::abs(V(xm, 0.002 * (1 - 1e-9)) - V(xm, 0)) / 2e-9;
+                across += A * E * E * std::exp(-B / E) * std::abs(b.x() - a.x()) * 1e-6;
+                most = std::max(most, E);
+                ++edges;
+            }
+            const double Ithin = global(*d.solution, QStringLiteral("semi.Ifn"));
+            qInfo("2 nm at %s V: semi.Ifn %.6g A, its %d edges' fields across the oxide (to %.3f MV/cm, the barrier %.2f nm wide there) %.6g", volts, Ithin, edges,
+                  most / 1e8, 3.1 / most * 1e9, across);
+            QVERIFY2(edges > 10 && most > 5e8 && most * 2e-9 < 3.1 && std::abs(Ithin / across - 1) < 1e-6, qPrintable(QStringLiteral("%1 %2").arg(Ithin).arg(across)));
+        }
     }
 
     void implantAndAnneal()
@@ -1897,10 +2032,11 @@ private slots:
         double sx = 0, sy = 0, sxx = 0, sxy = 0;
         int n = 0;
         for (const auto& point : r.study.solutions) {
-            const double E = at1(*point, QStringLiteral("semi.normE"), 0.05, 0.005), I = global(*point, QStringLiteral("semi.Ifn"));
+            // (The oxide's field along its middle, as fowlerNordheim's.)
+            const double E = meanAlong(*point, QStringLiteral("semi.normE"), 0, 0.1, 0.005), I = global(*point, QStringLiteral("semi.Ifn"));
             const double J = A * E * E * std::exp(-B / E);
             said << QStringLiteral("FN at %1 MV/cm: %2 A/cm² (%3)").arg(E / 1e8, 0, 'f', 2).arg(I / area * 1e-4, 0, 'g', 4).arg(J * 1e-4, 0, 'g', 4);
-            QVERIFY2(std::abs(I / (J * area) - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(I / (J * area) - 1) < 0.003, qPrintable(said.join(QLatin1String("; "))));
             const double x = 1 / E, y = std::log(I / (E * E));
             sx += x;
             sy += y;
