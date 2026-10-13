@@ -15,6 +15,7 @@
 
 #include "ink.h"
 #include "misc.h"
+#include "settings.h"
 
 #include <QAction>
 #include <QApplication>
@@ -38,6 +39,7 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QSplitter>
 #include <QTimer>
 #include <QTreeWidget>
@@ -873,15 +875,25 @@ HistoryView* Commands::showHistory(const QString& root, const QString& path)
     for (const QPointer<HistoryView>& h : std::as_const(a_histories))
         if (QDir::cleanPath(h->root()) == QDir::cleanPath(root) && QDir::cleanPath(h->path()) == wanted) {
             h->refresh();
-            if (QDockWidget* dock = h->dock()) {
-                dock->show();
-                dock->raise();
-                dock->activateWindow();
-            }
+            QWidget* shown = h->dock() != nullptr ? static_cast<QWidget*>(h->dock()) : h.data();
+            shown->show();
+            shown->raise();
+            shown->activateWindow();
             return h;
         }
     auto* h = new HistoryView(root, path);
     a_histories << h;
+    if (!historyDocked()) {
+        // A window of its own (the main window's: gone with it), as the
+        // IDEs' own windows are.
+        h->setParent(a_main, Qt::Window);
+        h->setAttribute(Qt::WA_DeleteOnClose);
+        h->resize(1200, 820);
+        h->show();
+        h->raise();
+        h->activateWindow();
+        return h;
+    }
     auto* dock = new QDockWidget(h->windowTitle(), a_main);
     // (Its own name: the window's layout kept with the others'.)
     dock->setObjectName(QStringLiteral("GitHistoryDock_%1").arg(QString::fromLatin1(
@@ -913,6 +925,42 @@ HistoryView* Commands::showHistory(const QString& root, const QString& path)
         dock->activateWindow();
     }
     return h;
+}
+
+bool Commands::historyDocked()
+{
+    return _settings::Get().item<bool>(QStringLiteral("GitHistoryDocked"));
+}
+
+void Commands::setHistoryDocked(bool docked)
+{
+    _settings::Get().setItem<bool>(QStringLiteral("GitHistoryDocked"), docked);
+}
+
+void Commands::editSettings()
+{
+    QDialog dialog(window());
+    dialog.setObjectName(QStringLiteral("gitSettingsDialog"));
+    dialog.setWindowTitle(tr("Git Settings"));
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(tr("History opens:"), &dialog));
+    auto* own = new QRadioButton(tr("In a window of its own"), &dialog);
+    own->setObjectName(QStringLiteral("gitHistoryWindow"));
+    auto* docked = new QRadioButton(tr("Docked in the main window, below the documents (to be moved, or floated)"), &dialog);
+    docked->setObjectName(QStringLiteral("gitHistoryDocked"));
+    (historyDocked() ? docked : own)->setChecked(true);
+    layout->addWidget(own);
+    layout->addWidget(docked);
+    auto* note = new QLabel(tr("A History open now stays where it is; the next one opens as chosen."), &dialog);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) return;
+    setHistoryDocked(docked->isChecked());
+    emit message(docked->isChecked() ? tr("History opens docked in the main window") : tr("History opens in a window of its own"));
 }
 
 void Commands::showBlame(const QString& root, const QString& path)

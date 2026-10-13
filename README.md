@@ -1661,9 +1661,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     with *Amend the last commit* and *Commit and Push*. When nothing is
     staged it offers to stage everything; a merge under way is committed
     with nothing staged (its conflicts resolved as the branch had them).
-    *History* is a **panel**, docked below the documents beside the
-    others there (each history a tab of them) - dragged to any side, or
-    floated as a window of its own and docked again, as any dock. It
+    *History* opens in a **window of its own** by default; *Git →
+    Settings…* makes it a **panel** instead, docked below the documents
+    beside the others there (each history a tab of them) - dragged to any
+    side, or floated as a window of its own and docked again, as any dock
+    (a History open stays as it is; the next opens as chosen). It
     draws every branch's commits as a **graph**, as VS Code's
     and Eclipse's history do: newest first, each commit a dot in its
     branch's lane and colour, the lines to its parents — a merge curving

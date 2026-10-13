@@ -34,6 +34,8 @@
 #include <QSaveFile>
 #include <QProcess>
 #include <QPushButton>
+#include <QRadioButton>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -364,7 +366,7 @@ private slots:
         for (const QPointer<QDialog>& d : Commands::instance()->openWindows())
             if (!d.isNull()) d->close();
         for (const QPointer<HistoryView>& h : Commands::instance()->histories())
-            if (!h.isNull() && h->dock() != nullptr) h->dock()->close();
+            if (!h.isNull()) (h->dock() != nullptr ? static_cast<QWidget*>(h->dock()) : h.data())->close();
         for (QucsDoc* doc : app->allDocuments()) doc->setDocChanged(false);
         app->closeAllFiles();
         delete app;
@@ -1198,13 +1200,74 @@ private slots:
         QCOMPARE(blamed.lines()->topLevelItem(0)->text(2), QStringLiteral("Tester"));
     }
 
-    // The History a panel: docked in the main window below the documents,
-    // a tab beside the panels there; a file's history a tab beside the
-    // repository's; asked again, the same one in front; moved to the right,
-    // floated as a window of its own and docked again; closed, gone with
-    // its view.
+    // The History a window of its own by default (the main window's: gone
+    // with it), asked again the same one in front, closed gone; Git >
+    // Settings... - its own, not the application menu's Preferences on a
+    // Mac - chooses a panel docked in the main window instead (theHistoryDocks)
+    // and back, kept with the settings; a History open stays as it is.
+    void theHistoryIsAWindowOfItsOwn()
+    {
+        QVERIFY(!Commands::historyDocked());
+        const QString repo = makeRepo("own");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(write(repo + "/notes.txt", "own\n"));
+        QVERIFY(commit(repo, "one", false, {repo + "/notes.txt"}).ok());
+        HistoryView* history = Commands::instance()->showHistory(repo);
+        QVERIFY(history != nullptr);
+        QVERIFY(history->dock() == nullptr);
+        QVERIFY(history->isWindow() && history->isVisible());
+        QCOMPARE(history->parentWidget(), static_cast<QWidget*>(app));
+        QCOMPARE(history->windowTitle(), QStringLiteral("History — own"));
+        QVERIFY(history->width() >= 1000);
+        QCOMPARE(history->model()->row(0).commit.subject, QStringLiteral("one"));
+        // Hidden (minimized away), asked again: shown.
+        history->hide();
+        QCOMPARE(Commands::instance()->showHistory(repo), history);
+        QVERIFY(history->isVisible());
+        // The menu's Settings...: its own role, and its choice.
+        QAction* settings = app->findChild<QAction*>(QStringLiteral("gitSettings"));
+        QVERIFY(settings != nullptr);
+        QCOMPARE(settings->menuRole(), QAction::NoRole);
+        auto answer = [](const char* choice, bool ok) {
+            QTimer::singleShot(0, [choice, ok] {
+                QDialog* d = nullptr;
+                for (QWidget* w : QApplication::topLevelWidgets())
+                    if (w->objectName() == QLatin1String("gitSettingsDialog") && w->isVisible()) d = qobject_cast<QDialog*>(w);
+                if (d == nullptr) return;
+                if (auto* b = d->findChild<QRadioButton*>(QString::fromLatin1(choice))) b->setChecked(true);
+                ok ? d->accept() : d->reject();
+            });
+        };
+        answer("gitHistoryDocked", false);
+        settings->trigger();
+        QVERIFY(!Commands::historyDocked());   // (cancelled)
+        answer("gitHistoryDocked", true);
+        settings->trigger();
+        QVERIFY(Commands::historyDocked());
+        QVERIFY(_settings::Get().item<bool>("GitHistoryDocked"));
+        // The one open stays a window; the next docks.
+        QCOMPARE(Commands::instance()->showHistory(repo), history);
+        QVERIFY(history->dock() == nullptr);
+        HistoryView* file = Commands::instance()->showHistory(repo, repo + "/notes.txt");
+        QVERIFY(file != nullptr && file->dock() != nullptr);
+        file->dock()->close();
+        answer("gitHistoryWindow", true);
+        settings->trigger();
+        QVERIFY(!Commands::historyDocked());
+        QPointer<HistoryView> gone = history;
+        history->close();
+        QTRY_VERIFY(gone.isNull());
+    }
+
+    // The History a panel (as Git > Settings... can have it): docked in the
+    // main window below the documents, a tab beside the panels there; a
+    // file's history a tab beside the repository's; asked again, the same
+    // one in front; moved to the right, floated as a window of its own and
+    // docked again; closed, gone with its view.
     void theHistoryDocks()
     {
+        Commands::setHistoryDocked(true);
+        const auto back = qScopeGuard([] { Commands::setHistoryDocked(false); });
         const QString repo = makeRepo("docked");
         QVERIFY(!repo.isEmpty());
         QVERIFY(write(repo + "/notes.txt", "docked\n"));
@@ -1712,8 +1775,10 @@ private slots:
         QCOMPARE(shown->scope(), QStringLiteral("all"));
         QCOMPARE(Commands::instance()->showHistory(repo), shown);
         QVERIFY(Commands::instance()->showHistory(repo, repo + "/b.txt") != shown);   // (a file's: its own)
+        // (A window of its own, as Git > Settings... has it by default: said.)
+        QVERIFY2(text(r).contains(QLatin1String("the History window shows it")), qPrintable(text(r)));
         for (const QPointer<HistoryView>& d : Commands::instance()->histories())
-            if (d != nullptr && d->root() == repo) d->dock()->close();
+            if (d != nullptr && d->root() == repo) (d->dock() != nullptr ? static_cast<QWidget*>(d->dock()) : d.data())->close();
     }
 
     // A merge in conflict over a schematic open in a tab: git's file has

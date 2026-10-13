@@ -319,7 +319,7 @@ QJsonObject QucsControl::gitLog(const QJsonObject& args)
         const git::Result drawn = git::run(root, a, true, 30000);
         if (drawn.ok()) o.insert(QStringLiteral("graph"), QJsonArray::fromStringList(drawn.out.split(QLatin1Char('\n'), Qt::SkipEmptyParts).mid(0, max * 4)));
     }
-    // The History panel: the graph as the user sees it.
+    // The History: the graph as the user sees it.
     if (args.value(QLatin1String("show")).toBool()) {
         if (git::HistoryView* d = git::Commands::instance()->showHistory(root, file)) {
             if (!ref.isEmpty() || all) {
@@ -327,7 +327,8 @@ QJsonObject QucsControl::gitLog(const QJsonObject& args)
                 d->reload();
             }
             if (!found.isEmpty()) d->select(found.first().hash);
-            o.insert(QStringLiteral("shown"), tr("the History panel shows it (docked below the documents): a graph of the commits, the one listed first chosen (screenshot takes a picture)"));
+            o.insert(QStringLiteral("shown"), (d->dock() != nullptr ? tr("the History panel shows it (docked in the main window)") : tr("the History window shows it (a window of its own)"))
+                                                  + tr(": a graph of the commits, the one listed first chosen (screenshot takes a picture; Git > Settings... chooses where it opens)"));
         }
     }
     return jsonResult(o);

@@ -176,6 +176,12 @@ void QucsApp::initGitMenu()
                                  ? fileBrowser->location() : QucsSettings.qucsWorkspaceDir.absolutePath());
       }, tr("A repository from a URL, into the File Browser's folder"));
   add("gitRefresh", tr("Refresh Git Status"), [] { Tracker::instance()->refresh(); });
+  gitMenu->addSeparator();
+  // (Its own: not moved to the application menu as its Preferences, as a
+  // Mac would a "Settings..." by its name.)
+  add("gitSettings", tr("Settings..."), [git] { git->editSettings(); },
+      tr("How the Git commands behave: whether History opens in a window of its own or docked in this window"))
+      ->setMenuRole(QAction::NoRole);
   connect(gitMenu, &QMenu::aboutToShow, this, &QucsApp::updateGitMenu);
 
   // Left of Help.
