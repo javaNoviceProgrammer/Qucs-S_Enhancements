@@ -888,7 +888,10 @@ About 3,000 lines and 900 of tests.
 
 **Where they differ from what such tools have:**
 - **Boltzmann's statistics only:** no Fermi-Dirac, no incomplete ionization, no band-gap
-  narrowing.
+  narrowing. (Since 2026-10-12 all three are there, each a choice on the Semiconductor
+  Material Model: Fermi-Dirac's ℱ1/2 through each carrier's band offset, Vt ln γ, as solved
+  at rest, in time and small-signal; Slotboom's narrowing with Klaassen's silicon values;
+  the dopants filled by the Fermi level, instantly - not captured in time.)
 - **Heterojunctions are not modelled:** the carriers are continuous at a node between two
   semiconductors. One semiconductor material per device, or several with the same bands.
 - **Isothermal:** the temperature is one constant (no hydrodynamic or thermal model of

@@ -234,6 +234,14 @@ struct SemiconductorState {
     double phin = NaN, phip = NaN;    ///< the quasi-Fermi potentials (V), smooth across a heterojunction
     double R = 0;
     double Jn[2] = {0, 0}, Jp[2] = {0, 0};
+    /// The carriers' Boltzmann densities: n/γ, p/γ with Fermi-Dirac's
+    /// statistics (γ = ℱ1/2(η)/e^η), n and p with Boltzmann's.
+    double nB = NaN, pB = NaN;
+    /// Incomplete ionization's (0: the dopants all ionized): Nd⁺ = Nd/(1 +
+    /// gd nB/n1d), Na⁻ = Na/(1 + ga pB/p1a) - filled by the Fermi level.
+    double n1d = 0, gd = 0, p1a = 0, ga = 0;
+    double donors(double Nd) const { return n1d > 0 ? Nd / (1 + gd * nB / n1d) : Nd; }
+    double acceptors(double Na) const { return p1a > 0 ? Na / (1 + ga * pB / p1a) : Na; }
 };
 SemiconductorState semiconductorAt(PointEvaluator& e, int field);
 

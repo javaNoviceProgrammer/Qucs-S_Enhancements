@@ -2,7 +2,9 @@
  * test_fem_devices.cpp - semiconductor devices beyond drift and diffusion
  *                        at its simplest: impact ionization (breakdown,
  *                        avalanche gain), a MOSFET's mobility (Lombardi's
- *                        surface scattering, saturation along the current)
+ *                        surface scattering, saturation along the current),
+ *                        heavy doping (Fermi-Dirac, band gap narrowing,
+ *                        dopants ionized in part)
  *
  * This file is part of Qucs-S.
  *
@@ -159,6 +161,53 @@ double lombardiElectrons(double bulk, double across, double N, double d)
     const double ac = 4.75e5 / across + 1e-4 * 1.74e5 * std::pow(std::max(N * 1e-6, 1.0), 0.125) / (300 * std::cbrt(across / 100));
     const double sr = 5.82e14 / (across * across), D = std::exp(-d / 1e-8);
     return 1 / (1 / bulk + D / ac + D / sr);
+}
+
+/// A silicon bar along x (µm), 0.2 high: \a body its regions and doping
+/// (features), ohmic contacts l at x = 0 (at Va) and r at its end;
+/// \a model the semiconductor model's more, \a steps its study's.
+QByteArray siliconBar(const QString& geometry, const QString& doping, const QString& model, const QString& steps, const QString& hmax)
+{
+    return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "Va", "expression": "0[V]"}],
+      "components": [{"unit": "um",
+        "geometry": [%1],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+          %2,
+          {"type": "model" %3, "selection": {"all": true}},
+          {"type": "ohmic", "name": "l", "V0": "Va", "selection": {"of": ["left"], "side": "left"}},
+          {"type": "ohmic", "name": "r", "V0": "0[V]", "selection": {"of": ["right"], "side": "right"}}]}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "%5"}}],
+      "studies": [{"type": "study", "steps": [%4]}]})json")
+        .arg(geometry, doping, model, steps, hmax)
+        .toUtf8();
+}
+
+/// Fermi-Dirac's integral of order 1/2, normalized (e^η where carriers are
+/// few): Simpson's rule in t = √ε, fine.
+double fermiHalf(double eta)
+{
+    const double T = std::sqrt(std::max(eta, 0.0) + 70);
+    const int m = 20000;
+    const double h = T / m;
+    double sum = 0;
+    for (int j = 0; j <= m; ++j) {
+        const double t = j * h, w = (j == 0 || j == m) ? 1 : (j % 2 ? 4 : 2);
+        sum += w * t * t / (1 + std::exp(t * t - eta));
+    }
+    return 4 / std::sqrt(M_PI) * sum * h / 3;
+}
+
+/// η where fermiHalf(η) = u (halved).
+double fermiHalfInverse(double u)
+{
+    double lo = std::log(u) - 1, hi = std::max(std::log(u), 0.0) + 2 * std::pow(u, 2.0 / 3) + 2;
+    for (int k = 0; k < 100; ++k) {
+        const double mid = (lo + hi) / 2;
+        (fermiHalf(mid) < u ? lo : hi) = mid;
+    }
+    return (lo + hi) / 2;
 }
 
 /// Silicon's ionization rates (van Overstraeten and de Man), 1/m at E V/m.
@@ -460,6 +509,241 @@ private slots:
         qInfo("MOSFET: %s", qPrintable(said.join(QLatin1String("; "))));
         QVERIFY2(std::abs(along / free - own) < 3e-3, qPrintable(said.join(QLatin1String("; "))));
         QVERIFY2(byField / free < 0.3, qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void aDegenerateStep()
+    {
+        // An n⁺ (1e20 cm⁻³) to n (1e17) step in silicon, 1.5 µm each, its
+        // carriers Boltzmann's, Fermi-Dirac's, the gap narrowed (Slotboom's,
+        // Klaassen's values), and both:
+        // - the potential's step from the n⁺ side's middle to the n side's:
+        //   Vt (η⁺ - η) - (ΔEg⁺ - ΔEg)/2q, η = ℱ⁻¹(N/Nc) (Boltzmann's ln(N/Nc))
+        //   - to 10 µV;
+        // - the n⁺ side's holes: p n/ni² = e^(ΔEg/kT) γ, γ = ℱ(η)/e^η (0.30 at
+        //   1e20) - to 1e-4;
+        // - at ±1 mV the currents opposite, to 1e-4 (the junction's own
+        //   second order 3e-6): the contacts and the fluxes as the statistics
+        //   (a contact's potential by Boltzmann's on Fermi-Dirac's carriers,
+        //   Vt ln γ off - 31 mV at 1e20 -, would drive a current at nought);
+        // - at 1 kHz its conductance the dc currents' slope, to 1e-6 (the
+        //   small-signal carriers δn = n ℱ'/ℱ (δV - δφn)).
+        constexpr double KB = 1.380649e-23;
+        const double Vt = KB * 300 / Q, Nc = 2.8e25, Nv = 1.04e25, ni = std::sqrt(Nc * Nv) * std::exp(-1.12 / (2 * Vt));
+        auto narrowing = [](double N) {   // eV
+            const double l = std::log(N / 1.3e23);
+            return 6.92e-3 * (l + std::sqrt(l * l + 0.5));
+        };
+        const QString geometry = QStringLiteral(R"({"type": "rectangle", "label": "left", "size": ["1.5", "0.2"]},
+                     {"type": "rectangle", "label": "right", "position": ["1.5", "0"], "size": ["1.5", "0.2"]})");
+        const QString doping = QStringLiteral(R"({"type": "doping", "dopant": "donor", "N0": "1e20[1/cm^3]", "selection": {"only": ["left"]}},
+          {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["right"]}})");
+        const QString steps = QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "0, -1e-3, 1e-3", "V"]]}, {"type": "stationary"},
+          {"type": "frequency", "frequencies": "1[kHz]"})");
+        QStringList said;
+        for (const bool fd : {false, true})
+            for (const bool bgn : {false, true}) {
+                QString model;
+                if (fd) model += QStringLiteral(R"(, "fermi": true)");
+                if (bgn) model += QStringLiteral(R"(, "bgn": true)");
+                Run r = run(modelOf(siliconBar(geometry, doping, model, steps, QStringLiteral("0.05"))));
+                QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+                QCOMPARE(int(r.study.solutions.size()), 3);
+                Solution& s = *r.study.solutions[0];
+                s.select(0);
+                const double G = global(s, QStringLiteral("semi.Gll"));
+                s.select(-1);
+                r.study.solutions[1]->select(-1);
+                r.study.solutions[2]->select(-1);
+                const Locator locator(s.mesh());
+                auto at = [&](const QString& e, double x) {
+                    const std::optional<double> v = evaluateAt(s, locator, e, QPointF(x, 0.1));
+                    return v ? *v : NAN;
+                };
+                const double etaPlus = fd ? fermiHalfInverse(1e26 / Nc) : std::log(1e26 / Nc);
+                const double eta = fd ? fermiHalfInverse(1e23 / Nc) : std::log(1e23 / Nc);
+                const double gPlus = bgn ? narrowing(1e26) : 0, g = bgn ? narrowing(1e23) : 0;
+                const double step = Vt * (etaPlus - eta) - (gPlus - g) / 2;
+                const double gamma = fd ? fermiHalf(etaPlus) / std::exp(etaPlus) : 1;
+                const double pn = std::exp(gPlus / Vt) * gamma;
+                const double dV = at(QStringLiteral("semi.V"), 0.75) - at(QStringLiteral("semi.V"), 2.25);
+                const double holes = at(QStringLiteral("semi.p"), 0.75) * at(QStringLiteral("semi.n"), 0.75) / (ni * ni);
+                const double Iminus = global(*r.study.solutions[1], QStringLiteral("semi.I_l"));
+                const double Iplus = global(*r.study.solutions[2], QStringLiteral("semi.I_l"));
+                said << QStringLiteral("%1%2: the step %3 V (%4), p n/ni² %5 (%6), at ±1 mV %7 and %8 A, G %9 S (%10)")
+                            .arg(fd ? QStringLiteral("Fermi-Dirac") : QStringLiteral("Boltzmann"), bgn ? QStringLiteral(" narrowed") : QString())
+                            .arg(dV, 0, 'f', 6)
+                            .arg(step, 0, 'f', 6)
+                            .arg(holes, 0, 'g', 6)
+                            .arg(pn, 0, 'g', 6)
+                            .arg(Iminus, 0, 'g', 6)
+                            .arg(Iplus, 0, 'g', 6)
+                            .arg(G, 0, 'g', 8)
+                            .arg((Iplus - Iminus) / 2e-3, 0, 'g', 8);
+                QVERIFY2(std::abs(dV - step) < 1e-5, qPrintable(said.join(QLatin1String("; "))));
+                QVERIFY2(std::abs(holes / pn - 1) < 1e-4, qPrintable(said.join(QLatin1String("; "))));
+                QVERIFY2(Iplus > 0 && std::abs(Iplus + Iminus) < 1e-4 * Iplus, qPrintable(said.join(QLatin1String("; "))));
+                QVERIFY2(std::abs(G / ((Iplus - Iminus) / 2e-3) - 1) < 1e-6, qPrintable(said.join(QLatin1String("; "))));
+            }
+        qInfo("degenerate step: %s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void aDegenerateAccumulation()
+    {
+        // 10 nm of oxide on n-type 1e20 cm⁻³ silicon, the gate at 1 V: its
+        // electrons accumulated at the surface, degenerate. Its small-signal
+        // capacitance at 1 kHz the quasi-static one (dQ/dV at equilibrium)
+        // to 1e-4, each carrier's change by Fermi-Dirac's - n ℱ'/ℱ in the
+        // first, Nc ℱ' in the second; the substrate's current the gate's,
+        // C_bg = -C_gg to 1e-4 (its carriers' change read back as the system
+        // has it); and Fermi-Dirac's below Boltzmann's, the band filling as
+        // the surface potential rises.
+        QStringList said;
+        double boltzmann = NAN;
+        for (const bool fd : {false, true}) {
+            const QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "bulk", "position": ["0", "-0.2"], "size": ["0.1", "0.18"]},
+                             {"type": "rectangle", "name": "surface", "position": ["0", "-0.02"], "size": ["0.1", "0.02"]},
+                             {"type": "rectangle", "name": "oxide", "size": ["0.1", "0.01"]}],
+                "materials": [{"material": "Silicon", "selection": {"only": ["bulk", "surface"]}},
+                              {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e20[1/cm^3]", "selection": {"only": ["bulk", "surface"]}},
+                  {"type": "model", "fermi": %1, "selection": {"all": true}},
+                  {"type": "gate", "name": "g", "V0": "1[V]", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+                  {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.02", "features": [
+                  {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "0.002"}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"}]}]})json")
+                                         .arg(fd ? QStringLiteral("true") : QStringLiteral("false"))
+                                         .toUtf8();
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double C = global(*r.solution, QStringLiteral("semi.Cgg")), C0 = global(*r.solution, QStringLiteral("semi.C0gg"));
+            const double Cbg = global(*r.solution, QStringLiteral("semi.Cbg"));
+            const double cox = 3.9 * Eps0 / 10e-9 * 0.1e-6;
+            said << QStringLiteral("%1: C %2 of Cox at 1 kHz, %3 quasi-static, the substrate's %4")
+                        .arg(fd ? QStringLiteral("Fermi-Dirac") : QStringLiteral("Boltzmann"))
+                        .arg(C / cox, 0, 'f', 5)
+                        .arg(C0 / cox, 0, 'f', 5)
+                        .arg(Cbg / cox, 0, 'f', 5);
+            QVERIFY2(std::abs(C / C0 - 1) < 1e-4, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(Cbg / C + 1) < 1e-4, qPrintable(said.join(QLatin1String("; "))));
+            if (!fd) boltzmann = C;
+            else QVERIFY2(C < boltzmann, qPrintable(said.join(QLatin1String("; "))));
+        }
+        qInfo("degenerate accumulation: %s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void aDegenerateChannel()
+    {
+        // A gated film: 20 nm of n-type 1e19 cm⁻³ silicon, 0.2 µm long, under
+        // 10 nm of oxide, the gate at 2 V accumulating it (degenerate at the surface),
+        // the drain at 0.1 V. Its transconductance at 1 kHz the dc one, from
+        // the gate ±10 mV, to 1e-5 - the small-signal currents along the
+        // channel each step's change with the carriers', Fermi-Dirac's ln γ
+        // in it. (A sanitized build: Fermi-Dirac's alone.)
+        QStringList said;
+        for (const bool fd : {false, true}) {
+            if (slowBuild() && !fd) continue;
+            const QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Vg", "expression": "2[V]"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "film", "position": ["0", "-0.02"], "size": ["0.2", "0.02"]},
+                             {"type": "rectangle", "name": "oxide", "size": ["0.2", "0.01"]}],
+                "materials": [{"material": "Silicon", "selection": {"only": ["film"]}},
+                              {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e19[1/cm^3]", "selection": {"only": ["film"]}},
+                  {"type": "model", "fermi": %1, "selection": {"all": true}},
+                  {"type": "gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+                  {"type": "ohmic", "name": "s", "V0": "0[V]", "selection": {"of": ["film"], "side": "left"}},
+                  {"type": "ohmic", "name": "d", "V0": "0.1[V]", "selection": {"of": ["film"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.003"}}],
+              "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Vg", "2, 1.99, 2.01", "V"]]},
+                                                      {"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"}]}]})json")
+                                         .arg(fd ? QStringLiteral("true") : QStringLiteral("false"))
+                                         .toUtf8();
+            Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            QCOMPARE(int(r.study.solutions.size()), 3);
+            Solution& s = *r.study.solutions[0];
+            s.select(0);
+            const double gm = global(s, QStringLiteral("semi.Gdg"));
+            r.study.solutions[1]->select(-1);
+            r.study.solutions[2]->select(-1);
+            const double dc = (global(*r.study.solutions[2], QStringLiteral("semi.I_d")) - global(*r.study.solutions[1], QStringLiteral("semi.I_d"))) / 0.02;
+            said << QStringLiteral("%1: gm %2 S at 1 kHz, %3 from the dc currents").arg(fd ? QStringLiteral("Fermi-Dirac") : QStringLiteral("Boltzmann")).arg(gm, 0, 'g', 7).arg(dc, 0, 'g', 7);
+            QVERIFY2(std::abs(gm / dc - 1) < 1e-5, qPrintable(said.join(QLatin1String("; "))));
+        }
+        qInfo("degenerate channel: %s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void dopantsIonizedInPart()
+    {
+        // Uniform silicon bars at equilibrium, their dopants ionized in part
+        // (45 meV, gd 2 for phosphorus and ga 4 for boron):
+        // - 1e18 cm⁻³ of phosphorus: n = Nd/(1 + 2 n/n1), n1 = Nc e^(-45 meV/kT)
+        //   - 0.763 of the donors;
+        // - 1e18 cm⁻³ of boron: p = Na/(1 + 4 p/p1) - 0.485;
+        // - 1e19 cm⁻³ of phosphorus, Fermi-Dirac's too: n = Nc ℱ(η), Nd⁺ =
+        //   Nd/(1 + 2 e^(η + ΔEd/kT)) - the donors filled by the Fermi level,
+        //   not by n.
+        // Each to 1e-6, semi.Ndi or semi.Nai the carriers, the charge nought.
+        constexpr double KB = 1.380649e-23;
+        const double Vt = KB * 300 / Q, Nc = 2.8e25, Nv = 1.04e25, n1 = Nc * std::exp(-0.045 / Vt), p1 = Nv * std::exp(-0.045 / Vt);
+        struct Case {
+            const char* dopant;
+            double N;
+            bool fd;
+        };
+        QStringList said;
+        for (const Case& c : {Case{"donor", 1e24, false}, Case{"acceptor", 1e24, false}, Case{"donor", 1e25, true}}) {
+            const bool donor = QLatin1String(c.dopant) == QLatin1String("donor");
+            double expected = 0;
+            if (!c.fd) {
+                // g x²/x1 + x - N = 0.
+                const double a = (donor ? 2 / n1 : 4 / p1);
+                expected = (-1 + std::sqrt(1 + 4 * a * c.N)) / (2 * a);
+            } else {
+                // Nc ℱ(η) = N/(1 + 2 e^η Nc/n1), halved in η.
+                double lo = -10, hi = 10;
+                for (int k = 0; k < 100; ++k) {
+                    const double mid = (lo + hi) / 2;
+                    (Nc * fermiHalf(mid) < c.N / (1 + 2 * std::exp(mid) * Nc / n1) ? lo : hi) = mid;
+                }
+                expected = Nc * fermiHalf((lo + hi) / 2);
+            }
+            const QString geometry = QStringLiteral(R"({"type": "rectangle", "label": "left", "size": ["1", "0.2"]},
+                     {"type": "rectangle", "label": "right", "position": ["1", "0"], "size": ["1", "0.2"]})");
+            const QString doping = QStringLiteral(R"({"type": "doping", "dopant": "%1", "N0": "%2", "selection": {"all": true}})")
+                                       .arg(QLatin1String(c.dopant), QString::number(c.N, 'g', 6));
+            const QString model = c.fd ? QStringLiteral(R"(, "incomplete": true, "fermi": true)") : QStringLiteral(R"(, "incomplete": true)");
+            const Run r = run(modelOf(siliconBar(geometry, doping, model, QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.1"))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.solution;
+            const Locator locator(s.mesh());
+            auto at = [&](const QString& e) {
+                const std::optional<double> v = evaluateAt(s, locator, e, QPointF(1, 0.1));
+                return v ? *v : NAN;
+            };
+            const double carriers = at(donor ? QStringLiteral("semi.n") : QStringLiteral("semi.p"));
+            const double ions = at(donor ? QStringLiteral("semi.Ndi") : QStringLiteral("semi.Nai"));
+            const double rho = at(QStringLiteral("semi.rho"));
+            said << QStringLiteral("%1 %2 m⁻³%3: %4 (%5, %6 of them), ionized %7, ρ %8 C/m³")
+                        .arg(QLatin1String(c.dopant))
+                        .arg(c.N, 0, 'g', 3)
+                        .arg(c.fd ? QStringLiteral(" Fermi-Dirac's") : QString())
+                        .arg(carriers, 0, 'g', 7)
+                        .arg(expected, 0, 'g', 7)
+                        .arg(expected / c.N, 0, 'f', 3)
+                        .arg(ions, 0, 'g', 7)
+                        .arg(rho, 0, 'g', 3);
+            QVERIFY2(std::abs(carriers / expected - 1) < 1e-6, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(ions / carriers - 1) < 1e-6, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(rho) < 1e-6 * Q * carriers, qPrintable(said.join(QLatin1String("; "))));
+        }
+        qInfo("ionized in part: %s", qPrintable(said.join(QLatin1String("; "))));
     }
 };
 

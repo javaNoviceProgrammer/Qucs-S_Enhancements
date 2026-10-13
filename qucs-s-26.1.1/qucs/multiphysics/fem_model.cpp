@@ -932,7 +932,29 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("deltap"), tr("Holes' δ"), QStringLiteral("V/s"), QStringLiteral("2.0546e14[V/s]")), QStringLiteral("surface=true")),
           shownIf(expr(QStringLiteral("lcrit"), tr("Depth lcrit"), QStringLiteral("m"), QStringLiteral("10[nm]"),
                        tr("How far from the interface the surface's scattering reaches: e^(-d/lcrit)")),
-                  QStringLiteral("surface=true"))},
+                  QStringLiteral("surface=true")),
+          flag(QStringLiteral("fermi"), tr("Fermi-Dirac statistics"), false,
+               tr("The carriers as Fermi-Dirac's, n = Nc ℱ1/2((Efn - Ec)/kT), not Boltzmann's Nc e^((Efn - Ec)/kT): fewer "
+                  "where the Fermi level nears or enters a band (silicon's 1e20 cm⁻³ 0.30 of Boltzmann's np), their diffusion "
+                  "the generalized Einstein relation's - degenerate contacts, emitters, a HEMT's channel")),
+          flag(QStringLiteral("bgn"), tr("Band gap narrowing (Slotboom)"), false,
+               tr("Heavy doping closes the gap: ΔEg = E (ln(N/Nref) + √(ln²(N/Nref) + C)), N the donors and acceptors - ni "
+                  "e^(ΔEg/2kT), the bands' edges each ΔEg/2 nearer the intrinsic level (a doping's gradient a field of its own "
+                  "on the minority carriers). Silicon's (Slotboom and de Graaff, Klaassen's values) by default")),
+          shownIf(expr(QStringLiteral("Ebgn"), tr("Narrowing's energy E"), QStringLiteral("eV"), QStringLiteral("6.92[meV]")),
+                  QStringLiteral("bgn=true")),
+          shownIf(expr(QStringLiteral("Nbgn"), tr("Narrowing's Nref"), QStringLiteral("1/m^3"), QStringLiteral("1.3e17[1/cm^3]")),
+                  QStringLiteral("bgn=true")),
+          shownIf(expr(QStringLiteral("Cbgn"), tr("Narrowing's C"), QString(), QStringLiteral("0.5")), QStringLiteral("bgn=true")),
+          flag(QStringLiteral("incomplete"), tr("Incomplete ionization"), false,
+               tr("The dopants ionized in part: Nd⁺ = Nd/(1 + gd n/n1), n1 = Nc e^(-ΔEd/kT), Na⁻ = Na/(1 + ga p/p1), p1 = Nv "
+                  "e^(-ΔEa/kT), in Poisson's equation at once (no capture in time). Silicon's phosphorus and boron by default")),
+          shownIf(expr(QStringLiteral("Ed"), tr("Donors' level below Ec, ΔEd"), QStringLiteral("eV"), QStringLiteral("45[meV]")),
+                  QStringLiteral("incomplete=true")),
+          shownIf(expr(QStringLiteral("gd"), tr("Donors' degeneracy gd"), QString(), QStringLiteral("2")), QStringLiteral("incomplete=true")),
+          shownIf(expr(QStringLiteral("Ea"), tr("Acceptors' level above Ev, ΔEa"), QStringLiteral("eV"), QStringLiteral("45[meV]")),
+                  QStringLiteral("incomplete=true")),
+          shownIf(expr(QStringLiteral("ga"), tr("Acceptors' degeneracy ga"), QString(), QStringLiteral("4")), QStringLiteral("incomplete=true"))},
          {}, {}, false, false, QStringLiteral("smm"),
          tr("A semiconductor's band gap, electron affinity, effective densities of states and mobilities, from its material or as "
             "given; ni = √(Nc Nv) exp(-Eg/2kT).")});

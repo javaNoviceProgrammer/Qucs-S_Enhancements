@@ -2080,7 +2080,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     (its quasi-Fermi level's gradient: the gate's field across a channel
     heats nothing - the drain current at 0.1 V 0.999 of the unsaturated
     one, where the whole field cut it to 0.09) or the whole field; semi.mun
-    and the current densities as solved, saturated; Shockley-Read-Hall, Auger and direct
+    and the current densities as solved, saturated. **Heavy doping:**
+    Fermi-Dirac statistics (silicon's 1e20 cm⁻³ 0.30 of Boltzmann's np,
+    its diffusion the generalized Einstein relation's, at rest, in time and
+    small-signal - a degenerate accumulation layer's 1 kHz capacitance the
+    quasi-static one), Slotboom's band gap narrowing and dopants ionized
+    in part (1e18 cm⁻³ of phosphorus 76 %, of boron 48 %; semi.Ndi,
+    semi.Nai) - an n⁺n step's potential and minority carriers the analytic
+    ones to 1e-6; Shockley-Read-Hall, Auger and direct
     recombination, generation (light absorbed). **Impact ionization**
     (Chynoweth's α = a e^(-(b/E)^β), silicon's van Overstraeten and de
     Man's or your own): its pairs from each triangle's field and currents
