@@ -191,6 +191,14 @@ public:
     }
     /// The globals (set after) of the spectrum's point \a k.
     virtual void selectSpectrum(int k) { (void)k; }
+    /// A Schrödinger-Poisson loop's turn: the carriers found by the states
+    /// (another physics') taken in where asked; the largest change made (in
+    /// Vt; 0 none, NaN an error in \a error).
+    virtual double quantumCorrection(QString* error)
+    {
+        (void)error;
+        return 0;
+    }
     /// Whether what it reads (its coefficients, sources, conditions) reads
     /// field \a f.
     bool reads(int f) const { return a_reads.contains(f); }

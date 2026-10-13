@@ -24,6 +24,7 @@
 #include "fem_mesh.h"
 
 #include <Eigen/SparseCholesky>
+#include <Eigen/QR>
 #include <Eigen/SparseLU>
 
 #include <algorithm>
@@ -325,6 +326,16 @@ private:
     // diffusion the generalized Einstein relation's.
     bool a_fermi = false;
     mutable std::vector<double> a_lgN, a_lgP, a_dlgN, a_dlgP, a_rN, a_rP;
+    // Schrödinger-Poisson: by node, the quantum potentials Λn, Λp (V) taken
+    // into the bands' offsets - θn + Λn, θp - Λp: the carriers there e^(Λ/Vt)
+    // Boltzmann's, as the states have them; the offsets without them; the
+    // nodes in the regions asked, and the states' carriers' expressions.
+    std::vector<double> a_lamN, a_lamP, a_thetaN0, a_thetaP0;
+    std::vector<int> a_quantumNodes;
+    Expression a_quantumN, a_quantumP;
+    std::vector<Eigen::VectorXd> a_andX, a_andG;   // Anderson's history: Λ/Vt and its steps
+    bool a_quantumElectrons = false, a_quantumHoles = false;
+    double quantumCorrection(QString* error) override;
     void degeneracy(const Eigen::VectorXd& x) const;
     /// Node \a i's carriers at v, the potential in Vt above its Fermi
     /// level's (Boltzmann's n = ni e^v): Fermi-Dirac's where asked; their
@@ -477,7 +488,10 @@ bool SemiconductorProblem::setup(QString* error)
     };
     std::vector<DopingDef> dopings;
     std::vector<const Node*> boundaryFeatures;
+    std::vector<char> quantumOn(topo.domains.size(), 0);
     a_optical.clear();
+    a_quantumN = a_quantumP = Expression();
+    a_quantumElectrons = a_quantumHoles = false;
     for (const Node& feature : a_node->children) {
         if (!feature.enabled) continue;
         const NodeKind* k = feature.kind();
@@ -490,6 +504,13 @@ bool SemiconductorProblem::setup(QString* error)
         else if (t == QLatin1String("semiconductor/auger")) for (int d : picked) augerOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/radiative")) for (int d : picked) radiativeOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/impact")) for (int d : picked) impactOf[std::size_t(d)] = &feature;
+        else if (t == QLatin1String("semiconductor/quantum")) {
+            for (int d : picked) quantumOn[std::size_t(d)] = 1;
+            a_quantumElectrons = feature.flag(QStringLiteral("electrons"));
+            a_quantumHoles = feature.flag(QStringLiteral("holes"));
+            if (a_quantumElectrons) a_quantumN = compile(feature.text(QStringLiteral("nq")), feature, QStringLiteral("nq"));
+            if (a_quantumHoles) a_quantumP = compile(feature.text(QStringLiteral("pq")), feature, QStringLiteral("pq"));
+        }
         else if (t == QLatin1String("semiconductor/doping")) dopings.push_back({&feature, picked});
         else if (t == QLatin1String("semiconductor/generation")) {
             const Expression g = compile(feature.text(QStringLiteral("G")), feature, QStringLiteral("G"));
@@ -854,6 +875,19 @@ bool SemiconductorProblem::setup(QString* error)
         a_thetaP[std::size_t(i)] = delta - spread;
         hetero = hetero || std::abs(delta) > 1e-9 || std::abs(m.ni / a_refNi - 1) > 1e-9;
     }
+    // Schrödinger-Poisson's nodes, their quantum potentials nought to start.
+    a_thetaN0 = a_thetaN;
+    a_thetaP0 = a_thetaP;
+    a_lamN.assign(std::size_t(a_n), 0.0);
+    a_lamP.assign(std::size_t(a_n), 0.0);
+    a_quantumNodes.clear();
+    if (a_quantumElectrons || a_quantumHoles)
+        for (int t = 0; t < nt; ++t) {
+            if (!a_elemSemi[std::size_t(t)] || !quantumOn[std::size_t(mesh.domain[std::size_t(t)])]) continue;
+            for (int k = 0; k < 3; ++k) a_quantumNodes.push_back(sp.dofs(t)[k]);
+        }
+    std::sort(a_quantumNodes.begin(), a_quantumNodes.end());
+    a_quantumNodes.erase(std::unique(a_quantumNodes.begin(), a_quantumNodes.end()), a_quantumNodes.end());
     if (hetero) {
         const QString line = tr("%1: heterojunctions - the bands' offsets (Anderson's rule: the electron affinities, the band gaps) "
                                 "between its semiconductors")
@@ -1203,8 +1237,9 @@ void SemiconductorProblem::carriersAt(int i, double v, double* n, double* p, dou
 {
     const double ni = a_ni[std::size_t(i)];
     v = std::clamp(v, -600.0, 600.0);
-    *n = ni * std::exp(v);
-    *p = ni * std::exp(-v);
+    // (Schrödinger-Poisson's quantum potentials: each carrier e^(Λ/Vt).)
+    *n = ni * std::exp(std::clamp(v + a_lamN[std::size_t(i)] / a_Vt, -600.0, 600.0));
+    *p = ni * std::exp(std::clamp(-v + a_lamP[std::size_t(i)] / a_Vt, -600.0, 600.0));
     *dn = *n;
     *dp = -*p;
     const int d = a_nodeDomain[std::size_t(i)];
@@ -1219,6 +1254,100 @@ void SemiconductorProblem::carriersAt(int i, double v, double* n, double* p, dou
     fh.at(std::log(*p / m.Nv), &F, &dF);
     *p = m.Nv * F;
     *dp = -m.Nv * dF;
+}
+
+double SemiconductorProblem::quantumCorrection(QString* error)
+{
+    (void)error;
+    if (a_quantumNodes.empty()) return 0;
+    // Each node's quantum potential moved by Vt ln(n_states/n): the
+    // semiconductor's carriers there the states' next time - its carriers
+    // e^(Λ/Vt) Boltzmann's, so Poisson's equation solved with them takes the
+    // states' as rising e^(δV/Vt) with the potential (Trellakis's predictor
+    // and corrector). (A step no more than 3 Vt, Λ within ±30 Vt; where the
+    // states have almost none - ψ nought at an oxide - floored at 1e-8 of
+    // their most, not counted below 1e-6 of it.) Once the steps are under
+    // Vt, Anderson's mixing of the last five: the plain steps crawled at 0.96
+    // a turn, the states' shape answering the potential's, not each node's.
+    const Field& f = field();
+    const std::size_t N = std::size_t(a_n);
+    PointEvaluator ev(a_s);
+    std::vector<double> nq(a_quantumNodes.size(), NaN), pq(a_quantumNodes.size(), NaN);
+    double mostN = 0, mostP = 0;
+    for (std::size_t k = 0; k < a_quantumNodes.size(); ++k) {
+        const auto& [t, r] = a_nodePoint[std::size_t(a_quantumNodes[k])];
+        ev.moveTo(t, r[0], r[1]);
+        if (a_quantumElectrons && a_quantumN.isValid()) mostN = std::max(mostN, nq[k] = ev.eval(a_quantumN));
+        if (a_quantumHoles && a_quantumP.isValid()) mostP = std::max(mostP, pq[k] = ev.eval(a_quantumP));
+    }
+    // The entries: each quantum node's Λn and Λp, their steps, and whether
+    // their carriers count.
+    std::vector<double*> lam;
+    std::vector<double> step;
+    std::vector<char> counted;
+    auto entry = [&](double target, double now, double most, double* l) {
+        if (!std::isfinite(target) || !(now > 0) || !(most > 0)) return;
+        lam.push_back(l);
+        step.push_back(std::clamp(a_Vt * std::log(std::max(target, 1e-8 * most) / now), -3 * a_Vt, 3 * a_Vt));
+        counted.push_back(std::max(target, now) > 1e-6 * most);
+    };
+    for (std::size_t k = 0; k < a_quantumNodes.size(); ++k) {
+        const std::size_t i = std::size_t(a_quantumNodes[k]);
+        if (a_quantumElectrons) entry(nq[k], f.values[N + i], mostN, &a_lamN[i]);
+        if (a_quantumHoles) entry(pq[k], f.values[2 * N + i], mostP, &a_lamP[i]);
+    }
+    const int m = int(lam.size());
+    double largest = 0;
+    for (int j = 0; j < m; ++j)
+        if (counted[std::size_t(j)]) largest = std::max(largest, std::abs(step[std::size_t(j)]));
+    Eigen::VectorXd x(m), g(m);
+    for (int j = 0; j < m; ++j) {
+        x(j) = *lam[std::size_t(j)] / a_Vt;
+        g(j) = counted[std::size_t(j)] ? step[std::size_t(j)] / a_Vt : 0.0;
+    }
+    Eigen::VectorXd next = x;
+    for (int j = 0; j < m; ++j) next(j) += step[std::size_t(j)] / a_Vt;
+    if (largest < a_Vt && a_andX.size() > 0 && a_andX.back().size() == m) {
+        // Anderson: x + g - (ΔX + ΔG) γ, γ the least squares' of ΔG γ = g.
+        const int depth = int(a_andX.size());
+        Eigen::MatrixXd dX(m, depth), dG(m, depth);
+        for (int c = 0; c < depth; ++c) {
+            const Eigen::VectorXd& x1 = c + 1 < depth ? a_andX[std::size_t(c + 1)] : x;
+            const Eigen::VectorXd& g1 = c + 1 < depth ? a_andG[std::size_t(c + 1)] : g;
+            dX.col(c) = x1 - a_andX[std::size_t(c)];
+            dG.col(c) = g1 - a_andG[std::size_t(c)];
+        }
+        const Eigen::VectorXd gamma = dG.colPivHouseholderQr().solve(g);
+        if (gamma.allFinite()) {
+            const Eigen::VectorXd mixed = x + g - (dX + dG) * gamma;
+            for (int j = 0; j < m; ++j)
+                if (counted[std::size_t(j)]) next(j) = x(j) + std::clamp(mixed(j) - x(j), -3.0, 3.0);
+        }
+    }
+    if (largest < a_Vt) {
+        a_andX.push_back(x);
+        a_andG.push_back(g);
+        if (a_andX.size() > 5) {
+            a_andX.erase(a_andX.begin());
+            a_andG.erase(a_andG.begin());
+        }
+    } else {
+        a_andX.clear();
+        a_andG.clear();
+    }
+    double change = 0;
+    for (int j = 0; j < m; ++j) {
+        const double before = *lam[std::size_t(j)];
+        *lam[std::size_t(j)] = std::clamp(next(j) * a_Vt, -30 * a_Vt, 30 * a_Vt);
+        if (counted[std::size_t(j)]) change = std::max(change, std::abs(*lam[std::size_t(j)] - before) / a_Vt);
+    }
+    for (std::size_t i = 0; i < N; ++i) {
+        a_thetaN[i] = a_thetaN0[i] + a_lamN[i];
+        a_thetaP[i] = a_thetaP0[i] - a_lamP[i];
+    }
+    // (Its measure of rest: the plain step's, how far the carriers are from
+    // the states'.)
+    return largest / a_Vt;
 }
 
 SemiconductorProblem::TrapState SemiconductorProblem::trapState(const TrapLevel& t, double n, double p)
@@ -2038,9 +2167,10 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
         f.values[std::size_t(i)] = a_iV[std::size_t(i)] >= 0 ? x(a_iV[std::size_t(i)]) : 0.0;
         f.values[N + std::size_t(i)] = a_iN[std::size_t(i)] >= 0 ? x(a_iN[std::size_t(i)]) : 0.0;
         f.values[2 * N + std::size_t(i)] = a_iP[std::size_t(i)] >= 0 ? x(a_iP[std::size_t(i)]) : 0.0;
-        // (The bands' offsets with Fermi-Dirac's degeneracy in them: φn, φp
-        // and the currents read at a point as solved.)
-        if (a_fermi) {
+        // (The bands' offsets with Fermi-Dirac's degeneracy and the quantum
+        // potentials in them: φn, φp and the currents read at a point as
+        // solved.)
+        if (a_fermi || !a_quantumNodes.empty()) {
             f.values[5 * N + std::size_t(i)] = a_thetaN[std::size_t(i)] + a_Vt * a_lgN[std::size_t(i)];
             f.values[6 * N + std::size_t(i)] = a_thetaP[std::size_t(i)] - a_Vt * a_lgP[std::size_t(i)];
         }

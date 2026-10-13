@@ -864,7 +864,8 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere"))},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
-          QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/insulation"),
+          QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/quantum"),
+          QStringLiteral("semiconductor/insulation"),
           QStringLiteral("semiconductor/ohmic"),
           QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge"),
           QStringLiteral("semiconductor/traps")},
@@ -1029,6 +1030,20 @@ QList<NodeKind> makeKinds()
                 "semi.In and semi.Ip (electrons', holes': breakdown where they reach 1) and their multiplications semi.Mn, "
                 "semi.Mp, the field semi.Emax: a breakdown voltage found by sweeping toward it, its currents in or not.")});
     }
+    add({QStringLiteral("semiconductor/quantum"), tr("Schrödinger-Poisson"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none), flag(QStringLiteral("electrons"), tr("Electrons"), true), flag(QStringLiteral("holes"), tr("Holes"), false),
+          shownIf(spatial(QStringLiteral("nq"), tr("Electrons in the states"), QStringLiteral("1/m^3"), QStringLiteral("qw.n"),
+                          tr("A quantum wells physics' electrons in its states (qw.n, its Fermi level semi.Efn - semi.Ec)")),
+                  QStringLiteral("electrons=true")),
+          shownIf(spatial(QStringLiteral("pq"), tr("Holes in the states"), QStringLiteral("1/m^3"), QStringLiteral("qw.p"),
+                          tr("Its holes (qw.p, their Fermi level semi.Ev - semi.Efp)")),
+                  QStringLiteral("holes=true"))},
+         {}, {}, false, false, QStringLiteral("sp"),
+         tr("The carriers here as quantum states have them - an inversion layer's, a 2DEG's, a well's: a Quantum States step "
+            "with Self-consistent solves the semiconductor and the states in turn, each node's carriers moved to the states' by a "
+            "quantum potential in its band, Vt ln(n_states/n), until it rests - Poisson's equation, the currents and the contacts "
+            "with it.")});
     add({QStringLiteral("semiconductor/generation"), tr("User-Defined Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), spatial(QStringLiteral("G"), tr("Generation rate G"), QStringLiteral("1/(m^3*s)"), QStringLiteral("0"),
@@ -1208,6 +1223,11 @@ QList<NodeKind> makeKinds()
                tr("Uniform: the quantum-confined Stark effect (100 kV/cm is 1e7 V/m); its potential 0 at the physics' middle")),
           spatial(QStringLiteral("V"), tr("Electric potential"), QStringLiteral("V"), QStringLiteral("0"),
                   tr("Another physics' (semi.V, es.V): the bands move by -q V")),
+          spatial(QStringLiteral("etan"), tr("Electrons' Fermi level above the band, Efn - Ec"), QStringLiteral("J"), QString(),
+                  tr("Where the electrons' quasi-Fermi level is: a semiconductor's semi.Efn - semi.Ec. The states found filled to it give "
+                     "qw.n - a Schrödinger-Poisson loop's. Empty: none counted")),
+          spatial(QStringLiteral("etap"), tr("Holes' Fermi level below the band, Ev - Efp"), QStringLiteral("J"), QString(),
+                  tr("A semiconductor's semi.Ev - semi.Efp: qw.p, the holes in the states found. Empty: none counted")),
           expr(QStringLiteral("drawn"), tr("Waves drawn"), QStringLiteral("eV"), QStringLiteral("50[meV]"),
                tr("qw.wave_e and the others: a state's energy with its |ψ|² on it, its largest this - a band diagram's picture"))},
          {QStringLiteral("quantum/material"), QStringLiteral("quantum/zero"), QStringLiteral("quantum/flux")},
@@ -1476,6 +1496,11 @@ QList<NodeKind> makeKinds()
              {physics, integer(QStringLiteral("states"), tr("States of each carrier"), 4, tr("The lowest: electrons upward, holes downward")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved before (a semiconductor's potential)")),
+              flag(QStringLiteral("consistent"), tr("Self-consistent (Schrödinger-Poisson)"), false,
+                   tr("The semiconductor and the states in turn until its Schrödinger-Poisson regions' carriers are the states'")),
+              shownIf(integer(QStringLiteral("iterations"), tr("Most turns"), 60), QStringLiteral("consistent=true")),
+              shownIf(expr(QStringLiteral("sptolerance"), tr("Its quantum potential's last change (Vt)"), QString(), QStringLiteral("1e-4")),
+                      QStringLiteral("consistent=true")),
               before, nonlinear},
              {}, {}, false, false, QStringLiteral("qs"),
              tr("A quantum wells physics' states: each a solution, as a mode is - each carrier's energy and wavefunction; the "

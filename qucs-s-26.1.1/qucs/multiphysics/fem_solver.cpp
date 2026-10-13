@@ -504,7 +504,8 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
     else if (p.type == QLatin1String("modes")) f.components = QStringList{QStringLiteral("Et"), QStringLiteral("Ez")};
     else if (p.type == QLatin1String("semiconductor"))
         f.components = QStringList{QStringLiteral("V"), QStringLiteral("n"), QStringLiteral("p"), QStringLiteral("Nd"), QStringLiteral("Na")};
-    else if (p.type == QLatin1String("quantum")) f.components = QStringList{QStringLiteral("psi_e"), QStringLiteral("psi_hh"), QStringLiteral("psi_lh")};
+    else if (p.type == QLatin1String("quantum"))
+        f.components = QStringList{QStringLiteral("psi_e"), QStringLiteral("psi_hh"), QStringLiteral("psi_lh"), QStringLiteral("n"), QStringLiteral("p")};
     else if (p.type == QLatin1String("pde")) {
         f.components = detail::pdeVariables(p);
         if (detail::pdeSecondOrder(p))
@@ -1039,6 +1040,8 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                    [st](PointEvaluator& e) { return st(e).mlh; });
             define(p + QStringLiteral("strain"), Dim(), tr("strain in the plane of the layers: (a_substrate - a)/a"), K::Derived, f,
                    [st](PointEvaluator& e) { return st(e).strain; });
+            component(p + QStringLiteral("n"), Dim::of(-3), tr("electrons in the states found, filled to the Fermi level given"), K::Value, f, 3);
+            component(p + QStringLiteral("p"), Dim::of(-3), tr("holes in the states found, filled to the Fermi level given"), K::Value, f, 4);
             continue;
         }
         if (field.type == QLatin1String("semiconductor")) {
@@ -2095,11 +2098,41 @@ bool statesStep(Solution& s, const Node& node, const std::function<bool(double, 
     // What the states read (a semiconductor's potential) first.
     if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
     if (!solvedBefore(st, others, error)) return false;
+    detail::Problem& q = *st.problems[std::size_t(quantum.front())];
+    const int count = std::clamp(node.integer(QStringLiteral("states")), 1, 100);
+    // Self-consistent: the states, then the semiconductor's carriers moved
+    // to theirs and it solved again, until those rest.
+    if (node.flag(QStringLiteral("consistent"))) {
+        const int most = std::max(1, node.integer(QStringLiteral("iterations")));
+        QString why;
+        const double tolerance = evaluateConstant(node.text(QStringLiteral("sptolerance")), s.parameters().scope, Dim(), &why).value_or(1e-4);
+        double change = NaN;
+        int turn = 0;
+        for (turn = 1; turn <= most; ++turn) {
+            if (q.solveModes(st.options, count, 0, error) < 0) return false;
+            q.selectMode(0);
+            change = 0;
+            for (int i : others) {
+                const double c = st.problems[std::size_t(i)]->quantumCorrection(error);
+                if (std::isnan(c)) return false;
+                change = std::max(change, c);
+            }
+            if (!tell(0.1 + 0.8 * turn / most, tr("%1: Schrödinger-Poisson, turn %2 (%3 Vt)").arg(node.name()).arg(turn).arg(change, 0, 'g', 3))) {
+                *error = tr("cancelled");
+                return false;
+            }
+            if (change <= tolerance) break;
+            if (!solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+        }
+        if (change <= tolerance)
+            s.log << tr("%1: Schrödinger-Poisson in %2 turns (the quantum potential's last change %3 Vt)").arg(node.name()).arg(turn).arg(change, 0, 'g', 3);
+        else
+            *warnings << tr("%1: Schrödinger-Poisson not at rest in %2 turns: the quantum potential still moving %3 Vt").arg(node.name()).arg(most).arg(change, 0, 'g', 3);
+    }
     s.frequencyDomain = true;
     s.modeAnalysis = true;
     s.quantumStates = true;
-    detail::Problem& q = *st.problems[std::size_t(quantum.front())];
-    const int found = q.solveModes(st.options, std::clamp(node.integer(QStringLiteral("states")), 1, 100), 0, error);
+    const int found = q.solveModes(st.options, count, 0, error);
     if (found < 0) return false;
     for (int k = 0; k < found; ++k) {
         q.selectMode(k);

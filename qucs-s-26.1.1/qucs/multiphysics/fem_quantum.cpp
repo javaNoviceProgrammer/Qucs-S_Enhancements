@@ -106,6 +106,23 @@ double softplus(double x)
     return x > 30 ? x + std::log1p(std::exp(-x)) : std::log1p(std::exp(x));
 }
 
+/// The Fermi-Dirac integral of order -1/2, normalized - (2/√π) ∫0^∞
+/// dt/(1 + e^(t² - η)), e^η where the carriers are few: a wire's carriers
+/// along it (Simpson's rule).
+double fermiMinusHalf(double eta)
+{
+    if (eta < -30) return std::exp(eta);
+    const double T = std::sqrt(std::max(eta, 0.0) + 40);
+    const int m = 400;
+    const double h = T / m;
+    double sum = 0;
+    for (int j = 0; j <= m; ++j) {
+        const double t = j * h, w = (j == 0 || j == m) ? 1 : (j % 2 ? 4 : 2);
+        sum += w * fermi(t * t - eta);
+    }
+    return 2 / std::sqrt(M_PI) * sum * h / 3;
+}
+
 class QuantumProblem : public Problem
 {
 public:
@@ -136,6 +153,13 @@ private:
     double mass(int c, int d, bool along) const;
     /// |ψ|² in SI (1/m, 1/m², 1/m³) from the integration's units.
     double densityScale() const;
+    /// The carriers in the states found, by degree of freedom (1/m³): each
+    /// state's |ψ|² times its free directions' density of states, filled to
+    /// the Fermi level a_etaN above the conduction band (electrons) or
+    /// a_etaP below the valence band (holes) there.
+    void densities();
+    Expression a_etaN, a_etaP;
+    std::vector<double> a_density[2];   // electrons, holes
 
     bool a_1d = true;
     int a_axis = 1;   // 0 x, 1 y
@@ -245,6 +269,14 @@ bool QuantumProblem::setup(QString* error)
     }
     const QString vText = a_node->text(QStringLiteral("V")).trimmed();
     a_V = vText.isEmpty() || vText == QLatin1String("0") ? Expression() : compile(vText, *a_node, QStringLiteral("V"));
+    // The carriers' Fermi levels from the band edges (another physics': a
+    // semiconductor's semi.Efn - semi.Ec): empty, no carriers counted.
+    auto optional = [&](const QString& key) {
+        const QString t = a_node->text(key).trimmed();
+        return t.isEmpty() ? Expression() : compile(t, *a_node, key);
+    };
+    a_etaN = optional(QStringLiteral("etan"));
+    a_etaP = optional(QStringLiteral("etap"));
     // The substrate's lattice constant: a library material's, or a length.
     double substrate = NaN;
     const QString sub = a_node->text(QStringLiteral("substrate")).trimmed();
@@ -858,10 +890,96 @@ int QuantumProblem::solveModes(const SolveOptions& options, int count, double gu
                    .arg(a_node->name(), found.join(QLatin1String(", ")))
                    .arg(a_neq)
                    .arg(a_1d ? tr(" along a line of %1").arg(formatQuantity(a_L, Dim::length())) : QString());
+    densities();
     field().solved = true;
     a_spec = Spectrum();
     a_specSelected = -1;
     return most;
+}
+
+void QuantumProblem::densities()
+{
+    const Space& sp = *field().space;
+    const int nd = sp.size();
+    for (auto& v : a_density) v.assign(std::size_t(nd), 0.0);
+    if (!a_etaN.isValid() && !a_etaP.isValid()) return;
+    const Mesh& mesh = a_s.mesh();
+    const Field& f = field();
+    const double kT = KB * a_T, scale = densityScale();
+    const QPointF u = a_1d && a_L > 0 ? (a_E - a_S) / a_L : QPointF();
+    // A state's ψ at a degree of freedom (in the integration's units): a
+    // line's where the point projects, or the mesh's own.
+    auto psiAt = [&](const State& st, int dof) {
+        if (!a_1d) return a_eq[std::size_t(dof)] >= 0 ? st.x(a_eq[std::size_t(dof)]) : 0.0;
+        const QPointF p = sp.point(dof) - a_S;
+        const double z = p.x() * u.x() + p.y() * u.y();
+        if (z < 0 || z > a_L || a_elemDomain.empty()) return 0.0;
+        const auto it = std::upper_bound(a_z.begin(), a_z.end(), z);
+        std::size_t e = std::size_t(std::max<std::ptrdiff_t>(0, (it - a_z.begin()) - 1)) / 2;
+        e = std::min(e, a_elemDomain.size() - 1);
+        const double z0 = a_z[2 * e], z2 = a_z[2 * e + 2];
+        const double xi = z2 > z0 ? (z - z0) / (z2 - z0) : 0;
+        auto at = [&](std::size_t node) { return a_eq[node] >= 0 ? st.x(a_eq[node]) : 0.0; };
+        return (1 - xi) * (1 - 2 * xi) * at(2 * e) + 4 * xi * (1 - xi) * at(2 * e + 1) + xi * (2 * xi - 1) * at(2 * e + 2);
+    };
+    // Each state's carriers per |ψ|² (1/m³ for |ψ|² in SI) at η = (the Fermi
+    // level - the state) / kT: a well's states free in the plane (m kT/πħ²
+    // ln(1 + e^η)), a wire's along z (√(2 m kT/πħ²) ℱ-1/2(η)), a dot's none
+    // (2 f(η)).
+    auto filled = [&](double mPar, double eta) {
+        if (a_1d) return mPar * M0 * kT / (M_PI * Hbar * Hbar) * softplus(eta);
+        if (a_s.axisymmetric()) return 2 * fermi(-eta);
+        return std::sqrt(2 * mPar * M0 * kT / (M_PI * Hbar * Hbar)) * fermiMinusHalf(eta);
+    };
+    std::vector<char> done(std::size_t(nd), 0);
+    PointEvaluator ev(a_s);
+    double highest[Carriers] = {0, 0, 0}, total[Carriers] = {0, 0, 0};
+    for (int t = 0; t < sp.elements(); ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)] || !a_bands[std::size_t(d)].on) continue;
+        const int* dof = sp.dofs(t);
+        const auto& g = sp.nodes(t);
+        const QPointF e1 = g[1] - g[0], e2 = g[2] - g[0];
+        const double det = e1.x() * e2.y() - e1.y() * e2.x();
+        if (!(std::abs(det) > 0)) continue;
+        for (int k = 0; k < sp.perElement(); ++k) {
+            const int i = dof[k];
+            if (done[std::size_t(i)]) continue;
+            done[std::size_t(i)] = 1;
+            const QPointF P = sp.point(i), r = P - g[0];
+            ev.moveTo(t, (r.x() * e2.y() - r.y() * e2.x()) / det, (e1.x() * r.y() - e1.y() * r.x()) / det);
+            double band[Carriers];
+            bandsAt(ev, d, a_axis == 1 ? P.y() : P.x(), band);
+            auto eV = [&](const Expression& e) {
+                const double v = ev.eval(e);
+                return e.dim() == Dim::of(2, 1, -2) ? v / Q : v;
+            };
+            for (int c = 0; c < Carriers; ++c) {
+                if (!a_on[c] || a_states[c].empty()) continue;
+                const bool electrons = c == 0;
+                if (!(electrons ? a_etaN : a_etaP).isValid()) continue;
+                // The Fermi level (eV): the band's edge here and the distance given.
+                const double Ef = electrons ? band[0] + eV(a_etaN) : std::max(band[1], band[2]) - eV(a_etaP);
+                if (!std::isfinite(Ef)) continue;
+                double sum = 0;
+                for (std::size_t j = 0; j < a_states[c].size(); ++j) {
+                    const State& st = a_states[c][j];
+                    const double psi = psiAt(st, i);
+                    const double eta = (electrons ? Ef - st.E : st.E - Ef) * Q / kT;
+                    const double add = psi * psi * scale * filled(st.mPar, eta);
+                    sum += add;
+                    total[c] += add;
+                    if (j + 1 == a_states[c].size()) highest[c] += add;
+                }
+                a_density[electrons ? 0 : 1][std::size_t(i)] += sum;
+            }
+        }
+    }
+    for (int c = 0; c < Carriers; ++c)
+        if (total[c] > 0 && highest[c] > 1e-3 * total[c])
+            a_s.log << tr("Warning: %1: its highest %2 state found holds %3 % of its carriers: ask for more states")
+                           .arg(a_node->name(), QLatin1String(CarrierName[c]))
+                           .arg(100 * highest[c] / total[c], 0, 'f', 1);
 }
 
 void QuantumProblem::selectMode(int k)
@@ -871,7 +989,12 @@ void QuantumProblem::selectMode(int k)
     const Space& sp = *f.space;
     const int nd = sp.size();
     const double scale = std::sqrt(densityScale());
-    f.values.assign(std::size_t(nd) * std::size_t(Carriers), 0.0);
+    // (Each carrier's wavefunction, then the carriers in all the states
+    // found: electrons, holes.)
+    f.values.assign(std::size_t(nd) * std::size_t(Carriers + 2), 0.0);
+    for (int c = 0; c < 2; ++c)
+        if (a_density[c].size() == std::size_t(nd))
+            std::copy(a_density[c].begin(), a_density[c].end(), f.values.begin() + std::ptrdiff_t(std::size_t(Carriers + c) * std::size_t(nd)));
     const std::size_t n1 = a_1d ? a_z.size() : 0;
     f.extra.assign(std::size_t(2 * Carriers) + Carriers * n1, NaN);
     // A 1D state's value at a node, and anywhere along the line (m).

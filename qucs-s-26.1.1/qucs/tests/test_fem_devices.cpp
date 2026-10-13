@@ -4,7 +4,8 @@
  *                        avalanche gain), a MOSFET's mobility (Lombardi's
  *                        surface scattering, saturation along the current),
  *                        heavy doping (Fermi-Dirac, band gap narrowing,
- *                        dopants ionized in part), interface traps
+ *                        dopants ionized in part), interface traps,
+ *                        Schrödinger-Poisson
  *
  * This file is part of Qucs-S.
  *
@@ -185,16 +186,18 @@ QByteArray siliconBar(const QString& geometry, const QString& doping, const QStr
 }
 
 /// A MOS capacitor (µm): 10 nm of oxide on p-type 1e17 cm⁻³ silicon 0.4
-/// deep, 0.1 wide, an n⁺ polysilicon gate g at Vg, the substrate b;
-/// \a traps its interface's features, \a steps its study's.
-QByteArray mosCapacitor(const QString& traps, const QString& steps)
+/// deep, \a width wide, an n⁺ polysilicon gate g at Vg, the substrate b;
+/// \a traps its interface's features, \a steps its study's; its top 20
+/// nm and the oxide meshed at \a fine.
+QByteArray mosCapacitor(const QString& traps, const QString& steps, const QString& width = QStringLiteral("0.1"),
+                        const QString& fine = QStringLiteral("0.002"))
 {
     return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
       "parameters": [{"name": "Vg", "expression": "0[V]"}],
       "components": [{"unit": "um",
-        "geometry": [{"type": "rectangle", "name": "bulk", "position": ["0", "-0.4"], "size": ["0.1", "0.38"]},
-                     {"type": "rectangle", "name": "surface", "position": ["0", "-0.02"], "size": ["0.1", "0.02"]},
-                     {"type": "rectangle", "name": "oxide", "size": ["0.1", "0.01"]}],
+        "geometry": [{"type": "rectangle", "name": "bulk", "position": ["0", "-0.4"], "size": ["%3", "0.38"]},
+                     {"type": "rectangle", "name": "surface", "position": ["0", "-0.02"], "size": ["%3", "0.02"]},
+                     {"type": "rectangle", "name": "oxide", "size": ["%3", "0.01"]}],
         "materials": [{"material": "Silicon", "selection": {"only": ["bulk", "surface"]}},
                       {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}],
         "physics": [{"type": "semiconductor", "tag": "semi", "features": [
@@ -202,9 +205,9 @@ QByteArray mosCapacitor(const QString& traps, const QString& steps)
           {"type": "gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
           {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}} %1]}],
         "mesh": {"size": "normal", "custom": true, "hmax": "0.02", "features": [
-          {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "0.002"}]}}],
+          {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "%4"}]}}],
       "studies": [{"type": "study", "steps": [%2]}]})json")
-        .arg(traps, steps)
+        .arg(traps, steps, width, fine)
         .toUtf8();
 }
 
@@ -873,6 +876,257 @@ private slots:
         qInfo("surface generation: I_a %.5g A, I_k %.5g A; q ∫ U along the surface %.5g A", Ia, Ik, generated);
         QVERIFY2(generated < 0 && std::abs(Ik / -generated - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(Ik).arg(generated)));
         QVERIFY(std::abs(Ia + Ik) < 1e-9 * std::abs(Ik));
+    }
+
+    void schrodingerPoisson()
+    {
+        // The MOS capacitor in strong inversion (2 V), its top 20 nm's
+        // electrons a Schrödinger equation's (one mass, 0.916 m0; ψ nought at
+        // the oxide and 20 nm down; its line's elements 0.1 nm, a sanitized
+        // build's 0.2), the two solved in turn to rest:
+        // - the semiconductor's electrons the states' (qw.n) to 1e-3;
+        // - none at the oxide (ψ nought there), where the classical ones are
+        //   most;
+        // - their centroid Fang and Howard's 3/b, b = (12 m q² N*/(εs ħ²))^⅓,
+        //   N* = Ndepl + 11/32 Ninv - to 15 % (theirs a variational ground
+        //   state's);
+        // - fewer of them than classically at the same gate voltage (the
+        //   centroid's distance a capacitance in series).
+        constexpr double Hbar = 1.054571817e-34, M0 = 9.1093837015e-31;
+        const double Na = 1e23, es = 11.7 * Eps0, m = 0.916 * M0;
+        const QString semi = QStringLiteral(R"(, {"type": "quantum", "electrons": true, "selection": {"only": ["surface"]}})");
+        const QString qw = QStringLiteral(R"(,
+          {"type": "quantum", "tag": "qw", "space": "1d", "axis": "y", "at": "0.005[um]", "h1d": "%1", "electrons": true, "heavy": false, "light": false,
+           "V": "semi.V", "etan": "semi.Efn - semi.Ec", "selection": {"only": ["surface"]}, "features": [
+            {"type": "material", "source": "user", "Ec": "0[eV]", "Ev": "-1.12[eV]", "me": "0.916", "selection": {"all": true}}]})")
+                               .arg(slowBuild() ? QStringLiteral("0.2[nm]") : QStringLiteral("0.1[nm]"));
+        QStringList said;
+        double classical = NAN, quantum = NAN;
+        for (const bool sp : {false, true}) {
+            // (Narrow - it is one-dimensional -, its top meshed at 0.5 nm: the
+            // states' carriers change over a nanometre at the oxide.)
+            QByteArray json = mosCapacitor(sp ? semi : QString(),
+                                           sp ? QStringLiteral(R"({"type": "states", "states": 6, "consistent": true})") : QStringLiteral(R"({"type": "stationary"})"),
+                                           QStringLiteral("0.01"), QStringLiteral("0.0005"));
+            json.replace(R"("expression": "0[V]")", R"("expression": "2[V]")");
+            // (The quantum wells physics after the semiconductor's.)
+            if (sp) json.replace(QByteArray("]}],\n        \"mesh\""), QByteArray("]}") + qw.toUtf8() + QByteArray("],\n        \"mesh\""));
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.study.solutions.front();
+            if (sp) {
+                int turns = 0;
+                static const QRegularExpression in(QStringLiteral("Schrödinger-Poisson in (\\d+) turns"));
+                for (const QString& line : s.log)
+                    if (const QRegularExpressionMatch mt = in.match(line); mt.hasMatch()) {
+                        turns = mt.captured(1).toInt();
+                        said << line;
+                    }
+                QVERIFY2(turns > 0 && turns <= 20, qPrintable(s.log.join(QLatin1String("; "))));
+            }
+            const Locator locator(s.mesh());
+            auto at = [&](const QString& e, double y) {
+                const std::optional<double> v = evaluateAt(s, locator, e, QPointF(0.005, y));
+                return v ? *v : NAN;
+            };
+            // The semiconductor's electrons the states' at its nodes in the
+            // region (each to 1e-3, above a thousandth of the most: between
+            // them each is interpolated its own way).
+            if (sp) {
+                double most = 0;
+                std::vector<std::pair<QPointF, double>> nodes;
+                for (const QPointF& p : s.mesh().nodes)
+                    if (p.y() < -1e-9 && p.y() > -0.02 + 1e-9) {
+                        const std::optional<double> n = evaluateAt(s, locator, QStringLiteral("semi.n"), p);
+                        if (n) {
+                            nodes.emplace_back(p, *n);
+                            most = std::max(most, *n);
+                        }
+                    }
+                int compared = 0;
+                for (const auto& [p, n] : nodes) {
+                    if (n < 1e-3 * most) continue;
+                    const double states = evaluateAt(s, locator, QStringLiteral("qw.n"), p).value_or(NAN);
+                    QVERIFY2(std::abs(n / states - 1) < 1e-3, qPrintable(QStringLiteral("at (%1, %2): semi.n %3, qw.n %4").arg(p.x()).arg(p.y()).arg(n).arg(states)));
+                    ++compared;
+                }
+                QVERIFY(compared > 20);
+                // At rest its quasi-Fermi level flat through the region, the
+                // quantum potential in its band (what the states read).
+                const double top = evaluateAt(s, locator, QStringLiteral("semi.Efn"), QPointF(0.005, -0.001)).value_or(NAN);
+                const double down = evaluateAt(s, locator, QStringLiteral("semi.Efn"), QPointF(0.005, -0.015)).value_or(NAN);
+                QVERIFY2(std::abs(top - down) < 1e-6 * Q, qPrintable(QStringLiteral("Efn %1 and %2 eV").arg(top / Q).arg(down / Q)));
+            }
+            // Across the top 20 nm: the electrons (the states', smooth; the
+            // classical ones), their centroid; the depletion's charge.
+            const int k = slowBuild() ? 100 : 400;
+            double ninv = 0, moment = 0, peak = 0, Qd = 0;
+            for (int j = 0; j < k; ++j) {
+                const double y = -(j + 0.5) * 0.02 / k, n = at(sp ? QStringLiteral("qw.n") : QStringLiteral("semi.n"), y);
+                ninv += n * 0.02e-6 / k;
+                moment += n * -y * 1e-6 * 0.02e-6 / k;
+                peak = std::max(peak, n);
+            }
+            for (int j = 0; j < k; ++j) Qd += (Na - at(QStringLiteral("semi.p"), -(j + 0.5) * 0.3 / k)) * 0.3e-6 / k;
+            const double zavg = moment / ninv, surface = at(sp ? QStringLiteral("qw.n") : QStringLiteral("semi.n"), -1e-5);
+            const double Nstar = Qd + 11.0 / 32 * ninv, b = std::cbrt(12 * m * Q * Q * Nstar / (es * Hbar * Hbar));
+            said << QStringLiteral("%1: Ninv %2 cm⁻², its centroid %3 nm (Fang and Howard's %4), at the oxide %5 of its most")
+                        .arg(sp ? QStringLiteral("Schrödinger-Poisson") : QStringLiteral("classical"))
+                        .arg(ninv * 1e-4, 0, 'g', 4)
+                        .arg(zavg * 1e9, 0, 'f', 3)
+                        .arg(3 / b * 1e9, 0, 'f', 3)
+                        .arg(surface / peak, 0, 'g', 3);
+            if (sp) {
+                QVERIFY2(surface < 0.05 * peak, qPrintable(said.join(QLatin1String("; "))));
+                QVERIFY2(std::abs(zavg / (3 / b) - 1) < 0.15, qPrintable(said.join(QLatin1String("; "))));
+                quantum = ninv;
+            } else {
+                QVERIFY2(surface > 0.99 * peak, qPrintable(said.join(QLatin1String("; "))));
+                classical = ninv;
+            }
+        }
+        // 0.1 µm wide, meshed at 2 nm, the plain turns crawled at 0.96 a turn
+        // (past 60): Anderson's mixing brings it to rest in 30. (Not on a
+        // sanitized build: its 26 turns some 200 s there.)
+        if (!slowBuild()) {
+            QByteArray json = mosCapacitor(semi, QStringLiteral(R"({"type": "states", "states": 6, "consistent": true, "iterations": 30})"),
+                                           QStringLiteral("0.1"), QStringLiteral("0.002"));
+            json.replace(R"("expression": "0[V]")", R"("expression": "2[V]")");
+            QString wide = qw;
+            wide.replace(QStringLiteral(R"("at": "0.005[um]")"), QStringLiteral(R"("at": "0.05[um]")"));
+            json.replace(QByteArray("]}],\n        \"mesh\""), QByteArray("]}") + wide.toUtf8() + QByteArray("],\n        \"mesh\""));
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            bool rested = false;
+            for (const QString& line : r.study.solutions.front()->log)
+                if (line.contains(QStringLiteral("Schrödinger-Poisson in"))) {
+                    rested = true;
+                    said << QStringLiteral("at 2 nm: ") + line;
+                }
+            QVERIFY2(rested, qPrintable(r.study.warnings.join(QLatin1String("; "))));
+        }
+        qInfo("Schrödinger-Poisson: %s", qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY(quantum < classical);
+    }
+
+    void schrodingerPoissonHoles()
+    {
+        // n-type silicon (1e17 cm⁻³) under the gate at -2.5 V: holes
+        // inverted, its top 20 nm's heavy and light holes (0.49 and 0.16 m0)
+        // a Schrödinger equation's, solved in turn with it to rest - its
+        // holes the states' at its nodes to 1e-3, none at the oxide, fewer
+        // than classically.
+        const QString semi = QStringLiteral(R"(, {"type": "quantum", "electrons": false, "holes": true, "selection": {"only": ["surface"]}})");
+        const QString qw = QStringLiteral(R"(,
+          {"type": "quantum", "tag": "qw", "space": "1d", "axis": "y", "at": "0.005[um]", "h1d": "%1", "electrons": false, "heavy": true, "light": true,
+           "V": "semi.V", "etap": "semi.Ev - semi.Efp", "selection": {"only": ["surface"]}, "features": [
+            {"type": "material", "source": "user", "Ec": "1.12[eV]", "Ev": "0[eV]", "me": "0.26", "mhh": "0.49", "mlh": "0.16", "selection": {"all": true}}]})")
+                               .arg(slowBuild() ? QStringLiteral("0.2[nm]") : QStringLiteral("0.1[nm]"));
+        QStringList said;
+        double sheet[2] = {NAN, NAN};
+        for (const bool sp : {false, true}) {
+            // (A sanitized build: meshed at 1 nm, 6 states of each.)
+            const bool slow = slowBuild();
+            QByteArray json = mosCapacitor(sp ? semi : QString(),
+                                           sp ? QStringLiteral(R"({"type": "states", "states": %1, "consistent": true})").arg(slow ? 6 : 8) : QStringLiteral(R"({"type": "stationary"})"),
+                                           QStringLiteral("0.01"), slow ? QStringLiteral("0.001") : QStringLiteral("0.0005"));
+            json.replace(R"("expression": "0[V]")", R"("expression": "-2.5[V]")");
+            json.replace(R"("dopant": "acceptor")", R"("dopant": "donor")");
+            if (sp) json.replace(QByteArray("]}],\n        \"mesh\""), QByteArray("]}") + qw.toUtf8() + QByteArray("],\n        \"mesh\""));
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.study.solutions.front();
+            const Locator locator(s.mesh());
+            auto at = [&](const QString& e, double y) {
+                const std::optional<double> v = evaluateAt(s, locator, e, QPointF(0.005, y));
+                return v ? *v : NAN;
+            };
+            if (sp) {
+                bool rested = false;
+                for (const QString& line : s.log) rested = rested || line.contains(QStringLiteral("Schrödinger-Poisson in"));
+                QVERIFY2(rested, qPrintable(s.log.join(QLatin1String("; "))));
+                double most = 0;
+                std::vector<std::pair<QPointF, double>> nodes;
+                for (const QPointF& p : s.mesh().nodes)
+                    if (p.y() < -1e-9 && p.y() > -0.02 + 1e-9)
+                        if (const std::optional<double> h = evaluateAt(s, locator, QStringLiteral("semi.p"), p)) {
+                            nodes.emplace_back(p, *h);
+                            most = std::max(most, *h);
+                        }
+                int compared = 0;
+                for (const auto& [p, h] : nodes) {
+                    if (h < 1e-3 * most) continue;
+                    const double states = evaluateAt(s, locator, QStringLiteral("qw.p"), p).value_or(NAN);
+                    QVERIFY2(std::abs(h / states - 1) < 1e-3, qPrintable(QStringLiteral("at (%1, %2): semi.p %3, qw.p %4").arg(p.x()).arg(p.y()).arg(h).arg(states)));
+                    ++compared;
+                }
+                QVERIFY(compared > 20);
+            }
+            double total = 0, peak = 0;
+            const int k = slowBuild() ? 100 : 400;
+            for (int j = 0; j < k; ++j) {
+                const double h = at(sp ? QStringLiteral("qw.p") : QStringLiteral("semi.p"), -(j + 0.5) * 0.02 / k);
+                total += h * 0.02e-6 / k;
+                peak = std::max(peak, h);
+            }
+            const double surface = at(sp ? QStringLiteral("qw.p") : QStringLiteral("semi.p"), -1e-5);
+            said << QStringLiteral("%1: %2 holes /cm², at the oxide %3 of their most").arg(sp ? QStringLiteral("Schrödinger-Poisson") : QStringLiteral("classical")).arg(total * 1e-4, 0, 'g', 4).arg(surface / peak, 0, 'g', 3);
+            if (sp) QVERIFY2(surface < 0.05 * peak, qPrintable(said.join(QLatin1String("; "))));
+            sheet[sp] = total;
+        }
+        qInfo("Schrödinger-Poisson, holes: %s", qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY(sheet[1] < sheet[0] && sheet[1] > 0.5 * sheet[0]);
+    }
+
+    void quantumCarriers()
+    {
+        // A flat well 10 nm wide (one material, ψ nought at its ends: an
+        // infinite one), its electrons' Fermi level 50 meV above the
+        // conduction band, its holes' 20 meV into the valence band (electrons 0.1 m0, heavy holes 0.5,
+        // light 0.2), 12 states each: its carriers per area Σ (m kT/πħ²)
+        // ln(1 + e^((Ef - Ei)/kT)), Ei = ħ²(iπ/L)²/2m - each carrier's - and
+        // at its middle Σ (2/L) sin²(iπ/2) of each, to 1e-3.
+        constexpr double Hbar = 1.054571817e-34, M0 = 9.1093837015e-31, KB = 1.380649e-23;
+        const double L = 10e-9, kT = KB * 300;
+        const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "name": "well", "size": ["2", "10"]}],
+            "physics": [{"type": "quantum", "tag": "qw", "space": "1d", "axis": "y", "at": "1[nm]", "h1d": "0.2[nm]",
+              "etan": "0.05[eV]", "etap": "0.02[eV]", "selection": {"all": true}, "features": [
+              {"type": "material", "source": "user", "Ec": "1[eV]", "Ev": "0[eV]", "me": "0.1", "mhh": "0.5", "mlh": "0.2", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.5"}}],
+          "studies": [{"type": "study", "steps": [{"type": "states", "states": 12}]}]})json")
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Solution& s = *r.study.solutions.front();
+        const Locator locator(s.mesh());
+        double sheet[2] = {0, 0};
+        const int k = 2000;
+        for (int j = 0; j < k; ++j) {
+            const double y = (j + 0.5) * 10.0 / k;
+            sheet[0] += evaluateAt(s, locator, QStringLiteral("qw.n"), QPointF(1, y)).value_or(NAN) * L / k;
+            sheet[1] += evaluateAt(s, locator, QStringLiteral("qw.p"), QPointF(1, y)).value_or(NAN) * L / k;
+        }
+        const double middle[2] = {evaluateAt(s, locator, QStringLiteral("qw.n"), QPointF(1, 5)).value_or(NAN),
+                                  evaluateAt(s, locator, QStringLiteral("qw.p"), QPointF(1, 5)).value_or(NAN)};
+        double expected[2] = {0, 0}, atMiddle[2] = {0, 0};
+        auto add = [&](int c, double m, double eta0) {
+            for (int i = 1; i <= 12; ++i) {
+                const double Ei = Hbar * Hbar * (i * M_PI / L) * (i * M_PI / L) / (2 * m * M0);
+                const double e = eta0 - Ei / kT, per = m * M0 * kT / (M_PI * Hbar * Hbar) * (e > 30 ? e : std::log1p(std::exp(e)));
+                expected[c] += per;
+                atMiddle[c] += per * 2 / L * std::pow(std::sin(i * M_PI / 2), 2);
+            }
+        };
+        add(0, 0.1, 0.05 * Q / kT);
+        add(1, 0.5, 0.02 * Q / kT);
+        add(1, 0.2, 0.02 * Q / kT);
+        qInfo("a well's carriers: electrons %.6g /m² (%.6g), at its middle %.6g /m³ (%.6g); holes %.6g /m² (%.6g), %.6g /m³ (%.6g)", sheet[0],
+              expected[0], middle[0], atMiddle[0], sheet[1], expected[1], middle[1], atMiddle[1]);
+        for (int c = 0; c < 2; ++c) {
+            QVERIFY2(std::abs(sheet[c] / expected[c] - 1) < 1e-3, qPrintable(QString::number(sheet[c] / expected[c])));
+            QVERIFY2(std::abs(middle[c] / atMiddle[c] - 1) < 1e-3, qPrintable(QString::number(middle[c] / atMiddle[c])));
+        }
     }
 
     void dopantsIonizedInPart()
