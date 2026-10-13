@@ -895,7 +895,8 @@ About 3,000 lines and 900 of tests.
 - **Heterojunctions are not modelled:** the carriers are continuous at a node between two
   semiconductors. One semiconductor material per device, or several with the same bands.
 - **Isothermal:** the temperature is one constant (no hydrodynamic or thermal model of
-  the lattice), and there is no tunnelling (impact ionization since 2026-10-12). Since
+  the lattice). (Impact ionization, band-to-band tunnelling and Fowler-Nordheim's through an
+  oxide, the last after the solve, since 2026-10-12.) Since
   2026-10-12 a lattice temperature from a heat physics moves the mobilities, and the carriers'
   heat (semi.H) feeds it back; their statistics stay at the physics' one temperature, and no
   thermoelectric current (Seebeck's) is modelled.

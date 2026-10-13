@@ -2101,7 +2101,13 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     - avalanche multiplication, an APD's gain - and the ionization
     integrals along the field line through the highest field (semi.In,
     semi.Ip, semi.Mn, semi.Mp): a breakdown voltage where they reach 1,
-    an abrupt junction's the depletion approximation's to 0.1 %. **Ohmic, Schottky and
+    an abrupt junction's the depletion approximation's to 0.1 %.
+    **Band-to-band tunnelling** (Hurkx's A E^γ e^(-B/E) with its sign
+    factor, or generation alone; silicon's Klaassen values) - Zener
+    breakdown, gate-induced drain leakage, tunnel FETs: a p⁺-i-n⁺ diode's
+    current the tunnelling summed over its triangles to 1e-5; and
+    **Fowler-Nordheim** tunnelling through an oxide after the solve
+    (semi.Ifn: 3 mA/cm² at 10 MV/cm in SiO₂). **Ohmic, Schottky and
     gate contacts** (a work function on an oxide), fixed surface charge,
     **interface traps** (acceptor- or donor-like, one level or a uniform
     Dit; Shockley-Read-Hall occupancy, their charge and the pairs they
