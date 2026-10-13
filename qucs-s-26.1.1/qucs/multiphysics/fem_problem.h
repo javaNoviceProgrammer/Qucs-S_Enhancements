@@ -139,7 +139,12 @@ struct SpectrumOptions {
     double linewidth = 0;   ///< J: the line's half width at half maximum
     int lineshape = 0;      ///< 0 Lorentzian, 1 Gaussian, 2 hyperbolic secant
     bool excitons = false;  ///< each transition's 1s exciton and its continuum's Sommerfeld factor
+    int excitonModel = 0;   ///< 0 two parameters (λ, γ), 1 Bastard's one (λ)
     double epsr = 0;        ///< the excitons' static permittivity (0: the wells' material's)
+    double dlinewidth = 0;  ///< J per V/m: the broadening grown by the field across the wells
+    double kmax = 0;        ///< a Valence Bands step's: its largest in-plane k (1/m)
+    int kpoints = 0;        ///< and how many values of k from 0 (a spectrum's: its k·p bands')
+    int continuum = 0;      ///< 0 the states found; 1 bound states' transitions and the barriers' bulk absorption
     double density = 0;
     double index = 0;
     SolveOptions solve;
@@ -197,6 +202,16 @@ public:
     }
     /// The globals (set after) of the spectrum's point \a k.
     virtual void selectSpectrum(int k) { (void)k; }
+    /// Quantum states: the k·p valence bands at \a o's in-plane k (kmax,
+    /// kpoints). How many points; -1 and why on failure.
+    virtual int solveBands(const SpectrumOptions& o, QString* error)
+    {
+        (void)o;
+        *error = tr("%1 has no valence bands (Quantum Wells has)").arg(field().tag);
+        return -1;
+    }
+    /// The globals (set after) of the bands' point \a k.
+    virtual void selectBands(int k) { (void)k; }
     /// A Schrödinger-Poisson loop's turn: the carriers found by the states
     /// (another physics') taken in where asked; the largest change made (in
     /// Vt; 0 none, NaN an error in \a error).

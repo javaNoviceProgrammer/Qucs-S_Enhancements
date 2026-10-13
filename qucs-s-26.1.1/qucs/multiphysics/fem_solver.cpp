@@ -1417,6 +1417,7 @@ QString Solution::snapshotText(int i) const
     if (frequencyDomain && photonAxis == 1)
         return QStringLiteral("E = ") + formatQuantity(6.62607015e-34 * v / 1.602176634e-19, Dim()) + QStringLiteral(" eV");
     if (frequencyDomain && photonAxis == 2) return QStringLiteral("λ = ") + formatQuantity(v > 0 ? 299792458.0 / v : 0, Dim::length());
+    if (frequencyDomain && photonAxis == 3) return QStringLiteral("k = ") + formatNumber(v * 1e-9, 4) + QStringLiteral(" /nm");
     return snapshotSymbol() + QStringLiteral(" = ") + formatQuantity(v, snapshotDim());
 }
 
@@ -2221,6 +2222,17 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
     const QString shape = node.text(QStringLiteral("lineshape"));
     o.lineshape = shape == QLatin1String("gaussian") ? 1 : shape == QLatin1String("sech") ? 2 : 0;
     o.excitons = node.flag(QStringLiteral("excitons"));
+    o.excitonModel = node.text(QStringLiteral("excitonmodel")) == QLatin1String("bastard") ? 1 : 0;
+    o.continuum = node.text(QStringLiteral("continuum")) == QLatin1String("bound") ? 1 : 0;
+    if (!node.text(QStringLiteral("dlinewidth")).trimmed().isEmpty()) {
+        // (Energy per field: C m.)
+        const std::optional<double> d = evaluateConstant(node.text(QStringLiteral("dlinewidth")), scope, Dim::of(1, 0, 1, 1), &why);
+        if (!d || *d < 0) {
+            *error = tr("%1: the broadening's growth with the field: %2").arg(node.name(), d ? tr("it must be 0 or more") : why);
+            return false;
+        }
+        o.dlinewidth = *d;
+    }
     if (!node.text(QStringLiteral("epsr")).trimmed().isEmpty()) {
         const std::optional<double> e = evaluateConstant(node.text(QStringLiteral("epsr")), scope, Dim(), &why);
         if (!e || !(*e > 0)) {
@@ -2244,6 +2256,8 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
         o.index = *n;
     }
     o.states = std::clamp(node.integer(QStringLiteral("states")), 1, 50);
+    // (The k·p bands' in-plane k grid.)
+    o.kpoints = node.text(QStringLiteral("kpoints")).trimmed().isEmpty() ? 121 : std::clamp(node.integer(QStringLiteral("kpoints")), 11, 2000);
     for (auto& p : st.problems)
         if (!p->field().solved) p->initialize();
     if (!tell(0.1, tr("%1: the spectrum").arg(node.name()))) {
@@ -2261,6 +2275,47 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
     for (int k = 0; k < points; ++k) {
         s.setFrequency(o.energies[std::size_t(k)] / h);
         qp.selectSpectrum(k);
+        for (auto& p : st.problems) p->setGlobals();
+        s.addSnapshot();
+    }
+    return true;
+}
+
+bool bandsStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+{
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    std::vector<int> quantum, others;
+    if (!splitQuantum(st, quantum, others, warnings, error)) return false;
+    const Scope& scope = s.parameters().scope;
+    QString why;
+    detail::SpectrumOptions o;
+    o.solve = st.options;
+    const std::optional<double> kmax = evaluateConstant(node.text(QStringLiteral("kmax")), scope, Dim::of(-1), &why);
+    if (!kmax || !(*kmax > 0)) {
+        *error = tr("%1: the largest k: %2").arg(node.name(), kmax ? tr("it must be more than 0") : why);
+        return false;
+    }
+    o.kmax = *kmax;
+    o.kpoints = std::clamp(node.integer(QStringLiteral("points")), 2, 2000);
+    o.states = std::clamp(node.integer(QStringLiteral("states")), 1, 50);
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    if (!tell(0.1, tr("%1: the valence bands").arg(node.name()))) {
+        *error = tr("cancelled");
+        return false;
+    }
+    if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    if (!solvedBefore(st, others, error)) return false;
+    s.frequencyDomain = true;
+    s.photonAxis = 3;
+    detail::Problem& qp = *st.problems[std::size_t(quantum.front())];
+    const int points = qp.solveBands(o, error);
+    if (points < 0) return false;
+    s.setMode(0);
+    for (int k = 0; k < points; ++k) {
+        s.setFrequency(o.kpoints > 1 ? o.kmax * k / (o.kpoints - 1) : 0.0);
+        qp.selectBands(k);
         for (auto& p : st.problems) p->setGlobals();
         s.addSnapshot();
     }
@@ -2635,7 +2690,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
             // (A mode analysis before a step in time is its light: a
             // photodiode's pulse response. After one, it is a frequency's.)
             inFrequency = inFrequency || step.type == QLatin1String("frequency") || (step.type == QLatin1String("mode") && inTime)
-                          || step.type == QLatin1String("states") || step.type == QLatin1String("spectrum")
+                          || step.type == QLatin1String("states") || step.type == QLatin1String("spectrum") || step.type == QLatin1String("bands")
                           || step.type == QLatin1String("eigenvalue");
             inTime = inTime || step.type == QLatin1String("transient");
         }
@@ -2661,6 +2716,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         else if (step.type == QLatin1String("states")) ok = statesStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("eigenvalue")) ok = eigenvalueStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("spectrum")) ok = spectrumStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("bands")) ok = bandsStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
         if (!ok) {
             out.error = why;

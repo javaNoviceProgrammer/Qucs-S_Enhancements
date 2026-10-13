@@ -227,19 +227,31 @@ QString formatText()
         "conduction band moving (VBO the compound's unless given). \"bands\": \"measured\" takes gaps fitted to 300 K "
         "measurements (InP 1.344, In0.53Ga0.47As 0.750, In0.52Al0.48As 1.46, InGaAsP within 7 meV of Nahory's, the 1.3 µm "
         "AlGaInAs 0.954) instead of Vurgaftman's, 9-16 meV off in the InP family. A feature material with \"source\": "
-        "\"user\" gives Ec, Ev (of x, y), me, mhh, mlh, mhhp, mlhp, Ep, nr, epsilonr. Features zero (ψ = 0 where it ends: a "
+        "\"user\" gives Ec, Ev (of x, y), me, mhh, mlh, mhhp, mlhp, Ep, nr, epsilonr, gamma3 and Delta (the k·p bands'). "
+        "\"valence\": \"kp4\" or \"kp6\" (1D wells) makes the holes Luttinger and Kohn's 4x4 or the 6x6 with the split-off "
+        "band - mixed as the in-plane k grows, Burt and Foreman's operator order across interfaces -, \"inplane\" axial (the "
+        "default: Chuang's, Lumerical's), 100, 110 or average (four directions, four times the work); a k·p spectrum's cost "
+        "grows with the line's equations and the step's \"kpoints\" (121): \"h1d\" 0.25[nm] is near 0.1's. A \"bands\" step {\"kmax\": \"1.5[1/nm]\", "
+        "\"points\": 41, \"states\": 4} makes each k a solution: qw.k, qw.Ev1... (each state, Kramers' pairs both). Features zero (ψ = 0 where it ends: a "
         "hard wall - a state a few meV below the barriers' top feels it; thick barriers) and flux (∂ψ/∂n = 0, 2D). A \"states\" step "
         "{\"states\": 4} makes each state a solution (\"mode\" picks one): qw.Ee1, qw.Ehh1, qw.Elh1... (J; unit eV), "
         "qw.E_e of the one selected, qw.Eg and qw.lambda (the effective gap), qw.Ee1hh1 and the overlap qw.Oe1hh1, qw.pos_e, "
         "qw.bound_e; variables qw.P_e (|ψ|²), qw.psi_e, qw.wave_e (a level with its |ψ|²: a band diagram), qw.Ec, qw.Ehh, "
         "qw.Elh, qw.Ev, qw.me, qw.strain. A \"spectrum\" step {\"energies\": \"linspace(0.75[eV], 0.95[eV], 201)\" (or "
         "wavelengths), \"states\", \"linewidth\" (half width at half maximum, eV), \"lineshape\" (lorentzian, gaussian, "
-        "sech), \"excitons\": true (each transition's 1s exciton, Bastard's variational binding over the states' envelopes - a "
-        "field weakens it -, and the continuum's 2D Sommerfeld factor; \"epsr\" its permittivity, else the wells' material's; "
-        "none with carriers), \"density\" (carriers in the wells: gain), \"nr\"} makes each photon energy a solution: "
-        "qw.alphaTE, qw.alphaTM (1/m: unit 1/cm), qw.gTE, qw.gTM, qw.Fc, qw.Fv, qw.dF, qw.Lw; with excitons qw.Eb, qw.Ex, qw.aX "
-        "(the e1-hh1 exciton's binding, line and radius). Each transition's reduced mass is of its states' own in-plane masses "
-        "(the inverse mass averaged over each |ψ|²).\n"
+        "sech), \"dlinewidth\" (its growth with the field across the wells, eV per V/m: qw.Fw, qw.linewidth), "
+        "\"excitons\": true (each transition's 1s exciton - \"excitonmodel\" two, the default: e^(-√(ρ² + γ²(ze - zh)²)/λ), "
+        "Khramtsov et al.'s exact GaAs/AlGaAs binding to 1.2 %, their measured radiative decay to 4 %; or bastard, γ 0, its "
+        "line weaker in wide wells - a field weakens it -, and the continuum's 2D Sommerfeld factor; \"epsr\" its "
+        "permittivity, else the wells' material's; none with carriers), \"continuum\": \"bound\" (the transitions of states "
+        "confined by their own well's barriers - in a field too - and the barriers' bulk absorption over the line, not the "
+        "box's states above them; no sum rule: a state a field frees takes its steps with it), \"density\" (carriers in the wells: gain), \"nr\"} makes each photon energy a "
+        "solution: qw.alphaTE, qw.alphaTM (1/m: unit 1/cm), qw.gTE, qw.gTM, qw.Fc, qw.Fv, qw.dF, qw.Lw; qw.dnTE, qw.dnTM (the "
+        "index the window's absorption makes, Kramers-Kronig: between two fields Δn; warned when the window's top absorbs); "
+        "with carriers qw.rsp (spontaneous emission per volume, time and energy: 1/(s cm³ eV)), qw.Rsp, qw.gspTE, qw.gspTM "
+        "(Lumerical's g_sp); with excitons qw.Eb, qw.Ex, qw.aX, qw.gX (the e1-hh1 exciton's binding, line, radius and γ). Each "
+        "transition's reduced mass is of its states' own in-plane masses (the inverse mass averaged over each |ψ|²); the "
+        "physics' \"T\" moves the compounds' gaps (Varshni) and the carriers' kT.\n"
         "Your own PDE: \"pde\" (tag c by default) - ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F; \"variables\": \"u\" or \"u, v\" (each "
         "with ux, uy, and c.u, c.ux; along a line us; of the second order in time their rates ut), \"unit\"; \"space\": \"2d\" "
         "(on the mesh, about an axis too) or \"1d\" (an ODE along a line: \"axis\" x or y, \"at\", \"elements\"). Features: "
@@ -736,7 +748,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
         extra.insert(states ? QStringLiteral("states") : QStringLiteral("modes"), modes);
     }
     if (sol->snapshotCount() > 0)
-        extra.insert(sol->photonAxis > 0 ? QStringLiteral("spectrum") : sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
+        extra.insert(sol->photonAxis == 3 ? QStringLiteral("bands") : sol->photonAxis > 0 ? QStringLiteral("spectrum") : sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
                      QJsonObject{{QStringLiteral("outputs"), sol->snapshotCount()},
                                  {QStringLiteral("from"), sol->photonAxis > 0 ? sol->snapshotText(0) : formatQuantity(sol->snapshotValue(0), sol->snapshotDim())},
                                  {QStringLiteral("to"), sol->photonAxis > 0 ? sol->snapshotText(sol->snapshotCount() - 1)
