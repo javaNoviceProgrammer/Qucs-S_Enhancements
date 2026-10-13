@@ -1,0 +1,44 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A GaAs well's excitons in a field: absorption and index",
+    "description": "A 10 nm GaAs well between Al0.3Ga0.7As barriers - an electroabsorption modulator's well - in a field of 0, 50 and 100 kV/cm along the growth axis. Each transition's 1s exciton is bound by the two-parameter variational envelope e^(-√(ρ² + γ²(ze - zh)²)/λ) (within 1.2% of the exact binding in GaAs/AlGaAs wells 2 to 20 nm wide; its radiative decay within 4% of what was measured): its line below the edge, and the continuum above raised by the 2D Sommerfeld factor. The field pulls the electron and hole apart: the line moves down (the quantum-confined Stark effect), weakens, and broadens (3 meV more per 100 kV/cm, a Gaussian line). Above the barriers' gap their bulk absorption takes over from the box's states (continuum bound), and qw.dnTE is the index that the window's absorption makes (Kramers and Kronig): between two fields, electrorefraction's Δn below the edge.",
+    "parameters": [
+        {"name": "F", "expression": "0[V/m]", "description": "the field along the growth axis"},
+        {"name": "Lw", "expression": "10[nm]", "description": "the well's width"}
+    ],
+    "components": [{
+        "unit": "nm",
+        "geometry": [
+            {"type": "rectangle", "label": "below", "size": ["10", "15"]},
+            {"type": "rectangle", "label": "well", "position": ["0", "15"], "size": ["10", "Lw"]},
+            {"type": "rectangle", "label": "above", "position": ["0", "15 + Lw"], "size": ["10", "15"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Aluminium gallium arsenide", "x": "0.3", "selection": {"only": ["below", "above"]}},
+            {"material": "Gallium arsenide", "selection": {"only": ["well"]}}
+        ],
+        "physics": [{"type": "quantum", "tag": "qw", "F": "F"}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "2"}
+    }],
+    "studies": [
+        {"type": "study", "tag": "std1", "label": "Electroabsorption", "steps": [
+            {"type": "sweep", "parameters": [["F", "0, 5e6, 1e7", "V/m"]]},
+            {"type": "spectrum", "energies": "linspace(1.40[eV], 2.00[eV], 301)", "states": 6, "linewidth": "3[meV]",
+             "dlinewidth": "3[meV]/(1e7[V/m])", "lineshape": "gaussian", "excitons": true, "continuum": "bound"}
+        ]}
+    ],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Absorption", "study": "std1", "plots": [
+                {"type": "globalgraph", "expression": "qw.alphaTE", "unit": "1/cm"}
+            ]},
+            {"type": "plotgroup1d", "label": "Index", "study": "std1", "plots": [
+                {"type": "globalgraph", "expression": "qw.dnTE"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "The e1-hh1 exciton", "study": "std1", "expression": "qw.Ex; qw.Eb; qw.gX; qw.linewidth", "solutions": "all"}
+        ]
+    }
+}

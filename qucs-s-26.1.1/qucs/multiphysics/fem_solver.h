@@ -239,7 +239,8 @@ public:
     bool modeAnalysis = false;            ///< and of modes, at each frequency
     bool quantumStates = false;           ///< its modes are quantum states
     /// A spectrum's snapshots, shown by: 0 their frequency, 1 the photon's
-    /// energy, 2 its wavelength in vacuum.
+    /// energy, 2 its wavelength in vacuum; 3 the valence bands' in-plane k
+    /// (1/m, kept as their frequency).
     int photonAxis = 0;
     /// Snapshot \a i as a label shows it: "t = 1 s", "f = 1 GHz", "E = 1.42 eV",
     /// "λ = 870 nm".

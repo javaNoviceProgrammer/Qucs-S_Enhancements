@@ -1302,6 +1302,17 @@ QList<NodeKind> makeKinds()
                      "qw.n - a Schrödinger-Poisson loop's. Empty: none counted")),
           spatial(QStringLiteral("etap"), tr("Holes' Fermi level below the band, Ev - Efp"), QStringLiteral("J"), QString(),
                   tr("A semiconductor's semi.Ev - semi.Efp: qw.p, the holes in the states found. Empty: none counted")),
+          choice(QStringLiteral("valence"), tr("Valence bands"), {QStringLiteral("parabolic"), QStringLiteral("kp4"), QStringLiteral("kp6")},
+                 {tr("Parabolic heavy and light holes"), tr("k·p 4x4 (Luttinger-Kohn)"), tr("k·p 6x6 (and the split-off band)")},
+                 QStringLiteral("parabolic"),
+                 tr("A spectrum's holes (1D wells): each parabolic in the plane, or the k·p bands - heavy and light holes mixed as "
+                    "the in-plane k grows (γ1, γ2, γ3; the 6x6 the split-off band too, Δ), solved at each k: the gain's width and "
+                    "peak, the TE/TM ratio of strained wells. A Valence Bands step gives their dispersion")),
+          choice(QStringLiteral("inplane"), tr("In-plane k"), {QStringLiteral("axial"), QStringLiteral("100"), QStringLiteral("110"), QStringLiteral("average")},
+                 {tr("Axial approximation"), tr("Along [100]"), tr("Along [110]"), tr("Averaged over directions")}, QStringLiteral("axial"),
+                 tr("The k·p bands' in-plane k: the axial approximation (the plane isotropic, R's γ2 and γ3 their mean - Chuang's, "
+                    "Lumerical's), along [100] or [110] taken for every direction, or the warped bands averaged over the plane's "
+                    "directions (four, 0 to 45°: four times the work)")),
           expr(QStringLiteral("drawn"), tr("Waves drawn"), QStringLiteral("eV"), QStringLiteral("50[meV]"),
                tr("qw.wave_e and the others: a state's energy with its |ψ|² on it, its largest this - a band diagram's picture"))},
          {QStringLiteral("quantum/material"), QStringLiteral("quantum/zero"), QStringLiteral("quantum/flux")},
@@ -1328,6 +1339,11 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("nr"), tr("Refractive index"), QString(), QStringLiteral("3.5")), QStringLiteral("source=user")),
           shownIf(expr(QStringLiteral("epsilonr"), tr("Static permittivity εr"), QString(), QString(),
                        tr("For the excitons' binding. Empty: nr²")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("gamma3"), tr("Luttinger's γ3"), QString(), QString(),
+                       tr("For the k·p valence bands (γ1 and γ2 those the masses along the axis make). Empty: γ2")),
+                  QStringLiteral("source=user")),
+          shownIf(expr(QStringLiteral("Delta"), tr("Split-off energy Δ"), QStringLiteral("eV"), QString(), tr("For the 6x6 k·p bands")),
                   QStringLiteral("source=user"))},
          {}, {}, false, false, QStringLiteral("qwm"),
          tr("The bands and masses: from the material - its compound (GaAs, InGaAs at x...), or its Eg, VBO (or χ), me, γ1 and γ2 - "
@@ -1456,7 +1472,7 @@ QList<NodeKind> makeKinds()
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
          {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("states"),
-          QStringLiteral("spectrum"), QStringLiteral("eigenvalue"), QStringLiteral("sweep")},
+          QStringLiteral("spectrum"), QStringLiteral("bands"), QStringLiteral("eigenvalue"), QStringLiteral("sweep")},
          {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
@@ -1588,23 +1604,53 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("qs"),
              tr("A quantum wells physics' states: each a solution, as a mode is - each carrier's energy and wavefunction; the "
                 "transitions' energies and overlaps. Physics at rest in it (a semiconductor's potential) are solved first.")});
+        add({QStringLiteral("bands"), tr("Valence Bands"), QStringLiteral("step"), QStringLiteral("spectrum"), Level::None,
+             {physics,
+              expr(QStringLiteral("kmax"), tr("Largest in-plane k"), QStringLiteral("1/m"), QStringLiteral("1[1/nm]"),
+                   tr("The wave vector in the wells' plane, from 0 (along x: the in-plane warping left out)")),
+              integer(QStringLiteral("points"), tr("Values of k"), 41),
+              integer(QStringLiteral("states"), tr("States"), 4, tr("The highest valence states (Kramers' pairs both: twice as many)")),
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6")), before, nonlinear},
+             {}, {}, false, false, QStringLiteral("bnd"),
+             tr("A quantum wells physics' k·p valence bands (its Valence bands 4x4 or 6x6) along the wave vector in the wells' "
+                "plane: each value of k a solution, qw.k, the states' energies qw.Ev1, qw.Ev2... - the subbands' dispersion, the "
+                "heavy and light holes mixed away from k = 0.")});
         add({QStringLiteral("spectrum"), tr("Optical Spectrum"), QStringLiteral("step"), QStringLiteral("spectrum"), Level::None,
              {physics,
               text(QStringLiteral("energies"), tr("Photon energies or wavelengths"), QStringLiteral("linspace(1.4[eV], 1.8[eV], 201)"),
                    tr("In eV, or free-space wavelengths in m (range(1.5[um], 1[nm], 1.6[um])), or Hz: linspace, range or values split "
                       "by commas")),
               integer(QStringLiteral("states"), tr("States of each carrier"), 6),
+              integer(QStringLiteral("kpoints"), tr("k points (k·p)"), 121,
+                      tr("The k·p valence bands' in-plane k from 0 past the highest photon and the holes' reach, at this many values: "
+                         "fewer, quicker - each interval's occupations and the line's tail are integrated within it")),
               expr(QStringLiteral("linewidth"), tr("Broadening"), QStringLiteral("eV"), QStringLiteral("6.6[meV]"),
                    tr("The line's half width at half maximum: a Lorentzian's ħ/τ, 6.6 meV for 0.1 ps")),
+              expr(QStringLiteral("dlinewidth"), tr("Broadening's growth with the field"), QString(), QString(),
+                   tr("Added to the broadening per field across the wells (qw.Fw, their band edge's slope): 1[meV]/(1e7[V/m]) - "
+                      "an electroabsorption edge broadens as the field pulls the states apart. Empty: none")),
+              choice(QStringLiteral("continuum"), tr("Continuum"), {QStringLiteral("states"), QStringLiteral("bound")},
+                     {tr("The states found (a box's)"), tr("Bound states', and the barriers' bulk absorption")}, QStringLiteral("states"),
+                     tr("The states found above the barriers are a box's - the line's ends hard walls -, moving with a field: a "
+                        "Kramers-Kronig index from them moves too. Bound: the transitions of states confined by their own well's barriers alone (in a field "
+                        "too: below its barriers' edges, not the line's far ends'), and above the barriers' gap their 3D absorption, over "
+                        "the line's length (per the wells' thickness, as the states' was)")),
               choice(QStringLiteral("lineshape"), tr("Line shape"), {QStringLiteral("lorentzian"), QStringLiteral("gaussian"), QStringLiteral("sech")},
                      {tr("Lorentzian"), tr("Gaussian"), tr("Hyperbolic secant")}, QStringLiteral("lorentzian"),
                      tr("Each transition's broadening. A Lorentzian's tails absorb far below the edge (an electroabsorption "
                         "modulator's loss at 0 V); a Gaussian's (inhomogeneous: the wells' widths and alloy) and a sech's do not")),
               flag(QStringLiteral("excitons"), tr("Excitons"), false,
-                   tr("Each transition's 1s exciton - its binding energy Bastard's variational one over the states' own envelopes "
-                      "(a field pulling them apart weakens it: the quantum-confined Stark effect's), its line |F(0)|² = 2/(πλ²) "
-                      "strong - and the continuum above it raised by the 2D Sommerfeld factor (2 at the edge). Absorption only: "
-                      "with carriers they are screened, left out")),
+                   tr("Each transition's 1s exciton - its binding energy variational over the states' own envelopes (a field "
+                      "pulling them apart weakens it: the quantum-confined Stark effect's), its line 2 |F(0)|² strong (both spin "
+                      "pairs) - and the continuum above it raised by the 2D Sommerfeld factor (2 at the edge). Absorption only: with "
+                      "carriers they are screened, left out")),
+              shownIf(choice(QStringLiteral("excitonmodel"), tr("Exciton"), {QStringLiteral("two"), QStringLiteral("bastard")},
+                             {tr("Two parameters (λ, γ)"), tr("Bastard's (λ)")}, QStringLiteral("two"),
+                             tr("Its trial function: e^(-√(ρ² + γ²(ze - zh)²)/λ), the electron and hole drawn together along the axis "
+                                "too (Gerlach et al.'s; Lumerical's variational one) - within 2 % of the exact binding and its line "
+                                "near the exact's in wells 2 to 20 nm wide -, or Bastard's e^(-ρ/λ) (γ 0: a narrow well's; |F(0)|² = "
+                                "2/(πλ²)), its line weaker in wide wells")),
+                      QStringLiteral("excitons=true")),
               shownIf(expr(QStringLiteral("epsr"), tr("Excitons' permittivity εr"), QString(), QString(),
                            tr("Static. Empty: the wells' material's (its epsilonr, else its compound's; a Quantum Well Material's "
                               "own, else nr²)")),
