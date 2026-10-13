@@ -36,8 +36,10 @@ jobs:
     runs-on: ubuntu-24.04
     # The build takes about half an hour and the unit tests under the
     # sanitizers 40 to 55 minutes (the multiphysics tests most of it): with
-    # the smoke tests, past 90 minutes on a busy runner (October 2026).
-    timeout-minutes: 150
+    # the smoke tests, past 90 minutes on a busy runner (October 2026). The
+    # semiconductor devices' tests (test_fem_devices) some 25 minutes more
+    # there since: the job some 150.
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@v4
 
