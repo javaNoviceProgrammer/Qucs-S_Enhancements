@@ -2019,7 +2019,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   its canvas's menu makes a model of a cut along the last ruler, its
   stack asked for (the layers under the cut offered), its materials from
   the library. *Form Union* makes them one, and numbers its domains,
-  boundaries and points (from the left, then from below).
+  boundaries and points (from the left, then from below). A **Lumerical
+  MQW project** (*File → Import Lumerical MQW Project…*, or Claude's
+  `fem_model` import: an `.ldev`, HDF5 read by a reader of its own) is
+  made a quantum wells model: its layer table a stack, each layer its
+  material's bands (zinc blende or wurtzite: γ or A1-A6, Δ's, Ep, the
+  deformation potentials, its strain) over its offset, the solver's k·p
+  order, temperature, field and grid, a valence bands study (k to its
+  Brillouin zone ratio) and a spectrum (its frequencies as photon
+  energies; Lumerical's γ a full width, half of it here; its carrier
+  density over the stack per the wells) - what was taken, and how,
+  said. Lumerical's three MQW examples so imported solve as the
+  benchmarks above.
   **Materials**: from a
   library of metals, board dielectrics (with their loss tangents),
   semiconductors and their insulators, **III-V compounds** (GaAs, AlAs,
@@ -2778,7 +2789,8 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   `edit_diagram` take a `theme` too.
 - **Data in and out of a diagram**: *Edit Diagram Properties → Import*
   reads data files — CSV, TSV, Excel (.xlsx), text in columns, NumPy
-  (.npy, .npz), Touchstone, Qucs-S datasets — into datasets of their own
+  (.npy, .npz), Touchstone, Qucs-S datasets, Lumerical's data files
+  (.ldf: each variable's curves) — into datasets of their own
   beside the schematic, to plot next to a simulation's (a trace
   `name:variable`); Claude's `import_data` does the same. *Export* writes
   a dataset's variables to a file for another program: check them (*All*,

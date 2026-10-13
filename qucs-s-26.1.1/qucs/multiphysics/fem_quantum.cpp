@@ -667,6 +667,27 @@ bool QuantumProblem::setup(QString* error)
             b.nr = number(mf->text(QStringLiteral("nr")), Dim(), tr("%1's refractive index").arg(where));
             const QString eps = mf->text(QStringLiteral("epsilonr")).trimmed();
             b.epsr = eps.isEmpty() ? b.nr * b.nr : number(eps, Dim(), tr("%1's permittivity").arg(where));
+            if (mf->text(QStringLiteral("crystal")) != QLatin1String("wurtzite") && !mf->text(QStringLiteral("exx")).trimmed().isEmpty()) {
+                // Zinc blende strained as given: Bir and Pikus's, as a
+                // compound's on a substrate - its edges' shifts added to its
+                // Ec and Ev, the Z orbital's to the k·p's.
+                const double exx = number(mf->text(QStringLiteral("exx")), Dim(), tr("%1's εxx").arg(where));
+                const double ac = energy(mf->text(QStringLiteral("ac")), tr("%1's ac").arg(where)), av = energy(mf->text(QStringLiteral("av")), tr("%1's av").arg(where));
+                const double bs = energy(mf->text(QStringLiteral("b")), tr("%1's b").arg(where));
+                const double c11 = number(mf->text(QStringLiteral("C11")), Dim::of(-1, 1, -2), tr("%1's C11").arg(where));
+                const double c12 = number(mf->text(QStringLiteral("C12")), Dim::of(-1, 1, -2), tr("%1's C12").arg(where));
+                if (!(c11 > 0) || !std::isfinite(c12) || !std::isfinite(ac) || !std::isfinite(av) || !std::isfinite(bs))
+                    problem(tr("%1: its strain wants ac, av, b, C11 and C12").arg(where));
+                else {
+                    const double ezz = -2 * c12 / c11 * exx, vol = 2 * exx + ezz, P = -av * vol, Qe = -bs * (exx - ezz);
+                    const double D = std::isfinite(b.delta) ? b.delta : 0.3;
+                    b.strain = exx;
+                    b.dZ = 3 * Qe;
+                    b.ecShift = ac * vol;
+                    b.hhOver = -P - Qe;
+                    b.lhOver = -P + 0.5 * (Qe - D + std::sqrt(D * D + 2 * D * Qe + 9 * Qe * Qe));
+                }
+            }
             if (mf->text(QStringLiteral("crystal")) == QLatin1String("wurtzite")) {
                 WurtziteParameters w;
                 auto six = [&](const QString& key, double* out, bool need) {

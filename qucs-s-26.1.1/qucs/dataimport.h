@@ -41,6 +41,9 @@
  * - Touchstone (.s1p, .s2p, ... .sNp, versions 1 and 2): the network's
  *   S, Y or Z parameters, complex, S[1,1] ..., over frequency in Hz.
  * - A dataset of Qucs-S from elsewhere (.dat): its variables as they are.
+ * - A Lumerical data file (.ldf, version 1.0): each variable's cell of
+ *   matrices, an n x 2 one a curve - name_x1 and name1 on it, ... (a cell
+ *   of one: name_x and name) -, an n x m one its columns on the first.
  *
  * In a table, x is the column chosen; by default the first when it rises
  * or falls steadily, else the row (1, 2, ...). Names are made safe for a
@@ -48,7 +51,7 @@
  */
 namespace qucs_s::dataimport {
 
-enum class Format { Unknown, Table, Workbook, Text, Npy, Npz, Touchstone, Dataset };
+enum class Format { Unknown, Table, Workbook, Text, Npy, Npz, Touchstone, Dataset, Lumerical };
 
 /// What a file is read as: by its suffix, else by what it holds.
 Format formatOf(const QString& path);
