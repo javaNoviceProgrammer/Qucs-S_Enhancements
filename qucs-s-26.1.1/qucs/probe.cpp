@@ -223,18 +223,14 @@ QString computedVariable(Schematic* sch, Component* analysis, const QString& exp
     return name;
 }
 
-// The last diagram of each schematic probed into.// The last diagram of each schematic probed into.
-QHash<const Schematic*, const Diagram*>& lastProbed()
+// The last diagram of each schematic probed into, by its serial: a pointer
+// outlived its diagram (a schematic closed, an undo), and the allocator gave
+// its address to a new one - reopened, a schematic's new diagram was taken
+// for the one probed before. Its schematic's entry forgotten with it.
+QHash<const Schematic*, quint64>& lastProbed()
 {
-    static QHash<const Schematic*, const Diagram*> last;
+    static QHash<const Schematic*, quint64> last;
     return last;
-}
-
-bool holds(const Schematic* sch, const Diagram* d)
-{
-    for (const Diagram* x : sch->a_DocDiags)
-        if (x == d) return true;
-    return false;
 }
 
 bool drawsAgainstX(const Diagram* d)
@@ -384,7 +380,9 @@ Diagram* frontDiagram(Schematic* sch)
 {
     for (Diagram* d : sch->a_DocDiags)
         if (d->isSelected && drawsAgainstX(d)) return d;
-    if (const Diagram* last = lastProbed().value(sch); last && holds(sch, last)) return const_cast<Diagram*>(last);
+    if (const quint64 last = lastProbed().value(sch, 0))
+        for (Diagram* d : sch->a_DocDiags)
+            if (d->serial() == last) return d;
     for (Diagram* d : sch->a_DocDiags)
         if (drawsAgainstX(d)) return d;
     return nullptr;
@@ -593,7 +591,7 @@ Result probe(Schematic* sch, const Target& target, Diagram* into)
         changed = true;
         d->loadGraphData(datasetPath(sch));
     }
-    lastProbed().insert(sch, d);
+    lastProbed().insert(sch, d->serial());
     if (changed) sch->setChanged(true, true);
     return r;
 }
@@ -617,6 +615,11 @@ QString partOfVariable(const QString& variable)
     const QRegularExpressionMatch m = current.match(ds::withoutSimulator(variable));
     if (!m.hasMatch()) return QString();
     return m.captured(1).isEmpty() ? m.captured(2) : m.captured(1);
+}
+
+void forget(const Schematic* sch)
+{
+    lastProbed().remove(sch);
 }
 
 } // namespace qucs_s::probe
