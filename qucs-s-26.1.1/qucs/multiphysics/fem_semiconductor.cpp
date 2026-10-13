@@ -372,6 +372,22 @@ private:
     std::vector<double> a_bcV, a_bcN, a_bcP;   // by node: a Dirichlet node's values
     std::vector<std::pair<int, Expression>> a_surface;   // node, charge density's expression
     std::vector<double> a_surfaceLength;                 // by entry: area (m²)
+    // Interface traps, by level at a node: its share of the interface (m²),
+    // density (1/m²), n1 and p1 (1/m³: ni e^(±(Et - Ei)/kT)), cn and cp (σ
+    // vth, m³/s), and whether acceptor-like.
+    struct TrapLevel {
+        int node = -1;
+        double area = 0, N = 0, n1 = 0, p1 = 0, cn = 0, cp = 0;
+        bool acceptor = true;
+    };
+    std::vector<TrapLevel> a_traps;
+    /// Level \a t at Boltzmann's carriers \a n, \a p: its occupancy f, its
+    /// rate 1/τ = cn (n + n1) + cp (p + p1), the pairs it recombines per area
+    /// U, and their changes with n and p.
+    struct TrapState {
+        double f, D, U, dfdn, dfdp, dUdn, dUdp;
+    };
+    static TrapState trapState(const TrapLevel& t, double n, double p);
     std::vector<std::pair<int, std::array<double, 3>>> a_nodePoint;   // a node's triangle and reference point
     std::vector<double> a_generation;  // by node (1/(m³ s)), at the last solve
     std::vector<OpticalSource> a_optical;
@@ -957,6 +973,7 @@ bool SemiconductorProblem::setup(QString* error)
     a_nodeContact.assign(std::size_t(a_n), -1);
     a_surface.clear();
     a_surfaceLength.clear();
+    a_traps.clear();
     for (const Node* bf : boundaryFeatures) {
         const QString t = bf->type;
         const QVector<int> picked = resolveSelection(topo, model, Level::Boundary, bf->selection(), &why);
@@ -978,6 +995,51 @@ bool SemiconductorProblem::setup(QString* error)
             for (const auto& [node, len] : share) {
                 a_surface.emplace_back(node, e);
                 a_surfaceLength.push_back(len);
+            }
+            continue;
+        }
+        if (t == QLatin1String("semiconductor/traps")) {
+            const QString where = bf->name();
+            const double sn = number(bf->text(QStringLiteral("sigman")), Dim::area(), where);
+            const double sp = number(bf->text(QStringLiteral("sigmap")), Dim::area(), where);
+            const double vth = number(bf->text(QStringLiteral("vth")), velocity, where);
+            if (!(sn > 0) || !(sp > 0) || !(vth > 0)) {
+                problem(tr("%1: its cross sections and thermal velocity must be more than 0").arg(where));
+                continue;
+            }
+            // Its levels: one, or the range's in equal steps (each Dit ΔE at
+            // its middle).
+            std::vector<std::pair<double, double>> levels;   // (Et - Ei in J, 1/m²)
+            if (bf->text(QStringLiteral("distribution")) == QLatin1String("level")) {
+                const double Nit = number(bf->text(QStringLiteral("Nit")), Dim::of(-2), where);
+                const double Et = energyOf(bf->text(QStringLiteral("Et")), constants, &why);
+                if (!(Nit >= 0) || !std::isfinite(Et)) problem(tr("%1: its density and level").arg(where));
+                else levels.emplace_back(Et, Nit);
+            } else {
+                const double Dit = number(bf->text(QStringLiteral("Dit")), Dim::of(-4, -1, 2), where);
+                const double lo = energyOf(bf->text(QStringLiteral("Elow")), constants, &why);
+                const double hi = energyOf(bf->text(QStringLiteral("Ehigh")), constants, &why);
+                const int count = std::max(1, bf->integer(QStringLiteral("levels")));
+                if (!(Dit >= 0) || !std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo)) problem(tr("%1: its density and range").arg(where));
+                else
+                    for (int k = 0; k < count; ++k) levels.emplace_back(lo + (k + 0.5) * (hi - lo) / count, Dit * (hi - lo) / count);
+            }
+            const bool acceptor = bf->text(QStringLiteral("kind")) != QLatin1String("donor");
+            for (const auto& [node, len] : share) {
+                if (a_nodeDomain[std::size_t(node)] < 0) continue;
+                const double ni = a_ni[std::size_t(node)];
+                for (const auto& [Et, N] : levels) {
+                    TrapLevel tl;
+                    tl.node = node;
+                    tl.area = len;
+                    tl.N = N;
+                    tl.n1 = ni * std::exp(Et / (KB * a_T));
+                    tl.p1 = ni * std::exp(-Et / (KB * a_T));
+                    tl.cn = sn * vth;
+                    tl.cp = sp * vth;
+                    tl.acceptor = acceptor;
+                    a_traps.push_back(tl);
+                }
             }
             continue;
         }
@@ -1157,6 +1219,21 @@ void SemiconductorProblem::carriersAt(int i, double v, double* n, double* p, dou
     fh.at(std::log(*p / m.Nv), &F, &dF);
     *p = m.Nv * F;
     *dp = -m.Nv * dF;
+}
+
+SemiconductorProblem::TrapState SemiconductorProblem::trapState(const TrapLevel& t, double n, double p)
+{
+    TrapState s;
+    s.D = t.cn * (n + t.n1) + t.cp * (p + t.p1);
+    const double filling = t.cn * n + t.cp * t.p1;
+    s.f = filling / s.D;
+    s.dfdn = t.cn * (t.cn * t.n1 + t.cp * p) / (s.D * s.D);
+    s.dfdp = -t.cp * filling / (s.D * s.D);
+    const double excess = n * p - t.n1 * t.p1;
+    s.U = t.N * t.cn * t.cp * excess / s.D;
+    s.dUdn = t.N * t.cn * t.cp * (p * s.D - excess * t.cn) / (s.D * s.D);
+    s.dUdp = t.N * t.cn * t.cp * (n * s.D - excess * t.cp) / (s.D * s.D);
+    return s;
 }
 
 void SemiconductorProblem::degeneracy(const Eigen::VectorXd& x) const
@@ -1619,6 +1696,25 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             rho = ev.eval(e);
         }
         if (std::isfinite(rho)) F(a_iV[std::size_t(i)]) += rho * a_surfaceLength[k];
+    }
+    // Interface traps: each level's charge, -q N f (acceptor-like) or
+    // q N (1 - f), and the pairs it recombines, at Boltzmann's carriers
+    // (Fermi-Dirac's n/γ: the traps filled by the Fermi level).
+    for (const TrapLevel& tl : a_traps) {
+        const int i = tl.node;
+        const std::size_t k = std::size_t(i);
+        const double gn = std::exp(a_lgN[k]), gp = std::exp(a_lgP[k]);
+        const TrapState st = trapState(tl, nn(i) / gn, pp(i) / gp);
+        const int rv = a_iV[k], rn = a_iN[k], rp = a_iP[k];
+        F(rv) += Q * tl.N * (tl.acceptor ? -st.f : 1 - st.f) * tl.area;
+        add(rv, rn, -Q * tl.N * st.dfdn / gn * tl.area);
+        add(rv, rp, -Q * tl.N * st.dfdp / gp * tl.area);
+        F(rn) -= Q * tl.area * st.U;
+        F(rp) += Q * tl.area * st.U;
+        add(rn, rn, -Q * tl.area * st.dUdn / gn);
+        add(rn, rp, -Q * tl.area * st.dUdp / gp);
+        add(rp, rn, Q * tl.area * st.dUdn / gn);
+        add(rp, rp, Q * tl.area * st.dUdp / gp);
     }
     // Schottky contacts: thermionic emission over the barrier.
     for (const Contact& c : a_contacts) {
@@ -2363,6 +2459,42 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
     };
     for (const auto& t : trip)
         if (!fixed[std::size_t(t.row())]) put(t.row(), t.col(), cd(t.value(), 0));
+    // Interface traps follow with their own time: δf = (cn (1 - f) δn -
+    // cp f δp)/(jω + 1/τ), 1/τ = cn (n + n1) + cp (p + p1) - each level's
+    // charge -q N δf, the electrons it takes δUn = N (cn (1 - f) δn - cn (n
+    // + n1) δf), the holes δUp = N (cp f δp + cp (p + p1) δf): at jω, in
+    // the place of the static changes assembled (to which they come at 0).
+    auto trapChanges = [&](const TrapLevel& tl, const TrapState& st, double n, double p, cd* dsn, cd* dsp, cd* dun, cd* dup, cd* dvn, cd* dvp) {
+        const cd denom(st.D, omega);
+        const cd fn = tl.cn * (1 - st.f) / denom, fp = -tl.cp * st.f / denom;   // δf per δn, δp
+        *dsn = -Q * tl.N * fn;
+        *dsp = -Q * tl.N * fp;
+        *dun = tl.N * (tl.cn * (1 - st.f) - tl.cn * (n + tl.n1) * fn);
+        *dup = tl.N * (-tl.cn * (n + tl.n1) * fp);
+        *dvn = tl.N * (tl.cp * (p + tl.p1) * fn);
+        *dvp = tl.N * (tl.cp * st.f + tl.cp * (p + tl.p1) * fp);
+    };
+    for (const TrapLevel& tl : a_traps) {
+        const std::size_t k = std::size_t(tl.node);
+        const int rv = a_iV[k], rn = a_iN[k], rp = a_iP[k];
+        const double gn = std::exp(a_lgN[k]), gp = std::exp(a_lgP[k]);
+        const double n = x(rn) / gn, p = x(rp) / gp;
+        const TrapState st = trapState(tl, n, p);
+        cd dsn, dsp, dun, dup, dvn, dvp;
+        trapChanges(tl, st, n, p, &dsn, &dsp, &dun, &dup, &dvn, &dvp);
+        if (!fixed[std::size_t(rv)]) {
+            put(rv, rn, (dsn + Q * tl.N * st.dfdn) * tl.area / gn);
+            put(rv, rp, (dsp + Q * tl.N * st.dfdp) * tl.area / gp);
+        }
+        if (!fixed[std::size_t(rn)]) {
+            put(rn, rn, -Q * tl.area * (dun - st.dUdn) / gn);
+            put(rn, rp, -Q * tl.area * (dup - st.dUdp) / gp);
+        }
+        if (!fixed[std::size_t(rp)]) {
+            put(rp, rn, Q * tl.area * (dvn - st.dUdn) / gn);
+            put(rp, rp, Q * tl.area * (dvp - st.dUdp) / gp);
+        }
+    }
     for (int i = 0; i < a_n; ++i) {
         const double A = a_box[std::size_t(i)];
         const int rn = a_iN[std::size_t(i)], rp = a_iP[std::size_t(i)];
@@ -2445,10 +2577,20 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
                     const double dw = w[std::size_t(a_edges[m].i)] - w[std::size_t(a_edges[m].j)];
                     if (dw != 0) dI += df[m] * dw;
                 }
-                // (The carriers' change, -qA δn and qA δp on their rows, at jω.)
+                // (The carriers' change, -qA δn and qA δp on their rows, at jω;
+                // the interface traps' charge's.)
                 for (int i = 0; i < a_n; ++i)
                     if (w[std::size_t(i)] != 0 && a_iN[std::size_t(i)] >= 0)
                         dI += w[std::size_t(i)] * cd(0, omega) * Q * a_box[std::size_t(i)] * (dx(a_iP[std::size_t(i)]) - dx(a_iN[std::size_t(i)]));
+                for (const TrapLevel& tl : a_traps) {
+                    const std::size_t k = std::size_t(tl.node);
+                    if (w[k] == 0) continue;
+                    const double gn = std::exp(a_lgN[k]), gp = std::exp(a_lgP[k]);
+                    const double n = x(a_iN[k]) / gn, p = x(a_iP[k]) / gp;
+                    cd dsn, dsp, dun, dup, dvn, dvp;
+                    trapChanges(tl, trapState(tl, n, p), n, p, &dsn, &dsp, &dun, &dup, &dvn, &dvp);
+                    dI += w[k] * cd(0, omega) * tl.area * (dsn * dx(a_iN[k]) / gn + dsp * dx(a_iP[k]) / gp);
+                }
             }
             out[c] = dI + cd(0, omega) * dQ;
         }

@@ -866,7 +866,8 @@ QList<NodeKind> makeKinds()
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
           QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/insulation"),
           QStringLiteral("semiconductor/ohmic"),
-          QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge")},
+          QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge"),
+          QStringLiteral("semiconductor/traps")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
             "p (Boltzmann's statistics), their currents Scharfetter and Gummel's along each edge of linear triangles - across "
@@ -1082,6 +1083,31 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), spatial(QStringLiteral("rhos"), tr("Surface charge density"), QStringLiteral("C/m^2"), QStringLiteral("0"),
                                        tr("Fixed charge at an interface: an oxide's, q times 1e10 to 1e11 per cm²"))},
          {}, {}, false, false, QStringLiteral("scd"), tr("Charge fixed on a boundary.")});
+    {
+        const QString level = QStringLiteral("distribution=level"), spread = QStringLiteral("distribution=uniform");
+        add({QStringLiteral("semiconductor/traps"), tr("Interface Traps"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
+             Level::Boundary,
+             {selectionProp(none),
+              choice(QStringLiteral("kind"), tr("Kind"), {QStringLiteral("acceptor"), QStringLiteral("donor")},
+                     {tr("Acceptor-like (negative when filled)"), tr("Donor-like (positive when empty)")}, QStringLiteral("acceptor")),
+              choice(QStringLiteral("distribution"), tr("In energy"), {QStringLiteral("level"), QStringLiteral("uniform")},
+                     {tr("A single level"), tr("Uniform over a range (Dit)")}, QStringLiteral("uniform")),
+              shownIf(expr(QStringLiteral("Nit"), tr("Density Nit"), QStringLiteral("1/m^2"), QStringLiteral("1e11[1/cm^2]")), level),
+              shownIf(expr(QStringLiteral("Et"), tr("Level above the intrinsic one, Et - Ei"), QStringLiteral("eV"), QStringLiteral("0[eV]")), level),
+              shownIf(expr(QStringLiteral("Dit"), tr("Density per energy Dit"), QStringLiteral("1/(m^2*J)"), QStringLiteral("1e11[1/(cm^2*eV)]")), spread),
+              shownIf(expr(QStringLiteral("Elow"), tr("From, above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("-0.5[eV]")), spread),
+              shownIf(expr(QStringLiteral("Ehigh"), tr("To, above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("0.5[eV]")), spread),
+              shownIf(integer(QStringLiteral("levels"), tr("Levels"), 64, tr("The range in this many levels, each Dit ΔE")), spread),
+              expr(QStringLiteral("sigman"), tr("Electrons' capture cross section σn"), QStringLiteral("m^2"), QStringLiteral("1e-16[cm^2]")),
+              expr(QStringLiteral("sigmap"), tr("Holes' capture cross section σp"), QStringLiteral("m^2"), QStringLiteral("1e-16[cm^2]")),
+              expr(QStringLiteral("vth"), tr("Thermal velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]"))},
+             {}, {}, false, false, QStringLiteral("trp"),
+             tr("Traps at an interface - an oxide's: each level filled as Shockley, Read and Hall have it, f = (cn n + cp p1)/(cn "
+                "(n + n1) + cp (p + p1)), cn = σn vth, n1 = ni e^((Et - Ei)/kT); its charge -q Nit f (acceptor-like) or q Nit (1 - f) "
+                "(donor-like), and the pairs it recombines, Nit cn cp (n p - ni²)/(cn (n + n1) + cp (p + p1)). At rest the C-V curve "
+                "stretched out; small-signal each level follows with its time, 1/(cn (n + n1) + cp (p + p1)) - the conductance "
+                "method's peak. In time the occupancy follows at once (a slow trap's own state not kept).")});
+    }
 
     // Geometrical optics.
     add({QStringLiteral("rays"), tr("Geometrical Optics"), QStringLiteral("physics"), QStringLiteral("gop"), Level::Domain,
