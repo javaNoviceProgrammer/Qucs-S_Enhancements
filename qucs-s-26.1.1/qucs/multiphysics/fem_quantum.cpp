@@ -57,6 +57,7 @@ struct Band {
     double mhhP = 0, mlhP = 0;          // across it
     double Ep = 0;                      // Kane's energy (eV)
     double nr = NaN;                    // refractive index
+    double epsr = NaN;                  // static permittivity (the excitons')
     double strain = 0;                  // in the plane
     Expression userEc, userEv;          // (as given: of x and y)
 };
@@ -121,6 +122,40 @@ double fermiMinusHalf(double eta)
         sum += w * fermi(t * t - eta);
     }
     return 2 / std::sqrt(M_PI) * sum * h / 3;
+}
+
+/// The Coulomb attraction of a 1s exciton's in-plane envelope, √(2/π)/λ
+/// e^(-ρ/λ), at a separation s along the axis, times λ (q²/4πε aside):
+/// g(u) = 4 ∫0^∞ t e^(-2t)/√(t² + u²) dt at u = s/λ - 2 at u = 0 (the strictly
+/// 2D exciton's 4 Ry), 1/u far off. Tabulated once over ln u (t = u sinh θ,
+/// Simpson's rule).
+double excitonG(double u)
+{
+    constexpr int N = 4000;
+    constexpr double lo = -13.815510557964274, hi = 9.210340371976184;   // ln 1e-6, ln 1e4
+    static const std::vector<double> table = [] {
+        std::vector<double> g(N + 1);
+        for (int k = 0; k <= N; ++k) {
+            const double uk = std::exp(lo + (hi - lo) * k / N);
+            const double top = std::asinh(40 / uk);
+            constexpr int m = 2000;
+            const double h = top / m;
+            double sum = 0;
+            for (int j = 0; j <= m; ++j) {
+                const double x = uk * std::sinh(j * h), w = (j == 0 || j == m) ? 1 : (j % 2 ? 4 : 2);
+                sum += w * x * std::exp(-2 * x);
+            }
+            g[std::size_t(k)] = 4 * sum * h / 3;
+        }
+        return g;
+    }();
+    if (!(u > 0)) return 2;
+    const double x = std::log(u);
+    if (x <= lo) return table.front();
+    if (x >= hi) return 1 / u - 0.75 / (u * u * u);
+    const double f = (x - lo) / (hi - lo) * N;
+    const int k = std::min(N - 1, int(f));
+    return table[std::size_t(k)] + (f - k) * (table[std::size_t(k) + 1] - table[std::size_t(k)]);
 }
 
 class QuantumProblem : public Problem
@@ -193,7 +228,16 @@ private:
         std::vector<double> E, te, tm;   // J, 1/m
         double Fc = NaN, Fv = NaN, size = 0, nr = 0;
         bool carriers = false;
+        // The e1-hh1 exciton's binding energy and peak (J), its radius (m).
+        bool excitons = false;
+        double Eb = NaN, Ex = NaN, radius = NaN;
     };
+    /// The 1s exciton of an electron and a hole state (1D wells): its
+    /// binding energy (J) and in-plane radius λ (m).
+    struct Exciton {
+        double Eb = 0, radius = NaN;
+    };
+    Exciton exciton(const State& e, const State& h, double mr, double epsr) const;
     Spectrum a_spec;
     int a_specSelected = -1;
 };
@@ -343,6 +387,8 @@ bool QuantumProblem::setup(QString* error)
             b.mlhP = lp.isEmpty() ? b.mlhZ : number(lp, Dim(), where);
             b.Ep = energy(mf->text(QStringLiteral("Ep")), tr("%1's Kane energy").arg(where));
             b.nr = number(mf->text(QStringLiteral("nr")), Dim(), tr("%1's refractive index").arg(where));
+            const QString eps = mf->text(QStringLiteral("epsilonr")).trimmed();
+            b.epsr = eps.isEmpty() ? b.nr * b.nr : number(eps, Dim(), tr("%1's permittivity").arg(where));
         } else {
             if (!mat) {
                 problem(tr("%1 has no material").arg(where));
@@ -351,22 +397,30 @@ bool QuantumProblem::setup(QString* error)
             auto text = [&](const QString& key) { return materialProperty(*mat, key, &constants); };
             const QString compound = materialProperty(*mat, QStringLiteral("compound")).trimmed();
             std::optional<BandParameters> p;
+            double shift300 = 0;   // its gap at T less its gap at 300 K (Varshni's)
             if (!compound.isEmpty()) {
                 const double x = evaluateConstant(materialProperty(*mat, QStringLiteral("x")), constants, Dim()).value_or(0);
                 const double y = evaluateConstant(materialProperty(*mat, QStringLiteral("y")), constants, Dim()).value_or(0);
-                p = bandParameters(compound, x, y, a_T, &why);
+                const BandSet set = bandSetOf(materialProperty(*mat, QStringLiteral("bands")));
+                p = bandParameters(compound, x, y, a_T, &why, set);
                 if (!p) {
                     problem(tr("%1: %2").arg(where, why));
                     continue;
                 }
+                shift300 = p->Eg - bandParameters(compound, x, y, 300, nullptr, set)->Eg;
             }
-            // A property given on the material over its compound's.
+            // A property given on the material - or on its library entry, as
+            // every physics reads a material (InP's measured 1.344 eV, not
+            // its compound's 1.353) - over its compound's. A gap given is
+            // the gap at 300 K: with a compound, moved with the temperature
+            // as the compound's is.
             auto value = [&](const QString& key, double fromCompound, const Dim& dim, bool eV) {
-                const QString own = mat->text(key).trimmed();
-                if (!own.isEmpty() || !p) {
-                    const QString t = own.isEmpty() ? text(key) : own;
+                const QString given = givenProperty(*mat, key, &constants).trimmed();
+                if (!given.isEmpty() || !p) {
+                    const QString t = given.isEmpty() ? text(key) : given;
                     if (t.trimmed().isEmpty()) return NaN;
-                    return eV ? energy(t, tr("%1's %2").arg(where, key)) : number(t, dim, tr("%1's %2").arg(where, key));
+                    const double v = eV ? energy(t, tr("%1's %2").arg(where, key)) : number(t, dim, tr("%1's %2").arg(where, key));
+                    return key == QLatin1String("Eg") && !given.isEmpty() ? v + shift300 : v;
                 }
                 return fromCompound;
             };
@@ -398,6 +452,8 @@ bool QuantumProblem::setup(QString* error)
             if (!std::isfinite(b.Ep)) b.Ep = 20;
             const QString nText = text(QStringLiteral("n"));
             b.nr = nText.trimmed().isEmpty() ? (p ? p->n : NaN) : evaluateConstant(nText, constants, Dim()).value_or(p ? p->n : NaN);
+            const QString epsText = text(QStringLiteral("epsilonr"));
+            b.epsr = epsText.trimmed().isEmpty() ? (p ? p->epsr : NaN) : evaluateConstant(epsText, constants, Dim()).value_or(p ? p->epsr : NaN);
             b.Ec = VBO + Eg;
             b.Ehh = b.Elh = VBO;
             if (std::isfinite(substrate)) {
@@ -1047,6 +1103,80 @@ bool QuantumProblem::solve(const SolveOptions& options, QString* error)
     return true;
 }
 
+QuantumProblem::Exciton QuantumProblem::exciton(const State& e, const State& h, double mr, double epsr) const
+{
+    // Bastard's variational exciton: χe(ze) χh(zh) √(2/π)/λ e^(-ρ/λ), its
+    // energy ħ²/(2 µ λ²) less q²/(4π ε) ∫ P(s) g(s/λ)/λ ds - P the
+    // distribution of the electron's and hole's separation along the axis,
+    // from their |χ|² binned - least over λ.
+    Exciton out;
+    std::vector<std::array<double, 3>> at;   // z (m), the electron's share, the hole's
+    at.reserve(a_points.size());
+    double lo = Inf(), hi = -Inf();
+    for (const Point& pt : a_points) {
+        double ve = 0, vh = 0;
+        for (int i = 0; i < pt.n; ++i)
+            if (pt.eq[i] >= 0) {
+                ve += pt.N[i] * e.x(pt.eq[i]);
+                vh += pt.N[i] * h.x(pt.eq[i]);
+            }
+        at.push_back({pt.a, pt.w * ve * ve, pt.w * vh * vh});
+        lo = std::min(lo, pt.a);
+        hi = std::max(hi, pt.a);
+    }
+    if (at.empty() || !(hi > lo) || !(mr > 0) || !(epsr > 0)) return out;
+    const double bin = std::max(2e-11, (hi - lo) / 3000);
+    const int n = int((hi - lo) / bin) + 1;
+    std::vector<double> pe(std::size_t(n), 0.0), ph(std::size_t(n), 0.0);
+    for (const auto& [z, a, b] : at) {
+        const int k = std::clamp(int((z - lo) / bin), 0, n - 1);
+        pe[std::size_t(k)] += a;
+        ph[std::size_t(k)] += b;
+    }
+    std::vector<int> ie, ih;
+    for (int k = 0; k < n; ++k) {
+        if (pe[std::size_t(k)] > 1e-12) ie.push_back(k);
+        if (ph[std::size_t(k)] > 1e-12) ih.push_back(k);
+    }
+    std::vector<double> P(std::size_t(n), 0.0);
+    for (int i : ie)
+        for (int j : ih) P[std::size_t(std::abs(i - j))] += pe[std::size_t(i)] * ph[std::size_t(j)];
+    std::vector<std::pair<double, double>> sep;   // s (m), its share
+    for (int m = 0; m < n; ++m)
+        if (P[std::size_t(m)] > 0) sep.emplace_back(m == 0 ? bin / 3 : m * bin, P[std::size_t(m)]);
+    const double k = Q * Q / (4 * M_PI * Eps0 * epsr);
+    auto energy = [&](double lambda) {
+        double v = 0;
+        for (const auto& [sm, w] : sep) v += w * excitonG(sm / lambda);
+        return Hbar * Hbar / (2 * mr * lambda * lambda) - k * v / lambda;
+    };
+    // Golden section in ln λ, 0.2 nm to 2 µm.
+    double a = std::log(2e-10), b = std::log(2e-6);
+    const double r = (std::sqrt(5.0) - 1) / 2;
+    double c = b - r * (b - a), d = a + r * (b - a), fc = energy(std::exp(c)), fd = energy(std::exp(d));
+    for (int it = 0; it < 120; ++it) {
+        if (fc < fd) {
+            b = d;
+            d = c;
+            fd = fc;
+            c = b - r * (b - a);
+            fc = energy(std::exp(c));
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + r * (b - a);
+            fd = energy(std::exp(d));
+        }
+    }
+    const double lambda = std::exp((a + b) / 2), least = energy(lambda);
+    if (least < 0) {
+        out.Eb = -least;
+        out.radius = lambda;
+    }
+    return out;
+}
+
 int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
 {
     if (solveModes(o.solve, std::max(1, o.states), 0, error) < 0) return -1;
@@ -1068,8 +1198,29 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         *error = tr("%1: a wire's spectrum wants a broadening more than 0").arg(a_node->name());
         return -1;
     }
+    if (o.excitons && !wells) {
+        *error = tr("%1: excitons are found in wells (1D) only, not yet in wires").arg(a_node->name());
+        return -1;
+    }
+    if (o.excitons && !(gamma > 0)) {
+        *error = tr("%1: an exciton's line wants a broadening more than 0").arg(a_node->name());
+        return -1;
+    }
     a_spec = Spectrum();
     a_spec.size = a_activeSize;
+    // The line's shape, its half width at half maximum γ: its cumulative
+    // and density at x (J) from its middle.
+    const double sigma = gamma / std::sqrt(2 * std::log(2.0)), width = gamma / std::acosh(2.0);
+    auto cdf = [&](double x) {
+        if (o.lineshape == 1) return 0.5 * std::erfc(-x / (sigma * std::sqrt(2.0)));
+        if (o.lineshape == 2) return x / width > 700 ? 1.0 : 2 / M_PI * std::atan(std::exp(x / width));
+        return 0.5 + std::atan(x / gamma) / M_PI;
+    };
+    auto pdf = [&](double x) {
+        if (o.lineshape == 1) return std::exp(-0.5 * x * x / (sigma * sigma)) / (sigma * std::sqrt(2 * M_PI));
+        if (o.lineshape == 2) return std::abs(x / width) > 700 ? 0.0 : 1 / (M_PI * width * std::cosh(x / width));
+        return gamma / M_PI / (x * x + gamma * gamma);
+    };
     // Carriers of carrier c per area (wells) or length (wires) with a
     // quasi-Fermi level F (J).
     auto sheet = [&](int c, double F) {
@@ -1119,6 +1270,8 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         double te, tm;
         double me, mh, mr;   // kg
         double Ep, nr;
+        double Eb = 0, radius = NaN;   // its 1s exciton's
+        bool e1hh1 = false;
     };
     std::vector<Transition> transitions;
     for (std::size_t i = 0; i < a_states[0].size(); ++i) {
@@ -1139,10 +1292,53 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 t.mr = 1 / (1 / t.me + 1 / t.mh);
                 t.Ep = e.Ep * Q;
                 t.nr = o.index > 0 ? o.index : e.nr;
+                t.e1hh1 = i == 0 && c == 1 && j == 0;
                 if (t.overlap > 1e-10) transitions.push_back(t);
             }
     }
     a_spec.nr = o.index > 0 ? o.index : (a_states[0].empty() ? 3.5 : a_states[0].front().nr);
+    // Excitons: each transition's 1s binding (in the wells' permittivity);
+    // screened by carriers, none.
+    a_spec.excitons = o.excitons && !a_spec.carriers;
+    if (o.excitons && a_spec.carriers)
+        a_s.log << tr("%1: the excitons are left out: carriers in the wells screen them").arg(a_node->name());
+    if (a_spec.excitons) {
+        double epsr = o.epsr;
+        if (!(epsr > 0))
+            for (std::size_t d = 0; d < a_bands.size() && !(epsr > 0); ++d)
+                if (d < a_active.size() && a_active[d] && a_bands[d].on) epsr = a_bands[d].epsr;
+        if (!(epsr > 0)) {
+            *error = tr("%1: the excitons want the wells' permittivity: give their material's epsilonr, or the step's").arg(a_node->name());
+            return -1;
+        }
+        // (Each transition's states, found again by their energies.)
+        auto find = [&](int c, double E) -> const State* {
+            for (const State& st : a_states[c])
+                if (st.E * Q == E) return &st;
+            return nullptr;
+        };
+        for (Transition& t : transitions) {
+            const State* e = find(0, t.Ee);
+            const State* h = find(t.tm > 0 ? 2 : 1, t.Eh);
+            if (!e || !h) continue;
+            const Exciton x = exciton(*e, *h, t.mr, epsr);
+            t.Eb = x.Eb;
+            t.radius = x.radius;
+            if (t.e1hh1) {
+                a_spec.Eb = x.Eb;
+                a_spec.Ex = t.E - x.Eb;
+                a_spec.radius = x.radius;
+            }
+        }
+    }
+    // The 2D Sommerfeld factor of a transition's continuum ε above its edge:
+    // 2/(1 + e^(-2π √(R/ε))), R a quarter of its exciton's binding (the
+    // strictly 2D exciton's Rydberg).
+    auto sommerfeld = [](const Transition& t, double eps) {
+        if (!(t.Eb > 0)) return 1.0;
+        if (!(eps > 0)) return 2.0;
+        return 2 / (1 + std::exp(-2 * M_PI * std::sqrt(t.Eb / 4 / eps)));
+    };
     // Each transition's density of states broadened (Lorentzian, half width
     // γ) and weighed by f_v - f_c along its in-plane dispersion: in cells,
     // the Lorentzian integrated exactly over each.
@@ -1154,9 +1350,9 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         const double Ec = t.Ee + t.mr / t.me * eps, Ev = t.Eh - t.mr / t.mh * eps;
         return fermi((Ev - a_spec.Fv) / kT) - fermi((Ec - a_spec.Fc) / kT);
     };
-    auto lorentz = [&](double a, double b, double delta) {
-        // ∫_a^b L(delta - ε) dε.
-        return (std::atan((b - delta) / gamma) - std::atan((a - delta) / gamma)) / M_PI;
+    auto line = [&](double a, double b, double delta) {
+        // ∫_a^b L(delta - ε) dε, the line's shape L.
+        return cdf(b - delta) - cdf(a - delta);
     };
     for (double E : o.energies) {
         double te = 0, tm = 0;
@@ -1165,24 +1361,27 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             double dos = 0;   // 1/(J m²) wells, 1/(J m) wires
             if (wells) {
                 double sum = 0;
-                if (gamma > 0 && !a_spec.carriers) sum = 0.5 + std::atan(delta / gamma) / M_PI;   // (a step's, broadened: exact)
+                const bool enhanced = a_spec.excitons && t.Eb > 0;
+                if (gamma > 0 && !a_spec.carriers && !enhanced) sum = cdf(delta);   // (a step's, broadened: exact)
                 else if (gamma > 0) {
                     for (int k = 0; k < cells; ++k) {
                         const double a = top * k / cells, b = top * (k + 1) / cells;
-                        sum += occupation(t, (a + b) / 2) * lorentz(a, b, delta);
+                        sum += occupation(t, (a + b) / 2) * sommerfeld(t, (a + b) / 2) * line(a, b, delta);
                     }
-                    sum += occupation(t, top) * (0.5 - std::atan((top - delta) / gamma) / M_PI);
+                    sum += occupation(t, top) * sommerfeld(t, top) * (1 - cdf(top - delta));
                 } else if (delta >= 0) sum = occupation(t, delta);
                 dos = t.mr / (M_PI * Hbar * Hbar) * sum;
+                // Its 1s exciton's line: |F(0)|² = 2/(πλ²) per area.
+                if (enhanced) dos += 2 / (M_PI * t.radius * t.radius) * pdf(delta + t.Eb);
             } else {
                 // In u = √ε: each cell's mean of ε^(-1/2) is 2/(u_k + u_k+1).
                 const double utop = std::sqrt(top);
                 double sum = 0;
                 for (int k = 0; k < cells; ++k) {
                     const double u0 = utop * k / cells, u1 = utop * (k + 1) / cells;
-                    sum += occupation(t, (u0 * u0 + u1 * u1) / 2) * 2 / (u0 + u1) * lorentz(u0 * u0, u1 * u1, delta);
+                    sum += occupation(t, (u0 * u0 + u1 * u1) / 2) * 2 / (u0 + u1) * line(u0 * u0, u1 * u1, delta);
                 }
-                sum += occupation(t, top) / utop * (0.5 - std::atan((top - delta) / gamma) / M_PI);
+                sum += occupation(t, top) / utop * (1 - cdf(top - delta));
                 dos = std::sqrt(2 * t.mr) / (M_PI * Hbar) * sum;
             }
             // α = (π q² ħ / (n c ε0 m0² E)) |ê·p|² |<e|h>|² ρ / (the wells' size); |Mb|² = m0 Ep / 6.
@@ -1200,7 +1399,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                    .arg(o.energies.size())
                    .arg(a_spec.carriers ? tr("the quasi-Fermi levels %1 apart").arg(formatQuantity((a_spec.Fc - a_spec.Fv) / Q, Dim::voltage()))
                                         : tr("no carriers"))
-                   .arg(QString());
+                   .arg(a_spec.excitons && std::isfinite(a_spec.Eb)
+                            ? tr("; the e1-hh1 exciton bound by %1, %2 across").arg(formatQuantity(a_spec.Eb / Q, Dim::voltage()),
+                                                                                  formatQuantity(a_spec.radius, Dim::length()))
+                            : QString());
     selectMode(0);
     return int(a_spec.E.size());
 }
@@ -1269,6 +1471,11 @@ void QuantumProblem::setGlobals()
         a_s.setGlobal(p + QStringLiteral("Ephoton"), a_spec.E[k], energy, tr("the photon's energy"));
         a_s.setGlobal(p + QStringLiteral("Lw"), a_spec.size, a_1d ? Dim::length() : Dim::of(2),
                       a_1d ? tr("the wells' thickness: the domains of the smallest gap") : tr("the wires' area: the domains of the smallest gap"));
+        if (a_spec.excitons) {
+            a_s.setGlobal(p + QStringLiteral("Eb"), a_spec.Eb, energy, tr("the e1-hh1 exciton's binding energy (1s, variational)"));
+            a_s.setGlobal(p + QStringLiteral("Ex"), a_spec.Ex, energy, tr("the e1-hh1 exciton's line: the transition less its binding"));
+            a_s.setGlobal(p + QStringLiteral("aX"), a_spec.radius, Dim::length(), tr("the e1-hh1 exciton's radius in the wells' plane, λ"));
+        }
         if (a_spec.carriers) {
             a_s.setGlobal(p + QStringLiteral("Fc"), a_spec.Fc, energy, tr("the electrons' quasi-Fermi level"));
             a_s.setGlobal(p + QStringLiteral("Fv"), a_spec.Fv, energy, tr("the holes' quasi-Fermi level"));

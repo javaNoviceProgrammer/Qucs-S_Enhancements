@@ -363,15 +363,34 @@ std::vector<const Node*> Problem::materials()
     return material;
 }
 
-QString Problem::materialProperty(const Node& m, const QString& key, const Scope* scope)
+QString Problem::givenProperty(const Node& m, const QString& key, const Scope* scope)
 {
-    QString text = m.text(key);
-    // Not given: its library entry's ({"material": "FR-4"} in a file).
+    // Its own, else its library entry's ({"material": "FR-4"} in a file).
     std::optional<MaterialEntry> entry;
     if (!m.text(QStringLiteral("library")).isEmpty()) entry = findMaterial(m.text(QStringLiteral("library")));
-    if (text.trimmed().isEmpty() && entry) text = entry->properties.value(key).toString();
+    auto own = [&](const QString& k) {
+        const QString t = m.text(k);
+        return t.trimmed().isEmpty() && entry ? entry->properties.value(k).toString() : t;
+    };
+    QString text = own(key);
+    if (text.trimmed().isEmpty() && key == QLatin1String("Eg")) {
+        // A gap wavelength's (the "1.3Q" quaternary's 1.3 µm): hc/λg.
+        const QString lambda = own(QStringLiteral("lambdag"));
+        const Scope none;
+        if (!lambda.trimmed().isEmpty())
+            if (const std::optional<double> l = evaluateConstant(lambda, scope ? *scope : none, Dim::length()); l && *l > 0)
+                text = formatNumber(6.62607015e-34 * 299792458.0 / *l / 1.602176634e-19, 10) + QStringLiteral("[eV]");
+    }
+    return text;
+}
+
+QString Problem::materialProperty(const Node& m, const QString& key, const Scope* scope)
+{
+    QString text = givenProperty(m, key, scope);
     if (!text.trimmed().isEmpty() || key == QLatin1String("compound") || key == QLatin1String("x") || key == QLatin1String("y")) return text;
     // A III-V alloy's: from its compound at its composition.
+    std::optional<MaterialEntry> entry;
+    if (!m.text(QStringLiteral("library")).isEmpty()) entry = findMaterial(m.text(QStringLiteral("library")));
     auto own = [&](const QString& k) {
         const QString t = m.text(k);
         return t.trimmed().isEmpty() && entry ? entry->properties.value(k).toString() : t;
@@ -387,7 +406,7 @@ QString Problem::materialProperty(const Node& m, const QString& key, const Scope
         if (!v) return text;
         xy[i] = *v;
     }
-    return compoundProperty(compound, xy[0], xy[1], key);
+    return compoundProperty(compound, xy[0], xy[1], key, bandSetOf(own(QStringLiteral("bands"))));
 }
 
 QJsonValue materialValue(const Node& m, const QString& key)
@@ -2196,6 +2215,17 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
         return true;
     };
     if (!energy(QStringLiteral("linewidth"), tr("its broadening"), &o.linewidth)) return false;
+    const QString shape = node.text(QStringLiteral("lineshape"));
+    o.lineshape = shape == QLatin1String("gaussian") ? 1 : shape == QLatin1String("sech") ? 2 : 0;
+    o.excitons = node.flag(QStringLiteral("excitons"));
+    if (!node.text(QStringLiteral("epsr")).trimmed().isEmpty()) {
+        const std::optional<double> e = evaluateConstant(node.text(QStringLiteral("epsr")), scope, Dim(), &why);
+        if (!e || !(*e > 0)) {
+            *error = tr("%1: the excitons' permittivity: %2").arg(node.name(), e ? tr("it must be more than 0") : why);
+            return false;
+        }
+        o.epsr = *e;
+    }
     const std::optional<double> density = evaluateConstant(node.text(QStringLiteral("density")), scope, Dim::of(-3), &why);
     if (!density || *density < 0) {
         *error = tr("%1: the carriers: %2").arg(node.name(), density ? tr("they must be 0 or more") : why);

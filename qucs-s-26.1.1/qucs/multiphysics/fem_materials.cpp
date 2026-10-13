@@ -42,7 +42,8 @@ const QStringList PropertyKeys = {QStringLiteral("epsilonr"), QStringLiteral("ta
                                   QStringLiteral("Ep"),       QStringLiteral("VBO"),  QStringLiteral("Delta"),
                                   QStringLiteral("a0"),       QStringLiteral("ac"),   QStringLiteral("av"),
                                   QStringLiteral("b"),        QStringLiteral("C11"),  QStringLiteral("C12"),
-                                  QStringLiteral("Egd"),      QStringLiteral("mr"),   QStringLiteral("Afk")};
+                                  QStringLiteral("Egd"),      QStringLiteral("mr"),   QStringLiteral("Afk"),
+                                  QStringLiteral("bands"),    QStringLiteral("lambdag")};
 
 constexpr double KB = 1.380649e-23, Hbar = 1.054571817e-34, M0 = 9.1093837015e-31;
 
@@ -108,11 +109,18 @@ const Binary* binary(const QString& name)
     return nullptr;
 }
 
-/// A binary's parameters at T (K): its Γ gap Varshni's.
-BandParameters binaryAt(const Binary& b, double T)
+/// A binary's parameters at T (K): its Γ gap Varshni's - in the 300 K fit
+/// moved to the gap measured there (InP's 9 meV down), the slope kept.
+BandParameters binaryAt(const Binary& b, double T, BandSet set = BandSet::Vurgaftman)
 {
     BandParameters p = b.p;
-    p.Eg = b.p.Eg - b.alpha * T * T / (T + b.beta);
+    auto varshni = [&](double t) { return b.p.Eg - b.alpha * t * t / (t + b.beta); };
+    p.Eg = varshni(T);
+    if (set == BandSet::Measured) {
+        static const std::pair<const char*, double> at300[] = {{"InP", 1.344}, {"GaAs", 1.424}, {"InAs", 0.354}};
+        for (const auto& [name, eg] : at300)
+            if (qstrcmp(b.name, name) == 0) p.Eg += eg - varshni(300);
+    }
     return p;
 }
 
@@ -158,12 +166,19 @@ BandParameters blend(const BandParameters& a, double u, const BandParameters& b,
     return p;
 }
 
-BandParameters ternaryAt(const Ternary& t, double x, double T)
+BandParameters ternaryAt(const Ternary& t, double x, double T, BandSet set = BandSet::Vurgaftman)
 {
-    const BandParameters a = binaryAt(*binary(QLatin1String(t.a)), T), b = binaryAt(*binary(QLatin1String(t.b)), T);
+    const BandParameters a = binaryAt(*binary(QLatin1String(t.a)), T, set), b = binaryAt(*binary(QLatin1String(t.b)), T, set);
     BandParameters p = blend(a, x, b, 1 - x);
     const double w = x * (1 - x);
-    p.Eg -= w * (t.cg0 + t.cg1 * x);
+    // (The 300 K fit's bowings: InGaAs's Goetz et al.'s, 0.750 eV on InP's
+    // lattice; InAlAs's to 1.46 eV there, of the 1.45-1.47 measured.)
+    double cg0 = t.cg0;
+    if (set == BandSet::Measured) {
+        if (qstrcmp(t.name, "InGaAs") == 0) cg0 = 0.43;
+        else if (qstrcmp(t.name, "InAlAs") == 0) cg0 = 0.663;
+    }
+    p.Eg -= w * (cg0 + t.cg1 * x);
     p.VBO -= w * t.cVBO;
     p.Delta -= w * t.cDelta;
     p.me -= w * t.cMe;
@@ -496,7 +511,12 @@ QStringList compounds()
     return out;
 }
 
-std::optional<BandParameters> bandParameters(const QString& compound, double x, double y, double T, QString* error)
+BandSet bandSetOf(const QString& text)
+{
+    return text.trimmed().compare(QLatin1String("measured"), Qt::CaseInsensitive) == 0 ? BandSet::Measured : BandSet::Vurgaftman;
+}
+
+std::optional<BandParameters> bandParameters(const QString& compound, double x, double y, double T, QString* error, BandSet set)
 {
     auto fail = [&](const QString& why) -> std::optional<BandParameters> {
         if (error) *error = why;
@@ -504,11 +524,11 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
     };
     const QString name = compound.trimmed();
     if (!(T > 0)) return fail(tr("a temperature of %1 K").arg(T));
-    if (const Binary* b = binary(name)) return binaryAt(*b, T);
+    if (const Binary* b = binary(name)) return binaryAt(*b, T, set);
     auto inRange = [](double v) { return v >= -1e-12 && v <= 1 + 1e-12; };
     if (const Ternary* t = ternary(name)) {
         if (!inRange(x)) return fail(tr("%1: x = %2 is not between 0 and 1").arg(name).arg(x));
-        return ternaryAt(*t, std::clamp(x, 0.0, 1.0), T);
+        return ternaryAt(*t, std::clamp(x, 0.0, 1.0), T, set);
     }
     if (name.compare(QLatin1String("InGaAsP"), Qt::CaseInsensitive) == 0) {
         // In1-x Gax Asy P1-y from its four ternaries (Vurgaftman's (6.4)).
@@ -518,18 +538,20 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
         const double wx = x * (1 - x), wy = y * (1 - y);
         if (wx + wy < 1e-12) {
             const char* corner = x > 0.5 ? (y > 0.5 ? "GaAs" : "GaP") : (y > 0.5 ? "InAs" : "InP");
-            return binaryAt(*binary(QLatin1String(corner)), T);
+            return binaryAt(*binary(QLatin1String(corner)), T, set);
         }
-        const BandParameters gaInAs = ternaryAt(*ternary(QStringLiteral("InGaAs")), 1 - x, T);   // (In's share 1 - x)
-        const BandParameters gaInP = ternaryAt(*ternary(QStringLiteral("GaInP")), x, T);
-        const BandParameters gaAsP = ternaryAt(*ternary(QStringLiteral("GaAsP")), y, T);
-        const BandParameters inAsP = ternaryAt(*ternary(QStringLiteral("InAsP")), y, T);
+        const BandParameters gaInAs = ternaryAt(*ternary(QStringLiteral("InGaAs")), 1 - x, T, set);   // (In's share 1 - x)
+        const BandParameters gaInP = ternaryAt(*ternary(QStringLiteral("GaInP")), x, T, set);
+        const BandParameters gaAsP = ternaryAt(*ternary(QStringLiteral("GaAsP")), y, T, set);
+        const BandParameters inAsP = ternaryAt(*ternary(QStringLiteral("InAsP")), y, T, set);
         const BandParameters a = blend(gaInAs, y, gaInP, 1 - y), b = blend(gaAsP, x, inAsP, 1 - x);
         BandParameters p = blend(a, wx / (wx + wy), b, wy / (wx + wy));
         // (The ternaries alone leave its gap up to 70 meV high on InP's
         // lattice; a bowing of its own, 0 on its ternaries but InAsP's,
-        // brings it within 15 meV of Nahory et al.'s 1.35 - 0.72 y + 0.12 y².)
-        p.Eg -= 0.36 * (1 - x) * y * (1 - y);
+        // brings it within 15 meV of Nahory et al.'s 1.35 - 0.72 y + 0.12 y²
+        // - the 300 K fit's, of two terms, within 7.)
+        if (set == BandSet::Measured) p.Eg -= (1 - x) * y * (1 - y) * (0.131 + 0.499 * y);
+        else p.Eg -= 0.36 * (1 - x) * y * (1 - y);
         return p;
     }
     if (name.compare(QLatin1String("AlGaInAs"), Qt::CaseInsensitive) == 0) {
@@ -543,20 +565,25 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
         const double d = x * y + y * zz + x * zz;
         if (d < 1e-12) {
             const char* corner = x > 0.5 ? "AlAs" : y > 0.5 ? "GaAs" : "InAs";
-            return binaryAt(*binary(QLatin1String(corner)), T);
+            return binaryAt(*binary(QLatin1String(corner)), T, set);
         }
         const double u = (1 + x - y) / 2, v = (1 + y - zz) / 2, w = (1 + x - zz) / 2;
-        const BandParameters alGa = ternaryAt(*ternary(QStringLiteral("AlGaAs")), u, T);
-        const BandParameters gaIn = ternaryAt(*ternary(QStringLiteral("InGaAs")), 1 - v, T);   // (In's share 1 - v)
-        const BandParameters alIn = ternaryAt(*ternary(QStringLiteral("InAlAs")), 1 - w, T);   // (In's share 1 - w)
-        return blend(blend(alGa, x * y / d, gaIn, y * zz / d), 1, alIn, x * zz / d);
+        const BandParameters alGa = ternaryAt(*ternary(QStringLiteral("AlGaAs")), u, T, set);
+        const BandParameters gaIn = ternaryAt(*ternary(QStringLiteral("InGaAs")), 1 - v, T, set);   // (In's share 1 - v)
+        const BandParameters alIn = ternaryAt(*ternary(QStringLiteral("InAlAs")), 1 - w, T, set);   // (In's share 1 - w)
+        BandParameters p = blend(blend(alGa, x * y / d, gaIn, y * zz / d), 1, alIn, x * zz / d);
+        // (The 300 K fit's own bowing: the 1.3 µm quaternary, Al0.165 Ga0.305
+        // In0.53 As, at 0.954 eV - 0.993 from the ternaries -, and InP's
+        // lattice within 15 meV of Olego et al.'s 0.76 + 0.49 z + 0.20 z².)
+        if (set == BandSet::Measured) p.Eg -= 1.815 * x * y * zz;
+        return p;
     }
     return fail(tr("%1 is not a compound known (%2)").arg(name, compounds().join(QLatin1String(", "))));
 }
 
-QString compoundProperty(const QString& compound, double x, double y, const QString& key)
+QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set)
 {
-    const std::optional<BandParameters> p = bandParameters(compound, x, y, 300);
+    const std::optional<BandParameters> p = bandParameters(compound, x, y, 300, nullptr, set);
     if (!p) return {};
     auto num = [](double v) { return formatNumber(v, 8); };
     auto eV = [&](double v) { return num(v) + QStringLiteral("[eV]"); };
@@ -580,7 +607,7 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
     if (k == QLatin1String("chi")) {
         // Its conduction band against GaAs's (χ 4.07 eV): the offsets of
         // the common scale.
-        const BandParameters gaas = binaryAt(*binary(QStringLiteral("GaAs")), 300);
+        const BandParameters gaas = binaryAt(*binary(QStringLiteral("GaAs")), 300, set);
         return eV(4.07 - ((p->VBO + p->Eg) - (gaas.VBO + gaas.Eg)));
     }
     if (k == QLatin1String("Nc") || k == QLatin1String("Nv")) {

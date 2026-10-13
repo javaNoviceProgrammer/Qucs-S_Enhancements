@@ -133,7 +133,10 @@ struct SolveOptions {
 struct SpectrumOptions {
     std::vector<double> energies;
     int states = 6;
-    double linewidth = 0;
+    double linewidth = 0;   ///< J: the line's half width at half maximum
+    int lineshape = 0;      ///< 0 Lorentzian, 1 Gaussian, 2 hyperbolic secant
+    bool excitons = false;  ///< each transition's 1s exciton and its continuum's Sommerfeld factor
+    double epsr = 0;        ///< the excitons' static permittivity (0: the wells' material's)
     double density = 0;
     double index = 0;
     SolveOptions solve;
@@ -218,6 +221,10 @@ protected:
     /// else (a III-V alloy's) its compound's at its composition - evaluated in
     /// \a scope (the parameters'; none: a plain number).
     static QString materialProperty(const Node& m, const QString& key, const Scope* scope = nullptr);
+    /// Property \a key as given: its own, else its library entry's - and
+    /// for Eg, without either, hc/λg of a gap wavelength λg given. Empty: not
+    /// given (a compound's, if any, is what is left).
+    static QString givenProperty(const Node& m, const QString& key, const Scope* scope = nullptr);
 
     Solution& a_s;
     int a_fi;
