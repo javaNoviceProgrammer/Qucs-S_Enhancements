@@ -333,6 +333,29 @@ private slots:
     // Touchstone: one port in MA and GHz; two in RI, version 1's order (11
     // 21 12 22), noise data after them left out; version 2 in its order;
     // three ports in dB, their rows over lines.
+    // A Lumerical data file (data/lumerical_sample.py's): a variable of two
+    // curves (3 x 2 each) - curve_x1 and curve1, curve_x2 and curve2 -, one
+    // of a 2 x 3 matrix - its columns on its first; by its suffix or its
+    // first words. Cut short: said.
+    void lumericalDataIsRead()
+    {
+        QFile f(QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf"));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QByteArray bytes = f.readAll();
+        di::Data d = read(QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf"));
+        QCOMPARE(d.format, di::Format::Lumerical);
+        QCOMPARE(names(d), (QStringList{"curve_x1", "curve1", "curve_x2", "curve2", "table_x", "table_1", "table_2"}));
+        QCOMPARE(find(d, "curve_x2")->re, (QVector<double>{0.1, 0.2, 0.3}));
+        QCOMPARE(find(d, "curve2")->re, (QVector<double>{-1, -2, -3}));
+        QCOMPARE(find(d, "curve2")->dependencies, (QStringList{"curve_x2"}));
+        QCOMPARE(find(d, "table_2")->re, (QVector<double>{100, 200}));
+        QCOMPARE(find(d, "table_x")->re, (QVector<double>{1, 2}));
+        QCOMPARE(di::formatOf(write("renamed.bin", bytes)), di::Format::Lumerical);
+        di::Data cut;
+        QString why;
+        QVERIFY(!di::read(write("cut.ldf", bytes.left(100)), {}, &cut, &why) && why.contains(QLatin1String("cut short")));
+    }
+
     void touchstoneIsRead()
     {
         di::Data d = read(write("ant.s1p", "! an antenna\n# GHz S MA R 50\n1 0.5 90\n2 0.25 180\n"));

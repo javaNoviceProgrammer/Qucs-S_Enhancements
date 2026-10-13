@@ -26,6 +26,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
@@ -589,6 +590,101 @@ bool readNpz(const QByteArray& bytes, QList<Column>* columns, QStringList* notes
 
 // ---- Touchstone
 
+/// A Lumerical data file (version 1.0, little-endian): 34 bytes of its
+/// name, 17 more, the variables' count; each variable its name, its cell's
+/// count, each matrix of it kind 1, a flag, its count, its dimensions, its
+/// realness (1: real, 0: complex - their imaginary parts after), 1, the
+/// numbers column by column. An n x 2 matrix a curve (name_x1, name1; a
+/// cell of one: name_x, name), n x m its columns on the first, n x 1 its
+/// values over its row.
+bool readLdf(const QByteArray& bytes, Data* data, QString* error)
+{
+    const auto fail = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return false;
+    };
+    static const QByteArray magic("Lumerical data file 2, version 1.0");
+    if (!bytes.startsWith(magic)) return fail(tr("It is not a Lumerical data file of version 1.0."));
+    qsizetype p = magic.size() + 4 + 13;
+    bool bad = false;
+    auto u32 = [&]() -> quint32 {
+        if (p + 4 > bytes.size()) {
+            bad = true;
+            return 0;
+        }
+        quint32 v = 0;
+        for (int i = 0; i < 4; ++i) v |= quint32(quint8(bytes[p + i])) << (8 * i);
+        p += 4;
+        return v;
+    };
+    auto f64 = [&]() {
+        quint64 lo = u32(), hi = u32();
+        const quint64 x = (hi << 32) | lo;
+        double d;
+        std::memcpy(&d, &x, 8);
+        return d;
+    };
+    const quint32 count = u32();
+    QSet<QString> taken;
+    auto unique = [&](QString name) {
+        name = safeName(name);
+        QString out = name;
+        for (int k = 2; taken.contains(out); ++k) out = name + QStringLiteral("_%1").arg(k);
+        taken.insert(out);
+        return out;
+    };
+    for (quint32 v = 0; v < count && !bad; ++v) {
+        const qsizetype length = u32();
+        if (p + length > bytes.size()) return fail(tr("It is cut short."));
+        const QString name = QString::fromUtf8(bytes.mid(p, length)).remove(QChar(0));
+        p += length;
+        const quint32 cells = u32();
+        for (quint32 c = 0; c < cells && !bad; ++c) {
+            if (u32() != 1) return fail(tr("Its variable %1 holds what is not a matrix.").arg(name));
+            u32();
+            const quint32 numel = u32(), dims = u32();
+            QList<quint32> shape;
+            quint64 product = 1;
+            for (quint32 k = 0; k < dims && !bad; ++k) {
+                shape << u32();
+                product *= shape.back();
+            }
+            const bool real = u32() == 1;
+            u32();
+            if (bad || product != numel || p + qsizetype(numel) * (real ? 8 : 16) > bytes.size()) return fail(tr("Its variable %1 is cut short.").arg(name));
+            QVector<double> values;
+            for (quint32 k = 0; k < numel; ++k) values << f64();
+            if (!real) {
+                p += qsizetype(numel) * 8;
+                data->notes << tr("%1: complex, its real parts read.").arg(name);
+            }
+            const int rows = shape.value(0, 1), cols = int(numel) / std::max(1, rows);
+            const QString suffix = cells > 1 ? QString::number(c + 1) : QString();
+            Variable x;
+            x.independent = true;
+            if (cols >= 2) {
+                x.name = unique(name + QStringLiteral("_x") + suffix);
+                x.re = values.mid(0, rows);
+            } else {
+                x.name = unique(name + QStringLiteral("_row") + suffix);
+                for (int r = 0; r < rows; ++r) x.re << r + 1;
+            }
+            data->variables << x;
+            for (int col = cols >= 2 ? 1 : 0; col < cols; ++col) {
+                Variable y;
+                y.name = unique(name + suffix + (cols > 2 ? QStringLiteral("_%1").arg(col) : QString()));
+                y.dependencies = QStringList{x.name};
+                y.re = values.mid(col * rows, rows);
+                data->variables << y;
+            }
+        }
+    }
+    if (bad) return fail(tr("It is cut short."));
+    if (data->variables.isEmpty()) return fail(tr("It holds no variables."));
+    data->x = data->variables.front().name;
+    return true;
+}
+
 bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QString* error)
 {
     const auto fail = [error](const QString& why) {
@@ -821,6 +917,7 @@ Format formatOf(const QString& path)
     if (suffix == QLatin1String("xlsx") || suffix == QLatin1String("xlsm")) return Format::Workbook;
     if (suffix == QLatin1String("npy")) return Format::Npy;
     if (suffix == QLatin1String("npz")) return Format::Npz;
+    if (suffix == QLatin1String("ldf")) return Format::Lumerical;
     static const QRegularExpression touchstone(QStringLiteral("^[syz](\\d+|n)p$"));   // (.snp: how many ports, it says inside)
     if (touchstone.match(suffix).hasMatch()) return Format::Touchstone;
     // What it begins with.
@@ -828,6 +925,7 @@ Format formatOf(const QString& path)
     if (!f.open(QIODevice::ReadOnly)) return Format::Unknown;
     const QByteArray head = f.read(64);
     if (head.startsWith("\x93NUMPY")) return Format::Npy;
+    if (head.startsWith("Lumerical data file")) return Format::Lumerical;
     if (head.trimmed().startsWith("<Qucs Dataset")) return Format::Dataset;
     if (head.startsWith("PK\x03\x04")) return suffix == QLatin1String("npz") ? Format::Npz : Format::Workbook;
     if (head.contains('\0')) return Format::Unknown;
@@ -845,6 +943,7 @@ QString formatName(Format format, const QString& path)
     case Format::Npz: return tr("NumPy archive");
     case Format::Touchstone: return tr("Touchstone");
     case Format::Dataset: return tr("Qucs-S dataset");
+    case Format::Lumerical: return tr("Lumerical data");
     case Format::Unknown: break;
     }
     return tr("unknown");
@@ -852,11 +951,12 @@ QString formatName(Format format, const QString& path)
 
 QString fileFilter()
 {
-    return tr("Data files (*.csv *.tsv *.xlsx *.xlsm *.txt *.prn *.asc *.out *.data *.npy *.npz *.s1p *.s2p *.s3p *.s4p *.snp *.dat)")
+    return tr("Data files (*.csv *.tsv *.xlsx *.xlsm *.txt *.prn *.asc *.out *.data *.npy *.npz *.s1p *.s2p *.s3p *.s4p *.snp *.dat *.ldf)")
            + QStringLiteral(";;") + tr("CSV and TSV (*.csv *.tsv)") + QStringLiteral(";;") + tr("Excel workbooks (*.xlsx *.xlsm)")
            + QStringLiteral(";;") + tr("Text (*.txt *.prn *.asc *.out *.data)") + QStringLiteral(";;")
            + tr("NumPy (*.npy *.npz)") + QStringLiteral(";;") + tr("Touchstone (*.s1p *.s2p *.s3p *.s4p *.snp)")
-           + QStringLiteral(";;") + tr("Qucs-S datasets (*.dat)") + QStringLiteral(";;") + tr("All files (*)");
+           + QStringLiteral(";;") + tr("Qucs-S datasets (*.dat)") + QStringLiteral(";;") + tr("Lumerical data (*.ldf)") + QStringLiteral(";;")
+           + tr("All files (*)");
 }
 
 bool read(const QString& path, const Options& options, Data* data, QString* error)
@@ -897,6 +997,7 @@ bool read(const QString& path, const Options& options, Data* data, QString* erro
         return true;
     }
     case Format::Touchstone: return readTouchstone(path, bytes, data, error);
+    case Format::Lumerical: return readLdf(bytes, data, error);
     case Format::Npy:
         if (!readNpy(bytes, safeName(QFileInfo(path).completeBaseName()), &columns, &why)) return fail(why);
         break;

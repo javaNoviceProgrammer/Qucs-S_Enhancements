@@ -2222,6 +2222,29 @@ private slots:
         QVERIFY2(units.contains("qw.dnTE") && units.value("qw.dnTE").toString().isEmpty(), qPrintable(units.value("qw.dnTE").toString()));   // (a number: none)
     }
 
+    // Claude imports a Lumerical MQW project (data/lumerical_sample.ldev):
+    // fem_model's import writes the model to 'to' and opens it, what was read
+    // said; over a file there only with 'replace'; its spectrum solves (under
+    // the sanitizers its bands: its k·p spectrum minutes there).
+    void claudeImportsLumerical()
+    {
+        const QString to = path(QStringLiteral("lumerical_imported.qfem"));
+        QFile::remove(to);
+        QJsonObject r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldev")}, {"to", to}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject said = json(r);
+        QVERIFY2(said.value("read").toArray().at(0).toString().contains(QLatin1String("3 layers")) && QFileInfo::exists(to), qPrintable(text(r)));
+        QCOMPARE(said.value("geometry").toString(), QStringLiteral("built"));
+        r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldev")}, {"to", to}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("is there already")), qPrintable(text(r)));
+        r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldev")}, {"to", to}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_solve", {{"path", to}, {"study", slowBuild() ? "bands" : "gain"}, {"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf")}, {"to", path(QStringLiteral("none.qfem"))}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("not an HDF5 file")), qPrintable(text(r)));
+    }
+
     // A PDE of one's own in the window: a 1D ODE's default plot a line graph
     // along its line (a dataset), a 2D one's a color map, an eigenproblem's
     // eigenvalues a graph over the modes.

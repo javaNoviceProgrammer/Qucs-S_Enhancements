@@ -14,6 +14,7 @@
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
 
+#include "fem_lumerical.h"
 #include "fem_materials.h"
 #include "misc.h"
 #include "multiphysicsdoc.h"
@@ -496,6 +497,33 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         return jsonResult(QJsonObject{{QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
                                       {QStringLiteral("geometry"), why.isEmpty() ? tr("built") : why}});
     }
+    if (action == QLatin1String("import")) {
+        // A Lumerical MQW project (.ldev) made a model: written beside it
+        // (or to 'to'), opened - what was read and how it was taken said.
+        if (given.isEmpty()) return errorResult(tr("'path': the Lumerical MQW project (.ldev)."));
+        const QString source = absolute(given);
+        const qucs_s::fem::LumericalImport imported = qucs_s::fem::importLumericalMqw(source);
+        if (!imported.error.isEmpty()) return errorResult(imported.error);
+        QString why;
+        std::optional<Model> m = Model::fromJson(QJsonDocument(imported.model).toJson(), &why);
+        if (!m) return errorResult(tr("The model made of it does not read: %1").arg(why));
+        const QString to = args.value(QLatin1String("to")).toString().trimmed();
+        QString file = to.isEmpty() ? QFileInfo(source).dir().filePath(QFileInfo(source).completeBaseName() + QStringLiteral(".qfem")) : absolute(to);
+        if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
+        if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
+            return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+        MultiphysicsDoc* doc = a_app->newMultiphysicsModel();
+        doc->setModel(*m, tr("Model"));
+        doc->undoStack()->clear();
+        doc->setName(file);
+        if (doc->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
+        a_app->titleDocumentTab(doc);
+        QString built;
+        doc->buildGeometry(&built);
+        return jsonResult(QJsonObject{{QStringLiteral("file"), QDir::toNativeSeparators(file)},
+                                      {QStringLiteral("read"), QJsonArray::fromStringList(imported.notes)},
+                                      {QStringLiteral("geometry"), built.isEmpty() ? tr("built") : built}});
+    }
     if (action == QLatin1String("open")) {
         QString error;
         MultiphysicsDoc* doc = femDocument(QJsonObject{{QStringLiteral("path"), given}}, &error);
@@ -529,7 +557,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         if (!why.isEmpty()) o.insert(QStringLiteral("notes"), why);
         return jsonResult(o);
     }
-    return errorResult(tr("'action' is new, open, save or set."));
+    return errorResult(tr("'action' is new, open, save, set or import."));
 }
 
 QJsonObject QucsControl::femEdit(const QJsonObject& args)
