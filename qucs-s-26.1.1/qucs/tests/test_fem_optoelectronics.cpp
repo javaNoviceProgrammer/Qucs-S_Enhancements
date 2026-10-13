@@ -210,6 +210,166 @@ private slots:
     // the current more by what is collected of q Gop; modulated, at low
     // frequency the same share, at 100 GHz less (the carriers' transit),
     // through 50 Ω a little less again. Dark: no light, no pairs.
+    void aPublishedLateralPhotodiode()
+    {
+        // Benchmark: Virot, Benedikovic et al., "Integrated waveguide PIN
+        // photodiodes exploiting lateral Si/Ge/Si heterojunction", Opt.
+        // Express 25, 19487 (2017): intrinsic germanium w wide, 260 nm thick
+        // on a 60 nm silicon seed, between p⁺⁺ and n⁺⁺ silicon (over 1e19
+        // cm⁻³) of a 220 nm SOI layer - its top 100 nm above them. Measured
+        // at 1550 nm and -16 dBm: 1.16 A/W at -1 V for w 1 µm 40 µm long,
+        // 0.5 for 10 µm (their FDTD 0.63: the butt coupling and a weaker
+        // absorption, the paper says); its bandwidth carriers' transit
+        // limited, about 18 GHz at -4 V for w 1 µm, over 50 GHz (the setup's
+        // limit) at -2 V for 0.3 µm. Here, the waveguide's mode the cross
+        // section's (no coupling's loss), at 25 µW:
+        // - 40 µm long 1.248 A/W, between theirs and the ideal qλ/hc 1.25;
+        //   10 µm long 1.231 - the mode the cross section's absorbs within 10
+        //   µm; theirs, coupled from a silicon waveguide, does not;
+        // - w 1 µm at -4 V 35 GHz, twice theirs (vsat 6e6 cm/s here); w 0.3
+        //   µm at -2 V 96 GHz, over their 50.
+        // (At 1 mW the 1 µm one's germanium filled with its own carriers,
+        // 4.5e16 cm⁻³, the field screened to 2 kV/cm: 2.5 GHz.) Release
+        // builds only: some 10 s there, minutes sanitized.
+        if (slowBuild()) QSKIP("a benchmark: Release builds only");
+        auto device = [&](const QString& w, const QString& L, const QString& va, const QString& freqs) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "%3"}, {"name": "P", "expression": "25[uW]"}, {"name": "lambda", "expression": "1550[nm]"},
+                             {"name": "w", "expression": "%1[um]"}],
+              "components": [{"unit": "um", "thickness": "%2[um]",
+                "geometry": [{"type": "rectangle", "label": "box", "position": ["-2.5", "-1"], "size": ["5", "1"]},
+                             {"type": "rectangle", "label": "cladding", "position": ["-2.5", "0"], "size": ["5", "1.6"]},
+                             {"type": "rectangle", "label": "pplus", "position": ["-w/2 - 1", "0"], "size": ["1", "0.22"]},
+                             {"type": "rectangle", "label": "nplus", "position": ["w/2", "0"], "size": ["1", "0.22"]},
+                             {"type": "rectangle", "label": "seed", "position": ["-w/2", "0"], "size": ["w", "0.06"]},
+                             {"type": "rectangle", "label": "ge", "position": ["-w/2", "0.06"], "size": ["w", "0.26"]},
+                             {"type": "form union"}],
+                "materials": [{"material": "Silicon dioxide", "selection": {"only": ["box", "cladding"]}},
+                              {"material": "Silicon", "selection": {"only": ["pplus", "nplus", "seed"]}},
+                              {"material": "Germanium on silicon", "selection": {"only": ["ge"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "selection": {"only": ["pplus", "nplus", "seed", "ge"]}, "features": [
+                  {"type": "model", "saturation": true, "vsatn": "6e6[cm/s]", "vsatp": "6e6[cm/s]", "selection": {"only": ["ge"]}},
+                  {"type": "model", "mobility": "doping", "saturation": true, "selection": {"only": ["pplus", "nplus", "seed"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pplus"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e19[1/cm^3]", "selection": {"only": ["nplus"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e15[1/cm^3]", "selection": {"only": ["seed", "ge"]}},
+                  {"type": "srh", "selection": {"all": true}},
+                  {"type": "optical", "mode": "emw", "P0": "P", "selection": {"only": ["ge"]}},
+                  {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["pplus"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nplus"], "side": "right"}}]},
+                 {"type": "modes", "tag": "emw", "features": [
+                  {"type": "wave", "electroabsorption": true, "selection": {"only": ["ge"]}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.25", "features": [
+                  {"type": "size", "level": "domain", "selection": {"only": ["pplus", "nplus", "seed", "ge"]}, "hmax": "0.03"}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary", "physics": ["semi"]},
+                {"type": "mode", "physics": ["emw"], "frequency": "lambda", "modes": 1, "neff": "4"},
+                {"type": "stationary", "physics": ["semi"]}, {"type": "frequency", "physics": ["semi"], "frequencies": "%4"}]}]})json")
+                .arg(w, L, va, freqs)
+                .toUtf8();
+        };
+        // The 3 dB frequency of HopRL_k against its lowest frequency's (log-interpolated).
+        auto bandwidth = [&](Solution& s) -> double {
+            s.select(0);
+            const double low = std::abs(global(s, QStringLiteral("semi.HopRL_k")));
+            double fPrev = s.snapshotValue(0), hPrev = 1;
+            for (int k = 1; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                const double f = s.snapshotValue(k), h = std::abs(global(s, QStringLiteral("semi.HopRL_k"))) / low;
+                if (h < 1 / std::sqrt(2.0)) {
+                    const double t = (std::log(hPrev) - std::log(1 / std::sqrt(2.0))) / (std::log(hPrev) - std::log(h));
+                    return std::exp(std::log(fPrev) + t * (std::log(f) - std::log(fPrev)));
+                }
+                fPrev = f;
+                hPrev = h;
+            }
+            return NAN;
+        };
+        QStringList said;
+        struct Case {
+            const char *w, *L, *va;
+            bool bw;
+        };
+        double R40 = NAN, R10 = NAN, f1 = NAN, f03 = NAN;
+        for (const Case& c : {Case{"1", "40", "-1[V]", false}, Case{"1", "10", "-1[V]", false}, Case{"1", "10", "-4[V]", true}, Case{"0.3", "10", "-2[V]", true}}) {
+            const QString freqs = c.bw ? QStringLiteral("1[GHz], 5[GHz], 10[GHz], 15[GHz], 20[GHz], 25[GHz], 30[GHz], 40[GHz], 50[GHz], 60[GHz], 80[GHz], 100[GHz]") : QStringLiteral("1[GHz]");
+            QElapsedTimer timer;
+            timer.start();
+            Run r = run(modelOf(device(QLatin1String(c.w), QLatin1String(c.L), QLatin1String(c.va), freqs)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            Solution& s = *r.solution;
+            s.select(0);
+            const double R = std::abs(global(s, QStringLiteral("semi.I_k"))) / 25e-6;
+            const double f3 = c.bw ? bandwidth(s) : NAN;
+            said << QStringLiteral("w %1 µm, %2 µm long, %3: %4 A/W%5 (%6 ms)")
+                        .arg(QLatin1String(c.w), QLatin1String(c.L), QLatin1String(c.va))
+                        .arg(R, 0, 'f', 3)
+                        .arg(c.bw ? QStringLiteral(", 3 dB at %1 GHz").arg(f3 / 1e9, 0, 'f', 1) : QString())
+                        .arg(timer.elapsed());
+            if (!c.bw && QLatin1String(c.L) == QLatin1String("40")) R40 = R;
+            if (!c.bw && QLatin1String(c.L) == QLatin1String("10")) R10 = R;
+            if (c.bw && QLatin1String(c.w) == QLatin1String("1")) f1 = f3;
+            if (c.bw && QLatin1String(c.w) == QLatin1String("0.3")) f03 = f3;
+        }
+        qInfo("Virot et al.'s lateral Si/Ge/Si photodiode: %s", qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(R40 > 1.15 && R40 < 1.26 && R10 > 1.15, qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(f1 > 18e9 && f1 < 45e9 && f03 > 50e9, qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // Benchmark: the GeSi electroabsorption modulator of Liu et al. (Nat.
+    // Photonics 2, 433, 2008) as Bernardis's thesis (MIT, 2008) gives it:
+    // germanium with 0.75 % silicon, 0.4 µm high, 0.6 µm wide, 50 µm long -
+    // 6.5 dB of extinction at 1550 nm at an effective -2.5 V, its extinction
+    // some 2.2 dB a volt up to 5.5 dB, 5.2 dB or more from 1510 to 1555 nm.
+    // Here the modulator example 0.4 µm high, its direct gap the one thing
+    // not given. Tensile germanium's 0.773 eV raised 3.6 eV a unit of
+    // silicon (the example's 1.4 % at 0.82 eV) puts it at 0.80 eV - on
+    // 1550 nm's photons, 18.5 dB lost at 0 V: no modulator. 10 meV higher
+    // the measured extinction at 1550 nm comes out, its slope near the
+    // measured one; but its window is narrower - the field lowers the loss
+    // above the gap and below 1540 nm there is little to modulate.
+    void aPublishedElectroabsorptionModulator()
+    {
+        if (slowBuild()) QSKIP("a benchmark: Release builds only");
+        const QString file = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/gesi_eam.qfem");
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QByteArray text = f.readAll();
+        QCOMPARE(text.count(R"("0.45")"), 3);
+        QCOMPARE(text.count(R"("Egd": "0.82[eV]")"), 1);
+        QCOMPARE(text.count(R"("expression": "1550[nm]")"), 1);
+        // Over 50 µm, in dB, at each bias.
+        const auto losses = [&](const QString& gap, const QString& nm, const QString& biases) -> std::vector<double> {
+            QByteArray json = text;
+            json.replace(R"("0.45")", R"("0.4")");
+            json.replace(R"("Egd": "0.82[eV]")", QStringLiteral(R"("Egd": "%1[eV]")").arg(gap).toUtf8());
+            json.replace(R"("expression": "1550[nm]")", QStringLiteral(R"("expression": "%1[nm]")").arg(nm).toUtf8());
+            Model m = modelOf(json);
+            only(m, QStringLiteral("std1"), QStringLiteral("sweep"), QStringLiteral("parameters"), sweepOf(QStringLiteral("Va"), biases, QStringLiteral("V")));
+            const Run r = run(m, QStringLiteral("std1"));
+            if (!r.error.isEmpty()) qWarning("%s", qPrintable(r.error));
+            std::vector<double> out;
+            for (const auto& point : r.study.solutions) out.push_back(global(*point, QStringLiteral("emw.loss")) * 50e-6);
+            return out;
+        };
+        const std::vector<double> law = losses(QStringLiteral("0.80"), QStringLiteral("1550"), QStringLiteral("0, -2.5"));
+        const std::vector<double> at1550 = losses(QStringLiteral("0.81"), QStringLiteral("1550"), QStringLiteral("0, -0.5, -1, -1.5, -2, -2.5"));
+        const std::vector<double> at1530 = losses(QStringLiteral("0.81"), QStringLiteral("1530"), QStringLiteral("0, -2.5"));
+        const std::vector<double> at1555 = losses(QStringLiteral("0.81"), QStringLiteral("1555"), QStringLiteral("0, -2.5"));
+        QVERIFY(law.size() == 2 && at1550.size() == 6 && at1530.size() == 2 && at1555.size() == 2);
+        // The extinction's slope to -2 V (up to 5.5 dB), a line through the origin.
+        double xy = 0, xx = 0;
+        for (int k = 1; k <= 4; ++k) xy += 0.5 * k * (at1550[k] - at1550[0]), xx += 0.25 * k * k;
+        const double slope = xy / xx, extinction = at1550[5] - at1550[0];
+        qInfo("Liu et al.'s GeSi modulator, 50 µm: at 0.80 eV %.1f dB lost at 0 V, %.2f dB of extinction at -2.5 V; at 0.81 eV %.2f dB lost, "
+              "%.2f dB of extinction at 1550 nm (6.5 measured), %.2f dB a volt (2.2), %.2f dB at 1530 nm and %.2f at 1555 (5.2 or more measured)",
+              law[0], law[1] - law[0], at1550[0], extinction, slope, at1530[1] - at1530[0], at1555[1] - at1555[0]);
+        QVERIFY2(law[0] > 10 && law[1] - law[0] < 4, qPrintable(QString::number(law[0])));
+        QVERIFY2(std::abs(extinction - 6.5) < 0.5, qPrintable(QString::number(extinction)));
+        QVERIFY2(slope > 2.2 && slope < 3.2, qPrintable(QString::number(slope)));
+        QVERIFY(at1550[0] < 5 && at1555[1] - at1555[0] > 5);
+        QVERIFY2(at1530[1] - at1530[0] < 3.5, qPrintable(QString::number(at1530[1] - at1530[0])));
+    }
+
     void aGermaniumPhotodiode()
     {
         QElapsedTimer timer;
