@@ -1881,6 +1881,36 @@ private slots:
         QVERIFY(!diagram.isEmpty());
         QVERIFY(!tagOf(bare->model(), "plotgroup1d", "The States").isEmpty());
         QVERIFY2(!bare->showGraphs(diagram, &why, false).isEmpty(), qPrintable(why));
+        // Its electrons alone (a Schrödinger-Poisson region's): no holes'
+        // probability nor their levels in the band diagram - not plots of
+        // what is defined nowhere.
+        const QString electrons = path(QStringLiteral("electrons_well.qfem"));
+        QFile e(electrons);
+        QVERIFY(e.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        e.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "label": "barrier", "size": ["10", "30"]},
+                         {"type": "rectangle", "label": "well", "position": ["0", "10"], "size": ["10", "10"]}, {"type": "form union"}],
+            "materials": [{"material": "Aluminium gallium arsenide", "selection": {"all": true}},
+                          {"material": "Gallium arsenide", "selection": {"only": ["well"]}}],
+            "physics": [{"type": "quantum", "tag": "qw", "h1d": "0.5[nm]", "heavy": false, "light": false}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "states", "states": 3}]}]})json");
+        e.close();
+        MultiphysicsDoc* lone = open(electrons);
+        QVERIFY(lone != nullptr);
+        lone->compute();
+        QVERIFY(lone->waitForJob(jobWait()));
+        QVERIFY2(lone->lastError().isEmpty(), qPrintable(lone->lastError()));
+        QVERIFY(!tagOf(lone->model(), "plotgroup", "Electron Probability (qw)").isEmpty());
+        QVERIFY(tagOf(lone->model(), "plotgroup", "Heavy Hole Probability (qw)").isEmpty());
+        const qucs_s::fem::Node* band = lone->model().find(tagOf(lone->model(), "plotgroup1d", "Band Diagram (qw)"));
+        QVERIFY(band != nullptr);
+        QStringList drawn;
+        for (const qucs_s::fem::Node& g : band->children) drawn << g.text(QStringLiteral("expression"));
+        QCOMPARE(drawn, (QStringList{QStringLiteral("qw.Ec"), QStringLiteral("qw.Ev"), QStringLiteral("qw.wave_e")}));
+        for (const qucs_s::fem::Node& g : lone->model().results().children)
+            if (g.type == QLatin1String("plotgroup")) QVERIFY2(lone->showPlotGroup(g.tag), qPrintable(g.label));
     }
 
     // Claude's tools: a well's states listed, a transition read; the kinds described.
@@ -1992,6 +2022,84 @@ private slots:
         QTest::qWait(1100);
         write(QStringLiteral("calib_b.qfem"), QStringLiteral("pg1"), QStringLiteral("B changed on disk"));
         QTRY_COMPARE_WITH_TIMEOUT(b->model().root.label, QStringLiteral("B changed on disk"), 10000);
+    }
+
+    // The quantum wells' numbers as one reads them (the update check of 13
+    // October, B3): energies in eV - the globals, the solve's, a Derived
+    // Values node's -, a unit for each expression of several or one for
+    // those it fits, qw.k in 1/nm, qw.rsp in 1/(s cm³ eV) converted, the
+    // Kramers-Kronig warning's window in eV; a global the same at each
+    // photon energy given once for its point.
+    void claudesToolsShowTheWellsInEV()
+    {
+        const QString model = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "F", "expression": "0[V/m]"}, {"name": "N", "expression": "0[1/cm^3]"}],
+          "components": [{"unit": "nm", "geometry": [{"type": "rectangle", "name": "well", "size": ["20", "10"]}],
+            "physics": [{"type": "quantum", "tag": "qw", "F": "F", "valence": "kp4", "features": [
+              {"type": "material", "source": "user", "Ec": "0[eV]", "Ev": "-1.5[eV]", "me": "0.067", "mhh": "0.35", "mlh": "0.09",
+               "mhhp": "0.11", "mlhp": "0.21", "gamma3": "2.93", "Ep": "25[eV]", "nr": "3.6", "epsilonr": "12.9", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+          "studies": [{"type": "study", "tag": "spec", "steps": [{"type": "sweep", "parameters": [["F", "0, 1e6", "V/m"]]},
+                        {"type": "spectrum", "energies": "linspace(1.55[eV], 1.75[eV], 5)", "states": 2, "linewidth": "5[meV]",
+                         "lineshape": "gaussian", "excitons": true, "kpoints": 21}]},
+                      {"type": "study", "tag": "gain", "steps": [{"type": "spectrum", "energies": "linspace(1.60[eV], 1.70[eV], 3)", "states": 2,
+                         "linewidth": "5[meV]", "density": "3e18[1/cm^3]", "kpoints": 21}]},
+                      {"type": "study", "tag": "bands", "steps": [{"type": "bands", "kmax": "1[1/nm]", "points": 3, "states": 2}]}],
+          "results": {"derived": [{"type": "global", "tag": "gev1", "label": "Exciton", "study": "spec",
+                                   "expression": "qw.Eb; qw.Ex; qw.gX", "solutions": "all"}]}})json");
+        QFile f(path(QStringLiteral("ev_wells.qfem")));
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(model.toUtf8());
+        f.close();
+        QVERIFY(open(path(QStringLiteral("ev_wells.qfem"))) != nullptr);
+        QJsonObject r = call("fem_solve", {{"path", "ev_wells.qfem"}, {"study", "spec"}, {"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject solved = json(r);
+        // The derived values: three a field, not three at each of five energies.
+        const QJsonObject derived = solved.value("derived values").toArray().at(0).toObject();
+        const QJsonObject values = derived.value("values").toObject();
+        QVERIFY2(values.size() == 6, qPrintable(QJsonDocument(derived).toJson()));
+        QVERIFY(derived.value("note").toString().contains(QLatin1String("once for the point")));
+        QVERIFY2(values.value("F = 0 V/m: qw.Eb").toString().endsWith(QLatin1String(" eV")), qPrintable(QJsonDocument(values).toJson()));
+        QVERIFY(values.value("F = 1 MV/m: qw.Ex").toString().endsWith(QLatin1String(" eV")));
+        QVERIFY(!values.value("F = 0 V/m: qw.gX").toString().contains(QLatin1String("eV")));
+        // The solve's globals and the Kramers-Kronig warning's window.
+        QVERIFY2(solved.value("globals").toObject().value("qw.Ee1hh1").toString().endsWith(QLatin1String(" eV")), qPrintable(text(r)));
+        QVERIFY2(solved.value("globals").toObject().value("qw.Ee1").toString().endsWith(QLatin1String(" eV")), qPrintable(text(r)));
+        QVERIFY2(text(r).contains(QLatin1String("between 1.55 eV and 1.75 eV")) && !text(r).contains(QLatin1String("1.75 V")), qPrintable(text(r)));
+        // Units: one for those it fits, one for each, none for a number.
+        QJsonArray v = json(call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "spec"}, {"expression", "qw.Ex; qw.Eb"}, {"unit", "meV"}}))
+                           .value("values").toArray();
+        QVERIFY2(v.at(0).toObject().value("value").toString().endsWith(QLatin1String(" meV")) && v.at(1).toObject().value("value").toString().endsWith(QLatin1String(" meV")),
+                 qPrintable(QJsonDocument(v).toJson()));
+        const double ex = v.at(0).toObject().value("SI").toDouble();
+        QVERIFY(std::abs(v.at(0).toObject().value("value").toString().section(QLatin1Char(' '), 0, 0).toDouble() - ex / 1.602176634e-22) < 0.05);
+        v = json(call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "spec"}, {"expression", "qw.Ex; qw.Eb"}, {"unit", "eV; meV"}}))
+                .value("values").toArray();
+        QVERIFY(v.at(0).toObject().value("value").toString().endsWith(QLatin1String(" eV")) && v.at(1).toObject().value("value").toString().endsWith(QLatin1String(" meV")));
+        r = call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "spec"}, {"expression", "qw.Eb; qw.gX"}, {"unit", "meV"}});
+        v = json(r).value("values").toArray();
+        QVERIFY2(v.at(0).toObject().value("value").toString().endsWith(QLatin1String(" meV")) && !v.at(1).toObject().value("value").toString().contains(QLatin1String("meV"))
+                     && !json(r).contains("errors"),
+                 qPrintable(text(r)));
+        r = call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "spec"}, {"expression", "qw.gX; qw.Fw"}, {"unit", "meV"}});
+        QVERIFY2(text(r).contains(QLatin1String("meV is a unit of none of them")), qPrintable(text(r)));
+        // The spontaneous emission per cm³ and eV, converted from SI's.
+        r = call("fem_solve", {{"path", "ev_wells.qfem"}, {"study", "gain"}, {"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        v = json(call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "gain"}, {"expression", "qw.rsp; qw.Rsp"}})).value("values").toArray();
+        const QJsonObject rsp = v.at(0).toObject(), Rsp = v.at(1).toObject();
+        QVERIFY2(rsp.value("value").toString().endsWith(QLatin1String(" 1/(s*cm^3*eV)")) && Rsp.value("value").toString().endsWith(QLatin1String(" 1/(s*cm^3)")),
+                 qPrintable(QJsonDocument(v).toJson()));
+        const double shownRsp = rsp.value("value").toString().section(QLatin1Char(' '), 0, 0).toDouble();
+        QVERIFY2(std::abs(shownRsp / (rsp.value("SI").toDouble() * 1e-6 * 1.602176634e-19) - 1) < 1e-3, qPrintable(QString::number(shownRsp)));
+        QVERIFY(std::abs(Rsp.value("value").toString().section(QLatin1Char(' '), 0, 0).toDouble() / (Rsp.value("SI").toDouble() * 1e-6) - 1) < 1e-3);
+        // k in 1/nm: 0.5 at the middle of 0 to 1 /nm.
+        r = call("fem_solve", {{"path", "ev_wells.qfem"}, {"study", "bands"}, {"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        v = json(call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "bands"}, {"expression", "qw.k; qw.Ev1"}, {"frequency", "5e8"}})).value("values").toArray();
+        QVERIFY2(v.at(0).toObject().value("value").toString() == QLatin1String("0.5 1/nm") && v.at(1).toObject().value("value").toString().endsWith(QLatin1String(" eV")),
+                 qPrintable(QJsonDocument(v).toJson()));
     }
 
     // A PDE of one's own in the window: a 1D ODE's default plot a line graph

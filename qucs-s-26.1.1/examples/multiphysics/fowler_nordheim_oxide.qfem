@@ -1,0 +1,57 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A gate oxide's Fowler-Nordheim leakage",
+    "description": "A MOS capacitor - 10 nm of silicon dioxide on p-type silicon (1e17 cm⁻³), an n⁺ polysilicon gate - at 6 to 12 V: the oxide's field from 6 to 12 MV/cm, electrons from the inversion layer tunnel through its triangular barrier, J = A E² e^(-B/E) (Lenzlinger and Snow: φB 3.1 eV, m_ox 0.42 m0 - A 1.18e-6 A/V², B 242 MV/cm), semi.Ifn its current over the gate's area (0.1 µm by 100 µm). A Fowler-Nordheim plot, ln(J/E²) against 1/E, is a straight line of slope -B: 1e-10 A/cm² at 6 MV/cm to 0.3 A/cm² at 12, as measured gate oxides have it. Taken after the solve, not from the carriers - a leakage far below the device's own currents.",
+    "parameters": [
+        {"name": "Vg", "expression": "10[V]", "description": "the gate's voltage"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "100[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "bulk", "position": ["0", "-0.4"], "size": ["0.1", "0.38"]},
+            {"type": "rectangle", "label": "surface", "position": ["0", "-0.02"], "size": ["0.1", "0.02"]},
+            {"type": "rectangle", "label": "oxide", "size": ["0.1", "0.01"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["bulk", "surface"]}},
+            {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}
+        ],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "p", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["bulk", "surface"]}},
+                {"type": "gate", "label": "Gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+                {"type": "ohmic", "label": "Substrate", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}},
+                {"type": "fn", "label": "Fowler-Nordheim tunnelling", "phiB": "3.1[eV]", "mox": "0.42", "selection": {"of": ["surface"], "side": "top"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.02", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "0.002"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "Gate voltage", "steps": [
+        {"type": "sweep", "parameters": [["Vg", "6, 7, 8, 9, 10, 11, 12", "V"]]},
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Tunnelling current", "plots": [
+                {"type": "globalgraph", "expression": "log10(semi.Ifn/1[A])"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Down through the gate", "start": ["0.05", "0.01"], "end": ["0.05", "-0.1"]},
+            {"type": "plotgroup1d", "label": "Bands", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ec", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ev", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Efn", "unit": "eV"}
+            ]},
+            {"type": "plotgroup1d", "label": "Field", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "semi.normE", "unit": "V/cm"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Leakage", "expression": "semi.Ifn", "unit": "A", "solutions": "all"}
+        ]
+    }
+}

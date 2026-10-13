@@ -15,9 +15,11 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSaveFile>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace qucs_s::fem {
@@ -579,6 +581,73 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
         return p;
     }
     return fail(tr("%1 is not a compound known (%2)").arg(name, compounds().join(QLatin1String(", "))));
+}
+
+std::optional<std::vector<ValleySet>> valleySets(const QString& text, QString* error)
+{
+    auto fail = [&](const QString& why) -> std::optional<std::vector<ValleySet>> {
+        if (error) *error = why;
+        return std::nullopt;
+    };
+    const QString t = text.trimmed();
+    std::vector<ValleySet> sets;
+    if (t.isEmpty()) return sets;
+    static const QRegularExpression preset(QStringLiteral(R"(^(si|ge)\s*\(\s*(100|110|111)\s*\)\s*(?:([^\s]+)\s+([^\s]+))?$)"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    auto number = [](const QString& s, bool* ok) { return s.toDouble(ok); };
+    if (const QRegularExpressionMatch m = preset.match(t); m.hasMatch()) {
+        const bool si = m.captured(1).compare(QLatin1String("si"), Qt::CaseInsensitive) == 0;
+        double ml = si ? 0.916 : 1.59, mt = si ? 0.190 : 0.0815;
+        if (!m.captured(3).isEmpty()) {
+            bool a = false, b = false;
+            ml = number(m.captured(3), &a);
+            mt = number(m.captured(4), &b);
+            if (!a || !b || !(ml > 0) || !(mt > 0)) return fail(tr("%1: its masses ml and mt must be numbers more than 0").arg(t));
+        }
+        // The valleys' axes (Si's along <100>, two valleys each; Ge's along
+        // <111>, half valleys at the zone's faces, two halves each) and the
+        // plane's normal.
+        std::vector<std::array<double, 3>> axes;
+        if (si) axes = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        else axes = {{1, 1, 1}, {1, 1, -1}, {1, -1, 1}, {-1, 1, 1}};
+        const double each = si ? 2 : 1;
+        const QString plane = m.captured(2);
+        const std::array<double, 3> n = plane == QLatin1String("100") ? std::array<double, 3>{1, 0, 0}
+                                        : plane == QLatin1String("110") ? std::array<double, 3>{1, 1, 0}
+                                                                        : std::array<double, 3>{1, 1, 1};
+        const double nn = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        for (const auto& a : axes) {
+            const double an = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+            const double c = (a[0] * n[0] + a[1] * n[1] + a[2] * n[2]) / (an * nn), c2 = c * c;
+            ValleySet v;
+            v.g = each;
+            v.mz = 1 / (c2 / ml + (1 - c2) / mt);
+            v.md = std::sqrt(ml * mt * mt / v.mz);
+            auto same = std::find_if(sets.begin(), sets.end(), [&](const ValleySet& s) { return std::abs(s.mz / v.mz - 1) < 1e-9; });
+            if (same != sets.end()) same->g += v.g;
+            else sets.push_back(v);
+        }
+        // (The heaviest along the axis first: the lowest ladder.)
+        std::sort(sets.begin(), sets.end(), [](const ValleySet& a, const ValleySet& b) { return a.mz > b.mz; });
+        return sets;
+    }
+    for (const QString& part : t.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+        const QStringList v = part.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (v.size() != 3 && v.size() != 4)
+            return fail(tr("%1: Si(100), Si(110), Si(111), Ge(100), Ge(110) or Ge(111) (each with ml mt if wanted), or sets "
+                           "\"g mz md [dE]\" split by ';'")
+                            .arg(t));
+        ValleySet s;
+        bool ok[4] = {true, true, true, true};
+        s.g = number(v[0], &ok[0]);
+        s.mz = number(v[1], &ok[1]);
+        s.md = number(v[2], &ok[2]);
+        if (v.size() == 4) s.dE = number(v[3], &ok[3]);
+        if (!ok[0] || !ok[1] || !ok[2] || !ok[3] || !(s.g > 0) || !(s.mz > 0) || !(s.md > 0) || !std::isfinite(s.dE))
+            return fail(tr("%1: a set's g, mz and md must be numbers more than 0 (dE a number of eV)").arg(part.trimmed()));
+        sets.push_back(s);
+    }
+    return sets;
 }
 
 QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set)

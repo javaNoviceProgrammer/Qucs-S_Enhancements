@@ -1,0 +1,57 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A MOS capacitor's C-V with interface traps",
+    "description": "A MOS capacitor - 10 nm of silicon dioxide on p-type silicon (1e17 cm⁻³), an n⁺ polysilicon gate - with 5e11 cm⁻² eV⁻¹ of traps at its interface: acceptor-like from the intrinsic level to 0.5 eV above it, donor-like down to 0.5 eV below, each level filled as Shockley, Read and Hall have it. Swept from -2 to 2 V: the traps' charge, -q² Dit (ψs - φB) through depletion, takes some of the gate's - the C-V curve stretched out along the voltage (from -0.9 to 0 V the surface potential moves 0.50 V, not 0.57), each gate voltage Vfb + ψs - (Qs + Qit)/Cox; quasi-statically (semi.C0gg) Cox in series with Cs + q² Dit, at 1 MHz (semi.Cgg) the traps following only as fast as they fill. Without the traps (disable them) the plain curve.",
+    "parameters": [
+        {"name": "Vg", "expression": "0[V]", "description": "the gate's voltage"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "100[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "bulk", "position": ["0", "-0.4"], "size": ["0.1", "0.38"]},
+            {"type": "rectangle", "label": "surface", "position": ["0", "-0.02"], "size": ["0.1", "0.02"]},
+            {"type": "rectangle", "label": "oxide", "size": ["0.1", "0.01"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Silicon", "selection": {"only": ["bulk", "surface"]}},
+            {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}}
+        ],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "p", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["bulk", "surface"]}},
+                {"type": "gate", "label": "Gate", "name": "g", "V0": "Vg", "phim": "4.05[eV]", "selection": {"of": ["oxide"], "side": "top"}},
+                {"type": "ohmic", "label": "Substrate", "name": "b", "V0": "0[V]", "selection": {"of": ["bulk"], "side": "bottom"}},
+                {"type": "traps", "label": "Acceptor-like traps", "kind": "acceptor", "distribution": "uniform", "Dit": "5e11[1/(cm^2*eV)]", "Elow": "0[eV]", "Ehigh": "0.5[eV]", "levels": 32, "selection": {"of": ["surface"], "side": "top"}},
+                {"type": "traps", "label": "Donor-like traps", "kind": "donor", "distribution": "uniform", "Dit": "5e11[1/(cm^2*eV)]", "Elow": "-0.5[eV]", "Ehigh": "0[eV]", "levels": 32, "selection": {"of": ["surface"], "side": "top"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.02", "features": [
+            {"type": "size", "level": "domain", "selection": {"only": ["surface", "oxide"]}, "hmax": "0.002"}
+        ]}
+    }],
+    "studies": [{"type": "study", "label": "C-V", "steps": [
+        {"type": "sweep", "parameters": [["Vg", "-2, -1.5, -1.2, -0.9, -0.75, -0.6, -0.45, -0.3, -0.15, 0, 0.25, 0.5, 1, 1.5, 2", "V"]]},
+        {"type": "stationary"},
+        {"type": "frequency", "frequencies": "1[MHz]"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Capacitance", "plots": [
+                {"type": "globalgraph", "expression": "semi.C0gg", "unit": "fF"},
+                {"type": "globalgraph", "expression": "semi.Cgg", "unit": "fF"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Down through the gate", "start": ["0.05", "0.01"], "end": ["0.05", "-0.4"]},
+            {"type": "plotgroup1d", "label": "Bands", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ec", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ev", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Efp", "unit": "eV"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Capacitance", "expression": "semi.C0gg; semi.Cgg", "unit": "fF", "solutions": "all"}
+        ]
+    }
+}

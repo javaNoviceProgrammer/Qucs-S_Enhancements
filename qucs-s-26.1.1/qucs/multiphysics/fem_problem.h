@@ -142,6 +142,7 @@ struct SpectrumOptions {
     int excitonModel = 0;   ///< 0 two parameters (λ, γ), 1 Bastard's one (λ)
     double epsr = 0;        ///< the excitons' static permittivity (0: the wells' material's)
     double dlinewidth = 0;  ///< J per V/m: the broadening grown by the field across the wells
+    double fade = 0;        ///< continuum bound: the bound steps fade into the bulk over this above the barriers' gap (J)
     double kmax = 0;        ///< a Valence Bands step's: its largest in-plane k (1/m)
     int kpoints = 0;        ///< and how many values of k from 0 (a spectrum's: its k·p bands')
     int continuum = 0;      ///< 0 the states found; 1 bound states' transitions and the barriers' bulk absorption

@@ -1384,14 +1384,23 @@ QList<Variable> Solution::globals() const
 void Solution::setGlobal(const QString& name, double value, const Dim& dim, const QString& description, const QString& unit)
 {
     a_globalScope->setConstant(name, value, dim);
+    // A unit of its dimension (eV, 1/nm) is where it is shown, the value
+    // converted; one its dimension cannot say (dB/m) is the value's own.
+    QString own, display;
+    if (!unit.isEmpty()) {
+        const std::optional<Unit> parsed = parseUnit(unit);
+        if (parsed && parsed->dim == dim) display = unit;
+        else own = unit;
+    }
     for (Variable& v : a_globals)
         if (v.name == name) {
             v.dim = dim;
             if (!description.isEmpty()) v.description = description;
-            v.unit = unit;
+            v.unit = own;
+            v.display = display;
             return;
         }
-    a_globals << Variable{name, dim, description, unit};
+    a_globals << Variable{name, dim, description, own, display};
 }
 
 QString Solution::globalText(const QString& name) const
@@ -1399,6 +1408,9 @@ QString Solution::globalText(const QString& name) const
     for (const Variable& v : a_globals)
         if (v.name == name) {
             const double value = a_globalScope->constant(name)->value;
+            if (!v.display.isEmpty())
+                if (const std::optional<Unit> u = parseUnit(v.display))
+                    return formatNumber((value - u->offset) / u->scale, 4) + QLatin1Char(' ') + v.display;
             return v.unit.isEmpty() ? formatQuantity(value, v.dim) : formatNumber(value, 4) + QLatin1Char(' ') + v.unit;
         }
     return {};
@@ -2224,6 +2236,7 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
     o.excitons = node.flag(QStringLiteral("excitons"));
     o.excitonModel = node.text(QStringLiteral("excitonmodel")) == QLatin1String("bastard") ? 1 : 0;
     o.continuum = node.text(QStringLiteral("continuum")) == QLatin1String("bound") ? 1 : 0;
+    if (!energy(QStringLiteral("fade"), tr("its fade"), &o.fade)) return false;
     if (!node.text(QStringLiteral("dlinewidth")).trimmed().isEmpty()) {
         // (Energy per field: C m.)
         const std::optional<double> d = evaluateConstant(node.text(QStringLiteral("dlinewidth")), scope, Dim::of(1, 0, 1, 1), &why);

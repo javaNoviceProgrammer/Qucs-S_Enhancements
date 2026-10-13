@@ -1,0 +1,54 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A p⁺n junction's avalanche breakdown",
+    "description": "An abrupt one-sided junction of silicon - p⁺ 1e19 cm⁻³ on n 1e16 cm⁻³, 4 µm of it - reversed from 10 to 54 V. Impact ionization (van Overstraeten and de Man's rates) gives the electrons' and holes' ionization integrals along the field line through the highest field, semi.In and semi.Ip (semi.Emax the field there, semi.Lion the line's length): the junction breaks down where they reach 1 - both together, a breakdown is one -, at 51.7 V, as the depletion approximation's field (a triangle falling from its highest) integrates the same rates to (Sze and Gibbons' fit, of older rates, says 61.6 V). Here the integrals alone (\"currents\" off: a breakdown voltage swept to, the currents as they are without it); with the currents in, the pairs it makes multiply them - a photodiode's avalanche gain, semi.Mn and semi.Mp - up to breakdown, past which no solution is found.",
+    "parameters": [
+        {"name": "Vr", "expression": "10[V]", "description": "the reverse voltage"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "100[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "pplus", "position": ["-0.5", "0"], "size": ["0.5", "0.2"]},
+            {"type": "rectangle", "label": "nside", "size": ["4", "0.2"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "p⁺", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pplus"]}},
+                {"type": "doping", "label": "n", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["nside"]}},
+                {"type": "impact", "label": "Impact ionization", "currents": false, "selection": {"all": true}},
+                {"type": "ohmic", "label": "Anode", "name": "a", "V0": "-Vr", "selection": {"of": ["pplus"], "side": "left"}},
+                {"type": "ohmic", "label": "Cathode", "name": "k", "V0": "0[V]", "selection": {"of": ["nside"], "side": "right"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}
+    }],
+    "studies": [{"type": "study", "label": "Breakdown", "steps": [
+        {"type": "sweep", "parameters": [["Vr", "10, 20, 30, 40, 46, 48, 50, 51, 52, 53, 54", "V"]]},
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Ionization integrals", "plots": [
+                {"type": "globalgraph", "expression": "semi.In"},
+                {"type": "globalgraph", "expression": "semi.Ip"}
+            ]},
+            {"type": "plotgroup1d", "label": "Highest field", "plots": [
+                {"type": "globalgraph", "expression": "semi.Emax", "unit": "V/cm"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Along the junction", "start": ["-0.5", "0.1"], "end": ["4", "0.1"]},
+            {"type": "plotgroup1d", "label": "Field", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "semi.normE", "unit": "V/cm"}
+            ]},
+            {"type": "plotgroup", "label": "Field", "plots": [
+                {"type": "surface", "expression": "semi.normE", "unit": "V/cm"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Ionization integrals", "expression": "semi.In; semi.Ip; semi.Emax", "unit": "1; 1; V/cm", "solutions": "all"}
+        ]
+    }
+}

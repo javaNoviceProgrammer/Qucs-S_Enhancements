@@ -1,0 +1,51 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A diode's reverse recovery",
+    "description": "A silicon pn diode - 1e16 cm⁻³ each side, 5 µm of each, its carriers' lifetimes 0.1 and 0.3 ns (swept; diffusion lengths below a micrometre) - forward at 0.65 V, switched to -1 V in a picosecond: the minority carriers stored each side come back out of the anode, a reverse current 120 to 180 times the forward one for some tens of picoseconds, then the depletion layer widening to its reverse width. Out of the anode beyond the steady reverse current: the charge stored at rest (q ∫ of the minority carriers beyond equilibrium's), the depletion layer's change - the same for both lifetimes - and less what recombines on the way; between the two lifetimes the charge out differs as the charge stored does, to some 10 %. The step in time adaptive (BDF2), its outputs dense where the current changes fast.",
+    "parameters": [
+        {"name": "tau", "expression": "0.3[ns]", "description": "the electrons' and holes' lifetime"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "100[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "pside", "size": ["5", "1"]},
+            {"type": "rectangle", "label": "nside", "position": ["5", "0"], "size": ["5", "1"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "p side", "dopant": "acceptor", "N0": "1e16[1/cm^3]", "selection": {"only": ["pside"]}},
+                {"type": "doping", "label": "n side", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["nside"]}},
+                {"type": "srh", "label": "Recombination", "source": "user", "taun": "tau", "taup": "tau", "selection": {"all": true}},
+                {"type": "ohmic", "label": "Anode", "name": "a", "V0": "0.65[V] - 1.65[V]*min(t/1[ps], 1)", "selection": {"of": ["pside"], "side": "left"}},
+                {"type": "ohmic", "label": "Cathode", "name": "k", "V0": "0[V]", "selection": {"of": ["nside"], "side": "right"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.1"}
+    }],
+    "studies": [{"type": "study", "label": "Switched off", "steps": [
+        {"type": "sweep", "parameters": [["tau", "0.1, 0.3", "ns"]]},
+        {"type": "stationary"},
+        {"type": "transient", "times": "range(0, 0.5[ps], 5[ps]), range(6[ps], 1[ps], 30[ps]), range(35[ps], 5[ps], 100[ps]), range(120[ps], 20[ps], 300[ps]), range(350[ps], 50[ps], 1.2[ns])", "rtol": "1e-4"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Anode current", "plots": [
+                {"type": "globalgraph", "expression": "semi.I_a", "unit": "mA", "solutions": "all"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Along the diode", "start": ["0", "0.5"], "end": ["10", "0.5"]},
+            {"type": "plotgroup1d", "label": "Holes", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "log10(semi.p*1[cm^3])"}
+            ]},
+            {"type": "plotgroup1d", "label": "Electrons", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "log10(semi.n*1[cm^3])"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Anode current", "expression": "semi.I_a", "unit": "mA", "solutions": "all"}
+        ]
+    }
+}

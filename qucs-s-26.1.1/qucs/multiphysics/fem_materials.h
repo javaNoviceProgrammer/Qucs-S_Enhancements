@@ -95,6 +95,21 @@ QStringList compounds();
 /// composition is out of range.
 std::optional<BandParameters> bandParameters(const QString& compound, double x, double y, double T, QString* error = nullptr,
                                             BandSet set = BandSet::Vurgaftman);
+/// A well's electron valley set (1D): its degeneracy (valleys alike, each
+/// with spin's two), its mass along the growth axis (the quantization's) and
+/// its density-of-states mass in the plane (m0), its edge above the band's
+/// (eV).
+struct ValleySet {
+    double g = 1, mz = 0, md = 0, dE = 0;
+};
+/// The valley sets "valleys" gives: Si(100), Si(110), Si(111) (the six Δ
+/// valleys, ml 0.916, mt 0.190), Ge(100), Ge(110), Ge(111) (the four L
+/// valleys, ml 1.59, mt 0.0815), each followed by "ml mt" for other masses -
+/// Stern and Howard's rule: along the axis 1/mz = cos²θ/ml + sin²θ/mt, in the
+/// plane md = √(ml mt²/mz), the valleys of one mz a set -, or sets of their
+/// own, "g mz md [dE]; ..." (dE in eV). None for an empty text; why when it is
+/// none of these.
+std::optional<std::vector<ValleySet>> valleySets(const QString& text, QString* error = nullptr);
 /// An alloy material's property \a key (Eg, chi, epsilonr, n, k, rho, Cp,
 /// Nc, Nv, mun, mup, taun, taup, me, gamma1..3, Ep, VBO, Delta, a0, ac, av,
 /// b, C11, C12) at 300 K as an expression with its unit: from its compound

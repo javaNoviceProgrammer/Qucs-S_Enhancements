@@ -27,6 +27,7 @@
 #include <QJsonArray>
 #include <QtTest>
 
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstring>
@@ -1312,7 +1313,9 @@ private slots:
     {
         // A GaAs well 8 nm in Al0.3GaAs, continuum "bound": above the
         // barriers' gap their bulk absorption, (π q² ħ/(n c ε0 m0² E)) |Mb|²
-        // Σ (1/2π²)(2 mr/ħ²)^(3/2) √(E - Eg) over the line, per the well.
+        // Σ (1/2π²)(2 mr/ħ²)^(3/2) √(E - Eg) over the line, over their 20 nm
+        // per the well; past the fade (0.1 eV) the well's bound steps gone,
+        // GaAs's own bulk over its 8 nm in their place.
         const int energies = slowBuild() ? 41 : 101;
         auto spectrum = [&](const QString& well, const QString& F) {
             return run(modelOf(heterostructure(well, well == QLatin1String("GaAs") ? QStringLiteral("0") : QStringLiteral("0.3"), QStringLiteral("AlGaAs"),
@@ -1320,16 +1323,24 @@ private slots:
                                                QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.40[eV], 2.4[eV], %1)", "states": 8, "linewidth": "6[meV]", "lineshape": "gaussian", "continuum": "bound"})x")
                                                    .arg(energies))));
         };
-        const BandParameters b = *bandParameters(QStringLiteral("AlGaAs"), 0.3, 0, 300);
-        const double Eg = b.Eg * Q, me = b.me, mhh = std::cbrt(1 / (b.gamma1 - 2 * b.gamma2) * std::pow(1 / (b.gamma1 + b.gamma2), 2));
-        const double mlh = std::cbrt(1 / (b.gamma1 + 2 * b.gamma2) * std::pow(1 / (b.gamma1 - b.gamma2), 2));
-        auto bulk = [&](double E) {
+        const BandParameters b = *bandParameters(QStringLiteral("AlGaAs"), 0.3, 0, 300), w = *bandParameters(QStringLiteral("GaAs"), 0, 0, 300);
+        const double sigma = 6e-3 * Q / std::sqrt(2 * std::log(2.0));
+        auto bulk = [&](const BandParameters& m, double E) {
+            // ∫ √ε G(E - Eg - ε) dε, the line's Gaussian (its half width 6 meV).
+            const double Eg = m.Eg * Q, delta = E - Eg, reach = std::max(0.0, delta) + 12 * sigma;
+            double root = 0;
+            for (int k = 0; k < 20000; ++k) {
+                const double eps = reach * (k + 0.5) / 20000, x = delta - eps;
+                root += std::sqrt(eps) * std::exp(-0.5 * x * x / (sigma * sigma)) / (sigma * std::sqrt(2 * M_PI)) * reach / 20000;
+            }
+            const double mhh = std::cbrt(1 / (m.gamma1 - 2 * m.gamma2) * std::pow(1 / (m.gamma1 + m.gamma2), 2));
+            const double mlh = std::cbrt(1 / (m.gamma1 + 2 * m.gamma2) * std::pow(1 / (m.gamma1 - m.gamma2), 2));
             double rho = 0;
             for (double mh : {mhh, mlh}) {
-                const double mr = 1 / (1 / me + 1 / mh) * M0;
-                rho += std::pow(2 * mr / (Hbar * Hbar), 1.5) / (2 * M_PI * M_PI) * std::sqrt(std::max(0.0, E - Eg));
+                const double mr = 1 / (1 / m.me + 1 / mh) * M0;
+                rho += std::pow(2 * mr / (Hbar * Hbar), 1.5) / (2 * M_PI * M_PI) * root;
             }
-            return M_PI * Q * Q * Hbar / (b.n * 299792458.0 * 8.8541878188e-12 * M0 * M0 * E) * (M0 * b.Ep * Q / 6) * rho;
+            return M_PI * Q * Q * Hbar / (m.n * 299792458.0 * 8.8541878188e-12 * M0 * M0 * E) * (M0 * m.Ep * Q / 6) * rho;
         };
         const Run r = spectrum(QStringLiteral("GaAs"), QStringLiteral("0[V/m]"));
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
@@ -1337,23 +1348,51 @@ private slots:
         s.select(s.snapshotCount() - 1);
         const double E = global(s, QStringLiteral("qw.Ephoton"));
         const double tm = global(s, QStringLiteral("qw.alphaTM")), te = global(s, QStringLiteral("qw.alphaTE"));
-        qInfo("at %.3f eV, %.0f meV above the barriers' gap: TM %.5g /cm, TE %.5g; their bulk absorption over the line per the well %.5g", E / Q,
-              (E - Eg) / Q * 1e3, tm / 100, te / 100, bulk(E) * 28 / 8 / 100);
-        // (TM: the bound light holes' steps under it, from the line's TE.)
-        QVERIFY2(tm > bulk(E) * 28 / 8 && tm < 1.6 * bulk(E) * 28 / 8, qPrintable(QString::number(tm / bulk(E) / 3.5)));
-        // The barrier alone, nothing bound: its bulk absorption, the same in
-        // a field (its gap where the line ends its own, not the edges' least).
+        const double expected = bulk(b, E) * 20 / 8 + bulk(w, E);
+        qInfo("at %.3f eV, %.0f meV above the barriers' gap: TM %.6g /cm, TE %.6g; their bulk over 20 nm and GaAs's over 8, per the well, %.6g", E / Q,
+              (E - b.Eg * Q) / Q * 1e3, tm / 100, te / 100, expected / 100);
+        QVERIFY2(std::abs(te / expected - 1) < 1e-3, qPrintable(QString::number(te / expected - 1)));
+        QVERIFY2(std::abs(tm / te - 1) < 1e-9, qPrintable(QString::number(tm / te - 1)));
+        // Below the first transition of a state above its barriers (an
+        // electron at the barriers' Ec to a hole at the well's Ev, or the
+        // other way) the bound steps alone, the box's: GaAs's own bulk only
+        // fading in as they fade out (a Gaussian line: none of either's tails
+        // there).
+        {
+            QByteArray boxed = heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("8"),
+                                               QStringLiteral("10"), QStringLiteral(R"(, "F": "0[V/m]")"),
+                                               QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.40[eV], 2.4[eV], %1)", "states": 8, "linewidth": "6[meV]", "lineshape": "gaussian"})x")
+                                                   .arg(energies));
+            const Run box = run(modelOf(boxed));
+            QVERIFY2(box.error.isEmpty(), qPrintable(box.error));
+            double worst = 0;
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                box.solution->select(k);
+                if (global(s, QStringLiteral("qw.Ephoton")) > (std::min(b.VBO + b.Eg - w.VBO, w.VBO + w.Eg - b.VBO) - 0.03) * Q) break;
+                const double a1 = global(s, QStringLiteral("qw.alphaTE")), a2 = global(*box.solution, QStringLiteral("qw.alphaTE"));
+                if (a2 > 1e3) worst = std::max(worst, std::abs(a1 / a2 - 1));
+            }
+            qInfo("below %.3f eV the bound continuum the box's to %.2g", std::min(b.VBO + b.Eg - w.VBO, w.VBO + w.Eg - b.VBO) - 0.03, worst);
+            QVERIFY2(worst < 1e-9, qPrintable(QString::number(worst)));
+        }
+        // The barrier alone, nothing bound (the line all of one gap, the
+        // wells' size its 28 nm): its bulk absorption whole from its gap
+        // (through the fade too), the same in a field (its gap where the line
+        // ends its own, not the edges' least).
         double worst = 0;
         for (const char* F : {"0[V/m]", "1e7[V/m]"}) {
             if (slowBuild() && !std::strcmp(F, "0[V/m]")) continue;   // (under the sanitizers the field's alone)
             const Run slab = spectrum(QStringLiteral("AlGaAs"), QString::fromLatin1(F));
             QVERIFY2(slab.error.isEmpty(), qPrintable(slab.error));
             QVERIFY2(slab.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("a spectrum of 0 transitions")), qPrintable(slab.solution->log.join(QLatin1Char('\n'))));
-            for (int k = (energies - 1) * 3 / 5; k < slab.solution->snapshotCount(); k += (energies - 1) / 5) {
+            for (int k = 0; k < slab.solution->snapshotCount(); ++k) {
                 slab.solution->select(k);
                 const double e = global(*slab.solution, QStringLiteral("qw.Ephoton")), a = global(*slab.solution, QStringLiteral("qw.alphaTE"));
-                qInfo("the slab in %s at %.3f eV: %.6g /cm, its bulk %.6g", F, e / Q, a / 100, bulk(e) / 100);
-                worst = std::max(worst, std::abs(a / bulk(e) - 1));
+                if (e < (b.Eg + 0.02) * Q) continue;
+                const double whole = bulk(b, e);
+                if (k % 5 == 0) qInfo("the slab in %s at %.3f eV: %.6g /cm, its bulk %.6g", F, e / Q, a / 100, whole / 100);
+                worst = std::max(worst, std::abs(a / whole - 1));
             }
         }
         QVERIFY2(worst < 1e-3, qPrintable(QString::number(worst)));
@@ -1373,6 +1412,310 @@ private slots:
         qInfo("at 100 kV/cm: %s; the e1-hh1 exciton at %.4f eV, bound by %.3f meV", qPrintable(t.solution->log.filter(QStringLiteral("spectrum of")).join(QString())),
               Ex / Q, Eb / Q * 1e3);
         QVERIFY(std::isfinite(Ex) && Eb > 0);
+    }
+
+    void electrorefractionOfAnyWindow()
+    {
+        // Δn between 0 and 50 kV/cm below the edge the same whatever the
+        // window's top past the barriers' gap and the fade: above them the
+        // bulk's absorption alone, the field's none (the review's -6.7e-3
+        // to 2.0 eV and -11.2e-3 to 3.0 eV before).
+        const double step = slowBuild() ? 0.02 : 0.01;
+        auto spectrum = [&](double top, const char* F, const QString& fade = QString()) {
+            const int n = qRound((top - 1.40) / step) + 1;
+            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("8"),
+                                               QStringLiteral("10"), QStringLiteral(R"(, "F": "%1")").arg(QLatin1String(F)),
+                                               QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.40[eV], %1[eV], %2)", "states": 8, "linewidth": "6[meV]", "lineshape": "gaussian", "continuum": "bound"%3})x")
+                                                   .arg(top)
+                                                   .arg(n)
+                                                   .arg(fade))));
+        };
+        auto at = [&](Solution& s, double E, const QString& name) {
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                if (std::abs(global(s, QStringLiteral("qw.Ephoton")) / Q - E) < 1e-9) return global(s, name);
+            }
+            return double(NAN);
+        };
+        double dn[2] = {NAN, NAN};
+        const double tops[2] = {2.0, slowBuild() ? 2.4 : 2.6};
+        for (int i = 0; i < 2; ++i) {
+            const Run off = spectrum(tops[i], "0[V/m]"), on = spectrum(tops[i], "5e6[V/m]");
+            QVERIFY2(off.error.isEmpty() && on.error.isEmpty(), qPrintable(off.error + on.error));
+            dn[i] = at(*on.solution, 1.45, QStringLiteral("qw.dnTE")) - at(*off.solution, 1.45, QStringLiteral("qw.dnTE"));
+            // The top's absorption the field's none; the index past it alike.
+            const double a0 = at(*off.solution, tops[i], QStringLiteral("qw.alphaTE")), a1 = at(*on.solution, tops[i], QStringLiteral("qw.alphaTE"));
+            const double t0 = at(*off.solution, 1.45, QStringLiteral("qw.dnTEtail")), t1 = at(*on.solution, 1.45, QStringLiteral("qw.dnTEtail"));
+            qInfo("to %.1f eV: dn(1.45 eV) %.6g; at the top %.6g /cm and %.6g; past it %.6g and %.6g", tops[i], dn[i], a0 / 100, a1 / 100, t0, t1);
+            QVERIFY2(std::abs(a1 / a0 - 1) < 1e-6, qPrintable(QString::number(a1 / a0 - 1)));
+            QVERIFY(t0 > 0 && std::abs(t1 / t0 - 1) < 1e-6);
+            const QString log = on.solution->log.join(QLatin1Char(' '));
+            QVERIFY2(log.contains(QLatin1String("the same in any field")) && !log.contains(QLatin1String("Warning")), qPrintable(log));
+        }
+        QVERIFY2(std::abs(dn[0]) > 1e-5, qPrintable(QString::number(dn[0])));
+        QVERIFY2(std::abs(dn[1] / dn[0] - 1) < 2e-3, qPrintable(QString::number(dn[1] / dn[0] - 1)));
+        // The window's top short of the fade's end: warned, with that energy
+        // (Al0.3GaAs's gap and 0.1 eV).
+        const Run shortOf = spectrum(1.80, "0[V/m]");
+        QVERIFY2(shortOf.error.isEmpty(), qPrintable(shortOf.error));
+        const QString log = shortOf.solution->log.join(QLatin1Char(' '));
+        const QString end = QString::number(bandParameters(QStringLiteral("AlGaAs"), 0.3, 0, 300)->Eg + 0.1, 'g', 5);
+        QVERIFY2(log.contains(QLatin1String("Warning")) && log.contains(QStringLiteral("past the barriers' gap and the fade, %1").arg(end)), qPrintable(log + end));
+        // A fade below 0 refused.
+        const Run negative = spectrum(1.60, "0[V/m]", QStringLiteral(R"(, "fade": "-0.1[eV]")"));
+        QVERIFY2(negative.error.contains(QLatin1String("its fade")), qPrintable(negative.error));
+    }
+
+    void fadingInEveryPath()
+    {
+        // The fade in each of the spectrum's paths - the parabolic bands'
+        // steps, the k·p bands' pairs at each k - with a Lorentzian line (its
+        // slow tails reaching far): the absorption at 1.70 eV the same whether
+        // the window ends at 1.80 eV (short of the fade's end, 1.94) or 2.2
+        // (each step reached to the fade's end either way, its tail past
+        // there faded); past the fade the top's absorption the field's none
+        // but for the Lorentzian tails of the steps below it (3e-5 at 2.2 eV:
+        // a Gaussian's or a sech's none); qw.dnTEtail (c ħ/π) α_top ln((top +
+        // E)/(top - E))/2E.
+        for (const bool kp : {false, true}) {
+            auto spectrum = [&](double top, const char* F) {
+                const int n = qRound((top - 1.40) / 0.02) + 1;
+                return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                                   QStringLiteral("8"), QStringLiteral("10"),
+                                                   QStringLiteral(R"(, "F": "%1"%2)").arg(QLatin1String(F), kp ? QStringLiteral(R"(, "valence": "kp4", "h1d": "0.2[nm]")") : QString()),
+                                                   QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.40[eV], %1[eV], %2)", "states": 6, "linewidth": "6[meV]", "continuum": "bound"%3})x")
+                                                       .arg(top)
+                                                       .arg(n)
+                                                       .arg(kp ? QStringLiteral(R"(, "kpoints": 31)") : QString()))));
+            };
+            auto at = [&](Solution& s, double E, const QString& name) {
+                for (int k = 0; k < s.snapshotCount(); ++k) {
+                    s.select(k);
+                    if (std::abs(global(s, QStringLiteral("qw.Ephoton")) / Q - E) < 1e-9) return global(s, name);
+                }
+                return double(NAN);
+            };
+            const Run shortOf = spectrum(1.80, "5e6[V/m]"), past = spectrum(2.2, "5e6[V/m]"), flat = spectrum(2.2, "0[V/m]");
+            QVERIFY2(shortOf.error.isEmpty() && past.error.isEmpty() && flat.error.isEmpty(), qPrintable(shortOf.error + past.error + flat.error));
+            const double a = at(*shortOf.solution, 1.70, QStringLiteral("qw.alphaTE")), b = at(*past.solution, 1.70, QStringLiteral("qw.alphaTE"));
+            const double top0 = at(*flat.solution, 2.2, QStringLiteral("qw.alphaTE")), top1 = at(*past.solution, 2.2, QStringLiteral("qw.alphaTE"));
+            const double E = 1.46 * Q, hi = 2.2 * Q;
+            const double tail = 299792458.0 * Hbar / M_PI * std::log((hi + E) / (hi - E)) / (2 * E) * top1;
+            const double given = at(*past.solution, 1.46, QStringLiteral("qw.dnTEtail"));
+            qInfo("%s: at 1.70 eV %.7g /cm to 1.80 eV, %.7g to 2.2; at 2.2 eV %.7g and %.7g in the field; the tail %.7g (%.7g)", kp ? "k·p" : "parabolic",
+                  a / 100, b / 100, top0 / 100, top1 / 100, given, tail);
+            QVERIFY2(std::abs(a / b - 1) < 1e-6, qPrintable(QString::number(a / b - 1)));
+            QVERIFY2(std::abs(top1 / top0 - 1) < 1e-4, qPrintable(QString::number(top1 / top0 - 1)));
+            QVERIFY2(std::abs(given / tail - 1) < 1e-9, qPrintable(QString::number(given / tail - 1)));
+        }
+    }
+
+    void kpAndParabolicFadeAlike()
+    {
+        // The fade's reach in each path: at 77 K the parabolic steps' cells
+        // go 0.3 eV above each (to 1.82 eV here), the k grid to the window's
+        // top and 20 broadenings and 10 kT (or the holes' 0.15 eV and 15 kT:
+        // heavy carriers, 0.6 and 1 m0, keep that short too) - to 1.95 eV,
+        // short of the fade's end (2.0): each carried to it all the same. With γ2 = γ3 = 0 (heavy and light
+        // holes one mass) the k·p spectrum the parabolic one's, continuum
+        // bound, a Lorentzian's tails, to 3e-5 (the parabolic steps' cells
+        // under the fade).
+        auto model = [](bool kp) {
+            QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "name": "below", "size": ["20", "10"]},
+                             {"type": "rectangle", "name": "well", "position": ["0", "10"], "size": ["20", "8"]},
+                             {"type": "rectangle", "name": "above", "position": ["0", "18"], "size": ["20", "10"]}],
+                "physics": [{"type": "quantum", "tag": "qw", "T": "77[K]" %1, "features": [
+                  {"type": "material", "source": "user", "Ec": "0.3[eV]", "Ev": "-1.6[eV]", "me": "0.7", "mhh": "1", "mlh": "1", "mhhp": "1",
+                   "mlhp": "1", "gamma3": "0", "Ep": "25[eV]", "nr": "3.4", "selection": {"only": ["below", "above"]}},
+                  {"type": "material", "source": "user", "Ec": "0[eV]", "Ev": "-1.5[eV]", "me": "0.6", "mhh": "1", "mlh": "1", "mhhp": "1",
+                   "mlhp": "1", "gamma3": "0", "Ep": "25[eV]", "nr": "3.6", "selection": {"only": ["well"]}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+              "studies": [{"type": "study", "steps": [{"type": "spectrum", "energies": "linspace(1.55[eV], 1.62[eV], 8)", "states": 3,
+                "linewidth": "5[meV]", "continuum": "bound"}]}]})json")
+                                  .arg(kp ? QStringLiteral(R"(, "valence": "kp4")") : QString())
+                                  .toUtf8();
+            if (slowBuild()) json.replace(R"("states": 3)", R"("states": 2)");
+            return lighter(json);
+        };
+        const Run para = run(modelOf(model(false))), kp = run(modelOf(model(true)));
+        QVERIFY2(para.error.isEmpty() && kp.error.isEmpty(), qPrintable(para.error + kp.error));
+        double worst = 0;
+        for (int k = 0; k < para.solution->snapshotCount(); ++k) {
+            para.solution->select(k);
+            kp.solution->select(k);
+            for (const char* pol : {"qw.alphaTE", "qw.alphaTM"}) {
+                const double a = global(*para.solution, QString::fromLatin1(pol)), b = global(*kp.solution, QString::fromLatin1(pol));
+                worst = std::max(worst, std::abs(b / a - 1));
+            }
+        }
+        qInfo("faded at 77 K: the k·p spectrum the parabolic one's to %.2g", worst);
+        QVERIFY2(worst < 3e-5, qPrintable(QString::number(worst)));
+    }
+
+    void valleyPresets()
+    {
+        // Stern and Howard's rule on the six Δ valleys of Si (ml 0.916, mt
+        // 0.190): Ando, Fowler and Stern's table - (100) two valleys 0.916
+        // along the axis, 0.190 in the plane, four 0.190 and 0.417; (110)
+        // four 0.315, 0.324 and two 0.190, 0.417; (111) six 0.258, 0.358.
+        struct Want {
+            const char* text;
+            std::vector<std::array<double, 3>> sets;   // g, mz, md
+        };
+        const Want si[] = {{"Si(100)", {{2, 0.916, 0.190}, {4, 0.190, 0.417}}},
+                           {"Si(110)", {{4, 0.315, 0.324}, {2, 0.190, 0.417}}},
+                           {"si (111)", {{6, 0.258, 0.358}}}};
+        for (const Want& w : si) {
+            QString why;
+            const std::optional<std::vector<ValleySet>> v = valleySets(QString::fromLatin1(w.text), &why);
+            QVERIFY2(v && v->size() == w.sets.size(), qPrintable(why));
+            for (std::size_t k = 0; k < w.sets.size(); ++k) {
+                const ValleySet& a = (*v)[k];
+                qInfo("%s: %g valleys, mz %.4f, md %.4f", w.text, a.g, a.mz, a.md);
+                QCOMPARE(a.g, w.sets[k][0]);
+                QVERIFY(std::abs(a.mz - w.sets[k][1]) < 6e-4 && std::abs(a.md - w.sets[k][2]) < 6e-4);
+            }
+        }
+        // Ge's four L valleys (ml 1.59, mt 0.0815): (111) one along it -
+        // ml and mt themselves - and three at cos²θ = 1/9; (100) four at
+        // 1/3; (110) two at 2/3 and two across it (mt along, √(ml mt) in
+        // the plane). Each md √(ml mt²/mz), the plane's determinant.
+        const double ml = 1.59, mt = 0.0815;
+        auto tilted = [&](double c2) { return 1 / (c2 / ml + (1 - c2) / mt); };
+        const Want ge[] = {{"Ge(111)", {{1, ml, mt}, {3, tilted(1.0 / 9), 0}}},
+                           {"Ge(100)", {{4, tilted(1.0 / 3), 0}}},
+                           {"Ge(110)", {{2, tilted(2.0 / 3), 0}, {2, mt, std::sqrt(ml * mt)}}}};
+        for (const Want& w : ge) {
+            const std::optional<std::vector<ValleySet>> v = valleySets(QString::fromLatin1(w.text));
+            QVERIFY(v && v->size() == w.sets.size());
+            for (std::size_t k = 0; k < w.sets.size(); ++k) {
+                const ValleySet& a = (*v)[k];
+                const double md = std::sqrt(ml * mt * mt / w.sets[k][1]);
+                qInfo("%s: %g valleys, mz %.4f, md %.4f", w.text, a.g, a.mz, a.md);
+                QCOMPARE(a.g, w.sets[k][0]);
+                QVERIFY(std::abs(a.mz / w.sets[k][1] - 1) < 1e-12 && std::abs(a.md / md - 1) < 1e-12);
+                if (w.sets[k][2] > 0) QVERIFY(std::abs(a.md / w.sets[k][2] - 1) < 1e-12);
+            }
+        }
+        // Masses of one's own, sets of one's own; refused.
+        const std::optional<std::vector<ValleySet>> own = valleySets(QStringLiteral("Si(100) 0.98 0.19"));
+        QVERIFY(own && own->size() == 2 && (*own)[0].mz == 0.98 && std::abs((*own)[1].md - std::sqrt(0.98 * 0.19)) < 1e-12);
+        const std::optional<std::vector<ValleySet>> sets = valleySets(QStringLiteral("2 0.916 0.19; 4 0.19 0.417 0.05"));
+        QVERIFY(sets && sets->size() == 2 && (*sets)[1].g == 4 && (*sets)[1].dE == 0.05 && (*sets)[0].dE == 0);
+        QVERIFY(valleySets(QString()) && valleySets(QString())->empty());
+        for (const char* bad : {"Si(001)", "2 0.916", "2 -0.9 0.19", "Ge(100) 1.59"}) {
+            QString why;
+            QVERIFY2(!valleySets(QString::fromLatin1(bad), &why) && !why.isEmpty(), bad);
+        }
+    }
+
+    void valleyLadders()
+    {
+        // Si(100)'s electrons against a wall in a field of 50 MV/m (a
+        // triangular well): each valley set a ladder of Airy's levels of its
+        // own mass along the axis, E_n - Ec(wall) = (ħ²/2mz)^⅓ (qF)^⅔ a_n,
+        // merged by energy; filled to a flat Fermi level, each state's
+        // electrons per area g md kT/(πħ²) ln(1 + e^((Ef - E)/kT)), the sets'
+        // their sums.
+        const QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "name": "si", "size": ["10", "20"]}],
+            "physics": [{"type": "quantum", "tag": "qw", "h1d": "%1", "F": "5e7[V/m]", "heavy": false, "light": false,
+              "etan": "-0.25[V] + 5e7[V/m]*(10[nm] - y)", "features": [
+              {"type": "material", "source": "user", "Ec": "0[eV]", "Ev": "-1.12[eV]", "me": "0.5", "valleys": "Si(100)", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.5"}}],
+          "studies": [{"type": "study", "steps": [{"type": "states", "states": 3}]}]})json")
+                                    .arg(slowBuild() ? QStringLiteral("0.1[nm]") : QStringLiteral("0.05[nm]"))
+                                    .toUtf8();
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        QCOMPARE(s.snapshotCount(), 6);
+        // (Each ladder's highest state checked for the carriers it holds: the
+        // two valleys' third, near the Fermi level, 3 % of them.)
+        QVERIFY2(s.log.join(QLatin1Char(' ')).contains(QLatin1String("in 2 valley sets")), qPrintable(s.log.join(QLatin1Char('\n'))));
+        QVERIFY2(s.log.join(QLatin1Char(' ')).contains(QLatin1String("its highest e state found holds")), qPrintable(s.log.join(QLatin1Char('\n'))));
+        s.select(0);
+        const double airy[3] = {2.338107410459767, 4.087949444130970, 5.520559828095551};
+        const double mz[2] = {0.916, 0.190}, md[2] = {0.190, std::sqrt(0.916 * 0.190)}, g[2] = {2, 4};
+        const double kT = KB * 300 / Q, Ef = -0.25;
+        int seen[2] = {0, 0};
+        double last = -1e9, worst = 0, sets[2] = {0, 0}, all = 0;
+        for (int k = 1; k <= 6; ++k) {
+            const double E = eV(s, QStringLiteral("qw.Ee%1").arg(k));
+            const int v = int(global(s, QStringLiteral("qw.Ve%1").arg(k))) - 1;
+            QVERIFY(v == 0 || v == 1);
+            const int n = seen[v]++;
+            const double want = -0.5 + std::cbrt(HB2M / mz[v]) * std::pow(0.05, 2.0 / 3) * airy[n];
+            const double N = global(s, QStringLiteral("qw.Ne%1").arg(k));
+            const double filled = g[v] * md[v] * M0 * KB * 300 / (M_PI * Hbar * Hbar) * std::log1p(std::exp((Ef - E) / kT));
+            qInfo("e%d: valley set %d's level %d, %.7f eV (Airy's %.7f); %.6g /cm² (%.6g)", k, v + 1, n + 1, E, want, N * 1e-4, filled * 1e-4);
+            QVERIFY(E >= last);
+            last = E;
+            worst = std::max(worst, std::abs((E + 0.5) / (want + 0.5) - 1));
+            QVERIFY2(std::abs(N / filled - 1) < 1e-9, qPrintable(QString::number(N / filled - 1)));
+            sets[v] += N;
+            all += N;
+        }
+        QVERIFY2(worst < 2e-5, qPrintable(QString::number(worst)));
+        QCOMPARE(seen[0], 3);
+        QCOMPARE(seen[1], 3);
+        for (int v = 0; v < 2; ++v)
+            QVERIFY(std::abs(global(s, QStringLiteral("qw.Nv%1").arg(v + 1)) / sets[v] - 1) < 1e-12);
+        QVERIFY(std::abs(global(s, QStringLiteral("qw.Ns")) / all - 1) < 1e-12);
+        // The electrons along the line the same: qw.n's integral (the mesh's
+        // quadratic interpolation of it, 0.5 nm: to 1e-3).
+        double integral = 0;
+        const int m = 4000;
+        for (int j = 0; j < m; ++j) integral += at(s, QStringLiteral("qw.n"), {5, (j + 0.5) * 20.0 / m}) * 20e-9 / m;
+        qInfo("qw.n along the line %.6g /cm², qw.Ns %.6g", integral * 1e-4, all * 1e-4);
+        QVERIFY2(std::abs(integral / all - 1) < 1e-3, qPrintable(QString::number(integral / all - 1)));
+        // One valley set only of a direct gap's: refused a spectrum; a wire's refused.
+        QByteArray spectrum = json;
+        spectrum.replace(R"({"type": "states", "states": 3})", R"({"type": "spectrum", "energies": "1.2[eV]"})");
+        QVERIFY(run(modelOf(spectrum)).error.contains(QLatin1String("indirect")));
+        QByteArray wire = json;
+        wire.replace(R"("tag": "qw",)", R"("tag": "qw", "space": "2d",)");
+        QVERIFY(run(modelOf(wire)).error.contains(QLatin1String("valleys are a well's")));
+        QByteArray bad = json;
+        bad.replace("Si(100)", "Si(010)");
+        QVERIFY(run(modelOf(bad)).error.contains(QLatin1String("its valleys")));
+        // Sets of one's own, the second's edge 0.05 eV up: its ladder Airy's
+        // raised by that.
+        QByteArray raised = json;
+        raised.replace("Si(100)", "2 0.916 0.190; 4 0.190 0.417 0.05");
+        const Run up = run(modelOf(raised));
+        QVERIFY2(up.error.isEmpty(), qPrintable(up.error));
+        up.solution->select(0);
+        int raisedLevels = 0;
+        for (int k = 1; k <= 6; ++k) {
+            if (int(global(*up.solution, QStringLiteral("qw.Ve%1").arg(k))) != 2) continue;
+            const double E = eV(*up.solution, QStringLiteral("qw.Ee%1").arg(k));
+            const double want = -0.5 + 0.05 + std::cbrt(HB2M / 0.190) * std::pow(0.05, 2.0 / 3) * airy[raisedLevels++];
+            QVERIFY2(std::abs((E + 0.45) / (want + 0.45) - 1) < 2e-5, qPrintable(QStringLiteral("%1 %2").arg(E).arg(want)));
+        }
+        QCOMPARE(raisedLevels, 3);
+        // A material's valleys (a compound's, read as every physics reads its
+        // properties): GaAs's own mass in one set of two - the levels the
+        // same, each state's electrons twice.
+        const double me = bandParameters(QStringLiteral("GaAs"), 0, 0, 300)->me;
+        auto gaas = [&](const QString& valleys) {
+            QByteArray w = heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("8"),
+                                           QStringLiteral("10"), QStringLiteral(R"(, "heavy": false, "light": false, "etan": "0.02[V]")"),
+                                           QStringLiteral(R"({"type": "states", "states": 2})"));
+            if (!valleys.isEmpty()) w.replace(R"("compound": "GaAs")", QStringLiteral(R"("compound": "GaAs", "valleys": "%1")").arg(valleys).toUtf8());
+            return run(modelOf(w));
+        };
+        const Run one = gaas(QString()), two = gaas(QStringLiteral("2 %1 %1").arg(me, 0, 'g', 17));
+        QVERIFY2(one.error.isEmpty() && two.error.isEmpty(), qPrintable(one.error + two.error));
+        one.solution->select(0);
+        two.solution->select(0);
+        const double E1 = eV(*one.solution, QStringLiteral("qw.Ee1")), E2 = eV(*two.solution, QStringLiteral("qw.Ee1"));
+        const double N1 = global(*one.solution, QStringLiteral("qw.Ne1")), N2 = global(*two.solution, QStringLiteral("qw.Ne1"));
+        qInfo("GaAs's valleys from its material: e1 %.9f eV (%.9f), %.6g /cm² (%.6g, twice)", E2, E1, N2 * 1e-4, N1 * 1e-4);
+        QVERIFY(std::abs(E2 - E1) < 1e-9 && std::abs(N2 / N1 - 2) < 1e-9);
     }
 
     void at77K()

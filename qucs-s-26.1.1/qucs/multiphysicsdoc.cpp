@@ -53,6 +53,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <map>
 #include <mutex>
 
 using namespace qucs_s::fem;
@@ -1285,16 +1286,47 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
     const bool all = n->text(QStringLiteral("solutions")) != QLatin1String("selected");
     auto evaluateIn = [&](const SolutionSet& in) {
         DerivedResult r;
+        // (A global's rows at each output - time, frequency, photon energy,
+        // mode - of a point, to give it once for the point where it is the
+        // same at each: a spectrum's qw.Eb at its 301 energies.)
+        struct Row {
+            int point;
+            QString name;
+            int index;
+        };
+        std::vector<Row> rows;
         for (const Instance& at : instances(in, all)) {
             Solution* sol = select(in, at);
             if (!sol) continue;
             DerivedResult one = evaluateDerived(*sol, *n);
             for (DerivedValue v : one.values) {
+                if (n->type == QLatin1String("global") && at.snapshot >= 0) rows.push_back({at.point, v.name, int(r.values.size())});
                 if (!at.label.isEmpty()) v.name = at.label + QStringLiteral(": ") + v.name;
                 r.values << v;
             }
             if (r.note.isEmpty()) r.note = one.note;
             if (r.error.isEmpty() && !one.error.isEmpty()) r.error = at.label.isEmpty() ? one.error : at.label + QStringLiteral(": ") + one.error;
+        }
+        std::map<std::pair<int, QString>, std::vector<int>> byPoint;
+        for (const Row& row : rows) byPoint[{row.point, row.name}].push_back(row.index);
+        std::vector<char> dropped(std::size_t(r.values.size()), 0);
+        bool once = false;
+        for (const auto& [key, indices] : byPoint) {
+            if (indices.size() < 2) continue;
+            bool same = true;
+            for (int k : indices) same = same && r.values[k].value == r.values[indices.front()].value;
+            if (!same) continue;
+            const QString label = std::size_t(key.first) < in.solutions.size() ? in.solutions[std::size_t(key.first)]->label : QString();
+            r.values[indices.front()].name = label.isEmpty() ? key.second : label + QStringLiteral(": ") + key.second;
+            for (std::size_t k = 1; k < indices.size(); ++k) dropped[std::size_t(indices[k])] = 1;
+            once = true;
+        }
+        if (once) {
+            QList<DerivedValue> kept;
+            for (int k = 0; k < r.values.size(); ++k)
+                if (!dropped[std::size_t(k)]) kept << r.values[k];
+            r.values = kept;
+            if (r.note.isEmpty()) r.note = tr("a value the same at each output of a point (each time, frequency, photon energy or mode) is given once for the point");
         }
         return r;
     };
@@ -1974,8 +2006,13 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
         } else if (f.type == QLatin1String("quantum")) {
             // The states' probability densities; along the growth axis a band
             // diagram - the band edges with each state's level and |ψ|² on it.
+            // (Of the carriers it solves.)
+            const Node* physics = m.find(t);
+            const bool electrons = !physics || physics->flag(QStringLiteral("electrons"));
+            const bool heavy = !physics || physics->flag(QStringLiteral("heavy"));
             for (const auto& [carrier, title] : {std::pair{QStringLiteral(".P_e"), tr("Electron Probability (%1)")},
                                                  std::pair{QStringLiteral(".P_hh"), tr("Heavy Hole Probability (%1)")}}) {
+                if (!(carrier == QLatin1String(".P_e") ? electrons : heavy)) continue;
                 Node g = group(title.arg(t));
                 plot(g, QStringLiteral("surface"), {{"expression", t + carrier}, {"colors", QStringLiteral("viridis")}});
                 m.add(m.results().tag, g);
@@ -2007,9 +2044,11 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 g.props.insert(QStringLiteral("study"), study);
                 const QString axis = alongX ? QStringLiteral("x") : QStringLiteral("y");
                 for (const auto& [what, all] : {std::pair{QStringLiteral(".Ec"), false}, std::pair{QStringLiteral(".Ev"), false},
-                                                std::pair{QStringLiteral(".wave_e"), true}, std::pair{QStringLiteral(".wave_hh"), true}})
+                                                std::pair{QStringLiteral(".wave_e"), true}, std::pair{QStringLiteral(".wave_hh"), true}}) {
+                    if ((what == QLatin1String(".wave_e") && !electrons) || (what == QLatin1String(".wave_hh") && !heavy)) continue;
                     plot(g, QStringLiteral("linegraph"), {{"data", line.tag}, {"expression", t + what}, {"unit", QStringLiteral("eV")},
                                                           {"xaxis", axis}, {"solutions", all ? QStringLiteral("all") : QStringLiteral("selected")}});
+                }
                 m.add(m.results().tag, g);
             }
         } else if (f.type == QLatin1String("rays")) {

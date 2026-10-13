@@ -1,0 +1,46 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A boron implant annealed through a mask",
+    "description": "Boron implanted into n-type silicon (1e15 cm⁻³) through a mask's window 0.4 µm wide - 1e14 cm⁻² at a range of 0.1 µm, straggles 30 nm down and across - and annealed at 1000 °C for 30 minutes (boron's intrinsic diffusivity, 1.5e-14 cm²/s: 2 D t's root 74 nm). Down the window's middle the acceptors dose/(√(2π) σ) (e^(-(d - Rp)²/2σ²) + e^(-(d + Rp)²/2σ²)), σ² = ΔRp² + 2 D t - the surface reflecting them -, times the window's erf's across: at its edges about half its middle. The junction where they fall to the background, 0.43 µm deep, its p region a well under the window; at rest, the bulk's contact at 0 V.",
+    "parameters": [],
+    "components": [{
+        "unit": "um",
+        "thickness": "1[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "si", "position": ["0", "-0.8"], "size": ["1", "0.8"]}
+        ],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "Background", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"all": true}},
+                {"type": "doping", "label": "Boron implant", "dopant": "acceptor", "profile": "implant", "dose": "1e14[1/cm^2]", "Rp": "0.1[um]", "dRp": "30[nm]", "dRl": "30[nm]",
+                 "x1": "0.3", "x2": "0.7", "Ta": "1273.15[K]", "ta": "30[min]", "selection": {"all": true}},
+                {"type": "ohmic", "label": "Bulk", "name": "b", "V0": "0[V]", "selection": {"of": ["si"], "side": "bottom"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.01"}
+    }],
+    "studies": [{"type": "study", "label": "At rest", "steps": [
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Acceptors", "plots": [
+                {"type": "surface", "expression": "log10(semi.Na*1[cm^3] + 1)", "colors": "viridis"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Down the window's middle", "start": ["0.5", "0"], "end": ["0.5", "-0.8"]},
+            {"type": "plotgroup1d", "label": "Profile", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Na", "unit": "1/cm^3"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Nd", "unit": "1/cm^3"}
+            ]},
+            {"type": "cutline", "tag": "cln2", "label": "Across at the range", "start": ["0", "-0.1"], "end": ["1", "-0.1"]},
+            {"type": "plotgroup1d", "label": "Across", "plots": [
+                {"type": "linegraph", "data": "cln2", "expression": "semi.Na", "unit": "1/cm^3"}
+            ]}
+        ],
+        "derived": [
+            {"type": "integral", "label": "Dose", "expression": "semi.Na/0.4[um]", "unit": "1/cm^2", "selection": {"all": true}}
+        ]
+    }
+}
