@@ -1,0 +1,56 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A silicon resistor heating itself",
+    "description": "A bar of n-type silicon (1e17 cm⁻³), 20 µm long and 1 µm high, its ends held at 300 K and from 1 to 4 V across it: the carriers' heat (semi.H, Joule's J·E) a heat physics' source, its mobility at that one's temperature (the lattice's, TL = ht.T: (T/300 K)^-2.5) - the two solved in turn. At 4 V its middle 330 K and its current 15 % below Ohm's at 300 K (1 % at 1 V): the one-dimensional problem's, -k T'' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, V = J ∫ρ dx, to 0.5 %. The current against the voltage bends below its slope at 1 V (the second graph).",
+    "parameters": [
+        {"name": "V0", "expression": "4[V]", "description": "the voltage across the bar"}
+    ],
+    "components": [{
+        "unit": "um",
+        "thickness": "1[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "left", "size": ["10", "1"]},
+            {"type": "rectangle", "label": "right", "position": ["10", "0"], "size": ["10", "1"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [
+            {"type": "semiconductor", "tag": "semi", "TL": "ht.T",
+             "features": [
+                {"type": "doping", "label": "n", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                {"type": "ohmic", "label": "Left", "name": "1", "V0": "0[V]", "selection": {"of": ["left"], "side": "left"}},
+                {"type": "ohmic", "label": "Right", "name": "2", "V0": "V0", "selection": {"of": ["right"], "side": "right"}}
+             ]},
+            {"type": "heat", "tag": "ht",
+             "features": [
+                {"type": "source", "label": "The carriers' heat", "Q0": "semi.H", "selection": {"all": true}},
+                {"type": "init", "T0": "300[K]", "selection": {"all": true}},
+                {"type": "temperature", "label": "Left end", "T0": "300[K]", "selection": {"of": ["left"], "side": "left"}},
+                {"type": "temperature", "label": "Right end", "T0": "300[K]", "selection": {"of": ["right"], "side": "right"}}
+             ]}
+        ],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.25"}
+    }],
+    "studies": [{"type": "study", "label": "Self-heating", "steps": [
+        {"type": "sweep", "parameters": [["V0", "1, 2, 3, 4", "V"]]},
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Temperature", "plots": [
+                {"type": "surface", "expression": "ht.T", "unit": "K", "colors": "heat"}
+            ]},
+            {"type": "plotgroup1d", "label": "Current against voltage", "plots": [
+                {"type": "globalgraph", "expression": "abs(semi.I_2)", "unit": "mA"},
+                {"type": "globalgraph", "expression": "V0*abs(semi.I_2)/1[V]", "unit": "mA"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Along the bar", "start": ["0", "0.5"], "end": ["20", "0.5"]},
+            {"type": "plotgroup1d", "label": "Temperature along", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "ht.T", "unit": "K"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Current", "expression": "semi.I_2", "unit": "mA", "solutions": "all"}
+        ]
+    }
+}

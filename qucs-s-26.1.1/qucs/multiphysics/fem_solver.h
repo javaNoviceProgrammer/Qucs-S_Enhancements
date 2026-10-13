@@ -104,6 +104,7 @@ struct Variable {
     Dim dim;
     QString description;
     QString unit;   ///< as shown, where its dimension cannot say it (dB/m); empty: its dimension's
+    QString display;   ///< shown in this unit of its dimension, converted (eV, 1/nm); empty: SI's
 };
 
 class PointEvaluator;

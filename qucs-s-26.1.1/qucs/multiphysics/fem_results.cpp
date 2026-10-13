@@ -216,6 +216,11 @@ DisplayUnit displayUnit(const QString& text, const Dim& dim, QString* warning)
 
 DisplayUnit displayUnitOf(const Solution& solution, const QString& expression, const QString& text, const Dim& dim, QString* warning)
 {
+    // A global shown in a unit of its own dimension (qw.Ee1 in eV, qw.k in
+    // 1/nm) when none is asked.
+    if (text.trimmed().isEmpty())
+        for (const Variable& g : solution.globals())
+            if (g.name == expression.trimmed() && !g.display.isEmpty()) return displayUnit(g.display, dim);
     for (const Variable& g : solution.globals()) {
         if (g.name != expression.trimmed() || g.unit.isEmpty()) continue;
         const QString asked = text.trimmed();
@@ -691,8 +696,14 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
     };
     if (type == QLatin1String("global")) {
         const QStringList exprs = node.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
+        // The unit: one for each expression ("eV; nm"), or one for each it
+        // is a unit of ("qw.Ex; qw.Eb; qw.gX" in eV: the energies in it).
+        const QStringList units = unitText.split(QLatin1Char(';'));
+        const bool each = exprs.size() > 1 && units.size() == exprs.size();
+        int fitted = 0, index = -1;
         QStringList problems;
         for (const QString& raw : exprs) {
+            ++index;
             const NamedExpression item = namedExpression(raw);
             const QString text = item.expression;
             if (text.isEmpty()) continue;
@@ -705,15 +716,26 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
                 problems << tr("%1 varies over the model: evaluate it at a point, or integrate it").arg(text);
                 continue;
             }
-            // (The unit asked is of one expression alone. A global of a unit
-            // its dimension cannot say - emw.loss, dB/m - in it, or over
-            // another length: dB/cm.)
-            QString warning;
-            DisplayUnit du = displayUnitOf(solution, text, exprs.size() == 1 ? unitText : QString(), e.dim(), &warning);
+            // (A global of a unit its dimension cannot say - emw.loss, dB/m -
+            // in it, or over another length: dB/cm.)
+            QString warning, asked = each ? units[index].trimmed() : unitText.trimmed();
+            DisplayUnit du;
+            if (exprs.size() > 1 && !each && !asked.isEmpty()) {
+                // One unit for several: those it is a unit of in it, the
+                // rest in their own.
+                QString notOfIt;
+                du = displayUnitOf(solution, text, asked, e.dim(), &notOfIt);
+                if (notOfIt.isEmpty() && du.name == asked) ++fitted;
+                else du = displayUnitOf(solution, text, QString(), e.dim());
+            } else {
+                du = displayUnitOf(solution, text, asked, e.dim(), &warning);
+            }
             if (du.name.isEmpty()) du = quotientUnit(text, e.dim(), solution.scope());
             out.values << DerivedValue{item.name, e.constant(), e.dim(), shown(e.constant(), e.dim(), du)};
             if (!warning.isEmpty() && out.error.isEmpty()) out.error = warning;
         }
+        if (exprs.size() > 1 && !each && !unitText.trimmed().isEmpty() && fitted == 0 && problems.isEmpty())
+            out.error = tr("%1 is a unit of none of them").arg(unitText.trimmed());
         if (!problems.isEmpty()) out.error = problems.join(QLatin1String("; "));
         return out;
     }

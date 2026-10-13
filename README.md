@@ -2229,7 +2229,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     An **Optical Spectrum** step: the
     wells' **absorption**, TE and TM (each transition's step of the 2D
     density of states, or a wire's 1D one, broadened by a Lorentzian, a
-    Gaussian or a sech - wider with the **field** across the wells if
+    Gaussian or a sech - for gain a Gaussian or a sech: a Lorentzian's
+    slow tails move the gain's zero some 10 meV below the quasi-Fermi
+    levels' separation -, wider with the **field** across the wells if
     asked, `dlinewidth`, `qw.Fw`; each its two states' own in-plane masses, the
     inverse mass averaged over |ψ|²; with the k·p bands, each pair of
     states at each k, TE and TM from their X, Y and Z parts), with **excitons** if asked - each
@@ -2245,10 +2247,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     coefficients `qw.gspTE`, `qw.gspTM`). Above the barriers, the box's
     states or (`"continuum": "bound"`) the transitions of states confined
     by their own well's barriers (in a field too) and the barriers' **bulk
-    absorption**; the **index** the window's
+    absorption** over their thickness, the wells' steps **fading** into
+    their own bulk absorption over the `fade` (0.1 eV) above the
+    barriers' gap - past it the absorption is the bulk's alone, the same
+    in any field; the **index** the window's
     absorption makes (Kramers and Kronig: `qw.dnTE`, `qw.dnTM` - between
-    two fields, electrorefraction's Δn; said when the window's top still
-    absorbs). At any temperature (`T`: the compounds' gaps Varshni's,
+    two fields, electrorefraction's Δn, the same whatever the window's top
+    past the fade: a 10 nm GaAs well's at 1.40 eV, 0 to 50 kV/cm, -5.254e-3
+    to 2.0, 2.5 and 3.0 eV alike; `qw.dnTEtail`, `qw.dnTMtail` what the
+    absorption above the window would add were it its top's; warned when
+    the top still absorbs short of the fade's end). Energies are shown in
+    eV, `qw.k` in 1/nm. At any temperature (`T`: the compounds' gaps Varshni's,
     the carriers' statistics kT's). Given
     each carrier's Fermi level from its band (`semi.Efn - semi.Ec`), the
     **carriers in the states** found, `qw.n` and `qw.p` (a flat well's
@@ -2257,7 +2266,19 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     rest - a quantum potential in each band, Vt ln(n_states/n), Anderson's
     mixing: an inversion layer's electrons 2.0 nm from the oxide where
     classically 1.0 (Fang and Howard's 1.8), none at it, its charge 2 %
-    less; holes likewise.
+    less; holes likewise. Silicon's and germanium's electrons in their
+    **valleys** (`"valleys": "Si(100)"`, Si(110), Si(111), Ge(100),
+    Ge(110), Ge(111), or sets of your own, `g mz md [dE]; ...`): each set
+    of valleys alike a ladder of states of its own - its mass along the
+    axis, its density of states' in the plane, Stern and Howard's of the
+    valleys' ml and mt (Ando, Fowler and Stern's table to 3 digits) -,
+    their carriers summed in `qw.n`; each state's carriers per area
+    (`qw.Ne1`..., g md kT/πħ² ln(1 + e^η) exactly), each set's (`qw.Nv1`,
+    `qw.Nv2`) and all (`qw.Ns`, `qw.Ps`). A triangular well's levels
+    Airy's of each set's mass to 1e-7; Si(100)'s inversion layer at 2 V
+    66 % in its two valleys, its centroid 2.31 nm where one valley of
+    0.916 m0 puts it at 1.96 (Fang and Howard's of each set, by their
+    electrons, 2.20).
   - *PDE (Coefficient and General Form)*: an **equation of your own**,
     ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F, for one or several dependent
     variables (named as you like, each with its gradient) - in the
@@ -2316,7 +2337,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   as a Qucs dataset beside the model and shown in a **Qucs data display**,
   with its markers and exports; and derived values (globals, integrals,
   averages, maxima and minima over domains or boundaries, values at
-  points) at each time, frequency and parameter value. A **transmission
+  points) at each time, frequency and parameter value - a global the same
+  at each output of a point (each photon energy, mode or state) once for
+  the point; several expressions split by `;`, their units likewise
+  (`qw.Eb; qw.Ex` in `meV; eV`). A **transmission
   line's parameters**: quasi-TEM (C, L, Z0, εeff from electrostatics), or
   **R, L, G and C per metre over frequency** - C from electrostatics, G
   from its dielectrics' loss tangents (and conductivities), R and L from
@@ -2392,8 +2416,18 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   biases); a GaAs quantum well's states on its band
   diagram and its absorption's staircase (e1-hh1 at 849 nm), an
   InGaAs/InAlAs multiple quantum well's Stark shift at 1.52 µm, a strained
-  InGaAs laser well's gain at 986 nm (1900 /cm with 3e18 cm⁻³), and a
-  GaAs quantum wire's states; the Bratu problem, a nonlinear ODE swept
+  InGaAs laser well's gain at 986 nm (1900 /cm with 3e18 cm⁻³), a GaAs
+  quantum wire's states, a GaAs modulator well's excitons in a field
+  (its line 20 meV lower at 100 kV/cm, the electrorefraction below it)
+  and a k·p laser well's gain (1280 /cm at 985 nm); a p⁺n junction's
+  avalanche breakdown (51.6 V, the depletion approximation's 51.7), a
+  tunnel junction's band-to-band current (nearly five decades from 1.5
+  to 2.5 V), a gate oxide's Fowler-Nordheim leakage (its plot's slope B,
+  242 MV/cm), a MOS capacitor's C-V stretched out by interface traps,
+  silicon's inversion layer in its two valley sets (Schrödinger-Poisson:
+  66 % in the lower ladder), a boron implant annealed through a mask (its
+  junction 0.43 µm deep), a resistor heating itself (15 % below Ohm's at
+  4 V) and a diode's reverse recovery at two lifetimes; the Bratu problem, a nonlinear ODE swept
   toward thermal runaway, a drum's modes (Bessel's zeros squared, to
   10⁻⁵), Fisher's equation's front travelling at 2√(rD), and Laplace's
   equation in a ring (ln r/ln 2, its flux 2π/ln 2).

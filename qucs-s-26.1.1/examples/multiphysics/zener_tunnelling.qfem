@@ -1,0 +1,56 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A tunnel junction's band-to-band current",
+    "description": "A p⁺-i-n⁺ diode of silicon - 1e20 cm⁻³ each side, 50 nm of 1e15 between them -, reversed to 2.5 V: its i layer's field past 0.6 MV/cm, electrons tunnel from the valence band to the conduction band (Hurkx's model, silicon's A 4e14 cm^-1/2 V^-5/2 s^-1, B 1.9e7 V/cm, γ 2.5 - phonon-assisted). Its current q ∫ G (G = -semi.R) rising nearly five decades from 1.5 to 2.5 V (below 1.5 V the diode's own leakage, 1e-22 A), as a Zener diode's breakdown does; at 0 V nought (Hurkx's (n p - ni²)/((n + ni)(p + ni)) nought at equilibrium), at 2 to 2.5 V a half to two thirds of Kane's generation alone, A E^γ e^(-B/E) at each point's field - where the junctions' carriers spill into the field (some 10 nm), the factor is about -ni/p. Local: each point's field stands for the tunnelling path's.",
+    "parameters": [
+        {"name": "Va", "expression": "0[V]", "description": "the anode's voltage"}
+    ],
+    "components": [{
+        "unit": "nm",
+        "thickness": "1[um]",
+        "geometry": [
+            {"type": "rectangle", "label": "p", "position": ["-100", "0"], "size": ["100", "20"]},
+            {"type": "rectangle", "label": "i", "size": ["50", "20"]},
+            {"type": "rectangle", "label": "n", "position": ["50", "0"], "size": ["100", "20"]},
+            {"type": "form union"}
+        ],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{
+            "type": "semiconductor", "tag": "semi",
+            "features": [
+                {"type": "doping", "label": "p⁺", "dopant": "acceptor", "N0": "1e20[1/cm^3]", "selection": {"only": ["p"]}},
+                {"type": "doping", "label": "i", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"only": ["i"]}},
+                {"type": "doping", "label": "n⁺", "dopant": "donor", "N0": "1e20[1/cm^3]", "selection": {"only": ["n"]}},
+                {"type": "btbt", "label": "Band-to-band tunnelling", "kind": "hurkx", "selection": {"all": true}},
+                {"type": "ohmic", "label": "Anode", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "left"}},
+                {"type": "ohmic", "label": "Cathode", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}
+            ]
+        }],
+        "mesh": {"size": "normal", "custom": true, "hmax": "2"}
+    }],
+    "studies": [{"type": "study", "label": "Reverse", "steps": [
+        {"type": "sweep", "parameters": [["Va", "0, -0.5, -1, -1.5, -2, -2.5", "V"]]},
+        {"type": "stationary"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup1d", "label": "Tunnelling current", "plots": [
+                {"type": "globalgraph", "expression": "semi.I_k", "unit": "A"}
+            ]},
+            {"type": "cutline", "tag": "cln1", "label": "Across the junction", "start": ["-100", "10"], "end": ["150", "10"]},
+            {"type": "plotgroup1d", "label": "Bands", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ec", "unit": "eV"},
+                {"type": "linegraph", "data": "cln1", "expression": "semi.Ev", "unit": "eV"}
+            ]},
+            {"type": "plotgroup1d", "label": "Generation", "plots": [
+                {"type": "linegraph", "data": "cln1", "expression": "-semi.R", "unit": "1/(cm^3*s)"}
+            ]},
+            {"type": "plotgroup", "label": "Field", "plots": [
+                {"type": "surface", "expression": "semi.normE", "unit": "V/cm"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Current", "expression": "semi.I_k", "unit": "A", "solutions": "all"}
+        ]
+    }
+}
