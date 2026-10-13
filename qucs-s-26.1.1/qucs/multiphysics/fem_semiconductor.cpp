@@ -43,10 +43,11 @@ constexpr double KB = 1.380649e-23;      // J/K
 const double Inf = std::numeric_limits<double>::infinity();
 // The field's extra: Vt, T, ni_ref, then each triangle's µn, µp, Ec - Ei, Eg,
 // ni, τn, τp, Et, Cn, Cp, B, δ, incomplete ionization's n1d, gd, p1a, ga,
-// Fermi-Dirac's Nc, Nv (0 for Boltzmann's), and the carriers' Joule heat as
-// solved (W/m³) (NaN where it is no semiconductor); its values V, n, p, Nd,
-// Na, θn, θp by node (θ with Fermi-Dirac's degeneracy in it, as solved).
-constexpr int ExtraHead = 3, PerTriangle = 19;
+// Fermi-Dirac's Nc, Nv (0 for Boltzmann's), the carriers' Joule heat as
+// solved (W/m³), band-to-band tunnelling's A (SI), B, γ (A 0: none) (NaN
+// where it is no semiconductor); its values V, n, p, Nd, Na, θn, θp by node
+// (θ with Fermi-Dirac's degeneracy in it, as solved).
+constexpr int ExtraHead = 3, PerTriangle = 22;
 
 /// Bernoulli's function x / (e^x - 1) and its derivative, safe at 0 and far
 /// from it.
@@ -105,6 +106,10 @@ struct Medium {
     // Impact ionization: Chynoweth's α = a e^(-(b/E)^β) (1/m, V/m), each
     // carrier's below E0 and above it (van Overstraeten and de Man's holes).
     bool ionization = false, ionizationCurrents = false;
+    // Band-to-band tunnelling, Hurkx's: R = A E^γ e^(-B/E) (n p - ni²)/((n +
+    // ni)(p + ni)) (1/m³ s; A in SI for E in V/m), each triangle's field.
+    bool tunnelling = false, btGeneration = false;   // generation alone, not Hurkx's sign and size
+    double btA = 0, btB = 0, btGamma = 2.5;
     double an = 0, bn = 0, an2 = 0, bn2 = 0, ap = 0, bp = 0, ap2 = 0, bp2 = 0, E0 = Inf, ionBetaN = 1, ionBetaP = 1;
 };
 
@@ -399,6 +404,16 @@ private:
         bool acceptor = true;
     };
     std::vector<TrapLevel> a_traps;
+    // Fowler-Nordheim tunnelling through an insulator, after the solve: by
+    // boundary edge, its length (m², the thickness in) and the insulator's
+    // triangle beside it, with J = A E² e^(-B/E) at the field across it.
+    struct FowlerNordheim {
+        std::vector<std::array<int, 2>> edges;   // its node pair
+        std::vector<int> triangles;              // the insulator's triangle at each
+        std::vector<double> lengths;
+        double A = 0, B = 0;
+    };
+    std::vector<FowlerNordheim> a_fn;
     /// Level \a t at Boltzmann's carriers \a n, \a p: its occupancy f, its
     /// rate 1/τ = cn (n + n1) + cp (p + p1), the pairs it recombines per area
     /// U, and their changes with n and p.
@@ -418,6 +433,7 @@ private:
     // ionization integrals along the field line through the highest field
     // (electrons', holes'), that field (V/m), the line's length (m).
     bool a_ionization = false, a_ionizationAny = false;
+    bool a_tunnelling = false;
     double a_In = NaN, a_Ip = NaN, a_Emax = NaN, a_ionLength = NaN;
     std::vector<std::array<int, 3>> a_neighbors;   // by triangle: across its edge k to k+1 (-1: none)
     /// The ionization integrals at \a x (a_In, a_Ip...).
@@ -492,6 +508,7 @@ bool SemiconductorProblem::setup(QString* error)
     std::vector<const Node*> srhOf(topo.domains.size(), nullptr);
     std::vector<const Node*> augerOf(topo.domains.size(), nullptr), radiativeOf(topo.domains.size(), nullptr);
     std::vector<const Node*> impactOf(topo.domains.size(), nullptr);
+    std::vector<const Node*> btbtOf(topo.domains.size(), nullptr);
     const Dim conc = Dim::of(-3), mobility = Dim::of(0, -1, 2, 1), velocity = Dim::of(1, 0, -1);
     struct DopingDef {
         const Node* node;
@@ -515,6 +532,7 @@ bool SemiconductorProblem::setup(QString* error)
         else if (t == QLatin1String("semiconductor/auger")) for (int d : picked) augerOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/radiative")) for (int d : picked) radiativeOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/impact")) for (int d : picked) impactOf[std::size_t(d)] = &feature;
+        else if (t == QLatin1String("semiconductor/btbt")) for (int d : picked) btbtOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/quantum")) {
             for (int d : picked) quantumOn[std::size_t(d)] = 1;
             a_quantumElectrons = feature.flag(QStringLiteral("electrons"));
@@ -669,6 +687,17 @@ bool SemiconductorProblem::setup(QString* error)
             m.Cp = number(a->text(QStringLiteral("Cp")), Dim::of(6, 0, -1), where);
         }
         if (const Node* r = radiativeOf[std::size_t(d)]) m.B = number(r->text(QStringLiteral("B")), Dim::of(3, 0, -1), where);
+        if (const Node* bt = btbtOf[std::size_t(d)]) {
+            // A in cm^-1/2 V^-5/2 s^-1 for γ 2.5 (Hurkx's, Klaassen's
+            // silicon): as given, scaled to SI for E in V/m.
+            m.tunnelling = a_tunnelling = true;
+            m.btGeneration = bt->text(QStringLiteral("kind")) == QLatin1String("generation");
+            m.btGamma = number(bt->text(QStringLiteral("gamma")), Dim(), bt->name());
+            const double Acm = number(bt->text(QStringLiteral("A")), Dim(), bt->name());
+            m.btB = number(bt->text(QStringLiteral("B")), Dim::of(1, 1, -3, -1), bt->name());
+            if (!(Acm > 0) || !(m.btB > 0) || !std::isfinite(m.btGamma)) problem(tr("%1: its A and B must be more than 0").arg(bt->name()));
+            m.btA = Acm * 1e6 * std::pow(1e-2, m.btGamma);   // (1/cm³ s per (V/cm)^γ → 1/m³ s per (V/m)^γ)
+        }
         if (const Node* ii = impactOf[std::size_t(d)]) {
             m.ionization = a_ionizationAny = true;
             m.ionizationCurrents = ii->flag(QStringLiteral("currents"));
@@ -1024,6 +1053,7 @@ bool SemiconductorProblem::setup(QString* error)
     a_surface.clear();
     a_surfaceLength.clear();
     a_traps.clear();
+    a_fn.clear();
     for (const Node* bf : boundaryFeatures) {
         const QString t = bf->type;
         const QVector<int> picked = resolveSelection(topo, model, Level::Boundary, bf->selection(), &why);
@@ -1046,6 +1076,42 @@ bool SemiconductorProblem::setup(QString* error)
                 a_surface.emplace_back(node, e);
                 a_surfaceLength.push_back(len);
             }
+            continue;
+        }
+        if (t == QLatin1String("semiconductor/fn")) {
+            // Lenzlinger and Snow's: A = q³ m0/(8π h φB m_ox), B = 8π √(2 m_ox)
+            // φB^(3/2)/(3 q h).
+            constexpr double H = 6.62607015e-34, M0 = 9.1093837015e-31;
+            const double phiB = energyOf(bf->text(QStringLiteral("phiB")), constants, &why);
+            const double mox = number(bf->text(QStringLiteral("mox")), Dim(), bf->name());
+            if (!(phiB > 0) || !(mox > 0)) {
+                problem(tr("%1: its barrier and mass must be more than 0").arg(bf->name()));
+                continue;
+            }
+            FowlerNordheim fn;
+            fn.A = Q * Q * Q / (8 * M_PI * H * phiB * mox);
+            fn.B = 8 * M_PI * std::sqrt(2 * mox * M0) * std::pow(phiB, 1.5) / (3 * Q * H);
+            // Each edge of its boundaries with an insulator's triangle beside it.
+            std::map<std::pair<int, int>, int> insulator;
+            for (int tt = 0; tt < nt; ++tt) {
+                if (!a_elemOn[std::size_t(tt)] || a_elemSemi[std::size_t(tt)]) continue;
+                for (int k = 0; k < 3; ++k) {
+                    const auto key = std::minmax(mesh.triangles[std::size_t(tt)][std::size_t(k)], mesh.triangles[std::size_t(tt)][std::size_t((k + 1) % 3)]);
+                    insulator[{key.first, key.second}] = tt;
+                }
+            }
+            for (const Mesh::Edge& me : mesh.edges) {
+                if (me.boundary < 0 || !on[std::size_t(me.boundary)]) continue;
+                const auto key = std::minmax(me.a, me.b);
+                const auto it = insulator.find({key.first, key.second});
+                if (it == insulator.end()) continue;
+                const QPointF a = mesh.nodes[std::size_t(me.a)] * scale, b = mesh.nodes[std::size_t(me.b)] * scale;
+                fn.edges.push_back({me.a, me.b});
+                fn.triangles.push_back(it->second);
+                fn.lengths.push_back(std::hypot(b.x() - a.x(), b.y() - a.y()) * a_s.weight((a + b) / 2.0));
+            }
+            if (fn.edges.empty()) problem(tr("%1: no insulator meets its boundaries").arg(bf->name()));
+            a_fn.push_back(fn);
             continue;
         }
         if (t == QLatin1String("semiconductor/traps")) {
@@ -1184,6 +1250,9 @@ bool SemiconductorProblem::setup(QString* error)
         e[16] = m.fermi ? m.Nc : 0.0;
         e[17] = m.fermi ? m.Nv : 0.0;
         e[18] = 0;
+        e[19] = m.tunnelling ? (m.btGeneration ? -m.btA : m.btA) : 0.0;   // (negative: generation alone)
+        e[20] = m.btB;
+        e[21] = m.btGamma;
     }
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
@@ -1647,6 +1716,57 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
                 add(row, pj, sign * dpj);
                 add(row, vj, sign * dvj);
                 add(row, vi, -sign * dvj);
+            }
+        }
+    }
+    // Band-to-band tunnelling, by triangle: A E^γ e^(-B/E) at its field, the
+    // pairs' sign and size at each corner's carriers, (n p - ni²)/((n +
+    // ni)(p + ni)) - generation where the carriers are fewer than at
+    // equilibrium (Hurkx's) -, a third of its volume to each.
+    if (a_tunnelling) {
+        const Space& tsp = *a_s.fields()[std::size_t(a_fi)].space;
+        for (int t = 0; t < tsp.elements(); ++t) {
+            if (!a_elemSemi[std::size_t(t)]) continue;
+            const ElementMobility& em = a_elements[std::size_t(t)];
+            const Medium& m = a_media[std::size_t(em.domain)];
+            if (!m.tunnelling) continue;
+            const int* dof = tsp.dofs(t);
+            double Ex = 0, Ey = 0;
+            for (int k = 0; k < 3; ++k) {
+                Ex -= em.gx[k] * V(dof[k]);
+                Ey -= em.gy[k] * V(dof[k]);
+            }
+            const double E = std::hypot(Ex, Ey);
+            if (!(E > 1e3)) continue;
+            const double rate = m.btA * std::pow(E, m.btGamma) * std::exp(-m.btB / E);
+            if (!(rate > 0)) continue;
+            // d rate/dE, and dE/dV at each corner.
+            const double drate = rate * (m.btGamma / E + m.btB / (E * E));
+            double dEdV[3];
+            for (int k = 0; k < 3; ++k) dEdV[k] = -(Ex * em.gx[k] + Ey * em.gy[k]) / E;
+            const double third = em.volume / 3;
+            for (int k = 0; k < 3; ++k) {
+                const int i = dof[k];
+                const std::size_t ii = std::size_t(i);
+                const double n = nn(i), p = pp(i), ni = a_ni[ii];
+                const double den = (n + ni) * (p + ni), excess = n * p - ni * ni;
+                // (Generation alone: D -1, whatever the carriers.)
+                const double D = m.btGeneration ? -1.0 : excess / den;
+                const double dDn = m.btGeneration ? 0.0 : (p * den - excess * (p + ni)) / (den * den);
+                const double dDp = m.btGeneration ? 0.0 : (n * den - excess * (n + ni)) / (den * den);
+                const double R = rate * D * third;   // pairs per second at the corner
+                const int rn = a_iN[ii], rp = a_iP[ii];
+                F(rn) -= Q * R;
+                F(rp) += Q * R;
+                add(rn, rn, -Q * rate * dDn * third);
+                add(rn, rp, -Q * rate * dDp * third);
+                add(rp, rn, Q * rate * dDn * third);
+                add(rp, rp, Q * rate * dDp * third);
+                for (int c = 0; c < 3; ++c) {
+                    const int col = a_iV[std::size_t(dof[c])];
+                    add(rn, col, -Q * drate * dEdV[c] * D * third);
+                    add(rp, col, Q * drate * dEdV[c] * D * third);
+                }
             }
         }
     }
@@ -3020,6 +3140,39 @@ QString matrixEntryName(const QString& tag, const QString& letter, const QString
 void SemiconductorProblem::setGlobals()
 {
     const QString p = field().tag + QLatin1Char('.');
+    // Fowler-Nordheim: each edge's insulator triangle's field across the
+    // edge, J = A E² e^(-B/E) through it.
+    if (!a_fn.empty() && field().solved) {
+        const Mesh& mesh = a_s.mesh();
+        const std::vector<double>& v = field().values;
+        double current = 0;
+        for (const FowlerNordheim& fn : a_fn)
+            for (std::size_t k = 0; k < fn.edges.size(); ++k) {
+                const auto& tri = mesh.triangles[std::size_t(fn.triangles[k])];
+                QPointF x[3];
+                double V[3];
+                for (int c = 0; c < 3; ++c) {
+                    x[c] = mesh.nodes[std::size_t(tri[std::size_t(c)])] * mesh.unitScale;
+                    V[c] = v[std::size_t(tri[std::size_t(c)])];
+                }
+                const double det = (x[1].x() - x[0].x()) * (x[2].y() - x[0].y()) - (x[2].x() - x[0].x()) * (x[1].y() - x[0].y());
+                if (!(std::abs(det) > 0)) continue;
+                double Ex = 0, Ey = 0;
+                for (int c = 0; c < 3; ++c) {
+                    const QPointF& a = x[(c + 1) % 3];
+                    const QPointF& b = x[(c + 2) % 3];
+                    Ex -= (a.y() - b.y()) / det * V[c];
+                    Ey -= (b.x() - a.x()) / det * V[c];
+                }
+                const QPointF ea = mesh.nodes[std::size_t(fn.edges[k][0])], eb = mesh.nodes[std::size_t(fn.edges[k][1])];
+                const double h = std::hypot(eb.x() - ea.x(), eb.y() - ea.y());
+                if (!(h > 0)) continue;
+                const double E = std::abs(Ex * -(eb.y() - ea.y()) / h + Ey * (eb.x() - ea.x()) / h);
+                if (E > 0) current += fn.A * E * E * std::exp(-fn.B / E) * fn.lengths[k];
+            }
+        a_s.setGlobal(p + QStringLiteral("Ifn"), current, Dim::current(),
+                      tr("Fowler-Nordheim tunnelling's current through the insulators asked, at the field across each (after the solve)"));
+    }
     if (a_ionizationAny && field().solved) {
         ionizationIntegrals(stateVector());
         const Dim field = Dim::of(1, 1, -3, -1);
@@ -3207,6 +3360,22 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
         s.Jn[1] = (a11 * bn[1] - a12 * bn[0]) / det;
         s.Jp[0] = (a22 * bp[0] - a12 * bp[1]) / det;
         s.Jp[1] = (a11 * bp[1] - a12 * bp[0]) / det;
+    }
+    // Band-to-band tunnelling's share of R at the triangle's field.
+    if (ex[19] != 0) {
+        const double area2 = (x[1].x() - x[0].x()) * (x[2].y() - x[0].y()) - (x[2].x() - x[0].x()) * (x[1].y() - x[0].y());
+        if (std::abs(area2) > 0) {
+            double Ex = 0, Ey = 0;
+            for (int k = 0; k < 3; ++k) {
+                const QPointF& a = x[(k + 1) % 3];
+                const QPointF& b = x[(k + 2) % 3];
+                Ex -= (a.y() - b.y()) / area2 * V[k];
+                Ey -= (b.x() - a.x()) / area2 * V[k];
+            }
+            const double E = std::hypot(Ex, Ey);
+            const double D = ex[19] < 0 ? -1.0 : (s.n * s.p - s.ni * s.ni) / ((s.n + s.ni) * (s.p + s.ni));
+            if (E > 1e3) s.R += std::abs(ex[19]) * std::pow(E, ex[21]) * std::exp(-ex[20] / E) * D;
+        }
     }
     return s;
 }
