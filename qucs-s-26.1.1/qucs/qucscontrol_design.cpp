@@ -44,6 +44,8 @@
 #include <QRegularExpression>
 #include <QTimer>
 #ifdef QUCS_HAVE_QTPDF
+#include "pdfdoc.h"
+
 #include <QPdfDocument>
 #include <QPdfSelection>
 #endif
@@ -1442,7 +1444,33 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
         if (!skipped.isEmpty()) result.insert(QStringLiteral("left out"), tr("pages %1: too much text at once - ask for them").arg(skipped.join(QStringLiteral(", "))));
         bool empty = true;
         for (const QJsonValue& v : std::as_const(read)) empty = empty && v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty();
-        if (empty) result.insert(QStringLiteral("note"), tr("The pages have no text (scanned): screenshot of the PDF's tab shows them."));
+        if (empty) result.insert(QStringLiteral("note"), tr("The pages have no text (scanned): 'image' draws them."));
+    }
+    // The pages drawn too: a figure, a scanned page (four at most).
+    if (args.value(QLatin1String("image")).toBool()) {
+        QList<double> corners;
+        for (const QJsonValue& v : args.value(QLatin1String("region")).toArray()) corners << v.toDouble();
+        QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                       {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact))}}};
+        QStringList drawn;
+        for (int page : std::as_const(pages)) {
+            if (drawn.size() >= 4) break;
+            const QSizeF size = pdf.pagePointSize(page - 1);
+            const QRectF region = corners.isEmpty() ? QRectF() : qucs_s::pdf::regionOf(corners, size).intersected(QRectF(QPointF(0, 0), size));
+            if (!corners.isEmpty() && region.isEmpty()) return errorResult(tr("'region' is [x1, y1, x2, y2] of a page: points from its top left, or fractions of it."));
+            const QSizeF part = region.isEmpty() ? size : region.size();
+            const qreal scale = region.isEmpty() ? std::clamp(1600.0 / std::max(part.width(), part.height()), 0.5, 2.0)
+                                                 : std::clamp(1600.0 / std::max(part.width(), part.height()), 1.0, 8.0);
+            const QImage image = qucs_s::pdf::renderPage(&pdf, page - 1, region, scale);
+            if (image.isNull()) continue;
+            content.append(pngContent(fitted(image)));
+            drawn << QString::number(page);
+        }
+        content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                   {QStringLiteral("text"), drawn.isEmpty() ? tr("No page could be drawn.")
+                                                                            : tr("Pages %1 drawn%2.").arg(drawn.join(QStringLiteral(", ")),
+                                                                                                         pages.size() > drawn.size() ? tr(" (four at most: ask for the others)") : QString())}});
+        return {{QStringLiteral("content"), content}, {QStringLiteral("isError"), false}};
     }
     return jsonResult(result);
 #else
@@ -1450,6 +1478,154 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
     return errorResult(tr("This build of Qucs-S has no PDF reader (Qt PDF)."));
 #endif
 }
+
+#ifdef QUCS_HAVE_QTPDF
+bool QucsControl::viewPdf(PdfDoc* pdf, const QJsonObject& args, QJsonObject* out, QString* error)
+{
+    const int count = pdf->pageCount();
+    if (count <= 0) {
+        *error = pdf->problem().isEmpty() ? tr("%1 has no pages.").arg(titleOf(pdf)) : pdf->problem();
+        return false;
+    }
+    qucs_s::pdf::PageView* view = pdf->view();
+    int page = -1;
+    bool onHit = false;   // the page is the first hit's, it in sight
+    // A hit first: the page asked for, when there is one, wins.
+    const QString text = args.value(QLatin1String("find")).toString();
+    if (!text.trimmed().isEmpty()) {
+        const QList<PdfDoc::Hit> hits = pdf->findAll(text);
+        QJsonArray pages;
+        for (const PdfDoc::Hit& h : hits)
+            if (pages.isEmpty() || pages.last().toInt() != h.page + 1) pages.append(h.page + 1);
+        out->insert(QStringLiteral("found"), QJsonObject{{QStringLiteral("text"), text}, {QStringLiteral("hits"), int(hits.size())}, {QStringLiteral("pages"), pages}});
+        if (hits.isEmpty()) out->insert(QStringLiteral("note"), tr("%1 is not in its text (a scanned page has none: read_pdf says so).").arg(text));
+        else {
+            page = hits.first().page;
+            onHit = true;
+        }
+    }
+    const QJsonValue asked = args.value(QLatin1String("page"));
+    if (!asked.isUndefined() && !asked.isNull()) {
+        bool number = asked.isDouble();
+        int p = asked.toInt();
+        if (asked.isString()) p = asked.toString().trimmed().toInt(&number);
+        if (number) {
+            if (p < 1 || p > count) {
+                *error = tr("%1 has pages 1 to %2.").arg(titleOf(pdf)).arg(count);
+                return false;
+            }
+            page = p - 1;
+            onHit = false;
+            view->goToPage(page);
+        } else {
+            // A page's label (its number as printed: "iv", "60"), else a
+            // destination of its outline.
+            const QString want = asked.toString().trimmed();
+            const int labelled = pdf->document()->pageIndexForLabel(want);
+            QPointF at(-1, -1);
+            QString title;
+            const int to = labelled >= 0 ? labelled : pdf->destination(want, &at, &title);
+            if (to < 0) {
+                const QStringList titles = pdf->outlineTitles();
+                *error = titles.isEmpty() ? tr("%1 has no page labelled %2, and no outline: a page number finds a page.").arg(titleOf(pdf), want)
+                                          : tr("%1 has no page labelled %2 and no destination titled so; its outline: %3").arg(titleOf(pdf), want, titles.join(QStringLiteral("; ")));
+                return false;
+            }
+            page = to;
+            onHit = false;
+            view->goToPage(page, labelled >= 0 ? QPointF(-1, -1) : at);
+            if (!title.isEmpty()) out->insert(QStringLiteral("destination"), title);
+        }
+    }
+    // The zoom: a percentage, or a fit.
+    const QJsonValue zoom = args.value(QLatin1String("zoom"));
+    if (zoom.isDouble() || (zoom.isString() && !zoom.toString().trimmed().isEmpty())) {
+        const QString z = zoom.isString() ? zoom.toString().trimmed().toLower() : QString();
+        if (z.contains(QLatin1String("width"))) view->setFit(qucs_s::pdf::PageView::Fit::Width);
+        else if (z.contains(QLatin1String("page"))) view->setFit(qucs_s::pdf::PageView::Fit::Page);
+        else {
+            bool ok = zoom.isDouble();
+            double percent = zoom.isDouble() ? zoom.toDouble() : QString(z).remove(QLatin1Char('%')).trimmed().toDouble(&ok);
+            if (!ok || !(percent > 0)) {
+                *error = tr("'zoom' is a percentage (150), \"fit width\" or \"fit page\".");
+                return false;
+            }
+            view->setZoom(percent / 100);
+        }
+        if (onHit) view->setCurrentSearchResult(view->currentSearchResult());
+        else if (page >= 0) view->goToPage(page);
+    }
+    // A region of the page: as large as the tab shows it.
+    if (args.contains(QLatin1String("region"))) {
+        QList<double> c;
+        for (const QJsonValue& v : args.value(QLatin1String("region")).toArray()) c << v.toDouble();
+        const int on = page >= 0 ? page : view->currentPage();
+        const QRectF region = qucs_s::pdf::regionOf(c, pdf->document()->pagePointSize(on));
+        if (region.isEmpty()) {
+            *error = tr("'region' is [x1, y1, x2, y2]: points from the page's top left, or fractions of it (all between 0 and 1).");
+            return false;
+        }
+        view->showRegion(on, region);
+        page = on;
+        out->insert(QStringLiteral("region"), QJsonArray{region.left(), region.top(), region.right(), region.bottom()});
+    }
+    const int shown = page >= 0 ? page : view->currentPage();
+    out->insert(QStringLiteral("page"), shown + 1);
+    const QString label = pdf->document()->pageLabel(shown);
+    if (!label.isEmpty() && label != QString::number(shown + 1)) out->insert(QStringLiteral("label"), label);
+    out->insert(QStringLiteral("pages"), count);
+    out->insert(QStringLiteral("zoom"), QStringLiteral("%1 %").arg(qRound(view->zoom() * 100)));
+    return true;
+}
+
+QJsonObject QucsControl::showPdf(const QJsonObject& args)
+{
+    // The PDF: opened when it is not, brought to the front.
+    QString file = args.value(QLatin1String("path")).toString().trimmed();
+    PdfDoc* pdf = nullptr;
+    if (file.isEmpty()) {
+        pdf = dynamic_cast<PdfDoc*>(a_app->DocumentTab->count() > 0 ? a_app->getDoc() : nullptr);
+        if (pdf == nullptr) return errorResult(tr("Which PDF? 'path' (the document in front is none)."));
+    } else {
+        file = absolute(file);
+        for (QucsDoc* d : a_app->allDocuments())
+            if (auto* p = dynamic_cast<PdfDoc*>(d); p != nullptr && sameFile(p->getDocName(), file)) pdf = p;
+        if (pdf == nullptr) {
+            QString why;
+            QucsDoc* d = document(QJsonObject{{QStringLiteral("path"), args.value(QLatin1String("path"))}}, &why);
+            pdf = dynamic_cast<PdfDoc*>(d);
+        }
+        if (pdf == nullptr) {
+            if (!QFileInfo(file).isFile()) return errorResult(tr("There is no file %1.").arg(QDir::toNativeSeparators(file)));
+            if (!file.endsWith(QLatin1String(".pdf"), Qt::CaseInsensitive)) return errorResult(tr("%1 is no PDF.").arg(QFileInfo(file).fileName()));
+            misc::ErrorCapture said;
+            if (!a_app->gotoPage(file, false, false))
+                return errorResult(tr("%1 could not be opened: %2").arg(QDir::toNativeSeparators(file), said.errors().join(QLatin1Char(' '))));
+            pdf = dynamic_cast<PdfDoc*>(a_app->getDoc());
+            if (pdf == nullptr) return errorResult(tr("%1 did not open as a PDF.").arg(QFileInfo(file).fileName()));
+        }
+    }
+    a_app->showDocument(QucsApp::documentWidget(pdf));
+    QJsonObject o{{QStringLiteral("file"), QDir::toNativeSeparators(pdf->getDocName())}};
+    QString error;
+    if (!viewPdf(pdf, args, &o, &error)) return errorResult(error);
+    o.insert(QStringLiteral("note"), o.value(QStringLiteral("note")).toString(
+                                         tr("screenshot of it takes a picture of what the tab shows; with 'page' and 'region' it draws that "
+                                            "page or part of it, the tab left as it is")));
+    return jsonResult(o);
+}
+#else
+bool QucsControl::viewPdf(PdfDoc*, const QJsonObject&, QJsonObject*, QString* error)
+{
+    *error = tr("This build of Qucs-S has no PDF reader (Qt PDF).");
+    return false;
+}
+
+QJsonObject QucsControl::showPdf(const QJsonObject&)
+{
+    return errorResult(tr("This build of Qucs-S has no PDF reader (Qt PDF)."));
+}
+#endif
 
 // ----------------------------------------------------------------------
 // The libraries searched by value

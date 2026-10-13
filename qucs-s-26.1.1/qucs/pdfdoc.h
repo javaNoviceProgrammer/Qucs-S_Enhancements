@@ -41,6 +41,13 @@ class QTreeView;
 
 namespace qucs_s::pdf {
 
+/// Page \a page of \a pdf drawn at \a scale pixels a point on white,
+/// \a region of it alone (points from its top left; empty: all of it).
+QImage renderPage(QPdfDocument* pdf, int page, const QRectF& region, qreal scale);
+/// A region [x1, y1, x2, y2] of page \a pageSize (points): in points from
+/// its top left, or as fractions of it when all four are between 0 and 1.
+QRectF regionOf(const QList<double>& corners, const QSizeF& pageSize);
+
 /*!
  * The pages of a PDF document one under the other, as a reader scrolls
  * them: each drawn in tiles, at the screen's resolution, as it comes into
@@ -77,6 +84,9 @@ public:
     /// Scrolls to \a page, \a location (points from its top left) at the
     /// top of the view; the page's top when \a location is negative.
     void goToPage(int page, QPointF location = QPointF(-1, -1));
+    /// Shows \a region (points from \a page's top left) as large as the
+    /// view takes it, in its middle.
+    void showRegion(int page, const QRectF& region);
 
     void setSearchModel(QPdfSearchModel* model);
     /// Marks result \a index of the search model as the current one and
@@ -226,6 +236,24 @@ public:
     /// Searches for \a text; the first result from the page in sight on
     /// becomes the current one.
     void find(const QString& text);
+    /// A search's hit: its page (from 0) and where on it (points).
+    struct Hit {
+        int page = 0;
+        QRectF rect;
+    };
+    /// Searches for \a text on every page at once, the search bar showing
+    /// it: each hit, in page order, the first the current one, in sight.
+    QList<Hit> findAll(const QString& text);
+    /// The destination of its outline titled \a title - the same, else the
+    /// first that begins with it, else the first that has it (case aside):
+    /// its page (from 0), where on it (points; negative: its top), its whole
+    /// title. -1 when there is none.
+    int destination(const QString& title, QPointF* location = nullptr, QString* found = nullptr) const;
+    /// The outline's titles, in order, a level deeper indented.
+    QStringList outlineTitles(int most = 60) const;
+    /// \a page drawn at \a scale pixels a point (on white), \a region of
+    /// it alone (points; empty: all of it) - the view left as it is.
+    QImage render(int page, const QRectF& region, qreal scale) const;
     void findNext(bool backwards = false);
     int searchResultCount() const;
     int currentSearchResult() const;

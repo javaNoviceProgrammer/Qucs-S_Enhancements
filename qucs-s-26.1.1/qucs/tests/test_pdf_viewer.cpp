@@ -15,6 +15,9 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenuBar>
@@ -69,6 +72,56 @@ bool writePdf(const QString& path, int pages)
     doc.setHtml(html);
     doc.print(&writer);
     return QFileInfo(path).size() > 0;
+}
+
+// A PDF of three pages written by hand, with what Qt's writer leaves out:
+// an outline ("1 Introduction" on page 1, "2.2.1 Modulation Efficiency"
+// lower on page 3) and page labels (i, then S-1, S-2). "Figure 2.15:" on
+// pages 2 and 3.
+bool writeOutlinedPdf(const QString& path)
+{
+    const QStringList texts{QStringLiteral("Front matter"), QStringLiteral("Introduction. Figure 2.15: a sketch"),
+                            QStringLiteral("Modulation. Figure 2.15: the bands")};
+    QList<QByteArray> objects;
+    objects << "<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /PageLabels << /Nums [0 << /S /r >> 1 << /P (S-) /S /D >>] >> >>";
+    objects << "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>";
+    for (int i = 0; i < 3; ++i)
+        objects << QStringLiteral("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Contents %1 0 R >>")
+                       .arg(7 + i)
+                       .toLatin1();
+    objects << "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+    for (int i = 0; i < 3; ++i) {
+        const QByteArray stream = QStringLiteral("BT /F1 24 Tf 72 700 Td (%1) Tj ET BT /F1 24 Tf 72 380 Td (Section on page %2) Tj ET")
+                                      .arg(texts.at(i))
+                                      .arg(i + 1)
+                                      .toLatin1();
+        objects << "<< /Length " + QByteArray::number(stream.size()) + " >>\nstream\n" + stream + "\nendstream";
+    }
+    objects << "<< /Type /Outlines /First 11 0 R /Last 12 0 R /Count 2 >>";
+    objects << "<< /Title (1 Introduction) /Parent 10 0 R /Next 12 0 R /Dest [3 0 R /XYZ 0 792 0] >>";
+    objects << "<< /Title (2.2.1 Modulation Efficiency) /Parent 10 0 R /Prev 11 0 R /Dest [5 0 R /XYZ 0 420 0] >>";
+    QByteArray out = "%PDF-1.4\n";
+    QList<int> offsets;
+    for (int i = 0; i < objects.size(); ++i) {
+        offsets << int(out.size());
+        out += QByteArray::number(i + 1) + " 0 obj\n" + objects.at(i) + "\nendobj\n";
+    }
+    const int xref = int(out.size());
+    out += "xref\n0 " + QByteArray::number(objects.size() + 1) + "\n0000000000 65535 f \n";
+    for (int o : offsets) out += QByteArray::number(o).rightJustified(10, '0') + " 00000 n \n";
+    out += "trailer\n<< /Size " + QByteArray::number(objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(out) == out.size();
+}
+
+// The dark pixels of a picture.
+int darkPixels(const QImage& image)
+{
+    int dark = 0;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            if (image.pixelColor(x, y).lightness() < 128) ++dark;
+    return dark;
 }
 
 // Whatever dialog comes up is closed: the commands are used, not answered.
@@ -601,6 +654,216 @@ private slots:
             for (int x = 0; x < sheet.width(); ++x)
                 if (sheet.pixelColor(x, y).alpha() > 0 && sheet.pixelColor(x, y).lightness() < 128) ++dark;
         QVERIFY2(dark > 20, qPrintable(QString::number(dark)));
+    }
+
+    // Claude's tools show a page: by number, by a hit of a search (every
+    // hit's page said), zoomed, a region of it as large as the tab takes it.
+    void claudesToolsShowAPage()
+    {
+        auto* control = app->findChild<QucsControl*>();
+        auto call = [&](const char* tool, const QJsonObject& args) { return control->callNow(QString::fromLatin1(tool), args); };
+        auto json = [](const QJsonObject& r) { return QJsonDocument::fromJson(QucsControl::textOf(r).toUtf8()).object(); };
+        QJsonObject r = call("show_pdf", {{"path", file}, {"page", 2}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        PdfDoc* doc = pdf();
+        QVERIFY(doc != nullptr);
+        QCOMPARE(json(r).value("page").toInt(), 2);
+        QCOMPARE(json(r).value("pages").toInt(), doc->pageCount());   // (5: written again by a test before)
+        QCOMPARE(doc->view()->currentPage(), 1);
+        // A search: every hit's page, the first shown and marked.
+        doc->firstPage();
+        r = call("show_pdf", {{"find", "needle"}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        const QJsonObject found = json(r).value("found").toObject();
+        QCOMPARE(found.value("hits").toInt(), 2);
+        QCOMPARE(found.value("pages").toArray(), QJsonArray({3}));
+        QCOMPARE(json(r).value("page").toInt(), 3);
+        QCOMPARE(doc->view()->currentPage(), 2);
+        QVERIFY(doc->currentSearchResult() >= 0);
+        QCOMPARE(doc->searchField()->text(), QStringLiteral("needle"));
+        QVERIFY(doc->searchField()->isVisible());
+        r = call("show_pdf", {{"find", "nowhere to be found"}});
+        QCOMPARE(json(r).value("found").toObject().value("hits").toInt(), 0);
+        QVERIFY(json(r).value("note").toString().contains("not in its text"));
+        doc->hideSearch();
+        // Zoomed: a percentage, a fit.
+        r = call("show_pdf", {{"page", 1}, {"zoom", 150}});
+        QCOMPARE(json(r).value("zoom").toString(), QStringLiteral("150 %"));
+        QVERIFY(std::abs(doc->view()->zoom() - 1.5) < 1e-9);
+        QCOMPARE(doc->view()->currentPage(), 0);
+        r = call("show_pdf", {{"zoom", "fit width"}});
+        QCOMPARE(doc->view()->fit(), PageView::Fit::Width);
+        // Found and zoomed at once: the hit still in sight (where a search
+        // of its own finds it).
+        doc->firstPage();
+        r = call("show_pdf", {{"find", "needle"}, {"zoom", 800}});
+        QCOMPARE(doc->view()->currentPage(), 2);
+        {
+            QPdfSearchModel own;
+            own.setDocument(doc->document());
+            own.setSearchString(QStringLiteral("needle"));
+            const QList<QPdfLink> links = own.resultsOnPage(2);
+            QVERIFY(!links.isEmpty() && !links.first().rectangles().isEmpty());
+            const QRectF hit = links.first().rectangles().first();
+            const qreal ppp = doc->view()->pixelsPerPoint();
+            const QRectF shown(doc->view()->pageRect(2).topLeft() + hit.topLeft() * ppp, hit.size() * ppp);
+            QVERIFY2(QRectF(doc->view()->viewport()->rect()).contains(shown), qPrintable(QStringLiteral("%1, %2").arg(shown.x()).arg(shown.y())));
+        }
+        doc->hideSearch();
+        r = call("show_pdf", {{"zoom", "fit width"}});
+        // A region - the third page's top left quarter, as fractions -:
+        // zoomed to fit it, all of it in sight, as large as the tab takes it.
+        const QRect vp = doc->view()->viewport()->rect();
+        auto inSight = [&](int page, const QRectF& region) {
+            const qreal ppp = doc->view()->pixelsPerPoint();
+            const QRect p = doc->view()->pageRect(page);
+            const QRectF shown(p.topLeft() + region.topLeft() * ppp, region.size() * ppp);
+            const bool fills = std::abs(shown.width() - (vp.width() - 32)) < 2 || std::abs(shown.height() - (vp.height() - 32)) < 2;
+            return QRectF(vp).adjusted(-1, -1, 1, 1).contains(shown) && fills;
+        };
+        r = call("show_pdf", {{"page", 3}, {"region", QJsonArray{0, 0, 0.5, 0.5}}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        const QSizeF size = doc->document()->pagePointSize(2);
+        QCOMPARE(doc->view()->currentPage(), 2);
+        QVERIFY(inSight(2, QRectF(0, 0, size.width() / 2, size.height() / 2)));
+        const qreal fits = std::min((vp.width() - 32) / (size.width() / 2), (vp.height() - 32) / (size.height() / 2)) / (doc->view()->logicalDpiX() / 72.0);
+        QVERIFY2(std::abs(doc->view()->zoom() - fits) < 1e-6, qPrintable(QString::number(doc->view()->zoom())));
+        // In points too - a small one, its middle the view's; out of the
+        // document, refused.
+        r = call("show_pdf", {{"page", 1}, {"region", QJsonArray{72, 72, 172, 122}}});
+        QVERIFY(inSight(0, QRectF(72, 72, 100, 50)));
+        QPointF at;
+        QCOMPARE(doc->view()->pageAt(vp.center(), &at), 0);
+        QVERIFY2(std::abs(at.x() - 122) < 2 && std::abs(at.y() - 97) < 2, qPrintable(QStringLiteral("%1, %2").arg(at.x()).arg(at.y())));
+        QVERIFY(call("show_pdf", {{"page", doc->pageCount() + 1}}).value("isError").toBool());
+        QVERIFY(call("show_pdf", {{"zoom", "bigger"}}).value("isError").toBool());
+        doc->view()->setFit(PageView::Fit::Width);
+    }
+
+    // An outline's destination, a page's label; opened at a page or a hit.
+    void claudesToolsFindDestinations()
+    {
+        auto* control = app->findChild<QucsControl*>();
+        auto call = [&](const char* tool, const QJsonObject& args) { return control->callNow(QString::fromLatin1(tool), args); };
+        auto json = [](const QJsonObject& r) { return QJsonDocument::fromJson(QucsControl::textOf(r).toUtf8()).object(); };
+        const QString outlined = dir.filePath("ws/outlined.pdf");
+        QVERIFY(writeOutlinedPdf(outlined));
+        QJsonObject r = call("open_document", {{"path", outlined}, {"page", "2.2.1 Modulation"}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        QVERIFY2(QucsControl::textOf(r).contains("At page 3 of 3") && QucsControl::textOf(r).contains("2.2.1 Modulation Efficiency"),
+                 qPrintable(QucsControl::textOf(r)));
+        PdfDoc* doc = pdf();
+        QVERIFY(doc != nullptr && doc->getDocName() == outlined);
+        QCOMPARE(doc->view()->currentPage(), 2);
+        r = call("show_pdf", {{"page", "introduction"}});
+        QCOMPARE(json(r).value("page").toInt(), 1);
+        QCOMPARE(json(r).value("destination").toString(), QStringLiteral("1 Introduction"));
+        r = call("show_pdf", {{"page", "Modulation"}});
+        QCOMPARE(json(r).value("page").toInt(), 3);
+        // Its labels: i, S-1, S-2 - a label finds its page; a number is the
+        // file's.
+        r = call("show_pdf", {{"page", "S-2"}});
+        QCOMPARE(json(r).value("page").toInt(), 3);
+        QCOMPARE(json(r).value("label").toString(), QStringLiteral("S-2"));
+        QVERIFY(!json(r).contains("destination"));
+        r = call("show_pdf", {{"page", "2"}});
+        QCOMPARE(json(r).value("page").toInt(), 2);
+        QCOMPARE(json(r).value("label").toString(), QStringLiteral("S-1"));
+        r = call("show_pdf", {{"page", "Conclusions"}});
+        QVERIFY(r.value("isError").toBool());
+        QVERIFY2(QucsControl::textOf(r).contains("1 Introduction; 2.2.1 Modulation Efficiency"), qPrintable(QucsControl::textOf(r)));
+        // A figure named: its pages, the first shown - the PDF brought to
+        // the front from behind another.
+        QVERIFY(app->gotoPage(file));
+        QVERIFY(pdf() != doc);
+        r = call("show_pdf", {{"path", outlined}, {"find", "Figure 2.15:"}});
+        QCOMPARE(pdf(), doc);
+        QCOMPARE(json(r).value("found").toObject().value("pages").toArray(), QJsonArray({2, 3}));
+        QCOMPARE(doc->view()->currentPage(), 1);
+        doc->hideSearch();
+        // Opened again at a hit: brought to the front there.
+        QVERIFY(app->gotoPage(file));
+        r = call("open_document", {{"path", outlined}, {"find", "the bands"}});
+        QVERIFY2(QucsControl::textOf(r).contains("1 hits, on pages 3"), qPrintable(QucsControl::textOf(r)));
+        QCOMPARE(pdf(), doc);
+        QCOMPARE(doc->view()->currentPage(), 2);
+        doc->hideSearch();
+        QVERIFY(call("open_document", {{"path", outlined}, {"page", 7}}).value("isError").toBool());
+        QVERIFY(app->gotoPage(outlined));
+        app->slotFileClose(app->DocumentTab->currentIndex());
+        QVERIFY(app->findDoc(outlined) == nullptr);
+    }
+
+    // A page drawn - all of it, or a region -, the tab not moved; read_pdf's
+    // pages as pictures too.
+    void claudesToolsDrawAPage()
+    {
+        auto* control = app->findChild<QucsControl*>();
+        auto call = [&](const char* tool, const QJsonObject& args) { return control->callNow(QString::fromLatin1(tool), args); };
+        auto image = [](const QJsonObject& r) {
+            for (const QJsonValue& v : r.value("content").toArray())
+                if (v.toObject().value("type").toString() == QLatin1String("image"))
+                    return QImage::fromData(QByteArray::fromBase64(v.toObject().value("data").toString().toLatin1()));
+            return QImage();
+        };
+        QVERIFY(app->gotoPage(file));
+        PdfDoc* doc = pdf();
+        doc->firstPage();
+        const int scrolled = doc->view()->verticalScrollBar()->value();
+        // The third page's top fifth: "Page 3." in it, drawn sharp.
+        QJsonObject r = call("screenshot", {{"page", 3}, {"region", QJsonArray{0, 0, 1, 0.2}}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        QImage part = image(r);
+        const QSizeF size = doc->document()->pagePointSize(2);
+        QVERIFY(!part.isNull());
+        QVERIFY2(std::abs(double(part.width()) / part.height() - size.width() / (0.2 * size.height())) < 0.02, qPrintable(QStringLiteral("%1 x %2").arg(part.width()).arg(part.height())));
+        QVERIFY(part.width() >= 1000);
+        QVERIFY2(darkPixels(part) > 100, qPrintable(QString::number(darkPixels(part))));
+        QVERIFY(QucsControl::textOf(r).contains("its tab left as it is"));
+        QCOMPARE(doc->view()->currentPage(), 0);
+        QCOMPARE(doc->view()->verticalScrollBar()->value(), scrolled);
+        // Its middle, blank (its number is at its foot).
+        r = call("screenshot", {{"page", 3}, {"region", QJsonArray{0, 0.45, 1, 0.55}}});
+        QCOMPARE(darkPixels(image(r)), 0);
+        // A whole page.
+        r = call("screenshot", {{"page", 2}});
+        const QImage whole = image(r);
+        QVERIFY(std::abs(double(whole.width()) / whole.height() - size.width() / size.height()) < 0.01);
+        QVERIFY(call("screenshot", {{"page", doc->pageCount() + 1}}).value("isError").toBool());
+        // read_pdf: the text and the pictures.
+        r = call("read_pdf", {{"path", file}, {"pages", "2-3"}, {"image", true}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        int images = 0;
+        for (const QJsonValue& v : r.value("content").toArray()) images += v.toObject().value("type").toString() == QLatin1String("image");
+        QCOMPARE(images, 2);
+        QVERIFY(QucsControl::textOf(r).contains("needle"));
+        r = call("read_pdf", {{"path", file}, {"pages", 3}, {"image", true}, {"region", QJsonArray{0, 0, 1, 0.2}}});
+        QVERIFY(darkPixels(image(r)) > 100);
+    }
+
+    // The tab's own bar through get_ui and set_ui: a page typed into its
+    // page field is shown.
+    void claudesToolsUseItsBar()
+    {
+        auto* control = app->findChild<QucsControl*>();
+        auto call = [&](const char* tool, const QJsonObject& args) { return control->callNow(QString::fromLatin1(tool), args); };
+        QVERIFY(app->gotoPage(file));
+        PdfDoc* doc = pdf();
+        doc->firstPage();
+        QJsonObject r = call("get_ui", {{"area", "document"}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        const QJsonObject ui = QJsonDocument::fromJson(QucsControl::textOf(r).toUtf8()).object();
+        QString pageId;
+        for (const QJsonValue& v : ui.value("controls").toArray())
+            if (v.toObject().value("value").toString() == QLatin1String("1") && v.toObject().value("kind").toString() == QLatin1String("field"))
+                pageId = v.toObject().value("id").toString();
+        QVERIFY2(!pageId.isEmpty(), qPrintable(QucsControl::textOf(r)));
+        r = call("set_ui", {{"area", "document"}, {"set", QJsonArray{QJsonObject{{"control", pageId}, {"value", "3"}}}}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QucsControl::textOf(r)));
+        QTRY_COMPARE(doc->view()->currentPage(), 2);
+        QVERIFY(call("get_ui", {}).value("isError").toBool() == false);
+        QVERIFY(QucsControl::textOf(call("get_ui", {})).contains("\"document\""));
+        doc->firstPage();
     }
 
     // Closed like any document.
