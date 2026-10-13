@@ -2140,7 +2140,10 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     breakdown, gate-induced drain leakage, tunnel FETs: a p⁺-i-n⁺ diode's
     current the tunnelling summed over its triangles to 1e-5; and
     **Fowler-Nordheim** tunnelling through an oxide after the solve
-    (semi.Ifn: 3 mA/cm² at 10 MV/cm in SiO₂). **Ohmic, Schottky and
+    (semi.Ifn: 3 mA/cm² at 10 MV/cm in SiO₂, at the barrier's mean
+    field - φB over the depth where the potential has moved by φB/q -,
+    not the first triangle's, which an inversion layer thinner than the
+    mesh makes ripple). **Ohmic, Schottky and
     gate contacts** (a work function on an oxide), fixed surface charge,
     wurtzite's **polarization charge** at the interfaces between nitrides
     (-ΔP·n, the spontaneous and piezoelectric parts on a substrate's

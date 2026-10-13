@@ -1182,8 +1182,9 @@ QList<NodeKind> makeKinds()
          {}, {}, false, false, QStringLiteral("fn"),
          tr("Electrons tunnelling through an insulator in a strong field - a gate oxide's leakage, a flash cell's writing: J = A "
             "E² e^(-B/E), A = q³ m0/(8π h φB m_ox), B = 8π √(2 m_ox) φB^(3/2)/(3 q h) (Lenzlinger and Snow; SiO₂ on silicon about "
-            "1.2e-6 A/V² and 240 MV/cm), E the insulator's field across the boundary: semi.Ifn, its current after the solve - not "
-            "taken from the carriers (a leakage far below the device's own currents).")});
+            "1.2e-6 A/V² and 240 MV/cm), E the barrier's mean field - φB over the depth into the insulator at which the potential has "
+            "moved by φB/q, along each boundary edge's normal (or its change over a thinner insulator: tunnelling direct): semi.Ifn, "
+            "its current after the solve - not taken from the carriers (a leakage far below the device's own currents).")});
     {
         const QString level = QStringLiteral("distribution=level"), spread = QStringLiteral("distribution=uniform");
         add({QStringLiteral("semiconductor/traps"), tr("Interface Traps"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
