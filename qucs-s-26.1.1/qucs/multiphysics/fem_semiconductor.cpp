@@ -2082,6 +2082,11 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
     // 1e-6 Vt, or after fifteen steps, Newton finishing with them.)
     bool held = false;
     for (int it = 0; it < maxSteps; ++it) {
+        // (Asked to stop: between its steps.)
+        if (cancelled()) {
+            if (why) *why = tr("cancelled");
+            return false;
+        }
         carrierScales();
         if (!held) updateMobilities(x);
         assemble(x, mass, history, F, &trip);
@@ -2738,6 +2743,9 @@ bool SemiconductorProblem::stationary(QString* why)
             at = next;
             ++solves;
             if (steps < 8) step = std::min(step * 2, 1.0);
+        } else if (cancelled()) {
+            *why = tr("cancelled");
+            return false;
         } else {
             step /= 4;
             if (step < 1e-5) {

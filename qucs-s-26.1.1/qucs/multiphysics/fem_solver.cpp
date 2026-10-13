@@ -1811,6 +1811,21 @@ struct Step {
     double tolerance = 1e-6;
 };
 
+/// A step's progress told, the last of it kept: asked again whether to go
+/// on - a long solve looks between its Newton steps - without moving it.
+struct Telling {
+    const std::function<bool(double, const QString&)>& to;
+    double fraction = 0;
+    QString what;
+    bool operator()(double f, const QString& w)
+    {
+        fraction = f;
+        what = w;
+        return to(f, w);
+    }
+    bool stopped() { return !to(fraction, what); }
+};
+
 /// The problems of \a step: its physics (all of them when it names none).
 bool setupStep(Step& st, QString* error)
 {
@@ -1846,6 +1861,13 @@ bool setupStep(Step& st, QString* error)
         st.maxIterations = std::clamp(st.node.integer(QStringLiteral("maxiter")), 1, 1000);
     st.options.maxIterations = st.maxIterations;
     return true;
+}
+
+/// The step's problems (their setup too: a semiconductor's way to its
+/// contacts' voltages) asked whether to stop, as its progress is.
+void cancelWith(Step& st, Telling& tell)
+{
+    for (auto& p : st.problems) p->setCancelled([&tell] { return tell.stopped(); });
 }
 
 /// Whether the step's physics must be solved in turn till they agree:
@@ -1906,10 +1928,12 @@ bool solvedBefore(const Step& st, const std::vector<int>& subset, QString* error
     return true;
 }
 
-bool stationaryStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool stationaryStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     // A field not solved before starts from its initial values (a step
     // before leaves its own as the next one's start).
     for (auto& p : st.problems)
@@ -1960,10 +1984,12 @@ int litMode(const Solution& s, const QString& tag)
     return 1;
 }
 
-bool modeStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool modeStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     // Frequencies, or free-space wavelengths.
     Dim dim;
     QString why;
@@ -2071,10 +2097,12 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
     return true;
 }
 
-bool eigenvalueStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool eigenvalueStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     std::vector<int> pdes, others;
     for (int i = 0; i < int(st.problems.size()); ++i)
         (st.problems[std::size_t(i)]->field().type == QLatin1String("pde") ? pdes : others).push_back(i);
@@ -2124,10 +2152,12 @@ bool splitQuantum(const Step& st, std::vector<int>& quantum, std::vector<int>& o
     return true;
 }
 
-bool statesStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool statesStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     std::vector<int> quantum, others;
     if (!splitQuantum(st, quantum, others, warnings, error)) return false;
     for (auto& p : st.problems)
@@ -2183,10 +2213,12 @@ bool statesStep(Solution& s, const Node& node, const std::function<bool(double, 
     return true;
 }
 
-bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     std::vector<int> quantum, others;
     if (!splitQuantum(st, quantum, others, warnings, error)) return false;
     constexpr double q = 1.602176634e-19, h = 6.62607015e-34, c0 = 299792458.0;
@@ -2294,10 +2326,12 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
     return true;
 }
 
-bool bandsStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool bandsStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     std::vector<int> quantum, others;
     if (!splitQuantum(st, quantum, others, warnings, error)) return false;
     const Scope& scope = s.parameters().scope;
@@ -2335,10 +2369,12 @@ bool bandsStep(Solution& s, const Node& node, const std::function<bool(double, c
     return true;
 }
 
-bool frequencyStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool frequencyStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     Dim dim;
     QString why;
     const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("frequencies")), s.parameters().scope, &dim, &why);
@@ -2415,10 +2451,12 @@ bool frequencyStep(Solution& s, const Node& node, const std::function<bool(doubl
     return true;
 }
 
-bool transientStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
+bool transientStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
 {
+    Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
     if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
     Dim dim;
     QString why;
     std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("times")), s.parameters().scope, &dim, &why);
