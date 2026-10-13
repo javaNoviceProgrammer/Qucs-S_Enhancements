@@ -1416,7 +1416,8 @@ private slots:
 
     void electrorefractionOfAnyWindow()
     {
-        // Δn between 0 and 50 kV/cm below the edge the same whatever the
+        // Δn between 0 and 50 kV/cm below the edge (at 1.46 eV, on both
+        // grids: 0.01 eV, a sanitized build's 0.02) the same whatever the
         // window's top past the barriers' gap and the fade: above them the
         // bulk's absorption alone, the field's none (the review's -6.7e-3
         // to 2.0 eV and -11.2e-3 to 3.0 eV before).
@@ -1442,11 +1443,11 @@ private slots:
         for (int i = 0; i < 2; ++i) {
             const Run off = spectrum(tops[i], "0[V/m]"), on = spectrum(tops[i], "5e6[V/m]");
             QVERIFY2(off.error.isEmpty() && on.error.isEmpty(), qPrintable(off.error + on.error));
-            dn[i] = at(*on.solution, 1.45, QStringLiteral("qw.dnTE")) - at(*off.solution, 1.45, QStringLiteral("qw.dnTE"));
+            dn[i] = at(*on.solution, 1.46, QStringLiteral("qw.dnTE")) - at(*off.solution, 1.46, QStringLiteral("qw.dnTE"));
             // The top's absorption the field's none; the index past it alike.
             const double a0 = at(*off.solution, tops[i], QStringLiteral("qw.alphaTE")), a1 = at(*on.solution, tops[i], QStringLiteral("qw.alphaTE"));
-            const double t0 = at(*off.solution, 1.45, QStringLiteral("qw.dnTEtail")), t1 = at(*on.solution, 1.45, QStringLiteral("qw.dnTEtail"));
-            qInfo("to %.1f eV: dn(1.45 eV) %.6g; at the top %.6g /cm and %.6g; past it %.6g and %.6g", tops[i], dn[i], a0 / 100, a1 / 100, t0, t1);
+            const double t0 = at(*off.solution, 1.46, QStringLiteral("qw.dnTEtail")), t1 = at(*on.solution, 1.46, QStringLiteral("qw.dnTEtail"));
+            qInfo("to %.1f eV: dn(1.46 eV) %.6g; at the top %.6g /cm and %.6g; past it %.6g and %.6g", tops[i], dn[i], a0 / 100, a1 / 100, t0, t1);
             QVERIFY2(std::abs(a1 / a0 - 1) < 1e-6, qPrintable(QString::number(a1 / a0 - 1)));
             QVERIFY(t0 > 0 && std::abs(t1 / t0 - 1) < 1e-6);
             const QString log = on.solution->log.join(QLatin1Char(' '));
@@ -1476,8 +1477,10 @@ private slots:
         // there faded); past the fade the top's absorption the field's none
         // but for the Lorentzian tails of the steps below it (3e-5 at 2.2 eV:
         // a Gaussian's or a sech's none); qw.dnTEtail (c ħ/π) α_top ln((top +
-        // E)/(top - E))/2E.
+        // E)/(top - E))/2E. (Under the sanitizers the parabolic path alone:
+        // the k·p one's three spectra take minutes there.)
         for (const bool kp : {false, true}) {
+            if (kp && slowBuild()) continue;
             auto spectrum = [&](double top, const char* F) {
                 const int n = qRound((top - 1.40) / 0.02) + 1;
                 return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
