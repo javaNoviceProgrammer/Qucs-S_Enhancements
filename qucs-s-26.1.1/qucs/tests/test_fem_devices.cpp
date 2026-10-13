@@ -7,7 +7,7 @@
  *                        dopants ionized in part), interface traps,
  *                        Schrödinger-Poisson, the carriers' heat and
  *                        self-heating, tunnelling (band to band,
- *                        Fowler-Nordheim)
+ *                        Fowler-Nordheim), implants and their anneal
  *
  * This file is part of Qucs-S.
  *
@@ -1364,6 +1364,167 @@ private slots:
               J * 1e-4, I, J * 0.1e-6);
         QVERIFY(std::abs(A / 1.18e-6 - 1) < 0.01 && std::abs(B / 2.42e10 - 1) < 0.01);
         QVERIFY2(Eox > 0.8e9 && std::abs(I / (J * 0.1e-6) - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(I).arg(J * 0.1e-6)));
+    }
+
+    void implantAndAnneal()
+    {
+        // Boron implanted, 1e14 cm⁻² at a range of 0.1 µm (straggles 30 nm),
+        // into n-type silicon (1e15 cm⁻³); then annealed at 1000 °C for 30
+        // minutes (D 1.5e-14 cm²/s, boron's intrinsic: 2 D t's root 74 nm):
+        // - down a column (0.02 µm wide, meshed at 5 nm), the Implant
+        //   profile's acceptors the formula's - dose/(√(2π) σ) (e^(-(d -
+        //   Rp)²/2σ²) + e^(-(d + Rp)²/2σ²)), σ² = ΔRp² + 2 D t -: their sum
+        //   the dose to 1e-3, at the range to 1 %, the junction where the
+        //   background is to 5 nm;
+        // - through a mask's window (0.3 to 0.7 µm) its edges erf's: at an
+        //   edge, annealed, half the middle's, to 1 %;
+        // - a PDE diffusing the implant as implanted (∂u/∂t = ∇·(D ∇u), no
+        //   flux at the surface) for those 30 minutes the annealed formula's,
+        //   to 0.5 % - the formula's image a reflecting surface's.
+        constexpr double KB_eV = 8.617333262e-5;
+        const double dose = 1e18, Rp = 1e-7, dRp = 3e-8, D = 0.76e-4 * std::exp(-3.46 / (KB_eV * 1273.15)), t = 1800;
+        const double sd = std::sqrt(dRp * dRp + 2 * D * t);
+        auto depth = [&](double d, double sigma) {
+            return d < 0 ? 0.0 : dose / (std::sqrt(2 * M_PI) * sigma)
+                                   * (std::exp(-(d - Rp) * (d - Rp) / (2 * sigma * sigma)) + std::exp(-(d + Rp) * (d + Rp) / (2 * sigma * sigma)));
+        };
+        auto across = [&](double x, double sigma) { return 0.5 * (std::erf((x - 0.3e-6) / (std::sqrt(2.0) * sigma)) - std::erf((x - 0.7e-6) / (std::sqrt(2.0) * sigma))); };
+        // A block of silicon (µm): \a width wide, \a deep deep, meshed at \a h; the implant annealed for \a time, through \a window.
+        auto implant = [&](const QString& width, const QString& deep, const QString& h, const QString& time, const QString& window) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "si", "position": ["0", "-%5"], "size": ["%4", "%5"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"all": true}},
+                  {"type": "doping", "dopant": "acceptor", "profile": "implant", "dose": "1e14[1/cm^2]", "Rp": "0.1[um]", "dRp": "30[nm]",
+                   "dRl": "30[nm]" %2, "ta": "%1", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["si"], "side": "bottom"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%3"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(time, window, h, width, deep)
+                .toUtf8();
+        };
+        QStringList said;
+        for (const bool annealed : {false, true}) {
+            const double sigma = annealed ? sd : dRp;
+            const Run r = run(modelOf(implant(QStringLiteral("0.02"), QStringLiteral("1"), QStringLiteral("0.005"),
+                                              annealed ? QStringLiteral("30[min]") : QStringLiteral("0[s]"), QString())));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            Solution& s = *r.solution;
+            Node sum;
+            sum.type = QStringLiteral("integral");
+            sum.props.insert(QStringLiteral("expression"), QStringLiteral("semi.Na*1[m]"));
+            sum.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+            const DerivedResult d = evaluateDerived(s, sum);
+            QVERIFY2(!d.values.isEmpty(), qPrintable(d.error));
+            const double total = d.values.front().value / 0.02e-6, peak = at1(s, QStringLiteral("semi.Na"), 0.01, -0.1), expected = depth(Rp, sigma);
+            // The junction: where the acceptors fall to the donors, halved.
+            const Locator locator(s.mesh());
+            double lo = 0.1, hi = 0.99;
+            for (int k = 0; k < 40; ++k) {
+                const double mid = (lo + hi) / 2;
+                (evaluateAt(s, locator, QStringLiteral("semi.Na"), QPointF(0.01, -mid)).value_or(0) > 1e21 ? lo : hi) = mid;
+            }
+            double jlo = Rp, jhi = 1e-6;
+            for (int k = 0; k < 100; ++k) {
+                const double mid = (jlo + jhi) / 2;
+                (depth(mid, sigma) > 1e21 ? jlo : jhi) = mid;
+            }
+            said << QStringLiteral("%1: dose %2 /m² (%3), at the range %4 /m³ (%5), the junction %6 µm deep (%7)")
+                        .arg(annealed ? QStringLiteral("annealed") : QStringLiteral("implanted"))
+                        .arg(total, 0, 'g', 6)
+                        .arg(dose, 0, 'g', 6)
+                        .arg(peak, 0, 'g', 5)
+                        .arg(expected, 0, 'g', 5)
+                        .arg((lo + hi) / 2, 0, 'f', 4)
+                        .arg((jlo + jhi) / 2 * 1e6, 0, 'f', 4);
+            QVERIFY2(std::abs(total / dose - 1) < 1e-3, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs(peak / expected - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+            QVERIFY2(std::abs((lo + hi) / 2 - (jlo + jhi) / 2 * 1e6) < 0.005, qPrintable(said.join(QLatin1String("; "))));
+        }
+        {
+            const Run r = run(modelOf(implant(QStringLiteral("1"), QStringLiteral("0.3"), QStringLiteral("0.01"), QStringLiteral("30[min]"),
+                                              QStringLiteral(R"(, "x1": "0.3", "x2": "0.7")"))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double edge = at1(*r.solution, QStringLiteral("semi.Na"), 0.3, -0.1), middle = at1(*r.solution, QStringLiteral("semi.Na"), 0.5, -0.1);
+            const double expected = across(0.3e-6, sd) / across(0.5e-6, sd);
+            said << QStringLiteral("at the window's edge %1 of its middle (%2)").arg(edge / middle, 0, 'f', 4).arg(expected, 0, 'f', 4);
+            QVERIFY2(std::abs(edge / middle / expected - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+        }
+        // The anneal solved: a PDE along the depth (x, from the surface at 0).
+        const QString u0 = QStringLiteral("1e18/(sqrt(2*pi)*3e-8)*(exp(-(X - 1e-7)*(X - 1e-7)/(2*9e-16)) + exp(-(X + 1e-7)*(X + 1e-7)/(2*9e-16)))");
+        const Run line = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "si", "size": ["1", "0.01"]}],
+            "physics": [{"type": "pde", "tag": "c", "space": "1d", "elements": 400, "features": [
+              {"type": "coefficient", "c": "%1", "f": "0", "selection": {"all": true}},
+              {"type": "init", "u0": "%2", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.01"}}],
+          "studies": [{"type": "study", "steps": [{"type": "transient", "times": "range(0, 300, 1800)", "rtol": "1e-6"}]}]})json")
+                                         .arg(QString::number(D, 'g', 12), QString(u0).replace(QStringLiteral("X"), QStringLiteral("(x/1[m])")))
+                                         .toUtf8()));
+        QVERIFY2(line.error.isEmpty(), qPrintable(line.error));
+        Solution& ls = *line.solution;
+        ls.select(ls.snapshotCount() - 1);
+        for (double d : {0.0, 0.05, 0.1, 0.2, 0.3}) {
+            const double u = at1(ls, QStringLiteral("u"), d, 0.005), expected = depth(d * 1e-6, sd);
+            said << QStringLiteral("solved at %1 µm %2 (%3)").arg(d).arg(u, 0, 'g', 6).arg(expected, 0, 'g', 6);
+            QVERIFY2(std::abs(u / expected - 1) < 5e-3, qPrintable(said.join(QLatin1String("; "))));
+        }
+        qInfo("implant and anneal: %s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void annealedDopingRead()
+    {
+        // The implant of implantAndAnneal as implanted, diffused by a PDE in
+        // a step in time (30 minutes at boron's 1000 °C diffusivity), the
+        // semiconductor's doping that PDE's u read as an expression in the
+        // next step: the Implant profile's, annealed, to 1 %. (A column 0.02
+        // µm wide, meshed at 5 nm, a sanitized build's 10.)
+        constexpr double KB_eV = 8.617333262e-5;
+        const double D = 0.76e-4 * std::exp(-3.46 / (KB_eV * 1273.15));
+        const QString h = slowBuild() ? QStringLiteral("0.01") : QStringLiteral("0.005");
+        const QString u0 = QStringLiteral("1e18/(sqrt(2*pi)*3e-8)*(exp(-(X - 1e-7)*(X - 1e-7)/(2*9e-16)) + exp(-(X + 1e-7)*(X + 1e-7)/(2*9e-16)))");
+        QStringList said;
+        // The semiconductor's doping that diffusion's, read as an expression.
+        const Run both = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "si", "position": ["0", "-0.6"], "size": ["0.02", "0.6"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "pde", "tag": "c", "features": [
+              {"type": "coefficient", "c": "%1", "f": "0", "selection": {"all": true}},
+              {"type": "init", "u0": "%2", "selection": {"all": true}}]},
+             {"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"all": true}},
+              {"type": "doping", "dopant": "acceptor", "profile": "expression", "N": "c.u*1[1/m^3]", "selection": {"all": true}},
+              {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["si"], "side": "bottom"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "%3"}}],
+          "studies": [{"type": "study", "steps": [{"type": "transient", "physics": ["c"], "times": "0, 1800", "rtol": "1e-4"},
+                                                  {"type": "stationary", "physics": ["semi"]}]}]})json")
+                                         .arg(QString::number(D, 'g', 12), QString(u0).replace(QStringLiteral("X"), QStringLiteral("(-y/1[m])")), h)
+                                         .toUtf8()));
+        QVERIFY2(both.error.isEmpty(), qPrintable(both.error));
+        const Run feature = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "si", "position": ["0", "-0.6"], "size": ["0.02", "0.6"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e15[1/cm^3]", "selection": {"all": true}},
+              {"type": "doping", "dopant": "acceptor", "profile": "implant", "dose": "1e14[1/cm^2]", "Rp": "0.1[um]", "dRp": "30[nm]",
+               "ta": "30[min]", "selection": {"all": true}},
+              {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["si"], "side": "bottom"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "%1"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                                            .arg(h)
+                                            .toUtf8()));
+        QVERIFY2(feature.error.isEmpty(), qPrintable(feature.error));
+        for (double d : {0.1, 0.25}) {
+            const double fromPde = at1(*both.solution, QStringLiteral("semi.Na"), 0.01, -d), fromFeature = at1(*feature.solution, QStringLiteral("semi.Na"), 0.01, -d);
+            said << QStringLiteral("at %1 µm the PDE's doping %2, the Implant profile's %3").arg(d).arg(fromPde, 0, 'g', 6).arg(fromFeature, 0, 'g', 6);
+            QVERIFY2(std::abs(fromPde / fromFeature - 1) < 0.01, qPrintable(said.join(QLatin1String("; "))));
+        }
+        qInfo("the annealed doping read: %s", qPrintable(said.join(QLatin1String("; "))));
     }
 
     void quantumCarriers()
