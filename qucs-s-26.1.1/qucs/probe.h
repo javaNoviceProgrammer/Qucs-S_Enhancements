@@ -71,6 +71,9 @@ inline bool isPowerVector(const QString& v) { return v.startsWith(QLatin1Char('@
 /// none (a new one is made).
 Diagram* frontDiagram(Schematic* sch);
 
+/// Forgets what was probed into a schematic going away (its destructor).
+void forget(const Schematic* sch);
+
 struct Result {
     QString variable;      ///< the trace's variable, as a graph names it
     QString labelled;      ///< a net label put on an unnamed net
