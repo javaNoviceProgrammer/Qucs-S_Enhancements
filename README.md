@@ -2718,7 +2718,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   which was lost on reading; files of before load as they did.
 - **Diagram legend**: every graph diagram (Cartesian, polar, Smith, 3D, …)
   can show a legend — a sample of each graph's line (colour, thickness,
-  style or symbol) with its variable — in a corner of its choice:
+  style or symbol) with its variable — in a corner of its choice, or
+  **outside** on its right, clear of its traces and of its right axis'
+  numbers:
   *Edit Diagram Properties → Properties → Legend*. Off by default; the
   position is saved with the diagram, and files without it load as before
   (upstream #1719).

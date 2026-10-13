@@ -172,7 +172,7 @@ bool drawsCurves(const Diagram* d)
 
 const char* const kStyles[] = {"solid", "dash", "dot", "long_dash", "stars", "circles", "arrows"};
 const char* const kMarkers[] = {"none", "auto", "circle", "square", "triangle", "diamond", "triangle_down", "cross", "plus"};
-const char* const kLegends[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right"};
+const char* const kLegends[] = {"off", "top_left", "top_right", "bottom_left", "bottom_right", "outside"};
 const char* const kUnits[] = {"none", "dB", "dBuV", "dBm"};
 // A trace's part of each value, by Graph::ValuePart's value.
 const char* const kParts[] = {"auto", "magnitude", "db", "phase", "real", "imaginary"};
