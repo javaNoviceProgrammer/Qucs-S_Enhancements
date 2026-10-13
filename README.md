@@ -2255,7 +2255,7 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     "wurtzite"`: A1-A6, Δcr, Δso, D1-D6, a1, a2, Psp, e31, e33, its strain
     given or its substrate's), the 6x6 Chuang and Chang's, the electron's
     mass across c and TM's Ep∥ their own; Lumerical's 6x6 benchmark, their
-    strained GaN/Al0.2Ga0.8N well, within 1.3 meV for the first five
+    strained GaN/Al0.2Ga0.8N well, within 1.5 meV for the first five
     subbands; an AlN layer's edge TM (its crystal field below 0). The
     **polarization** (`"polarization"`: periodic, or no field at the
     ends; metal or nitrogen face): each layer's field from the interfaces'
