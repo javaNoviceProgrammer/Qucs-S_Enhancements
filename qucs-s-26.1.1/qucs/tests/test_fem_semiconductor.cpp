@@ -870,6 +870,207 @@ private slots:
         QVERIFY2(std::abs(c1 / c0 - 1) < 2e-3, qPrintable(QString::number(c1 / c0)));
     }
 
+    // A semiconductor's models take its material's parameters: GaAs's own
+    // Caughey and Thomas (Lumerical's: µmin 40, Nref 8.1e16 cm⁻³, α 1), not
+    // silicon's; one given on the feature wins; where its material gives
+    // none - Masetti's on GaAs - silicon's are taken and the log says so.
+    void materialModelSets()
+    {
+        auto gaas = [](const QString& model) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "bar", "size": ["10", "1"]}],
+                "materials": [{"material": "Gallium arsenide", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "model", "selection": {"all": true} %1},
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "0.01[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.5"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(model)
+                .toUtf8();
+        };
+        const Run own = run(modelOf(gaas(QStringLiteral(R"(, "mobility": "doping")"))));
+        QVERIFY2(own.error.isEmpty(), qPrintable(own.error));
+        const double mu = at(*own.solution, QStringLiteral("semi.mun"), {5, 0.5});
+        QVERIFY2(std::abs(mu / ((40 + (8500 - 40) / (1 + 1e17 / 8.1e16)) * 1e-4) - 1) < 1e-9, qPrintable(QString::number(mu)));
+        QVERIFY2(!own.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("silicon's")), qPrintable(own.solution->log.join(QLatin1Char('\n'))));
+        const Run set = run(modelOf(gaas(QStringLiteral(R"(, "mobility": "doping", "munmin": "100[cm^2/(V*s)]")"))));
+        QVERIFY2(set.error.isEmpty(), qPrintable(set.error));
+        QVERIFY(std::abs(at(*set.solution, QStringLiteral("semi.mun"), {5, 0.5}) / ((100 + (8500 - 100) / (1 + 1e17 / 8.1e16)) * 1e-4) - 1) < 1e-9);
+        const Run masetti = run(modelOf(gaas(QStringLiteral(R"(, "mobility": "masetti")"))));
+        QVERIFY2(masetti.error.isEmpty(), qPrintable(masetti.error));
+        const QString log = masetti.solution->log.join(QLatin1Char('\n'));
+        QVERIFY2(log.contains(QLatin1String("Gallium arsenide (bar): its material gives no parameters for Masetti's mobility - silicon's")), qPrintable(log));
+    }
+
+    // At its temperature: silicon at 400 K - its gap Varshni's, Nc and Nv
+    // (T/300 K)^1.5 (semi.ni), its mobilities (T/300 K)^-2.5 (semi.mun) -,
+    // its material's texts read at the physics' T.
+    void atItsTemperature()
+    {
+        QByteArray json = bar(QStringLiteral("10"), QStringLiteral(R"({"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},)"),
+                              QStringLiteral("0.01[V]"), {}, QStringLiteral("0.5"));
+        json.replace(R"("tag": "semi", )", R"("tag": "semi", "T": "400[K]", )");
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const double T = 400, t = T / 300, eg = 1.12 - 4.73e-4 * (T * T / (T + 636) - 9e4 / 936);
+        const double ni = std::sqrt(2.8e25 * 1.04e25) * std::pow(t, 1.5) * std::exp(-eg * Q / (2 * KB * T));
+        QVERIFY2(std::abs(at(*r.solution, QStringLiteral("semi.ni"), {5, 0.5}) / ni - 1) < 1e-6, qPrintable(QString::number(at(*r.solution, QStringLiteral("semi.ni"), {5, 0.5}) / ni)));
+        QVERIFY(std::abs(at(*r.solution, QStringLiteral("semi.mun"), {5, 0.5}) / (0.14 * std::pow(t, -2.5)) - 1) < 1e-9);
+        // A lattice temperature TL scales them from the physics' T: TL 400 K
+        // there, as without it; 500 K, (5/4)^-2.5 more.
+        for (const double TL : {400.0, 500.0}) {
+            QByteArray lattice = json;
+            lattice.replace(R"("T": "400[K]", )", QStringLiteral(R"("T": "400[K]", "TL": "%1[K]", )").arg(TL).toUtf8());
+            const Run l = run(modelOf(lattice));
+            QVERIFY2(l.error.isEmpty(), qPrintable(l.error));
+            const double mu = at(*l.solution, QStringLiteral("semi.mun"), {5, 0.5}), expected = 0.14 * std::pow(TL / 300, -2.5);
+            QVERIFY2(std::abs(mu / expected - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(mu).arg(expected)));
+        }
+    }
+
+    // A gate's and a Schottky contact's metal beside it (gold): its work
+    // function the library's, 5.1 eV, where none is set - the solution as
+    // with it set, the log saying so; a gate with no metal beside it 4.05 eV.
+    void metalWorkFunction()
+    {
+        auto mos = [](const QString& gate, const QString& metal) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "si", "position": ["0", "-1"], "size": ["1", "1"]},
+                             {"type": "rectangle", "name": "oxide", "size": ["1", "0.01"]},
+                             {"type": "rectangle", "name": "metal", "position": ["0", "0.01"], "size": ["1", "0.05"]}],
+                "materials": [{"material": "Silicon", "selection": {"only": ["si"]}}, {"material": "Silicon dioxide", "selection": {"only": ["oxide"]}},
+                              {"material": "%2", "selection": {"only": ["metal"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "selection": {"objects": ["si", "oxide"]}, "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["si"]}},
+                  {"type": "ohmic", "name": "b", "V0": "0[V]", "selection": {"of": ["si"], "side": "bottom"}},
+                  {"type": "gate", "name": "g", "V0": "0[V]" %1, "selection": {"between": [["oxide"], ["metal"]]}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.05", "features": [{"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "0.005"}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(gate, metal)
+                .toUtf8();
+        };
+        const Run beside = run(modelOf(mos(QString(), QStringLiteral("Gold"))));
+        QVERIFY2(beside.error.isEmpty(), qPrintable(beside.error));
+        const Run given = run(modelOf(mos(QStringLiteral(R"(, "phim": "5.1[eV]")"), QStringLiteral("Gold"))));
+        const Run none = run(modelOf(mos(QString(), QStringLiteral("Air"))));
+        QVERIFY2(given.error.isEmpty() && none.error.isEmpty(), qPrintable(given.error + none.error));
+        const double qb = global(*beside.solution, QStringLiteral("semi.Q_g")), qg = global(*given.solution, QStringLiteral("semi.Q_g")), q0 = global(*none.solution, QStringLiteral("semi.Q_g"));
+        qInfo("gate's charge: gold beside it %g C/m, 5.1 eV given %g, nothing beside it %g", qb, qg, q0);
+        QVERIFY2(qb == qg && std::abs(qb - q0) > 0.1 * std::abs(q0), qPrintable(QStringLiteral("%1 %2 %3").arg(qb).arg(qg).arg(q0)));
+        QVERIFY2(beside.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("its work function its metal's, Gold: 5.1 eV")),
+                 qPrintable(beside.solution->log.join(QLatin1Char('\n'))));
+        // A Schottky contact on n-silicon: its barrier gold's less χ, 1.05 eV.
+        auto schottky = [](const QString& barrier) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "si", "size": ["2", "1"]}, {"type": "rectangle", "name": "metal", "position": ["2", "0"], "size": ["0.2", "1"]}],
+                "materials": [{"material": "Silicon", "selection": {"only": ["si"]}}, {"material": "Gold", "selection": {"only": ["metal"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "selection": {"objects": ["si"]}, "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["si"]}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["si"], "side": "left"}},
+                  {"type": "schottky", "name": "a", "V0": "0.2[V]" %1, "selection": {"between": [["si"], ["metal"]]}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(barrier)
+                .toUtf8();
+        };
+        const Run gold = run(modelOf(schottky(QString())));
+        const Run typed = run(modelOf(schottky(QStringLiteral(R"(, "phiB": "1.05[eV]")"))));
+        QVERIFY2(gold.error.isEmpty() && typed.error.isEmpty(), qPrintable(gold.error + typed.error));
+        // (5.1 - 4.05 eV and 1.05 eV a rounding apart.)
+        const double ig = global(*gold.solution, QStringLiteral("semi.I_a")), it = global(*typed.solution, QStringLiteral("semi.I_a"));
+        QVERIFY2(std::abs(ig / it - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(ig).arg(it)));
+        QVERIFY2(gold.solution->log.join(QLatin1Char('\n')).contains(QString::fromUtf8("its barrier its metal's, Gold: φ 5.1 eV less χ 4.05 eV, 1.05 eV")),
+                 qPrintable(gold.solution->log.join(QLatin1Char('\n'))));
+    }
+
+    // Stimulated recombination (Lumerical's laser model): above threshold a
+    // share c of the domains' recombination over R0 = Jth/(q t), the same
+    // throughout - semi.Istim its current, q c (∫R - R0 A) over its area;
+    // below threshold none.
+    void stimulatedRecombination()
+    {
+        auto diode = [](const QString& jth) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "pside", "size": ["1", "1"]}, {"type": "rectangle", "name": "nside", "position": ["1", "0"], "size": ["1", "1"]}],
+                "materials": [{"material": "Gallium arsenide", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["pside"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["nside"]}},
+                  {"type": "radiative", "selection": {"all": true}},
+                  {"type": "stimulated", "c": "0.5", "Jth": "%1", "t": "2[um]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "a", "V0": "1.25[V]", "selection": {"of": ["pside"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nside"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(jth)
+                .toUtf8();
+        };
+        const double jth = 1e5;   // A/m²
+        const Run lasing = run(modelOf(diode(QStringLiteral("1e5[A/m^2]"))));
+        QVERIFY2(lasing.error.isEmpty(), qPrintable(lasing.error));
+        Solution& s = *lasing.solution;
+        Node rec;
+        rec.type = QStringLiteral("integral");
+        rec.props.insert(QStringLiteral("expression"), QStringLiteral("semi.R*1[m]"));
+        rec.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+        const DerivedResult d = evaluateDerived(s, rec);
+        QVERIFY2(!d.values.isEmpty(), qPrintable(d.error));
+        const double area = 2e-12, R0 = jth / (Q * 2e-6);
+        const double expected = Q * 0.5 * (d.values.front().value - R0 * area * 1), istim = global(s, QStringLiteral("semi.Istim"));
+        qInfo("stimulated: semi.Istim %g A, q c (∫R - R0 A) %g A; the diode's %g A", istim, expected, global(s, QStringLiteral("semi.I_k")));
+        QVERIFY2(expected > 0 && std::abs(istim / expected - 1) < 0.02, qPrintable(QStringLiteral("%1 %2").arg(istim).arg(expected)));
+        const Run dark = run(modelOf(diode(QStringLiteral("1e12[A/m^2]"))));
+        QVERIFY2(dark.error.isEmpty(), qPrintable(dark.error));
+        QCOMPARE(global(*dark.solution, QStringLiteral("semi.Istim")), 0.0);
+    }
+
+    // Impact ionization's model "material" (its default now): GaAs's own
+    // Selberherr coefficients, one range - its ionization integrals as with
+    // them typed; silicon's another. Its n side at 1e17 cm⁻³ (the field some
+    // 5e5 V/cm, above the default E0's 4e5): the one range kept beyond it, E0
+    // set on the feature or not. (A slow build's mesh coarser: the integrals
+    // compared on one mesh.)
+    void impactFromItsMaterial()
+    {
+        auto diode = [](const QString& impact, const char* donors) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "pside", "size": ["0.5", "0.2"]}, {"type": "rectangle", "name": "nside", "position": ["0.5", "0"], "size": ["2", "0.2"]}],
+                "materials": [{"material": "Gallium arsenide", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pside"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "%2[1/cm^3]", "selection": {"only": ["nside"]}},
+                  {"type": "impact", "currents": false %1, "selection": {"all": true}},
+                  {"type": "ohmic", "name": "a", "V0": "-10[V]", "selection": {"of": ["pside"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nside"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%3"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(impact, QLatin1String(donors), slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05"))
+                .toUtf8();
+        };
+        auto integral = [&diode](const QString& impact, const char* donors) {
+            const Run r = run(modelOf(diode(impact, donors)));
+            return r.error.isEmpty() ? global(*r.solution, QStringLiteral("semi.In")) : NAN;
+        };
+        const QString typedCoefficients = QStringLiteral(R"(, "model": "user", "an": "2.99e5[1/cm]", "bn": "6.85e5[V/cm]", "an2": "2.99e5[1/cm]", "bn2": "6.85e5[V/cm]",
+                                                             "ap": "2.22e5[1/cm]", "bp": "6.57e5[V/cm]", "ap2": "2.22e5[1/cm]", "bp2": "6.57e5[V/cm]", "E0": "1e30[V/m]",
+                                                             "betan": "1.6", "betap": "1.75")");
+        const double in = integral(QString(), "1e16"), it = integral(typedCoefficients, "1e16"), is = integral(QStringLiteral(R"(, "model": "silicon")"), "1e16");
+        qInfo("GaAs's ionization integral at -10 V: %g (typed %g; silicon's coefficients %g)", in, it, is);
+        QVERIFY2(in > 0 && std::abs(in / it - 1) < 1e-9 && std::abs(is / in - 1) > 0.1, qPrintable(QStringLiteral("%1 %2 %3").arg(in).arg(it).arg(is)));
+        const double high = integral(QString(), "1e17"), highTyped = integral(typedCoefficients, "1e17");
+        const double highE0 = integral(QStringLiteral(R"(, "E0": "4e5[V/cm]")"), "1e17");
+        qInfo("its n side 1e17 cm^-3: %g (typed %g; E0 set %g)", high, highTyped, highE0);
+        QVERIFY2(high > 0 && std::abs(high / highTyped - 1) < 1e-9 && std::abs(highE0 / highTyped - 1) < 1e-9,
+                 qPrintable(QStringLiteral("%1 %2 %3").arg(high).arg(highTyped).arg(highE0)));
+    }
+
     void plasmaDispersion()
     {
         // A slab of silicon, donors 1e18 cm⁻³ (its electrons that many): its
@@ -897,9 +1098,15 @@ private slots:
         const Run carriers = run(modelOf(slab(QStringLiteral(R"({"type": "wave", "plasma": true, "selection": {"only": ["core"]}})"), true)));
         QVERIFY2(carriers.error.isEmpty(), qPrintable(carriers.error));
         const double dn = -8.8e-22 * 1e18, dalpha = 8.5e-18 * 1e18 * 100;
-        const Run given = run(modelOf(slab(QString::fromUtf8(R"x({"type": "wave", "source": "user", "n": "3.476 + (%1)", "kappa": "%2", "selection": {"only": ["core"]}})x")
+        // (The library's silicon's index at 1550 nm: Li's, of the wavelength.)
+        Scope at1550(&Scope::builtins());
+        at1550.setConstant(QStringLiteral("lambda0"), 1.55e-6, Dim::length());
+        const double n0 = evaluateConstant(findMaterial(QStringLiteral("Silicon"))->properties.value(QStringLiteral("n")).toString(), at1550, Dim()).value_or(NAN);
+        QVERIFY2(std::abs(n0 - 3.4764) < 1e-4, qPrintable(QString::number(n0, 'g', 10)));
+        const Run given = run(modelOf(slab(QString::fromUtf8(R"x({"type": "wave", "source": "user", "n": "%3 + (%1)", "kappa": "%2", "selection": {"only": ["core"]}})x")
                                                .arg(dn, 0, 'g', 17)
-                                               .arg(dalpha * 1.55e-6 / (4 * M_PI), 0, 'g', 17),
+                                               .arg(dalpha * 1.55e-6 / (4 * M_PI), 0, 'g', 17)
+                                               .arg(n0, 0, 'g', 17),
                                            false)));
         QVERIFY2(given.error.isEmpty(), qPrintable(given.error));
         Solution& a = *carriers.solution;
@@ -911,6 +1118,54 @@ private slots:
         qInfo("plasma dispersion: neff %.7f (given %.7f), loss %.4g dB/m (%.4g)", na, nb, la, lb);
         QVERIFY(std::abs(na - nb) < 2e-6);
         QVERIFY(std::abs(la / lb - 1) < 0.01);
+    }
+
+    // The library's indices of the wavelength: a mode at 1310 nm takes
+    // silicon's and its oxide's there (as with them given), germanium's
+    // (1550 nm's, given from 1.5 to 1.6 µm) said out of its range.
+    void indicesOfTheWavelength()
+    {
+        auto slab = [](const QString& core, const QString& wave) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "oxide", "position": ["0", "-1.5"], "size": ["0.4", "3.22"]},
+                             {"type": "rectangle", "name": "core", "size": ["0.4", "0.22"]}],
+                "materials": [{"material": "Silicon dioxide", "selection": {"only": ["oxide"]}},
+                              {"material": "%1", "selection": {"only": ["core"]}}],
+                "physics": [{"type": "modes", "tag": "emw", "features": [%2]}],
+                "mesh": {"size": "normal", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "0.03"}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "mode", "physics": ["emw"], "frequency": "1310[nm]", "modes": 1, "neff": "3"}]}]})json")
+                .arg(core, wave)
+                .toUtf8();
+        };
+        Scope at1310(&Scope::builtins());
+        at1310.setConstant(QStringLiteral("lambda0"), 1.31e-6, Dim::length());
+        auto index = [&](const char* name) {
+            return evaluateConstant(findMaterial(QLatin1String(name))->properties.value(QStringLiteral("n")).toString(), at1310, Dim()).value_or(NAN);
+        };
+        const double nsi = index("Silicon"), nox = index("Silicon dioxide");
+        QVERIFY2(nsi > 3.50 && nsi < 3.51 && nox > 1.446 && nox < 1.448, qPrintable(QStringLiteral("%1 %2").arg(nsi).arg(nox)));
+        const Run library = run(modelOf(slab(QStringLiteral("Silicon"), QString())));
+        const Run given = run(modelOf(slab(QStringLiteral("Silicon"), QStringLiteral(R"({"type": "wave", "source": "user", "n": "%1", "selection": {"only": ["core"]}},
+                                                                                         {"type": "wave", "source": "user", "n": "%2", "selection": {"only": ["oxide"]}})")
+                                                                       .arg(nsi, 0, 'g', 17)
+                                                                       .arg(nox, 0, 'g', 17))));
+        QVERIFY2(library.error.isEmpty() && given.error.isEmpty(), qPrintable(library.error + given.error));
+        Solution& a = *library.solution;
+        Solution& b = *given.solution;
+        a.select(a.snapshotCount() - 1);
+        b.select(b.snapshotCount() - 1);
+        const double na = global(a, QStringLiteral("emw.neff")), nb = global(b, QStringLiteral("emw.neff"));
+        qInfo("at 1310 nm: neff %.7f (the indices given %.7f)", na, nb);
+        QVERIFY(std::abs(na - nb) < 1e-9 && !a.log.join(QLatin1Char(' ')).contains(QLatin1String("holds from")));
+        const Run ge = run(modelOf(slab(QStringLiteral("Germanium"), QString())));
+        QVERIFY2(ge.error.isEmpty(), qPrintable(ge.error));
+        const QString log = ge.solution->log.join(QLatin1Char('\n'));
+        QVERIFY2(log.contains(QString::fromUtf8("Warning: Germanium's index holds from 1.5 to 1.6 µm (as its material gives it); here it is taken at 1.31 µm")), qPrintable(log));
+        // (Its index given on the feature: the user's, nothing said.)
+        const Run geGiven = run(modelOf(slab(QStringLiteral("Germanium"), QStringLiteral(R"({"type": "wave", "source": "user", "n": "4.36", "selection": {"only": ["core"]}})"))));
+        QVERIFY2(geGiven.error.isEmpty(), qPrintable(geGiven.error));
+        QVERIFY2(!geGiven.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("holds from")), qPrintable(geGiven.solution->log.join(QLatin1Char('\n'))));
     }
 
     void carriersInTime()

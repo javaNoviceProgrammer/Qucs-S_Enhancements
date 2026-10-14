@@ -90,7 +90,7 @@ struct Medium {
     bool saturation = false;         // high fields: Caughey and Thomas's too
     double vsatn = 1e5, vsatp = 8e4, betan = 2, betap = 1;
     bool wholeField = false;         // saturated by |E|, not by the force along the current
-    double zetan = 2.5, zetap = 2.2;   // the mobilities' (TL/300 K)^-ζ
+    double zetan = 2.5, zetap = 2.2;   // the mobilities' (TL/T)^-ζ
     // Lombardi's scattering at an insulator's surface: µac = B/E⊥ + C (N/1
     // cm⁻³)^λ / (T E⊥^⅓) (C in cm, V, s and K), µsr = δ/E⊥², E⊥ the field
     // across the nearest interface, each faded as e^(-d/lcrit) away from it.
@@ -425,7 +425,7 @@ private:
         double N = 0;                // its donors and acceptors (1/m³)
         // Surface scattering's: the nearest interface's normal, e^(-d/lcrit).
         double nx = 0, ny = 0, damp = 0;
-        // The lattice's temperature's: (TL/300 K)^-ζ of each carrier's.
+        // The lattice's temperature's: (TL/T)^-ζ of each carrier's.
         double tn = 1, tp = 1;
     };
     std::vector<ElementMobility> a_elements;
@@ -475,6 +475,17 @@ private:
     std::vector<std::pair<int, std::array<double, 3>>> a_nodePoint;   // a node's triangle and reference point
     std::vector<double> a_generation;  // by node (1/(m³ s)), at the last solve
     std::vector<OpticalSource> a_optical;
+    // Stimulated recombination (Lumerical's): on its domains, c (⟨R⟩ - R0)
+    // above threshold, R0 = J_th/(q t), ⟨R⟩ the domains' mean recombination
+    // at the last iterate (a_lastR, by node).
+    struct Stimulated {
+        std::vector<char> on;   // by domain
+        double c = 0, R0 = 0;
+    };
+    std::vector<Stimulated> a_stimulated;
+    mutable std::vector<double> a_lastR;
+    /// Each node's stimulated rate (1/m³ s) from a_lastR; none without it.
+    std::vector<double> stimulatedRates() const;
     double a_Gop = 0, a_Pin = 0;       // the optical generation's pairs per second, the light fed (W)
     std::vector<std::complex<double>> a_Hop;   // small-signal: each contact's current, the light modulated wholly (A)
     bool a_saturation = false, a_lombardi = false;
@@ -545,8 +556,11 @@ bool SemiconductorProblem::setup(QString* error)
         const QString tl = a_node->text(QStringLiteral("TL")).trimmed();
         a_TL = tl.isEmpty() ? Expression() : compile(tl, *a_node, QStringLiteral("TL"));
     }
+    // Its materials' and features' texts read T, its temperature (the
+    // library's gaps, densities of states, mobilities... are of it).
+    const MaterialScope atT(constants, a_T);
     auto number = [&](const QString& text, const Dim& dim, const QString& what) {
-        const std::optional<double> v = evaluateConstant(text, constants, dim, &why);
+        const std::optional<double> v = evaluateConstant(text, atT, dim, &why);
         if (!v) {
             problem(tr("%1: %2").arg(what, why));
             return NaN;
@@ -566,6 +580,7 @@ bool SemiconductorProblem::setup(QString* error)
         QVector<int> domains;
     };
     std::vector<DopingDef> dopings;
+    std::vector<DopingDef> stimulatedDefs;
     std::vector<const Node*> boundaryFeatures;
     std::vector<char> quantumOn(topo.domains.size(), 0);
     a_optical.clear();
@@ -584,6 +599,7 @@ bool SemiconductorProblem::setup(QString* error)
         else if (t == QLatin1String("semiconductor/radiative")) for (int d : picked) radiativeOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/impact")) for (int d : picked) impactOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/btbt")) for (int d : picked) btbtOf[std::size_t(d)] = &feature;
+        else if (t == QLatin1String("semiconductor/stimulated")) stimulatedDefs.push_back({&feature, picked});
         else if (t == QLatin1String("semiconductor/quantum")) {
             for (int d : picked) quantumOn[std::size_t(d)] = 1;
             a_quantumElectrons = feature.flag(QStringLiteral("electrons"));
@@ -621,6 +637,37 @@ bool SemiconductorProblem::setup(QString* error)
     }
     // Each domain's medium.
     bool referenced = false;
+    // A feature's parameter on domain d: as given on the feature (its source
+    // "user", or set there), else its material's (the library's model set:
+    // GaAs's own Caughey and Thomas, Auger...), else the feature's default -
+    // silicon's: said, by material, where the material is no silicon (its gap
+    // at 300 K not silicon's 1.12 eV, nor its entry Silicon).
+    std::map<QString, std::pair<QStringList, QStringList>> silicons;   // material: its domains, the models given silicon's
+    const MaterialScope at300(constants, 300);
+    auto siliconLike = [&at300](const Node* mat) {
+        if (!mat) return true;
+        if (mat->text(QStringLiteral("library")).compare(QLatin1String("Silicon"), Qt::CaseInsensitive) == 0) return true;
+        const std::optional<double> eg = evaluateConstant(materialProperty(*mat, QStringLiteral("Eg"), &at300), at300, Dim());
+        if (!eg) return true;
+        const double eV = Expression::compile(materialProperty(*mat, QStringLiteral("Eg"), &at300), at300).dim() == Dim::of(2, 1, -2) ? *eg / Q : *eg;
+        return std::abs(eV - 1.12) <= 0.03;
+    };
+    auto param = [&material, &atT, this, &siliconLike, &silicons, &topo](const Node* f, const QString& key, int d, const QString& model) -> QString {
+        if (f->text(QStringLiteral("source")) == QLatin1String("user") || f->props.contains(key)) return f->text(key);
+        const Node* mat = material[std::size_t(d)];
+        const QString mk = materialKeyOf(f->type, key);
+        if (!mk.isEmpty() && mat) {
+            const QString t = materialProperty(*mat, mk, &atT, a_T);
+            if (!t.trimmed().isEmpty()) return t;
+        }
+        if (!model.isEmpty() && !siliconLike(mat)) {
+            auto& [where, models] = silicons[mat->name()];
+            const QString object = topo.objectNames.value(topo.domains[std::size_t(d)].owner);
+            if (!where.contains(object)) where << object;
+            if (!models.contains(model)) models << model;
+        }
+        return f->text(key);
+    };
     for (int d : domains) {
         Medium& m = a_media[std::size_t(d)];
         const Node* mf = modelOf[std::size_t(d)];
@@ -629,7 +676,7 @@ bool SemiconductorProblem::setup(QString* error)
         const bool user = mf && mf->text(QStringLiteral("source")) == QLatin1String("user");
         auto text = [&](const QString& key) {
             if (user) return mf->text(key);
-            return mat ? materialProperty(*mat, key, &constants) : QString();
+            return mat ? materialProperty(*mat, key, &atT, a_T) : QString();
         };
         const QString where = tr("domain %1 (%2)").arg(d + 1).arg(object);
         if (!user && !mat) {
@@ -641,10 +688,10 @@ bool SemiconductorProblem::setup(QString* error)
         else m.epsr = number(eps, Dim(), where);
         m.semiconductor = !text(QStringLiteral("Eg")).trimmed().isEmpty();
         if (!m.semiconductor) continue;
-        m.Eg = energyOf(text(QStringLiteral("Eg")), constants, &why);
+        m.Eg = energyOf(text(QStringLiteral("Eg")), atT, &why);
         if (!std::isfinite(m.Eg)) problem(tr("%1: its band gap: %2").arg(where, why));
         const QString chi = text(QStringLiteral("chi"));
-        m.chi = chi.trimmed().isEmpty() ? 4.05 * Q : energyOf(chi, constants, &why);
+        m.chi = chi.trimmed().isEmpty() ? 4.05 * Q : energyOf(chi, atT, &why);
         for (const auto& [key, member, dim] : {std::tuple{QStringLiteral("Nc"), &Medium::Nc, conc}, std::tuple{QStringLiteral("Nv"), &Medium::Nv, conc},
                                                std::tuple{QStringLiteral("mun"), &Medium::mun, mobility},
                                                std::tuple{QStringLiteral("mup"), &Medium::mup, mobility}}) {
@@ -664,36 +711,41 @@ bool SemiconductorProblem::setup(QString* error)
             a_refNi = m.ni;
             referenced = true;
         }
+        auto value = [&](const Node* f, const QString& key, const Dim& dim, const QString& model) { return number(param(f, key, d, model), dim, where); };
         if (mf && mf->text(QStringLiteral("mobility")) == QLatin1String("masetti")) {
             m.masetti = true;
             const char* keys[2][8] = {{"m1n", "m2n", "mu1n", "pcn", "crn", "csn", "man", "mbn"}, {"m1p", "m2p", "mu1p", "pcp", "crp", "csp", "map", "mbp"}};
             for (int c = 0; c < 2; ++c)
                 for (int k = 0; k < 8; ++k)
-                    m.ms[c][k] = number(mf->text(QString::fromLatin1(keys[c][k])), k < 3 ? mobility : k < 6 ? conc : Dim(), where);
+                    m.ms[c][k] = value(mf, QString::fromLatin1(keys[c][k]), k < 3 ? mobility : k < 6 ? conc : Dim(), tr("Masetti's mobility"));
             for (int c = 0; c < 2; ++c)
                 if (!(m.ms[c][4] > 0) || !(m.ms[c][5] > 0) || !std::isfinite(m.ms[c][6]) || !std::isfinite(m.ms[c][7]))
                     problem(tr("%1: Masetti's Cr and Cs must be more than 0").arg(where));
         }
         if (mf && mf->text(QStringLiteral("mobility")) == QLatin1String("doping")) {
             m.dopingMobility = true;
-            m.munMin = number(mf->text(QStringLiteral("munmin")), mobility, where);
-            m.nRefN = number(mf->text(QStringLiteral("nrefn")), conc, where);
-            m.alphaN = number(mf->text(QStringLiteral("alphan")), Dim(), where);
-            m.mupMin = number(mf->text(QStringLiteral("mupmin")), mobility, where);
-            m.nRefP = number(mf->text(QStringLiteral("nrefp")), conc, where);
-            m.alphaP = number(mf->text(QStringLiteral("alphap")), Dim(), where);
+            const QString ct = tr("Caughey and Thomas's mobility");
+            m.munMin = value(mf, QStringLiteral("munmin"), mobility, ct);
+            m.nRefN = value(mf, QStringLiteral("nrefn"), conc, ct);
+            m.alphaN = value(mf, QStringLiteral("alphan"), Dim(), ct);
+            m.mupMin = value(mf, QStringLiteral("mupmin"), mobility, ct);
+            m.nRefP = value(mf, QStringLiteral("nrefp"), conc, ct);
+            m.alphaP = value(mf, QStringLiteral("alphap"), Dim(), ct);
         }
         if (mf) {
-            m.zetan = number(mf->text(QStringLiteral("zetan")), Dim(), where);
-            m.zetap = number(mf->text(QStringLiteral("zetap")), Dim(), where);
+            // (Said only where a lattice temperature TL scales them.)
+            const QString zetas = a_TL.isValid() ? tr("the mobilities' temperature exponents") : QString();
+            m.zetan = value(mf, QStringLiteral("zetan"), Dim(), zetas);
+            m.zetap = value(mf, QStringLiteral("zetap"), Dim(), zetas);
             if (!std::isfinite(m.zetan) || !std::isfinite(m.zetap)) m.zetan = m.zetap = 0;
         }
         if (mf && mf->flag(QStringLiteral("saturation"))) {
             m.saturation = a_saturation = true;
-            m.vsatn = number(mf->text(QStringLiteral("vsatn")), velocity, where);
-            m.vsatp = number(mf->text(QStringLiteral("vsatp")), velocity, where);
-            m.betan = number(mf->text(QStringLiteral("betan")), Dim(), where);
-            m.betap = number(mf->text(QStringLiteral("betap")), Dim(), where);
+            const QString sat = tr("saturation");
+            m.vsatn = value(mf, QStringLiteral("vsatn"), velocity, sat);
+            m.vsatp = value(mf, QStringLiteral("vsatp"), velocity, sat);
+            m.betan = value(mf, QStringLiteral("betan"), Dim(), sat);
+            m.betap = value(mf, QStringLiteral("betap"), Dim(), sat);
             if (!(m.betan > 0) || !(m.betap > 0)) problem(tr("%1: its saturation exponents β must be more than 0").arg(where));
             m.wholeField = mf->text(QStringLiteral("driving")) == QLatin1String("field");
             a_alongCurrent = a_alongCurrent || !m.wholeField;
@@ -701,33 +753,36 @@ bool SemiconductorProblem::setup(QString* error)
         if (mf && mf->flag(QStringLiteral("surface"))) {
             m.surface = a_lombardi = true;
             const Dim perSecond = Dim::voltage() / Dim::of(0, 0, 1);
-            m.sBn = number(mf->text(QStringLiteral("Bn")), velocity, where);
-            m.sCn = number(mf->text(QStringLiteral("Cn")), Dim(), where);
-            m.sLn = number(mf->text(QStringLiteral("lambdan")), Dim(), where);
-            m.sDn = number(mf->text(QStringLiteral("deltan")), perSecond, where);
-            m.sBp = number(mf->text(QStringLiteral("Bp")), velocity, where);
-            m.sCp = number(mf->text(QStringLiteral("Cp")), Dim(), where);
-            m.sLp = number(mf->text(QStringLiteral("lambdap")), Dim(), where);
-            m.sDp = number(mf->text(QStringLiteral("deltap")), perSecond, where);
-            m.lcrit = number(mf->text(QStringLiteral("lcrit")), Dim::length(), where);
+            const QString lombardi = tr("Lombardi's surface scattering");
+            m.sBn = value(mf, QStringLiteral("Bn"), velocity, lombardi);
+            m.sCn = value(mf, QStringLiteral("Cn"), Dim(), lombardi);
+            m.sLn = value(mf, QStringLiteral("lambdan"), Dim(), lombardi);
+            m.sDn = value(mf, QStringLiteral("deltan"), perSecond, lombardi);
+            m.sBp = value(mf, QStringLiteral("Bp"), velocity, lombardi);
+            m.sCp = value(mf, QStringLiteral("Cp"), Dim(), lombardi);
+            m.sLp = value(mf, QStringLiteral("lambdap"), Dim(), lombardi);
+            m.sDp = value(mf, QStringLiteral("deltap"), perSecond, lombardi);
+            m.lcrit = value(mf, QStringLiteral("lcrit"), Dim::length(), lombardi);
             if (!(m.sBn > 0) || !(m.sCn > 0) || !(m.sDn > 0) || !(m.sBp > 0) || !(m.sCp > 0) || !(m.sDp > 0) || !(m.lcrit > 0))
                 problem(tr("%1: its surface scattering's B, C, δ and lcrit must be more than 0").arg(where));
         }
         if (mf && mf->flag(QStringLiteral("bgn"))) {
             m.bgn = true;
-            m.bgnE = energyOf(mf->text(QStringLiteral("Ebgn")), constants, &why);
+            const QString bgn = tr("band gap narrowing");
+            m.bgnE = energyOf(param(mf, QStringLiteral("Ebgn"), d, bgn), atT, &why);
             if (!std::isfinite(m.bgnE)) problem(tr("%1: its band gap narrowing's energy: %2").arg(where, why));
-            m.bgnN = number(mf->text(QStringLiteral("Nbgn")), conc, where);
-            m.bgnC = number(mf->text(QStringLiteral("Cbgn")), Dim(), where);
+            m.bgnN = value(mf, QStringLiteral("Nbgn"), conc, bgn);
+            m.bgnC = value(mf, QStringLiteral("Cbgn"), Dim(), bgn);
             if (!(m.bgnN > 0) || !(m.bgnC >= 0)) problem(tr("%1: its band gap narrowing's Nref must be more than 0, C no less").arg(where));
         }
         if (mf && mf->flag(QStringLiteral("fermi"))) m.fermi = a_fermi = true;
         if (mf && mf->flag(QStringLiteral("incomplete"))) {
             m.incomplete = a_incomplete = true;
-            const double Ed = energyOf(mf->text(QStringLiteral("Ed")), constants, &why);
-            const double Ea = energyOf(mf->text(QStringLiteral("Ea")), constants, &why);
-            m.gd = number(mf->text(QStringLiteral("gd")), Dim(), where);
-            m.ga = number(mf->text(QStringLiteral("ga")), Dim(), where);
+            const QString levels = tr("its dopants' levels");
+            const double Ed = energyOf(param(mf, QStringLiteral("Ed"), d, levels), atT, &why);
+            const double Ea = energyOf(param(mf, QStringLiteral("Ea"), d, levels), atT, &why);
+            m.gd = value(mf, QStringLiteral("gd"), Dim(), levels);
+            m.ga = value(mf, QStringLiteral("ga"), Dim(), levels);
             if (!std::isfinite(Ed) || !std::isfinite(Ea) || !(m.gd > 0) || !(m.ga > 0))
                 problem(tr("%1: its dopants' levels and degeneracies (more than 0)").arg(where));
             m.n1d = m.Nc * std::exp(-Ed / (KB * a_T));
@@ -736,36 +791,40 @@ bool SemiconductorProblem::setup(QString* error)
         if (const Node* r = srhOf[std::size_t(d)]) {
             m.srh = true;
             const bool own = r->text(QStringLiteral("source")) == QLatin1String("user");
-            auto rt = [&](const QString& key) { return own ? r->text(key) : mat ? materialProperty(*mat, key, &constants) : QString(); };
+            auto rt = [&](const QString& key) { return own ? r->text(key) : mat ? materialProperty(*mat, key, &atT, a_T) : QString(); };
             const QString tn = rt(QStringLiteral("taun")), tp = rt(QStringLiteral("taup"));
             if (tn.trimmed().isEmpty() || tp.trimmed().isEmpty()) problem(tr("%1: its material has no carrier lifetimes (taun, taup)").arg(where));
             else {
-                // (Of x and y: each node's; a constant as it was.)
+                // (Of x and y: each node's; a constant as it was. T the
+                // physics' temperature.)
                 const Node& from = own ? *r : *mat;
-                m.taunOf = compile(tn, from, QStringLiteral("taun"), false);
-                m.taupOf = compile(tp, from, QStringLiteral("taup"), false);
+                const MaterialScope pointAtT(a_s.pointScope(), a_T);
+                m.taunOf = compile(tn, from, QStringLiteral("taun"), false, true, &pointAtT);
+                m.taupOf = compile(tp, from, QStringLiteral("taup"), false, true, &pointAtT);
                 m.taun = m.taunOf.isConstant() ? m.taunOf.constant() : 1.0;
                 m.taup = m.taupOf.isConstant() ? m.taupOf.constant() : 1.0;
                 if (m.taunOf.isConstant() && !(m.taun > 0)) problem(tr("%1: its electron lifetime must be more than 0").arg(where));
                 if (m.taupOf.isConstant() && !(m.taup > 0)) problem(tr("%1: its hole lifetime must be more than 0").arg(where));
             }
-            m.Et = energyOf(r->text(QStringLiteral("Et")), constants, &why);
+            m.Et = energyOf(param(r, QStringLiteral("Et"), d, QString()), atT, &why);
             if (!std::isfinite(m.Et)) m.Et = 0;
             if (r->text(QStringLiteral("dependence")) == QLatin1String("doping")) {
                 m.fossum = true;
-                m.N0n = number(r->text(QStringLiteral("N0n")), conc, r->name());
-                m.N0p = number(r->text(QStringLiteral("N0p")), conc, r->name());
-                m.fA = number(r->text(QStringLiteral("fA")), Dim(), r->name());
-                m.fB = number(r->text(QStringLiteral("fB")), Dim(), r->name());
-                m.fC = number(r->text(QStringLiteral("fC")), Dim(), r->name());
-                m.fE = number(r->text(QStringLiteral("fE")), Dim(), r->name());
+                const QString fossum = tr("Fossum's doping dependence");
+                m.N0n = value(r, QStringLiteral("N0n"), conc, fossum);
+                m.N0p = value(r, QStringLiteral("N0p"), conc, fossum);
+                m.fA = value(r, QStringLiteral("fA"), Dim(), fossum);
+                m.fB = value(r, QStringLiteral("fB"), Dim(), fossum);
+                m.fC = value(r, QStringLiteral("fC"), Dim(), fossum);
+                m.fE = value(r, QStringLiteral("fE"), Dim(), fossum);
                 if (!(m.N0n > 0) || !(m.N0p > 0) || !(m.fA >= 0) || !(m.fB >= 0) || !(m.fC >= 0) || !(m.fA + m.fB + m.fC > 0) || !std::isfinite(m.fE))
                     problem(tr("%1: its doping dependence's N0 more than 0, A, B and C no less (not all 0)").arg(r->name()));
             }
             if (r->flag(QStringLiteral("tat"))) {
                 // FΓ = √(24 m* m0 (kT)³)/(q ħ).
                 const double kT = KB * a_T;
-                const double mtn = number(r->text(QStringLiteral("mtn")), Dim(), r->name()), mtp = number(r->text(QStringLiteral("mtp")), Dim(), r->name());
+                const QString tat = tr("trap-assisted tunnelling's masses");
+                const double mtn = value(r, QStringLiteral("mtn"), Dim(), tat), mtp = value(r, QStringLiteral("mtp"), Dim(), tat);
                 if (!(mtn > 0) || !(mtp > 0)) problem(tr("%1: its tunnelling masses must be more than 0").arg(r->name()));
                 else {
                     m.tat = a_tat = true;
@@ -775,18 +834,19 @@ bool SemiconductorProblem::setup(QString* error)
             }
         }
         if (const Node* a = augerOf[std::size_t(d)]) {
-            m.Cn = number(a->text(QStringLiteral("Cn")), Dim::of(6, 0, -1), where);
-            m.Cp = number(a->text(QStringLiteral("Cp")), Dim::of(6, 0, -1), where);
+            m.Cn = value(a, QStringLiteral("Cn"), Dim::of(6, 0, -1), tr("Auger's coefficients"));
+            m.Cp = value(a, QStringLiteral("Cp"), Dim::of(6, 0, -1), tr("Auger's coefficients"));
         }
-        if (const Node* r = radiativeOf[std::size_t(d)]) m.B = number(r->text(QStringLiteral("B")), Dim::of(3, 0, -1), where);
+        if (const Node* r = radiativeOf[std::size_t(d)]) m.B = value(r, QStringLiteral("B"), Dim::of(3, 0, -1), tr("the radiative coefficient"));
         if (const Node* bt = btbtOf[std::size_t(d)]) {
             // A in cm^-1/2 V^-5/2 s^-1 for γ 2.5 (Hurkx's, Klaassen's
             // silicon): as given, scaled to SI for E in V/m.
             m.tunnelling = a_tunnelling = true;
             m.btGeneration = bt->text(QStringLiteral("kind")) == QLatin1String("generation");
-            m.btGamma = number(bt->text(QStringLiteral("gamma")), Dim(), bt->name());
-            const double Acm = number(bt->text(QStringLiteral("A")), Dim(), bt->name());
-            m.btB = number(bt->text(QStringLiteral("B")), Dim::of(1, 1, -3, -1), bt->name());
+            const QString btbt = tr("band-to-band tunnelling");
+            m.btGamma = number(param(bt, QStringLiteral("gamma"), d, btbt), Dim(), bt->name());
+            const double Acm = number(param(bt, QStringLiteral("A"), d, btbt), Dim(), bt->name());
+            m.btB = number(param(bt, QStringLiteral("B"), d, btbt), Dim::of(1, 1, -3, -1), bt->name());
             if (!(Acm > 0) || !(m.btB > 0) || !std::isfinite(m.btGamma)) problem(tr("%1: its A and B must be more than 0").arg(bt->name()));
             m.btA = Acm * 1e6 * std::pow(1e-2, m.btGamma);   // (1/cm³ s per (V/cm)^γ → 1/m³ s per (V/m)^γ)
         }
@@ -794,20 +854,8 @@ bool SemiconductorProblem::setup(QString* error)
             m.ionization = a_ionizationAny = true;
             m.ionizationCurrents = ii->flag(QStringLiteral("currents"));
             a_ionization = a_ionization || m.ionizationCurrents;
-            if (ii->text(QStringLiteral("model")) == QLatin1String("user")) {
-                const Dim perMetre = Dim::of(-1), field = Dim::of(1, 1, -3, -1);
-                m.an = number(ii->text(QStringLiteral("an")), perMetre, ii->name());
-                m.bn = number(ii->text(QStringLiteral("bn")), field, ii->name());
-                m.an2 = number(ii->text(QStringLiteral("an2")), perMetre, ii->name());
-                m.bn2 = number(ii->text(QStringLiteral("bn2")), field, ii->name());
-                m.ap = number(ii->text(QStringLiteral("ap")), perMetre, ii->name());
-                m.bp = number(ii->text(QStringLiteral("bp")), field, ii->name());
-                m.ap2 = number(ii->text(QStringLiteral("ap2")), perMetre, ii->name());
-                m.bp2 = number(ii->text(QStringLiteral("bp2")), field, ii->name());
-                m.E0 = number(ii->text(QStringLiteral("E0")), field, ii->name());
-                m.ionBetaN = number(ii->text(QStringLiteral("betan")), Dim(), ii->name());
-                m.ionBetaP = number(ii->text(QStringLiteral("betap")), Dim(), ii->name());
-            } else {
+            const QString model = ii->text(QStringLiteral("model"));
+            if (model == QLatin1String("silicon")) {
                 // Silicon at 300 K (van Overstraeten and de Man, 1970).
                 m.an = m.an2 = 7.03e7;
                 m.bn = m.bn2 = 1.231e8;
@@ -817,9 +865,58 @@ bool SemiconductorProblem::setup(QString* error)
                 m.bp2 = 1.693e8;
                 m.E0 = 4e7;
                 m.ionBetaN = m.ionBetaP = 1;
+            } else {
+                // Chynoweth's, as given (user) or its material's (one range
+                // where the material has one: Selberherr's).
+                const Dim perMetre = Dim::of(-1), field = Dim::of(1, 1, -3, -1);
+                const QString ionization = tr("impact ionization's coefficients");
+                auto coefficient = [&](const char* key, const char* first, const Dim& dim) {
+                    const QString k = QString::fromLatin1(key);
+                    if (model == QLatin1String("user") || ii->props.contains(k)) return number(ii->text(k), dim, ii->name());
+                    // (A second range's: the material's, else its first's.)
+                    if (first && mat && materialProperty(*mat, materialKeyOf(ii->type, k), &atT, a_T).trimmed().isEmpty()
+                        && !materialProperty(*mat, materialKeyOf(ii->type, QString::fromLatin1(first)), &atT, a_T).trimmed().isEmpty())
+                        return number(param(ii, QString::fromLatin1(first), d, ionization), dim, ii->name());
+                    return number(param(ii, k, d, ionization), dim, ii->name());
+                };
+                m.an = coefficient("an", nullptr, perMetre);
+                m.bn = coefficient("bn", nullptr, field);
+                m.an2 = coefficient("an2", "an", perMetre);
+                m.bn2 = coefficient("bn2", "bn", field);
+                m.ap = coefficient("ap", nullptr, perMetre);
+                m.bp = coefficient("bp", nullptr, field);
+                m.ap2 = coefficient("ap2", "ap", perMetre);
+                m.bp2 = coefficient("bp2", "bp", field);
+                m.ionBetaN = coefficient("betan", nullptr, Dim());
+                m.ionBetaP = coefficient("betap", nullptr, Dim());
+                // (A material of one range: its second the first's, whatever E0.)
+                m.E0 = coefficient("E0", nullptr, field);
             }
         }
     }
+    // Stimulated recombination: its share, its threshold's rate.
+    a_stimulated.clear();
+    a_lastR.clear();
+    for (const DopingDef& sd : stimulatedDefs) {
+        if (sd.domains.isEmpty()) continue;
+        const Node& f = *sd.node;
+        const int d0 = sd.domains.front();
+        Stimulated st;
+        st.on.assign(topo.domains.size(), 0);
+        for (int d : sd.domains) st.on[std::size_t(d)] = 1;
+        st.c = number(param(&f, QStringLiteral("c"), d0, QString()), Dim(), f.name());
+        const double Jth = number(param(&f, QStringLiteral("Jth"), d0, QString()), Dim::of(-2, 0, 0, 1), f.name());
+        const double thickness = number(param(&f, QStringLiteral("t"), d0, QString()), Dim::length(), f.name());
+        if (!(st.c >= 0 && st.c <= 1) || !(Jth >= 0) || !(thickness > 0))
+            problem(tr("%1: its share c from 0 to 1, its threshold no less than 0, its thickness more than 0").arg(f.name()));
+        else st.R0 = Jth / (Q * thickness);
+        a_stimulated.push_back(st);
+    }
+    // (Said once for each material: what is silicon's on it.)
+    for (const auto& [name, said] : silicons)
+        a_s.log << tr("Warning: %1 (%2): its material gives no parameters for %3 - silicon's (the features' defaults) taken; give them "
+                      "on the feature or the material")
+                       .arg(name, said.first.join(QStringLiteral(", ")), said.second.join(QStringLiteral(", ")));
     if (!referenced && !domains.isEmpty()) problem(tr("%1: none of its domains is a semiconductor (a material with a band gap Eg)").arg(a_node->name()));
     // Elements and nodes.
     const int nt = sp.elements();
@@ -1294,17 +1391,19 @@ bool SemiconductorProblem::setup(QString* error)
             const QString sub = bf->text(QStringLiteral("substrate")).trimmed();
             if (!sub.isEmpty()) {
                 QString compound = sub;
-                double sx = 0;
+                double sx = 0, sy = 0;
                 for (const Node& m : model.materials().children)
                     if (m.name().compare(sub, Qt::CaseInsensitive) == 0 || m.text(QStringLiteral("library")).compare(sub, Qt::CaseInsensitive) == 0) {
                         compound = materialProperty(m, QStringLiteral("compound"));
                         sx = evaluateConstant(materialProperty(m, QStringLiteral("x")), constants, Dim()).value_or(0);
+                        sy = evaluateConstant(materialProperty(m, QStringLiteral("y")), constants, Dim()).value_or(0);
                     }
                 if (const std::optional<MaterialEntry> e = findMaterial(sub); e && compound == sub) {
                     compound = e->properties.value(QStringLiteral("compound")).toString();
                     sx = evaluateConstant(e->properties.value(QStringLiteral("x")).toString(), constants, Dim()).value_or(0);
+                    sy = evaluateConstant(e->properties.value(QStringLiteral("y")).toString(), constants, Dim()).value_or(0);
                 }
-                if (const std::optional<WurtziteParameters> w = wurtziteParameters(compound, sx, a_T)) lattice = w->a;
+                if (const std::optional<WurtziteParameters> w = wurtziteParameters(compound, sx, a_T, nullptr, sy)) lattice = w->a;
                 else lattice = number(sub, Dim::length(), tr("%1's substrate (a nitride or a lattice constant)").arg(bf->name()));
             }
             auto polarizationOf = [&](int d) -> std::optional<double> {
@@ -1312,7 +1411,8 @@ bool SemiconductorProblem::setup(QString* error)
                 if (!mat) return std::nullopt;
                 const QString compound = materialProperty(*mat, QStringLiteral("compound")).trimmed();
                 const double x = evaluateConstant(materialProperty(*mat, QStringLiteral("x")), constants, Dim()).value_or(0);
-                const std::optional<WurtziteParameters> w = isWurtzite(compound) ? wurtziteParameters(compound, x, a_T) : std::nullopt;
+                const double y = evaluateConstant(materialProperty(*mat, QStringLiteral("y")), constants, Dim()).value_or(0);
+                const std::optional<WurtziteParameters> w = isWurtzite(compound) ? wurtziteParameters(compound, x, a_T, nullptr, y) : std::nullopt;
                 if (!w) return std::nullopt;
                 const double exx = std::isfinite(lattice) ? (lattice - w->a) / w->a : 0, ezz = -2 * w->C13 / w->C33 * exx;
                 return w->Psp + 2 * w->e31 * exx + w->e33 * ezz;
@@ -1477,14 +1577,41 @@ bool SemiconductorProblem::setup(QString* error)
         c.name = bf->text(QStringLiteral("name"));
         c.kind = t == QLatin1String("semiconductor/ohmic") ? Contact::Ohmic : t == QLatin1String("semiconductor/gate") ? Contact::Gate : Contact::Schottky;
         c.V0 = compile(bf->text(QStringLiteral("V0")), *bf, QStringLiteral("V0"), false);
+        // The metal beside it - a domain on its far side whose material has a
+        // work function φ (the library's metals): its own where none is set.
+        double metalPhi = NaN, semiconductorChi = NaN;
+        QString metalName;
+        for (int b : picked)
+            for (int d : {topo.boundaries[std::size_t(b)].up, topo.boundaries[std::size_t(b)].down}) {
+                if (d < 0) continue;
+                const Node* mat = material[std::size_t(d)];
+                if (a_media[std::size_t(d)].semiconductor) {
+                    if (!std::isfinite(semiconductorChi)) semiconductorChi = a_media[std::size_t(d)].chi;
+                    continue;
+                }
+                const QString phi = mat ? materialProperty(*mat, QStringLiteral("phi"), &atT, a_T) : QString();
+                if (phi.trimmed().isEmpty() || std::isfinite(metalPhi)) continue;
+                metalPhi = energyOf(phi, atT, &why);
+                metalName = mat->name();
+            }
         if (c.kind == Contact::Schottky) {
-            c.phiB = energyOf(bf->text(QStringLiteral("phiB")), constants, &why);
+            if (!bf->props.contains(QStringLiteral("phiB")) && std::isfinite(metalPhi) && std::isfinite(semiconductorChi)) {
+                c.phiB = metalPhi - semiconductorChi;
+                a_s.log << tr("%1: its barrier its metal's, %2: φ %3 eV less χ %4 eV, %5 eV")
+                               .arg(bf->name(), metalName, formatNumber(metalPhi / Q, 4), formatNumber(semiconductorChi / Q, 4),
+                                    formatNumber(c.phiB / Q, 4));
+            } else
+                c.phiB = energyOf(bf->text(QStringLiteral("phiB")), constants, &why);
             if (!std::isfinite(c.phiB)) problem(tr("%1: its barrier: %2").arg(bf->name(), why));
             c.vn = number(bf->text(QStringLiteral("vn")), velocity, bf->name());
             c.vp = number(bf->text(QStringLiteral("vp")), velocity, bf->name());
         }
         if (c.kind == Contact::Gate) {
-            c.phim = energyOf(bf->text(QStringLiteral("phim")), constants, &why);
+            if (!bf->props.contains(QStringLiteral("phim")) && std::isfinite(metalPhi)) {
+                c.phim = metalPhi;
+                a_s.log << tr("%1: its work function its metal's, %2: %3 eV").arg(bf->name(), metalName, formatNumber(metalPhi / Q, 4));
+            } else
+                c.phim = energyOf(bf->text(QStringLiteral("phim")), constants, &why);
             if (!std::isfinite(c.phim)) problem(tr("%1: its work function: %2").arg(bf->name(), why));
         }
         for (const Contact& other : a_contacts)
@@ -1980,6 +2107,29 @@ void SemiconductorProblem::updateMobilities(const Eigen::VectorXd& x)
     if (a_saturation || a_lombardi) edgeWeights(&x);
 }
 
+std::vector<double> SemiconductorProblem::stimulatedRates() const
+{
+    std::vector<double> rates;
+    if (a_stimulated.empty()) return rates;
+    rates.assign(std::size_t(a_n), 0.0);
+    if (a_lastR.size() != std::size_t(a_n)) return rates;
+    for (const Stimulated& st : a_stimulated) {
+        double volume = 0, recombined = 0;
+        for (int i = 0; i < a_n; ++i) {
+            const int d = a_nodeDomain[std::size_t(i)];
+            if (d < 0 || !st.on[std::size_t(d)]) continue;
+            volume += a_box[std::size_t(i)];
+            recombined += a_box[std::size_t(i)] * a_lastR[std::size_t(i)];
+        }
+        const double rate = volume > 0 ? st.c * std::max(0.0, recombined / volume - st.R0) : 0.0;
+        for (int i = 0; i < a_n; ++i) {
+            const int d = a_nodeDomain[std::size_t(i)];
+            if (d >= 0 && st.on[std::size_t(d)]) rates[std::size_t(i)] += rate;
+        }
+    }
+    return rates;
+}
+
 void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const std::vector<double>* history, Eigen::VectorXd& F,
                                     std::vector<Eigen::Triplet<double>>* jac) const
 {
@@ -2242,6 +2392,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
     // At each semiconductor node: the space charge, recombination, generation,
     // the carriers' change in time.
     const std::size_t N = std::size_t(a_n);
+    const std::vector<double> stimulated = stimulatedRates();
+    if (!a_stimulated.empty() && a_lastR.size() != N) a_lastR.assign(N, 0.0);
     for (int i = 0; i < a_n; ++i) {
         const int d = a_nodeDomain[std::size_t(i)];
         if (d < 0) continue;
@@ -2322,6 +2474,11 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             dRp += m.B * n;
         }
         const double G = a_generation.empty() ? 0.0 : a_generation[std::size_t(i)];
+        // (Stimulated: the last iterate's mean, its own derivative left out.)
+        if (!stimulated.empty()) {
+            a_lastR[std::size_t(i)] = R;
+            R += stimulated[std::size_t(i)];
+        }
         F(rn) -= Q * A * (R - G);
         F(rp) += Q * A * (R - G);
         add(rn, rn, -Q * A * dRn);
@@ -3367,7 +3524,7 @@ void SemiconductorProblem::latticeTemperature()
 {
     if (!a_TL.isValid()) return;
     // Each triangle's lattice temperature at its middle: its mobilities'
-    // factors (TL/300 K)^-ζ, the edges weighed again.
+    // factors (TL/T)^-ζ, the edges weighed again.
     PointEvaluator ev(a_s);
     for (int t = 0; t < int(a_elements.size()); ++t) {
         ElementMobility& em = a_elements[std::size_t(t)];
@@ -3376,8 +3533,9 @@ void SemiconductorProblem::latticeTemperature()
         const double T = ev.eval(a_TL);
         if (!(T > 0)) continue;
         const Medium& m = a_media[std::size_t(em.domain)];
-        em.tn = std::pow(T / 300, -m.zetan);
-        em.tp = std::pow(T / 300, -m.zetap);
+        // (Its mobilities are its material's at the physics' T: scaled from there.)
+        em.tn = std::pow(T / a_T, -m.zetan);
+        em.tp = std::pow(T / a_T, -m.zetap);
     }
     edgeWeights(nullptr);
 }
@@ -3658,6 +3816,13 @@ void SemiconductorProblem::setGlobals()
             }
         a_s.setGlobal(p + QStringLiteral("Ifn"), current, Dim::current(),
                       tr("Fowler-Nordheim tunnelling's current through the insulators asked, at the mean field over each one's barrier (after the solve)"));
+    }
+    if (!a_stimulated.empty()) {
+        const std::vector<double> rates = stimulatedRates();
+        double current = 0;
+        for (int i = 0; i < a_n; ++i) current += Q * a_box[std::size_t(i)] * rates[std::size_t(i)];
+        a_s.setGlobal(p + QStringLiteral("Istim"), current, Dim::current(),
+                      tr("stimulated recombination's current: the light's, its photons' rate semi.Istim/q (by the norm length)"));
     }
     if (a_ionizationAny && field().solved) {
         ionizationIntegrals(stateVector());

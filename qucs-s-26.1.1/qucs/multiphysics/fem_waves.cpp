@@ -61,6 +61,10 @@ public:
         mutable double eaZeroKey[5] = {NaN, NaN, NaN, NaN, NaN};
         mutable double eaZero = 0;
         bool pml = false;
+        // Where its material's index holds (its nrange; none: anywhere), and
+        // whose.
+        double from = 0, to = std::numeric_limits<double>::infinity();
+        QString rangeOf;
         // A PML's stretching: along x where it is left or right of the inner
         // region [x0, x1], growing to its own edge there; along y likewise
         // (a frame round the region: both at its corners).
@@ -68,6 +72,25 @@ public:
         double outer[4] = {NaN, NaN, NaN, NaN};
     };
     std::vector<Domain> domains;
+    mutable QSet<QString> warned;   // (the materials said out of their range)
+
+    /// What is said where an index is taken at \a omega outside where its
+    /// material holds it - each material once.
+    QStringList outOfRange(double omega) const
+    {
+        QStringList out;
+        if (!(omega > 0)) return out;
+        const double lambda = 2 * M_PI * C0 / omega;
+        for (const Domain& m : domains) {
+            if (!m.defined || m.rangeOf.isEmpty() || (lambda >= m.from * (1 - 1e-9) && lambda <= m.to * (1 + 1e-9)) || warned.contains(m.rangeOf))
+                continue;
+            warned.insert(m.rangeOf);
+            out << tr("Warning: %1's index holds from %2 to %3 µm (as its material gives it); here it is taken at %4 µm - give it for "
+                      "this wavelength")
+                       .arg(m.rangeOf, formatNumber(m.from * 1e6, 4), formatNumber(m.to * 1e6, 4), formatNumber(lambda * 1e6, 4));
+        }
+        return out;
+    }
 
     /// ε (each axis) and µ at the point the evaluator is at, at angular
     /// frequency \a omega; \a k0 for the PML's stretching.
@@ -183,6 +206,7 @@ public:
         const Topology& topo = s.topology();
         const std::size_t nd = topo.domains.size();
         domains.assign(nd, Domain());
+        warned.clear();
         std::vector<const Node*> modelOf(nd, nullptr);
         std::vector<char> pml(nd, 0);
         QString why;
@@ -234,6 +258,17 @@ public:
                 }
                 const QString kappa = text(QStringLiteral("kappa"));
                 if (!kappa.trimmed().isEmpty()) m.kappa = compile(kappa, from, QStringLiteral("kappa"));
+                // (Its wavelengths: "from to", lengths.)
+                const QStringList range = user ? QStringList() : property(*mat, QStringLiteral("nrange")).simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                if (range.size() == 2) {
+                    const std::optional<double> a = evaluateConstant(range[0], s.parameters().scope, Dim::length());
+                    const std::optional<double> b = evaluateConstant(range[1], s.parameters().scope, Dim::length());
+                    if (a && b && *a > 0 && *b > *a) {
+                        m.from = *a;
+                        m.to = *b;
+                        m.rangeOf = mat->name();
+                    }
+                }
             } else {
                 if (anisotropic) {
                     const char* keys[3] = {"epsxx", "epsyy", "epszz"};
@@ -463,6 +498,7 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     const double omega = 2 * M_PI * o.frequency;
     a_k0 = omega / C0;
     const double k0 = a_k0;
+    for (const QString& w : a_media.outOfRange(omega)) a_s.log << w;
     if (!(k0 > 0)) {
         *error = tr("%1: a mode analysis wants a frequency more than 0").arg(a_node->name());
         return -1;
@@ -1065,6 +1101,7 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
     const double omega = 2 * M_PI * o.frequency;
     a_omega = omega;
     const double k0 = omega / C0;
+    for (const QString& w : a_media.outOfRange(omega)) a_s.log << w;
     const int per = sp.perElement();
     std::vector<Eigen::Triplet<cd>> trip;
     Eigen::VectorXcd F = Eigen::VectorXcd::Zero(a_neq);

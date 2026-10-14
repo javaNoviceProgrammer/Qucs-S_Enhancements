@@ -346,6 +346,15 @@ double triangleBreakdown(double N)
 /// -k T'' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, V = J ∫ρ dx - T by finite
 /// differences (Picard's in ρ(T)), J by the secant's on V. Its current
 /// density (A/m²), its middle's temperature in \a Tmid.
+/// The library's silicon's conductivity of heat, 130 W/(m K) (T/300 K)^-1.65:
+/// the temperature at Kirchhoff's U = ∫ k(T)/k(300 K) dT from 300 K (its
+/// -k(300 K) U'' = Q what -∇·(k ∇T) = Q is).
+double kirchhoffTemperature(double U)
+{
+    const double a = 1 - 1.65;
+    return 300 * std::pow(std::max(1 + a * U / 300, 1e-9), 1 / a);
+}
+
 double selfHeated(double L, double V, double* Tmid)
 {
     const double k = 130, n = 1e23, mu = 0.14;
@@ -353,14 +362,15 @@ double selfHeated(double L, double V, double* Tmid)
     const int m = 2000;
     const double h = L / m;
     auto voltage = [&](double J) {
-        std::vector<double> T(m + 1, 300.0);
+        // (Kirchhoff's U, 0 at the ends: the conductivity's change with T.)
+        std::vector<double> U(m + 1, 0.0), T(m + 1, 300.0);
         for (int it = 0; it < 200; ++it) {
-            // -k (T[i-1] - 2T[i] + T[i+1])/h² = J² ρ(T[i]) (the Thomas algorithm).
+            // -k (U[i-1] - 2U[i] + U[i+1])/h² = J² ρ(T[i]) (the Thomas algorithm).
             std::vector<double> a(m + 1, -1), b(m + 1, 2), c(m + 1, -1), d(m + 1, 0);
             for (int i = 1; i < m; ++i) d[i] = J * J * rho0 * std::pow(T[i] / 300, 2.5) * h * h / k;
             b[0] = b[m] = 1;
             c[0] = a[m] = 0;
-            d[0] = d[m] = 300;
+            d[0] = d[m] = 0;
             for (int i = 1; i <= m; ++i) {
                 const double w = a[i] / b[i - 1];
                 b[i] -= w * c[i - 1];
@@ -370,8 +380,12 @@ double selfHeated(double L, double V, double* Tmid)
             next[m] = d[m] / b[m];
             for (int i = m - 1; i >= 0; --i) next[i] = (d[i] - c[i] * next[i + 1]) / b[i];
             double change = 0;
-            for (int i = 0; i <= m; ++i) change = std::max(change, std::abs(next[i] - T[i]));
-            T = next;
+            for (int i = 0; i <= m; ++i) {
+                const double t = kirchhoffTemperature(next[i]);
+                change = std::max(change, std::abs(t - T[i]));
+                T[i] = t;
+            }
+            U = next;
             if (change < 1e-10) break;
         }
         double sum = 0;
@@ -1536,8 +1550,10 @@ private slots:
         // its ends held at 300 K; its heat (semi.H) a heat physics' source,
         // its mobility at that one's temperature (TL = ht.T: (T/300 K)^-2.5)
         // - the two solved in turn. Its current the one-dimensional
-        // problem's, -k T'' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, V = J ∫ρ dx -
-        // to 0.5 %; some 15 % below the bar's at 300 K.
+        // problem's, -(k(T) T')' = J² ρ(T), ρ = ρ300 (T/300 K)^2.5, k the
+        // library's silicon's (130 W/(m K) (T/300 K)^-1.65), V = J ∫ρ dx -
+        // to 0.02 % (its middle's warming to 0.2 %); some 16 % below the bar's
+        // at 300 K.
         const double L = 20e-6, A = 1e-6, V = 4, rho0 = 1 / (Q * 1e23 * 0.14);
         double peak = NAN;
         const double expected = selfHeated(L, V, &peak) * A, cold = V / (rho0 * L) * A;
@@ -1562,23 +1578,24 @@ private slots:
         const double I = std::abs(global(*r.solution, QStringLiteral("semi.I_2")));
         const double Tmid = at1(*r.solution, QStringLiteral("ht.T"), 10, 0.5);
         qInfo("self-heating: %.6g A (the one-dimensional problem's %.6g, at 300 K %.6g); %.2f K at its middle (%.2f)", I, expected, cold, Tmid, peak);
-        QVERIFY2(std::abs(I / expected - 1) < 5e-3, qPrintable(QStringLiteral("%1 %2").arg(I).arg(expected)));
-        QVERIFY2(std::abs(Tmid - peak) < 0.01 * (peak - 300), qPrintable(QStringLiteral("%1 %2").arg(Tmid).arg(peak)));
+        QVERIFY2(std::abs(I / expected - 1) < 2e-4, qPrintable(QStringLiteral("%1 %2").arg(I).arg(expected)));
+        QVERIFY2(std::abs(Tmid - peak) < 0.002 * (peak - 300), qPrintable(QStringLiteral("%1 %2").arg(Tmid).arg(peak)));
     }
 
     void latticeTemperatureOneWay()
     {
         // The bar at 0.1 V, warmed by a heat source of its own (1e14 W/m³,
-        // its ends at 300 K: T = 300 K + Q x (L - x)/2k), its mobility at
+        // its ends at 300 K: Kirchhoff's U = Q x (L - x)/2k, its conductivity
+        // of heat the library's silicon's, of T), its mobility at
         // that temperature - the semiconductor reading the heat physics,
         // not read by it: solved after it all the same. Its current V/∫ρ,
-        // ρ = ρ300 (T/300 K)^2.5, to 0.5 %.
+        // ρ = ρ300 (T/300 K)^2.5, to 0.02 %.
         const double L = 20e-6, A = 1e-6, k = 130, n = 1e23, mu = 0.14, V = 0.1, Qh = 1e14;
         const double rho0 = 1 / (Q * n * mu);
         double sum = 0;
         const int m = 4000;
         for (int i = 0; i < m; ++i) {
-            const double x = (i + 0.5) * L / m, T = 300 + Qh * x * (L - x) / (2 * k);
+            const double x = (i + 0.5) * L / m, T = kirchhoffTemperature(Qh * x * (L - x) / (2 * k));
             sum += rho0 * std::pow(T / 300, 2.5) * L / m;
         }
         const double expected = V / sum * A;
@@ -1602,7 +1619,7 @@ private slots:
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         const double I = std::abs(global(*r.solution, QStringLiteral("semi.I_2")));
         qInfo("one way: %.6g A (∫ρ's %.6g; at 300 K %.6g)", I, expected, V / (rho0 * L) * A);
-        QVERIFY2(std::abs(I / expected - 1) < 5e-3, qPrintable(QStringLiteral("%1 %2").arg(I).arg(expected)));
+        QVERIFY2(std::abs(I / expected - 1) < 2e-4, qPrintable(QStringLiteral("%1 %2").arg(I).arg(expected)));
     }
 
     void bandToBandTunnelling()

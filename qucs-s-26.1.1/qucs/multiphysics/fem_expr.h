@@ -99,7 +99,9 @@ struct ExpressionOptions {
  * units in brackets after a value (3[mm], T[1/K]), + - * / ^, comparisons
  * and && || ! (true is 1), parentheses, functions (sin cos tan asin acos
  * atan atan2 sinh cosh tanh exp log log10 sqrt abs sign min max pow floor
- * ceil round mod if), constants (pi, eps0, mu0, c0, kB, q0 and the long names
+ * ceil round mod if, interp(x, x0, y0, x1, y1, ...) - straight lines through
+ * constant points -, neps(e1, e2) and keps(e1, e2) - the index and extinction
+ * of a permittivity e1 + i e2), constants (pi, eps0, mu0, c0, kB, q0 and the long names
  * epsilon0_const, mu0_const, c_const, e_const, k_B_const, sigma_const,
  * N_A_const, h_const, R_const, g_const), the parameters, and the
  * variables of where it is evaluated.

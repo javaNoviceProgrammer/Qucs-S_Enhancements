@@ -509,7 +509,7 @@ const Scope& Scope::builtins()
 namespace {
 
 enum Fn1 { Sin, Cos, Tan, Asin, Acos, Atan, Sinh, Cosh, Tanh, Exp, Log, Log10, Sqrt, Abs, Sign, Floor, Ceil, Round };
-enum Fn2 { Atan2, Min, Max, Pow, Mod };
+enum Fn2 { Atan2, Min, Max, Pow, Mod, NEps, KEps };
 
 struct FnInfo {
     const char* name;
@@ -524,7 +524,7 @@ const std::vector<FnInfo>& functionTable()
         {"sinh", 1, Sinh}, {"cosh", 1, Cosh}, {"tanh", 1, Tanh}, {"exp", 1, Exp}, {"log", 1, Log}, {"ln", 1, Log},
         {"log10", 1, Log10}, {"sqrt", 1, Sqrt}, {"abs", 1, Abs}, {"sign", 1, Sign}, {"floor", 1, Floor},
         {"ceil", 1, Ceil}, {"round", 1, Round}, {"atan2", 2, Atan2}, {"min", 2, Min}, {"max", 2, Max},
-        {"pow", 2, Pow}, {"mod", 2, Mod}, {"if", 3, 0},
+        {"pow", 2, Pow}, {"mod", 2, Mod}, {"neps", 2, NEps}, {"keps", 2, KEps}, {"if", 3, 0},
     };
     return fns;
 }
@@ -562,6 +562,9 @@ double apply2(int fn, double a, double b)
     case Max: return std::max(a, b);
     case Pow: return std::pow(a, b);
     case Mod: return b != 0 ? a - b * std::floor(a / b) : std::nan("");
+    // A complex permittivity's index n and extinction κ, (n + iκ)² = ε1 + iε2.
+    case NEps: return std::sqrt((std::hypot(a, b) + a) / 2);
+    case KEps: return std::sqrt(std::max(0.0, std::hypot(a, b) - a) / 2);
     }
     return a;
 }
@@ -945,7 +948,7 @@ private:
             if (!a_out.a_variables.contains(slot)) a_out.a_variables << slot;
             return v;
         }
-        if (a_scope.function(ast->name) || isBuiltinFunction(ast->name))
+        if (a_scope.function(ast->name) || isBuiltinFunction(ast->name) || ast->name == QLatin1String("interp"))
             return failed(tr("%1 is a function: %1(...)").arg(ast->name));
         return failed(unknown(ast->name));
     }
@@ -1035,6 +1038,7 @@ private:
             if (!body) return failed(tr("in the function %1: %2").arg(ast->name, why));
             return compile(substitute(body, f->arguments, ast->args), depth + 1);
         }
+        if (ast->name == QLatin1String("interp")) return interpolation(ast, depth);
         const FnInfo* info = nullptr;
         for (const FnInfo& fn : functionTable())
             if (ast->name == QLatin1String(fn.name)) info = &fn;
@@ -1101,6 +1105,51 @@ private:
         v.code.push_back({Expression::Op::Fn2, std::uint8_t(info->code)});
         v.dim = dim;
         return v;
+    }
+
+    /// interp(x, x0, y0, x1, y1, ...): straight lines through the points
+    /// (constants, x in its order), the ends held beyond them - a sampled
+    /// index of the wavelength, a property of the temperature.
+    std::optional<Value> interpolation(const AstPtr& ast, int depth)
+    {
+        const int n = int(ast->args.size());
+        if (n < 5 || n % 2 == 0) return failed(tr("interp takes x and two points or more: interp(x, x0, y0, x1, y1, ...)"));
+        std::vector<Value> args;
+        for (const AstPtr& a : ast->args) {
+            std::optional<Value> v = compile(a, depth + 1);
+            if (!v) return v;
+            args.push_back(std::move(*v));
+        }
+        auto table = std::make_shared<Expression::Table>();
+        std::vector<std::pair<double, double>> points;
+        const Dim xDim = args[1].dim, yDim = args[2].dim;
+        for (int k = 1; k < n; k += 2) {
+            const Value& px = args[std::size_t(k)];
+            const Value& py = args[std::size_t(k + 1)];
+            if (!px.constant || !py.constant) return failed(tr("interp's points must be constants"));
+            if (!(px.dim == xDim) || !(py.dim == yDim)) warn(tr("interp's points are in different units"));
+            points.emplace_back(px.value, py.value);
+        }
+        std::sort(points.begin(), points.end());
+        for (std::size_t k = 1; k < points.size(); ++k)
+            if (!(points[k].first > points[k - 1].first)) return failed(tr("interp has two points at x = %1").arg(points[k].first));
+        for (const auto& [px, py] : points) {
+            table->x.push_back(px);
+            table->y.push_back(py);
+        }
+        Value& x = args[0];
+        if (!(x.dim == xDim) && !x.dim.isNone() && !xDim.isNone())
+            warn(tr("interp's x is in %1, its points in %2").arg(dimName(x.dim), dimName(xDim)));
+        if (x.constant) {
+            Value v;
+            v.value = table->at(x.value);
+            v.dim = yDim;
+            return v;
+        }
+        x.code.push_back({Expression::Op::Table, 0, int(a_out.a_tables.size())});
+        a_out.a_tables.push_back(table);
+        x.dim = yDim;
+        return std::move(x);
     }
 
     /// The code of \a values one after another (each constant pushed).

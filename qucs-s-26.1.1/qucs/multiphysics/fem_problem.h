@@ -239,16 +239,20 @@ protected:
     /// scope, what it reads noted; a field read where \a spatial is not, an
     /// error.
     /// (\a unitChecked: its unit against the property's - not where it is
-    /// the equation's own, a PDE's flux.)
-    Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true, bool unitChecked = true);
+    /// the equation's own, a PDE's flux.) In \a scope where given (one over
+    /// the point scope: a material's T bound).
+    Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true, bool unitChecked = true,
+                       const Scope* scope = nullptr);
     /// The material of each domain: the last that has it (null: none).
     std::vector<const Node*> materials();
 
 public:
     /// Property \a key of material \a m: its own, else its library entry's,
-    /// else (a III-V alloy's) its compound's at its composition - evaluated in
-    /// \a scope (the parameters'; none: a plain number).
-    static QString materialProperty(const Node& m, const QString& key, const Scope* scope = nullptr);
+    /// else (a III-V alloy's) its compound's at its composition and
+    /// temperature \a T (K) - evaluated in \a scope (the parameters'; none: a
+    /// plain number). (A text may read T, the temperature it is at: read it
+    /// in a MaterialScope.)
+    static QString materialProperty(const Node& m, const QString& key, const Scope* scope = nullptr, double T = 300);
     /// Property \a key as given: its own, else its library entry's - and
     /// for Eg, without either, hc/λg of a gap wavelength λg given. Empty: not
     /// given (a compound's, if any, is what is left).

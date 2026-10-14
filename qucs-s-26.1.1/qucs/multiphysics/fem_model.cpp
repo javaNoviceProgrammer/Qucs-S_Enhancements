@@ -898,7 +898,7 @@ QList<NodeKind> makeKinds()
           QStringLiteral("semiconductor/ohmic"),
           QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge"),
           QStringLiteral("semiconductor/polarization"), QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/surfacerec"),
-          QStringLiteral("semiconductor/fn")},
+          QStringLiteral("semiconductor/fn"), QStringLiteral("semiconductor/stimulated")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
             "p (Boltzmann's statistics, or Fermi-Dirac's; band gap narrowing, dopants ionized in part, if the material model asks), "
@@ -1024,7 +1024,11 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("ga"), tr("Acceptors' degeneracy ga"), QString(), QStringLiteral("4")), QStringLiteral("incomplete=true"))},
          {}, {}, false, false, QStringLiteral("smm"),
          tr("A semiconductor's band gap, electron affinity, effective densities of states and mobilities, from its material or as "
-            "given; ni = √(Nc Nv) exp(-Eg/2kT).")});
+            "given; ni = √(Nc Nv) exp(-Eg/2kT). Its models' parameters (Caughey and Thomas's, Masetti's, ζ, saturation, "
+            "narrowing) each as set here, else its material's - the library's semiconductors each carry their own (GaAs's, InP's: "
+            "Lumerical's database's) -, else the default shown, silicon's: said in the log where the material is no silicon. Its "
+            "material's texts read T, the physics' temperature (the library's gap Varshni's, Nc and Nv (T/300 K)^1.5, mobilities "
+            "(T/300 K)^-ζ).")});
     add({QStringLiteral("semiconductor/doping"), tr("Analytic Doping Model"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none),
@@ -1101,23 +1105,30 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("mtp"), tr("Holes' tunnelling mass (m0)"), QString(), QStringLiteral("0.25")), QStringLiteral("tat=true"))},
          {}, {}, false, false, QStringLiteral("srh"),
          tr("Shockley-Read-Hall: R = (np - ni²) / (τp (n + n1) + τn (p + p1)); the lifetimes of x and y, by doping (Fossum), and "
-            "the field's trap-assisted tunnelling (Hurkx) if asked.")});
+            "the field's trap-assisted tunnelling (Hurkx) if asked. Fossum's and the tunnelling masses as set here, else the "
+            "material's, else silicon's defaults.")});
     add({QStringLiteral("semiconductor/auger"), tr("Auger Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(none), expr(QStringLiteral("Cn"), tr("Electrons' coefficient Cn"), QStringLiteral("m^6/s"), QStringLiteral("2.8e-31[cm^6/s]")),
           expr(QStringLiteral("Cp"), tr("Holes' coefficient Cp"), QStringLiteral("m^6/s"), QStringLiteral("9.9e-32[cm^6/s]"))},
-         {}, {}, false, false, QStringLiteral("aug"), tr("R = (Cn n + Cp p)(np - ni²): heavy doping, high injection.")});
+         {}, {}, false, false, QStringLiteral("aug"),
+         tr("R = (Cn n + Cp p)(np - ni²): heavy doping, high injection. Cn and Cp as set here, else the material's (caun, caup: "
+            "GaAs 1e-31 and 2.28e-31 cm⁶/s, germanium 1e-30), else silicon's.")});
     add({QStringLiteral("semiconductor/radiative"), tr("Direct Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), expr(QStringLiteral("B"), tr("Coefficient B"), QStringLiteral("m^3/s"), QStringLiteral("1.1e-14[cm^3/s]"))},
-         {}, {}, false, false, QStringLiteral("rad"), tr("Band to band: R = B (np - ni²) (GaAs about 7e-10 cm³/s).")});
+         {}, {}, false, false, QStringLiteral("rad"),
+         tr("Band to band: R = B (np - ni²) (GaAs about 7e-10 cm³/s). B as set here, else the material's (copt), else silicon's.")});
     {
         const QString user = QStringLiteral("model=user");
         const QString perCm = QStringLiteral("1/m"), fieldUnit = QStringLiteral("V/m");
         add({QStringLiteral("semiconductor/impact"), tr("Impact Ionization"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
              Level::Domain,
              {selectionProp(none),
-              choice(QStringLiteral("model"), tr("Model"), {QStringLiteral("silicon"), QStringLiteral("user")},
-                     {tr("Silicon (van Overstraeten and de Man)"), tr("User-defined (Chynoweth's)")}, QStringLiteral("silicon")),
+              choice(QStringLiteral("model"), tr("Model"), {QStringLiteral("material"), QStringLiteral("silicon"), QStringLiteral("user")},
+                     {tr("The material's"), tr("Silicon (van Overstraeten and de Man)"), tr("User-defined (Chynoweth's)")},
+                     QStringLiteral("material"),
+                     tr("The material's: its coefficients (iian, iibn, iiap, iibp, iibetan, iibetap - the library's: Lumerical's "
+                        "Selberherr ones; silicon's van Overstraeten and de Man's two ranges), else silicon's")),
               flag(QStringLiteral("currents"), tr("In the carriers' continuity"), true,
                    tr("Its pairs in the equations - avalanche multiplication, an APD's gain, up to breakdown; off: the ionization "
                       "integrals alone (a breakdown voltage swept to, the currents as they are without it)")),
@@ -1155,7 +1166,8 @@ QList<NodeKind> makeKinds()
          tr("Electrons tunnelling from the valence band to the conduction band where the field is strong - a Zener diode's "
             "breakdown, a MOSFET's gate-induced drain leakage, a tunnel FET: Hurkx's R = A E^γ e^(-B/E) (n p - ni²)/((n + ni)(p "
             "+ ni)), generation where the carriers are fewer than at equilibrium, each triangle's field. Local: the field at a "
-            "point stands for the tunnelling path's.")});
+            "point stands for the tunnelling path's. A, B, γ as set here, else the material's (bbtA, bbtB, bbtgamma: germanium "
+            "9.1e16, 4.9e6 V/cm), else silicon's.")});
     add({QStringLiteral("semiconductor/quantum"), tr("Schrödinger-Poisson"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), flag(QStringLiteral("electrons"), tr("Electrons"), true), flag(QStringLiteral("holes"), tr("Holes"), false),
@@ -1206,7 +1218,9 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("semiconductor/schottky"), tr("Schottky Contact"), QStringLiteral("semi"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("1")),
           expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]")),
-          expr(QStringLiteral("phiB"), tr("Barrier height"), QStringLiteral("eV"), QStringLiteral("0.8[eV]"), tr("The metal's work function less χ")),
+          expr(QStringLiteral("phiB"), tr("Barrier height"), QStringLiteral("eV"), QStringLiteral("0.8[eV]"),
+               tr("The metal's work function less χ: unset, the metal domain's beside it (its material's φ: gold 5.1 eV, aluminium "
+                  "4.28 eV) less the semiconductor's χ, else 0.8 eV")),
           expr(QStringLiteral("vn"), tr("Electrons' recombination velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]"),
                tr("A* T² / (q Nc): Richardson's")),
           expr(QStringLiteral("vp"), tr("Holes' recombination velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]"))},
@@ -1215,7 +1229,8 @@ QList<NodeKind> makeKinds()
          {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("g")),
           expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]")),
           expr(QStringLiteral("phim"), tr("Metal work function"), QStringLiteral("eV"), QStringLiteral("4.05[eV]"),
-               tr("n⁺ polysilicon 4.05 eV, aluminium 4.1 eV, p⁺ polysilicon 5.17 eV"))},
+               tr("n⁺ polysilicon 4.05 eV, aluminium 4.28 eV, p⁺ polysilicon 5.17 eV. Unset: the metal domain's beside it (its "
+                  "material's φ), else 4.05 eV"))},
          {}, {}, false, false, QStringLiteral("gc"),
          tr("A metal on an insulator (the gate oxide drawn as a domain): its potential V0 less the work function's difference. "
             "Its charge semi.Q_<name>; small-signal, its capacitance.")});
@@ -1247,6 +1262,21 @@ QList<NodeKind> makeKinds()
          tr("Pairs recombined at an interface - a semiconductor's with an insulator or another semiconductor: U = (n p - ni²) / ((n + "
             "n1)/Sp + (p + p1)/Sn) per area, its traps' charge none (Interface Traps for a charged one). Silicon's surface under "
             "oxide 1-1e4 cm/s; at an ohmic contact the carriers are at equilibrium already.")});
+    add({QStringLiteral("semiconductor/stimulated"), tr("Stimulated Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none),
+          expr(QStringLiteral("c"), tr("Share above threshold c"), QString(), QStringLiteral("0.5"),
+               tr("Of the recombination current above threshold, what is stimulated (0 to 1): an L-I curve's slope")),
+          expr(QStringLiteral("Jth"), tr("Threshold current density"), QStringLiteral("A/m^2"), QStringLiteral("1e7[A/m^2]"),
+               tr("The domains' recombination current per area at threshold - a laser model's (MQW gain, its cavity's losses)")),
+          expr(QStringLiteral("t"), tr("Gain region's thickness"), QStringLiteral("m"), QStringLiteral("10[nm]"),
+               tr("Its domains' (their volume over their area: per area the current is q t ⟨R⟩)"))},
+         {}, {}, false, false, QStringLiteral("stim"),
+         tr("A laser's light in a carrier model, Lumerical's: above threshold a share c of the recombination current is "
+            "stimulated, R_stim = c (J_rec - J_th)/(q t) on its domains, J_rec = q t ⟨R⟩ the domains' recombination (SRH, Auger, "
+            "radiative) per area - the carriers clamped, the rest light: semi.Istim, the stimulated current (A, by the norm "
+            "length), its photons' rate semi.Istim/q. The domains' mean taken from the last iterate (Newton's otherwise). c, "
+            "J_th, t as set here, else the material's (cstim, jthreshold, tgain).")});
     add({QStringLiteral("semiconductor/fn"), tr("Fowler-Nordheim Tunnelling"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
          {selectionProp(none),

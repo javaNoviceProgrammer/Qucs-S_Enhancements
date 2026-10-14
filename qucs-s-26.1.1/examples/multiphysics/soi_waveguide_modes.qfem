@@ -1,7 +1,7 @@
 {
     "format": "qucs-s multiphysics 1",
     "title": "An SOI strip waveguide's modes",
-    "description": "A silicon wire 500 × 220 nm in oxide, the window round it ended by perfectly matched layers: its TE- and TM-like modes at 1500, 1550 and 1600 nm - full-vector, Nédélec's edge elements - their effective indices (TE0 2.445, TM0 1.770 at 1550 nm), their fields and power flow, and the effective index against the wavelength.",
+    "description": "A silicon wire 500 × 220 nm in oxide, the window round it ended by perfectly matched layers: its TE- and TM-like modes at 1500, 1550 and 1600 nm - full-vector, Nédélec's edge elements - their effective indices (TE0 2.446, TM0 1.771 at 1550 nm), their fields and power flow, and the effective index against the wavelength.",
     "parameters": [
         {"name": "w", "expression": "500[nm]", "description": "the wire's width"},
         {"name": "h", "expression": "220[nm]", "description": "its height"},

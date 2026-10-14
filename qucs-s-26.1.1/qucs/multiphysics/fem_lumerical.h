@@ -13,6 +13,7 @@
 #define QUCS_FEM_LUMERICAL_H
 
 #include <QJsonObject>
+#include <QList>
 #include <QString>
 #include <QStringList>
 
@@ -59,6 +60,16 @@ LumericalImport importLumericalMqw(const QString& path);
  * notes say what was read and how it was taken, and what was not.
  */
 LumericalImport importLumerical(const QString& path);
+
+struct MaterialEntry;
+/// A Lumerical project's materials as a library's entries (Lumerical's
+/// "import materials from another project"): an .ldev's database - each
+/// semiconductor's gap, masses, χ and its models' parameters as expressions
+/// of T, an insulator's permittivity, a conductor's work function, their
+/// heat -, an .lms's or .fsp's optical materials (their index of the
+/// wavelength); its alloys left to the library's compounds. What is not
+/// taken in \a notes; none, and why, when it cannot be read.
+QList<MaterialEntry> lumericalMaterials(const QString& path, QString* error = nullptr, QStringList* notes = nullptr);
 
 class Model;
 struct Node;

@@ -14,6 +14,7 @@
 #define QUCS_FEM_LUMERICAL_SCENE_H
 
 #include "fem_lumerical.h"
+#include "fem_materials.h"
 
 #include <QByteArray>
 #include <QString>
@@ -154,6 +155,12 @@ QString compoundOf(const QString& lumerical, double x, double y, double* cx, dou
 /// The model a scene makes: MODE's (an FDE region), CHARGE's (a CHARGE
 /// solver), an MQW stack's (mqwindex).
 LumericalImport buildModel(const Scene& scene);
+/// A scene's materials as a library's entries: DEVICE's records (each
+/// semiconductor's gap, masses, χ and its models' parameters as
+/// expressions of T, an insulator's permittivity, a conductor's work
+/// function; their heat), MODE's and FDTD's optical ones (their index of the
+/// wavelength); what is not taken in \a notes.
+std::vector<MaterialEntry> libraryEntries(const Scene& scene, QStringList* notes = nullptr);
 
 } // namespace qucs_s::fem::lumerical
 

@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
@@ -31,7 +32,7 @@ QString tr(const char* text)
     return QCoreApplication::translate("qucs_s::fem::Materials", text);
 }
 
-const QStringList PropertyKeys = {QStringLiteral("epsilonr"), QStringLiteral("tand"), QStringLiteral("sigma"),
+const QStringList BasicKeys = {QStringLiteral("epsilonr"), QStringLiteral("tand"), QStringLiteral("sigma"),
                                   QStringLiteral("k"),        QStringLiteral("rho"),  QStringLiteral("Cp"),
                                   QStringLiteral("mur"),      QStringLiteral("BH"),   QStringLiteral("Br"),
                                   QStringLiteral("E"),        QStringLiteral("nu"),   QStringLiteral("alpha"),
@@ -45,7 +46,16 @@ const QStringList PropertyKeys = {QStringLiteral("epsilonr"), QStringLiteral("ta
                                   QStringLiteral("a0"),       QStringLiteral("ac"),   QStringLiteral("av"),
                                   QStringLiteral("b"),        QStringLiteral("C11"),  QStringLiteral("C12"),
                                   QStringLiteral("Egd"),      QStringLiteral("mr"),   QStringLiteral("Afk"),
-                                  QStringLiteral("bands"),    QStringLiteral("lambdag")};
+                                  QStringLiteral("bands"),    QStringLiteral("lambdag"), QStringLiteral("phi"),
+                                  QStringLiteral("nrange")};
+
+/// The keys a material node keeps of a library entry: the basic ones and
+/// its semiconductor models' parameters.
+const QStringList& propertyKeys()
+{
+    static const QStringList keys = BasicKeys + semiconductorModelKeys();
+    return keys;
+}
 
 constexpr double KB = 1.380649e-23, Hbar = 1.054571817e-34, M0 = 9.1093837015e-31;
 
@@ -101,8 +111,254 @@ const std::vector<Binary>& binaries()
          57, 4260, 450, 200, 400},
         {"InSb", bp(0.235, 0.0, 0.81, 0.0135, 34.8, 15.5, 16.5, 23.3, 6.4794, -6.94, 0.36, -2.0, 684.7, 373.5, 16.8, 4.00), 0.32e-3, 170,
          18, 5775, 200, 77000, 850},
+        // (Indirect: its X gap 2.49 eV at 300 K; n √ε∞. Its heat Lumerical's.)
+        {"AlP", bp(3.63, -1.74, 0.07, 0.22, 3.35, 0.71, 1.23, 17.7, 5.4672, -5.7, 3.0, -1.5, 1330, 630, 9.8, 2.75), 0.5771e-3, 372,
+         110, 2850, 362, 80, 450},
     };
     return list;
+}
+
+/// A semiconductor's models' parameters, as Lumerical's database has them
+/// (DEVICE's default materials, their lowest conduction valley's) - its
+/// 1e-34 cm⁶/s Auger and 1e-20 cm³/s radiative coefficients standing for
+/// none, as there. By carrier (electrons, holes): Caughey and Thomas's
+/// µmin (cm²/(V s)), Nref (cm⁻³), α (0: none) and their exponents (T/300
+/// K)^η; the lattice mobility's ζ, (T/300 K)^-ζ; the saturation velocity
+/// (cm/s) and β; Slotboom's narrowing - both bands' V1 (eV), N0 (cm⁻³), C
+/// (V1 0: none); the SRH lifetimes' exponent; Fossum's N0 (cm⁻³) by
+/// carrier, A, B, C, E; the tunnelling masses (m0); Auger's coefficients
+/// (cm⁶/s); the radiative one (cm³/s) and its exponent; Selberherr's α∞
+/// (1/cm), Ecrit (V/cm), β by carrier (α∞ 0: none); Hurkx's band-to-band
+/// A, B (V/cm), γ (A 0: none). Silicon's are the features' own defaults
+/// (Caughey and Thomas's, Klaassen's narrowing, van Overstraeten and de
+/// Man's ionization), their temperature exponents Lumerical's.
+struct ModelSet {
+    const char* name;
+    double muMin[2], nRef[2], alpha[2], etaMuMin[2], etaNRef[2], etaAlpha[2];
+    double zeta[2], vsat[2], beta[2];
+    double bgn[3];
+    double tauEta[2];
+    double fossum[6];   // N0 n, N0 p, A, B, C, E
+    double mt[2], auger[2], rad, radEta;
+    double ii[6];       // α∞, Ecrit, β: electrons', holes'
+    double bbt[3];
+};
+
+const std::vector<ModelSet>& modelSets()
+{
+    static const std::vector<ModelSet> list = {
+        {"Si", {68.5, 44.9}, {9.2e16, 2.23e17}, {0.711, 0.719}, {-0.57, -0.57}, {2.4, 2.4}, {-0.146, -0.146}, {2.5, 2.2}, {1e7, 8e6}, {2, 1},
+         {0.00692, 1.3e17, 0.5}, {0, 0}, {7.1e15, 7.1e15, 1, 0, 1, 1}, {0.25, 0.25}, {2.8e-31, 9.9e-32}, 1.1e-14, 0,
+         {7.03e5, 1.231e6, 1, 1.582e6, 2.036e6, 1}, {4e14, 1.9e7, 2.5}},
+        {"Ge", {850, 300}, {2.6e17, 1e17}, {0.56, 1}, {0, 0}, {0, 0}, {0, 0}, {1.66, 2.33}, {6e6, 5.4e6}, {2, 1}, {0, 0, 0}, {0, 0},
+         {1e16, 1e16, 1, 0, 0, 1}, {0.5532, 0.19}, {1e-30, 1e-30}, 6.41e-14, 0, {1.55e7, 1.55698e6, 1, 2.15e5, 7.1e5, 1}, {9.1e16, 4.9e6, 2.5}},
+        {"GaAs", {40, 40}, {8.1e16, 1e17}, {1, 1}, {-0.9, -0.9}, {0.5, 0.5}, {0, 0}, {2.2, 0.9}, {7.2e6, 9e6}, {2, 1}, {0.0045, 1.7e16, 0.5},
+         {-0.5, -0.5}, {7.1e15, 7.1e15, 1, 0, 0, 1}, {0.0706, 0.574}, {1e-31, 2.28e-31}, 7.2e-10, -2.5, {2.99e5, 6.85e5, 1.6, 2.22e5, 6.57e5, 1.75},
+         {0, 0, 0}},
+        {"AlAs", {10, 5}, {5e17, 2.9e17}, {1, 1}, {0, 0}, {0, 0.5}, {0, 0}, {2.1, 2.2}, {8.5e6, 8e6}, {2, 2}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.38, 0.81}, {1e-34, 1e-34}, 1e-20, 0, {3.69e5, 1.43e6, 1.33, 1.99e5, 1.21e6, 1.56}, {0, 0, 0}},
+        {"InAs", {11700, 48}, {4.4e16, 2.55e17}, {0.5, 1}, {-0.33, 0}, {3.6, 0.5}, {0, 0}, {1.7, 2.3}, {9e6, 5e6}, {2, 2}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.023, 0.41}, {1e-26, 2.2e-27}, 2e-11, 0, {1.25e5, 3.6e4, 1, 0, 0, 0}, {0, 0, 0}},
+        {"AlP", {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {1.7e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0}, {1e20, 1e20, 1, 0, 0, 1},
+         {0.4, 0.703}, {1e-34, 1e-34}, 1e-20, 0, {0, 0, 0, 0, 0, 0}, {0, 0, 0}},
+        {"InP", {1120, 24}, {4e16, 2.5e17}, {0.6, 1}, {2, 1.2}, {3.7, 0.47}, {0, 0}, {1.9, 1.2}, {6.7e6, 6e6}, {1.25, 1}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.077, 0.64}, {1.7e-33, 9e-31}, 2e-10, 0, {2.93e6, 2.64e6, 1, 1.62e6, 2.11e6, 1}, {0, 0, 0}},
+        {"GaP", {10, 27}, {4.4e18, 5e17}, {0.8, 1}, {-1.07, 0}, {1.8, 0}, {0, 0}, {1.94, 2}, {8.8e6, 5e6}, {1.25, 1}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.5, 0.6}, {1e-30, 1e-30}, 3e-15, 0, {0, 0, 0, 0, 0, 0}, {0, 0, 0}},
+        {"AlN", {297, 0}, {1e17, 0}, {1.16, 0}, {-1.82, 0}, {3.78, 0}, {0.86, 0}, {1.26, 0}, {1.6e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.314, 1.59}, {1e-34, 1e-34}, 4e-11, 0, {8.87e6, 3.76e7, 1, 0, 0, 0}, {0, 0, 0}},
+        {"InN", {834, 0}, {2.88e17, 0}, {0.76, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {1.32e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.11, 1.65}, {1e-34, 1e-34}, 2.2e-10, 0, {6.2e5, 3.54e7, 1, 0, 0, 0}, {0, 0, 0}},
+        {"GaN", {295, 3}, {2e17, 3e17}, {0.66, 2}, {-1.02, 0}, {3.02, 0}, {0.81, 0}, {1.26, 2}, {1.34e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.2, 1.47}, {1e-30, 1e-31}, 1.5e-11, 0, {1.4e7, 1.48e7, 1.4, 2.95e5, 5.17e6, 2}, {0, 0, 0}},
+        {"GaSb", {680, 85}, {3.2e17, 3.04e17}, {1.08, 0.44}, {0, 0}, {0, 0}, {0, 0}, {1.5, 1.5}, {9e6, 1e7}, {2, 1}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.0512, 0.42}, {5e-30, 5e-30}, 1e-10, 0, {1.07e7, 4.03e5, 1, 7.16e5, 4.02e5, 1}, {0, 0, 0}},
+        {"AlSb", {5, 50}, {6e18, 1e17}, {1.21, 1}, {0, 0}, {0, 0}, {0, 0}, {1.8, 1.95}, {1e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {1.5, 0.77}, {1e-34, 1e-34}, 1e-20, 0, {0, 0, 0, 0, 0, 0}, {0, 0, 0}},
+        {"InSb", {200, 48}, {2e17, 2.36e18}, {0.57, 0.39}, {0, 0}, {0, 0}, {0, 0}, {1.66, 1.8}, {5e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0},
+         {1e20, 1e20, 1, 0, 0, 1}, {0.0197, 0.43}, {5e-26, 1e-34}, 5e-11, 0, {0, 0, 0, 0, 0, 0}, {0, 0, 0}},
+        {"CdS", {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {1e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0}, {1e20, 1e20, 1, 0, 0, 1},
+         {0.21, 1.015}, {1e-34, 1e-34}, 1e-20, 0, {0, 0, 0, 0, 0, 0}, {0, 0, 0}},
+        {"CdSe", {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {1e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0}, {1e20, 1e20, 1, 0, 0, 1},
+         {0.13, 1.1}, {1e-34, 1e-34}, 1e-20, 0, {0, 0, 0, 0, 0, 0}, {0, 0, 0}},
+        {"CdTe", {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {1e7, 1e7}, {2, 2}, {0, 0, 0}, {0, 0}, {1e20, 1e20, 1, 0, 0, 1},
+         {0.11, 0.76}, {1e-34, 1e-34}, 1e-20, 0, {0, 0, 0, 0, 0, 0}, {0, 0, 0}},
+    };
+    return list;
+}
+
+const ModelSet* modelSet(const QString& name)
+{
+    for (const ModelSet& m : modelSets())
+        if (name.compare(QLatin1String(m.name), Qt::CaseInsensitive) == 0) return &m;
+    return nullptr;
+}
+
+/// A conductivity of heat's exponent, κ(T) = κ(300 K) (T/300 K)^η
+/// (Palankovski's, whose κ at 300 K Lumerical's database has).
+double heatExponent(const QString& name)
+{
+    static const std::pair<const char*, double> table[] = {{"Si", -1.65}, {"Ge", -1.25}, {"GaAs", -1.25}, {"AlAs", -1.37},
+                                                           {"InAs", -1.1}, {"InP", -1.4},  {"GaP", -1.4}};
+    for (const auto& [n, eta] : table)
+        if (name.compare(QLatin1String(n), Qt::CaseInsensitive) == 0) return eta;
+    return 0;
+}
+
+QString number(double v)
+{
+    return formatNumber(v, 10);
+}
+
+/// "v[unit]", times (T/300 K)^η where η is not 0.
+QString ofT(double v, const QString& unit, double eta)
+{
+    QString t = unit.isEmpty() ? number(v) : QStringLiteral("%1[%2]").arg(number(v), unit);
+    if (eta != 0) t += QStringLiteral("*(T/300[K])^(%1)").arg(number(eta));
+    return t;
+}
+
+/// Varshni's gap anchored at its 300 K value: Eg(300 K) - α (T²/(T + β) -
+/// 300²/(300 + β)) - the two terms the same at 300 K, to the last digit.
+QString varshniOfT(double eg300, double alpha, double beta)
+{
+    if (alpha == 0) return QStringLiteral("%1[eV]").arg(number(eg300));
+    return QStringLiteral("%1[eV] - %2[eV/K]*(T^2/(T + %3[K]) - (300[K])^2/(300[K] + %3[K]))").arg(number(eg300), number(alpha), number(beta));
+}
+
+/// Model set \a m's parameters as a material's properties (the keys
+/// semiconductorModelKeys() names; what it has none of left out).
+void addModels(QJsonObject& p, const ModelSet& m)
+{
+    auto put = [&p](const char* key, const QString& v) { p.insert(QString::fromLatin1(key), v); };
+    const char* c[2] = {"n", "p"};
+    for (int k = 0; k < 2; ++k) {
+        const QString C = QLatin1String(c[k]);
+        if (m.nRef[k] > 0) {
+            p.insert(QStringLiteral("mu") + C + QStringLiteral("min"), ofT(m.muMin[k], QStringLiteral("cm^2/(V*s)"), m.etaMuMin[k]));
+            p.insert(QStringLiteral("nref") + C, ofT(m.nRef[k], QStringLiteral("1/cm^3"), m.etaNRef[k]));
+            p.insert(QStringLiteral("alpha") + C, ofT(m.alpha[k], QString(), m.etaAlpha[k]));
+        }
+        if (m.zeta[k] != 0) p.insert(QStringLiteral("zeta") + C, number(m.zeta[k]));
+        p.insert(QStringLiteral("vsat") + C, ofT(m.vsat[k], QStringLiteral("cm/s"), 0));
+        p.insert(QStringLiteral("beta") + C, number(m.beta[k]));
+        p.insert(QStringLiteral("N0") + C, ofT(m.fossum[k], QStringLiteral("1/cm^3"), 0));
+        p.insert(QStringLiteral("mt") + C, number(m.mt[k]));
+        p.insert(QStringLiteral("cau") + C, ofT(m.auger[k], QStringLiteral("cm^6/s"), 0));
+        if (m.ii[3 * k] > 0) {
+            p.insert(QStringLiteral("iia") + C, ofT(m.ii[3 * k], QStringLiteral("1/cm"), 0));
+            p.insert(QStringLiteral("iib") + C, ofT(m.ii[3 * k + 1], QStringLiteral("V/cm"), 0));
+            p.insert(QStringLiteral("iibeta") + C, number(m.ii[3 * k + 2]));
+        }
+    }
+    if (m.bgn[0] > 0) {
+        put("Ebgn", ofT(m.bgn[0], QStringLiteral("eV"), 0));
+        put("Nbgn", ofT(m.bgn[1], QStringLiteral("1/cm^3"), 0));
+        put("Cbgn", number(m.bgn[2]));
+    }
+    put("fA", number(m.fossum[2]));
+    put("fB", number(m.fossum[3]));
+    put("fC", number(m.fossum[4]));
+    put("fE", number(m.fossum[5]));
+    put("copt", ofT(m.rad, QStringLiteral("cm^3/s"), m.radEta));
+    if (m.bbt[0] > 0) {
+        put("bbtA", number(m.bbt[0]));
+        put("bbtB", ofT(m.bbt[1], QStringLiteral("V/cm"), 0));
+        put("bbtgamma", number(m.bbt[2]));
+    }
+}
+
+// Indices of the wavelength (lambda0), each checked against the tables
+// Lumerical's database has (Palik's, Johnson and Christy's, the CRC's).
+
+/// Sellmeier's n² = A + Σ B λ²/(λ² - C²), C in µm.
+QString sellmeier(double A, std::initializer_list<std::pair<double, double>> terms)
+{
+    QString t = QStringLiteral("sqrt(%1").arg(number(A));
+    for (const auto& [B, C] : terms)
+        t += QStringLiteral(" + %1*lambda0^2/(lambda0^2 - %2[um^2])").arg(formatNumber(B, 9), formatNumber(C * C, 9));
+    return t + QLatin1Char(')');
+}
+
+/// Silicon's: Salzberg and Villa's Sellmeier below 1.2 µm (where it
+/// absorbs), Li's above 1.4 µm (its pole at 1.107 µm), the two between
+/// weighed linearly - Palik's within 0.01 from 0.8 to 14 µm (0.0001 at 1550
+/// nm; 0.04 low at 0.6 µm, 0.5 at 0.4 µm).
+QString siliconIndex()
+{
+    const QString sv = sellmeier(1, {{10.6684293, 0.301516485}, {0.0030434748, 1.13475115}, {1.54133408, 1104}});
+    const QString li = QStringLiteral("sqrt(11.6858 + 0.939816[um^2]/lambda0^2 + 0.00993358[um^2]/(lambda0^2 - 1.22567[um^2]))");
+    return QStringLiteral("if(lambda0 < 1.2[um], %1, if(lambda0 > 1.4[um], %2, ((1.4[um] - lambda0)*%1 + (lambda0 - 1.2[um])*%2)/0.2[um]))")
+        .arg(sv, li);
+}
+
+/// Silicon's absorption at 300 K, Rajkanan, Singh and Shewchun's (Solid
+/// State Electron. 22, 793, 1979): its two indirect gaps, each with two
+/// phonons absorbed or emitted, and the direct one - κ = αλ/4π, Palik's
+/// within 30 % from 0.45 to 1.1 µm, nought below the gap.
+QString siliconExtinction()
+{
+    const double T = 300, kT = 8.617333262e-5 * T, shift = 7.021e-4 * T * T / (T + 1108);
+    const double gaps[2] = {1.1557 - shift, 2.5 - shift}, A[2] = {3.231e2, 7.237e3};
+    const double Ep[2] = {1.827e-2, 5.773e-2}, C[2] = {5.5, 4.0};
+    const QString E = QStringLiteral("(1.23984198[um]/lambda0)");
+    QStringList terms;
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j) {
+            const double absorbed = C[j] * A[i] / std::expm1(Ep[j] / kT), emitted = C[j] * A[i] / -std::expm1(-Ep[j] / kT);
+            terms << QStringLiteral("%1*max(%2 - %3, 0)^2").arg(number(absorbed), E, number(gaps[i] - Ep[j]))
+                  << QStringLiteral("%1*max(%2 - %3, 0)^2").arg(number(emitted), E, number(gaps[i] + Ep[j]));
+        }
+    terms << QStringLiteral("1.052e6*sqrt(max(%1 - %2, 0))").arg(E, number(3.2 - shift));
+    return QStringLiteral("(%1)[1/cm]*lambda0/(4*pi)").arg(terms.join(QStringLiteral(" + ")));
+}
+
+/// Afromowitz's index of AlxGa1-xAs below its gap (Solid State Commun. 15,
+/// 59, 1974): a single oscillator and the gap's - GaAs Palik's within 0.004
+/// from 0.9 to 2 µm. (At the gap and above, the gap's.)
+QString afromowitzIndex(double x)
+{
+    const double E0 = 3.65 + 0.871 * x + 0.179 * x * x, Ed = 36.1 - 2.45 * x, Eg = 1.424 + 1.266 * x + 0.26 * x * x;
+    const double eta = M_PI * Ed / (2 * E0 * E0 * E0 * (E0 * E0 - Eg * Eg));
+    const QString E = QStringLiteral("min(1.23984198[um]/lambda0, %1)").arg(number(0.995 * Eg));
+    return QStringLiteral("sqrt(%1 + %2*%3^2 + %4*%3^4*log((%5 - %3^2)/(%6 - %3^2)))")
+        .arg(number(1 + Ed / E0), number(Ed / (E0 * E0 * E0)), E, number(eta / M_PI), number(2 * E0 * E0 - Eg * Eg), number(Eg * Eg));
+}
+
+/// A metal's permittivity as Drude's and Lorentz's terms of the photon's
+/// energy w (eV): ε∞ - ωp² f0/(w (w + iΓ0)) + Σ ωp² fj/(ωj² - w² - iΓj w);
+/// its n or κ (\a extinction).
+QString lorentzDrude(double epsInf, double wp, double f0, double g0, std::initializer_list<std::array<double, 3>> oscillators, bool extinction)
+{
+    const QString w = QStringLiteral("(1.23984198[um]/lambda0)");
+    const double d = wp * wp * f0;
+    QString e1 = QStringLiteral("%1 - %2/(%3^2 + %4)").arg(number(epsInf), number(d), w, number(g0 * g0));
+    QString e2 = QStringLiteral("%1/(%2*(%2^2 + %3))").arg(number(d * g0), w, number(g0 * g0));
+    for (const auto& [f, wj, gj] : oscillators) {
+        const QString D = QStringLiteral("((%1 - %2^2)^2 + %3*%2^2)").arg(number(wj * wj), w, number(gj * gj));
+        e1 += QStringLiteral(" + %1*(%2 - %3^2)/%4").arg(number(wp * wp * f), number(wj * wj), w, D);
+        e2 += QStringLiteral(" + %1*%2/%3").arg(number(wp * wp * f * gj), w, D);
+    }
+    return QStringLiteral("%1(%2, %3)").arg(extinction ? QStringLiteral("keps") : QStringLiteral("neps"), e1, e2);
+}
+
+/// The metals' optical constants (n or κ): gold Vial et al.'s
+/// Drude-Lorentz fit (Phys. Rev. B 71, 085416, 2005) - Johnson and Christy's
+/// κ within 3 % from 0.55 to 1.9 µm -, silver a Drude fit (ε∞ 3.7, ωp 9.1
+/// eV, γ 18 meV) - within 5 % from 0.4 to 1.9 µm, the CRC's to 10 µm -,
+/// copper and aluminium Rakić et al.'s Lorentz-Drude (Appl. Opt. 37, 5271,
+/// 1998) - the CRC's κ within 5 % from 0.6 to 2 µm (their n 10-40 % off).
+QString metalOptics(const char* metal, bool extinction)
+{
+    const QLatin1String m(metal);
+    if (m == QLatin1String("Au"))
+        return lorentzDrude(5.9673, 8.74116, 1.0, 0.0658413, {{1.09 * 2.68848 * 2.68848 / (8.74116 * 8.74116), 2.68848, 0.433666}}, extinction);
+    if (m == QLatin1String("Ag")) return lorentzDrude(3.7, 9.1, 1.0, 0.018, {}, extinction);
+    if (m == QLatin1String("Cu"))
+        return lorentzDrude(1, 10.83, 0.575, 0.030, {{0.061, 0.291, 0.378}, {0.104, 2.957, 1.056}, {0.723, 5.300, 3.213}, {0.638, 11.18, 4.305}},
+                            extinction);
+    return lorentzDrude(1, 14.98, 0.523, 0.047, {{0.227, 0.162, 0.333}, {0.050, 1.544, 0.312}, {0.166, 1.808, 1.351}, {0.030, 3.473, 3.382}},
+                        extinction);
 }
 
 const Binary* binary(const QString& name)
@@ -146,6 +402,14 @@ const std::vector<Ternary>& ternaries()
         {"GaAsP", "GaAs", "GaP", 0.19, 0, 0, 0, 0, 0, 0},
         {"InAsP", "InAs", "InP", 0.10, 0, 0, 0.16, 0, 0, 0},
         {"GaAsSb", "GaAs", "GaSb", 1.43, 0, -1.06, 0.6, 0, 0, 0},
+        // (Vurgaftman et al.'s bowings of the Γ gap, the split-off energy,
+        // the electron's mass and the valence band's offset.)
+        {"AlGaP", "AlP", "GaP", 0, 0, 0, 0, 0, 0, 0},
+        {"AlInP", "AlP", "InP", -0.48, 0, 0, 0, 0, 0, 0},
+        {"AlGaSb", "AlSb", "GaSb", -0.044, 1.22, 0, 0.3, 0, 0, 0},
+        {"AlAsSb", "AlAs", "AlSb", 0.8, 0, -1.71, 0, 0, 0, 0},
+        {"InAsSb", "InAs", "InSb", 0.67, 0, 0, 1.2, 0.035, 0, 0},
+        {"InAlSb", "InSb", "AlSb", 0.43, 0, 0, 0.25, 0, 0, 0},
     };
     return list;
 }
@@ -308,6 +572,44 @@ std::vector<std::pair<const Binary*, double>> shares(const QString& compound, do
         add("AlAs", x);
         add("GaAs", y);
         add("InAs", 1 - x - y);
+    } else if (compound.compare(QLatin1String("AlGaInP"), Qt::CaseInsensitive) == 0) {
+        add("AlP", x);
+        add("GaP", y);
+        add("InP", 1 - x - y);
+    }
+    return out;
+}
+
+/// The model sets an alloy is of and their shares: its binaries' (the
+/// nitrides' too).
+std::vector<std::pair<const ModelSet*, double>> modelShares(const QString& compound, double x, double y)
+{
+    std::vector<std::pair<const ModelSet*, double>> out;
+    for (const auto& [b, w] : shares(compound, x, y))
+        if (const ModelSet* m = modelSet(QLatin1String(b->name))) out.emplace_back(m, w);
+    if (!out.empty()) return out;
+    auto add = [&](const char* name, double w) {
+        if (w > 0)
+            if (const ModelSet* m = modelSet(QLatin1String(name))) out.emplace_back(m, w);
+    };
+    const QString c = compound.trimmed();
+    if (const ModelSet* m = modelSet(c)) out.emplace_back(m, 1.0);
+    else if (c.compare(QLatin1String("AlGaN"), Qt::CaseInsensitive) == 0) {
+        add("AlN", x);
+        add("GaN", 1 - x);
+    } else if (c.compare(QLatin1String("InGaN"), Qt::CaseInsensitive) == 0) {
+        add("InN", x);
+        add("GaN", 1 - x);
+    } else if (c.compare(QLatin1String("InAlN"), Qt::CaseInsensitive) == 0) {
+        add("InN", x);
+        add("AlN", 1 - x);
+    } else if (c.compare(QLatin1String("AlGaInN"), Qt::CaseInsensitive) == 0) {
+        add("AlN", x);
+        add("GaN", y);
+        add("InN", 1 - x - y);
+    } else if (c.compare(QLatin1String("SiGe"), Qt::CaseInsensitive) == 0) {
+        add("Si", 1 - x);
+        add("Ge", x);
     }
     return out;
 }
@@ -332,8 +634,37 @@ MaterialEntry entry(const char* name, const char* category, const char* descript
     return e;
 }
 
+/// \a e with \a props added or replaced.
+MaterialEntry with(MaterialEntry e, std::initializer_list<std::pair<const char*, QString>> props)
+{
+    for (const auto& [k, v] : props) e.properties.insert(QString::fromLatin1(k), v);
+    return e;
+}
+
+/// \a e with model set \a set's parameters (where it has none of its own).
+MaterialEntry withModels(MaterialEntry e, const char* set)
+{
+    QJsonObject p;
+    addModels(p, *modelSet(QLatin1String(set)));
+    for (auto it = p.constBegin(); it != p.constEnd(); ++it)
+        if (!e.properties.contains(it.key())) e.properties.insert(it.key(), it.value());
+    return e;
+}
+
+/// A metal's work function (eV, the CRC's - Lumerical's too) and its
+/// optical constants of the wavelength, held from \a range.
+MaterialEntry metal(MaterialEntry e, const char* symbol, double phi, const char* range)
+{
+    return with(std::move(e), {{"phi", QStringLiteral("%1[eV]").arg(number(phi))},
+                               {"n", metalOptics(symbol, false)},
+                               {"kappa", metalOptics(symbol, true)},
+                               {"nrange", QString::fromLatin1(range)}});
+}
+
 /// A III-V's entry: its compound (the band parameters, an alloy's at its
-/// composition) and, a binary's, what the other physics read of it.
+/// composition) and, a binary's, what the other physics read of it - its
+/// gap Varshni's, its densities of states, mobilities and conductivity of
+/// heat of the temperature T, its models' parameters.
 MaterialEntry compoundEntry(const char* name, const char* description, const char* compound, const char* x = nullptr,
                             const char* y = nullptr)
 {
@@ -344,11 +675,28 @@ MaterialEntry compoundEntry(const char* name, const char* description, const cha
     e.properties.insert(QStringLiteral("compound"), QString::fromLatin1(compound));
     if (x) e.properties.insert(QStringLiteral("x"), QString::fromLatin1(x));
     if (y) e.properties.insert(QStringLiteral("y"), QString::fromLatin1(y));
-    if (!x)
+    if (!x) {
+        const QString c = QString::fromLatin1(compound);
         for (const char* key : {"epsilonr", "n", "k", "rho", "Cp", "mur", "Eg", "chi", "Nc", "Nv", "mun", "mup", "taun", "taup"}) {
-            const QString v = qstrcmp(key, "mur") == 0 ? QStringLiteral("1") : compoundProperty(QString::fromLatin1(compound), 0, 0, QString::fromLatin1(key));
+            const QString v = qstrcmp(key, "mur") == 0 ? QStringLiteral("1") : compoundProperty(c, 0, 0, QString::fromLatin1(key));
             if (!v.isEmpty()) e.properties.insert(QString::fromLatin1(key), v);
         }
+        // (Of the temperature: as compoundProperty has them at T.)
+        if (const Binary* b = binary(c)) {
+            e.properties.insert(QStringLiteral("Eg"), varshniOfT(binaryAt(*b, 300).Eg, b->alpha, b->beta));
+            const ModelSet* m = modelSet(c);
+            e.properties.insert(QStringLiteral("mun"), ofT(b->mun, QStringLiteral("cm^2/(V*s)"), m ? -m->zeta[0] : 0));
+            e.properties.insert(QStringLiteral("mup"), ofT(b->mup, QStringLiteral("cm^2/(V*s)"), m ? -m->zeta[1] : 0));
+            e.properties.insert(QStringLiteral("k"), ofT(b->k, QStringLiteral("W/(m*K)"), heatExponent(c)));
+        } else if (const Nitride* n = nitride(c)) {
+            e.properties.insert(QStringLiteral("Eg"), varshniOfT(nitrideAt(*n, 300).Eg, n->alpha, n->beta));
+        }
+        for (const char* key : {"Nc", "Nv"}) {
+            const QString v = e.properties.value(QString::fromLatin1(key)).toString();
+            if (!v.isEmpty()) e.properties.insert(QString::fromLatin1(key), v + QStringLiteral("*(T/300[K])^1.5"));
+        }
+        if (const ModelSet* m = modelSet(c)) e = withModels(std::move(e), m->name);
+    }
     return e;
 }
 
@@ -358,14 +706,24 @@ const QList<MaterialEntry>& builtinMaterials()
 {
     static const QList<MaterialEntry> list = {
         // Metals.
-        entry("Copper", "Metals", "Annealed copper, the IACS reference", {{"epsilonr", "1"}, {"sigma", "5.998e7[S/m]"}, {"k", "400[W/(m*K)]"},
-              {"rho", "8960[kg/m^3]"}, {"Cp", "385[J/(kg*K)]"}, {"mur", "1"}, {"E", "110[GPa]"}, {"nu", "0.35"}, {"alpha", "17e-6[1/K]"}}),
-        entry("Aluminium", "Metals", "Pure aluminium", {{"epsilonr", "1"}, {"sigma", "3.774e7[S/m]"}, {"k", "238[W/(m*K)]"},
-              {"rho", "2700[kg/m^3]"}, {"Cp", "900[J/(kg*K)]"}, {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.33"}, {"alpha", "23e-6[1/K]"}}),
-        entry("Gold", "Metals", "Pure gold", {{"epsilonr", "1"}, {"sigma", "4.10e7[S/m]"}, {"k", "317[W/(m*K)]"},
-              {"rho", "19300[kg/m^3]"}, {"Cp", "129[J/(kg*K)]"}, {"mur", "1"}, {"E", "79[GPa]"}, {"nu", "0.44"}, {"alpha", "14.2e-6[1/K]"}}),
-        entry("Silver", "Metals", "Pure silver", {{"epsilonr", "1"}, {"sigma", "6.30e7[S/m]"}, {"k", "429[W/(m*K)]"},
-              {"rho", "10490[kg/m^3]"}, {"Cp", "235[J/(kg*K)]"}, {"mur", "1"}, {"E", "83[GPa]"}, {"nu", "0.37"}, {"alpha", "18.9e-6[1/K]"}}),
+        // (Their work functions, for gate and Schottky contacts, and their
+        // optical constants of the wavelength, for light: see metalOptics.)
+        metal(entry("Copper", "Metals", "Annealed copper, the IACS reference; work function 4.65 eV; n and κ from 0.6 to 2 µm (Rakić's)",
+                    {{"epsilonr", "1"}, {"sigma", "5.998e7[S/m]"}, {"k", "400[W/(m*K)]"}, {"rho", "8960[kg/m^3]"}, {"Cp", "385[J/(kg*K)]"},
+                     {"mur", "1"}, {"E", "110[GPa]"}, {"nu", "0.35"}, {"alpha", "17e-6[1/K]"}}),
+              "Cu", 4.65, "0.6[um] 2[um]"),
+        metal(entry("Aluminium", "Metals", "Pure aluminium; work function 4.28 eV; n and κ from 0.3 to 2 µm (Rakić's)",
+                    {{"epsilonr", "1"}, {"sigma", "3.774e7[S/m]"}, {"k", "238[W/(m*K)]"}, {"rho", "2700[kg/m^3]"}, {"Cp", "900[J/(kg*K)]"},
+                     {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.33"}, {"alpha", "23e-6[1/K]"}}),
+              "Al", 4.28, "0.3[um] 2[um]"),
+        metal(entry("Gold", "Metals", "Pure gold; work function 5.1 eV; n and κ from 0.5 to 1.9 µm (Vial et al.'s fit to Johnson and Christy)",
+                    {{"epsilonr", "1"}, {"sigma", "4.10e7[S/m]"}, {"k", "317[W/(m*K)]"}, {"rho", "19300[kg/m^3]"}, {"Cp", "129[J/(kg*K)]"},
+                     {"mur", "1"}, {"E", "79[GPa]"}, {"nu", "0.44"}, {"alpha", "14.2e-6[1/K]"}}),
+              "Au", 5.1, "0.5[um] 1.9[um]"),
+        metal(entry("Silver", "Metals", "Pure silver; work function 4.26 eV; n and κ from 0.4 to 10 µm (Drude's)",
+                    {{"epsilonr", "1"}, {"sigma", "6.30e7[S/m]"}, {"k", "429[W/(m*K)]"}, {"rho", "10490[kg/m^3]"}, {"Cp", "235[J/(kg*K)]"},
+                     {"mur", "1"}, {"E", "83[GPa]"}, {"nu", "0.37"}, {"alpha", "18.9e-6[1/K]"}}),
+              "Ag", 4.26, "0.4[um] 10[um]"),
         entry("Solder (SAC305)", "Metals", "Sn96.5 Ag3.0 Cu0.5", {{"epsilonr", "1"}, {"sigma", "7.7e6[S/m]"}, {"k", "58[W/(m*K)]"},
               {"rho", "7400[kg/m^3]"}, {"Cp", "230[J/(kg*K)]"}, {"mur", "1"}, {"E", "50[GPa]"}, {"nu", "0.36"}, {"alpha", "21.7e-6[1/K]"}}),
         entry("Stainless steel (304)", "Metals", "Austenitic stainless steel: all but non-magnetic", {{"epsilonr", "1"}, {"sigma", "1.39e6[S/m]"},
@@ -385,48 +743,160 @@ const QList<MaterialEntry>& builtinMaterials()
               {"rho", "3720[kg/m^3]"}, {"Cp", "880[J/(kg*K)]"}, {"mur", "1"}, {"E", "300[GPa]"}, {"nu", "0.21"}, {"alpha", "7.1e-6[1/K]"}}),
         entry("PTFE", "Dielectrics", "Polytetrafluoroethylene", {{"epsilonr", "2.1"}, {"tand", "0.0002"}, {"sigma", "1e-16[S/m]"}, {"k", "0.25[W/(m*K)]"},
               {"rho", "2200[kg/m^3]"}, {"Cp", "1000[J/(kg*K)]"}, {"mur", "1"}, {"E", "0.5[GPa]"}, {"nu", "0.46"}, {"alpha", "120e-6[1/K]"}}),
-        // Semiconductors and their insulators (no conductivity: it depends on the doping).
-        entry("Silicon", "Semiconductors", "Crystalline silicon at 300 K; n at 1550 nm. Its conductivity depends on its doping: give it, or solve its carriers (Semiconductor)",
-              {{"epsilonr", "11.7"}, {"k", "130[W/(m*K)]"}, {"rho", "2329[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"}, {"mur", "1"},
-               {"E", "170[GPa]"}, {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"n", "3.476"}, {"dndT", "1.86e-4[1/K]"},
-               {"Eg", "1.12[eV]"}, {"chi", "4.05[eV]"}, {"Nc", "2.8e19[1/cm^3]"}, {"Nv", "1.04e19[1/cm^3]"}, {"mun", "1400[cm^2/(V*s)]"},
-               {"mup", "450[cm^2/(V*s)]"}, {"taun", "10[us]"}, {"taup", "10[us]"}}),
-        entry("Germanium", "Semiconductors",
-              "Crystalline germanium; n at 1550 nm. Its direct gap's absorption (a Wave Equation's Direct-gap absorption): Egd 0.80 eV, "
-              "A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
-              {{"epsilonr", "16.2"}, {"k", "60[W/(m*K)]"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
-               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"dndT", "4.2e-4[1/K]"}, {"Eg", "0.66[eV]"}, {"chi", "4.0[eV]"},
-               {"Nc", "1.04e19[1/cm^3]"}, {"Nv", "6.0e18[1/cm^3]"}, {"mun", "3900[cm^2/(V*s)]"}, {"mup", "1900[cm^2/(V*s)]"},
-               {"taun", "1[ms]"}, {"taup", "1[ms]"}, {"Egd", "0.80[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
-        entry("Germanium on silicon", "Semiconductors",
-              "Germanium grown on silicon: 0.25 % tensile strain as it cools, its gaps narrowed - the direct one to 0.773 eV, "
-              "absorbing 4000 /cm at 1550 nm (a waveguide photodiode's). Its lifetimes the threading dislocations'",
-              {{"epsilonr", "16.2"}, {"k", "60[W/(m*K)]"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
-               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"dndT", "4.2e-4[1/K]"}, {"Eg", "0.65[eV]"}, {"chi", "4.0[eV]"},
-               {"Nc", "1.04e19[1/cm^3]"}, {"Nv", "6.0e18[1/cm^3]"}, {"mun", "3900[cm^2/(V*s)]"}, {"mup", "1900[cm^2/(V*s)]"},
-               {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"Egd", "0.773[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
-        entry("Gallium nitride", "Semiconductors",
-              "Wurtzite GaN: its bands for quantum wells (k·p 6x6, its polarization) its compound's; n at 1550 nm",
-              {{"compound", "GaN"}, {"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"}, {"mur", "1"}, {"E", "295[GPa]"},
-               {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"}, {"n", "2.31"}, {"Eg", "3.4[eV]"}, {"chi", "4.1[eV]"}, {"Nc", "2.3e18[1/cm^3]"},
-               {"Nv", "4.6e19[1/cm^3]"}, {"mun", "1000[cm^2/(V*s)]"}, {"mup", "30[cm^2/(V*s)]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
-        entry("Silicon dioxide", "Semiconductors", "SiO₂, thermal oxide or fused silica; n at 1550 nm",
-              {{"epsilonr", "3.9"}, {"tand", "0.0001"}, {"sigma", "1e-15[S/m]"}, {"k", "1.4[W/(m*K)]"}, {"rho", "2200[kg/m^3]"}, {"Cp", "730[J/(kg*K)]"},
-               {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.17"}, {"alpha", "0.5e-6[1/K]"}, {"n", "1.444"}, {"dndT", "9.5e-6[1/K]"}}),
-        entry("Silicon nitride", "Semiconductors", "Si₃N₄, stoichiometric (a thin film conducts heat less); n at 1550 nm",
-              {{"epsilonr", "7.5"}, {"sigma", "1e-14[S/m]"}, {"k", "20[W/(m*K)]"}, {"rho", "3100[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"},
-               {"mur", "1"}, {"E", "250[GPa]"}, {"nu", "0.23"}, {"alpha", "2.3e-6[1/K]"}, {"n", "1.996"}, {"dndT", "2.45e-5[1/K]"}}),
-        entry("Indium phosphide", "Semiconductors", "InP; n at 1550 nm", {{"compound", "InP"}, {"epsilonr", "12.4"}, {"k", "68[W/(m*K)]"},
-              {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"}, {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"n", "3.17"}, {"dndT", "2.0e-4[1/K]"},
-              {"Eg", "1.344[eV]"}, {"chi", "4.38[eV]"}, {"Nc", "5.7e17[1/cm^3]"}, {"Nv", "1.1e19[1/cm^3]"}, {"mun", "5400[cm^2/(V*s)]"},
-              {"mup", "200[cm^2/(V*s)]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
-        entry("Gallium arsenide", "Semiconductors", "GaAs; n at 1550 nm", {{"compound", "GaAs"}, {"epsilonr", "12.9"}, {"k", "55[W/(m*K)]"},
-              {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"}, {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"n", "3.37"}, {"dndT", "2.35e-4[1/K]"},
-              {"Eg", "1.424[eV]"}, {"chi", "4.07[eV]"}, {"Nc", "4.7e17[1/cm^3]"}, {"Nv", "9.0e18[1/cm^3]"}, {"mun", "8500[cm^2/(V*s)]"},
-              {"mup", "400[cm^2/(V*s)]"}, {"taun", "5[ns]"}, {"taup", "5[ns]"}}),
+        // Semiconductors and their insulators (no conductivity: it depends on
+        // the doping). Their gaps, densities of states, mobilities, lifetimes
+        // and conductivities of heat expressions of the temperature T (as at
+        // 300 K there); their models' parameters each its own (ModelSet).
+        withModels(with(entry("Silicon", "Semiconductors",
+                              "Crystalline silicon: at 300 K its gap 1.12 eV (Varshni's of T), its densities of states (T/300 K)^1.5, mobilities "
+                              "(T/300 K)^-ζ, conductivity of heat (T/300 K)^-1.65; its models' parameters (Caughey and Thomas's, Masetti's, "
+                              "saturation, Slotboom's, Fossum's, Auger, radiative, van Overstraeten and de Man's, Hurkx's); n and κ from 0.4 "
+                              "to 14 µm (Salzberg and Villa's, Li's, Rajkanan's absorption). Its conductivity depends on its doping: give it, "
+                              "or solve its carriers (Semiconductor)",
+                              {{"epsilonr", "11.7"}, {"rho", "2329[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"}, {"mur", "1"}, {"E", "170[GPa]"},
+                               {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"dndT", "1.86e-4[1/K]"}, {"chi", "4.05[eV]"}, {"taun", "10[us]"},
+                               {"taup", "10[us]"}}),
+                        {{"Eg", varshniOfT(1.12, 4.73e-4, 636)}, {"Nc", ofT(2.8e19, QStringLiteral("1/cm^3"), 1.5)},
+                         {"Nv", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(1400, QStringLiteral("cm^2/(V*s)"), -2.5)},
+                         {"mup", ofT(450, QStringLiteral("cm^2/(V*s)"), -2.2)}, {"k", ofT(130, QStringLiteral("W/(m*K)"), -1.65)},
+                         {"n", siliconIndex()}, {"kappa", siliconExtinction()}, {"nrange", QStringLiteral("0.4[um] 14[um]")},
+                         // (Masetti's: arsenic's and boron's, the feature's defaults.)
+                         {"m1n", QStringLiteral("52.2[cm^2/(V*s)]")}, {"m2n", QStringLiteral("52.2[cm^2/(V*s)]")},
+                         {"mu1n", QStringLiteral("43.4[cm^2/(V*s)]")}, {"pcn", QStringLiteral("0[1/cm^3]")},
+                         {"crn", QStringLiteral("9.68e16[1/cm^3]")}, {"csn", QStringLiteral("3.43e20[1/cm^3]")}, {"man", QStringLiteral("0.68")},
+                         {"mbn", QStringLiteral("2")}, {"m1p", QStringLiteral("44.9[cm^2/(V*s)]")}, {"m2p", QStringLiteral("0[cm^2/(V*s)]")},
+                         {"mu1p", QStringLiteral("29.0[cm^2/(V*s)]")}, {"pcp", QStringLiteral("9.23e16[1/cm^3]")},
+                         {"crp", QStringLiteral("2.23e17[1/cm^3]")}, {"csp", QStringLiteral("6.1e20[1/cm^3]")}, {"map", QStringLiteral("0.719")},
+                         {"mbp", QStringLiteral("2")},
+                         // (Van Overstraeten and de Man's holes' second range, above 400 kV/cm.)
+                         {"iian2", QStringLiteral("7.03e5[1/cm]")}, {"iibn2", QStringLiteral("1.231e6[V/cm]")},
+                         {"iiap2", QStringLiteral("6.71e5[1/cm]")}, {"iibp2", QStringLiteral("1.693e6[V/cm]")}, {"iiE0", QStringLiteral("4e5[V/cm]")}}),
+                   "Si"),
+        withModels(with(entry("Germanium", "Semiconductors",
+                              "Crystalline germanium: at 300 K its gap 0.66 eV (Varshni's of T), its densities of states, mobilities and "
+                              "conductivity of heat of T; its models' parameters (Lumerical's); n at 1550 nm. Its direct gap's absorption (a "
+                              "Wave Equation's Direct-gap absorption): Egd 0.80 eV, A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
+                              {{"epsilonr", "16.2"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
+                               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"nrange", "1.5[um] 1.6[um]"}, {"dndT", "4.2e-4[1/K]"},
+                               {"chi", "4.0[eV]"}, {"taun", "1[ms]"}, {"taup", "1[ms]"}, {"Egd", "0.80[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
+                        {{"Eg", varshniOfT(0.66, 4.774e-4, 235)}, {"Nc", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)},
+                         {"Nv", ofT(6.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(3900, QStringLiteral("cm^2/(V*s)"), -1.66)},
+                         {"mup", ofT(1900, QStringLiteral("cm^2/(V*s)"), -2.33)}, {"k", ofT(60, QStringLiteral("W/(m*K)"), -1.25)}}),
+                   "Ge"),
+        withModels(with(entry("Germanium on silicon", "Semiconductors",
+                              "Germanium grown on silicon: 0.25 % tensile strain as it cools, its gaps narrowed - the direct one to 0.773 eV, "
+                              "absorbing 4000 /cm at 1550 nm (a waveguide photodiode's). Its lifetimes the threading dislocations'; of T as "
+                              "Germanium",
+                              {{"epsilonr", "16.2"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
+                               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"nrange", "1.5[um] 1.6[um]"}, {"dndT", "4.2e-4[1/K]"},
+                               {"chi", "4.0[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"Egd", "0.773[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
+                        {{"Eg", varshniOfT(0.65, 4.774e-4, 235)}, {"Nc", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)},
+                         {"Nv", ofT(6.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(3900, QStringLiteral("cm^2/(V*s)"), -1.66)},
+                         {"mup", ofT(1900, QStringLiteral("cm^2/(V*s)"), -2.33)}, {"k", ofT(60, QStringLiteral("W/(m*K)"), -1.25)}}),
+                   "Ge"),
+        withModels(with(entry("Gallium nitride", "Semiconductors",
+                              "Wurtzite GaN: its bands for quantum wells (k·p 6x6, its polarization) its compound's; its gap 3.4 eV at 300 K "
+                              "(Varshni's of T), its models' parameters Lumerical's; n at 1550 nm",
+                              {{"compound", "GaN"}, {"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"},
+                               {"mur", "1"}, {"E", "295[GPa]"}, {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"}, {"n", "2.31"},
+                               {"nrange", "1.5[um] 1.6[um]"}, {"chi", "4.1[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
+                        {{"Eg", varshniOfT(3.4, 0.909e-3, 830)}, {"Nc", ofT(2.3e18, QStringLiteral("1/cm^3"), 1.5)},
+                         {"Nv", ofT(4.6e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(1000, QStringLiteral("cm^2/(V*s)"), -1.26)},
+                         {"mup", ofT(30, QStringLiteral("cm^2/(V*s)"), -2)}}),
+                   "GaN"),
+        with(entry("Silicon dioxide", "Semiconductors", "SiO₂, thermal oxide or fused silica; n from 0.21 to 6.7 µm (Malitson's)",
+                   {{"epsilonr", "3.9"}, {"tand", "0.0001"}, {"sigma", "1e-15[S/m]"}, {"k", "1.4[W/(m*K)]"}, {"rho", "2200[kg/m^3]"},
+                    {"Cp", "730[J/(kg*K)]"}, {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.17"}, {"alpha", "0.5e-6[1/K]"}, {"dndT", "9.5e-6[1/K]"},
+                    {"nrange", "0.21[um] 6.7[um]"}}),
+             {{"n", sellmeier(1, {{0.6961663, 0.0684043}, {0.4079426, 0.1162414}, {0.8974794, 9.896161}})}}),
+        with(entry("Silicon nitride", "Semiconductors",
+                   "Si₃N₄, stoichiometric (a thin film conducts heat less); n from 0.31 to 5.5 µm (Luke et al.'s, LPCVD)",
+                   {{"epsilonr", "7.5"}, {"sigma", "1e-14[S/m]"}, {"k", "20[W/(m*K)]"}, {"rho", "3100[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"},
+                    {"mur", "1"}, {"E", "250[GPa]"}, {"nu", "0.23"}, {"alpha", "2.3e-6[1/K]"}, {"dndT", "2.45e-5[1/K]"},
+                    {"nrange", "0.31[um] 5.5[um]"}}),
+             {{"n", sellmeier(1, {{3.0249, 0.1353406}, {40314, 1239.842}})}}),
+        // Gate and capacitor dielectrics (Robertson's permittivities, as
+        // Lumerical's; their heat Lumerical's, a bulk crystal's).
+        with(entry("Hafnium oxide", "Semiconductors", "HfO₂, a high-κ gate dielectric (εr 25, Robertson's); n about 1.88 near 1550 nm",
+                   {{"epsilonr", "25"}, {"sigma", "1e-15[S/m]"}, {"k", "22[W/(m*K)]"}, {"rho", "9680[kg/m^3]"}, {"Cp", "261[J/(kg*K)]"},
+                    {"mur", "1"}, {"n", "1.88"}, {"nrange", "1.5[um] 1.6[um]"}}),
+             {}),
+        with(entry("Zirconium oxide", "Semiconductors", "ZrO₂, a high-κ gate dielectric (εr 24); n from 0.36 to 5.1 µm (Wood and Nassau's, cubic)",
+                   {{"epsilonr", "24"}, {"sigma", "1e-15[S/m]"}, {"k", "2[W/(m*K)]"}, {"rho", "5680[kg/m^3]"}, {"Cp", "450[J/(kg*K)]"},
+                    {"mur", "1"}, {"nrange", "0.36[um] 5.1[um]"}}),
+             {{"n", sellmeier(1, {{1.347091, 0.062543}, {2.117788, 0.166739}, {9.452943, 24.320570}})}}),
+        with(entry("Titanium oxide", "Semiconductors",
+                   "TiO₂, rutile-like (εr 80, Robertson's); n from 0.43 to 1.53 µm, the ordinary ray's (DeVore's)",
+                   {{"epsilonr", "80"}, {"sigma", "1e-15[S/m]"}, {"k", "7.4[W/(m*K)]"}, {"rho", "4250[kg/m^3]"}, {"Cp", "690[J/(kg*K)]"},
+                    {"mur", "1"}, {"nrange", "0.43[um] 1.53[um]"}}),
+             {{"n", QStringLiteral("sqrt(5.913 + 0.2441[um^2]/(lambda0^2 - 0.0803[um^2]))")}}),
+        with(entry("Aluminium oxide", "Semiconductors",
+                   "Al₂O₃ as a gate dielectric (εr 9, Robertson's); n from 0.2 to 5 µm, sapphire's ordinary ray (Malitson and Dodge's; "
+                   "an amorphous film's 1.6-1.65)",
+                   {{"epsilonr", "9"}, {"sigma", "1e-15[S/m]"}, {"k", "28[W/(m*K)]"}, {"rho", "3900[kg/m^3]"}, {"Cp", "796[J/(kg*K)]"},
+                    {"mur", "1"}, {"nrange", "0.2[um] 5[um]"}}),
+             {{"n", sellmeier(1, {{1.4313493, 0.0726631}, {0.65054713, 0.1193242}, {5.3414021, 18.028251}})}}),
+        withModels(with(entry("Indium phosphide", "Semiconductors",
+                              "InP: its gap 1.344 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.95 to 10 µm "
+                              "(Pettit and Turner's)",
+                              {{"compound", "InP"}, {"epsilonr", "12.4"}, {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"},
+                               {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"dndT", "2.0e-4[1/K]"}, {"nrange", "0.95[um] 10[um]"},
+                               {"chi", "4.38[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
+                        {{"Eg", varshniOfT(1.344, 0.363e-3, 162)}, {"Nc", ofT(5.7e17, QStringLiteral("1/cm^3"), 1.5)},
+                         {"Nv", ofT(1.1e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(5400, QStringLiteral("cm^2/(V*s)"), -1.9)},
+                         {"mup", ofT(200, QStringLiteral("cm^2/(V*s)"), -1.2)}, {"k", ofT(68, QStringLiteral("W/(m*K)"), -1.4)},
+                         {"n", sellmeier(7.255, {{2.316, 0.6263}, {2.765, 32.935}})}}),
+                   "InP"),
+        withModels(with(entry("Gallium arsenide", "Semiconductors",
+                              "GaAs: its gap 1.424 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.88 to 5 µm "
+                              "(Afromowitz's)",
+                              {{"compound", "GaAs"}, {"epsilonr", "12.9"}, {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"},
+                               {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"dndT", "2.35e-4[1/K]"},
+                               {"nrange", "0.88[um] 5[um]"}, {"chi", "4.07[eV]"}}),
+                        {{"Eg", varshniOfT(1.424, 0.5405e-3, 204)}, {"Nc", ofT(4.7e17, QStringLiteral("1/cm^3"), 1.5)},
+                         {"Nv", ofT(9.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(8500, QStringLiteral("cm^2/(V*s)"), -2.2)},
+                         {"mup", ofT(400, QStringLiteral("cm^2/(V*s)"), -0.9)}, {"k", ofT(55, QStringLiteral("W/(m*K)"), -1.25)},
+                         {"taun", ofT(5, QStringLiteral("ns"), -0.5)}, {"taup", ofT(5, QStringLiteral("ns"), -0.5)}, {"n", afromowitzIndex(0)}}),
+                   "GaAs"),
+        // II-VI semiconductors (thin-film solar cells): their gaps measured at
+        // 300 K, constant; χ from Lumerical's work functions, Nc and Nv of its
+        // masses, its models' parameters; the holes' mobilities Sze's (CdSe's
+        // an estimate); n near 1550 nm.
+        withModels(with(entry("Cadmium sulfide", "Semiconductors",
+                              "CdS: a window layer (2.42 eV at 300 K); its lifetimes a crystal's (a film's are nanoseconds)",
+                              {{"epsilonr", "10"}, {"k", "20[W/(m*K)]"}, {"rho", "4826[kg/m^3]"}, {"Cp", "470[J/(kg*K)]"}, {"mur", "1"},
+                               {"n", "2.29"}, {"nrange", "1.5[um] 1.6[um]"}, {"Eg", "2.42[eV]"}, {"chi", "4.82[eV]"}, {"taun", "1[us]"},
+                               {"taup", "1[us]"}}),
+                        {{"Nc", ofT(2.4145e18, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(2.5657e19, QStringLiteral("1/cm^3"), 1.5)},
+                         {"mun", QStringLiteral("340[cm^2/(V*s)]")}, {"mup", QStringLiteral("50[cm^2/(V*s)]")}}),
+                   "CdS"),
+        withModels(with(entry("Cadmium selenide", "Semiconductors", "CdSe (1.74 eV at 300 K); its hole mobility an estimate",
+                              {{"epsilonr", "10"}, {"k", "9[W/(m*K)]"}, {"rho", "5816[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"}, {"mur", "1"},
+                               {"n", "2.45"}, {"nrange", "1.5[um] 1.6[um]"}, {"Eg", "1.74[eV]"}, {"chi", "5.00[eV]"}, {"taun", "1[us]"},
+                               {"taup", "1[us]"}}),
+                        {{"Nc", ofT(1.1760e18, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(2.8946e19, QStringLiteral("1/cm^3"), 1.5)},
+                         {"mun", QStringLiteral("650[cm^2/(V*s)]")}, {"mup", QStringLiteral("50[cm^2/(V*s)]")}}),
+                   "CdSe"),
+        withModels(with(entry("Cadmium telluride", "Semiconductors",
+                              "CdTe: a solar absorber (1.50 eV at 300 K); its lifetimes a crystal's (a film's are nanoseconds)",
+                              {{"epsilonr", "10.2"}, {"k", "6.2[W/(m*K)]"}, {"rho", "5850[kg/m^3]"}, {"Cp", "210[J/(kg*K)]"}, {"mur", "1"},
+                               {"n", "2.72"}, {"nrange", "1.5[um] 1.6[um]"}, {"Eg", "1.50[eV]"}, {"chi", "4.32[eV]"}, {"taun", "1[us]"},
+                               {"taup", "1[us]"}}),
+                        {{"Nc", ofT(9.1535e17, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(1.6623e19, QStringLiteral("1/cm^3"), 1.5)},
+                         {"mun", QStringLiteral("1050[cm^2/(V*s)]")}, {"mup", QStringLiteral("100[cm^2/(V*s)]")}}),
+                   "CdTe"),
+        // Silicon germanium: x the germanium's share - its X and L valleys'
+        // gaps (Lumerical's bowing of the X one), the lower; mobilities by
+        // harmonic means with the alloy's scattering.
+        with(entry("Silicon germanium", "Semiconductors",
+                   "Si₁₋ₓGeₓ, x the germanium's share (HBT bases, strained channels, photodetectors): its gap the lower of its X and L "
+                   "valleys' (the L one below from x 0.8), its mobilities scattered by the alloy",
+                   {{"compound", "SiGe"}, {"x", "0.2"}, {"mur", "1"}}),
+             {}),
         // III-V binaries and alloys: their band parameters for quantum wells
         // (an alloy's at its composition x, y), the rest rough.
         compoundEntry("Aluminium arsenide", "AlAs: indirect, its Γ gap 3.0 eV at 300 K", "AlAs"),
+        compoundEntry("Aluminium phosphide", "AlP: indirect, its Γ gap 3.55 eV at 300 K (its X one 2.49)", "AlP"),
         compoundEntry("Indium arsenide", "InAs: a narrow gap, 0.35 eV", "InAs"),
         compoundEntry("Gallium phosphide", "GaP: indirect, its Γ gap 2.78 eV", "GaP"),
         compoundEntry("Gallium antimonide", "GaSb", "GaSb"),
@@ -437,9 +907,19 @@ const QList<MaterialEntry>& builtinMaterials()
                       "InGaAs", "0.53"),
         compoundEntry("Indium aluminium arsenide", "InₓAl₁₋ₓAs, x the indium's share: 0.52 is InP's lattice", "InAlAs", "0.52"),
         compoundEntry("Gallium indium phosphide", "GaₓIn₁₋ₓP, x the gallium's share: 0.51 is GaAs's lattice", "GaInP", "0.51"),
+        compoundEntry("Aluminium indium phosphide", "AlₓIn₁₋ₓP, x the aluminium's share: 0.52 is GaAs's lattice (visible lasers' cladding)",
+                      "AlInP", "0.52"),
+        compoundEntry("Aluminium gallium phosphide", "AlₓGa₁₋ₓP, x the aluminium's share", "AlGaP", "0.5"),
+        compoundEntry("Aluminium gallium antimonide", "AlₓGa₁₋ₓSb, x the aluminium's share", "AlGaSb", "0.3"),
+        compoundEntry("Aluminium arsenide antimonide", "AlAsₓSb₁₋ₓ, x the arsenic's share: 0.56 is InP's lattice", "AlAsSb", "0.56"),
+        compoundEntry("Indium arsenide antimonide", "InAsₓSb₁₋ₓ, x the arsenic's share: 0.91 is GaSb's lattice (mid-infrared)", "InAsSb", "0.91"),
+        compoundEntry("Indium aluminium antimonide", "InₓAl₁₋ₓSb, x the indium's share", "InAlSb", "0.9"),
         compoundEntry("Indium gallium arsenide phosphide", "In₁₋ₓGaₓAsᵧP₁₋ᵧ: on InP's lattice y ≈ 2.2 x; x 0.28, y 0.6 is the 1.3 µm quaternary",
                       "InGaAsP", "0.28", "0.6"),
         compoundEntry("Aluminium gallium indium arsenide", "AlₓGaᵧIn₁₋ₓ₋ᵧAs: x + y 0.47 is InP's lattice", "AlGaInAs", "0.2", "0.27"),
+        compoundEntry("Aluminium gallium indium phosphide",
+                      "AlₓGaᵧIn₁₋ₓ₋ᵧP: x + y 0.51 is GaAs's lattice - (Al₀.₃Ga₀.₇)₀.₅₁In₀.₄₉P, a red laser's barrier, is x 0.153, y 0.357",
+                      "AlGaInP", "0.153", "0.357"),
         // The nitrides (wurtzite): their bands, strain and polarization for
         // quantum wells.
         compoundEntry("Aluminium nitride", "AlN: wurtzite, the widest gap (6.2 eV at 300 K); its crystal field below 0 - its top band Z-like, "
@@ -449,6 +929,8 @@ const QList<MaterialEntry>& builtinMaterials()
         compoundEntry("Indium gallium nitride", "InₓGa₁₋ₓN, x the indium's share (blue and green wells on GaN; a bowing of 1.4 eV)", "InGaN",
                       "0.15"),
         compoundEntry("Indium aluminium nitride", "InₓAl₁₋ₓN, x the indium's share: 0.18 is GaN's lattice", "InAlN", "0.18"),
+        compoundEntry("Aluminium gallium indium nitride", "AlₓGaᵧIn₁₋ₓ₋ᵧN: its gap from its three ternaries' (Vurgaftman and Meyer's)",
+                      "AlGaInN", "0.1", "0.8"),
         entry("Lithium niobate", "Semiconductors", "LiNbO₃ along its optical axis (εr33, ne at 1550 nm): it is anisotropic",
               {{"epsilonr", "28"}, {"sigma", "1e-15[S/m]"}, {"k", "4.6[W/(m*K)]"}, {"rho", "4640[kg/m^3]"}, {"Cp", "630[J/(kg*K)]"},
                {"mur", "1"}, {"E", "170[GPa]"}, {"nu", "0.25"}, {"alpha", "7.5e-6[1/K]"}, {"n", "2.138"}, {"dndT", "3.3e-5[1/K]"}}),
@@ -559,7 +1041,7 @@ Node materialNode(const Model& model, const MaterialEntry& entry, const QJsonObj
     n.label = entry.name;
     n.props.insert(QStringLiteral("library"), entry.name);
     for (auto it = entry.properties.begin(); it != entry.properties.end(); ++it)
-        if (PropertyKeys.contains(it.key())) n.props.insert(it.key(), it.value());
+        if (propertyKeys().contains(it.key())) n.props.insert(it.key(), it.value());
     n.props.insert(QStringLiteral("selection"), selection.isEmpty() ? QJsonObject{{QStringLiteral("numbers"), QJsonArray()}} : selection);
     return n;
 }
@@ -617,22 +1099,23 @@ QStringList compounds()
     QStringList out;
     for (const Binary& b : binaries()) out << QString::fromLatin1(b.name);
     for (const Ternary& t : ternaries()) out << QString::fromLatin1(t.name);
-    out << QStringLiteral("InGaAsP") << QStringLiteral("AlGaInAs");
+    out << QStringLiteral("InGaAsP") << QStringLiteral("AlGaInAs") << QStringLiteral("AlGaInP");
     for (const Nitride& n : nitrides()) out << QString::fromLatin1(n.name);
     for (const NitrideAlloy& a : nitrideAlloys()) out << QString::fromLatin1(a.name);
+    out << QStringLiteral("AlGaInN") << QStringLiteral("SiGe");
     return out;
 }
 
 bool isWurtzite(const QString& compound)
 {
     const QString name = compound.trimmed();
-    if (nitride(name)) return true;
+    if (nitride(name) || name.compare(QLatin1String("AlGaInN"), Qt::CaseInsensitive) == 0) return true;
     for (const NitrideAlloy& a : nitrideAlloys())
         if (name.compare(QLatin1String(a.name), Qt::CaseInsensitive) == 0) return true;
     return false;
 }
 
-std::optional<WurtziteParameters> wurtziteParameters(const QString& compound, double x, double T, QString* error)
+std::optional<WurtziteParameters> wurtziteParameters(const QString& compound, double x, double T, QString* error, double y)
 {
     auto fail = [&](const QString& why) -> std::optional<WurtziteParameters> {
         if (error) *error = why;
@@ -641,6 +1124,41 @@ std::optional<WurtziteParameters> wurtziteParameters(const QString& compound, do
     const QString name = compound.trimmed();
     if (!(T > 0)) return fail(tr("a temperature of %1 K").arg(T));
     if (const Nitride* n = nitride(name)) return nitrideAt(*n, T);
+    if (name.compare(QLatin1String("AlGaInN"), Qt::CaseInsensitive) == 0) {
+        // Alx Gay In1-x-y N from its three ternaries (Vurgaftman and Meyer's,
+        // as AlGaInAs's).
+        const double z = 1 - x - y;
+        if (!(x >= -1e-12 && y >= -1e-12 && z >= -1e-12))
+            return fail(tr("AlGaInN: x = %1, y = %2 are not shares that add up to 1 or less").arg(x).arg(y));
+        x = std::max(0.0, x);
+        y = std::max(0.0, y);
+        const double zz = std::max(0.0, z), d = x * y + y * zz + x * zz;
+        if (d < 1e-12) return wurtziteParameters(QLatin1String(x > 0.5 ? "AlN" : y > 0.5 ? "GaN" : "InN"), 0, T, error);
+        const double u = (1 + x - y) / 2, v = (1 + y - zz) / 2, w = (1 + x - zz) / 2;
+        const std::optional<WurtziteParameters> alGa = wurtziteParameters(QStringLiteral("AlGaN"), u, T, error);
+        const std::optional<WurtziteParameters> inGa = wurtziteParameters(QStringLiteral("InGaN"), 1 - v, T, error);   // (In's share 1 - v)
+        const std::optional<WurtziteParameters> inAl = wurtziteParameters(QStringLiteral("InAlN"), 1 - w, T, error);   // (In's share 1 - w)
+        if (!alGa || !inGa || !inAl) return std::nullopt;
+        const double weights[3] = {x * y / d, y * zz / d, x * zz / d};
+        const WurtziteParameters* parts[3] = {&*alGa, &*inGa, &*inAl};
+        WurtziteParameters p;
+        for (auto m : {&WurtziteParameters::Eg, &WurtziteParameters::Ev, &WurtziteParameters::dcr, &WurtziteParameters::dso,
+                       &WurtziteParameters::mez, &WurtziteParameters::mep, &WurtziteParameters::a1, &WurtziteParameters::a2,
+                       &WurtziteParameters::Ep, &WurtziteParameters::a, &WurtziteParameters::c, &WurtziteParameters::C11,
+                       &WurtziteParameters::C12, &WurtziteParameters::C13, &WurtziteParameters::C33, &WurtziteParameters::Psp,
+                       &WurtziteParameters::e31, &WurtziteParameters::e33, &WurtziteParameters::epsr, &WurtziteParameters::n}) {
+            p.*m = 0;
+            for (int k = 0; k < 3; ++k) p.*m += weights[k] * (parts[k]->*m);
+        }
+        for (int i = 0; i < 6; ++i) {
+            p.A[i] = p.D[i] = 0;
+            for (int k = 0; k < 3; ++k) {
+                p.A[i] += weights[k] * parts[k]->A[i];
+                p.D[i] += weights[k] * parts[k]->D[i];
+            }
+        }
+        return p;
+    }
     for (const NitrideAlloy& al : nitrideAlloys()) {
         if (name.compare(QLatin1String(al.name), Qt::CaseInsensitive) != 0) continue;
         if (!(x >= -1e-12 && x <= 1 + 1e-12)) return fail(tr("%1: x = %2 is not between 0 and 1").arg(name).arg(x));
@@ -683,7 +1201,7 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
         // A nitride's as zinc blende's would say it (other physics' gap,
         // affinity, permittivity, index; a substrate's lattice in the plane):
         // the holes' mass along c in γ1, γ2 0.
-        const std::optional<WurtziteParameters> w = wurtziteParameters(name, x, T, error);
+        const std::optional<WurtziteParameters> w = wurtziteParameters(name, x, T, error, y);
         if (!w) return std::nullopt;
         BandParameters p;
         p.Eg = w->Eg;
@@ -752,6 +1270,25 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
         // lattice within 15 meV of Olego et al.'s 0.76 + 0.49 z + 0.20 z².)
         if (set == BandSet::Measured) p.Eg -= 1.815 * x * y * zz;
         return p;
+    }
+    if (name.compare(QLatin1String("AlGaInP"), Qt::CaseInsensitive) == 0) {
+        // Alx Gay In1-x-y P from AlGaP, GaInP, AlInP, as AlGaInAs.
+        const double z = 1 - x - y;
+        if (!inRange(x) || !inRange(y) || z < -1e-12)
+            return fail(tr("AlGaInP: x = %1, y = %2 are not shares that add up to 1 or less").arg(x).arg(y));
+        x = std::clamp(x, 0.0, 1.0);
+        y = std::clamp(y, 0.0, 1.0);
+        const double zz = std::max(0.0, z);
+        const double d = x * y + y * zz + x * zz;
+        if (d < 1e-12) {
+            const char* corner = x > 0.5 ? "AlP" : y > 0.5 ? "GaP" : "InP";
+            return binaryAt(*binary(QLatin1String(corner)), T, set);
+        }
+        const double u = (1 + x - y) / 2, v = (1 + y - zz) / 2, w = (1 + x - zz) / 2;
+        const BandParameters alGa = ternaryAt(*ternary(QStringLiteral("AlGaP")), u, T, set);
+        const BandParameters gaIn = ternaryAt(*ternary(QStringLiteral("GaInP")), v, T, set);   // (Ga's share v)
+        const BandParameters alIn = ternaryAt(*ternary(QStringLiteral("AlInP")), w, T, set);   // (Al's share w)
+        return blend(blend(alGa, x * y / d, gaIn, y * zz / d), 1, alIn, x * zz / d);
     }
     return fail(tr("%1 is not a compound known (%2)").arg(name, compounds().join(QLatin1String(", "))));
 }
@@ -823,13 +1360,127 @@ std::optional<std::vector<ValleySet>> valleySets(const QString& text, QString* e
     return sets;
 }
 
-QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set)
+namespace {
+
+/// An alloy's model parameter \a key from its model sets: those that have
+/// it weighed by their shares (renormalized) - mobilities harmonically, the
+/// rest and the temperature exponents linearly, as Lumerical's alloys
+/// without bowings. Empty where none has it (Masetti's: silicon's alone).
+QString alloyModel(const std::vector<std::pair<const ModelSet*, double>>& parts, const QString& key)
 {
-    const std::optional<BandParameters> p = bandParameters(compound, x, y, 300, nullptr, set);
+    if (parts.empty()) return {};
+    const QString k = key;
+    const int c = k.endsWith(QLatin1Char('n')) ? 0 : 1;
+    // What a set has of the key: its value and exponent, or none.
+    struct Value {
+        bool has = false;
+        double v = 0, eta = 0;
+    };
+    auto of = [&k, &c](const ModelSet& m) -> Value {
+        if (k == QLatin1String("munmin") || k == QLatin1String("mupmin")) return {m.nRef[c] > 0, m.muMin[c], m.etaMuMin[c]};
+        if (k == QLatin1String("nrefn") || k == QLatin1String("nrefp")) return {m.nRef[c] > 0, m.nRef[c], m.etaNRef[c]};
+        if (k == QLatin1String("alphan") || k == QLatin1String("alphap")) return {m.nRef[c] > 0, m.alpha[c], m.etaAlpha[c]};
+        if (k == QLatin1String("zetan") || k == QLatin1String("zetap")) return {m.zeta[c] != 0, m.zeta[c], 0};
+        if (k == QLatin1String("vsatn") || k == QLatin1String("vsatp")) return {true, m.vsat[c], 0};
+        if (k == QLatin1String("betan") || k == QLatin1String("betap")) return {true, m.beta[c], 0};
+        if (k == QLatin1String("Ebgn")) return {m.bgn[0] > 0, m.bgn[0], 0};
+        if (k == QLatin1String("Nbgn")) return {m.bgn[0] > 0, m.bgn[1], 0};
+        if (k == QLatin1String("Cbgn")) return {m.bgn[0] > 0, m.bgn[2], 0};
+        if (k == QLatin1String("N0n") || k == QLatin1String("N0p")) return {true, m.fossum[c], 0};
+        if (k == QLatin1String("fA")) return {true, m.fossum[2], 0};
+        if (k == QLatin1String("fB")) return {true, m.fossum[3], 0};
+        if (k == QLatin1String("fC")) return {true, m.fossum[4], 0};
+        if (k == QLatin1String("fE")) return {true, m.fossum[5], 0};
+        if (k == QLatin1String("mtn") || k == QLatin1String("mtp")) return {true, m.mt[c], 0};
+        if (k == QLatin1String("caun") || k == QLatin1String("caup")) return {true, m.auger[c], 0};
+        if (k == QLatin1String("copt")) return {true, m.rad, m.radEta};
+        if (k == QLatin1String("iian") || k == QLatin1String("iiap")) return {m.ii[3 * c] > 0, m.ii[3 * c], 0};
+        if (k == QLatin1String("iibn") || k == QLatin1String("iibp")) return {m.ii[3 * c] > 0, m.ii[3 * c + 1], 0};
+        if (k == QLatin1String("iibetan") || k == QLatin1String("iibetap")) return {m.ii[3 * c] > 0, m.ii[3 * c + 2], 0};
+        if (k == QLatin1String("bbtA")) return {m.bbt[0] > 0, m.bbt[0], 0};
+        if (k == QLatin1String("bbtB")) return {m.bbt[0] > 0, m.bbt[1], 0};
+        if (k == QLatin1String("bbtgamma")) return {m.bbt[0] > 0, m.bbt[2], 0};
+        return {};
+    };
+    double total = 0, value = 0, inverse = 0, eta = 0;
+    const bool harmonic = k.startsWith(QLatin1String("mu"));
+    for (const auto& [m, w] : parts) {
+        const Value v = of(*m);
+        if (!v.has || !(w > 0)) continue;
+        total += w;
+        value += w * v.v;
+        if (harmonic) inverse += w / v.v;
+        eta += w * v.eta;
+    }
+    if (!(total > 0)) return {};
+    const double v = harmonic ? total / inverse : value / total;
+    eta /= total;
+    if (k.startsWith(QLatin1String("mu"))) return ofT(v, QStringLiteral("cm^2/(V*s)"), eta);
+    if (k.startsWith(QLatin1String("nref")) || k == QLatin1String("Nbgn") || k.startsWith(QLatin1String("N0")))
+        return ofT(v, QStringLiteral("1/cm^3"), eta);
+    if (k.startsWith(QLatin1String("vsat"))) return ofT(v, QStringLiteral("cm/s"), 0);
+    if (k == QLatin1String("Ebgn")) return ofT(v, QStringLiteral("eV"), 0);
+    if (k.startsWith(QLatin1String("cau"))) return ofT(v, QStringLiteral("cm^6/s"), 0);
+    if (k == QLatin1String("copt")) return ofT(v, QStringLiteral("cm^3/s"), eta);
+    if (k == QLatin1String("iian") || k == QLatin1String("iiap")) return ofT(v, QStringLiteral("1/cm"), 0);
+    if (k == QLatin1String("iibn") || k == QLatin1String("iibp") || k == QLatin1String("bbtB")) return ofT(v, QStringLiteral("V/cm"), 0);
+    return ofT(v, QString(), eta);
+}
+
+/// Silicon germanium's property \a key at Ge's share \a x and temperature
+/// \a T: its X valley's gap (Si's and Ge's X gaps, Lumerical's bowing of
+/// -0.4 eV) and L valley's (Si's 2.01 eV, Ge's), the lower; the valence
+/// band's top straight between Si's and Ge's (χ from it); the mobilities
+/// harmonic with the alloy's scattering (1/140 and 1/100 V s/cm² of x(1 -
+/// x), Lumerical's), the conductivity of heat with its (1/2.8 m K/W); the
+/// rest straight between the two. Empty for what it has none of.
+QString siliconGermanium(const QString& key, double x, double T)
+{
+    x = std::clamp(x, 0.0, 1.0);
+    auto lin = [x](double si, double ge) { return (1 - x) * si + x * ge; };
+    const double egSi = 1.12 - 4.73e-4 * (T * T / (T + 636) - 9e4 / 936), egGe = 0.66 - 4.774e-4 * (T * T / (T + 235) - 9e4 / 535);
+    const double eX = lin(egSi, 0.93) - 0.4 * x * (1 - x), eL = lin(2.01, egGe);
+    const double Eg = std::min(eX, eL);
+    const double t = T / 300;
+    const QString k = key;
+    if (k == QLatin1String("Eg")) return QStringLiteral("%1[eV]").arg(number(Eg));
+    if (k == QLatin1String("chi")) return QStringLiteral("%1[eV]").arg(number(lin(4.05 + egSi, 4.0 + egGe) - Eg));
+    if (k == QLatin1String("epsilonr")) return number(lin(11.7, 16.2));
+    if (k == QLatin1String("Nc")) return QStringLiteral("%1[1/cm^3]").arg(number(lin(2.8e19, 1.04e19) * std::pow(t, 1.5)));
+    if (k == QLatin1String("Nv")) return QStringLiteral("%1[1/cm^3]").arg(number(lin(1.04e19, 6.0e18) * std::pow(t, 1.5)));
+    if (k == QLatin1String("mun") || k == QLatin1String("mup")) {
+        const bool n = k == QLatin1String("mun");
+        const double si = (n ? 1400 : 450) * std::pow(t, n ? -2.5 : -2.2), ge = (n ? 3900 : 1900) * std::pow(t, n ? -1.66 : -2.33);
+        return QStringLiteral("%1[cm^2/(V*s)]").arg(number(1 / ((1 - x) / si + x / ge + x * (1 - x) / (n ? 140.0 : 100.0))));
+    }
+    if (k == QLatin1String("taun") || k == QLatin1String("taup")) return QStringLiteral("10[us]");
+    if (k == QLatin1String("k")) return QStringLiteral("%1[W/(m*K)]").arg(number(1 / ((1 - x) / 130 + x / 60 + x * (1 - x) / 2.8)));
+    if (k == QLatin1String("rho")) return QStringLiteral("%1[kg/m^3]").arg(number(lin(2329, 5323)));
+    if (k == QLatin1String("Cp")) return QStringLiteral("%1[J/(kg*K)]").arg(number(lin(700, 320)));
+    if (k == QLatin1String("E")) return QStringLiteral("%1[GPa]").arg(number(lin(170, 103)));
+    if (k == QLatin1String("nu")) return number(lin(0.28, 0.26));
+    if (k == QLatin1String("alpha")) return QStringLiteral("%1[1/K]").arg(number(lin(2.6e-6, 5.9e-6)));
+    if (k == QLatin1String("n")) return number(lin(3.476, 4.275));
+    if (k == QLatin1String("nrange")) return QStringLiteral("1.5[um] 1.6[um]");
+    if (k == QLatin1String("dndT")) return QStringLiteral("%1[1/K]").arg(number(lin(1.86e-4, 4.2e-4)));
+    if (k == QLatin1String("mur")) return QStringLiteral("1");
+    if (semiconductorModelKeys().contains(k)) return alloyModel(modelShares(QStringLiteral("SiGe"), x, 0), k);
+    return {};
+}
+
+} // namespace
+
+QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set, double T)
+{
+    if (!(T > 0)) T = 300;
+    if (compound.trimmed().compare(QLatin1String("SiGe"), Qt::CaseInsensitive) == 0) return siliconGermanium(key, x, T);
+    if (semiconductorModelKeys().contains(key)) return alloyModel(modelShares(compound.trimmed(), x, y), key);
+    const std::optional<BandParameters> p = bandParameters(compound, x, y, T, nullptr, set);
     if (!p) return {};
     auto num = [](double v) { return formatNumber(v, 8); };
     auto eV = [&](double v) { return num(v) + QStringLiteral("[eV]"); };
     const QString k = key;
+    const QString name = compound.trimmed();
     if (k == QLatin1String("Eg")) return eV(p->Eg);
     if (k == QLatin1String("VBO")) return eV(p->VBO);
     if (k == QLatin1String("Delta")) return eV(p->Delta);
@@ -845,12 +1496,25 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
     if (k == QLatin1String("C11")) return num(p->C11 / 1e9) + QStringLiteral("[GPa]");
     if (k == QLatin1String("C12")) return num(p->C12 / 1e9) + QStringLiteral("[GPa]");
     if (k == QLatin1String("epsilonr")) return num(p->epsr);
-    if (k == QLatin1String("n")) return num(p->n);
+    // The index: GaAs's and AlGaAs's Afromowitz's, InP's Pettit and
+    // Turner's (of the wavelength); the others' near their gap, constant.
+    const bool algaas = name.compare(QLatin1String("AlGaAs"), Qt::CaseInsensitive) == 0, gaas = name.compare(QLatin1String("GaAs"), Qt::CaseInsensitive) == 0;
+    const bool inp = name.compare(QLatin1String("InP"), Qt::CaseInsensitive) == 0;
+    if (k == QLatin1String("n")) {
+        if (algaas || gaas) return afromowitzIndex(gaas ? 0 : std::clamp(x, 0.0, 1.0));
+        if (inp) return sellmeier(7.255, {{2.316, 0.6263}, {2.765, 32.935}});
+        return num(p->n);
+    }
+    if (k == QLatin1String("nrange")) {
+        if (algaas || gaas) return QStringLiteral("%1[um] 5[um]").arg(number(1.23984198 / (1.424 + 1.266 * (gaas ? 0 : x) + 0.26 * x * x * (gaas ? 0 : 1)) / 0.995));
+        if (inp) return QStringLiteral("0.95[um] 10[um]");
+        return {};
+    }
     if (k == QLatin1String("chi")) {
         // Its conduction band against GaAs's (χ 4.07 eV): the offsets of
         // the common scale.
-        const BandParameters gaas = binaryAt(*binary(QStringLiteral("GaAs")), 300, set);
-        return eV(4.07 - ((p->VBO + p->Eg) - (gaas.VBO + gaas.Eg)));
+        const BandParameters gaasAtT = binaryAt(*binary(QStringLiteral("GaAs")), T, set);
+        return eV(4.07 - ((p->VBO + p->Eg) - (gaasAtT.VBO + gaasAtT.Eg)));
     }
     if (k == QLatin1String("Nc") || k == QLatin1String("Nv")) {
         // 2 (m kT / 2πħ²)^(3/2); the holes' mass of the heavy and light ones'.
@@ -859,24 +1523,33 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
             const double mhh = 1 / (p->gamma1 - 2 * p->gamma2), mlh = 1 / (p->gamma1 + 2 * p->gamma2);
             m = std::pow(std::pow(mhh, 1.5) + std::pow(mlh, 1.5), 2.0 / 3.0);
         }
-        return num(2 * std::pow(m * M0 * KB * 300 / (2 * M_PI * Hbar * Hbar), 1.5)) + QStringLiteral("[1/m^3]");
+        return num(2 * std::pow(m * M0 * KB * T / (2 * M_PI * Hbar * Hbar), 1.5)) + QStringLiteral("[1/m^3]");
     }
     if (k == QLatin1String("taun") || k == QLatin1String("taup")) return QStringLiteral("1[ns]");
-    const auto parts = shares(compound.trimmed(), x, y);
+    const auto parts = shares(name, x, y);
     if (parts.empty()) return {};
     double sum2 = 0;
     for (const auto& [b, w] : parts) sum2 += w * w;
     if (k == QLatin1String("mun") || k == QLatin1String("mup")) {
-        // (Matthiessen's rule over the binaries: a rough mobility.)
+        // (Matthiessen's rule over the binaries, each (T/300 K)^-ζ: a rough
+        // mobility.)
+        const int c = k == QLatin1String("mun") ? 0 : 1;
         double inv = 0;
-        for (const auto& [b, w] : parts) inv += w / (k == QLatin1String("mun") ? b->mun : b->mup);
+        for (const auto& [b, w] : parts) {
+            const ModelSet* m = modelSet(QLatin1String(b->name));
+            inv += w / ((c == 0 ? b->mun : b->mup) * std::pow(T / 300, m ? -m->zeta[c] : 0.0));
+        }
         return num(1 / inv) + QStringLiteral("[cm^2/(V*s)]");
     }
     if (k == QLatin1String("k")) {
-        // Thermal resistivities, with an alloy's disorder (0.3 m K/W of bowing).
-        double w = 0.3 * (1 - sum2) / 2;
-        for (const auto& [b, s] : parts) w += s / b->k;
-        return num(1 / w) + QStringLiteral("[W/(m*K)]");
+        // Thermal resistivities, with an alloy's disorder (0.3 m K/W of
+        // bowing); of T as its binaries' exponents weighed.
+        double w = 0.3 * (1 - sum2) / 2, eta = 0;
+        for (const auto& [b, s] : parts) {
+            w += s / b->k;
+            eta += s * heatExponent(QLatin1String(b->name));
+        }
+        return ofT(1 / w, QStringLiteral("W/(m*K)"), eta);
     }
     if (k == QLatin1String("rho") || k == QLatin1String("Cp")) {
         double v = 0;
@@ -886,13 +1559,79 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
     return {};
 }
 
+QStringList semiconductorModelKeys()
+{
+    static const QStringList keys = {
+        QStringLiteral("munmin"), QStringLiteral("nrefn"), QStringLiteral("alphan"), QStringLiteral("mupmin"), QStringLiteral("nrefp"),
+        QStringLiteral("alphap"), QStringLiteral("m1n"),   QStringLiteral("m2n"),    QStringLiteral("mu1n"),   QStringLiteral("pcn"),
+        QStringLiteral("crn"),    QStringLiteral("csn"),   QStringLiteral("man"),    QStringLiteral("mbn"),    QStringLiteral("m1p"),
+        QStringLiteral("m2p"),    QStringLiteral("mu1p"),  QStringLiteral("pcp"),    QStringLiteral("crp"),    QStringLiteral("csp"),
+        QStringLiteral("map"),    QStringLiteral("mbp"),   QStringLiteral("zetan"),  QStringLiteral("zetap"),  QStringLiteral("vsatn"),
+        QStringLiteral("vsatp"),  QStringLiteral("betan"), QStringLiteral("betap"),  QStringLiteral("Ebgn"),   QStringLiteral("Nbgn"),
+        QStringLiteral("Cbgn"),   QStringLiteral("N0n"),   QStringLiteral("N0p"),    QStringLiteral("fA"),     QStringLiteral("fB"),
+        QStringLiteral("fC"),     QStringLiteral("fE"),    QStringLiteral("mtn"),    QStringLiteral("mtp"),    QStringLiteral("Et"),
+        QStringLiteral("caun"),   QStringLiteral("caup"),  QStringLiteral("copt"),   QStringLiteral("iian"),   QStringLiteral("iibn"),
+        QStringLiteral("iian2"),  QStringLiteral("iibn2"), QStringLiteral("iiap"),   QStringLiteral("iibp"),   QStringLiteral("iiap2"),
+        QStringLiteral("iibp2"),  QStringLiteral("iiE0"),  QStringLiteral("iibetan"), QStringLiteral("iibetap"), QStringLiteral("bbtA"),
+        QStringLiteral("bbtB"),   QStringLiteral("bbtgamma"), QStringLiteral("cstim"), QStringLiteral("jthreshold"), QStringLiteral("tgain")};
+    return keys;
+}
+
+QString materialKeyOf(const QString& type, const QString& key)
+{
+    if (type == QLatin1String("semiconductor/auger")) {
+        if (key == QLatin1String("Cn")) return QStringLiteral("caun");
+        if (key == QLatin1String("Cp")) return QStringLiteral("caup");
+        return {};
+    }
+    if (type == QLatin1String("semiconductor/radiative")) return key == QLatin1String("B") ? QStringLiteral("copt") : QString();
+    if (type == QLatin1String("semiconductor/impact")) {
+        static const QHash<QString, QString> map = {
+            {QStringLiteral("an"), QStringLiteral("iian")},   {QStringLiteral("bn"), QStringLiteral("iibn")},
+            {QStringLiteral("ap"), QStringLiteral("iiap")},   {QStringLiteral("bp"), QStringLiteral("iibp")},
+            {QStringLiteral("an2"), QStringLiteral("iian2")}, {QStringLiteral("bn2"), QStringLiteral("iibn2")},
+            {QStringLiteral("ap2"), QStringLiteral("iiap2")}, {QStringLiteral("bp2"), QStringLiteral("iibp2")},
+            {QStringLiteral("E0"), QStringLiteral("iiE0")},   {QStringLiteral("betan"), QStringLiteral("iibetan")},
+            {QStringLiteral("betap"), QStringLiteral("iibetap")}};
+        return map.value(key);
+    }
+    if (type == QLatin1String("semiconductor/btbt")) {
+        if (key == QLatin1String("A")) return QStringLiteral("bbtA");
+        if (key == QLatin1String("B")) return QStringLiteral("bbtB");
+        if (key == QLatin1String("gamma")) return QStringLiteral("bbtgamma");
+        return {};
+    }
+    if (type == QLatin1String("semiconductor/stimulated")) {
+        if (key == QLatin1String("c")) return QStringLiteral("cstim");
+        if (key == QLatin1String("Jth")) return QStringLiteral("jthreshold");
+        if (key == QLatin1String("t")) return QStringLiteral("tgain");
+        return {};
+    }
+    if (type == QLatin1String("semiconductor/model") || type == QLatin1String("semiconductor/srh")) {
+        // (Not Lombardi's B, C, λ, δ - Cn, Cp the Auger's on a material -,
+        // nor the dopants' levels.)
+        static const QStringList feature = {QStringLiteral("Bn"),      QStringLiteral("Cn"),     QStringLiteral("lambdan"), QStringLiteral("deltan"),
+                                            QStringLiteral("Bp"),      QStringLiteral("Cp"),     QStringLiteral("lambdap"), QStringLiteral("deltap"),
+                                            QStringLiteral("lcrit")};
+        if (feature.contains(key)) return {};
+        if (semiconductorModelKeys().contains(key) || key == QLatin1String("taun") || key == QLatin1String("taup")) return key;
+        return {};
+    }
+    return {};
+}
+
+MaterialScope::MaterialScope(const Scope& parent, double T) : Scope(&parent)
+{
+    setConstant(QStringLiteral("T"), T, Dim::temperature());
+}
+
 MaterialEntry entryOf(const Node& material)
 {
     MaterialEntry e;
     e.name = material.name();
     e.category = tr("My materials");
     e.user = true;
-    for (const QString& key : PropertyKeys) {
+    for (const QString& key : propertyKeys()) {
         const QString v = material.text(key);
         if (!v.trimmed().isEmpty()) e.properties.insert(key, v);
     }

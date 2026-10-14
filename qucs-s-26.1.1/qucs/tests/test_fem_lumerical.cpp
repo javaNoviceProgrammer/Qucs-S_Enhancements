@@ -232,12 +232,17 @@ private slots:
             QCOMPARE(orders.size(), structures);
         }
         QCOMPARE(core->number(QStringLiteral("override mesh order from material database")), 1.0);
-        // (Their indices at 1500 nm: the silicon's 3.48, the oxide's.)
+        // (Their indices at 1500 nm: the silicon's 3.48, the oxide's - the
+        // library's silicon dioxide's there, Malitson's.)
+        Scope at1500(&Scope::builtins());
+        at1500.setConstant(QStringLiteral("lambda0"), 1.5e-6, Dim::length());
+        const double nOxide = evaluateConstant(findMaterial(QStringLiteral("Silicon dioxide"))->properties.value(QStringLiteral("n")).toString(), at1500, Dim()).value_or(NAN);
+        QVERIFY2(std::abs(nOxide - 1.4446) < 1e-4, qPrintable(QString::number(nOxide, 'g', 10)));
         QCOMPARE(int(sc.materials.size()), 2);
         for (const lum::Material& mat : sc.materials) {
             QCOMPARE(mat.type, QStringLiteral("(n,k) Material"));
             const double n = mat.n[0];
-            QVERIFY2(mat.name.startsWith(QLatin1String("silicon n=")) ? std::abs(n - 3.48) < 1e-9 : std::abs(n - 1.444) < 1e-9, qPrintable(mat.name));
+            QVERIFY2(mat.name.startsWith(QLatin1String("silicon n=")) ? std::abs(n - 3.48) < 1e-9 : std::abs(n - nOxide) < 1e-8, qPrintable(mat.name));
             QCOMPARE(mat.name, mat.name.section(QLatin1Char('='), 0, 0) + QLatin1Char('=') + QString::number(n, 'g', 6));
         }
         QCOMPARE(core->text(QStringLiteral("material")), sc.materials[std::size_t(sc.materials[0].n[0] > 2 ? 0 : 1)].name);
@@ -720,7 +725,7 @@ plot(r, r); somethingunknown;
         QVERIFY2(notes.contains(QLatin1String("a structure of a kind not read (7)")) && notes.contains(QLatin1String("mesh override")), qPrintable(notes));
         for (const char* said : {"its model's setup script not run", "LNOI: a structure group - its structures as its script made them",
                                  "temperature: a temperature import", "at the FDE's 310 K", "silicon_thermal: its free carriers' terms (Soref's) not taken",
-                                 "LN_Sellmeier_MgO_Zel: its index at 1550 nm"})
+                                 "LN_Sellmeier_MgO_Zel: its index of the wavelength, Lumerical's Sellmeier coefficients"})
             QVERIFY2(notes.contains(QString::fromUtf8(said)), said);
         const QJsonObject c = component(im.model);
         const QJsonArray geometry = c.value(QStringLiteral("geometry")).toArray();
@@ -737,10 +742,21 @@ plot(r, r); somethingunknown;
         QVERIFY(!named(geometry, QStringLiteral("label"), QStringLiteral("pml_right")).isEmpty() && named(geometry, QStringLiteral("label"), QStringLiteral("pml_top")).isEmpty());
         const QJsonArray materials = c.value(QStringLiteral("materials")).toArray();
         const double f = C0 / 1.55e-6, f0 = C0 / 1.6e-6, f1 = C0 / 1.5e-6, t = (f - f0) / (f1 - f0);
-        QVERIFY(near(numberOf(named(materials, QStringLiteral("label"), QStringLiteral("SiO2 (Glass) - Palik")).value(QStringLiteral("n"))), std::sqrt(2.10 + t * (2.08 - 2.10)), 1e-9));
+        // (Sampled data: its index of the wavelength - each sample's n and κ,
+        // straight between them - read at 1550 nm.)
+        auto at1550 = [](const QJsonValue& v) {
+            Scope s(&Scope::builtins());
+            s.setConstant(QStringLiteral("lambda0"), 1.55e-6, Dim::length());
+            return evaluateConstant(v.toString(), s, Dim()).value_or(NAN);
+        };
+        const QJsonObject oxide = named(materials, QStringLiteral("label"), QStringLiteral("SiO2 (Glass) - Palik"));
+        QVERIFY2(oxide.value(QStringLiteral("n")).toString().startsWith(QLatin1String("interp(lambda0")) && oxide.value(QStringLiteral("nrange")).toString() == QLatin1String("1.5[um] 1.6[um]"),
+                 qPrintable(QJsonDocument(oxide).toJson(QJsonDocument::Compact)));
+        QVERIFY(near(at1550(oxide.value(QStringLiteral("n"))), (std::sqrt(2.10) + std::sqrt(2.08)) / 2, 1e-6));
         const std::complex<double> si = std::sqrt(std::complex<double>(12.0 + t * 0.2, 0.01 + t * 0.01));
+        const std::complex<double> si0 = std::sqrt(std::complex<double>(12.0, 0.01)), si1 = std::sqrt(std::complex<double>(12.2, 0.02));
         const QJsonObject sim = named(materials, QStringLiteral("label"), QStringLiteral("Si (Silicon) - Palik"));
-        QVERIFY(near(numberOf(sim.value(QStringLiteral("n"))), si.real(), 1e-9) && near(numberOf(sim.value(QStringLiteral("kappa"))), si.imag(), 1e-9));
+        QVERIFY(near(at1550(sim.value(QStringLiteral("n"))), (si0.real() + si1.real()) / 2, 1e-6) && near(at1550(sim.value(QStringLiteral("kappa"))), (si0.imag() + si1.imag()) / 2, 1e-6));
         QCOMPARE(numberOf(named(materials, QStringLiteral("label"), QStringLiteral("Si3N4 (Silicon Nitride) - Phillip")).value(QStringLiteral("n"))), 2.0);
         QCOMPARE(numberOf(named(materials, QStringLiteral("label"), QStringLiteral("clad's index")).value(QStringLiteral("n"))), 1.45);
         // (Drawn the highest mesh order first, the objects' order between
@@ -772,7 +788,7 @@ plot(r, r); somethingunknown;
         };
         const double no = zelmon(2.2454, 0.01242, 1.3005, 0.05313, 6.8972, 331.33), ne = zelmon(2.4272, 0.01478, 1.4617, 0.05612, 9.6536, 371.216);
         const QJsonObject ln = named(fs, QStringLiteral("label"), QStringLiteral("LN_Sellmeier_MgO_Zel"));
-        QVERIFY2(near(numberOf(ln.value(QStringLiteral("nx"))), no, 1e-9) && near(numberOf(ln.value(QStringLiteral("ny"))), no, 1e-9) && near(numberOf(ln.value(QStringLiteral("nz"))), ne, 1e-9),
+        QVERIFY2(near(at1550(ln.value(QStringLiteral("nx"))), no, 1e-9) && near(at1550(ln.value(QStringLiteral("ny"))), no, 1e-9) && near(at1550(ln.value(QStringLiteral("nz"))), ne, 1e-9),
                  qPrintable(QJsonDocument(ln).toJson(QJsonDocument::Compact)));
         // The warm one: the silicon's index and dn/dT from 300 K, at the FDE's 310 K.
         const QJsonObject warm = named(fs, QStringLiteral("label"), QStringLiteral("silicon_thermal"));

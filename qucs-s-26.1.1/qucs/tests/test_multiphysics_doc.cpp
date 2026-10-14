@@ -45,6 +45,8 @@
 #include "module.h"
 #include "layoutdoc.h"
 #include "multiphysicsdoc.h"
+#include "fem_material_plot.h"
+#include "fem_materials.h"
 #include "multiphysicspanel.h"
 #include "dataimport.h"
 #include "dataset.h"
@@ -2262,6 +2264,93 @@ private slots:
     // fem_model's import writes the model to 'to' and opens it, what was read
     // said; over a file there only with 'replace'; its spectrum solves (under
     // the sanitizers its bands: its k·p spectrum minutes there).
+    // The library through Claude and the panel: a material's properties
+    // along a variable (fem_describe what=material), a Lumerical project's
+    // materials and a library file into My Materials (fem_model materials);
+    // a semiconductor feature's parameter not set shown as its material's (its
+    // placeholder), a material's properties plotted (a dataset, a display).
+    void claudeAndTheLibrary()
+    {
+        QJsonObject r = call("fem_describe", {{"what", "material"}, {"material", "Gallium arsenide"}, {"vs", "N"}, {"from", "1e15[1/cm^3]"}, {"to", "1e19[1/cm^3]"},
+                                              {"points", 5}, {"properties", QJsonArray{"mun"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(r);
+        QCOMPARE(o.value("variable").toString(), QStringLiteral("N"));
+        const QJsonArray at = o.value("at").toArray(), mu = o.value("properties").toArray().at(0).toObject().value("values").toArray();
+        QCOMPARE(at.size(), 5);
+        for (int i = 0; i < 5; ++i) {
+            const double N = at.at(i).toDouble(), expected = 40 + (8500 - 40) / (1 + N / 8.1e16);
+            QVERIFY2(std::abs(mu.at(i).toDouble() / expected - 1) < 1e-5, qPrintable(text(r)));
+        }
+        r = call("fem_describe", {{"what", "material"}, {"material", "Silicon"}, {"vs", "x"}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("no alloy")), qPrintable(text(r)));
+        // (The format's list: a long text, silicon's index, said by its length.)
+        r = call("fem_describe", {{"what", "format"}});
+        QJsonObject silicon;
+        for (const QJsonValue m : json(r).value("materials").toArray())
+            if (m.toObject().value("name").toString() == QLatin1String("Silicon")) silicon = m.toObject().value("properties").toObject();
+        QVERIFY2(silicon.value("n").toString().contains(QLatin1String("fem_describe what=material")) && silicon.value("Eg").toString().startsWith(QLatin1String("1.12[eV] - ")),
+                 qPrintable(QJsonDocument(silicon).toJson()));
+        r = call("fem_describe", {{"what", "material"}, {"material", "Unobtainium"}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        // A Lumerical project's materials into My Materials, then looked at.
+        r = call("fem_model", {{"action", "materials"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_device.ldev")}});
+        QVERIFY2(!failed(r) && json(r).value("materials").toArray().contains(QStringLiteral("Si (Silicon)")), qPrintable(text(r)));
+        QVERIFY(findMaterial(QStringLiteral("Si (Silicon)"), MultiphysicsPanel::userMaterials()));
+        r = call("fem_describe", {{"what", "material"}, {"material", "Si (Silicon)"}, {"vs", "T"}, {"from", "300[K]"}, {"to", "400[K]"}, {"points", 2}, {"properties", QJsonArray{"Eg"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray eg = json(r).value("properties").toArray().at(0).toObject().value("values").toArray();
+        QVERIFY2(std::abs(eg.at(0).toDouble() - (1.169 - 4.73e-4 * 9e4 / 936)) < 1e-5 && std::abs(eg.at(1).toDouble() - (1.169 - 4.73e-4 * 16e4 / 1036)) < 1e-5, qPrintable(text(r)));
+        // A library file's.
+        const QString lib = path(QStringLiteral("mine.json"));
+        QVERIFY(writeMaterials(lib, {MaterialEntry{QStringLiteral("Mine"), QStringLiteral("Mine"), QString(), QJsonObject{{"epsilonr", "3.3"}}, true}}));
+        r = call("fem_model", {{"action", "materials"}, {"path", lib}});
+        QVERIFY2(!failed(r) && findMaterial(QStringLiteral("Mine"), MultiphysicsPanel::userMaterials()), qPrintable(text(r)));
+        r = call("fem_model", {{"action", "materials"}, {"path", QStringLiteral(QUCS_TEST_DATA "/klayout_sample.oas")}});
+        QVERIFY2(failed(r), qPrintable(text(r)));
+        // The panel: a GaAs bar's material model - its Caughey and Thomas
+        // µmin not set: its field empty, GaAs's shown in it.
+        const QString file = path(QStringLiteral("gaas_bar.qfem"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "bar", "size": ["10", "1"]}],
+                "materials": [{"material": "Gallium arsenide", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "model", "tag": "gaasmodel", "mobility": "doping", "nrefn": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "0.01[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json");
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc);
+        QVERIFY(doc->geometry().topology);
+        panel()->selectNode(QStringLiteral("gaasmodel"));
+        auto* munmin = panel()->settingsArea()->findChild<QLineEdit*>(QStringLiteral("mpEdit_munmin"));
+        auto* nrefn = panel()->settingsArea()->findChild<QLineEdit*>(QStringLiteral("mpEdit_nrefn"));
+        QVERIFY(munmin && nrefn);
+        QVERIFY2(munmin->text().isEmpty() && munmin->placeholderText().contains(QLatin1String("40[cm^2/(V*s)]")) && munmin->placeholderText().contains(QLatin1String("Gallium arsenide's")),
+                 qPrintable(munmin->text() + QLatin1Char('|') + munmin->placeholderText()));
+        QCOMPARE(nrefn->text(), QStringLiteral("1e17[1/cm^3]"));   // (set on the feature: its own)
+        // Its material's properties plotted: a dataset and a display.
+        const qucs_s::fem::Node* mat = nullptr;
+        for (const qucs_s::fem::Node& m : doc->model().materials().children) mat = &m;
+        QVERIFY(mat);
+        MaterialSweep sweep;
+        sweep.variable = QStringLiteral("T");
+        sweep.points = 5;
+        QString why;
+        const QString dpl = doc->plotMaterial(*mat, {QStringLiteral("Eg"), QStringLiteral("mun")}, sweep, &why);
+        QVERIFY2(!dpl.isEmpty() && QFileInfo::exists(QString(dpl).replace(QLatin1String(".dpl"), QLatin1String(".dat"))), qPrintable(why));
+        QFile dat(QString(dpl).replace(QLatin1String(".dpl"), QLatin1String(".dat")));
+        QVERIFY(dat.open(QIODevice::ReadOnly));
+        const QByteArray content = dat.readAll();
+        QVERIFY2(content.contains("<indep T 5>") && content.contains("<dep Eg T>") && content.contains("<dep mun T>"), content.left(300).constData());
+    }
+
     void claudeImportsLumerical()
     {
         const QString to = path(QStringLiteral("lumerical_imported.qfem"));

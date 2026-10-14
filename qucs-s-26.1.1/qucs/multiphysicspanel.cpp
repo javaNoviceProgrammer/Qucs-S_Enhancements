@@ -11,6 +11,8 @@
  */
 #include "multiphysicspanel.h"
 
+#include "fem_lumerical.h"
+#include "fem_material_plot.h"
 #include "fem_solver.h"
 #include "ink.h"
 #include "main.h"
@@ -19,6 +21,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -682,6 +686,10 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
         });
     if (k && k->group == QLatin1String("derived")) menu->addAction(tr("Evaluate"), this, [this, tag] { a_doc->evaluate(tag); });
     if (n->type == QLatin1String("material"))
+        menu->addAction(tr("Plot Properties..."), this, [this, tag] {
+            if (const Node* mat = a_doc->model().find(tag)) plotProperties(*mat);
+        });
+    if (n->type == QLatin1String("material"))
         menu->addAction(tr("Add to My Materials"), this, [this, tag] {
             const Node* mat = a_doc->model().find(tag);
             if (!mat) return;
@@ -1008,6 +1016,10 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
             Scope local(&ps->scope);
             if (spatial)
                 for (const Variable& v : modelVariables(doc->model())) local.addVariable(v.name, v.dim);
+            // (A material's texts read T, the temperature they are at - a
+            // heat physics' field, else checked at 300 K.)
+            if (local.variable(QStringLiteral("T")) < 0 && !local.constant(QStringLiteral("T")))
+                local.setConstant(QStringLiteral("T"), 300, Dim::temperature());
             // (Items split by ';': a PDE's, one for each variable - each checked.)
             const QStringList items = text.split(QLatin1Char(';'));
             for (int i = 0; items.size() > 1 && i < items.size(); ++i) {
@@ -1037,9 +1049,16 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
             if (!e.warnings().isEmpty()) said += QStringLiteral("\n") + e.warnings().join(QLatin1Char('\n'));
             return said;
         };
-        auto* edit = new ExpressionEdit(node.text(key), check, a_form);
+        // A semiconductor feature's parameter not set on it: its material's
+        // where it gives one (shown, not set: typed, it is the feature's).
+        QString materialName;
+        const QString inherited = a_doc && a_doc->geometry().topology
+                                      ? inheritedParameter(a_doc->model(), *a_doc->geometry().topology, node, key, &materialName)
+                                      : QString();
+        auto* edit = new ExpressionEdit(inherited.isEmpty() ? node.text(key) : QString(), check, a_form);
         edit->setObjectName(QStringLiteral("mpEdit_") + key);
-        if (p.unit == QLatin1String("length")) edit->setPlaceholderText(tr("in the geometry's unit, or with one: 3[mm]"));
+        if (!inherited.isEmpty()) edit->setPlaceholderText(tr("%1 (%2's)").arg(inherited, materialName));
+        else if (p.unit == QLatin1String("length")) edit->setPlaceholderText(tr("in the geometry's unit, or with one: 3[mm]"));
         else if (!p.unit.isEmpty() && p.unit != QLatin1String("angle")) edit->setPlaceholderText(p.unit);
         connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
         return edit;
@@ -1625,7 +1644,157 @@ QWidget* MultiphysicsPanel::materialsLibrary(const Node& node)
     };
     connect(add, &QPushButton::clicked, this, addChosen);
     connect(list, &QTreeWidget::itemDoubleClicked, this, addChosen);
+    // The library exchanged: My Materials from a file - a library's (.json),
+    // a Lumerical project's (.ldev: its electrical and thermal database;
+    // .lms, .fsp: its optical materials) - and to one.
+    auto* exchange = new QHBoxLayout;
+    auto* import = new QPushButton(tr("Import Materials..."), w);
+    import->setObjectName(QStringLiteral("mpImportMaterials"));
+    import->setToolTip(tr("Into My Materials: a library file's (.json), or a Lumerical project's materials (.ldev, .lms, .fsp)"));
+    auto* exportMine = new QPushButton(tr("Export My Materials..."), w);
+    exportMine->setObjectName(QStringLiteral("mpExportMaterials"));
+    exchange->addWidget(import);
+    exchange->addWidget(exportMine);
+    v->addLayout(exchange);
+    connect(import, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, tr("Import Materials"), QString(),
+                                                          tr("Materials (*.json *.ldev *.lms *.fsp);;A library (*.json);;Lumerical projects (*.ldev *.lms *.fsp)"));
+        if (path.isEmpty()) return;
+        QString why;
+        QStringList notes;
+        const QList<MaterialEntry> taken = path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive) ? readMaterials(path, &why) : lumericalMaterials(path, &why, &notes);
+        if (taken.isEmpty()) {
+            QMessageBox::information(this, tr("Import Materials"), why.isEmpty() ? tr("%1 has no materials").arg(path) : why);
+            return;
+        }
+        QList<MaterialEntry> mine = userMaterials();
+        for (const MaterialEntry& e : taken) {
+            mine.erase(std::remove_if(mine.begin(), mine.end(), [&](const MaterialEntry& x) { return x.name == e.name; }), mine.end());
+            mine << e;
+        }
+        QDir().mkpath(QFileInfo(userMaterialsFile()).absolutePath());
+        if (!writeMaterials(userMaterialsFile(), mine, &why)) {
+            QMessageBox::warning(this, tr("Import Materials"), why);
+            return;
+        }
+        QMessageBox::information(this, tr("Import Materials"),
+                                 tr("%n material(s) into My Materials.", nullptr, int(taken.size())) + (notes.isEmpty() ? QString() : QStringLiteral("\n\n") + notes.join(QLatin1Char('\n'))));
+        showSettings();
+    });
+    connect(exportMine, &QPushButton::clicked, this, [this] {
+        const QList<MaterialEntry> mine = userMaterials();
+        if (mine.isEmpty()) {
+            QMessageBox::information(this, tr("Export My Materials"), tr("My Materials is empty: add a model's material to it (its menu) or import some."));
+            return;
+        }
+        const QString path = QFileDialog::getSaveFileName(this, tr("Export My Materials"), QStringLiteral("materials.json"), tr("A library (*.json)"));
+        QString why;
+        if (!path.isEmpty() && !writeMaterials(path, mine, &why)) QMessageBox::warning(this, tr("Export My Materials"), why);
+    });
+    auto* plot = new QPushButton(tr("Plot Properties..."), w);
+    plot->setObjectName(QStringLiteral("mpPlotMaterial"));
+    plot->setToolTip(tr("The chosen material's properties against the temperature, the doping, its composition, the wavelength or the field"));
+    v->addWidget(plot);
+    connect(plot, &QPushButton::clicked, this, [this, list] {
+        QTreeWidgetItem* item = list->currentItem();
+        if (!item || item->data(0, Qt::UserRole).toString().isEmpty() || !a_doc) return;
+        if (const std::optional<MaterialEntry> e = findMaterial(item->data(0, Qt::UserRole).toString(), userMaterials()))
+            plotProperties(materialNode(a_doc->model(), *e));
+    });
     return w;
+}
+
+void MultiphysicsPanel::plotProperties(const Node& material)
+{
+    if (!a_doc) return;
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Plot Properties: %1").arg(material.name()));
+    auto* form = new QFormLayout(&dialog);
+    // Each variable's range, scale and the properties first shown.
+    struct Variable {
+        const char* key;
+        QString label, from, to;
+        bool log;
+        QStringList shown;
+    };
+    const std::vector<Variable> variables = {
+        {"T", tr("Temperature T"), QStringLiteral("200[K]"), QStringLiteral("500[K]"), false,
+         {QStringLiteral("Eg"), QStringLiteral("ni"), QStringLiteral("mun"), QStringLiteral("mup")}},
+        {"N", tr("Doping N (donors and acceptors)"), QStringLiteral("1e14[1/cm^3]"), QStringLiteral("1e20[1/cm^3]"), true,
+         {QStringLiteral("mun"), QStringLiteral("mup"), QStringLiteral("taun"), QStringLiteral("taup")}},
+        {"x", tr("Composition x (an alloy's)"), QStringLiteral("0"), QStringLiteral("1"), false,
+         {QStringLiteral("Eg"), QStringLiteral("chi"), QStringLiteral("n")}},
+        {"lambda", tr("Wavelength λ"), QStringLiteral("0.4[um]"), QStringLiteral("2[um]"), false, {QStringLiteral("n"), QStringLiteral("kappa")}},
+        {"F", tr("Field F"), QStringLiteral("1e4[V/cm]"), QStringLiteral("1e6[V/cm]"), true,
+         {QStringLiteral("mun"), QStringLiteral("mup"), QStringLiteral("alphan"), QStringLiteral("alphap")}},
+    };
+    auto* variable = new QComboBox(&dialog);
+    for (const Variable& v : variables) variable->addItem(v.label, QString::fromLatin1(v.key));
+    auto* from = new QLineEdit(&dialog);
+    auto* to = new QLineEdit(&dialog);
+    auto* points = new QSpinBox(&dialog);
+    points->setRange(2, 2001);
+    points->setValue(51);
+    auto* log = new QCheckBox(tr("Logarithmic"), &dialog);
+    auto* T = new QLineEdit(QStringLiteral("300[K]"), &dialog);
+    auto* N = new QLineEdit(QStringLiteral("0[1/cm^3]"), &dialog);
+    auto* lambda = new QLineEdit(QStringLiteral("1.55[um]"), &dialog);
+    auto* F = new QLineEdit(QStringLiteral("0[V/cm]"), &dialog);
+    auto* list = new QListWidget(&dialog);
+    list->setObjectName(QStringLiteral("mpPlotProperties"));
+    for (const QString& key : plottableProperties()) {
+        auto* item = new QListWidgetItem(key, list);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+    }
+    auto choose = [=](int i) {
+        const Variable& v = variables[std::size_t(std::max(0, i))];
+        from->setText(v.from);
+        to->setText(v.to);
+        log->setChecked(v.log);
+        for (int r = 0; r < list->count(); ++r) list->item(r)->setCheckState(v.shown.contains(list->item(r)->text()) ? Qt::Checked : Qt::Unchecked);
+    };
+    choose(0);
+    connect(variable, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, choose);
+    form->addRow(tr("Against"), variable);
+    form->addRow(tr("From"), from);
+    form->addRow(tr("To"), to);
+    form->addRow(tr("Points"), points);
+    form->addRow(QString(), log);
+    form->addRow(tr("Held: T"), T);
+    form->addRow(tr("N"), N);
+    form->addRow(tr("λ"), lambda);
+    form->addRow(tr("F"), F);
+    form->addRow(tr("Properties"), list);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Plot"));
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const Scope& scope = a_doc->parameters()->scope;
+    QString why;
+    auto value = [&](QLineEdit* e, const Dim& dim) { return evaluateConstant(e->text(), scope, dim, &why).value_or(NAN); };
+    MaterialSweep sweep;
+    sweep.variable = variable->currentData().toString();
+    const Dim dim = sweep.variable == QLatin1String("T") ? Dim::temperature() : sweep.variable == QLatin1String("N") ? Dim::of(-3)
+                  : sweep.variable == QLatin1String("lambda") ? Dim::length() : sweep.variable == QLatin1String("F") ? Dim::of(1, 1, -3, -1) : Dim();
+    sweep.from = value(from, dim);
+    sweep.to = value(to, dim);
+    sweep.points = points->value();
+    sweep.log = log->isChecked();
+    sweep.T = value(T, Dim::temperature());
+    sweep.N = value(N, Dim::of(-3));
+    sweep.lambda = value(lambda, Dim::length());
+    sweep.F = value(F, Dim::of(1, 1, -3, -1));
+    QStringList keys;
+    for (int r = 0; r < list->count(); ++r)
+        if (list->item(r)->checkState() == Qt::Checked) keys << list->item(r)->text();
+    if (!why.isEmpty() || keys.isEmpty()) {
+        QMessageBox::information(this, tr("Plot Properties"), why.isEmpty() ? tr("Check a property to plot.") : why);
+        return;
+    }
+    if (a_doc->plotMaterial(material, keys, sweep, &why).isEmpty()) QMessageBox::information(this, tr("Plot Properties"), why);
 }
 
 void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
