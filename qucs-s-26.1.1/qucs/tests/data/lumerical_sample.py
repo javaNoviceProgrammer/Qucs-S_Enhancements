@@ -1,16 +1,20 @@
-# Writes lumerical_sample.ldev, lumerical_wurtzite.ldev and
+# Writes lumerical_sample.ldev, lumerical_wurtzite.ldev,
+# lumerical_mqw_offsets.ldev, lumerical_mqw_workfunctions.ldev and
 # lumerical_sample.ldf: small files laid out as Lumerical's MQW projects and
 # data files are (as Lumerical 2025's example package has them), for
 # test_fem_quantum's importer and test_data_import's .ldf.
-#   python3 lumerical_sample.py        (h5py 3, NumPy)
+#   python3 lumerical_sample.py [file...]   (h5py 3, NumPy; the files named
+#                                           alone, else all)
 # HDF5 of the latest version (object headers 2, links and attributes dense
 # where there are more than eight - a heap of indirect blocks, a B-tree of
 # two levels -, fixed-length strings) - an MQW object's
 # "Properties" a key/value blob, its layer table a Qt QDataStream's
 # dictionary; each material a record of attributes, its models' groups
 # GUIDs named by their "Name".
-import struct, uuid
+import struct, sys, uuid
 import numpy as np, h5py
+
+only = set(sys.argv[1:])
 
 def le(fmt, *v): return struct.pack('<' + fmt, *v)
 def be(fmt, *v): return struct.pack('>' + fmt, *v)
@@ -64,7 +68,7 @@ def models(parent, name, active, values):
         for k, x in ps.items(): sub.attrs[k] = np.float64(x)
     return g
 
-def material(f, index, name, eg, me, eps, zb=None, wz=None, lattice=5.65e-10, stiffness=None):
+def material(f, index, name, eg, me, eps, zb=None, wz=None, lattice=5.65e-10, stiffness=None, wf=4.5, mh=None):
     obj = f.create_group('SimObjectRoot/Children/1/Children/%d' % index)
     obj.create_dataset('Properties', data=np.frombuffer(blob({'name_value': name, 'type_value': 'Material'}), dtype=np.int8))
     prop = obj.create_group('Children/1')
@@ -74,7 +78,7 @@ def material(f, index, name, eg, me, eps, zb=None, wz=None, lattice=5.65e-10, st
     rec = prop.create_group('Custom/1/' + uid)
     for k, v in {'name': np.bytes_(name), 'type': np.bytes_('Electrical Material'), 'epsilonr': np.float64(eps), 'alpha': np.float64(1),
                  'delete protect': np.int32(0), 'mesh order': np.int32(2), 'mEpsrIsAnisotropic': np.int32(0),
-                 'mEpsrDiagonal': np.array([eps] * 3), 'last modified': np.int64(1415223023), 'workfunction': np.float64(4.5)}.items():
+                 'mEpsrDiagonal': np.array([eps] * 3), 'last modified': np.int64(1415223023), 'workfunction': np.float64(wf)}.items():
         rec.attrs[k] = v   # (ten: dense)
     # (Sixty more: the attributes' heap past its first block - an indirect
     # block's rows.)
@@ -105,19 +109,38 @@ def material(f, index, name, eg, me, eps, zb=None, wz=None, lattice=5.65e-10, st
     models(valley, 'Bandgap', 'Quadratic', {'Constant': {'A0': eg[0]}, 'Quadratic': {'y0': eg[0], 'alpha': eg[1], 'beta': eg[2]}})
     models(valley, 'Effective Mass (n)', 'Constant', {'Constant': {'A0': me}, 'Quadratic': {'y0': me, 'alpha': 0, 'beta': 0}})
     models(valley, 'Bandgap Narrowing (n)', 'Constant', {'Constant': {'A0': 0}})
+    if mh: models(valley, 'Effective Mass (p)', 'Constant', {'Constant': {'A0': mh}, 'Quadratic': {'y0': mh, 'alpha': 0, 'beta': 0}})
 
-def project(path, settings, layers, materials):
+# A result dataset's "Data": its name ("null"), -1, its dimensions, 1 for
+# real, the doubles column-major.
+def data(values):
+    v = np.asarray(values, dtype=float).reshape(-1, 1)
+    b = le('I', 5) + b'null\0' + le('i', -1) + le('Q', 2) + le('QQ', v.shape[0], 1) + bytes([1]) + v.tobytes(order='F')
+    return np.frombuffer(b, dtype=np.int8)
+
+def project(path, settings, layers, materials, results=None, dummies=True):
+    if only and path not in only: return
     with h5py.File(path, 'w', libver='latest') as f:
         f.create_group('FileVersionInfo')
         entries = dict(settings)
         entries['layers_value'] = {'size': len(layers), **{'data%d' % i: {'material': m, 'thickness': t, 'strain': s, 'valence band offset': v}
                                                            for i, (m, t, s, v) in enumerate(layers)}}
-        f.create_group('MqwSimObject').create_dataset('Properties', data=np.frombuffer(blob(entries), dtype=np.int8))
+        mqw = f.create_group('MqwSimObject')
+        mqw.create_dataset('Properties', data=np.frombuffer(blob(entries), dtype=np.int8))
+        # Its last run's results: each a group named by its Name, each
+        # dataset a group of its Name and a Data blob.
+        for k, (name, sets) in enumerate((results or {}).items()):
+            g = mqw.create_group('Children/1/Children/%d' % (k + 1))
+            g.attrs['Name'] = np.bytes_(name)
+            for j, (dname, values) in enumerate(sets.items()):
+                d = g.create_group('Children/%d' % (j + 1))
+                d.attrs['Name'] = np.bytes_(dname)
+                d.create_dataset('Data', data=data(values))
         for i, m in enumerate(materials):
             material(f, i + 1, **m)
         # (A hundred material objects: the group's links dense, their names'
         # B-tree of two levels.)
-        for i in range(len(materials), 100):
+        for i in range(len(materials), 100 if dummies else 0):
             f.create_group('SimObjectRoot/Children/1/Children/%d' % (i + 1))
 
 common = {'max num eigenvalues_value': 10.0, 'name_value': 'MQW', 'temperature_value': 300.0, 'efield type_value': 0, 'cden type_value': 0, 'freq type_value': 0,
@@ -147,10 +170,38 @@ project('lumerical_wurtzite.ldev',
          dict(name='GaN (sample)', eg=(3.5, 7.32e-4, 700), me=0.2, eps=9.7, wz=gan, lattice=3.189e-10,
               stiffness={0: 3.9e10, 6: 1.45e10, 12: 1.06e10, 14: 3.98e10, 21: 1.05e10})])
 
+# Lumerical's own band offsets ("override band offset" 0): one project with
+# the band diagram its last run stored (the valence band 0.1095 eV up in the
+# well, a field of 30 kV/cm across a stack padded 15 nm each side - its
+# photons in eV, "freq type" 2; its excitons on, carriers given; its
+# subbands 2 and 2, its cutoffs 0.1 with hard walls), one without (its
+# materials' work functions and hole masses; its photons as wavelengths,
+# "freq type" 1; PMLs, "boundary condition type" 1).
+mod = {**common, 'kdotp order_value': 0, 'efield_value': 3e6, 'freq type_value': 2, 'freq min_value': 1.2, 'freq max_value': 1.5,
+       'freq num points_value': 31.0, 'brillouin zone ratio_value': 0.2, 'override band offset_value': 0, 'enable excitons_value': 1,
+       'cden_value': 2e24, 'max num cb subbands_value': 2.0, 'max num vb subbands_value': 2.0, 'cutoff cb_value': 0.1, 'cutoff vb_value': 0.1,
+       'boundary condition type_value': 0, 'top layer extra thickness_value': 15e-9, 'bottom layer extra thickness_value': 15e-9}
+stack = [('GaAs (sample)', 8e-9, 0.0, -0.80), ('InGaAs (sample)', 6e-9, -0.01, -0.75), ('GaAs (sample)', 8e-9, 0.0, -0.80)]
+z = np.arange(0.1e-9, 52e-9, 0.2e-9)
+inwell = (z > 23e-9) & (z < 29e-9)
+ev = np.where(inwell, 0.1095, 0.0) - 3e6 * z
+ec = ev + np.where(inwell, 1.25, 1.424)
+project('lumerical_mqw_offsets.ldev', mod, stack,
+        [dict(name='GaAs (sample)', eg=(1.519, 5.405e-4, 204), me=0.067, eps=12.9, zb=gaas, lattice=5.6533e-10, wf=4.83),
+         dict(name='InGaAs (sample)', eg=(1.30, 4.5e-4, 180), me=0.058, eps=13.3, zb=ingaas, lattice=5.71e-10, wf=4.75)],
+        results={'banddiagram': {'z': z, 'Ec': ec, 'Ev': ev}}, dummies=False)
+project('lumerical_mqw_workfunctions.ldev',
+        {**mod, 'freq type_value': 1, 'freq min_value': 0.85e-6, 'freq max_value': 1.0e-6, 'enable excitons_value': 0,
+         'boundary condition type_value': 1, 'top layer extra thickness_value': 0.0, 'bottom layer extra thickness_value': 0.0}, stack,
+        [dict(name='GaAs (sample)', eg=(1.519, 5.405e-4, 204), me=0.067, eps=12.9, zb=gaas, lattice=5.6533e-10, wf=4.83, mh=0.5),
+         dict(name='InGaAs (sample)', eg=(1.30, 4.5e-4, 180), me=0.058, eps=13.3, zb=ingaas, lattice=5.71e-10, wf=4.75, mh=0.45)],
+        dummies=False)
+
 # A data file: "curve" two curves of 3 x 2, "table" one matrix of 2 x 3.
 def matrix(rows, cols, values):
     return le('IIIII', 1, 0, rows * cols, 2, rows) + le('I', cols) + le('II', 1, 1) + b''.join(le('d', v) for v in values)
-with open('lumerical_sample.ldf', 'wb') as f:
+if not only or 'lumerical_sample.ldf' in only:
+  with open('lumerical_sample.ldf', 'wb') as f:
     f.write(b'Lumerical data file 2, version 1.0' + bytes([0, 3, 4, 8]) + bytes(13) + le('I', 2))
     f.write(le('I', 6) + b'curve\0' + le('I', 2) + matrix(3, 2, [0.1, 0.2, 0.3, 1.0, 2.0, 3.0]) + matrix(3, 2, [0.1, 0.2, 0.3, -1.0, -2.0, -3.0]))
     f.write(le('I', 6) + b'table\0' + le('I', 1) + matrix(2, 3, [1.0, 2.0, 10.0, 20.0, 100.0, 200.0]))

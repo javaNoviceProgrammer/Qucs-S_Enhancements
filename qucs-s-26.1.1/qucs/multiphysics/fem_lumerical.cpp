@@ -258,6 +258,37 @@ QString num(double v)
     return QString::number(v, 'g', 10);
 }
 
+std::optional<std::vector<double>> dataBlob(const QByteArray& b, std::vector<quint64>* dims);
+
+/// A result an MQW solver stored with its last run (MqwSimObject's children:
+/// "banddiagram", "bandstructure"...): its datasets by name (z, Ec, Ev...).
+std::map<QString, std::vector<double>> storedResult(const Hdf5File& f, const QString& name)
+{
+    std::map<QString, std::vector<double>> out;
+    const quint64 results = f.find(QStringLiteral("MqwSimObject/Children/1/Children"));
+    if (!results) return out;
+    for (const auto& [n, g] : f.links(results)) {
+        const auto a = f.attributes(g);
+        const auto it = a.find(QStringLiteral("Name"));
+        if (it == a.end() || it->second.string() != name) continue;
+        std::function<void(quint64, int)> walk = [&f, &out, &walk](quint64 group, int depth) {
+            for (const auto& [m, child] : f.links(group)) {
+                if (m == QLatin1String("Data")) {
+                    const auto ga = f.attributes(group);
+                    const auto nm = ga.find(QStringLiteral("Name"));
+                    const std::optional<Hdf5File::Value> raw = f.dataset(child);
+                    std::vector<quint64> dims;
+                    if (nm == ga.end() || !raw) continue;
+                    if (const std::optional<std::vector<double>> v = dataBlob(raw->raw, &dims)) out[nm->second.string()] = *v;
+                } else if (depth < 6)
+                    walk(child, depth + 1);
+            }
+        };
+        walk(g, 0);
+    }
+    return out;
+}
+
 } // namespace
 
 LumericalImport importLumericalMqw(const QString& path)
@@ -314,12 +345,57 @@ LumericalImport importLumericalMqw(const QString& path)
         out.error = tr("%1: its MQW solver has no layers").arg(QFileInfo(path).fileName());
         return out;
     }
+    // Its stack padded: the first layer (the bottom) and the last thicker by
+    // their extra thicknesses, of their own materials.
+    {
+        const double bottom = setting(QStringLiteral("bottom layer extra thickness"), 0), top = setting(QStringLiteral("top layer extra thickness"), 0);
+        if (bottom > 0) layers.front().thickness += bottom;
+        if (top > 0) layers.back().thickness += top;
+        if (bottom > 0 || top > 0)
+            out.notes << tr("its stack padded as Lumerical pads it: its bottom layer %1 nm and its top layer %2 nm thicker (their extra thicknesses)")
+                             .arg(num(bottom * 1e9), num(top * 1e9));
+    }
     const double T = setting(QStringLiteral("temperature"), 300);
     const int order = int(setting(QStringLiteral("kdotp order"), 0));
-    if (setting(QStringLiteral("override band offset"), 1) != 1)
-        out.notes << tr("its band offsets the materials' own (\"override band offset\" 0): the layer table's are taken");
+    const bool ownOffsets = setting(QStringLiteral("override band offset"), 1) != 1;
     if (setting(QStringLiteral("calculate strain"), 0) != 0)
         out.notes << tr("it calculates its strain (\"calculate strain\" 1): the layer table's strains are taken as stored");
+    // Its band offsets: the layer table's where it overrides the materials'
+    // ("override band offset" 1); else Lumerical's own - the steps of the
+    // valence band its last run stored (its band diagram: each interface's,
+    // the field's slope taken out), or, none stored, its materials' work
+    // functions' (χ = W - Eg/2 - kT/2 ln(Nc/Nv), Anderson's rule).
+    std::vector<double> diagramEv;
+    if (ownOffsets) {
+        const std::map<QString, std::vector<double>> bd = storedResult(f, QStringLiteral("banddiagram"));
+        const auto z = bd.find(QStringLiteral("z")), ev = bd.find(QStringLiteral("Ev"));
+        if (z != bd.end() && ev != bd.end() && z->second.size() == ev->second.size() && z->second.size() > 8) {
+            const std::vector<double>& zs = z->second;
+            const std::vector<double>& es = ev->second;
+            // The edge at an interface from either side: the line through the
+            // two cells nearest it there.
+            auto edge = [&](double at, bool below) {
+                std::vector<std::size_t> near;
+                for (std::size_t k = 0; k < zs.size(); ++k)
+                    if (below ? zs[k] < at : zs[k] > at) near.push_back(k);
+                if (near.size() < 2) return double(NAN);
+                const std::size_t a = below ? near[near.size() - 2] : near[0], b = below ? near.back() : near[1];
+                if (!(std::abs(zs[b] - zs[a]) > 0)) return es[b];
+                return es[b] + (es[b] - es[a]) / (zs[b] - zs[a]) * (at - zs[b]);
+            };
+            diagramEv.assign(layers.size(), layers.front().vbo);
+            double at = 0;
+            bool ok = true;
+            for (std::size_t i = 0; i + 1 < layers.size() && ok; ++i) {
+                at += layers[i].thickness;
+                const double step = edge(at, false) - edge(at, true);
+                ok = std::isfinite(step);
+                diagramEv[i + 1] = diagramEv[i] + step;
+            }
+            if (!ok) diagramEv.clear();
+        }
+    }
+    QStringList offsetsSaid;
     // Each layer: a rectangle, a Quantum Well Material of its own.
     QJsonArray geometry, features;
     double y = 0, total = 0, wells = 0, wellA = NAN, gapLeast = INFINITY;
@@ -355,11 +431,40 @@ LumericalImport importLumericalMqw(const QString& path)
         }
         gaps.push_back(Eg);
         gapLeast = std::min(gapLeast, Eg);
+        double vbo = l.vbo;
+        if (ownOffsets && !diagramEv.empty()) vbo = diagramEv[i];
+        else if (ownOffsets) {
+            // (Its holes' density of states' mass: its own, else its heavy and
+            // light holes' of γ1 and γ2.)
+            const std::optional<Record> holeMass = valley ? valley->child(QStringLiteral("Effective Mass (p)")) : std::nullopt;
+            double mh = holeMass ? holeMass->model(T) : NAN;
+            if (!(mh > 0) && !wz) {
+                const std::optional<Record> z = kp->child(QStringLiteral("zincblende parameters"));
+                const double g1 = z ? z->number(QStringLiteral("gamma1")) : NAN, g2 = z ? z->number(QStringLiteral("gamma2")) : NAN;
+                if (g1 > 2 * g2 && g2 > 0) mh = std::pow(std::pow(1 / (g1 - 2 * g2), 1.5) + std::pow(1 / (g1 + 2 * g2), 1.5), 2.0 / 3);
+            }
+            double me = massModel ? massModel->model(T) : NAN;
+            if (!(me > 0) && wz)
+                if (const std::optional<Record> w = kp->child(QStringLiteral("wurtzite parameters"))) me = w->number(QStringLiteral("me out-of-plane"));
+            const double W = r.number(QStringLiteral("workfunction"), NAN);
+            if (std::isfinite(W) && me > 0 && mh > 0) {
+                const double kT = 8.617333262e-5 * T;
+                vbo = -(W + Eg / 2 - kT / 2 * 1.5 * std::log(me / mh));
+            } else
+                vbo = NAN;
+        }
+        if (!std::isfinite(vbo)) {
+            out.notes << tr("Warning: its band offsets Lumerical's own (\"override band offset\" 0), but %1 has no work function or masses read and "
+                            "no band diagram is stored: the layer table's taken there - check them")
+                             .arg(l.material);
+            vbo = l.vbo;
+        }
+        if (ownOffsets) offsetsSaid << num(vbo);
         QJsonObject m{{QStringLiteral("type"), QStringLiteral("material")},
                       {QStringLiteral("label"), l.material},
                       {QStringLiteral("source"), QStringLiteral("user")},
-                      {QStringLiteral("Ec"), num(l.vbo + Eg) + QStringLiteral("[eV]")},
-                      {QStringLiteral("Ev"), num(l.vbo) + QStringLiteral("[eV]")},
+                      {QStringLiteral("Ec"), num(vbo + Eg) + QStringLiteral("[eV]")},
+                      {QStringLiteral("Ev"), num(vbo) + QStringLiteral("[eV]")},
                       {QStringLiteral("nr"), num(setting(QStringLiteral("neff"), 3.5))},
                       {QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{name}}}}};
         const double eps = setting(QStringLiteral("enable custom eps dc"), 0) == 1 ? setting(QStringLiteral("eps dc"), NAN) : r.number(QStringLiteral("epsilonr"));
@@ -425,6 +530,11 @@ LumericalImport importLumericalMqw(const QString& path)
         out.error = tr("its layers are wurtzite and zinc blende both");
         return out;
     }
+    if (ownOffsets)
+        out.notes << tr("its band offsets Lumerical's own (\"override band offset\" 0), not the layer table's: %1 - each layer's Ev %2 eV")
+                         .arg(!diagramEv.empty() ? tr("the valence band's steps its last run stored (its band diagram)")
+                                                 : tr("its materials' work functions' (no band diagram stored)"),
+                              offsetsSaid.join(QStringLiteral(", ")));
     // The wells: the layers of the least gap.
     for (std::size_t i = 0; i < layers.size(); ++i)
         if (gaps[i] <= gapLeast + 1e-9) wells += layers[i].thickness * 1e9;
@@ -459,19 +569,57 @@ LumericalImport importLumericalMqw(const QString& path)
     const double h = 6.62607015e-34, q = 1.602176634e-19;
     const double fmin = setting(QStringLiteral("freq min"), NAN), fmax = setting(QStringLiteral("freq max"), NAN);
     const int nf = std::max(2, int(setting(QStringLiteral("freq num points"), 201)));
-    const double gamma = setting(QStringLiteral("gamma"), 0.0132), cden = setting(QStringLiteral("cden"), 0);
+    const double gamma = setting(QStringLiteral("gamma"), 0.0132);
+    const bool excitons = setting(QStringLiteral("enable excitons"), 0) == 1;
     // (Lumerical's density over the whole stack; here the wells': a well's
-    // carriers per its own volume.)
-    const double density = wells > 0 ? cden * total / wells : cden;
+    // carriers per its own volume. With its excitons on, its absorption's:
+    // carriers would screen them - none taken.)
+    const double cden = setting(QStringLiteral("cden"), 0);
+    const double density = excitons ? 0.0 : wells > 0 ? cden * total / wells : cden;
+    if (excitons && cden > 0)
+        out.notes << tr("its excitons on: its absorption's, without carriers (its cden %1 cm⁻³ would screen them) - a density in the "
+                        "spectrum's step for gain")
+                         .arg(num(cden * 1e-6));
+    // Its photons: frequencies (Hz; "freq type" 0), else - as its values
+    // are - photon energies (eV) or wavelengths (m).
+    const int ftype = int(setting(QStringLiteral("freq type"), 0));
+    auto photons = [&]() -> QString {
+        const double most = std::max(std::abs(fmin), std::abs(fmax));
+        if (ftype == 0 || most > 1e9)
+            return QStringLiteral("linspace(%1[eV], %2[eV], %3)").arg(num(h * fmin / q), num(h * fmax / q)).arg(nf);
+        if (most < 1e-3) return QStringLiteral("linspace(%1[um], %2[um], %3)").arg(num(fmin * 1e6), num(fmax * 1e6)).arg(nf);
+        return QStringLiteral("linspace(%1[eV], %2[eV], %3)").arg(num(fmin), num(fmax)).arg(nf);
+    };
+    if (ftype != 0 && std::isfinite(fmin))
+        out.notes << tr("its photons' range (\"freq type\" %1) read as %2").arg(ftype).arg(std::max(std::abs(fmin), std::abs(fmax)) > 1e9 ? tr("frequencies")
+                                                                                            : std::max(std::abs(fmin), std::abs(fmax)) < 1e-3
+                                                                                                ? tr("wavelengths")
+                                                                                                : tr("photon energies (eV)"));
     if (std::isfinite(fmin) && std::isfinite(fmax) && fmax > fmin) {
+        // Its subbands as Lumerical's (counted by energy, the valence ones
+        // heavy and light together), its states against its hard walls left
+        // out by its cutoffs, broadened within its window alone and per its
+        // whole stack - as Lumerical's MQW gives them.
         QJsonObject step{{QStringLiteral("type"), QStringLiteral("spectrum")},
-                         {QStringLiteral("energies"), QStringLiteral("linspace(%1[eV], %2[eV], %3)").arg(num(h * fmin / q), num(h * fmax / q)).arg(nf)},
-                         {QStringLiteral("states"), cb},
+                         {QStringLiteral("energies"), photons()},
+                         {QStringLiteral("states"), std::max(cb, vb)},
+                         {QStringLiteral("cstates"), cb},
+                         {QStringLiteral("vstates"), vb},
+                         {QStringLiteral("broaden"), QStringLiteral("window")},
+                         {QStringLiteral("normalize"), QStringLiteral("stack")},
                          {QStringLiteral("linewidth"), num(gamma / 2) + QStringLiteral("[eV]")},
                          {QStringLiteral("lineshape"), QStringLiteral("lorentzian")},
                          {QStringLiteral("index"), num(setting(QStringLiteral("neff"), 3.5))}};
+        const double cutC = setting(QStringLiteral("cutoff cb"), NAN), cutV = setting(QStringLiteral("cutoff vb"), NAN);
+        if (setting(QStringLiteral("boundary condition type"), 0) == 0) {
+            if (cutC > 0) step.insert(QStringLiteral("cutoff_c"), num(cutC));
+            if (cutV > 0) step.insert(QStringLiteral("cutoff_v"), num(cutV));
+        } else if (cutC > 0 || cutV > 0)
+            out.notes << tr("its boundaries PMLs (\"boundary condition type\" %1): its cutoffs reject states by their share in them - here the "
+                            "walls are hard: its states chosen by energy (\"select\": \"localized\" to keep those in the wells)")
+                             .arg(setting(QStringLiteral("boundary condition type")));
         if (density > 0) step.insert(QStringLiteral("density"), num(density) + QStringLiteral("[1/m^3]"));
-        if (setting(QStringLiteral("enable excitons"), 0) == 1) step.insert(QStringLiteral("excitons"), true);
+        if (excitons) step.insert(QStringLiteral("excitons"), true);
         studies.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("study")},
                                    {QStringLiteral("tag"), QStringLiteral("gain")},
                                    {QStringLiteral("label"), density > 0 ? tr("Gain") : tr("Absorption")},

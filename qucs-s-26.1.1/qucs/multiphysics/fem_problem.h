@@ -148,6 +148,25 @@ struct SpectrumOptions {
     int continuum = 0;      ///< 0 the states found; 1 bound states' transitions and the barriers' bulk absorption
     double density = 0;
     double index = 0;
+    /// The subbands that enter: so many conduction ones (0: states), so
+    /// many valence ones counted by energy across heavy and light holes (0:
+    /// states of each); a state whose wavefunction's slope at the line's
+    /// ends (its hard walls) is more than cutoffC (cutoffV) of its largest
+    /// left out (NaN: none) - Lumerical's "cutoff cb/vb" -, and with \a select
+    /// 1 only those with at least \a localized of |ψ|² in the wells and the
+    /// barriers between them.
+    int cstates = 0, vstates = 0;
+    double cutoffC = std::numeric_limits<double>::quiet_NaN(), cutoffV = std::numeric_limits<double>::quiet_NaN();
+    int select = 0;
+    double localized = 0.6;
+    /// 0 every transition broadened; 1 only those within the photons'
+    /// window (to windowExt (J) above its top), as Lumerical's MQW.
+    int broaden = 0;
+    double windowExt = 0;
+    /// What the absorption is per: 0 the wells' thickness, 1 the line's (the
+    /// stack's), 2 normLength (m).
+    int normalize = 0;
+    double normLength = 0;
     SolveOptions solve;
 };
 
