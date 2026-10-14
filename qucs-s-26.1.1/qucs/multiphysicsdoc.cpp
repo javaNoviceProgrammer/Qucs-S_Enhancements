@@ -1846,6 +1846,78 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     return dpl;
 }
 
+QString MultiphysicsDoc::plotMaterial(const qucs_s::fem::Node& material, const QStringList& keys, const qucs_s::fem::MaterialSweep& sweep,
+                                      QString* error)
+{
+    auto fail = [&](const QString& why) {
+        if (error) *error = why;
+        return QString();
+    };
+    const std::shared_ptr<qucs_s::fem::ParameterScope> parameters = qucs_s::fem::evaluateParameters(a_model);
+    const qucs_s::fem::MaterialCurves curves = qucs_s::fem::materialCurves(material, keys, sweep, parameters->scope);
+    if (!curves.error.isEmpty()) return fail(curves.error);
+    if (curves.curves.empty()) return fail(tr("%1 has none of these properties").arg(material.name()));
+    using qucs_s::dataset::Variable;
+    QList<Variable> vars;
+    Variable axis;
+    axis.name = curves.variable;
+    axis.independent = true;
+    for (double v : curves.at) axis.re << v;
+    vars << axis;
+    QStringList traces;
+    QJsonObject unitsOf{{curves.variable, curves.unit}};
+    for (const qucs_s::fem::MaterialCurve& c : curves.curves) {
+        Variable y;
+        y.name = c.key;
+        y.dependencies = QStringList{curves.variable};
+        for (double v : c.values) y.re << v;
+        vars << y;
+        traces << c.key;
+        unitsOf.insert(c.key, c.unit);
+    }
+    // Beside the model (in the cache while it is not saved).
+    QString base;
+    if (getDocName().isEmpty()) {
+        const QString dir = misc::cacheDir() + QStringLiteral("/multiphysics");
+        QDir().mkpath(dir);
+        base = dir + QStringLiteral("/untitled");
+    } else {
+        const QFileInfo fi(getDocName());
+        base = fi.absoluteDir().filePath(fi.completeBaseName());
+    }
+    const QString name = qucs_s::dataimport::safeName(material.name());
+    const QString dat = base + QStringLiteral("_material_") + name + QLatin1Char('_') + curves.variable + QStringLiteral(".dat");
+    const QString dpl = base + QStringLiteral("_material_") + name + QLatin1Char('_') + curves.variable + QStringLiteral(".dpl");
+    qucs_s::dataimport::Data data;
+    data.variables = vars;
+    qucs_s::dataimport::Origin origin;
+    origin.source = material.name();
+    origin.format = tr("Qucs-S material properties");
+    origin.imported = QDateTime::currentDateTime();
+    origin.units = unitsOf;
+    QString why;
+    if (!qucs_s::dataimport::writeDataset(dat, data, origin, &why)) return fail(why);
+    say(tr("%1: its %2 against %3 written (%4)").arg(material.name(), traces.join(QStringLiteral(", ")), curves.variable, QFileInfo(dat).fileName()));
+    for (const QString& n : curves.notes) say(n);
+    if (a_App != nullptr) {
+        QStringList units;
+        for (const qucs_s::fem::MaterialCurve& c : curves.curves)
+            if (!c.unit.isEmpty() && !units.contains(c.unit)) units << c.unit;
+        const QString x = curves.unit.isEmpty() ? curves.variable : QStringLiteral("%1 (%2)").arg(curves.variable, curves.unit);
+        const QString shown = a_App->showPythonDisplay(QJsonObject{{QStringLiteral("display"), dpl},
+                                                                   {QStringLiteral("dataset"), dat},
+                                                                   {QStringLiteral("traces"), QJsonArray::fromStringList(traces)},
+                                                                   {QStringLiteral("type"), QStringLiteral("rect")},
+                                                                   {QStringLiteral("title"), material.name()},
+                                                                   {QStringLiteral("replace"), true},
+                                                                   {QStringLiteral("ylabel"), units.join(QStringLiteral(", "))},
+                                                                   {QStringLiteral("xlabel"), x},
+                                                                   {QStringLiteral("xlog"), sweep.log}});
+        if (!shown.isEmpty()) return fail(shown);
+    }
+    return dpl;
+}
+
 void MultiphysicsDoc::evaluateAll(const QString& study)
 {
     const Node* derived = a_model.results().child(QStringLiteral("derived"));

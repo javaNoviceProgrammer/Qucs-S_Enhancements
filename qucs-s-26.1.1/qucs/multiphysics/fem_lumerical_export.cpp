@@ -1011,7 +1011,17 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
         }
         QString metal = QStringLiteral("contact metal");
         if (f.type == QLatin1String("semiconductor/gate")) {
-            const double phim = energyIn(f.text(QStringLiteral("phim")), scope);
+            // (Unset: the metal's beside it, as the semiconductor takes it.)
+            double phim = energyIn(f.text(QStringLiteral("phim")), scope);
+            if (!f.props.contains(QStringLiteral("phim"))) {
+                const MaterialScope at300(scope, 300);
+                for (int bd : bds)
+                    for (int d : {t.boundaries[std::size_t(bd)].up, t.boundaries[std::size_t(bd)].down})
+                        if (d >= 0 && !semi.count(d) && mats[std::size_t(d)]) {
+                            const QString phi = detail::Problem::materialProperty(*mats[std::size_t(d)], QStringLiteral("phi"), &at300);
+                            if (!phi.trimmed().isEmpty() && std::isfinite(energyIn(phi, at300))) phim = energyIn(phi, at300);
+                        }
+            }
             const double eV = std::isfinite(phim) ? phim : 4.05;
             metal = objectName(QStringLiteral("gate metal %1 eV").arg(QString::number(eV, 'g', 4)));
             gateMetals[metal] = eV;

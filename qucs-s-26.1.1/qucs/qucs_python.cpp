@@ -1270,7 +1270,12 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request)
     if (traces.size() > 1) args.insert(QStringLiteral("legend"), QStringLiteral("top_right"));
   }
   // (Its axis' unit: "k (1/nm)".)
-  if (!xLabel.isEmpty()) args.insert(QStringLiteral("x_axis"), QJsonObject{{QStringLiteral("label"), xLabel}});
+  if (!xLabel.isEmpty() || request.value(QStringLiteral("xlog")).toBool()) {
+    QJsonObject axis;
+    if (!xLabel.isEmpty()) axis.insert(QStringLiteral("label"), xLabel);
+    if (request.value(QStringLiteral("xlog")).toBool()) axis.insert(QStringLiteral("log"), true);
+    args.insert(QStringLiteral("x_axis"), axis);
+  }
   a_control->callTool(QStringLiteral("add_diagram"), args, [this](const QJsonObject &result) {
     if (result.value(QLatin1String("isError")).toBool())
       statusBar()->showMessage(tr("qucs.display(): %1").arg(result.value(QStringLiteral("content")).toArray().at(0).toObject()

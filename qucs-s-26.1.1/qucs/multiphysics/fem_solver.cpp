@@ -329,9 +329,9 @@ Problem::Problem(Solution& solution, int field) : a_s(solution), a_fi(field)
         if (p->tag == tag) a_node = p;
 }
 
-Expression Problem::compile(const QString& text, const Node& feature, const QString& key, bool spatial, bool unitChecked)
+Expression Problem::compile(const QString& text, const Node& feature, const QString& key, bool spatial, bool unitChecked, const Scope* scope)
 {
-    const Expression e = Expression::compile(text, a_s.pointScope());
+    const Expression e = Expression::compile(text, scope ? *scope : a_s.pointScope());
     const QString where = tr("%1 of %2").arg(feature.kind() && feature.kind()->property(key) ? feature.kind()->property(key)->label : key,
                                               feature.name());
     if (!e.isValid()) {
@@ -384,7 +384,7 @@ QString Problem::givenProperty(const Node& m, const QString& key, const Scope* s
     return text;
 }
 
-QString Problem::materialProperty(const Node& m, const QString& key, const Scope* scope)
+QString Problem::materialProperty(const Node& m, const QString& key, const Scope* scope, double T)
 {
     QString text = givenProperty(m, key, scope);
     if (!text.trimmed().isEmpty() || key == QLatin1String("compound") || key == QLatin1String("x") || key == QLatin1String("y")) return text;
@@ -406,7 +406,7 @@ QString Problem::materialProperty(const Node& m, const QString& key, const Scope
         if (!v) return text;
         xy[i] = *v;
     }
-    return compoundProperty(compound, xy[0], xy[1], key, bandSetOf(own(QStringLiteral("bands"))));
+    return compoundProperty(compound, xy[0], xy[1], key, bandSetOf(own(QStringLiteral("bands"))), T);
 }
 
 QJsonValue materialValue(const Node& m, const QString& key)

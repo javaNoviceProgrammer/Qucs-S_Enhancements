@@ -58,6 +58,15 @@ QString num(double v)
     return s == QLatin1String("-0") ? QStringLiteral("0") : s;
 }
 
+/// "v[unit]", times (T/300 K)^η where η is not 0 (a parameter of the
+/// temperature, as the library's).
+QString ofT(double v, const QString& unit, double eta)
+{
+    QString t = unit.isEmpty() ? num(v) : QStringLiteral("%1[%2]").arg(num(v), unit);
+    if (eta != 0 && std::isfinite(eta)) t += QStringLiteral("*(T/300[K])^(%1)").arg(num(eta));
+    return t;
+}
+
 // --- The cross-section --------------------------------------------------
 
 /// The solver's plane: its normal (0 x, 1 y, 2 z) and where it is, its
@@ -496,6 +505,61 @@ std::optional<std::array<double, 6>> indexOf(const Material& m, double f)
     return std::array<double, 6>{(*nk)[0], (*nk)[0], (*nk)[0], (*nk)[1], (*nk)[1], (*nk)[1]};
 }
 
+/// A sampled or Sellmeier material's index of the wavelength (lambda0), as
+/// texts: n along x, y and z, κ (empty: none), where it holds, and what it is.
+struct Dispersion {
+    QString n[3], kappa, range, what;
+};
+
+std::optional<Dispersion> dispersionOf(const Material& m)
+{
+    Dispersion d;
+    if (m.type == QLatin1String("sellmeier")) {
+        // n² = c0 + c1 λ²/(λ² - c2) + c3 λ²/(λ² - c4) + c5 λ²/(λ² - c6), λ in µm.
+        for (int a = 0; a < 3; ++a) {
+            const auto& c = m.sellmeier[std::size_t(a)];
+            QString t = QStringLiteral("sqrt(%1").arg(num(c[0]));
+            for (int k = 1; k < 7; k += 2)
+                if (c[std::size_t(k)] != 0)
+                    t += QStringLiteral(" + %1*lambda0^2/(lambda0^2 - %2[um^2])").arg(num(c[std::size_t(k)]), num(c[std::size_t(k + 1)]));
+            d.n[a] = t + QLatin1Char(')');
+        }
+        d.what = QObject::tr("Sellmeier coefficients");
+        return d;
+    }
+    if (m.type != QLatin1String("sampled") || m.f.empty() || m.epsRe.size() != m.f.size() || m.epsIm.size() != m.f.size()) return std::nullopt;
+    // (λ, n, κ) at each point from 0.2 to 20 µm, λ rising; at most 150 of them.
+    std::vector<std::array<double, 3>> rows;
+    for (std::size_t k = 0; k < m.f.size(); ++k) {
+        if (!(m.f[k] > 0)) continue;
+        const double lambda = C0 / m.f[k];
+        if (lambda < 0.2e-6 || lambda > 20e-6) continue;
+        const std::complex<double> nk = std::sqrt(std::complex<double>(m.epsRe[k], m.epsIm[k]));
+        rows.push_back({lambda, nk.real(), std::abs(nk.imag())});
+    }
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a[0] == b[0]; }), rows.end());
+    if (rows.size() < 2) return std::nullopt;
+    if (rows.size() > 150) {
+        std::vector<std::array<double, 3>> kept;
+        for (std::size_t k = 0; k < 150; ++k) kept.push_back(rows[k * (rows.size() - 1) / 149]);
+        rows = kept;
+    }
+    QString n = QStringLiteral("interp(lambda0"), kappa = QStringLiteral("interp(lambda0");
+    bool absorbs = false;
+    for (const auto& [lambda, re, im] : rows) {
+        const QString at = QStringLiteral("%1[um]").arg(formatNumber(lambda * 1e6, 6));
+        n += QStringLiteral(", %1, %2").arg(at, formatNumber(re, 6));
+        kappa += QStringLiteral(", %1, %2").arg(at, formatNumber(im, 6));
+        absorbs = absorbs || im > 0;
+    }
+    d.n[0] = d.n[1] = d.n[2] = n + QLatin1Char(')');
+    if (absorbs) d.kappa = kappa + QLatin1Char(')');
+    d.range = QStringLiteral("%1[um] %2[um]").arg(formatNumber(rows.front()[0] * 1e6, 6), formatNumber(rows.back()[0] * 1e6, 6));
+    d.what = QObject::tr("data, %1 points from %2 to %3 µm").arg(rows.size()).arg(formatNumber(rows.front()[0] * 1e6, 4), formatNumber(rows.back()[0] * 1e6, 4));
+    return d;
+}
+
 LumericalImport buildMode(const Scene& scene, const Object& fde)
 {
     LumericalImport out;
@@ -633,12 +697,26 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
                 m = indexed(s, mat, *nk, feature);
             } else if (nk && lm->type != QLatin1String("thermal")) {
                 m = indexed(s, mat, *nk, {});
-                if (lm->type == QLatin1String("sampled") || lm->type == QLatin1String("sellmeier")) {
-                    const QString ours = libraryOf(mat, false);
-                    say(tr("%1: its index at %2 nm, n %3 κ %4 (Lumerical's %5; constant%6)")
-                            .arg(mat, num(lambda * 1e9), QString::number((*nk)[0], 'f', 4), QString::number((*nk)[3], 'g', 3),
-                                 lm->type == QLatin1String("sampled") ? tr("data") : tr("Sellmeier coefficients"),
-                                 ours.isEmpty() ? QString() : tr(" - the library's %1 is dispersive").arg(ours)));
+                if (const std::optional<Dispersion> dn = dispersionOf(*lm)) {
+                    // Of the wavelength, as Lumerical has it: its data's
+                    // points (interp, at most 150 from 0.2 to 20 µm), its
+                    // Sellmeier coefficients - along x, y and z where they differ.
+                    const bool diagonal = dn->n[1] != dn->n[0] || dn->n[2] != dn->n[0];
+                    if (diagonal) {
+                        QJsonObject feature{{QStringLiteral("type"), QStringLiteral("wave")}, {QStringLiteral("label"), mat},
+                                            {QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("anisotropy"), QStringLiteral("diagonal")},
+                                            {QStringLiteral("nx"), dn->n[0]}, {QStringLiteral("ny"), dn->n[1]}, {QStringLiteral("nz"), dn->n[2]},
+                                            {QStringLiteral("kappa"), dn->kappa.isEmpty() ? QStringLiteral("0") : dn->kappa},
+                                            {QStringLiteral("selection"), only({s.label})}};
+                        features.append(feature);
+                        m = QJsonObject{{QStringLiteral("label"), mat}, {QStringLiteral("n"), dn->n[0]}};
+                    } else {
+                        m = QJsonObject{{QStringLiteral("label"), mat}, {QStringLiteral("n"), dn->n[0]}};
+                        if (!dn->kappa.isEmpty()) m.insert(QStringLiteral("kappa"), dn->kappa);
+                    }
+                    if (!dn->range.isEmpty()) m.insert(QStringLiteral("nrange"), dn->range);
+                    say(tr("%1: its index of the wavelength, Lumerical's %2 (n %3 κ %4 at %5 nm)")
+                            .arg(mat, dn->what, QString::number((*nk)[0], 'f', 4), QString::number((*nk)[3], 'g', 3), num(lambda * 1e9)));
                 }
             } else {
                 m = QJsonObject{{QStringLiteral("label"), mat}, {QStringLiteral("n"), QStringLiteral("1")}};
@@ -2507,5 +2585,193 @@ LumericalImport buildModel(const Scene& scene)
     out.error = tr("%1 makes no FDE region, CHARGE solver or mqwindex stack").arg(scene.source);
     return out;
 }
+
+std::vector<MaterialEntry> libraryEntries(const Scene& scene, QStringList* notes)
+{
+    std::vector<MaterialEntry> out;
+    QStringList alloys;
+    const QString category = tr("Lumerical (%1)").arg(scene.source);
+    auto put = [](MaterialEntry& e, const char* key, const QString& v) {
+        if (!v.isEmpty()) e.properties.insert(QString::fromLatin1(key), v);
+    };
+    // Its electrical and thermal records (DEVICE's): semiconductors with
+    // their models, insulators, conductors (their work functions).
+    for (const Object& o : scene.objects) {
+        if (o.kind != QLatin1String("modelmaterial")) continue;
+        const QString kind = o.text(QStringLiteral("@kind"));
+        if (kind.contains(QLatin1String("Alloy"))) {
+            alloys << o.name();
+            continue;
+        }
+        MaterialEntry e;
+        e.name = o.name();
+        e.category = category;
+        e.user = true;
+        e.description = tr("From %1: Lumerical's %2 record, its models' parameters of T as there").arg(scene.source, kind.isEmpty() ? tr("thermal") : kind.toLower());
+        const Value* all = o.prop(QStringLiteral("@models"));
+        auto model = [&](const QString& key) { return all && all->kind == Value::Struct ? all->field(key) : nullptr; };
+        auto active = [&](const QString& key) {
+            const Value* m = model(key);
+            const Value* a = m ? m->field(QStringLiteral("active")) : nullptr;
+            return a ? a->toText() : QString();
+        };
+        auto on = [&](const QString& key) {
+            const Value* m = model(key);
+            const Value* en = m ? m->field(QStringLiteral("enabled")) : nullptr;
+            return m && (!en || en->toNumber(1) != 0);
+        };
+        auto param = [&](const QString& key, const char* p, double otherwise = NAN) {
+            const Value* m = model(key);
+            const Value* ps = m ? m->field(QStringLiteral("params")) : nullptr;
+            const Value* v = ps ? ps->field(QString::fromLatin1(p)) : nullptr;
+            return v ? v->toNumber(otherwise) : otherwise;
+        };
+        // A parameter at 300 K and its exponent, a constant's or the
+        // universal temperature model's: "v[unit]*(T/300[K])^(η)".
+        auto ofTemperature = [&](const QString& key, const QString& unit, double scale = 1) -> QString {
+            const QString a = active(key);
+            if (a == QLatin1String("Constant") && std::isfinite(param(key, "A0"))) return ofT(param(key, "A0") * scale, unit, 0);
+            if (a.startsWith(QLatin1String("Universal")) && std::isfinite(param(key, "A"))) return ofT(param(key, "A") * scale, unit, param(key, "eta", 0));
+            return {};
+        };
+        if (o.prop(QStringLiteral("@epsilonr"))) put(e, "epsilonr", num(o.number(QStringLiteral("@epsilonr"))));
+        if (kind == QLatin1String("Conductor") && o.number(QStringLiteral("work function"), 0) > 0)
+            put(e, "phi", QStringLiteral("%1[eV]").arg(num(o.number(QStringLiteral("work function")))));
+        if (kind == QLatin1String("Semiconductor")) {
+            // Its gap (Varshni's) and masses (y0 + α T + β T²), of T; Nc and Nv
+            // of them; χ from its work function to the intrinsic level.
+            QString eg;
+            if (active(QStringLiteral("bandgap")) == QLatin1String("Constant")) eg = QStringLiteral("%1[eV]").arg(num(param(QStringLiteral("bandgap"), "A0")));
+            else if (model(QStringLiteral("bandgap")))
+                eg = QStringLiteral("(%1[eV] - %2[eV/K]*T^2/(T + %3[K]))")
+                         .arg(num(param(QStringLiteral("bandgap"), "y0")), num(param(QStringLiteral("bandgap"), "alpha", 0)), num(param(QStringLiteral("bandgap"), "beta", 0)));
+            auto mass = [&](const QString& key) -> QString {
+                if (active(key) == QLatin1String("Constant")) return num(param(key, "A0"));
+                if (!model(key)) return {};
+                return QStringLiteral("(%1 + %2[1/K]*T + %3[1/K^2]*T^2)").arg(num(param(key, "y0")), num(param(key, "alpha", 0)), num(param(key, "beta", 0)));
+            };
+            const QString me = mass(QStringLiteral("mass n")), mh = mass(QStringLiteral("mass p"));
+            const double W = o.number(QStringLiteral("work function"), NAN);
+            if (eg.isEmpty() || me.isEmpty() || mh.isEmpty() || !std::isfinite(W)) {
+                if (notes) *notes << tr("%1: its gap, masses or work function not read - left out").arg(o.name());
+                continue;
+            }
+            put(e, "Eg", eg);
+            put(e, "Nc", QStringLiteral("2.509e19[1/cm^3]*%1^1.5*(T/300[K])^1.5").arg(me));
+            put(e, "Nv", QStringLiteral("2.509e19[1/cm^3]*%1^1.5*(T/300[K])^1.5").arg(mh));
+            put(e, "chi", QStringLiteral("%1[eV] - %2/2 - 0.75*kB*T*log(%3/%4)").arg(num(W), eg, me, mh));
+            put(e, "mun", ofTemperature(QStringLiteral("mobility lattice n"), QStringLiteral("cm^2/(V*s)")));
+            put(e, "mup", ofTemperature(QStringLiteral("mobility lattice p"), QStringLiteral("cm^2/(V*s)")));
+            for (const char* c : {"n", "p"}) {
+                const QString C = QLatin1String(c), lattice = QStringLiteral("mobility lattice ") + C, impurity = QStringLiteral("mobility impurity ") + C;
+                if (active(lattice).startsWith(QLatin1String("Universal")))
+                    e.properties.insert(QStringLiteral("zeta") + C, num(-param(lattice, "eta", 0)));
+                if (active(impurity) == QLatin1String("Caughey-Thomas") && param(impurity, "N300", 1e30) < 1e29) {
+                    e.properties.insert(QStringLiteral("mu") + C + QStringLiteral("min"), ofT(param(impurity, "muMin300"), QStringLiteral("cm^2/(V*s)"), param(impurity, "eta1", 0)));
+                    e.properties.insert(QStringLiteral("nref") + C, ofT(param(impurity, "N300"), QStringLiteral("1/cm^3"), param(impurity, "eta2", 0)));
+                    e.properties.insert(QStringLiteral("alpha") + C, ofT(param(impurity, "p300"), QString(), param(impurity, "eta3", 0)));
+                } else if (active(impurity) == QLatin1String("Masetti")) {
+                    const QString mu = ofT(param(impurity, "muMin(300)"), QStringLiteral("cm^2/(V*s)"), param(impurity, "eta_muMin", 0));
+                    e.properties.insert(QStringLiteral("m1") + C, mu);
+                    e.properties.insert(QStringLiteral("m2") + C, mu);
+                    e.properties.insert(QStringLiteral("mu1") + C, ofT(param(impurity, "mu2(300)"), QStringLiteral("cm^2/(V*s)"), param(impurity, "eta_mu2", 0)));
+                    e.properties.insert(QStringLiteral("pc") + C, QStringLiteral("0[1/cm^3]"));
+                    e.properties.insert(QStringLiteral("cr") + C, ofT(param(impurity, "Cr(300)"), QStringLiteral("1/cm^3"), param(impurity, "eta_Cr", 0)));
+                    e.properties.insert(QStringLiteral("cs") + C, ofT(param(impurity, "Cs(300)"), QStringLiteral("1/cm^3"), param(impurity, "eta_Cs", 0)));
+                    e.properties.insert(QStringLiteral("ma") + C, ofT(param(impurity, "alpha(300)"), QString(), param(impurity, "eta_alpha", 0)));
+                    e.properties.insert(QStringLiteral("mb") + C, ofT(param(impurity, "beta(300)"), QString(), param(impurity, "eta_beta", 0)));
+                }
+                const QString vkey = QStringLiteral("vsat ") + C;
+                const double v = active(vkey) == QLatin1String("Constant") ? param(vkey, "A0") : param(vkey, "vsat300");
+                if (std::isfinite(v)) e.properties.insert(QStringLiteral("vsat") + C, ofT(v, QStringLiteral("cm/s"), 0));
+                const double beta = param(QStringLiteral("high field ") + C, "beta");
+                if (beta > 0) e.properties.insert(QStringLiteral("beta") + C, num(beta));
+                e.properties.insert(QStringLiteral("tau") + C, ofTemperature(QStringLiteral("srh tau ") + C, QStringLiteral("s")));
+                const QString doping = QStringLiteral("srh doping ") + C;
+                if (active(doping) == QLatin1String("Fossum") && std::isfinite(param(doping, "N0")))
+                    e.properties.insert(QStringLiteral("N0") + C, ofT(param(doping, "N0"), QStringLiteral("1/cm^3"), 0));
+                const double mt = param(QStringLiteral("srh field ") + C, "mt");
+                if (mt > 0) e.properties.insert(QStringLiteral("mt") + C, num(mt));
+                e.properties.insert(QStringLiteral("cau") + C, ofTemperature(QStringLiteral("auger ") + C, QStringLiteral("cm^6/s")));
+                const QString ii = QStringLiteral("impact ") + C;
+                if (active(ii) == QLatin1String("Selberherr") && param(ii, "Ecrit(300)", 1e30) < 1e19) {
+                    e.properties.insert(QStringLiteral("iia") + C, ofT(param(ii, "alphaInf(300)"), QStringLiteral("1/cm"), param(ii, "eta_alphaInf", 0)));
+                    e.properties.insert(QStringLiteral("iib") + C, ofT(param(ii, "Ecrit(300)"), QStringLiteral("V/cm"), param(ii, "eta_Ecrit", 0)));
+                    e.properties.insert(QStringLiteral("iibeta") + C, num(param(ii, "beta", 1)));
+                }
+            }
+            if (active(QStringLiteral("srh doping n")) == QLatin1String("Fossum")) {
+                put(e, "fA", num(param(QStringLiteral("srh doping n"), "alpha", 1)));
+                put(e, "fB", num(param(QStringLiteral("srh doping n"), "beta", 0)));
+                put(e, "fC", num(param(QStringLiteral("srh doping n"), "gamma", 1)));
+                put(e, "fE", num(param(QStringLiteral("srh doping n"), "sigma", 1)));
+            }
+            double v1 = 0;
+            for (const char* c : {"bgn n", "bgn p"})
+                if (active(QLatin1String(c)) == QLatin1String("Slotboom")) v1 += param(QLatin1String(c), "V1", 0);
+            if (v1 > 0) {
+                put(e, "Ebgn", QStringLiteral("%1[eV]").arg(num(v1)));
+                put(e, "Nbgn", QStringLiteral("%1[1/cm^3]").arg(num(param(QStringLiteral("bgn n"), "N0", 1e17))));
+                put(e, "Cbgn", num(param(QStringLiteral("bgn n"), "C", 0.5)));
+            }
+            put(e, "Et", QStringLiteral("%1[eV]").arg(num(param(QStringLiteral("trap n"), "A0", 0))));
+            put(e, "copt", ofTemperature(QStringLiteral("radiative n"), QStringLiteral("cm^3/s")));
+            if (active(QStringLiteral("btbt")) == QLatin1String("Hurkx") && param(QStringLiteral("btbt"), "A", 0) > 0) {
+                put(e, "bbtA", num(param(QStringLiteral("btbt"), "A")));
+                put(e, "bbtB", QStringLiteral("%1[V/cm]").arg(num(param(QStringLiteral("btbt"), "B"))));
+                put(e, "bbtgamma", num(param(QStringLiteral("btbt"), "eta", 2.5)));
+            }
+            Q_UNUSED(on);
+        }
+        // Its thermal record: κ, ρ, Cp (constant, or of T).
+        if (const Value* th = o.prop(QStringLiteral("@thermal"))) {
+            auto thermal = [&](const char* role, const QString& unit) -> QString {
+                const Value* m = th->field(QString::fromLatin1(role));
+                const Value* a = m ? m->field(QStringLiteral("active")) : nullptr;
+                const Value* ps = m ? m->field(QStringLiteral("params")) : nullptr;
+                if (!a || !ps) return {};
+                auto p = [&](const char* k) {
+                    const Value* v = ps->field(QString::fromLatin1(k));
+                    return v ? v->toNumber(NAN) : NAN;
+                };
+                if (a->toText() == QLatin1String("Constant") && p("A0") > 0) return ofT(p("A0"), unit, 0);
+                if (a->toText().startsWith(QLatin1String("Universal")) && p("A") > 0) return ofT(p("A"), unit, std::isfinite(p("eta")) ? p("eta") : 0.0);
+                return {};
+            };
+            put(e, "k", thermal("thermal conductivity", QStringLiteral("W/(m*K)")));
+            put(e, "rho", thermal("mass density", QStringLiteral("kg/m^3")));
+            put(e, "Cp", thermal("specific heat", QStringLiteral("J/(kg*K)")));
+        }
+        if (e.properties.isEmpty()) continue;
+        if (!e.properties.contains(QStringLiteral("mur"))) e.properties.insert(QStringLiteral("mur"), QStringLiteral("1"));
+        out.push_back(e);
+    }
+    // Its optical materials (MODE's, FDTD's): their index of the wavelength.
+    for (const Material& m : scene.materials) {
+        MaterialEntry e;
+        e.name = m.name;
+        e.category = category;
+        e.user = true;
+        if (const std::optional<Dispersion> d = dispersionOf(m)) {
+            if (d->n[1] != d->n[0] || d->n[2] != d->n[0]) {
+                if (notes) *notes << tr("%1: anisotropic - its index along x alone").arg(m.name);
+            }
+            e.properties.insert(QStringLiteral("n"), d->n[0]);
+            if (!d->kappa.isEmpty()) e.properties.insert(QStringLiteral("kappa"), d->kappa);
+            if (!d->range.isEmpty()) e.properties.insert(QStringLiteral("nrange"), d->range);
+            e.description = tr("From %1: Lumerical's optical %2").arg(scene.source, d->what);
+        } else if (m.type == QLatin1String("dielectric") || m.type.contains(QLatin1String("(n,k)"))) {
+            e.properties.insert(QStringLiteral("n"), num(m.n[0]));
+            if (m.k[0] != 0) e.properties.insert(QStringLiteral("kappa"), num(m.k[0]));
+            e.description = tr("From %1: Lumerical's optical (n,k) material, constant").arg(scene.source);
+        } else
+            continue;
+        out.push_back(e);
+    }
+    if (notes && !alloys.isEmpty())
+        *notes << tr("its alloys not taken (%1): the library's compounds are those, their composition each domain's").arg(alloys.join(QStringLiteral(", ")));
+    return out;
+}
+
 
 } // namespace qucs_s::fem::lumerical

@@ -109,6 +109,8 @@ target_compile_definitions(test_fem_nitrides PRIVATE QUCS_TEST_DATA="${CMAKE_CUR
 set_tests_properties(test_fem_nitrides PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_lumerical)
 target_compile_definitions(test_fem_lumerical PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+qucs_add_fem_test(test_fem_materials)
+target_compile_definitions(test_fem_materials PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 qucs_add_fem_test(test_fem_pde)
 qucs_add_fem_test(test_fem_optoelectronics)
 # (Sanitized: some 500 s here, CI's Debug about 1.45 times that.)
