@@ -1160,6 +1160,7 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         edit->setObjectName(QStringLiteral("mpEdit_") + key);
         const bool layout = node.type == QLatin1String("crosssection");
         const bool written = node.kind() && node.kind()->group == QLatin1String("export");
+        const bool script = written && node.type.startsWith(QLatin1String("lumerical"));
         edit->setPlaceholderText(layout    ? tr("a GDSII or OASIS layout, beside the model")
                                  : written ? tr("empty: model_%1 beside the model").arg(node.tag)
                                            : tr("a DXF, SVG, GDSII or OASIS file, beside the model"));
@@ -1169,12 +1170,13 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         h->addWidget(edit, 1);
         h->addWidget(browse);
         connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
-        connect(browse, &QToolButton::clicked, this, [this, key, edit, layout, written] {
+        connect(browse, &QToolButton::clicked, this, [this, key, edit, layout, written, script] {
             const QString model = a_doc ? a_doc->getDocName() : QString();
             const QDir dir = model.isEmpty() ? QDir::home() : QFileInfo(model).absoluteDir();
             const QString layouts = tr("Layouts (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)");
             const QString chosen =
-                written ? QFileDialog::getSaveFileName(this, tr("Export to"), dir.absolutePath(), tr("All files (*)"))
+                written ? QFileDialog::getSaveFileName(this, tr("Export to"), dir.absolutePath(),
+                                                       script ? tr("Lumerical scripts (*.lsf);;All files (*)") : tr("All files (*)"))
                 : layout ? QFileDialog::getOpenFileName(this, tr("A Layout"), dir.absolutePath(), layouts + tr(";;All files (*)"))
                          : QFileDialog::getOpenFileName(this, tr("Import a Drawing or a Layout"), dir.absolutePath(),
                                                         tr("Drawings and layouts (*.dxf *.svg *.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;"

@@ -241,6 +241,8 @@ protected:
     Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true);
     /// The material of each domain: the last that has it (null: none).
     std::vector<const Node*> materials();
+
+public:
     /// Property \a key of material \a m: its own, else its library entry's,
     /// else (a III-V alloy's) its compound's at its composition - evaluated in
     /// \a scope (the parameters'; none: a plain number).
@@ -250,6 +252,7 @@ protected:
     /// given (a compound's, if any, is what is left).
     static QString givenProperty(const Node& m, const QString& key, const Scope* scope = nullptr);
 
+protected:
     Solution& a_s;
     int a_fi;
     const Node* a_node = nullptr;
@@ -302,6 +305,29 @@ struct QuantumState {
     double strain = NaN, drawn = NaN;
 };
 QuantumState quantumAt(PointEvaluator& e, int field);
+
+/// A quantum wells physics' layers as it reads them, for an export
+/// (Lumerical's MQW): by domain, its band edges unstrained (eV; a Quantum
+/// Well Material's when constants), electron mass, Luttinger's γ1-γ3 (a
+/// Quantum Well Material's of its masses), split-off Δ and Kane's Ep (eV),
+/// refractive index and static permittivity; its strain in the plane and
+/// what strains it (a0 m; ac, av, b eV, Chuang's signs; C11, C12 Pa). The
+/// physics' temperature (K), field (V/m), element size along its line (m),
+/// k·p bands' size (0 parabolic, 4, 6, 8), axis (0 x, 1 y), whether it is a
+/// line's and whether it has a potential of another physics'.
+struct QuantumLayer {
+    bool on = false, user = false, wurtzite = false, valleys = false;
+    double Ec = NaN, Ev = NaN, me = NaN, g1 = NaN, g2 = NaN, g3 = NaN, delta = NaN, Ep = NaN, nr = NaN, epsr = NaN;
+    double exx = 0, a0 = NaN, ac = NaN, av = NaN, b = NaN, C11 = NaN, C12 = NaN;
+};
+struct QuantumLayers {
+    std::vector<QuantumLayer> layers;
+    double T = 300, F = 0, h1d = 1e-10;
+    int valence = 0, axis = 1;
+    bool line = true, potential = false;
+    QString error;
+};
+QuantumLayers quantumLayers(Solution& solution, int field);
 
 /// A PDE's dependent variables (by name), and whether it is of the second
 /// order in time (their rates its components too, named <u>_t).

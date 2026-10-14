@@ -10,9 +10,11 @@
  * (at your option) any later version.
  */
 #include "fem_lumerical.h"
+#include "fem_lumerical_scene.h"
 #include "fem_hdf5.h"
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QVariantMap>
@@ -20,6 +22,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <optional>
 
@@ -125,12 +128,14 @@ QVariant qvariant(Reader& r)
     }
 }
 
-/// A Lumerical "Properties" blob (little-endian): its entries' keys and
-/// values - texts, numbers (one, or a list), matrices (their real parts,
-/// column-major), dictionaries (a QDataStream's).
-QVariantMap properties(const QByteArray& blob, bool* ok)
+} // namespace
+
+namespace lumerical {
+
+QVariantMap properties(const QByteArray& blob, bool* ok, qint64 from, qint64* used)
 {
     Reader r{blob};
+    r.p = from;
     QVariantMap out;
     const quint32 n = r.u32();
     for (quint32 i = 0; i < n && !r.bad; ++i) {
@@ -140,19 +145,30 @@ QVariantMap properties(const QByteArray& blob, bool* ok)
         if (type == 0) v = QString::fromUtf8(r.raw(r.u32())).remove(QChar(0));
         else if (type == 1 || type == 2) {
             const quint32 count = r.u32();
+            if (count > quint32(blob.size())) {
+                r.bad = true;
+                break;
+            }
             QVariantList list;
             for (quint32 k = 0; k < count && !r.bad; ++k) list << (type == 1 ? QVariant(r.f64()) : QVariant(qint32(r.u32())));
             v = count == 1 ? list.value(0) : QVariant(list);
-        } else if (type == 3) {
+        } else if (type == 3 || type == 5) {
+            // (A matrix: doubles - complex ones their real parts, then their
+            // imaginary parts -, or integers.)
             r.u32();
             const quint32 numel = r.u32(), dims = r.u32();
+            if (numel > quint32(blob.size()) || dims > 16) {
+                r.bad = true;
+                break;
+            }
             for (quint32 k = 0; k < dims; ++k) r.u32();
             const bool real = r.u32() == 1;
             r.u32();
-            QVariantList list;
-            for (quint32 k = 0; k < numel && !r.bad; ++k) {
-                list << r.f64();
-                if (!real) r.f64();
+            QVariantList list, imag;
+            for (quint32 k = 0; k < numel && !r.bad; ++k) list << (type == 5 ? QVariant(qint32(r.u32())) : QVariant(r.f64()));
+            if (type == 3 && !real) {
+                for (quint32 k = 0; k < numel && !r.bad; ++k) imag << r.f64();
+                out.insert(key + QStringLiteral("@im"), imag);
             }
             v = list;
         } else if (type == 11) {
@@ -165,8 +181,13 @@ QVariantMap properties(const QByteArray& blob, bool* ok)
         out.insert(key, v);
     }
     if (ok) *ok = !r.bad;
+    if (used) *used = r.p - from;
     return out;
 }
+
+} // namespace lumerical
+
+namespace {
 
 using Value = Hdf5File::Value;
 
@@ -247,7 +268,7 @@ LumericalImport importLumericalMqw(const QString& path)
         return out;
     }
     bool ok = false;
-    const QVariantMap mqw = properties(blob->raw, &ok);
+    const QVariantMap mqw = lumerical::properties(blob->raw, &ok);
     if (!ok) out.notes << tr("its MQW solver's properties were read in part");
     auto setting = [&](const QString& key, double otherwise = NAN) {
         const QVariant v = mqw.value(key + QStringLiteral("_value"));
@@ -260,7 +281,7 @@ LumericalImport importLumericalMqw(const QString& path)
         const quint64 props = f.find(QStringLiteral("Properties"), object);
         const std::optional<Value> pb = props ? f.dataset(props) : std::nullopt;
         if (!pb) continue;
-        const QString name = properties(pb->raw, nullptr).value(QStringLiteral("name_value")).toString();
+        const QString name = lumerical::properties(pb->raw, nullptr).value(QStringLiteral("name_value")).toString();
         for (const auto& [cn, child] : f.links(f.find(QStringLiteral("Children"), object))) {
             const auto attrs = f.attributes(child);
             const auto it = attrs.find(QStringLiteral("Material Properties UID"));
@@ -477,6 +498,200 @@ LumericalImport importLumericalMqw(const QString& path)
                           .arg(layers.size())
                           .arg(said.join(QStringLiteral(", ")), valence == QLatin1String("kp8") ? QStringLiteral("8x8") : valence == QLatin1String("kp6") ? (wurtzites ? tr("6x6 (wurtzite)") : QStringLiteral("6x6")) : QStringLiteral("4x4"), num(T),
                                physics.contains(QStringLiteral("F")) ? tr(", a field of %1 V/m").arg(num(setting(QStringLiteral("efield")))) : QString(), num(gamma * 1e3), num(cden * 1e-6), num(density * 1e-6)));
+    return out;
+}
+
+namespace {
+
+/// An object's properties (its "Properties" dataset: the solver's after a
+/// 16-byte class id), their "_value"s as a scene's: texts, numbers,
+/// matrices (a vertices' N x 2).
+std::optional<lumerical::Object> objectAt(const Hdf5File& f, quint64 group, const QString& kind)
+{
+    const quint64 at = f.find(QStringLiteral("Properties"), group);
+    const std::optional<Value> blob = at ? f.dataset(at) : std::nullopt;
+    if (!blob) return std::nullopt;
+    QVariantMap d;
+    for (qint64 from : {qint64(0), qint64(16)}) {
+        bool ok = false;
+        qint64 used = 0;
+        d = lumerical::properties(blob->raw, &ok, from, &used);
+        if (ok && from + used == blob->raw.size()) break;
+        d.clear();
+    }
+    if (d.isEmpty()) return std::nullopt;
+    lumerical::Object o;
+    o.kind = kind;
+    for (auto it = d.cbegin(); it != d.cend(); ++it) {
+        if (!it.key().endsWith(QLatin1String("_value"))) continue;
+        const QString key = it.key().chopped(6);
+        const QVariant& v = it.value();
+        lumerical::Value x;
+        if (v.typeId() == QMetaType::QString) x = lumerical::Value::text(v.toString());
+        else if (v.typeId() == QMetaType::QVariantList) {
+            std::vector<double> m;
+            for (const QVariant& e : v.toList()) m.push_back(e.toDouble());
+            const int n = int(m.size());
+            x = key == QLatin1String("vertices") && n % 2 == 0 ? lumerical::Value::matrix(std::move(m), n / 2, 2) : lumerical::Value::matrix(std::move(m), n, 1);
+        } else if (v.canConvert<double>())
+            x = lumerical::Value::number(v.toDouble());
+        else
+            continue;
+        o.props[key] = x;
+        o.history.emplace_back(key, x);
+    }
+    return o;
+}
+
+/// A CHARGE project (Lumerical's DEVICE, the Finite Element IDE: an .ldev
+/// with a SemiconductorSimObject) as a scene: its materials (their kind,
+/// work function), geometry, simulation region, CHARGE solver, doping and
+/// contacts.
+lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
+{
+    lumerical::Scene scene;
+    scene.source = source;
+    // The materials, by their ids.
+    std::map<QString, QString> byId;
+    const quint64 mats = f.find(QStringLiteral("SemiconductorMaterials/Materials"));
+    for (const auto& [id, rec] : f.links(mats)) {
+        const auto attrs = f.attributes(rec);
+        auto attr = [&](const char* k) {
+            const auto it = attrs.find(QString::fromLatin1(k));
+            return it == attrs.end() ? std::optional<Value>() : std::optional<Value>(it->second);
+        };
+        const QString name = attr("name") ? attr("name")->string() : id;
+        byId[id] = name;
+        lumerical::Object o;
+        o.kind = QStringLiteral("modelmaterial");
+        auto put = [&](const QString& k, const lumerical::Value& v) {
+            o.props[k] = v;
+            o.history.emplace_back(k, v);
+        };
+        put(QStringLiteral("name"), lumerical::Value::text(name));
+        put(QStringLiteral("@CT"), lumerical::Value::text(name));
+        const quint64 detail = f.find(QStringLiteral("Detail"), rec);
+        if (detail) {
+            const auto d = f.attributes(detail);
+            const auto it = d.find(QStringLiteral("model label"));
+            if (it != d.end()) put(QStringLiteral("@kind"), lumerical::Value::text(it->second.string()));
+        }
+        if (attr("workfunction") && attr("workfunction")->number(0) > 0) put(QStringLiteral("work function"), lumerical::Value::number(attr("workfunction")->number()));
+        if (attr("epsilonr")) put(QStringLiteral("@epsilonr"), lumerical::Value::number(attr("epsilonr")->number()));
+        scene.objects.push_back(o);
+    }
+    // The geometry (its objects' material an id) and the simulation region.
+    const quint64 root = f.find(QStringLiteral("SimObjectRoot/Children"));
+    std::function<void(quint64, int)> walk = [&](quint64 children, int depth) {
+        std::vector<std::pair<int, quint64>> list;
+        for (const auto& [n, g] : f.links(children)) list.emplace_back(n.toInt(), g);
+        std::sort(list.begin(), list.end());
+        for (const auto& [n, g] : list) {
+            std::optional<lumerical::Object> o = objectAt(f, g, QString());
+            if (!o) continue;
+            const QString type = o->text(QStringLiteral("type"));
+            if (type == QLatin1String("Rectangle")) o->kind = QStringLiteral("rect");
+            else if (type == QLatin1String("Polygon")) o->kind = QStringLiteral("poly");
+            else if (type == QLatin1String("Circle")) o->kind = QStringLiteral("circle");
+            else if (type == QLatin1String("Simulation Region")) {
+                o->kind = QStringLiteral("region");
+                // (The file's dimension from 0, a script's from 1: 2 the 2D y-normal.)
+                o->props[QStringLiteral("dimension")] = lumerical::Value::number(o->number(QStringLiteral("dimension"), 1) + 1);
+            } else if (type.endsWith(QLatin1String("Group"))) {
+                if (depth < 8) walk(f.find(QStringLiteral("Children"), g), depth + 1);
+                continue;
+            } else {
+                if (!type.contains(QLatin1String("Material"))) scene.notes << tr("%1 (%2): not read").arg(o->name(), type);
+                continue;
+            }
+            const QString id = o->text(QStringLiteral("material"));
+            if (byId.count(id)) o->props[QStringLiteral("material")] = lumerical::Value::text(byId.at(id));
+            scene.objects.push_back(*o);
+        }
+    };
+    walk(root, 0);
+    // The solver; its doping and contacts.
+    const quint64 solver = f.find(QStringLiteral("SemiconductorSimObject"));
+    std::optional<lumerical::Object> s = objectAt(f, solver, QStringLiteral("charge"));
+    if (!s) {
+        scene.error = tr("%1: its CHARGE solver's properties do not read").arg(source);
+        return scene;
+    }
+    std::vector<lumerical::Object> later;
+    std::function<void(quint64, int)> solverChildren = [&](quint64 children, int depth) {
+        std::vector<std::pair<int, quint64>> list;
+        for (const auto& [n, g] : f.links(children)) list.emplace_back(n.toInt(), g);
+        std::sort(list.begin(), list.end());
+        for (const auto& [n, g] : list) {
+            std::optional<lumerical::Object> o = objectAt(f, g, QString());
+            if (!o) continue;
+            const QString type = o->text(QStringLiteral("type"));
+            if (type == QLatin1String("Constant Doping Region") || type == QLatin1String("Diffusion Doping")) {
+                o->kind = type.startsWith(QLatin1String("Constant")) ? QStringLiteral("dope") : QStringLiteral("diffusion");
+                // (Its numbers per cm³ whatever their label - Lumerical keeps
+                // doping so -, its dopant 0 n, 1 p, its source face from 0.)
+                o->props[QStringLiteral("concentration")] = lumerical::Value::number(o->number(QStringLiteral("concentration"), 0) * 1e6);
+                if (o->prop(QStringLiteral("ref concentration")))
+                    o->props[QStringLiteral("ref concentration")] = lumerical::Value::number(o->number(QStringLiteral("ref concentration")) * 1e6);
+                o->props[QStringLiteral("dopant type")] = lumerical::Value::text(o->number(QStringLiteral("dopant type"), 1) == 0 ? QStringLiteral("n") : QStringLiteral("p"));
+                if (o->prop(QStringLiteral("source face"))) o->props[QStringLiteral("source face")] = lumerical::Value::number(o->number(QStringLiteral("source face")) + 1);
+                if (o->number(QStringLiteral("volume type"), 0) == 1) o->props[QStringLiteral("volume type")] = lumerical::Value::text(QStringLiteral("solid"));
+                later.push_back(*o);
+            } else if (type == QLatin1String("Electrical Boundary Condition")) {
+                o->kind = QStringLiteral("contact");
+                const int sweep = int(o->number(QStringLiteral("sweep type"), 0));
+                o->props[QStringLiteral("sweep type")] = lumerical::Value::text(sweep == 1 ? QStringLiteral("range") : sweep == 2 ? QStringLiteral("value") : QStringLiteral("single"));
+                later.push_back(*o);
+            } else if (type == QLatin1String("Electrical Mesh Constraint")) {
+                o->kind = QStringLiteral("meshconstraint");
+                if (o->number(QStringLiteral("enabled"), 1) != 0) later.push_back(*o);
+            } else if (type.endsWith(QLatin1String("Group"))) {
+                if (depth < 8) solverChildren(f.find(QStringLiteral("Children"), g), depth + 1);
+            } else if (!type.isEmpty())
+                scene.notes << tr("%1 (%2): not read").arg(o->name(), type);
+        }
+    };
+    solverChildren(f.find(QStringLiteral("Children"), solver), 0);
+    scene.objects.push_back(*s);
+    scene.objects.insert(scene.objects.end(), later.begin(), later.end());
+    if (std::any_of(later.begin(), later.end(), [](const lumerical::Object& o) { return o.kind == QLatin1String("dope") || o.kind == QLatin1String("diffusion"); }))
+        scene.notes << tr("its doping concentrations read per cm³, as Lumerical keeps them");
+    return scene;
+}
+
+} // namespace
+
+LumericalImport importLumerical(const QString& path)
+{
+    LumericalImport out;
+    const QFileInfo info(path);
+    const QString suffix = info.suffix().toLower();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        out.error = tr("%1 cannot be read").arg(info.fileName());
+        return out;
+    }
+    const QByteArray bytes = f.readAll();
+    if (suffix == QLatin1String("lsf"))
+        return lumerical::buildModel(lumerical::readScript(QString::fromUtf8(bytes), info.fileName()));
+    if (suffix == QLatin1String("lms") || bytes.startsWith("LUMERICAL"))
+        return lumerical::buildModel(lumerical::readModeProject(bytes, info.fileName()));
+    if (suffix == QLatin1String("ldf")) {
+        out.error = tr("%1 is a Lumerical data file: import it as a dataset (Results > Import Data)").arg(info.fileName());
+        return out;
+    }
+    if (suffix == QLatin1String("ldev") || bytes.startsWith("\x89HDF")) {
+        Hdf5File h;
+        QString why;
+        if (!h.openData(bytes, &why)) {
+            out.error = tr("%1: %2").arg(info.fileName(), why);
+            return out;
+        }
+        if (h.find(QStringLiteral("SemiconductorSimObject/Properties")))
+            return lumerical::buildModel(readChargeProject(h, info.fileName()));
+        return importLumericalMqw(path);
+    }
+    out.error = tr("%1 is not a Lumerical project (.ldev, .lms) or script (.lsf)").arg(info.fileName());
     return out;
 }
 
