@@ -124,7 +124,8 @@ QJsonObject calculate(QucsTranscalc& w, const QJsonObject& spec)
     const QString kind = units.value(0);
     const char* unit = kind == QLatin1String("mil") ? "m" : kind == QLatin1String("GHz") ? "Hz" : kind == QLatin1String("Ohm") ? "Ohm"
                      : kind == QLatin1String("Deg") ? "Deg" : nullptr;
-    if (unit) w.setUnit(n, unit);
+    // (Its default, in the window's unit, converted: H 10 mil is 0.254 mm.)
+    if (unit) w.convertUnit(n, unit);
   }
   // The spec's values by name, case aside ("er", "h", "w", "z0", "f").
   QStringList unknown;

@@ -37,6 +37,9 @@ class transline {
   double getProperty (const char *);
   double getProperty (const char *, int, int);
   double convertProperty (const char *, double, int, int);
+  // A value of a unit's type (UNIT_LENGTH...) from one of its units into
+  // another (their indices in TransUnits).
+  static double convert (int, double, int, int);
   void   setResult (int, double, const char *);
   void   setResult (int, const char *);
   int    translateUnit (char *);

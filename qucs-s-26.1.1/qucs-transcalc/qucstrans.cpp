@@ -948,6 +948,24 @@ void QucsTranscalc::setUnit (QString prop, const char * unit) {
   }
 }
 
+/* Sets the given property unit, its value converted from the unit it had
+   into it. */
+void QucsTranscalc::convertUnit (QString prop, const char * unit) {
+  struct TransValue * val = findProperty (prop);
+  if (!val || !unit) return;
+  // Its unit type: the one whose units its are (TransUnits' order is
+  // UNIT_FREQ, UNIT_LENGTH, UNIT_RES, UNIT_ANG).
+  int type = -1;
+  for (int k = 0; k < 4 && type < 0; k++)
+    if (val->units[0] && !strcmp (val->units[0], TransUnits[k].units[0])) type = k;
+  if (type < 0) return;
+  const int src = translateUnit (getUnit (prop), type), dst = translateUnit (unit, type);
+  if (strcmp (unit, TransUnits[type].units[dst])) return;
+  const double value = transline::convert (type, getProperty (prop), src, dst);
+  setUnit (prop, unit);
+  setProperty (prop, value);
+}
+
 /* Returns the given property unit. */
 char * QucsTranscalc::getUnit (QString prop) {
   struct TransValue * val = findProperty (prop);
