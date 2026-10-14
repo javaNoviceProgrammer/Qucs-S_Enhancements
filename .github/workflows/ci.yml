@@ -55,6 +55,12 @@ jobs:
       - name: Lists of one list are nested on every compiler
         run: python3 scripts/ci/check-json-nesting.py
 
+      # No vendor's own project, script or data file - Ansys's examples stay
+      # out of the repository - and no vendor's copyright line (see
+      # scripts/ci/check-third-party.py).
+      - name: No vendor's files in the repository
+        run: python3 scripts/ci/check-third-party.py
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
