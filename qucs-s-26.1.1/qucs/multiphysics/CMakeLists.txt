@@ -26,6 +26,9 @@ set(FEM_SRCS
   fem_import.cpp
   fem_hdf5.cpp
   fem_lumerical.cpp
+  fem_lumerical_export.cpp
+  fem_lumerical_import.cpp
+  fem_lumerical_script.cpp
   fem_results.cpp
   fem_export.cpp
   fem_materials.cpp

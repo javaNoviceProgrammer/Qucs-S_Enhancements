@@ -41,6 +41,67 @@ struct LumericalImport {
 };
 LumericalImport importLumericalMqw(const QString& path);
 
+/*!
+ * A Lumerical project or script as a multiphysics model, by its kind:
+ *  - an .ldev: an MQW project's stack (importLumericalMqw), a CHARGE
+ *    project's cross-section;
+ *  - an .lms (MODE): its FDE region's cross-section (2D Z normal) - its
+ *    rectangles, each material its index at the wavelength (Lumerical's
+ *    data) or the library's of its name, PML sides as layers inside the
+ *    region -, the wavelength, trial modes and a sweep's wavelengths;
+ *  - an .lsf (a script, as an export writes it, or one that builds a
+ *    project with the same commands): what it makes - an FDE region's
+ *    cross-section, a CHARGE simulation region's (its structures, model
+ *    materials by name, constant and diffusion doping, contacts and their
+ *    sweeps, temperature, norm length), an mqwindex stack's layers and
+ *    spectrum.
+ * Where structures overlap the one of the lower mesh order is taken. Its
+ * notes say what was read and how it was taken, and what was not.
+ */
+LumericalImport importLumerical(const QString& path);
+
+class Model;
+struct Node;
+
+/*!
+ * What a Lumerical export node makes: a Lumerical script (.lsf) that, run
+ * in the product, builds the model in a new project and saves it beside
+ * the script (base.lms, base.ldev) - its cross-section a structure for
+ * each domain (rectangles, polygons; the outer first, a domain within
+ * another's hole after it), in metres:
+ *  - MODE (lumericalmode): (n,k) materials of each domain's index at the
+ *    mode step's wavelength as the model has it, or Lumerical's own by
+ *    name; an FDE region (2D Z normal) over the physics' domains, PML
+ *    where the model has PML domains, Metal or PMC on the other sides;
+ *    the wavelength, trial modes and the index searched about;
+ *  - CHARGE (lumericalcharge): Lumerical's electrical materials by name
+ *    (alloys at their composition), the cross-section in the x-z plane
+ *    (2D y-normal, Lumerical's default; y the model's y as z), uniform
+ *    and box doping as its constant and diffusion objects, an implant or
+ *    an expression sampled into an import doping object, each contact a
+ *    thin metal strip outside its boundary (a metal domain there its own)
+ *    with its voltage (a study's sweep a value table; a gate's metal its
+ *    work function), the norm length the model's thickness;
+ *  - MQW (lumericalmqw): the wells' stack for mqwindex (Lumerical's 4x4
+ *    k·p; its MQW solver object has no script command) - each layer's own
+ *    parameters (its gap, Ep, me, γ1-γ3, deformation potentials,
+ *    stiffness, lattice, valence band on one scale), or Lumerical's
+ *    database by compound and composition, and its strain -, the
+ *    temperature, the field (a study's sweep of it a solve for each), the
+ *    carrier density over the stack (a sweep's, mqwindex's densities),
+ *    the spectrum step's photon frequencies and broadening (a full width),
+ *    k of the bands step.
+ * An axisymmetric model is refused (MODE, CHARGE). Its notes say what
+ * was taken and how, and what Lumerical will do otherwise.
+ */
+struct LumericalScript {
+    QString text;
+    QString summary;
+    QStringList notes;
+    QString error;
+};
+LumericalScript lumericalScript(const Model& model, const Node& node, const QString& base, const QString& version);
+
 } // namespace qucs_s::fem
 
 #endif // QUCS_FEM_LUMERICAL_H

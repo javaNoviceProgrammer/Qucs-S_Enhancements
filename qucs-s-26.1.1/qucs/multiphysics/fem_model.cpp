@@ -2012,9 +2012,12 @@ QList<NodeKind> makeKinds()
 
         // Exports.
         add({QStringLiteral("exports"), tr("Export"), QString(), QStringLiteral("exports"), Level::None, {},
-             {QStringLiteral("touchstone"), QStringLiteral("spice"), QStringLiteral("qucspart")}, {}, true, true, QString(),
+             {QStringLiteral("touchstone"), QStringLiteral("spice"), QStringLiteral("qucspart"), QStringLiteral("lumericalmode"),
+              QStringLiteral("lumericalcharge"), QStringLiteral("lumericalmqw")},
+             {}, true, true, QString(),
              tr("Results as files and parts of circuits: a line's S-parameters (Touchstone), SPICE subcircuits, a Qucs "
-                "subcircuit - each written beside the model (model_tag.s2p, .cir, .sch).")});
+                "subcircuit - each written beside the model (model_tag.s2p, .cir, .sch); and the model as Lumerical scripts "
+                "(MODE, CHARGE, MQW: model_tag.lsf) that build it there.")});
         P line;
         line.key = QStringLiteral("line");
         line.label = tr("Line");
@@ -2071,6 +2074,62 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("qp"),
              tr("A Qucs subcircuit (.sch): an RLCG part of the line's values at a frequency and its length between ports 1 "
                 "and 2 - a part for a schematic (Subcircuit), or copied to paste.")});
+        // The model as Lumerical scripts (no study need be computed).
+        auto physicsOfType = [&](const QString& tag) {
+            P p;
+            p.key = QStringLiteral("physics");
+            p.label = tr("Physics");
+            p.kind = P::Physics;
+            p.defaultValue = QJsonArray{tag};
+            return p;
+        };
+        P lumStudy = study;
+        lumStudy.tooltip = tr("Whose steps give the settings. Empty: the first with one; it need not be computed");
+        const P run = flag(QStringLiteral("run"), tr("Run it there"), true, tr("The script runs the solver after it saves the project"));
+        add({QStringLiteral("lumericalmode"), tr("Lumerical MODE (FDE)"), QStringLiteral("export"), QStringLiteral("lumericalmode"), Level::None,
+             {physicsOfType(QStringLiteral("emw")), lumStudy,
+              choice(QStringLiteral("materials"), tr("Materials"), {QStringLiteral("indices"), QStringLiteral("library")},
+                     {tr("Their indices as the model has them, at the wavelength ((n,k) materials)"),
+                      tr("Lumerical's own by name (Si (Silicon) - Palik...), else their indices")},
+                     QStringLiteral("indices")),
+              expr(QStringLiteral("step"), tr("FDE mesh step"), QStringLiteral("m"), QString(), tr("Empty: λ/(20 n) of the largest index")),
+              integer(QStringLiteral("modes"), tr("Trial modes"), 0, tr("0: the mode step's")), run, file},
+             {}, {}, false, false, QStringLiteral("lm"),
+             tr("A Lumerical MODE script (.lsf): the cross-section a structure for each domain, each its index at the mode step's "
+                "wavelength as the model has it (or Lumerical's material of that name), an FDE region over the physics' domains "
+                "(2D Z normal; PML where the model has PML domains, Metal or PMC on the other sides), the wavelength, trial modes "
+                "and the index searched about. Run in MODE it builds the project and saves it (model_tag.lms), then finds the "
+                "modes.")});
+        add({QStringLiteral("lumericalcharge"), tr("Lumerical CHARGE"), QStringLiteral("export"), QStringLiteral("lumericalcharge"), Level::None,
+             {physicsOfType(QStringLiteral("semi")), lumStudy,
+              expr(QStringLiteral("strip"), tr("Contacts' metal"), QStringLiteral("m"), QString(),
+                   tr("The thickness of the metal strip each contact is put on, outside its boundary. Empty: 1 % of the device")),
+              [&] {
+                  P r = flag(QStringLiteral("run"), tr("Run it there"), false, tr("The script runs CHARGE after it saves the project"));
+                  return r;
+              }(),
+              file},
+             {}, {}, false, false, QStringLiteral("lc"),
+             tr("A Lumerical CHARGE script (.lsf, the Finite Element IDE): Lumerical's electrical materials by name (alloys at "
+                "their composition), the cross-section in its x-z plane (2D y-normal: the model's y its z), the doping - uniform "
+                "and box profiles as constant and diffusion objects, an implant or an expression sampled into an import doping "
+                "object -, each contact a thin metal strip outside its boundary at its voltage (a study's sweep a value table), "
+                "the norm length the model's thickness. Run in the Finite Element IDE it builds and saves the project "
+                "(model_tag.ldev).")});
+        add({QStringLiteral("lumericalmqw"), tr("Lumerical MQW"), QStringLiteral("export"), QStringLiteral("lumericalmqw"), Level::None,
+             {physicsOfType(QStringLiteral("qw")), lumStudy,
+              choice(QStringLiteral("materials"), tr("Materials"), {QStringLiteral("model"), QStringLiteral("database")},
+                     {tr("Each layer's parameters as the model has them"),
+                      tr("Lumerical's database by compound and composition (its offsets), else the model's")},
+                     QStringLiteral("model")),
+              run, file},
+             {}, {}, false, false, QStringLiteral("lq"),
+             tr("A Lumerical MQW script (.lsf): the wells' stack for mqwindex (Lumerical's 4x4 k·p, zinc blende) - each layer's "
+                "parameters as the model has them (its gap, Ep, me, γ1-γ3, deformation potentials, stiffness, valence band on one "
+                "scale) and its strain -, the temperature and field, the spectrum step's photon frequencies, carrier density "
+                "(over the stack) and broadening (a full width), the bands step's k. Run in any Lumerical product (an MQW license) it computes the stack's band structure, "
+                "gain and index and saves them (model_tag_mqw.ldf; a study's fields swept, model_tag_mqw_1.ldf... each). A study's sweep of the "
+                "carrier density is mqwindex's densities.")});
     }
     return k;
 }

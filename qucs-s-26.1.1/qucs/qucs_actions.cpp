@@ -359,8 +359,8 @@ void QucsApp::slotImportLTspice() {
 }
 
 void QucsApp::slotImportLumerical() {
-  const QString file = QFileDialog::getOpenFileName(this, tr("Import Lumerical MQW Project"), QucsSettings.qucsWorkspaceDir.absolutePath(),
-                                                    tr("Lumerical projects (*.ldev);;All files (*)"));
+  const QString file = QFileDialog::getOpenFileName(this, tr("Import Lumerical Project"), QucsSettings.qucsWorkspaceDir.absolutePath(),
+                                                    tr("Lumerical projects and scripts (*.ldev *.lms *.lsf);;All files (*)"));
   if (file.isEmpty()) return;
   auto *control = findChild<QucsControl *>();
   if (control == nullptr) return;
@@ -368,7 +368,7 @@ void QucsApp::slotImportLumerical() {
   const QString model = info.dir().filePath(info.completeBaseName() + QStringLiteral(".qfem"));
   bool replace = false;
   if (QFileInfo::exists(model)) {
-    if (QMessageBox::question(this, tr("Import Lumerical MQW Project"), tr("%1 is there already: write over it?").arg(QDir::toNativeSeparators(model)))
+    if (QMessageBox::question(this, tr("Import Lumerical Project"), tr("%1 is there already: write over it?").arg(QDir::toNativeSeparators(model)))
         != QMessageBox::Yes)
       return;
     replace = true;
@@ -378,14 +378,14 @@ void QucsApp::slotImportLumerical() {
                                                {QStringLiteral("replace"), replace}},
                                               120000);
   if (result.value(QStringLiteral("isError")).toBool()) {
-    QMessageBox::warning(this, tr("Import Lumerical MQW Project"), QucsControl::textOf(result));
+    QMessageBox::warning(this, tr("Import Lumerical Project"), QucsControl::textOf(result));
     return;
   }
   // What was read and how it was taken, said.
   const QJsonObject answer = QJsonDocument::fromJson(QucsControl::textOf(result).toUtf8()).object();
   QStringList said;
   for (const QJsonValue &v : answer.value(QStringLiteral("read")).toArray()) said << v.toString();
-  if (!said.isEmpty()) QMessageBox::information(this, tr("Import Lumerical MQW Project"), said.join(QStringLiteral("\n\n")));
+  if (!said.isEmpty()) QMessageBox::information(this, tr("Import Lumerical Project"), said.join(QStringLiteral("\n\n")));
 }
 
 void QucsApp::slotInsertBus() {

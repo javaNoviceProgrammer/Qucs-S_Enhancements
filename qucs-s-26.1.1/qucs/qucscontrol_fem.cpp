@@ -157,7 +157,9 @@ QString formatText()
         "layer, name_layer_datatype; a \"crosssection\" cuts one from \"start\" to \"end\" (µm) into its \"stack\" rows [name, layer "
         "(empty: all along the cut), z, thickness] - an object per row. A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
         "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step; "
-        "\"exports\": touchstone (\"line\", \"length\", \"zref\"), spice (\"what\": line or matrix), qucspart (an RLCG subcircuit) - "
+        "\"exports\": touchstone (\"line\", \"length\", \"zref\"), spice (\"what\": line or matrix), qucspart (an RLCG subcircuit), "
+        "lumericalmode (\"materials\": indices or library, \"step\", \"modes\"), lumericalcharge (\"strip\"), lumericalmqw (\"materials\": model "
+        "or database) - their \"physics\", \"run\" and \"file\" too, a Lumerical script of the model - "
         "fem_export writes them.\n"
         "Waves: \"modes\" (tag emw) - a waveguide cross-section's modes, a \"mode\" step {\"frequency\": \"1550[nm]\" (Hz or a "
         "wavelength), \"modes\": 4, \"neff\": the index to search about, \"track\": a selection (those most in it, emw.Gamma), "
@@ -498,11 +500,12 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
                                       {QStringLiteral("geometry"), why.isEmpty() ? tr("built") : why}});
     }
     if (action == QLatin1String("import")) {
-        // A Lumerical MQW project (.ldev) made a model: written beside it
-        // (or to 'to'), opened - what was read and how it was taken said.
-        if (given.isEmpty()) return errorResult(tr("'path': the Lumerical MQW project (.ldev)."));
+        // A Lumerical project (.ldev, .lms) or script (.lsf) made a model:
+        // written beside it (or to 'to'), opened - what was read and how it
+        // was taken said.
+        if (given.isEmpty()) return errorResult(tr("'path': the Lumerical project (.ldev, .lms) or script (.lsf)."));
         const QString source = absolute(given);
-        const qucs_s::fem::LumericalImport imported = qucs_s::fem::importLumericalMqw(source);
+        const qucs_s::fem::LumericalImport imported = qucs_s::fem::importLumerical(source);
         if (!imported.error.isEmpty()) return errorResult(imported.error);
         QString why;
         std::optional<Model> m = Model::fromJson(QJsonDocument(imported.model).toJson(), &why);
@@ -1123,7 +1126,7 @@ QJsonObject QucsControl::femExport(const QJsonObject& args)
         QStringList list;
         if (exports)
             for (const FNode& e : exports->children) list << QStringLiteral("%1 (%2)").arg(e.name(), e.tag);
-        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (touchstone, spice, qucspart).")
+        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (touchstone, spice, qucspart, lumericalmode, lumericalcharge, lumericalmqw).")
                                .arg(list.isEmpty() ? tr("none yet") : list.join(QStringLiteral(", "))));
     }
     if (args.value(QLatin1String("copy")).toBool()) {

@@ -2242,7 +2242,43 @@ private slots:
         r = call("fem_solve", {{"path", to}, {"study", slowBuild() ? "bands" : "gain"}, {"timeout", 300}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf")}, {"to", path(QStringLiteral("none.qfem"))}});
-        QVERIFY2(failed(r) && text(r).contains(QLatin1String("not an HDF5 file")), qPrintable(text(r)));
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("a Lumerical data file")), qPrintable(text(r)));
+        // A CHARGE project, a MODE project: each a model, built.
+        for (const char* project : {"lumerical_charge.ldev", "lumerical_mode.lms"}) {
+            const QString model = path(QFileInfo(QString::fromLatin1(project)).completeBaseName() + QStringLiteral(".qfem"));
+            r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/") + QString::fromLatin1(project)}, {"to", model}, {"replace", true}});
+            QVERIFY2(!failed(r), qPrintable(text(r)));
+            QCOMPARE(json(r).value("geometry").toString(), QStringLiteral("built"));
+            QVERIFY2(json(r).value("read").toArray().at(0).toString().contains(QString::fromLatin1(project).endsWith(QLatin1String(".lms")) ? QLatin1String("FDE region") : QLatin1String("CHARGE cross-section")),
+                     qPrintable(text(r)));
+        }
+    }
+
+    // Claude exports a model as a Lumerical script - fem_edit adds the node
+    // under "exports", fem_export writes it (no study need be computed),
+    // the panel shows it -, and imports the script again.
+    void claudeExportsLumerical()
+    {
+        const QString file = copyOf(QStringLiteral("pn_diode.qfem"));
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QJsonObject r = call("fem_edit", {{"action", "add"}, {"parent", "exports"}, {"type", "lumericalcharge"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString tag = json(r).value("added").toObject().value("tag").toString();
+        QVERIFY(tag.startsWith(QLatin1String("lc")));
+        r = call("fem_export", {{"export", tag}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString written = json(r).value("written").toString();
+        QCOMPARE(QFileInfo(written).fileName(), QStringLiteral("pn_diode_%1.lsf").arg(tag));
+        QVERIFY2(json(r).value("begins").toString().startsWith(QStringLiteral("# pn_diode_%1.lsf - a Lumerical CHARGE script").arg(tag)), qPrintable(text(r)));
+        QFile f(written);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(QString::fromUtf8(f.readAll()).contains(QStringLiteral("save(\"pn_diode_%1.ldev\");").arg(tag)));
+        panel()->selectNode(tag);
+        QVERIFY(panel()->findChild<QWidget*>(QStringLiteral("mpExportButton")) != nullptr);
+        r = call("fem_model", {{"action", "import"}, {"path", written}, {"to", path(QStringLiteral("diode_back.qfem"))}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("read").toArray().at(0).toString().contains(QLatin1String("2 structures, 2 doping objects, 2 contacts")), qPrintable(text(r)));
     }
 
     // A PDE of one's own in the window: a 1D ODE's default plot a line graph

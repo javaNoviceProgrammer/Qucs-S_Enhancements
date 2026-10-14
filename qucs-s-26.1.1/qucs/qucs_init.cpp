@@ -403,14 +403,17 @@ void QucsApp::initActions() {
          "joined by net labels. What was left out is said."));
   connect(importLTspice, &QAction::triggered, this, &QucsApp::slotImportLTspice);
 
-  importLumerical = new QAction(tr("Import Lumerical MQW Project..."), this);
+  importLumerical = new QAction(tr("Import Lumerical Project..."), this);
   importLumerical->setObjectName(QStringLiteral("importLumerical"));
-  importLumerical->setStatusTip(tr("Makes a quantum wells model of a Lumerical MQW project (.ldev)"));
+  importLumerical->setStatusTip(tr("Makes a multiphysics model of a Lumerical project (.ldev, .lms) or script (.lsf)"));
   importLumerical->setWhatsThis(
-      tr("Import Lumerical MQW Project\n\nMakes a multiphysics model of a Lumerical MQW project (.ldev): its layer table a stack "
-         "of layers, each its material's bands (zinc blende or wurtzite, its strain), the solver's k·p order, temperature and "
-         "field, a valence bands study and a spectrum - Lumerical's broadening a full width, its carrier density per the "
-         "wells. Written beside it and opened; what was taken, and how, is said."));
+      tr("Import Lumerical Project\n\nMakes a multiphysics model of a Lumerical project or script: an MQW project (.ldev) its "
+         "layer table a stack of layers, each its material's bands, the k·p order, temperature, field, a valence bands study "
+         "and a spectrum; a CHARGE project (.ldev) its cross-section - structures, materials by name, doping, contacts and "
+         "their sweeps, temperature, norm length; a MODE project (.lms) its FDE region's cross-section - each material its "
+         "index at the wavelength -, the modes and a sweep's wavelengths; a script (.lsf, as Results > Export > Lumerical "
+         "writes them, or one that builds a project with the same commands) what it makes. Written beside it and opened; "
+         "what was taken, and how, is said."));
   connect(importLumerical, &QAction::triggered, this, &QucsApp::slotImportLumerical);
 
   exportAsImage = new QAction(tr("Export as image..."), this);

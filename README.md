@@ -2020,17 +2020,37 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   stack asked for (the layers under the cut offered), its materials from
   the library. *Form Union* makes them one, and numbers its domains,
   boundaries and points (from the left, then from below). A **Lumerical
-  MQW project** (*File → Import Lumerical MQW Project…*, or Claude's
-  `fem_model` import: an `.ldev`, HDF5 read by a reader of its own) is
-  made a quantum wells model: its layer table a stack, each layer its
-  material's bands (zinc blende or wurtzite: γ or A1-A6, Δ's, Ep, the
-  deformation potentials, its strain) over its offset, the solver's k·p
-  order, temperature, field and grid, a valence bands study (k to its
-  Brillouin zone ratio) and a spectrum (its frequencies as photon
-  energies; Lumerical's γ a full width, half of it here; its carrier
-  density over the stack per the wells) - what was taken, and how,
-  said. Lumerical's three MQW examples so imported solve as the
-  benchmarks above.
+  project or script** (*File → Import Lumerical Project…*, or Claude's
+  `fem_model` import) is made a model. An **MQW project** (an `.ldev`,
+  HDF5 read by a reader of its own) a quantum wells model: its layer
+  table a stack, each layer its material's bands (zinc blende or
+  wurtzite: γ or A1-A6, Δ's, Ep, the deformation potentials, its strain)
+  over its offset, the solver's k·p order, temperature, field and grid, a
+  valence bands study (k to its Brillouin zone ratio) and a spectrum (its
+  frequencies as photon energies; Lumerical's γ a full width, half of it
+  here; its carrier density over the stack per the wells) - Lumerical's
+  three MQW examples so imported solve as the benchmarks above. A
+  **CHARGE project** (an `.ldev` of the Finite Element IDE) its
+  simulation region's cross-section: its rectangles and polygons (turned
+  into the plane), its materials the library's by name, else of their own
+  (their kind, permittivity, work function), its constant and diffusion
+  doping (per cm³, as Lumerical keeps them; a diffusion's plateau short of
+  its faces by the junction width, but at its source face), its contacts
+  (ohmic on the semiconductors their solids touch, a gate on the
+  insulators with its work function; a thin strip in nothing else left
+  out, the contact on the boundaries it covered) and their sweeps, its
+  mesh constraints, temperature and norm length. A **MODE project** (an
+  `.lms`, Lumerical's own binary) its FDE region's cross-section: its
+  rectangles, each material its index at the wavelength (sampled data
+  between its samples, a dielectric's, an object's own), PML sides as
+  layers inside the region, metal on the others, the wavelength, trial
+  modes, the index searched about and its sweep's wavelengths. A
+  **script** (an `.lsf`, as the exports below write them, or one that
+  builds a project with the same commands, read by a reader of
+  Lumerical's language) what it makes: an FDE region's, a CHARGE
+  region's or an mqwindex stack's model. Where structures overlap the one
+  of the lower mesh order wins, as in Lumerical. What was taken, and how,
+  is said.
   **Materials**: from a
   library of metals, board dielectrics (with their loss tangents),
   semiconductors and their insulators, **III-V compounds** (GaAs, AlAs,
@@ -2398,7 +2418,32 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   coupled-inductance matrix; a **Qucs subcircuit** of an RLCG part between
   two ports (*Copy Part* puts the part on the clipboard, to paste into a
   schematic); the S-matrix of a wave physics' ports as a Touchstone file
-  (.s2p, .s3p...).
+  (.s2p, .s3p...). And the model itself (no study need be computed) as a
+  **Lumerical script** (.lsf) that builds it in Lumerical and saves the
+  project beside it. *Lumerical MODE (FDE)*: a structure for each domain,
+  each its index at the mode step's wavelength as the model has it ((n,k)
+  materials, or Lumerical's own by name), an FDE region over the
+  physics' domains (2D Z normal; PML where the model has PML domains,
+  metal or PMC on the other sides), the wavelength, trial modes, the index
+  searched about and a frequency sweep to the step's last wavelength.
+  *Lumerical CHARGE*: Lumerical's electrical materials by name (alloys at
+  their composition), the cross-section in its x-z plane, uniform and box
+  doping as constant and diffusion objects, an implant or an expression
+  sampled into an import doping object, each contact a thin metal strip
+  outside its boundary at its voltage (a study's sweep a value table, a
+  gate's metal its work function), the norm length the model's thickness.
+  *Lumerical MQW*: the wells' stack for mqwindex (Lumerical's 4x4 k·p;
+  its MQW solver object has no script command) - each layer's own
+  parameters, or Lumerical's database by compound and composition, and
+  its strain -, the temperature, the study's fields (a solve and a file
+  for each) and carrier densities (over the stack), the spectrum's photon
+  frequencies and broadening (a full width). What is not taken (a model's
+  mobility and recombination models, which are Lumerical's materials'
+  own; wurtzite stacks for mqwindex) is said in the script. Lumerical
+  does not run here: the scripts are read back by the importer, and each
+  model so made solves as the model it was made of - an SOI wire's
+  effective index to 1e-5, a MOS capacitor's gate charge within 3 % (the
+  mesh is not carried), a strained laser's gain within 0.2 %.
 
   Selections are rules where they can be — "the boundaries of *trace*
   facing down", "between *substrate* and *air*", "the domains of
