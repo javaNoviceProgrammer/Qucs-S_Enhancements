@@ -146,7 +146,7 @@ std::optional<Shape> sectionOf(const Object& o, const Plane& p, QStringList& not
     s.name = o.name();
     s.material = o.text(QStringLiteral("material"));
     s.index = o.text(QStringLiteral("index"));
-    const QString axes[3] = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")};
+    const QLatin1String axes[3] = {QLatin1String("x"), QLatin1String("y"), QLatin1String("z")};
     const double tol = 1e-12;
     if (o.kind == QLatin1String("rect")) {
         std::pair<double, double> b[3];
@@ -430,7 +430,7 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
         p.u = 0;
         p.v = 2;
     }
-    const QString axes[3] = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")};
+    const QLatin1String axes[3] = {QLatin1String("x"), QLatin1String("y"), QLatin1String("z")};
     std::pair<double, double> b[3];
     for (int a = 0; a < 3; ++a) b[a] = span(fde, axes[a], a == p.normal ? 0 : 2e-6);
     p.at = (b[p.normal].first + b[p.normal].second) / 2;
@@ -464,7 +464,9 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
         return out;
     }
     const double size = std::max(p.u1 - p.u0, p.v1 - p.v0);
-    const auto [unit, scale] = unitFor(size);
+    const std::pair<QString, double> unitScale = unitFor(size);
+    const QString unit = unitScale.first;
+    const double scale = unitScale.second;
     QJsonArray geometry, materials, features;
     // (The region's background first: its index, else air.)
     geometry.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("rectangle")},
@@ -551,7 +553,7 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
     }
     // Its sides: PML (a frame of PML domains inside the region, 12 of its
     // mesh steps, else 10 % of it), PMC, else metal - the physics' own.
-    const QString bcKeys[4] = {QStringLiteral("x min bc"), QStringLiteral("x max bc"), QStringLiteral("y min bc"), QStringLiteral("y max bc")};
+    const QLatin1String bcKeys[4] = {QLatin1String("x min bc"), QLatin1String("x max bc"), QLatin1String("y min bc"), QLatin1String("y max bc")};
     QString bc[4];
     for (int k = 0; k < 4; ++k) {
         const QString key = p.normal == 2 ? bcKeys[k] : QString(bcKeys[k]).replace(0, 1, k < 2 ? axes[p.u] : axes[p.v]);
@@ -650,7 +652,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
             out.error = tr("its simulation region is 3D: a 2D one's cross-section is read");
             return out;
         }
-        const QString axes[3] = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")};
+        const QLatin1String axes[3] = {QLatin1String("x"), QLatin1String("y"), QLatin1String("z")};
         std::pair<double, double> b[3];
         for (int a = 0; a < 3; ++a) b[a] = span(*region, axes[a], a == p.normal ? 0 : INFINITY);
         p.at = std::isfinite(b[p.normal].first + b[p.normal].second) ? (b[p.normal].first + b[p.normal].second) / 2 : 0;
@@ -721,7 +723,9 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         v1 = std::max(v1, s.y1);
     }
     const double size = std::max(u1 - u0, v1 - v0);
-    const auto [unit, scale] = unitFor(size);
+    const std::pair<QString, double> unitScale = unitFor(size);
+    const QString unit = unitScale.first;
+    const double scale = unitScale.second;
     auto isMetal = [&](const Shape& s) { return mm.count(s.material) && mm.at(s.material).metal; };
     auto touches = [&](const Shape& a, const Shape& b) {
         const double e = 1e-9 * size;
@@ -790,7 +794,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         contacts.push_back(c);
     }
     const QStringList pre = notes;
-    auto assemble = [&]() -> LumericalImport {
+    auto assemble = [&pre, &mm, &shapes, &dropped, &scale, &isMetal, &insulator, &scene, &p, &size, &contacts, &solver, &u0, &u1, &v0, &v1, &unit]() -> LumericalImport {
     LumericalImport made;
     QStringList notes = pre;
     QJsonArray geometry, materials, features;
@@ -832,7 +836,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
     if (!dropped.isEmpty()) notes << tr("the contacts' thin metal strips left out: each contact on the boundaries it covered");
     geometry.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("form union")}});
     // The doping.
-    const QString axes[3] = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")};
+    const QLatin1String axes[3] = {QLatin1String("x"), QLatin1String("y"), QLatin1String("z")};
     auto inUnit = [&](double m) { return num(m / scale); };
     for (const Object& o : scene.objects) {
         const bool dope = o.kind == QLatin1String("dope"), diffusion = o.kind == QLatin1String("diffusion");
@@ -1323,7 +1327,7 @@ Scene readModeProject(const QByteArray& b, const QString& source)
     }
     // Its objects: a tree - a solver's (1001) its properties, a structure's
     // (1000) its box and index before them; each with its children.
-    std::function<void(int, bool)> record = [&](int depth, bool owned) {
+    std::function<void(int, bool)> record = [&r, &b, &scene, &byId, &source, &record](int depth, bool owned) {
         if (r.bad || depth > 32) {
             r.bad = true;
             return;

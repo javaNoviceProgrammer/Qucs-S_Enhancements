@@ -554,7 +554,9 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
     // The materials, by their ids.
     std::map<QString, QString> byId;
     const quint64 mats = f.find(QStringLiteral("SemiconductorMaterials/Materials"));
-    for (const auto& [id, rec] : f.links(mats)) {
+    for (const auto& link : f.links(mats)) {
+        const QString& id = link.first;
+        const quint64 rec = link.second;
         const auto attrs = f.attributes(rec);
         auto attr = [&](const char* k) {
             const auto it = attrs.find(QString::fromLatin1(k));
@@ -582,7 +584,7 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
     }
     // The geometry (its objects' material an id) and the simulation region.
     const quint64 root = f.find(QStringLiteral("SimObjectRoot/Children"));
-    std::function<void(quint64, int)> walk = [&](quint64 children, int depth) {
+    std::function<void(quint64, int)> walk = [&f, &walk, &scene, &byId](quint64 children, int depth) {
         std::vector<std::pair<int, quint64>> list;
         for (const auto& [n, g] : f.links(children)) list.emplace_back(n.toInt(), g);
         std::sort(list.begin(), list.end());
@@ -618,7 +620,7 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
         return scene;
     }
     std::vector<lumerical::Object> later;
-    std::function<void(quint64, int)> solverChildren = [&](quint64 children, int depth) {
+    std::function<void(quint64, int)> solverChildren = [&f, &later, &solverChildren, &scene](quint64 children, int depth) {
         std::vector<std::pair<int, quint64>> list;
         for (const auto& [n, g] : f.links(children)) list.emplace_back(n.toInt(), g);
         std::sort(list.begin(), list.end());

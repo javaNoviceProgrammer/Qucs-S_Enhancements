@@ -558,7 +558,8 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
     std::vector<double> sweepLambda;
     int trial = 4;
     QString neffText;
-    const auto [study, step] = studyStep(model, node, {QStringLiteral("mode")});
+    const std::pair<const Node*, const Node*> studyAndStep = studyStep(model, node, {QStringLiteral("mode")});
+    const Node* const step = studyAndStep.second;
     if (step) {
         Dim dim;
         const std::optional<std::vector<double>> v = valueList(step->text(QStringLiteral("frequency")), scope, &dim, &why);
@@ -723,7 +724,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
     if (!node.text(QStringLiteral("step")).trimmed().isEmpty()) meshStep = evaluateConstant(node.text(QStringLiteral("step")), scope, Dim::length()).value_or(NAN);
     if (!(meshStep > 0)) meshStep = std::min(lambda / (20 * nMax), std::min(region.width(), region.height()) * sc / 40);
     const double tol = 1e-6 * std::max(region.width(), region.height());
-    auto side = [&](int which) {
+    auto side = [&on, &pml, &t, &region, &tol, &pmc](int which) {
         // PML: a PML domain beyond that side; PMC: a PMC boundary on it.
         for (int d : on) {
             if (!pml[std::size_t(d)]) continue;
@@ -742,7 +743,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         }
         return QStringLiteral("Metal");
     };
-    const QString bcs[4] = {side(0), side(1), side(2), side(3)};
+    const QStringList bcs = {side(0), side(1), side(2), side(3)};
     w.comment(tr("The FDE region over %1's domains%2.").arg(phys->name(), all != region ? tr(" (its PML domains Lumerical's PML on those sides)") : QString()));
     w.line(QStringLiteral("addfde;"));
     w.setText(QStringLiteral("solver type"), QStringLiteral("2D Z normal"));
@@ -967,7 +968,7 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     w.line();
     w.comment(tr("The materials: Lumerical's electrical ones of the model's (CT)."));
     bool alloys = false;
-    auto modelMaterial = [&](const QString& name, const QString& database, int fractions, double x, double y) {
+    auto modelMaterial = [&w, &alloys](const QString& name, const QString& database, int fractions, double x, double y) {
         w.line(QStringLiteral("addmodelmaterial;"));
         w.setText(QStringLiteral("name"), name);
         if (fractions == 0) {
@@ -1303,7 +1304,8 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     w.line();
     // The contacts.
     w.comment(tr("The contacts: an electrical contact on each one's metal, at its voltage."));
-    const auto [study, step] = studyStep(model, node, {QStringLiteral("stationary"), QStringLiteral("sweep")});
+    const std::pair<const Node*, const Node*> studyAndStep = studyStep(model, node, {QStringLiteral("stationary"), QStringLiteral("sweep")});
+    const Node* const study = studyAndStep.first;
     for (const ContactSolid& cs : contacts) {
         const Node& f = *cs.feature;
         const std::vector<double> v = sweptValues(model, f.text(QStringLiteral("V0")), Dim::voltage(), study, w, f.name());
@@ -1446,8 +1448,12 @@ LumericalScript exportMqw(const Model& model, const Node& node, const QString& b
         w.note(tr("the model's holes parabolic: mqwindex mixes them (the 4x4)"));
     if (q.potential) w.note(tr("%1's potential of another physics left out: the field alone").arg(phys->name()));
     // The studies: the bands step's k, the spectrum step's.
-    const auto [bStudy, bands] = studyStep(model, node, {QStringLiteral("bands")});
-    const auto [sStudy, spectrum] = studyStep(model, node, {QStringLiteral("spectrum")});
+    const std::pair<const Node*, const Node*> bStudyAndBands = studyStep(model, node, {QStringLiteral("bands")});
+    const Node* const bStudy = bStudyAndBands.first;
+    const Node* const bands = bStudyAndBands.second;
+    const std::pair<const Node*, const Node*> sStudyAndSpectrum = studyStep(model, node, {QStringLiteral("spectrum")});
+    const Node* const sStudy = sStudyAndSpectrum.first;
+    const Node* const spectrum = sStudyAndSpectrum.second;
     QString why;
     std::vector<double> frequencies;
     double gamma = 2 * 6.6e-3, density = 0, nr = NAN;
