@@ -147,6 +147,20 @@ double transline::convertProperty (const char * prop, double value, int type,
   return value;
 }
 
+/* Converts a value of the given unit type from its source unit into its
+   destination unit. */
+double transline::convert (int type, double value, int srcunit, int dstunit) {
+  if (type == UNIT_LENGTH)
+    return value * conv_length[srcunit][dstunit];
+  else if (type == UNIT_RES)
+    return value * conv_res[srcunit][dstunit];
+  else if (type == UNIT_ANG)
+    return value * conv_ang[srcunit][dstunit];
+  else if (type == UNIT_FREQ)
+    return value * conv_freq[srcunit][dstunit];
+  return value;
+}
+
 /* Returns the unit of the given property. */
 char * transline::getUnit (const char * prop) {
   return app->getUnit (prop);
