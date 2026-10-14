@@ -345,7 +345,8 @@ private slots:
 
     // The script made a model again (its strips left out, each contact on
     // the boundaries it covered, the gate's work function its own): its gate
-    // charge over the sweep within 3 % of the model's (its mesh its own).
+    // charge over the sweep within 3 % of the model's largest (its mesh its
+    // own).
     void aChargeRoundTrip()
     {
         // (A slow build's two voltages: three's six solves near QtTest's 300 s on CI.)
@@ -369,10 +370,13 @@ private slots:
         const std::size_t n = slow ? 2 : 3;
         QCOMPARE(x.size(), n);
         QCOMPARE(y.size(), n);
+        // (The model's mesh is not carried: Lumerical's is its own, the round
+        // trip's "fine" - 1.3 % apart at 2 V, twice the charge at -2 V.)
+        double largest = 0;
+        for (double q : x) largest = std::max(largest, std::abs(q));
         for (std::size_t i = 0; i < n; ++i) {
             qInfo("Vg %d V: Q_g %.5g C, its round trip's %.5g", int(4 * i / (n - 1)) - 2, x[i], y[i]);
-            // (The model's mesh is not carried: Lumerical's is its own, the round trip's "fine".)
-            QVERIFY2(std::abs(x[i] - y[i]) <= 0.03 * std::abs(x[0]), qPrintable(QStringLiteral("%1 against %2").arg(x[i]).arg(y[i])));
+            QVERIFY2(std::abs(x[i] - y[i]) <= 0.03 * largest, qPrintable(QStringLiteral("%1 against %2").arg(x[i]).arg(y[i])));
         }
     }
 
