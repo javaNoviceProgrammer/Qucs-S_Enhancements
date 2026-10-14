@@ -262,6 +262,81 @@ private slots:
         QVERIFY(near(fde->number(QStringLiteral("dx")), 1.5e-6 / (20 * sc.materials[sc.materials[0].n[0] > 2 ? 0 : 1].n[0]), 1e-9));
     }
 
+    // A crystal both ways: the library's lithium niobate (an x-cut wafer's,
+    // y along z) in the SOI wire's place, absorbing along two of its axes
+    // (κ 1e-4 along its x, 2e-4 along its z). Exported: an (n,k) material of
+    // Lumerical's diagonal anisotropy - ne along x (its optic axis), no
+    // along y and z, κ 2e-4, 1e-4, 0 - not Lumerical's Z-cut material.
+    // Imported again: n and κ along each axis. Turned off the model's axes
+    // (30° about z): its ε's diagonal, and a note.
+    void aCrystalBothWays()
+    {
+        auto lnWire = [](const QString& orientation, const QString& oxideIndex = QString()) {
+            QJsonObject o = soi();
+            QJsonArray comps = o.value(QStringLiteral("components")).toArray();
+            QJsonObject c = comps.at(0).toObject();
+            QJsonArray mats = c.value(QStringLiteral("materials")).toArray();
+            if (!oxideIndex.isEmpty()) {
+                QJsonObject oxide = mats[0].toObject();
+                oxide.insert(QStringLiteral("n"), oxideIndex);
+                mats[0] = oxide;
+            }
+            QJsonObject ln{{QStringLiteral("label"), QStringLiteral("LN")}, {QStringLiteral("library"), QStringLiteral("Lithium niobate")},
+                           {QStringLiteral("kappa"), QStringLiteral("1e-4; 0; 2e-4")},
+                           {QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QStringLiteral("core")}}}}};
+            if (!orientation.isEmpty()) {
+                ln.insert(QStringLiteral("orientation"), QStringLiteral("euler"));
+                ln.insert(QStringLiteral("euler_phi"), orientation);
+            }
+            mats[1] = ln;
+            c.insert(QStringLiteral("materials"), mats);
+            comps[0] = c;
+            o.insert(QStringLiteral("components"), comps);
+            return modelOf(withStep(o, QStringLiteral("mode"), QJsonObject{{QStringLiteral("frequency"), QStringLiteral("1550[nm]")}}));
+        };
+        const double l2 = 1.55 * 1.55;
+        const double no = std::sqrt(1 + 2.6734 * l2 / (l2 - 0.01764) + 1.2290 * l2 / (l2 - 0.05914) + 12.614 * l2 / (l2 - 474.60));
+        const double ne = std::sqrt(1 + 2.9804 * l2 / (l2 - 0.02047) + 0.5981 * l2 / (l2 - 0.0666) + 8.9543 * l2 / (l2 - 416.08));
+        const LumericalScript s = exported(lnWire(QString()), QStringLiteral("lumericalmode"));
+        QVERIFY2(s.error.isEmpty(), qPrintable(s.error));
+        QVERIFY(!s.text.contains(QLatin1String("Z cut")));
+        const lum::Scene sc = lum::readScript(s.text, QStringLiteral("x.lsf"));
+        QVERIFY2(sc.error.isEmpty(), qPrintable(sc.error));
+        const lum::Material* crystal = nullptr;
+        for (const lum::Material& mat : sc.materials)
+            if (mat.name.startsWith(QLatin1String("LN"))) crystal = &mat;
+        QVERIFY2(crystal, qPrintable(s.text));
+        qInfo("exported: %s - n %.6f, %.6f, %.6f; κ %.3g, %.3g, %.3g", qPrintable(crystal->name), crystal->n[0], crystal->n[1], crystal->n[2], crystal->k[0],
+              crystal->k[1], crystal->k[2]);
+        QVERIFY(std::abs(crystal->n[0] - ne) < 1e-6 && std::abs(crystal->n[1] - no) < 1e-6 && std::abs(crystal->n[2] - no) < 1e-6);
+        QVERIFY(std::abs(crystal->k[0] - 2e-4) < 1e-9 && std::abs(crystal->k[1] - 1e-4) < 1e-9 && std::abs(crystal->k[2]) < 1e-12);
+        QVERIFY(!s.notes.join(QLatin1Char('\n')).contains(QLatin1String("turned off")));
+        // Imported again.
+        QTemporaryDir dir;
+        const LumericalImport back = imported(dir, s.text);
+        QVERIFY2(back.error.isEmpty(), qPrintable(back.error));
+        const QJsonObject f = named(features(back.model), QStringLiteral("label"), crystal->name);
+        QVERIFY2(!f.isEmpty(), qPrintable(QJsonDocument(back.model).toJson(QJsonDocument::Compact)));
+        QCOMPARE(f.value(QStringLiteral("anisotropy")).toString(), QStringLiteral("diagonal"));
+        QVERIFY(std::abs(numberOf(f.value(QStringLiteral("nx"))) - ne) < 1e-6 && std::abs(numberOf(f.value(QStringLiteral("ny"))) - no) < 1e-6);
+        const QStringList kappa = f.value(QStringLiteral("kappa")).toString().split(QLatin1Char(';'));
+        QCOMPARE(kappa.size(), 3);
+        QVERIFY(std::abs(kappa[0].toDouble() - 2e-4) < 1e-9 && std::abs(kappa[1].toDouble() - 1e-4) < 1e-9 && std::abs(kappa[2].toDouble()) < 1e-12);
+        // Asked for Lumerical's own materials: still its own (n,k) one; the
+        // oxide Lumerical's - but given an index along its axes, its own.
+        const QJsonObject library{{QStringLiteral("materials"), QStringLiteral("library")}};
+        const LumericalScript own = exported(lnWire(QString()), QStringLiteral("lumericalmode"), library);
+        QVERIFY2(own.error.isEmpty() && !own.text.contains(QLatin1String("LiNbO3")) && own.text.contains(QLatin1String("\"Anisotropy\", 1")),
+                 qPrintable(own.error + own.text));
+        QVERIFY(own.text.contains(QLatin1String("SiO2 (Glass) - Palik")));
+        const LumericalScript strained = exported(lnWire(QString(), QStringLiteral("1.444; 1.444; 1.46")), QStringLiteral("lumericalmode"), library);
+        QVERIFY2(strained.error.isEmpty() && !strained.text.contains(QLatin1String("SiO2 (Glass) - Palik")), qPrintable(strained.error + strained.text));
+        // (Turned 30° about z: its ε off the model's axes.)
+        const LumericalScript t = exported(lnWire(QStringLiteral("30")), QStringLiteral("lumericalmode"));
+        QVERIFY2(t.error.isEmpty(), qPrintable(t.error));
+        QVERIFY2(t.notes.join(QLatin1Char('\n')).contains(QLatin1String("turned off the model's axes")), qPrintable(t.notes.join(QLatin1Char('\n'))));
+    }
+
     // The script made a model again: the window its region, its PML sides
     // layers inside it, the core's index as the model had it - the modes
     // at 1550 nm as the model's (solved by the Release jobs: two fine mode

@@ -1009,7 +1009,10 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         const bool spatial = p.spatial;
         const Dim expected = p.dim();
         const bool length = p.unit == QLatin1String("length");
-        auto check = [doc, spatial, expected, length](const QString& text, bool* bad) -> QString {
+        // (A material's - a wave feature's - property split by ';': a
+        // tensor's items.)
+        const bool tensorial = node.type == QLatin1String("material") || node.type.endsWith(QLatin1String("/wave"));
+        auto check = [doc, spatial, expected, length, tensorial](const QString& text, bool* bad) -> QString {
             if (!doc) return {};
             if (text.trimmed().isEmpty()) return QCoreApplication::translate("MultiphysicsPanel", "not given");
             const std::shared_ptr<ParameterScope> ps = doc->parameters();
@@ -1028,6 +1031,26 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
                     *bad = !(spatial && items[i].contains(QLatin1Char('.')));
                     return part.error();
                 }
+            }
+            if (items.size() > 1 && tensorial) {
+                QStringList values;
+                for (const QString& item : items) {
+                    const Expression part = Expression::compile(item, local);
+                    values << (part.isConstant() ? formatQuantity(part.constant(), part.dim().isNone() ? expected : part.dim())
+                                                 : QCoreApplication::translate("MultiphysicsPanel", "varies"));
+                }
+                const int n = int(items.size());
+                if (n != 3 && n != 6 && n != 9) {
+                    *bad = true;
+                    return QCoreApplication::translate("MultiphysicsPanel",
+                                                       "%1 items: a tensor has 3 (along x, y, z - a material's, its crystal's axes), 6 "
+                                                       "(xx; yy; zz; yz; xz; xy) or 9 (row by row)")
+                        .arg(n);
+                }
+                return (n == 3 ? QCoreApplication::translate("MultiphysicsPanel", "along x, y, z (a material's: its crystal's axes, turned by its orientation): %1")
+                        : n == 6 ? QCoreApplication::translate("MultiphysicsPanel", "symmetric, xx; yy; zz; yz; xz; xy: %1")
+                                 : QCoreApplication::translate("MultiphysicsPanel", "row by row: %1"))
+                    .arg(values.join(QLatin1String(", ")));
             }
             if (items.size() > 1) return QCoreApplication::translate("MultiphysicsPanel", "%1 items, one for each variable").arg(items.size());
             const Expression e = Expression::compile(text, local);

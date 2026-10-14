@@ -630,7 +630,7 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
     };
     // (An index along x, y, z: a wave feature of its own, diagonal where
     // they differ - the material its x one, for the mesh.)
-    auto indexed = [&say, &features](const Shape& s, const QString& label, const std::array<double, 6>& nk, QJsonObject feature) {
+    auto indexed = [&features](const Shape& s, const QString& label, const std::array<double, 6>& nk, QJsonObject feature) {
         const bool diagonal = std::abs(nk[0] - nk[1]) > 1e-12 || std::abs(nk[0] - nk[2]) > 1e-12;
         if (!diagonal && feature.isEmpty())
             return QJsonObject{{QStringLiteral("label"), label}, {QStringLiteral("n"), num(nk[0])}, {QStringLiteral("kappa"), num(nk[3])}};
@@ -644,8 +644,9 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
             feature.insert(QStringLiteral("nz"), num(nk[2]));
         } else
             feature.insert(QStringLiteral("n"), num(nk[0]));
-        feature.insert(QStringLiteral("kappa"), num(nk[3]));
-        if (std::abs(nk[3] - nk[4]) > 1e-12 || std::abs(nk[3] - nk[5]) > 1e-12) say(tr("%1: its κ along x taken along y and z too").arg(label));
+        // (κ along x, y and z where they differ: a dichroic one's.)
+        const bool dichroic = std::abs(nk[3] - nk[4]) > 1e-12 || std::abs(nk[3] - nk[5]) > 1e-12;
+        feature.insert(QStringLiteral("kappa"), dichroic ? QStringLiteral("%1; %2; %3").arg(num(nk[3]), num(nk[4]), num(nk[5])) : num(nk[3]));
         feature.insert(QStringLiteral("selection"), only({s.label}));
         features.append(feature);
         return QJsonObject{{QStringLiteral("label"), label}, {QStringLiteral("n"), num(nk[0])}};
@@ -679,14 +680,16 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
                 const double T = fde.number(QStringLiteral("simulation temperature"), 300);
                 QJsonObject feature;
                 if (lm->thermal) {
+                    // (Along x, y and z where they differ.)
+                    const bool along = std::abs(lm->dndT[0] - lm->dndT[1]) > 1e-15 || std::abs(lm->dndT[0] - lm->dndT[2]) > 1e-15;
+                    const QString dndT = along ? QStringLiteral("%1[1/K]; %2[1/K]; %3[1/K]").arg(num(lm->dndT[0]), num(lm->dndT[1]), num(lm->dndT[2]))
+                                               : num(lm->dndT[0]) + QStringLiteral("[1/K]");
                     feature = QJsonObject{{QStringLiteral("thermooptic"), true},
-                                          {QStringLiteral("dndT"), num(lm->dndT[0]) + QStringLiteral("[1/K]")},
+                                          {QStringLiteral("dndT"), dndT},
                                           {QStringLiteral("T"), num(T) + QStringLiteral("[K]")},
                                           {QStringLiteral("Tref"), num(lm->tref) + QStringLiteral("[K]")}};
                     say(tr("%1: %2's index at %3 nm (n %4) and dn/dT %5 /K from %6 K, at the FDE's %7 K - its T a heat physics' ht.T to tune it")
                             .arg(mat, lm->base, num(lambda * 1e9), QString::number((*nk)[0], 'f', 4), num(lm->dndT[0]), num(lm->tref), num(T)));
-                    if (std::abs(lm->dndT[0] - lm->dndT[1]) > 1e-15 || std::abs(lm->dndT[0] - lm->dndT[2]) > 1e-15)
-                        say(tr("%1: its dn/dT along x taken along y and z too").arg(mat));
                     if (lm->dkdT != 0) say(tr("%1: its dκ/dT %2 /K not taken").arg(mat, num(lm->dkdT)));
                 } else
                     say(tr("%1: %2's index at %3 nm (its temperature effects off)").arg(mat, lm->base, num(lambda * 1e9)));
@@ -2753,16 +2756,20 @@ std::vector<MaterialEntry> libraryEntries(const Scene& scene, QStringList* notes
         e.category = category;
         e.user = true;
         if (const std::optional<Dispersion> d = dispersionOf(m)) {
-            if (d->n[1] != d->n[0] || d->n[2] != d->n[0]) {
-                if (notes) *notes << tr("%1: anisotropic - its index along x alone").arg(m.name);
-            }
-            e.properties.insert(QStringLiteral("n"), d->n[0]);
+            // (Anisotropic: n along its axes, "nx; ny; nz" - a crystal's, its
+            // orientation the library's material's.)
+            e.properties.insert(QStringLiteral("n"), d->n[1] != d->n[0] || d->n[2] != d->n[0]
+                                                         ? QStringLiteral("%1; %2; %3").arg(d->n[0], d->n[1], d->n[2])
+                                                         : d->n[0]);
             if (!d->kappa.isEmpty()) e.properties.insert(QStringLiteral("kappa"), d->kappa);
             if (!d->range.isEmpty()) e.properties.insert(QStringLiteral("nrange"), d->range);
             e.description = tr("From %1: Lumerical's optical %2").arg(scene.source, d->what);
         } else if (m.type == QLatin1String("dielectric") || m.type.contains(QLatin1String("(n,k)"))) {
-            e.properties.insert(QStringLiteral("n"), num(m.n[0]));
-            if (m.k[0] != 0) e.properties.insert(QStringLiteral("kappa"), num(m.k[0]));
+            auto axes = [](const double v[3]) {
+                return v[1] != v[0] || v[2] != v[0] ? QStringLiteral("%1; %2; %3").arg(num(v[0]), num(v[1]), num(v[2])) : num(v[0]);
+            };
+            e.properties.insert(QStringLiteral("n"), axes(m.n));
+            if (m.k[0] != 0 || m.k[1] != 0 || m.k[2] != 0) e.properties.insert(QStringLiteral("kappa"), axes(m.k));
             e.description = tr("From %1: Lumerical's optical (n,k) material, constant").arg(scene.source);
         } else
             continue;

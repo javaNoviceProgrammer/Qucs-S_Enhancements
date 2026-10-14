@@ -82,6 +82,8 @@ private:
 
     bool a_vacuum;
     bool a_es = false, a_ec = false, a_heat = false;
+    bool a_symmetric = true;                  // its coefficient's tensor (a Hall effect's is not)
+    bool a_polarized = false;                 // a piezoelectric solid's polarization (es)
     double a_scale = 1;                       // eps0 for electrostatics
     std::vector<Condition> a_conditions;      // by boundary
     std::vector<std::vector<Natural>> a_natural;   // by boundary
@@ -298,7 +300,18 @@ bool ScalarProblem::setup(QString* error)
         if (!n.g.isValid() && !n.q.isValid()) continue;
         for (int b : picked) a_natural[std::size_t(b)].push_back(n);
     }
-    // Each domain's coefficient: its feature's own, or its material's.
+    // Each domain's coefficient: its feature's own, or its material's - one,
+    // or a tensor in the plane (xx, xy, yx, yy: the model's axes, a
+    // material's turned by its orientation).
+    const QString prefix = a_es ? QStringLiteral("eps") : a_ec ? QStringLiteral("sigma") : QStringLiteral("k");
+    const char* parts[4] = {"xx", "xy", "yx", "yy"};
+    for (const char* part : parts) coef.named[QStringLiteral("c") + QString::fromLatin1(part)].assign(topo.domains.size(), Expression());
+    if (a_es)
+        for (const char* part : parts) {
+            coef.named[QStringLiteral("epsim") + QString::fromLatin1(part)].assign(topo.domains.size(), Expression());
+            coef.named[QStringLiteral("sigma") + QString::fromLatin1(part)].assign(topo.domains.size(), Expression());
+        }
+    a_symmetric = true;
     for (int d = 0; d < int(topo.domains.size()); ++d) {
         if (!f.domains[std::size_t(d)]) continue;
         const Node* feat = modelOf[std::size_t(d)];
@@ -309,39 +322,109 @@ bool ScalarProblem::setup(QString* error)
         const bool user = feat->text(QStringLiteral("source")) == QLatin1String("user");
         const Node* m = material[std::size_t(d)];
         const QString object = topo.objectNames.value(topo.domains[std::size_t(d)].owner);
-        auto from = [&](const QString& key, const QString& name, QString* text) -> const Node* {
-            if (user) {
-                *text = feat->text(key);
-                return feat;
-            }
-            if (!m) {
-                problem(tr("domain %1 (%2) has no material: its %3 is needed").arg(d + 1).arg(object, name));
-                return nullptr;
-            }
-            *text = materialProperty(*m, key, &a_s.parameters().scope);
-            if (text->trimmed().isEmpty()) {
-                problem(tr("domain %1 (%2): its material, %3, has no %4").arg(d + 1).arg(object, m->name(), name));
-                return nullptr;
-            }
-            return m;
-        };
-        QString text;
+        QString ct[2][2];
+        QString keys[2][2] = {{property, property}, {property, property}};
         const Node* where = feat;
-        if (a_vacuum) text = QStringLiteral("1");
-        else where = from(property, propertyName, &text);
-        if (!where) continue;
-        Expression e = compile(text, *where, property);
-        if (e.isValid() && e.isConstant() && !(e.constant() > 0) && !(a_es && e.constant() != 0))
-            problem(tr("domain %1: its %2 must be more than 0").arg(d + 1).arg(propertyName));
-        coef.c[std::size_t(d)] = e;
+        if (a_vacuum) {
+            ct[0][0] = ct[1][1] = QStringLiteral("1");
+            ct[0][1] = ct[1][0] = QStringLiteral("0");
+        } else if (user) {
+            const QString aniso = feat->text(QStringLiteral("anisotropy"));
+            if (aniso == QLatin1String("diagonal") || aniso == QLatin1String("symmetric")) {
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j) {
+                        const QString key = prefix + (i == j ? (i == 0 ? QStringLiteral("xx") : QStringLiteral("yy")) : QStringLiteral("xy"));
+                        keys[i][j] = key;
+                        ct[i][j] = i == j || aniso == QLatin1String("symmetric") ? feat->text(key) : QStringLiteral("0");
+                    }
+            } else {
+                ct[0][0] = ct[1][1] = feat->text(property);
+                ct[0][1] = ct[1][0] = QStringLiteral("0");
+            }
+        } else if (!m) {
+            problem(tr("domain %1 (%2) has no material: its %3 is needed").arg(d + 1).arg(object, propertyName));
+            continue;
+        } else {
+            where = m;
+            const std::optional<TensorText> t = materialTensor(*m, property);
+            if (!t) {
+                if (materialText(*m, property, &a_s.parameters().scope).trimmed().isEmpty())
+                    problem(tr("domain %1 (%2): its material, %3, has no %4").arg(d + 1).arg(object, m->name(), propertyName));
+                continue;
+            }
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) ct[i][j] = t->c[i][j];
+        }
+        bool bad = false;
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) {
+                if (ct[i][j].trimmed().isEmpty()) {
+                    problem(tr("domain %1 (%2): its %3 is not given").arg(d + 1).arg(object, propertyName));
+                    bad = true;
+                }
+            }
+        if (bad) continue;
+        Expression e[2][2];
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) {
+                e[i][j] = i != j && ct[i][j] == QLatin1String("0") ? Expression::compile(QStringLiteral("0"), a_s.pointScope())
+                                                                    : compile(ct[i][j], *where, keys[i][j]);
+                coef.named[QStringLiteral("c") + QString::fromLatin1(parts[2 * i + j])][std::size_t(d)] = e[i][j];
+            }
+        for (int i = 0; i < 2; ++i)
+            if (e[i][i].isValid() && e[i][i].isConstant() && !(e[i][i].constant() > 0) && !(a_es && e[i][i].constant() != 0))
+                problem(tr("domain %1: its %2 must be more than 0").arg(d + 1).arg(propertyName));
+        if (ct[0][1] != ct[1][0]) a_symmetric = false;
+        // (One value where it is isotropic, the mean of xx and yy where not:
+        // es.epsr, ht.k.)
+        const bool isotropic = ct[0][0] == ct[1][1] && ct[0][1] == QLatin1String("0") && ct[1][0] == QLatin1String("0");
+        coef.c[std::size_t(d)] = isotropic ? e[0][0]
+                                           : Expression::compile(QStringLiteral("((%1) + (%2))/2").arg(ct[0][0], ct[1][1]), a_s.pointScope());
         if (a_es && !a_vacuum) {
             // A dielectric's losses, for a line's conductance per metre: its
-            // loss tangent and its conductivity (none given: none).
+            // loss tangent and its conductivity (none given: none) - their
+            // means, and tensors in the plane: εr tan δ (along the
+            // crystal's axes where tan δ is three: εr's along them too), σ.
             for (const QString& key : {QStringLiteral("tand"), QStringLiteral("sigma")}) {
                 const QString t = user ? QString() : (m ? materialProperty(*m, key, &a_s.parameters().scope) : QString());
                 std::vector<Expression>& list = coef.named[key];
                 list.resize(topo.domains.size());
                 if (!t.trimmed().isEmpty()) list[std::size_t(d)] = compile(t, *m, key);
+            }
+            QString im[2][2], sg[2][2];
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) im[i][j] = sg[i][j] = QStringLiteral("0");
+            if (!user && m) {
+                const QString tand = materialText(*m, QStringLiteral("tand"), &a_s.parameters().scope);
+                if (isTensorText(tand)) {
+                    const std::optional<TensorText> lt = tensorText(tand, nullptr, {3});
+                    const std::optional<TensorText> et = tensorText(materialText(*m, property, &a_s.parameters().scope), nullptr, {1, 3});
+                    if (!lt || !et)
+                        problem(tr("%1's loss tangent: three along its axes (x; y; z), its permittivity one or three along them").arg(m->name()));
+                    else {
+                        TensorText loss = *lt;
+                        for (int k = 0; k < 3; ++k) loss.c[k][k] = QStringLiteral("(%1)*(%2)").arg(et->c[k][k], lt->c[k][k]);
+                        loss = rotated(loss, rotationOf(*m));
+                        for (int i = 0; i < 2; ++i)
+                            for (int j = 0; j < 2; ++j) im[i][j] = loss.c[i][j];
+                    }
+                } else if (!tand.trimmed().isEmpty()) {
+                    for (int i = 0; i < 2; ++i)
+                        for (int j = 0; j < 2; ++j)
+                            if (ct[i][j] != QLatin1String("0")) im[i][j] = QStringLiteral("(%1)*(%2)").arg(tand, ct[i][j]);
+                }
+                if (const std::optional<TensorText> st = materialText(*m, QStringLiteral("sigma"), &a_s.parameters().scope).trimmed().isEmpty()
+                                                             ? std::nullopt
+                                                             : materialTensor(*m, QStringLiteral("sigma")))
+                    for (int i = 0; i < 2; ++i)
+                        for (int j = 0; j < 2; ++j) sg[i][j] = st->c[i][j];
+            }
+            for (int k = 0; k < 4; ++k) {
+                const int i = k / 2, j = k % 2;
+                coef.named[QStringLiteral("epsim") + QString::fromLatin1(parts[k])][std::size_t(d)] =
+                    im[i][j] == QLatin1String("0") ? Expression::compile(QStringLiteral("0"), a_s.pointScope()) : compile(im[i][j], *m, QStringLiteral("tand"), true, false);
+                coef.named[QStringLiteral("sigma") + QString::fromLatin1(parts[k])][std::size_t(d)] =
+                    sg[i][j] == QLatin1String("0") ? Expression::compile(QStringLiteral("0[S/m]"), a_s.pointScope()) : compile(sg[i][j], *m, QStringLiteral("sigma"));
             }
         }
         if (a_heat) {
@@ -362,15 +445,60 @@ bool ScalarProblem::setup(QString* error)
             }
         }
     }
+    // A piezoelectric solid's polarization, e S: where a solid mechanics'
+    // Piezoelectric Effect names this electrostatics (its strain a field of
+    // that physics, solved in turn with this one).
+    a_polarized = false;
+    if (a_es && !a_vacuum) {
+        coef.named[QStringLiteral("Px")].assign(topo.domains.size(), Expression());
+        coef.named[QStringLiteral("Py")].assign(topo.domains.size(), Expression());
+        for (const Node* solid : model.physics()) {
+            if (!solid->enabled || solid->type != QLatin1String("solid")) continue;
+            const bool axi = a_s.axisymmetric();
+            // (Its strain, Voigt's engineering one, the model's axes.)
+            const QString st = solid->tag + QLatin1Char('.');
+            const QString S[6] = {st + (axi ? QStringLiteral("er") : QStringLiteral("ex")), st + (axi ? QStringLiteral("ez") : QStringLiteral("ey")),
+                                  axi ? st + QStringLiteral("ephi") : QString(), QString(), QString(),
+                                  QStringLiteral("2*") + st + (axi ? QStringLiteral("erz") : QStringLiteral("exy"))};
+            for (const Node& pz : solid->children) {
+                if (!pz.enabled || pz.type != QLatin1String("solid/piezo")) continue;
+                const QStringList tags = pz.list(QStringLiteral("es"));
+                if ((tags.isEmpty() ? QStringLiteral("es") : tags.first()) != f.tag) continue;
+                const QVector<int> on = resolveSelection(topo, model, Level::Domain, pz.selection(), &why);
+                for (int d : on) {
+                    if (d < 0 || !f.domains[std::size_t(d)]) continue;
+                    QString err;
+                    const std::optional<VoigtText> e = piezoMatrix(pz, material[std::size_t(d)], &err);
+                    if (!e) {
+                        problem(tr("domain %1: %2").arg(d + 1).arg(err));
+                        continue;
+                    }
+                    for (int i = 0; i < 2; ++i) {
+                        QStringList terms;
+                        for (int J = 0; J < 6; ++J)
+                            if (!S[J].isEmpty() && e->c[i][J] != QLatin1String("0")) terms << QStringLiteral("(%1)*%2").arg(e->c[i][J], S[J]);
+                        coef.named[i == 0 ? QStringLiteral("Px") : QStringLiteral("Py")][std::size_t(d)] =
+                            terms.isEmpty() ? Expression::compile(QStringLiteral("0[C/m^2]"), a_s.pointScope())
+                                            : compile(terms.join(QLatin1String(" + ")), pz, QStringLiteral("e"), true, false);
+                    }
+                    a_polarized = true;
+                }
+            }
+        }
+    }
     // Whether its matrix changes with the fields or time.
     a_matrixVaries = false;
-    for (const Expression& e : coef.c) a_matrixVaries = a_matrixVaries || (e.isValid() && a_s.varies(e));
+    for (const char* part : parts)
+        for (const Expression& e : coef.named[QStringLiteral("c") + QString::fromLatin1(part)]) a_matrixVaries = a_matrixVaries || (e.isValid() && a_s.varies(e));
     for (const Expression& e : coef.capacity) a_matrixVaries = a_matrixVaries || (e.isValid() && a_s.varies(e));
     for (const auto& list : a_natural)
         for (const Natural& n : list) a_matrixVaries = a_matrixVaries || (n.q.isValid() && a_s.varies(n.q));
     a_sourcesVary = false;
     for (const auto& list : coef.sources)
         for (const Expression& e : list) a_sourcesVary = a_sourcesVary || a_s.varies(e);
+    if (a_polarized)
+        for (const QString& key : {QStringLiteral("Px"), QStringLiteral("Py")})
+            for (const Expression& e : coef.named[key]) a_sourcesVary = a_sourcesVary || (e.isValid() && a_s.varies(e));
     for (const auto& list : a_natural)
         for (const Natural& n : list) a_sourcesVary = a_sourcesVary || (n.g.isValid() && a_s.varies(n.g));
     if (!a_problems.isEmpty()) {
@@ -430,16 +558,25 @@ void ScalarProblem::elementMatrices(bool jacobian, double massCoef, const std::v
     a_M.assign(mass ? std::size_t(nt) * pp : 0, 0);
     a_J.assign(jacobian ? std::size_t(nt) * pp : 0, 0);
     const bool selfReading = jacobian && a_reads.contains(a_fi);
+    const std::vector<Expression>& cxx = coef.named.at(QStringLiteral("cxx"));
+    const std::vector<Expression>& cxy = coef.named.at(QStringLiteral("cxy"));
+    const std::vector<Expression>& cyx = coef.named.at(QStringLiteral("cyx"));
+    const std::vector<Expression>& cyy = coef.named.at(QStringLiteral("cyy"));
+    static const std::vector<Expression> none;
+    const std::vector<Expression>& pxs = a_polarized ? coef.named.at(QStringLiteral("Px")) : none;
+    const std::vector<Expression>& pys = a_polarized ? coef.named.at(QStringLiteral("Py")) : none;
     parallelFor(nt, [&](int begin, int end) {
         PointEvaluator ev(a_s);
         for (int t = begin; t < end; ++t) {
             const int dom = mesh.domain[std::size_t(t)];
             if (dom < 0 || !fld.domains[std::size_t(dom)]) continue;
-            const Expression& c = coef.c[std::size_t(dom)];
+            // (Its coefficient's tensor in the plane: xx, xy, yx, yy.)
+            const Expression* c[4] = {&cxx[std::size_t(dom)], &cxy[std::size_t(dom)], &cyx[std::size_t(dom)], &cyy[std::size_t(dom)]};
             const Expression& cap = coef.capacity[std::size_t(dom)];
             const std::vector<Expression>& sources = coef.sources[std::size_t(dom)];
             const double sourceScale = coef.sourceScale[std::size_t(dom)];
-            bool constant = c.isConstant() && (!mass || cap.isConstant());
+            bool constant = (!mass || cap.isConstant());
+            for (const Expression* ce : c) constant = constant && ce->isConstant();
             for (const Expression& s : sources) constant = constant && s.isConstant();
             const int degree = sp.curved(t) || a_s.axisymmetric() ? 5 : constant ? (sp.order() == 1 ? 2 : 4) : (sp.order() == 1 ? 2 : 4);
             const TriangleRule& rule = triangleRule(degree);
@@ -454,14 +591,14 @@ void ScalarProblem::elementMatrices(bool jacobian, double massCoef, const std::v
                 shapeAt(sp.order(), q[0], q[1], s);
                 const Space::Map m = sp.map(t, q[0], q[1]);
                 const double w = q[2] * std::abs(m.det) * a_s.weight(m.x);
-                double cv = 0, fv = 0, capv = 0, dc = 0, df = 0, dcap = 0;
+                double cv[4] = {0, 0, 0, 0}, dc[4] = {0, 0, 0, 0}, fv = 0, capv = 0, df = 0, dcap = 0;
                 if (constant && !selfReading) {
-                    cv = c.constant();
+                    for (int k = 0; k < 4; ++k) cv[k] = c[k]->constant();
                     for (const Expression& src : sources) fv += src.constant();
                     if (mass) capv = cap.constant();
                 } else {
                     ev.moveTo(t, q[0], q[1]);
-                    cv = ev.eval(c);
+                    for (int k = 0; k < 4; ++k) cv[k] = ev.eval(*c[k]);
                     for (const Expression& src : sources) fv += ev.eval(src);
                     if (mass) capv = ev.eval(cap);
                     if (selfReading) {
@@ -470,34 +607,42 @@ void ScalarProblem::elementMatrices(bool jacobian, double massCoef, const std::v
                         ev.field(a_fi, u, ux, uy);
                         const double du = 1e-7 * (std::abs(u) + 1);
                         ev.perturb(a_fi, du);
-                        double c2 = ev.eval(c), f2 = 0, cap2 = mass ? ev.eval(cap) : 0;
+                        double c2[4], f2 = 0, cap2 = mass ? ev.eval(cap) : 0;
+                        for (int k = 0; k < 4; ++k) c2[k] = ev.eval(*c[k]);
                         for (const Expression& src : sources) f2 += ev.eval(src);
                         ev.perturb(a_fi, 0);
-                        dc = (c2 - cv) / du;
+                        for (int k = 0; k < 4; ++k) dc[k] = (c2[k] - cv[k]) / du;
                         df = (f2 - fv) / du;
                         dcap = mass ? (cap2 - capv) / du : 0;
                     }
                 }
-                cv *= a_scale;
-                dc *= a_scale;
+                for (int k = 0; k < 4; ++k) {
+                    cv[k] *= a_scale;
+                    dc[k] *= a_scale;
+                }
                 fv *= sourceScale;
                 df *= sourceScale;
                 for (int i = 0; i < per; ++i) Space::gradient(m, s.dxi[i], s.deta[i], gx[i], gy[i]);
+                // A polarization P's: ∫ P·∇N_i (∇·D = ρ, D = ε0 ε E + P).
+                double px = 0, py = 0;
+                if (!pxs.empty() && pxs[std::size_t(dom)].isValid()) {
+                    ev.moveTo(t, q[0], q[1]);
+                    px = ev.eval(pxs[std::size_t(dom)]);
+                    py = ev.eval(pys[std::size_t(dom)]);
+                    if (!std::isfinite(px)) px = 0;
+                    if (!std::isfinite(py)) py = 0;
+                }
+                // ∇N_i · C ∇N_j
                 for (int i = 0; i < per; ++i) {
-                    for (int j = i; j < per; ++j) {
-                        const double v = w * cv * (gx[i] * gx[j] + gy[i] * gy[j]);
-                        K[i * per + j] += v;
-                        if (j != i) K[j * per + i] += v;
-                        if (mass) {
-                            const double mv = w * capv * s.n[i] * s.n[j];
-                            M[i * per + j] += mv;
-                            if (j != i) M[j * per + i] += mv;
-                        }
+                    F[i] += w * (px * gx[i] + py * gy[i]);
+                    for (int j = 0; j < per; ++j) {
+                        K[i * per + j] += w * (gx[i] * (cv[0] * gx[j] + cv[1] * gy[j]) + gy[i] * (cv[2] * gx[j] + cv[3] * gy[j]));
+                        if (mass) M[i * per + j] += w * capv * s.n[i] * s.n[j];
                     }
                     F[i] += w * fv * s.n[i];
                 }
                 if (selfReading) {
-                    // (K u - F)' = K + dc N_j ∇u·∇N_i - df N_j N_i (+ the mass term's)
+                    // (K u - F)' = K + N_j ∇N_i·(dC ∇u) - df N_j N_i (+ the mass term's)
                     double ux = 0, uy = 0, upt = 0, hpt = 0;
                     for (int k = 0; k < per; ++k) {
                         const double v = fld.values[std::size_t(dofs[k])];
@@ -506,11 +651,12 @@ void ScalarProblem::elementMatrices(bool jacobian, double massCoef, const std::v
                         upt += s.n[k] * v;
                         if (history) hpt += s.n[k] * (*history)[std::size_t(dofs[k])];
                     }
+                    const double fluxx = dc[0] * ux + dc[1] * uy, fluxy = dc[2] * ux + dc[3] * uy;
                     // The mass term's: d/du_j of cap(u) (a u - h) N_i.
                     const double massTerm = mass ? dcap * (massCoef * upt - hpt) : 0;
                     for (int i = 0; i < per; ++i)
                         for (int j = 0; j < per; ++j) {
-                            const double v = dc * s.n[j] * (ux * gx[i] + uy * gy[i]) - df * s.n[j] * s.n[i] + massTerm * s.n[j] * s.n[i];
+                            const double v = s.n[j] * (fluxx * gx[i] + fluxy * gy[i]) - df * s.n[j] * s.n[i] + massTerm * s.n[j] * s.n[i];
                             J[i * per + j] += w * v;
                         }
                 }
@@ -889,7 +1035,7 @@ bool ScalarProblem::solve(const SolveOptions& o, QString* error)
         if (!have || a_matrixVaries || a_sourcesVary || newton) elementMatrices(newton, m, o.history);
         if (!a_factorized || a_matrixVaries || newton || a_factorJacobian || a_factorMass != m) {
             assemble(newton, m);
-            if (!a_system.factorize(!newton, o.solver, o.tolerance, a_node->name(), &a_s.log, error)) return false;
+            if (!a_system.factorize(!newton && a_symmetric, o.solver, o.tolerance, a_node->name(), &a_s.log, error)) return false;
             a_factorized = true;
             a_factorMass = m;
             a_factorJacobian = newton;
@@ -978,7 +1124,7 @@ bool ScalarProblem::sweepTerminals(const QString& solver, double tolerance, QStr
     if (voltage.empty()) return true;
     if (!a_factorized || a_factorMass != 0 || a_factorJacobian || a_matrixVaries) {
         assemble(false, 0);
-        if (!a_system.factorize(true, solver, tolerance, a_node->name(), &a_s.log, error)) return false;
+        if (!a_system.factorize(a_symmetric, solver, tolerance, a_node->name(), &a_s.log, error)) return false;
         a_factorized = true;
         a_factorMass = 0;
         a_factorJacobian = false;
@@ -1018,7 +1164,7 @@ double ScalarProblem::selfMatrix(const QString& name, QString* error)
     elementMatrices(false, 0, nullptr);
     if (!buildEquations(error)) return NaN;
     assemble(false, 0);
-    if (!a_system.factorize(true, QStringLiteral("direct"), 1e-9, a_node->name(), &a_s.log, error)) return NaN;
+    if (!a_system.factorize(a_symmetric, QStringLiteral("direct"), 1e-9, a_node->name(), &a_s.log, error)) return NaN;
     int g = -1;
     for (int i = 0; i < int(a_terminals.size()); ++i)
         if (a_terminals[std::size_t(i)].name == name && !a_terminals[std::size_t(i)].floating) g = i;

@@ -2269,6 +2269,39 @@ private slots:
     // materials and a library file into My Materials (fem_model materials);
     // a semiconductor feature's parameter not set shown as its material's (its
     // placeholder), a material's properties plotted (a dataset, a display).
+    // A crystal in the panel and to Claude: lithium niobate from the
+    // library - its orientation (an x-cut wafer's) and tensors on its node;
+    // its εr "44; 44; 28" said as along the axes, each item's value; two
+    // items, no tensor's, marked. fem_describe: its index along each axis.
+    void aCrystalInThePanel()
+    {
+        app->multiphysicsMenu()->findChild<QAction*>(QStringLiteral("mpNewModelAction"))->trigger();
+        auto* doc = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        const QString mat = panel()->addNode(doc->model().materials().tag, QStringLiteral("material:Lithium niobate"));
+        QVERIFY(!mat.isEmpty());
+        const qucs_s::fem::Node* node = doc->model().find(mat);
+        QCOMPARE(node->text(QStringLiteral("epsilonr")), QStringLiteral("44; 44; 28"));
+        QCOMPARE(node->text(QStringLiteral("orientation")), QStringLiteral("cut"));
+        QCOMPARE(node->text(QStringLiteral("cut")), QStringLiteral("x"));
+        QVERIFY(node->text(QStringLiteral("r")).contains(QLatin1String("r33=30.8[pm/V]")));
+        panel()->selectNode(mat);
+        auto* eps = panel()->settingsArea()->findChild<QLineEdit*>(QStringLiteral("mpEdit_epsilonr"));
+        QVERIFY(eps);
+        QVERIFY2(eps->toolTip().contains(QLatin1String("along x, y, z")) && eps->toolTip().contains(QLatin1String("28")), qPrintable(eps->toolTip()));
+        eps->setText(QStringLiteral("44; 28"));
+        QVERIFY2(eps->toolTip().contains(QLatin1String("a tensor has 3")) && eps->styleSheet().contains(QLatin1String("#c62828")), qPrintable(eps->toolTip()));
+        eps->setText(QStringLiteral("44; 44; 28"));
+        QVERIFY(eps->styleSheet().isEmpty());
+        const QJsonObject r = call("fem_describe", {{"what", "material"}, {"material", "Lithium niobate"}, {"vs", "lambda"}, {"from", "1.5[um]"},
+                                                    {"to", "1.6[um]"}, {"points", 3}, {"properties", QJsonArray{"n"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray props = json(r).value("properties").toArray();
+        QCOMPARE(props.size(), 3);
+        QCOMPARE(props.at(2).toObject().value("axis").toString(), QStringLiteral("x3"));
+        QVERIFY(props.at(0).toObject().value("values").toArray().at(1).toDouble() > props.at(2).toObject().value("values").toArray().at(1).toDouble());
+    }
+
     void claudeAndTheLibrary()
     {
         QJsonObject r = call("fem_describe", {{"what", "material"}, {"material", "Gallium arsenide"}, {"vs", "N"}, {"from", "1e15[1/cm^3]"}, {"to", "1e19[1/cm^3]"},
