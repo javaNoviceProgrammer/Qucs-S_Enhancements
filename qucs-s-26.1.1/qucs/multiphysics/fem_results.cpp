@@ -457,14 +457,23 @@ std::optional<double> evaluateAt(const Solution& solution, const Locator& locato
         if (error) *error = tr("(%1, %2) is in no domain").arg(p.x()).arg(p.y());
         return std::nullopt;
     }
+    const std::optional<double> v = evaluateAt(solution, locator, e, p);
+    if (!v && error) *error = tr("%1 is not defined at (%2, %3)").arg(expression).arg(p.x()).arg(p.y());
+    return v;
+}
+
+std::optional<double> evaluateAt(const Solution& solution, const Locator& locator, const Expression& e, QPointF p)
+{
+    if (!e.isValid()) return std::nullopt;
+    if (e.isConstant()) return e.constant();
+    int t = -1;
+    double xi = 0, eta = 0;
+    if (!locator.locate(p, &t, &xi, &eta)) return std::nullopt;
     refine(solution, t, p, xi, eta);
     PointEvaluator ev(solution);
     ev.moveTo(t, xi, eta);
     const double v = ev.eval(e);
-    if (!std::isfinite(v)) {
-        if (error) *error = tr("%1 is not defined at (%2, %3)").arg(expression).arg(p.x()).arg(p.y());
-        return std::nullopt;
-    }
+    if (!std::isfinite(v)) return std::nullopt;
     return v;
 }
 

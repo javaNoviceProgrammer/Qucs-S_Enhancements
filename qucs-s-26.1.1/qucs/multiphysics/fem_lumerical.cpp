@@ -17,6 +17,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QSet>
 #include <QVariantMap>
 
 #include <algorithm>
@@ -153,9 +154,15 @@ QVariantMap properties(const QByteArray& blob, bool* ok, qint64 from, qint64* us
             for (quint32 k = 0; k < count && !r.bad; ++k) list << (type == 1 ? QVariant(r.f64()) : QVariant(qint32(r.u32())));
             v = count == 1 ? list.value(0) : QVariant(list);
         } else if (type == 3 || type == 5) {
-            // (A matrix: doubles - complex ones their real parts, then their
-            // imaginary parts -, or integers.)
-            r.u32();
+            // (A matrix: its name - a value table's "Vdark_wcl"; none, a
+            // length of 0 -, then doubles - complex ones their real parts,
+            // then their imaginary parts -, or integers.)
+            const quint32 nameLength = r.u32();
+            if (nameLength > quint32(blob.size())) {
+                r.bad = true;
+                break;
+            }
+            r.raw(nameLength);
             const quint32 numel = r.u32(), dims = r.u32();
             if (numel > quint32(blob.size()) || dims > 16) {
                 r.bad = true;
@@ -503,6 +510,152 @@ LumericalImport importLumericalMqw(const QString& path)
 
 namespace {
 
+/// A model group's role, as the importer reads it ("srh tau", "mobility
+/// impurity"...), from its name and its models (two groups share the
+/// "SRH Carrier Lifetime" name: τ0's and its doping dependence's).
+QString modelRole(QString name, const QStringList& models)
+{
+    name = name.trimmed();
+    for (const char* tail : {" (n)", " (p)"})
+        if (name.endsWith(QLatin1String(tail))) name.chop(4);
+    auto has = [&](const char* m) { return models.contains(QString::fromLatin1(m)); };
+    const QString l = name.toLower();
+    if (l.startsWith(QLatin1String("impurity scattering"))) return QStringLiteral("mobility impurity");
+    if (l.startsWith(QLatin1String("lattice mobility"))) return QStringLiteral("mobility lattice");
+    if (has("Fossum") || has("Klaassen")) return l.startsWith(QLatin1String("srh")) ? QStringLiteral("srh doping") : QStringLiteral("mobility impurity");
+    if (l.startsWith(QLatin1String("srh carrier lifetime field"))) return QStringLiteral("srh field");
+    if (l.startsWith(QLatin1String("srh carrier lifetime"))) return QStringLiteral("srh tau");
+    if (has("Monotonic") || has("Overshoot") || l.startsWith(QLatin1String("high field"))) return QStringLiteral("high field");
+    if (l.startsWith(QLatin1String("mobility velocity saturation"))) return QStringLiteral("vsat");
+    if (l.startsWith(QLatin1String("effective mass"))) return QStringLiteral("mass");
+    if (l == QLatin1String("bandgap")) return QStringLiteral("bandgap");
+    if (l.startsWith(QLatin1String("bandgap narrowing"))) return QStringLiteral("bgn");
+    if (l.startsWith(QLatin1String("auger recombination"))) return QStringLiteral("auger");
+    if (l.startsWith(QLatin1String("optical carrier lifetime"))) return QStringLiteral("radiative");
+    if (l.startsWith(QLatin1String("impact ionization coefficient"))) return QStringLiteral("impact");
+    if (l.startsWith(QLatin1String("band to band"))) return QStringLiteral("btbt");
+    if (l.startsWith(QLatin1String("single-level trap"))) return QStringLiteral("trap");
+    return l;
+}
+
+/// A record's models: each group that has an active model, by its role and
+/// carrier ("srh tau n", "bandgap") - a struct of the model's name
+/// ("active"), whether it is on (it and the groups it is in: "enabled"),
+/// its driving field if it has one, its parameters ("params") - of the
+/// valley its Detail makes active alone.
+lumerical::Value recordModels(const Hdf5File& f, quint64 rec)
+{
+    lumerical::Value out;
+    out.kind = lumerical::Value::Struct;
+    int valley = -1;
+    if (const quint64 d = f.find(QStringLiteral("Detail"), rec)) {
+        const auto a = f.attributes(d);
+        if (const auto it = a.find(QStringLiteral("active")); it != a.end()) valley = int(it->second.number(-1));
+    }
+    std::function<void(quint64, const QString&, bool, int)> walk = [&f, &out, &valley, &walk](quint64 g, const QString& path, bool on, int depth) {
+        for (const auto& link : f.links(g)) {
+            const QString& name = link.first;
+            const quint64 child = link.second;
+            const auto a = f.attributes(child);
+            auto attr = [&](const char* k) {
+                const auto it = a.find(QString::fromLatin1(k));
+                return it == a.end() ? std::optional<Hdf5File::Value>() : std::optional<Hdf5File::Value>(it->second);
+            };
+            if (attr("Active Model")) {
+                const QString active = attr("Active Model")->string(), label = attr("Name") ? attr("Name")->string() : name;
+                QStringList models;
+                lumerical::Value params;
+                params.kind = lumerical::Value::Struct;
+                for (const auto& [alt, ag] : f.links(child)) {
+                    models << alt;
+                    if (alt != active) continue;
+                    for (const auto& [k, v] : f.attributes(ag))
+                        if (!v.text && !v.numbers.empty()) params.fields[k] = lumerical::Value::number(v.number());
+                }
+                QString carrier;
+                if (attr("Carrier Type")) carrier = attr("Carrier Type")->number() == 110 ? QStringLiteral("n") : attr("Carrier Type")->number() == 112 ? QStringLiteral("p") : QString();
+                if (carrier.isEmpty() && path.contains(QLatin1String("Mobility N"))) carrier = QStringLiteral("n");
+                if (carrier.isEmpty() && path.contains(QLatin1String("Mobility P"))) carrier = QStringLiteral("p");
+                if (carrier.isEmpty() && label.endsWith(QLatin1String(" (n)"))) carrier = QStringLiteral("n");
+                if (carrier.isEmpty() && label.endsWith(QLatin1String(" (p)"))) carrier = QStringLiteral("p");
+                lumerical::Value m;
+                m.kind = lumerical::Value::Struct;
+                m.fields[QStringLiteral("active")] = lumerical::Value::text(active);
+                m.fields[QStringLiteral("name")] = lumerical::Value::text(label);
+                m.fields[QStringLiteral("enabled")] = lumerical::Value::number(on && (!attr("Enabled") || attr("Enabled")->number(1) != 0) ? 1 : 0);
+                if (attr("Driving Field")) m.fields[QStringLiteral("driving")] = lumerical::Value::number(attr("Driving Field")->number());
+                m.fields[QStringLiteral("params")] = params;
+                const QString key = modelRole(label, models) + (carrier.isEmpty() ? QString() : QLatin1Char(' ') + carrier);
+                // (The first of a role: an alloy's own copies come later.)
+                if (!out.fields.count(key)) out.fields[key] = m;
+                continue;
+            }
+            // A plain group: the alloys' and k·p's not; another valley's not.
+            if (depth == 0 && (name == QLatin1String("Binary Alloy") || name == QLatin1String("KdotP") || name.contains(QLatin1String("Quaternary"))
+                               || name.startsWith(QLatin1String("Mechanical")) || name == QLatin1String("Alloy")))
+                continue;
+            if (depth == 0 && name.startsWith(QLatin1String("Valley ")) && valley >= 0 && name.mid(7).toInt() != valley) continue;
+            const auto it = a.find(QStringLiteral("enabled"));
+            const bool enabled = it == a.end() || it->second.number(1) != 0;
+            if (depth < 6) walk(child, path + QLatin1Char('/') + name, on && enabled, depth + 1);
+        }
+    };
+    walk(rec, QString(), true, 0);
+    return out;
+}
+
+/// A Lumerical dataset's "Data" blob: its name's length and name, 0xFFFFFFFF,
+/// its dimensions' count and dimensions (64-bit), 1 for real, then its
+/// numbers column-major (doubles; complex ones' real parts kept).
+std::optional<std::vector<double>> dataBlob(const QByteArray& b, std::vector<quint64>* dims)
+{
+    auto u32 = [&](qint64 at) {
+        quint32 v = 0;
+        std::memcpy(&v, b.constData() + at, 4);
+        return v;
+    };
+    if (b.size() < 8) return std::nullopt;
+    const qint64 nameLength = u32(0);
+    qint64 at = 4 + nameLength;
+    if (at + 12 > b.size()) return std::nullopt;
+    if (u32(at) != 0xFFFFFFFFu) {
+        // (An older DEVICE's: a Properties matrix's layout after the name -
+        // its count, its dimensions' count and dimensions (32-bit), 1 for
+        // real and a 1, the doubles; a complex one's real parts first.)
+        const quint32 count = u32(at), nd = u32(at + 4);
+        at += 8;
+        if (nd > 8 || at + qint64(4 * nd) + 8 > b.size()) return std::nullopt;
+        dims->clear();
+        for (quint32 k = 0; k < nd; ++k) dims->push_back(u32(at + 4 * k));
+        at += 4 * nd + 8;
+        if (at + qint64(count) * 8 > b.size()) return std::nullopt;
+        std::vector<double> out(count);
+        for (quint32 k = 0; k < count; ++k) std::memcpy(&out[k], b.constData() + at + qint64(k) * 8, 8);
+        return out;
+    }
+    at += 4;
+    quint64 nd = 0;
+    std::memcpy(&nd, b.constData() + at, 8);
+    at += 8;
+    if (nd > 8 || at + qint64(8 * nd) + 1 > b.size()) return std::nullopt;
+    quint64 count = nd ? 1 : 0;
+    dims->clear();
+    for (quint64 k = 0; k < nd; ++k) {
+        quint64 d = 0;
+        std::memcpy(&d, b.constData() + at, 8);
+        at += 8;
+        dims->push_back(d);
+        count *= d;
+    }
+    const bool real = b.at(int(at)) == 1;
+    ++at;
+    const qint64 stride = real ? 8 : 16;
+    if (at + qint64(count) * stride > b.size()) return std::nullopt;
+    std::vector<double> out(count);
+    for (quint64 k = 0; k < count; ++k) std::memcpy(&out[k], b.constData() + at + qint64(k) * stride, 8);
+    return out;
+}
+
 /// An object's properties (its "Properties" dataset: the solver's after a
 /// 16-byte class id), their "_value"s as a scene's: texts, numbers,
 /// matrices (a vertices' N x 2).
@@ -516,7 +669,9 @@ std::optional<lumerical::Object> objectAt(const Hdf5File& f, quint64 group, cons
         bool ok = false;
         qint64 used = 0;
         d = lumerical::properties(blob->raw, &ok, from, &used);
-        if (ok && from + used == blob->raw.size()) break;
+        // (Some end in four bytes of nought.)
+        const qint64 rest = blob->raw.size() - from - used;
+        if (ok && (rest == 0 || (rest == 4 && blob->raw.endsWith(QByteArray(4, '\0'))))) break;
         d.clear();
     }
     if (d.isEmpty()) return std::nullopt;
@@ -543,27 +698,28 @@ std::optional<lumerical::Object> objectAt(const Hdf5File& f, quint64 group, cons
     return o;
 }
 
-/// A CHARGE project (Lumerical's DEVICE, the Finite Element IDE: an .ldev
-/// with a SemiconductorSimObject) as a scene: its materials (their kind,
-/// work function), geometry, simulation region, CHARGE solver, doping and
-/// contacts.
-lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
+/// A DEVICE project (Lumerical's Finite Element IDE: an .ldev with a
+/// SemiconductorSimObject - CHARGE - or a ThermalSimObject - HEAT) as a
+/// scene: its materials (their kind, work function, models; their
+/// thermal records), geometry, simulation region, solver - CHARGE's
+/// doping, contacts, surface recombination and optical generation, HEAT's
+/// temperatures, convection and heat sources.
+lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source, bool heat = false)
 {
     lumerical::Scene scene;
     scene.source = source;
-    // The materials, by their ids.
+    // The materials, by their ids: the project's own material objects
+    // (each a record of what it is - electrical, thermal - under its
+    // Children's Custom groups; the geometry refers to its uuid), then the
+    // databases' (a file of DEVICE 7.1's: their records the project's).
     std::map<QString, QString> byId;
-    const quint64 mats = f.find(QStringLiteral("SemiconductorMaterials/Materials"));
-    for (const auto& link : f.links(mats)) {
-        const QString& id = link.first;
-        const quint64 rec = link.second;
+    QSet<QString> names;
+    auto recordOf = [&f, &names, &scene](const QString& name, quint64 rec, const QString& kind, const QString& alias, quint64 thermal, const QString& thermalKind) {
         const auto attrs = f.attributes(rec);
         auto attr = [&](const char* k) {
             const auto it = attrs.find(QString::fromLatin1(k));
             return it == attrs.end() ? std::optional<Value>() : std::optional<Value>(it->second);
         };
-        const QString name = attr("name") ? attr("name")->string() : id;
-        byId[id] = name;
         lumerical::Object o;
         o.kind = QStringLiteral("modelmaterial");
         auto put = [&](const QString& k, const lumerical::Value& v) {
@@ -572,15 +728,78 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
         };
         put(QStringLiteral("name"), lumerical::Value::text(name));
         put(QStringLiteral("@CT"), lumerical::Value::text(name));
-        const quint64 detail = f.find(QStringLiteral("Detail"), rec);
-        if (detail) {
+        if (!alias.isEmpty()) put(QStringLiteral("@alias"), lumerical::Value::text(alias));
+        QString k = kind;
+        if (const quint64 detail = rec ? f.find(QStringLiteral("Detail"), rec) : 0) {
             const auto d = f.attributes(detail);
             const auto it = d.find(QStringLiteral("model label"));
-            if (it != d.end()) put(QStringLiteral("@kind"), lumerical::Value::text(it->second.string()));
+            if (it != d.end() && !it->second.string().isEmpty()) k = it->second.string();
         }
-        if (attr("workfunction") && attr("workfunction")->number(0) > 0) put(QStringLiteral("work function"), lumerical::Value::number(attr("workfunction")->number()));
-        if (attr("epsilonr")) put(QStringLiteral("@epsilonr"), lumerical::Value::number(attr("epsilonr")->number()));
+        if (!k.isEmpty()) put(QStringLiteral("@kind"), lumerical::Value::text(k));
+        if (rec) {
+            if (attr("workfunction") && attr("workfunction")->number(0) > 0) put(QStringLiteral("work function"), lumerical::Value::number(attr("workfunction")->number()));
+            if (attr("epsilonr")) put(QStringLiteral("@epsilonr"), lumerical::Value::number(attr("epsilonr")->number()));
+            put(QStringLiteral("@models"), recordModels(f, rec));
+        }
+        if (thermal) {
+            put(QStringLiteral("@thermal"), recordModels(f, thermal));
+            put(QStringLiteral("@thermalkind"), lumerical::Value::text(thermalKind));
+        }
+        names.insert(name);
         scene.objects.push_back(o);
+    };
+    // (A material object's children: its electrical record, its thermal one.)
+    std::function<void(quint64, int)> materialObjects = [&f, &materialObjects, &byId, &recordOf](quint64 children, int depth) {
+        for (const auto& [n, g] : f.links(children)) {
+            const auto a = f.attributes(g);
+            const auto uuid = a.find(QStringLiteral("material uuid"));
+            if (uuid == a.end()) {
+                if (depth < 4 && f.find(QStringLiteral("Children"), g)) materialObjects(f.find(QStringLiteral("Children"), g), depth + 1);
+                continue;
+            }
+            const std::optional<lumerical::Object> mo = objectAt(f, g, QString());
+            const QString alias = mo ? mo->name() : QString();
+            quint64 electrical = 0, thermal = 0;
+            QString kind, thermalKind, recordName;
+            for (const auto& [cn, child] : f.links(f.find(QStringLiteral("Children"), g))) {
+                const std::optional<lumerical::Object> co = objectAt(f, child, QString());
+                const QString type = co ? co->text(QStringLiteral("type")) : QString();
+                const quint64 custom = f.find(QStringLiteral("Custom/1"), child);
+                const auto recs = custom ? f.links(custom) : std::vector<std::pair<QString, quint64>>();
+                if (recs.empty()) continue;
+                const quint64 rec = recs.front().second;
+                const auto ra = f.attributes(rec);
+                const auto nm = ra.find(QStringLiteral("name"));
+                const QString rn = nm != ra.end() ? nm->second.string() : co ? co->name() : QString();
+                if (type == QLatin1String("Solid") || type == QLatin1String("Fluid")) {
+                    thermal = rec;
+                    thermalKind = type;
+                    if (recordName.isEmpty()) recordName = rn;
+                } else {
+                    electrical = rec;
+                    kind = type;
+                    recordName = rn;
+                }
+            }
+            if (!electrical && !thermal) continue;
+            const QString name = recordName.isEmpty() ? alias : recordName;
+            byId[uuid->second.string()] = name;
+            recordOf(name, electrical, kind, alias, thermal, thermalKind);
+        }
+    };
+    if (const quint64 root = f.find(QStringLiteral("SimObjectRoot/Children"))) materialObjects(root, 0);
+    for (const char* db : {"SemiconductorMaterials/Materials", "ThermalMaterials/Materials"}) {
+        const bool thermalDb = QLatin1String(db).startsWith(QLatin1String("Thermal"));
+        for (const auto& [id, rec] : f.links(f.find(QString::fromLatin1(db)))) {
+            if (byId.count(id)) continue;
+            const auto attrs = f.attributes(rec);
+            const auto it = attrs.find(QStringLiteral("name"));
+            const QString name = it != attrs.end() ? it->second.string() : id;
+            byId[id] = name;
+            if (names.contains(name)) continue;
+            if (thermalDb) recordOf(name, 0, QString(), QString(), rec, QStringLiteral("Solid"));
+            else recordOf(name, rec, QString(), QString(), 0, QString());
+        }
     }
     // The geometry (its objects' material an id) and the simulation region.
     const quint64 root = f.find(QStringLiteral("SimObjectRoot/Children"));
@@ -593,6 +812,7 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
             if (!o) continue;
             const QString type = o->text(QStringLiteral("type"));
             if (type == QLatin1String("Rectangle")) o->kind = QStringLiteral("rect");
+            else if (type == QLatin1String("Pyramid")) o->kind = QStringLiteral("pyramid");
             else if (type == QLatin1String("Polygon")) o->kind = QStringLiteral("poly");
             else if (type == QLatin1String("Circle")) o->kind = QStringLiteral("circle");
             else if (type == QLatin1String("Simulation Region")) {
@@ -600,7 +820,7 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
                 // (The file's dimension from 0, a script's from 1: 2 the 2D y-normal.)
                 o->props[QStringLiteral("dimension")] = lumerical::Value::number(o->number(QStringLiteral("dimension"), 1) + 1);
             } else if (type.endsWith(QLatin1String("Group"))) {
-                if (depth < 8) walk(f.find(QStringLiteral("Children"), g), depth + 1);
+                if (depth < 8 && type != QLatin1String("Material Group")) walk(f.find(QStringLiteral("Children"), g), depth + 1);
                 continue;
             } else {
                 if (!type.contains(QLatin1String("Material"))) scene.notes << tr("%1 (%2): not read").arg(o->name(), type);
@@ -612,15 +832,40 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
         }
     };
     walk(root, 0);
-    // The solver; its doping and contacts.
-    const quint64 solver = f.find(QStringLiteral("SemiconductorSimObject"));
-    std::optional<lumerical::Object> s = objectAt(f, solver, QStringLiteral("charge"));
+    // The solver; its doping and contacts (CHARGE's), its temperatures and
+    // heat (HEAT's).
+    const quint64 solver = f.find(heat ? QStringLiteral("ThermalSimObject") : QStringLiteral("SemiconductorSimObject"));
+    std::optional<lumerical::Object> s = objectAt(f, solver, heat ? QStringLiteral("heat") : QStringLiteral("charge"));
     if (!s) {
-        scene.error = tr("%1: its CHARGE solver's properties do not read").arg(source);
+        scene.error = tr("%1: its %2 solver's properties do not read").arg(source, heat ? QStringLiteral("HEAT") : QStringLiteral("CHARGE"));
         return scene;
     }
     std::vector<lumerical::Object> later;
-    std::function<void(quint64, int)> solverChildren = [&f, &later, &solverChildren, &scene](quint64 children, int depth) {
+    int monitors = 0;
+    // An imported dataset's ("Data": its attribute G, its coordinates x, y, z).
+    auto dataOf = [&f](quint64 g, lumerical::Object& o) {
+        const quint64 data = f.find(QStringLiteral("Children/1/Children"), g);
+        if (!data) return false;
+        bool any = false;
+        for (const auto& [n, part] : f.links(data)) {
+            for (const auto& [m, item] : f.links(f.find(QStringLiteral("Children"), part))) {
+                const auto a = f.attributes(item);
+                const auto nm = a.find(QStringLiteral("Name"));
+                const quint64 d = f.find(QStringLiteral("Data"), item);
+                if (nm == a.end() || !d) continue;
+                const std::optional<Value> raw = f.dataset(d);
+                std::vector<quint64> dims;
+                const std::optional<std::vector<double>> v = raw ? dataBlob(raw->raw, &dims) : std::nullopt;
+                if (!v) continue;
+                lumerical::Value x = lumerical::Value::matrix(*v, int(v->size()), 1);
+                for (quint64 k : dims) x.dims.push_back(int(k));
+                o.props[QLatin1Char('@') + nm->second.string()] = x;
+                any = true;
+            }
+        }
+        return any;
+    };
+    std::function<void(quint64, int)> solverChildren = [&f, &later, &dataOf, &scene, &monitors, &solverChildren](quint64 children, int depth) {
         std::vector<std::pair<int, quint64>> list;
         for (const auto& [n, g] : f.links(children)) list.emplace_back(n.toInt(), g);
         std::sort(list.begin(), list.end());
@@ -644,9 +889,26 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
                 const int sweep = int(o->number(QStringLiteral("sweep type"), 0));
                 o->props[QStringLiteral("sweep type")] = lumerical::Value::text(sweep == 1 ? QStringLiteral("range") : sweep == 2 ? QStringLiteral("value") : QStringLiteral("single"));
                 later.push_back(*o);
-            } else if (type == QLatin1String("Electrical Mesh Constraint")) {
+            } else if (type == QLatin1String("Electrical Mesh Constraint") || type == QLatin1String("Thermal Mesh Constraint")) {
                 o->kind = QStringLiteral("meshconstraint");
                 if (o->number(QStringLiteral("enabled"), 1) != 0) later.push_back(*o);
+            } else if (type == QLatin1String("Surface Recombination")) {
+                o->kind = QStringLiteral("surfacerec");
+                if (o->number(QStringLiteral("enabled"), 1) != 0) later.push_back(*o);
+            } else if (type == QLatin1String("Optical Generation Rate")) {
+                o->kind = QStringLiteral("generation");
+                // (Not enabled - a project saved dark - kept, off.)
+                if (!dataOf(g, *o)) scene.notes << tr("%1: its imported generation's data does not read: left out").arg(o->name());
+                else later.push_back(*o);
+            } else if (type == QLatin1String("Temperature Boundary Condition") || type == QLatin1String("Convection")
+                       || type == QLatin1String("Uniform Power Heat Source") || type == QLatin1String("Heat Flux Boundary Condition")) {
+                o->kind = type.startsWith(QLatin1String("Temperature")) ? QStringLiteral("tbc")
+                          : type == QLatin1String("Convection")       ? QStringLiteral("convection")
+                          : type.startsWith(QLatin1String("Heat Flux")) ? QStringLiteral("heatflux")
+                                                                       : QStringLiteral("heatsource");
+                if (o->number(QStringLiteral("enabled"), 1) != 0) later.push_back(*o);
+            } else if (type.endsWith(QLatin1String("Monitor"))) {
+                ++monitors;
             } else if (type.endsWith(QLatin1String("Group"))) {
                 if (depth < 8) solverChildren(f.find(QStringLiteral("Children"), g), depth + 1);
             } else if (!type.isEmpty())
@@ -654,6 +916,7 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source)
         }
     };
     solverChildren(f.find(QStringLiteral("Children"), solver), 0);
+    if (monitors) scene.notes << tr("%1 monitors left out (the model's plots in their place)").arg(monitors);
     scene.objects.push_back(*s);
     scene.objects.insert(scene.objects.end(), later.begin(), later.end());
     if (std::any_of(later.begin(), later.end(), [](const lumerical::Object& o) { return o.kind == QLatin1String("dope") || o.kind == QLatin1String("diffusion"); }))
@@ -691,6 +954,16 @@ LumericalImport importLumerical(const QString& path)
         }
         if (h.find(QStringLiteral("SemiconductorSimObject/Properties")))
             return lumerical::buildModel(readChargeProject(h, info.fileName()));
+        if (h.find(QStringLiteral("ThermalSimObject/Properties")))
+            return lumerical::buildModel(readChargeProject(h, info.fileName(), true));
+        if (!h.find(QStringLiteral("MqwSimObject"))) {
+            QStringList solvers;
+            for (const auto& [n, g] : h.links(h.root()))
+                if (n.endsWith(QLatin1String("SimObject"))) solvers << n;
+            out.error = tr("%1: a DEVICE project of none of CHARGE, HEAT or MQW (its solvers: %2) - not read here")
+                            .arg(info.fileName(), solvers.isEmpty() ? tr("none") : solvers.join(QStringLiteral(", ")));
+            return out;
+        }
         return importLumericalMqw(path);
     }
     out.error = tr("%1 is not a Lumerical project (.ldev, .lms) or script (.lsf)").arg(info.fileName());

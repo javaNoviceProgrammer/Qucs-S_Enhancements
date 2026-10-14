@@ -278,6 +278,9 @@ struct SemiconductorState {
     double delta = 0;                 ///< the intrinsic level's offset here (V): Ei = -q (V + δ)
     double phin = NaN, phip = NaN;    ///< the quasi-Fermi potentials (V), smooth across a heterojunction
     double R = 0;
+    /// SRH's lifetimes here: by doping, of x and y, over 1 + Γ with
+    /// trap-assisted tunnelling (infinite: no SRH).
+    double taun = std::numeric_limits<double>::infinity(), taup = std::numeric_limits<double>::infinity();
     double Jn[2] = {0, 0}, Jp[2] = {0, 0};
     /// The carriers' Boltzmann densities: n/γ, p/γ with Fermi-Dirac's
     /// statistics (γ = ℱ1/2(η)/e^η), n and p with Boltzmann's.
