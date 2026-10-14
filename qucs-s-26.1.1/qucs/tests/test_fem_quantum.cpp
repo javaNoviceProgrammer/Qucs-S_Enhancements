@@ -190,6 +190,24 @@ private slots:
         QVERIFY(global(s, QStringLiteral("qw.lambda")) > 950e-9 && global(s, QStringLiteral("qw.lambda")) < 1020e-9);
     }
 
+    void theStiffness()
+    {
+        // Handbook values (Pa): GaAs's 122.1 and 56.6 GPa, InP's 101.1 and
+        // 56.1, InAs's 83.29 and 45.26; GaN's (wurtzite) 390 and 145 - and a
+        // material's display of its compound's.
+        const struct {
+            const char* compound;
+            double c11, c12;
+        } known[] = {{"GaAs", 122.1e9, 56.6e9}, {"InP", 101.1e9, 56.1e9}, {"InAs", 83.29e9, 45.26e9}};
+        for (const auto& k : known) {
+            const BandParameters p = *bandParameters(QString::fromLatin1(k.compound), 0, 0, 300);
+            QVERIFY2(std::abs(p.C11 / k.c11 - 1) < 1e-9 && std::abs(p.C12 / k.c12 - 1) < 1e-9, k.compound);
+        }
+        QCOMPARE(compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("C11")), QStringLiteral("122.1[GPa]"));
+        const WurtziteParameters gan = *wurtziteParameters(QStringLiteral("GaN"), 0, 300);
+        QVERIFY(std::abs(gan.C11 / 390e9 - 1) < 1e-9 && std::abs(gan.C12 / 145e9 - 1) < 1e-9);
+    }
+
     void theAlloys()
     {
         // What the literature has: their gaps at 300 K (eV) and lattices.
