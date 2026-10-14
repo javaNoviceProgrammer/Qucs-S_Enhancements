@@ -143,6 +143,9 @@ public:
   void    setProperty (QString, double);
   double  getProperty (QString);
   void    setUnit (QString, const char *);
+  // Its unit set and its value converted into it (setUnit keeps the
+  // number: a file gives both).
+  void    convertUnit (QString, const char *);
   char *  getUnit (QString);
   void    setResult (int, const char *);
   bool    isSelected (QString);

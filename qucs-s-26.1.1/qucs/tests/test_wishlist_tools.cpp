@@ -703,6 +703,22 @@ private slots:
         const double z0 = json(r).value("values").toObject().value("Z0").toDouble();
         QVERIFY2(std::abs(z0 / 50.0 - 1.0) < 0.005, qPrintable(text(r)));
         QVERIFY(failed(call("line_calc", {{"type", "microstrip"}, {"z0", 50}, {"din", 1e-3}})));   // a coax's
+        // What is not given, the window's defaults in SI - a 0.1 mil strip
+        // (2.54 µm) at 1 GHz -, not their numbers as metres and hertz (a strip
+        // 0.1 m thick: ErEff below nought, the losses nan).
+        r = call("line_calc", {{"type", "microstrip"}, {"z0", 50}, {"er", 4.4}, {"h", "1.6 mm"}, {"angle", 90}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject v = json(r).value("values").toObject(), res = json(r).value("results").toObject();
+        QVERIFY2(std::abs(v.value("T").toDouble() / 2.54e-6 - 1) < 1e-9 && v.value("Freq").toDouble() == 1e9, qPrintable(text(r)));
+        const double eeff = res.value("ErEff").toString().trimmed().toDouble();
+        QVERIFY2(eeff > 1 && eeff < 4.4 && !res.value("Conductor Losses").toString().contains("nan"), qPrintable(text(r)));
+        // (A quarter wave: λ0/(4 √εeff).)
+        QVERIFY2(std::abs(v.value("L").toDouble() / (299792458.0 / (4e9 * std::sqrt(eeff))) - 1) < 1e-3, qPrintable(text(r)));
+        QVERIFY2(v.value("W").toDouble() > 2.95e-3 && v.value("W").toDouble() < 3.10e-3, qPrintable(text(r)));
+        // A waveguide's all its defaults: 1 by 0.5 inch at 10 GHz.
+        r = call("line_calc", {{"type", "rectangular"}});
+        QVERIFY2(std::abs(json(r).value("values").toObject().value("a").toDouble() - 0.0254) < 1e-12
+                     && json(r).value("values").toObject().value("Freq").toDouble() == 1e10, qPrintable(text(r)));
     }
 
     // A receiver's budget: Friis for the noise figure, the gains added.
