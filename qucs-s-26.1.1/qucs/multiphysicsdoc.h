@@ -15,6 +15,7 @@
 #ifndef QUCS_MULTIPHYSICSDOC_H
 #define QUCS_MULTIPHYSICSDOC_H
 
+#include "fem_material_plot.h"
 #include "multiphysicsview.h"
 #include "qucsdoc.h"
 
@@ -152,6 +153,11 @@ public:
     /// (name_tag.dat; in the cache when it is not saved), shown in a data
     /// display (name_tag.dpl). The display's path; empty and why on failure.
     QString showGraphs(const QString& tag, QString* error = nullptr, bool open = true);
+    /// \a material's properties \a keys along \a sweep (Lumerical's
+    /// visualizer's): a dataset beside the model and a display of it; its
+    /// path, or empty and why.
+    QString plotMaterial(const qucs_s::fem::Node& material, const QStringList& keys, const qucs_s::fem::MaterialSweep& sweep,
+                         QString* error = nullptr);
     /// Runs the Export node \a tag: its file written (a Touchstone file, a
     /// SPICE or Qucs subcircuit) where it says, or beside the model as
     /// model_tag.s2p, .cir, .sch (in the cache when it is not saved). The

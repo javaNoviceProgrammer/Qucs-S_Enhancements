@@ -91,6 +91,9 @@ private:
     QWidget* parametersEditor(const qucs_s::fem::Node& node, const qucs_s::fem::PropertyDef& p);
     QWidget* pointsEditor(const qucs_s::fem::Node& node, const qucs_s::fem::PropertyDef& p);
     QWidget* materialsLibrary(const qucs_s::fem::Node& node);
+    /// A dialog for \a material's properties against T, N, x, λ or F, and
+    /// their display (Lumerical's material visualizer's).
+    void plotProperties(const qucs_s::fem::Node& material);
     void addActions(QVBoxLayout* layout, const qucs_s::fem::Node& node);
     void fillStart();
     bool visible(const qucs_s::fem::Node& node, const qucs_s::fem::PropertyDef& p) const;

@@ -71,6 +71,18 @@ with h5py.File('lumerical_charge.ldev', 'w', libver='latest') as f:
                      'mesh order': np.int32(2)}.items():
             rec.attrs[k] = v
         rec.create_group('Detail').attrs['model label'] = np.bytes_(kind)
+    # Its thermal database beside it: the oxide's record under the same id,
+    # its conductivity of T.
+    rec = f.create_group('ThermalMaterials/Materials/' + ids['SiO2 (Glass) - Sze'])
+    rec.attrs['name'] = np.bytes_('SiO2 (Glass) - Sze')
+    for role, active, params in [('Thermal Conductivity', 'Universal Temperature', {'A': 1.4, 'eta': 0.1}), ('Mass Density', 'Constant', {'A0': 2200.0}),
+                                 ('Specific Heat', 'Constant', {'A0': 730.0})]:
+        g = rec.create_group(role)
+        for k, v in {'Active Model': np.bytes_(active), 'Name': np.bytes_(role), 'Enabled': np.int32(1)}.items():
+            g.attrs[k] = v
+        a = g.create_group(active)
+        for k, v in params.items():
+            a.attrs[k] = np.float64(v)
     root = f.create_group('SimObjectRoot')
     props(root, {'name': 'model', 'type': ''})
     mats = root.create_group('Children/1')

@@ -497,8 +497,11 @@ bool QuantumProblem::setup(QString* error)
         if (a_valence && !a_1d) problem(tr("%1: the k·p valence bands are a well's (1D): a wire's holes stay parabolic").arg(a_node->name()));
     }
     if (a_1d && a_s.axisymmetric()) problem(tr("%1: about an axis it is 2D (dots: their states round the axis)").arg(a_node->name()));
+    // (What is read in: the parameters, then - its temperature known - its
+    // materials' T too.)
+    const Scope* reading = &constants;
     auto number = [&](const QString& text, const Dim& dim, const QString& what) {
-        const std::optional<double> v = evaluateConstant(text, constants, dim, &why);
+        const std::optional<double> v = evaluateConstant(text, *reading, dim, &why);
         if (!v) {
             problem(tr("%1: %2: %3").arg(a_node->name(), what, why));
             return NaN;
@@ -507,7 +510,7 @@ bool QuantumProblem::setup(QString* error)
     };
     // An energy in eV: a plain number or a voltage as eV, joules as such.
     auto energy = [&](const QString& text, const QString& what) {
-        const Expression e = Expression::compile(text, constants);
+        const Expression e = Expression::compile(text, *reading);
         if (!e.isValid() || !e.isConstant()) {
             problem(tr("%1: %2: %3").arg(a_node->name(), what, e.isValid() ? tr("it must be a constant") : e.error()));
             return NaN;
@@ -516,6 +519,10 @@ bool QuantumProblem::setup(QString* error)
     };
     a_T = number(a_node->text(QStringLiteral("T")), Dim::temperature(), tr("its temperature"));
     if (!(a_T > 0)) problem(tr("%1: its temperature must be more than 0").arg(a_node->name()));
+    // Its materials' texts read T, the wells' temperature (the library's
+    // gaps, densities of states and mobilities are expressions of it).
+    const MaterialScope materialsAtT(constants, a_T > 0 ? a_T : 300), materialsAt300(constants, 300);
+    reading = &materialsAtT;
     a_F = number(a_node->text(QStringLiteral("F")), Dim::of(1, 1, -3, -1), tr("its field"));
     if (!std::isfinite(a_F)) a_F = 0;
     {
@@ -756,13 +763,20 @@ bool QuantumProblem::setup(QString* error)
                 // the temperature as its compound's), pseudomorphic on the
                 // substrate's lattice in the c-plane (εzz = -2 C13/C33 εxx).
                 const double x = evaluateConstant(materialProperty(*mat, QStringLiteral("x")), constants, Dim()).value_or(0);
-                wz = wurtziteParameters(compound, x, a_T, &why);
+                const double y = evaluateConstant(materialProperty(*mat, QStringLiteral("y")), constants, Dim()).value_or(0);
+                wz = wurtziteParameters(compound, x, a_T, &why, y);
                 if (!wz) {
                     problem(tr("%1: %2").arg(where, why));
                     continue;
                 }
                 const QString eg = givenProperty(*mat, QStringLiteral("Eg"), &constants).trimmed();
-                if (!eg.isEmpty()) wz->Eg = energy(eg, tr("%1's Eg").arg(where)) + (wz->Eg - wurtziteParameters(compound, x, 300)->Eg);
+                if (!eg.isEmpty()) {
+                    // (A gap of T as it is at T; a number moved as the compound's.)
+                    const double v = energy(eg, tr("%1's Eg").arg(where));
+                    const std::optional<double> at300 = evaluateConstant(eg, materialsAt300, Dim());
+                    const double v300 = at300 ? (Expression::compile(eg, materialsAt300).dim() == Dim::of(2, 1, -2) ? *at300 / Q : *at300) : v;
+                    wz->Eg = std::abs(v - v300) > 1e-12 ? v : v + (wz->Eg - wurtziteParameters(compound, x, 300, nullptr, y)->Eg);
+                }
                 const QString vbo = givenProperty(*mat, QStringLiteral("VBO"), &constants).trimmed();
                 if (!vbo.isEmpty()) wz->Ev = energy(vbo, tr("%1's VBO").arg(where));
                 if (std::isfinite(substrate)) {
@@ -794,7 +808,12 @@ bool QuantumProblem::setup(QString* error)
                     const QString t = given.isEmpty() ? text(key) : given;
                     if (t.trimmed().isEmpty()) return NaN;
                     const double v = eV ? energy(t, tr("%1's %2").arg(where, key)) : number(t, dim, tr("%1's %2").arg(where, key));
-                    return key == QLatin1String("Eg") && !given.isEmpty() ? v + shift300 : v;
+                    if (key != QLatin1String("Eg") || given.isEmpty()) return v;
+                    // A gap of T (the library's) as it is at T; a number, its
+                    // 300 K one, moved as the compound's.
+                    const std::optional<double> at300 = evaluateConstant(t, materialsAt300, Dim());
+                    const double v300 = at300 ? (Expression::compile(t, materialsAt300).dim() == Dim::of(2, 1, -2) ? *at300 / Q : *at300) : v;
+                    return std::abs(v - v300) > 1e-12 ? v : v + shift300;
                 }
                 return fromCompound;
             };

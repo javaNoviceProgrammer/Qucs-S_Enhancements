@@ -116,14 +116,15 @@ struct WurtziteParameters {
     double epsr = 0, n = 0;
 };
 /// The nitrides: GaN, AlN, InN and AlGaN (x of Al), InGaN (x of In), InAlN
-/// (x of In): Vurgaftman and Meyer's (J. Appl. Phys. 94, 3675, 2003; their
+/// (x of In), AlGaInN (Alx Gay In1-x-y N): Vurgaftman and Meyer's (J. Appl. Phys. 94, 3675, 2003; their
 /// gaps' bowings 0.8, 1.4 and 2.5 eV), the spontaneous polarization's
 /// Bernardini and Fiorentini's (bowed), the piezoelectric constants
 /// Bernardini, Fiorentini and Vanderbilt's. Wurtzite: a compound of them.
 bool isWurtzite(const QString& compound);
-/// A nitride's parameters at composition \a x and temperature \a T (K);
-/// none, and why, when it is not one or x is out of range.
-std::optional<WurtziteParameters> wurtziteParameters(const QString& compound, double x, double T, QString* error = nullptr);
+/// A nitride's parameters at composition \a x (and \a y: AlGaInN's Alx Gay
+/// In1-x-y N) and temperature \a T (K); none, and why, when it is not one or
+/// x is out of range.
+std::optional<WurtziteParameters> wurtziteParameters(const QString& compound, double x, double T, QString* error = nullptr, double y = 0);
 /// A well's electron valley set (1D): its degeneracy (valleys alike, each
 /// with spin's two), its mass along the growth axis (the quantization's) and
 /// its density-of-states mass in the plane (m0), its edge above the band's
@@ -141,10 +142,40 @@ struct ValleySet {
 std::optional<std::vector<ValleySet>> valleySets(const QString& text, QString* error = nullptr);
 /// An alloy material's property \a key (Eg, chi, epsilonr, n, k, rho, Cp,
 /// Nc, Nv, mun, mup, taun, taup, me, gamma1..3, Ep, VBO, Delta, a0, ac, av,
-/// b, C11, C12) at 300 K as an expression with its unit: from its compound
-/// and composition (\a x, \a y). Empty for a key it has none of. Its
-/// transport and thermal values are rough.
-QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set = BandSet::Vurgaftman);
+/// b, C11, C12, and its models' parameters - munmin, zetan, caun... as
+/// semiconductorModelKeys() names them) at temperature \a T (K) as an
+/// expression with its unit: from its compound and composition (\a x, \a
+/// y) - its binaries' models' parameters weighed by their shares
+/// (mobilities harmonically), as Lumerical's alloys are. Empty for a key it
+/// has none of. Its transport and thermal values are rough. SiGe (x of
+/// Ge) is one: its X and L valleys' gaps, the lower.
+QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set = BandSet::Vurgaftman,
+                         double T = 300);
+
+/// The material properties a semiconductor's models read from its
+/// material - the Semiconductor Material Model's (Caughey and Thomas's and
+/// Masetti's mobilities, ζ, saturation, band gap narrowing), SRH's (Fossum's
+/// doping dependence, the tunnelling masses, the trap level), Auger's,
+/// radiative, impact ionization's, band-to-band tunnelling's -, each
+/// the key a material keeps it under.
+QStringList semiconductorModelKeys();
+/// The key a material keeps feature \a type's parameter \a key under (its
+/// model set): the same name, or Auger's Cn and Cp as caun and caup, the
+/// radiative B as copt, impact ionization's an, bn... as iian, iibn...,
+/// band-to-band tunnelling's A, B, γ as bbtA, bbtB, bbtgamma. Empty when
+/// it is the feature's alone (Lombardi's surface scattering, the dopants'
+/// levels).
+QString materialKeyOf(const QString& type, const QString& key);
+
+/// A scope over \a parent in which a material's texts read "T", the
+/// temperature they are taken at (K): a semiconductor's band gap,
+/// densities of states, mobilities and lifetimes, a conductivity of heat
+/// (the library's are expressions of T, anchored at 300 K).
+class MaterialScope : public Scope
+{
+public:
+    MaterialScope(const Scope& parent, double T);
+};
 
 /// A row of a layout's layer stack: an object's name, the layer under the
 /// cut it is made of ("1/0"; empty: all along the cut), its bottom and

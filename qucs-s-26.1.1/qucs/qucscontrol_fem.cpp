@@ -15,6 +15,7 @@
 #include "qucscontrol_p.h"
 
 #include "fem_lumerical.h"
+#include "fem_material_plot.h"
 #include "fem_materials.h"
 #include "misc.h"
 #include "multiphysicsdoc.h"
@@ -184,18 +185,23 @@ QString formatText()
         "A stationary or frequency step's \"adaptive\": true refines the mesh where the error is largest (\"adaptsteps\" times; in frequency, the last one's).\n"
         "Semiconductors: \"semiconductor\" (tag semi, \"T\") - drift and diffusion of electrons and holes on linear elements; a "
         "domain whose material has a band gap Eg is a semiconductor (Silicon, Germanium, Gallium arsenide, Indium phosphide, "
-        "Gallium nitride, Germanium on silicon), else an insulator (the potential alone); heterojunctions between them by "
+        "Gallium nitride, Germanium on silicon, the III-V and II-VI compounds, Silicon germanium), else an insulator (the "
+        "potential alone; Hafnium, Zirconium, Titanium and Aluminium oxide among them); its material's texts read T, the "
+        "physics' temperature (the library's gap Varshni's, Nc, Nv, mobilities of T); heterojunctions between them by "
         "Anderson's rule (their chi, Eg, Nc, Nv: Ge on Si's bands step 0.05 and 0.52 eV; a node on one the narrower gap's); its \"TL\" a lattice temperature for "
         "the mobilities (a heat physics' ht.T, (TL/300 K)^-zeta; semi.H the carriers' heat, Joule and recombination's, for "
-        "its source: solved in turn). Features: model (\"source\": material or user - epsilonr, Eg, "
-        "chi, Nc, Nv, mun, mup; \"mobility\": \"doping\" for Caughey-Thomas; \"saturation\" with vsatn, vsatp, \"driving\": "
+        "its source: solved in turn). Each feature's parameter as set on it, else its material's (the library's semiconductors "
+        "carry their own: Caughey-Thomas, saturation, Fossum, Auger caun/caup, radiative copt, impact iian..., band-to-band "
+        "bbtA...; fem_describe what=material shows them), else silicon's (said in the log). Features: model (\"source\": "
+        "material or user - epsilonr, Eg, chi, Nc, Nv, mun, mup; \"mobility\": \"doping\" for Caughey-Thomas; \"saturation\" with vsatn, vsatp, \"driving\": "
         "current (each carrier's quasi-Fermi gradient) or field; \"surface\": true for Lombardi's scattering at the nearest "
         "insulator's interface (Bn, Cn, lambdan, deltan, Bp..., lcrit); zetan, zetap; \"fermi\": true for Fermi-Dirac "
         "statistics; \"bgn\": true for Slotboom's narrowing (Ebgn, Nbgn, Cbgn); \"incomplete\": true for dopants ionized "
         "in part (Ed, gd, Ea, ga): semi.Ndi, semi.Nai), doping (\"dopant\": donor or "
         "acceptor; \"profile\": uniform with N0, box with N0, position, size, dj, Nb, implant with dose, Rp, dRp, dRl, "
         "surface (y), x1, x2 (a mask's window) and an anneal's D0, Ea, Ta, ta, or expression with N - another physics' u, "
-        "a diffusion solved in time), srh (taun, taup, Et), auger, radiative, impact (\"model\": silicon or user an, bn, "
+        "a diffusion solved in time), srh (taun, taup, Et), auger, radiative, stimulated (c, Jth, t: a laser's, semi.Istim), "
+        "impact (\"model\": material, silicon or user an, bn, "
         "ap, bp...; \"currents\": false for the ionization integrals alone - semi.In, semi.Ip, semi.Mn, semi.Mp, semi.Emax: "
         "breakdown where they reach 1), btbt (\"kind\": hurkx or generation; A, B, gamma), quantum (Schrödinger-Poisson: "
         "\"electrons\", \"holes\", nq/pq from a quantum wells physics' qw.n, qw.p - with a states step's \"consistent\": "
@@ -287,10 +293,13 @@ QString formatText()
         "and \"eigenvalue\" {\"count\": 6, \"shift\": 0}: -λ da u + ∇·Γ = F, each eigenvalue a solution with c.lambda; "
         "c.iterations Newton's.\n"
         "Expressions: numbers (1.5e-3, Qucs's 10u 2.2k, 3mm, 1GHz), units in brackets (3[mm], 20[degC], W/(m*K)), + - * / ^, "
-        "functions (sin, exp, sqrt, min, max, if(c,a,b)...), constants (pi, eps0, mu0, c0, kB, q0), the parameters. In the "
+        "functions (sin, exp, sqrt, min, max, if(c,a,b), interp(x, x0, y0, x1, y1, ...) through points, neps(e1, e2) and "
+        "keps(e1, e2) the index and extinction of a permittivity...), constants (pi, eps0, mu0, c0, kB, q0), the parameters. In the "
         "geometry and the mesh a plain number is in the component's unit and parameters are converted to it (L = 2[mm] "
         "is 2 in mm). A property's plain number is in its SI unit. Materials and sources may use x, y and fields (T, V, "
-        "es.normE, ec.Qrh...).\n"
+        "es.normE, ec.Qrh...); a material's n and kappa lambda0 (the library's dispersive: silicon, its oxide and nitride, "
+        "GaAs, InP, the metals' n and kappa - nrange where they hold, a warning outside), a gate's or Schottky contact's metal "
+        "beside it its work function phi.\n"
         "Selections (\"selection\"): {\"all\": true}, {\"numbers\": [1, 3]}, {\"objects\": [\"air\"]} (domains in them), "
         "{\"only\": [\"substrate\"]} (domains whose smallest object it is), {\"of\": [\"trace\"], \"side\": \"bottom\"} "
         "(boundaries on an object's edges, those facing down), {\"between\": [[\"a\"], [\"b\"]]}, {\"exterior\": true}, "
@@ -366,6 +375,81 @@ MultiphysicsDoc* QucsControl::femDocument(const QJsonObject& args, QString* erro
 QJsonObject QucsControl::femDescribe(const QJsonObject& args)
 {
     const QString what = args.value(QLatin1String("what")).toString(QStringLiteral("model"));
+    if (what == QLatin1String("material")) {
+        // A material's properties along one variable: a library entry (the
+        // user's too), else a material of the model open (its tag or name).
+        const QString name = args.value(QLatin1String("material")).toString().trimmed();
+        if (name.isEmpty()) return errorResult(tr("'material': a library entry (fem_describe what=format lists them) or a material of the model"));
+        std::optional<FNode> node;
+        std::shared_ptr<ParameterScope> parameters;
+        if (const std::optional<MaterialEntry> e = findMaterial(name, MultiphysicsPanel::userMaterials())) {
+            node = materialNode(Model::blank(), *e);
+            parameters = evaluateParameters(Model::blank());
+        } else {
+            QString error;
+            MultiphysicsDoc* doc = femDocument(args, &error);
+            if (doc == nullptr) return errorResult(tr("The library has no material %1, and %2").arg(name, error));
+            for (const FNode& m : doc->model().materials().children)
+                if (m.tag == name || m.name().compare(name, Qt::CaseInsensitive) == 0) node = m;
+            if (!node) return errorResult(tr("Neither the library nor the model has a material %1.").arg(name));
+            parameters = evaluateParameters(doc->model());
+        }
+        MaterialSweep sweep;
+        sweep.variable = args.value(QLatin1String("vs")).toString(QStringLiteral("T"));
+        // (Each variable's range when not given, and its unit.)
+        struct Default {
+            const char* name;
+            double from, to;
+            bool log;
+            Dim dim;
+        };
+        const Default defaults[] = {{"T", 200, 500, false, Dim::temperature()}, {"N", 1e20, 1e26, true, Dim::of(-3)},
+                                    {"x", 0, 1, false, Dim()},                    {"lambda", 0.4e-6, 2e-6, false, Dim::length()},
+                                    {"F", 1e6, 1e8, true, Dim::of(1, 1, -3, -1)}};
+        const Default* d = nullptr;
+        for (const Default& c : defaults)
+            if (sweep.variable == QLatin1String(c.name)) d = &c;
+        if (!d) return errorResult(tr("'vs' is T, N, x, lambda or F"));
+        auto quantity = [&](const char* key, double otherwise, const Dim& dim, QString* why) {
+            const QJsonValue v = args.value(QLatin1String(key));
+            if (v.isUndefined() || v.isNull()) return otherwise;
+            const QString t = v.isDouble() ? formatNumber(v.toDouble(), 15) : v.toString();
+            const std::optional<double> x = evaluateConstant(t, parameters->scope, dim, why);
+            return x ? *x : std::numeric_limits<double>::quiet_NaN();
+        };
+        QString why;
+        sweep.from = quantity("from", d->from, d->dim, &why);
+        sweep.to = quantity("to", d->to, d->dim, &why);
+        sweep.log = args.value(QLatin1String("log")).toBool(d->log);
+        sweep.points = args.value(QLatin1String("points")).toInt(51);
+        sweep.T = quantity("T", 300, Dim::temperature(), &why);
+        sweep.N = quantity("N", 0, Dim::of(-3), &why);
+        sweep.lambda = quantity("lambda", 1.55e-6, Dim::length(), &why);
+        sweep.F = quantity("F", 0, Dim::of(1, 1, -3, -1), &why);
+        sweep.x = quantity("x", std::numeric_limits<double>::quiet_NaN(), Dim(), &why);
+        sweep.y = quantity("y", std::numeric_limits<double>::quiet_NaN(), Dim(), &why);
+        if (!why.isEmpty()) return errorResult(why);
+        QStringList keys;
+        for (const QJsonValue& k : args.value(QLatin1String("properties")).toArray()) keys << k.toString();
+        const MaterialCurves curves = materialCurves(*node, keys, sweep, parameters->scope);
+        if (!curves.error.isEmpty()) return errorResult(curves.error);
+        auto list = [](const std::vector<double>& v) {
+            QJsonArray a;
+            for (double x : v) a.append(std::isfinite(x) ? QJsonValue(formatNumber(x, 6).toDouble()) : QJsonValue());
+            return a;
+        };
+        QJsonArray properties;
+        for (const MaterialCurve& c : curves.curves)
+            properties.append(QJsonObject{{QStringLiteral("key"), c.key}, {QStringLiteral("label"), c.label}, {QStringLiteral("unit"), c.unit},
+                                          {QStringLiteral("values"), list(c.values)}});
+        QJsonObject out{{QStringLiteral("material"), node->name()},
+                        {QStringLiteral("variable"), curves.variable},
+                        {QStringLiteral("unit"), curves.unit},
+                        {QStringLiteral("at"), list(curves.at)},
+                        {QStringLiteral("properties"), properties}};
+        if (!curves.notes.isEmpty()) out.insert(QStringLiteral("notes"), QJsonArray::fromStringList(curves.notes));
+        return jsonResult(out);
+    }
     if (what == QLatin1String("format")) {
         // The kinds of node, each with its properties.
         QJsonArray kinds;
@@ -399,9 +483,16 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             if (!k->help.isEmpty()) ko.insert(QStringLiteral("help"), k->help);
             kinds.append(ko);
         }
+        // (A long text - an index of the wavelength, a metal's permittivity -
+        // said by its length: fem_describe what=material gives its values.)
         QJsonArray materials;
-        for (const MaterialEntry& e : builtinMaterials())
-            materials.append(QJsonObject{{QStringLiteral("name"), e.name}, {QStringLiteral("category"), e.category}, {QStringLiteral("properties"), e.properties}});
+        for (const MaterialEntry& e : builtinMaterials()) {
+            QJsonObject properties = e.properties;
+            for (auto it = properties.begin(); it != properties.end(); ++it)
+                if (it.value().isString() && it.value().toString().size() > 160)
+                    it.value() = tr("an expression of %1 characters (fem_describe what=material plots it)").arg(it.value().toString().size());
+            materials.append(QJsonObject{{QStringLiteral("name"), e.name}, {QStringLiteral("category"), e.category}, {QStringLiteral("properties"), properties}});
+        }
         return jsonResult(QJsonObject{{QStringLiteral("format"), formatText()}, {QStringLiteral("kinds"), kinds},
                                       {QStringLiteral("materials"), materials}});
     }
@@ -500,6 +591,30 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         doc->buildGeometry(&why);
         return jsonResult(QJsonObject{{QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
                                       {QStringLiteral("geometry"), why.isEmpty() ? tr("built") : why}});
+    }
+    if (action == QLatin1String("materials")) {
+        // Into My Materials (the user's library): a library file's, or a
+        // Lumerical project's materials - an .ldev's database, an .lms's or
+        // .fsp's optical ones.
+        if (given.isEmpty()) return errorResult(tr("'path': a library (.json) or a Lumerical project (.ldev, .lms, .fsp)."));
+        const QString source = absolute(given);
+        QString why;
+        QStringList notes;
+        const QList<MaterialEntry> taken = source.endsWith(QLatin1String(".json"), Qt::CaseInsensitive) ? readMaterials(source, &why)
+                                                                                                        : qucs_s::fem::lumericalMaterials(source, &why, &notes);
+        if (taken.isEmpty()) return errorResult(why.isEmpty() ? tr("%1 has no materials").arg(given) : why);
+        QList<MaterialEntry> mine = MultiphysicsPanel::userMaterials();
+        QJsonArray names;
+        for (const MaterialEntry& e : taken) {
+            mine.erase(std::remove_if(mine.begin(), mine.end(), [&](const MaterialEntry& x) { return x.name == e.name; }), mine.end());
+            mine << e;
+            names.append(e.name);
+        }
+        QDir().mkpath(QFileInfo(MultiphysicsPanel::userMaterialsFile()).absolutePath());
+        if (!writeMaterials(MultiphysicsPanel::userMaterialsFile(), mine, &why)) return errorResult(why);
+        QJsonObject out{{QStringLiteral("materials"), names}, {QStringLiteral("library"), MultiphysicsPanel::userMaterialsFile()}};
+        if (!notes.isEmpty()) out.insert(QStringLiteral("read"), QJsonArray::fromStringList(notes));
+        return jsonResult(out);
     }
     if (action == QLatin1String("import")) {
         // A Lumerical project (.ldev, .lms) or script (.lsf) made a model:

@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "fem_lumerical.h"
+#include "fem_materials.h"
 #include "fem_lumerical_scene.h"
 #include "fem_hdf5.h"
 
@@ -791,10 +792,21 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source, boo
     for (const char* db : {"SemiconductorMaterials/Materials", "ThermalMaterials/Materials"}) {
         const bool thermalDb = QLatin1String(db).startsWith(QLatin1String("Thermal"));
         for (const auto& [id, rec] : f.links(f.find(QString::fromLatin1(db)))) {
-            if (byId.count(id)) continue;
             const auto attrs = f.attributes(rec);
             const auto it = attrs.find(QStringLiteral("name"));
             const QString name = it != attrs.end() ? it->second.string() : id;
+            // (A material in both databases - the same id -: its thermal
+            // record on the object its electrical one made.)
+            if (thermalDb && (byId.count(id) || names.contains(name))) {
+                const QString known = byId.count(id) ? byId[id] : name;
+                for (lumerical::Object& o : scene.objects)
+                    if (o.kind == QLatin1String("modelmaterial") && o.name() == known && !o.prop(QStringLiteral("@thermal"))) {
+                        o.props[QStringLiteral("@thermal")] = recordModels(f, rec);
+                        o.props[QStringLiteral("@thermalkind")] = lumerical::Value::text(QStringLiteral("Solid"));
+                    }
+                continue;
+            }
+            if (byId.count(id)) continue;
             byId[id] = name;
             if (names.contains(name)) continue;
             if (thermalDb) recordOf(name, 0, QString(), QString(), rec, QStringLiteral("Solid"));
@@ -925,6 +937,32 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source, boo
 }
 
 } // namespace
+
+QList<MaterialEntry> lumericalMaterials(const QString& path, QString* error, QStringList* notes)
+{
+    auto fail = [&](const QString& why) {
+        if (error) *error = why;
+        return QList<MaterialEntry>();
+    };
+    const QFileInfo info(path);
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return fail(tr("%1 cannot be read").arg(info.fileName()));
+    const QByteArray bytes = f.readAll();
+    lumerical::Scene scene;
+    if (info.suffix().compare(QLatin1String("ldev"), Qt::CaseInsensitive) == 0 || bytes.startsWith("\x89HDF")) {
+        Hdf5File h;
+        QString why;
+        if (!h.openData(bytes, &why)) return fail(tr("%1: %2").arg(info.fileName(), why));
+        scene = readChargeProject(h, info.fileName(), !h.find(QStringLiteral("SemiconductorSimObject/Properties")) && h.find(QStringLiteral("ThermalSimObject/Properties")));
+    } else if (bytes.contains(QByteArrayLiteral("Lumerical material data file"))) {
+        scene = lumerical::readModeProject(bytes, info.fileName());
+    } else {
+        return fail(tr("%1 is not a Lumerical project with materials (.ldev, .lms, .fsp)").arg(info.fileName()));
+    }
+    const std::vector<MaterialEntry> entries = lumerical::libraryEntries(scene, notes);
+    if (entries.empty()) return fail(tr("%1 has no materials read here").arg(info.fileName()));
+    return QList<MaterialEntry>(entries.begin(), entries.end());
+}
 
 LumericalImport importLumerical(const QString& path)
 {
