@@ -110,6 +110,10 @@ public:
     /// Every solution let go.
     void clearSolutions();
     bool isBusy() const { return a_job != nullptr; }
+    /// While a job runs: whether it makes the mesh (Build Mesh, or a study
+    /// whose mesh is old), and the study it computes (empty: none).
+    bool meshBeingMade() const { return a_job && a_jobMeshes; }
+    QString computing() const { return a_job ? a_jobStudy : QString(); }
     /// Waits for the job running to end, \a ms at most; whether it ended.
     bool waitForJob(int ms = 120000);
     void cancelJob();
@@ -222,6 +226,8 @@ private:
     std::map<QString, bool> a_stale;
     std::unique_ptr<qucs_s::fem::Locator> a_locator;
     std::shared_ptr<Job> a_job;
+    bool a_jobMeshes = false;
+    QString a_jobStudy;
     QString a_lastError;
     QStringList a_lastWarnings;
     QStringList a_messages;

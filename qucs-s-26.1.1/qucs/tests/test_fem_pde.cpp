@@ -343,6 +343,171 @@ private slots:
         }
     }
 
+    // What a PDE's expressions are in its unknowns: affine (one solve, its
+    // matrix kept), not (Newton's method); whether what multiplies them
+    // varies in time (its matrix made again each step).
+    void linearity()
+    {
+        Scope scope;
+        const int u = scope.addVariable(QStringLiteral("u")), ux = scope.addVariable(QStringLiteral("ux")),
+                  ut = scope.addVariable(QStringLiteral("ut")), t = scope.addVariable(QStringLiteral("t")),
+                  x = scope.addVariable(QStringLiteral("x")), v = scope.addVariable(QStringLiteral("other")),
+                  g = scope.addVariable(QStringLiteral("normgrad"));
+        scope.setConstant(QStringLiteral("k"), 2);
+        auto kind = [&](int slot) {
+            using K = Expression::SlotKind;
+            if (slot == u || slot == ux || slot == ut) return K::Unknown;
+            if (slot == t || slot == v) return K::Varying;
+            if (slot == g) return K::Opaque;
+            return K::Static;
+        };
+        (void)x;
+        struct Case {
+            const char* text;
+            int degree;
+            bool coefficientVaries, varies;
+        };
+        const Case cases[] = {
+            {"-(1)*(ux) - (k)*(u) + (0)", 1, false, false},
+            {"-ut/343", 1, false, false},
+            {"exp(-x^2)*u + sin(t)", 1, false, true},
+            {"(1 + t)*ux", 1, true, true},
+            {"u*other", 1, true, true},
+            {"if(t > 1, u, 0)", 1, true, true},
+            {"if(x > 1, u, 2*u) - u/k", 1, false, false},
+            {"u^1 + ux^0", 1, false, false},
+            {"exp(-t)*cos(x)", 0, false, true},
+            {"x^2 + k", 0, false, false},
+            {"u^2", -1, false, false},
+            {"u*ux", -1, false, false},
+            {"1/u", -1, false, false},
+            {"sin(u)", -1, false, false},
+            {"abs(ux)", -1, false, false},
+            {"if(u > 0, u, 0)", -1, false, false},
+            {"normgrad*0.5", -1, false, false},
+            {"k^u", -1, false, false},
+        };
+        for (const Case& c : cases) {
+            const Expression e = Expression::compile(QString::fromLatin1(c.text), scope);
+            QVERIFY2(e.isValid(), c.text);
+            const Expression::Linearity l = e.linearity(kind);
+            QVERIFY2(l.degree == c.degree, qPrintable(QStringLiteral("%1: degree %2").arg(QLatin1String(c.text)).arg(l.degree)));
+            if (c.degree >= 0) {
+                QVERIFY2(l.varyingCoefficient == c.coefficientVaries, c.text);
+                QVERIFY2(l.varying == c.varies, c.text);
+            }
+        }
+    }
+
+    // A linear PDE in time solved at once each step, its matrix factored
+    // once while its fixed step stays (backward Euler's first step, then
+    // BDF2's): heat to e^(-π² t) sin(πx); a source of t (the right side
+    // alone) keeps it; a diffusivity of t makes it again each step, e^(-π²(t
+    // + t²/2)) sin(πx) - and a nonlinear one stays Newton's.
+    void aLinearPdeInTime()
+    {
+        auto heat = [&](const QString& c, const QString& f, const QString& times, const QString& da = QStringLiteral("1")) {
+            return run(modelOf(model(QStringLiteral(R"x("1", "0.1")x"), QStringLiteral(R"x(, "space": "1d", "elements": 200)x"),
+                                     QStringLiteral(R"x({"type": "coefficient", "c": "%1", "f": "%2", "da": "%3", "selection": {"all": true}},
+                                                       {"type": "init", "u0": "sin(pi*x/1[m])", "selection": {"all": true}}, )x")
+                                             .arg(c, f, da) + Ends,
+                                     QStringLiteral(R"x({"type": "transient", "times": "%1", "stepping": "fixed", "dt": "1e-3"})x").arg(times),
+                                     QStringLiteral("0.05"))));
+        };
+        const Run plain = heat(QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("range(0, 0.05, 0.2)"));
+        QVERIFY2(plain.error.isEmpty(), qPrintable(plain.error));
+        Solution& h = *plain.solution;
+        h.select(h.snapshotCount() - 1);
+        const double u = at(h, QStringLiteral("u"), {0.5, 0.05}), exact = std::exp(-M_PI * M_PI * 0.2);
+        qInfo("heat, fixed steps: u(½, 0.2) %.7f (%.7f); %g iterations, %g factorizations; %s", u, exact, global(h, QStringLiteral("c.iterations")),
+              global(h, QStringLiteral("c.factorizations")), qPrintable(h.log.join(QLatin1String("; "))));
+        QVERIFY(std::abs(u / exact - 1) < 2e-3);
+        QCOMPARE(global(h, QStringLiteral("c.iterations")), 1.0);
+        QCOMPARE(global(h, QStringLiteral("c.factorizations")), 2.0);
+        QVERIFY(h.log.join(QLatin1Char(' ')).contains(QLatin1String("linear in its unknowns")));
+        const Run source = heat(QStringLiteral("1"), QStringLiteral("sin(10*t/1[s])"), QStringLiteral("range(0, 0.05, 0.2)"));
+        QVERIFY2(source.error.isEmpty(), qPrintable(source.error));
+        QCOMPARE(global(*source.solution, QStringLiteral("c.factorizations")), 2.0);
+        const Run varying = heat(QStringLiteral("1 + t/1[s]"), QStringLiteral("0"), QStringLiteral("range(0, 0.05, 0.2)"));
+        QVERIFY2(varying.error.isEmpty(), qPrintable(varying.error));
+        Solution& v = *varying.solution;
+        v.select(v.snapshotCount() - 1);
+        const double uv = at(v, QStringLiteral("u"), {0.5, 0.05}), exactV = std::exp(-M_PI * M_PI * (0.2 + 0.02));
+        qInfo("heat, its diffusivity 1 + t: u(½, 0.2) %.7f (%.7f); %g factorizations", uv, exactV, global(v, QStringLiteral("c.factorizations")));
+        QVERIFY(std::abs(uv / exactV - 1) < 2e-3);
+        QCOMPARE(global(v, QStringLiteral("c.factorizations")), 200.0);
+        const Run nonlinear = heat(QStringLiteral("1 + u"), QStringLiteral("0"), QStringLiteral("range(0, 0.01, 0.02)"));
+        QVERIFY2(nonlinear.error.isEmpty(), qPrintable(nonlinear.error));
+        QVERIFY(global(*nonlinear.solution, QStringLiteral("c.iterations")) >= 2);
+        QVERIFY(nonlinear.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("nonlinear in its unknowns")));
+        // (So is one whose da - what multiplies the rate - reads u: its
+        // degree 1, a coefficient's 0.)
+        const Run capacity = heat(QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("range(0, 0.01, 0.02)"), QStringLiteral("1 + u"));
+        QVERIFY2(capacity.error.isEmpty(), qPrintable(capacity.error));
+        QVERIFY(global(*capacity.solution, QStringLiteral("c.iterations")) >= 2);
+        QVERIFY(capacity.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("nonlinear in its unknowns")));
+    }
+
+    // A pulse running out of a line through an absorbing end - a flux of
+    // its rate, g = -ut: ∂u/∂x = -∂u/∂t, a wave going right's own -, gone;
+    // through a closed end, back. (Its rate in the flux's Jacobian too.)
+    void anAbsorbingEnd()
+    {
+        auto pulse = [&](const QString& end) {
+            const QString pulse0 = QStringLiteral("exp(-((x/1[m] - 0.3)/0.05)^2)");
+            return run(modelOf(model(QStringLiteral(R"x("1", "0.1")x"), QStringLiteral(R"x(, "space": "1d", "elements": 400)x"),
+                                     QStringLiteral(R"x({"type": "coefficient", "c": "1", "ea": "1", "da": "0", "f": "0", "selection": {"all": true}},
+                                                       {"type": "init", "u0": "%1", "ut0": "2*(x/1[m] - 0.3)/0.05^2*%1", "selection": {"all": true}}%2)x")
+                                         .arg(pulse0, end),
+                                     QStringLiteral(R"x({"type": "transient", "times": "range(0, 0.1, 1.2)", "stepping": "fixed", "dt": "2e-3", "method": "midpoint"})x"),
+                                     QStringLiteral("0.05"))));
+        };
+        auto largest = [&](Solution& s, int k) {
+            s.select(k);
+            double m = 0;
+            for (double x = 0; x <= 1; x += 0.005) m = std::max(m, std::abs(at(s, QStringLiteral("u"), {x, 0.05})));
+            return m;
+        };
+        const Run open = pulse(QStringLiteral(R"x(, {"type": "flux", "g": "-ut", "selection": {"of": ["box"], "side": "right"}})x"));
+        QVERIFY2(open.error.isEmpty(), qPrintable(open.error));
+        const Run closed = pulse(QString());
+        QVERIFY2(closed.error.isEmpty(), qPrintable(closed.error));
+        const int last = open.solution->snapshotCount() - 1;
+        const double before = largest(*open.solution, 4), left = largest(*open.solution, last), back = largest(*closed.solution, last);
+        qInfo("a pulse at t 0.4: %.4f; at t 1.2 through an absorbing end %.5f, through a closed one %.4f", before, left, back);
+        QVERIFY(before > 0.97);
+        QVERIFY(left < 3e-3);
+        QVERIFY(back > 0.9);
+    }
+
+    // The implicit midpoint rule keeps a standing wave's amplitude, ten
+    // periods on, where BDF2 at the same step damps it; it takes fixed
+    // steps.
+    void theMidpointRule()
+    {
+        auto wave = [&](const QString& method, const QString& stepping) {
+            return run(modelOf(model(QStringLiteral(R"x("1", "0.1")x"), QStringLiteral(R"x(, "space": "1d", "elements": 100)x"),
+                                     QStringLiteral(R"x({"type": "coefficient", "f": "0", "ea": "1", "da": "0", "selection": {"all": true}},
+                                                       {"type": "init", "u0": "sin(pi*x/1[m])", "selection": {"all": true}}, )x") + Ends,
+                                     QStringLiteral(R"x({"type": "transient", "times": "range(0, 2, 20)", "stepping": "%2", "dt": "0.02", "method": "%1"})x")
+                                         .arg(method, stepping),
+                                     QStringLiteral("0.05"))));
+        };
+        const Run mid = wave(QStringLiteral("midpoint"), QStringLiteral("fixed")), bdf = wave(QStringLiteral("bdf2"), QStringLiteral("fixed"));
+        QVERIFY2(mid.error.isEmpty() && bdf.error.isEmpty(), qPrintable(mid.error + bdf.error));
+        // (Ten periods: u(½) back to 1, its amplitude as it was.)
+        mid.solution->select(mid.solution->snapshotCount() - 1);
+        bdf.solution->select(bdf.solution->snapshotCount() - 1);
+        const double um = at(*mid.solution, QStringLiteral("u"), {0.5, 0.05}), ub = at(*bdf.solution, QStringLiteral("u"), {0.5, 0.05});
+        qInfo("a standing wave ten periods on: the midpoint rule's u(½) %.5f, BDF2's %.5f (1); %g factorizations", um, ub,
+              global(*mid.solution, QStringLiteral("c.factorizations")));
+        QVERIFY(std::abs(um - 1) < 1e-3);
+        QVERIFY(ub < 0.995);
+        QCOMPARE(global(*mid.solution, QStringLiteral("c.factorizations")), 1.0);
+        const Run adaptive = wave(QStringLiteral("midpoint"), QStringLiteral("adaptive"));
+        QVERIFY2(adaptive.error.contains(QLatin1String("fixed steps")), qPrintable(adaptive.error));
+    }
+
     void theExamples()
     {
         const QString dir = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
@@ -420,6 +585,49 @@ private slots:
             qInfo("Fisher: the front at %.2f (t %g), %.2f (t %g): %.3f per unit time (2√(rD) 2, less Bramson's 3/2t); %lld ms", a, t1, b, t2, speed,
                   timer.elapsed());
             QVERIFY(slowBuild() ? speed > 1.8 && speed < 2.2 : speed > 1.88 && speed < 2.0);
+        }
+        {
+            // The point source's spherical wave: R u peaks at τ/√(τ² + (s/c)²)
+            // at t0 + R/c (the midpoint rule: no damping), nothing back from
+            // the absorbing arc. (Coarser than the example; a sanitized
+            // build's coarser still, to 3 ms.)
+            timer.start();
+            Model m = load(QStringLiteral("point_source_wave.qfem"));
+            const bool slow = slowBuild();
+            m.find(m.mesh().tag)->props.insert(QStringLiteral("hmax"), slow ? QStringLiteral("0.05") : QStringLiteral("0.025"));
+            for (Node& step : m.find(m.studies().front()->tag)->children)
+                if (step.type == QLatin1String("transient")) step.props.insert(QStringLiteral("times"), slow ? QStringLiteral("range(0, 2e-5, 3e-3)") : QStringLiteral("range(0, 2e-5, 5.4e-3)"));
+            const Run r = solve(m);
+            Solution& s = *r.solution;
+            const double c = 343, tau = 1.5e-4, size = 0.02, t0 = 5e-4, peakExact = tau / std::sqrt(tau * tau + size * size / (c * c));
+            QStringList said;
+            for (double R : {0.25, 0.5, 0.75}) {
+                double peak = 0, when = 0;
+                for (int k = 0; k < s.snapshotCount(); ++k) {
+                    s.select(k);
+                    const double v = R * at(s, QStringLiteral("u"), {R / std::sqrt(2.0), R / std::sqrt(2.0)});
+                    if (v > peak) {
+                        peak = v;
+                        when = s.snapshotTime(k);
+                    }
+                }
+                said << QStringLiteral("R %1: %2 at %3 ms").arg(R).arg(peak, 0, 'f', 4).arg(when * 1e3, 0, 'f', 3);
+                QVERIFY2(std::abs(peak / peakExact - 1) < (slow ? 0.06 : 0.02), qPrintable(said.last()));
+                QVERIFY2(std::abs(when - (t0 + R / c)) < 3e-5, qPrintable(said.last()));
+            }
+            double back = 0;
+            if (!slow)
+                for (int k = 0; k < s.snapshotCount(); ++k) {
+                    if (s.snapshotTime(k) < 3.5e-3) continue;
+                    s.select(k);
+                    back = std::max(back, std::abs(0.5 * at(s, QStringLiteral("u"), {0.5 / std::sqrt(2.0), 0.5 / std::sqrt(2.0)})));
+                }
+            qInfo("point source: R u %s (%.4f at t0 + R/c); back at R 0.5 after 3.5 ms %.5f; %s; %lld ms", qPrintable(said.join(QLatin1String(", "))),
+                  peakExact, back, qPrintable(s.log.join(QLatin1String("; "))), timer.elapsed());
+            QVERIFY(back < 5e-3);
+            QVERIFY(global(s, QStringLiteral("c.factorizations")) == 1);
+            // (Its flux's g and q - Γ's units, the equation's own - not warned of.)
+            QVERIFY2(!s.log.join(QLatin1Char(' ')).contains(QLatin1String("Warning")), qPrintable(s.log.join(QLatin1String("; "))));
         }
         {
             // The ring: ln r / ln 2, and its flux 2π/ln 2 through the outer circle.

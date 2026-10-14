@@ -588,6 +588,9 @@ void MultiphysicsPanel::rebuildTree()
 void MultiphysicsPanel::updateStatusColumn()
 {
     if (!a_doc) return;
+    // The root: the model's file, as it is named now (saved since, renamed).
+    if (QTreeWidgetItem* root = a_tree->topLevelItem(0))
+        root->setText(0, a_doc->getDocName().isEmpty() ? tr("untitled.qfem") : QFileInfo(a_doc->getDocName()).fileName());
     const QColor grey = QApplication::palette().color(QPalette::Disabled, QPalette::Text);
     QTreeWidgetItemIterator it(a_tree);
     while (*it) {
@@ -608,10 +611,15 @@ void MultiphysicsPanel::updateStatusColumn()
                 status = n == 1 ? tr("1 domain") : tr("%1 domains").arg(n);
             }
         } else if (n->type == QLatin1String("mesh")) {
-            status = a_doc->meshStale() || !a_doc->mesh() ? tr("not built")
-                                                           : tr("%1 triangles").arg(QLocale().toString(qlonglong(a_doc->mesh()->triangles.size())));
+            // (Made by the job running - Build Mesh, or a study whose mesh is
+            // old -: being made, not "not built".)
+            status = a_doc->meshBeingMade() ? tr("being made")
+                     : a_doc->meshStale() || !a_doc->mesh()
+                         ? tr("not built")
+                         : tr("%1 triangles").arg(QLocale().toString(qlonglong(a_doc->mesh()->triangles.size())));
         } else if (n->type == QLatin1String("study")) {
-            if (a_doc->solution(tag)) status = a_doc->solutionStale(tag) ? tr("old") : tr("solved");
+            if (a_doc->computing() == tag) status = tr("computing");
+            else if (a_doc->solution(tag)) status = a_doc->solutionStale(tag) ? tr("old") : tr("solved");
         } else if (!a_doc->geometryStale() && a_doc->geometry().errors.contains(tag)) {
             status = tr("error");
             color = QColor(198, 40, 40);
