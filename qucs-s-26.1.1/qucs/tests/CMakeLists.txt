@@ -288,3 +288,22 @@ set(QUCS_THIRD_PARTY_CHECK "${CMAKE_SOURCE_DIR}/../scripts/ci/check-third-party.
 if(Python3_Interpreter_FOUND AND EXISTS "${QUCS_THIRD_PARTY_CHECK}")
   add_test(NAME check_third_party COMMAND Python3::Interpreter "${QUCS_THIRD_PARTY_CHECK}")
 endif()
+
+# A slow machine's room: each test's TIMEOUT and QtTest's limit on one test
+# function (300 s by default) times QUCS_TEST_TIMEOUT_SCALE. CI's sanitized
+# Debug job sets it: from October 2026 its runners took twice the time on
+# the same image and compiler (test_fem_pde 144 s, then 294), and tests
+# under their limits on a quiet runner timed out.
+set(QUCS_TEST_TIMEOUT_SCALE 1 CACHE STRING "Each test's TIMEOUT and QtTest's function limit multiplied by this (a whole number)")
+if(NOT QUCS_TEST_TIMEOUT_SCALE EQUAL 1)
+  math(EXPR _qucs_function_ms "300000 * ${QUCS_TEST_TIMEOUT_SCALE}")
+  get_property(_qucs_tests DIRECTORY PROPERTY TESTS)
+  foreach(_qucs_test IN LISTS _qucs_tests)
+    get_test_property(${_qucs_test} TIMEOUT _qucs_timeout)
+    if(_qucs_timeout)
+      math(EXPR _qucs_timeout "${_qucs_timeout} * ${QUCS_TEST_TIMEOUT_SCALE}")
+      set_tests_properties(${_qucs_test} PROPERTIES TIMEOUT ${_qucs_timeout})
+    endif()
+    set_property(TEST ${_qucs_test} APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_function_ms}")
+  endforeach()
+endif()
