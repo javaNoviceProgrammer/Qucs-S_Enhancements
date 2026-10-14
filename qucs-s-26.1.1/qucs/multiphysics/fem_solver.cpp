@@ -2305,6 +2305,45 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
         o.index = *n;
     }
     o.states = std::clamp(node.integer(QStringLiteral("states")), 1, 50);
+    // The subbands that enter, and how they are chosen.
+    o.cstates = node.text(QStringLiteral("cstates")).trimmed().isEmpty() ? 0 : std::clamp(node.integer(QStringLiteral("cstates")), 0, 50);
+    o.vstates = node.text(QStringLiteral("vstates")).trimmed().isEmpty() ? 0 : std::clamp(node.integer(QStringLiteral("vstates")), 0, 50);
+    for (const auto& [key, out] : {std::pair{QStringLiteral("cutoff_c"), &o.cutoffC}, std::pair{QStringLiteral("cutoff_v"), &o.cutoffV}}) {
+        if (node.text(key).trimmed().isEmpty()) continue;
+        const std::optional<double> c = evaluateConstant(node.text(key), scope, Dim(), &why);
+        if (!c || *c < 0) {
+            *error = tr("%1: its wall cutoff: %2").arg(node.name(), c ? tr("it must be 0 or more") : why);
+            return false;
+        }
+        *out = *c;
+    }
+    o.select = node.text(QStringLiteral("select")) == QLatin1String("localized") ? 1 : 0;
+    if (o.select == 1) {
+        const std::optional<double> p = evaluateConstant(node.text(QStringLiteral("pmin")), scope, Dim(), &why);
+        if (!p || *p < 0 || *p > 1) {
+            *error = tr("%1: the least share in the wells: %2").arg(node.name(), p ? tr("it must be between 0 and 1") : why);
+            return false;
+        }
+        o.localized = *p;
+    }
+    o.broaden = node.text(QStringLiteral("broaden")) == QLatin1String("window") ? 1 : 0;
+    if (o.broaden == 1 && !energy(QStringLiteral("window_ext"), tr("the window's extension"), &o.windowExt)) return false;
+    {
+        // (The wells', the stack's, or a length - as a choice, or as a length
+        // written in its place.)
+        const QString n = node.text(QStringLiteral("normalize")).trimmed();
+        if (n.isEmpty() || n == QLatin1String("wells")) o.normalize = 0;
+        else if (n == QLatin1String("stack")) o.normalize = 1;
+        else {
+            const std::optional<double> l = evaluateConstant(n == QLatin1String("length") ? node.text(QStringLiteral("normlength")) : n, scope, Dim::length(), &why);
+            if (!l || !(*l > 0)) {
+                *error = tr("%1: the absorption's length: %2").arg(node.name(), l ? tr("it must be more than 0") : why);
+                return false;
+            }
+            o.normalize = 2;
+            o.normLength = *l;
+        }
+    }
     // (The k·p bands' in-plane k grid.)
     o.kpoints = node.text(QStringLiteral("kpoints")).trimmed().isEmpty() ? 121 : std::clamp(node.integer(QStringLiteral("kpoints")), 11, 2000);
     for (auto& p : st.problems)
