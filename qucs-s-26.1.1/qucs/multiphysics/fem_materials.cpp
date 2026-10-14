@@ -61,7 +61,8 @@ struct Binary {
 
 const std::vector<Binary>& binaries()
 {
-    // Eg VBO Delta me γ1 γ2 γ3 Ep a0 ac av b C11 C12 εr n (eV, m0, m, Pa).
+    // Eg VBO Delta me γ1 γ2 γ3 Ep a0 ac av b C11 C12 εr n (eV, m0, Å; the
+    // stiffness Vurgaftman et al.'s figures, 10⁹ dyn/cm² - their "GPa" 0.1 GPa).
     auto bp = [](double eg, double vbo, double delta, double me, double g1, double g2, double g3, double ep, double a0, double ac,
                  double av, double b, double c11, double c12, double epsr, double n) {
         BandParameters p;
@@ -77,8 +78,8 @@ const std::vector<Binary>& binaries()
         p.ac = ac;
         p.av = av;
         p.b = b;
-        p.C11 = c11 * 1e9;
-        p.C12 = c12 * 1e9;
+        p.C11 = c11 * 1e8;
+        p.C12 = c12 * 1e8;
         p.epsr = epsr;
         p.n = n;
         return p;
