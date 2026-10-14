@@ -185,6 +185,50 @@ std::optional<Shape> sectionOf(const Object& o, const Plane& p, QStringList& not
         }
         return s;
     }
+    if (o.kind == QLatin1String("pyramid")) {
+        // A frustum along z: its spans in x and y at z min (bottom) and z max
+        // (top), linear between. Cut across z: a rectangle; along it, the
+        // trapezoid where the other axis' span reaches the plane.
+        const std::array<double, 9> R = rotation(o);
+        if (std::abs(R[0] - 1) + std::abs(R[4] - 1) + std::abs(R[8] - 1) > 1e-9) {
+            notes << tr("%1: a pyramid turned: left out").arg(s.name);
+            return std::nullopt;
+        }
+        const double c[2] = {o.number(QStringLiteral("x"), 0), o.number(QStringLiteral("y"), 0)};
+        const std::pair<double, double> w = span(o, QStringLiteral("z"), 1e-6);
+        const double bottom[2] = {o.number(QStringLiteral("x span bottom"), 1e-6), o.number(QStringLiteral("y span bottom"), 1e-6)};
+        const double top[2] = {o.number(QStringLiteral("x span top"), bottom[0]), o.number(QStringLiteral("y span top"), bottom[1])};
+        auto half = [&](int a, double t) { return (bottom[a] + (top[a] - bottom[a]) * t) / 2; };
+        if (p.normal == 2) {
+            if (p.at < w.first - tol || p.at > w.second + tol) return std::nullopt;
+            const double t = w.second > w.first ? (p.at - w.first) / (w.second - w.first) : 0;
+            s.kind = Shape::Rect;
+            s.x0 = c[0] - half(0, t);
+            s.x1 = c[0] + half(0, t);
+            s.y0 = c[1] - half(1, t);
+            s.y1 = c[1] + half(1, t);
+            return s;
+        }
+        if (p.v != 2) return std::nullopt;
+        const int along = p.u, across = p.normal;   // (x or y in the plane, the other out of it)
+        // The heights where |at - c| is within the span across: t in [ta, tb].
+        const double d = std::abs(p.at - c[across]);
+        double ta = 0, tb = 1;
+        const double h0 = half(across, 0), h1 = half(across, 1);
+        if (std::abs(h1 - h0) < 1e-30) {
+            if (d > h0 + tol) return std::nullopt;
+        } else {
+            const double tc = (d - h0) / (h1 - h0);   // where the span across is d
+            if (h1 > h0) ta = std::max(ta, tc);
+            else tb = std::min(tb, tc);
+        }
+        if (!(tb > ta + 1e-12)) return std::nullopt;
+        const double za = w.first + (w.second - w.first) * ta, zb = w.first + (w.second - w.first) * tb;
+        s.kind = Shape::Poly;
+        s.points = {QPointF(c[along] - half(along, ta), za), QPointF(c[along] + half(along, ta), za), QPointF(c[along] + half(along, tb), zb),
+                    QPointF(c[along] - half(along, tb), zb)};
+        return s;
+    }
     if (o.kind == QLatin1String("circle")) {
         const double r = o.number(QStringLiteral("radius"), 1e-6);
         const double c[3] = {o.number(QStringLiteral("x"), 0), o.number(QStringLiteral("y"), 0), o.number(QStringLiteral("z"), 0)};
@@ -343,7 +387,8 @@ std::vector<Shape> structures(const Scene& scene, const Plane& p, const std::fun
     std::vector<Shape> out;
     int turn = 0;
     for (const Object& o : scene.objects) {
-        if (o.kind != QLatin1String("rect") && o.kind != QLatin1String("poly") && o.kind != QLatin1String("circle")) continue;
+        if (o.kind != QLatin1String("rect") && o.kind != QLatin1String("poly") && o.kind != QLatin1String("circle") && o.kind != QLatin1String("pyramid"))
+            continue;
         if (o.prop(QStringLiteral("enabled")) && o.number(QStringLiteral("enabled"), 1) == 0) continue;
         std::optional<Shape> s = sectionOf(o, p, notes);
         if (!s) continue;
@@ -414,6 +459,43 @@ std::optional<std::array<double, 2>> indexAt(const Material& m, double f)
     return std::array<double, 2>{n.real(), n.imag()};
 }
 
+/// A Sellmeier material's index along an axis at a wavelength (m): n² = c0
+/// + c1 λ²/(λ² - c2) + c3 λ²/(λ² - c4) + c5 λ²/(λ² - c6), λ in µm (none
+/// where n² is not positive).
+std::optional<double> sellmeierAt(const Material& m, int axis, double lambda)
+{
+    const std::array<double, 7>& c = m.sellmeier[std::size_t(axis)];
+    const double l2 = lambda * 1e6 * lambda * 1e6;
+    double n2 = c[0];
+    for (int k = 1; k < 7; k += 2) {
+        if (c[std::size_t(k)] == 0) continue;
+        if (std::abs(l2 - c[std::size_t(k + 1)]) < 1e-12) return std::nullopt;
+        n2 += c[std::size_t(k)] * l2 / (l2 - c[std::size_t(k + 1)]);
+    }
+    if (!(n2 > 0)) return std::nullopt;
+    return std::sqrt(n2);
+}
+
+/// A material's index along x, y and z at a frequency, its κ: an (n,k)
+/// material's, a dielectric's, a sampled one's, a Sellmeier one's.
+std::optional<std::array<double, 6>> indexOf(const Material& m, double f)
+{
+    if (m.type == QLatin1String("sellmeier")) {
+        std::array<double, 6> out{};
+        for (int a = 0; a < 3; ++a) {
+            const std::optional<double> n = sellmeierAt(m, a, C0 / f);
+            if (!n) return std::nullopt;
+            out[std::size_t(a)] = *n;
+        }
+        return out;
+    }
+    if (m.type == QLatin1String("(n,k) Material") || m.type == QLatin1String("dielectric"))
+        return std::array<double, 6>{m.n[0], m.n[1], m.n[2], m.k[0], m.k[1], m.k[2]};
+    const std::optional<std::array<double, 2>> nk = indexAt(m, f);
+    if (!nk) return std::nullopt;
+    return std::array<double, 6>{(*nk)[0], (*nk)[0], (*nk)[0], (*nk)[1], (*nk)[1], (*nk)[1]};
+}
+
 LumericalImport buildMode(const Scene& scene, const Object& fde)
 {
     LumericalImport out;
@@ -479,43 +561,91 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
                                  {QStringLiteral("selection"), only({QStringLiteral("window")})}});
     std::map<QString, QJsonObject> made;
     QStringList saidLibrary;
+    auto say = [&](const QString& note) {
+        if (!notes.contains(note)) notes << note;
+    };
+    // (An index along x, y, z: a wave feature of its own, diagonal where
+    // they differ - the material its x one, for the mesh.)
+    auto indexed = [&say, &features](const Shape& s, const QString& label, const std::array<double, 6>& nk, QJsonObject feature) {
+        const bool diagonal = std::abs(nk[0] - nk[1]) > 1e-12 || std::abs(nk[0] - nk[2]) > 1e-12;
+        if (!diagonal && feature.isEmpty())
+            return QJsonObject{{QStringLiteral("label"), label}, {QStringLiteral("n"), num(nk[0])}, {QStringLiteral("kappa"), num(nk[3])}};
+        feature.insert(QStringLiteral("type"), QStringLiteral("wave"));
+        feature.insert(QStringLiteral("label"), label);
+        feature.insert(QStringLiteral("source"), QStringLiteral("user"));
+        if (diagonal) {
+            feature.insert(QStringLiteral("anisotropy"), QStringLiteral("diagonal"));
+            feature.insert(QStringLiteral("nx"), num(nk[0]));
+            feature.insert(QStringLiteral("ny"), num(nk[1]));
+            feature.insert(QStringLiteral("nz"), num(nk[2]));
+        } else
+            feature.insert(QStringLiteral("n"), num(nk[0]));
+        feature.insert(QStringLiteral("kappa"), num(nk[3]));
+        if (std::abs(nk[3] - nk[4]) > 1e-12 || std::abs(nk[3] - nk[5]) > 1e-12) say(tr("%1: its κ along x taken along y and z too").arg(label));
+        feature.insert(QStringLiteral("selection"), only({s.label}));
+        features.append(feature);
+        return QJsonObject{{QStringLiteral("label"), label}, {QStringLiteral("n"), num(nk[0])}};
+    };
     for (const Shape& s : shapes) {
         geometry.append(shapeJson(s, scale));
         QJsonObject m;
         const QString mat = s.material.trimmed();
         if (mat.isEmpty() || mat.startsWith(QLatin1Char('<'))) {
-            // An object defined dielectric: its own index.
-            bool ok = false;
-            const double n = s.index.trimmed().toDouble(&ok);
-            m = QJsonObject{{QStringLiteral("label"), tr("%1's index").arg(s.name)}, {QStringLiteral("n"), ok ? num(n) : QStringLiteral("1")}};
-            if (!ok) notes << tr("%1: its index %2 not a number: 1 taken").arg(s.name, s.index);
+            // An object defined dielectric: its own index - one, or along
+            // x, y and z ("nx;ny;nz").
+            const QStringList parts = s.index.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+            std::array<double, 6> nk{1, 1, 1, 0, 0, 0};
+            bool ok = parts.size() == 1 || parts.size() == 3;
+            for (int a = 0; a < 3 && ok; ++a) nk[std::size_t(a)] = parts[parts.size() == 3 ? a : 0].trimmed().toDouble(&ok);
+            if (!ok) {
+                nk = {1, 1, 1, 0, 0, 0};
+                notes << tr("%1: its index %2 not a number (nor three): 1 taken").arg(s.name, s.index);
+            }
+            m = indexed(s, tr("%1's index").arg(s.name), nk, {});
+            m.remove(QStringLiteral("kappa"));
         } else if (const Material* lm = materialNamed(scene, mat)) {
+            const Material* base = lm->type == QLatin1String("thermal") ? materialNamed(scene, lm->base) : nullptr;
+            const std::optional<std::array<double, 6>> nk = indexOf(base ? *base : *lm, C0 / lambda);
             if (lm->type == QLatin1String("PEC")) {
                 m = QJsonObject{{QStringLiteral("label"), mat}, {QStringLiteral("n"), QStringLiteral("1")}, {QStringLiteral("kappa"), QStringLiteral("1e4")}};
                 notes << tr("%1: a perfect conductor - an index with κ 1e4 (a PEC boundary on its edges is the exact one)").arg(mat);
-            } else if (lm->anisotropic) {
-                features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("wave")},
-                                            {QStringLiteral("label"), mat},
-                                            {QStringLiteral("source"), QStringLiteral("user")},
-                                            {QStringLiteral("anisotropy"), QStringLiteral("diagonal")},
-                                            {QStringLiteral("nx"), num(lm->n[0])},
-                                            {QStringLiteral("ny"), num(lm->n[1])},
-                                            {QStringLiteral("nz"), num(lm->n[2])},
-                                            {QStringLiteral("kappa"), num(lm->k[0])},
-                                            {QStringLiteral("selection"), only({s.label})}});
-                m = QJsonObject{{QStringLiteral("label"), mat}, {QStringLiteral("n"), num(lm->n[0])}};
-            } else if (const std::optional<std::array<double, 2>> nk = indexAt(*lm, C0 / lambda)) {
-                m = QJsonObject{{QStringLiteral("label"), mat}, {QStringLiteral("n"), num((*nk)[0])}, {QStringLiteral("kappa"), num((*nk)[1])}};
-                if (lm->type == QLatin1String("sampled")) {
+            } else if (lm->type == QLatin1String("thermal") && nk) {
+                // Temperature dependent: its material's index, and dn/dT (T
+                // - Tref) at the FDE's temperature.
+                const double T = fde.number(QStringLiteral("simulation temperature"), 300);
+                QJsonObject feature;
+                if (lm->thermal) {
+                    feature = QJsonObject{{QStringLiteral("thermooptic"), true},
+                                          {QStringLiteral("dndT"), num(lm->dndT[0]) + QStringLiteral("[1/K]")},
+                                          {QStringLiteral("T"), num(T) + QStringLiteral("[K]")},
+                                          {QStringLiteral("Tref"), num(lm->tref) + QStringLiteral("[K]")}};
+                    say(tr("%1: %2's index at %3 nm (n %4) and dn/dT %5 /K from %6 K, at the FDE's %7 K - its T a heat physics' ht.T to tune it")
+                            .arg(mat, lm->base, num(lambda * 1e9), QString::number((*nk)[0], 'f', 4), num(lm->dndT[0]), num(lm->tref), num(T)));
+                    if (std::abs(lm->dndT[0] - lm->dndT[1]) > 1e-15 || std::abs(lm->dndT[0] - lm->dndT[2]) > 1e-15)
+                        say(tr("%1: its dn/dT along x taken along y and z too").arg(mat));
+                    if (lm->dkdT != 0) say(tr("%1: its dκ/dT %2 /K not taken").arg(mat, num(lm->dkdT)));
+                } else
+                    say(tr("%1: %2's index at %3 nm (its temperature effects off)").arg(mat, lm->base, num(lambda * 1e9)));
+                if (lm->carriers)
+                    say(tr("%1: its free carriers' terms (Soref's) not taken - no carriers here (the wave feature's plasma dispersion, with a "
+                           "semiconductor physics' semi.n and semi.p)")
+                            .arg(mat));
+                m = indexed(s, mat, *nk, feature);
+            } else if (nk && lm->type != QLatin1String("thermal")) {
+                m = indexed(s, mat, *nk, {});
+                if (lm->type == QLatin1String("sampled") || lm->type == QLatin1String("sellmeier")) {
                     const QString ours = libraryOf(mat, false);
-                    const QString note = tr("%1: its index at %2 nm, n %3 κ %4 (Lumerical's data; constant%5)")
-                                             .arg(mat, num(lambda * 1e9), QString::number((*nk)[0], 'f', 4), QString::number((*nk)[1], 'g', 3),
-                                                  ours.isEmpty() ? QString() : tr(" - the library's %1 is dispersive").arg(ours));
-                    if (!notes.contains(note)) notes << note;
+                    say(tr("%1: its index at %2 nm, n %3 κ %4 (Lumerical's %5; constant%6)")
+                            .arg(mat, num(lambda * 1e9), QString::number((*nk)[0], 'f', 4), QString::number((*nk)[3], 'g', 3),
+                                 lm->type == QLatin1String("sampled") ? tr("data") : tr("Sellmeier coefficients"),
+                                 ours.isEmpty() ? QString() : tr(" - the library's %1 is dispersive").arg(ours)));
                 }
             } else {
                 m = QJsonObject{{QStringLiteral("label"), mat}, {QStringLiteral("n"), QStringLiteral("1")}};
-                notes << tr("%1: a material of a kind not read (%2): n = 1 - set its index").arg(mat, lm->type);
+                if (lm->type == QLatin1String("thermal"))
+                    notes << tr("%1: a temperature dependent material whose material (%2) is not read: n = 1 - set its index").arg(mat, lm->base);
+                else
+                    notes << tr("%1: a material of a kind not read (%2): n = 1 - set its index").arg(mat, lm->type);
             }
         } else if (const QString ours = libraryOf(mat, false); !ours.isEmpty()) {
             m = QJsonObject{{QStringLiteral("material"), ours}};
@@ -622,6 +752,210 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
 
 // --- CHARGE ---------------------------------------------------------------
 
+/// What a semiconductor's Lumerical models make here at temperature \a T:
+/// its material's properties - Eg (Varshni's), Nc and Nv of its masses,
+/// χ from its work function (Lumerical's to the intrinsic level: W - Eg/2
+/// - kT/2 ln(Nc/Nv)), εr, the lattice's mobilities, the SRH lifetimes -
+/// and its features: the material model's (its mobility by doping -
+/// Masetti's, Caughey and Thomas's -, saturation, band gap narrowing,
+/// Fermi-Dirac's statistics), SRH's (doping dependence, trap-assisted
+/// tunnelling, its trap level), Auger's, radiative, impact ionization
+/// (Selberherr's), band-to-band tunnelling (Hurkx's) - their selections
+/// left to set.
+struct SemiconductorModels {
+    bool ok = false;
+    QJsonObject material, model;
+    QJsonArray features;
+    QStringList notes;
+};
+
+SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
+{
+    SemiconductorModels out;
+    const Value* all = o.prop(QStringLiteral("@models"));
+    if (!all || all->kind != Value::Struct) return out;
+    const QString name = o.name();
+    auto model = [&](const QString& key) { return all->field(key); };
+    auto on = [&](const QString& key) {
+        const Value* m = model(key);
+        const Value* e = m ? m->field(QStringLiteral("enabled")) : nullptr;
+        return m && (!e || e->toNumber(1) != 0);
+    };
+    auto active = [&](const QString& key) {
+        const Value* m = model(key);
+        const Value* a = m ? m->field(QStringLiteral("active")) : nullptr;
+        return a ? a->toText() : QString();
+    };
+    auto param = [&](const QString& key, const QString& p, double otherwise = NAN) {
+        const Value* m = model(key);
+        const Value* ps = m ? m->field(QStringLiteral("params")) : nullptr;
+        const Value* v = ps ? ps->field(p) : nullptr;
+        return v ? v->toNumber(otherwise) : otherwise;
+    };
+    // (A parameter at 300 K and its exponent: X (T/300)^η.)
+    auto warm = [&](const QString& key, const QString& p300, const QString& eta) {
+        const double x = param(key, p300), e = param(key, eta, 0);
+        return x * std::pow(T / 300, std::isfinite(e) ? e : 0.0);
+    };
+    // A constant's A0, or the universal temperature's A (T/300)^η.
+    auto constantOrUniversal = [&](const QString& key) {
+        const QString a = active(key);
+        if (a == QLatin1String("Constant")) return param(key, QStringLiteral("A0"));
+        if (a.startsWith(QLatin1String("Universal"))) return param(key, QStringLiteral("A")) * std::pow(T / 300, param(key, QStringLiteral("eta"), 0));
+        return double(NAN);
+    };
+    const double W = o.number(QStringLiteral("work function"), NAN);
+    // Its band gap and masses.
+    double Eg = NAN;
+    if (active(QStringLiteral("bandgap")) == QLatin1String("Constant")) Eg = param(QStringLiteral("bandgap"), QStringLiteral("A0"));
+    else if (model(QStringLiteral("bandgap")))
+        Eg = param(QStringLiteral("bandgap"), QStringLiteral("y0")) - param(QStringLiteral("bandgap"), QStringLiteral("alpha"), 0) * T * T / (T + param(QStringLiteral("bandgap"), QStringLiteral("beta"), 0));
+    auto mass = [&](const QString& key) {
+        if (active(key) == QLatin1String("Constant")) return param(key, QStringLiteral("A0"));
+        return param(key, QStringLiteral("y0")) + param(key, QStringLiteral("alpha"), 0) * T + param(key, QStringLiteral("beta"), 0) * T * T;
+    };
+    const double me = mass(QStringLiteral("mass n")), mh = mass(QStringLiteral("mass p"));
+    if (!(Eg > 0) || !(me > 0) || !(mh > 0) || !std::isfinite(W)) return out;
+    const double Nc = 2.509e19 * std::pow(me, 1.5) * std::pow(T / 300, 1.5), Nv = 2.509e19 * std::pow(mh, 1.5) * std::pow(T / 300, 1.5);   // cm⁻³
+    const double kT = 8.617333262e-5 * T;
+    const double chi = W - Eg / 2 - kT / 2 * std::log(Nc / Nv);
+    out.material = QJsonObject{{QStringLiteral("label"), name},
+                               {QStringLiteral("Eg"), QStringLiteral("%1[eV]").arg(num(Eg))},
+                               {QStringLiteral("chi"), QStringLiteral("%1[eV]").arg(num(chi))},
+                               {QStringLiteral("Nc"), QStringLiteral("%1[1/cm^3]").arg(num(Nc))},
+                               {QStringLiteral("Nv"), QStringLiteral("%1[1/cm^3]").arg(num(Nv))}};
+    if (o.prop(QStringLiteral("@epsilonr"))) out.material.insert(QStringLiteral("epsilonr"), num(o.number(QStringLiteral("@epsilonr"))));
+    out.notes << tr("%1: Lumerical's models at %2 K - Eg %3 eV (%4), the masses' Nc %5, Nv %6 cm⁻³, χ %7 eV from its work function "
+                    "%8 eV (to the intrinsic level)")
+                     .arg(name, num(T), num(Eg), active(QStringLiteral("bandgap")) == QLatin1String("Constant") ? tr("constant") : tr("Varshni's"), num(Nc), num(Nv),
+                          num(chi), num(W));
+    // The lattice's mobilities, their temperature exponent.
+    QJsonObject m{{QStringLiteral("type"), QStringLiteral("model")}, {QStringLiteral("label"), tr("%1 (Lumerical's models)").arg(name)}};
+    for (const char* c : {"n", "p"}) {
+        const QString key = QStringLiteral("mobility lattice %1").arg(QLatin1String(c));
+        const double mu = constantOrUniversal(key);
+        if (std::isfinite(mu)) out.material.insert(QStringLiteral("mu%1").arg(QLatin1String(c)), QStringLiteral("%1[cm^2/(V*s)]").arg(num(mu)));
+        if (active(key).startsWith(QLatin1String("Universal"))) m.insert(QStringLiteral("zeta%1").arg(QLatin1String(c)), num(-param(key, QStringLiteral("eta"), 0)));
+    }
+    // By doping.
+    const QString impurity = on(QStringLiteral("mobility impurity n")) ? active(QStringLiteral("mobility impurity n")) : QString();
+    if (impurity == QLatin1String("Masetti")) {
+        m.insert(QStringLiteral("mobility"), QStringLiteral("masetti"));
+        for (const char* c : {"n", "p"}) {
+            const QString key = QStringLiteral("mobility impurity %1").arg(QLatin1String(c));
+            const QString C = QLatin1String(c);
+            const double muMin = warm(key, QStringLiteral("muMin(300)"), QStringLiteral("eta_muMin"));
+            m.insert(QStringLiteral("m1") + C, QStringLiteral("%1[cm^2/(V*s)]").arg(num(muMin)));
+            m.insert(QStringLiteral("m2") + C, QStringLiteral("%1[cm^2/(V*s)]").arg(num(muMin)));
+            m.insert(QStringLiteral("mu1") + C, QStringLiteral("%1[cm^2/(V*s)]").arg(num(warm(key, QStringLiteral("mu2(300)"), QStringLiteral("eta_mu2")))));
+            m.insert(QStringLiteral("pc") + C, QStringLiteral("0[1/cm^3]"));
+            m.insert(QStringLiteral("cr") + C, QStringLiteral("%1[1/cm^3]").arg(num(warm(key, QStringLiteral("Cr(300)"), QStringLiteral("eta_Cr")))));
+            m.insert(QStringLiteral("cs") + C, QStringLiteral("%1[1/cm^3]").arg(num(warm(key, QStringLiteral("Cs(300)"), QStringLiteral("eta_Cs")))));
+            m.insert(QStringLiteral("ma") + C, num(warm(key, QStringLiteral("alpha(300)"), QStringLiteral("eta_alpha"))));
+            m.insert(QStringLiteral("mb") + C, num(warm(key, QStringLiteral("beta(300)"), QStringLiteral("eta_beta"))));
+        }
+    } else if (impurity == QLatin1String("Caughey-Thomas")) {
+        m.insert(QStringLiteral("mobility"), QStringLiteral("doping"));
+        for (const char* c : {"n", "p"}) {
+            const QString key = QStringLiteral("mobility impurity %1").arg(QLatin1String(c));
+            const QString C = QLatin1String(c);
+            m.insert(QStringLiteral("mu") + C + QStringLiteral("min"), QStringLiteral("%1[cm^2/(V*s)]").arg(num(warm(key, QStringLiteral("muMin300"), QStringLiteral("eta1")))));
+            m.insert(QStringLiteral("nref") + C, QStringLiteral("%1[1/cm^3]").arg(num(warm(key, QStringLiteral("N300"), QStringLiteral("eta2")))));
+            m.insert(QStringLiteral("alpha") + C, num(warm(key, QStringLiteral("p300"), QStringLiteral("eta3"))));
+        }
+    } else if (!impurity.isEmpty())
+        out.notes << tr("%1: Lumerical's %2 mobility not here: its lattice's alone").arg(name, impurity);
+    if (!impurity.isEmpty() && on(QStringLiteral("mobility impurity p")) && active(QStringLiteral("mobility impurity p")) != impurity)
+        out.notes << tr("%1: its holes' mobility by doping Lumerical's %2, here as its electrons' (%3)").arg(name, active(QStringLiteral("mobility impurity p")), impurity);
+    // Saturation (Caughey and Thomas's high field).
+    if (on(QStringLiteral("high field n")) || on(QStringLiteral("high field p"))) {
+        m.insert(QStringLiteral("saturation"), true);
+        for (const char* c : {"n", "p"}) {
+            const QString C = QLatin1String(c);
+            const QString vkey = QStringLiteral("vsat ") + C;
+            const double v = active(vkey) == QLatin1String("Constant") ? param(vkey, QStringLiteral("A0")) : param(vkey, QStringLiteral("vsat300"));
+            if (std::isfinite(v)) m.insert(QStringLiteral("vsat") + C, QStringLiteral("%1[cm/s]").arg(num(v)));
+            const double beta = param(QStringLiteral("high field ") + C, QStringLiteral("beta"));
+            if (beta > 0) m.insert(QStringLiteral("beta") + C, num(beta));
+        }
+        // (Its driving field: 1 the quasi-Fermi potential's gradient, 0 the
+        // field - as the projects' scripts set them; inferred.)
+        const Value* hf = model(QStringLiteral("high field n"));
+        const Value* df = hf ? hf->field(QStringLiteral("driving")) : nullptr;
+        m.insert(QStringLiteral("driving"), df && df->toNumber() == 0 ? QStringLiteral("field") : QStringLiteral("current"));
+    }
+    if (on(QStringLiteral("bgn n")) && active(QStringLiteral("bgn n")) == QLatin1String("Slotboom") && param(QStringLiteral("bgn n"), QStringLiteral("V1"), 0) > 0) {
+        m.insert(QStringLiteral("bgn"), true);
+        m.insert(QStringLiteral("Ebgn"), QStringLiteral("%1[eV]").arg(num(param(QStringLiteral("bgn n"), QStringLiteral("V1")))));
+        m.insert(QStringLiteral("Nbgn"), QStringLiteral("%1[1/cm^3]").arg(num(param(QStringLiteral("bgn n"), QStringLiteral("N0")))));
+        m.insert(QStringLiteral("Cbgn"), num(param(QStringLiteral("bgn n"), QStringLiteral("C"), 0.5)));
+    }
+    if (fermi) m.insert(QStringLiteral("fermi"), true);
+    out.model = m;
+    // Recombination: SRH (its lifetimes on the material), Auger, radiative.
+    const double taun = constantOrUniversal(QStringLiteral("srh tau n")), taup = constantOrUniversal(QStringLiteral("srh tau p"));
+    if (on(QStringLiteral("srh tau n")) && taun > 0 && taup > 0) {
+        out.material.insert(QStringLiteral("taun"), QStringLiteral("%1[s]").arg(num(taun)));
+        out.material.insert(QStringLiteral("taup"), QStringLiteral("%1[s]").arg(num(taup)));
+        QJsonObject srh{{QStringLiteral("type"), QStringLiteral("srh")}, {QStringLiteral("label"), tr("%1: SRH").arg(name)}};
+        const double Et = param(QStringLiteral("trap n"), QStringLiteral("A0"), 0);
+        srh.insert(QStringLiteral("Et"), QStringLiteral("%1[eV]").arg(num(Et)));
+        if (on(QStringLiteral("srh doping n")) && active(QStringLiteral("srh doping n")) == QLatin1String("Fossum")) {
+            srh.insert(QStringLiteral("dependence"), QStringLiteral("doping"));
+            srh.insert(QStringLiteral("N0n"), QStringLiteral("%1[1/cm^3]").arg(num(param(QStringLiteral("srh doping n"), QStringLiteral("N0")))));
+            srh.insert(QStringLiteral("N0p"), QStringLiteral("%1[1/cm^3]").arg(num(param(QStringLiteral("srh doping p"), QStringLiteral("N0"), param(QStringLiteral("srh doping n"), QStringLiteral("N0"))))));
+            srh.insert(QStringLiteral("fA"), num(param(QStringLiteral("srh doping n"), QStringLiteral("alpha"), 1)));
+            srh.insert(QStringLiteral("fB"), num(param(QStringLiteral("srh doping n"), QStringLiteral("beta"), 0)));
+            srh.insert(QStringLiteral("fC"), num(param(QStringLiteral("srh doping n"), QStringLiteral("gamma"), 1)));
+            srh.insert(QStringLiteral("fE"), num(param(QStringLiteral("srh doping n"), QStringLiteral("sigma"), 1)));
+        } else if (on(QStringLiteral("srh doping n")) && !active(QStringLiteral("srh doping n")).isEmpty())
+            out.notes << tr("%1: Lumerical's %2 doping dependence of its lifetimes not here: none").arg(name, active(QStringLiteral("srh doping n")));
+        if (on(QStringLiteral("srh field n")) && active(QStringLiteral("srh field n")) == QLatin1String("Hurkx")) {
+            srh.insert(QStringLiteral("tat"), true);
+            srh.insert(QStringLiteral("mtn"), num(param(QStringLiteral("srh field n"), QStringLiteral("mt"), 0.25)));
+            srh.insert(QStringLiteral("mtp"), num(param(QStringLiteral("srh field p"), QStringLiteral("mt"), 0.25)));
+        } else if (on(QStringLiteral("srh field n")) && !active(QStringLiteral("srh field n")).isEmpty())
+            out.notes << tr("%1: Lumerical's %2 trap-assisted tunnelling not here: none").arg(name, active(QStringLiteral("srh field n")));
+        out.features.append(srh);
+    }
+    const double Cn = constantOrUniversal(QStringLiteral("auger n")), Cp = constantOrUniversal(QStringLiteral("auger p"));
+    if (on(QStringLiteral("auger n")) && std::isfinite(Cn) && std::isfinite(Cp) && (Cn > 0 || Cp > 0))
+        out.features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("auger")},
+                                        {QStringLiteral("label"), tr("%1: Auger").arg(name)},
+                                        {QStringLiteral("Cn"), QStringLiteral("%1[cm^6/s]").arg(num(Cn))},
+                                        {QStringLiteral("Cp"), QStringLiteral("%1[cm^6/s]").arg(num(Cp))}});
+    const double B = constantOrUniversal(QStringLiteral("radiative n"));
+    if (on(QStringLiteral("radiative n")) && B > 0)
+        out.features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("radiative")},
+                                        {QStringLiteral("label"), tr("%1: radiative").arg(name)},
+                                        {QStringLiteral("B"), QStringLiteral("%1[cm^3/s]").arg(num(B))}});
+    // Impact ionization: Selberherr's α∞ e^(-(Ecrit/E)^β), one range.
+    if (on(QStringLiteral("impact n")) && active(QStringLiteral("impact n")) == QLatin1String("Selberherr")) {
+        QJsonObject ii{{QStringLiteral("type"), QStringLiteral("impact")}, {QStringLiteral("label"), tr("%1: impact ionization").arg(name)},
+                       {QStringLiteral("model"), QStringLiteral("user")}, {QStringLiteral("E0"), QStringLiteral("1e30[V/m]")}};
+        for (const char* c : {"n", "p"}) {
+            const QString key = QStringLiteral("impact %1").arg(QLatin1String(c)), C = QLatin1String(c);
+            const QString a = QStringLiteral("%1[1/cm]").arg(num(warm(key, QStringLiteral("alphaInf(300)"), QStringLiteral("eta_alphaInf"))));
+            const QString b = QStringLiteral("%1[V/cm]").arg(num(warm(key, QStringLiteral("Ecrit(300)"), QStringLiteral("eta_Ecrit"))));
+            ii.insert(QStringLiteral("a") + C, a);
+            ii.insert(QStringLiteral("b") + C, b);
+            ii.insert(QStringLiteral("a") + C + QStringLiteral("2"), a);
+            ii.insert(QStringLiteral("b") + C + QStringLiteral("2"), b);
+            ii.insert(QStringLiteral("beta") + C, num(param(key, QStringLiteral("beta"), 1)));
+        }
+        out.features.append(ii);
+        out.notes << tr("%1: impact ionization driven by the field |E| (Lumerical's driving field not read)").arg(name);
+    }
+    if (on(QStringLiteral("btbt")) && active(QStringLiteral("btbt")) == QLatin1String("Hurkx"))
+        out.features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("btbt")},
+                                        {QStringLiteral("label"), tr("%1: band-to-band tunnelling").arg(name)},
+                                        {QStringLiteral("A"), num(param(QStringLiteral("btbt"), QStringLiteral("A")))},
+                                        {QStringLiteral("B"), QStringLiteral("%1[V/cm]").arg(num(param(QStringLiteral("btbt"), QStringLiteral("B"))))},
+                                        {QStringLiteral("gamma"), num(param(QStringLiteral("btbt"), QStringLiteral("eta"), 2.5))}});
+    out.ok = true;
+    return out;
+}
+
 LumericalImport buildCharge(const Scene& scene, const Object& solver)
 {
     LumericalImport out;
@@ -662,18 +996,36 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         p.v1 = b[p.v].second;
     } else
         notes << tr("no simulation region: every structure in the x-z plane at y = 0");
-    // The model materials: Lumerical's electrical ones by name.
+    // The model materials: Lumerical's electrical ones by name - a
+    // semiconductor with its models in the project, those; else the
+    // library's of its name.
+    const double T = solver.number(QStringLiteral("simulation temperature"), solver.number(QStringLiteral("temperature"), 300));
+    const bool fermi = solver.number(QStringLiteral("fermi statistics"), 0) != 0;
     struct ModelMaterial {
         QJsonObject json;
         bool metal = false, insulator = false;
         double workfunction = NAN;
         QStringList notes;   // (said if it is used)
+        std::optional<SemiconductorModels> models;
+        QString alias;       // its material object's name (a surface recombination's)
     };
     std::map<QString, ModelMaterial> mm;
     for (const Object& o : scene.objects) {
         if (o.kind != QLatin1String("modelmaterial")) continue;
         ModelMaterial m;
         const QString name = o.name();
+        m.alias = o.text(QStringLiteral("@alias"));
+        if (o.text(QStringLiteral("@kind")) == QLatin1String("Semiconductor")) {
+            const SemiconductorModels sm = semiconductorModels(o, T, fermi);
+            if (sm.ok) {
+                m.models = sm;
+                m.json = sm.material;
+                m.notes << sm.notes;
+                m.workfunction = o.number(QStringLiteral("work function"), NAN);
+                mm[name] = m;
+                continue;
+            }
+        }
         const QString ct = o.text(QStringLiteral("@CT"));
         const QString alloy = o.text(QStringLiteral("@alloy"));
         double cx = 0, cy = 0;
@@ -690,7 +1042,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                 m.notes << (ours != name ? tr("%1 as the library's %2").arg(name == ct ? ct : tr("%1 (%2)").arg(name, ct), ours) : QString());
             } else if (const QString compound = compoundOf(ct, o.number(QStringLiteral("mole frac constant"), 0), 0, &cx, &cy); !compound.isEmpty()) {
                 m.json = QJsonObject{{QStringLiteral("label"), name}, {QStringLiteral("compound"), compound}, {QStringLiteral("x"), num(cx)}};
-            } else
+            } else if (o.text(QStringLiteral("@kind")) != QLatin1String("Conductor"))
                 m.notes << tr("%1: Lumerical's %2 not in the library - set its properties").arg(name, ct);
         }
         if (m.json.isEmpty()) m.json = QJsonObject{{QStringLiteral("label"), name}};
@@ -794,7 +1146,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         contacts.push_back(c);
     }
     const QStringList pre = notes;
-    auto assemble = [&pre, &mm, &shapes, &dropped, &scale, &isMetal, &insulator, &scene, &p, &size, &contacts, &solver, &u0, &u1, &v0, &v1, &unit]() -> LumericalImport {
+    auto assemble = [&pre, &mm, &shapes, &dropped, &scale, &isMetal, &insulator, &unit, &scene, &p, &size, &used, &contacts, &solver, &T, &u0, &u1, &v0, &v1]() -> LumericalImport {
     LumericalImport made;
     QStringList notes = pre;
     QJsonArray geometry, materials, features;
@@ -838,6 +1190,8 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
     // The doping.
     const QLatin1String axes[3] = {QLatin1String("x"), QLatin1String("y"), QLatin1String("z")};
     auto inUnit = [&](double m) { return num(m / scale); };
+    // (In an expression a plain number is SI: a length there carries its unit.)
+    auto length = [&](double m) { return QStringLiteral("%1[%2]").arg(num(m / scale), unit); };
     for (const Object& o : scene.objects) {
         const bool dope = o.kind == QLatin1String("dope"), diffusion = o.kind == QLatin1String("diffusion");
         if (!dope && !diffusion && o.kind != QLatin1String("importdope")) continue;
@@ -884,7 +1238,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
             } else {
                 f.insert(QStringLiteral("profile"), QStringLiteral("expression"));
                 f.insert(QStringLiteral("N"), QStringLiteral("%1[1/m^3]*(x >= %2 && x <= %3 && y >= %4 && y <= %5)")
-                                                  .arg(num(N0), inUnit(box.left()), inUnit(box.right()), inUnit(box.top()), inUnit(box.bottom())));
+                                                  .arg(num(N0), length(box.left()), length(box.right()), length(box.top()), length(box.bottom())));
             }
         } else {
             // A diffusion: its plateau the box less the junction width on
@@ -899,7 +1253,11 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
             double x0 = box.left() + dj, x1 = box.right() - dj, y0 = box.top() + dj, y1 = box.bottom() - dj;
             if (faceAxis == p.u) (faceHigh ? x1 : x0) += faceHigh ? dj : -dj;
             if (faceAxis == p.v) (faceHigh ? y1 : y0) += faceHigh ? dj : -dj;
-            // (No plateau - a profile from its source face - is a box of no depth.)
+            // (No plateau - a profile from its source face - is a box of no
+            // depth: a box as deep as its junction width kept so.)
+            const double slack = 1e-9 * std::max(dj, size);
+            if (x1 < x0 && x1 > x0 - slack) x1 = x0;
+            if (y1 < y0 && y1 > y0 - slack) y1 = y0;
             if (!(x1 >= x0) || !(y1 >= y0)) {
                 notes << tr("%1: its box narrower than its junction width: left out").arg(name);
                 continue;
@@ -914,6 +1272,126 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
             f.insert(QStringLiteral("size"), QJsonArray{inUnit(x1 - x0), inUnit(y1 - y0)});
         }
         features.append(f);
+    }
+    // Surface recombination: on the boundaries between its two materials
+    // (by their material objects' names) - between a semiconductor and an
+    // insulator or another; at a metal, its contact's carriers at
+    // equilibrium already.
+    std::map<QString, QStringList> labelsOf;   // by material and by its object's name
+    for (const Shape& s : shapes) {
+        if (dropped.contains(s.label)) continue;
+        labelsOf[s.material] << s.label;
+        if (mm.count(s.material) && !mm.at(s.material).alias.isEmpty() && mm.at(s.material).alias != s.material) labelsOf[mm.at(s.material).alias] << s.label;
+    }
+    int recombination = 0;
+    QStringList atMetals;
+    for (const Object& o : scene.objects) {
+        if (o.kind != QLatin1String("surfacerec")) continue;
+        const QString a = o.text(QStringLiteral("material 1")), b = o.text(QStringLiteral("material 2"));
+        if (a.isEmpty() || b.isEmpty()) {
+            notes << tr("%1: its two materials not given (surface type %2): left out").arg(o.name()).arg(o.number(QStringLiteral("surface type"), -1));
+            continue;
+        }
+        auto metalNamed = [&](const QString& n) {
+            for (const auto& [name, m] : mm)
+                if ((name == n || m.alias == n) && m.metal) return true;
+            return false;
+        };
+        if (metalNamed(a) || metalNamed(b)) {
+            atMetals << o.name();
+            continue;
+        }
+        if (!labelsOf.count(a) || !labelsOf.count(b)) {
+            notes << tr("%1: between %2 and %3, not both in the region: left out").arg(o.name(), a, b);
+            continue;
+        }
+        const double Sn = o.number(QStringLiteral("electron velocity"), NAN), Sp = o.number(QStringLiteral("hole velocity"), NAN);
+        if (!(Sn >= 0) || !(Sp >= 0)) continue;
+        features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("surfacerec")},
+                                    {QStringLiteral("label"), o.name()},
+                                    {QStringLiteral("Sn"), QStringLiteral("%1[m/s]").arg(num(Sn))},
+                                    {QStringLiteral("Sp"), QStringLiteral("%1[m/s]").arg(num(Sp))},
+                                    {QStringLiteral("Et"), QStringLiteral("%1[eV]").arg(num(o.number(QStringLiteral("trap offset"), 0)))},
+                                    {QStringLiteral("selection"), QJsonObject{{QStringLiteral("between"), QJsonArray{QJsonArray::fromStringList(labelsOf.at(a)), QJsonArray::fromStringList(labelsOf.at(b))}}}}});
+        ++recombination;
+    }
+    if (recombination)
+        notes << tr("%1 surface recombination objects as Surface Recombination on the boundaries between their materials (each "
+                    "carrier's velocity, the SRH form for both - Lumerical's majority-carrier switch not read)")
+                     .arg(recombination);
+    if (!atMetals.isEmpty())
+        notes << tr("surface recombination at the metal contacts left out (%1): their carriers at equilibrium already").arg(atMetals.join(QStringLiteral(", ")));
+    // Optical generation imported: the data's slice in the plane (its
+    // coordinates its own), a table of two arguments, times its scale
+    // factor (the light's power, W), nought outside its data.
+    QJsonArray functions;
+    for (const Object& o : scene.objects) {
+        if (o.kind != QLatin1String("generation")) continue;
+        const Value* G = o.prop(QStringLiteral("@G"));
+        const Value* X[3] = {o.prop(QStringLiteral("@x")), o.prop(QStringLiteral("@y")), o.prop(QStringLiteral("@z"))};
+        if (!G || !X[0] || !X[1] || !X[2]) continue;
+        const std::size_t n[3] = {X[0]->m.size(), X[1]->m.size(), X[2]->m.size()};
+        if (G->m.size() != n[0] * n[1] * n[2] || !n[0] || !n[1] || !n[2]) {
+            notes << tr("%1: its generation's data and coordinates do not agree: left out").arg(o.name());
+            continue;
+        }
+        // (Relative coordinates: the object's middle added.)
+        double offset[3] = {0, 0, 0};
+        if (o.number(QStringLiteral("use relative coordinates"), 0) != 0)
+            for (int a = 0; a < 3; ++a) offset[a] = o.number(axes[a], 0);
+        // The slice nearest the plane along its normal (its data constant along it: one).
+        const std::vector<double>& along = X[p.normal]->m;
+        std::size_t k = 0;
+        for (std::size_t i = 1; i < along.size(); ++i)
+            if (std::abs(along[i] + offset[p.normal] - p.at) < std::abs(along[k] + offset[p.normal] - p.at)) k = i;
+        const double power = o.number(QStringLiteral("scale factor"), 1) * o.number(QStringLiteral("source power scaling"), 1);
+        QJsonArray grid;
+        double lo[2] = {INFINITY, INFINITY}, hi[2] = {-INFINITY, -INFINITY};
+        for (std::size_t i = 0; i < n[p.u]; ++i)
+            for (std::size_t j = 0; j < n[p.v]; ++j) {
+                std::size_t idx[3];
+                idx[p.u] = i;
+                idx[p.v] = j;
+                idx[p.normal] = k;
+                const double g = G->m[idx[0] + n[0] * (idx[1] + n[1] * idx[2])] * power;
+                const double u = X[p.u]->m[i] + offset[p.u], v = X[p.v]->m[j] + offset[p.v];
+                lo[0] = std::min(lo[0], u);
+                hi[0] = std::max(hi[0], u);
+                lo[1] = std::min(lo[1], v);
+                hi[1] = std::max(hi[1], v);
+                grid.append(QJsonArray{u / scale, v / scale, std::isfinite(g) ? g : 0.0});
+            }
+        const QString fn = label(QStringLiteral("G_") + contactName(o.name()), used);
+        functions.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("interpolation")},
+                                     {QStringLiteral("name"), fn},
+                                     {QStringLiteral("dimension"), QStringLiteral("2")},
+                                     {QStringLiteral("grid"), grid},
+                                     {QStringLiteral("argunit"), QStringLiteral("%1, %1").arg(unit)},
+                                     {QStringLiteral("unit"), QStringLiteral("1/(m^3*s)")}});
+        const double e = 1e-9 * size;
+        QStringList on;
+        const QRectF box(QPointF(lo[0] - e, lo[1] - e), QPointF(hi[0] + e, hi[1] + e));
+        for (const Shape& s : shapes)
+            if (!dropped.contains(s.label) && !isMetal(s) && !insulator(s) && box.intersects(QRectF(QPointF(s.x0, s.y0), QPointF(s.x1, s.y1)))) on << s.label;
+        if (on.isEmpty()) {
+            notes << tr("%1: its generation meets no semiconductor: left out").arg(o.name());
+            continue;
+        }
+        const bool off = o.number(QStringLiteral("enabled"), 1) == 0;
+        features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("generation")},
+                                    {QStringLiteral("enabled"), !off},
+                                    {QStringLiteral("label"), o.name()},
+                                    {QStringLiteral("G"), QStringLiteral("%1(x, y)*(x >= %2 && x <= %3 && y >= %4 && y <= %5)")
+                                                              .arg(fn, length(lo[0] - e), length(hi[0] + e), length(lo[1] - e), length(hi[1] + e))},
+                                    {QStringLiteral("selection"), only(on)}});
+        notes << tr("%1: its imported optical generation (%2 x %3 x %4 points) the slice at the plane, a function %5 of x and y, "
+                    "times its scale factor %6 W")
+                     .arg(o.name())
+                     .arg(n[0])
+                     .arg(n[1])
+                     .arg(n[2])
+                     .arg(fn, num(power))
+                 + (off ? tr(" - off, as the project was saved: switch it on for the light") : QString());
     }
     // The contacts: their voltages - a sweep's parameter each.
     QJsonArray parameters, sweeps;
@@ -949,10 +1427,33 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         features.append(f);
     }
     if (sweeps.size() > 1) notes << tr("its contacts sweep together in Lumerical (each its own table): here every combination");
-    if (!semiconductors.isEmpty())
-        features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("srh")}, {QStringLiteral("label"), tr("Recombination")}, {QStringLiteral("selection"), only(semiconductors)}});
-    notes << tr("the materials' models (mobility, recombination) the library's, not Lumerical's: check them");
-    const double T = solver.number(QStringLiteral("simulation temperature"), solver.number(QStringLiteral("temperature"), 300));
+    // Each semiconductor's Lumerical models on its domains; the library's
+    // (an SRH of its lifetimes) on those whose project has none.
+    {
+        std::map<QString, QStringList> domainsOf;
+        for (const Shape& s : shapes)
+            if (!dropped.contains(s.label) && !isMetal(s) && !insulator(s)) domainsOf[s.material] << s.label;
+        QStringList library;
+        for (const auto& [material, labels] : domainsOf) {
+            const auto it = mm.find(material);
+            if (it == mm.end() || !it->second.models) {
+                library << labels;
+                continue;
+            }
+            QJsonObject mf = it->second.models->model;
+            mf.insert(QStringLiteral("selection"), only(labels));
+            features.append(mf);
+            for (const QJsonValue& v : it->second.models->features) {
+                QJsonObject f = v.toObject();
+                f.insert(QStringLiteral("selection"), only(labels));
+                features.append(f);
+            }
+        }
+        if (!library.isEmpty()) {
+            features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("srh")}, {QStringLiteral("label"), tr("Recombination")}, {QStringLiteral("selection"), only(library)}});
+            notes << tr("%1: the library's models (mobility, recombination), the project having none of its own - check them").arg(library.join(QStringLiteral(", ")));
+        }
+    }
     const double norm = solver.number(QStringLiteral("norm length"), 1e-6);
     QJsonObject physics{{QStringLiteral("type"), QStringLiteral("semiconductor")},
                         {QStringLiteral("tag"), QStringLiteral("semi")},
@@ -966,10 +1467,24 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                                  {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("surface")}, {QStringLiteral("expression"), QStringLiteral("semi.V")}}}}},
                      QJsonObject{{QStringLiteral("type"), QStringLiteral("plotgroup")}, {QStringLiteral("label"), tr("Electrons")},
                                  {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("surface")}, {QStringLiteral("expression"), QStringLiteral("log10(semi.n*1[cm^3])")}}}}}};
-    if (!swept.isEmpty())
-        plots.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("plotgroup1d")}, {QStringLiteral("label"), tr("Current")},
-                                 {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("globalgraph")},
-                                                                                  {QStringLiteral("expression"), QStringLiteral("semi.I_%1").arg(contactName(swept))}}}}});
+    if (!swept.isEmpty()) {
+        // The swept contact's current - a gate's none: then those of the
+        // others at a voltage (a MOSFET's drain), else of all the others.
+        QStringList shown;
+        const auto sweptContact = std::find_if(contacts.begin(), contacts.end(), [&](const Contact& c) { return c.name == swept; });
+        if (sweptContact != contacts.end() && sweptContact->gate) {
+            for (const Contact& c : contacts)
+                if (!c.gate && c.o->number(QStringLiteral("voltage"), 0) != 0) shown << c.name;
+            if (shown.isEmpty())
+                for (const Contact& c : contacts)
+                    if (!c.gate) shown << c.name;
+        }
+        if (shown.isEmpty()) shown << swept;
+        QJsonArray graphs;
+        for (const QString& c : shown)
+            graphs.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("globalgraph")}, {QStringLiteral("expression"), QStringLiteral("semi.I_%1").arg(contactName(c))}});
+        plots.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("plotgroup1d")}, {QStringLiteral("label"), tr("Current")}, {QStringLiteral("plots"), graphs}});
+    }
     // Its mesh constraints: the boundaries within each one's box that fine.
     QJsonArray meshFeatures;
     for (const Object& o : scene.objects) {
@@ -988,6 +1503,49 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                                         {QStringLiteral("hmax"), inUnit(h)}});
     }
     if (!meshFeatures.isEmpty()) notes << tr("its mesh constraints: the boundaries within each one's box meshed to its largest edge");
+    // Lumerical refines its mesh where the doping changes, between its
+    // smallest and largest edges: here the semiconductors no coarser than a
+    // quarter of the thinnest or Lumerical's largest edge, each diffusion's
+    // fall (its Gaussian's width σ) at its source face's boundaries σ/2.
+    {
+        const double maxEdge = solver.number(QStringLiteral("max edge length"), INFINITY), minEdge = solver.number(QStringLiteral("min edge length"), 0);
+        double thinnest = INFINITY;
+        QStringList semis;
+        for (const Shape& sh : shapes)
+            if (!dropped.contains(sh.label) && !isMetal(sh) && !insulator(sh)) {
+                thinnest = std::min(thinnest, std::min(sh.x1 - sh.x0, sh.y1 - sh.y0));
+                semis << sh.label;
+            }
+        const double h = std::max(minEdge, std::min(maxEdge, thinnest / 4));
+        if (!semis.isEmpty() && std::isfinite(h) && h > 0) {
+            meshFeatures.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("size")}, {QStringLiteral("level"), QStringLiteral("domain")},
+                                            {QStringLiteral("label"), tr("Semiconductors")}, {QStringLiteral("selection"), only(semis)}, {QStringLiteral("hmax"), inUnit(h)}});
+            int fine = 0;
+            for (const Object& o : scene.objects) {
+                if (o.kind != QLatin1String("diffusion")) continue;
+                const double dj = o.number(QStringLiteral("junction width"), NAN), N0 = o.number(QStringLiteral("concentration"), NAN),
+                             Nb = o.number(QStringLiteral("ref concentration"), NAN);
+                if (!(dj > 0) || !(N0 > Nb) || !(Nb > 0)) continue;
+                const double sigma = dj / std::sqrt(std::log(N0 / Nb));
+                const double hd = std::max(minEdge, sigma / 2);
+                if (!(hd < h)) continue;
+                std::pair<double, double> b[3];
+                for (int a = 0; a < 3; ++a) b[a] = span(o, axes[a], INFINITY);
+                const double x0 = std::max(b[p.u].first, u0) - dj, x1 = std::min(b[p.u].second, u1) + dj;
+                const double y0 = std::max(b[p.v].first, v0) - dj, y1 = std::min(b[p.v].second, v1) + dj;
+                meshFeatures.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("size")},
+                                                {QStringLiteral("level"), QStringLiteral("boundary")},
+                                                {QStringLiteral("label"), tr("%1's fall").arg(o.name())},
+                                                {QStringLiteral("selection"), QJsonObject{{QStringLiteral("box"), QJsonArray{inUnit(x0), inUnit(y0), inUnit(x1), inUnit(y1)}}}},
+                                                {QStringLiteral("hmax"), inUnit(hd)}});
+                ++fine;
+            }
+            notes << tr("its mesh: the semiconductors to %1 µm%2, %3 diffusion falls finer at their boundaries (σ/2)")
+                         .arg(num(h * 1e6),
+                              std::isfinite(maxEdge) ? tr(" (Lumerical's edges %1 to %2 µm)").arg(num(minEdge * 1e6), num(maxEdge * 1e6)) : QString())
+                         .arg(fine);
+        }
+    }
     QJsonObject meshJson{{QStringLiteral("size"), QStringLiteral("fine")}};
     if (!meshFeatures.isEmpty()) meshJson.insert(QStringLiteral("features"), meshFeatures);
     const QJsonObject component{{QStringLiteral("unit"), unit},
@@ -999,6 +1557,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
     made.model = model(tr("%1 (Lumerical CHARGE)").arg(scene.source), tr("Imported from %1: its cross-section, %2 structures, %3 contacts.").arg(scene.source).arg(shapes.size() - dropped.size()).arg(contacts.size()),
                       component, QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("study")}, {QStringLiteral("label"), tr("Study 1")}, {QStringLiteral("steps"), steps}}},
                       QJsonObject{{QStringLiteral("plots"), plots}}, parameters);
+    if (!functions.isEmpty()) made.model.insert(QStringLiteral("functions"), functions);
     made.notes = QStringList{tr("%1: a CHARGE cross-section (%2), %3 structures, %4 doping objects, %5 contacts, %6 K, norm length %7 µm")
                                 .arg(scene.source, p.normal == 1 ? QStringLiteral("x-z") : p.normal == 0 ? QStringLiteral("y-z") : QStringLiteral("x-y"))
                                 .arg(shapes.size() - dropped.size())
@@ -1034,6 +1593,241 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         if (again) result = assemble();
     }
     return result;
+}
+
+// --- HEAT -----------------------------------------------------------------
+
+/// A HEAT project's cross-section as a heat model: its solids' thermal
+/// conductivity (of T where it varies so), density and heat capacity, its
+/// fluids not solved - convection on their boundaries -, its temperatures
+/// (on the region's faces, between two materials, on a solid), its uniform
+/// power heat sources (over the norm length, as Lumerical has them).
+LumericalImport buildHeat(const Scene& scene, const Object& solver)
+{
+    LumericalImport out;
+    QStringList notes;
+    const Object* region = nullptr;
+    const QString regionName = solver.text(QStringLiteral("simulation region"));
+    for (const Object& o : scene.objects)
+        if (o.kind == QLatin1String("region") && (regionName.isEmpty() || o.name() == regionName)) region = &o;
+    // (Its plane as CHARGE's: a text, or a number - 1 x-normal, 2 y-normal, 3 z-normal.)
+    Plane p;
+    p.normal = 2;
+    p.u = 0;
+    p.v = 1;
+    const QLatin1String axes[3] = {QLatin1String("x"), QLatin1String("y"), QLatin1String("z")};
+    if (region) {
+        QString dim = region->text(QStringLiteral("dimension")).toLower();
+        if (const Value* d = region->prop(QStringLiteral("dimension")); d && d->isNumber())
+            dim = QStringList{QStringLiteral("x-normal"), QStringLiteral("y-normal"), QStringLiteral("z-normal"), QStringLiteral("3d")}.value(int(d->toNumber(3)) - 1, QStringLiteral("z-normal"));
+        if (dim.contains(QLatin1String("3d"))) {
+            out.error = tr("its simulation region is 3D: a 2D one's cross-section is read");
+            return out;
+        }
+        if (dim.contains(QLatin1String("x-normal"))) {
+            p.normal = 0;
+            p.u = 1;
+            p.v = 2;
+        } else if (dim.contains(QLatin1String("y-normal"))) {
+            p.normal = 1;
+            p.u = 0;
+            p.v = 2;
+        }
+        std::pair<double, double> b[3];
+        for (int a = 0; a < 3; ++a) b[a] = span(*region, axes[a], a == p.normal ? 0 : INFINITY);
+        p.at = std::isfinite(b[p.normal].first + b[p.normal].second) ? (b[p.normal].first + b[p.normal].second) / 2 : 0;
+        p.u0 = b[p.u].first;
+        p.u1 = b[p.u].second;
+        p.v0 = b[p.v].first;
+        p.v1 = b[p.v].second;
+    }
+    // Its materials' thermal records.
+    struct Thermal {
+        QJsonObject json;
+        bool fluid = false;
+        QString alias;
+        QStringList notes;   // (said if it is used)
+    };
+    std::map<QString, Thermal> tm;
+    for (const Object& o : scene.objects) {
+        if (o.kind != QLatin1String("modelmaterial")) continue;
+        Thermal t;
+        t.alias = o.text(QStringLiteral("@alias"));
+        t.fluid = o.text(QStringLiteral("@thermalkind")) == QLatin1String("Fluid");
+        t.json = QJsonObject{{QStringLiteral("label"), o.name()}};
+        const Value* all = o.prop(QStringLiteral("@thermal"));
+        auto value = [&all, &t, &o](const QString& role, const QString& unit, bool ofT) -> QString {
+            const Value* m = all ? all->field(role) : nullptr;
+            const Value* a = m ? m->field(QStringLiteral("active")) : nullptr;
+            const Value* ps = m ? m->field(QStringLiteral("params")) : nullptr;
+            if (!a || !ps) return {};
+            const QString kind = a->toText();
+            auto param = [&](const char* k) {
+                const Value* v = ps->field(QString::fromLatin1(k));
+                return v ? v->toNumber(NAN) : NAN;
+            };
+            if (kind == QLatin1String("Constant") && std::isfinite(param("A0"))) return QStringLiteral("%1[%2]").arg(num(param("A0")), unit);
+            if (ofT && kind.startsWith(QLatin1String("Universal")) && std::isfinite(param("A")))
+                return QStringLiteral("%1[%2]*(T/300[K])^(%3)").arg(num(param("A")), unit, num(param("eta")));
+            t.notes << tr("%1: its %2 Lumerical's %3: not read").arg(o.name(), role, kind);
+            return {};
+        };
+        const QString k = value(QStringLiteral("thermal conductivity"), QStringLiteral("W/(m*K)"), true);
+        const QString rho = value(QStringLiteral("mass density"), QStringLiteral("kg/m^3"), false);
+        const QString cp = value(QStringLiteral("specific heat"), QStringLiteral("J/(kg*K)"), false);
+        if (!k.isEmpty()) t.json.insert(QStringLiteral("k"), k);
+        if (!rho.isEmpty()) t.json.insert(QStringLiteral("rho"), rho);
+        if (!cp.isEmpty()) t.json.insert(QStringLiteral("Cp"), cp);
+        if (k.isEmpty() && !t.fluid) {
+            if (const QString ours = libraryOf(o.name(), true); !ours.isEmpty()) t.json = QJsonObject{{QStringLiteral("label"), o.name()}, {QStringLiteral("library"), ours}};
+            else t.notes << tr("%1: no thermal conductivity read - set it").arg(o.name());
+        }
+        tm[o.name()] = t;
+    }
+    QSet<QString> used;
+    auto order = [&](const Object& o) { return int(o.number(QStringLiteral("mesh order"), 2)); };
+    std::vector<Shape> shapes = structures(scene, p, order, used, notes);
+    if (shapes.empty()) {
+        out.error = tr("no structure in its simulation region");
+        return out;
+    }
+    double u0 = INFINITY, v0 = INFINITY, u1 = -INFINITY, v1 = -INFINITY;
+    for (const Shape& sh : shapes) {
+        u0 = std::min(u0, sh.x0);
+        v0 = std::min(v0, sh.y0);
+        u1 = std::max(u1, sh.x1);
+        v1 = std::max(v1, sh.y1);
+    }
+    const double size = std::max(u1 - u0, v1 - v0);
+    const std::pair<QString, double> unitScale = unitFor(size);
+    const QString unit = unitScale.first;
+    const double scale = unitScale.second;
+    auto inUnit = [&](double m) { return num(m / scale); };
+    QJsonArray geometry, materials, features;
+    QStringList fluids;
+    std::map<QString, QStringList> labelsOf;
+    QString last;
+    QStringList lastOn;
+    auto flush = [&]() {
+        if (last.isEmpty()) return;
+        QJsonObject m = tm.count(last) ? tm.at(last).json : QJsonObject{{QStringLiteral("label"), last}};
+        m.insert(QStringLiteral("selection"), only(lastOn));
+        materials.append(m);
+    };
+    for (const Shape& sh : shapes) {
+        geometry.append(shapeJson(sh, scale));
+        if (sh.material != last) {
+            flush();
+            last = sh.material;
+            lastOn.clear();
+        }
+        lastOn << sh.label;
+        if (!labelsOf.count(sh.material) && tm.count(sh.material)) notes << tm.at(sh.material).notes;
+        labelsOf[sh.material] << sh.label;
+        if (tm.count(sh.material) && !tm.at(sh.material).alias.isEmpty() && tm.at(sh.material).alias != sh.material) labelsOf[tm.at(sh.material).alias] << sh.label;
+        if (tm.count(sh.material) && tm.at(sh.material).fluid) fluids << sh.label;
+    }
+    flush();
+    geometry.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("form union")}});
+    if (!fluids.isEmpty()) notes << tr("its fluids (%1) not solved: convection on their boundaries").arg(fluids.join(QStringLiteral(", ")));
+    // A boundary condition's surfaces: the region's faces (4), between two
+    // materials (6), a solid's (3).
+    auto surfaces = [&size, &p, &u1, &u0, &v1, &v0, &inUnit, &labelsOf, &shapes](const Object& o, std::vector<QJsonObject>* out) {
+        const int type = int(o.number(QStringLiteral("surface type"), -1));
+        const double e = 1e-6 * size;
+        if (type == 4) {
+            std::vector<QJsonObject>& boxes = *out;
+            const char* faces[6] = {"x min", "x max", "y min", "y max", "z min", "z max"};
+            for (int k = 0; k < 6; ++k) {
+                if (o.number(QString::fromLatin1(faces[k]), 0) == 0) continue;
+                const int axis = k / 2;
+                const bool high = k % 2;
+                if (axis == p.normal) continue;
+                const double at = axis == p.u ? (high ? u1 : u0) : (high ? v1 : v0);
+                const QJsonArray box = axis == p.u ? QJsonArray{inUnit(at - e), inUnit(v0 - e), inUnit(at + e), inUnit(v1 + e)}
+                                                   : QJsonArray{inUnit(u0 - e), inUnit(at - e), inUnit(u1 + e), inUnit(at + e)};
+                boxes.push_back(QJsonObject{{QStringLiteral("box"), box}});
+            }
+            return !boxes.empty();
+        }
+        if (type == 6) {
+            const QString a = o.text(QStringLiteral("material 1")), b = o.text(QStringLiteral("material 2"));
+            if (!labelsOf.count(a) || !labelsOf.count(b)) return false;
+            out->push_back(QJsonObject{{QStringLiteral("between"), QJsonArray{QJsonArray::fromStringList(labelsOf.at(a)), QJsonArray::fromStringList(labelsOf.at(b))}}});
+            return true;
+        }
+        if (type == 3) {
+            const QString solid = o.text(QStringLiteral("solid"));
+            for (const Shape& sh : shapes)
+                if (sh.name == solid) {
+                    out->push_back(QJsonObject{{QStringLiteral("of"), QJsonArray{sh.label}}});
+                    return true;
+                }
+        }
+        return false;
+    };
+    const double norm = solver.number(QStringLiteral("norm length"), 1e-6);
+    for (const Object& o : scene.objects) {
+        std::vector<QJsonObject> sels;
+        if (o.kind == QLatin1String("tbc")) {
+            if (!surfaces(o, &sels)) {
+                notes << tr("%1: its surfaces (type %2) not found here: left out").arg(o.name()).arg(o.number(QStringLiteral("surface type"), -1));
+                continue;
+            }
+            for (const QJsonObject& sel : sels)
+                features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("temperature")}, {QStringLiteral("label"), o.name()},
+                                            {QStringLiteral("T0"), QStringLiteral("%1[K]").arg(num(o.number(QStringLiteral("temperature"), 300)))}, {QStringLiteral("selection"), sel}});
+        } else if (o.kind == QLatin1String("convection")) {
+            if (!surfaces(o, &sels)) {
+                notes << tr("%1: its surfaces not found here: left out").arg(o.name());
+                continue;
+            }
+            for (const QJsonObject& sel : sels)
+                features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("flux")}, {QStringLiteral("label"), o.name()}, {QStringLiteral("kind"), QStringLiteral("convective")},
+                                            {QStringLiteral("h"), QStringLiteral("%1[W/(m^2*K)]").arg(num(o.number(QStringLiteral("h convection"), 10)))},
+                                            {QStringLiteral("Text"), QStringLiteral("%1[K]").arg(num(o.number(QStringLiteral("ambient temperature"), 300)))},
+                                            {QStringLiteral("selection"), sel}});
+            if (o.number(QStringLiteral("convection model"), 0) != 0) notes << tr("%1: its convection model not the constant h: h as given").arg(o.name());
+        } else if (o.kind == QLatin1String("heatsource")) {
+            const QString solid = o.text(QStringLiteral("volume solid"));
+            QStringList on;
+            for (const Shape& sh : shapes)
+                if (sh.name == solid) on << sh.label;
+            if (on.isEmpty()) {
+                notes << tr("%1: its solid %2 is not in the region: left out").arg(o.name(), solid);
+                continue;
+            }
+            // (Its power over the norm length - the model's thickness -, or
+            // over its own equivalent length.)
+            double P = o.number(QStringLiteral("total power"), 0);
+            if (o.number(QStringLiteral("use solver norm length"), 1) == 0 && o.number(QStringLiteral("equivalent length"), 0) > 0)
+                P *= norm / o.number(QStringLiteral("equivalent length"));
+            features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("source")}, {QStringLiteral("label"), o.name()}, {QStringLiteral("kind"), QStringLiteral("power")},
+                                        {QStringLiteral("P0"), QStringLiteral("%1[W]").arg(num(P))}, {QStringLiteral("selection"), only(on)}});
+        } else if (o.kind == QLatin1String("heatflux")) {
+            notes << tr("%1: a heat flux condition not read: left out").arg(o.name());
+        }
+    }
+    QJsonObject physics{{QStringLiteral("type"), QStringLiteral("heat")}, {QStringLiteral("tag"), QStringLiteral("ht")}, {QStringLiteral("features"), features}};
+    if (!fluids.isEmpty()) physics.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}, {QStringLiteral("except"), only(fluids)}});
+    const QJsonObject component{{QStringLiteral("unit"), unit},
+                                {QStringLiteral("thickness"), QStringLiteral("%1[um]").arg(num(norm * 1e6))},
+                                {QStringLiteral("geometry"), geometry},
+                                {QStringLiteral("materials"), materials},
+                                {QStringLiteral("physics"), QJsonArray{physics}},
+                                {QStringLiteral("mesh"), QJsonObject{{QStringLiteral("size"), QStringLiteral("fine")}}}};
+    const QJsonArray plots{QJsonObject{{QStringLiteral("type"), QStringLiteral("plotgroup")}, {QStringLiteral("label"), tr("Temperature")},
+                                       {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("surface")}, {QStringLiteral("expression"), QStringLiteral("T")}}}}}};
+    out.model = model(tr("%1 (Lumerical HEAT)").arg(scene.source), tr("Imported from %1: its cross-section, %2 structures.").arg(scene.source).arg(shapes.size()), component,
+                      QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("study")}, {QStringLiteral("label"), tr("Study 1")},
+                                             {QStringLiteral("steps"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("stationary")}}}}}},
+                      QJsonObject{{QStringLiteral("plots"), plots}});
+    out.notes = QStringList{tr("%1: a HEAT cross-section (%2), %3 structures, norm length %4 µm")
+                                .arg(scene.source, p.normal == 1 ? QStringLiteral("x-z") : p.normal == 0 ? QStringLiteral("y-z") : QStringLiteral("x-y"))
+                                .arg(shapes.size())
+                                .arg(num(norm * 1e6))}
+                + notes + scene.notes;
+    return out;
 }
 
 // --- MQW ------------------------------------------------------------------
@@ -1276,7 +2070,88 @@ struct Bytes {
         p += n;
         return s;
     }
+    /// A tagged value - a structure group's, a polygon's -: its tag (0 an
+    /// int, 1 a number, 2 a text - its length 0xFFFFFFFF none -, 3 a
+    /// matrix: its name, its elements, dimensions, whether real, its values
+    /// - a complex one's real parts, then imaginary ones -), its value.
+    struct Tagged {
+        int tag = -1;
+        double x = 0;   // (an int's, a number's)
+        QString s;
+        std::vector<double> m;
+        std::vector<quint32> dims;
+    };
+    bool tagged(Tagged& v)
+    {
+        v = Tagged{};
+        if (bad || p >= b.size()) {
+            bad = true;
+            return false;
+        }
+        v.tag = quint8(b[int(p)]);
+        ++p;
+        if (v.tag == 0)
+            v.x = double(qint32(u32()));
+        else if (v.tag == 1)
+            v.x = f64();
+        else if (v.tag == 2) {
+            const quint32 n = u32();
+            if (n != 0xFFFFFFFFu) {
+                if (bad || n > 1u << 24 || p + n > b.size()) bad = true;
+                else {
+                    v.s = QString::fromUtf8(b.mid(int(p), int(n))).remove(QChar(0));
+                    p += n;
+                }
+            }
+        } else if (v.tag == 3) {
+            const quint32 name = u32();
+            if (bad || name > 256 || p + name > b.size()) bad = true;
+            else {
+                p += name;
+                const quint32 count = u32(), nd = u32();
+                if (nd > 8) bad = true;
+                for (quint32 i = 0; i < nd && !bad; ++i) v.dims.push_back(u32());
+                const quint32 real = u32();
+                u32();
+                const quint64 values = quint64(count) * (real == 1 ? 1 : 2);
+                if (bad || values > (1u << 24) || p + qint64(values) * 8 > b.size()) bad = true;
+                else {
+                    v.m.resize(std::size_t(values));
+                    for (double& x : v.m) x = f64();
+                }
+            }
+        } else
+            bad = true;
+        return !bad;
+    }
 };
+
+/// A structure's mesh order among its tagged values: after its rotations
+/// and its display's opacity (a number), a flag - 0 its own order, 1 its
+/// material's -, the order, then a matrix (a polygon's its place). \a own:
+/// the flag (-1 none); \a after: where that matrix is.
+int meshOrderOf(const std::vector<Bytes::Tagged>& v, std::size_t from, int* own, std::size_t* after = nullptr)
+{
+    for (std::size_t i = from; i + 3 < v.size(); ++i)
+        if (v[i].tag == 1 && v[i + 1].tag == 0 && v[i + 2].tag == 0 && v[i + 3].tag == 3) {
+            *own = v[i + 1].x == 0 ? 1 : 0;
+            if (after) *after = i + 3;
+            return int(v[i + 2].x);
+        }
+    *own = -1;
+    if (after) *after = v.size();
+    return 2;
+}
+
+/// Whether a structure's rotations (three axes, then their angles: tagged
+/// values from \a from) turn it.
+bool turnedBy(const std::vector<Bytes::Tagged>& v, std::size_t from)
+{
+    if (v.size() < from + 4 || v[from + 3].tag != 3) return false;
+    for (double a : v[from + 3].m)
+        if (a != 0) return true;
+    return false;
+}
 
 } // namespace
 
@@ -1320,73 +2195,224 @@ Scene readModeProject(const QByteArray& b, const QString& source)
             if (e.size() == 9)
                 for (int c = 0; c < 3; ++c) m.n[c] = std::sqrt(std::max(0.0, e[c * 4].toDouble()));
             m.anisotropic = std::abs(m.n[0] - m.n[1]) > 1e-12 || std::abs(m.n[0] - m.n[2]) > 1e-12;
+        } else if (type == 6) {
+            // Sellmeier's: n² = c0 + c1 λ²/(λ² - c2) + c3 λ²/(λ² - c4) +
+            // c5 λ²/(λ² - c6), λ in µm; each coefficient diagonal.
+            m.type = QStringLiteral("sellmeier");
+            for (int c = 0; c < 7; ++c) {
+                const QVariantList e = d.value(QStringLiteral("coefficients%1").arg(c)).toList();
+                for (int a = 0; a < 3; ++a) m.sellmeier[std::size_t(a)][std::size_t(c)] = e.size() == 9 ? e[a * 4].toDouble() : 0;
+            }
+            m.anisotropic = m.sellmeier[0] != m.sellmeier[1] || m.sellmeier[0] != m.sellmeier[2];
+        } else if (type == 13) {
+            // Temperature dependent: another material's index, and dn/dT (T
+            // - Tref) (diagonal); free carriers' terms (Soref's) besides.
+            m.type = QStringLiteral("thermal");
+            m.base = d.value(QStringLiteral("basematerial")).toString();
+            const QVariantList dn = d.value(QStringLiteral("dnDt")).toList(), dk = d.value(QStringLiteral("dkDt")).toList(),
+                                tr0 = d.value(QStringLiteral("tref")).toList();
+            for (int a = 0; a < 3; ++a) m.dndT[a] = dn.size() == 9 ? dn[a * 4].toDouble() : 0;
+            m.dkdT = dk.size() == 9 ? dk[0].toDouble() : 0;
+            m.tref = tr0.size() == 9 ? tr0[0].toDouble() : 300;
+            m.thermal = d.value(QStringLiteral("includeTemperatureEffects"), 1).toInt() != 0;
+            for (const char* k : {"dnAn", "dnAp", "daAn", "daAp"}) {
+                const QVariantList c = d.value(QString::fromLatin1(k)).toList();
+                if (c.size() == 9 && c[0].toDouble() != 0) m.carriers = true;
+            }
         } else
             m.type = tr("kind %1").arg(type);
         byId[d.value(QStringLiteral("materialuuid")).toString()] = m.name;
         scene.materials.push_back(m);
     }
+    for (Material& m : scene.materials)
+        if (m.type == QLatin1String("thermal")) m.base = byId.count(m.base) ? byId.at(m.base) : QString();
     // Its objects: a tree - a solver's (1001) its properties, a structure's
-    // (1000) its box and index before them; each with its children.
-    std::function<void(int, bool)> record = [&r, &b, &scene, &byId, &source, &record](int depth, bool owned) {
+    // (1000) its shape and values, then its properties; each its children.
+    // A rectangle's (6) and a pyramid's (9) values a box - its index, its
+    // extent -, its index and name as texts, then tagged ones (rotations,
+    // mesh order); a polygon's (11) and a structure group's (13) all tagged,
+    // a group's then its script and its own properties. A group's children
+    // the structures its script made, as it saved them: without their kind
+    // and id, a polygon without a count of children.
+    struct Place {
+        double x = 0, y = 0, z = 0;
+    };
+    auto put = [](Object& o, const QString& k, const Value& v) {
+        o.props[k] = v;
+        o.history.emplace_back(k, v);
+    };
+    // (Its properties, after its values; where they start.)
+    auto dictionary = [&b, &r](QVariantMap& d) -> qint64 {
+        static const QByteArray first("\x0b\x00\x00\x00" "acf_custom\x00", 15);
+        const qint64 dict = b.indexOf(first, r.p) - 4;
+        if (r.bad || dict < r.p || dict - r.p > 4096) {
+            r.bad = true;
+            return -1;
+        }
+        bool ok = false;
+        qint64 used = 0;
+        d = properties(b, &ok, dict, &used);
+        if (!ok) {
+            r.bad = true;
+            return -1;
+        }
+        r.p = dict + used;
+        return dict;
+    };
+    auto material = [&](Object& o, const QVariantMap& d, const QString& index, const std::vector<Bytes::Tagged>& v, std::size_t from) {
+        put(o, QStringLiteral("index"), Value::text(index));
+        const QString id = d.value(QStringLiteral("materialuuid")).toString();
+        put(o, QStringLiteral("material"), Value::text(byId.count(id) ? byId.at(id) : QStringLiteral("<Object defined dielectric>")));
+        int own = -1;
+        const int order = meshOrderOf(v, from, &own);
+        if (own >= 0) {
+            put(o, QStringLiteral("override mesh order from material database"), Value::number(own));
+            put(o, QStringLiteral("mesh order"), Value::number(order));
+        }
+        if (turnedBy(v, from)) scene.notes << tr("%1: turned - its rotations not read: taken unturned").arg(o.name());
+    };
+    std::function<void(int, bool, bool, Place)> record = [&r, &dictionary, &scene, &b, &put, &material, &source, &record](int depth, bool owned, bool inner, Place at) {
         if (r.bad || depth > 32) {
             r.bad = true;
             return;
         }
-        const quint32 kind = r.u32();
-        const quint32 n = r.u32();
-        if (r.bad || n > 64) {
-            r.bad = true;
-            return;
+        quint32 kind = 1000;
+        if (!inner) {
+            kind = r.u32();
+            const quint32 n = r.u32();
+            if (r.bad || n > 64) {
+                r.bad = true;
+                return;
+            }
+            r.p += n;   // (its id)
         }
-        r.p += n;   // (its id)
         quint32 children = 0;
         bool solver = false;   // (its children its own: an FDE's region, its data)
+        bool group = false;
+        Place inside = at;     // (where its children's coordinates are from)
         if (kind == 1000) {
             const quint32 shape = r.u32();
-            r.u32();
-            r.u32();
-            double box[7];
-            for (double& x : box) x = r.f64();
-            const QString index = r.text();
-            r.u32();
-            r.u32();
-            const QString name = r.text();
-            static const QByteArray first("\x0b\x00\x00\x00" "acf_custom\x00", 15);
-            const qint64 dict = b.indexOf(first, r.p) - 4;
-            if (r.bad || dict < r.p || dict - r.p > 4096) {
-                r.bad = true;
-                return;
-            }
-            bool ok = false;
-            qint64 used = 0;
-            const QVariantMap d = properties(b, &ok, dict, &used);
-            if (!ok) {
-                r.bad = true;
-                return;
-            }
-            r.p = dict + used;
-            children = r.u32();
-            if (shape != 6) {
-                scene.notes << tr("%1: a structure of a kind not read (%2): only rectangles are").arg(name).arg(shape);
-            } else if (depth > 0 && !owned) {
-                // (Its box: index, y min, x min, y max, x max, z min, z max.)
-                Object o;
-                o.kind = QStringLiteral("rect");
-                auto put = [&](const QString& k, const Value& v) {
-                    o.props[k] = v;
-                    o.history.emplace_back(k, v);
-                };
-                put(QStringLiteral("name"), Value::text(name));
-                put(QStringLiteral("x min"), Value::number(box[2]));
-                put(QStringLiteral("x max"), Value::number(box[4]));
-                put(QStringLiteral("y min"), Value::number(box[1]));
-                put(QStringLiteral("y max"), Value::number(box[3]));
-                put(QStringLiteral("z min"), Value::number(box[5]));
-                put(QStringLiteral("z max"), Value::number(box[6]));
-                put(QStringLiteral("index"), Value::text(index));
-                const QString id = d.value(QStringLiteral("materialuuid")).toString();
-                put(QStringLiteral("material"), Value::text(byId.count(id) ? byId.at(id) : QStringLiteral("<Object defined dielectric>")));
-                scene.objects.push_back(o);
+            if (shape == 11 || shape == 13) {
+                const quint32 nf = r.u32();
+                if (r.bad || nf > 256) {
+                    r.bad = true;
+                    return;
+                }
+                std::vector<Bytes::Tagged> f(nf);
+                for (Bytes::Tagged& v : f)
+                    if (!r.tagged(v)) return;
+                if (shape == 13) {
+                    const quint32 more = r.u32();
+                    if (r.bad || more > 4096) {
+                        r.bad = true;
+                        return;
+                    }
+                    Bytes::Tagged v;
+                    for (quint32 i = 0; i < more; ++i)
+                        if (!r.tagged(v)) return;
+                }
+                QVariantMap d;
+                if (dictionary(d) < 0) return;
+                if (shape == 13) {
+                    // (Its rotations 0-3, name 14, place 15-17.)
+                    children = r.u32();
+                    group = true;
+                    const QString name = f.size() > 17 ? f[14].s : QString();
+                    if (f.size() > 17 && d.value(QStringLiteral("use_relative_coordinates"), 1).toInt() != 0)
+                        inside = Place{at.x + f[15].x, at.y + f[16].x, at.z + f[17].x};
+                    if (turnedBy(f, 0)) scene.notes << tr("%1: a structure group turned - its rotations not read: its structures taken unturned").arg(name);
+                    if (depth > 0 && !owned)
+                        scene.notes << tr("%1: a structure group - its structures as its script made them when the project was saved (the script not run)").arg(name);
+                } else {
+                    // A polygon: its index (1), its vertices (2: x and y in
+                    // turn), z min and max (3, 4), its index as a text (5),
+                    // its name (8), rotations (9-12), its mesh order, its
+                    // place (x, y: the matrix after the order).
+                    if (r.p + 4 <= b.size() && Bytes{b, r.p}.u32() == 0) r.u32();   // (a count of children, none)
+                    const bool fits = f.size() > 12 && f[2].tag == 3 && f[2].dims.size() == 2 && f[2].dims[0] == 2 && f[2].dims[1] >= 3 &&
+                                      f[2].m.size() >= std::size_t(2 * f[2].dims[1]) && f[3].tag == 1 && f[4].tag == 1 && f[8].tag == 2;
+                    if (!fits) {
+                        scene.notes << tr("%1: a polygon that does not read here: left out").arg(f.size() > 8 ? f[8].s : QString());
+                    } else if (depth > 0 && !owned) {
+                        Object o;
+                        o.kind = QStringLiteral("poly");
+                        put(o, QStringLiteral("name"), Value::text(f[8].s));
+                        int own = -1;
+                        std::size_t after = 0;
+                        meshOrderOf(f, 9, &own, &after);
+                        const bool placed = after < f.size() && f[after].m.size() == 2;
+                        put(o, QStringLiteral("x"), Value::number(at.x + (placed ? f[after].m[0] : 0)));
+                        put(o, QStringLiteral("y"), Value::number(at.y + (placed ? f[after].m[1] : 0)));
+                        put(o, QStringLiteral("z min"), Value::number(at.z + f[3].x));
+                        put(o, QStringLiteral("z max"), Value::number(at.z + f[4].x));
+                        const int nv = int(f[2].dims[1]);
+                        std::vector<double> xy(std::size_t(2 * nv));
+                        for (int i = 0; i < nv; ++i) {
+                            xy[std::size_t(i)] = f[2].m[std::size_t(2 * i)];
+                            xy[std::size_t(nv + i)] = f[2].m[std::size_t(2 * i + 1)];
+                        }
+                        put(o, QStringLiteral("vertices"), Value::matrix(std::move(xy), nv, 2));
+                        material(o, d, f[5].tag == 2 && !f[5].s.isEmpty() ? f[5].s : QString::number(f[1].x), f, 9);
+                        scene.objects.push_back(o);
+                    }
+                }
+            } else {
+                r.u32();
+                r.u32();
+                const bool known = shape == 6 || shape == 9;
+                double box[9] = {};
+                QString index, name;
+                if (known) {
+                    for (int i = 0; i < (shape == 9 ? 9 : 7); ++i) box[i] = r.f64();
+                    index = r.text();
+                    r.u32();
+                    r.u32();
+                    name = r.text();
+                }
+                const qint64 from = r.p;
+                QVariantMap d;
+                const qint64 dict = dictionary(d);
+                if (dict < 0) return;
+                children = r.u32();
+                std::vector<Bytes::Tagged> tail;
+                {
+                    // (Read no further than its properties.)
+                    const QByteArray upTo = QByteArray::fromRawData(b.constData(), qsizetype(dict));
+                    Bytes t{upTo, from};
+                    Bytes::Tagged v;
+                    while (t.p < dict && t.tagged(v)) tail.push_back(v);
+                }
+                const Place& o0 = at;
+                if (!known) {
+                    scene.notes << tr("a structure of a kind not read (%1): rectangles, pyramids, polygons and structure groups are").arg(shape);
+                } else if (depth > 0 && !owned) {
+                    Object o;
+                    put(o, QStringLiteral("name"), Value::text(name));
+                    if (shape == 6) {
+                        // (Its box: index, y min, x min, y max, x max, z min, z max.)
+                        o.kind = QStringLiteral("rect");
+                        put(o, QStringLiteral("x min"), Value::number(o0.x + box[2]));
+                        put(o, QStringLiteral("x max"), Value::number(o0.x + box[4]));
+                        put(o, QStringLiteral("y min"), Value::number(o0.y + box[1]));
+                        put(o, QStringLiteral("y max"), Value::number(o0.y + box[3]));
+                        put(o, QStringLiteral("z min"), Value::number(o0.z + box[5]));
+                        put(o, QStringLiteral("z max"), Value::number(o0.z + box[6]));
+                    } else {
+                        // (A pyramid's: index, x, y, its x and y spans at
+                        // the bottom, at the top, z min, z max.)
+                        o.kind = QStringLiteral("pyramid");
+                        put(o, QStringLiteral("x"), Value::number(o0.x + box[1]));
+                        put(o, QStringLiteral("y"), Value::number(o0.y + box[2]));
+                        put(o, QStringLiteral("x span bottom"), Value::number(box[3]));
+                        put(o, QStringLiteral("y span bottom"), Value::number(box[4]));
+                        put(o, QStringLiteral("x span top"), Value::number(box[5]));
+                        put(o, QStringLiteral("y span top"), Value::number(box[6]));
+                        put(o, QStringLiteral("z min"), Value::number(o0.z + box[7]));
+                        put(o, QStringLiteral("z max"), Value::number(o0.z + box[8]));
+                    }
+                    material(o, d, index, tail, 0);
+                    scene.objects.push_back(o);
+                }
             }
         } else if (kind == 1001) {
             bool ok = false;
@@ -1400,6 +2426,8 @@ Scene readModeProject(const QByteArray& b, const QString& source)
             r.u32();
             children = r.u32();
             const QString name = d.value(QStringLiteral("name")).toString().section(QStringLiteral("::"), -1);
+            if (depth == 0 && !d.value(QStringLiteral("setupscript")).toString().trimmed().isEmpty())
+                scene.notes << tr("its model's setup script not run: its objects as it set them when the project was saved");
             if (d.contains(QStringLiteral("MODEType"))) {
                 solver = true;
                 const int t = d.value(QStringLiteral("MODEType")).toInt();
@@ -1409,32 +2437,30 @@ Scene readModeProject(const QByteArray& b, const QString& source)
                 }
                 Object o;
                 o.kind = QStringLiteral("fde");
-                auto put = [&](const QString& k, const Value& v) {
-                    o.props[k] = v;
-                    o.history.emplace_back(k, v);
-                };
-                put(QStringLiteral("name"), Value::text(name));
-                put(QStringLiteral("solver type"), Value::text(QStringLiteral("2D Z normal")));
-                put(QStringLiteral("x"), Value::number(d.value(QStringLiteral("GUIx")).toDouble()));
-                put(QStringLiteral("x span"), Value::number(d.value(QStringLiteral("GUIwidth")).toDouble()));
-                put(QStringLiteral("y"), Value::number(d.value(QStringLiteral("GUIy")).toDouble()));
-                put(QStringLiteral("y span"), Value::number(d.value(QStringLiteral("GUIheight")).toDouble()));
-                put(QStringLiteral("z"), Value::number(0));
-                put(QStringLiteral("dx"), Value::number(d.value(QStringLiteral("dx")).toDouble()));
-                put(QStringLiteral("dy"), Value::number(d.value(QStringLiteral("dy")).toDouble()));
-                put(QStringLiteral("background index"), Value::number(d.value(QStringLiteral("refractiveIndex"), 1.0).toDouble()));
+                auto set = [&](const QString& k, const Value& v) { put(o, k, v); };
+                set(QStringLiteral("name"), Value::text(name));
+                set(QStringLiteral("solver type"), Value::text(QStringLiteral("2D Z normal")));
+                set(QStringLiteral("x"), Value::number(d.value(QStringLiteral("GUIx")).toDouble()));
+                set(QStringLiteral("x span"), Value::number(d.value(QStringLiteral("GUIwidth")).toDouble()));
+                set(QStringLiteral("y"), Value::number(d.value(QStringLiteral("GUIy")).toDouble()));
+                set(QStringLiteral("y span"), Value::number(d.value(QStringLiteral("GUIheight")).toDouble()));
+                set(QStringLiteral("z"), Value::number(0));
+                set(QStringLiteral("dx"), Value::number(d.value(QStringLiteral("dx")).toDouble()));
+                set(QStringLiteral("dy"), Value::number(d.value(QStringLiteral("dy")).toDouble()));
+                set(QStringLiteral("background index"), Value::number(d.value(QStringLiteral("refractiveIndex"), 1.0).toDouble()));
+                set(QStringLiteral("simulation temperature"), Value::number(d.value(QStringLiteral("simulationTemperature"), 300.0).toDouble()));
                 const double f = d.value(QStringLiteral("modeFrequency")).toDouble();
-                if (f > 0) put(QStringLiteral("analysis/wavelength"), Value::number(C0 / f));
-                put(QStringLiteral("analysis/number of trial modes"), Value::number(d.value(QStringLiteral("numberOfModes"), 4).toDouble()));
+                if (f > 0) set(QStringLiteral("analysis/wavelength"), Value::number(C0 / f));
+                set(QStringLiteral("analysis/number of trial modes"), Value::number(d.value(QStringLiteral("numberOfModes"), 4).toDouble()));
                 if (d.value(QStringLiteral("useMaxIndex"), 1).toInt() == 0) {
-                    put(QStringLiteral("analysis/use max index"), Value::number(0));
-                    put(QStringLiteral("analysis/n"), Value::number(d.value(QStringLiteral("mRefIndex")).toString().toDouble()));
+                    set(QStringLiteral("analysis/use max index"), Value::number(0));
+                    set(QStringLiteral("analysis/n"), Value::number(d.value(QStringLiteral("mRefIndex")).toString().toDouble()));
                 }
                 const double stop = d.value(QStringLiteral("stopFrequency")).toDouble();
                 const int points = d.value(QStringLiteral("numberOfPoints")).toInt();
                 if (stop > 0 && f > 0 && std::abs(stop - f) > 1e-9 * f && points > 1) {
-                    put(QStringLiteral("analysis/stop wavelength"), Value::number(C0 / stop));
-                    put(QStringLiteral("analysis/number of points"), Value::number(points));
+                    set(QStringLiteral("analysis/stop wavelength"), Value::number(C0 / stop));
+                    set(QStringLiteral("analysis/number of points"), Value::number(points));
                 }
                 // (Its sides: PML where its pmlMODE flags one; its boundary
                 // codes 1 metal - others not known.)
@@ -1444,20 +2470,22 @@ Scene readModeProject(const QByteArray& b, const QString& source)
                 for (int k = 0; k < 4; ++k) {
                     const int code = d.value(QString::fromLatin1(codes[k]), 1).toInt();
                     const bool isPml = pml.size() == 6 && pml[k].toInt() != 0;
-                    put(QString::fromLatin1(sides[k]), Value::text(isPml ? QStringLiteral("PML") : QStringLiteral("Metal")));
+                    set(QString::fromLatin1(sides[k]), Value::text(isPml ? QStringLiteral("PML") : QStringLiteral("Metal")));
                     if (!isPml && code != 1) scene.notes << tr("its %1: boundary code %2 not known - metal taken").arg(QLatin1String(sides[k])).arg(code);
                 }
                 scene.objects.push_back(o);
             } else if (name == QLatin1String("mesh")) {
                 scene.notes << tr("%1: a mesh override - the model's mesh its own").arg(name);
+            } else if (name == QLatin1String("temperature") && d.value(QStringLiteral("type")).toInt() == 3) {
+                scene.notes << tr("%1: a temperature import - its data a script's (not saved with the project): the FDE's temperature taken").arg(name);
             }
         } else {
             r.bad = true;
             return;
         }
-        for (quint32 i = 0; i < children && !r.bad && scene.error.isEmpty(); ++i) record(depth + 1, owned || solver);
+        for (quint32 i = 0; i < children && !r.bad && scene.error.isEmpty(); ++i) record(depth + 1, owned || solver, inner || group, inside);
     };
-    record(0, false);
+    record(0, false, false, Place{});
     if (r.bad && scene.error.isEmpty()) scene.error = tr("%1: its objects do not read (at byte %2)").arg(source).arg(r.p);
     return scene;
 }
@@ -1473,6 +2501,8 @@ LumericalImport buildModel(const Scene& scene)
         if (o.kind == QLatin1String("fde")) return buildMode(scene, o);
     for (const Object& o : scene.objects)
         if (o.kind == QLatin1String("charge")) return buildCharge(scene, o);
+    for (const Object& o : scene.objects)
+        if (o.kind == QLatin1String("heat")) return buildHeat(scene, o);
     if (scene.stack.kind != Value::Null) return buildMqw(scene);
     out.error = tr("%1 makes no FDE region, CHARGE solver or mqwindex stack").arg(scene.source);
     return out;

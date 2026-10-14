@@ -517,11 +517,20 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
         if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
             return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+        // (Its folder made if it is not there.)
+        if (!QDir().mkpath(QFileInfo(file).absolutePath()))
+            return errorResult(tr("%1 cannot be made: the model is not written.").arg(QDir::toNativeSeparators(QFileInfo(file).absolutePath())));
         MultiphysicsDoc* doc = a_app->newMultiphysicsModel();
         doc->setModel(*m, tr("Model"));
         doc->undoStack()->clear();
         doc->setName(file);
-        if (doc->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
+        if (doc->save() != 0) {
+            // (Not left open, unsaved, in the file's name: a later import or
+            // write of it would meet this tab.)
+            doc->setDocChanged(false);
+            a_app->slotFileClose(a_app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+            return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
+        }
         a_app->titleDocumentTab(doc);
         QString built;
         doc->buildGeometry(&built);

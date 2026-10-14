@@ -266,6 +266,36 @@ void TestFemEngine::expressions()
     f.setFunction(QStringLiteral("tab"), tab);
     QCOMPARE(Expression::compile(QStringLiteral("tab(1.5)"), f).constant(), 25.0);
     QCOMPARE(Expression::compile(QStringLiteral("tab(9)"), f).constant(), 40.0);
+    // Of two, on a grid: bilinear between its points - f(u, v) = 10 u + 2 u
+    // v + 2 v exactly, bilinear itself -, constant beyond.
+    Scope::Function tab2;
+    tab2.arguments << QStringLiteral("u") << QStringLiteral("v");
+    auto grid = std::make_shared<Expression::Table>();
+    grid->x = {0, 1, 3};
+    grid->grid = {0, 2};
+    grid->z = {0, 4, 10, 18, 30, 46};
+    tab2.table = grid;
+    f.setFunction(QStringLiteral("tab2"), tab2);
+    QCOMPARE(Expression::compile(QStringLiteral("tab2(2, 1)"), f).constant(), 26.0);
+    QCOMPARE(Expression::compile(QStringLiteral("tab2(0.5, 0.5)"), f).constant(), 6.5);
+    QCOMPARE(Expression::compile(QStringLiteral("tab2(5, 3)"), f).constant(), 46.0);
+    QCOMPARE(Expression::compile(QStringLiteral("tab2(-1, 1)"), f).constant(), 2.0);
+    QVERIFY(!Expression::compile(QStringLiteral("tab2(1)"), f).isValid());
+    // A model's: its rows (x, y, f) in any order, in their units; a table
+    // not every x with every y refused.
+    const QByteArray json = R"json({"format": "qucs-s multiphysics 1",
+        "functions": [{"type": "interpolation", "name": "g", "dimension": "2", "argunit": "um, um", "unit": "1/m^3",
+                       "grid": [[3, 2, 46], [0, 0, 0], [1, 2, 18], [0, 2, 4], [3, 0, 30], [1, 0, 10]]},
+                      {"type": "interpolation", "name": "bad", "dimension": "2", "grid": [[0, 0, 1], [1, 0, 2], [0, 1, 3]]}],
+        "parameters": [{"name": "a", "expression": "g(2[um], 1[um])"}, {"name": "b", "expression": "g(0.5e-6, 1e-6)"}]})json";
+    const Model m = modelOf(json);
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+    QVERIFY2(!ps->errors.contains(QStringLiteral("a")), qPrintable(ps->errors.value(QStringLiteral("a"))));
+    QCOMPARE(ps->values.value(QStringLiteral("a")), 26.0);
+    QCOMPARE(ps->values.value(QStringLiteral("b")), 8.0);
+    QCOMPARE(ps->dims.value(QStringLiteral("a")), Dim::of(-3));
+    QVERIFY2(ps->errors.value(QStringLiteral("bad")).contains(QLatin1String("not a grid of every x with every y (3 points for 2 x 2)")),
+             qPrintable(ps->errors.value(QStringLiteral("bad"))));
 }
 
 void TestFemEngine::modelRoundTrip()

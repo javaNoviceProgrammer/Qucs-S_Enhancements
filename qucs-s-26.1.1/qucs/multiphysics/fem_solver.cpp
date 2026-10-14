@@ -1169,6 +1169,10 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                 });
             }
             define(p + QStringLiteral("R"), rate, tr("net recombination rate"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.R; }));
+            define(p + QStringLiteral("taun"), Dim::of(0, 0, 1), tr("electrons' SRH lifetime: by doping, over 1 + Γ with trap-assisted tunnelling"),
+                   K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.taun; }));
+            define(p + QStringLiteral("taup"), Dim::of(0, 0, 1), tr("holes' SRH lifetime: by doping, over 1 + Γ with trap-assisted tunnelling"),
+                   K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.taup; }));
             define(p + QStringLiteral("mun"), mobility, tr("electron mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mun; }));
             // The heat the carriers leave: their Joule heat as solved (each
             // edge's current times its quasi-Fermi potential's drop, by

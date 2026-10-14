@@ -17,6 +17,8 @@
 #include <QSet>
 
 #include <algorithm>
+#include <map>
+#include <set>
 #include <functional>
 
 namespace qucs_s::fem {
@@ -230,12 +232,23 @@ QList<NodeKind> makeKinds()
         rows.label = tr("Table (x, f(x))");
         rows.kind = P::Rows;
         rows.defaultValue = QJsonArray();
+        P grid;
+        grid.key = QStringLiteral("grid");
+        grid.label = tr("Table (x, y, f(x, y))");
+        grid.kind = P::Rows;
+        grid.choiceLabels = {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("f")};
+        grid.defaultValue = QJsonArray();
+        grid.tooltip = tr("Every point of a rectilinear grid: each x with each y");
         add({QStringLiteral("interpolation"), tr("Interpolation"), QStringLiteral("function"), QStringLiteral("function"), Level::None,
-             {text(QStringLiteral("name"), tr("Function name"), QStringLiteral("int")), rows,
-              text(QStringLiteral("argunit"), tr("Argument's unit"), QString()),
+             {text(QStringLiteral("name"), tr("Function name"), QStringLiteral("int")),
+              choice(QStringLiteral("dimension"), tr("Arguments"), {QStringLiteral("1"), QStringLiteral("2")},
+                     {tr("One: f(x)"), tr("Two: f(x, y) on a grid")}, QStringLiteral("1")),
+              shownIf(rows, QStringLiteral("dimension=1")), shownIf(grid, QStringLiteral("dimension=2")),
+              text(QStringLiteral("argunit"), tr("Arguments' units"), QString(), tr("Two split by a comma for f(x, y): um, um")),
               text(QStringLiteral("unit"), tr("Function's unit"), QString())},
              {}, {}, false, false, QStringLiteral("ip"),
-             tr("A function of one argument given by a table: linear between its points, constant beyond them.")});
+             tr("A function given by a table: of one argument, linear between its points; of two, on a grid of every x with "
+                "every y, bilinear between them (an imported optical generation map); constant beyond them.")});
     }
     add({QStringLiteral("component"), tr("Component (2D)"), QString(), QStringLiteral("component"), Level::None,
          {choice(QStringLiteral("space"), tr("Space"), {QStringLiteral("2D"), QStringLiteral("axisymmetric")},
@@ -884,7 +897,8 @@ QList<NodeKind> makeKinds()
           QStringLiteral("semiconductor/insulation"),
           QStringLiteral("semiconductor/ohmic"),
           QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge"),
-          QStringLiteral("semiconductor/polarization"), QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/fn")},
+          QStringLiteral("semiconductor/polarization"), QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/surfacerec"),
+          QStringLiteral("semiconductor/fn")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
             "p (Boltzmann's statistics, or Fermi-Dirac's; band gap narrowing, dopants ionized in part, if the material model asks), "
@@ -912,9 +926,11 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("source=user")),
           shownIf(expr(QStringLiteral("mup"), tr("Hole mobility µp"), QStringLiteral("m^2/(V*s)"), QStringLiteral("450[cm^2/(V*s)]")),
                   QStringLiteral("source=user")),
-          choice(QStringLiteral("mobility"), tr("Mobility"), {QStringLiteral("constant"), QStringLiteral("doping")},
-                 {tr("Constant (the lattice's)"), tr("By doping (Caughey and Thomas)")}, QStringLiteral("constant"),
-                 tr("By doping: µmin + (µ - µmin)/(1 + (N/Nref)^α), N the donors and acceptors together")),
+          choice(QStringLiteral("mobility"), tr("Mobility"), {QStringLiteral("constant"), QStringLiteral("doping"), QStringLiteral("masetti")},
+                 {tr("Constant (the lattice's)"), tr("By doping (Caughey and Thomas)"), tr("By doping (Masetti)")}, QStringLiteral("constant"),
+                 tr("By doping: µmin + (µ - µmin)/(1 + (N/Nref)^α), N the donors and acceptors together; Masetti's µmin1 e^(-Pc/N) + "
+                    "(µ - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β) - silicon's arsenic and boron (Masetti, Severi and Solmi "
+                    "1983) by default; Lumerical's Masetti is this with µmin1 = µmin2 and Pc 0")),
           shownIf(expr(QStringLiteral("munmin"), tr("Electrons' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("68.5[cm^2/(V*s)]")),
                   QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("nrefn"), tr("Electrons' Nref"), QStringLiteral("1/m^3"), QStringLiteral("9.2e16[1/cm^3]")), QStringLiteral("mobility=doping")),
@@ -923,6 +939,28 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("nrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("2.23e17[1/cm^3]")), QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("alphap"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=doping")),
+          shownIf(expr(QStringLiteral("m1n"), tr("Electrons' µmin1"), QStringLiteral("m^2/(V*s)"), QStringLiteral("52.2[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("m2n"), tr("Electrons' µmin2"), QStringLiteral("m^2/(V*s)"), QStringLiteral("52.2[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("mu1n"), tr("Electrons' µ1"), QStringLiteral("m^2/(V*s)"), QStringLiteral("43.4[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("pcn"), tr("Electrons' Pc"), QStringLiteral("1/m^3"), QStringLiteral("0[1/cm^3]")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("crn"), tr("Electrons' Cr"), QStringLiteral("1/m^3"), QStringLiteral("9.68e16[1/cm^3]")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("csn"), tr("Electrons' Cs"), QStringLiteral("1/m^3"), QStringLiteral("3.43e20[1/cm^3]")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("man"), tr("Electrons' α"), QString(), QStringLiteral("0.68")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("mbn"), tr("Electrons' β"), QString(), QStringLiteral("2")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("m1p"), tr("Holes' µmin1"), QStringLiteral("m^2/(V*s)"), QStringLiteral("44.9[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("m2p"), tr("Holes' µmin2"), QStringLiteral("m^2/(V*s)"), QStringLiteral("0[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("mu1p"), tr("Holes' µ1"), QStringLiteral("m^2/(V*s)"), QStringLiteral("29.0[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("pcp"), tr("Holes' Pc"), QStringLiteral("1/m^3"), QStringLiteral("9.23e16[1/cm^3]")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("crp"), tr("Holes' Cr"), QStringLiteral("1/m^3"), QStringLiteral("2.23e17[1/cm^3]")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("csp"), tr("Holes' Cs"), QStringLiteral("1/m^3"), QStringLiteral("6.1e20[1/cm^3]")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("map"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("mbp"), tr("Holes' β"), QString(), QStringLiteral("2")), QStringLiteral("mobility=masetti")),
           expr(QStringLiteral("zetan"), tr("Electrons' mobility's temperature exponent ζ"), QString(), QStringLiteral("2.5"),
                tr("µ(TL) = µ(300 K) (TL/300 K)^-ζ where the physics' lattice temperature TL is given")),
           expr(QStringLiteral("zetap"), tr("Holes' mobility's temperature exponent ζ"), QString(), QStringLiteral("2.2")),
@@ -933,6 +971,10 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("saturation=true")),
           shownIf(expr(QStringLiteral("vsatp"), tr("Holes' saturation velocity"), QStringLiteral("m/s"), QStringLiteral("8e6[cm/s]")),
                   QStringLiteral("saturation=true")),
+          shownIf(expr(QStringLiteral("betan"), tr("Electrons' saturation exponent β"), QString(), QStringLiteral("2"),
+                       tr("µ0 / (1 + (µ0 F/vsat)^β)^(1/β): 2 for silicon's electrons, 1 for its holes (Caughey and Thomas)")),
+                  QStringLiteral("saturation=true")),
+          shownIf(expr(QStringLiteral("betap"), tr("Holes' saturation exponent β"), QString(), QStringLiteral("1")), QStringLiteral("saturation=true")),
           shownIf(choice(QStringLiteral("driving"), tr("Driving force"), {QStringLiteral("current"), QStringLiteral("field")},
                          {tr("Along the current"), tr("The whole field |E|")}, QStringLiteral("current"),
                          tr("Along the current: each carrier's quasi-Fermi potential's gradient, J/(q n µ) - the field along its "
@@ -1034,11 +1076,32 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("semiconductor/srh"), tr("Trap-Assisted Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(), source,
-          shownIf(expr(QStringLiteral("taun"), tr("Electron lifetime τn"), QStringLiteral("s"), QStringLiteral("10[us]")), QStringLiteral("source=user")),
-          shownIf(expr(QStringLiteral("taup"), tr("Hole lifetime τp"), QStringLiteral("s"), QStringLiteral("10[us]")), QStringLiteral("source=user")),
-          expr(QStringLiteral("Et"), tr("Trap level above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("0[eV]"))},
+          shownIf(spatial(QStringLiteral("taun"), tr("Electron lifetime τn"), QStringLiteral("s"), QStringLiteral("10[us]"),
+                          tr("Of x and y too (a lifetime map); τ0 when it depends on the doping")),
+                  QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("taup"), tr("Hole lifetime τp"), QStringLiteral("s"), QStringLiteral("10[us]")), QStringLiteral("source=user")),
+          expr(QStringLiteral("Et"), tr("Trap level above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("0[eV]")),
+          choice(QStringLiteral("dependence"), tr("Lifetimes' doping dependence"), {QStringLiteral("none"), QStringLiteral("doping")},
+                 {tr("None"), tr("By doping (Fossum)")}, QStringLiteral("none"),
+                 tr("τ0 / (A + B (N/N0) + C (N/N0)^E), N the donors and acceptors together - Fossum and Lee's silicon τ0/(1 + "
+                    "N/7.1e15 cm⁻³) by default: A 1, B 0, C 1, E 1 (Lumerical's α, β, γ, σ)")),
+          shownIf(expr(QStringLiteral("N0n"), tr("Electrons' N0"), QStringLiteral("1/m^3"), QStringLiteral("7.1e15[1/cm^3]")),
+                  QStringLiteral("dependence=doping")),
+          shownIf(expr(QStringLiteral("N0p"), tr("Holes' N0"), QStringLiteral("1/m^3"), QStringLiteral("7.1e15[1/cm^3]")),
+                  QStringLiteral("dependence=doping")),
+          shownIf(expr(QStringLiteral("fA"), tr("A"), QString(), QStringLiteral("1")), QStringLiteral("dependence=doping")),
+          shownIf(expr(QStringLiteral("fB"), tr("B"), QString(), QStringLiteral("0")), QStringLiteral("dependence=doping")),
+          shownIf(expr(QStringLiteral("fC"), tr("C"), QString(), QStringLiteral("1")), QStringLiteral("dependence=doping")),
+          shownIf(expr(QStringLiteral("fE"), tr("E"), QString(), QStringLiteral("1")), QStringLiteral("dependence=doping")),
+          flag(QStringLiteral("tat"), tr("Trap-assisted tunnelling (Hurkx)"), false,
+               tr("A strong field lets the carriers tunnel to the trap: each lifetime τ/(1 + Γ), Γ = 2√(3π) (F/FΓ) e^((F/FΓ)²), "
+                  "FΓ = √(24 m* (kT)³)/(q ħ), F the field at the node (Hurkx, Klaassen and Knuvers 1992) - a reverse-biased "
+                  "junction's leakage, an APD's dark current")),
+          shownIf(expr(QStringLiteral("mtn"), tr("Electrons' tunnelling mass (m0)"), QString(), QStringLiteral("0.25")), QStringLiteral("tat=true")),
+          shownIf(expr(QStringLiteral("mtp"), tr("Holes' tunnelling mass (m0)"), QString(), QStringLiteral("0.25")), QStringLiteral("tat=true"))},
          {}, {}, false, false, QStringLiteral("srh"),
-         tr("Shockley-Read-Hall: R = (np - ni²) / (τp (n + n1) + τn (p + p1)).")});
+         tr("Shockley-Read-Hall: R = (np - ni²) / (τp (n + n1) + τn (p + p1)); the lifetimes of x and y, by doping (Fossum), and "
+            "the field's trap-assisted tunnelling (Hurkx) if asked.")});
     add({QStringLiteral("semiconductor/auger"), tr("Auger Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(none), expr(QStringLiteral("Cn"), tr("Electrons' coefficient Cn"), QStringLiteral("m^6/s"), QStringLiteral("2.8e-31[cm^6/s]")),
           expr(QStringLiteral("Cp"), tr("Holes' coefficient Cp"), QStringLiteral("m^6/s"), QStringLiteral("9.9e-32[cm^6/s]"))},
@@ -1174,6 +1237,16 @@ QList<NodeKind> makeKinds()
          tr("Wurtzite's bound charge at the interfaces between nitrides (their materials' compounds): -ΔP·n, each side's P = Psp + "
             "e31 (εxx + εyy) + e33 εzz (Vurgaftman and Meyer's, Bernardini and Fiorentini's) - an AlGaN barrier on GaN's 2DEG, an "
             "LED's or laser's wells' field. The interfaces straight.")});
+    add({QStringLiteral("semiconductor/surfacerec"), tr("Surface Recombination"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
+         Level::Boundary,
+         {selectionProp(none),
+          expr(QStringLiteral("Sn"), tr("Electrons' recombination velocity Sn"), QStringLiteral("m/s"), QStringLiteral("100[cm/s]")),
+          expr(QStringLiteral("Sp"), tr("Holes' recombination velocity Sp"), QStringLiteral("m/s"), QStringLiteral("100[cm/s]")),
+          expr(QStringLiteral("Et"), tr("Trap level above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("0[eV]"))},
+         {}, {}, false, false, QStringLiteral("srec"),
+         tr("Pairs recombined at an interface - a semiconductor's with an insulator or another semiconductor: U = (n p - ni²) / ((n + "
+            "n1)/Sp + (p + p1)/Sn) per area, its traps' charge none (Interface Traps for a charged one). Silicon's surface under "
+            "oxide 1-1e4 cm/s; at an ohmic contact the carriers are at equilibrium already.")});
     add({QStringLiteral("semiconductor/fn"), tr("Fowler-Nordheim Tunnelling"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
          {selectionProp(none),
@@ -3016,6 +3089,42 @@ std::shared_ptr<ParameterScope> evaluateParameters(const Model& model, const QHa
             fn.body = f.text(QStringLiteral("expression"));
             const std::optional<Unit> u = parseUnit(f.text(QStringLiteral("unit")));
             fn.dim = u ? u->dim : Dim();
+            ps->scope.setFunction(name, fn);
+        } else if (f.type == QLatin1String("interpolation") && f.text(QStringLiteral("dimension")) == QLatin1String("2")) {
+            // Its grid: the x's and y's of its rows, each pair's value.
+            auto table = std::make_shared<Expression::Table>();
+            const QStringList units = f.text(QStringLiteral("argunit")).split(QLatin1Char(','));
+            const std::optional<Unit> xu = parseUnit(units.value(0).trimmed()), vu = parseUnit(units.value(1).trimmed());
+            const std::optional<Unit> fu = parseUnit(f.text(QStringLiteral("unit")));
+            auto number = [](const QJsonValue& v) { return v.isDouble() ? v.toDouble() : v.toString().toDouble(); };
+            std::map<std::pair<double, double>, double> at;
+            std::set<double> xs, ys;
+            for (const QJsonValue& row : f.value(QStringLiteral("grid")).toArray()) {
+                const QJsonArray r = row.toArray();
+                if (r.size() < 3) continue;
+                const double x = number(r.at(0)) * (xu ? xu->scale : 1) + (xu ? xu->offset : 0);
+                const double y = number(r.at(1)) * (vu ? vu->scale : 1) + (vu ? vu->offset : 0);
+                at[{x, y}] = number(r.at(2)) * (fu ? fu->scale : 1) + (fu ? fu->offset : 0);
+                xs.insert(x);
+                ys.insert(y);
+            }
+            table->x.assign(xs.begin(), xs.end());
+            table->grid.assign(ys.begin(), ys.end());
+            if (table->x.empty() || at.size() != xs.size() * ys.size()) {
+                ps->errors.insert(name, tr("%1: its table is not a grid of every x with every y (%2 points for %3 x %4)")
+                                            .arg(name)
+                                            .arg(at.size())
+                                            .arg(xs.size())
+                                            .arg(ys.size()));
+                continue;
+            }
+            for (double x : table->x)
+                for (double y : table->grid) table->z.push_back(at.at({x, y}));
+            Scope::Function fn;
+            fn.arguments << QStringLiteral("x") << QStringLiteral("y");
+            fn.argumentDims << (xu ? xu->dim : Dim()) << (vu ? vu->dim : Dim());
+            fn.table = table;
+            fn.dim = fu ? fu->dim : Dim();
             ps->scope.setFunction(name, fn);
         } else if (f.type == QLatin1String("interpolation")) {
             auto table = std::make_shared<Expression::Table>();

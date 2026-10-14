@@ -1999,7 +1999,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   in the left dock's sixth tab, *Multiphysics* (*Multiphysics → New
   Model*, or the tab's *New Model* and its examples). The tree is the
   order of work. **Global Definitions**: parameters, each shown with its
-  value and unit, and analytic or interpolated functions. **A 2D
+  value and unit, and analytic or interpolated functions (a table of one
+  argument, or of two on a grid of every x with every y, bilinear
+  between). **A 2D
   component**, in the plane or **about an axis** (2D axisymmetric: x is r,
   y is z, what is integrated integrated round the axis, the axis drawn
   dash-dot): its length unit and out-of-plane thickness, and named
@@ -2030,21 +2032,39 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   frequencies as photon energies; Lumerical's γ a full width, half of it
   here; its carrier density over the stack per the wells) - Lumerical's
   three MQW examples so imported solve as the benchmarks above. A
-  **CHARGE project** (an `.ldev` of the Finite Element IDE) its
-  simulation region's cross-section: its rectangles and polygons (turned
-  into the plane), its materials the library's by name, else of their own
-  (their kind, permittivity, work function), its constant and diffusion
+  **CHARGE project** (an `.ldev` of the Finite Element IDE, DEVICE 7.1's
+  or 7.17's) its simulation region's cross-section: its rectangles,
+  polygons (turned into the plane) and pyramids (a trapezoid where the
+  plane cuts them), its materials - the project's material objects, each
+  semiconductor with its models: Eg (Varshni's), Nc and Nv of its masses,
+  χ from its work function (Lumerical's, to the intrinsic level), its
+  mobilities (the lattice's, Masetti's or Caughey and Thomas's,
+  saturation), band gap narrowing, SRH (by doping, trap-assisted
+  tunnelling), Auger, radiative, impact ionization, band-to-band
+  tunnelling; else the library's by name -, its constant and diffusion
   doping (per cm³, as Lumerical keeps them; a diffusion's plateau short of
-  its faces by the junction width, but at its source face), its contacts
-  (ohmic on the semiconductors their solids touch, a gate on the
-  insulators with its work function; a thin strip in nothing else left
-  out, the contact on the boundaries it covered) and their sweeps, its
-  mesh constraints, temperature and norm length. A **MODE project** (an
-  `.lms`, Lumerical's own binary) its FDE region's cross-section: its
-  rectangles, each material its index at the wavelength (sampled data
-  between its samples, a dielectric's, an object's own), PML sides as
-  layers inside the region, metal on the others, the wavelength, trial
-  modes, the index searched about and its sweep's wavelengths. A
+  its faces by the junction width, but at its source face; none if its
+  box is no wider), its contacts (ohmic on the semiconductors their solids
+  touch, a gate on the insulators with its work function; a thin strip in
+  nothing else left out, the contact on the boundaries it covered) and
+  their sweeps, the other contacts' currents plotted, its surface
+  recombination, its imported optical generation (a table of x and y, times
+  its scale factor), its mesh constraints, temperature and norm length -
+  Lumerical's MOSFET's drain current, as it is imported, within 4 % of
+  Lumerical's from 0.8 to 1.8 V on its gate (16 % at 0.4 V, near its
+  threshold), its photodetector's dark current and responsivity within 3 %. A **HEAT project** (an `.ldev` with a HEAT
+  solver) its materials' thermal records, temperatures, convection and
+  heat sources (the thermal tuner's rise 0.7224 K/mW, Lumerical's 0.7151).
+  A **MODE project** (an `.lms`, Lumerical's own binary) its FDE region's
+  cross-section: its rectangles, pyramids and structure groups' polygons
+  and rectangles (where their scripts left them when the project was
+  saved), each material its index at the wavelength (sampled data between
+  its samples, a dielectric's, a Sellmeier one's along each axis, an
+  object's own - one, or "nx;ny;nz" -, a temperature dependent one's its
+  material's with dn/dT at the FDE's temperature), PML sides as layers
+  inside the region, metal on the others, the wavelength, trial modes,
+  the index searched about and its sweep's wavelengths - Lumerical's LN
+  ridge's TM2 at 775 nm 1.93861, the hand model's 1.9386. A
   **script** (an `.lsf`, as the exports below write them, or one that
   builds a project with the same commands, read by a reader of
   Lumerical's language) what it makes: an FDE region's, a CHARGE
@@ -2126,14 +2146,17 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     mask's window's edges spread, **annealed**: σ² = ΔRp² + 2 D t, D = D0
     e^(-Ea/kT), the dose kept - boron at 1000 °C for 30 minutes the PDE
     physics' diffusion to 1e-4) or an expression (another physics' field:
-    a diffusion solved in time read as the doping); mobility by doping (Caughey and Thomas),
+    a diffusion solved in time read as the doping); mobility by doping (Caughey and Thomas's,
+    or **Masetti's** - silicon's arsenic and boron by default, Lumerical's form with µmin1 =
+    µmin2 and Pc 0 -: a bar's current to 3e-3),
     **at an insulator's surface** (Lombardi's acoustic phonons and
     roughness by the field across the nearest interface: a MOSFET's
     channel 446 cm²/Vs at 0.33 MV/cm, 407 at 0.58 - the universal curve's)
     and high-field saturation by the force along each carrier's current
     (its quasi-Fermi level's gradient: the gate's field across a channel
     heats nothing - the drain current at 0.1 V 0.999 of the unsaturated
-    one, where the whole field cut it to 0.09) or the whole field; semi.mun
+    one, where the whole field cut it to 0.09) or the whole field, each
+    carrier's exponent β its own (µ0/(1 + (µ0 F/vsat)^β)^(1/β)); semi.mun
     and the current densities as solved, saturated. **Heavy doping:**
     Fermi-Dirac statistics (silicon's 1e20 cm⁻³ 0.30 of Boltzmann's np,
     its diffusion the generalized Einstein relation's, at rest, in time and
@@ -2148,8 +2171,14 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     and a lattice temperature for the mobilities (`ht.T`, (T/300 K)^-ζ):
     the two solved in turn, a self-heated bar's current its
     one-dimensional problem's to 1e-5 (15 % below its current at 300 K);
-    Shockley-Read-Hall, Auger and direct
-    recombination, generation (light absorbed). **Impact ionization**
+    Shockley-Read-Hall - its lifetimes of x and y, **by doping** (Fossum's
+    τ0/(A + B N/N0 + C (N/N0)^E)) and shortened by **trap-assisted
+    tunnelling** (Hurkx's τ/(1 + Γ), Γ his integral at the node's field:
+    semi.taun, semi.taup) -, Auger and direct recombination, **surface
+    recombination** at an interface (each carrier's velocity, a level of
+    no charge: a minority carrier's profile to such an end the analytic
+    one to 0.1 %), generation (light absorbed, or a map imported: a table
+    of x and y). **Impact ionization**
     (Chynoweth's α = a e^(-(b/E)^β), silicon's van Overstraeten and de
     Man's or your own): its pairs from each triangle's field and currents
     - avalanche multiplication, an APD's gain - and the ionization
@@ -2436,7 +2465,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   *Lumerical CHARGE*: Lumerical's electrical materials by name (alloys at
   their composition), the cross-section in its x-z plane, uniform and box
   doping as constant and diffusion objects, an implant or an expression
-  sampled into an import doping object, each contact a thin metal strip
+  sampled into an import doping object (finer where it changes: within 1 %
+  between its lines, an interface's samples from inside - a 10 nm layer's
+  peak on it kept), each structure its own mesh order, each contact a thin metal strip
   outside its boundary at its voltage (a study's sweep a value table, a
   gate's metal its work function), the norm length the model's thickness.
   *Lumerical MQW*: the wells' stack for mqwindex (Lumerical's 4x4 k·p;

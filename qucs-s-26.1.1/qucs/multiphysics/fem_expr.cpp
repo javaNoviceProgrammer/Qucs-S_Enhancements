@@ -988,6 +988,29 @@ private:
         // The model's functions first: an analytic one is its body with
         // the arguments put in; a table is looked up.
         if (const Scope::Function* f = a_scope.function(ast->name)) {
+            if (f->table && f->table->twoD()) {
+                if (ast->args.size() != 2) return failed(tr("%1 takes two arguments").arg(ast->name));
+                std::vector<Value> args;
+                for (const AstPtr& arg : ast->args) {
+                    std::optional<Value> a = compile(arg, depth + 1);
+                    if (!a) return a;
+                    args.push_back(*a);
+                }
+                for (int k = 0; k < 2; ++k)
+                    if (k < f->argumentDims.size() && !(args[std::size_t(k)].dim == f->argumentDims[k]) && !args[std::size_t(k)].dim.isNone())
+                        warn(tr("%1 expects %2 for its argument %3, not %4").arg(ast->name, dimName(f->argumentDims[k])).arg(k + 1).arg(dimName(args[std::size_t(k)].dim)));
+                if (args[0].constant && args[1].constant) {
+                    Value v;
+                    v.value = f->table->at(args[0].value, args[1].value);
+                    v.dim = f->dim;
+                    return v;
+                }
+                Value v = join(args);
+                v.code.push_back({Expression::Op::Table2, 0, int(a_out.a_tables.size())});
+                a_out.a_tables.push_back(f->table);
+                v.dim = f->dim;
+                return v;
+            }
             if (f->table) {
                 if (ast->args.size() != 1) return failed(tr("%1 takes one argument").arg(ast->name));
                 std::optional<Value> a = compile(ast->args[0], depth + 1);
@@ -1256,6 +1279,7 @@ double Expression::eval(const double* values) const
         case Op::Fn2: --sp; st[sp] = apply2(in.fn, st[sp], st[sp + 1]); break;
         case Op::If: sp -= 2; st[sp] = st[sp] != 0 ? st[sp + 1] : st[sp + 2]; break;
         case Op::Table: st[sp] = a_tables[std::size_t(in.index)]->at(st[sp]); break;
+        case Op::Table2: --sp; st[sp] = a_tables[std::size_t(in.index)]->at(st[sp], st[sp + 1]); break;
         default: --sp; st[sp] = ExprCompiler::binaryValue(in.op, st[sp], st[sp + 1]); break;
         }
     }
@@ -1391,6 +1415,35 @@ Expression::Linearity Expression::linearity(const std::function<SlotKind(int)>& 
     out.varyingCoefficient = r.deg == 1 && r.linVar;
     out.varying = r.var;
     return out;
+}
+
+double Expression::Table::at(double u, double v) const
+{
+    const std::size_t nx = x.size(), ny = grid.size();
+    if (nx == 0 || ny == 0 || z.size() < nx * ny) return std::nan("");
+    // Each axis: its cell and the share across it, clamped to the grid.
+    auto locate = [](const std::vector<double>& g, double w, std::size_t* i, double* t) {
+        if (g.size() == 1 || w <= g.front()) {
+            *i = 0;
+            *t = 0;
+            return;
+        }
+        if (w >= g.back()) {
+            *i = g.size() - 2;
+            *t = 1;
+            return;
+        }
+        const std::size_t k = std::size_t(std::upper_bound(g.begin(), g.end(), w) - g.begin());
+        *i = k - 1;
+        *t = (w - g[k - 1]) / (g[k] - g[k - 1]);
+    };
+    std::size_t i = 0, j = 0;
+    double s = 0, t = 0;
+    locate(x, u, &i, &s);
+    locate(grid, v, &j, &t);
+    const std::size_t i1 = std::min(i + 1, nx - 1), j1 = std::min(j + 1, ny - 1);
+    auto at = [&](std::size_t a, std::size_t b) { return z[a * ny + b]; };
+    return (1 - s) * ((1 - t) * at(i, j) + t * at(i, j1)) + s * ((1 - t) * at(i1, j) + t * at(i1, j1));
 }
 
 double Expression::Table::at(double v) const
