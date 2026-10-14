@@ -2031,6 +2031,42 @@ private slots:
     // those it fits, qw.k in 1/nm, qw.rsp in 1/(s cm³ eV) converted, the
     // Kramers-Kronig warning's window in eV; a global the same at each
     // photon energy given once for its point.
+    // The tree while a study solves: its mesh, made by it, "being made" (not
+    // "not built"), the study "computing"; after, the mesh's triangles and
+    // "solved". A model saved under a name: its name at the tree's root.
+    void theTreeWhileItSolves()
+    {
+        auto status = [&](const QString& name) {
+            QTreeWidgetItemIterator it(panel()->tree());
+            while (*it) {
+                if ((*it)->text(0) == name) return (*it)->text(1);
+                ++it;
+            }
+            return QStringLiteral("(no %1)").arg(name);
+        };
+        MultiphysicsDoc* doc = open(copyOf(QStringLiteral("diode_reverse_recovery.qfem")));
+        QVERIFY(doc != nullptr);
+        QCOMPARE(status(QStringLiteral("Mesh")), QStringLiteral("not built"));
+        const QString study = doc->model().studies().front()->name();
+        QJsonObject r = call("fem_solve", {{"timeout", 1}});
+        QVERIFY2(failed(r) && doc->isBusy(), qPrintable(text(r)));
+        QCOMPARE(status(QStringLiteral("Mesh")), QStringLiteral("being made"));
+        QCOMPARE(status(study), QStringLiteral("computing"));
+        r = call("fem_stop", {{"timeout", 600}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(status(QStringLiteral("Mesh")).endsWith(QLatin1String("triangles")));
+        QVERIFY2(status(study).isEmpty(), qPrintable(status(study)));
+        // Made untitled, then saved: the root its file's name.
+        r = call("fem_model", {{"action", "new"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(panel()->tree()->topLevelItem(0)->text(0), QStringLiteral("untitled.qfem"));
+        const QString named = path(QStringLiteral("named_later.qfem"));
+        QFile::remove(named);
+        r = call("fem_model", {{"action", "save"}, {"path", named}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(panel()->tree()->topLevelItem(0)->text(0), QStringLiteral("named_later.qfem"));
+    }
+
     // Claude stops a solve that goes on past fem_solve's timeout: fem_stop,
     // as the tab's Cancel - asked, waited for, what it said returned; with
     // nothing running, said so. The tab's own Cancel among get_ui's

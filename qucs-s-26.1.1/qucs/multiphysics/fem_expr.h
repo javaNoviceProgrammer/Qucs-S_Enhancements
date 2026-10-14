@@ -21,6 +21,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -127,6 +128,20 @@ public:
     /// Its value with the variables in \a values (indexed by slot). Safe
     /// from several threads at once.
     double eval(const double* values) const;
+
+    /// What a slot is to linearity(): a number that stays (x, a parameter),
+    /// one that changes (t, another field), an unknown (degree 1), or an
+    /// unknown read through what is not a sum of them (|∇u|: not linear).
+    enum class SlotKind { Static, Varying, Unknown, Opaque };
+    /// How it reads the unknowns: degree 0 (not), 1 (affine: a + Σ b·u, its
+    /// b free of them), -1 (otherwise); whether a b (the part with the
+    /// unknowns) reads what varies, and whether anything does.
+    struct Linearity {
+        int degree = 0;
+        bool varyingCoefficient = false;
+        bool varying = false;
+    };
+    Linearity linearity(const std::function<SlotKind(int)>& slot) const;
 
     enum class Op : std::uint8_t {
         Const, Var, Neg, Not, Add, Sub, Mul, Div, Pow, Lt, Le, Gt, Ge, Eq, Ne, And, Or, Fn1, Fn2, If, Table

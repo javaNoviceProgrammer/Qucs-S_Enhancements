@@ -1,0 +1,214 @@
+{
+    "components": [
+        {
+            "geometry": [
+                {
+                    "center": [
+                        "0",
+                        "0"
+                    ],
+                    "label": "ball",
+                    "radius": "R",
+                    "tag": "c1",
+                    "type": "circle"
+                },
+                {
+                    "label": "half",
+                    "position": [
+                        "0",
+                        "-R"
+                    ],
+                    "size": [
+                        "R",
+                        "2*R"
+                    ],
+                    "tag": "r1",
+                    "type": "rectangle"
+                },
+                {
+                    "input": [
+                        "ball",
+                        "half"
+                    ],
+                    "label": "air",
+                    "tag": "i1",
+                    "type": "intersection"
+                },
+                {
+                    "tag": "fin",
+                    "type": "form union"
+                }
+            ],
+            "materials": [],
+            "mesh": {
+                "custom": true,
+                "hmax": "0.012",
+                "size": "normal",
+                "tag": "mesh1"
+            },
+            "physics": [
+                {
+                    "features": [
+                        {
+                            "default": true,
+                            "tag": "cfeq_c",
+                            "type": "coefficient"
+                        },
+                        {
+                            "default": true,
+                            "tag": "zfl_c",
+                            "type": "zeroflux"
+                        },
+                        {
+                            "default": true,
+                            "tag": "init_c",
+                            "type": "init"
+                        },
+                        {
+                            "a": "0",
+                            "c": "1",
+                            "da": "0",
+                            "ea": "1/c^2",
+                            "f": "A*exp(-(x^2+y^2)/s^2)*exp(-((t-t0)/tau)^2)",
+                            "selection": {
+                                "all": true
+                            },
+                            "tag": "cf1",
+                            "type": "coefficient"
+                        },
+                        {
+                            "g": "-ut/c",
+                            "label": "Absorbing (outgoing spherical wave)",
+                            "q": "1/sqrt(x^2+y^2)",
+                            "selection": {
+                                "except": {
+                                    "box": [
+                                        -1,
+                                        -10,
+                                        0.001,
+                                        10
+                                    ]
+                                },
+                                "exterior": true
+                            },
+                            "tag": "abc",
+                            "type": "flux"
+                        }
+                    ],
+                    "selection": {
+                        "all": true
+                    },
+                    "tag": "c",
+                    "type": "pde",
+                    "variables": "u"
+                }
+            ],
+            "space": "axisymmetric",
+            "tag": "comp1",
+            "unit": "m"
+        }
+    ],
+    "format": "qucs-s multiphysics 1",
+    "parameters": [
+        {
+            "description": "wave speed, m/s (sound in air)",
+            "expression": "343",
+            "name": "c"
+        },
+        {
+            "description": "radius of the domain, m",
+            "expression": "1",
+            "name": "R"
+        },
+        {
+            "description": "source size (Gaussian radius), m",
+            "expression": "0.02",
+            "name": "s"
+        },
+        {
+            "description": "pulse width, s",
+            "expression": "1.5e-4",
+            "name": "tau"
+        },
+        {
+            "description": "pulse centre, s",
+            "expression": "5e-4",
+            "name": "t0"
+        },
+        {
+            "description": "source density: total strength 4*pi - a point source's R*u peaks at 1, this one's (of radius s) at 0.932",
+            "expression": "4*pi/(pi^1.5*s^3)",
+            "name": "A"
+        }
+    ],
+    "results": {
+        "derived": [],
+        "plots": [
+            {
+                "plots": [
+                    {
+                        "colors": "coolwarm",
+                        "expression": "u",
+                        "tag": "surf1",
+                        "type": "surface"
+                    }
+                ],
+                "tag": "pg_u",
+                "title": "Wave field u",
+                "type": "plotgroup"
+            },
+            {
+                "coordinates": [
+                    [
+                        "0.1768",
+                        "0.1768"
+                    ],
+                    [
+                        "0.3536",
+                        "0.3536"
+                    ],
+                    [
+                        "0.5303",
+                        "0.5303"
+                    ]
+                ],
+                "tag": "cpt1",
+                "type": "cutpoint"
+            },
+            {
+                "plots": [
+                    {
+                        "dataset": "cpt1",
+                        "expression": "sqrt(x^2+y^2)*u",
+                        "tag": "ptgr1",
+                        "type": "pointgraph"
+                    }
+                ],
+                "tag": "pg_t",
+                "title": "R*u at R = 0.25, 0.5, 0.75 m (0.932 at t0 + R/c)",
+                "type": "plotgroup1d"
+            }
+        ]
+    },
+    "studies": [
+        {
+            "steps": [
+                {
+                    "dt": "1e-5",
+                    "physics": [
+                        "c"
+                    ],
+                    "stepping": "fixed",
+                    "tag": "time1",
+                    "times": "range(0, 2e-5, 6e-3)",
+                    "type": "transient",
+                    "method": "midpoint"
+                }
+            ],
+            "tag": "std1",
+            "type": "study"
+        }
+    ],
+    "title": "A pulsed point source's spherical wave",
+    "description": "The scalar wave equation (1/c²) ∂²u/∂t² - ∇²u = f about an axis: sound in air (c = 343 m/s) from a Gaussian source of radius s = 2 cm pulsed for τ = 0.15 ms - a PDE of one's own, linear: its matrix factored once, each step one solve (600 steps of 10 µs in about half a minute). The outer arc absorbs it as an outgoing spherical wave: -n·Γ = g - q u with g = -ut/c, q = 1/R (∂u/∂R = -u̇/c - u/R), nothing coming back. The implicit midpoint rule keeps its energy: R u peaks at 0.93 at R = 0.25, 0.5 and 0.75 m (0.929 to 0.933, as its outputs 20 µs apart fall), at t0 + R/c - the analytic far field's τ/√(τ² + (s/c)²) = 0.9321 for a source of size s (a point's 1); BDF2 at this step loses half a percent of it each 0.25 m."
+}

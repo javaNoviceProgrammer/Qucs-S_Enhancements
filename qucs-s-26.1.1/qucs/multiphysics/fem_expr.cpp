@@ -1262,6 +1262,137 @@ double Expression::eval(const double* values) const
     return st[0];
 }
 
+Expression::Linearity Expression::linearity(const std::function<SlotKind(int)>& slot) const
+{
+    // Each value on the stack: its degree in the unknowns (2: more than
+    // one, or not a polynomial), whether its linear part reads what varies,
+    // whether it reads that at all; a constant's value.
+    struct V {
+        int deg = 0;
+        bool linVar = false, var = false;
+        bool known = false;
+        double value = 0;
+    };
+    Linearity out;
+    if (!a_valid) {
+        out.degree = -1;
+        return out;
+    }
+    if (a_constant) return out;
+    std::vector<V> st;
+    auto nonlinear = [](bool var) {
+        V v;
+        v.deg = 2;
+        v.var = var;
+        return v;
+    };
+    for (const Instr& in : a_code) {
+        switch (in.op) {
+        case Op::Const: {
+            V v;
+            v.known = true;
+            v.value = a_constants[std::size_t(in.index)];
+            st.push_back(v);
+            break;
+        }
+        case Op::Var: {
+            V v;
+            switch (slot(in.index)) {
+            case SlotKind::Static: break;
+            case SlotKind::Varying: v.var = true; break;
+            case SlotKind::Unknown: v.deg = 1; break;
+            case SlotKind::Opaque: v.deg = 2; break;
+            }
+            st.push_back(v);
+            break;
+        }
+        case Op::Neg:
+            st.back().value = -st.back().value;
+            break;
+        case Op::Not:
+        case Op::Fn1:
+        case Op::Table:
+            // (Of the unknowns: not linear; else what it reads.)
+            if (st.back().deg > 0) st.back() = nonlinear(st.back().var);
+            else st.back() = V{0, false, st.back().var, false, 0};
+            break;
+        case Op::If: {
+            const V b = st.back();
+            st.pop_back();
+            const V a = st.back();
+            st.pop_back();
+            const V c = st.back();
+            st.pop_back();
+            if (c.deg > 0) st.push_back(nonlinear(true));
+            else {
+                V v;
+                v.deg = std::max(a.deg, b.deg);
+                v.var = a.var || b.var || c.var;
+                // (A branch chosen as time goes: its coefficient changes.)
+                v.linVar = v.deg == 1 && (a.linVar || b.linVar || c.var);
+                st.push_back(v);
+            }
+            break;
+        }
+        default: {
+            const V b = st.back();
+            st.pop_back();
+            const V a = st.back();
+            st.pop_back();
+            V v;
+            v.var = a.var || b.var;
+            v.known = a.known && b.known;
+            switch (in.op) {
+            case Op::Add:
+            case Op::Sub:
+                v.deg = std::max(a.deg, b.deg);
+                v.linVar = a.linVar || b.linVar;
+                break;
+            case Op::Mul:
+                v.deg = std::min(2, a.deg + b.deg);
+                if (v.deg == 1) v.linVar = a.deg == 1 ? a.linVar || b.var : b.linVar || a.var;
+                break;
+            case Op::Div:
+                if (b.deg > 0) v = nonlinear(v.var);
+                else {
+                    v.deg = a.deg;
+                    v.linVar = a.deg == 1 && (a.linVar || b.var);
+                }
+                break;
+            case Op::Fn2:
+                if (a.deg > 0 || b.deg > 0) v = nonlinear(v.var);
+                break;
+            case Op::Pow:
+                if (b.deg > 0) v = nonlinear(v.var);
+                else if (a.deg > 0) {
+                    // (u^1 is u, u^0 is 1; any other power not linear.)
+                    if (b.known && b.value == 1) v = a;
+                    else if (b.known && b.value == 0) v = V{0, false, false, true, 1};
+                    else v = nonlinear(v.var);
+                }
+                break;
+            default:
+                // A comparison or a logical: of the unknowns, not linear.
+                if (a.deg > 0 || b.deg > 0) v = nonlinear(v.var);
+                break;
+            }
+            if (v.known) {
+                // (Constants are folded as they are compiled: what is left is not.)
+                v.known = false;
+            }
+            st.push_back(v);
+            break;
+        }
+        }
+    }
+    if (st.empty()) return out;
+    const V& r = st.back();
+    out.degree = r.deg > 1 ? -1 : r.deg;
+    out.varyingCoefficient = r.deg == 1 && r.linVar;
+    out.varying = r.var;
+    return out;
+}
+
 double Expression::Table::at(double v) const
 {
     if (x.empty()) return std::nan("");

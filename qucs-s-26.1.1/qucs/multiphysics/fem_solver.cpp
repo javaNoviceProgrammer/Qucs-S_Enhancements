@@ -329,7 +329,7 @@ Problem::Problem(Solution& solution, int field) : a_s(solution), a_fi(field)
         if (p->tag == tag) a_node = p;
 }
 
-Expression Problem::compile(const QString& text, const Node& feature, const QString& key, bool spatial)
+Expression Problem::compile(const QString& text, const Node& feature, const QString& key, bool spatial, bool unitChecked)
 {
     const Expression e = Expression::compile(text, a_s.pointScope());
     const QString where = tr("%1 of %2").arg(feature.kind() && feature.kind()->property(key) ? feature.kind()->property(key)->label : key,
@@ -344,7 +344,7 @@ Expression Problem::compile(const QString& text, const Node& feature, const QStr
         if (!spatial && d.field >= 0) problem(tr("%1 may not read a field (%2) here").arg(where, d.info.name));
     }
     const PropertyDef* p = feature.kind() ? feature.kind()->property(key) : nullptr;
-    if (p && !e.dim().isNone() && !(e.dim() == p->dim()))
+    if (unitChecked && p && !e.dim().isNone() && !(e.dim() == p->dim()))
         a_s.log << tr("Warning: %1 is in %2, where %3 is expected").arg(where, dimName(e.dim()), dimName(p->dim()));
     return e;
 }
@@ -2485,7 +2485,15 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
     double rtol = 1e-3;
     if (const std::optional<double> r = evaluateConstant(node.text(QStringLiteral("rtol")), s.parameters().scope, Dim()); r && *r > 0) rtol = *r;
     const bool euler = node.text(QStringLiteral("method")) == QLatin1String("euler");
+    // The implicit midpoint rule (order 2, no damping - a wave keeps its
+    // energy): backward Euler over half the step to v, then u(t + h) = 2v -
+    // u(t). It takes fixed steps.
+    const bool midpoint = node.text(QStringLiteral("method")) == QLatin1String("midpoint");
     const bool fixed = node.text(QStringLiteral("stepping")) == QLatin1String("fixed");
+    if (midpoint && !fixed) {
+        *error = tr("%1: the implicit midpoint rule takes fixed steps: set Steps to Fixed (and its time step)").arg(node.name());
+        return false;
+    }
     double h = 0;
     if (!node.text(QStringLiteral("dt")).trimmed().isEmpty()) {
         const std::optional<double> d = evaluateConstant(node.text(QStringLiteral("dt")), s.parameters().scope, Dim::of(0, 0, 1), &why);
@@ -2548,20 +2556,22 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
         // asked, so a step made smaller stays so).
         if (t + h >= target - 1e-9 * range) h = target - t;
         else if (target - (t + h) < 0.2 * h) h = (target - t) / 2;
-        const int order = euler || accepted < 2 ? 1 : 2;
+        const int order = euler || midpoint || accepted < 2 ? 1 : 2;
         const double omega = hPrev > 0 ? h / hPrev : 1;
+        // (Backward Euler's step: the whole, or the midpoint rule's half.)
+        const double hb = midpoint ? h / 2 : h;
         // Saved, to step again from here.
         std::vector<std::vector<double>> saved;
         for (const Field& f : s.fields()) saved.push_back(f.values);
-        s.setTime(t + h);
+        s.setTime(t + hb);
         for (int i : stepped) {
             const History& hi = hist[std::size_t(i)];
             const std::vector<double>& un = hi.u[0];
             std::vector<double>& hv = histories[std::size_t(i)];
             hv.resize(un.size());
             if (order == 1) {
-                masses[std::size_t(i)] = 1 / h;
-                for (std::size_t k = 0; k < un.size(); ++k) hv[k] = un[k] / h;
+                masses[std::size_t(i)] = 1 / hb;
+                for (std::size_t k = 0; k < un.size(); ++k) hv[k] = un[k] / hb;
             } else {
                 const std::vector<double>& um = hi.u[1];
                 masses[std::size_t(i)] = (1 + 2 * omega) / ((1 + omega) * h);
@@ -2595,6 +2605,17 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
             }
             *error = failed;
             return false;
+        }
+        if (midpoint) {
+            // From the midpoint to the step's end: 2v - u(t); the physics at
+            // rest solved there.
+            for (int i : stepped) {
+                std::vector<double>& v = st.problems[std::size_t(i)]->field().values;
+                const std::vector<double>& un = hist[std::size_t(i)].u[0];
+                for (std::size_t k = 0; k < v.size() && k < un.size(); ++k) v[k] = 2 * v[k] - un[k];
+            }
+            s.setTime(t + h);
+            if (!quasi.empty() && !solveTogether(st, quasi, [&](int) { return st.options; }, false, error)) return false;
         }
         // The error of the step: the solution against a predictor of its
         // order (Milne's device).
