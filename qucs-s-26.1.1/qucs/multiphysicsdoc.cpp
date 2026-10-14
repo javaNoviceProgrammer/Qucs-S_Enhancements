@@ -1868,12 +1868,12 @@ QString MultiphysicsDoc::plotMaterial(const qucs_s::fem::Node& material, const Q
     QJsonObject unitsOf{{curves.variable, curves.unit}};
     for (const qucs_s::fem::MaterialCurve& c : curves.curves) {
         Variable y;
-        y.name = c.key;
+        y.name = c.name();
         y.dependencies = QStringList{curves.variable};
         for (double v : c.values) y.re << v;
         vars << y;
-        traces << c.key;
-        unitsOf.insert(c.key, c.unit);
+        traces << c.name();
+        unitsOf.insert(c.name(), c.unit);
     }
     // Beside the model (in the cache while it is not saved).
     QString base;

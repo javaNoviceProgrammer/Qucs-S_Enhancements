@@ -417,24 +417,69 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("materials"), tr("Materials"), QString(), QStringLiteral("materials"), Level::None, {},
          {QStringLiteral("material")}, {}, true, true, QString(),
          tr("Each material on its domains; a later one overrides an earlier on the domains they share.")});
+    // (A tensor of a crystal: in its own axes, turned into the model's by
+    // its orientation.)
+    const QString tensor = tr("One value, or a tensor in the crystal's axes split by ';': three along them (x; y; z), six symmetric "
+                              "(xx; yy; zz; yz; xz; xy), nine row by row");
+    const QString alongAxes = tr("One value, or three along the crystal's axes split by ';' (x; y; z: an ordinary and an extraordinary "
+                                 "ray's no; no; ne)");
     add({QStringLiteral("material"), tr("Material"), QStringLiteral("material"), QStringLiteral("material"), Level::Domain,
          {selectionProp(none), text(QStringLiteral("library"), tr("From the library"), QString()),
-          spatial(QStringLiteral("epsilonr"), tr("Relative permittivity εr"), QString(), QString()),
-          spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QString()),
-          spatial(QStringLiteral("k"), tr("Thermal conductivity k"), QStringLiteral("W/(m*K)"), QString()),
+          choice(QStringLiteral("orientation"), tr("Crystal orientation"), {QStringLiteral("none"), QStringLiteral("cut"), QStringLiteral("euler")},
+                 {tr("Its axes the model's"), tr("A wafer's cut"), tr("Euler's angles")}, QStringLiteral("none"),
+                 tr("Where an anisotropic crystal's axes lie in the model (x across, y up - a wafer's normal -, z out of the plane, along a "
+                    "waveguide): its tensors - permittivity, conductivities, index, stiffness, the piezoelectric, electro-optic and "
+                    "photoelastic ones - turned into the model's axes in every physics")),
+          shownIf(choice(QStringLiteral("cut"), tr("Crystal axis up (y)"), {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")},
+                         {tr("x: x-cut"), tr("y: y-cut"), tr("z: z-cut")}, QStringLiteral("x"), tr("The crystal's axis along the wafer's normal")),
+                  QStringLiteral("orientation=cut")),
+          shownIf(choice(QStringLiteral("along"), tr("Crystal axis along z"), {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")},
+                         {tr("x: x-propagating"), tr("y: y-propagating"), tr("z: z-propagating")}, QStringLiteral("y"),
+                         tr("The crystal's axis along the waveguide, out of the plane; the third lies along x (x-cut, y-propagating "
+                            "lithium niobate: its z, the optic axis, across)")),
+                  QStringLiteral("orientation=cut")),
+          shownIf(expr(QStringLiteral("euler_phi"), tr("Euler angle φ"), QStringLiteral("angle"), QStringLiteral("0"),
+                       tr("z-x-z: the crystal turned φ about z, then θ about its new x, then ψ about its new z (degrees, or [rad])")),
+                  QStringLiteral("orientation=euler")),
+          shownIf(expr(QStringLiteral("euler_theta"), tr("Euler angle θ"), QStringLiteral("angle"), QStringLiteral("0")), QStringLiteral("orientation=euler")),
+          shownIf(expr(QStringLiteral("euler_psi"), tr("Euler angle ψ"), QStringLiteral("angle"), QStringLiteral("0")), QStringLiteral("orientation=euler")),
+          spatial(QStringLiteral("epsilonr"), tr("Relative permittivity εr"), QString(), QString(), tensor),
+          spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QString(), tensor),
+          spatial(QStringLiteral("k"), tr("Thermal conductivity k"), QStringLiteral("W/(m*K)"), QString(), tensor),
           spatial(QStringLiteral("rho"), tr("Density ρ"), QStringLiteral("kg/m^3"), QString()),
           spatial(QStringLiteral("Cp"), tr("Heat capacity Cp"), QStringLiteral("J/(kg*K)"), QString()),
           spatial(QStringLiteral("tand"), tr("Loss tangent tan δ"), QString(), QString(),
-                  tr("Of a dielectric: a line's conductance per metre G = ω C tan δ")),
-          spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QString()),
+                  tr("Of a dielectric: a line's conductance per metre G = ω C tan δ. %1").arg(alongAxes)),
+          spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QString(), tensor),
           bhRows(),
           expr(QStringLiteral("Br"), tr("Remanent flux density Br"), QStringLiteral("T"), QString(), tr("Of a permanent magnet")),
           spatial(QStringLiteral("E"), tr("Young's modulus E"), QStringLiteral("Pa"), QString()),
           spatial(QStringLiteral("nu"), tr("Poisson's ratio ν"), QString(), QString()),
-          spatial(QStringLiteral("alpha"), tr("Thermal expansion α"), QStringLiteral("1/K"), QString()),
-          spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QString()),
-          spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QString(), tr("The refractive index's imaginary part: n - jκ")),
-          expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QString()),
+          text(QStringLiteral("C"), tr("Stiffness Cij"), QString(),
+               tr("An anisotropic solid's, in Voigt's notation and the crystal's axes, by entries split by ';': C11=198[GPa]; "
+                  "C12=55[GPa]; C13=65[GPa]; C33=227[GPa]; C44=60[GPa]; ... (each Cij named once, Cji alike; those not named "
+                  "nought). Given, it is what solid mechanics uses over E and ν")),
+          spatial(QStringLiteral("alpha"), tr("Thermal expansion α"), QStringLiteral("1/K"), QString(), tensor),
+          text(QStringLiteral("e"), tr("Piezoelectric stress constants eij"), QString(),
+               tr("C/m², Voigt's, the crystal's axes: e15=3.7[C/m^2]; e22=2.4[C/m^2]; e31=0.2[C/m^2]; e33=1.3[C/m^2]; ... - D = e S + "
+                  "ε E, σ = C S - eᵀ E (each eij named, the rest nought; a crystal's symmetry gives each that is the same: e16 = "
+                  "-e22 too)")),
+          text(QStringLiteral("d"), tr("Piezoelectric strain constants dij"), QString(),
+               tr("C/N (pC/N), Voigt's, the crystal's axes: d15=69.2[pC/N]; d16=-41.6[pC/N]; ... - S = sᴱ σ + dᵀ E, a datasheet's "
+                  "form; without e, e = d C (its stiffness Cij needed)")),
+          spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QString(), alongAxes),
+          spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QString(),
+                  tr("The refractive index's imaginary part: n - jκ. %1").arg(alongAxes)),
+          expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QString(), alongAxes),
+          text(QStringLiteral("r"), tr("Electro-optic coefficients rij"), QString(),
+               tr("Pockels', m/V (pm/V), Voigt's, the crystal's axes: Δ(1/ε)_i = Σ r_ij E_j - r13=9.6[pm/V]; r22=6.8[pm/V]; "
+                  "r33=30.9[pm/V]; r51=32.6[pm/V]; ... (each named; the same by symmetry too: r23, r12 = -r22, r42)")),
+          text(QStringLiteral("p"), tr("Photoelastic coefficients pij"), QString(),
+               tr("Pockels', Voigt's, the crystal's axes: Δ(1/ε)_i = Σ p_ij S_j (S an engineering strain) - p11=-0.094; "
+                  "p12=0.017; p44=-0.051 (silicon's; p22, p13, p55... the same by symmetry, named too; pji is pij where it is not named)")),
+          expr(QStringLiteral("g"), tr("Gyration g"), QString(), QString(),
+               tr("A magneto-optic material's, magnetized: ε's off-diagonal j g along the magnetization (Ce:YIG's about 0.009 at "
+                  "1550 nm) - a wave feature's Magneto-optic option")),
           expr(QStringLiteral("Eg"), tr("Band gap Eg"), QStringLiteral("eV"), QString(),
                tr("A semiconductor's (an insulator has none). Given, it is the gap every physics uses, over its compound's - at "
                   "300 K: quantum wells at another temperature move it as the compound's moves. With a compound, the valence band "
@@ -488,6 +533,20 @@ QList<NodeKind> makeKinds()
          tr("Its properties, each an expression (of T too, for a temperature-dependent one). Those empty are not defined.")});
 
     // Electrostatics.
+    // (A scalar physics' coefficient as given: one, or a tensor in the
+    // plane - its xx, yy and xy, the model's axes.)
+    auto planeTensor = [](const QString& key, const QString& symbol, const QString& unit, const QString& def) {
+        const QString user = QStringLiteral("source=user&anisotropy!=isotropic");
+        return QList<P>{
+            shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("symmetric")},
+                           {tr("Isotropic"), tr("Diagonal (x, y)"), tr("Symmetric (xx, yy, xy)")}, QStringLiteral("isotropic"),
+                           tr("In the model's axes (r and z about an axis); a material's tensor is its own, turned by its orientation")),
+                    QStringLiteral("source=user")),
+            shownIf(spatial(key + QStringLiteral("xx"), symbol + QStringLiteral(", xx"), unit, def), user),
+            shownIf(spatial(key + QStringLiteral("yy"), symbol + QStringLiteral(", yy"), unit, def), user),
+            shownIf(spatial(key + QStringLiteral("xy"), symbol + QStringLiteral(", xy"), unit, QStringLiteral("0")),
+                    QStringLiteral("source=user&anisotropy=symmetric"))};
+    };
     const P source = choice(QStringLiteral("source"), tr("From"), {QStringLiteral("material"), QStringLiteral("user")},
                             {tr("Material"), tr("User defined")}, QStringLiteral("material"));
     add({QStringLiteral("electrostatics"), tr("Electrostatics"), QStringLiteral("physics"), QStringLiteral("es"), Level::Domain,
@@ -501,10 +560,13 @@ QList<NodeKind> makeKinds()
          tr("The electric potential V of charges at rest: -∇·(ε0 εr ∇V) = ρ. Terminals give a capacitance matrix.")});
     add({QStringLiteral("electrostatics/charge"), tr("Charge Conservation"), QStringLiteral("es"), QStringLiteral("domainfeature"),
          Level::Domain,
-         {selectionProp(), source,
-          shownIf(spatial(QStringLiteral("epsilonr"), tr("Relative permittivity εr"), QString(), QStringLiteral("1")),
-                  QStringLiteral("source=user"))},
-         {}, {}, false, false, QStringLiteral("ccn"), tr("D = ε0 εr E on its domains, εr from their material or as given.")});
+         QList<P>{selectionProp(), source,
+                  shownIf(spatial(QStringLiteral("epsilonr"), tr("Relative permittivity εr"), QString(), QStringLiteral("1")),
+                          QStringLiteral("source=user&anisotropy=isotropic"))}
+             + planeTensor(QStringLiteral("eps"), tr("εr"), QString(), QStringLiteral("1")),
+         {}, {}, false, false, QStringLiteral("ccn"),
+         tr("D = ε0 εr E on its domains, εr from their material or as given - a tensor too: an anisotropic crystal's (lithium "
+            "niobate, sapphire, quartz), its loss tangent along its axes too.")});
     add({QStringLiteral("electrostatics/spacecharge"), tr("Space Charge Density"), QStringLiteral("es"), QStringLiteral("domainfeature"),
          Level::Domain, {selectionProp(none), spatial(QStringLiteral("rho"), tr("Space charge density ρv"), QStringLiteral("C/m^3"), QStringLiteral("0"))},
          {}, {}, false, false, QStringLiteral("scd"), QString()});
@@ -544,10 +606,11 @@ QList<NodeKind> makeKinds()
          tr("Steady currents in conductors: -∇·(σ ∇V) = Qj. Terminals give a conductance matrix and resistances.")});
     add({QStringLiteral("currents/conservation"), tr("Current Conservation"), QStringLiteral("ec"), QStringLiteral("domainfeature"),
          Level::Domain,
-         {selectionProp(), source,
-          shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("1[S/m]")),
-                  QStringLiteral("source=user"))},
-         {}, {}, false, false, QStringLiteral("cuc"), tr("J = σ E on its domains, σ from their material or as given.")});
+         QList<P>{selectionProp(), source,
+                  shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("1[S/m]")),
+                          QStringLiteral("source=user&anisotropy=isotropic"))}
+             + planeTensor(QStringLiteral("sigma"), tr("σ"), QStringLiteral("S/m"), QStringLiteral("1[S/m]")),
+         {}, {}, false, false, QStringLiteral("cuc"), tr("J = σ E on its domains, σ from their material or as given - a tensor too.")});
     add({QStringLiteral("currents/source"), tr("Current Source"), QStringLiteral("ec"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(none), spatial(QStringLiteral("Qj"), tr("Current source Qj"), QStringLiteral("A/m^3"), QStringLiteral("0"))},
          {}, {}, false, false, QStringLiteral("cs"), QString()});
@@ -589,15 +652,17 @@ QList<NodeKind> makeKinds()
          {QStringLiteral("heat/solid"), QStringLiteral("heat/insulation"), QStringLiteral("heat/init")}, false, false, QStringLiteral("ht"),
          tr("The temperature T of conduction: ρ Cp ∂T/∂t - ∇·(k ∇T) = Q (at steady state without its first term).")});
     add({QStringLiteral("heat/solid"), tr("Solid"), QStringLiteral("ht"), QStringLiteral("domainfeature"), Level::Domain,
-         {selectionProp(), source,
+         QList<P>{selectionProp(), source,
           shownIf(spatial(QStringLiteral("k"), tr("Thermal conductivity k"), QStringLiteral("W/(m*K)"), QStringLiteral("1[W/(m*K)]")),
-                  QStringLiteral("source=user")),
+                  QStringLiteral("source=user&anisotropy=isotropic")),
           shownIf(spatial(QStringLiteral("rho"), tr("Density ρ"), QStringLiteral("kg/m^3"), QStringLiteral("1000[kg/m^3]")),
                   QStringLiteral("source=user")),
           shownIf(spatial(QStringLiteral("Cp"), tr("Heat capacity Cp"), QStringLiteral("J/(kg*K)"), QStringLiteral("1000[J/(kg*K)]")),
-                  QStringLiteral("source=user"))},
+                  QStringLiteral("source=user"))}
+             + planeTensor(QStringLiteral("k"), tr("k"), QStringLiteral("W/(m*K)"), QStringLiteral("1[W/(m*K)]")),
          {}, {}, false, false, QStringLiteral("sld"),
-         tr("q = -k ∇T on its domains; k (and for a study in time ρ and Cp) from their material or as given.")});
+         tr("q = -k ∇T on its domains; k (and for a study in time ρ and Cp) from their material or as given - k a tensor too: a "
+            "laminate's in its plane and across it, a crystal's along its axes.")});
     add({QStringLiteral("heat/init"), tr("Initial Values"), QStringLiteral("ht"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(), spatial(QStringLiteral("T0"), tr("Temperature T"), QStringLiteral("K"), QStringLiteral("293.15[K]"),
                                    tr("Of x and y: where a study in time starts, and Newton's first guess"))},
@@ -649,23 +714,55 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                  QStringLiteral("2"))},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free"), QStringLiteral("solid/fixed"), QStringLiteral("solid/displacement"),
-          QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload")},
+          QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload"), QStringLiteral("solid/piezo")},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free")}, false, false, QStringLiteral("solid"),
          tr("The displacement (u, v) of a linear elastic solid: -∇·σ = f, σ = D (ε - ε0), ε0 a thermal strain. In the plane, "
             "in plane strain or plane stress; about an axis, axisymmetric (the component's space).")});
     add({QStringLiteral("solid/elastic"), tr("Linear Elastic Material"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(), source,
-          shownIf(spatial(QStringLiteral("E"), tr("Young's modulus E"), QStringLiteral("Pa"), QStringLiteral("200[GPa]")), QStringLiteral("source=user")),
-          shownIf(spatial(QStringLiteral("nu"), tr("Poisson's ratio ν"), QString(), QStringLiteral("0.3")), QStringLiteral("source=user")),
+          shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("anisotropic")},
+                         {tr("Isotropic (E, ν)"), tr("Anisotropic (Cij)")}, QStringLiteral("isotropic"),
+                         tr("In the model's axes; a material's stiffness Cij is its crystal's, turned by its orientation")),
+                  QStringLiteral("source=user")),
+          shownIf(spatial(QStringLiteral("E"), tr("Young's modulus E"), QStringLiteral("Pa"), QStringLiteral("200[GPa]")),
+                  QStringLiteral("source=user&anisotropy=isotropic")),
+          shownIf(spatial(QStringLiteral("nu"), tr("Poisson's ratio ν"), QString(), QStringLiteral("0.3")), QStringLiteral("source=user&anisotropy=isotropic")),
+          shownIf(text(QStringLiteral("C"), tr("Stiffness Cij"), QStringLiteral("C11=165.7[GPa]; C12=63.9[GPa]; C13=63.9[GPa]; C22=165.7[GPa]; C23=63.9[GPa]; C33=165.7[GPa]; C44=79.6[GPa]; C55=79.6[GPa]; C66=79.6[GPa]"),
+                       tr("Voigt's, the model's axes (xx, yy, zz, yz, xz, xy), entries split by ';' - silicon's along its cube's axes "
+                          "by default")),
+                  QStringLiteral("source=user&anisotropy=anisotropic")),
           flag(QStringLiteral("thermal"), tr("Thermal expansion"), false, tr("A strain α (T - Tref), T from a heat physics or as given")),
-          shownIf(spatial(QStringLiteral("alpha"), tr("Coefficient of thermal expansion α"), QStringLiteral("1/K"), QStringLiteral("1e-5[1/K]")),
+          shownIf(spatial(QStringLiteral("alpha"), tr("Coefficient of thermal expansion α"), QStringLiteral("1/K"), QStringLiteral("1e-5[1/K]"),
+                          tr("One, or a tensor: x; y; z (or six, symmetric)")),
                   QStringLiteral("source=user")),
           shownIf(spatial(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("T"),
                           tr("An expression: T (a heat physics' field), ht.T, or a value")),
                   QStringLiteral("thermal=true")),
           shownIf(spatial(QStringLiteral("Tref"), tr("Strain-free temperature Tref"), QStringLiteral("K"), QStringLiteral("293.15[K]")),
                   QStringLiteral("thermal=true"))},
-         {}, {}, false, false, QStringLiteral("lemm"), tr("Hooke's law on its domains: E and ν (and α) from their material or as given.")});
+         {}, {}, false, false, QStringLiteral("lemm"),
+         tr("Hooke's law on its domains: E and ν (and α) from their material or as given - or an anisotropic crystal's stiffness "
+            "Cij (silicon's cubic one, lithium niobate's trigonal one), turned by its orientation: plane strain takes its xx, yy, "
+            "xy part, plane stress what is left with no stress out of the plane.")});
+    {
+        P es;
+        es.key = QStringLiteral("es");
+        es.label = tr("Electrostatics");
+        es.kind = P::Physics;
+        es.defaultValue = QJsonArray{QStringLiteral("es")};
+        es.tooltip = tr("The electrostatics whose field it feels and whose charge its strain makes");
+        add({QStringLiteral("solid/piezo"), tr("Piezoelectric Effect"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
+             {selectionProp(none), es, source,
+              shownIf(text(QStringLiteral("e"), tr("Piezoelectric stress constants eij"), QStringLiteral("e33=1.3[C/m^2]"),
+                           tr("C/m², Voigt's, the model's axes: e15=3.7[C/m^2]; e22=2.4[C/m^2]; ... (the material's, turned, when it "
+                              "is from the material)")),
+                      QStringLiteral("source=user"))},
+             {}, {}, false, false, QStringLiteral("pze"),
+             tr("A piezoelectric solid, its stress and charge in one: σ = C S - eᵀ E, D = εS E + e S - the solid's stiffness the "
+                "one at a constant field, the electrostatics' permittivity the clamped one (εS). The two physics solved in turn "
+                "till they agree, at rest; in plane strain or about an axis. Its terminals' capacitance es.C11 the clamped one; "
+                "es.Q_<name> over its voltage, the free one.")});
+    }
     add({QStringLiteral("solid/free"), tr("Free"), QStringLiteral("solid"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp()}, {}, {}, false, false, QStringLiteral("free"), tr("No load, no constraint: where no other condition is.")});
     add({QStringLiteral("solid/fixed"), tr("Fixed Constraint"), QStringLiteral("solid"), QStringLiteral("ground"), Level::Boundary,
@@ -711,8 +808,18 @@ QList<NodeKind> makeKinds()
                  {tr("Relative permeability"), tr("B-H curve")}, QStringLiteral("mur"),
                  tr("A B-H curve is solved by Newton's method; at rest only")),
           source,
-          shownIf(spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QStringLiteral("1")),
+          shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("symmetric")},
+                         {tr("Isotropic"), tr("Diagonal (x, y)"), tr("Symmetric (xx, yy, xy)")}, QStringLiteral("isotropic"),
+                         tr("µr in the plane, the model's axes: a laminated core's along its sheets and across them")),
                   QStringLiteral("source=user&constitutive=mur")),
+          shownIf(spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QStringLiteral("1")),
+                  QStringLiteral("source=user&constitutive=mur&anisotropy=isotropic")),
+          shownIf(spatial(QStringLiteral("murxx"), tr("µr, xx"), QString(), QStringLiteral("1")),
+                  QStringLiteral("source=user&constitutive=mur&anisotropy!=isotropic")),
+          shownIf(spatial(QStringLiteral("muryy"), tr("µr, yy"), QString(), QStringLiteral("1")),
+                  QStringLiteral("source=user&constitutive=mur&anisotropy!=isotropic")),
+          shownIf(spatial(QStringLiteral("murxy"), tr("µr, xy"), QString(), QStringLiteral("0")),
+                  QStringLiteral("source=user&constitutive=mur&anisotropy=symmetric")),
           shownIf(bhRows(), QStringLiteral("source=user&constitutive=bh")),
           shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("0[S/m]")),
                   QStringLiteral("source=user"))},
@@ -768,29 +875,74 @@ QList<NodeKind> makeKinds()
               choice(QStringLiteral("constitutive"), tr("Electric displacement"), {QStringLiteral("n"), QStringLiteral("epsilonr")},
                      {tr("Refractive index (n - jκ)"), tr("Relative permittivity (loss tangent, conductivity)")}, QStringLiteral("n")),
               source,
-              shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("diagonal")},
-                             {tr("Isotropic"), tr("Diagonal (x, y, z)")}, QStringLiteral("isotropic")),
+              shownIf(choice(QStringLiteral("anisotropy"), tr("Anisotropy"), {QStringLiteral("isotropic"), QStringLiteral("diagonal"), QStringLiteral("tensor")},
+                             {tr("Isotropic"), tr("Diagonal (x, y, z)"), tr("Tensor (εr symmetric: xx, yy, zz, xy, xz, yz)")},
+                             QStringLiteral("isotropic"),
+                             tr("In the model's axes. A tensor's xz and yz couple the transverse field to Ez: a crystal turned out of "
+                                "the cross-section's plane - its modes found by β, not β² (forward ones)")),
                       QStringLiteral("source=user")),
               shownIf(spatial(QStringLiteral("n"), tr("Refractive index n"), QString(), QStringLiteral("1")),
                       QStringLiteral("source=user&constitutive=n&anisotropy=isotropic")),
               shownIf(spatial(QStringLiteral("nx"), tr("nx"), QString(), QStringLiteral("1")), QStringLiteral("source=user&constitutive=n&anisotropy=diagonal")),
               shownIf(spatial(QStringLiteral("ny"), tr("ny"), QString(), QStringLiteral("1")), QStringLiteral("source=user&constitutive=n&anisotropy=diagonal")),
               shownIf(spatial(QStringLiteral("nz"), tr("nz"), QString(), QStringLiteral("1")), QStringLiteral("source=user&constitutive=n&anisotropy=diagonal")),
-              shownIf(spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QStringLiteral("0")),
+              shownIf(spatial(QStringLiteral("kappa"), tr("Extinction coefficient κ"), QString(), QStringLiteral("0"),
+                              tr("One, or three along x, y and z split by ';' (a sheet's absorption in its plane alone: κ; 0; κ for "
+                                 "one along x and z)")),
                       QStringLiteral("source=user&constitutive=n")),
               shownIf(spatial(QStringLiteral("epsilonr"), tr("Relative permittivity εr"), QString(), QStringLiteral("1")),
                       QStringLiteral("source=user&constitutive=epsilonr&anisotropy=isotropic")),
               shownIf(spatial(QStringLiteral("epsxx"), tr("εxx"), QString(), QStringLiteral("1")),
-                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal|source=user&constitutive=epsilonr&anisotropy=tensor")),
               shownIf(spatial(QStringLiteral("epsyy"), tr("εyy"), QString(), QStringLiteral("1")),
-                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal|source=user&constitutive=epsilonr&anisotropy=tensor")),
               shownIf(spatial(QStringLiteral("epszz"), tr("εzz"), QString(), QStringLiteral("1")),
-                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal")),
-              shownIf(spatial(QStringLiteral("tand"), tr("Loss tangent tan δ"), QString(), QStringLiteral("0")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=diagonal|source=user&constitutive=epsilonr&anisotropy=tensor")),
+              shownIf(spatial(QStringLiteral("epsxy"), tr("εxy"), QString(), QStringLiteral("0")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=tensor")),
+              shownIf(spatial(QStringLiteral("epsxz"), tr("εxz"), QString(), QStringLiteral("0")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=tensor")),
+              shownIf(spatial(QStringLiteral("epsyz"), tr("εyz"), QString(), QStringLiteral("0")),
+                      QStringLiteral("source=user&constitutive=epsilonr&anisotropy=tensor")),
+              shownIf(spatial(QStringLiteral("tand"), tr("Loss tangent tan δ"), QString(), QStringLiteral("0"),
+                              tr("One, or three along x, y and z split by ';'")),
                       QStringLiteral("source=user&constitutive=epsilonr")),
-              shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("0[S/m]")),
+              shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("0[S/m]"),
+                              tr("One, or three along x, y and z split by ';': a conducting sheet's in its plane alone (graphene, ITO "
+                                 "as a thin layer: σ; 0; σ for one along x and z), no current across it")),
                       QStringLiteral("source=user&constitutive=epsilonr")),
               shownIf(spatial(QStringLiteral("mur"), tr("Relative permeability µr"), QString(), QStringLiteral("1")), QStringLiteral("source=user")),
+              flag(QStringLiteral("electrooptic"), tr("Electro-optic (Pockels)"), false,
+                   tr("Δ(1/ε)_i = Σ r_ij E_j: its material's r (the crystal's axes, turned by its orientation) or as given, E a "
+                      "static field - an electrostatics' (es.Ex, es.Ey) or as given: a lithium niobate modulator's index under its "
+                      "electrodes, every r_ij - r33, r13, r22, r51 - and the field's every component")),
+              shownIf(text(QStringLiteral("r"), tr("Electro-optic coefficients rij"), QStringLiteral("r33=30.9[pm/V]"),
+                           tr("Voigt's, the model's axes: r13=9.6[pm/V]; r33=30.9[pm/V]; ... (the material's, turned, when it is "
+                              "from the material)")),
+                      QStringLiteral("electrooptic=true&source=user")),
+              shownIf(spatial(QStringLiteral("Ex"), tr("Static field Ex"), QStringLiteral("V/m"), QStringLiteral("es.Ex")), QStringLiteral("electrooptic=true")),
+              shownIf(spatial(QStringLiteral("Ey"), tr("Static field Ey"), QStringLiteral("V/m"), QStringLiteral("es.Ey")), QStringLiteral("electrooptic=true")),
+              shownIf(spatial(QStringLiteral("Ez"), tr("Static field Ez"), QStringLiteral("V/m"), QStringLiteral("0[V/m]")), QStringLiteral("electrooptic=true")),
+              flag(QStringLiteral("photoelastic"), tr("Photoelastic"), false,
+                   tr("Δ(1/ε)_i = Σ p_ij S_j: its material's p (turned by its orientation) or as given, S a solid mechanics' strain "
+                      "(solid.ex, solid.ey, solid.ez, solid.exy) - stress's birefringence, a heater's or a cladding's")),
+              shownIf(text(QStringLiteral("p"), tr("Photoelastic coefficients pij"),
+                           QStringLiteral("p11=-0.094; p22=-0.094; p33=-0.094; p12=0.017; p13=0.017; p23=0.017; p44=-0.051; p55=-0.051; p66=-0.051"),
+                           tr("Voigt's, the model's axes (the material's, turned, when it is from the material)")),
+                      QStringLiteral("photoelastic=true&source=user")),
+              shownIf(text(QStringLiteral("strain"), tr("Solid mechanics"), QStringLiteral("solid"),
+                           tr("The tag of the solid mechanics whose strain it is (its ex, ey, ez, exy)")),
+                      QStringLiteral("photoelastic=true")),
+              flag(QStringLiteral("magnetooptic"), tr("Magneto-optic"), false,
+                   tr("A magnetized garnet's gyrotropy: ε_ij + j e_ijk g_k (e^{jωt}), g along its magnetization - its material's g or "
+                      "as given. Along x (in the plane, across a waveguide), TM modes' β differs forward and back: an isolator's "
+                      "non-reciprocal phase shift (the mode found is the forward one; g's sign turned, the backward)")),
+              shownIf(choice(QStringLiteral("magnetization"), tr("Magnetization along"), {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")},
+                             {tr("x"), tr("y"), tr("z (along the waveguide: Faraday's)")}, QStringLiteral("x")),
+                      QStringLiteral("magnetooptic=true")),
+              shownIf(expr(QStringLiteral("g"), tr("Gyration g"), QString(), QStringLiteral("0.009"),
+                           tr("Negative: magnetized the other way")),
+                      QStringLiteral("magnetooptic=true&source=user")),
               flag(QStringLiteral("thermooptic"), tr("Thermo-optic"), false,
                    tr("n + dn/dT (T - Tref): T from a heat physics (as T) or as given")),
               shownIf(expr(QStringLiteral("dndT"), tr("Thermo-optic coefficient dn/dT"), QStringLiteral("1/K"), QStringLiteral("1.86e-4[1/K]")),
@@ -830,8 +982,10 @@ QList<NodeKind> makeKinds()
                       QStringLiteral("electroabsorption=true"))},
              {}, {}, false, false, QStringLiteral("wee"),
              tr("ε from a refractive index n - jκ (its square) or a permittivity εr (1 - j tan δ) - jσ/ωε0; µr; anisotropic along x, "
-                "y and z; warmed: n + dn/dT (T - Tref); free carriers' plasma dispersion; a direct gap's absorption and the "
-                "Franz-Keldysh effect on it. From their material or as given.")});
+                "y and z, or a tensor (a crystal's, turned by its material's orientation), its losses along each axis; warmed: n + "
+                "dn/dT (T - Tref); free carriers' plasma dispersion; a direct gap's absorption and the Franz-Keldysh effect on it; "
+                "Pockels' electro-optic effect of a static field, the photoelastic effect of a strain, a magnetized garnet's "
+                "gyrotropy. From their material or as given.")});
         add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
              QStringLiteral("pml"), Level::Domain, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pml"),
              tr("Domains beside, above or round the others that take the waves in without reflecting them: their coordinates "
@@ -843,15 +997,42 @@ QList<NodeKind> makeKinds()
              QStringLiteral("boundaryfeature"), Level::Boundary, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pmc"),
              tr("n × H = 0: a plane of symmetry of the fields.")});
     };
+    // A sheet of surface conductivity on boundaries (a mode analysis's).
+    auto sheet = [&add, &none]() {
+        add({QStringLiteral("modes/sheet"), tr("Conductive Sheet"), QStringLiteral("emw"), QStringLiteral("boundaryfeature"), Level::Boundary,
+             {selectionProp(none),
+              choice(QStringLiteral("model"), tr("Its conductivity"), {QStringLiteral("graphene"), QStringLiteral("user")},
+                     {tr("Graphene (Kubo's)"), tr("User defined σs")}, QStringLiteral("graphene"),
+                     tr("Graphene's of its chemical potential, scattering time and temperature at the mode's frequency - the "
+                        "Drude part and the interband one (Falkovsky's, of Kubo's formula) - or as given")),
+              shownIf(spatial(QStringLiteral("muc"), tr("Chemical potential µc"), QStringLiteral("eV"), QStringLiteral("0.4[eV]"),
+                              tr("Its Fermi level from the Dirac point (|µc| = ħ vF √(π n)); of a gate's voltage - a field - too")),
+                      QStringLiteral("model=graphene")),
+              shownIf(spatial(QStringLiteral("tau"), tr("Scattering time τ"), QStringLiteral("s"), QStringLiteral("0.1[ps]"),
+                              tr("Its carriers' momentum relaxation time: 2Γ = 1/τ (0.1 ps a typical CVD sheet's)")),
+                      QStringLiteral("model=graphene")),
+              shownIf(spatial(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]")), QStringLiteral("model=graphene")),
+              shownIf(spatial(QStringLiteral("sigmas"), tr("Surface conductivity σs, real part"), QStringLiteral("S"), QStringLiteral("6.08e-5[S]"),
+                              tr("σs = σs' - j σs'' (e^{jωt}: a Drude sheet's σs'' > 0); graphene's universal e²/4ħ is 6.08e-5 S")),
+                      QStringLiteral("model=user")),
+              shownIf(spatial(QStringLiteral("sigmas_im"), tr("Surface conductivity σs, -imaginary part σs''"), QStringLiteral("S"), QStringLiteral("0[S]")),
+                      QStringLiteral("model=user"))},
+             {}, {}, false, false, QStringLiteral("sht"),
+             tr("A sheet too thin to mesh - graphene, a 2D material, a thin TCO - on interior boundaries (or on the outside): the "
+                "tangential H jumps by the current it carries, n × (H1 - H2) = σs Et, along the boundary and along z. Graphene's "
+                "σs of µc, τ and T at the mode's frequency; emw.sheet: the power it absorbs per metre, the mode carrying 1 W.")});
+    };
     add({QStringLiteral("modes"), tr("Electromagnetic Waves, Mode Analysis"), QStringLiteral("physics"), QStringLiteral("emw"), Level::Domain,
          {selectionProp(),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")},
                  {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2"))},
-         {QStringLiteral("modes/wave"), QStringLiteral("modes/pml"), QStringLiteral("modes/pec"), QStringLiteral("modes/pmc")},
+         {QStringLiteral("modes/wave"), QStringLiteral("modes/pml"), QStringLiteral("modes/pec"), QStringLiteral("modes/pmc"),
+          QStringLiteral("modes/sheet")},
          {QStringLiteral("modes/wave"), QStringLiteral("modes/pec")}, false, false, QStringLiteral("emw"),
          tr("The modes of a waveguide's cross-section - the fields E(x, y) e^-jβz along it, full-vector (Et on Nédélec's edge "
             "elements, Ez on Lagrange's) - their effective index β/k0 and loss, at a frequency or a wavelength.")});
     waveEquation(QStringLiteral("modes"), tr("Wave Equation, Electric"));
+    sheet();
     add({QStringLiteral("waves"), tr("Electromagnetic Waves, Frequency Domain"), QStringLiteral("physics"), QStringLiteral("ewfd"), Level::Domain,
          {selectionProp(),
           choice(QStringLiteral("polarization"), tr("Field out of the plane"), {QStringLiteral("ez"), QStringLiteral("hz")},

@@ -91,7 +91,12 @@ const QStringList BasicKeys = {QStringLiteral("epsilonr"), QStringLiteral("tand"
                                   QStringLiteral("b"),        QStringLiteral("C11"),  QStringLiteral("C12"),
                                   QStringLiteral("Egd"),      QStringLiteral("mr"),   QStringLiteral("Afk"),
                                   QStringLiteral("bands"),    QStringLiteral("lambdag"), QStringLiteral("phi"),
-                                  QStringLiteral("nrange")};
+                                  QStringLiteral("nrange"),
+                                  // (A crystal's: its orientation and tensors.)
+                                  QStringLiteral("orientation"), QStringLiteral("cut"), QStringLiteral("along"),
+                                  QStringLiteral("euler_phi"), QStringLiteral("euler_theta"), QStringLiteral("euler_psi"),
+                                  QStringLiteral("C"),        QStringLiteral("e"),    QStringLiteral("d"),
+                                  QStringLiteral("r"),        QStringLiteral("p"),    QStringLiteral("g")};
 
 /// The keys a material node keeps of a library entry: the basic ones and
 /// its semiconductor models' parameters.
@@ -322,6 +327,112 @@ QString sellmeier(double A, std::initializer_list<std::pair<double, double>> ter
     for (const auto& [B, C] : terms)
         t += QStringLiteral(" + %1*lambda0^2/(lambda0^2 - %2[um^2])").arg(formatNumber(B, 9), formatNumber(C * C, 9));
     return t + QLatin1Char(')');
+}
+
+/// Kato and Takaoka's form: n² = A + B/(λ² - C) + D/(λ² - E), λ in µm.
+QString katoTakaoka(double A, double B, double C, double D, double E)
+{
+    return QStringLiteral("sqrt(%1 + %2[um^2]/(lambda0^2 - %3[um^2]) + %4[um^2]/(lambda0^2 - %5[um^2]))")
+        .arg(number(A), number(B), number(C), number(D), number(E));
+}
+
+/// n of the wavelength through measured points (µm, n), straight between.
+QString tabulated(std::initializer_list<std::pair<double, double>> points)
+{
+    QString t = QStringLiteral("interp(lambda0");
+    for (const auto& [l, n] : points) t += QStringLiteral(", %1[um], %2").arg(number(l), number(n));
+    return t + QLatin1Char(')');
+}
+
+// A crystal's tensors as a material's texts - Voigt's entries, each named
+// (fem_tensor.h) - from its independent constants, its class putting them
+// where they go: those the same, of the opposite sign or a combination of
+// others named too. The crystal's axes: x1 the a axis (a mirror's normal
+// in 3m), x3 the c axis (the optic axis of a uniaxial one).
+
+struct Voigt {
+    int row, col;
+    double value;
+};
+
+/// "C11=v[unit]; ..." of the entries not nought.
+QString voigtEntries(char letter, std::initializer_list<Voigt> entries, const char* unit)
+{
+    QStringList items;
+    for (const Voigt& v : entries)
+        if (v.value != 0)
+            items << QStringLiteral("%1%2%3=%4%5")
+                         .arg(QLatin1Char(letter))
+                         .arg(v.row)
+                         .arg(v.col)
+                         .arg(number(v.value), *unit ? QStringLiteral("[%1]").arg(QLatin1String(unit)) : QString());
+    return items.join(QLatin1String("; "));
+}
+
+/// A cubic crystal's stiffness (GPa).
+QString cubicStiffness(double c11, double c12, double c44)
+{
+    return voigtEntries('C', {{1, 1, c11}, {2, 2, c11}, {3, 3, c11}, {1, 2, c12}, {1, 3, c12}, {2, 3, c12}, {4, 4, c44}, {5, 5, c44}, {6, 6, c44}},
+                        "GPa");
+}
+
+/// A trigonal crystal's (3m, 32, -3m; GPa): C66 = (C11 - C12)/2.
+QString trigonalStiffness(double c11, double c12, double c13, double c14, double c33, double c44)
+{
+    return voigtEntries('C',
+                        {{1, 1, c11}, {1, 2, c12}, {1, 3, c13}, {1, 4, c14}, {2, 2, c11}, {2, 3, c13}, {2, 4, -c14}, {3, 3, c33}, {4, 4, c44},
+                         {5, 5, c44}, {5, 6, c14}, {6, 6, (c11 - c12) / 2}},
+                        "GPa");
+}
+
+/// 3m's piezoelectric strain constants (pC/N): d16 = -2 d22 (an
+/// engineering shear's).
+QString trigonal3mStrainPiezo(double d15, double d22, double d31, double d33)
+{
+    return voigtEntries('d', {{1, 5, d15}, {1, 6, -2 * d22}, {2, 1, -d22}, {2, 2, d22}, {2, 4, d15}, {3, 1, d31}, {3, 2, d31}, {3, 3, d33}}, "pC/N");
+}
+
+/// 32's (quartz's; pC/N).
+QString trigonal32StrainPiezo(double d11, double d14)
+{
+    return voigtEntries('d', {{1, 1, d11}, {1, 2, -d11}, {1, 4, d14}, {2, 5, -d14}, {2, 6, -2 * d11}}, "pC/N");
+}
+
+/// 3m's electro-optic coefficients (pm/V).
+QString trigonal3mElectroOptic(double r13, double r22, double r33, double r51)
+{
+    return voigtEntries('r', {{1, 2, -r22}, {1, 3, r13}, {2, 2, r22}, {2, 3, r13}, {3, 3, r33}, {4, 2, r51}, {5, 1, r51}, {6, 1, -r22}}, "pm/V");
+}
+
+/// mm2's (KTP's; pm/V).
+QString mm2ElectroOptic(double r13, double r23, double r33, double r42, double r51)
+{
+    return voigtEntries('r', {{1, 3, r13}, {2, 3, r23}, {3, 3, r33}, {4, 2, r42}, {5, 1, r51}}, "pm/V");
+}
+
+/// -43m's (zinc blende's; pm/V): r41 = r52 = r63.
+QString zincBlendeElectroOptic(double r41)
+{
+    return voigtEntries('r', {{4, 1, r41}, {5, 2, r41}, {6, 3, r41}}, "pm/V");
+}
+
+/// A cubic crystal's photoelastic coefficients - an isotropic solid's with
+/// p44 = (p11 - p12)/2.
+QString cubicPhotoelastic(double p11, double p12, double p44)
+{
+    return voigtEntries('p', {{1, 1, p11}, {2, 2, p11}, {3, 3, p11}, {1, 2, p12}, {1, 3, p12}, {2, 3, p12}, {4, 4, p44}, {5, 5, p44}, {6, 6, p44}},
+                        "");
+}
+
+/// A trigonal crystal's (3m, 32, -3m): p66 = (p11 - p12)/2; p not symmetric
+/// (p13 and p31, p14 and p41 apart).
+QString trigonalPhotoelastic(double p11, double p12, double p13, double p14, double p31, double p33, double p41, double p44)
+{
+    return voigtEntries('p',
+                        {{1, 1, p11}, {1, 2, p12}, {1, 3, p13}, {1, 4, p14}, {2, 1, p12}, {2, 2, p11}, {2, 3, p13}, {2, 4, -p14}, {3, 1, p31},
+                         {3, 2, p31}, {3, 3, p33}, {4, 1, p41}, {4, 2, -p41}, {4, 4, p44}, {5, 5, p44}, {5, 6, p41}, {6, 5, p14},
+                         {6, 6, (p11 - p12) / 2}},
+                        "");
 }
 
 /// Silicon's: Salzberg and Villa's Sellmeier below 1.2 µm (where it
@@ -685,6 +796,13 @@ MaterialEntry with(MaterialEntry e, std::initializer_list<std::pair<const char*,
     return e;
 }
 
+/// A (100) wafer's axes, the model's: its normal [001] up (y), [1-10]
+/// across (x), [-1-10] along z - Euler's θ -90°, ψ 45°.
+MaterialEntry onWafer(MaterialEntry e)
+{
+    return with(std::move(e), {{"orientation", QStringLiteral("euler")}, {"euler_theta", QStringLiteral("-90")}, {"euler_psi", QStringLiteral("45")}});
+}
+
 /// \a e with model set \a set's parameters (where it has none of its own).
 MaterialEntry withModels(MaterialEntry e, const char* set)
 {
@@ -791,12 +909,14 @@ const QList<MaterialEntry>& builtinMaterials()
         // the doping). Their gaps, densities of states, mobilities, lifetimes
         // and conductivities of heat expressions of the temperature T (as at
         // 300 K there); their models' parameters each its own (ModelSet).
-        withModels(with(entry("Silicon", "Semiconductors",
+        onWafer(withModels(with(entry("Silicon", "Semiconductors",
                               "Crystalline silicon: at 300 K its gap 1.12 eV (Varshni's of T), its densities of states (T/300 K)^1.5, mobilities "
                               "(T/300 K)^-ζ, conductivity of heat (T/300 K)^-1.65; its models' parameters (Caughey and Thomas's, Masetti's, "
                               "saturation, Slotboom's, Fossum's, Auger, radiative, van Overstraeten and de Man's, Hurkx's); n and κ from 0.4 "
-                              "to 14 µm (Salzberg and Villa's, Li's, Rajkanan's absorption). Its conductivity depends on its doping: give it, "
-                              "or solve its carriers (Semiconductor)",
+                              "to 14 µm (Salzberg and Villa's, Li's, Rajkanan's absorption); a cubic crystal's stiffness (C11 165.7, C12 63.9, "
+                              "C44 79.6 GPa: 169 GPa along x, a (100) wafer's [110]) and photoelastic constants (p11 -0.094, p12 0.017, p44 "
+                              "-0.051, at 1550 nm), its axes a (100) wafer's - [001] up, [1-10] across, a ⟨110⟩ along z (its orientation). Its "
+                              "conductivity depends on its doping: give it, or solve its carriers (Semiconductor)",
                               {{"epsilonr", "11.7"}, {"rho", "2329[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"}, {"mur", "1"}, {"E", "170[GPa]"},
                                {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"dndT", "1.86e-4[1/K]"}, {"chi", "4.05[eV]"}, {"taun", "10[us]"},
                                {"taup", "10[us]"}}),
@@ -814,8 +934,10 @@ const QList<MaterialEntry>& builtinMaterials()
                          {"mbp", QStringLiteral("2")},
                          // (Van Overstraeten and de Man's holes' second range, above 400 kV/cm.)
                          {"iian2", QStringLiteral("7.03e5[1/cm]")}, {"iibn2", QStringLiteral("1.231e6[V/cm]")},
-                         {"iiap2", QStringLiteral("6.71e5[1/cm]")}, {"iibp2", QStringLiteral("1.693e6[V/cm]")}, {"iiE0", QStringLiteral("4e5[V/cm]")}}),
-                   "Si"),
+                         {"iiap2", QStringLiteral("6.71e5[1/cm]")}, {"iibp2", QStringLiteral("1.693e6[V/cm]")}, {"iiE0", QStringLiteral("4e5[V/cm]")},
+                         // (Hall's stiffness; the photoelastic constants as used near 1550 nm.)
+                         {"C", cubicStiffness(165.7, 63.9, 79.6)}, {"p", cubicPhotoelastic(-0.094, 0.017, -0.051)}}),
+                   "Si")),
         withModels(with(entry("Germanium", "Semiconductors",
                               "Crystalline germanium: at 300 K its gap 0.66 eV (Varshni's of T), its densities of states, mobilities and "
                               "conductivity of heat of T; its models' parameters (Lumerical's); n at 1550 nm. Its direct gap's absorption (a "
@@ -852,7 +974,9 @@ const QList<MaterialEntry>& builtinMaterials()
                    {{"epsilonr", "3.9"}, {"tand", "0.0001"}, {"sigma", "1e-15[S/m]"}, {"k", "1.4[W/(m*K)]"}, {"rho", "2200[kg/m^3]"},
                     {"Cp", "730[J/(kg*K)]"}, {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.17"}, {"alpha", "0.5e-6[1/K]"}, {"dndT", "9.5e-6[1/K]"},
                     {"nrange", "0.21[um] 6.7[um]"}}),
-             {{"n", sellmeier(1, {{0.6961663, 0.0684043}, {0.4079426, 0.1162414}, {0.8974794, 9.896161}})}}),
+             {{"n", sellmeier(1, {{0.6961663, 0.0684043}, {0.4079426, 0.1162414}, {0.8974794, 9.896161}})},
+              // (Fused silica's photoelastic constants, an isotropic solid's.)
+              {"p", cubicPhotoelastic(0.121, 0.270, (0.121 - 0.270) / 2)}}),
         with(entry("Silicon nitride", "Semiconductors",
                    "Si₃N₄, stoichiometric (a thin film conducts heat less); n from 0.31 to 5.5 µm (Luke et al.'s, LPCVD)",
                    {{"epsilonr", "7.5"}, {"sigma", "1e-14[S/m]"}, {"k", "20[W/(m*K)]"}, {"rho", "3100[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"},
@@ -880,28 +1004,29 @@ const QList<MaterialEntry>& builtinMaterials()
                    {{"epsilonr", "9"}, {"sigma", "1e-15[S/m]"}, {"k", "28[W/(m*K)]"}, {"rho", "3900[kg/m^3]"}, {"Cp", "796[J/(kg*K)]"},
                     {"mur", "1"}, {"nrange", "0.2[um] 5[um]"}}),
              {{"n", sellmeier(1, {{1.4313493, 0.0726631}, {0.65054713, 0.1193242}, {5.3414021, 18.028251}})}}),
-        withModels(with(entry("Indium phosphide", "Semiconductors",
+        onWafer(withModels(with(entry("Indium phosphide", "Semiconductors",
                               "InP: its gap 1.344 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.95 to 10 µm "
-                              "(Pettit and Turner's)",
+                              "(Pettit and Turner's); Pockels' r41 1.45 pm/V, its axes a (100) wafer's (its orientation)",
                               {{"compound", "InP"}, {"epsilonr", "12.4"}, {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"},
                                {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"dndT", "2.0e-4[1/K]"}, {"nrange", "0.95[um] 10[um]"},
                                {"chi", "4.38[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
                         {{"Eg", varshniOfT(1.344, 0.363e-3, 162)}, {"Nc", ofT(5.7e17, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(1.1e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(5400, QStringLiteral("cm^2/(V*s)"), -1.9)},
                          {"mup", ofT(200, QStringLiteral("cm^2/(V*s)"), -1.2)}, {"k", ofT(68, QStringLiteral("W/(m*K)"), -1.4)},
-                         {"n", sellmeier(7.255, {{2.316, 0.6263}, {2.765, 32.935}})}}),
-                   "InP"),
-        withModels(with(entry("Gallium arsenide", "Semiconductors",
+                         {"n", sellmeier(7.255, {{2.316, 0.6263}, {2.765, 32.935}})}, {"r", zincBlendeElectroOptic(1.45)}}),
+                   "InP")),
+        onWafer(withModels(with(entry("Gallium arsenide", "Semiconductors",
                               "GaAs: its gap 1.424 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.88 to 5 µm "
-                              "(Afromowitz's)",
+                              "(Afromowitz's); Pockels' r41 1.5 pm/V, its axes a (100) wafer's (its orientation)",
                               {{"compound", "GaAs"}, {"epsilonr", "12.9"}, {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"},
                                {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"dndT", "2.35e-4[1/K]"},
                                {"nrange", "0.88[um] 5[um]"}, {"chi", "4.07[eV]"}}),
                         {{"Eg", varshniOfT(1.424, 0.5405e-3, 204)}, {"Nc", ofT(4.7e17, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(9.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(8500, QStringLiteral("cm^2/(V*s)"), -2.2)},
                          {"mup", ofT(400, QStringLiteral("cm^2/(V*s)"), -0.9)}, {"k", ofT(55, QStringLiteral("W/(m*K)"), -1.25)},
-                         {"taun", ofT(5, QStringLiteral("ns"), -0.5)}, {"taup", ofT(5, QStringLiteral("ns"), -0.5)}, {"n", afromowitzIndex(0)}}),
-                   "GaAs"),
+                         {"taun", ofT(5, QStringLiteral("ns"), -0.5)}, {"taup", ofT(5, QStringLiteral("ns"), -0.5)}, {"n", afromowitzIndex(0)},
+                         {"r", zincBlendeElectroOptic(1.5)}}),
+                   "GaAs")),
         // II-VI semiconductors (thin-film solar cells): their gaps measured at
         // 300 K, constant; χ from Lumerical's work functions, Nc and Nv of its
         // masses, its models' parameters; the holes' mobilities Sze's (CdSe's
@@ -975,20 +1100,105 @@ const QList<MaterialEntry>& builtinMaterials()
         compoundEntry("Indium aluminium nitride", "InₓAl₁₋ₓN, x the indium's share: 0.18 is GaN's lattice", "InAlN", "0.18"),
         compoundEntry("Aluminium gallium indium nitride", "AlₓGaᵧIn₁₋ₓ₋ᵧN: its gap from its three ternaries' (Vurgaftman and Meyer's)",
                       "AlGaInN", "0.1", "0.8"),
-        entry("Lithium niobate", "Semiconductors", "LiNbO₃ along its optical axis (εr33, ne at 1550 nm): it is anisotropic",
-              {{"epsilonr", "28"}, {"sigma", "1e-15[S/m]"}, {"k", "4.6[W/(m*K)]"}, {"rho", "4640[kg/m^3]"}, {"Cp", "630[J/(kg*K)]"},
-               {"mur", "1"}, {"E", "170[GPa]"}, {"nu", "0.25"}, {"alpha", "7.5e-6[1/K]"}, {"n", "2.138"}, {"dndT", "3.3e-5[1/K]"}}),
+        // Crystals: their tensors in their own axes (x1 a, x3 c), turned by
+        // their orientation - lithium niobate's and tantalate's an x-cut
+        // wafer's, y along the waveguide, their optic axis across (x).
+        with(entry("Lithium niobate", "Crystals",
+                   "LiNbO₃, congruent (3m), an x-cut wafer's, y-propagating (its orientation): εr 44 across its optic axis, 28 along it "
+                   "(clamped); no and ne from 0.4 to 5 µm (Zelmon et al.'s); Pockels' r13 8.6, r22 3.4, r33 30.8, r51 28 pm/V "
+                   "(clamped); piezoelectric d15 69.2, d22 20.8, d31 -0.85, d33 6.0 pC/N and its stiffness (Warner et al.'s); its "
+                   "photoelastic constants and expansion along its axes (Weis and Gaylord's summary), its conduction of heat 4.19 "
+                   "W/(m·K) across its optic axis, 4.6 along it; dn/dT the extraordinary ray's",
+                   {{"epsilonr", "44; 44; 28"}, {"sigma", "1e-15[S/m]"}, {"k", "4.19[W/(m*K)]; 4.19[W/(m*K)]; 4.6[W/(m*K)]"},
+                    {"rho", "4640[kg/m^3]"}, {"Cp", "630[J/(kg*K)]"}, {"mur", "1"}, {"E", "170[GPa]"}, {"nu", "0.25"},
+                    {"alpha", "15.4e-6[1/K]; 15.4e-6[1/K]; 7.5e-6[1/K]"}, {"dndT", "3.3e-5[1/K]"}, {"nrange", "0.4[um] 5[um]"},
+                    {"orientation", "cut"}, {"cut", "x"}, {"along", "y"}}),
+             {{"n", sellmeier(1, {{2.6734, std::sqrt(0.01764)}, {1.2290, std::sqrt(0.05914)}, {12.614, std::sqrt(474.60)}}) + QStringLiteral("; ") +
+                        sellmeier(1, {{2.6734, std::sqrt(0.01764)}, {1.2290, std::sqrt(0.05914)}, {12.614, std::sqrt(474.60)}}) + QStringLiteral("; ") +
+                        sellmeier(1, {{2.9804, std::sqrt(0.02047)}, {0.5981, std::sqrt(0.0666)}, {8.9543, std::sqrt(416.08)}})},
+              {"r", trigonal3mElectroOptic(8.6, 3.4, 30.8, 28)},
+              {"d", trigonal3mStrainPiezo(69.2, 20.8, -0.85, 6.0)},
+              {"C", trigonalStiffness(203, 53, 75, 9, 245, 60)},
+              {"p", trigonalPhotoelastic(-0.026, 0.090, 0.133, -0.075, 0.179, 0.071, -0.151, 0.146)}}),
+        with(entry("Lithium tantalate", "Crystals",
+                   "LiTaO₃, congruent (3m), an x-cut wafer's, y-propagating (its orientation): εr 41 across its optic axis, 43 along it "
+                   "(clamped); no and ne from 0.45 to 4 µm (Bond's measured indices); Pockels' r13 7.5, r22 1, r33 33, r51 20 pm/V "
+                   "(clamped; its sources differ, r33 30 to 36); piezoelectric d15 26, d22 8.5, d31 -3.0, d33 9.2 pC/N and its stiffness "
+                   "(Warner et al.'s)",
+                   {{"epsilonr", "41; 41; 43"}, {"sigma", "1e-15[S/m]"}, {"k", "4.6[W/(m*K)]"}, {"rho", "7454[kg/m^3]"}, {"Cp", "424[J/(kg*K)]"},
+                    {"mur", "1"}, {"alpha", "16.1e-6[1/K]; 16.1e-6[1/K]; 4.1e-6[1/K]"}, {"nrange", "0.45[um] 4[um]"}, {"orientation", "cut"},
+                    {"cut", "x"}, {"along", "y"}}),
+             {{"n", tabulated({{0.45, 2.2420}, {0.5, 2.2160}, {0.6, 2.1834}, {0.7, 2.1652}, {0.8, 2.1538}, {0.9, 2.1454}, {1.0, 2.1391},
+                               {1.2, 2.1305}, {1.4, 2.1236}, {1.6, 2.1174}, {1.8, 2.1120}, {2.0, 2.1066}, {2.4, 2.0951}, {3.0, 2.0755},
+                               {4.0, 2.0335}}) +
+                        QStringLiteral("; ") +
+                        tabulated({{0.45, 2.2420}, {0.5, 2.2160}, {0.6, 2.1834}, {0.7, 2.1652}, {0.8, 2.1538}, {0.9, 2.1454}, {1.0, 2.1391},
+                                   {1.2, 2.1305}, {1.4, 2.1236}, {1.6, 2.1174}, {1.8, 2.1120}, {2.0, 2.1066}, {2.4, 2.0951}, {3.0, 2.0755},
+                                   {4.0, 2.0335}}) +
+                        QStringLiteral("; ") +
+                        tabulated({{0.45, 2.2468}, {0.5, 2.2205}, {0.6, 2.1878}, {0.7, 2.1696}, {0.8, 2.1578}, {0.9, 2.1493}, {1.0, 2.1432},
+                                   {1.2, 2.1341}, {1.4, 2.1273}, {1.6, 2.1213}, {1.8, 2.1170}, {2.0, 2.1115}, {2.4, 2.0993}, {3.0, 2.0799},
+                                   {4.0, 2.0377}})},
+              {"r", trigonal3mElectroOptic(7.5, 1, 33, 20)},
+              {"d", trigonal3mStrainPiezo(26, 8.5, -3.0, 9.2)},
+              {"C", trigonalStiffness(233, 47, 80, -11, 275, 94)}}),
+        with(entry("KTP", "Crystals",
+                   "KTiOPO₄ (mm2), its axes the model's: nx, ny, nz from 0.43 to 3.54 µm (Kato and Takaoka's); Pockels' r13 9.5, r23 15.7, "
+                   "r33 36.3, r42 9.3, r51 7.3 pm/V; its expansion and conduction of heat along its axes; εr a datasheet's effective 13",
+                   {{"epsilonr", "13"}, {"sigma", "1e-12[S/m]"}, {"k", "2[W/(m*K)]; 3[W/(m*K)]; 3.3[W/(m*K)]"}, {"rho", "3010[kg/m^3]"},
+                    {"Cp", "728[J/(kg*K)]"}, {"mur", "1"}, {"alpha", "11e-6[1/K]; 9e-6[1/K]; 0.6e-6[1/K]"}, {"nrange", "0.43[um] 3.54[um]"}}),
+             {{"n", katoTakaoka(3.29100, 0.04140, 0.03978, 9.35522, 31.45571) + QStringLiteral("; ") +
+                        katoTakaoka(3.45018, 0.04341, 0.04597, 16.98825, 39.43799) + QStringLiteral("; ") +
+                        katoTakaoka(4.59423, 0.06206, 0.04763, 110.80672, 86.12171)},
+              {"r", mm2ElectroOptic(9.5, 15.7, 36.3, 9.3, 7.3)}}),
+        with(entry("Quartz", "Crystals",
+                   "α-quartz (32), its axes the model's: εr 4.52 across its optic axis, 4.68 along it; no and ne from 0.2 to 2 µm (Ghosh's); "
+                   "piezoelectric d11 2.31, d14 0.727 pC/N and its stiffness (Bechmann's); its expansion and conduction of heat along its axes",
+                   {{"epsilonr", "4.52; 4.52; 4.68"}, {"tand", "0.0001"}, {"sigma", "1e-16[S/m]"}, {"k", "6.2[W/(m*K)]; 6.2[W/(m*K)]; 10.4[W/(m*K)]"},
+                    {"rho", "2648[kg/m^3]"}, {"Cp", "740[J/(kg*K)]"}, {"mur", "1"}, {"alpha", "13.4e-6[1/K]; 13.4e-6[1/K]; 8.0e-6[1/K]"},
+                    {"nrange", "0.2[um] 2.05[um]"}}),
+             {{"n", sellmeier(1.28604141, {{1.07044083, std::sqrt(1.00585997e-2)}, {1.10202242, 10}}) + QStringLiteral("; ") +
+                        sellmeier(1.28604141, {{1.07044083, std::sqrt(1.00585997e-2)}, {1.10202242, 10}}) + QStringLiteral("; ") +
+                        sellmeier(1.28851804, {{1.09509924, std::sqrt(1.02101864e-2)}, {1.15662475, 10}})},
+              {"d", trigonal32StrainPiezo(2.31, 0.727)},
+              {"C", trigonalStiffness(86.74, 6.99, 11.91, -17.91, 107.2, 57.94)}}),
+        with(entry("Sapphire", "Crystals",
+                   "Al₂O₃ single crystal (-3m), a c-plane wafer's (its orientation: its optic axis up): εr 9.4 across its optic axis, 11.6 "
+                   "along it; no and ne from 0.2 to 5 µm (Malitson and Dodge's); its stiffness (Wachtman et al.'s); its expansion and "
+                   "conduction of heat along its axes",
+                   {{"epsilonr", "9.4; 9.4; 11.6"}, {"tand", "0.00003"}, {"sigma", "1e-16[S/m]"}, {"k", "33[W/(m*K)]; 33[W/(m*K)]; 35[W/(m*K)]"},
+                    {"rho", "3980[kg/m^3]"}, {"Cp", "761[J/(kg*K)]"}, {"mur", "1"}, {"alpha", "4.5e-6[1/K]; 4.5e-6[1/K]; 5.3e-6[1/K]"},
+                    {"nrange", "0.2[um] 5[um]"}, {"orientation", "cut"}, {"cut", "z"}, {"along", "x"}}),
+             {{"n", sellmeier(1, {{1.4313493, 0.0726631}, {0.65054713, 0.1193242}, {5.3414021, 18.028251}}) + QStringLiteral("; ") +
+                        sellmeier(1, {{1.4313493, 0.0726631}, {0.65054713, 0.1193242}, {5.3414021, 18.028251}}) + QStringLiteral("; ") +
+                        sellmeier(1, {{1.5039759, 0.0740288}, {0.55069141, 0.1216529}, {6.5927379, 20.072248}})},
+              {"C", trigonalStiffness(497.6, 162.6, 117.2, -23.5, 501.8, 147.2)}}),
+        with(entry("YIG", "Crystals",
+                   "Yttrium iron garnet, Y₃Fe₅O₁₂ (cubic): n 2.21 near 1550 nm; magnetized, its gyration g -3.3e-4 (its Faraday rotation "
+                   "about 175°/cm; θF = -π g/(λ n) about the magnetization, a wave feature's Magneto-optic option); its stiffness",
+                   {{"epsilonr", "15"}, {"tand", "0.0002"}, {"sigma", "1e-12[S/m]"}, {"k", "6[W/(m*K)]"}, {"rho", "5170[kg/m^3]"},
+                    {"Cp", "570[J/(kg*K)]"}, {"mur", "1"}, {"alpha", "10.4e-6[1/K]"}, {"n", "2.21"}, {"nrange", "1.2[um] 1.7[um]"},
+                    {"g", "-3.3e-4"}}),
+             {{"C", cubicStiffness(269, 107.7, 76.4)}}),
+        with(entry("Ce:YIG", "Crystals",
+                   "Cerium-substituted YIG, a magneto-optic garnet film: n 2.22 near 1550 nm; its gyration g 0.0086 (its Faraday rotation "
+                   "about -4500°/cm, YIG's the other way) - an isolator's non-reciprocal phase shift; its stiffness YIG's",
+                   {{"epsilonr", "15"}, {"tand", "0.0002"}, {"sigma", "1e-12[S/m]"}, {"k", "6[W/(m*K)]"}, {"rho", "5170[kg/m^3]"},
+                    {"Cp", "570[J/(kg*K)]"}, {"mur", "1"}, {"alpha", "10.4e-6[1/K]"}, {"n", "2.22"}, {"nrange", "1.2[um] 1.7[um]"},
+                    {"g", "0.0086"}}),
+             {{"C", cubicStiffness(269, 107.7, 76.4)}}),
         // Optical glasses: n of the wavelength (Sellmeier's), for rays and modes.
         entry("Glass (BK7)", "Optical", "Schott N-BK7: n 1.5168 at 587.6 nm (Sellmeier's), for lenses and prisms",
               {{"epsilonr", "6.7"}, {"k", "1.114[W/(m*K)]"}, {"rho", "2510[kg/m^3]"}, {"Cp", "858[J/(kg*K)]"}, {"mur", "1"}, {"E", "82[GPa]"},
                {"nu", "0.206"}, {"alpha", "7.1e-6[1/K]"}, {"dndT", "1.6e-6[1/K]"},
                {"n", "sqrt(1 + 1.03961212*(lambda0/1[um])^2/((lambda0/1[um])^2 - 0.00600069867) + 0.231792344*(lambda0/1[um])^2/((lambda0/1[um])^2 - "
                      "0.0200179144) + 1.01046945*(lambda0/1[um])^2/((lambda0/1[um])^2 - 103.560653))"}}),
-        entry("Fused silica", "Optical", "SiO₂ glass: n 1.4585 at 587.6 nm (Malitson's Sellmeier)",
+        with(entry("Fused silica", "Optical", "SiO₂ glass: n 1.4585 at 587.6 nm (Malitson's Sellmeier); photoelastic p11 0.121, p12 0.270",
               {{"epsilonr", "3.8"}, {"k", "1.38[W/(m*K)]"}, {"rho", "2203[kg/m^3]"}, {"Cp", "740[J/(kg*K)]"}, {"mur", "1"}, {"E", "73[GPa]"},
                {"nu", "0.17"}, {"alpha", "0.55e-6[1/K]"}, {"dndT", "1.0e-5[1/K]"},
                {"n", "sqrt(1 + 0.6961663*(lambda0/1[um])^2/((lambda0/1[um])^2 - 0.0684043^2) + 0.4079426*(lambda0/1[um])^2/((lambda0/1[um])^2 - "
                      "0.1162414^2) + 0.8974794*(lambda0/1[um])^2/((lambda0/1[um])^2 - 9.896161^2))"}}),
+             {{"p", cubicPhotoelastic(0.121, 0.270, (0.121 - 0.270) / 2)}}),
         // Magnetic materials: soft ones with a B-H curve (typical, not a datasheet's), permanent magnets.
         withCurve(entry("Iron (soft)", "Magnetic", "Low-carbon iron, annealed: a typical B-H curve; µr its first slope's",
                         {{"epsilonr", "1"}, {"sigma", "1.0e7[S/m]"}, {"mur", "4000"}, {"k", "80[W/(m*K)]"}, {"rho", "7870[kg/m^3]"},

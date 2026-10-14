@@ -41,6 +41,9 @@ struct MaterialSweep {
 struct MaterialCurve {
     QString key, label, unit;
     std::vector<double> values;
+    int axis = -1;   ///< a crystal's property along one of its axes (0-2), else -1
+    /// Its name in a dataset: its key, along an axis "n_x1".
+    QString name() const { return axis < 0 ? key : key + QStringLiteral("_x") + QString::number(axis + 1); }
 };
 
 struct MaterialCurves {

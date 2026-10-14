@@ -605,15 +605,20 @@ LineRLGC lineRLGC(const Solution& solution, const Node& node)
     for (int i = 0; i < int(es.matrix.size()); ++i)
         if (es.terminals[std::size_t(i)].name == terminal) out.C = es.matrix[std::size_t(i)][std::size_t(i)] / d;
     {
-        // G = (ω ∫ ε0 εr tan δ |E|² + ∫ σ |E|²) / V0², over the plane (per metre).
+        // G = (ω ∫ ε0 E·(εr tan δ) E + ∫ E·σ E) / V0², over the plane (per
+        // metre) - tensors where the dielectric is anisotropic (εr tan δ
+        // along its axes).
         QVector<int> domains;
         for (int k = 0; k < int(es.domains.size()); ++k)
             if (es.domains[std::size_t(k)]) domains << k;
         const QString p = esTag + QLatin1Char('.');
+        auto quadratic = [&p](const QString& t) {
+            return QStringLiteral("(%1xx*%2Ex^2 + (%1xy + %1yx)*%2Ex*%2Ey + %1yy*%2Ey^2)").arg(p + t, p);
+        };
         // (tan δ or σ not given: that term none)
-        const Expression loss = Expression::compile(QStringLiteral("(%1*eps0*%2epsr*if(%2tand > 0, %2tand, 0))*%2normE^2").arg(QString::number(omega, 'g', 17), p),
-                                                    solution.scope());
-        const Expression cond = Expression::compile(QStringLiteral("if(%1sigma > 0, %1sigma, 0)*%1normE^2").arg(p), solution.scope());
+        const Expression loss =
+            Expression::compile(QStringLiteral("%1*eps0*%2").arg(QString::number(omega, 'g', 17), quadratic(QStringLiteral("epsim"))), solution.scope());
+        const Expression cond = Expression::compile(quadratic(QStringLiteral("sigma")), solution.scope());
         if (!loss.isValid() || !cond.isValid()) {
             out.error = loss.isValid() ? cond.error() : loss.error();
             return out;

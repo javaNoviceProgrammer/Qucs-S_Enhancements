@@ -358,6 +358,23 @@ private slots:
         sweep.points = 2;
         c = materialCurves(gaas, {QStringLiteral("alphan")}, sweep, Scope::builtins());
         QVERIFY(near(c.curves[0].values[1], 2.99e5 * std::exp(-std::pow(6.85e5 / 6e5, 1.6)), 1e-9));
+        // A crystal's index along each of its axes: lithium niobate's no, no,
+        // ne (Zelmon et al.'s) - three curves, named apart in a dataset.
+        const Node ln = materialNode(Model::blank(), *findMaterial(QStringLiteral("Lithium niobate")));
+        sweep = MaterialSweep();
+        sweep.variable = QStringLiteral("lambda");
+        sweep.from = 1.5e-6;
+        sweep.to = 1.55e-6;
+        sweep.points = 2;
+        c = materialCurves(ln, {QStringLiteral("n"), QStringLiteral("rho")}, sweep, Scope::builtins());
+        QVERIFY2(c.error.isEmpty() && c.curves.size() == 4, qPrintable(c.error));
+        const double l2 = 1.55 * 1.55;
+        const double no = std::sqrt(1 + 2.6734 * l2 / (l2 - 0.01764) + 1.2290 * l2 / (l2 - 0.05914) + 12.614 * l2 / (l2 - 474.60));
+        const double ne = std::sqrt(1 + 2.9804 * l2 / (l2 - 0.02047) + 0.5981 * l2 / (l2 - 0.0666) + 8.9543 * l2 / (l2 - 416.08));
+        QVERIFY(near(c.curves[0].values[1], no, 1e-12) && near(c.curves[1].values[1], no, 1e-12) && near(c.curves[2].values[1], ne, 1e-12));
+        QCOMPARE(c.curves[2].name(), QStringLiteral("n_x3"));
+        QVERIFY(c.curves[2].label.contains(QLatin1String("x3")));
+        QCOMPARE(c.curves[3].name(), QStringLiteral("rho"));
         // What it is not.
         sweep.variable = QStringLiteral("x");
         QVERIFY(!materialCurves(si, {}, sweep, Scope::builtins()).error.isEmpty());

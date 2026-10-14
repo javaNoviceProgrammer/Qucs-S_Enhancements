@@ -14,6 +14,8 @@
  */
 #include "fem_problem.h"
 
+#include <Eigen/Dense>
+
 #include <QCoreApplication>
 
 #include <algorithm>
@@ -36,6 +38,43 @@ struct Load {
     bool pressure = false;
     Expression fx, fy, p;
 };
+
+/// An anisotropic solid's D in the plane - its rows xx, yy, xy (rr, zz,
+/// θθ, rz about the axis) - and D ε0 there, from its stiffness \a C (6x6,
+/// Voigt's, the model's axes) and free strain \a S0 (engineering shears):
+/// plane strain and about an axis its rows and columns, ε0's other
+/// components held (C S0's rows); plane stress what is left with no stress
+/// out of the plane (D = Cii - Cio Coo⁻¹ Coi, D ε0's in-plane part).
+void anisotropicD(const double C[6][6], const double S0[6], bool axi, bool planeStress, double D[4][4], double sigma0[4])
+{
+    if (planeStress) {
+        const int in[3] = {0, 1, 5}, out[3] = {2, 3, 4};
+        Eigen::Matrix3d Cii, Cio, Coi, Coo;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                Cii(i, j) = C[in[i]][in[j]];
+                Cio(i, j) = C[in[i]][out[j]];
+                Coi(i, j) = C[out[i]][in[j]];
+                Coo(i, j) = C[out[i]][out[j]];
+            }
+        const Eigen::Matrix3d Dp = Cii - Cio * Coo.fullPivLu().solve(Coi);
+        for (int i = 0; i < 3; ++i) {
+            sigma0[i] = 0;
+            for (int j = 0; j < 3; ++j) {
+                D[i][j] = Dp(i, j);
+                sigma0[i] += Dp(i, j) * S0[in[j]];
+            }
+        }
+        return;
+    }
+    const int idx[4] = {0, 1, axi ? 2 : 5, 5};
+    const int rows = axi ? 4 : 3;
+    for (int i = 0; i < rows; ++i) {
+        sigma0[i] = 0;
+        for (int k = 0; k < 6; ++k) sigma0[i] += C[idx[i]][k] * S0[k];
+        for (int j = 0; j < rows; ++j) D[i][j] = C[idx[i]][idx[j]];
+    }
+}
 
 class ElasticProblem : public Problem
 {
@@ -60,6 +99,12 @@ private:
     std::vector<std::vector<std::pair<Expression, Expression>>> a_body;   // by domain
     std::vector<Expression> a_thermalT, a_thermalRef;   // by domain (the expressions dT is made of)
     double a_emax = 0;
+    /// An anisotropic domain's: its stiffness (6x6, Voigt's, the model's
+    /// axes), its thermal expansion (xx, yy, zz, yz, xz, xy) and a
+    /// piezoelectric solid's stress eᵀE - each empty where it has none.
+    std::vector<std::array<Expression, 36>> a_C;
+    std::vector<std::array<Expression, 6>> a_alpha, a_piezo;
+    std::vector<char> a_anisotropic, a_hasPiezo;
 
     std::vector<int> a_eq;                      // by component * n + dof: its equation, -1 none, -3 fixed
     std::vector<int> a_constraintOf;            // by component * n + dof: the boundary that fixes it (-2: the axis)
@@ -106,10 +151,20 @@ bool ElasticProblem::setup(QString* error)
     coef.sourceScale.assign(nd, 1.0);
     coef.capacity.assign(nd, Expression());
     for (const char* key : {"E", "nu", "alpha", "dT"}) coef.named[QString::fromLatin1(key)].assign(nd, Expression());
+    for (int I = 1; I <= 6; ++I) {
+        for (int J = 1; J <= 6; ++J) coef.named[QStringLiteral("C%1%2").arg(I).arg(J)].assign(nd, Expression());
+        coef.named[QStringLiteral("alpha%1").arg(I)].assign(nd, Expression());
+        coef.named[QStringLiteral("sp%1").arg(I)].assign(nd, Expression());
+    }
+    a_C.assign(nd, {});
+    a_alpha.assign(nd, {});
+    a_piezo.assign(nd, {});
+    a_anisotropic.assign(nd, 0);
+    a_hasPiezo.assign(nd, 0);
     a_body.assign(nd, {});
     a_constraints.assign(topo.boundaries.size(), Constraint());
     a_loads.assign(topo.boundaries.size(), {});
-    std::vector<const Node*> elasticOf(nd, nullptr);
+    std::vector<const Node*> elasticOf(nd, nullptr), piezoOf(nd, nullptr);
     for (const Node& feature : a_node->children) {
         if (!feature.enabled) continue;
         const NodeKind* k = feature.kind();
@@ -119,6 +174,8 @@ bool ElasticProblem::setup(QString* error)
         const QString t = feature.type;
         if (t == QLatin1String("solid/elastic")) {
             for (int d : picked) elasticOf[std::size_t(d)] = &feature;
+        } else if (t == QLatin1String("solid/piezo")) {
+            for (int d : picked) piezoOf[std::size_t(d)] = &feature;
         } else if (t == QLatin1String("solid/bodyload")) {
             const Expression fx = compile(feature.text(QStringLiteral("fx")), feature, QStringLiteral("fx"));
             const Expression fy = compile(feature.text(QStringLiteral("fy")), feature, QStringLiteral("fy"));
@@ -183,18 +240,68 @@ bool ElasticProblem::setup(QString* error)
             }
             *out = compile(text, *where, key);
         };
-        Expression E, nu;
-        property(QStringLiteral("E"), tr("Young's modulus"), &E);
-        property(QStringLiteral("nu"), tr("Poisson's ratio"), &nu);
-        if (E.isValid() && E.isConstant() && !(E.constant() > 0)) problem(tr("domain %1: its Young's modulus must be more than 0").arg(d + 1));
-        if (nu.isValid() && nu.isConstant() && !(nu.constant() > -1 && nu.constant() < 0.5))
-            problem(tr("domain %1: its Poisson's ratio must be between -1 and 0.5").arg(d + 1));
-        if (E.isValid() && E.isConstant()) a_emax = std::max(a_emax, E.constant());
-        coef.named[QStringLiteral("E")][std::size_t(d)] = E;
-        coef.named[QStringLiteral("nu")][std::size_t(d)] = nu;
+        // An anisotropic stiffness: as given (the model's axes), or its
+        // material's crystal's turned by its orientation.
+        const QString stiffness = user ? (feat->text(QStringLiteral("anisotropy")) == QLatin1String("anisotropic") ? feat->text(QStringLiteral("C")) : QString())
+                                       : (m ? materialText(*m, QStringLiteral("C")) : QString());
+        if (!stiffness.trimmed().isEmpty()) {
+            QString why;
+            std::optional<VoigtText> c = voigtText(stiffness, QLatin1Char('C'), 6, 6, true, &why);
+            if (!c) {
+                problem(tr("domain %1 (%2): its stiffness: %3").arg(d + 1).arg(object, why));
+                continue;
+            }
+            if (!user) *c = rotated(*c, rotationOf(*m), QLatin1Char('C'));
+            const Node& from = user ? *feat : *m;
+            for (int I = 0; I < 6; ++I)
+                for (int J = 0; J < 6; ++J) {
+                    Expression& e = a_C[std::size_t(d)][std::size_t(6 * I + J)];
+                    e = c->c[I][J] == QLatin1String("0") ? Expression::compile(QStringLiteral("0[Pa]"), a_s.pointScope())
+                                                         : compile(c->c[I][J], from, QStringLiteral("C"), true, false);
+                    coef.named[QStringLiteral("C%1%2").arg(I + 1).arg(J + 1)][std::size_t(d)] = e;
+                    if (I == J && e.isValid() && e.isConstant()) {
+                        a_emax = std::max(a_emax, e.constant());
+                        if (I < 3 && !(e.constant() > 0)) problem(tr("domain %1 (%2): its C%3%3 must be more than 0").arg(d + 1).arg(object).arg(I + 1));
+                    }
+                }
+            a_anisotropic[std::size_t(d)] = 1;
+        } else {
+            Expression E, nu;
+            property(QStringLiteral("E"), tr("Young's modulus"), &E);
+            property(QStringLiteral("nu"), tr("Poisson's ratio"), &nu);
+            if (E.isValid() && E.isConstant() && !(E.constant() > 0)) problem(tr("domain %1: its Young's modulus must be more than 0").arg(d + 1));
+            if (nu.isValid() && nu.isConstant() && !(nu.constant() > -1 && nu.constant() < 0.5))
+                problem(tr("domain %1: its Poisson's ratio must be between -1 and 0.5").arg(d + 1));
+            if (E.isValid() && E.isConstant()) a_emax = std::max(a_emax, E.constant());
+            coef.named[QStringLiteral("E")][std::size_t(d)] = E;
+            coef.named[QStringLiteral("nu")][std::size_t(d)] = nu;
+        }
         if (feat->flag(QStringLiteral("thermal"))) {
             Expression alpha;
-            property(QStringLiteral("alpha"), tr("coefficient of thermal expansion"), &alpha);
+            // (A tensor: its components, the model's axes; one value alike.)
+            const QString alphaText = user ? feat->text(QStringLiteral("alpha")) : (m ? materialText(*m, QStringLiteral("alpha")) : QString());
+            if (isTensorText(alphaText) || a_anisotropic[std::size_t(d)]) {
+                QString why;
+                std::optional<TensorText> t = tensorText(alphaText.trimmed().isEmpty() ? QStringLiteral("0") : alphaText, &why);
+                if (!t) {
+                    problem(tr("domain %1 (%2): its thermal expansion: %3").arg(d + 1).arg(object, why));
+                    continue;
+                }
+                if (!user) *t = rotated(*t, rotationOf(*m));
+                const int vi[6] = {0, 1, 2, 1, 0, 0}, vj[6] = {0, 1, 2, 2, 2, 1};
+                for (int I = 0; I < 6; ++I) {
+                    const QString c = t->c[vi[I]][vj[I]];
+                    a_alpha[std::size_t(d)][std::size_t(I)] = c == QLatin1String("0") ? Expression::compile(QStringLiteral("0[1/K]"), a_s.pointScope())
+                                                                                      : compile(c, user ? *feat : *m, QStringLiteral("alpha"));
+                    coef.named[QStringLiteral("alpha%1").arg(I + 1)][std::size_t(d)] = a_alpha[std::size_t(d)][std::size_t(I)];
+                }
+                if (!a_anisotropic[std::size_t(d)]) {
+                    problem(tr("domain %1 (%2): a thermal expansion along axes is an anisotropic solid's (give its stiffness Cij)").arg(d + 1).arg(object));
+                    continue;
+                }
+                alpha = Expression::compile(QStringLiteral("0[1/K]"), a_s.pointScope());
+            } else
+                property(QStringLiteral("alpha"), tr("coefficient of thermal expansion"), &alpha);
             const QString T = feat->text(QStringLiteral("T")), ref = feat->text(QStringLiteral("Tref"));
             const Expression te = compile(T, *feat, QStringLiteral("T"));
             const Expression re = compile(ref, *feat, QStringLiteral("Tref"), false);
@@ -207,10 +314,44 @@ bool ElasticProblem::setup(QString* error)
             coef.named[QStringLiteral("alpha")][std::size_t(d)] = Expression::compile(QStringLiteral("0"), a_s.pointScope());
             coef.named[QStringLiteral("dT")][std::size_t(d)] = Expression::compile(QStringLiteral("0[K]"), a_s.pointScope());
         }
+        // A piezoelectric solid: its stress eᵀ E, E an electrostatics' field.
+        if (const Node* pz = piezoOf[std::size_t(d)]) {
+            if (a_planeStress) {
+                problem(tr("%1: a piezoelectric solid in plane strain or about an axis (not plane stress)").arg(pz->name()));
+                continue;
+            }
+            QString why;
+            const std::optional<VoigtText> e = piezoMatrix(*pz, m, &why);
+            if (!e) {
+                problem(tr("domain %1 (%2): %3").arg(d + 1).arg(object, why));
+                continue;
+            }
+            const QStringList tags = pz->list(QStringLiteral("es"));
+            const QString es = tags.isEmpty() ? QStringLiteral("es") : tags.first();
+            for (int I = 0; I < 6; ++I) {
+                // (In the plane: E's x and y.)
+                QStringList terms;
+                for (int k = 0; k < 2; ++k)
+                    if (e->c[k][I] != QLatin1String("0")) terms << QStringLiteral("(%1)*%2.E%3").arg(e->c[k][I], es, k == 0 ? QStringLiteral("x") : QStringLiteral("y"));
+                a_piezo[std::size_t(d)][std::size_t(I)] = terms.isEmpty() ? Expression::compile(QStringLiteral("0[Pa]"), a_s.pointScope())
+                                                                          : compile(terms.join(QLatin1String(" + ")), *pz, QStringLiteral("e"), true, false);
+                coef.named[QStringLiteral("sp%1").arg(I + 1)][std::size_t(d)] = a_piezo[std::size_t(d)][std::size_t(I)];
+            }
+            a_hasPiezo[std::size_t(d)] = 1;
+            if (!a_anisotropic[std::size_t(d)])
+                a_s.log << tr("%1: domain %2 (%3) piezoelectric with an isotropic stiffness (E, ν): its crystal's Cij is the one to give")
+                               .arg(pz->name())
+                               .arg(d + 1)
+                               .arg(object);
+        }
         for (const char* key : {"E", "nu", "alpha", "dT"}) {
             const Expression& e = coef.named[QString::fromLatin1(key)][std::size_t(d)];
             a_varies = a_varies || (e.isValid() && a_s.varies(e));
         }
+        for (int k = 0; k < 36; ++k) a_varies = a_varies || (a_C[std::size_t(d)][std::size_t(k)].isValid() && a_s.varies(a_C[std::size_t(d)][std::size_t(k)]));
+        for (int k = 0; k < 6; ++k)
+            a_varies = a_varies || (a_piezo[std::size_t(d)][std::size_t(k)].isValid() && a_s.varies(a_piezo[std::size_t(d)][std::size_t(k)]))
+                       || (a_alpha[std::size_t(d)][std::size_t(k)].isValid() && a_s.varies(a_alpha[std::size_t(d)][std::size_t(k)]));
         for (const auto& [fx, fy] : a_body[std::size_t(d)]) a_varies = a_varies || a_s.varies(fx) || a_s.varies(fy);
     }
     if (a_emax == 0) a_emax = 1e11;
@@ -407,36 +548,49 @@ void ElasticProblem::elementMatrices()
                 const double r = map.x.x();
                 const double w = q[2] * std::abs(map.det) * a_s.weight(map.x);
                 ev.moveTo(t, q[0], q[1]);
-                const double E = ev.eval(Es[d]), nu = ev.eval(nus[d]);
-                const double alpha = alphas[d].isValid() ? ev.eval(alphas[d]) : 0;
                 const double dT = dTs[d].isValid() ? ev.eval(dTs[d]) : 0;
-                const double th = (std::isfinite(alpha) ? alpha : 0) * (std::isfinite(dT) ? dT : 0);
                 double fx = 0, fy = 0;
                 for (const auto& [ex, ey] : a_body[d]) {
                     fx += ev.eval(ex);
                     fy += ev.eval(ey);
                 }
-                // D, and the free thermal strain ε0 it acts on.
+                // D, and σ0 = D ε0 of the free thermal strain ε0 (σ = D ε - σ0).
                 double D[4][4] = {};
-                double e0[4] = {};
-                const double mu = E / (2 * (1 + nu));
-                if (a_planeStress) {
-                    const double f = E / (1 - nu * nu);
-                    D[0][0] = D[1][1] = f;
-                    D[0][1] = D[1][0] = f * nu;
-                    D[2][2] = mu;
-                    e0[0] = e0[1] = th;
+                double sigma0[4] = {};
+                if (a_anisotropic[d]) {
+                    double C[6][6], S0[6] = {0, 0, 0, 0, 0, 0};
+                    for (int k = 0; k < 36; ++k) C[k / 6][k % 6] = ev.eval(a_C[d][std::size_t(k)]);
+                    for (int k = 0; k < 6 && std::isfinite(dT); ++k)
+                        if (a_alpha[d][std::size_t(k)].isValid()) S0[k] = (k < 3 ? 1.0 : 2.0) * ev.eval(a_alpha[d][std::size_t(k)]) * dT;
+                    anisotropicD(C, S0, axi, a_planeStress, D, sigma0);
                 } else {
-                    const double lambda = E * nu / ((1 + nu) * (1 - 2 * nu));
-                    for (int i = 0; i < (axi ? 3 : 2); ++i)
-                        for (int j = 0; j < (axi ? 3 : 2); ++j) D[i][j] = lambda + (i == j ? 2 * mu : 0);
-                    D[rows - 1][rows - 1] = mu;
-                    if (axi) e0[0] = e0[1] = e0[2] = th;
-                    else e0[0] = e0[1] = (1 + nu) * th;
+                    const double E = ev.eval(Es[d]), nu = ev.eval(nus[d]);
+                    const double alpha = alphas[d].isValid() ? ev.eval(alphas[d]) : 0;
+                    const double th = (std::isfinite(alpha) ? alpha : 0) * (std::isfinite(dT) ? dT : 0);
+                    double e0[4] = {};
+                    const double mu = E / (2 * (1 + nu));
+                    if (a_planeStress) {
+                        const double f = E / (1 - nu * nu);
+                        D[0][0] = D[1][1] = f;
+                        D[0][1] = D[1][0] = f * nu;
+                        D[2][2] = mu;
+                        e0[0] = e0[1] = th;
+                    } else {
+                        const double lambda = E * nu / ((1 + nu) * (1 - 2 * nu));
+                        for (int i = 0; i < (axi ? 3 : 2); ++i)
+                            for (int j = 0; j < (axi ? 3 : 2); ++j) D[i][j] = lambda + (i == j ? 2 * mu : 0);
+                        D[rows - 1][rows - 1] = mu;
+                        if (axi) e0[0] = e0[1] = e0[2] = th;
+                        else e0[0] = e0[1] = (1 + nu) * th;
+                    }
+                    for (int i = 0; i < rows; ++i)
+                        for (int j = 0; j < rows; ++j) sigma0[i] += D[i][j] * e0[j];
                 }
-                double sigma0[4] = {};   // D ε0
-                for (int i = 0; i < rows; ++i)
-                    for (int j = 0; j < rows; ++j) sigma0[i] += D[i][j] * e0[j];
+                // A piezoelectric solid's stress eᵀE (σ = C S - eᵀE): its rows'.
+                if (a_hasPiezo[d]) {
+                    const int idx[4] = {0, 1, axi ? 2 : 5, 5};
+                    for (int i = 0; i < rows; ++i) sigma0[i] += ev.eval(a_piezo[d][std::size_t(idx[i])]);
+                }
                 // B: a column for each (node, component).
                 double B[4][12] = {};
                 for (int i = 0; i < per; ++i) {

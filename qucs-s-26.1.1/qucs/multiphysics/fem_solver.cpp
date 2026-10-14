@@ -16,6 +16,8 @@
 #include "fem_materials.h"
 #include "fem_problem.h"
 
+#include <Eigen/Dense>
+
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QJsonDocument>
@@ -360,7 +362,88 @@ std::vector<const Node*> Problem::materials()
         if (!why.isEmpty()) problem(tr("%1: %2").arg(m.name(), why));
         for (int d : on) material[std::size_t(d)] = &m;
     }
+    // A physics of isotropic media: a tensor's mean, said.
+    const QString type = a_node ? a_node->type : QString();
+    if (type == QLatin1String("semiconductor") || type == QLatin1String("rays") || type == QLatin1String("quantum")) {
+        const QVector<int> mine = resolveSelection(topo, a_s.model(), Level::Domain, a_node->selection(), &why);
+        QSet<const Node*> said;
+        for (int d : mine) {
+            const Node* m = d >= 0 && d < int(material.size()) ? material[std::size_t(d)] : nullptr;
+            if (!m || said.contains(m)) continue;
+            said.insert(m);
+            QStringList keys;
+            for (const QString& k : tensorKeys())
+                if (isTensorText(materialText(*m, k))) keys << k;
+            if (!keys.isEmpty())
+                a_s.log << tr("%1: %2's %3 a tensor - its mean taken (%4 is isotropic)").arg(a_node->name(), m->name(), keys.join(QLatin1String(", ")), type);
+        }
+    }
     return material;
+}
+
+const QStringList& Problem::tensorKeys()
+{
+    static const QStringList keys = {QStringLiteral("epsilonr"), QStringLiteral("sigma"), QStringLiteral("k"),     QStringLiteral("tand"), QStringLiteral("mur"),
+                                     QStringLiteral("alpha"),    QStringLiteral("n"),     QStringLiteral("kappa"), QStringLiteral("dndT")};
+    return keys;
+}
+
+Rotation Problem::rotationOf(const Node& m)
+{
+    QString why;
+    const std::optional<Rotation> r = materialRotation(m, a_s.parameters().scope, &why);
+    if (!r) {
+        const QString said = tr("%1").arg(why);
+        if (!a_problems.contains(said)) problem(said);
+        return Rotation();
+    }
+    return *r;
+}
+
+std::optional<VoigtText> Problem::piezoMatrix(const Node& feature, const Node* material, QString* why)
+{
+    const bool user = feature.text(QStringLiteral("source")) == QLatin1String("user");
+    const QString text = user ? feature.text(QStringLiteral("e")) : material ? materialText(*material, QStringLiteral("e")) : QString();
+    // A material's strain constants d instead: e = d C (its crystal's axes).
+    if (!user && material && text.trimmed().isEmpty() && !materialText(*material, QStringLiteral("d")).trimmed().isEmpty()) {
+        const QString stiffness = materialText(*material, QStringLiteral("C"));
+        if (stiffness.trimmed().isEmpty()) {
+            *why = tr("its material, %1, has piezoelectric strain constants d but no stiffness Cij: e = d C (%2)").arg(material->name(), feature.name());
+            return std::nullopt;
+        }
+        const std::optional<VoigtText> d = voigtText(materialText(*material, QStringLiteral("d")), QLatin1Char('d'), 3, 6, false, why);
+        if (!d) return std::nullopt;
+        const std::optional<VoigtText> c = voigtText(stiffness, QLatin1Char('C'), 6, 6, true, why);
+        if (!c) return std::nullopt;
+        return rotated(multiplied(*d, *c), rotationOf(*material), QLatin1Char('e'));
+    }
+    if (text.trimmed().isEmpty()) {
+        *why = user ? tr("%1: its piezoelectric constants e are not given").arg(feature.name())
+               : material ? tr("its material, %1, has no piezoelectric constants, e or d (%2)").arg(material->name(), feature.name())
+                          : tr("it has no material: its piezoelectric constants e are needed (%1)").arg(feature.name());
+        return std::nullopt;
+    }
+    std::optional<VoigtText> e = voigtText(text, QLatin1Char('e'), 3, 6, false, why);
+    if (!e) return std::nullopt;
+    if (!user) *e = rotated(*e, rotationOf(*material), QLatin1Char('e'));
+    return e;
+}
+
+std::optional<TensorText> Problem::materialTensor(const Node& m, const QString& key, const QList<int>& allowed, Rotation* rotation)
+{
+    const QString text = materialText(m, key, &a_s.parameters().scope);
+    if (text.trimmed().isEmpty()) return std::nullopt;
+    QString why;
+    const std::optional<TensorText> t = tensorText(text, &why, allowed);
+    if (!t) {
+        const NodeKind* k = m.kind();
+        const PropertyDef* p = k ? k->property(key) : nullptr;
+        problem(tr("%1's %2: %3").arg(m.name(), p ? p->label : key, why));
+        return std::nullopt;
+    }
+    const Rotation r = rotationOf(m);
+    if (rotation) *rotation = r;
+    return rotated(*t, r);
 }
 
 QString Problem::givenProperty(const Node& m, const QString& key, const Scope* scope)
@@ -385,6 +468,12 @@ QString Problem::givenProperty(const Node& m, const QString& key, const Scope* s
 }
 
 QString Problem::materialProperty(const Node& m, const QString& key, const Scope* scope, double T)
+{
+    const QString text = materialText(m, key, scope, T);
+    return tensorKeys().contains(key) && isTensorText(text) ? isotropicText(text) : text;
+}
+
+QString Problem::materialText(const Node& m, const QString& key, const Scope* scope, double T)
 {
     QString text = givenProperty(m, key, scope);
     if (!text.trimmed().isEmpty() || key == QLatin1String("compound") || key == QLatin1String("x") || key == QLatin1String("y")) return text;
@@ -635,6 +724,51 @@ StressState stressAt(PointEvaluator& e, int field, bool planeStress, bool axisym
     st.e1 = ux;
     st.e2 = vy;
     st.g12 = uy + vx;
+    // An anisotropic solid: σ = C (S - S0) - eᵀE, its stiffness C (Voigt's,
+    // the model's axes), S0 its free thermal strain, eᵀE a piezoelectric
+    // one's stress; in plane stress S's zz, yz and xz those that leave no
+    // stress out of the plane.
+    if (std::isfinite(e.coefficient(field, QStringLiteral("C11")))) {
+        double C[6][6], S0[6], sp[6], S[6] = {ux, vy, 0, 0, 0, uy + vx};
+        for (int I = 0; I < 6; ++I) {
+            for (int J = 0; J < 6; ++J) C[I][J] = e.coefficient(field, QStringLiteral("C%1%2").arg(I + 1).arg(J + 1));
+            const double al = e.coefficient(field, QStringLiteral("alpha%1").arg(I + 1));
+            S0[I] = std::isfinite(al) && std::isfinite(dT) ? (I < 3 ? 1.0 : 2.0) * al * dT : 0.0;
+            const double p = e.coefficient(field, QStringLiteral("sp%1").arg(I + 1));
+            sp[I] = std::isfinite(p) ? p : 0.0;
+        }
+        if (axisymmetric) {
+            const double r = e.point().x();
+            S[2] = r > 0 ? u / r : ux;
+        } else if (planeStress) {
+            // C_oo (S - S0)_o = -C_oi (S - S0)_i + sp_o.
+            const int in[3] = {0, 1, 5}, out[3] = {2, 3, 4};
+            Eigen::Matrix3d Coo;
+            Eigen::Vector3d rhs;
+            for (int i = 0; i < 3; ++i) {
+                rhs(i) = sp[out[i]];
+                for (int j = 0; j < 3; ++j) {
+                    Coo(i, j) = C[out[i]][out[j]];
+                    rhs(i) -= C[out[i]][in[j]] * (S[in[j]] - S0[in[j]]);
+                }
+            }
+            const Eigen::Vector3d eo = Coo.fullPivLu().solve(rhs);
+            for (int i = 0; i < 3; ++i) S[out[i]] = eo(i) + S0[out[i]];
+        }
+        double sigma[6];
+        for (int I = 0; I < 6; ++I) {
+            sigma[I] = -sp[I];
+            for (int J = 0; J < 6; ++J) sigma[I] += C[I][J] * (S[J] - S0[J]);
+        }
+        st.e3 = S[2];
+        st.s1 = sigma[0];
+        st.s2 = sigma[1];
+        st.s3 = sigma[2];
+        st.s12 = sigma[5];
+        st.elastic = 0;
+        for (int I = 0; I < 6; ++I) st.elastic += 0.5 * (sigma[I] + sp[I]) * (S[I] - S0[I]);
+        return st;
+    }
     const double mu = E / (2 * (1 + nu));
     if (axisymmetric) {
         const double r = e.point().x();
@@ -721,14 +855,27 @@ MagneticState magneticAt(PointEvaluator& e, int f, bool axisymmetric)
     } else {
         st.mur = e.coefficient(f, QString());
         nu = 1 / (Mu0 * st.mur);
-        const double dx = st.B[0][0] - brx, dy = st.B[1][0] - bry;
-        st.w = harmonic ? 0.25 * nu * (st.B[0][0] * st.B[0][0] + st.B[1][0] * st.B[1][0] + st.B[0][1] * st.B[0][1] + st.B[1][1] * st.B[1][1])
-                        : 0.5 * nu * (dx * dx + dy * dy);
     }
-    st.H[0][0] = nu * (st.B[0][0] - brx);
-    st.H[1][0] = nu * (st.B[1][0] - bry);
-    st.H[0][1] = nu * st.B[0][1];
-    st.H[1][1] = nu * st.B[1][1];
+    // ν in the plane: isotropic, or the inverse of an anisotropic µr.
+    double nut[4] = {nu, 0, 0, nu};
+    if (!curve) {
+        const double mt[4] = {e.coefficient(f, QStringLiteral("murxx")), e.coefficient(f, QStringLiteral("murxy")), e.coefficient(f, QStringLiteral("muryx")),
+                              e.coefficient(f, QStringLiteral("muryy"))};
+        if (std::isfinite(mt[0]) && std::isfinite(mt[3])) {
+            const double det = Mu0 * (mt[0] * mt[3] - orZero(mt[1]) * orZero(mt[2]));
+            nut[0] = mt[3] / det;
+            nut[1] = -orZero(mt[1]) / det;
+            nut[2] = -orZero(mt[2]) / det;
+            nut[3] = mt[0] / det;
+        }
+    }
+    st.H[0][0] = nut[0] * (st.B[0][0] - brx) + nut[1] * (st.B[1][0] - bry);
+    st.H[1][0] = nut[2] * (st.B[0][0] - brx) + nut[3] * (st.B[1][0] - bry);
+    st.H[0][1] = nut[0] * st.B[0][1] + nut[1] * st.B[1][1];
+    st.H[1][1] = nut[2] * st.B[0][1] + nut[3] * st.B[1][1];
+    if (!curve)
+        st.w = harmonic ? 0.25 * (st.B[0][0] * st.H[0][0] + st.B[1][0] * st.H[1][0] + st.B[0][1] * st.H[0][1] + st.B[1][1] * st.H[1][1])
+                        : 0.5 * ((st.B[0][0] - brx) * st.H[0][0] + (st.B[1][0] - bry) * st.H[1][0]);
     st.sigma = orZero(e.coefficient(f, QStringLiteral("sigma")));
     const double je = orZero(e.coefficient(f, QStringLiteral("Je")));
     // A conductor's field from its voltage: U along the plane's normal (V/m),
@@ -940,9 +1087,11 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                     const detail::MediumAt m = detail::modeMediumAt(e, f);
                     const detail::ModeFields mf = detail::modeFieldsAt(e, f);
                     if (!m.defined || !mf.defined) return NaN;
-                    double q = 0;
-                    for (int k = 0; k < 3; ++k) q += m.lossEps[k] * std::norm(mf.E[k]);
-                    return 0.5 * m.omega * detail::Eps0 * q;
+                    // Eᴴ ε'' E (ε'' Hermitian: real).
+                    std::complex<double> q = 0;
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j) q += std::conj(mf.E[i]) * m.lossEps[i][j] * mf.E[j];
+                    return 0.5 * m.omega * detail::Eps0 * q.real();
                 });
                 define(p + QStringLiteral("Qgap"), qDim,
                        tr("power absorbed per volume across a gap (the media's κ and a direct gap's, not the free carriers'), the mode "
@@ -1228,8 +1377,12 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                    [st](PointEvaluator& e) { return st(e).q; });
             define(p + QStringLiteral("Wm"), Dim::of(-1, 1, -2), tr("magnetic energy density (a time average in the frequency domain)"), K::Derived,
                    f, [st](PointEvaluator& e) { return st(e).w; });
-            define(p + QStringLiteral("mur"), Dim(), tr("relative permeability (B/µ0H on a B-H curve)"), K::Derived, f,
-                   [st](PointEvaluator& e) { return st(e).mur; });
+            define(p + QStringLiteral("mur"), Dim(), tr("relative permeability (B/µ0H on a B-H curve; where it is a tensor, the mean of its xx and yy)"),
+                   K::Derived, f, [st](PointEvaluator& e) { return st(e).mur; });
+            for (const char* part : {"xx", "xy", "yx", "yy"})
+                coefficient(p + QStringLiteral("mur") + QString::fromLatin1(part), Dim(),
+                            tr("relative permeability, %1 component (where it is a tensor)").arg(QString::fromLatin1(part)), f,
+                            QStringLiteral("mur") + QString::fromLatin1(part));
             coefficient(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity (0 in a coil of turns)"), f,
                         QStringLiteral("sigma"));
             coefficient(p + QStringLiteral("Je"), jDim, tr("external current density (a coil of turns' too)"), f, QStringLiteral("Je"));
@@ -1245,50 +1398,76 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
         define(p + field.variable, field.dim, tr("the dependent variable"), K::Value, f, {});
         // Its plain name too (V, T), when no physics before has it.
         define(field.variable, field.dim, tr("the dependent variable of %1").arg(field.tag), K::Value, f, {});
+        // (A coefficient's tensor in the plane, as solved: xx, xy, yx, yy.)
+        auto tensor = [&](const QString& name, const Dim& dim, const QString& what) {
+            std::array<int, 4> out{};
+            const char* parts[4] = {"xx", "xy", "yx", "yy"};
+            for (int k = 0; k < 4; ++k)
+                out[std::size_t(k)] = coefficient(p + name + QString::fromLatin1(parts[k]), dim, tr("%1, %2 component").arg(what, QString::fromLatin1(parts[k])),
+                                      f, QStringLiteral("c") + QString::fromLatin1(parts[k]));
+            return out;
+        };
         if (field.type == QLatin1String("electrostatics") || field.type == QLatin1String("currents")) {
             const int ex = define(p + QStringLiteral("Ex"), efield, tr("electric field, x component"), K::GradX, f);
             const int ey = define(p + QStringLiteral("Ey"), efield, tr("electric field, y component"), K::GradY, f);
             const int ne = define(p + QStringLiteral("normE"), efield, tr("electric field, norm"), K::GradNorm, f);
+            auto zeroIfNaN = [](double v) { return std::isfinite(v) ? v : 0.0; };
             if (field.type == QLatin1String("electrostatics")) {
-                const int er = coefficient(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity"), f, QString());
+                coefficient(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity (where it is a tensor, the mean of its xx and yy)"), f, QString());
+                const std::array<int, 4> er = tensor(QStringLiteral("epsr"), Dim(), tr("relative permittivity"));
                 coefficient(p + QStringLiteral("tand"), Dim(), tr("loss tangent (its material's)"), f, QStringLiteral("tand"));
                 coefficient(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity (its material's)"), f,
                             QStringLiteral("sigma"));
+                const char* parts[4] = {"xx", "xy", "yx", "yy"};
+                for (const char* part : parts) {
+                    const QString c = QString::fromLatin1(part);
+                    coefficient(p + QStringLiteral("epsim") + c, Dim(), tr("a dielectric's loss, εr tan δ, %1 component (its material's)").arg(c), f,
+                                QStringLiteral("epsim") + c);
+                    coefficient(p + QStringLiteral("sigma") + c, Dim::of(-3, -1, 3, 2), tr("a dielectric's conductivity, %1 component (its material's)").arg(c), f,
+                                QStringLiteral("sigma") + c);
+                }
+                // (A piezoelectric solid's polarization: e S.)
+                const int px = coefficient(p + QStringLiteral("Px"), dfield, tr("polarization of a strained piezoelectric solid, x component"), f, QStringLiteral("Px"));
+                const int py = coefficient(p + QStringLiteral("Py"), dfield, tr("polarization of a strained piezoelectric solid, y component"), f, QStringLiteral("Py"));
                 const int dx = define(p + QStringLiteral("Dx"), dfield, tr("electric displacement, x component"), K::Derived, f,
-                                      [er, ex](PointEvaluator& e) { return detail::Eps0 * e.value(er) * e.value(ex); });
+                                      [er, ex, ey, px, zeroIfNaN](PointEvaluator& e) {
+                                          return detail::Eps0 * (e.value(er[0]) * e.value(ex) + e.value(er[1]) * e.value(ey)) + zeroIfNaN(e.value(px));
+                                      });
                 const int dy = define(p + QStringLiteral("Dy"), dfield, tr("electric displacement, y component"), K::Derived, f,
-                                      [er, ey](PointEvaluator& e) { return detail::Eps0 * e.value(er) * e.value(ey); });
+                                      [er, ex, ey, py, zeroIfNaN](PointEvaluator& e) {
+                                          return detail::Eps0 * (e.value(er[2]) * e.value(ex) + e.value(er[3]) * e.value(ey)) + zeroIfNaN(e.value(py));
+                                      });
                 define(p + QStringLiteral("normD"), dfield, tr("electric displacement, norm"), K::Derived, f,
                        [dx, dy](PointEvaluator& e) { return std::hypot(e.value(dx), e.value(dy)); });
-                define(p + QStringLiteral("We"), Dim::of(-1, 1, -2), tr("electric energy density"), K::Derived, f,
-                       [er, ne](PointEvaluator& e) {
-                           const double n = e.value(ne);
-                           return 0.5 * detail::Eps0 * e.value(er) * n * n;
-                       });
+                define(p + QStringLiteral("We"), Dim::of(-1, 1, -2), tr("electric energy density"), K::Derived, f, [er, ex, ey](PointEvaluator& e) {
+                    const double x = e.value(ex), y = e.value(ey);
+                    return 0.5 * detail::Eps0 * (e.value(er[0]) * x * x + (e.value(er[1]) + e.value(er[2])) * x * y + e.value(er[3]) * y * y);
+                });
+                (void)ne;
             } else {
-                const int sg = coefficient(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity"), f, QString());
+                coefficient(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity (where it is a tensor, the mean of its xx and yy)"), f, QString());
+                const std::array<int, 4> sg = tensor(QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity"));
                 const int jx = define(p + QStringLiteral("Jx"), jfield, tr("current density, x component"), K::Derived, f,
-                                      [sg, ex](PointEvaluator& e) { return e.value(sg) * e.value(ex); });
+                                      [sg, ex, ey](PointEvaluator& e) { return e.value(sg[0]) * e.value(ex) + e.value(sg[1]) * e.value(ey); });
                 const int jy = define(p + QStringLiteral("Jy"), jfield, tr("current density, y component"), K::Derived, f,
-                                      [sg, ey](PointEvaluator& e) { return e.value(sg) * e.value(ey); });
+                                      [sg, ex, ey](PointEvaluator& e) { return e.value(sg[2]) * e.value(ex) + e.value(sg[3]) * e.value(ey); });
                 define(p + QStringLiteral("normJ"), jfield, tr("current density, norm"), K::Derived, f,
                        [jx, jy](PointEvaluator& e) { return std::hypot(e.value(jx), e.value(jy)); });
                 define(p + QStringLiteral("Qrh"), power, tr("resistive (Joule) heating"), K::Derived, f,
-                       [sg, ne](PointEvaluator& e) {
-                           const double n = e.value(ne);
-                           return e.value(sg) * n * n;
-                       });
+                       [jx, jy, ex, ey](PointEvaluator& e) { return e.value(jx) * e.value(ex) + e.value(jy) * e.value(ey); });
+                (void)ne;
             }
         } else if (field.type == QLatin1String("heat")) {
             const int gx = define(p + QStringLiteral("gradTx"), gradT, tr("temperature gradient, x component"), K::GradX, f);
             const int gy = define(p + QStringLiteral("gradTy"), gradT, tr("temperature gradient, y component"), K::GradY, f);
             define(p + QStringLiteral("gradT"), gradT, tr("temperature gradient, norm"), K::GradNorm, f);
-            const int k = coefficient(p + QStringLiteral("k"), Dim::of(1, 1, -3, 0, -1), tr("thermal conductivity"), f, QString());
+            coefficient(p + QStringLiteral("k"), Dim::of(1, 1, -3, 0, -1), tr("thermal conductivity (where it is a tensor, the mean of its xx and yy)"), f, QString());
+            const std::array<int, 4> k = tensor(QStringLiteral("k"), Dim::of(1, 1, -3, 0, -1), tr("thermal conductivity"));
             // (gradients' signs: Ex is -dV/dx; gradTx is +dT/dx)
             const int qx = define(p + QStringLiteral("qx"), heatFlux, tr("conductive heat flux, x component"), K::Derived, f,
-                                  [k, gx](PointEvaluator& e) { return -e.value(k) * e.value(gx); });
+                                  [k, gx, gy](PointEvaluator& e) { return -(e.value(k[0]) * e.value(gx) + e.value(k[1]) * e.value(gy)); });
             const int qy = define(p + QStringLiteral("qy"), heatFlux, tr("conductive heat flux, y component"), K::Derived, f,
-                                  [k, gy](PointEvaluator& e) { return -e.value(k) * e.value(gy); });
+                                  [k, gx, gy](PointEvaluator& e) { return -(e.value(k[2]) * e.value(gx) + e.value(k[3]) * e.value(gy)); });
             define(p + QStringLiteral("normq"), heatFlux, tr("conductive heat flux, norm"), K::Derived, f,
                    [qx, qy](PointEvaluator& e) { return std::hypot(e.value(qx), e.value(qy)); });
         }
