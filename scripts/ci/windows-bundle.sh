@@ -44,12 +44,18 @@ bundle_files() {
 # those nothing supplies, as "name not-found". ldd starts the file under a
 # debugger to see what it loads, which can hang on Windows on Arm (the
 # 26.1.3 release waited 2 hours on one): each try has a time limit, and a
-# file ldd could not finish in two is one line "? timed-out".
+# file ldd could not finish in two is one line "? timed-out". ldd writes to
+# a file, not to a $(...): what ldd started can outlive it with the pipe
+# open, and a $(...) waits for every holder past any time limit (v27.0.0's
+# release waited the step's 30 minutes after qucs-s.exe, with no warning).
 needs() {
-  local out status try
+  local out status try tmp
   for try in 1 2; do
-    out="$(timeout -k 10 60 ldd "$1" 2>/dev/null)"
+    tmp="$(mktemp)"
+    timeout -k 10 60 ldd "$1" < /dev/null > "$tmp" 2>/dev/null
     status=$?
+    out="$(< "$tmp")"
+    rm -f "$tmp" 2>/dev/null
     [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && break
   done
   if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
