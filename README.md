@@ -2353,11 +2353,16 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
     them). Every coefficient is any expression of x, y, t, the variables,
     their gradients and other physics' fields: nonlinear equations are
     solved by **Newton's method**, the Jacobian of the expressions found
-    by nudging each variable and gradient in turn. In **2D** on the mesh
+    by nudging each variable and gradient in turn; an equation **linear**
+    in its unknowns (what multiplies them free of them - read from its
+    expressions) is solved at once, its matrix factored once while a time
+    step stays and each step one solve (again each step where what
+    multiplies them varies in time). In **2D** on the mesh
     (about an axis too: the divergence in cylinders) or in **1D** along
     a line across the geometry - an **ODE** in x, quadratic elements of
     its own. **Dirichlet** (u = r), **flux/Robin** (-n·Γ = g - q u, g and q
-    of the variables too) and zero flux conditions, on the boundaries
+    of the variables and their rates too: an absorbing boundary's g =
+    -ut/c) and zero flux conditions, on the boundaries
     chosen (along a line: where it meets them); initial values. At rest,
     **in time** (BDF; a second derivative through the variables' rates:
     waves) and as an **eigenproblem**: an *Eigenvalue* step finds -λ da u
@@ -2368,7 +2373,9 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   on chosen domains, boundaries or points, or a number of elements on a
   boundary. Finer on curves and across narrow gaps, growing no faster
   than a rate. **Studies**: steps at rest, **in time** - output times
-  as `range(0, 0.1, 1)`, adaptive BDF2 (or Euler, or fixed steps), the
+  as `range(0, 0.1, 1)`, adaptive BDF2 (or Euler, or fixed steps, or
+  the implicit midpoint rule - fixed steps, no damping: a wave keeps its
+  energy where BDF2 loses some each period), the
   physics without a time derivative at rest at each step - **in
   frequency** (`logspace(1[kHz], 1[GHz], 31)`: magnetic fields complex,
   the other physics at rest at each; a step at rest after it takes its
@@ -2520,8 +2527,11 @@ page — nothing built is committed to this repository (`bin/` is git-ignored;
   junction 0.43 µm deep), a resistor heating itself (15 % below Ohm's at
   4 V) and a diode's reverse recovery at two lifetimes; the Bratu problem, a nonlinear ODE swept
   toward thermal runaway, a drum's modes (Bessel's zeros squared, to
-  10⁻⁵), Fisher's equation's front travelling at 2√(rD), and Laplace's
-  equation in a ring (ln r/ln 2, its flux 2π/ln 2).
+  10⁻⁵), Fisher's equation's front travelling at 2√(rD), Laplace's
+  equation in a ring (ln r/ln 2, its flux 2π/ln 2), and a pulsed point
+  source's spherical wave about an axis, its arc absorbing it (R u's
+  peak 0.93 at each radius, the analytic far field's 0.932 for its
+  source's size; 600 time steps on 76 000 nodes in about half a minute).
   Claude builds and solves models with `fem_describe`, `fem_model`,
   `fem_edit`, `fem_build`, `fem_solve` (each mode's index, each quantum
   state's energies), `fem_stop` (a solve gone on past `fem_solve`'s

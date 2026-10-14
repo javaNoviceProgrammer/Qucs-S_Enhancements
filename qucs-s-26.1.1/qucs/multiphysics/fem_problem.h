@@ -238,7 +238,9 @@ protected:
     /// \a text of property \a key of \a feature compiled in the point
     /// scope, what it reads noted; a field read where \a spatial is not, an
     /// error.
-    Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true);
+    /// (\a unitChecked: its unit against the property's - not where it is
+    /// the equation's own, a PDE's flux.)
+    Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true, bool unitChecked = true);
     /// The material of each domain: the last that has it (null: none).
     std::vector<const Node*> materials();
 

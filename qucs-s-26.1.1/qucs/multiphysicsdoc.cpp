@@ -468,6 +468,8 @@ void MultiphysicsDoc::setName(const QString& name)
 {
     a_DocName = name;
     a_model.fileName = name;
+    // (The tree's root is its file's name.)
+    emit stateChanged();
 }
 
 bool MultiphysicsDoc::load()
@@ -792,6 +794,8 @@ void MultiphysicsDoc::buildMesh()
         return;
     }
     say(tr("Meshing…"));
+    a_jobMeshes = true;
+    a_jobStudy.clear();
     startJob(tr("Meshing"), [](Job& job) {
         QElapsedTimer timer;
         timer.start();
@@ -843,6 +847,8 @@ void MultiphysicsDoc::compute(const QString& study)
     const Node* node = a_model.find(tag);
     say(tr("Computing %1…").arg(node ? node->name() : tag));
     const bool meshIt = a_meshStale || !a_mesh;
+    a_jobMeshes = meshIt;
+    a_jobStudy = tag;
     startJob(tr("Computing"), [meshIt, tag](Job& job) {
         job.study = tag;
         // (Its mesh made first when it is old: runStudy makes it.)

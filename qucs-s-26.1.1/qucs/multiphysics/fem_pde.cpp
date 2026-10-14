@@ -9,8 +9,10 @@
  *               Dirichlet, flux (Robin: -n·Γ = g - q u) and zero flux
  *               conditions; solved by Newton's method (the Jacobian of the
  *               expressions by differences, each variable and gradient
- *               nudged in turn), in time (BDF; a second derivative through
- *               the variables' rates), or for its eigenvalues
+ *               nudged in turn) - a linear one by one solve, its matrix
+ *               factored once while it stays -, in time (BDF; a second
+ *               derivative through the variables' rates), or for its
+ *               eigenvalues
  *
  * This file is part of Qucs-S.
  *
@@ -30,6 +32,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <mutex>
 
 namespace qucs_s::fem::detail {
@@ -118,6 +121,21 @@ private:
     std::vector<Eigen1> a_eigen;
     int a_selected = -1;
     int a_iterations = 0;
+    // Linear: Γ, F and a flux's g affine in the unknowns (the variables,
+    // their rates and gradients), da, ea and q free of them. Its matrix
+    // varies where those parts read t or another physics' field.
+    bool a_linear = false, a_matrixVaries = false;
+    // The matrix factored: for which mass, unknowns and pattern (kept
+    // across a step in time's solves, and a nonlinear one's analysis).
+    std::unique_ptr<Eigen::SparseLU<Eigen::SparseMatrix<double>>> a_lu;
+    bool a_factored = false;
+    int a_factorizations = 0;
+    double a_factoredMass = -1;
+    int a_factoredNeq = -1, a_factoredSystem = -1;
+    std::vector<Eigen::Index> a_outer, a_inner;   // the analysed pattern
+    /// \a J factored in a_lu (its pattern analysed again only when it is
+    /// another); false and why on a singular one.
+    bool factor(const Eigen::SparseMatrix<double>& J, QString* error);
 };
 
 double PdeProblem::scaleOf(int c) const
@@ -215,8 +233,11 @@ bool PdeProblem::setup(QString* error)
                         c.r[std::size_t(v)] = compile(r, feature, QStringLiteral("r"));
                         c.dirichlet = true;
                     } else {
-                        c.g[std::size_t(v)] = compile(item(feature, QStringLiteral("g"), v), feature, QStringLiteral("g"));
-                        c.q[std::size_t(v)] = compile(item(feature, QStringLiteral("q"), v), feature, QStringLiteral("q"));
+                        // (Their units Γ's - as the equation's coefficients
+                        // make it, and the flux's q per its variable's -:
+                        // not checked against a fixed one.)
+                        c.g[std::size_t(v)] = compile(item(feature, QStringLiteral("g"), v), feature, QStringLiteral("g"), true, false);
+                        c.q[std::size_t(v)] = compile(item(feature, QStringLiteral("q"), v), feature, QStringLiteral("q"), true, false);
                         c.flux = true;
                     }
                 }
@@ -273,6 +294,67 @@ bool PdeProblem::setup(QString* error)
         *error = a_problems.join(QLatin1Char('\n'));
         return false;
     }
+    // Linear or not: each expression's degree in the unknowns.
+    {
+        const std::vector<Solution::VariableDef>& defs = a_s.definitions();
+        const int self = a_fi;
+        auto kind = [&defs, self](int slot) {
+            using K = Expression::SlotKind;
+            if (slot < 0 || slot >= int(defs.size())) return K::Varying;
+            const Solution::VariableDef& d = defs[std::size_t(slot)];
+            switch (d.kind) {
+            case Solution::VariableDef::X:
+            case Solution::VariableDef::Y:
+            case Solution::VariableDef::DomainNumber:
+            case Solution::VariableDef::Size:
+            case Solution::VariableDef::Frequency: return K::Static;
+            case Solution::VariableDef::Time: return K::Varying;
+            case Solution::VariableDef::Value:
+            case Solution::VariableDef::GradX:
+            case Solution::VariableDef::GradY: return d.field == self ? K::Unknown : K::Varying;
+            case Solution::VariableDef::Derived:
+                // (Its own along a line: the line's values and slopes, as
+                // linear in its unknowns as a value is.)
+                if (d.field == self) return K::Unknown;
+                return d.field < 0 ? K::Static : K::Varying;
+            default:
+                // (|∇u|, a coefficient worked out of a field: not a sum of the unknowns.)
+                return d.field == self ? K::Opaque : K::Varying;
+            }
+        };
+        a_linear = true;
+        a_matrixVaries = false;
+        // \a affine: its degree may be 1 (its coefficient then the matrix's),
+        // else 0 (it multiplies an unknown: the matrix's whole).
+        auto take = [&](const Expression& e, bool affine) {
+            if (!e.isValid()) return;
+            const Expression::Linearity l = e.linearity(kind);
+            if (l.degree < 0 || l.degree > (affine ? 1 : 0)) a_linear = false;
+            if (affine ? l.varyingCoefficient : l.varying) a_matrixVaries = true;
+        };
+        for (const Equations& q : a_eqs) {
+            if (!q.on) continue;
+            for (const auto* list : {&q.gx, &q.gy, &q.f})
+                for (const Expression& e : *list) take(e, true);
+            for (const auto* list : {&q.da, &q.ea})
+                for (const Expression& e : *list) take(e, false);
+        }
+        for (const Conditions& c : a_bc) {
+            for (const Expression& e : c.g) take(e, true);
+            for (const Expression& e : c.q) take(e, false);
+            for (const Expression& e : c.r) {
+                // (A Dirichlet value: of the unknowns, not linear; what varies, the values alone.)
+                if (e.isValid() && e.linearity(kind).degree != 0) a_linear = false;
+            }
+        }
+    }
+    a_lu.reset();
+    a_factored = false;
+    a_factorizations = 0;
+    a_s.log << (a_linear ? tr("%1: linear in its unknowns - solved at once, no Newton's iterations; its matrix factored %2")
+                               .arg(a_node->name(), a_matrixVaries ? tr("at each solve (what multiplies them varies in time)")
+                                                                   : tr("once while a time step stays"))
+                         : tr("%1: nonlinear in its unknowns - Newton's method").arg(a_node->name()));
     // The nodes: the line's, or the 2D space's degrees of freedom; where each is.
     if (a_line) {
         QString lineWhy;
@@ -558,7 +640,10 @@ void PdeProblem::assemble(double mass, const std::vector<double>* history, Eigen
                     base += b * fld.values[at(c, pt.node[i])];
                 }
                 const double sc = wch == 0 ? scale[std::size_t(c)] : scale[std::size_t(c)] / a_size;
-                const double h = 1e-7 * std::max(std::abs(base), sc);
+                // (Affine in it, any nudge gives its slope exactly: a linear
+                // problem's whole scale, its rounding 1e-16 - not 1e-9, a
+                // small nudge's - and one solve exact.)
+                const double h = (a_linear ? 1.0 : 1e-7) * std::max(std::abs(base), sc);
                 ev.shift(a_fi, c, wch, h);
                 values(gx2, gy2, src2);
                 ev.shift(a_fi, c, wch, 0);
@@ -615,7 +700,38 @@ void PdeProblem::assemble(double mass, const std::vector<double>* history, Eigen
         parallelFor(sp.elements(), [&](int begin, int end) {
             PointEvaluator ev(a_s);
             Eigen::VectorXd Fl = Eigen::VectorXd::Zero(a_neq);
-            std::vector<Eigen::Triplet<double>> Jl, Ml;
+            std::vector<Eigen::Triplet<double>> Jl, Ml, Je;
+            // An element's entries summed before they are kept: a few
+            // rows and columns (its components at its nodes), each entry
+            // once - not once a point of integration and a nudge.
+            std::vector<int> rows, cols;
+            std::vector<double> dense;
+            std::vector<char> touched;
+            auto keep = [&] {
+                rows.clear();
+                cols.clear();
+                auto place = [](std::vector<int>& list, int v) {
+                    for (std::size_t i = 0; i < list.size(); ++i)
+                        if (list[i] == v) return int(i);
+                    list.push_back(v);
+                    return int(list.size()) - 1;
+                };
+                for (const auto& e : Je) {
+                    place(rows, e.row());
+                    place(cols, e.col());
+                }
+                dense.assign(rows.size() * cols.size(), 0.0);
+                touched.assign(rows.size() * cols.size(), 0);
+                for (const auto& e : Je) {
+                    const std::size_t k = std::size_t(place(rows, e.row())) * cols.size() + std::size_t(place(cols, e.col()));
+                    dense[k] += e.value();
+                    touched[k] = 1;
+                }
+                for (std::size_t i = 0; i < rows.size(); ++i)
+                    for (std::size_t j = 0; j < cols.size(); ++j)
+                        if (touched[i * cols.size() + j]) Jl.emplace_back(rows[i], cols[j], dense[i * cols.size() + j]);
+                Je.clear();
+            };
             for (int t = begin; t < end; ++t) {
                 const int d = mesh.domain[std::size_t(t)];
                 if (d < 0 || !fld.domains[std::size_t(d)] || !a_eqs[std::size_t(d)].on) continue;
@@ -633,8 +749,9 @@ void PdeProblem::assemble(double mass, const std::vector<double>* history, Eigen
                         Space::gradient(m, sh.dxi[i], sh.deta[i], pt.dx[i], pt.dy[i]);
                     }
                     ev.moveTo(t, qp[0], qp[1]);
-                    contribute(ev, pt, Fl, Jl, Ml);
+                    contribute(ev, pt, Fl, jac ? Je : Jl, Ml);
                 }
+                if (jac) keep();
             }
             std::lock_guard<std::mutex> lock(merge);
             F += Fl;
@@ -670,14 +787,19 @@ void PdeProblem::assemble(double mass, const std::vector<double>* history, Eigen
             }
         }
         if (!jac) return;
-        // g and q reading the variables: their derivatives.
+        // g and q reading the components solved - the variables and (in
+        // time) their rates, an absorbing boundary's g = -ut/c: their
+        // derivatives.
         std::vector<double> g2(static_cast<std::size_t>(a_vars)), q2(static_cast<std::size_t>(a_vars));
-        for (int cc = 0; cc < a_vars; ++cc) {
-            const double h = 1e-7 * std::max(std::abs(u[std::size_t(cc)]), scale[std::size_t(cc)]);
+        for (int cc = 0; cc < a_system; ++cc) {
+            double base = 0;
+            for (int i = 0; i < n; ++i) base += N[i] * fld.values[at(cc, nodes[i])];
+            const double h = (a_linear ? 1.0 : 1e-7) * std::max(std::abs(base), scale[std::size_t(cc)]);
             ev.shift(a_fi, cc, 0, h);
             evaluate(g2, q2);
             ev.shift(a_fi, cc, 0, 0);
             for (int k = 0; k < a_vars; ++k) {
+                if (!c.g[std::size_t(k)].isValid() && !c.q[std::size_t(k)].isValid()) continue;
                 const double dt = ((g2[std::size_t(k)] - g[std::size_t(k)]) - (q2[std::size_t(k)] - qv[std::size_t(k)]) * u[std::size_t(k)]) / h;
                 if (dt == 0 || !std::isfinite(dt)) continue;
                 for (int i = 0; i < n; ++i) {
@@ -732,6 +854,29 @@ void PdeProblem::assemble(double mass, const std::vector<double>* history, Eigen
     }
 }
 
+bool PdeProblem::factor(const Eigen::SparseMatrix<double>& J, QString* error)
+{
+    // (Its pattern - each column's rows - as the last one's: its analysis kept.)
+    const Eigen::Index n = J.outerSize();
+    const bool same = a_lu && Eigen::Index(a_outer.size()) == n + 1 && std::equal(a_outer.begin(), a_outer.end(), J.outerIndexPtr())
+                      && Eigen::Index(a_inner.size()) == J.nonZeros() && std::equal(a_inner.begin(), a_inner.end(), J.innerIndexPtr());
+    if (!same) {
+        a_lu = std::make_unique<Eigen::SparseLU<Eigen::SparseMatrix<double>>>();
+        a_lu->analyzePattern(J);
+        a_outer.assign(J.outerIndexPtr(), J.outerIndexPtr() + n + 1);
+        a_inner.assign(J.innerIndexPtr(), J.innerIndexPtr() + J.nonZeros());
+    }
+    a_lu->factorize(J);
+    ++a_factorizations;
+    if (a_lu->info() != Eigen::Success) {
+        *error = tr("%1: its Jacobian is singular (a variable fixed nowhere? a coefficient 0?): %2")
+                     .arg(a_node->name(), QString::fromStdString(a_lu->lastErrorMessage()));
+        a_factored = false;
+        return false;
+    }
+    return true;
+}
+
 bool PdeProblem::solve(const SolveOptions& o, QString* error)
 {
     Field& f = field();
@@ -751,27 +896,51 @@ bool PdeProblem::solve(const SolveOptions& o, QString* error)
     const std::vector<double>* history = mass > 0 ? o.history : nullptr;
     Eigen::VectorXd F;
     std::vector<Eigen::Triplet<double>> trip;
-    Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
-    bool analyzed = false;
     const int maxIt = std::max(1, o.maxIterations);
     const double tol = o.tolerance > 0 ? o.tolerance : 1e-6;
     a_iterations = 0;
-    for (int it = 0; it < maxIt; ++it) {
-        assemble(mass, history, F, &trip);
+    auto matrix = [&] {
         Eigen::SparseMatrix<double> J(a_neq, a_neq);
         J.setFromTriplets(trip.begin(), trip.end());
         J.makeCompressed();
-        if (!analyzed) {
-            lu.analyzePattern(J);
-            analyzed = true;
+        return J;
+    };
+    if (a_linear) {
+        // One solve, from F at the values as they are: Newton's first step is
+        // the answer. Its matrix kept while the mass, the unknowns and (what
+        // they read not varying) its coefficients stay - a fixed step in
+        // time's: factored once (the mass to 1e-9, an output time's step
+        // rounded).
+        const bool kept = a_factored && !a_matrixVaries && a_factoredNeq == a_neq && a_factoredSystem == a_system
+                          && std::abs(a_factoredMass - mass) <= 1e-9 * std::max(std::abs(mass), 1e-300);
+        if (kept) assemble(mass, history, F, nullptr);
+        else {
+            assemble(mass, history, F, &trip);
+            const Eigen::SparseMatrix<double> J = matrix();
+            trip.clear();
+            trip.shrink_to_fit();
+            if (!factor(J, error)) return false;
+            a_factored = true;
+            a_factoredMass = mass;
+            a_factoredNeq = a_neq;
+            a_factoredSystem = a_system;
         }
-        lu.factorize(J);
-        if (lu.info() != Eigen::Success) {
-            *error = tr("%1: its Jacobian is singular (a variable fixed nowhere? a coefficient 0?): %2")
-                         .arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
+        const Eigen::VectorXd delta = a_lu->solve(-F);
+        if (!delta.allFinite()) {
+            *error = tr("%1: its solution is not finite").arg(a_node->name());
             return false;
         }
-        const Eigen::VectorXd delta = lu.solve(-F);
+        for (std::size_t r = 0; r < unknown.size(); ++r) f.values[std::size_t(unknown[r])] += delta(Eigen::Index(r));
+        a_iterations = 1;
+        f.solved = true;
+        project();
+        return true;
+    }
+    for (int it = 0; it < maxIt; ++it) {
+        assemble(mass, history, F, &trip);
+        if (!factor(matrix(), error)) return false;
+        a_factored = false;   // (a nonlinear problem's: the analysis kept, not the matrix)
+        const Eigen::VectorXd delta = a_lu->solve(-F);
         if (!delta.allFinite()) {
             *error = tr("%1: Newton's step is not finite").arg(a_node->name());
             return false;
@@ -907,7 +1076,9 @@ void PdeProblem::setGlobals()
         a_s.setGlobal(p + QStringLiteral("lambda_im"), l.imag(), Dim(), tr("its imaginary part"));
         a_s.setGlobal(p + QStringLiteral("eig"), a_selected + 1, Dim(), tr("the eigenvalue's number, by its real part"));
     }
-    a_s.setGlobal(p + QStringLiteral("iterations"), a_iterations, Dim(), tr("Newton's iterations of the last solve"));
+    a_s.setGlobal(p + QStringLiteral("iterations"), a_iterations, Dim(), tr("Newton's iterations of the last solve (a linear problem's 1)"));
+    a_s.setGlobal(p + QStringLiteral("factorizations"), a_factorizations, Dim(),
+                  tr("its matrix's factorizations so far in the step: a linear problem's once while its mass stays"));
 }
 
 } // namespace

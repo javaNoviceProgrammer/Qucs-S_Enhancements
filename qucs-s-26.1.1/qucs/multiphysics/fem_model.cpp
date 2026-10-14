@@ -1475,8 +1475,11 @@ QList<NodeKind> makeKinds()
              tr("An equation of your own, ea ∂²u/∂t² + da ∂u/∂t + ∇·Γ = F, for one or several variables: in the coefficient form "
                 "(Γ = -c ∇u - α u + γ, F = f - β·∇u - a u) or the general one (Γ and F as you write them); its coefficients any "
                 "expressions of x, y, t, the variables and their gradients, other physics' fields - nonlinear, by Newton's "
-                "method. On the mesh (2D, about an axis too) or along a line (1D: an ODE). Dirichlet, flux (Robin) and zero "
-                "flux conditions; at rest, in time or its eigenvalues.")});
+                "method; linear in its unknowns (what multiplies them free of them: a wave's, diffusion's), solved at once, "
+                "its matrix factored once while a time step stays (each step one solve; again each step where what "
+                "multiplies them varies in time). On the mesh (2D, about an axis too) or along a line (1D: an ODE). Dirichlet, "
+                "flux (Robin; g and q of the variables and their rates too - an absorbing boundary's g = -ut/c) and zero flux "
+                "conditions; at rest, in time or its eigenvalues.")});
         add({QStringLiteral("pde/coefficient"), tr("Coefficient Form PDE"), QStringLiteral("pde"), QStringLiteral("domainfeature"), Level::Domain,
              {selectionProp(),
               spatial(QStringLiteral("c"), tr("Diffusion coefficient c"), QString(), QStringLiteral("1"), each),
@@ -1604,8 +1607,12 @@ QList<NodeKind> makeKinds()
               text(QStringLiteral("times"), tr("Output times"), QStringLiteral("range(0, 0.1, 1)"),
                    tr("In seconds, or with a unit: range(start, step, stop), linspace(start, stop, count), or values split by "
                       "commas - range(0[s], 10[ms], 1[s])")),
-              choice(QStringLiteral("method"), tr("Method"), {QStringLiteral("bdf2"), QStringLiteral("euler")},
-                     {tr("BDF of order 2"), tr("Backward Euler (order 1)")}, QStringLiteral("bdf2")),
+              choice(QStringLiteral("method"), tr("Method"), {QStringLiteral("bdf2"), QStringLiteral("euler"), QStringLiteral("midpoint")},
+                     {tr("BDF of order 2"), tr("Backward Euler (order 1)"), tr("Implicit midpoint (order 2, no damping; fixed steps)")},
+                     QStringLiteral("bdf2"),
+                     tr("BDF damps what the steps resolve poorly - a wave loses some of its amplitude each period; the implicit "
+                        "midpoint rule keeps a wave's energy (an undamped one exactly) but does not damp a stiff start either: for "
+                        "waves, with fixed steps")),
               choice(QStringLiteral("stepping"), tr("Steps"), {QStringLiteral("adaptive"), QStringLiteral("fixed")},
                      {tr("Adaptive: as the tolerance asks"), tr("Fixed")}, QStringLiteral("adaptive")),
               expr(QStringLiteral("rtol"), tr("Relative tolerance"), QString(), QStringLiteral("0.001"),
