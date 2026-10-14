@@ -280,3 +280,10 @@ set(QUCS_JSON_NESTING_CHECK "${CMAKE_SOURCE_DIR}/../scripts/ci/check-json-nestin
 if(Python3_Interpreter_FOUND AND EXISTS "${QUCS_JSON_NESTING_CHECK}")
   add_test(NAME check_json_nesting COMMAND Python3::Interpreter "${QUCS_JSON_NESTING_CHECK}")
 endif()
+# And no vendor's project, script or data file (Ansys's examples stay out of
+# the repository; ours are the test data's, each its generator's), no
+# vendor's copyright line.
+set(QUCS_THIRD_PARTY_CHECK "${CMAKE_SOURCE_DIR}/../scripts/ci/check-third-party.py")
+if(Python3_Interpreter_FOUND AND EXISTS "${QUCS_THIRD_PARTY_CHECK}")
+  add_test(NAME check_third_party COMMAND Python3::Interpreter "${QUCS_THIRD_PARTY_CHECK}")
+endif()

@@ -378,3 +378,14 @@ version 2 or (at your option) any later version — see
 repository are released under the GNU General Public License, version 3
 ([`LICENSE`](LICENSE)), as the upstream "or any later version" terms allow;
 the combined work is therefore distributed under GPL-3.0.
+
+## Trademarks
+
+Ansys, Lumerical, Zemax and OpticStudio, and any and all ANSYS, Inc. brand,
+product, service and feature names, are registered trademarks or trademarks
+of ANSYS, Inc. or its subsidiaries in the United States or other countries.
+This product is not affiliated with, sponsored or endorsed by ANSYS, Inc. or
+Synopsys, Inc.: their names appear here only to say which files it reads and
+writes and which published results it is compared with. All other brand,
+product, service and feature names or trademarks are the property of their
+respective owners.

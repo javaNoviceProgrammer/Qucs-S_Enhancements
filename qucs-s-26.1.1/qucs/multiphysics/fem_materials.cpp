@@ -7,6 +7,50 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
+ *
+ * Sources. The formulas are their authors', and so are the figures where
+ * nothing else is said:
+ * - III-V band parameters: I. Vurgaftman, J. R. Meyer, L. R. Ram-Mohan,
+ *   J. Appl. Phys. 89, 5815 (2001); the nitrides': I. Vurgaftman, J. R.
+ *   Meyer, J. Appl. Phys. 94, 3675 (2003).
+ * - Gaps of T: Y. P. Varshni, Physica 34, 149 (1967).
+ * - Mobility by doping: D. M. Caughey, R. E. Thomas, Proc. IEEE 55, 2192
+ *   (1967); G. Masetti, M. Severi, S. Solmi, IEEE Trans. Electron Devices
+ *   30, 764 (1983).
+ * - Band gap narrowing: J. W. Slotboom, H. C. de Graaff, Solid-State
+ *   Electron. 19, 857 (1976); D. B. M. Klaassen, J. W. Slotboom, H. C. de
+ *   Graaff, Solid-State Electron. 35, 125 (1992).
+ * - Lifetimes by doping: J. G. Fossum, D. S. Lee, Solid-State Electron.
+ *   25, 741 (1982). Trap-assisted and band-to-band tunnelling: G. A. M.
+ *   Hurkx, D. B. M. Klaassen, M. P. G. Knuvers, IEEE Trans. Electron
+ *   Devices 39, 331 (1992).
+ * - Impact ionization: R. van Overstraeten, H. de Man, Solid-State
+ *   Electron. 13, 583 (1970); S. Selberherr, Analysis and Simulation of
+ *   Semiconductor Devices (Springer, 1984).
+ * - Conductivity of heat of T: V. Palankovski, R. Quay, Analysis and
+ *   Simulation of Heterostructure Devices (Springer, 2004).
+ * - Gate dielectrics' permittivities: J. Robertson, Eur. Phys. J. Appl.
+ *   Phys. 28, 265 (2004).
+ * - Indices of the wavelength: silicon H. H. Li, J. Phys. Chem. Ref. Data
+ *   9, 561 (1980) and C. D. Salzberg, J. J. Villa, J. Opt. Soc. Am. 47, 244
+ *   (1957), its absorption K. Rajkanan, R. Singh, J. Shewchun, Solid-State
+ *   Electron. 22, 793 (1979); SiO2 I. H. Malitson, J. Opt. Soc. Am. 55,
+ *   1205 (1965); Si3N4 K. Luke et al., Opt. Lett. 40, 4823 (2015); (Al)GaAs
+ *   M. A. Afromowitz, Solid State Commun. 15, 59 (1974); InP G. D. Pettit,
+ *   W. J. Turner, J. Appl. Phys. 36, 2081 (1965); sapphire I. H. Malitson,
+ *   M. J. Dodge, J. Opt. Soc. Am. 62, 1405 (1972); TiO2 J. R. DeVore, J.
+ *   Opt. Soc. Am. 41, 416 (1951); ZrO2 D. L. Wood, K. Nassau, Appl. Opt. 21,
+ *   2978 (1982); gold A. Vial et al., Phys. Rev. B 71, 085416 (2005); copper
+ *   and aluminium A. D. Rakić et al., Appl. Opt. 37, 5271 (1998); silver a
+ *   Drude fit of ours. Each checked against Palik's, Johnson and Christy's
+ *   or the CRC's tables.
+ * Read from the Lumerical material database (Ansys's: its figures, not its
+ * file; it cites no sources): the model sets' figures of the
+ * semiconductors but silicon (ModelSet: the models above, their parameters
+ * there), the II-VIs' masses and χ (from their work functions), the gate
+ * dielectrics' and AlP's heat, SiGe's X gap bowing and alloy scattering,
+ * the temperature exponents of silicon's models. Silicon's model figures
+ * are the semiconductor features' own defaults.
  */
 #include "fem_materials.h"
 
