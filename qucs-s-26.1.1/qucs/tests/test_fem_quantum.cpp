@@ -362,6 +362,154 @@ private slots:
         QVERIFY(std::abs(lateral / (HB2M * M_PI * M_PI / (0.067 * 400)) - 1) < 0.03);
     }
 
+    void spectrumAsLumerical()
+    {
+        // The infinite well 10 nm wide: hh1, lh1 and hh2 its highest holes
+        // (hh2 1.2 meV below lh1). Its subbands as Lumerical's MQW counts
+        // them - 2 conduction, 2 valence by energy, heavy and light together:
+        // e1 and e2 with hh1 and lh1 (e2's of them nothing: n differs) - its
+        // spectrum the n = 1 steps alone; 3 valence: hh2 too, e2-hh2's step.
+        const double eps0 = 8.8541878188e-12, c0 = 299792458.0, Ep = 25 * Q, L = 10e-9, gamma = 0.005;
+        auto cdf = [&](double x) { return 0.5 + std::atan(x / (gamma * Q)) / M_PI; };
+        // Each step's energy and height (its TE, TM weights) at E.
+        auto step = [&](int n, int c, double E, double* Et) {
+            const double ee = HB2M * n * n * M_PI * M_PI / (0.067 * 100);
+            const double mz = c == 0 ? 0.35 : 0.09, mp = c == 0 ? 0.11 : 0.21;
+            const double eh = -1.5 - HB2M * n * n * M_PI * M_PI / (mz * 100);
+            *Et = (ee - eh) * Q;
+            const double mr = 1 / (1 / 0.067 + 1 / mp) * M0;
+            return M_PI * Q * Q * Hbar / (3.6 * c0 * eps0 * M0 * M0 * E) * (M0 * Ep / 6) * mr / (M_PI * Hbar * Hbar * L);
+        };
+        struct Case {
+            QString more;
+            std::vector<std::pair<int, int>> steps;   // (n, carrier: 0 hh, 1 lh)
+            double windowTop;                         // eV, the broadened window's top (NaN: all)
+        };
+        const Case cases[] = {{QStringLiteral(R"(, "cstates": 2, "vstates": 2)"), {{1, 0}, {1, 1}}, NAN},
+                              {QStringLiteral(R"(, "cstates": 2, "vstates": 3)"), {{1, 0}, {1, 1}, {2, 0}}, NAN},
+                              {QStringLiteral(R"(, "cstates": 1, "vstates": 1)"), {{1, 0}}, NAN},
+                              // Broadened within the window alone (the photons' 1.5-2.1 eV, to 10 meV above): e3-hh3 (2.1017
+                              // eV) a part, e3-lh3 none.
+                              {QStringLiteral(R"(, "broaden": "window", "window_ext": "10[meV]")"),
+                               {{1, 0}, {1, 1}, {2, 0}, {2, 1}, {3, 0}, {3, 1}}, 2.11}};
+        for (const Case& c : cases) {
+            const Run r = run(modelOf(box(QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"),
+                                          QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.5[eV], 2.1[eV], 13)", "states": 3,
+                                                            "linewidth": "5[meV]" %1})x").arg(c.more))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            Solution& s = *r.solution;
+            for (int k = 0; k < s.snapshotCount(); k += 2) {
+                s.select(k);
+                const double E = global(s, QStringLiteral("qw.Ephoton"));
+                double te = 0, tm = 0;
+                for (const auto& [n, carrier] : c.steps) {
+                    double Et = 0;
+                    const double K = step(n, carrier, E, &Et);
+                    // ∫ over the step's energies Et + ε (within the window where
+                    // it is one) of the line at E.
+                    const double top = std::isfinite(c.windowTop) ? c.windowTop * Q : INFINITY;
+                    if (!(top > Et)) continue;
+                    const double share = (std::isfinite(top) ? cdf(top - E) : 1.0) - cdf(Et - E);
+                    te += K * share * (carrier == 0 ? 1.5 : 0.5);
+                    tm += K * share * (carrier == 0 ? 0 : 2);
+                }
+                const double fte = global(s, QStringLiteral("qw.alphaTE")), ftm = global(s, QStringLiteral("qw.alphaTM"));
+                QVERIFY2(std::abs(fte / te - 1) < 1e-4, qPrintable(QStringLiteral("%1 at %2 eV: TE %3 against %4").arg(c.more).arg(E / Q).arg(fte).arg(te)));
+                QVERIFY2(tm == 0 ? ftm == 0 : std::abs(ftm / tm - 1) < 1e-4, qPrintable(QStringLiteral("%1: TM %2 against %3").arg(c.more).arg(ftm).arg(tm)));
+            }
+            if (c.more.contains(QLatin1String("vstates")))
+                QVERIFY2(s.log.join(QLatin1Char(' ')).contains(QLatin1String("the spectrum's subbands:")), qPrintable(s.log.join(QLatin1Char('\n'))));
+        }
+
+        // Per the stack: a GaAs well 8 nm between AlGaAs barriers 8 nm each,
+        // the absorption the wells' times 8/24; per a length, times 8/length.
+        const QString spec = QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.45[eV], 1.75[eV], 7)", "states": 2, "linewidth": "5[meV]" %1})x");
+        auto well = [&](const QString& more) {
+            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                               QStringLiteral("8"), QStringLiteral("8"), QString(), spec.arg(more))));
+        };
+        const Run wells = well(QString()), stack = well(QStringLiteral(R"(, "normalize": "stack")")),
+                  length = well(QStringLiteral(R"(, "normalize": "length", "normlength": "100[nm]")"));
+        QVERIFY2(wells.error.isEmpty() && stack.error.isEmpty() && length.error.isEmpty(), qPrintable(wells.error + stack.error + length.error));
+        for (int k = 0; k < wells.solution->snapshotCount(); ++k) {
+            wells.solution->select(k);
+            stack.solution->select(k);
+            length.solution->select(k);
+            const double a = global(*wells.solution, QStringLiteral("qw.alphaTE"));
+            QVERIFY(std::abs(global(*stack.solution, QStringLiteral("qw.alphaTE")) - a * 8 / 24) < 1e-9 * std::abs(a));
+            QVERIFY(std::abs(global(*length.solution, QStringLiteral("qw.alphaTE")) - a * 8 / 100) < 1e-9 * std::abs(a));
+        }
+        QVERIFY(std::abs(global(*stack.solution, QStringLiteral("qw.Lstack")) - 24e-9) < 1e-18);
+        QVERIFY(std::abs(global(*stack.solution, QStringLiteral("qw.Lnorm")) - 24e-9) < 1e-18);
+        QVERIFY(std::abs(global(*wells.solution, QStringLiteral("qw.Lnorm")) - 8e-9) < 1e-18);
+        // (A length written in Absorption per's place, as a length: the same.)
+        const Run written = well(QStringLiteral(R"(, "normalize": "100[nm]")"));
+        QVERIFY2(written.error.isEmpty(), qPrintable(written.error));
+        written.solution->select(3);
+        length.solution->select(3);
+        QCOMPARE(global(*written.solution, QStringLiteral("qw.alphaTE")), global(*length.solution, QStringLiteral("qw.alphaTE")));
+
+        // A high field across a well padded 30 nm each side: the lowest
+        // electrons held against the line's low end (a triangle 0.45 eV
+        // deep there), the highest holes against its other. Chosen by where
+        // they are, or their slope at the walls, the well's own enter.
+        const QString field = QStringLiteral(R"(, "F": "1.5e7[V/m]")");
+        auto padded = [&](const QString& more) {
+            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                               QStringLiteral("8"), QStringLiteral("30"), field,
+                                               spec.arg(QStringLiteral(R"(, "cstates": 1, "vstates": 1)") + more))));
+        };
+        const Run plain = padded(QString()), localized = padded(QStringLiteral(R"(, "select": "localized", "pmin": "0.6")")),
+                  walls = padded(QStringLiteral(R"(, "cutoff_c": "0.1", "cutoff_v": "0.1")"));
+        QVERIFY2(plain.error.isEmpty() && localized.error.isEmpty() && walls.error.isEmpty(), qPrintable(plain.error + localized.error + walls.error));
+        // (The first states not the well's: its electron's mean place outside it.)
+        const double eWell = (30 + 4) * 1e-9;
+        plain.solution->select(0);
+        QVERIFY2(std::abs(global(*plain.solution, QStringLiteral("qw.pos_e")) - eWell) > 10e-9, qPrintable(QString::number(global(*plain.solution, QStringLiteral("qw.pos_e")))));
+        for (const Run* r : {&localized, &walls}) {
+            const QString log = r->solution->log.join(QLatin1Char('\n'));
+            QVERIFY2(log.contains(QLatin1String("left out (at a wall, or out of the wells)")) && log.contains(QLatin1String("e1")), qPrintable(log));
+        }
+        // The well's own e1-hh1, near 1.5 eV: the chosen ones absorb there,
+        // the wall's (apart) next to nothing.
+        int peak = 0;
+        double most = 0;
+        for (int k = 0; k < localized.solution->snapshotCount(); ++k) {
+            localized.solution->select(k);
+            plain.solution->select(k);
+            const double a = global(*localized.solution, QStringLiteral("qw.alphaTE"));
+            if (a > most) {
+                most = a;
+                peak = k;
+            }
+        }
+        localized.solution->select(peak);
+        walls.solution->select(peak);
+        plain.solution->select(peak);
+        QVERIFY(global(*plain.solution, QStringLiteral("qw.alphaTE")) < 0.1 * most);
+        QVERIFY(std::abs(global(*walls.solution, QStringLiteral("qw.alphaTE")) / most - 1) < 0.05);
+        // k·p (4x4): the valence subbands Kramers pairs, the highest - one,
+        // the heavy hole's: TM at 1.60 eV its light part's mixing away from k
+        // = 0 alone; two, lh1's step too (TM some nine times more).
+        auto kp = [&](int vstates) {
+            return run(modelOf(lighter(box(QStringLiteral("20"), QStringLiteral("10"), QStringLiteral(R"(, "valence": "kp4")"), QStringLiteral("0[eV]"),
+                                           QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.56[eV], 1.62[eV], 4)", "states": 2,
+                                                             "cstates": 1, "vstates": %1, "linewidth": "5[meV]"})x").arg(vstates)))));
+        };
+        const Run one = kp(1), two = kp(2);
+        QVERIFY2(one.error.isEmpty() && two.error.isEmpty(), qPrintable(one.error + two.error));
+        QVERIFY2(one.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("1 conduction, 1 valence (Kramers pairs)")), qPrintable(one.solution->log.join(QLatin1Char('\n'))));
+        one.solution->select(2);
+        two.solution->select(2);
+        QVERIFY(global(*one.solution, QStringLiteral("qw.alphaTM")) < 0.2 * global(*two.solution, QStringLiteral("qw.alphaTM")));
+        QVERIFY(global(*one.solution, QStringLiteral("qw.alphaTE")) > 0.6 * global(*two.solution, QStringLiteral("qw.alphaTE")));
+        // Wires: said.
+        const Run wire = run(modelOf(box(QStringLiteral("10"), QStringLiteral("10"), QStringLiteral(R"(, "space": "2d")"), QStringLiteral("0[eV]"),
+                                         QString::fromUtf8(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 1, "linewidth": "5[meV]",
+                                                           "normalize": "stack"})x"))));
+        QVERIFY(wire.error.contains(QLatin1String("a well's (1D)")));
+    }
+
     void absorption()
     {
         // The infinite well's spectrum: each e_n to h_n step (overlap 1)

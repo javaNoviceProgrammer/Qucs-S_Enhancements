@@ -1820,6 +1820,22 @@ QList<NodeKind> makeKinds()
                          "which then depends on it - a 10 nm GaAs well's TE peak 394 /cm with 2, 304 with 4 (Lumerical's MQW keeps 2 "
                          "conduction and 4 valence subbands: 2 here); the log warns when transitions more than 5 half widths above the "
                          "peak take more than 10 % off it. A Gaussian or a sech line hardly depends on it")),
+              integer(QStringLiteral("cstates"), tr("Conduction subbands"), 0,
+                      tr("How many electron states enter the spectrum, the lowest (0: States). Lumerical's max num cb subbands")),
+              integer(QStringLiteral("vstates"), tr("Valence subbands"), 0,
+                      tr("How many valence states enter, the highest by energy across heavy and light holes together - with k·p "
+                         "bands, each a Kramers pair, after their mixing (0: States of each kind). Lumerical's max num vb subbands: "
+                         "2 keeps hh1 and lh1 where hh2 lies below lh1")),
+              expr(QStringLiteral("cutoff_c"), tr("Conduction states' wall cutoff"), QString(), QString(),
+                   tr("An electron state whose wavefunction's slope at the line's ends (its hard walls) is more than this share of "
+                      "its largest is left out - one held against a wall by a field, not a well's. Lumerical's cutoff cb with hard "
+                      "walls. Empty: none")),
+              expr(QStringLiteral("cutoff_v"), tr("Valence states' wall cutoff"), QString(), QString(), tr("The same of the valence states")),
+              choice(QStringLiteral("select"), tr("States by"), {QStringLiteral("energy"), QStringLiteral("localized")},
+                     {tr("Energy alone"), tr("Energy, of those in the wells")}, QStringLiteral("energy"),
+                     tr("Localized: the subbands counted are the lowest (highest) of the states with at least a share of their |ψ|² in "
+                        "the wells and the barriers between them - not a high field's triangle against the line's end")),
+              shownIf(expr(QStringLiteral("pmin"), tr("Least share in the wells"), QString(), QStringLiteral("0.6")), QStringLiteral("select=localized")),
               integer(QStringLiteral("kpoints"), tr("k points (k·p)"), 121,
                       tr("The k·p valence bands' in-plane k from 0 past the highest photon and the holes' reach, at this many values: "
                          "fewer, quicker - each interval's occupations and the line's tail are integrated within it")),
@@ -1861,6 +1877,19 @@ QList<NodeKind> makeKinds()
                            tr("Static. Empty: the wells' material's (its epsilonr, else its compound's; a Quantum Well Material's "
                               "own, else nr²)")),
                       QStringLiteral("excitons=true")),
+              choice(QStringLiteral("broaden"), tr("Transitions broadened"), {QStringLiteral("all"), QStringLiteral("window")},
+                     {tr("All"), tr("Those within the photons' window")}, QStringLiteral("all"),
+                     tr("All: every transition of the states kept, its line's tail reaching every photon. The window: only the "
+                        "transitions whose energy lies within the photons' energies (to the extension above), as Lumerical's MQW - "
+                        "below the edge a single line's tail, not the sum over the 2D continuum")),
+              shownIf(expr(QStringLiteral("window_ext"), tr("Window's extension above"), QStringLiteral("eV"), QStringLiteral("0[eV]")),
+                      QStringLiteral("broaden=window")),
+              choice(QStringLiteral("normalize"), tr("Absorption per"), {QStringLiteral("wells"), QStringLiteral("stack"), QStringLiteral("length")},
+                     {tr("The wells' thickness"), tr("The stack's (the line's)"), tr("A length")}, QStringLiteral("wells"),
+                     tr("The wells': the material's absorption, to multiply by the wells' confinement factor. The stack's: the "
+                        "whole line, its padding too - as Lumerical's MQW reports it (qw.Lstack)")),
+              shownIf(expr(QStringLiteral("normlength"), tr("Its length"), QStringLiteral("m"), QStringLiteral("100[nm]")),
+                      QStringLiteral("normalize=length")),
               expr(QStringLiteral("density"), tr("Carriers in the wells"), QStringLiteral("1/m^3"), QStringLiteral("0[1/cm^3]"),
                    tr("Electrons and holes alike, per volume of the wells (the domains of the smallest gap): gain where their "
                       "quasi-Fermi levels are far enough apart; 0, the wells' absorption")),

@@ -34,6 +34,8 @@ OURS = {
     DATA + "lumerical_sample.ldev": DATA + "lumerical_sample.py",
     DATA + "lumerical_wurtzite.ldev": DATA + "lumerical_sample.py",
     DATA + "lumerical_sample.ldf": DATA + "lumerical_sample.py",
+    DATA + "lumerical_mqw_offsets.ldev": DATA + "lumerical_sample.py",
+    DATA + "lumerical_mqw_workfunctions.ldev": DATA + "lumerical_sample.py",
 }
 # A vendor's copyright line (its examples carry one); not a trademark notice.
 NOTICE = re.compile(r"(copyright|\(c\)|©)[^\n]{0,40}\b(ansys|lumerical|zemax|synopsys)\b", re.IGNORECASE)

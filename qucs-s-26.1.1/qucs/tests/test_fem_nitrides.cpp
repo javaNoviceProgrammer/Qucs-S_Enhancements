@@ -460,6 +460,70 @@ private slots:
         QVERIFY(std::abs(value(gan, "C13") / value(gan, "C33") - 1.06 / 3.98) < 1e-12);
         const Run w = run(modelOf(QJsonDocument(wz.model).toJson()));
         QVERIFY2(w.error.isEmpty(), qPrintable(w.error));
+        // Lumerical's own band offsets ("override band offset" 0), the layer
+        // table's not: the valence band's steps its last run stored - 0.1095
+        // eV up in the well, the field's slope taken out -; its stack padded
+        // 15 nm each side; its photons in eV ("freq type" 2); its excitons on,
+        // so no carriers; its subbands 2 and 2, its cutoffs (hard walls), its
+        // window and stack as Lumerical's.
+        const LumericalImport mod = importLumericalMqw(QStringLiteral(QUCS_TEST_DATA "/lumerical_mqw_offsets.ldev"));
+        QVERIFY2(mod.error.isEmpty(), qPrintable(mod.error));
+        const QString said = mod.notes.join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QLatin1String("its band diagram")) && said.contains(QLatin1String("15 nm")) && said.contains(QLatin1String("excitons on")),
+                 qPrintable(said));
+        const QJsonObject mc = mod.model.value("components").toArray().at(0).toObject();
+        const QJsonArray mg = mc.value("geometry").toArray();
+        QCOMPARE(mg.at(0).toObject().value("size").toArray().at(1).toString(), QStringLiteral("23"));
+        QCOMPARE(mg.at(1).toObject().value("position").toArray().at(1).toString(), QStringLiteral("23"));
+        QCOMPARE(mg.at(2).toObject().value("size").toArray().at(1).toString(), QStringLiteral("23"));
+        const QJsonArray mf = mc.value("physics").toArray().at(0).toObject().value("features").toArray();
+        QVERIFY(std::abs(value(mf.at(0).toObject(), "Ev") + 0.80) < 1e-12);
+        QVERIFY2(std::abs(value(mf.at(1).toObject(), "Ev") - (-0.80 + 0.1095)) < 1e-9, qPrintable(mf.at(1).toObject().value("Ev").toString()));
+        QVERIFY(std::abs(value(mf.at(2).toObject(), "Ev") + 0.80) < 1e-9);
+        const QJsonObject ms = mod.model.value("studies").toArray().at(1).toObject().value("steps").toArray().at(0).toObject();
+        QCOMPARE(ms.value("energies").toString(), QStringLiteral("linspace(1.2[eV], 1.5[eV], 31)"));
+        QVERIFY(!ms.contains("density") && ms.value("excitons").toBool());
+        QCOMPARE(ms.value("cstates").toInt(), 2);
+        QCOMPARE(ms.value("vstates").toInt(), 2);
+        QCOMPARE(ms.value("cutoff_c").toString(), QStringLiteral("0.1"));
+        QCOMPARE(ms.value("cutoff_v").toString(), QStringLiteral("0.1"));
+        QCOMPARE(ms.value("broaden").toString(), QStringLiteral("window"));
+        QCOMPARE(ms.value("normalize").toString(), QStringLiteral("stack"));
+        {
+            // (Its spectrum's study solved: the subbands chosen, broadened in
+            // the window, per the stack.)
+            const Model m = modelOf(lighter(QJsonDocument(mod.model).toJson()));
+            const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+            const GeometryBuild g = buildGeometry(m, *ps);
+            QVERIFY(g.ok());
+            const StudyRun sr = runStudy(m, ps, g.topology, nullptr, QStringLiteral("gain"));
+            QVERIFY2(sr.ok(), qPrintable(sr.error));
+            Solution& s = *sr.solutions.back();
+            const QString log = s.log.join(QLatin1Char('\n'));
+            // (Its shallow well's electrons, 0.065 eV deep, below the field's
+            // triangle at the stack's end: those against the wall left out.)
+            QVERIFY2(log.contains(QLatin1String("2 valence (Kramers pairs)")) && log.contains(QLatin1String("left out (at a wall")), qPrintable(log));
+            s.select(0);
+            QVERIFY(std::abs(global(s, QStringLiteral("qw.Lnorm")) - 52e-9) < 1e-15 && std::abs(global(s, QStringLiteral("qw.Lstack")) - 52e-9) < 1e-15);
+        }
+        // None stored: its materials' work functions (χ = W - Eg/2 - kT/2
+        // ln(Nc/Nv), Nc/Nv of their masses); its photons as wavelengths
+        // ("freq type" 1); carriers kept; PMLs - its cutoffs not taken, said.
+        const LumericalImport wf = importLumericalMqw(QStringLiteral(QUCS_TEST_DATA "/lumerical_mqw_workfunctions.ldev"));
+        QVERIFY2(wf.error.isEmpty(), qPrintable(wf.error));
+        const QJsonArray wfeatures = wf.model.value("components").toArray().at(0).toObject().value("physics").toArray().at(0).toObject().value("features").toArray();
+        const double kT = 8.617333262e-5 * 300;
+        auto ev = [&](double W, double Eg, double me, double mh) { return -(W + Eg / 2 - kT / 2 * 1.5 * std::log(me / mh)); };
+        const double egGaAs = 1.519 - 5.405e-4 * 300 * 300 / (300 + 204), egInGaAs = 1.30 - 4.5e-4 * 300 * 300 / (300 + 180);
+        QVERIFY(std::abs(value(wfeatures.at(0).toObject(), "Ev") - ev(4.83, egGaAs, 0.067, 0.5)) < 1e-8);
+        QVERIFY(std::abs(value(wfeatures.at(1).toObject(), "Ev") - ev(4.75, egInGaAs, 0.058, 0.45)) < 1e-8);
+        QVERIFY(std::abs(value(wfeatures.at(1).toObject(), "Ec") - ev(4.75, egInGaAs, 0.058, 0.45) - egInGaAs) < 1e-8);
+        const QJsonObject ws = wf.model.value("studies").toArray().at(1).toObject().value("steps").toArray().at(0).toObject();
+        QCOMPARE(ws.value("energies").toString(), QStringLiteral("linspace(0.85[um], 1[um], 31)"));
+        QVERIFY(std::abs(value(ws, "density") / (2e24 * 22 / 6) - 1) < 1e-9);
+        QVERIFY(!ws.contains("cutoff_c") && !ws.contains("cutoff_v"));
+        QVERIFY2(wf.notes.join(QLatin1Char(' ')).contains(QLatin1String("work functions")) && wf.notes.join(QLatin1Char(' ')).contains(QLatin1String("PMLs")),
+                 qPrintable(wf.notes.join(QLatin1Char('\n'))));
         // Not a project: said.
         QVERIFY(!importLumericalMqw(QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf")).error.isEmpty());
         QVERIFY(importLumericalMqw(QStringLiteral(QUCS_TEST_DATA "/klayout_sample.oas")).error.contains(QLatin1String("not an HDF5 file")));
