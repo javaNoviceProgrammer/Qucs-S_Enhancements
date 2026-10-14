@@ -14,6 +14,7 @@
 #include <QScrollBar>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTextList>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextDocument>
@@ -276,6 +277,84 @@ private slots:
         QVERIFY(md->preview()->isVisible());
         QVERIFY(md->isReadOnly());
         QCOMPARE(MarkdownDoc::defaultMode(), MarkdownDoc::Mode::Preview);
+        app.closeAllFiles();
+    }
+
+    // Images no wider than the rendering: a wide one scaled down to its
+    // room, its proportions kept, and up again as the tab widens - never
+    // past its own size; a small one as it is; one in a list within the
+    // list's indent; an HTML <img>'s width the most. Nothing past the tab's
+    // edge (the user's report: they drew at their own size, past it).
+    void imagesFitTheRendering()
+    {
+        QImage wide(1600, 400, QImage::Format_RGB32), small(60, 20, QImage::Format_RGB32);
+        wide.fill(Qt::darkCyan);
+        small.fill(Qt::darkRed);
+        QVERIFY(wide.save(dir.filePath("wide.png")) && small.save(dir.filePath("small.png")));
+        const QString file = write("images.md", "# Pictures\n\n![wide](wide.png)\n\n![small](small.png)\n\n"
+                                                "<img src=\"wide.png\" width=\"500\">\n\n- an item\n\n  ![listed](wide.png)\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1200, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        pump();
+        // The images in order: name, size drawn, the room of their block.
+        struct Drawn {
+            QString name;
+            QSizeF size;
+            qreal room;
+        };
+        auto drawn = [md] {
+            QTextDocument* doc = md->preview()->document();
+            QList<Drawn> out;
+            for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+                const QTextBlockFormat bf = b.blockFormat();
+                qreal room = md->preview()->viewport()->width() - 2 * doc->documentMargin() - bf.leftMargin() - bf.rightMargin()
+                           - bf.indent() * doc->indentWidth();
+                if (b.textList() != nullptr) room -= b.textList()->format().indent() * doc->indentWidth();
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                    if (it.fragment().charFormat().isImageFormat()) {
+                        const QTextImageFormat f = it.fragment().charFormat().toImageFormat();
+                        out.append({f.name(), QSizeF(f.width(), f.height()), room});
+                    }
+            }
+            return out;
+        };
+        QList<Drawn> images = drawn();
+        QCOMPARE(images.size(), 4);
+        const qreal roomWide = images[0].room;
+        QVERIFY2(images[0].name == "wide.png" && images[0].size.width() <= roomWide && images[0].size.width() > roomWide - 2,
+                 qPrintable(QString("%1 in %2").arg(images[0].size.width()).arg(roomWide)));
+        QVERIFY(qAbs(images[0].size.height() - images[0].size.width() / 4) < 0.01);
+        QCOMPARE(images[1].size, QSizeF(60, 20));
+        QCOMPARE(images[2].size, QSizeF(500, 125));
+        QVERIFY2(images[3].size.width() <= images[3].room && images[3].room < roomWide,
+                 qPrintable(QString("%1 in %2").arg(images[3].size.width()).arg(images[3].room)));
+        QVERIFY(md->preview()->document()->idealWidth() <= md->preview()->viewport()->width() + 1);
+        // (No horizontal bar at the tab's foot: the rendering's nor the hidden
+        // text's.)
+        QVERIFY(!md->preview()->horizontalScrollBar()->isVisible() && !md->horizontalScrollBar()->isVisible());
+        // Narrower: the HTML one's 500 too wide now, all within.
+        app.resize(500, 800);
+        pump();
+        images = drawn();
+        QVERIFY(images[0].size.width() < roomWide && images[0].size.width() <= images[0].room);
+        QVERIFY(images[2].size.width() < 500 && images[2].size.width() <= images[2].room);
+        QVERIFY(qAbs(images[2].size.height() - images[2].size.width() / 4) < 0.01);
+        QCOMPARE(images[1].size, QSizeF(60, 20));
+        QVERIFY2(md->preview()->document()->idealWidth() <= md->preview()->viewport()->width() + 1,
+                 qPrintable(QString("%1 in %2").arg(md->preview()->document()->idealWidth()).arg(md->preview()->viewport()->width())));
+        // Wider again: back up, the HTML one at its 500.
+        app.resize(1200, 800);
+        pump();
+        images = drawn();
+        QVERIFY(images[0].size.width() > roomWide - 2);
+        QCOMPARE(images[2].size, QSizeF(500, 125));
         app.closeAllFiles();
     }
 

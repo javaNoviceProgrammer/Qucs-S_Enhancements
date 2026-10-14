@@ -43,6 +43,14 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
 /// The anchor GitHub gives a heading: "Getting Started!" -> "getting-started".
 QString anchorOf(const QString& heading);
 
+/// \a document's images no wider than the room their paragraph has when
+/// the document is \a width wide (its margins and the paragraph's indent
+/// left out): each at its own size where that fits, else scaled down, its
+/// proportions kept - never enlarged; a width its Markdown or HTML gave the
+/// most. Their own sizes from the document's resources (the browser's
+/// files). Whether any changed.
+bool fitImages(QTextDocument* document, qreal width);
+
 } // namespace qucs_s::markdown
 
 /*!
@@ -97,12 +105,15 @@ private:
     QWidget* a_handle = nullptr;
     QScrollBar* a_scroll = nullptr;   // the text's, beside it in Split mode
     QTimer* a_timer = nullptr;
+    bool a_fitting = false;   // its images being fitted (a resize they make not followed)
 
     int barHeight() const;
     /// The text's width in Split mode.
     int textWidth() const;
     void layoutParts();
     void followScroll();
+    /// The rendering's images to its width.
+    void fitImages();
 };
 
 #endif // QUCS_MARKDOWNDOC_H

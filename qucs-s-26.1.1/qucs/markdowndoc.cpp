@@ -22,14 +22,18 @@
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QStyle>
 #include <QTextBlock>
 #include <QTextBrowser>
+#include <QTextList>
 #include <QTextDocument>
 #include <QTextDocumentFragment>
 #include <QTimer>
 #include <QToolButton>
 
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 namespace qucs_s::markdown {
 
@@ -102,6 +106,81 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
     }
 }
 
+namespace {
+// An image's own size (device-independent pixels) and the width its
+// author gave, kept on its format once read (0: none).
+constexpr int kOwnWidth = QTextFormat::UserProperty + 0x4D44;
+constexpr int kOwnHeight = kOwnWidth + 1;
+constexpr int kAuthorWidth = kOwnWidth + 2;
+
+QSizeF ownSize(QTextDocument* document, const QString& name)
+{
+    const QVariant v = document->resource(QTextDocument::ImageResource, QUrl(name));
+    QSizeF size;
+    if (v.canConvert<QImage>() && !v.value<QImage>().isNull()) {
+        const QImage image = v.value<QImage>();
+        size = QSizeF(image.size()) / image.devicePixelRatio();
+    } else if (v.canConvert<QPixmap>() && !v.value<QPixmap>().isNull()) {
+        const QPixmap pixmap = v.value<QPixmap>();
+        size = QSizeF(pixmap.size()) / pixmap.devicePixelRatio();
+    } else if (v.typeId() == QMetaType::QByteArray) {
+        const QImage image = QImage::fromData(v.toByteArray());
+        if (!image.isNull()) size = QSizeF(image.size()) / image.devicePixelRatio();
+    }
+    return size;
+}
+} // namespace
+
+bool fitImages(QTextDocument* document, qreal width)
+{
+    struct Image {
+        int position;
+        QTextImageFormat format;
+        qreal room;
+    };
+    std::vector<Image> images;
+    const qreal margin = document->documentMargin();
+    for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
+        const QTextBlockFormat bf = b.blockFormat();
+        qreal room = width - 2 * margin - bf.leftMargin() - bf.rightMargin() - bf.indent() * document->indentWidth();
+        // (In a list: its items' indent too.)
+        if (QTextList* list = b.textList()) room -= list->format().indent() * document->indentWidth();
+        for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+            const QTextFragment f = it.fragment();
+            if (f.isValid() && f.charFormat().isImageFormat())
+                for (int k = 0; k < f.length(); ++k) images.push_back({f.position() + k, f.charFormat().toImageFormat(), room});
+        }
+    }
+    bool changed = false;
+    QTextCursor c(document);
+    for (Image& im : images) {
+        QTextImageFormat& f = im.format;
+        if (!f.hasProperty(kOwnWidth)) {
+            const QSizeF own = ownSize(document, f.name());
+            if (own.isEmpty()) continue;   // (not found: drawn as Qt draws a missing one)
+            // (A size its author gave: the width the most; a height alone
+            // its width in proportion.)
+            qreal given = f.hasProperty(QTextFormat::ImageWidth) ? f.width() : 0;
+            if (given <= 0 && f.hasProperty(QTextFormat::ImageHeight) && f.height() > 0) given = f.height() * own.width() / own.height();
+            f.setProperty(kOwnWidth, own.width());
+            f.setProperty(kOwnHeight, own.height());
+            f.setProperty(kAuthorWidth, given);
+        }
+        const qreal ownWidth = f.doubleProperty(kOwnWidth), ownHeight = f.doubleProperty(kOwnHeight);
+        const qreal wanted = f.doubleProperty(kAuthorWidth) > 0 ? f.doubleProperty(kAuthorWidth) : ownWidth;
+        const qreal w = std::max(1.0, std::min(wanted, std::floor(im.room)));
+        const qreal h = w * ownHeight / ownWidth;
+        if (f.hasProperty(QTextFormat::ImageWidth) && std::abs(f.width() - w) < 0.5 && std::abs(f.height() - h) < 0.5) continue;
+        f.setWidth(w);
+        f.setHeight(h);
+        c.setPosition(im.position);
+        c.setPosition(im.position + 1, QTextCursor::KeepAnchor);
+        c.setCharFormat(f);
+        changed = true;
+    }
+    return changed;
+}
+
 QString anchorOf(const QString& heading)
 {
     QString anchor;
@@ -171,6 +250,9 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     a_preview->document()->setDocumentMargin(12);
     qucs_s::math::MathObject::install(a_preview->document());
     connect(a_preview, &QTextBrowser::anchorClicked, this, &MarkdownDoc::followLink);
+    // (Its images to its width as it changes: the tab's, the split's, a
+    // scroll bar's coming.)
+    a_preview->viewport()->installEventFilter(this);
 
     a_handle = new QWidget(this);
     a_handle->setObjectName(QStringLiteral("markdownHandle"));
@@ -232,6 +314,9 @@ void MarkdownDoc::setMode(Mode mode)
         setReadOnly(a_readOnly);
     }
     setVerticalScrollBarPolicy(mode == Mode::Edit ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
+    // (In Preview the text's own width is a pixel: its horizontal bar, at
+    // the tab's foot, would scroll nothing seen.)
+    setHorizontalScrollBarPolicy(mode == Mode::Preview ? Qt::ScrollBarAlwaysOff : Qt::ScrollBarAsNeeded);
     layoutParts();
     if (mode == Mode::Preview)
         a_preview->setFocus();
@@ -318,6 +403,7 @@ void MarkdownDoc::layoutParts()
 
 bool MarkdownDoc::eventFilter(QObject* watched, QEvent* event)
 {
+    if (a_preview != nullptr && watched == a_preview->viewport() && event->type() == QEvent::Resize) fitImages();
     if (watched == a_handle) {
         switch (event->type()) {
         case QEvent::MouseButtonPress:
@@ -373,7 +459,22 @@ void MarkdownDoc::renderNow()
     colours.paper = paper;
     colours.ink = ink;
     qucs_s::markdown::render(doc, toPlainText(), font, colours);
+    fitImages();
     bar->setValue(at);
+}
+
+void MarkdownDoc::fitImages()
+{
+    if (a_fitting || a_preview == nullptr) return;
+    a_fitting = true;
+    // To the width the rendering has with its scroll bar shown: fitted, the
+    // document grows or shrinks, a scroll bar comes or goes - its images
+    // the same either way (a style's bar over the text takes none).
+    const QScrollBar* bar = a_preview->verticalScrollBar();
+    const bool over = a_preview->style()->styleHint(QStyle::SH_ScrollBar_Transient, nullptr, bar) != 0;
+    const int width = a_preview->viewport()->width() - (bar->isVisible() || over ? 0 : bar->sizeHint().width());
+    qucs_s::markdown::fitImages(a_preview->document(), width);
+    a_fitting = false;
 }
 
 void MarkdownDoc::followLink(const QUrl& url)
