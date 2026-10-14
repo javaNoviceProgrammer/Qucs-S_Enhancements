@@ -38,8 +38,11 @@ jobs:
     # sanitizers 40 to 55 minutes (the multiphysics tests most of it): with
     # the smoke tests, past 90 minutes on a busy runner (October 2026). The
     # semiconductor devices' tests (test_fem_devices) some 25 minutes more
-    # there since: the job some 150.
-    timeout-minutes: 210
+    # there since: the job some 150. From mid-October the runners took twice
+    # that on the same image and compiler (the build 27 minutes, then 43;
+    # test_fem_pde 144 s, then 294) and the job ran out of its 210 minutes:
+    # the tests now run four at a time, their limits three times theirs.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
@@ -93,6 +96,7 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
             -DQUCS_SHARED_TEST_CORE=ON \
+            -DQUCS_TEST_TIMEOUT_SCALE=3 \
             -DGIT="${GITHUB_SHA::7}"
 
       - name: Build
@@ -113,8 +117,14 @@ jobs:
             | sort -n | awk '{ total += $1 } END { printf "tests and their library: %d files, %.1f GB\n", NR, total / 2^30 }
                             { last = $0 } END { print "largest: " last }' 
 
+      # As many at a time as the runner has processors (four), each test's
+      # limit and QtTest's per function three times theirs (the configure's
+      # QUCS_TEST_TIMEOUT_SCALE): a slow runner's time is not a failure. Its
+      # processors said, the next slow run's machine on record.
       - name: Unit tests (QtTest, headless)
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          echo "$(nproc) processors: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-)"
+          ctest --test-dir build --output-on-failure --parallel "$(nproc)"
 
       - name: Smoke test · load and render every ngspice example
         run: scripts/ci/smoke-test.sh load build/qucs/qucs-s "$SRC_DIR/examples" smoke-out
@@ -165,7 +175,10 @@ jobs:
   macos-build:
     name: macOS · Release build · unit tests
     runs-on: macos-15
-    timeout-minutes: 60
+    # The build some 28 minutes and the tests, one at a time, 31 at ce8d2b0
+    # (October 2026): past the 60 the job had. The tests now run as many at
+    # a time as the runner has processors (three).
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -197,7 +210,9 @@ jobs:
       - name: Unit tests (QtTest, headless)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          echo "$(sysctl -n hw.ncpu) processors: $(sysctl -n machdep.cpu.brand_string)"
+          ctest --test-dir build --output-on-failure --parallel "$(sysctl -n hw.ncpu)"
 
   windows-build:
     name: Windows · Release build (MSYS2 ucrt64)
