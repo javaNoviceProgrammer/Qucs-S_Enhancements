@@ -709,13 +709,14 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
     }
     // The cross-section.
     const std::vector<Outline> o = outlines(t);
-    int depthMax = 0;
-    for (int d : inner) depthMax = std::max(depthMax, o[std::size_t(d)].depth);
     const double size = std::max(region.width(), region.height()) * t.unitScale;
-    w.comment(tr("The cross-section in the x-y plane, each domain a structure (the outer first: where they overlap, the inner's mesh order wins)."));
-    for (int d : drawingOrder(o, inner)) {
+    w.comment(tr("The cross-section in the x-y plane, each domain a structure (the outer first: where they overlap, the inner's mesh order wins; "
+                 "each its own, none left to the objects' order)."));
+    const std::vector<int> modeOrder = drawingOrder(o, inner);
+    for (std::size_t i = 0; i < modeOrder.size(); ++i) {
+        const int d = modeOrder[i];
         w.comment(tr("domain %1: %2").arg(d + 1).arg(index[std::size_t(d)].name));
-        writeStructure(w, t, o[std::size_t(d)], structureName(t, d), materialOf[std::size_t(d)], 'z', 10 * size, Order::Mode, depthMax + 2 - o[std::size_t(d)].depth);
+        writeStructure(w, t, o[std::size_t(d)], structureName(t, d), materialOf[std::size_t(d)], 'z', 10 * size, Order::Mode, int(modeOrder.size() - i) + 1);
     }
     w.line();
     // The FDE region, its boundaries, mesh and analysis.
@@ -1063,17 +1064,23 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     // The cross-section, in the x-z plane.
     w.comment(tr("The cross-section in the x-z plane (2D y-normal, Lumerical's default): the model's x as x, its y as z; the outer first "
                  "(where they overlap the lower mesh order wins: an inner domain's, a contact's metal's)."));
-    int depthMax = 0;
-    for (int d : drawn) depthMax = std::max(depthMax, o[std::size_t(d)].depth);
-    for (int d : drawingOrder(o, drawn)) {
+    // (Each domain its own mesh order - the later drawn the lower -, above
+    // the contacts' metal strips', each its own too: none left to the
+    // objects' order.)
+    const int strips = int(std::count_if(contacts.begin(), contacts.end(), [](const ContactSolid& cs) { return !cs.strip.empty(); }));
+    const std::vector<int> chargeOrder = drawingOrder(o, drawn);
+    for (std::size_t i = 0; i < chargeOrder.size(); ++i) {
+        const int d = chargeOrder[i];
         w.comment(tr("domain %1: %2").arg(d + 1).arg(material.at(mats[std::size_t(d)]).name));
         const ChargeMaterial& cm = material.at(mats[std::size_t(d)]);
         QStringList extra;
         if (cm.fractions == 1) extra << QStringLiteral("try { set(\"mole frac constant\", %1); } catch(err); # (the alloy's, had it no composition of its own)").arg(num(cm.x));
-        writeStructure(w, t, o[std::size_t(d)], structureName(t, d), cm.name, 'y', 10 * size * sc, Order::Device, depthMax + 3 - o[std::size_t(d)].depth, extra);
+        writeStructure(w, t, o[std::size_t(d)], structureName(t, d), cm.name, 'y', 10 * size * sc, Order::Device, int(chargeOrder.size() - i) + strips, extra);
     }
+    int stripOrder = 0;
     for (const ContactSolid& cs : contacts) {
         if (cs.strip.empty()) continue;
+        ++stripOrder;
         Outline so;
         so.loops = {cs.strip};
         so.bounds = boundsOf(cs.strip);
@@ -1084,7 +1091,7 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
                                   && (std::abs(p.y() - so.bounds.top()) < tol || std::abs(p.y() - so.bounds.bottom()) < tol);
                        });
         w.comment(tr("%1's metal").arg(cs.feature->name()));
-        writeStructure(w, t, so, cs.solid, cs.metal, 'y', 10 * size * sc, Order::Device, 1);
+        writeStructure(w, t, so, cs.solid, cs.metal, 'y', 10 * size * sc, Order::Device, stripOrder);
     }
     w.line();
     // The solver and its region.
@@ -1213,7 +1220,6 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
             // An implant or an expression: sampled on a grid over its domains.
             QRectF r;
             for (int d : on) r = r.isNull() ? t.domains[std::size_t(d)].bounds : r.united(t.domains[std::size_t(d)].bounds);
-            const int nx = std::clamp(int(std::ceil(r.width() / r.height() * 80)), 20, 200), nz = std::clamp(int(std::ceil(r.height() / r.width() * 80)), 20, 200);
             Implant imp;
             Expression::Options inUnit;
             inUnit.lengthUnit = sc;
@@ -1253,39 +1259,125 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
                     locator = std::make_unique<Locator>(*b.mesh);
                 }
             }
+            // Its value at a point: the doped domains' from inside them - a
+            // point on an edge a hair in -, nought outside them.
+            const double extent = std::max(r.width(), r.height()), hair = 1e-6 * extent;
+            const Expression expression = N.isEmpty() ? Expression() : Expression::compile(N, sol->scope());
+            int missing = 0;
+            auto value = [&hair, &t, &on, &profile, &imp, &sc, &sol, &locator, &expression, &missing](QPointF p, bool counted, bool* in = nullptr) {
+                const QPointF tries[] = {p, p + QPointF(hair, 0), p - QPointF(hair, 0), p + QPointF(0, hair), p - QPointF(0, hair),
+                                         p + QPointF(hair, hair), p + QPointF(-hair, hair), p + QPointF(hair, -hair), p - QPointF(hair, hair)};
+                if (in) *in = false;
+                for (const QPointF& q : tries) {
+                    const int d = t.domainAt(q);
+                    if (d < 0 || std::find(on.begin(), on.end(), d) == on.end()) continue;
+                    if (in) *in = true;
+                    if (profile == QLatin1String("implant")) return imp.at(q.x() * sc, q.y() * sc);
+                    const std::optional<double> e = evaluateAt(*sol, *locator, expression, q);
+                    if (e) return std::max(0.0, *e);
+                    if (counted) ++missing;
+                    return 0.0;
+                }
+                return 0.0;
+            };
+            // The grid: evenly 20 to 200 lines along each axis (by its
+            // aspect), lines at the doped domains' corners and a hair either
+            // side (their edges kept sharp), each interval then halved while
+            // the profile midway, along lines across it, is more than 1 % off
+            // the straight line between its ends (Lumerical's interpolation)
+            // - a Gaussian's σ three samples and more -, what is less than
+            // 1e-5 of the largest value met let be (a tail's). Across the
+            // other axis' lines in turn (an implant's edges, a thin layer's).
+            auto lines = [&r, &on, &o, &extent](int axis) {
+                const double lo = axis == 0 ? r.left() : r.top(), hi = axis == 0 ? r.right() : r.bottom();
+                const double ratio = axis == 0 ? r.width() / r.height() : r.height() / r.width();
+                const int even = std::clamp(int(std::ceil(ratio * 80)), 20, 200);
+                std::vector<double> at;
+                for (int i = 0; i < even; ++i) at.push_back(lo + (hi - lo) * i / (even - 1));
+                for (int d : on)
+                    for (const auto& loop : o[std::size_t(d)].loops)
+                        for (const QPointF& q : loop) {
+                            const double c = axis == 0 ? q.x() : q.y();
+                            for (double e : {c - 1e-4 * extent, c, c + 1e-4 * extent})
+                                if (e >= lo && e <= hi) at.push_back(e);
+                        }
+                std::sort(at.begin(), at.end());
+                at.erase(std::unique(at.begin(), at.end(), [&](double a, double b) { return b - a < 1e-9 * extent; }), at.end());
+                return at;
+            };
+            std::vector<double> xs = lines(0), zs = lines(1);
+            double largest = 0;
+            for (double a : xs)
+                for (double c : zs) largest = std::max(largest, value(QPointF(a, c), false));
+            auto refined = [&r, &value, &largest](std::vector<double> along, const std::vector<double>& acrossLines, int axis) {
+                // (At most 48 lines across, evenly among the other axis' own.)
+                std::vector<double> across;
+                const std::size_t m = acrossLines.size();
+                for (std::size_t i = 0; i < std::min<std::size_t>(m, 48); ++i) across.push_back(acrossLines[m <= 48 ? i : i * (m - 1) / 47]);
+                for (double c : {0.25, 0.5, 0.75}) across.push_back((axis == 0 ? r.top() : r.left()) + c * (axis == 0 ? r.height() : r.width()));
+                auto at = [&](double a, double c, bool* in) { return value(axis == 0 ? QPointF(a, c) : QPointF(c, a), false, in); };
+                const double least = 1e-5 * (axis == 0 ? r.width() : r.height());
+                for (int round = 0; round < 24 && along.size() < 400; ++round) {
+                    std::vector<double> next{along.front()};
+                    bool split = false;
+                    for (std::size_t i = 1; i < along.size(); ++i) {
+                        const double a = along[i - 1], b = along[i], mid = (a + b) / 2;
+                        bool off = false;
+                        if (b - a > 2 * least)
+                            for (double c : across) {
+                                // (Across the selection's edge a step: its own lines' - not halved for.)
+                                bool ia = false, ib = false, im = false;
+                                const double va = at(a, c, &ia), vb = at(b, c, &ib), vm = at(mid, c, &im);
+                                largest = std::max({largest, va, vb, vm});
+                                if (!ia || !ib || !im) continue;
+                                if (std::abs(vm - (va + vb) / 2) > 0.01 * std::max({va, vb, vm}) + 1e-5 * largest) {
+                                    off = true;
+                                    break;
+                                }
+                            }
+                        if (off && next.size() + (along.size() - i) < 400) {
+                            next.push_back(mid);
+                            split = true;
+                        }
+                        next.push_back(b);
+                    }
+                    along = next;
+                    if (!split) break;
+                }
+                return along;
+            };
+            zs = refined(zs, xs, 1);
+            xs = refined(xs, zs, 0);
+            zs = refined(zs, xs, 1);
+            const int nx = int(xs.size()), nz = int(zs.size());
             std::vector<double> values;   // x fastest, then y (two), then z
             values.reserve(std::size_t(nx * 2 * nz));
-            int missing = 0;
-            std::vector<double> grid;
-            for (int k = 0; k < nz; ++k)
-                for (int j = 0; j < 2; ++j)
-                    for (int i = 0; i < nx; ++i) {
-                        const QPointF p(r.left() + r.width() * i / (nx - 1), r.top() + r.height() * k / (nz - 1));
-                        // (A point on an edge: its domain a hair inside.)
-                        int d = t.domainAt(p);
-                        if (d < 0) d = t.domainAt(p + (r.center() - p) * 1e-7);
-                        double v = 0;
-                        if (d >= 0 && std::find(on.begin(), on.end(), d) != on.end()) {
-                            if (profile == QLatin1String("implant")) v = imp.at(p.x() * sc, p.y() * sc);
-                            else {
-                                const std::optional<double> e = evaluateAt(*sol, *locator, N, p);
-                                if (e && std::isfinite(*e)) v = std::max(0.0, *e);
-                                else ++missing;
-                            }
-                        }
-                        values.push_back(v);
-                    }
+            for (int k = 0; k < nz; ++k) {
+                std::vector<double> row;
+                for (int i = 0; i < nx; ++i) row.push_back(value(QPointF(xs[std::size_t(i)], zs[std::size_t(k)]), true));
+                for (int j = 0; j < 2; ++j) values.insert(values.end(), row.begin(), row.end());
+            }
             if (missing > 0)
                 w.note(tr("%1: its N not had at %2 of the grid's points (another physics' field, not solved here): nought there").arg(f.name()).arg(missing));
             ++dopings;
-            w.comment(tr("%1: %2, sampled on %3 x %4 points").arg(f.name(), profile == QLatin1String("implant") ? tr("an implant (annealed)") : tr("an expression")).arg(nx).arg(nz));
+            w.comment(tr("%1: %2, sampled on %3 x %4 points (finer where it changes: within 1 % between them)")
+                          .arg(f.name(), profile == QLatin1String("implant") ? tr("an implant (annealed)") : tr("an expression"))
+                          .arg(nx)
+                          .arg(nz));
             w.line(QStringLiteral("addimportdope;"));
             w.setText(QStringLiteral("name"), fname);
             w.setText(QStringLiteral("dopant type"), type);
             w.line(QStringLiteral("try { set(\"use relative coordinates\", 0); } catch(err);"));
-            w.line(QStringLiteral("x = linspace(%1, %2, %3);").arg(num(r.left() * sc), num(r.right() * sc)).arg(nx));
+            // (Its lines to the last digit: where it is steep, a rounded line's
+            // value is not the one sampled.)
+            auto column = [&](const std::vector<double>& v) {
+                QStringList c;
+                for (double x : v) c << QString::number(x * sc, 'g', 17);
+                return c.join(QLatin1String("; "));
+            };
+            w.line(QStringLiteral("x = [%1];").arg(column(xs)));
             w.line(QStringLiteral("y = [%1; %2];").arg(num(-5 * size * sc), num(5 * size * sc)));
-            w.line(QStringLiteral("z = linspace(%1, %2, %3);").arg(num(r.top() * sc), num(r.bottom() * sc)).arg(nz));
+            w.line(QStringLiteral("z = [%1];").arg(column(zs)));
             QStringList chunks;
             for (std::size_t i = 0; i < values.size(); i += 16) {
                 QStringList c;

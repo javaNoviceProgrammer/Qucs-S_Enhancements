@@ -20,6 +20,7 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <array>
 #include <map>
 #include <memory>
 #include <vector>
@@ -111,10 +112,14 @@ struct Object {
 /// (n,k) material's index (diagonal), or its permittivity sampled.
 struct Material {
     QString name;
-    QString type;                 // "(n,k) Material", "database", "PEC", "dielectric", "sampled"
+    QString type;                 // "(n,k) Material", "database", "PEC", "dielectric", "sampled", "sellmeier", "thermal"
     double n[3] = {1, 1, 1}, k[3] = {0, 0, 0};
     bool anisotropic = false;
     std::vector<double> f, epsRe, epsIm;   // sampled (Hz)
+    std::array<std::array<double, 7>, 3> sellmeier{};   // Sellmeier's c0..c6 along x, y, z (λ in µm)
+    QString base;                 // a temperature dependent one's material (its name)
+    double dndT[3] = {0, 0, 0}, dkdT = 0, tref = 300;  // (its index n(λ) + dn/dT (T - Tref))
+    bool thermal = true, carriers = false;             // (its temperature taken; its free carriers' terms set)
     int priority = 2;             // its mesh order
 };
 

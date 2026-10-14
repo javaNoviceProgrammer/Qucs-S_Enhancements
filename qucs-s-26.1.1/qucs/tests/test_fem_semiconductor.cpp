@@ -622,6 +622,162 @@ private slots:
         QVERIFY2(std::abs(mu2 * 1e7 / v - 1) < 0.03, qPrintable(QString::number(mu2 * 1e7 / v)));
     }
 
+    void masettiMobility()
+    {
+        // Masetti's mobility by doping, silicon's figures (its defaults):
+        // electrons at 1e17 cm⁻³ (Pc 0: Lumerical's form) and at 1e20 (where
+        // its µ1 term, of Cs, counts: 5 %), holes at 1e17 (Pc 9.23e16 cm⁻³:
+        // e^(-Pc/N) counts) - the bar's current and semi.mun, semi.mup at
+        // its middle.
+        auto masetti = [](double N, double m1, double m2, double mu1, double pc, double cr, double cs, double a, double b, double mu) {
+            return m1 * std::exp(-pc / N) + (mu - m2) / (1 + std::pow(N / cr, a)) - mu1 / (1 + std::pow(cs / N, b));
+        };
+        struct Case {
+            const char* dopant;
+            double N, mu;   // (cm⁻³, Masetti's µ)
+        };
+        const Case cases[] = {{"donor", 1e17, masetti(1e17, 52.2, 52.2, 43.4, 0, 9.68e16, 3.43e20, 0.68, 2, 1400)},
+                              {"donor", 1e20, masetti(1e20, 52.2, 52.2, 43.4, 0, 9.68e16, 3.43e20, 0.68, 2, 1400)},
+                              {"acceptor", 1e17, masetti(1e17, 44.9, 0, 29.0, 9.23e16, 2.23e17, 6.1e20, 0.719, 2, 450)}};
+        const QString hmax = slowBuild() ? QStringLiteral("0.25") : QStringLiteral("0.1");
+        for (const Case& c : cases) {
+            const bool n = QLatin1String(c.dopant) == QLatin1String("donor");
+            const Run r = run(modelOf(bar(QStringLiteral("10"),
+                                          QStringLiteral(R"({"type": "doping", "dopant": "%1", "N0": "%2[1/cm^3]", "selection": {"all": true}},
+                                                            {"type": "model", "mobility": "masetti", "selection": {"all": true}},)")
+                                              .arg(QLatin1String(c.dopant))
+                                              .arg(c.N),
+                                          QStringLiteral("0.1[V]"), {}, hmax)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double got = at(*r.solution, n ? QStringLiteral("semi.mun") : QStringLiteral("semi.mup"), {5, 0.5}) * 1e4;
+            const double current = std::abs(global(*r.solution, QStringLiteral("semi.I_2"))) / (Q * c.N * 1e6 * 1e-4 * 0.1 * 1e-6 / 1e-5);
+            qInfo("Masetti, %s at %g cm⁻³: %.4f cm²/Vs (%.4f), from the current %.4f", c.dopant, c.N, got, c.mu, current);
+            QVERIFY2(std::abs(got / c.mu - 1) < 1e-6, qPrintable(QString::number(got)));
+            QVERIFY2(std::abs(current / c.mu - 1) < 3e-3, qPrintable(QString::number(current)));
+        }
+    }
+
+    void saturationExponents()
+    {
+        // µ0 / (1 + (µ0 F/vsat)^β)^(1/β) at 1e7 V/m: the electrons' β 1
+        // (theirs 2 by default), the holes' 1 by default and 2. (The field
+        // uniform: a sanitized build's mesh coarse, the holes' default left
+        // out - three solves near QtTest's 300 s there.)
+        struct Case {
+            const char* dopant;
+            const char* extra;
+            double mu, vsat, beta;
+        };
+        const Case cases[] = {{"donor", R"(, "betan": "1")", 0.14, 1e5, 1}, {"acceptor", R"(, "betap": "2")", 0.045, 8e4, 2}, {"acceptor", "", 0.045, 8e4, 1}};
+        for (const Case& c : cases) {
+            if (slowBuild() && &c == &cases[2]) continue;
+            const Run r = run(modelOf(bar(QStringLiteral("1"),
+                                          QStringLiteral(R"({"type": "doping", "dopant": "%1", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+                                                            {"type": "model", "saturation": true%2, "selection": {"all": true}},)")
+                                              .arg(QLatin1String(c.dopant), QLatin1String(c.extra)),
+                                          QStringLiteral("10[V]"), {}, slowBuild() ? QStringLiteral("0.25") : QStringLiteral("0.05"))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double muF = c.mu * 1e7, v = muF / std::pow(1 + std::pow(muF / c.vsat, c.beta), 1 / c.beta);
+            const double I = std::abs(global(*r.solution, QStringLiteral("semi.I_2"))), expected = Q * 1e22 * v * 1e-6;
+            qInfo("saturation, %s, β %g: I %.5g A (q N v %.5g)", c.dopant, c.beta, I, expected);
+            QVERIFY2(std::abs(I / expected - 1) < 0.03, qPrintable(QString::number(I / expected)));
+        }
+    }
+
+    void srhLifetimes()
+    {
+        // The lifetimes by doping (Fossum's τ0 / (A + B N/N0 + C (N/N0)^E),
+        // their own N0s) of a τ0 of x; semi.taun, semi.taup at the middle.
+        {
+            const Run r = run(modelOf(bar(QStringLiteral("10"),
+                                          QString::fromUtf8(R"x({"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                                                {"type": "srh", "source": "user", "taun": "1[us]*(1 + x/10[um])", "taup": "2[us]", "dependence": "doping",
+                                                 "N0n": "1e16[1/cm^3]", "N0p": "2e16[1/cm^3]", "fA": "1", "fB": "0.3", "fC": "2", "fE": "0.7", "selection": {"all": true}},)x"),
+                                          QStringLiteral("0[V]"), {}, QStringLiteral("0.1"))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double tn = at(*r.solution, QStringLiteral("semi.taun"), {5, 0.5}), tp = at(*r.solution, QStringLiteral("semi.taup"), {5, 0.5});
+            const double en = 1.5e-6 / (1 + 0.3 * 10 + 2 * std::pow(10, 0.7)), ep = 2e-6 / (1 + 0.3 * 5 + 2 * std::pow(5, 0.7));
+            qInfo("lifetimes by doping: τn %.5g s (%.5g), τp %.5g (%.5g)", tn, en, tp, ep);
+            QVERIFY2(std::abs(tn / en - 1) < 5e-3, qPrintable(QString::number(tn / en)));
+            QVERIFY2(std::abs(tp / ep - 1) < 1e-9, qPrintable(QString::number(tp / ep)));
+        }
+        // Trap-assisted tunnelling (Hurkx's) in a uniform 2e7 V/m: τ/(1 + Γ),
+        // Γ = ∫ e^(u - K u^(3/2)) du to ΔE/kT, K = 4/3 √(2 m*) (kT)^(3/2)/(q ħ F),
+        // ΔE the trap's depth below Ec (above Ev) - integrated here on its own.
+        // (A sanitized build: the field uniform, its mesh coarse; without the
+        // tunnelling left out.)
+        for (const bool tat : {true, false}) {
+            if (slowBuild() && !tat) continue;
+            const Run r = run(modelOf(bar(QStringLiteral("1"),
+                                          QStringLiteral(R"({"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+                                                            {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "tat": %1, "mtn": "0.25", "mtp": "0.3",
+                                                             "selection": {"all": true}},)")
+                                              .arg(tat ? QStringLiteral("true") : QStringLiteral("false")),
+                                          QStringLiteral("20[V]"), {}, slowBuild() ? QStringLiteral("0.25") : QStringLiteral("0.05"))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.solution;
+            const QPointF mid(0.5, 0.5);
+            const double F = at(s, QStringLiteral("semi.normE"), mid);
+            const double Ec = at(s, QStringLiteral("semi.Ec"), mid), Ev = at(s, QStringLiteral("semi.Ev"), mid), Ei = at(s, QStringLiteral("semi.Ei"), mid);
+            const double kT = KB * 300, hbar = 1.054571817e-34, m0 = 9.1093837015e-31;
+            auto gamma = [&](double dE, double mt) {
+                const double K = 4.0 / 3 * std::sqrt(2 * mt * m0) * std::pow(kT, 1.5) / (Q * hbar * F), top = dE / kT;
+                const int n = 200000;
+                double sum = 0;
+                for (int i = 0; i <= n; ++i) {
+                    const double u = top * i / n;
+                    sum += (i == 0 || i == n ? 0.5 : 1.0) * std::exp(u - K * std::pow(u, 1.5));
+                }
+                return sum * top / n;
+            };
+            const double gn = tat ? gamma(Ec - Ei, 0.25) : 0, gp = tat ? gamma(Ei - Ev, 0.3) : 0;
+            const double tn = at(s, QStringLiteral("semi.taun"), mid), tp = at(s, QStringLiteral("semi.taup"), mid);
+            qInfo("trap-assisted tunnelling %s: F %.4g V/m, Γn %.4f, Γp %.4f; τn %.5g s (%.5g), τp %.5g (%.5g)", tat ? "on" : "off", F, gn, gp, tn, 1e-6 / (1 + gn),
+                  tp, 1e-6 / (1 + gp));
+            QVERIFY(std::abs(F / 2e7 - 1) < 1e-3);
+            QVERIFY2(std::abs(tn * (1 + gn) / 1e-6 - 1) < 1e-3, qPrintable(QString::number(tn * (1 + gn) / 1e-6)));
+            QVERIFY2(std::abs(tp * (1 + gp) / 1e-6 - 1) < 1e-3, qPrintable(QString::number(tp * (1 + gp) / 1e-6)));
+            if (tat) QVERIFY(gn > 0.05 && gp > 0.05);
+        }
+    }
+
+    void surfaceRecombination()
+    {
+        // n-type, 1e16 cm⁻³, a uniform generation G (low injection: Δp 1e-3
+        // of n); its left end a surface of recombination velocity S (the
+        // holes', 1e4 cm/s; the electrons' ten times that, all but unfelt in
+        // n-type), its right an ohmic contact 60 µm away: the holes' Δp = G τ
+        // + A e^(-x/L) + B e^(x/L), D Δp'(0) = S Δp(0), Δp(60 µm) = 0 (L =
+        // √(D τ), D = kT/q µp).
+        const QByteArray json = R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "bar", "size": ["60", "1"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+              {"type": "srh", "source": "user", "taun": "0.1[us]", "taup": "0.1[us]", "selection": {"all": true}},
+              {"type": "generation", "G": "1e26[1/(m^3*s)]", "selection": {"all": true}},
+              {"type": "surfacerec", "Sn": "1e5[cm/s]", "Sp": "1e4[cm/s]", "selection": {"of": ["bar"], "side": "left"}},
+              {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.5"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json";
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Solution& s = *r.solution;
+        const double G = 1e26, tau = 1e-7, S = 100, D = KB * 300 / Q * 0.045, L = std::sqrt(D * tau), W = 60e-6;
+        // (A, B from the two ends: (D/L + S) A + (S - D/L) B = -S G τ; A e^(-W/L) + B e^(W/L) = -G τ.)
+        const double a11 = D / L + S, a12 = S - D / L, b1 = -S * G * tau, a21 = std::exp(-W / L), a22 = std::exp(W / L), b2 = -G * tau;
+        const double det = a11 * a22 - a12 * a21, A = (b1 * a22 - a12 * b2) / det, B = (a11 * b2 - a21 * b1) / det;
+        auto expected = [&](double x) { return G * tau + A * std::exp(-x / L) + B * std::exp(x / L); };
+        for (double x : {0.0, 5.0, 30.0}) {
+            const QPointF p(x, 0.5);
+            const double n = at(s, QStringLiteral("semi.n"), p), ni = at(s, QStringLiteral("semi.ni"), p);
+            const double dp = at(s, QStringLiteral("semi.p"), p) - ni * ni / n, e = expected(x * 1e-6);
+            qInfo("surface recombination: Δp at %g µm %.5g (%.5g; G τ %.3g)", x, dp, e, G * tau);
+            QVERIFY2(std::abs(dp / e - 1) < 5e-3, qPrintable(QStringLiteral("%1 µm: %2").arg(x).arg(dp / e)));
+        }
+    }
+
     void dopingAndRecombination()
     {
         // Doping of x (an expression); direct recombination alone in n-type

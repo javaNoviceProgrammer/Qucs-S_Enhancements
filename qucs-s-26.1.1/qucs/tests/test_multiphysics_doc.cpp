@@ -2279,15 +2279,32 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf")}, {"to", path(QStringLiteral("none.qfem"))}});
         QVERIFY2(failed(r) && text(r).contains(QLatin1String("a Lumerical data file")), qPrintable(text(r)));
-        // A CHARGE project, a MODE project: each a model, built.
-        for (const char* project : {"lumerical_charge.ldev", "lumerical_mode.lms"}) {
+        // CHARGE projects (DEVICE 7.1's, 7.17's), a MODE project, a HEAT
+        // project: each a model, built.
+        const std::pair<const char*, const char*> projects[] = {{"lumerical_charge.ldev", "CHARGE cross-section"}, {"lumerical_device.ldev", "CHARGE cross-section"},
+                                                                {"lumerical_mode.lms", "FDE region"}, {"lumerical_heat.ldev", "HEAT cross-section"}};
+        for (const auto& [project, kind] : projects) {
             const QString model = path(QFileInfo(QString::fromLatin1(project)).completeBaseName() + QStringLiteral(".qfem"));
             r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/") + QString::fromLatin1(project)}, {"to", model}, {"replace", true}});
             QVERIFY2(!failed(r), qPrintable(text(r)));
             QCOMPARE(json(r).value("geometry").toString(), QStringLiteral("built"));
-            QVERIFY2(json(r).value("read").toArray().at(0).toString().contains(QString::fromLatin1(project).endsWith(QLatin1String(".lms")) ? QLatin1String("FDE region") : QLatin1String("CHARGE cross-section")),
-                     qPrintable(text(r)));
+            QVERIFY2(json(r).value("read").toArray().at(0).toString().contains(QLatin1String(kind)), qPrintable(text(r)));
         }
+        // To a folder not there: made. To one it cannot write in: said, and no
+        // tab left in the file's name, unsaved (a later import of it met it).
+        const QString deep = path(QStringLiteral("imports/new/heat.qfem"));
+        r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_heat.ldev")}, {"to", deep}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(deep), qPrintable(text(r)));
+        const QString locked = path(QStringLiteral("locked"));
+        QVERIFY(QDir().mkpath(locked));
+        QVERIFY(QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        const int tabs = app->DocumentTab->count();
+        r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_heat.ldev")}, {"to", locked + QStringLiteral("/heat.qfem")}});
+        QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("cannot be written")), qPrintable(text(r)));
+        QCOMPARE(app->DocumentTab->count(), tabs);
+        for (int i = 0; i < app->DocumentTab->count(); ++i)
+            if (auto* d = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->widget(i))) QVERIFY(!d->getDocName().endsWith(QLatin1String("locked/heat.qfem")));
     }
 
     // Claude exports a model as a Lumerical script - fem_edit adds the node

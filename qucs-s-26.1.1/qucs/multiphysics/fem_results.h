@@ -128,6 +128,8 @@ ArrowData arrowData(const Solution& solution, const QString& x, const QString& y
 /// \a expression at \a p (the geometry's unit), SI; its unit in \a dim.
 std::optional<double> evaluateAt(const Solution& solution, const Locator& locator, const QString& expression, QPointF p,
                                  QString* error = nullptr, Dim* dim = nullptr);
+/// A compiled expression at \a p (none: in no domain, or not finite there).
+std::optional<double> evaluateAt(const Solution& solution, const Locator& locator, const Expression& expression, QPointF p);
 
 /// A derived value found: its name, value (SI) and how it is shown.
 struct DerivedValue {
