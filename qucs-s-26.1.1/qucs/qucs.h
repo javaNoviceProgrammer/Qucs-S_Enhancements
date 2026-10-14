@@ -852,7 +852,7 @@ public:
 
   QAction *exportAsImage;
   QAction *importLTspice = nullptr;   // File > Import LTspice Schematic
-  QAction *importLumerical = nullptr; // File > Import Lumerical MQW Project
+  QAction *importLumerical = nullptr; // File > Import Lumerical Project
   QAction *colourWires = nullptr;     // View > Colour Wires by Net
   QAction *exportDiagramAsImage;   // a diagram's context menu: the diagram alone
   QAction *exportGraphics;         // the canvas' context menu: the export dialog

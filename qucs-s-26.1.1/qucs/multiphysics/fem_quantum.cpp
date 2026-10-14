@@ -81,6 +81,10 @@ struct Band {
     double meP = NaN, EpZ = NaN, P = 0;
     Expression userEc, userEv;          // (as given: of x and y)
     std::vector<ValleySet> valleys;     // the electrons' valley sets (none: one, me's)
+    // As read, for an export (quantumLayers): the edges unstrained (eV; a
+    // user's when constant), the lattice constant (m) and what strains it
+    // (eV, Pa) - a zinc blende's.
+    double Ec0 = NaN, Ev0 = NaN, a0 = NaN, ac = NaN, av = NaN, bDef = NaN, c11 = NaN, c12 = NaN;
 };
 
 /// A point of integration: its domain, weight (nm, nm² or nm³ about an
@@ -275,6 +279,7 @@ class QuantumProblem : public Problem
 {
 public:
     QuantumProblem(Solution& solution, int field) : Problem(solution, field) {}
+    friend QuantumLayers detail::quantumLayers(Solution& solution, int field);
 
     bool setup(QString* error) override;
     void initialize() override;
@@ -650,6 +655,8 @@ bool QuantumProblem::setup(QString* error)
             b.user = true;
             b.userEc = compile(mf->text(QStringLiteral("Ec")), *mf, QStringLiteral("Ec"));
             b.userEv = compile(mf->text(QStringLiteral("Ev")), *mf, QStringLiteral("Ev"));
+            for (auto [e, out] : {std::pair{&b.userEc, &b.Ec0}, std::pair{&b.userEv, &b.Ev0}})
+                if (e->isConstant()) *out = e->dim() == Dim::of(2, 1, -2) ? e->constant() / Q : e->constant();
             b.me = number(mf->text(QStringLiteral("me")), Dim(), tr("%1's electron mass").arg(where));
             b.mhhZ = number(mf->text(QStringLiteral("mhh")), Dim(), tr("%1's heavy hole mass").arg(where));
             b.mlhZ = number(mf->text(QStringLiteral("mlh")), Dim(), tr("%1's light hole mass").arg(where));
@@ -679,6 +686,11 @@ bool QuantumProblem::setup(QString* error)
                 if (!(c11 > 0) || !std::isfinite(c12) || !std::isfinite(ac) || !std::isfinite(av) || !std::isfinite(bs))
                     problem(tr("%1: its strain wants ac, av, b, C11 and C12").arg(where));
                 else {
+                    b.ac = ac;
+                    b.av = av;
+                    b.bDef = bs;
+                    b.c11 = c11;
+                    b.c12 = c12;
                     const double ezz = -2 * c12 / c11 * exx, vol = 2 * exx + ezz, P = -av * vol, Qe = -bs * (exx - ezz);
                     const double D = std::isfinite(b.delta) ? b.delta : 0.3;
                     b.strain = exx;
@@ -823,6 +835,8 @@ bool QuantumProblem::setup(QString* error)
             b.epsr = epsText.trimmed().isEmpty() ? (p ? p->epsr : NaN) : evaluateConstant(epsText, constants, Dim()).value_or(p ? p->epsr : NaN);
             b.Ec = VBO + Eg;
             b.Ehh = b.Elh = VBO;
+            b.Ec0 = b.Ec;
+            b.Ev0 = VBO;
             if (std::isfinite(substrate)) {
                 // Pseudomorphic on the substrate: biaxial strain in the plane
                 // (Bir and Pikus; Chuang's signs).
@@ -837,6 +851,12 @@ bool QuantumProblem::setup(QString* error)
                     problem(tr("%1: its material has not what strain needs (a0, ac, av, b, C11, C12)").arg(where));
                     continue;
                 }
+                b.a0 = a0;
+                b.ac = ac;
+                b.av = av;
+                b.bDef = bs;
+                b.c11 = c11;
+                b.c12 = c12;
                 const double exx = (substrate - a0) / a0, ezz = -2 * c12 / c11 * exx;
                 const double vol = 2 * exx + ezz;
                 const double P = -av * vol, Qe = -bs * (exx - ezz);
@@ -846,6 +866,8 @@ bool QuantumProblem::setup(QString* error)
                 b.Ec += ac * vol;
                 b.Ehh = VBO - P - Qe;
                 b.Elh = VBO - P + 0.5 * (Qe - D + std::sqrt(D * D + 2 * D * Qe + 9 * Qe * Qe));
+            } else if (p) {
+                b.a0 = p->a0;
             }
         }
         if (wz) wurtzite(b, *wz, wzExx, wzEzz, wzLibrary);
@@ -3485,6 +3507,46 @@ void QuantumProblem::setGlobals()
 std::unique_ptr<Problem> makeQuantumProblem(Solution& solution, int field)
 {
     return std::make_unique<QuantumProblem>(solution, field);
+}
+
+QuantumLayers quantumLayers(Solution& solution, int field)
+{
+    QuantumLayers out;
+    QuantumProblem p(solution, field);
+    if (!p.setup(&out.error)) return out;
+    out.T = p.a_T;
+    out.F = p.a_F;
+    out.h1d = p.a_h1d;
+    out.valence = p.a_valence;
+    out.axis = p.a_axis;
+    out.line = p.a_1d;
+    out.potential = p.a_V.isValid();
+    for (const Band& b : p.a_bands) {
+        QuantumLayer l;
+        l.on = b.on;
+        l.user = b.user;
+        l.wurtzite = b.wz;
+        l.valleys = !b.valleys.empty();
+        l.Ec = b.Ec0;
+        l.Ev = b.Ev0;
+        l.me = b.me;
+        l.g1 = b.g1;
+        l.g2 = b.g2;
+        l.g3 = b.g3;
+        l.delta = b.delta;
+        l.Ep = b.Ep;
+        l.nr = b.nr;
+        l.epsr = b.epsr;
+        l.exx = b.strain;
+        l.a0 = b.a0;
+        l.ac = b.ac;
+        l.av = b.av;
+        l.b = b.bDef;
+        l.C11 = b.c11;
+        l.C12 = b.c12;
+        out.layers.push_back(l);
+    }
+    return out;
 }
 
 QuantumState quantumAt(PointEvaluator& e, int fi)

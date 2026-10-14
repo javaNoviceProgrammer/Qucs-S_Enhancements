@@ -13,6 +13,7 @@
 #include "config.h"
 #include "dataimport.h"
 #include "fem_export.h"
+#include "fem_lumerical.h"
 #include "ink.h"
 #include "misc.h"
 #include "qucs.h"
@@ -1856,9 +1857,16 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
     };
     const Node* n = a_model.find(tag);
     if (!n || !n->kind() || n->kind()->group != QLatin1String("export")) return fail(tr("there is no export %1").arg(tag));
-    const std::shared_ptr<SolutionSet> set = solutions(n->text(QStringLiteral("study")));
-    if (!set || set->solutions.empty()) return fail(tr("%1: its study is not computed yet - Compute it").arg(n->name()));
-    const ExportText out = exportText(a_model, *set, *n, QStringLiteral(PACKAGE_VERSION));
+    // (A Lumerical script is the model's, not a study's results: none need be computed.)
+    const bool lumerical = n->type.startsWith(QLatin1String("lumerical"));
+    ExportText out;
+    if (!lumerical) {
+        const std::shared_ptr<SolutionSet> set = solutions(n->text(QStringLiteral("study")));
+        if (!set || set->solutions.empty()) return fail(tr("%1: its study is not computed yet - Compute it").arg(n->name()));
+        out = exportText(a_model, *set, *n, QStringLiteral(PACKAGE_VERSION));
+    } else {
+        out.suffix = QStringLiteral("lsf");
+    }
     if (!out.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), out.error));
     // Where it says, else beside the model (in the cache while it is not
     // saved): model_tag, a Qucs subcircuit by its name (as a Subcircuit part
@@ -1880,6 +1888,16 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
     } else if (QFileInfo(path).isRelative()) {
         if (getDocName().isEmpty()) return fail(tr("%1: %2 is relative to the model's folder - save the model first").arg(n->name(), path));
         path = QFileInfo(getDocName()).absoluteDir().absoluteFilePath(path);
+    }
+    if (lumerical) {
+        // The script names the project it saves as itself (beside it).
+        Model m = a_model;
+        m.fileName = getDocName();
+        const LumericalScript ls = lumericalScript(m, *n, QFileInfo(path).completeBaseName(), QStringLiteral(PACKAGE_VERSION));
+        if (!ls.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), ls.error));
+        out.text = ls.text;
+        out.summary = ls.summary;
+        for (const QString& note : ls.notes) say(tr("%1: %2").arg(n->name(), note));
     }
     QString text = out.text;
     if (out.suffix == QLatin1String("sch")) {
