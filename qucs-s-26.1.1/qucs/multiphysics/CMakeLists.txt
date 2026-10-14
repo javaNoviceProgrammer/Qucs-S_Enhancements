@@ -33,6 +33,7 @@ set(FEM_SRCS
   fem_export.cpp
   fem_materials.cpp
   fem_material_plot.cpp
+  fem_tensor.cpp
 )
 
 add_library(fem STATIC ${FEM_SRCS})

@@ -159,4 +159,54 @@ double franzKeldysh(double photon, double gap, double field, double mr, double A
     return A * std::sqrt(theta / eV) * std::max(shape, 0.0) * eV / photon;
 }
 
+std::complex<double> grapheneConductivity(double omega, double mu, double tau, double T)
+{
+    constexpr double e = 1.602176634e-19, hbar = 1.054571817e-34, kB = 1.380649e-23;
+    const double kT = kB * std::max(T, 1.0), m = std::abs(mu);
+    // The Drude part: 2kT ln(2 cosh(µ/2kT)) = |µ| + 2kT ln(1 + e^(-|µ|/kT)).
+    const double D = e * e / (M_PI * hbar * hbar) * (m + 2 * kT * std::log1p(std::exp(-m / kT)));
+    const std::complex<double> intra = D / std::complex<double>(tau > 0 ? 1 / tau : 0.0, omega);
+    // The interband part. G(ε) for ε ≥ 0, as e^(-ε/kT) keeps it finite.
+    auto G = [&](double eps) {
+        const double x = eps / kT, a = std::exp(-2 * x);
+        return (1 - a) / (std::exp(m / kT - x) + std::exp(-m / kT - x) + 1 + a);
+    };
+    const double a = hbar * omega, e0 = a / 2, G0 = G(e0);
+    // ∫ (G(ε) - G0)/(a² - 4ε²) dε: Gauss-Legendre on pieces finer than kT
+    // and |µ| ask, to past |µ| + 40 kT, its tail as G is 1 beyond.
+    const double top = std::max(e0, m) + 40 * kT;
+    const double h = std::max(1e-6 * top, std::min({kT, e0 > 0 ? e0 : kT, m > 0 ? m : kT}) / 4);
+    static const double xg[8] = {-0.9602898564975363, -0.7966664774136267, -0.5255324099163290, -0.1834346424956498,
+                                 0.1834346424956498,  0.5255324099163290,  0.7966664774136267,  0.9602898564975363};
+    static const double wg[8] = {0.1012285362903763, 0.2223810344533745, 0.3137066458778873, 0.3626837833783620,
+                                 0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763};
+    auto integrand = [&](double eps) {
+        const double den = a * a - 4 * eps * eps;
+        if (std::abs(eps - e0) < 1e-9 * (e0 + kT)) {
+            // (Its limit there: G'(ε0)/(-8 ε0).)
+            const double x = e0 / kT, cm = std::cosh(m / kT), cx = std::cosh(x);
+            return std::isfinite(cx) ? -(1 + cm * cx) / ((cm + cx) * (cm + cx) * kT) / (8 * e0) : 0.0;
+        }
+        return (G(eps) - G0) / den;
+    };
+    double I = 0;
+    auto piece = [&](double lo, double hi) {
+        const int n = std::max(1, int(std::ceil((hi - lo) / h)));
+        for (int k = 0; k < n; ++k) {
+            const double l = lo + (hi - lo) * k / n, r = lo + (hi - lo) * (k + 1) / n;
+            for (int i = 0; i < 8; ++i) I += 0.5 * (r - l) * wg[i] * integrand(0.5 * (l + r) + 0.5 * (r - l) * xg[i]);
+        }
+    };
+    if (e0 > 0 && e0 < top) {
+        piece(0, e0);
+        piece(e0, top);
+    } else
+        piece(0, top);
+    // Beyond: (1 - G0) ∫ dε/(a² - 4ε²) = -(1 - G0) ln((2 top + a)/(2 top - a))/(4a).
+    if (a > 0) I += -(1 - G0) * std::log((2 * top + a) / (2 * top - a)) / (4 * a);
+    const double s0 = e * e / (4 * hbar);
+    const std::complex<double> inter = s0 * std::complex<double>(G0, -4 * a / M_PI * I);
+    return intra + inter;
+}
+
 } // namespace qucs_s::fem

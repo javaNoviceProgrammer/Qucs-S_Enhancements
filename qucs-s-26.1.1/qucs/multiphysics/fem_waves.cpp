@@ -37,19 +37,74 @@ constexpr double C0 = 299792458.0;
 constexpr double Mu0 = 1.25663706127e-6;
 const cd J(0, 1);
 
+/// A complex 3x3's inverse (false: singular).
+bool inverse3(const cd a[3][3], cd out[3][3])
+{
+    const cd det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+                   + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+    if (std::abs(det) < 1e-300) return false;
+    out[0][0] = (a[1][1] * a[2][2] - a[1][2] * a[2][1]) / det;
+    out[0][1] = (a[0][2] * a[2][1] - a[0][1] * a[2][2]) / det;
+    out[0][2] = (a[0][1] * a[1][2] - a[0][2] * a[1][1]) / det;
+    out[1][0] = (a[1][2] * a[2][0] - a[1][0] * a[2][2]) / det;
+    out[1][1] = (a[0][0] * a[2][2] - a[0][2] * a[2][0]) / det;
+    out[1][2] = (a[0][2] * a[1][0] - a[0][0] * a[1][2]) / det;
+    out[2][0] = (a[1][0] * a[2][1] - a[1][1] * a[2][0]) / det;
+    out[2][1] = (a[0][1] * a[2][0] - a[0][0] * a[2][1]) / det;
+    out[2][2] = (a[0][0] * a[1][1] - a[0][1] * a[1][0]) / det;
+    return true;
+}
+
+/// R T Rᵀ of a complex tensor (into the model's axes), and Rᵀ T R (into the crystal's).
+void toModel(const Rotation& r, const cd in[3][3], cd out[3][3])
+{
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            cd v = 0;
+            for (int a = 0; a < 3; ++a)
+                for (int b = 0; b < 3; ++b) v += r.r[i][a] * r.r[j][b] * in[a][b];
+            out[i][j] = v;
+        }
+}
+
+void toCrystal(const Rotation& r, const double in[3][3], double out[3][3])
+{
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double v = 0;
+            for (int a = 0; a < 3; ++a)
+                for (int b = 0; b < 3; ++b) v += r.r[a][i] * r.r[b][j] * in[a][b];
+            out[i][j] = v;
+        }
+}
+
+/// Voigt's pairs (xx, yy, zz, yz, xz, xy).
+constexpr int VoigtI[6] = {0, 1, 2, 1, 0, 0};
+constexpr int VoigtJ[6] = {0, 1, 2, 2, 2, 1};
+
+/// What a Media is set up with: its physics' compiling, its materials'
+/// texts (a tensor's as it is) and orientations, where to say what is wrong.
+using MediaContext = MediaHooks;
+
 /// The media of a waves physics, by domain: what makes ε (complex, a
-/// diagonal tensor) and µ (real) at a point - a refractive index n - jκ (n
-/// along x, y and z when anisotropic; warmed: + dn/dT (T - Tref)), or a
-/// permittivity with its loss tangent and conductivity - and the perfectly
-/// matched layers' stretching.
+/// tensor) and µ (along x, y, z) at a point - a refractive index n - jκ
+/// (along each axis; warmed: + dn/dT (T - Tref)), or a permittivity with
+/// its loss tangent and conductivity, in a crystal's axes turned into the
+/// model's by its orientation; Pockels' and the photoelastic effect's
+/// Δ(1/ε), a garnet's gyrotropy; and the perfectly matched layers'
+/// stretching.
 class Media
 {
 public:
     struct Domain {
         bool defined = false;
         bool byIndex = true;
-        Expression n[3], kappa, eps[3], tand, sigma, mur;
-        Expression dndT, T, Tref;   // warmed: all three
+        // In the crystal's axes (a feature's own: the model's): n - jκ along
+        // each, or εr's tensor (invalid: nought) with tan δ along each and σ.
+        Expression n[3], kappa[3], eps[3][3], tand[3], sigma[3][3];
+        Expression mur[3];          // the model's axes
+        Rotation rotation;          // the crystal's axes in the model's
+        Expression dndT[3], T, Tref;   // warmed: all three (dn/dT along each axis)
         Expression carriersN, carriersP;   // the plasma dispersion's (1/m³)
         // Absorption across a direct gap and its change with a field (the
         // Franz-Keldysh effect): the field (V/m, a semiconductor's), the gap
@@ -60,6 +115,20 @@ public:
         // mass, strength and broadening are: the last kept.)
         mutable double eaZeroKey[5] = {NaN, NaN, NaN, NaN, NaN};
         mutable double eaZero = 0;
+        // Pockels': r (6x3) in the axes of rRotation, the static field E
+        // (the model's axes).
+        bool electrooptic = false;
+        Expression r[6][3], field[3];
+        Rotation rRotation;
+        // The photoelastic effect: p (6x6) in the axes of pRotation, the
+        // strain (the model's axes, Voigt's engineering one).
+        bool photoelastic = false;
+        Expression p[6][6], strain[6];
+        Rotation pRotation;
+        // A garnet's gyrotropy: g along the model's axis gAxis.
+        bool magnetooptic = false;
+        int gAxis = 0;
+        Expression g;
         bool pml = false;
         // Where its material's index holds (its nrange; none: anywhere), and
         // whose.
@@ -92,12 +161,17 @@ public:
         return out;
     }
 
-    /// ε (each axis) and µ at the point the evaluator is at, at angular
-    /// frequency \a omega; \a k0 for the PML's stretching.
+    /// ε (a tensor, the model's axes) and µ (along x, y, z) at the point
+    /// the evaluator is at, at angular frequency \a omega; \a k0 for the
+    /// PML's stretching.
     struct At {
-        cd eps[3] = {1, 1, 1};
+        cd epsT[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        cd eps[3] = {1, 1, 1};   // its diagonal
         cd mu[3] = {1, 1, 1};
         bool ok = false;
+        /// Its xz, yz, zx or zy not nought: the transverse field coupled to
+        /// Ez (a mode found by β, not β²).
+        bool coupled = false;
         // (By index: n, and of κ what is absorbed across the gap - the
         // medium's own and the direct gap's -, the direct gap's alone and
         // its value without a field; not the free carriers'.)
@@ -113,9 +187,11 @@ public:
             const double v = x.isConstant() ? x.constant() : e.eval(x);
             return std::isfinite(v) ? v : fallback;
         };
-        const double mur = value(m.mur, 1.0);
-        double warm = 0;
-        if (m.dndT.isValid() && m.T.isValid()) warm = value(m.dndT, 0) * (value(m.T, 0) - value(m.Tref, 293.15));
+        double warm[3] = {0, 0, 0};
+        if (m.dndT[0].isValid() && m.T.isValid()) {
+            const double dT = value(m.T, 0) - value(m.Tref, 293.15);
+            for (int k = 0; k < 3; ++k) warm[k] = value(m.dndT[k].isValid() ? m.dndT[k] : m.dndT[0], 0) * dT;
+        }
         // Free carriers (silicon): Soref and Bennett's at 1550 nm, as λ² (Drude's).
         double plasma = 0, plasmaKappa = 0;
         if (m.carriersN.isValid() || m.carriersP.isValid()) {
@@ -147,25 +223,96 @@ public:
                 out.kappaEA0 = m.eaZero * C0 / (2 * omega);
             }
         }
+        // ε in the crystal's axes.
+        cd ec[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
         if (m.byIndex) {
-            out.n = value(m.n[0], 1.0) + warm + plasma;
-            out.kappaGap = value(m.kappa, 0.0) + out.kappaEA;
-        }
-        for (int k = 0; k < 3; ++k) {
-            if (m.byIndex) {
-                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm + plasma, -value(m.kappa, 0.0) - plasmaKappa - out.kappaEA);
-                out.eps[k] = n * n;
-            } else {
-                const double er = value(m.eps[k].isValid() ? m.eps[k] : m.eps[0], 1.0);
-                out.eps[k] = cd(er, -er * value(m.tand, 0.0));
-                const double sigma = value(m.sigma, 0.0);
-                if (sigma != 0 && omega > 0) out.eps[k] -= J * sigma / (omega * 8.8541878188e-12);
+            out.n = value(m.n[0], 1.0) + warm[0] + plasma;
+            out.kappaGap = value(m.kappa[0], 0.0) + out.kappaEA;
+            for (int k = 0; k < 3; ++k) {
+                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm[k] + plasma,
+                           -value(m.kappa[k].isValid() ? m.kappa[k] : m.kappa[0], 0.0) - plasmaKappa - out.kappaEA);
+                ec[k][k] = n * n;
             }
-            out.mu[k] = mur;
+        } else {
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) {
+                    const double er = i == j ? value(m.eps[i][i].isValid() ? m.eps[i][i] : m.eps[0][0], 1.0) : value(m.eps[i][j], 0.0);
+                    if (er == 0) continue;
+                    // (tan δ along each axis where εr is diagonal; one alike.)
+                    const double tand = i == j ? value(m.tand[i].isValid() ? m.tand[i] : m.tand[0], 0.0) : value(m.tand[0], 0.0);
+                    ec[i][j] = cd(er, -er * tand);
+                }
+            if (omega > 0)
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) {
+                        const double sigma = value(m.sigma[i][j], 0.0);
+                        if (sigma != 0) ec[i][j] -= J * sigma / (omega * 8.8541878188e-12);
+                    }
+        }
+        toModel(m.rotation, ec, out.epsT);
+        // Pockels' and the photoelastic Δ(1/ε): ε = (ε⁻¹ + Δη)⁻¹.
+        if (m.electrooptic || m.photoelastic) {
+            double deta[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+            if (m.electrooptic) {
+                const double Em[3] = {value(m.field[0], 0.0), value(m.field[1], 0.0), value(m.field[2], 0.0)};
+                double Ec[3];
+                m.rRotation.toCrystal(Em, Ec);
+                double dc[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+                for (int I = 0; I < 6; ++I) {
+                    double v = 0;
+                    for (int k = 0; k < 3; ++k) v += value(m.r[I][k], 0.0) * Ec[k];
+                    dc[VoigtI[I]][VoigtJ[I]] = dc[VoigtJ[I]][VoigtI[I]] = v;
+                }
+                cd in[3][3], dm[3][3];
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) in[i][j] = dc[i][j];
+                toModel(m.rRotation, in, dm);
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) deta[i][j] += dm[i][j].real();
+            }
+            if (m.photoelastic) {
+                // The strain into the crystal's axes (a tensor's, half the
+                // engineering shears), p S there, back.
+                double sm[3][3], sc[3][3];
+                for (int I = 0; I < 6; ++I) {
+                    const double v = value(m.strain[I], 0.0) * (I < 3 ? 1.0 : 0.5);
+                    sm[VoigtI[I]][VoigtJ[I]] = sm[VoigtJ[I]][VoigtI[I]] = v;
+                }
+                toCrystal(m.pRotation, sm, sc);
+                double S[6];
+                for (int I = 0; I < 6; ++I) S[I] = sc[VoigtI[I]][VoigtJ[I]] * (I < 3 ? 1.0 : 2.0);
+                cd dc[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, dm[3][3];
+                for (int I = 0; I < 6; ++I) {
+                    double v = 0;
+                    for (int J2 = 0; J2 < 6; ++J2) v += value(m.p[I][J2], 0.0) * S[J2];
+                    dc[VoigtI[I]][VoigtJ[I]] = dc[VoigtJ[I]][VoigtI[I]] = v;
+                }
+                toModel(m.pRotation, dc, dm);
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) deta[i][j] += dm[i][j].real();
+            }
+            cd eta[3][3];
+            if (inverse3(out.epsT, eta)) {
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) eta[i][j] += deta[i][j];
+                inverse3(eta, out.epsT);
+            }
+        }
+        // A garnet's gyrotropy: ε_ij + j e_ijk g_k (e^{jωt}).
+        if (m.magnetooptic) {
+            const double g = value(m.g, 0.0);
+            const int k = m.gAxis, a = (k + 1) % 3, b = (k + 2) % 3;
+            out.epsT[a][b] += J * g;
+            out.epsT[b][a] -= J * g;
+        }
+        const double mur[3] = {value(m.mur[0], 1.0), value(m.mur[1].isValid() ? m.mur[1] : m.mur[0], 1.0), value(m.mur[2].isValid() ? m.mur[2] : m.mur[0], 1.0)};
+        for (int k = 0; k < 3; ++k) {
+            out.mu[k] = mur[k];
+            out.eps[k] = out.epsT[k][k];
         }
         if (m.pml) {
-            // Stretched coordinates: x' = ∫ sx, its ε and µ diag(sy/sx, sx/sy,
-            // sx sy) times the medium's.
+            // Stretched coordinates: x' = ∫ sx, its ε and µ (sx sy) S⁻¹ T
+            // S⁻¹ times the medium's, S = diag(sx, sy, 1).
             const QPointF p = e.point();
             auto stretch = [&](double v, int axis) -> cd {
                 const double lo = m.inner[2 * axis], hi = m.inner[2 * axis + 1];
@@ -180,29 +327,31 @@ public:
                 } else
                     return 1.0;
                 xi = std::clamp(xi, 0.0, 1.0);
-                const double kk = k0 * std::sqrt(std::max(1.0, std::abs(out.eps[2].real() * out.mu[2].real())));
+                const double kk = k0 * std::sqrt(std::max(1.0, std::abs(out.epsT[2][2].real() * out.mu[2].real())));
                 // A reflection of e^-13.8 at its outside: 2 k σ0 d / 3 = 13.8.
                 const double sigma0 = 20.7 / (kk * depth);
                 return cd(1.0, -sigma0 * xi * xi);
             };
-            const cd sx = stretch(p.x(), 0), sy = stretch(p.y(), 1);
-            const cd f[3] = {sy / sx, sx / sy, sx * sy};
+            const cd s[3] = {stretch(p.x(), 0), stretch(p.y(), 1), 1.0};
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) out.epsT[i][j] *= s[0] * s[1] / (s[i] * s[j]);
+            const cd f[3] = {s[1] / s[0], s[0] / s[1], s[0] * s[1]};
             for (int k = 0; k < 3; ++k) {
-                out.eps[k] *= f[k];
                 out.mu[k] *= f[k];
+                out.eps[k] = out.epsT[k][k];
             }
         }
+        const double scale = std::abs(out.eps[0]) + std::abs(out.eps[1]) + std::abs(out.eps[2]);
+        for (int i = 0; i < 2; ++i)
+            out.coupled = out.coupled || std::abs(out.epsT[i][2]) > 1e-12 * scale || std::abs(out.epsT[2][i]) > 1e-12 * scale;
         out.ok = true;
         return out;
     }
 
     /// Set up from \a node's features (a wave equation's, PMLs) on its
-    /// domains; what is wrong to \a problem.
-    void setup(Problem& owner, Solution& s, const Node& node, const std::vector<char>& on, const std::vector<const Node*>& material,
-               const std::function<Expression(const QString&, const Node&, const QString&)>& compile,
-               const std::function<QString(const Node&, const QString&)>& property, const std::function<void(const QString&)>& problem)
+    /// domains; what is wrong to the context's problem.
+    void setup(Solution& s, const Node& node, const std::vector<char>& on, const std::vector<const Node*>& material, const MediaContext& c)
     {
-        (void)owner;
         const Topology& topo = s.topology();
         const std::size_t nd = topo.domains.size();
         domains.assign(nd, Domain());
@@ -215,7 +364,7 @@ public:
             const NodeKind* k = feature.kind();
             if (!k || k->selection != Level::Domain) continue;
             const QVector<int> picked = resolveSelection(topo, s.model(), Level::Domain, feature.selection(), &why);
-            if (!why.isEmpty()) problem(QStringLiteral("%1: %2").arg(feature.name(), why));
+            if (!why.isEmpty()) c.problem(QStringLiteral("%1: %2").arg(feature.name(), why));
             if (feature.type.endsWith(QLatin1String("/wave")))
                 for (int d : picked) modelOf[std::size_t(d)] = &feature;
             else if (feature.type.endsWith(QLatin1String("/pml")))
@@ -230,36 +379,53 @@ public:
             Domain& m = domains[d];
             const Node* feat = modelOf[d];
             if (!feat) {
-                problem(tr("domain %1 has no Wave Equation feature").arg(d + 1));
+                c.problem(tr("domain %1 has no Wave Equation feature").arg(d + 1));
                 continue;
             }
             const bool user = feat->text(QStringLiteral("source")) == QLatin1String("user");
             const Node* mat = material[d];
             const QString object = topo.objectNames.value(topo.domains[d].owner);
             if (!user && !mat) {
-                problem(tr("domain %1 (%2) has no material: its refractive index or permittivity is needed").arg(d + 1).arg(object));
+                c.problem(tr("domain %1 (%2) has no material: its refractive index or permittivity is needed").arg(d + 1).arg(object));
                 continue;
             }
             const Node& from = user ? *feat : *mat;
-            auto text = [&](const QString& key) { return user ? feat->text(key) : property(*mat, key); };
+            auto text = [&](const QString& key) { return user ? feat->text(key) : c.property(*mat, key); };
+            // A property along the axes: one, or three (x; y; z) - the crystal's
+            // for a material's, the model's for the feature's.
+            auto axes = [&](const QString& key, Expression out[3]) {
+                const QString t = text(key);
+                if (t.trimmed().isEmpty()) return true;
+                QString err;
+                const std::optional<TensorText> tt = tensorText(t, &err, {1, 3});
+                if (!tt) {
+                    c.problem(tr("%1's %2: %3").arg(from.name(), key, err));
+                    return false;
+                }
+                for (int k = 0; k < (tt->items == 1 ? 1 : 3); ++k) out[k] = c.compile(tt->c[k][k], from, key);
+                return true;
+            };
+            m.rotation = user ? Rotation() : c.rotation(*mat);
             m.byIndex = feat->text(QStringLiteral("constitutive")) != QLatin1String("epsilonr");
-            const bool anisotropic = user && feat->text(QStringLiteral("anisotropy")) == QLatin1String("diagonal");
+            const QString aniso = user ? feat->text(QStringLiteral("anisotropy")) : QString();
             if (m.byIndex) {
-                if (anisotropic) {
+                if (aniso == QLatin1String("tensor")) {
+                    c.problem(tr("%1: a tensor is a permittivity's - its electric displacement by permittivity").arg(feat->name()));
+                    continue;
+                }
+                if (aniso == QLatin1String("diagonal")) {
                     const char* keys[3] = {"nx", "ny", "nz"};
-                    for (int k = 0; k < 3; ++k) m.n[k] = compile(feat->text(QString::fromLatin1(keys[k])), *feat, QString::fromLatin1(keys[k]));
+                    for (int k = 0; k < 3; ++k) m.n[k] = c.compile(feat->text(QString::fromLatin1(keys[k])), *feat, QString::fromLatin1(keys[k]));
                 } else {
-                    const QString n = text(QStringLiteral("n"));
-                    if (n.trimmed().isEmpty()) {
-                        problem(tr("domain %1 (%2): its material, %3, has no refractive index n").arg(d + 1).arg(object, mat ? mat->name() : QString()));
+                    if (text(QStringLiteral("n")).trimmed().isEmpty()) {
+                        c.problem(tr("domain %1 (%2): its material, %3, has no refractive index n").arg(d + 1).arg(object, mat ? mat->name() : QString()));
                         continue;
                     }
-                    m.n[0] = compile(n, from, QStringLiteral("n"));
+                    if (!axes(QStringLiteral("n"), m.n)) continue;
                 }
-                const QString kappa = text(QStringLiteral("kappa"));
-                if (!kappa.trimmed().isEmpty()) m.kappa = compile(kappa, from, QStringLiteral("kappa"));
+                if (!axes(QStringLiteral("kappa"), m.kappa)) continue;
                 // (Its wavelengths: "from to", lengths.)
-                const QStringList range = user ? QStringList() : property(*mat, QStringLiteral("nrange")).simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                const QStringList range = user ? QStringList() : c.property(*mat, QStringLiteral("nrange")).simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
                 if (range.size() == 2) {
                     const std::optional<double> a = evaluateConstant(range[0], s.parameters().scope, Dim::length());
                     const std::optional<double> b = evaluateConstant(range[1], s.parameters().scope, Dim::length());
@@ -270,57 +436,158 @@ public:
                     }
                 }
             } else {
-                if (anisotropic) {
+                bool diagonal = true;
+                if (aniso == QLatin1String("diagonal") || aniso == QLatin1String("tensor")) {
                     const char* keys[3] = {"epsxx", "epsyy", "epszz"};
-                    for (int k = 0; k < 3; ++k) m.eps[k] = compile(feat->text(QString::fromLatin1(keys[k])), *feat, QString::fromLatin1(keys[k]));
+                    for (int k = 0; k < 3; ++k) m.eps[k][k] = c.compile(feat->text(QString::fromLatin1(keys[k])), *feat, QString::fromLatin1(keys[k]));
+                    if (aniso == QLatin1String("tensor")) {
+                        const char* off[3] = {"epsyz", "epsxz", "epsxy"};
+                        for (int I = 3; I < 6; ++I) {
+                            const QString t = feat->text(QString::fromLatin1(off[I - 3]));
+                            if (t.trimmed().isEmpty() || t.trimmed() == QLatin1String("0")) continue;
+                            m.eps[VoigtI[I]][VoigtJ[I]] = m.eps[VoigtJ[I]][VoigtI[I]] = c.compile(t, *feat, QString::fromLatin1(off[I - 3]));
+                            diagonal = false;
+                        }
+                    }
                 } else {
                     const QString er = text(QStringLiteral("epsilonr"));
                     if (er.trimmed().isEmpty()) {
-                        problem(tr("domain %1 (%2): its material, %3, has no relative permittivity").arg(d + 1).arg(object, mat ? mat->name() : QString()));
+                        c.problem(tr("domain %1 (%2): its material, %3, has no relative permittivity").arg(d + 1).arg(object, mat ? mat->name() : QString()));
                         continue;
                     }
-                    m.eps[0] = compile(er, from, QStringLiteral("epsilonr"));
+                    QString err;
+                    const std::optional<TensorText> t = tensorText(er, &err);
+                    if (!t) {
+                        c.problem(tr("%1's relative permittivity: %2").arg(from.name(), err));
+                        continue;
+                    }
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j)
+                            if (t->c[i][j] != QLatin1String("0")) m.eps[i][j] = c.compile(t->c[i][j], from, QStringLiteral("epsilonr"));
+                    diagonal = t->diagonal();
                 }
-                for (const QString& key : {QStringLiteral("tand"), QStringLiteral("sigma")}) {
-                    const QString t = text(key);
-                    if (!t.trimmed().isEmpty()) (key == QLatin1String("tand") ? m.tand : m.sigma) = compile(t, from, key);
+                if (!axes(QStringLiteral("tand"), m.tand)) continue;
+                if (!diagonal && m.tand[1].isValid()) {
+                    c.problem(tr("%1: a loss tangent along the axes is a diagonal permittivity's (give one tan δ, or σ)").arg(from.name()));
+                    continue;
+                }
+                const QString sg = text(QStringLiteral("sigma"));
+                if (!sg.trimmed().isEmpty()) {
+                    QString err;
+                    const std::optional<TensorText> t = tensorText(sg, &err);
+                    if (!t) {
+                        c.problem(tr("%1's conductivity: %2").arg(from.name(), err));
+                        continue;
+                    }
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j)
+                            if (t->c[i][j] != QLatin1String("0")) m.sigma[i][j] = c.compile(t->c[i][j], from, QStringLiteral("sigma"));
                 }
             }
+            // µr along the model's axes (a material's tensor turned: its
+            // diagonal).
             const QString mur = text(QStringLiteral("mur"));
-            if (!mur.trimmed().isEmpty()) m.mur = compile(mur, from, QStringLiteral("mur"));
+            if (!mur.trimmed().isEmpty()) {
+                QString err;
+                std::optional<TensorText> t = tensorText(mur, &err);
+                if (!t) {
+                    c.problem(tr("%1's relative permeability: %2").arg(from.name(), err));
+                    continue;
+                }
+                if (!user) *t = rotated(*t, m.rotation);
+                for (int k = 0; k < (t->items == 1 ? 1 : 3); ++k) m.mur[k] = c.compile(t->c[k][k], from, QStringLiteral("mur"));
+            }
             if (feat->flag(QStringLiteral("plasma"))) {
-                if (!m.byIndex) problem(tr("%1: the plasma dispersion adds to a refractive index (its constitutive relation n)").arg(feat->name()));
-                m.carriersN = compile(feat->text(QStringLiteral("Ncarriers")), *feat, QStringLiteral("Ncarriers"));
-                m.carriersP = compile(feat->text(QStringLiteral("Pcarriers")), *feat, QStringLiteral("Pcarriers"));
+                if (!m.byIndex) c.problem(tr("%1: the plasma dispersion adds to a refractive index (its constitutive relation n)").arg(feat->name()));
+                m.carriersN = c.compile(feat->text(QStringLiteral("Ncarriers")), *feat, QStringLiteral("Ncarriers"));
+                m.carriersP = c.compile(feat->text(QStringLiteral("Pcarriers")), *feat, QStringLiteral("Pcarriers"));
             }
             if (feat->flag(QStringLiteral("electroabsorption"))) {
-                if (!m.byIndex) problem(tr("%1: a direct gap's absorption adds to a refractive index (its constitutive relation n)").arg(feat->name()));
+                if (!m.byIndex) c.problem(tr("%1: a direct gap's absorption adds to a refractive index (its constitutive relation n)").arg(feat->name()));
                 // (The gap, mass and strength: the feature's own, or its material's.)
                 const bool own = feat->text(QStringLiteral("easource")) == QLatin1String("user");
                 for (const auto& [key, member] : {std::pair{QStringLiteral("Egd"), &Domain::eaGap}, std::pair{QStringLiteral("mr"), &Domain::eaMass},
                                                   std::pair{QStringLiteral("Afk"), &Domain::eaStrength}}) {
-                    const QString t = own ? feat->text(key) : mat ? property(*mat, key) : QString();
+                    const QString t = own ? feat->text(key) : mat ? c.property(*mat, key) : QString();
                     if (t.trimmed().isEmpty()) {
-                        problem(tr("domain %1 (%2): its material has no %3 for a direct gap's absorption (Germanium has: Egd, mr, Afk)")
-                                    .arg(d + 1)
-                                    .arg(object, key));
+                        c.problem(tr("domain %1 (%2): its material has no %3 for a direct gap's absorption (Germanium has: Egd, mr, Afk)")
+                                      .arg(d + 1)
+                                      .arg(object, key));
                         continue;
                     }
-                    m.*member = compile(t, own ? *feat : *mat, key);
+                    m.*member = c.compile(t, own ? *feat : *mat, key);
                 }
-                m.eaField = compile(feat->text(QStringLiteral("Fea")), *feat, QStringLiteral("Fea"));
+                m.eaField = c.compile(feat->text(QStringLiteral("Fea")), *feat, QStringLiteral("Fea"));
                 if (!feat->text(QStringLiteral("Ebroad")).trimmed().isEmpty())
-                    m.eaBroadening = compile(feat->text(QStringLiteral("Ebroad")), *feat, QStringLiteral("Ebroad"));
+                    m.eaBroadening = c.compile(feat->text(QStringLiteral("Ebroad")), *feat, QStringLiteral("Ebroad"));
                 m.electroabsorption = true;
             }
             if (feat->flag(QStringLiteral("thermooptic"))) {
-                const QString dndT = user ? feat->text(QStringLiteral("dndT")) : property(*mat, QStringLiteral("dndT"));
-                if (dndT.trimmed().isEmpty()) problem(tr("domain %1 (%2): its material has no thermo-optic coefficient dn/dT").arg(d + 1).arg(object));
+                const QString dndT = user ? feat->text(QStringLiteral("dndT")) : c.property(*mat, QStringLiteral("dndT"));
+                if (dndT.trimmed().isEmpty()) c.problem(tr("domain %1 (%2): its material has no thermo-optic coefficient dn/dT").arg(d + 1).arg(object));
                 else {
-                    m.dndT = compile(dndT, from, QStringLiteral("dndT"));
-                    m.T = compile(feat->text(QStringLiteral("T")), *feat, QStringLiteral("T"));
-                    m.Tref = compile(feat->text(QStringLiteral("Tref")), *feat, QStringLiteral("Tref"));
+                    if (!axes(QStringLiteral("dndT"), m.dndT)) continue;
+                    m.T = c.compile(feat->text(QStringLiteral("T")), *feat, QStringLiteral("T"));
+                    m.Tref = c.compile(feat->text(QStringLiteral("Tref")), *feat, QStringLiteral("Tref"));
                 }
+            }
+            if (feat->flag(QStringLiteral("electrooptic"))) {
+                // r: the feature's (the model's axes) or its material's (its
+                // crystal's, turned).
+                const QString rt = user ? feat->text(QStringLiteral("r")) : c.property(*mat, QStringLiteral("r"));
+                QString err;
+                const std::optional<VoigtText> r = rt.trimmed().isEmpty() ? std::nullopt : voigtText(rt, QLatin1Char('r'), 6, 3, false, &err);
+                if (!r) {
+                    c.problem(rt.trimmed().isEmpty() ? tr("domain %1 (%2): its material has no electro-optic coefficients r").arg(d + 1).arg(object)
+                                                     : tr("%1's electro-optic coefficients: %2").arg(from.name(), err));
+                    continue;
+                }
+                bool inMetresPerVolt = true;
+                for (int I = 0; I < 6; ++I)
+                    for (int k = 0; k < 3; ++k)
+                        if (r->c[I][k] != QLatin1String("0")) {
+                            m.r[I][k] = c.compile(r->c[I][k], from, QStringLiteral("r"));
+                            if (m.r[I][k].isValid() && !(m.r[I][k].dim() == Dim::of(-1, -1, 3, 1))) inMetresPerVolt = false;
+                        }
+                if (!inMetresPerVolt) {
+                    c.problem(tr("%1's electro-optic coefficients are in m/V (pm/V): r33=30.8[pm/V]").arg(from.name()));
+                    continue;
+                }
+                const char* keys[3] = {"Ex", "Ey", "Ez"};
+                for (int k = 0; k < 3; ++k) m.field[k] = c.compile(feat->text(QString::fromLatin1(keys[k])), *feat, QString::fromLatin1(keys[k]));
+                m.rRotation = m.rotation;
+                m.electrooptic = true;
+            }
+            if (feat->flag(QStringLiteral("photoelastic"))) {
+                const QString pt = user ? feat->text(QStringLiteral("p")) : c.property(*mat, QStringLiteral("p"));
+                QString err;
+                const std::optional<VoigtText> p = pt.trimmed().isEmpty() ? std::nullopt : voigtText(pt, QLatin1Char('p'), 6, 6, true, &err);
+                if (!p) {
+                    c.problem(pt.trimmed().isEmpty() ? tr("domain %1 (%2): its material has no photoelastic coefficients p").arg(d + 1).arg(object)
+                                                     : tr("%1's photoelastic coefficients: %2").arg(from.name(), err));
+                    continue;
+                }
+                for (int I = 0; I < 6; ++I)
+                    for (int J2 = 0; J2 < 6; ++J2)
+                        if (p->c[I][J2] != QLatin1String("0")) m.p[I][J2] = c.compile(p->c[I][J2], from, QStringLiteral("p"));
+                const QString tag = feat->text(QStringLiteral("strain")).trimmed().isEmpty() ? QStringLiteral("solid") : feat->text(QStringLiteral("strain")).trimmed();
+                const QString parts[6] = {QStringLiteral("ex"), QStringLiteral("ey"), QStringLiteral("ez"), QString(), QString(), QStringLiteral("exy")};
+                for (int I = 0; I < 6; ++I)
+                    if (!parts[I].isEmpty())
+                        m.strain[I] = c.compile((I == 5 ? QStringLiteral("2*") : QString()) + tag + QLatin1Char('.') + parts[I], *feat, QStringLiteral("strain"));
+                m.pRotation = m.rotation;
+                m.photoelastic = true;
+            }
+            if (feat->flag(QStringLiteral("magnetooptic"))) {
+                const QString g = user ? feat->text(QStringLiteral("g")) : c.property(*mat, QStringLiteral("g"));
+                if (g.trimmed().isEmpty()) {
+                    c.problem(tr("domain %1 (%2): its material has no gyration g").arg(d + 1).arg(object));
+                    continue;
+                }
+                m.g = c.compile(g, from, QStringLiteral("g"));
+                const QString axis = feat->text(QStringLiteral("magnetization"));
+                m.gAxis = axis == QLatin1String("y") ? 1 : axis == QLatin1String("z") ? 2 : 0;
+                m.magnetooptic = true;
             }
             m.defined = true;
             if (pml[d]) {
@@ -341,7 +608,7 @@ public:
                     }
                 }
                 if (!beyond)
-                    problem(tr("domain %1: a perfectly matched layer lies outside the other domains - beside, above or round them").arg(d + 1));
+                    c.problem(tr("domain %1: a perfectly matched layer lies outside the other domains - beside, above or round them").arg(d + 1));
             }
         }
     }
@@ -363,6 +630,29 @@ public:
 };
 
 // ------------------------------------------------------------------ Modes
+
+/// A conductive sheet on boundaries: graphene's (Kubo's of µc, τ, T) or
+/// σs as given (σs' - j σs'').
+struct Sheet {
+    bool graphene = true;
+    Expression muc, tau, T, re, im;
+    QString name;
+};
+
+/// A sheet's σs where the evaluator is, at angular frequency \a omega.
+cd sheetConductivity(PointEvaluator& e, const Sheet& s, double omega)
+{
+    auto value = [&](const Expression& x, double fallback) {
+        if (!x.isValid()) return fallback;
+        const double v = x.isConstant() ? x.constant() : e.eval(x);
+        return std::isfinite(v) ? v : fallback;
+    };
+    if (!s.graphene) return cd(value(s.re, 0.0), -value(s.im, 0.0));
+    // (µc in J, or eV as a number or in V.)
+    double mu = value(s.muc, 0.0);
+    if (s.muc.isValid() && s.muc.dim() != Dim::of(2, 1, -2)) mu *= 1.602176634e-19;
+    return grapheneConductivity(omega, mu, value(s.tau, 1e-13), value(s.T, 300.0));
+}
 
 class ModeProblem : public Problem
 {
@@ -404,6 +694,11 @@ private:
     // field adds to it, per metre (1/m); whether a medium has a direct gap's.
     double a_absorbedGap = 0, a_absorbedField = 0;
     bool a_electroabsorption = false;
+    // Conductive sheets, and each boundary's (-1 none); what the mode
+    // selected leaves in them, per metre (W/m at 1 W).
+    std::vector<Sheet> a_sheets;
+    std::vector<int> a_sheetOf;
+    double a_sheetPower = 0;
 };
 
 bool ModeProblem::setup(QString* error)
@@ -420,9 +715,7 @@ bool ModeProblem::setup(QString* error)
     f.domains.assign(topo.domains.size(), 0);
     for (int d : domains) f.domains[std::size_t(d)] = 1;
     if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
-    a_media.setup(*this, a_s, *a_node, f.domains, materials(),
-                  [this](const QString& t, const Node& n, const QString& k) { return compile(t, n, k); },
-                  [this](const Node& m, const QString& k) { return materialProperty(m, k, &a_s.parameters().scope); }, [this](const QString& w) { problem(w); });
+    a_media.setup(a_s, *a_node, f.domains, materials(), mediaHooks());
     a_electroabsorption = false;
     for (const Media::Domain& m : a_media.domains) a_electroabsorption = a_electroabsorption || (m.defined && m.electroabsorption);
     // For the variables: the index (its real part, as asked) by domain.
@@ -431,7 +724,7 @@ bool ModeProblem::setup(QString* error)
     std::vector<Expression> mur(topo.domains.size());
     for (std::size_t d = 0; d < a_media.domains.size(); ++d) {
         if (a_media.domains[d].defined && a_media.domains[d].byIndex) coef.c[d] = a_media.domains[d].n[0];
-        mur[d] = a_media.domains[d].mur;
+        mur[d] = a_media.domains[d].mur[0];
     }
     coef.named[QStringLiteral("mur")] = mur;
     if (!a_problems.isEmpty()) {
@@ -453,11 +746,29 @@ bool ModeProblem::setup(QString* error)
     }
     std::vector<int> condition(topo.boundaries.size(), 0);   // 1 PEC, 2 PMC: the last feature's
     auto inside = [&](int d) { return d >= 0 && f.domains[std::size_t(d)]; };
+    a_sheets.clear();
+    a_sheetOf.assign(topo.boundaries.size(), -1);
     for (const Node& feature : a_node->children) {
         if (!feature.enabled) continue;
         const NodeKind* k = feature.kind();
         if (!k || k->selection != Level::Boundary) continue;
         const QVector<int> picked = resolveSelection(topo, a_s.model(), Level::Boundary, feature.selection(), &why);
+        if (feature.type.endsWith(QLatin1String("/sheet"))) {
+            Sheet sh;
+            sh.name = feature.name();
+            sh.graphene = feature.text(QStringLiteral("model")) != QLatin1String("user");
+            if (sh.graphene) {
+                sh.muc = compile(feature.text(QStringLiteral("muc")), feature, QStringLiteral("muc"));
+                sh.tau = compile(feature.text(QStringLiteral("tau")), feature, QStringLiteral("tau"));
+                sh.T = compile(feature.text(QStringLiteral("T")), feature, QStringLiteral("T"));
+            } else {
+                sh.re = compile(feature.text(QStringLiteral("sigmas")), feature, QStringLiteral("sigmas"));
+                sh.im = compile(feature.text(QStringLiteral("sigmas_im")), feature, QStringLiteral("sigmas_im"));
+            }
+            for (int b : picked) a_sheetOf[std::size_t(b)] = int(a_sheets.size());
+            a_sheets.push_back(sh);
+            continue;
+        }
         const int c = feature.type.endsWith(QLatin1String("/pec")) ? 1 : feature.type.endsWith(QLatin1String("/pmc")) ? 2 : 0;
         if (!c) continue;
         for (int b : picked) {
@@ -505,19 +816,24 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     }
     if (!(guess > 0)) guess = a_media.largestIndex(a_s, f.domains, omega);
     const cd sigma = -(k0 * guess) * (k0 * guess);
-    // A and B, element by element.
-    std::vector<Eigen::Triplet<cd>> ta, tb;
+    // A and B, element by element (A x = -β² B x for x = (β Et, -j Ez)); and
+    // the coupling of Et to Ez an ε's xz, yz, zx, zy make (C, of -k0² ε_tz,
+    // -k0² ε_zt).
+    std::vector<Eigen::Triplet<cd>> ta, tb, tc;
     const int pe = es.perElement(), pn = ns.perElement();
     const int degree = ns.order() == 1 ? 2 : 4;
     const TriangleRule& rule = triangleRule(degree);
     PointEvaluator ev(a_s);
-    std::vector<cd> Ae(std::size_t(pe * pe)), Be(std::size_t((pe + pn) * (pe + pn)));
+    std::vector<cd> Ae(std::size_t(pe * pe)), Be(std::size_t((pe + pn) * (pe + pn))), Ce(std::size_t((pe + pn) * (pe + pn)));
+    bool coupled = false;
     for (int t = 0; t < ns.elements(); ++t) {
         const int d = mesh.domain[std::size_t(t)];
         if (d < 0 || !f.domains[std::size_t(d)]) continue;
         const AffineMap am = affineMap(ns, t);
         std::fill(Ae.begin(), Ae.end(), 0);
         std::fill(Be.begin(), Be.end(), 0);
+        std::fill(Ce.begin(), Ce.end(), 0);
+        bool here = false;
         EdgeSpace::Basis eb;
         Shape sh;
         for (const auto& q : rule.points) {
@@ -534,9 +850,12 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
                 ly[j] = sh.dxi[j] * i10 + sh.deta[j] * i11;
             }
             const cd ix = 1.0 / m.mu[1], iy = 1.0 / m.mu[0], iz = 1.0 / m.mu[2];   // (x parts with 1/µyy, y parts 1/µxx)
+            const cd (&eps)[3][3] = m.epsT;
             for (int i = 0; i < pe; ++i)
                 for (int j = 0; j < pe; ++j) {
-                    Ae[std::size_t(i * pe + j)] += w * (eb.curl[i] * eb.curl[j] * iz - k0 * k0 * (m.eps[0] * eb.vx[i] * eb.vx[j] + m.eps[1] * eb.vy[i] * eb.vy[j]));
+                    // w_i · ε_tt w_j
+                    const cd ee = eb.vx[i] * (eps[0][0] * eb.vx[j] + eps[0][1] * eb.vy[j]) + eb.vy[i] * (eps[1][0] * eb.vx[j] + eps[1][1] * eb.vy[j]);
+                    Ae[std::size_t(i * pe + j)] += w * (eb.curl[i] * eb.curl[j] * iz - k0 * k0 * ee);
                     Be[std::size_t(i * (pe + pn) + j)] += w * (eb.vx[i] * eb.vx[j] * ix + eb.vy[i] * eb.vy[j] * iy);
                 }
             for (int i = 0; i < pe; ++i)
@@ -548,7 +867,15 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
             for (int i = 0; i < pn; ++i)
                 for (int j = 0; j < pn; ++j)
                     Be[std::size_t((pe + i) * (pe + pn) + pe + j)] +=
-                        w * (lx[i] * lx[j] * ix + ly[i] * ly[j] * iy - k0 * k0 * m.eps[2] * sh.n[i] * sh.n[j]);
+                        w * (lx[i] * lx[j] * ix + ly[i] * ly[j] * iy - k0 * k0 * eps[2][2] * sh.n[i] * sh.n[j]);
+            if (m.coupled) {
+                here = true;
+                for (int i = 0; i < pe; ++i)
+                    for (int j = 0; j < pn; ++j) {
+                        Ce[std::size_t(i * (pe + pn) + pe + j)] += -k0 * k0 * w * (eb.vx[i] * eps[0][2] + eb.vy[i] * eps[1][2]) * sh.n[j];
+                        Ce[std::size_t((pe + j) * (pe + pn) + i)] += -k0 * k0 * w * sh.n[j] * (eps[2][0] * eb.vx[i] + eps[2][1] * eb.vy[i]);
+                    }
+            }
         }
         int eq[14];
         for (int i = 0; i < pe; ++i) eq[i] = a_edgeEq[std::size_t(es.dofs(t)[i])];
@@ -557,17 +884,88 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
             for (int j = 0; j < pe; ++j)
                 if (eq[i] >= 0 && eq[j] >= 0) ta.emplace_back(eq[i], eq[j], Ae[std::size_t(i * pe + j)]);
         for (int i = 0; i < pe + pn; ++i)
-            for (int j = 0; j < pe + pn; ++j)
-                if (eq[i] >= 0 && eq[j] >= 0 && Be[std::size_t(i * (pe + pn) + j)] != cd(0)) tb.emplace_back(eq[i], eq[j], Be[std::size_t(i * (pe + pn) + j)]);
+            for (int j = 0; j < pe + pn; ++j) {
+                if (eq[i] < 0 || eq[j] < 0) continue;
+                if (Be[std::size_t(i * (pe + pn) + j)] != cd(0)) tb.emplace_back(eq[i], eq[j], Be[std::size_t(i * (pe + pn) + j)]);
+                if (here && Ce[std::size_t(i * (pe + pn) + j)] != cd(0)) tc.emplace_back(eq[i], eq[j], Ce[std::size_t(i * (pe + pn) + j)]);
+            }
+        coupled = coupled || here;
+    }
+    // Conductive sheets: -k0² ∮ εs (w_i·t)(w_j·t) into A, -k0² ∮ εs N_i N_j
+    // into B's zz part, εs = -j σs/(ω ε0) (a layer's ε times its thickness).
+    for (int e = 0; e < int(mesh.edges.size()); ++e) {
+        const Mesh::Edge& me = mesh.edges[std::size_t(e)];
+        const int sheet = me.boundary >= 0 && me.boundary < int(a_sheetOf.size()) ? a_sheetOf[std::size_t(me.boundary)] : -1;
+        if (sheet < 0) continue;
+        int t = -1;
+        for (int side : {me.left, me.right})
+            if (side >= 0 && f.domains[std::size_t(mesh.domain[std::size_t(side)])]) {
+                t = side;
+                break;
+            }
+        if (t < 0) continue;
+        const AffineMap am = affineMap(ns, t);
+        const std::array<int, 3>& tv = mesh.triangles[std::size_t(t)];
+        const int k = Space::localEdge(tv, me.a, me.b);
+        const QPointF pa = mesh.nodes[std::size_t(me.a)] * mesh.unitScale, pb = mesh.nodes[std::size_t(me.b)] * mesh.unitScale;
+        const double len = std::hypot(pb.x() - pa.x(), pb.y() - pa.y());
+        if (!(len > 0)) continue;
+        const double tx = (pb.x() - pa.x()) / len, ty = (pb.y() - pa.y()) / len;
+        int eq[14];
+        for (int i = 0; i < pe; ++i) eq[i] = a_edgeEq[std::size_t(es.dofs(t)[i])];
+        for (int i = 0; i < pn; ++i) eq[pe + i] = a_nodeEq[std::size_t(ns.dofs(t)[i])];
+        for (const auto& q : lineRule(ns.order() + 3)) {
+            // (The edge's point from a, in the triangle's reference.)
+            const double r = tv[std::size_t(k)] == me.a ? q[0] : 1 - q[0];
+            const double xi = k == 0 ? r : k == 1 ? 1 - r : 0, eta = k == 0 ? 0 : k == 1 ? r : 1 - r;
+            ev.moveTo(t, xi, eta);
+            const cd epsS = -J * sheetConductivity(ev, a_sheets[std::size_t(sheet)], omega) / (omega * Eps0);
+            EdgeSpace::Basis eb;
+            Shape sh;
+            es.basis(t, am, xi, eta, eb);
+            shapeAt(ns.order(), xi, eta, sh);
+            const double w = q[1] * len;
+            for (int i = 0; i < pe; ++i)
+                for (int j = 0; j < pe; ++j)
+                    if (eq[i] >= 0 && eq[j] >= 0)
+                        ta.emplace_back(eq[i], eq[j], -k0 * k0 * w * epsS * (eb.vx[i] * tx + eb.vy[i] * ty) * (eb.vx[j] * tx + eb.vy[j] * ty));
+            for (int i = 0; i < pn; ++i)
+                for (int j = 0; j < pn; ++j)
+                    if (eq[pe + i] >= 0 && eq[pe + j] >= 0) tb.emplace_back(eq[pe + i], eq[pe + j], -k0 * k0 * w * epsS * sh.n[i] * sh.n[j]);
+        }
     }
     Eigen::SparseMatrix<cd> A(a_n, a_n), B(a_n, a_n);
     A.setFromTriplets(ta.begin(), ta.end());
     B.setFromTriplets(tb.begin(), tb.end());
-    Eigen::SparseMatrix<cd> M = A - sigma * B;
-    M.makeCompressed();
+    // Coupled: (K0 + β K1 + β² K2) x = 0 for x = (β Et, -j Ez), as the β²
+    // form's - K0 = A (its transverse part), K1 = j C_tz - j C_zt (ε's tz and
+    // zt), K2 = B: the β² form's A x = -β² B x with the coupling between,
+    // free of spurious modes as it is (its extra eigenvalues at β = 0, none
+    // at infinity: B is regular). Found by a shift and invert of its
+    // linearization about β = k0 n (the forward modes).
+    const cd shift = k0 * guess;
+    Eigen::SparseMatrix<cd> K0(a_n, a_n), K1(a_n, a_n), K2(a_n, a_n);
     Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
-    lu.analyzePattern(M);
-    lu.factorize(M);
+    if (coupled) {
+        std::vector<Eigen::Triplet<cd>> t1;
+        for (const auto& x : tc) t1.emplace_back(x.row(), x.col(), (x.row() < a_nEdge ? J : -J) * x.value());
+        K0 = A;
+        K1.setFromTriplets(t1.begin(), t1.end());
+        K2 = B;
+        // (In t = β/σ, the linearization's halves alike in size: K1 σ, K2 σ².)
+        K1 *= shift;
+        K2 *= shift * shift;
+        Eigen::SparseMatrix<cd> P = K0 + K1 + K2;
+        P.makeCompressed();
+        lu.analyzePattern(P);
+        lu.factorize(P);
+        a_s.log << tr("%1: its media couple Ez to the transverse field (a tensor's xz, yz): its modes found by β, the forward ones").arg(a_node->name());
+    } else {
+        Eigen::SparseMatrix<cd> M = A - sigma * B;
+        M.makeCompressed();
+        lu.analyzePattern(M);
+        lu.factorize(M);
+    }
     if (lu.info() != Eigen::Success) {
         *error = tr("%1: the shifted matrix is singular - %2 (another effective index to search about)")
                      .arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
@@ -647,7 +1045,16 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     int dropped = 0, crossed = 0, products = 0, restarts = 0;
     for (int asked = a_tracking ? std::max(2 * wanted + 4, wanted + 6) : layers || polarized ? 2 * wanted + 4 : wanted;; asked *= 2) {
         asked = std::min(asked, std::max(1, a_n - 2));
-        const EigenResult r = largestEigenvalues(a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(B * x); });
+        const EigenResult r = coupled ? largestEigenvalues(2 * a_n, asked,
+                                                           [&](const Eigen::VectorXcd& v, Eigen::VectorXcd& y) {
+                                                               // z1 = -P⁻¹ (K1 x1 + K2 x2 + σ K2 x1), z2 = x1 + σ z1.
+                                                               const Eigen::VectorXcd x1 = v.head(a_n), x2 = v.tail(a_n);
+                                                               const Eigen::VectorXcd z1 = -lu.solve(K1 * x1 + K2 * (x2 + x1));
+                                                               y.resize(2 * a_n);
+                                                               y.head(a_n) = z1;
+                                                               y.tail(a_n) = x1 + z1;
+                                                           })
+                                      : largestEigenvalues(a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(B * x); });
         if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
         products += r.products;
         restarts += r.restarts;
@@ -655,18 +1062,27 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
         dropped = 0;
         crossed = 0;
         for (std::size_t i = 0; i < r.values.size(); ++i) {
-            const cd lambda = sigma + 1.0 / r.values[i];
-            // (The null space of A - its Ez alone, λ nought - is no mode.)
-            if (std::abs(lambda) < 1e-8 * k0 * k0) continue;
-            cd beta = std::sqrt(-lambda);
-            if (beta.real() < 0) beta = -beta;
-            if (layers && inLayers(r.vectors[i], beta) > 0.5) {
+            cd beta;
+            Eigen::VectorXcd x;
+            if (coupled) {
+                beta = shift * (1.0 + 1.0 / r.values[i]);
+                // (K0's null space - Ez alone, β nought - is no mode.)
+                if (std::abs(beta) < 1e-4 * k0) continue;
+                x = r.vectors[i].head(a_n);
+            } else {
+                const cd lambda = sigma + 1.0 / r.values[i];
+                // (The null space of A - its Ez alone, λ nought - is no mode.)
+                if (std::abs(lambda) < 1e-8 * k0 * k0) continue;
+                beta = std::sqrt(-lambda);
+                if (beta.real() < 0) beta = -beta;
+                x = r.vectors[i];
+            }
+            if (layers && inLayers(x, beta) > 0.5) {
                 ++dropped;
                 continue;
             }
             // Its phase, which the eigensolver leaves to chance: its largest
             // transverse value real and more than nought.
-            Eigen::VectorXcd x = r.vectors[i];
             Eigen::Index largest = 0;
             if (a_nEdge > 0) x.head(a_nEdge).cwiseAbs().maxCoeff(&largest);
             if (std::abs(x(largest)) > 0) x *= std::conj(x(largest)) / std::abs(x(largest));
@@ -684,7 +1100,7 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     if (int(a_modes.size()) > wanted) {
         std::sort(a_modes.begin(), a_modes.end(), [&](const Mode& a, const Mode& b) {
             if (a_tracking) return a.share > b.share;
-            return std::abs(a.beta * a.beta + sigma) < std::abs(b.beta * b.beta + sigma);
+            return coupled ? std::abs(a.beta - shift) < std::abs(b.beta - shift) : std::abs(a.beta * a.beta + sigma) < std::abs(b.beta * b.beta + sigma);
         });
         a_modes.resize(std::size_t(wanted));
     }
@@ -750,7 +1166,15 @@ void ModeProblem::selectMode(int k)
         e[1] = m.kappaGap;
         e[2] = m.kappaEA;
         e[3] = m.kappaEA0;
-        for (int c = 0; c < 3; ++c) e[4 + c] = -m.eps[c].imag();
+        // ε'' = (εᴴ - ε)/2j: its diagonal, then xy, xz, yz (re, im).
+        auto loss = [&m](int i, int j) { return (std::conj(m.epsT[j][i]) - m.epsT[i][j]) / (2.0 * J); };
+        for (int c = 0; c < 3; ++c) e[4 + c] = loss(c, c).real();
+        const int pairs[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+        for (int k = 0; k < 3; ++k) {
+            const cd v = loss(pairs[k][0], pairs[k][1]);
+            e[7 + 2 * k] = v.real();
+            e[8 + 2 * k] = v.imag();
+        }
     }
     // Its power along z, 1 W: Sz = ½ Re(Ex Hy* - Ey Hx*) over the domains;
     // what it absorbs across the gap, ω ε0 n κ |E|² (the direct gap's, less
@@ -780,6 +1204,33 @@ void ModeProblem::selectMode(int k)
     for (double& v : f.values) v *= scale;
     a_absorbedGap = gap * scale * scale;
     a_absorbedField = field * scale * scale;
+    // What its sheets take: ½ ∮ Re σs (|E·t|² + |Ez|²) ds, per metre.
+    a_sheetPower = 0;
+    for (int e = 0; e < int(mesh.edges.size()) && !a_sheets.empty(); ++e) {
+        const Mesh::Edge& me = mesh.edges[std::size_t(e)];
+        const int sheet = me.boundary >= 0 && me.boundary < int(a_sheetOf.size()) ? a_sheetOf[std::size_t(me.boundary)] : -1;
+        if (sheet < 0) continue;
+        int t = -1;
+        for (int side : {me.left, me.right})
+            if (side >= 0 && f.domains[std::size_t(mesh.domain[std::size_t(side)])]) {
+                t = side;
+                break;
+            }
+        if (t < 0) continue;
+        const std::array<int, 3>& tv = mesh.triangles[std::size_t(t)];
+        const int k = Space::localEdge(tv, me.a, me.b);
+        const QPointF pa = mesh.nodes[std::size_t(me.a)] * mesh.unitScale, pb = mesh.nodes[std::size_t(me.b)] * mesh.unitScale;
+        const double len = std::hypot(pb.x() - pa.x(), pb.y() - pa.y());
+        if (!(len > 0)) continue;
+        for (const auto& q : lineRule(f.space->order() + 3)) {
+            const double r = tv[std::size_t(k)] == me.a ? q[0] : 1 - q[0];
+            ev.moveTo(t, k == 0 ? r : k == 1 ? 1 - r : 0, k == 0 ? 0 : k == 1 ? r : 1 - r);
+            const ModeFields mf = modeFieldsAt(ev, a_fi);
+            if (!mf.defined) continue;
+            const cd et = (mf.E[0] * (pb.x() - pa.x()) + mf.E[1] * (pb.y() - pa.y())) / len;
+            a_sheetPower += 0.5 * q[1] * len * sheetConductivity(ev, a_sheets[std::size_t(sheet)], omega).real() * (std::norm(et) + std::norm(mf.E[2]));
+        }
+    }
     a_s.setMode(k + 1);
 }
 
@@ -808,6 +1259,12 @@ void ModeProblem::setGlobals()
                   tr("loss in dB per metre absorbed across a gap - the media's κ and a direct gap's, not the free carriers': what makes "
                      "electron-hole pairs"),
                   QStringLiteral("dB/m"));
+    if (!a_sheets.empty()) {
+        a_s.setGlobal(p + QStringLiteral("Psheet"), a_sheetPower, Dim::of(1, 1, -3),
+                      tr("power the conductive sheets absorb per metre, the mode carrying 1 W (W/m)"));
+        a_s.setGlobal(p + QStringLiteral("loss_sheet"), a_sheetPower * dB, perMetre, tr("loss in dB per metre the conductive sheets absorb"),
+                      QStringLiteral("dB/m"));
+    }
     if (a_electroabsorption)
         a_s.setGlobal(p + QStringLiteral("dloss_EA"), a_absorbedField * dB, perMetre,
                       tr("loss in dB per metre the field adds to the direct gap's absorption (the Franz-Keldysh effect): its "
@@ -842,8 +1299,12 @@ private:
     };
     /// The point of triangle \a t on mesh edge \a e at s (0 at its a).
     void edgePoint(int e, double s, int* t, double* xi, double* eta) const;
-    /// p (scalar: the adjacent medium's) and k at a point.
-    void scalars(PointEvaluator& ev, int d, double omega, double k0, cd* p, cd* q) const;
+    /// The plane's P (row by row: xx, xy, yx, yy) of a medium - Ez's
+    /// diag(1/µyy, 1/µxx), Hz's from η = ε_t⁻¹ - and q (Ez's εzz, Hz's µzz).
+    void planeCoefficients(const Media::At& md, cd P[4], cd* q) const;
+    /// On a boundary of direction \a t (a unit vector along it, \a n across):
+    /// P across (nᵀ P n), along (tᵀ P t), mixed (nᵀ P t), and q.
+    void scalars(PointEvaluator& ev, int d, double omega, double k0, const double t[2], cd* across, cd* along, cd* mixed, cd* q) const;
     bool portMode(Port& port, double omega, double k0, QString* error);
 
     Media a_media;
@@ -880,9 +1341,7 @@ bool WaveProblem::setup(QString* error)
     f.domains.assign(topo.domains.size(), 0);
     for (int d : domains) f.domains[std::size_t(d)] = 1;
     if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
-    a_media.setup(*this, a_s, *a_node, f.domains, materials(),
-                  [this](const QString& t, const Node& n, const QString& k) { return compile(t, n, k); },
-                  [this](const Node& m, const QString& k) { return materialProperty(m, k, &a_s.parameters().scope); }, [this](const QString& w) { problem(w); });
+    a_media.setup(a_s, *a_node, f.domains, materials(), mediaHooks());
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
     std::vector<Expression> mur(topo.domains.size()), epsr(topo.domains.size());
@@ -893,9 +1352,9 @@ bool WaveProblem::setup(QString* error)
             coef.c[d] = m.n[0];
             if (m.n[0].isValid()) epsr[d] = Expression::compile(QStringLiteral("(%1)^2").arg(m.n[0].text()), a_s.pointScope());
         } else {
-            epsr[d] = m.eps[0];
+            epsr[d] = m.eps[0][0];
         }
-        mur[d] = m.mur;
+        mur[d] = m.mur[0];
     }
     coef.named[QStringLiteral("mur")] = mur;
     coef.named[QStringLiteral("epsr")] = epsr;
@@ -995,18 +1454,42 @@ void WaveProblem::edgePoint(int e, double s, int* t, double* xi, double* eta) co
     *eta = k == 0 ? 0 : k == 1 ? r : 1 - r;
 }
 
-void WaveProblem::scalars(PointEvaluator& ev, int d, double omega, double k0, cd* p, cd* q) const
+void WaveProblem::planeCoefficients(const Media::At& md, cd P[4], cd* q) const
 {
-    const Media::At m = a_media.at(ev, d, omega, k0);
-    // (On a boundary: the medium's own, its isotropic part.)
-    *p = a_hz ? 1.0 / m.eps[2] : 1.0 / m.mu[2];
-    *q = a_hz ? m.mu[2] : m.eps[2];
+    // Ez: P = diag(1/µyy, 1/µxx), q = εzz; Hz: P from η = ε_t⁻¹ (the
+    // in-plane part's inverse) - [ηyy, -ηyx; -ηxy, ηxx] -, q = µzz.
+    P[0] = 1.0 / md.mu[1];
+    P[1] = P[2] = 0;
+    P[3] = 1.0 / md.mu[0];
+    if (a_hz) {
+        const cd det = md.epsT[0][0] * md.epsT[1][1] - md.epsT[0][1] * md.epsT[1][0];
+        const cd eta[4] = {md.epsT[1][1] / det, -md.epsT[0][1] / det, -md.epsT[1][0] / det, md.epsT[0][0] / det};
+        P[0] = eta[3];
+        P[1] = -eta[2];
+        P[2] = -eta[1];
+        P[3] = eta[0];
+    }
+    *q = a_hz ? md.mu[2] : md.epsT[2][2];
+}
+
+void WaveProblem::scalars(PointEvaluator& ev, int d, double omega, double k0, const double t[2], cd* across, cd* along, cd* mixed, cd* q) const
+{
+    cd P[4];
+    planeCoefficients(a_media.at(ev, d, omega, k0), P, q);
+    const double n[2] = {t[1], -t[0]};
+    auto form = [&P](const double a[2], const double b[2]) { return a[0] * (P[0] * b[0] + P[1] * b[1]) + a[1] * (P[2] * b[0] + P[3] * b[1]); };
+    *across = form(n, n);
+    *along = form(t, t);
+    *mixed = form(n, t);
 }
 
 bool WaveProblem::portMode(Port& port, double omega, double k0, QString* error)
 {
-    // Its line's own problem: -(p e')' - k0² q e = -β² p e, on the 2D
-    // degrees of freedom along it (those fixed at its ends left out).
+    // Its line's own problem: -(pt e')' - k0² q e = -β² pn e, on the 2D
+    // degrees of freedom along it (those fixed at its ends left out) - pt
+    // the plane's P along the line, pn across it (an anisotropic medium's,
+    // its axes along and across the port; one turned between them mixes
+    // the two, nᵀ P t, its mode a tilted one: not a port's).
     const Field& fld = a_s.fields()[std::size_t(a_fi)];
     const Space& sp = *fld.space;
     const Mesh& mesh = a_s.mesh();
@@ -1024,6 +1507,9 @@ bool WaveProblem::portMode(Port& port, double omega, double k0, QString* error)
     const int ne = sp.order() == 1 ? 2 : 3;
     for (int e : port.edges) {
         const std::array<int, 3> dofs = sp.edgeDofs(e);
+        const QPointF a = sp.point(dofs[0]), b = sp.point(dofs[1]);
+        const double length = std::hypot(b.x() - a.x(), b.y() - a.y());
+        const double tangent[2] = {(b.x() - a.x()) / length, (b.y() - a.y()) / length};
         for (const auto& q : lineRule(sp.order() + 2)) {
             double jac = 0;
             sp.edgePoint(e, q[0], &jac);
@@ -1032,8 +1518,14 @@ bool WaveProblem::portMode(Port& port, double omega, double k0, QString* error)
             edgePoint(e, q[0], &t, &xi, &eta);
             if (t < 0) continue;
             ev.moveTo(t, xi, eta);
-            cd p, qq;
-            scalars(ev, mesh.domain[std::size_t(t)], omega, k0, &p, &qq);
+            cd p, pt, mixed, qq;
+            scalars(ev, mesh.domain[std::size_t(t)], omega, k0, tangent, &p, &pt, &mixed, &qq);
+            if (std::abs(mixed) > 1e-9 * std::abs(p)) {
+                *error = tr("port %1: its medium's axes are turned in the plane, neither along it nor across it (%2's εxy, with its "
+                            "line): its mode would be a tilted one - a port in a medium whose axes lie along and across it")
+                             .arg(port.name, a_hz ? tr("ε") : tr("µ"));
+                return false;
+            }
             const double s = q[0];
             double N[3], dN[3];
             if (ne == 2) {
@@ -1057,7 +1549,7 @@ bool WaveProblem::portMode(Port& port, double omega, double k0, QString* error)
                     auto jj = local.find(dofs[std::size_t(j)]);
                     if (jj == local.end()) continue;
                     // (d/ds: d/dq over the length per unit q)
-                    K(ii->second, jj->second) += w * (p * dN[i] * dN[j] / (jac * jac) - k0 * k0 * qq * N[i] * N[j]);
+                    K(ii->second, jj->second) += w * (pt * dN[i] * dN[j] / (jac * jac) - k0 * k0 * qq * N[i] * N[j]);
                     M(ii->second, jj->second) += w * p * N[i] * N[j];
                 }
             }
@@ -1110,6 +1602,7 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
     Shape sh;
     double gx[6], gy[6];
     std::vector<cd> Ke(std::size_t(per * per));
+    bool coupled = false;
     for (int t = 0; t < sp.elements(); ++t) {
         const int d = mesh.domain[std::size_t(t)];
         if (d < 0 || !fld.domains[std::size_t(d)]) continue;
@@ -1120,14 +1613,15 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
             const Space::Map m = sp.map(t, q[0], q[1]);
             ev.moveTo(t, q[0], q[1]);
             const Media::At md = a_media.at(ev, d, omega, k0);
-            // Ez: P = diag(1/µyy, 1/µxx), q = εzz; Hz: from ε, q = µzz.
-            const cd px = a_hz ? 1.0 / md.eps[1] : 1.0 / md.mu[1];
-            const cd py = a_hz ? 1.0 / md.eps[0] : 1.0 / md.mu[0];
-            const cd qq = a_hz ? md.mu[2] : md.eps[2];
+            if (md.coupled) coupled = true;
+            cd P[4], qq;
+            planeCoefficients(md, P, &qq);
             const double w = q[2] * std::abs(m.det);
             for (int i = 0; i < per; ++i) Space::gradient(m, sh.dxi[i], sh.deta[i], gx[i], gy[i]);
             for (int i = 0; i < per; ++i)
-                for (int j = 0; j < per; ++j) Ke[std::size_t(i * per + j)] += w * (px * gx[i] * gx[j] + py * gy[i] * gy[j] - k0 * k0 * qq * sh.n[i] * sh.n[j]);
+                for (int j = 0; j < per; ++j)
+                    Ke[std::size_t(i * per + j)] +=
+                        w * (gx[i] * (P[0] * gx[j] + P[1] * gy[j]) + gy[i] * (P[2] * gx[j] + P[3] * gy[j]) - k0 * k0 * qq * sh.n[i] * sh.n[j]);
         }
         for (int i = 0; i < per; ++i) {
             const int qi = a_eq[std::size_t(dofs[i])];
@@ -1138,6 +1632,10 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
             }
         }
     }
+    if (coupled)
+        a_s.log << tr("Warning: %1: a medium's ε has xz or yz parts, which would mix Ez and Hz - left out here, waves in the plane take ε's "
+                      "in-plane part and εzz (a mode analysis takes them all)")
+                       .arg(a_node->name());
     // Scattering boundaries: jk p u v, and what a plane wave brings in.
     const int ne = sp.order() == 1 ? 2 : 3;
     for (int e = 0; e < int(mesh.edges.size()); ++e) {
@@ -1158,6 +1656,7 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         QPointF centre;
         for (int k = 0; k < 3; ++k) centre += mesh.nodes[std::size_t(tv[std::size_t(k)])] * mesh.unitScale / 3.0;
         if ((centre.x() - a.x()) * nrm.x() + (centre.y() - a.y()) * nrm.y() > 0) nrm = -nrm;
+        const double tangent[2] = {-nrm.y(), nrm.x()};
         for (const auto& q : lineRule(sp.order() + 2)) {
             double jac = 0;
             const QPointF x = sp.edgePoint(e, q[0], &jac);
@@ -1165,8 +1664,9 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
             double xi = 0, eta = 0;
             edgePoint(e, q[0], &t, &xi, &eta);
             ev.moveTo(t, xi, eta);
-            cd p, qq;
-            scalars(ev, mesh.domain[std::size_t(t)], omega, k0, &p, &qq);
+            // (Across it: a wave going straight out, k from nᵀ P n.)
+            cd p, pt, mixed, qq;
+            scalars(ev, mesh.domain[std::size_t(t)], omega, k0, tangent, &p, &pt, &mixed, &qq);
             const cd k = k0 * std::sqrt(qq / p);
             const double s = q[0];
             double N[3];
@@ -1245,6 +1745,24 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
             a_S[std::size_t(i)][std::size_t(fed)] = bi * std::sqrt(pi.beta / a_ports[std::size_t(fed)].beta);
         }
     }
+    // Hz: each triangle's η = ε_t⁻¹ at its middle, for E (re, im of xx, xy,
+    // yx, yy).
+    fld.extra.clear();
+    if (a_hz) {
+        fld.extra.assign(std::size_t(8 * sp.elements()), NaN);
+        for (int t = 0; t < sp.elements(); ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (d < 0 || !fld.domains[std::size_t(d)]) continue;
+            ev.moveTo(t, 1.0 / 3, 1.0 / 3);
+            const Media::At md = a_media.at(ev, d, omega, k0);
+            const cd det = md.epsT[0][0] * md.epsT[1][1] - md.epsT[0][1] * md.epsT[1][0];
+            const cd eta[4] = {md.epsT[1][1] / det, -md.epsT[0][1] / det, -md.epsT[1][0] / det, md.epsT[0][0] / det};
+            for (int k = 0; k < 4; ++k) {
+                fld.extra[std::size_t(8 * t + 2 * k)] = eta[k].real();
+                fld.extra[std::size_t(8 * t + 2 * k + 1)] = eta[k].imag();
+            }
+        }
+    }
     const int nd = sp.size();
     fld.values.assign(std::size_t(2 * nd), 0.0);
     for (int dof = 0; dof < nd; ++dof) {
@@ -1314,11 +1832,16 @@ WaveFields waveFieldsAt(PointEvaluator& e, int f)
         out.H[0] = f0 * out.uy;
         out.H[1] = -f0 * out.ux;
     } else {
-        // H = ẑ Hz; E = (1/jωε) ∇×H = -j/(ωε) (∂y Hz, -∂x Hz, 0).
-        const cd f0 = -J / (omega * 8.8541878188e-12 * epsr);
+        // H = ẑ Hz; E = (1/jωε0) η ∇×H, ∇×H = (∂y Hz, -∂x Hz, 0), η = ε⁻¹ in the
+        // plane (the triangle's, as solved; else 1/εr).
+        const cd f0 = -J / (omega * 8.8541878188e-12);
+        const int t = e.triangle();
+        cd eta[4] = {1.0 / epsr, 0, 0, 1.0 / epsr};
+        if (t >= 0 && fld.extra.size() >= std::size_t(8 * (t + 1)) && std::isfinite(fld.extra[std::size_t(8 * t)]))
+            for (int k = 0; k < 4; ++k) eta[k] = cd(fld.extra[std::size_t(8 * t + 2 * k)], fld.extra[std::size_t(8 * t + 2 * k + 1)]);
         out.H[2] = out.u;
-        out.E[0] = f0 * out.uy;
-        out.E[1] = -f0 * out.ux;
+        out.E[0] = f0 * (eta[0] * out.uy - eta[1] * out.ux);
+        out.E[1] = f0 * (eta[2] * out.uy - eta[3] * out.ux);
     }
     out.defined = true;
     return out;
@@ -1343,7 +1866,13 @@ MediumAt modeMediumAt(PointEvaluator& e, int f)
     m.kappaGap = x[1];
     m.kappaEA = x[2];
     m.kappaEA0 = x[3];
-    for (int c = 0; c < 3; ++c) m.lossEps[c] = x[4 + c];
+    for (int c = 0; c < 3; ++c) m.lossEps[c][c] = x[4 + c];
+    const int pairs[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+    for (int k = 0; k < 3; ++k) {
+        const cd v(x[7 + 2 * k], x[8 + 2 * k]);
+        m.lossEps[pairs[k][0]][pairs[k][1]] = v;
+        m.lossEps[pairs[k][1]][pairs[k][0]] = std::conj(v);
+    }
     return m;
 }
 

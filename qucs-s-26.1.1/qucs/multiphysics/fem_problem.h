@@ -15,6 +15,7 @@
 #define QUCS_FEM_PROBLEM_H
 
 #include "fem_solver.h"
+#include "fem_tensor.h"
 
 #include <Eigen/IterativeLinearSolvers>
 #include <Eigen/SparseCholesky>
@@ -170,6 +171,15 @@ struct SpectrumOptions {
     SolveOptions solve;
 };
 
+/// A waves physics' media's: compiling, its materials' texts as they are
+/// (tensors too), their orientations, its problems.
+struct MediaHooks {
+    std::function<Expression(const QString&, const Node&, const QString&)> compile;
+    std::function<QString(const Node&, const QString&)> property;
+    std::function<Rotation(const Node&)> rotation;
+    std::function<void(const QString&)> problem;
+};
+
 /*!
  * One physics of a solution as the problem it is: set up from the model
  * (its domains, materials, conditions - what is wrong said), solved at the
@@ -262,8 +272,32 @@ protected:
     /// the point scope: a material's T bound).
     Expression compile(const QString& text, const Node& feature, const QString& key, bool spatial = true, bool unitChecked = true,
                        const Scope* scope = nullptr);
-    /// The material of each domain: the last that has it (null: none).
+    /// The material of each domain: the last that has it (null: none). A
+    /// physics that takes a material's property as one value (not a
+    /// tensor's: a semiconductor, rays, quantum wells) says in the log where
+    /// one of its materials gives a tensor, whose mean it takes.
     std::vector<const Node*> materials();
+    /// Property \a key of material \a m as a tensor in the model's axes:
+    /// the crystal's texts turned by the material's orientation (one item:
+    /// isotropic, as it is). \a allowed: the counts of items it may have.
+    /// None when it is not given, or wrong (said to the problems). Its
+    /// orientation's turn in \a rotation.
+    std::optional<TensorText> materialTensor(const Node& m, const QString& key, const QList<int>& allowed = {1, 3, 6, 9},
+                                             Rotation* rotation = nullptr);
+    /// Material \a m's orientation (said to the problems, once, when wrong).
+    Rotation rotationOf(const Node& m);
+    /// A waves physics' media's hooks.
+    MediaHooks mediaHooks()
+    {
+        // (Pockels' r, m/V, a text property's: its unit checked by the media.)
+        return {[this](const QString& t, const Node& n, const QString& k) { return compile(t, n, k, true, k != QLatin1String("r")); },
+                [this](const Node& m, const QString& k) { return materialText(m, k, &a_s.parameters().scope); },
+                [this](const Node& m) { return rotationOf(m); }, [this](const QString& w) { problem(w); }};
+    }
+    /// A Piezoelectric Effect feature's e (3x6, Voigt's, C/m²) in the
+    /// model's axes: as given on it, or its domain's material's (\a
+    /// material) crystal's turned by its orientation. None, and why.
+    std::optional<VoigtText> piezoMatrix(const Node& feature, const Node* material, QString* why);
 
 public:
     /// Property \a key of material \a m: its own, else its library entry's,
@@ -271,7 +305,13 @@ public:
     /// temperature \a T (K) - evaluated in \a scope (the parameters'; none: a
     /// plain number). (A text may read T, the temperature it is at: read it
     /// in a MaterialScope.)
+    /// A tensor's (a property of tensorKeys() given as "a; b; c") is its
+    /// mean: materialText() has it as it is.
     static QString materialProperty(const Node& m, const QString& key, const Scope* scope = nullptr, double T = 300);
+    static QString materialText(const Node& m, const QString& key, const Scope* scope = nullptr, double T = 300);
+    /// The material properties that may be tensors: εr, σ, k, tan δ, µr,
+    /// α, n, κ, dn/dT.
+    static const QStringList& tensorKeys();
     /// Property \a key as given: its own, else its library entry's - and
     /// for Eg, without either, hc/λg of a gap wavelength λg given. Empty: not
     /// given (a compound's, if any, is what is left).
@@ -375,13 +415,14 @@ ModeFields modeFieldsAt(PointEvaluator& e, int field);
 /// A mode analysis's medium where the evaluator is (constant over a
 /// triangle, at its middle - kept with the mode selected): n, κ absorbed
 /// across a gap (the medium's own and a direct gap's, not the free
-/// carriers'), the direct gap's alone and its value without a field, -Im ε
-/// along x, y and z; the angular frequency.
+/// carriers'), the direct gap's alone and its value without a field, ε's
+/// loss ε'' = (εᴴ - ε)/2j (Hermitian: -Im ε along x, y, z where it is
+/// diagonal); the angular frequency.
 struct MediumAt {
-    static constexpr int PerTriangle = 7;
+    static constexpr int PerTriangle = 13;
     bool defined = false;
     double omega = NaN, n = NaN, kappaGap = 0, kappaEA = 0, kappaEA0 = 0;
-    double lossEps[3] = {0, 0, 0};
+    std::complex<double> lossEps[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
 };
 MediumAt modeMediumAt(PointEvaluator& e, int field);
 /// The in-plane waves' field at a point: u (Ez or Hz), its gradient, the

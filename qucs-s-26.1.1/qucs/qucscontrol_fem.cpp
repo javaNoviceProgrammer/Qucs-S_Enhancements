@@ -153,6 +153,19 @@ QString formatText()
         "\"enabled\", properties...}; a geometry object's name is its label. Under a physics a feature's type is short "
         "(\"terminal\"). A material {\"material\": \"FR-4\"} takes the library's properties (a soft magnetic one its \"BH\" "
         "curve, [[B, H], ...] in T and A/m; a magnet its \"Br\"; a dielectric its loss tangent \"tand\").\n"
+        "Anisotropic materials: epsilonr, sigma, k, tand, mur, alpha, n, kappa and dndT may be tensors - \"a; b; c\" along x, y, "
+        "z, six items xx; yy; zz; yz; xz; xy, nine row by row - a crystal's in its own axes, its \"orientation\" turning them "
+        "into the model's (x across, y up - a wafer's normal -, z out of the plane, along a waveguide): \"cut\" (\"cut\": its "
+        "axis up, x, y or z; \"along\": its axis along z) or \"euler\" (euler_phi, euler_theta, euler_psi in degrees, z-x-z). "
+        "Its higher tensors by named Voigt entries, \"C11=203[GPa]; C12=53[GPa]; ...\" (each named; Cji alike): stiffness \"C\", "
+        "piezoelectric \"e\" (C/m²) or \"d\" (C/N: e = d C), electro-optic \"r\" (m/V), photoelastic \"p\"; a garnet's "
+        "gyration \"g\". The library's crystals: Lithium niobate and Lithium tantalate (x-cut, y along z), KTP, Quartz, "
+        "Sapphire (c-plane), YIG, Ce:YIG; Silicon (stiffness, photoelastic), Gallium arsenide, Indium phosphide (r41) on a "
+        "(100) wafer. Electrostatics, currents and heat take the in-plane 2x2 part (a feature's own: \"anisotropy\" diagonal "
+        "or symmetric, epsxx, epsyy, epsxy - sigmaxx..., kxx...; es.Dx, ec.Jx, ht.qx along it; a line's G its loss tangent's "
+        "tensor); magnetics µr's (murxx, muryy, murxy); solid mechanics a material's C (\"anisotropy\": \"anisotropic\" with "
+        "C on the feature; plane stress condensed) and its expansion along its axes; a \"piezo\" feature couples it to an "
+        "electrostatics (\"es\" its tag) - σ = C S - eᵀE, D = εE + e S, solved in turn.\n"
         "Magnetic fields (\"magnetic\", tag mf): A out of the plane (round the axis); features ampere (\"constitutive\": \"mur\" or "
         "\"bh\"), current (Je), coil (\"name\", \"conductor\": \"single\" - its current's distribution found, the skin effect - or "
         "\"multi\" with \"N\" turns; \"I0\"), magnet (\"direction\", Br), insulation (A = 0, on the outside), potential, pmc, "
@@ -168,7 +181,12 @@ QString formatText()
         "wavelength), \"modes\": 4, \"neff\": the index to search about, \"track\": a selection (those most in it, emw.Gamma), "
         "\"polarization\": \"te\" or \"tm\" (one alone: emw.TEfraction, of the transverse |E|² the part along x, at 1/2 or "
         "more is TE - a strip's lateral TE modes kept from outranking a slab's TM0)}; features wave (\"constitutive\": \"n\" - n, kappa - or "
-        "\"epsilonr\"; \"anisotropy\": \"diagonal\" with nx, ny, nz; \"thermooptic\" with T, Tref and the material's dndT), pml, "
+        "\"epsilonr\"; \"anisotropy\": \"diagonal\" with nx, ny, nz or \"tensor\" with epsxy, epsxz, epsyz too - xz and yz "
+        "couple Ez, the modes then found by β, a magnetized garnet's forward ones; kappa, tand, sigma one or three along x, y, z "
+        "(a sheet as a thin layer: σ; 0; σ); a material's crystal turned; \"thermooptic\" with T, Tref and the material's dndT; "
+        "\"electrooptic\" - Pockels' r, the material's or \"r\", the field Ex, Ey, Ez (es.Ex, es.Ey); \"photoelastic\" - p, "
+        "\"strain\" a solid's tag; \"magnetooptic\" - \"magnetization\" x, y or z, g), sheet (on an interior boundary: "
+        "\"model\" graphene - muc, tau, T, Kubo's - or user - sigmas, sigmas_im (σs - j sigmas_im) -; emw.Psheet, emw.loss_sheet), pml, "
         "pec (the outside by default), pmc; each mode a solution (\"mode\" picks one) with emw.neff, emw.loss (dB/m), emw.alpha, "
         "emw.loss_gap (dB/m absorbed across a gap: what a photodiode turns into pairs), emw.TEfraction, and fields emw.Ex... "
         "emw.Sz, emw.n, emw.Qh and "
@@ -181,7 +199,8 @@ QString formatText()
         "∫ Sz, ∂neff/∂n: a modal gain's Γ, a Δn there moving neff by Γ Δn) gives each mode's Γ without cut lines (a TM mode's "
         "normal E jumps at an index step). \"waves\" (tag ewfd) - waves in the plane (\"polarization\": \"ez\" or \"hz\") in a "
         "frequency step; features wave, pml, pec, pmc, scattering (\"incident\": \"plane\" with E0, angle), port (\"name\", "
-        "\"excite\") - S-parameters ewfd.S21, S21_im, S21dB, S21_abs, S21_arg; a touchstone export \"of\": \"ports\" writes them. "
+        "\"excite\") - S-parameters ewfd.S21, S21_im, S21dB, S21_abs, S21_arg; a touchstone export \"of\": \"ports\" writes them; Hz "
+        "takes ε's in-plane tensor (a port's medium's axes along and across it). "
         "A stationary or frequency step's \"adaptive\": true refines the mesh where the error is largest (\"adaptsteps\" times; in frequency, the last one's).\n"
         "Semiconductors: \"semiconductor\" (tag semi, \"T\") - drift and diffusion of electrons and holes on linear elements; a "
         "domain whose material has a band gap Eg is a semiconductor (Silicon, Germanium, Gallium arsenide, Indium phosphide, "
@@ -439,9 +458,13 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             return a;
         };
         QJsonArray properties;
-        for (const MaterialCurve& c : curves.curves)
-            properties.append(QJsonObject{{QStringLiteral("key"), c.key}, {QStringLiteral("label"), c.label}, {QStringLiteral("unit"), c.unit},
-                                          {QStringLiteral("values"), list(c.values)}});
+        for (const MaterialCurve& c : curves.curves) {
+            QJsonObject p{{QStringLiteral("key"), c.key}, {QStringLiteral("label"), c.label}, {QStringLiteral("unit"), c.unit},
+                          {QStringLiteral("values"), list(c.values)}};
+            // (A crystal's along one of its axes.)
+            if (c.axis >= 0) p.insert(QStringLiteral("axis"), QStringLiteral("x%1").arg(c.axis + 1));
+            properties.append(p);
+        }
         QJsonObject out{{QStringLiteral("material"), node->name()},
                         {QStringLiteral("variable"), curves.variable},
                         {QStringLiteral("unit"), curves.unit},

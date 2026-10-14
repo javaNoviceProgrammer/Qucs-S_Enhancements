@@ -249,6 +249,8 @@ private:
 
     // By domain.
     std::vector<Expression> a_mur, a_sigma, a_je, a_brx, a_bry;
+    // An anisotropic µr in the plane: xx, xy, yx, yy (none: a_mur's alone).
+    std::array<std::vector<Expression>, 4> a_murT;
     std::vector<std::shared_ptr<const BHCurve>> a_curves;
     std::vector<int> a_coilOf;
     std::vector<CoilDef> a_coils;
@@ -414,6 +416,7 @@ bool MagneticProblem::setup(QString* error)
     // Each domain's permeability (or curve) and conductivity.
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     a_mur.assign(nd, Expression());
+    for (auto& list : a_murT) list.clear();
     a_sigma.assign(nd, Expression());
     a_je.assign(nd, Expression());
     a_brx.assign(nd, Expression());
@@ -451,17 +454,47 @@ bool MagneticProblem::setup(QString* error)
             }
             a_nonlinear = true;
         } else {
-            const QString text = user ? feat->text(QStringLiteral("mur")) : materialProperty(*m, QStringLiteral("mur"));
-            if (text.trimmed().isEmpty()) {
-                problem(tr("domain %1 (%2): its material, %3, has no relative permeability").arg(d + 1).arg(object, m->name()));
-                continue;
+            // One, or a tensor in the plane (a laminated core's): the
+            // feature's in the model's axes, a material's turned by its
+            // orientation.
+            QString mt[4];
+            const QString aniso = user ? feat->text(QStringLiteral("anisotropy")) : QString();
+            if (user && (aniso == QLatin1String("diagonal") || aniso == QLatin1String("symmetric"))) {
+                mt[0] = feat->text(QStringLiteral("murxx"));
+                mt[3] = feat->text(QStringLiteral("muryy"));
+                mt[1] = mt[2] = aniso == QLatin1String("symmetric") ? feat->text(QStringLiteral("murxy")) : QStringLiteral("0");
+            } else if (!user && isTensorText(materialText(*m, QStringLiteral("mur")))) {
+                if (const std::optional<TensorText> t = materialTensor(*m, QStringLiteral("mur"))) {
+                    mt[0] = t->c[0][0];
+                    mt[1] = t->c[0][1];
+                    mt[2] = t->c[1][0];
+                    mt[3] = t->c[1][1];
+                }
             }
-            const Expression e = compile(text, user ? *feat : *m, QStringLiteral("mur"));
-            if (e.isValid() && e.isConstant() && !(e.constant() > 0)) problem(tr("domain %1: its relative permeability must be more than 0").arg(d + 1));
-            a_mur[std::size_t(d)] = e;
+            if (!mt[0].isEmpty()) {
+                const char* keys[4] = {"murxx", "murxy", "murxy", "muryy"};
+                for (int k = 0; k < 4; ++k) {
+                    a_murT[std::size_t(k)].resize(nd);
+                    a_murT[std::size_t(k)][std::size_t(d)] = compile(mt[k].trimmed().isEmpty() ? QStringLiteral("0") : mt[k], user ? *feat : *m,
+                                                                     user ? QString::fromLatin1(keys[k]) : QStringLiteral("mur"));
+                }
+                a_mur[std::size_t(d)] = Expression::compile(QStringLiteral("((%1) + (%2))/2").arg(mt[0], mt[3]), a_s.pointScope());
+            } else {
+                const QString text = user ? feat->text(QStringLiteral("mur")) : materialProperty(*m, QStringLiteral("mur"));
+                if (text.trimmed().isEmpty()) {
+                    problem(tr("domain %1 (%2): its material, %3, has no relative permeability").arg(d + 1).arg(object, m->name()));
+                    continue;
+                }
+                const Expression e = compile(text, user ? *feat : *m, QStringLiteral("mur"));
+                if (e.isValid() && e.isConstant() && !(e.constant() > 0)) problem(tr("domain %1: its relative permeability must be more than 0").arg(d + 1));
+                a_mur[std::size_t(d)] = e;
+            }
         }
-        // Its conductivity: none given, none.
-        const QString sigma = user ? feat->text(QStringLiteral("sigma")) : (m ? materialProperty(*m, QStringLiteral("sigma")) : QString());
+        // Its conductivity (along z, where the currents are: a tensor's zz):
+        // none given, none.
+        QString sigma = user ? feat->text(QStringLiteral("sigma")) : (m ? materialProperty(*m, QStringLiteral("sigma")) : QString());
+        if (!user && m && isTensorText(materialText(*m, QStringLiteral("sigma"))))
+            if (const std::optional<TensorText> t = materialTensor(*m, QStringLiteral("sigma"))) sigma = t->c[2][2];
         const int coil = a_coilOf[std::size_t(d)];
         const bool turns = coil >= 0 && !a_coils[std::size_t(coil)].single;
         if (!sigma.trimmed().isEmpty() && !turns) {
@@ -516,8 +549,13 @@ bool MagneticProblem::setup(QString* error)
         if (c >= 0 && a_coils[std::size_t(c)].single) coilIndex[std::size_t(d)] = Expression::compile(QString::number(c), a_s.pointScope());
     }
     coef.named[QStringLiteral("coil")] = coilIndex;
+    const char* parts[4] = {"murxx", "murxy", "muryx", "muryy"};
+    for (int k = 0; k < 4; ++k) {
+        if (a_murT[std::size_t(k)].empty()) coef.named.erase(QString::fromLatin1(parts[k]));
+        else coef.named[QString::fromLatin1(parts[k])] = a_murT[std::size_t(k)];
+    }
     a_varies = false;
-    for (const auto* list : {&a_mur, &a_sigma, &a_je, &a_brx, &a_bry})
+    for (const auto* list : {&a_mur, &a_sigma, &a_je, &a_brx, &a_bry, &a_murT[0], &a_murT[1], &a_murT[2], &a_murT[3]})
         for (const Expression& e : *list) a_varies = a_varies || (e.isValid() && a_s.varies(e));
     for (const auto& list : a_surface)
         for (const Expression& e : list) a_varies = a_varies || a_s.varies(e);
@@ -646,13 +684,27 @@ void MagneticProblem::elementTerms(const std::vector<double>& u, bool frequency,
                         b1 += by[k] * v;
                     }
                 double nu = 0, extra = 0;   // the tangent: nu β·β + extra (b·β_i)(b·β_j)
+                // An anisotropic one: H = ν B, ν (µ0 µr)⁻¹ in the plane.
+                double nut[4] = {0, 0, 0, 0};
+                bool tensor = false;
                 if (curve) {
                     const double b = std::hypot(b0, b1);
                     nu = curve->nu(b);
                     if (!frequency && b > 1e-12) extra = (curve->slope(b) - nu) / (b * b);
+                } else if (!a_murT[0].empty() && a_murT[0][std::size_t(dom)].isValid()) {
+                    double mt[4];
+                    for (int k = 0; k < 4; ++k) mt[k] = at(a_murT[std::size_t(k)][std::size_t(dom)]);
+                    const double det = mt[0] * mt[3] - mt[1] * mt[2];
+                    nut[0] = mt[3] / (Mu0 * det);
+                    nut[1] = -mt[1] / (Mu0 * det);
+                    nut[2] = -mt[2] / (Mu0 * det);
+                    nut[3] = mt[0] / (Mu0 * det);
+                    tensor = true;
                 } else {
                     nu = 1 / (Mu0 * at(mur));
+                    nut[0] = nut[3] = nu;
                 }
+                if (!tensor) nut[0] = nut[3] = nu;
                 double mx = 0, my = 0;   // the remanent flux density
                 if (brx.isValid()) {
                     mx = at(brx);
@@ -663,7 +715,8 @@ void MagneticProblem::elementTerms(const std::vector<double>& u, bool frequency,
                 for (int i = 0; i < per; ++i) {
                     const double bi = b0 * bx[i] + b1 * by[i];
                     for (int j = i; j < per; ++j) {
-                        double v = nu * (bx[i] * bx[j] + by[i] * by[j]);
+                        // β_i · ν β_j (ν symmetric)
+                        double v = bx[i] * (nut[0] * bx[j] + nut[1] * by[j]) + by[i] * (nut[2] * bx[j] + nut[3] * by[j]);
                         if (extra != 0) v += extra * bi * (b0 * bx[j] + b1 * by[j]);
                         K[i * per + j] += w * v;
                         if (j != i) K[j * per + i] += w * v;
@@ -674,8 +727,10 @@ void MagneticProblem::elementTerms(const std::vector<double>& u, bool frequency,
                         }
                     }
                     // H·β: ν (b - Br)·β (a magnet's ν linear)
-                    if (Fi) Fi[i] += w * nu * ((b0 - mx) * bx[i] + (b1 - my) * by[i]);
-                    else if (sources && (mx != 0 || my != 0)) Fe[i] += w * nu * (mx * bx[i] + my * by[i]);
+                    const double hx = nut[0] * (b0 - mx) + nut[1] * (b1 - my), hy = nut[2] * (b0 - mx) + nut[3] * (b1 - my);
+                    const double hmx = nut[0] * mx + nut[1] * my, hmy = nut[2] * mx + nut[3] * my;
+                    if (Fi) Fi[i] += w * (hx * bx[i] + hy * by[i]);
+                    else if (sources && (mx != 0 || my != 0)) Fe[i] += w * (hmx * bx[i] + hmy * by[i]);
                     if (jv != 0) Fe[i] += w * jv * s.n[i];
                     if (single) {
                         Bw[i] += w * sigma * g * s.n[i];
@@ -1340,12 +1395,27 @@ void MagneticProblem::energyAndLosses(bool frequency, double omega)
             const double bb = std::norm(b0) + std::norm(b1);
             if (curve) energy += w * curve->energy(std::sqrt(bb));
             else {
-                const double nu = 1 / (Mu0 * at(a_mur[std::size_t(dom)]));
-                if (frequency) energy += w * 0.25 * nu * bb;
+                // ν: isotropic, or the inverse of an anisotropic µr in the plane.
+                double nut[4];
+                if (!a_murT[0].empty() && a_murT[0][std::size_t(dom)].isValid()) {
+                    double mt[4];
+                    for (int k = 0; k < 4; ++k) mt[k] = at(a_murT[std::size_t(k)][std::size_t(dom)]);
+                    const double det = Mu0 * (mt[0] * mt[3] - mt[1] * mt[2]);
+                    nut[0] = mt[3] / det;
+                    nut[1] = -mt[1] / det;
+                    nut[2] = -mt[2] / det;
+                    nut[3] = mt[0] / det;
+                } else {
+                    nut[0] = nut[3] = 1 / (Mu0 * at(a_mur[std::size_t(dom)]));
+                    nut[1] = nut[2] = 0;
+                }
+                if (frequency)
+                    energy += w * 0.25 * (std::conj(b0) * (nut[0] * b0 + nut[1] * b1) + std::conj(b1) * (nut[2] * b0 + nut[3] * b1)).real();
                 else {
                     const double mx = a_brx[std::size_t(dom)].isValid() ? at(a_brx[std::size_t(dom)]) : 0.0;
                     const double my = a_bry[std::size_t(dom)].isValid() ? at(a_bry[std::size_t(dom)]) : 0.0;
-                    energy += w * 0.5 * nu * ((b0.real() - mx) * (b0.real() - mx) + (b1.real() - my) * (b1.real() - my));
+                    const double dx = b0.real() - mx, dy = b1.real() - my;
+                    energy += w * 0.5 * (dx * (nut[0] * dx + nut[1] * dy) + dy * (nut[2] * dx + nut[3] * dy));
                 }
             }
             if (a_sigma[std::size_t(dom)].isValid()) {

@@ -109,9 +109,22 @@ MaterialCurves materialCurves(const Node& material, const QStringList& keys, con
             return out;
         }
     std::vector<MaterialCurve> curves;
+    // (A crystal's εr, k, n and κ given along its axes: a curve along each.)
+    auto along = [&material](const QString& key) {
+        return isTensorText(detail::Problem::materialText(material, key == QLatin1String("alpha") ? QStringLiteral("kappa") : key));
+    };
+    static const char* axisNames[3] = {"x1", "x2", "x3"};
     for (const QString& k : wanted)
         for (const Info& i : infos())
-            if (k == QLatin1String(i.key)) curves.push_back({k, tr(i.label), QString::fromLatin1(i.unit), {}});
+            if (k == QLatin1String(i.key)) {
+                const bool tensorial = k == QLatin1String("epsilonr") || k == QLatin1String("k") || k == QLatin1String("n") ||
+                                       k == QLatin1String("kappa") || k == QLatin1String("alpha");
+                if (tensorial && along(k))
+                    for (int a = 0; a < 3; ++a)
+                        curves.push_back({k, tr("%1 along its crystal's %2").arg(tr(i.label), QLatin1String(axisNames[a])), QString::fromLatin1(i.unit), {}, a});
+                else
+                    curves.push_back({k, tr(i.label), QString::fromLatin1(i.unit), {}});
+            }
     QStringList models;
     auto said = [&models](const QString& m) {
         if (!models.contains(m)) models << m;
@@ -129,6 +142,14 @@ MaterialCurves materialCurves(const Node& material, const QStringList& keys, con
         MaterialScope scope(parameters, T > 0 ? T : 300);
         scope.setConstant(QStringLiteral("lambda0"), lambda, Dim::length());
         auto text = [&](const QString& key) { return detail::Problem::materialProperty(m, key, &scope, T > 0 ? T : 300); };
+        // Along a crystal's axis \a a: its tensor's diagonal there.
+        auto alongAxis = [&](const QString& key, int a) -> std::optional<double> {
+            const std::optional<TensorText> t = tensorText(detail::Problem::materialText(m, key, &scope, T > 0 ? T : 300));
+            if (!t) return std::nullopt;
+            const Expression e = Expression::compile(t->c[a][a], scope);
+            if (!e.isValid() || !e.isConstant()) return std::nullopt;
+            return e.constant();
+        };
         auto value = [&](const QString& key) -> std::optional<double> {
             const QString t = text(key);
             if (t.trimmed().isEmpty()) return std::nullopt;
@@ -213,7 +234,9 @@ MaterialCurves materialCurves(const Node& material, const QStringList& keys, con
                     const bool high = F > e0;
                     y = (high ? a2 : *a) * std::exp(-std::pow((high ? b2 : *b) / F, beta)) * 1e-2;
                 } else if (a && b) y = 0;
-            } else if (k == QLatin1String("alpha")) y = 4 * M_PI * value(QStringLiteral("kappa")).value_or(NaN) / lambda * 1e-2;
+            } else if (k == QLatin1String("alpha"))
+                y = 4 * M_PI * (curve.axis >= 0 ? alongAxis(QStringLiteral("kappa"), curve.axis) : value(QStringLiteral("kappa"))).value_or(NaN) / lambda * 1e-2;
+            else if (curve.axis >= 0) y = alongAxis(k, curve.axis).value_or(NaN);
             else y = value(k).value_or(NaN);
             curve.values.push_back(y);
         }

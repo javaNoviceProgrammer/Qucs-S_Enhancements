@@ -27,6 +27,7 @@
 #include "fem_problem.h"
 #include "fem_results.h"
 #include "fem_solver.h"
+#include "fem_tensor.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -634,35 +635,81 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         }
         auto text = [&](const QString& key) { return user ? feat->text(key) : detail::Problem::materialProperty(*mat, key, &scope); };
         const QPointF p = t.domains[std::size_t(d)].inside;
+        // A property along x, y and z: a tensor's diagonal - one value, or
+        // three split by ';' (a material's, its crystal's axes).
+        auto axes = [&](const QString& key, double fallback, double out[3]) {
+            const QString given = user ? feat->text(key) : detail::Problem::materialText(*mat, key, &scope);
+            const std::optional<TensorText> tensor = given.trimmed().isEmpty() ? std::nullopt : tensorText(given);
+            for (int c = 0; c < 3; ++c) out[c] = !tensor ? (given.trimmed().isEmpty() ? fallback : NAN) : valueIn(s, locator, tensor->c[c][c], p).value_or(NAN);
+        };
         const bool byIndex = !feat || feat->text(QStringLiteral("constitutive")) != QLatin1String("epsilonr");
-        ix.anisotropic = user && feat->text(QStringLiteral("anisotropy")) == QLatin1String("diagonal");
+        const QString anisotropy = user ? feat->text(QStringLiteral("anisotropy")) : QString();
+        ix.anisotropic = anisotropy == QLatin1String("diagonal") || anisotropy == QLatin1String("tensor");
+        if (anisotropy == QLatin1String("tensor"))
+            for (const char* off : {"epsxy", "epsxz", "epsyz"})
+                if (valueIn(s, locator, feat->text(QString::fromLatin1(off)), p).value_or(0) != 0) {
+                    w.note(tr("%1: its ε's off-diagonal (εxy, εxz, εyz) left out - Lumerical's index here its diagonal (a matrix transform "
+                              "grid attribute would turn it)")
+                               .arg(feat->name()));
+                    break;
+                }
         ix.name = user ? feat->name() : materialName(mat);
-        if (!user && mat) {
+        // (Lumerical's own material where there is one - not for a crystal,
+        // whose cut is its orientation's.)
+        if (!user && mat && !isTensorText(detail::Problem::materialText(*mat, QStringLiteral("n"), &scope))) {
             const Names* names = libraryNames(mat->text(QStringLiteral("library")).isEmpty() ? mat->name() : mat->text(QStringLiteral("library")));
             if (names && *names->em) ix.library = QString::fromLatin1(names->em);
         }
+        // ε along the axes it is given in - a feature's the model's, a
+        // material's its crystal's: n - jκ squared, or εr (1 - j tan δ) - j
+        // σ/(ω ε0); each one value, or three.
+        std::complex<double> e3[3];
         if (byIndex) {
+            double n[3], k[3];
             if (ix.anisotropic) {
                 const char* keys[3] = {"nx", "ny", "nz"};
-                for (int c = 0; c < 3; ++c) ix.n[c] = valueIn(s, locator, text(QString::fromLatin1(keys[c])), p).value_or(NAN);
-            } else {
-                ix.n[0] = ix.n[1] = ix.n[2] = valueIn(s, locator, text(QStringLiteral("n")), p).value_or(NAN);
-            }
-            const double kappa = valueIn(s, locator, text(QStringLiteral("kappa")), p).value_or(0);
-            for (double& k : ix.k) k = kappa;
+                for (int c = 0; c < 3; ++c) n[c] = valueIn(s, locator, text(QString::fromLatin1(keys[c])), p).value_or(NAN);
+            } else
+                axes(QStringLiteral("n"), NAN, n);
+            axes(QStringLiteral("kappa"), 0, k);
+            for (int c = 0; c < 3; ++c) e3[c] = std::pow(std::complex<double>(n[c], -k[c]), 2);
         } else {
-            // (By εr, tan δ and σ: n + jκ = √(εr (1 - j tan δ) - j σ/(ω ε0)).)
             const char* keys[3] = {"epsxx", "epsyy", "epszz"};
             const double omega = 2 * M_PI * C0 / lambda, eps0 = 8.8541878188e-12;
-            const double tand = valueIn(s, locator, text(QStringLiteral("tand")), p).value_or(0);
-            const double sigma = valueIn(s, locator, text(QStringLiteral("sigma")), p).value_or(0);
-            for (int c = 0; c < 3; ++c) {
-                const double er = valueIn(s, locator, ix.anisotropic ? text(QString::fromLatin1(keys[c])) : text(QStringLiteral("epsilonr")), p).value_or(NAN);
-                const std::complex<double> e = std::sqrt(std::complex<double>(er, -er * tand - sigma / (omega * eps0)));
-                ix.n[c] = e.real();
-                ix.k[c] = -e.imag();
-            }
+            double tand[3], sigma[3], er[3];
+            axes(QStringLiteral("tand"), 0, tand);
+            axes(QStringLiteral("sigma"), 0, sigma);
+            if (ix.anisotropic)
+                for (int c = 0; c < 3; ++c) er[c] = valueIn(s, locator, text(QString::fromLatin1(keys[c])), p).value_or(NAN);
+            else
+                axes(QStringLiteral("epsilonr"), NAN, er);
+            for (int c = 0; c < 3; ++c) e3[c] = std::complex<double>(er[c], -er[c] * tand[c] - sigma[c] / (omega * eps0));
         }
+        // A material's crystal turned into the model's axes: ε = R diag Rᵀ,
+        // Lumerical's diagonal anisotropy its diagonal.
+        const std::optional<Rotation> turned = !user && mat ? materialRotation(*mat, scope) : std::nullopt;
+        if (turned && !turned->isIdentity() && (e3[1] != e3[0] || e3[2] != e3[0])) {
+            std::complex<double> eps[3][3];
+            double off = 0, largest = 0;
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) {
+                    eps[i][j] = 0;
+                    for (int c = 0; c < 3; ++c) eps[i][j] += turned->r[i][c] * turned->r[j][c] * e3[c];
+                    if (i == j) largest = std::max(largest, std::abs(eps[i][j]));
+                    else off = std::max(off, std::abs(eps[i][j]));
+                }
+            for (int c = 0; c < 3; ++c) e3[c] = eps[c][c];
+            if (off > 1e-9 * largest)
+                w.note(tr("%1: its crystal turned off the model's axes - Lumerical's index here its ε's diagonal, the off-diagonal left out (a "
+                          "matrix transform grid attribute would turn it)")
+                           .arg(ix.name));
+        }
+        for (int c = 0; c < 3; ++c) {
+            const std::complex<double> nk = std::sqrt(e3[c]);
+            ix.n[c] = nk.real();
+            ix.k[c] = -nk.imag();
+        }
+        ix.anisotropic = ix.n[1] != ix.n[0] || ix.n[2] != ix.n[0] || ix.k[1] != ix.k[0] || ix.k[2] != ix.k[0];
         if (!std::isfinite(ix.n[0]) || !std::isfinite(ix.n[1]) || !std::isfinite(ix.n[2])) {
             out.error = tr("domain %1 (%2): its refractive index at %3 nm could not be had (%4)").arg(d + 1).arg(object, num(lambda * 1e9), ix.name);
             return out;
