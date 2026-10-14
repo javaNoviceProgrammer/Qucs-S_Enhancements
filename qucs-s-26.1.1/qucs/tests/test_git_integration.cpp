@@ -99,7 +99,9 @@ QString gitIn(const QString& dir, const QStringList& args)
     p.setWorkingDirectory(dir);
     p.start(program(), args);
     if (!p.waitForFinished(30000) || p.exitCode() != 0) {
-        qWarning() << "git" << args << "failed:" << p.readAllStandardError();
+        // (Its exit code and both outputs: "nothing to commit" is on stdout.)
+        qWarning() << "git" << args << "failed in" << dir << "- exit" << p.exitCode() << p.error() << ":" << p.readAllStandardError()
+                   << p.readAllStandardOutput();
         return QString();
     }
     return QString::fromUtf8(p.readAllStandardOutput()).trimmed() + QLatin1String("");
@@ -506,7 +508,7 @@ private slots:
         QCOMPARE(log(repo).size(), 2);
         QVERIFY(commit(repo, "b alone", false, {repo + "/b.txt"}).ok());
         QCOMPARE(read(repo).changedCount(), 0);
-        QCOMPARE(log(repo).first().subject, QStringLiteral("b alone"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("b alone"));
 
         // Names git or a shell could misread: a leading dash, spaces,
         // accents, quotes.
@@ -650,7 +652,7 @@ private slots:
         QVERIFY(all.first().date.isValid());
         QCOMPARE(all.first().parents.size(), 1);
         QCOMPARE(log(repo, repo + "/moved.txt").size(), 3);   // followed
-        QCOMPARE(log(repo, {}, 1, {}, 1).first().subject, QStringLiteral("four"));
+        QCOMPARE(log(repo, {}, 1, {}, 1).value(0).subject, QStringLiteral("four"));
         QCOMPARE(log(repo, {}, 10, "HEAD~1").size(), 2);
         const QString shown = show(repo, all.at(1).hash);
         QVERIFY(shown.contains("four") && shown.contains("+four"));
@@ -680,7 +682,7 @@ private slots:
         // Revert, cherry-pick, check out alone, reset.
         QVERIFY(revert(repo, all.at(1).hash).ok());
         QCOMPARE(readAll(repo + "/moved.txt"), QByteArray("one\ntwo\nthree\n"));
-        QVERIFY(log(repo).first().subject.startsWith("Revert"));
+        QVERIFY(log(repo).value(0).subject.startsWith("Revert"));
         QVERIFY(createBranch(repo, "side", all.at(2).hash).ok());
         QVERIFY(cherryPick(repo, all.at(1).hash).ok());
         QCOMPARE(readAll(repo + "/a.txt"), QByteArray("one\ntwo\nthree\nfour\n"));
@@ -696,7 +698,7 @@ private slots:
         QVERIFY(read(repo).stagedCount() > 0);
         QVERIFY(reset(repo, "v1", "hard").ok());
         QCOMPARE(read(repo).changedCount(), 0);
-        QCOMPARE(log(repo).first().subject, QStringLiteral("moved"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("moved"));
     }
 
     // A remote here (a bare repository): pushed to (made the upstream),
@@ -714,7 +716,7 @@ private slots:
         QVERIFY(why.contains("no remote"));
         QVERIFY(addRemote(repo, "origin", bare).ok());
         QCOMPARE(remotes(repo).size(), 1);
-        QCOMPARE(remotes(repo).first().fetchUrl, bare);
+        QCOMPARE(remotes(repo).value(0).fetchUrl, bare);
         const QStringList first = pushArgs(read(repo), &why);
         QCOMPARE(first.mid(first.size() - 3), QStringList({"-u", "origin", "main"}));
 
@@ -1138,7 +1140,7 @@ private slots:
         d->commitNow(false);
         QVERIFY(committed.wait(30000));
         QCOMPARE(committed.first().at(1).toBool(), false);
-        QCOMPARE(log(repo).first().subject, QStringLiteral("from the window"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("from the window"));
         QCOMPARE(d->stagedList()->count(), 0);
         QCOMPARE(d->unstagedList()->count(), 1);   // new.txt, left
         QVERIFY(d->messageEdit()->toPlainText().isEmpty());
@@ -1148,7 +1150,7 @@ private slots:
         answerBox("gitStageAllQuestion", "Stage All and Commit");
         d->commitNow(false);
         QVERIFY(committed.wait(30000));
-        QCOMPARE(log(repo).first().subject, QStringLiteral("all of it"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("all of it"));
         QCOMPARE(read(repo).changedCount(), 0);
         // Amend: the last commit's message changed.
         d->amendBox()->setChecked(true);
@@ -1156,7 +1158,7 @@ private slots:
         QVERIFY(d->commitButton()->isEnabled());
         d->commitNow(false);
         QVERIFY(committed.wait(30000));
-        QCOMPARE(log(repo).first().subject, QStringLiteral("all of it, amended"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("all of it, amended"));
         QCOMPARE(log(repo).size(), 3);
         d->close();
     }
@@ -1181,11 +1183,11 @@ private slots:
             QVERIFY2(menu->findChild<QAction*>(QLatin1String(name)) != nullptr, name);
         QVERIFY(submenuNamed(menu, "gitResetMenu") != nullptr);
         menu->findChild<QAction*>("gitCopyHash")->trigger();
-        QCOMPARE(QApplication::clipboard()->text(), log(repo).at(1).hash);
+        QCOMPARE(QApplication::clipboard()->text(), log(repo).value(1).hash);
         delete menu;
         menu = history.menuFor(0);   // "four" reverted
         menu->findChild<QAction*>("gitRevertCommit")->trigger();
-        QCOMPARE(log(repo).first().subject.left(6), QStringLiteral("Revert"));
+        QCOMPARE(log(repo).value(0).subject.left(6), QStringLiteral("Revert"));
         QCOMPARE(readAll(repo + "/a.txt"), QByteArray("one\ntwo\nthree\n"));
         QCOMPARE(history.model()->rowCount(), 3);   // read again
         delete menu;
@@ -1455,7 +1457,7 @@ private slots:
         q.max = 4;
         q.skip = 4;
         QCOMPARE(history(repo, q).size(), 4);
-        QCOMPARE(history(repo, q).first().hash, all.at(4).hash);
+        QCOMPARE(history(repo, q).value(0).hash, all.at(4).hash);
         // Laid out: no line broken, a few lanes.
         GraphLayout layout;
         QVector<GraphRow> rows;
@@ -1886,8 +1888,8 @@ private slots:
         QVERIFY(commit(repo, "merged").ok());
         // Theirs whole, the merge's tree is theirs: still in the history
         // of the repository's folder.
-        QCOMPARE(log(repo, repo, 1).first().subject, QStringLiteral("merged"));
-        QCOMPARE(log(repo, repo, 1).first().parents.size(), 2);
+        QCOMPARE(log(repo, repo, 1).value(0).subject, QStringLiteral("merged"));
+        QCOMPARE(log(repo, repo, 1).value(0).parents.size(), 2);
         QVERIFY(boxes.texts().isEmpty());
         sch->setDocChanged(false);
         app->closeAllFiles();
@@ -2078,7 +2080,7 @@ private slots:
         QVERIFY(d->commitButton()->isEnabled());
         d->commitNow(false);
         QVERIFY(committed.wait(30000));
-        QCOMPARE(log(repo).first().parents.size(), 2);
+        QCOMPARE(log(repo).value(0).parents.size(), 2);
         QVERIFY(read(repo).operation.isEmpty());
         d->close();
 
@@ -2412,7 +2414,7 @@ private slots:
         QVERIFY2(shown.startsWith("Schematic changes, part by part:") && shown.contains("\"33nF\""), qPrintable(shown.left(300)));
         QVERIFY(text(call("git_show", {{"path", repo}, {"commit", "HEAD~1"}})).contains("new: 8 parts"));
         HistoryView history(repo);
-        QVERIFY(history.select(log(repo).first().hash));
+        QVERIFY(history.select(log(repo).value(0).hash));
         QTRY_VERIFY(history.details()->toPlainText().startsWith("Schematic changes, part by part:"));
         QVERIFY(write(repo + "/RC_filter_FFT.sch", QString(base).replace("\"10nF\"", "\"47nF\"").toUtf8()));
         Commands::instance()->commit(repo);
@@ -2485,7 +2487,7 @@ private slots:
         // (a.txt is staged: committed)
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QCOMPARE(json(r).value("commit").toString().size(), 7);
-        QCOMPARE(log(repo).first().subject, QStringLiteral("nothing"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("nothing"));
         r = call("git_commit", {{"path", repo}, {"message", "again"}});
         QVERIFY(failed(r));
         QVERIFY2(text(r).contains("Nothing is staged"), qPrintable(text(r)));
@@ -2495,7 +2497,7 @@ private slots:
         QVERIFY(json(r).value("clean").toBool());
         r = call("git_commit", {{"path", repo}, {"message", "the new file, amended"}, {"amend", true}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QCOMPARE(log(repo).first().subject, QStringLiteral("the new file, amended"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("the new file, amended"));
 
         // The history, a commit, blame.
         r = call("git_log", {{"path", repo}});
@@ -2603,10 +2605,10 @@ private slots:
         QVERIFY(json(call("git_tag", {{"path", repo}})).value("tags").toArray().isEmpty());
         r = call("git_commit_action", {{"path", repo}, {"commit", "HEAD"}, {"action", "revert"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QVERIFY(log(repo).first().subject.startsWith("Revert"));
+        QVERIFY(log(repo).value(0).subject.startsWith("Revert"));
         r = call("git_commit_action", {{"path", repo}, {"commit", "HEAD~1"}, {"action", "reset"}, {"mode", "hard"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QCOMPARE(log(repo).first().subject, QStringLiteral("on main"));
+        QCOMPARE(log(repo).value(0).subject, QStringLiteral("on main"));
         r = call("git_commit_action", {{"path", repo}, {"commit", "HEAD~1"}, {"action", "check_out"}});
         QVERIFY(json(r).value("detached").toBool());
         QVERIFY(json(r).value("branch").isNull());

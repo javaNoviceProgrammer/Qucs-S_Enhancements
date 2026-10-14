@@ -55,6 +55,7 @@ endif()
 function(qucs_add_test name)
   add_executable(${name}
     ${name}.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/sanitizer_options.cpp
     ${QUCS_TEST_CORE_OBJECTS}
     ${CMAKE_CURRENT_SOURCE_DIR}/../qucs.qrc)
   target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
