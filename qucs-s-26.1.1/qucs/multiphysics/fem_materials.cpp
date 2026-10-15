@@ -1007,8 +1007,10 @@ const QList<MaterialEntry>& builtinMaterials()
              {{"n", sellmeier(1, {{1.4313493, 0.0726631}, {0.65054713, 0.1193242}, {5.3414021, 18.028251}})}}),
         onWafer(withModels(with(entry("Indium phosphide", "Semiconductors",
                               "InP: its gap 1.344 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.95 to 10 µm "
-                              "(Pettit and Turner's); Pockels' r41 1.45 pm/V, its axes a (100) wafer's (its orientation)",
+                              "(Pettit and Turner's); Pockels' r41 1.45 pm/V, its axes a (100) wafer's (its orientation); its edge's "
+                              "absorption A 1.16e5 per cm (Aspnes and Studna's k from 1.5 to 1.7 eV, within 4 %)",
                               {{"compound", "InP"}, {"epsilonr", "12.4"}, {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"},
+                               {"Afk", "1.16e5[1/cm]"},
                                {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"dndT", "2.0e-4[1/K]"}, {"nrange", "0.95[um] 10[um]"},
                                {"chi", "4.38[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"sigmaFCn", "1e-18[cm^2]"}, {"sigmaFCp", "2e-17[cm^2]"}}),
                         {{"Eg", varshniOfT(1.344, 0.363e-3, 162)}, {"Nc", ofT(5.7e17, QStringLiteral("1/cm^3"), 1.5)},

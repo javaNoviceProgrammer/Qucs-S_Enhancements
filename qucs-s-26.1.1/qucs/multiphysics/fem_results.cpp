@@ -1123,6 +1123,15 @@ void perturbationAlongSweep(const SolutionSet& set, const std::vector<Instance>&
     }
 }
 
+int modesAsked(const SolutionSet& set, const QString& which)
+{
+    if (which == QLatin1String("chosen")) return -1;
+    if (which != QLatin1String("auto") && !which.isEmpty()) return 0;
+    for (const auto& s : set.solutions)
+        if (s->modeAnalysis && s->modeChosen) return -1;
+    return 0;
+}
+
 Solution* select(const SolutionSet& set, const Instance& instance)
 {
     if (instance.point < 0 || instance.point >= int(set.solutions.size())) return nullptr;

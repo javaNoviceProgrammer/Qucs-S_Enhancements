@@ -1033,6 +1033,10 @@ QList<NodeKind> makeKinds()
                       QStringLiteral("bandfilling=true&bfmodel=user")),
               shownIf(flag(QStringLiteral("bfholes"), tr("Holes' too"), true, tr("The holes' band filling besides the electrons'")),
                       QStringLiteral("bandfilling=true&bfmodel=computed")),
+              shownIf(flag(QStringLiteral("bfexciton"), tr("Excitons' enhancement"), true,
+                           tr("Of Kane's Ep: Sommerfeld's enhancement of the edge by the electron and hole's attraction (the "
+                              "material's εr), as measured edges have - a material's Afk, a measured edge, is taken as it is")),
+                      QStringLiteral("bandfilling=true&bfmodel=computed")),
               shownIf(expr(QStringLiteral("Tbf"), tr("Carriers' temperature"), QStringLiteral("K"), QStringLiteral("300[K]")),
                       QStringLiteral("bandfilling=true&bfmodel=computed")),
               shownIf(spatial(QStringLiteral("Ncarriers"), tr("Electron concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.n")),
@@ -1180,6 +1184,22 @@ QList<NodeKind> makeKinds()
     // Semiconductors.
     add({QStringLiteral("semiconductor"), tr("Semiconductor"), QStringLiteral("physics"), QStringLiteral("semi"), Level::Domain,
          {selectionProp(),
+          choice(QStringLiteral("space"), tr("Solved"), {QStringLiteral("2d"), QStringLiteral("1d")},
+                 {tr("2D: over the cross-section"), tr("1D: along a line across the layers, its solution of that coordinate alone")},
+                 QStringLiteral("2d"),
+                 tr("1D: a stack's vertically depleted junction under a mesa - solved along a line through \"at\" (a strip of its "
+                    "own, its sides insulating: no lateral current), each node of its domains then taking the line's values at its "
+                    "coordinate, as other physics read them; its contacts where the line ends (or meets an interface), their "
+                    "currents the line's density through the narrowest of its domains across it (a mesa's). At rest alone "
+                    "(stationary steps)")),
+          shownIf(choice(QStringLiteral("axis"), tr("Line along"), {QStringLiteral("y"), QStringLiteral("x")}, {tr("y"), tr("x")}, QStringLiteral("y")),
+                  QStringLiteral("space=1d")),
+          shownIf(expr(QStringLiteral("at"), tr("Line through"), QStringLiteral("length"), QString(),
+                       tr("x (y, the line along x) where it runs; empty: the middle of the physics' domains")),
+                  QStringLiteral("space=1d")),
+          shownIf(expr(QStringLiteral("h1d"), tr("Element size along the line"), QStringLiteral("m"), QStringLiteral("1[nm]"),
+                       tr("A depletion region's edge wants a few Debye lengths' worth: 1 nm is 4 at 1e18 per cm³. A plain number is metres")),
+                  QStringLiteral("space=1d")),
           expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere")),
           spatial(QStringLiteral("TL"), tr("Lattice temperature for the mobilities"), QStringLiteral("K"), QString(),
                   tr("Where it varies - a heat physics' ht.T, its source semi.H: self-heating. The mobilities (TL/300 K)^-ζ there (each "
@@ -2286,10 +2306,12 @@ QList<NodeKind> makeKinds()
         dataset.kind = P::Dataset;
         dataset.defaultValue = QString();
         dataset.tooltip = tr("A cut line (a line graph) or cut point (a point graph) of the results");
-        const P solutions = choice(QStringLiteral("solutions"), tr("Solutions"), {QStringLiteral("all"), QStringLiteral("selected"), QStringLiteral("chosen")},
-                                   {tr("All: each output time, each parameter value"), tr("The plot group's time and parameter value"),
+        const P solutions = choice(QStringLiteral("solutions"), tr("Solutions"),
+                                   {QStringLiteral("auto"), QStringLiteral("all"), QStringLiteral("selected"), QStringLiteral("chosen")},
+                                   {tr("Automatic: all, but of a mode analysis whose step chose a mode that one alone"),
+                                    tr("All: each output time, each parameter value, each mode"), tr("The plot group's time and parameter value"),
                                     tr("Each parameter value, the mode its step chose (a mode analysis)")},
-                                   QStringLiteral("all"));
+                                   QStringLiteral("auto"));
         add({QStringLiteral("cutline"), tr("Cut Line 2D"), QStringLiteral("dataset"), QStringLiteral("cutline"), Level::None,
              {pair(QStringLiteral("start"), tr("Start"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
               pair(QStringLiteral("end"), tr("End"), QStringLiteral("length"), QStringLiteral("1"), QStringLiteral("0")),
@@ -2314,7 +2336,12 @@ QList<NodeKind> makeKinds()
               // curve per the other's) before a frequency step's frequencies, the
               // modes last; a transient's times, a spectrum before the sweep.)
               choice(QStringLiteral("against"), tr("Plot against"), {QStringLiteral("auto"), QStringLiteral("sweep"), QStringLiteral("steps")},
-                     {tr("Automatic"), tr("The sweep's parameters"), tr("The times, frequencies or modes")}, QStringLiteral("auto"))},
+                     {tr("Automatic"), tr("The sweep's parameters"), tr("The times, frequencies or modes")}, QStringLiteral("auto")),
+              choice(QStringLiteral("modes"), tr("Modes"), {QStringLiteral("auto"), QStringLiteral("all"), QStringLiteral("chosen")},
+                     {tr("Automatic: the mode its step chose where it chose one, else each"), tr("Each (an axis of them)"),
+                      tr("The one its step chose, at each frequency and parameter value")},
+                     QStringLiteral("auto"),
+                     tr("Of a mode analysis: each mode a curve, or the one its step chose (a guided TE0 against the bias, one curve)"))},
              {QStringLiteral("linegraph"), QStringLiteral("globalgraph"), QStringLiteral("pointgraph")}, {}, false, false,
              QStringLiteral("pg1d"),
              tr("Graphs of the solution - along a cut line, at points or of global values over time or a sweep - written as a "
@@ -2550,8 +2577,9 @@ QList<NodeKind> makeKinds()
         {
             P which = solutions;
             which.defaultValue = QStringLiteral("selected");
-            which.choiceLabels = {tr("All: each output time, each parameter value, each mode"), tr("One: its point, time or frequency, mode"),
-                            tr("Each parameter value, the mode its step chose (a mode analysis)")};
+            which.choiceLabels = {tr("Automatic: all, but of a mode analysis whose step chose a mode that one alone"),
+                                  tr("All: each output time, each parameter value, each mode"), tr("One: its point, time or frequency, mode"),
+                                  tr("Each parameter value, the mode its step chose (a mode analysis)")};
             const QString one = QStringLiteral("solutions=selected");
             add({QStringLiteral("fieldexport"), tr("Field on a Grid"), QStringLiteral("export"), QStringLiteral("fieldexport"), Level::None,
                  {study, which, shownIf(point, one), shownIf(time, one), shownIf(frequency, one),

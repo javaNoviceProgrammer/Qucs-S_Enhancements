@@ -2426,6 +2426,7 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         if (!p->field().solved) p->initialize();
     s.frequencyDomain = true;
     s.modeAnalysis = true;
+    s.modeChosen = s.modeChosen || kept.choose != 0;
     detail::Problem& modes = *st.problems[std::size_t(modal.front())];
     const QString tag = modes.field().tag;
     // (One mode asked for: it is the branch followed. Several are the set

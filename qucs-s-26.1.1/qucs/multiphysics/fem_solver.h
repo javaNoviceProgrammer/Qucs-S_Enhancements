@@ -246,6 +246,7 @@ public:
     bool timeDependent = false;
     bool frequencyDomain = false;         ///< its snapshots are of frequencies
     bool modeAnalysis = false;            ///< and of modes, at each frequency
+    bool modeChosen = false;              ///< its mode step chose a mode (not the first) at each
     bool quantumStates = false;           ///< its modes are quantum states
     /// A spectrum's snapshots, shown by: 0 their frequency, 1 the photon's
     /// energy, 2 its wavelength in vacuum; 3 the valence bands' in-plane k
