@@ -28,6 +28,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace qucs_s::fem {
@@ -163,7 +164,8 @@ GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters
  *   {"only": ["air"]}            domains whose smallest object is one of these
  *   {"of": ["trace"]}            boundaries (points) on the objects' edges;
  *                                with "side": "bottom" (top, left, right)
- *                                those facing it
+ *                                those facing it, or a list of sides
+ *                                (["left", "right"]: a cell's two walls)
  *   {"between": ["a", "b"]}      boundaries between a's domains and b's
  *   {"exterior": true}           boundaries with a domain on one side only
  *   {"interior": true}           boundaries between two domains
@@ -178,6 +180,23 @@ QVector<int> resolveSelection(const Topology& topology, const Model& model, Leve
 /// \a rule said for a reader: "domains 1, 3", "all boundaries", "the
 /// boundaries of trace (bottom)".
 QString describeSelection(const QJsonObject& rule, Level level);
+
+/*!
+ * A periodic condition's boundaries in two sides, one the other moved by
+ * \a shift (the geometry's unit; from the source to the destination, the
+ * source the side lower in x, then in y): each side a connected run of
+ * boundaries. \a copyOf by boundary: of a destination boundary, the source
+ * boundary it is (moved; \a reversed: walked the other way), -1 none whole
+ * - a mesh made the same on both.
+ */
+struct PeriodicSides {
+    std::vector<int> source, destination;
+    QPointF shift;
+    std::vector<int> copyOf;
+    std::vector<char> reversed;
+};
+/// \a boundaries in two such sides, or nothing and why in \a error.
+std::optional<PeriodicSides> periodicSides(const Topology& topology, const QVector<int>& boundaries, QString* error);
 
 } // namespace qucs_s::fem
 

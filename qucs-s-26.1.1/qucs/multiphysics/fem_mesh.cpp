@@ -459,8 +459,11 @@ private:
             return n;
         };
         for (const Topology::Point& p : a_t.points) nodeOf(p.vertex);
-        std::map<std::pair<int, int>, int> used;
-        for (int b = 0; b < int(a_t.boundaries.size()); ++b) {
+        // Each boundary's nodes between its ends: where along it (a length
+        // from its start).
+        const int nb = int(a_t.boundaries.size());
+        std::vector<std::vector<double>> where(static_cast<std::size_t>(nb));
+        for (int b = 0; b < nb; ++b) {
             const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
             const BoundaryPath path(a_t, bd);
             const double len = path.length();
@@ -488,8 +491,6 @@ private:
             if (path.onCurve() && a_t.curves[std::size_t(bd.curve)].kind != Curve::Line) n = std::max(n, 2);
             if (!path.onCurve()) n = std::max(n, 2);
             if (bd.start == bd.end) n = std::max(n, 3);
-            std::vector<int> nodes{nodeOf(bd.start)};
-            std::vector<double> params{bd.t0};
             for (int i = 1; i < n; ++i) {
                 double s = len * i / n;
                 if (!fAt.empty()) {
@@ -501,8 +502,62 @@ private:
                     const double u = f1 > f0 ? (target - f0) / (f1 - f0) : 0;
                     s = sAt[k - 1] + u * (sAt[k] - sAt[k - 1]);
                 }
+                where[std::size_t(b)].push_back(s);
+            }
+        }
+        // A periodic condition's two sides meshed alike: each pair of
+        // boundaries, one the other moved, at the nodes of both.
+        for (int d = 0; d < nb && d < int(a_sizes.copyOf.size()); ++d) {
+            const int src = a_sizes.copyOf[std::size_t(d)];
+            if (src < 0 || src >= nb || src == d) continue;
+            const bool turned = a_sizes.copyReversed[std::size_t(d)];
+            const double lenD = BoundaryPath(a_t, a_t.boundaries[std::size_t(d)]).length();
+            const double lenS = BoundaryPath(a_t, a_t.boundaries[std::size_t(src)]).length();
+            if (!(lenD > 0) || !(lenS > 0)) continue;
+            // (as fractions of their lengths, the source's way)
+            std::vector<double> own = where[std::size_t(d)], other = where[std::size_t(src)];
+            for (double& f : own) f = turned ? 1 - f / lenD : f / lenD;
+            for (double& f : other) f /= lenS;
+            // Each fraction with the spacing about it in its own list, the
+            // two merged: one closer to the last than 0.3 of that left out.
+            auto spaced = [](const std::vector<double>& fs) {
+                std::vector<std::pair<double, double>> out;
+                std::vector<double> sorted = fs;
+                std::sort(sorted.begin(), sorted.end());
+                for (std::size_t i = 0; i < sorted.size(); ++i) {
+                    const double before = sorted[i] - (i > 0 ? sorted[i - 1] : 0.0);
+                    const double after = (i + 1 < sorted.size() ? sorted[i + 1] : 1.0) - sorted[i];
+                    out.push_back({sorted[i], std::min(before, after)});
+                }
+                return out;
+            };
+            std::vector<std::pair<double, double>> all = spaced(own), more = spaced(other);
+            all.insert(all.end(), more.begin(), more.end());
+            std::sort(all.begin(), all.end());
+            std::vector<double> merged;
+            double lastAt = 0, lastGap = 1;
+            for (const auto& [f, gap] : all) {
+                if (f - lastAt < 0.3 * std::min(gap, lastGap) || 1 - f < 0.3 * gap) continue;
+                merged.push_back(f);
+                lastAt = f;
+                lastGap = gap;
+            }
+            std::vector<double> theirs = merged, mine = merged;
+            for (double& f : theirs) f *= lenS;
+            for (double& f : mine) f = (turned ? 1 - f : f) * lenD;
+            if (turned) std::reverse(mine.begin(), mine.end());
+            where[std::size_t(src)] = theirs;
+            where[std::size_t(d)] = mine;
+        }
+        std::map<std::pair<int, int>, int> used;
+        for (int b = 0; b < nb; ++b) {
+            const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
+            const BoundaryPath path(a_t, bd);
+            std::vector<int> nodes{nodeOf(bd.start)};
+            std::vector<double> params{bd.t0};
+            for (double at : where[std::size_t(b)]) {
                 double t = 0;
-                a_nodes.push_back(path.at(s, &t));
+                a_nodes.push_back(path.at(at, &t));
                 nodes.push_back(int(a_nodes.size()) - 1);
                 params.push_back(t);
             }
@@ -1230,9 +1285,140 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
         for (int d : resolveSelection(topology, model, Level::Domain, ph->selection(), &why))
             if (d >= 0 && d < int(s.delaunay.size())) s.delaunay[std::size_t(d)] = 1;
     }
+    // A periodic condition's two sides meshed alike (where they are not
+    // one the other moved, the physics says so).
+    s.copyOf.assign(topology.boundaries.size(), -1);
+    s.copyReversed.assign(topology.boundaries.size(), 0);
+    for (const Node* ph : model.physics()) {
+        if (!ph->enabled || ph->type != QLatin1String("waves")) continue;
+        for (const Node& f : ph->children) {
+            if (!f.enabled || f.type != QLatin1String("waves/periodic")) continue;
+            QString why;
+            const QVector<int> picked = resolveSelection(topology, model, Level::Boundary, f.selection(), &why);
+            const std::optional<PeriodicSides> sides = periodicSides(topology, picked, &why);
+            if (!sides) continue;
+            for (std::size_t b = 0; b < sides->copyOf.size(); ++b)
+                if (sides->copyOf[b] >= 0 && s.copyOf[b] < 0) {
+                    s.copyOf[b] = sides->copyOf[b];
+                    s.copyReversed[b] = sides->reversed[b];
+                }
+            s.periodic.push_back({sides->source, sides->destination, sides->shift});
+        }
+    }
     if (error) *error = problems.join(QLatin1String("; "));
     return s;
 }
+
+namespace {
+
+/// Boundary edge \a e of \a m split at \a p (on it): each triangle by it in
+/// two, the edges that bound them told.
+void splitBoundaryEdge(Mesh& m, int e, QPointF p, double s)
+{
+    const int np = int(m.nodes.size());
+    m.nodes.push_back(p);
+    Mesh::Edge& ed = m.edges[std::size_t(e)];
+    const int a = ed.a, b = ed.b;
+    Mesh::Edge second = ed;
+    second.a = np;
+    second.ta = ed.ta + s * (ed.tb - ed.ta);
+    ed.b = np;
+    ed.tb = second.ta;
+    auto edgeOf = [&m](int u, int v) {
+        for (int k = 0; k < int(m.edges.size()); ++k) {
+            const Mesh::Edge& x = m.edges[std::size_t(k)];
+            if ((x.a == u && x.b == v) || (x.a == v && x.b == u)) return k;
+        }
+        return -1;
+    };
+    for (int* side : {&ed.left, &ed.right}) {
+        const int t = *side;
+        if (t < 0) continue;
+        std::array<int, 3>& tri = m.triangles[std::size_t(t)];
+        // The new one: the old with a made p (the half by b); the old with b
+        // made p (the half by a) - the same turn both.
+        std::array<int, 3> half = tri;
+        for (int& v : half)
+            if (v == a) v = np;
+        for (int& v : tri)
+            if (v == b) v = np;
+        const int t2 = int(m.triangles.size());
+        m.triangles.push_back(half);
+        m.domain.push_back(m.domain[std::size_t(t)]);
+        int c = -1;
+        for (int v : half)
+            if (v != np && v != b) c = v;
+        // The edge (b, c) now bounds the new half.
+        if (const int k = edgeOf(b, c); k >= 0) {
+            Mesh::Edge& bc = m.edges[std::size_t(k)];
+            if (bc.left == t) bc.left = t2;
+            if (bc.right == t) bc.right = t2;
+        }
+        // (second's side: the half by b)
+        if (side == &ed.left) second.left = t2;
+        else second.right = t2;
+    }
+    m.edges.push_back(second);
+}
+
+/// Each periodic condition's two sides made the same node for node: a node
+/// of one moved onto the other where it has none, splitting its edge there.
+void matchPeriodicSides(Mesh& m, const MeshSizes& sizes)
+{
+    if (sizes.periodic.empty()) return;
+    const QRectF box = m.bounds();
+    const double tol = 1e-8 * std::max(std::hypot(box.width(), box.height()), 1e-300);
+    bool changed = false;
+    for (int pass = 0; pass < 8; ++pass) {
+        bool split = false;
+        for (const MeshSizes::Periodic& pc : sizes.periodic)
+            for (int dir : {1, -1}) {
+                const std::vector<int>& from = dir > 0 ? pc.source : pc.destination;
+                const std::vector<int>& to = dir > 0 ? pc.destination : pc.source;
+                const QPointF move = dir > 0 ? pc.shift : -pc.shift;
+                std::set<int> fromNodes;
+                std::vector<int> toEdges;
+                for (int e = 0; e < int(m.edges.size()); ++e) {
+                    const Mesh::Edge& ed = m.edges[std::size_t(e)];
+                    if (std::find(from.begin(), from.end(), ed.boundary) != from.end()) {
+                        fromNodes.insert(ed.a);
+                        fromNodes.insert(ed.b);
+                    }
+                    if (std::find(to.begin(), to.end(), ed.boundary) != to.end()) toEdges.push_back(e);
+                }
+                for (int n : fromNodes) {
+                    const QPointF p = m.nodes[std::size_t(n)] + move;
+                    int best = -1;
+                    double bestDist = std::numeric_limits<double>::infinity(), bestS = 0, bestLen = 0;
+                    for (int e : toEdges) {
+                        const Mesh::Edge& ed = m.edges[std::size_t(e)];
+                        const QPointF a = m.nodes[std::size_t(ed.a)], d = m.nodes[std::size_t(ed.b)] - a;
+                        const double l2 = d.x() * d.x() + d.y() * d.y();
+                        if (!(l2 > 0)) continue;
+                        const double s = std::clamp(((p.x() - a.x()) * d.x() + (p.y() - a.y()) * d.y()) / l2, 0.0, 1.0);
+                        const double dist = std::hypot(a.x() + s * d.x() - p.x(), a.y() + s * d.y() - p.y());
+                        if (dist < bestDist) {
+                            best = e;
+                            bestDist = dist;
+                            bestS = s;
+                            bestLen = std::sqrt(l2);
+                        }
+                    }
+                    if (best < 0 || bestDist > tol) continue;   // (not on the other side: the physics says so)
+                    if (bestS * bestLen <= tol || (1 - bestS) * bestLen <= tol) continue;   // a node there already
+                    const Mesh::Edge& ed = m.edges[std::size_t(best)];
+                    const QPointF a = m.nodes[std::size_t(ed.a)], b = m.nodes[std::size_t(ed.b)];
+                    splitBoundaryEdge(m, best, a + (b - a) * bestS, bestS);
+                    toEdges.push_back(int(m.edges.size()) - 1);
+                    split = changed = true;
+                }
+            }
+        if (!split) break;
+    }
+    if (changed) m.computeStatistics();
+}
+
+} // namespace
 
 MeshBuild buildMesh(std::shared_ptr<const Topology> topology, const MeshSizes& sizes, const Progress& progress)
 {
@@ -1243,6 +1429,7 @@ MeshBuild buildMesh(std::shared_ptr<const Topology> topology, const MeshSizes& s
     }
     Mesher mesher(std::move(topology), sizes, progress);
     MeshBuild out = mesher.run();
+    if (out.mesh) matchPeriodicSides(*out.mesh, sizes);
     if (out.mesh && out.mesh->triangles.empty()) {
         out.error = tr("the mesh has no triangles");
         out.mesh.reset();

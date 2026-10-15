@@ -27,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <unordered_map>
 
 namespace qucs_s::fem {
@@ -1792,24 +1793,34 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
         }
     } else if (rule.contains(QStringLiteral("of")) && level != Level::Domain) {
         const QSet<int> objs = objectIndices(t, rule.value(QStringLiteral("of")), unknown);
-        const QString side = rule.value(QStringLiteral("side")).toString();
-        QPointF dir;
-        if (side == QLatin1String("bottom")) dir = {0, -1};
-        else if (side == QLatin1String("top")) dir = {0, 1};
-        else if (side == QLatin1String("left")) dir = {-1, 0};
-        else if (side == QLatin1String("right")) dir = {1, 0};
-        else if (!side.isEmpty()) problems << tr("a side is bottom, top, left or right, not %1").arg(side);
+        // A side, or a list of them (a periodic cell's two walls).
+        QStringList sides;
+        const QJsonValue sideValue = rule.value(QStringLiteral("side"));
+        if (sideValue.isArray())
+            for (const QJsonValue& v : sideValue.toArray()) sides << v.toString();
+        else if (!sideValue.toString().isEmpty())
+            sides << sideValue.toString();
+        std::vector<QPointF> dirs;
+        for (const QString& side : sides) {
+            if (side == QLatin1String("bottom")) dirs.push_back({0, -1});
+            else if (side == QLatin1String("top")) dirs.push_back({0, 1});
+            else if (side == QLatin1String("left")) dirs.push_back({-1, 0});
+            else if (side == QLatin1String("right")) dirs.push_back({1, 0});
+            else problems << tr("a side is bottom, top, left or right, not %1").arg(side);
+        }
         QSet<int> boundaries;
         for (int b = 0; b < int(t.boundaries.size()); ++b) {
             const Topology::Boundary& bd = t.boundaries[std::size_t(b)];
             if (!bd.objects.intersects(objs)) continue;
-            if (!dir.isNull()) {
-                // Facing the side: the normal out of the objects' domain.
+            if (!sides.isEmpty()) {
+                // Facing a side: the normal out of the objects' domain.
                 auto held = [&](int d) { return d >= 0 && t.domains[std::size_t(d)].objects.intersects(objs); };
                 const bool upIn = held(bd.up), downIn = held(bd.down);
                 if (upIn == downIn) continue;
                 const QPointF nrm = t.normalAt(b, upIn ? bd.up : bd.down);
-                if (dot(nrm, dir) < 0.7) continue;
+                bool facing = false;
+                for (const QPointF& dir : dirs) facing = facing || dot(nrm, dir) >= 0.7;
+                if (!facing) continue;
             }
             boundaries.insert(b);
         }
@@ -1820,7 +1831,7 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
                     if (std::find(t.points[std::size_t(p)].boundaries.begin(), t.points[std::size_t(p)].boundaries.end(), b)
                         != t.points[std::size_t(p)].boundaries.end())
                         out.insert(p);
-        if (level == Level::Point && dir.isNull())
+        if (level == Level::Point && sides.isEmpty())
             for (int p = 0; p < int(t.points.size()); ++p)
                 if (t.points[std::size_t(p)].objects.intersects(objs)) out.insert(p);
     } else if (level == Level::Boundary && rule.contains(QStringLiteral("between"))) {
@@ -1897,7 +1908,10 @@ QString describeSelection(const QJsonObject& rule, Level level)
     else if (rule.contains(QStringLiteral("only"))) text = tr("the %1 of %2 alone").arg(plural, names(rule.value(QStringLiteral("only"))));
     else if (rule.contains(QStringLiteral("of"))) {
         text = tr("the %1 of %2").arg(plural, names(rule.value(QStringLiteral("of"))));
-        if (rule.contains(QStringLiteral("side"))) text += tr(" (%1)").arg(rule.value(QStringLiteral("side")).toString());
+        if (rule.contains(QStringLiteral("side"))) {
+            const QJsonValue side = rule.value(QStringLiteral("side"));
+            text += tr(" (%1)").arg(side.isArray() ? names(side) : side.toString());
+        }
     } else if (rule.contains(QStringLiteral("between"))) {
         const QJsonArray p = rule.value(QStringLiteral("between")).toArray();
         text = tr("the %1 between %2 and %3").arg(plural, names(p.at(0)), names(p.at(1)));
@@ -1910,6 +1924,120 @@ QString describeSelection(const QJsonObject& rule, Level level)
     if (rule.contains(QStringLiteral("except")))
         text += tr(", except %1").arg(describeSelection(rule.value(QStringLiteral("except")).toObject(), level));
     return text;
+}
+
+std::optional<PeriodicSides> periodicSides(const Topology& t, const QVector<int>& boundaries, QString* error)
+{
+    auto fail = [error](const QString& why) -> std::optional<PeriodicSides> {
+        if (error) *error = why;
+        return std::nullopt;
+    };
+    const int nb = int(t.boundaries.size());
+    std::vector<int> picked;
+    for (int b : boundaries)
+        if (b >= 0 && b < nb && std::find(picked.begin(), picked.end(), b) == picked.end()) picked.push_back(b);
+    if (picked.size() < 2)
+        return fail(tr("a periodic condition is on two sides, one the other moved: %1 boundary chosen").arg(int(picked.size())));
+    // Its sides: the runs of boundaries that meet end to end.
+    std::vector<std::size_t> parent(picked.size());
+    std::iota(parent.begin(), parent.end(), std::size_t(0));
+    const std::function<std::size_t(std::size_t)> root = [&](std::size_t i) { return parent[i] == i ? i : parent[i] = root(parent[i]); };
+    for (std::size_t i = 0; i < picked.size(); ++i)
+        for (std::size_t j = i + 1; j < picked.size(); ++j) {
+            const Topology::Boundary& a = t.boundaries[std::size_t(picked[i])];
+            const Topology::Boundary& b = t.boundaries[std::size_t(picked[j])];
+            if (a.start == b.start || a.start == b.end || a.end == b.start || a.end == b.end) parent[root(i)] = root(j);
+        }
+    std::map<std::size_t, std::vector<int>> runs;
+    for (std::size_t i = 0; i < picked.size(); ++i) runs[root(i)].push_back(picked[i]);
+    if (runs.size() != 2)
+        return fail(tr("its %1 boundaries make %2 runs, not two sides apart: a cell's two opposite walls ({\"of\": [...], \"side\": "
+                       "[\"left\", \"right\"]})")
+                        .arg(int(picked.size()))
+                        .arg(int(runs.size())));
+    const double tol = 1e-7 * std::max(std::hypot(t.bounds.width(), t.bounds.height()), 1e-300);
+    // Lower in x, then in y (within the tolerance: a wall's points share x).
+    auto lower = [tol](QPointF a, QPointF b) { return a.x() < b.x() - tol || (std::abs(a.x() - b.x()) <= tol && a.y() < b.y() - tol); };
+    struct Side {
+        std::vector<int> boundaries;
+        std::vector<std::vector<QPointF>> lines;
+        QPointF least;
+        double length = 0;
+    };
+    std::vector<Side> sides;
+    for (const auto& [key, list] : runs) {
+        Q_UNUSED(key);
+        Side s;
+        s.boundaries = list;
+        bool first = true;
+        for (int b : list) {
+            const Topology::Boundary& bd = t.boundaries[std::size_t(b)];
+            s.lines.push_back(bd.polyline(t));
+            s.length += bd.length;
+            for (const QPointF& p : s.lines.back())
+                if (first || lower(p, s.least)) {
+                    s.least = p;
+                    first = false;
+                }
+        }
+        sides.push_back(std::move(s));
+    }
+    if (lower(sides[1].least, sides[0].least)) std::swap(sides[0], sides[1]);
+    const Side& src = sides[0];
+    const Side& dst = sides[1];
+    PeriodicSides out;
+    out.source = src.boundaries;
+    out.destination = dst.boundaries;
+    out.shift = dst.least - src.least;
+    if (std::hypot(out.shift.x(), out.shift.y()) <= tol) return fail(tr("its two sides are in one place"));
+    // One the other moved: as long, and each one's points on the other's.
+    auto distance = [](QPointF p, const std::vector<std::vector<QPointF>>& lines) {
+        double best = std::numeric_limits<double>::infinity();
+        for (const auto& line : lines)
+            for (std::size_t i = 0; i + 1 < line.size(); ++i) {
+                const QPointF a = line[i], d = line[i + 1] - a;
+                const double l2 = d.x() * d.x() + d.y() * d.y();
+                const double u = l2 > 0 ? std::clamp(((p.x() - a.x()) * d.x() + (p.y() - a.y()) * d.y()) / l2, 0.0, 1.0) : 0.0;
+                best = std::min(best, std::hypot(p.x() - a.x() - u * d.x(), p.y() - a.y() - u * d.y()));
+            }
+        return best;
+    };
+    auto onOther = [&](const Side& from, const Side& to, QPointF move) {
+        for (const auto& line : from.lines)
+            for (std::size_t i = 0; i < line.size(); ++i) {
+                if (distance(line[i] + move, to.lines) > tol) return false;
+                if (i + 1 < line.size() && distance((line[i] + line[i + 1]) / 2 + move, to.lines) > tol) return false;
+            }
+        return true;
+    };
+    if (std::abs(src.length - dst.length) > 1e-6 * std::max(src.length, dst.length) || !onOther(src, dst, out.shift)
+        || !onOther(dst, src, -out.shift))
+        return fail(tr("its two sides are not one the other moved (%1 long and %2, %3 apart): a cell's opposite walls, the same "
+                       "shape")
+                        .arg(src.length)
+                        .arg(dst.length)
+                        .arg(std::hypot(out.shift.x(), out.shift.y())));
+    // Boundary by boundary, where whole ones match: a mesh made the same.
+    out.copyOf.assign(std::size_t(nb), -1);
+    out.reversed.assign(std::size_t(nb), 0);
+    for (int d : dst.boundaries) {
+        const Topology::Boundary& bd = t.boundaries[std::size_t(d)];
+        const QPointF d0 = t.vertices[std::size_t(bd.start)], d1 = t.vertices[std::size_t(bd.end)];
+        for (int s : src.boundaries) {
+            const Topology::Boundary& bs = t.boundaries[std::size_t(s)];
+            const QPointF s0 = t.vertices[std::size_t(bs.start)] + out.shift, s1 = t.vertices[std::size_t(bs.end)] + out.shift;
+            auto near = [tol](QPointF a, QPointF b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) <= tol; };
+            const bool same = near(s0, d0) && near(s1, d1), turned = near(s0, d1) && near(s1, d0);
+            if ((!same && !turned) || std::abs(bs.length - bd.length) > 1e-9 * std::max(bs.length, 1e-300)) continue;
+            bool along = true;
+            for (const QPointF& p : bs.polyline(t)) along = along && distance(p + out.shift, {bd.polyline(t)}) <= tol;
+            if (!along) continue;
+            out.copyOf[std::size_t(d)] = s;
+            out.reversed[std::size_t(d)] = turned && !same;
+            break;
+        }
+    }
+    return out;
 }
 
 } // namespace qucs_s::fem
