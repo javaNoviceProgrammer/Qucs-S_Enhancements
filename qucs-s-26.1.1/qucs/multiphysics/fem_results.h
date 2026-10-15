@@ -193,6 +193,10 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0,
                                 int mode = 0);
 /// The solution of \a instance, its snapshot selected.
 Solution* select(const SolutionSet& set, const Instance& instance);
+/// The mode a "solutions" (or a 1D plot group's "modes") choice \a which
+/// asks of \a set's mode analyses, as instances() takes it: -1 the one its
+/// step chose at each ("chosen"; "auto" where a step chose one), 0 each.
+int modesAsked(const SolutionSet& set, const QString& which);
 /// A Perturbation along a sweep (\a values: evaluateDerived's at each of
 /// \a at, instances of \a set): to each but the first point's of its mode,
 /// that point taken as the reference, its phase from it dphi_sweep = k0 L

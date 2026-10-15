@@ -242,6 +242,13 @@ double fermiHalfInverse(double u)
 
 } // namespace
 
+double sommerfeld(double x, double R)
+{
+    if (!(R > 0) || !(x > 0)) return 1;
+    const double a = 2 * M_PI * std::sqrt(R / x);
+    return a > 700 ? a : a / -std::expm1(-a);
+}
+
 IndexChange bandFilling(const BandFillingMedium& m, double E, double carriers, bool holes)
 {
     IndexChange out;
@@ -252,15 +259,18 @@ IndexChange bandFilling(const BandFillingMedium& m, double E, double carriers, b
     const double Nc = 2 * std::pow(mdos * M0 * kT / (2 * M_PI * Hbar * Hbar), 1.5);
     const double eta = fermiHalfInverse(carriers / Nc);
     const double mh[2] = {m.mhh, m.mlh};
-    double mr[2], strength[2];
+    double mr[2], strength[2], rydberg[2] = {0, 0};
     for (int j = 0; j < 2; ++j) mr[j] = m.me * mh[j] / (m.me + mh[j]);
     // α_j(E) = strength_j √(E - Eg) / E.
     if (m.A > 0) {
         const double w = std::pow(mr[0], 1.5) + std::pow(mr[1], 1.5);
         for (int j = 0; j < 2; ++j) strength[j] = m.A * std::pow(mr[j], 1.5) / w * Q / std::sqrt(Q);   // A √((E-Eg)/1 eV)(1 eV/E)
     } else {
-        for (int j = 0; j < 2; ++j)
+        for (int j = 0; j < 2; ++j) {
             strength[j] = Q * Q * m.Ep * std::pow(2 * mr[j] * M0 / (Hbar * Hbar), 1.5) * Hbar / (12 * M_PI * m.n * Clight * Eps0 * M0);
+            // (The exciton's Rydberg: 13.6057 eV m_r/εr².)
+            if (m.epsr > 0) rydberg[j] = 13.605693 * Q * mr[j] / (m.epsr * m.epsr);
+        }
     }
     // Δα at E' = Eg + x: the occupied share of the states it joins.
     auto dalpha = [&](double x) {
@@ -270,7 +280,7 @@ IndexChange bandFilling(const BandFillingMedium& m, double E, double carriers, b
             const double kinetic = x * mr[j] / (holes ? mh[j] : m.me);
             const double arg = kinetic / kT - eta;
             const double f = arg > 40 ? std::exp(-arg) : 1 / (1 + std::exp(arg));
-            sum += strength[j] * std::sqrt(x) / (m.Eg + x) * f;
+            sum += strength[j] * std::sqrt(x) / (m.Eg + x) * sommerfeld(x, rydberg[j]) * f;
         }
         return -sum;
     };

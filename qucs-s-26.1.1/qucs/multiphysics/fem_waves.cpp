@@ -702,12 +702,17 @@ public:
                     const std::optional<double> me = constant(QString(), QStringLiteral("me"), Dim(), tr("band filling's electron mass"), atT);
                     double mhh = NaN, mlh = NaN;
                     const bool holes = holeMasses(&mhh, &mlh);
-                    // Its absorption's strength: the material's edge (Afk), else Kane's Ep.
-                    double A = 0, Ep = 0;
-                    if (!c.property(*mat, QStringLiteral("Afk")).trimmed().isEmpty())
+                    // Its absorption's strength: the material's edge (Afk, a
+                    // measured one), else Kane's Ep - Sommerfeld's enhancement
+                    // with it, of the material's εr, unless left out.
+                    double A = 0, Ep = 0, epsr = 0;
+                    if (!c.property(*mat, QStringLiteral("Afk")).trimmed().isEmpty()) {
                         A = constant(QString(), QStringLiteral("Afk"), Dim::of(-1), tr("band filling's edge strength")).value_or(0);
-                    else
+                    } else {
                         Ep = constant(QString(), QStringLiteral("Ep"), Dim::of(2, 1, -2), tr("band filling's absorption (Kane's Ep)")).value_or(0);
+                        if (feat->flag(QStringLiteral("bfexciton")))
+                            epsr = constant(QString(), QStringLiteral("epsilonr"), Dim(), tr("band filling's excitons (the static εr)")).value_or(0);
+                    }
                     if (eg && me && T && holes && (A > 0 || Ep > 0)) {
                         bm.Eg = *eg;
                         bm.me = *me;
@@ -716,6 +721,7 @@ public:
                         bm.T = *T;
                         bm.A = A;
                         bm.Ep = Ep;
+                        bm.epsr = epsr;
                         m.bandFilling = 0;
                         m.bandHoles = feat->flag(QStringLiteral("bfholes"));
                     }

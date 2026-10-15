@@ -1290,11 +1290,12 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
         return out;
     }
     // At each solution it asks for: each output time, each parameter value.
-    // (Chosen: at each, the mode its step chose.)
+    // (Chosen: at each, the mode its step chose; automatic: so where a step
+    // chose one.)
     const QString which = n->text(QStringLiteral("solutions"));
     const bool all = which != QLatin1String("selected");
-    const int mode = which == QLatin1String("chosen") ? -1 : 0;
-    auto evaluateIn = [n, all, mode](const SolutionSet& in) {
+    auto evaluateIn = [n, all, which](const SolutionSet& in) {
+        const int mode = all ? modesAsked(in, which) : 0;
         DerivedResult r;
         // (A global's rows at each output - time, frequency, photon energy,
         // mode - of a point, to give it once for the point where it is the
@@ -1436,7 +1437,10 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     // the sweep (stored the time or the mode the faster) - each axis of more
     // than one value: one of one says nothing, and a data display drawing
     // over it draws nothing (a sweep's C-V curve at its one frequency).
-    const std::vector<Instance> every = instances(*set, true);
+    // (A mode analysis's chosen mode alone, where asked - or, automatic,
+    // where its step chose one: no axis of modes then.)
+    const int modeAsked = modesAsked(*set, g->text(QStringLiteral("modes")));
+    const std::vector<Instance> every = instances(*set, true, 0, {}, {}, modeAsked);
     QStringList outer;
     // Each variable's unit as its values are written - an axis's own (eV, a
     // band's k in 1/nm as qw.k is shown, s, Hz, a sweep's parameter's SI
@@ -1456,9 +1460,9 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
             if (!frequencies.contains(f)) frequencies << f;
             ++counts[f];
         }
-        const int perFrequency = counts.isEmpty() ? 0 : counts.first();
+        const int perFrequency = counts.isEmpty() ? 0 : modeAsked < 0 ? 1 : counts.first();
         modesEven = true;
-        for (int c : counts) modesEven = modesEven && c == perFrequency;
+        for (int c : counts) modesEven = modesEven && (modeAsked < 0 || c == perFrequency);
         if (modesEven) {
             if (perFrequency > 1) {
                 Variable m;
@@ -1632,9 +1636,12 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                     QMap<QString, Variable> byName;
                     QMap<QString, QString> unitOf;
                     QStringList order;
+                    // (A Perturbation's phase and VπL along the sweep: of all its points.)
+                    std::vector<DerivedResult> results;
+                    for (const Instance& in : every) results.push_back(evaluateDerived(*select(*set, in), *derivedNode));
+                    if (derivedNode->type == QLatin1String("perturbation")) perturbationAlongSweep(*set, every, *derivedNode, results);
                     for (const Instance& in : every) {
-                        Solution* sol = select(*set, in);
-                        const DerivedResult r = evaluateDerived(*sol, *derivedNode);
+                        const DerivedResult& r = results[std::size_t(&in - &every.front())];
                         if (!r.error.isEmpty()) problems << tr("%1: %2").arg(derivedNode->name(), r.error);
                         QSet<QString> seen;
                         for (const DerivedValue& dv : r.values) {
