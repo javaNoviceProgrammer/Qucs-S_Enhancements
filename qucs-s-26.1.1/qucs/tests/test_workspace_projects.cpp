@@ -3,7 +3,8 @@
  * folder copied into the workspace), Link Project (a link to it in the
  * workspace, nothing copied, and it acts as a project there), Unlink
  * Project (the link of the row right-clicked goes), Open Project (the
- * project right-clicked) and Close Project.
+ * project right-clicked) and Close Project; the File Browser's Open as
+ * Project (a folder linked so, and shown in the panel).
  * Deleting or unlinking a linked project removes the link, never the
  * project it leads to. And the workspace changed in the settings is the
  * one the panel lists.
@@ -17,6 +18,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStandardPaths>
+#include <QTabWidget>
 #include <QTemporaryDir>
 
 #ifndef Q_OS_WIN
@@ -32,6 +34,7 @@
 #include "settings.h"
 #include "workspace.h"
 #include "dialogs/qucssettingsdialog.h"
+#include "filebrowser.h"
 #include "dialogs/savedialog.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -743,6 +746,114 @@ private slots:
                       return true;
                   });
         QVERIFY2(said.contains("_prj"), qPrintable(said));
+    }
+
+    // The workspace's own entry for a folder: its own folder, or a link to it.
+    void aFolderTheWorkspaceHas()
+    {
+        fresh("has");
+        QCOMPARE(projectInWorkspace(source, workspace), QString());
+        const Result r = linkProject(source, workspace);
+        QVERIFY2(r.status == Result::Done, qPrintable(r.message));
+        QCOMPARE(projectInWorkspace(source, workspace), r.path);
+        QCOMPARE(projectInWorkspace(source + "/", workspace), r.path);   // as the folder dialog writes it
+        QCOMPARE(projectInWorkspace(r.path, workspace), r.path);         // the link itself
+        QVERIFY(QDir().mkpath(workspace + "/here_prj"));
+        QCOMPARE(projectInWorkspace(workspace + "/here_prj", workspace), workspace + "/here_prj");
+        QCOMPARE(projectInWorkspace(workspace, workspace), QString());   // the workspace is none of its own
+        QCOMPARE(projectInWorkspace(dir.filePath("has/nothing_prj"), workspace), QString());
+    }
+
+    // The File Browser's "Open as Project" on a folder: linked into the
+    // workspace as Link Project does, and selected in the Projects panel;
+    // again, or a project the workspace has, shown as it is; not offered on
+    // a file or the folder shown.
+    void openAsProjectFromTheFileBrowser()
+    {
+        fresh("browser");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        QVERIFY(app.switchWorkspace(workspace));
+        FileBrowser* browser = app.fileBrowserPanel();
+        QVERIFY(browser != nullptr);
+        // Each dialog that comes up: noted and answered, so none waits.
+        QStringList dialogs;
+        QTimer watch;
+        QObject::connect(&watch, &QTimer::timeout, [&] {
+            if (QWidget* modal = QApplication::activeModalWidget()) {
+                if (auto* box = qobject_cast<QMessageBox*>(modal)) {
+                    dialogs << box->text();
+                    box->accept();
+                } else if (auto* input = qobject_cast<QInputDialog*>(modal)) {
+                    dialogs << input->labelText();
+                    input->reject();
+                }
+            }
+        });
+        watch.start(20);
+        QString itemText;
+        const auto choose = [&](const QString& path) {
+            QMenu* menu = browser->contextMenuFor(path);
+            QAction* item = menu->findChild<QAction*>(QStringLiteral("fbOpenAsProject"));
+            const bool offered = item != nullptr;
+            if (item != nullptr) {
+                itemText = item->text();
+                item->trigger();
+            }
+            delete menu;
+            return offered;
+        };
+        // The left dock's tabs: the Projects panel's and the File Browser's.
+        QTabWidget* tabs = nullptr;
+        for (QTabWidget* t : app.findChildren<QTabWidget*>())
+            if (t->indexOf(browser) >= 0) tabs = t;
+        QVERIFY(tabs != nullptr);
+        auto inWorkspace = [&] { return QDir(workspace).entryList(QDir::Dirs | QDir::NoDotAndDotDot); };
+
+        // A project elsewhere: linked, nothing copied, and the Projects
+        // panel brought up with it chosen.
+        tabs->setCurrentWidget(browser);
+        QVERIFY(choose(source));
+        QCOMPARE(itemText, QStringLiteral("Open as Project"));
+        const QString linked = QDir(workspace).absoluteFilePath("amp_prj");
+        QVERIFY(isLink(linked));
+        QCOMPARE(QFileInfo(linked).canonicalFilePath(), QFileInfo(source).canonicalFilePath());
+        QCOMPARE(tabs->currentIndex(), 0);   // the Projects tab
+        QTRY_COMPARE(app.projectsView()->currentIndex().data().toString(), QStringLiteral("amp_prj"));
+        QVERIFY(app.projectsView()->currentIndex().data(Qt::FontRole).value<QFont>().italic());   // a link
+        QVERIFY2(dialogs.isEmpty(), qPrintable(dialogs.join(" | ")));
+
+        // Again: the link there is shown - no second link, no name asked.
+        tabs->setCurrentWidget(browser);
+        app.projectsView()->setCurrentIndex(QModelIndex());
+        QVERIFY(choose(source + "/"));
+        QCOMPARE(inWorkspace(), QStringList({"amp_prj"}));
+        QCOMPARE(tabs->currentIndex(), 0);
+        QTRY_COMPARE(app.projectsView()->currentIndex().data().toString(), QStringLiteral("amp_prj"));
+        QVERIFY2(dialogs.isEmpty(), qPrintable(dialogs.join(" | ")));
+
+        // A project the workspace has as its own folder: shown, not linked.
+        QVERIFY(write(workspace + "/own_prj/own.sch", kSchematic));
+        QVERIFY(choose(workspace + "/own_prj"));
+        QVERIFY(!isLink(workspace + "/own_prj"));
+        QTRY_COMPARE(app.projectsView()->currentIndex().data().toString(), QStringLiteral("own_prj"));
+        QCOMPARE(inWorkspace(), QStringList({"amp_prj", "own_prj"}));
+        QVERIFY2(dialogs.isEmpty(), qPrintable(dialogs.join(" | ")));
+
+        // A folder that cannot be a project (no _prj): said, nothing linked.
+        const bool anyWas = QucsSettings.AnyFolderIsProject;
+        QucsSettings.AnyFolderIsProject = false;
+        QVERIFY(QDir().mkpath(dir.filePath("browser/elsewhere/plain")));
+        QVERIFY(choose(dir.filePath("browser/elsewhere/plain")));
+        QucsSettings.AnyFolderIsProject = anyWas;
+        QTRY_COMPARE(dialogs.size(), 1);
+        QVERIFY2(dialogs.front().contains("_prj"), qPrintable(dialogs.front()));
+        QCOMPARE(inWorkspace(), QStringList({"amp_prj", "own_prj"}));
+
+        // A file's menu, and the folder shown's: no such item.
+        QVERIFY(!choose(source + "/amp.sch"));
+        QVERIFY(!choose(QString()));
+        watch.stop();
     }
 
     // Deleting a linked project from the workspace removes the link only.

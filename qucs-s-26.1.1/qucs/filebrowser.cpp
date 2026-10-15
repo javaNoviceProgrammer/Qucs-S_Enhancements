@@ -2757,6 +2757,12 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
         menu->setDefaultAction(open);
         menu->addAction(tr("Open in New Tab"), this, [this, path] { openInNewTab(path); })
             ->setObjectName(QStringLiteral("fbOpenInNewTab"));
+        // Linked into the workspace (Link Project's), shown in the Projects
+        // panel.
+        QAction* asProject = menu->addAction(tr("Open as Project"), this, [this, path] { emit openAsProjectRequested(path); });
+        asProject->setObjectName(QStringLiteral("fbOpenAsProject"));
+        asProject->setStatusTip(tr("Links the folder into the workspace as a project, as Link Project does, and shows it in "
+                                   "the Projects panel"));
         menu->addSeparator();
         menu->addAction(tr("New Folder…"), this, [this, path] {
             const QString made = createFolder(path);

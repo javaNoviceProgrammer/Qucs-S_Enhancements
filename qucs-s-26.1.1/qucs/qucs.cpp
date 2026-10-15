@@ -832,6 +832,7 @@ void QucsApp::initView()
     openFileFromProjectView(QFileInfo(path), QString());
   });
   connect(fileBrowser, &FileBrowser::newArchiveRequested, this, [this](const QString &folder) { newArchive(folder); });
+  connect(fileBrowser, &FileBrowser::openAsProjectRequested, this, [this](const QString &folder) { openFolderAsProject(folder); });
   connect(fileBrowser, &FileBrowser::moved, this, &QucsApp::documentsMoved);
   fileBrowser->setOpenDocumentsProvider([this] {
     QList<FileBrowser::OpenDocument> open;
@@ -2665,6 +2666,24 @@ void QucsApp::slotLinkProject()
     statusBar()->showMessage(tr("%1 is linked into the workspace from %2.")
                                  .arg(QDir(path).dirName(), QDir::toNativeSeparators(QDir(source).absolutePath())),
                              8000);
+}
+
+QString QucsApp::openFolderAsProject(const QString &folder)
+{
+  // The workspace's own already - its folder, or a link to it: shown, not
+  // linked a second time.
+  const QString there = qucs_s::workspace::projectInWorkspace(folder, QucsSettings.qucsWorkspaceDir.absolutePath());
+  if (!there.isEmpty() && qucs_s::workspace::isProjectFolder(there)) {
+    showProjectInList(there);
+    statusBar()->showMessage(tr("%1 is a project of the workspace already.").arg(QDir(there).dirName()), 5000);
+    return there;
+  }
+  const QString path = bringProjectIn(folder, true);
+  if (!path.isEmpty())
+    statusBar()->showMessage(tr("%1 is linked into the workspace from %2.")
+                                 .arg(QDir(path).dirName(), QDir::toNativeSeparators(QDir(folder).absolutePath())),
+                             8000);
+  return path;
 }
 
 bool QucsApp::switchWorkspace(const QString &dir)
