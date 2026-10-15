@@ -1670,6 +1670,94 @@ private slots:
     }
 
     // Claude's tools: the modes solved, a mode evaluated and plotted.
+    void graphsOfTheChosenMode()
+    {
+        // A slab (µm) 2 wide, its thickness swept, two modes at 1550 nm: its
+        // step chooses the more TM of them. A 1D plot group's graphs and a
+        // derived value take that one alone - automatically, the step having
+        // chosen -, each mode when asked; a Perturbation's VπL along the sweep.
+        const QString file = path(QStringLiteral("slab_chosen.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "t", "expression": "0.3[um]"}],
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "label": "clad", "position": ["-1.5", "-1"], "size": ["3", "2"]},
+                         {"type": "rectangle", "label": "core", "position": ["-1", "0"], "size": ["2", "t/1[um]"]}],
+            "materials": [{"label": "oxide", "n": "1.45", "selection": {"only": ["clad"]}},
+                          {"label": "silicon", "n": "3.4", "selection": {"only": ["core"]}}],
+            "physics": [{"type": "modes", "tag": "emw", "order": "1"}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.15"}}],
+          "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "sweep", "parameters": [["t", "0.3, 0.4", "um"]]},
+                                 {"type": "mode", "frequency": "1550[nm]", "modes": 2, "neff": "3.4", "choose": "tm"}]}],
+          "results": {"plots": [{"type": "plotgroup1d", "tag": "pga", "label": "Chosen", "study": "std1",
+                                 "plots": [{"type": "globalgraph", "expression": "emw.neff; emw.TEfraction"},
+                                           {"type": "globalgraph", "expression": "pert1.VpiL"}]},
+                                {"type": "plotgroup1d", "tag": "pgall", "label": "Each", "study": "std1", "modes": "all",
+                                 "plots": [{"type": "globalgraph", "expression": "emw.neff"}]}],
+                      "derived": [{"type": "global", "tag": "gev1", "study": "std1", "expression": "emw.neff"},
+                                  {"type": "global", "tag": "gev2", "study": "std1", "expression": "emw.neff", "solutions": "all"},
+                                  {"type": "perturbation", "tag": "pert1", "study": "std1", "dn": "1e-3", "selection": {"only": ["core"]}, "bias": "t"}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute(QStringLiteral("std1"));
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        // Each point's chosen snapshot: one.
+        const std::shared_ptr<SolutionSet> set = doc->solutions(QStringLiteral("std1"));
+        QCOMPARE(int(set->solutions.size()), 2);
+        double tm0[2] = {NAN, NAN}, all[4] = {NAN, NAN, NAN, NAN}, te[2][2];
+        int second = 0;
+        for (int p = 0; p < 2; ++p) {
+            Solution& s = *set->solutions[std::size_t(p)];
+            QCOMPARE(s.snapshotCount(), 2);
+            int chosen = -1;
+            for (int k = 0; k < 2; ++k) {
+                s.select(k);
+                all[k * 2 + p] = *s.global(QStringLiteral("emw.neff"));
+                te[p][k] = *s.global(QStringLiteral("emw.TEfraction"));
+                if (s.snapshotChosen(k)) {
+                    QCOMPARE(chosen, -1);
+                    chosen = k;
+                    tm0[p] = *s.global(QStringLiteral("emw.neff"));
+                }
+            }
+            // (The more TM of the two.)
+            QVERIFY(chosen >= 0 && te[p][chosen] <= te[p][1 - chosen]);
+            second += chosen == 1 ? 1 : 0;
+        }
+        // (Not the first: what is shown is not what was before.)
+        QVERIFY(second > 0);
+        QString why;
+        auto dataOf = [&](const QString& group, qucs_s::dataset::Dataset& data) {
+            const QString display = doc->showGraphs(group, &why, false);
+            return !display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why);
+        };
+        qucs_s::dataset::Dataset data;
+        QVERIFY2(dataOf(QStringLiteral("pga"), data), qPrintable(why));
+        const qucs_s::dataset::Variable* neff = data.find(QStringLiteral("emw.neff"));
+        QVERIFY(neff && data.find(QStringLiteral("mode")) == nullptr);
+        QCOMPARE(neff->dependencies, QStringList{QStringLiteral("t")});
+        QCOMPARE(neff->size(), 2);
+        for (int p = 0; p < 2; ++p) QCOMPARE(neff->re.at(p), tm0[p]);
+        for (int p = 0; p < 2; ++p) QCOMPARE(data.find(QStringLiteral("emw.TEfraction"))->re.at(p), std::min(te[p][0], te[p][1]));
+        // The perturbation's VπL along the sweep: none at its first point.
+        const qucs_s::dataset::Variable* vpil = data.find(QStringLiteral("VpiL"));
+        QVERIFY2(vpil && vpil->size() == 2 && std::isnan(vpil->re.at(0)) && vpil->re.at(1) > 0, qPrintable(why));
+        // Each mode when asked: an axis of them.
+        QVERIFY2(dataOf(QStringLiteral("pgall"), data), qPrintable(why));
+        neff = data.find(QStringLiteral("emw.neff"));
+        QCOMPARE(neff->dependencies, (QStringList{QStringLiteral("t"), QStringLiteral("mode")}));
+        for (int i = 0; i < 4; ++i) QCOMPARE(neff->re.at(i), all[i]);
+        // A derived value: the chosen alone by default, each when asked.
+        DerivedResult r = doc->evaluate(QStringLiteral("gev1"));
+        QVERIFY2(r.error.isEmpty() && r.values.size() == 2, qPrintable(r.error + QString::number(r.values.size())));
+        for (int p = 0; p < 2; ++p) QCOMPARE(r.values[p].value, tm0[p]);
+        r = doc->evaluate(QStringLiteral("gev2"));
+        QCOMPARE(r.values.size(), 4);
+    }
+
     void claudesToolsForModes()
     {
         open(copyOf(QStringLiteral("wr90_modes.qfem")));

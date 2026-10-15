@@ -21,6 +21,7 @@
  */
 #include "fem_problem.h"
 #include "fem_geometry.h"
+#include "fem_line.h"
 #include "fem_materials.h"
 #include "fem_mesh.h"
 
@@ -34,6 +35,7 @@
 #include <complex>
 #include <map>
 #include <optional>
+#include <set>
 #include <tuple>
 
 namespace qucs_s::fem::detail {
@@ -511,6 +513,14 @@ private:
     // The weights' system (its pattern the mesh's: analysed once).
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> a_weightSolver;
     int a_weightSize = -1;
+    // Solved in 1D: along a_line (a_axis1d 0 x, 1 y; its elements a_h1d
+    // long) - on a strip of its own, an auxiliary model's - its solution
+    // set at each node by its coordinate.
+    bool a_1d = false;
+    int a_axis1d = 1;
+    double a_h1d = 1e-9;
+    Line a_line;
+    bool solve1d(QString* error);
 };
 
 /// A band energy (eV, or V as eV per electron, or a plain number in eV)
@@ -1726,6 +1736,38 @@ bool SemiconductorProblem::setup(QString* error)
             a_contacts[k].current = f.terminals[k].charge;
             a_contacts[k].charge = f.terminals[k].chargeIm;
         }
+    // Solved in 1D: its line across its domains (no gap in it), and what a
+    // strip of its own cannot take.
+    a_1d = a_node->text(QStringLiteral("space")) == QLatin1String("1d");
+    if (a_1d) {
+        a_axis1d = a_node->text(QStringLiteral("axis")) == QLatin1String("x") ? 0 : 1;
+        if (a_s.axisymmetric()) problem(tr("%1: solved in 1D in a plane's model alone (not about an axis)").arg(a_node->name()));
+        if (a_TL.isValid()) problem(tr("%1: solved in 1D it takes no lattice temperature (TL)").arg(a_node->name()));
+        for (const Node& feature : a_node->children) {
+            if (!feature.enabled) continue;
+            if (feature.type == QLatin1String("semiconductor/optical") || feature.type == QLatin1String("semiconductor/quantum"))
+                problem(tr("%1: solved in 1D it takes no %2 (another physics' field across its domains)").arg(a_node->name(), feature.name()));
+        }
+        const std::optional<double> h = evaluateConstant(a_node->text(QStringLiteral("h1d")), constants, Dim::length(), &why);
+        if (!h || !(*h > 0)) {
+            problem(tr("%1: its line's element size: %2").arg(a_node->name(), h ? tr("it must be more than 0") : why));
+        } else {
+            a_h1d = *h;
+            QString lineWhy;
+            if (!buildLine(a_s, f.domains, a_axis1d, a_node->text(QStringLiteral("at")), a_h1d, 0, &a_line, &lineWhy)) {
+                problem(tr("%1: its line: %2").arg(a_node->name(), lineWhy));
+            } else {
+                for (int k = 0; k < a_line.elements(); ++k)
+                    if (a_line.domain[std::size_t(k)] < 0) {
+                        problem(tr("%1: its line leaves its domains between %2 and %3 µm along it: a 1D one is across them all, "
+                                   "without a gap")
+                                    .arg(a_node->name(), formatNumber(a_line.z[std::size_t(2 * k)] * 1e6, 4),
+                                         formatNumber(a_line.z[std::size_t(2 * k + 2)] * 1e6, 4)));
+                        break;
+                    }
+            }
+        }
+    }
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
         return false;
@@ -3546,6 +3588,13 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
         *error = a_initError;
         return false;
     }
+    if (a_1d) {
+        if (o.mass > 0 || (o.harmonic && o.frequency > 0)) {
+            *error = tr("%1: solved in 1D it is solved at rest alone - a stationary step, not one in time or frequency").arg(a_node->name());
+            return false;
+        }
+        return solve1d(error);
+    }
     latticeTemperature();
     // Generation at the nodes, as it is now (it may read other fields, t).
     a_generation.assign(std::size_t(a_n), 0.0);
@@ -3705,6 +3754,265 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
         return true;
     }
     return stationary(error);
+}
+
+bool SemiconductorProblem::solve1d(QString* error)
+{
+    // The line's stretches, each in one domain (along it, m), and the
+    // geometry's boundaries at their ends.
+    struct Stretch {
+        double s0 = 0, s1 = 0;
+        int domain = -1;
+        std::set<int> start, end;
+        int auxDomain = -1, auxStart = -1, auxEnd = -1;
+    };
+    std::vector<Stretch> stretches;
+    for (int k = 0; k < a_line.elements(); ++k) {
+        const int d = a_line.domain[std::size_t(k)];
+        if (stretches.empty() || stretches.back().domain != d) {
+            Stretch st;
+            st.s0 = a_line.z[std::size_t(2 * k)];
+            st.domain = d;
+            st.start = a_line.boundaries[std::size_t(2 * k)];
+            stretches.push_back(st);
+        }
+        stretches.back().s1 = a_line.z[std::size_t(2 * k + 2)];
+        stretches.back().end = a_line.boundaries[std::size_t(2 * k + 2)];
+    }
+    if (stretches.empty()) {
+        *error = tr("%1: its line crosses none of its domains").arg(a_node->name());
+        return false;
+    }
+    const Model& parent = a_s.model();
+    const Topology& topo = a_s.topology();
+    const double unit = a_s.mesh().unitScale;
+    const bool alongY = a_axis1d == 1;
+    // The strip, in the geometry's unit: a rectangle each stretch, the line
+    // its middle, as wide as the line is long, eight columns across - read
+    // along its middle. (A node where two layers meet takes their dopings
+    // as its triangles share it: the middle's balanced, a side's leaning
+    // one way - its disturbance gone a few screening lengths in.)
+    const double across = (alongY ? a_line.S.x() : a_line.S.y()) / unit, origin = (alongY ? a_line.S.y() : a_line.S.x()) / unit;
+    const double width = a_line.L / unit;
+    constexpr int Columns = 8;
+    auto stripPoint = [alongY, across, origin](double along, double side) {
+        return alongY ? QPointF(across + side, origin + along) : QPointF(origin + along, across + side);
+    };
+    Model aux = parent;
+    aux.geometry().children.clear();
+    for (std::size_t k = 0; k < stretches.size(); ++k) {
+        Node r = aux.make(QStringLiteral("rectangle"));
+        r.label = QStringLiteral("line1d_%1").arg(k + 1);
+        const double length = (stretches[k].s1 - stretches[k].s0) / unit;
+        const QPointF corner = stripPoint(stretches[k].s0 / unit, -width / 2);
+        r.props.insert(QStringLiteral("position"), QJsonArray{formatNumber(corner.x(), 17), formatNumber(corner.y(), 17)});
+        r.props.insert(QStringLiteral("size"), alongY ? QJsonArray{formatNumber(width, 17), formatNumber(length, 17)}
+                                                      : QJsonArray{formatNumber(length, 17), formatNumber(width, 17)});
+        aux.geometry().children.push_back(r);
+    }
+    const GeometryBuild built = buildGeometry(aux, *a_s.parametersPtr());
+    if (!built.topology || !built.errors.isEmpty()) {
+        *error = tr("%1: its line's strip: %2").arg(a_node->name(), QStringList(built.errors.values()).join(QLatin1String("; ")));
+        return false;
+    }
+    const Topology& strip = *built.topology;
+    // Each stretch's domain there, the boundaries at its ends.
+    const double tolerance = width * 1e-6;
+    for (Stretch& st : stretches) {
+        // (Off the line: not on a rectangle's diagonal.)
+        st.auxDomain = strip.domainAt(stripPoint((st.s0 + st.s1) / 2 / unit, width / (3 * Columns)));
+        st.auxStart = strip.boundaryAt(stripPoint(st.s0 / unit, 0), tolerance);
+        st.auxEnd = strip.boundaryAt(stripPoint(st.s1 / unit, 0), tolerance);
+        if (st.auxDomain < 0 || st.auxStart < 0 || st.auxEnd < 0) {
+            *error = tr("%1: its line's strip is not as made").arg(a_node->name());
+            return false;
+        }
+    }
+    auto numbers = [](const std::vector<int>& items) {
+        QJsonArray a;
+        for (int i : items) a.append(i + 1);
+        return QJsonObject{{QStringLiteral("numbers"), a}};
+    };
+    std::vector<int> allDomains;
+    for (const Stretch& st : stretches) allDomains.push_back(st.auxDomain);
+    // Its materials on the stretches of their domains.
+    QString why;
+    for (Node& m : aux.materials().children) {
+        const QVector<int> on = resolveSelection(topo, parent, Level::Domain, m.selection(), &why);
+        std::vector<int> mine;
+        for (const Stretch& st : stretches)
+            if (on.contains(st.domain)) mine.push_back(st.auxDomain);
+        if (mine.empty()) m.enabled = false;
+        else m.props.insert(QStringLiteral("selection"), numbers(mine));
+    }
+    // This physics alone, its features on the strip's: a domain's on its
+    // stretches, a boundary's where the line meets it.
+    for (Node& n : aux.component().children) {
+        if (!physicsTypes().contains(n.type)) continue;
+        if (n.tag != a_node->tag) {
+            n.enabled = false;
+            continue;
+        }
+        n.props.insert(QStringLiteral("space"), QStringLiteral("2d"));
+        n.props.insert(QStringLiteral("selection"), numbers(allDomains));
+        for (Node& feature : n.children) {
+            if (!feature.enabled) continue;
+            const NodeKind* kind = feature.kind();
+            const Level level = kind ? kind->selection : Level::None;
+            if (level == Level::Domain) {
+                const QVector<int> on = resolveSelection(topo, parent, Level::Domain, feature.selection(), &why);
+                std::vector<int> mine;
+                for (const Stretch& st : stretches)
+                    if (on.contains(st.domain)) mine.push_back(st.auxDomain);
+                if (mine.empty()) feature.enabled = false;
+                else feature.props.insert(QStringLiteral("selection"), numbers(mine));
+            } else if (level == Level::Boundary) {
+                // (The insulation: the strip's outside, as made.)
+                if (feature.type == QLatin1String("semiconductor/insulation")) {
+                    feature.props.insert(QStringLiteral("selection"), aux.make(feature.type).value(QStringLiteral("selection")));
+                    continue;
+                }
+                const QVector<int> on = resolveSelection(topo, parent, Level::Boundary, feature.selection(), &why);
+                std::vector<int> mine;
+                for (std::size_t k = 0; k < stretches.size(); ++k) {
+                    for (int b : stretches[k].start)
+                        if (on.contains(b) && std::find(mine.begin(), mine.end(), stretches[k].auxStart) == mine.end()) mine.push_back(stretches[k].auxStart);
+                    if (k + 1 == stretches.size())
+                        for (int b : stretches[k].end)
+                            if (on.contains(b) && std::find(mine.begin(), mine.end(), stretches[k].auxEnd) == mine.end()) mine.push_back(stretches[k].auxEnd);
+                }
+                const bool contact = feature.type == QLatin1String("semiconductor/ohmic") || feature.type == QLatin1String("semiconductor/schottky")
+                                     || feature.type == QLatin1String("semiconductor/gate");
+                if (mine.empty() && contact) {
+                    *error = tr("%1: %2 is not where its line ends or meets an interface - a 1D one's contacts are across its line")
+                                 .arg(a_node->name(), feature.name());
+                    return false;
+                }
+                if (mine.empty()) feature.enabled = false;
+                else feature.props.insert(QStringLiteral("selection"), numbers(mine));
+            } else if (level == Level::Point) {
+                feature.enabled = false;
+            }
+        }
+    }
+    // Its mesh: a Layered Region each stretch, one column, a_h1d along it.
+    Node& mesh = aux.mesh();
+    mesh.children.clear();
+    mesh.props.insert(QStringLiteral("custom"), true);
+    mesh.props.insert(QStringLiteral("hmax"), formatNumber(width, 17));
+    for (const Stretch& st : stretches) {
+        Node layered = aux.make(QStringLiteral("mesh/layered"));
+        layered.props.insert(QStringLiteral("axis"), alongY ? QStringLiteral("y") : QStringLiteral("x"));
+        layered.props.insert(QStringLiteral("hlateral"), formatNumber(width / Columns, 17));
+        layered.props.insert(QStringLiteral("count"), std::max(1, int(std::ceil((st.s1 - st.s0) / a_h1d - 1e-9))));
+        layered.props.insert(QStringLiteral("selection"), numbers({st.auxDomain}));
+        mesh.children.push_back(layered);
+    }
+    // A study of one stationary step.
+    std::vector<Node> kept;
+    for (Node& c : aux.root.children)
+        if (c.type != QLatin1String("study")) kept.push_back(c);
+    aux.root.children = kept;
+    Node study = aux.make(QStringLiteral("study"));
+    aux.root.children.push_back(study);
+    const MeshBuild meshed = buildMesh(aux, *a_s.parametersPtr(), built.topology);
+    if (!meshed.mesh) {
+        *error = tr("%1: its line's strip: %2").arg(a_node->name(), meshed.error);
+        return false;
+    }
+    const StudyResult solved = solveStudy(aux, a_s.parametersPtr(), meshed.mesh, study.tag, [this](double, const QString&) { return !cancelled(); });
+    if (!solved.error.isEmpty() || !solved.solution) {
+        *error = tr("%1, along its line: %2").arg(a_node->name(), solved.error);
+        return false;
+    }
+    for (const QString& w : solved.warnings) a_s.log << tr("Warning: %1, along its line: %2").arg(a_node->name(), w);
+    // Its solution along the strip's middle: V, n, p at each node.
+    const Solution& line = *solved.solution;
+    const int lf = line.fieldIndex(field().tag);
+    if (lf < 0) {
+        *error = tr("%1: its line's solution has no %2").arg(a_node->name(), field().tag);
+        return false;
+    }
+    const Field& lfield = line.fields()[std::size_t(lf)];
+    const Mesh& lmesh = line.mesh();
+    const Space& lsp = *lfield.space;
+    const std::size_t LN = std::size_t(lsp.size());
+    struct Sample {
+        double c, V, n, p;
+    };
+    std::vector<Sample> profile;
+    {
+        std::vector<int> dofOf(lmesh.nodes.size(), -1);
+        for (int t = 0; t < lsp.elements(); ++t)
+            for (int k = 0; k < 3; ++k) dofOf[std::size_t(lmesh.triangles[std::size_t(t)][std::size_t(k)])] = lsp.dofs(t)[k];
+        for (std::size_t i = 0; i < lmesh.nodes.size(); ++i) {
+            const QPointF q = lmesh.nodes[i];
+            if (dofOf[i] < 0 || std::abs((alongY ? q.x() : q.y()) - across) > tolerance) continue;
+            const std::size_t dof = std::size_t(dofOf[i]);
+            profile.push_back({alongY ? q.y() : q.x(), lfield.values[dof], lfield.values[LN + dof], lfield.values[2 * LN + dof]});
+        }
+        std::sort(profile.begin(), profile.end(), [](const Sample& a, const Sample& b) { return a.c < b.c; });
+    }
+    if (profile.size() < 2) {
+        *error = tr("%1: its line's solution has no nodes along it").arg(a_node->name());
+        return false;
+    }
+    // Each node of its own by its coordinate: V linear between the line's
+    // nodes, the carriers in their logarithm (held beyond its ends).
+    const Field& f = field();
+    const Space& sp = *f.space;
+    const Mesh& own = a_s.mesh();
+    std::vector<double> coordinate(std::size_t(a_n), NaN);
+    for (int t = 0; t < sp.elements(); ++t)
+        for (int k = 0; k < 3; ++k) {
+            const QPointF q = own.nodes[std::size_t(own.triangles[std::size_t(t)][std::size_t(k)])];
+            coordinate[std::size_t(sp.dofs(t)[k])] = alongY ? q.y() : q.x();
+        }
+    Eigen::VectorXd x = Eigen::VectorXd::Zero(a_unknowns);
+    for (int i = 0; i < a_n; ++i) {
+        const double c = std::clamp(coordinate[std::size_t(i)], profile.front().c, profile.back().c);
+        if (!std::isfinite(c)) continue;
+        const auto upper = std::upper_bound(profile.begin(), profile.end(), c, [](double v, const Sample& s) { return v < s.c; });
+        const std::size_t j = std::min<std::size_t>(std::size_t(std::max<std::ptrdiff_t>(upper - profile.begin(), 1)) - 1, profile.size() - 2);
+        const Sample &a = profile[j], &b = profile[j + 1];
+        const double u = b.c > a.c ? std::clamp((c - a.c) / (b.c - a.c), 0.0, 1.0) : 0.0;
+        auto carriers = [u](double x0, double x1) {
+            return x0 > 0 && x1 > 0 ? std::exp((1 - u) * std::log(x0) + u * std::log(x1)) : (1 - u) * x0 + u * x1;
+        };
+        const std::size_t ii = std::size_t(i);
+        if (a_iV[ii] >= 0) x(a_iV[ii]) = (1 - u) * a.V + u * b.V;
+        if (a_iN[ii] >= 0) x(a_iN[ii]) = carriers(a.n, b.n);
+        if (a_iP[ii] >= 0) x(a_iP[ii]) = carriers(a.p, b.p);
+    }
+    // The contacts: their voltages, and the line's currents and charges per
+    // area (its contacts a strip's width) times the stack's: the narrowest of
+    // its stretches' domains across the line (a mesa's), every contact alike
+    // - the current through one stack, kept.
+    std::vector<double> goal;
+    if (!targets(goal, error)) return false;
+    double narrowest = Inf;
+    for (const Stretch& st : stretches) {
+        const QRectF b = topo.domains[std::size_t(st.domain)].bounds;
+        narrowest = std::min(narrowest, alongY ? b.width() : b.height());
+    }
+    const double scale = narrowest / width;
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        Contact& c = a_contacts[k];
+        c.applied = goal[k];
+        for (const Field::Terminal& term : lfield.terminals)
+            if (term.name == c.name) {
+                c.current = term.charge * scale;
+                c.charge = term.chargeIm * scale;
+            }
+    }
+    store(x);
+    const QString said = tr("%1: solved in 1D along %2 = %3 %4: %5 nodes on %6 stretches, its currents through %7 %4 across")
+                             .arg(a_node->name(), alongY ? QStringLiteral("x") : QStringLiteral("y"), formatNumber(across, 6), a_s.topology().unitName)
+                             .arg(profile.size())
+                             .arg(stretches.size())
+                             .arg(formatNumber(narrowest, 6));
+    if (!a_s.log.contains(said)) a_s.log << said;
+    return true;
 }
 
 QString matrixEntryName(const QString& tag, const QString& letter, const QString& a, const QString& b)

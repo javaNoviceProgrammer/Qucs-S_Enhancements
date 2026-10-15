@@ -239,6 +239,31 @@ MeshBuild meshOf(const QByteArray& json)
     return buildMesh(m, *p, g.topology);
 }
 
+/// A silicon pn junction (µm): p from y 0 to 0.2, n from 0.2 to 0.4 - 2 µm
+/// wide, or (\a mesa) the n layer 4 wide under a p mesa of 2 -, the anode
+/// on the p layer's bottom at Va, the cathode on the n layer's top; the
+/// physics' \a space ("1d" with \a more), the mesh's features \a mesh (a
+/// mesh of \a hmax), the study's \a steps.
+QByteArray junction1d(const QString& space, const QString& mesh, bool mesa = false, const QString& steps = QStringLiteral(R"({"type": "stationary"})"),
+                      const QString& more = {}, const QString& hmax = QStringLiteral("0.5"))
+{
+    return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "Va", "expression": "0.5[V]"}],
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "name": "p", "position": ["-1", "0"], "size": ["2", "0.2"]},
+                     {"type": "rectangle", "name": "n", "position": ["%4", "0.2"], "size": ["%5", "0.2"]}],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{"type": "semiconductor", "tag": "semi", "space": "%1" %6, "features": [
+          {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["p"]}},
+          {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["n"]}},
+          {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "bottom"}},
+          {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "top"}}]}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "%7", "features": [%2]}}],
+      "studies": [{"type": "study", "steps": [%3]}]})json")
+        .arg(space, mesh, steps, mesa ? QStringLiteral("-2") : QStringLiteral("-1"), mesa ? QStringLiteral("4") : QStringLiteral("2"), more, hmax)
+        .toUtf8();
+}
+
 /// A wave feature on the core: \a flags and N 1e18, P 5e17 per cm³.
 QString onCore(const QString& flags)
 {
@@ -246,8 +271,9 @@ QString onCore(const QString& flags)
         .arg(flags);
 }
 
-// InP's (Vurgaftman, Meyer and Ram-Mohan's): me, γ1, γ2, Ep; its gap at 300 K.
-constexpr double InpMe = 0.0795, InpGamma1 = 5.08, InpGamma2 = 1.60, InpEp = 20.7 * Q, InpGap = 1.344 * Q;
+// InP's (Vurgaftman, Meyer and Ram-Mohan's): me, γ1, γ2, Ep; its gap at 300 K;
+// the library's edge A (1/m), Aspnes and Studna's fitted.
+constexpr double InpMe = 0.0795, InpGamma1 = 5.08, InpGamma2 = 1.60, InpEp = 20.7 * Q, InpGap = 1.344 * Q, InpEdge = 1.16e7;
 
 double heavyHoles()
 {
@@ -462,11 +488,98 @@ private slots:
             const double expected = C * Hbar / M_PI * integral, got = bandFilling(cold, E13, holes, true).dn;
             QVERIFY2(relative(got, expected) < 2e-3, qPrintable(QStringLiteral("holes: %1, %2").arg(got).arg(expected)));
         }
+        // Sommerfeld's enhancement: 2π√(R/x)/(1 - e^{-2π√(R/x)}) - at x = R,
+        // far above (1 + a/2 + a²/12, a = 2π√(R/x)), and finite at the edge
+        // (√x S → 2π√R).
+        {
+            const double R = 5e-3 * Q;
+            QVERIFY(relative(sommerfeld(R, R), 2 * M_PI / (1 - std::exp(-2 * M_PI))) < 1e-12);
+            QVERIFY(relative(sommerfeld(1e4 * R, R), 1 + M_PI / 100 + std::pow(2 * M_PI / 100, 2) / 12) < 1e-6);
+            QVERIFY(relative(std::sqrt(1e-8 * R) * sommerfeld(1e-8 * R, R), 2 * M_PI * std::sqrt(R)) < 1e-9);
+            QCOMPARE(sommerfeld(R, 0), 1.0);
+            // Degenerate electrons with it (εr 12.4): their block's integral
+            // here, each band's α times its own Rydberg's enhancement.
+            BandFillingMedium x = m;
+            x.T = 4;
+            x.epsr = 12.4;
+            for (const double lambda : {1.55e-6, 1.3e-6}) {
+                const double Eph = 2 * M_PI * Hbar * C / lambda;
+                double integral = 0;
+                for (int j = 0; j < 2; ++j) {
+                    const double Ry = 13.605693 * Q * mr[j] / (12.4 * 12.4);
+                    integral += gauss([&](double u) {
+                        const double Ep = m.Eg + u * u;
+                        // (√x S, finite at u 0: 2π√Ry.)
+                        const double a = 2 * M_PI * std::sqrt(Ry) / std::max(u, 1e-300);
+                        const double rootS = u > 0 ? a * u / (1 - std::exp(-a)) : 2 * M_PI * std::sqrt(Ry);
+                        return -s[j] * rootS / Ep / (Ep * Ep - Eph * Eph) * 2 * u;
+                    }, 0, std::sqrt(EF * m.me / mr[j]), 400);
+                }
+                const double expected = C * Hbar / M_PI * integral, got = bandFilling(x, Eph, N, false).dn;
+                QVERIFY2(relative(got, expected) < 2e-3, qPrintable(QStringLiteral("Sommerfeld, %1 nm: %2, %3").arg(lambda * 1e9).arg(got).arg(expected)));
+                // (More than without it.)
+                BandFillingMedium y = x;
+                y.epsr = 0;
+                QVERIFY(std::abs(got) > std::abs(bandFilling(y, Eph, N, false).dn));
+            }
+            // Above the gap, short of the Fermi level: -Σ α_j S_j exactly.
+            const double xs = 0.3 * EF * mr[1] / m.me, Es = m.Eg + xs;
+            double alpha = 0;
+            for (int j = 0; j < 2; ++j) {
+                const double Ry = 13.605693 * Q * mr[j] / (12.4 * 12.4), a = 2 * M_PI * std::sqrt(Ry / xs);
+                alpha += s[j] * std::sqrt(xs) / Es * a / (1 - std::exp(-a));
+            }
+            QVERIFY(relative(bandFilling(x, Es, N, false).dalpha, -alpha) < 1e-6);
+        }
         // The table, between its points, as the integral.
         const BandFillingTable table(m, E, false);
         for (const double between : {3.7e22, 2.2e23, 8.1e23, 4.4e24})
             QVERIFY2(relative(table.at(between).dn, bandFilling(m, E, between, false).dn) < 3e-3, qPrintable(QString::number(between)));
         QVERIFY(relative(table.at(1e18).dn, table.at(1e19).dn / 10) < 1e-12);
+    }
+
+    /// InP's edge as measured: Aspnes and Studna's k (1983) from 1.5 to 1.7 eV
+    /// as the library's A √((E - Eg)/1 eV)(1 eV/E) to 4 %; Kane's Ep alone
+    /// some 0.4 of it, with Sommerfeld's enhancement 0.6.
+    void inpEdgeAsMeasured()
+    {
+        const Node inp = materialNode(Model::blank(), *findMaterial(QStringLiteral("Indium phosphide")));
+        const Scope& scope = Scope::builtins();
+        const double A = evaluateConstant(detail::Problem::materialProperty(inp, QStringLiteral("Afk"), &scope), scope, Dim::of(-1)).value_or(NAN);
+        QVERIFY(relative(A, InpEdge) < 1e-12);
+        // (Their wavelength in µm, k.)
+        const double rows[3][2] = {{0.8266, 0.203}, {0.7749, 0.218}, {0.7293, 0.242}};
+        BandFillingMedium m;
+        m.Eg = InpGap;
+        m.me = InpMe;
+        m.mhh = heavyHoles();
+        m.mlh = lightHoles();
+        m.Ep = InpEp;
+        m.n = 3.45;
+        m.T = 4;
+        for (const auto& row : rows) {
+            const double lambda = row[0] * 1e-6, measured = 4 * M_PI * row[1] / lambda;
+            const double E = 2 * M_PI * Hbar * C / lambda, x = (E - InpGap) / Q;
+            const double fitted = A * std::sqrt(x) / (E / Q);
+            QVERIFY2(relative(fitted, measured) < 0.04, qPrintable(QStringLiteral("%1 eV: %2 per cm, measured %3").arg(E / Q).arg(fitted / 100).arg(measured / 100)));
+            // The bands' own: all bleached (10^21 per cm³ at 4 K): -Δα is α.
+            BandFillingMedium plain = m, excitons = m;
+            excitons.epsr = 12.4;
+            const double a0 = -bandFilling(plain, E, 1e27, false).dalpha, a1 = -bandFilling(excitons, E, 1e27, false).dalpha;
+            qInfo("%.3f eV: measured %.4g per cm, A's %.4g, Ep's %.4g (%.2f), with Sommerfeld's %.4g (%.2f)", E / Q, measured / 100, fitted / 100,
+                  a0 / 100, a0 / measured, a1 / 100, a1 / measured);
+            QVERIFY(a0 / measured > 0.3 && a0 / measured < 0.5);
+            QVERIFY(a1 / measured > 0.5 && a1 / measured < 0.75);
+        }
+        // What each makes of 10^18 electrons per cm³ at 1550 nm (300 K, n 3.3).
+        BandFillingMedium measuredEdge = m, ep = m, epS = m;
+        measuredEdge.T = ep.T = epS.T = 300;
+        measuredEdge.A = InpEdge;
+        ep.n = epS.n = 3.3;
+        epS.epsr = 12.4;
+        const double E = 2 * M_PI * Hbar * C / 1.55e-6;
+        qInfo("band filling of 1e18 electrons per cm3 at 1550 nm: %.3g (the measured edge), %.3g (Ep), %.3g (Ep, Sommerfeld's)",
+              bandFilling(measuredEdge, E, 1e24, false).dn, bandFilling(ep, E, 1e24, false).dn, bandFilling(epS, E, 1e24, false).dn);
     }
 
     /// Band filling in a mode: the material's gap, masses and Ep at the
@@ -475,13 +588,13 @@ private slots:
     void bandFillingInTheMode()
     {
         const QPointF middle(0, 0);
+        // (The library's InP: its measured edge, A.)
         BandFillingMedium m;
         m.Eg = InpGap;
         m.me = InpMe;
         m.mhh = heavyHoles();
         m.mlh = lightHoles();
-        m.Ep = InpEp;
-        m.n = 3.3;
+        m.A = InpEdge;
         for (const double lambda : {1.55e-6, 1.3e-6}) {
             const Run r = run(modelOf(guide(onCore(QStringLiteral(R"("bandfilling": true)")), QStringLiteral("%1[nm]").arg(lambda * 1e9))));
             QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
@@ -497,6 +610,22 @@ private slots:
             QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
             const double E = 2 * M_PI * Hbar * C / 1.55e-6;
             QVERIFY(relative(at(*r.solution, QStringLiteral("emw.dncarriers"), middle), bandFilling(m, E, 1e24, false).dn) < 3e-3);
+        }
+        // InP of its compound alone (no measured edge): Kane's Ep, with
+        // Sommerfeld's enhancement of its εr 12.4 - or without, asked.
+        for (const bool excitons : {true, false}) {
+            const Run r = run(modelOf(guide(onCore(QStringLiteral(R"("bandfilling": true, "bfexciton": %1)").arg(excitons ? "true" : "false")),
+                                            QStringLiteral("1550[nm]"),
+                                            QStringLiteral(R"("label": "InP alone", "compound": "InP", "bands": "measured", "n": "3.3")"))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            BandFillingMedium k = m;
+            k.A = 0;
+            k.Ep = InpEp;
+            k.epsr = excitons ? 12.4 : 0;   // (n 1: the tables' - as 1/n)
+            const double E = 2 * M_PI * Hbar * C / 1.55e-6;
+            const double expected = (bandFilling(k, E, 1e24, false).dn + bandFilling(k, E, 5e23, true).dn) / 3.3;
+            QVERIFY2(relative(at(*r.solution, QStringLiteral("emw.dncarriers"), middle), expected) < 3e-3,
+                     qPrintable(QStringLiteral("%1 %2").arg(at(*r.solution, QStringLiteral("emw.dncarriers"), middle)).arg(expected)));
         }
         // Given per carrier.
         {
@@ -933,6 +1062,8 @@ private slots:
         m.mhh = 1 / (g1 - 2 * g2);
         m.mlh = 1 / (g1 + 2 * g2);
         m.Ep = property(q13, "Ep") * Q;
+        m.epsr = property(q13, "epsilonr");   // (Sommerfeld's, of the composition's εr)
+        QVERIFY(m.epsr > 10 && m.epsr < 15);
         const double E = 2 * M_PI * Hbar * C / 1.55e-6;
         const double expected = (bandFilling(m, E, 1e24, false).dn + bandFilling(m, E, 5e23, true).dn) / 3.4;
         QVERIFY2(relative(at(*r.solution, QStringLiteral("emw.dncarriers"), QPointF(0, 0)), expected) < 3e-3,
@@ -1086,6 +1217,11 @@ private slots:
                 const auto& v = lay.mesh->triangles[t];
                 const QPointF a = lay.mesh->nodes[std::size_t(v[0])], b = lay.mesh->nodes[std::size_t(v[1])], c = lay.mesh->nodes[std::size_t(v[2])];
                 QVERIFY(std::abs(std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2 - 50 * h / 2) < 1e-6 * 50 * h);
+                // Each cell split the one way: its diagonal lower left to upper right.
+                for (const auto& [p0, p1] : {std::pair{a, b}, std::pair{b, c}, std::pair{c, a}}) {
+                    const QPointF e = p1 - p0;
+                    if (std::abs(e.x()) > 1e-6 && std::abs(e.y()) > 1e-6) QVERIFY2(e.x() * e.y() > 0, qPrintable(QStringLiteral("L%1").arg(k)));
+                }
                 for (const QPointF& p : {a, b, c}) {
                     const double row = (p.y() - t0) / h, column = (p.x() + 1000) / 50;
                     QVERIFY2(std::abs(row - std::round(row)) < 1e-6 && std::abs(column - std::round(column)) < 1e-6,
@@ -1154,6 +1290,108 @@ private slots:
                          R"({"type": "circle", "name": "ridge", "position": ["0", "514"], "r": "500"})");
             const MeshBuild m = meshOf(json);
             QVERIFY2(m.mesh && m.warnings.join(QLatin1Char(' ')).contains(QLatin1String("not a rectangle")), qPrintable(m.error + m.warnings.join(QLatin1Char(' '))));
+        }
+    }
+
+    /// A semiconductor solved in 1D: along its line, on a strip of its own,
+    /// each node taking the line's values at its coordinate - the 2D
+    /// solution of a layered stack (uniform across it, away from its sides)
+    /// at its nodes; a coarse mesh
+    /// as interpolated; under a mesa, its currents the mesa's through the
+    /// stack (anode's and cathode's alike); a bias sweep; what it refuses.
+    void semiconductorIn1D()
+    {
+        const QString layers = QStringLiteral(R"({"type": "layered", "hlateral": "0.25", "count": 40, "selection": {"only": ["p", "n"]}})");
+        const QString line = QStringLiteral(R"(, "h1d": "5[nm]")");
+        const Run plane = run(modelOf(junction1d(QStringLiteral("2d"), layers)));
+        const Run one = run(modelOf(junction1d(QStringLiteral("1d"), layers, false, QStringLiteral(R"({"type": "stationary"})"), line)));
+        QVERIFY2(plane.error.isEmpty() && one.error.isEmpty(), qPrintable(plane.error + one.error));
+        const double I2 = global(*plane.solution, QStringLiteral("semi.I_a")), I1 = global(*one.solution, QStringLiteral("semi.I_a"));
+        qInfo("junction at 0.5 V: %.8g A in 2D, %.8g A in 1D", I2, I1);
+        QVERIFY2(I2 > 0 && relative(I1, I2) < 1e-5, qPrintable(QStringLiteral("%1 %2").arg(I1).arg(I2)));
+        QVERIFY(relative(global(*one.solution, QStringLiteral("semi.I_k")), -I1) < 1e-6);
+        QVERIFY(one.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("solved in 1D along x = 0 um")));
+        // At each node of the 2D solution's away from its sides (|x| 0.5 µm or
+        // less: a side's node where the layers meet takes their dopings
+        // leaning one way): V to 10 µV, n and p to 1e-4.
+        {
+            const Field& f2 = plane.solution->fields()[std::size_t(plane.solution->fieldIndex(QStringLiteral("semi")))];
+            const Field& f1 = one.solution->fields()[std::size_t(one.solution->fieldIndex(QStringLiteral("semi")))];
+            const Mesh& mesh = plane.solution->mesh();
+            QVERIFY(mesh.nodes == one.solution->mesh().nodes);
+            const std::size_t N = std::size_t(f2.space->size());
+            QCOMPARE(N, mesh.nodes.size());
+            double dV = 0, dn = 0, largest = 0;
+            for (std::size_t i = 0; i < N; ++i) largest = std::max({largest, f2.values[N + i], f2.values[2 * N + i]});
+            for (std::size_t i = 0; i < N; ++i) {
+                if (std::abs(mesh.nodes[i].x()) > 0.5 + 1e-9) continue;
+                dV = std::max(dV, std::abs(f2.values[i] - f1.values[i]));
+                for (const std::size_t c : {N + i, 2 * N + i})
+                    if (f2.values[c] > 1e-6 * largest) dn = std::max(dn, relative(f1.values[c], f2.values[c]));
+            }
+            qInfo("the nodes: V within %.3g V, n and p within %.3g", dV, dn);
+            QVERIFY2(dV < 1e-5 && dn < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(dV).arg(dn)));
+        }
+        // The same y anywhere across: the line's values.
+        QCOMPARE(at(*one.solution, QStringLiteral("semi.V"), QPointF(-0.9, 0.11)), at(*one.solution, QStringLiteral("semi.V"), QPointF(0.9, 0.11)));
+        // On an isotropic mesh of its own (0.07 µm): the same current; its
+        // nodes' values between the line's interpolated.
+        {
+            const Run coarse = run(modelOf(junction1d(QStringLiteral("1d"), QString(), false, QStringLiteral(R"({"type": "stationary"})"), line, QStringLiteral("0.07"))));
+            QVERIFY2(coarse.error.isEmpty(), qPrintable(coarse.error));
+            QVERIFY(relative(global(*coarse.solution, QStringLiteral("semi.I_a")), I1) < 1e-9);
+            // Its nodes', between the line's: V linear, the carriers in their
+            // logarithm - as the 2D solution reads at those points.
+            const Field& fc = coarse.solution->fields()[std::size_t(coarse.solution->fieldIndex(QStringLiteral("semi")))];
+            const Mesh& cm = coarse.solution->mesh();
+            const std::size_t N = cm.nodes.size();
+            int compared = 0;
+            for (std::size_t i = 0; i < N; ++i) {
+                const QPointF q = cm.nodes[i];
+                if (std::abs(q.x()) > 0.5) continue;
+                // (Off the reference's rows: between two of its nodes.)
+                const double row = q.y() / 0.005;
+                if (std::abs(row - std::round(row)) < 0.05) continue;
+                ++compared;
+                QVERIFY2(std::abs(fc.values[i] - at(*plane.solution, QStringLiteral("semi.V"), QPointF(0, q.y()))) < 1e-4, qPrintable(QString::number(q.y())));
+                for (const auto& [index, name] : {std::pair{N + i, "semi.n"}, std::pair{2 * N + i, "semi.p"}})
+                    QVERIFY2(relative(fc.values[index], at(*plane.solution, QString::fromLatin1(name), QPointF(0, q.y()))) < 1e-3,
+                             qPrintable(QStringLiteral("%1 at %2: %3 %4").arg(QLatin1String(name)).arg(q.y()).arg(fc.values[index]).arg(at(*plane.solution, QString::fromLatin1(name), QPointF(0, q.y())))));
+            }
+            QVERIFY(compared >= 2);
+        }
+        // Under a mesa (the n layer 4 µm wide): the stack's current, the
+        // mesa's 2 µm - the cathode's as the anode's.
+        {
+            const Run mesa = run(modelOf(junction1d(QStringLiteral("1d"), QString(), true, QStringLiteral(R"({"type": "stationary"})"), line)));
+            QVERIFY2(mesa.error.isEmpty(), qPrintable(mesa.error));
+            QVERIFY(relative(global(*mesa.solution, QStringLiteral("semi.I_a")), I1) < 1e-9);
+            QVERIFY(relative(global(*mesa.solution, QStringLiteral("semi.I_k")), -I1) < 1e-9);
+            // Beside the mesa (x 1.5, the n layer's): its y's values.
+            QCOMPARE(at(*mesa.solution, QStringLiteral("semi.n"), QPointF(1.5, 0.3)), at(*mesa.solution, QStringLiteral("semi.n"), QPointF(0, 0.3)));
+        }
+        // A bias sweep: each point solved along its line.
+        {
+            const Run sweep = run(modelOf(junction1d(QStringLiteral("1d"), layers, false,
+                                                     QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "0.3, 0.5", "V"]]}, {"type": "stationary"})"), line)));
+            QVERIFY2(sweep.error.isEmpty() && sweep.study.solutions.size() == 2, qPrintable(sweep.error));
+            const double low = global(*sweep.study.solutions[0], QStringLiteral("semi.I_a")), high = global(*sweep.study.solutions[1], QStringLiteral("semi.I_a"));
+            QVERIFY(relative(high, I1) < 1e-6 && low > 0 && high > 50 * low);
+        }
+        // Refused, and said: a step in frequency; a contact the line does not
+        // reach (on a side); a line with a gap in it.
+        {
+            const Run f = run(modelOf(junction1d(QStringLiteral("1d"), layers, false,
+                                                 QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[MHz]"})"), line)));
+            QVERIFY2(f.error.contains(QLatin1String("at rest")), qPrintable(f.error));
+            QByteArray side = junction1d(QStringLiteral("1d"), layers, false, QStringLiteral(R"({"type": "stationary"})"), line);
+            side.replace(R"("selection": {"of": ["n"], "side": "top"})", R"("selection": {"of": ["n"], "side": "right"})");
+            const Run s1 = run(modelOf(side));
+            QVERIFY2(s1.error.contains(QLatin1String("not where its line ends")), qPrintable(s1.error));
+            QByteArray gap = junction1d(QStringLiteral("1d"), QString(), false, QStringLiteral(R"({"type": "stationary"})"), line);
+            gap.replace(R"("position": ["-1", "0.2"], "size": ["2", "0.2"])", R"("position": ["-1", "0.3"], "size": ["2", "0.2"])");
+            const Run s2 = run(modelOf(gap));
+            QVERIFY2(s2.error.contains(QLatin1String("leaves its domains")), qPrintable(s2.error));
         }
     }
 };

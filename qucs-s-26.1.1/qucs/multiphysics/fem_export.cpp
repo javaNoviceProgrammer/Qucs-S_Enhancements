@@ -376,11 +376,10 @@ ExportText fieldExport(const SolutionSet& set, const Node& node)
     // Which solutions: the one asked (its point, time or frequency, mode),
     // each, or at each point the mode its step chose.
     const QString which = node.text(QStringLiteral("solutions"));
-    const std::vector<Instance> at =
-        which == QLatin1String("all")      ? instances(set, true)
-        : which == QLatin1String("chosen") ? instances(set, true, 0, {}, {}, -1)
-                                           : instances(set, false, node.integer(QStringLiteral("point")), node.text(QStringLiteral("time")),
-                                                       node.text(QStringLiteral("frequency")), node.integer(QStringLiteral("mode")));
+    const bool one = which == QLatin1String("selected") || which.isEmpty();
+    const std::vector<Instance> at = one ? instances(set, false, node.integer(QStringLiteral("point")), node.text(QStringLiteral("time")),
+                                                     node.text(QStringLiteral("frequency")), node.integer(QStringLiteral("mode")))
+                                         : instances(set, true, 0, {}, {}, modesAsked(set, which));
     if (at.empty()) {
         out.error = tr("no solution to export");
         return out;

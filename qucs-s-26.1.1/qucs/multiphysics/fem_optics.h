@@ -56,11 +56,19 @@ std::complex<double> grapheneConductivity(double omega, double mu, double tau, d
 /// fill the states it joins - Fermi-Dirac's at \a T: Δα(E) = -Σ_j α_j(E)
 /// (f_c(E_cj) + f_v(E_vj)), E_cj = (E - Eg) m_rj/me, E_vj = (E - Eg) m_rj/m_j -
 /// and the index Kramers-Kronig's of it, Δn(E) = (cħ/π) P∫ Δα(E')/(E'² - E²)
-/// dE'. Energies in J, masses in m0.
+/// dE'. Of Ep, with a static permittivity \a epsr, each α_j times Elliott's
+/// (Sommerfeld's) enhancement of the continuum by the electron and hole's
+/// attraction, S = 2π√(R_j/x)/(1 - e^{-2π√(R_j/x)}), x = E - Eg, R_j the
+/// exciton's Rydberg 13.6057 eV m_rj/εr² - finite at the edge. Energies in
+/// J, masses in m0.
 struct BandFillingMedium {
     double Eg = 0, me = 0, mhh = 0, mlh = 0, Ep = 0, n = 1, T = 300;
-    double A = 0;   ///< 1/m; nought: of Ep
+    double A = 0;      ///< 1/m; nought: of Ep
+    double epsr = 0;   ///< of Ep: Sommerfeld's enhancement (nought: none)
 };
+/// Sommerfeld's enhancement of a direct gap's continuum at \a x above the
+/// gap, of an exciton's Rydberg \a R (both J): 1 without one.
+double sommerfeld(double x, double R);
 /// Δn and Δα (1/m) at photon energy \a E: of \a carriers electrons per m³
 /// (\a holes: holes), none of the other.
 struct IndexChange {

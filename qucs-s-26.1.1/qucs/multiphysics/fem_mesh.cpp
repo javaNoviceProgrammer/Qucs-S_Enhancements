@@ -959,6 +959,7 @@ private:
             if (layered(mesh->domain[std::size_t(t)]))
                 for (int v : mesh->triangles[std::size_t(t)]) fixedNode[std::size_t(v)] = 1;
         smooth(*mesh, fixedNode);
+        alignLayered(*mesh);
         keepDelaunay(*mesh);
         mesh->sharpCorners = a_sharp;
         mesh->computeStatistics();
@@ -1127,6 +1128,69 @@ private:
             const auto l = directed.find({e.a, e.b}), r = directed.find({e.b, e.a});
             e.left = l != directed.end() ? l->second : -1;
             e.right = r != directed.end() ? r->second : -1;
+        }
+    }
+
+    /// A layered region's cells each split the one way, lower left to upper
+    /// right: the triangulator's choice between a cell's two diagonals (its
+    /// corners on a circle) is arbitrary, and a node's share of its triangles
+    /// (a third of each - a semiconductor's box) then differs from its
+    /// neighbour's - a stack uniform across solved as if it were not.
+    void alignLayered(Mesh& mesh)
+    {
+        bool any = false;
+        for (int d = 0; d < int(a_t.domains.size()); ++d) any = any || layered(d);
+        if (!any) return;
+        auto key = [](int a, int b) { return std::pair<int, int>(std::min(a, b), std::max(a, b)); };
+        std::map<std::pair<int, int>, std::vector<int>> across;
+        for (int t = 0; t < int(mesh.triangles.size()); ++t)
+            for (int k = 0; k < 3; ++k) across[key(mesh.triangles[std::size_t(t)][std::size_t(k)], mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)])].push_back(t);
+        std::vector<char> done(mesh.triangles.size(), 0);
+        int flipped = 0;
+        for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (done[std::size_t(t)] || !layered(d)) continue;
+            // Its diagonal: the edge neither along x nor along y.
+            const std::array<int, 3>& v = mesh.triangles[std::size_t(t)];
+            int diagonal = -1;
+            for (int k = 0; k < 3; ++k) {
+                const QPointF e = mesh.nodes[std::size_t(v[std::size_t((k + 1) % 3)])] - mesh.nodes[std::size_t(v[std::size_t(k)])];
+                const double len = std::hypot(e.x(), e.y());
+                if (std::abs(e.x()) > 1e-9 * len && std::abs(e.y()) > 1e-9 * len) diagonal = k;
+            }
+            if (diagonal < 0) continue;
+            const int a = v[std::size_t(diagonal)], b = v[std::size_t((diagonal + 1) % 3)], c = v[std::size_t((diagonal + 2) % 3)];
+            const std::vector<int>& pair = across[key(a, b)];
+            if (pair.size() != 2) continue;
+            const int u = pair[0] == t ? pair[1] : pair[0];
+            if (done[std::size_t(u)] || mesh.domain[std::size_t(u)] != d) continue;
+            done[std::size_t(t)] = done[std::size_t(u)] = 1;
+            const QPointF e = mesh.nodes[std::size_t(b)] - mesh.nodes[std::size_t(a)];
+            if (e.x() * e.y() > 0) continue;   // (lower left to upper right already)
+            // The cell's other corner: the other triangle's, off a-b.
+            int o = -1;
+            for (int w : mesh.triangles[std::size_t(u)])
+                if (w != a && w != b) o = w;
+            if (o < 0) continue;
+            // Split along c-o instead: (a, o, c) and (o, b, c), counter-clockwise.
+            auto ccw = [&mesh](std::array<int, 3> tri) {
+                const QPointF p = mesh.nodes[std::size_t(tri[0])], q = mesh.nodes[std::size_t(tri[1])], r = mesh.nodes[std::size_t(tri[2])];
+                if (cross(q - p, r - p) < 0) std::swap(tri[1], tri[2]);
+                return tri;
+            };
+            mesh.triangles[std::size_t(t)] = ccw({a, o, c});
+            mesh.triangles[std::size_t(u)] = ccw({o, b, c});
+            ++flipped;
+        }
+        if (flipped == 0) return;
+        // Each segment's triangles again (on its left, its right).
+        std::map<std::pair<int, int>, int> directed;
+        for (int t = 0; t < int(mesh.triangles.size()); ++t)
+            for (int k = 0; k < 3; ++k) directed[{mesh.triangles[std::size_t(t)][std::size_t(k)], mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)]}] = t;
+        for (Mesh::Edge& edge : mesh.edges) {
+            const auto l = directed.find({edge.a, edge.b}), r = directed.find({edge.b, edge.a});
+            edge.left = l != directed.end() ? l->second : -1;
+            edge.right = r != directed.end() ? r->second : -1;
         }
     }
 
