@@ -1,0 +1,52 @@
+{
+    "format": "qucs-s multiphysics 1",
+    "title": "A grating's diffraction orders",
+    "description": "A lamellar grating - ridges of glass half of a 1 µm period, 0.3 µm deep, on glass - lit from air at 632.8 nm, TE (Ez across the plane). One period: its two sides a Periodic Condition (Floquet's, the incident wave's along the cell), a Periodic Port fed above at the angle of incidence and one taking what passes below. Each diffraction order that propagates its share of the light: at 10° three reflect and five pass - R_0 0.0214, T_0 0.5525, T_n1 0.1783, T_1 0.1857, the coupled waves' to 1e-6 - and R + T is 1. Swept from 0° to 40°, an order coming in or leaving as it turns.",
+    "parameters": [
+        {"name": "P", "expression": "1[um]", "description": "the grating's period"},
+        {"name": "d", "expression": "0.3[um]", "description": "its ridges' depth"},
+        {"name": "w", "expression": "0.5[um]", "description": "a ridge's width"},
+        {"name": "lambda0", "expression": "632.8[nm]", "description": "the light's wavelength in vacuum"},
+        {"name": "theta", "expression": "10", "description": "the angle of incidence, degrees from the normal toward +x"}
+    ],
+    "components": [{
+        "unit": "um",
+        "geometry": [
+            {"type": "rectangle", "label": "substrate", "size": ["P", "0.6[um]"]},
+            {"type": "rectangle", "label": "layer", "position": ["0", "0.6[um]"], "size": ["P", "d"]},
+            {"type": "rectangle", "label": "ridge", "position": ["0", "0.6[um]"], "size": ["w", "d"]},
+            {"type": "rectangle", "label": "cover", "position": ["0", "0.6[um] + d"], "size": ["P", "0.8[um]"]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"label": "Air", "n": "1", "selection": {"all": true}},
+            {"label": "Glass", "n": "1.5", "selection": {"objects": ["substrate", "ridge"]}}
+        ],
+        "physics": [{
+            "type": "waves", "tag": "ewfd", "polarization": "ez",
+            "features": [
+                {"type": "periodic", "label": "Periodic Condition", "selection": {"of": ["substrate", "layer", "ridge", "cover"], "side": ["left", "right"]}},
+                {"type": "periodicport", "label": "Light in", "name": "in", "angle": "theta", "selection": {"of": ["cover"], "side": "top"}},
+                {"type": "periodicport", "label": "Light out", "name": "out", "excite": false, "selection": {"of": ["substrate"], "side": "bottom"}}
+            ]
+        }],
+        "mesh": {"size": "fine", "custom": true, "hmax": "0.03"}
+    }],
+    "studies": [{"type": "study", "label": "Angle of incidence", "steps": [
+        {"type": "sweep", "parameters": [["theta", "0, 5, 10, 15, 20, 25, 30, 35, 40", ""]]},
+        {"type": "frequency", "frequencies": "c0/lambda0"}
+    ]}],
+    "results": {
+        "plots": [
+            {"type": "plotgroup", "label": "Electric Field", "plots": [
+                {"type": "surface", "expression": "ewfd.Ez", "colors": "coolwarm"}
+            ]},
+            {"type": "plotgroup1d", "label": "Reflected and transmitted", "plots": [
+                {"type": "globalgraph", "expression": "ewfd.R; ewfd.T; ewfd.T_0; ewfd.T_n1; ewfd.T_1"}
+            ]}
+        ],
+        "derived": [
+            {"type": "global", "label": "Each order", "expression": "ewfd.R_n1; ewfd.R_0; ewfd.R_1; ewfd.T_n2; ewfd.T_n1; ewfd.T_0; ewfd.T_1; ewfd.T_2", "solutions": "all"}
+        ]
+    }
+}

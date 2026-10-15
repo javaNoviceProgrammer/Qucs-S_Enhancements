@@ -1041,10 +1041,13 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                  QStringLiteral("2"))},
          {QStringLiteral("waves/wave"), QStringLiteral("waves/pml"), QStringLiteral("waves/pec"), QStringLiteral("waves/pmc"),
-          QStringLiteral("waves/scattering"), QStringLiteral("waves/port")},
+          QStringLiteral("waves/scattering"), QStringLiteral("waves/port"), QStringLiteral("waves/periodic"),
+          QStringLiteral("waves/periodicport")},
          {QStringLiteral("waves/wave"), QStringLiteral("waves/pec")}, false, false, QStringLiteral("ewfd"),
          tr("Waves in the plane at each frequency, Ez or Hz: -∇·(P ∇u) - k0² q u = 0. Ports give the S-parameters "
-            "(ewfd.S21, ewfd.S21dB); scattering boundaries and PMLs let waves out.")});
+            "(ewfd.S21, ewfd.S21dB) and the reflectance, transmittance and absorptance (ewfd.R, ewfd.T, ewfd.A); a unit "
+            "cell's Periodic Condition and Periodic Ports a grating's or a film's, order by order (ewfd.R_0, ewfd.T_n1); "
+            "scattering boundaries and PMLs let waves out.")});
     waveEquation(QStringLiteral("waves"), tr("Wave Equation, Electric"));
     add({QStringLiteral("waves/scattering"), tr("Scattering Boundary Condition"), QStringLiteral("ewfd"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
@@ -1057,12 +1060,39 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("incident=plane"))},
          {}, {}, false, false, QStringLiteral("sctr"),
          tr("A boundary waves pass out of as into free space (first order: best at right angles), and a plane wave may come in by.")});
+    add({QStringLiteral("waves/periodic"), tr("Periodic Condition"), QStringLiteral("ewfd"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none),
+          choice(QStringLiteral("floquet"), tr("Periodicity"), {QStringLiteral("port"), QStringLiteral("continuity"), QStringLiteral("given")},
+                 {tr("Floquet, the fed periodic port's"), tr("Continuity"), tr("Floquet, kF given")}, QStringLiteral("port"),
+                 tr("u(r + d) = u(r) e^-jkF·d, d from one side to the other: kF the plane wave's along the cell, a fed Periodic "
+                    "Port's (continuity without one), nought, or as given")),
+          shownIf(expr(QStringLiteral("kx"), tr("kF, its x"), QStringLiteral("1/m"), QStringLiteral("0[1/m]")), QStringLiteral("floquet=given")),
+          shownIf(expr(QStringLiteral("ky"), tr("kF, its y"), QStringLiteral("1/m"), QStringLiteral("0[1/m]")), QStringLiteral("floquet=given"))},
+         {}, {}, false, false, QStringLiteral("pc"),
+         tr("A unit cell's two opposite sides, one the other moved by d - a grating's, a film's, a photonic crystal's walls, "
+            "both in one selection ({\"of\": [...], \"side\": [\"left\", \"right\"]}): the field on one the other's, "
+            "shifted in phase by kF·d (Floquet's), the two meshed alike.")});
+    add({QStringLiteral("waves/periodicport"), tr("Periodic Port"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::Boundary,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
+          flag(QStringLiteral("excite"), tr("Fed"), true,
+               tr("The plane wave comes in by it: one periodic port fed, the others take what goes out")),
+          shownIf(expr(QStringLiteral("angle"), tr("Angle of incidence"), QStringLiteral("angle"), QStringLiteral("0"),
+                       tr("Degrees from the port's normal, into the cell, toward +x (toward +y for a port along y); in the "
+                          "port's medium")),
+                  QStringLiteral("excite=true")),
+          shownIf(expr(QStringLiteral("E0"), tr("Its amplitude (Ez or Hz)"), QString(), QStringLiteral("1")), QStringLiteral("excite=true"))},
+         {}, {}, false, false, QStringLiteral("pport"),
+         tr("A unit cell's top or bottom, one period long in one material: a plane wave fed at an angle, and what leaves in "
+            "each diffraction order (m: kt = kF + 2πm/L) taken out without reflection, the near field's orders too. "
+            "ewfd.R, ewfd.T, ewfd.A; each order that propagates, ewfd.R_m and ewfd.T_m (m written n1 for -1); the zeroth's "
+            "fields, ewfd.r_0 and ewfd.t_0 (real and imaginary parts). Ez: TE (s), Hz: TM (p).")});
     add({QStringLiteral("waves/port"), tr("Port"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
           flag(QStringLiteral("excite"), tr("Fed"), true, tr("Swept: each port fed in turn, the others matched - the S-matrix"))},
          {}, {}, false, false, QStringLiteral("port"),
          tr("A port across a waveguide: its first mode (found on the port's line) fed at 1 W, and taken out matched; the "
-            "S-parameters ewfd.S<i><j> (real and imaginary parts), ewfd.S<i><j>dB.")});
+            "S-parameters ewfd.S<i><j> (real and imaginary parts), ewfd.S<i><j>dB; the first port fed's reflectance "
+            "|Sii|², transmittance and absorptance, ewfd.R, ewfd.T, ewfd.A.")});
 
     // Semiconductors.
     add({QStringLiteral("semiconductor"), tr("Semiconductor"), QStringLiteral("physics"), QStringLiteral("semi"), Level::Domain,

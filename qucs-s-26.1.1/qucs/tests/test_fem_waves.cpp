@@ -5,8 +5,10 @@
  *                      equation), a coax's TEM mode, a lossy filling, a
  *                      thermo-optic shift; waves in the plane - a
  *                      parallel-plate guide's S-parameters, an iris's power
- *                      kept, a PML that does not reflect; adaptive
- *                      meshes; the examples
+ *                      kept, a PML that does not reflect; a periodic cell's
+ *                      reflectance and transmittance against Fresnel, thin
+ *                      films' characteristic matrices and a grating's coupled
+ *                      waves; adaptive meshes; the examples
  *
  * This file is part of Qucs-S.
  *
@@ -22,6 +24,7 @@
 #include <Eigen/Dense>
 
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QRegularExpression>
 #include <QtTest>
 
@@ -103,6 +106,160 @@ std::vector<double> indices(Solution& s, const QString& tag = QStringLiteral("em
         if (s.snapshotFrequency(k) != s.snapshotFrequency(0)) break;
         s.select(k);
         out.push_back(global(s, tag + QStringLiteral(".neff")));
+    }
+    return out;
+}
+
+/// A unit cell \a width µm wide: layers from the bottom up (thickness in
+/// µm, its material's properties: "\"n\": \"1.5\""), its sides periodic,
+/// a periodic port fed at its top at \a angle (degrees), another at its
+/// bottom; at the wavelength \a lambda (µm). \a extra: geometry, materials
+/// and features added (JSON array items, each list led by a comma), and
+/// mesh properties.
+struct Extra {
+    QString geometry, materials, features, mesh;
+};
+QByteArray cell(double width, const std::vector<std::pair<double, QString>>& layers, const QString& pol, double angle, double lambda,
+                double hmax, const Extra& extra = {})
+{
+    QStringList geometry, materials, names;
+    double y = 0;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        const QString name = QStringLiteral("L%1").arg(i);
+        names << QStringLiteral("\"%1\"").arg(name);
+        geometry << QStringLiteral(R"({"type": "rectangle", "name": "%1", "position": ["0", "%2"], "size": ["%3", "%4"]})")
+                        .arg(name)
+                        .arg(y, 0, 'g', 17)
+                        .arg(width, 0, 'g', 17)
+                        .arg(layers[i].first, 0, 'g', 17);
+        materials << QStringLiteral(R"({"label": "m%1", %2, "selection": {"only": ["%1"]}})").arg(name, layers[i].second);
+        y += layers[i].first;
+    }
+    const QString top = QStringLiteral("L%1").arg(layers.size() - 1);
+    return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "components": [{"unit": "um",
+        "geometry": [%1 %2],
+        "materials": [%3 %4],
+        "physics": [{"type": "waves", "tag": "ewfd", "polarization": "%5", "features": [
+          {"type": "periodic", "selection": {"of": [%6], "side": ["left", "right"]}},
+          {"type": "periodicport", "name": "in", "angle": "%7", "selection": {"of": ["%8"], "side": "top"}},
+          {"type": "periodicport", "name": "out", "excite": false, "selection": {"of": ["L0"], "side": "bottom"}} %9]}],
+        "mesh": {"size": "fine", "custom": true, "hmax": "%10" %11}}],
+      "studies": [{"type": "study", "steps": [{"type": "frequency", "frequencies": "%12[THz]"}]}]})json")
+        .arg(geometry.join(QLatin1String(", ")), extra.geometry, materials.join(QLatin1String(", ")), extra.materials, pol,
+             names.join(QLatin1String(", ")))
+        .arg(angle, 0, 'g', 17)
+        .arg(top, extra.features)
+        .arg(hmax, 0, 'g', 17)
+        .arg(extra.mesh)
+        .arg(C0 / (lambda * 1e-6) / 1e12, 0, 'g', 17)
+        .toUtf8();
+}
+
+/// A film stack's R, T and A by Macleod's characteristic matrices and
+/// tilted admittances (n - jκ): \a layers (index, thickness in µm) from the
+/// incident side, between a lossless \a n0 and a substrate \a ns; TE or TM
+/// at \a deg in n0, at \a lambda µm.
+struct Rta {
+    double R = 0, T = 0, A = 0;
+};
+Rta films(double n0, const std::vector<std::pair<cd, double>>& layers, cd ns, bool tm, double deg, double lambda)
+{
+    const double s0 = n0 * std::sin(deg * M_PI / 180);
+    // n cosθ in each: its imaginary part not above 0 (a wave dying away).
+    auto ncos = [s0](cd n) {
+        cd c = n * std::sqrt(1.0 - (s0 / n) * (s0 / n));
+        if (c.imag() > 1e-15 || (std::abs(c.imag()) <= 1e-15 && c.real() < 0)) c = -c;
+        return c;
+    };
+    auto eta = [&](cd n) { return tm ? n * n / ncos(n) : ncos(n); };
+    Eigen::Matrix2cd M = Eigen::Matrix2cd::Identity();
+    for (const auto& [n, d] : layers) {
+        const cd delta = 2 * M_PI * ncos(n) * d / lambda;
+        const cd e = eta(n);
+        Eigen::Matrix2cd Mj;
+        Mj << std::cos(delta), cd(0, 1) * std::sin(delta) / e, cd(0, 1) * e * std::sin(delta), std::cos(delta);
+        M = M * Mj;
+    }
+    const Eigen::Vector2cd bc = M * Eigen::Vector2cd(1, eta(ns));
+    const cd e0 = eta(n0), den = e0 * bc(0) + bc(1);
+    Rta out;
+    out.R = std::norm((e0 * bc(0) - bc(1)) / den);
+    out.T = 4 * e0.real() * eta(ns).real() / std::norm(den);
+    out.A = 1 - out.R - out.T;
+    return out;
+}
+
+/// A lamellar grating's diffraction efficiencies by rigorous coupled waves,
+/// TE (Moharam, Grann, Pommet and Gaylord, JOSA A 12, 1068, 1995): from n1
+/// at \a deg onto a layer \a depth µm deep - a ridge of \a nr a fraction \a
+/// fill of the period \a period µm, the rest \a ng - over \a n3; 2N + 1
+/// orders. Order m (along +x, as the cell's) at index m + N.
+struct Efficiencies {
+    std::vector<double> R, T;
+};
+Efficiencies rcwaTE(double n1, double nr, double ng, double n3, double period, double fill, double depth, double deg, double lambda, int N)
+{
+    const int n = 2 * N + 1;
+    const double k0 = 2 * M_PI / lambda, K = 2 * M_PI / period, th = deg * M_PI / 180;
+    // (Moharam's order i: k_xi = k0 n1 sinθ - i K; the cell's m = -i.)
+    Eigen::VectorXcd kx(n), z1(n), z3(n);
+    auto kz = [](double nn, cd k) {
+        const cd v = nn * nn - k * k;
+        return v.real() >= 0 ? std::sqrt(v) : cd(0, -1) * std::sqrt(-v);
+    };
+    for (int i = -N; i <= N; ++i) {
+        kx(i + N) = n1 * std::sin(th) - double(i) * K / k0;
+        z1(i + N) = kz(n1, kx(i + N));
+        z3(i + N) = kz(n3, kx(i + N));
+    }
+    // ε(x) = Σ ε_h e^{jhKx}, the ridge from 0 to fill: ε_h = (1/Λ) ∫ ε e^{-jhKx}.
+    auto epsh = [&](int h) -> cd {
+        if (h == 0) return ng * ng + (nr * nr - ng * ng) * fill;
+        const double a = 2 * M_PI * h * fill;
+        return (nr * nr - ng * ng) * (std::exp(cd(0, -a)) - 1.0) / cd(0, -2 * M_PI * h);
+    };
+    Eigen::MatrixXcd A(n, n);
+    for (int i = 0; i < n; ++i)
+        for (int p = 0; p < n; ++p) A(i, p) = (i == p ? kx(i) * kx(i) : cd(0)) - epsh(i - p);
+    Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(A);
+    const Eigen::MatrixXcd W = es.eigenvectors();
+    Eigen::VectorXcd q(n);
+    for (int m = 0; m < n; ++m) {
+        q(m) = std::sqrt(es.eigenvalues()(m));
+        if (q(m).real() < 0) q(m) = -q(m);
+    }
+    const Eigen::MatrixXcd V = W * q.asDiagonal();
+    Eigen::VectorXcd x(n);
+    for (int m = 0; m < n; ++m) x(m) = std::exp(-k0 * q(m) * depth);
+    const Eigen::MatrixXcd X = x.asDiagonal(), I = Eigen::MatrixXcd::Identity(n, n);
+    const cd J(0, 1);
+    // [R; c+; c-; T]: δ + R = W c+ + W X c-; j n1 cosθ δ - j Y1 R = V c+ - V X c-;
+    // W X c+ + W c- = T; V X c+ - V c- = j Y3 T.
+    Eigen::MatrixXcd M = Eigen::MatrixXcd::Zero(4 * n, 4 * n);
+    Eigen::VectorXcd b = Eigen::VectorXcd::Zero(4 * n);
+    M.block(0, 0, n, n) = -I;
+    M.block(0, n, n, n) = W;
+    M.block(0, 2 * n, n, n) = W * X;
+    M.block(n, 0, n, n) = J * Eigen::MatrixXcd(z1.asDiagonal());
+    M.block(n, n, n, n) = V;
+    M.block(n, 2 * n, n, n) = -V * X;
+    M.block(2 * n, n, n, n) = W * X;
+    M.block(2 * n, 2 * n, n, n) = W;
+    M.block(2 * n, 3 * n, n, n) = -I;
+    M.block(3 * n, n, n, n) = V * X;
+    M.block(3 * n, 2 * n, n, n) = -V;
+    M.block(3 * n, 3 * n, n, n) = -J * Eigen::MatrixXcd(z3.asDiagonal());
+    b(N) = 1;
+    b(n + N) = J * n1 * std::cos(th);
+    const Eigen::VectorXcd u = M.fullPivLu().solve(b);
+    Efficiencies out;
+    out.R.assign(std::size_t(n), 0);
+    out.T.assign(std::size_t(n), 0);
+    for (int i = -N; i <= N; ++i) {
+        const int m = -i;
+        out.R[std::size_t(m + N)] = std::norm(u(i + N)) * (z1(i + N) / (n1 * std::cos(th))).real();
+        out.T[std::size_t(m + N)] = std::norm(u(3 * n + i + N)) * (z3(i + N) / (n1 * std::cos(th))).real();
     }
     return out;
 }
@@ -586,6 +743,10 @@ private slots:
             QVERIFY(std::abs(a11 * a11 + a21 * a21 - 1) < 1e-3);
             QVERIFY(std::abs(global(s, QStringLiteral("ewfd.S12")) - global(s, QStringLiteral("ewfd.S21"))) < 1e-4);
             QVERIFY(std::abs(global(s, QStringLiteral("ewfd.S12_im")) - global(s, QStringLiteral("ewfd.S21_im"))) < 1e-4);
+            // Reflectance and transmittance: port 1's, |S11|² and |S21|²; nothing absorbed.
+            QVERIFY(std::abs(global(s, QStringLiteral("ewfd.R")) - a11 * a11) < 1e-12);
+            QVERIFY(std::abs(global(s, QStringLiteral("ewfd.T")) - a21 * a21) < 1e-12);
+            QVERIFY(std::abs(global(s, QStringLiteral("ewfd.A"))) < 1e-3);
         }
     }
 
@@ -607,6 +768,210 @@ private slots:
         const double s11 = global(*r.solution, QStringLiteral("ewfd.S11_abs"));
         qInfo("PML: |S11| %.2e", s11);
         QVERIFY2(s11 < 0.02, qPrintable(QString::number(s11)));
+    }
+
+    // ---- Periodic cells: Floquet's condition, periodic ports, R and T
+
+    void periodicFresnel()
+    {
+        // Air over glass in a cell 0.4 µm wide at λ 1 µm (the zeroth order
+        // alone propagates): Fresnel's R and T, TE (Ez) and TM (Hz), and the
+        // zeroth orders' fields at the ports' lines - the interface 1 µm
+        // from each: r e^-2jβ1 d, t e^-j(β1 + β2) d (t = 1 + r: TE's E, TM's H).
+        const double n1 = 1, n2 = 1.5, lambda = 1, d = 1e-6, k0 = 2 * M_PI / (lambda * 1e-6);
+        // (A sanitized build: a mesh twice as coarse, its errors some ten
+        // times larger - t_0's 6.4e-5.)
+        const bool slow = slowBuild();
+        const double hmax = slow ? 0.04 : 0.02, tolR = slow ? 5e-6 : 1e-6, tolr = slow ? 2e-5 : 1e-6, tolt = slow ? 1e-4 : 1e-5;
+        for (const QString& pol : {QStringLiteral("ez"), QStringLiteral("hz")})
+            for (double deg : {0.0, 30.0, 60.0}) {
+                const Run r = run(modelOf(cell(0.4, {{1.0, QStringLiteral(R"("n": "1.5")")}, {1.0, QStringLiteral(R"("n": "1")")}}, pol, deg, lambda, hmax)));
+                QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+                Solution& s = *r.solution;
+                const double ti = deg * M_PI / 180, tt = std::asin(n1 * std::sin(ti) / n2);
+                const double c1 = std::cos(ti), c2 = std::cos(tt);
+                const cd rf = pol == QLatin1String("ez") ? (n1 * c1 - n2 * c2) / (n1 * c1 + n2 * c2) : (n2 * c1 - n1 * c2) / (n2 * c1 + n1 * c2);
+                const double Tf = pol == QLatin1String("ez") ? std::norm(1.0 + rf) * n2 * c2 / (n1 * c1)
+                                                             : std::norm(1.0 + rf) * (c2 / n2) / (c1 / n1);
+                const cd r0e = rf * std::exp(cd(0, -2 * k0 * n1 * c1 * d));
+                const cd t0e = (1.0 + rf) * std::exp(cd(0, -k0 * (n1 * c1 + n2 * c2) * d));
+                const double R = global(s, QStringLiteral("ewfd.R")), T = global(s, QStringLiteral("ewfd.T"));
+                const cd r0(global(s, QStringLiteral("ewfd.r_0")), global(s, QStringLiteral("ewfd.r_0_im")));
+                const cd t0(global(s, QStringLiteral("ewfd.t_0")), global(s, QStringLiteral("ewfd.t_0_im")));
+                qInfo("%s at %g°: R %.7f (Fresnel %.7f), T %.7f (%.7f), |r0 - r| %.1e, |t0 - t| %.1e", qPrintable(pol), deg, R, std::norm(rf), T, Tf,
+                      std::abs(r0 - r0e), std::abs(t0 - t0e));
+                QVERIFY2(std::abs(R - std::norm(rf)) < tolR, qPrintable(QStringLiteral("%1 %2°: R %3").arg(pol).arg(deg).arg(R)));
+                QVERIFY2(std::abs(T - Tf) < tolR, qPrintable(QStringLiteral("%1 %2°: T %3").arg(pol).arg(deg).arg(T)));
+                QVERIFY(std::abs(global(s, QStringLiteral("ewfd.A"))) < 1e-9);
+                // (t's phase over 2 µm, one in glass: some 2.5e-6 off on this mesh)
+                QVERIFY2(std::abs(r0 - r0e) < tolr && std::abs(t0 - t0e) < tolt,
+                         qPrintable(QStringLiteral("%1 %2").arg(std::abs(r0 - r0e)).arg(std::abs(t0 - t0e))));
+                QCOMPARE(global(s, QStringLiteral("ewfd.R_0")), R);
+                QCOMPARE(global(s, QStringLiteral("ewfd.T_0")), T);
+                QVERIFY(std::isnan(global(s, QStringLiteral("ewfd.R_1"))));   // (none propagates)
+                QVERIFY(std::abs(global(s, QStringLiteral("ewfd.kF")) - k0 * n1 * std::sin(ti)) < 1e-6 * k0);
+                // The orders that propagate, and their angles, said.
+                QVERIFY2(s.log.join(QLatin1Char('\n')).contains(QStringLiteral("out: 0 (%1°)").arg(tt * 180 / M_PI, 0, 'f', 2)),
+                         qPrintable(s.log.join(QLatin1Char('\n'))));
+            }
+    }
+
+    void periodicThinFilms()
+    {
+        // A film 0.3 µm thick of n 2 on glass (n 1.5), from air at λ 1 µm -
+        // and the film absorbing (n 2 - 0.1j): R, T and A against the
+        // characteristic matrices, TE and TM, at 0° and 45°.
+        for (const bool lossy : {false, true})
+            for (const QString& pol : {QStringLiteral("ez"), QStringLiteral("hz")})
+                for (double deg : {0.0, 45.0}) {
+                    const QString film = lossy ? QStringLiteral(R"("n": "2", "kappa": "0.1")") : QStringLiteral(R"("n": "2")");
+                    // (A sanitized build: twice as coarse - 2.1e-5 off.)
+                    const double tol = slowBuild() ? 5e-5 : 2e-6;
+                    const Run r = run(modelOf(cell(0.4, {{0.8, QStringLiteral(R"("n": "1.5")")}, {0.3, film}, {0.8, QStringLiteral(R"("n": "1")")}}, pol, deg, 1.0,
+                                                   slowBuild() ? 0.04 : 0.02)));
+                    QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+                    Solution& s = *r.solution;
+                    const Rta e = films(1.0, {{cd(2, lossy ? -0.1 : 0), 0.3}}, 1.5, pol == QLatin1String("hz"), deg, 1.0);
+                    const double R = global(s, QStringLiteral("ewfd.R")), T = global(s, QStringLiteral("ewfd.T")), A = global(s, QStringLiteral("ewfd.A"));
+                    qInfo("%s film, %s at %g°: R %.6f (%.6f), T %.6f (%.6f), A %.6f (%.6f)", lossy ? "absorbing" : "clear", qPrintable(pol), deg, R, e.R, T, e.T, A, e.A);
+                    QVERIFY2(std::abs(R - e.R) < tol && std::abs(T - e.T) < tol && std::abs(A - e.A) < tol,
+                             qPrintable(QStringLiteral("%1 %2° %3: R %4 T %5 A %6").arg(pol).arg(deg).arg(lossy).arg(R).arg(T).arg(A)));
+                    if (!lossy) QVERIFY(std::abs(A) < 1e-9);
+                }
+    }
+
+    void gratingOrders()
+    {
+        // A lamellar grating (ridges of n 1.5, half the period of 1 µm, 0.3 µm
+        // deep, on glass) lit from air at 10°, λ 0.6328 µm, TE: three
+        // reflected orders (-1, 0, 1) and five transmitted (-2 to 2), each
+        // against rigorous coupled waves (81 orders); none lost.
+        const double lambda = 0.6328, deg = 10;
+        // (the coupled waves, a homogeneous layer: the characteristic matrix's)
+        const Efficiencies flat = rcwaTE(1.0, 1.5, 1.5, 1.5, 1.0, 0.5, 0.3, deg, lambda, 10);
+        QVERIFY(std::abs(flat.R[10] - films(1.0, {}, 1.5, false, deg, lambda).R) < 1e-9);
+        const Efficiencies ref = rcwaTE(1.0, 1.5, 1.0, 1.5, 1.0, 0.5, 0.3, deg, lambda, 40);
+        Extra ridge;
+        ridge.geometry = QStringLiteral(R"(, {"type": "rectangle", "name": "ridge", "position": ["0", "0.6"], "size": ["0.5", "0.3"]})");
+        ridge.materials = QStringLiteral(R"(, {"label": "mridge", "n": "1.5", "selection": {"objects": ["ridge"]}})");
+        const Run r = run(modelOf(cell(1.0, {{0.6, QStringLiteral(R"("n": "1.5")")}, {0.3, QStringLiteral(R"("n": "1")")}, {0.8, QStringLiteral(R"("n": "1")")}},
+                                       QStringLiteral("ez"), deg, lambda, slowBuild() ? 0.03 : 0.015, ridge)));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        const auto order = [](int m) { return m < 0 ? QStringLiteral("n%1").arg(-m) : QString::number(m); };
+        double sum = 0;
+        int reflected = 0, transmitted = 0;
+        for (int m = -3; m <= 3; ++m) {
+            const double R = global(s, QStringLiteral("ewfd.R_") + order(m)), T = global(s, QStringLiteral("ewfd.T_") + order(m));
+            const double Rr = ref.R[std::size_t(m + 40)], Tr = ref.T[std::size_t(m + 40)];
+            qInfo("order %+d: R %.6f (coupled waves %.6f), T %.6f (%.6f)", m, R, Rr, T, Tr);
+            QCOMPARE(std::isnan(R), Rr == 0);
+            QCOMPARE(std::isnan(T), Tr == 0);
+            if (!std::isnan(R)) {
+                ++reflected;
+                sum += R;
+                QVERIFY2(std::abs(R - Rr) < 5e-4, qPrintable(QStringLiteral("R %1: %2 against %3").arg(m).arg(R).arg(Rr)));
+            }
+            if (!std::isnan(T)) {
+                ++transmitted;
+                sum += T;
+                QVERIFY2(std::abs(T - Tr) < 5e-4, qPrintable(QStringLiteral("T %1: %2 against %3").arg(m).arg(T).arg(Tr)));
+            }
+        }
+        QCOMPARE(reflected, 3);
+        QCOMPARE(transmitted, 5);
+        QVERIFY2(std::abs(sum - 1) < 1e-9 && std::abs(global(s, QStringLiteral("ewfd.A"))) < 1e-9, qPrintable(QString::number(sum - 1)));
+        QVERIFY(std::abs(global(s, QStringLiteral("ewfd.R")) + global(s, QStringLiteral("ewfd.T")) - 1) < 1e-9);
+        // The ports 50 nm from it, in its near field: each order the same -
+        // the orders that die away taken out by the ports as well.
+        Extra close = ridge;
+        close.geometry = QStringLiteral(R"(, {"type": "rectangle", "name": "ridge", "position": ["0", "0.05"], "size": ["0.5", "0.3"]})");
+        const Run c = run(modelOf(cell(1.0, {{0.05, QStringLiteral(R"("n": "1.5")")}, {0.3, QStringLiteral(R"("n": "1")")}, {0.05, QStringLiteral(R"("n": "1")")}},
+                                       QStringLiteral("ez"), deg, lambda, slowBuild() ? 0.02 : 0.01, close)));
+        QVERIFY2(c.error.isEmpty(), qPrintable(c.error));
+        for (int m = -2; m <= 2; ++m) {
+            const double T = global(*c.solution, QStringLiteral("ewfd.T_") + order(m)), Tr = ref.T[std::size_t(m + 40)];
+            QVERIFY2(std::abs(T - Tr) < 5e-4, qPrintable(QStringLiteral("near: T %1: %2 against %3").arg(m).arg(T).arg(Tr)));
+        }
+        for (int m = -1; m <= 1; ++m) {
+            const double R = global(*c.solution, QStringLiteral("ewfd.R_") + order(m)), Rr = ref.R[std::size_t(m + 40)];
+            QVERIFY2(std::abs(R - Rr) < 5e-4, qPrintable(QStringLiteral("near: R %1: %2 against %3").arg(m).arg(R).arg(Rr)));
+        }
+    }
+
+    void periodicSidesMeshedAlike()
+    {
+        // A cell whose left wall has a point of its own (a block in the glass
+        // against it): its two walls still meshed node for node, and Fresnel's
+        // R as before - no warning of an interpolation.
+        Extra block;
+        block.geometry = QStringLiteral(R"(, {"type": "rectangle", "name": "block", "position": ["0", "0.37"], "size": ["0.11", "0.23"]})");
+        block.materials = QStringLiteral(R"(, {"label": "mblock", "n": "1.5", "selection": {"objects": ["block"]}})");
+        const Run r = run(modelOf(cell(0.4, {{1.0, QStringLiteral(R"("n": "1.5")")}, {1.0, QStringLiteral(R"("n": "1")")}}, QStringLiteral("hz"), 40, 1.0, 0.03, block)));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        const QString log = s.log.join(QLatin1Char('\n'));
+        QVERIFY2(!log.contains(QLatin1String("meshed apart")), qPrintable(log));
+        const double ti = 40 * M_PI / 180, tt = std::asin(std::sin(ti) / 1.5);
+        const double rp = (1.5 * std::cos(ti) - std::cos(tt)) / (1.5 * std::cos(ti) + std::cos(tt));
+        QVERIFY2(std::abs(global(s, QStringLiteral("ewfd.R")) - rp * rp) < 1e-6, qPrintable(QString::number(global(s, QStringLiteral("ewfd.R")))));
+        // The mesh's walls: each node on one, one on the other 0.4 µm across.
+        const Mesh& mesh = s.mesh();
+        std::vector<double> left, right;
+        for (const QPointF& p : mesh.nodes) {
+            if (std::abs(p.x()) < 1e-9) left.push_back(p.y());
+            if (std::abs(p.x() - 0.4) < 1e-9) right.push_back(p.y());
+        }
+        std::sort(left.begin(), left.end());
+        std::sort(right.begin(), right.end());
+        QCOMPARE(left.size(), right.size());
+        for (std::size_t i = 0; i < left.size(); ++i) QVERIFY(std::abs(left[i] - right[i]) < 1e-9);
+    }
+
+    void periodicRefusals()
+    {
+        auto error = [](const QByteArray& json) { return run(modelOf(json)).error; };
+        const std::vector<std::pair<double, QString>> stack{{1.0, QStringLiteral(R"("n": "1.5")")}, {1.0, QStringLiteral(R"("n": "1")")}};
+        // Two plane waves fed.
+        QString why = error(cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05).replace(R"("excite": false, )", ""));
+        QVERIFY2(why.contains(QLatin1String("is fed already")), qPrintable(why));
+        // None fed.
+        why = error(cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05).replace(R"("name": "in", )", R"("name": "in", "excite": false, )"));
+        QVERIFY2(why.contains(QLatin1String("no periodic port is fed")), qPrintable(why));
+        // The walls not one the other moved: one wall and the top, a run.
+        why = error(cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05).replace(R"("side": ["left", "right"])", R"("side": ["left", "top"])"));
+        QVERIFY2(why.contains(QLatin1String("not two sides apart")), qPrintable(why));
+        // Continuity with a plane wave at 30°: its kF disagrees.
+        why = error(cell(0.4, stack, QStringLiteral("ez"), 30, 1, 0.05).replace(R"({"type": "periodic", )", R"({"type": "periodic", "floquet": "continuity", )"));
+        QVERIFY2(why.contains(QLatin1String("Floquet, the fed periodic port's")), qPrintable(why));
+        // ... a kF given, its own: accepted, the same R as the port's.
+        const double kF = 2 * M_PI / 1e-6 * std::sin(30 * M_PI / 180);
+        const Run given = run(modelOf(cell(0.4, stack, QStringLiteral("ez"), 30, 1, 0.05)
+                                          .replace(R"({"type": "periodic", )", QStringLiteral(R"({"type": "periodic", "floquet": "given", "kx": "%1[1/m]", )").arg(kF, 0, 'g', 17).toUtf8())));
+        const Run port = run(modelOf(cell(0.4, stack, QStringLiteral("ez"), 30, 1, 0.05)));
+        QVERIFY2(given.error.isEmpty() && port.error.isEmpty(), qPrintable(given.error + port.error));
+        QVERIFY(std::abs(global(*given.solution, QStringLiteral("ewfd.R")) - global(*port.solution, QStringLiteral("ewfd.R"))) < 1e-12);
+        // No periodic condition.
+        QByteArray noSides = cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05);
+        noSides.replace(R"({"type": "periodic", "selection": {"of": ["L0", "L1"], "side": ["left", "right"]}},)", "");
+        why = error(noSides);
+        QVERIFY2(why.contains(QLatin1String("needs a Periodic Condition")), qPrintable(why));
+        // A port half the period long, and one over two media.
+        Extra halves;
+        halves.geometry = QStringLiteral(R"(, {"type": "rectangle", "name": "half", "position": ["0", "1"], "size": ["0.2", "1"]})");
+        halves.materials = QStringLiteral(R"(, {"label": "mhalf", "n": "1.2", "selection": {"objects": ["half"]}})");
+        why = error(cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05, halves));
+        QVERIFY2(why.contains(QLatin1String("not the same all along it")), qPrintable(why));
+        QByteArray shortPort = cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05, halves);
+        shortPort.replace(R"("selection": {"of": ["L1"], "side": "top"})", R"("selection": {"of": ["half"], "side": "top"})");
+        shortPort.replace(R"("n": "1.2")", R"("n": "1")");
+        why = error(shortPort);
+        QVERIFY2(why.contains(QLatin1String("needs a Periodic Condition")), qPrintable(why));
+        // With a waveguide's port.
+        QByteArray mixed = cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05);
+        mixed.replace(R"({"type": "periodicport", "name": "out", )", R"({"type": "port", "name": "out", )");
+        why = error(mixed);
+        QVERIFY2(why.contains(QLatin1String("periodic ports and ports together")), qPrintable(why));
     }
 
     void adaptiveMeshRefinement()
@@ -860,6 +1225,37 @@ private slots:
                   qPrintable(r.solution->log.filter(QStringLiteral("Adaptive")).join(QString())), timer.elapsed());
             QVERIFY2(std::abs(w / ref - 1) < 2e-3, qPrintable(QString::number(w / ref - 1)));
             QVERIFY(n < nf / 20);
+        }
+        {
+            // The grating: at 10° each order as the coupled waves have it,
+            // nothing lost at any angle; the +1st reflected at 0°, gone past
+            // grazing at 40° (sin θ + λ/P > 1 from 21.5°).
+            timer.start();
+            Model m = load(QStringLiteral("grating_orders.qfem"));
+            // (A sanitized build: three of its angles.)
+            const bool slow = slowBuild();
+            if (slow) {
+                QJsonArray rows;   // (by append: a braced list of one list is a copy to some compilers)
+                rows.append(QJsonArray{QStringLiteral("theta"), QStringLiteral("0, 10, 40"), QString()});
+                for (Node& step : m.find(m.studies().front()->tag)->children)
+                    if (step.type == QLatin1String("sweep")) step.props.insert(QStringLiteral("parameters"), rows);
+            }
+            const Run r = run(m);
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            QCOMPARE(int(r.study.solutions.size()), slow ? 3 : 9);
+            for (const auto& point : r.study.solutions)
+                QVERIFY(std::abs(global(*point, QStringLiteral("ewfd.R")) + global(*point, QStringLiteral("ewfd.T")) - 1) < 1e-9);
+            Solution& at10 = *r.study.solutions[slow ? 1 : 2];
+            const Efficiencies ref = rcwaTE(1.0, 1.5, 1.0, 1.5, 1.0, 0.5, 0.3, 10, 0.6328, 40);
+            for (const auto& [name, value] : std::vector<std::pair<QString, double>>{{QStringLiteral("R_0"), ref.R[40]}, {QStringLiteral("T_0"), ref.T[40]},
+                                                                                     {QStringLiteral("T_n1"), ref.T[39]}, {QStringLiteral("T_1"), ref.T[41]}})
+                QVERIFY2(std::abs(global(at10, QStringLiteral("ewfd.") + name) - value) < 5e-4,
+                         qPrintable(QStringLiteral("%1 %2 against %3").arg(name).arg(global(at10, QStringLiteral("ewfd.") + name)).arg(value)));
+            QVERIFY(!std::isnan(global(*r.study.solutions.front(), QStringLiteral("ewfd.R_1"))));
+            QVERIFY(std::isnan(global(*r.study.solutions.back(), QStringLiteral("ewfd.R_1"))));
+            QVERIFY(!std::isnan(global(*r.study.solutions.back(), QStringLiteral("ewfd.R_n1"))));
+            qInfo("grating: at 10° R_0 %.5f, T_0 %.5f, T_n1 %.5f, T_1 %.5f; %lld ms", global(at10, QStringLiteral("ewfd.R_0")), global(at10, QStringLiteral("ewfd.T_0")),
+                  global(at10, QStringLiteral("ewfd.T_n1")), global(at10, QStringLiteral("ewfd.T_1")), timer.elapsed());
         }
     }
 };
