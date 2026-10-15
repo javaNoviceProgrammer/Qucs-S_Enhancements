@@ -61,12 +61,14 @@ QString qucsLineSchematic(const LineRLGC& line, double length, const QString& ve
 /// What a Results > Export node makes: a file's text and its suffix.
 struct ExportText {
     QString text;
-    QString suffix;   ///< s2p, cir, sch
+    QByteArray data;  ///< a binary file's (NumPy's .npy) instead of text
+    QString suffix;   ///< s2p, cir, sch, csv, npy, dat
     QString summary;  ///< a line saying what is in it
     QString error;
 };
 /// Runs export node \a node of \a model on \a set (the solutions of its
-/// study): Touchstone, SPICE or Qucs subcircuit. \a version: Qucs-S's.
+/// study): Touchstone, SPICE or Qucs subcircuit, fields on a grid or at the
+/// mesh's nodes. \a version: Qucs-S's.
 ExportText exportText(const Model& model, const SolutionSet& set, const Node& node, const QString& version);
 
 } // namespace qucs_s::fem

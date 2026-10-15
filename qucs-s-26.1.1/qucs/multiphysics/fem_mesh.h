@@ -93,6 +93,13 @@ struct MeshSizes {
         QPointF shift;
     };
     std::vector<Periodic> periodic;
+    /// By domain: a layered region's - a rectangle of layers stacked along
+    /// y (layerAxis 1) or x (0) - lateral size (0: not one) and elements
+    /// across it: a structured grid of stretched triangles, not refined,
+    /// its sides never split.
+    std::vector<double> layerLateral;
+    std::vector<int> layerCount;
+    std::vector<char> layerAxis;
 };
 
 /// The sizes \a model's mesh node asks for on \a topology: its preset,

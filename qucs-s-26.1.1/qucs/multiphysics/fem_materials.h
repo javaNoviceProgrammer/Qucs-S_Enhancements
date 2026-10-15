@@ -152,6 +152,15 @@ std::optional<std::vector<ValleySet>> valleySets(const QString& text, QString* e
 QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set = BandSet::Vurgaftman,
                          double T = 300);
 
+/// The composition of alloy \a compound whose gap at \a T (K) is \a gap
+/// (eV) in band set \a set: a ternary's x; a quaternary's x and y on the
+/// lattice of compound \a lattice (InP, GaAs) - InGaAsP's along its In-Ga
+/// and As-P, AlGaInAs's and AlGaInP's along Al-Ga. Where the gap is reached
+/// twice, the lower x (a quaternary: the line's start, As-poor or Al-poor).
+/// None, and why - the gaps there are - when it is not reached.
+std::optional<std::pair<double, double>> compositionForGap(const QString& compound, double gap, const QString& lattice, BandSet set,
+                                                           QString* error = nullptr, double T = 300);
+
 /// The material properties a semiconductor's models read from its
 /// material - the Semiconductor Material Model's (Caughey and Thomas's and
 /// Masetti's mobilities, ζ, saturation, band gap narrowing), SRH's (Fossum's

@@ -152,7 +152,8 @@ struct DerivedResult {
     QString note;   ///< what it is worth knowing (a number integrated: its unit the area's)
 };
 /// Evaluates a Derived Values node (global, integral, average, maximum,
-/// minimum, pointeval, lineparams) on \a solution (its snapshot selected).
+/// minimum, pointeval, lineparams, confinement, perturbation) on \a
+/// solution (its snapshot selected).
 DerivedResult evaluateDerived(const Solution& solution, const Node& node);
 
 /// A transmission line's parameters per metre at a solution's frequency:
@@ -186,11 +187,18 @@ struct Instance {
 /// Every instance of \a set (each point, each time or frequency), or those
 /// picked: the point \a point (from 1; 0 the last), the time \a time or (in
 /// the frequency domain) the frequency \a frequency (empty: the last), of a
-/// mode analysis the mode \a mode (from 1; 0: the first).
+/// mode analysis the mode \a mode (from 1; 0: the one its step chose, the
+/// first unless it says; -1, all: the one chosen at each frequency).
 std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0, const QString& time = {}, const QString& frequency = {},
                                 int mode = 0);
 /// The solution of \a instance, its snapshot selected.
 Solution* select(const SolutionSet& set, const Instance& instance);
+/// A Perturbation along a sweep (\a values: evaluateDerived's at each of
+/// \a at, instances of \a set): to each but the first point's of its mode,
+/// that point taken as the reference, its phase from it dphi_sweep = k0 L
+/// (Δneff - Δneff0) (a length given) and VpiL = λ|V - V0|/2|Δneff - Δneff0|
+/// (a bias given: the swept parameter).
+void perturbationAlongSweep(const SolutionSet& set, const std::vector<Instance>& at, const Node& node, std::vector<DerivedResult>& values);
 
 } // namespace qucs_s::fem
 

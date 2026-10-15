@@ -367,6 +367,13 @@ private:
         const double cap = domainCap(d);
         return std::max(a_sizes.hmin, a_tree.query(p, a_k, cap));
     }
+    /// A layered region's domain; a boundary of one.
+    bool layered(int d) const { return d >= 0 && d < int(a_sizes.layerLateral.size()) && a_sizes.layerLateral[std::size_t(d)] > 0; }
+    bool layeredBoundary(int b) const
+    {
+        const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
+        return layered(bd.up) || layered(bd.down);
+    }
     /// On a boundary: the finer of its two sides'.
     double boundarySize(QPointF p, const Topology::Boundary& b) const
     {
@@ -387,7 +394,10 @@ private:
             if (b < int(a_sizes.boundaryMax.size())) h = std::min(h, a_sizes.boundaryMax[std::size_t(b)]);
             for (int d : {bd.up, bd.down})
                 if (d >= 0) h = std::min(h, domainCap(d));
-            own[std::size_t(b)] = std::max(h, a_sizes.hmin);
+            // (A layered region's: its elements' spacing along it.)
+            if (layeredBoundary(b) && b < int(a_sizes.boundaryCount.size()) && a_sizes.boundaryCount[std::size_t(b)] > 0)
+                h = BoundaryPath(a_t, bd).length() / a_sizes.boundaryCount[std::size_t(b)];
+            own[std::size_t(b)] = layeredBoundary(b) ? h : std::max(h, a_sizes.hmin);
         }
         // Boundaries that meet another at a point: not across a narrow
         // region from it.
@@ -408,8 +418,9 @@ private:
                 double h = own[std::size_t(b)];
                 // On a curve: the curvature factor times its radius.
                 h = std::min(h, a_sizes.curvature * path.radius(s));
-                // Across a narrow region: its width over the elements wanted.
-                if (a_sizes.narrow > 0) {
+                // Across a narrow region: its width over the elements wanted
+                // (a layered region's layers not: their grid says).
+                if (a_sizes.narrow > 0 && !layeredBoundary(b)) {
                     const QPointF tg = path.tangent(s);
                     const QPointF nrm(-tg.y(), tg.x());
                     const double reach = h * std::max(1.0, a_sizes.narrow) * 1.01;
@@ -419,7 +430,7 @@ private:
                     const double gap = std::min(grid.ray(p + inset, nrm, reach, skip), grid.ray(p + inset, -nrm, reach, skip));
                     if (gap < reach) h = std::min(h, gap / a_sizes.narrow);
                 }
-                h = std::max(h, a_sizes.hmin);
+                if (!layeredBoundary(b)) h = std::max(h, a_sizes.hmin);
                 *least = std::min(*least, h);
                 out.push_back({p.x(), p.y(), h});
             }
@@ -575,6 +586,21 @@ private:
                 a_edges.push_back({nodes[i], nodes[i + 1], b, path.onCurve() ? bd.curve : -1, params[i], params[i + 1]});
             }
         }
+        // A layered region's grid inside it: its lateral spacing along the
+        // layers, so many rows across each.
+        for (int d = 0; d < int(a_t.domains.size()); ++d) {
+            if (!layered(d)) continue;
+            const QRectF r = a_t.domains[std::size_t(d)].bounds;
+            const bool yStack = a_sizes.layerAxis[std::size_t(d)] == 1;
+            const double along = yStack ? r.width() : r.height(), across = yStack ? r.height() : r.width();
+            const int columns = std::max(1, int(std::ceil(along / a_sizes.layerLateral[std::size_t(d)] - 1e-9)));
+            const int rows = std::max(1, a_sizes.layerCount[std::size_t(d)]);
+            for (int i = 1; i < columns; ++i)
+                for (int j = 1; j < rows; ++j) {
+                    const double u = along * i / columns, v = across * j / rows;
+                    a_nodes.push_back(yStack ? QPointF(r.left() + u, r.top() + v) : QPointF(r.left() + v, r.top() + u));
+                }
+        }
     }
 
     // --- The triangulation ------------------------------------------------
@@ -695,6 +721,9 @@ private:
             cdt.insertEdges(edges);
         }
         constexpr int offset = 3;
+        // A layered region's sides never split: its grid kept.
+        for (const ConstraintEdge& e : a_edges)
+            if (layeredBoundary(e.boundary)) cdt.unsplitEdges.insert(CDT::Edge(CDT::VertInd(e.a + offset), CDT::VertInd(e.b + offset)));
         const std::size_t budget = 4000000;   // vertices at most
         // Every vertex's place, to a tolerance: no point put twice (two
         // circumcenters alike; one on a vertex there).
@@ -731,7 +760,7 @@ private:
             for (std::size_t t = 0; t < nt; ++t) {
                 const int d = dom[t];
                 const CDT::Triangle& tri = cdt.triangles[t];
-                if (d < 0) continue;
+                if (d < 0 || layered(d)) continue;
                 if (good[t] && seen[t] == tri.vertices) continue;
                 seen[t] = tri.vertices;
                 good[t] = 0;
@@ -822,7 +851,7 @@ private:
             const std::vector<int> dom = classify(cdt, offset);
             CDT::TriIndUSet outside;
             for (std::size_t t = 0; t < dom.size(); ++t)
-                if (dom[t] < 0) outside.insert(CDT::TriInd(t));
+                if (dom[t] < 0 || layered(dom[t])) outside.insert(CDT::TriInd(t));
             const CDT::VertInd room = CDT::VertInd(std::max<std::size_t>(budget > cdt.vertices.size() ? budget - cdt.vertices.size() : 0, 0));
             const CDT::Unrefined unrefined = cdt.refineTriangles(room, CDT::RefinementCriterion::SmallestAngle,
                                                                  CDT::degToRad(25.0), &outside, std::max(a_sizes.hmin * 0.25, diag * 1e-9));
@@ -925,6 +954,10 @@ private:
         std::vector<char> fixedNode = onBoundary;
         for (int n : mesh->pointNode)
             if (n >= 0) fixedNode[std::size_t(n)] = 1;
+        // (A layered region's grid as it is.)
+        for (int t = 0; t < int(mesh->triangles.size()); ++t)
+            if (layered(mesh->domain[std::size_t(t)]))
+                for (int v : mesh->triangles[std::size_t(t)]) fixedNode[std::size_t(v)] = 1;
         smooth(*mesh, fixedNode);
         keepDelaunay(*mesh);
         mesh->sharpCorners = a_sharp;
@@ -1276,6 +1309,57 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
             const int n = std::clamp(f.integer(QStringLiteral("count")), 1, 100000);
             for (int i : picked) s.boundaryCount[std::size_t(i)] = n;
         }
+    }
+    // Layered regions: each a rectangle (its area its box's), a grid of its
+    // lateral size along its layers and so many elements across each.
+    s.layerLateral.assign(topology.domains.size(), 0);
+    s.layerCount.assign(topology.domains.size(), 0);
+    s.layerAxis.assign(topology.domains.size(), 1);
+    for (const Node& f : m.children) {
+        if (!f.enabled || f.type != QLatin1String("mesh/layered")) continue;
+        QString why;
+        const QVector<int> picked = resolveSelection(topology, model, Level::Domain, f.selection(), &why);
+        if (!why.isEmpty()) problems << tr("%1: %2").arg(f.name(), why);
+        const double h = length(f.text(QStringLiteral("hlateral")), tr("%1's lateral size").arg(f.name()), s.hmax);
+        const int n = std::clamp(f.integer(QStringLiteral("count")), 1, 1000);
+        const char axis = f.text(QStringLiteral("axis")) == QLatin1String("x") ? 0 : 1;
+        for (int d : picked) {
+            if (d < 0 || d >= int(topology.domains.size())) continue;
+            const Topology::Domain& dm = topology.domains[std::size_t(d)];
+            const double box = dm.bounds.width() * dm.bounds.height();
+            if (!(box > 0) || std::abs(dm.area - box) > 1e-9 * box) {
+                problems << tr("%1: domain %2 is not a rectangle along x and y - a layered region's layers are").arg(f.name()).arg(d + 1);
+                continue;
+            }
+            s.layerLateral[std::size_t(d)] = h;
+            s.layerCount[std::size_t(d)] = n;
+            s.layerAxis[std::size_t(d)] = axis;
+        }
+    }
+    // Their boundaries' elements: along the layers as many as the lateral
+    // size makes (the finer side's), across them each layer's count of its
+    // thickness (a distribution given kept).
+    for (int b = 0; b < int(topology.boundaries.size()); ++b) {
+        const Topology::Boundary& bd = topology.boundaries[std::size_t(b)];
+        if (s.boundaryCount[std::size_t(b)] > 0) continue;
+        const std::vector<QPointF> line = bd.polyline(topology);
+        if (line.size() < 2) continue;
+        const QPointF along = line.back() - line.front();
+        int count = 0;
+        for (int d : {bd.up, bd.down}) {
+            if (d < 0 || !(s.layerLateral[std::size_t(d)] > 0)) continue;
+            const Topology::Domain& dm = topology.domains[std::size_t(d)];
+            const bool yStack = s.layerAxis[std::size_t(d)] == 1;
+            const bool lateral = yStack ? std::abs(along.x()) > std::abs(along.y()) : std::abs(along.y()) > std::abs(along.x());
+            const double len = std::hypot(along.x(), along.y());
+            if (lateral) {
+                count = std::max(count, int(std::ceil(len / s.layerLateral[std::size_t(d)] - 1e-9)));
+            } else {
+                const double thick = yStack ? dm.bounds.height() : dm.bounds.width();
+                count = std::max(count, std::max(1, int(std::lround(s.layerCount[std::size_t(d)] * len / thick))));
+            }
+        }
+        if (count > 0) s.boundaryCount[std::size_t(b)] = std::min(count, 100000);
     }
     // A semiconductor's domains kept Delaunay.
     s.delaunay.assign(topology.domains.size(), 0);

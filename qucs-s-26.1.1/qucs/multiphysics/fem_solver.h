@@ -197,6 +197,14 @@ public:
     double snapshotValue(int i) const { return frequencyDomain ? snapshotFrequency(i) : snapshotTime(i); }
     /// A mode analysis's snapshot: its mode's number (from 1), else 0.
     int snapshotMode(int i) const { return a_snapshots[std::size_t(i)].mode; }
+    /// Whether it is the mode its step chose at its frequency (a mode
+    /// analysis's: the one shown and evaluated by default).
+    bool snapshotChosen(int i) const { return a_snapshots[std::size_t(i)].chosen; }
+    /// The last snapshot marked as its step's chosen mode.
+    void chooseLastSnapshot()
+    {
+        if (!a_snapshots.empty()) a_snapshots.back().chosen = true;
+    }
     /// The mode the fields are of (from 1; 0: none).
     int mode() const { return a_mode; }
     void setMode(int m) { a_mode = m; }
@@ -270,6 +278,7 @@ private:
         double time = 0;
         double frequency = 0;
         int mode = 0;
+        bool chosen = false;
         std::vector<std::vector<double>> extra;    // by field
         std::vector<std::vector<double>> values;   // by field
         std::vector<std::vector<Field::Terminal>> terminals;

@@ -486,7 +486,8 @@ QList<NodeKind> makeKinds()
                   "stays at the compound's VBO, so a gap given moves the conduction band (give VBO too to move the other)")),
           expr(QStringLiteral("lambdag"), tr("Gap wavelength λg"), QStringLiteral("m"), QString(),
                tr("Eg = hc/λg when Eg is not given: a quaternary named by its gap's wavelength (\"1.3Q\": 1.3[um]) - its masses "
-                  "and deformation potentials still its compound's")),
+                  "and deformation potentials still its compound's at the composition given; or, its composition solved for "
+                  "the gap (Composition), all of them of that composition")),
           expr(QStringLiteral("chi"), tr("Electron affinity χ"), QStringLiteral("eV"), QString()),
           expr(QStringLiteral("Nc"), tr("Effective density of states Nc"), QStringLiteral("1/m^3"), QString()),
           expr(QStringLiteral("Nv"), tr("Effective density of states Nv"), QStringLiteral("1/m^3"), QString()),
@@ -513,6 +514,13 @@ QList<NodeKind> makeKinds()
                tr("An alloy's: AlGaAs, Al's share; InGaAs, InAlAs, In's; GaInP, Ga's; GaAsP, InAsP, GaAsSb, As's; InGaAsP "
                   "(In1-x Gax Asy P1-y), Ga's; AlGaInAs (Alx Gay In1-x-y As), Al's")),
           expr(QStringLiteral("y"), tr("Composition y"), QString(), QString(), tr("InGaAsP, As's share; AlGaInAs, Ga's")),
+          choice(QStringLiteral("composition"), tr("Composition"), {QStringLiteral("given"), QStringLiteral("gap")},
+                 {tr("As given (x, y)"), tr("Solved for its gap λg (a quaternary on a lattice)")}, QStringLiteral("given"),
+                 tr("Solved: the alloy whose gap at 300 K is hc/λg in its band set - a ternary's x; a quaternary's x and y on "
+                    "the lattice below (InGaAsP along As and P, AlGaInAs and AlGaInP along Al and Ga) -, its gap, masses, "
+                    "offsets and deformation potentials all of that composition (the 1.3Q's of the 300 K fit: In0.72 Ga0.28 As0.60 P0.40)")),
+          shownIf(text(QStringLiteral("lattice"), tr("Lattice-matched to"), QStringLiteral("InP"), tr("A binary: InP, GaAs...")),
+                  QStringLiteral("composition=gap")),
           expr(QStringLiteral("me"), tr("Electron effective mass (m0)"), QString(), QString()),
           expr(QStringLiteral("gamma1"), tr("Luttinger parameter γ1"), QString(), QString(),
                tr("The holes' masses: heavy 1/(γ1 - 2γ2) along the growth axis, 1/(γ1 + γ2) across it; light 1/(γ1 + 2γ2), 1/(γ1 - γ2)")),
@@ -920,9 +928,39 @@ QList<NodeKind> makeKinds()
                            tr("Voigt's, the model's axes: r13=9.6[pm/V]; r33=30.9[pm/V]; ... (the material's, turned, when it is "
                               "from the material)")),
                       QStringLiteral("electrooptic=true&source=user")),
-              shownIf(spatial(QStringLiteral("Ex"), tr("Static field Ex"), QStringLiteral("V/m"), QStringLiteral("es.Ex")), QStringLiteral("electrooptic=true")),
-              shownIf(spatial(QStringLiteral("Ey"), tr("Static field Ey"), QStringLiteral("V/m"), QStringLiteral("es.Ey")), QStringLiteral("electrooptic=true")),
-              shownIf(spatial(QStringLiteral("Ez"), tr("Static field Ez"), QStringLiteral("V/m"), QStringLiteral("0[V/m]")), QStringLiteral("electrooptic=true")),
+              flag(QStringLiteral("kerr"), tr("Quadratic electro-optic (Kerr, QCSE)"), false,
+                   tr("Δn = ½ n³ R (|E|² - E0²) along each axis, E the static field below: a quantum well stack's electrorefraction "
+                      "below its edge (R about 1e-19 m²/V² TE in InGaAsP wells at 1550 nm), the simple alternative to its wells' "
+                      "absorption computed (Quantum Wells' Absorption)")),
+              shownIf(text(QStringLiteral("Rkerr"), tr("R along x, y, z"), QStringLiteral("1e-19[m^2/V^2]"),
+                           tr("One value, or three \"a; b; c\" - a stack grown along y: TE's along x and z, TM's along y")),
+                      QStringLiteral("kerr=true")),
+              shownIf(expr(QStringLiteral("E0kerr"), tr("Field the index is given at E0"), QStringLiteral("V/m"), QStringLiteral("0[V/m]")),
+                      QStringLiteral("kerr=true")),
+              shownIf(spatial(QStringLiteral("Ex"), tr("Static field Ex"), QStringLiteral("V/m"), QStringLiteral("es.Ex")), QStringLiteral("electrooptic=true|kerr=true")),
+              shownIf(spatial(QStringLiteral("Ey"), tr("Static field Ey"), QStringLiteral("V/m"), QStringLiteral("es.Ey")), QStringLiteral("electrooptic=true|kerr=true")),
+              shownIf(spatial(QStringLiteral("Ez"), tr("Static field Ez"), QStringLiteral("V/m"), QStringLiteral("0[V/m]")), QStringLiteral("electrooptic=true|kerr=true")),
+              flag(QStringLiteral("qwabsorption"), tr("Quantum wells' absorption (QCSE)"), false,
+                   tr("A quantum wells physics' absorption and Kramers-Kronig index at the mode's photon energy, of the field at each "
+                      "point: the wells solved again at fields from -Fmax to Fmax, their spectrum as the study's Spectrum step says (its "
+                      "energies the Kramers-Kronig window, its broadening, excitons, absorption per), α added to κ, n(F) - n(F0) to n - "
+                      "TE along the wells' plane, TM along their axis. An MQW modulator's α(V) and Δn(V) from its semiconductor's field")),
+              shownIf(text(QStringLiteral("qwtag"), tr("Quantum wells"), QStringLiteral("qw"), tr("The tag of the quantum wells physics")),
+                      QStringLiteral("qwabsorption=true")),
+              shownIf(text(QStringLiteral("spectrumstep"), tr("Spectrum step"), QString(),
+                           tr("The tag of the Spectrum step whose options the wells' spectrum takes - one disabled too, its options "
+                              "alone read (empty: the mode step's study's first)")),
+                      QStringLiteral("qwabsorption=true")),
+              shownIf(spatial(QStringLiteral("Fqw"), tr("Field along the wells' axis"), QStringLiteral("V/m"), QStringLiteral("semi.Ey"),
+                              tr("At each point: a semiconductor's (semi.Ey for wells grown along y), as the wells' F")),
+                      QStringLiteral("qwabsorption=true")),
+              shownIf(expr(QStringLiteral("Fmax"), tr("Largest field"), QStringLiteral("V/m"), QStringLiteral("200[kV/cm]"),
+                           tr("The table's: from -Fmax to Fmax, beyond it held")),
+                      QStringLiteral("qwabsorption=true")),
+              shownIf(integer(QStringLiteral("Fpoints"), tr("Fields solved"), 21, tr("Evenly from -Fmax to Fmax, interpolated between")),
+                      QStringLiteral("qwabsorption=true")),
+              shownIf(expr(QStringLiteral("F0qw"), tr("Field the index is given at F0"), QStringLiteral("V/m"), QStringLiteral("0[V/m]")),
+                      QStringLiteral("qwabsorption=true")),
               flag(QStringLiteral("photoelastic"), tr("Photoelastic"), false,
                    tr("Δ(1/ε)_i = Σ p_ij S_j: its material's p (turned by its orientation) or as given, S a solid mechanics' strain "
                       "(solid.ex, solid.ey, solid.ez, solid.exy) - stress's birefringence, a heater's or a cladding's")),
@@ -951,12 +989,56 @@ QList<NodeKind> makeKinds()
               shownIf(expr(QStringLiteral("Tref"), tr("Reference temperature"), QStringLiteral("K"), QStringLiteral("293.15[K]")),
                       QStringLiteral("thermooptic=true")),
               flag(QStringLiteral("plasma"), tr("Plasma dispersion (free carriers)"), false,
-                   tr("Silicon's free carriers: Δn = -(8.8e-22 N + 8.5e-18 P^0.8), Δα = 8.5e-18 N + 6.0e-18 P (cm⁻³, cm⁻¹; Soref and "
-                      "Bennett's at 1550 nm, as λ²) - N and P from a semiconductor physics")),
+                   tr("The free carriers' index: silicon's fit (Soref and Bennett's), Drude's of the material's masses, or "
+                      "coefficients given - N and P from a semiconductor physics, at the mode's wavelength")),
+              shownIf(choice(QStringLiteral("plasmamodel"), tr("Model"), {QStringLiteral("soref"), QStringLiteral("drude"), QStringLiteral("user")},
+                             {tr("Silicon's (Soref and Bennett)"), tr("Drude's (the material's masses)"), tr("Coefficients given")},
+                             QStringLiteral("soref"),
+                             tr("Silicon's: Δn = -(8.8e-22 N + 8.5e-18 P^0.8), Δα = 8.5e-18 N + 6.0e-18 P (cm⁻³, cm⁻¹; at 1550 nm, as λ²). "
+                                "Drude's: Δn = -(q²λ²/8π²c²ε0 n)(N/me + P/mh) - a III-V's (InP's some five times silicon's per "
+                                "electron); its absorption Free-carrier absorption's. Given: Δn = (∂n/∂N) N + (∂n/∂P) P")),
+                      QStringLiteral("plasma=true")),
+              shownIf(expr(QStringLiteral("mepl"), tr("Electron mass me (m0)"), QString(), QString(),
+                           tr("Empty: its material's me (a III-V's, of its composition)")),
+                      QStringLiteral("plasma=true&plasmamodel=drude")),
+              shownIf(expr(QStringLiteral("mhpl"), tr("Hole mass mh (m0)"), QString(), QString(),
+                           tr("Empty: its material's, of its Luttinger parameters - heavy and light holes' conductivity mass "
+                              "(mhh^1.5 + mlh^1.5)/(mhh^0.5 + mlh^0.5), mhh = 1/(γ1 - 2γ2), mlh = 1/(γ1 + 2γ2)")),
+                      QStringLiteral("plasma=true&plasmamodel=drude")),
+              shownIf(expr(QStringLiteral("dndN"), tr("∂n/∂N"), QStringLiteral("m^3"), QStringLiteral("-4.3e-21[cm^3]")),
+                      QStringLiteral("plasma=true&plasmamodel=user")),
+              shownIf(expr(QStringLiteral("dndP"), tr("∂n/∂P"), QStringLiteral("m^3"), QStringLiteral("-1e-21[cm^3]")),
+                      QStringLiteral("plasma=true&plasmamodel=user")),
+              flag(QStringLiteral("fca"), tr("Free-carrier absorption"), false,
+                   tr("Δα = σn N + σp P, each cross-section at 1550 nm and as λ² - the material's (sigmaFCn, sigmaFCp: InP's "
+                      "family 1e-18 and 2e-17 cm²) or as given; of all the carriers there, a doped cladding's loss with them")),
+              shownIf(choice(QStringLiteral("fcasource"), tr("Cross-sections"), {QStringLiteral("material"), QStringLiteral("user")},
+                             {tr("From the material (sigmaFCn, sigmaFCp)"), tr("User defined")}, QStringLiteral("material")),
+                      QStringLiteral("fca=true")),
+              shownIf(expr(QStringLiteral("sigmaFCn"), tr("Electrons' σn (at 1550 nm)"), QStringLiteral("m^2"), QStringLiteral("1e-18[cm^2]")),
+                      QStringLiteral("fca=true&fcasource=user")),
+              shownIf(expr(QStringLiteral("sigmaFCp"), tr("Holes' σp (at 1550 nm)"), QStringLiteral("m^2"), QStringLiteral("2e-17[cm^2]")),
+                      QStringLiteral("fca=true&fcasource=user")),
+              flag(QStringLiteral("bandfilling"), tr("Band filling (Burstein-Moss)"), false,
+                   tr("Free carriers filling the states a direct gap's absorption joins: that absorption bleached, the index "
+                      "lowered below the gap (Kramers-Kronig's) - a depletion modulator's largest term. Computed of the "
+                      "material's gap, masses and Ep (Bennett, Soref and del Alamo's), or Δn per carrier given")),
+              shownIf(choice(QStringLiteral("bfmodel"), tr("Band filling"), {QStringLiteral("computed"), QStringLiteral("user")},
+                             {tr("Computed (the material's Eg, me, γ1, γ2, Ep)"), tr("Δn per carrier given")}, QStringLiteral("computed")),
+                      QStringLiteral("bandfilling=true")),
+              shownIf(spatial(QStringLiteral("Pbfn"), tr("Δn per electron"), QStringLiteral("m^3"), QStringLiteral("-1e-21[cm^3]"),
+                              tr("Of the wavelength too - an Interpolation of lambda0")),
+                      QStringLiteral("bandfilling=true&bfmodel=user")),
+              shownIf(spatial(QStringLiteral("Pbfp"), tr("Δn per hole"), QStringLiteral("m^3"), QStringLiteral("0[cm^3]")),
+                      QStringLiteral("bandfilling=true&bfmodel=user")),
+              shownIf(flag(QStringLiteral("bfholes"), tr("Holes' too"), true, tr("The holes' band filling besides the electrons'")),
+                      QStringLiteral("bandfilling=true&bfmodel=computed")),
+              shownIf(expr(QStringLiteral("Tbf"), tr("Carriers' temperature"), QStringLiteral("K"), QStringLiteral("300[K]")),
+                      QStringLiteral("bandfilling=true&bfmodel=computed")),
               shownIf(spatial(QStringLiteral("Ncarriers"), tr("Electron concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.n")),
-                      QStringLiteral("plasma=true")),
+                      QStringLiteral("plasma=true|fca=true|bandfilling=true")),
               shownIf(spatial(QStringLiteral("Pcarriers"), tr("Hole concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.p")),
-                      QStringLiteral("plasma=true")),
+                      QStringLiteral("plasma=true|fca=true|bandfilling=true")),
               flag(QStringLiteral("electroabsorption"), tr("Direct-gap absorption (Franz-Keldysh)"), false,
                    tr("κ + αλ/4π, α a direct gap's: A √((ħω - Eg)/1 eV) (1 eV/ħω) without a field, and under one the Franz-Keldysh "
                       "effect - A (ħθ/1 eV)^½ π (Ai'(β)² - β Ai(β)²) (1 eV/ħω), β = (Eg - ħω)/ħθ, ħθ = (q²ħ²F²/2µ)^⅓: a tail below "
@@ -983,7 +1065,8 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("wee"),
              tr("ε from a refractive index n - jκ (its square) or a permittivity εr (1 - j tan δ) - jσ/ωε0; µr; anisotropic along x, "
                 "y and z, or a tensor (a crystal's, turned by its material's orientation), its losses along each axis; warmed: n + "
-                "dn/dT (T - Tref); free carriers' plasma dispersion; a direct gap's absorption and the Franz-Keldysh effect on it; "
+                "dn/dT (T - Tref); free carriers' plasma dispersion (silicon's, Drude's), absorption and band filling; a direct "
+                "gap's absorption and the Franz-Keldysh effect on it; "
                 "Pockels' electro-optic effect of a static field, the photoelastic effect of a strain, a magnetized garnet's "
                 "gyrotropy. From their material or as given.")});
         add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
@@ -1859,7 +1942,7 @@ QList<NodeKind> makeKinds()
                        tr("An element on a curve at most this times its radius")), QStringLiteral("custom=true")),
           shownIf(expr(QStringLiteral("narrow"), tr("Resolution of narrow regions"), QString(), QString(),
                        tr("Elements across a gap between boundaries, at least")), QStringLiteral("custom=true"))},
-         {QStringLiteral("mesh/size"), QStringLiteral("mesh/distribution")}, {}, true, true, QString(),
+         {QStringLiteral("mesh/size"), QStringLiteral("mesh/distribution"), QStringLiteral("mesh/layered")}, {}, true, true, QString(),
          tr("Triangles, Delaunay, refined till their angles are good and their sizes as asked.")});
     add({QStringLiteral("mesh/size"), tr("Size"), QStringLiteral("mesh"), QStringLiteral("meshsize"), Level::Domain,
          {choice(QStringLiteral("level"), tr("Level"), {QStringLiteral("domain"), QStringLiteral("boundary"), QStringLiteral("point")},
@@ -1869,6 +1952,16 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("mesh/distribution"), tr("Distribution"), QStringLiteral("mesh"), QStringLiteral("meshdistribution"),
          Level::Boundary, {selectionProp(none), integer(QStringLiteral("count"), tr("Number of elements"), 10)},
          {}, {}, false, false, QStringLiteral("dis"), tr("A number of elements along boundaries.")});
+    add({QStringLiteral("mesh/layered"), tr("Layered Region"), QStringLiteral("mesh"), QStringLiteral("meshlayered"), Level::Domain,
+         {selectionProp(none),
+          choice(QStringLiteral("axis"), tr("Layers stacked along"), {QStringLiteral("y"), QStringLiteral("x")}, {tr("y"), tr("x")}, QStringLiteral("y")),
+          expr(QStringLiteral("hlateral"), tr("Lateral element size"), QStringLiteral("length"), QString(),
+               tr("Along the layers (empty: the maximum element size)")),
+          integer(QStringLiteral("count"), tr("Elements across each layer"), 2)},
+         {}, {}, false, false, QStringLiteral("lay"),
+         tr("A stack of thin layers - an MQW's wells and barriers, each a rectangle - as a grid of stretched triangles: so many "
+            "across each layer, the lateral size along them; not refined, its sides never split. Forty 6 nm layers under a 2 µm "
+            "mesa some 6400 triangles, not the 200 000 isotropic ones they force.")});
 
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
@@ -1979,8 +2072,21 @@ QList<NodeKind> makeKinds()
               }(),
               choice(QStringLiteral("polarization"), tr("Polarization"), {QStringLiteral("any"), QStringLiteral("te"), QStringLiteral("tm")},
                      {tr("Any"), tr("TE (E along x)"), tr("TM (E along y)")}, QStringLiteral("any"),
-                     tr("Those of one polarization alone - by emw.TEfraction, of the transverse |E|² the part along x: TE at 1/2 "
-                        "or more. A metal or magnetic wall's lateral modes (a 2 µm strip's TE01 above a slab's TM0) left out")),
+                     tr("Those of one polarization alone - by emw.TEfraction, of the transverse |E|² the part along x: TE at the "
+                        "fraction below or more, TM at 1 less it or less. A metal or magnetic wall's lateral modes (a 2 µm strip's "
+                        "TE01 above a slab's TM0) left out")),
+              shownIf(expr(QStringLiteral("tefraction"), tr("TE fraction at least"), QString(), QStringLiteral("0.5"),
+                           tr("TE: emw.TEfraction this or more; TM: 1 less this or less (0.9: a hybrid mode near a slab's left out)")),
+                      QStringLiteral("polarization=te|polarization=tm")),
+              expr(QStringLiteral("minneff"), tr("Effective index above"), QString(), QString(),
+                   tr("Guided: those above it alone - a substrate's or cladding's index, their modes left out (empty: any)")),
+              expr(QStringLiteral("maxloss"), tr("Loss below (dB/cm)"), QString(), QString(),
+                   tr("Guided: those losing less alone - an absorbing layer's or a leaky mode left out (empty: any)")),
+              choice(QStringLiteral("choose"), tr("Mode chosen"), {QStringLiteral("first"), QStringLiteral("share"), QStringLiteral("te"), QStringLiteral("tm")},
+                     {tr("The first (highest effective index)"), tr("The most in the domains tracked"), tr("The most TE"), tr("The most TM")},
+                     QStringLiteral("first"),
+                     tr("Of those kept, at each frequency and sweep point: the one a plot group shows (its mode 0), a derived value "
+                        "evaluates (its solutions: chosen) and the steps after are lit by")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved before at each frequency")),
               before, nonlinear},
@@ -2160,7 +2266,8 @@ QList<NodeKind> makeKinds()
         frequency.tooltip = tr("Of a study in the frequency domain: the frequency shown, or its wavelength (empty: the last)");
         add({QStringLiteral("plotgroup"), tr("2D Plot Group"), QStringLiteral("results"), QStringLiteral("plotgroup"), Level::None,
              {study, point, time, frequency,
-              integer(QStringLiteral("mode"), tr("Mode"), 1, tr("Of a mode analysis: which mode, from 1 (by effective index)")),
+              integer(QStringLiteral("mode"), tr("Mode"), 0,
+                      tr("Of a mode analysis: which mode, from 1 (by effective index); 0 the one its step chose (the first unless it says)")),
               text(QStringLiteral("title"), tr("Title"), QString())},
              {QStringLiteral("surface"), QStringLiteral("contour"), QStringLiteral("arrow"), QStringLiteral("meshplot"), QStringLiteral("deformation"),
               QStringLiteral("rayplot")},
@@ -2179,8 +2286,9 @@ QList<NodeKind> makeKinds()
         dataset.kind = P::Dataset;
         dataset.defaultValue = QString();
         dataset.tooltip = tr("A cut line (a line graph) or cut point (a point graph) of the results");
-        const P solutions = choice(QStringLiteral("solutions"), tr("Solutions"), {QStringLiteral("all"), QStringLiteral("selected")},
-                                   {tr("All: each output time, each parameter value"), tr("The plot group's time and parameter value")},
+        const P solutions = choice(QStringLiteral("solutions"), tr("Solutions"), {QStringLiteral("all"), QStringLiteral("selected"), QStringLiteral("chosen")},
+                                   {tr("All: each output time, each parameter value"), tr("The plot group's time and parameter value"),
+                                    tr("Each parameter value, the mode its step chose (a mode analysis)")},
                                    QStringLiteral("all"));
         add({QStringLiteral("cutline"), tr("Cut Line 2D"), QStringLiteral("dataset"), QStringLiteral("cutline"), Level::None,
              {pair(QStringLiteral("start"), tr("Start"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0")),
@@ -2270,7 +2378,8 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("ray"), tr("The rays' paths, as traced.")});
         add({QStringLiteral("derived"), tr("Derived Values"), QString(), QStringLiteral("derived"), Level::None, {},
              {QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
-              QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams"), QStringLiteral("confinement")},
+              QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams"), QStringLiteral("confinement"),
+              QStringLiteral("perturbation")},
              {}, true, true, QString(), tr("Numbers of the solution: integrals, averages, a capacitance, a resistance.")});
         add({QStringLiteral("global"), tr("Global Evaluation"), QStringLiteral("derived"), QStringLiteral("global"), Level::None,
              {study, text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("es.C11"),
@@ -2316,6 +2425,20 @@ QList<NodeKind> makeKinds()
                  {}, {}, false, false, QStringLiteral("conf"),
                  tr("A mode's share of the domains chosen, for each mode solved: Γ without integrating cut lines (a TM mode's "
                     "normal E jumps at an index step: a line samples one side of it).")});
+            add({QStringLiteral("perturbation"), tr("Perturbation"), QStringLiteral("derived"), QStringLiteral("perturbation"), Level::Domain,
+                 {study, selectionProp(), modes,
+                  spatial(QStringLiteral("dn"), tr("Δn"), QString(), QStringLiteral("emw.dncarriers"),
+                          tr("The index's change: the free carriers' (emw.dncarriers), a field's, any expression - empty: none")),
+                  spatial(QStringLiteral("dalpha"), tr("Δα (the power's)"), QStringLiteral("1/m"), QStringLiteral("emw.alphacarriers"),
+                          tr("The absorption's change, 4πΔκ/λ: the free carriers' (emw.alphacarriers), any expression - empty: none")),
+                  expr(QStringLiteral("length"), tr("Length"), QStringLiteral("m"), QString(), tr("A phase shifter's: Δφ = k0 Δneff L (empty: none)")),
+                  text(QStringLiteral("bias"), tr("Bias"), QString(),
+                       tr("The swept parameter (Va): each point's Δφ and VπL from the sweep's first, λ|V - V0|/2|Δneff - Δneff0|")),
+                  solutions},
+                 {}, {}, false, false, QStringLiteral("pert"),
+                 tr("A mode's change to the first order, for each mode solved: Δneff = (c ε0/2) ∫ n Δn |E|² over ∫ Sz, and the "
+                    "power's Δα = (c ε0/2) ∫ n Δα |E|² over ∫ Sz, in the domains chosen - without solving it again; along a bias "
+                    "sweep its phase and VπL.")});
         }
         add({QStringLiteral("pointeval"), tr("Point Evaluation"), QStringLiteral("derived"), QStringLiteral("pointeval"), Level::Point,
              {study,
@@ -2362,12 +2485,12 @@ QList<NodeKind> makeKinds()
 
         // Exports.
         add({QStringLiteral("exports"), tr("Export"), QString(), QStringLiteral("exports"), Level::None, {},
-             {QStringLiteral("touchstone"), QStringLiteral("spice"), QStringLiteral("qucspart"), QStringLiteral("lumericalmode"),
-              QStringLiteral("lumericalcharge"), QStringLiteral("lumericalmqw")},
+             {QStringLiteral("touchstone"), QStringLiteral("spice"), QStringLiteral("qucspart"), QStringLiteral("fieldexport"),
+              QStringLiteral("lumericalmode"), QStringLiteral("lumericalcharge"), QStringLiteral("lumericalmqw")},
              {}, true, true, QString(),
              tr("Results as files and parts of circuits: a line's S-parameters (Touchstone), SPICE subcircuits, a Qucs "
-                "subcircuit - each written beside the model (model_tag.s2p, .cir, .sch); and the model as Lumerical scripts "
-                "(MODE, CHARGE, MQW: model_tag.lsf) that build it there.")});
+                "subcircuit, fields on a grid (CSV, NumPy) - each written beside the model (model_tag.s2p, .cir, .sch, .csv); "
+                "and the model as Lumerical scripts (MODE, CHARGE, MQW: model_tag.lsf) that build it there.")});
         P line;
         line.key = QStringLiteral("line");
         line.label = tr("Line");
@@ -2424,6 +2547,35 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("qp"),
              tr("A Qucs subcircuit (.sch): an RLCG part of the line's values at a frequency and its length between ports 1 "
                 "and 2 - a part for a schematic (Subcircuit), or copied to paste.")});
+        {
+            P which = solutions;
+            which.defaultValue = QStringLiteral("selected");
+            which.choiceLabels = {tr("All: each output time, each parameter value, each mode"), tr("One: its point, time or frequency, mode"),
+                            tr("Each parameter value, the mode its step chose (a mode analysis)")};
+            const QString one = QStringLiteral("solutions=selected");
+            add({QStringLiteral("fieldexport"), tr("Field on a Grid"), QStringLiteral("export"), QStringLiteral("fieldexport"), Level::None,
+                 {study, which, shownIf(point, one), shownIf(time, one), shownIf(frequency, one),
+                  shownIf(integer(QStringLiteral("mode"), tr("Mode"), 0, tr("Of a mode analysis: from 1; 0 the one its step chose")), one),
+                  text(QStringLiteral("expressions"), tr("Expressions"), QStringLiteral("emw.normE"),
+                       tr("Split by ';', each named if wanted: E = emw.normE; semi.n; emw.Sz - in SI")),
+                  choice(QStringLiteral("where"), tr("At"), {QStringLiteral("grid"), QStringLiteral("nodes")},
+                         {tr("A regular x-y grid"), tr("The mesh's nodes")}, QStringLiteral("grid")),
+                  shownIf(pair(QStringLiteral("from"), tr("Lower left corner"), QStringLiteral("length"), QString(), QString(),
+                               tr("In the geometry's unit; empty, both corners: the model's extent")),
+                          QStringLiteral("where=grid")),
+                  shownIf(pair(QStringLiteral("to"), tr("Upper right corner"), QStringLiteral("length"), QString(), QString()), QStringLiteral("where=grid")),
+                  shownIf(integer(QStringLiteral("nx"), tr("Points along x"), 101), QStringLiteral("where=grid")),
+                  shownIf(integer(QStringLiteral("ny"), tr("Points along y"), 101), QStringLiteral("where=grid")),
+                  choice(QStringLiteral("format"), tr("Format"), {QStringLiteral("csv"), QStringLiteral("npy"), QStringLiteral("dat")},
+                         {tr("CSV (a row per point: x, y, values)"), tr("NumPy .npy (a grid: [solution,] expression, y, x)"),
+                          tr("Columns, # comments, a blank line after each grid row (gnuplot)")},
+                         QStringLiteral("csv")),
+                  file},
+                 {}, {}, false, false, QStringLiteral("fx"),
+                 tr("Expressions of the solution on a regular grid or at the mesh's nodes, for a contour outside Qucs-S: "
+                    "CSV, NumPy or columns - x and y in the geometry's unit, the values in SI, NaN outside the domains; one "
+                    "solution (a point, time, frequency or mode), each, or each point's chosen mode.")});
+        }
         // The model as Lumerical scripts (no study need be computed).
         auto physicsOfType = [&](const QString& tag) {
             P p;

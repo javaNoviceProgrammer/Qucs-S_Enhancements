@@ -20,7 +20,9 @@
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QJsonDocument>
+#include <QMutex>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -29,6 +31,7 @@
 #include <limits>
 #include <map>
 #include <thread>
+#include <tuple>
 
 namespace qucs_s::fem {
 
@@ -361,6 +364,16 @@ std::vector<const Node*> Problem::materials()
         const QVector<int> on = resolveSelection(topo, a_s.model(), Level::Domain, m.selection(), &why);
         if (!why.isEmpty()) problem(tr("%1: %2").arg(m.name(), why));
         for (int d : on) material[std::size_t(d)] = &m;
+        // A composition solved for its gap: what it is, or why there is none.
+        QString unsolved;
+        if (const std::optional<std::pair<double, double>> xy = solvedComposition(m, &a_s.parameters().scope, &unsolved)) {
+            const QString compound = materialText(m, QStringLiteral("compound")).trimmed();
+            const bool four = QStringList{QStringLiteral("InGaAsP"), QStringLiteral("AlGaInAs"), QStringLiteral("AlGaInP")}.contains(compound, Qt::CaseInsensitive);
+            a_s.log << tr("%1: %2 of its gap - x = %3%4").arg(m.name(), compound, formatNumber(xy->first, 5),
+                                                              four ? tr(", y = %1").arg(formatNumber(xy->second, 5)) : QString());
+        } else if (!unsolved.isEmpty() && !on.isEmpty()) {
+            problem(tr("%1: %2").arg(m.name(), unsolved));
+        }
     }
     // A physics of isotropic media: a tensor's mean, said.
     const QString type = a_node ? a_node->type : QString();
@@ -456,7 +469,8 @@ QString Problem::givenProperty(const Node& m, const QString& key, const Scope* s
         return t.trimmed().isEmpty() && entry ? entry->properties.value(k).toString() : t;
     };
     QString text = own(key);
-    if (text.trimmed().isEmpty() && key == QLatin1String("Eg")) {
+    // (A composition solved for the gap: the compound's gap at it.)
+    if (text.trimmed().isEmpty() && key == QLatin1String("Eg") && m.text(QStringLiteral("composition")) != QLatin1String("gap")) {
         // A gap wavelength's (the "1.3Q" quaternary's 1.3 µm): hc/λg.
         const QString lambda = own(QStringLiteral("lambdag"));
         const Scope none;
@@ -473,8 +487,48 @@ QString Problem::materialProperty(const Node& m, const QString& key, const Scope
     return tensorKeys().contains(key) && isTensorText(text) ? isotropicText(text) : text;
 }
 
+std::optional<std::pair<double, double>> Problem::solvedComposition(const Node& m, const Scope* scope, QString* error)
+{
+    // (The model's choice, not a library entry's: read before any lookup.)
+    if (m.text(QStringLiteral("composition")) != QLatin1String("gap")) return std::nullopt;
+    std::optional<MaterialEntry> entry;
+    if (!m.text(QStringLiteral("library")).isEmpty()) entry = findMaterial(m.text(QStringLiteral("library")));
+    auto own = [&](const QString& k) {
+        const QString t = m.text(k);
+        return t.trimmed().isEmpty() && entry ? entry->properties.value(k).toString() : t;
+    };
+    const QString compound = own(QStringLiteral("compound")).trimmed();
+    QString lattice = own(QStringLiteral("lattice")).trimmed();
+    if (lattice.isEmpty()) lattice = QStringLiteral("InP");
+    const Scope none;
+    const std::optional<double> lambda = evaluateConstant(own(QStringLiteral("lambdag")), scope ? *scope : none, Dim::length());
+    if (compound.isEmpty() || !lambda || !(*lambda > 0)) {
+        if (error) *error = tr("its composition is solved for its gap: give it a compound and the gap's wavelength λg");
+        return std::nullopt;
+    }
+    // (Solved once for each: the same material read again and again.)
+    static QMutex lock;
+    static QHash<QString, std::pair<std::optional<std::pair<double, double>>, QString>> solved;
+    const BandSet set = bandSetOf(own(QStringLiteral("bands")));
+    const double gap = 6.62607015e-34 * 299792458.0 / *lambda / 1.602176634e-19;
+    const QString key = QStringLiteral("%1|%2|%3|%4").arg(compound, lattice).arg(gap, 0, 'g', 17).arg(int(set));
+    QMutexLocker held(&lock);
+    auto it = solved.find(key);
+    if (it == solved.end()) {
+        QString why;
+        const std::optional<std::pair<double, double>> xy = compositionForGap(compound, gap, lattice, set, &why);
+        it = solved.insert(key, {xy, why});
+    }
+    if (!it->first && error) *error = it->second;
+    return it->first;
+}
+
 QString Problem::materialText(const Node& m, const QString& key, const Scope* scope, double T)
 {
+    // A composition solved for its gap: x and y its, over those given.
+    const std::optional<std::pair<double, double>> solved = solvedComposition(m, scope);
+    if (solved && (key == QLatin1String("x") || key == QLatin1String("y")))
+        return formatNumber(key == QLatin1String("x") ? solved->first : solved->second, 10);
     QString text = givenProperty(m, key, scope);
     if (!text.trimmed().isEmpty() || key == QLatin1String("compound") || key == QLatin1String("x") || key == QLatin1String("y")) return text;
     // A III-V alloy's: from its compound at its composition.
@@ -488,12 +542,17 @@ QString Problem::materialText(const Node& m, const QString& key, const Scope* sc
     if (compound.trimmed().isEmpty()) return text;
     const Scope none;
     double xy[2] = {0, 0};
-    for (int i = 0; i < 2; ++i) {
-        const QString t = own(i == 0 ? QStringLiteral("x") : QStringLiteral("y"));
-        if (t.trimmed().isEmpty()) continue;
-        const std::optional<double> v = evaluateConstant(t, scope ? *scope : none, Dim());
-        if (!v) return text;
-        xy[i] = *v;
+    if (solved) {
+        xy[0] = solved->first;
+        xy[1] = solved->second;
+    } else {
+        for (int i = 0; i < 2; ++i) {
+            const QString t = own(i == 0 ? QStringLiteral("x") : QStringLiteral("y"));
+            if (t.trimmed().isEmpty()) continue;
+            const std::optional<double> v = evaluateConstant(t, scope ? *scope : none, Dim());
+            if (!v) return text;
+            xy[i] = *v;
+        }
     }
     return compoundProperty(compound, xy[0], xy[1], key, bandSetOf(own(QStringLiteral("bands"))), T);
 }
@@ -1107,6 +1166,32 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                            const detail::MediumAt m = detail::modeMediumAt(e, f);
                            return m.defined ? 2 * m.omega / 299792458.0 * m.kappaGap : NaN;
                        });
+                define(p + QStringLiteral("dncarriers"), Dim(),
+                       tr("the free carriers' index change: their plasma dispersion and band filling (the wave feature's)"), K::Derived, f,
+                       [f](PointEvaluator& e) {
+                           const detail::MediumAt m = detail::modeMediumAt(e, f);
+                           return m.defined ? m.dnCarriers : NaN;
+                       });
+                define(p + QStringLiteral("alphacarriers"), perMetre,
+                       tr("the free carriers' absorption coefficient, less what band filling bleaches (the power's)"), K::Derived, f,
+                       [f](PointEvaluator& e) {
+                           const detail::MediumAt m = detail::modeMediumAt(e, f);
+                           return m.defined ? m.alphaCarriers : NaN;
+                       });
+                for (int pol = 0; pol < 2; ++pol) {
+                    const QString which = pol == 0 ? QStringLiteral("TE") : QStringLiteral("TM");
+                    define(p + QStringLiteral("dnqw") + which, Dim(),
+                           tr("quantum wells' index change from F0 (the wave feature's Quantum Wells' Absorption), %1").arg(which), K::Derived, f,
+                           [f, pol](PointEvaluator& e) {
+                               const detail::MediumAt m = detail::modeMediumAt(e, f);
+                               return m.defined ? m.dnWells[pol] : NaN;
+                           });
+                    define(p + QStringLiteral("alphaqw") + which, perMetre, tr("quantum wells' absorption coefficient at the field there, %1").arg(which),
+                           K::Derived, f, [f, pol](PointEvaluator& e) {
+                               const detail::MediumAt m = detail::modeMediumAt(e, f);
+                               return m.defined ? m.alphaWells[pol] : NaN;
+                           });
+                }
                 define(p + QStringLiteral("dalphaEA"), perMetre,
                        tr("what the field adds to a direct gap's absorption coefficient (the Franz-Keldysh effect)"), K::Derived, f,
                        [f](PointEvaluator& e) {
@@ -1656,6 +1741,7 @@ void Solution::replaceLastSnapshot()
     if (a_snapshots.empty()) return;
     const double t = a_snapshots.back().time, f = a_snapshots.back().frequency;
     const int mode = a_snapshots.back().mode;
+    const bool chosen = a_snapshots.back().chosen;
     a_snapshots.pop_back();
     const double nowT = a_time, nowF = a_frequency;
     const int nowM = a_mode;
@@ -1663,6 +1749,7 @@ void Solution::replaceLastSnapshot()
     a_frequency = f;
     a_mode = mode;
     addSnapshot();
+    a_snapshots.back().chosen = chosen;
     a_time = nowT;
     a_frequency = nowF;
     a_mode = nowM;
@@ -2152,7 +2239,7 @@ bool stationaryStep(Solution& s, const Node& node, const std::function<bool(doub
 }
 
 /// The mode of mode analysis \a tag a semiconductor's Optical Generation
-/// is lit by (its number: 1 the highest index), 1 when none asks.
+/// is lit by (its number: 1 the highest index), 0 when none asks.
 int litMode(const Solution& s, const QString& tag)
 {
     for (const Node* p : s.model().physics()) {
@@ -2164,7 +2251,91 @@ int litMode(const Solution& s, const QString& tag)
             if (mode == tag) return std::max(1, f.integer(QStringLiteral("number")));
         }
     }
-    return 1;
+    return 0;
+}
+
+bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error);
+
+/// The quantum wells' tables a mode analysis's features ask for, at
+/// \a frequency: each wells solved again at fields from -Fmax to Fmax, its
+/// spectrum - the study's Spectrum step's, the photon's energy among its -
+/// read there; the wells left at their own field.
+bool wellTables(Step& st, detail::Problem& modes, double frequency, QString* error)
+{
+    const std::vector<detail::WellRequest> asked = modes.wellRequests();
+    if (asked.empty()) return true;
+    Solution& s = st.s;
+    const double photon = 6.62607015e-34 * frequency;
+    for (const detail::WellRequest& w : asked) {
+        // Its Spectrum step: the one named (anywhere, enabled or not), else
+        // the mode step's study's first.
+        const Node* spectrum = nullptr;
+        for (const Node* study : s.model().studies()) {
+            bool mine = false;
+            for (const Node& step : study->children) mine = mine || step.tag == st.node.tag;
+            for (const Node& step : study->children)
+                if (!spectrum && step.type == QLatin1String("spectrum") && (w.spectrum.isEmpty() ? mine : step.tag == w.spectrum)) spectrum = &step;
+        }
+        if (!spectrum) {
+            *error = w.spectrum.isEmpty() ? tr("%1: the wells' absorption is their spectrum's as a Spectrum step says - its energies the "
+                                               "Kramers-Kronig window about the photon's, its broadening, excitons: give the study one")
+                                                .arg(st.node.name())
+                                          : tr("%1: there is no Spectrum step %2").arg(st.node.name(), w.spectrum);
+            return false;
+        }
+        detail::SpectrumOptions o;
+        int axis = 1;
+        if (!spectrumOptionsOf(*spectrum, s.parameters().scope, o, &axis, error)) return false;
+        o.solve = st.options;
+        const auto [lo, hi] = std::minmax_element(o.energies.begin(), o.energies.end());
+        if (photon < *lo || photon > *hi) {
+            *error = tr("%1: the photon's %2 eV is not within %3's energies (%4 to %5 eV): the Kramers-Kronig window must hold it")
+                         .arg(st.node.name(), formatNumber(photon / 1.602176634e-19, 5), spectrum->name(), formatNumber(*lo / 1.602176634e-19, 4),
+                              formatNumber(*hi / 1.602176634e-19, 4));
+            return false;
+        }
+        o.energies.push_back(photon);
+        detail::Problem* qp = nullptr;
+        for (auto& p : st.problems)
+            if (p->field().tag == w.wells && p->field().type == QLatin1String("quantum")) qp = p.get();
+        if (!qp) {
+            *error = tr("%1: the quantum wells %2 are not solved in it (among its physics)").arg(st.node.name(), w.wells);
+            return false;
+        }
+        if (!(w.Fmax > 0) || !std::isfinite(w.Fmax)) {
+            *error = tr("%1: the wells' largest field must be more than 0").arg(st.node.name());
+            return false;
+        }
+        const int n = std::clamp(w.Fpoints, 2, 201);
+        auto table = std::make_shared<detail::WellTable>();
+        table->photon = photon;
+        const double own = qp->wellField();
+        for (int k = 0; k < n; ++k) {
+            const double F = -w.Fmax + 2 * w.Fmax * k / (n - 1);
+            qp->setWellField(F);
+            double v[4];
+            if (!qp->solve(o.solve, error) || qp->solveSpectrum(o, error) < 0) return false;
+            if (!qp->spectrumAt(photon, v)) {
+                *error = tr("%1: %2's spectrum has no value at the photon's energy").arg(st.node.name(), w.wells);
+                return false;
+            }
+            table->F.push_back(F);
+            table->alphaTE.push_back(v[0]);
+            table->alphaTM.push_back(v[1]);
+            table->nTE.push_back(v[2]);
+            table->nTM.push_back(v[3]);
+        }
+        qp->setWellField(own);
+        if (!qp->solve(o.solve, error) || qp->solveSpectrum(o, error) < 0) return false;
+        const auto [least, most] = std::minmax_element(table->alphaTE.begin(), table->alphaTE.end());
+        s.log << tr("%1: the wells %2 at %3 fields to ±%4 kV/cm, at %5 eV: α TE from %6 to %7 per cm")
+                     .arg(st.node.name(), w.wells)
+                     .arg(n)
+                     .arg(formatNumber(w.Fmax / 1e5, 4), formatNumber(photon / 1.602176634e-19, 5), formatNumber(*least / 100, 4),
+                          formatNumber(*most / 100, 4));
+        modes.setWellTable(w.feature, table);
+    }
+    return true;
 }
 
 bool modeStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
@@ -2209,6 +2380,32 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
             for (int d : picked) track[std::size_t(d)] = 1;
         }
     }
+    // Which it keeps and which it chooses: above an index, below a loss
+    // (dB/cm), of a polarization by its TE fraction.
+    SolveOptions kept;
+    kept.track = track;
+    kept.polarization = node.text(QStringLiteral("polarization")) == QLatin1String("te")   ? 1
+                        : node.text(QStringLiteral("polarization")) == QLatin1String("tm") ? 2
+                                                                                            : 0;
+    for (const auto& [key, member, what] :
+         {std::tuple{QStringLiteral("minneff"), &SolveOptions::minNeff, tr("the effective index above")},
+          std::tuple{QStringLiteral("maxloss"), &SolveOptions::maxAlpha, tr("the loss below (dB/cm)")},
+          std::tuple{QStringLiteral("tefraction"), &SolveOptions::teFraction, tr("the TE fraction")}}) {
+        if (node.text(key).trimmed().isEmpty()) continue;
+        const std::optional<double> v = evaluateConstant(node.text(key), s.parameters().scope, Dim(), &why);
+        if (!v || !(*v >= 0) || (key == QLatin1String("tefraction") && *v > 1)) {
+            *error = tr("%1: %2: %3").arg(node.name(), what, v ? tr("from 0%1").arg(key == QLatin1String("tefraction") ? tr(" to 1") : QString()) : why);
+            return false;
+        }
+        // (dB/cm: the power's per metre.)
+        kept.*member = key == QLatin1String("maxloss") ? *v * 100 * std::log(10.0) / 10 : *v;
+    }
+    const QString choose = node.text(QStringLiteral("choose"));
+    kept.choose = choose == QLatin1String("share") ? 1 : choose == QLatin1String("te") ? 2 : choose == QLatin1String("tm") ? 3 : 0;
+    if (kept.choose == 1 && track.empty()) {
+        *error = tr("%1: the mode most in the domains tracked is chosen of none: give it domains to track").arg(node.name());
+        return false;
+    }
     double guess = 0;
     if (!node.text(QStringLiteral("neff")).trimmed().isEmpty()) {
         const std::optional<double> g = evaluateConstant(node.text(QStringLiteral("neff")), s.parameters().scope, Dim(), &why);
@@ -2247,18 +2444,23 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         SolveOptions o = st.options;
         o.harmonic = true;
         o.frequency = f;
-        o.track = track;
-        o.polarization = node.text(QStringLiteral("polarization")) == QLatin1String("te")   ? 1
-                         : node.text(QStringLiteral("polarization")) == QLatin1String("tm") ? 2
-                                                                                             : 0;
+        o.track = kept.track;
+        o.polarization = kept.polarization;
+        o.teFraction = kept.teFraction;
+        o.minNeff = kept.minNeff;
+        o.maxAlpha = kept.maxAlpha;
+        o.choose = kept.choose;
+        if (!wellTables(st, modes, f, error)) return false;
         const int found = modes.solveModes(o, count, guess, error);
         if (found < 0) return false;
         if (found == 0) *warnings << tr("%1: no mode found at %2").arg(node.name(), formatQuantity(f, Dim::of(0, 0, -1)));
         double centre = 0;
+        const int chosen = found > 0 ? std::clamp(modes.chosenMode(), 0, found - 1) : 0;
         for (int m = 0; m < found; ++m) {
             modes.selectMode(m);
             for (auto& p : st.problems) p->setGlobals();
             s.addSnapshot();
+            if (m == chosen) s.chooseLastSnapshot();
             centre += s.global(tag + QStringLiteral(".neff")).value_or(0) / found;
         }
         // Where the next frequency (a sweep's next point) searches.
@@ -2267,10 +2469,12 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
             if (follow) guess = centre;
         }
         // Left selected for the steps after: the mode a semiconductor's
-        // Optical Generation asks for, else the first (each mode in turn
-        // left the last, the lowest index, lighting a photodiode).
+        // Optical Generation asks for, else the one chosen - the first unless
+        // the step says (each mode in turn left the last, the lowest index,
+        // lighting a photodiode).
         if (found > 0) {
-            const int lit = std::clamp(litMode(s, modes.field().tag), 1, found);
+            const int asked = litMode(s, modes.field().tag);
+            const int lit = asked > 0 ? std::clamp(asked, 1, found) : chosen + 1;
             if (lit < found) {
                 modes.selectMode(lit - 1);
                 for (auto& p : st.problems) p->setGlobals();
@@ -2396,16 +2600,12 @@ bool statesStep(Solution& s, const Node& node, const std::function<bool(double, 
     return true;
 }
 
-bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
+/// A Spectrum step's options (\a node's) but its solve's: its photon
+/// energies (\a photonAxis: 0 frequencies, 1 energies, 2 wavelengths),
+/// broadening, excitons, carriers, subbands, what the absorption is per.
+bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error)
 {
-    Telling tell{told, 0, node.name()};
-    Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
-    cancelWith(st, tell);
-    std::vector<int> quantum, others;
-    if (!splitQuantum(st, quantum, others, warnings, error)) return false;
     constexpr double q = 1.602176634e-19, h = 6.62607015e-34, c0 = 299792458.0;
-    const Scope& scope = s.parameters().scope;
     // Photon energies (eV, J), free-space wavelengths or frequencies.
     Dim dim;
     QString why;
@@ -2414,9 +2614,8 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
         *error = tr("%1: the photon energies: %2").arg(node.name(), why);
         return false;
     }
-    detail::SpectrumOptions o;
-    o.solve = st.options;
-    int axis = 1;
+    int& axis = *photonAxis;
+    axis = 1;
     if (dim == Dim::length()) axis = 2;
     else if (dim == Dim::of(0, 0, -1)) axis = 0;
     else if (!dim.isNone() && !(dim == Dim::of(2, 1, -2))) {
@@ -2525,6 +2724,22 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
     }
     // (The k·p bands' in-plane k grid.)
     o.kpoints = node.text(QStringLiteral("kpoints")).trimmed().isEmpty() ? 121 : std::clamp(node.integer(QStringLiteral("kpoints")), 11, 2000);
+    return true;
+}
+
+bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
+{
+    Telling tell{told, 0, node.name()};
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
+    std::vector<int> quantum, others;
+    if (!splitQuantum(st, quantum, others, warnings, error)) return false;
+    constexpr double h = 6.62607015e-34;
+    detail::SpectrumOptions o;
+    o.solve = st.options;
+    int axis = 1;
+    if (!spectrumOptionsOf(node, s.parameters().scope, o, &axis, error)) return false;
     for (auto& p : st.problems)
         if (!p->field().solved) p->initialize();
     if (!tell(0.1, tr("%1: the spectrum").arg(node.name()))) {

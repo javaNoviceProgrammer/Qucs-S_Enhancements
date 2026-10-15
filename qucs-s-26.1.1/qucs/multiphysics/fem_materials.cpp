@@ -91,7 +91,8 @@ const QStringList BasicKeys = {QStringLiteral("epsilonr"), QStringLiteral("tand"
                                   QStringLiteral("b"),        QStringLiteral("C11"),  QStringLiteral("C12"),
                                   QStringLiteral("Egd"),      QStringLiteral("mr"),   QStringLiteral("Afk"),
                                   QStringLiteral("bands"),    QStringLiteral("lambdag"), QStringLiteral("phi"),
-                                  QStringLiteral("nrange"),
+                                  QStringLiteral("composition"), QStringLiteral("lattice"),
+                                  QStringLiteral("nrange"),   QStringLiteral("sigmaFCn"), QStringLiteral("sigmaFCp"),
                                   // (A crystal's: its orientation and tensors.)
                                   QStringLiteral("orientation"), QStringLiteral("cut"), QStringLiteral("along"),
                                   QStringLiteral("euler_phi"), QStringLiteral("euler_theta"), QStringLiteral("euler_psi"),
@@ -919,7 +920,7 @@ const QList<MaterialEntry>& builtinMaterials()
                               "conductivity depends on its doping: give it, or solve its carriers (Semiconductor)",
                               {{"epsilonr", "11.7"}, {"rho", "2329[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"}, {"mur", "1"}, {"E", "170[GPa]"},
                                {"nu", "0.28"}, {"alpha", "2.6e-6[1/K]"}, {"dndT", "1.86e-4[1/K]"}, {"chi", "4.05[eV]"}, {"taun", "10[us]"},
-                               {"taup", "10[us]"}}),
+                               {"taup", "10[us]"}, {"sigmaFCn", "8.5e-18[cm^2]"}, {"sigmaFCp", "6.0e-18[cm^2]"}}),
                         {{"Eg", varshniOfT(1.12, 4.73e-4, 636)}, {"Nc", ofT(2.8e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(1400, QStringLiteral("cm^2/(V*s)"), -2.5)},
                          {"mup", ofT(450, QStringLiteral("cm^2/(V*s)"), -2.2)}, {"k", ofT(130, QStringLiteral("W/(m*K)"), -1.65)},
@@ -1009,7 +1010,7 @@ const QList<MaterialEntry>& builtinMaterials()
                               "(Pettit and Turner's); Pockels' r41 1.45 pm/V, its axes a (100) wafer's (its orientation)",
                               {{"compound", "InP"}, {"epsilonr", "12.4"}, {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"},
                                {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"dndT", "2.0e-4[1/K]"}, {"nrange", "0.95[um] 10[um]"},
-                               {"chi", "4.38[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
+                               {"chi", "4.38[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"sigmaFCn", "1e-18[cm^2]"}, {"sigmaFCp", "2e-17[cm^2]"}}),
                         {{"Eg", varshniOfT(1.344, 0.363e-3, 162)}, {"Nc", ofT(5.7e17, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(1.1e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(5400, QStringLiteral("cm^2/(V*s)"), -1.9)},
                          {"mup", ofT(200, QStringLiteral("cm^2/(V*s)"), -1.2)}, {"k", ofT(68, QStringLiteral("W/(m*K)"), -1.4)},
@@ -1072,9 +1073,9 @@ const QList<MaterialEntry>& builtinMaterials()
         compoundEntry("Aluminium antimonide", "AlSb: indirect, its Γ gap 2.3 eV", "AlSb"),
         compoundEntry("Indium antimonide", "InSb: the narrowest gap, 0.17 eV", "InSb"),
         compoundEntry("Aluminium gallium arsenide", "AlₓGa₁₋ₓAs, x the aluminium's share (barriers to GaAs; direct below x 0.45)", "AlGaAs", "0.3"),
-        compoundEntry("Indium gallium arsenide", "InₓGa₁₋ₓAs, x the indium's share: 0.53 is InP's lattice, 0.2 a strained well on GaAs",
-                      "InGaAs", "0.53"),
-        compoundEntry("Indium aluminium arsenide", "InₓAl₁₋ₓAs, x the indium's share: 0.52 is InP's lattice", "InAlAs", "0.52"),
+        with(compoundEntry("Indium gallium arsenide", "InₓGa₁₋ₓAs, x the indium's share: 0.53 is InP's lattice, 0.2 a strained well on GaAs",
+                      "InGaAs", "0.53"), {{"sigmaFCn", QStringLiteral("1e-18[cm^2]")}, {"sigmaFCp", QStringLiteral("2e-17[cm^2]")}}),
+        with(compoundEntry("Indium aluminium arsenide", "InₓAl₁₋ₓAs, x the indium's share: 0.52 is InP's lattice", "InAlAs", "0.52"), {{"sigmaFCn", QStringLiteral("1e-18[cm^2]")}, {"sigmaFCp", QStringLiteral("2e-17[cm^2]")}}),
         compoundEntry("Gallium indium phosphide", "GaₓIn₁₋ₓP, x the gallium's share: 0.51 is GaAs's lattice", "GaInP", "0.51"),
         compoundEntry("Aluminium indium phosphide", "AlₓIn₁₋ₓP, x the aluminium's share: 0.52 is GaAs's lattice (visible lasers' cladding)",
                       "AlInP", "0.52"),
@@ -1083,9 +1084,9 @@ const QList<MaterialEntry>& builtinMaterials()
         compoundEntry("Aluminium arsenide antimonide", "AlAsₓSb₁₋ₓ, x the arsenic's share: 0.56 is InP's lattice", "AlAsSb", "0.56"),
         compoundEntry("Indium arsenide antimonide", "InAsₓSb₁₋ₓ, x the arsenic's share: 0.91 is GaSb's lattice (mid-infrared)", "InAsSb", "0.91"),
         compoundEntry("Indium aluminium antimonide", "InₓAl₁₋ₓSb, x the indium's share", "InAlSb", "0.9"),
-        compoundEntry("Indium gallium arsenide phosphide", "In₁₋ₓGaₓAsᵧP₁₋ᵧ: on InP's lattice y ≈ 2.2 x; x 0.28, y 0.6 is the 1.3 µm quaternary",
-                      "InGaAsP", "0.28", "0.6"),
-        compoundEntry("Aluminium gallium indium arsenide", "AlₓGaᵧIn₁₋ₓ₋ᵧAs: x + y 0.47 is InP's lattice", "AlGaInAs", "0.2", "0.27"),
+        with(compoundEntry("Indium gallium arsenide phosphide", "In₁₋ₓGaₓAsᵧP₁₋ᵧ: on InP's lattice y ≈ 2.2 x; x 0.28, y 0.6 is the 1.3 µm quaternary",
+                      "InGaAsP", "0.28", "0.6"), {{"sigmaFCn", QStringLiteral("1e-18[cm^2]")}, {"sigmaFCp", QStringLiteral("2e-17[cm^2]")}}),
+        with(compoundEntry("Aluminium gallium indium arsenide", "AlₓGaᵧIn₁₋ₓ₋ᵧAs: x + y 0.47 is InP's lattice", "AlGaInAs", "0.2", "0.27"), {{"sigmaFCn", QStringLiteral("1e-18[cm^2]")}, {"sigmaFCp", QStringLiteral("2e-17[cm^2]")}}),
         compoundEntry("Aluminium gallium indium phosphide",
                       "AlₓGaᵧIn₁₋ₓ₋ᵧP: x + y 0.51 is GaAs's lattice - (Al₀.₃Ga₀.₇)₀.₅₁In₀.₄₉P, a red laser's barrier, is x 0.153, y 0.357",
                       "AlGaInP", "0.153", "0.357"),
@@ -1723,6 +1724,100 @@ QString siliconGermanium(const QString& key, double x, double T)
 }
 
 } // namespace
+
+std::optional<std::pair<double, double>> compositionForGap(const QString& compound, double gap, const QString& lattice, BandSet set,
+                                                           QString* error, double T)
+{
+    auto fail = [&](const QString& why) -> std::optional<std::pair<double, double>> {
+        if (error) *error = why;
+        return std::nullopt;
+    };
+    const QString name = compound.trimmed();
+    const bool quaternary = name.compare(QLatin1String("InGaAsP"), Qt::CaseInsensitive) == 0 ||
+                            name.compare(QLatin1String("AlGaInAs"), Qt::CaseInsensitive) == 0 ||
+                            name.compare(QLatin1String("AlGaInP"), Qt::CaseInsensitive) == 0;
+    if (!ternary(name) && !quaternary)
+        return fail(tr("%1 has no composition to solve for (a ternary or InGaAsP, AlGaInAs, AlGaInP has)").arg(name));
+    double a = 0;
+    if (quaternary) {
+        const std::optional<BandParameters> l = bandParameters(lattice, 0, 0, T, nullptr, set);
+        if (!binary(lattice.trimmed()) || !l) return fail(tr("its lattice: %1 is not a binary (InP, GaAs...)").arg(lattice));
+        a = l->a0;
+    }
+    // Along its line, u from 0 to 1: a ternary's x; a quaternary's
+    // composition on the lattice - InGaAsP's y (As), x (Ga) matching it;
+    // AlGaInAs's Al share u of Al and Ga, their sum matching it.
+    auto along = [&name, quaternary, a, T, set](double u, double* x, double* y) {
+        if (!quaternary) {
+            *x = u;
+            *y = 0;
+            return true;
+        }
+        const bool ingaasp = name.compare(QLatin1String("InGaAsP"), Qt::CaseInsensitive) == 0;
+        auto lat = [&](double s) {
+            const std::optional<BandParameters> p = ingaasp ? bandParameters(name, s, u, T, nullptr, set) : bandParameters(name, u * s, (1 - u) * s, T, nullptr, set);
+            return p ? p->a0 - a : NAN;
+        };
+        double lo = 0, hi = 1, flo = lat(lo), fhi = lat(hi);
+        if (!(flo * fhi <= 0)) return false;
+        // (An end on the lattice: that end - InP itself at y 0.)
+        if (flo == 0) hi = lo;
+        else if (fhi == 0) lo = hi;
+        for (int k = 0; k < 100 && hi - lo > 1e-13; ++k) {
+            const double mid = 0.5 * (lo + hi), f = lat(mid);
+            if ((f <= 0) == (flo <= 0)) {
+                lo = mid;
+                flo = f;
+            } else {
+                hi = mid;
+            }
+        }
+        const double s = 0.5 * (lo + hi);
+        *x = ingaasp ? s : u * s;
+        *y = ingaasp ? u : (1 - u) * s;
+        return true;
+    };
+    auto gapAt = [&name, &along, gap, T, set](double u) {
+        double x = 0, y = 0;
+        if (!along(u, &x, &y)) return double(NAN);
+        const std::optional<BandParameters> p = bandParameters(name, x, y, T, nullptr, set);
+        return p ? p->Eg - gap : NAN;
+    };
+    const int n = 400;
+    double least = INFINITY, most = -INFINITY, previous = gapAt(0), u0 = 0;
+    for (int k = 1; k <= n; ++k) {
+        const double u = double(k) / n, f = gapAt(u);
+        if (std::isfinite(f)) {
+            least = std::min(least, f + gap);
+            most = std::max(most, f + gap);
+        }
+        if (std::isfinite(previous)) {
+            least = std::min(least, previous + gap);
+            most = std::max(most, previous + gap);
+        }
+        if (std::isfinite(previous) && std::isfinite(f) && (previous == 0 || previous * f < 0)) {
+            double lo = u0, hi = u, flo = previous;
+            for (int i = 0; i < 100 && hi - lo > 1e-13; ++i) {
+                const double mid = 0.5 * (lo + hi), fm = gapAt(mid);
+                if ((fm <= 0) == (flo <= 0)) {
+                    lo = mid;
+                    flo = fm;
+                } else {
+                    hi = mid;
+                }
+            }
+            double x = 0, y = 0;
+            along(previous == 0 ? u0 : 0.5 * (lo + hi), &x, &y);
+            return std::pair{x, y};
+        }
+        previous = f;
+        u0 = u;
+    }
+    if (!std::isfinite(least)) return fail(tr("%1 has no composition on %2's lattice").arg(name, lattice));
+    return fail(tr("%1's gap of %2 eV is not reached%3: its gaps there from %4 to %5 eV")
+                    .arg(name, formatNumber(gap, 4), quaternary ? tr(" on %1's lattice").arg(lattice) : QString(), formatNumber(least, 4),
+                         formatNumber(most, 4)));
+}
 
 QString compoundProperty(const QString& compound, double x, double y, const QString& key, BandSet set, double T)
 {

@@ -118,6 +118,8 @@ struct CDT_EXPORT Unrefined
     /// break the triangulation's topology
     /// @note in practice one of the edge's triangles is thinner than an ulp
     std::size_t splitVertexInvalid;
+    /// encroached fixed edges in Triangulation::unsplitEdges, not split (Qucs-S)
+    std::size_t unsplitEdges;
 
     /// Constructor: all the counts start at zero
     Unrefined();
@@ -528,6 +530,10 @@ public:
     V2dVec vertices;                     ///< triangulation's vertices
     TriangleVec triangles;               ///< triangulation's triangles
     EdgeUSet fixedEdges; ///< triangulation's constraints (fixed edges)
+    /// Fixed edges refinement never splits for being encroached (a
+    /// structured region's sides): a circumcenter that would encroach one is
+    /// given up on (Qucs-S)
+    EdgeUSet unsplitEdges;
 
     /** Stores count of overlapping boundaries for a fixed edge. If no entry is
      * present for an edge: no boundaries overlap.
