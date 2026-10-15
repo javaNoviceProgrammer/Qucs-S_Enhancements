@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <thread>
 
 namespace qucs_s::fem {
@@ -880,6 +881,82 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             gamma, Dim(), false);
         return out;
     }
+    if (type == QLatin1String("perturbation")) {
+        // To the first order, each mode at 1 W (∫ Sz over the physics' all):
+        // Δneff = (c ε0/2) ∫ n Δn |E|², the power's Δα = (c ε0/2) ∫ n Δα |E|²
+        // over the domains chosen.
+        const QStringList tags = node.list(QStringLiteral("physics"));
+        const QString tag = tags.isEmpty() ? QStringLiteral("emw") : tags.first();
+        const int fi = solution.fieldIndex(tag);
+        if (fi < 0 || !solution.modeAnalysis) {
+            out.error = tr("there is no mode analysis %1 solved").arg(tag);
+            return out;
+        }
+        QString why;
+        const QVector<int> picked = resolveSelection(solution.topology(), solution.model(), Level::Domain, node.selection(), &why);
+        if (!why.isEmpty()) {
+            out.error = why;
+            return out;
+        }
+        QVector<int> every;
+        for (int d = 0; d < int(solution.topology().domains.size()); ++d) every << d;
+        const Expression sz = Expression::compile(tag + QStringLiteral(".Sz"), solution.scope());
+        const Over power = overDomains(solution, sz, every, false);
+        if (!sz.isValid() || !power.any || !(std::abs(power.integral) > 0)) {
+            out.error = tr("%1's mode is not defined in them").arg(tag);
+            return out;
+        }
+        constexpr double c0eps0 = 299792458.0 * 8.8541878188e-12;
+        const QString weight = tag + QStringLiteral(".n*") + tag + QStringLiteral(".normE^2");
+        // (c ε0/2) ∫ n x |E|² over ∫ Sz of \a text, which must be of \a dim.
+        auto overlap = [&node, &solution, &out, &weight, &picked, &power](const QString& key, const Dim& dim) -> std::optional<double> {
+            const QString text = node.text(key).trimmed();
+            if (text.isEmpty()) return std::nullopt;
+            const Expression x = Expression::compile(text, solution.scope());
+            if (!x.isValid()) {
+                if (out.error.isEmpty()) out.error = tr("%1: %2").arg(text, x.error());
+                return std::nullopt;
+            }
+            if (x.dim() != dim) {
+                if (out.error.isEmpty()) out.error = tr("%1 is in %2, not %3").arg(text, dimName(x.dim()), dimName(dim));
+                return std::nullopt;
+            }
+            const Expression e = Expression::compile(QStringLiteral("(%1)*%2").arg(text, weight), solution.scope());
+            const Over o = overDomains(solution, e, picked, false);
+            return o.any ? 0.5 * c0eps0 * o.integral / power.integral : 0.0;
+        };
+        const std::optional<double> dneff = overlap(QStringLiteral("dn"), Dim()), dalpha = overlap(QStringLiteral("dalpha"), Dim::of(-1));
+        if (!out.error.isEmpty()) return out;
+        if (dneff) add(QStringLiteral("dneff"), *dneff, Dim(), false);
+        if (dalpha) {
+            add(QStringLiteral("dalpha"), *dalpha, Dim::of(-1), false);
+            const double db = 10 / std::log(10.0) * *dalpha;
+            add(QStringLiteral("dloss"), db, Dim::of(-1), false);
+            out.values.back().text = formatNumber(db / 100, 4) + QStringLiteral(" dB/cm");
+        }
+        const QString lengthText = node.text(QStringLiteral("length")).trimmed();
+        if (dneff && !lengthText.isEmpty()) {
+            QString err;
+            const std::optional<double> L = evaluateConstant(lengthText, solution.parameters().scope, Dim::length(), &err);
+            const std::optional<double> lambda = solution.global(tag + QStringLiteral(".lambda0"));
+            if (!L || !lambda) {
+                out.error = L ? tr("%1 has no wavelength").arg(tag) : tr("the length %1: %2").arg(lengthText, err);
+                return out;
+            }
+            add(QStringLiteral("dphi"), 2 * M_PI / *lambda * *dneff * *L, Dim(), false);
+            out.values.back().text = formatNumber(out.values.back().value, 4) + QStringLiteral(" rad");
+        }
+        const QString bias = node.text(QStringLiteral("bias")).trimmed();
+        if (!bias.isEmpty()) {
+            const Expression v = Expression::compile(bias, solution.parameters().scope);
+            if (!v.isValid() || !v.isConstant()) {
+                out.error = tr("the bias %1: %2").arg(bias, v.isValid() ? tr("not a parameter") : v.error());
+                return out;
+            }
+            add(bias, v.constant(), v.dim(), false);
+        }
+        return out;
+    }
     if (type == QLatin1String("lineparams")) {
         if (solution.axisymmetric()) {
             out.error = tr("a line's parameters are per metre of a 2D cross-section in the plane: not about an axis");
@@ -977,20 +1054,23 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         bool several = false;
         if (s.modeAnalysis) {
             for (int k = 1; k < snaps; ++k) several = several || s.snapshotFrequency(k) != s.snapshotFrequency(0);
+            // (None asked: the one its step chose, the first unless it said.)
             const double f = s.snapshotFrequency(pick);
-            const int wanted = std::max(1, mode);
-            int first = -1;
+            int first = -1, chosen = -1;
             for (int k = 0; k < snaps; ++k)
                 if (s.snapshotFrequency(k) == f) {
                     if (first < 0) first = k;
-                    if (s.snapshotMode(k) == wanted) pick = k;
+                    if (chosen < 0 && s.snapshotChosen(k)) chosen = k;
+                    if (mode > 0 && s.snapshotMode(k) == mode) pick = k;
                 }
-            if (s.snapshotMode(pick) != wanted && first >= 0) pick = first;
+            if (mode <= 0) pick = chosen >= 0 ? chosen : first >= 0 ? first : pick;
+            else if (s.snapshotMode(pick) != mode && first >= 0) pick = first;
         }
         for (int k = 0; k < snaps; ++k) {
             if (!all && k != pick) continue;
-            // (All, a mode asked: that mode alone at each.)
+            // (All, a mode asked: that mode alone at each - or the one chosen at each.)
             if (all && mode > 0 && s.modeAnalysis && s.snapshotMode(k) != mode) continue;
+            if (all && mode < 0 && s.modeAnalysis && !s.snapshotChosen(k)) continue;
             QString when = s.snapshotText(k);
             const QString mode = (s.quantumStates ? QStringLiteral("state %1") : QStringLiteral("mode %1")).arg(s.snapshotMode(k));
             if (s.modeAnalysis) when = several ? when + QStringLiteral(", ") + mode : mode;
@@ -998,6 +1078,49 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         }
     }
     return out;
+}
+
+void perturbationAlongSweep(const SolutionSet& set, const std::vector<Instance>& at, const Node& node, std::vector<DerivedResult>& values)
+{
+    const QString bias = node.text(QStringLiteral("bias")).trimmed(), lengthText = node.text(QStringLiteral("length")).trimmed();
+    auto find = [](const DerivedResult& r, const QString& name) -> const DerivedValue* {
+        for (const DerivedValue& v : r.values)
+            if (v.name == name) return &v;
+        return nullptr;
+    };
+    // Each mode's first point: its reference.
+    std::map<int, std::size_t> first;
+    for (std::size_t i = 0; i < at.size() && i < values.size(); ++i) {
+        const DerivedValue* dn = find(values[i], QStringLiteral("dneff"));
+        if (!dn) continue;
+        const auto ref = first.find(at[i].mode);
+        if (ref == first.end()) {
+            first[at[i].mode] = i;
+            continue;
+        }
+        const DerivedValue* dn0 = find(values[ref->second], QStringLiteral("dneff"));
+        const Solution& s = *set.solutions[std::size_t(at[i].point)];
+        const double frequency = at[i].snapshot >= 0 ? s.snapshotFrequency(at[i].snapshot) : s.frequency();
+        if (!(frequency > 0)) continue;
+        const double lambda = 299792458.0 / frequency, change = dn->value - dn0->value;
+        if (!lengthText.isEmpty()) {
+            const std::optional<double> L = evaluateConstant(lengthText, s.parameters().scope, Dim::length());
+            if (L) {
+                const double phi = 2 * M_PI / lambda * change * *L;
+                values[i].values << DerivedValue{QStringLiteral("dphi_sweep"), phi, Dim(), formatNumber(phi, 4) + QStringLiteral(" rad")};
+            }
+        }
+        const DerivedValue* v = bias.isEmpty() ? nullptr : find(values[i], bias);
+        const DerivedValue* v0 = bias.isEmpty() ? nullptr : find(values[ref->second], bias);
+        if (v && v0 && v->value != v0->value && change != 0) {
+            // Vπ L: the bias moving the phase by π over a length L, times L.
+            const double vpil = lambda * std::abs(v->value - v0->value) / (2 * std::abs(change));
+            const Dim dim = v->dim * Dim::length();
+            values[i].values << DerivedValue{QStringLiteral("VpiL"), vpil, dim,
+                                             v->dim == Dim::voltage() ? formatNumber(vpil * 100, 4) + QStringLiteral(" V·cm")
+                                                                            : formatNumber(vpil, 4) + QStringLiteral(" (bias)·m")};
+        }
+    }
 }
 
 Solution* select(const SolutionSet& set, const Instance& instance)

@@ -19,6 +19,7 @@
  * (at your option) any later version.
  */
 #include "fem_edge.h"
+#include "fem_materials.h"
 #include "fem_optics.h"
 #include "fem_problem.h"
 
@@ -109,7 +110,23 @@ public:
         Expression mur[3];          // the model's axes
         Rotation rotation;          // the crystal's axes in the model's
         Expression dndT[3], T, Tref;   // warmed: all three (dn/dT along each axis)
-        Expression carriersN, carriersP;   // the plasma dispersion's (1/m³)
+        // Free carriers, N and P (1/m³): the plasma dispersion (0 silicon's,
+        // Soref and Bennett's; 1 Drude's of the masses (m0); 2 its
+        // coefficients given), their absorption (cross-sections at 1550 nm,
+        // as λ²), band filling (0 computed of its medium, its tables - at
+        // n 1 - for the photon energy bfKey; 1 Δn per carrier given).
+        Expression carriersN, carriersP;
+        int plasmaModel = -1;
+        double drudeMe = 0, drudeMh = 0;
+        Expression dndN, dndP;
+        bool fca = false;
+        Expression sigmaN, sigmaP;
+        int bandFilling = -1;
+        bool bandHoles = true;
+        BandFillingMedium bfMedium;
+        Expression pbfN, pbfP;
+        mutable double bfKey = NaN;
+        mutable BandFillingTable bfElectrons, bfHoles;
         // Absorption across a direct gap and its change with a field (the
         // Franz-Keldysh effect): the field (V/m, a semiconductor's), the gap
         // (J, or eV as a number), the reduced mass (m0), the edge's strength (1/m).
@@ -124,6 +141,17 @@ public:
         bool electrooptic = false;
         Expression r[6][3], field[3];
         Rotation rRotation;
+        // The quadratic electro-optic effect (Kerr's, a well stack's QCSE):
+        // Δn_k = ½ n³ R_k (|E|² - E0²), E the field above.
+        bool kerr = false;
+        Expression kerrR[3], kerrE0;
+        // A quantum wells' absorption and index of the field along their
+        // axis (qwAxis: 0 x, 1 y): the table its feature (qwFeature) is
+        // given at the photon energy solved; the index's change from F0.
+        QString qwFeature;
+        Expression qwField, qwF0;
+        int qwAxis = 1;
+        std::shared_ptr<const WellTable> qwTable;
         // The photoelastic effect: p (6x6) in the axes of pRotation, the
         // strain (the model's axes, Voigt's engineering one).
         bool photoelastic = false;
@@ -180,6 +208,10 @@ public:
         // medium's own and the direct gap's -, the direct gap's alone and
         // its value without a field; not the free carriers'.)
         double n = 1, kappaGap = 0, kappaEA = 0, kappaEA0 = 0;
+        // The free carriers' Δn and absorption (1/m, net of band filling's bleaching).
+        double dnCarriers = 0, alphaCarriers = 0;
+        // Quantum wells' (TE, TM): Δn from F0 and absorption (1/m).
+        double dnWells[2] = {0, 0}, alphaWells[2] = {0, 0};
     };
     At at(PointEvaluator& e, int d, double omega, double k0) const
     {
@@ -196,15 +228,48 @@ public:
             const double dT = value(m.T, 0) - value(m.Tref, 293.15);
             for (int k = 0; k < 3; ++k) warm[k] = value(m.dndT[k].isValid() ? m.dndT[k] : m.dndT[0], 0) * dT;
         }
-        // Free carriers (silicon): Soref and Bennett's at 1550 nm, as λ² (Drude's).
-        double plasma = 0, plasmaKappa = 0;
-        if (m.carriersN.isValid() || m.carriersP.isValid()) {
-            const double lambda = omega > 0 ? 2 * M_PI * 299792458.0 / omega : 1.55e-6;
+        // Free carriers: their index (plasma dispersion, band filling) and
+        // absorption, at the wavelength solved.
+        double plasma = 0, plasmaKappa = 0, bleachKappa = 0;
+        const bool carriers = m.carriersN.isValid() || m.carriersP.isValid();
+        const double lambda = omega > 0 ? 2 * M_PI * 299792458.0 / omega : 1.55e-6;
+        if (carriers) {
             const double scale = (lambda / 1.55e-6) * (lambda / 1.55e-6);
-            const double N = std::max(0.0, value(m.carriersN, 0)) * 1e-6, P = std::max(0.0, value(m.carriersP, 0)) * 1e-6;   // (cm⁻³)
-            plasma = -(8.8e-22 * N + 8.5e-18 * std::pow(P, 0.8)) * scale;
-            const double alpha = (8.5e-18 * N + 6.0e-18 * P) * scale * 100;   // (1/m)
+            const double N = std::max(0.0, value(m.carriersN, 0)), P = std::max(0.0, value(m.carriersP, 0));   // (1/m³)
+            const double n0 = std::max(1.0, value(m.n[0], 1.0));
+            double alpha = 0;   // (1/m)
+            if (m.plasmaModel == 0) {
+                // Silicon's: Soref and Bennett's at 1550 nm (cm⁻³, cm⁻¹), as λ².
+                const double Ncm = N * 1e-6, Pcm = P * 1e-6;
+                plasma -= (8.8e-22 * Ncm + 8.5e-18 * std::pow(Pcm, 0.8)) * scale;
+                alpha += (8.5e-18 * Ncm + 6.0e-18 * Pcm) * scale * 100;
+            } else if (m.plasmaModel == 1) {
+                // Drude's: -(q²λ²/8π²c²ε0 n)(N/me + P/mh).
+                constexpr double q = 1.602176634e-19, m0 = 9.1093837015e-31, eps0 = 8.8541878188e-12;
+                const double k = q * q * lambda * lambda / (8 * M_PI * M_PI * C0 * C0 * eps0 * n0 * m0);
+                plasma -= k * (N / m.drudeMe + P / m.drudeMh);
+            } else if (m.plasmaModel == 2) {
+                plasma += value(m.dndN, 0.0) * N + value(m.dndP, 0.0) * P;
+            }
+            if (m.fca) alpha += (value(m.sigmaN, 0.0) * N + value(m.sigmaP, 0.0) * P) * scale;
+            double bleach = 0;
+            if (m.bandFilling == 0 && omega > 0) {
+                // (Its tables at n 1: of Kane's Ep its absorption is as 1/n.)
+                const double photon = 1.054571817e-34 * omega;
+                if (m.bfKey != photon) {
+                    m.bfElectrons = BandFillingTable(m.bfMedium, photon, false);
+                    m.bfHoles = m.bandHoles ? BandFillingTable(m.bfMedium, photon, true) : BandFillingTable();
+                    m.bfKey = photon;
+                }
+                const double per = m.bfMedium.A > 0 ? 1 : 1 / n0;
+                const IndexChange e = m.bfElectrons.at(N), h = m.bandHoles ? m.bfHoles.at(P) : IndexChange();
+                plasma += (e.dn + h.dn) * per;
+                bleach += (e.dalpha + h.dalpha) * per;   // (nought or less: the edge's absorption bleached)
+            } else if (m.bandFilling == 1) {
+                plasma += value(m.pbfN, 0.0) * N + value(m.pbfP, 0.0) * P;
+            }
             plasmaKappa = alpha * lambda / (4 * M_PI);
+            bleachKappa = -bleach * lambda / (4 * M_PI);
         }
         // A direct gap's absorption at the field there.
         if (m.electroabsorption && omega > 0) {
@@ -227,14 +292,51 @@ public:
                 out.kappaEA0 = m.eaZero * C0 / (2 * omega);
             }
         }
+        // The quadratic electro-optic effect along each axis.
+        double kerr[3] = {0, 0, 0};
+        if (m.kerr) {
+            const double n0 = value(m.n[0], 1.0);
+            double E2 = 0;
+            for (int k = 0; k < 3; ++k) E2 += std::pow(value(m.field[k], 0.0), 2);
+            const double E0 = value(m.kerrE0, 0.0);
+            for (int k = 0; k < 3; ++k) {
+                const double nk = value(m.n[k].isValid() ? m.n[k] : m.n[0], n0);
+                kerr[k] = 0.5 * nk * nk * nk * value(m.kerrR[k].isValid() ? m.kerrR[k] : m.kerrR[0], 0.0) * (E2 - E0 * E0);
+            }
+        }
+        // A quantum wells' absorption and index at the field there: TE in
+        // their plane, TM along their axis.
+        double wellsN[3] = {0, 0, 0}, wellsKappa[3] = {0, 0, 0};
+        if (m.qwTable) {
+            double now[4], given[4];
+            m.qwTable->at(value(m.qwField, 0.0), now);
+            m.qwTable->at(value(m.qwF0, 0.0), given);
+            for (int k = 0; k < 3; ++k) {
+                const int tm = k == m.qwAxis ? 1 : 0;
+                wellsN[k] = now[2 + tm] - given[2 + tm];
+                wellsKappa[k] = std::max(0.0, now[tm]) * lambda / (4 * M_PI);
+            }
+            for (int pol = 0; pol < 2; ++pol) {
+                out.dnWells[pol] = now[2 + pol] - given[2 + pol];
+                out.alphaWells[pol] = std::max(0.0, now[pol]);
+            }
+        }
+        if (carriers) {
+            // (Bleached at most of what the medium absorbs there: no gain of it.)
+            if (bleachKappa > 0) plasmaKappa -= std::min(bleachKappa, std::max(0.0, value(m.kappa[0], 0.0) + out.kappaEA));
+            out.dnCarriers = plasma;
+            out.alphaCarriers = plasmaKappa * 4 * M_PI / lambda;
+        }
         // ε in the crystal's axes.
         cd ec[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
         if (m.byIndex) {
-            out.n = value(m.n[0], 1.0) + warm[0] + plasma;
-            out.kappaGap = value(m.kappa[0], 0.0) + out.kappaEA;
+            // (The wells' absorption across their gap: κ across it, as the
+            // direct gap's - TE's, along x.)
+            out.n = value(m.n[0], 1.0) + warm[0] + plasma + kerr[0] + wellsN[0];
+            out.kappaGap = value(m.kappa[0], 0.0) + out.kappaEA + wellsKappa[0];
             for (int k = 0; k < 3; ++k) {
-                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm[k] + plasma,
-                           -value(m.kappa[k].isValid() ? m.kappa[k] : m.kappa[0], 0.0) - plasmaKappa - out.kappaEA);
+                const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm[k] + plasma + kerr[k] + wellsN[k],
+                           -value(m.kappa[k].isValid() ? m.kappa[k] : m.kappa[0], 0.0) - plasmaKappa - out.kappaEA - wellsKappa[k]);
                 ec[k][k] = n * n;
             }
         } else {
@@ -501,10 +603,123 @@ public:
                 if (!user) *t = rotated(*t, m.rotation);
                 for (int k = 0; k < (t->items == 1 ? 1 : 3); ++k) m.mur[k] = c.compile(t->c[k][k], from, QStringLiteral("mur"));
             }
-            if (feat->flag(QStringLiteral("plasma"))) {
-                if (!m.byIndex) c.problem(tr("%1: the plasma dispersion adds to a refractive index (its constitutive relation n)").arg(feat->name()));
+            // Free carriers: the plasma dispersion, their absorption, band filling.
+            const bool plasma = feat->flag(QStringLiteral("plasma")), fca = feat->flag(QStringLiteral("fca")),
+                       filling = feat->flag(QStringLiteral("bandfilling"));
+            if (plasma || fca || filling) {
+                if (!m.byIndex)
+                    c.problem(tr("%1: the free carriers' index and absorption add to a refractive index (its constitutive relation n)").arg(feat->name()));
                 m.carriersN = c.compile(feat->text(QStringLiteral("Ncarriers")), *feat, QStringLiteral("Ncarriers"));
                 m.carriersP = c.compile(feat->text(QStringLiteral("Pcarriers")), *feat, QStringLiteral("Pcarriers"));
+            }
+            // A constant of the feature's (key) or else its material's (\a
+            // of) - at temperature \a T (K; nought: its texts as they are).
+            auto constant = [feat, mat, &c, &s, d, &object](const QString& key, const QString& of, const Dim& dim, const QString& what,
+                                                             double T = 0) -> std::optional<double> {
+                QString t = key.isEmpty() ? QString() : feat->text(key).trimmed();
+                const Node* holder = feat;
+                if (t.isEmpty() && mat) {
+                    t = (T > 0 ? Problem::materialText(*mat, of, &s.parameters().scope, T) : c.property(*mat, of)).trimmed();
+                    holder = mat;
+                }
+                if (t.isEmpty()) {
+                    c.problem(tr("domain %1 (%2): %3 - its material, %4, has none (%5)").arg(d + 1).arg(object, what, mat ? mat->name() : tr("none"), of));
+                    return std::nullopt;
+                }
+                QString err;
+                const MaterialScope atT(s.parameters().scope, T > 0 ? T : 300);
+                const std::optional<double> v = evaluateConstant(t, atT, dim, &err);
+                if (!v) c.problem(tr("%1's %2: %3").arg(holder->name(), of, err));
+                return v;
+            };
+            // The holes' masses (m0), of the material's Luttinger parameters.
+            auto holeMasses = [&](double* mhh, double* mlh) {
+                const std::optional<double> g1 = constant(QString(), QStringLiteral("gamma1"), Dim(), tr("its holes' masses (Luttinger's γ1)"));
+                const std::optional<double> g2 = constant(QString(), QStringLiteral("gamma2"), Dim(), tr("its holes' masses (Luttinger's γ2)"));
+                if (!g1 || !g2 || !(*g1 - 2 * *g2 > 0)) return false;
+                *mhh = 1 / (*g1 - 2 * *g2);
+                *mlh = 1 / (*g1 + 2 * *g2);
+                return true;
+            };
+            if (plasma) {
+                const QString model = feat->text(QStringLiteral("plasmamodel"));
+                if (model == QLatin1String("drude")) {
+                    m.plasmaModel = 1;
+                    const std::optional<double> me = constant(QStringLiteral("mepl"), QStringLiteral("me"), Dim(), tr("Drude's electron mass"));
+                    m.drudeMe = me.value_or(NaN);
+                    if (!feat->text(QStringLiteral("mhpl")).trimmed().isEmpty()) {
+                        m.drudeMh = constant(QStringLiteral("mhpl"), QStringLiteral("mhpl"), Dim(), tr("Drude's hole mass")).value_or(NaN);
+                    } else {
+                        double mhh = NaN, mlh = NaN;
+                        if (holeMasses(&mhh, &mlh))
+                            m.drudeMh = (std::pow(mhh, 1.5) + std::pow(mlh, 1.5)) / (std::sqrt(mhh) + std::sqrt(mlh));
+                    }
+                    if (!(m.drudeMe > 0) || !(m.drudeMh > 0)) {
+                        if (me && !(m.drudeMe > 0)) c.problem(tr("%1: Drude's masses are more than nought").arg(feat->name()));
+                        m.plasmaModel = -1;
+                    }
+                } else if (model == QLatin1String("user")) {
+                    m.plasmaModel = 2;
+                    m.dndN = c.compile(feat->text(QStringLiteral("dndN")), *feat, QStringLiteral("dndN"));
+                    m.dndP = c.compile(feat->text(QStringLiteral("dndP")), *feat, QStringLiteral("dndP"));
+                } else {
+                    m.plasmaModel = 0;
+                    if (fca)
+                        c.problem(tr("%1: silicon's plasma dispersion carries its own absorption (Soref and Bennett's): with Free-carrier "
+                                     "absorption too it would count twice - Drude's index with it, or silicon's alone")
+                                      .arg(feat->name()));
+                }
+            }
+            if (fca) {
+                const bool own = feat->text(QStringLiteral("fcasource")) == QLatin1String("user");
+                for (const auto& [key, member] : {std::pair{QStringLiteral("sigmaFCn"), &Domain::sigmaN}, std::pair{QStringLiteral("sigmaFCp"), &Domain::sigmaP}}) {
+                    const QString t = own ? feat->text(key) : mat ? c.property(*mat, key) : QString();
+                    if (t.trimmed().isEmpty()) {
+                        c.problem(tr("domain %1 (%2): its material, %3, has no free-carrier absorption cross-section %4 (InP's family has; "
+                                     "or give them on the feature)")
+                                      .arg(d + 1)
+                                      .arg(object, mat ? mat->name() : tr("none"), key));
+                        continue;
+                    }
+                    m.*member = c.compile(t, own ? *feat : *mat, key);
+                }
+                m.fca = true;
+            }
+            if (filling) {
+                if (feat->text(QStringLiteral("bfmodel")) == QLatin1String("user")) {
+                    m.bandFilling = 1;
+                    m.pbfN = c.compile(feat->text(QStringLiteral("Pbfn")), *feat, QStringLiteral("Pbfn"));
+                    m.pbfP = c.compile(feat->text(QStringLiteral("Pbfp")), *feat, QStringLiteral("Pbfp"));
+                } else if (!mat) {
+                    c.problem(tr("%1: band filling is computed of a material's gap, masses and Ep - domain %2 has none").arg(feat->name()).arg(d + 1));
+                } else {
+                    BandFillingMedium& bm = m.bfMedium;
+                    // (A direct gap's: germanium's Egd, else the gap.)
+                    const QString gapKey = c.property(*mat, QStringLiteral("Egd")).trimmed().isEmpty() ? QStringLiteral("Eg") : QStringLiteral("Egd");
+                    const std::optional<double> T = constant(QStringLiteral("Tbf"), QStringLiteral("Tbf"), Dim::temperature(), tr("band filling's temperature"));
+                    const double atT = T && *T > 0 ? *T : 300;
+                    const std::optional<double> eg = constant(QString(), gapKey, Dim::of(2, 1, -2), tr("band filling's gap"), atT);
+                    const std::optional<double> me = constant(QString(), QStringLiteral("me"), Dim(), tr("band filling's electron mass"), atT);
+                    double mhh = NaN, mlh = NaN;
+                    const bool holes = holeMasses(&mhh, &mlh);
+                    // Its absorption's strength: the material's edge (Afk), else Kane's Ep.
+                    double A = 0, Ep = 0;
+                    if (!c.property(*mat, QStringLiteral("Afk")).trimmed().isEmpty())
+                        A = constant(QString(), QStringLiteral("Afk"), Dim::of(-1), tr("band filling's edge strength")).value_or(0);
+                    else
+                        Ep = constant(QString(), QStringLiteral("Ep"), Dim::of(2, 1, -2), tr("band filling's absorption (Kane's Ep)")).value_or(0);
+                    if (eg && me && T && holes && (A > 0 || Ep > 0)) {
+                        bm.Eg = *eg;
+                        bm.me = *me;
+                        bm.mhh = mhh;
+                        bm.mlh = mlh;
+                        bm.T = *T;
+                        bm.A = A;
+                        bm.Ep = Ep;
+                        m.bandFilling = 0;
+                        m.bandHoles = feat->flag(QStringLiteral("bfholes"));
+                    }
+                }
             }
             if (feat->flag(QStringLiteral("electroabsorption"))) {
                 if (!m.byIndex) c.problem(tr("%1: a direct gap's absorption adds to a refractive index (its constitutive relation n)").arg(feat->name()));
@@ -561,6 +776,38 @@ public:
                 for (int k = 0; k < 3; ++k) m.field[k] = c.compile(feat->text(QString::fromLatin1(keys[k])), *feat, QString::fromLatin1(keys[k]));
                 m.rRotation = m.rotation;
                 m.electrooptic = true;
+            }
+            if (feat->flag(QStringLiteral("kerr"))) {
+                if (!m.byIndex) c.problem(tr("%1: the quadratic electro-optic effect adds to a refractive index (its constitutive relation n)").arg(feat->name()));
+                const QStringList items = feat->text(QStringLiteral("Rkerr")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
+                if (items.size() != 1 && items.size() != 3) {
+                    c.problem(tr("%1: R along x, y, z - one value or three").arg(feat->name()));
+                    continue;
+                }
+                for (int k = 0; k < int(items.size()); ++k) {
+                    m.kerrR[k] = c.compile(items[k].trimmed(), *feat, QStringLiteral("Rkerr"));
+                    if (m.kerrR[k].isValid() && !(m.kerrR[k].dim() == Dim::of(-2, -2, 6, 2) || m.kerrR[k].dim().isNone()))
+                        c.problem(tr("%1: R is in m²/V² (1e-19[m^2/V^2])").arg(feat->name()));
+                }
+                m.kerrE0 = c.compile(feat->text(QStringLiteral("E0kerr")), *feat, QStringLiteral("E0kerr"));
+                const char* keys[3] = {"Ex", "Ey", "Ez"};
+                for (int k = 0; k < 3; ++k) m.field[k] = c.compile(feat->text(QString::fromLatin1(keys[k])), *feat, QString::fromLatin1(keys[k]));
+                m.kerr = true;
+            }
+            if (feat->flag(QStringLiteral("qwabsorption"))) {
+                if (!m.byIndex) c.problem(tr("%1: the wells' absorption adds to a refractive index (its constitutive relation n)").arg(feat->name()));
+                const QString wells = feat->text(QStringLiteral("qwtag")).trimmed();
+                const Node* qw = nullptr;
+                for (const Node* p : s.model().physics())
+                    if (p->enabled && p->tag == wells && p->type == QLatin1String("quantum")) qw = p;
+                if (!qw) {
+                    c.problem(tr("%1: there is no quantum wells physics %2 (its tag)").arg(feat->name(), wells));
+                    continue;
+                }
+                m.qwFeature = feat->tag;
+                m.qwAxis = qw->text(QStringLiteral("axis")) == QLatin1String("x") ? 0 : 1;
+                m.qwField = c.compile(feat->text(QStringLiteral("Fqw")), *feat, QStringLiteral("Fqw"));
+                m.qwF0 = c.compile(feat->text(QStringLiteral("F0qw")), *feat, QStringLiteral("F0qw"));
             }
             if (feat->flag(QStringLiteral("photoelastic"))) {
                 const QString pt = user ? feat->text(QStringLiteral("p")) : c.property(*mat, QStringLiteral("p"));
@@ -678,7 +925,29 @@ public:
     bool modal() const override { return true; }
     int solveModes(const SolveOptions& options, int count, double guess, QString* error) override;
     void selectMode(int k) override;
+    int chosenMode() const override { return a_chosen; }
     void setGlobals() override;
+    std::vector<WellRequest> wellRequests() const override
+    {
+        // (Each wave feature's of its Quantum Wells' Absorption, once.)
+        std::vector<WellRequest> out;
+        for (const Node& feature : a_node->children) {
+            if (!feature.enabled || !feature.type.endsWith(QLatin1String("/wave")) || !feature.flag(QStringLiteral("qwabsorption"))) continue;
+            WellRequest w;
+            w.feature = feature.tag;
+            w.wells = feature.text(QStringLiteral("qwtag")).trimmed();
+            w.spectrum = feature.text(QStringLiteral("spectrumstep")).trimmed();
+            w.Fmax = evaluateConstant(feature.text(QStringLiteral("Fmax")), a_s.parameters().scope, Dim::of(1, 1, -3, -1)).value_or(NaN);
+            w.Fpoints = feature.integer(QStringLiteral("Fpoints"));
+            out.push_back(w);
+        }
+        return out;
+    }
+    void setWellTable(const QString& feature, std::shared_ptr<const WellTable> table) override
+    {
+        for (Media::Domain& m : a_media.domains)
+            if (m.qwFeature == feature) m.qwTable = table;
+    }
 
 private:
     Media a_media;
@@ -691,6 +960,7 @@ private:
         double te = NaN;      // of its transverse |E|², the part along x
     };
     std::vector<Mode> a_modes;
+    int a_chosen = 0;   // of a_modes, the one its options choose
     bool a_tracking = false;
     double a_k0 = 0;
     int a_selected = -1;
@@ -1044,10 +1314,12 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     for (char c : o.track) a_tracking = a_tracking || c;
     auto tracked = [&](int d) { return std::size_t(d) < o.track.size() && o.track[std::size_t(d)]; };
     // (As many again while too few are left, the layers' crowding the guess
-    // - or the other polarization's.)
+    // - or the other polarization's, or those below the index or above the
+    // loss asked.)
     const bool polarized = o.polarization == 1 || o.polarization == 2;
-    int dropped = 0, crossed = 0, products = 0, restarts = 0;
-    for (int asked = a_tracking ? std::max(2 * wanted + 4, wanted + 6) : layers || polarized ? 2 * wanted + 4 : wanted;; asked *= 2) {
+    const bool filtered = o.minNeff > 0 || std::isfinite(o.maxAlpha);
+    int dropped = 0, crossed = 0, unguided = 0, products = 0, restarts = 0, keptBefore = -1;
+    for (int asked = a_tracking ? std::max(2 * wanted + 4, wanted + 6) : layers || polarized || filtered ? 2 * wanted + 4 : wanted;; asked *= 2) {
         asked = std::min(asked, std::max(1, a_n - 2));
         const EigenResult r = coupled ? largestEigenvalues(2 * a_n, asked,
                                                            [&](const Eigen::VectorXcd& v, Eigen::VectorXcd& y) {
@@ -1065,6 +1337,7 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
         a_modes.clear();
         dropped = 0;
         crossed = 0;
+        unguided = 0;
         for (std::size_t i = 0; i < r.values.size(); ++i) {
             cd beta;
             Eigen::VectorXcd x;
@@ -1091,13 +1364,22 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
             if (a_nEdge > 0) x.head(a_nEdge).cwiseAbs().maxCoeff(&largest);
             if (std::abs(x(largest)) > 0) x *= std::conj(x(largest)) / std::abs(x(largest));
             const double te = teFraction(x);
-            if (polarized && (o.polarization == 1 ? !(te >= 0.5) : !(te < 0.5))) {
+            if (polarized && (o.polarization == 1 ? !(te >= o.teFraction) : !(te < 1 - o.teFraction))) {
                 ++crossed;
+                continue;
+            }
+            // Guided: above the index asked, its power's loss below that asked.
+            if (!(beta.real() / k0 > o.minNeff) || !(-2 * beta.imag() < o.maxAlpha)) {
+                ++unguided;
                 continue;
             }
             a_modes.push_back({beta, x, a_tracking ? shareIn(x, beta, tracked) : NaN, te});
         }
-        if ((!layers && !polarized) || int(a_modes.size()) >= wanted || asked >= 96 || asked >= a_n - 2) break;
+        if ((!layers && !polarized && !filtered) || int(a_modes.size()) >= wanted || asked >= 96 || asked >= a_n - 2) break;
+        // (Guided ones asked: twice as many found and none more kept - there
+        // are no more about the index.)
+        if (filtered && int(a_modes.size()) == keptBefore) break;
+        keptBefore = int(a_modes.size());
     }
     // By their effective index, the highest first; those nearest the guess
     // as many as asked - or, tracking, those most in the domains tracked.
@@ -1114,9 +1396,19 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
         a_s.log << tr("%1: the modes most in the domains tracked: their shares of |E|² %2").arg(a_node->name(), shares.join(QLatin1String(", ")));
     }
     std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) { return a.beta.real() > b.beta.real(); });
+    // The one chosen: the first, or the most in the domains tracked, the
+    // most TE, the most TM.
+    a_chosen = 0;
+    for (int k = 1; k < int(a_modes.size()); ++k) {
+        const Mode &m = a_modes[std::size_t(k)], &best = a_modes[std::size_t(a_chosen)];
+        if ((o.choose == 1 && m.share > best.share) || (o.choose == 2 && m.te > best.te) || (o.choose == 3 && m.te < best.te)) a_chosen = k;
+    }
     if (dropped) a_s.log << tr("%1: %2 modes of the absorbing layers left out").arg(a_node->name()).arg(dropped);
     if (crossed)
         a_s.log << tr("%1: %2 %3 modes left out").arg(a_node->name()).arg(crossed).arg(o.polarization == 1 ? tr("TM") : tr("TE"));
+    if (unguided)
+        a_s.log << tr("%1: %2 modes below the effective index or above the loss asked left out").arg(a_node->name()).arg(unguided);
+    if (o.choose != 0 && !a_modes.empty()) a_s.log << tr("%1: mode %2 chosen").arg(a_node->name()).arg(a_chosen + 1);
     a_s.log << tr("%1: %2 modes at %3 about n = %4 (%5 products, %6 restarts)")
                    .arg(a_node->name())
                    .arg(a_modes.size())
@@ -1170,6 +1462,12 @@ void ModeProblem::selectMode(int k)
         e[1] = m.kappaGap;
         e[2] = m.kappaEA;
         e[3] = m.kappaEA0;
+        e[13] = m.dnCarriers;
+        e[14] = m.alphaCarriers;
+        for (int pol = 0; pol < 2; ++pol) {
+            e[15 + pol] = m.dnWells[pol];
+            e[17 + pol] = m.alphaWells[pol];
+        }
         // ε'' = (εᴴ - ε)/2j: its diagonal, then xy, xz, yz (re, im).
         auto loss = [&m](int i, int j) { return (std::conj(m.epsT[j][i]) - m.epsT[i][j]) / (2.0 * J); };
         for (int c = 0; c < 3; ++c) e[4 + c] = loss(c, c).real();
@@ -2440,6 +2738,12 @@ MediumAt modeMediumAt(PointEvaluator& e, int f)
     m.kappaGap = x[1];
     m.kappaEA = x[2];
     m.kappaEA0 = x[3];
+    m.dnCarriers = x[13];
+    m.alphaCarriers = x[14];
+    for (int pol = 0; pol < 2; ++pol) {
+        m.dnWells[pol] = x[15 + pol];
+        m.alphaWells[pol] = x[17 + pol];
+    }
     for (int c = 0; c < 3; ++c) m.lossEps[c][c] = x[4 + c];
     const int pairs[3][2] = {{0, 1}, {0, 2}, {1, 2}};
     for (int k = 0; k < 3; ++k) {

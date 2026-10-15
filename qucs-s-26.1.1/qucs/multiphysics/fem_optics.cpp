@@ -209,4 +209,138 @@ std::complex<double> grapheneConductivity(double omega, double mu, double tau, d
     return intra + inter;
 }
 
+namespace {
+
+constexpr double KB = 1.380649e-23, Clight = 299792458.0, Eps0 = 8.8541878188e-12;
+
+/// ℱ1/2 (normalized: (2/√π) ∫ √x/(1 + e^(x-η)) dx): Simpson's in t = √x.
+double fermiHalf(double eta)
+{
+    if (eta < -30) return std::exp(eta);
+    const double T = std::sqrt(std::max(eta, 0.0) + 50);
+    const int m = 1200;
+    const double h = T / m;
+    double sum = 0;
+    for (int j = 0; j <= m; ++j) {
+        const double t = j * h, w = (j == 0 || j == m) ? 1 : (j % 2 ? 4 : 2);
+        const double x = t * t - eta;
+        sum += w * t * t * (x > 0 ? std::exp(-x) / (1 + std::exp(-x)) : 1 / (1 + std::exp(x)));
+    }
+    return 4 / std::sqrt(M_PI) * sum * h / 3;
+}
+
+/// η where ℱ1/2(η) = u: bisection in η.
+double fermiHalfInverse(double u)
+{
+    double lo = std::log(u) - 2, hi = std::max(std::pow(0.75 * std::sqrt(M_PI) * u, 2.0 / 3) + 5, std::log(u) + 5);
+    for (int k = 0; k < 200 && hi - lo > 1e-12 * std::max(1.0, std::abs(hi)); ++k) {
+        const double mid = 0.5 * (lo + hi);
+        (fermiHalf(mid) < u ? lo : hi) = mid;
+    }
+    return 0.5 * (lo + hi);
+}
+
+} // namespace
+
+IndexChange bandFilling(const BandFillingMedium& m, double E, double carriers, bool holes)
+{
+    IndexChange out;
+    if (!(carriers > 0) || !(m.Eg > 0) || !(m.me > 0) || !(m.mhh > 0) || !(m.mlh > 0) || !(E > 0) || !(m.T > 0)) return out;
+    const double kT = KB * m.T;
+    // The carriers' Fermi level (η: from the band's edge, in kT).
+    const double mdos = holes ? std::pow(std::pow(m.mhh, 1.5) + std::pow(m.mlh, 1.5), 2.0 / 3) : m.me;
+    const double Nc = 2 * std::pow(mdos * M0 * kT / (2 * M_PI * Hbar * Hbar), 1.5);
+    const double eta = fermiHalfInverse(carriers / Nc);
+    const double mh[2] = {m.mhh, m.mlh};
+    double mr[2], strength[2];
+    for (int j = 0; j < 2; ++j) mr[j] = m.me * mh[j] / (m.me + mh[j]);
+    // α_j(E) = strength_j √(E - Eg) / E.
+    if (m.A > 0) {
+        const double w = std::pow(mr[0], 1.5) + std::pow(mr[1], 1.5);
+        for (int j = 0; j < 2; ++j) strength[j] = m.A * std::pow(mr[j], 1.5) / w * Q / std::sqrt(Q);   // A √((E-Eg)/1 eV)(1 eV/E)
+    } else {
+        for (int j = 0; j < 2; ++j)
+            strength[j] = Q * Q * m.Ep * std::pow(2 * mr[j] * M0 / (Hbar * Hbar), 1.5) * Hbar / (12 * M_PI * m.n * Clight * Eps0 * M0);
+    }
+    // Δα at E' = Eg + x: the occupied share of the states it joins.
+    auto dalpha = [&](double x) {
+        if (!(x > 0)) return 0.0;
+        double sum = 0;
+        for (int j = 0; j < 2; ++j) {
+            const double kinetic = x * mr[j] / (holes ? mh[j] : m.me);
+            const double arg = kinetic / kT - eta;
+            const double f = arg > 40 ? std::exp(-arg) : 1 / (1 + std::exp(arg));
+            sum += strength[j] * std::sqrt(x) / (m.Eg + x) * f;
+        }
+        return -sum;
+    };
+    if (E > m.Eg) out.dalpha = dalpha(E - m.Eg);
+    // Kramers-Kronig's: x = u², the √x of the edge smooth in u; where E is
+    // above the gap, its pole taken out (the integrand's value there
+    // subtracted, its principal value added).
+    double least = 1;
+    for (int j = 0; j < 2; ++j) least = std::min(least, mr[j] / (holes ? mh[j] : m.me));
+    const double xmax = (std::max(eta, 0.0) + 45) * kT / least;
+    const double umax = std::sqrt(xmax);
+    const int n = 20000;
+    const double h = umax / n;
+    const bool pole = E > m.Eg && E < m.Eg + xmax;
+    const double xe = E - m.Eg;
+    const double ge = pole ? dalpha(xe) / (2 * E) : 0;   // g(E'): Δα/(E' + E), at E
+    double sum = 0;
+    for (int k = 0; k <= n; ++k) {
+        const double u = k * h, x = u * u, Eprime = m.Eg + x;
+        const double w = (k == 0 || k == n) ? 1 : (k % 2 ? 4 : 2);
+        double f;
+        if (pole) {
+            const double d = Eprime - E;
+            if (std::abs(d) < 1e-9 * E) continue;   // (its limit, a derivative: of measure nought here)
+            f = (dalpha(x) / (Eprime + E) - ge) / d;
+        } else {
+            f = dalpha(x) / (Eprime * Eprime - E * E);
+        }
+        sum += w * f * 2 * u;   // dE' = 2u du
+    }
+    double integral = sum * h / 3;
+    if (pole) integral += ge * std::log((m.Eg + xmax - E) / (E - m.Eg));
+    out.dn = Clight * Hbar / M_PI * integral;
+    return out;
+}
+
+BandFillingTable::BandFillingTable(const BandFillingMedium& m, double E, bool holes)
+{
+    for (double lg = 20; lg <= 26 + 1e-9; lg += 0.125) {
+        const IndexChange c = bandFilling(m, E, std::pow(10.0, lg), holes);
+        a_logN.push_back(lg);
+        a_dn.push_back(c.dn);
+        a_dalpha.push_back(c.dalpha);
+    }
+}
+
+IndexChange BandFillingTable::at(double carriers) const
+{
+    IndexChange out;
+    if (a_dn.empty() || !(carriers > 0)) return out;
+    const double lg = std::log10(carriers);
+    if (lg <= a_logN.front()) {
+        const double r = carriers / std::pow(10.0, a_logN.front());
+        out.dn = a_dn.front() * r;
+        out.dalpha = a_dalpha.front() * r;
+        return out;
+    }
+    if (lg >= a_logN.back()) {
+        out.dn = a_dn.back();
+        out.dalpha = a_dalpha.back();
+        return out;
+    }
+    // (Linear in log N of the change per carrier.)
+    const double u = (lg - a_logN.front()) / (a_logN[1] - a_logN[0]);
+    const std::size_t k = std::min(std::size_t(u), a_logN.size() - 2);
+    const double s = u - double(k);
+    const double n0 = std::pow(10.0, a_logN[k]), n1 = std::pow(10.0, a_logN[k + 1]);
+    out.dn = carriers * ((1 - s) * a_dn[k] / n0 + s * a_dn[k + 1] / n1);
+    out.dalpha = carriers * ((1 - s) * a_dalpha[k] / n0 + s * a_dalpha[k + 1] / n1);
+    return out;
+}
+
 } // namespace qucs_s::fem

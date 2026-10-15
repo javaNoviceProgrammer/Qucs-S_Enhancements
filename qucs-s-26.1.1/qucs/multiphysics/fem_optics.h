@@ -16,6 +16,7 @@
 #define QUCS_FEM_OPTICS_H
 
 #include <complex>
+#include <vector>
 
 namespace qucs_s::fem {
 
@@ -45,6 +46,41 @@ double franzKeldysh(double photon, double gap, double field, double mr, double A
 /// nearly none below (Pauli's blocking: an electro-absorption modulator's
 /// off and on).
 std::complex<double> grapheneConductivity(double omega, double mu, double tau, double T);
+
+/// A direct-gap semiconductor's band filling (Burstein-Moss), after
+/// Bennett, Soref and del Alamo (IEEE J. Quantum Electron. 26, 113, 1990):
+/// parabolic bands, the heavy and light holes' absorption across the gap
+/// α_j(E) = q² Ep (2 m_rj/ħ²)^{3/2} √(E - Eg) / (12π n c ε0 m0 ω) (Kane's Ep,
+/// |ê·p|² = m0 Ep/6; or \a A, the edge's strength as franzKeldysh() takes it,
+/// shared by their reduced masses' m_r^{3/2}), bleached where free carriers
+/// fill the states it joins - Fermi-Dirac's at \a T: Δα(E) = -Σ_j α_j(E)
+/// (f_c(E_cj) + f_v(E_vj)), E_cj = (E - Eg) m_rj/me, E_vj = (E - Eg) m_rj/m_j -
+/// and the index Kramers-Kronig's of it, Δn(E) = (cħ/π) P∫ Δα(E')/(E'² - E²)
+/// dE'. Energies in J, masses in m0.
+struct BandFillingMedium {
+    double Eg = 0, me = 0, mhh = 0, mlh = 0, Ep = 0, n = 1, T = 300;
+    double A = 0;   ///< 1/m; nought: of Ep
+};
+/// Δn and Δα (1/m) at photon energy \a E: of \a carriers electrons per m³
+/// (\a holes: holes), none of the other.
+struct IndexChange {
+    double dn = 0, dalpha = 0;
+};
+IndexChange bandFilling(const BandFillingMedium& m, double E, double carriers, bool holes);
+
+/// The same tabulated at \a E over 1e20 to 1e26 per m³, and read at any
+/// density: below the table's first, as N (non-degenerate: Boltzmann's).
+class BandFillingTable
+{
+public:
+    BandFillingTable() = default;
+    BandFillingTable(const BandFillingMedium& m, double E, bool holes);
+    IndexChange at(double carriers) const;
+    bool valid() const { return !a_dn.empty(); }
+
+private:
+    std::vector<double> a_logN, a_dn, a_dalpha;
+};
 
 } // namespace qucs_s::fem
 

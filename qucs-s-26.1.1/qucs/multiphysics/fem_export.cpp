@@ -1,6 +1,7 @@
 /*
  * fem_export.cpp - a multiphysics model's results as parts of circuits:
- *                  Touchstone files, SPICE and Qucs subcircuits
+ *                  Touchstone files, SPICE and Qucs subcircuits; its
+ *                  fields on a grid (CSV, NumPy, columns)
  *
  * This file is part of Qucs-S.
  *
@@ -14,6 +15,7 @@
 #include <QCoreApplication>
 
 #include <cmath>
+#include <cstring>
 
 namespace qucs_s::fem {
 
@@ -328,6 +330,199 @@ QString qucsLineSchematic(const LineRLGC& line, double length, const QString& ve
     return out;
 }
 
+namespace {
+
+/// NumPy's .npy (format 1.0) of \a values, doubles little-endian in C's
+/// order, of \a shape.
+QByteArray npy(const std::vector<double>& values, const std::vector<std::size_t>& shape)
+{
+    QByteArray dims;
+    for (std::size_t i = 0; i < shape.size(); ++i) dims += (i ? ", " : "") + QByteArray::number(qulonglong(shape[i]));
+    if (shape.size() == 1) dims += ',';
+    QByteArray header = "{'descr': '<f8', 'fortran_order': False, 'shape': (" + dims + "), }";
+    // (Magic, version, its length, the header and a newline: a multiple of 64.)
+    const int pad = (64 - (10 + header.size() + 1) % 64) % 64;
+    header += QByteArray(pad, ' ') + '\n';
+    QByteArray out("\x93NUMPY\x01\x00", 8);
+    out += char(header.size() & 0xff);
+    out += char((header.size() >> 8) & 0xff);
+    out += header;
+    out.reserve(out.size() + qsizetype(8 * values.size()));
+    for (double v : values) {
+        quint64 bits;
+        std::memcpy(&bits, &v, 8);
+        for (int b = 0; b < 8; ++b) out += char((bits >> (8 * b)) & 0xff);
+    }
+    return out;
+}
+
+/// A Field on a Grid export: its expressions at each of its instances, on
+/// a regular grid or at the mesh's nodes.
+ExportText fieldExport(const SolutionSet& set, const Node& node)
+{
+    ExportText out;
+    // The expressions, each named if wanted ("E = emw.normE").
+    std::vector<NamedExpression> items;
+    for (const QString& raw : node.text(QStringLiteral("expressions")).split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+        NamedExpression item = namedExpression(raw);
+        if (item.expression.isEmpty()) continue;
+        if (item.name.isEmpty()) item.name = item.expression;
+        items.push_back(item);
+    }
+    if (items.empty()) {
+        out.error = tr("give it an expression (emw.normE; semi.n...)");
+        return out;
+    }
+    // Which solutions: the one asked (its point, time or frequency, mode),
+    // each, or at each point the mode its step chose.
+    const QString which = node.text(QStringLiteral("solutions"));
+    const std::vector<Instance> at =
+        which == QLatin1String("all")      ? instances(set, true)
+        : which == QLatin1String("chosen") ? instances(set, true, 0, {}, {}, -1)
+                                           : instances(set, false, node.integer(QStringLiteral("point")), node.text(QStringLiteral("time")),
+                                                       node.text(QStringLiteral("frequency")), node.integer(QStringLiteral("mode")));
+    if (at.empty()) {
+        out.error = tr("no solution to export");
+        return out;
+    }
+    const Solution& first = *set.solutions[std::size_t(at.front().point)];
+    const Topology& topo = first.topology();
+    const double scale = topo.unitScale;
+    const QString unit = topo.unitName.isEmpty() ? QStringLiteral("m") : topo.unitName;
+    // Where: a grid's corners (the geometry's unit; empty: the model's
+    // extent) and counts, or the mesh's nodes.
+    const bool grid = node.text(QStringLiteral("where")) != QLatin1String("nodes");
+    std::vector<QPointF> points;
+    int nx = 0, ny = 0;
+    if (grid) {
+        nx = std::clamp(node.integer(QStringLiteral("nx")), 2, 10000);
+        ny = std::clamp(node.integer(QStringLiteral("ny")), 2, 10000);
+        if (qint64(nx) * ny > 4000000) {
+            out.error = tr("%1 by %2 points: four million at most").arg(nx).arg(ny);
+            return out;
+        }
+        // (The mesh's extent: its nodes' least and most x and y.)
+        double corner[2][2] = {{INFINITY, INFINITY}, {-INFINITY, -INFINITY}};
+        for (const QPointF& p : first.mesh().nodes) {
+            corner[0][0] = std::min(corner[0][0], p.x());
+            corner[0][1] = std::min(corner[0][1], p.y());
+            corner[1][0] = std::max(corner[1][0], p.x());
+            corner[1][1] = std::max(corner[1][1], p.y());
+        }
+        const QStringList from = node.pair(QStringLiteral("from")), to = node.pair(QStringLiteral("to"));
+        bool given = false;
+        for (const QString& t : from + to) given = given || !t.trimmed().isEmpty();
+        if (given) {
+            Expression::Options options;
+            options.lengthUnit = scale;
+            options.numbersAreLengths = true;
+            const QStringList texts[2] = {from, to};
+            for (int c = 0; c < 2; ++c)
+                for (int k = 0; k < 2; ++k) {
+                    const Expression e = Expression::compile(texts[c].value(k), first.parameters().scope, options);
+                    if (!e.isValid() || !e.isConstant()) {
+                        out.error = tr("the corner %1: %2").arg(texts[c].value(k), e.isValid() ? tr("not a constant") : e.error());
+                        return out;
+                    }
+                    corner[c][k] = e.constant();
+                }
+        }
+        if (!(corner[1][0] > corner[0][0]) || !(corner[1][1] > corner[0][1])) {
+            out.error = tr("its corners: the second above and right of the first");
+            return out;
+        }
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i)
+                points.emplace_back(corner[0][0] + (corner[1][0] - corner[0][0]) * i / (nx - 1),
+                                    corner[0][1] + (corner[1][1] - corner[0][1]) * j / (ny - 1));
+    } else {
+        points = first.mesh().nodes;
+        for (const Instance& in : at)
+            if (set.solutions[std::size_t(in.point)]->mesh().nodes != points) {
+                out.error = tr("the mesh is not the same at each solution (a swept geometry): export them on a grid, or one alone");
+                return out;
+            }
+    }
+    // values[(i K + k) N + n]: instance i, expression k, point n.
+    const std::size_t N = points.size(), K = items.size(), I = at.size();
+    std::vector<double> values(I * K * N, NAN);
+    QStringList names;
+    for (std::size_t i = 0; i < I; ++i) {
+        Solution* s = select(set, at[i]);
+        const Locator locator(s->mesh());
+        for (std::size_t k = 0; k < K; ++k) {
+            const Expression e = Expression::compile(items[k].expression, s->scope());
+            if (!e.isValid()) {
+                out.error = tr("%1: %2").arg(items[k].expression, e.error());
+                return out;
+            }
+            const QString u = dimName(e.dim());
+            names << (I > 1 && !at[i].label.isEmpty() ? at[i].label + QStringLiteral(": ") : QString()) + items[k].name +
+                         (e.dim().isNone() ? QString() : QStringLiteral(" (%1)").arg(u));
+            for (std::size_t n = 0; n < N; ++n) {
+                const std::optional<double> v = evaluateAt(*s, locator, e, points[n]);
+                if (v) values[(i * K + k) * N + n] = *v;
+            }
+        }
+    }
+    const QString format = node.text(QStringLiteral("format"));
+    const QString where = grid ? tr("a %1 by %2 grid").arg(nx).arg(ny) : tr("the mesh's %1 nodes").arg(N);
+    if (format == QLatin1String("npy")) {
+        // A grid: (instances,) expressions, y, x; nodes: rows of x, y, then
+        // each instance's each expression.
+        out.suffix = QStringLiteral("npy");
+        if (grid) {
+            std::vector<std::size_t> shape;
+            if (I > 1) shape.push_back(I);
+            shape.insert(shape.end(), {K, std::size_t(ny), std::size_t(nx)});
+            out.data = npy(values, shape);
+            out.summary = tr("%1 at %2 (shape %3; x, y in %4: from the corners)")
+                              .arg(names.join(QLatin1String(", ")), where,
+                                   QStringLiteral("(%1%2, %3, %4)").arg(I > 1 ? QString::number(I) + QStringLiteral(", ") : QString()).arg(K).arg(ny).arg(nx),
+                                   unit);
+        } else {
+            std::vector<double> rows(N * (2 + I * K));
+            for (std::size_t n = 0; n < N; ++n) {
+                double* r = &rows[n * (2 + I * K)];
+                r[0] = points[n].x();
+                r[1] = points[n].y();
+                for (std::size_t c = 0; c < I * K; ++c) r[2 + c] = values[c * N + n];
+            }
+            out.data = npy(rows, {N, 2 + I * K});
+            out.summary = tr("x, y (%1), %2 at %3").arg(unit, names.join(QLatin1String(", ")), where);
+        }
+        return out;
+    }
+    // Text: a row per point - x, y, each value; .dat a blank line after each
+    // grid row (gnuplot's splot), # before its header.
+    const bool dat = format == QLatin1String("dat");
+    const QString sep = dat ? QStringLiteral(" ") : QStringLiteral(",");
+    QString text;
+    QStringList header = {QStringLiteral("x (%1)").arg(unit), QStringLiteral("y (%1)").arg(unit)};
+    header += names;
+    if (dat) {
+        text += QStringLiteral("# %1\n").arg(where);
+        text += QStringLiteral("# ") + header.join(QLatin1String("\t")) + QLatin1Char('\n');
+    } else {
+        QStringList quoted;
+        for (const QString& h : header) quoted << (h.contains(QLatin1Char(',')) || h.contains(QLatin1Char('"')) ? QLatin1Char('"') + QString(h).replace(QLatin1Char('"'), QStringLiteral("\"\"")) + QLatin1Char('"') : h);
+        text += quoted.join(sep) + QLatin1Char('\n');
+    }
+    auto number = [](double v) { return std::isfinite(v) ? QString::number(v, 'g', 12) : QStringLiteral("nan"); };
+    for (std::size_t n = 0; n < N; ++n) {
+        QStringList row = {number(points[n].x()), number(points[n].y())};
+        for (std::size_t c = 0; c < I * K; ++c) row << number(values[c * N + n]);
+        text += row.join(sep) + QLatin1Char('\n');
+        if (dat && grid && (n + 1) % std::size_t(nx) == 0 && n + 1 < N) text += QLatin1Char('\n');
+    }
+    out.text = text;
+    out.suffix = dat ? QStringLiteral("dat") : QStringLiteral("csv");
+    out.summary = tr("%1 at %2 (x, y in %3)").arg(names.join(QLatin1String(", ")), where, unit);
+    return out;
+}
+
+} // namespace
+
 ExportText exportText(const Model& model, const SolutionSet& set, const Node& node, const QString& version)
 {
     ExportText out;
@@ -368,6 +563,7 @@ ExportText exportText(const Model& model, const SolutionSet& set, const Node& no
         return select(set, inst.front());
     };
     const QString type = node.type;
+    if (type == QLatin1String("fieldexport")) return fieldExport(set, node);
     if (type == QLatin1String("touchstone") && node.text(QStringLiteral("of")) == QLatin1String("ports")) {
         const QStringList tags = node.list(QStringLiteral("physics"));
         const QString tag = tags.isEmpty() ? QStringLiteral("ewfd") : tags.first();

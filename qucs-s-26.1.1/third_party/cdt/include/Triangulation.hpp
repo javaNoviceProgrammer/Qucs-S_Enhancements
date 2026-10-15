@@ -62,6 +62,7 @@ CDT_INLINE_IF_HEADER_ONLY Unrefined::Unrefined()
     , sharpFixedCorner(0)
     , shortEdges(0)
     , splitVertexInvalid(0)
+    , unsplitEdges(0)
 {}
 
 template <typename T, typename TNearPointLocator>
@@ -1631,6 +1632,12 @@ TriIndVec Triangulation<T, TNearPointLocator>::resolveEncroachedEdges(
         encroachedEdges.pop();
         if(fixedEdges.find(edge) == fixedEdges.end())
         {
+            continue;
+        }
+        // never split (Qucs-S): given up on as a short one is
+        if(unsplitEdges.count(edge))
+        {
+            ++unrefined.unsplitEdges;
             continue;
         }
         // give up on already-too-short edges rather than split forever
