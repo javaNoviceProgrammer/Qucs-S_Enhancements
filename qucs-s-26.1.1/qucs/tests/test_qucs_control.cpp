@@ -4710,7 +4710,10 @@ private slots:
         {
             QFile f(slow);
             QVERIFY(f.open(QIODevice::WriteOnly));
-            f.write("#!/bin/sh\necho \"slow ngspice\"\nsleep 5\nexit 0\n");
+            // Running until stopped (a minute at most), however slow the
+            // build: the checks below are made while it runs. (exec: Stop
+            // kills the sleep itself, nothing left behind.)
+            f.write("#!/bin/sh\necho \"slow ngspice\"\nexec sleep 60\n");
         }
         QFile::setPermissions(slow, QFile::permissions(slow) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
         const QString simulatorWas = QucsSettings.NgspiceExecutable;
@@ -4721,7 +4724,16 @@ private slots:
         QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"), sch));
         QVERIFY(!failed(call("open_document", {{"path", sch}})));
         QVERIFY(QMetaObject::invokeMethod(app, "slotSimulateWithSpice"));
-        QTRY_VERIFY(app->simulationConsole()->console()->toPlainText().contains("slow ngspice"));
+        // Stopped should a check fail: the next test meets no run (it found
+        // one, and trash_file refused).
+        const auto stopped = qScopeGuard([this] {
+            if (!app->simulationConsole()->isRunning()) return;
+            app->simulationConsole()->stopAction()->trigger();
+            if (!QTest::qWaitFor([this] { return !app->simulationConsole()->isRunning(); }, 30000))
+                qWarning("the slow simulator was not stopped");
+        });
+        // (Some 0.2 s; once 7 s, a sanitized build among three others.)
+        QTRY_VERIFY_WITH_TIMEOUT(app->simulationConsole()->console()->toPlainText().contains("slow ngspice"), 30000);
         r = call("list_actions", {{"search", "Stop Simulation"}});
         QVERIFY2(json(r).toArray().first().toObject().value("enabled").toBool(), qPrintable(text(r)));
         r = call("trash_file", {{"path", QucsSettings.qucsWorkspaceDir.absoluteFilePath("nothing-here.txt")}});
@@ -4734,7 +4746,7 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("simulation is running"), qPrintable(text(r)));
         r = call("trigger_action", {{"action", "Simulation > Stop Simulation"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
-        QTRY_VERIFY_WITH_TIMEOUT(!app->simulationConsole()->isRunning(), 4000);   // not the 5 s it takes
+        QTRY_VERIFY_WITH_TIMEOUT(!app->simulationConsole()->isRunning(), 20000);   // not the minute it takes
         QVERIFY(QFileInfo::exists(QucsSettings.qucsWorkspaceDir.absoluteFilePath("access-note.txt")));
         QVERIFY(!failed(call("close_document", {{"path", sch}, {"unsaved", "discard"}})));
     }
