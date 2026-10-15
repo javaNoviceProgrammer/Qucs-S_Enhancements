@@ -395,6 +395,12 @@ public:
   /// workspace has one of its name, and selects it in the Projects panel.
   /// Returns the project in the workspace; empty if nothing came in.
   QString bringProjectIn(const QString &source, bool link);
+  /// The File Browser's "Open as Project": the folder \a folder linked into
+  /// the workspace (Link Project's) and selected in the Projects panel - or,
+  /// when the workspace has it already (its own folder, or a link to it),
+  /// selected there as it is. Returns the project in the workspace; empty
+  /// if nothing came in (why said).
+  QString openFolderAsProject(const QString &folder);
   /// Lists the workspace in the Projects panel with \a path selected.
   void showProjectInList(const QString &path);
   /// Files and folders moved (the File Browser): \a from[i] is \a to[i]

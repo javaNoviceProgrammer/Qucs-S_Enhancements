@@ -72,6 +72,11 @@ Result importProject(const QString& source, const QString& workspace, const QStr
 /// symbolic link, or a junction without the privilege for one).
 Result linkProject(const QString& source, const QString& workspace, const QString& name = QString());
 
+/// The workspace's own entry for the folder \a folder: the folder itself
+/// when it is one of \a workspace's, or a link there that leads to it;
+/// empty when the workspace has none.
+QString projectInWorkspace(const QString& folder, const QString& workspace);
+
 /// The first name in \a workspace free for a project like \a name:
 /// "amp_2_prj", "amp_3_prj", ... - or for a plain "amp", "amp_2", "amp_3".
 QString freeName(const QString& workspace, const QString& name);

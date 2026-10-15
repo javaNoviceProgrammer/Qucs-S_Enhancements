@@ -250,6 +250,23 @@ Result linkProject(const QString& sourceGiven, const QString& workspaceGiven, co
     return r;
 }
 
+QString projectInWorkspace(const QString& folderGiven, const QString& workspaceGiven)
+{
+    const QString folder = clean(folderGiven);
+    const QString workspace = clean(workspaceGiven);
+    const QString space = QFileInfo(workspace).canonicalFilePath();
+    const QString real = QFileInfo(folder).canonicalFilePath();
+    if (space.isEmpty() || real.isEmpty()) return QString();
+    // One of the workspace's own: by its place, or as the link there.
+    if (samePath(QFileInfo(QFileInfo(folder).absolutePath()).canonicalFilePath(), space))
+        return QDir(workspace).absoluteFilePath(QFileInfo(folder).fileName());
+    if (samePath(QFileInfo(real).absolutePath(), space)) return QDir(workspace).absoluteFilePath(QFileInfo(real).fileName());
+    // A link in the workspace to it.
+    for (const QFileInfo& entry : QDir(workspace).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden))
+        if (isLink(entry.absoluteFilePath()) && samePath(entry.canonicalFilePath(), real)) return entry.absoluteFilePath();
+    return QString();
+}
+
 QString freeName(const QString& workspace, const QString& name)
 {
     const bool suffixed = hasSuffix(name);
