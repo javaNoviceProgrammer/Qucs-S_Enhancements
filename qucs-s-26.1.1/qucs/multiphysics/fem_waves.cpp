@@ -5,7 +5,9 @@
  *                 formulation, A x = -β² B x, solved by a shift and invert
  *                 about the effective index guessed) and waves in the plane
  *                 (Ez or Hz: -∇·(P ∇u) - k0² q u = 0) with ports and their
- *                 S-parameters, scattering boundaries; in media of a complex
+ *                 S-parameters, scattering boundaries, a unit cell's
+ *                 periodic (Floquet) condition and periodic ports - each
+ *                 diffraction order's reflectance and transmittance; in media of a complex
  *                 refractive index or permittivity, anisotropic (diagonal),
  *                 warmed (dn/dT), and perfectly matched layers
  *
@@ -26,6 +28,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <limits>
 #include <map>
 
 namespace qucs_s::fem::detail {
@@ -1307,11 +1311,56 @@ private:
     void scalars(PointEvaluator& ev, int d, double omega, double k0, const double t[2], cd* across, cd* along, cd* mixed, cd* q) const;
     bool portMode(Port& port, double omega, double k0, QString* error);
 
+    /// A Periodic Condition: u(r + d) = u(r) e^{-j kF·d} - each node of its
+    /// destination side of the source's (interpolated where the two meshes
+    /// differ).
+    struct Periodic {
+        QString name;
+        int floquet = 1;   // 0 continuity, 1 from the fed periodic port, 2 kF given
+        double kx = 0, ky = 0;
+        QPointF shift;     // d, metres: from the source side to the destination
+        std::vector<int> source, destination;   // boundaries
+        std::vector<std::pair<int, std::vector<std::pair<int, double>>>> ties;   // equation: (equation, weight)
+    };
+    /// A periodic port: a unit cell's top or bottom, the plane waves of its
+    /// diffraction orders e_m = e^{-j k_m·r}/√L, k_m = (kF + 2πm/L) ê.
+    struct PeriodicPort {
+        QString name;
+        bool excite = false;
+        double angle = 0;   // radians, from the inward normal toward ê
+        double E0 = 1;
+        std::vector<int> edges;
+        QPointF along;      // ê: along it, toward +x (+y when it lies along y)
+        double length = 0;  // L, metres
+        cd p = 0, pt = 0, q = 0;   // its medium's: across, along it, and q
+        int domain = -1;
+        std::vector<int> m;
+        std::vector<double> kt;   // along ê
+        std::vector<cd> beta;
+        std::vector<Eigen::VectorXcd> c, dual;   // ∫ N e_m ds, ∫ N ê_m ds (ê_m = e^{+j k_m·r}/√L)
+        std::vector<cd> b;        // what each order carries out
+        std::vector<double> power;   // of the incident's
+        std::vector<char> open;      // it propagates
+    };
+    /// The periodic ports' orders at \a omega: their media, kF, β, c.
+    bool periodicOrders(double omega, double k0, QString* error);
+    /// The equations in the free ones (the periodic conditions' ties, their
+    /// phases at kF): T, a_neq by its columns; \a tied false where none is.
+    bool periodicMap(Eigen::SparseMatrix<cd>* T, bool* tied, QString* error);
+
     Media a_media;
     bool a_hz = false;
     std::vector<int> a_eq;          // by dof: equation, -1 none, -3 fixed (0)
     int a_neq = 0;
-    std::vector<int> a_condition;   // by boundary: 1 fixed, 2 natural, 3 scattering
+    std::vector<int> a_condition;   // by boundary: 1 fixed, 2 natural, 3 scattering, 4 port, 5 periodic port, 6 periodic
+    std::vector<Periodic> a_periodic;
+    std::vector<PeriodicPort> a_pports;
+    int a_pfed = -1;
+    double a_kF[2] = {0, 0};        // the Floquet wave vector, 1/m
+    // Reflectance, transmittance (the fed port's power that comes back, that
+    // goes out by the others): NaN where there are none.
+    double a_R = NaN, a_T = NaN;
+    cd a_r0 = cd(NaN, NaN), a_t0 = cd(NaN, NaN);
     struct Incident {
         bool plane = false;
         Expression amplitude;
@@ -1358,12 +1407,21 @@ bool WaveProblem::setup(QString* error)
     }
     coef.named[QStringLiteral("mur")] = mur;
     coef.named[QStringLiteral("epsr")] = epsr;
-    // Boundaries: conductors, scattering, ports (the last feature's).
+    // Boundaries: conductors, scattering, ports, periodic (the last feature's).
     a_condition.assign(topo.boundaries.size(), 0);
     a_incident.assign(topo.boundaries.size(), Incident());
     a_ports.clear();
-    std::vector<int> portOf(topo.boundaries.size(), -1);
+    a_periodic.clear();
+    a_pports.clear();
+    a_pfed = -1;
+    std::vector<int> portOf(topo.boundaries.size(), -1), pportOf(topo.boundaries.size(), -1);
     auto inside = [&](int d) { return d >= 0 && f.domains[std::size_t(d)]; };
+    // A boundary a feature takes: no longer an earlier one's port.
+    auto take = [&](int b, int condition) {
+        a_condition[std::size_t(b)] = condition;
+        portOf[std::size_t(b)] = -1;
+        pportOf[std::size_t(b)] = -1;
+    };
     for (const Node& feature : a_node->children) {
         if (!feature.enabled) continue;
         const NodeKind* k = feature.kind();
@@ -1377,8 +1435,7 @@ bool WaveProblem::setup(QString* error)
             for (int b : picked) {
                 const Topology::Boundary& bd = topo.boundaries[std::size_t(b)];
                 if (feature.isDefault && inside(bd.up) == inside(bd.down)) continue;
-                a_condition[std::size_t(b)] = pec != a_hz ? 1 : 2;
-                portOf[std::size_t(b)] = -1;
+                take(b, pec != a_hz ? 1 : 2);
             }
         } else if (t.endsWith(QLatin1String("/scattering"))) {
             Incident in;
@@ -1389,10 +1446,55 @@ bool WaveProblem::setup(QString* error)
                 in.angle = a ? *a * M_PI / 180 : 0;
             }
             for (int b : picked) {
-                a_condition[std::size_t(b)] = 3;
+                take(b, 3);
                 a_incident[std::size_t(b)] = in;
-                portOf[std::size_t(b)] = -1;
             }
+        } else if (t.endsWith(QLatin1String("/periodicport"))) {
+            PeriodicPort port;
+            port.name = feature.text(QStringLiteral("name")).trimmed();
+            if (port.name.isEmpty()) port.name = QString::number(a_pports.size() + 1);
+            for (const PeriodicPort& other : a_pports)
+                if (other.name == port.name) problem(tr("%1: another periodic port is named %2").arg(feature.name(), port.name));
+            port.excite = feature.flag(QStringLiteral("excite"));
+            if (port.excite) {
+                if (a_pfed >= 0) problem(tr("%1: a periodic port is fed already (%2): one plane wave comes in").arg(feature.name(), a_pports[std::size_t(a_pfed)].name));
+                a_pfed = int(a_pports.size());
+                const std::optional<double> a = evaluateConstant(feature.text(QStringLiteral("angle")), a_s.parameters().scope, Dim(), &why);
+                if (!a) problem(tr("%1: its angle: %2").arg(feature.name(), why));
+                else if (!(std::abs(*a) < 90)) problem(tr("%1: its angle is %2°: less than 90° from the normal").arg(feature.name()).arg(*a));
+                else port.angle = *a * M_PI / 180;
+                const std::optional<double> e0 = evaluateConstant(feature.text(QStringLiteral("E0")), a_s.parameters().scope, Dim(), &why);
+                if (!e0) problem(tr("%1: its amplitude: %2").arg(feature.name(), why));
+                else port.E0 = *e0;
+            }
+            for (int b : picked) {
+                take(b, 5);
+                pportOf[std::size_t(b)] = int(a_pports.size());
+            }
+            a_pports.push_back(port);
+        } else if (t.endsWith(QLatin1String("/periodic"))) {
+            Periodic pc;
+            pc.name = feature.name();
+            const QString kind = feature.text(QStringLiteral("floquet"));
+            pc.floquet = kind == QLatin1String("continuity") ? 0 : kind == QLatin1String("given") ? 2 : 1;
+            if (pc.floquet == 2) {
+                const std::optional<double> kx = evaluateConstant(feature.text(QStringLiteral("kx")), a_s.parameters().scope, Dim::of(-1), &why);
+                if (!kx) problem(tr("%1: kF's x: %2").arg(feature.name(), why));
+                const std::optional<double> ky = evaluateConstant(feature.text(QStringLiteral("ky")), a_s.parameters().scope, Dim::of(-1), &why);
+                if (!ky) problem(tr("%1: kF's y: %2").arg(feature.name(), why));
+                pc.kx = kx.value_or(0);
+                pc.ky = ky.value_or(0);
+            }
+            const std::optional<PeriodicSides> sides = periodicSides(topo, picked, &why);
+            if (!sides) {
+                problem(tr("%1: %2").arg(feature.name(), why));
+                continue;
+            }
+            pc.shift = sides->shift * topo.unitScale;
+            pc.source = sides->source;
+            pc.destination = sides->destination;
+            for (int b : picked) take(b, 6);
+            a_periodic.push_back(pc);
         } else if (t.endsWith(QLatin1String("/port"))) {
             Port port;
             port.name = feature.text(QStringLiteral("name")).trimmed();
@@ -1401,7 +1503,7 @@ bool WaveProblem::setup(QString* error)
                 if (other.name == port.name) problem(tr("%1: another port is named %2").arg(feature.name(), port.name));
             port.excite = feature.flag(QStringLiteral("excite"));
             for (int b : picked) {
-                a_condition[std::size_t(b)] = 4;
+                take(b, 4);
                 portOf[std::size_t(b)] = int(a_ports.size());
             }
             a_ports.push_back(port);
@@ -1410,9 +1512,15 @@ bool WaveProblem::setup(QString* error)
     for (int e = 0; e < int(mesh.edges.size()); ++e) {
         const int b = mesh.edges[std::size_t(e)].boundary;
         if (portOf[std::size_t(b)] >= 0) a_ports[std::size_t(portOf[std::size_t(b)])].edges.push_back(e);
+        if (pportOf[std::size_t(b)] >= 0) a_pports[std::size_t(pportOf[std::size_t(b)])].edges.push_back(e);
     }
     for (const Port& p : a_ports)
         if (p.edges.empty()) problem(tr("port %1 is on no boundary").arg(p.name));
+    for (const PeriodicPort& p : a_pports)
+        if (p.edges.empty()) problem(tr("periodic port %1 is on no boundary").arg(p.name));
+    if (!a_pports.empty() && !a_ports.empty())
+        problem(tr("%1: periodic ports and ports together - a unit cell's periodic ports, or a waveguide's ports").arg(a_node->name()));
+    if (!a_pports.empty() && a_pfed < 0) problem(tr("%1: no periodic port is fed: one brings the plane wave in").arg(a_node->name()));
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
         return false;
@@ -1432,6 +1540,137 @@ bool WaveProblem::setup(QString* error)
     a_neq = 0;
     for (int& q : a_eq)
         if (q == -2) q = a_neq++;
+    // Periodic conditions: each free node of the destination side tied to
+    // the source side at the node moved back by d - the source edge's shape
+    // functions there (one node, where the meshes match).
+    const double diag = std::hypot(topo.bounds.width(), topo.bounds.height()) * topo.unitScale;
+    const double tol = 1e-6 * diag;
+    for (Periodic& pc : a_periodic) {
+        std::vector<char> isSource(topo.boundaries.size(), 0), isDest(topo.boundaries.size(), 0);
+        for (int b : pc.source) isSource[std::size_t(b)] = 1;
+        for (int b : pc.destination) isDest[std::size_t(b)] = 1;
+        std::vector<int> sourceEdges;
+        std::vector<int> dofs;
+        for (int e = 0; e < int(mesh.edges.size()); ++e) {
+            const int b = mesh.edges[std::size_t(e)].boundary;
+            if (isSource[std::size_t(b)]) sourceEdges.push_back(e);
+            if (isDest[std::size_t(b)])
+                for (int dof : sp.edgeDofs(e))
+                    if (dof >= 0 && a_eq[std::size_t(dof)] >= 0 && std::find(dofs.begin(), dofs.end(), dof) == dofs.end()) dofs.push_back(dof);
+        }
+        int lost = 0;
+        for (int dof : dofs) {
+            const QPointF at = sp.point(dof) - pc.shift;
+            int best = -1;
+            double bestDistance = std::numeric_limits<double>::infinity(), bestS = 0;
+            for (int e : sourceEdges) {
+                const std::array<int, 3> ed = sp.edgeDofs(e);
+                const QPointF a = sp.point(ed[0]), d = sp.point(ed[1]) - a;
+                const double l2 = d.x() * d.x() + d.y() * d.y();
+                if (!(l2 > 0)) continue;
+                const double s = std::clamp(((at.x() - a.x()) * d.x() + (at.y() - a.y()) * d.y()) / l2, 0.0, 1.0);
+                const double dist = std::hypot(a.x() + s * d.x() - at.x(), a.y() + s * d.y() - at.y());
+                if (dist < bestDistance) {
+                    best = e;
+                    bestDistance = dist;
+                    bestS = s;
+                }
+            }
+            if (best < 0 || bestDistance > tol) {
+                ++lost;
+                continue;
+            }
+            const std::array<int, 3> ed = sp.edgeDofs(best);
+            const double s = bestS;
+            double N[3];
+            int count = 2;
+            if (sp.order() == 1) {
+                N[0] = 1 - s;
+                N[1] = s;
+            } else {
+                N[0] = (1 - s) * (1 - 2 * s);
+                N[1] = s * (2 * s - 1);
+                N[2] = 4 * s * (1 - s);
+                count = 3;
+            }
+            std::vector<std::pair<int, double>> from;
+            for (int i = 0; i < count; ++i) {
+                if (ed[std::size_t(i)] < 0 || std::abs(N[i]) < 1e-12) continue;
+                const int q = a_eq[std::size_t(ed[std::size_t(i)])];
+                if (q >= 0) from.push_back({q, N[i]});   // (a fixed node's nought left out)
+            }
+            pc.ties.push_back({a_eq[std::size_t(dof)], from});
+        }
+        if (lost > 0) {
+            *error = tr("%1: %2 nodes of its destination side have no point of its source side moved onto them").arg(pc.name).arg(lost);
+            return false;
+        }
+        int between = 0;
+        for (const auto& tie : pc.ties) between += tie.second.size() > 1 ? 1 : 0;
+        if (between > 0)
+            a_s.log << tr("Warning: %1: its two sides are meshed apart at %2 of %3 nodes, interpolated there - less exact than a mesh "
+                          "the same on both (as made here)")
+                           .arg(pc.name)
+                           .arg(between)
+                           .arg(pc.ties.size());
+    }
+    // Periodic ports: straight, one period long, along their cell's d.
+    for (PeriodicPort& port : a_pports) {
+        QPointF lo, hi;
+        bool first = true;
+        QPointF dir;
+        for (int e : port.edges) {
+            const std::array<int, 3> ed = sp.edgeDofs(e);
+            for (int k = 0; k < 2; ++k) {
+                const QPointF x = sp.point(ed[std::size_t(k)]);
+                if (first) {
+                    lo = hi = x;
+                    first = false;
+                }
+                if (std::hypot(x.x() - lo.x(), x.y() - lo.y()) > std::hypot(hi.x() - lo.x(), hi.y() - lo.y())) hi = x;
+            }
+        }
+        // (the farthest from the first point, then from that: its two ends)
+        for (int e : port.edges)
+            for (int k = 0; k < 2; ++k) {
+                const QPointF x = sp.point(sp.edgeDofs(e)[std::size_t(k)]);
+                if (std::hypot(x.x() - hi.x(), x.y() - hi.y()) > std::hypot(lo.x() - hi.x(), lo.y() - hi.y())) lo = x;
+            }
+        port.length = std::hypot(hi.x() - lo.x(), hi.y() - lo.y());
+        if (!(port.length > tol)) {
+            *error = tr("periodic port %1 has no length").arg(port.name);
+            return false;
+        }
+        dir = (hi - lo) / port.length;
+        if (std::abs(dir.x()) >= std::abs(dir.y()) ? dir.x() < 0 : dir.y() < 0) dir = -dir;
+        port.along = dir;
+        double crooked = 0;
+        for (int e : port.edges)
+            for (int k = 0; k < 2; ++k) {
+                const QPointF x = sp.point(sp.edgeDofs(e)[std::size_t(k)]) - lo;
+                crooked = std::max(crooked, std::abs(x.x() * dir.y() - x.y() * dir.x()));
+            }
+        if (crooked > tol) {
+            *error = tr("periodic port %1 is not straight: a cell's top or bottom, one line").arg(port.name);
+            return false;
+        }
+        const Periodic* cell = nullptr;
+        for (const Periodic& pc : a_periodic) {
+            const double d = std::hypot(pc.shift.x(), pc.shift.y());
+            if (std::abs(pc.shift.x() * dir.y() - pc.shift.y() * dir.x()) <= tol && std::abs(d - port.length) <= 1e-6 * d) cell = &pc;
+        }
+        if (!cell) {
+            *error = tr("periodic port %1 (%2 long) needs a Periodic Condition on its cell's sides, one period along it apart")
+                         .arg(port.name, formatQuantity(port.length, Dim::length()));
+            return false;
+        }
+        for (int e : port.edges) {
+            int t = -1;
+            double xi = 0, eta = 0;
+            edgePoint(e, 0.5, &t, &xi, &eta);
+            if (t >= 0) port.domain = mesh.domain[std::size_t(t)];
+        }
+    }
     return true;
 }
 
@@ -1581,6 +1820,209 @@ bool WaveProblem::portMode(Port& port, double omega, double k0, QString* error)
     return true;
 }
 
+// An 8-point Gauss-Legendre rule on [0, 1] (s, weight): a high diffraction
+// order's plane wave turns along an edge.
+const std::array<std::array<double, 2>, 8>& gauss8()
+{
+    static const std::array<std::array<double, 2>, 8> rule = [] {
+        const double x[4] = {0.1834346424956498, 0.5255324099163290, 0.7966664774136267, 0.9602898564975363};
+        const double w[4] = {0.3626837833783620, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763};
+        std::array<std::array<double, 2>, 8> r{};
+        for (int i = 0; i < 4; ++i) {
+            r[std::size_t(2 * i)] = {0.5 - 0.5 * x[i], 0.5 * w[i]};
+            r[std::size_t(2 * i + 1)] = {0.5 + 0.5 * x[i], 0.5 * w[i]};
+        }
+        return r;
+    }();
+    return rule;
+}
+
+bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
+{
+    if (a_pports.empty()) return true;
+    const Field& fld = a_s.fields()[std::size_t(a_fi)];
+    const Space& sp = *fld.space;
+    const Mesh& mesh = a_s.mesh();
+    PointEvaluator ev(a_s);
+    // Each port's medium: the same all along it (a plane wave's), its axes
+    // along it and across.
+    for (PeriodicPort& port : a_pports) {
+        bool first = true;
+        const double tangent[2] = {port.along.x(), port.along.y()};
+        for (int e : port.edges)
+            for (const auto& g : lineRule(3)) {
+                int t = -1;
+                double xi = 0, eta = 0;
+                edgePoint(e, g[0], &t, &xi, &eta);
+                if (t < 0) continue;
+                ev.moveTo(t, xi, eta);
+                cd p, pt, mixed, q;
+                scalars(ev, mesh.domain[std::size_t(t)], omega, k0, tangent, &p, &pt, &mixed, &q);
+                if (std::abs(mixed) > 1e-9 * std::abs(p)) {
+                    *error = tr("periodic port %1: its medium's axes are turned in the plane, neither along it nor across it").arg(port.name);
+                    return false;
+                }
+                auto differs = [](cd a, cd b) { return std::abs(a - b) > 1e-9 * std::max(std::abs(a), std::abs(b)); };
+                if (first) {
+                    port.p = p;
+                    port.pt = pt;
+                    port.q = q;
+                    first = false;
+                } else if (differs(p, port.p) || differs(pt, port.pt) || differs(q, port.q)) {
+                    *error = tr("periodic port %1: its medium is not the same all along it - the plane waves' half-space: the cell's "
+                                "top or bottom in one material")
+                                 .arg(port.name);
+                    return false;
+                }
+            }
+        if (first) {
+            *error = tr("periodic port %1 is on no domain of %2").arg(port.name, a_node->name());
+            return false;
+        }
+    }
+    // kF: the fed port's plane wave's along the cell (its index across it).
+    const PeriodicPort& fed = a_pports[std::size_t(a_pfed)];
+    const cd kIn = k0 * std::sqrt(fed.q / fed.p);
+    if (std::abs(kIn.imag()) > 1e-9 * std::abs(kIn.real()))
+        a_s.log << tr("Warning: %1: periodic port %2's medium absorbs: the plane wave's angle taken of its index's real part")
+                       .arg(a_node->name(), fed.name);
+    const double kt0 = kIn.real() * std::sin(fed.angle);
+    a_kF[0] = kt0 * fed.along.x();
+    a_kF[1] = kt0 * fed.along.y();
+    // Each port's orders: those that propagate in any port's medium and ten
+    // more each way (the near field's), as many as its edges resolve.
+    QStringList said;
+    for (PeriodicPort& port : a_pports) {
+        const double ktF = a_kF[0] * port.along.x() + a_kF[1] * port.along.y();
+        const double kmax = std::sqrt(std::max(0.0, (k0 * k0 * port.q / port.pt).real()));
+        const int propagating = int(std::ceil((kmax + std::abs(ktF)) * port.length / (2 * M_PI))) + 1;
+        const int M = std::min(propagating + 10, std::max(propagating, int(port.edges.size()) / 2));
+        port.m.clear();
+        port.kt.clear();
+        port.beta.clear();
+        QStringList open;
+        for (int m = -M; m <= M; ++m) {
+            const double kt = ktF + 2 * M_PI * m / port.length;
+            const cd beta2 = (k0 * k0 * port.q - port.pt * kt * kt) / port.p;
+            cd beta = std::sqrt(beta2);
+            if (beta.imag() > 0) beta = -beta;   // e^{-jβξ} out of the cell: going, or dying away
+            port.m.push_back(m);
+            port.kt.push_back(kt);
+            port.beta.push_back(beta);
+            if (beta2.real() > 0) open << QStringLiteral("%1 (%2°)").arg(m).arg(std::atan2(kt, beta.real()) * 180 / M_PI, 0, 'f', 2);
+        }
+        said << tr("%1: %2").arg(port.name, open.isEmpty() ? tr("none") : open.join(QLatin1String(", ")));
+        const std::size_t n = port.m.size();
+        port.c.assign(n, Eigen::VectorXcd::Zero(a_neq));
+        port.dual.assign(n, Eigen::VectorXcd::Zero(a_neq));
+        const double root = std::sqrt(port.length);
+        for (int e : port.edges) {
+            const std::array<int, 3> dofs = sp.edgeDofs(e);
+            const int ne = sp.order() == 1 ? 2 : 3;
+            for (const auto& g : gauss8()) {
+                double jac = 0;
+                const QPointF x = sp.edgePoint(e, g[0], &jac);
+                const double s = g[0];
+                double N[3];
+                if (ne == 2) {
+                    N[0] = 1 - s;
+                    N[1] = s;
+                } else {
+                    N[0] = (1 - s) * (1 - 2 * s);
+                    N[1] = s * (2 * s - 1);
+                    N[2] = 4 * s * (1 - s);
+                }
+                const double w = g[1] * jac;
+                const double along = x.x() * port.along.x() + x.y() * port.along.y();
+                for (std::size_t k = 0; k < n; ++k) {
+                    const cd em = std::exp(-J * port.kt[k] * along) / root;
+                    for (int i = 0; i < ne; ++i) {
+                        const int q = a_eq[std::size_t(dofs[std::size_t(i)])];
+                        if (q < 0) continue;
+                        port.c[k](q) += w * N[i] * em;
+                        port.dual[k](q) += w * N[i] * std::conj(em);
+                    }
+                }
+            }
+        }
+    }
+    a_s.log << tr("%1: a periodic cell %2 wide, kF %3 (%4° in periodic port %5's medium); the orders that propagate - %6")
+                   .arg(a_node->name(), formatQuantity(fed.length, Dim::length()), formatQuantity(kt0, Dim::of(-1)))
+                   .arg(fed.angle * 180 / M_PI, 0, 'g', 6)
+                   .arg(fed.name, said.join(QLatin1String("; ")));
+    return true;
+}
+
+bool WaveProblem::periodicMap(Eigen::SparseMatrix<cd>* T, bool* tied, QString* error)
+{
+    *tied = false;
+    if (a_periodic.empty()) return true;
+    // Each tied equation: its condition's phase, e^{-j kF·d}, times its
+    // source's weights.
+    struct Tie {
+        cd phase;
+        const std::vector<std::pair<int, double>>* from;
+    };
+    std::vector<int> tieOf(std::size_t(a_neq), -1);
+    std::vector<Tie> ties;
+    for (const Periodic& pc : a_periodic) {
+        double kx = 0, ky = 0;
+        if (pc.floquet == 2) {
+            kx = pc.kx;
+            ky = pc.ky;
+        } else if (pc.floquet == 1) {
+            kx = a_kF[0];
+            ky = a_kF[1];
+        }
+        const cd phase = std::exp(-J * (kx * pc.shift.x() + ky * pc.shift.y()));
+        for (const auto& [q, from] : pc.ties) {
+            if (tieOf[std::size_t(q)] >= 0) continue;   // (a corner two conditions tie: the first's)
+            tieOf[std::size_t(q)] = int(ties.size());
+            ties.push_back({phase, &from});
+        }
+    }
+    if (ties.empty()) return true;
+    std::vector<int> freeOf(std::size_t(a_neq), -1);
+    int nfree = 0;
+    for (int q = 0; q < a_neq; ++q)
+        if (tieOf[std::size_t(q)] < 0) freeOf[std::size_t(q)] = nfree++;
+    // In the free ones: a source tied in its turn (a corner) followed.
+    std::vector<std::vector<std::pair<int, cd>>> sums(static_cast<std::size_t>(a_neq));
+    std::vector<char> state(std::size_t(a_neq), 0);   // 1 being summed, 2 done
+    const std::function<bool(int)> sum = [&](int q) -> bool {
+        if (state[std::size_t(q)] == 2) return true;
+        if (state[std::size_t(q)] == 1) return false;
+        state[std::size_t(q)] = 1;
+        std::map<int, cd> acc;
+        if (tieOf[std::size_t(q)] < 0) {
+            acc[freeOf[std::size_t(q)]] = 1;
+        } else {
+            const Tie& t = ties[std::size_t(tieOf[std::size_t(q)])];
+            for (const auto& [src, w] : *t.from) {
+                if (!sum(src)) return false;
+                for (const auto& [col, v] : sums[std::size_t(src)]) acc[col] += t.phase * w * v;
+            }
+        }
+        sums[std::size_t(q)].assign(acc.begin(), acc.end());
+        state[std::size_t(q)] = 2;
+        return true;
+    };
+    std::vector<Eigen::Triplet<cd>> trip;
+    for (int q = 0; q < a_neq; ++q) {
+        if (!sum(q)) {
+            *error = tr("%1: its periodic conditions tie a node to itself: one condition for each pair of sides").arg(a_node->name());
+            return false;
+        }
+        for (const auto& [col, v] : sums[std::size_t(q)])
+            if (std::abs(v) > 1e-14) trip.emplace_back(q, col, v);
+    }
+    T->resize(a_neq, nfree);
+    T->setFromTriplets(trip.begin(), trip.end());
+    T->makeCompressed();
+    *tied = true;
+    return true;
+}
+
 bool WaveProblem::solve(const SolveOptions& o, QString* error)
 {
     Field& fld = field();
@@ -1707,9 +2149,60 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         for (int i : nz)
             for (int j : nz) trip.emplace_back(i, j, J * port.beta * port.c(i) * port.c(j));
     }
+    // Periodic ports: each order's condition, jβ_m p c_m ĉ_mᵀ (the field's
+    // part in it, ∫ u ê_m, going out as e_m), and the plane wave fed,
+    // 2jβ0 p a c_0 (a = E0 √L: e_0's amplitude E0).
+    if (!periodicOrders(omega, k0, error)) return false;
+    // A condition along the ports whose kF is not their plane wave's: the
+    // orders would not be the field's.
+    if (a_pfed >= 0)
+        for (const Periodic& pc : a_periodic) {
+            if (pc.floquet == 1) continue;
+            const QPointF along = a_pports[std::size_t(a_pfed)].along;
+            if (std::abs(pc.shift.x() * along.y() - pc.shift.y() * along.x()) > 1e-9 * std::hypot(pc.shift.x(), pc.shift.y())) continue;
+            const double own = pc.floquet == 2 ? pc.kx * pc.shift.x() + pc.ky * pc.shift.y() : 0.0;
+            const double wave = a_kF[0] * pc.shift.x() + a_kF[1] * pc.shift.y();
+            if (std::abs(std::remainder(own - wave, 2 * M_PI)) > 1e-6) {
+                *error = tr("%1: its kF·d is %2 rad, periodic port %3's plane wave's %4: Floquet, the fed periodic port's")
+                             .arg(pc.name)
+                             .arg(own, 0, 'g', 6)
+                             .arg(a_pports[std::size_t(a_pfed)].name)
+                             .arg(wave, 0, 'g', 6);
+                return false;
+            }
+        }
+    for (const PeriodicPort& port : a_pports) {
+        std::vector<int> nz;
+        if (!port.c.empty())
+            for (int i = 0; i < a_neq; ++i)
+                if (port.c[0](i) != cd(0)) nz.push_back(i);
+        for (std::size_t k = 0; k < port.m.size(); ++k) {
+            const cd f = J * port.beta[k] * port.p;
+            for (int i : nz)
+                for (int j : nz) trip.emplace_back(i, j, f * port.c[k](i) * port.dual[k](j));
+        }
+    }
+    cd incident = 0;
+    std::size_t specular = 0;
+    if (a_pfed >= 0) {
+        const PeriodicPort& fp = a_pports[std::size_t(a_pfed)];
+        specular = std::size_t(std::find(fp.m.begin(), fp.m.end(), 0) - fp.m.begin());
+        incident = fp.E0 * std::sqrt(fp.length);
+        F += 2.0 * J * fp.beta[specular] * fp.p * incident * fp.c[specular];
+    }
     Eigen::SparseMatrix<cd> A(a_neq, a_neq);
     A.setFromTriplets(trip.begin(), trip.end());
     A.makeCompressed();
+    // Periodic conditions: u = T v, v the free nodes' - tested by T's
+    // conjugate (the other side's phase), Tᴴ A T v = Tᴴ F.
+    Eigen::SparseMatrix<cd> T;
+    bool tied = false;
+    if (!periodicMap(&T, &tied, error)) return false;
+    if (tied) {
+        const Eigen::SparseMatrix<cd> Th = T.adjoint();
+        A = Eigen::SparseMatrix<cd>(Th * A * T);
+        A.makeCompressed();
+    }
     Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
     lu.analyzePattern(A);
     lu.factorize(A);
@@ -1717,6 +2210,11 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         *error = tr("%1: the matrix is singular - %2").arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
         return false;
     }
+    auto solved = [&](const Eigen::VectorXcd& rhs) -> Eigen::VectorXcd {
+        if (!tied) return lu.solve(rhs);
+        const Eigen::VectorXcd reduced = T.adjoint() * rhs;
+        return T * Eigen::VectorXcd(lu.solve(reduced));
+    };
     // Fed: each port that is, in turn (the field kept: the first's, the plane
     // wave's when none is).
     a_fed.clear();
@@ -1732,7 +2230,7 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
             rhs += 2.0 * J * pj.beta * pj.c;
             if (j > 0) rhs -= F;   // (a plane wave with the first only)
         }
-        const Eigen::VectorXcd x = lu.solve(rhs);
+        const Eigen::VectorXcd x = solved(rhs);
         if (!x.allFinite()) {
             *error = tr("%1: the solution is not finite").arg(a_node->name());
             return false;
@@ -1743,6 +2241,45 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
             const Port& pi = a_ports[std::size_t(i)];
             const cd bi = (pi.c.transpose() * x)(0) - (i == fed ? cd(1) : cd(0));
             a_S[std::size_t(i)][std::size_t(fed)] = bi * std::sqrt(pi.beta / a_ports[std::size_t(fed)].beta);
+        }
+    }
+    // Reflectance and transmittance: of the first port fed, |S_ii|² and the
+    // others' |S_ji|² (power waves); of a periodic cell, each order's power
+    // over the incident's, Re(p β_m) |b_m|² / Re(p β_0) |a|².
+    a_R = a_T = NaN;
+    a_r0 = a_t0 = cd(NaN, NaN);
+    if (!a_fed.empty()) {
+        const int f0 = a_fed.front();
+        a_R = std::norm(a_S[std::size_t(f0)][std::size_t(f0)]);
+        a_r0 = a_S[std::size_t(f0)][std::size_t(f0)];
+        a_T = 0;
+        for (int i = 0; i < int(a_ports.size()); ++i)
+            if (i != f0) a_T += std::norm(a_S[std::size_t(i)][std::size_t(f0)]);
+        if (a_ports.size() == 2) a_t0 = a_S[std::size_t(1 - f0)][std::size_t(f0)];
+    }
+    if (a_pfed >= 0) {
+        const PeriodicPort& fp = a_pports[std::size_t(a_pfed)];
+        const double in = (fp.p * fp.beta[specular]).real() * std::norm(incident);
+        a_R = a_T = 0;
+        for (int i = 0; i < int(a_pports.size()); ++i) {
+            PeriodicPort& port = a_pports[std::size_t(i)];
+            port.b.assign(port.m.size(), 0);
+            port.power.assign(port.m.size(), 0);
+            port.open.assign(port.m.size(), 0);
+            for (std::size_t k = 0; k < port.m.size(); ++k) {
+                cd b = (port.dual[k].transpose() * kept)(0);
+                if (i == a_pfed && port.m[k] == 0) b -= incident;
+                port.b[k] = b;
+                // (an order that does not propagate carries nothing out)
+                const bool open = ((k0 * k0 * port.q - port.pt * port.kt[k] * port.kt[k]) / port.p).real() > 0;
+                port.open[k] = open;
+                port.power[k] = open && in > 0 ? (port.p * port.beta[k]).real() * std::norm(b) / in : 0;
+                (i == a_pfed ? a_R : a_T) += port.power[k];
+                if (port.m[k] == 0) {
+                    if (i == a_pfed) a_r0 = b / incident;
+                    else if (a_pports.size() == 2) a_t0 = b / incident;
+                }
+            }
         }
     }
     // Hz: each triangle's η = ε_t⁻¹ at its middle, for E (re, im of xx, xy,
@@ -1802,6 +2339,43 @@ void WaveProblem::setGlobals()
             a_s.setGlobal(base + QStringLiteral("_arg"), std::arg(v) * 180 / M_PI, Dim(), what + tr(", its phase in degrees"));
         }
     }
+    // Reflectance, transmittance, absorptance: the first port fed's, or the
+    // periodic cell's.
+    if (!std::isnan(a_R)) {
+        const QString of = a_pfed >= 0 ? tr("the plane wave's power") : tr("the power fed");
+        a_s.setGlobal(p + QStringLiteral("R"), a_R, Dim(), tr("reflectance: %1 that comes back").arg(of));
+        a_s.setGlobal(p + QStringLiteral("T"), a_T, Dim(), tr("transmittance: %1 that goes out by the other ports").arg(of));
+        a_s.setGlobal(p + QStringLiteral("A"), 1 - a_R - a_T, Dim(), tr("absorptance: %1 neither reflected nor transmitted, 1 - R - T").arg(of));
+    }
+    if (a_pfed < 0) return;
+    // Each order that propagates: its share of the incident power, R_m at
+    // the fed port, T_m at the other (T_<port>_m where there are more).
+    const auto order = [](int m) { return m < 0 ? QStringLiteral("n%1").arg(-m) : QString::number(m); };
+    for (int i = 0; i < int(a_pports.size()); ++i) {
+        const PeriodicPort& port = a_pports[std::size_t(i)];
+        const bool fed = i == a_pfed;
+        double total = 0;
+        for (std::size_t k = 0; k < port.m.size() && k < port.open.size(); ++k) {
+            if (!port.open[k]) continue;
+            total += port.power[k];
+            const QString name = fed ? QStringLiteral("R_") + order(port.m[k])
+                                 : a_pports.size() == 2 ? QStringLiteral("T_") + order(port.m[k])
+                                                        : QStringLiteral("T_%1_%2").arg(port.name, order(port.m[k]));
+            const QString what = fed ? tr("reflectance into order %1").arg(port.m[k])
+                                     : tr("transmittance into order %1 at periodic port %2").arg(port.m[k]).arg(port.name);
+            a_s.setGlobal(p + name, port.power[k], Dim(), what);
+        }
+        if (!fed && a_pports.size() > 2) a_s.setGlobal(p + QStringLiteral("T_") + port.name, total, Dim(), tr("transmittance at periodic port %1").arg(port.name));
+    }
+    // The zeroth orders' fields over the incident's, at the ports' lines
+    // (their phase along them taken from the same origin).
+    a_s.setGlobal(p + QStringLiteral("r_0"), a_r0.real(), Dim(), tr("reflection coefficient, order 0, its real part"));
+    a_s.setGlobal(p + QStringLiteral("r_0_im"), a_r0.imag(), Dim(), tr("reflection coefficient, order 0, its imaginary part"));
+    if (!std::isnan(a_t0.real())) {
+        a_s.setGlobal(p + QStringLiteral("t_0"), a_t0.real(), Dim(), tr("transmission coefficient, order 0, its real part"));
+        a_s.setGlobal(p + QStringLiteral("t_0_im"), a_t0.imag(), Dim(), tr("transmission coefficient, order 0, its imaginary part"));
+    }
+    a_s.setGlobal(p + QStringLiteral("kF"), std::hypot(a_kF[0], a_kF[1]), Dim::of(-1), tr("the Floquet wave number along the cell"));
 }
 
 } // namespace

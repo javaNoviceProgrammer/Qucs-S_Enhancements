@@ -81,6 +81,18 @@ struct MeshSizes {
     /// making carriers oscillate): its edges flipped after smoothing, a
     /// segment with an obtuse angle across it split.
     std::vector<char> delaunay;
+    /// By boundary: the boundary it is moved from - a periodic condition's
+    /// sides, meshed alike (-1: none) - and whether walked the other way.
+    std::vector<int> copyOf;
+    std::vector<char> copyReversed;
+    /// The periodic conditions' sides (boundaries) and the move from the
+    /// source's to the destination's (the geometry's unit): made the same
+    /// node for node once triangulated, where refinement split one.
+    struct Periodic {
+        std::vector<int> source, destination;
+        QPointF shift;
+    };
+    std::vector<Periodic> periodic;
 };
 
 /// The sizes \a model's mesh node asks for on \a topology: its preset,
