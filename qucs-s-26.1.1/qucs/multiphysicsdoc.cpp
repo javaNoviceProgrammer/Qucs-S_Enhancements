@@ -1290,8 +1290,11 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
         return out;
     }
     // At each solution it asks for: each output time, each parameter value.
-    const bool all = n->text(QStringLiteral("solutions")) != QLatin1String("selected");
-    auto evaluateIn = [&](const SolutionSet& in) {
+    // (Chosen: at each, the mode its step chose.)
+    const QString which = n->text(QStringLiteral("solutions"));
+    const bool all = which != QLatin1String("selected");
+    const int mode = which == QLatin1String("chosen") ? -1 : 0;
+    auto evaluateIn = [n, all, mode](const SolutionSet& in) {
         DerivedResult r;
         // (A global's rows at each output - time, frequency, photon energy,
         // mode - of a point, to give it once for the point where it is the
@@ -1302,10 +1305,20 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
             int index;
         };
         std::vector<Row> rows;
-        for (const Instance& at : instances(in, all)) {
-            Solution* sol = select(in, at);
-            if (!sol) continue;
-            DerivedResult one = evaluateDerived(*sol, *n);
+        const std::vector<Instance> each = instances(in, all, 0, {}, {}, mode);
+        std::vector<DerivedResult> ones(each.size());
+        std::vector<char> found(each.size(), 0);
+        for (std::size_t i = 0; i < each.size(); ++i)
+            if (Solution* sol = select(in, each[i])) {
+                ones[i] = evaluateDerived(*sol, *n);
+                found[i] = 1;
+            }
+        // (A perturbation along a sweep: its phase and VπL from the first point.)
+        if (n->type == QLatin1String("perturbation")) perturbationAlongSweep(in, each, *n, ones);
+        for (std::size_t i = 0; i < each.size(); ++i) {
+            if (!found[i]) continue;
+            const Instance& at = each[i];
+            const DerivedResult& one = ones[i];
             for (DerivedValue v : one.values) {
                 if (n->type == QLatin1String("global") && at.snapshot >= 0) rows.push_back({at.point, v.name, int(r.values.size())});
                 if (!at.label.isEmpty()) v.name = at.label + QStringLiteral(": ") + v.name;
@@ -1986,7 +1999,7 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
         text.replace(names, QStringLiteral("<\\1=") + base + QStringLiteral(".\\2>"));
     }
     QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly) || file.write(text.toUtf8()) < 0 || !file.commit())
+    if (!file.open(QIODevice::WriteOnly) || file.write(out.data.isEmpty() ? text.toUtf8() : out.data) < 0 || !file.commit())
         return fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(path), file.errorString()));
     say(tr("%1: %2 written - %3").arg(n->name(), QFileInfo(path).fileName(), out.summary));
     return path;

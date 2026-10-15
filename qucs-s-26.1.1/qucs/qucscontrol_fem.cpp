@@ -244,8 +244,28 @@ QString formatText()
         "their time), fn (Fowler-Nordheim through an insulator: phiB, mox - semi.Ifn after the solve). Globals semi.I_<name> (A into the device), semi.V_<name>, semi.Q_<name>; a frequency "
         "step after a stationary one gives the small-signal semi.G<a><b>, semi.C<a><b> (semi.C_a_b for longer names). Variables "
         "semi.V, semi.n, semi.p, semi.Ndop, semi.Ec, semi.Ev, semi.Efn, semi.Efp (J: unit eV), semi.Jx, semi.normJ, semi.R. Sweep "
-        "a contact's voltage as a parameter (each point starts from the last). A modes wave feature's \"plasma\": true adds "
-        "silicon's free-carrier dispersion from semi.n and semi.p.\n"
+        "a contact's voltage as a parameter (each point starts from the last). A modes wave feature's free carriers, N and P "
+        "(\"Ncarriers\", \"Pcarriers\": semi.n, semi.p by default), at the mode's wavelength: \"plasma\": true - "
+        "\"plasmamodel\" soref (silicon's, its absorption too), drude (-(q²λ²/8π²c²ε0 n)(N/me + P/mh), the material's me and "
+        "its γ1, γ2's conductivity mass, or \"mepl\", \"mhpl\"; a III-V's) or user (dndN, dndP); \"fca\": true - free-carrier "
+        "absorption σn N + σp P as λ² (the material's sigmaFCn, sigmaFCp, InP's family 1e-18 and 2e-17 cm², or \"fcasource\": "
+        "\"user\"; with soref refused: counted twice); \"bandfilling\": true - Burstein-Moss, of the material's Eg (Egd), me, γ1, "
+        "γ2 and Afk or Ep, Fermi-Dirac at \"Tbf\", Kramers-Kronig's Δn, the edge bleached no more than the medium absorbs "
+        "(\"bfholes\"; or \"bfmodel\": \"user\" with Pbfn, Pbfp per carrier); emw.dncarriers, emw.alphacarriers. "
+        "\"kerr\": true - Δn = ½ n³ R (|E|² - E0²) along x, y, z (\"Rkerr\" one or three in m²/V², \"E0kerr\"; the field Ex, "
+        "Ey, Ez); \"qwabsorption\": true - a quantum wells physics' (\"qwtag\") absorption and Kramers-Kronig index at the "
+        "mode's photon energy of the field at each point (\"Fqw\": semi.Ey), the wells solved at \"Fpoints\" fields to ±\"Fmax\" "
+        "with a Spectrum step's options (\"spectrumstep\", one disabled too; its energies the window round the photon's), Δn "
+        "from \"F0qw\" - emw.alphaqwTE, alphaqwTM, dnqwTE, dnqwTM. A derived value \"perturbation\" (\"dn\": "
+        "emw.dncarriers, \"dalpha\": emw.alphacarriers, any expressions; \"selection\"; \"length\"; \"bias\": the swept "
+        "parameter) gives each mode's dneff = (c ε0/2) ∫ n Δn |E|² / ∫ Sz, dalpha, dloss (dB/cm), dphi; along a sweep from its "
+        "first point dphi_sweep and VpiL (V·cm). A mode step keeps \"minneff\" (an index above), \"maxloss\" (dB/cm below), "
+        "\"tefraction\" (with a polarization: TE at it or more, TM at 1 less it or less) and \"choose\"s the mode shown and "
+        "evaluated by default: first, share (most in \"track\"), te, tm - a plot group's \"mode\" 0, a derived value's "
+        "\"solutions\": \"chosen\" (each point's). An export \"fieldexport\" writes \"expressions\" on a grid (\"from\", "
+        "\"to\", \"nx\", \"ny\") or at the mesh's nodes (\"where\": nodes) as csv, npy or dat. A mesh feature \"layered\" "
+        "(\"selection\" rectangles of a stack, \"axis\" y, \"hlateral\", \"count\" across each layer) meshes thin layers as "
+        "a grid of stretched triangles, not refined.\n"
         "Rays: \"rays\" (tag gop, Geometrical Optics; a stationary step traces them) - features medium (n, kappa from the "
         "material or \"source\": \"user\"; n may vary with x, y, lambda0, a field: graded, dispersive, thermal), point "
         "(\"position\", \"angle\", \"spread\" in degrees), beam (\"start\", \"end\", \"angle\", \"profile\" uniform or "
@@ -264,7 +284,9 @@ QString formatText()
         "arsenide) or its Eg, VBO (or chi), me, gamma1, gamma2. A property given on the material or its library entry is used "
         "over the compound's in every physics (the library's Indium phosphide 1.344 eV in qw and semi alike): Eg given (or "
         "\"lambdag\", a gap wavelength: Eg = hc/λg, \"1.3Q\" 1.3[um]) is the gap at 300 K, moved with T as the compound's, the "
-        "conduction band moving (VBO the compound's unless given). \"bands\": \"measured\" takes gaps fitted to 300 K "
+        "conduction band moving (VBO the compound's unless given); \"composition\": \"gap\" solves the alloy for hc/λg at 300 "
+        "K instead - a ternary's x, a quaternary's x and y on \"lattice\" (InP) - every property of that composition. "
+        "\"bands\": \"measured\" takes gaps fitted to 300 K "
         "measurements (InP 1.344, In0.53Ga0.47As 0.750, In0.52Al0.48As 1.46, InGaAsP within 7 meV of Nahory's, the 1.3 µm "
         "AlGaInAs 0.954) instead of Vurgaftman's, 9-16 meV off in the InP family. A feature material with \"source\": "
         "\"user\" gives Ec, Ev (of x, y), me, mhh, mlh, mhhp, mlhp, Ep, nr, epsilonr, gamma3 and Delta (the k·p bands'); with "
@@ -1283,7 +1305,7 @@ QJsonObject QucsControl::femExport(const QJsonObject& args)
         QStringList list;
         if (exports)
             for (const FNode& e : exports->children) list << QStringLiteral("%1 (%2)").arg(e.name(), e.tag);
-        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (touchstone, spice, qucspart, lumericalmode, lumericalcharge, lumericalmqw).")
+        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (touchstone, spice, qucspart, fieldexport, lumericalmode, lumericalcharge, lumericalmqw).")
                                .arg(list.isEmpty() ? tr("none yet") : list.join(QStringLiteral(", "))));
     }
     if (args.value(QLatin1String("copy")).toBool()) {
@@ -1296,6 +1318,15 @@ QJsonObject QucsControl::femExport(const QJsonObject& args)
     if (path.isEmpty()) return errorResult(why);
     QFile f(path);
     QString head;
-    if (f.open(QIODevice::ReadOnly)) head = QString::fromUtf8(f.read(1500));
+    if (f.open(QIODevice::ReadOnly)) {
+        const QByteArray bytes = f.read(1500);
+        // (NumPy's: its header, the array's shape - not its numbers' bytes.)
+        if (bytes.startsWith("\x93NUMPY") && bytes.size() > 10) {
+            const int length = quint8(bytes[8]) | (quint8(bytes[9]) << 8);
+            head = QString::fromLatin1(bytes.mid(10, length)).trimmed();
+        } else {
+            head = QString::fromUtf8(bytes);
+        }
+    }
     return jsonResult(QJsonObject{{QStringLiteral("written"), QDir::toNativeSeparators(path)}, {QStringLiteral("begins"), head}});
 }

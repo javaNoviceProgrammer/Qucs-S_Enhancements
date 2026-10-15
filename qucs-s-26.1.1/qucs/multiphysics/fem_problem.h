@@ -24,10 +24,12 @@
 
 #include <QSet>
 
+#include <algorithm>
 #include <complex>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <vector>
 
 namespace qucs_s::fem::detail {
 
@@ -127,7 +129,16 @@ struct SolveOptions {
     std::vector<char> track;
     /// A mode analysis's: 1 TE modes alone (their transverse E mostly along
     /// x - in the plane of layers stacked along y), 2 TM (along y); 0 any.
+    /// TE: a TE fraction of teFraction or more; TM: 1 - teFraction or less.
     int polarization = 0;
+    double teFraction = 0.5;
+    /// A mode analysis's: those kept - an effective index above minNeff,
+    /// a loss (of the power, 1/m) below maxAlpha.
+    double minNeff = 0, maxAlpha = std::numeric_limits<double>::infinity();
+    /// A mode analysis's mode chosen of those kept (the one shown, evaluated
+    /// and lit by default): 0 the first (the highest effective index), 1
+    /// the most in the domains tracked, 2 the most TE, 3 the most TM.
+    int choose = 0;
 };
 
 /// An optical spectrum of quantum states: at photon energies (J), from so
@@ -169,6 +180,38 @@ struct SpectrumOptions {
     int normalize = 0;
     double normLength = 0;
     SolveOptions solve;
+};
+
+/// A quantum wells' absorption (the power's, 1/m) and Kramers-Kronig index
+/// at one photon energy (J), TE and TM, at fields along their axis F (V/m,
+/// rising): what a mode analysis's Quantum Wells' Absorption reads.
+struct WellTable {
+    double photon = 0;
+    std::vector<double> F, alphaTE, alphaTM, nTE, nTM;
+    /// At field \a f - linear between, held beyond: α TE, α TM, n TE, n TM.
+    void at(double f, double out[4]) const
+    {
+        const std::size_t n = F.size();
+        const std::vector<double>* cols[4] = {&alphaTE, &alphaTM, &nTE, &nTM};
+        if (n == 0) {
+            for (int c = 0; c < 4; ++c) out[c] = 0;
+            return;
+        }
+        std::size_t k = 0;
+        double s = 0;
+        if (n > 1 && f > F.front()) {
+            k = std::min<std::size_t>(std::size_t(std::upper_bound(F.begin(), F.end(), f) - F.begin()) - 1, n - 2);
+            s = std::clamp((f - F[k]) / (F[k + 1] - F[k]), 0.0, 1.0);
+        }
+        for (int c = 0; c < 4; ++c) out[c] = n > 1 ? (1 - s) * (*cols[c])[k] + s * (*cols[c])[k + 1] : (*cols[c])[0];
+    }
+};
+/// A table a mode analysis's feature asks for: of quantum wells \a wells
+/// (a tag), at Fpoints fields from -Fmax to Fmax.
+struct WellRequest {
+    QString feature, wells, spectrum;   ///< (spectrum: a Spectrum step's tag; empty: the study's first)
+    double Fmax = 0;
+    int Fpoints = 0;
 };
 
 /// A waves physics' media's: compiling, its materials' texts as they are
@@ -222,6 +265,8 @@ public:
     }
     /// The field (and its globals, set after) of mode \a k found (from 0).
     virtual void selectMode(int k) { (void)k; }
+    /// The mode chosen of those found (from 0; SolveOptions::choose).
+    virtual int chosenMode() const { return 0; }
     /// Quantum states: their optical spectrum at \a o's photon energies.
     /// How many points; -1 and why on failure.
     virtual int solveSpectrum(const SpectrumOptions& o, QString* error)
@@ -232,6 +277,30 @@ public:
     }
     /// The globals (set after) of the spectrum's point \a k.
     virtual void selectSpectrum(int k) { (void)k; }
+    /// Quantum wells: the field along their axis (V/m) - its value, and
+    /// set (solve() again after); false: none to set.
+    virtual double wellField() const { return 0; }
+    virtual bool setWellField(double F)
+    {
+        (void)F;
+        return false;
+    }
+    /// Quantum wells: the spectrum's absorption and index at photon energy
+    /// \a E (one of its energies): α TE, α TM, n TE, n TM. False: none.
+    virtual bool spectrumAt(double E, double out[4]) const
+    {
+        (void)E;
+        (void)out;
+        return false;
+    }
+    /// A mode analysis: the wells' tables its features ask for, and each
+    /// as found (at the frequency solved).
+    virtual std::vector<WellRequest> wellRequests() const { return {}; }
+    virtual void setWellTable(const QString& feature, std::shared_ptr<const WellTable> table)
+    {
+        (void)feature;
+        (void)table;
+    }
     /// Quantum states: the k·p valence bands at \a o's in-plane k (kmax,
     /// kpoints). How many points; -1 and why on failure.
     virtual int solveBands(const SpectrumOptions& o, QString* error)
@@ -309,6 +378,10 @@ public:
     /// mean: materialText() has it as it is.
     static QString materialProperty(const Node& m, const QString& key, const Scope* scope = nullptr, double T = 300);
     static QString materialText(const Node& m, const QString& key, const Scope* scope = nullptr, double T = 300);
+    /// Material \a m's composition solved for its gap ("composition":
+    /// "gap" - hc/λg at 300 K, a quaternary on its "lattice"'s): x and y.
+    /// None when it is not asked, or (why in \a error) not found.
+    static std::optional<std::pair<double, double>> solvedComposition(const Node& m, const Scope* scope = nullptr, QString* error = nullptr);
     /// The material properties that may be tensors: εr, σ, k, tan δ, µr,
     /// α, n, κ, dn/dT.
     static const QStringList& tensorKeys();
@@ -417,11 +490,14 @@ ModeFields modeFieldsAt(PointEvaluator& e, int field);
 /// across a gap (the medium's own and a direct gap's, not the free
 /// carriers'), the direct gap's alone and its value without a field, ε's
 /// loss ε'' = (εᴴ - ε)/2j (Hermitian: -Im ε along x, y, z where it is
-/// diagonal); the angular frequency.
+/// diagonal); the angular frequency; the free carriers' Δn (their plasma
+/// dispersion and band filling) and absorption (1/m: theirs, less what band
+/// filling bleaches); quantum wells' Δn (from F0) and absorption, TE and TM.
 struct MediumAt {
-    static constexpr int PerTriangle = 13;
+    static constexpr int PerTriangle = 19;
     bool defined = false;
-    double omega = NaN, n = NaN, kappaGap = 0, kappaEA = 0, kappaEA0 = 0;
+    double omega = NaN, n = NaN, kappaGap = 0, kappaEA = 0, kappaEA0 = 0, dnCarriers = 0, alphaCarriers = 0;
+    double dnWells[2] = {0, 0}, alphaWells[2] = {0, 0};
     std::complex<double> lossEps[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
 };
 MediumAt modeMediumAt(PointEvaluator& e, int field);

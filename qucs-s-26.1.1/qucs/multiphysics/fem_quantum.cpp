@@ -289,6 +289,25 @@ public:
     void selectMode(int k) override;
     int solveSpectrum(const SpectrumOptions& o, QString* error) override;
     void selectSpectrum(int k) override;
+    double wellField() const override { return a_F; }
+    bool setWellField(double F) override
+    {
+        a_F = F;
+        return true;
+    }
+    bool spectrumAt(double E, double out[4]) const override
+    {
+        // (Its energy nearest E: one of them, asked for.)
+        std::size_t best = a_spec.E.size();
+        for (std::size_t k = 0; k < a_spec.E.size(); ++k)
+            if (best == a_spec.E.size() || std::abs(a_spec.E[k] - E) < std::abs(a_spec.E[best] - E)) best = k;
+        if (best == a_spec.E.size() || std::abs(a_spec.E[best] - E) > 1e-9 * E || best >= a_spec.dnTE.size()) return false;
+        out[0] = a_spec.te[best];
+        out[1] = a_spec.tm[best];
+        out[2] = a_spec.dnTE[best];
+        out[3] = a_spec.dnTM[best];
+        return true;
+    }
     int solveBands(const SpectrumOptions& o, QString* error) override;
     void selectBands(int k) override;
 
