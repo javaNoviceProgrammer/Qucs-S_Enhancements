@@ -647,7 +647,10 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         }
         QString why;
         doc->buildGeometry(&why);
+        // (Its title: what names it to the other tools - 'path' - while it has
+        // no file.)
         return jsonResult(QJsonObject{{QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
+                                      {QStringLiteral("title"), titleOf(doc)},
                                       {QStringLiteral("geometry"), why.isEmpty() ? tr("built") : why}});
     }
     if (action == QLatin1String("materials")) {
@@ -719,18 +722,51 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         return femDescribe(QJsonObject{{QStringLiteral("path"), doc->getDocName()}, {QStringLiteral("depth"), 3}});
     }
     QString error;
-    MultiphysicsDoc* doc = femDocument(action == QLatin1String("save") ? QJsonObject() : args, &error);
     if (action == QLatin1String("save")) {
-        if (!given.isEmpty() && doc == nullptr) doc = femDocument(args, &error);
+        // Which model: the one 'path' names - an open model's file or title
+        // (whichever is in front: another conversation's may be), a model's
+        // file opened -, else the one in front; 'as' a file to save it as.
+        // A 'path' that is no model's file and no file at all is taken as
+        // 'as' was before it: the model in front saved as it - an untitled
+        // one only, never one with a file of its own written elsewhere.
+        QString as = args.value(QLatin1String("as")).toString().trimmed();
+        MultiphysicsDoc* doc = nullptr;
+        if (!given.isEmpty()) {
+            QString none;
+            if (!dynamic_cast<MultiphysicsDoc*>(document(QJsonObject{{QStringLiteral("path"), given}}, &none)) && as.isEmpty()) {
+                QString file = absolute(given);
+                if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
+                if (!QFileInfo::exists(file)) {
+                    doc = femDocument(QJsonObject(), &error);
+                    if (doc == nullptr) return errorResult(error);
+                    if (!doc->getDocName().isEmpty())
+                        return errorResult(tr("No model is %1. The one in front is %2 - 'as' saves it under another file, 'path' names the "
+                                              "model saved").arg(QDir::toNativeSeparators(file), titleOf(doc)));
+                    as = file;
+                }
+            }
+        }
+        if (doc == nullptr) doc = femDocument(given.isEmpty() ? QJsonObject() : QJsonObject{{QStringLiteral("path"), given}}, &error);
         if (doc == nullptr) return errorResult(error);
-        QString file = given.isEmpty() ? doc->getDocName() : absolute(given);
-        if (file.isEmpty()) return errorResult(tr("The model has no file yet: give 'path'."));
-        if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
+        const QString was = titleOf(doc);
+        QString file = doc->getDocName();
+        if (!as.isEmpty()) {
+            file = absolute(as);
+            if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
+            const bool own = !doc->getDocName().isEmpty() && sameFile(doc->getDocName(), file);
+            if (!own && QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
+                return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+            for (QucsDoc* other : a_app->allDocuments())
+                if (other != doc && !other->getDocName().isEmpty() && sameFile(other->getDocName(), file))
+                    return errorResult(tr("%1 is open: another document's file.").arg(QDir::toNativeSeparators(file)));
+        }
+        if (file.isEmpty()) return errorResult(tr("%1 has no file yet: give 'as'.").arg(was));
         doc->setName(file);
         if (doc->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
         a_app->titleDocumentTab(doc);
-        return jsonResult(QJsonObject{{QStringLiteral("saved"), QDir::toNativeSeparators(file)}});
+        return jsonResult(QJsonObject{{QStringLiteral("saved"), QDir::toNativeSeparators(file)}, {QStringLiteral("model"), was}});
     }
+    MultiphysicsDoc* doc = femDocument(args, &error);
     if (action == QLatin1String("set")) {
         if (doc == nullptr) return errorResult(error);
         QString why;
