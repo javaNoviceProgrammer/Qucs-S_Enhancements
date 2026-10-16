@@ -622,6 +622,107 @@ private slots:
         QVERIFY2(std::abs(mu2 * 1e7 / v - 1) < 0.03, qPrintable(QString::number(mu2 * 1e7 / v)));
     }
 
+    // The small signal of a saturated mobility: its own change with the
+    // field counts - Newton holds the mobilities a step, the small-signal
+    // matrix was that Jacobian, the mobility fixed (a MOSFET's output
+    // conductance three times its DC curve's slope: the update check of
+    // 110e8b9). The bar at 1e7 V/m: dI/dV q N dv/dE, dv/dE = µ/(1 +
+    // (µE/vsat)²)^(3/2) - 197 times less than q N µ(E) -, the AC's as the DC
+    // curve's slope by 10 mV either side.
+    void smallSignalSaturated()
+    {
+        // (A sanitized build: a coarser mesh - the walks to 10 V, the
+        // mobility saturating, some 90 s each there.)
+        const QString hmax = slowBuild() ? QStringLiteral("0.25") : QStringLiteral("0.05");
+        auto at = [&hmax](const QString& volts, bool ac) {
+            QByteArray model = bar(QStringLiteral("1"),
+                                   QStringLiteral(R"({"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+                                                     {"type": "model", "saturation": true, "selection": {"all": true}},)"),
+                                   volts, {}, hmax);
+            if (ac) model.replace(R"({"type": "stationary"}])", R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"}])");
+            return run(modelOf(model));
+        };
+        const Run ac = at(QStringLiteral("10[V]"), true), below = at(QStringLiteral("9.99[V]"), false), above = at(QStringLiteral("10.01[V]"), false);
+        QVERIFY2(ac.error.isEmpty() && below.error.isEmpty() && above.error.isEmpty(), qPrintable(ac.error + below.error + above.error));
+        const double G = global(*ac.solution, QStringLiteral("semi.G22"));
+        const double slope = (global(*above.solution, QStringLiteral("semi.I_2")) - global(*below.solution, QStringLiteral("semi.I_2"))) / 0.02;
+        const double muE = 0.14 * 1e7, expected = Q * 1e22 * 0.14 / std::pow(1 + (muE / 1e5) * (muE / 1e5), 1.5) * 1e-6 / 1e-6;
+        const double heldMobility = Q * 1e22 * 0.14 / std::sqrt(1 + (muE / 1e5) * (muE / 1e5));
+        qInfo("saturated bar's small signal: G22 %.5g S (the DC slope %.5g, q N dv/dE %.5g; the mobility held %.5g)", G, slope, expected, heldMobility);
+        QVERIFY2(std::abs(G / slope - 1) < 0.02, qPrintable(QString::number(G / slope)));
+        QVERIFY2(std::abs(G / expected - 1) < 0.1, qPrintable(QString::number(G / expected)));
+    }
+
+    // A node on the wall between two domains of one material recombines
+    // over both its shares (its parts of its own bands; another material's
+    // left out): a diode's n side split in two where its holes recombine
+    // carries the current of it whole - a part of its own domain alone, the
+    // wall's node recombined half.
+    void aWallOfOneMaterialRecombinesWhole()
+    {
+        auto diode = [](bool split) {
+            const QString n = split ? QStringLiteral(R"({"type": "rectangle", "name": "n1", "position": ["1", "0"], "size": ["0.5", "0.5"]},
+                                                        {"type": "rectangle", "name": "n2", "position": ["1.5", "0"], "size": ["1.5", "0.5"]})")
+                                    : QStringLiteral(R"({"type": "rectangle", "name": "n1", "position": ["1", "0"], "size": ["2", "0.5"]})");
+            const QString on = split ? QStringLiteral(R"(["n1", "n2"])") : QStringLiteral(R"(["n1"])");
+            // (Rows of 0.1 µm in each: the same nodes, split or whole.)
+            auto rows = [](const char* d, int count) {
+                return QStringLiteral(R"({"type": "layered", "axis": "x", "hlateral": "0.25", "count": %1, "selection": {"only": ["%2"]}})").arg(count).arg(QLatin1String(d));
+            };
+            const QString layers = split ? rows("p", 10) + QStringLiteral(", ") + rows("n1", 5) + QStringLiteral(", ") + rows("n2", 15)
+                                         : rows("p", 10) + QStringLiteral(", ") + rows("n1", 20);
+            return QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "p", "size": ["1", "0.5"]}, %1],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["p"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": %2}},
+                  {"type": "srh", "source": "user", "taun": "1[ns]", "taup": "1[ns]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "a", "V0": "0.6[V]", "selection": {"of": ["p"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n%3"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                         "features": [%4]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(n, on, split ? QStringLiteral("2") : QStringLiteral("1"), layers)
+                .toUtf8();
+        };
+        const Run whole = run(modelOf(diode(false))), split = run(modelOf(diode(true)));
+        QVERIFY2(whole.error.isEmpty() && split.error.isEmpty(), qPrintable(whole.error + split.error));
+        QCOMPARE(whole.solution->mesh().nodes.size(), split.solution->mesh().nodes.size());
+        const double a = global(*whole.solution, QStringLiteral("semi.I_a")), b = global(*split.solution, QStringLiteral("semi.I_a"));
+        qInfo("the diode's n side whole %.8g A, split %.8g A", a, b);
+        QVERIFY2(a > 0 && std::abs(b / a - 1) < 1e-6, qPrintable(QStringLiteral("%1 %2").arg(a).arg(b)));
+    }
+
+    // The same in a junction, saturated hard (vsat 1e5 cm/s): its matrix a
+    // two-terminal's - each column's currents opposite, the contacts raised
+    // together carrying none - and its conductance the DC curve's slope,
+    // forward and reversed. (Its derivatives by too large a step, 1e-4 Vt -
+    // a weak field's triangle moved as much as its corners differ -, Gak was
+    // 7 % from -Gaa; with the mobility held, reversed 24 times the slope.)
+    void aJunctionsSmallSignalSaturated()
+    {
+        auto at = [](double v, bool ac) {
+            const QByteArray m = junction(QStringLiteral("1"), QStringLiteral("1e17[1/cm^3]"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("%1[V]").arg(v, 0, 'g', 12),
+                                          ac ? QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"})") : QStringLiteral(R"({"type": "stationary"})"),
+                                          QStringLiteral(R"(, {"type": "model", "saturation": true, "vsatn": "1e5[cm/s]", "vsatp": "1e5[cm/s]", "selection": {"all": true}})"));
+            return run(modelOf(m));
+        };
+        // (Reversed, its DC current some 6e-13 A to 1e-16: its slope over
+        // ±0.4 V, 0.1 V steps' 3.1e-14 to 4.3e-14.)
+        for (const auto& [v, dv, within] : {std::tuple{0.6, 1e-3, 0.01}, std::tuple{-2.0, 0.4, 0.1}}) {
+            const Run a = at(v, true), lo = at(v - dv, false), hi = at(v + dv, false);
+            QVERIFY2(a.error.isEmpty() && lo.error.isEmpty() && hi.error.isEmpty(), qPrintable(a.error + lo.error + hi.error));
+            const double slope = (global(*hi.solution, QStringLiteral("semi.I_a")) - global(*lo.solution, QStringLiteral("semi.I_a"))) / (2 * dv);
+            const double aa = global(*a.solution, QStringLiteral("semi.Gaa")), ak = global(*a.solution, QStringLiteral("semi.Gak"));
+            const double ka = global(*a.solution, QStringLiteral("semi.Gka")), kk = global(*a.solution, QStringLiteral("semi.Gkk"));
+            qInfo("junction at %g V: Gaa %.6g, Gak %.6g, Gka %.6g, Gkk %.6g S; the DC slope %.6g", v, aa, ak, ka, kk, slope);
+            for (const double other : {-ak, -ka, kk}) QVERIFY2(std::abs(other / aa - 1) < 1e-6, qPrintable(QStringLiteral("%1 %2").arg(other).arg(aa)));
+            QVERIFY2(std::abs(aa / slope - 1) < within, qPrintable(QStringLiteral("%1 %2").arg(aa).arg(slope)));
+        }
+    }
+
     void masettiMobility()
     {
         // Masetti's mobility by doping, silicon's figures (its defaults):
@@ -701,6 +802,24 @@ private slots:
             QVERIFY2(std::abs(tn / en - 1) < 5e-3, qPrintable(QString::number(tn / en)));
             QVERIFY2(std::abs(tp / ep - 1) < 1e-9, qPrintable(QString::number(tp / ep)));
         }
+        // A lifetime set on the feature without its "source": "user" is the
+        // feature's, its other its material's - as its other parameters are
+        // (the VCSEL laser example's 5 ns were the material's 1 ns: the
+        // update check of 110e8b9).
+        {
+            const Run own = run(modelOf(bar(QStringLiteral("2"), QStringLiteral(R"({"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                                                                                 {"type": "srh", "taun": "5[ns]", "selection": {"all": true}},)"),
+                                            QStringLiteral("0[V]"))));
+            const Run material = run(modelOf(bar(QStringLiteral("2"), QStringLiteral(R"({"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                                                                                      {"type": "srh", "selection": {"all": true}},)"),
+                                                 QStringLiteral("0[V]"))));
+            QVERIFY2(own.error.isEmpty() && material.error.isEmpty(), qPrintable(own.error + material.error));
+            const double tn = at(*own.solution, QStringLiteral("semi.taun"), {1, 0.5}), tp = at(*own.solution, QStringLiteral("semi.taup"), {1, 0.5});
+            const double mn = at(*material.solution, QStringLiteral("semi.taun"), {1, 0.5}), mp = at(*material.solution, QStringLiteral("semi.taup"), {1, 0.5});
+            qInfo("the feature's τn %.4g s, the material's %.4g; τp %.4g, %.4g", tn, mn, tp, mp);
+            QVERIFY(std::abs(tn / 5e-9 - 1) < 1e-9 && mn != tn);
+            QVERIFY(tp == mp);
+        }
         // Trap-assisted tunnelling (Hurkx's) in a uniform 2e7 V/m: τ/(1 + Γ),
         // Γ = ∫ e^(u - K u^(3/2)) du to ΔE/kT, K = 4/3 √(2 m*) (kT)^(3/2)/(q ħ F),
         // ΔE the trap's depth below Ec (above Ev) - integrated here on its own.
@@ -739,6 +858,40 @@ private slots:
             QVERIFY2(std::abs(tp * (1 + gp) / 1e-6 - 1) < 1e-3, qPrintable(QString::number(tp * (1 + gp) / 1e-6)));
             if (tat) QVERIFY(gn > 0.05 && gp > 0.05);
         }
+    }
+
+    // A stack laterally uniform whose layers' rows are of different heights
+    // (40 nm and 5 nm): along each row one potential. A node's box was a
+    // third of each triangle about it, its doping's the Voronoi share - at a
+    // wall between rows of two heights the two disagreed, V 2.6 mV off along
+    // it (the update check of 8bd5709); now both the Voronoi box.
+    void aStacksRowsLevel()
+    {
+        const QByteArray json = QByteArrayLiteral(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "nreg", "size": ["2", "1"]},
+                         {"type": "rectangle", "name": "ireg", "position": ["0", "1"], "size": ["2", "0.2"]},
+                         {"type": "rectangle", "name": "preg", "position": ["0", "1.2"], "size": ["2", "1"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nreg"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e14[1/cm^3]", "selection": {"only": ["ireg"]}},
+              {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["preg"]}},
+              {"type": "ohmic", "name": "a", "V0": "0.7[V]", "selection": {"of": ["preg"], "side": "top"}},
+              {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nreg"], "side": "bottom"}}]}],
+            "mesh": {"size": "normal", "features": [
+              {"type": "layered", "axis": "y", "hlateral": "0.25", "count": 25, "selection": {"objects": ["nreg", "preg"]}},
+              {"type": "layered", "axis": "y", "hlateral": "0.25", "count": 40, "selection": {"objects": ["ireg"]}}]}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json");
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Solution& s = *r.solution;
+        double worst = 0;
+        for (const double y : {1.0, 1.005, 1.2, 1.195, 0.96, 1.24})
+            for (const double x : {0.1, 0.55, 1.0, 1.45, 1.9})
+                worst = std::max(worst, std::abs(at(s, QStringLiteral("semi.V"), {x, y}) - at(s, QStringLiteral("semi.V"), {0.1, y})));
+        qInfo("V along a row: %.3g V apart at most", worst);
+        QVERIFY2(worst < 1e-9, qPrintable(QString::number(worst)));
     }
 
     void surfaceRecombination()

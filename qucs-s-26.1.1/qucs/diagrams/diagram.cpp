@@ -499,6 +499,12 @@ void Diagram::createAxisLabels() {
             used_kernels.append(kernel_name);
     }
 
+    // A label no longer than the diagram is high: one longer cut in its
+    // middle, its ends kept (a long expression's ran far above and below the
+    // diagram: the update check of 7451b1c). The legend names it whole.
+    auto fit = [&metrics, this](const QString& text) {
+        return metrics.boundingRect(text).width() > y2 ? metrics.elidedText(text, Qt::ElideMiddle, y2) : text;
+    };
     if (yAxis.Label.isEmpty()) {
         // draw left y-label for all graphs ------------------------------
 
@@ -515,25 +521,29 @@ void Diagram::createAxisLabels() {
                 }
                 var_name = pg->withValuePart(var_name);
                 if (Name[0] != 'C') {   // location curve ?
-                    w = metrics.boundingRect(var_name).width() >> 1;
+                    const QString shown = fit(var_name);
+                    w = metrics.boundingRect(shown).width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(as(labelPart(pg, Part::YAxis), new Text(x, y - w, var_name, labelColor(pg), 12.0, 0.0, 1.0)));
+                    Texts.append(as(labelPart(pg, Part::YAxis), new Text(x, y - w, shown, labelColor(pg), 12.0, 0.0, 1.0)));
                 } else {
-                    w = metrics.boundingRect("imag(" + var_name + ")").width() >> 1;
+                    const QString shown = fit("imag(" + var_name + ")");
+                    w = metrics.boundingRect(shown).width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(as(labelPart(pg, Part::YAxis), new Text(x, y - w, "imag(" + var_name + ")",
+                    Texts.append(as(labelPart(pg, Part::YAxis), new Text(x, y - w, shown,
                                                                       labelColor(pg), 12.0, 0.0, 1.0)));
                 }
             } else {     // if no data => <invalid>
-                w = metrics.boundingRect(pg->Var + INVALID_STR).width() >> 1;
+                const QString shown = fit(pg->Var + INVALID_STR);
+                w = metrics.boundingRect(shown).width() >> 1;
                 if (w > wmax) wmax = w;
-                Texts.append(new Text(x, y - w, pg->Var + INVALID_STR,
+                Texts.append(new Text(x, y - w, shown,
                                       pg->Color, 12.0, 0.0, 1.0));
             }
             x -= LineSpacing;
         }
     } else {
         encode_String(yAxis.Label, Str);
+        Str = fit(Str);
         w = metrics.boundingRect(Str).width() >> 1;
         if (w > wmax) wmax = w;
         Texts.append(as(Part::YAxis, new Text(x, y - w, Str, Qt::black, 12.0, 0.0, 1.0)));
@@ -556,26 +566,30 @@ void Diagram::createAxisLabels() {
                 }
                 var_name = pg->withValuePart(var_name);
                 if (Name[0] != 'C') {   // location curve ?
-                    w = metrics.boundingRect(var_name).width() >> 1;
+                    const QString shown = fit(var_name);
+                    w = metrics.boundingRect(shown).width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(as(labelPart(pg, Part::RightAxis), new Text(x, y + w, var_name,
+                    Texts.append(as(labelPart(pg, Part::RightAxis), new Text(x, y + w, shown,
                                                                           labelColor(pg), 12.0, 0.0, -1.0)));
                 } else {
-                    w = metrics.boundingRect("imag(" + var_name + ")").width() >> 1;
+                    const QString shown = fit("imag(" + var_name + ")");
+                    w = metrics.boundingRect(shown).width() >> 1;
                     if (w > wmax) wmax = w;
-                    Texts.append(as(labelPart(pg, Part::RightAxis), new Text(x, y + w, "imag(" + var_name + ")",
+                    Texts.append(as(labelPart(pg, Part::RightAxis), new Text(x, y + w, shown,
                                                                           labelColor(pg), 12.0, 0.0, -1.0)));
                 }
             } else {     // if no data => <invalid>
-                w = metrics.boundingRect(pg->Var + INVALID_STR).width() >> 1;
+                const QString shown = fit(pg->Var + INVALID_STR);
+                w = metrics.boundingRect(shown).width() >> 1;
                 if (w > wmax) wmax = w;
-                Texts.append(new Text(x, y + w, pg->Var + INVALID_STR,
+                Texts.append(new Text(x, y + w, shown,
                                       pg->Color, 12.0, 0.0, -1.0));
             }
             x += LineSpacing;
         }
     } else {
         encode_String(zAxis.Label, Str);
+        Str = fit(Str);
         w = metrics.boundingRect(Str).width() >> 1;
         if (w > wmax) wmax = w;
         Texts.append(as(Part::RightAxis, new Text(x, y + w, Str, Qt::black, 12.0, 0.0, -1.0)));

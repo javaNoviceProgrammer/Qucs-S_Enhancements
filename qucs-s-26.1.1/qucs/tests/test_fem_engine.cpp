@@ -201,6 +201,12 @@ void TestFemEngine::units()
     QCOMPARE(formatQuantity(50.31, Dim::resistance()), QStringLiteral("50.31 Ω"));
     QCOMPARE(formatQuantity(0.0033, Dim::length()), QStringLiteral("3.3 mm"));
     QCOMPARE(dimName(Dim::of(1, 1, -3, 0, -1)), QStringLiteral("W/(m·K)"));
+    // Beyond the prefixes (a to E): its SI unit's power of ten - "4.591e-11
+    // aJ" was 4.591e-29 J (the update check of 110e8b9).
+    QCOMPARE(formatQuantity(4.591e-29, Dim::of(2, 1, -2)), QStringLiteral("4.591e-29 J"));
+    QCOMPARE(formatQuantity(2.132e-29, Dim::current()), QStringLiteral("2.132e-29 A"));
+    QCOMPARE(formatQuantity(3e21, Dim::length()), QStringLiteral("3e+21 m"));
+    QCOMPARE(formatQuantity(4.5e-18, Dim::of(2, 1, -2)), QStringLiteral("4.5 aJ"));
 }
 
 void TestFemEngine::expressions()
@@ -521,6 +527,15 @@ void TestFemEngine::booleans()
         why.clear();
         QCOMPARE(pick(R"({"only": ["r"]})").size(), 0);
         QVERIFY2(why.contains(QLatin1String("array row's input")), qPrintable(why));
+        // (A name ending in s: rows' input, not rows's - the update check of
+        // 8bd5709.)
+        const Model rows = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
+            {"type": "rectangle", "name": "r", "size": ["2", "2"]},
+            {"type": "array", "name": "rows", "input": ["r"], "count": ["3", "1"], "displacement": ["5", "0"]}]}]})");
+        const Run rr = run(rows, false);
+        why.clear();
+        QCOMPARE(resolveSelection(*rr.topology, rows, Level::Domain, QJsonDocument::fromJson(R"({"only": ["r"]})").object(), &why).size(), 0);
+        QVERIFY2(why.contains(QLatin1String("array rows' input")) && !why.contains(QLatin1String("rows's")), qPrintable(why));
     }
     // An unknown input: said, with the objects there are.
     const Model bad = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [

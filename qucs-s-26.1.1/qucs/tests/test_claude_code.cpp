@@ -1812,6 +1812,36 @@ private slots:
         QVERIFY(centredBlock);
     }
 
+    // A reply's block quote has its bar, as in the viewer (the update check
+    // of 7451b1c): Qt's Markdown sets a quote in by its margin alone.
+    void quotesHaveTheirBar()
+    {
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("quotework"));
+        panel.resize(420, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        panel.session()->setProgram("claude");
+        panel.session()->handleLine(QJsonDocument(QJsonObject{
+            {"type", "assistant"},
+            {"message", QJsonObject{{"content", QJsonArray{QJsonObject{
+                {"type", "text"}, {"text", "As the manual says:\n\n> Quoted.\n\nAfter."}}}}}}}).toJson(QJsonDocument::Compact));
+        panel.renderNow();
+        const QList<QRectF> bars = qucs_s::markdown::QuoteBars::bars(panel.transcript());
+        QCOMPARE(int(bars.size()), 1);
+        const QImage shot = panel.transcript()->viewport()->grab().toImage();
+        const QColor background = shot.pixelColor(QPoint(int(bars[0].center().x() + 8), int(bars[0].center().y())) * shot.devicePixelRatio());
+        const QColor bar = shot.pixelColor((bars[0].center() * shot.devicePixelRatio()).toPoint());
+        QVERIFY2(qAbs(qGray(bar.rgb()) - qGray(background.rgb())) > 20, qPrintable(QStringLiteral("%1 %2").arg(qGray(bar.rgb())).arg(qGray(background.rgb()))));
+        // (The quote's text drawn beside it: the view's painting sent on.)
+        bool text = false;
+        const qreal r = shot.devicePixelRatio();
+        for (int y = int(bars[0].top() * r); y < int(bars[0].bottom() * r) && !text; ++y)
+            for (int x = int((bars[0].right() + 4) * r); x < shot.width() && !text; ++x)
+                text = qAbs(qGray(shot.pixel(x, y)) - qGray(background.rgb())) > 100;
+        QVERIFY(text);
+    }
+
     // Dollars in code are code: an indented code block (after a blank line,
     // not in a list, whose items go on indented) and HTML <code> and <pre>,
     // as GitHub reads them (bug hunt 2026-09-26, E6: "$HOME/bin:$" was set

@@ -449,6 +449,16 @@ void TestFemPhysics::sweeps()
     const std::vector<Instance> one = instances(set, false, 2);
     QCOMPARE(int(one.size()), 1);
     QCOMPARE(one[0].point, 1);
+    // Values close: each point named apart - as many figures as tell them
+    // apart (21.542937, 21.543037, 21.543137 were each "21.54": one name for
+    // three points, the update check of 8bd5709).
+    other = json;
+    other.replace(R"json([["L", "10, 20, 40", "mm"]])json", R"json([["L", "21.542937, 21.543037, 21.543137", "mm"]])json");
+    r = run(modelOf(other));
+    QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+    QCOMPARE(r.study.solutions[0]->label, QStringLiteral("L = 21.5429 mm"));
+    QCOMPARE(r.study.solutions[2]->label, QStringLiteral("L = 21.5431 mm"));
+    QVERIFY(r.study.solutions[1]->label != r.study.solutions[0]->label && r.study.solutions[1]->label != r.study.solutions[2]->label);
     // A unit missing for a parameter that has one: said.
     other = json;
     other.replace(R"json([["L", "10, 20, 40", "mm"]])json", R"json([["L", "10, 20", ""]])json");

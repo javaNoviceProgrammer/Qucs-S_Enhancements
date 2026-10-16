@@ -72,6 +72,9 @@ struct PropertyDef {
     QString showIf;
     /// An expression evaluated where the physics are: of x, y and fields.
     bool spatial = false;
+    /// A Choice that takes a value of its unit in its place too (Absorption
+    /// per: a length) - its step reads and checks it.
+    bool orValue = false;
 
     Dim dim() const;
 };

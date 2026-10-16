@@ -399,7 +399,12 @@ private slots:
         const double ingaas = slope("InGaAs", 0.53, 0, 1.55), q13 = slope("InGaAsP", 0.27775, 0.60475, 1.55);
         qInfo("In0.53Ga0.47As at 1550 nm %.4g per K; 1.3Q InGaAsP %.4g", ingaas, q13);
         QVERIFY(ingaas > 2e-4 && ingaas < 3.5e-4);
-        QVERIFY(near(q13, 2e-4, 0.15));
+        // (The binaries' measured dn/dT at 1550 nm the compounds' - InP's
+        // 2.0e-4, not its oscillator's 1.48e-4 -, an alloy's by their
+        // shares: the quaternary's mostly InP's 2.05e-4 now 2.31e-4.)
+        QVERIFY2(q13 > 2e-4 && q13 < 2.5e-4, qPrintable(QString::number(q13)));
+        for (const auto& [c, measured] : {std::pair{"InP", 2.0e-4}, {"GaAs", 2.247e-4}})
+            QVERIFY2(near(slope(c, 0, 0, 1.55), measured, 0.01), c);
         // (At 300 K the 300 K index itself; dndT the derivative.)
         QCOMPARE(compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("n"), BandSet::Vurgaftman, 300), compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("n")));
         const double dndT = compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("dndT"), um(1.55));
@@ -424,6 +429,18 @@ private slots:
             if (l <= 2.2) QVERIFY(near(compoundValue(QStringLiteral("AlGaAs"), 1, 0, QStringLiteral("n"), um(l)), lib("Aluminium arsenide"), 1e-9));
             QVERIFY(near(compoundValue(QStringLiteral("GaInP"), 0, 0, QStringLiteral("n"), um(l)), lib("Indium phosphide"), 1e-9));
             QVERIFY(near(compoundValue(QStringLiteral("InGaAs"), 1, 0, QStringLiteral("n"), um(l)), lib("Indium arsenide"), 1e-9));
+        }
+        // In0.52Ga0.48As near its gap against Adachi's 1989 (refractiveindex.info's
+        // tables: 3.5276 at 1.5277 µm, 3.4688 at 1.9566 µm): on InP's lattice
+        // his quaternary at y 1 - the oscillator, bowed, was 0.040 over at
+        // 1550 nm: the update check of 8bd5709 -; the quaternary at y 1 and
+        // the ternary the same there.
+        for (const auto& [l, adachi] : {std::pair{1.5277, 3.5276}, {1.9566, 3.4688}}) {
+            const double n = compoundValue(QStringLiteral("InGaAs"), 0.52, 0, QStringLiteral("n"), um(l));
+            const double q = compoundValue(QStringLiteral("InGaAsP"), 0.468, 1, QStringLiteral("n"), um(l)), t = compoundValue(QStringLiteral("InGaAs"), 0.532, 0, QStringLiteral("n"), um(l));
+            qInfo("In0.52Ga0.48As at %g um: %.4f (Adachi's %.4f); In0.532 %.4f, the quaternary at y 1 %.4f", l, n, adachi, t, q);
+            QVERIFY2(std::abs(n - adachi) < 0.02, qPrintable(QString::number(n)));
+            QVERIFY2(std::abs(q - t) < 0.002, qPrintable(QStringLiteral("%1 %2").arg(q).arg(t)));
         }
         const double le = compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("n"), um(16.7));
         QVERIFY2(std::abs(le - 3.2983) < 0.01, qPrintable(QString::number(le)));

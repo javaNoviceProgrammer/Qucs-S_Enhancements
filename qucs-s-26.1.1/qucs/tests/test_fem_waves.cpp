@@ -422,6 +422,119 @@ private slots:
         }
     }
 
+    // The update check of 8bd5709: the Thermo-optic option warms κ with n -
+    // In0.53Ga0.47As's κ rises with T (its gap falls), the mode's loss held
+    // at 300 K's while its index followed -; a material's own index takes no
+    // range of its library entry's (In0.2Ga0.8As's n given at 980 nm was said
+    // to be outside its 0.999 to 17 µm); a choice none of its kind's refused
+    // (a mode step's "choose": "bogus" ran as "first").
+    void theThermoOpticAndTheChoices()
+    {
+        // (A sanitized build: a coarse mesh - fine, its four solves passed
+        // QtTest's 300 s there.)
+        const QString size = slowBuild() ? QStringLiteral("coarse") : QStringLiteral("fine");
+        auto box = [&size](const QString& T, const QString& material, const QString& more, const QString& side = QStringLiteral("6")) {
+            return QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Tk", "expression": "%1"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "box", "size": ["%6", "%6"]}],
+                "materials": [{"library": "%2", "selection": {"all": true} %3}],
+                "physics": [{"type": "modes", "tag": "emw", "features": [{"type": "wave", "thermooptic": true, "T": "Tk", "Tref": "300[K]", "selection": {"all": true}}]}],
+                "mesh": {"size": "%5"}}],
+              "studies": [{"type": "study", "steps": [{"type": "mode", "frequency": "c_const/1550[nm]", "modes": 1, "neff": "3.6" %4}]}]})json")
+                .arg(T, material, more.section(QLatin1Char('|'), 0, 0), more.section(QLatin1Char('|'), 1, 1), size, side)
+                .toUtf8();
+        };
+        double loss[2], neff[2];
+        for (int k = 0; k < 2; ++k) {
+            const Run r = run(modelOf(box(k ? QStringLiteral("350[K]") : QStringLiteral("300[K]"), QStringLiteral("Indium gallium arsenide"), QString())));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            loss[k] = global(*r.solution, QStringLiteral("emw.loss"));
+            neff[k] = global(*r.solution, QStringLiteral("emw.neff"));
+        }
+        qInfo("In0.53Ga0.47As: neff %.6f to %.6f, loss %.4g to %.4g dB/m from 300 to 350 K", neff[0], neff[1], loss[0], loss[1]);
+        QVERIFY(neff[1] > neff[0]);
+        QVERIFY2(loss[1] > 1.1 * loss[0], qPrintable(QStringLiteral("%1 %2").arg(loss[0]).arg(loss[1])));
+        // Its own index: no range warned. (The range is said as the media
+        // are made, before the search: a box 1 µm a side - InAs's own
+        // absorbing mode in the 6 µm one took 12 s, 400 under the
+        // sanitizers.)
+        Run own = run(modelOf(box(QStringLiteral("300[K]"), QStringLiteral("Indium arsenide"), QStringLiteral(R"(, "n": "3.5", "kappa": "0"|)"), QStringLiteral("1"))));
+        QVERIFY2(own.error.isEmpty(), qPrintable(own.error));
+        QVERIFY2(!own.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("index holds from")), qPrintable(own.solution->log.join(QLatin1Char(' '))));
+        Run library = run(modelOf(box(QStringLiteral("300[K]"), QStringLiteral("Indium arsenide"), QString(), QStringLiteral("1"))));
+        QVERIFY2(library.error.isEmpty() && library.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("index holds from")), qPrintable(library.error));
+        // A choice none of its kind's.
+        for (const auto& [more, said] : {std::pair{QStringLiteral(R"(|, "choose": "bogus")"), "its Mode chosen is \"bogus\" - one of first, share, te, tm"},
+                                         {QStringLiteral(R"(|, "polarization": "xy")"), "its Polarization is \"xy\" - one of any, te, tm"}}) {
+            const Run bad = run(modelOf(box(QStringLiteral("300[K]"), QStringLiteral("Indium arsenide"), more, QStringLiteral("1"))));
+            QVERIFY2(bad.error.contains(QLatin1String(said)), qPrintable(bad.error));
+        }
+    }
+
+    // A choice it cannot make well is said (the update check of 8bd5709):
+    // an SOI wire 500 by 220 nm in oxide - 8 modes about n = 2, "te" TE0 at
+    // 2.445, nothing said; 8 about 1.4, none guided (all below the oxide's
+    // 1.444): "te" took 1.4239 silently; 2 about 2, {1.770, 1.493} without
+    // TE0: "te" took 1.493, TE 0.70, as TE. A slab across its window (its
+    // edge as high as its core): nothing said of a cladding.
+    void aChoiceItCannotMakeIsSaid()
+    {
+        const bool slow = slowBuild();
+        auto wire = [slow](const QString& step) {
+            return QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "oxide", "position": ["-1.5", "-1"], "size": ["3", "2.22"]},
+                             {"type": "rectangle", "name": "core", "position": ["-0.25", "0"], "size": ["0.5", "0.22"]}],
+                "materials": [{"label": "oxide", "n": "1.444", "selection": {"only": ["oxide"]}},
+                              {"label": "silicon", "n": "3.476", "selection": {"only": ["core"]}}],
+                "physics": [{"type": "modes", "tag": "emw"}],
+                "mesh": {"size": "fine", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "%2"},
+                                                      {"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "%3"}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "mode", "frequency": "1550[nm]", %1, "choose": "te"}]}]})json")
+                .arg(step, slow ? QStringLiteral("0.05") : QStringLiteral("0.03"), slow ? QStringLiteral("0.25") : QStringLiteral("0.12"))
+                .toUtf8();
+        };
+        auto chosen = [](const Run& r) {
+            for (int k = 0; k < r.solution->snapshotCount(); ++k)
+                if (r.solution->snapshotChosen(k)) {
+                    r.solution->select(k);
+                    return std::pair{*r.solution->global(QStringLiteral("emw.neff")), *r.solution->global(QStringLiteral("emw.TEfraction"))};
+                }
+            return std::pair{std::nan(""), std::nan("")};
+        };
+        const QString below = QStringLiteral("below its cladding's index"), hybrid = QStringLiteral("is a hybrid");
+        // (A sanitized build: the set of eight left out - some 100 s there;
+        // the slab says nothing is said where nothing is wrong.)
+        if (!slow) {
+            const Run good = run(modelOf(wire(QStringLiteral(R"("modes": 8, "neff": "2")"))));
+            QVERIFY2(good.error.isEmpty(), qPrintable(good.error));
+            const auto [n0, te0] = chosen(good);
+            qInfo("8 about 2: TE chosen at %.6f (TE %.3f); warned: %s", n0, te0, qPrintable(good.study.warnings.join(QLatin1String(" | "))));
+            QVERIFY(n0 > 2.3 && te0 > 0.9);
+            QVERIFY2(good.study.warnings.isEmpty(), qPrintable(good.study.warnings.join(QLatin1String(" | "))));
+        }
+        const Run low = run(modelOf(wire(QStringLiteral(R"("modes": 4, "neff": "1.2")"))));
+        QVERIFY2(low.error.isEmpty(), qPrintable(low.error));
+        const auto [n1, te1] = chosen(low);
+        qInfo("4 about 1.2: chosen %.6f (TE %.3f); warned: %s", n1, te1, qPrintable(low.study.warnings.join(QLatin1String(" | "))));
+        QVERIFY(n1 < 1.444);
+        QVERIFY2(low.study.warnings.join(QLatin1Char(' ')).contains(below), qPrintable(low.study.warnings.join(QLatin1String(" | "))));
+        QVERIFY(low.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("the cladding's 1.444")));
+        const Run two = run(modelOf(wire(QStringLiteral(R"("modes": 2, "neff": "2")"))));
+        QVERIFY2(two.error.isEmpty(), qPrintable(two.error));
+        const auto [n2, te2] = chosen(two);
+        qInfo("2 about 2: chosen %.6f (TE %.3f); warned: %s", n2, te2, qPrintable(two.study.warnings.join(QLatin1String(" | "))));
+        QVERIFY(te2 < 0.9);
+        QVERIFY2(two.study.warnings.join(QLatin1Char(' ')).contains(hybrid), qPrintable(two.study.warnings.join(QLatin1String(" | "))));
+        QVERIFY(!two.study.warnings.join(QLatin1Char(' ')).contains(below));
+        // (A slab across its window, about an index below the oxide's: its
+        // edge is its core's - nothing said of a cladding.)
+        const Run slab = run(modelOf(slabWindow(QString(), QStringLiteral(R"(, "modes": 3)"), QStringLiteral("3.476"))));
+        QVERIFY2(slab.error.isEmpty(), qPrintable(slab.error));
+        QVERIFY2(!slab.study.warnings.join(QLatin1Char(' ')).contains(below), qPrintable(slab.study.warnings.join(QLatin1String(" | "))));
+    }
+
     void rectangularWaveguide()
     {
         // WR-90 at 20 GHz: TE10, TE20, TE01, then TE11 and TM11 (one cutoff).

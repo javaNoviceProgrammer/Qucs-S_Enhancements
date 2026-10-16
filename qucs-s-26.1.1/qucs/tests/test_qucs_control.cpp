@@ -1259,6 +1259,10 @@ private slots:
         QVERIFY(!failed(call("edit_component", {{"name", "R1"}, {"properties", QJsonObject{{"R", "3k"}}}})));
         r = as(us, "get_schematic");
         QVERIFY2(text(r).contains("Since your last call") && text(r).contains("changed by the user"), qPrintable(text(r).right(400)));
+        // (Its own item, on its own line: a client that joins the texts glued
+        // it to an error's - the update check of 110e8b9.)
+        QVERIFY2(r.value("content").toArray().last().toObject().value("text").toString().startsWith(QLatin1String("\nSince your last call")),
+                 qPrintable(r.value("content").toArray().last().toObject().value("text").toString()));
         r = as(us, "get_state");
         QVERIFY(!text(r).contains("Since your last call"));
         QCOMPARE(entry(r).value("last edit").toObject().value("by").toString(), QStringLiteral("the user"));

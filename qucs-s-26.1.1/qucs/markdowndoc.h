@@ -17,6 +17,8 @@
 #include <QColor>
 #include <QFont>
 #include <QImage>
+#include <QList>
+#include <QRectF>
 #include <QString>
 #include <QTextObjectInterface>
 #include <QUrl>
@@ -26,6 +28,8 @@ class QScrollBar;
 class QTextBrowser;
 class QTextDocument;
 class QTimer;
+
+class QTextEdit;
 
 namespace qucs_s::markdown {
 
@@ -83,6 +87,29 @@ private:
     SmoothImages(QObject* parent, QTextObjectInterface* qts);
     QTextObjectInterface* a_qts;   // Qt's own handler
     QCache<QString, QImage> a_scaled;
+};
+
+/*!
+ * A block quote's bar, a level's each, in the margin Qt's Markdown sets it
+ * in by - which alone marked it (the update check of 7451b1c): drawn after
+ * the view's own painting (its document's background covered them before
+ * it), in its text's colour, faint.
+ */
+class QuoteBars : public QObject
+{
+public:
+    /// \a edit's quotes drawn with their bars from now on.
+    static void install(QTextEdit* edit);
+    /// Where \a edit draws its bars, in its viewport's coordinates.
+    static QList<QRectF> bars(const QTextEdit* edit);
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+    explicit QuoteBars(QTextEdit* edit);
+    QTextEdit* a_edit;
+    bool a_inside = false;   // (its view's own painting, sent on by it)
 };
 
 } // namespace qucs_s::markdown
