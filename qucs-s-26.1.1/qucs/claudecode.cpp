@@ -302,6 +302,10 @@ QStringList arguments(const Options& options)
     if (!options.mcpConfig.isEmpty()) args << QStringLiteral("--mcp-config") << options.mcpConfig;
     if (!options.allowedTools.isEmpty())
         args << QStringLiteral("--allowedTools") << options.allowedTools.join(QLatin1Char(','));
+    // Auto-compact as the dock says, over the user's own settings.
+    args << QStringLiteral("--settings")
+         << QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("autoCompactEnabled"), options.autoCompact}})
+                                  .toJson(QJsonDocument::Compact));
     return args;
 }
 
@@ -724,6 +728,15 @@ void Session::setModel(const QString& model)
                {{QStringLiteral("model"), model.isEmpty() ? QStringLiteral("default") : model}});
 }
 
+void Session::setAutoCompact(bool on)
+{
+    if (on == a_autoCompact) return;
+    a_autoCompact = on;
+    if (!isRunning()) return;
+    askProgram(QStringLiteral("apply_flag_settings"),
+               {{QStringLiteral("settings"), QJsonObject{{QStringLiteral("autoCompactEnabled"), on}}}});
+}
+
 void Session::askProgram(const QString& subtype, const QJsonObject& fields)
 {
     static int count = 0;
@@ -797,6 +810,7 @@ void Session::start()
     Options options;
     options.permissionMode = a_mode;
     options.model = a_model;
+    options.autoCompact = a_autoCompact;
     options.resume = a_sessionId;
     // A prompt edited: the conversation up to the message before it, as a
     // new session (until the program says it started on it).

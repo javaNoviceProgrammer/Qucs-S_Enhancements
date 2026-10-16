@@ -120,6 +120,10 @@ struct Options {
     QString appendSystemPrompt;
     QString mcpConfig;        ///< --mcp-config: the host's tool server
     QStringList allowedTools; ///< tools used without asking
+    /// The conversation compacted when its context fills (Claude Code's
+    /// autoCompactEnabled), whatever the user's own settings say: told
+    /// always, as a flag setting (--settings).
+    bool autoCompact = true;
 };
 QStringList arguments(const Options& options);
 
@@ -336,6 +340,11 @@ public:
     /// For the turns after this one, as the mode.
     void setModel(const QString& model);
     QString model() const { return a_model; }
+    /// Auto-compact (Options::autoCompact), on unless set off: a running
+    /// program is told at once (apply_flag_settings; started again with
+    /// it after the turn when it refuses).
+    void setAutoCompact(bool on);
+    bool autoCompact() const { return a_autoCompact; }
     void setAppendSystemPrompt(const QString& prompt) { a_systemPrompt = prompt; }
     /// The host's tools, offered from the next start on (not owned; it
     /// outlives the session).
@@ -482,6 +491,7 @@ private:
     QString a_workDir;
     QString a_mode;
     QString a_model;
+    bool a_autoCompact = true;
     QString a_systemPrompt;
     bool a_restartAfterTurn = false;   // the program would not take another mode or model
     QHash<QString, QString> a_asked;   // askProgram() not answered yet: request id -> subtype
