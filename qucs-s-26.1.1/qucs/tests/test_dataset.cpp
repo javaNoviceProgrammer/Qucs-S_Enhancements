@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QTemporaryDir>
+#include <QRandomGenerator>
 
 #include <cmath>
 #include <complex>
@@ -634,6 +635,137 @@ private slots:
         const QVector<double> t{0, 1, 2, 3}, v{0, 10, 0, 10};
         QCOMPARE(ds::sampledAt(t, v, {}, 0.25).real(), 2.5);
         QCOMPARE(ds::sampledAt(t, v, {}, 1.5).real(), 5.0);
+    }
+
+    // QUCS_DATASET_FUZZ=<seconds> (QUCS_DATASET_FUZZ_SEED): datasets made
+    // and damaged - variables over others, over themselves, over nothing,
+    // of no values, complex and not, NaN and huge, counts that lie, bytes
+    // flipped - read; random expressions of their names, numbers,
+    // constants and functions, nested, with junk, evaluated; names
+    // resolved; values between samples asked of hostile arrays. Nothing
+    // may crash, hang or trip a sanitizer.
+    void fuzz()
+    {
+        const int seconds = qEnvironmentVariableIntValue("QUCS_DATASET_FUZZ");
+        if (seconds <= 0) QSKIP("set QUCS_DATASET_FUZZ to a number of seconds");
+        QRandomGenerator rng(quint32(qEnvironmentVariableIntValue("QUCS_DATASET_FUZZ_SEED") + 1));
+        const auto pick = [&rng](const QStringList& from) { return from.at(int(rng.bounded(quint32(from.size())))); };
+        const QStringList numbers{"0", "1", "-1", "1e308", "-1e308", "1e-320", "nan", "inf", "-inf", "2.5", "1+j1", "-0.5-j2",
+                                  "1e3+j1e300", "j", "+j", "x", "", "1e", "0x10", "99999999999999999999999"};
+        const QStringList functions{"db", "abs", "mag", "phase", "real", "imag", "sqrt", "log10", "ln", "exp", "conj", "sin",
+                                    "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "arg", "log", "log2",
+                                    "floor", "ceil", "round", "sign", "sq", "nosuch", "v", "i"};
+        const QStringList junk{"(", ")", "+", "-", "*", "/", "^", ",", ":", "@", "#", "[", "]", " ", "\t", "$", "\\", "'",
+                               "\"", "ngspice/", "xyce/", ".", "..", "e", "pi", "j", "E", "1e-3", "--", "**", "/0", "^^"};
+        QElapsedTimer timer;
+        timer.start();
+        int datasets = 0, expressions = 0, evaluated = 0, samples = 0;
+        while (timer.elapsed() < seconds * 1000LL) {
+            // A dataset of a few variables, made with care or none.
+            QStringList indep, all;
+            QString text = QStringLiteral("<Qucs Dataset 26.1.3>\n");
+            const int nIndep = int(rng.bounded(4u));
+            QHash<QString, int> sizes;
+            for (int k = 0; k < nIndep; ++k) {
+                const QString name = pick({"frequency", "time", "ac1.r1", "Rs", "x", "a b", "", "n" + QString::number(k)});
+                const int n = rng.bounded(10u) == 0 ? int(rng.bounded(3000u)) : int(rng.bounded(6u));
+                const int written = rng.bounded(8u) == 0 ? int(rng.bounded(8u)) : n;   // (a count that lies)
+                text += QStringLiteral("<indep %1 %2>\n").arg(name).arg(n);
+                double x = rng.generateDouble() * 10;
+                const bool log = rng.bounded(2u) == 0;
+                for (int i = 0; i < written; ++i) {
+                    text += QStringLiteral("  %1\n").arg(rng.bounded(12u) == 0 ? pick(numbers) : QString::number(x, 'g', 17));
+                    x = log ? x * (1 + rng.generateDouble() * 3) : x + rng.generateDouble() * 2 - 0.2;
+                }
+                text += QStringLiteral("</indep>\n");
+                indep << name;
+                sizes[name] = n;
+                all << name;
+            }
+            const int nDep = int(rng.bounded(5u));
+            for (int k = 0; k < nDep; ++k) {
+                const QString name = pick({"ac.v(out)", "ac.v(in)", "tran.v(out)", "v(out)", "L", "C", "out.v", "S[1,1]",
+                                           "pi", "e", "j", "frequency", "ac.a-b", "2*L", "x", "y" + QString::number(k)});
+                QStringList over;
+                const int nOver = int(rng.bounded(quint32(std::max<int>(1, int(indep.size()) + 2))));
+                for (int i = 0; i < nOver; ++i) over << (rng.bounded(6u) == 0 ? pick({"nowhere", name, ""}) : indep.isEmpty() ? "nowhere" : pick(indep));
+                qint64 n = 1;
+                for (const QString& o : over) n *= std::max(1, sizes.value(o, 1));
+                if (n > 20000) n = 20000;
+                const bool complex = rng.bounded(2u) == 0;
+                const qint64 written = rng.bounded(6u) == 0 ? qint64(rng.bounded(30u)) : n;
+                text += QStringLiteral("<dep %1 %2>\n").arg(name, over.join(QLatin1Char(' ')));
+                for (qint64 i = 0; i < written; ++i) {
+                    if (rng.bounded(15u) == 0) text += "  " + pick(numbers) + "\n";
+                    else if (complex) text += QStringLiteral("  %1%2j%3\n").arg(rng.generateDouble() * 4 - 2).arg(rng.bounded(2u) ? "+" : "-").arg(rng.generateDouble());
+                    else text += QStringLiteral("  %1\n").arg(rng.generateDouble() * 200 - 100);
+                }
+                if (rng.bounded(10u) != 0) text += QStringLiteral("</dep>\n");
+                all << name;
+            }
+            // Bytes flipped, cut, repeated.
+            QByteArray bytes = text.toUtf8();
+            for (int m = int(rng.bounded(4u)); m-- > 0 && !bytes.isEmpty();) {
+                const int at = int(rng.bounded(quint32(bytes.size())));
+                switch (rng.bounded(4u)) {
+                case 0: bytes[at] = char(rng.bounded(256u)); break;
+                case 1: bytes.truncate(at); break;
+                case 2: bytes.insert(at, bytes.mid(at, int(rng.bounded(40u)))); break;
+                default: bytes.remove(at, int(rng.bounded(20u))); break;
+                }
+            }
+            const QString path = dir.filePath(rng.bounded(3u) == 0 ? "fz.dat" : "fz.dat.ngspice");
+            {
+                QFile f(path);
+                QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                f.write(bytes);
+            }
+            ds::Dataset data;
+            QString error;
+            data.read(path, &error);
+            ++datasets;
+            for (const ds::Variable& v : data.variables()) all << v.name;
+            // Expressions of its names.
+            for (int e = 0; e < 25; ++e) {
+                const std::function<QString(int)> term = [&rng, &pick, &all, &numbers, &functions, &junk, &term](int depth) -> QString {
+                    switch (rng.bounded(depth > 6 ? 3u : 8u)) {
+                    case 0: return all.isEmpty() ? QStringLiteral("x") : pick(all);
+                    case 1: return pick(numbers);
+                    case 2: return pick({"pi", "e", "j", "frequency", "time"});
+                    case 3: return pick(functions) + "(" + term(depth + 1) + ")";
+                    case 4: return "(" + term(depth + 1) + ")";
+                    case 5: return term(depth + 1) + pick({"+", "-", "*", "/", "^", " + ", "@", ""}) + term(depth + 1);
+                    case 6: return "-" + term(depth + 1);
+                    default: return pick(junk) + term(depth + 1);
+                    }
+                };
+                QString ex = term(0);
+                if (rng.bounded(5u) == 0) ex = (all.isEmpty() ? "" : pick(all) + ":") + ex;
+                if (ex.size() > 4000) ex.truncate(4000);
+                ++expressions;
+                (void)ds::isExpression(ex);
+                (void)ds::checkExpression(ex, &error);
+                (void)data.resolve(ex);
+                ds::Variable out;
+                if (ds::evaluate(data, ex, &out, &error)) ++evaluated;
+            }
+            // Values between samples of hostile arrays.
+            for (int t = 0; t < 20; ++t) {
+                QVector<double> xs, re, im;
+                const int n = int(rng.bounded(8u));
+                for (int i = 0; i < n; ++i) {
+                    xs << (rng.bounded(8u) == 0 ? pick({"0", "-1", "nan", "inf", "1e-320"}).toDouble() : std::pow(10.0, rng.generateDouble() * 8 - 2));
+                    re << rng.generateDouble() * 2 - 1;
+                    if (rng.bounded(2u)) im << rng.generateDouble() * 2 - 1;
+                }
+                if (rng.bounded(2u)) std::sort(xs.begin(), xs.end());
+                if (rng.bounded(4u) == 0 && !re.isEmpty()) re.removeLast();
+                (void)ds::isLogSweep(xs);
+                (void)ds::sampledAt(xs, re, im, rng.bounded(6u) == 0 ? std::nan("") : std::pow(10.0, rng.generateDouble() * 8 - 2));
+                ++samples;
+            }
+        }
+        qInfo("%d datasets, %d expressions (%d evaluated), %d interpolations", datasets, expressions, evaluated, samples);
     }
 
     // A SPICE run's dataset written as a plain .dat (exported, saved as

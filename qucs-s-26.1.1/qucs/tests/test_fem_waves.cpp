@@ -74,7 +74,7 @@ struct Run {
     QString error;
 };
 
-Run run(const Model& model)
+Run run(const Model& model, const Progress& progress = {})
 {
     Run r;
     r.parameters = evaluateParameters(model);
@@ -83,7 +83,7 @@ Run run(const Model& model)
         r.error = QStringLiteral("geometry: ") + QStringList(g.errors.values()).join(QLatin1String("; "));
         return r;
     }
-    r.study = runStudy(model, r.parameters, g.topology, nullptr, QString());
+    r.study = runStudy(model, r.parameters, g.topology, nullptr, QString(), progress);
     if (!r.study.ok()) {
         r.error = r.study.error;
         return r;
@@ -372,6 +372,54 @@ private slots:
         const EigenResult rb = largestEigenvalues(n, 3, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = B * x; });
         QCOMPARE(int(rb.values.size()), 3);
         for (int i = 0; i < 3; ++i) QVERIFY(std::abs(rb.values[std::size_t(i)] - all[std::size_t(i)]) < 1e-8 * std::abs(all[std::size_t(i)]));
+    }
+
+    // A mode search stops when asked: after its factorization and before
+    // each product of its Krylov search. It looked nowhere, so a model's
+    // close and fem_stop waited out the whole solve (a VCSEL's 17 s, minutes
+    // under the sanitizers: the fuzzing of 2026-10-16).
+    void searchesStopWhenAsked()
+    {
+        const int n = 60;
+        Eigen::MatrixXcd A = Eigen::MatrixXcd::Zero(n, n);
+        for (int i = 0; i < n; ++i) A(i, i) = 1.0 + i;
+        const auto apply = [&A](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = A * x; };
+        int asked = 0;
+        const EigenResult stopped = largestEigenvalues(n, 4, apply, 0, 1e-10, 300, [&asked] { return ++asked > 3; });
+        QVERIFY(stopped.cancelled);
+        QCOMPARE(stopped.products, 3);
+        QCOMPARE(asked, 4);
+        QVERIFY(stopped.values.empty() && stopped.vectors.empty());
+        asked = 0;
+        const EigenResult whole = largestEigenvalues(n, 4, apply, 0, 1e-10, 300, [&asked] { return ++asked < 0; });
+        QVERIFY(!whole.cancelled);
+        QCOMPARE(int(whole.values.size()), 4);
+        QCOMPARE(asked, whole.products);
+        // The mode analysis: asked once at its frequency, once after its
+        // factorization and before each product (the count its log gives).
+        const Model guide = modelOf(rectangular(QStringLiteral("20[GHz]"), 5));
+        int checks = 0;
+        const Run all = run(guide, [&checks](double, const QString& what) {
+            checks += what.contains(QLatin1String("modes at")) ? 1 : 0;
+            return true;
+        });
+        QVERIFY2(all.error.isEmpty(), qPrintable(all.error));
+        static const QRegularExpression productsRe(QStringLiteral("\\((\\d+) products"));
+        const QRegularExpressionMatch m = productsRe.match(all.solution->log.join(QLatin1Char('\n')));
+        QVERIFY2(m.hasMatch(), qPrintable(all.solution->log.join(QLatin1Char('\n'))));
+        const int products = m.captured(1).toInt();
+        QVERIFY(products > 10);
+        QCOMPARE(checks, 2 + products);
+        // Stopped at each of those: cancelled, not asked again.
+        for (int at : {1, 2, 3, products / 2, products + 2}) {
+            int seen = 0;
+            const Run part = run(guide, [&seen, at](double, const QString& what) {
+                if (!what.contains(QLatin1String("modes at"))) return true;
+                return ++seen < at;
+            });
+            QVERIFY2(part.error.contains(QLatin1String("cancelled")), qPrintable(QStringLiteral("at %1: %2").arg(at).arg(part.error)));
+            QCOMPARE(seen, at);
+        }
     }
 
     void rectangularWaveguide()

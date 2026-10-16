@@ -111,8 +111,12 @@ QString Winding::spice_netlist(spicecompat::SpiceDialect dialect /* = spicecompa
 
     QString H_node, B_node;
     for (Component *pc: *containingSchematic->a_Components) {
-      if (pc->Name == CORE) {
-        QString BH = pc->getProperty("BHprobes")->Value;
+      // (A part of that name that is no core - a damaged or edited file's -
+      // has no BHprobes: passed over, not read through a null pointer.
+      // The fuzzing of 2026-10-16.)
+      const Property *probes = pc->Name == CORE ? pc->getProperty("BHprobes") : nullptr;
+      if (probes != nullptr) {
+        QString BH = probes->Value;
         if (BH == "true") {
           H_node = pc->Ports.at(0)->Connection->Name;
           B_node = pc->Ports.at(1)->Connection->Name;

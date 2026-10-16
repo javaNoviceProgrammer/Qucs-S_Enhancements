@@ -26,6 +26,7 @@
 
 #include <QCoreApplication>
 
+#include <climits>
 #include <cmath>
 #include <functional>
 #include <optional>
@@ -33,6 +34,16 @@
 namespace qucs_s::fem::lumerical {
 
 namespace {
+
+// A number as a whole one in an int's range: NaN and beyond it the
+// nearest bound, which the checks after refuse - not cast (a cast out of
+// range is undefined behaviour: the fuzzing of 2026-10-16).
+int whole(double x)
+{
+    if (!(x == x) || x <= -2147483648.0) return INT_MIN;
+    if (x >= 2147483647.0) return INT_MAX;
+    return int(x);
+}
 
 QString tr(const char* text)
 {
@@ -778,7 +789,7 @@ private:
         case Expr::Cell: {
             const Value a = eval(*e.args[0]);
             if (a.kind != Value::Cell || e.args.size() < 2) raise(tr("{} of what is not a cell"), e.line);
-            const int i = int(number(eval(*e.args[1]), e.line));
+            const int i = whole(number(eval(*e.args[1]), e.line));
             if (i < 1 || i > int(a.cell.size())) raise(tr("a cell's index %1 out of 1 to %2").arg(i).arg(a.cell.size()), e.line);
             return a.cell[std::size_t(i - 1)];
         }
@@ -825,7 +836,7 @@ private:
         std::vector<double> out;
         if (picks.size() == 1) {
             for (double i : picks[0]) {
-                const int k = int(std::lround(i));
+                const int k = whole(std::round(i));
                 if (k < 1 || k > int(v.m.size())) raise(tr("index %1 out of 1 to %2").arg(k).arg(v.m.size()), line);
                 out.push_back(v.m[std::size_t(k - 1)]);
             }
@@ -834,7 +845,7 @@ private:
         }
         for (double j : picks[1])
             for (double i : picks[0]) {
-                const int r = int(std::lround(i)), c = int(std::lround(j));
+                const int r = whole(std::round(i)), c = whole(std::round(j));
                 if (r < 1 || r > v.rows || c < 1 || c > v.cols) raise(tr("index (%1, %2) out of %3 x %4").arg(r).arg(c).arg(v.rows).arg(v.cols), line);
                 out.push_back(v.m[std::size_t((c - 1) * v.rows + r - 1)]);
             }
@@ -855,7 +866,7 @@ private:
             Value& owner = place(*e.args[0]);
             if (owner.kind == Value::Null) owner.kind = Value::Cell;
             if (owner.kind != Value::Cell || e.args.size() < 2) raise(tr("{} of what is not a cell"), e.line);
-            const int i = int(number(eval(*e.args[1]), e.line));
+            const int i = whole(number(eval(*e.args[1]), e.line));
             if (i < 1 || i > 100000) raise(tr("a cell's index %1").arg(i), e.line);
             if (int(owner.cell.size()) < i) owner.cell.resize(std::size_t(i));
             return owner.cell[std::size_t(i - 1)];
@@ -870,7 +881,7 @@ private:
             const Expr& owner = *target.args[0];
             if (owner.kind != Expr::Name || target.args.size() != 2) raise(tr("only a(i) = value is read"), line);
             Value& m = a_vars[owner.s];
-            const int i = int(number(eval(*target.args[1]), line));
+            const int i = whole(number(eval(*target.args[1]), line));
             if (m.kind == Value::Null) m = Value::matrix({}, 0, 0);
             if (m.kind != Value::Matrix || i < 1 || i > 10000000) raise(tr("a(%1) = value of what is not a matrix").arg(i), line);
             if (int(m.m.size()) < i) {
@@ -978,7 +989,7 @@ private:
         }
         if (name == QLatin1String("linspace")) {
             const double a = num(0), b = num(1);
-            const int n = int(num(2));
+            const int n = whole(num(2));
             if (n < 1 || n > 10000000) raise(tr("linspace's count %1").arg(n), line);
             std::vector<double> v(static_cast<std::size_t>(n));
             for (int i = 0; i < n; ++i) v[std::size_t(i)] = n == 1 ? b : a + (b - a) * i / (n - 1);
@@ -987,13 +998,16 @@ private:
         if (name == QLatin1String("reshape")) {
             Value out = arg(0);
             const Value& d = arg(1);
-            std::size_t total = 1;
+            double total = 1;
             out.dims.clear();
             for (double x : d.m) {
+                // (Each a whole size to 1e7, their product in doubles: one
+                // in size_t wrapped round to the values' count.)
+                if (!(x >= 0 && x <= 1e7) || x != std::floor(x)) raise(tr("reshape: a size %1").arg(x), line);
                 out.dims.push_back(int(x));
-                total *= std::size_t(std::max(0.0, x));
+                total *= x;
             }
-            if (total != out.m.size()) raise(tr("reshape: %1 values are not %2").arg(out.m.size()).arg(total), line);
+            if (total != double(out.m.size())) raise(tr("reshape: %1 values are not %2").arg(out.m.size()).arg(total), line);
             if (!out.dims.empty()) {
                 out.rows = out.dims[0];
                 out.cols = int(out.m.size()) / std::max(1, out.rows);
@@ -1021,7 +1035,7 @@ private:
             return scalar(r);
         }
         if (name == QLatin1String("zeros") || name == QLatin1String("ones")) {
-            const int r = args.empty() ? 1 : int(num(0)), c = args.size() > 1 ? int(num(1)) : r;
+            const int r = args.empty() ? 1 : whole(num(0)), c = args.size() > 1 ? whole(num(1)) : r;
             if (r < 0 || c < 0 || double(r) * c > 1e7) raise(tr("%1's size").arg(name), line);
             return Value::matrix(std::vector<double>(std::size_t(r * c), name == QLatin1String("ones") ? 1.0 : 0.0), r, c);
         }
@@ -1033,7 +1047,7 @@ private:
         if (name == QLatin1String("cell")) {
             Value v;
             v.kind = Value::Cell;
-            v.cell.resize(std::size_t(std::clamp(args.empty() ? 0 : int(num(0)), 0, 100000)));
+            v.cell.resize(std::size_t(std::clamp(args.empty() ? 0 : whole(num(0)), 0, 100000)));
             return v;
         }
         if (name == QLatin1String("isfield")) return scalar(arg(0).field(arg(1).toText()) != nullptr);
@@ -1141,7 +1155,7 @@ private:
             else if (key == QLatin1String("refractive index") || key == QLatin1String("imaginary refractive index")) {
                 double* out = key == QLatin1String("refractive index") ? m->n : m->k;
                 for (int c = 0; c < 3; ++c) out[c] = v.m.empty() ? 0 : v.m[std::min(v.m.size() - 1, std::size_t(c))];
-            } else if (key == QLatin1String("mesh order")) m->priority = int(v.toNumber());
+            } else if (key == QLatin1String("mesh order")) m->priority = whole(v.toNumber());
             else if (key == QLatin1String("permittivity")) {
                 for (int c = 0; c < 3; ++c) m->n[c] = std::sqrt(std::max(0.0, v.m.empty() ? 1 : v.m[std::min(v.m.size() - 1, std::size_t(c))]));
             }

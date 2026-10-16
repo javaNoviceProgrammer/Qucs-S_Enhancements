@@ -69,7 +69,8 @@ private:
         qint64 at = 0, size = 0;
     };
     quint64 u(qint64 at, int bytes) const;
-    bool fits(qint64 at, qint64 bytes) const { return at >= 0 && bytes >= 0 && at + bytes <= a_data.size(); }
+    // (Not at + bytes: a damaged file's offset near 2^63 overflowed it.)
+    bool fits(qint64 at, qint64 bytes) const { return at >= 0 && bytes >= 0 && at <= a_data.size() && bytes <= a_data.size() - at; }
     std::vector<Message> messages(quint64 object) const;
     std::optional<std::pair<QString, quint64>> link(qint64 at, qint64 size) const;
     std::optional<std::pair<QString, Value>> attribute(qint64 at, qint64 size) const;

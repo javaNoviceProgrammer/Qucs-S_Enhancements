@@ -27,6 +27,7 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QMap>
+#include <QBuffer>
 #include <QImageReader>
 #include <QPainter>
 #include <QPdfWriter>
@@ -3760,6 +3761,78 @@ private slots:
         panel.session()->reset();
 #endif
         qunsetenv("QUCS_CACHE_DIR");
+    }
+
+    // QUCS_CHAT_FUZZ=<seconds> (QUCS_CHAT_FUZZ_SEED): image files of every
+    // format Qt reads, damaged - bytes flipped, cut, repeated, sizes in
+    // their headers made huge (a decompression bomb), formats spliced -
+    // given to imageForClaude(), dropped and pasted on the panel, its strip
+    // drawn. Nothing may crash, hang or trip a sanitizer.
+    void fuzz()
+    {
+        const int seconds = qEnvironmentVariableIntValue("QUCS_CHAT_FUZZ");
+        if (seconds <= 0) QSKIP("set QUCS_CHAT_FUZZ to a number of seconds");
+        QRandomGenerator rng(quint32(qEnvironmentVariableIntValue("QUCS_CHAT_FUZZ_SEED") + 1));
+        const QString work = fresh("chatfuzz");
+        qputenv("QUCS_CACHE_DIR", fresh("chatfuzzcache").toUtf8());
+        // Seeds: a picture in each format.
+        QImage picture(97, 61, QImage::Format_ARGB32);
+        for (int y = 0; y < picture.height(); ++y)
+            for (int x = 0; x < picture.width(); ++x) picture.setPixel(x, y, qRgba(x * 2, y * 4, (x * y) % 256, 128 + x));
+        QList<QPair<QString, QByteArray>> seeds;
+        for (const char* format : {"PNG", "JPEG", "GIF", "BMP", "TIFF", "WEBP", "ICO", "PPM", "XPM", "TGA"}) {
+            QByteArray bytes;
+            QBuffer buffer(&bytes);
+            buffer.open(QIODevice::WriteOnly);
+            if (picture.save(&buffer, format)) seeds.append(qMakePair(QString::fromLatin1(format).toLower(), bytes));
+        }
+        seeds.append(qMakePair(QStringLiteral("svg"), QByteArray("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\"><rect width=\"100\" height=\"50\" fill=\"red\"/></svg>")));
+        QVERIFY(seeds.size() >= 5);
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QElapsedTimer timer;
+        timer.start();
+        int files = 0, taken = 0, given = 0;
+        while (timer.elapsed() < seconds * 1000LL) {
+            const auto& seed = seeds.at(int(rng.bounded(quint32(seeds.size()))));
+            QByteArray bytes = seed.second;
+            for (int m = 1 + int(rng.bounded(4u)); m-- > 0 && !bytes.isEmpty();) {
+                const int at = int(rng.bounded(quint32(bytes.size())));
+                switch (rng.bounded(6u)) {
+                case 0: bytes[at] = char(rng.bounded(256u)); break;
+                case 1: bytes.truncate(at); break;
+                case 2: bytes.insert(at, bytes.mid(at, int(rng.bounded(64u)))); break;
+                case 3: bytes.remove(at, int(rng.bounded(32u))); break;
+                case 4:   // (a size field made huge: the four bytes at an early place 0xff)
+                    for (int k = 0; k < 4 && at % 64 + k < bytes.size(); ++k) bytes[at % 64 + k] = char(0xff);
+                    break;
+                default: bytes.append(seeds.at(int(rng.bounded(quint32(seeds.size())))).second.left(int(rng.bounded(200u)))); break;
+                }
+            }
+            const QString path = work + QStringLiteral("/fz%1.%2").arg(files % 50).arg(rng.bounded(5u) == 0 ? QStringLiteral("png") : seed.first);
+            {
+                QFile f(path);
+                QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                f.write(bytes);
+            }
+            ++files;
+            QString type, why;
+            if (!qucs_s::claude::imageForClaude(path, &type, &why).isEmpty()) ++given;
+            (void)qucs_s::claude::promptContent(QStringLiteral("x"), {path});
+            QMimeData data;
+            if (rng.bounded(2u)) data.setUrls({QUrl::fromLocalFile(path)});
+            else data.setImageData(QImage::fromData(bytes));
+            if (panel.attachImages(&data)) ++taken;
+            if (panel.attachedImages().size() > 10)
+                while (!panel.attachedImages().isEmpty()) panel.removeAttachedImage(0);
+            QCoreApplication::processEvents();
+        }
+        while (!panel.attachedImages().isEmpty()) panel.removeAttachedImage(0);
+        qunsetenv("QUCS_CACHE_DIR");
+        qInfo("%d files: %d given to Claude, %d attached", files, given, taken);
     }
 
     // A reply's images no wider than the panel: a wide plot at the width it

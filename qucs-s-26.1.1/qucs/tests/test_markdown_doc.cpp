@@ -11,6 +11,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
+#include <QRandomGenerator>
 #include <QSet>
 #include <QPainter>
 #include <QPicture>
@@ -503,6 +504,31 @@ private slots:
         QVERIFY2(ours.grey > 0.95, qPrintable(QString::number(ours.grey)));
         QVERIFY2(retina.grey > 0.9, qPrintable(QString::number(retina.grey)));
         QVERIFY(ours.dotExact);
+        // A thin picture made 20000 wide by its author, fitted: millions of
+        // pixels tall, drawn where it is seen (it was scaled whole - 12 GB,
+        // nothing drawn, seconds a frame: the fuzzing of 2026-10-16).
+        {
+            QImage thin(1, 20000, QImage::Format_RGB32);
+            thin.fill(qRgb(200, 0, 0));
+            QTextDocument doc;
+            doc.setDocumentMargin(10);
+            qucs_s::markdown::SmoothImages::install(&doc);
+            qucs_s::markdown::render(&doc, "<img src=\"thin.png\" width=\"20000\">", QFont(), {});
+            doc.addResource(QTextDocument::ImageResource, QUrl("thin.png"), thin);
+            qucs_s::markdown::fitImages(&doc, 420);
+            doc.setTextWidth(420);
+            QVERIFY(doc.size().height() > 1e6);
+            QImage out(400, 400, QImage::Format_RGB32);
+            out.fill(Qt::white);
+            QElapsedTimer drawing;
+            drawing.start();
+            QPainter p(&out);
+            doc.drawContents(&p, QRectF(0, 0, 400, 400));
+            p.end();
+            // (Whole, 2 to 4 s here; seen, some milliseconds.)
+            QVERIFY2(drawing.elapsed() < 1000, qPrintable(QString::number(drawing.elapsed())));
+            QCOMPARE(QColor(out.pixel(200, 200)), QColor(200, 0, 0));
+        }
         // On paper (no pixels of its own, a picture): Qt's, the image whole.
         QTextDocument doc;
         qucs_s::markdown::SmoothImages::install(&doc);
@@ -663,6 +689,150 @@ private slots:
         QVERIFY2(aligned > std::max(rowOne, rowTwo) + 0.5 * std::min(rowOne, rowTwo),
                  qPrintable(QString("%1 against %2 and %3").arg(aligned).arg(rowOne).arg(rowTwo)));
         QVERIFY2(!blocks.toPlainText().contains("```") && !blocks.toPlainText().contains("begin"), qPrintable(blocks.toPlainText()));
+    }
+
+    // QUCS_MARKDOWN_FUZZ=<seconds> (QUCS_MARKDOWN_FUZZ_SEED): Markdown
+    // made of fragments - tables (images, math and HTML in cells, rows of
+    // other widths), lists and quotes nested, fences (math ones, ones not
+    // closed), HTML, links, images of hostile sizes (none, 1 by 20000,
+    // missing), math in every form, the private use area the renderer
+    // marks math with - rendered at random widths and pixel ratios, its
+    // images fitted and drawn under random transforms; random TeX typeset
+    // alone. Nothing may crash, hang or trip a sanitizer.
+    void fuzz()
+    {
+        const int seconds = qEnvironmentVariableIntValue("QUCS_MARKDOWN_FUZZ");
+        if (seconds <= 0) QSKIP("set QUCS_MARKDOWN_FUZZ to a number of seconds");
+        QRandomGenerator rng(quint32(qEnvironmentVariableIntValue("QUCS_MARKDOWN_FUZZ_SEED") + 1));
+        const auto pick = [&rng](const QStringList& from) { return from.at(int(rng.bounded(quint32(from.size())))); };
+        const QStringList tex{"x^2", "\\frac{a}{b}", "\\sqrt[3]{x}", "\\sum_{n=0}^{\\infty}", "\\int_0^1 f\\,dx", "\\left(\\frac{1}{2}\\right)",
+                              "\\begin{pmatrix}1&2\\\\3&4\\end{pmatrix}", "\\begin{cases}a&b\\\\c\\end{cases}", "\\mathbb{R}", "\\text{SNR}",
+                              "\\hat{x}\\vec{v}", "\\overline{AB}", "\\underbrace{a}_{b}", "\\color{red}{x}", "\\nosuch", "{", "}", "^", "_",
+                              "\\\\", "&", "\\left(", "\\right)", "\\begin{align}a&=b\\\\c&=d\\end{align}", "\\begin{equation}", "\\end{equation}",
+                              "\\frac{", "\\sqrt{", "\\mathrm{V}", "\\,", "\\!", "\\qquad", "%", "$", "\\$", "\\tag{1}", "\\begin{array}{cc}1&2\\end{array}",
+                              QString(300, QLatin1Char('{')), QString(300, QLatin1Char('}')), "\\frac" + QString(40, QLatin1Char('{'))};
+        const std::function<QString(int)> mathText = [&rng, &pick, &tex, &mathText](int depth) -> QString {
+            QString t;
+            for (int k = int(rng.bounded(6u)); k-- > 0;) t += depth < 8 && rng.bounded(3u) == 0 ? "{" + mathText(depth + 1) + "}" : pick(tex);
+            return t;
+        };
+        const auto math = [&rng, &mathText]() -> QString {
+            const QString t = mathText(0);
+            switch (rng.bounded(9u)) {
+            case 0: return "$" + t + "$";
+            case 1: return "$$" + t + "$$";
+            case 2: return "\\(" + t + "\\)";
+            case 3: return "\\[" + t + "\\]";
+            case 4: return "\n```math\n" + t + "\n```\n";
+            case 5: return "\\begin{equation}" + t + "\\end{equation}";
+            case 6: return "\\\\(" + t + "\\\\)";
+            case 7: return "$`" + t + "`$";
+            default: return "$" + t;   // (not closed)
+            }
+        };
+        const QStringList images{"![a](big.png)", "![b](tall.png)", "![c](tiny.png)", "![d](missing.png)", "<img src=\"big.png\" width=\"0\">",
+                                 "<img src=\"big.png\" width=\"-5\" height=\"99999\">", "<img src=\"tall.png\" width=\"20000\">", "![e](big.png \"t\")",
+                                 "[![f](tiny.png)](link)", "![g]()", "![h](data:image/png;base64,AAAA)"};
+        const QStringList inline_{"word", "**bold**", "*em*", "`code $x$`", "~~del~~", "<b>b</b>", "<br>", "<span>", "</div>", "&amp;", "&#xE000;",
+                                  QString(QChar(0xE000)), QString(QChar(0xE001)) + "x", QString(QChar(0xF7FF)), QString(QChar(0xFFFC)), "\\", "|", "[link](#h)",
+                                  "<!-- c -->", "<code>$y$</code>", "😀", QString(QChar(0xD800)), "\t"};
+        const std::function<QString(int)> block = [&rng, &pick, &math, &images, &inline_, &block](int depth) -> QString {
+            const auto line = [&rng, &pick, &math, &images, &inline_]() {
+                QString l;
+                for (int k = 1 + int(rng.bounded(6u)); k-- > 0;)
+                    l += (rng.bounded(4u) == 0 ? math() : rng.bounded(5u) == 0 ? pick(images) : pick(inline_)) + " ";
+                return l;
+            };
+            switch (rng.bounded(depth > 4 ? 3u : 9u)) {
+            case 0: return line() + "\n\n";
+            case 1: return pick({"# ", "## ", "###### ", "####### "}) + line() + "\n";
+            case 2: return "```" + pick({"", "math", "cpp", "`"}) + "\n" + line() + (rng.bounded(4u) ? "\n```\n" : "\n");
+            case 3: {   // a table
+                const int columns = 1 + int(rng.bounded(5u));
+                QString t = "|";
+                for (int c = 0; c < columns; ++c) t += " h" + QString::number(c) + " |";
+                t += "\n|";
+                for (int c = 0; c < columns; ++c) t += pick({"---|", ":--|", "--:|", ":-:|", "-|"});
+                t += "\n";
+                for (int r = int(rng.bounded(5u)); r-- > 0;) {
+                    t += "|";
+                    for (int c = int(rng.bounded(quint32(columns + 2))); c-- > 0;) t += " " + line() + " |";
+                    t += "\n";
+                }
+                return t + "\n";
+            }
+            case 4: return "- " + line() + "\n" + (rng.bounded(2u) ? "  " + block(depth + 1).replace("\n", "\n  ") : QString()) + "\n";
+            case 5: return "1. " + line() + "\n\n    " + block(depth + 1).replace("\n", "\n    ") + "\n";
+            case 6: return "> " + block(depth + 1).replace("\n", "\n> ") + "\n";
+            case 7: return "<details>\n<summary>s</summary>\n\n" + block(depth + 1) + (rng.bounded(2u) ? "</details>\n" : "\n");
+            default: return math() + "\n\n";
+            }
+        };
+        // The images: big, tall and thin, tiny.
+        QImage big(1600, 400, QImage::Format_RGB32), tall(1, 20000, QImage::Format_RGB32), tiny(1, 1, QImage::Format_ARGB32);
+        big.fill(Qt::darkCyan);
+        tall.fill(Qt::red);
+        tiny.fill(Qt::transparent);
+        QElapsedTimer timer;
+        timer.start();
+        int documents = 0, typeset = 0;
+        int slow = 0;
+        while (timer.elapsed() < seconds * 1000LL) {
+            QElapsedTimer one;
+            one.start();
+            QString md;
+            for (int k = 1 + int(rng.bounded(8u)); k-- > 0;) md += block(0);
+            QTextDocument doc;
+            doc.setDocumentMargin(rng.bounded(3u) * 6);
+            qucs_s::math::MathObject::install(&doc);
+            qucs_s::markdown::SmoothImages::install(&doc);
+            QFont font;
+            font.setPointSizeF(pick({"1", "6", "13", "40", "200"}).toDouble());
+            const qreal dpr = pick({"0.5", "1", "1.5", "2", "3", "4"}).toDouble();
+            qucs_s::markdown::render(&doc, md, font, {}, dpr);
+            doc.addResource(QTextDocument::ImageResource, QUrl("big.png"), big);
+            doc.addResource(QTextDocument::ImageResource, QUrl("tall.png"), tall);
+            doc.addResource(QTextDocument::ImageResource, QUrl("tiny.png"), tiny);
+            const qreal width = pick({"0", "1", "50", "300", "800", "5000", "-20"}).toDouble();
+            qucs_s::markdown::fitImages(&doc, width);
+            qucs_s::markdown::fitImages(&doc, width * 0.5);
+            doc.setTextWidth(std::max<qreal>(1.0, width));
+            const QSizeF size = doc.size();
+            QImage out(QSize(int(std::min<qreal>(1200, std::max<qreal>(1, size.width()))), int(std::min<qreal>(1200, std::max<qreal>(1, size.height())))),
+                       QImage::Format_ARGB32_Premultiplied);
+            out.setDevicePixelRatio(rng.bounded(2u) ? 1.0 : 2.0);
+            out.fill(Qt::white);
+            {
+                QPainter p(&out);
+                switch (rng.bounded(4u)) {
+                case 0: p.translate(rng.generateDouble() * 3, rng.generateDouble() * 3); break;
+                case 1: p.scale(0.37, 0.37); break;
+                case 2: p.rotate(13); break;
+                default: break;
+                }
+                doc.drawContents(&p, QRectF(0, 0, out.width(), out.height()));
+            }
+            (void)qucs_s::math::findMath(md);
+            (void)qucs_s::markdown::htmlBalanced(md);
+            ++documents;
+            // (A document of more than 3 s kept, with the width it had: a hang's start.)
+            if (one.elapsed() > 3000) {
+                const QString keep = qEnvironmentVariable("QUCS_FUZZ_OUT", dir.path());
+                QDir().mkpath(keep);
+                QFile f(keep + QStringLiteral("/slow-%1.md").arg(++slow));
+                if (f.open(QIODevice::WriteOnly)) f.write(md.toUtf8());
+                qWarning("slow document %d: %lld ms at width %g, font %g pt, dpr %g (%s)", slow, one.elapsed(), width, font.pointSizeF(), dpr,
+                         qPrintable(f.fileName()));
+            }
+            for (int k = 0; k < 3; ++k) {
+                QFont f;
+                f.setPointSizeF(pick({"0.5", "9", "13", "72"}).toDouble());
+                const qucs_s::math::Typeset t = qucs_s::math::typeset(mathText(0), f, Qt::black, rng.bounded(2u) == 0, dpr);
+                (void)t;
+                ++typeset;
+            }
+        }
+        qInfo("%d documents, %d formulas typeset alone", documents, typeset);
     }
 
     // The rendering follows the edits; the text is saved as it is.
