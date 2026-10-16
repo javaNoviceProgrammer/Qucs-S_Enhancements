@@ -12,6 +12,7 @@
 #ifndef QUCS_DATASET_H
 #define QUCS_DATASET_H
 
+#include <complex>
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
@@ -138,6 +139,18 @@ Curve within(const Curve& c, double from, double to);
 /// sample within rounding of \a x is at it: a sweep's end of 10 kHz may be
 /// written 9999.999999999889.
 double valueAt(const Curve& c, double x);
+/// Whether \a x steps alike in its logarithm (an AC run's sweep by
+/// decades or octaves): three samples or more, all above nought.
+bool isLogSweep(const QVector<double>& x);
+/// The value \a re + j \a im (\a im empty: real) at \a x between the
+/// samples of \a xs - on a sweep alike in log x (isLogSweep()), a cubic
+/// in log x through the two samples about it, its slopes from theirs: of
+/// a complex value's log magnitude and its phase unwrapped, of a real
+/// value (an RC's response at its corner, sampled ten to a decade, within
+/// 1e-6; straight in x it was 5e-5 to 1e-4 off); else straight in x. A
+/// sample's own at it; NaN outside them. The one get_dataset's 'at' and
+/// its table both give (GUI check of 2026-10-16, 4).
+std::complex<double> sampledAt(const QVector<double>& xs, const QVector<double>& re, const QVector<double>& im, double x);
 
 struct Crossing {
     double x;

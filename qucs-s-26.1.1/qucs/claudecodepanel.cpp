@@ -2935,11 +2935,7 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
         const qucs_s::math::Typeset t = typesetMath(sp.tex, font, sp.display);
         hit.insertText(QString(QChar::ObjectReplacementCharacter), qucs_s::math::MathObject::format(t, font, sp.tex));
         if (sp.display && hit.block().text().trimmed() == QString(QChar::ObjectReplacementCharacter)) {
-            QTextBlockFormat bf = hit.blockFormat();
-            bf.setAlignment(Qt::AlignHCenter);
-            bf.setTopMargin(std::max(bf.topMargin(), 4.0));
-            bf.setBottomMargin(std::max(bf.bottomMargin(), 4.0));
-            hit.setBlockFormat(bf);
+            qucs_s::math::placeDisplay(hit);
         }
     }
 }

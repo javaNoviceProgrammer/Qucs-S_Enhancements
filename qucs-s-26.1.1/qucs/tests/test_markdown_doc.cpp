@@ -634,8 +634,34 @@ private slots:
                     typeset << it.fragment().charFormat().toolTip();
                     centred = centred || (b.blockFormat().alignment() & Qt::AlignHCenter);
                 }
-        QCOMPARE(typeset, (QStringList{"Z = R + jX", "\\begin{equation}\nY = 1/Z\n\\end{equation}", "w"}));
+        QCOMPARE(typeset.size(), 3);
+        QCOMPARE(typeset.at(0), QStringLiteral("Z = R + jX"));
+        QCOMPARE(typeset.at(2), QStringLiteral("w"));
+        // (An environment LaTeX would number: said in its tip that it is not.)
+        QVERIFY2(typeset.at(1).startsWith("\\begin{equation}\nY = 1/Z\n\\end{equation}\n\n") && typeset.at(1).contains("Not numbered"),
+                 qPrintable(typeset.at(1)));
         QVERIFY(centred);
+        // In a list item: set in under its text, not centred on the page
+        // (GUI check of 2026-10-16, 6); on its own: centred.
+        QTextDocument listed;
+        qucs_s::math::MathObject::install(&listed);
+        qucs_s::markdown::render(&listed, "$$a = b$$\n\n- an item\n\n    ```math\n    y = mx + c\n    ```\n\n> quoted\n>\n> $$q$$\n", QFont(), {});
+        QList<QTextBlock> shown;
+        for (QTextBlock b = listed.begin(); b.isValid(); b = b.next())
+            if (b.text().trimmed() == QString(QChar::ObjectReplacementCharacter)) shown << b;
+        QCOMPARE(shown.size(), 3);
+        QVERIFY(shown.at(0).blockFormat().alignment() & Qt::AlignHCenter);
+        for (const QTextBlock& b : {shown.at(1), shown.at(2)}) {
+            QVERIFY(!(b.blockFormat().alignment() & Qt::AlignHCenter));
+            QVERIFY(b.blockFormat().indent() > 0 || b.blockFormat().leftMargin() > 24 || b.textList() != nullptr);
+        }
+        // align's columns: the left sides to the right of one column, the
+        // right sides from it - wider than any one row set alone.
+        const qreal aligned = qucs_s::math::measure("\\begin{aligned} x &= 1111111 \\\\ aaaaaaa &= 2 \\end{aligned}", QFont(), true).width;
+        const qreal rowOne = qucs_s::math::measure("x = 1111111", QFont(), true).width;
+        const qreal rowTwo = qucs_s::math::measure("aaaaaaa = 2", QFont(), true).width;
+        QVERIFY2(aligned > std::max(rowOne, rowTwo) + 0.5 * std::min(rowOne, rowTwo),
+                 qPrintable(QString("%1 against %2 and %3").arg(aligned).arg(rowOne).arg(rowTwo)));
         QVERIFY2(!blocks.toPlainText().contains("```") && !blocks.toPlainText().contains("begin"), qPrintable(blocks.toPlainText()));
     }
 

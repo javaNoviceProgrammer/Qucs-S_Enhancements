@@ -20,6 +20,7 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QVarLengthArray>
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QSet>
@@ -359,8 +360,13 @@ QStringList Dataset::resolve(const QString& wanted) const
         if (dat > 0 && w.left(colon).compare(file.left(dat), Qt::CaseInsensitive) == 0) w = w.mid(colon + 1);
     }
     // A SPICE simulator's dataset names its variables after the analysis
-    // (tran.v(out)); Qucsator's after the node or the part (out.Vt).
-    const bool spice = !a_path.endsWith(QLatin1String(".dat"));
+    // (tran.v(out)); Qucsator's after the node or the part (out.Vt). Told
+    // by its names too: a SPICE run written as a plain .dat (exported, a
+    // run kept as text) has the simulator's (GUI check of 2026-10-16, 1).
+    static const QRegularExpression spiceName(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*\\.[vViI]\\("));
+    const bool spice = !a_path.endsWith(QLatin1String(".dat"))
+                       || std::any_of(a_variables.cbegin(), a_variables.cend(),
+                                      [](const Variable& v) { return !v.independent && spiceName.match(v.name).hasMatch(); });
     if (const Variable* exact = find(w)) {
         QStringList names{w};
         // The op analysis prints v(out) as it is: the others' come too.
@@ -509,6 +515,76 @@ double valueAt(const Curve& c, double x)
         }
     }
     return NaN;
+}
+
+bool isLogSweep(const QVector<double>& x)
+{
+    const qsizetype n = x.size();
+    if (n < 3 || !(x.at(0) > 0) || !(x.at(1) > 0)) return false;
+    const double first = std::log(x.at(1) / x.at(0));
+    if (!std::isfinite(first) || first == 0) return false;
+    for (qsizetype i = 1; i + 1 < n; ++i) {
+        if (!(x.at(i + 1) > 0)) return false;
+        if (std::abs(std::log(x.at(i + 1) / x.at(i)) - first) > 1e-4 * std::abs(first)) return false;
+    }
+    return true;
+}
+
+std::complex<double> sampledAt(const QVector<double>& xs, const QVector<double>& re, const QVector<double>& im, double x)
+{
+    using C = std::complex<double>;
+    const qsizetype n = std::min(xs.size(), re.size());
+    const bool complex = !im.isEmpty() && im.size() >= n;
+    const auto value = [&](qsizetype i) { return C(re.at(i), complex ? im.at(i) : 0.0); };
+    const bool logarithmic = x > 0 && isLogSweep(n == xs.size() ? xs : xs.mid(0, n));
+    for (qsizetype i = 0; i < n; ++i) {
+        const double xi = xs.at(i);
+        if (xi == x || std::abs(xi - x) <= 1e-12 * std::max(std::abs(xi), std::abs(x))) return value(i);
+        if (i + 1 >= n) break;
+        const double x0 = xs.at(i), x1 = xs.at(i + 1);
+        if (!((x0 < x && x < x1) || (x1 < x && x < x0))) continue;
+        const C a = value(i), b = value(i + 1);
+        if (!logarithmic) return a + (x - x0) / (x1 - x0) * (b - a);
+        // In u = ln x, a cubic through i and i + 1 with the slopes of their
+        // neighbours (central differences; one-sided at the sweep's ends):
+        // of ln|v| and the phase (unwrapped from i's) for a complex value,
+        // of the value for a real one. (Of a filter's response sampled
+        // ten to a decade: within 1e-4 at its corner, where straight in x
+        // was 1e-3 off.)
+        const qsizetype lo = std::max<qsizetype>(0, i - 1), hi = std::min(n - 1, i + 2);
+        QVarLengthArray<double, 4> u, y, phase;
+        for (qsizetype k = lo; k <= hi; ++k) {
+            const C v = value(k);
+            u.append(std::log(xs.at(k)));
+            if (!complex) {
+                y.append(v.real());
+                continue;
+            }
+            if (!(std::abs(v) > 0) || !std::isfinite(std::abs(v))) return a + std::log(x / x0) / std::log(x1 / x0) * (b - a);
+            y.append(std::log(std::abs(v)));
+            phase.append(std::arg(v));
+        }
+        if (complex)
+            for (qsizetype k = 0; k < phase.size(); ++k) {
+                const double reference = phase.at(i - lo);
+                while (phase[k] - reference > M_PI) phase[k] -= 2 * M_PI;
+                while (phase[k] - reference < -M_PI) phase[k] += 2 * M_PI;
+            }
+        const qsizetype p = i - lo;   // i's place among them
+        const double h = u.at(p + 1) - u.at(p), t = (std::log(x) - u.at(p)) / h;
+        const auto hermite = [&u, p, h, t](const QVarLengthArray<double, 4>& v) {
+            const auto slope = [&u, &v](qsizetype k) {
+                const qsizetype a = std::max<qsizetype>(0, k - 1), b = std::min<qsizetype>(v.size() - 1, k + 1);
+                return (v.at(b) - v.at(a)) / (u.at(b) - u.at(a));
+            };
+            const double m0 = slope(p) * h, m1 = slope(p + 1) * h;
+            const double t2 = t * t, t3 = t2 * t;
+            return (2 * t3 - 3 * t2 + 1) * v.at(p) + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * v.at(p + 1) + (t3 - t2) * m1;
+        };
+        if (!complex) return C(hermite(y), 0.0);
+        return std::polar(std::exp(hermite(y)), hermite(phase));
+    }
+    return C(NaN, NaN);
 }
 
 QList<Crossing> crossings(const Curve& c, double level)
@@ -1041,17 +1117,26 @@ bool evaluate(const Dataset& data, const QString& expression, Variable* out, QSt
         if (candidates.at(k).size() == 1) dependencies = data.find(candidates.at(k).first())->dependencies;
     for (int k = 0; k < candidates.size() && dependencies.isEmpty(); ++k)
         if (!candidates.at(k).isEmpty()) dependencies = data.find(candidates.at(k).first())->dependencies;
-    // (Of independent variables alone: of one, over itself.)
-    if (dependencies.isEmpty())
-        for (int k = 0; k < names.size(); ++k) {
-            const QString of = independent.at(k)->name;
-            if (dependencies.isEmpty()) dependencies << of;
-            else if (dependencies.first() != of) {
-                *error = tr("%1 and %2 are both independent: an expression of them alone is of one - with a variable over both, "
-                            "each its value at its samples").arg(dependencies.first(), of);
-                return false;
-            }
-        }
+    // Of independent variables alone: of one, over itself; of more, over
+    // the grid of their sweeps (an analytic model drawn over a swept run:
+    // GUI check of 2026-10-16, 2) - in the order of a variable over them
+    // all, the one over fewest else, else the dataset's.
+    if (dependencies.isEmpty()) {
+        QStringList named;
+        for (const Variable* sweep : std::as_const(independent))
+            if (sweep != nullptr && !named.contains(sweep->name)) named << sweep->name;
+        const Variable* over = nullptr;
+        if (named.size() > 1)
+            for (const Variable& v : data.variables())
+                if (!v.independent && (over == nullptr || v.dependencies.size() < over->dependencies.size())
+                    && std::all_of(named.cbegin(), named.cend(), [&v](const QString& n) { return v.dependencies.contains(n); }))
+                    over = &v;
+        for (const QString& d : over != nullptr ? over->dependencies : QStringList())
+            if (named.contains(d)) dependencies << d;
+        if (over == nullptr)
+            for (const Variable& v : data.variables())
+                if (v.independent && named.contains(v.name) && !dependencies.contains(v.name)) dependencies << v.name;
+    }
     // An independent variable at each sample of the others: its value
     // there, the samples running over the sweeps fastest first.
     std::list<Variable> spread;
