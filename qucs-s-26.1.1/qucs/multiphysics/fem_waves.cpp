@@ -1978,10 +1978,14 @@ void ResonatorProblem::selectMode(int k)
             f.values[std::size_t(2 * ne + dof)] = v.real();
             f.values[std::size_t(2 * ne + nn + dof)] = v.imag();
         }
-    f.extra.assign(3, 0.0);
+    // (Its extra: k0's real and imaginary parts, m, the stored energy U,
+    // then each triangle's Re ε.)
+    const int nt = f.space->elements();
+    f.extra.assign(std::size_t(4 + nt), std::numeric_limits<double>::quiet_NaN());
     f.extra[0] = md.k.real();
     f.extra[1] = md.k.imag();
     f.extra[2] = a_m;
+    f.extra[3] = 0;
     // Its largest |E| outside the layers 1 V/m, there real.
     const Mesh& mesh = a_s.mesh();
     PointEvaluator ev(a_s);
@@ -2015,6 +2019,37 @@ void ResonatorProblem::selectMode(int k)
             f.values[std::size_t(2 * ne + nn + dof)] = v.imag();
         }
     }
+    // Each triangle's permittivity (the diagonal's mean, its real part) and
+    // the mode's stored energy, U = ½ ε0 ∫ Re ε |E|² dV outside the layers -
+    // electric and magnetic, a resonance's time average, the field as
+    // normalized: what a laser's photons are counted against.
+    {
+        constexpr double Eps0 = 8.8541878188e-12;
+        const double omega = md.k.real() * C0, k0 = md.k.real();
+        const TriangleRule& q4 = triangleRule(4);
+        double U = 0;
+        for (int t = 0; t < nt; ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (d < 0 || !f.domains[std::size_t(d)] || a_media.domains[std::size_t(d)].pml) continue;
+            ev.moveTo(t, 1.0 / 3, 1.0 / 3);
+            const Media::At m = a_media.at(ev, d, omega, k0);
+            const double eps = (m.eps[0].real() + m.eps[1].real() + m.eps[2].real()) / 3;
+            f.extra[std::size_t(4 + t)] = eps;
+            const AffineMap am = affineMap(*f.space, t);
+            const std::array<int, 3>& v = mesh.triangles[std::size_t(t)];
+            for (const auto& q : q4.points) {
+                ev.moveTo(t, q[0], q[1]);
+                const ResonatorFields rf = resonatorFieldsAt(ev, a_fi);
+                if (!rf.defined) continue;
+                const double r = ((1 - q[0] - q[1]) * mesh.nodes[std::size_t(v[0])].x() + q[0] * mesh.nodes[std::size_t(v[1])].x()
+                                  + q[1] * mesh.nodes[std::size_t(v[2])].x())
+                                 * mesh.unitScale;
+                const double e2 = std::norm(rf.E[0]) + std::norm(rf.E[1]) + std::norm(rf.E[2]);
+                U += q[2] * std::abs(am.det) * 2 * M_PI * r * eps * e2;
+            }
+        }
+        f.extra[3] = 0.5 * Eps0 * U;
+    }
     a_s.setMode(k + 1);
     a_s.setFrequency(md.k.real() * C0 / (2 * M_PI));
 }
@@ -2034,6 +2069,13 @@ void ResonatorProblem::setGlobals()
                   Dim(), tr("quality factor: Re ω / 2 Im ω (infinite without losses)"));
     a_s.setGlobal(p + QStringLiteral("m"), a_m, Dim(), tr("azimuthal order: the fields e^{-jmφ}"));
     a_s.setGlobal(p + QStringLiteral("mode"), a_selected + 1, Dim(), tr("the mode's number, by frequency"));
+    // Its stored energy and what it loses (the field as normalized).
+    const Field& f = field();
+    const double U = f.extra.size() > 3 ? f.extra[3] : 0;
+    a_s.setGlobal(p + QStringLiteral("U"), U, Dim::of(2, 1, -2),
+                  tr("stored energy, ½ ε0 ∫ Re ε |E|² dV outside the absorbing layers, of the mode as normalized (its largest |E| 1 V/m)"));
+    a_s.setGlobal(p + QStringLiteral("Ploss"), 2 * k.imag() * C0 * U, Dim::of(2, 1, -3),
+                  tr("power it loses at that energy, 2 Im ω U = ω U / Q (radiated, absorbed)"));
 }
 
 // ------------------------------------------------------------------ Waves in the plane
@@ -3338,6 +3380,7 @@ ResonatorFields resonatorFieldsAt(PointEvaluator& e, int f)
     out.H[0] = f0 * (-J * (m * ez + chiz) / r);
     out.H[1] = f0 * (J * (m * er + chir) / r);
     out.H[2] = f0 * (-curl);
+    if (fld.extra.size() > std::size_t(4 + t)) out.eps = fld.extra[std::size_t(4 + t)];
     out.defined = true;
     return out;
 }

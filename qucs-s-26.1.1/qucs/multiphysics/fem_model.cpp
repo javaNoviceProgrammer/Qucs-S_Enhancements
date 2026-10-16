@@ -1232,7 +1232,7 @@ QList<NodeKind> makeKinds()
           QStringLiteral("semiconductor/ohmic"),
           QStringLiteral("semiconductor/schottky"), QStringLiteral("semiconductor/gate"), QStringLiteral("semiconductor/charge"),
           QStringLiteral("semiconductor/polarization"), QStringLiteral("semiconductor/traps"), QStringLiteral("semiconductor/surfacerec"),
-          QStringLiteral("semiconductor/fn"), QStringLiteral("semiconductor/stimulated")},
+          QStringLiteral("semiconductor/fn"), QStringLiteral("semiconductor/stimulated"), QStringLiteral("semiconductor/laser")},
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/insulation")}, false, false, QStringLiteral("semi"),
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
             "p (Boltzmann's statistics, or Fermi-Dirac's; band gap narrowing, dopants ionized in part, if the material model asks), "
@@ -1611,6 +1611,49 @@ QList<NodeKind> makeKinds()
             "radiative) per area - the carriers clamped, the rest light: semi.Istim, the stimulated current (A, by the norm "
             "length), its photons' rate semi.Istim/q. The domains' mean taken from the last iterate (Newton's otherwise). c, "
             "J_th, t as set here, else the material's (cstim, jthreshold, tgain).")});
+    add({QStringLiteral("semiconductor/laser"), tr("Lasing (Cavity Mode)"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
+         Level::Domain,
+         {selectionProp(none),
+          text(QStringLiteral("mode"), tr("Resonator"), QStringLiteral("emr"),
+               tr("The Electromagnetic Waves, Eigenfrequency whose mode lases - the one its step kept (solved before)")),
+          choice(QStringLiteral("gain"), tr("Gain"), {QStringLiteral("logarithmic"), QStringLiteral("linear"), QStringLiteral("quantum")},
+                 {tr("Logarithmic: g0 ln((N + Ns)/(Ntr + Ns))"), tr("Linear: a (N - Ntr)"), tr("Its quantum wells' (a Laser L-I step's table)")},
+                 QStringLiteral("logarithmic"), tr("The material gain at the mode's wavelength of the carriers N there")),
+          shownIf(text(QStringLiteral("wells"), tr("Quantum wells"), QStringLiteral("qw"), tr("The Quantum Wells physics whose spectrum's gain it is")),
+                  QStringLiteral("gain=quantum")),
+          shownIf(text(QStringLiteral("spectrum"), tr("Spectrum step"), QString(),
+                       tr("Whose options the wells' spectrum is solved with: its states, broadening (empty: its study's first)")),
+                  QStringLiteral("gain=quantum")),
+          shownIf(choice(QStringLiteral("polarization"), tr("Polarization"), {QStringLiteral("te"), QStringLiteral("tm")},
+                         {tr("TE: the field in the wells' plane (a VCSEL's)"), tr("TM: along their axis")}, QStringLiteral("te")),
+                  QStringLiteral("gain=quantum")),
+          shownIf(expr(QStringLiteral("Nmin"), tr("Densities from"), QStringLiteral("1/m^3"), QStringLiteral("1e17[1/cm^3]")), QStringLiteral("gain=quantum")),
+          shownIf(expr(QStringLiteral("Nmax"), tr("Densities to"), QStringLiteral("1/m^3"), QStringLiteral("2e19[1/cm^3]")), QStringLiteral("gain=quantum")),
+          shownIf(integer(QStringLiteral("points"), tr("Densities"), 25, tr("Of the table, by their logarithm")), QStringLiteral("gain=quantum")),
+          shownIf(expr(QStringLiteral("g0"), tr("Gain coefficient g0"), QStringLiteral("1/m"), QStringLiteral("2000[1/cm]")),
+                  QStringLiteral("gain=logarithmic")),
+          shownIf(expr(QStringLiteral("Ns"), tr("Shift Ns"), QStringLiteral("1/m^3"), QStringLiteral("0[1/cm^3]")), QStringLiteral("gain=logarithmic")),
+          shownIf(expr(QStringLiteral("a"), tr("Differential gain a"), QStringLiteral("m^2"), QStringLiteral("5e-16[cm^2]")), QStringLiteral("gain=linear")),
+          shownIf(expr(QStringLiteral("Ntr"), tr("Transparency density Ntr"), QStringLiteral("1/m^3"), QStringLiteral("2e18[1/cm^3]")),
+                  QStringLiteral("gain!=quantum")),
+          choice(QStringLiteral("carrier"), tr("Carriers N"), {QStringLiteral("mean"), QStringLiteral("electrons"), QStringLiteral("holes")},
+                 {tr("√(n p)"), tr("Electrons n"), tr("Holes p")}, QStringLiteral("mean")),
+          expr(QStringLiteral("beta"), tr("Spontaneous emission factor β"), QString(), QStringLiteral("1e-4"),
+               tr("Of the radiative recombination on its domains, the share into the mode")),
+          expr(QStringLiteral("ng"), tr("Group index"), QString(), QString(),
+               tr("Of the gain region: the photons' velocity c/ng there (empty: the resonator's index there, √Re ε)")),
+          expr(QStringLiteral("eta"), tr("Output share η"), QString(), QStringLiteral("1"),
+               tr("Of the mode's loss rate ω/Q, the share that is light out (the rest absorbed, or out the other way)"))},
+         {}, {}, false, false, QStringLiteral("las"),
+         tr("A laser: the photons S of a resonator's mode (the one its Eigenfrequency step kept) solved with the carriers - "
+            "their balance (G - 1/τp) S + β Rsp = 0, τp = Q/ω the cold cavity's photon lifetime, G = Σ v g(N) Π the modal "
+            "gain rate (g the material gain of the carriers N at each node of its domains, v = c/ng, Π each node's share of the "
+            "mode's energy), Rsp the radiative recombination on its domains (its material's B: a Radiative Recombination "
+            "there) - and the stimulated recombination v g(N) S Π at each node taken from its carriers: below threshold S "
+            "spontaneous, above it the carriers clamped and the current light. semi.S, semi.Pout (η ħω S/τp, W), semi.G and "
+            "semi.Gnet = G - 1/τp (1/s), semi.Gamma (Σ Π), semi.gth (the material gain at threshold, 1/(τp v Γ)), semi.Istim "
+            "(q, the stimulated recombination), semi.Nact (the carriers' mean on its domains), semi.taup; at each point "
+            "semi.gain and semi.Rst. Stationary steps, and a Laser L-I step's bias points.")});
     add({QStringLiteral("semiconductor/fn"), tr("Fowler-Nordheim Tunnelling"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
          {selectionProp(none),
@@ -2006,7 +2049,8 @@ QList<NodeKind> makeKinds()
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
          {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("states"),
-          QStringLiteral("spectrum"), QStringLiteral("bands"), QStringLiteral("eigenvalue"), QStringLiteral("eigenfrequency"), QStringLiteral("sweep")},
+          QStringLiteral("spectrum"), QStringLiteral("bands"), QStringLiteral("eigenvalue"), QStringLiteral("eigenfrequency"), QStringLiteral("laser"),
+          QStringLiteral("sweep")},
          {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
@@ -2146,12 +2190,26 @@ QList<NodeKind> makeKinds()
              {physics, integer(QStringLiteral("count"), tr("Eigenfrequencies"), 6, tr("Those nearest what it searches about")),
               expr(QStringLiteral("around"), tr("Search about"), QString(), QStringLiteral("1[um]"),
                    tr("A free-space wavelength (980[nm]) or a frequency (306[THz]); its media taken there")),
+              integer(QStringLiteral("keep"), tr("Mode kept for the steps after"), 0,
+                      tr("The mode a laser's step after it lases in: its number of those found (0: the one of highest Q)")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved before")),
               before, nonlinear},
              {}, {}, false, false, QStringLiteral("eig"),
              tr("A resonator's (Electromagnetic Waves, Eigenfrequency) modes nearest a frequency or wavelength: each a solution, "
-                "by frequency - its eigenfrequency, Q and fields. Physics at rest are solved first.")});
+                "by frequency - its eigenfrequency, Q and fields. Physics at rest are solved first; the steps after see the mode "
+                "kept.")});
+        add({QStringLiteral("laser"), tr("Laser L-I"), QStringLiteral("step"), QStringLiteral("laser"), Level::None,
+             {physics,
+              text(QStringLiteral("contact"), tr("Contact swept"), QStringLiteral("anode"), tr("A semiconductor's metal contact, by name")),
+              text(QStringLiteral("voltages"), tr("Its voltages"), QStringLiteral("range(0, 0.05, 2)"),
+                   tr("In volts, or with a unit: range(start, step, stop), linspace(start, stop, count), or values split by commas")),
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"), tr("Of coupled physics at each point")),
+              nonlinear},
+             {}, {}, false, false, QStringLiteral("lis"),
+             tr("A laser's light against its current: the contact held at each voltage, the physics at rest solved there - a "
+                "semiconductor's Lasing in the mode an Eigenfrequency step before it kept - each point a solution (by voltage, "
+                "from the last): semi.Pout, semi.S against semi.I_<contact>, its threshold where semi.Gnet reaches nought.")});
         add({QStringLiteral("states"), tr("Quantum States"), QStringLiteral("step"), QStringLiteral("states"), Level::None,
              {physics, integer(QStringLiteral("states"), tr("States of each carrier"), 4, tr("The lowest: electrons upward, holes downward")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
@@ -2367,6 +2425,9 @@ QList<NodeKind> makeKinds()
               // modes last; a transient's times, a spectrum before the sweep.)
               choice(QStringLiteral("against"), tr("Plot against"), {QStringLiteral("auto"), QStringLiteral("sweep"), QStringLiteral("steps")},
                      {tr("Automatic"), tr("The sweep's parameters"), tr("The times, frequencies or modes")}, QStringLiteral("auto")),
+              text(QStringLiteral("x"), tr("Against a global"), QString(),
+                   tr("An expression of the globals along x, each solution's value of it, in place of its one axis (semi.I_anode: a "
+                      "laser's light against its current); empty: the axis itself")),
               choice(QStringLiteral("modes"), tr("Modes"), {QStringLiteral("auto"), QStringLiteral("all"), QStringLiteral("chosen")},
                      {tr("Automatic: the mode its step chose where it chose one, else each"), tr("Each (an axis of them)"),
                       tr("The one its step chose, at each frequency and parameter value")},
