@@ -156,6 +156,7 @@ qucs_add_test(test_sheet_doc)
 qucs_add_test(test_zip_doc)
 qucs_add_test(test_layout_doc)
 qucs_add_test(test_multiphysics_doc)
+qucs_add_test(test_multiphysics_view)
 # (The window's multiphysics end to end - every physics' examples solved:
 # five minutes and more under the sanitizers on CI's runners, as the
 # engine's tests.)
