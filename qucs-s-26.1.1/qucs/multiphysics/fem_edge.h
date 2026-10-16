@@ -91,6 +91,7 @@ struct EigenResult {
     int restarts = 0;
     int products = 0;
     QString error;
+    bool cancelled = false;   ///< stopped when asked, before it was done: nothing found
 };
 /*!
  * The \a count eigenvalues of largest magnitude of the operator \a apply
@@ -98,10 +99,12 @@ struct EigenResult {
  * basis of \a basis vectors (0: chosen), restarted on its sorted Schur
  * form's wanted part until each wanted pair's residual is under \a
  * tolerance relative to its value. With Op = (A - σB)⁻¹B these are the
- * eigenvalues of A x = λ B x nearest σ: λ = σ + 1/θ.
+ * eigenvalues of A x = λ B x nearest σ: λ = σ + 1/θ. \a stop, when given,
+ * is asked before each product: true stops it (cancelled, nothing found).
  */
 EigenResult largestEigenvalues(int n, int count, const std::function<void(const Eigen::VectorXcd&, Eigen::VectorXcd&)>& apply,
-                               int basis = 0, double tolerance = 1e-10, int maxRestarts = 300);
+                               int basis = 0, double tolerance = 1e-10, int maxRestarts = 300,
+                               const std::function<bool()>& stop = {});
 
 } // namespace qucs_s::fem
 

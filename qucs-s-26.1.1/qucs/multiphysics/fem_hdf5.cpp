@@ -80,6 +80,9 @@ bool Hdf5File::openData(const QByteArray& data, QString* error)
             break;
         }
     if (at < 0) return fail(tr("it is not an HDF5 file"));
+    // (Its signature alone, cut after it: its bytes past the end were read -
+    // the fuzzing of 2026-10-16.)
+    if (!fits(at, 12)) return fail(tr("its HDF5 superblock is cut short"));
     const int version = quint8(a_data[at + 8]);
     if (version != 2 && version != 3) return fail(tr("its HDF5 superblock is of version %1: 2 and 3 are read").arg(version));
     a_O = quint8(a_data[at + 9]);
@@ -105,6 +108,10 @@ std::vector<Hdf5File::Message> Hdf5File::messages(quint64 object) const
     const int sizeBytes = 1 << (flags & 3);
     const qint64 size = qint64(u(p, sizeBytes));
     p += sizeBytes;
+    if (!fits(p, size)) {
+        a_error = tr("an object header past the file's end");
+        return {};
+    }
     const int prefix = 4 + ((flags & 0x04) ? 2 : 0);
     // Its first chunk, then each continuation's.
     std::vector<std::pair<qint64, qint64>> chunks{{p, p + size}};
@@ -196,7 +203,7 @@ std::vector<std::pair<QString, quint64>> Hdf5File::links(quint64 object) const
 
 std::optional<Hdf5File::Value> Hdf5File::decode(qint64 type, qint64 space, qint64 data, qint64 available) const
 {
-    if (!fits(type, 8) || !fits(space, 2)) return std::nullopt;
+    if (!fits(type, 8) || !fits(space, 4)) return std::nullopt;
     const int cls = quint8(a_data[type]) & 0x0F;
     const int bits = quint8(a_data[type + 1]);
     const qint64 size = qint64(u(type + 4, 4));
@@ -206,13 +213,20 @@ std::optional<Hdf5File::Value> Hdf5File::decode(qint64 type, qint64 space, qint6
     qint64 dims = space + (version == 1 ? 8 : 4);
     quint64 count = 1;
     if (version == 2 && quint8(a_data[space + 3]) == 2) count = 0;   // (null)
+    // (Each value a byte at least: no more of them than the file's bytes -
+    // checked as they are multiplied, which a damaged file's dimensions
+    // overflowed, 2^60 by 512: the fuzzing of 2026-10-16.)
+    const quint64 most = quint64(a_data.size());
     for (int i = 0; i < rank; ++i) {
         const quint64 d = u(dims + qint64(i) * a_L, a_L);
         v.dims.push_back(d);
+        if (d != 0 && count > most / d) return std::nullopt;
         count *= d;
     }
-    if (size <= 0 || count > quint64(available / size) + 1 || !fits(data, qint64(count) * size)) return std::nullopt;
-    v.raw = a_data.mid(data, int(count * quint64(size)));
+    if (size <= 0 || quint64(size) > most || count > most / quint64(size) || count > quint64(available / size) + 1
+        || !fits(data, qint64(count) * size))
+        return std::nullopt;
+    v.raw = a_data.mid(data, qsizetype(count * quint64(size)));
     for (quint64 i = 0; i < count; ++i) {
         const qint64 at = data + qint64(i) * size;
         if (cls == 0) {   // fixed point (little-endian)
@@ -329,6 +343,10 @@ QByteArray Hdf5File::heapObject(quint64 heap, const QByteArray& id) const
     const int maxHeapBits = int(u(p + 2 + 2 * a_L, 2));
     const quint64 rootBlock = u(p + 2 + 2 * a_L + 4, a_O);
     const int rows = int(u(p + 2 + 2 * a_L + 4 + a_O, 2));
+    // (Blocks double in size row by row: no heap has more than 64 rows. A
+    // damaged one's - a shift by its row number, a block of size nought, a
+    // block its own child - are not walked.)
+    if (rows > 64 || start == 0) return {};
     const int offsetBytes = (maxHeapBits + 7) / 8, lengthBytes = bytesFor(std::min(maxDirect, maxManaged));
     // (A managed object: huge ones and tiny ones - Lumerical's files have none
     // - not read.)
@@ -340,9 +358,9 @@ QByteArray Hdf5File::heapObject(quint64 heap, const QByteArray& id) const
     // Its block: the root direct, or one an indirect block's rows hold.
     const int maxDirectRows = log2Of(maxDirect) - log2Of(start) + 2;
     const int entry = a_O + (filters > 0 ? a_L + 4 : 0);
-    std::function<qint64(quint64, int, quint64)> locate = [&](quint64 block, int nrows, quint64 blockOffset) -> qint64 {
+    std::function<qint64(quint64, int, quint64, int)> locate = [&](quint64 block, int nrows, quint64 blockOffset, int level) -> qint64 {
         const qint64 b = qint64(block);
-        if (!fits(b, 4) || std::memcmp(a_data.constData() + b, "FHIB", 4) != 0) return -1;
+        if (nrows > 64 || level > 64 || !fits(b, 4) || std::memcmp(a_data.constData() + b, "FHIB", 4) != 0) return -1;
         const qint64 entries = b + 5 + a_O + offsetBytes;
         quint64 rowStart = blockOffset;
         const int directRows = std::min(nrows, maxDirectRows);
@@ -357,13 +375,13 @@ QByteArray Hdf5File::heapObject(quint64 heap, const QByteArray& id) const
                 }
                 const qint64 at = entries + qint64(directRows * width) * entry + qint64((r - maxDirectRows) * width + int(col)) * a_O;
                 const int childRows = log2Of(s) - log2Of(start * quint64(width)) + 1;
-                return locate(u(at, a_O), childRows, childOffset);
+                return locate(u(at, a_O), childRows, childOffset, level + 1);
             }
             rowStart += span;
         }
         return -1;
     };
-    const qint64 at = rows == 0 ? qint64(rootBlock + offset) : locate(rootBlock, rows, 0);
+    const qint64 at = rows == 0 ? qint64(rootBlock + offset) : locate(rootBlock, rows, 0, 0);
     if (at < 0 || !fits(at, qint64(length))) return {};
     return a_data.mid(at, int(length));
 }
@@ -377,7 +395,9 @@ std::vector<QByteArray> Hdf5File::treeRecords(quint64 tree) const
     const int recordSize = int(u(t + 10, 2)), depth = int(u(t + 12, 2));
     const quint64 rootNode = u(t + 16, a_O);
     const int rootRecords = int(u(t + 16 + a_O, 2));
-    if (recordSize <= 0 || nodeSize <= 10) return out;
+    // (No B-tree of a file this reads is 64 deep: a damaged one's depth, up
+    // to 65535, was as many calls deep.)
+    if (recordSize <= 0 || nodeSize <= 10 || depth > 64) return out;
     // The child pointers' sizes by depth: their records' and totals' bytes.
     std::vector<quint64> maxRecords(std::size_t(depth) + 1), maxTotal(std::size_t(depth) + 1);
     std::vector<int> pointerSize(std::size_t(depth) + 1, 0);

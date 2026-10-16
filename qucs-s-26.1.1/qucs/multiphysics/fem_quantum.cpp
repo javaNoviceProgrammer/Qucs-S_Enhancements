@@ -1428,12 +1428,19 @@ bool QuantumProblem::ladder(int c, int count, QString* error)
             return false;
         }
         const int asked = std::min(count + 3, n - 2);
-        const EigenResult r = largestEigenvalues(n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
-            const Eigen::VectorXd re = M * x.real(), im = M * x.imag();
-            const Eigen::VectorXd sr = llt.solve(re), si = llt.solve(im);
-            y.resize(n);
-            for (int i = 0; i < n; ++i) y(i) = std::complex<double>(sr(i), si(i));
-        });
+        const EigenResult r = largestEigenvalues(
+            n, asked,
+            [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
+                const Eigen::VectorXd re = M * x.real(), im = M * x.imag();
+                const Eigen::VectorXd sr = llt.solve(re), si = llt.solve(im);
+                y.resize(n);
+                for (int i = 0; i < n; ++i) y(i) = std::complex<double>(sr(i), si(i));
+            },
+            0, 1e-10, 300, [this] { return cancelled(); });
+        if (r.cancelled) {
+            *error = tr("%1: cancelled").arg(a_node->name());
+            return false;
+        }
         if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
         // Rayleigh and Ritz in the real space they span (a degenerate pair
         // comes out of the solver mixed, complex): M-orthonormal, then K's
@@ -2098,7 +2105,11 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
                             y = solve(Mc * v);
                             project(y);
                         },
-                        0, check ? 1e-5 : 1e-10);
+                        0, check ? 1e-5 : 1e-10, 300, [this] { return cancelled(); });
+                    if (r.cancelled) {
+                        *error = tr("%1: cancelled").arg(a_node->name());
+                        return false;
+                    }
                     if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
                     bool higher = false;
                     for (std::size_t c = 0; c < r.vectors.size(); ++c) {

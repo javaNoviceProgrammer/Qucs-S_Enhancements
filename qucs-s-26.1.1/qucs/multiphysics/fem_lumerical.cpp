@@ -418,7 +418,14 @@ LumericalImport importLumericalMqw(const QString& path)
             return out;
         }
         const Record& r = rec->second;
+        // (Each record a damaged project may not have: said, not read
+        // where there is none - an empty optional's -> read garbage, Qucs-S
+        // gone: the fuzzing of 2026-10-16.)
         const std::optional<Record> kp = r.child(QStringLiteral("KdotP"));
+        if (!kp) {
+            out.error = tr("its material %1 has no k·p record (KdotP) read").arg(l.material);
+            return out;
+        }
         const bool wz = kp->number(QStringLiteral("crystal structure"), 0) == 1;
         wurtzites += wz ? 1 : 0;
         const std::optional<Record> valley = r.child(QStringLiteral("Valley 0"));
@@ -475,6 +482,10 @@ LumericalImport importLumericalMqw(const QString& path)
         const double a = latA ? latA->model(T, 2) : NAN;
         if (wz) {
             const std::optional<Record> w = kp->child(QStringLiteral("wurtzite parameters"));
+            if (!w) {
+                out.error = tr("its material %1 has no wurtzite parameters read").arg(l.material);
+                return out;
+            }
             QStringList A, D;
             for (int k = 1; k <= 6; ++k) {
                 A << num(w->number(QStringLiteral("A%1").arg(k), 0));
@@ -498,6 +509,10 @@ LumericalImport importLumericalMqw(const QString& path)
             if (l.strain != 0) m.insert(QStringLiteral("exx"), num(l.strain));
         } else {
             const std::optional<Record> z = kp->child(QStringLiteral("zincblende parameters"));
+            if (!z) {
+                out.error = tr("its material %1 has no zincblende parameters read").arg(l.material);
+                return out;
+            }
             const double g1 = z->number(QStringLiteral("gamma1")), g2 = z->number(QStringLiteral("gamma2")), g3 = z->number(QStringLiteral("gamma3"));
             if (!(g1 > 2 * g2) || !(g1 > g2)) {
                 out.error = tr("its material %1's Luttinger parameters (%2, %3) make no masses").arg(l.material).arg(g1).arg(g2);
