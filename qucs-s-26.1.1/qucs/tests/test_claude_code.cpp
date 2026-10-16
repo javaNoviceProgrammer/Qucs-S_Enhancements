@@ -27,6 +27,13 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QMap>
+#include <QImageReader>
+#include <QPainter>
+#include <QPdfWriter>
+#include <QDropEvent>
+#include <QRandomGenerator>
+#include <QClipboard>
+#include <QMimeData>
 #include <QMessageBox>
 #include <QTableView>
 #include <QLabel>
@@ -3502,6 +3509,193 @@ private slots:
         QTRY_COMPARE(tabs.current(), panel);
         QCOMPARE(tabs.count(), tabsNow + 1);
         QDir(history::directory()).removeRecursively();
+    }
+
+    // An image dropped on the chat box or the conversation, or pasted, is
+    // attached to the next prompt: a small picture above the box, its ×
+    // taking it off. Sent, Claude is given each - an image block of its
+    // data before the text (the CLI's stream-json, as the API has it),
+    // its file said - and it stays in the prompt's line, kept with the
+    // conversation and back in the box when the prompt is edited. One too
+    // large for the API is scaled and written smaller; what is no image is
+    // not taken; text pasted or dropped is text.
+    void imagesDroppedAreShownToClaude()
+    {
+        const QString work = fresh("dropwork");
+        const QString cache = fresh("dropcache");
+        qputenv("QUCS_CACHE_DIR", cache.toUtf8());
+        QImage plot(300, 120, QImage::Format_RGB32);
+        plot.fill(Qt::white);
+        for (int x = 0; x < 300; ++x) plot.setPixel(x, 60 + int(40 * std::sin(x / 20.0)), qRgb(0, 0, 200));
+        QVERIFY(plot.save(work + "/plot.png"));
+        QImage big(2400, 1600, QImage::Format_RGB32);   // (noise: too large for the API as a PNG)
+        QRandomGenerator noise(7);
+        for (int y = 0; y < big.height(); ++y) {
+            auto* line = reinterpret_cast<quint32*>(big.scanLine(y));
+            for (int x = 0; x < big.width(); ++x) line[x] = 0xff000000u | (noise.generate() & 0xffffffu);
+        }
+        QVERIFY(big.save(work + "/big.png"));
+        QFile notes(work + "/notes.sch");
+        QVERIFY(notes.open(QIODevice::WriteOnly) && notes.write("<Qucs Schematic 1.0>\n") > 0);
+        notes.close();
+
+        // As Claude is given them: a PNG as it is; the noise as a JPEG of
+        // 2000 pixels, within the limit; a schematic no image.
+        QString type, why;
+        QFile plotFile(work + "/plot.png");
+        QVERIFY(plotFile.open(QIODevice::ReadOnly));
+        QCOMPARE(qucs_s::claude::imageForClaude(work + "/plot.png", &type), plotFile.readAll());
+        QCOMPARE(type, QStringLiteral("image/png"));
+        const QByteArray smaller = qucs_s::claude::imageForClaude(work + "/big.png", &type);
+        QCOMPARE(type, QStringLiteral("image/jpeg"));
+        QVERIFY(smaller.size() <= 3932160 && !smaller.isEmpty());
+        QCOMPARE(QImage::fromData(smaller).size(), QSize(2000, 1333));
+        QVERIFY(qucs_s::claude::imageForClaude(work + "/notes.sch", &type, &why).isEmpty() && why.contains("notes.sch"));
+        QCOMPARE(qucs_s::claude::promptContent("words", {}).toString(), QStringLiteral("words"));
+
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QVERIFY(!panel.imageStrip()->isVisible());
+        // Files dropped on the box: the image taken, the schematic not, no
+        // name put in as text.
+        QMimeData files;
+        files.setUrls({QUrl::fromLocalFile(work + "/plot.png"), QUrl::fromLocalFile(work + "/notes.sch")});
+        QDragEnterEvent enter(QPoint(10, 10), Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.composer()->viewport(), &enter);
+        QVERIFY(enter.isAccepted());
+        QDropEvent drop(QPointF(10, 10), Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.composer()->viewport(), &drop);
+        QVERIFY(drop.isAccepted());
+        QCOMPARE(panel.attachedImages(), QStringList{work + "/plot.png"});
+        QVERIFY(panel.composer()->toPlainText().isEmpty());
+        QVERIFY(panel.imageStrip()->isVisible());
+        QCOMPARE(panel.imageStrip()->findChildren<QFrame*>("claudeImage").size(), 1);
+        QVERIFY(panel.sendButton()->isEnabled());   // (an image alone may be sent)
+        // The same file again: once. Another on the conversation: taken.
+        QCoreApplication::sendEvent(panel.composer()->viewport(), &drop);
+        QCOMPARE(panel.attachedImages().size(), 1);
+        QImage dot(40, 40, QImage::Format_RGB32);
+        dot.fill(Qt::darkMagenta);
+        QVERIFY(dot.save(work + "/dot.jpg"));
+        QMimeData another;
+        another.setUrls({QUrl::fromLocalFile(work + "/dot.jpg")});
+        QDragEnterEvent onViewEnter(QPoint(30, 30), Qt::CopyAction, &another, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.transcript()->viewport(), &onViewEnter);
+        QVERIFY(onViewEnter.isAccepted());
+        QDropEvent onView(QPointF(30, 30), Qt::CopyAction, &another, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.transcript()->viewport(), &onView);
+        QCOMPARE(panel.attachedImages(), (QStringList{work + "/plot.png", work + "/dot.jpg"}));
+        panel.removeAttachedImage(1);
+        QCOMPARE(panel.attachedImages().size(), 1);
+        // A schematic alone: not taken - on the conversation not even let
+        // in (no drop there but an image's).
+        QMimeData schematic;
+        schematic.setUrls({QUrl::fromLocalFile(work + "/notes.sch")});
+        QDragEnterEvent other(QPoint(10, 10), Qt::CopyAction, &schematic, Qt::LeftButton, Qt::NoModifier);
+        other.ignore();
+        QCoreApplication::sendEvent(panel.transcript()->viewport(), &other);
+        QVERIFY(!other.isAccepted());
+        QVERIFY(!panel.attachImages(&schematic));
+        // A PDF neither (Qt reads its first page as a picture: not all of it).
+        {
+            QPdfWriter pdf(work + "/paper.pdf");
+            QPainter p(&pdf);
+            p.drawText(100, 100, "a page");
+        }
+        QVERIFY(QImageReader(work + "/paper.pdf").canRead() || !QImageReader::supportedImageFormats().contains("pdf"));
+        QVERIFY(!panel.attachImageFiles({work + "/paper.pdf"}));
+        // A screenshot pasted: kept as a PNG in the cache, as it was.
+        QImage shot(64, 48, QImage::Format_RGB32);
+        shot.fill(qRgb(255, 0, 0));
+        QApplication::clipboard()->setImage(shot);
+        panel.composer()->setFocus();
+        QTest::keyClick(panel.composer(), Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(panel.attachedImages().size(), 2);
+        const QString pasted = panel.attachedImages().at(1);
+        QVERIFY2(pasted.startsWith(cache + "/claude-images/") && pasted.endsWith(".png"), qPrintable(pasted));
+        QCOMPARE(QImage(pasted).size(), QSize(64, 48));
+        QCOMPARE(QImage(pasted).pixel(3, 3), qRgb(255, 0, 0));
+        QVERIFY(panel.composer()->toPlainText().isEmpty());
+        // Text with a picture of itself (a spreadsheet's cells copied): text.
+        auto* cells = new QMimeData;
+        cells->setText("A1 B1");
+        QImage table(30, 12, QImage::Format_RGB32);
+        table.fill(Qt::darkGreen);
+        cells->setImageData(table);
+        QApplication::clipboard()->setMimeData(cells);
+        QTest::keyClick(panel.composer(), Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("A1 B1"));
+        QCOMPARE(panel.attachedImages().size(), 2);
+        panel.composer()->clear();
+        // Text pasted: text.
+        QApplication::clipboard()->setText("What does the plot show?");
+        QTest::keyClick(panel.composer(), Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(panel.composer()->toPlainText(), QStringLiteral("What does the plot show?"));
+        QCOMPARE(panel.attachedImages().size(), 2);
+        // Its × takes the screenshot off; the noise attached.
+        QList<QToolButton*> removes = panel.imageStrip()->findChildren<QToolButton*>("claudeImageRemove");
+        QCOMPARE(removes.size(), 2);
+        removes.last()->click();
+        QCOMPARE(panel.attachedImages(), QStringList{work + "/plot.png"});
+        QVERIFY(panel.attachImageFiles({work + "/big.png"}));
+        QCOMPARE(panel.imageStrip()->findChildren<QFrame*>("claudeImage").size(), 2);
+
+#ifndef Q_OS_WIN   // (the fake claude is a shell script)
+        // Sent: each image's block, then the text with their files said.
+        QFile::remove(dir.filePath("prompts"));
+        panel.session()->setProgram(script("writer", kWriter));
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("plot show"), 10000);
+        const QJsonObject message = QJsonDocument::fromJson(read(dir.filePath("prompts")).section('\n', 0, 0).toUtf8()).object();
+        const QJsonArray content = message.value("message").toObject().value("content").toArray();
+        QCOMPARE(content.size(), 3);
+        const QJsonObject first = content.at(0).toObject(), second = content.at(1).toObject(), text = content.at(2).toObject();
+        QCOMPARE(first.value("type").toString(), QStringLiteral("image"));
+        QCOMPARE(first.value("source").toObject().value("type").toString(), QStringLiteral("base64"));
+        QCOMPARE(first.value("source").toObject().value("media_type").toString(), QStringLiteral("image/png"));
+        plotFile.seek(0);
+        QCOMPARE(QByteArray::fromBase64(first.value("source").toObject().value("data").toString().toLatin1()), plotFile.readAll());
+        QCOMPARE(second.value("source").toObject().value("media_type").toString(), QStringLiteral("image/jpeg"));
+        QCOMPARE(QImage::fromData(QByteArray::fromBase64(second.value("source").toObject().value("data").toString().toLatin1())).width(), 2000);
+        QCOMPARE(text.value("type").toString(), QStringLiteral("text"));
+        QVERIFY(text.value("text").toString().startsWith("What does the plot show?"));
+        QVERIFY2(text.value("text").toString().contains("(2 images attached, from: " + QDir::toNativeSeparators(work + "/plot.png")),
+                 qPrintable(text.value("text").toString()));
+        QVERIFY(panel.attachedImages().isEmpty() && !panel.imageStrip()->isVisible());
+        // In its line: the two, small; its text the words alone.
+        panel.renderNow();
+        const auto pictures = [](QTextDocument* doc) {
+            QList<QTextImageFormat> out;
+            for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                    if (it.fragment().charFormat().isImageFormat()) out << it.fragment().charFormat().toImageFormat();
+            return out;
+        };
+        QList<QTextImageFormat> shown = pictures(panel.transcript()->document());
+        QCOMPARE(shown.size(), 2);
+        QCOMPARE(shown.at(0).name(), QUrl::fromLocalFile(work + "/plot.png").toString());
+        QCOMPARE(shown.at(0).width(), 240.0);
+        QVERIFY(shown.at(1).width() <= 240 && shown.at(1).height() <= 180);
+        QVERIFY(!panel.transcriptText().contains("images attached"));
+        // Kept with the conversation, and back; in its export.
+        ClaudeCodePanel again;
+        again.setDefaultDirectory(work);
+        again.restoreConversation(panel.conversationJson());
+        again.renderNow();
+        QCOMPARE(pictures(again.transcript()->document()).size(), 2);
+        // Edited: its images back in the box with its text; cancelled, gone.
+        QVERIFY(panel.editPrompt(0));
+        QCOMPARE(panel.attachedImages(), (QStringList{work + "/plot.png", work + "/big.png"}));
+        panel.cancelEdit();
+        QVERIFY(panel.attachedImages().isEmpty());
+        panel.session()->stop();
+        QTRY_VERIFY(!panel.session()->isBusy());
+        panel.session()->reset();
+#endif
+        qunsetenv("QUCS_CACHE_DIR");
     }
 
     // A reply's images no wider than the panel: a wide plot at the width it

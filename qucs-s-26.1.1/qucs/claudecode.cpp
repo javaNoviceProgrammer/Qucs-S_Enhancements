@@ -16,7 +16,11 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QBuffer>
+#include <QFile>
 #include <QFileInfo>
+#include <QImage>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocale>
@@ -166,6 +170,76 @@ QString stateText(State state)
     case State::Failed: return tr("failed");
     }
     return {};
+}
+
+QByteArray imageForClaude(const QString& path, QString* mediaType, QString* why)
+{
+    constexpr qint64 kMostBytes = 3932160;   // 3.75 MB: 5 MB in base64
+    constexpr int kMostSide = 2000;
+    QImageReader reader(path);
+    reader.setAutoTransform(true);   // (a photo's orientation)
+    const QByteArray format = reader.format().toLower();
+    const QSize size = reader.size();
+    if (!reader.canRead()) {
+        if (why != nullptr) *why = tr("%1 is no image that reads (%2)").arg(QFileInfo(path).fileName(), reader.errorString());
+        return {};
+    }
+    static const QHash<QByteArray, QString> types{{"png", QStringLiteral("image/png")},
+                                                  {"jpeg", QStringLiteral("image/jpeg")},
+                                                  {"jpg", QStringLiteral("image/jpeg")},
+                                                  {"gif", QStringLiteral("image/gif")},
+                                                  {"webp", QStringLiteral("image/webp")}};
+    // As it is: a type Claude takes, small enough, upright (a JPEG's
+    // orientation turned by its reader is written again).
+    if (types.contains(format) && QFileInfo(path).size() <= kMostBytes && size.isValid() && size.width() <= kMostSide
+        && size.height() <= kMostSide && reader.transformation() == QImageIOHandler::TransformationNone) {
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) {
+            *mediaType = types.value(format);
+            return f.readAll();
+        }
+    }
+    QImage image = reader.read();
+    if (image.isNull()) {
+        if (why != nullptr) *why = tr("%1 is no image that reads (%2)").arg(QFileInfo(path).fileName(), reader.errorString());
+        return {};
+    }
+    if (image.width() > kMostSide || image.height() > kMostSide)
+        image = image.scaled(kMostSide, kMostSide, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    for (int pass = 0; pass < 6; ++pass) {
+        for (const char* as : {"PNG", "JPEG"}) {
+            QByteArray bytes;
+            QBuffer buffer(&bytes);
+            buffer.open(QIODevice::WriteOnly);
+            const QImage written = qstrcmp(as, "JPEG") == 0 ? image.convertToFormat(QImage::Format_RGB32) : image;
+            if (!written.save(&buffer, as, qstrcmp(as, "JPEG") == 0 ? 88 : -1)) continue;
+            if (bytes.size() <= kMostBytes) {
+                *mediaType = qstrcmp(as, "JPEG") == 0 ? QStringLiteral("image/jpeg") : QStringLiteral("image/png");
+                return bytes;
+            }
+        }
+        image = image.scaled(image.size() * 0.7, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    }
+    if (why != nullptr) *why = tr("%1 is too large to send").arg(QFileInfo(path).fileName());
+    return {};
+}
+
+QJsonValue promptContent(const QString& prompt, const QStringList& images)
+{
+    if (images.isEmpty()) return prompt;
+    QJsonArray blocks;
+    for (const QString& path : images) {
+        QString type;
+        const QByteArray bytes = imageForClaude(path, &type);
+        if (bytes.isEmpty()) continue;
+        blocks.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
+                                  {QStringLiteral("source"), QJsonObject{{QStringLiteral("type"), QStringLiteral("base64")},
+                                                                         {QStringLiteral("media_type"), type},
+                                                                         {QStringLiteral("data"), QString::fromLatin1(bytes.toBase64())}}}});
+    }
+    if (!prompt.trimmed().isEmpty() || blocks.isEmpty())
+        blocks.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), prompt}});
+    return blocks;
 }
 
 TokenUsage& TokenUsage::operator+=(const TokenUsage& other)
@@ -802,9 +876,9 @@ void Session::answerElicitation(const QString& id, const QString& action, const 
                                                     {QStringLiteral("response"), answer}}}});
 }
 
-bool Session::send(const QString& prompt)
+bool Session::send(const QString& prompt, const QStringList& images)
 {
-    if (a_busy || prompt.trimmed().isEmpty()) return false;
+    if (a_busy || (prompt.trimmed().isEmpty() && images.isEmpty())) return false;
     if (a_program.isEmpty()) {
         setState(State::NotFound);
         return false;
@@ -824,7 +898,7 @@ bool Session::send(const QString& prompt)
     a_streaming = false;
     write({{QStringLiteral("type"), QStringLiteral("user")},
            {QStringLiteral("message"), QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
-                                                   {QStringLiteral("content"), prompt}}},
+                                                   {QStringLiteral("content"), promptContent(prompt, images)}}},
            {QStringLiteral("parent_tool_use_id"), QJsonValue::Null},
            {QStringLiteral("session_id"), a_sessionId}});
     setState(State::Thinking);
