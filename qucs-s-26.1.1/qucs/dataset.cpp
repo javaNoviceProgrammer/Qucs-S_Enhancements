@@ -16,6 +16,7 @@
 #include "spreadsheet.h"
 
 #include <QByteArrayView>
+#include <list>
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -618,9 +619,13 @@ using Complex = std::complex<double>;
 
 const QStringList& functionNames()
 {
-    static const QStringList names{QStringLiteral("db"),   QStringLiteral("abs"),  QStringLiteral("mag"),   QStringLiteral("phase"),
-                                   QStringLiteral("real"), QStringLiteral("imag"), QStringLiteral("sqrt"),  QStringLiteral("log10"),
-                                   QStringLiteral("ln"),   QStringLiteral("exp"),  QStringLiteral("conj")};
+    static const QStringList names{
+        QStringLiteral("db"),    QStringLiteral("abs"),  QStringLiteral("mag"),   QStringLiteral("phase"), QStringLiteral("real"),
+        QStringLiteral("imag"),  QStringLiteral("sqrt"), QStringLiteral("log10"), QStringLiteral("ln"),    QStringLiteral("exp"),
+        QStringLiteral("conj"),  QStringLiteral("sin"),  QStringLiteral("cos"),   QStringLiteral("tan"),   QStringLiteral("asin"),
+        QStringLiteral("acos"),  QStringLiteral("atan"), QStringLiteral("sinh"),  QStringLiteral("cosh"),  QStringLiteral("tanh"),
+        QStringLiteral("arg"),   QStringLiteral("log"),  QStringLiteral("log2"),  QStringLiteral("floor"), QStringLiteral("ceil"),
+        QStringLiteral("round"), QStringLiteral("sign"), QStringLiteral("sq")};
     return names;
 }
 
@@ -628,6 +633,7 @@ const QStringList& functionNames()
 struct Term {
     enum Kind { Number, Name, Negate, Binary, Function } kind = Number;
     double number = 0;
+    double imaginary = 0;   // a number's imaginary part (j)
     QString text;   // a name, a function
     char op = 0;
     std::vector<std::unique_ptr<Term>> args;
@@ -781,8 +787,10 @@ private:
             i += m.capturedLength(0);
             return e;
         }
-        // A name, or a function: a word, then what is in parentheses.
-        static const QRegularExpression word(QStringLiteral("^[A-Za-z_@#][A-Za-z0-9_.#@:/\\[\\]]*"));
+        // A name, or a function: a word, then what is in parentheses. (A
+        // slash a simulator's prefix's, ngspice/tran.v(out); else a
+        // division, L/C.)
+        static const QRegularExpression word(QStringLiteral("^(?:(?:ngspice|xyce|spopus|qucsator)/)?[A-Za-z_@#][A-Za-z0-9_.#@:\\[\\]]*"));
         const QRegularExpressionMatch m = word.match(t.mid(i));
         if (!m.hasMatch()) {
             fail(tr("%1 is not a value").arg(t.mid(i, 12)));
@@ -867,6 +875,26 @@ Complex applyFunction(const QString& f, Complex x)
     if (f == QLatin1String("ln")) return x.imag() == 0 && x.real() > 0 ? Complex(std::log(x.real()), 0) : std::log(x);
     if (f == QLatin1String("exp")) return std::exp(x);
     if (f == QLatin1String("conj")) return std::conj(x);
+    // (Real where the value is: its real function, not the complex one's
+    // rounding of an imaginary nought.)
+    const bool real = x.imag() == 0;
+    if (f == QLatin1String("sin")) return real ? Complex(std::sin(x.real()), 0) : std::sin(x);
+    if (f == QLatin1String("cos")) return real ? Complex(std::cos(x.real()), 0) : std::cos(x);
+    if (f == QLatin1String("tan")) return real ? Complex(std::tan(x.real()), 0) : std::tan(x);
+    if (f == QLatin1String("asin")) return real && std::abs(x.real()) <= 1 ? Complex(std::asin(x.real()), 0) : std::asin(x);
+    if (f == QLatin1String("acos")) return real && std::abs(x.real()) <= 1 ? Complex(std::acos(x.real()), 0) : std::acos(x);
+    if (f == QLatin1String("atan")) return real ? Complex(std::atan(x.real()), 0) : std::atan(x);
+    if (f == QLatin1String("sinh")) return real ? Complex(std::sinh(x.real()), 0) : std::sinh(x);
+    if (f == QLatin1String("cosh")) return real ? Complex(std::cosh(x.real()), 0) : std::cosh(x);
+    if (f == QLatin1String("tanh")) return real ? Complex(std::tanh(x.real()), 0) : std::tanh(x);
+    if (f == QLatin1String("arg")) return Complex(std::arg(x), 0);   // (radians; phase() in degrees)
+    if (f == QLatin1String("log")) return real && x.real() > 0 ? Complex(std::log10(x.real()), 0) : std::log10(x);   // (Nutmeg's: base 10)
+    if (f == QLatin1String("log2")) return real && x.real() > 0 ? Complex(std::log2(x.real()), 0) : std::log(x) / std::log(2.0);
+    if (f == QLatin1String("floor")) return Complex(std::floor(x.real()), std::floor(x.imag()));
+    if (f == QLatin1String("ceil")) return Complex(std::ceil(x.real()), std::ceil(x.imag()));
+    if (f == QLatin1String("round")) return Complex(std::round(x.real()), std::round(x.imag()));
+    if (f == QLatin1String("sign")) return Complex(x.real() > 0 ? 1.0 : x.real() < 0 ? -1.0 : 0.0, 0);
+    if (f == QLatin1String("sq")) return x * x;
     return x;
 }
 
@@ -888,7 +916,7 @@ bool evaluateTerm(const Term* e, Samples* out, QString* error)
     switch (e->kind) {
     case Term::Number:
         out->scalar = true;
-        out->value = Complex(e->number, 0);
+        out->value = Complex(e->number, e->imaginary);
         return true;
     case Term::Name: {
         const Variable* v = e->variable;
@@ -968,36 +996,96 @@ bool evaluate(const Dataset& data, const QString& expression, Variable* out, QSt
     Parser parser(expression);
     std::unique_ptr<Term> root = parser.parse(error);
     if (!root) return false;
+    QList<Term*> all;
+    namesOf(root.get(), all);
+    // Constants - pi, e, j (√-1) -: a name the dataset has no variable of.
     QList<Term*> names;
-    namesOf(root.get(), names);
+    for (Term* n : std::as_const(all)) {
+        const QString c = n->text.toLower();
+        if ((c == QLatin1String("pi") || c == QLatin1String("e") || c == QLatin1String("j")) && data.resolve(n->text).isEmpty()) {
+            n->kind = Term::Number;
+            n->number = c == QLatin1String("pi") ? 3.14159265358979323846 : c == QLatin1String("e") ? 2.71828182845904523536 : 0.0;
+            n->imaginary = c == QLatin1String("j") ? 1.0 : 0.0;
+            continue;
+        }
+        names << n;
+    }
     if (names.isEmpty()) {
         *error = tr("it has no variable: only numbers");
         return false;
     }
-    // Each name's variables; one analysis for all - that of the names that
-    // say which, else the first name's first.
+    // Each name's variables - its dependent ones, else an independent one
+    // (frequency, time, a swept parameter: its value at each sample of the
+    // others, on their sweeps); one analysis for all - that of the names
+    // that say which, else the first name's first.
     QList<QStringList> candidates;
+    QList<const Variable*> independent;
     for (Term* n : std::as_const(names)) {
-        QStringList found = data.resolve(n->text);
-        found.erase(std::remove_if(found.begin(), found.end(), [&data](const QString& name) {
-                        const Variable* v = data.find(name);
-                        return v == nullptr || v->independent || v->size() < 1;
-                    }),
-                    found.end());
-        if (found.isEmpty()) {
+        QStringList found;
+        const Variable* sweep = nullptr;
+        for (const QString& name : data.resolve(n->text)) {
+            const Variable* v = data.find(name);
+            if (v == nullptr || v->size() < 1) continue;
+            if (!v->independent) found << name;
+            else if (sweep == nullptr) sweep = v;
+        }
+        if (found.isEmpty() && sweep == nullptr) {
             *error = tr("there is no variable %1").arg(n->text);
             return false;
         }
         candidates << found;
+        independent << (found.isEmpty() ? sweep : nullptr);
     }
     QStringList dependencies;
-    for (const QStringList& c : std::as_const(candidates))
-        if (c.size() == 1) {
-            dependencies = data.find(c.first())->dependencies;
-            break;
+    for (int k = 0; k < candidates.size() && dependencies.isEmpty(); ++k)
+        if (candidates.at(k).size() == 1) dependencies = data.find(candidates.at(k).first())->dependencies;
+    for (int k = 0; k < candidates.size() && dependencies.isEmpty(); ++k)
+        if (!candidates.at(k).isEmpty()) dependencies = data.find(candidates.at(k).first())->dependencies;
+    // (Of independent variables alone: of one, over itself.)
+    if (dependencies.isEmpty())
+        for (int k = 0; k < names.size(); ++k) {
+            const QString of = independent.at(k)->name;
+            if (dependencies.isEmpty()) dependencies << of;
+            else if (dependencies.first() != of) {
+                *error = tr("%1 and %2 are both independent: an expression of them alone is of one - with a variable over both, "
+                            "each its value at its samples").arg(dependencies.first(), of);
+                return false;
+            }
         }
-    if (dependencies.isEmpty()) dependencies = data.find(candidates.first().first())->dependencies;
+    // An independent variable at each sample of the others: its value
+    // there, the samples running over the sweeps fastest first.
+    std::list<Variable> spread;
     for (int k = 0; k < names.size(); ++k) {
+        if (const Variable* sweep = independent.at(k)) {
+            const qsizetype at = dependencies.indexOf(sweep->name);
+            if (at < 0) {
+                *error = tr("%1 is not a sweep of the others (they are over %2)").arg(names.at(k)->text, dependencies.join(QStringLiteral(", ")));
+                return false;
+            }
+            qint64 stride = 1, total = 1;
+            for (qsizetype d = 0; d < dependencies.size(); ++d) {
+                const Variable* over = data.find(dependencies.at(d));
+                const qint64 n = over != nullptr ? over->size() : 0;
+                if (n < 1) {
+                    *error = tr("its sweep %1 has no values").arg(dependencies.at(d));
+                    return false;
+                }
+                if (d < at) stride *= n;
+                total *= n;
+            }
+            if (total > 100000000) {
+                *error = tr("over %1 it has %2 samples: too many").arg(dependencies.join(QStringLiteral(", "))).arg(total);
+                return false;
+            }
+            Variable v;
+            v.name = sweep->name;
+            v.dependencies = dependencies;
+            v.re.resize(qsizetype(total));
+            for (qint64 i = 0; i < total; ++i) v.re[qsizetype(i)] = sweep->re.at(qsizetype((i / stride) % sweep->size()));
+            spread.push_back(std::move(v));
+            names.at(k)->variable = &spread.back();
+            continue;
+        }
         const Variable* chosen = nullptr;
         for (const QString& name : candidates.at(k))
             if (data.find(name)->dependencies == dependencies && chosen == nullptr) chosen = data.find(name);

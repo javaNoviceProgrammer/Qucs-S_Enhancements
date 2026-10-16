@@ -55,6 +55,7 @@
 #include "rect3ddiagram.h"
 #include "misc.h"
 #include "datasetfile.h"
+#include "dataset.h"
 #include "ink.h"
 
 #include <QTextStream>
@@ -471,14 +472,12 @@ void Diagram::createAxisLabels() {
 
     QStringList used_kernels, used_simulations;
     for (const auto pg: Graphs) {
-      if (!pg->Var.contains("/") || pg->ghost) continue; // Qucsator data; a kept run's
-        QString kernel_name = pg->Var.section('/', 0, 0);
-        QString var_name = pg->Var;
-        auto p = var_name.indexOf('/');
-        var_name = var_name.mid(p + 1);
-        QString sim_name = var_name.section('.', 0, 0);
-        if (!used_simulations.contains(sim_name))
-            used_simulations.append(sim_name);
+        QString kernel_name;
+        const QString var_name = qucs_s::dataset::withoutSimulator(pg->Var, &kernel_name);
+        if (kernel_name.isEmpty() || pg->ghost) continue; // Qucsator data; a kept run's
+        for (const QString &sim_name : Graph::analysesOf(var_name))
+            if (!used_simulations.contains(sim_name))
+                used_simulations.append(sim_name);
         if (!used_kernels.contains(kernel_name))
             used_kernels.append(kernel_name);
     }
@@ -494,14 +493,8 @@ void Diagram::createAxisLabels() {
             if (pg->cPointsY) {
                 QString var_name = pg->Var;
                 if (!QucsSettings.fullTraceName) {
-                    if (used_kernels.count() == 1) {
-                        auto p = var_name.indexOf('/');
-                        var_name = var_name.mid(p + 1);
-                    }
-                    if (used_simulations.count() == 1) {
-                        auto p = var_name.indexOf('.');
-                        var_name = var_name.mid(p + 1);
-                    }
+                    if (used_kernels.count() == 1) var_name = pg->unprefixed();
+                    if (used_simulations.count() == 1) var_name = Graph::withoutAnalysis(var_name, used_simulations.first());
                 }
                 var_name = pg->withValuePart(var_name);
                 if (Name[0] != 'C') {   // location curve ?
@@ -541,14 +534,8 @@ void Diagram::createAxisLabels() {
             if (pg->cPointsY) {
                 QString var_name = pg->Var;
                 if (!QucsSettings.fullTraceName) {
-                    if (used_kernels.count() == 1) {
-                        auto p = var_name.indexOf('/');
-                        var_name = var_name.mid(p + 1);
-                    }
-                    if (used_simulations.count() == 1) {
-                        auto p = var_name.indexOf('.');
-                        var_name = var_name.mid(p + 1);
-                    }
+                    if (used_kernels.count() == 1) var_name = pg->unprefixed();
+                    if (used_simulations.count() == 1) var_name = Graph::withoutAnalysis(var_name, used_simulations.first());
                 }
                 var_name = pg->withValuePart(var_name);
                 if (Name[0] != 'C') {   // location curve ?
@@ -1214,21 +1201,15 @@ int Graph::loadDatFile(const QString &fileName) {
     QString Variable;
     QFileInfo Info(fileName);
 
-    int pos1 = g->Var.indexOf('/');
-//  if(g->Var.right(3) == "].X")  // e.g. stdl[8:0].X
-//    if(pos > g->Var.indexOf('['))
-//      pos = -1;
-
     /* WORK-AROUND: A bug in SCIM (libscim) which Qt is linked to causes
        to change the locale to the default. */
     setlocale(LC_NUMERIC, "C");
 
-    QString tail = "";
-    QString svar = g->Var;
-    if (pos1 > 0) {  // remove simulator signature
-        tail = '.' + g->Var.section('/', 0, 0);
-        svar = g->Var.mid(pos1 + 1);
-    }
+    // The simulator's signature (ngspice/: name.dat.ngspice) - not a
+    // division's slash (v(out)/v(in)).
+    QString simulator;
+    QString svar = qucs_s::dataset::withoutSimulator(g->Var, &simulator);
+    const QString tail = simulator.isEmpty() ? QString() : '.' + simulator;
 
     int pos = svar.indexOf(':');
     if (pos <= 0) {
@@ -1269,6 +1250,13 @@ int Graph::loadDatFile(const QString &fileName) {
         Variable = Variable.left(at);
     }
 
+
+    // An expression of the dataset's variables, dependent and independent
+    // (2*L, db(v(out)/v(in)), 2*pi*frequency*L): evaluated sample by
+    // sample - unless one variable is so named (a Nutmeg equation's own).
+    g->loadError.clear();
+    if (qucs_s::dataset::isExpression(Variable))
+        if (const int read = loadExpression(file.fileName(), Variable, hasExplIndep, ExplIndep); read >= 0) return read;
 
     // A binary dataset (a large run's): from its blocks, the one asked for
     // and those it is over - not the whole file.
@@ -1575,6 +1563,78 @@ int Graph::loadDatFile(const QString &fileName) {
 
     }  // of "if not digital"
 
+    lastLoaded = QDateTime::currentDateTime();
+    return 2;
+}
+
+// An expression's graph: the whole dataset read (dataset.h - text or
+// binary alike), the expression evaluated at each sample, the axes its
+// dependencies' values (or one plotted against, @x), the part of each
+// value shown.
+int Graph::loadExpression(const QString &path, const QString &expression, bool hasExplIndep, const QString &explIndep)
+{
+    namespace ds = qucs_s::dataset;
+    ds::Dataset data;
+    if (!data.read(path)) return -1;   // (its file's own loading says why not)
+    if (data.find(expression) != nullptr) return -1;   // a variable so named
+    ds::Variable v;
+    QString why;
+    if (!ds::evaluate(data, expression, &v, &why)) {
+        loadError = QObject::tr("%1: %2").arg(expression, why);
+        return 0;
+    }
+    auto fail = [this](const QString &reason) {
+        clearData();
+        loadError = reason;
+        return 0;
+    };
+    int counting = 0;
+    if (v.dependencies.isEmpty()) {   // over its own index
+        counting = v.size();
+        if (counting <= 0) return fail(QObject::tr("%1 has no values").arg(expression));
+        double *p = new (std::nothrow) double[counting];
+        if (!p) return fail(QObject::tr("%1: no memory").arg(expression));
+        mutable_axes().push_back(new DataX("number", p, counting));
+        countY = 1;
+        for (int z = 1; z <= counting; z++) *(p++) = double(z);
+    } else {
+        for (const QString &over : v.dependencies) mutable_axes().push_back(new DataX(hasExplIndep ? explIndep : over));
+        countY = 1;
+        for (int ii = int(numAxes()); ii-- > 0;) {
+            DataX *x = mutable_axis(uint(ii));
+            const ds::Variable *values = data.find(x->Var);
+            // (A dependent variable can be the x too, over one variable,
+            // as many values as it has.)
+            qint64 n = -1;
+            if (values != nullptr && values->independent) n = values->size();
+            else if (values != nullptr && values->dependencies.size() == 1)
+                if (const ds::Variable *over = data.find(values->dependencies.first())) n = std::min<qint64>(over->size(), values->size());
+            if (n <= 0 || n > INT_MAX) return fail(QObject::tr("%1: no variable %2 to plot it against").arg(expression, x->Var));
+            double *p = new (std::nothrow) double[n];
+            if (!p) return fail(QObject::tr("%1: no memory").arg(expression));
+            std::copy(values->re.cbegin(), values->re.cbegin() + n, p);
+            x->Points = p;
+            x->count = int(n);
+            counting = int(n);
+            if (countY > INT_MAX / counting) return fail(QObject::tr("%1: too many samples").arg(expression));
+            countY *= counting;
+        }
+        countY /= counting;
+    }
+    const long long total = static_cast<long long>(counting) * countY;
+    if (total <= 0 || total > v.size() || total > INT_MAX / 2)
+        return fail(QObject::tr("%1: %2 values, its sweeps %3").arg(expression).arg(v.size()).arg(total));
+    counting = int(total);
+    double *p = new (std::nothrow) double[2 * static_cast<size_t>(counting)];
+    if (!p) return fail(QObject::tr("%1: no memory").arg(expression));
+    cPointsY = p;
+    for (int z = 0; z < counting; ++z) {
+        double x = v.re.at(z), y = v.isComplex() ? v.im.at(z) : 0.0;
+        // The part of the value shown (dB, the phase, ...), as read.
+        if (valuePart != Graph::ValuePart::Auto) Graph::takeValuePart(valuePart, &x, &y);
+        p[2 * z] = x;
+        p[2 * z + 1] = y;
+    }
     lastLoaded = QDateTime::currentDateTime();
     return 2;
 }

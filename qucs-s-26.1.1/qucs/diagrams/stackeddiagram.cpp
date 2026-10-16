@@ -12,6 +12,7 @@
 
 #include "stackeddiagram.h"
 
+#include "dataset.h"
 #include "main.h"
 #include "marker.h"
 #include "misc.h"
@@ -433,7 +434,7 @@ QStringList StackedDiagram::valuesAt(double x, int paneIndex, const QString& ove
         if (count == 1 && x == xp[0]) value = std::fabs(g->cPointsY[1]) > 1e-250 ? std::hypot(g->cPointsY[0], g->cPointsY[1]) : g->cPointsY[0];
         const Axis* a = graphAxis(g);
         if (std::isfinite(value) && a->log && a->Units != Axis::NoUnits) value = qucs::num2db(value, a->Units);
-        const QString name = g->withValuePart(g->Var.contains(QLatin1Char('/')) ? g->Var.section(QLatin1Char('/'), 1) : g->Var);
+        const QString name = g->withValuePart(g->unprefixed());
         lines << name + QStringLiteral(": ")
                      + (!std::isfinite(value) ? QStringLiteral("-") : marker != nullptr ? marker->numberText(value) : numberText(value));
     }
@@ -454,7 +455,7 @@ QString StackedDiagram::extraMarkerText(Marker const* m) const
             lines << line;
     // (Its own trace is in the text already.)
     const Graph* own = m->graph();
-    const QString ownName = own->withValuePart(own->Var.contains(QLatin1Char('/')) ? own->Var.section(QLatin1Char('/'), 1) : own->Var) + QStringLiteral(": ");
+    const QString ownName = own->withValuePart(own->unprefixed()) + QStringLiteral(": ");
     lines.erase(std::remove_if(lines.begin(), lines.end(), [&](const QString& l) { return l.startsWith(ownName); }), lines.end());
     return lines.isEmpty() ? QString() : QStringLiteral("\n") + lines.join(QLatin1Char('\n'));
 }
@@ -495,17 +496,18 @@ void StackedDiagram::createAxisLabels()
     // the same for all.
     QStringList kernels, analyses;
     for (const Graph* g : Graphs) {
-        if (!g->Var.contains(QLatin1Char('/'))) continue;
-        const QString kernel = g->Var.section(QLatin1Char('/'), 0, 0);
-        const QString analysis = g->Var.section(QLatin1Char('/'), 1).section(QLatin1Char('.'), 0, 0);
+        QString kernel;
+        const QString bare = qucs_s::dataset::withoutSimulator(g->Var, &kernel);
+        if (kernel.isEmpty()) continue;
         if (!kernels.contains(kernel)) kernels << kernel;
-        if (!analyses.contains(analysis)) analyses << analysis;
+        for (const QString& analysis : Graph::analysesOf(bare))
+            if (!analyses.contains(analysis)) analyses << analysis;
     }
     const auto nameOf = [&](const Graph* g) {
         QString name = g->Var;
         if (!QucsSettings.fullTraceName) {
-            if (kernels.size() == 1) name = name.mid(name.indexOf(QLatin1Char('/')) + 1);
-            if (analyses.size() == 1) name = name.mid(name.indexOf(QLatin1Char('.')) + 1);
+            if (kernels.size() == 1) name = g->unprefixed();
+            if (analyses.size() == 1) name = Graph::withoutAnalysis(name, analyses.first());
         }
         return g->withValuePart(name);
     };

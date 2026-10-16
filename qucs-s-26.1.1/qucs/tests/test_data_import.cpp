@@ -26,6 +26,7 @@
 
 #include <QComboBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QPainter>
@@ -680,6 +681,98 @@ private slots:
             d.paintDiagram(&p);
             p.end();
             img.save(grabs + "/diagram.png");
+        }
+        QucsSettings.DefaultSimulator = simulator;
+    }
+
+    // An expression typed over an imported dataset (the user's 2*L over
+    // coax_rlgc_pg1d2): of the dataset chosen, as a variable taken from the
+    // list is - coax_rlgc:2*L -, and drawn; one that does not evaluate in
+    // red, why in its tip; a graph edited keeps its own dataset; the
+    // simulation's ngspice/, a division's slash its own.
+    void anExpressionOverAnImportedDataset()
+    {
+        QDir(dir.path()).mkpath("expr");
+        const QString folder = QFileInfo(dir.filePath("expr")).canonicalFilePath();
+        write("expr/line.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n");
+        write("expr/line.dat.ngspice", "<Qucs Dataset " PACKAGE_VERSION ">\n<indep frequency 2>\n1e6\n2e6\n</indep>\n"
+                                       "<dep ac.v(out) frequency>\n1\n4\n</dep>\n");
+        const QString table = write("coax_rlgc.csv", "frequency,L,C\n1e9,2.5e-7,1e-10\n2e9,2.4e-7,1e-10\n4e9,2.3e-7,1e-10\n");
+        const int simulator = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        {
+            Schematic sch(nullptr, folder + "/line.sch");
+            RectDiagram d;
+            auto* dialog = new DiagramDialog(&d, &sch);
+            dialog->findChild<DataImportPanel*>()->importFiles({table});
+            auto* datasets = dialog->findChild<QComboBox*>("diagramDataset");
+            QCOMPARE(datasets->currentData().toString(), QStringLiteral("coax_rlgc"));
+            auto* input = dialog->findChild<QLineEdit*>("graphInput");
+            auto* graphs = dialog->findChild<QTableWidget*>("diagramGraphs");
+            QVERIFY(input != nullptr && graphs != nullptr);
+            // Typed and added, none chosen in the list.
+            const auto add = [&](const QString& text) {
+                graphs->setCurrentItem(nullptr);
+                input->setText(text);
+                QMetaObject::invokeMethod(dialog, "slotNewGraph");
+                return graphs->item(graphs->rowCount() - 1, 0);
+            };
+            const auto red = [](const QTableWidgetItem* item) { return item->foreground().color() == QColor(Qt::red); };
+            QTableWidgetItem* item = add("2*L");
+            QCOMPARE(item->text(), QStringLiteral("coax_rlgc:2*L"));
+            QVERIFY(!red(item));
+            QVERIFY2(item->toolTip().contains("evaluated at each of their samples"), qPrintable(item->toolTip()));
+            item = add("2*pi*frequency*L");
+            QCOMPARE(item->text(), QStringLiteral("coax_rlgc:2*pi*frequency*L"));
+            QVERIFY(!red(item));
+            item = add("sqrt(L/C)");   // (its slash a division's: the file coax_rlgc.dat's)
+            QVERIFY(!red(item));
+            QVERIFY2(item->toolTip().contains("evaluated at each of their samples"), qPrintable(item->toolTip()));
+            item = add("2*nosuch");
+            QVERIFY(red(item));
+            QVERIFY2(item->toolTip().contains("Not evaluated: there is no variable nosuch"), qPrintable(item->toolTip()));
+            item = add("L");   // (a variable: no tip)
+            QCOMPARE(item->text(), QStringLiteral("coax_rlgc:L"));
+            QVERIFY(!red(item) && item->toolTip().isEmpty());
+            // The simulation's: ngspice's, the division's slash its own.
+            datasets->setCurrentIndex(datasets->findData("line"));
+            QMetaObject::invokeMethod(dialog, "slotReadVarsAndSetSimulator", Q_ARG(int, 0));
+            item = add("ac.v(out)/2");
+            QCOMPARE(item->text(), QStringLiteral("ngspice/ac.v(out)/2"));
+            QVERIFY(!red(item));
+            item = add("ngspice/ac.v(out)*frequency");   // (said: as typed)
+            QCOMPARE(item->text(), QStringLiteral("ngspice/ac.v(out)*frequency"));
+            item = add("coax_rlgc:L*1e6");   // (its dataset said: no simulator's)
+            QCOMPARE(item->text(), QStringLiteral("coax_rlgc:L*1e6"));
+            QVERIFY(!red(item));
+            // The first edited: its own dataset kept, the simulation's
+            // chosen now.
+            graphs->setCurrentCell(0, 0);
+            emit graphs->itemClicked(graphs->item(0, 0));
+            QCOMPARE(input->text(), QStringLiteral("coax_rlgc:2*L"));
+            input->setText("3*L");
+            QCOMPARE(graphs->item(0, 0)->text(), QStringLiteral("coax_rlgc:3*L"));
+            QVERIFY(!red(graphs->item(0, 0)));
+
+            QMetaObject::invokeMethod(dialog, "slotOK");
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCOMPARE(d.Graphs.size(), size_t(8));
+            d.loadGraphData(folder + "/line.dat");
+            for (const int i : {0, 1, 2, 4, 5, 6})
+                QVERIFY2(d.Graphs.at(i)->cPointsY != nullptr, qPrintable(d.Graphs.at(i)->Var + ": " + d.Graphs.at(i)->loadError));
+            const Graph* tripled = d.Graphs.at(0);
+            QCOMPARE(tripled->axisName(0), QStringLiteral("frequency"));
+            QCOMPARE(tripled->count(0), size_t(3));
+            QCOMPARE(tripled->cPointsY[0], 7.5e-7);
+            QVERIFY(std::abs(d.Graphs.at(1)->cPointsY[4] - 2 * M_PI * 4e9 * 2.3e-7) < 1e-12);
+            QVERIFY(std::abs(d.Graphs.at(2)->cPointsY[0] - 50) < 1e-12);
+            QVERIFY(d.Graphs.at(3)->cPointsY == nullptr);
+            QVERIFY2(d.Graphs.at(3)->loadError.contains("nosuch"), qPrintable(d.Graphs.at(3)->loadError));
+            QCOMPARE(d.Graphs.at(4)->cPointsY[2], 2.4e-7);
+            QCOMPARE(d.Graphs.at(5)->cPointsY[0], 0.5);
+            QCOMPARE(d.Graphs.at(5)->cPointsY[2], 2.0);
+            QCOMPARE(d.Graphs.at(6)->cPointsY[2], 8e6);
+            QVERIFY(d.Graphs.at(7)->cPointsY != nullptr && std::abs(d.Graphs.at(7)->cPointsY[4] - 0.23) < 1e-15);
         }
         QucsSettings.DefaultSimulator = simulator;
     }

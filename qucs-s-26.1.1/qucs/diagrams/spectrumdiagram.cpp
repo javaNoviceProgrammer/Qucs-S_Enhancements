@@ -182,12 +182,12 @@ QStringList SpectrumDiagram::summary() const
     for (const Graph* g : Graphs) {
         const Result r = m_results.value(g);
         if (!r.analysis.ok) {
-            if (!r.analysis.error.isEmpty()) lines << QObject::tr("%1: %2").arg(g->Var.section(QLatin1Char('/'), -1), r.analysis.error);
+            if (!r.analysis.error.isEmpty()) lines << QObject::tr("%1: %2").arg(g->unprefixed(), r.analysis.error);
             continue;
         }
         const sp::Analysis& a = r.analysis;
         lines << QObject::tr("%1: f0 %2, %3 window")
-                     .arg(g->Var.section(QLatin1Char('/'), -1), engineering(a.fundamental, QStringLiteral("Hz")),
+                     .arg(g->unprefixed(), engineering(a.fundamental, QStringLiteral("Hz")),
                           sp::windowName(window).replace(QLatin1Char('_'), QLatin1Char(' ')));
         lines << QObject::tr("THD %1 % (%2 dB)  SFDR %3 dB")
                      .arg(QString::number(100 * a.thd, 'g', 3), QString::number(a.thd > 0 ? 20 * std::log10(a.thd) : -400, 'f', 1),
