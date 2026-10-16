@@ -219,7 +219,10 @@ QString formatText()
         "(the modes mostly in it left out, said); pec (the outside by default), pmc; materials by n, kappa (a metal's too) "
         "or epsilonr, one or three along r, z, φ. Fields at φ = 0 emr.Er, Ez, Ephi (each _im too), Hr, Hz, Hphi, normE, "
         "normH, Sr, Sz - the largest |E| outside the pml 1 V/m. m 0 splits into TE0n (E_φ alone) and TM0n, m 1 holds "
-        "HE1n and EH1n, m 2 HE2n... (an LP mode's vector parts); fem_solve lists each mode's lambda0 and Q to seven figures. "
+        "HE1n and EH1n, m 2 HE2n... (an LP mode's vector parts); fem_solve lists each mode's lambda0 and Q to seven figures - "
+        "the solve's on its mesh, not its accuracy (a VCSEL's LP11 splitting, some pm, wants a finer mesh than its modes: solve "
+        "again finer before reading it). A pml's \"reflection\" its strength (1e-6). Modes of Q near 1, mostly in the layers, "
+        "are left out with the layers' own. "
         "Its stored energy emr.U (½ ε0 ∫ Re ε |E|², the layers left out) and loss emr.Ploss = ω U/Q; emr.we its density, "
         "emr.epsr Re ε. The step's \"keep\": the mode the steps after see (its number, 0 the highest Q) - a laser's.\n"
         "Lasers: a semiconductor's \"laser\" feature on its gain region (its wells) lases in a resonator's kept mode "
@@ -289,11 +292,14 @@ QString formatText()
         "from \"F0qw\" - emw.alphaqwTE, alphaqwTM, dnqwTE, dnqwTM. A derived value \"perturbation\" (\"dn\": "
         "emw.dncarriers, \"dalpha\": emw.alphacarriers, any expressions; \"selection\"; \"length\"; \"bias\": the swept "
         "parameter) gives each mode's dneff = (c ε0/2) ∫ n Δn |E|² / ∫ Sz, dalpha, dloss (dB/cm), dphi; along a sweep from its "
-        "first point dphi_sweep and VpiL (V·cm). A mode step keeps \"minneff\" (an index above), \"maxloss\" (dB/cm below), "
-        "\"tefraction\" (with a polarization: TE at it or more, TM at 1 less it or less) and \"choose\"s the mode shown and "
-        "evaluated by default: first, share (most in \"track\"), te, tm - a plot group's \"mode\" 0, a 1D plot group's "
-        "\"modes\" and a derived value's \"solutions\" \"auto\" (the chosen one where the step chose one; \"all\", \"chosen\" "
-        "too). An export \"fieldexport\" writes \"expressions\" on a grid (\"from\", "
+        "first point dphi_sweep and VpiL (V·cm; with a bias of no unit, cm times its unit). A mode step keeps \"minneff\" (an "
+        "index above), \"maxloss\" (dB/cm below), \"tefraction\" (with a polarization: TE at it or more, TM at 1 less it or "
+        "less) and \"choose\"s the mode shown and evaluated by default: first, share (most in \"track\"), te, tm (the "
+        "TE-like, TM-like of the highest index: TE fraction over, under a half) - a plot group's \"mode\" 0, a 1D plot "
+        "group's \"modes\" and a derived value's \"solutions\" \"auto\" (the chosen one where the step chose one; \"all\", "
+        "\"chosen\" too; \"selected\" the plot group's or the export's own point, time, mode). \"track\" chooses by the "
+        "share in its domains about the step's own \"neff\" (its \"follow\" then not followed). A \"mode\" asked that a "
+        "solution has not is refused. An export \"fieldexport\" writes \"expressions\" on a grid (\"from\", "
         "\"to\", \"nx\", \"ny\") or at the mesh's nodes (\"where\": nodes) as csv, npy or dat. A mesh feature \"layered\" "
         "(\"selection\" rectangles of a stack, \"axis\" y, \"hlateral\", \"count\" across each layer) meshes thin layers as "
         "a grid of stretched triangles, not refined.\n"
@@ -380,17 +386,24 @@ QString formatText()
         "is 2 in mm). A property's plain number is in its SI unit. Materials and sources may use x, y and fields (T, V, "
         "es.normE, ec.Qrh...); a material's n and kappa lambda0 - the library's of the wavelength, each checked against the "
         "measured spectra of the refractiveindex.info database: silicon (Green's, Li's) and germanium (Nunley's, Burnett's) n and "
-        "κ; every zinc blende III-V and alloy Afromowitz's oscillator of its binaries at its gap and x, y, T (its lattice's term "
-        "in the infrared), κ its direct gap's edge above it (nought below; an alloy's of its binaries over µ^1.5 Ep); the "
-        "II-VIs, GaN, the oxides, nitrides and their films (ALD alumina, sputtered hafnia, PECVD nitride), the crystals, water, "
-        "the metals; nrange where each holds - a mode or wave solve warns outside it, fem_describe what=material notes it. A "
+        "κ; every zinc blende III-V and alloy Afromowitz's oscillator of its binaries at its gap and x, y (an alloy's bowed as "
+        "half its gap; its ends its binaries' own; its gap broadened 20 meV: finite at it and on above it - InGaAsP Adachi's, "
+        "its edge broadened 50 meV), its lattice's term in the infrared, κ its direct gap's edge above it (nought below; an "
+        "alloy's of its binaries over µ^1.5 Ep); of T a compound's (\"compound\", at its material's T) its oscillator with "
+        "its gap and E0 moved by the gap's shift - its dndT that derivative (the Thermo-optic option takes it); the library's "
+        "entries' n at 300 K, their T the Thermo-optic option's measured dn/dT. SiGe silicon's and germanium's mixed (from 1.9 "
+        "µm). The II-VIs, GaN, the oxides, nitrides and their films (ALD alumina, sputtered hafnia, PECVD nitride: n and κ), "
+        "the crystals, water, the metals; nrange where each holds (a III-V's from 0.2 eV above its gap, mostly-indirect ones' "
+        "from 0.15 eV below their direct gap) - a mode or wave solve warns outside it, fem_describe what=material notes it; a "
+        "formula that fails past its range (a Sellmeier's pole) held at its end there. A "
         "wave feature's Direct-gap absorption and quantum wells' absorption take the place of a material's κ (the same edge), "
         "not added to it. A gate's or Schottky contact's metal beside it its work function phi.\n"
         "Selections (\"selection\"): {\"all\": true}, {\"numbers\": [1, 3]}, {\"objects\": [\"air\"]} (domains in them), "
         "{\"only\": [\"substrate\"]} (domains whose smallest object it is), {\"of\": [\"trace\"], \"side\": \"bottom\"} "
         "(boundaries on an object's edges, those facing down), {\"between\": [[\"a\"], [\"b\"]]}, {\"exterior\": true}, "
         "{\"interior\": true}, {\"adjacent\": {domain rule}}, {\"box\": [x0, y0, x1, y1]}, {\"named\": \"sel\"}; any with "
-        "\"except\": {rule}. An array's name (no object of its own) names all its copies, row_1, row_2... Numbers change "
+        "\"except\": {rule}. An array's name (no object of its own) names all its copies, row_1, row_2... (its input object's "
+        "used up by it: named, the array said). Numbers change "
         "when the geometry does: rules do not.\n"
         "Results: after solving, variables at a point (x, y, t, V, T, es.Ex, es.normE, es.Dx, es.We, ec.Jx, ec.normJ, ec.Qrh, "
         "ht.qx, ht.normq, solid.u, solid.v, solid.disp, solid.sx, solid.mises, mf.Az, mf.Bx, mf.normB, mf.Hx, mf.Jz, mf.normJ, "
@@ -660,20 +673,46 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
 {
     const QString action = args.value(QLatin1String("action")).toString();
     const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    // A file open in a tab that 'new' or 'import' writes over ('replace'):
+    // that tab takes the new model - one tab of the file, the tools on it
+    // (a second tab of it, the tools found the first: its old model solved,
+    // nothing said); its changes not saved are not thrown away.
+    auto tabOf = [this](const QString& file, MultiphysicsDoc** open) -> QString {
+        *open = nullptr;
+        for (QucsDoc* other : a_app->allDocuments())
+            if (!other->getDocName().isEmpty() && sameFile(other->getDocName(), file)) {
+                *open = dynamic_cast<MultiphysicsDoc*>(other);
+                if (*open == nullptr) return tr("%1 is open: another kind of document's file.").arg(QDir::toNativeSeparators(file));
+                if ((*open)->getDocChanged())
+                    return tr("%1 is open, its changes not saved: save or close it first ('replace' does not throw them away).")
+                        .arg(QDir::toNativeSeparators(file));
+            }
+        return QString();
+    };
     if (action == QLatin1String("new")) {
-        MultiphysicsDoc* doc = a_app->newMultiphysicsModel();
+        std::optional<Model> m;
         if (args.contains(QLatin1String("model"))) {
             QString why;
-            std::optional<Model> m = Model::fromJson(QJsonDocument(args.value(QLatin1String("model")).toObject()).toJson(), &why);
+            m = Model::fromJson(QJsonDocument(args.value(QLatin1String("model")).toObject()).toJson(), &why);
             if (!m) return errorResult(tr("'model': %1").arg(why));
-            doc->setModel(*m, tr("Model"));
-            doc->undoStack()->clear();
         }
+        QString file;
+        MultiphysicsDoc* open = nullptr;
         if (!given.isEmpty()) {
-            QString file = absolute(given);
+            file = absolute(given);
             if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
             if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
                 return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+            const QString busy = tabOf(file, &open);
+            if (!busy.isEmpty()) return errorResult(busy);
+        }
+        MultiphysicsDoc* doc = open ? open : a_app->newMultiphysicsModel();
+        if (open) a_app->DocumentTab->setCurrentWidget(open);
+        if (m || open) {
+            doc->setModel(m ? *m : Model::blank(), tr("Model"));
+            doc->undoStack()->clear();
+        }
+        if (!file.isEmpty()) {
             doc->setName(file);
             if (doc->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
             a_app->titleDocumentTab(doc);
@@ -726,18 +765,23 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
         if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
             return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+        MultiphysicsDoc* open = nullptr;
+        if (const QString busy = tabOf(file, &open); !busy.isEmpty()) return errorResult(busy);
         // (Its folder made if it is not there.)
         if (!QDir().mkpath(QFileInfo(file).absolutePath()))
             return errorResult(tr("%1 cannot be made: the model is not written.").arg(QDir::toNativeSeparators(QFileInfo(file).absolutePath())));
-        MultiphysicsDoc* doc = a_app->newMultiphysicsModel();
+        MultiphysicsDoc* doc = open ? open : a_app->newMultiphysicsModel();
+        if (open) a_app->DocumentTab->setCurrentWidget(open);
         doc->setModel(*m, tr("Model"));
         doc->undoStack()->clear();
         doc->setName(file);
         if (doc->save() != 0) {
             // (Not left open, unsaved, in the file's name: a later import or
-            // write of it would meet this tab.)
-            doc->setDocChanged(false);
-            a_app->slotFileClose(a_app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+            // write of it would meet this tab - one of its own made for it.)
+            if (!open) {
+                doc->setDocChanged(false);
+                a_app->slotFileClose(a_app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+            }
             return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
         }
         a_app->titleDocumentTab(doc);
@@ -1001,6 +1045,24 @@ QJsonObject QucsControl::femStop(const QJsonObject& args)
     return jsonResult(o);
 }
 
+/// A mode (state) asked of \a set, of modes: from 1 to the most it has -
+/// else why not (it was clamped: mode 5 of 4 gave the 4th, 0 the 1st, and a
+/// plot group kept "mode": 9).
+static QString modeAsked(const SolutionSet& set, int mode)
+{
+    int most = 0;
+    bool modal = false;
+    for (const auto& s : set.solutions) {
+        modal = modal || s->modeAnalysis;
+        for (int k = 0; k < s->snapshotCount(); ++k) most = std::max(most, s->snapshotMode(k));
+    }
+    const QString what = !set.solutions.empty() && set.solutions.front()->quantumStates ? QObject::tr("state") : QObject::tr("mode");
+    // (No modes here: not this study's - fem_evaluate looks in the others.)
+    if (!modal) return QString();
+    if (mode < 1 || mode > most) return QObject::tr("%1 %2: it has %3 (from 1 to %3)").arg(what).arg(mode).arg(most);
+    return QString();
+}
+
 QJsonObject QucsControl::femSolve(const QJsonObject& args)
 {
     QString error;
@@ -1015,8 +1077,25 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     if (!doc->lastError().isEmpty()) return errorResult(doc->lastError());
     const std::shared_ptr<SolutionSet> set = doc->solutions(study);
     if (!set || set->solutions.empty()) return errorResult(tr("It was not solved."));
+    // A solution's globals as said: at its last output time - a mode
+    // analysis's the mode chosen there, as fem_evaluate's (its last mode
+    // was said at a sweep's last point, the chosen one at the others).
+    auto atItsLast = [](Solution& s) {
+        int k = s.snapshotCount() - 1;
+        if (s.modeAnalysis && !s.eigenfrequencies && k >= 0) {
+            int first = k;
+            for (int j = k; j >= 0 && s.snapshotFrequency(j) == s.snapshotFrequency(k); --j) first = j;
+            k = first;
+            for (int j = first; j < s.snapshotCount(); ++j)
+                if (s.snapshotChosen(j)) {
+                    k = j;
+                    break;
+                }
+        }
+        s.select(k);
+    };
     const std::shared_ptr<Solution> sol = set->solutions.back();
-    sol->select(-1);   // (its last output time)
+    atItsLast(*sol);
     QJsonObject globals;
     for (const Variable& v : sol->globals()) globals.insert(v.name, sol->globalText(v.name));
     // A sweep's solutions, each with its globals (at its last time).
@@ -1024,7 +1103,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     if (set->solutions.size() > 1)
         for (std::size_t i = 0; i < set->solutions.size() && i < 50; ++i) {
             Solution& s = *set->solutions[i];
-            s.select(-1);
+            atItsLast(s);
             QJsonObject g;
             for (const Variable& v : s.globals()) g.insert(v.name, s.globalText(v.name));
             swept.append(QJsonObject{{QStringLiteral("point"), int(i) + 1}, {QStringLiteral("parameters"), s.label}, {QStringLiteral("globals"), g}});
@@ -1045,7 +1124,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     }
     int dofs = 0;
     for (const Field& f : sol->fields())
-        if (f.solved) dofs += f.space->size() * f.count();
+        if (f.solved) dofs += f.unknowns >= 0 ? f.unknowns : f.space->size() * f.count();
     QJsonObject extra;
     if (!swept.isEmpty()) {
         extra.insert(QStringLiteral("sweep"), QJsonObject{{QStringLiteral("parameters"), QJsonArray::fromStringList(set->swept)},
@@ -1079,6 +1158,13 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
         }
         sol->select(was);
         extra.insert(states ? QStringLiteral("states") : QStringLiteral("modes"), modes);
+        // (Seven figures are the solve's, not the mesh's: a VCSEL's modes
+        // moved 0.06 nm on finer meshes, its LP11 group's 7 pm splitting
+        // 27-33 pm, reordered - the oxide's corner.)
+        if (resonator)
+            extra.insert(QStringLiteral("figures"), tr("seven: the solve's on this mesh - its error is the mesh's, larger (a VCSEL's modes "
+                                                       "some 0.05 nm, its vector splittings not yet converged at 0.05 µm): before reading "
+                                                       "splittings, solve again with a finer mesh"));
     }
     if (sol->snapshotCount() > 0)
         extra.insert(sol->photonAxis == 3 ? QStringLiteral("bands") : sol->photonAxis > 0 ? QStringLiteral("spectrum") : sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
@@ -1087,8 +1173,11 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                  {QStringLiteral("to"), sol->photonAxis > 0 ? sol->snapshotText(sol->snapshotCount() - 1)
                                                                             : formatQuantity(sol->snapshotValue(sol->snapshotCount() - 1), sol->snapshotDim())},
                                  {QStringLiteral("globals at"), tr("the last")}});
+    // (A sweep's seconds: all its points', not its last one's.)
+    double seconds = 0;
+    for (const auto& one : set->solutions) seconds += one->seconds;
     QJsonObject result{{QStringLiteral("study"), sol->studyTag},
-                                  {QStringLiteral("seconds"), sol->seconds},
+                                  {QStringLiteral("seconds"), seconds},
                                   {QStringLiteral("unknowns"), dofs},
                                   {QStringLiteral("triangles"), int(sol->mesh().triangles.size())},
                                   {QStringLiteral("log"), QJsonArray::fromStringList(sol->log)},
@@ -1241,6 +1330,8 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
         }
         return out;
     };
+    if (args.contains(QLatin1String("mode")) || args.contains(QLatin1String("state")))
+        if (const QString bad = modeAsked(*set, mode); !bad.isEmpty()) return errorResult(bad);
     Found found = evaluateIn(*set);
     // No study given and the first has not what it reads: the first
     // computed study that has.
@@ -1341,6 +1432,12 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
         const bool hasTime = args.contains(QLatin1String("time")), hasPoint = args.contains(QLatin1String("point"));
         const bool hasFrequency = args.contains(QLatin1String("frequency")), hasMode = args.contains(QLatin1String("mode"));
         const int mode = args.value(QLatin1String("mode")).toInt(1);
+        if (hasMode) {
+            const FNode* g = doc->model().find(group);
+            const QString study = g ? g->text(QStringLiteral("study")) : QString();
+            if (const std::shared_ptr<SolutionSet> set = doc->solutions(study))
+                if (const QString bad = modeAsked(*set, mode); !bad.isEmpty()) return errorResult(bad);
+        }
         QString why;
         if (!doc->editNode(group, [&](FNode& n) {
                 if (hasTime) n.props.insert(QStringLiteral("time"), time);

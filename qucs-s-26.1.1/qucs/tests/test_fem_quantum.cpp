@@ -1364,8 +1364,10 @@ private slots:
     void kramersKronig()
     {
         // The index the window's absorption makes, (c ħ/π) P∫ α(E')/(E'² -
-        // E²) dE': on the infinite well's Lorentzian steps (41 energies)
-        // against the same principal value of their analytic α on 40001.
+        // E²) dE': on the infinite well's Lorentzian steps against the same
+        // principal value of their analytic α on 40001 energies - the
+        // spectrum's every 2.5 meV, and every 10 meV (twice the line's half
+        // width: the integral's own energies between, an eighth of it apart).
         const double gamma = 0.005 * Q, L = 10e-9, eps0 = 8.8541878188e-12, c0 = 299792458.0, Ep = 25 * Q;
         auto alpha = [&](double E) {
             double te = 0;
@@ -1382,32 +1384,38 @@ private slots:
             return te;
         };
         const double lo = 1.5 * Q, hi = 2.1 * Q;
+        for (int energies : {241, 61}) {
         const Run r = run(modelOf(box(QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"),
-                                      QString::fromUtf8(R"x({"type": "spectrum", "energies": "linspace(1.5[eV], 2.1[eV], 241)", "states": 3, "linewidth": "5[meV]"})x"))));
+                                      QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.5[eV], 2.1[eV], %1)", "states": 3, "linewidth": "5[meV]"})x")
+                                          .arg(energies))));
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         Solution& s = *r.solution;
         double worst = 0, most = 0;
-        for (int k = 20; k < s.snapshotCount() - 20; k += 20) {
+        const int every = (energies - 1) / 12;
+        for (int k = every; k < s.snapshotCount() - every; k += every) {
             s.select(k);
             const double E = global(s, QStringLiteral("qw.Ephoton"));
-            // The principal value: the interval about E left out symmetrically.
+            // The principal value: α(E) taken out, the integrand regular - at
+            // E its limit α'(E)/2E. (Nought within |x² - E²| < 1e-40 J² once:
+            // ±1.2 meV about E left out, 1.1 % off beside a step - as the
+            // solver's own integral was, its nought at E.)
             const int m = 40000;
-            const double h = (hi - lo) / m, aE = alpha(E);
+            const double h = (hi - lo) / m, aE = alpha(E), limit = (alpha(E + 1e-7 * Q) - alpha(E - 1e-7 * Q)) / (2e-7 * Q) / (2 * E);
             double sum = 0;
             for (int i = 0; i <= m; ++i) {
                 const double x = lo + i * h, w = (i == 0 || i == m) ? 0.5 : 1;
-                const double d = x * x - E * E;
-                sum += w * (std::abs(d) < 1e-40 ? 0.0 : (alpha(x) - aE) / d) * h;
+                sum += w * (std::abs(x - E) < 1e-9 * E ? limit : (alpha(x) - aE) / (x * x - E * E)) * h;
             }
             sum += aE * std::log(std::abs((hi - E) * (lo + E) / ((hi + E) * (lo - E)))) / (2 * E);
             const double expected = c0 * Hbar / M_PI * sum, got = global(s, QStringLiteral("qw.dnTE"));
-            qInfo("%.3f eV: n from the window %.6g (%.6g)", E / Q, got, expected);
+            qInfo("%d energies, %.3f eV: n from the window %.7g (%.7g)", energies, E / Q, got, expected);
             worst = std::max(worst, std::abs(got - expected));
             most = std::max(most, std::abs(expected));
         }
-        QVERIFY2(worst < 1e-3 * most, qPrintable(QString::number(worst / most)));
+        QVERIFY2(worst < 1e-4 * most, qPrintable(QString::number(worst / most)));
         // Its top still absorbing: said.
         QVERIFY(s.log.join(QLatin1Char(' ')).contains(QLatin1String("Kramers-Kronig")));
+        }
     }
 
     void broadeningWithTheField()

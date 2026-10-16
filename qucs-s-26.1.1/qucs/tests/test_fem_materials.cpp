@@ -66,12 +66,12 @@ double expression(const QString& text)
 }
 
 /// A compound's property \a key at composition x, y and wavelength \a
-/// lambda (m), 300 K.
-double compoundValue(const QString& compound, double x, double y, const QString& key, double lambda)
+/// lambda (m), at \a T (300 K).
+double compoundValue(const QString& compound, double x, double y, const QString& key, double lambda, double T = 300)
 {
-    MaterialScope scope(Scope::builtins(), 300);
+    MaterialScope scope(Scope::builtins(), T);
     scope.setConstant(QStringLiteral("lambda0"), lambda, Dim::length());
-    const Expression e = Expression::compile(compoundProperty(compound, x, y, key), scope);
+    const Expression e = Expression::compile(compoundProperty(compound, x, y, key, BandSet::Vurgaftman, T), scope);
     return e.isValid() && e.isConstant() ? e.constant() : NAN;
 }
 
@@ -83,12 +83,16 @@ double sellmeierAt(double l, double A, std::initializer_list<std::pair<double, d
     return std::sqrt(n2);
 }
 
-/// Afromowitz's oscillator at λ (µm): E0, Ed, the gap Eg (eV), held at
-/// 0.995 Eg; lattice terms εs - ε∞ at a TO phonon (eV).
+/// Afromowitz's oscillator at λ (µm): E0, Ed, the gap Eg (eV), its gap's
+/// log broadened by 20 meV (the real part of the log of E² + 2iEΓ's), held
+/// 0.5 eV above the gap; lattice terms εs - ε∞ at a TO phonon (eV).
 double oscillatorAt(double l, double E0, double Ed, double Eg, std::initializer_list<std::pair<double, double>> lattice = {})
 {
-    const double Eph = 1.23984198 / l, E = std::min(Eph, 0.995 * Eg), eta = M_PI * Ed / (2 * E0 * E0 * E0 * (E0 * E0 - Eg * Eg));
-    double e1 = 1 + Ed / E0 + Ed * E * E / (E0 * E0 * E0) + eta / M_PI * std::pow(E, 4) * std::log((2 * E0 * E0 - Eg * Eg - E * E) / (Eg * Eg - E * E));
+    const double G = 0.02, Eph = 1.23984198 / l, E = std::min(Eph, Eg + 0.5), eta = M_PI * Ed / (2 * E0 * E0 * E0 * (E0 * E0 - Eg * Eg));
+    const double Ef2 = 2 * E0 * E0 - Eg * Eg;
+    double e1 = 1 + Ed / E0 + Ed * E * E / (E0 * E0 * E0)
+                + eta / M_PI * std::pow(E, 4) * 0.5
+                      * std::log((std::pow(Ef2 - E * E, 2) + 4 * Ef2 * G * G) / (std::pow(Eg * Eg - E * E, 2) + 4 * Eg * Eg * G * G));
     for (const auto& [S, ETO] : lattice) e1 += S / (1 - std::pow(Eph / ETO, 2));
     return std::sqrt(e1);
 }
@@ -303,13 +307,14 @@ private slots:
         QVERIFY(near(valueOf(QStringLiteral("Silicon dioxide"), QStringLiteral("n"), 300, um(0.6328)),
                      sell(0.6328, {{0.6961663, 0.0684043}, {0.4079426, 0.1162414}, {0.8974794, 9.896161}}), 1e-9));
         QVERIFY(near(valueOf(QStringLiteral("Silicon nitride"), QStringLiteral("n"), 300, um(l)), sell(l, {{3.0249, 0.1353406}, {40314, 1239.842}}), 1e-9));
-        // InP: Pettit and Turner's from 1 µm; below 0.95 µm (its pole at
-        // 0.626 µm) its oscillator, finite.
+        // InP: Pettit and Turner's from 0.95 µm; below 0.92 µm (its pole at
+        // 0.626 µm) its oscillator, finite (held 0.5 eV over its gap, 0.67
+        // µm, out of its range).
         QVERIFY(near(valueOf(QStringLiteral("Indium phosphide"), QStringLiteral("n"), 300, um(l)),
                      std::sqrt(7.255 + 2.316 * l * l / (l * l - 0.6263 * 0.6263) + 2.765 * l * l / (l * l - 32.935 * 32.935)), 1e-9));
         for (double lambda = 0.4; lambda < 1.0; lambda += 0.005) {
             const double n = valueOf(QStringLiteral("Indium phosphide"), QStringLiteral("n"), 300, um(lambda));
-            QVERIFY2(std::isfinite(n) && n > 3.1 && n < 3.6, qPrintable(QStringLiteral("%1: %2").arg(lambda).arg(n)));
+            QVERIFY2(std::isfinite(n) && n > 3.1 && n < 3.7, qPrintable(QStringLiteral("%1: %2").arg(lambda).arg(n)));
         }
         {
             // Vial et al.'s gold at 800 nm.
@@ -333,6 +338,135 @@ private slots:
             QVERIFY(near(valueOf(QStringLiteral("Silver"), QStringLiteral("kappa"), 300, um(10)), 69.04, 0.01));
         }
         QCOMPARE(findMaterial(QStringLiteral("Germanium"))->properties.value(QStringLiteral("nrange")).toString(), QStringLiteral("0.3[um] 14[um]"));
+    }
+
+    // Near the gap and above it: the oscillator's gap broadened (20 meV),
+    // not held at 0.995 Eg - GaAs's index rising above its gap with
+    // Aspnes and Studna's and Jellison's (within 0.04; held, 0.1 under at
+    // 0.73 µm); the indirect AlAs's and AlSb's ranges ending 0.15 eV below
+    // their direct gaps (their oscillators' spike there 0.2 and 0.3 above the
+    // measured: Rakic's, Zollner's), within 0.05 in them; InGaAsP's (Adachi's
+    // √ edge broadened by 50 meV) within 0.04 of his 1989 tables on both
+    // sides of its gap - held, 0.1 and 0.14 over.
+    void nearTheGapAndAbove()
+    {
+        auto um = [](double l) { return l * 1e-6; };
+        for (const auto& [l, aspnes, jellison] : {std::tuple{0.7293, 3.742, 3.7347}, {0.7749, 3.700, 3.6891}, {0.8266, 3.666, 3.661}}) {
+            const double n = valueOf(QStringLiteral("Gallium arsenide"), QStringLiteral("n"), 300, um(l));
+            QVERIFY2(std::abs(n - aspnes) < 0.04 && std::abs(n - jellison) < 0.04, qPrintable(QStringLiteral("%1: %2").arg(l).arg(n)));
+        }
+        QVERIFY(std::abs(valueOf(QStringLiteral("Aluminium arsenide"), QStringLiteral("n"), 300, um(0.4387)) - 3.5736) < 0.05);
+        for (const auto& [l, zollner] : {std::pair{0.6, 3.9742}, {0.886, 3.5}})
+            QVERIFY2(std::abs(valueOf(QStringLiteral("Aluminium antimonide"), QStringLiteral("n"), 300, um(l)) - zollner) < 0.06, qPrintable(QString::number(l)));
+        auto rangeOf = [](const char* name) {
+            const QString t = findMaterial(QLatin1String(name))->properties.value(QStringLiteral("nrange")).toString();
+            return evaluateConstant(t.simplified().split(QLatin1Char(' ')).value(0), Scope::builtins(), Dim::length()).value_or(NAN) * 1e6;
+        };
+        QVERIFY2(std::abs(rangeOf("Aluminium arsenide") - 1.23984198 / (3.003 - 0.15)) < 0.002, qPrintable(QString::number(rangeOf("Aluminium arsenide"))));
+        QVERIFY2(std::abs(rangeOf("Gallium arsenide") - 1.23984198 / (1.424 + 0.2)) < 0.002, qPrintable(QString::number(rangeOf("Gallium arsenide"))));
+        for (const auto& [l, adachi] : {std::pair{0.922, 3.4515}, {1.09, 3.379}, {1.3, 3.2906}}) {
+            const double n = compoundValue(QStringLiteral("InGaAsP"), 0.109, 0.24, QStringLiteral("n"), um(l));
+            QVERIFY2(std::abs(n - adachi) < 0.04, qPrintable(QStringLiteral("%1: %2 %3").arg(l).arg(n).arg(adachi)));
+        }
+        // (Finite through the gap: no spike, no pole - GaAs every meV from
+        // 0.2 eV below to 0.5 above.)
+        double last = 0;
+        for (int k = 0; k <= 700; ++k) {
+            const double E = 1.224 + 0.001 * k, n = valueOf(QStringLiteral("Gallium arsenide"), QStringLiteral("n"), 300, um(1.23984198 / E));
+            QVERIFY2(std::isfinite(n) && (k == 0 || std::abs(n - last) < 0.01), qPrintable(QStringLiteral("%1 eV: %2").arg(E).arg(n)));
+            last = n;
+        }
+    }
+
+    // Of the temperature: a compound's index its 300 K one and its
+    // oscillator's change as its gap and E0 move together by the gap's
+    // shift - GaAs's dn/dT within 10 % of Franta et al.'s measured (2.25e-4
+    // per K at 1.55 µm, 1.87e-4 at 5 µm; its gap alone moved, nought);
+    // In0.53Ga0.47As's positive at 1550 nm, above its gap (it was -2e-4);
+    // the 1.3 µm InGaAsP's near the literature's 2e-4 (it was half). Its
+    // dndT the same derivative - so the Thermo-optic option takes a compound.
+    void anIndexOfTheTemperature()
+    {
+        auto um = [](double l) { return l * 1e-6; };
+        auto slope = [&](const char* c, double x, double y, double l) {
+            return (compoundValue(QLatin1String(c), x, y, QStringLiteral("n"), um(l), 350) - compoundValue(QLatin1String(c), x, y, QStringLiteral("n"), um(l), 250)) / 100;
+        };
+        for (const auto& [l, franta] : {std::pair{1.55, 2.247e-4}, {5.0, 1.868e-4}}) {
+            const double d = slope("GaAs", 0, 0, l);
+            qInfo("GaAs at %g um: dn/dT %.4g per K (Franta et al.'s %.4g)", l, d, franta);
+            QVERIFY2(near(d, franta, 0.1), qPrintable(QString::number(d)));
+        }
+        const double ingaas = slope("InGaAs", 0.53, 0, 1.55), q13 = slope("InGaAsP", 0.27775, 0.60475, 1.55);
+        qInfo("In0.53Ga0.47As at 1550 nm %.4g per K; 1.3Q InGaAsP %.4g", ingaas, q13);
+        QVERIFY(ingaas > 2e-4 && ingaas < 3.5e-4);
+        QVERIFY(near(q13, 2e-4, 0.15));
+        // (At 300 K the 300 K index itself; dndT the derivative.)
+        QCOMPARE(compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("n"), BandSet::Vurgaftman, 300), compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("n")));
+        const double dndT = compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("dndT"), um(1.55));
+        const double fd = (compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("n"), um(1.55), 300.5)
+                           - compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("n"), um(1.55), 299.5));
+        QVERIFY2(near(dndT, fd, 1e-6), qPrintable(QStringLiteral("%1 %2").arg(dndT).arg(fd)));
+    }
+
+    // An alloy's ends its binaries' own: AlGaAs at x 0 and 1 GaAs and AlAs
+    // (they were 0.006 and 0.03 apart), GaInP at x 0 InP (0.005), InGaAs at
+    // 0 and 1; between, the alloy's oscillator bowed as half its gap -
+    // In0.53Ga0.47As within 0.01 of Le et al.'s measured at 16.7 µm (it
+    // was 0.027 under), the lattice-matched InGaAsP at y 1 within 0.015 of
+    // it at 2 µm (it was 0.03 over). Silicon germanium silicon's and
+    // germanium's mixed: its ends theirs.
+    void anAlloysEnds()
+    {
+        auto um = [](double l) { return l * 1e-6; };
+        for (double l : {1.31, 1.55, 3.0, 8.0}) {
+            auto lib = [&](const char* name) { return valueOf(QLatin1String(name), QStringLiteral("n"), 300, um(l)); };
+            QVERIFY(near(compoundValue(QStringLiteral("AlGaAs"), 0, 0, QStringLiteral("n"), um(l)), lib("Gallium arsenide"), 1e-9));
+            if (l <= 2.2) QVERIFY(near(compoundValue(QStringLiteral("AlGaAs"), 1, 0, QStringLiteral("n"), um(l)), lib("Aluminium arsenide"), 1e-9));
+            QVERIFY(near(compoundValue(QStringLiteral("GaInP"), 0, 0, QStringLiteral("n"), um(l)), lib("Indium phosphide"), 1e-9));
+            QVERIFY(near(compoundValue(QStringLiteral("InGaAs"), 1, 0, QStringLiteral("n"), um(l)), lib("Indium arsenide"), 1e-9));
+        }
+        const double le = compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("n"), um(16.7));
+        QVERIFY2(std::abs(le - 3.2983) < 0.01, qPrintable(QString::number(le)));
+        const double q = compoundValue(QStringLiteral("InGaAsP"), 0.47, 1, QStringLiteral("n"), um(2)), t = compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("n"), um(2));
+        QVERIFY2(std::abs(q - t) < 0.015, qPrintable(QStringLiteral("%1 %2").arg(q).arg(t)));
+        for (double l : {2.0, 5.0}) {
+            QVERIFY(near(compoundValue(QStringLiteral("SiGe"), 0, 0, QStringLiteral("n"), um(l)), valueOf(QStringLiteral("Silicon"), QStringLiteral("n"), 300, um(l)), 1e-9));
+            QVERIFY(near(compoundValue(QStringLiteral("SiGe"), 1, 0, QStringLiteral("n"), um(l)), valueOf(QStringLiteral("Germanium"), QStringLiteral("n"), 300, um(l)), 1e-9));
+        }
+        QVERIFY(compoundProperty(QStringLiteral("SiGe"), 0.2, 0, QStringLiteral("kappa")).isEmpty());
+    }
+
+    // The films' κ their measured (Rodriguez de Marcos et al.'s ALD Al2O3,
+    // Bright et al.'s sputtered HfO2, within 3 %); an index whose formula
+    // fails past its range (a Sellmeier's pole: silica beyond 8.3 µm,
+    // lithium niobate below 0.22 µm - NaN in a solve) held at its ends,
+    // the same within it.
+    void filmsAndRanges()
+    {
+        auto um = [](double l) { return l * 1e-6; };
+        QVERIFY(near(valueOf(QStringLiteral("Aluminium oxide (ALD)"), QStringLiteral("kappa"), 300, um(1.55)), 2.58e-4, 0.03));
+        QVERIFY(near(valueOf(QStringLiteral("Aluminium oxide (ALD)"), QStringLiteral("kappa"), 300, um(4)), 1.75e-3, 0.03));
+        QVERIFY(near(valueOf(QStringLiteral("Hafnium oxide (sputtered)"), QStringLiteral("kappa"), 300, um(1.55)), 6.97e-5, 0.03));
+        int held = 0;
+        for (const MaterialEntry& e : builtinMaterials()) {
+            const QString n = e.properties.value(QStringLiteral("n")).toString();
+            if (!n.contains(QLatin1String("lambda0"))) continue;
+            const QStringList range = e.properties.value(QStringLiteral("nrange")).toString().simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (range.size() != 2) continue;
+            const double a = evaluateConstant(range[0], Scope::builtins(), Dim::length()).value_or(NAN);
+            const double b = evaluateConstant(range[1], Scope::builtins(), Dim::length()).value_or(NAN);
+            for (double l : {0.21 * a, 0.5 * a, 0.9 * a, 1.1 * b, 1.3 * b, 1.45 * b}) {
+                const double v = valueOf(e.name, QStringLiteral("n"), 300, l);
+                QVERIFY2(std::isfinite(v) && v > 0, qPrintable(QStringLiteral("%1 at %2 um: %3").arg(e.name).arg(l * 1e6).arg(v)));
+            }
+            if (n.contains(QLatin1String("min(max(lambda0"))) ++held;
+        }
+        qInfo("%d entries held at their ranges' ends", held);
+        QVERIFY(held >= 10);
+        // (Silica's held: its value at 6.7 µm at 9 µm, where its Sellmeier's
+        // n² < 0; GaAs's not - past its phonon it is the Reststrahlen's.)
+        QVERIFY(near(valueOf(QStringLiteral("Silicon dioxide"), QStringLiteral("n"), 300, um(9)), valueOf(QStringLiteral("Silicon dioxide"), QStringLiteral("n"), 300, um(6.7)), 1e-12));
+        QVERIFY(near(valueOf(QStringLiteral("Silicon dioxide"), QStringLiteral("n"), 300, um(1.55)), 1.44402, 1e-5));
     }
 
     // The semiconductors' n and κ of the wavelength against the measured
@@ -413,21 +547,33 @@ private slots:
         }
         // An alloy's index follows x: InGaAs at 1.8 µm from x 0.3 to 0.53.
         QVERIFY(compoundValue(QStringLiteral("InGaAs"), 0.53, 0, QStringLiteral("n"), um(1.8)) > compoundValue(QStringLiteral("InGaAs"), 0.3, 0, QStringLiteral("n"), um(1.8)) + 0.03);
-        // GaInP (x 0.51): Ferrini et al.'s film within 0.012 at 1.55 µm.
-        QVERIFY(std::abs(value("Gallium indium phosphide", "n", 1.55) - 3.1052) < 0.012);
+        // GaInP (x 0.51): between Ferrini et al.'s film and Kaneko's at 0.95
+        // and 1.31 µm (they 0.03 apart; Schubert's ordered sample between),
+        // within 0.025 of Ferrini's at 1.55 µm (its oscillator bowed as half
+        // its gap: 0.02 up).
+        for (const auto& [l, ferrini, kaneko] : {std::tuple{0.95, 3.2138, 3.2452}, {1.31, 3.1283, 3.1553}}) {
+            const double n = value("Gallium indium phosphide", "n", l);
+            QVERIFY2(n > ferrini - 0.005 && n < kaneko + 0.005, qPrintable(QStringLiteral("%1: %2").arg(l).arg(n)));
+        }
+        QVERIFY(std::abs(value("Gallium indium phosphide", "n", 1.55) - 3.1053) < 0.025);
         // InGaAsP on InP's lattice: Adachi's (1982) A 8.4 - 3.4 y, B 6.6 + 3.4 y
         // at its gap - his 1989 dispersion (y 0.24) within 0.005 from 1.55 to 5
         // µm, 0.012 at 1.3 µm; at y 0 InP's (Pettit and Turner's 3.1649 at 1550 nm) within
-        // 0.003; the 1.3 µm quaternary 3.393 at 1550 nm.
+        // 0.003; the 1.3 µm quaternary 3.386 at 1550 nm.
+        // (Of the energy broadened by 50 meV: f's real part at (E + iΓ)/E0.)
         auto adachi = [](double l, double y, double E0, double Eso) {
-            const double E = std::min(1.23984198 / l, 0.995 * E0);
-            auto f = [](double c) { return (2 - std::sqrt(1 + c) - std::sqrt(1 - c)) / (c * c); };
-            return std::sqrt((8.4 - 3.4 * y) * (f(E / E0) + 0.5 * std::pow(E0 / Eso, 1.5) * f(E / Eso)) + 6.6 + 3.4 * y);
+            const double E = std::min(1.23984198 / l, E0 + 0.5);
+            auto f = [E](double gap) {
+                const std::complex<double> c = std::complex<double>(E, 0.05) / gap;
+                return ((2.0 - std::sqrt(1.0 + c) - std::sqrt(1.0 - c)) / (c * c)).real();
+            };
+            return std::sqrt((8.4 - 3.4 * y) * (f(E0) + 0.5 * std::pow(E0 / Eso, 1.5) * f(Eso)) + 6.6 + 3.4 * y);
         };
         {
             const BandParameters q = *bandParameters(QStringLiteral("InGaAsP"), 0.28, 0.6, 300, nullptr, BandSet::Measured);
             QVERIFY(near(value("Indium gallium arsenide phosphide", "n", 1.55), adachi(1.55, 0.6, q.Eg, q.Eg + q.Delta), 1e-9));
-            QVERIFY2(std::abs(value("Indium gallium arsenide phosphide", "n", 1.55) - 3.393) < 0.005, qPrintable(QString::number(value("Indium gallium arsenide phosphide", "n", 1.55))));
+            // (3.386: its edge broadened, 0.003 under the held 3.389.)
+            QVERIFY2(std::abs(value("Indium gallium arsenide phosphide", "n", 1.55) - 3.386) < 0.002, qPrintable(QString::number(value("Indium gallium arsenide phosphide", "n", 1.55))));
             for (const auto& [lambda, adachi89] : {std::pair{1.3, 3.2906}, {1.55, 3.2515}, {2.0, 3.2206}, {5.0, 3.1866}}) {
                 const double n = compoundValue(QStringLiteral("InGaAsP"), 0.1095, 0.24, QStringLiteral("n"), um(lambda));
                 QVERIFY2(std::abs(n - adachi89) < (lambda < 1.5 ? 0.012 : 0.005), qPrintable(QStringLiteral("%1: %2").arg(lambda).arg(n)));
@@ -543,7 +689,7 @@ private slots:
         sweep.to = 3e-6;
         sweep.points = 3;
         MaterialCurves c = materialCurves(inas, {QStringLiteral("n")}, sweep, Scope::builtins());
-        QVERIFY2(c.notes.join(QLatin1Char(' ')).contains(QStringLiteral("nrange")) && c.notes.join(QLatin1Char(' ')).contains(QStringLiteral("1.2 to 2.731")),
+        QVERIFY2(c.notes.join(QLatin1Char(' ')).contains(QStringLiteral("nrange")) && c.notes.join(QLatin1Char(' ')).contains(QStringLiteral("1.2 to 2.238")),
                  qPrintable(c.notes.join(QLatin1Char(' '))));
         sweep.variable = QStringLiteral("T");
         sweep.from = 250;

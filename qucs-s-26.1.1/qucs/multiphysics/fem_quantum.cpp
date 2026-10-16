@@ -3289,7 +3289,27 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     std::vector<double>& tailTM = a_spec.farTM;
     tailTE.clear();
     tailTM.clear();
-    for (double E : o.energies) {
+    // The energies asked, then those the Kramers-Kronig index wants between
+    // them: at most an eighth of the line's half width apart (its absorption
+    // there alone, not a point of the spectrum) - the integral of energies
+    // as far apart as the line is wide was 60 % off at a 6 meV line every
+    // 10 meV, 1e-4 with these (2e-3 at a quarter).
+    std::vector<double> sweep = o.energies, kkE, kkTE, kkTM;
+    if (o.kramersKronig && gamma > 0 && o.energies.size() >= 2) {
+        std::vector<double> sorted = o.energies;
+        std::sort(sorted.begin(), sorted.end());
+        double fine = gamma / 8, extra = 0;
+        for (std::size_t k = 1; k < sorted.size(); ++k) extra += std::max(0.0, std::ceil((sorted[k] - sorted[k - 1]) / fine) - 1);
+        if (extra > 20000) fine *= extra / 20000;   // (at most some 20 000 more)
+        for (std::size_t k = 1; k < sorted.size(); ++k) {
+            const double gap = sorted[k] - sorted[k - 1];
+            const int n = int(std::ceil(gap / fine));
+            for (int j = 1; j < n; ++j) sweep.push_back(sorted[k - 1] + gap * j / n);
+        }
+    }
+    const std::size_t asked = o.energies.size();
+    for (std::size_t point = 0; point < sweep.size(); ++point) {
+        const double E = sweep[point];
         double te = 0, tm = 0, ste = 0, stm = 0, teTail = 0, tmTail = 0;
         for (const KpPair& pr : pairs) {
             const double te0 = te, tm0 = tm;
@@ -3468,6 +3488,12 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             te += C;
             tm += C;
         }
+        if (point >= asked) {
+            kkE.push_back(E);
+            kkTE.push_back(te);
+            kkTM.push_back(tm);
+            continue;
+        }
         a_spec.E.push_back(E);
         a_spec.te.push_back(te);
         a_spec.tm.push_back(tm);
@@ -3528,23 +3554,38 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // absorption that changes is inside the window: said when its ends
     // still absorb.
     if (a_spec.E.size() >= 3) {
-        std::vector<std::size_t> order(a_spec.E.size());
+        // (Over the energies asked and those between for it.)
+        std::vector<double> allE = a_spec.E, allTE = a_spec.te, allTM = a_spec.tm;
+        allE.insert(allE.end(), kkE.begin(), kkE.end());
+        allTE.insert(allTE.end(), kkTE.begin(), kkTE.end());
+        allTM.insert(allTM.end(), kkTM.begin(), kkTM.end());
+        std::vector<std::size_t> order(allE.size());
         for (std::size_t k = 0; k < order.size(); ++k) order[k] = k;
-        std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return a_spec.E[a] < a_spec.E[b]; });
+        std::sort(order.begin(), order.end(), [&allE](std::size_t a, std::size_t b) { return allE[a] < allE[b]; });
         std::vector<double> x, aTE, aTM;
         for (std::size_t k : order) {
-            x.push_back(a_spec.E[k]);
-            aTE.push_back(a_spec.te[k]);
-            aTM.push_back(a_spec.tm[k]);
+            x.push_back(allE[k]);
+            aTE.push_back(allTE[k]);
+            aTM.push_back(allTM[k]);
         }
         const double lo = x.front(), hi = x.back();
-        auto kk = [&](const std::vector<double>& alpha, double E, double aE) {
+        auto kk = [&x, lo, hi](const std::vector<double>& alpha, double E, double aE) {
+            // (At E and within rounding of it - an energy given twice, the
+            // photon's beside its own - the integrand's limit, α'(E)/2E, α'
+            // by the energies either side: not 0, nor a quotient of two
+            // roundings.)
+            constexpr double Rounding = 1e-9;
+            const std::size_t at = std::size_t(std::lower_bound(x.begin(), x.end(), E * (1 - Rounding)) - x.begin());
+            std::size_t past = at;
+            while (past < x.size() && std::abs(x[past] - E) <= Rounding * E) ++past;
+            double limit = 0;
+            if (at > 0 && past < x.size()) limit = (alpha[past] - alpha[at - 1]) / (x[past] - x[at - 1]);
+            else if (at > 0) limit = (aE - alpha[at - 1]) / (E - x[at - 1]);
+            else if (past < x.size()) limit = (alpha[past] - aE) / (x[past] - E);
+            if (E > 0) limit /= 2 * E;
             double sum = 0;
             for (std::size_t k = 1; k < x.size(); ++k) {
-                auto f = [&](std::size_t i) {
-                    const double d = x[i] * x[i] - E * E;
-                    return std::abs(d) < 1e-30 * Q * Q ? 0.0 : (alpha[i] - aE) / d;
-                };
+                auto f = [&](std::size_t i) { return i >= at && i < past ? limit : (alpha[i] - aE) / (x[i] * x[i] - E * E); };
                 sum += 0.5 * (f(k) + f(k - 1)) * (x[k] - x[k - 1]);
             }
             // P∫_lo^hi dE'/(E'² - E²) = ln|((hi - E)(lo + E))/((hi + E)(lo - E))| / 2E.
@@ -3573,7 +3614,8 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         double most = 0;
         for (std::size_t k = 0; k < x.size(); ++k) most = std::max({most, std::abs(aTE[k]), std::abs(aTM[k])});
         const double atTop = std::max(std::abs(aTE.back()), std::abs(aTM.back()));
-        const std::size_t first = order.front();
+        // (The lowest energy asked: those between are above it.)
+        const std::size_t first = std::size_t(std::min_element(a_spec.E.begin(), a_spec.E.end()) - a_spec.E.begin());
         const double tail = std::max(std::abs(a_spec.dnTEtail[first]), std::abs(a_spec.dnTMtail[first]));
         if (most > 0 && atTop > 0.05 * most) {
             if (fading && hi >= barrierGap + o.fade)

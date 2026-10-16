@@ -62,6 +62,9 @@ struct Field {
     std::vector<std::vector<double>> matrix;
     double initial = 0;           ///< its value before it is solved
     bool solved = false;
+    /// Solved elsewhere - a 1D semiconductor on its line's strip -: the
+    /// unknowns it took there (-1: its space's).
+    int unknowns = -1;
     /// A mode's tangential field on edge elements (its values first in
     /// values, Ez's after them); null for a field of nodes alone.
     std::shared_ptr<const EdgeSpace> edges;
@@ -217,6 +220,9 @@ public:
     }
     QString snapshotSymbol() const { return frequencyDomain ? QStringLiteral("f") : biasAxis ? QStringLiteral("V") : QStringLiteral("t"); }
     int selected() const { return a_selected; }
+    /// Its fields and globals left no snapshot's (a step's chosen mode set
+    /// after its last): the next select() restores the one asked.
+    void unselect() { a_selected = -1; }
     /// The fields and globals of snapshot \a i (out of range: the last).
     void select(int i);
     /// The fields and globals as they are now, kept as a snapshot at time()

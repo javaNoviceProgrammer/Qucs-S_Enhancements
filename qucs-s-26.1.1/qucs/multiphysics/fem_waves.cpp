@@ -162,6 +162,8 @@ public:
         int gAxis = 0;
         Expression g;
         bool pml = false;
+        double pmlLog = 13.8155;   // -ln of its outside's reflection (1e-6)
+        mutable bool overBleached = false;   // band filling bleached more than it absorbs (its Δα held)
         // Where its material's index holds (its nrange; none: anywhere), and
         // whose.
         double from = 0, to = std::numeric_limits<double>::infinity();
@@ -193,6 +195,20 @@ public:
             out << tr("Warning: %1's index holds from %2 to %3 µm (as its material gives it); here it is taken at %4 µm - give it for "
                       "this wavelength")
                        .arg(m.rangeOf, formatNumber(m.from * 1e6, 4), formatNumber(m.to * 1e6, 4), formatNumber(lambda * 1e6, 4));
+        }
+        // (Band filling bleaching more than the medium absorbs - its κ 0
+        // above its gap -: its Δα held at what it absorbs, no gain of it;
+        // its Δn the whole edge's, as the edge's own absorption it computes.)
+        for (std::size_t d = 0; d < domains.size(); ++d) {
+            const Domain& m = domains[d];
+            const QString key = QStringLiteral("bleached %1").arg(d);
+            if (!m.overBleached || warned.contains(key)) continue;
+            warned.insert(key);
+            out << tr("domain %1%2: band filling bleaches more absorption than its material has at %3 µm (its κ there) - its Δα "
+                      "held at that, no gain; its Δn the computed edge's whole bleaching (its Kramers-Kronig), not held")
+                       .arg(d + 1)
+                       .arg(m.rangeOf.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(m.rangeOf))
+                       .arg(formatNumber(lambda * 1e6, 4));
         }
         return out;
     }
@@ -327,7 +343,9 @@ public:
         }
         if (carriers) {
             // (Bleached at most of what the medium absorbs there: no gain of it.)
-            if (bleachKappa > 0) plasmaKappa -= std::min(bleachKappa, std::max(0.0, value(m.kappa[0], 0.0) + out.kappaEA));
+            const double absorbs = std::max(0.0, value(m.kappa[0], 0.0) + out.kappaEA);
+            if (bleachKappa > 0) plasmaKappa -= std::min(bleachKappa, absorbs);
+            if (bleachKappa > 1.001 * absorbs) m.overBleached = true;
             out.dnCarriers = plasma;
             out.alphaCarriers = plasmaKappa * 4 * M_PI / lambda;
         }
@@ -438,8 +456,8 @@ public:
                     return 1.0;
                 xi = std::clamp(xi, 0.0, 1.0);
                 const double kk = k0 * std::sqrt(std::max(1.0, std::abs(out.epsT[2][2].real() * out.mu[2].real())));
-                // A reflection of e^-13.8 at its outside: 2 k σ0 d / 3 = 13.8.
-                const double sigma0 = 20.7 / (kk * depth);
+                // Its outside's reflection R (1e-6, e^-13.8): 2 k σ0 d / 3 = -ln R.
+                const double sigma0 = 1.5 * m.pmlLog / (kk * depth);
                 return cd(1.0, -sigma0 * xi * xi);
             };
             const cd s[3] = {stretch(p.x(), 0), stretch(p.y(), 1), 1.0};
@@ -486,6 +504,7 @@ public:
         warned.clear();
         std::vector<const Node*> modelOf(nd, nullptr);
         std::vector<char> pml(nd, 0);
+        std::vector<const Node*> pmlOf(nd, nullptr);
         QString why;
         for (const Node& feature : node.children) {
             if (!feature.enabled) continue;
@@ -496,7 +515,10 @@ public:
             if (feature.type.endsWith(QLatin1String("/wave")))
                 for (int d : picked) modelOf[std::size_t(d)] = &feature;
             else if (feature.type.endsWith(QLatin1String("/pml")))
-                for (int d : picked) pml[std::size_t(d)] = 1;
+                for (int d : picked) {
+                    pml[std::size_t(d)] = 1;
+                    pmlOf[std::size_t(d)] = &feature;
+                }
         }
         // The region the PMLs surround: the other domains' bounds.
         QRectF inner;
@@ -880,6 +902,14 @@ public:
             m.defined = true;
             if (pml[d]) {
                 m.pml = true;
+                // (Its strength: a wave at normal incidence reflected from
+                // its outside by this.)
+                if (const Node* f = pmlOf[d]; f && !f->text(QStringLiteral("reflection")).trimmed().isEmpty()) {
+                    const Expression R = c.compile(f->text(QStringLiteral("reflection")), *f, QStringLiteral("reflection"));
+                    const double r = R.isValid() && R.isConstant() ? R.constant() : NaN;
+                    if (!(r > 0) || !(r < 1)) c.problem(tr("%1: its reflection is a number between 0 and 1 (1e-6: e^-13.8)").arg(f->name()));
+                    else m.pmlLog = -std::log(r);
+                }
                 const QRectF b = topo.domains[d].bounds;
                 const double scale = topo.unitScale;
                 // It stretches where it reaches past the inner region.
@@ -1433,19 +1463,32 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
         a_s.log << tr("%1: the modes most in the domains tracked: their shares of |E|² %2").arg(a_node->name(), shares.join(QLatin1String(", ")));
     }
     std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) { return a.beta.real() > b.beta.real(); });
-    // The one chosen: the first, or the most in the domains tracked, the
-    // most TE, the most TM.
+    // The one chosen: the first, or the most in the domains tracked; TE (TM)
+    // the first - of the highest index - that is TE-like (more of its
+    // transverse field along x: its TE fraction over a half), the most TE
+    // when none is. (The most TE of all took a mode below the cladding's
+    // index, 3.166 of TE fraction 1.0000, over TE0 at 3.210 of 0.9999.)
     a_chosen = 0;
-    for (int k = 1; k < int(a_modes.size()); ++k) {
-        const Mode &m = a_modes[std::size_t(k)], &best = a_modes[std::size_t(a_chosen)];
-        if ((o.choose == 1 && m.share > best.share) || (o.choose == 2 && m.te > best.te) || (o.choose == 3 && m.te < best.te)) a_chosen = k;
-    }
+    if (o.choose == 2 || o.choose == 3) {
+        int like = -1, most = 0;
+        for (int k = 0; k < int(a_modes.size()); ++k) {
+            const double te = a_modes[std::size_t(k)].te, best = a_modes[std::size_t(most)].te;
+            if (like < 0 && (o.choose == 2 ? te > 0.5 : te < 0.5)) like = k;
+            if (o.choose == 2 ? te > best : te < best) most = k;
+        }
+        a_chosen = like >= 0 ? like : most;
+    } else
+        for (int k = 1; k < int(a_modes.size()); ++k)
+            if (o.choose == 1 && a_modes[std::size_t(k)].share > a_modes[std::size_t(a_chosen)].share) a_chosen = k;
     if (dropped) a_s.log << tr("%1: %2 modes of the absorbing layers left out").arg(a_node->name()).arg(dropped);
     if (crossed)
         a_s.log << tr("%1: %2 %3 modes left out").arg(a_node->name()).arg(crossed).arg(o.polarization == 1 ? tr("TM") : tr("TE"));
     if (unguided)
         a_s.log << tr("%1: %2 modes below the effective index or above the loss asked left out").arg(a_node->name()).arg(unguided);
     if (o.choose != 0 && !a_modes.empty()) a_s.log << tr("%1: mode %2 chosen").arg(a_node->name()).arg(a_chosen + 1);
+    // (What its media found as they were assembled - band filling bleaching
+    // more than a material absorbs -, said once.)
+    for (const QString& w : a_media.outOfRange(omega)) a_s.log << w;
     a_s.log << tr("%1: %2 modes at %3 about n = %4 (%5 products, %6 restarts)")
                    .arg(a_node->name())
                    .arg(a_modes.size())
@@ -1683,7 +1726,16 @@ bool ResonatorProblem::setup(QString* error)
     if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
     a_media.cylindrical = true;
     a_media.setup(a_s, *a_node, f.domains, materials(), mediaHooks());
-    a_m = a_node->integer(QStringLiteral("m"));
+    // Its azimuthal order a whole number - the fields e^(-jmφ) single-valued
+    // (1.5 was solved as 0, nothing said).
+    {
+        const QJsonValue v = a_node->value(QStringLiteral("m"));
+        double m = v.isDouble() ? v.toDouble() : 0;
+        if (v.isString()) m = evaluateConstant(v.toString(), a_s.parameters().scope, Dim()).value_or(NaN);
+        if (!std::isfinite(m) || m != std::round(m) || std::abs(m) > 1000)
+            problem(tr("%1: its azimuthal order m is a whole number (0, 1, 2...), not %2").arg(a_node->name(), a_node->text(QStringLiteral("m"))));
+        a_m = std::isfinite(m) ? int(std::lround(m)) : 0;
+    }
     Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     coef.c.assign(topo.domains.size(), Expression());
     std::vector<Expression> mur(topo.domains.size());
@@ -2143,6 +2195,7 @@ private:
         std::vector<cd> b;        // what each order carries out
         std::vector<double> power;   // of the incident's
         std::vector<char> open;      // it propagates
+        int reach = 0;               // the orders that propagate here at some angle: |m| up to this
     };
     /// The periodic ports' orders at \a omega: their media, kF, β, c.
     bool periodicOrders(double omega, double k0, QString* error);
@@ -2692,12 +2745,21 @@ bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
     a_kF[0] = kt0 * fed.along.x();
     a_kF[1] = kt0 * fed.along.y();
     // Each port's orders: those that propagate in any port's medium and ten
-    // more each way (the near field's), as many as its edges resolve.
+    // more each way (the near field's), as many as its edges resolve. (An
+    // order at its cutoff - β nought to rounding - not open: listed in the
+    // substrate, not in the air, at the same angle.)
+    auto opens = [k0](const PeriodicPort& port, double kt) {
+        return ((k0 * k0 * port.q - port.pt * kt * kt) / port.p).real() > 1e-9 * std::abs((k0 * k0 * port.q / port.p).real());
+    };
     QStringList said;
     for (PeriodicPort& port : a_pports) {
         const double ktF = a_kF[0] * port.along.x() + a_kF[1] * port.along.y();
         const double kmax = std::sqrt(std::max(0.0, (k0 * k0 * port.q / port.pt).real()));
         const int propagating = int(std::ceil((kmax + std::abs(ktF)) * port.length / (2 * M_PI))) + 1;
+        // (The orders that propagate here at some angle of the fed wave's -
+        // its tangential k up to the fed medium's k: each its global at
+        // every angle, nought where it does not: a sweep's the same names.)
+        port.reach = int(std::floor((kmax + kIn.real()) * port.length / (2 * M_PI) + 1e-9));
         const int M = std::min(propagating + 10, std::max(propagating, int(port.edges.size()) / 2));
         port.m.clear();
         port.kt.clear();
@@ -2711,7 +2773,7 @@ bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
             port.m.push_back(m);
             port.kt.push_back(kt);
             port.beta.push_back(beta);
-            if (beta2.real() > 0) open << QStringLiteral("%1 (%2°)").arg(m).arg(std::atan2(kt, beta.real()) * 180 / M_PI, 0, 'f', 2);
+            if (opens(port, kt)) open << QStringLiteral("%1 (%2°)").arg(m).arg(std::atan2(kt, beta.real()) * 180 / M_PI, 0, 'f', 2);
         }
         said << tr("%1: %2").arg(port.name, open.isEmpty() ? tr("none") : open.join(QLatin1String(", ")));
         const std::size_t n = port.m.size();
@@ -3073,7 +3135,8 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
                 if (i == a_pfed && port.m[k] == 0) b -= incident;
                 port.b[k] = b;
                 // (an order that does not propagate carries nothing out)
-                const bool open = ((k0 * k0 * port.q - port.pt * port.kt[k] * port.kt[k]) / port.p).real() > 0;
+                const bool open = ((k0 * k0 * port.q - port.pt * port.kt[k] * port.kt[k]) / port.p).real()
+                                  > 1e-9 * std::abs((k0 * k0 * port.q / port.p).real());
                 port.open[k] = open;
                 port.power[k] = open && in > 0 ? (port.p * port.beta[k]).real() * std::norm(b) / in : 0;
                 (i == a_pfed ? a_R : a_T) += port.power[k];
@@ -3150,15 +3213,17 @@ void WaveProblem::setGlobals()
         a_s.setGlobal(p + QStringLiteral("A"), 1 - a_R - a_T, Dim(), tr("absorptance: %1 neither reflected nor transmitted, 1 - R - T").arg(of));
     }
     if (a_pfed < 0) return;
-    // Each order that propagates: its share of the incident power, R_m at
-    // the fed port, T_m at the other (T_<port>_m where there are more).
+    // Each order that propagates at some angle: its share of the incident
+    // power, R_m at the fed port, T_m at the other (T_<port>_m where there
+    // are more) - nought where it does not at this one (a sweep's names the
+    // same at each: "ewfd.T_2 is not a parameter" from 15°).
     const auto order = [](int m) { return m < 0 ? QStringLiteral("n%1").arg(-m) : QString::number(m); };
     for (int i = 0; i < int(a_pports.size()); ++i) {
         const PeriodicPort& port = a_pports[std::size_t(i)];
         const bool fed = i == a_pfed;
         double total = 0;
         for (std::size_t k = 0; k < port.m.size() && k < port.open.size(); ++k) {
-            if (!port.open[k]) continue;
+            if (!port.open[k] && std::abs(port.m[k]) > port.reach) continue;
             total += port.power[k];
             const QString name = fed ? QStringLiteral("R_") + order(port.m[k])
                                  : a_pports.size() == 2 ? QStringLiteral("T_") + order(port.m[k])

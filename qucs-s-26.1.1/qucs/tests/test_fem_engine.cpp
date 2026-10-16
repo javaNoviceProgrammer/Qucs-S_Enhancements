@@ -517,6 +517,10 @@ void TestFemEngine::booleans()
         QCOMPARE(pick(R"({"only": ["row_2"]})").size(), 1);
         QCOMPARE(pick(R"({"only": ["ro"]})").size(), 0);
         QVERIFY2(why.contains(QLatin1String("ro")), qPrintable(why));
+        // The array's input, used up: said - the array names its copies.
+        why.clear();
+        QCOMPARE(pick(R"({"only": ["r"]})").size(), 0);
+        QVERIFY2(why.contains(QLatin1String("array row's input")), qPrintable(why));
     }
     // An unknown input: said, with the objects there are.
     const Model bad = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [

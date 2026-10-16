@@ -865,14 +865,17 @@ private slots:
             const double R = global(s, QStringLiteral("ewfd.R_") + order(m)), T = global(s, QStringLiteral("ewfd.T_") + order(m));
             const double Rr = ref.R[std::size_t(m + 40)], Tr = ref.T[std::size_t(m + 40)];
             qInfo("order %+d: R %.6f (coupled waves %.6f), T %.6f (%.6f)", m, R, Rr, T, Tr);
-            QCOMPARE(std::isnan(R), Rr == 0);
-            QCOMPARE(std::isnan(T), Tr == 0);
-            if (!std::isnan(R)) {
+            // (One that does not propagate here: nought - defined, as it
+            // propagates at another angle.)
+            QVERIFY(!std::isnan(R) && !std::isnan(T));
+            if (Rr == 0) QVERIFY(R == 0);
+            if (Tr == 0) QVERIFY(T == 0);
+            if (Rr > 0) {
                 ++reflected;
                 sum += R;
                 QVERIFY2(std::abs(R - Rr) < 5e-4, qPrintable(QStringLiteral("R %1: %2 against %3").arg(m).arg(R).arg(Rr)));
             }
-            if (!std::isnan(T)) {
+            if (Tr > 0) {
                 ++transmitted;
                 sum += T;
                 QVERIFY2(std::abs(T - Tr) < 5e-4, qPrintable(QStringLiteral("T %1: %2 against %3").arg(m).arg(T).arg(Tr)));
@@ -928,6 +931,30 @@ private slots:
         for (std::size_t i = 0; i < left.size(); ++i) QVERIFY(std::abs(left[i] - right[i]) < 1e-9);
     }
 
+    // An order exactly at its cutoff - a period of the wavelength, lit
+    // straight: orders ±1 grazing the air - closed, as in any medium (β²
+    // nought to 1e-9 of k²): not listed, nought; it was listed open in the
+    // substrate at -90°, not in the air, by its rounding.
+    void anOrderAtItsCutoff()
+    {
+        // (Grazing the air or the substrate below, orders 1 and 2: whichever
+        // way its rounding leans, none listed open at ±90°, each nought.)
+        for (const auto& [substrate, lambda] : {std::pair{1.0, 1.0}, std::pair{1.0, 0.5}, std::pair{1.5, 1.5}, std::pair{1.5, 0.75}}) {
+            const std::vector<std::pair<double, QString>> stack{{1.0, QStringLiteral(R"("n": "%1")").arg(substrate)}, {1.0, QStringLiteral(R"("n": "1")")}};
+            const Run r = run(modelOf(cell(1.0, stack, QStringLiteral("ez"), 0, lambda, slowBuild() ? 0.1 : 0.04)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const QString log = r.solution->log.join(QLatin1Char('\n'));
+            const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("in: ([^;]*); out: ([^\n]*)")).match(log);
+            QVERIFY2(m.hasMatch(), qPrintable(log));
+            qInfo("n %g, %g um - open: in %s; out %s", substrate, lambda, qPrintable(m.captured(1)), qPrintable(m.captured(2)));
+            QVERIFY2(!m.captured(0).contains(QLatin1String("90.00")), qPrintable(m.captured(0)));
+            const auto order = [](int k) { return k < 0 ? QStringLiteral("n%1").arg(-k) : QString::number(k); };
+            const int edge = qRound(substrate / lambda);   // (the order grazing the substrate; the air's 1/λ)
+            for (int k : {edge, -edge})
+                QCOMPARE(global(*r.solution, QStringLiteral("ewfd.T_") + order(k)), 0.0);
+        }
+    }
+
     void periodicRefusals()
     {
         auto error = [](const QByteArray& json) { return run(modelOf(json)).error; };
@@ -940,7 +967,10 @@ private slots:
         QVERIFY2(why.contains(QLatin1String("no periodic port is fed")), qPrintable(why));
         // The walls not one the other moved: one wall and the top, a run.
         why = error(cell(0.4, stack, QStringLiteral("ez"), 0, 1, 0.05).replace(R"("side": ["left", "right"])", R"("side": ["left", "top"])"));
-        QVERIFY2(why.contains(QLatin1String("not two sides apart")), qPrintable(why));
+        // (Said where each is: a stepped wall's pieces, its steps not chosen,
+        // are walls of their own - "6 boundaries make 3 runs" said nothing.)
+        QVERIFY2(why.contains(QLatin1String("walls, each a line")) && why.contains(QLatin1String(") to (")) && why.contains(QLatin1String("its steps")),
+                 qPrintable(why));
         // Continuity with a plane wave at 30°: its kF disagrees.
         why = error(cell(0.4, stack, QStringLiteral("ez"), 30, 1, 0.05).replace(R"({"type": "periodic", )", R"({"type": "periodic", "floquet": "continuity", )"));
         QVERIFY2(why.contains(QLatin1String("Floquet, the fed periodic port's")), qPrintable(why));
@@ -1229,7 +1259,8 @@ private slots:
         {
             // The grating: at 10° each order as the coupled waves have it,
             // nothing lost at any angle; the +1st reflected at 0°, gone past
-            // grazing at 40° (sin θ + λ/P > 1 from 21.5°).
+            // grazing at 40° (sin θ + λ/P > 1 from 21.5°) - its share nought
+            // there, as each order's that could propagate at another angle.
             timer.start();
             Model m = load(QStringLiteral("grating_orders.qfem"));
             // (A sanitized build: three of its angles.)
@@ -1251,9 +1282,21 @@ private slots:
                                                                                      {QStringLiteral("T_n1"), ref.T[39]}, {QStringLiteral("T_1"), ref.T[41]}})
                 QVERIFY2(std::abs(global(at10, QStringLiteral("ewfd.") + name) - value) < 5e-4,
                          qPrintable(QStringLiteral("%1 %2 against %3").arg(name).arg(global(at10, QStringLiteral("ewfd.") + name)).arg(value)));
-            QVERIFY(!std::isnan(global(*r.study.solutions.front(), QStringLiteral("ewfd.R_1"))));
-            QVERIFY(std::isnan(global(*r.study.solutions.back(), QStringLiteral("ewfd.R_1"))));
-            QVERIFY(!std::isnan(global(*r.study.solutions.back(), QStringLiteral("ewfd.R_n1"))));
+            QVERIFY(global(*r.study.solutions.front(), QStringLiteral("ewfd.R_1")) > 0);
+            // (Past grazing: there, nought - each order that propagates at
+            // some angle its global at every angle, "Each order" read at each:
+            // it was not a parameter from 15°.)
+            QCOMPARE(global(*r.study.solutions.back(), QStringLiteral("ewfd.R_1")), 0.0);
+            QVERIFY(global(*r.study.solutions.back(), QStringLiteral("ewfd.R_n1")) > 0);
+            const Node* each = nullptr;
+            for (const Node& d : m.results().child(QStringLiteral("derived"))->children) each = &d;
+            QVERIFY(each);
+            for (const auto& point : r.study.solutions) {
+                const DerivedResult d = evaluateDerived(*point, *each);
+                QVERIFY2(d.error.isEmpty() && d.values.size() == 10, qPrintable(point->label + QStringLiteral(": ") + d.error));
+                for (const char* name : {"ewfd.R_n3", "ewfd.R_3", "ewfd.T_n3", "ewfd.T_3"}) QVERIFY2(point->global(QLatin1String(name)), name);
+                QVERIFY(!point->global(QStringLiteral("ewfd.R_4")));
+            }
             qInfo("grating: at 10° R_0 %.5f, T_0 %.5f, T_n1 %.5f, T_1 %.5f; %lld ms", global(at10, QStringLiteral("ewfd.R_0")), global(at10, QStringLiteral("ewfd.T_0")),
                   global(at10, QStringLiteral("ewfd.T_n1")), global(at10, QStringLiteral("ewfd.T_1")), timer.elapsed());
         }
