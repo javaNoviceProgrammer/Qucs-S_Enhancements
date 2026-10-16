@@ -49,6 +49,17 @@ enum class State {
 /// "ready", "thinking", ...: the state in a word or two.
 QString stateText(State state);
 
+/// The image in the file \a path as a prompt gives it to Claude: its bytes
+/// as they are when PNG, JPEG, GIF or WebP of 3.75 MB at most (5 MB in
+/// base64, the API's limit) and no side over 2000 pixels - else read,
+/// scaled down to 2000 pixels at most a side, and written as PNG (as JPEG
+/// when that is too large: a photo); \a mediaType image/png and so on.
+/// Empty, and why in \a why, when it is no image that reads.
+QByteArray imageForClaude(const QString& path, QString* mediaType, QString* why = nullptr);
+/// A prompt's message content: \a prompt as it is, or with \a images
+/// (their files) each an image block before it - Claude sees them.
+QJsonValue promptContent(const QString& prompt, const QStringList& images);
+
 /// A tool that asks to be used (Bash, Write, Edit, ...).
 struct PermissionRequest {
     QString id;             ///< the request's id, for the answer
@@ -381,9 +392,11 @@ public:
     QString modelInUse() const { return a_modelInUse; }
     QString version() const { return a_version; }
 
-    /// Sends a prompt, starting the program first when it does not run.
-    /// False when it cannot be sent: no program, a turn under way.
-    bool send(const QString& prompt);
+    /// Sends a prompt - with \a images, files Claude is shown
+    /// (promptContent()) -, starting the program first when it does not
+    /// run. False when it cannot be sent: no program, a turn under way,
+    /// nothing to send.
+    bool send(const QString& prompt, const QStringList& images = {});
     /// Answers the permission request \a id: \a allow it or not; with
     /// \a allowEdits, edits need no asking for the rest of the session;
     /// with \a allowTools, the host's tools (the other requests for them

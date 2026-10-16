@@ -22,7 +22,9 @@
 #include <QAbstractTextDocumentLayout>
 #include <QActionGroup>
 #include <QApplication>
+#include <QBuffer>
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
@@ -31,6 +33,8 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QFrame>
+#include <QImageReader>
+#include <QMimeData>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonDocument>
@@ -518,7 +522,8 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     connect(a_view, &QTextBrowser::anchorClicked, this, &ClaudeCodePanel::handleLink);
     qucs_s::math::MathObject::install(a_view->document());
     qucs_s::markdown::SmoothImages::install(a_view->document());
-    a_view->viewport()->installEventFilter(this);   // its images fitted as it resizes
+    a_view->viewport()->installEventFilter(this);   // its images fitted as it resizes; an image dropped on it
+    a_view->viewport()->setAcceptDrops(true);
     layout->addWidget(a_view, 1);
 
     buildPermissionCard();
@@ -915,12 +920,22 @@ void ClaudeCodePanel::buildComposer()
     auto* layout = new QVBoxLayout(a_composer);
     layout->setContentsMargins(8, 6, 6, 6);
     layout->setSpacing(4);
+    // The images attached to the next prompt: a small picture of each, its
+    // × taking it off.
+    a_imageStrip = new QWidget(a_composer);
+    a_imageStrip->setObjectName(QStringLiteral("claudeImages"));
+    auto* strip = new QHBoxLayout(a_imageStrip);
+    strip->setContentsMargins(0, 0, 0, 0);
+    strip->setSpacing(6);
+    a_imageStrip->hide();
+    layout->addWidget(a_imageStrip);
     a_input = new QPlainTextEdit(a_composer);
     a_input->setObjectName(QStringLiteral("claudeInput"));
     a_input->setFrameShape(QFrame::NoFrame);
-    a_input->setPlaceholderText(tr("Ask Claude about your circuits, simulations or files…"));
+    a_input->setPlaceholderText(tr("Ask Claude about your circuits, simulations, files or images…"));
     a_input->setTabChangesFocus(true);
     a_input->installEventFilter(this);
+    a_input->viewport()->installEventFilter(this);   // (an image dropped on it)
     layout->addWidget(a_input);
     auto* row = new QHBoxLayout;
     row->setSpacing(6);
@@ -1231,6 +1246,24 @@ bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
         updateDirectory();
         return false;
     }
+    // An image dropped on the composer or the conversation: attached to the
+    // next prompt. (Anything else as before: text into the composer.)
+    if ((a_input != nullptr && watched == a_input->viewport()) || (a_view != nullptr && watched == a_view->viewport())) {
+        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+            auto* drag = static_cast<QDragMoveEvent*>(event);
+            if (!imageFilesIn(drag->mimeData()).isEmpty() || drag->mimeData()->hasImage()) {
+                drag->acceptProposedAction();
+                return true;
+            }
+        } else if (event->type() == QEvent::Drop) {
+            auto* drop = static_cast<QDropEvent*>(event);
+            if (attachImages(drop->mimeData())) {
+                drop->acceptProposedAction();
+                focusComposer();
+                return true;
+            }
+        }
+    }
     if (watched == a_input) {
         if (event->type() == QEvent::KeyPress && a_commandList->isVisible()) {
             // The commands offered: chosen with the arrows, put in with Tab,
@@ -1261,6 +1294,13 @@ bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
         }
         if (event->type() == QEvent::KeyPress) {
             auto* key = static_cast<QKeyEvent*>(event);
+            // An image pasted (a screenshot copied, an image file): attached.
+            // Text with a picture of itself (a spreadsheet's cells) is text.
+            if (key->matches(QKeySequence::Paste)) {
+                const QMimeData* data = QApplication::clipboard()->mimeData();
+                if (data != nullptr && (!imageFilesIn(data).isEmpty() || (data->hasImage() && !data->hasText())) && attachImages(data))
+                    return true;
+            }
             if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
                 && !(key->modifiers() & (Qt::ShiftModifier | Qt::AltModifier))) {
                 if (!a_session->isBusy()) sendComposer();
@@ -1709,7 +1749,7 @@ void ClaudeCodePanel::updateComposer()
     a_send->setText(busy ? tr("Stop") : tr("Send"));
     a_send->setToolTip(busy ? tr("Stop Claude (Esc)") : tr("Send (Enter)"));
     a_send->setProperty("stop", busy);
-    a_send->setEnabled(busy || !a_input->toPlainText().trimmed().isEmpty());
+    a_send->setEnabled(busy || !a_input->toPlainText().trimmed().isEmpty() || !a_images.isEmpty());
     a_send->style()->unpolish(a_send);
     a_send->style()->polish(a_send);
     // Two lines to eight, as the text needs.
@@ -1727,7 +1767,129 @@ void ClaudeCodePanel::focusComposer()
 
 void ClaudeCodePanel::sendComposer()
 {
-    if (sendText(a_input->toPlainText().trimmed(), true)) a_input->clear();
+    // (The dock's commands and Claude Code's take no images: they stay.)
+    const QString text = a_input->toPlainText().trimmed();
+    const bool command = text.startsWith(QLatin1Char('/'));
+    if (!sendText(text, true, command ? QStringList() : a_images)) return;
+    a_input->clear();
+    if (!command && !a_images.isEmpty()) {
+        a_images.clear();
+        updateImageStrip();
+    }
+    updateComposer();
+}
+
+namespace {
+// Whether \a path is a picture to show Claude: one Qt reads - not a PDF,
+// which its PDF reader takes as its first page alone.
+bool isPicture(const QString& path)
+{
+    QImageReader reader(path);
+    return QFileInfo(path).isFile() && reader.canRead() && reader.format().toLower() != "pdf";
+}
+} // namespace
+
+QStringList ClaudeCodePanel::imageFilesIn(const QMimeData* data)
+{
+    QStringList files;
+    if (data == nullptr || !data->hasUrls()) return files;
+    for (const QUrl& url : data->urls())
+        if (url.isLocalFile() && isPicture(url.toLocalFile())) files << url.toLocalFile();
+    return files;
+}
+
+bool ClaudeCodePanel::attachImages(const QMimeData* data)
+{
+    if (data == nullptr) return false;
+    QStringList files = imageFilesIn(data);
+    if (files.isEmpty() && data->hasImage()) {
+        // An image's data (a screenshot, a picture from a page): kept as a
+        // PNG in the cache, named by what it holds.
+        const QImage image = qvariant_cast<QImage>(data->imageData());
+        if (!image.isNull()) {
+            QByteArray bytes;
+            QBuffer buffer(&bytes);
+            buffer.open(QIODevice::WriteOnly);
+            image.save(&buffer, "PNG");
+            const QString dir = misc::cacheDir() + QStringLiteral("/claude-images");
+            QDir().mkpath(dir);
+            const QString path = dir + QLatin1Char('/') + QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha1).toHex().left(16))
+                                 + QStringLiteral(".png");
+            if (!QFileInfo::exists(path)) {
+                QSaveFile f(path);
+                if (f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size()) f.commit();
+            }
+            if (QFileInfo::exists(path)) files << path;
+        }
+    }
+    return attachImageFiles(files);
+}
+
+bool ClaudeCodePanel::attachImageFiles(const QStringList& files)
+{
+    bool any = false;
+    for (const QString& file : files) {
+        const QString path = QFileInfo(file).absoluteFilePath();
+        if (a_images.contains(path) || a_images.size() >= 20 || !isPicture(path)) continue;
+        a_images << path;
+        any = true;
+    }
+    if (any) {
+        updateImageStrip();
+        updateComposer();
+    }
+    return any;
+}
+
+void ClaudeCodePanel::removeAttachedImage(qsizetype index)
+{
+    if (index < 0 || index >= a_images.size()) return;
+    a_images.removeAt(index);
+    updateImageStrip();
+    updateComposer();
+}
+
+void ClaudeCodePanel::updateImageStrip()
+{
+    auto* strip = static_cast<QHBoxLayout*>(a_imageStrip->layout());
+    while (QLayoutItem* item = strip->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+    const qreal dpr = devicePixelRatioF();
+    for (const QString& path : std::as_const(a_images)) {
+        auto* box = new QFrame(a_imageStrip);
+        box->setObjectName(QStringLiteral("claudeImage"));
+        box->setToolTip(QDir::toNativeSeparators(path));
+        auto* row = new QHBoxLayout(box);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(0);
+        // A small picture of it, as tall as two lines of text at most -
+        // never bigger than it is.
+        QImageReader reader(path);
+        reader.setAutoTransform(true);
+        QImage picture = reader.read();
+        const QSize shown = picture.isNull() ? QSize(1, 1)
+                            : picture.size().width() <= 96 && picture.size().height() <= 56 ? picture.size()
+                                                                                             : picture.size().scaled(96, 56, Qt::KeepAspectRatio);
+        if (!picture.isNull()) {
+            picture = picture.scaled(shown * dpr, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            picture.setDevicePixelRatio(dpr);
+        }
+        auto* label = new QLabel(box);
+        label->setPixmap(QPixmap::fromImage(picture));
+        auto* remove = new QToolButton(box);
+        remove->setObjectName(QStringLiteral("claudeImageRemove"));
+        remove->setText(QStringLiteral("×"));
+        remove->setAutoRaise(true);
+        remove->setToolTip(tr("Take this image off the prompt"));
+        connect(remove, &QToolButton::clicked, this, [this, path] { removeAttachedImage(a_images.indexOf(path)); });
+        row->addWidget(label);
+        row->addWidget(remove, 0, Qt::AlignTop);
+        strip->addWidget(box);
+    }
+    strip->addStretch(1);
+    a_imageStrip->setVisible(!a_images.isEmpty());
 }
 
 bool ClaudeCodePanel::sendPrompt(const QString& text)
@@ -1781,8 +1943,14 @@ bool ClaudeCodePanel::editPrompt(qsizetype index)
     a_setAside = a_entries.mid(index);
     a_entries.resize(index);
     a_draft = a_input->toPlainText();
+    a_draftImages = a_images;
     a_input->setPlainText(a_setAside.constFirst().text);
     a_input->moveCursor(QTextCursor::End);
+    // (Its images with it, those whose files are there.)
+    a_images.clear();
+    for (const QString& path : a_setAside.constFirst().images)
+        if (QFileInfo(path).isFile()) a_images << path;
+    updateImageStrip();
     a_editBar->show();
     a_requests.clear();
     showNextRequest();
@@ -1804,6 +1972,9 @@ void ClaudeCodePanel::cancelEdit()
     a_input->setPlainText(a_draft);
     a_input->moveCursor(QTextCursor::End);
     a_draft.clear();
+    a_images = a_draftImages;
+    a_draftImages.clear();
+    updateImageStrip();
     a_editBar->hide();
     updateState();
     render();
@@ -1828,6 +1999,7 @@ void ClaudeCodePanel::forgetEdit()
     a_editing = -1;
     a_setAside.clear();
     a_draft.clear();
+    a_draftImages.clear();
     a_editStopped = false;
     a_rewinding = false;
     a_rewindIndex = -1;
@@ -1859,9 +2031,9 @@ void ClaudeCodePanel::placePrompts(const QString& sessionId)
     }
 }
 
-bool ClaudeCodePanel::sendText(const QString& text, bool withDocument)
+bool ClaudeCodePanel::sendText(const QString& text, bool withDocument, const QStringList& images)
 {
-    if (text.isEmpty()) return false;
+    if (text.isEmpty() && images.isEmpty()) return false;
     // The dock's own commands: run here, whatever Claude is doing and with
     // no program needed.
     if (text.startsWith(QLatin1Char('/')) && runCommand(text)) return true;
@@ -1889,6 +2061,15 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument)
     }
 
     QString prompt = text;
+    // Its images shown to Claude (Session::send()), their files said too:
+    // to be read again, or used.
+    if (!images.isEmpty()) {
+        QStringList files;
+        for (const QString& path : images) files << QDir::toNativeSeparators(path);
+        prompt += (prompt.isEmpty() ? QString() : QStringLiteral("\n\n"))
+                  + (images.size() == 1 ? tr("(An image attached, from: %1)").arg(files.constFirst())
+                                        : tr("(%1 images attached, from: %2)").arg(images.size()).arg(files.join(QStringLiteral(", "))));
+    }
     QString attached;
     refreshDocument();
     if (!withDocument) {
@@ -1904,8 +2085,10 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument)
         if (!attached.isEmpty())
             prompt += QStringLiteral("\n\n") + tr("(The document open in Qucs-S: %1)").arg(QDir::toNativeSeparators(attached));
     }
-    append(promptEntry(text, attached.isEmpty() ? QString() : QFileInfo(attached).fileName()));
-    const bool sent = a_session->send(prompt);
+    Entry e = promptEntry(text, attached.isEmpty() ? QString() : QFileInfo(attached).fileName());
+    e.images = images;
+    append(e);
+    const bool sent = a_session->send(prompt, images);
     updateState();
     return sent;
 }
@@ -2302,6 +2485,30 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         for (int i = 0; i < lines.size(); ++i) {
             if (i > 0) c.insertBlock();
             c.insertText(lines.at(i), plain);
+        }
+        // Its images, small (fitted to the line, never bigger than they
+        // are) - the file's name where it is gone.
+        if (!e.images.isEmpty()) {
+            QTextBlockFormat bf;
+            bf.setTopMargin(e.text.isEmpty() ? 0 : 6);
+            if (e.text.isEmpty()) c.setBlockFormat(bf);
+            else c.insertBlock(bf);
+            for (const QString& path : e.images) {
+                const QSize own = QImageReader(path).size();
+                if (!QFileInfo(path).isFile() || !own.isValid()) {
+                    c.insertText(tr("[%1: its file is gone]").arg(QFileInfo(path).fileName()), muted);
+                    c.insertText(QStringLiteral(" "), plain);
+                    continue;
+                }
+                const QSize shown = own.width() <= 240 && own.height() <= 180 ? own : own.scaled(240, 180, Qt::KeepAspectRatio);
+                QTextImageFormat image;
+                image.setName(QUrl::fromLocalFile(path).toString());
+                image.setWidth(shown.width());
+                image.setHeight(shown.height());
+                image.setToolTip(QDir::toNativeSeparators(path));
+                c.insertImage(image);
+                c.insertText(QStringLiteral(" "), plain);
+            }
         }
         if (!e.extra.isEmpty()) {
             QTextBlockFormat bf;
@@ -2771,6 +2978,7 @@ QJsonObject ClaudeCodePanel::conversationJson() const
             o.insert(QStringLiteral("at"), e.at);
         }
         if (!e.extra.isEmpty()) o.insert(QStringLiteral("extra"), e.extra);
+        if (!e.images.isEmpty()) o.insert(QStringLiteral("images"), QJsonArray::fromStringList(e.images));
         if (!e.id.isEmpty()) o.insert(QStringLiteral("id"), e.id);
         if (!e.output.isEmpty()) o.insert(QStringLiteral("output"), e.output);
         if (e.kind == Entry::Tool) o.insert(QStringLiteral("tool"), int(e.tool));
@@ -2812,6 +3020,7 @@ void ClaudeCodePanel::restoreConversation(const QJsonObject& conversation)
         Entry e{static_cast<Entry::Kind>(kind), o.value(QLatin1String("text")).toString(),
                 o.value(QLatin1String("extra")).toString(), o.value(QLatin1String("id")).toString()};
         e.output = o.value(QLatin1String("output")).toString();
+        for (const QJsonValue& image : o.value(QLatin1String("images")).toArray()) e.images << image.toString();
         e.detail = o.value(QLatin1String("detail")).toString();
         e.result = o.value(QLatin1String("result")).toString();
         if (e.kind == Entry::You && o.contains(QLatin1String("at"))) {
@@ -3213,6 +3422,7 @@ QString ClaudeCodePanel::exportTitle() const
     for (const Entry& e : a_entries)
         if (e.kind == Entry::You) {
             QString t = e.text.simplified();
+            if (t.isEmpty() && !e.images.isEmpty()) t = tr("Image: %1").arg(QFileInfo(e.images.constFirst()).fileName());
             if (t.size() > 120) t = t.left(119).trimmed() + QChar(0x2026);
             return t;
         }
@@ -3321,6 +3531,8 @@ QString ClaudeCodePanel::conversationMarkdown() const
             md += QStringLiteral("\n### ") + tr("You") + QStringLiteral("\n\n");
             for (const QString& line : e.text.split(QLatin1Char('\n')))
                 md += (line.isEmpty() ? QStringLiteral(">") : QStringLiteral("> ") + line) + QLatin1Char('\n');
+            for (const QString& path : e.images)
+                md += QStringLiteral(">\n> ![%1](<%2>)\n").arg(QFileInfo(path).fileName(), QUrl::fromLocalFile(path).toString());
             if (!e.extra.isEmpty()) md += QStringLiteral(">\n> ↳ ") + inlineCode(e.extra) + QLatin1Char('\n');
             break;
         case Entry::Claude:
@@ -3390,6 +3602,7 @@ QString ClaudeCodePanel::conversationText() const
         case Entry::You:
             captioned = false;
             out << tr("You:") << e.text.trimmed();
+            for (const QString& path : e.images) out << tr("[image: %1]").arg(QDir::toNativeSeparators(path));
             if (!e.extra.isEmpty()) out << QStringLiteral("↳ ") + e.extra;
             break;
         case Entry::Claude:
