@@ -2097,6 +2097,72 @@ private slots:
         QVERIFY(json(r).value("format").toString().contains("Quantum wells"));
     }
 
+    // The update checks of 8bd5709 and 110e8b9, in the tools: a resonator's
+    // globals said at the mode kept (they were "the last"), its figures'
+    // note no VCSEL's for a cylinder; a sweep's seconds to the millisecond
+    // (0.4460000000000003), the sweep's said in its log; a 1D plot whose x
+    // does not read refused (drawn against its axis, as it was), its x in a
+    // unit asked (xunit); an energy density in J/m³ (it was Pa).
+    void theUpdateChecksInTheTools()
+    {
+        auto write = [&](const QString& name, const QString& json) {
+            QFile f(path(name));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(json.toUtf8());
+        };
+        write(QStringLiteral("cylinder.qfem"), QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "mm", "space": "axisymmetric",
+            "geometry": [{"type": "rectangle", "name": "cav", "position": ["0", "0"], "size": ["10", "20"]}],
+            "materials": [{"label": "air", "n": "1", "selection": {"all": true}}],
+            "physics": [{"type": "resonator", "tag": "emr", "m": 1, "features": [{"type": "wave", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+          "studies": [{"type": "study", "steps": [{"type": "eigenfrequency", "count": 3, "around": "15[GHz]", "keep": 1}]}]})json"));
+        QVERIFY(open(path(QStringLiteral("cylinder.qfem"))) != nullptr);
+        QJsonObject r = call("fem_solve", {{"path", "cylinder.qfem"}, {"timeout", 120}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject solved = json(r);
+        QCOMPARE(solved.value("frequencies").toObject().value("globals at").toString(), QStringLiteral("mode 1, the one kept for the steps after"));
+        QCOMPARE(solved.value("globals").toObject().value("emr.mode").toString(), QStringLiteral("1"));
+        QVERIFY2(!solved.value("figures").toString().contains(QLatin1String("VCSEL")), qPrintable(solved.value("figures").toString()));
+        QJsonArray atPoint;   // (a list of one point: QJsonArray{QJsonArray{...}} is a copy)
+        atPoint.append(QJsonArray{5, 10});
+        r = call("fem_evaluate", {{"path", "cylinder.qfem"}, {"expression", "emr.we"}, {"at", atPoint}});
+        QVERIFY2(!failed(r) && text(r).contains(QString::fromUtf8("J/m³")) && !text(r).contains(QLatin1String(" Pa")), qPrintable(text(r)));
+        write(QStringLiteral("bars.qfem"), QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "L", "expression": "10[mm]"}],
+          "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "bar", "size": ["L", "1"]}],
+            "materials": [{"label": "m", "sigma": "1e6[S/m]", "selection": {"all": true}}],
+            "physics": [{"type": "currents", "tag": "ec", "features": [
+              {"type": "terminal", "name": "1", "V0": "1[mV]", "selection": {"of": ["bar"], "side": "left"}},
+              {"type": "ground", "selection": {"of": ["bar"], "side": "right"}}]}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["L", "10, 20, 40", "mm"]]}, {"type": "stationary"}]}],
+          "results": {"plots": [{"type": "plotgroup1d", "tag": "badx", "x": "nosuch", "plots": [{"type": "globalgraph", "expression": "ec.G11"}]},
+                                {"type": "plotgroup1d", "tag": "inmA", "x": "ec.I_1", "xunit": "mA", "plots": [{"type": "globalgraph", "expression": "ec.G11"}]}]}})json"));
+        QVERIFY(open(path(QStringLiteral("bars.qfem"))) != nullptr);
+        r = call("fem_solve", {{"path", "bars.qfem"}, {"timeout", 120}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const double seconds = json(r).value("seconds").toDouble();
+        // (Exactly the double nearest a whole number of ms: 0.4460000000000003
+        // is 3e-16 off it.)
+        QVERIFY2(seconds == std::round(seconds * 1000) / 1000, qPrintable(QString::number(seconds, 'g', 17)));
+        const QJsonArray log = json(r).value("log").toArray();
+        QVERIFY2(log.last().toString().startsWith(QLatin1String("The sweep: 3 points in")), qPrintable(log.last().toString()));
+        r = call("fem_plot", {{"path", "bars.qfem"}, {"plot", "badx"}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("its x, nosuch,")), qPrintable(text(r)));
+        r = call("fem_plot", {{"path", "bars.qfem"}, {"plot", "inmA"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QFile dataset(json(r).value("dataset").toString());
+        QVERIFY(dataset.open(QIODevice::ReadOnly));
+        const QString data = QString::fromUtf8(dataset.readAll());
+        // (1 mV over 10 mm of a 1 mm bar of 1 MS/m, a metre thick: 100 A -
+        // 1e5 mA.)
+        const QStringList lines = data.split(QLatin1Char('\n'));
+        const int at = int(lines.indexOf(QStringLiteral("<indep ec.I_1 3>")));
+        QVERIFY2(at >= 0, qPrintable(data.left(400)));
+        QVERIFY2(std::abs(lines.at(at + 1).trimmed().toDouble() / 1e5 - 1) < 1e-9, qPrintable(lines.at(at + 1)));
+    }
+
     // The MQW calibration's tool notes:
     // - a plot group's tag a study's already: renamed, the reading said so,
     //   and the plot groups there are named when the tag is asked for;

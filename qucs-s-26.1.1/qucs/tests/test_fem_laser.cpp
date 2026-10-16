@@ -176,7 +176,7 @@ private slots:
         qInfo("U %.7g J (%.7g)", U, Uexact);
         QVERIFY(std::abs(U / Uexact - 1) < 1e-3);
         // Threshold: the carriers clamped, the gain at gth.
-        const double taup = global(s, QStringLiteral("semi.taup")), v = C / 3.5, ad = 5e-20, Ntr = 2e24, B = 1e-16;
+        const double taup = global(s, QStringLiteral("semi.tauph")), v = C / 3.5, ad = 5e-20, Ntr = 2e24, B = 1e-16;
         const double gth = 1 / (taup * v * Gamma), Nth = Ntr + gth / ad;
         QVERIFY(std::abs(global(s, QStringLiteral("semi.gth")) / gth - 1) < 1e-9);
         const double freq = global(s, QStringLiteral("emr.freq")), photon = Hbar * 2 * M_PI * freq;
@@ -245,7 +245,7 @@ private slots:
             return d.error.isEmpty() && !d.values.empty() ? d.values.front().value : NAN;
         };
         const double gth = global(s, QStringLiteral("semi.gth")), gmean = global(s, QStringLiteral("semi.gmean"));
-        const double v = C / std::sqrt(3.5 * 3.5 - 1e-6), taup = global(s, QStringLiteral("semi.taup")), Gamma = global(s, QStringLiteral("semi.Gamma"));
+        const double v = C / std::sqrt(3.5 * 3.5 - 1e-6), taup = global(s, QStringLiteral("semi.tauph")), Gamma = global(s, QStringLiteral("semi.Gamma"));
         qInfo("logarithmic: n %.5g, p %.5g on the disk; gmean %.7g, gth %.7g (%.7g); its form off by %.3g at most; S %.4g", derived("nav"), derived("pav"),
               gmean, gth, 1 / (taup * v * Gamma), derived("off"), global(s, QStringLiteral("semi.S")));
         QVERIFY(derived("pav") > 1.2 * derived("nav"));
@@ -307,11 +307,15 @@ private slots:
     }
 
     // The example vcsel_laser.qfem as its description says (six of its
-    // voltages): the mode HE11 980.30 nm, Q 15 800; Γ 0.042, the gain at
-    // threshold 409 per cm; the wells transparent at 8.6e17 per cm³;
-    // threshold 0.13 mA at 1.40 V, 0.59 W/A, 1.1 mW at 2.1 mA (1.90 V);
-    // dark at 1.30 V, lasing from 1.40 V. (A slow build: its geometry and
-    // mesh alone - CI's Release builds solve it.)
+    // voltages): the mode HE11 980.29 nm, Q 15 800; Γ 0.042, the gain at
+    // threshold 409 per cm; the wells transparent at 1.09e18 per cm³ (twelve
+    // states: five gave 1.00e18 and a warning); threshold 49 µA at 1.34 V
+    // (these six points; its own 36, 49 µA at 1.34 V), 0.60 W/A, 0.95 mW at
+    // 1.63 mA (1.90 V); dark at 1.30 V, lasing from 1.36 V. Its cavity's
+    // rows ten (the current at 1.9 V within 11 % of twice as many; five were
+    // 2.09 mA against 1.42 at four times), its SRH lifetimes its own 5 ns
+    // (they were the material's 1 ns): the update check of 110e8b9. (A slow
+    // build: its geometry and mesh alone - CI's Release builds solve it.)
     void theVcselLaserExample()
     {
         QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/vcsel_laser.qfem"));
@@ -330,28 +334,52 @@ private slots:
             for (const Node& st : study->children)
                 if (st.type == QLatin1String("laser")) step = model.find(st.tag);
         QVERIFY(step);
-        step->props.insert(QStringLiteral("voltages"), QStringLiteral("1.30, 1.38, 1.40, 1.44, 1.60, 1.90"));
+        step->props.insert(QStringLiteral("voltages"), QStringLiteral("1.20, 1.30, 1.36, 1.40, 1.60, 1.90"));
         Run r = run(model);
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         Solution& s = *r.solution;
         const QString log = s.log.join(QLatin1Char('\n'));
         const double lambda = global(s, QStringLiteral("emr.lambda0")), Qf = global(s, QStringLiteral("emr.Q"));
         qInfo("mode %.5f nm, Q %.0f, Γ %.5f, gth %.1f per cm", lambda * 1e9, Qf, global(s, QStringLiteral("semi.Gamma")), global(s, QStringLiteral("semi.gth")) / 100);
-        QVERIFY(std::abs(lambda * 1e9 - 980.30) < 0.01 && std::abs(Qf / 15829 - 1) < 0.01);
+        QVERIFY(std::abs(lambda * 1e9 - 980.290) < 0.01 && std::abs(Qf / 15827 - 1) < 0.01);
         QVERIFY(std::abs(global(s, QStringLiteral("semi.Gamma")) / 0.04158 - 1) < 0.01);
         QVERIFY(std::abs(global(s, QStringLiteral("semi.gth")) / 4.0905e4 - 1) < 0.01);
         QRegularExpressionMatch tr = QRegularExpression(QStringLiteral("transparency ([0-9.e+]+) per cm")).match(log);
-        QVERIFY2(tr.hasMatch() && std::abs(tr.captured(1).toDouble() / 8.577e17 - 1) < 0.01, qPrintable(log));
+        QVERIFY2(tr.hasMatch() && std::abs(tr.captured(1).toDouble() / 1.094e18 - 1) < 0.01, qPrintable(log));
+        QVERIFY2(!log.contains(QLatin1String("ask for more states")), qPrintable(log));
         const std::vector<Point> p = points(s);
         QCOMPARE(int(p.size()), 6);
         QVERIFY(p[0].S < 1 && p[0].Gnet < 0);
         for (std::size_t k = 2; k < p.size(); ++k) QVERIFY2(std::abs(p[k].gmean / 4.0905e4 - 1) < 1e-3, qPrintable(QString::number(p[k].gmean)));
-        QVERIFY(std::abs(p.back().Pout / 1.142e-3 - 1) < 0.01 && std::abs(p.back().I / 2.06e-3 - 1) < 0.01);
+        QVERIFY(std::abs(p.back().Pout / 0.949e-3 - 1) < 0.01 && std::abs(p.back().I / 1.6316e-3 - 1) < 0.01);
         QRegularExpressionMatch th = QRegularExpression(QStringLiteral("threshold ([0-9.]+) µA at ([0-9.]+) V.*slope ([0-9.]+) W/A")).match(log);
         QVERIFY2(th.hasMatch(), qPrintable(log));
         qInfo("threshold %s µA at %s V, slope %s W/A", qPrintable(th.captured(1)), qPrintable(th.captured(2)), qPrintable(th.captured(3)));
-        QVERIFY(std::abs(th.captured(1).toDouble() / 129 - 1) < 0.05 && std::abs(th.captured(2).toDouble() - 1.40) < 0.01
-                && std::abs(th.captured(3).toDouble() / 0.589 - 1) < 0.02);
+        QVERIFY(std::abs(th.captured(1).toDouble() / 48.55 - 1) < 0.05 && std::abs(th.captured(2).toDouble() - 1.339) < 0.01
+                && std::abs(th.captured(3).toDouble() / 0.5992 - 1) < 0.02);
+        // Its carriers within its gain table: nothing said. Its table ending
+        // lower (Nmax 1.5e18, transparency 1.09e18), the carriers past it at
+        // 1.6 V - its gain held at its last there: said, once (it was not:
+        // the update check of 110e8b9, 9).
+        QVERIFY2(!log.contains(QLatin1String("carriers reach")), qPrintable(log));
+        std::function<void(Node&)> lower = [&lower](Node& n) {
+            if (n.type == QLatin1String("semiconductor/laser")) n.props.insert(QStringLiteral("Nmax"), QStringLiteral("1.5e18[1/cm^3]"));
+            for (Node& c : n.children) lower(c);
+        };
+        lower(model.component());
+        step->props.insert(QStringLiteral("voltages"), QStringLiteral("1.40, 1.60, 1.70"));
+        r = run(model);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const QStringList reach = r.study.warnings.filter(QLatin1String("carriers reach"));
+        QVERIFY2(reach.size() == 1 && reach.front().contains(QLatin1String("past its wells' gain table's 1.5e+18")), qPrintable(r.study.warnings.join(QLatin1Char('\n'))));
+        // A stationary step in its Laser L-I step's place: its quantum gain
+        // is that step's table - refused, its mode solved (a line of the log,
+        // it was: the update check of 110e8b9, 8).
+        step->type = QStringLiteral("stationary");
+        step->props.remove(QStringLiteral("voltages"));
+        step->props.remove(QStringLiteral("contact"));
+        r = run(model);
+        QVERIFY2(r.error.contains(QLatin1String("tabulated at the mode's photon energy by a Laser L-I step - not solved in another step")), qPrintable(r.error));
     }
 
     // The Eigenfrequency step's mode kept for the steps after: the one asked
@@ -376,6 +404,134 @@ private slots:
         QCOMPARE(int(frequencies.size()), 3);
         Run r = keeping(4);
         QVERIFY2(r.error.contains(QLatin1String("keeps mode 4 of the 3")), qPrintable(r.error));
+    }
+
+    // The update check of 110e8b9, 1: a mode kept with a step after it, the
+    // other modes as they were (the step's solution was written over the
+    // last mode's: with three found and the first kept, the third read as
+    // the first); the kept one holds the step's.
+    void aModeKeptAndAStepAfter()
+    {
+        QByteArray json = pillbox(QStringLiteral(R"j({"type": "stationary", "physics": ["semi"]})j"));
+        json.replace(R"("count": 1, "around": "9.1[um]")", R"("count": 3, "around": "6[um]", "keep": 1)");
+        json.replace(R"("name": "anode", "V0": "0[V]")", R"("name": "anode", "V0": "1.45[V]")");
+        Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        QCOMPARE(s.snapshotCount(), 3);
+        std::vector<double> f;
+        for (int k = 0; k < 3; ++k) {
+            s.select(k);
+            QCOMPARE(int(global(s, QStringLiteral("emr.mode"))), k + 1);
+            f.push_back(global(s, QStringLiteral("emr.freq")));
+        }
+        QVERIFY2(f[0] < f[1] && f[1] < f[2], qPrintable(QStringLiteral("%1 %2 %3").arg(f[0]).arg(f[1]).arg(f[2])));
+        s.select(0);
+        QVERIFY(global(s, QStringLiteral("semi.I_anode")) > 1e-9);
+    }
+
+    // 4: a reverse bias in a Laser L-I (its photons none: held at a
+    // twentieth each Newton step, as they were, they never met their balance
+    // - it failed); a stationary step above threshold from equilibrium (the
+    // walk to its voltage went before its mode was read, then had no smaller
+    // step left - it failed), its light the L-I's there.
+    void aReverseBiasAndAStepAboveThreshold()
+    {
+        // (A sanitized build: the curve's reverse points alone and the steps
+        // at 1.6 V after the mode alone - each walk to 1.6 V some 60 s there.)
+        const bool slow = slowBuild();
+        Run li = run(modelOf(pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "%1"})j")
+                                         .arg(slow ? QStringLiteral("-0.5, 0") : QStringLiteral("-0.5, 0, 1.4, 1.6")))));
+        QVERIFY2(li.error.isEmpty(), qPrintable(li.error));
+        const std::vector<Point> p = points(*li.solution);
+        QCOMPARE(int(p.size()), slow ? 2 : 4);
+        QVERIFY2(p[0].S >= 0 && p[0].S < 1e-9 && std::abs(p[0].I) < 1e-15, qPrintable(QStringLiteral("%1 %2").arg(p[0].S).arg(p[0].I)));
+        if (!slow) QVERIFY(p[3].S > 100);
+        QByteArray json = pillbox(QStringLiteral(R"j({"type": "stationary", "physics": ["semi"]})j"));
+        json.replace(R"("name": "anode", "V0": "0[V]")", R"("name": "anode", "V0": "1.6[V]")");
+        double S = NAN;
+        if (!slow) {
+            Run st = run(modelOf(json));
+            QVERIFY2(st.error.isEmpty(), qPrintable(st.error));
+            S = global(*st.solution, QStringLiteral("semi.S"));
+            const double I = global(*st.solution, QStringLiteral("semi.I_anode"));
+            QVERIFY2(std::abs(S / p[3].S - 1) < 1e-6 && std::abs(I / p[3].I - 1) < 1e-6, qPrintable(QStringLiteral("%1 %2, %3 %4").arg(S).arg(p[3].S).arg(I).arg(p[3].I)));
+        }
+        // At 1.6 V before its mode is solved (no light: said), then again
+        // after it: from the state of no photons walked again, with the
+        // light - the same point.
+        json.replace(R"([{"type": "eigenfrequency")", R"([{"type": "stationary", "physics": ["semi"]}, {"type": "eigenfrequency")");
+        Run twice = run(modelOf(json));
+        QVERIFY2(twice.error.isEmpty(), qPrintable(twice.error));
+        QVERIFY(twice.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("no lasing yet")));
+        const double S2 = global(*twice.solution, QStringLiteral("semi.S"));
+        QVERIFY2(slow ? S2 > 100 : std::abs(S2 / S - 1) < 1e-6, qPrintable(QStringLiteral("%1 %2").arg(S2).arg(S)));
+    }
+
+    // 7, 5: its threshold said as it is - two points lasing are not "below
+    // threshold at every point", a curve lasing from its first point is
+    // warned; a point that does not converge keeps the points before it
+    // (the semiconductor says "failed to converge", which the step did not
+    // look for: the curve was lost).
+    void theThresholdSaid()
+    {
+        auto log = [](const QString& volts) {
+            Run r = run(modelOf(pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "%1"})j").arg(volts))));
+            return std::make_pair(r, r.solution ? r.solution->log.join(QLatin1Char('\n')) : QString());
+        };
+        auto [two, twoLog] = log(QStringLiteral("1.40, 1.45, 1.59, 1.60"));
+        QVERIFY2(two.error.isEmpty() && twoLog.contains(QLatin1String("lasing at its last 2 points only")), qPrintable(two.error + twoLog));
+        auto [above, aboveLog] = log(QStringLiteral("1.57, 1.58, 1.59, 1.60"));
+        QVERIFY2(above.error.isEmpty() && above.study.warnings.join(QLatin1Char(' ')).contains(QLatin1String("lases from its first point")),
+                 qPrintable(above.error + above.study.warnings.join(QLatin1Char(' '))));
+        QVERIFY2(aboveLog.contains(QLatin1String("a voltage below the first point's")), qPrintable(aboveLog));
+        // (A cavity of Q 2e6 - κ 1e-6 - does not converge past threshold at
+        // 1.45 V, said; its point before kept.)
+        QByteArray json = pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "1.40, 1.45"})j"));
+        json.replace("\"kappa\": \"1e-3\"", "\"kappa\": \"1e-6\"");
+        Run cut = run(modelOf(json));
+        QVERIFY2(cut.error.isEmpty(), qPrintable(cut.error));
+        QCOMPARE(cut.solution->snapshotCount(), 1);
+        QVERIFY2(cut.study.warnings.join(QLatin1Char(' ')).contains(QLatin1String("stopped at 1.45 V")), qPrintable(cut.study.warnings.join(QLatin1Char(' '))));
+    }
+
+    // 2, 10: its current what it recombines - a node's box by the Voronoi
+    // shares, its recombination on the parts of its own bands (a node on
+    // the disk's edge recombined over half the cladding's next row too: the
+    // contact's current 1.458 times q ∫ R + the stimulated current on the
+    // reviewer's toy); semi.gain and semi.Rst nought outside the disk (the
+    // cladding's next element took its nodes' values); the L-I's points by
+    // number (fem_evaluate's 'point' read the last).
+    void itsCurrentWhatItRecombines()
+    {
+        QByteArray json = pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "1.45, 1.6"})j"));
+        json.replace(R"("studies": [)", R"j("results": {"derived": [{"type": "integral", "tag": "rad", "expression": "1e-16[m^3/s]*(semi.n*semi.p - semi.ni^2)", "revolved": true, "selection": {"only": ["active"]}}]}, "studies": [)j");
+        const Model model = modelOf(json);
+        Run r = run(model);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        for (int k = 0; k < 2; ++k) {
+            s.select(k);
+            const DerivedResult rad = evaluateDerived(s, *model.find(QStringLiteral("rad")));
+            QVERIFY2(rad.error.isEmpty() && !rad.values.empty(), qPrintable(rad.error));
+            const double I = global(s, QStringLiteral("semi.I_anode")), budget = Q * rad.values.front().value + global(s, QStringLiteral("semi.Istim"));
+            qInfo("%g V: I %.6g A, q ∫ R + Istim %.6g A", s.snapshotValue(k), I, budget);
+            QVERIFY2(std::abs(I / budget - 1) < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(I).arg(budget)));
+        }
+        const Locator locator(s.mesh());
+        for (const char* e : {"semi.gain", "semi.Rst"}) {
+            const std::optional<double> in = evaluateAt(s, locator, QLatin1String(e), {0.1, 0.5}), out = evaluateAt(s, locator, QLatin1String(e), {0.1, 0.512}),
+                                        beside = evaluateAt(s, locator, QLatin1String(e), {0.205, 0.5});
+            QVERIFY2(in && *in != 0 && out && *out == 0 && beside && *beside == 0,
+                     qPrintable(QStringLiteral("%1: %2 %3 %4").arg(QLatin1String(e)).arg(in.value_or(NAN)).arg(out.value_or(NAN)).arg(beside.value_or(NAN))));
+        }
+        SolutionSet set;
+        set.solutions = r.study.solutions;
+        for (int point : {1, 2}) {
+            const std::vector<Instance> at = instances(set, false, point);
+            QCOMPARE(int(at.size()), 1);
+            QCOMPARE(at.front().snapshot, point - 1);
+        }
     }
 
     // Quantum wells about an axis: a line along it (y) planar wells across it
@@ -409,6 +565,26 @@ private slots:
         QVERIFY2(along.error.contains(QLatin1String("lie across it")), qPrintable(along.error));
     }
 
+    // One point above threshold, from equilibrium: its walk's tries that
+    // take the photons to none, a twentieth a step, given up after eight -
+    // forty each, they were: a Laser L-I of one point at 1.9 V 110 s against
+    // 103 for the example's 36 (the update check of 110e8b9, 12).
+    void onePointAboveThreshold()
+    {
+        // (A sanitized build: 1.6 V alone - each point some 90 s there.)
+        for (const char* v : {"1.6", "1.8", "2.0"}) {
+            if (slowBuild() && std::strcmp(v, "1.6") != 0) continue;
+            const Run r = run(modelOf(pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "%1"})j").arg(QLatin1String(v)))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("reached in (\\d+) steps \\((\\d+) of Newton's\\)")).match(r.solution->log.join(QLatin1Char('\n')));
+            QVERIFY2(m.hasMatch(), qPrintable(r.solution->log.join(QLatin1Char('\n'))));
+            qInfo("one point at %s V: %s steps, %s of Newton's; S %.4g", v, qPrintable(m.captured(1)), qPrintable(m.captured(2)), points(*r.solution).back().S);
+            // (271 for 21 steps at 1.6 V; 484 when each such try ran its forty.)
+            QVERIFY2(m.captured(2).toInt() < 350, qPrintable(m.captured(0)));
+            QVERIFY(points(*r.solution).back().S > 1000);
+        }
+    }
+
     // Refused, and said: a Laser L-I step without a semiconductor that lases,
     // without its mode solved before, with a contact it has not; a cavity
     // that loses nothing; a step in time with lasing.
@@ -433,6 +609,52 @@ private slots:
         json.replace(R"("kappa": "1e-3")", R"("kappa": "0")");
         r = run(modelOf(json));
         QVERIFY2(r.error.contains(QLatin1String("loses nothing")), qPrintable(r.error));
+        // The update check of 110e8b9, 3 and 9: no spontaneous emission into
+        // the mode - β 0, or no Radiative on the gain region (its light none
+        // at any current, its net gain above nought unseen); a group index of
+        // 0 (taken as none given); a mode kept below 0 (taken as 0); a gain
+        // or carriers none of its choices (run as logarithmic, as the mean);
+        // a count not whole (said to be 0); a key it has not, said.
+        json = pillbox(lis);
+        json.replace(R"("beta": "1e-4")", R"("beta": "0")");
+        r = run(modelOf(json));
+        QVERIFY2(r.error.contains(QString::fromUtf8("no spontaneous emission into the mode (its β is 0)")), qPrintable(r.error));
+        json = pillbox(lis);
+        json.replace(R"({"type": "radiative", "B")", R"({"type": "radiative", "enabled": false, "B")");
+        r = run(modelOf(json));
+        QVERIFY2(r.error.contains(QLatin1String("no Radiative recombination on its gain region")), qPrintable(r.error));
+        json = pillbox(lis);
+        json.replace(R"("ng": "3.5")", R"("ng": "0")");
+        r = run(modelOf(json));
+        QVERIFY2(r.error.contains(QLatin1String("its group index 1 or more")), qPrintable(r.error));
+        json = pillbox(lis);
+        json.replace(R"("count": 1, "around": "9.1[um]")", R"("count": 1, "around": "9.1[um]", "keep": -1)");
+        r = run(modelOf(json));
+        QVERIFY2(r.error.contains(QLatin1String("not -1")), qPrintable(r.error));
+        for (const auto& [from, to, said] : {std::tuple{R"("gain": "linear")", R"("gain": "parabolic")", "its Gain is \"parabolic\" - one of logarithmic, linear, quantum"},
+                                             std::tuple{R"("beta": "1e-4")", R"("beta": "1e-4", "carrier": "photons")", "its Carriers N is \"photons\" - one of mean, electrons, holes"},
+                                             std::tuple{R"("count": 1, "around")", R"("count": 2.5, "around")", "is 2.5 - a whole number"}}) {
+            json = pillbox(lis);
+            json.replace(from, to);
+            r = run(modelOf(json));
+            QVERIFY2(r.error.contains(QLatin1String(said)), qPrintable(r.error));
+        }
+        json = pillbox(lis);
+        json.replace(R"("beta": "1e-4")", R"("beta": "1e-4", "gainn": "3")");
+        r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty() && r.study.warnings.join(QLatin1Char(' ')).contains(QLatin1String("it has no property gainn - not read")),
+                 qPrintable(r.error + r.study.warnings.join(QLatin1Char(' '))));
+        // Its voltages a JSON list - numbers, texts -, as the text of them
+        // (it was "no values": the update check of 110e8b9, 9).
+        json = pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": [1.4, "1.5"]})j"));
+        r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        {
+            const std::vector<Point> p = points(*r.solution);
+            QCOMPARE(int(p.size()), 2);
+            QCOMPARE(p[0].V, 1.4);
+            QCOMPARE(p[1].V, 1.5);
+        }
         // In time (a study of its own: not after an Eigenfrequency step's frequency).
         json = pillbox(QStringLiteral(R"j({"type": "transient", "physics": ["semi"], "times": "range(0, 1e-12, 2e-12)"})j"));
         json.replace(R"({"type": "eigenfrequency", "physics": ["emr"], "count": 1, "around": "9.1[um]"}, )", "");

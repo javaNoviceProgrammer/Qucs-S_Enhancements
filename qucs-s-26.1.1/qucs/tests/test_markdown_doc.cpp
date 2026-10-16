@@ -546,6 +546,46 @@ private slots:
     // and a formula are drawn where the layout put them (taken off the
     // painter's transform, each was moved twice: the chat's pictures below
     // its prompt's frame).
+    // A block quote marked by a bar beside it, a level's each - Qt's
+    // Markdown sets it in by its margin alone (the update check of
+    // 7451b1c): in the viewer, drawn over what the view paints (under it, the
+    // document's background covered it).
+    void quotesHaveTheirBar()
+    {
+        const QString file = write("quotes.md", "Plain.\n\n> Quoted,\n>\n> two paragraphs.\n\n>> Nested.\n\nAfter.\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        pump();
+        QTextBrowser* view = md->preview();
+        const QList<QRectF> bars = qucs_s::markdown::QuoteBars::bars(view);
+        QCOMPARE(int(bars.size()), 4);   // (two paragraphs a bar each, the nested two)
+        // One bar through the quote's paragraphs: the first down to the second.
+        QVERIFY2(std::abs(bars[0].bottom() - bars[1].top()) < 1, qPrintable(QStringLiteral("%1 %2").arg(bars[0].bottom()).arg(bars[1].top())));
+        const QImage shot = view->viewport()->grab().toImage();
+        const QColor background = view->palette().color(QPalette::Base);
+        for (const QRectF& bar : bars) {
+            const QPoint at = (bar.center() * shot.devicePixelRatio()).toPoint(), beside = ((bar.center() + QPointF(8, 0)) * shot.devicePixelRatio()).toPoint();
+            QVERIFY2(bar.left() > 0 && qAbs(qGray(shot.pixel(at)) - qGray(background.rgb())) > 20,
+                     qPrintable(QStringLiteral("%1 at %2: %3").arg(bar.left()).arg(bar.top()).arg(qGray(shot.pixel(at)))));
+            QVERIFY(qAbs(qGray(shot.pixel(beside)) - qGray(background.rgb())) < 5);
+            // (The quote's text drawn beside it: the view's own painting
+            // sent on, the bars over it.)
+            bool text = false;
+            const qreal r = shot.devicePixelRatio();
+            for (int y = int(bar.top() * r); y < int(bar.bottom() * r) && !text; ++y)
+                for (int x = int((bar.right() + 4) * r); x < shot.width() && !text; ++x)
+                    text = qAbs(qGray(shot.pixel(x, y)) - qGray(background.rgb())) > 100;
+            QVERIFY2(text, qPrintable(QStringLiteral("no text beside the bar at %1").arg(bar.top())));
+        }
+        app.closeAllFiles();
+    }
+
     void drawnWhereLaidOutInAWindow()
     {
         QWidget window;

@@ -565,6 +565,20 @@ QString oscillatorIndex(double E0, double Ed, double Eg, const std::vector<std::
     return QStringLiteral("sqrt(%1)").arg(t);
 }
 
+/// oscillatorIndex()'s value at a free-space wavelength \a lambda (m).
+double oscillatorValue(double E0, double Ed, double Eg, const std::vector<std::pair<double, double>>& lattice, double lambda)
+{
+    constexpr double Gamma = 0.02;
+    const double eta = M_PI * Ed / (2 * E0 * E0 * E0 * (E0 * E0 - Eg * Eg)), Ef2 = 2 * E0 * E0 - Eg * Eg;
+    const double E = std::min(1.23984198e-6 / lambda, Eg + 0.5), E2 = E * E;
+    double t = 1 + Ed / E0 + Ed / (E0 * E0 * E0) * E2
+               + eta / M_PI / 2 * E2 * E2
+                     * std::log(((Ef2 - E2) * (Ef2 - E2) + 4 * Ef2 * Gamma * Gamma) / ((Eg * Eg - E2) * (Eg * Eg - E2) + 4 * Eg * Eg * Gamma * Gamma));
+    for (const auto& [S, ETO] : lattice)
+        if (S > 0) t += S / (1 - std::pow(1.23984198e-6 / lambda / ETO, 2));
+    return std::sqrt(t);
+}
+
 /// Adachi's index of InGaAsP on InP's lattice (J. Appl. Phys. 53, 5863,
 /// 1982): n² = A [f(E/E0) + ½ (E0/Eso)^1.5 f(E/Eso)] + B, f(χ) = χ⁻² (2 -
 /// (1 + χ)^½ - (1 - χ)^½), A 8.4 - 3.4 y, B 6.6 + 3.4 y - his 1989
@@ -1364,9 +1378,9 @@ const QList<MaterialEntry>& builtinMaterials()
         onWafer(withModels(with(entry("Gallium arsenide", "Semiconductors",
                               "GaAs: its gap 1.424 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.76 to 17 µm "
                               "(Afromowitz's oscillator fitted to Skauli's, its gap broadened; at 300 K - with T, the Thermo-optic "
-                              "option's dn/dT); Pockels' r41 1.5 pm/V, its axes a (100) wafer's (its orientation)",
+                              "option's dn/dT, Franta et al.'s at 1550 nm); Pockels' r41 1.5 pm/V, its axes a (100) wafer's (its orientation)",
                               {{"compound", "GaAs"}, {"epsilonr", "12.9"}, {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"},
-                               {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"dndT", "2.35e-4[1/K]"},
+                               {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"dndT", "2.247e-4[1/K]"},
                                {"chi", "4.07[eV]"}}),
                         {{"Eg", varshniOfT(1.424, 0.5405e-3, 204)}, {"Nc", ofT(4.7e17, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(9.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(8500, QStringLiteral("cm^2/(V*s)"), -2.2)},
@@ -2261,7 +2275,27 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
             const double shift = Eg300 - (mt ? mt->Eg : Eg300);
             return oscillatorIndex(E0 - shift, Ed, Eg300 - shift, lattice);
         };
-        if (k == QLatin1String("dndT")) return QStringLiteral("(%1 - %2)/1[K]").arg(oscillatorAt(T + 0.5), oscillatorAt(T - 0.5));
+        // Its change with T scaled so that a binary's dn/dT at 1550 nm is its
+        // library entry's measured one where it has one (GaAs Franta et
+        // al.'s 2.247e-4, InP 2.0e-4 per K), an alloy's by its binaries' shares - the
+        // oscillator's own change, its gap's shift alone, gave InP 1.48e-4:
+        // one material, two coefficients, the update check of 8bd5709. The
+        // same in n of T and in dndT, its derivative.
+        double factor = 0;
+        for (const auto& [b, w] : parts) {
+            const double measured = qstrcmp(b->name, "GaAs") == 0 ? 2.247e-4 : qstrcmp(b->name, "InP") == 0 ? 2.0e-4 : NAN;
+            const BinaryOptics* o = opticsOf(b->name);
+            const std::optional<BandParameters> at300 = bandParameters(QString::fromLatin1(b->name), 0, 0, 300, nullptr, BandSet::Measured),
+                                                hot = bandParameters(QString::fromLatin1(b->name), 0, 0, 300.5, nullptr, BandSet::Measured),
+                                                cold = bandParameters(QString::fromLatin1(b->name), 0, 0, 299.5, nullptr, BandSet::Measured);
+            double own = NAN;
+            if (o && at300 && hot && cold) {
+                auto index = [&](double shift) { return oscillatorValue(o->E0 - shift, o->Ed, at300->Eg - shift, {{o->S, o->ETO}}, 1.55e-6); };
+                own = index(at300->Eg - hot->Eg) - index(at300->Eg - cold->Eg);
+            }
+            factor += w * (measured > 0 && own > 0 ? measured / own : 1.0);
+        }
+        if (k == QLatin1String("dndT")) return QStringLiteral("%1*(%2 - %3)/1[K]").arg(number(factor), oscillatorAt(T + 0.5), oscillatorAt(T - 0.5));
         if (k == QLatin1String("n")) {
             QString at300;
             const BinaryOptics *gaas = opticsOf("GaAs"), *alas = opticsOf("AlAs"), *ip = opticsOf("InP");
@@ -2288,6 +2322,18 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
                                  afromowitzIndex(1));
             }
             else if (name.compare(QLatin1String("InGaAsP"), Qt::CaseInsensitive) == 0) at300 = adachiIndex(std::clamp(y, 0.0, 1.0), Eg300, Eg300 + m300->Delta);
+            // (InGaAs on InP's lattice - In 0.532, the quaternary at y 1 -
+            // Adachi's InGaAsP to 2 µm, its oscillator from 4 µm (his has no
+            // lattice's term: 0.11 over Le et al.'s at 16.7 µm), the two
+            // weighed between and within 0.1 of In 0.532: the oscillator,
+            // bowed, was 0.040 above his In0.53Ga0.47As at 1550 nm and 0.03
+            // from the quaternary at y 1 - the update check of 8bd5709.)
+            else if (name.compare(QLatin1String("InGaAs"), Qt::CaseInsensitive) == 0 && std::abs(x - 0.532) < 0.1) {
+                const double w = 1 - std::abs(x - 0.532) / 0.1;
+                const QString adachi = adachiIndex(1.0, Eg300, Eg300 + m300->Delta), own = oscillatorIndex(E0, Ed, Eg300, lattice);
+                const QString weight = QStringLiteral("(%1*min(max((4[um] - lambda0)/2[um], 0), 1))").arg(number(w));
+                at300 = QStringLiteral("%1*(%2) + (1 - %1)*(%3)").arg(weight, adachi, own);
+            }
             else if (inp) at300 = inpIndex();
             // (An alloy of InP: its share of InP's own over its oscillator -
             // GaInP at x 0 InP's: 0.005 apart at 1550 nm.)
@@ -2295,7 +2341,7 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
                 at300 = QStringLiteral("%1 + %2*(%3 - %4)").arg(oscillatorIndex(E0, Ed, Eg300, lattice), number(inpShare), inpIndex(), binaryIndex(ip));
             else at300 = oscillatorIndex(E0, Ed, Eg300, lattice);
             if (std::abs(T - 300) < 1e-9) return at300;
-            return QStringLiteral("%1 + (%2 - %3)").arg(at300, oscillatorAt(T), oscillatorIndex(E0, Ed, Eg300, lattice));
+            return QStringLiteral("%1 + %4*(%2 - %3)").arg(at300, oscillatorAt(T), oscillatorIndex(E0, Ed, Eg300, lattice), number(factor));
         }
         // (From 0.2 eV above the gap - the broadened gap's index within
         // 0.03 of GaAs's and InP's measured there; an alloy mostly (0.6) of

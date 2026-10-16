@@ -249,6 +249,15 @@ DisplayUnit displayUnitOf(const Solution& solution, const QString& expression, c
         own.name = g.unit;
         return own;
     }
+    // A point variable's own unit where its dimension's name would mislead
+    // (an energy density's J/m³, not Pa).
+    if (text.trimmed().isEmpty())
+        for (const Solution::VariableDef& d : solution.definitions())
+            if (d.info.name == expression.trimmed() && !d.info.unit.isEmpty()) {
+                DisplayUnit own;
+                own.name = d.info.unit;
+                return own;
+            }
     return displayUnit(text, dim, warning);
 }
 
@@ -1050,6 +1059,9 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
             }
             if (v) pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
         }
+        // A Laser L-I step's points, by number when no sweep has them (the
+        // last, whatever was asked: the update check of 110e8b9).
+        if (!all && s.biasAxis && n == 1 && point > 0 && at.trimmed().isEmpty()) pick = std::min(point, snaps) - 1;
         // Modes: at that frequency (the last when none is asked), the mode asked.
         bool several = false;
         if (s.modeAnalysis && s.eigenfrequencies) {

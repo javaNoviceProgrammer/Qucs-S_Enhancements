@@ -1919,7 +1919,9 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
                 for (const Node& c : n.children) look(c);
             };
             look(model.geometry());
-            said << (array.isEmpty() ? name : tr("%1 (array %2's input: its copies %2_1, %2_2... - chosen together by %2)").arg(name, array));
+            // (bars' input, not bars's: the update check of 8bd5709.)
+            const QString whose = array.endsWith(QLatin1Char('s')) ? array + QLatin1Char('\'') : array + QStringLiteral("'s");
+            said << (array.isEmpty() ? name : tr("%1 (array %2 input: its copies %3_1, %3_2... - chosen together by %3)").arg(name, whose, array));
         }
         problems << tr("there is no object %1").arg(said.join(QLatin1String(", ")));
     }

@@ -35,6 +35,7 @@
 namespace qucs_s::fem {
 
 class EdgeSpace;
+class Solution;
 
 /// One physics solved: its field on its space, and what was found.
 struct Field {
@@ -63,8 +64,10 @@ struct Field {
     double initial = 0;           ///< its value before it is solved
     bool solved = false;
     /// Solved elsewhere - a 1D semiconductor on its line's strip -: the
-    /// unknowns it took there (-1: its space's).
+    /// unknowns it took there (-1: its space's), and the strip as solved (a
+    /// sweep's next point starts from it).
     int unknowns = -1;
+    std::shared_ptr<const Solution> line;
     /// A mode's tangential field on edge elements (its values first in
     /// values, Ez's after them); null for a field of nodes alone.
     std::shared_ptr<const EdgeSpace> edges;
@@ -208,6 +211,12 @@ public:
     {
         if (!a_snapshots.empty()) a_snapshots.back().chosen = true;
     }
+    /// Snapshot \a i marked as its step's chosen mode (an Eigenfrequency
+    /// step's kept one).
+    void chooseSnapshot(int i)
+    {
+        if (i >= 0 && i < int(a_snapshots.size())) a_snapshots[std::size_t(i)].chosen = true;
+    }
     /// The mode the fields are of (from 1; 0: none).
     int mode() const { return a_mode; }
     void setMode(int m) { a_mode = m; }
@@ -220,22 +229,32 @@ public:
     }
     QString snapshotSymbol() const { return frequencyDomain ? QStringLiteral("f") : biasAxis ? QStringLiteral("V") : QStringLiteral("t"); }
     int selected() const { return a_selected; }
-    /// Its fields and globals left no snapshot's (a step's chosen mode set
-    /// after its last): the next select() restores the one asked.
-    void unselect() { a_selected = -1; }
+    /// Its fields and globals left those of snapshot \a i, not the last's
+    /// (the mode a step keeps for the steps after): the next select()
+    /// restores the one asked, a step at rest after it keeps its solution
+    /// in \a i (replaceLastSnapshot()).
+    void leaveAt(int i)
+    {
+        a_selected = -1;
+        a_live = i;
+    }
     /// The fields and globals of snapshot \a i (out of range: the last).
     void select(int i);
     /// The fields and globals as they are now, kept as a snapshot at time()
     /// (frequency()).
     void addSnapshot();
-    /// The last snapshot made again of the fields as they are now (a step at
-    /// rest after one in time or frequency).
+    /// The snapshot the fields are of - the last, or the one a step left them
+    /// at (leaveAt()) - made again of the fields as they are now (a step at
+    /// rest after one in time, frequency or modes). (The last, always, it
+    /// was: a mode kept for the steps after was written over the last mode -
+    /// the update check of 110e8b9, 1.)
     void replaceLastSnapshot();
     /// No snapshots (a step's own series to come; the fields as they are).
     void clearSnapshots()
     {
         a_snapshots.clear();
         a_selected = -1;
+        a_live = -1;
     }
     /// The snapshot nearest time \a t (s), or -1 when there is none.
     int snapshotAt(double t) const;
@@ -298,6 +317,7 @@ private:
     };
     std::vector<Snapshot> a_snapshots;
     int a_selected = -1;
+    int a_live = -1;   // the snapshot the fields are of when not the last (leaveAt())
 };
 
 /*!

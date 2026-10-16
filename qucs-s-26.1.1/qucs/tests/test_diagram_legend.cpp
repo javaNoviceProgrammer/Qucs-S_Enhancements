@@ -217,6 +217,38 @@ private slots:
         QVERIFY(again);
         QCOMPARE(again->legendPos, int(Diagram::LegendOutside));
     }
+
+    // A label longer than the diagram is high is cut in its middle, its ends
+    // kept; one shorter whole (a long expression's ran far above and below
+    // the diagram: the update check of 7451b1c). The legend names it whole.
+    void longAxisLabelsFitTheDiagram()
+    {
+        const QString along = "db(1/(1+j*2*pi*frequency*ac1.r1*1e-9))+20*log10(abs(1/(1+j*2*pi*frequency*ac1.r1*ac1.c1)))";
+        QString body = "<\"ngspice/" + along + "\" #0000ff 2 3 0 0 0>\n<\"ngspice/ac.v(in)\" #ff0000 2 3 0 1 1>\n</Rect>\n";
+        QTextStream stream(&body, QIODevice::ReadOnly);
+        QScopedPointer<RectDiagram> d(new RectDiagram());
+        QVERIFY(d->load(kRectLine, &stream));
+        d->updateGraphData();
+        const QFontMetrics metrics(QucsSettings.font, nullptr);
+        QVERIFY(metrics.boundingRect(along).width() > d->y2);
+        int cut = 0, whole = 0;
+        for (const Text* t : d->Texts) {
+            if (t->angle() == 0) continue;
+            QVERIFY2(metrics.boundingRect(t->s).width() <= d->y2, qPrintable(t->s));
+            if (t->s.contains(QChar(0x2026))) {
+                ++cut;
+                QVERIFY2(t->s.startsWith("ngspice/db(1/(") && t->s.endsWith(INVALID_STR.right(4)), qPrintable(t->s));
+            } else if (t->s.contains("ac.v(in)")) ++whole;
+        }
+        QCOMPARE(cut, 1);
+        QCOMPARE(whole, 1);
+        // An axis' own label too.
+        d->yAxis.Label = along;
+        d->updateGraphData();
+        cut = 0;
+        for (const Text* t : d->Texts) cut += t->angle() != 0 && t->s.contains(QChar(0x2026)) ? 1 : 0;
+        QCOMPARE(cut, 1);
+    }
 };
 
 int main(int argc, char** argv)

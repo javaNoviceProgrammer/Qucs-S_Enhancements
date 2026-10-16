@@ -523,6 +523,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     connect(a_view, &QTextBrowser::anchorClicked, this, &ClaudeCodePanel::handleLink);
     qucs_s::math::MathObject::install(a_view->document());
     qucs_s::markdown::SmoothImages::install(a_view->document());
+    qucs_s::markdown::QuoteBars::install(a_view);
     a_view->viewport()->installEventFilter(this);   // its images fitted as it resizes; an image dropped on it
     a_view->viewport()->setAcceptDrops(true);
     layout->addWidget(a_view, 1);

@@ -622,6 +622,7 @@ struct FieldInfo {
     bool line = false;          // (quantum, pde: 1D along a line)
     int pdeVars = 0;            // (pde: its variables, before their rates)
     bool lasing = false;        // (semiconductor: a Lasing feature - its gain and rate)
+    std::vector<char> gainOn;   // (by domain: of its gain region)
 };
 
 FieldInfo infoOf(const Node& p, bool axisymmetric)
@@ -1474,15 +1475,21 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
             }
             define(p + QStringLiteral("R"), rate, tr("net recombination rate"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.R; }));
             // A laser's (Lasing): its material gain and stimulated rate at each
-            // node of its gain region, nought elsewhere, linear between.
+            // node of its gain region, linear between - nought in the other
+            // domains' elements (a barrier's element took the well's nodes'
+            // values: semi.Rst over every domain 9 times the stimulated
+            // current, a gain inside the barriers - the update check of
+            // 110e8b9).
             {
                 if (field.lasing) {
-                    auto nodal = [f](int block) {
-                        return [f, block](PointEvaluator& e) {
+                    auto nodal = [f, on = field.gainOn](int block) {
+                        return [f, block, on](PointEvaluator& e) {
                             const Field& fl = e.solution().fields()[std::size_t(f)];
                             const int t = e.triangle();
                             const std::size_t n = std::size_t(fl.space->size());
                             if (t < 0 || fl.values.size() < 9 * n + 1) return NaN;
+                            const int d = e.solution().mesh().domain[std::size_t(t)];
+                            if (d < 0 || std::size_t(d) >= on.size() || !on[std::size_t(d)]) return 0.0;
                             const int* dof = fl.space->dofs(t);
                             const double w[3] = {1 - e.xi() - e.eta(), e.xi(), e.eta()};
                             double v = 0;
@@ -1694,7 +1701,14 @@ void Solution::defineVariables()
                 info.line = (p->type == QLatin1String("quantum") && p->text(QStringLiteral("space")) != QLatin1String("2d"))
                             || (p->type == QLatin1String("pde") && p->text(QStringLiteral("space")) == QLatin1String("1d"));
                 if (p->type == QLatin1String("pde")) info.pdeVars = int(detail::pdeVariables(*p).size());
-                for (const Node& c : p->children) info.lasing = info.lasing || (c.enabled && c.type == QLatin1String("semiconductor/laser"));
+                for (const Node& c : p->children)
+                    if (c.enabled && c.type == QLatin1String("semiconductor/laser")) {
+                        info.lasing = true;
+                        QString why;
+                        info.gainOn.resize(a_mesh->topology->domains.size(), 0);
+                        for (int d : resolveSelection(*a_mesh->topology, a_model, Level::Domain, c.selection(), &why))
+                            if (d >= 0 && d < int(info.gainOn.size())) info.gainOn[std::size_t(d)] = 1;
+                    }
             }
         fields.push_back(info);
     }
@@ -1709,6 +1723,11 @@ void Solution::defineVariables()
                          }
                          return slot;
                      });
+    // (An energy density in J/m³, not in Pa - its dimension's name: emr.we
+    // was "Pa", the update check of 110e8b9.)
+    for (VariableDef& d : a_defs)
+        if (d.info.unit.isEmpty() && d.info.dim == Dim::of(-1, 1, -2) && d.info.description.contains(QLatin1String("energy density")))
+            d.info.unit = QStringLiteral("J/m³");
     a_globalScope = std::make_unique<Scope>(a_pointScope.get());
 }
 
@@ -1807,6 +1826,7 @@ void Solution::addSnapshot()
     for (const Variable& v : a_globals) s.globals.push_back(a_globalScope->constant(v.name)->value);
     a_snapshots.push_back(std::move(s));
     a_selected = int(a_snapshots.size()) - 1;
+    a_live = -1;
 }
 
 void Solution::select(int i)
@@ -1831,17 +1851,22 @@ void Solution::select(int i)
 void Solution::replaceLastSnapshot()
 {
     if (a_snapshots.empty()) return;
-    const double t = a_snapshots.back().time, f = a_snapshots.back().frequency;
-    const int mode = a_snapshots.back().mode;
-    const bool chosen = a_snapshots.back().chosen;
-    a_snapshots.pop_back();
+    const std::size_t at = a_live >= 0 && a_live < int(a_snapshots.size()) ? std::size_t(a_live) : a_snapshots.size() - 1;
+    const double t = a_snapshots[at].time, f = a_snapshots[at].frequency;
+    const int mode = a_snapshots[at].mode;
+    const bool chosen = a_snapshots[at].chosen;
     const double nowT = a_time, nowF = a_frequency;
     const int nowM = a_mode;
     a_time = t;
     a_frequency = f;
     a_mode = mode;
     addSnapshot();
-    a_snapshots.back().chosen = chosen;
+    Snapshot made = std::move(a_snapshots.back());
+    a_snapshots.pop_back();
+    made.chosen = chosen;
+    a_snapshots[at] = std::move(made);
+    a_selected = int(at);
+    a_live = at + 1 == a_snapshots.size() ? -1 : int(at);
     a_time = nowT;
     a_frequency = nowF;
     a_mode = nowM;
@@ -2515,16 +2540,29 @@ bool laserStep(Solution& s, const Node& node, const std::function<bool(double, c
     const std::vector<double>& volts = *listed;
     const QString semi = laser->field().tag + QLatin1Char('.');
     std::vector<double> current, light, net;   // by point: I, Pout, Gnet
-    auto threshold = [&]() {
+    auto threshold = [&s, &node, &semi, &mode, &current, &light, &net, &volts, warnings]() {
         // Its threshold: the light's line above it (its points of net gain
         // nought to 1e-3 of 1/τp, the first left out - the knee), back to no
-        // light; the voltage at that current.
-        const double rate = 1 / s.global(semi + QStringLiteral("taup")).value_or(std::numeric_limits<double>::infinity());
+        // light; the voltage at that current. (Each case said as it is: two
+        // points lasing were "below threshold at every point", every point
+        // lasing gave NaN V, leakage a threshold of -58 mA: the update check
+        // of 110e8b9.)
+        const double rate = 1 / s.global(semi + QStringLiteral("tauph")).value_or(std::numeric_limits<double>::infinity());
         std::vector<std::size_t> above;
         for (std::size_t k = 0; k < current.size(); ++k)
             if (std::isfinite(net[k]) && std::isfinite(light[k]) && net[k] > -1e-3 * rate) above.push_back(k);
+        if (current.empty()) return;
+        if (above.empty()) {
+            s.log << tr("%1: below threshold at every point (its net gain at the last %2 per second)").arg(node.name(), formatNumber(net.back(), 3));
+            return;
+        }
+        if (!above.empty() && above.front() == 0)
+            *warnings << tr("%1: it lases from its first point, %2: its threshold is below it - start the voltages lower")
+                             .arg(node.name(), formatQuantity(volts.front(), Dim::voltage()));
         if (above.size() < 3) {
-            if (!current.empty()) s.log << tr("%1: below threshold at every point (its net gain at the last %2 per second)").arg(node.name(), formatNumber(net.back(), 3));
+            s.log << tr("%1: lasing at its last %2 only - too few points above threshold to draw its line: more voltages above %3")
+                         .arg(node.name(), above.size() == 1 ? tr("point") : tr("%1 points").arg(above.size()),
+                              formatQuantity(volts[above.front()], Dim::voltage()));
             return;
         }
         double sx = 0, sy = 0, sxx = 0, sxy = 0;
@@ -2540,14 +2578,25 @@ bool laserStep(Solution& s, const Node& node, const std::function<bool(double, c
         }
         const double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx), at = (sy - slope * sx) / n;
         const double Ith = -at / slope;
+        const double photon = 6.62607015e-34 * s.global(mode + QStringLiteral(".freq")).value_or(0.0);
+        const QString line = tr("slope %1 W/A, %2 of a photon an electron (ħω/q %3 V)")
+                                 .arg(formatNumber(slope, 4), formatNumber(photon > 0 ? slope / (photon / 1.602176634e-19) : NaN, 4),
+                                      formatNumber(photon / 1.602176634e-19, 5));
+        if (!(Ith > 0) || !(slope > 0)) {
+            s.log << tr("%1: its light's line reaches none at %2 - no threshold (a current that leaks past the gain region, or "
+                        "points above too far from it); %3")
+                         .arg(node.name(), formatQuantity(Ith, Dim::current()), line);
+            return;
+        }
         double Vth = NaN;
         for (std::size_t k = 0; k + 1 < current.size(); ++k)
             if ((current[k] - Ith) * (current[k + 1] - Ith) <= 0 && current[k + 1] != current[k])
                 Vth = volts[k] + (volts[k + 1] - volts[k]) * (Ith - current[k]) / (current[k + 1] - current[k]);
-        const double photon = 6.62607015e-34 * s.global(mode + QStringLiteral(".freq")).value_or(0.0);
-        s.log << tr("%1: threshold %2 at %3 (its light's line back to none); slope %4 W/A, %5 of a photon an electron (ħω/q %6 V)")
-                     .arg(node.name(), formatQuantity(Ith, Dim::current()), formatQuantity(Vth, Dim::voltage()), formatNumber(slope, 4),
-                          formatNumber(photon > 0 ? slope / (photon / 1.602176634e-19) : NaN, 4), formatNumber(photon / 1.602176634e-19, 5));
+        s.log << tr("%1: threshold %2 at %3 (its light's line back to none); %4")
+                     .arg(node.name(), formatQuantity(Ith, Dim::current()),
+                          std::isfinite(Vth) ? formatQuantity(Vth, Dim::voltage())
+                                             : Ith < current.front() ? tr("a voltage below the first point's") : tr("a voltage above the last point's"),
+                          line);
     };
     for (std::size_t k = 0; k < volts.size(); ++k) {
         if (!tell(double(k) / double(volts.size()), tr("%1: %2 at %3").arg(node.name(), contact, formatQuantity(volts[k], Dim::voltage())))) {
@@ -2558,7 +2607,11 @@ bool laserStep(Solution& s, const Node& node, const std::function<bool(double, c
         laser->holdContact(contact, volts[k]);
         if (!solveTogether(st, solved, [&](int) { return st.options; }, false, &why)) {
             laser->holdContact(contact, NaN);
-            if (why.contains(QLatin1String("did not converge")) && k > 0) {
+            // (The points before kept: the semiconductor says "failed to
+            // converge" on its way to a voltage - this looked for "did not
+            // converge" alone, and the whole curve was lost: the update
+            // check of 110e8b9, 5.)
+            if ((why.contains(QLatin1String("did not converge")) || why.contains(QLatin1String("failed to converge"))) && k > 0) {
                 *warnings << tr("%1: stopped at %2 - %3").arg(node.name(), formatQuantity(volts[k], Dim::voltage()), why);
                 threshold();
                 return true;
@@ -2816,8 +2869,8 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
             if (lit < found) {
                 modes.selectMode(lit - 1);
                 for (auto& p : st.problems) p->setGlobals();
-                // (Its fields no snapshot's now: the next select() restores one.)
-                s.unselect();
+                // (Its fields that mode's snapshot's now, not the last's.)
+                s.leaveAt(s.snapshotCount() - found + lit - 1);
             }
         }
     }
@@ -2930,15 +2983,24 @@ bool eigenfrequencyStep(Solution& s, const Node& node, const std::function<bool(
     // The mode the steps after see (a laser's): the one asked, else the one
     // of highest Q.
     const int asked = node.integer(QStringLiteral("keep"));
+    // (-1 and -3 were taken as 0: the update check of 110e8b9.)
+    if (asked < 0) {
+        *error = tr("%1: the mode it keeps is 0 (the highest Q) or one of the %2 it found, not %3 (Mode kept for the steps after)")
+                     .arg(node.name()).arg(found).arg(asked);
+        return false;
+    }
     if (asked > found) {
         *error = tr("%1: it keeps mode %2 of the %3 it found (Mode kept for the steps after)").arg(node.name()).arg(asked).arg(found);
         return false;
     }
     if (asked > 0) kept = asked - 1;
+    // (Marked: fem_solve says its globals at it, not at the last mode - the
+    // update check of 8bd5709.)
+    if (found > 0) s.chooseSnapshot(s.snapshotCount() - found + kept);
     if (found > 0 && kept != found - 1) {
         e.selectMode(kept);
         for (auto& p : st.problems) p->setGlobals();
-        s.unselect();
+        s.leaveAt(s.snapshotCount() - found + kept);
     }
     if (found > 0) s.log << tr("%1: mode %2 kept for the steps after").arg(node.name()).arg(kept + 1);
     return true;
@@ -3600,6 +3662,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
             if (!g.solved || g.type != f.type || !g.space || !f.space || g.space->size() != f.space->size()) continue;
             f.values = g.values;
             f.terminals = g.terminals;
+            f.line = g.line;
             f.solved = true;
         }
     if (solution->axisymmetric()) {
@@ -3841,6 +3904,44 @@ QString valueText(double v, const Dim& dim)
 
 } // namespace
 
+/// What of \a node (and its children) its kind does not take: a choice
+/// none of its choices', a number not whole where a whole one is asked -
+/// refused; a key its kind has not - said (not read). (A mode step's
+/// "choose": "bogus" ran as "first", a feature's "constitutive": "abc" as
+/// its default, a count of 2.5 was said to be 0: the update check of
+/// 8bd5709.)
+static void checkProperties(const Node& node, QStringList* errors, QStringList* warnings)
+{
+    if (!node.enabled) return;
+    if (const NodeKind* kind = node.kind()) {
+        for (auto it = node.props.begin(); it != node.props.end(); ++it) {
+            const PropertyDef* def = kind->property(it.key());
+            if (!def) {
+                *warnings << tr("%1: it has no property %2 - not read").arg(node.name(), it.key());
+                continue;
+            }
+            const QJsonValue v = it.value();
+            // (A Choice that takes a value too - Absorption per's length - is
+            // its step's to read and check.)
+            if (def->kind == PropertyDef::Choice && !def->choices.isEmpty() && !def->orValue) {
+                const QString text = v.isString() ? v.toString() : v.isDouble() ? formatNumber(v.toDouble(), 15) : QString();
+                if (!(v.isString() || v.isDouble()) || (!text.trimmed().isEmpty() && !def->choices.contains(text)))
+                    *errors << tr("%1: its %2 is %3 - one of %4").arg(node.name(), def->label.isEmpty() ? def->key : def->label,
+                                                                       v.isString() || v.isDouble() ? QLatin1Char('"') + text + QLatin1Char('"') : tr("not a text"),
+                                                                       def->choices.join(QLatin1String(", ")));
+            } else if (def->kind == PropertyDef::Integer) {
+                bool whole = false;
+                if (v.isDouble()) whole = std::isfinite(v.toDouble()) && v.toDouble() == std::floor(v.toDouble()) && std::abs(v.toDouble()) < 2147483648.0;
+                else if (v.isString()) v.toString().trimmed().toInt(&whole);
+                if (!whole)
+                    *errors << tr("%1: its %2 is %3 - a whole number").arg(node.name(), def->label.isEmpty() ? def->key : def->label,
+                                                                           v.isDouble() ? formatNumber(v.toDouble(), 15) : v.isString() ? v.toString() : tr("not a number"));
+            }
+        }
+    }
+    for (const Node& c : node.children) checkProperties(c, errors, warnings);
+}
+
 StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
                   std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress)
 {
@@ -3852,6 +3953,16 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     if (!study) {
         run.error = studyTag.isEmpty() ? tr("the model has no study") : tr("there is no study %1").arg(studyTag);
         return run;
+    }
+    {
+        // Its component and its own steps, as their kinds take them.
+        QStringList errors;
+        checkProperties(model.component(), &errors, &run.warnings);
+        checkProperties(*study, &errors, &run.warnings);
+        if (!errors.isEmpty()) {
+            run.error = errors.join(QLatin1String("; "));
+            return run;
+        }
     }
     const Node* sweep = nullptr;
     for (const Node& c : study->children)
@@ -3980,6 +4091,24 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     shaping.insert(QStringLiteral("geometry"), component.value(QStringLiteral("geometry")));
     shaping.insert(QStringLiteral("mesh"), component.value(QStringLiteral("mesh")));
     shaping.insert(QStringLiteral("functions"), whole.value(QStringLiteral("functions")));
+    // Each parameter's figures in the points' names: as many as tell its
+    // values apart, 4 at least (21.542937, 21.543037 and 21.543137 were each
+    // "theta = 21.54", one name for three points: the update check of
+    // 8bd5709).
+    std::vector<int> figures(lists.size(), 4);
+    for (std::size_t i = 0; i < lists.size(); ++i)
+        for (int d = 4; d <= 15; ++d) {
+            QHash<QString, double> named;
+            bool apart = true;
+            for (double v : lists[i].values) {
+                const QString t = formatQuantity(v, lists[i].dim, d);
+                const auto it = named.constFind(t);
+                if (it != named.constEnd() && *it != v) apart = false;
+                named.insert(t, v);
+            }
+            figures[i] = d;
+            if (apart) break;
+        }
     std::shared_ptr<const Mesh> base = mesh;
     std::shared_ptr<const Solution> previous;
     for (std::size_t k = 0; k < points.size(); ++k) {
@@ -3988,7 +4117,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         QHash<QString, double> values;
         for (std::size_t i = 0; i < lists.size(); ++i) {
             overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
-            label << QStringLiteral("%1 = %2").arg(lists[i].name, formatQuantity(points[k][i], lists[i].dim));
+            label << QStringLiteral("%1 = %2").arg(lists[i].name, formatQuantity(points[k][i], lists[i].dim, figures[i]));
             values.insert(lists[i].name, points[k][i]);
         }
         const std::shared_ptr<ParameterScope> ps = evaluateParameters(model, overrides);
@@ -4021,7 +4150,9 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             m = base;
         }
         const StudyResult r = solveAdaptive(model, ps, m, study->tag, sub(0.3, 1), previous.get());
-        run.warnings << r.warnings;
+        // (Each once, not once a point: the update check of 8bd5709.)
+        for (const QString& w : r.warnings)
+            if (!run.warnings.contains(w)) run.warnings << w;
         if (!r.solution) {
             run.error = tr("%1: %2").arg(where, r.error);
             return run;

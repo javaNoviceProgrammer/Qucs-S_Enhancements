@@ -1535,8 +1535,10 @@ private slots:
             };
             qInfo("solved: %d unknowns in 1D, %d in 2D", solvedOf(one), solvedOf(plane));
             QVERIFY(solvedOf(one) > 0 && solvedOf(one) < solvedOf(plane) / 2);
-            // Its "at" not given: said.
+            // Its "at" not given: said - a warning, not a log line alone (the
+            // update check of 8bd5709).
             QVERIFY(one.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("its \"at\" not given")));
+            QVERIFY2(one.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("its \"at\" not given")), qPrintable(one.study.warnings.join(QLatin1Char('\n'))));
         }
         // The same y anywhere across: the line's values.
         QCOMPARE(at(*one.solution, QStringLiteral("semi.V"), QPointF(-0.9, 0.11)), at(*one.solution, QStringLiteral("semi.V"), QPointF(0.9, 0.11)));
@@ -1548,6 +1550,8 @@ private slots:
             // (Said: what reads it here sees it as coarse as this mesh.)
             QVERIFY2(coarse.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("set on this mesh's nodes up to")),
                      qPrintable(coarse.solution->log.join(QLatin1Char('\n'))));
+            QVERIFY2(coarse.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("set on this mesh's nodes up to")),
+                     qPrintable(coarse.study.warnings.join(QLatin1Char('\n'))));
             QVERIFY(relative(global(*coarse.solution, QStringLiteral("semi.I_a")), I1) < 1e-9);
             // Its nodes', between the line's: V linear, the carriers in their
             // logarithm - as the 2D solution reads at those points.
@@ -1588,6 +1592,29 @@ private slots:
             QVERIFY2(sweep.error.isEmpty() && sweep.study.solutions.size() == 2, qPrintable(sweep.error));
             const double low = global(*sweep.study.solutions[0], QStringLiteral("semi.I_a")), high = global(*sweep.study.solutions[1], QStringLiteral("semi.I_a"));
             QVERIFY(relative(high, I1) < 1e-6 && low > 0 && high > 50 * low);
+            // (Its second point from its first's strip - not from
+            // equilibrium again, as the 2D's from its point before: the update
+            // check of 8bd5709.)
+            auto strip = [](const Solution& s) { return s.fields()[std::size_t(s.fieldIndex(QStringLiteral("semi")))].line; };
+            auto steps = [](const Solution& s) {
+                const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("voltages reached in (\\d+) steps")).match(s.log.join(QLatin1Char('\n')));
+                return m.hasMatch() ? m.captured(1).toInt() : -1;
+            };
+            QVERIFY(strip(*sweep.study.solutions[0]) && strip(*sweep.study.solutions[1]) && strip(*one.solution));
+            QVERIFY(strip(*sweep.study.solutions[1])->meshPtr() == strip(*sweep.study.solutions[0])->meshPtr());
+            const int fromBefore = steps(*strip(*sweep.study.solutions[1])), fromRest = steps(*strip(*one.solution));
+            qInfo("0.5 V along its line: %d steps from 0.3 V's, %d from equilibrium", fromBefore, fromRest);
+            QVERIFY2(fromBefore > 0 && fromBefore < fromRest, qPrintable(QStringLiteral("%1 %2").arg(fromBefore).arg(fromRest)));
+        }
+        // A mesa's swept: its warning once, not once a point, with numbers -
+        // not "some %" (the update check of 8bd5709).
+        {
+            const Run sweep = run(modelOf(junction1d(QStringLiteral("1d"), QString(), true,
+                                                     QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "0.3, 0.5, 0.7", "V"]]}, {"type": "stationary"})"), line)));
+            QVERIFY2(sweep.error.isEmpty(), qPrintable(sweep.error));
+            const QStringList spreads = sweep.study.warnings.filter(QLatin1String("spreads it"));
+            QCOMPARE(int(spreads.size()), 1);
+            QVERIFY2(spreads.front().contains(QLatin1String("4 to 11 %")) && !spreads.front().contains(QLatin1String("some %")), qPrintable(spreads.front()));
         }
         // Refused, and said: a step in frequency; a contact the line does not
         // reach (on a side); a line with a gap in it.

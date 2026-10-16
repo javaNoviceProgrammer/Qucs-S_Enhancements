@@ -385,7 +385,20 @@ private:
     std::vector<char> a_elemSemi;      // by triangle: of a semiconductor in the physics
     std::vector<char> a_elemOn;        // in the physics
     std::vector<int> a_nodeDomain;     // a node's semiconductor domain (-1: none)
-    std::vector<double> a_box;         // by node: its share of semiconductor (m³)
+    std::vector<double> a_box;         // by node: its share of semiconductor (m³), its Voronoi box's
+    // By node: the parts of its box that recombine - its share of each domain
+    // of its own bands, with that domain's lifetimes (a_recStart's range of
+    // a_rec). A part in a semiconductor of other bands (a barrier beside a
+    // well) holds that one's carriers, fewer by the bands' offset, not the
+    // node's: it is left out.
+    struct RecombiningPart {
+        int domain = -1;
+        double volume = 0;   // m³
+        double tn = 0, tp = 0;
+    };
+    std::vector<int> a_recStart;
+    std::vector<RecombiningPart> a_rec;
+    std::vector<double> a_recVolume;   // by node: the sum of its parts' volumes
     std::vector<double> a_Nd, a_Na, a_ni, a_n1, a_p1;
     // By node: its SRH lifetimes τ0 (of x and y, by doping); trap-assisted
     // tunnelling's field there - its triangles' fields, by their volumes
@@ -460,6 +473,15 @@ private:
     /// The edges' weights from the elements' mobilities at \a x (when there
     /// is one, and the model asks).
     void edgeWeights(const Eigen::VectorXd* x);
+    /// A triangle's mobilities' change with its unknowns (\a col: V, n, p at
+    /// its corners) at a solution - those that change (a saturation, a
+    /// surface's scattering): the small signal's.
+    struct MobilityChange {
+        int t = -1;
+        int col[9] = {};
+        double dn[9] = {}, dp[9] = {};
+    };
+    std::vector<MobilityChange> mobilityChanges(const Eigen::VectorXd& x) const;
     std::vector<int> a_iV, a_iN, a_iP; // by node: unknowns (-1 none)
     int a_unknowns = 0;
     // A laser (its Lasing feature): the photons S of a resonator's mode the
@@ -706,9 +728,12 @@ bool SemiconductorProblem::setup(QString* error)
             L.carrier = carrier == QLatin1String("electrons") ? 1 : carrier == QLatin1String("holes") ? 2 : 0;
             L.beta = number(feature.text(QStringLiteral("beta")), Dim(), feature.name());
             L.eta = number(feature.text(QStringLiteral("eta")), Dim(), feature.name());
-            if (!feature.text(QStringLiteral("ng")).trimmed().isEmpty()) L.ng = number(feature.text(QStringLiteral("ng")), Dim(), feature.name());
-            if (!(L.beta >= 0 && L.beta <= 1) || !(L.eta >= 0 && L.eta <= 1) || !(L.ng == 0 || L.ng >= 1))
-                problem(tr("%1: its β and η from 0 to 1, its group index 1 or more").arg(feature.name()));
+            // (Its group index given: 1 or more - 0 was taken as none given:
+            // the update check of 110e8b9.)
+            const bool ngGiven = !feature.text(QStringLiteral("ng")).trimmed().isEmpty();
+            if (ngGiven) L.ng = number(feature.text(QStringLiteral("ng")), Dim(), feature.name());
+            if (!(L.beta >= 0 && L.beta <= 1) || !(L.eta >= 0 && L.eta <= 1) || (ngGiven && !(L.ng >= 1)))
+                problem(tr("%1: its β and η from 0 to 1, its group index 1 or more (none: the media's)").arg(feature.name()));
         }
         else if (t == QLatin1String("semiconductor/quantum")) {
             for (int d : picked) quantumOn[std::size_t(d)] = 1;
@@ -901,16 +926,25 @@ bool SemiconductorProblem::setup(QString* error)
         if (const Node* r = srhOf[std::size_t(d)]) {
             m.srh = true;
             const bool own = r->text(QStringLiteral("source")) == QLatin1String("user");
-            auto rt = [&](const QString& key) { return own ? r->text(key) : mat ? materialProperty(*mat, key, &atT, a_T) : QString(); };
-            const QString tn = rt(QStringLiteral("taun")), tp = rt(QStringLiteral("taup"));
-            if (tn.trimmed().isEmpty() || tp.trimmed().isEmpty()) problem(tr("%1: its material has no carrier lifetimes (taun, taup)").arg(where));
+            // Each lifetime the feature's where it sets it, as its other
+            // parameters are (param()), else its material's. (Set on the
+            // feature without "source": "user" they were the material's -
+            // the VCSEL laser example's 5 ns taken as 1 ns: the update check
+            // of 110e8b9.)
+            auto lifetimeFrom = [&](const QString& key) -> const Node* {
+                if (own || r->props.contains(key)) return r;
+                return mat && !materialProperty(*mat, key, &atT, a_T).trimmed().isEmpty() ? mat : nullptr;
+            };
+            const Node *fromN = lifetimeFrom(QStringLiteral("taun")), *fromP = lifetimeFrom(QStringLiteral("taup"));
+            auto rt = [&](const Node* from, const QString& key) { return from == r ? r->text(key) : materialProperty(*from, key, &atT, a_T); };
+            if (!fromN || !fromP) problem(tr("%1: its material has no carrier lifetimes (taun, taup)").arg(where));
             else {
                 // (Of x and y: each node's; a constant as it was. T the
                 // physics' temperature.)
-                const Node& from = own ? *r : *mat;
+                const QString tn = rt(fromN, QStringLiteral("taun")), tp = rt(fromP, QStringLiteral("taup"));
                 const MaterialScope pointAtT(a_s.pointScope(), a_T);
-                m.taunOf = compile(tn, from, QStringLiteral("taun"), false, true, &pointAtT);
-                m.taupOf = compile(tp, from, QStringLiteral("taup"), false, true, &pointAtT);
+                m.taunOf = compile(tn, *fromN, QStringLiteral("taun"), false, true, &pointAtT);
+                m.taupOf = compile(tp, *fromP, QStringLiteral("taup"), false, true, &pointAtT);
                 m.taun = m.taunOf.isConstant() ? m.taunOf.constant() : 1.0;
                 m.taup = m.taupOf.isConstant() ? m.taupOf.constant() : 1.0;
                 if (m.taunOf.isConstant() && !(m.taun > 0)) problem(tr("%1: its electron lifetime must be more than 0").arg(where));
@@ -1039,6 +1073,7 @@ bool SemiconductorProblem::setup(QString* error)
     std::map<std::pair<int, int>, int> edgeIndex;
     a_edges.clear();
     const double scale = mesh.unitScale;
+    std::vector<double> weightOf(std::size_t(nt), 0.0);   // by triangle: the space's weight at its centre
     for (int t = 0; t < nt; ++t) {
         const int d = mesh.domain[std::size_t(t)];
         if (d < 0 || !f.domains[std::size_t(d)]) continue;
@@ -1053,6 +1088,7 @@ bool SemiconductorProblem::setup(QString* error)
         const double det = (x[1].x() - x[0].x()) * (x[2].y() - x[0].y()) - (x[2].x() - x[0].x()) * (x[1].y() - x[0].y());
         const double area = std::abs(det) / 2;
         const double weight = a_s.weight((x[0] + x[1] + x[2]) / 3.0);
+        weightOf[std::size_t(t)] = weight;
         // ∇φk = perpendicular of the opposite edge over 2 A (signed).
         double gx[3], gy[3];
         for (int k = 0; k < 3; ++k) {
@@ -1067,7 +1103,6 @@ bool SemiconductorProblem::setup(QString* error)
         if (!m.semiconductor) continue;
         a_elemSemi[std::size_t(t)] = 1;
         for (int k = 0; k < 3; ++k) {
-            a_box[std::size_t(dof[k])] += area * weight / 3;
             // A node between two semiconductors takes the narrower gap's
             // medium - an absorber's, a well's, a channel's: their carriers
             // on their own bands to its edge -, between equal gaps the lower
@@ -1143,6 +1178,35 @@ bool SemiconductorProblem::setup(QString* error)
             shares[std::size_t(i)].push_back({mesh.domain[std::size_t(t)], t, k, part});
         }
     }
+    // Its box: those shares, as the edges' weights are the Voronoi box's (a
+    // third of each triangle, as it was, put a wall's node of rows of two
+    // heights off its doping's box - mV across a uniform PIN: the update
+    // check of 8bd5709). The parts that recombine: of its own bands.
+    auto sameBands = [this](int d, int e) {
+        const Medium &a = a_media[std::size_t(d)], &b = a_media[std::size_t(e)];
+        auto near = [](double x, double y) { return std::abs(x - y) <= 1e-9 * std::max(std::abs(x), std::abs(y)); };
+        return near(a.Eg, b.Eg) && near(a.chi + a.dEc, b.chi + b.dEc) && near(a.ni, b.ni);
+    };
+    a_recStart.assign(std::size_t(a_n) + 1, 0);
+    a_rec.clear();
+    a_recVolume.assign(std::size_t(a_n), 0);
+    for (int i = 0; i < a_n; ++i) {
+        a_recStart[std::size_t(i)] = int(a_rec.size());
+        const int own = a_nodeDomain[std::size_t(i)];
+        for (const Share& sh : shares[std::size_t(i)]) {
+            const double v = sh.area * scale * scale * weightOf[std::size_t(sh.triangle)];
+            a_box[std::size_t(i)] += v;
+            if (own < 0 || !sameBands(sh.domain, own)) continue;
+            auto it = std::find_if(a_rec.begin() + a_recStart[std::size_t(i)], a_rec.end(), [&sh](const RecombiningPart& r) { return r.domain == sh.domain; });
+            if (it == a_rec.end()) {
+                a_rec.push_back({sh.domain, 0, 0, 0});
+                it = a_rec.end() - 1;
+            }
+            it->volume += v;
+            a_recVolume[std::size_t(i)] += v;
+        }
+    }
+    a_recStart[std::size_t(a_n)] = int(a_rec.size());
     PointEvaluator ev(a_s);
     Expression::Options inUnit;
     inUnit.lengthUnit = topo.unitScale;
@@ -1285,29 +1349,36 @@ bool SemiconductorProblem::setup(QString* error)
         a_ni[std::size_t(i)] = ni;
         a_n1[std::size_t(i)] = ni * std::exp(m.Et / (KB * a_T));
         a_p1[std::size_t(i)] = ni * std::exp(-m.Et / (KB * a_T));
-        if (m.srh) {
-            // Its lifetimes: of x and y there, by its doping.
-            double tn = m.taun, tp = m.taup;
-            if (!m.taunOf.isConstant() || !m.taupOf.isConstant()) {
+        // Its lifetimes in a medium: of x and y there, by its doping.
+        auto lifetimesIn = [this, &lifetimes, &lifetimeWhy, &sp, i](const Medium& in) {
+            double tn = in.taun, tp = in.taup;
+            if (!in.taunOf.isConstant() || !in.taupOf.isConstant()) {
                 const auto& [t, r] = a_nodePoint[std::size_t(i)];
                 if (t >= 0) {
                     lifetimes.moveTo(t, r[0], r[1]);
-                    if (!m.taunOf.isConstant()) tn = lifetimes.eval(m.taunOf);
-                    if (!m.taupOf.isConstant()) tp = lifetimes.eval(m.taupOf);
+                    if (!in.taunOf.isConstant()) tn = lifetimes.eval(in.taunOf);
+                    if (!in.taupOf.isConstant()) tp = lifetimes.eval(in.taupOf);
                 }
             }
-            if (m.fossum) {
+            if (in.fossum) {
                 const double N = a_Nd[std::size_t(i)] + a_Na[std::size_t(i)];
-                tn /= m.fA + m.fB * N / m.N0n + m.fC * std::pow(N / m.N0n, m.fE);
-                tp /= m.fA + m.fB * N / m.N0p + m.fC * std::pow(N / m.N0p, m.fE);
+                tn /= in.fA + in.fB * N / in.N0n + in.fC * std::pow(N / in.N0n, in.fE);
+                tp /= in.fA + in.fB * N / in.N0p + in.fC * std::pow(N / in.N0p, in.fE);
             }
             if (!(tn > 0) || !(tp > 0)) {
                 if (lifetimeWhy.isEmpty()) lifetimeWhy = tr("%1: a lifetime at (%2, %3) is not more than 0").arg(a_node->name()).arg(sp.point(i).x()).arg(sp.point(i).y());
                 tn = tn > 0 ? tn : Inf;
                 tp = tp > 0 ? tp : Inf;
             }
-            a_tauN[std::size_t(i)] = tn;
-            a_tauP[std::size_t(i)] = tp;
+            return std::pair{tn, tp};
+        };
+        if (m.srh) std::tie(a_tauN[std::size_t(i)], a_tauP[std::size_t(i)]) = lifetimesIn(m);
+        for (int k = a_recStart[std::size_t(i)]; k < a_recStart[std::size_t(i) + 1]; ++k) {
+            RecombiningPart& part = a_rec[std::size_t(k)];
+            const Medium& in = a_media[std::size_t(part.domain)];
+            if (part.domain == d) std::tie(part.tn, part.tp) = std::pair{a_tauN[std::size_t(i)], a_tauP[std::size_t(i)]};
+            else if (in.srh) std::tie(part.tn, part.tp) = lifetimesIn(in);
+            else part.tn = part.tp = Inf;
         }
         a_scale = std::max({a_scale, std::abs(doping(i)), ni});
         // (A node on a heterojunction is its first semiconductor's: the
@@ -2267,6 +2338,62 @@ void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, do
     }
 }
 
+std::vector<SemiconductorProblem::MobilityChange> SemiconductorProblem::mobilityChanges(const Eigen::VectorXd& x) const
+{
+    std::vector<MobilityChange> out;
+    if (!a_saturation && !a_lombardi) return out;
+    const Space& sp = *a_s.fields()[std::size_t(a_fi)].space;
+    Eigen::VectorXd y = x;
+    for (int t = 0; t < int(a_elements.size()); ++t) {
+        const ElementMobility& em = a_elements[std::size_t(t)];
+        if (em.domain < 0) continue;
+        const Medium& m = a_media[std::size_t(em.domain)];
+        if (!m.saturation && !(m.surface && em.damp > 0)) continue;
+        const int* dof = sp.dofs(t);
+        MobilityChange mc;
+        mc.t = t;
+        bool all = true;
+        for (int k = 0; k < 3; ++k) {
+            mc.col[k] = a_iV[std::size_t(dof[k])];
+            mc.col[3 + k] = a_iN[std::size_t(dof[k])];
+            mc.col[6 + k] = a_iP[std::size_t(dof[k])];
+            all = all && mc.col[k] >= 0 && mc.col[3 + k] >= 0 && mc.col[6 + k] >= 0;
+        }
+        if (!all) continue;
+        bool any = false;
+        for (int c = 0; c < 9; ++c) {
+            // (1e-7 Vt in the potential, of the carriers 1e-7 of theirs: 1e-7
+            // Vt in their quasi-Fermi potential. 1e-4 Vt moved a weak
+            // field's triangle by as much as its corners differ - its
+            // differences the curvature of |∇φ|, not its slope: a junction's
+            // conductances 7 % off, Gak not -Gaa.)
+            const int col = mc.col[c];
+            const double h = c < 3 ? 1e-7 * a_Vt : 1e-7 * std::abs(x(col));
+            mc.dn[c] = mc.dp[c] = 0;
+            if (!(h > 0)) continue;
+            double n1 = 0, p1 = 0, n2 = 0, p2 = 0;
+            y(col) = x(col) + h;
+            elementMobilities(t, &y, &n1, &p1);
+            y(col) = x(col) - h;
+            elementMobilities(t, &y, &n2, &p2);
+            y(col) = x(col);
+            mc.dn[c] = (n1 - n2) / (2 * h);
+            mc.dp[c] = (p1 - p2) / (2 * h);
+            any = any || mc.dn[c] != 0 || mc.dp[c] != 0;
+        }
+        // Of the potential through its gradient alone: its three corners'
+        // changes sum to nought - exactly, their differences' rounding taken
+        // out (else the contacts raised together carry a current).
+        const double meanN = (mc.dn[0] + mc.dn[1] + mc.dn[2]) / 3, meanP = (mc.dp[0] + mc.dp[1] + mc.dp[2]) / 3;
+        for (int k = 0; k < 3; ++k) {
+            mc.dn[k] -= meanN;
+            mc.dp[k] -= meanP;
+        }
+        if (any) out.push_back(mc);
+    }
+    return out;
+}
+
 void SemiconductorProblem::updateMobilities(const Eigen::VectorXd& x)
 {
     if (a_saturation || a_lombardi) edgeWeights(&x);
@@ -2283,8 +2410,8 @@ std::vector<double> SemiconductorProblem::stimulatedRates() const
         for (int i = 0; i < a_n; ++i) {
             const int d = a_nodeDomain[std::size_t(i)];
             if (d < 0 || !st.on[std::size_t(d)]) continue;
-            volume += a_box[std::size_t(i)];
-            recombined += a_box[std::size_t(i)] * a_lastR[std::size_t(i)];
+            volume += a_recVolume[std::size_t(i)];
+            recombined += a_recVolume[std::size_t(i)] * a_lastR[std::size_t(i)];
         }
         const double rate = volume > 0 ? st.c * std::max(0.0, recombined / volume - st.R0) : 0.0;
         for (int i = 0; i < a_n; ++i) {
@@ -2423,6 +2550,16 @@ bool SemiconductorProblem::prepareLasing(QString* why)
     }
     if (L.nodes.empty() || !(L.Gamma > 0)) {
         *why = tr("%1: the mode of %2 has none of its energy on its domains (Γ %3)").arg(L.name, L.mode, formatNumber(L.Gamma, 3));
+        return false;
+    }
+    // (No spontaneous emission into the mode - β 0, or no Radiative on its
+    // gain region: no photon starts it, S stays 0 at any current, its net
+    // gain above nought unseen - S 0 with a gain of 600 GHz against a loss
+    // of 118: the update check of 110e8b9.)
+    if (!(L.beta > 0) || std::none_of(L.B.begin(), L.B.end(), [](double b) { return b > 0; })) {
+        *why = tr("%1: no spontaneous emission into the mode (%2): no photon starts it, its light stays none at any current - give "
+                  "β more than 0 (1e-4 is usual) and a Radiative recombination on its gain region")
+                   .arg(L.name, !(L.beta > 0) ? tr("its β is 0") : tr("no Radiative recombination on its gain region"));
         return false;
     }
     L.ready = true;
@@ -2739,77 +2876,97 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             add(rv, rn, -Q * A);
             add(rv, rp, Q * A);
         }
-        double R = 0, dRn = 0, dRp = 0;
+        // Recombination: in each part of its box of its own bands, by that
+        // domain's mechanisms and lifetimes - volume times rate summed. (The
+        // whole box by the node's medium, as it was, recombined a well's
+        // carriers over half its barriers' next rows as well - an 8 nm well
+        // as some 13 nm, a laser's threshold with the mesh: the update check
+        // of 110e8b9.)
+        double RV = 0, dRnV = 0, dRpV = 0;
         const double excess = n * p - ni * ni * gn * gp;
-        if (m.srh) {
-            // (Its lifetimes there; a field's trap-assisted tunnelling
-            // shortening them, τ/(1 + Γ), Γ of the node's field.)
-            double tn = a_tauN[std::size_t(i)], tp = a_tauP[std::size_t(i)];
-            double F = 0, gammaN = 0, gammaP = 0, dgN = 0, dgP = 0;
-            const int from = m.tat ? a_fieldStart[std::size_t(i)] : 0, to = m.tat ? a_fieldStart[std::size_t(i) + 1] : 0;
-            if (m.tat && to > from) {
-                // (The trap Et above the intrinsic level: Ec - Et, Et - Ev at the
-                // node, its gap narrowed.)
-                const double kT = KB * a_T, gap = a_gap[std::size_t(i)];
-                const double ecEi = m.dEc - gap / 2, eiEv = m.Eg - gap - ecEi;
-                F = fieldAt(i);
-                hurkx(F, m.FGn, (ecEi - m.Et) / kT, &gammaN, &dgN);
-                hurkx(F, m.FGp, (eiEv + m.Et) / kT, &gammaP, &dgP);
-                tn /= 1 + gammaN;
-                tp /= 1 + gammaP;
-            }
-            const double nn1 = n + gn * a_n1[std::size_t(i)], pp1 = p + gp * a_p1[std::size_t(i)];
-            const double D = tp * nn1 + tn * pp1;
-            R += excess / D;
-            dRn += (p * D - excess * tp) / (D * D);
-            dRp += (n * D - excess * tn) / (D * D);
-            if (jac && m.tat && to > from && (dgN != 0 || dgP != 0)) {
-                // dR/dV through τ's field: dR/dτn = -R pp1/D, dτ/dF = -τ dΓ/dF/(1 + Γ).
-                const double rate = excess / D;
-                const double dRdF = rate / D * (tn * dgN / (1 + gammaN) * pp1 + tp * dgP / (1 + gammaP) * nn1);
-                for (int k = from; k < to; ++k) {
-                    const auto& [t, share] = a_fieldTris[std::size_t(k)];
-                    const ElementMobility& em = a_elements[std::size_t(t)];
-                    const int* tdof = a_s.fields()[std::size_t(a_fi)].space->dofs(t);
-                    double Ex = 0, Ey = 0;
-                    for (int c = 0; c < 3; ++c) {
-                        Ex -= em.gx[c] * V(tdof[c]);
-                        Ey -= em.gy[c] * V(tdof[c]);
-                    }
-                    const double E = std::hypot(Ex, Ey);
-                    if (!(E > 0)) continue;
-                    for (int c = 0; c < 3; ++c) {
-                        const double dEdV = -(Ex * em.gx[c] + Ey * em.gy[c]) / E;
-                        const int col = a_iV[std::size_t(tdof[c])];
-                        add(rn, col, -Q * A * dRdF * share * dEdV);
-                        add(rp, col, Q * A * dRdF * share * dEdV);
+        for (int k = a_recStart[std::size_t(i)]; k < a_recStart[std::size_t(i) + 1]; ++k) {
+            const RecombiningPart& part = a_rec[std::size_t(k)];
+            const Medium& in = a_media[std::size_t(part.domain)];
+            const double Vk = part.volume;
+            double R = 0, dRn = 0, dRp = 0;
+            if (in.srh) {
+                // (Its lifetimes there; a field's trap-assisted tunnelling
+                // shortening them, τ/(1 + Γ), Γ of the node's field.)
+                double tn = part.tn, tp = part.tp;
+                double F = 0, gammaN = 0, gammaP = 0, dgN = 0, dgP = 0;
+                const bool tat = in.tat && a_tat;
+                const int from = tat ? a_fieldStart[std::size_t(i)] : 0, to = tat ? a_fieldStart[std::size_t(i) + 1] : 0;
+                if (tat && to > from) {
+                    // (The trap Et above the intrinsic level: Ec - Et, Et - Ev at
+                    // the node, its gap narrowed.)
+                    const double kT = KB * a_T, gap = a_gap[std::size_t(i)];
+                    const double ecEi = in.dEc - gap / 2, eiEv = in.Eg - gap - ecEi;
+                    F = fieldAt(i);
+                    hurkx(F, in.FGn, (ecEi - in.Et) / kT, &gammaN, &dgN);
+                    hurkx(F, in.FGp, (eiEv + in.Et) / kT, &gammaP, &dgP);
+                    tn /= 1 + gammaN;
+                    tp /= 1 + gammaP;
+                }
+                const double n1 = part.domain == d ? a_n1[std::size_t(i)] : ni * std::exp(in.Et / (KB * a_T));
+                const double p1 = part.domain == d ? a_p1[std::size_t(i)] : ni * std::exp(-in.Et / (KB * a_T));
+                const double nn1 = n + gn * n1, pp1 = p + gp * p1;
+                const double D = tp * nn1 + tn * pp1;
+                R += excess / D;
+                dRn += (p * D - excess * tp) / (D * D);
+                dRp += (n * D - excess * tn) / (D * D);
+                if (jac && tat && to > from && (dgN != 0 || dgP != 0)) {
+                    // dR/dV through τ's field: dR/dτn = -R pp1/D, dτ/dF = -τ dΓ/dF/(1 + Γ).
+                    const double rate = excess / D;
+                    const double dRdF = rate / D * (tn * dgN / (1 + gammaN) * pp1 + tp * dgP / (1 + gammaP) * nn1);
+                    for (int f = from; f < to; ++f) {
+                        const auto& [t, share] = a_fieldTris[std::size_t(f)];
+                        const ElementMobility& em = a_elements[std::size_t(t)];
+                        const int* tdof = a_s.fields()[std::size_t(a_fi)].space->dofs(t);
+                        double Ex = 0, Ey = 0;
+                        for (int c = 0; c < 3; ++c) {
+                            Ex -= em.gx[c] * V(tdof[c]);
+                            Ey -= em.gy[c] * V(tdof[c]);
+                        }
+                        const double E = std::hypot(Ex, Ey);
+                        if (!(E > 0)) continue;
+                        for (int c = 0; c < 3; ++c) {
+                            const double dEdV = -(Ex * em.gx[c] + Ey * em.gy[c]) / E;
+                            const int col = a_iV[std::size_t(tdof[c])];
+                            add(rn, col, -Q * Vk * dRdF * share * dEdV);
+                            add(rp, col, Q * Vk * dRdF * share * dEdV);
+                        }
                     }
                 }
             }
-        }
-        if (m.Cn != 0 || m.Cp != 0) {
-            const double c = m.Cn * n + m.Cp * p;
-            R += c * excess;
-            dRn += m.Cn * excess + c * p;
-            dRp += m.Cp * excess + c * n;
-        }
-        if (m.B != 0) {
-            R += m.B * excess;
-            dRn += m.B * p;
-            dRp += m.B * n;
+            if (in.Cn != 0 || in.Cp != 0) {
+                const double c = in.Cn * n + in.Cp * p;
+                R += c * excess;
+                dRn += in.Cn * excess + c * p;
+                dRp += in.Cp * excess + c * n;
+            }
+            if (in.B != 0) {
+                R += in.B * excess;
+                dRn += in.B * p;
+                dRp += in.B * n;
+            }
+            RV += Vk * R;
+            dRnV += Vk * dRn;
+            dRpV += Vk * dRp;
         }
         const double G = a_generation.empty() ? 0.0 : a_generation[std::size_t(i)];
-        // (Stimulated: the last iterate's mean, its own derivative left out.)
+        // (Stimulated: the last iterate's mean, its own derivative left out -
+        // over the parts that recombine.)
+        const double AR = a_recVolume[std::size_t(i)];
         if (!stimulated.empty()) {
-            a_lastR[std::size_t(i)] = R;
-            R += stimulated[std::size_t(i)];
+            a_lastR[std::size_t(i)] = AR > 0 ? RV / AR : 0.0;
+            RV += AR * stimulated[std::size_t(i)];
         }
-        F(rn) -= Q * A * (R - G);
-        F(rp) += Q * A * (R - G);
-        add(rn, rn, -Q * A * dRn);
-        add(rn, rp, -Q * A * dRp);
-        add(rp, rn, Q * A * dRn);
-        add(rp, rp, Q * A * dRp);
+        F(rn) -= Q * (RV - A * G);
+        F(rp) += Q * (RV - A * G);
+        add(rn, rn, -Q * dRnV);
+        add(rn, rp, -Q * dRpV);
+        add(rp, rn, Q * dRnV);
+        add(rp, rp, Q * dRpV);
         if (mass > 0 && history) {
             F(rn) -= Q * A * (mass * n - (*history)[N + std::size_t(i)]);
             F(rp) += Q * A * (mass * p - (*history)[2 * N + std::size_t(i)]);
@@ -2956,6 +3113,7 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
     Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
     bool analyzed = false;
     int crawling = 0;   // steps in a row damped to less than 2 %
+    int fading = 0;     // steps in a row the photons cut to a twentieth above threshold
     // (Mobilities saturated by the force along the current: lagged a step,
     // they settle only as the carriers do - where generation sets a
     // current, J/(q n µ), a lower µ a steeper force and a lower µ again, at
@@ -3033,10 +3191,28 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         const double alpha = maxDV > 10 * a_Vt ? 10 * a_Vt / maxDV : 1.0;
         double changeV = 0, changeC = 0;
         if (a_iS >= 0) {
-            // (The photons kept positive, as the carriers.)
+            // (The photons kept positive, as the carriers - a step that takes
+            // them down past a twentieth: below threshold, their balance's
+            // own number at these carriers, τp β Rsp/(1 - τp G). Held at a
+            // twentieth each step, as they were, those of a reverse bias -
+            // nought, Rsp nought - never met their balance: a Laser L-I's
+            // point below 0 V failed, the update check of 110e8b9, 4.)
             const double before = x(a_iS);
             double after = before + alpha * dx(a_iS);
-            if (after < 0.05 * before) after = 0.05 * before;
+            bool cut = false;
+            if (after < 0.05 * before) {
+                after = 0.05 * before;
+                cut = true;
+                if (a_laser->ready) {
+                    const LaserState ls = laserState(x);
+                    const Lasing& L = *a_laser;
+                    if (L.tauP * ls.G < 1) {
+                        after = std::max(L.tauP * L.beta * ls.Rsp / (1 - L.tauP * ls.G), 0.0);
+                        cut = false;
+                    }
+                }
+            }
+            fading = cut ? fading + 1 : 0;
             x(a_iS) = std::max(after, 0.0);
             changeC = std::max(changeC, std::abs(x(a_iS) - before) / (before + 1e-6));
         }
@@ -3061,6 +3237,12 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         // breakdown's diode's most time).
         crawling = alpha < 0.02 ? crawling + 1 : 0;
         if (crawling >= 10) break;
+        // The photons cut to a twentieth eight steps in a row above threshold
+        // - 2.6e10 down, where they lase -: going nowhere too (Newton's step
+        // taking them to none, step after step). Each such try took its forty
+        // steps: a Laser L-I of one point at 1.9 V 110 s, 72 of them in nine
+        // tries at its threshold - the update check of 110e8b9, 12.
+        if (fading >= 8) break;
         held = held || (a_alongCurrent && alpha == 1.0 && (changeV < 1e-6 || it >= 15));
         // Converged: the potential still to 1e-8 Vt and the carriers to 1e-6
         // (or the potential to 1e-12 Vt: the carriers' last digits are noise)
@@ -3648,7 +3830,13 @@ bool SemiconductorProblem::stationary(QString* why)
     }
     a_C0.clear();
     std::vector<double> at(a_contacts.size(), 0.0);
-    if (!f.solved) {
+    // A laser ready on a state solved without it - its photons none, its
+    // carriers perhaps past their clamp: initialize()'s walk to the voltages
+    // went before its mode was read - walked again from equilibrium, with
+    // it. (From there no smaller step was left: a stationary step at 1.6 V,
+    // above threshold, failed - the update check of 110e8b9, 4.)
+    const bool laserFresh = a_laser && a_laser->ready && a_iS >= 0 && !(x(a_iS) > 0);
+    if (!f.solved || laserFresh) {
         if (!equilibriumPoisson(x, 0, at, false, why)) return false;
         for (Contact& c : a_contacts) c.applied = 0;
     } else {
@@ -3657,7 +3845,7 @@ bool SemiconductorProblem::stationary(QString* why)
     // From the voltages it is at to those asked, in steps that Newton's
     // method takes (smaller when it does not).
     double step = 0.1;
-    int solves = 0;
+    int solves = 0, iterations = 0;
     QString failed;
     while (true) {
         double left = 0;
@@ -3669,7 +3857,9 @@ bool SemiconductorProblem::stationary(QString* why)
         contactValues(next);
         Eigen::VectorXd trial = x;
         int steps = 0;
-        if (newton(trial, 0, nullptr, 40, &steps, &failed)) {
+        const bool solved = newton(trial, 0, nullptr, 40, &steps, &failed);
+        iterations += steps;
+        if (solved) {
             x = trial;
             at = next;
             ++solves;
@@ -3691,7 +3881,7 @@ bool SemiconductorProblem::stationary(QString* why)
         }
     }
     finish(x, false);
-    if (solves > 1) a_s.log << tr("%1: the contacts' voltages reached in %2 steps").arg(a_node->name()).arg(solves);
+    if (solves > 1) a_s.log << tr("%1: the contacts' voltages reached in %2 steps (%3 of Newton's)").arg(a_node->name()).arg(solves).arg(iterations);
     return true;
 }
 
@@ -3705,6 +3895,43 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
     Eigen::VectorXd F;
     std::vector<Eigen::Triplet<double>> trip;
     assemble(x, 0, nullptr, F, &trip);
+    // The mobilities' own change (a saturation's with the force, a surface's
+    // with the field across): Newton holds them a step, and the solution is
+    // theirs at its end - but the small signal is the Jacobian itself, and
+    // held they are not in it (a saturated bar's conductance 197 times its
+    // DC curve's slope; a MOSFET's output conductance 3: the update check of
+    // 110e8b9). Each triangle's mobilities by its nine unknowns (V, n, p at
+    // its corners; central differences), times each of its edges' current
+    // per unit of the edge's weight.
+    const std::vector<MobilityChange> moving = mobilityChanges(x);
+    std::vector<double> perWn(a_edges.size(), 0.0), perWp(a_edges.size(), 0.0);
+    if (!moving.empty())
+        for (std::size_t m = 0; m < a_edges.size(); ++m) {
+            const Edge& e = a_edges[m];
+            if (e.w <= 0) continue;
+            double dN = 0, dP = 0;
+            edgeSteps(e, x, &dN, &dP);
+            if (e.wn > 0) perWn[m] = Q * a_Vt * (x(a_iN[std::size_t(e.j)]) * bern(dN) - x(a_iN[std::size_t(e.i)]) * bern(-dN));
+            if (e.wp > 0) perWp[m] = Q * a_Vt * (x(a_iP[std::size_t(e.i)]) * bern(dP) - x(a_iP[std::size_t(e.j)]) * bern(-dP));
+        }
+    for (const MobilityChange& mc : moving) {
+        const ElementMobility& em = a_elements[std::size_t(mc.t)];
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t m = std::size_t(em.edge[k]);
+            const Edge& e = a_edges[m];
+            for (int c = 0; c < 9; ++c) {
+                const double fn = perWn[m] * em.cot[k] * mc.dn[c], fp = perWp[m] * em.cot[k] * mc.dp[c];
+                if (fn != 0) {
+                    trip.emplace_back(a_iN[std::size_t(e.i)], mc.col[c], fn);
+                    trip.emplace_back(a_iN[std::size_t(e.j)], mc.col[c], -fn);
+                }
+                if (fp != 0) {
+                    trip.emplace_back(a_iP[std::size_t(e.i)], mc.col[c], fp);
+                    trip.emplace_back(a_iP[std::size_t(e.j)], mc.col[c], -fp);
+                }
+            }
+        }
+    }
     std::vector<char> fixed(std::size_t(a_unknowns), 0);
     for (const Contact& c : a_contacts)
         for (int i : c.nodes) {
@@ -3818,6 +4045,18 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         if (fixed[std::size_t(t.row())] && colNode[std::size_t(t.row())] >= 0 && colKind[std::size_t(t.row())] == 0) rows[t.row()].emplace_back(t.col(), t.value());
     const std::size_t nc = a_contacts.size();
     const std::vector<std::vector<double>> weight = currentWeights(x);
+    // (Each edge's current's change by its mobilities'.)
+    auto moved = [&moving, &perWn, &perWp, this](const Eigen::VectorXcd& dx, std::vector<cd>& df) {
+        for (const MobilityChange& mc : moving) {
+            cd dmun(0, 0), dmup(0, 0);
+            for (int c = 0; c < 9; ++c) {
+                dmun += mc.dn[c] * dx(mc.col[c]);
+                dmup += mc.dp[c] * dx(mc.col[c]);
+            }
+            const ElementMobility& em = a_elements[std::size_t(mc.t)];
+            for (int k = 0; k < 3; ++k) df[std::size_t(em.edge[k])] += em.cot[k] * (perWn[std::size_t(em.edge[k])] * dmun + perWp[std::size_t(em.edge[k])] * dmup);
+        }
+    };
     // Each contact's current's change for a solution's change dy (δV/Vt,
     // δφn/Vt, δφp/Vt): the edges' currents' and the carriers' at jω weighed,
     // and its metal's charge's at jω.
@@ -3855,6 +4094,7 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
             const cd dfp = e.wp * (bern(dP) * dx(pi) - bern(-dP) * dx(pj) + (x(pi) * dbern(dP) + x(pj) * dbern(-dP)) * dVp);
             df[m] = dfn + dfp;
         }
+        moved(dx, df);
         std::vector<cd> out(nc, cd(0, 0));
         for (std::size_t c = 0; c < nc; ++c) {
             const Contact& ct2 = a_contacts[c];
@@ -3923,6 +4163,11 @@ void SemiconductorProblem::initialize()
     // From where it is (a step before's), or a solution at rest at the
     // contacts' voltages now: a study in time starts there.
     if (field().solved) return;
+    // (A laser's walk to its voltages is its step's, its mode read - no
+    // step in time starts from it: walked here without the mode, it was
+    // walked again - a Laser L-I of one point the slower, 113 s against 93
+    // for 31: the update check of 110e8b9.)
+    if (a_laser) return;
     a_generation.assign(std::size_t(a_n), 0.0);
     QString why;
     if (!stationary(&why)) a_initError = why;
@@ -3970,9 +4215,19 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
         // Its mode as its resonator solved it; none yet (a step before its
         // Eigenfrequency step's): no light, said once.
         QString why;
-        if (!prepareLasing(&why) && !a_laserSaid) {
-            a_s.log << tr("%1: no lasing yet - %2").arg(a_node->name(), why);
-            a_laserSaid = true;
+        if (!prepareLasing(&why)) {
+            // (Its mode solved, it cannot lase as it is - its wells' gain not
+            // tabulated in a stationary step, no spontaneous emission: refused,
+            // not a line of the log - the update check of 110e8b9, 8.)
+            const int fi = a_s.fieldIndex(a_laser->mode);
+            if (fi >= 0 && a_s.fields()[std::size_t(fi)].solved) {
+                *error = why;
+                return false;
+            }
+            if (!a_laserSaid) {
+                a_s.log << tr("%1: no lasing yet - %2").arg(a_node->name(), why);
+                a_laserSaid = true;
+            }
         }
     }
     latticeTemperature();
@@ -4301,7 +4556,21 @@ bool SemiconductorProblem::solve1d(QString* error)
         *error = tr("%1: its line's strip: %2").arg(a_node->name(), meshed.error);
         return false;
     }
-    const StudyResult solved = solveStudy(aux, a_s.parametersPtr(), meshed.mesh, study.tag, [this](double, const QString&) { return !cancelled(); });
+    // From a sweep's point before, its strip meshed alike: its solution,
+    // the contacts' voltages raised from there. (Each point walked from
+    // equilibrium again: 8 points of a PIN 0.75 s in 1D, 0.45 s on a 2D
+    // Layered Region - which starts from the point before: the update check
+    // of 8bd5709.)
+    std::shared_ptr<const Mesh> stripMesh = meshed.mesh;
+    const Solution* before = nullptr;
+    if (const std::shared_ptr<const Solution> last = field().line) {
+        const Mesh& m = last->mesh();
+        if (m.nodes == meshed.mesh->nodes && m.triangles == meshed.mesh->triangles && m.domain == meshed.mesh->domain) {
+            stripMesh = last->meshPtr();
+            before = last.get();
+        }
+    }
+    const StudyResult solved = solveStudy(aux, a_s.parametersPtr(), stripMesh, study.tag, [this](double, const QString&) { return !cancelled(); }, before);
     if (!solved.error.isEmpty() || !solved.solution) {
         *error = tr("%1, along its line: %2").arg(a_node->name(), solved.error);
         return false;
@@ -4317,6 +4586,7 @@ bool SemiconductorProblem::solve1d(QString* error)
     const Field& lfield = line.fields()[std::size_t(lf)];
     // (The unknowns it solved: the strip's, not this mesh's.)
     a_s.fields()[std::size_t(a_fi)].unknowns = lfield.space->size() * lfield.count();
+    a_s.fields()[std::size_t(a_fi)].line = solved.solution;
     const Mesh& lmesh = line.mesh();
     const Space& lsp = *lfield.space;
     const std::size_t LN = std::size_t(lsp.size());
@@ -4396,7 +4666,8 @@ bool SemiconductorProblem::solve1d(QString* error)
     // narrow); this mesh along the line coarser than its own - what reads
     // it here (fem_evaluate, a mode's index) sees it that coarse.
     if (a_node->text(QStringLiteral("at")).trimmed().isEmpty()) {
-        const QString w = tr("%1: solved in 1D along its domains' middle, %2 = %3 %4 - its \"at\" not given")
+        // (Each a warning, not a log line alone: the update check of 8bd5709.)
+        const QString w = tr("Warning: %1: solved in 1D along its domains' middle, %2 = %3 %4 - its \"at\" not given")
                               .arg(a_node->name(), alongY ? QStringLiteral("x") : QStringLiteral("y"), formatNumber(across, 6), a_s.topology().unitName);
         if (!a_s.log.contains(w)) a_s.log << w;
     }
@@ -4408,7 +4679,8 @@ bool SemiconductorProblem::solve1d(QString* error)
         }
         if (widest > 1.05 * narrowest) {
             const QString w = tr("Warning: %1: solved in 1D its current is a straight column's %2 %3 across (its narrowest domain's) - "
-                                 "a stack %4 %3 wide elsewhere spreads it, which a 2D solve takes (a mesa: some %)")
+                                 "a stack %4 %3 wide elsewhere spreads it, which a 2D solve takes (a mesa's 2D current was 4 to 11 % "
+                                 "more forward, 35 % through narrow-wide-narrow)")
                                   .arg(a_node->name(), formatNumber(narrowest, 4), a_s.topology().unitName, formatNumber(widest, 4));
             if (!a_s.log.contains(w)) a_s.log << w;
         }
@@ -4424,7 +4696,7 @@ bool SemiconductorProblem::solve1d(QString* error)
         double gap = 0;
         for (std::size_t k = 1; k < along.size(); ++k) gap = std::max(gap, (along[k] - along[k - 1]) * unit);
         if (gap > 4 * a_h1d) {
-            const QString w = tr("%1: solved in 1D every %2 nm along its line, set on this mesh's nodes up to %3 nm apart - read here "
+            const QString w = tr("Warning: %1: solved in 1D every %2 nm along its line, set on this mesh's nodes up to %3 nm apart - read here "
                                  "(fem_evaluate, a plot, another physics) it is that coarse (its currents are its line's): a Layered "
                                  "Region along the line as fine keeps its detail")
                                   .arg(a_node->name(), formatNumber(a_h1d * 1e9, 3), formatNumber(gap * 1e9, 3));
@@ -4568,12 +4840,32 @@ void SemiconductorProblem::setGlobals()
         a_s.setGlobal(p + QStringLiteral("Istim"), Q * ls.Rstim, Dim::current(), tr("stimulated recombination's current, q S G"));
         a_s.setGlobal(p + QStringLiteral("Isp"), Q * ls.Rsp, Dim::current(), tr("radiative recombination's current on the gain region"));
         a_s.setGlobal(p + QStringLiteral("Nact"), ls.Nact, Dim::of(-3), tr("the carriers N on the gain region, by volume"));
-        a_s.setGlobal(p + QStringLiteral("taup"), L.tauP, Dim::of(0, 0, 1), tr("photon lifetime of the cold cavity, Q/ω"));
+        // Carriers past its wells' gain table's end: its gain held at the
+        // table's last there - said (it was not: the update check of
+        // 110e8b9).
+        if (L.ready && L.gain == 2 && L.table && !L.table->N.empty()) {
+            const Eigen::VectorXd x = stateVector();
+            double most = 0;
+            for (const int i : L.nodes) {
+                if (a_iN[std::size_t(i)] < 0) continue;
+                const double n = std::max(x(a_iN[std::size_t(i)]), 0.0), pv = std::max(x(a_iP[std::size_t(i)]), 0.0);
+                most = std::max(most, L.carrier == 1 ? n : L.carrier == 2 ? pv : std::sqrt(n * pv));
+            }
+            const QString first = tr("Warning: %1: its carriers reach").arg(L.name);
+            if (most > L.table->N.back() * (1 + 1e-9)
+                && std::none_of(a_s.log.begin(), a_s.log.end(), [&first](const QString& l) { return l.startsWith(first); }))
+                a_s.log << tr("%1 %2 per cm³ on its gain region (first where it is solved past it), past its wells' gain table's %3 "
+                              "(Nmax): its gain held at the table's last there - raise Nmax")
+                               .arg(first, formatNumber(most * 1e-6, 3), formatNumber(L.table->N.back() * 1e-6, 3));
+        }
+        // (tauph: semi.taup is the holes' SRH lifetime, which this hid - the
+        // update check of 110e8b9.)
+        a_s.setGlobal(p + QStringLiteral("tauph"), L.tauP, Dim::of(0, 0, 1), tr("photon lifetime of the cold cavity, Q/ω"));
     }
     if (!a_stimulated.empty()) {
         const std::vector<double> rates = stimulatedRates();
         double current = 0;
-        for (int i = 0; i < a_n; ++i) current += Q * a_box[std::size_t(i)] * rates[std::size_t(i)];
+        for (int i = 0; i < a_n; ++i) current += Q * a_recVolume[std::size_t(i)] * rates[std::size_t(i)];
         a_s.setGlobal(p + QStringLiteral("Istim"), current, Dim::current(),
                       tr("stimulated recombination's current: the light's, its photons' rate semi.Istim/q (by the norm length)"));
     }
