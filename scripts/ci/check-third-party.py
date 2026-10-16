@@ -30,6 +30,7 @@ OURS = {
     DATA + "lumerical_charge.ldev": DATA + "lumerical_projects.py",
     DATA + "lumerical_device.ldev": DATA + "lumerical_projects.py",
     DATA + "lumerical_heat.ldev": DATA + "lumerical_projects.py",
+    DATA + "lumerical_damaged_dataspace.ldev": DATA + "lumerical_projects.py",
     DATA + "lumerical_mode.lms": DATA + "lumerical_projects.py",
     DATA + "lumerical_sample.ldev": DATA + "lumerical_sample.py",
     DATA + "lumerical_wurtzite.ldev": DATA + "lumerical_sample.py",
