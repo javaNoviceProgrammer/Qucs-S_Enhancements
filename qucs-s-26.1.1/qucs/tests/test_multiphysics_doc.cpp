@@ -1670,6 +1670,75 @@ private slots:
     }
 
     // Claude's tools: the modes solved, a mode evaluated and plotted.
+    // A laser's light against its current: a 1D plot group's x a global
+    // (semi.I_anode) in place of its one axis, each point's value; without,
+    // the Laser L-I step's own axis, its voltages (V).
+    void lightAgainstCurrent()
+    {
+        const QString file = path(QStringLiteral("toy_laser.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um", "space": "axisymmetric",
+            "geometry": [{"type": "rectangle", "name": "nclad", "position": ["0", "0"], "size": ["1", "0.49"]},
+                         {"type": "rectangle", "name": "ring", "position": ["0", "0.49"], "size": ["1", "0.02"]},
+                         {"type": "rectangle", "name": "active", "position": ["0", "0.49"], "size": ["0.2", "0.02"]},
+                         {"type": "rectangle", "name": "pclad", "position": ["0", "0.51"], "size": ["1", "0.49"]}],
+            "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "n": "3.5", "kappa": "1e-3", "selection": {"only": ["nclad", "pclad", "ring"]}},
+                          {"material": "Gallium arsenide", "n": "3.5", "kappa": "1e-3", "selection": {"only": ["active"]}}],
+            "physics": [{"type": "resonator", "tag": "emr", "m": 0, "features": [{"type": "wave", "selection": {"all": true}}]},
+                        {"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
+              {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
+              {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
+              {"type": "laser", "gain": "linear", "a": "5e-16[cm^2]", "Ntr": "2e18[1/cm^3]", "ng": "3.5", "selection": {"only": ["active"]}},
+              {"type": "ohmic", "name": "anode", "V0": "0[V]", "selection": {"of": ["pclad"], "side": "top"}},
+              {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                     "features": [{"type": "layered", "hlateral": "0.05", "count": 4, "selection": {"all": true}}]}}],
+          "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "eigenfrequency", "physics": ["emr"], "count": 1, "around": "9.1[um]"},
+                                   {"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "1.50, 1.54, 1.56, 1.58, 1.60"}]}],
+          "results": {"plots": [{"type": "plotgroup1d", "tag": "pgli", "study": "std1", "x": "semi.I_anode",
+                                 "plots": [{"type": "globalgraph", "expression": "semi.Pout"}]},
+                                {"type": "plotgroup1d", "tag": "pgiv", "study": "std1",
+                                 "plots": [{"type": "globalgraph", "expression": "semi.I_anode"}]}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute(QStringLiteral("std1"));
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        Solution& s = *doc->solutions(QStringLiteral("std1"))->solutions.back();
+        QCOMPARE(s.snapshotCount(), 5);
+        std::vector<double> I, P, V;
+        for (int k = 0; k < 5; ++k) {
+            s.select(k);
+            I.push_back(*s.global(QStringLiteral("semi.I_anode")));
+            P.push_back(*s.global(QStringLiteral("semi.Pout")));
+            V.push_back(s.snapshotValue(k));
+        }
+        QString why;
+        auto dataOf = [&](const QString& group, qucs_s::dataset::Dataset& data) {
+            const QString display = doc->showGraphs(group, &why, false);
+            return !display.isEmpty() && data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why);
+        };
+        qucs_s::dataset::Dataset li, iv;
+        QVERIFY2(dataOf(QStringLiteral("pgli"), li), qPrintable(why));
+        const qucs_s::dataset::Variable* pout = li.find(QStringLiteral("semi.Pout"));
+        QVERIFY(pout);
+        QCOMPARE(pout->dependencies.size(), 1);
+        const qucs_s::dataset::Variable* x = li.find(pout->dependencies.front());
+        QVERIFY2(x && x->independent && pout->dependencies.front().contains(QLatin1String("I_anode")), qPrintable(pout->dependencies.join(' ')));
+        for (int k = 0; k < 5; ++k) {
+            QCOMPARE(x->re.at(k), I[std::size_t(k)]);
+            QCOMPARE(pout->re.at(k), P[std::size_t(k)]);
+        }
+        QVERIFY2(dataOf(QStringLiteral("pgiv"), iv), qPrintable(why));
+        const qucs_s::dataset::Variable* cur = iv.find(QStringLiteral("semi.I_anode"));
+        QVERIFY(cur && cur->dependencies == QStringList{QStringLiteral("voltage")});
+        for (int k = 0; k < 5; ++k) QCOMPARE(iv.find(QStringLiteral("voltage"))->re.at(k), V[std::size_t(k)]);
+    }
+
     void graphsOfTheChosenMode()
     {
         // A slab (µm) 2 wide, its thickness swept, two modes at 1550 nm: its

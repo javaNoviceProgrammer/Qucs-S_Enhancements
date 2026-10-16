@@ -516,7 +516,10 @@ bool QuantumProblem::setup(QString* error)
         a_inplane = in == QLatin1String("100") ? 1 : in == QLatin1String("110") ? 2 : in == QLatin1String("average") ? 3 : 0;
         if (a_valence && !a_1d) problem(tr("%1: the k·p valence bands are a well's (1D): a wire's holes stay parabolic").arg(a_node->name()));
     }
-    if (a_1d && a_s.axisymmetric()) problem(tr("%1: about an axis it is 2D (dots: their states round the axis)").arg(a_node->name()));
+    // (About an axis, a line along it - y, z - is planar wells across it, a
+    // VCSEL's: their plane the r-φ plane; along r there are none.)
+    if (a_1d && a_s.axisymmetric() && a_axis == 0)
+        problem(tr("%1: about an axis its wells lie across it - their line along the axis (y), or 2D for dots round it").arg(a_node->name()));
     // (What is read in: the parameters, then - its temperature known - its
     // materials' T too.)
     const Scope* reading = &constants;
@@ -2536,7 +2539,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         if (each >= 64 || (complete && (!choosing || (keptE >= wantE && (a_valence > 0 || keptH >= wantH))))) break;
     }
 
-    if (a_s.axisymmetric()) {
+    if (a_s.axisymmetric() && !a_1d) {
         *error = tr("%1: a dot's spectrum (about an axis) is not found yet: 1D wells or 2D wires").arg(a_node->name());
         return -1;
     }
