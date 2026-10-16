@@ -31,6 +31,7 @@ class QFrame;
 class QLabel;
 class QListWidget;
 class QMenu;
+class QMimeData;
 class QPlainTextEdit;
 class QTextBrowser;
 class QTextCursor;
@@ -222,9 +223,21 @@ public:
     /// Whether the \a index th line is a prompt that can be edited.
     bool canEdit(qsizetype index) const;
 
+    /// Images for the next prompt (dropped on the composer or the
+    /// conversation, pasted): image files, or an image's data (kept in the
+    /// cache's claude-images as a PNG). Sent, Claude is shown them with the
+    /// text - and told their files -, and they stay in the prompt's line.
+    /// Whether any was taken (20 at most a prompt).
+    bool attachImages(const QMimeData* data);
+    bool attachImageFiles(const QStringList& files);
+    QStringList attachedImages() const { return a_images; }
+    void removeAttachedImage(qsizetype index);
+
     // For the tests.
     ClaudeGitBar* gitBar() const { return a_gitBar; }
     QPlainTextEdit* composer() const { return a_input; }
+    /// The images attached, as small pictures above the composer.
+    QWidget* imageStrip() const { return a_imageStrip; }
     QTextBrowser* transcript() const { return a_view; }
     QToolButton* sendButton() const { return a_send; }
     QToolButton* attachButton() const { return a_attach; }
@@ -314,6 +327,7 @@ private:
         // rewindable.
         QString session = QString(), at = QString();
         bool rewindable = false;
+        QStringList images = QStringList();   // a prompt's: the image files it showed Claude
     };
     /// A turn's line, as usageShown() has it: each part, with its tooltip.
     static QList<QPair<QString, QString>> summaryParts(const Entry& e);
@@ -387,7 +401,11 @@ private:
     /// Runs \a text as a command or sends it as a prompt (with the note of
     /// the document in front when \a withDocument); true when it is done
     /// with - what the composer held can go.
-    bool sendText(const QString& text, bool withDocument);
+    bool sendText(const QString& text, bool withDocument, const QStringList& images = {});
+    /// The image files a drop or a paste holds, and whether it holds an
+    /// image's data instead.
+    static QStringList imageFilesIn(const QMimeData* data);
+    void updateImageStrip();
     void updateState();
     void updateDirectory();
     void updateComposer();
@@ -447,6 +465,9 @@ private:
     qsizetype a_editing = -1;
     QList<Entry> a_setAside;
     QString a_draft;
+    QStringList a_draftImages;   // the composer's images while a prompt is edited
+    QStringList a_images;        // attached to the next prompt
+    QWidget* a_imageStrip = nullptr;
     bool a_editStopped = false;
     bool a_rewinding = false;
     qsizetype a_rewindIndex = -1;
