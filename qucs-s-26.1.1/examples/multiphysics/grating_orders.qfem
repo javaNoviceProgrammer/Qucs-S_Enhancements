@@ -1,7 +1,7 @@
 {
     "format": "qucs-s multiphysics 1",
     "title": "A grating's diffraction orders",
-    "description": "A lamellar grating - ridges of glass half of a 1 µm period, 0.3 µm deep, on glass - lit from air at 632.8 nm, TE (Ez across the plane). One period: its two sides a Periodic Condition (Floquet's, the incident wave's along the cell), a Periodic Port fed above at the angle of incidence and one taking what passes below. Each diffraction order that propagates its share of the light: at 10° three reflect and five pass - R_0 0.0214, T_0 0.5525, T_n1 0.1783, T_1 0.1857, the coupled waves' to 1e-6 - and R + T is 1. Swept from 0° to 40°, an order coming in or leaving as it turns.",
+    "description": "A lamellar grating - ridges of glass half of a 1 µm period, 0.3 µm deep, on glass - lit from air at 632.8 nm, TE (Ez across the plane). One period: its two sides a Periodic Condition (Floquet's, the incident wave's along the cell), a Periodic Port fed above at the angle of incidence and one taking what passes below. Each diffraction order that propagates its share of the light: at 10° three reflect and five pass - R_0 0.0214, T_0 0.5525, T_n1 0.1783, T_1 0.1857, the coupled waves' to 1e-6 - and R + T is 1. Swept from 0° to 40°, an order coming in or leaving as it turns: each order that can propagate at some angle (R_n3 to R_3, T_n3 to T_3) its global at every angle, nought where it does not.",
     "parameters": [
         {"name": "P", "expression": "1[um]", "description": "the grating's period"},
         {"name": "d", "expression": "0.3[um]", "description": "its ridges' depth"},
@@ -46,7 +46,7 @@
             ]}
         ],
         "derived": [
-            {"type": "global", "label": "Each order", "expression": "ewfd.R_n1; ewfd.R_0; ewfd.R_1; ewfd.T_n2; ewfd.T_n1; ewfd.T_0; ewfd.T_1; ewfd.T_2", "solutions": "all"}
+            {"type": "global", "label": "Each order", "expression": "ewfd.R_n2; ewfd.R_n1; ewfd.R_0; ewfd.R_1; ewfd.T_n3; ewfd.T_n2; ewfd.T_n1; ewfd.T_0; ewfd.T_1; ewfd.T_2", "solutions": "all"}
         ]
     }
 }

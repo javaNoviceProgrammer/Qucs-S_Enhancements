@@ -467,17 +467,6 @@
       "type": "surface",
       "expression": "emr.normE",
       "colors": "rainbow"
-     },
-     {
-      "type": "arrow",
-      "x": "emr.Er",
-      "y": "emr.Ez",
-      "points": [
-       "16",
-       "40"
-      ],
-      "scaling": "normalized",
-      "color": "white"
      }
     ]
    },

@@ -2040,6 +2040,13 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(out.data.isEmpty() ? text.toUtf8() : out.data) < 0 || !file.commit())
         return fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(path), file.errorString()));
+    if (!out.coordinates.isEmpty()) {
+        // (A grid's coordinates beside it: <file>_xy.npy.)
+        const QFileInfo fi(path);
+        QSaveFile xy(fi.absoluteDir().filePath(fi.completeBaseName() + QStringLiteral("_xy.npy")));
+        if (!xy.open(QIODevice::WriteOnly) || xy.write(out.coordinates) < 0 || !xy.commit())
+            return fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(xy.fileName()), xy.errorString()));
+    }
     say(tr("%1: %2 written - %3").arg(n->name(), QFileInfo(path).fileName(), out.summary));
     return path;
 }
@@ -2135,11 +2142,10 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".Sz")}, {"colors", QStringLiteral("thermal")}});
             m.add(m.results().tag, g2);
         } else if (f.type == QLatin1String("resonator")) {
-            // A resonant mode's electric field in the meridian plane (E_r, E_z
-            // as arrows), and its part round the axis.
+            // A resonant mode's electric field (its size; no arrows - not
+            // wanted), and its part round the axis.
             Node g = group(tr("Electric Field (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normE")}, {"colors", QStringLiteral("rainbow")}});
-            plot(g, QStringLiteral("arrow"), {{"x", t + QStringLiteral(".Er")}, {"y", t + QStringLiteral(".Ez")}, {"scaling", QStringLiteral("normalized")}});
             m.add(m.results().tag, g);
             Node g2 = group(tr("Azimuthal Field (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".Ephi")}, {"colors", QStringLiteral("coolwarm")}});

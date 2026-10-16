@@ -458,7 +458,10 @@ private slots:
     // parts one circularly turning field; 3 % off by the mesh at 2 nm from
     // it), E_z nought; the curl's 1/r parts finite. Refused, and said: a 2D (not axisymmetric) component, a
     // geometry reaching x < 0, an Eigenfrequency step without a resonator,
-    // what it searches about not a frequency or length.
+    // what it searches about not a frequency or length; m not whole, a
+    // count not from 1 to 200, an element order not 1 or 2, a Mode Analysis
+    // step on it, a reflection not between 0 and 1. The layers' reflection
+    // its strength.
     void theAxisAndRefusals()
     {
         Run r = run(modelOf(sphere(1, QStringLiteral("3.5"), slowBuild() ? QStringLiteral("0.15") : QStringLiteral("0.1"), QStringLiteral("5.05[um]"), 1)));
@@ -485,6 +488,34 @@ private slots:
         json = sphere(1, QStringLiteral("3.5"), QStringLiteral("0.3"), QStringLiteral("4[V]"), 2);
         r = run(modelOf(json));
         QVERIFY2(r.error.contains(QLatin1String("searches about")), qPrintable(r.error));
+        // (Each once taken as another, nothing said: m 1.5 as 0, a count of
+        // 0 or 500 as 1 or 200, an element order 3 as 2, a Mode Analysis
+        // step on a resonator as an Eigenfrequency step.)
+        const QByteArray base = sphere(2, QStringLiteral("3.5"), QStringLiteral("0.3"), QStringLiteral("5.05[um]"), 2);
+        for (const auto& [from, to, said] : {std::tuple{R"("m": 2)", R"("m": 1.5)", "whole number"},
+                                            std::tuple{R"("count": 2)", R"("count": 0)", "from 1 to 200"},
+                                            std::tuple{R"("count": 2)", R"("count": 500)", "from 1 to 200"},
+                                            std::tuple{R"("m": 2)", R"("m": 2, "order": "3")", "one of 1, 2"},
+                                            std::tuple{R"({"type": "eigenfrequency", "count": 2, "around": "5.05[um]"})",
+                                                       R"({"type": "mode", "frequency": "59.4[THz]", "modes": 2})", "Eigenfrequency step"},
+                                            std::tuple{R"({"type": "pml", "selection")", R"({"type": "pml", "reflection": "2", "selection")", "between 0 and 1"}}) {
+            QByteArray j = base;
+            QVERIFY2(j.contains(from), from);
+            j.replace(from, to);
+            r = run(modelOf(j));
+            QVERIFY2(r.error.contains(QLatin1String(said)), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(to), r.error)));
+        }
+        // The absorbing layers' strength its reflection's: weaker (0.1 for
+        // 1e-6), a mode's Q moved - the layers' own reflection in it.
+        QByteArray weak = base;
+        weak.replace(R"({"type": "pml", "selection")", R"({"type": "pml", "reflection": "0.1", "selection")");
+        Run a = run(modelOf(base)), b = run(modelOf(weak));
+        QVERIFY2(a.error.isEmpty() && b.error.isEmpty(), qPrintable(a.error + b.error));
+        a.solution->select(0);
+        b.solution->select(0);
+        const double qa = global(*a.solution, QStringLiteral("emr.Q")), qb = global(*b.solution, QStringLiteral("emr.Q"));
+        qInfo("Q with the layers reflecting 1e-6 %.6g, 0.1 %.6g", qa, qb);
+        QVERIFY(std::isfinite(qa) && std::isfinite(qb) && std::abs(qb / qa - 1) > 1e-4);
     }
 };
 

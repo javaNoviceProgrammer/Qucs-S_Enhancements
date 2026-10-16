@@ -1101,7 +1101,13 @@ bool SemiconductorProblem::setup(QString* error)
         }
     }
     // Doping, by node: each feature's in its share of the node's box (a node
-    // on a junction between two domains doped differently takes their mean).
+    // on a junction between two domains doped differently takes their mean)
+    // - each triangle's part of the box its corner's circumcentric (Voronoi)
+    // area, a mixed one's where it is obtuse (half to the obtuse corner, a
+    // quarter to each other): a Layered Region's rectangles, halved by their
+    // diagonals, give each corner a quarter. (By their whole areas a node on
+    // a side wall where two layers meet took them 1/3 and 2/3 - one triangle
+    // of a row against two -, 8.5 mV across a uniform PIN.)
     a_Nd.assign(std::size_t(a_n), 0);
     a_Na.assign(std::size_t(a_n), 0);
     a_nodePoint.assign(std::size_t(a_n), {-1, {0, 0, 0}});
@@ -1119,10 +1125,22 @@ bool SemiconductorProblem::setup(QString* error)
             if (a_nodePoint[std::size_t(i)].first < 0 || (a_elemSemi[std::size_t(t)] && !a_elemSemi[std::size_t(a_nodePoint[std::size_t(i)].first)]))
                 a_nodePoint[std::size_t(i)] = {t, {ref[k][0], ref[k][1], 0}};
             if (!a_elemSemi[std::size_t(t)]) continue;
-            const QPointF a = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][0])], b = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][1])],
-                          c = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][2])];
-            const double area = std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y()));
-            shares[std::size_t(i)].push_back({mesh.domain[std::size_t(t)], t, k, area});
+            const std::array<int, 3>& tri = mesh.triangles[std::size_t(t)];
+            const QPointF P = mesh.nodes[std::size_t(tri[std::size_t(k)])], Qn = mesh.nodes[std::size_t(tri[std::size_t((k + 1) % 3)])],
+                          R = mesh.nodes[std::size_t(tri[std::size_t((k + 2) % 3)])];
+            const double area = std::abs((Qn.x() - P.x()) * (R.y() - P.y()) - (R.x() - P.x()) * (Qn.y() - P.y())) / 2;
+            auto dot = [](QPointF u, QPointF v) { return u.x() * v.x() + u.y() * v.y(); };
+            const double atP = dot(Qn - P, R - P), atQ = dot(P - Qn, R - Qn), atR = dot(P - R, Qn - R);
+            double part = area / 3;
+            if (area > 0) {
+                if (atP < 0) part = area / 2;
+                else if (atQ < 0 || atR < 0) part = area / 4;
+                else {
+                    // (|PR|² cot Q + |PQ|² cot R)/8, cot = dot/(2 area).
+                    part = (dot(R - P, R - P) * atQ + dot(Qn - P, Qn - P) * atR) / (16 * area);
+                }
+            }
+            shares[std::size_t(i)].push_back({mesh.domain[std::size_t(t)], t, k, part});
         }
     }
     PointEvaluator ev(a_s);
@@ -4150,13 +4168,14 @@ bool SemiconductorProblem::solve1d(QString* error)
     const double unit = a_s.mesh().unitScale;
     const bool alongY = a_axis1d == 1;
     // The strip, in the geometry's unit: a rectangle each stretch, the line
-    // its middle, as wide as the line is long, eight columns across - read
+    // its middle, as wide as the line is long, two columns across - read
     // along its middle. (A node where two layers meet takes their dopings
-    // as its triangles share it: the middle's balanced, a side's leaning
-    // one way - its disturbance gone a few screening lengths in.)
+    // by its circumcentric box: a side's balanced as the middle's. Eight
+    // columns, once a side's leaned: 3 to 10 times a 2D Layered Region's
+    // time.)
     const double across = (alongY ? a_line.S.x() : a_line.S.y()) / unit, origin = (alongY ? a_line.S.y() : a_line.S.x()) / unit;
     const double width = a_line.L / unit;
-    constexpr int Columns = 8;
+    constexpr int Columns = 2;
     auto stripPoint = [alongY, across, origin](double along, double side) {
         return alongY ? QPointF(across + side, origin + along) : QPointF(origin + along, across + side);
     };
@@ -4296,6 +4315,8 @@ bool SemiconductorProblem::solve1d(QString* error)
         return false;
     }
     const Field& lfield = line.fields()[std::size_t(lf)];
+    // (The unknowns it solved: the strip's, not this mesh's.)
+    a_s.fields()[std::size_t(a_fi)].unknowns = lfield.space->size() * lfield.count();
     const Mesh& lmesh = line.mesh();
     const Space& lsp = *lfield.space;
     const std::size_t LN = std::size_t(lsp.size());
@@ -4368,6 +4389,48 @@ bool SemiconductorProblem::solve1d(QString* error)
             }
     }
     store(x);
+    // What it is not, said: its line's place not given (the middle of its
+    // domains taken); a stack narrower somewhere (a mesa) - its current
+    // through the narrowest, as a straight column's: where it widens, a 2D
+    // solve's spreads (4 to 11 % more forward, 35 % through narrow-wide-
+    // narrow); this mesh along the line coarser than its own - what reads
+    // it here (fem_evaluate, a mode's index) sees it that coarse.
+    if (a_node->text(QStringLiteral("at")).trimmed().isEmpty()) {
+        const QString w = tr("%1: solved in 1D along its domains' middle, %2 = %3 %4 - its \"at\" not given")
+                              .arg(a_node->name(), alongY ? QStringLiteral("x") : QStringLiteral("y"), formatNumber(across, 6), a_s.topology().unitName);
+        if (!a_s.log.contains(w)) a_s.log << w;
+    }
+    {
+        double widest = 0;
+        for (const Stretch& st : stretches) {
+            const QRectF b = topo.domains[std::size_t(st.domain)].bounds;
+            widest = std::max(widest, alongY ? b.width() : b.height());
+        }
+        if (widest > 1.05 * narrowest) {
+            const QString w = tr("Warning: %1: solved in 1D its current is a straight column's %2 %3 across (its narrowest domain's) - "
+                                 "a stack %4 %3 wide elsewhere spreads it, which a 2D solve takes (a mesa: some %)")
+                                  .arg(a_node->name(), formatNumber(narrowest, 4), a_s.topology().unitName, formatNumber(widest, 4));
+            if (!a_s.log.contains(w)) a_s.log << w;
+        }
+    }
+    {
+        // (Its nodes along the line: the widest gap between those of this
+        // mesh within its domains, against its own h1d.)
+        std::vector<double> along;
+        for (int i = 0; i < a_n; ++i)
+            if (std::isfinite(coordinate[std::size_t(i)])) along.push_back(coordinate[std::size_t(i)]);
+        std::sort(along.begin(), along.end());
+        along.erase(std::unique(along.begin(), along.end(), [](double a, double b) { return std::abs(a - b) < 1e-12; }), along.end());
+        double gap = 0;
+        for (std::size_t k = 1; k < along.size(); ++k) gap = std::max(gap, (along[k] - along[k - 1]) * unit);
+        if (gap > 4 * a_h1d) {
+            const QString w = tr("%1: solved in 1D every %2 nm along its line, set on this mesh's nodes up to %3 nm apart - read here "
+                                 "(fem_evaluate, a plot, another physics) it is that coarse (its currents are its line's): a Layered "
+                                 "Region along the line as fine keeps its detail")
+                                  .arg(a_node->name(), formatNumber(a_h1d * 1e9, 3), formatNumber(gap * 1e9, 3));
+            if (!a_s.log.contains(w)) a_s.log << w;
+        }
+    }
     const QString said = tr("%1: solved in 1D along %2 = %3 %4: %5 nodes on %6 stretches, its currents through %7 %4 across")
                              .arg(a_node->name(), alongY ? QStringLiteral("x") : QStringLiteral("y"), formatNumber(across, 6), a_s.topology().unitName)
                              .arg(profile.size())

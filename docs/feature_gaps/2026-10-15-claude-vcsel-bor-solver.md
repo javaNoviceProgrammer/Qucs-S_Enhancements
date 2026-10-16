@@ -108,6 +108,21 @@ nm Q 226; m 1: 979.09, 978.34, 975.73; m 2: 978.70 nm Q 571, 978.56 nm Q 225) - 
 Lumerical lists other eigenvalues (FI 0 978.5, 978.2; FI 1 979.84), which the user's scalar
 runs found only as low-Q modes moving with the mesh; not followed further here.
 
+**Not converged, the splitting (the 2026-10-16 check):** the reviewer solved the bench on finer
+meshes - the LP11 group's 7.4 pm here is one mesh's:
+
+| mesh (along r, rows thin/thick) | unknowns | TE01 | HE21 | TM01 |
+|---|---|---|---|---|
+| 0.1 µm, 6/60 | 290 640 | 979.2088 | 979.2736 | 979.3340 |
+| 0.05 µm, 6/60 (this one) | 524 296 | 979.2147 | 979.2075 | 979.2073 |
+| 0.05 µm, 9/90 | 766 280 | 979.2268 | 979.2050 | 979.1937 |
+| 0.035 µm, 6/60 | 740 678 | 979.2142 | 979.1965 | 979.1875 |
+
+Finer, the order is TM01 < HE21 < TE01, 27-33 pm apart; HE11 980.9453 nm here, 980.9359 at 0.035
+µm. The modes hold to some 0.05 nm, their vector splittings not yet: the oxide aperture's corner
+converges slowly. fem_solve's seven figures are the solve's on its mesh, not its accuracy - its
+output says so now ("figures"), and a splitting wants a finer mesh than the modes do.
+
 ## The example
 
 `examples/multiphysics/vcsel_modes.qfem` - an own design (not the bench's): GaAs and

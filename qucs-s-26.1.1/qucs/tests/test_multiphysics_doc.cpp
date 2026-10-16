@@ -2233,6 +2233,146 @@ private slots:
     // 'as' saves it under another file ('replace' over one there); a path no
     // file has is the untitled model in front's new file, never a titled
     // one's; 'new' says its title, which names it till it has a file.
+    // fem_solve's sweep: each point's globals its chosen mode's, as
+    // fem_evaluate's (its last point said its last mode: two modes asked,
+    // the last point mode 2, the others mode 1). A mode not there refused.
+    void aSweepsModesAsChosen()
+    {
+        const QString file = path(QStringLiteral("sweep_modes.qfem"));
+        QFile::remove(file);
+        QJsonArray rows;   // (by append: a braced list of one list is a copy to some compilers)
+        rows.append(QJsonArray{"nc", "3.4, 3.45, 3.5", ""});
+        const QJsonObject model{{"format", "qucs-s multiphysics 1"},
+                                {"parameters", QJsonArray{QJsonObject{{"name", "nc"}, {"expression", "3.4"}}}},
+                                {"components", QJsonArray{QJsonObject{
+                                    {"unit", "um"},
+                                    {"geometry", QJsonArray{QJsonObject{{"type", "rectangle"}, {"name", "clad"}, {"position", QJsonArray{"-2", "-2"}}, {"size", QJsonArray{"4", "4"}}},
+                                                            QJsonObject{{"type", "rectangle"}, {"name", "core"}, {"position", QJsonArray{"-0.5", "-0.25"}}, {"size", QJsonArray{"1", "0.5"}}}}},
+                                    {"materials", QJsonArray{QJsonObject{{"label", "clad"}, {"n", "1.44"}, {"selection", QJsonObject{{"only", QJsonArray{"clad"}}}}},
+                                                             QJsonObject{{"label", "core"}, {"n", "nc"}, {"selection", QJsonObject{{"only", QJsonArray{"core"}}}}}}},
+                                    {"physics", QJsonArray{QJsonObject{{"type", "modes"}, {"tag", "emw"}}}},
+                                    {"mesh", QJsonObject{{"size", "coarser"}}}}}},
+                                {"studies", QJsonArray{QJsonObject{{"type", "study"},
+                                                                   {"steps", QJsonArray{QJsonObject{{"type", "sweep"}, {"parameters", rows}},
+                                                                                        QJsonObject{{"type", "mode"}, {"frequency", "1550[nm]"}, {"modes", 2}, {"neff", "3"}}}}}}}};
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"path", file}, {"model", model}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_solve", {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray each = json(r).value("sweep").toObject().value("each").toArray();
+        QCOMPARE(each.size(), 3);
+        for (const QJsonValue& p : each) QCOMPARE(p.toObject().value("globals").toObject().value("emw.mode").toString(), QStringLiteral("1"));
+        QCOMPARE(json(r).value("globals").toObject().value("emw.mode").toString(), QStringLiteral("1"));
+        // Its seconds: the sweep's, each point's together (the last one's said).
+        {
+            double total = 0, last = 0;
+            for (QucsDoc* d : app->allDocuments())
+                if (auto* m = dynamic_cast<MultiphysicsDoc*>(d); m && QFileInfo(m->getDocName()) == QFileInfo(file))
+                    for (const auto& one : m->solutions(QString())->solutions) {
+                        total += one->seconds;
+                        last = one->seconds;
+                    }
+            QVERIFY2(std::abs(json(r).value("seconds").toDouble() - total) < 1e-9 && total > last, qPrintable(QStringLiteral("%1 %2").arg(total).arg(last)));
+        }
+        // A mode it has not: refused, said (mode 3 of 2 gave the 2nd, 0 the
+        // 1st; a plot group took "mode": 9 and showed the last).
+        for (int mode : {3, 0}) {
+            r = call("fem_evaluate", {{"path", file}, {"expression", "emw.neff"}, {"mode", mode}});
+            QVERIFY2(failed(r) && text(r).contains("from 1 to 2"), qPrintable(text(r)));
+        }
+        r = call("fem_evaluate", {{"path", file}, {"expression", "emw.neff"}, {"mode", 2}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_plot", {{"path", file}, {"expression", "emw.normE"}, {"mode", 9}});
+        QVERIFY2(failed(r) && text(r).contains("from 1 to 2"), qPrintable(text(r)));
+        for (QucsDoc* d : app->allDocuments())
+            if (QFileInfo(d->getDocName()) == QFileInfo(file)) {
+                d->setDocChanged(false);
+                app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(d)));
+                break;
+            }
+    }
+
+    // A resonator's: fem_solve says its seven figures are its mesh's; its
+    // plots made for it no arrows (|E| and E_φ).
+    void aResonatorsFiguresAndPlots()
+    {
+        const QString file = path(QStringLiteral("pillbox.qfem"));
+        QFile::remove(file);
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um", "space": "axisymmetric",
+            "geometry": [{"type": "rectangle", "name": "box", "size": ["1", "1"]}],
+            "materials": [{"label": "glass", "n": "3.5", "kappa": "1e-3", "selection": {"all": true}}],
+            "physics": [{"type": "resonator", "tag": "emr", "m": 0}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "steps": [{"type": "eigenfrequency", "count": 2, "around": "9[um]"}]}]})json");
+        f.close();
+        QJsonObject r = call("fem_solve", {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("figures").toString().contains("finer mesh"), qPrintable(text(r).left(600)));
+        MultiphysicsDoc* doc = nullptr;
+        for (QucsDoc* d : app->allDocuments())
+            if (auto* m = dynamic_cast<MultiphysicsDoc*>(d); m && QFileInfo(m->getDocName()) == QFileInfo(file)) doc = m;
+        QVERIFY(doc);
+        int groups = 0;
+        for (const qucs_s::fem::Node& g : doc->model().results().children) {
+            if (g.type != QLatin1String("plotgroup")) continue;
+            ++groups;
+            for (const qucs_s::fem::Node& p : g.children) QVERIFY2(p.type != QLatin1String("arrow"), qPrintable(g.name()));
+        }
+        QVERIFY(groups >= 2);
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // fem_model new over a model's file open in a tab ('replace'): that tab
+    // takes the new model - one tab of the file, the tools on it (a second
+    // tab was made, the tools found the first: its old model, nothing said);
+    // its changes not saved refused, not thrown away.
+    void newOverAnOpenModel()
+    {
+        const QString file = path(QStringLiteral("replaced.qfem"));
+        QFile::remove(file);
+        auto model = [](const char* value) {
+            return QJsonObject{{"format", "qucs-s multiphysics 1"},
+                               {"parameters", QJsonArray{QJsonObject{{"name", "p"}, {"expression", QString::fromLatin1(value)}}}},
+                               {"components", QJsonArray{QJsonObject{{"geometry", QJsonArray{QJsonObject{{"type", "rectangle"}, {"size", QJsonArray{"1", "1"}}}}}}}}};
+        };
+        auto tabsOf = [&]() {
+            QList<MultiphysicsDoc*> out;
+            for (QucsDoc* d : app->allDocuments())
+                if (auto* m = dynamic_cast<MultiphysicsDoc*>(d); m && QFileInfo(m->getDocName()) == QFileInfo(file)) out << m;
+            return out;
+        };
+        auto parameterOf = [](MultiphysicsDoc* d) {
+            for (const auto& p : d->model().parameters())
+                if (p.name == QLatin1String("p")) return p.expression;
+            return QString();
+        };
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"path", file}, {"model", model("1")}, {"replace", true}});
+        QVERIFY2(!failed(r) && tabsOf().size() == 1, qPrintable(text(r)));
+        MultiphysicsDoc* first = tabsOf().front();
+        r = call("fem_model", {{"action", "new"}, {"path", file}, {"model", model("2")}, {"replace", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(tabsOf().size(), 1);
+        QCOMPARE(tabsOf().front(), first);
+        QCOMPARE(parameterOf(first), QStringLiteral("2"));
+        QVERIFY(!first->getDocChanged());
+        // (The tools on it: the file's model.)
+        r = call("fem_describe", {{"path", file}, {"what", "model"}});
+        QVERIFY2(!failed(r) && text(r).contains("\"2\""), qPrintable(text(r).left(400)));
+        // Its changes not saved: refused, kept.
+        r = call("fem_edit", {{"path", file}, {"action", "parameters"}, {"parameters", QJsonArray{QJsonObject{{"name", "p"}, {"expression", "3"}}}}});
+        QVERIFY2(!failed(r) && first->getDocChanged(), qPrintable(text(r)));
+        r = call("fem_model", {{"action", "new"}, {"path", file}, {"model", model("4")}, {"replace", true}});
+        QVERIFY2(failed(r) && text(r).contains("not saved"), qPrintable(text(r)));
+        QCOMPARE(parameterOf(first), QStringLiteral("3"));
+        QCOMPARE(tabsOf().size(), 1);
+        first->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(first)));
+    }
+
     void savingTheModelItsPathNames()
     {
         auto read = [](const QString& file) {

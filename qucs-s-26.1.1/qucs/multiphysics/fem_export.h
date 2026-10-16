@@ -62,6 +62,9 @@ QString qucsLineSchematic(const LineRLGC& line, double length, const QString& ve
 struct ExportText {
     QString text;
     QByteArray data;  ///< a binary file's (NumPy's .npy) instead of text
+    /// A grid's .npy: its points' x and y (shape 2, ny, nx), written beside
+    /// it as <file>_xy.npy - the values' own file has no coordinates.
+    QByteArray coordinates;
     QString suffix;   ///< s2p, cir, sch, csv, npy, dat
     QString summary;  ///< a line saying what is in it
     QString error;

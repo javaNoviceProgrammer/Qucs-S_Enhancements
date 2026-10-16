@@ -645,6 +645,9 @@ private slots:
             const double absorbs = 4 * M_PI * kappa / lambda;
             const double got = at(*r.solution, QStringLiteral("emw.alphacarriers"), middle);
             QVERIFY2(relative(got, std::max(bleach, -absorbs)) < 3e-3, qPrintable(QStringLiteral("%1 %2 %3").arg(got).arg(bleach).arg(absorbs)));
+            // (Held - its κ 1e-4 less than the bleaching: said, its Δn the
+            // whole edge's; κ 0.2 more: nothing to say.)
+            QCOMPARE(r.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("bleaches more absorption")), kappa < 0.1);
         }
         // A material without a gap: said.
         const Run none = run(modelOf(guide(onCore(QStringLiteral(R"("bandfilling": true)")), QStringLiteral("1550[nm]"),
@@ -740,6 +743,19 @@ private slots:
         QVERIFY(relative(value(2, QStringLiteral("VpiL")), 1.55e-6 * 3 / (2 * std::abs(d3))) < 1e-12);
         QVERIFY(relative(value(2, QStringLiteral("dphi_sweep")), 2 * M_PI / 1.55e-6 * d3 * 1e-3) < 1e-12);
         QVERIFY2(values[2].values.back().text.endsWith(QStringLiteral("V·cm")), qPrintable(values[2].values.back().name + QStringLiteral(" ") + values[2].values.back().text));
+        // A bias of no unit: its VπL in cm too (it was said in m, "(bias)·m").
+        {
+            std::vector<DerivedResult> plain;
+            for (const Instance& at : each) plain.push_back(evaluateDerived(*select(set, at), pert));
+            for (DerivedResult& d : plain)
+                for (DerivedValue& v : d.values)
+                    if (v.name == QLatin1String("V")) v.dim = Dim();
+            perturbationAlongSweep(set, each, pert, plain);
+            QString said;
+            for (const DerivedValue& v : plain[2].values)
+                if (v.name == QLatin1String("VpiL")) said = v.text;
+            QVERIFY2(said == formatNumber(value(2, QStringLiteral("VpiL")) * 100, 4) + QStringLiteral(" cm (times the bias's unit)"), qPrintable(said));
+        }
         // Linear in V: one VπL (but for the field's own change, 0.3 % at 3 V);
         // Drude's Δn per volt times the core's Γ (index).
         QVERIFY2(relative(value(2, QStringLiteral("VpiL")), value(1, QStringLiteral("VpiL"))) < 5e-3,
@@ -807,18 +823,27 @@ private slots:
             QVERIFY(r.error.isEmpty());
             // (The fields left as the steps after take them: the one chosen.)
             QCOMPARE(r.solution->mode(), expected);
+            // (A choice given - "first" too - its step's: "auto" that mode
+            // alone; "first" said once listed every mode.)
+            {
+                SolutionSet given;
+                given.solutions = r.study.solutions;
+                QCOMPARE(modesAsked(given, QStringLiteral("auto")), -1);
+            }
             SolutionSet set;
             set.solutions = r.study.solutions;
             const std::vector<Instance> shown = instances(set, false);
             QCOMPARE(int(shown.size()), 1);
             QVERIFY2(shown.front().mode == expected, choose);
-            double best = std::strcmp(choose, "tm") == 0 ? 1 : 0;
+            // (TE, TM: the first - of the highest index - TE-like, TM-like.)
+            int like = -1;
             for (int k = 0; k < r.solution->snapshotCount(); ++k) {
                 const double f = at(r, k, "emw.TEfraction");
-                best = std::strcmp(choose, "tm") == 0 ? std::min(best, f) : std::max(best, f);
+                qInfo("%s: mode %d, n %.5f, TE %.4f", choose, k + 1, at(r, k, "emw.neff"), f);
+                if (like < 0 && (std::strcmp(choose, "tm") == 0 ? f < 0.5 : f > 0.5)) like = k;
                 QCOMPARE(r.solution->snapshotChosen(k), k + 1 == expected);
             }
-            if (std::strcmp(choose, "first") != 0) QCOMPARE(at(r, expected - 1, "emw.TEfraction"), best);
+            if (std::strcmp(choose, "first") != 0) QCOMPARE(like + 1, expected);
         }
         if (!slowBuild()) {
             const Run r = solve(QStringLiteral(R"(, "modes": 4, "track": {"only": ["ridge"]}, "choose": "share")"));
@@ -827,6 +852,61 @@ private slots:
             for (int k = 1; k < r.solution->snapshotCount(); ++k)
                 if (at(r, k, "emw.Gamma") > at(r, most, "emw.Gamma")) most = k;
             QVERIFY(r.solution->snapshotChosen(most));
+        }
+        // TE: the TE-like of the highest index, not the most TE of all - a
+        // rib 1.5 µm high on a substrate 2 µm deep, meshed finer in its MQW
+        // and ridge, above the substrate's index: TE0 at 3.228 (TE 0.9993)
+        // and the MQW's slab mode at 3.177 (0.9996) - the slab chosen once.
+        if (!slowBuild()) {
+            QByteArray json = rib(QStringLiteral(R"(, "modes": 4, "minneff": "3.17", "choose": "te")"));
+            json.replace(R"("position": ["-3", "-1.5"], "size": ["6", "3.5"])", R"("position": ["-3", "-2"], "size": ["6", "5.5"])");
+            json.replace(R"("position": ["-3", "-1.5"], "size": ["6", "1.5"])", R"("position": ["-3", "-2"], "size": ["6", "2"])");
+            json.replace(R"("size": ["2", "1.4"])", R"("size": ["2", "1.5"])");
+            json.replace(R"("mesh": {"size": "normal", "custom": true, "hmax": "0.12"})",
+                         R"("mesh": {"size": "fine", "features": [{"type": "size", "hmax": "0.05", "level": "domain", "selection": {"only": ["mqw", "ridge"]}}]})");
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            int chosen = -1, mostTE = 0;
+            for (int k = 0; k < r.solution->snapshotCount(); ++k) {
+                qInfo("the finer rib: mode %d, n %.5f, TE %.4f%s", k + 1, at(r, k, "emw.neff"), at(r, k, "emw.TEfraction"), r.solution->snapshotChosen(k) ? ", chosen" : "");
+                if (r.solution->snapshotChosen(k)) chosen = k;
+                if (at(r, k, "emw.TEfraction") > at(r, mostTE, "emw.TEfraction")) mostTE = k;
+            }
+            QVERIFY(chosen >= 0 && at(r, chosen, "emw.neff") > 3.22 && at(r, chosen, "emw.TEfraction") > 0.99);
+            QVERIFY2(mostTE != chosen && at(r, mostTE, "emw.neff") < 3.2, "the most TE the MQW's slab mode, not chosen");
+        }
+        // Tracking along a sweep of the ridge's width: at each point the mode
+        // most in the MQW about the step's own index - not about the last
+        // one's (followed, it drifted to modes of half the share: at 2 µm
+        // 3.103 for 3.168); the last point the ridge 2 µm wide solved alone.
+        if (!slowBuild()) {
+            QByteArray json = rib(QStringLiteral(R"(, "modes": 1, "track": {"only": ["mqw"]})"),
+                                  QStringLiteral(R"({"type": "sweep", "parameters": [["w", "0.8, 1.4, 2", "um"]]},)"));
+            json.replace(R"("parameters": [{"name": "V", "expression": "0[V]"}])", R"("parameters": [{"name": "V", "expression": "0[V]"}, {"name": "w", "expression": "2[um]"}])");
+            json.replace(R"("position": ["-1", "0.2"], "size": ["2", "1.4"])", R"("position": ["-w/2", "0.2"], "size": ["w", "1.4"])");
+            const Run swept = run(modelOf(json));
+            const Run alone = solve(QStringLiteral(R"(, "modes": 1, "track": {"only": ["mqw"]})"));
+            QVERIFY2(swept.error.isEmpty() && alone.error.isEmpty(), qPrintable(swept.error + alone.error));
+            const Solution& last = *swept.study.solutions.back();
+            const double n = global(last, QStringLiteral("emw.neff")), n1 = at(alone, 0, "emw.neff");
+            qInfo("tracked along the widths: at 2 um %.5f (alone %.5f), its share %.3f", n, n1, global(last, QStringLiteral("emw.Gamma")));
+            QVERIFY(std::abs(n - n1) < 1e-6);
+            QVERIFY(last.log.join(QLatin1Char(' ')).contains(QLatin1String("not followed")));
+            // The reviewer's: from 0.6 µm (its first a TM-like mode at 3.135),
+            // a ridge 1.5 µm high meshed finer - followed, the 2 µm point
+            // drifted to 3.103 (Γ 0.096); about its own index, 3.168 (Γ 0.2).
+            QByteArray fine = json;
+            fine.replace(R"("parameters": [["w", "0.8, 1.4, 2", "um"]])", R"("parameters": [["w", "0.6, 0.8, 1.0, 1.4, 2.0", "um"]])");
+            fine.replace(R"("position": ["-3", "-1.5"], "size": ["6", "3.5"])", R"("position": ["-3", "-2"], "size": ["6", "5.5"])");
+            fine.replace(R"("position": ["-3", "-1.5"], "size": ["6", "1.5"])", R"("position": ["-3", "-2"], "size": ["6", "2"])");
+            fine.replace(R"("size": ["w", "1.4"])", R"("size": ["w", "1.5"])");
+            fine.replace(R"("mesh": {"size": "normal", "custom": true, "hmax": "0.12"})",
+                         R"("mesh": {"size": "fine", "features": [{"type": "size", "hmax": "0.05", "level": "domain", "selection": {"only": ["mqw", "ridge"]}}]})");
+            const Run reviewer = run(modelOf(fine));
+            QVERIFY2(reviewer.error.isEmpty(), qPrintable(reviewer.error));
+            const Solution& two = *reviewer.study.solutions.back();
+            qInfo("the reviewer's widths: at 2 um %.5f, its share %.3f", global(two, QStringLiteral("emw.neff")), global(two, QStringLiteral("emw.Gamma")));
+            QVERIFY(global(two, QStringLiteral("emw.neff")) > 3.16 && global(two, QStringLiteral("emw.Gamma")) > 0.15);
         }
         // Along a sweep, at each point the one chosen alone.
         {
@@ -843,6 +923,20 @@ private slots:
                 QVERIFY(global(*s, QStringLiteral("emw.TEfraction")) < 0.1);
             }
             QCOMPARE(int(instances(set, true).size()), 3 * points);
+        }
+        // Right after its solve, its last mode asked: that mode's fields and
+        // globals - the step left the chosen one's (mode 1's) after the last
+        // snapshot, and the selection took them as the last's.
+        {
+            const Run r = solve(QStringLiteral(R"(, "modes": 2)"));
+            QVERIFY(r.error.isEmpty());
+            Solution& s = *r.solution;
+            s.select(s.snapshotCount() - 1);
+            const double first = global(s, QStringLiteral("emw.neff"));
+            s.select(0);
+            s.select(s.snapshotCount() - 1);
+            QCOMPARE(first, global(s, QStringLiteral("emw.neff")));
+            QCOMPARE(s.mode(), 2);
         }
         // Guided: a lossy substrate's modes left out by their loss - of the
         // four nearest 3.3 the rib's two below 1 dB/cm (0.78, 0.81), the
@@ -928,6 +1022,22 @@ private slots:
         QVERIFY(std::abs(element(0, 3, 4) - (-2 + 4.5 * 4 / 9) * 1e-6) < 1e-15);
         QVERIFY(std::isnan(element(1, 2, 9)));
         QVERIFY(relative(element(1, 5, 2), lines[1 + 5 * 10 + 2].split(QLatin1Char(','))[3].toDouble()) < 1e-11);
+        // Its points' x and y beside it (its _xy.npy): (2, y, x), the
+        // geometry's unit - the values' file has none.
+        {
+            const QByteArray& xy = npy.coordinates;
+            QVERIFY(xy.startsWith(QByteArray("\x93NUMPY\x01\x00", 8)));
+            const int hl = quint8(xy[8]) | (quint8(xy[9]) << 8);
+            QVERIFY2(xy.mid(10, hl).startsWith("{'descr': '<f8', 'fortran_order': False, 'shape': (2, 7, 10), }"), xy.mid(10, hl).constData());
+            auto at = [&](int c, int j, int i) {
+                double v;
+                std::memcpy(&v, xy.constData() + 10 + hl + 8 * ((c * 7 + j) * 10 + i), 8);
+                return v;
+            };
+            const QStringList row = lines[1 + 5 * 10 + 2].split(QLatin1Char(','));
+            QVERIFY(std::abs(at(0, 5, 2) - row[0].toDouble()) < 1e-12 && std::abs(at(1, 5, 2) - row[1].toDouble()) < 1e-12);
+            QVERIFY(npy.summary.contains(QLatin1String("_xy.npy")));
+        }
         // Columns: # before the header, a blank line after each grid row.
         fx.props.insert(QStringLiteral("format"), QStringLiteral("dat"));
         const ExportText dat = exportText(model, set, fx, QStringLiteral("test"));
@@ -1047,6 +1157,26 @@ private slots:
         QVERIFY(!compositionForGap(QStringLiteral("InGaAsP"), 1.4587, QStringLiteral("InP"), BandSet::Measured, &why));
         QVERIFY2(why.contains(QLatin1String("not reached")) && why.contains(QLatin1String("1.344")), qPrintable(why));
         QVERIFY(!compositionForGap(QStringLiteral("GaAs"), 1.4, QStringLiteral("InP"), BandSet::Measured, &why));
+        // Its gap as an energy Eg, not a wavelength: the same composition
+        // (refused once - λg alone taken).
+        {
+            Model blank = Model::blank();
+            Node byWavelength = blank.make(QStringLiteral("material")), byEnergy = blank.make(QStringLiteral("material"));
+            for (Node* n : {&byWavelength, &byEnergy}) {
+                n->props.insert(QStringLiteral("compound"), QStringLiteral("InGaAsP"));
+                n->props.insert(QStringLiteral("composition"), QStringLiteral("gap"));
+                n->props.insert(QStringLiteral("bands"), QStringLiteral("measured"));
+            }
+            byWavelength.props.insert(QStringLiteral("lambdag"), QStringLiteral("1.3[um]"));
+            byEnergy.props.insert(QStringLiteral("Eg"), QStringLiteral("%1[eV]").arg(6.62607015e-34 * 299792458.0 / 1.3e-6 / 1.602176634e-19, 0, 'g', 17));
+            QString why;
+            const auto a = detail::Problem::solvedComposition(byWavelength, nullptr, &why);
+            const auto b = detail::Problem::solvedComposition(byEnergy, nullptr, &why);
+            QVERIFY2(a && b, qPrintable(why));
+            QVERIFY(std::abs(a->first - b->first) < 1e-9 && std::abs(a->second - b->second) < 1e-9);
+            byEnergy.props.remove(QStringLiteral("Eg"));
+            QVERIFY(!detail::Problem::solvedComposition(byEnergy, nullptr, &why) && why.contains(QLatin1String("Eg")));
+        }
         // In a model: the composition in its log, its gap in band filling;
         // one not reached, a problem.
         QByteArray json = guide(onCore(QStringLiteral(R"("bandfilling": true)")), QStringLiteral("1550[nm]"),
@@ -1112,6 +1242,22 @@ private slots:
         QVERIFY2(std::abs(dn - (n50 - n0)) < 1e-6 * std::abs(n50 - n0) + 1e-12, qPrintable(QStringLiteral("%1 %2").arg(dn).arg(n50 - n0)));
         QVERIFY(relative(at(*off.solution, QStringLiteral("emw.alphaqwTE"), centre), a0) < 1e-6);
         QCOMPARE(at(*off.solution, QStringLiteral("emw.dnqwTE"), centre), 0.0);
+        // The photon within rounding of one of the spectrum's energies (its
+        // frequency to ten digits; 1.46 eV one of them): the same Δn - not
+        // the Kramers-Kronig integral's beside an interval of no width.
+        {
+            const double f = 1.46 * Q / 6.62607015e-34;
+            QByteArray json = stackGuide(wells);
+            json.replace(R"("name": "Fw", "expression": "0[V/m]")", R"("name": "Fw", "expression": "5e6[V/m]")");
+            const QByteArray full = QString::number(f, 'g', 17).toUtf8(), ten = QString::number(f, 'g', 10).toUtf8();
+            QVERIFY(json.contains(full) && full != ten && std::abs(ten.toDouble() / f - 1) > 1e-12);
+            json.replace(full, ten);
+            const Run rounded = run(modelOf(json));
+            QVERIFY2(rounded.error.isEmpty(), qPrintable(rounded.error));
+            const double dn10 = at(*rounded.solution, QStringLiteral("emw.dnqwTE"), centre);
+            qInfo("dn TE with the frequency to ten digits %.6g (%.6g)", dn10, n50 - n0);
+            QVERIFY2(std::abs(dn10 - (n50 - n0)) < 1e-3 * std::abs(n50 - n0), qPrintable(QStringLiteral("%1 %2").arg(dn10).arg(n50 - n0)));
+        }
         // Not in the barriers or the core: none.
         QCOMPARE(at(*on.solution, QStringLiteral("emw.alphaqwTE"), QPointF(0, 100)), 0.0);
         // The mode loses more and is slower with the field (the edge moved toward it).
@@ -1357,9 +1503,11 @@ private slots:
         QVERIFY2(I2 > 0 && relative(I1, I2) < 1e-5, qPrintable(QStringLiteral("%1 %2").arg(I1).arg(I2)));
         QVERIFY(relative(global(*one.solution, QStringLiteral("semi.I_k")), -I1) < 1e-6);
         QVERIFY(one.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("solved in 1D along x = 0 um")));
-        // At each node of the 2D solution's away from its sides (|x| 0.5 µm or
-        // less: a side's node where the layers meet takes their dopings
-        // leaning one way): V to 10 µV, n and p to 1e-4.
+        // At each node of the 2D solution's, its sides' too (a node where the
+        // layers meet takes their dopings by its circumcentric box: on a side
+        // as in the middle - by its triangles' areas a side's leaned 1/3 to
+        // 2/3, and 1D its strip of eight columns to keep its middle clear):
+        // V and the carriers to rounding.
         {
             const Field& f2 = plane.solution->fields()[std::size_t(plane.solution->fieldIndex(QStringLiteral("semi")))];
             const Field& f1 = one.solution->fields()[std::size_t(one.solution->fieldIndex(QStringLiteral("semi")))];
@@ -1370,13 +1518,25 @@ private slots:
             double dV = 0, dn = 0, largest = 0;
             for (std::size_t i = 0; i < N; ++i) largest = std::max({largest, f2.values[N + i], f2.values[2 * N + i]});
             for (std::size_t i = 0; i < N; ++i) {
-                if (std::abs(mesh.nodes[i].x()) > 0.5 + 1e-9) continue;
                 dV = std::max(dV, std::abs(f2.values[i] - f1.values[i]));
                 for (const std::size_t c : {N + i, 2 * N + i})
                     if (f2.values[c] > 1e-6 * largest) dn = std::max(dn, relative(f1.values[c], f2.values[c]));
             }
             qInfo("the nodes: V within %.3g V, n and p within %.3g", dV, dn);
-            QVERIFY2(dV < 1e-5 && dn < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(dV).arg(dn)));
+            QVERIFY2(dV < 1e-9 && dn < 1e-8, qPrintable(QStringLiteral("%1 %2").arg(dV).arg(dn)));
+            // (Uniform across the 2D: its side's node as its middle's.)
+            const QPointF side(-1, 0.2), middle(0, 0.2);
+            QVERIFY(std::abs(at(*plane.solution, QStringLiteral("semi.V"), side) - at(*plane.solution, QStringLiteral("semi.V"), middle)) < 1e-9);
+            // The unknowns said: its strip's (three nodes across), fewer than
+            // the 2D's (nine) - not this mesh's.
+            auto solvedOf = [](const Run& r) {
+                const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("Solved (\\d+) degrees")).match(r.solution->log.join(QLatin1Char('\n')));
+                return m.hasMatch() ? m.captured(1).toInt() : -1;
+            };
+            qInfo("solved: %d unknowns in 1D, %d in 2D", solvedOf(one), solvedOf(plane));
+            QVERIFY(solvedOf(one) > 0 && solvedOf(one) < solvedOf(plane) / 2);
+            // Its "at" not given: said.
+            QVERIFY(one.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("its \"at\" not given")));
         }
         // The same y anywhere across: the line's values.
         QCOMPARE(at(*one.solution, QStringLiteral("semi.V"), QPointF(-0.9, 0.11)), at(*one.solution, QStringLiteral("semi.V"), QPointF(0.9, 0.11)));
@@ -1385,6 +1545,9 @@ private slots:
         {
             const Run coarse = run(modelOf(junction1d(QStringLiteral("1d"), QString(), false, QStringLiteral(R"({"type": "stationary"})"), line, QStringLiteral("0.07"))));
             QVERIFY2(coarse.error.isEmpty(), qPrintable(coarse.error));
+            // (Said: what reads it here sees it as coarse as this mesh.)
+            QVERIFY2(coarse.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("set on this mesh's nodes up to")),
+                     qPrintable(coarse.solution->log.join(QLatin1Char('\n'))));
             QVERIFY(relative(global(*coarse.solution, QStringLiteral("semi.I_a")), I1) < 1e-9);
             // Its nodes', between the line's: V linear, the carriers in their
             // logarithm - as the 2D solution reads at those points.
@@ -1413,6 +1576,8 @@ private slots:
             QVERIFY2(mesa.error.isEmpty(), qPrintable(mesa.error));
             QVERIFY(relative(global(*mesa.solution, QStringLiteral("semi.I_a")), I1) < 1e-9);
             QVERIFY(relative(global(*mesa.solution, QStringLiteral("semi.I_k")), -I1) < 1e-9);
+            // (Said: a 2D solve's current spreads where the stack widens.)
+            QVERIFY(mesa.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("spreads it")));
             // Beside the mesa (x 1.5, the n layer's): its y's values.
             QCOMPARE(at(*mesa.solution, QStringLiteral("semi.n"), QPointF(1.5, 0.3)), at(*mesa.solution, QStringLiteral("semi.n"), QPointF(0, 0.3)));
         }

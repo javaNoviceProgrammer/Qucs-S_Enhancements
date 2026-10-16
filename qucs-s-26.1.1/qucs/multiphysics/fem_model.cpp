@@ -1077,9 +1077,12 @@ QList<NodeKind> makeKinds()
                 "Pockels' electro-optic effect of a static field, the photoelastic effect of a strain, a magnetized garnet's "
                 "gyrotropy. From their material or as given.")});
         add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), tag,
-             QStringLiteral("pml"), Level::Domain, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pml"),
+             QStringLiteral("pml"), Level::Domain,
+             {selectionProp(none), expr(QStringLiteral("reflection"), tr("Reflection at its outside (its strength)"), QString(), QStringLiteral("1e-6"))},
+             {}, {}, false, false, QStringLiteral("pml"),
              tr("Domains beside, above or round the others that take the waves in without reflecting them: their coordinates "
-                "stretched into the complex plane, more the deeper.")});
+                "stretched into the complex plane, more the deeper - as strongly as a wave at normal incidence is reflected "
+                "from its outside by \"reflection\" (1e-6: e^-13.8; less, stronger - and more of its own modes).")});
         add({p + QStringLiteral("pec"), tr("Perfect Electric Conductor"), tag,
              QStringLiteral("ground"), Level::Boundary, {selectionProp()}, {}, {}, false, false, QStringLiteral("pec"),
              tr("n × E = 0. On the outside by default.")});

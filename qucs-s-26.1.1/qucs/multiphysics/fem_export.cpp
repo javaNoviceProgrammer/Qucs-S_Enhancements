@@ -475,10 +475,19 @@ ExportText fieldExport(const SolutionSet& set, const Node& node)
             if (I > 1) shape.push_back(I);
             shape.insert(shape.end(), {K, std::size_t(ny), std::size_t(nx)});
             out.data = npy(values, shape);
-            out.summary = tr("%1 at %2 (shape %3; x, y in %4: from the corners)")
+            // (Its points' x and y beside it: shape 2, ny, nx.)
+            std::vector<double> xy(2 * N);
+            for (std::size_t n = 0; n < N; ++n) {
+                xy[n] = points[n].x();
+                xy[N + n] = points[n].y();
+            }
+            out.coordinates = npy(xy, {2, std::size_t(ny), std::size_t(nx)});
+            out.summary = tr("%1 at %2 (shape %3; x, y in %4 in its _xy.npy beside it, shape (2, %5, %6))")
                               .arg(names.join(QLatin1String(", ")), where,
                                    QStringLiteral("(%1%2, %3, %4)").arg(I > 1 ? QString::number(I) + QStringLiteral(", ") : QString()).arg(K).arg(ny).arg(nx),
-                                   unit);
+                                   unit)
+                              .arg(ny)
+                              .arg(nx);
         } else {
             std::vector<double> rows(N * (2 + I * K));
             for (std::size_t n = 0; n < N; ++n) {
