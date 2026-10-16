@@ -339,6 +339,9 @@ private:
     void restyle();
     void scheduleRender();
     void render();
+    /// Each image of a reply no wider than the transcript (as the Markdown
+    /// preview's).
+    void fitImages();
     /// The entries, from the first prompt on.
     void renderConversation(QTextCursor& c);
     /// What the conversation is, for an export: [label, value] pairs.
@@ -476,7 +479,8 @@ private:
     QToolButton* a_dirButton;
     QToolButton* a_dirReset;
     // The conversation.
-    QTextBrowser* a_view;
+    QTextBrowser* a_view = nullptr;
+    bool a_fitting = false;
     // The permission card.
     QFrame* a_card;
     QLabel* a_cardTitle;
