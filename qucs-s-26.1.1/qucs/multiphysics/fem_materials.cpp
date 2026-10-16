@@ -31,19 +31,36 @@
  *   Simulation of Heterostructure Devices (Springer, 2004).
  * - Gate dielectrics' permittivities: J. Robertson, Eur. Phys. J. Appl.
  *   Phys. 28, 265 (2004).
- * - Indices of the wavelength: silicon H. H. Li, J. Phys. Chem. Ref. Data
- *   9, 561 (1980) and C. D. Salzberg, J. J. Villa, J. Opt. Soc. Am. 47, 244
- *   (1957), its absorption K. Rajkanan, R. Singh, J. Shewchun, Solid-State
- *   Electron. 22, 793 (1979); SiO2 I. H. Malitson, J. Opt. Soc. Am. 55,
- *   1205 (1965); Si3N4 K. Luke et al., Opt. Lett. 40, 4823 (2015); (Al)GaAs
- *   M. A. Afromowitz, Solid State Commun. 15, 59 (1974); InP G. D. Pettit,
- *   W. J. Turner, J. Appl. Phys. 36, 2081 (1965); sapphire I. H. Malitson,
- *   M. J. Dodge, J. Opt. Soc. Am. 62, 1405 (1972); TiO2 J. R. DeVore, J.
- *   Opt. Soc. Am. 41, 416 (1951); ZrO2 D. L. Wood, K. Nassau, Appl. Opt. 21,
- *   2978 (1982); gold A. Vial et al., Phys. Rev. B 71, 085416 (2005); copper
- *   and aluminium A. D. Rakić et al., Appl. Opt. 37, 5271 (1998); silver a
- *   Drude fit of ours. Each checked against Palik's, Johnson and Christy's
- *   or the CRC's tables.
+ * - Indices of the wavelength, each checked against the measured spectra
+ *   of the refractiveindex.info database (M. N. Polyanskiy, Sci. Data 11,
+ *   94, 2024; CC0) - the fits ours, made to them: silicon H. H. Li, J. Phys.
+ *   Chem. Ref. Data 9, 561 (1980) and M. A. Green, Sol. Energy Mater. Sol.
+ *   Cells 92, 1305 (2008) - its n fitted, its absorption as measured;
+ *   germanium T. N. Nunley et al., J. Vac. Sci. Technol. B 34, 061205
+ *   (2016) and J. H. Burnett et al., Proc. SPIE 9974, 99740X (2016); the
+ *   III-Vs M. A. Afromowitz's oscillator (Solid State Commun. 15, 59, 1974)
+ *   with a lattice term, fitted to T. Skauli et al.'s GaAs (J. Appl. Phys.
+ *   94, 6447, 2003), G. D. Pettit and W. J. Turner's InP (J. Appl. Phys.
+ *   36, 2081, 1965), O. G. Lorimor and W. G. Spitzer's InAs, R. E. Fern and
+ *   A. Onton's AlAs, W. L. Bond's GaP, S. Zollner's and S. Adachi's AlSb,
+ *   A. B. Djurišić's and Adachi's GaSb, Adachi's InSb; their gaps'
+ *   absorption to D. E. Aspnes and A. A. Studna's (Phys. Rev. B 27, 985,
+ *   1983) GaAs and InP, G. E. Jellison's GaP; SiO2 I. H. Malitson, J. Opt.
+ *   Soc. Am. 55, 1205 (1965), its infrared absorption D. Franta et al.'s
+ *   (Proc. SPIE 9890, 989014, 2016);
+ *   Si3N4 K. Luke et al., Opt. Lett. 40, 4823 (2015); sapphire I. H.
+ *   Malitson, M. J. Dodge, J. Opt. Soc. Am. 62, 1405 (1972); TiO2 J. R.
+ *   DeVore, J. Opt. Soc. Am. 41, 416 (1951); ZrO2 D. L. Wood, K. Nassau,
+ *   Appl. Opt. 21, 2978 (1982); HfO2 M. F. Al-Kuhaili, Opt. Mater. 27, 383
+ *   (2004); the films' L. V. Rodriguez de Marcos et al.'s (ALD alumina),
+ *   T. J. Bright et al.'s (sputtered hafnia), L. Yu. Beliaev et al.'s
+ *   (PECVD nitride); CdTe D. T. F. Marple, CdSe M. P. Lisitsa et al., CdS
+ *   T. M. Bieniewski and S. J. Czyzak, GaN A. S. Barker and M. Ilegems;
+ *   LiTaO3 W. L. Bond's points; water M. Daimon and A. Masumura, Appl. Opt.
+ *   46, 3811 (2007) and G. M. Hale and M. R. Querry, Appl. Opt. 12, 555
+ *   (1973); gold A. Vial et al., Phys. Rev. B 71, 085416 (2005); copper and
+ *   aluminium A. D. Rakić et al., Appl. Opt. 37, 5271 (1998); silver H. U.
+ *   Yang et al., Phys. Rev. B 91, 235137 (2015).
  * Read from the Lumerical material database (Ansys's: its figures, not its
  * file; it cites no sources): the model sets' figures of the
  * semiconductors but silicon (ModelSet: the models above, their parameters
@@ -330,6 +347,12 @@ QString sellmeier(double A, std::initializer_list<std::pair<double, double>> ter
     return t + QLatin1Char(')');
 }
 
+/// Sellmeier's held at its range's ends (µm): its poles beyond them.
+QString heldSellmeier(double A, std::initializer_list<std::pair<double, double>> terms, double from, double to)
+{
+    return sellmeier(A, terms).replace(QStringLiteral("lambda0"), QStringLiteral("min(max(lambda0, %1[um]), %2[um])").arg(number(from), number(to)));
+}
+
 /// Kato and Takaoka's form: n² = A + B/(λ² - C) + D/(λ² - E), λ in µm.
 QString katoTakaoka(double A, double B, double C, double D, double E)
 {
@@ -436,49 +459,250 @@ QString trigonalPhotoelastic(double p11, double p12, double p13, double p14, dou
                         "");
 }
 
-/// Silicon's: Salzberg and Villa's Sellmeier below 1.2 µm (where it
-/// absorbs), Li's above 1.4 µm (its pole at 1.107 µm), the two between
-/// weighed linearly - Palik's within 0.01 from 0.8 to 14 µm (0.0001 at 1550
-/// nm; 0.04 low at 0.6 µm, 0.5 at 0.4 µm).
+/// κ of the wavelength through measured points (µm, κ) over decades:
+/// straight between their logarithms, nought beyond the last.
+QString tabulatedLog(std::initializer_list<std::pair<double, double>> points)
+{
+    QString t = QStringLiteral("interp(lambda0");
+    double last = 0;
+    for (const auto& [l, k] : points) {
+        t += QStringLiteral(", %1[um], %2").arg(number(l), formatNumber(std::log(k), 6));
+        last = l;
+    }
+    return QStringLiteral("if(lambda0 > %1[um], 0, exp(%2)))").arg(number(last), t);
+}
+
+/// Silicon's index: Green's measured n below 0.4 µm (its E1 peak there),
+/// above it a Sellmeier of two ultraviolet poles fitted to Green's (0.4-1.45
+/// µm, 300 K) and Li's (1.2-14 µm, 293 K) together - within 0.007 of either,
+/// 1e-4 of Li's at 1550 nm, falling with λ, no pole in its range.
 QString siliconIndex()
 {
-    const QString sv = sellmeier(1, {{10.6684293, 0.301516485}, {0.0030434748, 1.13475115}, {1.54133408, 1104}});
-    const QString li = QStringLiteral("sqrt(11.6858 + 0.939816[um^2]/lambda0^2 + 0.00993358[um^2]/(lambda0^2 - 1.22567[um^2]))");
-    return QStringLiteral("if(lambda0 < 1.2[um], %1, if(lambda0 > 1.4[um], %2, ((1.4[um] - lambda0)*%1 + (lambda0 - 1.2[um])*%2)/0.2[um]))")
-        .arg(sv, li);
+    const QString uv = tabulated({{0.25, 1.665}, {0.26, 1.757}, {0.27, 2.068}, {0.28, 2.959}, {0.29, 4.356}, {0.30, 4.976}, {0.31, 5.121},
+                                  {0.32, 5.112}, {0.33, 5.195}, {0.34, 5.301}, {0.35, 5.494}, {0.36, 6.026}, {0.37, 6.891}, {0.38, 6.616},
+                                  {0.39, 6.039}, {0.40, 5.613}});
+    return QStringLiteral("if(lambda0 < 0.4[um], %1, %2)").arg(uv, sellmeier(1, {{5.763557701, 0.2623529368}, {4.885714572, 0.3488033962}}));
 }
 
-/// Silicon's absorption at 300 K, Rajkanan, Singh and Shewchun's (Solid
-/// State Electron. 22, 793, 1979): its two indirect gaps, each with two
-/// phonons absorbed or emitted, and the direct one - κ = αλ/4π, Palik's
-/// within 30 % from 0.45 to 1.1 µm, nought below the gap.
+/// Silicon's absorption at 300 K, Green's (its band-to-band absorption,
+/// self-consistent with its n) from 0.25 to 1.45 µm; nought beyond.
 QString siliconExtinction()
 {
-    const double T = 300, kT = 8.617333262e-5 * T, shift = 7.021e-4 * T * T / (T + 1108);
-    const double gaps[2] = {1.1557 - shift, 2.5 - shift}, A[2] = {3.231e2, 7.237e3};
-    const double Ep[2] = {1.827e-2, 5.773e-2}, C[2] = {5.5, 4.0};
-    const QString E = QStringLiteral("(1.23984198[um]/lambda0)");
-    QStringList terms;
-    for (int i = 0; i < 2; ++i)
-        for (int j = 0; j < 2; ++j) {
-            const double absorbed = C[j] * A[i] / std::expm1(Ep[j] / kT), emitted = C[j] * A[i] / -std::expm1(-Ep[j] / kT);
-            terms << QStringLiteral("%1*max(%2 - %3, 0)^2").arg(number(absorbed), E, number(gaps[i] - Ep[j]))
-                  << QStringLiteral("%1*max(%2 - %3, 0)^2").arg(number(emitted), E, number(gaps[i] + Ep[j]));
-        }
-    terms << QStringLiteral("1.052e6*sqrt(max(%1 - %2, 0))").arg(E, number(3.2 - shift));
-    return QStringLiteral("(%1)[1/cm]*lambda0/(4*pi)").arg(terms.join(QStringLiteral(" + ")));
+    return tabulatedLog({
+        {0.25, 3.665}, {0.26, 4.084}, {0.27, 4.68}, {0.28, 5.287}, {0.29, 5.286}, {0.30, 4.234}, {0.31, 3.598}, {0.32, 3.303},
+        {0.33, 3.1}, {0.34, 2.977}, {0.35, 2.938}, {0.36, 2.966}, {0.37, 2.171}, {0.38, 0.946}, {0.39, 0.445}, {0.40, 0.296},
+        {0.41, 0.227}, {0.42, 0.176}, {0.43, 0.138}, {0.44, 0.107}, {0.45, 0.086302}, {0.46, 0.071381}, {0.47, 0.062086}, {0.48, 0.055004},
+        {0.49, 0.049131}, {0.50, 0.044165}, {0.51, 0.039367}, {0.52, 0.036415}, {0.53, 0.033108}, {0.54, 0.030295}, {0.55, 0.027968}, {0.56, 0.025758},
+        {0.57, 0.024131}, {0.58, 0.022524}, {0.59, 0.021081}, {0.60, 0.019934}, {0.61, 0.018446}, {0.62, 0.017367}, {0.63, 0.016444}, {0.64, 0.015432},
+        {0.65, 0.014431}, {0.66, 0.013498}, {0.67, 0.012743}, {0.68, 0.011905}, {0.69, 0.011201}, {0.70, 0.010528}, {0.71, 0.010057}, {0.72, 0.0096257},
+        {0.73, 0.0089461}, {0.74, 0.008362}, {0.75, 0.0078185}, {0.76, 0.007197}, {0.77, 0.0067402}, {0.78, 0.0063933}, {0.79, 0.005834}, {0.80, 0.0054113},
+        {0.81, 0.0049955}, {0.82, 0.0046134}, {0.83, 0.0042734}, {0.84, 0.0039439}, {0.85, 0.003612}, {0.86, 0.0032781}, {0.87, 0.0029839}, {0.88, 0.0026821},
+        {0.89, 0.0024293}, {0.90, 0.0021701}, {0.91, 0.0019625}, {0.92, 0.0017571}, {0.93, 0.0015467}, {0.94, 0.0013689}, {0.95, 0.0011793}, {0.96, 0.0010237},
+        {0.97, 0.00087225}, {0.98, 0.00074866}, {0.99, 0.00062238}, {1.00, 0.0005093}, {1.01, 0.00041071}, {1.02, 0.00032386}, {1.03, 0.00024753}, {1.04, 0.00018704},
+        {1.05, 0.0001362}, {1.06, 9.3631e-05}, {1.07, 6.8118e-05}, {1.08, 5.3285e-05}, {1.09, 4.0768e-05}, {1.10, 3.0637e-05}, {1.11, 2.3849e-05}, {1.12, 1.7825e-05},
+        {1.13, 1.3488e-05}, {1.14, 9.0718e-06}, {1.15, 6.223e-06}, {1.16, 3.877e-06}, {1.17, 2.0483e-06}, {1.18, 6.1036e-07}, {1.19, 3.4091e-07}, {1.20, 2.1008e-07},
+        {1.21, 1.2518e-07}, {1.22, 7.9609e-08}, {1.23, 4.6004e-08}, {1.24, 2.3682e-08}, {1.25, 9.9472e-09}, {1.26, 3.6096e-09}, {1.27, 2.0213e-09}, {1.28, 1.2223e-09},
+        {1.29, 7.2885e-10}, {1.30, 4.6553e-10}, {1.31, 2.8147e-10}, {1.32, 1.6807e-10}, {1.33, 8.467e-11}, {1.34, 3.7322e-11}, {1.35, 1.8263e-11}, {1.36, 1.0281e-11},
+        {1.37, 6.5413e-12}, {1.38, 4.173e-12}, {1.39, 2.5441e-12}, {1.40, 1.5597e-12}, {1.41, 9.5374e-13}, {1.42, 5.65e-13}, {1.43, 2.8449e-13}, {1.44, 2.0626e-13},
+        {1.45, 1.3846e-13}
+    });
 }
 
-/// Afromowitz's index of AlxGa1-xAs below its gap (Solid State Commun. 15,
-/// 59, 1974): a single oscillator and the gap's - GaAs Palik's within 0.004
-/// from 0.9 to 2 µm. (At the gap and above, the gap's.)
-QString afromowitzIndex(double x)
+/// Germanium's index: Nunley et al.'s measured n (J. Vac. Sci. Technol. B
+/// 34, 061205, 2016; 300 K) to 1.9 µm - its points where a straight line
+/// between them misses those left out by 0.002 at most -, Burnett et al.'s
+/// Sellmeier (2-14 µm) from 2 µm, the two weighed between (0.005 apart).
+QString germaniumIndex()
 {
-    const double E0 = 3.65 + 0.871 * x + 0.179 * x * x, Ed = 36.1 - 2.45 * x, Eg = 1.424 + 1.266 * x + 0.26 * x * x;
+    const QString near = tabulated({
+        {0.3002, 3.916}, {0.3046, 3.938}, {0.3179, 3.992}, {0.3271, 4.015}, {0.3454, 4.043}, {0.3522, 4.063}, {0.3583, 4.092},
+        {0.3701, 4.163}, {0.3757, 4.184}, {0.3887, 4.21}, {0.3936, 4.209}, {0.3987, 4.197}, {0.4065, 4.161}, {0.4175, 4.107},
+        {0.4246, 4.082}, {0.432, 4.07}, {0.4381, 4.069}, {0.4476, 4.084}, {0.4575, 4.117}, {0.4679, 4.167}, {0.4787, 4.235},
+        {0.4881, 4.306}, {0.4959, 4.376}, {0.502, 4.439}, {0.5061, 4.488}, {0.5123, 4.578}, {0.5166, 4.65}, {0.5209, 4.731},
+        {0.5298, 4.91}, {0.5344, 4.996}, {0.5391, 5.072}, {0.5414, 5.105}, {0.5462, 5.16}, {0.5486, 5.183}, {0.556, 5.236}, {0.561,
+        5.27}, {0.5636, 5.292}, {0.5661, 5.319}, {0.5687, 5.353}, {0.5714, 5.396}, {0.574, 5.446}, {0.5821, 5.625}, {0.5848, 5.68},
+        {0.5876, 5.725}, {0.5904, 5.758}, {0.5932, 5.778}, {0.5961, 5.785}, {0.599, 5.78}, {0.6019, 5.766}, {0.6048, 5.745},
+        {0.6108, 5.69}, {0.6326, 5.468}, {0.6458, 5.348}, {0.6525, 5.292}, {0.663, 5.214}, {0.6775, 5.122}, {0.6965, 5.022},
+        {0.7167, 4.935}, {0.738, 4.856}, {0.7606, 4.785}, {0.7798, 4.733}, {0.8051, 4.674}, {0.8321, 4.621}, {0.861, 4.573}, {0.892,
+        4.53}, {0.9322, 4.484}, {0.984, 4.438}, {1.042, 4.397}, {1.107, 4.364}, {1.216, 4.31}, {1.319, 4.275}, {1.425, 4.249},
+        {1.494, 4.241}, {1.531, 4.249}, {1.55, 4.25}, {1.59, 4.216}, {1.631, 4.194}, {1.722, 4.164}, {1.851, 4.136}, {2.033, 4.109}
+    });
+    const QString ir = QStringLiteral("sqrt(1 + 0.4886331*lambda0^2/(lambda0^2 - 1.393959[um^2]) + 14.5142535*lambda0^2/(lambda0^2 - "
+                                      "0.1626427[um^2]) + 0.0091224*lambda0^2/(lambda0^2 - 752.19[um^2]))");
+    return QStringLiteral("if(lambda0 < 1.9[um], %1, if(lambda0 > 2[um], %2, ((2[um] - lambda0)*%1 + (lambda0 - 1.9[um])*%2)/0.1[um]))").arg(near, ir);
+}
+
+/// Germanium's absorption at 300 K, Nunley et al.'s (its direct gap's edge at
+/// 1550 nm) to 2.03 µm, within 3 % of their points; nought beyond.
+QString germaniumExtinction()
+{
+    return tabulatedLog({
+        {0.3002, 3.694}, {0.3342, 2.845}, {0.4175, 2.097}, {0.5276, 2.385}, {0.5821, 1.826}, {0.623, 0.8524}, {0.6595, 0.5599},
+        {0.7293, 0.3597}, {0.8321, 0.247}, {1.127, 0.1292}, {1.512, 0.05406}, {1.531, 0.04564}, {1.55, 0.02519}, {1.569, 0.007651},
+        {1.59, 0.002758}, {1.61, 0.001915}, {1.722, 0.0004261}, {1.851, 5.835e-05}, {2.033, 2.607e-06}
+    });
+}
+
+/// Afromowitz's index of an oscillator E0, Ed and a gap Eg (eV; Solid State
+/// Commun. 15, 59, 1974) with lattice terms (εs - ε∞, TO phonon); at 0.995 Eg
+/// and above, held (within the measured spectra's spread to 0.1 eV over the
+/// gap: GaAs's n there differs by 0.06 from one to another).
+QString oscillatorIndex(double E0, double Ed, double Eg, const std::vector<std::pair<double, double>>& lattice = {})
+{
     const double eta = M_PI * Ed / (2 * E0 * E0 * E0 * (E0 * E0 - Eg * Eg));
     const QString E = QStringLiteral("min(1.23984198[um]/lambda0, %1)").arg(number(0.995 * Eg));
-    return QStringLiteral("sqrt(%1 + %2*%3^2 + %4*%3^4*log((%5 - %3^2)/(%6 - %3^2)))")
-        .arg(number(1 + Ed / E0), number(Ed / (E0 * E0 * E0)), E, number(eta / M_PI), number(2 * E0 * E0 - Eg * Eg), number(Eg * Eg));
+    QString t = QStringLiteral("%1 + %2*%3^2 + %4*%3^4*log((%5 - %3^2)/(%6 - %3^2))")
+                    .arg(number(1 + Ed / E0), number(Ed / (E0 * E0 * E0)), E, number(eta / M_PI), number(2 * E0 * E0 - Eg * Eg), number(Eg * Eg));
+    for (const auto& [S, ETO] : lattice)
+        if (S > 0) t += QStringLiteral(" + %1/(1 - (1.23984198[um]/lambda0/%2)^2)").arg(number(S), number(ETO));
+    return QStringLiteral("sqrt(%1)").arg(t);
+}
+
+/// Adachi's index of InGaAsP on InP's lattice (J. Appl. Phys. 53, 5863,
+/// 1982): n² = A [f(E/E0) + ½ (E0/Eso)^1.5 f(E/Eso)] + B, f(χ) = χ⁻² (2 -
+/// (1 + χ)^½ - (1 - χ)^½), A 8.4 - 3.4 y, B 6.6 + 3.4 y - his 1989
+/// dispersion's (the database's y 0.24) within 0.004 from 1.55 to 5 µm, 0.01
+/// at 1.3 µm, nearer the gap; InP's
+/// (y 0) Pettit and Turner's within 0.002 at 1550 nm; held at 0.995 E0 and
+/// above.
+QString adachiIndex(double y, double E0, double Eso)
+{
+    const double A = 8.4 - 3.4 * y, B = 6.6 + 3.4 * y;
+    const QString E = QStringLiteral("min(1.23984198[um]/lambda0, %1)").arg(number(0.995 * E0));
+    auto f = [&](double gap) {
+        const QString c = QStringLiteral("(%1/%2)").arg(E, number(gap));
+        return QStringLiteral("(2 - sqrt(1 + %1) - sqrt(1 - %1))/%1^2").arg(c);
+    };
+    return QStringLiteral("sqrt(%1*(%2 + %3*%4) + %5)").arg(number(A), f(E0), number(0.5 * std::pow(E0 / Eso, 1.5)), f(Eso), number(B));
+}
+
+/// Afromowitz's AlxGa1-xAs: GaAs Palik's within 0.004 from 0.9 to 2 µm.
+QString afromowitzIndex(double x)
+{
+    return oscillatorIndex(3.65 + 0.871 * x + 0.179 * x * x, 36.1 - 2.45 * x, 1.424 + 1.266 * x + 0.26 * x * x);
+}
+
+/// Water's index at 20 °C: Daimon and Masumura's Sellmeier (Appl. Opt. 46,
+/// 3811, 2007) to 1 µm, Hale and Querry's (25 °C; Appl. Opt. 12, 555, 1973)
+/// from 1.13 µm - its points within 0.001 -, the two weighed between (0.0015
+/// apart: their temperatures).
+QString waterIndex()
+{
+    const QString daimon = sellmeier(1, {{0.5684027565, std::sqrt(5.101829712e-3)}, {0.1726177391, std::sqrt(1.821153936e-2)},
+                                         {0.02086189578, std::sqrt(2.620722293e-2)}, {0.1130748688, std::sqrt(10.69792721)}});
+    const QString hale = tabulated({
+        {1, 1.327}, {1.6, 1.317}, {2, 1.306}, {2.2, 1.296}, {2.4, 1.279}, {2.6, 1.242}, {2.65, 1.219}, {2.75, 1.157}, {2.8, 1.142},
+        {2.85, 1.149}, {2.9, 1.201}, {2.95, 1.292}, {3, 1.371}, {3.05, 1.426}, {3.1, 1.467}, {3.15, 1.483}, {3.2, 1.478}, {3.25,
+        1.467}, {3.35, 1.432}, {3.4, 1.42}, {3.5, 1.4}, {3.6, 1.385}, {3.8, 1.364}, {4, 1.351}, {4.4, 1.334}, {4.6, 1.33}, {4.8,
+        1.33}, {5.1, 1.322}, {5.3, 1.312}, {5.5, 1.298}, {5.6, 1.289}, {5.7, 1.277}, {5.9, 1.248}, {6, 1.265}, {6.1, 1.319}, {6.2,
+        1.363}, {6.3, 1.357}, {6.5, 1.339}, {6.8, 1.324}, {7.1, 1.314}, {8.4, 1.281}, {9, 1.262}, {9.6, 1.239}, {10, 1.218}, {11,
+        1.153}, {11.5, 1.126}, {12, 1.111}, {12.5, 1.123}, {13, 1.146}, {14.5, 1.241}, {16, 1.325}, {17.5, 1.401}, {18.5, 1.443},
+        {19, 1.461}, {19.5, 1.476}, {21, 1.487}, {23, 1.511}, {25, 1.531}, {26, 1.539}, {28, 1.549}, {29, 1.551}, {30, 1.551}, {32,
+        1.546}, {36, 1.527}, {40, 1.519}, {42, 1.522}, {44, 1.53}, {46, 1.541}, {48, 1.555}, {50, 1.587}, {70, 1.821}, {80, 1.886},
+        {90, 1.924}, {100, 1.957}, {110, 1.966}, {120, 2.004}, {130, 2.036}, {140, 2.056}, {190, 2.119}, {200, 2.13}
+    });
+    return QStringLiteral("if(lambda0 < 1[um], %1, if(lambda0 > 1.129[um], %2, ((1.129[um] - lambda0)*%1 + (lambda0 - 1[um])*%2)/0.129[um]))")
+        .arg(daimon, hale);
+}
+
+/// Water's absorption, Hale and Querry's from 0.2 to 200 µm (within 2 % of
+/// their points).
+QString waterExtinction()
+{
+    return tabulatedLog({
+        {0.2, 1.1e-07}, {0.225, 4.9e-08}, {0.3, 1.6e-08}, {0.325, 1.08e-08}, {0.35, 6.5e-09}, {0.4, 1.86e-09}, {0.425, 1.3e-09},
+        {0.45, 1.02e-09}, {0.475, 9.35e-10}, {0.5, 1e-09}, {0.525, 1.32e-09}, {0.55, 1.96e-09}, {0.575, 3.6e-09}, {0.6, 1.09e-08},
+        {0.625, 1.39e-08}, {0.65, 1.64e-08}, {0.675, 2.23e-08}, {0.7, 3.35e-08}, {0.725, 9.15e-08}, {0.75, 1.56e-07}, {0.775,
+        1.48e-07}, {0.8, 1.25e-07}, {0.825, 1.82e-07}, {0.85, 2.93e-07}, {0.875, 3.91e-07}, {0.9, 4.86e-07}, {0.925, 1.06e-06},
+        {0.95, 2.93e-06}, {0.975, 3.48e-06}, {1, 2.89e-06}, {1.2, 9.89e-06}, {1.4, 0.000138}, {1.6, 8.55e-05}, {1.8, 0.000115}, {2,
+        0.0011}, {2.2, 0.000289}, {2.6, 0.00317}, {2.65, 0.0067}, {2.7, 0.019}, {2.75, 0.059}, {2.8, 0.115}, {2.85, 0.185}, {2.9,
+        0.268}, {2.95, 0.298}, {3.05, 0.24}, {3.1, 0.192}, {3.2, 0.0924}, {3.25, 0.061}, {3.3, 0.0368}, {3.35, 0.0261}, {3.4,
+        0.0195}, {3.45, 0.0132}, {3.5, 0.0094}, {3.6, 0.00515}, {3.7, 0.0036}, {3.8, 0.0034}, {3.9, 0.0038}, {4.4, 0.0103}, {4.5,
+        0.0134}, {4.7, 0.0157}, {4.8, 0.015}, {5.2, 0.0101}, {5.3, 0.0098}, {5.4, 0.0103}, {5.5, 0.0116}, {5.6, 0.0142}, {5.7,
+        0.0203}, {5.8, 0.033}, {5.9, 0.0622}, {6, 0.107}, {6.1, 0.131}, {6.3, 0.057}, {6.4, 0.0449}, {6.6, 0.0356}, {6.8, 0.0327},
+        {7.4, 0.0324}, {8.8, 0.0385}, {9.8, 0.0479}, {10, 0.0508}, {10.5, 0.0662}, {11.5, 0.142}, {12, 0.199}, {12.5, 0.259}, {13,
+        0.305}, {13.5, 0.343}, {14.5, 0.388}, {16.5, 0.428}, {19, 0.414}, {22, 0.373}, {32, 0.324}, {36, 0.343}, {50, 0.514}, {60,
+        0.587}, {90, 0.536}, {130, 0.514}, {160, 0.496}, {200, 0.504}
+    });
+}
+
+/// Fused silica's absorption in the infrared: Franta et al.'s (a bulk plate's;
+/// Proc. SPIE 9890, 989014, 2016) from 2.5 to 7 µm, within 3 % of their
+/// points; nought below (its transparent window: 5e-6 at 2.5 µm).
+QString silicaExtinction()
+{
+    return QStringLiteral("if(lambda0 < 2.5[um], 0, %1)").arg(tabulatedLog({
+        {2.503, 5.05e-06}, {2.555, 1.06e-05}, {2.597, 1.54e-05}, {2.639, 2.15e-05}, {2.657, 2.93e-05}, {2.669, 4.13e-05}, {2.675,
+        5.37e-05}, {2.682, 8.02e-05}, {2.694, 0.000258}, {2.7, 0.000411}, {2.706, 0.000536}, {2.713, 0.000595}, {2.731, 0.000597},
+        {2.763, 0.000417}, {2.795, 0.000237}, {2.86, 5.04e-05}, {2.893, 2.73e-05}, {2.934, 1.58e-05}, {2.988, 9.65e-06}, {3.065,
+        6.24e-06}, {3.254, 4.03e-06}, {3.322, 3.87e-06}, {3.376, 4.68e-06}, {3.463, 7.49e-06}, {3.551, 1.61e-05}, {3.651, 2.76e-05},
+        {3.719, 4.39e-05}, {3.771, 4.97e-05}, {3.894, 5.12e-05}, {3.994, 5.92e-05}, {4.153, 0.000112}, {4.25, 0.000147}, {4.359,
+        0.00027}, {4.41, 0.000304}, {4.471, 0.000285}, {4.554, 0.000241}, {4.617, 0.000265}, {4.703, 0.000379}, {4.758, 0.000585},
+        {4.88, 0.00247}, {4.936, 0.00383}, {4.993, 0.00471}, {5.075, 0.0048}, {5.157, 0.00476}, {5.217, 0.00595}, {5.302, 0.00901},
+        {5.351, 0.00958}, {5.413, 0.00825}, {5.526, 0.00534}, {5.629, 0.00473}, {5.786, 0.00488}, {5.935, 0.00625}, {6.087, 0.0084},
+        {6.186, 0.0084}, {6.389, 0.0065}, {6.537, 0.00721}, {6.989, 0.0105}
+    }));
+}
+
+/// A zinc blende binary's optics (fitted to the refractiveindex.info
+/// database's measured spectra at 300 K, the gaps the measured ones):
+/// Afromowitz's oscillator E0, Ed (eV) at its gap, the lattice's term
+/// εs - ε∞ at its TO phonon (eV), below the gap; its direct gap's
+/// absorption α = A √(E - Eg) / E (1/cm, E in eV) above it - an alloy's
+/// strength A its binaries' over µ^1.5 Ep weighed, of its own µ and Ep (the
+/// edge's joint density of states); the longest wavelength fitted (µm).
+struct BinaryOptics {
+    const char* name;
+    double E0, Ed, S, ETO, A, to;
+};
+
+const std::vector<BinaryOptics>& binaryOptics()
+{
+    static const std::vector<BinaryOptics> list = {
+        // (n: Skauli's GaAs, Pettit and Turner's InP, Lorimor's InAs, Fern and
+        // Onton's AlAs, Bond's GaP, Zollner's and Adachi's AlSb, Djurišić's
+        // and Adachi's GaSb - 0.15 apart at 2 µm, the fit between -, Adachi's
+        // InSb, below their gaps; A: Aspnes and Studna's GaAs and InP,
+        // Jellison's and Aspnes's GaP, Djurišić's GaSb, Zollner's and
+        // Djurišić's AlSb, Rakić's AlAs, Adachi's InAs and InSb, from 0.05 to
+        // 0.45 eV above the gap - InP's 1.5-1.7 eV, its Afk.)
+        {"GaAs", 3.6795, 36.290, 2.01, 0.0333, 6.578e4, 17},
+        {"InP", 3.4589, 29.597, 2.89, 0.0377, 1.16e5, 10},
+        {"InAs", 1.5317, 16.533, 2.85, 0.0271, 9381, 20},
+        {"GaSb", 2.1130, 26.897, 1.30, 0.0284, 2.806e4, 12.4},
+        {"InSb", 1.0841, 15.682, 1.10, 0.0222, 3449, 12.4},
+        {"AlSb", 3.4606, 31.384, 1.80, 0.0395, 7.22e5, 12.4},
+        {"GaP", 4.9666, 40.393, 1.99, 0.0455, 5.051e5, 4},
+        {"AlAs", 4.7906, 34.333, 1.90, 0.0449, 4.486e5, 2.2},
+        // (None measured in the database: its oscillator at 1.65 its Γ gap,
+        // AlAs's and GaP's ratio, Ed to its ε∞ 7.56; A of AlAs's and GaP's
+        // µ^1.5 Ep's mean.)
+        {"AlP", 5.862, 38.47, 2.24, 0.0548, 6.0e5, 2.2},
+    };
+    return list;
+}
+
+const BinaryOptics* opticsOf(const char* name)
+{
+    for (const BinaryOptics& o : binaryOptics())
+        if (qstrcmp(o.name, name) == 0) return &o;
+    return nullptr;
+}
+
+/// The edge's strength's scale: the reduced mass of the electron and the
+/// heavy hole (along [001]) to the 1.5, times Ep.
+double edgeScale(const BandParameters& p)
+{
+    const double mh = 1 / (p.gamma1 - 2 * p.gamma2), mr = p.me * mh / (p.me + mh);
+    return std::pow(mr, 1.5) * p.Ep;
+}
+
+/// κ of a direct gap's absorption α = A √(E - Eg) / E above Eg (A in 1/cm,
+/// E in eV), αλ/4π; nought below.
+QString edgeExtinction(double A, double Eg)
+{
+    const QString E = QStringLiteral("(1.23984198[um]/lambda0)");
+    return QStringLiteral("%1[1/cm]*lambda0/(4*pi)*sqrt(max(%2 - %3, 0))/%2").arg(number(A), E, number(Eg));
 }
 
 /// A metal's permittivity as Drude's and Lorentz's terms of the photon's
@@ -500,8 +724,11 @@ QString lorentzDrude(double epsInf, double wp, double f0, double g0, std::initia
 
 /// The metals' optical constants (n or κ): gold Vial et al.'s
 /// Drude-Lorentz fit (Phys. Rev. B 71, 085416, 2005) - Johnson and Christy's
-/// κ within 3 % from 0.55 to 1.9 µm -, silver a Drude fit (ε∞ 3.7, ωp 9.1
-/// eV, γ 18 meV) - within 5 % from 0.4 to 1.9 µm, the CRC's to 10 µm -,
+/// κ within 3 % from 0.55 to 1.9 µm -, silver a Drude-Lorentz fit of ours to
+/// Yang et al.'s (Phys. Rev. B 91, 235137, 2015; ε∞ 2.45, ωp 8.85 eV, γ 37
+/// meV, an oscillator at 8 eV for its interband absorption) - n and κ within
+/// 3 % from 0.4 to 1 µm, 1 % from 1 to 25 µm; Johnson and Christy's κ within
+/// 5 % -,
 /// copper and aluminium Rakić et al.'s Lorentz-Drude (Appl. Opt. 37, 5271,
 /// 1998) - the CRC's κ within 5 % from 0.6 to 2 µm (their n 10-40 % off).
 QString metalOptics(const char* metal, bool extinction)
@@ -509,7 +736,7 @@ QString metalOptics(const char* metal, bool extinction)
     const QLatin1String m(metal);
     if (m == QLatin1String("Au"))
         return lorentzDrude(5.9673, 8.74116, 1.0, 0.0658413, {{1.09 * 2.68848 * 2.68848 / (8.74116 * 8.74116), 2.68848, 0.433666}}, extinction);
-    if (m == QLatin1String("Ag")) return lorentzDrude(3.7, 9.1, 1.0, 0.018, {}, extinction);
+    if (m == QLatin1String("Ag")) return lorentzDrude(2.4473, 8.847, 1.0, 0.03671, {{0.89276 * 64 / (8.847 * 8.847), 8, 3}}, extinction);
     if (m == QLatin1String("Cu"))
         return lorentzDrude(1, 10.83, 0.575, 0.030, {{0.061, 0.291, 0.378}, {0.104, 2.957, 1.056}, {0.723, 5.300, 3.213}, {0.638, 11.18, 4.305}},
                             extinction);
@@ -840,7 +1067,7 @@ MaterialEntry compoundEntry(const char* name, const char* description, const cha
     if (y) e.properties.insert(QStringLiteral("y"), QString::fromLatin1(y));
     if (!x) {
         const QString c = QString::fromLatin1(compound);
-        for (const char* key : {"epsilonr", "n", "k", "rho", "Cp", "mur", "Eg", "chi", "Nc", "Nv", "mun", "mup", "taun", "taup"}) {
+        for (const char* key : {"epsilonr", "n", "kappa", "nrange", "k", "rho", "Cp", "mur", "Eg", "chi", "Nc", "Nv", "mun", "mup", "taun", "taup"}) {
             const QString v = qstrcmp(key, "mur") == 0 ? QStringLiteral("1") : compoundProperty(c, 0, 0, QString::fromLatin1(key));
             if (!v.isEmpty()) e.properties.insert(QString::fromLatin1(key), v);
         }
@@ -871,7 +1098,9 @@ const QList<MaterialEntry>& builtinMaterials()
         // Metals.
         // (Their work functions, for gate and Schottky contacts, and their
         // optical constants of the wavelength, for light: see metalOptics.)
-        metal(entry("Copper", "Metals", "Annealed copper, the IACS reference; work function 4.65 eV; n and κ from 0.6 to 2 µm (Rakić's)",
+        metal(entry("Copper", "Metals",
+                    "Annealed copper, the IACS reference; work function 4.65 eV; n and κ from 0.6 to 2 µm (Rakić et al.'s "
+                    "Lorentz-Drude fit: n 0.47 at 1550 nm, Johnson and Christy's 0.72, Babar and Weaver's 0.19 - films differ)",
                     {{"epsilonr", "1"}, {"sigma", "5.998e7[S/m]"}, {"k", "400[W/(m*K)]"}, {"rho", "8960[kg/m^3]"}, {"Cp", "385[J/(kg*K)]"},
                      {"mur", "1"}, {"E", "110[GPa]"}, {"nu", "0.35"}, {"alpha", "17e-6[1/K]"}}),
               "Cu", 4.65, "0.6[um] 2[um]"),
@@ -883,10 +1112,12 @@ const QList<MaterialEntry>& builtinMaterials()
                     {{"epsilonr", "1"}, {"sigma", "4.10e7[S/m]"}, {"k", "317[W/(m*K)]"}, {"rho", "19300[kg/m^3]"}, {"Cp", "129[J/(kg*K)]"},
                      {"mur", "1"}, {"E", "79[GPa]"}, {"nu", "0.44"}, {"alpha", "14.2e-6[1/K]"}}),
               "Au", 5.1, "0.5[um] 1.9[um]"),
-        metal(entry("Silver", "Metals", "Pure silver; work function 4.26 eV; n and κ from 0.4 to 10 µm (Drude's)",
+        metal(entry("Silver", "Metals",
+                    "Pure silver; work function 4.26 eV; n and κ from 0.4 to 25 µm (a Drude-Lorentz fit to Yang et al.'s, "
+                    "template-stripped silver: within 3 % to 1 µm, 1 % beyond; Johnson and Christy's κ within 5 %)",
                     {{"epsilonr", "1"}, {"sigma", "6.30e7[S/m]"}, {"k", "429[W/(m*K)]"}, {"rho", "10490[kg/m^3]"}, {"Cp", "235[J/(kg*K)]"},
                      {"mur", "1"}, {"E", "83[GPa]"}, {"nu", "0.37"}, {"alpha", "18.9e-6[1/K]"}}),
-              "Ag", 4.26, "0.4[um] 10[um]"),
+              "Ag", 4.26, "0.4[um] 25[um]"),
         entry("Solder (SAC305)", "Metals", "Sn96.5 Ag3.0 Cu0.5", {{"epsilonr", "1"}, {"sigma", "7.7e6[S/m]"}, {"k", "58[W/(m*K)]"},
               {"rho", "7400[kg/m^3]"}, {"Cp", "230[J/(kg*K)]"}, {"mur", "1"}, {"E", "50[GPa]"}, {"nu", "0.36"}, {"alpha", "21.7e-6[1/K]"}}),
         entry("Stainless steel (304)", "Metals", "Austenitic stainless steel: all but non-magnetic", {{"epsilonr", "1"}, {"sigma", "1.39e6[S/m]"},
@@ -913,8 +1144,9 @@ const QList<MaterialEntry>& builtinMaterials()
         onWafer(withModels(with(entry("Silicon", "Semiconductors",
                               "Crystalline silicon: at 300 K its gap 1.12 eV (Varshni's of T), its densities of states (T/300 K)^1.5, mobilities "
                               "(T/300 K)^-ζ, conductivity of heat (T/300 K)^-1.65; its models' parameters (Caughey and Thomas's, Masetti's, "
-                              "saturation, Slotboom's, Fossum's, Auger, radiative, van Overstraeten and de Man's, Hurkx's); n and κ from 0.4 "
-                              "to 14 µm (Salzberg and Villa's, Li's, Rajkanan's absorption); a cubic crystal's stiffness (C11 165.7, C12 63.9, "
+                              "saturation, Slotboom's, Fossum's, Auger, radiative, van Overstraeten and de Man's, Hurkx's); n and κ from 0.25 "
+                              "to 14 µm (Green's measured n below 0.4 µm, above it a Sellmeier fitted to Green's and Li's, within 0.007 of "
+                              "both; Green's absorption at 300 K, nought beyond 1.45 µm); a cubic crystal's stiffness (C11 165.7, C12 63.9, "
                               "C44 79.6 GPa: 169 GPa along x, a (100) wafer's [110]) and photoelastic constants (p11 -0.094, p12 0.017, p44 "
                               "-0.051, at 1550 nm), its axes a (100) wafer's - [001] up, [1-10] across, a ⟨110⟩ along z (its orientation). Its "
                               "conductivity depends on its doping: give it, or solve its carriers (Semiconductor)",
@@ -924,7 +1156,7 @@ const QList<MaterialEntry>& builtinMaterials()
                         {{"Eg", varshniOfT(1.12, 4.73e-4, 636)}, {"Nc", ofT(2.8e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(1400, QStringLiteral("cm^2/(V*s)"), -2.5)},
                          {"mup", ofT(450, QStringLiteral("cm^2/(V*s)"), -2.2)}, {"k", ofT(130, QStringLiteral("W/(m*K)"), -1.65)},
-                         {"n", siliconIndex()}, {"kappa", siliconExtinction()}, {"nrange", QStringLiteral("0.4[um] 14[um]")},
+                         {"n", siliconIndex()}, {"kappa", siliconExtinction()}, {"nrange", QStringLiteral("0.25[um] 14[um]")},
                          // (Masetti's: arsenic's and boron's, the feature's defaults.)
                          {"m1n", QStringLiteral("52.2[cm^2/(V*s)]")}, {"m2n", QStringLiteral("52.2[cm^2/(V*s)]")},
                          {"mu1n", QStringLiteral("43.4[cm^2/(V*s)]")}, {"pcn", QStringLiteral("0[1/cm^3]")},
@@ -941,120 +1173,171 @@ const QList<MaterialEntry>& builtinMaterials()
                    "Si")),
         withModels(with(entry("Germanium", "Semiconductors",
                               "Crystalline germanium: at 300 K its gap 0.66 eV (Varshni's of T), its densities of states, mobilities and "
-                              "conductivity of heat of T; its models' parameters (Lumerical's); n at 1550 nm. Its direct gap's absorption (a "
-                              "Wave Equation's Direct-gap absorption): Egd 0.80 eV, A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
+                              "conductivity of heat of T; its models' parameters (Lumerical's); n and κ from 0.3 to 14 µm (Nunley et al.'s "
+                              "measured to 1.9 µm - its direct gap's absorption, 2000 /cm at 1550 nm -, Burnett et al.'s Sellmeier from 2 µm). "
+                              "Its direct gap for a Wave Equation's Direct-gap absorption (the Franz-Keldysh effect; κ then the option's): "
+                              "Egd 0.80 eV, A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
                               {{"epsilonr", "16.2"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
-                               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"nrange", "1.5[um] 1.6[um]"}, {"dndT", "4.2e-4[1/K]"},
+                               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"nrange", "0.3[um] 14[um]"}, {"dndT", "4.2e-4[1/K]"},
                                {"chi", "4.0[eV]"}, {"taun", "1[ms]"}, {"taup", "1[ms]"}, {"Egd", "0.80[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
-                        {{"Eg", varshniOfT(0.66, 4.774e-4, 235)}, {"Nc", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)},
+                        {{"Eg", varshniOfT(0.66, 4.774e-4, 235)}, {"n", germaniumIndex()}, {"kappa", germaniumExtinction()},
+                         {"Nc", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(6.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(3900, QStringLiteral("cm^2/(V*s)"), -1.66)},
                          {"mup", ofT(1900, QStringLiteral("cm^2/(V*s)"), -2.33)}, {"k", ofT(60, QStringLiteral("W/(m*K)"), -1.25)}}),
                    "Ge"),
         withModels(with(entry("Germanium on silicon", "Semiconductors",
                               "Germanium grown on silicon: 0.25 % tensile strain as it cools, its gaps narrowed - the direct one to 0.773 eV, "
-                              "absorbing 4000 /cm at 1550 nm (a waveguide photodiode's). Its lifetimes the threading dislocations'; of T as "
-                              "Germanium",
+                              "absorbing 4000 /cm at 1550 nm (a waveguide photodiode's): κ its direct gap's edge (Egd, A) or bulk "
+                              "germanium's, the larger; n germanium's, 27 meV lower with the gap (its peak there, 1.60 µm). Its "
+                              "lifetimes the threading dislocations'; of T as Germanium",
                               {{"epsilonr", "16.2"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
-                               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"n", "4.275"}, {"nrange", "1.5[um] 1.6[um]"}, {"dndT", "4.2e-4[1/K]"},
+                               {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"nrange", "0.3[um] 14[um]"}, {"dndT", "4.2e-4[1/K]"},
                                {"chi", "4.0[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"Egd", "0.773[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
-                        {{"Eg", varshniOfT(0.65, 4.774e-4, 235)}, {"Nc", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)},
+                        {{"Eg", varshniOfT(0.65, 4.774e-4, 235)},
+                         // (Bulk germanium's, its spectrum moved 27 meV down with
+                         // its direct gap: the index's peak at the gap there.)
+                         {"n", germaniumIndex().replace(QStringLiteral("lambda0"), QStringLiteral("(lambda0/(1 + 0.027*lambda0/1.23984198[um]))"))},
+                         {"kappa", QStringLiteral("max(%1, %2)").arg(edgeExtinction(2e4, 0.773), germaniumExtinction())},
+                         {"Nc", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(6.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(3900, QStringLiteral("cm^2/(V*s)"), -1.66)},
                          {"mup", ofT(1900, QStringLiteral("cm^2/(V*s)"), -2.33)}, {"k", ofT(60, QStringLiteral("W/(m*K)"), -1.25)}}),
                    "Ge"),
         withModels(with(entry("Gallium nitride", "Semiconductors",
                               "Wurtzite GaN: its bands for quantum wells (k·p 6x6, its polarization) its compound's; its gap 3.4 eV at 300 K "
-                              "(Varshni's of T), its models' parameters Lumerical's; n at 1550 nm",
+                              "(Varshni's of T), its models' parameters Lumerical's; n from 0.37 to 10 µm, the ordinary ray's - across its c "
+                              "axis, a c-plane film's in its plane - (Barker and Ilegems's), held beyond",
                               {{"compound", "GaN"}, {"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"},
-                               {"mur", "1"}, {"E", "295[GPa]"}, {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"}, {"n", "2.31"},
-                               {"nrange", "1.5[um] 1.6[um]"}, {"chi", "4.1[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
-                        {{"Eg", varshniOfT(3.4, 0.909e-3, 830)}, {"Nc", ofT(2.3e18, QStringLiteral("1/cm^3"), 1.5)},
+                               {"mur", "1"}, {"E", "295[GPa]"}, {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"},
+                               {"nrange", "0.37[um] 10[um]"}, {"chi", "4.1[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}}),
+                        {{"Eg", varshniOfT(3.4, 0.909e-3, 830)}, {"n", heldSellmeier(3.60, {{1.75, 0.256}, {4.1, 17.86}}, 0.37, 10)},
+                         {"Nc", ofT(2.3e18, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(4.6e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(1000, QStringLiteral("cm^2/(V*s)"), -1.26)},
                          {"mup", ofT(30, QStringLiteral("cm^2/(V*s)"), -2)}}),
                    "GaN"),
-        with(entry("Silicon dioxide", "Semiconductors", "SiO₂, thermal oxide or fused silica; n from 0.21 to 6.7 µm (Malitson's)",
+        with(entry("Silicon dioxide", "Semiconductors",
+                   "SiO₂, thermal oxide or fused silica; n from 0.21 to 6.7 µm (Malitson's - Fused silica's too, which has the "
+                   "glass's figures of heat and stiffness); κ in the infrared, from 2.5 µm (Franta et al.'s fused silica: 0.0048 at "
+                   "5 µm)",
                    {{"epsilonr", "3.9"}, {"tand", "0.0001"}, {"sigma", "1e-15[S/m]"}, {"k", "1.4[W/(m*K)]"}, {"rho", "2200[kg/m^3]"},
                     {"Cp", "730[J/(kg*K)]"}, {"mur", "1"}, {"E", "70[GPa]"}, {"nu", "0.17"}, {"alpha", "0.5e-6[1/K]"}, {"dndT", "9.5e-6[1/K]"},
                     {"nrange", "0.21[um] 6.7[um]"}}),
-             {{"n", sellmeier(1, {{0.6961663, 0.0684043}, {0.4079426, 0.1162414}, {0.8974794, 9.896161}})},
+             {{"n", sellmeier(1, {{0.6961663, 0.0684043}, {0.4079426, 0.1162414}, {0.8974794, 9.896161}})}, {"kappa", silicaExtinction()},
               // (Fused silica's photoelastic constants, an isotropic solid's.)
               {"p", cubicPhotoelastic(0.121, 0.270, (0.121 - 0.270) / 2)}}),
         with(entry("Silicon nitride", "Semiconductors",
-                   "Si₃N₄, stoichiometric (a thin film conducts heat less); n from 0.31 to 5.5 µm (Luke et al.'s, LPCVD)",
+                   "Si₃N₄, stoichiometric (a thin film conducts heat less); n from 0.31 to 5.5 µm (Luke et al.'s, an LPCVD film: "
+                   "1.996 at 1550 nm; PECVD films 1.88-2.05 by their recipe - Silicon nitride (PECVD) -, sputtered ones to 2.46)",
                    {{"epsilonr", "7.5"}, {"sigma", "1e-14[S/m]"}, {"k", "20[W/(m*K)]"}, {"rho", "3100[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"},
                     {"mur", "1"}, {"E", "250[GPa]"}, {"nu", "0.23"}, {"alpha", "2.3e-6[1/K]"}, {"dndT", "2.45e-5[1/K]"},
                     {"nrange", "0.31[um] 5.5[um]"}}),
              {{"n", sellmeier(1, {{3.0249, 0.1353406}, {40314, 1239.842}})}}),
+        with(entry("Silicon nitride (PECVD)", "Semiconductors",
+                   "SiNₓ deposited by PECVD: n from 0.3 to 1.69 µm (a Sellmeier fitted to Beliaev et al.'s film, within 0.007: 1.990 at "
+                   "1550 nm - recipes vary it, 1.88-2.05, Vogt's films); its other figures stoichiometric Si₃N₄'s",
+                   {{"epsilonr", "7"}, {"sigma", "1e-14[S/m]"}, {"k", "20[W/(m*K)]"}, {"rho", "3100[kg/m^3]"}, {"Cp", "700[J/(kg*K)]"},
+                    {"mur", "1"}, {"E", "250[GPa]"}, {"nu", "0.23"}, {"alpha", "2.3e-6[1/K]"}, {"dndT", "2.45e-5[1/K]"},
+                    {"nrange", "0.3[um] 1.69[um]"}}),
+             {{"n", sellmeier(1, {{2.93502, 0.13673}})}}),
         // Gate and capacitor dielectrics (Robertson's permittivities, as
         // Lumerical's; their heat Lumerical's, a bulk crystal's).
-        with(entry("Hafnium oxide", "Semiconductors", "HfO₂, a high-κ gate dielectric (εr 25, Robertson's); n about 1.88 near 1550 nm",
+        with(entry("Hafnium oxide", "Semiconductors",
+                   "HfO₂, a high-κ gate dielectric (εr 25, Robertson's); n from 0.2 to 2 µm, an e-beam film's (Al-Kuhaili's Cauchy: "
+                   "1.878 at 1550 nm; sputtered films 1.96 - Hafnium oxide (sputtered) -, others to 2.05), held beyond",
                    {{"epsilonr", "25"}, {"sigma", "1e-15[S/m]"}, {"k", "22[W/(m*K)]"}, {"rho", "9680[kg/m^3]"}, {"Cp", "261[J/(kg*K)]"},
-                    {"mur", "1"}, {"n", "1.88"}, {"nrange", "1.5[um] 1.6[um]"}}),
-             {}),
+                    {"mur", "1"}, {"nrange", "0.2[um] 2[um]"}}),
+             {{"n", QStringLiteral("1.875 + 6.28e-3[um^2]/%1^2 + 5.80e-4[um^4]/%1^4").arg(QStringLiteral("min(max(lambda0, 0.2[um]), 2[um])"))}}),
+        with(entry("Hafnium oxide (sputtered)", "Semiconductors",
+                   "HfO₂ sputtered: n from 0.4 to 5 µm (a Sellmeier fitted to Bright et al.'s films, within 0.0033: 1.957 at 1550 nm; "
+                   "κ 0.0026 at 5 µm, rising: its phonons); its other figures Hafnium oxide's",
+                   {{"epsilonr", "25"}, {"sigma", "1e-15[S/m]"}, {"k", "22[W/(m*K)]"}, {"rho", "9680[kg/m^3]"}, {"Cp", "261[J/(kg*K)]"},
+                    {"mur", "1"}, {"nrange", "0.4[um] 5[um]"}}),
+             {{"n", sellmeier(1, {{2.83267, 0.144922}, {188746, 4005.28}})}}),
         with(entry("Zirconium oxide", "Semiconductors", "ZrO₂, a high-κ gate dielectric (εr 24); n from 0.36 to 5.1 µm (Wood and Nassau's, cubic)",
                    {{"epsilonr", "24"}, {"sigma", "1e-15[S/m]"}, {"k", "2[W/(m*K)]"}, {"rho", "5680[kg/m^3]"}, {"Cp", "450[J/(kg*K)]"},
                     {"mur", "1"}, {"nrange", "0.36[um] 5.1[um]"}}),
              {{"n", sellmeier(1, {{1.347091, 0.062543}, {2.117788, 0.166739}, {9.452943, 24.320570}})}}),
         with(entry("Titanium oxide", "Semiconductors",
-                   "TiO₂, rutile-like (εr 80, Robertson's); n from 0.43 to 1.53 µm, the ordinary ray's (DeVore's)",
+                   "TiO₂, rutile-like (εr 80, Robertson's); n from 0.43 to 1.53 µm, a rutile crystal's ordinary ray (DeVore's: 2.45 "
+                   "at 1.5 µm; amorphous and anatase films 0.2-0.6 lower in the visible)",
                    {{"epsilonr", "80"}, {"sigma", "1e-15[S/m]"}, {"k", "7.4[W/(m*K)]"}, {"rho", "4250[kg/m^3]"}, {"Cp", "690[J/(kg*K)]"},
                     {"mur", "1"}, {"nrange", "0.43[um] 1.53[um]"}}),
              {{"n", QStringLiteral("sqrt(5.913 + 0.2441[um^2]/(lambda0^2 - 0.0803[um^2]))")}}),
         with(entry("Aluminium oxide", "Semiconductors",
-                   "Al₂O₃ as a gate dielectric (εr 9, Robertson's); n from 0.2 to 5 µm, sapphire's ordinary ray (Malitson and Dodge's; "
-                   "an amorphous film's 1.6-1.65)",
+                   "Al₂O₃ as a gate dielectric (εr 9, Robertson's); n from 0.2 to 5 µm, a crystal's - sapphire's ordinary ray "
+                   "(Malitson and Dodge's): 1.746 at 1550 nm; amorphous and ALD films 1.61-1.66 - Aluminium oxide (ALD)",
                    {{"epsilonr", "9"}, {"sigma", "1e-15[S/m]"}, {"k", "28[W/(m*K)]"}, {"rho", "3900[kg/m^3]"}, {"Cp", "796[J/(kg*K)]"},
                     {"mur", "1"}, {"nrange", "0.2[um] 5[um]"}}),
              {{"n", sellmeier(1, {{1.4313493, 0.0726631}, {0.65054713, 0.1193242}, {5.3414021, 18.028251}})}}),
+        with(entry("Aluminium oxide (ALD)", "Semiconductors",
+                   "Al₂O₃ deposited by (plasma-enhanced) atomic layers: n from 0.3 to 5 µm (a Sellmeier fitted to Rodriguez de Marcos "
+                   "et al.'s, within 0.001: 1.646 at 1550 nm; κ 0.0018 at 4 µm, rising: its phonons); its other figures Aluminium "
+                   "oxide's",
+                   {{"epsilonr", "9"}, {"sigma", "1e-15[S/m]"}, {"k", "28[W/(m*K)]"}, {"rho", "3900[kg/m^3]"}, {"Cp", "796[J/(kg*K)]"},
+                    {"mur", "1"}, {"nrange", "0.3[um] 5[um]"}}),
+             {{"n", sellmeier(1, {{1.74187, 0.100569}, {3.51452, 14.5533}})}}),
         onWafer(withModels(with(entry("Indium phosphide", "Semiconductors",
                               "InP: its gap 1.344 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.95 to 10 µm "
                               "(Pettit and Turner's); Pockels' r41 1.45 pm/V, its axes a (100) wafer's (its orientation); its edge's "
                               "absorption A 1.16e5 per cm (Aspnes and Studna's k from 1.5 to 1.7 eV, within 4 %)",
                               {{"compound", "InP"}, {"epsilonr", "12.4"}, {"rho", "4810[kg/m^3]"}, {"Cp", "310[J/(kg*K)]"}, {"mur", "1"},
                                {"Afk", "1.16e5[1/cm]"},
-                               {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"dndT", "2.0e-4[1/K]"}, {"nrange", "0.95[um] 10[um]"},
+                               {"E", "61[GPa]"}, {"nu", "0.36"}, {"alpha", "4.6e-6[1/K]"}, {"dndT", "2.0e-4[1/K]"},
                                {"chi", "4.38[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"sigmaFCn", "1e-18[cm^2]"}, {"sigmaFCp", "2e-17[cm^2]"}}),
                         {{"Eg", varshniOfT(1.344, 0.363e-3, 162)}, {"Nc", ofT(5.7e17, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(1.1e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(5400, QStringLiteral("cm^2/(V*s)"), -1.9)},
                          {"mup", ofT(200, QStringLiteral("cm^2/(V*s)"), -1.2)}, {"k", ofT(68, QStringLiteral("W/(m*K)"), -1.4)},
-                         {"n", sellmeier(7.255, {{2.316, 0.6263}, {2.765, 32.935}})}, {"r", zincBlendeElectroOptic(1.45)}}),
+                         {"n", compoundProperty(QStringLiteral("InP"), 0, 0, QStringLiteral("n"))},
+                         {"kappa", compoundProperty(QStringLiteral("InP"), 0, 0, QStringLiteral("kappa"))},
+                         {"nrange", compoundProperty(QStringLiteral("InP"), 0, 0, QStringLiteral("nrange"))}, {"r", zincBlendeElectroOptic(1.45)}}),
                    "InP")),
         onWafer(withModels(with(entry("Gallium arsenide", "Semiconductors",
                               "GaAs: its gap 1.424 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.88 to 5 µm "
                               "(Afromowitz's); Pockels' r41 1.5 pm/V, its axes a (100) wafer's (its orientation)",
                               {{"compound", "GaAs"}, {"epsilonr", "12.9"}, {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"},
                                {"E", "85.9[GPa]"}, {"nu", "0.31"}, {"alpha", "5.73e-6[1/K]"}, {"dndT", "2.35e-4[1/K]"},
-                               {"nrange", "0.88[um] 5[um]"}, {"chi", "4.07[eV]"}}),
+                               {"chi", "4.07[eV]"}}),
                         {{"Eg", varshniOfT(1.424, 0.5405e-3, 204)}, {"Nc", ofT(4.7e17, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(9.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(8500, QStringLiteral("cm^2/(V*s)"), -2.2)},
                          {"mup", ofT(400, QStringLiteral("cm^2/(V*s)"), -0.9)}, {"k", ofT(55, QStringLiteral("W/(m*K)"), -1.25)},
-                         {"taun", ofT(5, QStringLiteral("ns"), -0.5)}, {"taup", ofT(5, QStringLiteral("ns"), -0.5)}, {"n", afromowitzIndex(0)},
+                         {"taun", ofT(5, QStringLiteral("ns"), -0.5)}, {"taup", ofT(5, QStringLiteral("ns"), -0.5)},
+                         {"n", compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("n"))},
+                         {"kappa", compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("kappa"))},
+                         {"nrange", compoundProperty(QStringLiteral("GaAs"), 0, 0, QStringLiteral("nrange"))},
                          {"r", zincBlendeElectroOptic(1.5)}}),
                    "GaAs")),
         // II-VI semiconductors (thin-film solar cells): their gaps measured at
         // 300 K, constant; χ from Lumerical's work functions, Nc and Nv of its
         // masses, its models' parameters; the holes' mobilities Sze's (CdSe's
-        // an estimate); n near 1550 nm.
+        // an estimate); n of the wavelength, held beyond where measured.
         withModels(with(entry("Cadmium sulfide", "Semiconductors",
-                              "CdS: a window layer (2.42 eV at 300 K); its lifetimes a crystal's (a film's are nanoseconds)",
+                              "CdS: a window layer (2.42 eV at 300 K); its lifetimes a crystal's (a film's are nanoseconds); n from 0.52 to "
+                              "1.4 µm, the ordinary ray's (Bieniewski and Czyzak's)",
                               {{"epsilonr", "10"}, {"k", "20[W/(m*K)]"}, {"rho", "4826[kg/m^3]"}, {"Cp", "470[J/(kg*K)]"}, {"mur", "1"},
-                               {"n", "2.29"}, {"nrange", "1.5[um] 1.6[um]"}, {"Eg", "2.42[eV]"}, {"chi", "4.82[eV]"}, {"taun", "1[us]"},
+                               {"nrange", "0.52[um] 1.4[um]"}, {"Eg", "2.42[eV]"}, {"chi", "4.82[eV]"}, {"taun", "1[us]"},
                                {"taup", "1[us]"}}),
-                        {{"Nc", ofT(2.4145e18, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(2.5657e19, QStringLiteral("1/cm^3"), 1.5)},
+                        {{"n", QStringLiteral("sqrt(5.1792 + 0.23504[um^2]/(%1^2 - 0.083591[um^2]) + 0.036927[um^2]/(%1^2 - 0.23504[um^2]))")
+                                   .arg(QStringLiteral("min(max(lambda0, 0.52[um]), 1.4[um])"))},
+                         {"Nc", ofT(2.4145e18, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(2.5657e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"mun", QStringLiteral("340[cm^2/(V*s)]")}, {"mup", QStringLiteral("50[cm^2/(V*s)]")}}),
                    "CdS"),
-        withModels(with(entry("Cadmium selenide", "Semiconductors", "CdSe (1.74 eV at 300 K); its hole mobility an estimate",
+        withModels(with(entry("Cadmium selenide", "Semiconductors",
+                              "CdSe (1.74 eV at 300 K); its hole mobility an estimate; n from 1.01 to 22 µm, the ordinary ray's (Lisitsa "
+                              "et al.'s)",
                               {{"epsilonr", "10"}, {"k", "9[W/(m*K)]"}, {"rho", "5816[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"}, {"mur", "1"},
-                               {"n", "2.45"}, {"nrange", "1.5[um] 1.6[um]"}, {"Eg", "1.74[eV]"}, {"chi", "5.00[eV]"}, {"taun", "1[us]"},
+                               {"nrange", "1.01[um] 22[um]"}, {"Eg", "1.74[eV]"}, {"chi", "5.00[eV]"}, {"taun", "1[us]"},
                                {"taup", "1[us]"}}),
-                        {{"Nc", ofT(1.1760e18, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(2.8946e19, QStringLiteral("1/cm^3"), 1.5)},
+                        {{"n", heldSellmeier(4.2243, {{1.768, std::sqrt(0.227)}, {3.12, std::sqrt(3380.0)}}, 1.01, 22)},
+                         {"Nc", ofT(1.1760e18, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(2.8946e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"mun", QStringLiteral("650[cm^2/(V*s)]")}, {"mup", QStringLiteral("50[cm^2/(V*s)]")}}),
                    "CdSe"),
         withModels(with(entry("Cadmium telluride", "Semiconductors",
-                              "CdTe: a solar absorber (1.50 eV at 300 K); its lifetimes a crystal's (a film's are nanoseconds)",
+                              "CdTe: a solar absorber (1.50 eV at 300 K); its lifetimes a crystal's (a film's are nanoseconds); n from 0.86 "
+                              "to 2.5 µm (Marple's)",
                               {{"epsilonr", "10.2"}, {"k", "6.2[W/(m*K)]"}, {"rho", "5850[kg/m^3]"}, {"Cp", "210[J/(kg*K)]"}, {"mur", "1"},
-                               {"n", "2.72"}, {"nrange", "1.5[um] 1.6[um]"}, {"Eg", "1.50[eV]"}, {"chi", "4.32[eV]"}, {"taun", "1[us]"},
+                               {"nrange", "0.86[um] 2.5[um]"}, {"Eg", "1.50[eV]"}, {"chi", "4.32[eV]"}, {"taun", "1[us]"},
                                {"taup", "1[us]"}}),
-                        {{"Nc", ofT(9.1535e17, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(1.6623e19, QStringLiteral("1/cm^3"), 1.5)},
+                        {{"n", heldSellmeier(5.68, {{1.53, std::sqrt(0.366)}}, 0.86, 2.5)},
+                         {"Nc", ofT(9.1535e17, QStringLiteral("1/cm^3"), 1.5)}, {"Nv", ofT(1.6623e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"mun", QStringLiteral("1050[cm^2/(V*s)]")}, {"mup", QStringLiteral("100[cm^2/(V*s)]")}}),
                    "CdTe"),
         // Silicon germanium: x the germanium's share - its X and L valleys'
@@ -1108,7 +1391,8 @@ const QList<MaterialEntry>& builtinMaterials()
         // wafer's, y along the waveguide, their optic axis across (x).
         with(entry("Lithium niobate", "Crystals",
                    "LiNbO₃, congruent (3m), an x-cut wafer's, y-propagating (its orientation): εr 44 across its optic axis, 28 along it "
-                   "(clamped); no and ne from 0.4 to 5 µm (Zelmon et al.'s); Pockels' r13 8.6, r22 3.4, r33 30.8, r51 28 pm/V "
+                   "(clamped); no and ne from 0.4 to 5 µm (Zelmon et al.'s) - no along its x1 and x2, across its optic axis, ne along x3, "
+                   "the axis; Pockels' r13 8.6, r22 3.4, r33 30.8, r51 28 pm/V "
                    "(clamped); piezoelectric d15 69.2, d22 20.8, d31 -0.85, d33 6.0 pC/N and its stiffness (Warner et al.'s); its "
                    "photoelastic constants and expansion along its axes (Weis and Gaylord's summary), its conduction of heat 4.19 "
                    "W/(m·K) across its optic axis, 4.6 along it; dn/dT the extraordinary ray's",
@@ -1125,23 +1409,16 @@ const QList<MaterialEntry>& builtinMaterials()
               {"p", trigonalPhotoelastic(-0.026, 0.090, 0.133, -0.075, 0.179, 0.071, -0.151, 0.146)}}),
         with(entry("Lithium tantalate", "Crystals",
                    "LiTaO₃, congruent (3m), an x-cut wafer's, y-propagating (its orientation): εr 41 across its optic axis, 43 along it "
-                   "(clamped); no and ne from 0.45 to 4 µm (Bond's measured indices); Pockels' r13 7.5, r22 1, r33 33, r51 20 pm/V "
+                   "(clamped); no and ne from 0.45 to 4 µm (Sellmeiers fitted to Bond's measured indices, within 0.0007) - no along its "
+                   "x1 and x2, across its optic axis, ne along x3, the axis; Pockels' r13 7.5, r22 1, r33 33, r51 20 pm/V "
                    "(clamped; its sources differ, r33 30 to 36); piezoelectric d15 26, d22 8.5, d31 -3.0, d33 9.2 pC/N and its stiffness "
                    "(Warner et al.'s)",
                    {{"epsilonr", "41; 41; 43"}, {"sigma", "1e-15[S/m]"}, {"k", "4.6[W/(m*K)]"}, {"rho", "7454[kg/m^3]"}, {"Cp", "424[J/(kg*K)]"},
                     {"mur", "1"}, {"alpha", "16.1e-6[1/K]; 16.1e-6[1/K]; 4.1e-6[1/K]"}, {"nrange", "0.45[um] 4[um]"}, {"orientation", "cut"},
                     {"cut", "x"}, {"along", "y"}}),
-             {{"n", tabulated({{0.45, 2.2420}, {0.5, 2.2160}, {0.6, 2.1834}, {0.7, 2.1652}, {0.8, 2.1538}, {0.9, 2.1454}, {1.0, 2.1391},
-                               {1.2, 2.1305}, {1.4, 2.1236}, {1.6, 2.1174}, {1.8, 2.1120}, {2.0, 2.1066}, {2.4, 2.0951}, {3.0, 2.0755},
-                               {4.0, 2.0335}}) +
-                        QStringLiteral("; ") +
-                        tabulated({{0.45, 2.2420}, {0.5, 2.2160}, {0.6, 2.1834}, {0.7, 2.1652}, {0.8, 2.1538}, {0.9, 2.1454}, {1.0, 2.1391},
-                                   {1.2, 2.1305}, {1.4, 2.1236}, {1.6, 2.1174}, {1.8, 2.1120}, {2.0, 2.1066}, {2.4, 2.0951}, {3.0, 2.0755},
-                                   {4.0, 2.0335}}) +
-                        QStringLiteral("; ") +
-                        tabulated({{0.45, 2.2468}, {0.5, 2.2205}, {0.6, 2.1878}, {0.7, 2.1696}, {0.8, 2.1578}, {0.9, 2.1493}, {1.0, 2.1432},
-                                   {1.2, 2.1341}, {1.4, 2.1273}, {1.6, 2.1213}, {1.8, 2.1170}, {2.0, 2.1115}, {2.4, 2.0993}, {3.0, 2.0799},
-                                   {4.0, 2.0377}})},
+             {{"n", sellmeier(2.23997, {{2.27035, 0.194489}, {18.708, 28.2899}}) + QStringLiteral("; ") +
+                        sellmeier(2.23997, {{2.27035, 0.194489}, {18.708, 28.2899}}) + QStringLiteral("; ") +
+                        sellmeier(2.18189, {{2.34332, 0.192952}, {7.17944, 17.8713}})},
               {"r", trigonal3mElectroOptic(7.5, 1, 33, 20)},
               {"d", trigonal3mStrainPiezo(26, 8.5, -3.0, 9.2)},
               {"C", trigonalStiffness(233, 47, 80, -11, 275, 94)}}),
@@ -1155,7 +1432,8 @@ const QList<MaterialEntry>& builtinMaterials()
                         katoTakaoka(4.59423, 0.06206, 0.04763, 110.80672, 86.12171)},
               {"r", mm2ElectroOptic(9.5, 15.7, 36.3, 9.3, 7.3)}}),
         with(entry("Quartz", "Crystals",
-                   "α-quartz (32), its axes the model's: εr 4.52 across its optic axis, 4.68 along it; no and ne from 0.2 to 2 µm (Ghosh's); "
+                   "α-quartz (32), its axes the model's: εr 4.52 across its optic axis, 4.68 along it; no and ne from 0.2 to 2 µm (Ghosh's) - "
+                   "no along x and y, ne along z, its optic axis; "
                    "piezoelectric d11 2.31, d14 0.727 pC/N and its stiffness (Bechmann's); its expansion and conduction of heat along its axes",
                    {{"epsilonr", "4.52; 4.52; 4.68"}, {"tand", "0.0001"}, {"sigma", "1e-16[S/m]"}, {"k", "6.2[W/(m*K)]; 6.2[W/(m*K)]; 10.4[W/(m*K)]"},
                     {"rho", "2648[kg/m^3]"}, {"Cp", "740[J/(kg*K)]"}, {"mur", "1"}, {"alpha", "13.4e-6[1/K]; 13.4e-6[1/K]; 8.0e-6[1/K]"},
@@ -1167,7 +1445,8 @@ const QList<MaterialEntry>& builtinMaterials()
               {"C", trigonalStiffness(86.74, 6.99, 11.91, -17.91, 107.2, 57.94)}}),
         with(entry("Sapphire", "Crystals",
                    "Al₂O₃ single crystal (-3m), a c-plane wafer's (its orientation: its optic axis up): εr 9.4 across its optic axis, 11.6 "
-                   "along it; no and ne from 0.2 to 5 µm (Malitson and Dodge's); its stiffness (Wachtman et al.'s); its expansion and "
+                   "along it; no and ne from 0.2 to 5 µm (Malitson and Dodge's) - no across the optic axis (x1, x2), ne along it (x3); its "
+                   "stiffness (Wachtman et al.'s); its expansion and "
                    "conduction of heat along its axes",
                    {{"epsilonr", "9.4; 9.4; 11.6"}, {"tand", "0.00003"}, {"sigma", "1e-16[S/m]"}, {"k", "33[W/(m*K)]; 33[W/(m*K)]; 35[W/(m*K)]"},
                     {"rho", "3980[kg/m^3]"}, {"Cp", "761[J/(kg*K)]"}, {"mur", "1"}, {"alpha", "4.5e-6[1/K]; 4.5e-6[1/K]; 5.3e-6[1/K]"},
@@ -1196,12 +1475,15 @@ const QList<MaterialEntry>& builtinMaterials()
                {"nu", "0.206"}, {"alpha", "7.1e-6[1/K]"}, {"dndT", "1.6e-6[1/K]"},
                {"n", "sqrt(1 + 1.03961212*(lambda0/1[um])^2/((lambda0/1[um])^2 - 0.00600069867) + 0.231792344*(lambda0/1[um])^2/((lambda0/1[um])^2 - "
                      "0.0200179144) + 1.01046945*(lambda0/1[um])^2/((lambda0/1[um])^2 - 103.560653))"}}),
-        with(entry("Fused silica", "Optical", "SiO₂ glass: n 1.4585 at 587.6 nm (Malitson's Sellmeier); photoelastic p11 0.121, p12 0.270",
+        with(entry("Fused silica", "Optical",
+                   "SiO₂ glass: n 1.4585 at 587.6 nm (Malitson's Sellmeier, from 0.21 to 6.7 µm - Silicon dioxide's too); κ from "
+                   "2.5 µm (Franta et al.'s); photoelastic p11 0.121, p12 0.270",
               {{"epsilonr", "3.8"}, {"k", "1.38[W/(m*K)]"}, {"rho", "2203[kg/m^3]"}, {"Cp", "740[J/(kg*K)]"}, {"mur", "1"}, {"E", "73[GPa]"},
                {"nu", "0.17"}, {"alpha", "0.55e-6[1/K]"}, {"dndT", "1.0e-5[1/K]"},
                {"n", "sqrt(1 + 0.6961663*(lambda0/1[um])^2/((lambda0/1[um])^2 - 0.0684043^2) + 0.4079426*(lambda0/1[um])^2/((lambda0/1[um])^2 - "
                      "0.1162414^2) + 0.8974794*(lambda0/1[um])^2/((lambda0/1[um])^2 - 9.896161^2))"}}),
-             {{"p", cubicPhotoelastic(0.121, 0.270, (0.121 - 0.270) / 2)}}),
+             {{"p", cubicPhotoelastic(0.121, 0.270, (0.121 - 0.270) / 2)}, {"kappa", silicaExtinction()},
+              {"nrange", QStringLiteral("0.21[um] 6.7[um]")}}),
         // Magnetic materials: soft ones with a B-H curve (typical, not a datasheet's), permanent magnets.
         withCurve(entry("Iron (soft)", "Magnetic", "Low-carbon iron, annealed: a typical B-H curve; µr its first slope's",
                         {{"epsilonr", "1"}, {"sigma", "1.0e7[S/m]"}, {"mur", "4000"}, {"k", "80[W/(m*K)]"}, {"rho", "7870[kg/m^3]"},
@@ -1229,8 +1511,12 @@ const QList<MaterialEntry>& builtinMaterials()
         // Fluids.
         entry("Air", "Fluids", "Dry air at 20 °C and 1 atm (an insulator: no conductivity)", {{"epsilonr", "1"}, {"k", "0.0257[W/(m*K)]"},
               {"rho", "1.204[kg/m^3]"}, {"Cp", "1005[J/(kg*K)]"}, {"mur", "1"}, {"n", "1"}}),
-        entry("Water", "Fluids", "Pure water at 20 °C", {{"epsilonr", "80.1"}, {"sigma", "5.5e-6[S/m]"}, {"k", "0.598[W/(m*K)]"},
-              {"rho", "998[kg/m^3]"}, {"Cp", "4182[J/(kg*K)]"}, {"mur", "1"}, {"n", "1.333"}}),
+        with(entry("Water", "Fluids",
+                   "Pure water at 20 °C; n and κ from 0.2 to 200 µm (Daimon and Masumura's Sellmeier to 1 µm, Hale and Querry's "
+                   "beyond: 1.318 at 1550 nm, κ 1e-4 there - its absorption bands at 1.45, 1.94 and 2.95 µm)",
+                   {{"epsilonr", "80.1"}, {"sigma", "5.5e-6[S/m]"}, {"k", "0.598[W/(m*K)]"}, {"rho", "998[kg/m^3]"}, {"Cp", "4182[J/(kg*K)]"},
+                    {"mur", "1"}, {"nrange", "0.2[um] 200[um]"}}),
+             {{"n", waterIndex()}, {"kappa", waterExtinction()}}),
     };
     return list;
 }
@@ -1847,19 +2133,48 @@ QString compoundProperty(const QString& compound, double x, double y, const QStr
     if (k == QLatin1String("C11")) return num(p->C11 / 1e9) + QStringLiteral("[GPa]");
     if (k == QLatin1String("C12")) return num(p->C12 / 1e9) + QStringLiteral("[GPa]");
     if (k == QLatin1String("epsilonr")) return num(p->epsr);
-    // The index: GaAs's and AlGaAs's Afromowitz's, InP's Pettit and
-    // Turner's (of the wavelength); the others' near their gap, constant.
+    // The index and absorption: a nitride's index constant (near its gap);
+    // a zinc blende's AlGaAs's Afromowitz's, InP's Pettit and Turner's,
+    // InGaAsP's Adachi's (on InP's lattice), the others' Afromowitz's
+    // oscillator of their binaries (binaryOptics), at the gap measured at
+    // 300 K (of T), held above it, where its gap's absorption is.
     const bool algaas = name.compare(QLatin1String("AlGaAs"), Qt::CaseInsensitive) == 0, gaas = name.compare(QLatin1String("GaAs"), Qt::CaseInsensitive) == 0;
     const bool inp = name.compare(QLatin1String("InP"), Qt::CaseInsensitive) == 0;
-    if (k == QLatin1String("n")) {
-        if (algaas || gaas) return afromowitzIndex(gaas ? 0 : std::clamp(x, 0.0, 1.0));
-        if (inp) return sellmeier(7.255, {{2.316, 0.6263}, {2.765, 32.935}});
-        return num(p->n);
-    }
-    if (k == QLatin1String("nrange")) {
-        if (algaas || gaas) return QStringLiteral("%1[um] 5[um]").arg(number(1.23984198 / (1.424 + 1.266 * (gaas ? 0 : x) + 0.26 * x * x * (gaas ? 0 : 1)) / 0.995));
-        if (inp) return QStringLiteral("0.95[um] 10[um]");
-        return {};
+    if (k == QLatin1String("n") || k == QLatin1String("kappa") || k == QLatin1String("nrange")) {
+        std::vector<std::pair<const Binary*, double>> parts;
+        if (!isWurtzite(name)) parts = shares(name, x, y);
+        const std::optional<BandParameters> m = bandParameters(compound, x, y, T, nullptr, BandSet::Measured);
+        if (parts.empty() || !m) return k == QLatin1String("n") ? num(p->n) : QString();
+        double E0 = 0, Ed = 0, C = 0, to = 1e9;
+        std::vector<std::pair<double, double>> lattice;
+        for (const auto& [b, w] : parts) {
+            const BinaryOptics* o = opticsOf(b->name);
+            if (!o) return k == QLatin1String("n") ? num(p->n) : QString();
+            E0 += w * o->E0;
+            Ed += w * o->Ed;
+            C += w * o->A / edgeScale(binaryAt(*b, 300));
+            lattice.emplace_back(w * o->S, o->ETO);
+            to = std::min(to, o->to);
+        }
+        const double Eg = m->Eg;
+        if (k == QLatin1String("kappa")) return edgeExtinction(parts.size() == 1 ? opticsOf(parts.front().first->name)->A : C * edgeScale(*m), Eg);
+        if (k == QLatin1String("n")) {
+            if (algaas) return afromowitzIndex(std::clamp(x, 0.0, 1.0));
+            if (name.compare(QLatin1String("InGaAsP"), Qt::CaseInsensitive) == 0) return adachiIndex(std::clamp(y, 0.0, 1.0), Eg, Eg + m->Delta);
+            // (Pettit and Turner's from 0.95 µm - its pole at 0.626 µm -, the
+            // oscillator below, the two weighed from 0.95 to 1 µm.)
+            if (inp)
+                return QStringLiteral("if(lambda0 < 0.95[um], %1, if(lambda0 > 1[um], %2, ((1[um] - lambda0)*%1 + (lambda0 - 0.95[um])*%2)/0.05[um]))")
+                    .arg(oscillatorIndex(E0, Ed, Eg, lattice), sellmeier(7.255, {{2.316, 0.6263}, {2.765, 32.935}}));
+            return oscillatorIndex(E0, Ed, Eg, lattice);
+        }
+        // (From 0.1 eV above the gap - GaP's from 0.8 µm, its oscillator
+        // 0.04 off nearer its gap -, to the longest wavelength its binaries
+        // were fitted to; AlGaAs's Afromowitz's to 5 µm.)
+        double from = 1.23984198 / (Eg + 0.1);
+        if (name.compare(QLatin1String("GaP"), Qt::CaseInsensitive) == 0) from = std::max(from, 0.8);
+        if (algaas) to = 5;
+        return QStringLiteral("%1[um] %2[um]").arg(number(std::round(from * 1000) / 1000), number(to));
     }
     if (k == QLatin1String("chi")) {
         // Its conduction band against GaAs's (χ 4.07 eV): the offsets of

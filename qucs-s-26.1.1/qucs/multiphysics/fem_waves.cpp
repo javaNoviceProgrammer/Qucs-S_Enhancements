@@ -742,6 +742,11 @@ public:
                     }
                     m.*member = c.compile(t, own ? *feat : *mat, key);
                 }
+                // (Its material's κ the same edge measured - the library's
+                // semiconductors' -: the direct gap's in its place, not added
+                // to it; a κ given in the feature added.)
+                if (!user)
+                    for (Expression& k : m.kappa) k = Expression();
                 m.eaField = c.compile(feat->text(QStringLiteral("Fea")), *feat, QStringLiteral("Fea"));
                 if (!feat->text(QStringLiteral("Ebroad")).trimmed().isEmpty())
                     m.eaBroadening = c.compile(feat->text(QStringLiteral("Ebroad")), *feat, QStringLiteral("Ebroad"));
@@ -814,6 +819,10 @@ public:
                 m.qwAxis = qw->text(QStringLiteral("axis")) == QLatin1String("x") ? 0 : 1;
                 m.qwField = c.compile(feat->text(QStringLiteral("Fqw")), *feat, QStringLiteral("Fqw"));
                 m.qwF0 = c.compile(feat->text(QStringLiteral("F0qw")), *feat, QStringLiteral("F0qw"));
+                // (Its material's κ a bulk edge - a compound's -: the wells'
+                // own absorption in its place, as a direct gap's is.)
+                if (!user)
+                    for (Expression& k : m.kappa) k = Expression();
             }
             if (feat->flag(QStringLiteral("photoelastic"))) {
                 const QString pt = user ? feat->text(QStringLiteral("p")) : c.property(*mat, QStringLiteral("p"));
