@@ -517,6 +517,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     a_view->setTextInteractionFlags(Qt::TextBrowserInteraction);
     connect(a_view, &QTextBrowser::anchorClicked, this, &ClaudeCodePanel::handleLink);
     qucs_s::math::MathObject::install(a_view->document());
+    qucs_s::markdown::SmoothImages::install(a_view->document());
     a_view->viewport()->installEventFilter(this);   // its images fitted as it resizes
     layout->addWidget(a_view, 1);
 

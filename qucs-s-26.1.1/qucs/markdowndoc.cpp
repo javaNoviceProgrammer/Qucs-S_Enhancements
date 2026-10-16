@@ -16,6 +16,11 @@
 #include "settings.h"
 
 #include <QAbstractTextDocumentLayout>
+#include <QFontMetricsF>
+#include <QHash>
+#include <QPaintEngine>
+#include <QPainter>
+#include <QTextTable>
 #include <QButtonGroup>
 #include <QDesktopServices>
 #include <QFileInfo>
@@ -44,7 +49,7 @@ constexpr char16_t kMathMark = 0xE000;
 constexpr qsizetype kMostMath = 0x1800;
 } // namespace
 
-void render(QTextDocument* document, const QString& markdown, const QFont& font, const Colours& colours)
+void render(QTextDocument* document, const QString& markdown, const QFont& font, const Colours& colours, qreal devicePixelRatio)
 {
     // The math out of the way of the Markdown: a mark for each formula.
     // Display math on lines of its own is a paragraph of its own.
@@ -94,7 +99,7 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
         if (hit.isNull()) continue;
         const qucs_s::math::Span& sp = spans.at(k);
         const QFont at = hit.charFormat().font().resolve(font);
-        const qucs_s::math::Typeset t = qucs_s::math::typeset(sp.tex, at, colours.ink, sp.display);
+        const qucs_s::math::Typeset t = qucs_s::math::typeset(sp.tex, at, colours.ink, sp.display, devicePixelRatio);
         hit.insertText(QString(QChar::ObjectReplacementCharacter), qucs_s::math::MathObject::format(t, at, sp.tex));
         if (sp.display && hit.block().text().trimmed() == QString(QChar::ObjectReplacementCharacter)) {
             QTextBlockFormat bf = hit.blockFormat();
@@ -131,6 +136,108 @@ QSizeF ownSize(QTextDocument* document, const QString& name)
 }
 } // namespace
 
+namespace {
+
+// Whether \a block has an image.
+bool hasImage(const QTextBlock& block)
+{
+    for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it)
+        if (it.fragment().isValid() && it.fragment().charFormat().isImageFormat()) return true;
+    return false;
+}
+
+// \a block's width set in a line, unwrapped: its text's advance in its
+// fonts, its inline objects' widths (math), its margins and indent.
+qreal naturalWidth(QTextDocument* document, const QTextBlock& block)
+{
+    qreal w = 0;
+    for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment f = it.fragment();
+        if (!f.isValid()) continue;
+        const QTextCharFormat cf = f.charFormat();
+        if (cf.objectType() == qucs_s::math::MathObject::Type) {
+            w += cf.property(qucs_s::math::MathObject::SizeProperty).toSizeF().width() * f.length();
+            continue;
+        }
+        w += QFontMetricsF(cf.font().resolve(document->defaultFont())).horizontalAdvance(f.text());
+    }
+    const QTextBlockFormat bf = block.blockFormat();
+    return w + bf.leftMargin() + bf.rightMargin() + bf.indent() * document->indentWidth() + bf.textIndent();
+}
+
+// The widths \a table's columns have for their contents, \a room its
+// own: its margins, borders, spacing and cells' padding off, the rest
+// shared - a column with no image its text's width set in a line at most
+// (as Qt's layout gives it: no more needed), those with one the rest alike.
+QVector<qreal> columnRooms(QTextDocument* document, QTextTable* table, qreal room)
+{
+    const QTextTableFormat f = table->format();
+    const int n = std::max(1, table->columns());
+    qreal avail = room - f.leftMargin() - f.rightMargin();
+    if (f.width().type() == QTextLength::PercentageLength) avail = avail * f.width().rawValue() / 100.0;
+    else if (f.width().type() == QTextLength::FixedLength) avail = std::min(avail, f.width().rawValue());
+    avail -= 2 * f.border() + 2 * f.padding() + (n + 1) * f.cellSpacing();
+    QVector<qreal> pad(n, 0.0), need(n, 0.0);
+    QVector<bool> image(n, false);
+    for (int r = 0; r < table->rows(); ++r)
+        for (int c = 0; c < n; ++c) {
+            const QTextTableCell cell = table->cellAt(r, c);
+            if (!cell.isValid() || cell.row() != r || cell.column() != c) continue;   // (a spanned one's)
+            const QTextTableCellFormat cf = cell.format().toTableCellFormat();
+            const qreal left = cf.hasProperty(QTextFormat::TableCellLeftPadding) ? cf.leftPadding() : f.cellPadding();
+            const qreal right = cf.hasProperty(QTextFormat::TableCellRightPadding) ? cf.rightPadding() : f.cellPadding();
+            // (Its border on each side, and a pixel's slack for the layout's rounding.)
+            pad[c] = std::max(pad[c], left + right + 2 * f.border() + 1);
+            for (QTextFrame::iterator it = cell.begin(); !it.atEnd(); ++it) {
+                if (it.currentFrame() != nullptr) {   // (a table in it: as one with an image, its room the column's)
+                    image[c] = true;
+                    continue;
+                }
+                const QTextBlock b = it.currentBlock();
+                if (hasImage(b)) image[c] = true;
+                else if (cell.columnSpan() == 1) need[c] = std::max(need[c], naturalWidth(document, b));
+            }
+        }
+    for (const qreal p : std::as_const(pad)) avail -= p;
+    const qreal equal = std::max(1.0, avail / n);
+    qreal used = 0;
+    int withImages = 0;
+    for (int c = 0; c < n; ++c) {
+        if (image[c]) ++withImages;
+        else used += std::min(need[c], equal);
+    }
+    const qreal rest = withImages > 0 ? std::max(1.0, (avail - used) / withImages) : equal;
+    QVector<qreal> out(n);
+    for (int c = 0; c < n; ++c) out[c] = image[c] ? rest : std::min(need[c], equal);
+    return out;
+}
+
+// The room for the contents of a block at \a position of \a frame (its
+// own margins not off): the document's width less its margins, a frame's
+// margins, border and padding, a table's cell's column(s).
+qreal roomIn(QTextDocument* document, QTextFrame* frame, int position, qreal width, QHash<QTextTable*, QVector<qreal>>& tables)
+{
+    QTextFrame* parent = frame->parentFrame();
+    if (parent == nullptr) return width - 2 * document->documentMargin();
+    const int outside = frame->firstPosition() - 1;   // (its own place in its parent)
+    if (auto* table = qobject_cast<QTextTable*>(frame)) {
+        auto found = tables.find(table);
+        if (found == tables.end()) found = tables.insert(table, columnRooms(document, table, roomIn(document, parent, outside, width, tables)));
+        const QTextTableCell cell = table->cellAt(position);
+        if (!cell.isValid()) return found->value(0);
+        const QTextTableFormat f = table->format();
+        qreal w = 0;
+        for (int c = cell.column(); c < cell.column() + cell.columnSpan(); ++c) w += found->value(c);
+        // (Spanning: the spacing, borders and padding between its columns too.)
+        w += (cell.columnSpan() - 1) * (f.cellSpacing() + 2 * f.border() + 2 * f.cellPadding());
+        return w;
+    }
+    const QTextFrameFormat f = frame->frameFormat();
+    return roomIn(document, parent, outside, width, tables) - f.leftMargin() - f.rightMargin() - 2 * f.border() - 2 * f.padding();
+}
+
+} // namespace
+
 bool fitImages(QTextDocument* document, qreal width)
 {
     struct Image {
@@ -139,10 +246,12 @@ bool fitImages(QTextDocument* document, qreal width)
         qreal room;
     };
     std::vector<Image> images;
-    const qreal margin = document->documentMargin();
+    QHash<QTextTable*, QVector<qreal>> tables;
     for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
+        if (!hasImage(b)) continue;
         const QTextBlockFormat bf = b.blockFormat();
-        qreal room = width - 2 * margin - bf.leftMargin() - bf.rightMargin() - bf.indent() * document->indentWidth();
+        qreal room = roomIn(document, QTextCursor(b).currentFrame(), b.position(), width, tables) - bf.leftMargin() - bf.rightMargin()
+                     - bf.indent() * document->indentWidth();
         // (In a list: its items' indent too.)
         if (QTextList* list = b.textList()) room -= list->format().indent() * document->indentWidth();
         for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
@@ -179,6 +288,78 @@ bool fitImages(QTextDocument* document, qreal width)
         changed = true;
     }
     return changed;
+}
+
+SmoothImages::SmoothImages(QObject* parent, QTextObjectInterface* qts) : QObject(parent), a_qts(qts)
+{
+    a_scaled.setMaxCost(96 * 1024);   // (in KB)
+}
+
+void SmoothImages::install(QTextDocument* document)
+{
+    QAbstractTextDocumentLayout* layout = document->documentLayout();
+    QTextObjectInterface* own = layout->handlerForObject(QTextFormat::ImageObject);
+    if (own == nullptr || dynamic_cast<SmoothImages*>(own) != nullptr) return;
+    layout->registerHandler(QTextFormat::ImageObject, new SmoothImages(document, own));
+}
+
+QSizeF SmoothImages::intrinsicSize(QTextDocument* doc, int posInDocument, const QTextFormat& format)
+{
+    return a_qts->intrinsicSize(doc, posInDocument, format);
+}
+
+void SmoothImages::drawObject(QPainter* painter, const QRectF& rect, QTextDocument* doc, int posInDocument, const QTextFormat& format)
+{
+    // Printed, or on a device of no pixels of its own: Qt's (a PDF keeps
+    // the image's own pixels).
+    const QPaintEngine* engine = painter->paintEngine();
+    const QPaintEngine::Type kind = engine != nullptr ? engine->type() : QPaintEngine::User;
+    const bool pixels = kind == QPaintEngine::Raster || kind == QPaintEngine::CoreGraphics || kind == QPaintEngine::OpenGL
+                        || kind == QPaintEngine::OpenGL2;
+    const QTransform t = painter->deviceTransform();
+    // The document's image: decoded once (a file's bytes kept as an image).
+    const QUrl url(format.toImageFormat().name());
+    const QVariant v = doc->resource(QTextDocument::ImageResource, url);
+    QImage image;
+    QPixmap pixmap;
+    if (v.userType() == QMetaType::QImage) {
+        image = v.value<QImage>();
+    } else if (v.userType() == QMetaType::QPixmap) {
+        pixmap = v.value<QPixmap>();
+    } else if (v.userType() == QMetaType::QByteArray) {
+        image = QImage::fromData(v.toByteArray());
+        if (!image.isNull()) doc->addResource(QTextDocument::ImageResource, url, image);
+    }
+    const QSize own = !image.isNull() ? image.size() : pixmap.size();
+    if (!pixels || t.isRotating() || t.m11() <= 0 || std::abs(t.m11() - t.m22()) > 1e-9 || own.isEmpty() || rect.isEmpty()) {
+        painter->save();
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+        a_qts->drawObject(painter, rect, doc, posInDocument, format);
+        painter->restore();
+        return;
+    }
+    // The device pixels it covers, on whole ones.
+    const QRectF device = t.mapRect(rect);
+    const QRect target(QPoint(qRound(device.left()), qRound(device.top())),
+                       QSize(std::max(1, qRound(device.width())), std::max(1, qRound(device.height()))));
+    QImage drawn;
+    if (own == target.size()) {
+        drawn = !image.isNull() ? image : pixmap.toImage();
+    } else {
+        const QString key = QStringLiteral("%1/%2x%3").arg(!image.isNull() ? image.cacheKey() : pixmap.cacheKey()).arg(target.width()).arg(target.height());
+        if (const QImage* kept = a_scaled.object(key)) {
+            drawn = *kept;
+        } else {
+            const QImage source = !image.isNull() ? image : pixmap.toImage();
+            drawn = source.scaled(target.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            a_scaled.insert(key, new QImage(drawn), int(std::max<qsizetype>(1, drawn.sizeInBytes() / 1024)));
+        }
+    }
+    // A pixel of it to each of the device's, at its place under the
+    // painter's own transform (a widget's is moved to where it is in its
+    // window: reset, it was moved twice).
+    drawn.setDevicePixelRatio(t.m11());
+    painter->drawImage(QPointF((target.left() - t.dx()) / t.m11(), (target.top() - t.dy()) / t.m22()), drawn);
 }
 
 QString anchorOf(const QString& heading)
@@ -249,6 +430,7 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     a_preview->setFrameShape(QFrame::NoFrame);
     a_preview->document()->setDocumentMargin(12);
     qucs_s::math::MathObject::install(a_preview->document());
+    qucs_s::markdown::SmoothImages::install(a_preview->document());
     connect(a_preview, &QTextBrowser::anchorClicked, this, &MarkdownDoc::followLink);
     // (Its images to its width as it changes: the tab's, the split's, a
     // scroll bar's coming.)
@@ -404,6 +586,11 @@ void MarkdownDoc::layoutParts()
 bool MarkdownDoc::eventFilter(QObject* watched, QEvent* event)
 {
     if (a_preview != nullptr && watched == a_preview->viewport() && event->type() == QEvent::Resize) fitImages();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    // (Another screen's pixels: its math typeset again for them.)
+    if (a_preview != nullptr && watched == a_preview->viewport() && event->type() == QEvent::DevicePixelRatioChange)
+        a_timer->start();
+#endif
     if (watched == a_handle) {
         switch (event->type()) {
         case QEvent::MouseButtonPress:
@@ -458,7 +645,7 @@ void MarkdownDoc::renderNow()
     qucs_s::markdown::Colours colours;
     colours.paper = paper;
     colours.ink = ink;
-    qucs_s::markdown::render(doc, toPlainText(), font, colours);
+    qucs_s::markdown::render(doc, toPlainText(), font, colours, a_preview->devicePixelRatioF());
     fitImages();
     bar->setValue(at);
 }

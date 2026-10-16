@@ -2362,8 +2362,20 @@ void MathObject::drawObject(QPainter* painter, const QRectF& rect, QTextDocument
     const QImage image = qvariant_cast<QImage>(format.property(ImageProperty));
     if (image.isNull()) return;
     painter->save();
-    painter->setRenderHint(QPainter::SmoothPixmapTransform);
-    painter->drawImage(rect, image);
+    // Typeset at the device's pixels: a pixel of it to each, on whole
+    // pixels. (Drawn at a fraction of one, as a line's objects are, a
+    // smooth transform blended each pixel with its neighbours: blurred.)
+    // (Its place under the painter's own transform: a widget's is moved to
+    // where it is in its window - reset, it was moved twice.)
+    const QTransform t = painter->deviceTransform();
+    const qreal ratio = image.devicePixelRatio();
+    if (!t.isRotating() && std::abs(t.m11() - ratio) < 1e-9 && std::abs(t.m22() - ratio) < 1e-9) {
+        const QPointF at = t.map(rect.topLeft());
+        painter->drawImage(QPointF((std::round(at.x()) - t.dx()) / t.m11(), (std::round(at.y()) - t.dy()) / t.m22()), image);
+    } else {
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+        painter->drawImage(rect, image);
+    }
     painter->restore();
 }
 
@@ -3104,6 +3116,11 @@ QList<Span> findMath(const QString& markdown)
         for (qsizetype k = at - 1; k >= 0 && md.at(k) == QLatin1Char('\\'); --k) ++backslashes;
         return backslashes % 2 == 1;
     };
+    // LaTeX's display environments written bare, as MathJax takes them:
+    // \begin{equation} ... \end{equation}, align, gather, multline,
+    // eqnarray, displaymath (starred too).
+    static const QRegularExpression environment(
+        QStringLiteral("\\G\\\\begin\\{(equation|align|gather|multline|eqnarray|displaymath)(\\*?)\\}"));
     outsideCode(md, true, [&](qsizetype i, bool) -> qsizetype {
         const QChar c = md.at(i);
         if (c == QLatin1Char('\\') && i + 1 < n) {
@@ -3114,6 +3131,26 @@ QList<Span> findMath(const QString& markdown)
                 if (close > i + 2) {
                     spans.append({i, close + 2 - i, md.mid(i + 2, close - i - 2).trimmed(), next == QLatin1Char('[')});
                     return close + 2;
+                }
+            }
+            // \\( ... \\) and \\[ ... \\]: written so that Markdown's escape
+            // leaves \( for MathJax.
+            if (next == QLatin1Char('\\') && i + 2 < n && (md.at(i + 2) == QLatin1Char('[') || md.at(i + 2) == QLatin1Char('('))) {
+                const bool display = md.at(i + 2) == QLatin1Char('[');
+                const qsizetype close = md.indexOf(display ? QStringLiteral("\\\\]") : QStringLiteral("\\\\)"), i + 3);
+                if (close > i + 3) {
+                    spans.append({i, close + 3 - i, md.mid(i + 3, close - i - 3).trimmed(), display});
+                    return close + 3;
+                }
+            }
+            if (next == QLatin1Char('b')) {
+                if (const QRegularExpressionMatch m = environment.match(md, i); m.hasMatch()) {
+                    const QString end = QStringLiteral("\\end{%1%2}").arg(m.captured(1), m.captured(2));
+                    const qsizetype close = md.indexOf(end, m.capturedEnd(0));
+                    if (close > 0) {
+                        spans.append({i, close + end.size() - i, md.mid(i, close + end.size() - i), true});
+                        return close + end.size();
+                    }
                 }
             }
             return -1;
@@ -3155,6 +3192,48 @@ QList<Span> findMath(const QString& markdown)
         }
         return -1;
     });
+    // GitHub's display math: a fenced block of the language math. (The
+    // walk above skips it as code.)
+    static const QRegularExpression fence(QStringLiteral("^([ \\t]*)(`{3,}|~{3,})[ \\t]*math[ \\t]*$"),
+                                          QRegularExpression::MultilineOption | QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression anyFence(QStringLiteral("^[ \\t]*(`{3,}|~{3,})"), QRegularExpression::MultilineOption);
+    bool added = false;
+    for (qsizetype at = 0; at < n;) {
+        const QRegularExpressionMatch open = anyFence.match(md, at);
+        if (!open.hasMatch()) break;
+        const qsizetype lineEnd = md.indexOf(QLatin1Char('\n'), open.capturedEnd(0));
+        const qsizetype bodyStart = lineEnd < 0 ? n : lineEnd + 1;
+        // (A backtick in a backtick fence's info: inline code, no fence.)
+        if (open.captured(1).startsWith(QLatin1Char('`'))
+            && md.mid(open.capturedEnd(0), (lineEnd < 0 ? n : lineEnd) - open.capturedEnd(0)).contains(QLatin1Char('`'))) {
+            at = bodyStart;
+            continue;
+        }
+        // Its closing fence: of its character, at least as long, alone on its line.
+        const QString mark = open.captured(1);
+        const QRegularExpression closing(QStringLiteral("^[ \\t]*%1%2*[ \\t]*$").arg(QRegularExpression::escape(mark), QRegularExpression::escape(mark.left(1))),
+                                         QRegularExpression::MultilineOption);
+        const QRegularExpressionMatch shut = closing.match(md, bodyStart);
+        const qsizetype bodyEnd = shut.hasMatch() ? shut.capturedStart(0) : n;
+        const qsizetype end = shut.hasMatch() ? shut.capturedEnd(0) : n;
+        if (const QRegularExpressionMatch m = fence.match(md, open.capturedStart(0)); m.hasMatch() && m.capturedStart(0) == open.capturedStart(0)) {
+            const qsizetype indent = m.capturedLength(1);
+            QStringList lines;
+            for (QString line : md.mid(bodyStart, std::max<qsizetype>(0, bodyEnd - bodyStart)).split(QLatin1Char('\n'))) {
+                qsizetype cut = 0;
+                while (cut < indent && cut < line.size() && (line.at(cut) == QLatin1Char(' ') || line.at(cut) == QLatin1Char('\t'))) ++cut;
+                lines << line.mid(cut);
+            }
+            const QString tex = lines.join(QLatin1Char('\n')).trimmed();
+            const qsizetype start = m.capturedStart(2);
+            if (!tex.isEmpty()) {
+                spans.append({start, end - start, tex, true});
+                added = true;
+            }
+        }
+        at = end < n ? end + 1 : n;
+    }
+    if (added) std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) { return a.start < b.start; });
     return spans;
 }
 
