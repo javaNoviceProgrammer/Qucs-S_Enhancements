@@ -46,7 +46,7 @@ QString rateText(double rate)
 
 QString nameOf(const Graph* g)
 {
-    return g->Var.section(QLatin1Char('/'), -1);
+    return g->unprefixed();
 }
 
 // The quantile q of sorted values, between neighbours.

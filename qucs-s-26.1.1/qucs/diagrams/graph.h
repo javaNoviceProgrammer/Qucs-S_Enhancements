@@ -132,6 +132,11 @@ public:
   typedef container::const_iterator const_iterator;
 
   int loadDatFile(const QString& filename);
+  // An expression of the dataset's variables (2*L, db(v(out)/v(in)),
+  // 2*pi*frequency*L): evaluated over \a path's samples, the graph over their
+  // independent variables; -1 when a variable of the dataset is so named
+  // (read as one), 0 (and why in loadError) when it does not evaluate.
+  int loadExpression(const QString& path, const QString& expression, bool hasExplIndep, const QString& explIndep);
   int loadIndepVarData(const QString&, char* datfilecontent, DataX* where);
   // The same of a binary dataset (datasetfile.h), from its blocks.
   int loadBinaryDatFile(const QString& path, QString variable, bool hasExplIndep, const QString& explIndep);
@@ -166,6 +171,7 @@ public:
   const_iterator end() const{return ScrPoints.end();}
 
   QDateTime lastLoaded;  // when it was loaded into memory
+  QString loadError;     // why an expression's data did not load (empty: it did, or it is a variable)
   int     yAxisNo;       // which y axis is used
   int     pane = 0;      // a stacked diagram's pane it is in (0: the top one)
   /// Drawn faint, behind the others: a kept run beside this one's (the
@@ -243,6 +249,16 @@ public:
   /// \a name as the graph shows it: dB(name), phase(name), mag(name),
   /// re(name), im(name), or as it is.
   QString withValuePart(const QString& name) const;
+  /// Its name without a simulator's prefix (ngspice/ac.v(out): ac.v(out));
+  /// a division's slash is none (v(out)/v(in), 2*L/3 as they are).
+  QString unprefixed() const;
+  /// The analyses an unprefixed name's variables are of: ac.v(out) ac,
+  /// db(ac.v(out)/ac.v(in)) ac, 2*frequency none.
+  static QStringList analysesOf(const QString& name);
+  /// \a name without \a analysis before its variables, for a label of
+  /// one analysis's graphs: ac.v(out) v(out), db(ac.v(out)/ac.v(in))
+  /// db(v(out)/v(in)).
+  static QString withoutAnalysis(const QString& name, const QString& analysis);
   /// \a re, \a im made the part: \a re its value, \a im 0.
   static void takeValuePart(ValuePart part, double* re, double* im);
   static const QList<PointMarker>& autoMarkers();

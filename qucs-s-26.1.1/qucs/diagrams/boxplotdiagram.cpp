@@ -162,7 +162,7 @@ int BoxPlotDiagram::calcDiagram()
     m_boxes.clear();
     for (const Graph* g : Graphs) {
         Box b = boxOf(valuesOf(g), range);
-        b.name = g->Var.section(QLatin1Char('/'), -1);
+        b.name = g->unprefixed();
         m_boxes << b;
     }
     // Along: a column a box (no numbers on it: the boxes are named).

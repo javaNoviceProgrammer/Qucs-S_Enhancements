@@ -84,7 +84,7 @@ ContourDiagram::Grid SpectrogramDiagram::gridFor(const Graph* g) const
     const DataX* xs = g->axis(0);
     // (Over frequency - an AC sweep - there is no time to cut.)
     if (xs != nullptr && xs->Var.contains(QLatin1String("freq"), Qt::CaseInsensitive)) {
-        grid.error = QObject::tr("%1 is over %2 (an AC run's): a spectrogram cuts a transient, over time").arg(g->Var.section(QLatin1Char('/'), -1), xs->Var);
+        grid.error = QObject::tr("%1 is over %2 (an AC run's): a spectrogram cuts a transient, over time").arg(g->unprefixed(), xs->Var);
         return grid;
     }
     if (g->cPointsY == nullptr || xs == nullptr || xs->Points == nullptr || xs->count < 16) {
@@ -189,7 +189,7 @@ void SpectrogramDiagram::autoRange(double, double hi)
 
 QString SpectrogramDiagram::colourName() const
 {
-    return Graphs.isEmpty() ? QString() : Graphs.first()->Var.section(QLatin1Char('/'), -1) + QStringLiteral(", dB");
+    return Graphs.isEmpty() ? QString() : Graphs.first()->unprefixed() + QStringLiteral(", dB");
 }
 
 void SpectrogramDiagram::createAxisLabels()

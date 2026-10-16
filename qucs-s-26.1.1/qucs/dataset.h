@@ -79,13 +79,18 @@ bool isExpression(const QString& text);
 /// Whether \a expression reads as one evaluate() takes - its syntax alone,
 /// no variable looked up; why not in \a error (x=1, v(out) +, 2e).
 bool checkExpression(const QString& expression, QString* error);
-/// \a expression evaluated over \a data, sample by sample: numbers, the
-/// variables as resolve() finds them (one analysis for all: v(out) is
-/// the analysis's of the other variables), + - * / ^, parentheses and
-/// db(), abs(), mag(), phase() (degrees), real(), imag(), sqrt(), log10(),
-/// ln(), exp(), conj() - in complex numbers where the values are. A new
-/// variable named \a expression, on the variables' independent ones;
-/// false and why in \a error when it does not evaluate.
+/// \a expression evaluated over \a data, sample by sample: numbers, pi, e,
+/// j (√-1) - where no variable has the name -, the variables as resolve()
+/// finds them (one analysis for all: v(out) is the analysis's of the other
+/// variables), an independent one too (frequency, time, a swept parameter:
+/// its value at each sample of the others; alone, over itself), + - * /
+/// ^, parentheses and db(), abs(), mag(), phase() (degrees), arg()
+/// (radians), real(), imag(), conj(), sqrt(), sq(), exp(), ln(), log() and
+/// log10() (base 10), log2(), sin(), cos(), tan(), asin(), acos(), atan(),
+/// sinh(), cosh(), tanh(), floor(), ceil(), round(), sign() - in complex
+/// numbers where the values are. A new variable named \a expression, on
+/// the variables' independent ones; false and why in \a error when it does
+/// not evaluate.
 bool evaluate(const Dataset& data, const QString& expression, Variable* out, QString* error);
 
 /// A value of an operating point: an independent variable of one value

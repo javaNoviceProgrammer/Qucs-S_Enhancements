@@ -24,6 +24,7 @@
 #endif*/
 
 #include <QDialog>
+#include <QHash>
 #include <QList>
 #include <QPair>
 #include <QSet>
@@ -159,6 +160,21 @@ private:
   /// \param row: Number of the row to update
   ///
   void updateGraphListItem(int row);
+  // Why an expression (2*L, 2*pi*frequency*L) does not evaluate over the
+  // chosen dataset - empty when it does, or is no expression; cached by
+  // text till the dataset changes.
+  QString expressionProblem(const QString& text);
+  // The file a trace's name reads and its variable (or expression) there:
+  // ngspice/tran.v(out) tran.v(out) in name.dat.ngspice, other:v(out)
+  // v(out) in other.dat - as Graph::loadDatFile finds them.
+  QPair<QString, QString> traceFile(const QString& trace) const;
+  // A trace's name as typed (2*L, v(out)/v(in)), its dataset and simulator
+  // said when it names neither: those of the graph it was (\a was), a new
+  // one's those chosen above - bench:2*L over a dataset beside the
+  // schematic's, ngspice/2*ac.v(out) -, as a variable taken from the list is.
+  QString qualified(const QString& typed, const QString& was) const;
+  QString datasetPath() const;
+  QHash<QString, QString> a_expressionProblems;
 
   Diagram *Diag;
   QString defaultDataSet;

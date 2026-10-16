@@ -283,7 +283,7 @@ void BathtubDiagram::paintVoltage(QPainter* painter)
     for (int i = 0; i < m_volts.size() && i < Graphs.size(); ++i) {
         const Graph* g = Graphs.at(i);
         const QColor ink = qucs_s::ink::on(g->Color);
-        const QString unit = qucs_s::dataset::unitOf(g->Var.section(QLatin1Char('/'), -1));
+        const QString unit = qucs_s::dataset::unitOf(g->unprefixed());
         const QList<eye::VoltageBathtub>& tubs = m_volts.at(i);
         for (int k = 0; k < tubs.size(); ++k) {
             const eye::VoltageBathtub& b = tubs.at(k);
@@ -337,7 +337,7 @@ QStringList BathtubDiagram::voltageSummary() const
 {
     QStringList lines;
     for (int i = 0; i < m_volts.size() && i < Graphs.size(); ++i) {
-        const QString name = Graphs.at(i)->Var.section(QLatin1Char('/'), -1);
+        const QString name = Graphs.at(i)->unprefixed();
         const QString unit = qucs_s::dataset::unitOf(name);
         const QList<eye::VoltageBathtub>& tubs = m_volts.at(i);
         if (tubs.isEmpty()) continue;
@@ -374,7 +374,7 @@ QStringList BathtubDiagram::summary() const
 {
     QStringList lines;
     for (int i = 0; i < m_tubs.size() && i < Graphs.size(); ++i) {
-        const QString name = Graphs.at(i)->Var.section(QLatin1Char('/'), -1);
+        const QString name = Graphs.at(i)->unprefixed();
         const QList<eye::Bathtub>& tubs = m_tubs.at(i);
         if (tubs.isEmpty()) continue;
         if (tubs.size() == 1 && !tubs.first().ok()) {
