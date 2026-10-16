@@ -14,6 +14,7 @@
 
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
+#include "multiphysicssettings.h"
 
 #include "main.h"
 
@@ -87,6 +88,17 @@ void QucsApp::initMultiphysics()
   clear->setObjectName(QStringLiteral("mpClearAction"));
   a_multiphysicsMenu->addSeparator();
   a_multiphysicsMenu->addAction(tr("Show the Multiphysics Panel"), this, [this] { showMultiphysicsPanel(); });
+  a_multiphysicsMenu->addSeparator();
+  // Its settings (the Graphics view drawn with the GPU or the CPU). (No
+  // role: on macOS a "Settings…" would be taken into the application's menu
+  // as its Preferences.)
+  QAction *settings = a_multiphysicsMenu->addAction(tr("Settings…"), this, [this] {
+    qucs_s::fem::MultiphysicsSettingsDialog dialog(this);
+    dialog.exec();
+  });
+  settings->setObjectName(QStringLiteral("mpSettingsAction"));
+  settings->setMenuRole(QAction::NoRole);
+  settings->setStatusTip(tr("The multiphysics settings: the Graphics view drawn with the GPU (OpenGL) or the CPU"));
   connect(a_multiphysicsMenu, &QMenu::aboutToShow, this, &QucsApp::updateMultiphysicsMenu);
   const QList<QAction *> bar = menuBar()->actions();
   const int view = int(bar.indexOf(viewMenu->menuAction()));

@@ -17,10 +17,13 @@
  * QUCS_VIEW_SAVE=<folder>: the GPU's and the CPU's pictures there.
  */
 #include "multiphysicsview.h"
+#include "multiphysicssettings.h"
 
 #include "isolated_settings.h"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QLabel>
 #include <QElapsedTimer>
 #include <QOpenGLWidget>
 #include <QTemporaryDir>
@@ -297,6 +300,42 @@ private slots:
         QVERIFY(canvas != nullptr);
         QCOMPARE(canvas->geometry(), view.rect());
         QVERIFY(compare(QStringLiteral("surface-again")) < 0.03);
+    }
+
+    // The Multiphysics menu's Settings: every open view drawn as it says on
+    // OK - by the CPU off, by the GPU on where there is one (the offscreen
+    // platform: by the CPU, said); the setting the views' own menu keeps.
+    void theSettingsDrawEveryViewSo()
+    {
+        GraphicsView a, b;
+        for (GraphicsView* v : {&a, &b}) {
+            v->setMesh(gridMesh(4));
+            v->setShow(GraphicsView::Show::Mesh);
+            v->resize(300, 200);
+            v->show();
+            (void)QTest::qWaitForWindowExposed(v, 1000);   // (as bench(): the GPU canvas a child window)
+        }
+        {
+            MultiphysicsSettingsDialog d;
+            d.gpuBox()->setChecked(false);
+            QCOMPARE(d.gpuStatus()->text(), GraphicsView::gpuAvailable() ? QStringLiteral("The CPU draws the Graphics view.")
+                                                                           : MultiphysicsSettingsDialog::gpuHindrance());
+            d.apply();
+        }
+        QVERIFY(!MultiphysicsSettingsDialog::gpuWanted());
+        QVERIFY(!a.gpu() && !b.gpu());
+        {
+            MultiphysicsSettingsDialog d;
+            QVERIFY(!d.gpuBox()->isChecked());
+            d.gpuBox()->setChecked(true);
+            if (GraphicsView::gpuAvailable()) QCOMPARE(d.gpuStatus()->text(), QStringLiteral("The GPU draws the Graphics view."));
+            else QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("No OpenGL 3.3 here")), qPrintable(d.gpuStatus()->text()));
+            d.apply();
+        }
+        QVERIFY(MultiphysicsSettingsDialog::gpuWanted());
+        QCOMPARE(a.gpu(), GraphicsView::gpuAvailable());
+        QCOMPARE(b.gpu(), GraphicsView::gpuAvailable());
+        qInfo("the GPU %s here", GraphicsView::gpuAvailable() ? "draws" : "cannot draw");
     }
 
     // (QUCS_VIEW_BENCH=1: a frame's time, zooming, the CPU's and the GPU's.)

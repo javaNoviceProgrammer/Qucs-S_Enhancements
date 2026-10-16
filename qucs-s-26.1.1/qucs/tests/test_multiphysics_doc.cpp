@@ -16,7 +16,9 @@
  */
 #include <QtTest>
 #include <QAction>
+#include <QCheckBox>
 #include <QClipboard>
+#include <QDialogButtonBox>
 #include <QComboBox>
 #include <QFontDatabase>
 #include <QJsonArray>
@@ -48,6 +50,7 @@
 #include "fem_material_plot.h"
 #include "fem_materials.h"
 #include "multiphysicspanel.h"
+#include "multiphysicssettings.h"
 #include "dataimport.h"
 #include "dataset.h"
 #include "diagrams/diagram.h"
@@ -223,6 +226,71 @@ private slots:
         QMenu* menu = app->multiphysicsMenu();
         QVERIFY(menu != nullptr);
         QVERIFY(app->menuBar()->actions().contains(menu->menuAction()));
+    }
+
+    // The Multiphysics menu's Settings…: the Graphics view drawn with the
+    // GPU (OpenGL) or the CPU - the setting the view's own menu sets
+    // (Multiphysics/gpu), kept on OK, not on Cancel; what keeps the GPU from
+    // drawing here said (offscreen: no OpenGL 3.3; QUCS_GPU=0). The item no
+    // role: on macOS "Settings…" would be taken to the application's menu.
+    void theSettingsHaveTheGpu()
+    {
+        QAction* item = app->multiphysicsMenu()->findChild<QAction*>(QStringLiteral("mpSettingsAction"));
+        QVERIFY(item != nullptr);
+        QCOMPARE(item->text(), QStringLiteral("Settings…"));
+        QCOMPARE(item->menuRole(), QAction::NoRole);
+        QVERIFY(app->multiphysicsMenu()->actions().contains(item));
+        // (Opened from the menu - modal: closed from inside.)
+        bool opened = false;
+        QTimer::singleShot(0, this, [&opened] {
+            if (auto* d = qobject_cast<MultiphysicsSettingsDialog*>(QApplication::activeModalWidget())) {
+                opened = d->gpuBox() != nullptr;
+                d->reject();
+            }
+        });
+        item->trigger();
+        QVERIFY(opened);
+        const bool before = MultiphysicsSettingsDialog::gpuWanted();
+        {
+            MultiphysicsSettingsDialog d(app);
+            QCOMPARE(d.gpuBox()->isChecked(), before);
+            QCOMPARE(d.gpuBox()->text(), QStringLiteral("Draw with the GPU (OpenGL)"));
+            if (!GraphicsView::gpuAvailable())
+                QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("No OpenGL 3.3 here")), qPrintable(d.gpuStatus()->text()));
+            else
+                QCOMPARE(d.gpuStatus()->text(), before ? QStringLiteral("The GPU draws the Graphics view.") : QStringLiteral("The CPU draws the Graphics view."));
+            d.gpuBox()->setChecked(!before);
+            d.reject();   // (Cancel: nothing kept.)
+        }
+        QCOMPARE(MultiphysicsSettingsDialog::gpuWanted(), before);
+        {
+            MultiphysicsSettingsDialog d(app);
+            d.gpuBox()->setChecked(false);
+            d.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+            QCOMPARE(d.result(), int(QDialog::Accepted));
+        }
+        QVERIFY(!MultiphysicsSettingsDialog::gpuWanted());
+        // (Every view the CPU's: none draws with the GPU after.)
+        for (QWidget* w : QApplication::allWidgets())
+            if (auto* view = qobject_cast<GraphicsView*>(w)) QVERIFY(!view->gpu());
+        // (A view open, where there is a GPU: drawn by it again on OK.)
+        GraphicsView own;
+        own.resize(200, 150);
+        {
+            MultiphysicsSettingsDialog d(app);
+            QVERIFY(!d.gpuBox()->isChecked());
+            d.gpuBox()->setChecked(true);
+            d.apply();
+        }
+        QVERIFY(MultiphysicsSettingsDialog::gpuWanted());
+        QCOMPARE(own.gpu(), GraphicsView::gpuAvailable());
+        // QUCS_GPU=0 said, whatever the setting.
+        qputenv("QUCS_GPU", "0");
+        {
+            MultiphysicsSettingsDialog d(app);
+            QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("QUCS_GPU=0 is set")), qPrintable(d.gpuStatus()->text()));
+        }
+        qunsetenv("QUCS_GPU");
     }
 
     // An example opened: its tree in the panel, its geometry built and
