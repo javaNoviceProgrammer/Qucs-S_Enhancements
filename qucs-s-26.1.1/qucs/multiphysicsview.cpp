@@ -11,18 +11,25 @@
 #include "multiphysicsview.h"
 
 #include "ink.h"
+#include "settings.h"
+#ifdef QUCS_GPU_VIEW
+#include "multiphysicsviewgl.h"
+#endif
 
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QPainter>
 #include <QPalette>
+#include <QSurfaceFormat>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
-#include <set>
+#include <thread>
 
 namespace qucs_s::fem {
 
@@ -96,6 +103,88 @@ GraphicsView::GraphicsView(QWidget* parent) : QWidget(parent)
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setMinimumSize(200, 150);
+#ifdef QUCS_GPU_VIEW
+    // The GPU's canvas over it, where there can be one and it is wanted.
+    if (qEnvironmentVariable("QUCS_GPU") != QLatin1String("0") && QucsSettingsFile().value(QStringLiteral("Multiphysics/gpu"), true).toBool()
+        && gpuAvailable())
+        a_canvas = new GlCanvas(this);
+#endif
+}
+
+GraphicsView::~GraphicsView()
+{
+#ifdef QUCS_GPU_VIEW
+    // (Its canvas first: its last frame paints through the view.)
+    delete a_canvas;
+    a_canvas = nullptr;
+#endif
+}
+
+bool GraphicsView::gpuAvailable()
+{
+#ifdef QUCS_GPU_VIEW
+    return GlCanvas::available();
+#else
+    return false;
+#endif
+}
+
+void GraphicsView::prepareGpu()
+{
+#ifdef QUCS_GPU_VIEW
+    if (qEnvironmentVariable("QUCS_GPU") == QLatin1String("0")) return;
+    QSurfaceFormat f = QSurfaceFormat::defaultFormat();
+    f.setVersion(3, 3);
+    f.setProfile(QSurfaceFormat::CoreProfile);
+    QSurfaceFormat::setDefaultFormat(f);
+#endif
+}
+
+void GraphicsView::setGpu(bool on)
+{
+    QucsSettingsFile().setValue(QStringLiteral("Multiphysics/gpu"), on);
+#ifdef QUCS_GPU_VIEW
+    if (on && !a_canvas && !a_gpuBroken && gpuAvailable()) {
+        a_canvas = new GlCanvas(this);
+        a_canvas->setGeometry(rect());
+        a_canvas->show();
+    } else if (!on && a_canvas) {
+        delete a_canvas;
+        a_canvas = nullptr;
+    }
+#endif
+    a_rasterDirty = true;
+    redraw();
+}
+
+int GraphicsView::gpuFrames() const
+{
+#ifdef QUCS_GPU_VIEW
+    return a_canvas ? a_canvas->frames() : 0;
+#else
+    return 0;
+#endif
+}
+
+void GraphicsView::canvasFailed()
+{
+#ifdef QUCS_GPU_VIEW
+    // (Its shaders did not build: the CPU draws it from now on.)
+    if (!a_canvas) return;
+    a_gpuBroken = true;
+    a_canvas->deleteLater();
+    a_canvas = nullptr;
+#endif
+    a_rasterDirty = true;
+    redraw();
+}
+
+void GraphicsView::redraw()
+{
+    update();
+#ifdef QUCS_GPU_VIEW
+    if (a_canvas) a_canvas->update();
+#endif
 }
 
 void GraphicsView::setShow(Show show)
@@ -103,42 +192,55 @@ void GraphicsView::setShow(Show show)
     if (a_show == show) return;
     a_show = show;
     a_rasterDirty = true;
-    update();
+    redraw();
 }
 
 void GraphicsView::setTopology(std::shared_ptr<const Topology> topology)
 {
     const bool first = !a_topology && topology;
     a_topology = std::move(topology);
+    ++a_topologyStamp;
     rebuildPaths();
     if (first || !a_fitted) fit();
-    update();
+    redraw();
 }
 
 void GraphicsView::setMesh(std::shared_ptr<const Mesh> mesh)
 {
     a_mesh = std::move(mesh);
+    ++a_meshStamp;
+    a_meshEdges.clear();
     a_meshPath = QPainterPath();
+    a_meshPathBuilt = false;
     if (a_mesh) {
-        std::set<std::pair<int, int>> edges;
+        a_meshEdges.reserve(a_mesh->triangles.size() * 3);
         for (const auto& t : a_mesh->triangles)
             for (int k = 0; k < 3; ++k) {
                 const int a = t[std::size_t(k)], b = t[std::size_t((k + 1) % 3)];
-                edges.emplace(std::min(a, b), std::max(a, b));
+                a_meshEdges.emplace_back(std::min(a, b), std::max(a, b));
             }
-        for (const auto& [a, b] : edges) {
-            a_meshPath.moveTo(a_mesh->nodes[std::size_t(a)]);
-            a_meshPath.lineTo(a_mesh->nodes[std::size_t(b)]);
-        }
+        std::sort(a_meshEdges.begin(), a_meshEdges.end());
+        a_meshEdges.erase(std::unique(a_meshEdges.begin(), a_meshEdges.end()), a_meshEdges.end());
     }
     a_qualityRaster = QImage();
     a_rasterDirty = true;
-    update();
+    redraw();
+}
+
+void GraphicsView::buildMeshPath()
+{
+    if (a_meshPathBuilt || !a_mesh) return;
+    for (const auto& [a, b] : a_meshEdges) {
+        a_meshPath.moveTo(a_mesh->nodes[std::size_t(a)]);
+        a_meshPath.lineTo(a_mesh->nodes[std::size_t(b)]);
+    }
+    a_meshPathBuilt = true;
 }
 
 void GraphicsView::setPlot(std::shared_ptr<const PlotScene> plot)
 {
     a_plot = std::move(plot);
+    ++a_plotStamp;
     a_contourPaths.clear();
     a_contourColors.clear();
     if (a_plot) {
@@ -161,7 +263,7 @@ void GraphicsView::setPlot(std::shared_ptr<const PlotScene> plot)
         }
     }
     a_rasterDirty = true;
-    update();
+    redraw();
 }
 
 void GraphicsView::setHighlight(Level level, const QVector<int>& entities)
@@ -169,7 +271,7 @@ void GraphicsView::setHighlight(Level level, const QVector<int>& entities)
     if (a_highlightLevel == level && a_highlight == entities) return;
     a_highlightLevel = level;
     a_highlight = entities;
-    update();
+    redraw();
 }
 
 void GraphicsView::setPickLevel(Level level)
@@ -177,7 +279,7 @@ void GraphicsView::setPickLevel(Level level)
     a_pickLevel = level;
     a_hovered = -1;
     setCursor(level == Level::None ? Qt::ArrowCursor : Qt::PointingHandCursor);
-    update();
+    redraw();
 }
 
 void GraphicsView::rebuildPaths()
@@ -252,7 +354,7 @@ void GraphicsView::setView(QPointF center, double scale)
     a_center = center;
     a_scale = std::clamp(scale, 1e-12, 1e15);
     a_rasterDirty = true;
-    update();
+    redraw();
     emit viewChanged();
 }
 
@@ -290,6 +392,9 @@ int GraphicsView::entityAt(Level level, QPointF pixel) const
 void GraphicsView::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
+#ifdef QUCS_GPU_VIEW
+    if (a_canvas) a_canvas->setGeometry(rect());
+#endif
     if (!a_fitted) fit();
     a_rasterDirty = true;
 }
@@ -299,7 +404,7 @@ void GraphicsView::changeEvent(QEvent* event)
     QWidget::changeEvent(event);
     if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
         a_rasterDirty = true;
-        update();
+        redraw();
     }
 }
 
@@ -347,7 +452,7 @@ void GraphicsView::mouseMoveEvent(QMouseEvent* event)
         const int h = entityAt(a_pickLevel, pos);
         if (h != a_hovered) {
             a_hovered = h;
-            update();
+            redraw();
         }
     }
     emit pointerMoved(toModel(pos), true);
@@ -385,9 +490,21 @@ void GraphicsView::leaveEvent(QEvent* event)
     QWidget::leaveEvent(event);
     if (a_hovered >= 0) {
         a_hovered = -1;
-        update();
+        redraw();
     }
     emit pointerMoved({}, false);
+}
+
+void GraphicsView::contextMenuEvent(QContextMenuEvent* event)
+{
+    QMenu menu(this);
+    menu.addAction(tr("Fit"), this, [this] { fit(); });
+    QAction* gpuAction = menu.addAction(tr("Draw with the GPU (OpenGL)"));
+    gpuAction->setCheckable(true);
+    gpuAction->setChecked(gpu());
+    gpuAction->setEnabled(gpuAvailable() && !a_gpuBroken);
+    connect(gpuAction, &QAction::toggled, this, [this](bool on) { setGpu(on); });
+    menu.exec(event->globalPos());
 }
 
 QImage GraphicsView::picture()
@@ -395,7 +512,10 @@ QImage GraphicsView::picture()
     QImage image(size() * devicePixelRatioF(), QImage::Format_ARGB32_Premultiplied);
     image.setDevicePixelRatio(devicePixelRatioF());
     image.fill(Qt::transparent);
-    render(&image);
+    QPainter p(&image);
+    a_exporting = true;
+    paintFrame(p, nullptr);
+    a_exporting = false;
     return image;
 }
 
@@ -403,7 +523,18 @@ QImage GraphicsView::picture()
 
 void GraphicsView::paintEvent(QPaintEvent*)
 {
+#ifdef QUCS_GPU_VIEW
+    // (The GPU's canvas over it draws it.)
+    if (a_canvas) return;
+#endif
     QPainter p(this);
+    paintFrame(p, nullptr);
+}
+
+void GraphicsView::paintFrame(QPainter& p, GlCanvas* gl)
+{
+    a_gl = gl;
+    p.setFont(font());
     const Colors c = colors();
     p.fillRect(rect(), c.background);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -411,6 +542,7 @@ void GraphicsView::paintEvent(QPaintEvent*)
         p.setPen(c.ink);
         p.drawText(rect(), Qt::AlignCenter | Qt::TextWordWrap,
                    tr("Build the geometry to see it here: its features in the Multiphysics panel, then Build All."));
+        a_gl = nullptr;
         return;
     }
     paintGrid(p, c);
@@ -449,13 +581,14 @@ void GraphicsView::paintEvent(QPaintEvent*)
         p.setPen(QColor(200, 40, 40));
         p.drawText(QRectF(10, 26, width() - 20, 40), Qt::AlignLeft | Qt::TextWordWrap, a_plot->problems.join(QLatin1Char('\n')));
     }
+    a_gl = nullptr;
 }
 
 void GraphicsView::setAxisymmetric(bool on)
 {
     if (a_axisymmetric == on) return;
     a_axisymmetric = on;
-    update();
+    redraw();
 }
 
 void GraphicsView::paintGrid(QPainter& p, const Colors& c) const
@@ -509,27 +642,38 @@ void GraphicsView::paintGeometry(QPainter& p, const Colors& c, bool faded)
 {
     if (!a_topology) return;
     const Topology& t = *a_topology;
-    const bool dark = qucs_s::ink::isDark(c.background);
-    p.save();
-    p.setTransform(modelToPixel());
-    const bool domainsChosen = a_highlightLevel == Level::Domain;
-    for (int d = 0; d < int(a_domainPaths.size()); ++d) {
-        QColor fill = domainColor(d, dark);
-        if (faded) fill.setAlpha(110);
-        if (domainsChosen && a_highlight.contains(d)) fill = c.highlight.lighter(dark ? 100 : 160);
-        if (a_pickLevel == Level::Domain && a_hovered == d) fill = c.hover.lighter(dark ? 110 : 150);
-        p.fillPath(a_domainPaths[std::size_t(d)], fill);
-    }
-    for (int b = 0; b < int(a_boundaryPaths.size()); ++b) {
+    auto boundaryPen = [this, &c](int b) {
         const bool chosen = a_highlightLevel == Level::Boundary && a_highlight.contains(b);
         const bool hover = a_pickLevel == Level::Boundary && a_hovered == b;
-        QPen pen(hover ? c.hover : chosen ? c.highlight : c.boundary, hover || chosen ? 3.0 : 1.2);
-        pen.setCosmetic(true);
-        pen.setCapStyle(Qt::RoundCap);
-        p.setPen(pen);
-        p.drawPath(a_boundaryPaths[std::size_t(b)]);
+        return std::make_pair(hover ? c.hover : chosen ? c.highlight : c.boundary, hover || chosen ? 3.0 : 1.2);
+    };
+#ifdef QUCS_GPU_VIEW
+    if (a_gl) {
+        std::vector<QColor> fills(a_domainPaths.size());
+        for (int d = 0; d < int(fills.size()); ++d) fills[std::size_t(d)] = domainFill(d, c, faded);
+        a_gl->drawDomains(p, fills);
+        std::vector<GlCanvas::Stroke> strokes(a_boundaryPaths.size());
+        for (int b = 0; b < int(strokes.size()); ++b) {
+            const auto [color, w] = boundaryPen(b);
+            strokes[std::size_t(b)] = {color, float(w)};
+        }
+        a_gl->drawBoundaries(p, strokes);
+    } else
+#endif
+    {
+        p.save();
+        p.setTransform(modelToPixel());
+        for (int d = 0; d < int(a_domainPaths.size()); ++d) p.fillPath(a_domainPaths[std::size_t(d)], domainFill(d, c, faded));
+        for (int b = 0; b < int(a_boundaryPaths.size()); ++b) {
+            const auto [color, w] = boundaryPen(b);
+            QPen pen(color, w);
+            pen.setCosmetic(true);
+            pen.setCapStyle(Qt::RoundCap);
+            p.setPen(pen);
+            p.drawPath(a_boundaryPaths[std::size_t(b)]);
+        }
+        p.restore();
     }
-    p.restore();
     // Points, in pixels.
     for (int i = 0; i < int(t.points.size()); ++i) {
         const bool chosen = a_highlightLevel == Level::Point && a_highlight.contains(i);
@@ -543,28 +687,54 @@ void GraphicsView::paintGeometry(QPainter& p, const Colors& c, bool faded)
     p.setBrush(Qt::NoBrush);
 }
 
+QColor GraphicsView::domainFill(int d, const Colors& c, bool faded) const
+{
+    const bool dark = qucs_s::ink::isDark(c.background);
+    QColor fill = domainColor(d, dark);
+    if (faded) fill.setAlpha(110);
+    if (a_highlightLevel == Level::Domain && a_highlight.contains(d)) fill = c.highlight.lighter(dark ? 100 : 160);
+    if (a_pickLevel == Level::Domain && a_hovered == d) fill = c.hover.lighter(dark ? 110 : 150);
+    return fill;
+}
+
+QColor GraphicsView::qualityColor(double quality)
+{
+    // Red poor, green good.
+    return QColor::fromHsvF(float(std::clamp((quality - 0.3) / 0.7, 0.0, 1.0) * 0.33), 0.55f, 0.95f);
+}
+
 void GraphicsView::paintMesh(QPainter& p, const Colors& c, bool quality)
 {
     if (!a_mesh) return;
+    QColor ink = c.ink;
+    ink.setAlpha(a_show == Show::Results ? 70 : 150);
+#ifdef QUCS_GPU_VIEW
+    if (a_gl) {
+        if (quality) a_gl->drawQuality(p);
+        a_gl->drawMesh(p, ink, 0.6f);
+        return;
+    }
+#endif
     if (quality) {
-        // Each triangle in the color of its quality: red poor, green good.
+        // Each triangle in the color of its quality.
         p.save();
         p.setTransform(modelToPixel());
         p.setPen(Qt::NoPen);
         for (int t = 0; t < int(a_mesh->triangles.size()); ++t) {
-            const double q = a_mesh->quality(t);
             const auto& v = a_mesh->triangles[std::size_t(t)];
             QPolygonF poly;
             poly << a_mesh->nodes[std::size_t(v[0])] << a_mesh->nodes[std::size_t(v[1])] << a_mesh->nodes[std::size_t(v[2])];
-            p.setBrush(QColor::fromHsvF(std::clamp((q - 0.3) / 0.7, 0.0, 1.0) * 0.33, 0.55, 0.95));
+            p.setBrush(qualityColor(a_mesh->quality(t)));
             p.drawPolygon(poly);
         }
         p.restore();
     }
+    buildMeshPath();
     p.save();
     p.setTransform(modelToPixel());
-    QColor ink = c.ink;
-    ink.setAlpha(a_show == Show::Results ? 70 : 150);
+    // (A large mesh's edges antialiased only in a picture: on screen, the
+    // CPU strokes them some six times faster without.)
+    p.setRenderHint(QPainter::Antialiasing, a_exporting || a_meshEdges.size() < 60000);
     QPen pen(ink, 0.6);
     pen.setCosmetic(true);
     p.setPen(pen);
@@ -589,39 +759,57 @@ void GraphicsView::rasterize()
     const double sy = -a_scale * dpr, oy = height() / 2.0 * dpr - a_center.y() * sy;
     const int W = px.width(), H = px.height();
     const std::size_t n = s.points.size() / 3;
-    for (std::size_t t = 0; t < n; ++t) {
-        const double v0 = s.values[t * 3], v1 = s.values[t * 3 + 1], v2 = s.values[t * 3 + 2];
-        if (!std::isfinite(v0) || !std::isfinite(v1) || !std::isfinite(v2)) continue;
-        const QPointF& a = s.points[t * 3];
-        const QPointF& b = s.points[t * 3 + 1];
-        const QPointF& c = s.points[t * 3 + 2];
-        const double x0 = a.x() * sx + ox, y0 = a.y() * sy + oy;
-        const double x1 = b.x() * sx + ox, y1 = b.y() * sy + oy;
-        const double x2 = c.x() * sx + ox, y2 = c.y() * sy + oy;
-        const int minX = std::max(0, int(std::floor(std::min({x0, x1, x2}))));
-        const int maxX = std::min(W - 1, int(std::ceil(std::max({x0, x1, x2}))));
-        const int minY = std::max(0, int(std::floor(std::min({y0, y1, y2}))));
-        const int maxY = std::min(H - 1, int(std::ceil(std::max({y0, y1, y2}))));
-        if (minX > maxX || minY > maxY) continue;
-        const double det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-        if (std::abs(det) < 1e-12) continue;
-        const double inv = 1 / det;
-        const double eps = 1e-7;
-        for (int y = minY; y <= maxY; ++y) {
-            QRgb* line = reinterpret_cast<QRgb*>(a_raster.scanLine(y));
-            const double py = y + 0.5;
-            for (int x = minX; x <= maxX; ++x) {
-                const double pxl = x + 0.5;
-                const double l1 = ((pxl - x0) * (y2 - y0) - (x2 - x0) * (py - y0)) * inv;
-                const double l2 = ((x1 - x0) * (py - y0) - (pxl - x0) * (y1 - y0)) * inv;
-                const double l0 = 1 - l1 - l2;
-                if (l0 < -eps || l1 < -eps || l2 < -eps) continue;
-                const double v = l0 * v0 + l1 * v1 + l2 * v2;
-                const int i = std::clamp(int((v - lo) / span * 255.0 + 0.5), 0, 255);
-                line[x] = table[std::size_t(i)];
+    // (Its bits once: scanLine() would detach the image in each thread.)
+    uchar* const bits = a_raster.bits();
+    const qsizetype stride = a_raster.bytesPerLine();
+    auto band = [&s, &table, lo, span, sx, ox, sy, oy, W, n, bits, stride](int bandLo, int bandHi) {
+        for (std::size_t t = 0; t < n; ++t) {
+            const double v0 = s.values[t * 3], v1 = s.values[t * 3 + 1], v2 = s.values[t * 3 + 2];
+            if (!std::isfinite(v0) || !std::isfinite(v1) || !std::isfinite(v2)) continue;
+            const QPointF& a = s.points[t * 3];
+            const QPointF& b = s.points[t * 3 + 1];
+            const QPointF& c = s.points[t * 3 + 2];
+            const double x0 = a.x() * sx + ox, y0 = a.y() * sy + oy;
+            const double x1 = b.x() * sx + ox, y1 = b.y() * sy + oy;
+            const double x2 = c.x() * sx + ox, y2 = c.y() * sy + oy;
+            const int minX = std::max(0, int(std::floor(std::min({x0, x1, x2}))));
+            const int maxX = std::min(W - 1, int(std::ceil(std::max({x0, x1, x2}))));
+            const int minY = std::max(bandLo, int(std::floor(std::min({y0, y1, y2}))));
+            const int maxY = std::min(bandHi - 1, int(std::ceil(std::max({y0, y1, y2}))));
+            if (minX > maxX || minY > maxY) continue;
+            const double det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+            if (std::abs(det) < 1e-12) continue;
+            const double inv = 1 / det;
+            const double eps = 1e-7;
+            for (int y = minY; y <= maxY; ++y) {
+                QRgb* line = reinterpret_cast<QRgb*>(bits + y * stride);
+                const double py = y + 0.5;
+                for (int x = minX; x <= maxX; ++x) {
+                    const double pxl = x + 0.5;
+                    const double l1 = ((pxl - x0) * (y2 - y0) - (x2 - x0) * (py - y0)) * inv;
+                    const double l2 = ((x1 - x0) * (py - y0) - (pxl - x0) * (y1 - y0)) * inv;
+                    const double l0 = 1 - l1 - l2;
+                    if (l0 < -eps || l1 < -eps || l2 < -eps) continue;
+                    const double v = l0 * v0 + l1 * v1 + l2 * v2;
+                    const int i = std::clamp(int((v - lo) / span * 255.0 + 0.5), 0, 255);
+                    line[x] = table[std::size_t(i)];
+                }
             }
         }
+    };
+    // (Each band its rows: no pixel written by two threads.)
+    const int threads = std::clamp(int(std::thread::hardware_concurrency()), 1, 16);
+    if (threads == 1 || n < 2000 || H < 64) {
+        band(0, H);
+        return;
     }
+    std::vector<std::thread> pool;
+    const int rows = (H + threads - 1) / threads;
+    for (int k = 0; k < threads; ++k) {
+        const int b = k * rows, e = std::min(H, b + rows);
+        if (b < e) pool.emplace_back(band, b, e);
+    }
+    for (std::thread& t : pool) t.join();
 }
 
 void GraphicsView::paintResults(QPainter& p, const Colors& c)
@@ -631,35 +819,60 @@ void GraphicsView::paintResults(QPainter& p, const Colors& c)
         return;
     }
     if (a_plot->surface) {
-        if (a_rasterDirty || a_raster.size() != QSize(int(width() * devicePixelRatioF()), int(height() * devicePixelRatioF())))
-            rasterize();
-        QImage shown = a_raster;
-        shown.setDevicePixelRatio(devicePixelRatioF());
-        p.drawImage(QPointF(0, 0), shown);
+#ifdef QUCS_GPU_VIEW
+        if (a_gl) {
+            a_gl->drawSurface(p);
+        } else
+#endif
+        {
+            if (a_rasterDirty || a_raster.size() != QSize(int(width() * devicePixelRatioF()), int(height() * devicePixelRatioF())))
+                rasterize();
+            QImage shown = a_raster;
+            shown.setDevicePixelRatio(devicePixelRatioF());
+            p.drawImage(QPointF(0, 0), shown);
+        }
     } else {
         paintGeometry(p, c, true);
     }
     if (a_plot->mesh) paintMesh(p, c, a_plot->quality);
     // The boundaries, thin, over the colors.
-    p.save();
-    p.setTransform(modelToPixel());
     QColor edge = c.boundary;
     edge.setAlpha(a_plot->surface ? 150 : 255);
-    for (int b = 0; b < int(a_boundaryPaths.size()); ++b) {
+    auto boundaryPen = [this, &c, &edge](int b) {
         const bool chosen = a_highlightLevel == Level::Boundary && a_highlight.contains(b);
-        QPen pen(chosen ? c.highlight : edge, chosen ? 2.5 : 0.8);
-        pen.setCosmetic(true);
-        p.setPen(pen);
-        p.drawPath(a_boundaryPaths[std::size_t(b)]);
+        return std::make_pair(chosen ? c.highlight : edge, chosen ? 2.5 : 0.8);
+    };
+#ifdef QUCS_GPU_VIEW
+    if (a_gl) {
+        std::vector<GlCanvas::Stroke> strokes(a_boundaryPaths.size());
+        for (int b = 0; b < int(strokes.size()); ++b) {
+            const auto [color, w] = boundaryPen(b);
+            strokes[std::size_t(b)] = {color, float(w)};
+        }
+        a_gl->drawBoundaries(p, strokes);
+        a_gl->drawContours(p);
+        a_gl->drawRays(p);
+    } else
+#endif
+    {
+        p.save();
+        p.setTransform(modelToPixel());
+        for (int b = 0; b < int(a_boundaryPaths.size()); ++b) {
+            const auto [color, w] = boundaryPen(b);
+            QPen pen(color, w);
+            pen.setCosmetic(true);
+            p.setPen(pen);
+            p.drawPath(a_boundaryPaths[std::size_t(b)]);
+        }
+        for (std::size_t k = 0; k < a_contourPaths.size(); ++k) {
+            QPen pen(a_contourColors[k], 1.3);
+            pen.setCosmetic(true);
+            p.setPen(pen);
+            p.drawPath(a_contourPaths[k]);
+        }
+        p.restore();
+        for (const PlotScene::Rays& r : a_plot->rays) paintRays(p, r);
     }
-    for (std::size_t k = 0; k < a_contourPaths.size(); ++k) {
-        QPen pen(a_contourColors[k], 1.3);
-        pen.setCosmetic(true);
-        p.setPen(pen);
-        p.drawPath(a_contourPaths[k]);
-    }
-    p.restore();
-    for (const PlotScene::Rays& r : a_plot->rays) paintRays(p, r);
     for (const PlotScene::Arrows& a : a_plot->arrows) paintArrows(p, a);
     if (a_plot->surface) {
         paintLegend(p, c, a_plot->surfaceLabel, a_plot->colors, a_plot->min, a_plot->max);
@@ -712,22 +925,26 @@ QColor spectral(double lambda)
 
 } // namespace
 
-void GraphicsView::paintRays(QPainter& p, const PlotScene::Rays& rays)
+QColor GraphicsView::rayColor(const PlotScene::Rays& rays, std::size_t ray, std::size_t point)
 {
     const std::vector<QRgb>& table = colorTable(rays.colors);
     const double span = rays.max > rays.min ? rays.max - rays.min : 1;
     auto fromTable = [&](double v) { return QColor::fromRgb(table[std::size_t(std::clamp(int((v - rays.min) / span * 255 + 0.5), 0, 255))]); };
+    if (rays.by == QLatin1String("wavelength")) return spectral(rays.lambda[ray]);
+    if (rays.by == QLatin1String("release")) return fromTable(rays.release[ray]);
+    if (rays.by == QLatin1String("power")) return fromTable(rays.power[ray][point]);
+    return rays.single;
+}
+
+void GraphicsView::paintRays(QPainter& p, const PlotScene::Rays& rays)
+{
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
     for (std::size_t k = 0; k < rays.paths.size(); ++k) {
         const std::vector<QPointF>& path = rays.paths[k];
         if (path.size() < 2) continue;
-        QColor color = rays.single;
-        if (rays.by == QLatin1String("wavelength")) color = spectral(rays.lambda[k]);
-        else if (rays.by == QLatin1String("release")) color = fromTable(rays.release[k]);
         for (std::size_t i = 0; i + 1 < path.size(); ++i) {
-            if (rays.by == QLatin1String("power")) color = fromTable(rays.power[k][i]);
-            QPen pen(color, 1.1);
+            QPen pen(rayColor(rays, k, i), 1.1);
             p.setPen(pen);
             p.drawLine(toPixel(path[i]), toPixel(path[i + 1]));
         }

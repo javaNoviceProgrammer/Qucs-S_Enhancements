@@ -27,6 +27,8 @@
 
 namespace qucs_s::fem {
 
+class GlCanvas;
+
 /// A color table: 256 colors, from the least value to the greatest.
 const std::vector<QRgb>& colorTable(const QString& name);
 
@@ -79,6 +81,7 @@ class GraphicsView : public QWidget
 
 public:
     explicit GraphicsView(QWidget* parent = nullptr);
+    ~GraphicsView() override;
 
     enum class Show { Geometry, Mesh, Results };
     Show show() const { return a_show; }
@@ -114,10 +117,24 @@ public:
     void zoomBy(double factor, QPointF anchor = QPointF(-1, -1));
     QPointF toModel(QPointF pixel) const;
     QPointF toPixel(QPointF point) const;
-    /// What is drawn now, as an image.
+    /// What is drawn now, as an image (drawn by the CPU, whatever draws
+    /// the view).
     QImage picture();
     /// The surface's rasterizations so far (for the tests: the cache works).
     int rasters() const { return a_rasters; }
+
+    /// Drawn by the GPU (OpenGL 3.3): its domains, mesh, surface, lines
+    /// from buffers made once, the text over them; where a context can be
+    /// made (not on the offscreen platform) and neither the setting
+    /// Multiphysics/gpu nor QUCS_GPU=0 says no.
+    bool gpu() const { return a_canvas != nullptr; }
+    void setGpu(bool on);
+    static bool gpuAvailable();
+    /// Before the application is made: every window's OpenGL the core
+    /// profile the GPU's drawing asks for (macOS shares only alike contexts).
+    static void prepareGpu();
+    /// The frames the GPU has drawn (for the tests).
+    int gpuFrames() const;
 
 signals:
     /// A click on an entity of the pick level (\a entity -1: on none).
@@ -136,8 +153,10 @@ protected:
     void leaveEvent(QEvent* event) override;
     bool event(QEvent* event) override;
     void changeEvent(QEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
+    friend class GlCanvas;
     struct Colors {
         QColor background, ink, faint, boundary, highlight, hover;
     };
@@ -153,6 +172,14 @@ private:
     void paintRays(QPainter& p, const PlotScene::Rays& rays);
     void rasterize();
     QTransform modelToPixel() const;
+    void redraw();
+    /// The view's picture, by \a gl's GPU (its heavy layers) or the CPU.
+    void paintFrame(QPainter& p, GlCanvas* gl);
+    void canvasFailed();
+    void buildMeshPath();
+    QColor domainFill(int d, const Colors& c, bool faded) const;
+    static QColor qualityColor(double quality);
+    static QColor rayColor(const PlotScene::Rays& rays, std::size_t ray, std::size_t point);
 
     Show a_show = Show::Geometry;
     bool a_axisymmetric = false;
@@ -161,7 +188,9 @@ private:
     std::shared_ptr<const PlotScene> a_plot;
     std::vector<QPainterPath> a_domainPaths;     // the geometry's unit
     std::vector<QPainterPath> a_boundaryPaths;
-    QPainterPath a_meshPath;
+    std::vector<std::pair<int, int>> a_meshEdges;   // nodes, each edge once
+    QPainterPath a_meshPath;                     // made when the CPU draws it
+    bool a_meshPathBuilt = false;
     std::vector<QPainterPath> a_contourPaths;    // by contour plot and level, flattened
     std::vector<QColor> a_contourColors;
 
@@ -178,6 +207,12 @@ private:
     bool a_rasterDirty = true;
     int a_rasters = 0;
     QImage a_qualityRaster;
+    bool a_exporting = false;        // picture(): the CPU at its best
+
+    GlCanvas* a_canvas = nullptr;    // the GPU's, over the view
+    GlCanvas* a_gl = nullptr;        // the GPU painting now, through it
+    bool a_gpuBroken = false;        // its shaders failed: not again
+    quint64 a_topologyStamp = 1, a_meshStamp = 1, a_plotStamp = 1;   // changed data, for its buffers
 
     QPoint a_pressPos, a_lastPos;
     bool a_dragging = false;
