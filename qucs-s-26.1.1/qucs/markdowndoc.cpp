@@ -102,11 +102,7 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
         const qucs_s::math::Typeset t = qucs_s::math::typeset(sp.tex, at, colours.ink, sp.display, devicePixelRatio);
         hit.insertText(QString(QChar::ObjectReplacementCharacter), qucs_s::math::MathObject::format(t, at, sp.tex));
         if (sp.display && hit.block().text().trimmed() == QString(QChar::ObjectReplacementCharacter)) {
-            QTextBlockFormat bf = hit.blockFormat();
-            bf.setAlignment(Qt::AlignHCenter);
-            bf.setTopMargin(std::max(bf.topMargin(), 4.0));
-            bf.setBottomMargin(std::max(bf.bottomMargin(), 4.0));
-            hit.setBlockFormat(bf);
+            qucs_s::math::placeDisplay(hit);
         }
     }
 }
