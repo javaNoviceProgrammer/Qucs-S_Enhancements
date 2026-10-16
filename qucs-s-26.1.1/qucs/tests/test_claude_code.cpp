@@ -40,6 +40,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
+#include <QAbstractTextDocumentLayout>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextDocument>
@@ -55,6 +56,7 @@
 #include "claudecodepanel.h"
 #include "claudecodetabs.h"
 #include "claudehistory.h"
+#include "markdowndoc.h"
 #include "mathtypeset.h"
 #include "config.h"
 #include "isolated_settings.h"
@@ -1716,10 +1718,15 @@ private slots:
             {"type", "assistant"},
             {"message", QJsonObject{{"content", QJsonArray{QJsonObject{
                 {"type", "text"},
-                {"text", "The cutoff is $f_c = \\frac{1}{2\\pi RC}$.\n\n$$Z = \\sqrt{\\frac{L}{C}}$$\n\n- in a list: $\\omega_0$\n\n`$not$ math`"}}}}}}}).toJson(QJsonDocument::Compact));
+                {"text", "The cutoff is $f_c = \\frac{1}{2\\pi RC}$.\n\n$$Z = \\sqrt{\\frac{L}{C}}$$\n\n- in a list: $\\omega_0$\n\n`$not$ math`\n\n"
+                         "```math\nY = 1/Z\n```\n"}}}}}}}).toJson(QJsonDocument::Compact));
         panel.renderNow();
         const QStringList typeset = mathIn(panel.transcript()->document());
-        QCOMPARE(typeset, (QStringList{"f_c = \\frac{1}{2\\pi RC}", "Z = \\sqrt{\\frac{L}{C}}", "\\omega_0"}));
+        QCOMPARE(typeset, (QStringList{"f_c = \\frac{1}{2\\pi RC}", "Z = \\sqrt{\\frac{L}{C}}", "\\omega_0", "Y = 1/Z"}));
+        QVERIFY(!panel.transcriptText().contains("```"));
+        // (Its images drawn smoothly, its math on whole pixels: markdowndoc.h, mathtypeset.h.)
+        QVERIFY(dynamic_cast<qucs_s::markdown::SmoothImages*>(
+                    panel.transcript()->document()->documentLayout()->handlerForObject(QTextFormat::ImageObject)) != nullptr);
         const QString shown = panel.transcriptText();
         QVERIFY(!shown.contains("\\frac"));
         QVERIFY(shown.contains("The cutoff is"));

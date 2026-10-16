@@ -11,6 +11,10 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
+#include <QSet>
+#include <QPainter>
+#include <QPicture>
+#include <QAbstractTextDocumentLayout>
 #include <QScrollBar>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -327,6 +331,9 @@ private slots:
         };
         QList<Drawn> images = drawn();
         QCOMPARE(images.size(), 4);
+        // (Drawn smoothly, its math at the screen's pixels: SmoothImages.)
+        QVERIFY(dynamic_cast<qucs_s::markdown::SmoothImages*>(
+                    md->preview()->document()->documentLayout()->handlerForObject(QTextFormat::ImageObject)) != nullptr);
         const qreal roomWide = images[0].room;
         QVERIFY2(images[0].name == "wide.png" && images[0].size.width() <= roomWide && images[0].size.width() > roomWide - 2,
                  qPrintable(QString("%1 in %2").arg(images[0].size.width()).arg(roomWide)));
@@ -356,6 +363,280 @@ private slots:
         QVERIFY(images[0].size.width() > roomWide - 2);
         QCOMPARE(images[2].size, QSizeF(500, 125));
         app.closeAllFiles();
+    }
+
+    // Images in a table's cells fit their cells (they were fitted to the
+    // whole width: a table with one ran past the rendering's edge, its
+    // pictures not shrinking with it): a column of text its words' width,
+    // the image's column the rest; two images alike; at any width, the
+    // table within the rendering, each image within its cell.
+    void imagesInATableFitTheirCells()
+    {
+        QImage wide(1600, 400, QImage::Format_RGB32);
+        wide.fill(Qt::darkCyan);
+        QVERIFY(wide.save(dir.filePath("tablewide.png")));
+        const QString file = write("tables.md", "| Plot | Notes |\n|------|-------|\n| ![one](tablewide.png) | a few words |\n\n"
+                                                "| ![two](tablewide.png) | ![three](tablewide.png) |\n|---|---|\n| x | y |\n\n"
+                                                "| ![four](tablewide.png) | A longer note on the plot beside it, which wraps in its cell "
+                                                "as the table narrows: it is text, and has the room the picture leaves. |\n|---|---|\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1200, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        pump();
+        // Each image: its size, where it starts and where the next cell of
+        // its row starts (the rendering's right margin for the last).
+        struct Drawn {
+            QSizeF size;
+            qreal left, next;
+        };
+        const auto drawn = [md] {
+            QTextDocument* doc = md->preview()->document();
+            QList<Drawn> out;
+            for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                    if (it.fragment().charFormat().isImageFormat()) {
+                        const QTextImageFormat f = it.fragment().charFormat().toImageFormat();
+                        qreal next = md->preview()->viewport()->width() - doc->documentMargin();
+                        if (QTextTable* t = QTextCursor(b).currentTable()) {
+                            const QTextTableCell cell = t->cellAt(b.position());
+                            const QTextTableCell after = t->cellAt(cell.row(), cell.column() + cell.columnSpan());
+                            if (after.isValid()) next = doc->documentLayout()->blockBoundingRect(doc->findBlock(after.firstPosition())).left();
+                        }
+                        out.append({QSizeF(f.width(), f.height()), doc->documentLayout()->blockBoundingRect(b).left(), next});
+                    }
+            return out;
+        };
+        for (const int width : {1400, 900, 700, 450, 1400}) {
+            app.resize(width, 800);
+            pump();
+            const QString at = QStringLiteral("at %1: ").arg(width);
+            const QList<Drawn> images = drawn();
+            QCOMPARE(images.size(), 4);
+            const qreal room = md->preview()->viewport()->width() - 2 * md->preview()->document()->documentMargin();
+            QVERIFY2(md->preview()->document()->idealWidth() <= md->preview()->viewport()->width() + 1,
+                     qPrintable(at + QString("%1 in %2").arg(md->preview()->document()->idealWidth()).arg(md->preview()->viewport()->width())));
+            QVERIFY(!md->preview()->horizontalScrollBar()->isVisible());
+            // (Each in its cell: Qt's layout keeps a table to the width and
+            // squeezes its columns - an image wider than its cell ran over
+            // the next one, past the edge.)
+            for (const Drawn& d : images) {
+                QVERIFY2(d.left + d.size.width() <= d.next + 0.5,
+                         qPrintable(at + QString("%1 from %2, the next cell at %3").arg(d.size.width()).arg(d.left).arg(d.next)));
+                QVERIFY(qAbs(d.size.height() - d.size.width() / 4) < 0.01);
+            }
+            // The picture beside a few words has most of the room; two side
+            // by side the same; beside a long note, room still. (At 450 the
+            // rendering is a hundred pixels: a picture beside words there
+            // has what the words leave.)
+            qInfo("%s room %.0f: %.0f, %.0f and %.0f, %.0f", qPrintable(at), room, images[0].size.width(), images[1].size.width(),
+                  images[2].size.width(), images[3].size.width());
+            if (room < 300) continue;
+            QVERIFY2(images[0].size.width() > 0.6 * room, qPrintable(at + QString("%1 of %2").arg(images[0].size.width()).arg(room)));
+            QVERIFY(qAbs(images[1].size.width() - images[2].size.width()) < 1);
+            QVERIFY2(images[1].size.width() > 0.4 * room, qPrintable(at + QString("%1 of %2").arg(images[1].size.width()).arg(room)));
+            QVERIFY2(images[3].size.width() > 0.3 * room, qPrintable(at + QString("%1 of %2").arg(images[3].size.width()).arg(room)));
+        }
+        app.closeAllFiles();
+    }
+
+    // Images are drawn smoothly scaled - an average of the pixels each
+    // takes in - with the device's pixels (Qt's own took the nearest pixel
+    // of the picture for each: a plot's lines and letters lost, scaled
+    // down); one at its own size pixel for pixel.
+    void imagesAreDrawnSmoothly()
+    {
+        QImage stripes(1200, 40, QImage::Format_RGB32);
+        for (int x = 0; x < stripes.width(); ++x)
+            for (int y = 0; y < stripes.height(); ++y) stripes.setPixel(x, y, x % 2 == 0 ? 0xff000000 : 0xffffffff);
+        QImage dot(60, 20, QImage::Format_RGB32);
+        for (int x = 0; x < dot.width(); ++x)
+            for (int y = 0; y < dot.height(); ++y) dot.setPixel(x, y, qRgb(4 * x, 12 * y, 200));
+        // A document of the stripes (fitted to 400: a third) and the dot,
+        // drawn at a device pixel ratio; the share of grey pixels across the
+        // stripes, and whether the dot is its own pixels.
+        struct Seen {
+            double grey = 0;
+            bool dotExact = false;
+        };
+        const auto draw = [&stripes, &dot](bool smooth, qreal dpr) {
+            QTextDocument doc;
+            doc.setDocumentMargin(10);
+            if (smooth) qucs_s::markdown::SmoothImages::install(&doc);
+            qucs_s::markdown::render(&doc, "![s](stripes.png)\n\n![d](dot.png)\n", QFont(), {});
+            doc.addResource(QTextDocument::ImageResource, QUrl("stripes.png"), stripes);
+            doc.addResource(QTextDocument::ImageResource, QUrl("dot.png"), dot);
+            qucs_s::markdown::fitImages(&doc, 420);
+            doc.setTextWidth(420);
+            QImage out(QSize(420, int(doc.size().height()) + 2) * dpr, QImage::Format_RGB32);
+            out.setDevicePixelRatio(dpr);
+            out.fill(Qt::white);
+            QPainter p(&out);
+            p.translate(0, 0.37);   // (a fraction of a pixel down: on whole pixels all the same)
+            doc.drawContents(&p);
+            p.end();
+            Seen seen;
+            const QRectF first = doc.documentLayout()->blockBoundingRect(doc.begin());
+            const int y = int((first.top() + 10) * dpr);
+            int grey = 0, all = 0;
+            for (int x = int(15 * dpr); x < int(395 * dpr); ++x, ++all) {
+                const int v = qGray(out.pixel(x, y));
+                grey += v > 25 && v < 230;
+            }
+            seen.grey = double(grey) / all;
+            // The dot: at its own size where the device is 1:1.
+            const QRectF second = doc.documentLayout()->blockBoundingRect(doc.begin().next());
+            const QPoint at(int(std::round((second.left() + 0) * dpr)), int(std::round((second.top() + 0.37) * dpr)));
+            int exact = 0;
+            for (int x = 0; x < 60; ++x)
+                for (int y2 = 0; y2 < 20; ++y2) exact += out.pixel(at.x() + x, at.y() + y2) == dot.pixel(x, y2);
+            seen.dotExact = exact == 60 * 20;
+            return seen;
+        };
+        const Seen qts = draw(false, 1.0), ours = draw(true, 1.0), retina = draw(true, 2.0);
+        QVERIFY2(qts.grey < 0.05, qPrintable(QString::number(qts.grey)));   // (Qt's: black or white, a stripe in three)
+        QVERIFY2(ours.grey > 0.95, qPrintable(QString::number(ours.grey)));
+        QVERIFY2(retina.grey > 0.9, qPrintable(QString::number(retina.grey)));
+        QVERIFY(ours.dotExact);
+        // On paper (no pixels of its own, a picture): Qt's, the image whole.
+        QTextDocument doc;
+        qucs_s::markdown::SmoothImages::install(&doc);
+        qucs_s::markdown::render(&doc, "![s](stripes.png)", QFont(), {});
+        doc.addResource(QTextDocument::ImageResource, QUrl("stripes.png"), stripes);
+        qucs_s::markdown::fitImages(&doc, 420);
+        QPicture picture;
+        QPainter p(&picture);
+        doc.drawContents(&p);
+        p.end();
+        QVERIFY(picture.size() > 0);
+    }
+
+    // In a window - a browser placed in it, drawn where it is - an image
+    // and a formula are drawn where the layout put them (taken off the
+    // painter's transform, each was moved twice: the chat's pictures below
+    // its prompt's frame).
+    void drawnWhereLaidOutInAWindow()
+    {
+        QWidget window;
+        window.resize(520, 420);
+        auto* browser = new QTextBrowser(&window);
+        browser->setGeometry(30, 70, 440, 320);
+        browser->setFrameShape(QFrame::NoFrame);
+        QTextDocument* doc = browser->document();
+        qucs_s::math::MathObject::install(doc);
+        qucs_s::markdown::SmoothImages::install(doc);
+        QImage solid(300, 60, QImage::Format_RGB32);
+        solid.fill(qRgb(0, 160, 0));
+        qucs_s::markdown::render(doc, "![s](solid.png)\n\nThe math: $\\sum_{k=1}^{n} k^2$ here.\n", QFont(), {});
+        doc->addResource(QTextDocument::ImageResource, QUrl("solid.png"), solid);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        qucs_s::markdown::fitImages(doc, browser->viewport()->width());
+        pump();
+        const QImage shot = window.grab().toImage();
+        const QPoint origin = browser->viewport()->mapTo(&window, QPoint(0, 0));
+        // The image: green at its middle, not above it.
+        const QRectF block = doc->documentLayout()->blockBoundingRect(doc->begin());
+        const QPoint middle = origin + QPoint(int(block.left() + 150), int(block.top() + 30));
+        QVERIFY2(block.height() > 55, qPrintable(QString::number(block.height())));   // (the picture 300 by 60)
+        QCOMPARE(QColor(shot.pixel(middle)).green(), 160);
+        QVERIFY(QColor(shot.pixel(middle - QPoint(0, 33))).green() != 160 || QColor(shot.pixel(middle - QPoint(0, 33))).red() != 0);
+        // The formula: ink within its place in its line.
+        QTextBlock line = doc->begin().next();
+        int at = -1;
+        for (QTextBlock::iterator it = line.begin(); !it.atEnd(); ++it)
+            if (it.fragment().charFormat().objectType() == qucs_s::math::MathObject::Type) at = it.fragment().position() - line.position();
+        QVERIFY(at >= 0);
+        const QTextLine l = line.layout()->lineForTextPosition(at);
+        const QRectF lineRect = doc->documentLayout()->blockBoundingRect(line);
+        const QRect place(origin + QPoint(int(lineRect.left() + l.cursorToX(at)), int(lineRect.top() + l.y())), QSize(20, int(l.height())));
+        int darkest = 255;
+        for (int x = place.left(); x <= place.right(); ++x)
+            for (int y = place.top(); y <= place.bottom(); ++y) darkest = std::min(darkest, qGray(shot.pixel(x, y)));
+        QVERIFY2(darkest < 100, qPrintable(QString::number(darkest)));
+    }
+
+    // Math is typeset at the screen's pixels and drawn on whole ones, a
+    // pixel of it to each (the rendering's was typeset at one to a point,
+    // scaled up on a Retina screen; and drawn at a fraction of a pixel,
+    // blended with its neighbours: blurred). GitHub's math blocks and bare
+    // equation environments are typeset; \\( written for MathJax too.
+    void mathIsSharpAndFound()
+    {
+        QTextDocument doc;
+        qucs_s::math::MathObject::install(&doc);
+        qucs_s::markdown::render(&doc, "Inline $x^2$.", QFont(), {}, 2.0);
+        QImage image;
+        QTextCharFormat math;
+        for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                if (it.fragment().charFormat().objectType() == qucs_s::math::MathObject::Type) {
+                    math = it.fragment().charFormat();
+                    image = qvariant_cast<QImage>(math.property(qucs_s::math::MathObject::ImageProperty));
+                }
+        QVERIFY(!image.isNull());
+        QCOMPARE(image.devicePixelRatio(), 2.0);
+        // Drawn at a fraction of a pixel: on the nearest whole one, its own
+        // pixels.
+        const QSizeF size = math.property(qucs_s::math::MathObject::SizeProperty).toSizeF();
+        QImage drawn(QSize(80, 60) * 2, QImage::Format_ARGB32_Premultiplied), expected = drawn;
+        drawn.setDevicePixelRatio(2);
+        expected.setDevicePixelRatio(2);
+        drawn.fill(Qt::white);
+        expected.fill(Qt::white);
+        {
+            QPainter p(&drawn);
+            qucs_s::math::MathObject object;
+            object.drawObject(&p, QRectF(QPointF(10.3, 5.7), size), &doc, 0, math);
+        }
+        {
+            QPainter p(&expected);
+            p.drawImage(QPointF(21, 11) / 2, image);   // (20.6 and 11.4 device pixels, rounded)
+        }
+        QVERIFY(drawn == expected);
+
+        using qucs_s::math::findMath;
+        const auto texts = [](const QString& md) {
+            QStringList t;
+            for (const auto& sp : findMath(md)) t << (sp.display ? "D:" : "T:") + sp.tex;
+            return t;
+        };
+        QCOMPARE(texts("```math\nE = mc^2\n```"), QStringList{"D:E = mc^2"});
+        QCOMPARE(texts("~~~ Math\nx\n~~~\n"), QStringList{"D:x"});
+        QCOMPARE(texts("- item\n\n  ```math\n  a^2 + b^2\n  ```\n"), QStringList{"D:a^2 + b^2"});
+        QCOMPARE(texts("$a$ then\n```math\nb\n```\nthen $c$"), (QStringList{"T:a", "D:b", "T:c"}));
+        QCOMPARE(texts("```python\nx = $a$\n```"), QStringList());
+        QCOMPARE(texts("````\n```math\nx\n```\n````"), QStringList());   // (in another block)
+        QCOMPARE(texts("```a``` and ```math``` inline"), QStringList());
+        QCOMPARE(texts("```a``` x\n\n```math\nb\n```\n"), QStringList{"D:b"});   // (inline code first: no fence)
+        QCOMPARE(texts("\\begin{equation}\nE = mc^2\n\\end{equation}"), QStringList{"D:\\begin{equation}\nE = mc^2\n\\end{equation}"});
+        QCOMPARE(texts("\\begin{align*}\na &= b \\\\\nc &= d\n\\end{align*}"), QStringList{"D:\\begin{align*}\na &= b \\\\\nc &= d\n\\end{align*}"});
+        QCOMPARE(texts("$$\\begin{equation}x\\end{equation}$$"), QStringList{"D:\\begin{equation}x\\end{equation}"});
+        QCOMPARE(texts("\\begin{itemize}x\\end{itemize}"), QStringList());
+        QCOMPARE(texts("Inline \\\\(a^2\\\\) and \\\\[b\\\\]"), (QStringList{"T:a^2", "D:b"}));
+        for (const char* tex : {"\\begin{equation}\nE = mc^2\n\\end{equation}", "\\begin{align*}\na &= b \\\\\nc &= d\n\\end{align*}"})
+            QVERIFY2(qucs_s::math::typeset(QString::fromLatin1(tex), QFont(), Qt::black, true).ok, tex);
+        // Rendered: each typeset, nothing of the fences left; a block centred.
+        QTextDocument blocks;
+        qucs_s::math::MathObject::install(&blocks);
+        qucs_s::markdown::render(&blocks, "Before.\n\n```math\nZ = R + jX\n```\n\n\\begin{equation}\nY = 1/Z\n\\end{equation}\n\nAfter \\\\(w\\\\).\n",
+                                 QFont(), {});
+        QStringList typeset;
+        bool centred = false;
+        for (QTextBlock b = blocks.begin(); b.isValid(); b = b.next())
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                if (it.fragment().charFormat().objectType() == qucs_s::math::MathObject::Type) {
+                    typeset << it.fragment().charFormat().toolTip();
+                    centred = centred || (b.blockFormat().alignment() & Qt::AlignHCenter);
+                }
+        QCOMPARE(typeset, (QStringList{"Z = R + jX", "\\begin{equation}\nY = 1/Z\n\\end{equation}", "w"}));
+        QVERIFY(centred);
+        QVERIFY2(!blocks.toPlainText().contains("```") && !blocks.toPlainText().contains("begin"), qPrintable(blocks.toPlainText()));
     }
 
     // The rendering follows the edits; the text is saved as it is.

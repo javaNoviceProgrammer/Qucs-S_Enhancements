@@ -13,9 +13,12 @@
 
 #include "textdoc.h"
 
+#include <QCache>
 #include <QColor>
 #include <QFont>
+#include <QImage>
 #include <QString>
+#include <QTextObjectInterface>
 #include <QUrl>
 
 class QButtonGroup;
@@ -35,21 +38,52 @@ struct Colours {
 
 /// \a markdown (GitHub's dialect: headings, lists, task lists, tables,
 /// code, links, images, emphasis, strike-through) rendered into \a document
-/// in \a font, code on a shade, TeX math between dollars typeset
-/// (mathtypeset.h). The document's layout must draw math objects
-/// (MathObject::install()).
-void render(QTextDocument* document, const QString& markdown, const QFont& font, const Colours& colours);
+/// in \a font, code on a shade, TeX math typeset (mathtypeset.h: between
+/// dollars, a math block, a bare equation environment) at \a
+/// devicePixelRatio - the screen's, else it is scaled up there, blurred.
+/// The document's layout must draw math objects (MathObject::install()).
+void render(QTextDocument* document, const QString& markdown, const QFont& font, const Colours& colours,
+            qreal devicePixelRatio = 1.0);
 
 /// The anchor GitHub gives a heading: "Getting Started!" -> "getting-started".
 QString anchorOf(const QString& heading);
 
 /// \a document's images no wider than the room their paragraph has when
 /// the document is \a width wide (its margins and the paragraph's indent
-/// left out): each at its own size where that fits, else scaled down, its
-/// proportions kept - never enlarged; a width its Markdown or HTML gave the
-/// most. Their own sizes from the document's resources (the browser's
-/// files). Whether any changed.
+/// left out; in a table, its cell's - the columns with no image their
+/// text's width at most, those with one the rest alike): each at its own
+/// size where that fits, else scaled down, its proportions kept - never
+/// enlarged; a width its Markdown or HTML gave the most. Their own sizes
+/// from the document's resources (the browser's files). Whether any
+/// changed.
 bool fitImages(QTextDocument* document, qreal width);
+
+/*!
+ * A document's images drawn smoothly: each scaled to the device pixels it
+ * covers (an average of the pixels it takes in, scaled down; between them,
+ * scaled up), on whole pixels, kept until that size changes. Qt's own
+ * draws an image's own pixels into its rectangle a nearest one to each, so
+ * a plot fitted to a narrow panel lost its lines and letters. Sizes, a
+ * missing image and print (an image's own pixels in a PDF) are Qt's.
+ */
+class SmoothImages : public QObject, public QTextObjectInterface
+{
+    Q_OBJECT
+    Q_INTERFACES(QTextObjectInterface)
+
+public:
+    /// \a document's layout draws its images so from now on.
+    static void install(QTextDocument* document);
+
+    QSizeF intrinsicSize(QTextDocument* doc, int posInDocument, const QTextFormat& format) override;
+    void drawObject(QPainter* painter, const QRectF& rect, QTextDocument* doc, int posInDocument,
+                    const QTextFormat& format) override;
+
+private:
+    SmoothImages(QObject* parent, QTextObjectInterface* qts);
+    QTextObjectInterface* a_qts;   // Qt's own handler
+    QCache<QString, QImage> a_scaled;
+};
 
 } // namespace qucs_s::markdown
 
