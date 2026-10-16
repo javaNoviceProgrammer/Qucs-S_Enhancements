@@ -3497,6 +3497,80 @@ private slots:
         QDir(history::directory()).removeRecursively();
     }
 
+    // A reply's images no wider than the panel: a wide plot at the width it
+    // has (less the margins, a list's indent), its height in proportion, as
+    // it narrows and widens - never past its own size; a small one as it is.
+    // (Qt's text layout draws an image at its own size: a plot ran past the
+    // panel's edge, as the Markdown preview's had.)
+    void repliesImagesFitThePanel()
+    {
+        const QString work = fresh("imagework");
+        QImage wide(1600, 400, QImage::Format_RGB32), small(60, 20, QImage::Format_RGB32);
+        wide.fill(Qt::darkCyan);
+        small.fill(Qt::darkRed);
+        QVERIFY(wide.save(work + "/plot.png") && small.save(work + "/small.png"));
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        panel.session()->setProgram("claude");
+        panel.session()->handleLine(QJsonDocument(QJsonObject{
+            {"type", "assistant"},
+            {"message", QJsonObject{{"content", QJsonArray{QJsonObject{
+                {"type", "text"},
+                {"text", QStringLiteral("The response:\n\n![plot](%1/plot.png)\n\nand ![dot](%1/small.png)\n\n- in a list:\n\n  ![again](%1/plot.png)").arg(work)}}}}}}})
+                                        .toJson(QJsonDocument::Compact));
+        panel.renderNow();
+        QTextBrowser* view = panel.transcript();
+        auto images = [view] {
+            QList<QSizeF> out;
+            for (QTextBlock b = view->document()->begin(); b.isValid(); b = b.next())
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                    if (it.fragment().charFormat().isImageFormat()) {
+                        const QTextImageFormat f = it.fragment().charFormat().toImageFormat();
+                        out << QSizeF(f.width(), f.height());
+                    }
+            return out;
+        };
+        auto check = [&](const char* when) {
+            const QList<QSizeF> got = images();
+            QVERIFY2(got.size() >= 3, when);
+            const qreal room = view->viewport()->width() - 2 * view->document()->documentMargin();
+            for (int k : {0, 2}) {
+                QVERIFY2(got.at(k).width() > 0 && got.at(k).width() <= room && got.at(k).width() <= 1600, qPrintable(QStringLiteral("%1: %2 in %3").arg(when).arg(got.at(k).width()).arg(room)));
+                QVERIFY2(std::abs(got.at(k).height() - got.at(k).width() / 4) < 1, when);
+            }
+            QVERIFY2(got.at(2).width() < got.at(0).width(), when);   // (the list's indent)
+            QVERIFY2(got.at(1) == QSizeF(60, 20), when);
+            QVERIFY2(view->document()->idealWidth() <= view->viewport()->width() + 1, when);
+        };
+        check("at 440");
+        const qreal at440 = images().at(0).width();
+        panel.resize(900, 700);
+        QTRY_VERIFY(images().at(0).width() > at440 + 300);
+        check("at 900");
+        panel.resize(300, 700);
+        QTRY_VERIFY(images().at(0).width() < at440);
+        check("at 300");
+        // Rendered again (a reply goes on): fitted again - hidden too (a
+        // tab behind another, no resize to fit them on).
+        panel.renderNow();
+        check("rendered again");
+        panel.hide();
+        panel.session()->handleLine(QJsonDocument(QJsonObject{
+            {"type", "assistant"},
+            {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", QStringLiteral("More: ![plot](%1/plot.png)").arg(work)}}}}}}})
+                                        .toJson(QJsonDocument::Compact));
+        panel.renderNow();
+        QCOMPARE(images().size(), 4);
+        QVERIFY2(images().at(3).width() > 0 && images().at(3).width() <= view->viewport()->width(), qPrintable(QString::number(images().at(3).width())));
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        panel.resize(2400, 700);
+        QTRY_COMPARE(images().at(0).width(), 1600.0);   // (never enlarged)
+    }
+
     // The resume list's columns: each one's edge dragged by the mouse - the
     // conversation's had been stretched, out of the user's reach -, the
     // widths kept for the next time; a folder's path cut in its middle, its
