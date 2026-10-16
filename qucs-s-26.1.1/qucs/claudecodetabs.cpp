@@ -12,6 +12,7 @@
 
 #include "apptheme.h"
 #include "claudecodepanel.h"
+#include "settings.h"
 
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -22,6 +23,7 @@
 #include <QJsonArray>
 #include <QLocale>
 #include <QPushButton>
+#include <QStyledItemDelegate>
 #include <QTreeWidget>
 #include <QUuid>
 #include <QEvent>
@@ -334,6 +336,20 @@ QString whenOf(const QDateTime& time)
     return QLocale().toString(local.date(), QLocale::ShortFormat);
 }
 
+// A folder's path cut in its middle: its end - the project - seen.
+class MiddleElided : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        option->textElideMode = Qt::ElideMiddle;
+    }
+};
+
 } // namespace
 
 QDialog* ClaudeCodeTabs::resumeDialog(const QString& folder, const QString& query)
@@ -353,7 +369,20 @@ QDialog* ClaudeCodeTabs::resumeDialog(const QString& folder, const QString& quer
     list->setHeaderLabels({tr("Conversation"), tr("Folder"), tr("When"), tr("From")});
     list->setRootIsDecorated(false);
     list->setUniformRowHeights(true);
-    list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    // (Each column's edge the user's to drag, the last filling what is
+    // left; their widths as they were left the last time.)
+    QHeaderView* header = list->header();
+    header->setSectionResizeMode(QHeaderView::Interactive);
+    header->setStretchLastSection(true);
+    const QByteArray widths = QucsSettingsFile().value(QStringLiteral("ClaudeCode/resumeColumns")).toByteArray();
+    if (widths.isEmpty() || !header->restoreState(widths)) {
+        header->resizeSection(0, 330);
+        header->resizeSection(1, 170);
+        header->resizeSection(2, 80);
+    }
+    connect(dialog, &QDialog::finished, dialog,
+            [header] { QucsSettingsFile().setValue(QStringLiteral("ClaudeCode/resumeColumns"), header->saveState()); });
+    list->setItemDelegateForColumn(1, new MiddleElided(list));
     const QList<history::Summary> all = resumable(folder);
     for (qsizetype i = 0; i < all.size(); ++i) {
         const history::Summary& s = all.at(i);
