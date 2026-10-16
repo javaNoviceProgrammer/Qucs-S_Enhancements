@@ -1098,11 +1098,12 @@ private slots:
         const Run carriers = run(modelOf(slab(QStringLiteral(R"({"type": "wave", "plasma": true, "selection": {"only": ["core"]}})"), true)));
         QVERIFY2(carriers.error.isEmpty(), qPrintable(carriers.error));
         const double dn = -8.8e-22 * 1e18, dalpha = 8.5e-18 * 1e18 * 100;
-        // (The library's silicon's index at 1550 nm: Li's, of the wavelength.)
+        // (The library's silicon's index at 1550 nm: its Sellmeier fitted to
+        // Green's and Li's, Li's 3.4757 there.)
         Scope at1550(&Scope::builtins());
         at1550.setConstant(QStringLiteral("lambda0"), 1.55e-6, Dim::length());
         const double n0 = evaluateConstant(findMaterial(QStringLiteral("Silicon"))->properties.value(QStringLiteral("n")).toString(), at1550, Dim()).value_or(NAN);
-        QVERIFY2(std::abs(n0 - 3.4764) < 1e-4, qPrintable(QString::number(n0, 'g', 10)));
+        QVERIFY2(std::abs(n0 - 3.4757) < 2e-4, qPrintable(QString::number(n0, 'g', 10)));
         const Run given = run(modelOf(slab(QString::fromUtf8(R"x({"type": "wave", "source": "user", "n": "%3 + (%1)", "kappa": "%2", "selection": {"only": ["core"]}})x")
                                                .arg(dn, 0, 'g', 17)
                                                .arg(dalpha * 1.55e-6 / (4 * M_PI), 0, 'g', 17)
@@ -1121,8 +1122,9 @@ private slots:
     }
 
     // The library's indices of the wavelength: a mode at 1310 nm takes
-    // silicon's and its oxide's there (as with them given), germanium's
-    // (1550 nm's, given from 1.5 to 1.6 µm) said out of its range.
+    // silicon's and its oxide's there (as with them given), indium
+    // arsenide's (fitted from 0.1 eV above its gap, 2.731 µm) said out of
+    // its range; germanium's (0.3 to 14 µm) not.
     void indicesOfTheWavelength()
     {
         auto slab = [](const QString& core, const QString& wave) {
@@ -1158,10 +1160,12 @@ private slots:
         const double na = global(a, QStringLiteral("emw.neff")), nb = global(b, QStringLiteral("emw.neff"));
         qInfo("at 1310 nm: neff %.7f (the indices given %.7f)", na, nb);
         QVERIFY(std::abs(na - nb) < 1e-9 && !a.log.join(QLatin1Char(' ')).contains(QLatin1String("holds from")));
+        const Run inas = run(modelOf(slab(QStringLiteral("Indium arsenide"), QString())));
+        QVERIFY2(inas.error.isEmpty(), qPrintable(inas.error));
+        const QString log = inas.solution->log.join(QLatin1Char('\n'));
+        QVERIFY2(log.contains(QString::fromUtf8("Warning: Indium arsenide's index holds from 2.731 to 20 µm (as its material gives it); here it is taken at 1.31 µm")), qPrintable(log));
         const Run ge = run(modelOf(slab(QStringLiteral("Germanium"), QString())));
-        QVERIFY2(ge.error.isEmpty(), qPrintable(ge.error));
-        const QString log = ge.solution->log.join(QLatin1Char('\n'));
-        QVERIFY2(log.contains(QString::fromUtf8("Warning: Germanium's index holds from 1.5 to 1.6 µm (as its material gives it); here it is taken at 1.31 µm")), qPrintable(log));
+        QVERIFY2(ge.error.isEmpty() && !ge.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("holds from")), qPrintable(ge.error));
         // (Its index given on the feature: the user's, nothing said.)
         const Run geGiven = run(modelOf(slab(QStringLiteral("Germanium"), QStringLiteral(R"({"type": "wave", "source": "user", "n": "4.36", "selection": {"only": ["core"]}})"))));
         QVERIFY2(geGiven.error.isEmpty(), qPrintable(geGiven.error));

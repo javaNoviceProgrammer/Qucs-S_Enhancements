@@ -943,7 +943,8 @@ QList<NodeKind> makeKinds()
               flag(QStringLiteral("qwabsorption"), tr("Quantum wells' absorption (QCSE)"), false,
                    tr("A quantum wells physics' absorption and Kramers-Kronig index at the mode's photon energy, of the field at each "
                       "point: the wells solved again at fields from -Fmax to Fmax, their spectrum as the study's Spectrum step says (its "
-                      "energies the Kramers-Kronig window, its broadening, excitons, absorption per), α added to κ, n(F) - n(F0) to n - "
+                      "energies the Kramers-Kronig window, its broadening, excitons, absorption per), α in place of its material's κ (a "
+                      "compound's bulk edge; a κ given here added to it), n(F) - n(F0) added to n - "
                       "TE along the wells' plane, TM along their axis. An MQW modulator's α(V) and Δn(V) from its semiconductor's field")),
               shownIf(text(QStringLiteral("qwtag"), tr("Quantum wells"), QStringLiteral("qw"), tr("The tag of the quantum wells physics")),
                       QStringLiteral("qwabsorption=true")),
@@ -1044,7 +1045,8 @@ QList<NodeKind> makeKinds()
               shownIf(spatial(QStringLiteral("Pcarriers"), tr("Hole concentration"), QStringLiteral("1/m^3"), QStringLiteral("semi.p")),
                       QStringLiteral("plasma=true|fca=true|bandfilling=true")),
               flag(QStringLiteral("electroabsorption"), tr("Direct-gap absorption (Franz-Keldysh)"), false,
-                   tr("κ + αλ/4π, α a direct gap's: A √((ħω - Eg)/1 eV) (1 eV/ħω) without a field, and under one the Franz-Keldysh "
+                   tr("αλ/4π in place of the material's κ (the same edge, measured - a κ given here is added), α a direct gap's: A "
+                      "√((ħω - Eg)/1 eV) (1 eV/ħω) without a field, and under one the Franz-Keldysh "
                       "effect - A (ħθ/1 eV)^½ π (Ai'(β)² - β Ai(β)²) (1 eV/ħω), β = (Eg - ħω)/ħθ, ħθ = (q²ħ²F²/2µ)^⅓: a tail below "
                       "the gap, an electroabsorption modulator's; germanium's absorption at 1550 nm, a photodiode's")),
               shownIf(choice(QStringLiteral("easource"), tr("Gap, mass and strength"), {QStringLiteral("material"), QStringLiteral("user")},

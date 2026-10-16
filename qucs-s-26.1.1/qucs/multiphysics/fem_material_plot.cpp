@@ -15,6 +15,7 @@
 #include "fem_problem.h"
 
 #include <QCoreApplication>
+#include <QLocale>
 
 #include <cmath>
 #include <optional>
@@ -252,6 +253,34 @@ MaterialCurves materialCurves(const Node& material, const QStringList& keys, con
         out.curves.push_back(std::move(c));
     }
     if (!models.isEmpty()) out.notes << tr("%1: %2").arg(material.name(), models.join(QStringLiteral(", ")));
+    // Its index's range (nrange): taken outside it - swept past it, or held
+    // there -, said (a formula beyond where it was fitted, a table held at
+    // its ends: what a mode or wave solve warns of too).
+    bool optics = false;
+    for (const MaterialCurve& c : out.curves)
+        optics = optics || c.key == QLatin1String("n") || c.key == QLatin1String("kappa") || c.key == QLatin1String("alpha");
+    if (optics) {
+        Node m = material;
+        if (std::isfinite(sweep.x) && v != QLatin1String("x")) m.props.insert(QStringLiteral("x"), formatNumber(sweep.x, 12));
+        if (std::isfinite(sweep.y)) m.props.insert(QStringLiteral("y"), formatNumber(sweep.y, 12));
+        const QStringList range = detail::Problem::materialProperty(m, QStringLiteral("nrange")).simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        const std::optional<double> a = range.size() == 2 ? evaluateConstant(range[0], parameters, Dim::length()) : std::nullopt;
+        const std::optional<double> b = range.size() == 2 ? evaluateConstant(range[1], parameters, Dim::length()) : std::nullopt;
+        if (a && b && *a > 0 && *b > *a) {
+            const double lo = v == QLatin1String("lambda") ? std::min(sweep.from, sweep.to) : sweep.lambda;
+            const double hi = v == QLatin1String("lambda") ? std::max(sweep.from, sweep.to) : sweep.lambda;
+            QStringList outside;
+            auto um = [](double l) { return QLocale::c().toString(l * 1e6, 'g', 4); };
+            // (A stretch of the sweep outside, or the one wavelength.)
+            auto stretch = [&](double from, double to) { return to > from * (1 + 1e-9) ? tr("%1 to %2 µm").arg(um(from), um(to)) : tr("%1 µm").arg(um(from)); };
+            if (lo < *a * (1 - 1e-9)) outside << stretch(lo, std::min(hi, *a));
+            if (hi > *b * (1 + 1e-9)) outside << stretch(std::max(lo, *b), hi);
+            if (!outside.isEmpty())
+                out.notes << tr("%1: its index holds from %2 to %3 µm (its nrange); here taken at %4 - outside it, a formula beyond where it "
+                                "was fitted, a table held at its ends")
+                                 .arg(material.name(), um(*a), um(*b), outside.join(tr(" and ")));
+        }
+    }
     return out;
 }
 
