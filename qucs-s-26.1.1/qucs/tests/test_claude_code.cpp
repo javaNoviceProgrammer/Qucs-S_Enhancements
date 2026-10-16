@@ -189,6 +189,9 @@ while IFS= read -r line; do
       mode=$(printf '%s' "$line" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p')
       echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"mode":"'"$mode"'"}}}'
       ;;
+    *'"subtype":"apply_flag_settings"'*)
+      echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'"}}'
+      ;;
   esac
 done
 )SH";
@@ -505,6 +508,12 @@ private slots:
         QVERIFY(!plain.contains("--permission-mode"));
         QVERIFY(!plain.contains("--resume"));
         QVERIFY(!plain.contains("--model"));
+        // Auto-compact told always, on by default (over the user's own settings).
+        QCOMPARE(plain.at(plain.indexOf("--settings") + 1), QStringLiteral(R"({"autoCompactEnabled":true})"));
+        qucs_s::claude::Options off;
+        off.autoCompact = false;
+        const QStringList noCompact = qucs_s::claude::arguments(off);
+        QCOMPARE(noCompact.at(noCompact.indexOf("--settings") + 1), QStringLiteral(R"({"autoCompactEnabled":false})"));
 
         qucs_s::claude::Options options;
         options.permissionMode = "acceptEdits";
@@ -520,6 +529,50 @@ private slots:
         QCOMPARE(all.at(all.indexOf("--model") + 1), QStringLiteral("opus"));
         QCOMPARE(all.at(all.indexOf("--resume") + 1), QStringLiteral("s-9"));
         QCOMPARE(all.at(all.indexOf("--append-system-prompt") + 1), QStringLiteral("Be brief."));
+    }
+
+    // Auto-compact on in every conversation unless set off under ⋯: its
+    // item checked at first; off, kept in the settings and told to the
+    // program at once - another tab's as its menu shows, a new one's at
+    // its start.
+    void autoCompactIsOnUnlessSetOff()
+    {
+        QucsSettingsFile().remove("ClaudeCode/autoCompact");
+        ClaudeCodePanel panel, other;
+        QVERIFY(panel.session()->autoCompact() && other.session()->autoCompact());
+        auto* item = panel.findChild<QAction*>(QStringLiteral("claudeAutoCompact"));
+        QVERIFY(item != nullptr);
+        auto* menu = qobject_cast<QMenu*>(item->parent());
+        QVERIFY(menu != nullptr);
+        emit menu->aboutToShow();
+        QVERIFY(item->isCheckable() && item->isChecked());
+        item->trigger();
+        QVERIFY(!item->isChecked());
+        QVERIFY(!panel.session()->autoCompact());
+        QCOMPARE(QucsSettingsFile().value("ClaudeCode/autoCompact").toBool(), false);
+        auto* otherItem = other.findChild<QAction*>(QStringLiteral("claudeAutoCompact"));
+        emit qobject_cast<QMenu*>(otherItem->parent())->aboutToShow();
+        QVERIFY(!otherItem->isChecked() && !other.session()->autoCompact());
+        ClaudeCodePanel third;
+        QVERIFY(!third.session()->autoCompact());
+        QucsSettingsFile().setValue("ClaudeCode/autoCompact", true);
+        third.reloadSettings();
+        QVERIFY(third.session()->autoCompact());
+        QucsSettingsFile().remove("ClaudeCode/autoCompact");
+#ifndef Q_OS_WIN
+        // Off before it starts: started with it off.
+        QFile::remove(dir.filePath("switcher-args"));
+        Session s;
+        s.setProgram(script("switcher", kSwitcher));
+        s.setWorkingDirectory(fresh("compactwork"));
+        s.setAutoCompact(false);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QVERIFY(s.send("Hello"));
+        QVERIFY(turns.wait(10000));
+        const QStringList args = read(dir.filePath("switcher-args")).split('\n');
+        QCOMPARE(args.value(args.indexOf("--settings") + 1), QStringLiteral(R"({"autoCompactEnabled":false})"));
+        s.stop();
+#endif
     }
 
     // The program the settings name, else claude on PATH, else where its
@@ -788,6 +841,17 @@ private slots:
         QCOMPARE(s.modelInUse(), QStringLiteral("claude-opus-5-5"));
         const QStringList args = read(dir.filePath("switcher-args")).split('\n');
         QCOMPARE(args.value(args.indexOf("--model") + 1), QStringLiteral("claude-opus-5-5"));
+        QCOMPARE(args.value(args.indexOf("--settings") + 1), QStringLiteral(R"({"autoCompactEnabled":true})"));
+
+        // Auto-compact off and on again: told at once (a flag setting), not
+        // started again.
+        QVERIFY(s.autoCompact());
+        s.setAutoCompact(false);
+        QTRY_VERIFY_WITH_TIMEOUT(readIn().contains(R"("request":{"settings":{"autoCompactEnabled":false},"subtype":"apply_flag_settings"})"), 10000);
+        s.setAutoCompact(true);
+        QTRY_VERIFY_WITH_TIMEOUT(readIn().contains(R"("request":{"settings":{"autoCompactEnabled":true},"subtype":"apply_flag_settings"})"), 10000);
+        QVERIFY(s.isRunning());
+        QCOMPARE(starts(), 1);
 
         // The model: asked for at once, which one is in use no longer known
         // - and the next turn says.

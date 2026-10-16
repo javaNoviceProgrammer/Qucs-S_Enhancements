@@ -89,6 +89,7 @@ const QString kModel = QStringLiteral("ClaudeCode/model");
 const QString kModels = QStringLiteral("ClaudeCode/models");          // what the program offers
 const QString kOtherModels = QStringLiteral("ClaudeCode/otherModels"); // chosen by name, the latest first
 const QString kAttach = QStringLiteral("ClaudeCode/attachDocument");
+const QString kAutoCompact = QStringLiteral("ClaudeCode/autoCompact");  // the conversation compacted as its context fills
 const QString kExportDir = QStringLiteral("ClaudeCode/exportFolder");
 const QString kExportDetails = QStringLiteral("ClaudeCode/exportToolDetails");
 const QString kCommands = QStringLiteral("ClaudeCode/slashCommands");   // Claude Code's, as it last said
@@ -671,6 +672,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     const QucsSettingsFile settings;
     a_session->setPermissionMode(settings.value(kMode).toString());
     a_session->setModel(settings.value(kModel).toString());
+    a_session->setAutoCompact(settings.value(kAutoCompact, true).toBool());
     a_listedModels = QJsonDocument::fromJson(settings.value(kModels).toString().toUtf8()).array();
     rebuildModelMenu();
     a_attach->setChecked(settings.value(kAttach, true).toBool());
@@ -1039,6 +1041,22 @@ void ClaudeCodePanel::buildMenu()
     });
     // Asked again when the menu opens: a program installed meanwhile.
     connect(a_modelMenu, &QMenu::aboutToShow, this, &ClaudeCodePanel::listModels);
+    // Auto-compact: on unless set off here, whatever Claude Code's own
+    // settings say; for every conversation, at once.
+    QAction* compact = a_menu->addAction(tr("Auto-Compact"));
+    compact->setObjectName(QStringLiteral("claudeAutoCompact"));
+    compact->setCheckable(true);
+    compact->setToolTip(tr("When a conversation's context fills, Claude Code compacts it - sums up what was said - and "
+                           "goes on (off: it stops at the limit)"));
+    connect(compact, &QAction::triggered, this, [this](bool on) {
+        QucsSettingsFile().setValue(kAutoCompact, on);
+        a_session->setAutoCompact(on);
+    });
+    connect(a_menu, &QMenu::aboutToShow, this, [this, compact] {
+        const bool on = QucsSettingsFile().value(kAutoCompact, true).toBool();   // (another tab may have changed it)
+        compact->setChecked(on);
+        a_session->setAutoCompact(on);
+    });
 
     a_menu->addSeparator();
     a_menu->addAction(tr("Choose Folder…"), a_dirButton, &QToolButton::click);
@@ -1327,6 +1345,7 @@ void ClaudeCodePanel::reloadSettings()
 {
     const QucsSettingsFile settings;
     a_attach->setChecked(settings.value(kAttach, true).toBool());
+    a_session->setAutoCompact(settings.value(kAutoCompact, true).toBool());
     if (!hasConversation() && !a_session->isRunning()) {
         a_session->setPermissionMode(settings.value(kMode).toString());
         a_session->setModel(settings.value(kModel).toString());
