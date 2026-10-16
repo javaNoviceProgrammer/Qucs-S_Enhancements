@@ -209,6 +209,16 @@ QString formatText()
         "each diffraction order out without reflection - ewfd.R, ewfd.T, ewfd.A, each propagating order's ewfd.R_0, R_1, R_n1 "
         "(n1: -1) and ewfd.T_0... (T_<port>_<m> with more ports), the zeroth's fields ewfd.r_0, r_0_im, t_0, t_0_im, ewfd.kF; "
         "the log lists the orders and their angles. Ez is TE (s), Hz TM (p). "
+        "\"resonator\" (tag emr) - an axisymmetric component's body of revolution (x = r, y = z, the axis x = 0, nothing at "
+        "x < 0), its cavity modes of one azimuthal order (E ∝ e^(-jmφ), \"m\" 0, 1, 2...; m and -m alike), full-vector - E_r, "
+        "E_z on edge elements, E_φ on nodes, \"order\" 1 or 2 - by an \"eigenfrequency\" step {\"around\": a free-space "
+        "wavelength (980[nm]) or a frequency, \"count\": 6 - the modes nearest it}: each mode a solution (\"mode\" picks "
+        "one), its complex eigenfrequency emr.freq, emr.freq_im, emr.lambda0 and emr.Q = Re ω / 2 Im ω (infinite with nothing "
+        "lossy or open), emr.m; a pml (cylindrical about the axis: r stretched where it is along r) for an open cavity's Q "
+        "(the modes mostly in it left out, said); pec (the outside by default), pmc; materials by n, kappa (a metal's too) "
+        "or epsilonr, one or three along r, z, φ. Fields at φ = 0 emr.Er, Ez, Ephi (each _im too), Hr, Hz, Hphi, normE, "
+        "normH, Sr, Sz - the largest |E| outside the pml 1 V/m. m 0 splits into TE0n (E_φ alone) and TM0n, m 1 holds "
+        "HE1n and EH1n, m 2 HE2n... (an LP mode's vector parts); fem_solve lists each mode's lambda0 and Q to seven figures. "
         "A stationary or frequency step's \"adaptive\": true refines the mesh where the error is largest (\"adaptsteps\" times; in frequency, the last one's).\n"
         "Semiconductors: \"semiconductor\" (tag semi, \"T\"; \"space\": \"1d\" solves it along a line across its layers - "
         "\"axis\" y or x, \"at\", \"h1d\" - each node then of its coordinate: a stack under a mesa, its contacts where the line "
@@ -363,7 +373,8 @@ QString formatText()
         "{\"only\": [\"substrate\"]} (domains whose smallest object it is), {\"of\": [\"trace\"], \"side\": \"bottom\"} "
         "(boundaries on an object's edges, those facing down), {\"between\": [[\"a\"], [\"b\"]]}, {\"exterior\": true}, "
         "{\"interior\": true}, {\"adjacent\": {domain rule}}, {\"box\": [x0, y0, x1, y1]}, {\"named\": \"sel\"}; any with "
-        "\"except\": {rule}. Numbers change when the geometry does: rules do not.\n"
+        "\"except\": {rule}. An array's name (no object of its own) names all its copies, row_1, row_2... Numbers change "
+        "when the geometry does: rules do not.\n"
         "Results: after solving, variables at a point (x, y, t, V, T, es.Ex, es.normE, es.Dx, es.We, ec.Jx, ec.normJ, ec.Qrh, "
         "ht.qx, ht.normq, solid.u, solid.v, solid.disp, solid.sx, solid.mises, mf.Az, mf.Bx, mf.normB, mf.Hx, mf.Jz, mf.normJ, "
         "mf.Qrh, mf.Wm, mf.mur...; about an axis r, z, solid.sr, solid.sphi, mf.Aphi, mf.Br, mf.Bz, mf.psi; in the frequency "
@@ -1029,18 +1040,23 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
         QJsonArray modes;
         const bool states = sol->quantumStates;
         const int was = sol->selected();
+        // (A resonator's modes to seven figures: a VCSEL's split by 0.01 nm.)
+        bool resonator = false;
+        for (const Variable& v : sol->globals()) resonator = resonator || v.name.endsWith(QLatin1String(".Q"));
+        const int digits = resonator ? 7 : 4;
         for (int k = 0; k < sol->snapshotCount() && k < 60; ++k) {
             sol->select(k);
             QJsonObject m{{states ? QStringLiteral("state") : QStringLiteral("mode"), sol->snapshotMode(k)}};
-            if (!states) m.insert(QStringLiteral("frequency"), formatQuantity(sol->snapshotFrequency(k), Dim::of(0, 0, -1)));
+            if (!states) m.insert(QStringLiteral("frequency"), formatQuantity(sol->snapshotFrequency(k), Dim::of(0, 0, -1), digits));
             for (const Variable& v : sol->globals()) {
                 const bool wanted = states ? v.name.endsWith(QLatin1String(".E_e")) || v.name.endsWith(QLatin1String(".E_hh"))
                                                  || v.name.endsWith(QLatin1String(".E_lh"))
                                            : v.name.endsWith(QLatin1String(".neff")) || v.name.endsWith(QLatin1String(".loss"))
-                                                 || v.name.endsWith(QLatin1String(".lambda"));
+                                                 || v.name.endsWith(QLatin1String(".lambda")) || v.name.endsWith(QLatin1String(".Q"))
+                                                 || (v.name.endsWith(QLatin1String(".lambda0")) && sol->global(v.name.chopped(7) + QStringLiteral("Q")));
                 const std::optional<double> g = sol->global(v.name);
                 if (wanted && g && std::isfinite(*g))
-                    m.insert(v.name, states ? formatQuantity(*g / 1.602176634e-19, Dim()) + QStringLiteral(" eV") : sol->globalText(v.name));
+                    m.insert(v.name, states ? formatQuantity(*g / 1.602176634e-19, Dim()) + QStringLiteral(" eV") : sol->globalText(v.name, digits));
             }
             modes.append(m);
         }

@@ -485,6 +485,15 @@ struct ModeFields {
 };
 ModeFields modeFieldsAt(PointEvaluator& e, int field);
 
+/// A body of revolution's resonant mode at a point (V/m, A/m): along r, z
+/// and φ (the model's x, y and the third axis), its fields E(r, z) e^{-jmφ}
+/// at φ = 0, the largest |E| 1 V/m.
+struct ResonatorFields {
+    std::complex<double> E[3], H[3];
+    bool defined = false;
+};
+ResonatorFields resonatorFieldsAt(PointEvaluator& e, int field);
+
 /// A mode analysis's medium where the evaluator is (constant over a
 /// triangle, at its middle - kept with the mode selected): n, κ absorbed
 /// across a gap (the medium's own and a direct gap's, not the free

@@ -506,6 +506,18 @@ void TestFemEngine::booleans()
     QCOMPARE(int(r.topology->domains.size()), 3);
     for (const Topology::Domain& d : r.topology->domains) QVERIFY(std::abs(d.area - 1) < 1e-9);
     QCOMPARE(r.topology->objectNames, (QStringList{QStringLiteral("row_1"), QStringLiteral("row_2"), QStringLiteral("row_3")}));
+    {
+        // The array's name selects its copies; a copy's its own; no other
+        // stem does.
+        QString why;
+        auto pick = [&](const char* rule) { return resolveSelection(*r.topology, moved, Level::Domain, QJsonDocument::fromJson(rule).object(), &why); };
+        QCOMPARE(pick(R"({"only": ["row"]})").size(), 3);
+        QCOMPARE(pick(R"({"objects": ["row"]})").size(), 3);
+        QVERIFY(why.isEmpty());
+        QCOMPARE(pick(R"({"only": ["row_2"]})").size(), 1);
+        QCOMPARE(pick(R"({"only": ["ro"]})").size(), 0);
+        QVERIFY2(why.contains(QLatin1String("ro")), qPrintable(why));
+    }
     // An unknown input: said, with the objects there are.
     const Model bad = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm", "geometry": [
         {"type": "rectangle", "name": "a", "size": ["2", "2"]},

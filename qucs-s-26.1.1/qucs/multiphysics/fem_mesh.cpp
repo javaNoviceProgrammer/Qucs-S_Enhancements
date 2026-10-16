@@ -320,6 +320,7 @@ public:
         }
         if (!step(0.02, tr("Sizes"))) return cancelled();
         sizeSources();
+        layerColumns();
         if (!step(0.08, tr("Boundaries"))) return cancelled();
         discretize();
         if (!a_error.isEmpty()) {
@@ -374,6 +375,90 @@ private:
         const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
         return layered(bd.up) || layered(bd.down);
     }
+    /// Whether boundary \a b runs along the layers of layered domain \a d.
+    bool alongLayers(int b, int d) const
+    {
+        const std::vector<QPointF> line = a_t.boundaries[std::size_t(b)].polyline(a_t);
+        if (line.size() < 2 || !layered(d)) return false;
+        const QPointF along = line.back() - line.front();
+        return a_sizes.layerAxis[std::size_t(d)] == 1 ? std::abs(along.x()) > std::abs(along.y()) : std::abs(along.y()) > std::abs(along.x());
+    }
+    /// A coordinate along the layers of domain \a d (x when they are stacked along y).
+    double lateralOf(QPointF p, int d) const { return a_sizes.layerAxis[std::size_t(d)] == 1 ? p.x() : p.y(); }
+
+    /// Each layered domain's columns: where along its layers its grid's
+    /// lines are (its ends among them). A stack - layered domains sharing a
+    /// boundary along their layers - has one set: its breakpoints (its
+    /// domains' ends, its boundaries' ends - where a layer is split, an
+    /// aperture's edge) and between each two ceil(gap / its lateral size)
+    /// columns alike; so every layer and every boundary along them has the
+    /// same lines, the grid's cells quadrilaterals. (Each layer's own width
+    /// divided apart had them disagree where a layer was split: a 2 um
+    /// aperture in a 5 um stack at 0.06 um came to 34 + 50 columns in one
+    /// layer and 84 in the next - slivers, a singular matrix.)
+    void layerColumns()
+    {
+        const int nd = int(a_t.domains.size());
+        a_columns.assign(std::size_t(nd), {});
+        std::vector<int> parent(static_cast<std::size_t>(nd));
+        for (int d = 0; d < nd; ++d) parent[std::size_t(d)] = d;
+        auto find = [&parent](int d) {
+            while (parent[std::size_t(d)] != d) d = parent[std::size_t(d)] = parent[std::size_t(parent[std::size_t(d)])];
+            return d;
+        };
+        const int nb = int(a_t.boundaries.size());
+        for (int b = 0; b < nb; ++b) {
+            const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
+            if (layered(bd.up) && layered(bd.down) && a_sizes.layerAxis[std::size_t(bd.up)] == a_sizes.layerAxis[std::size_t(bd.down)]
+                && alongLayers(b, bd.up))
+                parent[std::size_t(find(bd.up))] = find(bd.down);
+        }
+        std::map<int, std::vector<double>> cuts;
+        std::map<int, double> step;
+        double extent = 1e-300;
+        for (int d = 0; d < nd; ++d) {
+            if (!layered(d)) continue;
+            const QRectF r = a_t.domains[std::size_t(d)].bounds;
+            const bool yStack = a_sizes.layerAxis[std::size_t(d)] == 1;
+            const int root = find(d);
+            cuts[root].push_back(yStack ? r.left() : r.top());
+            cuts[root].push_back(yStack ? r.right() : r.bottom());
+            auto it = step.find(root);
+            step[root] = it == step.end() ? a_sizes.layerLateral[std::size_t(d)] : std::min(it->second, a_sizes.layerLateral[std::size_t(d)]);
+            extent = std::max({extent, std::abs(r.left()), std::abs(r.right()), std::abs(r.top()), std::abs(r.bottom())});
+        }
+        if (cuts.empty()) return;
+        for (int b = 0; b < nb; ++b) {
+            const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
+            for (int d : {bd.up, bd.down})
+                if (alongLayers(b, d))
+                    for (int v : {bd.start, bd.end}) cuts[find(d)].push_back(lateralOf(a_t.vertices[std::size_t(v)], d));
+        }
+        const double tol = 1e-9 * extent;
+        std::map<int, std::vector<double>> lines;
+        for (auto& [root, c] : cuts) {
+            std::sort(c.begin(), c.end());
+            std::vector<double> u;
+            for (double x : c)
+                if (u.empty() || x - u.back() > tol) u.push_back(x);
+            std::vector<double>& out = lines[root];
+            for (std::size_t i = 0; i + 1 < u.size(); ++i) {
+                const double gap = u[i + 1] - u[i];
+                const int n = std::clamp(int(std::ceil(gap / step[root] - 1e-9)), 1, 100000);
+                for (int k = 0; k < n; ++k) out.push_back(u[i] + gap * k / n);
+            }
+            out.push_back(u.back());
+        }
+        for (int d = 0; d < nd; ++d) {
+            if (!layered(d)) continue;
+            const QRectF r = a_t.domains[std::size_t(d)].bounds;
+            const bool yStack = a_sizes.layerAxis[std::size_t(d)] == 1;
+            const double lo = yStack ? r.left() : r.top(), hi = yStack ? r.right() : r.bottom();
+            for (double x : lines[find(d)])
+                if (x > lo - tol && x < hi + tol) a_columns[std::size_t(d)].push_back(x);
+        }
+    }
+
     /// On a boundary: the finer of its two sides'.
     double boundarySize(QPointF p, const Topology::Boundary& b) const
     {
@@ -515,6 +600,18 @@ private:
                 }
                 where[std::size_t(b)].push_back(s);
             }
+            // Along a layered region's layers: at its stack's columns.
+            for (int d : {bd.up, bd.down}) {
+                if (!alongLayers(b, d) || a_columns[std::size_t(d)].size() < 2) continue;
+                const double from = lateralOf(a_t.vertices[std::size_t(bd.start)], d), to = lateralOf(a_t.vertices[std::size_t(bd.end)], d);
+                const double tol = 1e-9 * std::max(1e-300, len);
+                std::vector<double> at;
+                for (double x : a_columns[std::size_t(d)])
+                    if (x > std::min(from, to) + tol && x < std::max(from, to) - tol) at.push_back(std::abs(x - from));
+                std::sort(at.begin(), at.end());
+                if (!at.empty() || path.onCurve()) where[std::size_t(b)] = at;
+                break;
+            }
         }
         // A periodic condition's two sides meshed alike: each pair of
         // boundaries, one the other moved, at the nodes of both.
@@ -592,13 +689,13 @@ private:
             if (!layered(d)) continue;
             const QRectF r = a_t.domains[std::size_t(d)].bounds;
             const bool yStack = a_sizes.layerAxis[std::size_t(d)] == 1;
-            const double along = yStack ? r.width() : r.height(), across = yStack ? r.height() : r.width();
-            const int columns = std::max(1, int(std::ceil(along / a_sizes.layerLateral[std::size_t(d)] - 1e-9)));
+            const double across = yStack ? r.height() : r.width();
+            const std::vector<double>& columns = a_columns[std::size_t(d)];
             const int rows = std::max(1, a_sizes.layerCount[std::size_t(d)]);
-            for (int i = 1; i < columns; ++i)
+            for (std::size_t i = 1; i + 1 < columns.size(); ++i)
                 for (int j = 1; j < rows; ++j) {
-                    const double u = along * i / columns, v = across * j / rows;
-                    a_nodes.push_back(yStack ? QPointF(r.left() + u, r.top() + v) : QPointF(r.left() + v, r.top() + u));
+                    const double v = across * j / rows;
+                    a_nodes.push_back(yStack ? QPointF(columns[i], r.top() + v) : QPointF(r.left() + v, columns[i]));
                 }
         }
     }
@@ -1246,6 +1343,7 @@ private:
     SizeTree a_tree;
     std::vector<QPointF> a_nodes;
     QHash<int, int> a_vertexNode;
+    std::vector<std::vector<double>> a_columns;   // a layered domain's (layerColumns)
     std::vector<ConstraintEdge> a_edges;
     std::map<std::pair<int, int>, int> a_edgeIndex;
     int a_sharp = 0;

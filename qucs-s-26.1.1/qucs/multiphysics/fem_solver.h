@@ -155,7 +155,7 @@ public:
     QList<Variable> globals() const;
     void setGlobal(const QString& name, double value, const Dim& dim, const QString& description = {}, const QString& unit = {});
     /// A global's value as it is shown: in its unit (dB/m) where it has one.
-    QString globalText(const QString& name) const;
+    QString globalText(const QString& name, int digits = 4) const;
     std::optional<double> global(const QString& name) const;
 
     /// Each physics' coefficient expressions, by domain (compiled in the
@@ -248,6 +248,7 @@ public:
     bool modeAnalysis = false;            ///< and of modes, at each frequency
     bool modeChosen = false;              ///< its mode step chose a mode (not the first) at each
     bool quantumStates = false;           ///< its modes are quantum states
+    bool eigenfrequencies = false;        ///< its modes each at its own frequency (a resonator's)
     /// A spectrum's snapshots, shown by: 0 their frequency, 1 the photon's
     /// energy, 2 its wavelength in vacuum; 3 the valence bands' in-plane k
     /// (1/m, kept as their frequency).

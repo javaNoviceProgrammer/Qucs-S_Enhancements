@@ -574,6 +574,7 @@ std::unique_ptr<Problem> makeElasticProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeMagneticProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeModeProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeWaveProblem(Solution& solution, int field);
+std::unique_ptr<Problem> makeResonatorProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeSemiconductorProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeRayProblem(Solution& solution, int field);
 std::unique_ptr<Problem> makeQuantumProblem(Solution& solution, int field);
@@ -590,6 +591,7 @@ std::unique_ptr<Problem> makeProblem(Solution& solution, int field)
     if (type == QLatin1String("magnetic")) return makeMagneticProblem(solution, field);
     if (type == QLatin1String("modes")) return makeModeProblem(solution, field);
     if (type == QLatin1String("waves")) return makeWaveProblem(solution, field);
+    if (type == QLatin1String("resonator")) return makeResonatorProblem(solution, field);
     return makeScalarProblem(solution, field);
 }
 
@@ -628,7 +630,7 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
         // The magnetic vector potential out of the plane (round the axis).
         f.variable = axisymmetric ? QStringLiteral("Aphi") : QStringLiteral("Az");
         f.dim = Dim::of(1, 1, -2, -1);
-    } else if (p.type == QLatin1String("modes")) {
+    } else if (p.type == QLatin1String("modes") || p.type == QLatin1String("resonator")) {
         f.variable = QStringLiteral("E");
         f.dim = Dim::of(1, 1, -3, -1);
     } else if (p.type == QLatin1String("rays")) {
@@ -669,6 +671,7 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
     else if (p.type == QLatin1String("magnetic") || p.type == QLatin1String("waves"))
         f.components = QStringList{f.variable, f.variable + QStringLiteral("_im")};
     else if (p.type == QLatin1String("modes")) f.components = QStringList{QStringLiteral("Et"), QStringLiteral("Ez")};
+    else if (p.type == QLatin1String("resonator")) f.components = QStringList{QStringLiteral("Et"), QStringLiteral("chi")};
     else if (p.type == QLatin1String("semiconductor"))
         f.components = QStringList{QStringLiteral("V"), QStringLiteral("n"), QStringLiteral("p"), QStringLiteral("Nd"), QStringLiteral("Na")};
     else if (p.type == QLatin1String("quantum"))
@@ -718,8 +721,9 @@ Solution::Solution(const Model& model, std::shared_ptr<ParameterScope> parameter
         if (it == spaces.end()) it = spaces.emplace(order, std::make_shared<Space>(a_mesh, order)).first;
         f.space = it->second;
         f.values.assign(std::size_t(f.space->size()) * std::size_t(f.count()), f.initial);
-        if (p->type == QLatin1String("modes")) {
-            // Et on edge elements of the order, Ez on the nodes: each complex.
+        if (p->type == QLatin1String("modes") || p->type == QLatin1String("resonator")) {
+            // Et on edge elements of the order, Ez (a resonator's χ = -j r E_φ)
+            // on the nodes: each complex.
             f.edges = std::make_shared<EdgeSpace>(a_mesh, order);
             f.values.assign(std::size_t(2 * f.edges->size() + 2 * f.space->size()), 0.0);
             f.extra.assign(3, 0.0);
@@ -986,7 +990,7 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
     bool optical = false;
     for (const FieldInfo& fi : fields)
         optical = optical || fi.type == QLatin1String("rays") || fi.type == QLatin1String("modes") || fi.type == QLatin1String("waves")
-                  || fi.type == QLatin1String("quantum");
+                  || fi.type == QLatin1String("resonator") || fi.type == QLatin1String("quantum");
     if (optical)
         define(QStringLiteral("lambda0"), Dim::length(), tr("free-space wavelength: c0/freq (a ray's, a mode's)"), K::Derived, -1, [](PointEvaluator& e) {
             const double f = e.frequency();
@@ -1052,6 +1056,47 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                        const StressState s = st(e);
                        return -(s.s1 + s.s2 + s.s3) / 3;
                    });
+            continue;
+        }
+        if (field.type == QLatin1String("resonator")) {
+            // A body of revolution's mode: along r, z and φ (at φ = 0).
+            const Dim eDim = Dim::of(1, 1, -3, -1), hDim = Dim::of(-1, 0, 0, 1), sDim = Dim::of(0, 1, -3);
+            const char* parts[3] = {"r", "z", "phi"};
+            for (int which = 0; which < 2; ++which) {
+                const bool e = which == 0;
+                for (int k = 0; k < 3; ++k) {
+                    const QString name = p + (e ? QStringLiteral("E") : QStringLiteral("H")) + QString::fromLatin1(parts[k]);
+                    auto part = [f, k, e](PointEvaluator& ev, bool imag) {
+                        const detail::ResonatorFields rf = detail::resonatorFieldsAt(ev, f);
+                        if (!rf.defined) return NaN;
+                        const std::complex<double> v = e ? rf.E[k] : rf.H[k];
+                        return imag ? v.imag() : v.real();
+                    };
+                    define(name, e ? eDim : hDim,
+                           tr("%1 field along %2 (its real part, at φ = 0)").arg(e ? tr("electric") : tr("magnetic"), QString::fromLatin1(parts[k])),
+                           K::Derived, f, [part](PointEvaluator& ev) { return part(ev, false); });
+                    define(name + QStringLiteral("_im"), e ? eDim : hDim,
+                           tr("%1 field along %2, imaginary part").arg(e ? tr("electric") : tr("magnetic"), QString::fromLatin1(parts[k])), K::Derived,
+                           f, [part](PointEvaluator& ev) { return part(ev, true); });
+                }
+                define(p + (e ? QStringLiteral("normE") : QStringLiteral("normH")), e ? eDim : hDim,
+                       tr("%1 field, norm (its amplitude; the largest |E| 1 V/m)").arg(e ? tr("electric") : tr("magnetic")), K::Derived, f,
+                       [f, e](PointEvaluator& ev) {
+                           const detail::ResonatorFields rf = detail::resonatorFieldsAt(ev, f);
+                           if (!rf.defined) return NaN;
+                           const std::complex<double>* v = e ? rf.E : rf.H;
+                           return std::sqrt(std::norm(v[0]) + std::norm(v[1]) + std::norm(v[2]));
+                       });
+            }
+            // ½ Re(E × H*) in (r, φ, z): S_r = Eφ Hz* - Ez Hφ*, S_z = Er Hφ* - Eφ Hr*.
+            define(p + QStringLiteral("Sr"), sDim, tr("power flow along r (a time average)"), K::Derived, f, [f](PointEvaluator& ev) {
+                const detail::ResonatorFields rf = detail::resonatorFieldsAt(ev, f);
+                return rf.defined ? 0.5 * (rf.E[2] * std::conj(rf.H[1]) - rf.E[1] * std::conj(rf.H[2])).real() : NaN;
+            });
+            define(p + QStringLiteral("Sz"), sDim, tr("power flow along z (a time average)"), K::Derived, f, [f](PointEvaluator& ev) {
+                const detail::ResonatorFields rf = detail::resonatorFieldsAt(ev, f);
+                return rf.defined ? 0.5 * (rf.E[0] * std::conj(rf.H[2]) - rf.E[2] * std::conj(rf.H[0])).real() : NaN;
+            });
             continue;
         }
         if (field.type == QLatin1String("modes") || field.type == QLatin1String("waves")) {
@@ -1671,15 +1716,15 @@ void Solution::setGlobal(const QString& name, double value, const Dim& dim, cons
     a_globals << Variable{name, dim, description, own, display};
 }
 
-QString Solution::globalText(const QString& name) const
+QString Solution::globalText(const QString& name, int digits) const
 {
     for (const Variable& v : a_globals)
         if (v.name == name) {
             const double value = a_globalScope->constant(name)->value;
             if (!v.display.isEmpty())
                 if (const std::optional<Unit> u = parseUnit(v.display))
-                    return formatNumber((value - u->offset) / u->scale, 4) + QLatin1Char(' ') + v.display;
-            return v.unit.isEmpty() ? formatQuantity(value, v.dim) : formatNumber(value, 4) + QLatin1Char(' ') + v.unit;
+                    return formatNumber((value - u->offset) / u->scale, digits) + QLatin1Char(' ') + v.display;
+            return v.unit.isEmpty() ? formatQuantity(value, v.dim, digits) : formatNumber(value, digits) + QLatin1Char(' ') + v.unit;
         }
     return {};
 }
@@ -2527,6 +2572,60 @@ bool eigenvalueStep(Solution& s, const Node& node, const std::function<bool(doub
     return true;
 }
 
+/// A resonator's eigenfrequencies about a frequency or a free-space
+/// wavelength ("around"): each mode a solution, by frequency.
+bool eigenfrequencyStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings,
+                        QString* error)
+{
+    Telling tell{told, 0, node.name()};
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
+    std::vector<int> resonators, others;
+    for (int i = 0; i < int(st.problems.size()); ++i)
+        (st.problems[std::size_t(i)]->field().type == QLatin1String("resonator") ? resonators : others).push_back(i);
+    if (resonators.empty()) {
+        *error = tr("%1: none of its physics has eigenfrequencies (Electromagnetic Waves, Eigenfrequency has)").arg(node.name());
+        return false;
+    }
+    if (resonators.size() > 1) *warnings << tr("%1: its first resonator's eigenfrequencies only").arg(node.name());
+    // (A wavelength - a length - or a frequency.)
+    const Expression around = Expression::compile(node.text(QStringLiteral("around")), s.parameters().scope);
+    double frequency = NaN;
+    if (around.isValid() && around.isConstant()) {
+        if (around.dim() == Dim::length()) frequency = around.constant() > 0 ? 299792458.0 / around.constant() : NaN;
+        else if (around.dim() == Dim::of(0, 0, -1)) frequency = around.constant();
+    }
+    if (!(frequency > 0)) {
+        *error = tr("%1: what it searches about - a frequency (300[THz]) or a free-space wavelength (980[nm]): %2")
+                     .arg(node.name(), around.isValid() ? node.text(QStringLiteral("around")) : around.error());
+        return false;
+    }
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    if (!tell(0.1, tr("%1: the eigenfrequencies").arg(node.name()))) {
+        *error = tr("cancelled");
+        return false;
+    }
+    if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
+    if (!solvedBefore(st, others, error)) return false;
+    s.frequencyDomain = true;
+    s.modeAnalysis = true;
+    s.eigenfrequencies = true;
+    SolveOptions o = st.options;
+    o.frequency = frequency;
+    detail::Problem& e = *st.problems[std::size_t(resonators.front())];
+    const int found = e.solveModes(o, std::clamp(node.integer(QStringLiteral("count")), 1, 200), 0, error);
+    if (found < 0) return false;
+    if (found == 0) *warnings << tr("%1: no eigenfrequency found").arg(node.name());
+    for (int k = 0; k < found; ++k) {
+        e.selectMode(k);
+        for (auto& p : st.problems) p->setGlobals();
+        s.addSnapshot();
+    }
+    return true;
+}
+
 /// A step's quantum wells physics (by problem) and the others, solved first.
 bool splitQuantum(const Step& st, std::vector<int>& quantum, std::vector<int>& others, QStringList* warnings, QString* error)
 {
@@ -2847,7 +2946,7 @@ bool frequencyStep(Solution& s, const Node& node, const std::function<bool(doubl
     // light's own frequency.
     if (s.modeAnalysis) {
         s.clearSnapshots();
-        s.modeAnalysis = s.quantumStates = false;
+        s.modeAnalysis = s.quantumStates = s.eigenfrequencies = false;
         s.photonAxis = 0;
         s.setMode(0);
     }
@@ -2953,7 +3052,7 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
     // and globals as they are.
     if (s.modeAnalysis) {
         s.clearSnapshots();
-        s.modeAnalysis = s.quantumStates = s.frequencyDomain = false;
+        s.modeAnalysis = s.quantumStates = s.eigenfrequencies = s.frequencyDomain = false;
         s.photonAxis = 0;
         s.setMode(0);
     }
@@ -3201,7 +3300,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
             // photodiode's pulse response. After one, it is a frequency's.)
             inFrequency = inFrequency || step.type == QLatin1String("frequency") || (step.type == QLatin1String("mode") && inTime)
                           || step.type == QLatin1String("states") || step.type == QLatin1String("spectrum") || step.type == QLatin1String("bands")
-                          || step.type == QLatin1String("eigenvalue");
+                          || step.type == QLatin1String("eigenvalue") || step.type == QLatin1String("eigenfrequency");
             inTime = inTime || step.type == QLatin1String("transient");
         }
     if (steps.empty()) {
@@ -3225,6 +3324,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         else if (step.type == QLatin1String("mode")) ok = modeStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("states")) ok = statesStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("eigenvalue")) ok = eigenvalueStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("eigenfrequency")) ok = eigenfrequencyStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("spectrum")) ok = spectrumStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("bands")) ok = bandsStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
