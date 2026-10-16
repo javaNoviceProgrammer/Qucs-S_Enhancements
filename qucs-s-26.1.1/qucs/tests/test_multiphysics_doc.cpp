@@ -2157,6 +2157,71 @@ private slots:
         QCOMPARE(panel()->tree()->topLevelItem(0)->text(0), QStringLiteral("named_later.qfem"));
     }
 
+    // fem_model save names its model by 'path', as the other tools do -
+    // whichever model is in front: two conversations, each with its own
+    // model, the other's brought to the front no longer written over this
+    // one's file (it was: the model in front saved to 'path', renamed so).
+    // 'as' saves it under another file ('replace' over one there); a path no
+    // file has is the untitled model in front's new file, never a titled
+    // one's; 'new' says its title, which names it till it has a file.
+    void savingTheModelItsPathNames()
+    {
+        auto read = [](const QString& file) {
+            QFile f(file);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        const QString a = copyOf(QStringLiteral("drum_modes.qfem")), b = copyOf(QStringLiteral("pn_diode.qfem"));
+        MultiphysicsDoc* docA = open(a);
+        MultiphysicsDoc* docB = open(b);
+        QVERIFY(docA && docB && docA != docB);
+        const QByteArray bBefore = read(b);
+        // A changed by its conversation, through its path; B in front.
+        QJsonObject r = call("fem_edit", {{"path", a}, {"action", "parameters"}, {"parameters", QJsonArray{QJsonObject{{"name", "mineA"}, {"expression", "7"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        app->DocumentTab->setCurrentWidget(docB);
+        r = call("fem_model", {{"action", "save"}, {"path", a}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(read(a).contains("mineA"));
+        QCOMPARE(read(b), bBefore);
+        QCOMPARE(json(r).value("model").toString(), QStringLiteral("drum_modes.qfem"));
+        QVERIFY(QFileInfo(docB->getDocName()) == QFileInfo(b) && QFileInfo(docA->getDocName()) == QFileInfo(a));
+        QVERIFY(!docA->getDocChanged());
+        QCOMPARE(app->DocumentTab->currentWidget(), static_cast<QWidget*>(docB));
+        // By its title too.
+        call("fem_edit", {{"path", a}, {"action", "parameters"}, {"parameters", QJsonArray{QJsonObject{{"name", "mineA"}, {"expression", "8"}}}}});
+        r = call("fem_model", {{"action", "save"}, {"path", "drum_modes.qfem"}});
+        QVERIFY2(!failed(r) && !docA->getDocChanged() && read(b) == bBefore, qPrintable(text(r)));
+        // 'as': B under another file, kept as its file; over a file there
+        // only with 'replace'.
+        const QString c = path(QStringLiteral("pn_copy.qfem"));
+        QFile::remove(c);
+        r = call("fem_model", {{"action", "save"}, {"path", b}, {"as", c}});
+        QVERIFY2(!failed(r) && QFileInfo(docB->getDocName()) == QFileInfo(c) && read(c).size() > 0, qPrintable(text(r)));
+        r = call("fem_model", {{"action", "save"}, {"path", c}, {"as", b}});
+        QVERIFY2(failed(r) && text(r).contains("replace"), qPrintable(text(r)));
+        r = call("fem_model", {{"action", "save"}, {"path", c}, {"as", a}, {"replace", true}});
+        QVERIFY2(failed(r) && text(r).contains("open"), qPrintable(text(r)));   // (A's file, open)
+        r = call("fem_model", {{"action", "save"}, {"path", c}, {"as", b}, {"replace", true}});
+        QVERIFY2(!failed(r) && QFileInfo(docB->getDocName()) == QFileInfo(b), qPrintable(text(r)));
+        // A path no file has, a titled model in front: refused, nothing
+        // renamed or written.
+        const QString d = path(QStringLiteral("not_yet.qfem"));
+        QFile::remove(d);
+        r = call("fem_model", {{"action", "save"}, {"path", d}});
+        QVERIFY2(failed(r) && text(r).contains("pn_diode.qfem") && !QFileInfo::exists(d), qPrintable(text(r)));
+        QVERIFY(QFileInfo(docB->getDocName()) == QFileInfo(b));
+        // An untitled model: its title from 'new' names it; saved by it with
+        // 'as', whichever model is in front.
+        r = call("fem_model", {{"action", "new"}});
+        const QString title = json(r).value("title").toString();
+        QVERIFY2(!failed(r) && !title.isEmpty(), qPrintable(text(r)));
+        auto* fresh = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
+        app->DocumentTab->setCurrentWidget(docA);
+        r = call("fem_model", {{"action", "save"}, {"path", title}, {"as", d}});
+        QVERIFY2(!failed(r) && fresh && QFileInfo(fresh->getDocName()) == QFileInfo(d), qPrintable(text(r)));
+        QVERIFY(QFileInfo(docA->getDocName()) == QFileInfo(a));
+    }
+
     // Claude stops a solve that goes on past fem_solve's timeout: fem_stop,
     // as the tab's Cancel - asked, waited for, what it said returned; with
     // nothing running, said so. The tab's own Cancel among get_ui's
