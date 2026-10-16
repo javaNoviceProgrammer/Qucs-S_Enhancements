@@ -264,8 +264,8 @@ QList<NodeKind> makeKinds()
                        tr("What a charge, a current, a power or a force of the 2D model is for: per this length out of the plane")),
                   QStringLiteral("space=2D"))},
          {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-          QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays"),
-          QStringLiteral("quantum"), QStringLiteral("pde")},
+          QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
+          QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde")},
          {}, true, true, QString(), tr("The model's 2D space: its geometry, materials, physics and mesh.")});
     add({QStringLiteral("selections"), tr("Definitions"), QString(), QStringLiteral("definitions"), Level::None, {},
          {QStringLiteral("selection")}, {}, true, true, QString(), tr("Named selections, which the physics may use.")});
@@ -877,7 +877,8 @@ QList<NodeKind> makeKinds()
     // Electromagnetic waves: a cross-section's modes, waves in the plane.
     auto waveEquation = [&](const QString& physics, const QString& title) {
         const QString p = physics + QLatin1Char('/');
-        add({p + QStringLiteral("wave"), title, physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+        const QString tag = physics == QLatin1String("modes") ? QStringLiteral("emw") : physics == QLatin1String("resonator") ? QStringLiteral("emr") : QStringLiteral("ewfd");
+        add({p + QStringLiteral("wave"), title, tag,
              QStringLiteral("domainfeature"), Level::Domain,
              {selectionProp(),
               choice(QStringLiteral("constitutive"), tr("Electric displacement"), {QStringLiteral("n"), QStringLiteral("epsilonr")},
@@ -1075,14 +1076,14 @@ QList<NodeKind> makeKinds()
                 "gap's absorption and the Franz-Keldysh effect on it; "
                 "Pockels' electro-optic effect of a static field, the photoelastic effect of a strain, a magnetized garnet's "
                 "gyrotropy. From their material or as given.")});
-        add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+        add({p + QStringLiteral("pml"), tr("Perfectly Matched Layer"), tag,
              QStringLiteral("pml"), Level::Domain, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pml"),
              tr("Domains beside, above or round the others that take the waves in without reflecting them: their coordinates "
                 "stretched into the complex plane, more the deeper.")});
-        add({p + QStringLiteral("pec"), tr("Perfect Electric Conductor"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+        add({p + QStringLiteral("pec"), tr("Perfect Electric Conductor"), tag,
              QStringLiteral("ground"), Level::Boundary, {selectionProp()}, {}, {}, false, false, QStringLiteral("pec"),
              tr("n × E = 0. On the outside by default.")});
-        add({p + QStringLiteral("pmc"), tr("Perfect Magnetic Conductor"), physics == QLatin1String("modes") ? QStringLiteral("emw") : QStringLiteral("ewfd"),
+        add({p + QStringLiteral("pmc"), tr("Perfect Magnetic Conductor"), tag,
              QStringLiteral("boundaryfeature"), Level::Boundary, {selectionProp(none)}, {}, {}, false, false, QStringLiteral("pmc"),
              tr("n × H = 0: a plane of symmetry of the fields.")});
     };
@@ -1138,6 +1139,23 @@ QList<NodeKind> makeKinds()
             "cell's Periodic Condition and Periodic Ports a grating's or a film's, order by order (ewfd.R_0, ewfd.T_n1); "
             "scattering boundaries and PMLs let waves out.")});
     waveEquation(QStringLiteral("waves"), tr("Wave Equation, Electric"));
+    add({QStringLiteral("resonator"), tr("Electromagnetic Waves, Eigenfrequency"), QStringLiteral("physics"), QStringLiteral("emr"), Level::Domain,
+         {selectionProp(),
+          integer(QStringLiteral("m"), tr("Azimuthal order m"), 1,
+                  tr("The fields E(r, z) e^-jmφ: 0 the TE0 and TM0 modes (E round the axis, or in its planes), 1 the HE11 and EH11 "
+                     "(a VCSEL's fundamental), m the modes of m azimuthal periods - each order solved alone, both of a pair its "
+                     "modes")),
+          choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")},
+                 {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2"))},
+         {QStringLiteral("resonator/wave"), QStringLiteral("resonator/pml"), QStringLiteral("resonator/pec"), QStringLiteral("resonator/pmc")},
+         {QStringLiteral("resonator/wave"), QStringLiteral("resonator/pec")}, false, false, QStringLiteral("emr"),
+         tr("A body of revolution's resonant modes (its component axisymmetric: r along x from the axis, z along y), of one "
+            "azimuthal order m - full-vector, E(r, z) e^-jmφ: (E_r, E_z) on Nédélec's edge elements, E_φ on Lagrange's (as r E_φ); "
+            "their eigenfrequencies ω complex - perfectly matched layers (stretched as a cylinder's) or lossy media taking their "
+            "energy: Q = Re ω / 2 Im ω. Solved by an Eigenfrequency step: emr.freq, emr.lambda0, emr.Q; emr.Er, emr.Ez, "
+            "emr.Ephi, emr.normE, the H field and the power flow. A VCSEL's cavity, a microdisk's or a sphere's whispering "
+            "gallery, a cylindrical cavity.")});
+    waveEquation(QStringLiteral("resonator"), tr("Wave Equation, Electric"));
     add({QStringLiteral("waves/scattering"), tr("Scattering Boundary Condition"), QStringLiteral("ewfd"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
          {selectionProp(none),
@@ -1988,7 +2006,7 @@ QList<NodeKind> makeKinds()
     // Studies.
     add({QStringLiteral("study"), tr("Study"), QStringLiteral("study"), QStringLiteral("study"), Level::None, {},
          {QStringLiteral("stationary"), QStringLiteral("transient"), QStringLiteral("frequency"), QStringLiteral("mode"), QStringLiteral("states"),
-          QStringLiteral("spectrum"), QStringLiteral("bands"), QStringLiteral("eigenvalue"), QStringLiteral("sweep")},
+          QStringLiteral("spectrum"), QStringLiteral("bands"), QStringLiteral("eigenvalue"), QStringLiteral("eigenfrequency"), QStringLiteral("sweep")},
          {QStringLiteral("stationary")}, false, false,
          QStringLiteral("std"), tr("What is solved, and how: its steps in order (for each point of its sweep).")});
     {
@@ -2124,6 +2142,16 @@ QList<NodeKind> makeKinds()
              {}, {}, false, false, QStringLiteral("eig"),
              tr("A PDE's eigenvalues λ - -λ da u + ∇·Γ = F linearized about where it is, its Dirichlet conditions 0 - and their "
                 "eigenfunctions: each a solution, as a mode is.")});
+        add({QStringLiteral("eigenfrequency"), tr("Eigenfrequency"), QStringLiteral("step"), QStringLiteral("eigenfrequency"), Level::None,
+             {physics, integer(QStringLiteral("count"), tr("Eigenfrequencies"), 6, tr("Those nearest what it searches about")),
+              expr(QStringLiteral("around"), tr("Search about"), QString(), QStringLiteral("1[um]"),
+                   tr("A free-space wavelength (980[nm]) or a frequency (306[THz]); its media taken there")),
+              expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
+                   tr("Of the physics solved before")),
+              before, nonlinear},
+             {}, {}, false, false, QStringLiteral("eig"),
+             tr("A resonator's (Electromagnetic Waves, Eigenfrequency) modes nearest a frequency or wavelength: each a solution, "
+                "by frequency - its eigenfrequency, Q and fields. Physics at rest are solved first.")});
         add({QStringLiteral("states"), tr("Quantum States"), QStringLiteral("step"), QStringLiteral("states"), Level::None,
              {physics, integer(QStringLiteral("states"), tr("States of each carrier"), 4, tr("The lowest: electrons upward, holes downward")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
@@ -2699,8 +2727,8 @@ QList<const NodeKind*> nodeKinds()
 QStringList physicsTypes()
 {
     return {QStringLiteral("electrostatics"), QStringLiteral("currents"), QStringLiteral("heat"), QStringLiteral("solid"),
-            QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("semiconductor"), QStringLiteral("rays"),
-            QStringLiteral("quantum"), QStringLiteral("pde")};
+            QStringLiteral("magnetic"), QStringLiteral("modes"), QStringLiteral("waves"), QStringLiteral("resonator"), QStringLiteral("semiconductor"),
+            QStringLiteral("rays"), QStringLiteral("quantum"), QStringLiteral("pde")};
 }
 
 // ------------------------------------------------------------------ Node

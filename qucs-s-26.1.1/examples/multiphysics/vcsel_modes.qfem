@@ -1,0 +1,517 @@
+{
+ "format": "qucs-s multiphysics 1",
+ "title": "A VCSEL's cavity modes",
+ "description": "An oxide-confined 980 nm VCSEL's cold cavity, full-vector, one azimuthal order at a time: GaAs and Al0.9Ga0.1As quarter-wave mirrors (25 pairs below, 20 above), a one-wave Al0.3Ga0.7As cavity, a 30 nm oxide layer with a 2 µm aperture, perfectly matched layers along r, below and above. Order m 1, the three modes nearest 977 nm: HE11 at 978.52 nm, Q 16 000 (the aperture's confinement 1.5 nm below the mirrors' 980 nm), a ring at 974.24 nm (EH11's, with some of HE12's on the axis) and HE12 at 973.43 nm, its field highest on the axis and nought near r = 1 µm - Q from the complex eigenfrequency. Set m to 0 for TM01 and TE01 (976.83 and 976.46 nm), to 2 for HE21 (976.66 nm): the LP11 group split by 0.38 nm. A mesh twice as fine along r moves HE11 0.13 nm (the oxide's corners).",
+ "parameters": [
+  {
+   "name": "lambda0",
+   "expression": "980[nm]",
+   "description": "the design wavelength"
+  },
+  {
+   "name": "nH",
+   "expression": "3.52",
+   "description": "GaAs's index at 980 nm"
+  },
+  {
+   "name": "nL",
+   "expression": "2.98",
+   "description": "Al0.9Ga0.1As's"
+  },
+  {
+   "name": "nC",
+   "expression": "3.40",
+   "description": "the cavity's (Al0.3Ga0.7As)"
+  },
+  {
+   "name": "nAp",
+   "expression": "2.95",
+   "description": "AlAs's, in the aperture"
+  },
+  {
+   "name": "nOx",
+   "expression": "1.60",
+   "description": "its oxide's, round it"
+  },
+  {
+   "name": "tH",
+   "expression": "lambda0/(4*nH)",
+   "description": "a quarter wave of GaAs"
+  },
+  {
+   "name": "tL",
+   "expression": "lambda0/(4*nL)",
+   "description": "of Al0.9Ga0.1As"
+  },
+  {
+   "name": "tC",
+   "expression": "lambda0/nC",
+   "description": "the cavity: one wave"
+  },
+  {
+   "name": "tOx",
+   "expression": "30[nm]",
+   "description": "the oxidized layer"
+  },
+  {
+   "name": "Nb",
+   "expression": "25",
+   "description": "pairs below"
+  },
+  {
+   "name": "Nt",
+   "expression": "20",
+   "description": "pairs above"
+  },
+  {
+   "name": "a",
+   "expression": "2[um]",
+   "description": "the aperture's radius"
+  },
+  {
+   "name": "R",
+   "expression": "4[um]",
+   "description": "the window's radius"
+  },
+  {
+   "name": "d",
+   "expression": "1[um]",
+   "description": "the absorbing layers' thickness, along r"
+  },
+  {
+   "name": "dz",
+   "expression": "0.5[um]",
+   "description": "along z"
+  },
+  {
+   "name": "s",
+   "expression": "0.6[um]",
+   "description": "substrate and air"
+  },
+  {
+   "name": "yc",
+   "expression": "Nb*(tH + tL)",
+   "description": "the cavity's bottom"
+  },
+  {
+   "name": "yt",
+   "expression": "yc + tC + Nt*(tH + tL)",
+   "description": "the top mirror's top"
+  }
+ ],
+ "components": [
+  {
+   "unit": "um",
+   "space": "axisymmetric",
+   "geometry": [
+    {
+     "type": "rectangle",
+     "label": "sub",
+     "position": [
+      "0",
+      "-s - dz"
+     ],
+     "size": [
+      "R + d",
+      "s + dz"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "bh",
+     "position": [
+      "0",
+      "0"
+     ],
+     "size": [
+      "R + d",
+      "tH"
+     ]
+    },
+    {
+     "type": "array",
+     "label": "bottom_h",
+     "input": [
+      "bh"
+     ],
+     "count": [
+      "1",
+      "Nb"
+     ],
+     "displacement": [
+      "0",
+      "tH + tL"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "bl",
+     "position": [
+      "0",
+      "tH"
+     ],
+     "size": [
+      "R + d",
+      "tL"
+     ]
+    },
+    {
+     "type": "array",
+     "label": "bottom_l",
+     "input": [
+      "bl"
+     ],
+     "count": [
+      "1",
+      "Nb"
+     ],
+     "displacement": [
+      "0",
+      "tH + tL"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "cavity",
+     "position": [
+      "0",
+      "yc"
+     ],
+     "size": [
+      "R + d",
+      "tC"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "tl",
+     "position": [
+      "0",
+      "yc + tC"
+     ],
+     "size": [
+      "R + d",
+      "tL"
+     ]
+    },
+    {
+     "type": "array",
+     "label": "top_l",
+     "input": [
+      "tl"
+     ],
+     "count": [
+      "1",
+      "Nt"
+     ],
+     "displacement": [
+      "0",
+      "tH + tL"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "th",
+     "position": [
+      "0",
+      "yc + tC + tL"
+     ],
+     "size": [
+      "R + d",
+      "tH"
+     ]
+    },
+    {
+     "type": "array",
+     "label": "top_h",
+     "input": [
+      "th"
+     ],
+     "count": [
+      "1",
+      "Nt"
+     ],
+     "displacement": [
+      "0",
+      "tH + tL"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "aperture",
+     "position": [
+      "0",
+      "yc + tC"
+     ],
+     "size": [
+      "a",
+      "tOx"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "oxide",
+     "position": [
+      "a",
+      "yc + tC"
+     ],
+     "size": [
+      "R + d - a",
+      "tOx"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "air",
+     "position": [
+      "0",
+      "yt"
+     ],
+     "size": [
+      "R + d",
+      "s + dz"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "pml_side",
+     "position": [
+      "R",
+      "-s - dz"
+     ],
+     "size": [
+      "d",
+      "yt + 2*(s + dz)"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "pml_bottom",
+     "position": [
+      "0",
+      "-s - dz"
+     ],
+     "size": [
+      "R + d",
+      "dz"
+     ]
+    },
+    {
+     "type": "rectangle",
+     "label": "pml_top",
+     "position": [
+      "0",
+      "yt + s"
+     ],
+     "size": [
+      "R + d",
+      "dz"
+     ]
+    },
+    {
+     "type": "form union"
+    }
+   ],
+   "materials": [
+    {
+     "label": "GaAs",
+     "n": "nH",
+     "selection": {
+      "objects": [
+       "sub",
+       "bottom_h",
+       "top_h"
+      ]
+     }
+    },
+    {
+     "label": "Al0.9Ga0.1As",
+     "n": "nL",
+     "selection": {
+      "objects": [
+       "bottom_l",
+       "top_l"
+      ]
+     }
+    },
+    {
+     "label": "Al0.3Ga0.7As",
+     "n": "nC",
+     "selection": {
+      "objects": [
+       "cavity"
+      ]
+     }
+    },
+    {
+     "label": "Air",
+     "n": "1",
+     "selection": {
+      "objects": [
+       "air"
+      ]
+     }
+    },
+    {
+     "label": "AlAs (aperture)",
+     "n": "nAp",
+     "selection": {
+      "objects": [
+       "aperture"
+      ]
+     }
+    },
+    {
+     "label": "AlOx",
+     "n": "nOx",
+     "selection": {
+      "objects": [
+       "oxide"
+      ]
+     }
+    }
+   ],
+   "physics": [
+    {
+     "type": "resonator",
+     "tag": "emr",
+     "m": 1,
+     "order": "2",
+     "features": [
+      {
+       "type": "pml",
+       "label": "Absorbing layers",
+       "selection": {
+        "objects": [
+         "pml_side",
+         "pml_bottom",
+         "pml_top"
+        ]
+       }
+      }
+     ]
+    }
+   ],
+   "mesh": {
+    "size": "normal",
+    "custom": true,
+    "hmax": "0.2",
+    "features": [
+     {
+      "type": "layered",
+      "label": "Mirrors",
+      "axis": "y",
+      "count": "3",
+      "hlateral": "0.1",
+      "selection": {
+       "objects": [
+        "bottom_h",
+        "bottom_l",
+        "top_l",
+        "top_h",
+        "aperture",
+        "oxide"
+       ]
+      }
+     },
+     {
+      "type": "layered",
+      "label": "Cavity",
+      "axis": "y",
+      "count": "10",
+      "hlateral": "0.1",
+      "selection": {
+       "objects": [
+        "cavity"
+       ]
+      }
+     },
+     {
+      "type": "layered",
+      "label": "Substrate and air",
+      "axis": "y",
+      "count": "8",
+      "hlateral": "0.1",
+      "selection": {
+       "objects": [
+        "sub",
+        "air"
+       ]
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "studies": [
+  {
+   "type": "study",
+   "label": "Study 1",
+   "steps": [
+    {
+     "type": "eigenfrequency",
+     "count": 3,
+     "around": "977[nm]"
+    }
+   ]
+  }
+ ],
+ "results": {
+  "plots": [
+   {
+    "type": "plotgroup",
+    "label": "Electric Field, HE11",
+    "mode": 1,
+    "plots": [
+     {
+      "type": "surface",
+      "expression": "emr.normE",
+      "colors": "rainbow"
+     },
+     {
+      "type": "arrow",
+      "x": "emr.Er",
+      "y": "emr.Ez",
+      "points": [
+       "16",
+       "40"
+      ],
+      "scaling": "normalized",
+      "color": "white"
+     }
+    ]
+   },
+   {
+    "type": "plotgroup",
+    "label": "Azimuthal Field, HE11",
+    "mode": 1,
+    "plots": [
+     {
+      "type": "surface",
+      "expression": "emr.Ephi",
+      "colors": "coolwarm"
+     }
+    ]
+   },
+   {
+    "type": "plotgroup",
+    "label": "Electric Field, HE12",
+    "mode": 3,
+    "plots": [
+     {
+      "type": "surface",
+      "expression": "emr.normE",
+      "colors": "rainbow"
+     }
+    ]
+   }
+  ],
+  "derived": [
+   {
+    "type": "global",
+    "label": "Wavelengths and Q",
+    "expression": "emr.lambda0; emr.Q; emr.freq"
+   }
+  ]
+ }
+}
