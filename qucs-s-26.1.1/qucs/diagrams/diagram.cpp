@@ -434,12 +434,29 @@ void Diagram::createAxisLabels() {
 
     x = (x2 >> 1);
     y = -y1;
+    // How many graphs each x variable is of: one several share is written
+    // once, in the axis' colour (each graph's the same word under the
+    // axis, once a graph: GUI check of 2026-10-16, 5); one graph's alone
+    // in its colour, as before.
+    QHash<QString, int> sharing;
+    for (const Graph *pg: Graphs)
+        if (const DataX *pD = pg->axis(0); pD && !pg->ghost) ++sharing[pD->Var];
+    QSet<QString> written;
     if (xAxis.Label.isEmpty()) {
         // write all x labels ----------------------------------------
         // (A ghost - a kept run's - no label: it is in the legend.)
         for (Graph *pg: Graphs) {
             DataX const *pD = pg->axis(0);
             if (!pD || pg->ghost) continue;
+            if (Name[0] != 'C' && sharing.value(pD->Var) > 1) {   // (a locus curve's is each graph's own: real(...))
+                if (written.contains(pD->Var)) continue;
+                written.insert(pD->Var);
+                y -= LineSpacing;
+                w = metrics.boundingRect(pD->Var).width() >> 1;
+                if (w > wmax) wmax = w;
+                Texts.append(as(Part::XAxis, new Text(x - w, y, pD->Var, Qt::black, 12.0)));
+                continue;
+            }
             y -= LineSpacing;
             if (Name[0] != 'C') {   // locus curve ?
                 w = metrics.boundingRect(pD->Var).width() >> 1;

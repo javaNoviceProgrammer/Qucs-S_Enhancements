@@ -20,6 +20,7 @@
 #include <QTextFormat>
 #include <QTextObjectInterface>
 
+class QTextCursor;
 class QTextDocument;
 
 /*!
@@ -93,6 +94,12 @@ struct Span {
     bool display = false;
 };
 QList<Span> findMath(const QString& markdown);
+
+/// The block \a at is in, display math alone on its lines: centred on the
+/// page - in a list item or a quote (indented), set in under its text, as
+/// the item's own (centred, it stood apart from it: GUI check of
+/// 2026-10-16, 6) -, a little room above and below.
+void placeDisplay(QTextCursor& at);
 
 } // namespace qucs_s::math
 

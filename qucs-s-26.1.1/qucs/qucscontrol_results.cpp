@@ -2650,6 +2650,12 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         if (what == QLatin1String("evm")) return evmJson(data, v, k, o);
         return ds::measure(part, what, options);
     };
+    // A curve's value at x (its complex value, or its real one): as the
+    // curves and the table alike give it.
+    const auto valueOf = [&v, &curves, &offsets](int k, double x) {
+        const int at = offsets.at(k), n = int(curves.at(k).x.size());
+        return ds::sampledAt(curves.at(k).x, v.re.mid(at, n), v.isComplex() ? v.im.mid(at, n) : QVector<double>(), x);
+    };
     QJsonArray curveList;
     int offset = 0;
     const int most = 50;
@@ -2693,21 +2699,17 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
         c.insert(QStringLiteral("initial"), number(s.first));
         c.insert(QStringLiteral("final"), number(s.last));
 
-        // The values at the x asked for, straight between the samples.
+        // The values at the x asked for, between the samples as
+        // ds::sampledAt() takes them (the table's too).
         if (!o.at.isEmpty()) {
-            ds::Curve re{full.x, {}}, im{full.x, {}};
-            for (int i = 0; i < length; ++i) {
-                re.y << v.re.value(offset + i, NaN);
-                if (v.isComplex()) im.y << v.im.value(offset + i, NaN);
-            }
             QJsonArray values;
             for (double x : o.at) {
-                const double r = ds::valueAt(re, x);
+                const std::complex<double> at = valueOf(k, x);
                 QJsonArray row{number(x)};
-                if (std::isnan(r)) row << QJsonValue(QJsonValue::Null);
+                if (std::isnan(at.real())) row << QJsonValue(QJsonValue::Null);
                 else if (v.isComplex()) {
-                    for (const QJsonValue& part2 : complexParts(r, ds::valueAt(im, x), o.form)) row << part2;
-                } else row << number(r);
+                    for (const QJsonValue& part2 : complexParts(at.real(), at.imag(), o.form)) row << part2;
+                } else row << number(at.real());
                 values.append(row);
             }
             c.insert(QStringLiteral("at"), values);
@@ -2749,7 +2751,9 @@ QJsonObject variableJson(const ds::Dataset& data, const ds::Variable& v, const R
             for (const auto& p : outer.value(k)) row << number(p.second);
             if (outer.value(k).isEmpty()) row << k + 1;
             for (double x : o.at) {
-                const double y = ds::valueAt(curves.at(k), x);
+                // (The statistics' value: a complex one's magnitude.)
+                const std::complex<double> at = valueOf(k, x);
+                const double y = v.isComplex() ? std::abs(at) : at.real();
                 row << (std::isnan(y) ? QJsonValue(QJsonValue::Null) : QJsonValue(number(y)));
             }
             const ds::Curve part = ds::within(curves.at(k), o.from, o.to);

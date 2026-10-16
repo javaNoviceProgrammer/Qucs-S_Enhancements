@@ -2338,6 +2338,20 @@ void MathObject::install(QTextDocument* document)
     if (layout->handlerForObject(Type) == nullptr) layout->registerHandler(Type, new MathObject(document));
 }
 
+void placeDisplay(QTextCursor& at)
+{
+    QTextBlockFormat bf = at.blockFormat();
+    if (at.block().textList() != nullptr || bf.indent() > 0 || bf.leftMargin() > 0) {
+        bf.setAlignment(Qt::AlignLeft);
+        bf.setLeftMargin(bf.leftMargin() + 24);
+    } else {
+        bf.setAlignment(Qt::AlignHCenter);
+    }
+    bf.setTopMargin(std::max(bf.topMargin(), 4.0));
+    bf.setBottomMargin(std::max(bf.bottomMargin(), 4.0));
+    at.setBlockFormat(bf);
+}
+
 QTextCharFormat MathObject::format(const Typeset& math, const QFont& font, const QString& tex)
 {
     qreal height = 0.0;
@@ -2348,7 +2362,10 @@ QTextCharFormat MathObject::format(const Typeset& math, const QFont& font, const
     f.setProperty(SizeProperty, QSizeF(math.width, height));
     f.setVerticalAlignment(QTextCharFormat::AlignMiddle);
     f.setFont(font);   // (its x-height places it)
-    f.setToolTip(tex);
+    // (An environment LaTeX numbers: said that it is not, as on GitHub.)
+    static const QRegularExpression numbered(QStringLiteral("^\\s*\\\\begin\\{(equation|align|gather|multline|eqnarray)\\}"));
+    f.setToolTip(numbered.match(tex).hasMatch() ? tex + QStringLiteral("\n\n") + tr("Not numbered, as GitHub shows it (LaTeX would number it).")
+                                                : tex);
     return f;
 }
 

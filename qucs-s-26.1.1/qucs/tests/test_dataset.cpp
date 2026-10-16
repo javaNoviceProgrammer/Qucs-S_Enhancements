@@ -544,12 +544,140 @@ private slots:
         QVERIFY(withPi.read(named));
         QVERIFY2(ds::evaluate(withPi, "2*pi", &v, &error), qPrintable(error));
         QCOMPARE(v.re, (QVector<double>{14, 16}));
+        // Of independent variables alone (an analytic model to draw over a
+        // swept run): over the grid of their sweeps, as a variable over
+        // them all is - Z's order, frequency the fastest; two no variable
+        // is over, in the dataset's order.
+        QVERIFY2(ds::evaluate(data, "frequency*Rs", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, (QStringList{"frequency", "Rs"}));
+        QCOMPARE(v.re, (QVector<double>{1e7, 2e7, 4e7, 2e7, 4e7, 8e7}));
+        QVERIFY2(ds::evaluate(data, "Rs + 0*frequency", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, (QStringList{"frequency", "Rs"}));   // (as Z, whatever the expression's order)
+        QCOMPARE(v.re, (QVector<double>{10, 10, 10, 20, 20, 20}));
+        // (The order of the variable over them, not the dataset's: z is
+        // over b then a.)
+        const QString swapped = write("swapped.dat", datasetText({
+            {"indep a 2", "", {"1", "2"}},
+            {"indep b 3", "", {"10", "20", "30"}},
+            {"dep z b a", "", {"0", "0", "0", "0", "0", "0"}},
+        }));
+        ds::Dataset sw;
+        QVERIFY(sw.read(swapped));
+        QVERIFY2(ds::evaluate(sw, "a*b", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, (QStringList{"b", "a"}));
+        QCOMPARE(v.re, (QVector<double>{10, 20, 30, 20, 40, 60}));
+        QVERIFY2(ds::evaluate(data, "frequency*time", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, (QStringList{"frequency", "time"}));
+        QCOMPARE(v.re, (QVector<double>{0, 0, 0, 1e6, 2e6, 4e6}));
         // Refused, with why.
-        QVERIFY(!ds::evaluate(data, "frequency*Rs", &v, &error));
-        QVERIFY2(error.contains("both independent"), qPrintable(error));
         QVERIFY(!ds::evaluate(data, "v*frequency", &v, &error));
         QVERIFY2(error.contains("frequency is not a sweep of the others (they are over time)"), qPrintable(error));
         QVERIFY(!ds::evaluate(data, "2*pi*j", &v, &error) && error.contains("numbers"));
+    }
+
+    // Between samples: on a log sweep a cubic in log x - of a complex
+    // value's log magnitude and phase, of a real value - else straight in
+    // x (GUI check of 2026-10-16, 4: an RC's response at its corner was
+    // 0.70714 and 0.70721 from two places, 1/sqrt(2) the answer).
+    void valuesBetweenSamples()
+    {
+        QVector<double> f, re, im;
+        const double fc = 1 / (2 * M_PI * 1e3 * 1e-9);
+        for (int k = 0; k <= 40; ++k) {
+            f << std::pow(10.0, 3 + k / 10.0);
+            const std::complex<double> h = 1.0 / std::complex<double>(1, f.last() / fc);
+            re << h.real();
+            im << h.imag();
+        }
+        QVERIFY(ds::isLogSweep(f));
+        QVERIFY(!ds::isLogSweep({1, 2, 3, 4}) && !ds::isLogSweep({0, 1, 10}) && !ds::isLogSweep({1, 10}));
+        const std::complex<double> corner = ds::sampledAt(f, re, im, 159154.9);
+        const std::complex<double> exact = 1.0 / std::complex<double>(1, 159154.9 / fc);
+        QVERIFY2(std::abs(std::abs(corner) - std::abs(exact)) < 1e-6, qPrintable(QString::number(std::abs(corner), 'g', 10)));
+        QVERIFY(std::abs(std::arg(corner) - std::arg(exact)) < 1e-4);   // (1.7e-5 rad: 0.001 degrees)
+        // Everywhere between: within 1e-4 (straight in x: 1.3e-2).
+        double worst = 0;
+        for (int k = 0; k < 2000; ++k) {
+            const double x = std::pow(10.0, 3.0001 + 3.9998 * k / 1999.0);
+            const std::complex<double> h = 1.0 / std::complex<double>(1, x / fc);
+            worst = std::max(worst, std::abs(std::abs(ds::sampledAt(f, re, im, x)) - std::abs(h)) / std::abs(h));
+        }
+        QVERIFY2(worst < 1e-4, qPrintable(QString::number(worst)));
+        // A phase through ±180 degrees between samples: unwrapped (its
+        // atan2 jumps from +pi to -pi there).
+        QVector<double> wre, wim;
+        for (double x : f) {
+            const std::complex<double> h = std::polar(1.0, M_PI + 0.2 * (std::log10(x) - 5.05));
+            wre << h.real();
+            wim << h.imag();
+        }
+        const std::complex<double> across = ds::sampledAt(f, wre, wim, std::pow(10.0, 5.05));
+        QVERIFY2(std::abs(across + 1.0) < 1e-6, qPrintable(QString("%1 %2").arg(across.real()).arg(across.imag())));
+        // (And the other way, from -pi to +pi.)
+        wre.clear();
+        wim.clear();
+        for (double x : f) {
+            const std::complex<double> h = std::polar(1.0, M_PI - 0.2 * (std::log10(x) - 5.05));
+            wre << h.real();
+            wim << h.imag();
+        }
+        const std::complex<double> back = ds::sampledAt(f, wre, wim, std::pow(10.0, 5.05));
+        QVERIFY2(std::abs(back + 1.0) < 1e-6, qPrintable(QString("%1 %2").arg(back.real()).arg(back.imag())));
+        // A sample's own; outside, none.
+        QCOMPARE(ds::sampledAt(f, re, im, f.at(7)), std::complex<double>(re.at(7), im.at(7)));
+        QVERIFY(std::isnan(ds::sampledAt(f, re, im, 10.0).real()) && std::isnan(ds::sampledAt(f, re, im, 2e7).real()));
+        // A real value on a log sweep: a cubic of it (a line in log x exact).
+        QVector<double> line;
+        for (double x : f) line << 3 * std::log(x) + 1;
+        QVERIFY(std::abs(ds::sampledAt(f, line, {}, 31622.0).real() - (3 * std::log(31622.0) + 1)) < 1e-9);
+        // A linear sweep: straight in x, as before.
+        const QVector<double> t{0, 1, 2, 3}, v{0, 10, 0, 10};
+        QCOMPARE(ds::sampledAt(t, v, {}, 0.25).real(), 2.5);
+        QCOMPARE(ds::sampledAt(t, v, {}, 1.5).real(), 5.0);
+    }
+
+    // A SPICE run's dataset written as a plain .dat (exported, saved as
+    // text, a kept run): its names as the simulator's - v(out) is
+    // ac.v(out) when one analysis has it -, as in its own name.dat.ngspice;
+    // Qucsator's names (out.v) as before.
+    void spiceNamesInAPlainDataset()
+    {
+        const QString exported = write("rcsw.dat", datasetText({
+            {"indep frequency 2", "", {"1e3", "1e4"}},
+            {"indep ac1.r1 2", "", {"500", "1000"}},
+            {"dep ac.v(in) frequency ac1.r1", "", {"1+j0", "1+j0", "1+j0", "1+j0"}},
+            {"dep ac.v(out) frequency ac1.r1", "", {"0.5+j0", "0.25+j0", "0.4+j0", "0.2+j0"}},
+        }));
+        ds::Dataset data;
+        QVERIFY(data.read(exported));
+        QCOMPARE(data.resolve("v(out)"), QStringList{"ac.v(out)"});
+        QCOMPARE(data.resolve("out"), QStringList{"ac.v(out)"});   // (a node: its voltage)
+        ds::Variable v;
+        QString error;
+        QVERIFY2(ds::evaluate(data, "v(out)/v(in)", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, (QStringList{"frequency", "ac1.r1"}));
+        QCOMPARE(v.re, (QVector<double>{0.5, 0.25, 0.4, 0.2}));
+        // An analytic model over the run: frequency and R1 alone.
+        QVERIFY2(ds::evaluate(data, "abs(1/(1+j*frequency*ac1.r1*1e-6))", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, (QStringList{"frequency", "ac1.r1"}));
+        QVERIFY(std::abs(v.re.at(3) - 1 / std::abs(std::complex<double>(1, 1e4 * 1000 * 1e-6))) < 1e-15);
+        // Qucsator's own: no analysis before a name, none taken off.
+        const QString qucsator = write("plainq.dat", datasetText({
+            {"indep frequency 2", "", {"1", "2"}},
+            {"dep out.v frequency", "", {"3", "4"}},
+        }));
+        ds::Dataset q;
+        QVERIFY(q.read(qucsator));
+        QCOMPARE(q.resolve("out"), QStringList{"out.v"});
+        QVERIFY(q.resolve("v(out)").isEmpty());
+        // A variable over nothing (<dep x>): its expression evaluates (it
+        // was a null pointer read).
+        const QString bare = write("bare.dat", datasetText({{"dep x", "", {"1.5", "2.5"}}}));
+        ds::Dataset b;
+        QVERIFY(b.read(bare));
+        QVERIFY2(ds::evaluate(b, "x*2", &v, &error), qPrintable(error));
+        QCOMPARE(v.re, (QVector<double>{3, 5}));
+        QVERIFY(v.dependencies.isEmpty());
     }
 
     // An expression nested beyond reason is refused, not a crash (100,000

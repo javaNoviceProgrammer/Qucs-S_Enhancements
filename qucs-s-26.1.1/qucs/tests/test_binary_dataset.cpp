@@ -745,6 +745,9 @@ private slots:
             {"ngspice/ac.Z*Rs", {"frequency", "Rs"}, {1e6, 2e6, 4e6}, {10, 0, 20, 0, 30, 0, 80, 0, 100, 0, 120, 0}},
             {"ngspice/2*ac.L@ac.a-b", {"ac.a-b"}, {7, 8, 9}, {2e-6, 0, 4e-6, 0, 6e-6, 0}},
             {"ngspice/ac.a-b", {"frequency"}, {1e6, 2e6, 4e6}, {7, 0, 8, 0, 9, 0}},   // the variable
+            // (Of the sweeps alone: over their grid, as ac.Z is - refused
+            // before the GUI check of 2026-10-16, 2.)
+            {"ngspice/frequency*Rs/1e6", {"frequency", "Rs"}, {1e6, 2e6, 4e6}, {10, 0, 20, 0, 40, 0, 20, 0, 40, 0, 80, 0}},
         };
         for (const Case& c : cases)
             for (const QString& base : {textBase, binaryBase}) {
@@ -779,7 +782,6 @@ private slots:
         }
         // Refused, and why; no data.
         for (const auto& [trace, why] : {std::pair<QString, QString>{"ngspice/2*ac.nosuch", "there is no variable ac.nosuch"},
-                                         {"ngspice/frequency*Rs", "both independent"},
                                          {"ngspice/ac.L*ac.L(", "a ) is missing"}}) {
             RectDiagram d;
             auto* g = new Graph(&d, trace);
@@ -828,6 +830,16 @@ private slots:
             QStringList labels;
             for (const Text* t : d.Texts) labels << t->s;
             for (const char* label : {"v(out)/v(in)", "db(v(out)/v(in))", "2*L"}) QVERIFY2(labels.contains(label), qPrintable(labels.join(" | ")));
+            // (Their x, frequency, written once: GUI check of 2026-10-16, 5.)
+            QVERIFY2(labels.count("frequency") == 1, qPrintable(labels.join(" | ")));
+            // Another x beside it: each x once - the shared one, and the
+            // graph's own.
+            d.Graphs.append(new Graph(&d, "ngspice/2*ac.L@ac.a-b"));
+            d.Graphs.append(new Graph(&d, "ngspice/ac.Z"));
+            d.loadGraphData(binaryBase + ".dat");
+            labels.clear();
+            for (const Text* t : d.Texts) labels << t->s;
+            QVERIFY2(labels.count("frequency") == 1 && labels.count("ac.a-b") == 1, qPrintable(labels.join(" | ")));
             QVERIFY2(!labels.contains("v(in)") && !labels.contains("v(in))"), qPrintable(labels.join(" | ")));
         }
     }

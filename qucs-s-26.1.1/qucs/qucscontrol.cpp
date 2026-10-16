@@ -10531,7 +10531,10 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
         if (args.contains(QLatin1String("diagram"))) {
             Diagram* d = diagramOf(sch, args.value(QLatin1String("diagram")), &error);
             if (d == nullptr) return errorResult(error);
-            wanted = d->boundingRect().adjusted(-20, -20, 20, 20);
+            // All it draws - a legend beside it, its axes' numbers - not its
+            // frame alone (GUI check of 2026-10-16, 3: an outside legend's
+            // text was cut off), in the font the page is drawn in.
+            wanted = (d->boundingRect() | d->paintedRect(QFontMetricsF(QucsSettings.font)).toAlignedRect()).adjusted(-20, -20, 20, 20);
             what = tr("diagram %1").arg(args.value(QLatin1String("diagram")).toInt());
         } else {
             const QJsonArray r = args.value(QLatin1String("region")).toArray();

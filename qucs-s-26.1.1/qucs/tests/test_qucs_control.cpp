@@ -11945,6 +11945,61 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
+    // The GUI check of 2026-10-16 (ea025a5): a SPICE run exported as a
+    // plain .dat reads its short names as its own did (v(out) for
+    // ac.v(out)); an expression of its sweeps alone is over their grid (an
+    // analytic model drawn over the run); get_dataset's curve and table
+    // give one number at a point between samples, near the exact one; a
+    // diagram's picture has its outside legend whole.
+    void anExportedRunReadsAsItsOwn()
+    {
+        const QString folder = QFileInfo(QucsSettings.qucsWorkspaceDir.absoluteFilePath("guicheck")).absoluteFilePath();
+        QVERIFY(QDir().mkpath(folder));
+        // An RC low-pass, R1 swept: 41 points from 1 kHz to 10 MHz.
+        QString content = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep frequency 41>\n";
+        for (int k = 0; k <= 40; ++k) content += QStringLiteral("  %1\n").arg(std::pow(10.0, 3 + k / 10.0), 0, 'g', 17);
+        content += "</indep>\n<indep ac1.r1 4>\n  500\n  1000\n  1500\n  2000\n</indep>\n<dep ac.v(in) frequency ac1.r1>\n";
+        for (int k = 0; k < 164; ++k) content += "  1+j0\n";
+        content += "</dep>\n<dep ac.v(out) frequency ac1.r1>\n";
+        for (const double r : {500.0, 1000.0, 1500.0, 2000.0})
+            for (int k = 0; k <= 40; ++k) {
+                const std::complex<double> h = 1.0 / std::complex<double>(1, 2 * M_PI * std::pow(10.0, 3 + k / 10.0) * r * 1e-9);
+                content += QStringLiteral("  %1%2j%3\n").arg(h.real(), 0, 'g', 17).arg(h.imag() < 0 ? "-" : "+").arg(std::abs(h.imag()), 0, 'g', 17);
+            }
+        content += "</dep>\n";
+        {
+            QFile f(folder + "/rcsw.dat");
+            QVERIFY(f.open(QIODevice::WriteOnly) && f.write(content.toUtf8()) > 0);
+        }
+        // Its short names, and one number in the curve and the table.
+        QJsonObject r = call("get_dataset", {{"path", folder + "/rcsw.dat"}, {"variables", QJsonArray{"v(out)/v(in)"}}, {"at", QJsonArray{159154.9}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject ratio = json(r).toObject().value("variables").toArray().first().toObject();
+        const double inCurve = ratio.value("curves").toArray().at(1).toObject().value("at").toArray().first().toArray().at(1).toDouble();
+        const double inTable = ratio.value("table").toObject().value("rows").toArray().at(1).toArray().at(1).toDouble();
+        QCOMPARE(inCurve, inTable);
+        QVERIFY2(std::abs(inCurve - 1 / std::sqrt(2.0)) < 2e-6, qPrintable(QString::number(inCurve, 'g', 10)));
+        // A diagram of the run, the model over it, the legend outside.
+        QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(call("save_document", {{"as", folder + "/check.sch"}, {"replace", true}})));
+        r = call("add_diagram", {{"x", 100}, {"y", 400}, {"traces", QJsonArray{"rcsw:v(out)/v(in)", "rcsw:abs(1/(1+j*2*pi*frequency*ac1.r1*1e-9))"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        for (const QJsonValue& t : json(r).toObject().value("traces").toArray())
+            QVERIFY2(t.toObject().value("points").toInt() == 41 && t.toObject().value("curves").toInt() == 4 && !t.toObject().contains("no data"),
+                     qPrintable(text(r)));
+        const auto aspect = [this] {
+            const QJsonObject shot = call("screenshot", {{"diagram", 1}});
+            const QImage image = QImage::fromData(QByteArray::fromBase64(shot.value("content").toArray().first().toObject().value("data").toString().toLatin1()));
+            return double(image.width()) / image.height();
+        };
+        QVERIFY(!failed(call("edit_diagram", {{"diagram", 1}, {"legend", "off"}})));
+        const double plain = aspect();
+        QVERIFY(!failed(call("edit_diagram", {{"diagram", 1}, {"legend", "outside"}})));
+        const double withLegend = aspect();
+        QVERIFY2(withLegend > plain * 1.15, qPrintable(QString("%1 against %2").arg(withLegend).arg(plain)));   // (the frame's alone before)
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+    }
+
     // A data file plotted with no simulation (qucs-s-csv-import-mcp-fix):
     // there was no tool to import one, and a trace of an imported dataset
     // (name.dat, name:variable) was given the simulator's prefix by
