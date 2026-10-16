@@ -439,6 +439,9 @@ private slots:
         QCOMPARE(v.dependencies, QStringList{"time"});
         QCOMPARE(v.re, (QVector<double>{0.5, 0.5, 0.75}));
         QVERIFY(!v.isComplex());
+        // (A simulator's prefix is the name's, the next slash a division.)
+        QVERIFY2(ds::evaluate(data, "ngspice/tran.v(out)/ngspice/tran.v(in)", &v, &error), qPrintable(error));
+        QCOMPARE(v.re, (QVector<double>{0.5, 0.5, 0.75}));
         QVERIFY2(ds::evaluate(data, "2 * (tran.v(out) - tran.v(in)) ^ 2", &v, &error), qPrintable(error));
         QCOMPARE(v.re, (QVector<double>{0.5, 2, 2}));
         // AC: complex, and its dB.
@@ -459,6 +462,94 @@ private slots:
         QVERIFY(!ds::evaluate(data, "3 * 4", &v, &error) && error.contains("numbers"));
         QVERIFY(!ds::evaluate(data, "tran.v(out) / ac.v(in)", &v, &error) && error.contains("analysis"));
         QVERIFY(!ds::evaluate(data, "abs(tran.v(out)", &v, &error));
+    }
+
+    // An expression of the sweeps too (a diagram's 2*pi*frequency*L): an
+    // independent variable its value at each sample of the others, the
+    // samples over the sweeps fastest first; alone, over itself. pi, e and
+    // j where no variable has the name; the functions of a calculator.
+    void expressionsOfTheSweeps()
+    {
+        const QString path = write("rlgc.dat", datasetText({
+            {"indep frequency 3", "", {"1e6", "2e6", "4e6"}},
+            {"dep L frequency", "", {"1e-6", "2e-6", "3e-6"}},
+            {"dep C frequency", "", {"1e-12", "2e-12", "4e-12"}},
+            {"indep Rs 2", "", {"10", "20"}},
+            {"dep Z frequency Rs", "", {"1", "2", "3", "4", "5", "6"}},
+            {"indep time 2", "", {"0", "1"}},
+            {"dep v time", "", {"0.5", "1.5"}},
+        }));
+        ds::Dataset data;
+        QVERIFY(data.read(path));
+        ds::Variable v;
+        QString error;
+        // The user's 2*L, and with its frequency.
+        QVERIFY2(ds::evaluate(data, "2*L", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, QStringList{"frequency"});
+        QCOMPARE(v.re, (QVector<double>{2e-6, 4e-6, 6e-6}));
+        QVERIFY2(ds::evaluate(data, "2*pi*frequency*L", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, QStringList{"frequency"});
+        QVERIFY(!v.isComplex());
+        const double f[3] = {1e6, 2e6, 4e6}, L[3] = {1e-6, 2e-6, 3e-6}, C[3] = {1e-12, 2e-12, 4e-12};
+        for (int k = 0; k < 3; ++k) QVERIFY(near(v.re.at(k), 2 * M_PI * f[k] * L[k], 1e-15));
+        // Complex with j: the capacitor's reactance, its real part nought.
+        QVERIFY2(ds::evaluate(data, "1/(j*2*pi*frequency*C)", &v, &error), qPrintable(error));
+        QVERIFY(v.isComplex());
+        for (int k = 0; k < 3; ++k) {
+            QVERIFY(v.re.at(k) == 0);
+            QVERIFY(near(v.im.at(k), -1 / (2 * M_PI * f[k] * C[k]), 1e-15));
+        }
+        QVERIFY2(ds::evaluate(data, "L/C", &v, &error), qPrintable(error));   // (a division, not a name with a slash)
+        for (int k = 0; k < 3; ++k) QCOMPARE(v.re.at(k), L[k] / C[k]);
+        QVERIFY2(ds::evaluate(data, "sqrt(L/C)*e/e", &v, &error), qPrintable(error));
+        for (int k = 0; k < 3; ++k) QVERIFY(near(v.re.at(k), std::sqrt(L[k] / C[k]), 1e-15));
+        // Of a sweep alone: over itself.
+        QVERIFY2(ds::evaluate(data, "frequency^2", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, QStringList{"frequency"});
+        QCOMPARE(v.re, (QVector<double>{1e12, 4e12, 16e12}));
+        QVERIFY2(ds::evaluate(data, "Rs/2", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, QStringList{"Rs"});
+        QCOMPARE(v.re, (QVector<double>{5, 10}));
+        // Over two sweeps: frequency the fastest, Rs each third sample.
+        QVERIFY2(ds::evaluate(data, "Z*Rs + frequency/1e6", &v, &error), qPrintable(error));
+        QCOMPARE(v.dependencies, (QStringList{"frequency", "Rs"}));
+        QCOMPARE(v.re, (QVector<double>{1 * 10 + 1, 2 * 10 + 2, 3 * 10 + 4, 4 * 20 + 1, 5 * 20 + 2, 6 * 20 + 4}));
+        // The functions, each its real one on real values.
+        struct Case {
+            const char* f;
+            double (*real)(double);
+        };
+        const Case cases[] = {{"sin", std::sin},   {"cos", std::cos},     {"tan", std::tan},     {"atan", std::atan},
+                              {"sinh", std::sinh}, {"cosh", std::cosh},   {"tanh", std::tanh},   {"log", std::log10},
+                              {"log2", std::log2}, {"floor", std::floor}, {"ceil", std::ceil},   {"round", std::round},
+                              {"exp", std::exp},   {"ln", std::log},      {"sqrt", std::sqrt},   {"log10", std::log10}};
+        for (const Case& c : cases) {
+            QVERIFY2(ds::evaluate(data, QStringLiteral("%1(v*3)").arg(c.f), &v, &error), qPrintable(error));
+            QVERIFY2(!v.isComplex(), c.f);
+            for (int k = 0; k < 2; ++k) QVERIFY2(v.re.at(k) == c.real(3 * (0.5 + k)), c.f);
+        }
+        QVERIFY2(ds::evaluate(data, "asin(v-1) + acos(v-1)", &v, &error), qPrintable(error));   // (-0.5, 0.5)
+        for (int k = 0; k < 2; ++k) QVERIFY(std::abs(v.re.at(k) - M_PI / 2) < 1e-15);
+        QVERIFY2(ds::evaluate(data, "sq(v) + sign(v-1) + arg(j*v)", &v, &error), qPrintable(error));
+        QVERIFY(std::abs(v.re.at(0) - (0.25 - 1 + M_PI / 2)) < 1e-15 && std::abs(v.re.at(1) - (2.25 + 1 + M_PI / 2)) < 1e-15);
+        // Out of a real function's range: complex, as a calculator's.
+        QVERIFY2(ds::evaluate(data, "asin(v*2)", &v, &error), qPrintable(error));
+        QVERIFY(v.isComplex() && std::abs(v.re.at(0) - M_PI / 2) < 1e-15 && v.im.at(1) != 0);
+        // A variable named pi is the variable.
+        const QString named = write("named.dat", datasetText({
+            {"indep frequency 2", "", {"1", "2"}},
+            {"dep pi frequency", "", {"7", "8"}},
+        }));
+        ds::Dataset withPi;
+        QVERIFY(withPi.read(named));
+        QVERIFY2(ds::evaluate(withPi, "2*pi", &v, &error), qPrintable(error));
+        QCOMPARE(v.re, (QVector<double>{14, 16}));
+        // Refused, with why.
+        QVERIFY(!ds::evaluate(data, "frequency*Rs", &v, &error));
+        QVERIFY2(error.contains("both independent"), qPrintable(error));
+        QVERIFY(!ds::evaluate(data, "v*frequency", &v, &error));
+        QVERIFY2(error.contains("frequency is not a sweep of the others (they are over time)"), qPrintable(error));
+        QVERIFY(!ds::evaluate(data, "2*pi*j", &v, &error) && error.contains("numbers"));
     }
 
     // An expression nested beyond reason is refused, not a crash (100,000

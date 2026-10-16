@@ -8824,9 +8824,13 @@ private slots:
         QCOMPARE(sch->a_DocComps.size(), parts);
         const int simulator = QucsSettings.DefaultSimulator;
         QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        // (Under Qucsator the diagram evaluates it - it was refused, an Eqn
+        // to be added: diagrams take expressions now.)
         r = call("add_trace", {{"diagram", 1}, {"variable", "v(out)/2"}});
         QucsSettings.DefaultSimulator = simulator;
-        QVERIFY2(failed(r) && text(r).contains("Eqn"), qPrintable(text(r)));
+        QVERIFY2(!failed(r) && json(r).toObject().value("variable").toString() == "v(out)/2"
+                     && json(r).toObject().value("note").toString().contains("the diagram evaluates it"),
+                 qPrintable(text(r)));
         const QJsonObject painting = json(call("describe_tool", {{"name", "add_painting"}})).toObject();
         QVERIFY(painting.value("inputSchema").toObject().value("properties").toObject().contains("tex"));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
@@ -12066,6 +12070,26 @@ private slots:
         r = call("add_trace", {{"diagram", 3}, {"variable", "run1:v1"}});
         QVERIFY2(json(r).toObject().value("variable").toString() == "ngspice/run1:v1" && json(r).toObject().value("points").toInt() == 3,
                  qPrintable(text(r)));
+
+        // An expression of an imported dataset's variables, its sweep's
+        // too: the diagram evaluates it, at once; one that does not, why.
+        r = call("add_trace", {{"diagram", 3}, {"variable", "dummy_data:2*pi*time*v1 + v2"}});
+        QVERIFY2(json(r).toObject().value("variable").toString() == "dummy_data:2*pi*time*v1 + v2"
+                     && json(r).toObject().value("points").toInt() == 11 && !json(r).toObject().contains("no data"),
+                 qPrintable(text(r)));
+        r = call("add_trace", {{"diagram", 3}, {"variable", "dummy_data:v1*nosuch"}});
+        QVERIFY2(json(r).toObject().value("no data").toString().contains("there is no variable nosuch"), qPrintable(text(r)));
+        // Under Qucsator, of the schematic's own: the diagram's too (it was
+        // refused - only an equation block would compute one).
+        write("csv_plot.dat", "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 3>\n  0\n  1\n  2\n</indep>\n<dep out.V time>\n  1\n  2\n  3\n</dep>\n");
+        const int simulatorWas = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simQucsator;
+        r = call("add_trace", {{"diagram", 3}, {"variable", "out.V/2 + time"}});
+        QucsSettings.DefaultSimulator = simulatorWas;
+        QVERIFY2(json(r).toObject().value("variable").toString() == "out.V/2 + time" && json(r).toObject().value("points").toInt() == 3
+                     && json(r).toObject().value("note").toString().contains("the diagram evaluates it at each of their samples"),
+                 qPrintable(text(r)));
+        QVERIFY(QFile::remove(folder + "/csv_plot.dat"));
 
         // What is not there, or not so: said, and nothing written.
         const auto refused = [this](const QJsonObject& args, const QString& said) {

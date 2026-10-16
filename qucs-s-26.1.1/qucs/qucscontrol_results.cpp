@@ -228,7 +228,7 @@ QStringList domainNotes(const Diagram* d)
         if (g->isEmpty()) continue;
         const int has = domainOf(g);
         if (d->Name == QLatin1String("PoleZero") ? has != 0 : (wants != 0 && has != 0 && has != wants))
-            off << tr("trace %1 (%2) is over %3").arg(k + 1).arg(g->Var.section(QLatin1Char('/'), -1), g->axis(0)->Var);
+            off << tr("trace %1 (%2) is over %3").arg(k + 1).arg(g->unprefixed(), g->axis(0)->Var);
     }
     if (!off.isEmpty())
         notes << (d->Name == QLatin1String("PoleZero")
@@ -1970,13 +1970,10 @@ QString traceFile(Schematic* sch, const QString& var, QString* variable)
 {
     const QFileInfo doc(sch->getDocName());
     const QString dir = doc.absolutePath();
-    QString tail;
-    QString svar = var;
-    const qsizetype slash = var.indexOf(QLatin1Char('/'));
-    if (slash > 0) {
-        tail = QLatin1Char('.') + var.left(slash);
-        svar = var.mid(slash + 1);
-    }
+    // (A division's slash is no simulator's: v(out)/v(in).)
+    QString simulator;
+    QString svar = qucs_s::dataset::withoutSimulator(var, &simulator);
+    const QString tail = simulator.isEmpty() ? QString() : QLatin1Char('.') + simulator;
     const qsizetype colon = svar.indexOf(QLatin1Char(':'));
     QString file;
     if (colon <= 0) {
@@ -3427,6 +3424,7 @@ QString whyNoData(Schematic* sch, Graph* g)
     ds::Dataset data;
     QString error;
     if (!data.read(file, &error)) return error;
+    if (!g->loadError.isEmpty()) return g->loadError;   // (an expression that does not evaluate: why)
     if (data.find(variable) == nullptr) {
         QStringList like = data.resolve(ds::bareName(variable));
         like.removeAll(variable);

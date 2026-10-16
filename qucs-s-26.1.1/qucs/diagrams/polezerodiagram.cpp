@@ -103,7 +103,7 @@ QList<PoleZeroDiagram::Root> PoleZeroDiagram::rootsOf(const Graph* g)
 
 bool PoleZeroDiagram::isZero(const Graph* g)
 {
-    const QString name = g->Var.section(QLatin1Char('/'), -1).section(QLatin1Char('.'), -1).toLower();
+    const QString name = g->unprefixed().section(QLatin1Char('.'), -1).toLower();
     return name.startsWith(QLatin1String("zero"));
 }
 

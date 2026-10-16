@@ -130,8 +130,8 @@ QList<QPointF> ConstellationDiagram::idealPoints(int modulation)
 ConstellationDiagram::Pair ConstellationDiagram::pairOf(const Graph* gi, const Graph* gq) const
 {
     Pair pair;
-    pair.i = gi->Var.section(QLatin1Char('/'), -1);
-    pair.q = gq != nullptr ? gq->Var.section(QLatin1Char('/'), -1) : QString();
+    pair.i = gi->unprefixed();
+    pair.q = gq != nullptr ? gq->unprefixed() : QString();
     if (gq == nullptr) {
         pair.error = QObject::tr("an I with no Q: the traces go in pairs, I then Q");
         return pair;

@@ -263,8 +263,7 @@ int TabDiagram::calcDiagram()
     y = y2-tHeight-5;
     colWidth = 0;
 
-    Str = g->Var;
-    if (Str.contains('/')) Str = g->Var.section('/', 1);
+    Str = g->unprefixed();
     Str = g->withValuePart(Str);
 
     colWidth = checkColumnWidth(Str, metrics, colWidth, x, y2);

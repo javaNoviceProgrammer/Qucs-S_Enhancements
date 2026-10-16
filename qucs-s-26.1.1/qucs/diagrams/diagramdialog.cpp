@@ -20,6 +20,7 @@
   \brief The DiagramDialog is used to setup and edit diagrams.
 */
 #include "diagramdialog.h"
+#include "dataset.h"
 #include "dataimport.h"
 #include "dataexportpanel.h"
 #include "dataimportpanel.h"
@@ -285,6 +286,7 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
   InputGroup->setLayout(InputGroupLayout);
   Tab1Layout->addWidget(InputGroup);
   GraphInput = new QLineEdit();
+  GraphInput->setObjectName(QStringLiteral("graphInput"));
   lblPlotVs = new QLabel(tr("Plot Vs."));
   ChooseXVar = new QComboBox();
   connect(ChooseXVar, SIGNAL(currentIndexChanged(int)), this,
@@ -1770,24 +1772,52 @@ QList<QPair<QString, QString>> DiagramDialog::traceFiles() const {
   // suffix (ngspice/tran.v(out): name.dat.ngspice), name:variable another
   // dataset beside the schematic.
   QList<QPair<QString, QString>> list;
-  const QString dir = QFileInfo(defaultDataSet).absolutePath();
-  for (const auto &g : Graphs) {
-    QString var = g->Var, tail;
-    const qsizetype slash = var.indexOf('/');
-    if (slash > 0) {
-      tail = '.' + var.left(slash);
-      var = var.mid(slash + 1);
-    }
-    const qsizetype colon = var.indexOf(':');
-    QString file = defaultDataSet + tail;
-    if (colon > 0) {
-      file = dir + QDir::separator() + var.left(colon) + ".dat" + tail;
-      var = var.mid(colon + 1);
-    }
-    const int at = Graph::plotVsSeparator(var);
-    list.append({file, at > 0 ? var.left(at) : var});
-  }
+  for (const auto &g : Graphs)
+    list.append(traceFile(g->Var));
   return list;
+}
+
+QString DiagramDialog::qualified(const QString &typed, const QString &was) const {
+  // A name's simulator (ngspice/) and dataset (other:) - not a vector's
+  // range, stdl[8:0].X -, and the rest.
+  const auto prefixes = [](const QString &name, QString *simulator, QString *dataset) {
+    const QString rest = qucs_s::dataset::withoutSimulator(name.trimmed(), simulator);
+    const qsizetype colon = rest.indexOf(':');
+    const bool named = colon > 0 && !rest.left(colon).contains('(') && !rest.left(colon).contains('[');
+    *dataset = named ? rest.left(colon + 1) : QString();
+    return rest.mid(dataset->size());
+  };
+  QString simulator, dataset;
+  if (prefixes(typed, &simulator, &dataset).isEmpty() || !simulator.isEmpty() || !dataset.isEmpty())
+    return typed;
+  if (!was.trimmed().isEmpty()) {
+    prefixes(was, &simulator, &dataset);
+  } else {
+    if (chosenDataset() != QFileInfo(defaultDataSet).baseName())
+      dataset = chosenDataset() + ':';
+    if (ChooseSimulator->currentText() == "Ngspice")
+      simulator = "ngspice";
+    else if (ChooseSimulator->currentText() == "Xyce")
+      simulator = "xyce";
+    else if (ChooseSimulator->currentText() == "SpiceOpus")
+      simulator = "spopus";
+  }
+  return (simulator.isEmpty() ? QString() : simulator + '/') + dataset + typed;
+}
+
+QPair<QString, QString> DiagramDialog::traceFile(const QString &trace) const {
+  // (A division's slash is no simulator's: v(out)/v(in).)
+  QString simulator;
+  QString var = qucs_s::dataset::withoutSimulator(trace, &simulator);
+  const QString tail = simulator.isEmpty() ? QString() : '.' + simulator;
+  const qsizetype colon = var.indexOf(':');
+  QString file = defaultDataSet + tail;
+  if (colon > 0) {
+    file = QFileInfo(defaultDataSet).absolutePath() + QDir::separator() + var.left(colon) + ".dat" + tail;
+    var = var.mid(colon + 1);
+  }
+  const int at = Graph::plotVsSeparator(var);
+  return {file, at > 0 ? var.left(at) : var};
 }
 
 QString DiagramDialog::chosenDataset() const {
@@ -1896,7 +1926,7 @@ void DiagramDialog::slotReadVarsAndSetSimulator(int) {
  * \param index The simulator index (unused, kept for signal compatibility)
  * \see slotReadVarsAndSetSimulator(), updateCompleter()
  */
-void DiagramDialog::slotReadVars(int) {
+QString DiagramDialog::datasetPath() const {
   QFileInfo Info(defaultDataSet);
   QString DocName = chosenDataset() + ".dat";
 
@@ -1907,10 +1937,40 @@ void DiagramDialog::slotReadVars(int) {
   } else if (ChooseSimulator->currentText() == "SpiceOpus") {
     DocName += ".spopus";
   }
-  if (a_export != nullptr)
-    a_export->follow(Info.absolutePath() + QDir::separator() + DocName);
+  return Info.absolutePath() + QDir::separator() + DocName;
+}
 
-  QFile file(Info.absolutePath() + QDir::separator() + DocName);
+QString DiagramDialog::expressionProblem(const QString &text) {
+  // Over the file the graph reads (Graph::loadDatFile's: name:, ngspice/).
+  const auto [file, expression] = traceFile(text.trimmed());
+  if (!qucs_s::dataset::isExpression(expression))
+    return QString();
+  const QString key = file + QLatin1Char('\n') + expression;
+  const auto cached = a_expressionProblems.constFind(key);
+  if (cached != a_expressionProblems.constEnd())
+    return cached.value();
+  QString why;
+  if (qucs_s::dataset::checkExpression(expression, &why)) {
+    qucs_s::dataset::Dataset data;
+    if (data.read(file) && data.find(expression) == nullptr) {
+      qucs_s::dataset::Variable v;
+      if (qucs_s::dataset::evaluate(data, expression, &v, &why))
+        why.clear();
+    } else {
+      why.clear();   // (no dataset yet - said when there is one -, or a variable so named)
+    }
+  }
+  a_expressionProblems.insert(key, why);
+  return why;
+}
+
+void DiagramDialog::slotReadVars(int) {
+  a_expressionProblems.clear();   // (another dataset: its expressions again)
+  const QString path = datasetPath();
+  if (a_export != nullptr)
+    a_export->follow(path);
+
+  QFile file(path);
   if (!file.open(QIODevice::ReadOnly)) {
     return;
   }
@@ -2298,7 +2358,7 @@ void DiagramDialog::slotNewGraph() {
   int newRow = GraphList->rowCount();
   GraphList->setRowCount(newRow + 1);
 
-  Graph *g = new Graph(Diag, GraphInput->text());
+  Graph *g = new Graph(Diag, qualified(GraphInput->text(), QString()));
   if (PartBox != nullptr) g->valuePart = Graph::ValuePart(PartBox->currentIndex());
 
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
@@ -3014,7 +3074,7 @@ void DiagramDialog::slotResetToTake(const QString &s) {
   if (i < 0)
     return;
 
-  Graphs.at(i)->Var = s;
+  Graphs.at(i)->Var = qualified(s, Graphs.at(i)->Var);
   updateGraphListItem(i);
   changed = true;
   toTake = false;
@@ -3432,8 +3492,8 @@ void DiagramDialog::keyPressEvent(QKeyEvent *event) {
         int selectedRow = GraphList->currentRow();
 
         if (selectedRow >= 0) {
-          GraphList->item(selectedRow, 0)->setText(GraphInput->text());
-          Graphs.at(selectedRow)->Var = GraphInput->text();
+          Graphs.at(selectedRow)->Var = qualified(GraphInput->text(), Graphs.at(selectedRow)->Var);
+          GraphList->item(selectedRow, 0)->setText(Graphs.at(selectedRow)->Var);
           updateGraphListItem(selectedRow);
         } else {
           slotNewGraph();
@@ -3496,6 +3556,16 @@ void DiagramDialog::updateGraphListItem(int row) {
     GraphList->setItem(row, 0, varItem);
   } else {
     varItem->setText(g->withValuePart(g->Var));
+  }
+  // An expression of the dataset's variables (2*L, 2*pi*frequency*L):
+  // evaluated - in red, why not, where it does not.
+  {
+    const QString problem = expressionProblem(g->Var);
+    const bool expression = qucs_s::dataset::isExpression(traceFile(g->Var.trimmed()).second);
+    varItem->setForeground(problem.isEmpty() ? QBrush() : QBrush(Qt::red));
+    varItem->setToolTip(!problem.isEmpty() ? tr("Not evaluated: %1").arg(problem)
+                        : expression ? tr("An expression of the dataset's variables, evaluated at each of their samples")
+                                     : QString());
   }
 
   // Only show trace properties if we have more than 1 column

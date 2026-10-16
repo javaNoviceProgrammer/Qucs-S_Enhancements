@@ -2645,7 +2645,7 @@ QList<Issue> check(Schematic* doc, bool run)
             warnings << Issue{Severity::Warning,
                               tr("diagram %1: %2 is beyond %3 from %4 to %5, by %6 at %7%8 (the last run's data)")
                                   .arg(diagramNumber)
-                                  .arg(g->Var.section(QLatin1Char('/'), -1), limitName(v.limit), misc::num2str(v.from), misc::num2str(v.to),
+                                  .arg(g->unprefixed(), limitName(v.limit), misc::num2str(v.from), misc::num2str(v.to),
                                        misc::num2str(v.worst), misc::num2str(v.worstAt), stretches),
                               QPoint(d->cx, d->cy), QString(), QString(), QString(), true};
         }

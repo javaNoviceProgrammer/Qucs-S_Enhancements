@@ -250,7 +250,7 @@ void Marker::createText()
     Text += numberText(VarPos[ii]) + "\n";
   }
 
-  Text += pGraph->withValuePart(pGraph->Var.contains('/') ? pGraph->Var.section('/', 1) : pGraph->Var) + ": ";
+  Text += pGraph->withValuePart(pGraph->unprefixed()) + ": ";
   const Axis *ax = diag()->graphAxis(pGraph);
   int units = ax->Units;
   if (units == Axis::NoUnits || !ax->log) {

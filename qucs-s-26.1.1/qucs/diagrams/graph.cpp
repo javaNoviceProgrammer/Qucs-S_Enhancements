@@ -18,6 +18,7 @@
 #include "misc.h"
 #include "ink.h"
 #include "diagram.h"
+#include "dataset.h"
 
 #include <algorithm>
 #include <climits>
@@ -353,6 +354,33 @@ bool Graph::valuePartApplies(const QString& diagramName)
   return cartesian.contains(diagramName);
 }
 
+QString Graph::unprefixed() const
+{
+  return qucs_s::dataset::withoutSimulator(Var);
+}
+
+QStringList Graph::analysesOf(const QString& name)
+{
+  if (!qucs_s::dataset::isExpression(name)) return {name.section('.', 0, 0)};
+  // (Each name's first part: not a number's, 1.5, nor a name's second,
+  // tr1.tran.v(pre).)
+  static const QRegularExpression first(QStringLiteral("(?:^|[^A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\\.(?=[A-Za-z_])"));
+  QStringList found;
+  for (auto m = first.globalMatch(name); m.hasNext();) {
+    const QString analysis = m.next().captured(1);
+    if (!found.contains(analysis)) found << analysis;
+  }
+  return found;
+}
+
+QString Graph::withoutAnalysis(const QString& name, const QString& analysis)
+{
+  if (!qucs_s::dataset::isExpression(name)) return name.mid(name.indexOf('.') + 1);
+  QString s = name;
+  return s.replace(QRegularExpression(QStringLiteral("(^|[^A-Za-z0-9_.])%1\\.(?=[A-Za-z_])").arg(QRegularExpression::escape(analysis))),
+                   QStringLiteral("\\1"));
+}
+
 QString Graph::withValuePart(const QString& name) const
 {
   switch (valuePart) {
@@ -562,7 +590,7 @@ QString Graph::curveLabel(int curve) const
   QStringList parts;
   // The swept parameters' names without what the graph's own name starts
   // with: "ngspice/ngsweep1.v(out)" has "ngsweep1.r1" as r1.
-  QString own = Var.section('/', -1);
+  QString own = unprefixed();
   const qsizetype dot = own.indexOf('.');
   own = dot > 0 ? own.left(dot + 1) : QString();
   int c = curve;

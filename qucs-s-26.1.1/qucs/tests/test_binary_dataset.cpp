@@ -679,6 +679,159 @@ private slots:
         }
     }
 
+    // A graph of an expression of the dataset's variables (2*L,
+    // 2*pi*frequency*L): evaluated at each sample, over the variables'
+    // sweeps, from text and binary alike - a division's slash no
+    // simulator's, two sweeps, plotted against another variable; a variable
+    // whose name reads as one is the variable; another dataset's
+    // (coax:2*L); refused with why; labelled whole, a shared analysis left
+    // off each of its names.
+    void aGraphOfAnExpression()
+    {
+        const auto blocks = [](df::Writer& w) {
+            w.begin("indep frequency 3");
+            for (double f : {1e6, 2e6, 4e6}) w.real(f);
+            w.end();
+            w.begin("dep ac.L frequency");
+            for (double l : {1e-6, 2e-6, 3e-6}) w.real(l);
+            w.end();
+            w.begin("dep ac.v(in) frequency");
+            for (int i = 0; i < 3; ++i) w.complex(2, 0);
+            w.end();
+            w.begin("dep ac.v(out) frequency");
+            w.complex(1, 1);
+            w.complex(0, -2);
+            w.complex(-3, 0.5);
+            w.end();
+            w.begin("dep ac.a-b frequency");   // (a name that reads as an expression)
+            for (double x : {7.0, 8.0, 9.0}) w.real(x);
+            w.end();
+            w.begin("indep Rs 2");
+            w.real(10);
+            w.real(20);
+            w.end();
+            w.begin("dep ac.Z frequency Rs");
+            for (int i = 1; i <= 6; ++i) w.real(i);
+            w.end();
+        };
+        const QString textBase = dir.filePath("exprtext"), binaryBase = dir.filePath("exprbin");
+        for (const bool binary : {false, true}) {
+            QSaveFile f((binary ? binaryBase : textBase) + ".dat.ngspice");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            std::unique_ptr<df::Writer> w;
+            if (binary)
+                w = std::make_unique<df::BinaryWriter>(&f);
+            else
+                w = std::make_unique<df::TextWriter>(&f);
+            blocks(*w);
+            QVERIFY(w->finish(nullptr));
+            QVERIFY(f.commit());
+        }
+        const double f[3] = {1e6, 2e6, 4e6}, L[3] = {1e-6, 2e-6, 3e-6};
+        struct Case {
+            QString trace;
+            QStringList axes;
+            QVector<double> x;      // the first axis's values
+            QVector<double> values;   // re, im of each
+        };
+        const QList<Case> cases{
+            {"ngspice/2*ac.L", {"frequency"}, {1e6, 2e6, 4e6}, {2e-6, 0, 4e-6, 0, 6e-6, 0}},
+            {"ngspice/2*pi*frequency*ac.L",
+             {"frequency"},
+             {1e6, 2e6, 4e6},
+             {2 * M_PI * f[0] * L[0], 0, 2 * M_PI * f[1] * L[1], 0, 2 * M_PI * f[2] * L[2], 0}},
+            {"ngspice/ac.v(out)/ac.v(in)", {"frequency"}, {1e6, 2e6, 4e6}, {0.5, 0.5, 0, -1, -1.5, 0.25}},
+            {"ngspice/frequency^2", {"frequency"}, {1e6, 2e6, 4e6}, {1e12, 0, 4e12, 0, 16e12, 0}},
+            {"ngspice/ac.Z*Rs", {"frequency", "Rs"}, {1e6, 2e6, 4e6}, {10, 0, 20, 0, 30, 0, 80, 0, 100, 0, 120, 0}},
+            {"ngspice/2*ac.L@ac.a-b", {"ac.a-b"}, {7, 8, 9}, {2e-6, 0, 4e-6, 0, 6e-6, 0}},
+            {"ngspice/ac.a-b", {"frequency"}, {1e6, 2e6, 4e6}, {7, 0, 8, 0, 9, 0}},   // the variable
+        };
+        for (const Case& c : cases)
+            for (const QString& base : {textBase, binaryBase}) {
+                const QString what = c.trace + (base == binaryBase ? " (binary)" : " (text)");
+                RectDiagram d;
+                auto* g = new Graph(&d, c.trace);
+                d.Graphs.append(g);
+                QCOMPARE(g->loadDatFile(base + ".dat"), 2);
+                QVERIFY2(g->loadError.isEmpty(), qPrintable(what + ": " + g->loadError));
+                QCOMPARE(g->numAxes(), unsigned(c.axes.size()));
+                for (int a = 0; a < c.axes.size(); ++a) QCOMPARE(g->axisName(unsigned(a)), c.axes.at(a));
+                QCOMPARE(g->count(0), size_t(c.x.size()));
+                for (int k = 0; k < c.x.size(); ++k) QCOMPARE(g->axis(0)->Points[k], c.x.at(k));
+                QCOMPARE(qsizetype(g->count(0)) * g->countY * 2, c.values.size());
+                for (int k = 0; k < c.values.size(); ++k)
+                    QVERIFY2(std::abs(g->cPointsY[k] - c.values.at(k)) <= 1e-15 * std::abs(c.values.at(k)),
+                             qPrintable(QStringLiteral("%1 [%2]: %3, not %4").arg(what).arg(k).arg(g->cPointsY[k], 0, 'g', 17).arg(c.values.at(k), 0, 'g', 17)));
+                // Unchanged: not read again.
+                QCOMPARE(g->loadDatFile(base + ".dat"), 1);
+            }
+        // Its part: the phase of v(out)/v(in) that of v(out) (v(in) 2).
+        {
+            RectDiagram d;
+            auto* ratio = new Graph(&d, "ngspice/ac.v(out)/ac.v(in)");
+            auto* out = new Graph(&d, "ngspice/ac.v(out)");
+            d.Graphs.append(ratio);
+            d.Graphs.append(out);
+            ratio->valuePart = out->valuePart = Graph::ValuePart::Phase;
+            QCOMPARE(ratio->loadDatFile(binaryBase + ".dat"), 2);
+            QCOMPARE(out->loadDatFile(binaryBase + ".dat"), 2);
+            for (int k = 0; k < 6; ++k) QVERIFY(std::abs(ratio->cPointsY[k] - out->cPointsY[k]) < 1e-12);
+        }
+        // Refused, and why; no data.
+        for (const auto& [trace, why] : {std::pair<QString, QString>{"ngspice/2*ac.nosuch", "there is no variable ac.nosuch"},
+                                         {"ngspice/frequency*Rs", "both independent"},
+                                         {"ngspice/ac.L*ac.L(", "a ) is missing"}}) {
+            RectDiagram d;
+            auto* g = new Graph(&d, trace);
+            d.Graphs.append(g);
+            QCOMPARE(g->loadDatFile(binaryBase + ".dat"), 0);
+            QVERIFY2(g->loadError.contains(why), qPrintable(g->loadError));
+            QVERIFY(g->cPointsY == nullptr && g->numAxes() == 0);
+        }
+        // Another dataset beside the schematic's - an imported table's, the
+        // user's coax_rlgc: name:expression.
+        write(dir.filePath("coax.dat"), "<Qucs Dataset " PACKAGE_VERSION ">\n<indep frequency 2>\n  1e9\n  2e9\n</indep>\n"
+                                        "<dep L frequency>\n  2.5e-7\n  2.4e-7\n</dep>\n<dep C frequency>\n  1e-10\n  1e-10\n</dep>\n");
+        {
+            RectDiagram d;
+            auto* doubled = new Graph(&d, "coax:2*L");
+            auto* z0 = new Graph(&d, "coax:sqrt(L/C)");
+            d.Graphs.append(doubled);
+            d.Graphs.append(z0);
+            QCOMPARE(doubled->loadDatFile(dir.filePath("amp.dat")), 2);
+            QCOMPARE(z0->loadDatFile(dir.filePath("amp.dat")), 2);
+            QCOMPARE(doubled->axisName(0), QStringLiteral("frequency"));
+            QCOMPARE(doubled->cPointsY[0], 5e-7);
+            QCOMPARE(doubled->cPointsY[2], 4.8e-7);
+            QVERIFY(std::abs(z0->cPointsY[0] - 50) < 1e-12);
+        }
+        // Its name without the simulator: the division's slash kept.
+        {
+            RectDiagram d;
+            QCOMPARE(Graph(&d, "ngspice/ac.v(out)/ac.v(in)").unprefixed(), QStringLiteral("ac.v(out)/ac.v(in)"));
+            QCOMPARE(Graph(&d, "v(out)/v(in)").unprefixed(), QStringLiteral("v(out)/v(in)"));
+            QCOMPARE(Graph(&d, "xyce/tran.v(out)").unprefixed(), QStringLiteral("tran.v(out)"));
+            QCOMPARE(Graph::analysesOf("db(ac.v(out)/ac.v(in))"), QStringList{"ac"});
+            QCOMPARE(Graph::analysesOf("1.5*tr1.tran.v(pre)"), QStringList{"tr1"});
+            QCOMPARE(Graph::analysesOf("2*pi*frequency"), QStringList{});
+            QCOMPARE(Graph::analysesOf("ac.v(out)"), QStringList{"ac"});
+            QCOMPARE(Graph::withoutAnalysis("db(ac.v(out)/ac.v(in))", "ac"), QStringLiteral("db(v(out)/v(in))"));
+            QCOMPARE(Graph::withoutAnalysis("2*ac.L+ac.v(x.ac.y)", "ac"), QStringLiteral("2*L+v(x.ac.y)"));
+        }
+        // The labels: each whole, the one analysis left off its names (the
+        // division's slash was taken for the simulator's: v(in) alone).
+        {
+            RectDiagram d;
+            for (const char* trace : {"ngspice/ac.v(out)/ac.v(in)", "ngspice/db(ac.v(out)/ac.v(in))", "ngspice/2*ac.L"})
+                d.Graphs.append(new Graph(&d, trace));
+            d.loadGraphData(binaryBase + ".dat");
+            QStringList labels;
+            for (const Text* t : d.Texts) labels << t->s;
+            for (const char* label : {"v(out)/v(in)", "db(v(out)/v(in))", "2*L"}) QVERIFY2(labels.contains(label), qPrintable(labels.join(" | ")));
+            QVERIFY2(!labels.contains("v(in)") && !labels.contains("v(in))"), qPrintable(labels.join(" | ")));
+        }
+    }
+
     // Save as Text: a binary dataset written out as text has the same
     // numbers; so does a CSV export of each.
     void saveAsTextGivesTheSameNumbers()
