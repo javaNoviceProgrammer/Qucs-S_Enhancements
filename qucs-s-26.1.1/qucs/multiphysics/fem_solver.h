@@ -210,9 +210,12 @@ public:
     void setMode(int m) { a_mode = m; }
     /// Its unit (s or Hz), its name in a dataset ("time", "frequency") and
     /// in a label ("t", "f").
-    Dim snapshotDim() const { return frequencyDomain ? Dim::of(0, 0, -1) : Dim::of(0, 0, 1); }
-    QString snapshotName() const { return frequencyDomain ? QStringLiteral("frequency") : QStringLiteral("time"); }
-    QString snapshotSymbol() const { return frequencyDomain ? QStringLiteral("f") : QStringLiteral("t"); }
+    Dim snapshotDim() const { return frequencyDomain ? Dim::of(0, 0, -1) : biasAxis ? Dim::voltage() : Dim::of(0, 0, 1); }
+    QString snapshotName() const
+    {
+        return frequencyDomain ? QStringLiteral("frequency") : biasAxis ? QStringLiteral("voltage") : QStringLiteral("time");
+    }
+    QString snapshotSymbol() const { return frequencyDomain ? QStringLiteral("f") : biasAxis ? QStringLiteral("V") : QStringLiteral("t"); }
     int selected() const { return a_selected; }
     /// The fields and globals of snapshot \a i (out of range: the last).
     void select(int i);
@@ -249,6 +252,7 @@ public:
     bool modeChosen = false;              ///< its mode step chose a mode (not the first) at each
     bool quantumStates = false;           ///< its modes are quantum states
     bool eigenfrequencies = false;        ///< its modes each at its own frequency (a resonator's)
+    bool biasAxis = false;                ///< its snapshots are of a contact's voltage (a Laser L-I step's), kept as their time
     /// A spectrum's snapshots, shown by: 0 their frequency, 1 the photon's
     /// energy, 2 its wavelength in vacuum; 3 the valence bands' in-plane k
     /// (1/m, kept as their frequency).

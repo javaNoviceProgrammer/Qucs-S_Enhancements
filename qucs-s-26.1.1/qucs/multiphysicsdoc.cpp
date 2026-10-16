@@ -1508,6 +1508,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                    : photon == 2              ? QStringLiteral("m")
                                    : photon == 3              ? QStringLiteral("1/nm")
                                    : first.frequencyDomain    ? QStringLiteral("Hz")
+                                   : first.biasAxis           ? QStringLiteral("V")
                                                               : QStringLiteral("s"));
         outer << t.name;
         kinds << (first.modeAnalysis ? Axis::Mode : Axis::Steps);   // (modes found unevenly: an index)
@@ -1604,6 +1605,37 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
                                                      g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")));
     QStringList problems;
+    // Against a global (x): its one axis's values each solution's value of
+    // it - a laser's light against its current, not its voltage.
+    if (const QString xText = g->text(QStringLiteral("x")).trimmed(); !xText.isEmpty()) {
+        if (outer.size() != 1) {
+            problems << tr("%1: its x (%2) takes the place of its one axis - it has %3").arg(g->name(), xText).arg(outer.size());
+        } else {
+            QVector<double> xs;
+            QString unit;
+            for (const Instance& in : every) {
+                Solution* sol = select(*set, in);
+                const Expression e = Expression::compile(xText, sol->scope());
+                if (!e.isValid() || !e.isConstant()) {
+                    problems << tr("%1: its x, %2, is %3").arg(g->name(), xText, e.isValid() ? tr("not a global") : e.error());
+                    xs.clear();
+                    break;
+                }
+                const DisplayUnit du = displayUnitOf(*sol, xText, QString(), e.dim());
+                xs << (e.constant() - du.offset) / du.scale;
+                if (unit.isEmpty()) unit = du.name.isEmpty() ? dimName(e.dim()) : du.name;
+            }
+            for (Variable& v : vars)
+                if (v.name == outer.front() && xs.size() == v.re.size()) {
+                    const QString name = unique(xText);
+                    unitsOf.remove(v.name);
+                    unitsOf.insert(name, unit);
+                    v.name = name;
+                    v.re = xs;
+                    outer.front() = name;
+                }
+        }
+    }
     // The y axis's words: each trace's name and unit - "semi.Ckk (pF)", a
     // label's own as it says it ("Loss (dB/cm)"); none when no trace has a
     // unit (each then named in its colour, as before).

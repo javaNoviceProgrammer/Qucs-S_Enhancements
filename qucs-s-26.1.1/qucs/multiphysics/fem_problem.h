@@ -25,10 +25,12 @@
 #include <QSet>
 
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace qucs_s::fem::detail {
@@ -206,6 +208,53 @@ struct WellTable {
         for (int c = 0; c < 4; ++c) out[c] = n > 1 ? (1 - s) * (*cols[c])[k] + s * (*cols[c])[k + 1] : (*cols[c])[0];
     }
 };
+/// A laser's material gain from its quantum wells (1/m, TE or TM) at its
+/// mode's photon energy (J) at carrier densities N (1/m³, rising) - a
+/// monotone cubic in ln N between (Fritsch and Carlson's: its derivative
+/// smooth for Newton's method), held beyond.
+struct GainTable {
+    double photon = 0;
+    std::vector<double> N, g;
+    std::vector<double> slope;   // dg/d ln N at each point (made by prepare())
+    void prepare()
+    {
+        const std::size_t n = N.size();
+        slope.assign(n, 0.0);
+        if (n < 2) return;
+        std::vector<double> d(n - 1);
+        for (std::size_t k = 0; k + 1 < n; ++k) d[k] = (g[k + 1] - g[k]) / std::log(N[k + 1] / N[k]);
+        slope[0] = d[0];
+        slope[n - 1] = d[n - 2];
+        for (std::size_t k = 1; k + 1 < n; ++k) slope[k] = d[k - 1] * d[k] > 0 ? 2 / (1 / d[k - 1] + 1 / d[k]) : 0.0;
+    }
+    double at(double n, double* dgdN) const
+    {
+        if (dgdN) *dgdN = 0;
+        if (N.size() < 2) return g.empty() ? 0.0 : g.front();
+        if (!(n > N.front())) return g.front();
+        if (n >= N.back()) return g.back();
+        const std::size_t k = std::size_t(std::upper_bound(N.begin(), N.end(), n) - N.begin()) - 1;
+        const double h = std::log(N[k + 1] / N[k]), s = std::log(n / N[k]) / h;
+        const double h00 = (1 + 2 * s) * (1 - s) * (1 - s), h10 = s * (1 - s) * (1 - s), h01 = s * s * (3 - 2 * s), h11 = s * s * (s - 1);
+        const double v = h00 * g[k] + h10 * h * slope[k] + h01 * g[k + 1] + h11 * h * slope[k + 1];
+        if (dgdN) {
+            const double d00 = 6 * s * s - 6 * s, d10 = 3 * s * s - 4 * s + 1, d01 = -6 * s * s + 6 * s, d11 = 3 * s * s - 2 * s;
+            *dgdN = (d00 * g[k] / h + d10 * slope[k] + d01 * g[k + 1] / h + d11 * slope[k + 1]) / n;
+        }
+        return v;
+    }
+};
+/// What a laser's gain from quantum wells asks for: the wells (a tag), the
+/// Spectrum step whose options it is solved with (empty: its study's
+/// first), the densities (points from Nmin to Nmax, 1/m³, by their
+/// logarithm), TM (else TE).
+struct GainRequest {
+    QString wells, spectrum;
+    double Nmin = 0, Nmax = 0;
+    int points = 0;
+    bool tm = false;
+};
+
 /// A table a mode analysis's feature asks for: of quantum wells \a wells
 /// (a tag), at Fpoints fields from -Fmax to Fmax.
 struct WellRequest {
@@ -277,6 +326,28 @@ public:
     }
     /// The globals (set after) of the spectrum's point \a k.
     virtual void selectSpectrum(int k) { (void)k; }
+    /// A semiconductor's contact \a name held at \a volts by a step (a
+    /// laser's bias points) instead of its own voltage - NaN its own again;
+    /// false: it has no such contact.
+    virtual bool holdContact(const QString& name, double volts)
+    {
+        (void)name;
+        (void)volts;
+        return false;
+    }
+    /// A semiconductor that lases: its resonator's tag (empty: none).
+    virtual QString lasingMode() const { return {}; }
+    /// Its gain from quantum wells: what it asks for (none: none), and the
+    /// table as made.
+    virtual std::optional<GainRequest> gainRequest() const { return std::nullopt; }
+    virtual void setGainTable(std::shared_ptr<const GainTable> table) { (void)table; }
+    /// Whether it can lase in its mode as solved (false and why: no mode,
+    /// one that loses nothing, none of it on the gain region).
+    virtual bool readyToLase(QString* why)
+    {
+        (void)why;
+        return false;
+    }
     /// Quantum wells: the field along their axis (V/m) - its value, and
     /// set (solve() again after); false: none to set.
     virtual double wellField() const { return 0; }
@@ -490,6 +561,9 @@ ModeFields modeFieldsAt(PointEvaluator& e, int field);
 /// at φ = 0, the largest |E| 1 V/m.
 struct ResonatorFields {
     std::complex<double> E[3], H[3];
+    /// Re ε there - its triangle's, the diagonal's mean; NaN in an absorbing
+    /// layer (the energy is the cavity's).
+    double eps = std::numeric_limits<double>::quiet_NaN();
     bool defined = false;
 };
 ResonatorFields resonatorFieldsAt(PointEvaluator& e, int field);

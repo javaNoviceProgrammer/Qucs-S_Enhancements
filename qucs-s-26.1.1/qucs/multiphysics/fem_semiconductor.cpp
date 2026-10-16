@@ -281,8 +281,29 @@ public:
     void setGlobals() override;
     bool hasMass() const override { return true; }
     bool harmonic() const override { return true; }
+    bool holdContact(const QString& name, double volts) override
+    {
+        bool known = false;
+        for (const Contact& c : a_contacts) known = known || c.name == name;
+        if (!known) return false;
+        if (std::isfinite(volts)) a_held[name] = volts;
+        else a_held.erase(name);
+        return true;
+    }
+    QString lasingMode() const override { return a_laser ? a_laser->mode : QString(); }
+    std::optional<GainRequest> gainRequest() const override
+    {
+        if (!a_laser || a_laser->gain != 2) return std::nullopt;
+        return a_laser->request;
+    }
+    void setGainTable(std::shared_ptr<const GainTable> table) override
+    {
+        if (a_laser) a_laser->table = std::move(table);
+    }
+    bool readyToLase(QString* why) override { return a_laser && prepareLasing(why); }
 
 private:
+    std::map<QString, double> a_held;   // contacts a step holds at a voltage of its own
     struct Edge {
         int i = -1, j = -1;
         double w = 0;                // Σ cot weights (m², the thickness in)
@@ -441,6 +462,41 @@ private:
     void edgeWeights(const Eigen::VectorXd* x);
     std::vector<int> a_iV, a_iN, a_iP; // by node: unknowns (-1 none)
     int a_unknowns = 0;
+    // A laser (its Lasing feature): the photons S of a resonator's mode the
+    // last unknown (a_iS, -1 none), solved with the carriers - their
+    // balance's row, the stimulated recombination in the carriers' rows.
+    // What they read of the mode is set at each solve (prepareLasing).
+    struct Lasing {
+        QString name, mode;          // the feature's, the resonator's tag
+        std::vector<char> on;        // by domain
+        int gain = 0;                // 0 logarithmic, 1 linear, 2 its quantum wells' (table)
+        GainRequest request;         // (2: what it asks for)
+        std::shared_ptr<const GainTable> table;
+        double g0 = 0, Ntr = 0, Ns = 0, a = 0;
+        int carrier = 0;             // 0 √(n p), 1 n, 2 p
+        double beta = 0, ng = 0, eta = 1;
+        bool ready = false;          // the mode read
+        double omega = 0, tauP = 0, photon = 0, Gamma = 0;
+        std::vector<int> nodes;      // those on its domains
+        std::vector<double> share;   // by entry: its part of the mode's energy (∫ we dV / U over its part of the domains)
+        std::vector<double> volume;  // its part of the domains' volume (m³)
+        std::vector<double> speed;   // the photons' there, c/ng (m/s)
+        std::vector<double> B;       // the radiative coefficient there (m³/s)
+    };
+    std::unique_ptr<Lasing> a_laser;
+    int a_iS = -1;
+    bool a_laserSaid = false;
+    /// The lasing's material gain (1/m) at carriers n, p; its derivatives.
+    double laserGain(double n, double p, double* dn, double* dp) const;
+    /// What the lasing reads of its mode, as its resonator solved it (false and why: none).
+    bool prepareLasing(QString* why);
+    /// The lasing at x: the photons, the modal gain rate G (1/s), the
+    /// spontaneous emission Rsp and stimulated recombination (pairs/s) on its
+    /// domains, their carriers' and gain's means (by volume, by share).
+    struct LaserState {
+        double S = 0, G = 0, Rsp = 0, Rstim = 0, Nact = 0, gmean = 0;
+    };
+    LaserState laserState(const Eigen::VectorXd& x) const;
     std::vector<Contact> a_contacts;
     std::vector<int> a_nodeContact;    // by node (-1 none)
     std::vector<double> a_bcV, a_bcN, a_bcP;   // by node: a Dirichlet node's values
@@ -610,6 +666,50 @@ bool SemiconductorProblem::setup(QString* error)
         else if (t == QLatin1String("semiconductor/impact")) for (int d : picked) impactOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/btbt")) for (int d : picked) btbtOf[std::size_t(d)] = &feature;
         else if (t == QLatin1String("semiconductor/stimulated")) stimulatedDefs.push_back({&feature, picked});
+        else if (t == QLatin1String("semiconductor/laser")) {
+            if (a_laser) {
+                problem(tr("%1: a semiconductor lases in one mode - %2 is its lasing already").arg(feature.name(), a_laser->name));
+                continue;
+            }
+            a_laser = std::make_unique<Lasing>();
+            Lasing& L = *a_laser;
+            L.name = feature.name();
+            L.mode = feature.text(QStringLiteral("mode")).trimmed();
+            if (L.mode.isEmpty()) L.mode = QStringLiteral("emr");
+            L.on.assign(topo.domains.size(), 0);
+            for (int d : picked) L.on[std::size_t(d)] = 1;
+            if (picked.isEmpty()) problem(tr("%1 is on no domain: its gain region's").arg(feature.name()));
+            const QString gain = feature.text(QStringLiteral("gain"));
+            L.gain = gain == QLatin1String("linear") ? 1 : gain == QLatin1String("quantum") ? 2 : 0;
+            if (L.gain != 2) L.Ntr = number(feature.text(QStringLiteral("Ntr")), Dim::of(-3), feature.name());
+            if (L.gain == 2) {
+                GainRequest& rq = L.request;
+                rq.wells = feature.text(QStringLiteral("wells")).trimmed();
+                if (rq.wells.isEmpty()) rq.wells = QStringLiteral("qw");
+                rq.spectrum = feature.text(QStringLiteral("spectrum")).trimmed();
+                rq.Nmin = number(feature.text(QStringLiteral("Nmin")), Dim::of(-3), feature.name());
+                rq.Nmax = number(feature.text(QStringLiteral("Nmax")), Dim::of(-3), feature.name());
+                rq.points = feature.integer(QStringLiteral("points"));
+                rq.tm = feature.text(QStringLiteral("polarization")) == QLatin1String("tm");
+                if (!(rq.Nmin > 0) || !(rq.Nmax > rq.Nmin) || rq.points < 3 || rq.points > 200)
+                    problem(tr("%1: its densities from Nmin more than 0 to Nmax above it, at 3 to 200 points").arg(feature.name()));
+            } else if (L.gain == 0) {
+                L.g0 = number(feature.text(QStringLiteral("g0")), Dim::of(-1), feature.name());
+                L.Ns = number(feature.text(QStringLiteral("Ns")), Dim::of(-3), feature.name());
+                if (!(L.g0 > 0) || !(L.Ntr + L.Ns > 0) || !(L.Ns >= 0))
+                    problem(tr("%1: its gain coefficient g0 more than 0, its shift Ns 0 or more, its transparency more than 0").arg(feature.name()));
+            } else {
+                L.a = number(feature.text(QStringLiteral("a")), Dim::of(2), feature.name());
+                if (!(L.a > 0) || !(L.Ntr >= 0)) problem(tr("%1: its differential gain a more than 0, its transparency 0 or more").arg(feature.name()));
+            }
+            const QString carrier = feature.text(QStringLiteral("carrier"));
+            L.carrier = carrier == QLatin1String("electrons") ? 1 : carrier == QLatin1String("holes") ? 2 : 0;
+            L.beta = number(feature.text(QStringLiteral("beta")), Dim(), feature.name());
+            L.eta = number(feature.text(QStringLiteral("eta")), Dim(), feature.name());
+            if (!feature.text(QStringLiteral("ng")).trimmed().isEmpty()) L.ng = number(feature.text(QStringLiteral("ng")), Dim(), feature.name());
+            if (!(L.beta >= 0 && L.beta <= 1) || !(L.eta >= 0 && L.eta <= 1) || !(L.ng == 0 || L.ng >= 1))
+                problem(tr("%1: its β and η from 0 to 1, its group index 1 or more").arg(feature.name()));
+        }
         else if (t == QLatin1String("semiconductor/quantum")) {
             for (int d : picked) quantumOn[std::size_t(d)] = 1;
             a_quantumElectrons = feature.flag(QStringLiteral("electrons"));
@@ -1657,11 +1757,14 @@ bool SemiconductorProblem::setup(QString* error)
             a_iN[std::size_t(i)] = a_unknowns++;
             a_iP[std::size_t(i)] = a_unknowns++;
         }
+    // (A laser's photons: the last.)
+    a_iS = a_laser ? a_unknowns++ : -1;
     a_bcV.assign(std::size_t(a_n), 0);
     a_bcN.assign(std::size_t(a_n), 0);
     a_bcP.assign(std::size_t(a_n), 0);
     // The field's constant parts: the doping; what the variables read.
-    f.values.resize(std::size_t(7) * std::size_t(a_n), 0.0);
+    // (A laser's: each node's gain and stimulated rate after, then S.)
+    f.values.resize(std::size_t(a_laser ? 9 : 7) * std::size_t(a_n) + (a_laser ? 1 : 0), 0.0);
     for (int i = 0; i < a_n; ++i) {
         f.values[std::size_t(3 * a_n + i)] = a_Nd[std::size_t(i)];
         f.values[std::size_t(4 * a_n + i)] = a_Na[std::size_t(i)];
@@ -1742,6 +1845,7 @@ bool SemiconductorProblem::setup(QString* error)
     if (a_1d) {
         a_axis1d = a_node->text(QStringLiteral("axis")) == QLatin1String("x") ? 0 : 1;
         if (a_s.axisymmetric()) problem(tr("%1: solved in 1D in a plane's model alone (not about an axis)").arg(a_node->name()));
+        if (a_laser) problem(tr("%1: %2 lases in its cavity's 2D solution - not solved in 1D").arg(a_node->name(), a_laser->name));
         if (a_TL.isValid()) problem(tr("%1: solved in 1D it takes no lattice temperature (TL)").arg(a_node->name()));
         for (const Node& feature : a_node->children) {
             if (!feature.enabled) continue;
@@ -2007,7 +2111,8 @@ bool SemiconductorProblem::targets(std::vector<double>& out, QString* error)
             return false;
         }
         double v = c.V0.isConstant() ? c.V0.constant() : NaN;
-        if (!c.V0.isConstant()) {
+        if (const auto held = a_held.find(c.name); held != a_held.end()) v = held->second;
+        else if (!c.V0.isConstant()) {
             const auto& [t, r] = a_nodePoint[std::size_t(c.nodes.front())];
             ev.moveTo(t, r[0], r[1]);
             v = ev.eval(c.V0);
@@ -2170,6 +2275,166 @@ std::vector<double> SemiconductorProblem::stimulatedRates() const
         }
     }
     return rates;
+}
+
+double SemiconductorProblem::laserGain(double n, double p, double* dn, double* dp) const
+{
+    const Lasing& L = *a_laser;
+    // The carriers it is of, N, and N's derivatives.
+    n = std::max(n, 0.0);
+    p = std::max(p, 0.0);
+    double N = 0, dNn = 0, dNp = 0;
+    if (L.carrier == 1) {
+        N = n;
+        dNn = 1;
+    } else if (L.carrier == 2) {
+        N = p;
+        dNp = 1;
+    } else {
+        N = std::sqrt(n * p);
+        if (N > 0) {
+            dNn = 0.5 * N / n;
+            dNp = 0.5 * N / p;
+        }
+    }
+    double g = 0, dg = 0;
+    if (L.gain == 2) {
+        g = L.table ? L.table->at(N, &dg) : 0.0;
+    } else if (L.gain == 1) {
+        g = L.a * (N - L.Ntr);
+        dg = L.a;
+    } else {
+        // (Its logarithm held at -10 g0 far below transparency: an absorption without end otherwise.)
+        const double least = (L.Ntr + L.Ns) * std::exp(-10.0), Ne = N + L.Ns;
+        g = L.g0 * std::log(std::max(Ne, least) / (L.Ntr + L.Ns));
+        dg = Ne > least ? L.g0 / Ne : 0;
+    }
+    if (dn) *dn = dg * dNn;
+    if (dp) *dp = dg * dNp;
+    return g;
+}
+
+bool SemiconductorProblem::prepareLasing(QString* why)
+{
+    Lasing& L = *a_laser;
+    L.ready = false;
+    const int fi = a_s.fieldIndex(L.mode);
+    if (fi < 0 || a_s.fields()[std::size_t(fi)].type != QLatin1String("resonator")) {
+        *why = tr("%1: there is no resonator %2 (Electromagnetic Waves, Eigenfrequency) for it to lase in").arg(L.name, L.mode);
+        return false;
+    }
+    const std::optional<double> freq = a_s.global(L.mode + QStringLiteral(".freq")), Qf = a_s.global(L.mode + QStringLiteral(".Q")),
+                                U = a_s.global(L.mode + QStringLiteral(".U"));
+    if (!a_s.fields()[std::size_t(fi)].solved || !freq || !Qf || !U || !(*U > 0) || !(*freq > 0)) {
+        *why = tr("%1: its resonator %2's mode is not solved - an Eigenfrequency step before (the mode it keeps lases)").arg(L.name, L.mode);
+        return false;
+    }
+    if (!std::isfinite(*Qf) || !(*Qf > 0)) {
+        *why = tr("%1: the mode of %2 loses nothing (Q %3) - a laser's cavity loses its light: absorbing layers, a material's κ")
+                   .arg(L.name, L.mode, formatNumber(*Qf, 4));
+        return false;
+    }
+    L.omega = 2 * M_PI * *freq;
+    L.tauP = *Qf / L.omega;
+    L.photon = 1.054571817e-34 * L.omega;
+    if (L.gain == 2 && (!L.table || std::abs(L.table->photon / L.photon - 1) > 1e-9)) {
+        *why = tr("%1: its gain is its quantum wells' %2, tabulated at the mode's photon energy by a Laser L-I step - not solved in "
+                  "another step").arg(L.name, L.request.wells);
+        return false;
+    }
+    // Each node's share of the mode: over its domains' triangles, a third of
+    // each one's ∫ we dV (the energy there) to each corner, over U; its part
+    // of their volume; the photons' speed there (c/ng, or c/√Re ε of the
+    // triangles about it, by volume); its radiative coefficient.
+    const Expression we = Expression::compile(L.mode + QStringLiteral(".we"), a_s.pointScope());
+    const Expression epsr = Expression::compile(L.mode + QStringLiteral(".epsr"), a_s.pointScope());
+    const Space& sp = *field().space;
+    const Mesh& mesh = a_s.mesh();
+    const double unit = mesh.unitScale;
+    std::vector<int> entry(std::size_t(a_n), -1);
+    L.nodes.clear();
+    L.share.clear();
+    L.volume.clear();
+    L.speed.clear();
+    L.B.clear();
+    std::vector<double> slow;   // by entry: Σ volume/v, for the volume's mean of 1/v
+    PointEvaluator ev(a_s);
+    const TriangleRule& rule = triangleRule(4);
+    for (int t = 0; t < sp.elements(); ++t) {
+        if (!a_elemSemi[std::size_t(t)]) continue;
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !L.on[std::size_t(d)]) continue;
+        QPointF x[3];
+        for (int k = 0; k < 3; ++k) x[k] = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * unit;
+        const double area = std::abs((x[1].x() - x[0].x()) * (x[2].y() - x[0].y()) - (x[2].x() - x[0].x()) * (x[1].y() - x[0].y())) / 2;
+        const double vol = area * a_s.weight((x[0] + x[1] + x[2]) / 3.0);
+        double energy = 0;
+        for (const auto& q : rule.points) {
+            ev.moveTo(t, q[0], q[1]);
+            const QPointF at = (1 - q[0] - q[1]) * x[0] + q[0] * x[1] + q[1] * x[2];
+            const double w = ev.eval(we);
+            if (std::isfinite(w)) energy += q[2] * 2 * area * a_s.weight(at) * w;
+        }
+        ev.moveTo(t, 1.0 / 3, 1.0 / 3);
+        const double eps = ev.eval(epsr);
+        const double v = L.ng > 0 ? 299792458.0 / L.ng : (eps >= 1 ? 299792458.0 / std::sqrt(eps) : 299792458.0);
+        const int* dof = sp.dofs(t);
+        for (int k = 0; k < 3; ++k) {
+            const int i = dof[k];
+            if (entry[std::size_t(i)] < 0) {
+                entry[std::size_t(i)] = int(L.nodes.size());
+                L.nodes.push_back(i);
+                L.share.push_back(0);
+                L.volume.push_back(0);
+                L.speed.push_back(0);
+                L.B.push_back(0);
+                slow.push_back(0);
+            }
+            const std::size_t e = std::size_t(entry[std::size_t(i)]);
+            L.share[e] += energy / 3 / *U;
+            L.volume[e] += vol / 3;
+            slow[e] += vol / 3 / v;
+            L.B[e] += vol / 3 * a_media[std::size_t(d)].B;
+        }
+    }
+    L.Gamma = 0;
+    for (std::size_t e = 0; e < L.nodes.size(); ++e) {
+        L.speed[e] = slow[e] > 0 ? L.volume[e] / slow[e] : 299792458.0;
+        if (L.volume[e] > 0) L.B[e] /= L.volume[e];
+        L.Gamma += L.share[e];
+    }
+    if (L.nodes.empty() || !(L.Gamma > 0)) {
+        *why = tr("%1: the mode of %2 has none of its energy on its domains (Γ %3)").arg(L.name, L.mode, formatNumber(L.Gamma, 3));
+        return false;
+    }
+    L.ready = true;
+    return true;
+}
+
+SemiconductorProblem::LaserState SemiconductorProblem::laserState(const Eigen::VectorXd& x) const
+{
+    LaserState out;
+    if (!a_laser || a_iS < 0 || !a_laser->ready) return out;
+    const Lasing& L = *a_laser;
+    out.S = x(a_iS);
+    double vol = 0;
+    for (std::size_t e = 0; e < L.nodes.size(); ++e) {
+        const std::size_t i = std::size_t(L.nodes[e]);
+        if (a_iN[i] < 0) continue;
+        const double n = x(a_iN[i]), p = x(a_iP[i]);
+        const double g = laserGain(n, p, nullptr, nullptr);
+        out.G += L.speed[e] * L.share[e] * g;
+        out.gmean += L.share[e] * g;
+        const double excess = n * p - a_ni[i] * a_ni[i] * std::exp(a_lgN[i] + a_lgP[i]);
+        if (excess > 0) out.Rsp += L.B[e] * L.volume[e] * excess;
+        const double N = L.carrier == 1 ? n : L.carrier == 2 ? p : std::sqrt(std::max(n * p, 0.0));
+        out.Nact += N * L.volume[e];
+        vol += L.volume[e];
+    }
+    out.Rstim = out.S * out.G;
+    if (vol > 0) out.Nact /= vol;
+    if (L.Gamma > 0) out.gmean /= L.Gamma;
+    return out;
 }
 
 void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const std::vector<double>* history, Eigen::VectorXd& F,
@@ -2534,6 +2799,51 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             add(rp, rp, Q * A * mass);
         }
     }
+    // A laser: the stimulated recombination at each node of its domains,
+    // S v g(N) Π (pairs/s), and the photons' balance (τp G - 1) S + τp β
+    // Rsp = 0 - G = Σ v g Π, Rsp = Σ B (n p - ni²) of its volume -; until
+    // its mode is read, S = 0.
+    if (a_laser && a_iS >= 0) {
+        const Lasing& L = *a_laser;
+        const int rs = a_iS;
+        if (!L.ready) {
+            F(rs) = x(rs);
+            add(rs, rs, 1.0);
+        } else {
+            const double S = x(rs);
+            double G = 0, Rsp = 0;
+            for (std::size_t e = 0; e < L.nodes.size(); ++e) {
+                const int i = L.nodes[e];
+                const int rn = a_iN[std::size_t(i)], rp = a_iP[std::size_t(i)];
+                if (rn < 0 || rp < 0) continue;
+                const double n = nn(i), p = pp(i);
+                double dgn = 0, dgp = 0;
+                const double g = laserGain(n, p, &dgn, &dgp);
+                const double w = L.speed[e] * L.share[e];
+                const double rate = S * w * g;
+                G += w * g;
+                F(rn) -= Q * rate;
+                F(rp) += Q * rate;
+                add(rn, rn, -Q * S * w * dgn);
+                add(rn, rp, -Q * S * w * dgp);
+                add(rn, rs, -Q * w * g);
+                add(rp, rn, Q * S * w * dgn);
+                add(rp, rp, Q * S * w * dgp);
+                add(rp, rs, Q * w * g);
+                double rsn = 0, rsp = 0;
+                const double excess = n * p - a_ni[std::size_t(i)] * a_ni[std::size_t(i)] * std::exp(a_lgN[std::size_t(i)] + a_lgP[std::size_t(i)]);
+                if (excess > 0 && L.B[e] > 0) {
+                    Rsp += L.B[e] * L.volume[e] * excess;
+                    rsn = L.B[e] * L.volume[e] * p;
+                    rsp = L.B[e] * L.volume[e] * n;
+                }
+                add(rs, rn, L.tauP * (S * w * dgn + L.beta * rsn));
+                add(rs, rp, L.tauP * (S * w * dgp + L.beta * rsp));
+            }
+            F(rs) = (L.tauP * G - 1) * S + L.tauP * L.beta * Rsp;
+            add(rs, rs, L.tauP * G - 1);
+        }
+    }
     // Surface charges.
     for (std::size_t k = 0; k < a_surface.size(); ++k) {
         const int i = a_surface[k].first;
@@ -2599,7 +2909,16 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             for (int k : {a_iN[std::size_t(i)], a_iP[std::size_t(i)]})
                 if (k >= 0) colScale(k) = std::max(std::abs(x(k)), 1e-20 * a_scale);
         }
+        // (A laser's photons: as the carriers, by their own number.)
+        if (a_iS >= 0) colScale(a_iS) = std::max(std::abs(x(a_iS)), 1e-6);
     };
+    // A laser's photons from nothing (a solution without them): those its
+    // spontaneous emission keeps below threshold, τp β Rsp/(1 - τp G).
+    if (a_iS >= 0 && a_laser->ready && !(x(a_iS) > 0)) {
+        const LaserState ls = laserState(x);
+        const Lasing& L = *a_laser;
+        x(a_iS) = L.tauP * L.beta * ls.Rsp / std::max(1 - L.tauP * ls.G, 1e-3);
+    }
     std::vector<char> fixed(std::size_t(a_unknowns), 0);
     Eigen::VectorXd target = Eigen::VectorXd::Zero(a_unknowns);
     for (const Contact& c : a_contacts)
@@ -2695,6 +3014,14 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             if (a_iV[std::size_t(i)] >= 0) maxDV = std::max(maxDV, std::abs(dx(a_iV[std::size_t(i)])));
         const double alpha = maxDV > 10 * a_Vt ? 10 * a_Vt / maxDV : 1.0;
         double changeV = 0, changeC = 0;
+        if (a_iS >= 0) {
+            // (The photons kept positive, as the carriers.)
+            const double before = x(a_iS);
+            double after = before + alpha * dx(a_iS);
+            if (after < 0.05 * before) after = 0.05 * before;
+            x(a_iS) = std::max(after, 0.0);
+            changeC = std::max(changeC, std::abs(x(a_iS) - before) / (before + 1e-6));
+        }
         for (int i = 0; i < a_n; ++i) {
             if (a_iV[std::size_t(i)] >= 0) {
                 const int k = a_iV[std::size_t(i)];
@@ -2904,6 +3231,7 @@ Eigen::VectorXd SemiconductorProblem::stateVector() const
         if (a_iN[std::size_t(i)] >= 0) x(a_iN[std::size_t(i)]) = f.values[N + std::size_t(i)];
         if (a_iP[std::size_t(i)] >= 0) x(a_iP[std::size_t(i)]) = f.values[2 * N + std::size_t(i)];
     }
+    if (a_iS >= 0 && f.values.size() > 9 * N) x(a_iS) = f.values[9 * N];
     return x;
 }
 
@@ -2922,6 +3250,24 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
         if (a_fermi || !a_quantumNodes.empty()) {
             f.values[5 * N + std::size_t(i)] = a_thetaN[std::size_t(i)] + a_Vt * a_lgN[std::size_t(i)];
             f.values[6 * N + std::size_t(i)] = a_thetaP[std::size_t(i)] - a_Vt * a_lgP[std::size_t(i)];
+        }
+    }
+    // A laser's photons, and its gain and stimulated rate at each node of its
+    // domains (nought elsewhere).
+    if (a_iS >= 0 && f.values.size() > 9 * N) {
+        f.values[9 * N] = x(a_iS);
+        std::fill(f.values.begin() + std::ptrdiff_t(7 * N), f.values.begin() + std::ptrdiff_t(9 * N), 0.0);
+        const Lasing& L = *a_laser;
+        if (L.ready) {
+            std::vector<double> volume(N, 0.0);
+            for (std::size_t e = 0; e < L.nodes.size(); ++e) {
+                const std::size_t i = std::size_t(L.nodes[e]);
+                if (a_iN[i] < 0) continue;
+                const double g = laserGain(x(a_iN[i]), x(a_iP[i]), nullptr, nullptr);
+                f.values[7 * N + i] = g;
+                // (Per volume: the node's share of the mode over its part of the domains' volume.)
+                if (L.volume[e] > 0) f.values[8 * N + i] = x(a_iS) * L.speed[e] * L.share[e] * g / L.volume[e];
+            }
         }
     }
     f.solved = true;
@@ -3274,8 +3620,10 @@ bool SemiconductorProblem::stationary(QString* why)
     double fermi = 0;
     if (atEquilibrium(goal, &fermi)) {
         // No current: Poisson's equation alone (a MOS capacitor, a junction
-        // unbiased) - exact, the currents' equations hold at once.
+        // unbiased) - exact, the currents' equations hold at once; a laser
+        // dark.
         if (!equilibriumPoisson(x, fermi, goal, f.solved, why)) return false;
+        if (a_iS >= 0) x(a_iS) = 0;
         finish(x, true);
         quasiStatic(x, fermi, goal);
         return true;
@@ -3594,6 +3942,20 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
             return false;
         }
         return solve1d(error);
+    }
+    if (a_laser) {
+        if (o.mass > 0 || (o.harmonic && o.frequency > 0)) {
+            *error = tr("%1: %2 lases at rest - a stationary step or a Laser L-I step's points, not a step in time or frequency")
+                         .arg(a_node->name(), a_laser->name);
+            return false;
+        }
+        // Its mode as its resonator solved it; none yet (a step before its
+        // Eigenfrequency step's): no light, said once.
+        QString why;
+        if (!prepareLasing(&why) && !a_laserSaid) {
+            a_s.log << tr("%1: no lasing yet - %2").arg(a_node->name(), why);
+            a_laserSaid = true;
+        }
     }
     latticeTemperature();
     // Generation at the nodes, as it is now (it may read other fields, t).
@@ -4124,6 +4486,26 @@ void SemiconductorProblem::setGlobals()
             }
         a_s.setGlobal(p + QStringLiteral("Ifn"), current, Dim::current(),
                       tr("Fowler-Nordheim tunnelling's current through the insulators asked, at the mean field over each one's barrier (after the solve)"));
+    }
+    if (a_laser && field().solved) {
+        const Lasing& L = *a_laser;
+        const LaserState ls = laserState(stateVector());
+        const double rate = 1 / L.tauP;
+        a_s.setGlobal(p + QStringLiteral("S"), ls.S, Dim(), tr("photons in the lasing mode"));
+        a_s.setGlobal(p + QStringLiteral("Pout"), L.ready ? L.eta * L.photon * ls.S * rate : 0.0, Dim::of(2, 1, -3),
+                      tr("the laser's light out: η ħω S/τp"));
+        a_s.setGlobal(p + QStringLiteral("G"), ls.G, Dim::of(0, 0, -1), tr("modal gain rate, Σ v g(N) Π (1/s)"));
+        a_s.setGlobal(p + QStringLiteral("Gnet"), L.ready ? ls.G - rate : 0.0, Dim::of(0, 0, -1),
+                      tr("net modal gain rate, G - 1/τp: nought at threshold, below it negative"));
+        a_s.setGlobal(p + QStringLiteral("Gamma"), L.Gamma, Dim(), tr("confinement: the mode's share of its energy on the gain region"));
+        const double v = L.ready && !L.speed.empty() ? L.speed.front() : 0.0;
+        a_s.setGlobal(p + QStringLiteral("gth"), L.ready && L.Gamma > 0 && v > 0 ? rate / (v * L.Gamma) : 0.0, Dim::of(-1),
+                      tr("the material gain at threshold, 1/(τp v Γ) (1/m: unit 1/cm)"));
+        a_s.setGlobal(p + QStringLiteral("gmean"), ls.gmean, Dim::of(-1), tr("the material gain, the mode's mean over the gain region (1/m)"));
+        a_s.setGlobal(p + QStringLiteral("Istim"), Q * ls.Rstim, Dim::current(), tr("stimulated recombination's current, q S G"));
+        a_s.setGlobal(p + QStringLiteral("Isp"), Q * ls.Rsp, Dim::current(), tr("radiative recombination's current on the gain region"));
+        a_s.setGlobal(p + QStringLiteral("Nact"), ls.Nact, Dim::of(-3), tr("the carriers N on the gain region, by volume"));
+        a_s.setGlobal(p + QStringLiteral("taup"), L.tauP, Dim::of(0, 0, 1), tr("photon lifetime of the cold cavity, Q/ω"));
     }
     if (!a_stimulated.empty()) {
         const std::vector<double> rates = stimulatedRates();

@@ -612,6 +612,7 @@ struct FieldInfo {
     bool planeStress = false;   // (solid)
     bool line = false;          // (quantum, pde: 1D along a line)
     int pdeVars = 0;            // (pde: its variables, before their rates)
+    bool lasing = false;        // (semiconductor: a Lasing feature - its gain and rate)
 };
 
 FieldInfo infoOf(const Node& p, bool axisymmetric)
@@ -657,6 +658,7 @@ FieldInfo infoOf(const Node& p, bool axisymmetric)
         // The potential; the carriers and the doping with it.
         f.variable = QStringLiteral("V");
         f.dim = Dim::voltage();
+        for (const Node& c : p.children) f.lasing = f.lasing || (c.enabled && c.type == QLatin1String("semiconductor/laser"));
     } else if (p.type == QLatin1String("waves")) {
         // E or H out of the plane.
         const bool h = p.text(QStringLiteral("polarization")) == QLatin1String("hz");
@@ -1088,6 +1090,20 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                            return std::sqrt(std::norm(v[0]) + std::norm(v[1]) + std::norm(v[2]));
                        });
             }
+            // The energy density, ½ ε0 Re ε |E|² (the mode's stored energy,
+            // emr.U, its integral outside the layers), and Re ε.
+            define(p + QStringLiteral("we"), Dim::of(-1, 1, -2), tr("energy density, ½ ε0 Re ε |E|² (its integral the stored energy emr.U; nought in the absorbing layers)"),
+                   K::Derived, f, [f](PointEvaluator& ev) {
+                       const detail::ResonatorFields rf = detail::resonatorFieldsAt(ev, f);
+                       if (!rf.defined) return NaN;
+                       if (!std::isfinite(rf.eps)) return 0.0;
+                       return 0.5 * 8.8541878188e-12 * rf.eps * (std::norm(rf.E[0]) + std::norm(rf.E[1]) + std::norm(rf.E[2]));
+                   });
+            define(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity, its real part (the diagonal's mean)"), K::Derived, f,
+                   [f](PointEvaluator& ev) {
+                       const detail::ResonatorFields rf = detail::resonatorFieldsAt(ev, f);
+                       return rf.defined ? rf.eps : NaN;
+                   });
             // ½ Re(E × H*) in (r, φ, z): S_r = Eφ Hz* - Ez Hφ*, S_z = Er Hφ* - Eφ Hr*.
             define(p + QStringLiteral("Sr"), sDim, tr("power flow along r (a time average)"), K::Derived, f, [f](PointEvaluator& ev) {
                 const detail::ResonatorFields rf = detail::resonatorFieldsAt(ev, f);
@@ -1448,6 +1464,27 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                 });
             }
             define(p + QStringLiteral("R"), rate, tr("net recombination rate"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.R; }));
+            // A laser's (Lasing): its material gain and stimulated rate at each
+            // node of its gain region, nought elsewhere, linear between.
+            {
+                if (field.lasing) {
+                    auto nodal = [f](int block) {
+                        return [f, block](PointEvaluator& e) {
+                            const Field& fl = e.solution().fields()[std::size_t(f)];
+                            const int t = e.triangle();
+                            const std::size_t n = std::size_t(fl.space->size());
+                            if (t < 0 || fl.values.size() < 9 * n + 1) return NaN;
+                            const int* dof = fl.space->dofs(t);
+                            const double w[3] = {1 - e.xi() - e.eta(), e.xi(), e.eta()};
+                            double v = 0;
+                            for (int k = 0; k < 3; ++k) v += w[k] * fl.values[std::size_t(block) * n + std::size_t(dof[k])];
+                            return v;
+                        };
+                    };
+                    define(p + QStringLiteral("gain"), Dim::of(-1), tr("the laser's material gain (1/m: unit 1/cm) on its gain region"), K::Derived, f, nodal(7));
+                    define(p + QStringLiteral("Rst"), rate, tr("the laser's stimulated recombination rate, S v g Π per volume"), K::Derived, f, nodal(8));
+                }
+            }
             define(p + QStringLiteral("taun"), Dim::of(0, 0, 1), tr("electrons' SRH lifetime: by doping, over 1 + Γ with trap-assisted tunnelling"),
                    K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.taun; }));
             define(p + QStringLiteral("taup"), Dim::of(0, 0, 1), tr("holes' SRH lifetime: by doping, over 1 + Γ with trap-assisted tunnelling"),
@@ -1648,6 +1685,7 @@ void Solution::defineVariables()
                 info.line = (p->type == QLatin1String("quantum") && p->text(QStringLiteral("space")) != QLatin1String("2d"))
                             || (p->type == QLatin1String("pde") && p->text(QStringLiteral("space")) == QLatin1String("1d"));
                 if (p->type == QLatin1String("pde")) info.pdeVars = int(detail::pdeVariables(*p).size());
+                for (const Node& c : p->children) info.lasing = info.lasing || (c.enabled && c.type == QLatin1String("semiconductor/laser"));
             }
         fields.push_back(info);
     }
@@ -2301,6 +2339,213 @@ int litMode(const Solution& s, const QString& tag)
 
 bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error);
 
+/// A laser's gain from its quantum wells, at its mode's photon energy
+/// \a photon (J): the wells solved, their spectrum - a Spectrum step's
+/// options - at each density asked, its TE (TM) gain -α there.
+bool laserGainTable(Step& st, detail::Problem& laser, const detail::GainRequest& rq, double photon, QString* error)
+{
+    Solution& s = st.s;
+    const Node* spectrum = nullptr;
+    for (const Node* study : s.model().studies()) {
+        bool mine = false;
+        for (const Node& step : study->children) mine = mine || step.tag == st.node.tag;
+        for (const Node& step : study->children)
+            if (!spectrum && step.type == QLatin1String("spectrum") && (rq.spectrum.isEmpty() ? mine : step.tag == rq.spectrum)) spectrum = &step;
+    }
+    if (!spectrum) {
+        *error = rq.spectrum.isEmpty() ? tr("%1: its laser's gain is its wells' spectrum, as a Spectrum step says - its states, broadening: give "
+                                            "the study one (disabled: it is not solved, only read)")
+                                             .arg(st.node.name())
+                                       : tr("%1: there is no Spectrum step %2").arg(st.node.name(), rq.spectrum);
+        return false;
+    }
+    detail::SpectrumOptions o;
+    int axis = 1;
+    if (!spectrumOptionsOf(*spectrum, s.parameters().scope, o, &axis, error)) return false;
+    o.solve = st.options;
+    // (Its own energies with the photon's: the spectrum's index wants a window.)
+    o.energies.push_back(photon);
+    detail::Problem* qp = nullptr;
+    for (auto& p : st.problems)
+        if (p->field().tag == rq.wells && p->field().type == QLatin1String("quantum")) qp = p.get();
+    if (!qp) {
+        *error = tr("%1: the quantum wells %2 are not among its physics").arg(st.node.name(), rq.wells);
+        return false;
+    }
+    // (What the wells say, each thing once - not at each density; their
+    // index's window not: the gain is their absorption alone.)
+    const qsizetype logged = s.log.size();
+    if (!qp->solve(o.solve, error)) return false;
+    auto table = std::make_shared<detail::GainTable>();
+    table->photon = photon;
+    for (int k = 0; k < rq.points; ++k) {
+        const double N = rq.Nmin * std::pow(rq.Nmax / rq.Nmin, double(k) / (rq.points - 1));
+        o.density = N;
+        double v[4];
+        if (qp->solveSpectrum(o, error) < 0) return false;
+        if (!qp->spectrumAt(photon, v)) {
+            *error = tr("%1: %2's spectrum has no value at the photon's energy").arg(st.node.name(), rq.wells);
+            return false;
+        }
+        table->N.push_back(N);
+        table->g.push_back(-v[rq.tm ? 1 : 0]);
+    }
+    table->prepare();
+    {
+        QStringList said;
+        for (qsizetype k = logged; k < s.log.size(); ++k) {
+            const QString& line = s.log[k];
+            if (line.contains(QLatin1String("Kramers-Kronig")) || said.contains(line)) continue;
+            if (line.startsWith(QLatin1String("Warning: "))) said << line;
+        }
+        s.log.erase(s.log.begin() + logged, s.log.end());
+        s.log << said;
+    }
+    // (Its transparency: where the gain crosses nought, by the table.)
+    double Ntr = NaN;
+    for (std::size_t k = 0; k + 1 < table->N.size(); ++k)
+        if (table->g[k] <= 0 && table->g[k + 1] > 0)
+            Ntr = table->N[k] * std::pow(table->N[k + 1] / table->N[k], -table->g[k] / (table->g[k + 1] - table->g[k]));
+    s.log << tr("%1: the wells %2's %3 gain at %4 eV, %5 densities from %6 to %7 per cm³: %8 to %9 per cm, transparency %10")
+                 .arg(st.node.name(), rq.wells, rq.tm ? QStringLiteral("TM") : QStringLiteral("TE"), formatNumber(photon / 1.602176634e-19, 5))
+                 .arg(rq.points)
+                 .arg(formatNumber(rq.Nmin * 1e-6, 3), formatNumber(rq.Nmax * 1e-6, 3), formatNumber(table->g.front() / 100, 4),
+                      formatNumber(table->g.back() / 100, 4),
+                      std::isfinite(Ntr) ? formatNumber(Ntr * 1e-6, 4) + QStringLiteral(" per cm³") : tr("not reached"));
+    laser.setGainTable(table);
+    return true;
+}
+
+/// A laser's light against its current: the contact asked held at each
+/// voltage, the physics at rest solved there (a semiconductor's lasing in
+/// the mode its Eigenfrequency step kept, solved before) - each point a
+/// solution, by voltage.
+bool laserStep(Solution& s, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings, QString* error)
+{
+    Telling tell{told, 0, node.name()};
+    Step st{s, node, {}, {}, {}, 50, 1e-6};
+    if (!setupStep(st, error)) return false;
+    cancelWith(st, tell);
+    // Its semiconductor that lases; the physics solved at each point (not
+    // modes: the cavity's is its Eigenfrequency step's).
+    detail::Problem* laser = nullptr;
+    std::vector<int> solved;
+    for (int i = 0; i < int(st.problems.size()); ++i) {
+        detail::Problem& p = *st.problems[std::size_t(i)];
+        if (!laser && !p.lasingMode().isEmpty()) laser = &p;
+        if (!p.modal() && p.field().type != QLatin1String("quantum")) solved.push_back(i);
+    }
+    if (!laser) {
+        *error = tr("%1: none of its physics lases - a semiconductor with a Lasing (Cavity Mode) on its gain region").arg(node.name());
+        return false;
+    }
+    const QString mode = laser->lasingMode();
+    if (!s.global(mode + QStringLiteral(".U")) || s.fieldIndex(mode) < 0 || !s.fields()[std::size_t(s.fieldIndex(mode))].solved) {
+        *error = tr("%1: its laser's mode, %2's, is not solved - an Eigenfrequency step before it (the mode it keeps lases)").arg(node.name(), mode);
+        return false;
+    }
+    // Its gain from quantum wells: tabulated at the mode's photon energy.
+    if (const std::optional<detail::GainRequest> rq = laser->gainRequest()) {
+        const double photon = 6.62607015e-34 * s.global(mode + QStringLiteral(".freq")).value_or(0.0);
+        if (!laserGainTable(st, *laser, *rq, photon, error)) return false;
+    }
+    {
+        QString cannot;
+        if (!laser->readyToLase(&cannot)) {
+            *error = tr("%1: %2").arg(node.name(), cannot);
+            return false;
+        }
+    }
+    const QString contact = node.text(QStringLiteral("contact")).trimmed();
+    Dim dim;
+    QString why;
+    const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("voltages")), s.parameters().scope, &dim, &why);
+    if (!listed || listed->empty()) {
+        *error = tr("%1: the voltages: %2").arg(node.name(), listed ? tr("none") : why);
+        return false;
+    }
+    if (!dim.isNone() && !(dim == Dim::voltage())) {
+        *error = tr("%1: the voltages are in %2, not in V").arg(node.name(), dimName(dim));
+        return false;
+    }
+    if (!laser->holdContact(contact, (*listed)[0])) {
+        *error = tr("%1: %2 has no metal contact %3").arg(node.name(), laser->field().tag, contact);
+        return false;
+    }
+    for (auto& p : st.problems)
+        if (!p->field().solved) p->initialize();
+    // Its own series: the voltages.
+    s.clearSnapshots();
+    s.modeAnalysis = s.quantumStates = s.eigenfrequencies = s.frequencyDomain = s.timeDependent = false;
+    s.photonAxis = 0;
+    s.setMode(0);
+    s.biasAxis = true;
+    const std::vector<double>& volts = *listed;
+    const QString semi = laser->field().tag + QLatin1Char('.');
+    std::vector<double> current, light, net;   // by point: I, Pout, Gnet
+    auto threshold = [&]() {
+        // Its threshold: the light's line above it (its points of net gain
+        // nought to 1e-3 of 1/τp, the first left out - the knee), back to no
+        // light; the voltage at that current.
+        const double rate = 1 / s.global(semi + QStringLiteral("taup")).value_or(std::numeric_limits<double>::infinity());
+        std::vector<std::size_t> above;
+        for (std::size_t k = 0; k < current.size(); ++k)
+            if (std::isfinite(net[k]) && std::isfinite(light[k]) && net[k] > -1e-3 * rate) above.push_back(k);
+        if (above.size() < 3) {
+            if (!current.empty()) s.log << tr("%1: below threshold at every point (its net gain at the last %2 per second)").arg(node.name(), formatNumber(net.back(), 3));
+            return;
+        }
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        const std::size_t first = above[1];
+        int n = 0;
+        for (std::size_t k : above) {
+            if (k < first) continue;
+            sx += current[k];
+            sy += light[k];
+            sxx += current[k] * current[k];
+            sxy += current[k] * light[k];
+            ++n;
+        }
+        const double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx), at = (sy - slope * sx) / n;
+        const double Ith = -at / slope;
+        double Vth = NaN;
+        for (std::size_t k = 0; k + 1 < current.size(); ++k)
+            if ((current[k] - Ith) * (current[k + 1] - Ith) <= 0 && current[k + 1] != current[k])
+                Vth = volts[k] + (volts[k + 1] - volts[k]) * (Ith - current[k]) / (current[k + 1] - current[k]);
+        const double photon = 6.62607015e-34 * s.global(mode + QStringLiteral(".freq")).value_or(0.0);
+        s.log << tr("%1: threshold %2 at %3 (its light's line back to none); slope %4 W/A, %5 of a photon an electron (ħω/q %6 V)")
+                     .arg(node.name(), formatQuantity(Ith, Dim::current()), formatQuantity(Vth, Dim::voltage()), formatNumber(slope, 4),
+                          formatNumber(photon > 0 ? slope / (photon / 1.602176634e-19) : NaN, 4), formatNumber(photon / 1.602176634e-19, 5));
+    };
+    for (std::size_t k = 0; k < volts.size(); ++k) {
+        if (!tell(double(k) / double(volts.size()), tr("%1: %2 at %3").arg(node.name(), contact, formatQuantity(volts[k], Dim::voltage())))) {
+            laser->holdContact(contact, NaN);
+            *error = tr("cancelled");
+            return false;
+        }
+        laser->holdContact(contact, volts[k]);
+        if (!solveTogether(st, solved, [&](int) { return st.options; }, false, &why)) {
+            laser->holdContact(contact, NaN);
+            if (why.contains(QLatin1String("did not converge")) && k > 0) {
+                *warnings << tr("%1: stopped at %2 - %3").arg(node.name(), formatQuantity(volts[k], Dim::voltage()), why);
+                threshold();
+                return true;
+            }
+            *error = why;
+            return false;
+        }
+        s.setTime(volts[k]);
+        for (auto& p : st.problems) p->setGlobals();
+        s.addSnapshot();
+        current.push_back(s.global(semi + QStringLiteral("I_") + contact).value_or(NaN));
+        light.push_back(s.global(semi + QStringLiteral("Pout")).value_or(NaN));
+        net.push_back(s.global(semi + QStringLiteral("Gnet")).value_or(NaN));
+    }
+    laser->holdContact(contact, NaN);
+    threshold();
+    return true;
+}
+
 /// The quantum wells' tables a mode analysis's features ask for, at
 /// \a frequency: each wells solved again at fields from -Fmax to Fmax, its
 /// spectrum - the study's Spectrum step's, the photon's energy among its -
@@ -2618,11 +2863,28 @@ bool eigenfrequencyStep(Solution& s, const Node& node, const std::function<bool(
     const int found = e.solveModes(o, std::clamp(node.integer(QStringLiteral("count")), 1, 200), 0, error);
     if (found < 0) return false;
     if (found == 0) *warnings << tr("%1: no eigenfrequency found").arg(node.name());
+    int kept = 0;
+    double best = -1;
     for (int k = 0; k < found; ++k) {
         e.selectMode(k);
         for (auto& p : st.problems) p->setGlobals();
         s.addSnapshot();
+        const std::optional<double> q = s.global(e.field().tag + QStringLiteral(".Q"));
+        if (q && *q > best) best = *q, kept = k;
     }
+    // The mode the steps after see (a laser's): the one asked, else the one
+    // of highest Q.
+    const int asked = node.integer(QStringLiteral("keep"));
+    if (asked > found) {
+        *error = tr("%1: it keeps mode %2 of the %3 it found (Mode kept for the steps after)").arg(node.name()).arg(asked).arg(found);
+        return false;
+    }
+    if (asked > 0) kept = asked - 1;
+    if (found > 0 && kept != found - 1) {
+        e.selectMode(kept);
+        for (auto& p : st.problems) p->setGlobals();
+    }
+    if (found > 0) s.log << tr("%1: mode %2 kept for the steps after").arg(node.name()).arg(kept + 1);
     return true;
 }
 
@@ -3325,6 +3587,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         else if (step.type == QLatin1String("states")) ok = statesStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("eigenvalue")) ok = eigenvalueStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("eigenfrequency")) ok = eigenfrequencyStep(*solution, step, tell, &out.warnings, &why);
+        else if (step.type == QLatin1String("laser")) ok = laserStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("spectrum")) ok = spectrumStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("bands")) ok = bandsStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
