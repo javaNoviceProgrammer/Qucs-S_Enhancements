@@ -22,6 +22,7 @@
 #include "fem_results.h"
 
 #include <QFile>
+#include <QRegularExpression>
 #include <QtTest>
 
 #include <cmath>
@@ -65,7 +66,7 @@ struct Run {
     QString error;
 };
 
-Run run(const Model& model)
+Run run(const Model& model, const Progress& progress = {})
 {
     Run r;
     r.parameters = evaluateParameters(model);
@@ -74,7 +75,7 @@ Run run(const Model& model)
         r.error = QStringLiteral("geometry: ") + QStringList(g.errors.values()).join(QLatin1String("; "));
         return r;
     }
-    r.study = runStudy(model, r.parameters, g.topology, nullptr, QString());
+    r.study = runStudy(model, r.parameters, g.topology, nullptr, QString(), progress);
     if (!r.study.ok()) {
         r.error = r.study.error;
         return r;
@@ -462,6 +463,46 @@ private slots:
     // count not from 1 to 200, an element order not 1 or 2, a Mode Analysis
     // step on it, a reflection not between 0 and 1. The layers' reflection
     // its strength.
+    // A resonator's solve stops when asked: before and after its
+    // factorization and before each product of its search. It looked
+    // nowhere, so a model's close and fem_stop waited out the whole solve
+    // (vcsel_modes 17 s, minutes under the sanitizers: the fuzzing of
+    // 2026-10-16).
+    void stopsWhenAsked()
+    {
+        const Model cavity = modelOf(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "mm", "space": "axisymmetric",
+            "geometry": [{"type": "rectangle", "name": "cav", "position": ["0", "0"], "size": ["10", "20"]}],
+            "materials": [{"label": "air", "n": "1", "selection": {"all": true}}],
+            "physics": [{"type": "resonator", "tag": "emr", "m": 1, "features": [{"type": "wave", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+          "studies": [{"type": "study", "steps": [{"type": "eigenfrequency", "count": 4, "around": "15[GHz]"}]}]})json");
+        const QLatin1String told("the eigenfrequencies");
+        int checks = 0;
+        const Run all = run(cavity, [&checks, told](double, const QString& what) {
+            checks += what.contains(told) ? 1 : 0;
+            return true;
+        });
+        QVERIFY2(all.error.isEmpty(), qPrintable(all.error));
+        static const QRegularExpression productsRe(QStringLiteral("\\((\\d+) products"));
+        const QRegularExpressionMatch m = productsRe.match(all.solution->log.join(QLatin1Char('\n')));
+        QVERIFY2(m.hasMatch(), qPrintable(all.solution->log.join(QLatin1Char('\n'))));
+        const int products = m.captured(1).toInt();
+        QVERIFY(products > 10);
+        // (Told once as it starts, asked before and after the factorization
+        // and before each product.)
+        QCOMPARE(checks, 3 + products);
+        for (int at : {1, 2, 3, 4, products / 2, products + 3}) {
+            int seen = 0;
+            const Run part = run(cavity, [&seen, at, told](double, const QString& what) {
+                if (!what.contains(told)) return true;
+                return ++seen < at;
+            });
+            QVERIFY2(part.error.contains(QLatin1String("cancelled")), qPrintable(QStringLiteral("at %1: %2").arg(at).arg(part.error)));
+            QCOMPARE(seen, at);
+        }
+    }
+
     void theAxisAndRefusals()
     {
         Run r = run(modelOf(sphere(1, QStringLiteral("3.5"), slowBuild() ? QStringLiteral("0.15") : QStringLiteral("0.1"), QStringLiteral("5.05[um]"), 1)));

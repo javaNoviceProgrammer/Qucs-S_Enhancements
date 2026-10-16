@@ -155,6 +155,28 @@ private slots:
     // know no Vdc.
     void init() { Module::registerModules(); }
 
+    // A winding's core named by another part (a damaged or edited file):
+    // netlisted without its core's nodes - it read that part's BHprobes
+    // through a null pointer, Qucs-S gone (the fuzzing of 2026-10-16).
+    void aWindingsCoreThatIsNoCore()
+    {
+        QFile example(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/MagneticCores/core_test.sch"));
+        QVERIFY(example.open(QIODevice::ReadOnly));
+        const QByteArray original = example.readAll();
+        const QString good = dir.filePath("core_good.sch"), bad = dir.filePath("core_bad.sch");
+        write(good, original);
+        write(bad, QByteArray(original).replace("<WINDING W1 1 420 270 35 -44 0 0 \"N87_1\"", "<WINDING W1 1 420 270 35 -44 0 0 \"R1\""));
+        Schematic fine(nullptr, good), damaged(nullptr, bad);
+        QVERIFY(fine.load() && damaged.load());
+        GroundProbe<Ngspice> both(&fine), one(&damaged);
+        const QString netlist = both.netlist(), broken = one.netlist();
+        QVERIFY2(netlist.contains("X_W1 ") && netlist.contains("net_N87_1_H_node"), qPrintable(netlist));
+        // (W1 netlisted alone, its core's nodes none; W2 as before.)
+        QRegularExpression w1(QStringLiteral("X_W1 (\\S+) (\\S+) +winding"));
+        QVERIFY2(w1.match(broken).hasMatch(), qPrintable(broken));
+        QVERIFY2(broken.contains(QRegularExpression(QStringLiteral("X_W2 \\S+ \\S+ net_N87_1_H_node net_N87_1_B_node winding"))), qPrintable(broken));
+    }
+
     void theGroundIsRequiredOnlyWhenTheSettingsSaySo()
     {
         // The settings as they were for the other tests, whatever happens.

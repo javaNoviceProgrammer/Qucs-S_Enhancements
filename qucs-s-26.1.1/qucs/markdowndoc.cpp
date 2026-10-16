@@ -338,6 +338,18 @@ void SmoothImages::drawObject(QPainter* painter, const QRectF& rect, QTextDocume
     const QRectF device = t.mapRect(rect);
     const QRect target(QPoint(qRound(device.left()), qRound(device.top())),
                        QSize(std::max(1, qRound(device.width())), std::max(1, qRound(device.height()))));
+    // More than 16 million of them (a picture 64 MB scaled - a long
+    // screenshot on a Retina screen, a thin one an author made 20000 wide):
+    // Qt's smooth transform, which draws what is seen alone. (Scaled whole,
+    // a 1 by 20000 picture 392 wide tried billions of pixels: 17 s a frame -
+    // the fuzzing of 2026-10-16.)
+    if (double(target.width()) * target.height() > 16e6) {
+        painter->save();
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+        a_qts->drawObject(painter, rect, doc, posInDocument, format);
+        painter->restore();
+        return;
+    }
     QImage drawn;
     if (own == target.size()) {
         drawn = !image.isNull() ? image : pixmap.toImage();

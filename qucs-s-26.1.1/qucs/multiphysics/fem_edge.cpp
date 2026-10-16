@@ -180,7 +180,7 @@ void swapSchur(Eigen::MatrixXcd& T, Eigen::MatrixXcd& Q, int i)
 } // namespace
 
 EigenResult largestEigenvalues(int n, int count, const std::function<void(const Eigen::VectorXcd&, Eigen::VectorXcd&)>& apply, int basis,
-                               double tolerance, int maxRestarts)
+                               double tolerance, int maxRestarts, const std::function<bool()>& stop)
 {
     EigenResult out;
     if (n <= 0 || count <= 0) return out;
@@ -202,6 +202,13 @@ EigenResult largestEigenvalues(int n, int count, const std::function<void(const 
     for (int restart = 0; restart <= maxRestarts; ++restart) {
         // Arnoldi from k to m: orthogonalized twice.
         for (int j = k; j < m; ++j) {
+            // (Asked to stop: each product may be a large solve - a VCSEL's
+            // seventy of them some 12 s, close and fem_stop waited them out:
+            // the fuzzing of 2026-10-16.)
+            if (stop && stop()) {
+                out.cancelled = true;
+                return out;
+            }
             apply(V.col(j), w);
             ++out.products;
             // (The operator's own scale: (A - σB)⁻¹B may be 1e-13 at optical

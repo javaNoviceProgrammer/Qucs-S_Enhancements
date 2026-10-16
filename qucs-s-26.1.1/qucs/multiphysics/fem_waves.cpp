@@ -1312,6 +1312,12 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
                      .arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
         return -1;
     }
+    // (Asked to stop: after the factorization - not inside it - and before
+    // each product of the search.)
+    if (cancelled()) {
+        *error = tr("cancelled");
+        return -1;
+    }
     // With absorbing layers, more than asked: the layers' own modes (their
     // fields in the layers mostly) are left out.
     bool layers = false;
@@ -1396,8 +1402,15 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
                                                                y.resize(2 * a_n);
                                                                y.head(a_n) = z1;
                                                                y.tail(a_n) = x1 + z1;
-                                                           })
-                                      : largestEigenvalues(a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(B * x); });
+                                                           },
+                                                           0, 1e-10, 300, [this] { return cancelled(); })
+                                      : largestEigenvalues(
+                                            a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(B * x); }, 0, 1e-10, 300,
+                                            [this] { return cancelled(); });
+        if (r.cancelled) {
+            *error = tr("cancelled");
+            return -1;
+        }
         if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
         products += r.products;
         restarts += r.restarts;
@@ -1922,12 +1935,24 @@ int ResonatorProblem::solveModes(const SolveOptions& o, int count, double, QStri
     const cd sigma = k0 * k0;
     Eigen::SparseMatrix<cd> P = K - sigma * M;
     P.makeCompressed();
+    // (Asked to stop: before and after the factorization - not inside it,
+    // a VCSEL's some 6 s - and before each product of the search; it looked
+    // nowhere, so close and fem_stop waited out the whole solve: the fuzzing
+    // of 2026-10-16.)
+    if (cancelled()) {
+        *error = tr("cancelled");
+        return -1;
+    }
     Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
     lu.analyzePattern(P);
     lu.factorize(P);
     if (lu.info() != Eigen::Success) {
         *error = tr("%1: the shifted matrix is singular - %2 (another frequency to search about)")
                      .arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
+        return -1;
+    }
+    if (cancelled()) {
+        *error = tr("cancelled");
         return -1;
     }
     // The layers' own modes (their fields there mostly) and the curl's null
@@ -1974,7 +1999,12 @@ int ResonatorProblem::solveModes(const SolveOptions& o, int count, double, QStri
     int products = 0, restarts = 0, dropped = 0;
     for (int asked = 2 * wanted + 4;; asked *= 2) {
         asked = std::min(asked, std::max(1, a_n - 2));
-        const EigenResult r = largestEigenvalues(a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(M * x); });
+        const EigenResult r = largestEigenvalues(
+            a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(M * x); }, 0, 1e-10, 300, [this] { return cancelled(); });
+        if (r.cancelled) {
+            *error = tr("cancelled");
+            return -1;
+        }
         if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
         products += r.products;
         restarts += r.restarts;

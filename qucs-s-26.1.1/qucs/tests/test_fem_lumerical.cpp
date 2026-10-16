@@ -16,6 +16,7 @@
  * synthetic ones of data/lumerical_projects.py (laid out as its own are).
  */
 #include "fem_geometry.h"
+#include "fem_hdf5.h"
 #include "fem_lumerical.h"
 #include "fem_lumerical_scene.h"
 #include "fem_materials.h"
@@ -30,8 +31,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QElapsedTimer>
+#include <QRandomGenerator>
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 
@@ -1135,6 +1139,233 @@ plot(r, r); somethingunknown;
     }
 
     // The kinds it reads by their file; what it does not, said.
+    // QUCS_LUMERICAL_FUZZ=<seconds> (QUCS_LUMERICAL_FUZZ_SEED, QUCS_FUZZ_OUT):
+    // scripts made of the language's pieces - loops with hostile bounds,
+    // zeros, linspace, reshape of huge sizes, structs and cells nested,
+    // unknown commands, brackets not closed - and the test's scripts
+    // damaged, each written to current.lsf before it runs, read and built
+    // into a model; the projects (.ldev, .lms, .ldf) with bytes damaged,
+    // imported and their materials read. Nothing may crash, hang or trip
+    // a sanitizer; a script of more than 5 s is kept (slow-N.lsf).
+    void fuzz()
+    {
+        const int seconds = qEnvironmentVariableIntValue("QUCS_LUMERICAL_FUZZ");
+        if (seconds <= 0) QSKIP("set QUCS_LUMERICAL_FUZZ to a number of seconds");
+        QRandomGenerator rng(quint32(qEnvironmentVariableIntValue("QUCS_LUMERICAL_FUZZ_SEED") + 1));
+        QTemporaryDir own;
+        const QString keep = qEnvironmentVariable("QUCS_FUZZ_OUT", own.path());
+        QDir().mkpath(keep);
+        const auto pick = [&rng](const QStringList& from) { return from.at(int(rng.bounded(quint32(from.size())))); };
+        const QStringList numbers{"0", "1", "-1", "2", "1e-6", "1e308", "-1e308", "1e9", "2147483648", "nan", "inf", "0.5", "1:3", "[1,2;3,4]",
+                                  "a", "b", "t.u", "\"s\"", "''", "pi", "true", "%", "1e400"};
+        const QStringList calls{"zeros", "ones", "linspace", "reshape", "length", "size", "cell", "struct", "matrix", "rand", "sqrt", "abs",
+                                "exp", "sin", "max", "min", "sum", "find", "num2str", "str2num", "nosuchfunction", "getnamed", "addrect",
+                                "addfde", "addcircle", "addpoly", "addmaterial", "set", "setnamed", "select", "adddevice", "addchargesolver",
+                                "adddope", "mqwindex", "addgroup", "copy", "delete", "selectall", "eval", "feval"};
+        const std::function<QString(int)> expr = [&rng, &pick, &numbers, &calls, &expr](int depth) -> QString {
+            switch (rng.bounded(depth > 5 ? 2u : 7u)) {
+            case 0: return pick(numbers);
+            case 1: return pick({"a", "b", "c", "i", "k", "t", "s", "r", "z"});
+            case 2: return pick(calls) + "(" + expr(depth + 1) + (rng.bounded(2u) ? ", " + expr(depth + 1) : QString()) + ")";
+            case 3: return expr(depth + 1) + pick({" + ", " - ", " * ", " / ", " ^ ", ":", " == ", " < ", ", ", "; "}) + expr(depth + 1);
+            case 4: return "[" + expr(depth + 1) + (rng.bounded(2u) ? "; " + expr(depth + 1) : QString()) + "]";
+            case 5: return pick({"a", "t.u", "z"}) + pick({"(", "{"}) + expr(depth + 1) + pick({")", "}", ""});
+            default: return "(" + expr(depth + 1) + (rng.bounded(5u) ? ")" : "");
+            }
+        };
+        const auto statement = [&rng, &pick, &expr]() -> QString {
+            switch (rng.bounded(9u)) {
+            case 0: return pick({"a", "b", "c", "t", "s", "r", "z", "t.u", "a(2)", "t.u{2}"}) + " = " + expr(0) + ";";
+            case 1: return "for (i = " + expr(1) + ":" + expr(1) + ") { b = b + i; }";
+            case 2: return "for (k = 0; k < " + pick({"2", "1e9", "inf", "k + 1", "nan"}) + "; k = k " + pick({"+ 1", "", "- 1", "* 1"}) + ") { b = b * 2; }";
+            case 3: return "if (" + expr(1) + ") { c = 1; } else { c = 2; }";
+            case 4: return "while (" + pick({"1", "b < 10", "true", "0"}) + ") { b = b + 1; }";
+            case 5: return "set(\"" + pick({"x", "x span", "y span", "name", "material", "z", "mesh order", "nosuch"}) + "\", " + expr(1) + ");";
+            case 6: return pick({"addrect;", "addfde;", "addcircle;", "adddevice;", "addchargesolver;", "addmaterial(\"x\");", "selectall; delete;"});
+            case 7: return "try { " + expr(1) + "; } catch(err);";
+            default: return expr(0) + ";";
+            }
+        };
+        const QString language = QStringLiteral("a = [1, 2; 3, 4]; b = a(2, 1) * 10 + a(3); for (i = 1:3) { b = b + i; }\n"
+                                                 "t = struct; t.u = cell(2); t.u{2} = struct; t.u{2}.v = linspace(0, 1, 5);\n"
+                                                 "addrect; set(\"name\", \"r\"); set(\"x\", 1e-6); set(\"x span\", 2e-6);\n"
+                                                 "addfde; set(\"x span\", 4e-6); set(\"y span\", 3e-6); set(\"wavelength\", 1.55e-6);\n");
+        QStringList projects;
+        for (const char* f : {"lumerical_mode.lms", "lumerical_device.ldev", "lumerical_heat.ldev", "lumerical_wurtzite.ldev",
+                              "lumerical_mqw_offsets.ldev", "lumerical_sample.ldev", "lumerical_charge.ldev", "lumerical_mqw_workfunctions.ldev"})
+            projects << QStringLiteral(QUCS_TEST_DATA "/") + QLatin1String(f);
+        QElapsedTimer timer;
+        timer.start();
+        int scripts = 0, built = 0, files = 0, slow = 0;
+        while (timer.elapsed() < seconds * 1000LL) {
+            // A script.
+            QString text;
+            if (rng.bounded(3u) == 0) {
+                text = language;
+                for (int m = 1 + int(rng.bounded(4u)); m-- > 0 && !text.isEmpty();) {
+                    const int at = int(rng.bounded(quint32(text.size())));
+                    switch (rng.bounded(3u)) {
+                    case 0: text.insert(at, pick({"(", ")", "[", "]", "{", "}", ";", "\"", "'", "1e9", ":", "for", "%"})); break;
+                    case 1: text.remove(at, int(rng.bounded(12u))); break;
+                    default: text.insert(at, statement()); break;
+                    }
+                }
+            } else {
+                for (int k = 1 + int(rng.bounded(12u)); k-- > 0;) text += statement() + QLatin1Char('\n');
+            }
+            {
+                QFile f(keep + QStringLiteral("/current.lsf"));
+                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(text.toUtf8());
+            }
+            QElapsedTimer one;
+            one.start();
+            const lum::Scene scene = lum::readScript(text, QStringLiteral("fz.lsf"));
+            if (scene.error.isEmpty()) {
+                (void)lum::buildModel(scene);
+                ++built;
+            }
+            ++scripts;
+            if (one.elapsed() > 5000) {
+                QFile f(keep + QStringLiteral("/slow-%1.lsf").arg(++slow));
+                if (f.open(QIODevice::WriteOnly)) f.write(text.toUtf8());
+                qWarning("slow script %d: %lld ms (%s)", slow, one.elapsed(), qPrintable(f.fileName()));
+            }
+            // A project, damaged.
+            if (rng.bounded(4u) == 0) {
+                const QString from = pick(projects);
+                QFile in(from);
+                QVERIFY(in.open(QIODevice::ReadOnly));
+                QByteArray bytes = in.readAll();
+                for (int m = 1 + int(rng.bounded(5u)); m-- > 0 && !bytes.isEmpty();) {
+                    const int at = int(rng.bounded(quint32(bytes.size())));
+                    switch (rng.bounded(5u)) {
+                    case 0: bytes[at] = char(rng.bounded(256u)); break;
+                    case 1: bytes.truncate(at); break;
+                    case 2: bytes.insert(at, bytes.mid(at, int(rng.bounded(64u)))); break;
+                    case 3: for (int k = 0; k < 8 && at + k < bytes.size(); ++k) bytes[at + k] = char(0xff); break;
+                    default: bytes.remove(at, int(rng.bounded(32u))); break;
+                    }
+                }
+                const QString path = keep + QStringLiteral("/current") + from.mid(from.lastIndexOf(QLatin1Char('.')));
+                {
+                    QFile f(path);
+                    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(bytes);
+                }
+                QElapsedTimer t;
+                t.start();
+                (void)importLumerical(path);
+                QString error;
+                QStringList notes;
+                (void)lumericalMaterials(path, &error, &notes);
+                bool ok = false;
+                (void)lum::properties(bytes, &ok);
+                ++files;
+                if (t.elapsed() > 5000) {
+                    QFile::copy(path, keep + QStringLiteral("/slow-%1").arg(++slow) + from.mid(from.lastIndexOf(QLatin1Char('.'))));
+                    qWarning("slow project %d: %lld ms", slow, t.elapsed());
+                }
+            }
+        }
+        qInfo("%d scripts (%d built), %d projects damaged", scripts, built, files);
+    }
+
+    // A damaged project or script is refused with why, never read past
+    // what is there (the fuzzing of 2026-10-16): an MQW project whose
+    // material has no k·p record, no zincblende or wurtzite parameters -
+    // an empty optional's -> read garbage and crashed Qucs-S, one time in
+    // three; a script's hostile sizes and indexes (cast to int out of
+    // range: undefined), a reshape whose sizes multiplied past size_t
+    // wrapped round to the values' count.
+    void damagedInputsAreRefused()
+    {
+        QTemporaryDir dir;
+        const auto damaged = [&dir](const char* from, const QByteArray& name, const QByteArray& instead, int nth) {
+            QFile f(QStringLiteral(QUCS_TEST_DATA "/") + QLatin1String(from));
+            if (!f.open(QIODevice::ReadOnly)) return QString();
+            QByteArray bytes = f.readAll();
+            qsizetype at = -1;
+            for (int k = 0; k <= nth; ++k)
+                if ((at = bytes.indexOf(name, at + 1)) < 0) return QString();
+            bytes.replace(at, name.size(), instead);
+            const QString path = dir.filePath(QStringLiteral("%1-%2").arg(nth).arg(QLatin1String(from)));
+            QFile out(path);
+            if (!out.open(QIODevice::WriteOnly) || out.write(bytes) != bytes.size()) return QString();
+            return path;
+        };
+        // (One material's record renamed, as the fuzzer's damage did: each
+        // name is a material's; a material is listed only with its KdotP.)
+        const QStringList paths{damaged("lumerical_sample.ldev", "zincblende parameters", "zincblende paramXters", 2),
+                                damaged("lumerical_wurtzite.ldev", "wurtzite parameters", "wurtzite paramXters", 0),
+                                damaged("lumerical_wurtzite.ldev", "wurtzite parameters", "wurtzite paramXters", 2)};
+        const QStringList said{QStringLiteral("its material InGaAs (sample) has no zincblende parameters read"),
+                               QStringLiteral("its material AlGaN (sample) has no wurtzite parameters read"),
+                               QStringLiteral("its material GaN (sample) has no wurtzite parameters read")};
+        for (int k = 0; k < 5; ++k)   // (it read garbage one time in three)
+            for (int n = 0; n < paths.size(); ++n) {
+                QVERIFY(!paths[n].isEmpty());
+                QCOMPARE(importLumerical(paths[n]).error, said[n]);
+            }
+        // (A project cut after its HDF5 signature and a byte: its superblock
+        // was read past the end - a Qt assertion, an abort.)
+        {
+            Hdf5File cut;
+            QString why;
+            QVERIFY(!cut.openData(QByteArray("\x89HDF\r\n\x1a\n\x03", 9), &why));
+            QCOMPARE(why, QStringLiteral("its HDF5 superblock is cut short"));
+            const QString path = dir.filePath(QStringLiteral("cut.ldev"));
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QByteArray("\x89HDF\r\n\x1a\n\x03", 9));
+            f.close();
+            QVERIFY(importLumerical(path).error.contains(QLatin1String("cut short")));
+        }
+        // (The fuzzer's project with an attribute of 2^60 values of 512
+        // bytes, its sizes past its message: their product overflowed before
+        // it was checked against the file - under UBSan an abort. Every
+        // object of it read, each attribute and dataset: refused, not read
+        // past the file.)
+        const QString dataspace = QStringLiteral(QUCS_TEST_DATA "/lumerical_damaged_dataspace.ldev");
+        QString error;
+        QStringList notes;
+        (void)lumericalMaterials(dataspace, &error, &notes);
+        (void)importLumerical(dataspace);
+        {
+            QFile f(dataspace);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            bool ok = false;
+            (void)lum::properties(f.readAll(), &ok);
+        }
+        Hdf5File h5;
+        QVERIFY(h5.open(dataspace));
+        std::vector<quint64> objects{h5.root()};
+        for (std::size_t k = 0; k < objects.size() && k < 2000; ++k) {
+            for (const auto& [name, at] : h5.links(objects[k]))
+                if (std::find(objects.begin(), objects.end(), at) == objects.end()) objects.push_back(at);
+            (void)h5.attributes(objects[k]);
+            if (const std::optional<Hdf5File::Value> v = h5.dataset(objects[k])) QVERIFY(v->raw.size() <= 20715);
+        }
+        QVERIFY(objects.size() > 1);
+        // Scripts: sizes and indexes out of an int's range, NaN, a reshape
+        // past size_t - each refused, with why.
+        const QList<std::pair<QString, QString>> scripts{
+            {"a = [1, 2]; b = a(1e10);", "index"},
+            {"a = [1, 2]; b = a(0/0);", "index"},
+            {"a = [1, 2; 3, 4]; b = a(1e10, 1);", "index"},
+            {"z = zeros(1e10, 1e10);", "size"},
+            {"z = zeros(-1e300);", "size"},
+            {"v = linspace(0, 1, 2147483648);", "count"},
+            {"c = cell(2); c{1e12} = 1;", "cell's index"},
+            {"c = cell(2); d = c{-1e300};", "cell's index"},
+            {"r = reshape([1, 2], [18446744073709551616, 0]);", "reshape: a size"},
+            {"r = reshape([1, 2], [4294967296, 4294967296]);", "reshape: a size"},
+            {"r = reshape([1, 2], [0.5, 4]);", "reshape: a size"}};
+        for (const auto& [script, why] : scripts) {
+            const lum::Scene scene = lum::readScript(script, QStringLiteral("hostile.lsf"));
+            QVERIFY2(scene.error.contains(why), qPrintable(script + " -> " + scene.error));
+        }
+        QCOMPARE(lum::readScript(QStringLiteral("r = reshape([1, 2, 3, 4], [2, 2]); addrect; set(\"x\", r(2, 2));"), QStringLiteral("ok.lsf")).error, QString());
+    }
+
     void importsRefused()
     {
         QVERIFY(importLumerical(QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf")).error.contains(QLatin1String("data file")));

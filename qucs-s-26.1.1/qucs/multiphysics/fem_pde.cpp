@@ -1018,12 +1018,19 @@ int PdeProblem::solveModes(const SolveOptions& o, int count, double guess, QStri
         return -1;
     }
     const int asked = std::min(std::max(1, count) + 2, n - 1);
-    const EigenResult r = largestEigenvalues(n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
-        const Eigen::VectorXd re = M * x.real(), im = M * x.imag();
-        const Eigen::VectorXd sr = lu.solve(re), si = lu.solve(im);
-        y.resize(n);
-        for (int i = 0; i < n; ++i) y(i) = std::complex<double>(sr(i), si(i));
-    });
+    const EigenResult r = largestEigenvalues(
+        n, asked,
+        [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
+            const Eigen::VectorXd re = M * x.real(), im = M * x.imag();
+            const Eigen::VectorXd sr = lu.solve(re), si = lu.solve(im);
+            y.resize(n);
+            for (int i = 0; i < n; ++i) y(i) = std::complex<double>(sr(i), si(i));
+        },
+        0, 1e-10, 300, [this] { return cancelled(); });
+    if (r.cancelled) {
+        *error = tr("cancelled");
+        return -1;
+    }
     if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
     a_eigen.clear();
     for (std::size_t i = 0; i < r.values.size(); ++i) {
