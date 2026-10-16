@@ -420,6 +420,42 @@ private slots:
         QVERIFY(hHighRL <= hHigh * (1 + 1e-9));
     }
 
+    // A material whose κ is its gap's edge (Germanium on silicon's: its
+    // Egd 0.773 eV and A 2e4 /cm, as the Direct-gap absorption takes them)
+    // and that option on: the option's absorption in place of the
+    // material's κ, not added to it - at no field the mode loses what it
+    // loses by the material's κ alone (it lost twice that). The material's
+    // κ given as nought: the same again.
+    void theGapsEdgeCountedOnce()
+    {
+        auto lossOf = [](const QString& wave, const QString& kappa) {
+            const QString hmax = slowBuild() ? QStringLiteral("0.15") : QStringLiteral("0.08");
+            const QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "clad", "position": ["-2", "-1.5"], "size": ["4", "3"]},
+                             {"type": "rectangle", "label": "core", "position": ["-0.3", "-0.2"], "size": ["0.6", "0.4"]}],
+                "materials": [{"material": "Silicon dioxide", "selection": {"only": ["clad"]}},
+                              {"material": "Germanium on silicon", %2 "selection": {"only": ["core"]}}],
+                "physics": [{"type": "modes", "tag": "emw", %3 "features": [{"type": "wave", %1 "selection": {"only": ["core"]}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%4"}}],
+              "studies": [{"type": "study", "steps": [{"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 1, "neff": "3.8"}]}]})json")
+                                        .arg(wave, kappa, slowBuild() ? QStringLiteral(R"("order": "1",)") : QString(), hmax)
+                                        .toUtf8();
+            const Run r = run(modelOf(json));
+            if (!r.error.isEmpty()) qWarning("%s", qPrintable(r.error));
+            return r.error.isEmpty() ? global(*r.solution, QStringLiteral("emw.alpha")) : NAN;
+        };
+        const double byKappa = lossOf(QString(), QString());
+        const double byOption = lossOf(QStringLiteral(R"("electroabsorption": true, "Fea": "0[V/m]",)"), QString());
+        const double noughtKappa = lossOf(QStringLiteral(R"("electroabsorption": true, "Fea": "0[V/m]",)"), QStringLiteral(R"("kappa": "0",)"));
+        const double none = lossOf(QString(), QStringLiteral(R"("kappa": "0",)"));
+        qInfo("Ge on Si at 1550 nm: its mode's α %.6g /cm by its κ, %.6g by the option (its κ nought: %.6g; neither: %.3g)", byKappa / 100,
+              byOption / 100, noughtKappa / 100, none / 100);
+        QVERIFY2(byKappa > 1000 && std::abs(none) < 1e-6 * byKappa, qPrintable(QStringLiteral("%1 %2").arg(byKappa).arg(none)));
+        QVERIFY2(std::abs(byOption / byKappa - 1) < 1e-6, qPrintable(QString::number(byOption / byKappa)));
+        QVERIFY2(std::abs(noughtKappa / byOption - 1) < 1e-9, qPrintable(QString::number(noughtKappa / byOption)));
+    }
+
     // The light from the mode asked for: a mode step finding three, the
     // photodiode lit by mode 1 (the highest index), then by mode 3 - the
     // step leaving it selected (it left the last lighting it whatever was
@@ -460,8 +496,9 @@ private slots:
     // A wavelength sweep's mode followed: each point searching about the
     // mode the point before found, not about the index the step names - the
     // photodiode example's spectrum, 1500 to 1640 nm by 20, its effective
-    // index falling all the way (at 1580 nm it jumped from 3.838 to another
-    // branch, 3.956, nearer 3.9).
+    // index moving by less than 0.03 a step (germanium's measured index has
+    // its peak at the direct gap: it rises, then falls); searched about the
+    // step's index each, at 1600 nm it jumps to another branch.
     void aSweepFollowsItsMode()
     {
         // (A sanitized build: 1560 to 1600 nm, its mode solves slow - and
@@ -484,8 +521,13 @@ private slots:
         for (double v : not_) b << QString::number(v, 'f', 4);
         qInfo("followed: %s; about 3.9 each: %s", qPrintable(a.join(' ')), qPrintable(b.join(' ')));
         QCOMPARE(int(followed.size()), slow ? 3 : 8);
-        for (std::size_t k = 1; k < followed.size(); ++k)
-            QVERIFY2(followed[k] < followed[k - 1] && followed[k - 1] - followed[k] < 0.02, qPrintable(a.join(' ')));
+        for (std::size_t k = 1; k < followed.size(); ++k) QVERIFY2(std::abs(followed[k] - followed[k - 1]) < 0.03, qPrintable(a.join(' ')));
+        if (!slow) {
+            QVERIFY2(followed.back() < followed.front() - 0.05, qPrintable(a.join(' ')));
+            double jump = 0;
+            for (std::size_t k = 1; k < not_.size(); ++k) jump = std::max(jump, std::abs(not_[k] - not_[k - 1]));
+            QVERIFY2(jump > 0.06, qPrintable(b.join(' ')));
+        }
     }
 
     // A semiconductor's mesh Delaunay: every edge in its domains weighed
@@ -715,7 +757,10 @@ private slots:
         qInfo("Ge photodiode: neff %.4f, %.3f dB/µm; %.4g mA of q Gop %.4g (%.3f), %.4f A/W; modulated %.4f at 1 GHz, %.4f at 24 GHz "
               "through 50 Ω (%.3f of it); %lld ms",
               neff, loss * 1e-6, I * 1e3, Iop * 1e3, I / Iop, I / 1e-3, hLow, h24, h24 / hLow, timer.elapsed());
-        QVERIFY(std::abs(neff - 3.84) < (slow ? 0.03 : 0.01));
+        // (3.84 while germanium's index was 4.275, a constant; Nunley et al.'s
+        // moved 27 meV with the strained gap, 4.241 at 1550 nm, moves the
+        // mode to 3.81 - the example's guess 3.82, its next mode up 3.94.)
+        QVERIFY2(std::abs(neff - 3.81) < (slow ? 0.03 : 0.01), qPrintable(QString::number(neff)));
         QVERIFY(std::abs(loss * 1e-6 - 1.9) < (slow ? 0.2 : 0.1));
         QVERIFY2(std::abs(I / 1e-3 - 1.155) < (slow ? 0.06 : 0.02), qPrintable(QString::number(I / 1e-3)));
         QVERIFY(std::abs(I / Iop - 0.925) < (slow ? 0.03 : 0.02));
@@ -749,12 +794,14 @@ private slots:
         QStringList said;
         for (std::size_t k = 0; k < R.size(); ++k) said << QStringLiteral("%1 nm %2 A/W (neff %3)").arg(1500 + 20 * k).arg(R[k], 0, 'f', 3).arg(index[k], 0, 'f', 4);
         qInfo("its spectrum: %s", qPrintable(said.join(QLatin1String(", "))));
-        // One mode throughout (its index falling by less than 0.02 a step);
-        // the most at 1560 nm, then the edge: 1580 its 1.12, 1620 less than
+        // One mode throughout (its index moving by less than 0.03 a step);
+        // the most at 1560 nm, then the edge: 1580 its 1.09, 1620 less than
         // half of it, as the example says.
-        for (std::size_t k = 1; k < index.size(); ++k) QVERIFY2(index[k] < index[k - 1] && index[k - 1] - index[k] < 0.02, qPrintable(said.join(' ')));
+        for (std::size_t k = 1; k < index.size(); ++k) QVERIFY2(std::abs(index[k] - index[k - 1]) < 0.03, qPrintable(said.join(' ')));
         QCOMPARE(int(std::max_element(R.begin(), R.end()) - R.begin()), 3);
-        QVERIFY2(std::abs(R[4] - 1.12) < 0.02 && std::abs(R[5] - 0.905) < 0.02 && std::abs(R[6] - 0.41) < 0.02 && std::abs(R[7] - 0.16) < 0.02,
+        // (1580 and 1600 nm 1.12 and 0.905 while germanium's index was a
+        // constant: its measured one moves the mode.)
+        QVERIFY2(std::abs(R[4] - 1.094) < 0.02 && std::abs(R[5] - 0.879) < 0.02 && std::abs(R[6] - 0.41) < 0.02 && std::abs(R[7] - 0.16) < 0.02,
                  qPrintable(said.join(' ')));
         QVERIFY(R[6] < 0.5 * R[4]);
     }
@@ -778,7 +825,8 @@ private slots:
               on - il, i0 * 1e6, i3 * 1e3, timer.elapsed());
         QVERIFY(std::abs(il - 0.615) < (slow ? 0.2 : 0.03));
         QVERIFY(std::abs(on - 6.26) < (slow ? 0.3 : 0.1));
-        QVERIFY2(std::abs(on - il - 5.65) < (slow ? 0.05 : 0.02), qPrintable(QString::number(on - il)));
+        // (5.65 while germanium's index was a constant 4.275.)
+        QVERIFY2(std::abs(on - il - 5.63) < (slow ? 0.05 : 0.02), qPrintable(QString::number(on - il)));
         QVERIFY(std::abs(i0 * 1e3 - 0.160) < (slow ? 0.09 : 0.01) && std::abs(i3 * 1e3 - 0.95) < (slow ? 0.1 : 0.02));
     }
 

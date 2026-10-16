@@ -1119,9 +1119,25 @@ private slots:
         const double loss = 2 * k0 * global(*on.solution, QStringLiteral("emw.neff_im")), lossOff = 2 * k0 * global(*off.solution, QStringLiteral("emw.neff_im"));
         QVERIFY2(loss > lossOff && lossOff > 0, qPrintable(QStringLiteral("%1 %2").arg(loss).arg(lossOff)));
         if (!slowBuild()) {
-            // (Without the wells' absorption: none at all.)
-            const Run none = mode("0[V/m]", QString());
+            // (Without the wells' absorption: the well's bulk GaAs's - its
+            // compound's κ at 1.46 eV, above its gap -, in its place with it:
+            // the bulk's no more than the wells'; the well's κ given nought,
+            // none at all.)
+            const Run bulk = mode("0[V/m]", QString());
+            const double lossBulk = 2 * k0 * global(*bulk.solution, QStringLiteral("emw.neff_im"));
+            QVERIFY2(bulk.error.isEmpty() && lossBulk > 0 && std::abs(lossBulk - lossOff) > 1e-3 * lossOff,
+                     qPrintable(QStringLiteral("%1 %2 %3").arg(bulk.error).arg(lossBulk).arg(lossOff)));
+            QByteArray clear = stackGuide(QString());
+            clear.replace(R"("compound": "GaAs", "n": "3.6",)", R"("compound": "GaAs", "n": "3.6", "kappa": "0",)");
+            const Run none = run(modelOf(clear));
             QVERIFY2(none.error.isEmpty() && global(*none.solution, QStringLiteral("emw.neff_im")) < 1e-12, qPrintable(none.error));
+            // The wells' with the well's κ nought: as with its bulk κ there
+            // (not added to it).
+            QByteArray withWells = stackGuide(wells);
+            withWells.replace(R"("compound": "GaAs", "n": "3.6",)", R"("compound": "GaAs", "n": "3.6", "kappa": "0",)");
+            const Run offClear = run(modelOf(withWells));
+            QVERIFY2(offClear.error.isEmpty() && relative(2 * k0 * global(*offClear.solution, QStringLiteral("emw.neff_im")), lossOff) < 1e-9,
+                     qPrintable(offClear.error));
         }
         // Its share: Γ of the well times α (the first order), the solve's.
         Node pert = modelOf(stackGuide(wells)).make(QStringLiteral("perturbation"));

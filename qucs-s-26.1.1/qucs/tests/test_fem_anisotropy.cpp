@@ -1061,8 +1061,10 @@ private slots:
             {"Lithium niobate",
              {zelmon(2.6734, 0.01764, 1.2290, 0.05914, 12.614, 474.60), zelmon(2.6734, 0.01764, 1.2290, 0.05914, 12.614, 474.60),
               zelmon(2.9804, 0.02047, 0.5981, 0.0666, 8.9543, 416.08)}},
-            // (Bond's, straight between 1.4 and 1.6 µm.)
-            {"Lithium tantalate", {2.1236 - 0.75 * 0.0062, 2.1236 - 0.75 * 0.0062, 2.1273 - 0.75 * 0.0060}},
+            // (Sellmeiers fitted to Bond's points: within 0.0007 of them.)
+            {"Lithium tantalate",
+             {sell(2.23997, {{2.27035, 0.194489}, {18.708, 28.2899}}), sell(2.23997, {{2.27035, 0.194489}, {18.708, 28.2899}}),
+              sell(2.18189, {{2.34332, 0.192952}, {7.17944, 17.8713}})}},
             {"KTP",
              {kato(3.29100, 0.04140, 0.03978, 9.35522, 31.45571), kato(3.45018, 0.04341, 0.04597, 16.98825, 39.43799),
               kato(4.59423, 0.06206, 0.04763, 110.80672, 86.12171)}},
@@ -1085,6 +1087,8 @@ private slots:
             qInfo("%s at 1550 nm: n %.5f, %.5f, %.5f", c.name, c.n[0], c.n[1], c.n[2]);
         }
         QVERIFY(std::abs(indices[0].n[0] - 2.2111) < 1e-4 && std::abs(indices[0].n[2] - 2.1376) < 1e-4);
+        // (Bond's tantalate between 1.4 and 1.6 µm, straight: within 5e-4.)
+        QVERIFY(std::abs(indices[1].n[0] - (2.1236 - 0.75 * 0.0062)) < 5e-4 && std::abs(indices[1].n[2] - (2.1273 - 0.75 * 0.0060)) < 5e-4);
         // Each tensor text read whole.
         for (const char* name : {"Lithium niobate", "Lithium tantalate", "KTP", "Quartz", "Sapphire", "YIG", "Ce:YIG", "Silicon", "Gallium arsenide",
                                  "Indium phosphide", "Silicon dioxide", "Fused silica"}) {
