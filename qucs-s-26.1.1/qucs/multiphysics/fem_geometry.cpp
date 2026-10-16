@@ -1906,7 +1906,23 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
                              level == Level::Domain ? QStringLiteral("objects, only, ")
                                                     : QStringLiteral("of (with a side), between, exterior, interior, adjacent, "));
     }
-    if (!unknown.isEmpty()) problems << tr("there is no object %1").arg(unknown.join(QLatin1String(", ")));
+    if (!unknown.isEmpty()) {
+        // (An array's input, used up by it: its copies are the array's - by
+        // the array's name.)
+        QStringList said;
+        for (const QString& name : unknown) {
+            QString array;
+            const std::function<void(const Node&)> look = [&](const Node& n) {
+                if (n.type == QLatin1String("array"))
+                    for (const QString& input : n.list(QStringLiteral("input")))
+                        if (input == name && array.isEmpty()) array = n.name();
+                for (const Node& c : n.children) look(c);
+            };
+            look(model.geometry());
+            said << (array.isEmpty() ? name : tr("%1 (array %2's input: its copies %2_1, %2_2... - chosen together by %2)").arg(name, array));
+        }
+        problems << tr("there is no object %1").arg(said.join(QLatin1String(", ")));
+    }
     if (rule.contains(QStringLiteral("except"))) out.subtract(resolve(t, model, level, rule.value(QStringLiteral("except")).toObject(), problems, depth + 1));
     return out;
 }
@@ -1987,11 +2003,25 @@ std::optional<PeriodicSides> periodicSides(const Topology& t, const QVector<int>
         }
     std::map<std::size_t, std::vector<int>> runs;
     for (std::size_t i = 0; i < picked.size(); ++i) runs[root(i)].push_back(picked[i]);
-    if (runs.size() != 2)
-        return fail(tr("its %1 boundaries make %2 runs, not two sides apart: a cell's two opposite walls ({\"of\": [...], \"side\": "
+    if (runs.size() != 2) {
+        // (Each run said where it is: a stepped wall's pieces apart - the
+        // boundary between them not chosen - are runs of their own.)
+        QStringList where;
+        for (const auto& [key, list] : runs) {
+            Q_UNUSED(key);
+            QRectF span;
+            for (int b : list)
+                for (const QPointF& p : t.boundaries[std::size_t(b)].polyline(t)) span = span.isNull() ? QRectF(p, QSizeF(0, 0)) : span.united(QRectF(p, QSizeF(0, 0)));
+            where << tr("(%1, %2) to (%3, %4)").arg(span.left(), 0, 'g', 5).arg(span.top(), 0, 'g', 5).arg(span.right(), 0, 'g', 5).arg(span.bottom(), 0, 'g', 5);
+        }
+        return fail(tr("its %1 boundaries are %2 walls, each a line of boundaries meeting end to end - %3 - not two: a periodic "
+                       "condition joins a cell's two opposite walls, each one line. A wall in steps is one only with its steps "
+                       "chosen too (the boundaries between its pieces); else choose the two sides whole ({\"of\": [...], \"side\": "
                        "[\"left\", \"right\"]})")
                         .arg(int(picked.size()))
-                        .arg(int(runs.size())));
+                        .arg(int(runs.size()))
+                        .arg(where.join(QLatin1String("; "))));
+    }
     const double tol = 1e-7 * std::max(std::hypot(t.bounds.width(), t.bounds.height()), 1e-300);
     // Lower in x, then in y (within the tolerance: a wall's points share x).
     auto lower = [tol](QPointF a, QPointF b) { return a.x() < b.x() - tol || (std::abs(a.x() - b.x()) <= tol && a.y() < b.y() - tol); };

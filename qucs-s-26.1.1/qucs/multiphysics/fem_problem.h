@@ -160,6 +160,7 @@ struct SpectrumOptions {
     double kmax = 0;        ///< a Valence Bands step's: its largest in-plane k (1/m)
     int kpoints = 0;        ///< and how many values of k from 0 (a spectrum's: its k·p bands')
     int continuum = 0;      ///< 0 the states found; 1 bound states' transitions and the barriers' bulk absorption
+    bool kramersKronig = true;  ///< its Kramers-Kronig index (its absorption between the energies for it); a laser's gain alone not
     double density = 0;
     double index = 0;
     /// The subbands that enter: so many conduction ones (0: states), so

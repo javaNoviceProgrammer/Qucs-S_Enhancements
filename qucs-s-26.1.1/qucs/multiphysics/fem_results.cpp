@@ -1126,9 +1126,12 @@ void perturbationAlongSweep(const SolutionSet& set, const std::vector<Instance>&
             // Vπ L: the bias moving the phase by π over a length L, times L.
             const double vpil = lambda * std::abs(v->value - v0->value) / (2 * std::abs(change));
             const Dim dim = v->dim * Dim::length();
+            // (In cm as a voltage's is: a bias without a unit was said in m -
+            // "0.003091 (bias)·m" for 0.3091 V·cm.)
             values[i].values << DerivedValue{QStringLiteral("VpiL"), vpil, dim,
                                              v->dim == Dim::voltage() ? formatNumber(vpil * 100, 4) + QStringLiteral(" V·cm")
-                                                                            : formatNumber(vpil, 4) + QStringLiteral(" (bias)·m")};
+                                             : v->dim.isNone()        ? formatNumber(vpil * 100, 4) + QStringLiteral(" cm (times the bias's unit)")
+                                                                      : formatNumber(vpil * 100, 4) + QStringLiteral(" (%1)·cm").arg(dimName(v->dim))};
         }
     }
 }

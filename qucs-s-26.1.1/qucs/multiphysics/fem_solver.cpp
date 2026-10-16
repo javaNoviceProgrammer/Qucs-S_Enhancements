@@ -501,16 +501,25 @@ std::optional<std::pair<double, double>> Problem::solvedComposition(const Node& 
     QString lattice = own(QStringLiteral("lattice")).trimmed();
     if (lattice.isEmpty()) lattice = QStringLiteral("InP");
     const Scope none;
-    const std::optional<double> lambda = evaluateConstant(own(QStringLiteral("lambdag")), scope ? *scope : none, Dim::length());
-    if (compound.isEmpty() || !lambda || !(*lambda > 0)) {
-        if (error) *error = tr("its composition is solved for its gap: give it a compound and the gap's wavelength λg");
+    // Its gap: as a wavelength λg, or an energy Eg (eV; refused once, the
+    // wavelength alone taken).
+    double gap = NaN;
+    if (const QString lg = own(QStringLiteral("lambdag")); !lg.trimmed().isEmpty()) {
+        const std::optional<double> lambda = evaluateConstant(lg, scope ? *scope : none, Dim::length());
+        if (lambda && *lambda > 0) gap = 6.62607015e-34 * 299792458.0 / *lambda / 1.602176634e-19;
+    } else if (const QString eg = m.text(QStringLiteral("Eg")); !eg.trimmed().isEmpty()) {
+        const Expression e = Expression::compile(eg, scope ? *scope : none);
+        if (e.isValid() && e.isConstant())
+            gap = e.dim() == Dim::of(2, 1, -2) ? e.constant() / 1.602176634e-19 : e.dim().isNone() ? e.constant() : NaN;
+    }
+    if (compound.isEmpty() || !(gap > 0)) {
+        if (error) *error = tr("its composition is solved for its gap: give it a compound and the gap - its wavelength λg, or its energy Eg");
         return std::nullopt;
     }
     // (Solved once for each: the same material read again and again.)
     static QMutex lock;
     static QHash<QString, std::pair<std::optional<std::pair<double, double>>, QString>> solved;
     const BandSet set = bandSetOf(own(QStringLiteral("bands")));
-    const double gap = 6.62607015e-34 * 299792458.0 / *lambda / 1.602176634e-19;
     const QString key = QStringLiteral("%1|%2|%3|%4").arg(compound, lattice).arg(gap, 0, 'g', 17).arg(int(set));
     QMutexLocker held(&lock);
     auto it = solved.find(key);
@@ -2193,6 +2202,16 @@ bool setupStep(Step& st, QString* error)
             return false;
         }
         st.which.push_back(fi);
+        // Its choices one of theirs: an element order of 3 was taken as 2,
+        // nothing said.
+        for (const Node* node : st.s.model().physics())
+            if (node->tag == t && node->kind())
+                for (const PropertyDef& d : node->kind()->properties) {
+                    if (d.kind != PropertyDef::Choice || d.choices.isEmpty() || !node->props.contains(d.key)) continue;
+                    const QString v = node->text(d.key);
+                    if (!v.isEmpty() && !d.choices.contains(v))
+                        errors << tr("%1's %2 is %3 - one of %4").arg(node->name(), d.label, v, d.choices.join(QStringLiteral(", ")));
+                }
         auto p = detail::makeProblem(st.s, fi);
         QString why;
         if (!p->setup(&why)) errors << why;
@@ -2339,6 +2358,18 @@ int litMode(const Solution& s, const QString& tag)
 
 bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error);
 
+/// A spectrum's energies with the photon's \a photon among them - not again
+/// when one is it to rounding (the spectrum's value there is the photon's:
+/// spectrumAt() takes the nearest within 1e-9; two energies a rounding
+/// apart made the Kramers-Kronig integral's interval between them of no
+/// width).
+void addPhoton(std::vector<double>& energies, double photon)
+{
+    for (double E : energies)
+        if (std::abs(E - photon) <= 1e-9 * photon) return;
+    energies.push_back(photon);
+}
+
 /// A laser's gain from its quantum wells, at its mode's photon energy
 /// \a photon (J): the wells solved, their spectrum - a Spectrum step's
 /// options - at each density asked, its TE (TM) gain -α there.
@@ -2363,8 +2394,9 @@ bool laserGainTable(Step& st, detail::Problem& laser, const detail::GainRequest&
     int axis = 1;
     if (!spectrumOptionsOf(*spectrum, s.parameters().scope, o, &axis, error)) return false;
     o.solve = st.options;
-    // (Its own energies with the photon's: the spectrum's index wants a window.)
-    o.energies.push_back(photon);
+    // (Its own energies with the photon's; its gain alone: no index.)
+    addPhoton(o.energies, photon);
+    o.kramersKronig = false;
     detail::Problem* qp = nullptr;
     for (auto& p : st.problems)
         if (p->field().tag == rq.wells && p->field().type == QLatin1String("quantum")) qp = p.get();
@@ -2584,7 +2616,7 @@ bool wellTables(Step& st, detail::Problem& modes, double frequency, QString* err
                               formatNumber(*hi / 1.602176634e-19, 4));
             return false;
         }
-        o.energies.push_back(photon);
+        addPhoton(o.energies, photon);
         detail::Problem* qp = nullptr;
         for (auto& p : st.problems)
             if (p->field().tag == w.wells && p->field().type == QLatin1String("quantum")) qp = p.get();
@@ -2712,16 +2744,31 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
         return false;
     }
     if (modal.size() > 1) *warnings << tr("%1: the modes of its first mode analysis only").arg(node.name());
+    // (A resonator's modes are an Eigenfrequency step's: a Mode Analysis
+    // step on one was solved as such, nothing said.)
+    if (st.problems[std::size_t(modal.front())]->field().type == QLatin1String("resonator")) {
+        *error = tr("%1: %2 is a resonator - its modes are an Eigenfrequency step's (\"around\" a wavelength or frequency, "
+                    "\"count\")")
+                     .arg(node.name(), st.problems[std::size_t(modal.front())]->field().tag);
+        return false;
+    }
     for (auto& p : st.problems)
         if (!p->field().solved) p->initialize();
     s.frequencyDomain = true;
     s.modeAnalysis = true;
-    s.modeChosen = s.modeChosen || kept.choose != 0;
+    // (A choice given - "first" too - is the step's: a derived value's
+    // "auto" its mode alone; "first" said once listed every mode.)
+    s.modeChosen = s.modeChosen || kept.choose != 0 || (node.props.contains(QStringLiteral("choose")) && !node.props.value(QStringLiteral("choose")).toString().trimmed().isEmpty());
     detail::Problem& modes = *st.problems[std::size_t(modal.front())];
     const QString tag = modes.field().tag;
     // (One mode asked for: it is the branch followed. Several are the set
-    // nearest the index - a dispersion's modes, kept as they are.)
-    const bool follow = node.flag(QStringLiteral("follow")) && count == 1;
+    // nearest the index - a dispersion's modes, kept as they are. Tracking
+    // domains, the mode most in them is the branch - searched about the
+    // step's own index: about the last one chosen, a ridge widened drifted
+    // down to modes of half the share, 3.103 for 3.168.)
+    const bool follow = node.flag(QStringLiteral("follow")) && count == 1 && track.empty();
+    if (node.flag(QStringLiteral("follow")) && count == 1 && !track.empty() && s.modeCentres.value(tag, 0) > 0)
+        s.log << tr("%1: the mode most in the domains tracked - searched about its own index, not followed").arg(node.name());
     if (follow && s.modeCentres.value(tag) > 0) guess = s.modeCentres.value(tag);
     for (std::size_t k = 0; k < frequencies.size(); ++k) {
         const double f = frequencies[k];
@@ -2769,6 +2816,8 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
             if (lit < found) {
                 modes.selectMode(lit - 1);
                 for (auto& p : st.problems) p->setGlobals();
+                // (Its fields no snapshot's now: the next select() restores one.)
+                s.unselect();
             }
         }
     }
@@ -2860,7 +2909,13 @@ bool eigenfrequencyStep(Solution& s, const Node& node, const std::function<bool(
     SolveOptions o = st.options;
     o.frequency = frequency;
     detail::Problem& e = *st.problems[std::size_t(resonators.front())];
-    const int found = e.solveModes(o, std::clamp(node.integer(QStringLiteral("count")), 1, 200), 0, error);
+    // (Its count from 1 to 200: 0 and -2 were taken as 1, 500 as 200.)
+    const int count = node.integer(QStringLiteral("count"));
+    if (count < 1 || count > 200) {
+        *error = tr("%1: it finds from 1 to 200 modes, not %2").arg(node.name()).arg(count);
+        return false;
+    }
+    const int found = e.solveModes(o, count, 0, error);
     if (found < 0) return false;
     if (found == 0) *warnings << tr("%1: no eigenfrequency found").arg(node.name());
     int kept = 0;
@@ -2883,6 +2938,7 @@ bool eigenfrequencyStep(Solution& s, const Node& node, const std::function<bool(
     if (found > 0 && kept != found - 1) {
         e.selectMode(kept);
         for (auto& p : st.problems) p->setGlobals();
+        s.unselect();
     }
     if (found > 0) s.log << tr("%1: mode %2 kept for the steps after").arg(node.name()).arg(kept + 1);
     return true;
@@ -3603,7 +3659,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
     solution->seconds = timer.elapsed() / 1000.0;
     int dofs = 0;
     for (const Field& f : solution->fields())
-        if (f.solved) dofs += f.space->size() * f.count();
+        if (f.solved) dofs += f.unknowns >= 0 ? f.unknowns : f.space->size() * f.count();
     solution->log << tr("Solved %1 degrees of freedom in %2 s").arg(dofs).arg(solution->seconds, 0, 'f', 2);
     if (progress) progress(1.0, tr("Done"));
     out.solution = solution;

@@ -1163,7 +1163,7 @@ private slots:
         const Run inas = run(modelOf(slab(QStringLiteral("Indium arsenide"), QString())));
         QVERIFY2(inas.error.isEmpty(), qPrintable(inas.error));
         const QString log = inas.solution->log.join(QLatin1Char('\n'));
-        QVERIFY2(log.contains(QString::fromUtf8("Warning: Indium arsenide's index holds from 2.731 to 20 µm (as its material gives it); here it is taken at 1.31 µm")), qPrintable(log));
+        QVERIFY2(log.contains(QString::fromUtf8("Warning: Indium arsenide's index holds from 2.238 to 20 µm (as its material gives it); here it is taken at 1.31 µm")), qPrintable(log));
         const Run ge = run(modelOf(slab(QStringLiteral("Germanium"), QString())));
         QVERIFY2(ge.error.isEmpty() && !ge.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("holds from")), qPrintable(ge.error));
         // (Its index given on the feature: the user's, nothing said.)
