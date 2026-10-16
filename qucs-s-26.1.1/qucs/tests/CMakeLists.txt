@@ -92,6 +92,10 @@ qucs_add_fem_test(test_fem_physics)
 qucs_add_fem_test(test_fem_magnetics)
 qucs_add_fem_test(test_fem_layout)
 qucs_add_fem_test(test_fem_waves)
+# (2056 s on CI's sanitized Debug at 3bf5821, its limit 900 times its scale
+# of 3; an SOI wire's mode choices and a thermo-optic loss since - some 280 s
+# sanitized here.)
+set_tests_properties(test_fem_waves PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_semiconductor)
 # (864 s and a timeout at 900 on CI's runners, 613 s on a sanitized Debug
 # build at home: its contacts' currents, its examples.)
@@ -117,6 +121,10 @@ qucs_add_fem_test(test_fem_anisotropy)
 qucs_add_fem_test(test_fem_modulator)
 qucs_add_fem_test(test_fem_resonator)
 qucs_add_fem_test(test_fem_laser)
+# (Sanitized here some 800 s - the toy laser walked to 1.6 V, its threshold's
+# cases, a reverse bias -: CI's Debug 2 to 2.5 times that, near 900 times its
+# scale.)
+set_tests_properties(test_fem_laser PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_optoelectronics)
 # (Sanitized: some 500 s here, CI's Debug about 1.45 times that.)
 set_tests_properties(test_fem_optoelectronics PROPERTIES TIMEOUT 1800)

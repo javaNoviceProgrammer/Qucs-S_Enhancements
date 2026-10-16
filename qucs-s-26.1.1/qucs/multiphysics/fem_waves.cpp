@@ -110,6 +110,7 @@ public:
         Expression mur[3];          // the model's axes
         Rotation rotation;          // the crystal's axes in the model's
         Expression dndT[3], T, Tref;   // warmed: all three (dn/dT along each axis)
+        Expression dkdT;               // warmed: κ's change, its material's κ at Tref ± 0.5 K (where it is of T)
         // Free carriers, N and P (1/m³): the plasma dispersion (0 silicon's,
         // Soref and Bennett's; 1 Drude's of the masses (m0); 2 its
         // coefficients given), their absorption (cross-sections at 1550 nm,
@@ -243,10 +244,11 @@ public:
             const double v = x.isConstant() ? x.constant() : e.eval(x);
             return std::isfinite(v) ? v : fallback;
         };
-        double warm[3] = {0, 0, 0};
+        double warm[3] = {0, 0, 0}, warmKappa = 0;
         if (m.dndT[0].isValid() && m.T.isValid()) {
             const double dT = value(m.T, 0) - value(m.Tref, 293.15);
             for (int k = 0; k < 3; ++k) warm[k] = value(m.dndT[k].isValid() ? m.dndT[k] : m.dndT[0], 0) * dT;
+            warmKappa = value(m.dkdT, 0) * dT;
         }
         // Free carriers: their index (plasma dispersion, band filling) and
         // absorption, at the wavelength solved.
@@ -355,10 +357,14 @@ public:
             // (The wells' absorption across their gap: κ across it, as the
             // direct gap's - TE's, along x.)
             out.n = value(m.n[0], 1.0) + warm[0] + plasma + kerr[0] + wellsN[0];
-            out.kappaGap = value(m.kappa[0], 0.0) + out.kappaEA + wellsKappa[0];
+            // (κ warmed too, never below nought: an absorber's edge moves
+            // with its gap - the thermo-optic mode's loss held at 300 K's
+            // while its index followed T, the update check of 8bd5709.)
+            auto kappaOf = [&](int k) { return std::max(0.0, value(m.kappa[k].isValid() ? m.kappa[k] : m.kappa[0], 0.0) + warmKappa); };
+            out.kappaGap = kappaOf(0) + out.kappaEA + wellsKappa[0];
             for (int k = 0; k < 3; ++k) {
                 const cd n(value(m.n[k].isValid() ? m.n[k] : m.n[0], 1.0) + warm[k] + plasma + kerr[k] + wellsN[k],
-                           -value(m.kappa[k].isValid() ? m.kappa[k] : m.kappa[0], 0.0) - plasmaKappa - out.kappaEA - wellsKappa[k]);
+                           -kappaOf(k) - plasmaKappa - out.kappaEA - wellsKappa[k]);
                 ec[k][k] = n * n;
             }
         } else {
@@ -574,8 +580,14 @@ public:
                     if (!axes(QStringLiteral("n"), m.n)) continue;
                 }
                 if (!axes(QStringLiteral("kappa"), m.kappa)) continue;
-                // (Its wavelengths: "from to", lengths.)
-                const QStringList range = user ? QStringList() : c.property(*mat, QStringLiteral("nrange")).simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                // (Its wavelengths: "from to", lengths - none where the
+                // material gives its own index, not its library entry's: the
+                // VCSEL laser example's wells, n 3.60 at 980 nm, were said to
+                // be outside In0.2Ga0.8As's 0.999 to 17 µm - the update check
+                // of 110e8b9.)
+                const bool ownIndex = mat && mat->props.contains(QStringLiteral("n")) && !mat->props.contains(QStringLiteral("nrange"));
+                const QStringList range = user || ownIndex ? QStringList()
+                                                           : c.property(*mat, QStringLiteral("nrange")).simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
                 if (range.size() == 2) {
                     const std::optional<double> a = evaluateConstant(range[0], s.parameters().scope, Dim::length());
                     const std::optional<double> b = evaluateConstant(range[1], s.parameters().scope, Dim::length());
@@ -803,6 +815,14 @@ public:
                     if (!axes(QStringLiteral("dndT"), m.dndT)) continue;
                     m.T = c.compile(feat->text(QStringLiteral("T")), *feat, QStringLiteral("T"));
                     m.Tref = c.compile(feat->text(QStringLiteral("Tref")), *feat, QStringLiteral("Tref"));
+                    // Its material's κ of T: its change about Tref, per kelvin.
+                    if (!user && mat && !mat->props.contains(QStringLiteral("kappa"))) {
+                        const double T0 = m.Tref.isValid() && m.Tref.isConstant() ? m.Tref.constant() : 293.15;
+                        const QString hot = Problem::materialText(*mat, QStringLiteral("kappa"), &s.parameters().scope, T0 + 0.5).section(QLatin1Char(';'), 0, 0).trimmed();
+                        const QString cold = Problem::materialText(*mat, QStringLiteral("kappa"), &s.parameters().scope, T0 - 0.5).section(QLatin1Char(';'), 0, 0).trimmed();
+                        if (!hot.isEmpty() && !cold.isEmpty() && hot != cold)
+                            m.dkdT = c.compile(QStringLiteral("((%1) - (%2))/1[K]").arg(hot, cold), *mat, QStringLiteral("kappa"));
+                    }
                 }
             }
             if (feat->flag(QStringLiteral("electrooptic"))) {
@@ -941,6 +961,28 @@ public:
             if (d < 0 || !on[std::size_t(d)] || domains[std::size_t(d)].pml) continue;
             e.moveTo(t, 1.0 / 3, 1.0 / 3);
             const At a = at(e, d, omega, 1);
+            for (int k = 0; k < 3; ++k) best = std::max(best, std::sqrt(std::abs((a.eps[k] * a.mu[k]).real())));
+        }
+        return best;
+    }
+    /// The largest refractive index (real) at the edge of these domains -
+    /// the window's, or beside its perfectly matched layers: the cladding's,
+    /// which a guided mode's effective index is above.
+    double outerIndex(Solution& s, const std::vector<char>& on, double omega) const
+    {
+        double best = 0;
+        PointEvaluator e(s);
+        const Mesh& mesh = s.mesh();
+        auto inside = [&mesh, &on, this](int t) {
+            if (t < 0) return false;
+            const int d = mesh.domain[std::size_t(t)];
+            return d >= 0 && on[std::size_t(d)] && !domains[std::size_t(d)].pml;
+        };
+        for (const Mesh::Edge& edge : mesh.edges) {
+            if (inside(edge.left) == inside(edge.right)) continue;
+            const int t = inside(edge.left) ? edge.left : edge.right;
+            e.moveTo(t, 1.0 / 3, 1.0 / 3);
+            const At a = at(e, mesh.domain[std::size_t(t)], omega, 1);
             for (int k = 0; k < 3; ++k) best = std::max(best, std::sqrt(std::abs((a.eps[k] * a.mu[k]).real())));
         }
         return best;
@@ -1490,6 +1532,26 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
             if (o.choose == 2 ? te > best : te < best) most = k;
         }
         a_chosen = like >= 0 ? like : most;
+        // (Said: a set without the polarization's modes - 2 about n = 2 of
+        // an SOI wire, {1.770, 1.493}, its TE0 at 2.445 not among them - gave
+        // the most TE of what it had, a hybrid of 0.70, as TE: the update
+        // check of 8bd5709.)
+        if (!a_modes.empty()) {
+            const double te = a_modes[std::size_t(a_chosen)].te, own = o.choose == 2 ? te : 1 - te;
+            if (like < 0)
+                a_s.log << tr("Warning: %1: none of its modes is %2-like (more than half its transverse field along %3) - the most %2 "
+                              "chosen; ask for more modes, or about another index")
+                               .arg(a_node->name(), o.choose == 2 ? tr("TE") : tr("TM"), o.choose == 2 ? QStringLiteral("x") : QStringLiteral("y"));
+            else if (own < 0.9)
+                a_s.log << tr("Warning: %1: the %2 mode chosen is a hybrid (its transverse field under 90 % along %3) - its set may lack "
+                              "the %2 mode: ask for more modes, or about another index")
+                               .arg(a_node->name(), o.choose == 2 ? tr("TE") : tr("TM"), o.choose == 2 ? QStringLiteral("x") : QStringLiteral("y"));
+            if (own < 0.9)
+                a_s.log << tr("%1: mode %2 chosen, of index %3: a TE fraction of %4")
+                               .arg(a_node->name())
+                               .arg(a_chosen + 1)
+                               .arg(formatNumber(a_modes[std::size_t(a_chosen)].beta.real() / k0, 6), formatNumber(te, 3));
+        }
     } else
         for (int k = 1; k < int(a_modes.size()); ++k)
             if (o.choose == 1 && a_modes[std::size_t(k)].share > a_modes[std::size_t(a_chosen)].share) a_chosen = k;
@@ -1499,6 +1561,24 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     if (unguided)
         a_s.log << tr("%1: %2 modes below the effective index or above the loss asked left out").arg(a_node->name()).arg(unguided);
     if (o.choose != 0 && !a_modes.empty()) a_s.log << tr("%1: mode %2 chosen").arg(a_node->name()).arg(a_chosen + 1);
+    // A mode chosen below the cladding's index is no guided one - the set
+    // about an index under it (8 modes about 1.4 of an SOI wire in oxide:
+    // "te" took 1.4239, Γ 0.0025, nothing said: the update check of
+    // 8bd5709). (Where the window's edge is as high as anything - a slab, a
+    // rib's - not said: there the material's index is no bound.)
+    if (!a_modes.empty()) {
+        const double outer = a_media.outerIndex(a_s, f.domains, omega), inner = a_media.largestIndex(a_s, f.domains, omega);
+        const double neff = a_modes[std::size_t(a_chosen)].beta.real() / k0;
+        if (outer > 0 && outer < inner * (1 - 1e-9) && neff < outer) {
+            a_s.log << tr("Warning: %1: the mode chosen is below its cladding's index (at its window's edge) - not guided: no guided mode "
+                          "in its set; search about a higher index")
+                           .arg(a_node->name());
+            a_s.log << tr("%1: mode %2 chosen, of index %3, the cladding's %4")
+                           .arg(a_node->name())
+                           .arg(a_chosen + 1)
+                           .arg(formatNumber(neff, 6), formatNumber(outer, 5));
+        }
+    }
     // (What its media found as they were assembled - band filling bleaching
     // more than a material absorbs -, said once.)
     for (const QString& w : a_media.outOfRange(omega)) a_s.log << w;

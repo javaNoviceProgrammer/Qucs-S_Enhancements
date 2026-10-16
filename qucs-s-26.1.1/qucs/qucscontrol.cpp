@@ -4169,7 +4169,9 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         if (!changes.isEmpty()) {
             QJsonArray content = result.value(QStringLiteral("content")).toArray();
             content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
-                                       {QStringLiteral("text"), tr("Since your last call: %1").arg(changes.join(QLatin1Char(' ')))}});
+                                       // (On its own line: a client that joins the texts
+                                       // glued it to an error's - the update check of 110e8b9.)
+                                       {QStringLiteral("text"), QLatin1Char('\n') + tr("Since your last call: %1").arg(changes.join(QLatin1Char(' ')))}});
             result.insert(QStringLiteral("content"), content);
         }
         done(result);

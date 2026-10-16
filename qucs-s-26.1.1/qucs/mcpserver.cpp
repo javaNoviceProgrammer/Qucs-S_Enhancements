@@ -345,7 +345,8 @@ QJsonObject structuredOf(const QJsonObject& result)
     QJsonArray notes;
     for (int i = 1; i < texts.size(); ++i) {
         static const QString since = QStringLiteral("Since your last call: ");
-        if (texts.at(i).startsWith(since)) structured.insert(QStringLiteral("since_last_call"), texts.at(i).mid(since.size()));
+        const QString t = texts.at(i).trimmed();
+        if (t.startsWith(since)) structured.insert(QStringLiteral("since_last_call"), t.mid(since.size()));
         else notes.append(texts.at(i));
     }
     if (!notes.isEmpty()) structured.insert(QStringLiteral("notes"), notes);

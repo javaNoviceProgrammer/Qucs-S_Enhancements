@@ -181,6 +181,13 @@ P shownIf(P p, const QString& condition)
     return p;
 }
 
+/// A Choice that takes a value in its place too.
+P orValue(P p)
+{
+    p.orValue = true;
+    return p;
+}
+
 /// A B-H curve: rows of B and H.
 P bhRows()
 {
@@ -1620,8 +1627,11 @@ QList<NodeKind> makeKinds()
           text(QStringLiteral("mode"), tr("Resonator"), QStringLiteral("emr"),
                tr("The Electromagnetic Waves, Eigenfrequency whose mode lases - the one its step kept (solved before)")),
           choice(QStringLiteral("gain"), tr("Gain"), {QStringLiteral("logarithmic"), QStringLiteral("linear"), QStringLiteral("quantum")},
-                 {tr("Logarithmic: g0 ln((N + Ns)/(Ntr + Ns))"), tr("Linear: a (N - Ntr)"), tr("Its quantum wells' (a Laser L-I step's table)")},
-                 QStringLiteral("logarithmic"), tr("The material gain at the mode's wavelength of the carriers N there")),
+                 {tr("Logarithmic: g0 ln((N + Ns)/(Ntr + Ns)), held at -10 g0 far below transparency"), tr("Linear: a (N - Ntr)"),
+                  tr("Its quantum wells' (a Laser L-I step's table; held at its ends beyond Nmin and Nmax, said)")},
+                 QStringLiteral("logarithmic"),
+                 tr("The material gain at the mode's wavelength of the carriers N there. The logarithm's held at -10 g0 where N + Ns is "
+                    "below e^-10 (Ntr + Ns): an absorption without end otherwise")),
           shownIf(text(QStringLiteral("wells"), tr("Quantum wells"), QStringLiteral("qw"), tr("The Quantum Wells physics whose spectrum's gain it is")),
                   QStringLiteral("gain=quantum")),
           shownIf(text(QStringLiteral("spectrum"), tr("Spectrum step"), QString(),
@@ -1655,7 +1665,9 @@ QList<NodeKind> makeKinds()
             "there) - and the stimulated recombination v g(N) S Π at each node taken from its carriers: below threshold S "
             "spontaneous, above it the carriers clamped and the current light. semi.S, semi.Pout (η ħω S/τp, W), semi.G and "
             "semi.Gnet = G - 1/τp (1/s), semi.Gamma (Σ Π), semi.gth (the material gain at threshold, 1/(τp v Γ)), semi.Istim "
-            "(q, the stimulated recombination), semi.Nact (the carriers' mean on its domains), semi.taup; at each point "
+            "(q, the stimulated recombination), semi.Isp (q, the spontaneous emission's on its domains), semi.Nact (the "
+            "carriers' mean on its domains), semi.gmean (the gain's mean by the mode's energy), semi.tauph (τp, the photon "
+            "lifetime; semi.taup is the holes' SRH lifetime); at each point "
             "semi.gain and semi.Rst. Stationary steps, and a Laser L-I step's bias points.")});
     add({QStringLiteral("semiconductor/fn"), tr("Fowler-Nordheim Tunnelling"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"),
          Level::Boundary,
@@ -2312,10 +2324,10 @@ QList<NodeKind> makeKinds()
                         "below the edge a single line's tail, not the sum over the 2D continuum")),
               shownIf(expr(QStringLiteral("window_ext"), tr("Window's extension above"), QStringLiteral("eV"), QStringLiteral("0[eV]")),
                       QStringLiteral("broaden=window")),
-              choice(QStringLiteral("normalize"), tr("Absorption per"), {QStringLiteral("wells"), QStringLiteral("stack"), QStringLiteral("length")},
-                     {tr("The wells' thickness"), tr("The stack's (the line's)"), tr("A length")}, QStringLiteral("wells"),
-                     tr("The wells': the material's absorption, to multiply by the wells' confinement factor. The stack's: the "
-                        "whole line, its padding too - as Lumerical's MQW reports it (qw.Lstack)")),
+              orValue(choice(QStringLiteral("normalize"), tr("Absorption per"), {QStringLiteral("wells"), QStringLiteral("stack"), QStringLiteral("length")},
+                             {tr("The wells' thickness"), tr("The stack's (the line's)"), tr("A length")}, QStringLiteral("wells"),
+                             tr("The wells': the material's absorption, to multiply by the wells' confinement factor. The stack's: the "
+                                "whole line, its padding too - as Lumerical's MQW reports it (qw.Lstack)"))),
               shownIf(expr(QStringLiteral("normlength"), tr("Its length"), QStringLiteral("m"), QStringLiteral("100[nm]")),
                       QStringLiteral("normalize=length")),
               expr(QStringLiteral("density"), tr("Carriers in the wells"), QStringLiteral("1/m^3"), QStringLiteral("0[1/cm^3]"),
@@ -2431,6 +2443,8 @@ QList<NodeKind> makeKinds()
               text(QStringLiteral("x"), tr("Against a global"), QString(),
                    tr("An expression of the globals along x, each solution's value of it, in place of its one axis (semi.I_anode: a "
                       "laser's light against its current); empty: the axis itself")),
+              text(QStringLiteral("xunit"), tr("Its unit"), QString(),
+                   tr("The unit its global is shown in along x (mA for semi.I_anode); empty: its own (A)")),
               choice(QStringLiteral("modes"), tr("Modes"), {QStringLiteral("auto"), QStringLiteral("all"), QStringLiteral("chosen")},
                      {tr("Automatic: the mode its step chose where it chose one, else each"), tr("Each (an axis of them)"),
                       tr("The one its step chose, at each frequency and parameter value")},
@@ -2818,6 +2832,16 @@ QString Node::text(const QString& key) const
     const QJsonValue v = value(key);
     if (v.isDouble()) return formatNumber(v.toDouble(), 15);
     if (v.isBool()) return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    if (v.isArray()) {
+        // A list given as JSON's - [1.2, 1.4, "1.6[V]"] -: its values, as a
+        // list's text writes them. (It read as no values: a Laser L-I's
+        // voltages - the update check of 110e8b9.)
+        QStringList parts;
+        for (const QJsonValue& e : v.toArray())
+            if (e.isDouble()) parts << formatNumber(e.toDouble(), 15);
+            else if (e.isString()) parts << e.toString();
+        return parts.join(QLatin1String(", "));
+    }
     return v.toString();
 }
 

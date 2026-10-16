@@ -28,6 +28,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUndoStack>
+#include <cmath>
 #include <map>
 
 using namespace qucs_s::control;
@@ -234,7 +235,10 @@ QString formatText()
         "study's first; disabled, it is only read; its line \"sech\"); \"carrier\": mean (√np), electrons or holes; "
         "\"beta\", \"eta\" (the loss's share out). Give the gain region's material \"kappa\": \"0\" - its absorption is the "
         "gain's, not the cold cavity's. semi.S, semi.Pout, semi.G, semi.Gnet, semi.Gamma, semi.gth, semi.gmean, "
-        "semi.Istim, semi.Isp, semi.Nact, semi.taup; semi.gain, semi.Rst. A \"laser\" step {\"contact\": \"anode\", "
+        "semi.Istim, semi.Isp, semi.Nact, semi.tauph (the photon lifetime; semi.taup is the holes' SRH lifetime); semi.gain, "
+        "semi.Rst. Refused: a second laser feature; ng below 1; beta or eta outside 0 to 1; a, g0 not above 0; Ntr, Ns below 0; "
+        "Nmin not below Nmax; no spontaneous emission (beta 0, or no Radiative on the gain region); a mode that loses "
+        "nothing (Q infinite); quantum gain in a step other than a Laser L-I step; a negative keep. A \"laser\" step {\"contact\": \"anode\", "
         "\"voltages\": \"range(1.3, 0.02, 1.9)\", \"physics\": [\"semi\", \"qw\"]} after an eigenfrequency step: each "
         "voltage a solution (from the last), the log its threshold and slope; a 1D plot group's \"x\": \"semi.I_anode\" "
         "for the light against the current. "
@@ -1082,6 +1086,10 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     // was said at a sweep's last point, the chosen one at the others).
     auto atItsLast = [](Solution& s) {
         int k = s.snapshotCount() - 1;
+        // (A resonator's: the mode kept for the steps after.)
+        if (s.eigenfrequencies)
+            for (int j = 0; j < s.snapshotCount(); ++j)
+                if (s.snapshotChosen(j)) k = j;
         if (s.modeAnalysis && !s.eigenfrequencies && k >= 0) {
             int first = k;
             for (int j = k; j >= 0 && s.snapshotFrequency(j) == s.snapshotFrequency(k); --j) first = j;
@@ -1162,9 +1170,8 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
         // moved 0.06 nm on finer meshes, its LP11 group's 7 pm splitting
         // 27-33 pm, reordered - the oxide's corner.)
         if (resonator)
-            extra.insert(QStringLiteral("figures"), tr("seven: the solve's on this mesh - its error is the mesh's, larger (a VCSEL's modes "
-                                                       "some 0.05 nm, its vector splittings not yet converged at 0.05 µm): before reading "
-                                                       "splittings, solve again with a finer mesh"));
+            extra.insert(QStringLiteral("figures"), tr("seven: the solve's on this mesh - its error is the mesh's, larger: before reading "
+                                                       "the splittings of close modes, solve again with a finer mesh"));
     }
     if (sol->snapshotCount() > 0)
         extra.insert(sol->photonAxis == 3 ? QStringLiteral("bands") : sol->photonAxis > 0 ? QStringLiteral("spectrum") : sol->frequencyDomain ? QStringLiteral("frequencies") : QStringLiteral("times"),
@@ -1172,15 +1179,23 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                  {QStringLiteral("from"), sol->photonAxis > 0 ? sol->snapshotText(0) : formatQuantity(sol->snapshotValue(0), sol->snapshotDim())},
                                  {QStringLiteral("to"), sol->photonAxis > 0 ? sol->snapshotText(sol->snapshotCount() - 1)
                                                                             : formatQuantity(sol->snapshotValue(sol->snapshotCount() - 1), sol->snapshotDim())},
-                                 {QStringLiteral("globals at"), tr("the last")}});
-    // (A sweep's seconds: all its points', not its last one's.)
+                                 {QStringLiteral("globals at"), sol->eigenfrequencies && sol->selected() >= 0
+                                                                    ? tr("mode %1, the one kept for the steps after").arg(sol->snapshotMode(sol->selected()))
+                                                                    : tr("the last")}});
+    // (A sweep's seconds: all its points', not its last one's - to the
+    // millisecond: 0.4460000000000003 was a sum's noise, the update check of
+    // 8bd5709; its log the last point's, the sweep's said after it.)
     double seconds = 0;
     for (const auto& one : set->solutions) seconds += one->seconds;
+    seconds = std::round(seconds * 1000) / 1000;
+    QStringList log = sol->log;
+    if (set->solutions.size() > 1)
+        log << tr("The sweep: %1 points in %2 s (the lines above the last point's)").arg(set->solutions.size()).arg(seconds);
     QJsonObject result{{QStringLiteral("study"), sol->studyTag},
                                   {QStringLiteral("seconds"), seconds},
                                   {QStringLiteral("unknowns"), dofs},
                                   {QStringLiteral("triangles"), int(sol->mesh().triangles.size())},
-                                  {QStringLiteral("log"), QJsonArray::fromStringList(sol->log)},
+                                  {QStringLiteral("log"), QJsonArray::fromStringList(log)},
                                   {QStringLiteral("globals"), globals},
                                   {QStringLiteral("derived values"), derived},
                                   {QStringLiteral("shown"), doc->shownPlotGroup().isEmpty() ? QString() : doc->model().find(doc->shownPlotGroup())->name()}};

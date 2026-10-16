@@ -19,9 +19,11 @@
 #include <QFontMetricsF>
 #include <QHash>
 #include <QPaintEngine>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QTextTable>
 #include <QButtonGroup>
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -291,6 +293,54 @@ SmoothImages::SmoothImages(QObject* parent, QTextObjectInterface* qts) : QObject
     a_scaled.setMaxCost(96 * 1024);   // (in KB)
 }
 
+QuoteBars::QuoteBars(QTextEdit* edit) : QObject(edit), a_edit(edit) {}
+
+void QuoteBars::install(QTextEdit* edit)
+{
+    edit->viewport()->installEventFilter(new QuoteBars(edit));
+}
+
+QList<QRectF> QuoteBars::bars(const QTextEdit* edit)
+{
+    QList<QRectF> out;
+    QTextDocument* doc = edit->document();
+    QAbstractTextDocumentLayout* layout = doc->documentLayout();
+    const QPointF offset(-edit->horizontalScrollBar()->value(), -edit->verticalScrollBar()->value());
+    for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+        const QTextBlockFormat f = b.blockFormat();
+        const int level = f.property(QTextFormat::BlockQuoteLevel).toInt();
+        if (level <= 0 || !b.isVisible()) continue;
+        const QRectF r = layout->blockBoundingRect(b).translated(offset);
+        // (Its margin's each level's part - within its rectangle, which
+        // starts at its frame's edge -, the bar a third into it; down to the
+        // next block where it is the quote's too - its paragraphs one bar.)
+        const qreal step = f.leftMargin() / level, from = r.left();
+        qreal bottom = r.bottom();
+        const QTextBlock next = b.next();
+        if (next.isValid() && next.blockFormat().property(QTextFormat::BlockQuoteLevel).toInt() > 0)
+            bottom = std::max(bottom, layout->blockBoundingRect(next).translated(offset).top());
+        for (int k = 0; k < level; ++k) out << QRectF(from + step * k + step / 3, r.top(), 3, bottom - r.top());
+    }
+    return out;
+}
+
+bool QuoteBars::eventFilter(QObject* watched, QEvent* event)
+{
+    if (event->type() != QEvent::Paint || watched != a_edit->viewport() || a_inside) return false;
+    // The view's own painting first - sent on, this filter passing it -,
+    // then the bars over it.
+    a_inside = true;
+    QCoreApplication::sendEvent(watched, event);
+    a_inside = false;
+    const QRect visible = static_cast<QPaintEvent*>(event)->rect();
+    QColor colour = a_edit->palette().color(QPalette::Text);
+    colour.setAlpha(70);
+    QPainter painter(a_edit->viewport());
+    for (const QRectF& bar : bars(a_edit))
+        if (bar.intersects(visible)) painter.fillRect(bar, colour);
+    return true;
+}
+
 void SmoothImages::install(QTextDocument* document)
 {
     QAbstractTextDocumentLayout* layout = document->documentLayout();
@@ -439,6 +489,7 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     a_preview->document()->setDocumentMargin(12);
     qucs_s::math::MathObject::install(a_preview->document());
     qucs_s::markdown::SmoothImages::install(a_preview->document());
+    qucs_s::markdown::QuoteBars::install(a_preview);
     connect(a_preview, &QTextBrowser::anchorClicked, this, &MarkdownDoc::followLink);
     // (Its images to its width as it changes: the tab's, the split's, a
     // scroll bar's coming.)

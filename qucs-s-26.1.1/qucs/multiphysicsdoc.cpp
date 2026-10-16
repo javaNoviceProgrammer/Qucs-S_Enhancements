@@ -1608,20 +1608,21 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     // Against a global (x): its one axis's values each solution's value of
     // it - a laser's light against its current, not its voltage.
     if (const QString xText = g->text(QStringLiteral("x")).trimmed(); !xText.isEmpty()) {
-        if (outer.size() != 1) {
-            problems << tr("%1: its x (%2) takes the place of its one axis - it has %3").arg(g->name(), xText).arg(outer.size());
-        } else {
+        // (An x that does not read is the plot's error: it was drawn against
+        // its axis, said in the messages alone - the update check of 110e8b9.)
+        if (outer.size() != 1)
+            return fail(tr("%1: its x (%2) takes the place of its one axis - it has %3").arg(g->name(), xText).arg(outer.size()));
+        {
             QVector<double> xs;
             QString unit;
             for (const Instance& in : every) {
                 Solution* sol = select(*set, in);
                 const Expression e = Expression::compile(xText, sol->scope());
-                if (!e.isValid() || !e.isConstant()) {
-                    problems << tr("%1: its x, %2, is %3").arg(g->name(), xText, e.isValid() ? tr("not a global") : e.error());
-                    xs.clear();
-                    break;
-                }
-                const DisplayUnit du = displayUnitOf(*sol, xText, QString(), e.dim());
+                if (!e.isValid() || !e.isConstant())
+                    return fail(tr("%1: its x, %2, is %3").arg(g->name(), xText, e.isValid() ? tr("not a global - a value of each solution") : e.error()));
+                QString unitWhy;
+                const DisplayUnit du = displayUnitOf(*sol, xText, g->text(QStringLiteral("xunit")), e.dim(), &unitWhy);
+                if (!unitWhy.isEmpty()) return fail(tr("%1: its x's unit: %2").arg(g->name(), unitWhy));
                 xs << (e.constant() - du.offset) / du.scale;
                 if (unit.isEmpty()) unit = du.name.isEmpty() ? dimName(e.dim()) : du.name;
             }

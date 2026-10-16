@@ -394,7 +394,9 @@ QString formatQuantity(double si, const Dim& dim, int digits)
     if (!prefixed || si == 0 || !std::isfinite(si)) return formatNumber(si, digits) + QLatin1Char(' ') + name;
     static const char* prefixes[] = {"a", "f", "p", "n", "µ", "m", "", "k", "M", "G", "T", "P", "E"};
     int e = int(std::floor(std::log10(std::abs(si)) / 3.0));
-    e = std::clamp(e, -6, 6);
+    // (Beyond the prefixes, its SI unit's power of ten: "4.591e-11 aJ" was
+    // 4.591e-29 J - the update check of 110e8b9.)
+    if (e < -6 || e > 6) return formatNumber(si, digits) + QLatin1Char(' ') + name;
     double mantissa = si / std::pow(10.0, 3 * e);
     // (999.96 rounds to 1000 at 4 digits: the next prefix.)
     if (std::abs(QString::number(mantissa, 'g', digits).toDouble()) >= 1000 && e < 6) {
