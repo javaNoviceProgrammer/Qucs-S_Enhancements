@@ -15,6 +15,7 @@
 
 #include "apptheme.h"
 #include "ink.h"
+#include "markdowndoc.h"
 #include "misc.h"
 #include "settings.h"
 
@@ -516,6 +517,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     a_view->setTextInteractionFlags(Qt::TextBrowserInteraction);
     connect(a_view, &QTextBrowser::anchorClicked, this, &ClaudeCodePanel::handleLink);
     qucs_s::math::MathObject::install(a_view->document());
+    a_view->viewport()->installEventFilter(this);   // its images fitted as it resizes
     layout->addWidget(a_view, 1);
 
     buildPermissionCard();
@@ -1220,6 +1222,10 @@ void ClaudeCodePanel::showEvent(QShowEvent* event)
 
 bool ClaudeCodePanel::eventFilter(QObject* watched, QEvent* event)
 {
+    if (a_view != nullptr && watched == a_view->viewport() && event->type() == QEvent::Resize) {
+        fitImages();
+        return false;
+    }
     if (watched == a_dirLabel && event->type() == QEvent::Resize) {
         updateDirectory();
         return false;
@@ -2149,6 +2155,7 @@ void ClaudeCodePanel::render()
     QTextCursor c(doc);
     if (a_entries.isEmpty()) renderWelcome(c);
     else renderConversation(c);
+    fitImages();
 
     if (follow) {
         QTimer::singleShot(0, this, [this] {
@@ -2157,6 +2164,20 @@ void ClaudeCodePanel::render()
     } else {
         bar->setValue(keep);
     }
+}
+
+void ClaudeCodePanel::fitImages()
+{
+    // Qt's layout draws an image at its own size: each a reply has given the
+    // width the transcript has with its scroll bar shown (a bar coming or
+    // going as they shrink moving nothing), its height in proportion.
+    if (a_fitting) return;
+    a_fitting = true;
+    const QScrollBar* bar = a_view->verticalScrollBar();
+    const bool over = a_view->style()->styleHint(QStyle::SH_ScrollBar_Transient, nullptr, bar) != 0;
+    const int width = a_view->viewport()->width() - (bar->isVisible() || over ? 0 : bar->sizeHint().width());
+    qucs_s::markdown::fitImages(a_view->document(), width);
+    a_fitting = false;
 }
 
 void ClaudeCodePanel::renderConversation(QTextCursor& c)
