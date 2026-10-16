@@ -174,6 +174,10 @@ public:
     };
     std::vector<Domain> domains;
     mutable QSet<QString> warned;   // (the materials said out of their range)
+    /// A body of revolution's (x r, y z, the third axis φ): its layers'
+    /// stretching a cylinder's - r̃ = ∫ s_r, Λ = ((r̃/r) s_z/s_r, (r̃/r)
+    /// s_r/s_z, (r/r̃) s_r s_z) along r, z, φ.
+    bool cylindrical = false;
 
     /// What is said where an index is taken at \a omega outside where its
     /// material holds it - each material once.
@@ -439,12 +443,30 @@ public:
                 return cd(1.0, -sigma0 * xi * xi);
             };
             const cd s[3] = {stretch(p.x(), 0), stretch(p.y(), 1), 1.0};
-            for (int i = 0; i < 3; ++i)
-                for (int j = 0; j < 3; ++j) out.epsT[i][j] *= s[0] * s[1] / (s[i] * s[j]);
-            const cd f[3] = {s[1] / s[0], s[0] / s[1], s[0] * s[1]};
-            for (int k = 0; k < 3; ++k) {
-                out.mu[k] *= f[k];
-                out.eps[k] = out.epsT[k][k];
+            if (cylindrical) {
+                // r̃: ∫ s_r from the inner region's edge, -j σ0 d ξ³/3 more.
+                const double r = p.x(), hi = m.inner[1], depth = m.outer[1] - m.inner[1];
+                cd rt = r;
+                if (r > hi && depth > 0) {
+                    const double xi = std::clamp((r - hi) / depth, 0.0, 1.0);
+                    rt = r + (s[0] - 1.0) * depth * xi / 3.0;   // (s_r - 1 = -j σ0 ξ²)
+                }
+                const cd ratio = r > 0 ? rt / r : 1.0;
+                const cd f[3] = {ratio * s[1] / s[0], ratio * s[0] / s[1], s[0] * s[1] / ratio};
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) out.epsT[i][j] *= i == j ? f[i] : 1.0;
+                for (int k = 0; k < 3; ++k) {
+                    out.mu[k] *= f[k];
+                    out.eps[k] = out.epsT[k][k];
+                }
+            } else {
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) out.epsT[i][j] *= s[0] * s[1] / (s[i] * s[j]);
+                const cd f[3] = {s[1] / s[0], s[0] / s[1], s[0] * s[1]};
+                for (int k = 0; k < 3; ++k) {
+                    out.mu[k] *= f[k];
+                    out.eps[k] = out.epsT[k][k];
+                }
             }
         }
         const double scale = std::abs(out.eps[0]) + std::abs(out.eps[1]) + std::abs(out.eps[2]);
@@ -1587,6 +1609,431 @@ void ModeProblem::setGlobals()
                       tr("loss in dB per metre the field adds to the direct gap's absorption (the Franz-Keldysh effect): its "
                          "electroabsorption over none at all"),
                       QStringLiteral("dB/m"));
+}
+
+// ------------------------------------------------------------------ A body of revolution's resonances
+
+/*!
+ * A body of revolution's resonant modes, of one azimuthal order m: the
+ * fields E(r, z) e^{-jmφ}, full-vector - (E_r, E_z) on Nédélec's edge
+ * elements of the meridian plane, χ = -j r E_φ on Lagrange's nodes. The
+ * curl's r and z parts are j(m E_z + ∂z χ)/r and j(m E_r + ∂r χ)/r, its φ
+ * part the plane's curl of E_t:
+ *   ∫ [(m E_r + ∂r χ)²/(µ_z r) + (m E_z + ∂z χ)²/(µ_r r) + r (curl E_t)²/µ_φ]
+ *     = k0² ∫ [ε_r r E_r² + ε_z r E_z² + ε_φ χ²/r]
+ * - symmetric; complex with lossy media and the layers' (cylindrical)
+ * stretching. On the axis χ = 0, and E_z = 0 for m ≠ 0. Its eigenvalues
+ * k0² about the one searched for, shifted and inverted: ω = c k0 complex,
+ * a mode the layers or its media take decaying, Q = Re ω / 2 Im ω.
+ */
+class ResonatorProblem : public Problem
+{
+public:
+    ResonatorProblem(Solution& solution, int field) : Problem(solution, field) {}
+
+    bool setup(QString* error) override;
+    void initialize() override
+    {
+        Field& f = field();
+        f.values.assign(std::size_t(2 * f.edges->size() + 2 * f.space->size()), 0.0);
+        f.extra.assign(3, 0.0);
+    }
+    bool solve(const SolveOptions&, QString* error) override
+    {
+        *error = tr("%1: a resonator's modes are solved by an Eigenfrequency step").arg(a_node->name());
+        return false;
+    }
+    bool modal() const override { return true; }
+    int solveModes(const SolveOptions& options, int count, double guess, QString* error) override;
+    void selectMode(int k) override;
+    void setGlobals() override;
+
+private:
+    Media a_media;
+    std::vector<int> a_edgeEq, a_nodeEq;   // equations, -1 none (fixed or not here)
+    int a_n = 0, a_m = 0;
+    struct Mode {
+        cd k;                 // k0 = ω/c, complex
+        Eigen::VectorXcd x;   // E_t then χ, by equation
+    };
+    std::vector<Mode> a_modes;
+    int a_selected = -1;
+    double a_target = 0;      // the k0 searched about
+};
+
+bool ResonatorProblem::setup(QString* error)
+{
+    if (!a_node) {
+        *error = tr("there is no physics %1").arg(field().tag);
+        return false;
+    }
+    if (!a_s.axisymmetric()) {
+        *error = tr("%1: a resonator here is a body of revolution's - its component's space axisymmetric (the axis x = 0, r along "
+                    "x, z along y)")
+                     .arg(a_node->name());
+        return false;
+    }
+    Field& f = field();
+    const Topology& topo = a_s.topology();
+    QString why;
+    const QVector<int> domains = resolveSelection(topo, a_s.model(), Level::Domain, a_node->selection(), &why);
+    if (!why.isEmpty()) problem(tr("%1: %2").arg(a_node->name(), why));
+    f.domains.assign(topo.domains.size(), 0);
+    for (int d : domains) f.domains[std::size_t(d)] = 1;
+    if (domains.isEmpty()) problem(tr("%1 is on no domain").arg(a_node->name()));
+    a_media.cylindrical = true;
+    a_media.setup(a_s, *a_node, f.domains, materials(), mediaHooks());
+    a_m = a_node->integer(QStringLiteral("m"));
+    Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+    coef.c.assign(topo.domains.size(), Expression());
+    std::vector<Expression> mur(topo.domains.size());
+    for (std::size_t d = 0; d < a_media.domains.size(); ++d) {
+        if (a_media.domains[d].defined && a_media.domains[d].byIndex) coef.c[d] = a_media.domains[d].n[0];
+        mur[d] = a_media.domains[d].mur[0];
+    }
+    coef.named[QStringLiteral("mur")] = mur;
+    if (!a_problems.isEmpty()) {
+        *error = a_problems.join(QLatin1Char('\n'));
+        return false;
+    }
+    const EdgeSpace& es = *f.edges;
+    const Space& ns = *f.space;
+    const Mesh& mesh = a_s.mesh();
+    a_edgeEq.assign(std::size_t(es.size()), -1);
+    a_nodeEq.assign(std::size_t(ns.size()), -1);
+    for (int t = 0; t < ns.elements(); ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        for (int i = 0; i < es.perElement(); ++i) a_edgeEq[std::size_t(es.dofs(t)[i])] = -2;
+        for (int i = 0; i < ns.perElement(); ++i) a_nodeEq[std::size_t(ns.dofs(t)[i])] = -2;
+    }
+    // The axis (r = 0): no boundary - χ = 0 there, and E_z = 0 for m ≠ 0;
+    // a conductor elsewhere (the outside by default): E_t's edges and χ.
+    const double tol = 1e-9 * std::max(1e-300, std::max(topo.bounds.width(), topo.bounds.height()));
+    auto onAxis = [&](int node) { return std::abs(mesh.nodes[std::size_t(node)].x()) <= tol; };
+    std::vector<int> condition(topo.boundaries.size(), 0);   // 1 PEC, 2 PMC: the last feature's
+    auto inside = [&](int d) { return d >= 0 && f.domains[std::size_t(d)]; };
+    for (const Node& feature : a_node->children) {
+        if (!feature.enabled) continue;
+        const NodeKind* k = feature.kind();
+        if (!k || k->selection != Level::Boundary) continue;
+        const int c = feature.type.endsWith(QLatin1String("/pec")) ? 1 : feature.type.endsWith(QLatin1String("/pmc")) ? 2 : 0;
+        if (!c) continue;
+        const QVector<int> picked = resolveSelection(topo, a_s.model(), Level::Boundary, feature.selection(), &why);
+        for (int b : picked) {
+            const Topology::Boundary& bd = topo.boundaries[std::size_t(b)];
+            if (feature.isDefault && inside(bd.up) == inside(bd.down)) continue;
+            condition[std::size_t(b)] = c;
+        }
+    }
+    int axisEdges = 0;
+    for (int e = 0; e < int(mesh.edges.size()); ++e) {
+        const Mesh::Edge& me = mesh.edges[std::size_t(e)];
+        const bool axis = onAxis(me.a) && onAxis(me.b);
+        if (axis) {
+            ++axisEdges;
+            if (a_m != 0)
+                for (int dof : es.edgeDofs(me.a, me.b))
+                    if (dof >= 0 && a_edgeEq[std::size_t(dof)] != -1) a_edgeEq[std::size_t(dof)] = -3;
+            for (int dof : ns.edgeDofs(e))
+                if (dof >= 0 && a_nodeEq[std::size_t(dof)] != -1) a_nodeEq[std::size_t(dof)] = -3;
+            continue;
+        }
+        if (me.boundary < 0 || condition[std::size_t(me.boundary)] != 1) continue;
+        for (int dof : es.edgeDofs(me.a, me.b))
+            if (dof >= 0 && a_edgeEq[std::size_t(dof)] != -1) a_edgeEq[std::size_t(dof)] = -3;
+        for (int dof : ns.edgeDofs(e))
+            if (dof >= 0 && a_nodeEq[std::size_t(dof)] != -1) a_nodeEq[std::size_t(dof)] = -3;
+    }
+    // (A node on the axis alone - a domain touching it at a point - too.)
+    for (int t = 0; t < ns.elements(); ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        for (int i = 0; i < 3; ++i) {
+            const int v = mesh.triangles[std::size_t(t)][std::size_t(i)];
+            if (onAxis(v)) {
+                const int dof = ns.dofs(t)[i];
+                if (a_nodeEq[std::size_t(dof)] != -1) a_nodeEq[std::size_t(dof)] = -3;
+            }
+        }
+    }
+    (void)axisEdges;
+    for (const auto& node : mesh.nodes)
+        if (node.x() < -tol) {
+            *error = tr("%1: the geometry reaches x < 0 - a body of revolution's lies at r = x ≥ 0").arg(a_node->name());
+            return false;
+        }
+    a_n = 0;
+    for (int& q : a_edgeEq)
+        if (q == -2) q = a_n++;
+    for (int& q : a_nodeEq)
+        if (q == -2) q = a_n++;
+    if (a_n == 0) {
+        *error = tr("%1: nothing to solve - every field is fixed").arg(a_node->name());
+        return false;
+    }
+    return true;
+}
+
+int ResonatorProblem::solveModes(const SolveOptions& o, int count, double, QString* error)
+{
+    Field& f = field();
+    const EdgeSpace& es = *f.edges;
+    const Space& ns = *f.space;
+    const Mesh& mesh = a_s.mesh();
+    const double omega = 2 * M_PI * o.frequency;
+    a_target = omega / C0;
+    const double k0 = a_target;
+    if (!(k0 > 0)) {
+        *error = tr("%1: an eigenfrequency step wants a frequency or wavelength to search about").arg(a_node->name());
+        return -1;
+    }
+    for (const QString& w : a_media.outOfRange(omega)) a_s.log << w;
+    std::vector<Eigen::Triplet<cd>> tk, tm;
+    const int pe = es.perElement(), pn = ns.perElement(), pa = pe + pn;
+    const TriangleRule& rule = triangleRule(5);
+    PointEvaluator ev(a_s);
+    std::vector<cd> Ke(std::size_t(pa * pa)), Me(std::size_t(pa * pa));
+    const std::size_t all = static_cast<std::size_t>(pa);
+    std::vector<double> gr(all), gz(all), cu(all), er(all), ez(all), ch(all);
+    const double m = a_m;
+    bool warnedTensor = false;
+    for (int t = 0; t < ns.elements(); ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        const AffineMap am = affineMap(ns, t);
+        std::fill(Ke.begin(), Ke.end(), 0);
+        std::fill(Me.begin(), Me.end(), 0);
+        EdgeSpace::Basis eb;
+        Shape sh;
+        const std::array<int, 3>& tv = mesh.triangles[std::size_t(t)];
+        const double x0 = mesh.nodes[std::size_t(tv[0])].x() * mesh.unitScale, x1 = mesh.nodes[std::size_t(tv[1])].x() * mesh.unitScale,
+                     x2 = mesh.nodes[std::size_t(tv[2])].x() * mesh.unitScale;
+        for (const auto& q : rule.points) {
+            ev.moveTo(t, q[0], q[1]);
+            // (r of the triangle the basis is of - straight: a curved one's
+            // point may come to the axis where the basis's does not.)
+            const double r = (1 - q[0] - q[1]) * x0 + q[0] * x1 + q[1] * x2;
+            if (!(r > 0)) continue;
+            const Media::At md = a_media.at(ev, d, omega, k0);
+            if (md.coupled && !warnedTensor) {
+                warnedTensor = true;
+                a_s.log << tr("Warning: %1: a medium's tensor couples r, z and φ - its diagonal taken (a body of revolution's medium is "
+                              "uniaxial along z at most)")
+                               .arg(a_node->name());
+            }
+            const double w = q[2] * std::abs(am.det);
+            es.basis(t, am, q[0], q[1], eb);
+            shapeAt(ns.order(), q[0], q[1], sh);
+            const double i00 = am.grad[1][0], i01 = am.grad[2][0], i10 = am.grad[1][1], i11 = am.grad[2][1];
+            for (int i = 0; i < pe; ++i) {
+                gr[std::size_t(i)] = m * eb.vx[i];
+                gz[std::size_t(i)] = m * eb.vy[i];
+                cu[std::size_t(i)] = eb.curl[i];
+                er[std::size_t(i)] = eb.vx[i];
+                ez[std::size_t(i)] = eb.vy[i];
+                ch[std::size_t(i)] = 0;
+            }
+            for (int j = 0; j < pn; ++j) {
+                gr[std::size_t(pe + j)] = sh.dxi[j] * i00 + sh.deta[j] * i01;
+                gz[std::size_t(pe + j)] = sh.dxi[j] * i10 + sh.deta[j] * i11;
+                cu[std::size_t(pe + j)] = 0;
+                er[std::size_t(pe + j)] = 0;
+                ez[std::size_t(pe + j)] = 0;
+                ch[std::size_t(pe + j)] = sh.n[j];
+            }
+            const cd aR = w / (md.mu[1] * r), aZ = w / (md.mu[0] * r), aC = w * r / md.mu[2];
+            const cd bR = w * md.eps[0] * r, bZ = w * md.eps[1] * r, bC = w * md.eps[2] / r;
+            for (int i = 0; i < pa; ++i)
+                for (int j = 0; j < pa; ++j) {
+                    const std::size_t k = std::size_t(i * pa + j);
+                    Ke[k] += aR * gr[std::size_t(i)] * gr[std::size_t(j)] + aZ * gz[std::size_t(i)] * gz[std::size_t(j)]
+                             + aC * cu[std::size_t(i)] * cu[std::size_t(j)];
+                    Me[k] += bR * er[std::size_t(i)] * er[std::size_t(j)] + bZ * ez[std::size_t(i)] * ez[std::size_t(j)]
+                             + bC * ch[std::size_t(i)] * ch[std::size_t(j)];
+                }
+        }
+        int eq[16];
+        for (int i = 0; i < pe; ++i) eq[i] = a_edgeEq[std::size_t(es.dofs(t)[i])];
+        for (int i = 0; i < pn; ++i) eq[pe + i] = a_nodeEq[std::size_t(ns.dofs(t)[i])];
+        for (int i = 0; i < pa; ++i)
+            for (int j = 0; j < pa; ++j) {
+                if (eq[i] < 0 || eq[j] < 0) continue;
+                const std::size_t k = std::size_t(i * pa + j);
+                if (Ke[k] != cd(0)) tk.emplace_back(eq[i], eq[j], Ke[k]);
+                if (Me[k] != cd(0)) tm.emplace_back(eq[i], eq[j], Me[k]);
+            }
+    }
+    Eigen::SparseMatrix<cd> K(a_n, a_n), M(a_n, a_n);
+    K.setFromTriplets(tk.begin(), tk.end());
+    M.setFromTriplets(tm.begin(), tm.end());
+    const cd sigma = k0 * k0;
+    Eigen::SparseMatrix<cd> P = K - sigma * M;
+    P.makeCompressed();
+    Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
+    lu.analyzePattern(P);
+    lu.factorize(P);
+    if (lu.info() != Eigen::Success) {
+        *error = tr("%1: the shifted matrix is singular - %2 (another frequency to search about)")
+                     .arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
+        return -1;
+    }
+    // The layers' own modes (their fields there mostly) and the curl's null
+    // space (k0 nought) left out: more asked while too few are left.
+    bool layers = false;
+    for (std::size_t d = 0; d < a_media.domains.size(); ++d) layers = layers || (f.domains[d] && a_media.domains[d].pml);
+    auto inLayers = [&](const Eigen::VectorXcd& x) {
+        double all = 0, there = 0;
+        EdgeSpace::Basis eb;
+        Shape sh;
+        const TriangleRule& q2 = triangleRule(2);
+        for (int t = 0; t < ns.elements(); ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            const AffineMap am = affineMap(ns, t);
+            double e2 = 0;
+            for (const auto& q : q2.points) {
+                es.basis(t, am, q[0], q[1], eb);
+                shapeAt(ns.order(), q[0], q[1], sh);
+                cd exr = 0, exz = 0, chi = 0;
+                for (int i = 0; i < pe; ++i) {
+                    const int k = a_edgeEq[std::size_t(es.dofs(t)[i])];
+                    if (k < 0) continue;
+                    exr += x(k) * eb.vx[i];
+                    exz += x(k) * eb.vy[i];
+                }
+                for (int i = 0; i < pn; ++i) {
+                    const int k = a_nodeEq[std::size_t(ns.dofs(t)[i])];
+                    if (k >= 0) chi += x(k) * sh.n[i];
+                }
+                const std::array<int, 3>& tv = mesh.triangles[std::size_t(t)];
+                const double r = std::max(((1 - q[0] - q[1]) * mesh.nodes[std::size_t(tv[0])].x() + q[0] * mesh.nodes[std::size_t(tv[1])].x()
+                                           + q[1] * mesh.nodes[std::size_t(tv[2])].x())
+                                              * mesh.unitScale,
+                                          1e-300);
+                e2 += q[2] * std::abs(am.det) * r * (std::norm(exr) + std::norm(exz) + std::norm(chi) / (r * r));
+            }
+            all += e2;
+            if (a_media.domains[std::size_t(d)].pml) there += e2;
+        }
+        return all > 0 ? there / all : 0.0;
+    };
+    const int wanted = std::max(1, count);
+    int products = 0, restarts = 0, dropped = 0;
+    for (int asked = 2 * wanted + 4;; asked *= 2) {
+        asked = std::min(asked, std::max(1, a_n - 2));
+        const EigenResult r = largestEigenvalues(a_n, asked, [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) { y = lu.solve(M * x); });
+        if (!r.error.isEmpty()) a_s.log << tr("Warning: %1: %2").arg(a_node->name(), r.error);
+        products += r.products;
+        restarts += r.restarts;
+        a_modes.clear();
+        dropped = 0;
+        for (std::size_t i = 0; i < r.values.size(); ++i) {
+            const cd k2 = sigma + 1.0 / r.values[i];
+            // (The curl's null space: gradients, k0 nought.)
+            if (std::abs(k2) < 1e-6 * k0 * k0) continue;
+            cd k = std::sqrt(k2);
+            if (k.real() < 0) k = -k;
+            if (layers && inLayers(r.vectors[i]) > 0.5) {
+                ++dropped;
+                continue;
+            }
+            a_modes.push_back({k, r.vectors[i]});
+        }
+        if (int(a_modes.size()) >= wanted || asked >= 96 || asked >= a_n - 2) break;
+    }
+    // Those nearest the frequency searched about, then by frequency.
+    std::sort(a_modes.begin(), a_modes.end(), [&](const Mode& a, const Mode& b) { return std::abs(a.k - k0) < std::abs(b.k - k0); });
+    if (int(a_modes.size()) > wanted) a_modes.resize(std::size_t(wanted));
+    std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) { return a.k.real() < b.k.real(); });
+    if (dropped) a_s.log << tr("%1: %2 modes of the absorbing layers left out").arg(a_node->name()).arg(dropped);
+    a_s.log << tr("%1: %2 modes of azimuthal order %3 about %4 (%5 products, %6 restarts)")
+                   .arg(a_node->name())
+                   .arg(a_modes.size())
+                   .arg(a_m)
+                   .arg(formatQuantity(o.frequency, Dim::of(0, 0, -1)))
+                   .arg(products)
+                   .arg(restarts);
+    f.solved = true;
+    return int(a_modes.size());
+}
+
+void ResonatorProblem::selectMode(int k)
+{
+    Field& f = field();
+    if (k < 0 || k >= int(a_modes.size())) return;
+    a_selected = k;
+    const Mode& md = a_modes[std::size_t(k)];
+    const int ne = f.edges->size(), nn = f.space->size();
+    f.values.assign(std::size_t(2 * ne + 2 * nn), 0.0);
+    for (int dof = 0; dof < ne; ++dof)
+        if (a_edgeEq[std::size_t(dof)] >= 0) {
+            const cd v = md.x(a_edgeEq[std::size_t(dof)]);
+            f.values[std::size_t(dof)] = v.real();
+            f.values[std::size_t(ne + dof)] = v.imag();
+        }
+    for (int dof = 0; dof < nn; ++dof)
+        if (a_nodeEq[std::size_t(dof)] >= 0) {
+            const cd v = md.x(a_nodeEq[std::size_t(dof)]);
+            f.values[std::size_t(2 * ne + dof)] = v.real();
+            f.values[std::size_t(2 * ne + nn + dof)] = v.imag();
+        }
+    f.extra.assign(3, 0.0);
+    f.extra[0] = md.k.real();
+    f.extra[1] = md.k.imag();
+    f.extra[2] = a_m;
+    // Its largest |E| outside the layers 1 V/m, there real.
+    const Mesh& mesh = a_s.mesh();
+    PointEvaluator ev(a_s);
+    const TriangleRule& rule = triangleRule(2);
+    double largest = 0;
+    cd at = 1;
+    for (int t = 0; t < f.space->elements(); ++t) {
+        const int d = mesh.domain[std::size_t(t)];
+        if (d < 0 || !f.domains[std::size_t(d)] || a_media.domains[std::size_t(d)].pml) continue;
+        for (const auto& q : rule.points) {
+            ev.moveTo(t, q[0], q[1]);
+            const ResonatorFields rf = resonatorFieldsAt(ev, a_fi);
+            if (!rf.defined) continue;
+            for (const cd& c : rf.E)
+                if (std::abs(c) > largest) {
+                    largest = std::abs(c);
+                    at = c;
+                }
+        }
+    }
+    if (largest > 0) {
+        const cd scale = std::conj(at) / (largest * largest);
+        for (int dof = 0; dof < ne; ++dof) {
+            const cd v = cd(f.values[std::size_t(dof)], f.values[std::size_t(ne + dof)]) * scale;
+            f.values[std::size_t(dof)] = v.real();
+            f.values[std::size_t(ne + dof)] = v.imag();
+        }
+        for (int dof = 0; dof < nn; ++dof) {
+            const cd v = cd(f.values[std::size_t(2 * ne + dof)], f.values[std::size_t(2 * ne + nn + dof)]) * scale;
+            f.values[std::size_t(2 * ne + dof)] = v.real();
+            f.values[std::size_t(2 * ne + nn + dof)] = v.imag();
+        }
+    }
+    a_s.setMode(k + 1);
+    a_s.setFrequency(md.k.real() * C0 / (2 * M_PI));
+}
+
+void ResonatorProblem::setGlobals()
+{
+    if (a_selected < 0 || a_selected >= int(a_modes.size())) return;
+    const cd k = a_modes[std::size_t(a_selected)].k;
+    const QString p = field().tag + QLatin1Char('.');
+    const Dim hertz = Dim::of(0, 0, -1);
+    a_s.setGlobal(p + QStringLiteral("freq"), k.real() * C0 / (2 * M_PI), hertz, tr("eigenfrequency, its real part (Hz)"));
+    a_s.setGlobal(p + QStringLiteral("freq_im"), k.imag() * C0 / (2 * M_PI), hertz,
+                  tr("eigenfrequency's imaginary part: the mode's decay (e^{jωt}, its energy e^{-2 Im ω t})"));
+    a_s.setGlobal(p + QStringLiteral("lambda0"), 2 * M_PI / k.real(), Dim::length(), tr("free-space wavelength of the eigenfrequency, 2πc/Re ω"));
+    // (Without losses Im ω is the eigensolver's round-off, 1e-16 of Re ω.)
+    a_s.setGlobal(p + QStringLiteral("Q"), std::abs(k.imag()) > 1e-13 * k.real() ? k.real() / (2 * k.imag()) : std::numeric_limits<double>::infinity(),
+                  Dim(), tr("quality factor: Re ω / 2 Im ω (infinite without losses)"));
+    a_s.setGlobal(p + QStringLiteral("m"), a_m, Dim(), tr("azimuthal order: the fields e^{-jmφ}"));
+    a_s.setGlobal(p + QStringLiteral("mode"), a_selected + 1, Dim(), tr("the mode's number, by frequency"));
 }
 
 // ------------------------------------------------------------------ Waves in the plane
@@ -2824,6 +3271,80 @@ ModeFields modeFieldsAt(PointEvaluator& e, int f)
 std::unique_ptr<Problem> makeModeProblem(Solution& solution, int field)
 {
     return std::make_unique<ModeProblem>(solution, field);
+}
+
+ResonatorFields resonatorFieldsAt(PointEvaluator& e, int f)
+{
+    ResonatorFields out;
+    const Solution& s = e.solution();
+    const Field& fld = s.fields()[std::size_t(f)];
+    const int t = e.triangle();
+    if (t < 0 || !fld.edges || fld.extra.size() < 3) return out;
+    const int d = e.domain();
+    if (d < 0 || !fld.domains[std::size_t(d)]) return out;
+    const EdgeSpace& es = *fld.edges;
+    const Space& ns = *fld.space;
+    const int ne = es.size(), nn = ns.size();
+    if (int(fld.values.size()) < 2 * ne + 2 * nn) return out;
+    const Mesh& mesh = s.mesh();
+    const AffineMap am = affineMap(ns, t);
+    // r there; on the axis (or nearly), the fields a little inside its
+    // triangle - its curl's 1/r parts their limits.
+    double xi = e.xi(), eta = e.eta();
+    auto rAt = [&](double a, double b) {
+        const std::array<int, 3>& v = mesh.triangles[std::size_t(t)];
+        return ((1 - a - b) * mesh.nodes[std::size_t(v[0])].x() + a * mesh.nodes[std::size_t(v[1])].x() + b * mesh.nodes[std::size_t(v[2])].x())
+               * mesh.unitScale;
+    };
+    double r = rAt(xi, eta);
+    const double size = std::sqrt(std::abs(am.det));
+    if (r < 1e-6 * size) {
+        xi += 1e-3 * (1.0 / 3 - xi);
+        eta += 1e-3 * (1.0 / 3 - eta);
+        r = rAt(xi, eta);
+    }
+    if (!(r > 0)) return out;
+    EdgeSpace::Basis b;
+    es.basis(t, am, xi, eta, b);
+    cd er = 0, ez = 0, curl = 0;
+    for (int i = 0; i < b.count; ++i) {
+        const int dof = es.dofs(t)[i];
+        const cd v(fld.values[std::size_t(dof)], fld.values[std::size_t(ne + dof)]);
+        er += b.vx[i] * v;
+        ez += b.vy[i] * v;
+        curl += b.curl[i] * v;
+    }
+    Shape sh;
+    shapeAt(ns.order(), xi, eta, sh);
+    cd chi = 0, chir = 0, chiz = 0;
+    for (int i = 0; i < sh.count; ++i) {
+        const int dof = ns.dofs(t)[i];
+        const cd v(fld.values[std::size_t(2 * ne + dof)], fld.values[std::size_t(2 * ne + nn + dof)]);
+        chi += sh.n[i] * v;
+        chir += (sh.dxi[i] * am.grad[1][0] + sh.deta[i] * am.grad[2][0]) * v;
+        chiz += (sh.dxi[i] * am.grad[1][1] + sh.deta[i] * am.grad[2][1]) * v;
+    }
+    const cd k(fld.extra[0], fld.extra[1]);
+    const double m = fld.extra[2];
+    const cd omega = k * C0;
+    double mur = e.coefficient(f, QStringLiteral("mur"));
+    if (!std::isfinite(mur) || mur <= 0) mur = 1;
+    // E_φ = j χ/r; ∇×E = (-j(m E_z + ∂z χ)/r, j(m E_r + ∂r χ)/r, ∂z E_r - ∂r E_z)
+    // along r, z, φ; H = j/(ωµ) ∇×E.
+    const cd f0 = J / (omega * Mu0 * mur);
+    out.E[0] = er;
+    out.E[1] = ez;
+    out.E[2] = J * chi / r;
+    out.H[0] = f0 * (-J * (m * ez + chiz) / r);
+    out.H[1] = f0 * (J * (m * er + chir) / r);
+    out.H[2] = f0 * (-curl);
+    out.defined = true;
+    return out;
+}
+
+std::unique_ptr<Problem> makeResonatorProblem(Solution& solution, int field)
+{
+    return std::make_unique<ResonatorProblem>(solution, field);
 }
 
 } // namespace qucs_s::fem::detail

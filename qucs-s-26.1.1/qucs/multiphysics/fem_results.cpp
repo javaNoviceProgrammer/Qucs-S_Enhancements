@@ -1052,7 +1052,17 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         }
         // Modes: at that frequency (the last when none is asked), the mode asked.
         bool several = false;
-        if (s.modeAnalysis) {
+        if (s.modeAnalysis && s.eigenfrequencies) {
+            // A resonator's, each at its own frequency: the mode asked, the
+            // first when none is (a frequency asked: the nearest's).
+            several = true;
+            if (mode > 0) {
+                for (int k = 0; k < snaps; ++k)
+                    if (s.snapshotMode(k) == mode) pick = k;
+            } else if (at.trimmed().isEmpty()) {
+                pick = 0;
+            }
+        } else if (s.modeAnalysis) {
             for (int k = 1; k < snaps; ++k) several = several || s.snapshotFrequency(k) != s.snapshotFrequency(0);
             // (None asked: the one its step chose, the first unless it said.)
             const double f = s.snapshotFrequency(pick);

@@ -1249,6 +1249,36 @@ private slots:
             QVERIFY2(slowBuild() || iso.mesh->triangles.size() > 5 * lay.mesh->triangles.size(),
                      qPrintable(QStringLiteral("%1 %2").arg(iso.mesh->triangles.size()).arg(lay.mesh->triangles.size())));
         }
+        // A layer split (an aperture's edge at 2 um in a 5 um stack) where
+        // the lateral size divides the widths apart (2/0.06, 3/0.06, 5/0.06):
+        // the stack's one set of columns - 34 to the edge, 50 after it - in
+        // every layer and on every boundary, the base's two layers from the
+        // split too; the cells whole, no sliver. (Each layer's width
+        // divided apart: 84 columns beside 34 + 50.)
+        {
+            const MeshBuild split = meshOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um", "geometry": [
+                {"type": "rectangle", "name": "base", "position": ["0", "-0.1"], "size": ["5", "0.1"]},
+                {"type": "rectangle", "name": "below", "size": ["5", "0.1"]},
+                {"type": "rectangle", "name": "aperture", "position": ["0", "0.1"], "size": ["2", "0.03"]},
+                {"type": "rectangle", "name": "oxide", "position": ["2", "0.1"], "size": ["3", "0.03"]},
+                {"type": "rectangle", "name": "above", "position": ["0", "0.13"], "size": ["5", "0.1"]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.5",
+                         "features": [{"type": "layered", "hlateral": "0.06", "count": 2, "selection": {"all": true}}]}}]})");
+            QVERIFY2(split.mesh, qPrintable(split.error));
+            auto column = [](double x) {
+                const double a = x * 34 / 2, b = (x - 2) * 50 / 3;
+                return (x <= 2 + 1e-9 && std::abs(a - std::round(a)) < 1e-6) || (x >= 2 - 1e-9 && std::abs(b - std::round(b)) < 1e-6);
+            };
+            double least = std::numeric_limits<double>::infinity();
+            for (const auto& v : split.mesh->triangles) {
+                const QPointF a = split.mesh->nodes[std::size_t(v[0])], b = split.mesh->nodes[std::size_t(v[1])], c = split.mesh->nodes[std::size_t(v[2])];
+                least = std::min(least, std::abs((b.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (b.y() - a.y())) / 2);
+                for (const QPointF& p : {a, b, c}) QVERIFY2(column(p.x()), qPrintable(QStringLiteral("(%1, %2)").arg(p.x(), 0, 'g', 12).arg(p.y())));
+            }
+            // (The smallest cell's half: 2/34 by 0.015, halved.)
+            QVERIFY2(least > 0.99 * (2.0 / 34) * 0.015 / 2, qPrintable(QString::number(least)));
+            QCOMPARE(int(split.mesh->triangles.size()), 4 * 84 * 2 * 2);   // (four layers, 84 columns, two rows)
+        }
         // The TE0 of four layers: the same on the layered mesh (two rows, 50
         // nm; four, 25) as on the isotropic one, to 2e-6. (A slow build: the
         // two layered ones alike, the isotropic one left out.)

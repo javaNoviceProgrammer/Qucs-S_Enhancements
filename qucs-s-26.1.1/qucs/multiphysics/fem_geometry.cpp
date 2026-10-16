@@ -67,6 +67,30 @@ double segmentDistance(QPointF p, QPointF a, QPointF b, double* along = nullptr)
 
 constexpr double ArcStep = M_PI / 180;   // an arc's pieces: a degree each, for the topology
 
+/// cos and sin, exact at multiples of a right angle: a quarter turn's
+/// cos(-π/2) 6e-17 left a rotated half-disk's edge that far off the axis
+/// it lies on, a sliver of triangles between (a body of revolution's 1/r
+/// then astronomical there).
+double exactCos(double t)
+{
+    const double q = t / (M_PI / 2), n = std::round(q);
+    if (std::abs(q - n) < 1e-12) {
+        const long long k = ((static_cast<long long>(n) % 4) + 4) % 4;
+        return k == 0 ? 1.0 : k == 2 ? -1.0 : 0.0;
+    }
+    return std::cos(t);
+}
+
+double exactSin(double t)
+{
+    const double q = t / (M_PI / 2), n = std::round(q);
+    if (std::abs(q - n) < 1e-12) {
+        const long long k = ((static_cast<long long>(n) % 4) + 4) % 4;
+        return k == 1 ? 1.0 : k == 3 ? -1.0 : 0.0;
+    }
+    return std::sin(t);
+}
+
 } // namespace
 
 // ------------------------------------------------------------------ Curves
@@ -82,7 +106,7 @@ QPointF Curve::at(double t) const
         if (last == 0) return pts[0];
         return pts[std::size_t(i)] + (pts[std::size_t(i) + 1] - pts[std::size_t(i)]) * u;
     }
-    return c + a * std::cos(t) + b * std::sin(t);
+    return c + a * exactCos(t) + b * exactSin(t);
 }
 
 double Curve::paramOf(QPointF p) const
@@ -298,7 +322,7 @@ struct Affine {
     static Affine rotate(double radians, QPointF about)
     {
         Affine a;
-        const double c = std::cos(radians), s = std::sin(radians);
+        const double c = exactCos(radians), s = exactSin(radians);
         a.m11 = c;
         a.m12 = -s;
         a.m21 = s;
@@ -582,7 +606,7 @@ private:
         const double rot = angle(f.text(QStringLiteral("rotation")));
         if (!a_error.isEmpty()) return;
         if (!(axes.x() > 0) || !(axes.y() > 0)) return fail(tr("an ellipse's semiaxes must be more than 0"));
-        const double c = std::cos(rot), s = std::sin(rot);
+        const double c = exactCos(rot), s = exactSin(rot);
         arcObject(f, center, QPointF(axes.x() * c, axes.x() * s), QPointF(-axes.y() * s, axes.y() * c), 2 * M_PI, 0);
     }
     void polygon(const Node& f)
@@ -1720,6 +1744,19 @@ QSet<int> objectIndices(const Topology& t, const QJsonValue& names, QStringList&
             if (t.objectNames.at(i) == n) {
                 out.insert(i);
                 any = true;
+            }
+        // No object of the name: an array's (or another feature's numbered
+        // objects') name selects every one of them, n_1, n_2...
+        if (!any && !n.isEmpty())
+            for (int i = 0; i < t.objectNames.size(); ++i) {
+                const QString& o = t.objectNames.at(i);
+                if (o.size() < n.size() + 2 || !o.startsWith(n) || o.at(n.size()) != QLatin1Char('_')) continue;
+                bool digits = true;
+                for (qsizetype k = n.size() + 1; k < o.size() && digits; ++k) digits = o.at(k).isDigit();
+                if (digits) {
+                    out.insert(i);
+                    any = true;
+                }
             }
         if (!any) unknown << n;
     }
