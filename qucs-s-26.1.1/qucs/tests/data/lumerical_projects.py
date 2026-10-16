@@ -411,3 +411,15 @@ with h5py.File('lumerical_heat.ldev', 'w', libver='latest') as f:
     child(2, {'name': 'top', 'type': 'Convection', 'surface type': 6, 'material 1': 'SiO2', 'material 2': 'Air', 'h convection': 10.0,
               'ambient temperature': 300.0, 'convection model': 0, 'enabled': 1}, bcs)
     child(3, {'name': 'heater', 'type': 'Uniform Power Heat Source', 'volume solid': 'wire', 'total power': 1e-5, 'use solver norm length': 1, 'enabled': 1}, bcs)
+
+# lumerical_damaged_dataspace.ldev: the HEAT project above as the fuzz
+# round's fuzzer damaged it (docs/bug_hunts/2026-10-16-fuzz.md, F6) - three
+# bytes cut at 5082, eight at 13586 set to all ones, five cut at 15732, its
+# 53 bytes from 3052 put in again at 16772, all from 20670 cut. Its offsets
+# are into the project as written here (HDF5 1.14's layout): written by
+# another library, see that test_fem_lumerical's damagedInputsAreRefused
+# still reads it as damaged.
+with open('lumerical_heat.ldev', 'rb') as f:
+    heat = f.read()
+with open('lumerical_damaged_dataspace.ldev', 'wb') as f:
+    f.write(heat[:5082] + heat[5085:13586] + b'\xff' * 8 + heat[13594:15732] + heat[15737:16772] + heat[3052:3105] + heat[16772:20670])
