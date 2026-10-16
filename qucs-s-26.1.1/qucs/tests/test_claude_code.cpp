@@ -13,6 +13,9 @@
 #include <QDialog>
 #include <QListWidget>
 #include <QPushButton>
+#include <QHeaderView>
+#include <QProxyStyle>
+#include <QStyleOptionViewItem>
 #include <QTreeWidget>
 #include <QApplication>
 #include <QDockWidget>
@@ -3491,6 +3494,84 @@ private slots:
         tabs.current()->sendComposer();
         QTRY_COMPARE(tabs.current(), panel);
         QCOMPARE(tabs.count(), tabsNow + 1);
+        QDir(history::directory()).removeRecursively();
+    }
+
+    // The resume list's columns: each one's edge dragged by the mouse - the
+    // conversation's had been stretched, out of the user's reach -, the
+    // widths kept for the next time; a folder's path cut in its middle, its
+    // end (the project) seen.
+    void resumeColumnsAreResized()
+    {
+        using namespace qucs_s::claude;
+        QucsSettingsFile().remove("ClaudeCode/resumeColumns");
+        const QString work = fresh("resumecolumns");
+        const QString folder = work + "/a/rather/deep/folder/of/the/workspace/filter_prj";
+        QVERIFY(history::save("cols1", {{"title", "A conversation whose first prompt is long enough to be cut short in its column"},
+                                        {"folder", folder}, {"sessionId", "s-cols"},
+                                        {"entries", QJsonArray{QJsonObject{{"kind", 0}, {"text", "Old prompt"}}}}}));
+        ClaudeCodeTabs tabs;
+        tabs.setDefaultDirectory(work);
+
+        // (What each cell is drawn with: its elision, by column.)
+        class Recorder : public QProxyStyle
+        {
+        public:
+            QMap<int, Qt::TextElideMode> elide;
+            void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter, const QWidget* widget) const override
+            {
+                if (const auto* item = qstyleoption_cast<const QStyleOptionViewItem*>(option); item && element == CE_ItemViewItem)
+                    const_cast<Recorder*>(this)->elide[item->index.column()] = item->textElideMode;
+                QProxyStyle::drawControl(element, option, painter, widget);
+            }
+        };
+        auto drag = [](QHeaderView* header, int section, int by) {
+            const QPoint from(header->sectionViewportPosition(section) + header->sectionSize(section) - 1, header->height() / 2);
+            QTest::mousePress(header->viewport(), Qt::LeftButton, {}, from);
+            for (int step = 1; step <= 4; ++step) QTest::mouseMove(header->viewport(), from + QPoint(by * step / 4, 0));
+            QTest::mouseRelease(header->viewport(), Qt::LeftButton, {}, from + QPoint(by, 0));
+        };
+        QList<int> widths;
+        {
+            QScopedPointer<QDialog> dialog(tabs.resumeDialog(work, QString()));
+            dialog->resize(900, 400);
+            dialog->show();
+            QVERIFY(QTest::qWaitForWindowExposed(dialog.data()));
+            auto* list = dialog->findChild<QTreeWidget*>("claudeResumeList");
+            QVERIFY(list);
+            QHeaderView* header = list->header();
+            // Narrower, then wider: each of the first three columns.
+            for (int s = 0; s < 3; ++s) {
+                const int before = header->sectionSize(s);
+                drag(header, s, -30);
+                QVERIFY2(header->sectionSize(s) <= before - 20, qPrintable(QStringLiteral("column %1: %2 -> %3").arg(s).arg(before).arg(header->sectionSize(s))));
+                const int narrowed = header->sectionSize(s);
+                drag(header, s, 60);
+                QVERIFY2(header->sectionSize(s) >= narrowed + 40, qPrintable(QStringLiteral("column %1: %2 -> %3").arg(s).arg(narrowed).arg(header->sectionSize(s))));
+            }
+            for (int s = 0; s < 3; ++s)
+                QVERIFY2(header->sectionResizeMode(s) == QHeaderView::Interactive, qPrintable(QString::number(s)));
+            // The folder's cut in its middle (its end shown), the title's at
+            // its end.
+            header->resizeSection(1, 160);
+            Recorder recorder;
+            list->setStyle(&recorder);
+            list->viewport()->grab();
+            QCOMPARE(recorder.elide.value(1, Qt::ElideNone), Qt::ElideMiddle);
+            QCOMPARE(recorder.elide.value(0, Qt::ElideNone), Qt::ElideRight);
+            list->setStyle(nullptr);
+            for (int s = 0; s < 3; ++s) widths << header->sectionSize(s);
+            dialog->reject();
+        }
+        // Opened again: as they were left.
+        QScopedPointer<QDialog> again(tabs.resumeDialog(work, QString()));
+        again->resize(900, 400);
+        again->show();
+        QVERIFY(QTest::qWaitForWindowExposed(again.data()));
+        QHeaderView* header = again->findChild<QTreeWidget*>("claudeResumeList")->header();
+        for (int s = 0; s < 3; ++s) QCOMPARE(header->sectionSize(s), widths.at(s));
+        again->reject();
+        QucsSettingsFile().remove("ClaudeCode/resumeColumns");
         QDir(history::directory()).removeRecursively();
     }
 
