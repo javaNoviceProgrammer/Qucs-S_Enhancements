@@ -425,9 +425,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
         const QString tips[4] = {
             tr("Its tiles kept on the GPU as textures and drawn, scaled and scrolled by it; the pages themselves "
                "are drawn by pdfium on the CPU, as before."),
-            tr("Its text drawn by the GPU from a glyph atlas, its images as textures. A whole paint a little "
-               "quicker than the CPU's, a scroll slower (the CPU moves the picture and paints the lines coming in): "
-               "the CPU unless chosen."),
+            tr("Its text drawn by the GPU from a glyph atlas, its images as textures: a little quicker than the "
+               "CPU, its glyphs a little heavier than the platform draws them. The CPU unless chosen."),
             tr("The cell flattened once into the GPU's buffers: a pan or a zoom a frame of the GPU's, the CPU "
                "drawing nothing. Past two million shapes the CPU draws it."),
             tr("The geometry, mesh, surfaces and lines from the GPU's buffers (also in Multiphysics > Settings… and "

@@ -2,7 +2,9 @@
 
 The request (2026-10-17): *"Let's add GPU rendering and acceleration to the pdf viewer, markdown viewer, and gds layout viewer and add a setting option in qucs setting so that the user can manually choose CPU or GPU acceleration for these."*
 
-An earlier note (2026-10-16-claude-multiphysics-settings.md) had named the layout viewer the best candidate and expected nothing from the other two. Measured now, the PDF viewer gains as well; the Markdown preview does not, so it is drawn by the CPU unless chosen.
+An earlier note (2026-10-16-claude-multiphysics-settings.md) had named the layout viewer the best candidate and expected nothing from the other two. Measured now, the PDF viewer gains as well. The Markdown preview is drawn by the CPU unless chosen.
+
+> **Corrected the same day** (2026-10-17-claude-markdown-dark-mode.md): the Markdown figures below were measured while the preview had wrong colours in a dark theme. That fault also let the CPU scroll by moving the picture. Measured again with the right colours, the GPU is a little quicker. The preview keeps the CPU by default for its glyphs, which Qt's OpenGL engine draws a little heavier than the platform does.
 
 ## The setting
 
@@ -11,7 +13,7 @@ An earlier note (2026-10-16-claude-multiphysics-settings.md) had named the layou
 | Viewer | Kept as | Default |
 |---|---|---|
 | PDF viewer | `Rendering/pdf` (`gpu`, `cpu`) | GPU |
-| Markdown preview | `Rendering/markdown` | **CPU** (see the measurements) |
+| Markdown preview | `Rendering/markdown` | **CPU** (its glyphs the platform's; see the correction above) |
 | Layout viewer (GDS, OASIS) | `Rendering/layout` | GPU |
 | Multiphysics Graphics view | `Multiphysics/gpu` (also in Multiphysics > Settings… and the view's menu) | GPU |
 
@@ -53,12 +55,13 @@ Measured on an M2 Ultra under macOS 26, on its own display, by the tests below; 
 | Layout | The same, zoomed into a corner | 3 ms | 4 to 6 ms |
 | Layout | 8,000 rings and C's of 96 points, all in sight: a view | 45 to 75 ms | 6 to 8 ms; its buffers 9 ms, once |
 | PDF | A scroll's paint (median of 20) | 1.8 to 3.0 ms | **0.12 to 0.22 ms** |
-| Markdown | A scroll's paint (median) | **0.25 to 0.30 ms** | 1.38 to 1.41 ms |
-| Markdown | All of it painted again | 2.5 to 3.0 ms | 1.6 to 1.8 ms |
+| Markdown | A scroll's paint (median), as first measured (wrong colours) | 0.25 to 0.30 ms | 1.38 to 1.41 ms |
+| Markdown | The same, measured again with the right colours | 2.05 to 2.22 ms | **1.27 to 1.42 ms** |
+| Markdown | All of it painted again, with the right colours | 1.7 to 2.0 ms | 1.5 to 1.7 ms |
 
 **Zoomed into a corner of a large layout, the CPU is as quick.** It draws only the shapes in sight, while the GPU draws every shape from its buffers, those out of sight too. The GPU's gain is the whole layout in sight, and every pan or zoom without a new picture.
 
-**Why the Markdown preview stays on the CPU.** On a scroll, the CPU moves the picture and paints only the lines coming in. The GPU's framebuffer is drawn whole each frame. A whole paint is a little quicker on the GPU, but scrolling is most of what a preview does, and there the CPU is about five times cheaper. So the CPU is the default, and the GPU is a choice.
+**Why the Markdown preview stays on the CPU.** As first measured, a CPU scroll moved the picture and painted only the lines coming in, about five times cheaper than the GPU's whole frame. That was the colour fault: the wrong fill let Qt move the picture. With the right colours, every scroll paints the whole view on either path, and the GPU is a little quicker. The CPU stays the default for its glyphs, the platform's own. The GPU is a choice.
 
 **Alike, picture for picture** (the same view grabbed each way; "alike" means a pixel's colour within a pixel of it in the other picture):
 
@@ -68,9 +71,9 @@ Measured on an M2 Ultra under macOS 26, on its own display, by the tests below; 
 | The sample layout | 2.84 % of the inked pixels, all in its text's glyphs (the GL engine's grey edges) |
 | The curves | 4.9 % of the sampled pixels, at the curves' edges (triangles rasterized against QPainter's spans), checked by eye |
 | A PDF page | 0 pixels |
-| Markdown: headings, a table, code, math, quotes, an image | 0.28 % of the inked pixels |
-| Markdown, with a selection | 0.45 % |
-| Markdown, scrolled 237 pixels down | 0 pixels |
+| Markdown: headings, a table, code, math, quotes, an image | 0.28 % of the inked pixels on the wrong (dark) paper; 10.2 % on the right white paper, at the glyphs' edges; no 32 by 32 block's mean colour apart by more than 9 |
+| Markdown, with a selection | 0.45 %; on the white paper 7.8 %, blocks within 9 |
+| Markdown, scrolled 237 pixels down | 0 pixels; on the white paper 19.6 %, blocks within 9 |
 
 ## Found doing it
 
@@ -158,7 +161,7 @@ Sixteen changes broken on purpose, all caught. Ten were caught at once; six only
   - the PDF `everyCommandLeavesItWhole` sometimes stops in File > Save As: macOS's own save panel, which the test's dialog closer cannot close. It ran to QtTest's 300 s limit once, and passed in other runs.
 
   All pass offscreen.
-- **An older fault found on the display:** in macOS dark mode with the platform theme, the Markdown preview has black text on a near-black background. Its paper and ink are set as a palette, which the main window's style sheet resets; the text editor sets them as a style sheet for this reason. It is the CPU's picture too, so it is not fixed here; it is flagged as a task of its own.
+- **An older fault found on the display:** in macOS dark mode with the platform theme, the Markdown preview has black text on a near-black background. Its paper and ink are set as a palette, which the main window's style sheet resets; the text editor sets them as a style sheet for this reason. It is the CPU's picture too, so it was not fixed here. It was flagged as a task of its own, and fixed in the next commit (2026-10-17-claude-markdown-dark-mode.md), with both Markdown tests above.
 - **Under the sanitizers** (offscreen and on the display): the new and changed functions, and the whole PDF and Markdown tests before their last changes. No report.
 - **The lints pass.**
 

@@ -34,7 +34,7 @@ QString settingKey(Viewer viewer);
 /// "PDF viewer", "Markdown preview", ...
 QString viewerName(Viewer viewer);
 /// The user's choice: the GPU unless set to the CPU - the Markdown
-/// preview the CPU unless set to the GPU (its scrolls the CPU's cheaper).
+/// preview the CPU unless set to the GPU (its text the platform's glyphs).
 bool wanted(Viewer viewer);
 /// Kept, and told to the open viewers (changed()).
 void setWanted(Viewer viewer, bool gpu);

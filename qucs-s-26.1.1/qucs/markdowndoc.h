@@ -159,6 +159,9 @@ public:
     bool previewGpu() const;
     /// The rendering made again now (it is a moment after each edit).
     void renderNow();
+    /// The editor's colours and the rendering's, in the theme's paper and
+    /// ink (black on white under the platform's themes, light or dark).
+    void applyDocumentColors() override;
     /// Where a link of the rendering leads (see the class).
     void followLink(const QUrl& url);
     /// The part of the width the text has in Split mode (0.15 to 0.85).
