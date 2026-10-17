@@ -26,6 +26,7 @@
 # include <config.h>
 #endif
 
+#include "gpurendering.h"
 #include "qucssettingsdialog.h"
 #include <iostream>
 #include <cmath>
@@ -60,6 +61,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QGroupBox>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QTableWidgetItem>
 #include <QHeaderView>
@@ -411,6 +413,45 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                    "the whole path.\n0 (Never): names are shown whole."));
     fileNameCapSpin->setValue(QucsSettings.FileNameCap);
     appAppearanceGrid->addWidget(fileNameCapSpin, 14, 1);
+
+    // Each viewer drawn by the GPU (OpenGL) or the CPU, as the user chooses.
+    {
+        auto *drawing = new QGroupBox(tr("Drawing: the GPU (OpenGL) or the CPU"), appAppearanceTab);
+        drawing->setObjectName("drawingGroup");
+        auto *rows = new QGridLayout(drawing);
+        const qucs_s::gpu::Viewer viewers[4] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
+                                                qucs_s::gpu::Viewer::Multiphysics};
+        const char *names[4] = {"drawingPdf", "drawingMarkdown", "drawingLayout", "drawingMultiphysics"};
+        const QString tips[4] = {
+            tr("Its tiles kept on the GPU as textures and drawn, scaled and scrolled by it; the pages themselves "
+               "are drawn by pdfium on the CPU, as before."),
+            tr("Its text drawn by the GPU from a glyph atlas, its images as textures. A whole paint a little "
+               "quicker than the CPU's, a scroll slower (the CPU moves the picture and paints the lines coming in): "
+               "the CPU unless chosen."),
+            tr("The cell flattened once into the GPU's buffers: a pan or a zoom a frame of the GPU's, the CPU "
+               "drawing nothing. Past two million shapes the CPU draws it."),
+            tr("The geometry, mesh, surfaces and lines from the GPU's buffers (also in Multiphysics > Settings… and "
+               "the view's own menu).")};
+        for (int i = 0; i < 4; ++i) {
+            rows->addWidget(new QLabel(qucs_s::gpu::viewerName(viewers[i]) + QLatin1Char(':'), drawing), i, 0);
+            drawingCombos[i] = new QComboBox(drawing);
+            drawingCombos[i]->setObjectName(names[i]);
+            drawingCombos[i]->addItem(tr("GPU (OpenGL)"));
+            drawingCombos[i]->addItem(tr("CPU"));
+            drawingCombos[i]->setToolTip(tips[i]);
+            drawingCombos[i]->setCurrentIndex(qucs_s::gpu::wanted(viewers[i]) ? 0 : 1);
+            rows->addWidget(drawingCombos[i], i, 1);
+        }
+        drawingStatus = new QLabel(drawing);
+        drawingStatus->setObjectName("drawingStatus");
+        drawingStatus->setWordWrap(true);
+        const QString hindrance = qucs_s::gpu::hindrance();
+        drawingStatus->setText(hindrance.isEmpty() ? tr("The GPU can draw here (OpenGL 3.3). QUCS_GPU=0 in the environment "
+                                                        "turns it off for all of them.")
+                                                   : hindrance);
+        rows->addWidget(drawingStatus, 4, 0, 1, 2);
+        appAppearanceGrid->addWidget(drawing, 15, 0, 1, 2);
+    }
 
     t->addTab(appAppearanceTab, tr("Appearance"));
 
@@ -981,6 +1022,17 @@ void QucsSettingsDialog::slotApply()
 {
     bool changed = false;
     bool homeDirChanged = false;
+
+    // Each viewer drawn as chosen: told to the open ones.
+    {
+        const qucs_s::gpu::Viewer viewers[4] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
+                                                qucs_s::gpu::Viewer::Multiphysics};
+        for (int i = 0; i < 4; ++i) {
+            if (drawingCombos[i] == nullptr) continue;
+            const bool gpu = drawingCombos[i]->currentIndex() == 0;
+            if (gpu != qucs_s::gpu::wanted(viewers[i])) qucs_s::gpu::setWanted(viewers[i], gpu);
+        }
+    }
 
     // check QucsHome is changed, will require to close all files and refresh tree
     // (the field shows the canonical path: compare canonically, or a workspace

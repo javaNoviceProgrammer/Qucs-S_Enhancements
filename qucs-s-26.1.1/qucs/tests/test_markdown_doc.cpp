@@ -25,6 +25,8 @@
 #include <QTextDocument>
 #include <QTextTable>
 
+#include "multiphysicsview.h"
+#include "gpurendering.h"
 #include "config.h"
 #include "qucs.h"
 #include "module.h"
@@ -47,6 +49,40 @@ void pump()
 {
     for (int i = 0; i < 3; ++i) QCoreApplication::processEvents();
 }
+
+// The time a viewport's paint takes, its painting sent on and timed.
+class PaintTimer : public QObject
+{
+public:
+    explicit PaintTimer(QWidget* viewport) : QObject(viewport) { viewport->installEventFilter(this); }
+    qint64 worst = 0;   // µs
+    int paints = 0;
+    QList<qint64> times;   // µs, each paint's
+    qint64 median() const
+    {
+        QList<qint64> sorted = times;
+        std::sort(sorted.begin(), sorted.end());
+        return sorted.isEmpty() ? 0 : sorted.at(sorted.size() / 2);
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() != QEvent::Paint || a_inside) return false;
+        a_inside = true;
+        QElapsedTimer t;
+        t.start();
+        QCoreApplication::sendEvent(watched, event);
+        times << t.nsecsElapsed() / 1000;
+        worst = std::max(worst, times.last());
+        ++paints;
+        a_inside = false;
+        return true;
+    }
+
+private:
+    bool a_inside = false;
+};
 
 // The blocks of a rendering whose text is \a text.
 QTextBlock blockWith(QTextDocument* doc, const QString& text)
@@ -586,6 +622,186 @@ private slots:
         app.closeAllFiles();
     }
 
+    // Drawn by the GPU as by the CPU (gpurendering.h: an OpenGL viewport
+    // drawing the document as QTextEdit does, drawPreview): headings, a
+    // table, code, math, a quote's bars, an image, a selection, scrolled; a
+    // document shorter than the view; what the screen shows the grab's
+    // picture; the setting switching the preview open; a scroll's paint
+    // timed each way.
+    void theGpuDrawsAsTheCpu()
+    {
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        QImage picture(240, 80, QImage::Format_RGB32);
+        picture.fill(qRgb(30, 120, 200));
+        QVERIFY(picture.save(dir.filePath("picture.png")));
+        QByteArray text = kReadme;
+        text += "\n> A quote,\n>\n>> nested.\n\n![a picture](picture.png)\n\n- one\n- two\n";
+        for (int i = 0; i < 40; ++i) text += "\nLine " + QByteArray::number(i) + " of the tail, long enough to wrap at the preview's width or near it.\n";
+        const QString file = write("gpu.md", text);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        QTextBrowser* view = md->preview();
+        QVERIFY(!md->previewGpu());   // (the CPU's unless chosen)
+        QVERIFY(!qucs_s::gpu::wanted(qucs_s::gpu::Viewer::Markdown));
+        // (Two grabs alike: what a timer renders again - math, images -
+        // done.)
+        const auto shownOf = [](QTextBrowser* v) {
+            QImage last;
+            for (int k = 0; k < 100; ++k) {
+                QTest::qWait(40);
+                const QImage now = v->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
+                if (!last.isNull() && now == last) return now;
+                last = now;
+            }
+            return last;
+        };
+        const auto shown = [&shownOf, view] { return shownOf(view); };
+        // What the screen shows, read before a grab paints the framebuffer
+        // again: alike twice, the window having painted it.
+        const auto onScreen = [](QTextBrowser* v) {
+            QImage last;
+            for (int k = 0; k < 100; ++k) {
+                QTest::qWait(40);
+                const QImage now = qucs_s::gpu::shownFrame(v);
+                if (k >= 3 && !last.isNull() && now == last) return now;
+                last = now;
+            }
+            return last;
+        };
+        const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS");
+        for (const QString& kind : {QStringLiteral("plain"), QStringLiteral("selected"), QStringLiteral("scrolled")}) {
+            if (kind == "selected") {
+                QTextCursor c(view->document());
+                c.setPosition(4);
+                c.setPosition(60, QTextCursor::KeepAnchor);
+                view->setTextCursor(c);
+            }
+            if (kind == "scrolled") {
+                QVERIFY(view->verticalScrollBar()->maximum() > 300);
+                view->verticalScrollBar()->setValue(237);
+            }
+            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Markdown, false);
+            QVERIFY(!md->previewGpu());
+            QCOMPARE(QucsSettingsFile().value("Rendering/markdown").toString(), QString("cpu"));
+            const QImage cpu = shown();
+            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Markdown, true);
+            QVERIFY(md->previewGpu());
+            // What the screen shows - the framebuffer as the window painted
+            // it, not a grab's paint - is the grab's picture.
+            const QImage screen = onScreen(view);
+            const QImage gpu = shown();
+            QCOMPARE(gpu.size(), cpu.size());
+            QCOMPARE(screen.size(), gpu.size());
+            // The quotes' bars, each its colour in each.
+            const qreal ratio = cpu.devicePixelRatio();
+            int bars = 0;
+            for (const QRectF& bar : qucs_s::markdown::QuoteBars::bars(view)) {
+                const QPoint at = (bar.center() * ratio).toPoint();
+                if (!cpu.rect().contains(at)) continue;
+                ++bars;
+                QVERIFY2(cpu.pixel(at) != cpu.pixel(at + QPoint(int(6 * ratio), 0)), "a bar drawn by the CPU");
+                QCOMPARE(QColor(gpu.pixel(at)), QColor(cpu.pixel(at)));
+                QCOMPARE(QColor(screen.pixel(at)), QColor(cpu.pixel(at)));
+            }
+            if (kind != "scrolled") QVERIFY(bars >= 2);
+            // (Alike where a pixel of one has its colour in the other within
+            // a pixel of it: a glyph's grey edge is the GL engine's.)
+            const QColor paper = cpu.pixelColor(cpu.width() - 3, cpu.height() - 3);
+            const auto near = [](const QImage& in, int x, int y, QColor want) {
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (!in.rect().contains(x + dx, y + dy)) continue;
+                        const QColor k = in.pixelColor(x + dx, y + dy);
+                        if (std::abs(k.red() - want.red()) + std::abs(k.green() - want.green()) + std::abs(k.blue() - want.blue()) <= 60) return true;
+                    }
+                return false;
+            };
+            int inked = 0, differ = 0, blue = 0, off = 0;
+            for (int y = 0; y < cpu.height(); ++y)
+                for (int x = 0; x < cpu.width(); ++x) {
+                    const QColor a = cpu.pixelColor(x, y), b = gpu.pixelColor(x, y);
+                    blue += b == QColor(30, 120, 200);
+                    off += screen.pixel(x, y) != gpu.pixel(x, y);
+                    if (a == paper && b == paper) continue;
+                    ++inked;
+                    if (!near(gpu, x, y, a) || !near(cpu, x, y, b)) ++differ;
+                }
+            QVERIFY2(off == 0, qPrintable(QStringLiteral("the screen's frame and the grab: %1 pixels apart").arg(off)));
+            if (!shots.isEmpty()) {
+                cpu.save(shots + QStringLiteral("/markdown_cpu_%1.png").arg(kind));
+                gpu.save(shots + QStringLiteral("/markdown_gpu_%1.png").arg(kind));
+            }
+            qInfo("%s: %d of %d pixels inked, %d differ (%.2f %%)", qPrintable(kind), inked, cpu.width() * cpu.height(), differ,
+                  100.0 * differ / std::max(1, inked));
+            QVERIFY(inked > 5000);
+            if (kind != "scrolled") QVERIFY(blue > 1000);   // (the picture, drawn by the GPU)
+            QCOMPARE(view->verticalScrollBar()->value(), kind == "scrolled" ? 237 : 0);
+            QVERIFY2(differ < inked / 50, qPrintable(QStringLiteral("%1 of %2").arg(differ).arg(inked)));
+        }
+        // A document shorter than the view: the paper under it too - the
+        // GPU's viewport fills its background as Qt fills the CPU's, and a
+        // viewport back from the GPU still fills its own.
+        {
+            QVERIFY(app.gotoPage(write("short.md", "# Short\n\nOne line.\n")));
+            MarkdownDoc* small = current(app);
+            QVERIFY(small != nullptr && small != md);
+            small->setMode(MarkdownDoc::Mode::Preview);
+            QTextBrowser* preview = small->preview();
+            small->setPreviewGpu(false);
+            const QImage before = shownOf(preview);
+            small->setPreviewGpu(true);
+            QVERIFY(small->previewGpu());
+            const QImage screen = onScreen(preview), gpu = shownOf(preview);
+            small->setPreviewGpu(false);
+            const QImage after = shownOf(preview);
+            const QPoint low = QPoint(preview->viewport()->width() / 2, preview->viewport()->height() - 8) * before.devicePixelRatio();
+            // (the CPU's background: its viewport's, filled by Qt)
+            QCOMPARE(QColor(before.pixel(low)).name(), preview->viewport()->palette().color(preview->viewport()->backgroundRole()).name());
+            QCOMPARE(QColor(gpu.pixel(low)).name(), QColor(before.pixel(low)).name());
+            QCOMPARE(QColor(screen.pixel(low)).name(), QColor(before.pixel(low)).name());
+            QCOMPARE(QColor(after.pixel(low)).name(), QColor(before.pixel(low)).name());
+            QVERIFY(app.gotoPage(file));
+        }
+        // A scroll's paint, each way.
+        qint64 worst[2] = {0, 0}, median[2] = {0, 0}, whole[2] = {0, 0};
+        for (const bool onGpu : {false, true}) {
+            md->setPreviewGpu(onGpu);
+            (void)shown();
+            auto* timer = new PaintTimer(view->viewport());
+            for (int k = 0; k < 20; ++k) {
+                view->verticalScrollBar()->setValue(view->verticalScrollBar()->value() + 31);
+                QTest::qWait(20);
+            }
+            QTRY_VERIFY(timer->paints > 5);
+            worst[onGpu] = timer->worst;
+            median[onGpu] = timer->median();
+            // (all of it painted again: the drawing's own cost)
+            timer->times.clear();
+            for (int k = 0; k < 10; ++k) {
+                view->viewport()->update();
+                QTest::qWait(20);
+            }
+            QTRY_VERIFY(timer->times.size() >= 5);
+            whole[onGpu] = timer->median();
+            delete timer;
+            view->verticalScrollBar()->setValue(0);
+        }
+        qInfo("all of it painted: the CPU %lld µs, the GPU %lld µs", whole[0], whole[1]);
+        // (Back to the default for the tests after.)
+        QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Markdown));
+        md->setPreviewGpu(qucs_s::gpu::used(qucs_s::gpu::Viewer::Markdown));
+        QVERIFY(!md->previewGpu());
+        qInfo("a scroll's paint: the CPU %lld µs (%lld at most), the GPU %lld µs (%lld)", median[0], worst[0], median[1], worst[1]);
+        app.closeAllFiles();
+    }
+
     void drawnWhereLaidOutInAWindow()
     {
         QWidget window;
@@ -984,6 +1200,9 @@ private slots:
 int main(int argc, char** argv)
 {
     int one = 1;   // QucsApp opens every argument as a document
+    // (As the application: the core profile's OpenGL, before the
+    // application - the GPU's drawing where there is one.)
+    qucs_s::fem::GraphicsView::prepareGpu();
     QApplication app(one, argv);
     TestMarkdownDoc test;
     return QTest::qExec(&test, argc, argv);

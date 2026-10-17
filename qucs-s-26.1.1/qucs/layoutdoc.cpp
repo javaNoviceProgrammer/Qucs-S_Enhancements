@@ -12,6 +12,10 @@
  */
 #include "layoutdoc.h"
 
+#include "gpurendering.h"
+#ifdef QUCS_GPU_VIEW
+#include "layoutviewgl.h"
+#endif
 #include "links.h"
 #include "misc.h"
 #include "multiphysicsdoc.h"
@@ -300,6 +304,49 @@ LayoutView::LayoutView(QWidget* parent) : QWidget(parent)
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setMinimumSize(120, 80);
+    // Drawn by the GPU as set, and when the setting changes.
+    setGpu(gpu::used(gpu::Viewer::Layout));
+    connect(gpu::Notifier::instance(), &gpu::Notifier::changed, this, [this](gpu::Viewer viewer) {
+        if (viewer == gpu::Viewer::Layout) setGpu(gpu::used(gpu::Viewer::Layout));
+    });
+}
+
+void LayoutView::setGpu(bool on)
+{
+#ifdef QUCS_GPU_VIEW
+    if (on && !a_canvas && !a_gpuBroken && gpu::hindrance().isEmpty()) {
+        a_canvas = new LayoutGl(this);
+        a_canvas->setGeometry(rect());
+        a_canvas->show();
+    } else if (!on && a_canvas) {
+        delete a_canvas;
+        a_canvas = nullptr;
+    }
+#else
+    Q_UNUSED(on);
+#endif
+    invalidate();
+}
+
+bool LayoutView::gpu() const
+{
+#ifdef QUCS_GPU_VIEW
+    return a_canvas && !a_canvas->failed();
+#else
+    return false;
+#endif
+}
+
+void LayoutView::canvasFailed()
+{
+#ifdef QUCS_GPU_VIEW
+    a_gpuBroken = true;
+    if (a_canvas) {
+        a_canvas->deleteLater();
+        a_canvas = nullptr;
+    }
+#endif
+    invalidate();
 }
 
 void LayoutView::setLayout(std::shared_ptr<const Layout> layout)
@@ -411,6 +458,19 @@ void LayoutView::invalidate()
 {
     a_dirty = true;
     update();
+}
+
+void LayoutView::paintEvent(QPaintEvent*)
+{
+#ifdef QUCS_GPU_VIEW
+    // (The canvas over the view draws it.)
+    if (a_canvas) {
+        a_canvas->update();
+        return;
+    }
+#endif
+    QPainter p(this);
+    paintFrame(p, nullptr);
 }
 
 void LayoutView::setView(QPointF center, double scale)
@@ -563,18 +623,38 @@ QImage LayoutView::picture()
     return grab().toImage();
 }
 
-void LayoutView::paintEvent(QPaintEvent*)
+void LayoutView::paintFrame(QPainter& p, LayoutGl* gl)
 {
     const qreal ratio = devicePixelRatioF();
     const QSize pixels = (QSizeF(size()) * ratio).toSize();
     const Colors c = colors();
-    if (a_dirty || a_cache.size() != pixels) {
+    // The GPU's: the grid by QPainter, the layers from its buffers - past
+    // its budget, nothing drawn, the CPU's picture as without it.
+    bool drawn = false;
+#ifdef QUCS_GPU_VIEW
+    if (gl) {
+        p.fillRect(rect(), c.background);
+        drawn = true;
+        if (a_layout && a_cell >= 0) {
+            if (a_grid) paintGrid(p, c);
+            RenderStats stats;
+            drawn = gl->drawLayout(p, &stats);
+            if (drawn) {
+                a_stats = stats;
+                a_dirty = false;
+            }
+        }
+    }
+#else
+    Q_UNUSED(gl);
+#endif
+    if (!drawn && (a_dirty || a_cache.size() != pixels)) {
         a_cache = QImage(pixels, QImage::Format_ARGB32_Premultiplied);
         a_cache.setDevicePixelRatio(ratio);
         a_cache.fill(c.background);
         if (a_layout && a_cell >= 0) {
-            QPainter p(&a_cache);
-            if (a_grid) paintGrid(p, c);
+            QPainter cached(&a_cache);
+            if (a_grid) paintGrid(cached, c);
             RenderOptions o;
             o.cell = a_cell;
             o.depth = a_depth;
@@ -585,13 +665,13 @@ void LayoutView::paintEvent(QPaintEvent*)
             o.frames = c.frames;
             o.text = c.ink;
             if (a_adapted) o.background = c.background;
-            a_stats = qucs_s::layout::render(p, *a_layout, o);
+            a_stats = qucs_s::layout::render(cached, *a_layout, o);
             ++a_renders;
         }
         a_dirty = false;
     }
-    QPainter p(this);
-    p.drawImage(QPointF(0, 0), a_cache);
+    if (!drawn) p.drawImage(QPointF(0, 0), a_cache);
+    p.save();
     p.setRenderHint(QPainter::Antialiasing);
     if (a_grid && a_layout && a_cell >= 0) paintScale(p, c);
     // What is selected.
@@ -636,6 +716,7 @@ void LayoutView::paintEvent(QPaintEvent*)
         p.setBrush(tint);
         p.drawRect(a_zoomBox);
     }
+    p.restore();
 }
 
 void LayoutView::paintGrid(QPainter& p, const Colors& c) const
@@ -741,6 +822,9 @@ void LayoutView::paintScale(QPainter& p, const Colors& c) const
 
 void LayoutView::resizeEvent(QResizeEvent*)
 {
+#ifdef QUCS_GPU_VIEW
+    if (a_canvas) a_canvas->setGeometry(rect());
+#endif
     if (a_fitted) {
         fit();
         a_fitted = true;

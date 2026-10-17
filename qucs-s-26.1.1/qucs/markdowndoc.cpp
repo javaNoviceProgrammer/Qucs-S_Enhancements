@@ -9,6 +9,8 @@
  * (at your option) any later version.
  */
 #include "markdowndoc.h"
+
+#include "gpurendering.h"
 #include "links.h"
 
 #include "mathtypeset.h"
@@ -30,6 +32,7 @@
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QStyle>
+#include <QStyleOption>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextList>
@@ -295,9 +298,19 @@ SmoothImages::SmoothImages(QObject* parent, QTextObjectInterface* qts) : QObject
 
 QuoteBars::QuoteBars(QTextEdit* edit) : QObject(edit), a_edit(edit) {}
 
-void QuoteBars::install(QTextEdit* edit)
+void QuoteBars::install(QTextEdit* edit, bool on)
 {
-    edit->viewport()->installEventFilter(new QuoteBars(edit));
+    // (Once: a viewport made again - the GPU's or the CPU's - has it anew.)
+    for (QObject* child : edit->children())
+        if (auto* old = dynamic_cast<QuoteBars*>(child)) delete old;
+    if (on) edit->viewport()->installEventFilter(new QuoteBars(edit));
+}
+
+QColor QuoteBars::colour(const QTextEdit* edit)
+{
+    QColor colour = edit->palette().color(QPalette::Text);
+    colour.setAlpha(70);
+    return colour;
 }
 
 QList<QRectF> QuoteBars::bars(const QTextEdit* edit)
@@ -333,12 +346,45 @@ bool QuoteBars::eventFilter(QObject* watched, QEvent* event)
     QCoreApplication::sendEvent(watched, event);
     a_inside = false;
     const QRect visible = static_cast<QPaintEvent*>(event)->rect();
-    QColor colour = a_edit->palette().color(QPalette::Text);
-    colour.setAlpha(70);
+    const QColor colour = QuoteBars::colour(a_edit);
     QPainter painter(a_edit->viewport());
     for (const QRectF& bar : bars(a_edit))
         if (bar.intersects(visible)) painter.fillRect(bar, colour);
     return true;
+}
+
+void drawPreview(const QTextEdit* edit, QPainter& p)
+{
+    // (QTextEdit's painting - QTextEditPrivate::paint, QWidgetTextControl's
+    // drawContents and paint context - by its public parts.)
+    const QWidget* viewport = edit->viewport();
+    const QPoint offset(edit->isRightToLeft() ? edit->horizontalScrollBar()->maximum() - edit->horizontalScrollBar()->value()
+                                              : edit->horizontalScrollBar()->value(),
+                        edit->verticalScrollBar()->value());
+    QAbstractTextDocumentLayout::PaintContext context;
+    context.palette = edit->palette();
+    const QPalette::ColorGroup group = edit->hasFocus() ? QPalette::Active : QPalette::Inactive;
+    for (const QTextEdit::ExtraSelection& extra : edit->extraSelections()) context.selections.append({extra.cursor, extra.format});
+    const QTextCursor cursor = edit->textCursor();
+    if (cursor.hasSelection()) {
+        QAbstractTextDocumentLayout::Selection selection;
+        selection.cursor = cursor;
+        selection.format.setBackground(context.palette.brush(group, QPalette::Highlight));
+        selection.format.setForeground(context.palette.brush(group, QPalette::HighlightedText));
+        QStyleOption option;
+        option.initFrom(edit);
+        if (edit->style()->styleHint(QStyle::SH_RichText_FullWidthSelection, &option, edit))
+            selection.format.setProperty(QTextFormat::FullWidthSelection, true);
+        context.selections.append(selection);
+    }
+    p.save();
+    p.translate(-offset);
+    context.clip = QRectF(offset, viewport->size());
+    p.setClipRect(context.clip, Qt::IntersectClip);
+    edit->document()->documentLayout()->draw(&p, context);
+    p.restore();
+    const QColor colour = QuoteBars::colour(edit);
+    for (const QRectF& bar : QuoteBars::bars(edit)) p.fillRect(bar, colour);
 }
 
 void SmoothImages::install(QTextDocument* document)
@@ -494,6 +540,11 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     // (Its images to its width as it changes: the tab's, the split's, a
     // scroll bar's coming.)
     a_preview->viewport()->installEventFilter(this);
+    // Drawn by the GPU as set, and when the setting changes.
+    setPreviewGpu(qucs_s::gpu::used(qucs_s::gpu::Viewer::Markdown));
+    connect(qucs_s::gpu::Notifier::instance(), &qucs_s::gpu::Notifier::changed, this, [this](qucs_s::gpu::Viewer viewer) {
+        if (viewer == qucs_s::gpu::Viewer::Markdown) setPreviewGpu(qucs_s::gpu::used(qucs_s::gpu::Viewer::Markdown));
+    });
 
     a_handle = new QWidget(this);
     a_handle->setObjectName(QStringLiteral("markdownHandle"));
@@ -640,6 +691,25 @@ void MarkdownDoc::layoutParts()
         break;
     }
     a_bar->raise();
+}
+
+void MarkdownDoc::setPreviewGpu(bool on)
+{
+    QTextBrowser* preview = a_preview;
+    if (!qucs_s::gpu::setGlViewport(a_preview, on && qucs_s::gpu::hindrance().isEmpty(),
+                                    [preview](QPainter& p) { qucs_s::markdown::drawPreview(preview, p); }))
+        return;
+    // (The new viewport's own filters: the quotes' bars - the CPU's; the
+    // GPU's has them drawn -, the images' width.)
+    qucs_s::markdown::QuoteBars::install(a_preview, !previewGpu());
+    a_preview->viewport()->installEventFilter(this);
+    a_preview->viewport()->setMouseTracking(true);
+    fitImages();
+}
+
+bool MarkdownDoc::previewGpu() const
+{
+    return qucs_s::gpu::hasGlViewport(a_preview);
 }
 
 bool MarkdownDoc::eventFilter(QObject* watched, QEvent* event)

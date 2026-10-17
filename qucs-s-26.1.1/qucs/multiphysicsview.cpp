@@ -10,6 +10,8 @@
  */
 #include "multiphysicsview.h"
 
+#include "gpurendering.h"
+
 #include "ink.h"
 #include "settings.h"
 #ifdef QUCS_GPU_VIEW
@@ -99,6 +101,10 @@ const std::vector<QRgb>& colorTable(const QString& name)
 GraphicsView::GraphicsView(QWidget* parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("multiphysicsGraphics"));
+    // (Settings… > Appearance > Drawing, Multiphysics > Settings…: drawn so.)
+    connect(gpu::Notifier::instance(), &gpu::Notifier::changed, this, [this](gpu::Viewer viewer) {
+        if (viewer == gpu::Viewer::Multiphysics) setGpu(gpu::wanted(gpu::Viewer::Multiphysics));
+    });
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
