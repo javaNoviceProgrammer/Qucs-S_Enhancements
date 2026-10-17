@@ -161,7 +161,9 @@ public:
   /// settings are not a new document's or were changed since the last save.
   virtual bool writesSettings () const;
   void refreshLanguage(void);
-  void applyDocumentColors();
+  /// The editor's colours for the current theme (the application calls it
+  /// when the theme changes; a Markdown document draws its rendering again).
+  virtual void applyDocumentColors();
 
   QMenu* createStandardContextMenu();
 

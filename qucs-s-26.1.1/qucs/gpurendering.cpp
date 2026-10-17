@@ -57,9 +57,9 @@ QString viewerName(Viewer viewer)
 
 bool wanted(Viewer viewer)
 {
-    // (The Markdown preview the CPU's unless chosen: a scroll of it - the
-    // picture moved, the lines coming in painted - some five times cheaper
-    // than the GPU's whole frame, measured.)
+    // (The Markdown preview the CPU's unless chosen: its text the
+    // platform's glyphs - Qt's OpenGL engine draws them a little heavier.
+    // The GPU's frames are a little quicker, both within 2.5 ms, measured.)
     const QVariant v = QucsSettingsFile().value(settingKey(viewer), viewer != Viewer::Markdown);
     // (Rendering/...: "gpu" or "cpu"; Multiphysics/gpu: true or false)
     if (v.typeId() == QMetaType::QString) {
@@ -204,6 +204,11 @@ bool setGlViewport(QAbstractScrollArea* area, bool gpu, std::function<void(QPain
         gl->setProperty("qucsFillsBackground", fills);
         gl->takePaints();
     }
+    // (The area's own style sheet - its colours, as the Markdown preview's
+    // - given to the new viewport as it was to the old: the area polished
+    // again. A viewport only polished as a new widget had the
+    // application's palette.)
+    if (!area->styleSheet().isEmpty()) area->setStyleSheet(area->styleSheet());
     fresh->update();
     return true;
 #else
