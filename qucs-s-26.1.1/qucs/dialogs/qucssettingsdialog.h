@@ -179,8 +179,8 @@ public:
     /// The selected category of the user's one place up (-1) or down (1).
     void moveContentCategory(int by);
     QComboBox *componentSymbolsCombo;   ///< The symbols new parts get: US or European (qucs_s::symbols::Style).
-    QComboBox *drawingCombos[4] = {};   ///< By qucs_s::gpu::Viewer: GPU (OpenGL) or CPU.
-    QLabel *drawingStatus = nullptr;    ///< What keeps the GPU from drawing here, if anything.
+    QCheckBox *gpuBoxes[4] = {};        ///< Viewers tab, by qucs_s::gpu::Viewer: drawn by the GPU (OpenGL), opt-in.
+    QLabel *gpuStatus = nullptr;        ///< What keeps the GPU from drawing here, if anything.
     QCheckBox *showPinNames;
     QCheckBox *showPinDirections;
     QCheckBox *embedVerilogA;        ///< Create Library copies the .va and .osdi files the subcircuits use.

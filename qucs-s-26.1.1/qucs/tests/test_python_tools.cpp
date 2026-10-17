@@ -1082,7 +1082,9 @@ private slots:
         QTest::keyClick(py, Qt::Key_F2, Qt::ControlModifier);   // Continue
         QVERIFY(paused.wait(20000));
         QCOMPARE(run->stack().first().line, 8);
-        QVERIFY(run->outputText().contains("total 6"));
+        // (Its output and its pause come by two channels - its stdout, the
+        // debugger's -, in no order: on CI's Linux the pause came first.)
+        QTRY_VERIFY_WITH_TIMEOUT(run->outputText().contains("total 6"), 10000);
         QTreeWidget* tree = run->variablesView();
         QTreeWidgetItem* data = nullptr;
         for (int k = 0; k < tree->topLevelItemCount(); ++k)

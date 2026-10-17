@@ -128,8 +128,8 @@ public:
 
     /// Drawn by the GPU (OpenGL 3.3): its domains, mesh, surface, lines
     /// from buffers made once, the text over them; where a context can be
-    /// made (not on the offscreen platform) and neither the setting
-    /// Multiphysics/gpu nor QUCS_GPU=0 says no.
+    /// made (not on the offscreen platform), the setting
+    /// Viewers/multiphysicsGpu chooses it and QUCS_GPU=0 does not say no.
     bool gpu() const { return a_canvas != nullptr; }
     void setGpu(bool on);
     static bool gpuAvailable();

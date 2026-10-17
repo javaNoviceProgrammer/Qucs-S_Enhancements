@@ -231,7 +231,7 @@ private slots:
 
     // The Multiphysics menu's Settings…: the Graphics view drawn with the
     // GPU (OpenGL) or the CPU - the setting the view's own menu sets
-    // (Multiphysics/gpu), kept on OK, not on Cancel; what keeps the GPU from
+    // (Viewers/multiphysicsGpu), kept on OK, not on Cancel; what keeps the GPU from
     // drawing here said (offscreen: no OpenGL 3.3; QUCS_GPU=0). The item no
     // role: on macOS "Settings…" would be taken to the application's menu.
     void theSettingsHaveTheGpu()

@@ -414,45 +414,53 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     fileNameCapSpin->setValue(QucsSettings.FileNameCap);
     appAppearanceGrid->addWidget(fileNameCapSpin, 14, 1);
 
-    // Each viewer drawn by the GPU (OpenGL) or the CPU, as the user chooses.
+    t->addTab(appAppearanceTab, tr("Appearance"));
+
+    // ...........................................................
+    // The viewers tab: each drawn by the CPU, or by the GPU (OpenGL) where
+    // the user chooses it - an opt-in, each viewer.
     {
-        auto *drawing = new QGroupBox(tr("Drawing: the GPU (OpenGL) or the CPU"), appAppearanceTab);
-        drawing->setObjectName("drawingGroup");
-        auto *rows = new QGridLayout(drawing);
+        auto *viewersTab = new QWidget(t);
+        viewersTab->setObjectName("viewersTab");
+        auto *page = new QVBoxLayout(viewersTab);
+        auto *gpuGroup = new QGroupBox(tr("Drawn by the GPU (OpenGL)"), viewersTab);
+        gpuGroup->setObjectName("gpuGroup");
+        auto *rows = new QVBoxLayout(gpuGroup);
+        auto *lead = new QLabel(tr("The CPU draws each viewer unless the GPU is chosen for it here."), gpuGroup);
+        lead->setWordWrap(true);
+        rows->addWidget(lead);
         const qucs_s::gpu::Viewer viewers[4] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
                                                 qucs_s::gpu::Viewer::Multiphysics};
-        const char *names[4] = {"drawingPdf", "drawingMarkdown", "drawingLayout", "drawingMultiphysics"};
+        const char *names[4] = {"gpuPdf", "gpuMarkdown", "gpuLayout", "gpuMultiphysics"};
         const QString tips[4] = {
             tr("Its tiles kept on the GPU as textures and drawn, scaled and scrolled by it; the pages themselves "
-               "are drawn by pdfium on the CPU, as before."),
+               "are drawn by pdfium on the CPU, as with the CPU."),
             tr("Its text drawn by the GPU from a glyph atlas, its images as textures: a little quicker than the "
-               "CPU, its glyphs a little heavier than the platform draws them. The CPU unless chosen."),
-            tr("The cell flattened once into the GPU's buffers: a pan or a zoom a frame of the GPU's, the CPU "
-               "drawing nothing. Past two million shapes the CPU draws it."),
+               "CPU, its glyphs a little heavier than the platform draws them."),
+            tr("The cell flattened into the GPU's buffers: a pan or a zoom a frame of the GPU's, the CPU drawing "
+               "nothing. Past two million shapes the CPU draws it."),
             tr("The geometry, mesh, surfaces and lines from the GPU's buffers (also in Multiphysics > Settings… and "
                "the view's own menu).")};
         for (int i = 0; i < 4; ++i) {
-            rows->addWidget(new QLabel(qucs_s::gpu::viewerName(viewers[i]) + QLatin1Char(':'), drawing), i, 0);
-            drawingCombos[i] = new QComboBox(drawing);
-            drawingCombos[i]->setObjectName(names[i]);
-            drawingCombos[i]->addItem(tr("GPU (OpenGL)"));
-            drawingCombos[i]->addItem(tr("CPU"));
-            drawingCombos[i]->setToolTip(tips[i]);
-            drawingCombos[i]->setCurrentIndex(qucs_s::gpu::wanted(viewers[i]) ? 0 : 1);
-            rows->addWidget(drawingCombos[i], i, 1);
+            gpuBoxes[i] = new QCheckBox(qucs_s::gpu::viewerName(viewers[i]), gpuGroup);
+            gpuBoxes[i]->setObjectName(names[i]);
+            gpuBoxes[i]->setToolTip(tips[i]);
+            gpuBoxes[i]->setChecked(qucs_s::gpu::wanted(viewers[i]));
+            rows->addWidget(gpuBoxes[i]);
         }
-        drawingStatus = new QLabel(drawing);
-        drawingStatus->setObjectName("drawingStatus");
-        drawingStatus->setWordWrap(true);
+        gpuStatus = new QLabel(gpuGroup);
+        gpuStatus->setObjectName("gpuStatus");
+        gpuStatus->setWordWrap(true);
         const QString hindrance = qucs_s::gpu::hindrance();
-        drawingStatus->setText(hindrance.isEmpty() ? tr("The GPU can draw here (OpenGL 3.3). QUCS_GPU=0 in the environment "
-                                                        "turns it off for all of them.")
-                                                   : hindrance);
-        rows->addWidget(drawingStatus, 4, 0, 1, 2);
-        appAppearanceGrid->addWidget(drawing, 15, 0, 1, 2);
+        gpuStatus->setText(hindrance.isEmpty() ? tr("The GPU can draw here (OpenGL 3.3). QUCS_GPU=0 in the environment "
+                                                    "turns it off for all of them.")
+                                               : hindrance);
+        rows->addWidget(gpuStatus);
+        page->addWidget(gpuGroup);
+        page->addStretch();
+        t->addTab(viewersTab, tr("Viewers"));
     }
 
-    t->addTab(appAppearanceTab, tr("Appearance"));
 
     // ...........................................................
     // The source code editor settings tab: how each language is highlighted
@@ -1027,8 +1035,8 @@ void QucsSettingsDialog::slotApply()
         const qucs_s::gpu::Viewer viewers[4] = {qucs_s::gpu::Viewer::Pdf, qucs_s::gpu::Viewer::Markdown, qucs_s::gpu::Viewer::Layout,
                                                 qucs_s::gpu::Viewer::Multiphysics};
         for (int i = 0; i < 4; ++i) {
-            if (drawingCombos[i] == nullptr) continue;
-            const bool gpu = drawingCombos[i]->currentIndex() == 0;
+            if (gpuBoxes[i] == nullptr) continue;
+            const bool gpu = gpuBoxes[i]->isChecked();
             if (gpu != qucs_s::gpu::wanted(viewers[i])) qucs_s::gpu::setWanted(viewers[i], gpu);
         }
     }

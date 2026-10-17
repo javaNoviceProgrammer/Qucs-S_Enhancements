@@ -56,6 +56,7 @@ struct Flattened {
     std::vector<float> frameDots;      // x y size
     QVector<QPair<QRectF, QString>> names;    // a frame's box (µm) and its cell's name
     QVector<QPair<QPointF, QString>> texts;   // µm
+    std::vector<quint32> textLayers;          // each text's layer
     quint64 shapes = 0, frameCount = 0;
     quint64 approximated = 0;   // fills CDT could not make: fanned
     bool tooLarge = false;
@@ -66,9 +67,11 @@ Flattened flatten(const Layout& layout, int cell, int depth, const QVector<Layer
  * The GPU's canvas over a LayoutView, its size: it paints through the
  * view's own painting (LayoutView::paintFrame), which hands it the layers
  * between its QPainter's native painting. Mouse and keys go to the view
- * under it. Its buffers made again when the layout, the cell, the depth,
- * the layers shown or the texts change; colours and patterns are the
- * shaders' (a theme, a .lyp, the adapted colours: no new buffers).
+ * under it. Its buffers made again when the layout, the cell, the depth or
+ * the texts change; colours and patterns are the shaders' (a theme, a .lyp,
+ * the adapted colours: no new buffers). A layer hidden keeps its buffers,
+ * not drawn; one shown for the first time is flattened alone and its
+ * buffers added - shown or hidden again, nothing made.
  */
 class LayoutGl : public QOpenGLWidget, protected QOpenGLExtraFunctions
 {
@@ -81,8 +84,13 @@ public:
 
     bool failed() const { return a_failed; }
     int frames() const { return a_frames; }
-    /// Its buffers made (for the tests).
+    /// Its buffers made, whole (for the tests).
     int builds() const { return a_builds; }
+    /// Layers flattened alone and added, shown for the first time (for the
+    /// tests).
+    int layersAdded() const { return a_layersAdded; }
+    /// The texts its last frame drew (for the tests).
+    int textsDrawn() const { return a_textsDrawn; }
     /// Past its budget: the CPU draws (its picture shown here).
     bool tooLarge() const { return a_flat.tooLarge; }
     const Flattened& flattened() const { return a_flat; }
@@ -115,7 +123,7 @@ private:
     QMetaObject::Connection a_contextLost;
     bool a_failed = false;
     bool a_ready = false;
-    int a_frames = 0, a_builds = 0;
+    int a_frames = 0, a_builds = 0, a_layersAdded = 0, a_textsDrawn = 0;
     std::unique_ptr<QOpenGLShaderProgram> a_fill, a_dot;
     std::vector<std::unique_ptr<LayerBatches>> a_layers;   // (a vertex array object moves not)
     Batch a_frameLines, a_frameDots;
@@ -125,7 +133,7 @@ private:
     const Layout* a_madeOf = nullptr;
     int a_cell = -2, a_depth = -1;
     bool a_labels = false;
-    QVector<bool> a_visible;
+    std::vector<char> a_made;   // by layer: flattened into the buffers
 };
 
 } // namespace qucs_s::layout

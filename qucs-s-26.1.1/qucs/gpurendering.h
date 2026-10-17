@@ -2,7 +2,7 @@
  * gpurendering.h - which viewers the GPU draws: the PDF viewer, the
  *                  Markdown preview, the layout viewer and the multiphysics
  *                  Graphics view, each the user's choice (Qucs-S's
- *                  Settings… > Appearance > Drawing), and what keeps the GPU
+ *                  Settings… > Viewers, the CPU unless chosen), and what keeps the GPU
  *                  from drawing at all
  *
  * This file is part of Qucs-S.
@@ -28,13 +28,14 @@ namespace qucs_s::gpu {
 
 enum class Viewer { Pdf, Markdown, Layout, Multiphysics };
 
-/// The setting's key: Rendering/pdf, Rendering/markdown, Rendering/layout;
-/// the Graphics view's Multiphysics/gpu (its own menu sets it too).
+/// The setting's key: Viewers/pdfGpu, Viewers/markdownGpu,
+/// Viewers/layoutGpu, Viewers/multiphysicsGpu (the Graphics view's own menu
+/// and Multiphysics > Settings… set it too).
 QString settingKey(Viewer viewer);
 /// "PDF viewer", "Markdown preview", ...
 QString viewerName(Viewer viewer);
-/// The user's choice: the GPU unless set to the CPU - the Markdown
-/// preview the CPU unless set to the GPU (its text the platform's glyphs).
+/// The user's choice (Settings… > Viewers): the CPU unless the GPU is
+/// chosen - an opt-in, each viewer.
 bool wanted(Viewer viewer);
 /// Kept, and told to the open viewers (changed()).
 void setWanted(Viewer viewer, bool gpu);

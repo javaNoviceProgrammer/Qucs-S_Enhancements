@@ -403,6 +403,8 @@ private slots:
         QVERIFY(!none.open(QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf"), &why) && why.contains(QLatin1String("not an HDF5 file")));
     }
 
+    // (Four functions, each under QtTest's limit: as one, some 1,460 s on
+    // CI's sanitized Linux, its limit 900.)
     void lumericalProjects()
     {
         // data/lumerical_sample.ldev (zinc blende, 4x4): its layers a stack,
@@ -447,8 +449,13 @@ private slots:
         r.solution->select(0);
         const double hh = eV(*r.solution, QStringLiteral("qw.Ev1"));
         QVERIFY2(hh > -0.75 && hh < -0.70, qPrintable(QString::number(hh)));
-        // data/lumerical_wurtzite.ldev (6x6): its layers wurtzite - A, D, Δ's,
-        // the electron's masses, the well's strain with C13, C33.
+    }
+
+    // data/lumerical_wurtzite.ldev (6x6): its layers wurtzite - A, D, Δ's,
+    // the electron's masses, the well's strain with C13, C33 - and it solves.
+    void lumericalWurtzite()
+    {
+        auto value = [](const QJsonObject& o, const char* key) { return o.value(QLatin1String(key)).toString().section(QLatin1Char('['), 0, 0).toDouble(); };
         const LumericalImport wz = importLumericalMqw(QStringLiteral(QUCS_TEST_DATA "/lumerical_wurtzite.ldev"));
         QVERIFY2(wz.error.isEmpty(), qPrintable(wz.error));
         const QJsonObject wphysics = wz.model.value("components").toArray().at(0).toObject().value("physics").toArray().at(0).toObject();
@@ -460,12 +467,17 @@ private slots:
         QVERIFY(std::abs(value(gan, "C13") / value(gan, "C33") - 1.06 / 3.98) < 1e-12);
         const Run w = run(modelOf(QJsonDocument(wz.model).toJson()));
         QVERIFY2(w.error.isEmpty(), qPrintable(w.error));
-        // Lumerical's own band offsets ("override band offset" 0), the layer
-        // table's not: the valence band's steps its last run stored - 0.1095
-        // eV up in the well, the field's slope taken out -; its stack padded
-        // 15 nm each side; its photons in eV ("freq type" 2); its excitons on,
-        // so no carriers; its subbands 2 and 2, its cutoffs (hard walls), its
-        // window and stack as Lumerical's.
+    }
+
+    // Lumerical's own band offsets ("override band offset" 0), the layer
+    // table's not: the valence band's steps its last run stored - 0.1095 eV
+    // up in the well, the field's slope taken out -; its stack padded 15 nm
+    // each side; its photons in eV ("freq type" 2); its excitons on, so no
+    // carriers; its subbands 2 and 2, its cutoffs (hard walls), its window
+    // and stack as Lumerical's.
+    void lumericalOffsets()
+    {
+        auto value = [](const QJsonObject& o, const char* key) { return o.value(QLatin1String(key)).toString().section(QLatin1Char('['), 0, 0).toDouble(); };
         const LumericalImport mod = importLumericalMqw(QStringLiteral(QUCS_TEST_DATA "/lumerical_mqw_offsets.ldev"));
         QVERIFY2(mod.error.isEmpty(), qPrintable(mod.error));
         const QString said = mod.notes.join(QLatin1Char('\n'));
@@ -492,7 +504,11 @@ private slots:
         {
             // (Its spectrum's study solved: the subbands chosen, broadened in
             // the window, per the stack.)
-            const Model m = modelOf(lighter(QJsonDocument(mod.model).toJson()));
+            // (Sanitized, coarser still: 486 s there at 0.25 nm and 41 values
+            // of k - Eigen's dense solves unoptimized -, some 1,200 on CI's.)
+            QByteArray json = lighter(QJsonDocument(mod.model).toJson());
+            if (slowBuild()) json.replace(R"("h1d": "0.25[nm]")", R"("h1d": "0.5[nm]")").replace(R"("kpoints": 41)", R"("kpoints": 21)");
+            const Model m = modelOf(json);
             const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
             const GeometryBuild g = buildGeometry(m, *ps);
             QVERIFY(g.ok());
@@ -506,9 +522,15 @@ private slots:
             s.select(0);
             QVERIFY(std::abs(global(s, QStringLiteral("qw.Lnorm")) - 52e-9) < 1e-15 && std::abs(global(s, QStringLiteral("qw.Lstack")) - 52e-9) < 1e-15);
         }
-        // None stored: its materials' work functions (χ = W - Eg/2 - kT/2
-        // ln(Nc/Nv), Nc/Nv of their masses); its photons as wavelengths
-        // ("freq type" 1); carriers kept; PMLs - its cutoffs not taken, said.
+    }
+
+    // None stored: its materials' work functions (χ = W - Eg/2 - kT/2
+    // ln(Nc/Nv), Nc/Nv of their masses); its photons as wavelengths ("freq
+    // type" 1); carriers kept; PMLs - its cutoffs not taken, said. Not a
+    // project: said.
+    void lumericalWorkFunctions()
+    {
+        auto value = [](const QJsonObject& o, const char* key) { return o.value(QLatin1String(key)).toString().section(QLatin1Char('['), 0, 0).toDouble(); };
         const LumericalImport wf = importLumericalMqw(QStringLiteral(QUCS_TEST_DATA "/lumerical_mqw_workfunctions.ldev"));
         QVERIFY2(wf.error.isEmpty(), qPrintable(wf.error));
         const QJsonArray wfeatures = wf.model.value("components").toArray().at(0).toObject().value("physics").toArray().at(0).toObject().value("features").toArray();

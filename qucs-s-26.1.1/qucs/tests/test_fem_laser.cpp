@@ -320,11 +320,27 @@ private slots:
     // mA, 11 % from twice as many, five rows 2.09), its SRH lifetimes its own 5 ns
     // (they were the material's 1 ns): the update check of 110e8b9. (A slow
     // build: its geometry and mesh alone - CI's Release builds solve it.)
-    void theVcselLaserExample()
+    // (The example read, its Laser L-I step found - three functions of it,
+    // each a solve of its 563,000 unknowns: as one, 145 s with Eigen's LU
+    // here, over QtTest's 300 s for a function on CI's macOS 15, its LU
+    // Eigen's.)
+    static Node* vcselExample(Model& model)
     {
         QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/vcsel_laser.qfem"));
-        QVERIFY(f.open(QIODevice::ReadOnly));
-        Model model = modelOf(f.readAll());
+        if (!f.open(QIODevice::ReadOnly)) return nullptr;
+        model = modelOf(f.readAll());
+        Node* step = nullptr;
+        for (const Node* study : model.studies())
+            for (const Node& st : study->children)
+                if (st.type == QLatin1String("laser")) step = model.find(st.tag);
+        return step;
+    }
+
+    void theVcselLaserExample()
+    {
+        Model model;
+        Node* step = vcselExample(model);
+        QVERIFY(step);
         if (slowBuild()) {
             const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
             const GeometryBuild g = buildGeometry(model, *ps);
@@ -333,11 +349,6 @@ private slots:
             QVERIFY2(m.mesh, qPrintable(m.error));
             QSKIP("its solve is a Release build's");
         }
-        Node* step = nullptr;
-        for (const Node* study : model.studies())
-            for (const Node& st : study->children)
-                if (st.type == QLatin1String("laser")) step = model.find(st.tag);
-        QVERIFY(step);
         step->props.insert(QStringLiteral("voltages"), QStringLiteral("1.20, 1.30, 1.36, 1.40, 1.60, 1.90"));
         Run r = run(model);
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
@@ -362,28 +373,44 @@ private slots:
         qInfo("threshold %s µA at %s V, slope %s W/A", qPrintable(th.captured(1)), qPrintable(th.captured(2)), qPrintable(th.captured(3)));
         QVERIFY(std::abs(th.captured(1).toDouble() / 45.42 - 1) < 0.05 && std::abs(th.captured(2).toDouble() - 1.365) < 0.01
                 && std::abs(th.captured(3).toDouble() / 0.5976 - 1) < 0.02);
-        // Its carriers within its gain table: nothing said. Its table ending
-        // lower (Nmax 1.5e18, transparency 1.09e18), the carriers past it at
-        // 1.6 V - its gain held at its last there: said, once (it was not:
-        // the update check of 110e8b9, 9).
+        // Its carriers within its gain table: nothing said.
         QVERIFY2(!log.contains(QLatin1String("carriers reach")), qPrintable(log));
+    }
+
+    // Its table ending lower (Nmax 1.5e18, transparency 1.09e18), the
+    // carriers past it at 1.6 V - its gain held at its last there: said,
+    // once (it was not: the update check of 110e8b9, 9).
+    void theVcselsGainTableEnds()
+    {
+        if (slowBuild()) QSKIP("its solve is a Release build's");
+        Model model;
+        Node* step = vcselExample(model);
+        QVERIFY(step);
         std::function<void(Node&)> lower = [&lower](Node& n) {
             if (n.type == QLatin1String("semiconductor/laser")) n.props.insert(QStringLiteral("Nmax"), QStringLiteral("1.5e18[1/cm^3]"));
             for (Node& c : n.children) lower(c);
         };
         lower(model.component());
         step->props.insert(QStringLiteral("voltages"), QStringLiteral("1.40, 1.60, 1.70"));
-        r = run(model);
+        const Run r = run(model);
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         const QStringList reach = r.study.warnings.filter(QLatin1String("carriers reach"));
         QVERIFY2(reach.size() == 1 && reach.front().contains(QLatin1String("past its wells' gain table's 1.5e+18")), qPrintable(r.study.warnings.join(QLatin1Char('\n'))));
-        // A stationary step in its Laser L-I step's place: its quantum gain
-        // is that step's table - refused, its mode solved (a line of the log,
-        // it was: the update check of 110e8b9, 8).
+    }
+
+    // A stationary step in its Laser L-I step's place: its quantum gain is
+    // that step's table - refused, its mode solved (a line of the log, it
+    // was: the update check of 110e8b9, 8).
+    void theVcselsStationaryStepRefused()
+    {
+        if (slowBuild()) QSKIP("its solve is a Release build's");
+        Model model;
+        Node* step = vcselExample(model);
+        QVERIFY(step);
         step->type = QStringLiteral("stationary");
         step->props.remove(QStringLiteral("voltages"));
         step->props.remove(QStringLiteral("contact"));
-        r = run(model);
+        const Run r = run(model);
         QVERIFY2(r.error.contains(QLatin1String("tabulated at the mode's photon energy by a Laser L-I step - not solved in another step")), qPrintable(r.error));
     }
 

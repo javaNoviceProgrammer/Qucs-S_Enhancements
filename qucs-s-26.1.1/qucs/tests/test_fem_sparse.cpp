@@ -159,11 +159,26 @@ private slots:
     }
 
     // Factorized again with another pattern - an entry more, then fewer
-    // (a Newton's Jacobian whose entries come and go): solved as each is.
-    // Accelerate's refactorization wants the pattern analysed: the union is
-    // analysed, a pattern within it factorized there.
+    // (a Newton's Jacobian whose entries come and go): solved as each is,
+    // on each backend. Accelerate's refactorization wants the pattern
+    // analysed: the union is analysed, a pattern within it factorized
+    // there. Eigen's LU wants the pattern it analysed: another analysed
+    // again. (Given another, Eigen's wrote past its arrays - a heap
+    // overflow under CI's sanitizers, a SIGSEGV on macOS 15: the backend
+    // where Accelerate's LU is not, never run on a Mac where it is.)
+    void aPatternThatChanges_data()
+    {
+        QTest::addColumn<int>("backend");
+        QTest::newRow("Eigen's") << int(DirectSolver::Eigen);
+        QTest::newRow("the platform's") << int(DirectSolver::Automatic);
+    }
     void aPatternThatChanges()
     {
+        QFETCH(int, backend);
+        setDirectSolver(DirectSolver(backend));
+        const struct Reset {
+            ~Reset() { setDirectSolver(DirectSolver::Automatic); }
+        } reset;
         qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
         const auto a = grid<double>(30), b = grid<double>(30, 0.5, 1), c = grid<double>(30, 1.0, 2);
         SparseLu<double> lu;
@@ -177,8 +192,9 @@ private slots:
         }
         // (Accelerate's: analysed three times - a, a and b's union, and
         // with c's; b, c and a within it after. Analysed at each change -
-        // five here -, an analysis was eight factorizations' time.)
-        if (lu.accelerated()) QCOMPARE(lu.analyses(), 3);
+        // five here -, an analysis was eight factorizations' time. Eigen's:
+        // at each change, six.)
+        QCOMPARE(lu.analyses(), lu.accelerated() ? 3 : 6);
         // Another of the same pattern - a problem made again, a sweep's next
         // point -: its analysis the cache's, none made.
         if (lu.accelerated()) {
