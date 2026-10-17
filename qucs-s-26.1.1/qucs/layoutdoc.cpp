@@ -1758,18 +1758,26 @@ void LayoutDoc::fillCellChildren(QTreeWidgetItem* item)
     }
 }
 
+QPixmap LayoutDoc::swatchPixmap(const LayerStyle& style, const QColor& background, qreal ratio)
+{
+    // (Its frame filled, a pixel wide at its edge, whole at any ratio:
+    // stroked - a rectangle through the pixels' centres - at a Retina
+    // screen's 2, its left corners' outer device pixels stayed the
+    // background.)
+    QPixmap pm(QSize(16, 12) * ratio);
+    pm.setDevicePixelRatio(ratio);
+    pm.fill(style.frame);
+    QPainter p(&pm);
+    const QRectF inside(1, 1, 14, 10);
+    p.fillRect(inside, background);
+    if (style.pattern != Qt::NoBrush) p.fillRect(inside, QBrush(style.fill, style.pattern));
+    return pm;
+}
+
 QIcon LayoutDoc::swatch(const LayerStyle& given) const
 {
     // As the canvas draws it, on the canvas's background.
-    const LayerStyle style = a_view->shownStyle(given);
-    QPixmap pm(QSize(16, 12) * devicePixelRatioF());
-    pm.setDevicePixelRatio(devicePixelRatioF());
-    pm.fill(a_view->colors().background);
-    QPainter p(&pm);
-    p.setPen(QPen(style.frame, 1));
-    p.setBrush(style.pattern == Qt::NoBrush ? QBrush(Qt::NoBrush) : QBrush(style.fill, style.pattern));
-    p.drawRect(QRectF(0.5, 0.5, 15, 11));
-    return QIcon(pm);
+    return QIcon(swatchPixmap(a_view->shownStyle(given), a_view->colors().background, devicePixelRatioF()));
 }
 
 void LayoutDoc::updateSwatches()

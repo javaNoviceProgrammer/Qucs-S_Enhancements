@@ -970,10 +970,12 @@ private slots:
         for (QAction* a : background->actions())
             if (a->isChecked()) checked << a->text();
         QCOMPARE(checked, QStringList({"Light", "Colours in Contrast to It"}));
-        // The application's again: its Base.
+        // The application's again: its Base, in the 8 bits it is drawn in (a
+        // dark platform's Base has finer ones: the same #171717, unequal
+        // as QColors).
         choose(background, "Like the Application");
         QCOMPARE(view->theme(), LayoutView::Theme::Application);
-        QCOMPARE(corner(), view->palette().color(QPalette::Base));
+        QCOMPARE(corner().rgba(), view->palette().color(QPalette::Base).rgba());
         QCOMPARE(QucsSettingsFile().value("LayoutViewer/background").toString(), QString("app"));
         doc->setGridShown(true);
     }
@@ -1110,6 +1112,43 @@ private slots:
         doc->setGridShown(true);
     }
 
+    // A layer's swatch at any device pixel ratio: its frame the outermost
+    // pixel all round, its corners too; inside, the canvas and the fill.
+    // (Stroked through the pixels' centres, at a Retina screen's 2 its left
+    // corners' outer device pixels were the background: the layer list's
+    // corner read white on the display.)
+    void aSwatchIsWholeAtAnyRatio()
+    {
+        LayerStyle style = paletteStyle(0);
+        style.frame = QColor("#ff3474");
+        style.pattern = Qt::NoBrush;
+        const QColor canvas(Qt::white);
+        for (const qreal ratio : {1.0, 1.5, 2.0}) {
+            const QImage swatch = LayoutDoc::swatchPixmap(style, canvas, ratio).toImage();
+            QCOMPARE(swatch.size(), (QSizeF(16, 12) * ratio).toSize());
+            // (The frame a pixel deep: its device pixels whole, at least - a
+            // ratio of 1.5's pixel 2 of them left and above, 1 right and
+            // below, as Qt rounds the inside's edges.)
+            const int deep = int(std::floor(ratio)), within = int(std::ceil(ratio));
+            QString wrong;
+            for (int y = 0; y < swatch.height(); ++y)
+                for (int x = 0; x < swatch.width(); ++x) {
+                    const bool onFrame = x < deep || y < deep || x >= swatch.width() - deep || y >= swatch.height() - deep;
+                    const bool inside = x >= within && y >= within && x < swatch.width() - within && y < swatch.height() - within;
+                    const QColor c = swatch.pixelColor(x, y);
+                    if ((onFrame && c != style.frame) || (inside && c != canvas)) wrong += QStringLiteral(" %1,%2 %3").arg(x).arg(y).arg(c.name());
+                }
+            QVERIFY2(wrong.isEmpty(), qPrintable(QStringLiteral("at %1:%2").arg(ratio).arg(wrong.left(300))));
+        }
+        // Filled: its pattern inside the frame, the frame whole.
+        style.fill = QColor("#3474ff");
+        style.pattern = Qt::SolidPattern;
+        const QImage filled = LayoutDoc::swatchPixmap(style, canvas, 2).toImage();
+        QCOMPARE(filled.pixelColor(0, 0), style.frame);
+        QCOMPARE(filled.pixelColor(0, filled.height() - 1), style.frame);
+        QCOMPARE(filled.pixelColor(filled.width() / 2, filled.height() / 2), style.fill);
+    }
+
     // The grid behind the layout, as KLayout has it: a dot every step - 1,
     // 2 or 5 times a power of ten µm, 16 pixels apart at least - those on
     // a power of ten stronger, a scale in the lower left; lines or crosses
@@ -1150,11 +1189,21 @@ private slots:
             const QPointF p = view->toPixel(QPointF(x, y));
             return QPoint(int(std::round(p.x())), int(std::round(p.y())));
         };
+        // A view's pixel in its picture: the device pixel at its centre, at
+        // the picture's ratio - a Retina screen's 2, the grid's dots and
+        // lines drawn through pixels' centres (read as the view's pixels,
+        // they were missed).
+        const auto device = [](const QImage& picture, QPoint p) {
+            const qreal r = picture.devicePixelRatio();
+            return QPoint(int(std::floor((p.x() + 0.5) * r)), int(std::floor((p.y() + 0.5) * r)));
+        };
+        const auto pixel = [&device](const QImage& picture, QPoint p) { return picture.pixelColor(device(picture, p)); };
         // The darkest of the pixels about one.
-        const auto darkest = [](const QImage& picture, QPoint p) {
+        const auto darkest = [&device](const QImage& picture, QPoint p) {
+            const QPoint d = device(picture, p);
             int least = 255;
             for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx) least = std::min(least, picture.pixelColor(p + QPoint(dx, dy)).lightness());
+                for (int dx = -1; dx <= 1; ++dx) least = std::min(least, picture.pixelColor(d + QPoint(dx, dy)).lightness());
             return least;
         };
         QImage picture = view->picture();
@@ -1163,9 +1212,10 @@ private slots:
         QVERIFY2(darkest(picture, weak) < 230, qPrintable(QString::number(darkest(picture, weak))));
         QCOMPARE(darkest(picture, between), 255);
         // The scale: its bar in the lower left, in ink.
-        const auto scaleDrawn = [view](const QImage& picture) {
-            for (int y = view->height() - 14; y < view->height() - 6; ++y)
-                for (int x = 14; x < 30; ++x)
+        const auto scaleDrawn = [view, &device](const QImage& picture) {
+            const QPoint from = device(picture, QPoint(14, view->height() - 14)), to = device(picture, QPoint(30, view->height() - 6));
+            for (int y = from.y(); y < to.y(); ++y)
+                for (int x = from.x(); x < to.x(); ++x)
                     if (picture.pixelColor(x, y).lightness() < 90) return true;
             return false;
         };
@@ -1228,14 +1278,17 @@ private slots:
         QVERIFY(darkest(picture, onWeak) < 255);
         QVERIFY(darkest(picture, onStrong) < darkest(picture, onWeak));
         QCOMPARE(darkest(picture, between), 255);
-        // Crosses: their arms, longer on a power of ten.
+        // Crosses: their arms, longer on a power of ten - a weak one's
+        // reaching 2 pixels, not 3, a strong one's 3 at least. (Read a pixel
+        // about: at a ratio of 2 Qt's aliased lines fall a device pixel left
+        // of a whole coordinate, not above one - an arm ends there.)
         action["Crosses"]->trigger();
         QCOMPARE(view->gridStyle(), LayoutView::GridStyle::Crosses);
         picture = view->picture();
-        QVERIFY(picture.pixelColor(weak + QPoint(2, 0)).lightness() < 255);
-        QCOMPARE(picture.pixelColor(weak + QPoint(4, 0)).lightness(), 255);
-        QVERIFY(picture.pixelColor(strong + QPoint(4, 0)).lightness() < 255);
-        QCOMPARE(picture.pixelColor(strong + QPoint(3, 3)).lightness(), 255);
+        QVERIFY(darkest(picture, weak + QPoint(2, 0)) < 255);
+        QCOMPARE(darkest(picture, weak + QPoint(4, 0)), 255);
+        QVERIFY(darkest(picture, strong + QPoint(4, 0)) < 255);
+        QCOMPARE(darkest(picture, strong + QPoint(3, 3)), 255);
         emit grid->aboutToShow();
         QVERIFY(action["Crosses"]->isChecked() && !action["Dots"]->isChecked());
         action["Show the Grid"]->trigger();
@@ -1249,8 +1302,8 @@ private slots:
         view->setView(QPointF(11, 0.8), 200);   // in INV's rectangle on 1/0, placed at (10, 0)
         QCOMPARE(view->gridStep(), 0.1);
         picture = view->picture();
-        QCOMPARE(picture.pixelColor(at(11, 0.8)), view->shownStyle(solid[0]).fill);
-        QCOMPARE(picture.pixelColor(at(11.05, 0.85)), view->shownStyle(solid[0]).fill);
+        QCOMPARE(pixel(picture, at(11, 0.8)), view->shownStyle(solid[0]).fill);
+        QCOMPARE(pixel(picture, at(11.05, 0.85)), view->shownStyle(solid[0]).fill);
         doc->setGridStyle(LayoutView::GridStyle::Dots);
         doc->setCanvasTheme(LayoutView::Theme::Application);
     }
