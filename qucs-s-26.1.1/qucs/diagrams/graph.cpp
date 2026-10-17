@@ -19,6 +19,7 @@
 #include "ink.h"
 #include "diagram.h"
 #include "dataset.h"
+#include "levelofdetail.h"
 
 #include <algorithm>
 #include <climits>
@@ -824,20 +825,35 @@ static void setLineStyle(QPen& pen, graphstyle_t style)
 void Graph::drawLines(QPainter* painter) const {
   painter->save();
 
+  const double scaleNow = std::max(std::abs(painter->transform().m11()), std::abs(painter->transform().m22()));
   QPen pen = painter->pen();
   pen.setJoinStyle(Qt::RoundJoin);
   pen.setCapStyle(Qt::RoundCap);
+  // Solid lines' caps square where a round one is not told from it - 3
+  // pixels of the device wide or less - and while the canvas zooms
+  // (levelofdetail.h): wider than a pixel, Qt outlines each round cap as
+  // curves, a line per pair of points - 147 ms a paint of a page of
+  // sweeps, 23 with square caps.
+  const double ratio = painter->device() != nullptr ? painter->device()->devicePixelRatioF() : 1.0;
+  const double deviceWidth = (pen.isCosmetic() || pen.widthF() <= 0 ? std::max(1.0, pen.widthF()) : pen.widthF() * scaleNow) * ratio;
+  const bool squareCaps = qucs_s::lod::draft() || deviceWidth <= qucs_s::lod::kSquareCapsWidth;
+  const auto capped = [squareCaps](QPen& p) {
+    if (squareCaps && p.style() == Qt::SolidLine) p.setCapStyle(Qt::SquareCap);
+  };
   const QPen base = pen;
   setLineStyle(pen, Style);
+  capped(pen);
   painter->setPen(pen);
 
   // (Thinned for the scale they were drawn at: drawn larger - an export
-  // after a small view - they are thinned again, finer.)
-  const double scaleNow = std::max(std::abs(painter->transform().m11()), std::abs(painter->transform().m22()));
+  // after a small view - they are thinned again, finer; drawn smaller - a
+  // zoom out - again too, coarser: thinned for 2.2 times the scale, a zoom
+  // out drew 3.7 times the lines it needed, 211 ms a step.)
   if ( ! linesCalculated.isValid()
     || ! lastLoaded.isValid()
     || lastLoaded > linesCalculated
-    || scaleNow > 1.5 * linesScale) {//Start lines (re)calculation
+    || scaleNow > 1.5 * linesScale
+    || scaleNow * 1.5 < linesScale) {//Start lines (re)calculation
   linesScale = scaleNow;
 
   // How graphs are drawn
@@ -1052,6 +1068,48 @@ void Graph::drawLines(QPainter* painter) const {
 
   }//finish lines calculation
 
+  // On the canvas, the lines in sight alone: zoomed in, most of a diagram
+  // is off it, and each line is outlined whether in sight or not. The
+  // widget and the painter's clip, a pen's width about. (Prints and
+  // exports, their devices' coordinates their own, draw all.)
+  QRectF sight;
+  if (painter->device() != nullptr && painter->device()->devType() == QInternal::Widget) {
+    bool invertible = false;
+    const QTransform toLogical = painter->combinedTransform().inverted(&invertible);
+    if (invertible) {
+      sight = toLogical.mapRect(QRectF(0, 0, painter->device()->width(), painter->device()->height()));
+      if (painter->hasClipping()) sight &= painter->clipBoundingRect();
+      const double margin = (pen.isCosmetic() || pen.widthF() <= 0 ? 1.0 : pen.widthF()) + 2.0 / std::max(scaleNow, 1e-9);
+      sight.adjust(-margin, -margin, margin, margin);
+    }
+  }
+  paintedLines = 0;
+  paintedRound = 0;
+  QList<QLineF> inSight;
+  const auto drawInSight = [painter, &sight, &inSight, this](const QLineF* from, qsizetype count) {
+    qsizetype drawn = count;
+    if (sight.isNull()) {
+      if (count > 0) painter->drawLines(from, int(count));
+    } else {
+      inSight.clear();
+      for (qsizetype k = 0; k < count; ++k) {
+        const QLineF& l = from[k];
+        if (std::max(l.x1(), l.x2()) < sight.left() || std::min(l.x1(), l.x2()) > sight.right()
+            || std::max(l.y1(), l.y2()) < sight.top() || std::min(l.y1(), l.y2()) > sight.bottom())
+          continue;
+        inSight.append(l);
+      }
+      drawn = inSight.size();
+      if (drawn > 0) painter->drawLines(inSight);
+    }
+    paintedLines += int(drawn);
+    if (painter->pen().capStyle() == Qt::RoundCap) paintedRound += int(drawn);
+  };
+  const auto countStroke = [painter, this](const QPolygonF& s) {
+    paintedLines += int(s.size()) - 1;
+    if (painter->pen().capStyle() == Qt::RoundCap) paintedRound += int(s.size()) - 1;
+  };
+
   if (colorsEachCurve() && !isSelected) {
     // Auto colors: every curve with its own pen. The lines and strokes
     // come curve after curve.
@@ -1065,12 +1123,15 @@ void Graph::drawLines(QPainter* painter) const {
       QPen curvePen = base;
       curvePen.setColor(qucs_s::ink::on(curveColor(c)));
       setLineStyle(curvePen, Style);
+      capped(curvePen);
       painter->setPen(curvePen);
       if (curvePen.style() == Qt::CustomDashLine) {
-        for (qsizetype k = si; k < se; ++k)
+        for (qsizetype k = si; k < se; ++k) {
           painter->drawPolyline(strokes.at(k));
+          countStroke(strokes.at(k));
+        }
       } else if (le > li) {
-        painter->drawLines(lines.constData() + li, int(le - li));
+        drawInSight(lines.constData() + li, le - li);
       }
       li = le;
       si = se;
@@ -1080,10 +1141,12 @@ void Graph::drawLines(QPainter* painter) const {
     // to the next. Drawn as separate lines, it would start again at every
     // point, and wherever the points are closer than a dash - most
     // simulations - the graph would come out solid.
-    for (const QPolygonF& s : strokes)
+    for (const QPolygonF& s : strokes) {
       painter->drawPolyline(s);
+      countStroke(s);
+    }
   } else {
-    painter->drawLines(lines);
+    drawInSight(lines.constData(), lines.size());
   }
   painter->restore();
 }

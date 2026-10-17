@@ -30,4 +30,21 @@ HiddenTexts::~HiddenTexts() { hidden() = m_previous; }
 
 bool textsShown() { return !hidden(); }
 
+namespace {
+bool& drafted()
+{
+    static bool draft = false;
+    return draft;
+}
+} // namespace
+
+Draft::Draft(bool draft) : m_previous(drafted())
+{
+    drafted() = draft;
+}
+
+Draft::~Draft() { drafted() = m_previous; }
+
+bool draft() { return drafted(); }
+
 } // namespace qucs_s::lod

@@ -215,6 +215,10 @@ public:
   */
   void zoomAroundPoint(double scaleChange, QPoint coords, bool viewportRelative);
   double zoomBy(double);
+  /// A zoom by wheel or pinch under way (till 120 ms after its last step):
+  /// the canvas drawn in draft meanwhile, a graph's lines with square
+  /// caps (levelofdetail.h), then in full.
+  bool zooming() const { return a_zooming; }
   void  showAll();
   /// Scrolls so that \a modelPoint sits at the centre of the viewport, at
   /// the current scale (the model is widened if the point is outside it).
@@ -678,6 +682,7 @@ private:
     int gridX, gridY;
     bool symbolMode;
     bool texts;
+    bool draft;
     bool operator==(const SceneKey&) const = default;
   };
   SceneKey sceneKey(Gesture gesture, const QTransform& base, const QPainter* p) const;
@@ -686,6 +691,10 @@ private:
     QImage image;
   };
   std::optional<HeldScene> a_heldScene;
+  /// A zoom by wheel or pinch: zooming() till a_zoomSettle times out.
+  void zoomed();
+  bool a_zooming = false;
+  QTimer* a_zoomSettle = nullptr;
   /// Counts the edits and the rebuilds of the document: a scene held
   /// across them is drawn again.
   quint64 a_sceneGeneration = 0;
