@@ -60,6 +60,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <vector>
 #include <functional>
 #include <cmath>
 
@@ -184,7 +185,8 @@ void PageView::setDocument(QPdfDocument* document)
     a_tiles.clear();
     a_previews.clear();
     a_links.clear();
-    a_charBoxes.clear();
+    a_pageTexts.clear();
+    a_charAts.clear();
     clearSelection();
     a_currentPage = 0;
     relayout();
@@ -430,38 +432,98 @@ void PageView::clearSelection()
     setSelection(-1, QString(), {});
 }
 
-const QList<QRectF>& PageView::charBoxes(int page)
+const PageView::PageText& PageView::pageText(int page)
 {
-    // The boxes of the page's characters, by their index, once.
-    auto it = a_charBoxes.find(page);
-    if (it == a_charBoxes.end()) {
-        QList<QRectF> boxes;
+    auto it = a_pageTexts.find(page);
+    if (it == a_pageTexts.end()) {
+        PageText t;
         const QPdfSelection all = a_document->getAllText(page);
-        const int n = std::min(all.endIndex(), 20000);
-        for (int i = 0; i < n; ++i) boxes << a_document->getSelectionAtIndex(page, i, 1).boundingRectangle();
-        it = a_charBoxes.insert(page, boxes);
+        for (const QPolygonF& run : all.bounds()) t.runs << run.boundingRect();
+        // (Two anchors for the hit test: a character with a box at each end
+        // - the text's first ones may be spaces or a line's end, boxless.)
+        const int n = all.endIndex();
+        for (int i = 0; i < std::min(n, 64) && t.first < 0; ++i)
+            if (const QRectF b = a_document->getSelectionAtIndex(page, i, 1).boundingRectangle(); !b.isEmpty()) {
+                t.first = i;
+                t.firstAt = b.center();
+            }
+        for (int i = n - 1; i >= std::max(t.first + 1, n - 64) && t.last < 0; --i)
+            if (const QRectF b = a_document->getSelectionAtIndex(page, i, 1).boundingRectangle(); !b.isEmpty()) {
+                t.last = i;
+                t.lastAt = b.center();
+            }
+        it = a_pageTexts.insert(page, t);
     }
     return *it;
 }
 
+int PageView::hitChar(int page, QPointF point)
+{
+    // pdfium's own hit test (QPdfDocument::getSelection): from the first
+    // character to the point, the point's character the selection's end;
+    // the first's own, from it to the last, its start. Nothing there (off
+    // the text, beyond its tolerance): neither. (A box for each character
+    // took a call each, some 2 ms: a page of 6000 characters 11 s at the
+    // first selection on it, the program not answering.)
+    const PageText& t = pageText(page);
+    if (t.first < 0) return -1;
+    QPdfSelection s = a_document->getSelection(page, t.firstAt, point);
+    if (s.isValid() && s.endIndex() > t.first) return s.endIndex();
+    if (t.last > t.first) {
+        s = a_document->getSelection(page, point, t.lastAt);
+        if (s.isValid() && s.startIndex() >= t.first && s.startIndex() < t.last) return s.startIndex();
+    }
+    return -1;
+}
+
 int PageView::charAt(int page, QPointF point, bool* pastMiddle)
 {
-    const QList<QRectF>& boxes = charBoxes(page);
-    int best = -1;
-    qreal distance = std::numeric_limits<qreal>::max();
-    for (int i = 0; i < boxes.size(); ++i) {
-        const QRectF& box = boxes.at(i);
-        if (box.isEmpty()) continue;
-        const qreal dx = std::max({box.left() - point.x(), 0.0, point.x() - box.right()});
-        const qreal dy = std::max({box.top() - point.y(), 0.0, point.y() - box.bottom()});
-        const qreal d = dx * dx + dy * dy * 4;   // the line first
-        if (d < distance) {
-            distance = d;
-            best = i;
+    for (const CharAt& c : std::as_const(a_charAts))
+        if (c.page == page && c.point == point) {
+            if (pastMiddle != nullptr) *pastMiddle = c.pastMiddle;
+            return c.index;
+        }
+    int index = hitChar(page, point);
+    if (index < 0) {
+        // Off the text: the nearest run's - a line's, the line first -,
+        // the point brought into it; on a gap there (a space, between
+        // words), along it a step at a time, out from the point; the next
+        // nearest runs after it.
+        const PageText& t = pageText(page);
+        std::vector<std::pair<qreal, const QRectF*>> near;
+        for (const QRectF& box : t.runs) {
+            if (box.isEmpty()) continue;
+            const qreal dx = std::max({box.left() - point.x(), 0.0, point.x() - box.right()});
+            const qreal dy = std::max({box.top() - point.y(), 0.0, point.y() - box.bottom()});
+            near.push_back({dx * dx + dy * dy * 4, &box});   // the line first
+        }
+        const std::size_t tried = std::min<std::size_t>(near.size(), 3);
+        std::partial_sort(near.begin(), near.begin() + std::ptrdiff_t(tried), near.end(),
+                          [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (std::size_t r = 0; r < tried && index < 0; ++r) {
+            const QRectF& box = *near[r].second;
+            const qreal inset = std::min<qreal>(0.5, box.width() / 4);
+            const qreal x0 = std::clamp(point.x(), box.left() + inset, box.right() - inset);
+            const qreal step = std::max<qreal>(1.0, box.height() / 2);
+            for (int k = 0; k <= 8 && index < 0; ++k)
+                for (const int sign : {1, -1}) {
+                    if (k == 0 && sign < 0) continue;
+                    const qreal x = x0 + sign * k * step;
+                    if (x < box.left() || x > box.right()) continue;
+                    index = hitChar(page, QPointF(x, box.center().y()));
+                    if (index >= 0) break;
+                }
         }
     }
-    if (pastMiddle != nullptr) *pastMiddle = best >= 0 && point.x() > boxes.at(best).center().x();
-    return best;
+    bool past = false;
+    if (index >= 0) {
+        const QRectF box = a_document->getSelectionAtIndex(page, index, 1).boundingRectangle();
+        past = !box.isEmpty() && point.x() > box.center().x();
+    }
+    a_charAts.prepend({page, point, index, past});
+    if (a_charAts.size() > 4) a_charAts.removeLast();
+    if (pastMiddle != nullptr) *pastMiddle = past;
+    return index;
 }
 
 bool PageView::selectText(int page, QPointF from, QPointF to)
