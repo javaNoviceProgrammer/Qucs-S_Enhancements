@@ -887,13 +887,17 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     const QString action = args.value(QLatin1String("action")).toString();
     Model m = doc->model();
     const QJsonObject props = args.value(QLatin1String("props")).toObject();
-    // Properties set: only those its kind has.
+    // Properties set: only those its kind has (a material: and what a
+    // library entry gives one - its semiconductor models' parameters too).
     auto apply = [&](FNode& n) -> QString {
         const NodeKind* k = n.kind();
         for (auto it = props.begin(); it != props.end(); ++it) {
-            if (k && !k->property(it.key())) {
+            if (k && !k->property(it.key()) && !(n.type == QLatin1String("material") && isMaterialKey(it.key()))) {
                 QStringList keys;
                 for (const PropertyDef& p : k->properties) keys << p.key;
+                if (n.type == QLatin1String("material"))
+                    for (const QString& key : materialKeys())
+                        if (!keys.contains(key)) keys << key;
                 return tr("%1 has no property %2 (it has %3)").arg(k->title, it.key(), keys.join(QStringLiteral(", ")));
             }
             if (it.value().isNull()) n.props.remove(it.key());

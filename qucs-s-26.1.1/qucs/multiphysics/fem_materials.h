@@ -49,6 +49,13 @@ std::optional<MaterialEntry> findMaterial(const QString& name, const QList<Mater
 /// A material node of \a entry: its properties copied, its library named;
 /// on no domain yet (\a selection otherwise).
 Node materialNode(const Model& model, const MaterialEntry& entry, const QJsonObject& selection = {});
+/// The keys a material node takes from a library entry (materialNode keeps
+/// them): its kind's properties, and beyond them its semiconductor models'
+/// parameters (semiconductorModelKeys()), its index's range (nrange), the
+/// free-carrier cross-sections (sigmaFCn, sigmaFCp) - each read by the
+/// physics that takes it from the material.
+const QStringList& materialKeys();
+bool isMaterialKey(const QString& key);
 /// The entry a material node would make (to keep it in a library).
 MaterialEntry entryOf(const Node& material);
 

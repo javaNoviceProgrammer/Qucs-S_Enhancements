@@ -1672,6 +1672,16 @@ std::optional<MaterialEntry> findMaterial(const QString& name, const QList<Mater
     return std::nullopt;
 }
 
+const QStringList& materialKeys()
+{
+    return propertyKeys();
+}
+
+bool isMaterialKey(const QString& key)
+{
+    return propertyKeys().contains(key);
+}
+
 Node materialNode(const Model& model, const MaterialEntry& entry, const QJsonObject& selection)
 {
     Node n = model.make(QStringLiteral("material"));

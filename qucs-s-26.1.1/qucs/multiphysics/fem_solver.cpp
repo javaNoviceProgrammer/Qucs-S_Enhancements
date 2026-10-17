@@ -3973,6 +3973,13 @@ static void checkProperties(const Node& node, QStringList* errors, QStringList* 
         for (auto it = node.props.begin(); it != node.props.end(); ++it) {
             const PropertyDef* def = kind->property(it.key());
             if (!def) {
+                // (A material's library keys its kind lists not - its
+                // semiconductor models' parameters, nrange, the
+                // free-carrier cross-sections - are read where a physics
+                // takes them from it, the models a device uses not among
+                // them or not: a library Silicon said 59 of them "not
+                // read".)
+                if (node.type == QLatin1String("material") && isMaterialKey(it.key())) continue;
                 *warnings << tr("%1: it has no property %2 - not read").arg(node.name(), it.key());
                 continue;
             }

@@ -1058,6 +1058,48 @@ private slots:
         QVERIFY2(log.contains(QLatin1String("Gallium arsenide (bar): its material gives no parameters for Masetti's mobility - silicon's")), qPrintable(log));
     }
 
+    // A library material put in as the Multiphysics panel and Claude's
+    // fem_edit put it (materialNode: its semiconductor models' parameters,
+    // its index's range, the free-carrier cross-sections kept on the node):
+    // none of them said "not read" - a library Silicon said 59, Auger's,
+    // impact ionization's, narrowing's among them, read by the features
+    // that take them from it. A key no material has is said still, on a
+    // material and on any other node.
+    void aLibraryMaterialsKeysAreItsOwn()
+    {
+        const auto junction = [](const QJsonObject& extra) {
+            // (A coarse mesh: what is said is asked, not the solution.)
+            Model m = modelOf(bar(QStringLiteral("10"),
+                                  QStringLiteral(R"({"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},)"),
+                                  QStringLiteral("0.1[V]"), QString(), QStringLiteral("1")));
+            Node silicon = materialNode(m, *findMaterial(QStringLiteral("Silicon")), QJsonObject{{QStringLiteral("all"), true}});
+            for (auto it = extra.begin(); it != extra.end(); ++it) silicon.props.insert(it.key(), it.value());
+            m.materials().children = {silicon};
+            return m;
+        };
+        const Model library = junction({});
+        const Node& silicon = library.materials().children.front();
+        for (const char* key : {"Cbgn", "caun", "iian", "munmin", "nrange", "sigmaFCn"})
+            QVERIFY2(silicon.props.contains(QLatin1String(key)), key);   // (what the node carries)
+        Run r = run(library);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const QString said = r.study.warnings.join(QLatin1Char('\n'));
+        QVERIFY2(!said.contains(QLatin1String("has no property")), qPrintable(said));
+        // A key no material has: said.
+        r = run(junction({{QStringLiteral("Cbgnx"), QStringLiteral("0.5")}}));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QVERIFY2(r.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("Silicon: it has no property Cbgnx - not read")),
+                 qPrintable(r.study.warnings.join(QLatin1Char('\n'))));
+        // A material's key on another node: said.
+        Model other = junction({});
+        for (Node& f : other.component().child(QStringLiteral("semiconductor"))->children)
+            if (f.type == QLatin1String("semiconductor/ohmic")) f.props.insert(QStringLiteral("Cbgn"), QStringLiteral("0.5"));
+        r = run(other);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QVERIFY2(r.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("it has no property Cbgn - not read")),
+                 qPrintable(r.study.warnings.join(QLatin1Char('\n'))));
+    }
+
     // At its temperature: silicon at 400 K - its gap Varshni's, Nc and Nv
     // (T/300 K)^1.5 (semi.ni), its mobilities (T/300 K)^-2.5 (semi.mun) -,
     // its material's texts read at the physics' T.
