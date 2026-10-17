@@ -1183,6 +1183,224 @@ private slots:
                  qPrintable(inPml.solution->log.join(QLatin1Char('\n'))));
     }
 
+    // ---- The array scan: one source in a periodic structure from its cell
+
+    /// A periodic stack at λ0 1 µm, cells 0.4 µm wide: glass (n 1.5), an
+    /// absorbing film (2 - j \a kappa, 0.1 µm), a spacer (1.7, 0.1 µm) with
+    /// a dipole px at (0.13, 0.66), a tooth of glass 0.2 µm wide on it in
+    /// each cell, air; PMLs above and below (or periodic ports not fed,
+    /// \a ports). \a cells side by side, their sides \a periodic's (a
+    /// Periodic Condition's properties) - or none, PMLs 0.8 µm deep beside
+    /// them (a window). All of it meshed as layers: a supercell's mesh its
+    /// cell's again and again.
+    static QByteArray scanStack(int cells, const QString& periodic, double kappa = 0.3, bool ports = false)
+    {
+        const double L = 0.4, W = cells * L, side = periodic.isEmpty() ? 0.8 : 0;
+        struct Band {
+            QString name;
+            double y, h;
+            QString material;
+            int rows;
+        };
+        const QString air = QStringLiteral(R"("n": "1")"), glass = QStringLiteral(R"("n": "1.5")");
+        const std::vector<Band> bands = {
+            {QStringLiteral("below"), -0.4, 0.4, glass, 8},
+            {QStringLiteral("glass"), 0, 0.5, glass, 10},
+            {QStringLiteral("film"), 0.5, 0.1, QStringLiteral(R"("n": "2", "kappa": "%1")").arg(kappa), 4},
+            {QStringLiteral("spacer"), 0.6, 0.1, QStringLiteral(R"("n": "1.7")"), 4},
+            {QStringLiteral("teeth"), 0.7, 0.1, air, 4},
+            {QStringLiteral("air"), 0.8, 0.5, air, 10},
+            {QStringLiteral("above"), 1.3, 0.4, air, 8},
+        };
+        QStringList geometry, materials, layered, pml, all;
+        auto rect = [&geometry, &all](const QString& name, double x, double y, double w, double h) {
+            geometry << QStringLiteral(R"({"type": "rectangle", "name": "%1", "position": ["%2", "%3"], "size": ["%4", "%5"]})")
+                            .arg(name)
+                            .arg(x, 0, 'g', 17)
+                            .arg(y, 0, 'g', 17)
+                            .arg(w, 0, 'g', 17)
+                            .arg(h, 0, 'g', 17);
+            all << QStringLiteral("\"%1\"").arg(name);
+        };
+        auto layers = [&layered](const QStringList& names, int rows, double lateral) {
+            layered << QStringLiteral(R"({"type": "layered", "axis": "y", "count": "%1", "hlateral": "%2", "selection": {"only": [%3]}})")
+                           .arg(rows)
+                           .arg(lateral)
+                           .arg(names.join(QLatin1String(", ")));
+        };
+        for (const Band& b : bands) {
+            const bool outer = !ports && (b.name == QLatin1String("below") || b.name == QLatin1String("above"));
+            if (ports && (b.name == QLatin1String("below") || b.name == QLatin1String("above"))) continue;
+            QStringList names;
+            if (b.name == QLatin1String("teeth")) {
+                QStringList teeth;
+                for (int c = 0; c < cells; ++c) {
+                    const QString n = QStringLiteral("t%1"), a = QStringLiteral("a%1_%2");
+                    rect(a.arg(c).arg(0), c * L, b.y, 0.1, b.h);
+                    rect(n.arg(c), c * L + 0.1, b.y, 0.2, b.h);
+                    rect(a.arg(c).arg(1), c * L + 0.3, b.y, 0.1, b.h);
+                    names << QStringLiteral("\"%1\"").arg(a.arg(c).arg(0)) << QStringLiteral("\"%1\"").arg(a.arg(c).arg(1));
+                    teeth << QStringLiteral("\"%1\"").arg(n.arg(c));
+                }
+                materials << QStringLiteral(R"({"label": "tooth", %1, "selection": {"only": [%2]}})").arg(glass, teeth.join(QLatin1String(", ")));
+                layers(teeth, b.rows, 0.05);
+            } else {
+                rect(b.name, 0, b.y, W, b.h);
+                names << QStringLiteral("\"%1\"").arg(b.name);
+                if (outer) pml << names.last();
+            }
+            if (side > 0) {
+                rect(b.name + QStringLiteral("_l"), -side, b.y, side, b.h);
+                rect(b.name + QStringLiteral("_r"), W, b.y, side, b.h);
+                const QStringList sides = {QStringLiteral("\"%1_l\"").arg(b.name), QStringLiteral("\"%1_r\"").arg(b.name)};
+                pml << sides;
+                layers(sides, b.rows, 0.1);
+                names << sides;
+            }
+            materials << QStringLiteral(R"({"label": "%1", %2, "selection": {"only": [%3]}})").arg(b.name, b.material, names.join(QLatin1String(", ")));
+            layers(QStringList(names.mid(0, names.size() - (side > 0 ? 2 : 0))), b.rows, 0.05);
+        }
+        // (a window's in its middle cell)
+        const double x0 = (periodic.isEmpty() ? cells / 2 * L : 0) + 0.13;
+        QString features = QStringLiteral(R"({"type": "dipole", "position": ["%1", "0.66"], "px": "1e-20[C]"})").arg(x0, 0, 'g', 17);
+        if (!pml.isEmpty()) features += QStringLiteral(R"(, {"type": "pml", "selection": {"only": [%1]}})").arg(pml.join(QLatin1String(", ")));
+        if (!periodic.isEmpty())
+            features += QStringLiteral(R"(, {"type": "periodic", %1, "selection": {"of": [%2], "side": ["left", "right"]}})").arg(periodic, all.join(QLatin1String(", ")));
+        if (ports)
+            features += QStringLiteral(R"(, {"type": "periodicport", "name": "up", "excite": false, "selection": {"of": ["air"], "side": "top"}},
+                {"type": "periodicport", "name": "down", "excite": false, "selection": {"of": ["glass"], "side": "bottom"}})");
+        return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um", "geometry": [%1], "materials": [%2],
+            "physics": [{"type": "waves", "tag": "ewfd", "polarization": "hz", "features": [%3]}],
+            "mesh": {"size": "fine", "features": [%4]}}],
+          "studies": [{"type": "study", "steps": [{"type": "frequency", "frequencies": "299.792458[THz]"}]}]})json")
+            .arg(geometry.join(QLatin1String(", ")), materials.join(QLatin1String(", ")), features, layered.join(QLatin1String(", ")))
+            .toUtf8();
+    }
+
+    void anArrayScanIsASupercell()
+    {
+        // N kF points on one cell, the mean of their fields, are a supercell
+        // of N cells with one source - on these meshes, cell for cell the
+        // same, to rounding: its power, its field here and there.
+        const Run scan = run(modelOf(scanStack(1, QStringLiteral(R"("floquet": "scan", "points": 4, "sampling": "even")"))));
+        QVERIFY2(scan.error.isEmpty(), qPrintable(scan.error));
+        const Run super = run(modelOf(scanStack(4, QStringLiteral(R"("floquet": "continuity")"))));
+        QVERIFY2(super.error.isEmpty(), qPrintable(super.error));
+        Solution& a = *scan.solution;
+        Solution& b = *super.solution;
+        const double Pa = global(a, QStringLiteral("ewfd.Psource")), Pb = global(b, QStringLiteral("ewfd.Psource"));
+        qInfo("4 kF on a cell: Psource %.10g W/m; a supercell of 4: %.10g; Purcell %.6f", Pa, Pb, global(a, QStringLiteral("ewfd.Purcell")));
+        QVERIFY2(std::abs(Pa / Pb - 1) < 1e-9, qPrintable(QStringLiteral("%1 against %2").arg(Pa, 0, 'g', 12).arg(Pb, 0, 'g', 12)));
+        QCOMPARE(a.mesh().triangles.size() * 4, b.mesh().triangles.size());
+        for (const QPointF& at : {QPointF(0.13, 1.0), QPointF(0.31, 0.2), QPointF(0.05, 0.75)}) {
+            PointEvaluator ea(a), eb(b);
+            const Locator la(a.mesh()), lb(b.mesh());
+            int ta = -1, tb = -1;
+            double xa = 0, ya = 0, xb = 0, yb = 0;
+            QVERIFY(la.locate(at, &ta, &xa, &ya) && lb.locate(at, &tb, &xb, &yb));
+            ea.moveTo(ta, xa, ya);
+            eb.moveTo(tb, xb, yb);
+            const cd ha(ea.eval(Expression::compile(QStringLiteral("ewfd.Hz"), a.pointScope())), ea.eval(Expression::compile(QStringLiteral("ewfd.Hz_im"), a.pointScope())));
+            const cd hb(eb.eval(Expression::compile(QStringLiteral("ewfd.Hz"), b.pointScope())), eb.eval(Expression::compile(QStringLiteral("ewfd.Hz_im"), b.pointScope())));
+            QVERIFY2(std::abs(ha - hb) < 1e-8 * std::abs(hb), qPrintable(QStringLiteral("(%1, %2): %3 against %4").arg(at.x()).arg(at.y()).arg(std::abs(ha)).arg(std::abs(hb))));
+        }
+        // Said: its kF, and what half of them give.
+        QVERIFY2(a.log.join(QLatin1Char('\n')).contains(QStringLiteral("the array scan's 4 kF - Psource")), qPrintable(a.log.join(QLatin1Char('\n'))));
+        // Lossless, between periodic ports not fed: what it gives they take,
+        // at each kF and so in all.
+        const Run lossless = run(modelOf(scanStack(1, QStringLiteral(R"("floquet": "scan", "points": 8)"), 0, true)));
+        QVERIFY2(lossless.error.isEmpty(), qPrintable(lossless.error));
+        Solution& c = *lossless.solution;
+        const double P = global(c, QStringLiteral("ewfd.Psource")), up = global(c, QStringLiteral("ewfd.Pport_up")),
+                     down = global(c, QStringLiteral("ewfd.Pport_down"));
+        qInfo("lossless, 8 kF: Psource %.8g W/m, up %.8g, down %.8g (%.2e apart)", P, up, down, (up + down) / P - 1);
+        QVERIFY2(std::abs((up + down) / P - 1) < 1e-8, qPrintable(QStringLiteral("%1 + %2 against %3").arg(up).arg(down).arg(P)));
+        QVERIFY(up > 0.05 * P && down > 0.05 * P);
+    }
+
+    void anArrayScanAgainstAWindow()
+    {
+        // The dipole of the stack in a window of cells, PMLs beside it (as
+        // the OLED model was), against its array scan: the same Purcell
+        // factor. The scan's kF clustered about the anomalies converges -
+        // 128 kF and 256 agree to 1e-9 between periodic ports; evenly, as
+        // a supercell, it does not (1.198, 1.112, 1.090, 1.124 at 8 to 64
+        // kF, 1.131 at 256: Rayleigh's anomaly at kF ±k0, the glass's -1
+        // order and the air's 0 there both grazing).
+        // (Sanitized, the window's Purcell factor as a Release build solves
+        // it - 22,000 unknowns, some 40 s with Eigen's LU sanitized; the
+        // scan's own the same in any build. 12 cells 1.1320155, 48 1.1319936.)
+        const bool slow = slowBuild();
+        const int cells = 24;
+        double window = 1.1324522;
+        if (!slow) {
+            const Run w = run(modelOf(scanStack(cells, QString())));
+            QVERIFY2(w.error.isEmpty(), qPrintable(w.error));
+            window = global(*w.solution, QStringLiteral("ewfd.Purcell"));
+            QVERIFY2(std::abs(window - 1.1324522) < 1e-6, qPrintable(QString::number(window, 'g', 10)));
+        }
+        auto scan = [](int n, const char* sampling, bool ports, double* half) -> double {
+            const Run r = run(modelOf(scanStack(1, QStringLiteral(R"("floquet": "scan", "points": %1, "sampling": "%2")").arg(n).arg(QLatin1String(sampling)), 0.3, ports)));
+            if (!r.error.isEmpty()) qWarning("%s", qPrintable(r.error));
+            if (!r.solution) return NAN;
+            // (the log: Psource, with half of them, how far apart)
+            static const QRegularExpression apart(QStringLiteral("with half of them [^:]*: ([0-9.e+-]+) % apart"));
+            const QRegularExpressionMatch m = apart.match(r.solution->log.join(QLatin1Char('\n')));
+            *half = m.hasMatch() ? m.captured(1).toDouble() / 100 : NAN;
+            return global(*r.solution, QStringLiteral("ewfd.Purcell"));
+        };
+        double h16 = 0, h128 = 0, h256 = 0, hEven = 0, hPml = 0;
+        // (sanitized, 128 kF the reference: CI's few cores solve some 600 cells here otherwise)
+        const double p16 = scan(16, "anomalies", true, &h16), p128 = scan(128, "anomalies", true, &h128);
+        const double p256 = slow ? p128 : scan(256, "anomalies", true, &h256);
+        const double pml = scan(128, "anomalies", false, &hPml), even = scan(64, "even", false, &hEven);
+        qInfo("a window of %d cells: Purcell %.7f; its scan between periodic ports %.7f (128 kF, %.1e from half), %.7f (256, %.1e); "
+              "with the PMLs %.7f (128, %.1e); evenly %.7f (64, %.1e)",
+              cells, window, p128, h128, p256, h256, pml, hPml, even, hEven);
+        QVERIFY2(std::abs(p128 / p256 - 1) < 1e-6, qPrintable(QString::number(p128 / p256 - 1)));
+        QVERIFY(h128 < 1e-3 && (slow || h256 < 1e-6));
+        // (its half's estimate, where it is not yet there, at least the error)
+        QVERIFY2(h16 > 1e-3 && std::abs(p16 / p256 - 1) < h16, qPrintable(QStringLiteral("%1 off, %2 said").arg(std::abs(p16 / p256 - 1)).arg(h16)));
+        QVERIFY2(std::abs(pml / window - 1) < 1e-3, qPrintable(QStringLiteral("%1 against %2").arg(pml).arg(window)));
+        QVERIFY2(std::abs(p128 / window - 1) < 1e-3, qPrintable(QStringLiteral("%1 against %2").arg(p128).arg(window)));
+        // (evenly: its half says it is off)
+        QVERIFY(std::abs(even / window - 1) > 3e-3 && hEven > 3e-3);
+        // Said: where the anomalies are.
+        const Run r = run(modelOf(scanStack(1, QStringLiteral(R"("floquet": "scan", "points": 16)"))));
+        QVERIFY2(r.solution && r.solution->log.join(QLatin1Char('\n')).contains(QStringLiteral("clustered about Rayleigh's anomalies at kF ±")),
+                 qPrintable(r.solution ? r.solution->log.join(QLatin1Char('\n')) : r.error));
+    }
+
+    void arrayScanRefusals()
+    {
+        struct Case {
+            QString periodic;
+            QString error;
+        };
+        const std::vector<Case> cases = {
+            {QStringLiteral(R"("floquet": "scan", "points": 7)"), QStringLiteral("7 kF points - an even number")},
+            {QStringLiteral(R"("floquet": "scan", "points": 0)"), QStringLiteral("0 kF points")},
+        };
+        for (const Case& c : cases) {
+            const Run r = run(modelOf(scanStack(1, c.periodic)));
+            QVERIFY2(r.error.contains(c.error), qPrintable(QStringLiteral("%1: %2").arg(c.periodic, r.error)));
+        }
+        // Without a point source.
+        QString none = QString::fromUtf8(scanStack(1, QStringLiteral(R"("floquet": "scan")")));
+        none.replace(QStringLiteral(R"({"type": "dipole", "position": ["0.13", "0.66"], "px": "1e-20[C]"}, )"), QString());
+        QVERIFY(!none.contains(QLatin1String("dipole")));
+        const Run lone = run(modelOf(none.toUtf8()));
+        QVERIFY2(lone.error.contains(QStringLiteral("an array scan without a point source")), qPrintable(lone.error));
+        // A Floquet solve of its own (kF given) with the source between
+        // periodic ports not fed: a periodic array's, what it gives they take.
+        const Run given = run(modelOf(scanStack(1, QStringLiteral(R"("floquet": "given", "kx": "2[1/um]")"), 0, true)));
+        QVERIFY2(given.error.isEmpty(), qPrintable(given.error));
+        const double P = global(*given.solution, QStringLiteral("ewfd.Psource"));
+        const double out = global(*given.solution, QStringLiteral("ewfd.Pport_up")) + global(*given.solution, QStringLiteral("ewfd.Pport_down"));
+        QVERIFY2(std::abs(out / P - 1) < 1e-8, qPrintable(QStringLiteral("%1 against %2").arg(out).arg(P)));
+    }
+
     // ---- Periodic cells: Floquet's condition, periodic ports, R and T
 
     void periodicFresnel()

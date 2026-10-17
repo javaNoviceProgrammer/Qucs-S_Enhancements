@@ -32,6 +32,8 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <thread>
+#include <atomic>
 
 namespace qucs_s::fem::detail {
 
@@ -233,6 +235,9 @@ public:
         double dnCarriers = 0, alphaCarriers = 0;
         // Quantum wells' (TE, TM): Δn from F0 and absorption (1/m).
         double dnWells[2] = {0, 0}, alphaWells[2] = {0, 0};
+        /// What k² / k0² is along x before a PML's stretching: Ez's εzz µyy,
+        /// Hz's εyy µzz (an outer medium's, for an array scan's anomalies).
+        cd own[2] = {1, 1};
     };
     At at(PointEvaluator& e, int d, double omega, double k0) const
     {
@@ -444,6 +449,8 @@ public:
             out.mu[k] = mur[k];
             out.eps[k] = out.epsT[k][k];
         }
+        out.own[0] = out.epsT[2][2] * out.mu[1];
+        out.own[1] = out.epsT[1][1] * out.mu[2];
         if (m.pml) {
             // Stretched coordinates: x' = ∫ sx, its ε and µ (sx sy) S⁻¹ T
             // S⁻¹ times the medium's, S = diag(sx, sy, 1).
@@ -2298,7 +2305,9 @@ private:
     /// differ).
     struct Periodic {
         QString name;
-        int floquet = 1;   // 0 continuity, 1 from the fed periodic port, 2 kF given
+        int floquet = 1;   // 0 continuity, 1 from the fed periodic port, 2 kF given, 3 an array scan
+        int points = 16;   // an array scan's kF
+        bool evenly = false;   // its kF evenly (a supercell's), not clustered about the anomalies
         double kx = 0, ky = 0;
         QPointF shift;     // d, metres: from the source side to the destination
         std::vector<int> source, destination;   // boundaries
@@ -2324,12 +2333,30 @@ private:
         std::vector<double> power;   // of the incident's
         std::vector<char> open;      // it propagates
         int reach = 0;               // the orders that propagate here at some angle: |m| up to this
+        double out = NaN;            // not fed: what the point sources send out by it (W/m)
     };
-    /// The periodic ports' orders at \a omega: their media, kF, β, c.
-    bool periodicOrders(double omega, double k0, QString* error);
+    /// The periodic ports' media at \a omega (p, pt, q: one along each).
+    bool periodicMedia(double omega, double k0, QString* error);
+    /// \a ports' orders at \a kF (\a kIn the fed wave's k: the orders that
+    /// propagate at some angle): kt, β, c, dual; those that propagate in
+    /// \a said. Reads the mesh alone (an array scan's threads).
+    void periodicOrders(double k0, const double kF[2], double kIn, std::vector<PeriodicPort>& ports, QStringList* said) const;
+    /// Each order's condition, jβ_m p c_m ĉ_mᵀ, into \a trip.
+    void periodicConditions(const std::vector<PeriodicPort>& ports, std::vector<Eigen::Triplet<cd>>& trip) const;
+    /// What a periodic port takes from the field \a x (by equation): its
+    /// open orders' Re(p β_m) |b_m|² / 2ωµ0 (ε0 for Hz), b_m = ĉ_mᵀ x.
+    double periodicOut(const PeriodicPort& port, const Eigen::VectorXcd& x, double omega, double k0) const;
     /// The equations in the free ones (the periodic conditions' ties, their
-    /// phases at kF): T, a_neq by its columns; \a tied false where none is.
-    bool periodicMap(Eigen::SparseMatrix<cd>* T, bool* tied, QString* error);
+    /// phases at \a kF): T, a_neq by its columns; \a tied false where none is.
+    bool periodicMap(const double kF[2], Eigen::SparseMatrix<cd>* T, bool* tied, QString* error) const;
+    /// An array scan: the cell at each kF of its Brillouin zone (\a trip and
+    /// \a F the part that is the same at each); the mean of their fields in
+    /// \a kept, of what each periodic port takes in its out.
+    bool scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const Eigen::VectorXcd& F, double omega, double k0, Eigen::VectorXcd* kept,
+                   QString* error);
+    int a_scan = -1;           // the array scan's periodic condition
+    int a_scanCount = 0;       // the kF it solved
+    double a_scanHalf = NaN;   // its sources' power with half its points
 
     Media a_media;
     bool a_hz = false;
@@ -2499,7 +2526,13 @@ bool WaveProblem::setup(QString* error)
             Periodic pc;
             pc.name = feature.name();
             const QString kind = feature.text(QStringLiteral("floquet"));
-            pc.floquet = kind == QLatin1String("continuity") ? 0 : kind == QLatin1String("given") ? 2 : 1;
+            pc.floquet = kind == QLatin1String("continuity") ? 0 : kind == QLatin1String("given") ? 2 : kind == QLatin1String("scan") ? 3 : 1;
+            if (pc.floquet == 3) {
+                pc.points = feature.integer(QStringLiteral("points"));
+                pc.evenly = feature.text(QStringLiteral("sampling")) == QLatin1String("even");
+                if (pc.points < 2 || pc.points % 2)
+                    problem(tr("%1: %2 kF points - an even number, 2 or more (N points: a supercell of N cells)").arg(feature.name()).arg(pc.points));
+            }
             if (pc.floquet == 2) {
                 const std::optional<double> kx = evaluateConstant(feature.text(QStringLiteral("kx")), a_s.parameters().scope, Dim::of(-1), &why);
                 if (!kx) problem(tr("%1: kF's x: %2").arg(feature.name(), why));
@@ -2543,7 +2576,8 @@ bool WaveProblem::setup(QString* error)
         if (p.edges.empty()) problem(tr("periodic port %1 is on no boundary").arg(p.name));
     if (!a_pports.empty() && !a_ports.empty())
         problem(tr("%1: periodic ports and ports together - a unit cell's periodic ports, or a waveguide's ports").arg(a_node->name()));
-    if (!a_pports.empty() && a_pfed < 0) problem(tr("%1: no periodic port is fed: one brings the plane wave in").arg(a_node->name()));
+    if (!a_pports.empty() && a_pfed < 0 && a_sources.empty())
+        problem(tr("%1: no periodic port is fed: one brings the plane wave in (or a point source in the cell)").arg(a_node->name()));
     if (!a_sources.empty()) {
         // The sources' field alone: their power, and what each port takes.
         QStringList fed;
@@ -2555,6 +2589,21 @@ bool WaveProblem::setup(QString* error)
             problem(tr("%1: a point source and a fed port (%2) - the ports matched, not fed (Fed off), take what the sources send them")
                         .arg(a_node->name(), fed.join(QStringLiteral(", "))));
         if (plane) problem(tr("%1: a point source and a plane wave coming in - one or the other: the sources' power is of their field alone").arg(a_node->name()));
+    }
+    // An array scan: one, of a cell with a point source and no ports.
+    a_scan = -1;
+    for (int i = 0; i < int(a_periodic.size()); ++i) {
+        if (a_periodic[std::size_t(i)].floquet != 3) continue;
+        if (a_scan >= 0)
+            problem(tr("%1: two array scans (%2, %3) - one, along one period").arg(a_node->name(), a_periodic[std::size_t(a_scan)].name, a_periodic[std::size_t(i)].name));
+        else
+            a_scan = i;
+    }
+    if (a_scan >= 0) {
+        const QString scan = a_periodic[std::size_t(a_scan)].name;
+        if (a_sources.empty())
+            problem(tr("%1: an array scan without a point source - it gives one source's field: a Point Dipole or a Line Current in the cell").arg(scan));
+        if (!a_ports.empty()) problem(tr("%1: an array scan with ports - the cell's top and bottom PMLs, or periodic ports not fed").arg(scan));
     }
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
@@ -2872,11 +2921,9 @@ const std::array<std::array<double, 2>, 8>& gauss8()
     return rule;
 }
 
-bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
+bool WaveProblem::periodicMedia(double omega, double k0, QString* error)
 {
     if (a_pports.empty()) return true;
-    const Field& fld = a_s.fields()[std::size_t(a_fi)];
-    const Space& sp = *fld.space;
     const Mesh& mesh = a_s.mesh();
     PointEvaluator ev(a_s);
     // Each port's medium: the same all along it (a plane wave's), its axes
@@ -2915,15 +2962,13 @@ bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
             return false;
         }
     }
-    // kF: the fed port's plane wave's along the cell (its index across it).
-    const PeriodicPort& fed = a_pports[std::size_t(a_pfed)];
-    const cd kIn = k0 * std::sqrt(fed.q / fed.p);
-    if (std::abs(kIn.imag()) > 1e-9 * std::abs(kIn.real()))
-        a_s.log << tr("Warning: %1: periodic port %2's medium absorbs: the plane wave's angle taken of its index's real part")
-                       .arg(a_node->name(), fed.name);
-    const double kt0 = kIn.real() * std::sin(fed.angle);
-    a_kF[0] = kt0 * fed.along.x();
-    a_kF[1] = kt0 * fed.along.y();
+    return true;
+}
+
+void WaveProblem::periodicOrders(double k0, const double kF[2], double kIn, std::vector<PeriodicPort>& ports, QStringList* said) const
+{
+    const Field& fld = a_s.fields()[std::size_t(a_fi)];
+    const Space& sp = *fld.space;
     // Each port's orders: those that propagate in any port's medium and ten
     // more each way (the near field's), as many as its edges resolve. (An
     // order at its cutoff - β nought to rounding - not open: listed in the
@@ -2931,15 +2976,14 @@ bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
     auto opens = [k0](const PeriodicPort& port, double kt) {
         return ((k0 * k0 * port.q - port.pt * kt * kt) / port.p).real() > 1e-9 * std::abs((k0 * k0 * port.q / port.p).real());
     };
-    QStringList said;
-    for (PeriodicPort& port : a_pports) {
-        const double ktF = a_kF[0] * port.along.x() + a_kF[1] * port.along.y();
+    for (PeriodicPort& port : ports) {
+        const double ktF = kF[0] * port.along.x() + kF[1] * port.along.y();
         const double kmax = std::sqrt(std::max(0.0, (k0 * k0 * port.q / port.pt).real()));
         const int propagating = int(std::ceil((kmax + std::abs(ktF)) * port.length / (2 * M_PI))) + 1;
         // (The orders that propagate here at some angle of the fed wave's -
         // its tangential k up to the fed medium's k: each its global at
         // every angle, nought where it does not: a sweep's the same names.)
-        port.reach = int(std::floor((kmax + kIn.real()) * port.length / (2 * M_PI) + 1e-9));
+        port.reach = int(std::floor((kmax + kIn) * port.length / (2 * M_PI) + 1e-9));
         const int M = std::min(propagating + 10, std::max(propagating, int(port.edges.size()) / 2));
         port.m.clear();
         port.kt.clear();
@@ -2955,7 +2999,7 @@ bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
             port.beta.push_back(beta);
             if (opens(port, kt)) open << QStringLiteral("%1 (%2°)").arg(m).arg(std::atan2(kt, beta.real()) * 180 / M_PI, 0, 'f', 2);
         }
-        said << tr("%1: %2").arg(port.name, open.isEmpty() ? tr("none") : open.join(QLatin1String(", ")));
+        if (said) *said << tr("%1: %2").arg(port.name, open.isEmpty() ? tr("none") : open.join(QLatin1String(", ")));
         const std::size_t n = port.m.size();
         port.c.assign(n, Eigen::VectorXcd::Zero(a_neq));
         port.dual.assign(n, Eigen::VectorXcd::Zero(a_neq));
@@ -2990,14 +3034,36 @@ bool WaveProblem::periodicOrders(double omega, double k0, QString* error)
             }
         }
     }
-    a_s.log << tr("%1: a periodic cell %2 wide, kF %3 (%4° in periodic port %5's medium); the orders that propagate - %6")
-                   .arg(a_node->name(), formatQuantity(fed.length, Dim::length()), formatQuantity(kt0, Dim::of(-1)))
-                   .arg(fed.angle * 180 / M_PI, 0, 'g', 6)
-                   .arg(fed.name, said.join(QLatin1String("; ")));
-    return true;
 }
 
-bool WaveProblem::periodicMap(Eigen::SparseMatrix<cd>* T, bool* tied, QString* error)
+void WaveProblem::periodicConditions(const std::vector<PeriodicPort>& ports, std::vector<Eigen::Triplet<cd>>& trip) const
+{
+    for (const PeriodicPort& port : ports) {
+        std::vector<int> nz;
+        if (!port.c.empty())
+            for (int i = 0; i < a_neq; ++i)
+                if (port.c[0](i) != cd(0)) nz.push_back(i);
+        for (std::size_t k = 0; k < port.m.size(); ++k) {
+            const cd f = J * port.beta[k] * port.p;
+            for (int i : nz)
+                for (int j : nz) trip.emplace_back(i, j, f * port.c[k](i) * port.dual[k](j));
+        }
+    }
+}
+
+double WaveProblem::periodicOut(const PeriodicPort& port, const Eigen::VectorXcd& x, double omega, double k0) const
+{
+    // (an order that does not propagate carries nothing out)
+    double sum = 0;
+    for (std::size_t k = 0; k < port.m.size(); ++k) {
+        const bool open = ((k0 * k0 * port.q - port.pt * port.kt[k] * port.kt[k]) / port.p).real()
+                          > 1e-9 * std::abs((k0 * k0 * port.q / port.p).real());
+        if (open) sum += (port.p * port.beta[k]).real() * std::norm((port.dual[k].transpose() * x)(0));
+    }
+    return sum / (2 * omega * (a_hz ? Eps0 : Mu0));
+}
+
+bool WaveProblem::periodicMap(const double kF[2], Eigen::SparseMatrix<cd>* T, bool* tied, QString* error) const
 {
     *tied = false;
     if (a_periodic.empty()) return true;
@@ -3014,9 +3080,9 @@ bool WaveProblem::periodicMap(Eigen::SparseMatrix<cd>* T, bool* tied, QString* e
         if (pc.floquet == 2) {
             kx = pc.kx;
             ky = pc.ky;
-        } else if (pc.floquet == 1) {
-            kx = a_kF[0];
-            ky = a_kF[1];
+        } else if (pc.floquet == 1 || pc.floquet == 3) {
+            kx = kF[0];
+            ky = kF[1];
         }
         const cd phase = std::exp(-J * (kx * pc.shift.x() + ky * pc.shift.y()));
         for (const auto& [q, from] : pc.ties) {
@@ -3064,6 +3130,203 @@ bool WaveProblem::periodicMap(Eigen::SparseMatrix<cd>* T, bool* tied, QString* e
     T->setFromTriplets(trip.begin(), trip.end());
     T->makeCompressed();
     *tied = true;
+    return true;
+}
+
+bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const Eigen::VectorXcd& F, double omega, double k0, Eigen::VectorXcd* kept,
+                            QString* error)
+{
+    const Periodic& pc = a_periodic[std::size_t(a_scan)];
+    const double period = std::hypot(pc.shift.x(), pc.shift.y());
+    const QPointF along = pc.shift / period;
+    if (!a_pports.empty()) {
+        QStringList said;
+        std::vector<PeriodicPort> ports = a_pports;
+        const double none[2] = {0, 0};
+        periodicOrders(k0, none, 0, ports, &said);
+        a_s.log << tr("%1: a periodic cell %2 wide; at kF 0 the orders that propagate - %3")
+                       .arg(a_node->name(), formatQuantity(period, Dim::length()), said.join(QLatin1String("; ")));
+    }
+    // Where the cell's response is singular in kF: Rayleigh's anomalies, an
+    // order grazing a lossless outer medium (a periodic port's, a PML's),
+    // kF = ±k there, folded into the zone. Between them (round the zone, its
+    // integrand periodic) kF by tanh-sinh's rule, clustered at both ends -
+    // its error falling as e^-cN with a singularity of a square root at an
+    // end; every other point the rule of half as many. None: evenly, the
+    // trapezoid rule (as a supercell of N cells with one source), kF =
+    // (2π/Λ)(i/N - ½), every other the half.
+    const double zone = 2 * M_PI / period;
+    auto fold = [zone](double k) { return std::remainder(k, zone); };
+    std::vector<double> anomalies;
+    auto anomaly = [&anomalies, &fold, k0](cd own) {
+        if (!(own.real() > 0) || std::abs(own.imag()) > 1e-9 * own.real()) return;
+        for (double sign : {1.0, -1.0}) anomalies.push_back(fold(sign * k0 * std::sqrt(own.real())));
+    };
+    if (!pc.evenly) {
+        for (const PeriodicPort& port : a_pports) anomaly(port.q / port.pt);
+        const Mesh& mesh = a_s.mesh();
+        PointEvaluator ev(a_s);
+        std::vector<char> seen(a_media.domains.size(), 0);
+        for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (d < 0 || !field().domains[std::size_t(d)] || !a_media.domains[std::size_t(d)].pml || seen[std::size_t(d)]) continue;
+            seen[std::size_t(d)] = 1;
+            ev.moveTo(t, 1.0 / 3, 1.0 / 3);
+            anomaly(a_media.at(ev, d, omega, k0).own[a_hz ? 1 : 0]);
+        }
+        std::sort(anomalies.begin(), anomalies.end());
+        std::vector<double> apart;
+        for (double k : anomalies)
+            if (apart.empty() || k - apart.back() > 1e-9 * zone) apart.push_back(k);
+        if (apart.size() > 1 && apart.front() + zone - apart.back() <= 1e-9 * zone) apart.pop_back();
+        anomalies = apart;
+    }
+    struct Node {
+        double k, w, half;   // kF; its weight, in the rule of half the points (the zone's mean: they sum to 1)
+    };
+    std::vector<Node> nodes;
+    if (anomalies.empty()) {
+        for (int i = 0; i < pc.points; ++i)
+            nodes.push_back({zone * (double(i) / pc.points - 0.5), 1.0 / pc.points, i % 2 ? 0.0 : 2.0 / pc.points});
+    } else {
+        // tanh-sinh on [a, b]: k = (a + b)/2 + (b - a)/2 tanh(π/2 sinh τ),
+        // τ from -τm to τm by h, M points (odd), weights h (b - a)/2 (π/2)
+        // cosh τ / cosh²(π/2 sinh τ) - the ends' left out (their weights
+        // some 1e-8 of the rest), as the anomalies themselves.
+        constexpr double tm = 2.6;
+        for (std::size_t i = 0; i < anomalies.size(); ++i) {
+            const double a = anomalies[i], b = i + 1 < anomalies.size() ? anomalies[i + 1] : anomalies.front() + zone;
+            int M = std::max(9, int(std::lround(pc.points * (b - a) / zone)));
+            if (M % 2 == 0) ++M;
+            const double h = 2 * tm / (M - 1);
+            for (int j = 1; j + 1 < M; ++j) {
+                const double tau = -tm + j * h, u = M_PI / 2 * std::sinh(tau);
+                const double w = h * (b - a) / 2 * M_PI / 2 * std::cosh(tau) / (std::cosh(u) * std::cosh(u)) / zone;
+                nodes.push_back({fold((a + b) / 2 + (b - a) / 2 * std::tanh(u)), w, j % 2 ? 0.0 : 2 * w});
+            }
+        }
+    }
+    const int n = int(nodes.size());
+    if (!anomalies.empty()) {
+        QStringList at;
+        for (double k : anomalies)
+            if (k >= 0) at << formatQuantity(k, Dim::of(-1));
+        a_s.log << tr("%1: the array scan's %2 kF clustered about Rayleigh's anomalies at kF ±%3")
+                       .arg(pc.name)
+                       .arg(n)
+                       .arg(at.join(QLatin1String(", ±")));
+    }
+    // Each cell solved alone: on threads of their own where Eigen's LU (one
+    // thread) factorizes it, one after another where Accelerate's.
+    std::vector<Eigen::VectorXcd> x(static_cast<std::size_t>(n));
+    std::vector<std::vector<double>> out(std::size_t(n), std::vector<double>(a_pports.size(), 0.0));
+    std::vector<QString> failed(static_cast<std::size_t>(n));
+    // (The matrix but the periodic ports' conditions the same at each kF;
+    // each thread's LU analysed once while its pattern holds - the same at
+    // each kF, the ties' phases and the orders' values alone changing.)
+    Eigen::SparseMatrix<cd> A0(a_neq, a_neq);
+    A0.setFromTriplets(trip.begin(), trip.end());
+    A0.makeCompressed();
+    struct Lu {
+        SparseLu<cd> lu;
+        std::vector<int> outer, inner;   // the pattern analysed
+    };
+    auto one = [this, &A0, &F, &x, &out, &failed, &nodes, omega, k0, along](int i, Lu& own) {
+        const double k = nodes[std::size_t(i)].k;
+        const double kF[2] = {k * along.x(), k * along.y()};
+        std::vector<PeriodicPort> ports = a_pports;
+        periodicOrders(k0, kF, 0, ports, nullptr);
+        Eigen::SparseMatrix<cd> A = A0;
+        if (!ports.empty()) {
+            std::vector<Eigen::Triplet<cd>> t;
+            periodicConditions(ports, t);
+            Eigen::SparseMatrix<cd> P(a_neq, a_neq);
+            P.setFromTriplets(t.begin(), t.end());
+            A = Eigen::SparseMatrix<cd>(A0 + P);
+            A.makeCompressed();
+        }
+        Eigen::SparseMatrix<cd> T;
+        bool tied = false;
+        QString why;
+        if (!periodicMap(kF, &T, &tied, &why)) {
+            failed[std::size_t(i)] = why;
+            return;
+        }
+        if (tied) {
+            const Eigen::SparseMatrix<cd> Th = T.adjoint();
+            A = Eigen::SparseMatrix<cd>(Th * A * T);
+            A.makeCompressed();
+        }
+        const std::vector<int> outer(A.outerIndexPtr(), A.outerIndexPtr() + A.outerSize() + 1), inner(A.innerIndexPtr(), A.innerIndexPtr() + A.nonZeros());
+        if (outer != own.outer || inner != own.inner) {
+            own.lu.analyzePattern(A);
+            own.outer = outer;
+            own.inner = inner;
+        }
+        own.lu.factorize(A);
+        if (own.lu.info() != Eigen::Success) {
+            failed[std::size_t(i)] = tr("the matrix is singular - %1").arg(QString::fromStdString(own.lu.lastErrorMessage()));
+            own.outer.clear();
+            return;
+        }
+        Eigen::VectorXcd v = tied ? Eigen::VectorXcd(T * Eigen::VectorXcd(own.lu.solve(Eigen::VectorXcd(T.adjoint() * F)))) : Eigen::VectorXcd(own.lu.solve(F));
+        if (!v.allFinite()) {
+            failed[std::size_t(i)] = tr("the solution is not finite");
+            return;
+        }
+        for (std::size_t q = 0; q < ports.size(); ++q) out[std::size_t(i)][q] = periodicOut(ports[q], v, omega, k0);
+        x[std::size_t(i)] = std::move(v);
+    };
+    const int threads = acceleratedLu() && a_neq >= acceleratedFrom() ? 1 : std::clamp(int(std::thread::hardware_concurrency()), 1, 16);
+    std::atomic<int> next{0};
+    std::atomic<bool> stop{false};
+    auto work = [&next, &stop, &one, n] {
+        Lu own;
+        for (int i = next++; i < n && !stop; i = next++) one(i, own);
+    };
+    std::vector<std::thread> pool;
+    for (int k = 1; k < std::min(threads, n); ++k) pool.emplace_back(work);
+    // (this thread too, asking between its points whether to stop)
+    Lu own;
+    for (int i = next++; i < n; i = next++) {
+        if (cancelled()) {
+            stop = true;
+            break;
+        }
+        one(i, own);
+    }
+    for (std::thread& t : pool) t.join();
+    if (stop) {
+        *error = tr("cancelled");
+        return false;
+    }
+    for (int i = 0; i < n; ++i)
+        if (!failed[std::size_t(i)].isEmpty()) {
+            *error = tr("%1: at kF %2: %3").arg(a_node->name(), formatQuantity(nodes[std::size_t(i)].k, Dim::of(-1)), failed[std::size_t(i)]);
+            return false;
+        }
+    // One source's field: the mean of the cells' (what the periodic ports
+    // take, by Parseval, the mean of theirs); with every other kF, half of
+    // them - its sources' power then, the scan's error's measure.
+    *kept = Eigen::VectorXcd::Zero(a_neq);
+    Eigen::VectorXcd half = Eigen::VectorXcd::Zero(a_neq);
+    for (int i = 0; i < n; ++i) {
+        *kept += nodes[std::size_t(i)].w * x[std::size_t(i)];
+        half += nodes[std::size_t(i)].half * x[std::size_t(i)];
+    }
+    for (std::size_t q = 0; q < a_pports.size(); ++q) {
+        double sum = 0;
+        for (int i = 0; i < n; ++i) sum += nodes[std::size_t(i)].w * out[std::size_t(i)][q];
+        a_pports[q].out = sum;
+    }
+    double P = 0;
+    for (const Source& src : a_sources)
+        for (const auto& [dof, w] : src.power) {
+            const int q = a_eq[std::size_t(dof)];
+            if (q >= 0) P += (half(q) * w).real();
+        }
+    a_scanHalf = P;
+    a_scanCount = n;
     return true;
 }
 
@@ -3194,72 +3457,31 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         for (int i : nz)
             for (int j : nz) trip.emplace_back(i, j, J * port.beta * port.c(i) * port.c(j));
     }
-    // Periodic ports: each order's condition, jβ_m p c_m ĉ_mᵀ (the field's
-    // part in it, ∫ u ê_m, going out as e_m), and the plane wave fed,
-    // 2jβ0 p a c_0 (a = E0 √L: e_0's amplitude E0).
-    if (!periodicOrders(omega, k0, error)) return false;
-    // A condition along the ports whose kF is not their plane wave's: the
-    // orders would not be the field's.
-    if (a_pfed >= 0)
-        for (const Periodic& pc : a_periodic) {
-            if (pc.floquet == 1) continue;
-            const QPointF along = a_pports[std::size_t(a_pfed)].along;
-            if (std::abs(pc.shift.x() * along.y() - pc.shift.y() * along.x()) > 1e-9 * std::hypot(pc.shift.x(), pc.shift.y())) continue;
-            const double own = pc.floquet == 2 ? pc.kx * pc.shift.x() + pc.ky * pc.shift.y() : 0.0;
-            const double wave = a_kF[0] * pc.shift.x() + a_kF[1] * pc.shift.y();
-            if (std::abs(std::remainder(own - wave, 2 * M_PI)) > 1e-6) {
-                *error = tr("%1: its kF·d is %2 rad, periodic port %3's plane wave's %4: Floquet, the fed periodic port's")
-                             .arg(pc.name)
-                             .arg(own, 0, 'g', 6)
-                             .arg(a_pports[std::size_t(a_pfed)].name)
-                             .arg(wave, 0, 'g', 6);
-                return false;
+    // Periodic ports: their media; kF - the fed one's plane wave's along the
+    // cell, else a condition's given one (an array scan's, each in turn).
+    if (!periodicMedia(omega, k0, error)) return false;
+    a_kF[0] = a_kF[1] = 0;
+    double kIn = 0, kt0 = 0;
+    if (a_pfed >= 0) {
+        const PeriodicPort& fed = a_pports[std::size_t(a_pfed)];
+        const cd kc = k0 * std::sqrt(fed.q / fed.p);
+        if (std::abs(kc.imag()) > 1e-9 * std::abs(kc.real()))
+            a_s.log << tr("Warning: %1: periodic port %2's medium absorbs: the plane wave's angle taken of its index's real part")
+                           .arg(a_node->name(), fed.name);
+        kIn = kc.real();
+        kt0 = kIn * std::sin(fed.angle);
+        a_kF[0] = kt0 * fed.along.x();
+        a_kF[1] = kt0 * fed.along.y();
+    } else {
+        for (const Periodic& pc : a_periodic)
+            if (pc.floquet == 2) {
+                a_kF[0] = pc.kx;
+                a_kF[1] = pc.ky;
+                break;
             }
-        }
-    for (const PeriodicPort& port : a_pports) {
-        std::vector<int> nz;
-        if (!port.c.empty())
-            for (int i = 0; i < a_neq; ++i)
-                if (port.c[0](i) != cd(0)) nz.push_back(i);
-        for (std::size_t k = 0; k < port.m.size(); ++k) {
-            const cd f = J * port.beta[k] * port.p;
-            for (int i : nz)
-                for (int j : nz) trip.emplace_back(i, j, f * port.c[k](i) * port.dual[k](j));
-        }
     }
     cd incident = 0;
     std::size_t specular = 0;
-    if (a_pfed >= 0) {
-        const PeriodicPort& fp = a_pports[std::size_t(a_pfed)];
-        specular = std::size_t(std::find(fp.m.begin(), fp.m.end(), 0) - fp.m.begin());
-        incident = fp.E0 * std::sqrt(fp.length);
-        F += 2.0 * J * fp.beta[specular] * fp.p * incident * fp.c[specular];
-    }
-    Eigen::SparseMatrix<cd> A(a_neq, a_neq);
-    A.setFromTriplets(trip.begin(), trip.end());
-    A.makeCompressed();
-    // Periodic conditions: u = T v, v the free nodes' - tested by T's
-    // conjugate (the other side's phase), Tᴴ A T v = Tᴴ F.
-    Eigen::SparseMatrix<cd> T;
-    bool tied = false;
-    if (!periodicMap(&T, &tied, error)) return false;
-    if (tied) {
-        const Eigen::SparseMatrix<cd> Th = T.adjoint();
-        A = Eigen::SparseMatrix<cd>(Th * A * T);
-        A.makeCompressed();
-    }
-    SparseLu<cd> lu;
-    lu.analyzePattern(A);
-    lu.factorize(A);
-    if (lu.info() != Eigen::Success) {
-        *error = tr("%1: the matrix is singular - %2").arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
-        return false;
-    }
-    auto solved = [&](const Eigen::VectorXcd& rhs) -> Eigen::VectorXcd {
-        if (!tied) return lu.solve(rhs);
-        const Eigen::VectorXcd reduced = T.adjoint() * rhs;
-        return T * Eigen::VectorXcd(lu.solve(reduced));
-    };
     // Fed: each port that is, in turn (the field kept: the first's, the plane
     // wave's when none is).
     a_fed.clear();
@@ -3267,30 +3489,104 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         if (a_ports[std::size_t(i)].excite) a_fed.push_back(i);
     a_S.assign(a_ports.size(), std::vector<cd>(a_ports.size(), cd(NaN, NaN)));
     Eigen::VectorXcd kept;
-    for (std::size_t j = 0; j < a_fed.size() || (j == 0 && a_fed.empty()); ++j) {
-        Eigen::VectorXcd rhs = F;
-        const int fed = a_fed.empty() ? -1 : a_fed[j];
-        if (fed >= 0) {
-            const Port& pj = a_ports[std::size_t(fed)];
-            rhs += 2.0 * J * pj.beta * pj.c;
-            if (j > 0) rhs -= F;   // (a plane wave with the first only)
+    a_scanHalf = NaN;
+    if (a_scan >= 0) {
+        if (!scanSolve(trip, F, omega, k0, &kept, error)) return false;
+    } else {
+        // Each periodic port's orders and their conditions, jβ_m p c_m ĉ_mᵀ
+        // (the field's part in it, ∫ u ê_m, going out as e_m), and the plane
+        // wave fed, 2jβ0 p a c_0 (a = E0 √L: e_0's amplitude E0).
+        QStringList said;
+        periodicOrders(k0, a_kF, kIn, a_pports, &said);
+        if (a_pfed >= 0) {
+            const PeriodicPort& fed = a_pports[std::size_t(a_pfed)];
+            a_s.log << tr("%1: a periodic cell %2 wide, kF %3 (%4° in periodic port %5's medium); the orders that propagate - %6")
+                           .arg(a_node->name(), formatQuantity(fed.length, Dim::length()), formatQuantity(kt0, Dim::of(-1)))
+                           .arg(fed.angle * 180 / M_PI, 0, 'g', 6)
+                           .arg(fed.name, said.join(QLatin1String("; ")));
+        } else if (!a_pports.empty()) {
+            const PeriodicPort& first = a_pports.front();
+            a_s.log << tr("%1: a periodic cell %2 wide, kF %3; the orders that propagate - %4")
+                           .arg(a_node->name(), formatQuantity(first.length, Dim::length()),
+                                formatQuantity(a_kF[0] * first.along.x() + a_kF[1] * first.along.y(), Dim::of(-1)), said.join(QLatin1String("; ")));
         }
-        const Eigen::VectorXcd x = solved(rhs);
-        if (!x.allFinite()) {
-            *error = tr("%1: the solution is not finite").arg(a_node->name());
+        // A condition along the ports whose kF is not their plane wave's: the
+        // orders would not be the field's.
+        if (a_pfed >= 0)
+            for (const Periodic& pc : a_periodic) {
+                if (pc.floquet == 1) continue;
+                const QPointF along = a_pports[std::size_t(a_pfed)].along;
+                if (std::abs(pc.shift.x() * along.y() - pc.shift.y() * along.x()) > 1e-9 * std::hypot(pc.shift.x(), pc.shift.y())) continue;
+                const double own = pc.floquet == 2 ? pc.kx * pc.shift.x() + pc.ky * pc.shift.y() : 0.0;
+                const double wave = a_kF[0] * pc.shift.x() + a_kF[1] * pc.shift.y();
+                if (std::abs(std::remainder(own - wave, 2 * M_PI)) > 1e-6) {
+                    *error = tr("%1: its kF·d is %2 rad, periodic port %3's plane wave's %4: Floquet, the fed periodic port's")
+                                 .arg(pc.name)
+                                 .arg(own, 0, 'g', 6)
+                                 .arg(a_pports[std::size_t(a_pfed)].name)
+                                 .arg(wave, 0, 'g', 6);
+                    return false;
+                }
+            }
+        periodicConditions(a_pports, trip);
+        if (a_pfed >= 0) {
+            const PeriodicPort& fp = a_pports[std::size_t(a_pfed)];
+            specular = std::size_t(std::find(fp.m.begin(), fp.m.end(), 0) - fp.m.begin());
+            incident = fp.E0 * std::sqrt(fp.length);
+            F += 2.0 * J * fp.beta[specular] * fp.p * incident * fp.c[specular];
+        }
+        Eigen::SparseMatrix<cd> A(a_neq, a_neq);
+        A.setFromTriplets(trip.begin(), trip.end());
+        A.makeCompressed();
+        // Periodic conditions: u = T v, v the free nodes' - tested by T's
+        // conjugate (the other side's phase), Tᴴ A T v = Tᴴ F.
+        Eigen::SparseMatrix<cd> T;
+        bool tied = false;
+        if (!periodicMap(a_kF, &T, &tied, error)) return false;
+        if (tied) {
+            const Eigen::SparseMatrix<cd> Th = T.adjoint();
+            A = Eigen::SparseMatrix<cd>(Th * A * T);
+            A.makeCompressed();
+        }
+        SparseLu<cd> lu;
+        lu.analyzePattern(A);
+        lu.factorize(A);
+        if (lu.info() != Eigen::Success) {
+            *error = tr("%1: the matrix is singular - %2").arg(a_node->name(), QString::fromStdString(lu.lastErrorMessage()));
             return false;
         }
-        if (j == 0) kept = x;
-        // Matched, the power each port takes from the sources: |b|² Re β /
-        // 2ωµ0 (Ez; ε0 Hz), b = cᵀ x (∫ p e² = 1).
-        for (Port& port : a_ports)
-            port.out = a_sources.empty() ? NaN : std::norm((port.c.transpose() * x)(0)) * port.beta.real() / (2 * omega * (a_hz ? Eps0 : Mu0));
-        if (fed < 0) break;
-        for (int i = 0; i < int(a_ports.size()); ++i) {
-            const Port& pi = a_ports[std::size_t(i)];
-            const cd bi = (pi.c.transpose() * x)(0) - (i == fed ? cd(1) : cd(0));
-            a_S[std::size_t(i)][std::size_t(fed)] = bi * std::sqrt(pi.beta / a_ports[std::size_t(fed)].beta);
+        auto solved = [&](const Eigen::VectorXcd& rhs) -> Eigen::VectorXcd {
+            if (!tied) return lu.solve(rhs);
+            const Eigen::VectorXcd reduced = T.adjoint() * rhs;
+            return T * Eigen::VectorXcd(lu.solve(reduced));
+        };
+        for (std::size_t j = 0; j < a_fed.size() || (j == 0 && a_fed.empty()); ++j) {
+            Eigen::VectorXcd rhs = F;
+            const int fed = a_fed.empty() ? -1 : a_fed[j];
+            if (fed >= 0) {
+                const Port& pj = a_ports[std::size_t(fed)];
+                rhs += 2.0 * J * pj.beta * pj.c;
+                if (j > 0) rhs -= F;   // (a plane wave with the first only)
+            }
+            const Eigen::VectorXcd x = solved(rhs);
+            if (!x.allFinite()) {
+                *error = tr("%1: the solution is not finite").arg(a_node->name());
+                return false;
+            }
+            if (j == 0) kept = x;
+            // Matched, the power each port takes from the sources: |b|² Re β /
+            // 2ωµ0 (Ez; ε0 Hz), b = cᵀ x (∫ p e² = 1).
+            for (Port& port : a_ports)
+                port.out = a_sources.empty() ? NaN : std::norm((port.c.transpose() * x)(0)) * port.beta.real() / (2 * omega * (a_hz ? Eps0 : Mu0));
+            if (fed < 0) break;
+            for (int i = 0; i < int(a_ports.size()); ++i) {
+                const Port& pi = a_ports[std::size_t(i)];
+                const cd bi = (pi.c.transpose() * x)(0) - (i == fed ? cd(1) : cd(0));
+                a_S[std::size_t(i)][std::size_t(fed)] = bi * std::sqrt(pi.beta / a_ports[std::size_t(fed)].beta);
+            }
         }
+        // Periodic ports not fed: what each takes from the sources.
+        for (PeriodicPort& port : a_pports) port.out = a_sources.empty() || int(&port - a_pports.data()) == a_pfed ? NaN : periodicOut(port, kept, omega, k0);
     }
     // Reflectance and transmittance: of the first port fed, |S_ii|² and the
     // others' |S_ji|² (power waves); of a periodic cell, each order's power
@@ -3359,11 +3655,20 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         fld.values[std::size_t(nd + dof)] = kept(q).imag();
     }
     // Each source's power: Re Σ u_i W_i, the field as solved.
+    double given = 0;
     for (Source& src : a_sources) {
         cd sum = 0;
         for (const auto& [dof, w] : src.power) sum += cd(fld.values[std::size_t(dof)], fld.values[std::size_t(nd + dof)]) * w;
         src.P = sum.real();
+        given += src.P;
     }
+    if (a_scan >= 0)
+        a_s.log << tr("%1: the array scan's %2 kF - Psource %3, with half of them %4: %5 % apart (the scan's error's measure: more "
+                      "points where it is large)")
+                       .arg(a_periodic[std::size_t(a_scan)].name)
+                       .arg(a_scanCount)
+                       .arg(formatQuantity(given, Dim::of(1, 1, -3)), formatQuantity(a_scanHalf, Dim::of(1, 1, -3)))
+                       .arg(100 * std::abs(a_scanHalf - given) / std::abs(given), 0, 'g', 3);
     fld.terminals.clear();
     for (const Port& p : a_ports) {
         Field::Terminal t;
@@ -3519,6 +3824,12 @@ void WaveProblem::setGlobals()
         a_s.setGlobal(p + QStringLiteral("T"), a_T, Dim(), tr("transmittance: %1 that goes out by the other ports").arg(of));
         a_s.setGlobal(p + QStringLiteral("A"), 1 - a_R - a_T, Dim(), tr("absorptance: %1 neither reflected nor transmitted, 1 - R - T").arg(of));
     }
+    // Periodic ports not fed: what the sources send out by each.
+    if (!a_sources.empty())
+        for (const PeriodicPort& port : a_pports)
+            if (!std::isnan(port.out))
+                a_s.setGlobal(p + QStringLiteral("Pport_") + port.name, port.out, Dim::of(1, 1, -3),
+                              tr("power the point sources send out by periodic port %1, per metre of z").arg(port.name));
     if (a_pfed < 0) return;
     // Each order that propagates at some angle: its share of the incident
     // power, R_m at the fed port, T_m at the other (T_<port>_m where there
