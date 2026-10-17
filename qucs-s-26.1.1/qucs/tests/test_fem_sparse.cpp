@@ -9,6 +9,7 @@
 #include <QtTest>
 
 #include <complex>
+#include <thread>
 #include <vector>
 
 using namespace qucs_s::fem;
@@ -149,6 +150,31 @@ private slots:
         QCOMPARE(lu.info(), Eigen::Success);
         const Eigen::VectorXd ones = Eigen::VectorXd::Ones(d.rows());
         QVERIFY(residual(d, lu.solve(ones), ones) < 1e-12);
+    }
+
+    // Analysed and factorized on several threads at once - a sweep's points
+    // solved at once: Accelerate's symbolic LU at once on several threads
+    // stopped the program (a SIGSEGV in libSparse); one analysis at a time,
+    // each solved to 1e-12.
+    void onThreadsAtOnce()
+    {
+        qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
+        std::vector<double> worst(8, 1.0);
+        std::vector<std::thread> pool;
+        for (int k = 0; k < 8; ++k)
+            pool.emplace_back([k, &worst] {
+                double w = 0;
+                for (int m : {30, 34, 30, 38}) {
+                    const auto a = grid<double>(m, 0.1 * k);
+                    SparseLu<double> lu;
+                    lu.compute(a);
+                    const Eigen::VectorXd b = Eigen::VectorXd::Ones(a.rows());
+                    w = std::max(w, lu.info() == Eigen::Success ? residual(a, lu.solve(b), b) : 1.0);
+                }
+                worst[std::size_t(k)] = w;
+            });
+        for (std::thread& t : pool) t.join();
+        for (double w : worst) QVERIFY2(w < 1e-12, qPrintable(QString::number(w)));
     }
 
     // A singular matrix: said (info, a message) - not a stop of the program

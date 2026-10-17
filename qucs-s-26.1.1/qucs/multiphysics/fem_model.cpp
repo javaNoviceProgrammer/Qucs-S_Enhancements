@@ -2351,7 +2351,12 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("sweep"), tr("Parametric Sweep"), QStringLiteral("step"), QStringLiteral("sweep"), Level::None,
              {rows,
               choice(QStringLiteral("combination"), tr("Sweep type"), {QStringLiteral("all"), QStringLiteral("specified")},
-                     {tr("All combinations"), tr("Specified combinations (the n-th values together)")}, QStringLiteral("all"))},
+                     {tr("All combinations"), tr("Specified combinations (the n-th values together)")}, QStringLiteral("all")),
+              integer(QStringLiteral("parallel"), tr("Points at once"), 1,
+                      tr("Points of the sweep solved at the same time, each with its own threads - for a sweep of points "
+                         "independent of each other (wavelengths, angles, sources); each holds its own matrices, its memory "
+                         "too. 1: one after another. A sweep whose points start from the one before (a semiconductor's, a "
+                         "mode followed or tracked) is solved one after another, said."))},
              {}, {}, false, true, QStringLiteral("param"),
              tr("The study's steps solved again for each value of its parameters - the geometry and the mesh made again "
                 "where they change. Results show one point of it, or all of them along a 1D plot.")});

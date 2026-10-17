@@ -535,6 +535,31 @@ private slots:
         QVERIFY2(!slab.study.warnings.join(QLatin1Char(' ')).contains(below), qPrintable(slab.study.warnings.join(QLatin1String(" | "))));
     }
 
+    // A sweep's points at once where a mode step searches about its own
+    // index (Follow off; several modes, or domains tracked, alike); one after
+    // another where it follows the mode from the point before - said.
+    void aModeFollowedIsSweptInTurn()
+    {
+        auto swept = [](bool follow) {
+            QByteArray json = rectangular(QStringLiteral("fr"), 1);
+            json.replace(R"("format": "qucs-s multiphysics 1",)", R"("format": "qucs-s multiphysics 1", "parameters": [{"name": "fr", "expression": "20[GHz]"}],)");
+            json.replace(R"([{"type": "mode", "frequency": "fr", "modes": 1, "neff": "1"}])",
+                         QStringLiteral(R"([{"type": "sweep", "parameters": [["fr", "18, 20, 22", "GHz"]], "parallel": 3}, {"type": "mode", "frequency": "fr", "modes": 1, "neff": "1"%1}])")
+                             .arg(follow ? QStringLiteral(R"(, "follow": true)") : QStringLiteral(R"(, "follow": false)"))
+                             .toUtf8());
+            return run(modelOf(json));
+        };
+        const Run atOnce = swept(false), inTurn = swept(true);
+        QVERIFY2(atOnce.error.isEmpty() && inTurn.error.isEmpty(), qPrintable(atOnce.error + inTurn.error));
+        QCOMPARE(int(atOnce.study.solutions.size()), 3);
+        QCOMPARE(atOnce.study.solutions[0]->atOnce, 3);
+        QCOMPARE(inTurn.study.solutions[0]->atOnce, 1);
+        QVERIFY2(inTurn.study.log.join(QLatin1Char(' ')).contains(QLatin1String("one point after another")), qPrintable(inTurn.study.log.join(QLatin1Char('\n'))));
+        // (TE10 at each: as at once as in turn.)
+        for (int k = 0; k < 3; ++k)
+            QVERIFY(std::abs(*atOnce.study.solutions[std::size_t(k)]->global(QStringLiteral("emw.neff")) - *inTurn.study.solutions[std::size_t(k)]->global(QStringLiteral("emw.neff"))) < 1e-12);
+    }
+
     void rectangularWaveguide()
     {
         // WR-90 at 20 GHz: TE10, TE20, TE01, then TE11 and TM11 (one cutoff).
