@@ -153,11 +153,19 @@ bool LinearSystem::factorize(bool symmetric, const QString& solver, double toler
             a_ldlt->analyzePattern(a_A);
             a_ldltAnalyzed = true;
         }
-        // (A matrix not positive definite fails it: an LU then.)
+        // (A matrix not positive definite fails it: an LU then. One singular
+        // to rounding is said - an LU would solve it, garbage.)
         a_ldlt->factorize(a_A);
         if (a_ldlt->info() == Eigen::Success) {
             a_lu.reset();
             return true;
+        }
+        if (a_ldlt->singularToRounding()) {
+            *error = tr("%1: the matrix is singular - %2 (a part of the model whose value nothing sets?)")
+                         .arg(name, QString::fromStdString(a_ldlt->lastErrorMessage()));
+            a_ldlt.reset();
+            a_ldltAnalyzed = false;
+            return false;
         }
         a_ldlt.reset();
         a_ldltAnalyzed = false;
@@ -167,6 +175,9 @@ bool LinearSystem::factorize(bool symmetric, const QString& solver, double toler
     }
     if (!a_lu) {
         a_lu = std::make_unique<SparseLu<double>>();
+        // (singular to rounding said: a symmetric one whose Cholesky found a
+        // pivot of rounding's size below nought comes here)
+        a_lu->setSingularChecked(true);
         a_luAnalyzed = false;
     }
     if (!a_luAnalyzed) {
@@ -188,12 +199,40 @@ bool LinearSystem::solve(const Eigen::VectorXd& rhs, Eigen::VectorXd& x, const Q
     if (a_ldlt) x = a_ldlt->solve(rhs);
     else if (a_lu) x = a_lu->solve(rhs);
     else if (a_cg) {
-        x = a_cg->solve(rhs);
+        // In rounds of 500 iterations from the last: stopped where five
+        // rounds have not halved the error - a singular system's (a part of
+        // the model nothing sets) stalls, and its 170,000 iterations took an
+        // hour.
+        countIterative();
+        const int limit = a_cg->maxIterations();
+        a_cg->setMaxIterations(std::min(limit, 500));
+        x = Eigen::VectorXd::Zero(rhs.size());
+        int done = 0, flat = 0;
+        double best = std::numeric_limits<double>::infinity();
+        bool stalled = false;
+        while (true) {
+            x = a_cg->solveWithGuess(rhs, x);
+            done += int(a_cg->iterations());
+            if (a_cg->info() == Eigen::Success || done >= limit) break;
+            if (a_cg->error() < 0.5 * best) {
+                best = a_cg->error();
+                flat = 0;
+            } else if (++flat >= 5) {
+                stalled = true;
+                break;
+            }
+        }
+        a_cg->setMaxIterations(limit);
         if (a_cg->info() != Eigen::Success) {
-            *error = tr("%1: the conjugate gradients did not converge in %2 iterations (error %3): try the direct solver")
-                         .arg(name)
-                         .arg(a_cg->iterations())
-                         .arg(a_cg->error());
+            *error = stalled ? tr("%1: the conjugate gradients stalled at an error of %2 after %3 iterations - a singular system (a part "
+                                  "of the model whose value nothing sets?), or try the direct solver")
+                                   .arg(name)
+                                   .arg(a_cg->error())
+                                   .arg(done)
+                             : tr("%1: the conjugate gradients did not converge in %2 iterations (error %3): try the direct solver")
+                                   .arg(name)
+                                   .arg(done)
+                                   .arg(a_cg->error());
             return false;
         }
     } else {
@@ -358,8 +397,12 @@ Expression Problem::compile(const QString& text, const Node& feature, const QStr
         if (!spatial && d.field >= 0) problem(tr("%1 may not read a field (%2) here").arg(where, d.info.name));
     }
     const PropertyDef* p = feature.kind() ? feature.kind()->property(key) : nullptr;
-    if (unitChecked && p && !e.dim().isNone() && !(e.dim() == p->dim()))
-        a_s.log << tr("Warning: %1 is in %2, where %3 is expected").arg(where, dimName(e.dim()), dimName(p->dim()));
+    // (Once: a feature's expression is compiled for each domain it is on -
+    // the OLED model's 18 said in 1,148 lines.)
+    if (unitChecked && p && !e.dim().isNone() && !(e.dim() == p->dim())) {
+        const QString said = tr("Warning: %1 is in %2, where %3 is expected").arg(where, dimName(e.dim()), dimName(p->dim()));
+        if (!a_s.log.contains(said)) a_s.log << said;
+    }
     return e;
 }
 
@@ -3633,6 +3676,7 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
 {
     StudyResult out;
     QElapsedTimer timer;
+    const SolverUse used = solverUse();
     timer.start();
     if (!mesh || !mesh->topology) {
         out.error = tr("there is no mesh");
@@ -3732,7 +3776,10 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
     int dofs = 0;
     for (const Field& f : solution->fields())
         if (f.solved) dofs += f.unknowns >= 0 ? f.unknowns : f.space->size() * f.count();
-    solution->log << tr("Solved %1 degrees of freedom in %2 s").arg(dofs).arg(solution->seconds, 0, 'f', 2);
+    // (and by which solver: Accelerate's or Eigen's, Multiphysics > Settings…)
+    const QString with = solverUseText(used, solverUse());
+    solution->log << (with.isEmpty() ? tr("Solved %1 degrees of freedom in %2 s").arg(dofs).arg(solution->seconds, 0, 'f', 2)
+                                     : tr("Solved %1 degrees of freedom in %2 s with %3").arg(dofs).arg(solution->seconds, 0, 'f', 2).arg(with));
     if (progress) progress(1.0, tr("Done"));
     out.solution = solution;
     return out;

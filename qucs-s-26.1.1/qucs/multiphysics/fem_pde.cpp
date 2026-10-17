@@ -914,6 +914,9 @@ bool PdeProblem::factor(const Eigen::SparseMatrix<double>& J, QString* error)
                       && Eigen::Index(a_inner.size()) == J.nonZeros() && std::equal(a_inner.begin(), a_inner.end(), J.innerIndexPtr());
     if (!same) {
         a_lu = std::make_unique<SparseLu<double>>();
+        // (singular to rounding said - a variable nothing fixes solved to
+        // anything, -2.9e7 and +2.6e7 by the two backends)
+        a_lu->setSingularChecked(true);
         a_lu->analyzePattern(J);
         a_outer.assign(J.outerIndexPtr(), J.outerIndexPtr() + n + 1);
         a_inner.assign(J.innerIndexPtr(), J.innerIndexPtr() + J.nonZeros());

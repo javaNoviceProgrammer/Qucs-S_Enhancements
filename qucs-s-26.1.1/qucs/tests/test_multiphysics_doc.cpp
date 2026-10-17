@@ -50,6 +50,7 @@
 #include "fem_material_plot.h"
 #include "fem_materials.h"
 #include "multiphysicspanel.h"
+#include "fem_sparse.h"
 #include "multiphysicssettings.h"
 #include "dataimport.h"
 #include "dataset.h"
@@ -291,6 +292,76 @@ private slots:
             QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("QUCS_GPU=0 is set")), qPrintable(d.gpuStatus()->text()));
         }
         qunsetenv("QUCS_GPU");
+    }
+
+    // The settings' sparse direct solver: Automatic by default; Eigen's
+    // chosen, kept and given to the solver on OK (not on Cancel), each
+    // solve's line saying which ran; QUCS_FEM_SOLVER said over it; this
+    // macOS's LU said.
+    void theSettingsHaveTheSolver()
+    {
+        qunsetenv("QUCS_FEM_SOLVER");
+        QCOMPARE(MultiphysicsSettingsDialog::solverWanted(), 0);
+        {
+            MultiphysicsSettingsDialog d(app);
+            QComboBox* box = d.solverBox();
+            QVERIFY(box != nullptr);
+            QCOMPARE(box->count(), 3);
+            QCOMPARE(box->currentIndex(), 0);
+            QVERIFY(box->itemText(0).startsWith(QLatin1String("Automatic")));
+            const QString status = d.solverStatusLabel()->text();
+            qInfo("solver: %s", qPrintable(status));
+            QVERIFY2(acceleratedLuHindrance().isEmpty() ? status.contains(QLatin1String("Accelerate's LU and Cholesky from 20,000"))
+                                                        : status.contains(QLatin1String("Eigen's LU")),
+                     qPrintable(status));
+            box->setCurrentIndex(1);
+            QCOMPARE(d.solverStatusLabel()->text(), QStringLiteral("Eigen's LU and Cholesky (LDLT) at every size."));
+            d.reject();
+        }
+        QCOMPARE(MultiphysicsSettingsDialog::solverWanted(), 0);
+        QVERIFY(directSolver() == DirectSolver::Automatic);
+        {
+            MultiphysicsSettingsDialog d(app);
+            d.solverBox()->setCurrentIndex(1);
+            d.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        }
+        QCOMPARE(MultiphysicsSettingsDialog::solverWanted(), 1);
+        QVERIFY(directSolver() == DirectSolver::Eigen);
+        // A solve says it: Eigen's, though its matrix is Accelerate's size.
+        const QJsonObject model = QJsonDocument::fromJson(R"({"format": "qucs-s multiphysics 1",
+            "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "label": "gap", "size": ["10", "1"]}],
+              "materials": [{"label": "glass", "epsilonr": "5", "selection": {"all": true}}],
+              "physics": [{"type": "electrostatics", "tag": "es", "features": [
+                {"type": "terminal", "name": "1", "selection": {"of": ["gap"], "side": "top"}},
+                {"type": "ground", "selection": {"of": ["gap"], "side": "bottom"}}]}],
+              "mesh": {"size": "fine", "custom": true, "hmax": "0.02"}}],
+            "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})").object();
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"path", "solver_choice"}, {"model", model}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_solve");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(text(r).contains(QLatin1String("with Eigen's Cholesky (LDLT)")), qPrintable(text(r)));
+        // Back to Automatic: Accelerate's where this macOS has it.
+        {
+            MultiphysicsSettingsDialog d(app);
+            QCOMPARE(d.solverBox()->currentIndex(), 1);
+            d.solverBox()->setCurrentIndex(0);
+            d.apply();
+        }
+        QVERIFY(directSolver() == DirectSolver::Automatic);
+        r = call("fem_solve");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+#if defined(__APPLE__)
+        QVERIFY2(text(r).contains(QLatin1String("with Accelerate's Cholesky")), qPrintable(text(r)));
+#endif
+        // The environment's over the setting, said.
+        qputenv("QUCS_FEM_SOLVER", "eigen");
+        {
+            MultiphysicsSettingsDialog d(app);
+            QVERIFY2(d.solverStatusLabel()->text().startsWith(QLatin1String("QUCS_FEM_SOLVER=eigen is set, whatever this says: Eigen's")),
+                     qPrintable(d.solverStatusLabel()->text()));
+        }
+        qunsetenv("QUCS_FEM_SOLVER");
     }
 
     // An example opened: its tree in the panel, its geometry built and

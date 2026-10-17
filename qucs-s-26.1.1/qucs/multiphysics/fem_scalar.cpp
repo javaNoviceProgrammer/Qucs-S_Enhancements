@@ -812,6 +812,76 @@ bool ScalarProblem::buildEquations(QString* error)
                              "potential is not determined").arg(a_node->name());
         return false;
     }
+    // So in each part on its own - domains that touch none of the others (a
+    // floating terminal's tying its boundary in one): a value set in it, or
+    // a convective flux. Without, its matrix is singular to rounding, and
+    // solved its level is anything (an Eigen's LDLT said "solved", -2.9e12 V).
+    {
+        std::vector<int> root(static_cast<std::size_t>(nd));
+        for (int i = 0; i < nd; ++i) root[std::size_t(i)] = i;
+        auto find = [&root](int i) {
+            while (root[std::size_t(i)] != i) i = root[std::size_t(i)] = root[std::size_t(root[std::size_t(i)])];
+            return i;
+        };
+        auto join = [&root, &find](int a, int b) { root[std::size_t(find(a))] = find(b); };
+        for (int t = 0; t < sp.elements(); ++t) {
+            const int dom = mesh.domain[std::size_t(t)];
+            if (dom < 0 || !fld.domains[std::size_t(dom)]) continue;
+            const int* d = sp.dofs(t);
+            for (int i = 1; i < per; ++i) join(d[0], d[i]);
+        }
+        std::vector<int> firstOf(a_terminals.size(), -1);
+        for (int dof = 0; dof < nd; ++dof) {
+            const int g = group[std::size_t(dof)];
+            if (a_eq[std::size_t(dof)] != -4 || g < 0) continue;
+            if (firstOf[std::size_t(g)] < 0) firstOf[std::size_t(g)] = dof;
+            else join(firstOf[std::size_t(g)], dof);
+        }
+        std::vector<char> held(static_cast<std::size_t>(nd), 0);
+        for (int dof = 0; dof < nd; ++dof)
+            if (a_eq[std::size_t(dof)] == -3) held[std::size_t(find(dof))] = 1;
+        for (int e = 0; e < int(mesh.edges.size()); ++e) {
+            bool leaves = false;
+            for (const Natural& n : a_natural[std::size_t(mesh.edges[std::size_t(e)].boundary)]) leaves = leaves || n.q.isValid();
+            if (!leaves) continue;
+            for (int dof : sp.edgeDofs(e))
+                if (dof >= 0 && a_eq[std::size_t(dof)] != -1) held[std::size_t(find(dof))] = 1;
+        }
+        QVector<int> loose;
+        const Topology& topo = a_s.topology();
+        for (int t = 0; t < sp.elements(); ++t) {
+            const int dom = mesh.domain[std::size_t(t)];
+            if (dom < 0 || !fld.domains[std::size_t(dom)] || held[std::size_t(find(sp.dofs(t)[0]))] || loose.contains(dom)) continue;
+            loose << dom;
+        }
+        if (!loose.isEmpty()) {
+            std::sort(loose.begin(), loose.end());
+            QStringList named;
+            for (int d : loose) {
+                const QString object = topo.objectNames.value(topo.domains[std::size_t(d)].owner);
+                named << (object.isEmpty() ? QString::number(d + 1) : QStringLiteral("%1 (%2)").arg(d + 1).arg(object));
+            }
+            const QString list = named.join(QLatin1String(", "));
+            if (a_heat)
+                *error = loose.size() == 1 ? tr("%1: domain %2 touches no set temperature and loses no heat (no Temperature or "
+                                                "convective Heat Flux on it or on what it touches): its temperature is not determined")
+                                                 .arg(a_node->name(), list)
+                                           : tr("%1: domains %2 touch no set temperature and lose no heat (no Temperature or "
+                                                "convective Heat Flux on them or on what they touch): their temperature is not "
+                                                "determined")
+                                                 .arg(a_node->name(), list);
+            else
+                *error = loose.size() == 1 ? tr("%1: domain %2 touches no set potential (no Ground, Electric Potential or Terminal at "
+                                                "a voltage on it or on what it touches): its potential is not determined - left "
+                                                "floating")
+                                                 .arg(a_node->name(), list)
+                                           : tr("%1: domains %2 touch no set potential (no Ground, Electric Potential or Terminal at "
+                                                "a voltage on them or on what they touch): their potential is not determined - left "
+                                                "floating")
+                                                 .arg(a_node->name(), list);
+            return false;
+        }
+    }
     // Numbered: the free degrees of freedom, then one for each group.
     a_neq = 0;
     for (int dof = 0; dof < nd; ++dof)

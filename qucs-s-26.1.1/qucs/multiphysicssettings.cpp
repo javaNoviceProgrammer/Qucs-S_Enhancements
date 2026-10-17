@@ -9,13 +9,16 @@
  * (at your option) any later version.
  */
 #include "multiphysicssettings.h"
+#include "fem_sparse.h"
 #include "multiphysicsview.h"
 #include "settings.h"
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QVBoxLayout>
 
@@ -44,6 +47,32 @@ MultiphysicsSettingsDialog::MultiphysicsSettingsDialog(QWidget* parent) : QDialo
     a_status->setWordWrap(true);
     inside->addWidget(a_status);
     layout->addWidget(view);
+    auto* solver = new QGroupBox(tr("Solver"), this);
+    auto* rows = new QVBoxLayout(solver);
+    auto* line = new QHBoxLayout();
+    line->addWidget(new QLabel(tr("Sparse direct solver:"), solver));
+    a_solver = new QComboBox(solver);
+    a_solver->setObjectName(QStringLiteral("mpSolverBox"));
+    a_solver->addItem(tr("Automatic (Accelerate from 20,000 unknowns, Eigen below)"), QStringLiteral("auto"));
+    a_solver->addItem(tr("Eigen at every size"), QStringLiteral("eigen"));
+    a_solver->addItem(tr("Accelerate at every size"), QStringLiteral("accelerate"));
+    a_solver->setCurrentIndex(solverWanted());
+    line->addWidget(a_solver, 1);
+    rows->addLayout(line);
+    auto* explain = new QLabel(tr("Apple's Accelerate factorizes on many threads: a large model's LU or Cholesky some 10 to 60 "
+                                  "times faster than Eigen's (one thread). Below some 20,000 unknowns Eigen's is the quicker. "
+                                  "Accelerate's LU needs macOS 26 or later; its Cholesky any macOS; Linux and Windows have Eigen's "
+                                  "alone. Each solve's log line says which ran (\"Solved … with Accelerate's LU\"). "
+                                  "QUCS_FEM_SOLVER=eigen, accelerate or auto in the environment chooses, whatever this says."),
+                               solver);
+    explain->setWordWrap(true);
+    rows->addWidget(explain);
+    a_solverStatus = new QLabel(solver);
+    a_solverStatus->setObjectName(QStringLiteral("mpSolverStatus"));
+    a_solverStatus->setWordWrap(true);
+    rows->addWidget(a_solverStatus);
+    layout->addWidget(solver);
+    connect(a_solver, &QComboBox::currentIndexChanged, this, &MultiphysicsSettingsDialog::showStatus);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, [this] {
         apply();
@@ -71,17 +100,49 @@ bool MultiphysicsSettingsDialog::gpuWanted()
     return QucsSettingsFile().value(QStringLiteral("Multiphysics/gpu"), true).toBool();
 }
 
+int MultiphysicsSettingsDialog::solverWanted()
+{
+    const QString v = QucsSettingsFile().value(QStringLiteral("Multiphysics/solver"), QStringLiteral("auto")).toString();
+    return v == QLatin1String("eigen") ? 1 : v == QLatin1String("accelerate") ? 2 : 0;
+}
+
+void MultiphysicsSettingsDialog::applySolverSetting()
+{
+    const int c = solverWanted();
+    setDirectSolver(c == 1 ? DirectSolver::Eigen : c == 2 ? DirectSolver::Accelerate : DirectSolver::Automatic);
+}
+
+QString MultiphysicsSettingsDialog::solverStatus(int choice)
+{
+    const QByteArray asked = qgetenv("QUCS_FEM_SOLVER").trimmed().toLower();
+    QString lead;
+    if (asked == "eigen" || asked == "accelerate" || asked == "auto" || asked == "automatic") {
+        lead = tr("QUCS_FEM_SOLVER=%1 is set, whatever this says: ").arg(QString::fromLatin1(asked));
+        choice = asked == "eigen" ? 1 : asked == "accelerate" ? 2 : 0;
+    }
+    // (asked of the solver: the build's macros are its own)
+    if (!accelerateInBuild()) return lead + tr("this build has Eigen's solvers alone.");
+    if (choice == 1) return lead + tr("Eigen's LU and Cholesky (LDLT) at every size.");
+    const QString from = choice == 2 ? tr("at every size") : tr("from 20,000 unknowns, Eigen's below");
+    const QString lu = acceleratedLuHindrance();
+    if (lu.isEmpty()) return lead + tr("Accelerate's LU and Cholesky %1.").arg(from);
+    return lead + tr("Accelerate's Cholesky %1; Eigen's LU (%2).").arg(from, lu);
+}
+
 void MultiphysicsSettingsDialog::showStatus()
 {
     const QString hindrance = gpuHindrance();
     if (!hindrance.isEmpty()) a_status->setText(hindrance);
     else a_status->setText(a_gpu->isChecked() ? tr("The GPU draws the Graphics view.") : tr("The CPU draws the Graphics view."));
+    if (a_solver) a_solverStatus->setText(solverStatus(a_solver->currentIndex()));
 }
 
 void MultiphysicsSettingsDialog::apply()
 {
     const bool on = a_gpu->isChecked();
     QucsSettingsFile().setValue(QStringLiteral("Multiphysics/gpu"), on);
+    QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"), a_solver->currentData().toString());
+    applySolverSetting();
     // (Each open view drawn so - setGpu() keeps the setting too; a view
     // whose shaders failed stays with the CPU. The views found first: one
     // set off deletes its GPU canvas, a widget of the list - read after, a

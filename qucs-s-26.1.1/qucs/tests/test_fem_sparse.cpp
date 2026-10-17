@@ -1,11 +1,14 @@
 /*
  * The multiphysics solver's sparse direct factorizations (fem_sparse.h):
- * Accelerate's LU and Cholesky where there are (macOS 15.5), Eigen's
+ * Accelerate's LU (macOS 26) and Cholesky where there are, Eigen's
  * elsewhere, below a size and when asked - each solving what Eigen's does,
- * a pattern changing between factorizations, a singular matrix said.
+ * a pattern changing between factorizations, a singular matrix said, one
+ * singular to rounding too, the solver chosen and said.
  */
+#include "fem_problem.h"
 #include "fem_sparse.h"
 
+#include <QElapsedTimer>
 #include <QtTest>
 
 #include <complex>
@@ -39,6 +42,49 @@ template <typename Scalar> Eigen::SparseMatrix<Scalar> grid(int m, Scalar shift 
     if (extra == 1) t.emplace_back(0, n - 1, Scalar(0.25));
     if (extra == 2) t.emplace_back(n - 1, 0, Scalar(0.25));
     Eigen::SparseMatrix<Scalar> a(n, n);
+    a.setFromTriplets(t.begin(), t.end());
+    a.makeCompressed();
+    return a;
+}
+
+bool slowBuild()
+{
+    // (QUCS_TEST_SLOW: a slow build's path in any, to check it quickly.)
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
+/// An m by m grid's Laplacian: \a floating, no value set anywhere (each
+/// node's diagonal its neighbours' count: singular, the constant its null
+/// vector - a potential left floating); else 4.01 on it (sound). \a scaled:
+/// D A D, D from 1e-3 to 1e3 (a sound matrix badly scaled).
+Eigen::SparseMatrix<double> laplacian(int m, bool floating, bool scaled = false)
+{
+    const int n = m * m;
+    std::vector<Eigen::Triplet<double>> t;
+    auto d = [scaled](int k) { return scaled ? std::pow(10.0, double(k % 7) - 3) : 1.0; };
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < m; ++j) {
+            const int p = i * m + j;
+            int neighbours = 0;
+            auto link = [&](int q) {
+                t.emplace_back(p, q, -d(p) * d(q));
+                ++neighbours;
+            };
+            if (i > 0) link(p - m);
+            if (i < m - 1) link(p + m);
+            if (j > 0) link(p - 1);
+            if (j < m - 1) link(p + 1);
+            t.emplace_back(p, p, (floating ? double(neighbours) : 4.01) * d(p) * d(p));
+        }
+    Eigen::SparseMatrix<double> a(n, n);
     a.setFromTriplets(t.begin(), t.end());
     a.makeCompressed();
     return a;
@@ -199,6 +245,170 @@ private slots:
             QVERIFY(!lu.solve(Eigen::VectorXd::Ones(a.rows())).allFinite());
             qInfo("singular, %s: %s", from, lu.lastErrorMessage().c_str());
         }
+    }
+
+    // The solver chosen (Multiphysics > Settings…) and the environment's
+    // over it; each factorization counted by its solver, a step's said.
+    void theSolverChosen()
+    {
+        init();
+        setDirectSolver(DirectSolver::Eigen);
+        QVERIFY(directSolver() == DirectSolver::Eigen);
+        QVERIFY(!acceleratedLu() && !acceleratedCholesky());
+        QCOMPARE(acceleratedFrom(), 20000);
+        SolverUse before = solverUse();
+        {
+            // (Accelerate's size made 100 unknowns: Eigen's chosen still)
+            qputenv("QUCS_FEM_ACCELERATE_FROM", "100");
+            SparseLu<double> lu;
+            lu.compute(grid<double>(10));
+            QVERIFY(!lu.accelerated());
+            qunsetenv("QUCS_FEM_ACCELERATE_FROM");
+        }
+        QCOMPARE(solverUseText(before, solverUse()), QStringLiteral("Eigen's LU"));
+        setDirectSolver(DirectSolver::Accelerate);
+        QCOMPARE(acceleratedFrom(), 0);
+        QCOMPARE(acceleratedLu(), acceleratedLuHindrance().isEmpty());
+        qInfo("Accelerate's LU here: %s", acceleratedLu() ? "yes" : qPrintable(acceleratedLuHindrance()));
+        before = solverUse();
+        {
+            SparseLu<double> lu;
+            lu.compute(grid<double>(10));   // (200: any size, asked)
+            QCOMPARE(lu.accelerated(), acceleratedLu());
+            SparseCholesky c;
+            const auto a = laplacian(20, false);
+            c.analyzePattern(a);
+            c.factorize(a);
+            QCOMPARE(c.info(), Eigen::Success);
+        }
+        const QString used = solverUseText(before, solverUse());
+        QVERIFY2(used.contains(acceleratedLu() ? QStringLiteral("Accelerate's LU") : QStringLiteral("Eigen's LU")), qPrintable(used));
+#if defined(__APPLE__)
+        QVERIFY2(used.contains(QStringLiteral("Accelerate's Cholesky")), qPrintable(used));
+#endif
+        // The environment over the choice, both ways.
+        qputenv("QUCS_FEM_SOLVER", "eigen");
+        QVERIFY(directSolver() == DirectSolver::Eigen && !acceleratedCholesky());
+        setDirectSolver(DirectSolver::Eigen);
+        qputenv("QUCS_FEM_SOLVER", "accelerate");
+        QVERIFY(directSolver() == DirectSolver::Accelerate);
+        QCOMPARE(acceleratedFrom(), 0);
+        qputenv("QUCS_FEM_SOLVER", "auto");
+        QVERIFY(directSolver() == DirectSolver::Automatic);
+        QCOMPARE(acceleratedFrom(), 20000);
+        init();
+        setDirectSolver(DirectSolver::Automatic);
+        QCOMPARE(solverUseText(solverUse(), solverUse()), QString());
+    }
+
+    // A matrix singular to rounding (a grid's Laplacian, no value set: a
+    // potential left floating): its Cholesky refuses it, and so does an LU
+    // asked to check (a PDE's, a linear system's), on either backend - an
+    // LU not asked (a semiconductor's) solves it, as before; a linear system
+    // says it singular rather than solve it (Eigen's LDLT had, 1e9 off), its
+    // conjugate gradients stopping where they stall (an hour, before). A
+    // sound one scaled from 1e-3 to 1e3 is solved by each.
+    void singularToRounding()
+    {
+        // (A sanitized build: a grid of 50 - the 160's conjugate gradients
+        // took 229 s there.)
+        const int m = slowBuild() ? 50 : 160;
+        const auto floating = laplacian(m, true), sound = laplacian(m, false, true);
+        Eigen::VectorXd b = Eigen::VectorXd::Zero(floating.rows());
+        b[17] = 1;   // (a charge: no solution, any constant added)
+        for (DirectSolver solver : {DirectSolver::Eigen, DirectSolver::Accelerate}) {
+            init();
+            setDirectSolver(solver);
+            const char* which = solver == DirectSolver::Eigen ? "Eigen" : "Accelerate";
+            SparseCholesky c;
+            c.analyzePattern(floating);
+            c.factorize(floating);
+            QVERIFY2(c.info() != Eigen::Success, which);
+            if (c.singularToRounding()) QVERIFY2(QString::fromStdString(c.lastErrorMessage()).contains(QStringLiteral("singular to rounding")), which);
+            c.factorize(sound);
+            QVERIFY2(c.info() == Eigen::Success && !c.singularToRounding(), which);
+            QVERIFY(residual(sound, c.solve(b), b) < 1e-10);
+            SparseLu<double> checked;
+            checked.setSingularChecked(true);
+            checked.compute(floating);
+            QVERIFY2(checked.info() != Eigen::Success, which);
+            qInfo("%s: floating, %s", which, checked.lastErrorMessage().c_str());
+            checked.compute(sound);
+            QVERIFY2(checked.info() == Eigen::Success, which);
+            QVERIFY(residual(sound, checked.solve(b), b) < 1e-10);
+            SparseLu<double> unchecked;
+            unchecked.compute(floating);
+            if (solver == DirectSolver::Eigen || !acceleratedLu()) QVERIFY2(unchecked.info() == Eigen::Success, which);
+            // The linear system: said singular, not solved.
+            detail::LinearSystem system;
+            system.setPattern(m * m, [m](const std::function<void(const int*, int)>& element) {
+                for (int i = 0; i < m; ++i)
+                    for (int j = 0; j < m; ++j) {
+                        const int p = i * m + j;
+                        if (j + 1 < m) {
+                            const int pair[2] = {p, p + 1};
+                            element(pair, 2);
+                        }
+                        if (i + 1 < m) {
+                            const int pair[2] = {p, p + m};
+                            element(pair, 2);
+                        }
+                    }
+            });
+            for (int j = 0; j < floating.outerSize(); ++j)
+                for (Eigen::SparseMatrix<double>::InnerIterator it(floating, j); it; ++it) system.add(int(it.row()), j, it.value());
+            QString error;
+            // (said by its Cholesky: no LU made after)
+            const SolverUse before = solverUse();
+            QVERIFY2(!system.factorize(true, QStringLiteral("auto"), 1e-6, QStringLiteral("Floating"), nullptr, &error), which);
+            QVERIFY2(error.contains(QStringLiteral("the matrix is singular")), qPrintable(error));
+            QVERIFY2(!solverUseText(before, solverUse()).contains(QStringLiteral("LU")), qPrintable(solverUseText(before, solverUse())));
+            qInfo("%s: %s", which, qPrintable(error));
+            // Singular and indefinite (the floating grid beside -1 on a
+            // diagonal): its Cholesky fails by its sign, its LU says it.
+            {
+                detail::LinearSystem both;
+                const int n = m * m;
+                both.setPattern(2 * n, [m, n](const std::function<void(const int*, int)>& element) {
+                    for (int i = 0; i < m; ++i)
+                        for (int j = 0; j < m; ++j) {
+                            const int p = i * m + j;
+                            if (j + 1 < m) {
+                                const int pair[2] = {p, p + 1};
+                                element(pair, 2);
+                            }
+                            if (i + 1 < m) {
+                                const int pair[2] = {p, p + m};
+                                element(pair, 2);
+                            }
+                            const int one[1] = {n + p};
+                            element(one, 1);
+                        }
+                });
+                for (int j = 0; j < floating.outerSize(); ++j)
+                    for (Eigen::SparseMatrix<double>::InnerIterator it(floating, j); it; ++it) both.add(int(it.row()), j, it.value());
+                for (int k = 0; k < n; ++k) both.add(n + k, n + k, -1.0);
+                QString why;
+                QVERIFY2(!both.factorize(true, QStringLiteral("auto"), 1e-6, QStringLiteral("Indefinite"), nullptr, &why), which);
+                QVERIFY2(why.contains(QStringLiteral("singular to rounding")), qPrintable(why));
+            }
+            // Its conjugate gradients: stopped where they stall.
+            QElapsedTimer clock;
+            clock.start();
+            QStringList log;
+            error.clear();
+            if (system.factorize(true, QStringLiteral("iterative"), 1e-6, QStringLiteral("Floating"), &log, &error)) {
+                Eigen::VectorXd x;
+                QVERIFY(!system.solve(b, x, QStringLiteral("Floating"), &error));
+                QVERIFY2(error.contains(QStringLiteral("stalled")), qPrintable(error));
+            } else {
+                QVERIFY2(error.contains(QStringLiteral("the matrix is singular")), qPrintable(error));
+            }
+            qInfo("%s, iterative: %s (%lld ms)", which, qPrintable(error), clock.elapsed());
+            QVERIFY(clock.elapsed() < 60000);
+        }
+        init();
+        setDirectSolver(DirectSolver::Automatic);
     }
 
     // Its Cholesky: a symmetric positive definite matrix solved; one that is
