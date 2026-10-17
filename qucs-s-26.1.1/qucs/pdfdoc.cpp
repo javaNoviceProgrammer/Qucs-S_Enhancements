@@ -11,6 +11,7 @@
  */
 #include "pdfdoc.h"
 
+#include "gpurendering.h"
 #include "links.h"
 #include "misc.h"
 #include "qucs.h"
@@ -160,6 +161,21 @@ PageView::PageView(QWidget* parent) : QAbstractScrollArea(parent)
     viewport()->setAttribute(Qt::WA_OpaquePaintEvent);
     verticalScrollBar()->setSingleStep(24);
     horizontalScrollBar()->setSingleStep(24);
+    // Drawn by the GPU as set, and when the setting changes.
+    setGpu(gpu::used(gpu::Viewer::Pdf));
+    connect(gpu::Notifier::instance(), &gpu::Notifier::changed, this, [this](gpu::Viewer viewer) {
+        if (viewer == gpu::Viewer::Pdf) setGpu(gpu::used(gpu::Viewer::Pdf));
+    });
+}
+
+void PageView::setGpu(bool on)
+{
+    gpu::setGlViewport(this, on && gpu::hindrance().isEmpty(), [this](QPainter& p) { paintPages(p, viewport()->rect()); });
+}
+
+bool PageView::gpu() const
+{
+    return gpu::hasGlViewport(this);
 }
 
 void PageView::setDocument(QPdfDocument* document)
@@ -576,6 +592,9 @@ QImage PageView::tile(int page, qreal scale, int tx, int ty, bool* cached)
     options.setScaledSize(full);
     options.setScaledClipRect(rect);
     QImage image = a_document->render(page, rect.size(), options);
+    // (Its pixel ratio set once: drawn, the same image each time - the GPU's
+    // texture of it kept; set at each paint, it was a copy each time.)
+    image.setDevicePixelRatio(viewport()->devicePixelRatioF());
     ++a_tilesRendered;
     a_tiles.insert(key, new QImage(image), int(std::max<qsizetype>(1, image.sizeInBytes() / 1024)));
     return image;
@@ -584,14 +603,18 @@ QImage PageView::tile(int page, qreal scale, int tx, int ty, bool* cached)
 void PageView::paintEvent(QPaintEvent* event)
 {
     QPainter p(viewport());
+    paintPages(p, event->rect());
+}
+
+void PageView::paintPages(QPainter& p, const QRect& visible)
+{
     const QPalette pal = palette();
     const bool dark = pal.color(QPalette::Window).lightness() < 128;
-    p.fillRect(event->rect(), dark ? pal.color(QPalette::Window).darker(135) : QColor(0xe4, 0xe6, 0xea));
+    p.fillRect(visible, dark ? pal.color(QPalette::Window).darker(135) : QColor(0xe4, 0xe6, 0xea));
     if (a_document == nullptr || a_pages.isEmpty()) return;
 
     const qreal dpr = viewport()->devicePixelRatioF();
     const qreal scale = pixelsPerPoint() * dpr;
-    const QRect visible = event->rect();
     QElapsedTimer clock;
     clock.start();
     bool pending = false;   // tiles left for the next paint

@@ -15,6 +15,7 @@
 #include <QGuiApplication>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
+#include <QOpenGLPaintDevice>
 #include <QPainter>
 #include <QSurfaceFormat>
 #include <QVector2D>
@@ -294,7 +295,13 @@ void GlCanvas::paintGL()
         glClear(GL_COLOR_BUFFER_BIT);
         return;
     }
-    QPainter p(this);
+    // (A painter on the framebuffer itself: one on the widget, while Qt
+    // grabs the view - QWidget::grab, a screenshot - is the grab's raster
+    // painter, its fills and texts under the framebuffer's old picture.)
+    QOpenGLPaintDevice device(QSize(std::lround(width() * devicePixelRatioF()), std::lround(height() * devicePixelRatioF())));
+    device.setDevicePixelRatio(devicePixelRatioF());
+    QPainter p(&device);
+    p.setFont(font());
     a_view->paintFrame(p, this);
     ++a_frames;
 }

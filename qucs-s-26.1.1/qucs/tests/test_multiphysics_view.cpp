@@ -192,11 +192,11 @@ private slots:
     }
 
     // The GPU draws what the CPU draws: the geometry (its domain chosen),
-    // the mesh, a color surface with its contours and the mesh over it -
-    // their pictures alike but for the lines' and letters' antialiasing
-    // (under 3 % of the pixels more than 40 apart in a channel); a zoom the
-    // GPU's frames, no raster made; told so, the setting kept - a view made
-    // after drawn by the CPU -, and on again.
+    // the mesh, a color surface with its contours and the mesh over it, the
+    // view grabbed as a window is - their pictures alike but for the lines'
+    // and letters' antialiasing (under 3 % of the pixels more than 40 apart
+    // in a channel); a zoom the GPU's frames, no raster made; told so, the
+    // setting kept - a view made after drawn by the CPU -, and on again.
     void theGpuDrawsAsTheCpu()
     {
         if (!GraphicsView::gpuAvailable()) QSKIP("no OpenGL 3.3 here (the offscreen platform)");
@@ -231,6 +231,27 @@ private slots:
         view.setShow(GraphicsView::Show::Geometry);
         view.setHighlight(Level::Domain, {0});
         QVERIFY(compare(QStringLiteral("geometry")) < 0.03);
+        // Grabbed as a window is - QWidget::grab of the view, Claude's
+        // screenshots -: the same picture, its background and words with it
+        // (a painter on the canvas itself was the grab's, under the
+        // framebuffer's picture).
+        {
+            const QImage grabbed = view.grab().toImage();
+            const double off = differing(view.picture(), grabbed, 40);
+            qInfo("grabbed with the view: %.2f %% of the pixels apart", 100 * off);
+            QVERIFY(off < 0.03);
+            // Grabbed again and again as it moves, the window not painting
+            // between: each grab its own frame, none of those before it
+            // showing through.
+            for (int k = 0; k < 3; ++k) {
+                view.zoomBy(1.15, QPointF(200 + 40 * k, 150));
+                (void)view.grab();
+            }
+            view.fit();
+            const double again = differing(view.picture(), view.grab().toImage(), 40);
+            qInfo("grabbed after three moves: %.2f %% of the pixels apart", 100 * again);
+            QVERIFY(again < 0.03);
+        }
         // A boundary chosen: its color the CPU's (its strokes uploaded again).
         view.setHighlight(Level::Boundary, {1});
         QVERIFY(compare(QStringLiteral("boundary")) < 0.03);

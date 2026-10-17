@@ -98,10 +98,13 @@ private:
 class QuoteBars : public QObject
 {
 public:
-    /// \a edit's quotes drawn with their bars from now on.
-    static void install(QTextEdit* edit);
+    /// \a edit's quotes drawn with their bars from now on (\a on; not:
+    /// none drawn by it - drawPreview draws them on the GPU).
+    static void install(QTextEdit* edit, bool on = true);
     /// Where \a edit draws its bars, in its viewport's coordinates.
     static QList<QRectF> bars(const QTextEdit* edit);
+    /// Their colour: \a edit's text's, faint.
+    static QColor colour(const QTextEdit* edit);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -111,6 +114,13 @@ private:
     QTextEdit* a_edit;
     bool a_inside = false;   // (its view's own painting, sent on by it)
 };
+
+/// \a edit's viewport drawn on \a p as QTextEdit draws it - its document
+/// scrolled, its selection (and extra ones), in its palette - and the
+/// quotes' bars over it: the preview on the GPU (gpurendering.h), whose
+/// painter is not the viewport's. (A link focused by the keyboard is
+/// marked as a selection is, not by the style's focus format.)
+void drawPreview(const QTextEdit* edit, QPainter& p);
 
 } // namespace qucs_s::markdown
 
@@ -142,6 +152,11 @@ public:
     static Mode defaultMode();
 
     QTextBrowser* preview() const { return a_preview; }
+    /// The preview drawn by the GPU: its viewport an OpenGL widget, its text
+    /// from a glyph atlas, its images textures (Settings… > Appearance >
+    /// Drawing: Rendering/markdown).
+    void setPreviewGpu(bool on);
+    bool previewGpu() const;
     /// The rendering made again now (it is a moment after each edit).
     void renderNow();
     /// Where a link of the rendering leads (see the class).
