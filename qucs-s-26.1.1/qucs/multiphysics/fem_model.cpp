@@ -1180,16 +1180,34 @@ QList<NodeKind> makeKinds()
          tr("A boundary waves pass out of as into free space (first order: best at right angles), and a plane wave may come in by.")});
     add({QStringLiteral("waves/periodic"), tr("Periodic Condition"), QStringLiteral("ewfd"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp(none),
-          choice(QStringLiteral("floquet"), tr("Periodicity"), {QStringLiteral("port"), QStringLiteral("continuity"), QStringLiteral("given")},
-                 {tr("Floquet, the fed periodic port's"), tr("Continuity"), tr("Floquet, kF given")}, QStringLiteral("port"),
+          choice(QStringLiteral("floquet"), tr("Periodicity"),
+                 {QStringLiteral("port"), QStringLiteral("continuity"), QStringLiteral("given"), QStringLiteral("scan")},
+                 {tr("Floquet, the fed periodic port's"), tr("Continuity"), tr("Floquet, kF given"),
+                  tr("Array scan: one source, kF over the Brillouin zone")},
+                 QStringLiteral("port"),
                  tr("u(r + d) = u(r) e^-jkF·d, d from one side to the other: kF the plane wave's along the cell, a fed Periodic "
-                    "Port's (continuity without one), nought, or as given")),
+                    "Port's (continuity without one), nought, or as given. Array scan: a point source's field in a periodic "
+                    "structure from unit cells - the cell solved at kF across its Brillouin zone, the mean of their fields one "
+                    "source's (not a periodic array's)")),
           shownIf(expr(QStringLiteral("kx"), tr("kF, its x"), QStringLiteral("1/m"), QStringLiteral("0[1/m]")), QStringLiteral("floquet=given")),
-          shownIf(expr(QStringLiteral("ky"), tr("kF, its y"), QStringLiteral("1/m"), QStringLiteral("0[1/m]")), QStringLiteral("floquet=given"))},
+          shownIf(expr(QStringLiteral("ky"), tr("kF, its y"), QStringLiteral("1/m"), QStringLiteral("0[1/m]")), QStringLiteral("floquet=given")),
+          shownIf(integer(QStringLiteral("points"), tr("kF points"), 32,
+                          tr("About as many cells solved, across the Brillouin zone; the log says what half of them give. Guided "
+                             "modes that lose little want many (their peaks in kF narrow); one that loses nothing is a pole: "
+                             "give its layers a little loss")),
+                  QStringLiteral("floquet=scan")),
+          shownIf(choice(QStringLiteral("sampling"), tr("kF sampling"), {QStringLiteral("anomalies"), QStringLiteral("even")},
+                         {tr("Clustered about Rayleigh's anomalies"), tr("Evenly (a supercell of N cells)")}, QStringLiteral("anomalies"),
+                         tr("Where an order grazes a lossless outer medium (a periodic port's, a PML's) the cell's response is "
+                            "singular in kF: tanh-sinh's rule between those kF converges fast. Evenly: the trapezoid rule, kF = "
+                            "(2π/Λ)(i/N - ½) - the same as N cells side by side with one source, slow at an anomaly")),
+                  QStringLiteral("floquet=scan"))},
          {}, {}, false, false, QStringLiteral("pc"),
          tr("A unit cell's two opposite sides, one the other moved by d - a grating's, a film's, a photonic crystal's walls, "
             "both in one selection ({\"of\": [...], \"side\": [\"left\", \"right\"]}): the field on one the other's, "
-            "shifted in phase by kF·d (Floquet's), the two meshed alike.")});
+            "shifted in phase by kF·d (Floquet's), the two meshed alike. Array scan: a Point Dipole or Line Current in "
+            "the cell, PMLs or periodic ports (not fed) above and below - ewfd.Psource and ewfd.Purcell one source's, "
+            "ewfd.Pport_<name> what it sends out by each periodic port, the field shown its own.")});
     add({QStringLiteral("waves/periodicport"), tr("Periodic Port"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
           flag(QStringLiteral("excite"), tr("Fed"), true,
