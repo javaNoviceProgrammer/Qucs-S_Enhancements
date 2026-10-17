@@ -114,8 +114,8 @@ public:
     /// The tiles drawn since the start (for the tests).
     int tilesRendered() const { return a_tilesRendered; }
     /// Drawn by the GPU: its viewport an OpenGL widget, the tiles textures
-    /// kept there and scaled by it (Settings… > Appearance > Drawing:
-    /// Rendering/pdf). The pages themselves are pdfium's, on the CPU.
+    /// kept there and scaled by it (Settings… > Viewers: Viewers/pdfGpu, off
+    /// unless chosen). The pages themselves are pdfium's, on the CPU.
     void setGpu(bool on);
     bool gpu() const;
 

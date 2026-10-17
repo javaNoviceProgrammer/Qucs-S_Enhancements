@@ -928,12 +928,17 @@ private slots:
         QVERIFY(app->gotoPage(file));
         PdfDoc* doc = pdf();
         PageView* view = doc->view();
-        QVERIFY(view->gpu());   // (chosen by default)
+        QVERIFY(!view->gpu());   // (the CPU's unless chosen: Settings… > Viewers)
+        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, true);
+        const struct Back {
+            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Pdf)); }
+        } back;
+        QVERIFY(view->gpu());
         QVERIFY(qucs_s::gpu::hasGlViewport(view));
         doc->firstPage();
         qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, false);
         QVERIFY(!view->gpu());
-        QCOMPARE(QucsSettingsFile().value("Rendering/pdf").toString(), QString("cpu"));
+        QCOMPARE(QucsSettingsFile().value("Viewers/pdfGpu").toBool(), false);
         const QImage cpu = shown(view);
         qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, true);
         QVERIFY(view->gpu());

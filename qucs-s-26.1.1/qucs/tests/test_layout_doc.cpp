@@ -25,7 +25,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QGroupBox>
+#include <QTabWidget>
 #include <QLabel>
 #include <QToolButton>
 #include <QAction>
@@ -1473,12 +1475,17 @@ private slots:
     // the sample, and shapes the GPU must triangulate - an L, a square with
     // a hole by a slit (a GDSII hole), a ring, a bow tie (odd-even) - in
     // each pattern. A pan and a zoom drawn from its buffers, not made
-    // again, the CPU drawing nothing; a layer hidden, made again. Past its
-    // budget the CPU's picture. Where there is no OpenGL 3.3 (CI's
-    // offscreen display) it is not there to compare.
+    // again, the CPU drawing nothing; a layer hidden, its buffers kept, not
+    // drawn. Past its budget the CPU's picture. Where there is no OpenGL 3.3
+    // (CI's offscreen display) it is not there to compare. (The GPU chosen
+    // for the layout viewer: the CPU's unless it is.)
     void theGpuDrawsAsTheCpu()
     {
         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Layout, true);
+        const struct Back {
+            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Layout)); }
+        } back;
         const QString shapes = path("shapes.gds");
         {
             gdstk::Library lib = {};
@@ -1557,11 +1564,14 @@ private slots:
             QTRY_VERIFY(view->canvas()->frames() > frames);
             QCOMPARE(view->canvas()->builds(), builds);
             QCOMPARE(view->renders(), renders);
-            // A layer hidden: made again, and gone from the picture.
+            // A layer hidden: its buffers kept, not drawn - none made.
             QVector<LayerStyle> styles = view->styles();
             styles[0].visible = false;
+            const int drawn = view->canvas()->frames();
             view->setStyles(styles);
-            QTRY_VERIFY(view->canvas()->builds() > builds);
+            QTRY_VERIFY(view->canvas()->frames() > drawn);
+            QCOMPARE(view->canvas()->builds(), builds);
+            QCOMPARE(view->canvas()->layersAdded(), 0);
             closeAll();
         }
         // Past its budget: the CPU draws, its picture on the canvas.
@@ -1586,20 +1596,27 @@ private slots:
         QVERIFY(doc->view()->gpu());
         qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Layout, false);
         QVERIFY(!doc->view()->gpu());
-        QCOMPARE(QucsSettingsFile().value("Rendering/layout").toString(), QString("cpu"));
+        QCOMPARE(QucsSettingsFile().value("Viewers/layoutGpu").toBool(), false);
         qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Layout, true);
         QVERIFY(doc->view()->gpu());
         closeAll();
     }
 
-    // Settings… > Appearance > Drawing: each viewer's choice shown, kept
-    // and told to the viewers open - a layout, a PDF, a Markdown preview, a
-    // multiphysics Graphics view - each drawn as chosen where the GPU can
-    // (offscreen, where it cannot, the CPU whatever is chosen); the status
-    // says which.
-    void theDrawingSettings()
+    // Settings… > Viewers: each viewer drawn by the CPU unless the GPU is
+    // chosen for it - an opt-in each (the GPU by default, as it was, made
+    // a large layout slow to show or hide a layer: the user's word). Its
+    // choices shown, kept on OK, not on Cancel, and told to the viewers
+    // open - a layout, a PDF, a Markdown preview, a multiphysics Graphics
+    // view - each drawn as chosen where the GPU can (offscreen, where it
+    // cannot, the CPU whatever is chosen); the status says which. The old
+    // keys (Rendering/..., Multiphysics/gpu: the GPU on unless set off) not
+    // read.
+    void theViewersSettings()
     {
         using qucs_s::gpu::Viewer;
+        const Viewer all[4] = {Viewer::Pdf, Viewer::Markdown, Viewer::Layout, Viewer::Multiphysics};
+        QucsSettingsFile().setValue("Rendering/layout", "gpu");
+        QucsSettingsFile().setValue("Multiphysics/gpu", true);
         LayoutDoc* layout = open(path("sample.gds"));
         QVERIFY(layout != nullptr);
 #ifdef QUCS_HAVE_QTPDF
@@ -1636,64 +1653,212 @@ private slots:
             QCOMPARE(markdown->previewGpu(), qucs_s::gpu::used(Viewer::Markdown));
             QCOMPARE(graphics.gpu(), qucs_s::gpu::used(Viewer::Multiphysics));
         };
-        // The defaults: the GPU but for the Markdown preview.
-        QVERIFY(qucs_s::gpu::wanted(Viewer::Pdf) && qucs_s::gpu::wanted(Viewer::Layout) && qucs_s::gpu::wanted(Viewer::Multiphysics));
-        QVERIFY(!qucs_s::gpu::wanted(Viewer::Markdown));
-        drawnAsChosen();
-        QCOMPARE(layout->view()->gpu(), can);
-        QCOMPARE(markdown->previewGpu(), false);
-        const QStringList names{"drawingPdf", "drawingMarkdown", "drawingLayout", "drawingMultiphysics"};
-        {
-            QucsSettingsDialog dlg(app);
-            auto* group = dlg.findChild<QGroupBox*>("drawingGroup");
-            QVERIFY(group != nullptr);
-            QList<QComboBox*> combos;
-            for (const QString& name : names) {
-                combos << dlg.findChild<QComboBox*>(name);
-                QVERIFY(combos.last() != nullptr);
-                QCOMPARE(combos.last()->count(), 2);
-            }
-            QCOMPARE(combos[0]->currentIndex(), 0);   // the GPU
-            QCOMPARE(combos[1]->currentIndex(), 1);   // the CPU
-            QCOMPARE(combos[2]->currentIndex(), 0);
-            QCOMPARE(combos[3]->currentIndex(), 0);
-            auto* status = dlg.findChild<QLabel*>("drawingStatus");
-            QVERIFY(status != nullptr);
-            if (can) QVERIFY2(status->text().contains("OpenGL 3.3"), qPrintable(status->text()));
-            else QCOMPARE(status->text(), qucs_s::gpu::hindrance());
-            // Each the other way.
-            for (QComboBox* combo : combos) combo->setCurrentIndex(1 - combo->currentIndex());
-            QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
-        }
-        QCOMPARE(QucsSettingsFile().value("Rendering/pdf").toString(), QString("cpu"));
-        QCOMPARE(QucsSettingsFile().value("Rendering/markdown").toString(), QString("gpu"));
-        QCOMPARE(QucsSettingsFile().value("Rendering/layout").toString(), QString("cpu"));
-        QCOMPARE(QucsSettingsFile().value("Multiphysics/gpu").toBool(), false);
+        // The defaults: the CPU, each - whatever the old keys say.
+        for (Viewer v : all) QVERIFY(!qucs_s::gpu::wanted(v));
         drawnAsChosen();
         QVERIFY(!layout->view()->gpu());
+        QVERIFY(!markdown->previewGpu());
+        QVERIFY(!graphics.gpu());
+        const QStringList names{"gpuPdf", "gpuMarkdown", "gpuLayout", "gpuMultiphysics"};
+        {
+            QucsSettingsDialog dlg(app);
+            QVERIFY(dlg.findChild<QGroupBox*>("drawingGroup") == nullptr);   // (not in Appearance now)
+            auto* tab = dlg.findChild<QWidget*>("viewersTab");
+            QVERIFY(tab != nullptr);
+            auto* tabs = dlg.findChild<QTabWidget*>();
+            QVERIFY(tabs != nullptr);
+            QCOMPARE(tabs->tabText(tabs->indexOf(tab)), QString("Viewers"));
+            QVERIFY(tab->findChild<QGroupBox*>("gpuGroup") != nullptr);
+            QList<QCheckBox*> boxes;
+            for (const QString& name : names) {
+                boxes << tab->findChild<QCheckBox*>(name);
+                QVERIFY(boxes.last() != nullptr);
+                QVERIFY(!boxes.last()->isChecked());
+            }
+            QCOMPARE(boxes[2]->text(), qucs_s::gpu::viewerName(Viewer::Layout));
+            auto* status = tab->findChild<QLabel*>("gpuStatus");
+            QVERIFY(status != nullptr);
+            if (qucs_s::gpu::hindrance().isEmpty()) QVERIFY2(status->text().contains("OpenGL 3.3"), qPrintable(status->text()));
+            else QCOMPARE(status->text(), qucs_s::gpu::hindrance());
+            // The GPU chosen for each.
+            for (QCheckBox* box : boxes) box->setChecked(true);
+            QVERIFY(QMetaObject::invokeMethod(&dlg, "slotApply"));
+        }
+        for (Viewer v : all) {
+            QVERIFY(qucs_s::gpu::wanted(v));
+            QCOMPARE(QucsSettingsFile().value(qucs_s::gpu::settingKey(v)).toBool(), true);
+        }
+        QVERIFY(qucs_s::gpu::settingKey(Viewer::Layout).startsWith("Viewers/"));
+        drawnAsChosen();
+        QCOMPARE(layout->view()->gpu(), can);
         QCOMPARE(markdown->previewGpu(), can);
         // Shown again as chosen; Cancel keeps nothing.
         {
             QucsSettingsDialog dlg(app);
-            QCOMPARE(dlg.findChild<QComboBox*>("drawingPdf")->currentIndex(), 1);
-            QCOMPARE(dlg.findChild<QComboBox*>("drawingMarkdown")->currentIndex(), 0);
-            dlg.findChild<QComboBox*>("drawingLayout")->setCurrentIndex(0);
+            QVERIFY(dlg.findChild<QCheckBox*>("gpuPdf")->isChecked());
+            dlg.findChild<QCheckBox*>("gpuLayout")->setChecked(false);
             dlg.reject();
         }
-        QVERIFY(!layout->view()->gpu());
+        QVERIFY(qucs_s::gpu::wanted(Viewer::Layout));
+        QCOMPARE(layout->view()->gpu(), can);
         // QUCS_GPU=0: the CPU whatever is chosen, said.
         qputenv("QUCS_GPU", "0");
         QVERIFY(qucs_s::gpu::hindrance().contains("QUCS_GPU=0"));
         qucs_s::gpu::setWanted(Viewer::Markdown, true);
         QVERIFY(!markdown->previewGpu());
         qunsetenv("QUCS_GPU");
-        // Back to the defaults.
-        for (Viewer v : {Viewer::Pdf, Viewer::Markdown, Viewer::Layout, Viewer::Multiphysics}) QucsSettingsFile().remove(qucs_s::gpu::settingKey(v));
-        for (Viewer v : {Viewer::Pdf, Viewer::Markdown, Viewer::Layout, Viewer::Multiphysics})
-            emit qucs_s::gpu::Notifier::instance()->changed(v);
+        // Back to the defaults: the CPU.
+        for (Viewer v : all) QucsSettingsFile().remove(qucs_s::gpu::settingKey(v));
+        QucsSettingsFile().remove("Rendering/layout");
+        QucsSettingsFile().remove("Multiphysics/gpu");
+        for (Viewer v : all) emit qucs_s::gpu::Notifier::instance()->changed(v);
         drawnAsChosen();
-        QCOMPARE(layout->view()->gpu(), can);
+        QVERIFY(!layout->view()->gpu());
         closeAll();
+    }
+
+    // A photonic layout's rings and bends: 8,000 of 96 points, half not
+    // convex (C's, an arc 300° wide, 1 µm thick), on layers 0 to 3.
+    static bool writeCurves(const QString& file)
+    {
+        gdstk::Library lib = {};
+        lib.init("CURVES", 1e-6, 1e-9);
+        gdstk::Cell* top = newCell(lib, "CURVES");
+        for (int i = 0; i < 80; ++i)
+            for (int j = 0; j < 100; ++j) {
+                auto* p = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+                p->tag = gdstk::make_tag(uint32_t((i + j) % 4), 0);
+                const double cx = i * 10.0, cy = j * 10.0;
+                const bool c = (i + j) % 2;
+                for (int k = 0; k < 48; ++k) {
+                    const double a = (c ? 0.5 + 5.3 * k / 47.0 : 2 * M_PI * k / 48.0);
+                    p->point_array.append({cx + 4 * std::cos(a), cy + 4 * std::sin(a)});
+                }
+                for (int k = 47; k >= 0; --k) {
+                    const double a = (c ? 0.5 + 5.3 * k / 47.0 : 2 * M_PI * k / 48.0);
+                    p->point_array.append({cx + (c ? 3.0 : 4.0) * std::cos(a), cy + (c ? 3.0 : 4.0) * std::sin(a)});
+                }
+                top->polygon_array.append(p);
+            }
+        const bool ok = lib.write_gds(QFile::encodeName(file).constData(), 0, nullptr) == gdstk::ErrorCode::NoError;
+        lib.free_all();
+        return ok;
+    }
+
+    // A layer shown or hidden on the GPU at once: its buffers kept, hidden,
+    // not drawn - none made again; one hidden from the start flattened
+    // alone and added when shown. (Made again whole at each, a chip's
+    // layer took as long to show or hide as the cell to load into the GPU:
+    // the user's "very laggy when turning a layer on or off".)
+    void aLayerShownOrHiddenAtOnce()
+    {
+#ifdef QUCS_GPU_VIEW
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        const QString curves = path("curves.gds");
+        QVERIFY(writeCurves(curves));
+        LayoutDoc* doc = open(curves);
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        doc->setGridShown(false);
+        view->resize(1000, 800);
+        view->fit();
+        doc->setLayerVisible(1, false);   // (hidden before the GPU has it)
+        view->setGpu(true);
+        QVERIFY(view->gpu());
+        QElapsedTimer t;
+        t.start();
+        (void)view->canvas()->grabFramebuffer();
+        const qint64 build = t.elapsed();
+        const int builds = view->canvas()->builds();
+        QCOMPARE(view->canvas()->flattened().shapes, quint64(6000));
+        // (the layer's outline colour in the framebuffer: inked by it or not)
+        const auto inked = [view](int layer) {
+            const QColor want = view->shownStyle(view->styles().at(layer)).frame;
+            const QImage frame = view->canvas()->grabFramebuffer().convertToFormat(QImage::Format_RGB32);
+            int n = 0;
+            for (int y = 0; y < frame.height(); y += 2)
+                for (int x = 0; x < frame.width(); x += 2) {
+                    const QColor k = frame.pixelColor(x, y);
+                    n += std::abs(k.red() - want.red()) + std::abs(k.green() - want.green()) + std::abs(k.blue() - want.blue()) <= 30;
+                }
+            return n;
+        };
+        QVERIFY(inked(0) > 100);
+        QCOMPARE(inked(1), 0);
+        // Hidden and shown again: none made, drawn as asked.
+        t.restart();
+        doc->setLayerVisible(0, false);
+        (void)view->canvas()->grabFramebuffer();
+        const qint64 hide = t.elapsed();
+        QCOMPARE(inked(0), 0);
+        t.restart();
+        doc->setLayerVisible(0, true);
+        (void)view->canvas()->grabFramebuffer();
+        const qint64 show = t.elapsed();
+        QVERIFY(inked(0) > 100);
+        QCOMPARE(view->canvas()->builds(), builds);
+        QCOMPARE(view->canvas()->layersAdded(), 0);
+        // The layer hidden from the start: flattened alone, added.
+        t.restart();
+        doc->setLayerVisible(1, true);
+        (void)view->canvas()->grabFramebuffer();
+        const qint64 added = t.elapsed();
+        QVERIFY(inked(1) > 100);
+        QCOMPARE(view->canvas()->builds(), builds);
+        QCOMPARE(view->canvas()->layersAdded(), 1);
+        QCOMPARE(view->canvas()->flattened().shapes, quint64(8000));
+        // Hidden again, shown again: nothing made.
+        doc->setLayerVisible(1, false);
+        (void)view->canvas()->grabFramebuffer();
+        doc->setLayerVisible(1, true);
+        (void)view->canvas()->grabFramebuffer();
+        QCOMPARE(view->canvas()->layersAdded(), 1);
+        QCOMPARE(view->canvas()->builds(), builds);
+        // (Made again whole - the texts shown or not, as a layer shown or
+        // hidden made them before -: timed, for the record.)
+        t.restart();
+        view->setLabelsShown(!view->labelsShown());
+        (void)view->canvas()->grabFramebuffer();
+        const qint64 whole = t.elapsed();
+        view->setLabelsShown(!view->labelsShown());
+        (void)view->canvas()->grabFramebuffer();
+        QCOMPARE(view->canvas()->builds(), builds + 2);
+        // A hidden layer's texts not drawn either (the sample's on 10/0).
+        {
+            LayoutDoc* sample = open(path("sample.gds"));
+            QVERIFY(sample != nullptr);
+            sample->view()->resize(640, 480);
+            sample->view()->fit();
+            sample->view()->setGpu(true);
+            QVERIFY(sample->view()->labelsShown());
+            (void)sample->view()->canvas()->grabFramebuffer();
+            QVERIFY(sample->view()->canvas()->textsDrawn() > 0);
+            const int text = sample->layout()->layerIndex(LayerKey{10, 0});
+            QVERIFY(text >= 0);
+            sample->setLayerVisible(text, false);
+            (void)sample->view()->canvas()->grabFramebuffer();
+            QCOMPARE(sample->view()->canvas()->textsDrawn(), 0);
+            sample->setLayerVisible(text, true);
+            (void)sample->view()->canvas()->grabFramebuffer();
+            QVERIFY(sample->view()->canvas()->textsDrawn() > 0);
+            QCOMPARE(sample->view()->canvas()->builds(), 1);
+            app->DocumentTab->setCurrentWidget(doc);
+        }
+        // On the CPU, for the record: each a picture drawn again.
+        view->setGpu(false);
+        (void)view->grab();
+        t.restart();
+        doc->setLayerVisible(0, false);
+        (void)view->grab();
+        const qint64 cpuHide = t.elapsed();
+        doc->setLayerVisible(0, true);
+        qInfo("8,000 curves on the GPU: its first frame %lld ms; a layer hidden %lld ms, shown %lld ms, one shown for the first time %lld ms "
+              "(its 2,000 alone); made again whole %lld ms (each layer shown or hidden, before); on the CPU hidden %lld ms",
+              build, hide, show, added, whole, cpuHide);
+        closeAll();
+#else
+        QSKIP("a build without OpenGL");
+#endif
     }
 
     // Curves - a photonic layout's rings and bends, 8,000 of them of 96
@@ -1705,29 +1870,7 @@ private slots:
 #ifdef QUCS_GPU_VIEW
         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
         const QString curves = path("curves.gds");
-        {
-            gdstk::Library lib = {};
-            lib.init("CURVES", 1e-6, 1e-9);
-            gdstk::Cell* top = newCell(lib, "CURVES");
-            for (int i = 0; i < 80; ++i)
-                for (int j = 0; j < 100; ++j) {
-                    auto* p = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
-                    p->tag = gdstk::make_tag(uint32_t((i + j) % 4), 0);
-                    const double cx = i * 10.0, cy = j * 10.0;
-                    const bool c = (i + j) % 2;   // a C: an arc 300° wide, 1 µm thick
-                    for (int k = 0; k < 48; ++k) {
-                        const double a = (c ? 0.5 + 5.3 * k / 47.0 : 2 * M_PI * k / 48.0);
-                        p->point_array.append({cx + 4 * std::cos(a), cy + 4 * std::sin(a)});
-                    }
-                    for (int k = 47; k >= 0; --k) {
-                        const double a = (c ? 0.5 + 5.3 * k / 47.0 : 2 * M_PI * k / 48.0);
-                        p->point_array.append({cx + (c ? 3.0 : 4.0) * std::cos(a), cy + (c ? 3.0 : 4.0) * std::sin(a)});
-                    }
-                    top->polygon_array.append(p);
-                }
-            QCOMPARE(lib.write_gds(QFile::encodeName(curves).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
-            lib.free_all();
-        }
+        QVERIFY(writeCurves(curves));
         LayoutDoc* doc = open(curves);
         QVERIFY(doc != nullptr);
         LayoutView* view = doc->view();

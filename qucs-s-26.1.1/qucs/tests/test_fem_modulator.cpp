@@ -797,8 +797,12 @@ private slots:
         // TE at 0.9 or more: the TE0.
         const Run te = solve(QStringLiteral(R"(, "modes": 1, "track": {"only": ["mqw"]}, "polarization": "te", "tefraction": "0.9")"));
         QVERIFY(te.error.isEmpty());
-        const double te0 = at(te, 0, "emw.neff");
-        QVERIFY2(te0 > 3.22 && at(te, 0, "emw.TEfraction") > 0.99, qPrintable(QString::number(te0)));
+        // (TE 0.9997 here; sanitized, its coarser mesh, 0.998 here and under
+        // 0.99 on CI's Linux mesh, its index the same 3.2263 - the hybrid
+        // 0.85 and below 3.2.)
+        const double te0 = at(te, 0, "emw.neff"), teFraction = at(te, 0, "emw.TEfraction");
+        qInfo("the TE0 %.6f, TE %.5f", te0, teFraction);
+        QVERIFY2(te0 > 3.22 && teFraction > (slowBuild() ? 0.95 : 0.99), qPrintable(QStringLiteral("%1, TE %2").arg(te0).arg(teFraction)));
         // TM at 0.1 or less: the TM0, a few 1e-4 below it. Above 3.2: the two
         // the rib guides, the most in the MQW of them the TE0. (Slow: neither.)
         if (!slowBuild()) {

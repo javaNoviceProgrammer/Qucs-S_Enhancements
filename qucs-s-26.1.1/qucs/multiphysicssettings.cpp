@@ -10,6 +10,7 @@
  */
 #include "multiphysicssettings.h"
 #include "fem_sparse.h"
+#include "gpurendering.h"
 #include "multiphysicsview.h"
 #include "settings.h"
 
@@ -97,7 +98,7 @@ QString MultiphysicsSettingsDialog::gpuHindrance()
 
 bool MultiphysicsSettingsDialog::gpuWanted()
 {
-    return QucsSettingsFile().value(QStringLiteral("Multiphysics/gpu"), true).toBool();
+    return gpu::wanted(gpu::Viewer::Multiphysics);
 }
 
 int MultiphysicsSettingsDialog::solverWanted()
@@ -121,7 +122,9 @@ QString MultiphysicsSettingsDialog::solverStatus(int choice)
         choice = asked == "eigen" ? 1 : asked == "accelerate" ? 2 : 0;
     }
     // (asked of the solver: the build's macros are its own)
-    if (!accelerateInBuild()) return lead + tr("this build has Eigen's solvers alone.");
+    // (Named as the other cases name them: "this build has Eigen's solvers
+    // alone" named no LU - CI's Linux build's test looked for one.)
+    if (!accelerateInBuild()) return lead + tr("Eigen's LU and Cholesky (LDLT) at every size: this build has no Accelerate.");
     if (choice == 1) return lead + tr("Eigen's LU and Cholesky (LDLT) at every size.");
     const QString from = choice == 2 ? tr("at every size") : tr("from 20,000 unknowns, Eigen's below");
     const QString lu = acceleratedLuHindrance();
@@ -140,7 +143,7 @@ void MultiphysicsSettingsDialog::showStatus()
 void MultiphysicsSettingsDialog::apply()
 {
     const bool on = a_gpu->isChecked();
-    QucsSettingsFile().setValue(QStringLiteral("Multiphysics/gpu"), on);
+    QucsSettingsFile().setValue(gpu::settingKey(gpu::Viewer::Multiphysics), on);
     QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"), a_solver->currentData().toString());
     applySolverSetting();
     // (Each open view drawn so - setGpu() keeps the setting too; a view

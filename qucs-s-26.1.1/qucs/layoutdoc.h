@@ -152,8 +152,8 @@ public:
     QImage picture();
 
     /// Drawn by the GPU (layoutviewgl.h): its canvas over the view, the
-    /// layers from buffers made once. The setting (Settings… > Appearance >
-    /// Drawing: Rendering/layout) chooses; where there is no OpenGL 3.3, or
+    /// layers from buffers made once. The setting (Settings… > Viewers:
+    /// Viewers/layoutGpu, off unless chosen) chooses; where there is no OpenGL 3.3, or
     /// QUCS_GPU=0, the CPU draws whatever it says.
     void setGpu(bool on);
     bool gpu() const;
