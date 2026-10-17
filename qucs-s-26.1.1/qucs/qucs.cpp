@@ -1766,8 +1766,19 @@ void QucsApp::initCursorMenu()
   connect(ActionCMenuBuildAllVerilogA, SIGNAL(triggered()), SLOT(slotCMenuBuildAllVerilogA()));
   ContentVerilogAMenu->addAction(ActionCMenuBuildAllVerilogA);
 
-  // The empty area of the panel: the panel's own settings.
+  // The project's folder as it is on the disk: the File Browser's tab of
+  // it (one made the first time).
+  ActionCMenuOpenInFileBrowser = new QAction(tr("Open in File Browser"), this);
+  ActionCMenuOpenInFileBrowser->setObjectName("contentOpenInFileBrowser");
+  ActionCMenuOpenInFileBrowser->setStatusTip(tr("Shows the project's folder in the File Browser, in a tab of its own - "
+                                                "the tab showing it already, if there is one"));
+  connect(ActionCMenuOpenInFileBrowser, &QAction::triggered, this, &QucsApp::showProjectInFileBrowser);
+
+  // The empty area of the panel: the project's folder, the panel's own
+  // settings.
   ContentPanelMenu = new QMenu(this);
+  ContentPanelMenu->addAction(ActionCMenuOpenInFileBrowser);
+  ContentPanelMenu->addSeparator();
   ContentPanelMenu->addAction(ActionCMenuRefresh);
   ContentPanelMenu->addSeparator();
   ContentPanelMenu->addMenu(ContentViewMenu);
@@ -1782,6 +1793,14 @@ void QucsApp::slotCMenuContentView(QAction *mode)
   Content->setTreeView(mode == ActionCMenuViewTree);
 }
 
+void QucsApp::showProjectInFileBrowser()
+{
+  if (fileBrowser == nullptr || ProjName.isEmpty()) return;
+  fileBrowser->showInTab(QucsSettings.QucsWorkDir.absolutePath());
+  if (dock != nullptr && !dock->isVisible()) dock->show();
+  if (TabView != nullptr) TabView->setCurrentWidget(fileBrowser);
+}
+
 // ----------------------------------------------------------
 // Shows the menu.
 void QucsApp::slotShowContentMenu(const QPoint& pos)
@@ -1791,6 +1810,7 @@ void QucsApp::slotShowContentMenu(const QPoint& pos)
   const QPoint where = Content->viewport()->mapToGlobal(pos);   // pos is viewport-relative
 
   if (!idx.isValid()) {          // the empty area: the panel's menu
+    ActionCMenuOpenInFileBrowser->setEnabled(!ProjName.isEmpty() && fileBrowser != nullptr);
     ContentPanelMenu->popup(where);
     return;
   }

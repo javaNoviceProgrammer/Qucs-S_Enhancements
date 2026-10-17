@@ -11,6 +11,7 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QListView>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStandardPaths>
@@ -20,6 +21,7 @@
 #include "config.h"
 #include "claudecode.h"
 #include "filebrowser.h"
+#include "projectView.h"
 #include "main.h"
 #include "misc.h"
 #include "module.h"
@@ -523,6 +525,86 @@ private slots:
             }
         const QRect dot = QRect(row.right() - 30, row.top(), 31, row.height());
         QVERIFY2(lastInk > 0 && lastInk < dot.left(), qPrintable(QString("%1 %2").arg(lastInk).arg(dot.left())));
+    }
+
+    // The Content panel's empty area: Open in File Browser - the open
+    // project's folder in a File Browser tab of its own, the File Browser
+    // brought to the front; asked again, the tab showing it, not another.
+    // No project open: not to be chosen.
+    void theContentPanelOpensTheProjectInTheFileBrowser()
+    {
+        fresh("browse");
+        QVERIFY(QDir().mkpath(workspace + "/amp_prj"));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 700);
+        app.show();
+        QVERIFY(app.switchWorkspace(workspace));
+        ProjectView* content = app.projectView();
+        FileBrowser* browser = app.fileBrowserPanel();
+        QVERIFY(content != nullptr && browser != nullptr);
+        QTabWidget* panels = nullptr;
+        for (QWidget* up = browser->parentWidget(); up != nullptr && panels == nullptr; up = up->parentWidget())
+            panels = qobject_cast<QTabWidget*>(up);
+        QVERIFY(panels != nullptr);
+        auto* item = app.findChild<QAction*>("contentOpenInFileBrowser");
+        QVERIFY(item != nullptr);
+        // (The menu of the panel's foot, below any row: the item its first.
+        // Found as the item's menu - the one shown is the platform's own on
+        // a Mac's display, no popup of Qt's.)
+        QMenu* panelMenu = nullptr;
+        for (QObject* holder : item->associatedObjects())
+            if (auto* menu = qobject_cast<QMenu*>(holder)) panelMenu = menu;
+        QVERIFY(panelMenu != nullptr);
+        QCOMPARE(panelMenu->actions().first(), item);
+        // (The Content panel's page: the panel under its filter.)
+        QWidget* contentPage = nullptr;
+        for (int i = 0; i < panels->count(); ++i)
+            if (panels->widget(i) == content || panels->widget(i)->isAncestorOf(content)) contentPage = panels->widget(i);
+        QVERIFY(contentPage != nullptr);
+        const auto emptyAreaMenu = [&] {
+            panels->setCurrentWidget(contentPage);
+            QCoreApplication::processEvents();
+            for (int y = content->viewport()->height() - 3; y > 0; y -= 4)
+                if (const QPoint at(4, y); !content->indexAt(at).isValid()) {
+                    emit content->customContextMenuRequested(at);
+                    panelMenu->hide();
+                    return true;
+                }
+            return false;
+        };
+        QVERIFY(emptyAreaMenu());
+        QVERIFY(!item->isEnabled());   // no project open
+        const int before = browser->tabCount();
+        item->trigger();
+        QCOMPARE(browser->tabCount(), before);
+
+        app.openProject(workspace + "/amp_prj");
+        const QString project = QFileInfo(workspace + "/amp_prj").canonicalFilePath();
+        QVERIFY(emptyAreaMenu());
+        QVERIFY(item->isEnabled());
+        panels->setCurrentWidget(contentPage);
+        item->trigger();
+        QCOMPARE(panels->currentWidget(), static_cast<QWidget*>(browser));
+        QCOMPARE(QFileInfo(browser->location()).canonicalFilePath(), project);
+        const int tabs = browser->tabCount();
+        const int its = browser->currentTab();
+        QCOMPARE(browser->tabShowing(project), its);
+        // Elsewhere in the File Browser, the Content panel in front: asked
+        // again, back to that tab - none made.
+        browser->openInNewTab(workspace);
+        QCOMPARE(browser->tabCount(), tabs + 1);
+        QVERIFY(browser->currentTab() != its);
+        panels->setCurrentWidget(contentPage);
+        item->trigger();
+        QCOMPARE(browser->tabCount(), tabs + 1);
+        QCOMPARE(browser->currentTab(), its);
+        QCOMPARE(panels->currentWidget(), static_cast<QWidget*>(browser));
+
+        app.slotMenuProjClose();
+        QVERIFY(emptyAreaMenu());
+        QVERIFY(!item->isEnabled());
+        while (browser->tabCount() > 1) browser->closeTab(browser->tabCount() - 1);
     }
 
     // Above the projects, the File Browser's filter: the projects and

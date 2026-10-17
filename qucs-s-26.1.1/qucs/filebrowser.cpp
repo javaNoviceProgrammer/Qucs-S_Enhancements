@@ -2755,7 +2755,7 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
             go(path, true);
         });
         menu->setDefaultAction(open);
-        menu->addAction(tr("Open in New Tab"), this, [this, path] { openInNewTab(path); })
+        menu->addAction(tr("Open in New Tab"), this, [this, path] { showInTab(path); })
             ->setObjectName(QStringLiteral("fbOpenInNewTab"));
         // Linked into the workspace (Link Project's), shown in the Projects
         // panel.
@@ -2782,7 +2782,7 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
                 setView(a_fileView);
                 go(path, true);
             });
-            menu->addAction(tr("Show in a New Tab"), this, [this, path] { openInNewTab(path); })
+            menu->addAction(tr("Show in a New Tab"), this, [this, path] { showInTab(path); })
                 ->setObjectName(QStringLiteral("fbShowInNewTab"));
         }
         // A new archive beside it.
@@ -2958,6 +2958,37 @@ int FileBrowser::openInNewTab(const QString& path, bool makeCurrent)
     if (makeCurrent) setCurrentTab(at);
     save();
     return at;
+}
+
+int FileBrowser::showInTab(const QString& path, bool makeCurrent)
+{
+    const QFileInfo info(path);
+    if (path.isEmpty() || !info.exists()) return -1;
+    const int at = tabShowing(info.isDir() ? info.absoluteFilePath() : info.absolutePath());
+    if (at < 0) return openInNewTab(path, makeCurrent);
+    if (info.isFile()) {
+        const QString file = QDir::cleanPath(info.absoluteFilePath());
+        if (at == a_tab) selectPath(file);
+        else a_tabs[at].selected = file;
+    }
+    if (makeCurrent) setCurrentTab(at);
+    return at;
+}
+
+int FileBrowser::tabShowing(const QString& folder) const
+{
+    // (Compared as they are on the disk: a folder reached through a link -
+    // /tmp, a linked home - is the one it names.)
+    const auto real = [](const QString& path) {
+        const QString canonical = QFileInfo(path).canonicalFilePath();
+        return canonical.isEmpty() ? QDir::cleanPath(path) : canonical;
+    };
+    const QString wanted = real(folder);
+    for (int i = 0; i < a_tabs.size(); ++i) {
+        if ((i == a_tab ? a_view : a_tabs[i].view) == View::Recent) continue;
+        if (samePath(real(i == a_tab ? a_location : a_tabs[i].location), wanted)) return i;
+    }
+    return -1;
 }
 
 void FileBrowser::setCurrentTab(int index)
@@ -3163,7 +3194,8 @@ bool FileBrowser::eventFilter(QObject* watched, QEvent* event)
     default:
         break;
     }
-    // Command (Ctrl elsewhere) with a double-click: a folder in a new tab.
+    // Command (Ctrl elsewhere) with a double-click: a folder in a new tab
+    // (the tab showing it, if one does).
     if (event->type() == QEvent::MouseButtonDblClick && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton
         && (static_cast<QMouseEvent*>(event)->modifiers() & Qt::ControlModifier)) {
         auto* widget = qobject_cast<QWidget*>(watched);
@@ -3171,12 +3203,13 @@ bool FileBrowser::eventFilter(QObject* watched, QEvent* event)
         if (view != nullptr) {
             const QString path = pathOf(view->indexAt(static_cast<QMouseEvent*>(event)->position().toPoint()));
             if (QFileInfo(path).isDir()) {
-                openInNewTab(path);
+                showInTab(path);
                 return true;
             }
         }
     }
-    // A middle click: a folder opens in a new tab behind; a tab closes.
+    // A middle click: a folder opens in a new tab behind (none when a tab
+    // shows it already); a tab closes.
     if (event->type() == QEvent::MouseButtonRelease && static_cast<QMouseEvent*>(event)->button() == Qt::MiddleButton) {
         const QPoint at = static_cast<QMouseEvent*>(event)->position().toPoint();
         if (watched == a_tabBar) {
@@ -3188,7 +3221,7 @@ bool FileBrowser::eventFilter(QObject* watched, QEvent* event)
             if (auto* view = qobject_cast<QAbstractItemView*>(widget->parentWidget())) {
                 const QString path = pathOf(view->indexAt(at));
                 if (QFileInfo(path).isDir()) {
-                    openInNewTab(path, false);
+                    showInTab(path, false);
                     return true;
                 }
             }
