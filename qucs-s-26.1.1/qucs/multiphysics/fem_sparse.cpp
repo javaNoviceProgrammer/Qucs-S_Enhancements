@@ -98,6 +98,10 @@ struct Analysed {
 };
 std::mutex analysesLock;
 std::atomic<int> analysesMade{0};
+// One analysis at a time: Accelerate's symbolic LU on several threads at once
+// stopped the program (a sweep's points solved at once, each analysing the
+// same pattern: a SIGSEGV in libSparse). The others then find it kept.
+std::mutex analysingLock;
 // (Never destroyed: Accelerate's objects are not released at the program's
 // end, after its own state may be gone.)
 std::list<Analysed>& analyses()
@@ -326,6 +330,7 @@ struct SparseLu<Scalar>::Impl {
         if (__builtin_available(macOS 15.5, *)) {
             const bool complex = !std::is_same_v<Scalar, double>;
             const std::uint64_t hash = patternHash(starts, rows);
+            std::lock_guard<std::mutex> one(analysingLock);
             if (findAnalysed(complex, hash, starts, rows, &symbolic)) {
                 analysed = true;
                 return;

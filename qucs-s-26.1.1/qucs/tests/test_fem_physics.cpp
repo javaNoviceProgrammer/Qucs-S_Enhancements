@@ -132,6 +132,7 @@ private slots:
     void thermalExpansion();
     void sphericalCapacitor();
     void sweeps();
+    void sweepPointsAtOnce();
     void cutLines();
     void dxfImport();
     void svgImport();
@@ -400,6 +401,63 @@ void TestFemPhysics::sphericalCapacitor()
     const DerivedResult d = evaluateDerived(*r.solution, integral);
     QVERIFY2(d.error.isEmpty() && d.values.size() == 1, qPrintable(d.error));
     QVERIFY2(std::abs(d.values[0].value - 0.5 * got) / (0.5 * got) < 2e-3, qPrintable(QString::number(d.values[0].value)));
+}
+
+// A sweep's points solved at once (its "parallel"): the same solutions, in
+// the sweep's order, each its own mesh where the geometry changes - one for
+// all where it does not; its time the whole sweep's. A semiconductor's
+// points, each from the one before, one after another - said.
+void TestFemPhysics::sweepPointsAtOnce()
+{
+    const QByteArray json = R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "L", "expression": "10[mm]"}, {"name": "s", "expression": "1e6[S/m]"}],
+      "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "bar", "size": ["L", "1"]}],
+        "materials": [{"label": "m", "sigma": "s", "selection": {"all": true}}],
+        "physics": [{"type": "currents", "tag": "ec", "features": [
+          {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["bar"], "side": "left"}},
+          {"type": "ground", "selection": {"of": ["bar"], "side": "right"}}]}],
+        "mesh": {"size": "coarse"}}],
+      "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["L", "10, 15, 20, 25, 30, 40", "mm"]] %1}, {"type": "stationary"}]}]})json";
+    const Run one = run(modelOf(QString::fromUtf8(json).arg(QString()).toUtf8()));
+    const Run four = run(modelOf(QString::fromUtf8(json).arg(QStringLiteral(R"(, "parallel": 4)")).toUtf8()));
+    QVERIFY2(one.error.isEmpty() && four.error.isEmpty(), qPrintable(one.error + four.error));
+    QCOMPARE(int(four.study.solutions.size()), 6);
+    for (std::size_t i = 0; i < 6; ++i) {
+        const Solution &a = *one.study.solutions[i], &b = *four.study.solutions[i];
+        QCOMPARE(b.label, a.label);
+        QCOMPARE(b.sweptValues, a.sweptValues);
+        QVERIFY(b.global(QStringLiteral("ec.G11")).value_or(NAN) == a.global(QStringLiteral("ec.G11")).value_or(NAN));
+        QCOMPARE(b.atOnce, 4);
+        QCOMPARE(a.atOnce, 1);
+        QVERIFY(b.sweepSeconds > 0);
+    }
+    QVERIFY(four.study.solutions[0]->meshPtr() != four.study.solutions[1]->meshPtr());
+    // The conductivity swept, three at once: one mesh for all.
+    QByteArray other = QString::fromUtf8(json).arg(QStringLiteral(R"(, "parallel": 3)")).toUtf8();
+    other.replace(R"json([["L", "10, 15, 20, 25, 30, 40", "mm"]])json", R"json([["s", "range(1e6, 1e6, 3e6)", "S/m"]])json");
+    const Run kept = run(modelOf(other));
+    QVERIFY2(kept.error.isEmpty(), qPrintable(kept.error));
+    QCOMPARE(int(kept.study.solutions.size()), 3);
+    QVERIFY(kept.study.solutions[0]->meshPtr() == kept.study.solutions[2]->meshPtr());
+    QVERIFY(std::abs(kept.study.solutions[2]->global(QStringLiteral("ec.G11")).value_or(NAN) / 3e5 - 1) < 1e-9);   // (σ A / L, per metre of thickness)
+    // A semiconductor's points: one after another, said.
+    const QByteArray semi = R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "Va", "expression": "0[V]"}],
+      "components": [{"unit": "um", "geometry": [{"type": "rectangle", "name": "p", "size": ["1", "1"]}, {"type": "rectangle", "name": "n", "position": ["1", "0"], "size": ["1", "1"]}],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+          {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["p"]}},
+          {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["n"]}},
+          {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "left"}},
+          {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.1"}}],
+      "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "0.1, 0.2", "V"]], "parallel": 2}, {"type": "stationary"}]}]})json";
+    const Run walked = run(modelOf(semi));
+    QVERIFY2(walked.error.isEmpty(), qPrintable(walked.error));
+    QCOMPARE(int(walked.study.solutions.size()), 2);
+    QCOMPARE(walked.study.solutions[1]->atOnce, 1);
+    QVERIFY2(walked.study.log.join(QLatin1Char(' ')).contains(QLatin1String("one point after another - Semiconductor starts from the point before")),
+             qPrintable(walked.study.log.join(QLatin1Char('\n'))));
 }
 
 void TestFemPhysics::sweeps()

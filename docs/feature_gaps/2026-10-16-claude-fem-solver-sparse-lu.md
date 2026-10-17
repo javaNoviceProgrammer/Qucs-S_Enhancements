@@ -41,9 +41,43 @@ Once the factorization is fast, the OLED's per-wavelength time is the assembly: 
 
 What is left is the expressions' evaluation itself.
 
-## 4 and 2
+## 4. Sweep points in parallel
 
-Each in a commit of its own, after this one; written up below as they are done.
+| Recommended | Now |
+|---|---|
+| Wavelengths, orientations and source positions run concurrently inside one Qucs-S (it took several headless processes) | The Parametric Sweep step's **Points at once** (`"parallel"`, 1 by default): points solved in batches of that many, each on its own threads (its assembly's and its factorization's), their solutions in the sweep's order. Each point holds its own matrices, so its memory is multiplied too; the tooltip says so. The geometry and mesh are made before each batch, one point at a time where a parameter changes them. Progress is told one point at a time, and a stop stops each. The tools say "The sweep: N points, M at once, in X s", X being the sweep's own time; summed, the points' overlapping seconds were more. |
+| — | **Where a point starts from the one before, one after another, said.** A semiconductor walks from the last point's solution; a mode step asking for one mode, Follow on and no domains tracked, searches about the last point's mode. Such a sweep runs one point at a time and the log says "one point after another - Semiconductor starts from the point before". (`track`'s default, no domains, is not tracking.) |
+| — | **Found doing it:** Accelerate's symbolic LU on several threads at once stopped the program, a SIGSEGV in libSparse, three runs out of three on the OLED sweep at once. Analyses now run one at a time; the others then find the analysis in the cache. The factorizations themselves run at once. |
+
+Measured: the grating example's nine angles (26,488 unknowns each) took 1.08 s one after another, 0.40 s four at once and 0.175 s nine at once, the same reflectances. The OLED's three wavelengths at once took 7.2 s, against 8.4 one after another. Its points each already keep the cores busy, so the gain is small; it is large for models of fewer unknowns.
+
+Tests:
+
+- **test_fem_physics `sweepPointsAtOnce` (new):**
+  - six lengths four at once, the same conductances, names and values as one at a time, each its own mesh, the sweep's time;
+  - three conductivities three at once on one mesh;
+  - a semiconductor's two voltages one after another, said.
+- **test_fem_waves `aModeFollowedIsSweptInTurn` (new):** three frequencies at once with Follow off, in turn with it on, the same TE10 index.
+- **test_fem_sparse `onThreadsAtOnce` (new):** eight threads analysing and factorizing at once, Accelerate forced, each solve to 1e-12.
+- **test_multiphysics_doc:** "3 points, 3 at once".
+
+Nine changes broken on purpose:
+
+- **8 caught:**
+  - points one after another whatever asked;
+  - a semiconductor, or a followed mode, taken as independent;
+  - the default track taken as tracking;
+  - the points out of order;
+  - no sweep time;
+  - the analyses at once (the threads test: a SIGSEGV);
+  - the tools' "at once" unsaid.
+- **1 not caught:** the tools' seconds summed. On the test's points, of milliseconds, the sum and the sweep's own time differ by timing alone.
+
+The Release suite 127 of 127; the touched tests under the sanitizers, no report.
+
+## 2
+
+In a commit of its own, after these.
 
 ## Tests
 

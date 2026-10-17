@@ -31,6 +31,8 @@
 #include <limits>
 #include <map>
 #include <atomic>
+#include <functional>
+#include <mutex>
 #include <thread>
 #include <tuple>
 
@@ -4118,7 +4120,116 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         }
     std::shared_ptr<const Mesh> base = mesh;
     std::shared_ptr<const Solution> previous;
-    for (std::size_t k = 0; k < points.size(); ++k) {
+    // Points at once (the sweep's "parallel"): not where a point starts from
+    // the one before - a semiconductor walks from the last point's
+    // solution, a mode followed or tracked searches about its index.
+    int atOnce = 1;
+    if (sweep->props.contains(QStringLiteral("parallel"))) atOnce = std::clamp(sweep->integer(QStringLiteral("parallel")), 1, 64);
+    if (atOnce > 1) {
+        QString starts;
+        std::function<void(const Node&)> look = [&look, &starts](const Node& n) {
+            if (!n.enabled) return;
+            if (n.type == QLatin1String("semiconductor") && starts.isEmpty()) starts = n.name();
+            for (const Node& c : n.children) look(c);
+        };
+        look(model.component());
+        // (A mode step follows the mode from the point before where it asks
+        // for one mode, Follow on, no domains tracked - as modeStep reads it.)
+        for (const Node& st : study->children) {
+            if (!st.enabled || st.type != QLatin1String("mode") || !starts.isEmpty()) continue;
+            const QJsonObject t = st.value(QStringLiteral("track")).toObject();
+            const bool tracking = !(t.isEmpty() || (t.size() == 1 && t.contains(QStringLiteral("numbers")) && t.value(QStringLiteral("numbers")).toArray().isEmpty()));
+            if (st.flag(QStringLiteral("follow")) && st.integer(QStringLiteral("modes")) == 1 && !tracking) starts = st.name();
+        }
+        if (!starts.isEmpty()) {
+            run.log << tr("%1: one point after another - %2 starts from the point before").arg(sweep->name(), starts);
+            atOnce = 1;
+        }
+    }
+    // A point made ready: its parameters, its name, its mesh.
+    struct Ready {
+        std::shared_ptr<ParameterScope> ps;
+        QString where;
+        QHash<QString, double> values;
+        std::shared_ptr<const Mesh> mesh;
+    };
+    std::mutex told;
+    QElapsedTimer wall;
+    wall.start();
+    for (std::size_t batch = 0; batch < points.size() && atOnce > 1; batch += std::size_t(atOnce)) {
+        const std::size_t end = std::min(points.size(), batch + std::size_t(atOnce));
+        std::vector<Ready> ready;
+        for (std::size_t k = batch; k < end; ++k) {
+            QHash<QString, QString> overrides;
+            QStringList label;
+            Ready r;
+            for (std::size_t i = 0; i < lists.size(); ++i) {
+                overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
+                label << QStringLiteral("%1 = %2").arg(lists[i].name, formatQuantity(points[k][i], lists[i].dim, figures[i]));
+                r.values.insert(lists[i].name, points[k][i]);
+            }
+            r.where = label.join(QLatin1String(", "));
+            r.ps = evaluateParameters(model, overrides);
+            if (!r.ps->errors.isEmpty()) {
+                QStringList list;
+                for (auto it = r.ps->errors.cbegin(); it != r.ps->errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
+                run.error = tr("%1: the parameters: %2").arg(r.where, list.join(QLatin1String("; ")));
+                return run;
+            }
+            QSet<QString> changed;
+            for (auto it = r.ps->values.cbegin(); it != r.ps->values.cend(); ++it)
+                if (!parameters->values.contains(it.key()) || parameters->values.value(it.key()) != it.value()) changed.insert(it.key());
+            const double from = double(k) / double(points.size());
+            const Progress meshing([&progress, &told, from, &r](double, const QString& w) {
+                std::lock_guard<std::mutex> lock(told);
+                return !progress || progress(from, QStringLiteral("%1: %2").arg(r.where, w));
+            });
+            if (mentions(shaping, changed)) {
+                if (!meshOf(*r.ps, nullptr, meshing, &r.mesh)) {
+                    run.error = tr("%1: %2").arg(r.where, run.error);
+                    return run;
+                }
+            } else {
+                if (!base && !meshOf(*parameters, topology, meshing, &base)) return run;
+                run.mesh = base;
+                r.mesh = base;
+            }
+            ready.push_back(std::move(r));
+        }
+        // Each on its own thread; what each tells, one at a time.
+        std::vector<StudyResult> results(ready.size());
+        std::vector<std::thread> pool;
+        for (std::size_t i = 0; i < ready.size(); ++i)
+            pool.emplace_back([&model, &ready, &results, &progress, &told, study, i, batch, n = points.size()] {
+                const Ready& r = ready[i];
+                const double from = double(batch + i) / double(n), span = 1.0 / double(n);
+                const Progress tell([&progress, &told, &r, from, span](double f, const QString& w) {
+                    std::lock_guard<std::mutex> lock(told);
+                    return !progress || progress(from + span * f, QStringLiteral("%1: %2").arg(r.where, w));
+                });
+                results[i] = solveAdaptive(model, r.ps, r.mesh, study->tag, tell, nullptr);
+            });
+        for (std::thread& t : pool) t.join();
+        for (std::size_t i = 0; i < ready.size(); ++i) {
+            const StudyResult& r = results[i];
+            for (const QString& w : r.warnings)
+                if (!run.warnings.contains(w)) run.warnings << w;
+            if (!r.solution) {
+                run.error = tr("%1: %2").arg(ready[i].where, r.error);
+                return run;
+            }
+            r.solution->label = ready[i].where;
+            r.solution->sweptValues = ready[i].values;
+            run.log << QStringLiteral("%1: %2").arg(ready[i].where, r.solution->log.join(QLatin1String("; ")));
+            run.solutions.push_back(r.solution);
+        }
+    }
+    if (atOnce > 1)
+        for (const auto& one : run.solutions) {
+            one->atOnce = atOnce;
+            one->sweepSeconds = double(wall.elapsed()) / 1000;
+        }
+    for (std::size_t k = 0; k < points.size() && atOnce == 1; ++k) {
         QHash<QString, QString> overrides;
         QStringList label;
         QHash<QString, double> values;

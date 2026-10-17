@@ -1185,11 +1185,15 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     // (A sweep's seconds: all its points', not its last one's - to the
     // millisecond: 0.4460000000000003 was a sum's noise, the update check of
     // 8bd5709; its log the last point's, the sweep's said after it.)
+    // (Points solved at once: the sweep's own time, theirs overlapping.)
     double seconds = 0;
     for (const auto& one : set->solutions) seconds += one->seconds;
+    if (sol->atOnce > 1) seconds = sol->sweepSeconds;
     seconds = std::round(seconds * 1000) / 1000;
     QStringList log = sol->log;
-    if (set->solutions.size() > 1)
+    if (set->solutions.size() > 1 && sol->atOnce > 1)
+        log << tr("The sweep: %1 points, %2 at once, in %3 s (the lines above the last point's)").arg(set->solutions.size()).arg(sol->atOnce).arg(seconds);
+    else if (set->solutions.size() > 1)
         log << tr("The sweep: %1 points in %2 s (the lines above the last point's)").arg(set->solutions.size()).arg(seconds);
     QJsonObject result{{QStringLiteral("study"), sol->studyTag},
                                   {QStringLiteral("seconds"), seconds},
