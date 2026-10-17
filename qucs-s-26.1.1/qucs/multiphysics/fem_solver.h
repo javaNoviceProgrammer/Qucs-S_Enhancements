@@ -267,6 +267,11 @@ public:
     /// Of a sweep: the parameters' values this solution is of ("w = 2 mm").
     QString label;
     QHash<QString, double> sweptValues;   ///< SI, by parameter
+    /// A sweep's points solved at once (its "parallel"; 1: one after
+    /// another), and then the whole sweep's time (s) - its points' own
+    /// seconds overlapping.
+    int atOnce = 1;
+    double sweepSeconds = 0;
     /// By mode analysis: the mean effective index of the modes its last
     /// frequency found - where the next frequency, or a sweep's next point,
     /// searches when its step asks for one mode (Follow the mode).

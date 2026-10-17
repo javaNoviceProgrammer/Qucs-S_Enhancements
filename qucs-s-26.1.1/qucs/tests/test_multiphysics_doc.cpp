@@ -2216,6 +2216,23 @@ private slots:
         QVERIFY2(seconds == std::round(seconds * 1000) / 1000, qPrintable(QString::number(seconds, 'g', 17)));
         const QJsonArray log = json(r).value("log").toArray();
         QVERIFY2(log.last().toString().startsWith(QLatin1String("The sweep: 3 points in")), qPrintable(log.last().toString()));
+        // Its points at once: said, its seconds the sweep's own (theirs
+        // overlapping, summed they were more).
+        {
+            QFile bars(path(QStringLiteral("bars.qfem")));
+            QVERIFY(bars.open(QIODevice::ReadOnly));
+            QByteArray text = bars.readAll();
+            bars.close();
+            QVERIFY(text.contains(R"("parameters": [["L", "10, 20, 40", "mm"]])") || text.contains(R"("parameters":[["L","10, 20, 40","mm"]])"));
+            text.replace(R"("parameters": [["L", "10, 20, 40", "mm"]])", R"("parameters": [["L", "10, 20, 40", "mm"]], "parallel": 3)");
+            text.replace(R"("parameters":[["L","10, 20, 40","mm"]])", R"("parameters":[["L","10, 20, 40","mm"]],"parallel":3)");
+            write(QStringLiteral("bars_at_once.qfem"), QString::fromUtf8(text));
+            QVERIFY(open(path(QStringLiteral("bars_at_once.qfem"))) != nullptr);
+            const QJsonObject at = json(call("fem_solve", {{"path", "bars_at_once.qfem"}, {"timeout", 120}}));
+            const QJsonArray lines = at.value("log").toArray();
+            QVERIFY2(lines.last().toString().startsWith(QLatin1String("The sweep: 3 points, 3 at once, in")), qPrintable(lines.last().toString()));
+            QVERIFY(at.value("seconds").toDouble() >= 0);
+        }
         r = call("fem_plot", {{"path", "bars.qfem"}, {"plot", "badx"}});
         QVERIFY2(failed(r) && text(r).contains(QLatin1String("its x, nosuch,")), qPrintable(text(r)));
         r = call("fem_plot", {{"path", "bars.qfem"}, {"plot", "inmA"}});
