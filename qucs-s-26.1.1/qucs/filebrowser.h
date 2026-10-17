@@ -98,8 +98,9 @@ QLineEdit* nameFilterEdit(QWidget* parent);
  * they open; from the Finder or the Explorer they are copied in. A folder
  * held under a drag opens. Tabs: a folder opened in a new tab (its menu's
  * Open in New Tab, a middle click, Command - Ctrl elsewhere - with the
- * double-click), each with its own folder, steps back and forward, view,
- * filter and selection; the tab bar shows while there are two or more.
+ * double-click) - the tab showing it already, if one does -, each with its
+ * own folder, steps back and forward, view, filter and selection; the tab
+ * bar shows while there are two or more.
  * The folder, the view, the tabs and the options are kept for the next
  * start.
  */
@@ -161,6 +162,15 @@ public:
     /// new tab after the one in front - brought to the front with \a
     /// makeCurrent. Returns its index.
     int openInNewTab(const QString& path, bool makeCurrent = true);
+    /// \a path (a folder; a file's folder, with it selected) in a tab: the
+    /// tab showing that folder already, else a new one after the one in
+    /// front - brought to the front with \a makeCurrent. What Open in New
+    /// Tab, a middle click, Command with the double-click and the Content
+    /// panel's Open in File Browser do. Returns its index.
+    int showInTab(const QString& path, bool makeCurrent = true);
+    /// The tab showing \a folder's entries (not the documents opened last
+    /// there), or -1.
+    int tabShowing(const QString& folder) const;
     int tabCount() const { return int(a_tabs.size()); }
     int currentTab() const { return a_tab; }
     void setCurrentTab(int index);

@@ -1,10 +1,11 @@
 /*
  * The File Browser's tabs: a folder opened in a new tab (its menu's Open in
  * New Tab, a middle click - behind -, Command or Ctrl with the
- * double-click, the Options menu's New Tab); each tab with its own folder,
- * steps back and forward, view, filter, selection and Tree folders open;
- * the tab bar shown while there are two or more, its tabs closed (their
- * ✕, a middle click, its menu), moved; the tabs kept for the next start.
+ * double-click, the Options menu's New Tab; a folder a tab shows already
+ * that tab); each tab with its own folder, steps back and forward, view,
+ * filter, selection and Tree folders open; the tab bar shown while there
+ * are two or more, its tabs closed (their ✕, a middle click, its menu),
+ * moved; the tabs kept for the next start.
  */
 #include <QtTest>
 #include <QAction>
@@ -260,6 +261,92 @@ private slots:
         emit bar->tabCloseRequested(0);
         QCOMPARE(fb.tabLocations(), QStringList({top + "/beta"}));
         QCOMPARE(fb.location(), top + "/beta");
+    }
+
+    // A folder a tab shows already: Open in New Tab, Command with the
+    // double-click and showInTab bring that tab to the front - none made;
+    // a middle click (behind) makes none either; a file of its folder
+    // selected there. A tab in the Recent view does not show its folder.
+    // The Options menu's New Tab still opens the folder shown again.
+    void aFolderInATabAlreadyIsJumpedTo()
+    {
+        FileBrowser fb;
+        fb.resize(300, 600);
+        fb.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&fb));
+        while (fb.tabCount() > 1) fb.closeTab(fb.tabCount() - 1);
+        fb.setView(FileBrowser::View::List);
+        fb.setFilterText(QString());
+        fb.setLocation(top);
+        QVERIFY(settled(fb, "beta"));
+        // Opened: a tab of its own.
+        QMenu* menu = fb.contextMenuFor(top + "/beta");
+        actionNamed(menu, "fbOpenInNewTab")->trigger();
+        delete menu;
+        QCOMPARE(fb.tabLocations(), QStringList({top, top + "/beta"}));
+        QCOMPARE(fb.tabShowing(top + "/beta"), 1);
+        QCOMPARE(fb.tabShowing(top + "/beta/"), 1);
+        QCOMPARE(fb.tabShowing(top + "/gamma"), -1);
+        // Back to the first; opened again: that tab, none made.
+        fb.setCurrentTab(0);
+        QVERIFY(settled(fb, "beta"));
+        menu = fb.contextMenuFor(top + "/beta");
+        actionNamed(menu, "fbOpenInNewTab")->trigger();
+        delete menu;
+        QCOMPARE(fb.tabCount(), 2);
+        QCOMPARE(fb.currentTab(), 1);
+        QCOMPARE(fb.location(), top + "/beta");
+        // Command (Ctrl) with a double-click on it: the same.
+        fb.setCurrentTab(0);
+        QVERIFY(settled(fb, "beta"));
+        QAbstractItemView* view = fb.currentView();
+        QTest::mouseDClick(view->viewport(), Qt::LeftButton, Qt::ControlModifier, view->visualRect(fb.indexOf(top + "/beta")).center());
+        QTRY_COMPARE(fb.currentTab(), 1);
+        QCOMPARE(fb.tabCount(), 2);
+        // A middle click on it: behind, and none made.
+        fb.setCurrentTab(0);
+        QVERIFY(settled(fb, "beta"));
+        view = fb.currentView();
+        QTest::mouseClick(view->viewport(), Qt::MiddleButton, Qt::NoModifier, view->visualRect(fb.indexOf(top + "/beta")).center());
+        QCOMPARE(fb.tabCount(), 2);
+        QCOMPARE(fb.currentTab(), 0);
+        // Another folder: a tab of its own, as before.
+        QTest::mouseClick(view->viewport(), Qt::MiddleButton, Qt::NoModifier, view->visualRect(fb.indexOf(top + "/gamma")).center());
+        QCOMPARE(fb.tabLocations(), QStringList({top, top + "/gamma", top + "/beta"}));
+        QCOMPARE(fb.currentTab(), 0);
+        // A file: the tab of its folder, the file chosen there.
+        QCOMPARE(fb.showInTab(top + "/beta/b1.sch"), 2);
+        QCOMPARE(fb.currentTab(), 2);
+        QVERIFY(settled(fb, "b1.sch"));
+        QTRY_COMPARE(fb.selectedPath(), top + "/beta/b1.sch");
+        QCOMPARE(fb.tabCount(), 3);
+        // Behind (not brought to the front): the file chosen there for when
+        // it is.
+        fb.setCurrentTab(0);
+        QCOMPARE(fb.showInTab(top + "/gamma/g.txt", false), 1);
+        QCOMPARE(fb.currentTab(), 0);
+        fb.setCurrentTab(1);
+        QVERIFY(settled(fb, "g.txt"));
+        QTRY_COMPARE(fb.selectedPath(), top + "/gamma/g.txt");
+        // Through a link to it: the same folder.
+        const QString link = top + "/link_to_beta";
+        QFile::remove(link);
+        QVERIFY(QFile::link(top + "/beta", link));
+        QCOMPARE(fb.showInTab(link), 2);
+        QCOMPARE(fb.tabCount(), 3);
+        QFile::remove(link);
+        // A tab in the Recent view shows no folder: another tab is made.
+        fb.setCurrentTab(2);
+        fb.setView(FileBrowser::View::Recent);
+        QCOMPARE(fb.tabShowing(top + "/beta"), -1);
+        QCOMPARE(fb.showInTab(top + "/beta"), 3);
+        QCOMPARE(fb.tabCount(), 4);
+        QCOMPARE(fb.location(), top + "/beta");
+        // New Tab (Options): the folder shown, again - asked for.
+        fb.findChild<QAction*>("fbNewTab")->trigger();
+        QCOMPARE(fb.tabCount(), 5);
+        while (fb.tabCount() > 1) fb.closeTab(fb.tabCount() - 1);
+        fb.setView(FileBrowser::View::List);
     }
 
     // A tab's menu: a new one, close it, the others, those to its right.

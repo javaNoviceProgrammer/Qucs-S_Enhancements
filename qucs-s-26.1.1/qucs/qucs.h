@@ -302,6 +302,10 @@ public:
   /// Code, a tab each, in the workspace folder unless another is chosen.
   ClaudeCodeTabs *claudeCode() const { return claudeTabs; }
   FileBrowser *fileBrowserPanel() const { return fileBrowser; }
+  /// The open project's folder in the File Browser (the Content panel's
+  /// Open in File Browser): the tab showing it, else a new one; the File
+  /// Browser in front. Nothing without a project open.
+  void showProjectInFileBrowser();
   /// The Multiphysics tab of the left dock (multiphysicspanel.h).
   MultiphysicsPanel *multiphysicsPanel() const { return a_multiphysicsPanel; }
   QMenu *multiphysicsMenu() const { return a_multiphysicsMenu; }
@@ -820,7 +824,8 @@ public:
   QAction *ActionCMenuOpen, *ActionCMenuCopy, *ActionCMenuRename,
       *ActionCMenuDelete, *ActionCMenuInsert, *ActionCMenuBuildAllVerilogA,
       *ActionCMenuCompileVerilogA, *ActionCMenuSaveAsText,
-      *ActionCMenuViewFlat, *ActionCMenuViewTree, *ActionCMenuRefresh;
+      *ActionCMenuViewFlat, *ActionCMenuViewTree, *ActionCMenuRefresh,
+      *ActionCMenuOpenInFileBrowser;
 
   // "Build All" for Verilog-A: the files still to compile with OpenVAF,
   // the running compiler, and the tally for the summary line.
