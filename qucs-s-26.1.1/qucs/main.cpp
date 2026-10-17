@@ -62,6 +62,7 @@
 #include "apptheme.h"
 #include "systemopen.h"
 #include "multiphysicsview.h"
+#include "multiphysicssettings.h"
 
 
 #include "extsimkernels/ngspice.h"
@@ -764,6 +765,8 @@ int main(int argc, char *argv[])
 
     // load existing settings (if any)
     loadSettings();
+    // The multiphysics' sparse direct solver as set (Multiphysics > Settings…).
+    qucs_s::fem::MultiphysicsSettingsDialog::applySolverSetting();
 
     // --workspace DIR: this run's workspace, not the settings' (a client of
     // --mcp-server keeps its files in a folder of its own) - and its scratch

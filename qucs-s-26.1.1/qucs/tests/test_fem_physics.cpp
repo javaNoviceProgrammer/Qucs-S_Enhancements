@@ -133,6 +133,7 @@ private slots:
     void sphericalCapacitor();
     void sweeps();
     void sweepPointsAtOnce();
+    void aPartLeftFloating();
     void cutLines();
     void dxfImport();
     void svgImport();
@@ -407,6 +408,65 @@ void TestFemPhysics::sphericalCapacitor()
 // the sweep's order, each its own mesh where the geometry changes - one for
 // all where it does not; its time the whole sweep's. A semiconductor's
 // points, each from the one before, one after another - said.
+// A part of the model no value is set in - a box touching none of the
+// grounded one, a conductor floating alone there: refused, said which (an
+// Eigen's LDLT had said it solved: -2.9e12 V there); the same grounded, a
+// floating conductor where a ground is, and a convective flux, solved.
+void TestFemPhysics::aPartLeftFloating()
+{
+    auto twoBoxes = [](const QString& physics, const QString& features) {
+        return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "mm",
+            "geometry": [{"type": "rectangle", "name": "a", "size": ["10", "10"]},
+                         {"type": "rectangle", "name": "b", "position": ["12", "0"], "size": ["10", "10"]},
+                         {"type": "circle", "name": "blob", "center": ["17", "5"], "radius": "1"}, {"type": "form union"}],
+            "materials": [{"label": "m", "epsilonr": "4", "k": "1[W/(m*K)]", "selection": {"all": true}}],
+            "physics": [{"type": "%1", "tag": "p", "features": [%2]}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+            .arg(physics, features)
+            .toUtf8();
+    };
+    const QString charge = QStringLiteral(R"({"type": "spacecharge", "rho": "1e-6[C/m^3]", "selection": {"only": ["blob"]}})");
+    const QString groundA = QStringLiteral(R"({"type": "ground", "selection": {"of": ["a"]}})");
+    const Run floating = run(modelOf(twoBoxes(QStringLiteral("electrostatics"), charge + QLatin1Char(',') + groundA)));
+    QVERIFY2(floating.error.contains(QStringLiteral("touch no set potential")) && floating.error.contains(QStringLiteral("(b)"))
+                 && floating.error.contains(QStringLiteral("(blob)")) && floating.error.contains(QStringLiteral("left floating"))
+                 && !floating.error.contains(QStringLiteral("(a)")),
+             qPrintable(floating.error));
+    // (Nothing set anywhere: said as before.)
+    const Run none = run(modelOf(twoBoxes(QStringLiteral("electrostatics"), charge)));
+    QVERIFY2(none.error.contains(QStringLiteral("no potential is set")), qPrintable(none.error));
+    // Both grounded: solved, the charge's potential above nought.
+    const Run grounded = run(modelOf(twoBoxes(QStringLiteral("electrostatics"),
+                                              charge + QLatin1Char(',') + QStringLiteral(R"({"type": "ground", "selection": {"exterior": true}})"))));
+    QVERIFY2(grounded.error.isEmpty(), qPrintable(grounded.error));
+    QVERIFY(at(grounded, QStringLiteral("V"), QPointF(17, 5)) > 0);
+    // A floating conductor (its charge given) in the grounded box: solved;
+    // alone in the other: refused.
+    const QString floatingWire = QStringLiteral(R"({"type": "floating", "Q0": "1e-12[C]", "selection": {"of": ["blob"]}})");
+    // (b grounded, its conductor floating: fine - a alone said)
+    const Run withGround = run(modelOf(twoBoxes(QStringLiteral("electrostatics"),
+                                                floatingWire + QLatin1Char(',') + QStringLiteral(R"({"type": "ground", "selection": {"of": ["b"]}})"))));
+    QVERIFY2(withGround.error.contains(QStringLiteral("domain 1 (a) touches no set potential")), qPrintable(withGround.error));
+    const Run aloneInB = run(modelOf(twoBoxes(QStringLiteral("electrostatics"), floatingWire + QLatin1Char(',') + groundA)));
+    QVERIFY2(aloneInB.error.contains(QStringLiteral("touch no set potential")), qPrintable(aloneInB.error));
+    const Run conductorGrounded = run(modelOf(twoBoxes(QStringLiteral("electrostatics"),
+                                                       floatingWire + QLatin1Char(',') + QStringLiteral(R"({"type": "ground", "selection": {"exterior": true}})"))));
+    QVERIFY2(conductorGrounded.error.isEmpty(), qPrintable(conductorGrounded.error));
+    // Heat: a source in the box no temperature reaches - refused; let it
+    // lose heat by convection there and it is solved.
+    const QString source = QStringLiteral(R"({"type": "source", "Q0": "1e5[W/m^3]", "selection": {"only": ["blob"]}})");
+    const QString tempA = QStringLiteral(R"({"type": "temperature", "T0": "300[K]", "selection": {"of": ["a"]}})");
+    const Run hot = run(modelOf(twoBoxes(QStringLiteral("heat"), source + QLatin1Char(',') + tempA)));
+    QVERIFY2(hot.error.contains(QStringLiteral("touch no set temperature and lose no heat")), qPrintable(hot.error));
+    const Run cooled = run(modelOf(twoBoxes(QStringLiteral("heat"),
+                                            source + QLatin1Char(',') + tempA + QLatin1Char(',')
+                                                + QStringLiteral(R"({"type": "flux", "kind": "convective", "h": "10[W/(m^2*K)]", "selection": {"of": ["b"], "side": "top"}})"))));
+    QVERIFY2(cooled.error.isEmpty(), qPrintable(cooled.error));
+    QVERIFY(at(cooled, QStringLiteral("T"), QPointF(17, 5)) > 293.15);
+}
+
 void TestFemPhysics::sweepPointsAtOnce()
 {
     const QByteArray json = R"json({"format": "qucs-s multiphysics 1",
