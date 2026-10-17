@@ -1113,7 +1113,10 @@ private slots:
         QVERIFY2(given.error.isEmpty() && none.error.isEmpty(), qPrintable(given.error + none.error));
         const double qb = global(*beside.solution, QStringLiteral("semi.Q_g")), qg = global(*given.solution, QStringLiteral("semi.Q_g")), q0 = global(*none.solution, QStringLiteral("semi.Q_g"));
         qInfo("gate's charge: gold beside it %g C/m, 5.1 eV given %g, nothing beside it %g", qb, qg, q0);
-        QVERIFY2(qb == qg && std::abs(qb - q0) > 0.1 * std::abs(q0), qPrintable(QStringLiteral("%1 %2 %3").arg(qb).arg(qg).arg(q0)));
+        // (To 1e-12, not bit for bit: Accelerate's factorization, on its
+        // threads, is not the same to the last bit from one solve to the
+        // next.)
+        QVERIFY2(std::abs(qb - qg) <= 1e-12 * std::abs(qg) && std::abs(qb - q0) > 0.1 * std::abs(q0), qPrintable(QStringLiteral("%1 %2 %3").arg(qb).arg(qg).arg(q0)));
         QVERIFY2(beside.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("its work function its metal's, Gold: 5.1 eV")),
                  qPrintable(beside.solution->log.join(QLatin1Char('\n'))));
         // A Schottky contact on n-silicon: its barrier gold's less χ, 1.05 eV.

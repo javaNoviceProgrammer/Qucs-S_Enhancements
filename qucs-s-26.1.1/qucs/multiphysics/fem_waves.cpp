@@ -1328,7 +1328,7 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     // linearization about β = k0 n (the forward modes).
     const cd shift = k0 * guess;
     Eigen::SparseMatrix<cd> K0(a_n, a_n), K1(a_n, a_n), K2(a_n, a_n);
-    Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
+    SparseLu<cd> lu;
     if (coupled) {
         std::vector<Eigen::Triplet<cd>> t1;
         for (const auto& x : tc) t1.emplace_back(x.row(), x.col(), (x.row() < a_nEdge ? J : -J) * x.value());
@@ -2023,7 +2023,7 @@ int ResonatorProblem::solveModes(const SolveOptions& o, int count, double, QStri
         *error = tr("cancelled");
         return -1;
     }
-    Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
+    SparseLu<cd> lu;
     lu.analyzePattern(P);
     lu.factorize(P);
     if (lu.info() != Eigen::Success) {
@@ -3177,7 +3177,7 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         A = Eigen::SparseMatrix<cd>(Th * A * T);
         A.makeCompressed();
     }
-    Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
+    SparseLu<cd> lu;
     lu.analyzePattern(A);
     lu.factorize(A);
     if (lu.info() != Eigen::Success) {
