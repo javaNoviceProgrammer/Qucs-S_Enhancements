@@ -39,6 +39,8 @@
 #include "schematic.h"
 #include "settings.h"
 #include "components/component.h"
+#include "diagrams/diagram.h"
+#include "diagrams/graph.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 
@@ -603,6 +605,175 @@ private slots:
         // has come out at not quite four.)
         QVERIFY2(step * 3 < whole, qPrintable(QStringLiteral("a step %1 ms, a whole paint %2 ms")
                                                   .arg(step / 1e6).arg(whole / 1e6)));
+    }
+
+    // A page of sweeps zooms smoothly (the user's "the dpl panels choke on
+    // plots that have many curves when zooming in and zooming out"). On a
+    // copy of their 10-well page (sixty curves of 2,000 points, 1 and 3
+    // wide) a zoom's step took 67-211 ms, held at 1.33 147: each line's
+    // round caps outlined as curves by Qt, the lines thinned for 2.2 times
+    // the scale on the way out, those off the canvas outlined too. Now
+    // square caps where they are not told apart (3 device pixels wide or
+    // less) and while a wheel or a pinch zooms, round again 120 ms after;
+    // thinned again on the way out; the lines out of sight passed over:
+    // 20 and 23 ms there.
+    void aPlotOfManyCurvesZoomsSmoothly()
+    {
+        constexpr int points = 2000, states = 20;
+        QString dat = QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n<indep y %1>\n").arg(points);
+        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg(i * 1e-9 / (points - 1), 0, 'g', 12);
+        dat += QStringLiteral("</indep>\n<indep state %1>\n").arg(states);
+        for (int k = 0; k < states; ++k) dat += QStringLiteral("  %1\n").arg(k);
+        dat += QStringLiteral("</indep>\n<dep wave y state>\n");
+        for (int k = 0; k < states; ++k)
+            for (int i = 0; i < points; ++i) {
+                const double y = double(i) / (points - 1);
+                dat += QStringLiteral("  %1\n").arg(0.05 * k + 0.02 * std::sin(M_PI * (k + 1) * y) * std::sin(40 * M_PI * y), 0, 'g', 10);
+            }
+        dat += QStringLiteral("</dep>\n<dep Ec y>\n");
+        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg((i / 100) % 2 ? 0.55 : 0.45);   // (mid-plot)
+        dat += QStringLiteral("</dep>\n");
+        write(QStringLiteral("sweeps.dat"), dat);
+        const QString dpl = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,1200,800,1,0,0>\n  <Grid=10,10,0>\n"
+                                           "  <DataSet=sweeps.dat>\n  <DataDisplay=sweeps.dpl>\n  <OpenDisplay=0>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                                           "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
+                                           "  <Rect 100 700 900 600 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 \"\" \"\" \"\">\n"
+                                           "    <\"wave\" #ff00ff 1 3 0 0 0 1>\n    <\"Ec\" #0000ff 3 3 0 0 0>\n  </Rect>\n"
+                                           "</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        Schematic* s = open(app, write(QStringLiteral("sweeps.dpl"), dpl), {1100, 800});
+        QVERIFY(s != nullptr);
+        QCOMPARE(s->a_DocDiags.size(), 1);
+        Diagram* d = s->a_DocDiags.front();
+        QCOMPARE(d->Graphs.size(), 2);
+        const Graph* wave = d->Graphs.at(0);
+        const Graph* ec = d->Graphs.at(1);
+        const double ratio = s->viewport()->devicePixelRatioF();
+        const auto zoomTo = [s](double scale) {
+            s->zoomBy(scale / s->getScale());
+            s->centerOn(QPoint(550, 400));
+            pump();
+        };
+        QElapsedTimer t;
+        const auto paint = [s, &t] {
+            t.start();
+            s->viewport()->repaint();
+            return t.nsecsElapsed() / 1e6;
+        };
+
+        // Thinned again on the way out: the lines at 0.5 the same after
+        // a zoom to 3 as before it (they were 3's).
+        zoomTo(0.5);
+        paint();
+        const qsizetype atHalf = wave->drawnLines().size();
+        QVERIFY(atHalf > 1000);
+        zoomTo(3);
+        paint();
+        QVERIFY(wave->drawnLines().size() > atHalf);
+        zoomTo(0.5);
+        paint();
+        QCOMPARE(wave->drawnLines().size(), atHalf);
+
+        // A 1-wide graph 2 device pixels wide: square caps; the 3-wide
+        // one, 6, round.
+        zoomTo(2 / ratio);
+        const double full = paint();
+        QVERIFY(!s->zooming());
+        QVERIFY(wave->linesPainted() > 1000);
+        QCOMPARE(wave->roundCapsPainted(), 0);
+        QVERIFY(ec->linesPainted() > 0);
+        QCOMPARE(ec->roundCapsPainted(), ec->linesPainted());
+
+        // A pinch: each step drawn in draft (all square), the lines all
+        // there; 120 ms after its last, in full.
+        const QPoint middle = s->viewport()->rect().center();
+        QList<double> frames;
+        for (int i = 0; i < 6; ++i) {
+            QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, middle, middle,
+                                  s->viewport()->mapToGlobal(QPointF(middle)), 0.04, QPointF());
+            QCoreApplication::sendEvent(s->viewport(), &e);
+            QVERIFY(s->zooming());
+            frames << paint();
+            QVERIFY(ec->linesPainted() > 0);
+            QCOMPARE(ec->roundCapsPainted(), 0);
+            QCOMPARE(wave->roundCapsPainted(), 0);
+        }
+        std::sort(frames.begin(), frames.end());
+        qInfo("a full paint %.1f ms; a pinch's steps in draft %.1f ms (median)", full, frames.at(frames.size() / 2));
+        QTRY_VERIFY(!s->zooming());
+        paint();
+        QVERIFY(ec->roundCapsPainted() > 0);
+        // A touchpad's swipe with Ctrl zooms so too.
+        // (Sent to the canvas, as test_mouse_wheel's: the scroll view hands
+        // it on to its contents.)
+        const QPointF at(s->width() / 2.0, s->height() / 2.0);
+        QWheelEvent swipe(at, s->mapToGlobal(at), QPoint(0, 6), QPoint(0, 30), Qt::NoButton, Qt::ControlModifier, Qt::ScrollUpdate, false);
+        const double before = s->getScale();
+        QCoreApplication::sendEvent(s, &swipe);
+        QVERIFY2(s->getScale() > before, qPrintable(QStringLiteral("%1 %2").arg(before).arg(s->getScale())));
+        QVERIFY(s->zooming());
+        paint();
+        QCOMPARE(ec->roundCapsPainted(), 0);
+        QTRY_VERIFY(!s->zooming());
+
+        // Zoomed in: the lines out of sight passed over - but not one whose
+        // ink, its pen as wide, reaches in: the band edge's step (3 wide:
+        // 6 pixels each side at 4) a unit off the canvas's right edge. The
+        // canvas as the scene drawn whole has it: the scene held under View
+        // > Zoom In's rectangle, drawn on an image, no line passed over.
+        zoomTo(4);
+        paint();
+        const QList<QLineF> edges = ec->drawnLines();
+        const auto rise = std::find_if(edges.begin(), edges.end(), [](const QLineF& l) {
+            return std::abs(l.x1() - l.x2()) < 1 && std::abs(l.y1() - l.y2()) > 10 && l.x1() > 300 && l.x1() < 600;
+        });
+        QVERIFY(rise != edges.end());
+        const double riseX = std::min(rise->x1(), rise->x2());   // (its samples 0.45 apart)
+        const double halfWidth = s->viewport()->width() / 2.0 / s->getScale();
+        s->centerOn(QPoint(int(std::lround(d->cx + riseX - 0.75 - halfWidth)), int(std::lround(d->cy - (rise->y1() + rise->y2()) / 2))));
+        pump();
+        const int past = int(std::floor((d->cx + riseX - s->viewportToModel(QPoint(0, 0)).x()) * s->getScale())) - s->viewport()->width();
+        QVERIFY2(past >= 0 && past <= 5, qPrintable(QStringLiteral("the step %1 pixels past the edge").arg(past)));
+        paint();
+        QVERIFY(wave->linesPainted() > 0);
+        QVERIFY2(wave->linesPainted() * 2 < wave->drawnLines().size(),
+                 qPrintable(QStringLiteral("%1 of %2").arg(wave->linesPainted()).arg(wave->drawnLines().size())));
+        const QImage whole = canvasImage(s);
+        app.magPlus->trigger();
+        QVERIFY(app.MouseMoveAction == &MouseActions::MMoveZoomIn);
+        const QPoint from = s->viewport()->rect().center() - QPoint(100, 100);
+        QTest::mousePress(s->viewport(), Qt::LeftButton, Qt::NoModifier, from);
+        pump();
+        const QPoint to = from + QPoint(8, 6);
+        moveTo(s, to, Qt::LeftButton);
+        const QImage step = canvasImage(s);
+        const QRect band = QRect(from, to).normalized().adjusted(-3, -3, 3, 3);
+        QVERIFY2(inked(step, s->viewport()->rect(), paperOf(s)) > 1000, "the diagram is not in sight");
+        // (A line passed over is paper where ink is: more than 64 apart. On
+        // a Retina screen the held scene is drawn at its ratio and the
+        // picture at 1, its antialiasing some 12 apart.)
+        const auto missing = [](const QImage& a, const QImage& b, const QRect& area) -> std::optional<QPoint> {
+            const QRect r = area & a.rect();
+            for (int y = r.top(); y <= r.bottom(); ++y)
+                for (int x = r.left(); x <= r.right(); ++x) {
+                    const QRgb p = a.pixel(x, y), q = b.pixel(x, y);
+                    if (std::max({std::abs(qRed(p) - qRed(q)), std::abs(qGreen(p) - qGreen(q)), std::abs(qBlue(p) - qBlue(q))}) > 64)
+                        return QPoint(x, y);
+                }
+            return std::nullopt;
+        };
+        for (const QRect& r : (QRegion(whole.rect()) - QRegion(band)))
+            if (const auto at = missing(whole, step, r)) {
+                if (const QString grabs = qEnvironmentVariable("CANVAS_GRABS"); !grabs.isEmpty()) {
+                    whole.save(grabs + "/sweeps whole.png");
+                    step.save(grabs + "/sweeps step.png");
+                }
+                QFAIL(qPrintable(QStringLiteral("the canvas differs from the scene drawn whole at (%1,%2): %3 against %4")
+                                     .arg(at->x()).arg(at->y()).arg(whole.pixelColor(*at).name(QColor::HexArgb), step.pixelColor(*at).name(QColor::HexArgb))));
+            }
+        QTest::keyClick(s->viewport(), Qt::Key_Escape);
+        pump();
     }
 };
 

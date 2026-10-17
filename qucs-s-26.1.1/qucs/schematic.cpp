@@ -733,8 +733,10 @@ void Schematic::drawContents(QPainter *p, int clipx, int clipy, int clipw, int c
     // What is drawn on the canvas is drawn on its paper: on a dark one,
     // the colours meant for light paper are fitted to it (ink.h).
     const qucs_s::ink::Paper paper(viewport()->palette().color(viewport()->backgroundRole()));
-    // Texts a pixel or two tall are left out (levelofdetail.h).
+    // Texts a pixel or two tall are left out (levelofdetail.h); a zoom's
+    // steps drawn in draft.
     const qucs_s::lod::HiddenTexts hidden(p->fontMetrics().lineSpacing() * a_Scale < qucs_s::lod::kSmallestLine);
+    const qucs_s::lod::Draft draft(a_zooming);
 
     const QRectF area = modelArea(QRect(clipx, clipy, clipw, cliph));
     if (gesture == Gesture::None) {
@@ -847,6 +849,7 @@ Schematic::SceneKey Schematic::sceneKey(Gesture gesture, const QTransform& base,
     key.gridY = a_GridY;
     key.symbolMode = a_symbolMode;
     key.texts = qucs_s::lod::textsShown();
+    key.draft = qucs_s::lod::draft();
     return key;
 }
 
@@ -2766,6 +2769,7 @@ void Schematic::contentsWheelEvent(QWheelEvent *Event)
             static_cast<int>(Event->position().x()),
             static_cast<int>(Event->position().y())};
         zoomAroundPoint(scaleCoef, pointer);
+        zoomed();
     }
     // Scroll vertically
     else {
@@ -3076,6 +3080,24 @@ void Schematic::contentsNativeGestureZoomEvent( QNativeGestureEvent* Event) {
   const auto factor = 1.0 + Event->value();
   const auto pointer = mapFromGlobal(Event->globalPosition().toPoint());
   zoomAroundPoint(factor,pointer);
+  zoomed();
+}
+
+void Schematic::zoomed()
+{
+  // (Its steps come faster than a page of sweeps is drawn in full: each in
+  // draft, the last in full once they stop.)
+  if (a_zoomSettle == nullptr) {
+    a_zoomSettle = new QTimer(this);
+    a_zoomSettle->setSingleShot(true);
+    a_zoomSettle->setInterval(120);
+    connect(a_zoomSettle, &QTimer::timeout, this, [this] {
+      a_zooming = false;
+      viewport()->update();
+    });
+  }
+  a_zooming = true;
+  a_zoomSettle->start();
 }
 
 // ---------------------------------------------------
