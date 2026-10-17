@@ -508,6 +508,46 @@ private slots:
         QVERIFY2(adaptive.error.contains(QLatin1String("fixed steps")), qPrintable(adaptive.error));
     }
 
+    // A PDE whose value nothing sets (zero flux all round, no absorption):
+    // singular to rounding, said - it had solved to -2.9e7 by Accelerate's
+    // LU and +2.6e7 by Eigen's; with absorption it is solved. And a
+    // coefficient's unit that is not the one expected, on many domains:
+    // said once (the OLED model's 18 warnings in 1,148 lines).
+    void aPdeNothingSets()
+    {
+        auto pde = [](const QString& a, int boxes, const QString& c) {
+            QStringList geometry;
+            for (int k = 0; k < boxes; ++k)
+                geometry << QStringLiteral(R"({"type": "rectangle", "name": "b%1", "position": ["%2", "0"], "size": ["2", "10"]})").arg(k).arg(2 * k);
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "mm", "geometry": [%1, {"type": "form union"}],
+                "physics": [{"type": "pde", "tag": "c", "variables": "u", "features": [
+                  {"type": "coefficient", "c": "%3", "a": "%2", "f": "1", "selection": {"all": true}}]}],
+                "mesh": {"size": "coarse"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(geometry.join(QLatin1String(", ")), a, c)
+                .toUtf8();
+        };
+        for (const char* solver : {"eigen", "accelerate"}) {
+            qputenv("QUCS_FEM_SOLVER", solver);
+            const Run r = run(modelOf(pde(QStringLiteral("0"), 1, QStringLiteral("1"))));
+            QVERIFY2(r.error.contains(QStringLiteral("singular to rounding")), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(solver), r.error)));
+            const Run absorbing = run(modelOf(pde(QStringLiteral("1"), 1, QStringLiteral("1"))));
+            QVERIFY2(absorbing.error.isEmpty(), qPrintable(absorbing.error));
+        }
+        qunsetenv("QUCS_FEM_SOLVER");
+        // (the general form's flux checked, as the OLED's was: in 1/m)
+        QString general = QString::fromUtf8(pde(QStringLiteral("1"), 6, QStringLiteral("1")));
+        general.replace(QStringLiteral(R"({"type": "coefficient", "c": "1", "a": "1", "f": "1", "selection": {"all": true}})"),
+                        QStringLiteral(R"({"type": "general", "Gx": "-ux*1[1/m]", "Gy": "-uy", "F": "1 - u", "selection": {"all": true}})"));
+        QVERIFY(general.contains(QLatin1String("\"general\"")));
+        const Run units = run(modelOf(general.toUtf8()));
+        QVERIFY2(units.error.isEmpty(), qPrintable(units.error));
+        QStringList said = units.solution->log.filter(QStringLiteral("where 1 is expected"));
+        QVERIFY2(!said.isEmpty(), qPrintable(units.solution->log.join(QLatin1Char('\n'))));
+        QVERIFY2(said.removeDuplicates() == 0, qPrintable(units.solution->log.join(QLatin1Char('\n'))));
+    }
+
     void theExamples()
     {
         const QString dir = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");

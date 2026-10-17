@@ -14,11 +14,13 @@
 #include <Eigen/SparseLU>
 
 #include <QByteArray>
+#include <QStringList>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <list>
@@ -34,11 +36,121 @@ namespace qucs_s::fem {
 
 namespace {
 
-/// QUCS_FEM_SOLVER=eigen: Eigen's, where Accelerate's would be taken (read
-/// as each factorization is analysed).
-bool eigenAsked()
+std::atomic<int> chosen{int(DirectSolver::Automatic)};
+std::atomic<long long> usedAccelerateLu{0}, usedEigenLu{0}, usedAccelerateCholesky{0}, usedEigenCholesky{0}, usedIterative{0};
+
+/// Accelerate's LU in this build and on this macOS (26 and later - which
+/// says 16.0 to a program built with an older SDK).
+bool luHere()
 {
-    return qgetenv("QUCS_FEM_SOLVER").trimmed().toLower() == "eigen";
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+    if (__builtin_available(macOS 16.0, *)) return true;
+#endif
+    return false;
+}
+
+/// A factorization's check, each backend's after each factorization: one
+/// solve of b = R⁻¹ b̂ (b̂ fixed, 0.5 to 1.5; R the inverses of the rows'
+/// largest entries).
+/// - Its backward error |b - A x| / (|A| |x| + |b|), max norms: Accelerate's
+///   LU says a singular matrix factorized, a pivot of nought replaced, its
+///   solves finite and wrong (a row and column of noughts: 0.028).
+/// - The condition of R A C it shows (C likewise the columns', after R):
+///   ‖R A C‖ ‖C⁻¹ x‖ / ‖b̂‖, a lower bound of it, free of the unknowns'
+///   scales. A symmetric positive definite matrix singular to rounding - a
+///   potential left floating - factorizes with a pivot of rounding's size,
+///   and x is some 1e16 times b there: its Cholesky is said singular over
+///   1e15. Not an LU's: the suite's semiconductors' Jacobians show 1e22 and
+///   solve well (their carriers' exponentials), its waves' 1e16; what
+///   leaves one singular their physics say.
+struct Check {
+    double backward = 0, condition = 0;
+};
+template <typename Scalar, typename Solve>
+Check checkSolve(const Eigen::SparseMatrix<Scalar>& a, const Solve& solve, const char* kind)
+{
+    using Vector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1>;
+    using It = typename Eigen::SparseMatrix<Scalar>::InnerIterator;
+    const int n = int(a.rows());
+    Check out;
+    if (n == 0) return out;
+    std::vector<double> rowMax(static_cast<std::size_t>(n), 0.0), colMax(static_cast<std::size_t>(n), 0.0);
+    for (int j = 0; j < a.outerSize(); ++j)
+        for (It it(a, j); it; ++it) rowMax[std::size_t(it.row())] = std::max(rowMax[std::size_t(it.row())], double(std::abs(it.value())));
+    for (int j = 0; j < a.outerSize(); ++j)
+        for (It it(a, j); it; ++it)
+            if (rowMax[std::size_t(it.row())] > 0)
+                colMax[std::size_t(j)] = std::max(colMax[std::size_t(j)], double(std::abs(it.value())) / rowMax[std::size_t(it.row())]);
+    Vector b(n);
+    double bhatMax = 0;
+    for (int k = 0; k < n; ++k) {
+        const double bhat = 0.5 + std::fmod(0.6180339887 * (k + 1), 1.0);
+        bhatMax = std::max(bhatMax, bhat);
+        b[k] = Scalar(rowMax[std::size_t(k)] > 0 ? bhat * rowMax[std::size_t(k)] : bhat);
+    }
+    const Vector x = solve(b);
+    if (!x.allFinite()) {
+        out.backward = out.condition = std::numeric_limits<double>::infinity();
+        return out;
+    }
+    Vector r = -b;
+    std::vector<double> rowSum(static_cast<std::size_t>(n), 0.0), scaledSum(static_cast<std::size_t>(n), 0.0);
+    for (int j = 0; j < a.outerSize(); ++j)
+        for (It it(a, j); it; ++it) {
+            const int i = int(it.row());
+            r[i] += it.value() * x[j];
+            rowSum[std::size_t(i)] += std::abs(it.value());
+            if (rowMax[std::size_t(i)] > 0 && colMax[std::size_t(j)] > 0)
+                scaledSum[std::size_t(i)] += std::abs(it.value()) / (rowMax[std::size_t(i)] * colMax[std::size_t(j)]);
+        }
+    double normA = 0, normScaled = 0, cx = 0;
+    for (int i = 0; i < n; ++i) {
+        normA = std::max(normA, rowSum[std::size_t(i)]);
+        normScaled = std::max(normScaled, scaledSum[std::size_t(i)]);
+        cx = std::max(cx, double(std::abs(x[i])) * (colMax[std::size_t(i)] > 0 ? colMax[std::size_t(i)] : 1.0));
+    }
+    const double denominator = normA * double(x.cwiseAbs().maxCoeff()) + double(b.cwiseAbs().maxCoeff());
+    out.backward = denominator > 0 ? double(r.cwiseAbs().maxCoeff()) / denominator : 0.0;
+    out.condition = normScaled * cx / bhatMax;
+    // (QUCS_FEM_CHECK_LOG=<file>: each check's figures appended - to see
+    // what a model's matrices are.)
+    static const QByteArray logTo = qgetenv("QUCS_FEM_CHECK_LOG");
+    if (!logTo.isEmpty()) {
+        static std::mutex lock;
+        std::lock_guard<std::mutex> one(lock);
+        if (FILE* f = std::fopen(logTo.constData(), "a")) {
+#if defined(__APPLE__)
+            const char* who = getprogname();
+#else
+            const char* who = "-";
+#endif
+            std::fprintf(f, "%s %s %d %.3e %.3e\n", who, kind, n, out.condition, out.backward);
+            std::fclose(f);
+        }
+    }
+    return out;
+}
+
+/// Over this condition (scaled, a lower bound) a matrix is singular to
+/// rounding: fewer than one digit of its solution left (QUCS_FEM_SINGULAR another).
+double singularCondition()
+{
+    static const double limit = [] {
+        bool ok = false;
+        const double v = qgetenv("QUCS_FEM_SINGULAR").toDouble(&ok);
+        return ok && v > 0 ? v : 1e15;
+    }();
+    return limit;
+}
+
+std::string checkText(const Check& c)
+{
+    char text[200];
+    if (c.backward >= 1e-6)
+        std::snprintf(text, sizeof text, "a solve with its factorization leaves a backward error of %.3g (a pivot of nought replaced)", c.backward);
+    else
+        std::snprintf(text, sizeof text, "singular to rounding: its condition, its rows and columns scaled, at least %.2g - no digit of a solution left", c.condition);
+    return text;
 }
 
 #if defined(QUCS_ACCELERATE)
@@ -150,29 +262,89 @@ void keepAnalysed(bool complex, std::uint64_t hash, const std::vector<long>& sta
 
 } // namespace
 
+void setDirectSolver(DirectSolver solver)
+{
+    chosen = int(solver);
+}
+
+DirectSolver directSolver()
+{
+    // (read as each factorization is analysed)
+    const QByteArray asked = qgetenv("QUCS_FEM_SOLVER").trimmed().toLower();
+    if (asked == "eigen") return DirectSolver::Eigen;
+    if (asked == "accelerate") return DirectSolver::Accelerate;
+    if (asked == "auto" || asked == "automatic") return DirectSolver::Automatic;
+    return DirectSolver(chosen.load());
+}
+
 int acceleratedFrom()
 {
     bool ok = false;
     const int from = qgetenv("QUCS_FEM_ACCELERATE_FROM").toInt(&ok);
-    return ok && from >= 0 ? from : 20000;
+    if (ok && from >= 0) return from;
+    return directSolver() == DirectSolver::Accelerate ? 0 : 20000;
 }
 
 bool acceleratedLu()
 {
-#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
-    if (eigenAsked()) return false;
-    if (__builtin_available(macOS 15.5, *)) return true;
-#endif
-    return false;
+    return directSolver() != DirectSolver::Eigen && luHere();
 }
 
 bool acceleratedCholesky()
 {
 #if defined(QUCS_ACCELERATE)
-    return !eigenAsked();
+    return directSolver() != DirectSolver::Eigen;
 #else
     return false;
 #endif
+}
+
+bool accelerateInBuild()
+{
+#if defined(QUCS_ACCELERATE)
+    return true;
+#else
+    return false;
+#endif
+}
+
+QString acceleratedLuHindrance()
+{
+#if !defined(QUCS_ACCELERATE)
+    return QStringLiteral("this build has no Accelerate");
+#elif !defined(QUCS_ACCELERATE_LU)
+    return QStringLiteral("this build's SDK has no Accelerate LU (macOS 15.5's)");
+#else
+    if (!luHere()) return QStringLiteral("this macOS is older than 26 (Accelerate's LU on macOS 15 stopped the program in semiconductor solves)");
+    return QString();
+#endif
+}
+
+SolverUse solverUse()
+{
+    SolverUse u;
+    u.accelerateLu = usedAccelerateLu;
+    u.eigenLu = usedEigenLu;
+    u.accelerateCholesky = usedAccelerateCholesky;
+    u.eigenCholesky = usedEigenCholesky;
+    u.iterative = usedIterative;
+    return u;
+}
+
+void countIterative()
+{
+    ++usedIterative;
+}
+
+QString solverUseText(const SolverUse& before, const SolverUse& after)
+{
+    QStringList used;
+    if (after.accelerateLu > before.accelerateLu) used << QStringLiteral("Accelerate's LU");
+    if (after.accelerateCholesky > before.accelerateCholesky) used << QStringLiteral("Accelerate's Cholesky");
+    if (after.eigenLu > before.eigenLu) used << QStringLiteral("Eigen's LU");
+    if (after.eigenCholesky > before.eigenCholesky) used << QStringLiteral("Eigen's Cholesky (LDLT)");
+    if (after.iterative > before.iterative) used << QStringLiteral("Eigen's conjugate gradients");
+    return used.join(QLatin1String(", "));
 }
 
 int acceleratedAnalysesMade()
@@ -220,6 +392,7 @@ template <> struct AccelerateTypes<std::complex<double>> {
 template <typename Scalar>
 struct SparseLu<Scalar>::Impl {
     bool accelerate = false;
+    bool conditionChecked = false;
     int analyses = 0;
     Eigen::ComputationInfo info = Eigen::InvalidInput;
     std::string error;
@@ -248,8 +421,10 @@ struct SparseLu<Scalar>::Impl {
     }
     void release()
     {
-        if (factored) SparseCleanup(numeric);
-        if (analysed) SparseCleanup(symbolic);
+        if (__builtin_available(macOS 15.5, *)) {
+            if (factored) SparseCleanup(numeric);
+            if (analysed) SparseCleanup(symbolic);
+        }
         factored = analysed = false;
     }
     /// \a a's values put in P (false: an entry of it outside P).
@@ -291,33 +466,6 @@ struct SparseLu<Scalar>::Impl {
         }
         starts = std::move(s);
         rows = std::move(r);
-    }
-    /// The backward error of a solve with the factorization: |b - A x| /
-    /// (|A| |x| + |b|), maximum norms, for a fixed right-hand side. Accelerate's
-    /// LU says a singular matrix factorized - a pivot of nought replaced -,
-    /// its solves finite and wrong (a row and column of noughts: a residual
-    /// of 0.035); Eigen's says it singular, as the callers read it. Large
-    /// here, it is said singular too.
-    double backwardError() const
-    {
-        Vector b(n), x(n);
-        for (int k = 0; k < n; ++k) b[k] = Scalar(0.5 + std::fmod(0.6180339887 * (k + 1), 1.0));
-        Vector work = b;
-        if (__builtin_available(macOS 15.5, *))
-            SparseSolve(numeric, T::dense(n, work.data()), T::dense(n, x.data()));
-        if (!x.allFinite()) return std::numeric_limits<double>::infinity();
-        Vector r = -b;
-        double normA = 0;
-        std::vector<double> rowSum(std::size_t(n), 0.0);
-        for (int j = 0; j < n; ++j)
-            for (long k = starts[std::size_t(j)]; k < starts[std::size_t(j) + 1]; ++k) {
-                const int i = rows[std::size_t(k)];
-                r[i] += values[std::size_t(k)] * x[j];
-                rowSum[std::size_t(i)] += std::abs(values[std::size_t(k)]);
-            }
-        for (double v : rowSum) normA = std::max(normA, v);
-        const double denominator = normA * x.cwiseAbs().maxCoeff() + b.cwiseAbs().maxCoeff();
-        return denominator > 0 ? r.cwiseAbs().maxCoeff() / denominator : 0.0;
     }
     /// P analysed (Accelerate's symbolic factorization).
     void analyse()
@@ -423,18 +571,29 @@ template <typename Scalar> void SparseLu<Scalar>::factorize(const Matrix& given)
                                                                           : _SparseDefaultNumericFactorOptions_Complex_Double;
             o.pivotTolerance = pivotTolerance();
             accelerateError.clear();
+            ++usedAccelerateLu;
             if (d.factored) {
                 SparseRefactor(m, &d.numeric, o);
             } else {
                 d.numeric = SparseFactor(d.symbolic, m, o);
                 d.factored = true;
             }
-            const double eta = d.numeric.status == SparseStatusOK ? d.backwardError() : 0.0;
-            if (d.numeric.status == SparseStatusOK && eta < 1e-6) {
+            const Check check = d.numeric.status == SparseStatusOK ? checkSolve(
+                                                                         given,
+                                                                         [&d](const Vector& b) {
+                                                                             Vector x(b.size()), in = b;
+                                                                             if (__builtin_available(macOS 15.5, *))
+                                                                                 SparseSolve(d.numeric, Impl::T::dense(d.n, in.data()),
+                                                                                             Impl::T::dense(d.n, x.data()));
+                                                                             return x;
+                                                                         },
+                                                                         "accelerate-lu")
+                                                                   : Check{};
+            if (d.numeric.status == SparseStatusOK && check.backward < 1e-6 && (!d.conditionChecked || check.condition < singularCondition())) {
                 d.info = Eigen::Success;
             } else if (d.numeric.status == SparseStatusOK) {
                 d.info = Eigen::NumericalIssue;
-                d.error = "the matrix is singular (a solve with its factorization leaves a backward error of " + std::to_string(eta) + ")";
+                d.error = checkText(check);
             } else {
                 d.info = Eigen::NumericalIssue;
                 d.error = statusText(d.numeric.status);
@@ -450,9 +609,24 @@ template <typename Scalar> void SparseLu<Scalar>::factorize(const Matrix& given)
         d.eigen = std::make_unique<Eigen::SparseLU<Matrix>>();
         d.eigen->analyzePattern(given);
     }
+    ++usedEigenLu;
     d.eigen->factorize(given);
     d.info = d.eigen->info();
-    if (d.info != Eigen::Success) d.error = d.eigen->lastErrorMessage();
+    if (d.info != Eigen::Success) {
+        d.error = d.eigen->lastErrorMessage();
+        return;
+    }
+    if (!d.conditionChecked) return;
+    const Check check = checkSolve(given, [&d](const Vector& b) { return Vector(d.eigen->solve(b)); }, "eigen-lu");
+    if (check.backward >= 1e-6 || check.condition >= singularCondition()) {
+        d.info = Eigen::NumericalIssue;
+        d.error = checkText(check);
+    }
+}
+
+template <typename Scalar> void SparseLu<Scalar>::setSingularChecked(bool on)
+{
+    a_impl->conditionChecked = on;
 }
 
 template <typename Scalar> Eigen::ComputationInfo SparseLu<Scalar>::info() const
@@ -506,6 +680,17 @@ template class SparseLu<std::complex<double>>;
 struct SparseCholesky::Impl {
     bool accelerate = false;
     Eigen::ComputationInfo info = Eigen::InvalidInput;
+    // Singular to rounding (not: not positive definite), and why.
+    bool singular = false;
+    std::string error;
+    /// A factorization's check read: singular to rounding said.
+    void judge(const Check& c)
+    {
+        if (c.backward < 1e-6 && c.condition < singularCondition()) return;
+        info = Eigen::NumericalIssue;
+        singular = true;
+        error = checkText(c);
+    }
     std::unique_ptr<Eigen::SimplicialLDLT<Matrix>> eigen;
 #if defined(QUCS_ACCELERATE)
     // (Its lower triangle's pattern, kept: the matrix is given whole.)
@@ -569,6 +754,8 @@ void SparseCholesky::analyzePattern(const Matrix& a)
 void SparseCholesky::factorize(const Matrix& a)
 {
     Impl& d = *a_impl;
+    d.singular = false;
+    d.error.clear();
 #if defined(QUCS_ACCELERATE)
     if (d.accelerate) {
         if (d.n == 0) {
@@ -592,6 +779,7 @@ void SparseCholesky::factorize(const Matrix& a)
         d.starts.assign(d.lower.outerIndexPtr(), d.lower.outerIndexPtr() + d.lower.cols() + 1);
         SparseMatrix_Double m{d.structure(), d.lower.valuePtr()};
         accelerateError.clear();
+        ++usedAccelerateCholesky;
         if (d.factored) {
             SparseRefactor(m, &d.numeric);
         } else {
@@ -599,8 +787,20 @@ void SparseCholesky::factorize(const Matrix& a)
             d.factored = true;
         }
         // (Not positive definite: a pivot of nought or less, said as Eigen's
-        // LDLT would be read - the caller takes an LU.)
+        // LDLT would be read - the caller takes an LU. Nor singular to
+        // rounding: then too, its LU checked in turn.)
         d.info = d.numeric.status == SparseStatusOK ? Eigen::Success : Eigen::NumericalIssue;
+        if (d.info == Eigen::Success) {
+            const Check check = checkSolve(
+                a,
+                [&d](const Eigen::VectorXd& b) {
+                    Eigen::VectorXd x(b.size()), in = b;
+                    SparseSolve(d.numeric, DenseVector_Double{d.n, in.data()}, DenseVector_Double{d.n, x.data()});
+                    return x;
+                },
+                "accelerate-cholesky");
+            d.judge(check);
+        }
         if (d.info != Eigen::Success) {
             SparseCleanup(d.numeric);
             d.factored = false;
@@ -612,10 +812,23 @@ void SparseCholesky::factorize(const Matrix& a)
         d.eigen = std::make_unique<Eigen::SimplicialLDLT<Matrix>>();
         d.eigen->analyzePattern(a);
     }
+    ++usedEigenCholesky;
     d.eigen->factorize(a);
     d.info = d.eigen->info();
-    // (A Cholesky of a matrix not positive definite: a pivot of 0 or less.)
+    // (A Cholesky of a matrix not positive definite: a pivot of 0 or less.
+    // Nor singular to rounding.)
     if (d.info == Eigen::Success && !(d.eigen->vectorD().array() > 0).all()) d.info = Eigen::NumericalIssue;
+    if (d.info == Eigen::Success) d.judge(checkSolve(a, [&d](const Eigen::VectorXd& b) { return Eigen::VectorXd(d.eigen->solve(b)); }, "eigen-ldlt"));
+}
+
+bool SparseCholesky::singularToRounding() const
+{
+    return a_impl->singular;
+}
+
+std::string SparseCholesky::lastErrorMessage() const
+{
+    return a_impl->error;
 }
 
 Eigen::ComputationInfo SparseCholesky::info() const
