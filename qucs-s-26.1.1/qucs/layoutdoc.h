@@ -315,6 +315,11 @@ public:
     /// asks for. Null, and why in \a error, when there is none.
     MultiphysicsDoc* crossSection(const QLineF& cut, const QList<qucs_s::fem::StackRow>* rows = nullptr, QString* error = nullptr);
 
+    /// A layer's swatch as the layer list shows it, \a ratio device pixels
+    /// a pixel: 16 by 12, its frame the outermost pixel all round in \a
+    /// style's frame colour, inside it \a background and the style's fill.
+    static QPixmap swatchPixmap(const qucs_s::layout::LayerStyle& style, const QColor& background, qreal ratio);
+
     // For the tests.
     QTreeWidget* cellTree() const { return a_cells; }
     QTreeWidget* layerList() const { return a_layers; }
