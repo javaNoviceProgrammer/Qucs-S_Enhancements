@@ -754,16 +754,28 @@ void MarkdownDoc::followScroll()
     theirs->setValue(qRound(theirs->maximum() * qreal(own->value()) / own->maximum()));
 }
 
+void MarkdownDoc::applyDocumentColors()
+{
+    TextDoc::applyDocumentColors();
+    // The rendering in the theme's paper and ink too: its document, which
+    // has them in its formats, drawn again.
+    if (a_preview != nullptr) renderNow();
+}
+
 void MarkdownDoc::renderNow()
 {
     a_timer->stop();
     QScrollBar* bar = a_preview->verticalScrollBar();
     const int at = bar->value();
     const auto [paper, ink] = paperAndInk();
-    QPalette palette = a_preview->palette();
-    palette.setColor(QPalette::Base, paper);
-    palette.setColor(QPalette::Text, ink);
-    a_preview->setPalette(palette);
+    // As a style sheet, as the editor's colours (TextDoc::paperAndInk): a
+    // palette set here, the main window's style sheet put the
+    // application's back on the preview as it polished it - in a dark
+    // platform theme the dark base under the black ink. (Set when it
+    // changes: each one polishes the preview again.)
+    const QString sheet = QStringLiteral("QTextBrowser { background-color: %1; color: %2; }")
+                              .arg(paper.name(QColor::HexRgb), ink.name(QColor::HexRgb));
+    if (a_preview->styleSheet() != sheet) a_preview->setStyleSheet(sheet);
     QTextDocument* doc = a_preview->document();
     const QString dir = a_DocName.isEmpty() ? QString() : QFileInfo(a_DocName).absolutePath();
     if (!dir.isEmpty()) {

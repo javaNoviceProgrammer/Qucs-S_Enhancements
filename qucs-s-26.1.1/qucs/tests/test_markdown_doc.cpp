@@ -32,6 +32,7 @@
 #include "module.h"
 #include "main.h"
 #include "misc.h"
+#include "apptheme.h"
 #include "markdowndoc.h"
 #include "mathtypeset.h"
 #include "settings.h"
@@ -578,10 +579,104 @@ private slots:
         QVERIFY(picture.size() > 0);
     }
 
-    // In a window - a browser placed in it, drawn where it is - an image
-    // and a formula are drawn where the layout put them (taken off the
-    // painter's transform, each was moved twice: the chat's pictures below
-    // its prompt's frame).
+    // The rendering's paper and ink: black on white under the platform's
+    // themes, light or dark, as the editor's; a designed theme's own,
+    // followed as the theme changes with the preview open (its document
+    // drawn again in them). Set as a style sheet, as the editor's: the main
+    // window's style sheet put the application's palette back on the
+    // preview it polished - in a dark theme its viewport the dark base
+    // under the black ink. The GPU's preview the same, where there is one.
+    void thePaperIsTheThemesNotThePlatforms()
+    {
+        struct ThemeGuard {
+            int theme = QucsSettings.Theme;
+            ~ThemeGuard()
+            {
+                QucsSettings.Theme = theme;
+                qucs_s::apptheme::apply(theme);
+            }
+        } themeGuard;
+        const QString file = write("paper.md", "# Paper\n\nSome text, then a quote.\n\n> Quoted.\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        app.applyTheme(qucs_s::apptheme::System);
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        QTextBrowser* view = md->preview();
+        const auto check = [&](const QString& what) {
+            pump();
+            QTest::qWait(30);
+            const auto [paper, ink] = TextDoc::paperAndInk();
+            const QImage shot = view->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
+            const qreal r = shot.devicePixelRatio();
+            // Below the document: the paper.
+            const QColor below = shot.pixelColor(int((view->viewport()->width() - 6) * r), int((view->viewport()->height() - 6) * r));
+            QVERIFY2(below.name() == paper.name(), qPrintable(QStringLiteral("%1: %2 under the document, the paper %3").arg(what, below.name(), paper.name())));
+            // A line of text: its glyphs' cores the ink.
+            const QTextBlock line = blockWith(view->document(), "Some text");
+            QVERIFY(line.isValid());
+            const QRectF box = view->document()->documentLayout()->blockBoundingRect(line).translated(0, -view->verticalScrollBar()->value());
+            int nearest = 1000;
+            for (int y = int(box.top() * r); y < int(box.bottom() * r) && y < shot.height(); ++y)
+                for (int x = int(box.left() * r); x < int(box.right() * r) && x < shot.width(); ++x) {
+                    const QColor c = shot.pixelColor(x, y);
+                    nearest = std::min(nearest, std::abs(c.red() - ink.red()) + std::abs(c.green() - ink.green()) + std::abs(c.blue() - ink.blue()));
+                }
+            QVERIFY2(nearest < 60, qPrintable(QStringLiteral("%1: the text %2 from its ink %3").arg(what).arg(nearest).arg(ink.name())));
+            // What the bars and the selections are drawn in.
+            QCOMPARE(view->palette().color(QPalette::Base).name(), paper.name());
+            QCOMPARE(view->palette().color(QPalette::Text).name(), ink.name());
+        };
+        check(QStringLiteral("System"));
+        if (QTest::currentTestFailed()) return;
+        app.applyTheme(qucs_s::apptheme::Dark);
+        QVERIFY(qucs_s::apptheme::isDark());
+        check(QStringLiteral("Dark"));
+        if (QTest::currentTestFailed()) return;
+        app.applyTheme(qucs_s::apptheme::Nord);
+        QVERIFY(qucs_s::apptheme::designedInUse());
+        check(QStringLiteral("Nord"));
+        if (QTest::currentTestFailed()) return;
+        app.applyTheme(qucs_s::apptheme::Daylight);
+        check(QStringLiteral("Daylight"));
+        if (QTest::currentTestFailed()) return;
+        app.applyTheme(qucs_s::apptheme::Dark);
+        check(QStringLiteral("Dark again"));
+        if (QTest::currentTestFailed()) return;
+        // Opened in a dark designed theme.
+        app.applyTheme(qucs_s::apptheme::Dracula);
+        const QString other = write("paper2.md", "# Again\n\nSome text in Dracula.\n");
+        QVERIFY(app.gotoPage(other));
+        md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        view = md->preview();
+        check(QStringLiteral("Dracula"));
+        if (QTest::currentTestFailed()) return;
+        // The GPU's preview.
+        if (qucs_s::gpu::hindrance().isEmpty()) {
+            md->setPreviewGpu(true);
+            QVERIFY(md->previewGpu());
+            check(QStringLiteral("Dracula on the GPU"));
+            if (QTest::currentTestFailed()) return;
+            app.applyTheme(qucs_s::apptheme::Dark);
+            check(QStringLiteral("Dark on the GPU"));
+            if (QTest::currentTestFailed()) return;
+            md->setPreviewGpu(false);
+            check(QStringLiteral("Dark back on the CPU"));
+            if (QTest::currentTestFailed()) return;
+        }
+        app.applyTheme(qucs_s::apptheme::System);
+        check(QStringLiteral("System again"));
+        if (QTest::currentTestFailed()) return;
+        app.closeAllFiles();
+    }
+
     // A block quote marked by a bar beside it, a level's each - Qt's
     // Markdown sets it in by its margin alone (the update check of
     // 7451b1c): in the viewer, drawn over what the view paints (under it, the
@@ -697,6 +792,11 @@ private slots:
             // it, not a grab's paint - is the grab's picture.
             const QImage screen = onScreen(view);
             const QImage gpu = shown();
+            if (!shots.isEmpty()) {
+                cpu.save(shots + QStringLiteral("/markdown_cpu_%1.png").arg(kind));
+                gpu.save(shots + QStringLiteral("/markdown_gpu_%1.png").arg(kind));
+                screen.save(shots + QStringLiteral("/markdown_screen_%1.png").arg(kind));
+            }
             QCOMPARE(gpu.size(), cpu.size());
             QCOMPARE(screen.size(), gpu.size());
             // The quotes' bars, each its colour in each.
@@ -711,8 +811,8 @@ private slots:
                 QCOMPARE(QColor(screen.pixel(at)), QColor(cpu.pixel(at)));
             }
             if (kind != "scrolled") QVERIFY(bars >= 2);
-            // (Alike where a pixel of one has its colour in the other within
-            // a pixel of it: a glyph's grey edge is the GL engine's.)
+            // (Pixel by pixel, for the log: alike where a pixel of one has
+            // its colour in the other within a pixel of it.)
             const QColor paper = cpu.pixelColor(cpu.width() - 3, cpu.height() - 3);
             const auto near = [](const QImage& in, int x, int y, QColor want) {
                 for (int dy = -1; dy <= 1; ++dy)
@@ -734,16 +834,37 @@ private slots:
                     if (!near(gpu, x, y, a) || !near(cpu, x, y, b)) ++differ;
                 }
             QVERIFY2(off == 0, qPrintable(QStringLiteral("the screen's frame and the grab: %1 pixels apart").arg(off)));
-            if (!shots.isEmpty()) {
-                cpu.save(shots + QStringLiteral("/markdown_cpu_%1.png").arg(kind));
-                gpu.save(shots + QStringLiteral("/markdown_gpu_%1.png").arg(kind));
-            }
-            qInfo("%s: %d of %d pixels inked, %d differ (%.2f %%)", qPrintable(kind), inked, cpu.width() * cpu.height(), differ,
-                  100.0 * differ / std::max(1, inked));
+            // Alike block by block: the mean colour of each 32 by 32 pixels
+            // within 30 (the channels' sum). (Pixel by pixel the glyphs'
+            // edges differ - the GL engine draws them a little heavier
+            // than the raster one, black on the white paper some 10 % of
+            // the inked pixels -; over a block that is a few levels, a
+            // selection or a scroll missing scores of them.)
+            constexpr int n = 32;
+            int blocks = 0, apart = 0, worst = 0;
+            for (int by = 0; by + n <= cpu.height(); by += n)
+                for (int bx = 0; bx + n <= cpu.width(); bx += n) {
+                    qint64 sum[2][3] = {};
+                    for (int y = by; y < by + n; ++y)
+                        for (int x = bx; x < bx + n; ++x)
+                            for (int k = 0; k < 2; ++k) {
+                                const QRgb c = (k == 0 ? cpu : gpu).pixel(x, y);
+                                sum[k][0] += qRed(c);
+                                sum[k][1] += qGreen(c);
+                                sum[k][2] += qBlue(c);
+                            }
+                    int d = 0;
+                    for (int c = 0; c < 3; ++c) d += int(std::abs(sum[0][c] - sum[1][c]) / (n * n));
+                    ++blocks;
+                    apart += d > 30;
+                    worst = std::max(worst, d);
+                }
+            qInfo("%s: %d of %d pixels inked, %d differ (%.2f %%); %d of %d blocks apart, at most %d", qPrintable(kind), inked,
+                  cpu.width() * cpu.height(), differ, 100.0 * differ / std::max(1, inked), apart, blocks, worst);
             QVERIFY(inked > 5000);
             if (kind != "scrolled") QVERIFY(blue > 1000);   // (the picture, drawn by the GPU)
             QCOMPARE(view->verticalScrollBar()->value(), kind == "scrolled" ? 237 : 0);
-            QVERIFY2(differ < inked / 50, qPrintable(QStringLiteral("%1 of %2").arg(differ).arg(inked)));
+            QVERIFY2(apart < blocks / 100, qPrintable(QStringLiteral("%1 of %2 blocks").arg(apart).arg(blocks)));
         }
         // A document shorter than the view: the paper under it too - the
         // GPU's viewport fills its background as Qt fills the CPU's, and a
@@ -802,6 +923,11 @@ private slots:
         app.closeAllFiles();
     }
 
+    // In a window - a browser placed in it, drawn where it is - an image
+    // and a formula are drawn where the layout put them (taken off the
+    // painter's transform, each was moved twice: the chat's pictures below
+    // its prompt's frame). Read in the picture's own pixels: two to each on
+    // a Retina screen.
     void drawnWhereLaidOutInAWindow()
     {
         QWidget window;
@@ -821,13 +947,15 @@ private slots:
         qucs_s::markdown::fitImages(doc, browser->viewport()->width());
         pump();
         const QImage shot = window.grab().toImage();
+        const qreal r = shot.devicePixelRatio();
+        const auto pixel = [&shot, r](QPoint at) { return QColor(shot.pixel((QPointF(at) * r).toPoint())); };
         const QPoint origin = browser->viewport()->mapTo(&window, QPoint(0, 0));
         // The image: green at its middle, not above it.
         const QRectF block = doc->documentLayout()->blockBoundingRect(doc->begin());
         const QPoint middle = origin + QPoint(int(block.left() + 150), int(block.top() + 30));
         QVERIFY2(block.height() > 55, qPrintable(QString::number(block.height())));   // (the picture 300 by 60)
-        QCOMPARE(QColor(shot.pixel(middle)).green(), 160);
-        QVERIFY(QColor(shot.pixel(middle - QPoint(0, 33))).green() != 160 || QColor(shot.pixel(middle - QPoint(0, 33))).red() != 0);
+        QCOMPARE(pixel(middle).green(), 160);
+        QVERIFY(pixel(middle - QPoint(0, 33)).green() != 160 || pixel(middle - QPoint(0, 33)).red() != 0);
         // The formula: ink within its place in its line.
         QTextBlock line = doc->begin().next();
         int at = -1;
@@ -838,8 +966,8 @@ private slots:
         const QRectF lineRect = doc->documentLayout()->blockBoundingRect(line);
         const QRect place(origin + QPoint(int(lineRect.left() + l.cursorToX(at)), int(lineRect.top() + l.y())), QSize(20, int(l.height())));
         int darkest = 255;
-        for (int x = place.left(); x <= place.right(); ++x)
-            for (int y = place.top(); y <= place.bottom(); ++y) darkest = std::min(darkest, qGray(shot.pixel(x, y)));
+        for (int x = int(place.left() * r); x <= int(place.right() * r); ++x)
+            for (int y = int(place.top() * r); y <= int(place.bottom() * r); ++y) darkest = std::min(darkest, qGray(shot.pixel(x, y)));
         QVERIFY2(darkest < 100, qPrintable(QString::number(darkest)));
     }
 
