@@ -2258,12 +2258,30 @@ public:
     bool harmonic() const override { return true; }
 
 private:
+    /// A point source - a Line Current, a Point Dipole (a line of them along
+    /// z): where it is (m), its current along z (Ez) or its moment per metre
+    /// of z (C: px, py in the plane for Hz, pz for Ez), its phase taken in;
+    /// placed, its right-hand side and its power's weights by degree of
+    /// freedom (W per metre of z: Re Σ u_i W_i), its power and the same
+    /// source's in a homogeneous medium.
+    struct Source {
+        QString name;
+        bool dipole = false;
+        QPointF at;
+        cd I = 0, p[3] = {0, 0, 0};
+        std::vector<std::pair<int, cd>> rhs, power;
+        double P = NaN, P0 = NaN;
+    };
+    std::vector<Source> a_sources;
+    /// The sources placed at this frequency: \a F their right-hand side.
+    bool placeSources(double omega, double k0, Eigen::VectorXcd& F, QString* error);
     struct Port {
         QString name;
         bool excite = true;
         std::vector<int> edges;     // mesh edges
         cd beta;
         Eigen::VectorXcd c;         // ∫ p e N_i ds, by equation
+        double out = NaN;           // a point source's power it takes (W/m)
     };
     /// The point of triangle \a t on mesh edge \a e at s (0 at its a).
     void edgePoint(int e, double s, int* t, double* xi, double* eta) const;
@@ -2387,8 +2405,48 @@ bool WaveProblem::setup(QString* error)
         portOf[std::size_t(b)] = -1;
         pportOf[std::size_t(b)] = -1;
     };
+    a_sources.clear();
     for (const Node& feature : a_node->children) {
         if (!feature.enabled) continue;
+        if (feature.type == QLatin1String("waves/dipole") || feature.type == QLatin1String("waves/linecurrent")) {
+            Source src;
+            src.name = feature.name();
+            src.dipole = feature.type == QLatin1String("waves/dipole");
+            Expression::Options inUnit;
+            inUnit.lengthUnit = mesh.unitScale;
+            inUnit.numbersAreLengths = true;
+            const QStringList at = feature.pair(QStringLiteral("position"));
+            double xy[2] = {0, 0};
+            for (int c = 0; c < 2; ++c) {
+                const Expression e = Expression::compile(at.value(c), a_s.parameters().scope, inUnit);
+                if (!e.isValid() || !e.isConstant()) problem(tr("%1: its position: %2").arg(feature.name(), e.isValid() ? tr("a constant") : e.error()));
+                else xy[c] = e.constant() * mesh.unitScale;
+            }
+            src.at = QPointF(xy[0], xy[1]);
+            auto value = [&](const QString& key, const Dim& dim) {
+                QString warned;
+                const std::optional<double> v = evaluateConstant(feature.text(key), a_s.parameters().scope, dim, &why, &warned);
+                if (!v) problem(tr("%1: its %2: %3").arg(feature.name(), key, why));
+                else if (!warned.isEmpty()) a_s.log << tr("Warning: %1: its %2: %3").arg(feature.name(), key, warned);
+                return v.value_or(0.0);
+            };
+            const cd turn = std::polar(1.0, value(QStringLiteral("phase"), Dim()) * M_PI / 180);
+            if (src.dipole) {
+                const QString keys[3] = {QStringLiteral("px"), QStringLiteral("py"), QStringLiteral("pz")};
+                for (int c = 0; c < 3; ++c) src.p[c] = turn * value(keys[c], Dim::charge());
+                const bool plane = src.p[0] != cd(0) || src.p[1] != cd(0), across = src.p[2] != cd(0);
+                if (a_hz && !plane) problem(tr("%1: its moment in the plane is nought - Hz waves radiate from px and py (pz drives Ez)").arg(feature.name()));
+                else if (!a_hz && !across) problem(tr("%1: its moment out of the plane is nought - Ez waves radiate from pz (px and py drive Hz)").arg(feature.name()));
+                else if ((a_hz && across) || (!a_hz && plane))
+                    a_s.log << tr("Warning: %1: its moment %2 drives the other polarization - left out here (Field out of the plane: %3)")
+                                   .arg(feature.name(), a_hz ? QStringLiteral("pz") : QStringLiteral("px, py"), a_hz ? tr("Magnetic") : tr("Electric"));
+            } else {
+                src.I = turn * value(QStringLiteral("I"), Dim::current());
+                if (a_hz) problem(tr("%1: a current along z drives Ez - this physics solves Hz: a Point Dipole in the plane does").arg(feature.name()));
+            }
+            a_sources.push_back(src);
+            continue;
+        }
         const NodeKind* k = feature.kind();
         if (!k || k->selection != Level::Boundary) continue;
         const QVector<int> picked = resolveSelection(topo, a_s.model(), Level::Boundary, feature.selection(), &why);
@@ -2486,6 +2544,18 @@ bool WaveProblem::setup(QString* error)
     if (!a_pports.empty() && !a_ports.empty())
         problem(tr("%1: periodic ports and ports together - a unit cell's periodic ports, or a waveguide's ports").arg(a_node->name()));
     if (!a_pports.empty() && a_pfed < 0) problem(tr("%1: no periodic port is fed: one brings the plane wave in").arg(a_node->name()));
+    if (!a_sources.empty()) {
+        // The sources' field alone: their power, and what each port takes.
+        QStringList fed;
+        for (const Port& p : a_ports)
+            if (p.excite) fed << p.name;
+        bool plane = a_pfed >= 0;
+        for (std::size_t b = 0; b < a_incident.size(); ++b) plane = plane || (a_condition[b] == 3 && a_incident[b].plane);
+        if (!fed.isEmpty())
+            problem(tr("%1: a point source and a fed port (%2) - the ports matched, not fed (Fed off), take what the sources send them")
+                        .arg(a_node->name(), fed.join(QStringLiteral(", "))));
+        if (plane) problem(tr("%1: a point source and a plane wave coming in - one or the other: the sources' power is of their field alone").arg(a_node->name()));
+    }
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
         return false;
@@ -3115,6 +3185,7 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         }
     }
     // Ports: their modes, jβ c cᵀ each.
+    if (!placeSources(omega, k0, F, error)) return false;
     for (Port& port : a_ports) {
         if (!portMode(port, omega, k0, error)) return false;
         std::vector<int> nz;
@@ -3210,6 +3281,10 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
             return false;
         }
         if (j == 0) kept = x;
+        // Matched, the power each port takes from the sources: |b|² Re β /
+        // 2ωµ0 (Ez; ε0 Hz), b = cᵀ x (∫ p e² = 1).
+        for (Port& port : a_ports)
+            port.out = a_sources.empty() ? NaN : std::norm((port.c.transpose() * x)(0)) * port.beta.real() / (2 * omega * (a_hz ? Eps0 : Mu0));
         if (fed < 0) break;
         for (int i = 0; i < int(a_ports.size()); ++i) {
             const Port& pi = a_ports[std::size_t(i)];
@@ -3283,6 +3358,12 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
         fld.values[std::size_t(dof)] = kept(q).real();
         fld.values[std::size_t(nd + dof)] = kept(q).imag();
     }
+    // Each source's power: Re Σ u_i W_i, the field as solved.
+    for (Source& src : a_sources) {
+        cd sum = 0;
+        for (const auto& [dof, w] : src.power) sum += cd(fld.values[std::size_t(dof)], fld.values[std::size_t(nd + dof)]) * w;
+        src.P = sum.real();
+    }
     fld.terminals.clear();
     for (const Port& p : a_ports) {
         Field::Terminal t;
@@ -3295,9 +3376,125 @@ bool WaveProblem::solve(const SolveOptions& o, QString* error)
     return true;
 }
 
+bool WaveProblem::placeSources(double omega, double k0, Eigen::VectorXcd& F, QString* error)
+{
+    if (a_sources.empty()) return true;
+    const Field& fld = field();
+    const Space& sp = *fld.space;
+    const Mesh& mesh = a_s.mesh();
+    PointEvaluator ev(a_s);
+    Shape sh;
+    double gx[6], gy[6];
+    bool absorbing = false;
+    for (Source& src : a_sources) {
+        src.rhs.clear();
+        src.power.clear();
+        // The triangles it is in - one, the two of an edge it is on, those
+        // round a node -, each taken by its angle about the point (a small
+        // disc of the source's: a dipole's ∇N differs from one to the next).
+        struct In {
+            int t;
+            double xi, eta, angle;
+        };
+        std::vector<In> in;
+        const QPointF at = src.at / mesh.unitScale;
+        for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (d < 0 || !fld.domains[std::size_t(d)]) continue;
+            const auto& v = mesh.triangles[std::size_t(t)];
+            const QPointF p[3] = {mesh.nodes[std::size_t(v[0])], mesh.nodes[std::size_t(v[1])], mesh.nodes[std::size_t(v[2])]};
+            const double ax = p[1].x() - p[0].x(), bx = p[2].x() - p[0].x(), ay = p[1].y() - p[0].y(), by = p[2].y() - p[0].y();
+            const double det = ax * by - bx * ay;
+            if (det == 0) continue;
+            const double qx = at.x() - p[0].x(), qy = at.y() - p[0].y();
+            const double l[3] = {0, (qx * by - bx * qy) / det, (ax * qy - qx * ay) / det};
+            const double l0 = 1 - l[1] - l[2];
+            constexpr double tol = 1e-9;
+            if (std::min({l0, l[1], l[2]}) < -tol) continue;
+            const bool zero[3] = {std::abs(l0) <= tol, std::abs(l[1]) <= tol, std::abs(l[2]) <= tol};
+            const int zeros = int(zero[0]) + int(zero[1]) + int(zero[2]);
+            double angle = zeros == 0 ? 2 * M_PI : M_PI;
+            if (zeros >= 2) {
+                const int k = !zero[0] ? 0 : !zero[1] ? 1 : 2;   // the node it is at
+                const QPointF a = p[(k + 1) % 3] - p[k], b = p[(k + 2) % 3] - p[k];
+                angle = std::abs(std::atan2(a.x() * b.y() - a.y() * b.x(), a.x() * b.x() + a.y() * b.y()));
+            }
+            in.push_back({t, std::clamp(l[1], 0.0, 1.0), std::clamp(l[2], 0.0, 1.0), angle});
+        }
+        double total = 0;
+        for (const In& i : in) total += i.angle;
+        if (in.empty() || !(total > 0)) {
+            *error = tr("%1: its position (%2, %3 m) is in none of %4's domains").arg(src.name, formatNumber(src.at.x(), 6), formatNumber(src.at.y(), 6), a_node->name());
+            return false;
+        }
+        cd I = 0;
+        if (!a_hz) {
+            I = src.dipole ? J * omega * src.p[2] : src.I;
+            src.P0 = omega * Mu0 * std::norm(I) / 8;
+        } else {
+            src.P0 = Mu0 * omega * omega * omega * (std::norm(src.p[0]) + std::norm(src.p[1])) / 16;
+        }
+        for (const In& i : in) {
+            const double share = i.angle / total;
+            shapeAt(sp.order(), i.xi, i.eta, sh);
+            const Space::Map m = sp.map(i.t, i.xi, i.eta);
+            for (int n = 0; n < sh.count; ++n) Space::gradient(m, sh.dxi[n], sh.deta[n], gx[n], gy[n]);
+            const int* dofs = sp.dofs(i.t);
+            ev.moveTo(i.t, i.xi, i.eta);
+            const Media::At md = a_media.at(ev, mesh.domain[std::size_t(i.t)], omega, k0);
+            cd P[4], q;
+            planeCoefficients(md, P, &q);
+            if (q.imag() != 0 || P[0].imag() != 0 || P[1].imag() != 0 || P[2].imag() != 0 || P[3].imag() != 0) absorbing = true;
+            if (!a_hz) {
+                // Ez: -∇·(P∇u) - k0² q u = -jωµ0 J_z, J_z = I δ (I = jω pz a
+                // dipole's); its power -½ Re(Ez I*) at its point.
+                for (int n = 0; n < sh.count; ++n) {
+                    src.rhs.emplace_back(dofs[n], share * -J * omega * Mu0 * I * sh.n[n]);
+                    src.power.emplace_back(dofs[n], share * -0.5 * std::conj(I) * sh.n[n]);
+                }
+            } else {
+                // Hz: -∇·(P∇u) - k0² q u = [∇×(η J)]_z, J = jω p δ in the
+                // plane, η = ε_t⁻¹ (P its turn: [η_yy, -η_yx; -η_xy, η_xx]);
+                // its power -½ Re(E·J*), E = η ∇×(Hz ẑ)/(jωε0) (J's own
+                // part imaginary).
+                const cd exx = P[3], eyy = P[0], exy = -P[2], eyx = -P[1];
+                const cd ax = exx * src.p[0] + exy * src.p[1], ay = eyx * src.p[0] + eyy * src.p[1];
+                const cd vx = exx * std::conj(src.p[0]) + eyx * std::conj(src.p[1]), vy = exy * std::conj(src.p[0]) + eyy * std::conj(src.p[1]);
+                for (int n = 0; n < sh.count; ++n) {
+                    src.rhs.emplace_back(dofs[n], share * J * omega * (ax * gy[n] - ay * gx[n]));
+                    src.power.emplace_back(dofs[n], share * (gy[n] * vx - gx[n] * vy) / (2 * Eps0));
+                }
+            }
+        }
+        for (const auto& [dof, v] : src.rhs) {
+            const int qi = a_eq[std::size_t(dof)];
+            if (qi >= 0) F(qi) += v;
+        }
+    }
+    if (absorbing)
+        a_s.log << tr("Warning: %1: a point source in an absorbing medium (or a PML) - its near field's absorption, and its power, "
+                      "grow as the mesh is refined: put it in a lossless one")
+                       .arg(a_node->name());
+    return true;
+}
+
 void WaveProblem::setGlobals()
 {
     const QString p = field().tag + QLatin1Char('.');
+    if (!a_sources.empty()) {
+        double P = 0, P0 = 0;
+        for (const Source& src : a_sources) {
+            P += src.P;
+            P0 += src.P0;
+        }
+        const Dim perLength = Dim::of(1, 1, -3);
+        a_s.setGlobal(p + QStringLiteral("Psource"), P, perLength, tr("power the point sources give, per metre of z (-½ Re E·J*)"));
+        a_s.setGlobal(p + QStringLiteral("Psource0"), P0, perLength,
+                      tr("power the same sources give in a homogeneous medium, per metre of z (in 2D the same in every one)"));
+        a_s.setGlobal(p + QStringLiteral("Purcell"), P0 > 0 ? P / P0 : NaN, Dim(), tr("Psource over Psource0: the sources' power enhancement"));
+        for (const Port& port : a_ports)
+            a_s.setGlobal(p + QStringLiteral("Pport_") + port.name, port.out, perLength, tr("power the point sources send out by port %1, per metre of z").arg(port.name));
+    }
     for (int i = 0; i < int(a_ports.size()); ++i) {
         const QString a = a_ports[std::size_t(i)].name;
         a_s.setGlobal(p + QStringLiteral("beta_") + a, a_ports[std::size_t(i)].beta.real(), Dim::of(-1), tr("port %1's mode, its propagation constant").arg(a));

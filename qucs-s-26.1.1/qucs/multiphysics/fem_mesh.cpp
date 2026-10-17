@@ -1551,6 +1551,26 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
             s.periodic.push_back({sides->source, sides->destination, sides->shift});
         }
     }
+    // A point source's mesh four times finer about it than its domain's: a
+    // dipole's near field (1/r) is what its power is read from.
+    for (const Node* ph : model.physics()) {
+        if (!ph->enabled || ph->type != QLatin1String("waves")) continue;
+        for (const Node& f : ph->children) {
+            if (!f.enabled || (f.type != QLatin1String("waves/dipole") && f.type != QLatin1String("waves/linecurrent"))) continue;
+            Expression::Options options;
+            options.lengthUnit = topology.unitScale;
+            options.numbersAreLengths = true;
+            const QStringList at = f.pair(QStringLiteral("position"));
+            const Expression x = Expression::compile(at.value(0), parameters.scope, options);
+            const Expression y = Expression::compile(at.value(1), parameters.scope, options);
+            // (one that is not a constant said by its physics)
+            if (!x.isValid() || !x.isConstant() || !y.isValid() || !y.isConstant()) continue;
+            const QPointF p(x.constant(), y.constant());
+            const int d = topology.domainAt(p);
+            const double there = d >= 0 && d < int(s.domainMax.size()) ? std::min(s.hmax, s.domainMax[std::size_t(d)]) : s.hmax;
+            s.points.push_back({p.x(), p.y(), there / 4});
+        }
+    }
     if (error) *error = problems.join(QLatin1String("; "));
     return s;
 }

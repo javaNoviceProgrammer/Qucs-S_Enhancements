@@ -274,6 +274,13 @@ void GraphicsView::setHighlight(Level level, const QVector<int>& entities)
     redraw();
 }
 
+void GraphicsView::setMarks(const QVector<QPointF>& at)
+{
+    if (a_marks == at) return;
+    a_marks = at;
+    redraw();
+}
+
 void GraphicsView::setPickLevel(Level level)
 {
     a_pickLevel = level;
@@ -685,6 +692,16 @@ void GraphicsView::paintGeometry(QPainter& p, const Colors& c, bool faded)
         p.drawEllipse(at, r, r);
     }
     p.setBrush(Qt::NoBrush);
+    // A point source: a circle and its cross.
+    QPen mark(c.highlight, 2);
+    mark.setCosmetic(true);
+    p.setPen(mark);
+    for (const QPointF& m : a_marks) {
+        const QPointF at = toPixel(m);
+        p.drawEllipse(at, 7.0, 7.0);
+        p.drawLine(at - QPointF(5, 5), at + QPointF(5, 5));
+        p.drawLine(at - QPointF(5, -5), at + QPointF(5, -5));
+    }
 }
 
 QColor GraphicsView::domainFill(int d, const Colors& c, bool faded) const
