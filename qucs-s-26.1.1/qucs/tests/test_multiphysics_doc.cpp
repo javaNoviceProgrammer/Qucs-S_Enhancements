@@ -757,6 +757,17 @@ private slots:
         r = call("fem_edit", {{"action", "add"}, {"parent", "materials"}, {"type", "material:Silicon"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QCOMPARE(json(r).value("added").toObject().value("props").toObject().value("epsilonr").toString(), QStringLiteral("11.7"));
+        // Its semiconductor models' parameters its own: set (Auger's), not
+        // refused; a key no material has refused, the library's named.
+        // Solved with them: none said "not read" (a library Silicon said 59).
+        const QString silicon = json(r).value("added").toObject().value("tag").toString();
+        r = call("fem_edit", {{"action", "set"}, {"tag", silicon}, {"props", QJsonObject{{"caun", "3e-31[cm^6/s]"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_edit", {{"action", "set"}, {"tag", silicon}, {"props", QJsonObject{{"Cbgnx", "0.5"}}}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("no property Cbgnx") && text(r).contains("Cbgn, ") && text(r).contains("caun"), qPrintable(text(r)));
+        r = call("fem_solve");
+        QVERIFY2(!failed(r) && !text(r).contains("has no property"), qPrintable(text(r)));
         // A plot of an expression made and shown.
         r = call("fem_plot", {{"expression", "V"}, {"contours", true}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
