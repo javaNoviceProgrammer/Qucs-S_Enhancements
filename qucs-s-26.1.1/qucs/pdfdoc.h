@@ -165,7 +165,18 @@ private:
     QImage preview(int page);
     const QList<Link>& linksOn(int page);
     const Link* linkAt(QPoint pos);
-    const QList<QRectF>& charBoxes(int page);
+    /// What a page's text gives to find its characters, once a page: its
+    /// runs' boxes (a line's, or its part in one font) and two characters
+    /// with a box, its first and its last.
+    struct PageText {
+        QList<QRectF> runs;   // points
+        int first = -1, last = -1;
+        QPointF firstAt, lastAt;
+    };
+    const PageText& pageText(int page);
+    /// The character under \a point (points), by pdfium's hit test; -1 off
+    /// the text.
+    int hitChar(int page, QPointF point);
     /// The character at \a point, or the nearest (on its line first);
     /// -1 on a page without text. \a pastMiddle: the point is past its middle.
     int charAt(int page, QPointF point, bool* pastMiddle);
@@ -185,7 +196,15 @@ private:
     QHash<int, QImage> a_previews;
     int a_tilesRendered = 0;
     QHash<int, QList<Link>> a_links;
-    QHash<int, QList<QRectF>> a_charBoxes;   // points, by the text's index
+    QHash<int, PageText> a_pageTexts;
+    // charAt()'s last answers (the press point asked at each move of a drag).
+    struct CharAt {
+        int page;
+        QPointF point;
+        int index;
+        bool pastMiddle;
+    };
+    QList<CharAt> a_charAts;
 
     // A drag: a selection, a link pressed, the view panned.
     enum class Drag { None, Select, Link, Pan };
