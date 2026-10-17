@@ -12,6 +12,7 @@ set(FEM_SRCS
   fem_mesh.cpp
   fem_fe.cpp
   fem_solver.cpp
+  fem_sparse.cpp
   fem_scalar.cpp
   fem_elastic.cpp
   fem_magnetic.cpp
@@ -45,3 +46,24 @@ target_include_directories(fem SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party/gd
 target_link_libraries(fem PUBLIC Qt6::Core eigen cdt PRIVATE gdstk)
 # M_PI and its kin in <cmath> under -std=c++20 with MinGW and MSVC too.
 target_compile_definitions(fem PUBLIC _USE_MATH_DEFINES)
+# The sparse direct factorizations (fem_sparse.cpp): on macOS Accelerate's -
+# supernodal, multithreaded; its Cholesky from macOS 10.13, its LU from 15.5
+# where the SDK has it (Xcode 16.4 and later), told at run time; Eigen's
+# elsewhere and before.
+if(APPLE)
+  find_library(QUCS_ACCELERATE_FRAMEWORK Accelerate)
+  if(QUCS_ACCELERATE_FRAMEWORK)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_LIBRARIES ${QUCS_ACCELERATE_FRAMEWORK})
+    check_cxx_source_compiles("
+      #include <Accelerate/Accelerate.h>
+      int main() { SparseFactorization_t t = SparseFactorizationLU; return int(t) == 80 ? 0 : 1; }" QUCS_ACCELERATE_HAS_LU)
+    unset(CMAKE_REQUIRED_LIBRARIES)
+    target_link_libraries(fem PUBLIC ${QUCS_ACCELERATE_FRAMEWORK})
+    set_property(SOURCE fem_sparse.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUCS_ACCELERATE)
+    if(QUCS_ACCELERATE_HAS_LU)
+      set_property(SOURCE fem_sparse.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUCS_ACCELERATE_LU)
+    endif()
+    message(STATUS "Multiphysics sparse solver: Accelerate (its LU: ${QUCS_ACCELERATE_HAS_LU})")
+  endif()
+endif()

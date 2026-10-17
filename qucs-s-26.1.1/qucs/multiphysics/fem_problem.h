@@ -21,6 +21,7 @@
 #include <Eigen/SparseCholesky>
 #include <Eigen/SparseCore>
 #include <Eigen/SparseLU>
+#include "fem_sparse.h"
 
 #include <QSet>
 
@@ -75,8 +76,8 @@ public:
 private:
     int a_n = 0;
     Eigen::SparseMatrix<double> a_A;
-    std::unique_ptr<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>> a_ldlt;
-    std::unique_ptr<Eigen::SparseLU<Eigen::SparseMatrix<double>>> a_lu;
+    std::unique_ptr<SparseCholesky> a_ldlt;
+    std::unique_ptr<SparseLu<double>> a_lu;
     std::unique_ptr<Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower | Eigen::Upper,
                                              Eigen::IncompleteCholesky<double>>> a_cg;
     bool a_ldltAnalyzed = false, a_luAnalyzed = false;
@@ -104,7 +105,7 @@ public:
 private:
     int a_n = 0;
     Matrix a_A;
-    std::unique_ptr<Eigen::SparseLU<Matrix>> a_lu;
+    std::unique_ptr<SparseLu<std::complex<double>>> a_lu;
     bool a_analyzed = false;
     Eigen::SparseMatrix<double> a_real;
     std::unique_ptr<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>> a_ldlt;

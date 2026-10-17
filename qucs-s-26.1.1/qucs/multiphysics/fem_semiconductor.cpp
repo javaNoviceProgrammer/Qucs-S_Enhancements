@@ -3110,7 +3110,7 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         if (fixed[std::size_t(k)]) x(k) = target(k);
     Eigen::VectorXd F;
     std::vector<Eigen::Triplet<double>> trip;
-    Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+    SparseLu<double> lu;
     bool analyzed = false;
     int crawling = 0;   // steps in a row damped to less than 2 %
     int fading = 0;     // steps in a row the photons cut to a twentieth above threshold
@@ -3299,7 +3299,7 @@ bool SemiconductorProblem::equilibriumPoisson(Eigen::VectorXd& x, double fermi, 
             fixed[std::size_t(k)] = 1;
             x(a_iV[std::size_t(i)]) = a_bcV[std::size_t(i)];
         }
-    Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+    SparseLu<double> lu;
     bool analyzed = false;
     for (int it = 0; it < 200; ++it) {
         Eigen::VectorXd Fv;
@@ -3400,7 +3400,7 @@ void SemiconductorProblem::quasiStatic(const Eigen::VectorXd& x, double fermi, c
     Eigen::SparseMatrix<double> J, full;
     equilibriumSystem(x, fermi, local, vIndex, fixed, false, Fv, J);
     equilibriumSystem(x, fermi, local, vIndex, fixed, true, Fv, full);
-    Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+    SparseLu<double> lu;
     lu.compute(J);
     if (lu.info() != Eigen::Success) return;
     // Each gate at 1 V more, the other contacts held: each gate's charge.
@@ -4031,7 +4031,7 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
     for (int k = 0; k < A.outerSize(); ++k)
         for (Eigen::SparseMatrix<cd>::InnerIterator itr(A, k); itr; ++itr) itr.valueRef() /= rowMax(itr.row());
     A.makeCompressed();
-    Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
+    SparseLu<cd> lu;
     lu.analyzePattern(A);
     lu.factorize(A);
     if (lu.info() != Eigen::Success) {

@@ -127,7 +127,7 @@ private:
     bool a_linear = false, a_matrixVaries = false;
     // The matrix factored: for which mass, unknowns and pattern (kept
     // across a step in time's solves, and a nonlinear one's analysis).
-    std::unique_ptr<Eigen::SparseLU<Eigen::SparseMatrix<double>>> a_lu;
+    std::unique_ptr<SparseLu<double>> a_lu;
     bool a_factored = false;
     int a_factorizations = 0;
     double a_factoredMass = -1;
@@ -550,6 +550,46 @@ void PdeProblem::assemble(double mass, const std::vector<double>* history, Eigen
         double w = 0;
         int d = -1;
     };
+    // Which of a domain's expressions (each equation's gx, gy and f) each
+    // nudge of the Jacobian's can change: those that read the component
+    // nudged - its value, or that derivative -, or a derived variable or a
+    // coefficient (what those read is not known here). The others are not
+    // evaluated again: the same numbers. (Every one was, at every nudge: a
+    // 681 054-unknown PDE's assembly 2.3 s, most of its solve once its
+    // factorization took 0.2.)
+    const int nudges = a_system * which;
+    std::vector<std::vector<char>> moves(a_eqs.size());
+    if (jac) {
+        const auto& defs = a_s.definitions();
+        using K = Solution::VariableDef;
+        auto depends = [&defs, this](const Expression& e, int c, int wch) {
+            if (!e.isValid() || e.isConstant()) return false;
+            for (int slot : e.variables()) {
+                const K& d = defs[std::size_t(slot)];
+                if (d.kind == K::Derived || d.kind == K::Coefficient) return true;
+                if (d.field != a_fi || d.component != c) continue;
+                if (d.kind == K::Value && wch == 0) return true;
+                if ((d.kind == K::GradX || d.kind == K::GradY || d.kind == K::GradNorm) && wch != 0
+                    && (a_line || d.kind == K::GradNorm || (d.kind == K::GradX) == (wch == 1)))
+                    return true;
+            }
+            return false;
+        };
+        for (std::size_t dm = 0; dm < a_eqs.size(); ++dm) {
+            const Equations& q = a_eqs[dm];
+            if (!q.on) continue;
+            std::vector<char>& m = moves[dm];
+            m.assign(std::size_t(nudges) * std::size_t(3 * a_vars), 0);
+            for (int c = 0; c < a_system; ++c)
+                for (int w = 0; w < which; ++w)
+                    for (int k = 0; k < a_vars; ++k) {
+                        const std::size_t at = std::size_t(c * which + w) * std::size_t(3 * a_vars) + std::size_t(3 * k);
+                        m[at] = depends(q.gx[std::size_t(k)], c, w);
+                        m[at + 1] = depends(q.gy[std::size_t(k)], c, w);
+                        m[at + 2] = depends(q.f[std::size_t(k)], c, w);
+                    }
+        }
+    }
     auto contribute = [&](PointEvaluator& ev, const Point& pt, Eigen::VectorXd& Fl, std::vector<Eigen::Triplet<double>>& Jl,
                           std::vector<Eigen::Triplet<double>>& Ml) {
         const Equations& q = a_eqs[std::size_t(pt.d)];
@@ -644,8 +684,20 @@ void PdeProblem::assemble(double mass, const std::vector<double>* history, Eigen
                 // problem's whole scale, its rounding 1e-16 - not 1e-9, a
                 // small nudge's - and one solve exact.)
                 const double h = (a_linear ? 1.0 : 1e-7) * std::max(std::abs(base), sc);
+                const std::vector<char>& mv = moves[std::size_t(pt.d)];
+                const char* move = mv.empty() ? nullptr : &mv[std::size_t(c * which + wch) * std::size_t(3 * a_vars)];
                 ev.shift(a_fi, c, wch, h);
-                values(gx2, gy2, src2);
+                for (int k = 0; k < a_vars; ++k) {
+                    if (!move || move[3 * k] || move[3 * k + 1]) {
+                        const double vx = ev.eval(q.gx[std::size_t(k)]), vy = ev.eval(q.gy[std::size_t(k)]);
+                        gx2[std::size_t(k)] = a_line ? vx * dir.x() + vy * dir.y() : vx;
+                        gy2[std::size_t(k)] = a_line ? 0 : vy;
+                    } else {
+                        gx2[std::size_t(k)] = gx[std::size_t(k)];
+                        gy2[std::size_t(k)] = gy[std::size_t(k)];
+                    }
+                    src2[std::size_t(k)] = !move || move[3 * k + 2] ? ev.eval(q.f[std::size_t(k)]) : src[std::size_t(k)];
+                }
                 ev.shift(a_fi, c, wch, 0);
                 for (int k = 0; k < a_vars; ++k) {
                     const double dgx = (gx2[std::size_t(k)] - gx[std::size_t(k)]) / h, dgy = (gy2[std::size_t(k)] - gy[std::size_t(k)]) / h;
@@ -861,7 +913,7 @@ bool PdeProblem::factor(const Eigen::SparseMatrix<double>& J, QString* error)
     const bool same = a_lu && Eigen::Index(a_outer.size()) == n + 1 && std::equal(a_outer.begin(), a_outer.end(), J.outerIndexPtr())
                       && Eigen::Index(a_inner.size()) == J.nonZeros() && std::equal(a_inner.begin(), a_inner.end(), J.innerIndexPtr());
     if (!same) {
-        a_lu = std::make_unique<Eigen::SparseLU<Eigen::SparseMatrix<double>>>();
+        a_lu = std::make_unique<SparseLu<double>>();
         a_lu->analyzePattern(J);
         a_outer.assign(J.outerIndexPtr(), J.outerIndexPtr() + n + 1);
         a_inner.assign(J.innerIndexPtr(), J.innerIndexPtr() + J.nonZeros());
@@ -1009,7 +1061,7 @@ int PdeProblem::solveModes(const SolveOptions& o, int count, double guess, QStri
     const Eigen::SparseMatrix<double> A = -J;
     Eigen::SparseMatrix<double> shifted = A - guess * M;
     shifted.makeCompressed();
-    Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+    SparseLu<double> lu;
     lu.analyzePattern(shifted);
     lu.factorize(shifted);
     if (lu.info() != Eigen::Success) {

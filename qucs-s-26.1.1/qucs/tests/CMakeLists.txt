@@ -88,6 +88,7 @@ function(qucs_add_fem_test name)
 endfunction()
 
 qucs_add_fem_test(test_fem_engine)
+qucs_add_fem_test(test_fem_sparse)
 qucs_add_fem_test(test_fem_physics)
 qucs_add_fem_test(test_fem_magnetics)
 qucs_add_fem_test(test_fem_layout)
