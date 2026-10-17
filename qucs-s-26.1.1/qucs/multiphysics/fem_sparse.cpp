@@ -285,6 +285,14 @@ int acceleratedFrom()
     return directSolver() == DirectSolver::Accelerate ? 0 : 20000;
 }
 
+int acceleratedFromAtOnce()
+{
+    bool ok = false;
+    const int from = qgetenv("QUCS_FEM_ACCELERATE_FROM").toInt(&ok);
+    if (ok && from >= 0) return from;
+    return directSolver() == DirectSolver::Accelerate ? 0 : 50000;
+}
+
 bool acceleratedLu()
 {
     return directSolver() != DirectSolver::Eigen && luHere();
@@ -393,6 +401,7 @@ template <typename Scalar>
 struct SparseLu<Scalar>::Impl {
     bool accelerate = false;
     bool conditionChecked = false;
+    bool manyAtOnce = false;   // setManyAtOnce()
     int analyses = 0;
     Eigen::ComputationInfo info = Eigen::InvalidInput;
     std::string error;
@@ -522,7 +531,7 @@ template <typename Scalar> void SparseLu<Scalar>::analyzePattern(const Matrix& g
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) d.release();
 #endif
-    d.accelerate = acceleratedLu() && given.rows() == given.cols() && given.rows() >= acceleratedFrom();
+    d.accelerate = acceleratedLu() && given.rows() == given.cols() && given.rows() >= (d.manyAtOnce ? acceleratedFromAtOnce() : acceleratedFrom());
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
     if (d.accelerate) {
         d.eigen.reset();
@@ -622,6 +631,11 @@ template <typename Scalar> void SparseLu<Scalar>::factorize(const Matrix& given)
         d.info = Eigen::NumericalIssue;
         d.error = checkText(check);
     }
+}
+
+template <typename Scalar> void SparseLu<Scalar>::setManyAtOnce(bool on)
+{
+    a_impl->manyAtOnce = on;
 }
 
 template <typename Scalar> void SparseLu<Scalar>::setSingularChecked(bool on)

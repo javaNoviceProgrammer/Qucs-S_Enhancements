@@ -231,6 +231,13 @@ private slots:
         // (At 1 mW the 1 µm one's germanium filled with its own carriers,
         // 4.5e16 cm⁻³, the field screened to 2 kV/cm: 2.5 GHz.) Release
         // builds only: some 10 s there, minutes sanitized.
+        // Its heterojunctions graded over an element: its holes cross from
+        // the germanium into the p⁺⁺ silicon at 5e6 A/m², over the valence
+        // band's 0.48 eV step - abrupt, drift and diffusion (or emission over
+        // it) would want 1e21 per cm³ of them at the interface: 66 nA of the
+        // 31 µA, where the device measures 1.16 A/W, by tunnelling through
+        // the silicon's few nanometres of depletion and the interface's
+        // intermixing, which graded takes for it.
         if (slowBuild()) QSKIP("a benchmark: Release builds only");
         auto device = [&](const QString& w, const QString& L, const QString& va, const QString& freqs) {
             return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
@@ -247,7 +254,7 @@ private slots:
                 "materials": [{"material": "Silicon dioxide", "selection": {"only": ["box", "cladding"]}},
                               {"material": "Silicon", "selection": {"only": ["pplus", "nplus", "seed"]}},
                               {"material": "Germanium on silicon", "selection": {"only": ["ge"]}}],
-                "physics": [{"type": "semiconductor", "tag": "semi", "selection": {"only": ["pplus", "nplus", "seed", "ge"]}, "features": [
+                "physics": [{"type": "semiconductor", "tag": "semi", "heterojunctions": "element", "selection": {"only": ["pplus", "nplus", "seed", "ge"]}, "features": [
                   {"type": "model", "saturation": true, "vsatn": "6e6[cm/s]", "vsatp": "6e6[cm/s]", "selection": {"only": ["ge"]}},
                   {"type": "model", "mobility": "doping", "saturation": true, "selection": {"only": ["pplus", "nplus", "seed"]}},
                   {"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pplus"]}},

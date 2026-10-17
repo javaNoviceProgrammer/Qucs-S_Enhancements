@@ -457,7 +457,42 @@ LayoutView::Colors LayoutView::colors() const
 void LayoutView::invalidate()
 {
     a_dirty = true;
+    a_countStale = true;
     update();
+}
+
+RenderOptions LayoutView::renderOptions() const
+{
+    const Colors c = colors();
+    RenderOptions o;
+    o.cell = a_cell;
+    o.depth = a_depth;
+    o.device = QRectF(rect());
+    o.toDevice = viewTransform(a_center, a_scale, o.device);
+    o.styles = &a_styles;
+    o.labels = a_labels;
+    o.frames = c.frames;
+    o.text = c.ink;
+    if (a_adapted) o.background = c.background;
+    return o;
+}
+
+const RenderStats& LayoutView::lastStats() const
+{
+    if (a_countStale || a_countedSize != size()) {
+        a_counted = a_layout && a_cell >= 0 ? qucs_s::layout::countDrawn(*a_layout, renderOptions()) : RenderStats();
+        a_countStale = false;
+        a_countedSize = size();
+    }
+    return a_counted;
+}
+
+bool LayoutView::drawnInPart() const
+{
+#ifdef QUCS_GPU_VIEW
+    if (a_canvas && !a_canvas->failed() && !a_canvas->tooLarge()) return false;
+#endif
+    return a_stats.incomplete;
 }
 
 void LayoutView::paintEvent(QPaintEvent*)
@@ -637,12 +672,8 @@ void LayoutView::paintFrame(QPainter& p, LayoutGl* gl)
         drawn = true;
         if (a_layout && a_cell >= 0) {
             if (a_grid) paintGrid(p, c);
-            RenderStats stats;
-            drawn = gl->drawLayout(p, &stats);
-            if (drawn) {
-                a_stats = stats;
-                a_dirty = false;
-            }
+            drawn = gl->drawLayout(p, nullptr);
+            if (drawn) a_dirty = false;
         }
     }
 #else
@@ -655,18 +686,14 @@ void LayoutView::paintFrame(QPainter& p, LayoutGl* gl)
         if (a_layout && a_cell >= 0) {
             QPainter cached(&a_cache);
             if (a_grid) paintGrid(cached, c);
-            RenderOptions o;
-            o.cell = a_cell;
-            o.depth = a_depth;
-            o.device = QRectF(rect());
-            o.toDevice = viewTransform(a_center, a_scale, o.device);
-            o.styles = &a_styles;
-            o.labels = a_labels;
-            o.frames = c.frames;
-            o.text = c.ink;
-            if (a_adapted) o.background = c.background;
-            a_stats = qucs_s::layout::render(cached, *a_layout, o);
+            a_stats = qucs_s::layout::render(cached, *a_layout, renderOptions());
             ++a_renders;
+            // (what lastStats() would count: the same view)
+            a_counted = a_stats;
+            a_countStale = false;
+            a_countedSize = size();
+        } else {
+            a_stats = RenderStats();
         }
         a_dirty = false;
     }
@@ -1425,7 +1452,7 @@ void LayoutDoc::buildUi()
     connect(a_view, &LayoutView::selectionChanged, this, &LayoutDoc::updateInfo);
     connect(a_view, &LayoutView::rulersChanged, this, &LayoutDoc::updateInfo);
     connect(a_view, &LayoutView::viewChanged, this, [this] {
-        if (a_view->lastStats().incomplete) updateInfo();
+        if (a_view->drawnInPart()) updateInfo();
     });
     connect(a_view, &LayoutView::cellRequested, this, [this](int cell) { showCell(cell); });
     connect(a_view, &LayoutView::menuRequested, this, [this](QPoint at) {
@@ -1927,7 +1954,7 @@ void LayoutDoc::updateInfo()
                             counted(a_layout->labelCount, QT_TRANSLATE_NOOP("LayoutDoc", "%1 text"), QT_TRANSLATE_NOOP("LayoutDoc", "%1 texts")),
                             counted(quint64(a_layout->layers.size()), QT_TRANSLATE_NOOP("LayoutDoc", "%1 layer"), QT_TRANSLATE_NOOP("LayoutDoc", "%1 layers")),
                             micrometres(*a_layout, a_layout->dbu));
-    if (a_view->lastStats().incomplete) text += tr(" - drawn in part: too much in sight, zoom in");
+    if (a_view->drawnInPart()) text += tr(" - drawn in part: too much in sight, zoom in");
     if (!a_layout->warnings.isEmpty()) text += tr(" - %1").arg(a_layout->warnings.first());
     a_info->setText(text);
     a_info->setToolTip(a_layout->warnings.join(QLatin1Char('\n')));

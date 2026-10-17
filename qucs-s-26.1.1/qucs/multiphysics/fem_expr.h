@@ -242,6 +242,16 @@ private:
 std::optional<double> evaluateConstant(const QString& text, const Scope& scope, const Dim& expected,
                                        QString* error = nullptr, QString* warning = nullptr);
 
+/// The physical constants expressions know, each with its unit: "eps0
+/// (vacuum permittivity, F/m), ..., q0 or e_const (the elementary charge,
+/// C), ..." - for what describes expressions.
+QString constantsText();
+/// What of \a expression is a constant's value as a bare number - a
+/// number with no unit, its result's unit then wrong (1.602e-19*semi.R an
+/// integral in Hz, not A): "1.602e-19 is q0's value without its unit (the
+/// elementary charge, C): q0 gives the result its unit", one for each.
+QStringList bareConstants(const QString& expression);
+
 } // namespace qucs_s::fem
 
 #endif // QUCS_FEM_EXPR_H

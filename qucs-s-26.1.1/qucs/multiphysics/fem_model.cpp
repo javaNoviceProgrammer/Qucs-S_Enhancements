@@ -224,7 +224,8 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("parameters"), tr("Parameters"), QString(), QStringLiteral("parameters"), Level::None, {rows}, {},
              {}, true, true, QString(),
              tr("Named values, each an expression of those above it: w = 3[mm]. Geometry, materials and physics use them; "
-                "a sweep changes them.")});
+                "a sweep changes them. The constants each expression knows, with their units: %1.")
+                 .arg(constantsText())});
     }
     add({QStringLiteral("analytic"), tr("Analytic Function"), QStringLiteral("function"), QStringLiteral("function"), Level::None,
          {text(QStringLiteral("name"), tr("Function name"), QStringLiteral("fn")),
@@ -1278,6 +1279,16 @@ QList<NodeKind> makeKinds()
                        tr("A depletion region's edge wants a few Debye lengths' worth: 1 nm is 4 at 1e18 per cm³. A plain number is metres")),
                   QStringLiteral("space=1d")),
           expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere")),
+          choice(QStringLiteral("heterojunctions"), tr("Heterojunctions"), {QStringLiteral("abrupt"), QStringLiteral("element")},
+                 {tr("Abrupt: the bands' step at the interface"), tr("Graded over an element: the step along the wider gap's first")},
+                 QStringLiteral("abrupt"),
+                 tr("Abrupt: each side's carriers on its own bands up to the interface, their quasi-Fermi levels continuous across "
+                    "it - drift-diffusion's heterojunction, the same with the mesh refined; a step's depletion and accumulation want "
+                    "elements of a few Debye lengths there (1 nm at 1e19 per cm³). Graded over an element: the step spread along "
+                    "the wider gap's first edges, a node on the interface the narrower gap's carriers over its whole box - an "
+                    "intermixed interface the mesh's width, the current through it the mesh's (a laser's at 1.7 V from 2.2 mA to "
+                    "77 µA as its rows were refined); a valence band's step a hole current crosses at high density (germanium's "
+                    "holes into p⁺ silicon, its 0.5 eV) graded away, as tunnelling and intermixing make a real one's")),
           spatial(QStringLiteral("TL"), tr("Lattice temperature for the mobilities"), QStringLiteral("K"), QString(),
                   tr("Where it varies - a heat physics' ht.T, its source semi.H: self-heating. The mobilities (TL/300 K)^-ζ there (each "
                      "material model's ζ); the carriers' statistics at T. Empty: none")) },
@@ -1294,7 +1305,7 @@ QList<NodeKind> makeKinds()
          tr("Drift and diffusion of electrons and holes: Poisson's equation for the potential V, continuity for the carriers n and "
             "p (Boltzmann's statistics, or Fermi-Dirac's; band gap narrowing, dopants ionized in part, if the material model asks), "
             "their currents Scharfetter and Gummel's along each edge of linear triangles - across heterojunctions too, the bands' "
-            "offsets by Anderson's rule (χ, Eg), a node on one the narrower gap's. Mobilities by doping, at an insulator's surface (Lombardi) and saturated, warmed "
+            "offsets by Anderson's rule (χ, Eg), abrupt at the interface (or graded over an element). Mobilities by doping, at an insulator's surface (Lombardi) and saturated, warmed "
             "by a lattice temperature TL; recombination, impact ionization, band-to-band tunnelling, interface traps, light's "
             "pairs; the carriers' heat semi.H for a heat physics; a quantum wells physics' states for its carriers "
             "(Schrödinger-Poisson). Domains whose material has no band gap are insulators: the potential alone. Solved by "

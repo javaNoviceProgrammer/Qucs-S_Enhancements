@@ -138,7 +138,15 @@ public:
     /// selected already); false when there is nothing.
     bool selectAt(QPointF pixel);
 
-    const RenderStats& lastStats() const { return a_stats; }
+    /// What the view draws as it stands - shapes, dots, frames, texts in
+    /// sight -, the CPU's picture's counts: counted again when the view
+    /// changed since (the GPU's canvas draws every shape, painted when it
+    /// will: its counts are those of the CPU's picture of the same view).
+    const RenderStats& lastStats() const;
+    /// Whether the picture shown is drawn in part (the CPU's budget ran
+    /// out; the GPU draws all - past its own budget the CPU draws). Not
+    /// counted again: the last picture's.
+    bool drawnInPart() const;
     int renders() const { return a_renders; }
     /// The view drawn now, as the screen shows it.
     QImage picture();
@@ -213,8 +221,13 @@ private:
     bool a_dirty = true;
     LayoutGl* a_canvas = nullptr;
     bool a_gpuBroken = false;
-    RenderStats a_stats;
+    RenderStats a_stats;        // the CPU's last picture's
+    mutable RenderStats a_counted;   // lastStats(): the view as it stands
+    mutable bool a_countStale = true;
+    mutable QSize a_countedSize;
     int a_renders = 0;
+    /// The CPU's drawing of the view as it stands.
+    RenderOptions renderOptions() const;
 
     QList<QLineF> a_rulers;
     bool a_measuring = false;
