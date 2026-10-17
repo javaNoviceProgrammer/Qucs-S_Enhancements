@@ -101,6 +101,9 @@ public:
     void setHighlight(Level level, const QVector<int>& entities);
     Level highlightLevel() const { return a_highlightLevel; }
     const QVector<int>& highlighted() const { return a_highlight; }
+    /// Places marked (the geometry's unit): a chosen point source's.
+    void setMarks(const QVector<QPointF>& at);
+    const QVector<QPointF>& marks() const { return a_marks; }
     /// What a click picks (Level::None: nothing; the view is panned).
     void setPickLevel(Level level);
     Level pickLevel() const { return a_pickLevel; }
@@ -196,6 +199,7 @@ private:
 
     Level a_highlightLevel = Level::None;
     QVector<int> a_highlight;
+    QVector<QPointF> a_marks;
     Level a_pickLevel = Level::None;
     int a_hovered = -1;
 

@@ -1142,12 +1142,13 @@ QList<NodeKind> makeKinds()
                  QStringLiteral("2"))},
          {QStringLiteral("waves/wave"), QStringLiteral("waves/pml"), QStringLiteral("waves/pec"), QStringLiteral("waves/pmc"),
           QStringLiteral("waves/scattering"), QStringLiteral("waves/port"), QStringLiteral("waves/periodic"),
-          QStringLiteral("waves/periodicport")},
+          QStringLiteral("waves/periodicport"), QStringLiteral("waves/dipole"), QStringLiteral("waves/linecurrent")},
          {QStringLiteral("waves/wave"), QStringLiteral("waves/pec")}, false, false, QStringLiteral("ewfd"),
          tr("Waves in the plane at each frequency, Ez or Hz: -∇·(P ∇u) - k0² q u = 0. Ports give the S-parameters "
             "(ewfd.S21, ewfd.S21dB) and the reflectance, transmittance and absorptance (ewfd.R, ewfd.T, ewfd.A); a unit "
             "cell's Periodic Condition and Periodic Ports a grating's or a film's, order by order (ewfd.R_0, ewfd.T_n1); "
-            "scattering boundaries and PMLs let waves out.")});
+            "scattering boundaries and PMLs let waves out. A Point Dipole or a Line Current radiates from inside: ewfd.Psource "
+            "the power it gives, ewfd.Purcell that over the same source's in a homogeneous medium.")});
     waveEquation(QStringLiteral("waves"), tr("Wave Equation, Electric"));
     add({QStringLiteral("resonator"), tr("Electromagnetic Waves, Eigenfrequency"), QStringLiteral("physics"), QStringLiteral("emr"), Level::Domain,
          {selectionProp(),
@@ -1203,6 +1204,34 @@ QList<NodeKind> makeKinds()
             "each diffraction order (m: kt = kF + 2πm/L) taken out without reflection, the near field's orders too. "
             "ewfd.R, ewfd.T, ewfd.A; each order that propagates, ewfd.R_m and ewfd.T_m (m written n1 for -1); the zeroth's "
             "fields, ewfd.r_0 and ewfd.t_0 (real and imaginary parts). Ez: TE (s), Hz: TM (p).")});
+    // Point sources (a line along z in the plane's model): no selection - a
+    // place of their own.
+    add({QStringLiteral("waves/dipole"), tr("Point Dipole"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::None,
+         {pair(QStringLiteral("position"), tr("Position"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0"),
+               tr("Where it is, in the geometry's unit (or with one: 330[nm]) - inside the physics' domains")),
+          expr(QStringLiteral("px"), tr("Dipole moment, x"), QStringLiteral("C"), QStringLiteral("1e-20[C]"),
+               tr("Per metre along z (C m/m): in the plane, it radiates Hz waves (Field out of the plane: Magnetic)")),
+          expr(QStringLiteral("py"), tr("Dipole moment, y"), QStringLiteral("C"), QStringLiteral("0[C]")),
+          expr(QStringLiteral("pz"), tr("Dipole moment, z"), QStringLiteral("C"), QStringLiteral("0[C]"),
+               tr("Out of the plane, it radiates Ez waves (Field out of the plane: Electric) - as a line current jω pz")),
+          expr(QStringLiteral("phase"), tr("Phase"), QStringLiteral("angle"), QStringLiteral("0"), tr("Degrees"))},
+         {}, {}, false, false, QStringLiteral("dip"),
+         tr("An oscillating dipole at a point of the plane - a line of them along z -, its current jω p: in the plane (px, py) "
+            "for Hz, out of it (pz) for Ez; the other polarization's part left out, said. ewfd.Psource the power it gives "
+            "(W per metre of z, -½ Re E·J*), ewfd.Psource0 the same dipole's in any homogeneous medium (in 2D the same in "
+            "every one: µ0 ω³ |p|²/16 in the plane, /8 out of it), ewfd.Purcell their ratio; ports not fed take what reaches "
+            "them (ewfd.Pport_<name>). In a lossless medium: in an absorbing one its near field's absorption grows as the mesh "
+            "is refined, said. The mesh about it four times finer than its domain's.")});
+    add({QStringLiteral("waves/linecurrent"), tr("Line Current"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::None,
+         {pair(QStringLiteral("position"), tr("Position"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0"),
+               tr("Where it is, in the geometry's unit (or with one: 330[nm]) - inside the physics' domains")),
+          expr(QStringLiteral("I"), tr("Current"), QStringLiteral("A"), QStringLiteral("1[A]"), tr("Along z: it radiates Ez waves")),
+          expr(QStringLiteral("phase"), tr("Phase"), QStringLiteral("angle"), QStringLiteral("0"), tr("Degrees"))},
+         {}, {}, false, false, QStringLiteral("lc"),
+         tr("A filament of current along z through a point of the plane: Ez waves (Field out of the plane: Electric). "
+            "ewfd.Psource the power it gives (W per metre of z), ewfd.Psource0 the same current's in a homogeneous medium "
+            "(ω µ0 |I|²/8, the same in every one in 2D), ewfd.Purcell their ratio; ports not fed take what reaches them "
+            "(ewfd.Pport_<name>). The mesh about it four times finer than its domain's.")});
     add({QStringLiteral("waves/port"), tr("Port"), QStringLiteral("ewfd"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Port name"), QStringLiteral("1")),
           flag(QStringLiteral("excite"), tr("Fed"), true, tr("Swept: each port fed in turn, the others matched - the S-matrix"))},

@@ -808,6 +808,67 @@ private slots:
         return find(m.root);
     }
 
+    // A point source: where it is marked in the Graphics view when it is
+    // chosen; solved by the tools, its power and Purcell factor told.
+    void aPointSourceMarkedAndSolved()
+    {
+        const QString file = path(QStringLiteral("dipole_box.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "x0", "expression": "137[nm]"}],
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "label": "pml", "base": "center", "size": ["6", "6"]},
+                         {"type": "rectangle", "label": "box", "base": "center", "size": ["4", "4"]}, {"type": "form union"}],
+            "materials": [{"label": "air", "n": "1", "selection": {"all": true}}],
+            "physics": [{"type": "waves", "tag": "ewfd", "polarization": "hz", "features": [
+              {"type": "pml", "selection": {"only": ["pml"]}},
+              {"type": "dipole", "label": "Emitter", "position": ["x0", "0.071"], "px": "1e-20[C]"}]}],
+            "mesh": {"size": "fine", "custom": true, "hmax": "0.1"}}],
+          "studies": [{"type": "study", "label": "Study 1", "steps": [{"type": "frequency", "frequencies": "299.792458[THz]"}]}]})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->view()->marks().isEmpty());
+        const QString dipole = tagOf(doc->model(), QStringLiteral("waves/dipole"), QStringLiteral("Emitter"));
+        QVERIFY(!dipole.isEmpty());
+        panel()->selectNode(dipole);
+        QCOMPARE(doc->view()->marks().size(), 1);
+        QVERIFY(std::abs(doc->view()->marks().first().x() - 0.137) < 1e-12);
+        QVERIFY(std::abs(doc->view()->marks().first().y() - 0.071) < 1e-12);
+        // Drawn there: the view with it and without it (nothing else
+        // changed) differ about it, and only there.
+        GraphicsView* view = doc->view();
+        view->fit();
+        const QImage drawn = view->grab().toImage();
+        const QPoint at = (view->toPixel(view->marks().first()) * drawn.devicePixelRatio()).toPoint();
+        const QVector<QPointF> marks = view->marks();
+        view->setMarks({});
+        const QImage unmarked = view->grab().toImage();
+        view->setMarks(marks);
+        int near = 0, far = 0;
+        for (int y = 0; y < drawn.height(); ++y)
+            for (int x = 0; x < drawn.width(); ++x)
+                if (drawn.pixel(x, y) != unmarked.pixel(x, y)) ++(std::abs(x - at.x()) <= 12 * drawn.devicePixelRatio() && std::abs(y - at.y()) <= 12 * drawn.devicePixelRatio() ? near : far);
+        QVERIFY2(near > 20 && far == 0, qPrintable(QStringLiteral("%1 near, %2 far").arg(near).arg(far)));
+        panel()->selectNode(QStringLiteral("ewfd"));
+        QVERIFY(doc->view()->marks().isEmpty());
+        // Moved by its parameter: the mark follows.
+        QVERIFY(doc->editNode(dipole, [](qucs_s::fem::Node& n) {
+            n.props.insert(QStringLiteral("position"), QJsonArray{QStringLiteral("-1"), QStringLiteral("x0*2")});
+        }, QStringLiteral("position")));
+        panel()->selectNode(dipole);
+        QCOMPARE(doc->view()->marks().size(), 1);
+        QVERIFY(std::abs(doc->view()->marks().first().x() + 1) < 1e-12 && std::abs(doc->view()->marks().first().y() - 0.274) < 1e-12);
+        // Solved by the tools: its power and the Purcell factor.
+        const QJsonObject r = call("fem_solve");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject globals = json(r).value("globals").toObject();
+        for (const char* g : {"ewfd.Psource", "ewfd.Psource0", "ewfd.Purcell"}) QVERIFY2(globals.contains(QLatin1String(g)), qPrintable(text(r)));
+        const double purcell = globals.value("ewfd.Purcell").toString().toDouble();
+        QVERIFY2(std::abs(purcell - 1) < 0.01, qPrintable(globals.value("ewfd.Purcell").toString()));
+    }
+
     // A study in time: its plot at the last output time, a box to choose
     // another (the plot group's setting, a step of Undo), Derived Values at
     // the time it asks for.

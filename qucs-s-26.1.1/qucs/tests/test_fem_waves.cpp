@@ -956,6 +956,233 @@ private slots:
         QVERIFY2(s11 < 0.02, qPrintable(QString::number(s11)));
     }
 
+    // ---- Point sources: a line current, a dipole
+
+    /// A box \a across µm wide of index \a n, a PML a quarter as deep round
+    /// it, at λ0 1 µm; \a features its sources (JSON items, each led by a
+    /// comma).
+    static QByteArray sourceBox(const QString& pol, double n, const QString& features, double hmax, double across = 4)
+    {
+        return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "pml", "base": "center", "size": ["%5", "%5"]},
+                         {"type": "rectangle", "name": "box", "base": "center", "size": ["%6", "%6"]},
+                         {"type": "form union"}],
+            "materials": [{"label": "medium", "n": "%2", "selection": {"all": true}}],
+            "physics": [{"type": "waves", "tag": "ewfd", "polarization": "%1", "features": [
+              {"type": "pml", "selection": {"only": ["pml"]}} %3]}],
+            "mesh": {"size": "fine", "custom": true, "hmax": "%4"}}],
+          "studies": [{"type": "study", "steps": [{"type": "frequency", "frequencies": "299.792458[THz]"}]}]})json")
+            .arg(pol)
+            .arg(n)
+            .arg(features)
+            .arg(hmax)
+            .arg(1.5 * across)
+            .arg(across)
+            .toUtf8();
+    }
+
+    void pointSources()
+    {
+        // In 2D a source's power is the same in every homogeneous medium: a
+        // line current's ω µ0 |I|²/8, a dipole's µ0 ω³ |p|²/8 out of the
+        // plane (a line current jω pz), /16 in it - the PML taking what it
+        // gives. At a point inside a triangle, on a node, in glass. The mesh
+        // four times finer about a source: the dipole in the plane's power
+        // is read from its near field (1/r) - without it, in glass on a
+        // node at hmax 0.05 µm, 4.2 % high; 0.39 % with it. (A sanitized
+        // build: a box half as wide, a mesh twice as coarse, the last case
+        // and the two at 0° left out - CI's sanitized Eigen took some 100 s
+        // a solve at hmax 0.08 µm in the larger box.)
+        const bool slow = slowBuild();
+        const double hmax = slow ? 0.1 : 0.05, across = slow ? 2 : 4, omega = 2 * M_PI * 299.792458e12, mu0 = 1.25663706127e-6;
+        struct Case {
+            const char* what;
+            QString pol;
+            double n;
+            QString feature;
+            double P0;
+        };
+        const double p = 1e-20, I = 1;
+        const std::vector<Case> cases = {
+            {"line current", QStringLiteral("ez"), 1,
+             QStringLiteral(R"(, {"type": "linecurrent", "position": ["0.137", "0.071"], "I": "1[A]"})"), omega * mu0 * I * I / 8},
+            {"dipole out of the plane", QStringLiteral("ez"), 1,
+             QStringLiteral(R"(, {"type": "dipole", "position": ["0.137", "0.071"], "px": "0[C]", "pz": "1e-20[C]"})"),
+             mu0 * omega * omega * omega * p * p / 8},
+            {"dipole in the plane", QStringLiteral("hz"), 1,
+             QStringLiteral(R"(, {"type": "dipole", "position": ["0.137", "0.071"], "px": "1e-20[C]"})"), mu0 * omega * omega * omega * p * p / 16},
+            {"dipole in the plane in glass, on the centre, along xy", QStringLiteral("hz"), 2,
+             QStringLiteral(R"(, {"type": "dipole", "position": ["0", "0"], "px": "0.6e-20[C]", "py": "0.8e-20[C]", "phase": "45"})"),
+             mu0 * omega * omega * omega * p * p / 16},
+            {"line current in glass, on the centre", QStringLiteral("ez"), 1.5,
+             QStringLiteral(R"(, {"type": "linecurrent", "position": ["0", "0"], "I": "1[A]", "phase": "30"})"), omega * mu0 * I * I / 8},
+        };
+        std::vector<double> purcell;
+        for (const Case& c : cases) {
+            if (slow && &c == &cases.back()) break;
+            const Run r = run(modelOf(sourceBox(c.pol, c.n, c.feature, hmax, across)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.what), r.error)));
+            Solution& s = *r.solution;
+            const double P = global(s, QStringLiteral("ewfd.Psource")), P0 = global(s, QStringLiteral("ewfd.Psource0"));
+            const double F = global(s, QStringLiteral("ewfd.Purcell"));
+            qInfo("%s: Psource %.6g W/m, homogeneous %.6g (%.6g), Purcell %.5f", c.what, P, P0, c.P0, F);
+            QVERIFY2(std::abs(P0 / c.P0 - 1) < 1e-9, c.what);
+            QVERIFY2(std::abs(F - P / P0) < 1e-12, c.what);
+            // (sanitized, in glass of n 2 at hmax 0.1 µm - λ/5 there - 1.6 %)
+            QVERIFY2(std::abs(F - 1) < (slow ? 0.025 : 0.005), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.what)).arg(F)));
+            QVERIFY2(!s.log.join(QLatin1Char('\n')).contains(QStringLiteral("Warning")), qPrintable(s.log.join(QLatin1Char('\n'))));
+            purcell.push_back(F);
+            // Its triangle's edges a quarter of hmax, give or take the growth.
+            const Mesh& mesh = s.mesh();
+            const QStringList at = QString::fromUtf8(c.feature.toUtf8()).section(QStringLiteral("\"position\": ["), 1).section(QLatin1Char(']'), 0, 0).remove(QLatin1Char('"')).split(QLatin1Char(','));
+            const Locator locator(mesh);
+            int t = -1;
+            double xi = 0, eta = 0;
+            QVERIFY(locator.locate(QPointF(at.value(0).toDouble(), at.value(1).toDouble()), &t, &xi, &eta));
+            double longest = 0;
+            for (int k = 0; k < 3; ++k)
+                longest = std::max(longest, QLineF(mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])],
+                                                   mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)])])
+                                                .length());
+            QVERIFY2(longest < 0.4 * hmax, qPrintable(QStringLiteral("%1: %2 µm").arg(QLatin1String(c.what)).arg(longest)));
+        }
+        // A dipole pz is a line current jω pz: the same field, the same ratio.
+        QVERIFY(std::abs(purcell[1] - purcell[0]) < 1e-9);
+        // Two at one place, each's power with the field of both: a line
+        // current of 1 A and a dipole of 1/ω C at 90° (a current jω pz =
+        // -1 A) cancel; at 270° they double the current, four times the
+        // power of one (two sources' worth: Purcell 2); at 0°, 1 + j, twice.
+        for (const auto& [phase, expected] : std::vector<std::pair<int, double>>{{90, 0}, {270, 2}, {0, 1}}) {
+            if (slow && phase == 0) break;
+            const QString both = QStringLiteral(R"(, {"type": "linecurrent", "position": ["0.137", "0.071"], "I": "1[A]"},
+                {"type": "dipole", "position": ["0.137", "0.071"], "px": "0[C]", "pz": "%1[C]", "phase": "%2"})")
+                                     .arg(1 / omega, 0, 'g', 17)
+                                     .arg(phase);
+            const Run r = run(modelOf(sourceBox(QStringLiteral("ez"), 1, both, hmax, across)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double F = global(*r.solution, QStringLiteral("ewfd.Purcell"));
+            qInfo("a line current and a dipole at %d°: Purcell %.6g", phase, F);
+            QVERIFY2(std::abs(F - expected * purcell[0]) < 1e-6, qPrintable(QStringLiteral("%1°: %2").arg(phase).arg(F)));
+        }
+    }
+
+    void pointSourcesInAGuide()
+    {
+        // A line current midway across a parallel-plate guide 10 mm wide at
+        // 20 GHz (Ez: TE1 alone propagates): its power ω µ0 |I|² / 2wβ, half
+        // out of each matched port; a dipole across it (Hz: TEM, and TM1 not
+        // excited midway) ω k0 |p|² / 4 ε0 w.
+        const double w = 10e-3, omega = 2 * M_PI * 20e9, k0 = omega / C0, mu0 = 1.25663706127e-6, eps0 = 8.8541878188e-12;
+        const double beta = std::sqrt(k0 * k0 - std::pow(M_PI / w, 2));
+        // (A sanitized build: a mesh twice as coarse - the dipole's power
+        // 1.5e-4 high there.)
+        const bool slow = slowBuild();
+        const QString hmax = slow ? QStringLiteral("0.5") : QStringLiteral("0.25");
+        auto guide = [&hmax](const QString& pol, const QString& source, const QString& fed) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "mm",
+                "geometry": [{"type": "rectangle", "name": "guide", "size": ["40", "10"]}],
+                "materials": [{"label": "air", "n": "1", "selection": {"all": true}}],
+                "physics": [{"type": "waves", "tag": "ewfd", "polarization": "%1", "features": [
+                  {"type": "port", "name": "1", "excite": %3, "selection": {"of": ["guide"], "side": "left"}},
+                  {"type": "port", "name": "2", "excite": false, "selection": {"of": ["guide"], "side": "right"}}, %2]}],
+                "mesh": {"size": "fine", "custom": true, "hmax": "%4"}}],
+              "studies": [{"type": "study", "steps": [{"type": "frequency", "frequencies": "20[GHz]"}]}]})json")
+                .arg(pol, source, fed, hmax)
+                .toUtf8();
+        };
+        struct Case {
+            const char* what;
+            QString pol, source;
+            double P;
+        };
+        const std::vector<Case> cases = {
+            {"line current", QStringLiteral("ez"), QStringLiteral(R"({"type": "linecurrent", "position": ["20", "5"], "I": "1[A]"})"),
+             omega * mu0 / (2 * w * beta)},
+            {"dipole across", QStringLiteral("hz"), QStringLiteral(R"({"type": "dipole", "position": ["20", "5"], "px": "0[C]", "py": "1e-12[C]"})"),
+             omega * k0 * 1e-24 / (4 * eps0 * w)},
+        };
+        for (const Case& c : cases) {
+            const Run r = run(modelOf(guide(c.pol, c.source, QStringLiteral("false"))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(c.what), r.error)));
+            Solution& s = *r.solution;
+            const double P = global(s, QStringLiteral("ewfd.Psource"));
+            const double P1 = global(s, QStringLiteral("ewfd.Pport_1")), P2 = global(s, QStringLiteral("ewfd.Pport_2"));
+            qInfo("%s in a guide: Psource %.7g W/m (%.7g), out by port 1 %.7g, 2 %.7g", c.what, P, c.P, P1, P2);
+            QVERIFY2(std::abs(P / c.P - 1) < (slow ? 1e-3 : 2e-4), c.what);
+            // (what it gives the ports take: no loss)
+            QVERIFY2(std::abs((P1 + P2) / P - 1) < 1e-5, c.what);
+            QVERIFY2(std::abs(P1 / P2 - 1) < 1e-5, c.what);
+            // (no S-parameters: no port is fed)
+            QVERIFY(std::isnan(global(s, QStringLiteral("ewfd.S11"))));
+        }
+        // The mesh about a source a quarter of its domain's size (a Size
+        // feature's), not of the whole's.
+        {
+            const QString sized = QString::fromUtf8(guide(QStringLiteral("ez"), cases[0].source, QStringLiteral("false")))
+                                      .replace(QStringLiteral(R"("hmax": "%1"}}])").arg(hmax),
+                                               QStringLiteral(R"("hmax": "1", "features": [{"type": "size", "level": "domain", "hmax": "0.4", "selection": {"all": true}}]}}])"));
+            QVERIFY(sized.contains(QLatin1String("\"size\", \"level\"")));
+            // (meshed, not solved)
+            const Model model = modelOf(sized.toUtf8());
+            const std::shared_ptr<ParameterScope> parameters = evaluateParameters(model);
+            const GeometryBuild g = buildGeometry(model, *parameters);
+            QVERIFY(g.ok());
+            const MeshBuild built = buildMesh(model, *parameters, g.topology);
+            QVERIFY2(built.mesh, qPrintable(built.error));
+            const Mesh& mesh = *built.mesh;
+            const Locator locator(mesh);
+            int t = -1;
+            double xi = 0, eta = 0;
+            QVERIFY(locator.locate(QPointF(20, 5), &t, &xi, &eta));
+            double longest = 0;
+            for (int k = 0; k < 3; ++k)
+                longest = std::max(longest, QLineF(mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])],
+                                                   mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t((k + 1) % 3)])])
+                                                .length());
+            QVERIFY2(longest < 0.4 * 0.4, qPrintable(QString::number(longest)));
+        }
+        // A fed port with a source: refused.
+        const Run fed = run(modelOf(guide(QStringLiteral("ez"), cases[0].source, QStringLiteral("true"))));
+        QVERIFY2(fed.error.contains(QStringLiteral("a point source and a fed port (1)")), qPrintable(fed.error));
+    }
+
+    void pointSourceRefusals()
+    {
+        const double hmax = 0.3;
+        struct Case {
+            QString pol, feature, error;
+        };
+        const std::vector<Case> cases = {
+            {QStringLiteral("ez"), QStringLiteral(R"(, {"type": "linecurrent", "position": ["7", "0"]})"), QStringLiteral("is in none of")},
+            {QStringLiteral("hz"), QStringLiteral(R"(, {"type": "linecurrent", "position": ["0", "0"]})"), QStringLiteral("a current along z drives Ez")},
+            {QStringLiteral("hz"), QStringLiteral(R"(, {"type": "dipole", "position": ["0", "0"], "px": "0[C]", "pz": "1e-20[C]"})"),
+             QStringLiteral("its moment in the plane is nought")},
+            {QStringLiteral("ez"), QStringLiteral(R"(, {"type": "dipole", "position": ["0", "0"]})"), QStringLiteral("its moment out of the plane is nought")},
+            {QStringLiteral("ez"), QStringLiteral(R"(, {"type": "linecurrent", "position": ["0", "x"]})"), QStringLiteral("its position")},
+            {QStringLiteral("ez"),
+             QStringLiteral(R"(, {"type": "linecurrent", "position": ["0", "0"]}, {"type": "scattering", "incident": "plane", "selection": {"all": true}})"),
+             QStringLiteral("a point source and a plane wave coming in")},
+        };
+        for (const Case& c : cases) {
+            const Run r = run(modelOf(sourceBox(c.pol, 1, c.feature, hmax)));
+            QVERIFY2(r.error.contains(c.error), qPrintable(QStringLiteral("%1: %2").arg(c.feature, r.error)));
+        }
+        // Said: the other polarization's part left out, a source in the PML.
+        const Run other = run(modelOf(sourceBox(QStringLiteral("ez"), 1, QStringLiteral(R"(, {"type": "dipole", "position": ["0", "0"], "pz": "1e-20[C]"})"), hmax)));
+        QVERIFY2(other.error.isEmpty(), qPrintable(other.error));
+        QVERIFY2(other.solution->log.join(QLatin1Char('\n')).contains(QStringLiteral("its moment px, py drives the other polarization")),
+                 qPrintable(other.solution->log.join(QLatin1Char('\n'))));
+        const Run unit = run(modelOf(sourceBox(QStringLiteral("ez"), 1, QStringLiteral(R"(, {"type": "dipole", "position": ["0", "0"], "px": "0[C]", "pz": "1e-20[V]"})"), hmax)));
+        QVERIFY2(unit.error.isEmpty(), qPrintable(unit.error));
+        QVERIFY2(unit.solution->log.join(QLatin1Char('\n')).contains(QStringLiteral("its pz: its unit is")), qPrintable(unit.solution->log.join(QLatin1Char('\n'))));
+        const Run inPml = run(modelOf(sourceBox(QStringLiteral("ez"), 1, QStringLiteral(R"(, {"type": "linecurrent", "position": ["2.5", "0"]})"), hmax)));
+        QVERIFY2(inPml.error.isEmpty(), qPrintable(inPml.error));
+        QVERIFY2(inPml.solution->log.join(QLatin1Char('\n')).contains(QStringLiteral("a point source in an absorbing medium")),
+                 qPrintable(inPml.solution->log.join(QLatin1Char('\n'))));
+    }
+
     // ---- Periodic cells: Floquet's condition, periodic ports, R and T
 
     void periodicFresnel()
