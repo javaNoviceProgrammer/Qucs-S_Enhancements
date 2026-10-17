@@ -20,6 +20,7 @@
 #include <QtTest>
 
 #include <cmath>
+#include <map>
 #include <vector>
 
 using namespace qucs_s::fem;
@@ -317,6 +318,165 @@ private slots:
         }
     }
 
+    // A double heterostructure's current with its mesh (the update check of
+    // 48d5fa8, 2): Al0.6Ga0.4As claddings doped 1e18 per cm³ about 20 nm of
+    // p-GaAs (2e18) that recombines, at 1.6 V. Its heterojunctions abrupt -
+    // the bands' step at the interface, each side's carriers on its own
+    // bands to it -: 176, 223, 228 mA as its rows went 32, 128, 512.
+    // Graded over an element, as they were: 7.65 A, 822 mA, 309 mA, the step
+    // a barrier one element wide. At rest beside the interface: the
+    // cladding's electrons fewer by the conduction band's step (theirs at
+    // its density of states), not the GaAs's smeared into it (0.75 of them).
+    void anAbruptHeterojunctionWithItsMesh()
+    {
+        auto strip = [](int rows, const QString& va, const QString& kind) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "nclad", "size": ["0.05", "0.3"]},
+                             {"type": "rectangle", "name": "active", "position": ["0", "0.3"], "size": ["0.05", "0.02"]},
+                             {"type": "rectangle", "name": "pclad", "position": ["0", "0.32"], "size": ["0.05", "0.48"]}],
+                "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "selection": {"only": ["nclad", "pclad"]}},
+                              {"material": "Gallium arsenide", "selection": {"only": ["active"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "heterojunctions": "%3", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "2e18[1/cm^3]", "selection": {"only": ["active"]}},
+                  {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
+                  {"type": "ohmic", "name": "anode", "V0": "%2", "selection": {"of": ["pclad"], "side": "top"}},
+                  {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                         "features": [{"type": "layered", "hlateral": "0.05", "count": %1, "selection": {"all": true}}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(rows)
+                               .arg(va, kind)
+                               .toUtf8());
+        };
+        // (A sanitized build: 32 and 128 rows alone.)
+        const bool slow = slowBuild();
+        std::map<std::pair<QString, int>, double> I;
+        for (const QString& kind : {QStringLiteral("abrupt"), QStringLiteral("element")})
+            for (int rows : {32, 128, 512}) {
+                if (slow && rows == 512) continue;
+                const Run r = run(strip(rows, QStringLiteral("1.6[V]"), kind));
+                QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+                I[{kind, rows}] = global(*r.solution, QStringLiteral("semi.I_anode"));
+            }
+        auto at = [&I](const char* kind, int rows) { return I[{QLatin1String(kind), rows}]; };
+        qInfo("1.6 V: abrupt %.4g, %.4g, %.4g A; graded over an element %.4g, %.4g, %.4g A (32, 128, 512 rows)", at("abrupt", 32), at("abrupt", 128),
+              at("abrupt", 512), at("element", 32), at("element", 128), at("element", 512));
+        QVERIFY2((slow || std::abs(at("abrupt", 512) / at("abrupt", 128) - 1) < 0.05) && std::abs(at("abrupt", 128) / at("abrupt", 32) - 1) < 0.35,
+                 qPrintable(QStringLiteral("%1 %2 %3").arg(at("abrupt", 32)).arg(at("abrupt", 128)).arg(at("abrupt", 512))));
+        QVERIFY((slow || at("element", 512) < 0.5 * at("element", 128)) && at("element", 128) < 0.2 * at("element", 32));
+        for (const QString& kind : {QStringLiteral("abrupt"), QStringLiteral("element")}) {
+            const Run r = run(strip(128, QStringLiteral("0[V]"), kind));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.solution;
+            const double cladding = ::at(s, QStringLiteral("semi.n"), {0.025, 0.2999}), gaas = ::at(s, QStringLiteral("semi.n"), {0.025, 0.3001});
+            const double step = (::at(s, QStringLiteral("semi.Ec"), {0.025, 0.2999}) - ::at(s, QStringLiteral("semi.Ec"), {0.025, 0.3001})) / (KB * 300);
+            const double states = cladding / gaas * std::exp(step);   // (Nc's ratio, abrupt)
+            qInfo("%s at rest: n %.4g beside the interface in the cladding, %.4g in the GaAs; Ec's step %.4f eV; n's ratio e^(ΔEc/kT) %.4g",
+                  qPrintable(kind), cladding, gaas, step * KB * 300 / Q, states);
+            if (kind == QLatin1String("abrupt")) QVERIFY2(states > 0.5 && states < 5, qPrintable(QString::number(states)));
+            else QVERIFY2(cladding / gaas > 0.1, qPrintable(QString::number(cladding / gaas)));
+        }
+    }
+
+    // An edge between two domains of one material - the layer beside a GaAs
+    // disk and the cladding under both, Al0.6Ga0.4As - from a node of the
+    // disk's heterojunction (its corner): that material's carriers, the
+    // band step at the node. Taken as an edge of two media, as one along a
+    // heterojunction, it had none: the GaAs's electrons along it into the
+    // cladding, the current the mesh's - the update check of 48d5fa8's toy
+    // laser (here without the laser) at 1.4 V 452, 353, 295 nA at 64, 128,
+    // 256 rows. Now 223 and 230 at 64 and 128. (A sanitized build: 16 rows
+    // alone, its 164 nA below the limit, some 232, as the rows have it -
+    // with the edges of two media 542, above it.)
+    void edgesBetweenDomainsOfOneMaterial()
+    {
+        auto toy = [](int rows) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um", "space": "axisymmetric",
+                "geometry": [{"type": "rectangle", "label": "nclad", "position": ["0", "0"], "size": ["1.2", "0.3"]},
+                             {"type": "rectangle", "label": "layer", "position": ["0", "0.3"], "size": ["1.2", "0.02"]},
+                             {"type": "rectangle", "label": "active", "position": ["0.35", "0.3"], "size": ["0.3", "0.02"]},
+                             {"type": "rectangle", "label": "pclad", "position": ["0", "0.32"], "size": ["1.2", "0.48"]},
+                             {"type": "form union"}],
+                "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "selection": {"only": ["nclad", "pclad", "layer"]}},
+                              {"material": "Gallium arsenide", "selection": {"only": ["active"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "2e18[1/cm^3]", "selection": {"only": ["active"]}},
+                  {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
+                  {"type": "srh", "source": "user", "taun": "2[ns]", "taup": "2[ns]", "selection": {"only": ["active"]}},
+                  {"type": "auger", "Cn": "1e-30[cm^6/s]", "Cp": "1e-30[cm^6/s]", "selection": {"only": ["active"]}},
+                  {"type": "ohmic", "name": "anode", "V0": "1.4[V]", "selection": {"of": ["pclad"], "side": "top"}},
+                  {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                         "features": [{"type": "layered", "hlateral": "0.05", "count": %1, "selection": {"all": true}}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(rows)
+                               .toUtf8());
+        };
+        if (slowBuild()) {
+            const Run r = run(toy(16));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double I16 = global(*r.solution, QStringLiteral("semi.I_anode"));
+            QVERIFY2(I16 > 100e-9 && I16 < 250e-9, qPrintable(QString::number(I16)));
+            return;
+        }
+        double I[2];
+        for (int k = 0; k < 2; ++k) {
+            const Run r = run(toy(k == 0 ? 64 : 128));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            I[k] = global(*r.solution, QStringLiteral("semi.I_anode"));
+        }
+        qInfo("a GaAs disk in Al0.6Ga0.4As at 1.4 V: %.5g A on 64 rows, %.5g on 128", I[0], I[1]);
+        QVERIFY2(std::abs(I[1] / I[0] - 1) < 0.06, qPrintable(QStringLiteral("%1 %2").arg(I[0]).arg(I[1])));
+    }
+
+    // A heterojunction's step in a triangle: its carriers emitted over it,
+    // not saturated there. A germanium-on-silicon photodiode's bar, p⁺⁺ and
+    // n⁺⁺ silicon either side, lit, at -1 V on 30 nm elements: 276 µA with
+    // its mobilities saturated, 314 without. Saturated in the triangles of
+    // its steps, the holes' quasi-Fermi level's fall across the valence
+    // band's 0.48 eV into the p⁺⁺ silicon there - one element's, its
+    // depletion unresolved - lowered their mobility, which held the fall:
+    // 82 µA. (Three times as tall, 838 against 946 and 223; on 3 nm elements
+    // saturated as not.)
+    void notSaturatedOverAStep()
+    {
+        auto pin = [](bool saturated) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "p", "size": ["0.2", "0.1"]},
+                             {"type": "rectangle", "name": "ge", "position": ["0.2", "0"], "size": ["1", "0.1"]},
+                             {"type": "rectangle", "name": "n", "position": ["1.2", "0"], "size": ["0.2", "0.1"]}],
+                "materials": [{"material": "Silicon", "selection": {"only": ["p", "n"]}},
+                              {"material": "Germanium on silicon", "selection": {"only": ["ge"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["p"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e19[1/cm^3]", "selection": {"only": ["n"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e15[1/cm^3]", "selection": {"only": ["ge"]}},
+                  {"type": "srh", "selection": {"all": true}},
+                  {"type": "generation", "G": "1e28[1/(m^3*s)]", "selection": {"only": ["ge"]}},
+                  %1
+                  {"type": "ohmic", "name": "a", "V0": "-1[V]", "selection": {"of": ["p"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.03"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(saturated ? QStringLiteral(R"({"type": "model", "saturation": true, "vsatn": "6e6[cm/s]", "vsatp": "6e6[cm/s]", "selection": {"only": ["ge"]}},
+                  {"type": "model", "mobility": "doping", "saturation": true, "selection": {"only": ["p", "n"]}},)")
+                                              : QString())
+                               .toUtf8());
+        };
+        const Run free = run(pin(false)), saturated = run(pin(true));
+        QVERIFY2(free.error.isEmpty() && saturated.error.isEmpty(), qPrintable(free.error + saturated.error));
+        const double I0 = global(*free.solution, QStringLiteral("semi.I_k")), I = global(*saturated.solution, QStringLiteral("semi.I_k"));
+        qInfo("Ge on Si, lit, -1 V: %.4g A saturated, %.4g A not", I, I0);
+        QVERIFY2(I > 0.85 * I0 && I <= 1.01 * I0, qPrintable(QStringLiteral("%1 %2").arg(I).arg(I0)));
+    }
+
     void contactCurrents()
     {
         // P+ P N N+ (1e19 and 1e17 cm⁻³; contacts on the 1e19), reversed
@@ -436,6 +596,60 @@ private slots:
         qInfo("in time: at -1 V I_a %.6g A, I_k %.6g (C dV/dt %.6g, C %.5g F); %s", Ia, Ik, expected, C, qPrintable(s.log.join(QLatin1String("; "))));
         QVERIFY2(std::abs(Ia / expected - 1) < 0.01, qPrintable(QString::number(Ia / expected)));
         QVERIFY2(std::abs(Ia + Ik) < 1e-3 * std::abs(Ia), qPrintable(QString::number(Ik / Ia)));
+    }
+
+    // A junction ionized in part (1e18 cm⁻³ each side, silicon's 45 meV
+    // levels) at -1 V: a carrier its dopants take leaves its band through no
+    // current, each continuity's store the carriers' less their ions (n -
+    // Nd⁺, p - Na⁻), in time and at a frequency. Its small-signal C the same
+    // at both contacts (the carriers' alone, as it was: C_aa and C_kk apart -
+    // the Liu 2013 phase shifter's 1.52 and 2.09 pF at 4 V: the update check
+    // of 48d5fa8, 7), and a ramp's current C dV/dt, out of the other contact
+    // too (the contacts' charge in time was the history's carriers' ions:
+    // 14 times it, and the two apart). (The p side's ∫ρ, at rest at two
+    // voltages, 3.7 % short of C, as 2.9 % fully ionized: ρ between nodes on
+    // 20 nm elements across 50 nm of depletion.)
+    void aJunctionIonizedInPart()
+    {
+        // (A sanitized build: 0.1 µm elements.)
+        const bool slow = slowBuild();
+        const QString hmax = slow ? QStringLiteral("0.1") : QStringLiteral("0.02");
+        const QString partly = QStringLiteral(R"(, {"type": "model", "incomplete": true, "selection": {"all": true}})");
+        auto model = [&](const QString& va, const QString& steps) {
+            return modelOf(junction(QStringLiteral("1"), QStringLiteral("1e18[1/cm^3]"), QStringLiteral("1e18[1/cm^3]"), va, steps, partly, hmax));
+        };
+        const Run ac = run(model(QStringLiteral("-1[V]"), QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"})")));
+        QVERIFY2(ac.error.isEmpty(), qPrintable(ac.error));
+        const Solution& s = *ac.solution;
+        const double Caa = global(s, QStringLiteral("semi.Caa")), Ckk = global(s, QStringLiteral("semi.Ckk"));
+        const double Cak = global(s, QStringLiteral("semi.Cak")), Cka = global(s, QStringLiteral("semi.Cka"));
+        Model ramp = model(QStringLiteral("0[V]"), QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "0, 0.5[us]", "rtol": "1e-3"})x"));
+        for (Node& f : ramp.find(QStringLiteral("semi"))->children)
+            if (f.text(QStringLiteral("name")) == QLatin1String("a")) f.props.insert(QStringLiteral("V0"), QStringLiteral("-2[V]*t/1[us]"));
+        Run t = run(ramp);
+        QVERIFY2(t.error.isEmpty(), qPrintable(t.error));
+        t.solution->select(1);
+        const double Ia = global(*t.solution, QStringLiteral("semi.I_a")), Ik = global(*t.solution, QStringLiteral("semi.I_k"));
+        qInfo("ionized in part, -1 V: C_aa %.6g F, C_kk %.6g, C_ak %.6g, C_ka %.6g; a ramp's I_a %.6g A (C dV/dt %.6g), I_k %.6g", Caa, Ckk, Cak,
+              Cka, Ia, -2e6 * Caa, Ik);
+        QVERIFY2(std::abs(Ckk / Caa - 1) < 1e-6 && std::abs(Cak / Caa + 1) < 1e-6 && std::abs(Cka / Caa + 1) < 1e-6,
+                 qPrintable(QStringLiteral("%1 %2 %3 %4").arg(Caa).arg(Ckk).arg(Cak).arg(Cka)));
+        QVERIFY2(std::abs(Ia / (-2e6 * Caa) - 1) < 1e-3 && std::abs(Ia + Ik) < 1e-4 * std::abs(Ia), qPrintable(QStringLiteral("%1 %2").arg(Ia).arg(Ik)));
+        // The same in 10 ps: met, and out of the other contact (the ions'
+        // change's own size not among the flows Newton's imbalance is
+        // measured by - its rounding where the carriers are depleted -, it
+        // never converged; nor with the ions nought at its start). (A
+        // sanitized build: not - its hundred steps some minutes there.)
+        if (slow) return;
+        Model fast = model(QStringLiteral("0[V]"), QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 1[ps], 3[ps])", "rtol": "1e-4"})x"));
+        for (Node& f : fast.find(QStringLiteral("semi"))->children)
+            if (f.text(QStringLiteral("name")) == QLatin1String("a")) f.props.insert(QStringLiteral("V0"), QStringLiteral("-2[V]*t/10[ps]"));
+        Run q = run(fast);
+        QVERIFY2(q.error.isEmpty(), qPrintable(q.error));
+        q.solution->select(2);
+        const double Ifast = global(*q.solution, QStringLiteral("semi.I_a")), Kfast = global(*q.solution, QStringLiteral("semi.I_k"));
+        qInfo("in 10 ps: at 2 ps I_a %.6g A, I_k %.6g; %s", Ifast, Kfast, qPrintable(q.solution->log.filter(QStringLiteral("steps taken")).join(QString())));
+        QVERIFY2(Ifast < 0 && std::abs(Ifast + Kfast) < 1e-4 * std::abs(Ifast), qPrintable(QStringLiteral("%1 %2").arg(Ifast).arg(Kfast)));
     }
 
     void aDiodesReverseRecovery()

@@ -4005,6 +4005,36 @@ static void checkProperties(const Node& node, QStringList* errors, QStringList* 
     for (const Node& c : node.children) checkProperties(c, errors, warnings);
 }
 
+/// A plot of a field a waves physics' polarization leaves nought - Ez, Hx,
+/// Hy under Hz; Hz, Ex, Ey under Ez -: said, with the field it solves.
+/// (Its default plot group, Ez, stayed when Hz was chosen: a plot of
+/// nought, the update check of 48d5fa8.)
+static void checkPlottedFields(const Model& model, QStringList* warnings)
+{
+    for (const Node& physics : model.component().children) {
+        if (physics.type != QLatin1String("waves") || !physics.enabled) continue;
+        const bool hz = physics.text(QStringLiteral("polarization")) == QLatin1String("hz");
+        const QStringList nought = hz ? QStringList{QStringLiteral("Ez"), QStringLiteral("Hx"), QStringLiteral("Hy")}
+                                      : QStringList{QStringLiteral("Hz"), QStringLiteral("Ex"), QStringLiteral("Ey")};
+        const QRegularExpression field(QStringLiteral("(?<![A-Za-z0-9_.])%1\\.(%2)(?:_im|_re|_abs)?(?![A-Za-z0-9_])")
+                                           .arg(QRegularExpression::escape(physics.tag), nought.join(QLatin1Char('|'))));
+        const QString solved = hz ? tr("%1.Hz (out of the plane), %1.Ex and %1.Ey").arg(physics.tag)
+                                  : tr("%1.Ez (out of the plane), %1.Hx and %1.Hy").arg(physics.tag);
+        std::function<void(const Node&, const Node*)> visit = [&](const Node& node, const Node* group) {
+            if (node.type == QLatin1String("plotgroup") || node.type == QLatin1String("plotgroup1d")) group = &node;
+            if (group && node.enabled && &node != group) {
+                const QString text = QString::fromUtf8(QJsonDocument(node.props).toJson(QJsonDocument::Compact));
+                if (const QRegularExpressionMatch m = field.match(text); m.hasMatch())
+                    *warnings << tr("%1: it shows %2, nought under the %3 polarization of %4 (%5) - it solves %6")
+                                     .arg(group->name(), m.captured(0), hz ? QStringLiteral("Hz") : QStringLiteral("Ez"), physics.name(),
+                                          physics.tag, solved);
+            }
+            for (const Node& c : node.children) visit(c, group);
+        };
+        visit(model.results(), nullptr);
+    }
+}
+
 StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
                   std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress)
 {
@@ -4022,6 +4052,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         QStringList errors;
         checkProperties(model.component(), &errors, &run.warnings);
         checkProperties(*study, &errors, &run.warnings);
+        checkPlottedFields(model, &run.warnings);
         if (!errors.isEmpty()) {
             run.error = errors.join(QLatin1String("; "));
             return run;

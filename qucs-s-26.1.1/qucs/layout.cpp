@@ -1008,7 +1008,7 @@ public:
         const qsizetype i = qsizetype(p.y() - device.top()) * device.width() + (p.x() - device.left());
         if (bits.testBit(i)) return;
         bits.setBit(i);
-        dots[int(layer)].append(at);
+        if (!counting) dots[int(layer)].append(at);
         stats.dots++;
     }
 
@@ -1030,11 +1030,12 @@ public:
                     dot(sh.layer, T.map(b.center()));
                     return true;
                 }
+                stats.polygons++;
+                if (counting) return true;
                 QPolygonF poly(sh.count);
                 const QPointF* p = cell.points.constData() + sh.first;
                 for (quint32 k = 0; k < sh.count; ++k) poly[k] = T.map(p[k] + off);
                 polygons[int(sh.layer)].append(poly);
-                stats.polygons++;
                 return true;
             };
             if (sh.repetition < 0) {
@@ -1048,7 +1049,7 @@ public:
                 if (!meets(e, vis)) continue;
                 if (full()) return;
                 ++used;
-                polygons[int(sh.layer)].append(T.map(QPolygonF(e)));
+                if (!counting) polygons[int(sh.layer)].append(T.map(QPolygonF(e)));
                 stats.polygons++;
                 continue;
             }
@@ -1083,14 +1084,15 @@ public:
                 const QTransform ct = it * QTransform::fromTranslate(off.x(), off.y()) * T;
                 if (px < 2) {
                     ++used;
-                    frameDots.append(T.map(one.center() + off));
+                    if (!counting) frameDots.append(T.map(one.center() + off));
                     return true;
                 }
                 if (level + 1 > O.depth) {
                     ++used;
+                    stats.frames++;
+                    if (counting) return true;
                     const QPolygonF frame = ct.map(QPolygonF(child.bounds));
                     frames.append(frame);
-                    stats.frames++;
                     if (px > 48) names.append({frame.boundingRect(), child.name});
                     return true;
                 }
@@ -1105,7 +1107,7 @@ public:
             if (px < 2 && r.count() > 16) {
                 if (full()) return;
                 ++used;
-                arrays.append(T.map(QPolygonF(inst.bounds)));
+                if (!counting) arrays.append(T.map(QPolygonF(inst.bounds)));
                 continue;
             }
             if (!r.forEach(one, vis, put)) return;
@@ -1166,6 +1168,7 @@ public:
 
     const Layout& L;
     const RenderOptions& O;
+    bool counting = false;   // what would be drawn counted, nothing kept (countDrawn)
     QRect device;
     RenderStats stats;
     quint64 used = 0;
@@ -1187,6 +1190,15 @@ RenderStats render(QPainter& painter, const Layout& layout, const RenderOptions&
     Renderer r(layout, options);
     r.cell(options.cell, options.toDevice, 0);
     r.paint(painter);
+    return r.stats;
+}
+
+RenderStats countDrawn(const Layout& layout, const RenderOptions& options)
+{
+    if (options.cell < 0 || options.cell >= layout.cells.size() || options.device.isEmpty()) return {};
+    Renderer r(layout, options);
+    r.counting = true;
+    r.cell(options.cell, options.toDevice, 0);
     return r.stats;
 }
 

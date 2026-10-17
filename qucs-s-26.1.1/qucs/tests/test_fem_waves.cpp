@@ -1366,10 +1366,46 @@ private slots:
         QVERIFY2(std::abs(p128 / window - 1) < 1e-3, qPrintable(QStringLiteral("%1 against %2").arg(p128).arg(window)));
         // (evenly: its half says it is off)
         QVERIFY(std::abs(even / window - 1) > 3e-3 && hEven > 3e-3);
-        // Said: where the anomalies are.
+        // Said: where the anomalies are, and why not the number asked - the
+        // rule's points in each interval between them less its ends, the
+        // anomalies (the update check of 48d5fa8, 3: 64 asked, 60 said).
         const Run r = run(modelOf(scanStack(1, QStringLiteral(R"("floquet": "scan", "points": 16)"))));
-        QVERIFY2(r.solution && r.solution->log.join(QLatin1Char('\n')).contains(QStringLiteral("clustered about Rayleigh's anomalies at kF ±")),
-                 qPrintable(r.solution ? r.solution->log.join(QLatin1Char('\n')) : r.error));
+        const QString log = r.solution ? r.solution->log.join(QLatin1Char('\n')) : r.error;
+        QVERIFY2(log.contains(QStringLiteral("clustered about Rayleigh's anomalies at kF ±")), qPrintable(log));
+        const QRegularExpressionMatch m =
+            QRegularExpression(QStringLiteral("the array scan's (\\d+) kF .* - of the (\\d+) asked, tanh-sinh's rule between them \\(([0-9 +]+) points")).match(log);
+        QVERIFY2(m.hasMatch() && m.captured(2) == QLatin1String("16"), qPrintable(log));
+        int points = 0, intervals = 0;
+        for (const QString& each : m.captured(3).split(QLatin1Char('+'))) {
+            points += each.trimmed().toInt();
+            ++intervals;
+        }
+        QVERIFY2(m.captured(1).toInt() == points - 2 * intervals && points >= 16, qPrintable(m.captured(0)));
+    }
+
+    // A plot of a field the polarization leaves nought - its default plot
+    // group's Ez kept when Hz was chosen -: said, with the fields it solves
+    // (the update check of 48d5fa8, 5: fem_solve "shown" Ez, nought).
+    void aPlotOfAFieldNotSolvedIsSaid()
+    {
+        auto window = [](const QString& plotted, const QString& polarization) {
+            QByteArray json = scanStack(1, QString());
+            json.replace(R"("polarization": "hz")", QStringLiteral(R"("polarization": "%1")").arg(polarization).toUtf8());
+            json.replace(R"("studies": [)", QStringLiteral(R"("results": {"plots": [{"type": "plotgroup", "label": "Field", "plots": [
+                {"type": "surface", "expression": "%1"}]}]}, "studies": [)").arg(plotted).toUtf8());
+            return run(modelOf(json)).study.warnings.join(QLatin1Char('\n'));
+        };
+        QString said = window(QStringLiteral("ewfd.Ez"), QStringLiteral("hz"));
+        QVERIFY2(said.contains(QLatin1String("Field: it shows ewfd.Ez, nought under the Hz polarization")) && said.contains(QLatin1String("it solves ewfd.Hz")),
+                 qPrintable(said));
+        said = window(QStringLiteral("abs(ewfd.Hy_im)"), QStringLiteral("hz"));
+        QVERIFY2(said.contains(QLatin1String("it shows ewfd.Hy_im, nought")), qPrintable(said));
+        for (const char* shown : {"ewfd.Hz", "ewfd.normE", "ewfd.Ex", "ewfd.Ezz"}) {
+            said = window(QLatin1String(shown), QStringLiteral("hz"));
+            QVERIFY2(!said.contains(QLatin1String("nought under")), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(shown), said)));
+        }
+        said = window(QStringLiteral("ewfd.Hz"), QStringLiteral("ez"));
+        QVERIFY2(said.contains(QLatin1String("it shows ewfd.Hz, nought under the Ez polarization")), qPrintable(said));
     }
 
     void arrayScanRefusals()

@@ -1347,6 +1347,7 @@ private slots:
         (void)view->grab();
         const qint64 fullMs = t.elapsed();
         QCOMPARE(view->renders(), before + 1);
+        const RenderStats wholeOnCpu = view->lastStats();
         QVERIFY(!view->lastStats().incomplete);
         // Each square under a pixel: a dot each, once a pixel.
         QCOMPARE(view->lastStats().polygons, quint64(0));
@@ -1389,7 +1390,10 @@ private slots:
             (void)view->canvas()->grabFramebuffer();
             const qint64 buildMs = t.elapsed();
             QCOMPARE(view->canvas()->builds(), 1);
-            QCOMPARE(view->lastStats().polygons, quint64(1000000));
+            QCOMPARE(view->canvas()->flattened().shapes, quint64(1000000));   // (all in its buffers)
+            // (its counts the CPU's picture's of the same view)
+            QCOMPARE(view->lastStats().polygons, wholeOnCpu.polygons);
+            QCOMPARE(view->lastStats().dots, wholeOnCpu.dots);
             qint64 worst = 0;
             for (int k = 0; k < 10; ++k) {
                 view->setView(view->center() + QPointF(37, 23), view->scale() * (k % 2 ? 1.3 : 1 / 1.3));
@@ -1864,6 +1868,17 @@ private slots:
         const QJsonArray region = j.value("region").toArray();
         QVERIFY2(region.at(0).toDouble() <= 9 && region.at(2).toDouble() >= 13 && region.at(1).toDouble() <= -1 && region.at(3).toDouble() >= 2,
                  qPrintable(text(r)));
+        // What is drawn counted as the CPU draws the view, whichever draws
+        // it (the GPU's canvas, painted when it will, had left them nought:
+        // the update check of 48d5fa8).
+        const QJsonObject drawn = j.value("drawn").toObject();
+        QVERIFY2(drawn.value("shapes").toInt() > 0, qPrintable(text(r)));
+        const bool onGpu = doc->view()->gpu();
+        doc->view()->setGpu(!onGpu);
+        r = call("show_layout", {{"cell", "TOP"}, {"region", QJsonArray{9, -1, 13, 2}}, {"layers", "all"}, {"depth", "all"}});
+        QCOMPARE(json(r).value("drawn").toObject(), drawn);
+        doc->view()->setGpu(onGpu);
+        QCOMPARE(doc->view()->gpu(), onGpu);
         // get_layout says what the tab shows; a screenshot shows it.
         j = json(call("get_layout", {{"path", "sample.gds"}}));
         QCOMPARE(j.value("tab").toObject().value("cell").toString(), QString("TOP"));

@@ -3185,6 +3185,7 @@ bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const E
         double k, w, half;   // kF; its weight, in the rule of half the points (the zone's mean: they sum to 1)
     };
     std::vector<Node> nodes;
+    QStringList between;   // each interval's points, its ends counted (the log)
     if (anomalies.empty()) {
         for (int i = 0; i < pc.points; ++i)
             nodes.push_back({zone * (double(i) / pc.points - 0.5), 1.0 / pc.points, i % 2 ? 0.0 : 2.0 / pc.points});
@@ -3198,6 +3199,7 @@ bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const E
             const double a = anomalies[i], b = i + 1 < anomalies.size() ? anomalies[i + 1] : anomalies.front() + zone;
             int M = std::max(9, int(std::lround(pc.points * (b - a) / zone)));
             if (M % 2 == 0) ++M;
+            between << QString::number(M);
             const double h = 2 * tm / (M - 1);
             for (int j = 1; j + 1 < M; ++j) {
                 const double tau = -tm + j * h, u = M_PI / 2 * std::sinh(tau);
@@ -3211,13 +3213,25 @@ bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const E
         QStringList at;
         for (double k : anomalies)
             if (k >= 0) at << formatQuantity(k, Dim::of(-1));
-        a_s.log << tr("%1: the array scan's %2 kF clustered about Rayleigh's anomalies at kF ±%3")
+        // (Not the number asked: tanh-sinh's rule between the anomalies -
+        // an odd number in each interval, its share of the zone's - with
+        // each interval's two ends, the anomalies themselves, left out.)
+        a_s.log << tr("%1: the array scan's %2 kF clustered about Rayleigh's anomalies at kF ±%3 - of the %4 asked, tanh-sinh's "
+                      "rule between them (%5 points, each interval's an odd number) less each interval's two ends, the "
+                      "anomalies themselves, where the integrand is singular and the rule's weight some 1e-8 of the rest")
                        .arg(pc.name)
                        .arg(n)
-                       .arg(at.join(QLatin1String(", ±")));
+                       .arg(at.join(QLatin1String(", ±")))
+                       .arg(pc.points)
+                       .arg(between.join(QLatin1String(" + ")));
     }
     // Each cell solved alone: on threads of their own where Eigen's LU (one
-    // thread) factorizes it, one after another where Accelerate's.
+    // thread) factorizes it, one after another where Accelerate's - under
+    // Automatic Eigen's below acceleratedFromAtOnce() unknowns (50 000:
+    // its LUs on their threads together the quicker; Accelerate's from
+    // 20 000, one cell after another, made a scan of 21k-unknown cells -
+    // 42k degrees of freedom - three times slower: the update check of
+    // 48d5fa8).
     std::vector<Eigen::VectorXcd> x(static_cast<std::size_t>(n));
     std::vector<std::vector<double>> out(std::size_t(n), std::vector<double>(a_pports.size(), 0.0));
     std::vector<QString> failed(static_cast<std::size_t>(n));
@@ -3228,6 +3242,7 @@ bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const E
     A0.setFromTriplets(trip.begin(), trip.end());
     A0.makeCompressed();
     struct Lu {
+        Lu() { lu.setManyAtOnce(true); }
         SparseLu<cd> lu;
         std::vector<int> outer, inner;   // the pattern analysed
     };
@@ -3277,7 +3292,17 @@ bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const E
         for (std::size_t q = 0; q < ports.size(); ++q) out[std::size_t(i)][q] = periodicOut(ports[q], v, omega, k0);
         x[std::size_t(i)] = std::move(v);
     };
-    const int threads = acceleratedLu() && a_neq >= acceleratedFrom() ? 1 : std::clamp(int(std::thread::hardware_concurrency()), 1, 16);
+    // (Decided on the matrix each LU factorizes: the periodic ties' - fewer
+    // unknowns than the system's.)
+    int cellSize = a_neq;
+    {
+        Eigen::SparseMatrix<cd> T;
+        bool tied = false;
+        QString why;
+        const double kF[2] = {nodes.front().k * along.x(), nodes.front().k * along.y()};
+        if (periodicMap(kF, &T, &tied, &why) && tied) cellSize = int(T.cols());
+    }
+    const int threads = acceleratedLu() && cellSize >= acceleratedFromAtOnce() ? 1 : std::clamp(int(std::thread::hardware_concurrency()), 1, 16);
     std::atomic<int> next{0};
     std::atomic<bool> stop{false};
     auto work = [&next, &stop, &one, n] {

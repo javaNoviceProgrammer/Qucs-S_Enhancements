@@ -262,6 +262,9 @@ struct RenderStats {
 
 /// Draws \a options.cell of \a layout as \a options say.
 RenderStats render(QPainter& painter, const Layout& layout, const RenderOptions& options);
+/// What render() would draw, counted - nothing drawn, no outline kept (the
+/// counts of a view the GPU draws: its own drawing draws every shape).
+RenderStats countDrawn(const Layout& layout, const RenderOptions& options);
 
 /// toDevice for a view of \a scale pixels per µm with \a center (µm) in
 /// the middle of \a device - y upwards, as layouts have it.

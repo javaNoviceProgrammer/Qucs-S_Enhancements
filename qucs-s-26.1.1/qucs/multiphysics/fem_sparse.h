@@ -48,6 +48,15 @@ QString acceleratedLuHindrance();
 /// Eigen's quicker (QUCS_FEM_ACCELERATE_FROM another; 0 - and the choice of
 /// Accelerate - always).
 int acceleratedFrom();
+/// The same for a matrix of many solved at once, each on a thread of its
+/// own (the array scan's cells): Eigen's LUs on their threads together
+/// quicker than Accelerate's one after another below some 50 000 unknowns
+/// (rows: a complex system's, its degrees of freedom twice as many) - a
+/// scan of 32 cells of 21k complex unknowns 0.34 s against 1.02; 44k 1.19
+/// against 1.35; 56k 1.89 against 1.71; 82k 3.40 against 2.27; 504k 106
+/// against 20 (QUCS_FEM_ACCELERATE_FROM another for both; the choice of
+/// Accelerate 0).
+int acceleratedFromAtOnce();
 /// "Accelerate" or "Eigen" (the LU's), for the log.
 QString directSolverName();
 
@@ -104,6 +113,9 @@ public:
     /// semiconductor's Jacobian (the suite's to 1e22, solved well) nor a
     /// shift-and-invert's (near singular by design). Off by default.
     void setSingularChecked(bool on);
+    /// One of many solved at once, each on a thread of its own: Accelerate's
+    /// from acceleratedFromAtOnce() unknowns, not acceleratedFrom().
+    void setManyAtOnce(bool on);
     /// Its patterns analysed so far (a pattern within the one analysed is
     /// not analysed again; for the tests).
     int analyses() const;

@@ -24,6 +24,8 @@
 #include <QtTest>
 
 #include <cmath>
+#include <utility>
+#include <vector>
 
 using namespace qucs_s::fem;
 
@@ -158,6 +160,7 @@ class TestFemEngine : public QObject
 private slots:
     void units();
     void expressions();
+    void constantsWithTheirUnits();
     void modelRoundTrip();
     void proposalFormat();
     void formUnionCounts();
@@ -207,6 +210,32 @@ void TestFemEngine::units()
     QCOMPARE(formatQuantity(2.132e-29, Dim::current()), QStringLiteral("2.132e-29 A"));
     QCOMPARE(formatQuantity(3e21, Dim::length()), QStringLiteral("3e+21 m"));
     QCOMPARE(formatQuantity(4.5e-18, Dim::of(2, 1, -2)), QStringLiteral("4.5 aJ"));
+}
+
+// The constants, each with its unit - the text that describes
+// expressions saying which; a constant's value written as a bare number
+// pointed out (an integral of 1.602e-19*semi.R was in µHz, not µA: the
+// update check of 48d5fa8, 6).
+void TestFemEngine::constantsWithTheirUnits()
+{
+    const Scope& b = Scope::builtins();
+    auto dim = [&](const QString& text) { return Expression::compile(text, b).dim(); };
+    for (const auto& [name, unit] : std::vector<std::pair<const char*, const char*>>{
+             {"q0", "C"}, {"e_const", "C"}, {"eps0", "F/m"}, {"mu0", "H/m"}, {"c0", "m/s"}, {"kB", "J/K"}, {"h_const", "J*s"},
+             {"sigma_const", "W/(m^2*K^4)"}, {"N_A_const", "1/mol"}, {"R_const", "J/(mol*K)"}, {"g_const", "m/s^2"}})
+        QVERIFY2(dim(QLatin1String(name)) == dim(QStringLiteral("1[%1]").arg(QLatin1String(unit))), name);
+    const QString text = constantsText();
+    for (const char* said : {"q0 or e_const (the elementary charge, C)", "eps0 or epsilon0_const (the vacuum permittivity, F/m)", "kB or k_B_const"})
+        QVERIFY2(text.contains(QLatin1String(said)), qPrintable(text));
+    QStringList bare = bareConstants(QStringLiteral("1.602e-19*semi.R"));
+    QCOMPARE(bare.size(), 1);
+    QVERIFY2(bare.front().contains(QLatin1String("1.602e-19 is q0's value without its unit (the elementary charge, C)")), qPrintable(bare.front()));
+    bare = bareConstants(QStringLiteral("es.C11/(8.854e-12*5) + 1.38e-23*T"));
+    QCOMPARE(bare.size(), 2);
+    QVERIFY(bare.front().contains(QLatin1String("eps0")) && bare.back().contains(QLatin1String("kB")));
+    for (const char* none : {"q0*semi.R", "1.602e-19[C]*semi.R", "2.5e3*x", "x1.602e-19", "1e-19*y"})
+        QVERIFY2(bareConstants(QLatin1String(none)).isEmpty(), none);
+    QCOMPARE(bareConstants(QStringLiteral("2.998e8/f")).size(), 1);   // (c0, 299792458; 3e8 too, 0.07 % off)
 }
 
 void TestFemEngine::expressions()
