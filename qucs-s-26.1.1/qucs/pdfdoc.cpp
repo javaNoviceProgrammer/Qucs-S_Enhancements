@@ -57,6 +57,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
+#include <QVariantAnimation>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -73,6 +74,13 @@ constexpr int Spacing = 12;     // between them
 constexpr int TileSize = 512;   // device pixels
 constexpr int PreviewWidth = 240;
 constexpr int ThumbnailWidth = 104;
+// A zoom's step: its frames over this, eased out; a gesture's tiles
+// rendered this long after its last event (or at its end).
+constexpr int ZoomStepMs = 150;
+constexpr int ZoomSettleMs = 100;
+// A paint's rendering, at most: the rest in the next (some 1.7 ms a
+// tile of a paper's text at 512 by 512).
+constexpr int RenderBudgetMs = 30;
 
 // The toolbar's icons, drawn in the text's color of the moment.
 class GlyphIcon : public QIconEngine
@@ -162,6 +170,29 @@ PageView::PageView(QWidget* parent) : QAbstractScrollArea(parent)
     viewport()->setAttribute(Qt::WA_OpaquePaintEvent);
     verticalScrollBar()->setSingleStep(24);
     horizontalScrollBar()->setSingleStep(24);
+    a_settle = new QTimer(this);
+    a_settle->setSingleShot(true);
+    connect(a_settle, &QTimer::timeout, this, &PageView::settle);
+    // A step's frames: its zoom eased out, in proportion (each frame the
+    // same factor more at an even pace) - from a_zoomFrom to a_zoomTarget.
+    a_zoomAnimation = new QVariantAnimation(this);
+    a_zoomAnimation->setDuration(ZoomStepMs);
+    a_zoomAnimation->setStartValue(0.0);
+    a_zoomAnimation->setEndValue(1.0);
+    a_zoomAnimation->setEasingCurve(QEasingCurve::OutCubic);
+    connect(a_zoomAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        if (a_zoomAnimation->state() != QAbstractAnimation::Running) return;
+        const qreal t = value.toDouble();
+        if (a_zoomPage < 0) takeAnchor(a_zoomAnchor);   // (scrolled meanwhile)
+        placeZoom(t >= 1 ? a_zoomTarget : a_zoomFrom * std::pow(a_zoomTarget / a_zoomFrom, t), a_zoomAnchor, a_zoomPage, a_zoomPoint);
+    });
+    connect(a_zoomAnimation, &QVariantAnimation::finished, this, [this] {
+        if (a_zoomPage < 0) takeAnchor(a_zoomAnchor);
+        if (a_zoom != a_zoomTarget) placeZoom(a_zoomTarget, a_zoomAnchor, a_zoomPage, a_zoomPoint);
+        // (Its tiles a moment after: a step clicked again soon goes on
+        // from the last's scaled tiles, none rendered between.)
+        a_settle->start(ZoomSettleMs);
+    });
     // Drawn by the GPU as set, and when the setting changes.
     setGpu(gpu::used(gpu::Viewer::Pdf));
     connect(gpu::Notifier::instance(), &gpu::Notifier::changed, this, [this](gpu::Viewer viewer) {
@@ -181,8 +212,12 @@ bool PageView::gpu() const
 
 void PageView::setDocument(QPdfDocument* document)
 {
+    a_zoomAnimation->stop();
+    a_settle->stop();
+    a_zooming = false;
     a_document = document;
     a_tiles.clear();
+    a_tileScales.clear();
     a_previews.clear();
     a_links.clear();
     a_pageTexts.clear();
@@ -204,14 +239,20 @@ void PageView::setZoom(qreal zoom)
 {
     a_fit = Fit::None;
     const qreal z = std::clamp(zoom, MinZoom, MaxZoom);
-    if (z == a_zoom) return;
+    if (z == a_zoom && a_zoomAnimation->state() != QAbstractAnimation::Running) return;
     zoomBy(z / a_zoom);
 }
 
 void PageView::zoomBy(qreal factor, QPoint anchor)
 {
+    // (At once, its tiles too: a step under way ends where this is. A
+    // gesture's zoom is zooming() again after it.)
+    a_zoomAnimation->stop();
+    a_settle->stop();
+    a_zooming = false;
     const qreal z = std::clamp(a_zoom * factor, MinZoom, MaxZoom);
     a_fit = Fit::None;
+    a_zoomTarget = z;
     if (!(z > 0) || z == a_zoom || a_pages.isEmpty()) {
         a_zoom = z;
         relayout();
@@ -226,17 +267,98 @@ void PageView::zoomBy(qreal factor, QPoint anchor)
         page = a_currentPage;
         inPage = QPointF(0, 0);
     }
-    a_zoom = z;
+    placeZoom(z, anchor, page, inPage);
+}
+
+void PageView::placeZoom(qreal zoom, QPoint anchor, int page, QPointF inPage)
+{
+    a_zoom = std::clamp(zoom, MinZoom, MaxZoom);
+    a_placing = true;
     relayout();
-    const QPointF at = toViewport(page, inPage);
-    horizontalScrollBar()->setValue(horizontalScrollBar()->value() + int(std::lround(at.x() - anchor.x())));
-    verticalScrollBar()->setValue(verticalScrollBar()->value() + int(std::lround(at.y() - anchor.y())));
+    if (page >= 0 && page < a_pages.size()) {
+        const QPointF at = toViewport(page, inPage);
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() + int(std::lround(at.x() - anchor.x())));
+        verticalScrollBar()->setValue(verticalScrollBar()->value() + int(std::lround(at.y() - anchor.y())));
+    }
+    a_placing = false;
     viewport()->update();
     emit zoomChanged(a_zoom);
 }
 
+void PageView::zoomSmoothly(qreal factor, QPoint anchor)
+{
+    const bool running = a_zoomAnimation->state() == QAbstractAnimation::Running;
+    const qreal target = std::clamp((running ? a_zoomTarget : a_zoom) * factor, MinZoom, MaxZoom);
+    if (a_pages.isEmpty() || (!running && target == a_zoom)) {
+        zoomBy(factor, anchor);
+        return;
+    }
+    // From the zoom shown, the point under the anchor kept there all the
+    // way (each frame placed from it: no rounding gathered).
+    if (anchor.x() < 0) anchor = viewport()->rect().center();
+    a_zoomAnimation->stop();
+    takeAnchor(anchor);
+    a_fit = Fit::None;
+    a_zoomFrom = a_zoom;
+    a_zoomTarget = target;
+    a_zooming = true;
+    a_settle->stop();
+    a_zoomAnimation->start();
+}
+
+qreal PageView::targetZoom() const
+{
+    return a_zoomAnimation->state() == QAbstractAnimation::Running ? a_zoomTarget : a_zoom;
+}
+
+void PageView::takeAnchor(QPoint anchor)
+{
+    a_zoomAnchor = anchor;
+    a_zoomPage = pageAt(anchor, &a_zoomPoint);
+    if (a_zoomPage < 0) {
+        a_zoomPage = a_currentPage;
+        a_zoomPoint = QPointF(0, 0);
+    }
+}
+
+void PageView::zoomGesture(qreal factor, QPoint anchor)
+{
+    if (a_pages.isEmpty()) {
+        zoomBy(factor, anchor);
+        return;
+    }
+    // The point under the fingers taken once a gesture (again where they
+    // move, or the view is scrolled), each event's zoom placed from it: an
+    // event at a time, each scroll rounded to a pixel, it moved 2 pixels
+    // in 20.
+    a_zoomAnimation->stop();
+    if (!a_zooming || anchor != a_zoomAnchor || a_zoomPage < 0) takeAnchor(anchor);
+    a_fit = Fit::None;
+    a_zoomTarget = std::clamp(a_zoom * factor, MinZoom, MaxZoom);
+    placeZoom(a_zoomTarget, anchor, a_zoomPage, a_zoomPoint);
+    zoomed(ZoomSettleMs);
+}
+
+void PageView::zoomed(int settle)
+{
+    a_zooming = true;
+    a_settle->start(settle);
+}
+
+void PageView::settle()
+{
+    if (a_zoomAnimation->state() == QAbstractAnimation::Running) return;
+    a_settle->stop();
+    if (!a_zooming) return;
+    a_zooming = false;
+    viewport()->update();
+}
+
 void PageView::setFit(Fit fit)
 {
+    a_zoomAnimation->stop();
+    a_settle->stop();
+    a_zooming = false;
     const int page = a_currentPage;
     a_fit = fit;
     relayout();
@@ -659,6 +781,12 @@ QImage PageView::tile(int page, qreal scale, int tx, int ty, bool* cached)
     image.setDevicePixelRatio(viewport()->devicePixelRatioF());
     ++a_tilesRendered;
     a_tiles.insert(key, new QImage(image), int(std::max<qsizetype>(1, image.sizeInBytes() / 1024)));
+    QList<qreal>& scales = a_tileScales[page];
+    if (scales.isEmpty() || scales.last() != scale) {
+        scales.removeAll(scale);
+        scales << scale;
+        if (scales.size() > 6) scales.removeFirst();
+    }
     return image;
 }
 
@@ -694,29 +822,26 @@ void PageView::paintPages(QPainter& p, const QRect& visible)
         const QRectF local((shown.topLeft() - r.topLeft()) * dpr, shown.size() * dpr);
         const int tx0 = std::max(0, int(local.left()) / TileSize), tx1 = int(local.right()) / TileSize;
         const int ty0 = std::max(0, int(local.top()) / TileSize), ty1 = int(local.bottom()) / TileSize;
-        QImage low;
+        QRegion missing;
         for (int ty = ty0; ty <= ty1; ++ty)
             for (int tx = tx0; tx <= tx1; ++tx) {
                 const QRectF target(r.left() + tx * TileSize / dpr, r.top() + ty * TileSize / dpr, TileSize / dpr, TileSize / dpr);
                 bool cached = false;
                 QImage image;
                 // Rendering takes its time: what does not fit in this
-                // paint comes in the next, the page's preview till then.
-                if (clock.elapsed() < 60 || a_tiles.contains(tileKey(i, scale, tx, ty)))
+                // paint comes in the next. A zoom under way renders none:
+                // its frames from the tiles at hand.
+                if (a_tiles.contains(tileKey(i, scale, tx, ty)) || (!a_zooming && clock.elapsed() < RenderBudgetMs))
                     image = tile(i, scale, tx, ty, &cached);
                 if (!image.isNull()) {
                     image.setDevicePixelRatio(dpr);
                     p.drawImage(target.topLeft(), image);
                 } else {
-                    pending = true;
-                    if (low.isNull()) low = preview(i);
-                    if (!low.isNull()) {
-                        const QRectF from((target.left() - r.left()) / r.width() * low.width(), (target.top() - r.top()) / r.height() * low.height(),
-                                          target.width() / r.width() * low.width(), target.height() / r.height() * low.height());
-                        p.drawImage(target, low, from);
-                    }
+                    if (!a_zooming) pending = true;
+                    missing += target.intersected(r).toAlignedRect();
                 }
             }
+        if (!missing.isEmpty()) paintScaled(p, i, r, missing, scale, dpr);
         // The search's results, the current one more.
         if (a_search != nullptr && !a_search->searchString().isEmpty()) {
             const QPdfLink current = a_searchIndex >= 0 ? a_search->resultAtIndex(a_searchIndex) : QPdfLink();
@@ -745,6 +870,49 @@ void PageView::paintPages(QPainter& p, const QRect& visible)
     if (pending) QTimer::singleShot(0, viewport(), qOverload<>(&QWidget::update));
 }
 
+void PageView::paintScaled(QPainter& p, int page, const QRectF& r, const QRegion& missing, qreal scale, qreal dpr)
+{
+    // (A tile is the page's ink alone, transparent between - on the white
+    // paper drawn: each part from one source, the nearest scale's tiles,
+    // then the next's where they have none, the preview in what is left.
+    // Laid over each other the text showed twice, the preview a halo.)
+    p.save();
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    QList<qreal> scales = a_tileScales.value(page);
+    scales.removeAll(scale);
+    // Nearest first, in proportion: twice the scale as near as half.
+    std::sort(scales.begin(), scales.end(), [scale](qreal a, qreal b) { return std::abs(std::log(a / scale)) < std::abs(std::log(b / scale)); });
+    QRegion left = missing;
+    for (int n = 0; n < std::min<qsizetype>(scales.size(), 2) && !left.isEmpty(); ++n) {
+        const qreal s = scales.at(n);
+        // What is left in device pixels of the page at s, and its tiles.
+        const qreal k = s / scale;
+        const QRectF bounds = QRectF(left.boundingRect()).intersected(r);
+        const QRectF at(((bounds.topLeft() - r.topLeft()) * dpr) * k, bounds.size() * dpr * k);
+        const int tx0 = std::max(0, int(at.left()) / TileSize), tx1 = int(at.right()) / TileSize;
+        const int ty0 = std::max(0, int(at.top()) / TileSize), ty1 = int(at.bottom()) / TileSize;
+        QRegion covered;
+        p.setClipRegion(left);
+        for (int ty = ty0; ty <= ty1; ++ty)
+            for (int tx = tx0; tx <= tx1; ++tx) {
+                const QImage* image = a_tiles.object(tileKey(page, s, tx, ty));
+                if (image == nullptr) continue;
+                const QRectF target(r.topLeft() + QPointF(tx, ty) * (TileSize / (k * dpr)), QSizeF(image->size()) / (k * dpr));
+                p.drawImage(target, *image);
+                covered += target.toAlignedRect();
+                ++a_tilesScaled;
+            }
+        left -= covered;
+    }
+    // The preview: a part no tile at a near scale has.
+    if (!left.isEmpty()) {
+        const QImage low = preview(page);
+        p.setClipRegion(left);
+        if (!low.isNull()) p.drawImage(r, low);
+    }
+    p.restore();
+}
+
 void PageView::resizeEvent(QResizeEvent* event)
 {
     QAbstractScrollArea::resizeEvent(event);
@@ -761,6 +929,8 @@ void PageView::resizeEvent(QResizeEvent* event)
 
 void PageView::scrollContentsBy(int, int)
 {
+    // (Scrolled by the user: a gesture's point taken again.)
+    if (!a_placing) a_zoomPage = -1;
     updateCurrentPage();
     viewport()->update();
 }
@@ -769,7 +939,17 @@ void PageView::wheelEvent(QWheelEvent* event)
 {
     if (event->modifiers() & Qt::ControlModifier) {
         const int delta = event->angleDelta().y();
-        if (delta != 0) zoomBy(std::pow(1.0015, delta), event->position().toPoint());
+        if (delta != 0) {
+            const qreal factor = std::pow(1.0015, delta);
+            // A mouse wheel's notch (no phase, no pixels): a step, in
+            // frames. A trackpad's scroll: as it comes, its tiles when it
+            // stops.
+            if (event->phase() == Qt::NoScrollPhase && event->pixelDelta().isNull()) {
+                zoomSmoothly(factor, event->position().toPoint());
+            } else {
+                zoomGesture(factor, event->position().toPoint());
+            }
+        }
         event->accept();
         return;
     }
@@ -781,9 +961,11 @@ bool PageView::viewportEvent(QEvent* event)
     if (event->type() == QEvent::NativeGesture) {
         auto* g = static_cast<QNativeGestureEvent*>(event);
         if (g->gestureType() == Qt::ZoomNativeGesture) {
-            zoomBy(1.0 + g->value(), g->position().toPoint());
+            zoomGesture(1.0 + g->value(), g->position().toPoint());
             return true;
         }
+        // (The fingers lifted: the tiles at once.)
+        if (g->gestureType() == Qt::EndNativeGesture && a_zooming) settle();
     }
     return QAbstractScrollArea::viewportEvent(event);
 }
@@ -1154,13 +1336,14 @@ void PdfDoc::buildUi()
         updatePageField();
         a_view->setFocus();
     });
-    connect(a_zoomOutButton, &QToolButton::clicked, this, [this] { a_view->zoomBy(1 / 1.25); });
-    connect(a_zoomInButton, &QToolButton::clicked, this, [this] { a_view->zoomBy(1.25); });
+    // (The steps in frames: zoomSmoothly.)
+    connect(a_zoomOutButton, &QToolButton::clicked, this, [this] { a_view->zoomSmoothly(1 / 1.25); });
+    connect(a_zoomInButton, &QToolButton::clicked, this, [this] { a_view->zoomSmoothly(1.25); });
     connect(a_zoomBox, &QComboBox::activated, this, [this](int index) {
         const double z = a_zoomBox->itemData(index).toDouble();
         if (z == -1.0) a_view->setFit(PageView::Fit::Width);
         else if (z == -2.0) a_view->setFit(PageView::Fit::Page);
-        else a_view->setZoom(z);
+        else a_view->zoomSmoothly(std::clamp(z, PageView::MinZoom, PageView::MaxZoom) / a_view->targetZoom());
         a_view->setFocus();
     });
     connect(a_zoomBox->lineEdit(), &QLineEdit::returnPressed, this, [this] {
@@ -1168,7 +1351,7 @@ void PdfDoc::buildUi()
         t.remove(QLatin1Char('%'));
         bool ok = false;
         const double z = t.toDouble(&ok);
-        if (ok && z > 0) a_view->setZoom(z / 100.0);
+        if (ok && z > 0) a_view->zoomSmoothly(std::clamp(z / 100.0, PageView::MinZoom, PageView::MaxZoom) / a_view->targetZoom());
         updateZoomBox();
         a_view->setFocus();
     });
@@ -1690,9 +1873,10 @@ void PdfDoc::becomeCurrent(bool)
 
 double PdfDoc::zoomBy(double factor)
 {
-    // View > Zoom In and Out: a step each, as the toolbar's.
-    a_view->zoomBy(factor > 1 ? 1.25 : factor < 1 ? 1 / 1.25 : 1.0);
-    return a_view->zoom();
+    // View > Zoom In and Out: a step each, as the toolbar's, in frames -
+    // the zoom it reaches.
+    a_view->zoomSmoothly(factor > 1 ? 1.25 : factor < 1 ? 1 / 1.25 : 1.0);
+    return a_view->targetZoom();
 }
 
 void PdfDoc::showAll()
