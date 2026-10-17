@@ -42,6 +42,8 @@ class QTreeWidgetItem;
 
 namespace qucs_s::layout {
 
+class LayoutGl;
+
 /*!
  * A cell of a layout drawn as a layout viewer draws it: each layer in its
  * colour and fill, the cells it places down to a depth and deeper ones as
@@ -141,6 +143,19 @@ public:
     /// The view drawn now, as the screen shows it.
     QImage picture();
 
+    /// Drawn by the GPU (layoutviewgl.h): its canvas over the view, the
+    /// layers from buffers made once. The setting (Settings… > Appearance >
+    /// Drawing: Rendering/layout) chooses; where there is no OpenGL 3.3, or
+    /// QUCS_GPU=0, the CPU draws whatever it says.
+    void setGpu(bool on);
+    bool gpu() const;
+    LayoutGl* canvas() const { return a_canvas; }
+    /// The view's painting - the canvas's when \a gl, which draws the
+    /// layers; else the CPU's, into its picture.
+    void paintFrame(QPainter& p, LayoutGl* gl);
+    /// The canvas could not draw (no context, its shaders): the CPU's again.
+    void canvasFailed();
+
     static constexpr double MinScale = 1e-6;   // px per µm: 1 m in a pixel
     static constexpr double MaxScale = 1e6;    // a pm in a pixel
 
@@ -172,6 +187,7 @@ protected:
     bool event(QEvent* event) override;
 
 private:
+    friend class LayoutGl;
     void invalidate();
     void paintGrid(QPainter& p, const Colors& c) const;
     void paintScale(QPainter& p, const Colors& c) const;
@@ -195,6 +211,8 @@ private:
 
     QImage a_cache;             // the layout drawn, under the overlays
     bool a_dirty = true;
+    LayoutGl* a_canvas = nullptr;
+    bool a_gpuBroken = false;
     RenderStats a_stats;
     int a_renders = 0;
 

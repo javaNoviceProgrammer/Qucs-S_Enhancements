@@ -38,9 +38,12 @@
 #include <QTextDocument>
 #include <QTreeView>
 
+#include "multiphysicsview.h"
+#include "gpurendering.h"
 #include "config.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
+#include "settings.h"
 #include "main.h"
 #include "misc.h"
 #include "module.h"
@@ -123,6 +126,55 @@ int darkPixels(const QImage& image)
             if (image.pixelColor(x, y).lightness() < 128) ++dark;
     return dark;
 }
+
+// What a page view shows, painted and its tiles all drawn: two grabs
+// alike. (An OpenGL viewport's grab is its last picture, painted when the
+// window was; a plain one's is painted for the grab.)
+QImage shown(PageView* view)
+{
+    QImage last;
+    for (int k = 0; k < 100; ++k) {
+        QTest::qWait(40);
+        const QImage now = view->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
+        if (!last.isNull() && now == last) return now;
+        last = now;
+    }
+    return last;
+}
+
+// The time a viewport's paint takes, its painting sent on and timed.
+class PaintTimer : public QObject
+{
+public:
+    explicit PaintTimer(QWidget* viewport) : QObject(viewport) { viewport->installEventFilter(this); }
+    qint64 worst = 0;   // µs
+    int paints = 0;
+    QList<qint64> times;   // µs, each paint's
+    qint64 median() const
+    {
+        QList<qint64> sorted = times;
+        std::sort(sorted.begin(), sorted.end());
+        return sorted.isEmpty() ? 0 : sorted.at(sorted.size() / 2);
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() != QEvent::Paint || a_inside) return false;
+        a_inside = true;
+        QElapsedTimer t;
+        t.start();
+        QCoreApplication::sendEvent(watched, event);
+        times << t.nsecsElapsed() / 1000;
+        worst = std::max(worst, times.last());
+        ++paints;
+        a_inside = false;
+        return true;
+    }
+
+private:
+    bool a_inside = false;
+};
 
 // Whatever dialog comes up is closed: the commands are used, not answered.
 class DialogCloser : public QObject
@@ -256,7 +308,7 @@ private slots:
         QCOMPARE(view->currentPage(), 0);
         QCOMPARE(doc->pageField()->text(), QStringLiteral("1"));
         // Drawn: the paper white, the text dark.
-        const QImage shot = view->viewport()->grab().toImage();
+        const QImage shot = shown(view);
         const QRect page = view->pageRect(0).intersected(view->viewport()->rect());
         int dark = 0, white = 0;
         for (int y = page.top(); y < page.bottom(); y += 3)
@@ -866,6 +918,61 @@ private slots:
         doc->firstPage();
     }
 
+    // Drawn by the GPU as by the CPU (gpurendering.h: an OpenGL viewport,
+    // the page's tiles textures), the setting switching the view open; a
+    // scroll's paint timed each way.
+    void theGpuDrawsAsTheCpu()
+    {
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        QVERIFY(app->gotoPage(file));
+        PdfDoc* doc = pdf();
+        PageView* view = doc->view();
+        QVERIFY(view->gpu());   // (chosen by default)
+        QVERIFY(qucs_s::gpu::hasGlViewport(view));
+        doc->firstPage();
+        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, false);
+        QVERIFY(!view->gpu());
+        QCOMPARE(QucsSettingsFile().value("Rendering/pdf").toString(), QString("cpu"));
+        const QImage cpu = shown(view);
+        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, true);
+        QVERIFY(view->gpu());
+        const QImage gpu = shown(view);
+        QCOMPARE(gpu.size(), cpu.size());
+        int differ = 0, dark = 0;
+        for (int y = 0; y < cpu.height(); ++y)
+            for (int x = 0; x < cpu.width(); ++x) {
+                const QColor a = cpu.pixelColor(x, y), b = gpu.pixelColor(x, y);
+                dark += a.lightness() < 100;
+                differ += std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()) > 24;
+            }
+        const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS");
+        if (!shots.isEmpty()) {
+            cpu.save(shots + "/pdf_cpu.png");
+            gpu.save(shots + "/pdf_gpu.png");
+        }
+        qInfo("%d of %d pixels differ; %d dark (the text)", differ, cpu.width() * cpu.height(), dark);
+        QVERIFY(dark > 500);
+        QVERIFY2(differ < cpu.width() * cpu.height() / 200, qPrintable(QString::number(differ)));
+        // A scroll's paint, each way.
+        qint64 worst[2] = {0, 0}, median[2] = {0, 0};
+        for (bool onGpu : {false, true}) {
+            view->setGpu(onGpu);
+            (void)shown(view);
+            auto* timer = new PaintTimer(view->viewport());
+            for (int k = 0; k < 20; ++k) {
+                view->verticalScrollBar()->setValue(view->verticalScrollBar()->value() + 37);
+                QTest::qWait(20);
+            }
+            QTRY_VERIFY(timer->paints > 5);
+            worst[onGpu] = timer->worst;
+            median[onGpu] = timer->median();
+            delete timer;
+            doc->firstPage();
+        }
+        qInfo("a scroll's paint: the CPU %lld µs (%lld at most), the GPU %lld µs (%lld)", median[0], worst[0], median[1], worst[1]);
+        QVERIFY(view->gpu());
+    }
+
     // Closed like any document.
     void itIsClosed()
     {
@@ -876,5 +983,13 @@ private slots:
     }
 };
 
-QTEST_MAIN(TestPdfViewer)
+int main(int argc, char** argv)
+{
+    // (As the application: the core profile's OpenGL, before the
+    // application - the GPU's drawing where there is one.)
+    qucs_s::fem::GraphicsView::prepareGpu();
+    QApplication app(argc, argv);
+    TestPdfViewer test;
+    return QTest::qExec(&test, argc, argv);
+}
 #include "test_pdf_viewer.moc"

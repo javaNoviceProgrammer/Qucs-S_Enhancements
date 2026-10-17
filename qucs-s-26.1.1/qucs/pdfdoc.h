@@ -113,6 +113,11 @@ public:
     qreal pixelsPerPoint() const;
     /// The tiles drawn since the start (for the tests).
     int tilesRendered() const { return a_tilesRendered; }
+    /// Drawn by the GPU: its viewport an OpenGL widget, the tiles textures
+    /// kept there and scaled by it (Settings… > Appearance > Drawing:
+    /// Rendering/pdf). The pages themselves are pdfium's, on the CPU.
+    void setGpu(bool on);
+    bool gpu() const;
 
     static constexpr qreal MinZoom = 0.1;
     static constexpr qreal MaxZoom = 16.0;
@@ -147,6 +152,9 @@ private:
         QPointF location;
     };
 
+    /// The pages in \a visible (the viewport's), on \a p: the CPU's
+    /// painter on the viewport, or the GPU's on its framebuffer.
+    void paintPages(QPainter& p, const QRect& visible);
     void relayout();
     void updateScrollBars();
     void updateCurrentPage();
