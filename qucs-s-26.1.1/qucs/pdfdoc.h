@@ -36,6 +36,7 @@ class QSplitter;
 class QStackedWidget;
 class QTabWidget;
 class QTimer;
+class QVariantAnimation;
 class QToolButton;
 class QTreeView;
 
@@ -74,8 +75,20 @@ public:
     qreal zoom() const { return a_zoom; }
     void setZoom(qreal zoom);
     /// \a factor times the zoom, the point under \a anchor (in the
-    /// viewport; the middle when not given) kept where it is.
+    /// viewport; the middle when not given) kept where it is. At once:
+    /// setZoom(), the tools'.
     void zoomBy(qreal factor, QPoint anchor = QPoint(-1, -1));
+    /// The same in steps over some 150 ms (the toolbar's, the View menu's,
+    /// a mouse wheel's notch, a zoom chosen in the box): zoom() goes there
+    /// a frame at a time, targetZoom() where it ends; a step before the end
+    /// goes on from there.
+    void zoomSmoothly(qreal factor, QPoint anchor = QPoint(-1, -1));
+    qreal targetZoom() const;
+    /// A zoom under way: a step's frames, a pinch or a trackpad's scroll
+    /// (till 100 ms after its last frame or event, or the pinch's end). Meanwhile the pages are
+    /// drawn from the tiles at hand, another zoom's scaled, none rendered:
+    /// each frame quick. Then the tiles at the zoom reached.
+    bool zooming() const { return a_zooming; }
     Fit fit() const { return a_fit; }
     void setFit(Fit fit);
 
@@ -113,6 +126,9 @@ public:
     qreal pixelsPerPoint() const;
     /// The tiles drawn since the start (for the tests).
     int tilesRendered() const { return a_tilesRendered; }
+    /// The tiles drawn from another zoom's, scaled, while their own are
+    /// not there (for the tests).
+    int tilesScaled() const { return a_tilesScaled; }
     /// Drawn by the GPU: its viewport an OpenGL widget, the tiles textures
     /// kept there and scaled by it (Settings… > Viewers: Viewers/pdfGpu, off
     /// unless chosen). The pages themselves are pdfium's, on the CPU.
@@ -156,6 +172,19 @@ private:
     /// painter on the viewport, or the GPU's on its framebuffer.
     void paintPages(QPainter& p, const QRect& visible);
     void relayout();
+    /// The zoom \a zoom, \a inPage of \a page (points) at \a anchor.
+    void placeZoom(qreal zoom, QPoint anchor, int page, QPointF inPage);
+    /// A gesture's zoom (a pinch's, a trackpad's scroll): \a factor about
+    /// \a anchor, zooming() till ZoomSettleMs after it.
+    void zoomGesture(qreal factor, QPoint anchor);
+    /// The page and point under \a anchor, kept by a zoom's frames.
+    void takeAnchor(QPoint anchor);
+    void zoomed(int settle);
+    void settle();
+    /// The parts \a missing (viewport) of page \a page (at \a r) whose
+    /// tiles at \a scale are not there: drawn from its tiles at the
+    /// nearest other scales, the preview under them.
+    void paintScaled(QPainter& p, int page, const QRectF& r, const QRegion& missing, qreal scale, qreal dpr);
     void updateScrollBars();
     void updateCurrentPage();
     QRectF pagePoints(int page) const;   // its rect in document pixels
@@ -193,8 +222,22 @@ private:
     int a_currentPage = 0;
 
     QCache<QString, QImage> a_tiles;
+    QHash<int, QList<qreal>> a_tileScales;   // the scales a page has had tiles at, the latest last
     QHash<int, QImage> a_previews;
     int a_tilesRendered = 0;
+    int a_tilesScaled = 0;
+
+    // A zoom under way: a step's animation (0 to 1, from a_zoomFrom to
+    // a_zoomTarget), its anchor's page and point kept; a gesture's end.
+    QVariantAnimation* a_zoomAnimation = nullptr;
+    qreal a_zoomFrom = 1.0;
+    qreal a_zoomTarget = 1.0;
+    QPoint a_zoomAnchor;
+    int a_zoomPage = -1;
+    QPointF a_zoomPoint;
+    QTimer* a_settle = nullptr;
+    bool a_zooming = false;
+    bool a_placing = false;   // placeZoom()'s scrolling
     QHash<int, QList<Link>> a_links;
     QHash<int, PageText> a_pageTexts;
     // charAt()'s last answers (the press point asked at each move of a drag).

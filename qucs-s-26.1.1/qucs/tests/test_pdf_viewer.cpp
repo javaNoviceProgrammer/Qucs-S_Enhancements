@@ -134,6 +134,9 @@ int darkPixels(const QImage& image)
 QImage shown(PageView* view)
 {
     QImage last;
+    // (A zoom under way draws other zooms' tiles scaled, the same frame
+    // till it ends.)
+    for (int k = 0; k < 250 && view->zooming(); ++k) QTest::qWait(20);
     for (int k = 0; k < 100; ++k) {
         QTest::qWait(40);
         const QImage now = view->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
@@ -355,11 +358,12 @@ private slots:
         QCOMPARE(view->fit(), PageView::Fit::None);
         const QSizeF points = doc->document()->pagePointSize(0);
         QVERIFY(std::abs(view->pageRect(0).width() - points.width() * view->pixelsPerPoint()) <= 2);
-        app->magPlus->trigger();   // View > Zoom In
-        QCOMPARE(view->zoom(), 1.25);
+        app->magPlus->trigger();   // View > Zoom In: in frames (zoomIsSmooth)
+        QCOMPARE(view->targetZoom(), 1.25);
+        QTRY_COMPARE(view->zoom(), 1.25);
         QVERIFY(!app->magPlus->isChecked());   // not a mode, for a PDF
         app->magMinus->trigger();
-        QCOMPARE(view->zoom(), 1.0);
+        QTRY_COMPARE(view->zoom(), 1.0);
         app->magAll->trigger();   // View All: the page whole
         QCOMPARE(view->fit(), PageView::Fit::Page);
         QVERIFY(view->pageRect(0).height() <= view->viewport()->height() - 30);
@@ -373,6 +377,157 @@ private slots:
         QVERIFY(view->tilesRendered() - before < 40);
         view->setZoom(0.001);
         QCOMPARE(view->zoom(), PageView::MinZoom);
+        view->setFit(PageView::Fit::Width);
+    }
+
+    // A zoom is smooth (the user's "focus on making zoom in and zoom out
+    // very smooth in the pdf viewer"): its frames drawn from the tiles at
+    // hand, another zoom's scaled, none rendered - a pinch's 60 frames on a
+    // paper some 5 ms each where they were 25-37 -, the tiles at the zoom
+    // reached once it ends; a step (the toolbar's, the View menu's, a mouse
+    // wheel's notch) in frames over 150 ms, the point under it kept.
+    void zoomIsSmooth()
+    {
+        PdfDoc* doc = pdf();
+        PageView* view = doc->view();
+        doc->firstPage();
+        // (From the width: a page narrower than the view is in its middle,
+        // whatever point a zoom is about.)
+        view->setZoom(1.0);
+        view->setFit(PageView::Fit::Width);
+        QVERIFY(!view->zooming());
+        shown(view);
+        auto* timer = new PaintTimer(view->viewport());
+        const auto pointAt = [view](QPoint at) {
+            QPointF in;
+            const int page = view->pageAt(at, &in);
+            return std::make_pair(page, in);
+        };
+        // A pinch: no tile rendered, the old ones scaled; the point under
+        // the fingers kept.
+        // (On the page's first line, "Page 1. Hello world": its frames are
+        // told from the zoom's own by the text.)
+        const QRectF text = doc->document()->getAllText(0).boundingRectangle();
+        QVERIFY(!text.isEmpty());
+        const QPoint fingers = (QPointF(view->pageRect(0).topLeft()) + (text.topLeft() + QPointF(80, 14)) * view->pixelsPerPoint()).toPoint();
+        QVERIFY(view->viewport()->rect().contains(fingers));
+        QVERIFY(pointAt(fingers).first >= 0);
+        const auto gesture = [view, fingers](Qt::NativeGestureType type, qreal value) {
+            QNativeGestureEvent e(type, QPointingDevice::primaryPointingDevice(), 2, fingers, fingers, view->viewport()->mapToGlobal(QPointF(fingers)),
+                                  value, QPointF());
+            QCoreApplication::sendEvent(view->viewport(), &e);
+        };
+        int rendered = view->tilesRendered(), scaled = view->tilesScaled();
+        const qreal fitted = view->zoom();
+        timer->times.clear();
+        for (int i = 0; i < 10; ++i) {
+            gesture(Qt::ZoomNativeGesture, 0.03);
+            view->viewport()->repaint();
+        }
+        // Scrolled meanwhile (two fingers): not undone, the point under
+        // them taken again.
+        view->verticalScrollBar()->setValue(view->verticalScrollBar()->value() + 40);
+        const auto [page, in] = pointAt(fingers);
+        for (int i = 0; i < 20; ++i) {
+            gesture(Qt::ZoomNativeGesture, 0.03);
+            view->viewport()->repaint();
+        }
+        QVERIFY(view->zooming());
+        QVERIFY(std::abs(view->zoom() - fitted * std::pow(1.03, 30)) < 1e-9);
+        QCOMPARE(view->tilesRendered(), rendered);
+        QVERIFY2(view->tilesScaled() > scaled, qPrintable(QString::number(view->tilesScaled() - scaled)));
+        const auto [pageAfter, inAfter] = pointAt(fingers);
+        QCOMPARE(pageAfter, page);
+        // (Each event placed from the point: one rounding to a pixel, not
+        // one an event - 2 pixels in 20.)
+        qInfo("the point under the fingers moved %.2f px", QLineF(inAfter, in).length() * view->pixelsPerPoint());
+        QVERIFY2(QLineF(inAfter, in).length() * view->pixelsPerPoint() <= 0.75,
+                 qPrintable(QStringLiteral("%1 %2 against %3 %4, %5 px a point, scroll %6 of %7")
+                                .arg(inAfter.x()).arg(inAfter.y()).arg(in.x()).arg(in.y()).arg(view->pixelsPerPoint())
+                                .arg(view->horizontalScrollBar()->value()).arg(view->horizontalScrollBar()->maximum())));
+        qInfo("a pinch's frames: median %.1f ms, worst %.1f ms", timer->median() / 1000.0, timer->worst / 1000.0);
+        // Its frame the page's ink once, from the tiles at hand: as white
+        // between the glyphs as the zoom's own tiles make it (a tile is
+        // the ink alone - the preview drawn under them gave a grey halo).
+        const auto whiteShare = [view](const QImage& shot) {
+            const QRect area = view->pageRect(view->currentPage()).intersected(view->viewport()->rect()).adjusted(8, 8, -8, -8);
+            int white = 0, all = 0;
+            for (int y = area.top(); y < area.bottom(); y += 2)
+                for (int x = area.left(); x < area.right(); x += 2, ++all)
+                    if (shot.pixelColor(QPoint(x, y) * shot.devicePixelRatio()).lightness() > 245) ++white;
+            return all > 0 ? double(white) / all : 0.0;
+        };
+        const double during = whiteShare(view->viewport()->grab().toImage());
+        // The fingers lifted: its tiles at once, each frame then the zoom's
+        // own.
+        gesture(Qt::EndNativeGesture, 0);
+        QVERIFY(!view->zooming());
+        const double after = whiteShare(shown(view));
+        qInfo("white between the glyphs: %.4f during, %.4f after", during, after);
+        // (The grey: some 1.3 times the tiles' own scaled, the halo 2.3.)
+        QVERIFY2(1 - during < 1.8 * (1 - after), qPrintable(QStringLiteral("%1 %2").arg(during).arg(after)));
+        QVERIFY(view->tilesRendered() > rendered);
+        rendered = view->tilesRendered();
+        scaled = view->tilesScaled();
+        view->viewport()->repaint();
+        QCOMPARE(view->tilesRendered(), rendered);
+        QCOMPARE(view->tilesScaled(), scaled);
+
+        // A step, the View menu's: in frames, none rendering a tile, from
+        // the zoom shown to its own; the middle kept.
+        const qreal z = view->zoom();
+        const QPoint middle = view->viewport()->rect().center();
+        const auto [pageM, inM] = pointAt(middle);
+        QList<int> renderedAt;
+        auto frames = connect(view, &PageView::zoomChanged, view, [&renderedAt, view] { renderedAt << view->tilesRendered(); });
+        QVERIFY(std::abs(doc->zoomBy(2) - z * 1.25) < 1e-9);   // (the zoom it reaches)
+        QCOMPARE(view->zoom(), z);
+        QVERIFY(std::abs(view->targetZoom() - z * 1.25) < 1e-9);
+        QVERIFY(view->zooming());
+        QTRY_VERIFY(std::abs(view->zoom() - z * 1.25) < 1e-12);
+        disconnect(frames);
+        QVERIFY2(renderedAt.size() >= 3, qPrintable(QString::number(renderedAt.size())));
+        for (int r : std::as_const(renderedAt)) QCOMPARE(r, rendered);
+        const auto [pageM2, inM2] = pointAt(middle);
+        QCOMPARE(pageM2, pageM);
+        QVERIFY(QLineF(inM2, inM).length() * view->pixelsPerPoint() <= 1.0);
+        // Then its tiles.
+        QTRY_VERIFY(!view->zooming());
+        shown(view);
+        QVERIFY(view->tilesRendered() > rendered);
+        // Steps before the end go on from it: two, 1.25 times 1.25.
+        const qreal z2 = view->zoom();
+        view->zoomSmoothly(1.25);
+        view->zoomSmoothly(1.25);
+        QVERIFY(std::abs(view->targetZoom() - z2 * 1.5625) < 1e-9);
+        QTRY_VERIFY(std::abs(view->zoom() - z2 * 1.5625) < 1e-12);
+        // A mouse wheel's notch with Ctrl: a step; a trackpad's scroll: at
+        // once, settled after.
+        const QPointF wheelAt(view->viewport()->rect().center());
+        QWheelEvent notch(wheelAt, view->viewport()->mapToGlobal(wheelAt), QPoint(), QPoint(0, -120), Qt::NoButton, Qt::ControlModifier,
+                          Qt::NoScrollPhase, false);
+        const qreal z3 = view->targetZoom();
+        QCoreApplication::sendEvent(view->viewport(), &notch);
+        QVERIFY(std::abs(view->zoom() - z3) < 1e-12);   // (its frames to come)
+        QVERIFY(std::abs(view->targetZoom() - z3 * std::pow(1.0015, -120)) < 1e-9);
+        QTRY_VERIFY(std::abs(view->zoom() - z3 * std::pow(1.0015, -120)) < 1e-12);
+        QTRY_VERIFY(!view->zooming());
+        QWheelEvent scroll(wheelAt, view->viewport()->mapToGlobal(wheelAt), QPoint(0, 4), QPoint(0, 20), Qt::NoButton, Qt::ControlModifier,
+                           Qt::ScrollUpdate, false);
+        const qreal z4 = view->zoom();
+        QCoreApplication::sendEvent(view->viewport(), &scroll);
+        QVERIFY(std::abs(view->zoom() - z4 * std::pow(1.0015, 20)) < 1e-9);
+        QVERIFY(view->zooming());
+        QTRY_VERIFY(!view->zooming());
+        // The tools' zoom (show_pdf's) at once, a step under way ended.
+        view->zoomSmoothly(2);
+        view->setZoom(1.5);
+        QCOMPARE(view->zoom(), 1.5);
+        QCOMPARE(view->targetZoom(), 1.5);
+        QVERIFY(!view->zooming());
+        QTest::qWait(300);
+        QCOMPARE(view->zoom(), 1.5);
+        delete timer;
         view->setFit(PageView::Fit::Width);
     }
 
