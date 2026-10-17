@@ -400,7 +400,8 @@ QString formatText()
         "c.iterations Newton's.\n"
         "Expressions: numbers (1.5e-3, Qucs's 10u 2.2k, 3mm, 1GHz), units in brackets (3[mm], 20[degC], W/(m*K)), + - * / ^, "
         "functions (sin, exp, sqrt, min, max, if(c,a,b), interp(x, x0, y0, x1, y1, ...) through points, neps(e1, e2) and "
-        "keps(e1, e2) the index and extinction of a permittivity...), constants (pi, eps0, mu0, c0, kB, q0), the parameters. In the "
+        "keps(e1, e2) the index and extinction of a permittivity...), constants with their units (%CONSTANTS% - q0*semi.R "
+        "is a current's density, 1.602e-19*semi.R a plain number's: give the constant, not its value), the parameters. In the "
         "geometry and the mesh a plain number is in the component's unit and parameters are converted to it (L = 2[mm] "
         "is 2 in mm). A property's plain number is in its SI unit. Materials and sources may use x, y and fields (T, V, "
         "es.normE, ec.Qrh...); a material's n and kappa lambda0 - the library's of the wavelength, each checked against the "
@@ -431,7 +432,8 @@ QString formatText()
         "es.W, ec.G11, ec.R, ec.I_1, ec.P, ht.Tmax, ht.Tmin, ht.P, ht.Rth, solid.dmax, solid.Rx, solid.Ry, solid.W, mf.L_1, "
         "mf.R_1, mf.V_1, mf.Phi_1, mf.L11, mf.R_1_2, mf.W, mf.P). A terminal named 1 at 1 V in turn gives the capacitance (es) "
         "or conductance (ec) matrix; coils at 1 A in turn the inductance (impedance) matrix (mf). A parameter of a plain name "
-        "(t, T, h) keeps it: time is then 'time'.");
+        "(t, T, h) keeps it: time is then 'time'.")
+        .replace(QLatin1String("%CONSTANTS%"), constantsText());
 }
 
 } // namespace
@@ -1405,6 +1407,10 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     if (doc->solutionStale(usedStudy.isEmpty() ? study : usedStudy)) o.insert(QStringLiteral("note"), tr("the model changed since it was solved"));
     if (!usedStudy.isEmpty()) o.insert(QStringLiteral("study"), usedStudy);
     if (!found.note.isEmpty()) o.insert(QStringLiteral("note"), found.note);
+    // (A constant's value as a bare number: its result's unit wrong -
+    // 1.602e-19*semi.R integrated in µHz, not µA: the update check of 48d5fa8.)
+    if (const QStringList bare = bareConstants(expression); !bare.isEmpty())
+        o.insert(QStringLiteral("hint"), bare.join(QLatin1String("; ")));
     if (!found.solutions.isEmpty()) o.insert(QStringLiteral("solutions"), found.solutions);
     o.insert(QStringLiteral("values"), found.values);
     found.errors.removeDuplicates();

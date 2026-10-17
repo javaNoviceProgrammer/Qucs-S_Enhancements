@@ -11,10 +11,13 @@
 #include "fem_expr.h"
 
 #include <QCoreApplication>
+#include <QRegularExpression>
+#include <QStringList>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <vector>
 
 namespace qucs_s::fem {
 
@@ -478,6 +481,63 @@ QStringList Scope::names() const
     all.removeDuplicates();
     all.sort();
     return all;
+}
+
+namespace {
+
+// The constants, their units' names and what they are (builtins() sets
+// them; constantsText() and bareConstants() say them).
+struct Constant {
+    const char* names;   // its names, split by " or "
+    double value;
+    const char* unit;
+    const char* what;
+};
+const std::vector<Constant>& constants()
+{
+    static const std::vector<Constant> list = {
+        {"eps0 or epsilon0_const", 8.8541878188e-12, "F/m", QT_TRANSLATE_NOOP("fem", "the vacuum permittivity")},
+        {"mu0 or mu0_const", 1.25663706127e-6, "H/m", QT_TRANSLATE_NOOP("fem", "the vacuum permeability")},
+        {"c0 or c_const", 299792458.0, "m/s", QT_TRANSLATE_NOOP("fem", "the speed of light")},
+        {"kB or k_B_const", 1.380649e-23, "J/K", QT_TRANSLATE_NOOP("fem", "Boltzmann's constant")},
+        {"q0 or e_const", 1.602176634e-19, "C", QT_TRANSLATE_NOOP("fem", "the elementary charge")},
+        {"h_const", 6.62607015e-34, "J*s", QT_TRANSLATE_NOOP("fem", "Planck's constant")},
+        {"sigma_const", 5.670374419e-8, "W/(m^2*K^4)", QT_TRANSLATE_NOOP("fem", "Stefan-Boltzmann's constant")},
+        {"N_A_const", 6.02214076e23, "1/mol", QT_TRANSLATE_NOOP("fem", "Avogadro's number")},
+        {"R_const", 8.314462618, "J/(mol*K)", QT_TRANSLATE_NOOP("fem", "the gas constant")},
+        {"g_const", 9.80665, "m/s^2", QT_TRANSLATE_NOOP("fem", "the standard gravity")}};
+    return list;
+}
+
+} // namespace
+
+QString constantsText()
+{
+    QStringList out{QStringLiteral("pi")};
+    for (const Constant& c : constants())
+        out << QStringLiteral("%1 (%2, %3)").arg(QString::fromLatin1(c.names), QCoreApplication::translate("fem", c.what), QString::fromLatin1(c.unit));
+    return out.join(QLatin1String(", "));
+}
+
+QStringList bareConstants(const QString& expression)
+{
+    // (A number in the e-notation, not part of a name or of another number,
+    // and no unit in brackets after it.)
+    static const QRegularExpression number(QStringLiteral(R"((?<![A-Za-z0-9_.])((?:\d+\.?\d*|\.\d+)[eE][-+]?\d+)(?!\s*\[))"));
+    QStringList out;
+    auto it = number.globalMatch(expression);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const double v = m.captured(1).toDouble();
+        for (const Constant& c : constants()) {
+            if (!(v != 0) || std::abs(v / c.value - 1) > 2e-3) continue;
+            const QString name = QString::fromLatin1(c.names).section(QLatin1Char(' '), 0, 0);
+            const QString said = QCoreApplication::translate("fem", "%1 is %2's value without its unit (%3, %4): %2 gives the result its unit")
+                                     .arg(m.captured(1), name, QCoreApplication::translate("fem", c.what), QString::fromLatin1(c.unit));
+            if (!out.contains(said)) out << said;
+        }
+    }
+    return out;
 }
 
 const Scope& Scope::builtins()

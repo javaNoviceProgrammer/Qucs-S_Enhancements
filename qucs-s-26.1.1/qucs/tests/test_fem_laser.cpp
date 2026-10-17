@@ -86,7 +86,10 @@ double global(const Solution& s, const QString& name)
 /// uniform along z - a 20 nm active layer at its middle holds 2 % of its
 /// energy, Γ 0.02 exactly; a p-i-n across it (contacts top and bottom),
 /// recombination only on the active layer, radiative (B), its gain linear
-/// a (N - Ntr), N = √(n p), ng 3.5. \a steps the study's.
+/// a (N - Ntr), N = √(n p), ng 3.5. Its heterojunctions graded over an
+/// element, as its voltages were found (abrupt, its claddings' four rows
+/// give its threshold at 1.78 V: the rate equations the same). \a steps the
+/// study's.
 QByteArray pillbox(const QString& steps, const QString& more = {})
 {
     return QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
@@ -98,7 +101,7 @@ QByteArray pillbox(const QString& steps, const QString& more = {})
         "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "n": "3.5", "kappa": "1e-3", "selection": {"only": ["nclad", "pclad", "ring"]}},
                       {"material": "Gallium arsenide", "n": "3.5", "kappa": "1e-3", "selection": {"only": ["active"]}}],
         "physics": [{"type": "resonator", "tag": "emr", "m": 0, "features": [{"type": "wave", "selection": {"all": true}}]},
-                    {"type": "semiconductor", "tag": "semi", "features": [
+                    {"type": "semiconductor", "tag": "semi", "heterojunctions": "element", "features": [
           {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
           {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
           {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
@@ -309,11 +312,12 @@ private slots:
     // The example vcsel_laser.qfem as its description says (six of its
     // voltages): the mode HE11 980.29 nm, Q 15 800; Γ 0.042, the gain at
     // threshold 409 per cm; the wells transparent at 1.09e18 per cm³ (twelve
-    // states: five gave 1.00e18 and a warning); threshold 49 µA at 1.34 V
-    // (these six points; its own 36, 49 µA at 1.34 V), 0.60 W/A, 0.95 mW at
-    // 1.63 mA (1.90 V); dark at 1.30 V, lasing from 1.36 V. Its cavity's
-    // rows ten (the current at 1.9 V within 11 % of twice as many; five were
-    // 2.09 mA against 1.42 at four times), its SRH lifetimes its own 5 ns
+    // states: five gave 1.00e18 and a warning); threshold 45 µA at 1.37 V
+    // (these six points; its own 36, 47 µA at 1.37 V), 0.60 W/A, 0.82 mW at
+    // 1.42 mA (1.90 V); dark at 1.30 V, lasing from 1.36 V. Its cavity's
+    // rows ten (the current at 1.9 V within 1 % of four times as many, its
+    // heterojunctions abrupt; graded over an element, as they were, 1.63
+    // mA, 11 % from twice as many, five rows 2.09), its SRH lifetimes its own 5 ns
     // (they were the material's 1 ns): the update check of 110e8b9. (A slow
     // build: its geometry and mesh alone - CI's Release builds solve it.)
     void theVcselLaserExample()
@@ -351,12 +355,13 @@ private slots:
         QCOMPARE(int(p.size()), 6);
         QVERIFY(p[0].S < 1 && p[0].Gnet < 0);
         for (std::size_t k = 2; k < p.size(); ++k) QVERIFY2(std::abs(p[k].gmean / 4.0905e4 - 1) < 1e-3, qPrintable(QString::number(p[k].gmean)));
-        QVERIFY(std::abs(p.back().Pout / 0.949e-3 - 1) < 0.01 && std::abs(p.back().I / 1.6316e-3 - 1) < 0.01);
+        QVERIFY2(std::abs(p.back().Pout / 0.821e-3 - 1) < 0.01 && std::abs(p.back().I / 1.418e-3 - 1) < 0.01,
+                 qPrintable(QStringLiteral("%1 W at %2 A").arg(p.back().Pout).arg(p.back().I)));
         QRegularExpressionMatch th = QRegularExpression(QStringLiteral("threshold ([0-9.]+) µA at ([0-9.]+) V.*slope ([0-9.]+) W/A")).match(log);
         QVERIFY2(th.hasMatch(), qPrintable(log));
         qInfo("threshold %s µA at %s V, slope %s W/A", qPrintable(th.captured(1)), qPrintable(th.captured(2)), qPrintable(th.captured(3)));
-        QVERIFY(std::abs(th.captured(1).toDouble() / 48.55 - 1) < 0.05 && std::abs(th.captured(2).toDouble() - 1.339) < 0.01
-                && std::abs(th.captured(3).toDouble() / 0.5992 - 1) < 0.02);
+        QVERIFY(std::abs(th.captured(1).toDouble() / 45.42 - 1) < 0.05 && std::abs(th.captured(2).toDouble() - 1.365) < 0.01
+                && std::abs(th.captured(3).toDouble() / 0.5976 - 1) < 0.02);
         // Its carriers within its gain table: nothing said. Its table ending
         // lower (Nmax 1.5e18, transparency 1.09e18), the carriers past it at
         // 1.6 V - its gain held at its last there: said, once (it was not:

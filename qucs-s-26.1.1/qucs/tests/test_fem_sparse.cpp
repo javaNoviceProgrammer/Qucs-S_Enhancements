@@ -247,6 +247,35 @@ private slots:
         }
     }
 
+    // One of many solved at once, each on a thread of its own (the array
+    // scan's cells): Accelerate's LU from 50 000 unknowns, not 20 000 - its
+    // LUs one after another slower below that than Eigen's on their threads
+    // together (the update check of 48d5fa8, 4: a scan of 21k-unknown cells
+    // three times so). The environment's size and the choice of
+    // Accelerate over it.
+    void manyAtOnceFromFiftyThousand()
+    {
+        init();
+        QCOMPARE(acceleratedFromAtOnce(), 50000);
+        const auto a = grid<double>(123);   // (30 258 unknowns)
+        for (bool many : {false, true}) {
+            SparseLu<double> lu;
+            lu.setManyAtOnce(many);
+            lu.compute(a);
+            QCOMPARE(lu.info(), Eigen::Success);
+            QCOMPARE(lu.accelerated(), acceleratedLu() && !many);
+            const Eigen::VectorXd b = Eigen::VectorXd::Random(a.rows());
+            QVERIFY(residual(a, lu.solve(b), b) < 1e-12);
+        }
+        qputenv("QUCS_FEM_ACCELERATE_FROM", "100");
+        QCOMPARE(acceleratedFromAtOnce(), 100);
+        init();
+        setDirectSolver(DirectSolver::Accelerate);
+        QCOMPARE(acceleratedFromAtOnce(), 0);
+        setDirectSolver(DirectSolver::Automatic);
+        QCOMPARE(acceleratedFromAtOnce(), 50000);
+    }
+
     // The solver chosen (Multiphysics > Settings…) and the environment's
     // over it; each factorization counted by its solver, a step's said.
     void theSolverChosen()

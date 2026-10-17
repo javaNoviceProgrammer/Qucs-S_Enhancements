@@ -698,6 +698,9 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         const QJsonObject format = json(r);
         QVERIFY(format.value("format").toString().contains("selection"));
+        // (The constants with their units: the update check of 48d5fa8, 6.)
+        QVERIFY2(format.value("format").toString().contains("q0 or e_const (the elementary charge, C)") && !format.value("format").toString().contains("%CONSTANTS%"),
+                 qPrintable(format.value("format").toString()));
         QStringList types;
         for (const QJsonValue& k : format.value("kinds").toArray()) types << k.toObject().value("type").toString();
         for (const char* t : {"rectangle", "electrostatics/terminal", "heat/flux", "lineparams"}) QVERIFY2(types.contains(QString::fromLatin1(t)), t);
@@ -738,6 +741,11 @@ private slots:
         r = call("fem_evaluate", {{"expression", "es.C11/(eps0*5)"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(std::abs(json(r).value("values").toArray().first().toObject().value("SI").toDouble() - 10) < 1e-6);
+        QVERIFY(!json(r).contains("hint"));
+        // A constant's value as a bare number: pointed out (the result has no
+        // unit of it).
+        r = call("fem_evaluate", {{"expression", "es.C11/(8.854e-12*5)"}});
+        QVERIFY2(!failed(r) && json(r).value("hint").toString().contains("8.854e-12 is eps0's value without its unit"), qPrintable(text(r)));
         // Changed: the dielectric twice as thick - one step of Undo; solved again.
         r = call("fem_edit", {{"action", "parameters"}, {"parameters", QJsonArray{QJsonObject{{"name", "d"}, {"expression", "2[mm]"}},
                                                                                 QJsonObject{{"name", "w"}, {"expression", "10[mm]"}}}}});
