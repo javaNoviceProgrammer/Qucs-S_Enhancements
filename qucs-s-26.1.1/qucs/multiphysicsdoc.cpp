@@ -1225,8 +1225,21 @@ void MultiphysicsDoc::updateHighlight()
     if (!n || !topology) {
         a_view->setHighlight(Level::None, {});
         a_view->setPickLevel(Level::None);
+        a_view->setMarks({});
         return;
     }
+    // A point source: where it is.
+    QVector<QPointF> marks;
+    if (n->type == QLatin1String("waves/dipole") || n->type == QLatin1String("waves/linecurrent")) {
+        Expression::Options inUnit;
+        inUnit.lengthUnit = topology->unitScale;
+        inUnit.numbersAreLengths = true;
+        const QStringList at = n->pair(QStringLiteral("position"));
+        const Expression x = Expression::compile(at.value(0), parameters()->scope, inUnit);
+        const Expression y = Expression::compile(at.value(1), parameters()->scope, inUnit);
+        if (x.isValid() && x.isConstant() && y.isValid() && y.isConstant()) marks << QPointF(x.constant(), y.constant());
+    }
+    a_view->setMarks(marks);
     const NodeKind* k = n->kind();
     Level level = k ? k->selection : Level::None;
     QJsonObject rule = n->selection();
