@@ -24,6 +24,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPdfDocument>
+#include <QPdfSelection>
 #include <QPdfLink>
 #include <QPdfLinkModel>
 #include <QPdfSearchModel>
@@ -971,6 +972,77 @@ private slots:
         }
         qInfo("a scroll's paint: the CPU %lld µs (%lld at most), the GPU %lld µs (%lld)", median[0], worst[0], median[1], worst[1]);
         QVERIFY(view->gpu());
+    }
+
+    // A page full of text: its first selection at once. (Each of its
+    // characters' boxes was asked of pdfium one by one, some 2 ms each - a
+    // paper's page of 6000 characters 11 s at its first selection, the
+    // program not answering; now pdfium's own hit test, a few calls.) What
+    // is selected: from the character under the press to the one under the
+    // mouse, past its middle.
+    void aFullPageIsSelectedAtOnce()
+    {
+        const QString dense = dir.filePath("ws/dense.pdf");
+        {
+            QPdfWriter writer(dense);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            QTextDocument text;
+            QFont font(QStringLiteral("Helvetica"));
+            font.setPointSize(7);
+            text.setDefaultFont(font);
+            QString html;
+            for (int i = 0; i < 70; ++i)
+                html += QStringLiteral("<p>Line %1: the quick brown fox jumps over the lazy dog, again and again, until the page is full.</p>")
+                            .arg(i, 2, 10, QLatin1Char('0'));
+            text.setHtml(html);
+            text.print(&writer);
+        }
+        QVERIFY(app->gotoPage(dense));
+        PdfDoc* doc = pdf();
+        QVERIFY(doc != nullptr);
+        PageView* view = doc->view();
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(dense), QPdfDocument::Error::None);
+        const QPdfSelection all = pdf.getAllText(0);
+        QVERIFY2(all.endIndex() > 3000, qPrintable(QString::number(all.endIndex())));
+        const QRectF page = all.boundingRectangle();
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer)) || !defined(NDEBUG)
+        const qint64 slower = 10;   // (a build with sanitizers, or for debugging)
+#else
+        const qint64 slower = 1;
+#endif
+        QElapsedTimer t;
+        t.start();
+        QVERIFY(view->selectText(0, page.topLeft() + QPointF(2, 2), page.bottomRight() - QPointF(2, 2)));
+        const qint64 first = t.elapsed();
+        t.restart();
+        QVERIFY(view->selectText(0, page.topLeft() + QPointF(2, 2), page.center()));
+        const qint64 next = t.elapsed();
+        qInfo("a page of %d characters: its first selection %lld ms, the next %lld ms", all.endIndex(), first, next);
+        QVERIFY2(first < 1000 * slower, qPrintable(QString::number(first)));
+        QVERIFY2(next < 200 * slower, qPrintable(QString::number(next)));
+        // From the middle of "quick" to past the middle of "fox"'s x.
+        const QString line = QStringLiteral("Line 10: the quick brown fox");
+        const int at = int(all.text().indexOf(line));
+        QVERIFY(at >= 0);
+        const QRectF q = pdf.getSelectionAtIndex(0, at + int(line.indexOf("quick")) + 2, 1).boundingRectangle();
+        const QRectF x = pdf.getSelectionAtIndex(0, at + int(line.indexOf("fox")) + 2, 1).boundingRectangle();
+        QVERIFY(!q.isEmpty() && !x.isEmpty());
+        QVERIFY(view->selectText(0, QPointF(q.left() + 0.2, q.center().y()), QPointF(x.right() - 0.2, x.center().y())));
+        QCOMPARE(view->selectedText(), QStringLiteral("ick brown fox"));
+        // Past the middle of the 'i', short of the middle of the 'x': each
+        // left out.
+        QVERIFY(view->selectText(0, QPointF(q.center().x() + 0.3 * q.width(), q.center().y()),
+                                 QPointF(x.center().x() - 0.3 * x.width(), x.center().y())));
+        QCOMPARE(view->selectedText(), QStringLiteral("ck brown fo"));
+        // Begun in the margin, left of the line: from its first character.
+        QVERIFY(view->selectText(0, QPointF(page.left() - 20, q.center().y()), QPointF(x.right() - 0.2, x.center().y())));
+        QCOMPARE(view->selectedText(), line);
+        view->clearSelection();
+        // (Closed: the probe in front, as the tests after have it.)
+        app->slotFileClose(app->DocumentTab->indexOf(doc));
+        QVERIFY(app->findDoc(dense) == nullptr);
+        QVERIFY(app->gotoPage(file));
     }
 
     // Closed like any document.
