@@ -45,6 +45,38 @@ private:
 /// Whether texts are drawn (true when no HiddenTexts says otherwise).
 bool textsShown();
 
+/*!
+ * \brief A zoom under way: a graph's lines drawn quickly.
+ *
+ * A diagram's graph is a line from each point to the next, each with round
+ * caps; wider than a pixel, Qt outlines every cap as curves before it fills
+ * it. A page of sweeps (sixty curves of 2,000 points) took 147 ms a paint,
+ * and a zoom by wheel or pinch choked on it. While the canvas zooms, the
+ * caps are square - their width and colour as they are, some six times
+ * quicker -; the zoom done, round again.
+ *
+ * Set for the time of a paint with a Draft object; nothing set, the
+ * lines are drawn in full. Prints and exports are.
+ */
+class Draft
+{
+public:
+    explicit Draft(bool draft);
+    ~Draft();
+    Draft(const Draft&) = delete;
+    Draft& operator=(const Draft&) = delete;
+private:
+    bool m_previous;
+};
+
+/// Whether a zoom's draft is drawn (false when no Draft says otherwise).
+bool draft();
+
+/// A graph's lines this wide, in pixels of the device, or less have square
+/// caps whatever: a square end differs from a round one by under half a
+/// pixel there.
+constexpr double kSquareCapsWidth = 3.0;
+
 } // namespace qucs_s::lod
 
 #endif

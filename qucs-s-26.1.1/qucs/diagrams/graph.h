@@ -307,7 +307,13 @@ private:
 public:
   /// The lines it was last drawn with (thinned for the painter's scale).
   const QList<QLineF>& drawnLines() const { return lines; }
+  /// Of its last paint (for the tests): the lines drawn - those in sight -
+  /// and how many of them with round caps (levelofdetail.h).
+  int linesPainted() const { return paintedLines; }
+  int roundCapsPainted() const { return paintedRound; }
 private:
+  mutable int paintedLines = 0;
+  mutable int paintedRound = 0;
   // The same points as one polyline per stroke: a dash pattern runs on
   // along a polyline, while every line of drawLines() starts it afresh.
   mutable QList<QPolygonF> strokes;
