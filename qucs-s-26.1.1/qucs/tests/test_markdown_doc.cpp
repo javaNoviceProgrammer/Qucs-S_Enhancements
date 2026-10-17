@@ -784,7 +784,7 @@ private slots:
             }
             qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Markdown, false);
             QVERIFY(!md->previewGpu());
-            QCOMPARE(QucsSettingsFile().value("Rendering/markdown").toString(), QString("cpu"));
+            QCOMPARE(QucsSettingsFile().value("Viewers/markdownGpu").toBool(), false);
             const QImage cpu = shown();
             qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Markdown, true);
             QVERIFY(md->previewGpu());

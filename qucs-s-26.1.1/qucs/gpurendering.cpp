@@ -36,10 +36,13 @@ namespace qucs_s::gpu {
 QString settingKey(Viewer viewer)
 {
     switch (viewer) {
-    case Viewer::Pdf: return QStringLiteral("Rendering/pdf");
-    case Viewer::Markdown: return QStringLiteral("Rendering/markdown");
-    case Viewer::Layout: return QStringLiteral("Rendering/layout");
-    case Viewer::Multiphysics: return QStringLiteral("Multiphysics/gpu");
+    // (Keys of their own: the GPU chosen here, not by the defaults - on,
+    // as they were in Rendering/... and Multiphysics/gpu, a layout viewer
+    // slow to show or hide a layer. Those not read.)
+    case Viewer::Pdf: return QStringLiteral("Viewers/pdfGpu");
+    case Viewer::Markdown: return QStringLiteral("Viewers/markdownGpu");
+    case Viewer::Layout: return QStringLiteral("Viewers/layoutGpu");
+    case Viewer::Multiphysics: return QStringLiteral("Viewers/multiphysicsGpu");
     }
     return QString();
 }
@@ -57,23 +60,13 @@ QString viewerName(Viewer viewer)
 
 bool wanted(Viewer viewer)
 {
-    // (The Markdown preview the CPU's unless chosen: its text the
-    // platform's glyphs - Qt's OpenGL engine draws them a little heavier.
-    // The GPU's frames are a little quicker, both within 2.5 ms, measured.)
-    const QVariant v = QucsSettingsFile().value(settingKey(viewer), viewer != Viewer::Markdown);
-    // (Rendering/...: "gpu" or "cpu"; Multiphysics/gpu: true or false)
-    if (v.typeId() == QMetaType::QString) {
-        const QString s = v.toString();
-        if (s == QLatin1String("cpu") || s == QLatin1String("false")) return false;
-        return true;
-    }
-    return v.toBool();
+    // (The CPU's unless chosen, each viewer: Settings… > Viewers.)
+    return QucsSettingsFile().value(settingKey(viewer), false).toBool();
 }
 
 void setWanted(Viewer viewer, bool gpu)
 {
-    const QVariant value = viewer == Viewer::Multiphysics ? QVariant(gpu) : QVariant(gpu ? QStringLiteral("gpu") : QStringLiteral("cpu"));
-    QucsSettingsFile().setValue(settingKey(viewer), value);
+    QucsSettingsFile().setValue(settingKey(viewer), gpu);
     emit Notifier::instance()->changed(viewer);
 }
 

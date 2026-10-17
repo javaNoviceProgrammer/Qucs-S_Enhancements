@@ -101,7 +101,7 @@ const std::vector<QRgb>& colorTable(const QString& name)
 GraphicsView::GraphicsView(QWidget* parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("multiphysicsGraphics"));
-    // (Settings… > Appearance > Drawing, Multiphysics > Settings…: drawn so.)
+    // (Settings… > Viewers, Multiphysics > Settings…: drawn so.)
     connect(gpu::Notifier::instance(), &gpu::Notifier::changed, this, [this](gpu::Viewer viewer) {
         if (viewer == gpu::Viewer::Multiphysics) setGpu(gpu::wanted(gpu::Viewer::Multiphysics));
     });
@@ -111,8 +111,7 @@ GraphicsView::GraphicsView(QWidget* parent) : QWidget(parent)
     setMinimumSize(200, 150);
 #ifdef QUCS_GPU_VIEW
     // The GPU's canvas over it, where there can be one and it is wanted.
-    if (qEnvironmentVariable("QUCS_GPU") != QLatin1String("0") && QucsSettingsFile().value(QStringLiteral("Multiphysics/gpu"), true).toBool()
-        && gpuAvailable())
+    if (qEnvironmentVariable("QUCS_GPU") != QLatin1String("0") && gpu::wanted(gpu::Viewer::Multiphysics) && gpuAvailable())
         a_canvas = new GlCanvas(this);
 #endif
 }
@@ -148,7 +147,7 @@ void GraphicsView::prepareGpu()
 
 void GraphicsView::setGpu(bool on)
 {
-    QucsSettingsFile().setValue(QStringLiteral("Multiphysics/gpu"), on);
+    QucsSettingsFile().setValue(gpu::settingKey(gpu::Viewer::Multiphysics), on);
 #ifdef QUCS_GPU_VIEW
     if (on && !a_canvas && !a_gpuBroken && gpuAvailable()) {
         a_canvas = new GlCanvas(this);

@@ -219,6 +219,7 @@ Flattened flatten(const Layout& layout, int cell, int depth, const QVector<Layer
                 if (!visible(l.layer) || f.texts.size() >= 100000) continue;
                 const auto text = [&](QPointF off) {
                     f.texts.append({T.map(l.origin + off), l.text});
+                    f.textLayers.push_back(l.layer);
                     return f.texts.size() < 100000;
                 };
                 if (l.repetition < 0) text(QPointF());
@@ -388,22 +389,63 @@ void LayoutGl::upload(Batch& b, const std::vector<float>& data, int components, 
 
 void LayoutGl::sync()
 {
-    // (The buffers made of the cell to its depth, the layers shown and the
-    // texts: made again when one changes - not for colours or patterns.)
+    // (The buffers made of the cell to its depth and the texts: made again
+    // when one changes - not for colours or patterns. A layer hidden keeps
+    // its buffers, not drawn; one shown for the first time flattened alone,
+    // its buffers added. Made again whole at each layer shown or hidden, as
+    // they were, a large chip's layer took seconds to show or hide.)
     const Layout* layout = a_view->a_layout.get();
-    QVector<bool> visible;
-    for (const LayerStyle& s : a_view->a_styles) visible << s.visible;
-    if (layout == a_madeOf && a_view->a_cell == a_cell && a_view->a_depth == a_depth && a_view->a_labels == a_labels && visible == a_visible)
-        return;
+    const QVector<LayerStyle>& styles = a_view->a_styles;
+    const auto shown = [&styles](std::size_t i) { return int(i) >= styles.size() || styles.at(int(i)).visible; };
+    // (QUCS_LAYOUT_GPU_BUDGET another budget - the tests' small one.)
+    bool ok = false;
+    const quint64 asked = qEnvironmentVariable("QUCS_LAYOUT_GPU_BUDGET").toULongLong(&ok);
+    const quint64 budget = ok ? asked : Budget;
+    const bool same = layout == a_madeOf && a_view->a_cell == a_cell && a_view->a_depth == a_depth && a_view->a_labels == a_labels;
+    if (same && layout && !a_flat.tooLarge) {
+        // (Every layer's flag its own: past the list flatten takes a layer
+        // as shown.)
+        QVector<LayerStyle> more = styles;
+        more.resize(layout->layers.size());
+        bool any = false;
+        for (std::size_t i = 0; i < std::size_t(more.size()); ++i) {
+            const bool wanted = shown(i) && (i >= a_made.size() || !a_made[i]);
+            more[int(i)].visible = wanted;
+            any = any || wanted;
+        }
+        if (!any) return;
+        // (Only those layers, within what the budget leaves; past it, all
+        // made again of the layers shown - the CPU's where they are many.)
+        Flattened added = flatten(*layout, a_cell, a_depth, more, a_labels, budget - std::min(budget, a_flat.shapes));
+        if (!added.tooLarge) {
+            a_flat.shapes += added.shapes;
+            a_flat.approximated += added.approximated;
+            for (std::size_t i = 0; i < added.layers.size() && i < a_flat.layers.size(); ++i) {
+                if (int(i) >= more.size() || !more.at(int(i)).visible) continue;
+                a_flat.layers[i] = std::move(added.layers[i]);
+                if (i >= a_made.size()) a_made.resize(i + 1, 0);
+                a_made[i] = 1;
+                while (a_layers.size() <= i) a_layers.push_back(std::make_unique<LayerBatches>());
+                upload(a_layers[i]->fills, a_flat.layers[i].fills, 2, false);
+                upload(a_layers[i]->outlines, a_flat.layers[i].outlines, 2, false);
+                upload(a_layers[i]->dots, a_flat.layers[i].dots, 3, true);
+            }
+            for (int k = 0; k < added.texts.size(); ++k) {
+                if (a_flat.texts.size() >= 100000) break;
+                a_flat.texts.append(added.texts.at(k));
+                a_flat.textLayers.push_back(added.textLayers[std::size_t(k)]);
+            }
+            ++a_layersAdded;
+            return;
+        }
+    }
     a_madeOf = layout;
     a_cell = a_view->a_cell;
     a_depth = a_view->a_depth;
     a_labels = a_view->a_labels;
-    a_visible = visible;
-    // (QUCS_LAYOUT_GPU_BUDGET another budget - the tests' small one.)
-    bool ok = false;
-    const quint64 asked = qEnvironmentVariable("QUCS_LAYOUT_GPU_BUDGET").toULongLong(&ok);
-    a_flat = layout ? flatten(*layout, a_cell, a_depth, a_view->a_styles, a_labels, ok ? asked : Budget) : Flattened();
+    a_flat = layout ? flatten(*layout, a_cell, a_depth, styles, a_labels, budget) : Flattened();
+    a_made.assign(a_flat.layers.size(), 0);
+    for (std::size_t i = 0; i < a_made.size(); ++i) a_made[i] = shown(i) ? 1 : 0;
     ++a_builds;
     while (a_layers.size() < a_flat.layers.size()) a_layers.push_back(std::make_unique<LayerBatches>());
     for (std::size_t i = 0; i < a_layers.size(); ++i) {
@@ -574,8 +616,11 @@ bool LayoutGl::drawLayout(QPainter& p, RenderStats* stats)
         QPen ink(c.ink.isValid() ? c.ink : QColor(Qt::black), 0);
         ink.setCosmetic(true);
         p.setPen(ink);
-        for (const auto& [at, text] : std::as_const(a_flat.texts)) {
+        for (int k = 0; k < a_flat.texts.size(); ++k) {
+            const auto& [at, text] = a_flat.texts.at(k);
             if (!seen.contains(at)) continue;
+            const quint32 layer = a_flat.textLayers[std::size_t(k)];
+            if (int(layer) < a_view->a_styles.size() && !a_view->a_styles.at(int(layer)).visible) continue;
             if (++texts > 5000) break;
             const QPointF px = a_view->toPixel(at);
             p.drawLine(px + QPointF(-3, 0), px + QPointF(3, 0));
@@ -583,6 +628,7 @@ bool LayoutGl::drawLayout(QPainter& p, RenderStats* stats)
             p.drawText(px + QPointF(4, -3), text);
         }
     }
+    a_textsDrawn = std::min(texts, 5000);
     if (stats) {
         *stats = RenderStats();
         stats->polygons = a_flat.shapes - a_flat.frameCount;

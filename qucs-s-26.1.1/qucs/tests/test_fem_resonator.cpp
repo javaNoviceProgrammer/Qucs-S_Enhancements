@@ -503,7 +503,9 @@ private slots:
         }
     }
 
-    void theAxisAndRefusals()
+    // (Three functions, each under QtTest's limit: as one, 1,368 s on CI's
+    // sanitized Linux, its limit 900.)
+    void theAxis()
     {
         Run r = run(modelOf(sphere(1, QStringLiteral("3.5"), slowBuild() ? QStringLiteral("0.15") : QStringLiteral("0.1"), QStringLiteral("5.05[um]"), 1)));
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
@@ -518,6 +520,11 @@ private slots:
         QVERIFY(std::abs(ez) < 0.05 * std::abs(er));
         const double hr = at(s, QStringLiteral("emr.Hr"), QPointF(0, 0.3)), hz = at(s, QStringLiteral("emr.Hz"), QPointF(0, 0.3));
         QVERIFY2(std::isfinite(hr) && std::isfinite(hz) && std::abs(hr) < 1, qPrintable(QStringLiteral("%1 %2").arg(hr).arg(hz)));
+    }
+
+    void refusals()
+    {
+        Run r;
         QByteArray json = sphere(1, QStringLiteral("3.5"), QStringLiteral("0.3"), QStringLiteral("4[um]"), 2);
         json.replace(R"("space": "axisymmetric",)", "");
         r = run(modelOf(json));
@@ -546,8 +553,17 @@ private slots:
             r = run(modelOf(j));
             QVERIFY2(r.error.contains(QLatin1String(said)), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(to), r.error)));
         }
-        // The absorbing layers' strength its reflection's: weaker (0.1 for
-        // 1e-6), a mode's Q moved - the layers' own reflection in it.
+    }
+
+    // The absorbing layers' strength its reflection's: weaker (0.1 for
+    // 1e-6), a mode's Q moved - the layers' own reflection in it.
+    void theLayersReflection()
+    {
+        // (A sanitized build: coarser - 321 s there at 0.3 µm, some 1,000 on
+        // CI's.)
+        const bool slow = slowBuild();
+        const QByteArray base = sphere(2, QStringLiteral("3.5"), slow ? QStringLiteral("0.45") : QStringLiteral("0.3"), QStringLiteral("5.05[um]"), 2, 4, 2,
+                                       slow ? QStringLiteral("0.5") : QStringLiteral("0.3"));
         QByteArray weak = base;
         weak.replace(R"({"type": "pml", "selection")", R"({"type": "pml", "reflection": "0.1", "selection")");
         Run a = run(modelOf(base)), b = run(modelOf(weak));

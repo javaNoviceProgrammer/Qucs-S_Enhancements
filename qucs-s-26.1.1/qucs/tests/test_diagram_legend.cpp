@@ -223,14 +223,20 @@ private slots:
     // the diagram: the update check of 7451b1c). The legend names it whole.
     void longAxisLabelsFitTheDiagram()
     {
-        const QString along = "db(1/(1+j*2*pi*frequency*ac1.r1*1e-9))+20*log10(abs(1/(1+j*2*pi*frequency*ac1.r1*ac1.c1)))";
+        // (Longer than the diagram is high - 300 - in whatever font this
+        // has: CI's Linux measured this one's 92 characters no longer, its
+        // failure saying nothing more. A font that measures nothing: none.)
+        const QFontMetrics metrics(QucsSettings.font, nullptr);
+        if (metrics.horizontalAdvance(QLatin1Char('x')) <= 0) QSKIP("no font measures text here");
+        QString along = "db(1/(1+j*2*pi*frequency*ac1.r1*1e-9))+20*log10(abs(1/(1+j*2*pi*frequency*ac1.r1*ac1.c1)))";
+        while (metrics.boundingRect(along).width() <= 300 && along.size() < 4000) along += QStringLiteral("+abs(ac1.r1)");
         QString body = "<\"ngspice/" + along + "\" #0000ff 2 3 0 0 0>\n<\"ngspice/ac.v(in)\" #ff0000 2 3 0 1 1>\n</Rect>\n";
         QTextStream stream(&body, QIODevice::ReadOnly);
         QScopedPointer<RectDiagram> d(new RectDiagram());
         QVERIFY(d->load(kRectLine, &stream));
         d->updateGraphData();
-        const QFontMetrics metrics(QucsSettings.font, nullptr);
-        QVERIFY(metrics.boundingRect(along).width() > d->y2);
+        QVERIFY2(metrics.boundingRect(along).width() > d->y2,
+                 qPrintable(QStringLiteral("%1 px against %2 (%3)").arg(metrics.boundingRect(along).width()).arg(d->y2).arg(QucsSettings.font.toString())));
         int cut = 0, whole = 0;
         for (const Text* t : d->Texts) {
             if (t->angle() == 0) continue;

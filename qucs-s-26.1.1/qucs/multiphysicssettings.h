@@ -23,7 +23,8 @@ namespace qucs_s::fem {
 
 /*!
  * The multiphysics settings: drawing the Graphics view with the GPU
- * (OpenGL) - the setting Multiphysics/gpu, as the view's own menu sets it;
+ * (OpenGL) - the setting Viewers/multiphysicsGpu, as the view's own menu
+ * and Settings… > Viewers set it;
  * on OK every open view drawn so. What keeps the GPU from drawing here
  * (QUCS_GPU=0, a build without OpenGL, no OpenGL 3.3) said under it. The
  * sparse direct solver - Automatic, Eigen's or Accelerate's at every size
@@ -38,7 +39,7 @@ public:
 
     /// Why the GPU cannot draw here, whatever the setting (empty: it can).
     static QString gpuHindrance();
-    /// The setting (Multiphysics/gpu; on unless set off).
+    /// The setting (Viewers/multiphysicsGpu; off unless chosen).
     static bool gpuWanted();
 
     /// The solver setting (Multiphysics/solver: auto, eigen, accelerate;

@@ -153,8 +153,8 @@ public:
 
     QTextBrowser* preview() const { return a_preview; }
     /// The preview drawn by the GPU: its viewport an OpenGL widget, its text
-    /// from a glyph atlas, its images textures (Settings… > Appearance >
-    /// Drawing: Rendering/markdown).
+    /// from a glyph atlas, its images textures (Settings… > Viewers:
+    /// Viewers/markdownGpu, off unless chosen).
     void setPreviewGpu(bool on);
     bool previewGpu() const;
     /// The rendering made again now (it is a moment after each edit).
