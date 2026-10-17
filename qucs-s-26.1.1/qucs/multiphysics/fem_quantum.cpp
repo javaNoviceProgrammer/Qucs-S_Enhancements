@@ -2046,7 +2046,7 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
                 A.makeCompressed();
                 std::function<Eigen::VectorXcd(const Eigen::VectorXcd&)> solve;
                 Eigen::SimplicialLDLT<Eigen::SparseMatrix<cd>> ldlt;
-                Eigen::SparseLU<Eigen::SparseMatrix<cd>> lu;
+                SparseLu<cd> lu;
                 if (nb == 8) {
                     lu.analyzePattern(A);
                     lu.factorize(A);

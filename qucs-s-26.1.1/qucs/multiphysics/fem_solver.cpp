@@ -30,6 +30,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <atomic>
 #include <thread>
 #include <tuple>
 
@@ -49,13 +50,16 @@ void parallelFor(int n, const std::function<void(int, int)>& work)
         work(0, n);
         return;
     }
+    // (Four chunks a thread, taken as each is done: elements of one region
+    // costing more than another's - a PML's coefficients - no thread
+    // waiting for the one whose chunk they all fell in.)
+    const int chunks = 4 * threads, chunk = (n + chunks - 1) / chunks;
+    std::atomic<int> next{0};
+    auto run = [&next, &work, chunk, n] {
+        for (int k = next++; k * chunk < n; k = next++) work(k * chunk, std::min(n, (k + 1) * chunk));
+    };
     std::vector<std::thread> pool;
-    const int chunk = (n + threads - 1) / threads;
-    for (int k = 0; k < threads; ++k) {
-        const int b = k * chunk, e = std::min(n, b + chunk);
-        if (b >= e) break;
-        pool.emplace_back(work, b, e);
-    }
+    for (int k = 0; k < threads; ++k) pool.emplace_back(run);
     for (std::thread& t : pool) t.join();
 }
 
@@ -121,7 +125,11 @@ void LinearSystem::add(int i, int j, double v)
 
 bool LinearSystem::factorize(bool symmetric, const QString& solver, double tolerance, const QString& name, QStringList* log, QString* error)
 {
-    const bool iterative = symmetric && (solver == QLatin1String("iterative") || (solver != QLatin1String("direct") && a_n > 400000));
+    // (Conjugate gradients from 400 000 unknowns, unless asked otherwise -
+    // where Eigen's simplicial Cholesky is the direct one; Accelerate's
+    // supernodal one is the faster there too.)
+    const bool iterative = symmetric && (solver == QLatin1String("iterative")
+                                         || (solver != QLatin1String("direct") && a_n > 400000 && !acceleratedCholesky()));
     a_cg.reset();
     if (iterative) {
         a_ldlt.reset();
@@ -136,21 +144,18 @@ bool LinearSystem::factorize(bool symmetric, const QString& solver, double toler
     }
     if (symmetric) {
         if (!a_ldlt) {
-            a_ldlt = std::make_unique<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>();
+            a_ldlt = std::make_unique<SparseCholesky>();
             a_ldltAnalyzed = false;
         }
         if (!a_ldltAnalyzed) {
             a_ldlt->analyzePattern(a_A);
             a_ldltAnalyzed = true;
         }
+        // (A matrix not positive definite fails it: an LU then.)
         a_ldlt->factorize(a_A);
         if (a_ldlt->info() == Eigen::Success) {
-            // A Cholesky of a matrix not positive definite: a pivot of 0 or less.
-            const auto dvec = a_ldlt->vectorD();
-            if ((dvec.array() > 0).all()) {
-                a_lu.reset();
-                return true;
-            }
+            a_lu.reset();
+            return true;
         }
         a_ldlt.reset();
         a_ldltAnalyzed = false;
@@ -159,7 +164,7 @@ bool LinearSystem::factorize(bool symmetric, const QString& solver, double toler
         a_ldltAnalyzed = false;
     }
     if (!a_lu) {
-        a_lu = std::make_unique<Eigen::SparseLU<Eigen::SparseMatrix<double>>>();
+        a_lu = std::make_unique<SparseLu<double>>();
         a_luAnalyzed = false;
     }
     if (!a_luAnalyzed) {
@@ -246,7 +251,9 @@ void ComplexSystem::add(int i, int j, std::complex<double> v)
 
 bool ComplexSystem::factorize(const QString& name, QString* error, bool quasiDefinite)
 {
-    if (quasiDefinite) {
+    // (Accelerate's complex LU, where there is one, faster than the real
+    // equivalent's simplicial LDLT.)
+    if (quasiDefinite && !acceleratedLu()) {
         // [Re, -Im; -Im, -Re] in each 2 × 2 block: its rows the real part's
         // equation and minus the imaginary part's.
         for (int j = 0; j < a_n; ++j)
@@ -279,7 +286,7 @@ bool ComplexSystem::factorize(const QString& name, QString* error, bool quasiDef
         a_ldltAnalyzed = false;
     }
     if (!a_lu) {
-        a_lu = std::make_unique<Eigen::SparseLU<Matrix>>();
+        a_lu = std::make_unique<SparseLu<std::complex<double>>>();
         a_analyzed = false;
     }
     if (!a_analyzed) {
