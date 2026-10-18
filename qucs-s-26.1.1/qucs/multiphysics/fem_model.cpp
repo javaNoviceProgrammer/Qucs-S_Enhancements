@@ -1332,7 +1332,7 @@ QList<NodeKind> makeKinds()
                  {tr("Constant (the lattice's)"), tr("By doping (Caughey and Thomas)"), tr("By doping (Masetti)")}, QStringLiteral("constant"),
                  tr("By doping: µmin + (µ - µmin)/(1 + (N/Nref)^α), N the donors and acceptors together; Masetti's µmin1 e^(-Pc/N) + "
                     "(µ - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β) - silicon's arsenic and boron (Masetti, Severi and Solmi "
-                    "1983) by default; Lumerical's Masetti is this with µmin1 = µmin2 and Pc 0")),
+                    "1983) by default; the Lumerical Masetti model is this with µmin1 = µmin2 and Pc 0")),
           shownIf(expr(QStringLiteral("munmin"), tr("Electrons' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("68.5[cm^2/(V*s)]")),
                   QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("nrefn"), tr("Electrons' Nref"), QStringLiteral("1/m^3"), QStringLiteral("9.2e16[1/cm^3]")), QStringLiteral("mobility=doping")),
@@ -1428,7 +1428,7 @@ QList<NodeKind> makeKinds()
          tr("A semiconductor's band gap, electron affinity, effective densities of states and mobilities, from its material or as "
             "given; ni = √(Nc Nv) exp(-Eg/2kT). Its models' parameters (Caughey and Thomas's, Masetti's, ζ, saturation, "
             "narrowing) each as set here, else its material's - the library's semiconductors each carry their own (GaAs's, InP's: "
-            "Lumerical's database's) -, else the default shown, silicon's: said in the log where the material is no silicon. Its "
+            "from the Lumerical database) -, else the default shown, silicon's: said in the log where the material is no silicon. Its "
             "material's texts read T, the physics' temperature (the library's gap Varshni's, Nc and Nv (T/300 K)^1.5, mobilities "
             "(T/300 K)^-ζ).")});
     add({QStringLiteral("semiconductor/doping"), tr("Analytic Doping Model"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
@@ -1490,7 +1490,7 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("dependence"), tr("Lifetimes' doping dependence"), {QStringLiteral("none"), QStringLiteral("doping")},
                  {tr("None"), tr("By doping (Fossum)")}, QStringLiteral("none"),
                  tr("τ0 / (A + B (N/N0) + C (N/N0)^E), N the donors and acceptors together - Fossum and Lee's silicon τ0/(1 + "
-                    "N/7.1e15 cm⁻³) by default: A 1, B 0, C 1, E 1 (Lumerical's α, β, γ, σ)")),
+                    "N/7.1e15 cm⁻³) by default: A 1, B 0, C 1, E 1 (the Lumerical α, β, γ, σ)")),
           shownIf(expr(QStringLiteral("N0n"), tr("Electrons' N0"), QStringLiteral("1/m^3"), QStringLiteral("7.1e15[1/cm^3]")),
                   QStringLiteral("dependence=doping")),
           shownIf(expr(QStringLiteral("N0p"), tr("Holes' N0"), QStringLiteral("1/m^3"), QStringLiteral("7.1e15[1/cm^3]")),
@@ -1529,7 +1529,7 @@ QList<NodeKind> makeKinds()
               choice(QStringLiteral("model"), tr("Model"), {QStringLiteral("material"), QStringLiteral("silicon"), QStringLiteral("user")},
                      {tr("The material's"), tr("Silicon (van Overstraeten and de Man)"), tr("User-defined (Chynoweth's)")},
                      QStringLiteral("material"),
-                     tr("The material's: its coefficients (iian, iibn, iiap, iibp, iibetan, iibetap - the library's: Lumerical's "
+                     tr("The material's: its coefficients (iian, iibn, iiap, iibp, iibetan, iibetap - the library's: the Lumerical "
                         "Selberherr ones; silicon's van Overstraeten and de Man's two ranges), else silicon's")),
               flag(QStringLiteral("currents"), tr("In the carriers' continuity"), true,
                    tr("Its pairs in the equations - avalanche multiplication, an APD's gain, up to breakdown; off: the ionization "
@@ -1674,7 +1674,7 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("t"), tr("Gain region's thickness"), QStringLiteral("m"), QStringLiteral("10[nm]"),
                tr("Its domains' (their volume over their area: per area the current is q t ⟨R⟩)"))},
          {}, {}, false, false, QStringLiteral("stim"),
-         tr("A laser's light in a carrier model, Lumerical's: above threshold a share c of the recombination current is "
+         tr("A laser's light in a carrier model, as the Lumerical solvers have it: above threshold a share c of the recombination current is "
             "stimulated, R_stim = c (J_rec - J_th)/(q t) on its domains, J_rec = q t ⟨R⟩ the domains' recombination (SRH, Auger, "
             "radiative) per area - the carriers clamped, the rest light: semi.Istim, the stimulated current (A, by the norm "
             "length), its photons' rate semi.Istim/q. The domains' mean taken from the last iterate (Newton's otherwise). c, "
@@ -1891,7 +1891,7 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("inplane"), tr("In-plane k"), {QStringLiteral("axial"), QStringLiteral("100"), QStringLiteral("110"), QStringLiteral("average")},
                  {tr("Axial approximation"), tr("Along [100]"), tr("Along [110]"), tr("Averaged over directions")}, QStringLiteral("axial"),
                  tr("The k·p bands' in-plane k: the axial approximation (the plane isotropic, R's γ2 and γ3 their mean - Chuang's, "
-                    "Lumerical's), along [100] or [110] taken for every direction, or the warped bands averaged over the plane's "
+                    "the Lumerical one), along [100] or [110] taken for every direction, or the warped bands averaged over the plane's "
                     "directions (four, 0 to 45°: four times the work)")),
           expr(QStringLiteral("drawn"), tr("Waves drawn"), QStringLiteral("eV"), QStringLiteral("50[meV]"),
                tr("qw.wave_e and the others: a state's energy with its |ψ|² on it, its largest this - a band diagram's picture"))},
@@ -2321,18 +2321,18 @@ QList<NodeKind> makeKinds()
               integer(QStringLiteral("states"), tr("States of each carrier"), 6,
                       tr("How many states of each carrier are solved and enter the spectrum (with k·p valence bands, twice as many "
                          "of those: Kramers' pairs). With a Lorentzian line each higher state's tail reaches under the gain's peak, "
-                         "which then depends on it - a 10 nm GaAs well's TE peak 394 /cm with 2, 304 with 4 (Lumerical's MQW keeps 2 "
+                         "which then depends on it - a 10 nm GaAs well's TE peak 394 /cm with 2, 304 with 4 (the Lumerical MQW solver keeps 2 "
                          "conduction and 4 valence subbands: 2 here); the log warns when transitions more than 5 half widths above the "
                          "peak take more than 10 % off it. A Gaussian or a sech line hardly depends on it")),
               integer(QStringLiteral("cstates"), tr("Conduction subbands"), 0,
-                      tr("How many electron states enter the spectrum, the lowest (0: States). Lumerical's max num cb subbands")),
+                      tr("How many electron states enter the spectrum, the lowest (0: States). In the Lumerical MQW solver: max num cb subbands")),
               integer(QStringLiteral("vstates"), tr("Valence subbands"), 0,
                       tr("How many valence states enter, the highest by energy across heavy and light holes together - with k·p "
-                         "bands, each a Kramers pair, after their mixing (0: States of each kind). Lumerical's max num vb subbands: "
+                         "bands, each a Kramers pair, after their mixing (0: States of each kind). In the Lumerical MQW solver: max num vb subbands: "
                          "2 keeps hh1 and lh1 where hh2 lies below lh1")),
               expr(QStringLiteral("cutoff_c"), tr("Conduction states' wall cutoff"), QString(), QString(),
                    tr("An electron state whose wavefunction's slope at the line's ends (its hard walls) is more than this share of "
-                      "its largest is left out - one held against a wall by a field, not a well's. Lumerical's cutoff cb with hard "
+                      "its largest is left out - one held against a wall by a field, not a well's. In the Lumerical MQW solver: cutoff cb with hard "
                       "walls. Empty: none")),
               expr(QStringLiteral("cutoff_v"), tr("Valence states' wall cutoff"), QString(), QString(), tr("The same of the valence states")),
               choice(QStringLiteral("select"), tr("States by"), {QStringLiteral("energy"), QStringLiteral("localized")},
@@ -2373,7 +2373,7 @@ QList<NodeKind> makeKinds()
               shownIf(choice(QStringLiteral("excitonmodel"), tr("Exciton"), {QStringLiteral("two"), QStringLiteral("bastard")},
                              {tr("Two parameters (λ, γ)"), tr("Bastard's (λ)")}, QStringLiteral("two"),
                              tr("Its trial function: e^(-√(ρ² + γ²(ze - zh)²)/λ), the electron and hole drawn together along the axis "
-                                "too (Gerlach et al.'s; Lumerical's variational one) - within 2 % of the exact binding and its line "
+                                "too (Gerlach et al.'s; the Lumerical variational one) - within 2 % of the exact binding and its line "
                                 "near the exact's in wells 2 to 20 nm wide -, or Bastard's e^(-ρ/λ) (γ 0: a narrow well's; |F(0)|² = "
                                 "2/(πλ²)), its line weaker in wide wells")),
                       QStringLiteral("excitons=true")),
@@ -2384,14 +2384,14 @@ QList<NodeKind> makeKinds()
               choice(QStringLiteral("broaden"), tr("Transitions broadened"), {QStringLiteral("all"), QStringLiteral("window")},
                      {tr("All"), tr("Those within the photons' window")}, QStringLiteral("all"),
                      tr("All: every transition of the states kept, its line's tail reaching every photon. The window: only the "
-                        "transitions whose energy lies within the photons' energies (to the extension above), as Lumerical's MQW - "
+                        "transitions whose energy lies within the photons' energies (to the extension above), as the Lumerical MQW solver - "
                         "below the edge a single line's tail, not the sum over the 2D continuum")),
               shownIf(expr(QStringLiteral("window_ext"), tr("Window's extension above"), QStringLiteral("eV"), QStringLiteral("0[eV]")),
                       QStringLiteral("broaden=window")),
               orValue(choice(QStringLiteral("normalize"), tr("Absorption per"), {QStringLiteral("wells"), QStringLiteral("stack"), QStringLiteral("length")},
                              {tr("The wells' thickness"), tr("The stack's (the line's)"), tr("A length")}, QStringLiteral("wells"),
                              tr("The wells': the material's absorption, to multiply by the wells' confinement factor. The stack's: the "
-                                "whole line, its padding too - as Lumerical's MQW reports it (qw.Lstack)"))),
+                                "whole line, its padding too - as the Lumerical MQW solver reports it (qw.Lstack)"))),
               shownIf(expr(QStringLiteral("normlength"), tr("Its length"), QStringLiteral("m"), QStringLiteral("100[nm]")),
                       QStringLiteral("normalize=length")),
               expr(QStringLiteral("density"), tr("Carriers in the wells"), QStringLiteral("1/m^3"), QStringLiteral("0[1/cm^3]"),
@@ -2793,21 +2793,21 @@ QList<NodeKind> makeKinds()
         P lumStudy = study;
         lumStudy.tooltip = tr("Whose steps give the settings. Empty: the first with one; it need not be computed");
         const P run = flag(QStringLiteral("run"), tr("Run it there"), true, tr("The script runs the solver after it saves the project"));
-        add({QStringLiteral("lumericalmode"), tr("Lumerical MODE (FDE)"), QStringLiteral("export"), QStringLiteral("lumericalmode"), Level::None,
+        add({QStringLiteral("lumericalmode"), tr("Lumerical™ MODE (FDE)"), QStringLiteral("export"), QStringLiteral("lumericalmode"), Level::None,
              {physicsOfType(QStringLiteral("emw")), lumStudy,
               choice(QStringLiteral("materials"), tr("Materials"), {QStringLiteral("indices"), QStringLiteral("library")},
                      {tr("Their indices as the model has them, at the wavelength ((n,k) materials)"),
-                      tr("Lumerical's own by name (Si (Silicon) - Palik...), else their indices")},
+                      tr("Lumerical materials by name (Si (Silicon) - Palik...), else their indices")},
                      QStringLiteral("indices")),
               expr(QStringLiteral("step"), tr("FDE mesh step"), QStringLiteral("m"), QString(), tr("Empty: λ/(20 n) of the largest index")),
               integer(QStringLiteral("modes"), tr("Trial modes"), 0, tr("0: the mode step's")), run, file},
              {}, {}, false, false, QStringLiteral("lm"),
              tr("A Lumerical MODE script (.lsf): the cross-section a structure for each domain, each its index at the mode step's "
-                "wavelength as the model has it (or Lumerical's material of that name), an FDE region over the physics' domains "
+                "wavelength as the model has it (or the Lumerical material of that name), an FDE region over the physics' domains "
                 "(2D Z normal; PML where the model has PML domains, Metal or PMC on the other sides), the wavelength, trial modes "
                 "and the index searched about. Run in MODE it builds the project and saves it (model_tag.lms), then finds the "
                 "modes.")});
-        add({QStringLiteral("lumericalcharge"), tr("Lumerical CHARGE"), QStringLiteral("export"), QStringLiteral("lumericalcharge"), Level::None,
+        add({QStringLiteral("lumericalcharge"), tr("Lumerical™ CHARGE"), QStringLiteral("export"), QStringLiteral("lumericalcharge"), Level::None,
              {physicsOfType(QStringLiteral("semi")), lumStudy,
               expr(QStringLiteral("strip"), tr("Contacts' metal"), QStringLiteral("m"), QString(),
                    tr("The thickness of the metal strip each contact is put on, outside its boundary. Empty: 1 % of the device")),
@@ -2817,21 +2817,21 @@ QList<NodeKind> makeKinds()
               }(),
               file},
              {}, {}, false, false, QStringLiteral("lc"),
-             tr("A Lumerical CHARGE script (.lsf, the Finite Element IDE): Lumerical's electrical materials by name (alloys at "
+             tr("A Lumerical CHARGE script (.lsf, the Finite Element IDE): the Lumerical electrical materials by name (alloys at "
                 "their composition), the cross-section in its x-z plane (2D y-normal: the model's y its z), the doping - uniform "
                 "and box profiles as constant and diffusion objects, an implant or an expression sampled into an import doping "
                 "object -, each contact a thin metal strip outside its boundary at its voltage (a study's sweep a value table), "
                 "the norm length the model's thickness. Run in the Finite Element IDE it builds and saves the project "
                 "(model_tag.ldev).")});
-        add({QStringLiteral("lumericalmqw"), tr("Lumerical MQW"), QStringLiteral("export"), QStringLiteral("lumericalmqw"), Level::None,
+        add({QStringLiteral("lumericalmqw"), tr("Lumerical™ MQW"), QStringLiteral("export"), QStringLiteral("lumericalmqw"), Level::None,
              {physicsOfType(QStringLiteral("qw")), lumStudy,
               choice(QStringLiteral("materials"), tr("Materials"), {QStringLiteral("model"), QStringLiteral("database")},
                      {tr("Each layer's parameters as the model has them"),
-                      tr("Lumerical's database by compound and composition (its offsets), else the model's")},
+                      tr("The Lumerical database by compound and composition (its offsets), else the model's")},
                      QStringLiteral("model")),
               run, file},
              {}, {}, false, false, QStringLiteral("lq"),
-             tr("A Lumerical MQW script (.lsf): the wells' stack for mqwindex (Lumerical's 4x4 k·p, zinc blende) - each layer's "
+             tr("A Lumerical MQW script (.lsf): the wells' stack for mqwindex (the Lumerical 4x4 k·p, zinc blende) - each layer's "
                 "parameters as the model has them (its gap, Ep, me, γ1-γ3, deformation potentials, stiffness, valence band on one "
                 "scale) and its strain -, the temperature and field, the spectrum step's photon frequencies, carrier density "
                 "(over the stack) and broadening (a full width), the bands step's k. Run in any Lumerical product (an MQW license) it computes the stack's band structure, "

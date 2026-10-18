@@ -718,7 +718,7 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
                         if (!dn->kappa.isEmpty()) m.insert(QStringLiteral("kappa"), dn->kappa);
                     }
                     if (!dn->range.isEmpty()) m.insert(QStringLiteral("nrange"), dn->range);
-                    say(tr("%1: its index of the wavelength, Lumerical's %2 (n %3 κ %4 at %5 nm)")
+                    say(tr("%1: its index of the wavelength, the Lumerical %2 (n %3 κ %4 at %5 nm)")
                             .arg(mat, dn->what, QString::number((*nk)[0], 'f', 4), QString::number((*nk)[3], 'g', 3), num(lambda * 1e9)));
                 }
             } else {
@@ -738,7 +738,7 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
         m.insert(QStringLiteral("selection"), only({s.label}));
         materials.append(m);
     }
-    if (!saidLibrary.isEmpty()) notes << tr("Lumerical's materials as the library's: %1").arg(saidLibrary.join(QStringLiteral(", ")));
+    if (!saidLibrary.isEmpty()) notes << tr("Lumerical materials as the library's: %1").arg(saidLibrary.join(QStringLiteral(", ")));
     // (The guiding structures - the highest index's - meshed to an eighth
     // of their smaller side.)
     QJsonArray meshFeatures;
@@ -906,12 +906,12 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
                                {QStringLiteral("Nc"), QStringLiteral("%1[1/cm^3]").arg(num(Nc))},
                                {QStringLiteral("Nv"), QStringLiteral("%1[1/cm^3]").arg(num(Nv))}};
     if (o.prop(QStringLiteral("@epsilonr"))) out.material.insert(QStringLiteral("epsilonr"), num(o.number(QStringLiteral("@epsilonr"))));
-    out.notes << tr("%1: Lumerical's models at %2 K - Eg %3 eV (%4), the masses' Nc %5, Nv %6 cm⁻³, χ %7 eV from its work function "
+    out.notes << tr("%1: the Lumerical models at %2 K - Eg %3 eV (%4), the masses' Nc %5, Nv %6 cm⁻³, χ %7 eV from its work function "
                     "%8 eV (to the intrinsic level)")
                      .arg(name, num(T), num(Eg), active(QStringLiteral("bandgap")) == QLatin1String("Constant") ? tr("constant") : tr("Varshni's"), num(Nc), num(Nv),
                           num(chi), num(W));
     // The lattice's mobilities, their temperature exponent.
-    QJsonObject m{{QStringLiteral("type"), QStringLiteral("model")}, {QStringLiteral("label"), tr("%1 (Lumerical's models)").arg(name)}};
+    QJsonObject m{{QStringLiteral("type"), QStringLiteral("model")}, {QStringLiteral("label"), tr("%1 (Lumerical models)").arg(name)}};
     for (const char* c : {"n", "p"}) {
         const QString key = QStringLiteral("mobility lattice %1").arg(QLatin1String(c));
         const double mu = constantOrUniversal(key);
@@ -945,9 +945,9 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
             m.insert(QStringLiteral("alpha") + C, num(warm(key, QStringLiteral("p300"), QStringLiteral("eta3"))));
         }
     } else if (!impurity.isEmpty())
-        out.notes << tr("%1: Lumerical's %2 mobility not here: its lattice's alone").arg(name, impurity);
+        out.notes << tr("%1: the Lumerical %2 mobility not here: its lattice's alone").arg(name, impurity);
     if (!impurity.isEmpty() && on(QStringLiteral("mobility impurity p")) && active(QStringLiteral("mobility impurity p")) != impurity)
-        out.notes << tr("%1: its holes' mobility by doping Lumerical's %2, here as its electrons' (%3)").arg(name, active(QStringLiteral("mobility impurity p")), impurity);
+        out.notes << tr("%1: its holes' mobility by doping the Lumerical %2, here as its electrons' (%3)").arg(name, active(QStringLiteral("mobility impurity p")), impurity);
     // Saturation (Caughey and Thomas's high field).
     if (on(QStringLiteral("high field n")) || on(QStringLiteral("high field p"))) {
         m.insert(QStringLiteral("saturation"), true);
@@ -990,13 +990,13 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
             srh.insert(QStringLiteral("fC"), num(param(QStringLiteral("srh doping n"), QStringLiteral("gamma"), 1)));
             srh.insert(QStringLiteral("fE"), num(param(QStringLiteral("srh doping n"), QStringLiteral("sigma"), 1)));
         } else if (on(QStringLiteral("srh doping n")) && !active(QStringLiteral("srh doping n")).isEmpty())
-            out.notes << tr("%1: Lumerical's %2 doping dependence of its lifetimes not here: none").arg(name, active(QStringLiteral("srh doping n")));
+            out.notes << tr("%1: the Lumerical %2 doping dependence of its lifetimes not here: none").arg(name, active(QStringLiteral("srh doping n")));
         if (on(QStringLiteral("srh field n")) && active(QStringLiteral("srh field n")) == QLatin1String("Hurkx")) {
             srh.insert(QStringLiteral("tat"), true);
             srh.insert(QStringLiteral("mtn"), num(param(QStringLiteral("srh field n"), QStringLiteral("mt"), 0.25)));
             srh.insert(QStringLiteral("mtp"), num(param(QStringLiteral("srh field p"), QStringLiteral("mt"), 0.25)));
         } else if (on(QStringLiteral("srh field n")) && !active(QStringLiteral("srh field n")).isEmpty())
-            out.notes << tr("%1: Lumerical's %2 trap-assisted tunnelling not here: none").arg(name, active(QStringLiteral("srh field n")));
+            out.notes << tr("%1: the Lumerical %2 trap-assisted tunnelling not here: none").arg(name, active(QStringLiteral("srh field n")));
         out.features.append(srh);
     }
     const double Cn = constantOrUniversal(QStringLiteral("auger n")), Cp = constantOrUniversal(QStringLiteral("auger p"));
@@ -1025,7 +1025,7 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
             ii.insert(QStringLiteral("beta") + C, num(param(key, QStringLiteral("beta"), 1)));
         }
         out.features.append(ii);
-        out.notes << tr("%1: impact ionization driven by the field |E| (Lumerical's driving field not read)").arg(name);
+        out.notes << tr("%1: impact ionization driven by the field |E| (the Lumerical driving field not read)").arg(name);
     }
     if (on(QStringLiteral("btbt")) && active(QStringLiteral("btbt")) == QLatin1String("Hurkx"))
         out.features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("btbt")},
@@ -1124,7 +1124,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
             } else if (const QString compound = compoundOf(ct, o.number(QStringLiteral("mole frac constant"), 0), 0, &cx, &cy); !compound.isEmpty()) {
                 m.json = QJsonObject{{QStringLiteral("label"), name}, {QStringLiteral("compound"), compound}, {QStringLiteral("x"), num(cx)}};
             } else if (o.text(QStringLiteral("@kind")) != QLatin1String("Conductor"))
-                m.notes << tr("%1: Lumerical's %2 not in the library - set its properties").arg(name, ct);
+                m.notes << tr("%1: the Lumerical material %2 not in the library - set its properties").arg(name, ct);
         }
         if (m.json.isEmpty()) m.json = QJsonObject{{QStringLiteral("label"), name}};
         const QString lib = m.json.value(QStringLiteral("material")).toString();
@@ -1265,7 +1265,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         if (!isMetal(s) && !insulator(s)) semiconductors << s.label;
     }
     flush();
-    if (!library.isEmpty()) notes << tr("Lumerical's materials as the library's: %1").arg(library.join(QStringLiteral(", ")));
+    if (!library.isEmpty()) notes << tr("Lumerical materials as the library's: %1").arg(library.join(QStringLiteral(", ")));
     if (!dropped.isEmpty()) notes << tr("the contacts' thin metal strips left out: each contact on the boundaries it covered");
     geometry.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("form union")}});
     // The doping.
@@ -1344,7 +1344,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                 continue;
             }
             if (o.text(QStringLiteral("distribution function")).toLower().contains(QLatin1String("erf")))
-                notes << tr("%1: Lumerical's erfc diffusion as a Gaussian").arg(name);
+                notes << tr("%1: the Lumerical erfc diffusion as a Gaussian").arg(name);
             f.insert(QStringLiteral("profile"), QStringLiteral("box"));
             f.insert(QStringLiteral("N0"), QStringLiteral("%1[1/m^3]").arg(num(N0)));
             f.insert(QStringLiteral("Nb"), QStringLiteral("%1[1/m^3]").arg(num(Nb)));
@@ -1398,7 +1398,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
     }
     if (recombination)
         notes << tr("%1 surface recombination objects as Surface Recombination on the boundaries between their materials (each "
-                    "carrier's velocity, the SRH form for both - Lumerical's majority-carrier switch not read)")
+                    "carrier's velocity, the SRH form for both - the Lumerical majority-carrier switch not read)")
                      .arg(recombination);
     if (!atMetals.isEmpty())
         notes << tr("surface recombination at the metal contacts left out (%1): their carriers at equilibrium already").arg(atMetals.join(QStringLiteral(", ")));
@@ -1623,7 +1623,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
             }
             notes << tr("its mesh: the semiconductors to %1 µm%2, %3 diffusion falls finer at their boundaries (σ/2)")
                          .arg(num(h * 1e6),
-                              std::isfinite(maxEdge) ? tr(" (Lumerical's edges %1 to %2 µm)").arg(num(minEdge * 1e6), num(maxEdge * 1e6)) : QString())
+                              std::isfinite(maxEdge) ? tr(" (the Lumerical edges %1 to %2 µm)").arg(num(minEdge * 1e6), num(maxEdge * 1e6)) : QString())
                          .arg(fine);
         }
     }
@@ -1750,7 +1750,7 @@ LumericalImport buildHeat(const Scene& scene, const Object& solver)
             if (kind == QLatin1String("Constant") && std::isfinite(param("A0"))) return QStringLiteral("%1[%2]").arg(num(param("A0")), unit);
             if (ofT && kind.startsWith(QLatin1String("Universal")) && std::isfinite(param("A")))
                 return QStringLiteral("%1[%2]*(T/300[K])^(%3)").arg(num(param("A")), unit, num(param("eta")));
-            t.notes << tr("%1: its %2 Lumerical's %3: not read").arg(o.name(), role, kind);
+            t.notes << tr("%1: its %2 of the Lumerical form %3: not read").arg(o.name(), role, kind);
             return {};
         };
         const QString k = value(QStringLiteral("thermal conductivity"), QStringLiteral("W/(m*K)"), true);
@@ -1949,7 +1949,7 @@ LumericalImport buildMqw(const Scene& scene)
             const QString compound = compoundOf(db->toText(), m.field(QStringLiteral("x")) ? m.field(QStringLiteral("x"))->toNumber() : 0,
                                                 m.field(QStringLiteral("y")) ? m.field(QStringLiteral("y"))->toNumber() : 0, &cx, &cy);
             if (compound.isEmpty()) {
-                out.error = tr("layer %1: Lumerical's %2 is not a compound here").arg(i + 1).arg(db->toText());
+                out.error = tr("layer %1: the Lumerical material %2 is not a compound here").arg(i + 1).arg(db->toText());
                 return out;
             }
             materials.append(QJsonObject{{QStringLiteral("label"), QStringLiteral("%1 %2").arg(compound, num(cx))},
@@ -1996,7 +1996,7 @@ LumericalImport buildMqw(const Scene& scene)
         }
         features.append(qm);
     }
-    if (!materials.isEmpty() && !features.isEmpty()) notes << tr("its layers of Lumerical's database and of their own both: the database's here the library's compounds");
+    if (!materials.isEmpty() && !features.isEmpty()) notes << tr("its layers of the Lumerical database and of their own both: the database's here the library's compounds");
     // The wells: the least gap's; the density per them.
     double wells = 0;
     for (std::size_t i = 0; i < n; ++i)
@@ -2610,7 +2610,7 @@ std::vector<MaterialEntry> libraryEntries(const Scene& scene, QStringList* notes
         e.name = o.name();
         e.category = category;
         e.user = true;
-        e.description = tr("From %1: Lumerical's %2 record, its models' parameters of T as there").arg(scene.source, kind.isEmpty() ? tr("thermal") : kind.toLower());
+        e.description = tr("From %1: the Lumerical %2 record, its models' parameters of T as there").arg(scene.source, kind.isEmpty() ? tr("thermal") : kind.toLower());
         const Value* all = o.prop(QStringLiteral("@models"));
         auto model = [&](const QString& key) { return all && all->kind == Value::Struct ? all->field(key) : nullptr; };
         auto active = [&](const QString& key) {
@@ -2763,14 +2763,14 @@ std::vector<MaterialEntry> libraryEntries(const Scene& scene, QStringList* notes
                                                          : d->n[0]);
             if (!d->kappa.isEmpty()) e.properties.insert(QStringLiteral("kappa"), d->kappa);
             if (!d->range.isEmpty()) e.properties.insert(QStringLiteral("nrange"), d->range);
-            e.description = tr("From %1: Lumerical's optical %2").arg(scene.source, d->what);
+            e.description = tr("From %1: the Lumerical optical %2").arg(scene.source, d->what);
         } else if (m.type == QLatin1String("dielectric") || m.type.contains(QLatin1String("(n,k)"))) {
             auto axes = [](const double v[3]) {
                 return v[1] != v[0] || v[2] != v[0] ? QStringLiteral("%1; %2; %3").arg(num(v[0]), num(v[1]), num(v[2])) : num(v[0]);
             };
             e.properties.insert(QStringLiteral("n"), axes(m.n));
             if (m.k[0] != 0 || m.k[1] != 0 || m.k[2] != 0) e.properties.insert(QStringLiteral("kappa"), axes(m.k));
-            e.description = tr("From %1: Lumerical's optical (n,k) material, constant").arg(scene.source);
+            e.description = tr("From %1: a Lumerical optical (n,k) material, constant").arg(scene.source);
         } else
             continue;
         out.push_back(e);

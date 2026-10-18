@@ -3053,6 +3053,14 @@ private slots:
 
     void claudeImportsLumerical()
     {
+        // The mark at its first use, as its owner's guidelines ask: the
+        // menu's entry, its tip and its help, and the three exports' kinds.
+        const QAction* menu = app->findChild<QAction*>(QStringLiteral("importLumerical"));
+        QVERIFY(menu != nullptr);
+        for (const QString& said : {menu->text(), menu->statusTip(), menu->whatsThis()})
+            QVERIFY2(said.contains(QStringLiteral("Lumerical™")), qPrintable(said));
+        for (const char* kind : {"lumericalmode", "lumericalcharge", "lumericalmqw"})
+            QVERIFY2(nodeKind(QLatin1String(kind)) && nodeKind(QLatin1String(kind))->title.startsWith(QStringLiteral("Lumerical™ ")), kind);
         const QString to = path(QStringLiteral("lumerical_imported.qfem"));
         QFile::remove(to);
         QJsonObject r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldev")}, {"to", to}});
@@ -3112,7 +3120,7 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         const QString written = json(r).value("written").toString();
         QCOMPARE(QFileInfo(written).fileName(), QStringLiteral("pn_diode_%1.lsf").arg(tag));
-        QVERIFY2(json(r).value("begins").toString().startsWith(QStringLiteral("# pn_diode_%1.lsf - a Lumerical CHARGE script").arg(tag)), qPrintable(text(r)));
+        QVERIFY2(json(r).value("begins").toString().startsWith(QStringLiteral("# pn_diode_%1.lsf - a Lumerical™ CHARGE script").arg(tag)), qPrintable(text(r)));
         QFile f(written);
         QVERIFY(f.open(QIODevice::ReadOnly));
         QVERIFY(QString::fromUtf8(f.readAll()).contains(QStringLiteral("save(\"pn_diode_%1.ldev\");").arg(tag)));

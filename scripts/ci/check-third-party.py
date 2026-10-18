@@ -12,7 +12,11 @@ below with its generator, which must still write it.
     python3 scripts/ci/check-third-party.py
 
 Exits 1, and says what, when a file of a vendor's format is not one of ours
-or a text file carries a vendor's copyright line.
+or a text file carries a vendor's copyright line - or when a string the
+program shows (a C++ string literal, not a comment) or the README writes a
+vendor's name as a possessive ("Lumerical's database"): the owner's
+Trademark Usage Guidelines ask for a mark as an adjective before a noun
+("the Lumerical database"), never possessive or plural.
 """
 import os
 import re
@@ -41,6 +45,38 @@ OURS = {
 # A vendor's copyright line (its examples carry one); not a trademark notice.
 NOTICE = re.compile(r"(copyright|\(c\)|©)[^\n]{0,40}\b(ansys|lumerical|zemax|synopsys)\b", re.IGNORECASE)
 TEXT = (".cpp", ".h", ".py", ".md", ".txt", ".json", ".qfem", ".sch", ".cmake", ".sh", ".yml", ".html", ".csv", ".lsf")
+POSSESSIVE = re.compile(r"\b(Lumerical|Ansys|ANSYS|Zemax|OpticStudio)'s\b")
+
+
+def strings(text):
+    """Each line's string literals (number, text), comments passed over."""
+    block = False
+    for number, line in enumerate(text.split("\n"), 1):
+        j, out = 0, []
+        while j < len(line):
+            if block:
+                k = line.find("*/", j)
+                if k < 0:
+                    break
+                block, j = False, k + 2
+            elif line.startswith("/*", j):
+                block, j = True, j + 2
+            elif line.startswith("//", j):
+                break
+            elif line[j] == '"':
+                k = j + 1
+                while k < len(line) and line[k] != '"':
+                    k += 2 if line[k] == "\\" else 1
+                out.append(line[j + 1:k])
+                j = k + 1
+            elif line[j] == "'" and j + 2 < len(line):
+                # (a character literal: '"' is not a string's start)
+                k = line.find("'", j + 1 + (line[j + 1] == "\\"))
+                j = k + 1 if k > j else j + 1
+            else:
+                j += 1
+        for t in out:
+            yield number, t
 
 
 def tracked():
@@ -71,10 +107,19 @@ for path in tracked():
                     found.append(f"{path}: {generator} no longer writes it")
     if path.lower().endswith(TEXT) and not path.startswith("scripts/ci/check-third-party"):
         with open(full, encoding="utf-8", errors="replace") as f:
-            for number, line in enumerate(f, 1):
-                if NOTICE.search(line):
-                    found.append(f"{path}:{number}: a vendor's copyright line: {line.strip()[:120]}")
+            text = f.read()
+        for number, line in enumerate(text.split("\n"), 1):
+            if NOTICE.search(line):
+                found.append(f"{path}:{number}: a vendor's copyright line: {line.strip()[:120]}")
+        said = []
+        if path.startswith("qucs-s-26.1.1/qucs/") and path.endswith((".cpp", ".h")):
+            said = [(n, t) for n, t in strings(text) if POSSESSIVE.search(t)]
+        elif path == "README.md":
+            said = [(n, line) for n, line in enumerate(text.split("\n"), 1) if POSSESSIVE.search(line)]
+        for number, t in said:
+            found.append(f"{path}:{number}: a vendor's name as a possessive ({POSSESSIVE.search(t).group(0)}) - "
+                         f"as an adjective (\"the Lumerical database\"): {t.strip()[:100]}")
 for f in found:
     print(f)
-print(f"{len(found)} vendor files or notices" if found else "no vendor's file or copyright notice")
+print(f"{len(found)} vendor files, notices or possessives" if found else "no vendor's file, copyright notice or possessive")
 sys.exit(1 if found else 0)

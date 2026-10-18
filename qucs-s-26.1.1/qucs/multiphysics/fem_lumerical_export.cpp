@@ -181,7 +181,7 @@ std::optional<Alloy> lumericalCompound(const QString& compound, double x, double
     if (compound == QLatin1String("AlGaInAs")) return Alloy{QStringLiteral("AlGaInAs"), x, y, 2, {}};
     if (compound == QLatin1String("InGaAsP"))
         return Alloy{QStringLiteral("InGaAsP"), x, y, 2,
-                     tr("InGaAsP: ours In(1-x) Ga(x) As(y) P(1-y) - x and y passed as they are; check Lumerical's convention for it")};
+                     tr("InGaAsP: ours In(1-x) Ga(x) As(y) P(1-y) - x and y passed as they are; check the Lumerical convention for it")};
     return std::nullopt;
 }
 
@@ -453,7 +453,7 @@ QString header(const QString& product, const Model& model, const QString& base, 
                const QString& does, const QString& where)
 {
     const QString from = model.fileName.isEmpty() ? tr("an unsaved model") : QFileInfo(model.fileName).fileName();
-    return tr("# %1 - a Lumerical %2 script, written by Qucs-S %3 from %4 on %5.\n"
+    return tr("# %1 - a Lumerical™ %2 script, written by Qucs-S %3 from %4 on %5.\n"
               "# Run it in %6 (Script File Editor > Run, or the script prompt: %7): it %8%9.\n"
               "# Lengths in metres, every value SI.\n")
         .arg(base + QStringLiteral(".lsf"), product, version, from, QDateTime::currentDateTime().toString(Qt::ISODate), where,
@@ -463,7 +463,7 @@ QString header(const QString& product, const Model& model, const QString& base, 
 /// Lumerical's cross-sections are planar: an axisymmetric model's is not one.
 QString planarOnly(const Model& model)
 {
-    return model.axisymmetric() ? tr("the model is axisymmetric: Lumerical's 2D regions here are planar cross-sections") : QString();
+    return model.axisymmetric() ? tr("the model is axisymmetric: the Lumerical 2D regions here are planar cross-sections") : QString();
 }
 
 /// The script: its header, its notes (what was taken, and how), its body.
@@ -570,7 +570,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         }
         lambda = dim == Dim::length() ? (*v)[0] : C0 / (*v)[0];
         for (double x : *v) sweepLambda.push_back(dim == Dim::length() ? x : C0 / x);
-        if (v->size() > 1) w.note(tr("%1 sweeps %2 wavelengths: its first, %3 nm, taken (Lumerical's frequency sweep goes on from it)")
+        if (v->size() > 1) w.note(tr("%1 sweeps %2 wavelengths: its first, %3 nm, taken (the Lumerical frequency sweep goes on from it)")
                                       .arg(step->name()).arg(v->size()).arg(num(lambda * 1e9)));
         trial = std::max(1, step->integer(QStringLiteral("modes")));
         neffText = step->text(QStringLiteral("neff")).trimmed();
@@ -648,7 +648,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         if (anisotropy == QLatin1String("tensor"))
             for (const char* off : {"epsxy", "epsxz", "epsyz"})
                 if (valueIn(s, locator, feat->text(QString::fromLatin1(off)), p).value_or(0) != 0) {
-                    w.note(tr("%1: its ε's off-diagonal (εxy, εxz, εyz) left out - Lumerical's index here its diagonal (a matrix transform "
+                    w.note(tr("%1: its ε's off-diagonal (εxy, εxz, εyz) left out - the Lumerical index here its diagonal (a matrix transform "
                               "grid attribute would turn it)")
                                .arg(feat->name()));
                     break;
@@ -700,7 +700,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
                 }
             for (int c = 0; c < 3; ++c) e3[c] = eps[c][c];
             if (off > 1e-9 * largest)
-                w.note(tr("%1: its crystal turned off the model's axes - Lumerical's index here its ε's diagonal, the off-diagonal left out (a "
+                w.note(tr("%1: its crystal turned off the model's axes - the Lumerical index here its ε's diagonal, the off-diagonal left out (a "
                           "matrix transform grid attribute would turn it)")
                            .arg(ix.name));
         }
@@ -728,7 +728,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
             materialOf[std::size_t(d)] = ix.library;
             continue;
         }
-        if (library) w.note(tr("%1: no material of Lumerical's for it - its index as an (n,k) material").arg(ix.name));
+        if (library) w.note(tr("%1: no Lumerical material for it - its index as an (n,k) material").arg(ix.name));
         QString nm = objectName(QStringLiteral("%1 n=%2").arg(ix.name, QString::number(ix.n[0], 'g', 6)));
         if (ix.anisotropic) nm = objectName(QStringLiteral("%1 n=%2,%3,%4").arg(ix.name, QString::number(ix.n[0], 'g', 5), QString::number(ix.n[1], 'g', 5), QString::number(ix.n[2], 'g', 5)));
         if (ix.k[0] != 0) nm += QStringLiteral(" k=") + QString::number(ix.k[0], 'g', 4);
@@ -792,7 +792,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         return QStringLiteral("Metal");
     };
     const QStringList bcs = {side(0), side(1), side(2), side(3)};
-    w.comment(tr("The FDE region over %1's domains%2.").arg(phys->name(), all != region ? tr(" (its PML domains Lumerical's PML on those sides)") : QString()));
+    w.comment(tr("The FDE region over %1's domains%2.").arg(phys->name(), all != region ? tr(" (its PML domains a Lumerical PML on those sides)") : QString()));
     w.line(QStringLiteral("addfde;"));
     w.setText(QStringLiteral("solver type"), QStringLiteral("2D Z normal"));
     w.set(QStringLiteral("x"), region.center().x() * sc);
@@ -823,7 +823,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         if (sweepLambda.size() > 1) {
             // (Lumerical's sweep: from the analysis' wavelength to its stop,
             // evenly; its first mode followed.)
-            w.comment(tr("The mode step's wavelengths: the first mode followed to %1 nm, %2 points (Lumerical's spacing).").arg(num(sweepLambda.back() * 1e9)).arg(sweepLambda.size()));
+            w.comment(tr("The mode step's wavelengths: the first mode followed to %1 nm, %2 points (the Lumerical spacing).").arg(num(sweepLambda.back() * 1e9)).arg(sweepLambda.size()));
             w.line(QStringLiteral("try {"));
             w.line(QStringLiteral("    selectmode(1);"));
             w.line(QStringLiteral("    setanalysis(\"track selected mode\", 1);"));
@@ -835,7 +835,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         w.line(QStringLiteral("for (i = 1:n) { ?\"mode\" + num2str(i) + \": neff \" + num2str(real(getdata(\"FDE::data::mode\" + num2str(i), \"neff\"))) + \", loss \" + num2str(getdata(\"FDE::data::mode\" + num2str(i), \"loss\")) + \" dB/m\"; }"));
     }
     if (bcs[0] == QLatin1String("PML") || bcs[1] == QLatin1String("PML") || bcs[2] == QLatin1String("PML") || bcs[3] == QLatin1String("PML"))
-        w.note(tr("its PML domains left out: Lumerical's PML at the FDE region's sides beyond which they were"));
+        w.note(tr("its PML domains left out: a Lumerical PML at the FDE region's sides beyond which they were"));
     out.text = compose(header(QStringLiteral("MODE"), model, base, version, saved, tr("builds the model in a new project"), tr("Lumerical MODE")), w);
     out.notes = w.notes;
     out.summary = tr("a MODE script: %1 structures, an FDE region %2 x %3 µm, %4 modes at %5 nm").arg(inner.size()).arg(num(region.width() * sc * 1e6), num(region.height() * sc * 1e6)).arg(trial).arg(num(lambda * 1e9));
@@ -875,7 +875,7 @@ ChargeMaterial chargeMaterial(const Node& mat, const Scope& scope, Writer& w)
     if (const Names* n = libraryNames(lib); n && *n->ct) {
         cm.database = QString::fromLatin1(n->ct);
         if (lib.compare(QLatin1String("Germanium on silicon"), Qt::CaseInsensitive) == 0)
-            w.note(tr("%1: Lumerical's Ge (Germanium), unstrained - the tensile strain's narrowed gaps are not in it").arg(cm.name));
+            w.note(tr("%1: the Lumerical material Ge (Germanium), unstrained - the tensile strain's narrowed gaps are not in it").arg(cm.name));
         return cm;
     }
     // A material of its own: by what it has.
@@ -885,7 +885,7 @@ ChargeMaterial chargeMaterial(const Node& mat, const Scope& scope, Writer& w)
     if (semiconductor) cm.database = QStringLiteral("Si (Silicon)");
     else if (s > 1e5) cm.database = QStringLiteral("Al (Aluminium) - CRC");
     else cm.database = QStringLiteral("SiO2 (Glass) - Sze");
-    w.note(tr("%1: no material of Lumerical's of its name - %2 taken: set its properties there (Materials) to the model's").arg(cm.name, cm.database));
+    w.note(tr("%1: no Lumerical material of its name - %2 taken: set its properties there (Materials) to the model's").arg(cm.name, cm.database));
     return cm;
 }
 
@@ -1014,7 +1014,7 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     const QString saved = base + QStringLiteral(".ldev");
     w.line(QStringLiteral("newproject;"));
     w.line();
-    w.comment(tr("The materials: Lumerical's electrical ones of the model's (CT)."));
+    w.comment(tr("The materials: the Lumerical electrical ones of the model's (CT)."));
     bool alloys = false;
     auto modelMaterial = [&w, &alloys](const QString& name, const QString& database, int fractions, double x, double y) {
         w.line(QStringLiteral("addmodelmaterial;"));
@@ -1115,11 +1115,11 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     if (plainMetal) modelMaterial(QStringLiteral("contact metal"), QStringLiteral("Al (Aluminium) - CRC"), 0, 0, 0);
     for (const auto& [name, eV] : gateMetals) {
         modelMaterial(name, QStringLiteral("Al (Aluminium) - CRC"), 0, 0, 0);
-        w.line(QStringLiteral("try { set(\"work function\", %1); } catch(err); # (its work function, eV; Lumerical's aluminium's otherwise)").arg(num(eV)));
+        w.line(QStringLiteral("try { set(\"work function\", %1); } catch(err); # (its work function, eV; the Lumerical aluminium's otherwise)").arg(num(eV)));
     }
     w.line();
     // The cross-section, in the x-z plane.
-    w.comment(tr("The cross-section in the x-z plane (2D y-normal, Lumerical's default): the model's x as x, its y as z; the outer first "
+    w.comment(tr("The cross-section in the x-z plane (2D y-normal, the Lumerical default): the model's x as x, its y as z; the outer first "
                  "(where they overlap the lower mesh order wins: an inner domain's, a contact's metal's)."));
     // (Each domain its own mesh order - the later drawn the lower -, above
     // the contacts' metal strips', each its own too: none left to the
@@ -1169,7 +1169,7 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     w.line(QStringLiteral("setnamed(\"CHARGE\", \"simulation region\", \"qucs-s region\");"));
     w.line();
     // The doping.
-    w.comment(tr("The doping (SI, 1/m3): Lumerical's doping objects add, n against p."));
+    w.comment(tr("The doping (SI, 1/m3): the Lumerical doping objects add, n against p."));
     int dopings = 0;
     bool restricted = false;
     std::unique_ptr<Solution> sol;
@@ -1272,7 +1272,7 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
             w.line(QStringLiteral("try { set(\"distribution function\", \"gaussian 3d\"); } catch(err);"));
             box(r);
             if (on.size() == 1 && overreaches(r, on.front())) restrict(on.front());
-            w.note(tr("%1: a box with Gaussian tails as Lumerical's diffusion - alike along its sides, its corners Lumerical's products of the two sides' falls where the model's are by the distance").arg(f.name()));
+            w.note(tr("%1: a box with Gaussian tails as a Lumerical diffusion - alike along its sides, its corners the Lumerical products of the two sides' falls where the model's are by the distance").arg(f.name()));
         } else {
             // An implant or an expression: sampled on a grid over its domains.
             QRectF r;
@@ -1490,13 +1490,13 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
             own << named;
     }
     if (!own.isEmpty())
-        w.note(tr("the materials' models and parameters (mobility, recombination) Lumerical's own: check them against the model's %1").arg(own.join(QStringLiteral(", "))));
+        w.note(tr("the materials' models and parameters (mobility, recombination) the Lumerical ones: check them against the model's %1").arg(own.join(QStringLiteral(", "))));
     if (!left.isEmpty()) w.note(tr("not taken - set them there: %1").arg(left.join(QStringLiteral(", "))));
     w.line();
     w.line(QStringLiteral("save(%1);").arg(str(saved)));
     if (node.flag(QStringLiteral("run"))) w.line(QStringLiteral("run(\"CHARGE\");"));
     out.text = compose(header(QStringLiteral("CHARGE"), model, base, version, saved, tr("builds the model in a new project"),
-                              tr("Lumerical's Finite Element IDE (CHARGE)")),
+                              tr("the Lumerical Finite Element IDE (CHARGE)")),
                        w);
     out.notes = w.notes;
     out.summary = tr("a CHARGE script: %1 structures, %2 doping objects, %3 contacts").arg(drawn.size()).arg(dopings).arg(contacts.size());
@@ -1581,7 +1581,7 @@ LumericalScript exportMqw(const Model& model, const Node& node, const QString& b
         const detail::QuantumLayer& ql = q.layers[std::size_t(l.d)];
         const QString where = tr("domain %1").arg(l.d + 1);
         if (ql.wurtzite) {
-            out.error = tr("%1 is wurtzite: mqwindex is zinc blende's 4x4 - Lumerical's MQW solver object has the 6x6 (an imported .ldev's)").arg(where);
+            out.error = tr("%1 is wurtzite: mqwindex is zinc blende's 4x4 - the Lumerical MQW solver object has the 6x6 (an imported .ldev's)").arg(where);
             return out;
         }
         if (!std::isfinite(ql.Ec) || !std::isfinite(ql.Ev)) {
@@ -1592,7 +1592,7 @@ LumericalScript exportMqw(const Model& model, const Node& node, const QString& b
         gapLeast = std::min(gapLeast, ql.Ec - ql.Ev);
     }
     if (q.valence == 6 || q.valence == 8)
-        w.note(tr("the model's k·p %1: mqwindex's is the 4x4 (Lumerical's MQW solver object has the 6x6 and the 8x8)").arg(q.valence == 6 ? QStringLiteral("6x6") : QStringLiteral("8x8")));
+        w.note(tr("the model's k·p %1: mqwindex's is the 4x4 (the Lumerical MQW solver object has the 6x6 and the 8x8)").arg(q.valence == 6 ? QStringLiteral("6x6") : QStringLiteral("8x8")));
     else if (q.valence == 0)
         w.note(tr("the model's holes parabolic: mqwindex mixes them (the 4x4)"));
     if (q.potential) w.note(tr("%1's potential of another physics left out: the field alone").arg(phys->name()));
@@ -1675,7 +1675,7 @@ LumericalScript exportMqw(const Model& model, const Node& node, const QString& b
                 if (a->fractions == 2) w.line(m + QStringLiteral(".y = %1;").arg(num(a->y)));
                 continue;
             }
-            w.note(tr("domain %1: no compound of Lumerical's MQW database - the model's parameters").arg(l.d + 1));
+            w.note(tr("domain %1: no compound of the Lumerical MQW database - the model's parameters").arg(l.d + 1));
         }
         // (The model's own: unstrained, on the valence band's scale; what
         // strain needs nought where there is none.)
@@ -1700,7 +1700,7 @@ LumericalScript exportMqw(const Model& model, const Node& node, const QString& b
             w.note(tr("domain %1 strained without its deformation potentials or stiffness: GaAs's stiffness, nought for the rest").arg(l.d + 1));
     }
     if (defaultLattice) w.note(tr("a layer without a lattice constant: GaAs's (lc sets only mqwindex's default range of k, given here)"));
-    if (fromDatabase > 0) w.note(tr("%1 layers Lumerical's database's by compound and composition - their band offsets Lumerical's (Palankovski's)").arg(fromDatabase));
+    if (fromDatabase > 0) w.note(tr("%1 layers the Lumerical database's by compound and composition - their band offsets the database's (Palankovski's)").arg(fromDatabase));
     w.line();
     // The field's potential: 0 at the stack's middle, as the model has it.
     w.comment(tr("The simulation: %1 K, the field %2 V/m (its potential 0 at the stack's middle: the bands at -q V).").arg(num(q.T), num(q.F)));
@@ -1747,7 +1747,7 @@ LumericalScript exportMqw(const Model& model, const Node& node, const QString& b
     const QString saved = base + (fields.size() > 1 ? QStringLiteral("_mqw_1.ldf ...") : QStringLiteral("_mqw.ldf"));
     const bool swept = fields.size() > 1;
     if (node.flag(QStringLiteral("run"))) {
-        w.comment(tr("Lumerical's 4x4 k·p: the band diagram, the bands, the gain (TE, TM; 1/m over the stack) and the index."));
+        w.comment(tr("The Lumerical 4x4 k·p: the band diagram, the bands, the gain (TE, TM; 1/m over the stack) and the index."));
         QString indent;
         if (swept) {
             QStringList v;

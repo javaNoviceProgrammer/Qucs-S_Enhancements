@@ -40,7 +40,8 @@ The steps are done, and the facts they depend on were checked against the reposi
 
   The program's messages, help and tool texts write "Lumerical's" about 60 times ("Lumerical's
   MQW solver", "Lumerical's database"). Whether to follow these guidelines there is a
-  decision to make; it was not made here.
+  decision to make; it was not made here. (Made on 18 October: adjectives, not possessives,
+  and the marks at first use - `2026-10-18-claude-trademark-adjectives-and-marks.md`.)
 - **The User Terms of Use §5** (reverse engineering of content, derivative works) and the
   use of the downloaded examples to work out the formats and to benchmark.
 - **The material parameters read from the Lumerical database** (listed above): whether to

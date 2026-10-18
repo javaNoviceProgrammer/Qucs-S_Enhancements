@@ -1247,7 +1247,7 @@ const QList<MaterialEntry>& builtinMaterials()
                    "Si")),
         withModels(with(entry("Germanium", "Semiconductors",
                               "Crystalline germanium: at 300 K its gap 0.66 eV (Varshni's of T), its densities of states, mobilities and "
-                              "conductivity of heat of T; its models' parameters (Lumerical's); n and κ from 0.3 to 14 µm (Nunley et al.'s "
+                              "conductivity of heat of T; its models' parameters (from the Lumerical database); n and κ from 0.3 to 14 µm (Nunley et al.'s "
                               "measured to 1.9 µm - its direct gap's absorption, 2000 /cm at 1550 nm -, Burnett et al.'s Sellmeier from 2 µm). "
                               "Its direct gap for a Wave Equation's Direct-gap absorption (the Franz-Keldysh effect; κ then the option's): "
                               "Egd 0.80 eV, A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
@@ -1278,7 +1278,7 @@ const QList<MaterialEntry>& builtinMaterials()
                    "Ge"),
         withModels(with(entry("Gallium nitride", "Semiconductors",
                               "Wurtzite GaN: its bands for quantum wells (k·p 6x6, its polarization) its compound's; its gap 3.4 eV at 300 K "
-                              "(Varshni's of T), its models' parameters Lumerical's; n from 0.37 to 10 µm, the ordinary ray's - across its c "
+                              "(Varshni's of T), its models' parameters from the Lumerical database; n from 0.37 to 10 µm, the ordinary ray's - across its c "
                               "axis, a c-plane film's in its plane - (Barker and Ilegems's), held beyond",
                               {{"compound", "GaN"}, {"epsilonr", "8.9"}, {"k", "130[W/(m*K)]"}, {"rho", "6150[kg/m^3]"}, {"Cp", "490[J/(kg*K)]"},
                                {"mur", "1"}, {"E", "295[GPa]"}, {"nu", "0.23"}, {"alpha", "5.6e-6[1/K]"},
@@ -1360,7 +1360,7 @@ const QList<MaterialEntry>& builtinMaterials()
                                       {2.25, 0.000383}, {2.5, 0.000474}, {2.75, 0.000593}, {3, 0.000743}, {3.25, 0.000929}, {3.5, 0.00116},
                                       {3.75, 0.00143}, {4, 0.00175}, {4.25, 0.00214}, {4.5, 0.0026}, {4.75, 0.0033}, {5, 0.00418}})}}),
         onWafer(withModels(with(entry("Indium phosphide", "Semiconductors",
-                              "InP: its gap 1.344 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.80 to 10 µm "
+                              "InP: its gap 1.344 eV at 300 K (Varshni's of T), its models' parameters from the Lumerical database; n from 0.80 to 10 µm "
                               "(Pettit and Turner's from 0.95 µm, its oscillator below; at 300 K - with T, the Thermo-optic option's "
                               "dn/dT); Pockels' r41 1.45 pm/V, its axes a (100) wafer's (its orientation); its edge's "
                               "absorption A 1.16e5 per cm (Aspnes and Studna's k from 1.5 to 1.7 eV, within 4 %)",
@@ -1376,7 +1376,7 @@ const QList<MaterialEntry>& builtinMaterials()
                          {"nrange", compoundProperty(QStringLiteral("InP"), 0, 0, QStringLiteral("nrange"))}, {"r", zincBlendeElectroOptic(1.45)}}),
                    "InP")),
         onWafer(withModels(with(entry("Gallium arsenide", "Semiconductors",
-                              "GaAs: its gap 1.424 eV at 300 K (Varshni's of T), its models' parameters Lumerical's; n from 0.76 to 17 µm "
+                              "GaAs: its gap 1.424 eV at 300 K (Varshni's of T), its models' parameters from the Lumerical database; n from 0.76 to 17 µm "
                               "(Afromowitz's oscillator fitted to Skauli's, its gap broadened; at 300 K - with T, the Thermo-optic "
                               "option's dn/dT, Franta et al.'s at 1550 nm); Pockels' r41 1.5 pm/V, its axes a (100) wafer's (its orientation)",
                               {{"compound", "GaAs"}, {"epsilonr", "12.9"}, {"rho", "5320[kg/m^3]"}, {"Cp", "330[J/(kg*K)]"}, {"mur", "1"},
