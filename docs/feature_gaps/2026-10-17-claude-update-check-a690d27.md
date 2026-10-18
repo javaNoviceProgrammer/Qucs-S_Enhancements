@@ -32,7 +32,7 @@ A study gets one such line, its worst point's: a Laser L-I step replaces it as p
 
 **Not said:** the VCSEL example (10 and 40 cavity rows, the same current to 0.9 %), the Ge/Si electroabsorption modulator and the Ge photodiode (heterojunctions, meshed fine enough), and the Liu model (no heterojunction).
 
-**Found on the way, not said by it.** The toy's current also depends on the lateral element size. At 128 rows it is 35.6, 41.8 and 57.8 µA at 50, 100 and 200 nm laterally, from the current funnelling into the 0.3 µm disk. That is a 2D effect of the claddings, not a heterojunction's crossing, and the warning does not cover it.
+**Found on the way, not said by it.** The toy's current also depended on the lateral element size: at 128 rows, 35.6, 41.8 and 57.8 µA at 50, 100 and 200 nm laterally. It was put down here to the current funnelling into the 0.3 µm disk. The cause was the disk's side-wall nodes, each holding half a column of the cladding at the disk's carriers. Fixed afterwards with graded columns at such walls (`2026-10-18-claude-lateral-columns-at-walls.md`): 29.8, 29.6 and 29.5 µA.
 
 ## 2. A contact's charge, said as it is
 

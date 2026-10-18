@@ -2113,6 +2113,12 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("axis"), tr("Layers stacked along"), {QStringLiteral("y"), QStringLiteral("x")}, {tr("y"), tr("x")}, QStringLiteral("y")),
           expr(QStringLiteral("hlateral"), tr("Lateral element size"), QStringLiteral("length"), QString(),
                tr("Along the layers (empty: the maximum element size)")),
+          expr(QStringLiteral("hwall"), tr("Lateral element size at its side walls"), QStringLiteral("length"), QString(),
+               tr("At a material's side across the layers, between two of a semiconductor's domains of different materials (a "
+                  "buried active region's side wall, an oxide aperture's edge): the columns from this size, each the next twice the "
+                  "last, to the lateral size (empty: a thirty-second of it; the lateral size: even columns). With even columns a "
+                  "buried GaAs ring passed current as if it were half a column wider at each wall, and the VCSEL example 2.5 % "
+                  "more at 1.9 V on 100 nm columns")),
           integer(QStringLiteral("count"), tr("Elements across each layer"), 2)},
          {}, {}, false, false, QStringLiteral("lay"),
          tr("A stack of thin layers - an MQW's wells and barriers, each a rectangle - as a grid of stretched triangles: so many "

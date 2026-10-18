@@ -13,6 +13,7 @@
  * (at your option) any later version.
  */
 #include "fem_materials.h"
+#include "fem_mesh.h"
 #include "fem_results.h"
 
 #include <QElapsedTimer>
@@ -21,6 +22,7 @@
 
 #include <cmath>
 #include <map>
+#include <set>
 #include <vector>
 
 using namespace qucs_s::fem;
@@ -437,12 +439,15 @@ private slots:
             QVERIFY2(said(r).isEmpty(), qPrintable(QStringLiteral("%1 rows, %2, %3: %4").arg(rows).arg(QLatin1String(va), QLatin1String(kind), said(r))));
         }
         // A GaAs stripe 100 nm wide in Al0.6Ga0.4As, its side walls 50 nm
-        // elements across, its rows fine: not said - the carriers run along
-        // the walls within the stripe, the current crosses at its top and
-        // bottom (the walls' edges' share of it nought, an edge from a
-        // corner along an interface not across one). Swept to 1.6 V on 4
-        // rows: one line, the worst point's.
-        auto stripe = [](int rows, const QString& sweep) {
+        // elements across (even columns), its rows fine: not said - the
+        // carriers run along the walls within the stripe, the current
+        // crosses at its top and bottom (the walls' edges' share of it
+        // nought, an edge from a corner along an interface not across one).
+        // Its columns graded at the walls, the same. Swept to 1.6 V on 4 rows:
+        // one line, the worst point's - the n cladding's 75 nm rows (the
+        // holes enter through the walls, its top less than a tenth of the
+        // current).
+        auto stripe = [](int rows, const QString& sweep, const QString& wall) {
             return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
               "parameters": [{"name": "Va", "expression": "0[V]"}],
               "components": [{"unit": "um",
@@ -461,18 +466,20 @@ private slots:
                   {"type": "ohmic", "name": "anode", "V0": "Va", "selection": {"of": ["pclad"], "side": "top"}},
                   {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
                 "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
-                         "features": [{"type": "layered", "hlateral": "0.05", "count": %1, "selection": {"all": true}}]}}],
+                         "features": [{"type": "layered", "hlateral": "0.05", "hwall": "%3", "count": %1, "selection": {"all": true}}]}}],
               "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "%2", "V"]]}, {"type": "stationary"}]}]})json")
                                .arg(rows)
-                               .arg(sweep)
+                               .arg(sweep, wall)
                                .toUtf8());
         };
         if (!slow) {
-            r = run(stripe(128, QStringLiteral("1.6")));
-            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-            QVERIFY2(said(r).isEmpty(), qPrintable(said(r)));
+            for (const char* wall : {"0.05", ""}) {
+                r = run(stripe(128, QStringLiteral("1.6"), QLatin1String(wall)));
+                QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+                QVERIFY2(said(r).isEmpty(), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(wall), said(r))));
+            }
         }
-        r = run(stripe(4, QStringLiteral("1.2, 1.4, 1.6")));
+        r = run(stripe(4, QStringLiteral("1.2, 1.4, 1.6"), QString()));
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         QCOMPARE(int(r.study.solutions.size()), 3);
         for (const auto& solution : r.study.solutions) {
@@ -481,11 +488,12 @@ private slots:
             QVERIFY2(lines <= 1, qPrintable(solution->log.join(QLatin1String(" | "))));
         }
         r.solution = r.study.solutions.back();
-        QVERIFY2(said(r).contains(QLatin1String("elements 120 nm across")), qPrintable(said(r)));
+        QVERIFY2(said(r).contains(QLatin1String("elements 75 nm across")) && said(r).contains(QStringLiteral("“nclad”")), qPrintable(said(r)));
         // The toy laser's disk in Al0.6Ga0.4As (without its laser) at 1.7 V
         // on 16 rows: a cladding's row said (18.7 or 30 nm) - not the 50 nm
         // edge from the disk's corner along its top, which runs along the
-        // interface, not across it (refined, nothing changes).
+        // interface, not across it (refined, nothing changes). (A sanitized
+        // build: its columns even, a third of its triangles.)
         r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
           "components": [{"unit": "um", "space": "axisymmetric",
             "geometry": [{"type": "rectangle", "label": "nclad", "position": ["0", "0"], "size": ["1.2", "0.3"]},
@@ -504,11 +512,110 @@ private slots:
               {"type": "ohmic", "name": "anode", "V0": "1.7[V]", "selection": {"of": ["pclad"], "side": "top"}},
               {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
             "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
-                     "features": [{"type": "layered", "hlateral": "0.05", "count": 16, "selection": {"all": true}}]}}],
+                     "features": [{"type": "layered", "hlateral": "0.05", "hwall": "%1", "count": 16, "selection": {"all": true}}]}}],
           "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                                    .arg(slow ? QStringLiteral("0.05") : QString())
                                     .toUtf8()));
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         QVERIFY2(said(r).contains(QLatin1String("elements 18.7 nm across")) || said(r).contains(QLatin1String("elements 30 nm across")), qPrintable(said(r)));
+    }
+
+    // A material's side walls across a Layered Region's layers - between
+    // two of a semiconductor's domains of different materials: the columns
+    // graded there, from a thirty-second of the lateral size (or its
+    // "hwall"), each the next twice the last, each leaving as much again
+    // after it; even elsewhere, and where hwall is the lateral size. With
+    // even columns a wall's node held its part of the material beside it
+    // at its own carriers: a GaAs stripe 100 nm wide in Al0.6Ga0.4As at
+    // 1.4 V on 32 rows passed 19.3, 15.7 and 13.6 mA (a metre of it) on
+    // columns 100, 50 and 25 nm wide, about 12.65 in the limit (even
+    // columns 1.6 nm wide 12.57, graded to 3.1 nm 12.64); graded, 12.61,
+    // 12.68, 12.70. (A sanitized build: its meshes alone - its graded
+    // solves 70 to 100 s there.)
+    void itsColumnsGradedAtSideWalls()
+    {
+        auto stripe = [](const QString& hl, const QString& wall, const QString& active, bool physics) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "nclad", "size": ["0.3", "0.3"]},
+                             {"type": "rectangle", "name": "layer", "position": ["0", "0.3"], "size": ["0.3", "0.02"]},
+                             {"type": "rectangle", "name": "active", "position": ["0.1", "0.3"], "size": ["0.1", "0.02"]},
+                             {"type": "rectangle", "name": "pclad", "position": ["0", "0.32"], "size": ["0.3", "0.48"]},
+                             {"type": "form union"}],
+                "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "selection": {"only": ["nclad", "pclad", "layer"]}},
+                              {%3, "selection": {"only": ["active"]}}],
+                "physics": [%4],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                         "features": [{"type": "layered", "hlateral": "%1", "hwall": "%2", "count": 32, "selection": {"all": true}}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(hl, wall, active,
+                                    physics ? QStringLiteral(R"json({"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "2e18[1/cm^3]", "selection": {"only": ["active"]}},
+                  {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
+                  {"type": "ohmic", "name": "anode", "V0": "1.4[V]", "selection": {"of": ["pclad"], "side": "top"}},
+                  {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]})json")
+                                            : QString())
+                               .toUtf8());
+        };
+        const QString gaas = QStringLiteral(R"("material": "Gallium arsenide")");
+        // Its columns' lines (µm).
+        auto columns = [](const Model& model) {
+            const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
+            const GeometryBuild g = buildGeometry(model, *ps);
+            const MeshBuild m = buildMesh(model, *ps, g.topology);
+            std::set<double> lines;
+            if (m.mesh)
+                for (const QPointF& p : m.mesh->nodes) lines.insert(std::round(p.x() * 1e7) / 1e7);
+            return std::vector<double>(lines.cbegin(), lines.cend());
+        };
+        auto text = [](const std::vector<double>& v) {
+            QStringList s;
+            for (double x : v) s << QString::number(x, 'g', 8);
+            return s.join(QLatin1String(", "));
+        };
+        // From each wall 3.125, 6.25, 12.5 and 25 nm; between the walls
+        // 25 nm leaves too little after it - the middle one column.
+        const std::vector<double> graded{0, 0.053125, 0.078125, 0.090625, 0.096875, 0.1, 0.103125, 0.109375, 0.121875,
+                                         0.178125, 0.190625, 0.196875, 0.2, 0.203125, 0.209375, 0.221875, 0.246875, 0.3},
+            even{0, 0.1, 0.2, 0.3};
+        std::vector<double> c = columns(stripe(QStringLiteral("0.1"), QString(), gaas, true));
+        QVERIFY2(c == graded, qPrintable(text(c)));
+        // Its "hwall" 10 nm: 10 and 20 nm from each wall.
+        c = columns(stripe(QStringLiteral("0.1"), QStringLiteral("0.01"), gaas, true));
+        QVERIFY2(c == std::vector<double>({0, 0.07, 0.09, 0.1, 0.11, 0.13, 0.17, 0.19, 0.2, 0.21, 0.23, 0.3}), qPrintable(text(c)));
+        // The lateral size: even. The stripe of the cladding's material, or
+        // no semiconductor: no wall, even.
+        for (const auto& [wall, active, physics] : {std::tuple{"0.1", gaas, true},
+                                                    std::tuple{"", QStringLiteral(R"("material": "Aluminium gallium arsenide", "x": "0.6")"), true},
+                                                    std::tuple{"", gaas, false}}) {
+            c = columns(stripe(QStringLiteral("0.1"), QLatin1String(wall), active, physics));
+            QVERIFY2(c == even, qPrintable(QStringLiteral("%1 %2 %3: %4").arg(QLatin1String(wall), active).arg(physics).arg(text(c))));
+        }
+        // An insulator's edge in the semiconductor (an oxide aperture's):
+        // graded too.
+        c = columns(stripe(QStringLiteral("0.1"), QString(), QStringLiteral(R"("label": "Oxide", "epsilonr": "4")"), true));
+        QVERIFY2(c == graded, qPrintable(text(c)));
+        // The current: graded, the same to 1 % from 100 to 25 nm, within 2 %
+        // of the limit; even at 100 nm, half again.
+        if (slowBuild()) return;
+        std::map<QString, double> I;
+        for (const auto& [hl, wall] : {std::pair{"0.1", ""}, std::pair{"0.05", ""}, std::pair{"0.025", ""}, std::pair{"0.1", "0.1"}}) {
+            const Run r = run(stripe(QLatin1String(hl), QLatin1String(wall), gaas, true));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            I[QStringLiteral("%1/%2").arg(QLatin1String(hl), QLatin1String(wall))] = global(*r.solution, QStringLiteral("semi.I_anode"));
+        }
+        QStringList all;
+        for (const auto& [key, current] : I) all << QStringLiteral("%1 %2 mA").arg(key).arg(current * 1e3);
+        qInfo("%s", qPrintable(all.join(QLatin1String(", "))));
+        const double limit = 12.65e-3;
+        for (const char* hl : {"0.1", "0.05", "0.025"}) {
+            const auto it = I.find(QStringLiteral("%1/").arg(QLatin1String(hl)));
+            QVERIFY(it != I.end());
+            QVERIFY2(std::abs(it->second / I[QStringLiteral("0.1/")] - 1) < 0.01 && std::abs(it->second / limit - 1) < 0.02, qPrintable(all.join(QLatin1String(", "))));
+        }
+        QVERIFY2(I[QStringLiteral("0.1/0.1")] > 1.4 * limit, qPrintable(all.join(QLatin1String(", "))));
     }
 
     // An edge between two domains of one material - the layer beside a GaAs
