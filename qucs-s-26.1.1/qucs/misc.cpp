@@ -1447,6 +1447,14 @@ QString misc::formatValue(const QString& input, int precision) {
     return input;
 }
 
+bool misc::isReadOnlyText(const QWidget* widget)
+{
+    if (const auto* text = qobject_cast<const QTextEdit*>(widget)) return text->isReadOnly();
+    if (const auto* text = qobject_cast<const QPlainTextEdit*>(widget)) return text->isReadOnly();
+    if (const auto* label = qobject_cast<const QLabel*>(widget)) return label->textInteractionFlags() & Qt::TextSelectableByMouse;
+    return false;
+}
+
 bool misc::wheelZooms(const QWheelEvent* event)
 {
     const bool ctrl = event->modifiers() & Qt::ControlModifier;

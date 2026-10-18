@@ -4390,6 +4390,82 @@ private slots:
         QApplication::setPalette(before);
     }
 
+    // In the application, the conversation's text takes the editing keys:
+    // Cmd+C copies the text chosen there and Cmd+A chooses all of it; Cut,
+    // Paste, Delete and Backspace do nothing - the schematic open behind it,
+    // all of it chosen, untouched. (Its text read-only, Qt left the keys to
+    // the window's Edit menu: Copy copied the schematic's selection, Delete
+    // and Cut took its parts. Right-click > Copy alone worked.) Edit > Copy
+    // from the menu copies the text chosen too.
+    void theConversationsTextTakesTheKeys()
+    {
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        QucsSettings.firstRun = false;
+        QucsSettings.NgspiceExecutable = QStandardPaths::findExecutable("sh");
+        QucsSettings.S4Qworkdir = dir.filePath("s4q");
+        QucsSettings.tempFilesDir.setPath(dir.filePath("s4q"));
+        QDir().mkpath(dir.filePath("s4q"));
+        QucsVersion = VersionTriplet(PACKAGE_VERSION);
+        Module::registerModules();
+        const QString workspace = fresh("keysWorkspace");
+        QucsSettings.qucsWorkspaceDir.setPath(workspace);
+        QDir(qucs_s::claude::history::directory()).removeRecursively();
+
+        QucsApp app(false);
+        MainGuard guard(&app);
+        ClaudeCodePanel* panel = app.claudeCode()->current();
+        QVERIFY(panel != nullptr);
+        app.resize(1200, 800);
+        app.show();
+        app.claudeDockWidget()->show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        app.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&app));
+        // A schematic, all of it chosen.
+        const QString file = workspace + "/rc.sch";
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/ngspice/RF/Miscellaneous/RCL_resonance.sch"), file));
+        QFile::setPermissions(file, QFile::ReadOwner | QFile::WriteOwner);
+        QVERIFY(app.gotoPage(file, false, false));
+        auto* doc = dynamic_cast<Schematic*>(app.getDoc());
+        QVERIFY(doc != nullptr);
+        const std::size_t parts = doc->a_DocComps.size();
+        QVERIFY(parts > 2);
+        doc->selectElements(doc->allBoundingRect().marginsAdded(QMargins{1, 1, 1, 1}), true, false);
+        // A reply, some of it chosen, the conversation in focus.
+        panel->session()->setProgram("claude");
+        panel->session()->handleLine(R"({"type":"assistant","message":{"content":[{"type":"text","text":"The cutoff is 1.59 kHz here."}]}})");
+        QTextBrowser* view = panel->transcript();
+        QTRY_VERIFY(view->toPlainText().contains("1.59 kHz"));
+        const QTextCursor chosen = view->document()->find(QStringLiteral("1.59 kHz"));
+        QVERIFY(!chosen.isNull());
+        view->setTextCursor(chosen);
+        view->setFocus();
+        QTRY_VERIFY(view->hasFocus());
+        QApplication::clipboard()->setText(QStringLiteral("before"));
+        QTest::keySequence(view, QKeySequence::Copy);
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("1.59 kHz"));
+        // The others: nothing here, nothing to the schematic.
+        QTest::keySequence(view, QKeySequence::Cut);
+        QTest::keySequence(view, QKeySequence::Paste);
+        QTest::keyClick(view, Qt::Key_Backspace);
+        QTest::keyClick(view, Qt::Key_Delete);
+        QCOMPARE(doc->a_DocComps.size(), parts);
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("1.59 kHz"));
+        QVERIFY(view->toPlainText().contains("1.59 kHz"));
+        QCOMPARE(app.getDoc(), static_cast<QucsDoc*>(doc));
+        // All of the conversation.
+        QTest::keySequence(view, QKeySequence::SelectAll);
+        QCOMPARE(view->textCursor().selectionStart(), 0);
+        QCOMPARE(view->textCursor().selectionEnd(), view->document()->characterCount() - 1);
+        // Edit > Copy from the menu: the text chosen.
+        view->setTextCursor(chosen);
+        QApplication::clipboard()->setText(QStringLiteral("before"));
+        QVERIFY(QMetaObject::invokeMethod(&app, "slotEditCopy"));
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("1.59 kHz"));
+        panel->session()->reset();
+        app.closeAllFiles();
+    }
+
     // In the application: the dock works in the workspace folder and moves
     // with it, the status bar says what Claude does and brings the dock,
     // and a file Claude changed is loaded again - unless it has unsaved
