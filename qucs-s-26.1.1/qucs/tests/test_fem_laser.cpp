@@ -207,7 +207,11 @@ private slots:
             if (q.S > 100) {
                 ++lasing;
                 QVERIFY2(std::abs(q.Nact / Nth - 1) < 1e-3, qPrintable(QStringLiteral("%1: %2 (%3)").arg(q.V).arg(q.Nact).arg(Nth)));
-                QVERIFY(std::abs(q.gmean / gth - 1) < 1e-4);
+                // (Clamped: its mean gain the threshold's but for β Rsp / S -
+                // G τp exactly -, 1.9e-4 below it at 153 photons, a point
+                // just above threshold.)
+                QVERIFY(std::abs(q.gmean / gth - q.G * taup) < 1e-6);
+                QVERIFY(std::abs(q.gmean / gth - 1) < 1e-3);
                 const double Isp = Q * B * Nth * Nth * M_PI * b * b * ha;
                 QVERIFY2(std::abs(q.Isp / Isp - 1) < 3e-3, qPrintable(QStringLiteral("%1 %2").arg(q.Isp).arg(Isp)));
             } else {
@@ -328,8 +332,10 @@ private slots:
     // voltages): the mode HE11 980.29 nm, Q 15 800; Γ 0.042, the gain at
     // threshold 409 per cm; the wells transparent at 1.09e18 per cm³ (twelve
     // states: five gave 1.00e18 and a warning); threshold 45 µA at 1.37 V
-    // (these six points; its own 36, 47 µA at 1.37 V), 0.60 W/A, 0.82 mW at
-    // 1.42 mA (1.90 V); dark at 1.30 V, lasing from 1.36 V. Its cavity's
+    // (these six points; its own 36, 47 µA at 1.37 V), 0.60 W/A, 0.80 mW at
+    // 1.38 mA (1.90 V; 0.82 mW at 1.42 mA on even columns at the aperture's
+    // wall, 1.40 mA on columns half as wide); dark at 1.30 V, lasing from
+    // 1.36 V. Its cavity's
     // rows ten (the current at 1.9 V within 1 % of four times as many, its
     // heterojunctions abrupt; graded over an element, as they were, 1.63
     // mA, 11 % from twice as many, five rows 2.09), its SRH lifetimes its own 5 ns
@@ -371,7 +377,9 @@ private slots:
         const QString log = s.log.join(QLatin1Char('\n'));
         const double lambda = global(s, QStringLiteral("emr.lambda0")), Qf = global(s, QStringLiteral("emr.Q"));
         qInfo("mode %.5f nm, Q %.0f, Γ %.5f, gth %.1f per cm", lambda * 1e9, Qf, global(s, QStringLiteral("semi.Gamma")), global(s, QStringLiteral("semi.gth")) / 100);
-        QVERIFY(std::abs(lambda * 1e9 - 980.290) < 0.01 && std::abs(Qf / 15827 - 1) < 0.01);
+        // (980.290 nm and 15827 on even columns at its aperture's edge;
+        // graded there, 980.273 and 15874.)
+        QVERIFY(std::abs(lambda * 1e9 - 980.273) < 0.01 && std::abs(Qf / 15874 - 1) < 0.01);
         QVERIFY(std::abs(global(s, QStringLiteral("semi.Gamma")) / 0.04158 - 1) < 0.01);
         QVERIFY(std::abs(global(s, QStringLiteral("semi.gth")) / 4.0905e4 - 1) < 0.01);
         QRegularExpressionMatch tr = QRegularExpression(QStringLiteral("transparency ([0-9.e+]+) per cm")).match(log);
@@ -380,14 +388,20 @@ private slots:
         const std::vector<Point> p = points(s);
         QCOMPARE(int(p.size()), 6);
         QVERIFY(p[0].S < 1 && p[0].Gnet < 0);
-        for (std::size_t k = 2; k < p.size(); ++k) QVERIFY2(std::abs(p[k].gmean / 4.0905e4 - 1) < 1e-3, qPrintable(QString::number(p[k].gmean)));
-        QVERIFY2(std::abs(p.back().Pout / 0.821e-3 - 1) < 0.01 && std::abs(p.back().I / 1.418e-3 - 1) < 0.01,
+        // Lasing: its mean gain its threshold's, but for β Rsp / S (G τph
+        // exactly) - 1.36 V just above threshold.
+        const double gth = global(s, QStringLiteral("semi.gth")), tauph = global(s, QStringLiteral("semi.tauph"));
+        for (std::size_t k = 2; k < p.size(); ++k) {
+            QVERIFY2(std::abs(p[k].gmean / gth - p[k].G * tauph) < 1e-6, qPrintable(QString::number(p[k].gmean)));
+            QVERIFY2(std::abs(p[k].gmean / gth - 1) < 2e-3, qPrintable(QString::number(p[k].gmean)));
+        }
+        QVERIFY2(std::abs(p.back().Pout / 0.801e-3 - 1) < 0.01 && std::abs(p.back().I / 1.382e-3 - 1) < 0.01,
                  qPrintable(QStringLiteral("%1 W at %2 A").arg(p.back().Pout).arg(p.back().I)));
         QRegularExpressionMatch th = QRegularExpression(QStringLiteral("threshold ([0-9.]+) µA at ([0-9.]+) V.*slope ([0-9.]+) W/A")).match(log);
         QVERIFY2(th.hasMatch(), qPrintable(log));
         qInfo("threshold %s µA at %s V, slope %s W/A", qPrintable(th.captured(1)), qPrintable(th.captured(2)), qPrintable(th.captured(3)));
-        QVERIFY(std::abs(th.captured(1).toDouble() / 45.42 - 1) < 0.05 && std::abs(th.captured(2).toDouble() - 1.365) < 0.01
-                && std::abs(th.captured(3).toDouble() / 0.5976 - 1) < 0.02);
+        QVERIFY(std::abs(th.captured(1).toDouble() / 45.01 - 1) < 0.05 && std::abs(th.captured(2).toDouble() - 1.366) < 0.01
+                && std::abs(th.captured(3).toDouble() / 0.5986 - 1) < 0.02);
         // Its carriers within its gain table: nothing said.
         QVERIFY2(!log.contains(QLatin1String("carriers reach")), qPrintable(log));
     }

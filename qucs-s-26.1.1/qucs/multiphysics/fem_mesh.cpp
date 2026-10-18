@@ -414,7 +414,7 @@ private:
                 parent[std::size_t(find(bd.up))] = find(bd.down);
         }
         std::map<int, std::vector<double>> cuts;
-        std::map<int, double> step;
+        std::map<int, double> step, wallStep;
         double extent = 1e-300;
         for (int d = 0; d < nd; ++d) {
             if (!layered(d)) continue;
@@ -425,6 +425,10 @@ private:
             cuts[root].push_back(yStack ? r.right() : r.bottom());
             auto it = step.find(root);
             step[root] = it == step.end() ? a_sizes.layerLateral[std::size_t(d)] : std::min(it->second, a_sizes.layerLateral[std::size_t(d)]);
+            const double given = d < int(a_sizes.layerWall.size()) ? a_sizes.layerWall[std::size_t(d)] : 0;
+            const double wall = given > 0 ? given : a_sizes.layerLateral[std::size_t(d)] / 32;
+            auto w = wallStep.find(root);
+            wallStep[root] = w == wallStep.end() ? wall : std::min(w->second, wall);
             extent = std::max({extent, std::abs(r.left()), std::abs(r.right()), std::abs(r.top()), std::abs(r.bottom())});
         }
         if (cuts.empty()) return;
@@ -435,17 +439,73 @@ private:
                     for (int v : {bd.start, bd.end}) cuts[find(d)].push_back(lateralOf(a_t.vertices[std::size_t(v)], d));
         }
         const double tol = 1e-9 * extent;
+        // Its walls: a material's sides across its layers - between two of
+        // a semiconductor's domains of different materials: a
+        // heterojunction's side wall, an oxide aperture's edge. The columns
+        // there from the wall's size, each the next twice the last, to the
+        // lateral size. (Even, a node on a heterojunction's wall held its
+        // part of the material beside it at its own carriers - half a column
+        // of it, current from the cladding under that part taken as into the
+        // wall: a GaAs ring in Al0.6Ga0.4As 300 nm wide passed 326, 259,
+        // 230, 209 nA with columns 200, 100, 50 and 25 nm wide, some 190 in
+        // the limit; graded so, 195, 192, 192 nA, and as a laser 29.8, 29.6,
+        // 29.5 µA where it was 57.8, 41.8, 35.6. The current crowds at an
+        // aperture's edge: the VCSEL example at 1.9 V 1.418, 1.398, 1.388 mA
+        // on even columns 100, 50 and 25 nm wide, graded 1.382 and 1.383.)
+        std::map<int, std::vector<double>> walls;
+        for (int b = 0; b < nb; ++b) {
+            const Topology::Boundary& bd = a_t.boundaries[std::size_t(b)];
+            if (b >= int(a_sizes.layerWalls.size()) || !a_sizes.layerWalls[std::size_t(b)] || !layered(bd.up) || !layered(bd.down)) continue;
+            if (alongLayers(b, bd.up) || find(bd.up) != find(bd.down)) continue;
+            walls[find(bd.up)].push_back(lateralOf(a_t.vertices[std::size_t(bd.start)], bd.up));
+        }
         std::map<int, std::vector<double>> lines;
         for (auto& [root, c] : cuts) {
             std::sort(c.begin(), c.end());
             std::vector<double> u;
             for (double x : c)
                 if (u.empty() || x - u.back() > tol) u.push_back(x);
+            const double h = step[root], h0 = std::min(h, wallStep[root]);
+            const auto isWall = [&walls, root = root, tol](double x) {
+                return std::any_of(walls[root].cbegin(), walls[root].cend(), [x, tol](double w) { return std::abs(w - x) <= tol; });
+            };
             std::vector<double>& out = lines[root];
             for (std::size_t i = 0; i + 1 < u.size(); ++i) {
-                const double gap = u[i + 1] - u[i];
-                const int n = std::clamp(int(std::ceil(gap / step[root] - 1e-9)), 1, 100000);
-                for (int k = 0; k < n; ++k) out.push_back(u[i] + gap * k / n);
+                out.push_back(u[i]);
+                const double a = u[i], b = u[i + 1], gap = b - a;
+                const bool fromA = h0 < h && isWall(a), fromB = h0 < h && isWall(b);
+                // The graded columns from each wall end (half the gap each
+                // when both are walls), each leaving at least as much again
+                // after it - the rest no column narrower than the last.
+                std::vector<double> nearA, nearB;
+                for (const auto& [from, near] : {std::pair{fromA, &nearA}, std::pair{fromB, &nearB}}) {
+                    if (!from) continue;
+                    const double room = fromA && fromB ? gap / 2 : gap;
+                    double size = h0, used = 0;
+                    while (size < h && used + 2 * size <= room + tol) {
+                        near->push_back(size);
+                        used += size;
+                        size *= 2;
+                    }
+                }
+                double usedA = 0, usedB = 0;
+                for (double size : nearA) usedA += size;
+                for (double size : nearB) usedB += size;
+                std::vector<double> points;
+                double x = a;
+                for (double size : nearA) points.push_back(x += size);
+                // The rest even, no column wider than the lateral size.
+                const double from = a + usedA, to = b - usedB, rest = to - from;
+                if (rest > tol) {
+                    const int n = std::clamp(int(std::ceil(rest / h - 1e-9)), 1, 100000);
+                    for (int k = 1; k < n; ++k) points.push_back(from + rest * k / n);
+                    points.push_back(to);
+                }
+                double y = b;
+                for (double size : nearB) points.push_back(y -= size);
+                std::sort(points.begin(), points.end());
+                for (double p : points)
+                    if (p > out.back() + tol && p < b - tol) out.push_back(p);
             }
             out.push_back(u.back());
         }
@@ -1477,12 +1537,14 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
     s.layerLateral.assign(topology.domains.size(), 0);
     s.layerCount.assign(topology.domains.size(), 0);
     s.layerAxis.assign(topology.domains.size(), 1);
+    s.layerWall.assign(topology.domains.size(), 0);
     for (const Node& f : m.children) {
         if (!f.enabled || f.type != QLatin1String("mesh/layered")) continue;
         QString why;
         const QVector<int> picked = resolveSelection(topology, model, Level::Domain, f.selection(), &why);
         if (!why.isEmpty()) problems << tr("%1: %2").arg(f.name(), why);
         const double h = length(f.text(QStringLiteral("hlateral")), tr("%1's lateral size").arg(f.name()), s.hmax);
+        const double wall = length(f.text(QStringLiteral("hwall")), tr("%1's lateral size at its side walls").arg(f.name()), 0);
         const int n = std::clamp(f.integer(QStringLiteral("count")), 1, 1000);
         const char axis = f.text(QStringLiteral("axis")) == QLatin1String("x") ? 0 : 1;
         for (int d : picked) {
@@ -1496,6 +1558,7 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
             s.layerLateral[std::size_t(d)] = h;
             s.layerCount[std::size_t(d)] = n;
             s.layerAxis[std::size_t(d)] = axis;
+            s.layerWall[std::size_t(d)] = wall;
         }
     }
     // Their boundaries' elements: along the layers as many as the lateral
@@ -1530,6 +1593,33 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
         QString why;
         for (int d : resolveSelection(topology, model, Level::Domain, ph->selection(), &why))
             if (d >= 0 && d < int(s.delaunay.size())) s.delaunay[std::size_t(d)] = 1;
+    }
+    // A material's walls: boundaries between two of a semiconductor's
+    // domains of different materials (each domain's the last material that
+    // has it, as the physics take it; two of the same kind and properties,
+    // wherever they are, one).
+    {
+        const auto same = [](const Node* a, const Node* c) {
+            if (a == c) return true;
+            QJsonObject p = a->props, q = c->props;
+            p.remove(QStringLiteral("selection"));
+            q.remove(QStringLiteral("selection"));
+            return a->type == c->type && p == q;
+        };
+        std::vector<const Node*> material(topology.domains.size(), nullptr);
+        for (const Node& mat : model.materials().children) {
+            if (!mat.enabled) continue;
+            QString why;
+            for (int d : resolveSelection(topology, model, Level::Domain, mat.selection(), &why))
+                if (d >= 0 && d < int(material.size())) material[std::size_t(d)] = &mat;
+        }
+        s.layerWalls.assign(topology.boundaries.size(), 0);
+        for (int b = 0; b < int(topology.boundaries.size()); ++b) {
+            const Topology::Boundary& bd = topology.boundaries[std::size_t(b)];
+            if (bd.up < 0 || bd.down < 0 || !s.delaunay[std::size_t(bd.up)] || !s.delaunay[std::size_t(bd.down)]) continue;
+            const Node *a = material[std::size_t(bd.up)], *c = material[std::size_t(bd.down)];
+            if (a != nullptr && c != nullptr && !same(a, c)) s.layerWalls[std::size_t(b)] = 1;
+        }
     }
     // A periodic condition's two sides meshed alike (where they are not
     // one the other moved, the physics says so).

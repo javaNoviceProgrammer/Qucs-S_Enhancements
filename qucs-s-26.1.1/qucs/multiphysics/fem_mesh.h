@@ -100,6 +100,14 @@ struct MeshSizes {
     std::vector<double> layerLateral;
     std::vector<int> layerCount;
     std::vector<char> layerAxis;
+    /// Its lateral size at a wall - a material's side across its layers
+    /// (layerWalls) -, the columns from it growing to the lateral size (0:
+    /// a thirty-second of the lateral size).
+    std::vector<double> layerWall;
+    /// By boundary: a wall the columns are graded toward - between two of a
+    /// semiconductor's domains of different materials (a heterojunction's
+    /// side wall, an oxide aperture's edge).
+    std::vector<char> layerWalls;
 };
 
 /// The sizes \a model's mesh node asks for on \a topology: its preset,
