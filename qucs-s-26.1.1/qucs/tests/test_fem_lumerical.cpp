@@ -428,16 +428,32 @@ private slots:
     }
 
     // The script made a model again (its strips left out, each contact on
-    // the boundaries it covered, the gate's work function its own): its gate
-    // charge over the sweep within 3 % of the model's largest (its mesh its
-    // own).
+    // the boundaries it covered, the gate's work function its own, its
+    // mesh the model's - carried on its Qucs-S line): its gate charge over
+    // the sweep within 0.2 % (it was 1.3 % at 2 V and twice at -2 V with
+    // the import's own mesh).
     void aChargeRoundTrip()
     {
-        // (A slow build's two voltages: three's six solves near QtTest's 300 s on CI.)
+        // (A slow build's two voltages, its mesh twice as coarse, the model's
+        // and its round trip's alike: three's six solves near QtTest's 300 s
+        // on CI; the round trip's mesh, the model's now, as fine as its.)
         const bool slow = slowBuild();
         QJsonArray rows;
         rows.append(QJsonArray{QStringLiteral("Vg"), slow ? QStringLiteral("-2, 2") : QStringLiteral("-2, 0, 2"), QStringLiteral("V")});
-        const QJsonObject o = withStep(exampleJson(QStringLiteral("mos_capacitor.qfem")), QStringLiteral("sweep"), QJsonObject{{QStringLiteral("parameters"), rows}});
+        QJsonObject o = withStep(exampleJson(QStringLiteral("mos_capacitor.qfem")), QStringLiteral("sweep"), QJsonObject{{QStringLiteral("parameters"), rows}});
+        if (slow) {
+            QJsonArray comps = o.value(QStringLiteral("components")).toArray();
+            QJsonObject comp = comps.at(0).toObject(), mesh = comp.value(QStringLiteral("mesh")).toObject();
+            QJsonArray sizes = mesh.value(QStringLiteral("features")).toArray();
+            QJsonObject surface = sizes.at(0).toObject();
+            surface.insert(QStringLiteral("hmax"), QStringLiteral("0.006"));
+            sizes[0] = surface;
+            mesh.insert(QStringLiteral("features"), sizes);
+            mesh.insert(QStringLiteral("hmax"), QStringLiteral("0.04"));
+            comp.insert(QStringLiteral("mesh"), mesh);
+            comps[0] = comp;
+            o.insert(QStringLiteral("components"), comps);
+        }
         const Model m = modelOf(o, QStringLiteral("moscap.qfem"));
         QTemporaryDir dir;
         const LumericalScript s = exported(m, QStringLiteral("lumericalcharge"));
@@ -454,14 +470,121 @@ private slots:
         const std::size_t n = slow ? 2 : 3;
         QCOMPARE(x.size(), n);
         QCOMPARE(y.size(), n);
-        // (The model's mesh is not carried: Lumerical's is its own, the round
-        // trip's "fine" - 1.3 % apart at 2 V, twice the charge at -2 V.)
-        double largest = 0;
-        for (double q : x) largest = std::max(largest, std::abs(q));
         for (std::size_t i = 0; i < n; ++i) {
             qInfo("Vg %d V: Q_g %.5g C, its round trip's %.5g", int(4 * i / (n - 1)) - 2, x[i], y[i]);
-            QVERIFY2(std::abs(x[i] - y[i]) <= 0.03 * largest, qPrintable(QStringLiteral("%1 against %2").arg(x[i]).arg(y[i])));
+            QVERIFY2(std::abs(x[i] - y[i]) <= 2e-3 * std::abs(x[i]), qPrintable(QStringLiteral("%1 against %2").arg(x[i]).arg(y[i])));
         }
+    }
+
+    // A graded junction there and back (the update check of 2e349c6: a
+    // photodiode's graded dopings, own models and surface recombination came
+    // back as the library's, its dark current 366 times): a silicon diode, a
+    // Gaussian p layer by expression on its n substrate, its own SRH (Fossum,
+    // by doping), Auger, surface recombination at its oxide S (T/300 K)^-2,
+    // a generation of a power swept, its own mesh. The script: the doping a
+    // dataset, the surface recombination Lumerical's boundary condition with
+    // its temperature model, the generation imported data, the solver's
+    // edges, the rest on its Qucs-S line. Back: each feature the model's, its
+    // currents over the sweep the model's to 1e-3 (its structures polygons
+    // there, its mesh some 17 triangles in 5,000 apart: at 0.3 V, the
+    // light's current near the diode's, 1.1 % - halved, 0.1 %). Without the line (a
+    // script edited, or another's): the doping and generation tables, the
+    // surface recombination of T read from the script's own objects. (A slow
+    // build: two voltages, its elements twice as large.)
+    void aGradedDiodeRoundTrip()
+    {
+        const bool slow = slowBuild();
+        const QJsonObject o = QJsonDocument::fromJson(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "Va", "expression": "0.3[V]"}, {"name": "Pin", "expression": "1e-3[W]"}],
+          "components": [{"unit": "um", "thickness": "10[um]",
+            "geometry": [{"type": "rectangle", "label": "si", "size": ["2", "1"]},
+                         {"type": "rectangle", "label": "ox", "position": ["0", "1"], "size": ["2", "0.2"]},
+                         {"type": "rectangle", "label": "top", "position": ["0.8", "1"], "size": ["0.4", "0.2"]},
+                         {"type": "rectangle", "label": "bottom", "position": ["0", "-0.1"], "size": ["2", "0.1"]}, {"type": "form union"}],
+            "materials": [{"material": "Silicon", "selection": {"only": ["si"]}}, {"material": "Silicon dioxide", "selection": {"only": ["ox"]}},
+                          {"material": "Aluminium", "selection": {"only": ["top", "bottom"]}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "T": "320[K]", "selection": {"only": ["si", "ox"]}, "features": [
+              {"type": "doping", "label": "substrate", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["si"]}},
+              {"type": "doping", "label": "graded p", "dopant": "acceptor", "profile": "expression",
+               "N": "1e18[1/cm^3]*exp(-((y/1[um]) - 1)^2/0.15^2)", "selection": {"only": ["si"]}},
+              {"type": "srh", "label": "own SRH", "source": "user", "taun": "5[ns]", "taup": "3[ns]", "dependence": "doping",
+               "N0n": "5e16[1/cm^3]", "N0p": "5e16[1/cm^3]", "selection": {"only": ["si"]}},
+              {"type": "auger", "label": "own Auger", "Cn": "3e-31[cm^6/s]", "Cp": "1e-31[cm^6/s]", "selection": {"only": ["si"]}},
+              {"type": "surfacerec", "label": "oxide surface", "Sn": "1000[m/s]*(T/300[K])^(-2)", "Sp": "500[m/s]*(T/300[K])^(-2)",
+               "selection": {"between": [["si"], ["ox"]]}},
+              {"type": "generation", "label": "light", "G": "Pin/1[W]*1e27[1/(m^3*s)]*exp(-(1 - y/1[um])/0.3)", "selection": {"only": ["si"]}},
+              {"type": "ohmic", "name": "anode", "V0": "Va", "selection": {"between": [["si"], ["top"]]}},
+              {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"between": [["si"], ["bottom"]]}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.2",
+                     "features": [{"type": "size", "level": "domain", "hmax": "%1", "selection": {"only": ["si"]}}]}}],
+          "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "%2", "V"]]}, {"type": "stationary"}]}]})json")
+                                                          .arg(slow ? QStringLiteral("0.08") : QStringLiteral("0.04"), slow ? QStringLiteral("-0.5, 0.6") : QStringLiteral("-0.5, 0.5, 0.6"))
+                                                          .toUtf8())
+                                .object();
+        const Model m = modelOf(o, QStringLiteral("graded.qfem"));
+        const LumericalScript s = exported(m, QStringLiteral("lumericalcharge"));
+        QVERIFY2(s.error.isEmpty(), qPrintable(s.error));
+        // The script's own objects.
+        const lum::Scene sc = lum::readScript(s.text, QStringLiteral("x.lsf"));
+        QVERIFY2(sc.error.isEmpty(), qPrintable(sc.error));
+        QVERIFY(object(sc, QStringLiteral("importdope"), QStringLiteral("graded p")));
+        const lum::Object* rec = object(sc, QStringLiteral("surfacerec"), QStringLiteral("oxide surface"));
+        QVERIFY(rec);
+        QCOMPARE(rec->text(QStringLiteral("surface type")), QStringLiteral("material:material"));
+        QVERIFY(near(rec->number(QStringLiteral("electron velocity")), 1000, 1e-9) && near(rec->number(QStringLiteral("hole velocity")), 500, 1e-9));
+        QVERIFY(rec->number(QStringLiteral("enable temperature model")) == 1 && near(rec->number(QStringLiteral("electron eta")), -2, 1e-9)
+                && near(rec->number(QStringLiteral("hole eta")), -2, 1e-9));
+        const lum::Object* gen = object(sc, QStringLiteral("generation"), QStringLiteral("light"));
+        QVERIFY(gen && gen->prop(QStringLiteral("@dataset")) && gen->prop(QStringLiteral("@dataset"))->field(QStringLiteral("G")));
+        const lum::Object* solver = object(sc, QStringLiteral("charge"));
+        QVERIFY(solver && near(solver->number(QStringLiteral("max edge length")), slow ? 0.08e-6 : 0.04e-6, 1e-12));
+        QVERIFY(!sc.carried.isEmpty());
+        QVERIFY2(s.notes.join(QLatin1Char('\n')).contains(QLatin1String("light: its G sampled with the model's parameters as they are (Pin 1e-3[W])")),
+                 qPrintable(s.notes.join(QLatin1Char('\n'))));
+        // Back, with its Qucs-S line: the model's own features, its currents.
+        QTemporaryDir dir;
+        const LumericalImport im = imported(dir, s.text);
+        QVERIFY2(im.error.isEmpty(), qPrintable(im.error));
+        const QJsonArray fs = features(im.model);
+        QCOMPARE(named(fs, QStringLiteral("label"), QStringLiteral("graded p")).value(QStringLiteral("N")).toString(),
+                 QStringLiteral("1e18[1/cm^3]*exp(-((y/1[um]) - 1)^2/0.15^2)"));
+        QCOMPARE(named(fs, QStringLiteral("label"), QStringLiteral("own SRH")).value(QStringLiteral("taun")).toString(), QStringLiteral("5[ns]"));
+        QCOMPARE(named(fs, QStringLiteral("label"), QStringLiteral("oxide surface")).value(QStringLiteral("Sn")).toString(), QStringLiteral("1000[m/s]*(T/300[K])^(-2)"));
+        // (Between the domains each owns: the oxide's two, either side of the
+        // metal - not the metal its rectangle covers too.)
+        const QJsonArray between = named(fs, QStringLiteral("label"), QStringLiteral("oxide surface")).value(QStringLiteral("selection")).toObject().value(QStringLiteral("between")).toArray();
+        auto all = [](const QJsonValue& side, const char* prefix) {
+            const QJsonArray a = side.toArray();
+            return !a.isEmpty() && std::all_of(a.begin(), a.end(), [prefix](const QJsonValue& v) { return v.toString().startsWith(QLatin1String(prefix)); });
+        };
+        QVERIFY2(between.size() == 2 && all(between.at(0), "si") && all(between.at(1), "ox") && between.at(1).toArray().size() == 2,
+                 qPrintable(QString::fromUtf8(QJsonDocument(between).toJson(QJsonDocument::Compact))));
+        QVERIFY(named(fs, QStringLiteral("label"), QStringLiteral("light")).value(QStringLiteral("G")).toString().startsWith(QLatin1String("Pin/1[W]")));
+        // (Its own models carried: not the library's recombination beside them.)
+        QVERIFY(named(fs, QStringLiteral("label"), QStringLiteral("Recombination")).isEmpty());
+        QVERIFY2(im.notes.join(QLatin1Char('\n')).contains(QLatin1String("its Qucs-S line read back")), qPrintable(im.notes.join(QLatin1Char('\n'))));
+        const Solved a = solve(m), b = solve(modelOfImport(im));
+        QVERIFY2(a.error.isEmpty() && b.error.isEmpty(), qPrintable(a.error + b.error));
+        const std::vector<double> x = globals(a, QStringLiteral("semi.I_anode"));
+        std::vector<double> y = globals(b, QStringLiteral("semi.I_anode"));
+        const std::size_t n = slow ? 2 : 3;
+        QCOMPARE(x.size(), n);
+        QCOMPARE(y.size(), n);
+        for (std::size_t i = 0; i < n; ++i) {
+            qInfo("I_anode %.6g A, its round trip's %.6g", x[i], y[i]);
+            // (A slow build's coarse meshes 1.3 % apart: 2 % there.)
+            QVERIFY2(std::abs(x[i] - y[i]) <= (slow ? 2e-2 : 1e-3) * std::abs(x[i]), qPrintable(QStringLiteral("%1 against %2").arg(x[i]).arg(y[i])));
+        }
+        // Without its line: the script's own objects.
+        QString foreign = s.text;
+        foreign.remove(QRegularExpression(QStringLiteral("^#qucs-s [^\\n]*\\n"), QRegularExpression::MultilineOption));
+        const LumericalImport bare = imported(dir, foreign, QStringLiteral("y.lsf"));
+        QVERIFY2(bare.error.isEmpty(), qPrintable(bare.error));
+        const QJsonArray bs = features(bare.model);
+        QVERIFY(named(bs, QStringLiteral("label"), QStringLiteral("graded p")).value(QStringLiteral("N")).toString().startsWith(QLatin1String("N_graded_p(x, y)")));
+        QCOMPARE(named(bs, QStringLiteral("label"), QStringLiteral("oxide surface")).value(QStringLiteral("Sn")).toString(), QStringLiteral("1000[m/s]*(T/300[K])^(-2)"));
+        QVERIFY(named(bs, QStringLiteral("label"), QStringLiteral("light")).value(QStringLiteral("G")).toString().startsWith(QLatin1String("G_light(x, y)")));
+        QVERIFY(named(bs, QStringLiteral("label"), QStringLiteral("own SRH")).isEmpty());
     }
 
     // A box's Gaussian tails as Lumerical's diffusion - its box the model's
@@ -527,9 +650,26 @@ private slots:
                 }
             }
         QVERIFY(peak > 1e23);
-        // Back: the box as it was, the implant said.
+        // Back with its Qucs-S line: the implant exact, as it was, in the
+        // sampled one's place, no table left.
         QTemporaryDir dir;
-        const LumericalImport im = imported(dir, s.text);
+        {
+            const LumericalImport exact = imported(dir, s.text);
+            QVERIFY2(exact.error.isEmpty(), qPrintable(exact.error));
+            const QJsonArray fs = features(exact.model);
+            const QJsonObject implant = named(fs, QStringLiteral("label"), QStringLiteral("implant"));
+            QCOMPARE(implant.value(QStringLiteral("profile")).toString(), QStringLiteral("implant"));
+            QCOMPARE(implant.value(QStringLiteral("dose")).toString(), QStringLiteral("1e13[1/cm^2]"));
+            QCOMPARE(int(std::count_if(fs.begin(), fs.end(), [](const QJsonValue& v) { return v.toObject().value(QStringLiteral("label")) == QLatin1String("implant"); })), 1);
+            QVERIFY(exact.model.value(QStringLiteral("functions")).toArray().isEmpty());
+        }
+        // Without it (a script edited, or another's): the box as it was; the
+        // implant a table of x and y (µm), its samples' values, applied
+        // within them (it was left out, said - the update check of 2e349c6).
+        QString foreign = s.text;
+        foreign.remove(QRegularExpression(QStringLiteral("^#qucs-s [^\\n]*\\n"), QRegularExpression::MultilineOption));
+        QVERIFY(!foreign.contains(QLatin1String("#qucs-s")));
+        const LumericalImport im = imported(dir, foreign);
         QVERIFY2(im.error.isEmpty(), qPrintable(im.error));
         const QJsonObject box = named(features(im.model), QStringLiteral("label"), QStringLiteral("source"));
         QCOMPARE(box.value(QStringLiteral("profile")).toString(), QStringLiteral("box"));
@@ -538,8 +678,23 @@ private slots:
         QCOMPARE(numberOf(box.value(QStringLiteral("dj"))), 0.2);
         QCOMPARE(numberOf(box.value(QStringLiteral("Nb"))), 1e21);
         QCOMPARE(named(features(im.model), QStringLiteral("label"), QStringLiteral("well")).value(QStringLiteral("profile")).toString(), QStringLiteral("uniform"));
-        QVERIFY(named(features(im.model), QStringLiteral("label"), QStringLiteral("implant")).isEmpty());
-        QVERIFY2(im.notes.join(QLatin1Char('\n')).contains(QLatin1String("implant: an imported doping profile")), qPrintable(im.notes.join(QLatin1Char('\n'))));
+        const QJsonObject back = named(features(im.model), QStringLiteral("label"), QStringLiteral("implant"));
+        QCOMPARE(back.value(QStringLiteral("profile")).toString(), QStringLiteral("expression"));
+        QCOMPARE(back.value(QStringLiteral("dopant")).toString(), QStringLiteral("acceptor"));
+        QVERIFY2(back.value(QStringLiteral("N")).toString().startsWith(QLatin1String("N_implant(x, y)*(x >= ")), qPrintable(back.value(QStringLiteral("N")).toString()));
+        QJsonObject table;
+        for (const QJsonValue& v : im.model.value(QStringLiteral("functions")).toArray())
+            if (v.toObject().value(QStringLiteral("name")).toString() == QLatin1String("N_implant")) table = v.toObject();
+        QCOMPARE(table.value(QStringLiteral("dimension")).toString(), QStringLiteral("2"));
+        QCOMPARE(table.value(QStringLiteral("unit")).toString(), QStringLiteral("1/m^3"));
+        const QJsonArray grid = table.value(QStringLiteral("grid")).toArray();
+        QCOMPARE(std::size_t(grid.size()), nx * nz);
+        for (const QJsonValue& v : grid) {
+            const QJsonArray row = v.toArray();
+            const double want = implant(row.at(0).toDouble() * 1e-6, row.at(1).toDouble() * 1e-6);
+            QVERIFY2(std::abs(row.at(2).toDouble() - want) <= 1e-9 * std::max(1.0, want), qPrintable(QString::number(row.at(2).toDouble())));
+        }
+        QVERIFY2(im.notes.join(QLatin1Char('\n')).contains(QLatin1String("1 imported doping profiles (sampled) as tables of x and y")), qPrintable(im.notes.join(QLatin1Char('\n'))));
         QCOMPARE(numberOf(named(features(im.model), QStringLiteral("name"), QStringLiteral("t")).value(QStringLiteral("V0"))), 0.5);
         QCOMPARE(component(im.model).value(QStringLiteral("thickness")).toString(), QStringLiteral("10[um]"));
     }
@@ -1050,9 +1205,14 @@ plot(r, r); somethingunknown;
         QCOMPARE(pp.value(QStringLiteral("size")).toArray(), (QJsonArray{QStringLiteral("0.56"), QStringLiteral("0")}));
         QCOMPARE(pp.value(QStringLiteral("dj")).toString(), QStringLiteral("0.02[um]"));
         // Surface recombination between the silicon and the oxide, by their
-        // material objects' names; at the metal left out.
+        // material objects' names, its temperature model each carrier's S
+        // (T/300 K)^η (it was S alone - the update check of 2e349c6); at the
+        // metal left out.
         const QJsonObject sr = named(fs, QStringLiteral("type"), QStringLiteral("surfacerec"));
-        QVERIFY(sr.value(QStringLiteral("Sn")).toString() == QLatin1String("100[m/s]") && sr.value(QStringLiteral("Sp")).toString() == QLatin1String("200[m/s]"));
+        QVERIFY2(sr.value(QStringLiteral("Sn")).toString() == QLatin1String("100[m/s]*(T/300[K])^(-3.8)")
+                     && sr.value(QStringLiteral("Sp")).toString() == QLatin1String("200[m/s]*(T/300[K])^(-2)"),
+                 qPrintable(sr.value(QStringLiteral("Sn")).toString() + QLatin1Char(' ') + sr.value(QStringLiteral("Sp")).toString()));
+        QVERIFY2(notes.contains(QLatin1String("1 of them with their temperature model")), qPrintable(notes));
         QCOMPARE(sr.value(QStringLiteral("Et")).toString(), QStringLiteral("0.05[eV]"));
         QCOMPARE(sr.value(QStringLiteral("selection")).toObject().value(QStringLiteral("between")).toArray(),
                  (QJsonArray{QJsonArray{QStringLiteral("body")}, QJsonArray{QStringLiteral("oxide")}}));
