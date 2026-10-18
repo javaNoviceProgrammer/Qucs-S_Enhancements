@@ -101,6 +101,25 @@ bool used(Viewer viewer)
     return wanted(viewer) && hindrance().isEmpty();
 }
 
+void readyWindow(QWidget* window)
+{
+#ifdef QUCS_GPU_VIEW
+    bool any = false;
+    for (Viewer v : {Viewer::Pdf, Viewer::Markdown, Viewer::Layout, Viewer::Multiphysics}) any = any || used(v);
+    const QString name = QStringLiteral("qucsGpuWindowReady");
+    if (!any || window->findChild<QRhiWidget*>(name, Qt::FindDirectChildrenOnly) != nullptr) return;
+    // (Made parentless, then parented, as the viewports are: QRhiWidget's
+    // constructor asks for its RHI after QWidget's has parented it. Hidden
+    // for good: never drawn.)
+    auto* ready = new QRhiWidget();
+    ready->setObjectName(name);
+    ready->setParent(window);
+    ready->hide();
+#else
+    Q_UNUSED(window);
+#endif
+}
+
 bool hasGpuViewport(const QAbstractScrollArea* area)
 {
 #ifdef QUCS_GPU_VIEW

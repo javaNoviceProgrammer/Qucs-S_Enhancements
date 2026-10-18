@@ -24,6 +24,7 @@
 #include <QTextBrowser>
 #include <QTextDocument>
 #include <QTextTable>
+#include <QWindow>
 
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
@@ -973,6 +974,49 @@ private slots:
         md->setPreviewGpu(true);
         QVERIFY(!md->previewGpu());
         app.closeAllFiles();
+#else
+        QSKIP("a build without Qt's RHI");
+#endif
+    }
+
+    // A viewer on the GPU chosen (Settings… > Viewers), the window is made
+    // for it before it is first shown: a preview on the GPU opened in it
+    // leaves its native window as it was. It was made again, the whole
+    // window gone and back - a flash as a model opened (the user's report
+    // of 18 October); without the choice, a preview on the GPU still has
+    // Qt make it again.
+    void aGpuViewerLeavesTheWindowAsItWas()
+    {
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+#ifdef QUCS_GPU_VIEW
+        const QString file = write("window.md", "# The window\n\nAs it was.\n");
+        const struct Back {
+            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Markdown)); }
+        } back;
+        for (const bool chosen : {true, false}) {
+            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Markdown, chosen);
+            QucsApp app(false);
+            MainGuard guard(&app);
+            app.resize(700, 500);
+            app.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&app));
+            // (Its RHI widget hidden: nothing of it over the window.)
+            const QRhiWidget* ready = app.findChild<QRhiWidget*>(QStringLiteral("qucsGpuWindowReady"));
+            QCOMPARE(ready != nullptr, chosen);
+            QVERIFY(ready == nullptr || !ready->isVisible());
+            const QPointer<QWindow> shown = app.windowHandle();
+            QVERIFY(shown);
+            QVERIFY(app.gotoPage(file));
+            MarkdownDoc* md = current(app);
+            QVERIFY(md != nullptr);
+            md->setMode(MarkdownDoc::Mode::Preview);
+            md->setPreviewGpu(true);
+            QVERIFY(md->previewGpu());
+            pump();
+            QVERIFY2(!shown.isNull() == chosen, chosen ? "made again" : "kept: Qt no longer makes it again?");
+            if (chosen) QCOMPARE(app.windowHandle(), shown.data());
+            app.closeAllFiles();
+        }
 #else
         QSKIP("a build without Qt's RHI");
 #endif
