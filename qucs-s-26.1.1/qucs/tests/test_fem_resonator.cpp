@@ -199,6 +199,43 @@ QByteArray sphere(int m, const QString& n, const QString& hs, const QString& aro
         .toUtf8();
 }
 
+/// The example vcsel_modes.qfem solved for order \a m (about \a around,
+/// \a count modes, when given). In a slow build - the sanitized one, its
+/// sparse LU's dense products some 150 times slower - the same cavity with
+/// 8 and 6 pairs, 0.5 um along r.
+Run vcselRun(int m, const QString& around = QString(), int count = 0)
+{
+    QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/vcsel_modes.qfem"));
+    if (!f.open(QIODevice::ReadOnly)) qFatal("no example vcsel_modes.qfem");
+    Model model = modelOf(f.readAll());
+    Node* emr = model.find(QStringLiteral("emr"));
+    if (!emr) qFatal("no physics emr");
+    emr->props.insert(QStringLiteral("m"), m);
+    if (!around.isEmpty()) {
+        Node* step = nullptr;
+        for (const Node* study : model.studies())
+            for (const Node& st : study->children)
+                if (st.type == QLatin1String("eigenfrequency")) step = model.find(st.tag);
+        if (!step) qFatal("no eigenfrequency step");
+        step->props.insert(QStringLiteral("around"), around);
+        step->props.insert(QStringLiteral("count"), count);
+    }
+    if (slowBuild()) {
+        for (Node& feature : model.find(model.mesh().tag)->children) {
+            feature.props.insert(QStringLiteral("hlateral"), QStringLiteral("0.5"));
+            feature.props.insert(QStringLiteral("count"),
+                                 feature.label == QLatin1String("Mirrors") ? 2 : feature.label == QLatin1String("Cavity") ? 6 : 4);
+        }
+        QList<Model::Parameter> ps = model.parameters();
+        for (Model::Parameter& p : ps) {
+            if (p.name == QLatin1String("Nb")) p.expression = QStringLiteral("8");
+            if (p.name == QLatin1String("Nt")) p.expression = QStringLiteral("6");
+        }
+        model.setParameters(ps);
+    }
+    return run(model);
+}
+
 } // namespace
 
 class TestFemResonator : public QObject
@@ -340,52 +377,17 @@ private slots:
 
     // The example vcsel_modes.qfem as its description says: order 1's HE11
     // at 978.52 nm, Q 16 000, the ring at 974.24 nm and HE12 at 973.43 nm
-    // (its field highest on the axis, nought near r = 1 um); order 0's
-    // TM01 at 976.83 nm (E_r, no E_φ) and TE01 at 976.46 nm (E_φ alone);
-    // order 2's HE21 at 976.66 nm. (A slow build - the sanitized one, its
-    // sparse LU's dense products some 150 times slower; CI's Release builds
-    // check the numbers -: the same cavity with 8 and 6 pairs, 0.5 um along
-    // r, its order 1's modes found, near 980 nm, and by number.)
+    // (its field highest on the axis, nought near r = 1 um). (A slow build
+    // - the sanitized one -: the same cavity with 8 and 6 pairs, 0.5 um
+    // along r, its order 1's modes found, near 980 nm, and by number; CI's
+    // Release builds check the numbers.) Orders 0 and 2 below: three solves
+    // in one function took CI's macOS runner past QtTest's 300 s, the
+    // heavy tests run beside it.
     void theVcselExample()
     {
         const bool slow = slowBuild();
-        auto solve = [slow](int m, const QString& around = QString(), int count = 0) {
-            QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/vcsel_modes.qfem"));
-            if (!f.open(QIODevice::ReadOnly)) qFatal("no example vcsel_modes.qfem");
-            Model model = modelOf(f.readAll());
-            Node* emr = model.find(QStringLiteral("emr"));
-            if (!emr) qFatal("no physics emr");
-            emr->props.insert(QStringLiteral("m"), m);
-            if (!around.isEmpty()) {
-                Node* step = nullptr;
-                for (const Node* study : model.studies())
-                    for (const Node& st : study->children)
-                        if (st.type == QLatin1String("eigenfrequency")) step = model.find(st.tag);
-                if (!step) qFatal("no eigenfrequency step");
-                step->props.insert(QStringLiteral("around"), around);
-                step->props.insert(QStringLiteral("count"), count);
-            }
-            if (slow) {
-                for (Node& feature : model.find(model.mesh().tag)->children) {
-                    feature.props.insert(QStringLiteral("hlateral"), QStringLiteral("0.5"));
-                    feature.props.insert(QStringLiteral("count"),
-                                         feature.label == QLatin1String("Mirrors") ? 2 : feature.label == QLatin1String("Cavity") ? 6 : 4);
-                }
-                QList<Model::Parameter> ps = model.parameters();
-                for (Model::Parameter& p : ps) {
-                    if (p.name == QLatin1String("Nb")) p.expression = QStringLiteral("8");
-                    if (p.name == QLatin1String("Nt")) p.expression = QStringLiteral("6");
-                }
-                model.setParameters(ps);
-            }
-            return run(model);
-        };
         const double tH = 0.98 / (4 * 3.52), tL = 0.98 / (4 * 2.98), tC = 0.98 / 3.4, z = 25 * (tH + tL) + tC / 2;
-        auto norm = [z](Solution& s, double r, const char* what) {
-            const QString e = QStringLiteral("emr.") + QLatin1String(what);
-            return std::hypot(at(s, e, QPointF(r, z)), at(s, e + QStringLiteral("_im"), QPointF(r, z)));
-        };
-        Run one = solve(1);
+        Run one = vcselRun(1);
         QVERIFY2(one.error.isEmpty(), qPrintable(one.error));
         std::vector<double> lambda, Q;
         for (int k = 0; k < one.solution->snapshotCount(); ++k) {
@@ -412,16 +414,29 @@ private slots:
         if (slow) {
             for (std::size_t k = 0; k < lambda.size(); ++k) QVERIFY(lambda[k] > 960 && lambda[k] < 1000 && Q[k] > 5);
             return;
-        } else {
-            QVERIFY(std::abs(lambda[0] - 978.5249) < 0.005 && std::abs(Q[0] / 15990.8 - 1) < 0.005);
-            QVERIFY(std::abs(lambda[1] - 974.237) < 0.005 && std::abs(lambda[2] - 973.4269) < 0.005);
-            // HE12: highest on the axis, nought near r = 1 um.
-            one.solution->select(2);
-            const double axis = at(*one.solution, QStringLiteral("emr.normE"), QPointF(0.2, z)), ring = at(*one.solution, QStringLiteral("emr.normE"), QPointF(1.0, z));
-            QVERIFY2(axis > 10 * ring, qPrintable(QStringLiteral("%1 %2").arg(axis).arg(ring)));
         }
+        QVERIFY(std::abs(lambda[0] - 978.5249) < 0.005 && std::abs(Q[0] / 15990.8 - 1) < 0.005);
+        QVERIFY(std::abs(lambda[1] - 974.237) < 0.005 && std::abs(lambda[2] - 973.4269) < 0.005);
+        // HE12: highest on the axis, nought near r = 1 um.
+        one.solution->select(2);
+        const double axis = at(*one.solution, QStringLiteral("emr.normE"), QPointF(0.2, z)), ring = at(*one.solution, QStringLiteral("emr.normE"), QPointF(1.0, z));
+        QVERIFY2(axis > 10 * ring, qPrintable(QStringLiteral("%1 %2").arg(axis).arg(ring)));
+    }
+
+    // The same example's order 0: TM01 at 976.83 nm (E_r, no E_φ) and TE01
+    // at 976.46 nm (E_φ alone); order 2's HE21 at 976.66 nm, four modes
+    // about 980 nm, one of the absorbing layers' own left out, said. (Not
+    // in a slow build: its order 1 alone, above.)
+    void theVcselExamplesOtherOrders()
+    {
+        if (slowBuild()) QSKIP("a slow build checks the example's order 1 alone");
+        const double tH = 0.98 / (4 * 3.52), tL = 0.98 / (4 * 2.98), tC = 0.98 / 3.4, z = 25 * (tH + tL) + tC / 2;
+        auto norm = [z](Solution& s, double r, const char* what) {
+            const QString e = QStringLiteral("emr.") + QLatin1String(what);
+            return std::hypot(at(s, e, QPointF(r, z)), at(s, e + QStringLiteral("_im"), QPointF(r, z)));
+        };
         // Order 0: TM01, then TE01, by their fields.
-        Run zero = solve(0);
+        Run zero = vcselRun(0);
         QVERIFY2(zero.error.isEmpty(), qPrintable(zero.error));
         double tm = 0, te = 0;
         for (int k = 0; k < zero.solution->snapshotCount(); ++k) {
@@ -435,24 +450,22 @@ private slots:
         }
         qInfo("order 0: TM01 %.4f nm, TE01 %.4f nm", tm, te);
         QVERIFY(tm > 0 && te > 0);
-        {
-            QVERIFY(std::abs(tm - 976.834) < 0.005 && std::abs(te - 976.457) < 0.005);
-            // Order 2: HE21 between them - four about 980 nm, one of the
-            // absorbing layers' own among them left out, said.
-            Run two = solve(2, QStringLiteral("980[nm]"), 4);
-            QVERIFY2(two.error.isEmpty(), qPrintable(two.error));
-            QVERIFY2(two.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("modes of the absorbing layers left out")),
-                     qPrintable(two.solution->log.join(QLatin1Char('\n'))));
-            QCOMPARE(two.solution->snapshotCount(), 4);
-            double he21 = 0, best = 0;   // (the highest Q: the next, 971.36 nm, Q 8 100)
-            for (int k = 0; k < two.solution->snapshotCount(); ++k) {
-                two.solution->select(k);
-                const double q = global(*two.solution, QStringLiteral("emr.Q"));
-                if (q > best) best = q, he21 = global(*two.solution, QStringLiteral("emr.lambda0")) * 1e9;
-            }
-            qInfo("order 2: HE21 %.4f nm", he21);
-            QVERIFY(std::abs(he21 - 976.657) < 0.005);
+        QVERIFY(std::abs(tm - 976.834) < 0.005 && std::abs(te - 976.457) < 0.005);
+        // Order 2: HE21 between them - four about 980 nm, one of the
+        // absorbing layers' own among them left out, said.
+        Run two = vcselRun(2, QStringLiteral("980[nm]"), 4);
+        QVERIFY2(two.error.isEmpty(), qPrintable(two.error));
+        QVERIFY2(two.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("modes of the absorbing layers left out")),
+                 qPrintable(two.solution->log.join(QLatin1Char('\n'))));
+        QCOMPARE(two.solution->snapshotCount(), 4);
+        double he21 = 0, best = 0;   // (the highest Q: the next, 971.36 nm, Q 8 100)
+        for (int k = 0; k < two.solution->snapshotCount(); ++k) {
+            two.solution->select(k);
+            const double q = global(*two.solution, QStringLiteral("emr.Q"));
+            if (q > best) best = q, he21 = global(*two.solution, QStringLiteral("emr.lambda0")) * 1e9;
         }
+        qInfo("order 2: HE21 %.4f nm", he21);
+        QVERIFY(std::abs(he21 - 976.657) < 0.005);
     }
 
     // On the axis: order 1's field E_φ = -j E_r there (its two transverse
