@@ -1393,6 +1393,107 @@ private slots:
         }
     }
 
+    // A surface's recombination at an ohmic contact, its "Apply to majority
+    // carriers" off (the Lumerical vertical photodetector's review, of 13
+    // October): the contact's minority carriers by it, the majority held at
+    // equilibrium. The bar of surfaceRecombination with its left end a
+    // contact: the same Δp; S huge an ohmic contact's, on none at all; off
+    // where no contact is refused. A short diode whose anode recombines its
+    // electrons at Dn/W: their part of the current halved - its small signal
+    // at 1 kHz the dc slope.
+    void aContactsSurfaceRecombination()
+    {
+        auto bar = [](const QString& left, const QString& steps = QStringLiteral(R"({"type": "stationary"})")) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "bar", "size": ["60", "1"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+                  {"type": "srh", "source": "user", "taun": "0.1[us]", "taup": "0.1[us]", "selection": {"all": true}},
+                  {"type": "generation", "G": "1e26[1/(m^3*s)]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "0", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}}%1,
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.5"}}],
+              "studies": [{"type": "study", "steps": [%2]}]})json")
+                .arg(left, steps)
+                .toUtf8();
+        };
+        auto surface = [](const char* sp, bool majority, const char* side = "left") {
+            return QStringLiteral(R"(, {"type": "surfacerec", "Sn": "1e5[cm/s]", "Sp": "%1", "majority": %2, "selection": {"of": ["bar"], "side": "%3"}})")
+                .arg(QLatin1String(sp), majority ? QStringLiteral("true") : QStringLiteral("false"), QLatin1String(side));
+        };
+        auto deltaP = [](const Solution& s, double x) {
+            const QPointF p(x, 0.5);
+            const double n = at(s, QStringLiteral("semi.n"), p), ni = at(s, QStringLiteral("semi.ni"), p);
+            return at(s, QStringLiteral("semi.p"), p) - ni * ni / n;
+        };
+        const double G = 1e26, tau = 1e-7, S = 100, D = KB * 300 / Q * 0.045, L = std::sqrt(D * tau), W = 60e-6;
+        const double a11 = D / L + S, a12 = S - D / L, b1 = -S * G * tau, a21 = std::exp(-W / L), a22 = std::exp(W / L), b2 = -G * tau;
+        const double det = a11 * a22 - a12 * a21, A = (b1 * a22 - a12 * b2) / det, B = (a11 * b2 - a21 * b1) / det;
+        auto expected = [&](double x) { return G * tau + A * std::exp(-x / L) + B * std::exp(x / L); };
+        const Run r = run(modelOf(bar(surface("1e4[cm/s]", false), QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"})"))));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        // (Its light modulated at 1 kHz, the left contact's current its dc
+        // one - the holes it takes fewer than the right one's: freed in the
+        // small signal too, else the bar's symmetric one's, none.)
+        const double I0 = global(*r.solution, QStringLiteral("semi.I_0")), Iop = global(*r.solution, QStringLiteral("semi.Iop"));
+        const double hop = global(*r.solution, QStringLiteral("semi.Hop_0"));
+        qInfo("at a contact: its current %.6g A/m, modulated %.6g of q Gop (%.6g)", I0, hop, I0 / Iop);
+        QVERIFY2(std::abs(I0) > 0.01 * Iop && std::abs(hop / (I0 / Iop) - 1) < 1e-2, qPrintable(QStringLiteral("%1 against %2").arg(hop).arg(I0 / Iop)));
+        QVERIFY2(r.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("minority carriers of")), qPrintable(r.solution->log.join(QLatin1Char('\n'))));
+        for (double x : {0.0, 5.0, 30.0}) {
+            const double dp = deltaP(*r.solution, x), e = expected(x * 1e-6);
+            qInfo("at a contact: Δp at %g µm %.5g (%.5g; G τ %.3g)", x, dp, e, G * tau);
+            QVERIFY2(std::abs(dp / e - 1) < 5e-3, qPrintable(QStringLiteral("%1 µm: %2").arg(x).arg(dp / e)));
+        }
+        // (Its electrons, the majority, at equilibrium there.)
+        QVERIFY(std::abs(at(*r.solution, QStringLiteral("semi.n"), QPointF(0, 0.5)) / 1e22 - 1) < 1e-3);
+        // Huge, an ohmic contact's; on, none (the contact holds both).
+        const Run plain = run(modelOf(bar(QString())));
+        const Run huge = run(modelOf(bar(surface("1e12[cm/s]", false))));
+        const Run on = run(modelOf(bar(surface("1e4[cm/s]", true))));
+        QVERIFY2(plain.error.isEmpty() && huge.error.isEmpty() && on.error.isEmpty(), qPrintable(plain.error + huge.error + on.error));
+        QVERIFY(std::abs(deltaP(*huge.solution, 0)) < 1e-4 * G * tau);
+        QVERIFY(std::abs(deltaP(*huge.solution, 5) / deltaP(*plain.solution, 5) - 1) < 1e-3);
+        QVERIFY(std::abs(deltaP(*on.solution, 5) / deltaP(*plain.solution, 5) - 1) < 1e-9);
+        QVERIFY2(on.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("its recombination none there")), qPrintable(on.solution->log.join(QLatin1Char('\n'))));
+        // Off where no contact is: refused.
+        const Run off = run(modelOf(bar(surface("1e4[cm/s]", false, "top"))));
+        QVERIFY2(off.error.contains(QLatin1String("at an ohmic contact only")), qPrintable(off.error));
+        // A short diode (aShortDiodesCurrent's): its anode's electrons
+        // recombined at S = Dn/Wq - their current Dn/(Wq + Dn/S) half its own.
+        const double ni = siliconNi(), vt = KB * 300 / Q, N = 1e22, es = 11.7 * Eps0;
+        const double vbi = vt * std::log(N * N / (ni * ni));
+        const double Wd = std::sqrt(2 * es * (2 * N) * (vbi - 0.4 - 2 * vt) / (Q * N * N)), wq = 5e-6 - Wd / 2;
+        const double Dn = 0.14 * vt, Dp = 0.045 * vt, Sn = Dn / wq;
+        const QString srh = QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "1[s]", "taup": "1[s]", "selection": {"all": true}})");
+        const QString anode = QStringLiteral(R"(, {"type": "surfacerec", "Sn": "%1[m/s]", "Sp": "%1[m/s]", "majority": false, "selection": {"of": ["pside"], "side": "left"}})")
+                                  .arg(Sn, 0, 'g', 10);
+        const QString steps = QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[kHz]"})");
+        // (A sanitized build: a coarser mesh, the slope's two without the
+        // frequency step - 198 s there before, 3 in Release.)
+        auto diode = [&](const QString& va, const QString& extra, bool small = true) {
+            return run(modelOf(junction(QStringLiteral("5"), QStringLiteral("1e16[1/cm^3]"), QStringLiteral("1e16[1/cm^3]"), va,
+                                        small ? steps : QStringLiteral(R"({"type": "stationary"})"), srh + extra,
+                                        slowBuild() ? QStringLiteral("0.25") : QString())));
+        };
+        const Run ohmic = diode(QStringLiteral("0.4[V]"), QString(), false), lossy = diode(QStringLiteral("0.4[V]"), anode);
+        QVERIFY2(ohmic.error.isEmpty() && lossy.error.isEmpty(), qPrintable(ohmic.error + lossy.error));
+        const double ratio = global(*lossy.solution, QStringLiteral("semi.I_a")) / global(*ohmic.solution, QStringLiteral("semi.I_a"));
+        const double want = (Dn / (wq + Dn / Sn) + Dp / wq) / (Dn / wq + Dp / wq);
+        qInfo("a short diode's anode recombining at Dn/Wq (%.4g m/s): its current %.5f of the ohmic one's (%.5f)", Sn, ratio, want);
+        QVERIFY2(std::abs(ratio / want - 1) < 0.02, qPrintable(QString::number(ratio)));
+        QVERIFY(std::abs(global(*lossy.solution, QStringLiteral("semi.I_a")) + global(*lossy.solution, QStringLiteral("semi.I_k")))
+                < 1e-6 * global(*lossy.solution, QStringLiteral("semi.I_a")));
+        const Run up = diode(QStringLiteral("0.401[V]"), anode, false), down = diode(QStringLiteral("0.399[V]"), anode, false);
+        QVERIFY2(up.error.isEmpty() && down.error.isEmpty(), qPrintable(up.error + down.error));
+        const double slope = (global(*up.solution, QStringLiteral("semi.I_a")) - global(*down.solution, QStringLiteral("semi.I_a"))) / 2e-3;
+        const double Gaa = global(*lossy.solution, QStringLiteral("semi.Gaa"));
+        qInfo("its small-signal conductance at 1 kHz %.6g S, the dc slope %.6g", Gaa, slope);
+        QVERIFY2(std::abs(Gaa / slope - 1) < 2e-3, qPrintable(QStringLiteral("%1 against %2").arg(Gaa).arg(slope)));
+    }
+
     void dopingAndRecombination()
     {
         // Doping of x (an expression); direct recombination alone in n-type
@@ -1419,19 +1520,20 @@ private slots:
         // n-type 1e16 cm⁻³, a 0.6 eV barrier at the left: reversed, the current
         // thermionic emission's saturation q vn Nc e^(-φB/kT) (the drift through
         // the depletion faster); forward, rising as e^(V/Vt).
-        auto diode = [](double va) {
+        auto diode = [](double va, const QString& extra = {}) {
             return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
               "components": [{"unit": "um",
                 "geometry": [{"type": "rectangle", "name": "bar", "size": ["2", "1"]}],
                 "materials": [{"material": "Silicon", "selection": {"all": true}}],
                 "physics": [{"type": "semiconductor", "tag": "semi", "features": [
                   {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
-                  {"type": "schottky", "name": "a", "V0": "%1[V]", "phiB": "0.6[eV]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "schottky", "name": "a", "V0": "%1[V]", "phiB": "0.6[eV]", "selection": {"of": ["bar"], "side": "left"}}%3,
                   {"type": "ohmic", "name": "k", "selection": {"of": ["bar"], "side": "right"}}]}],
                 "mesh": {"size": "normal", "custom": true, "hmax": "%2"}}],
               "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
                 .arg(va)
                 .arg(slowBuild() ? QStringLiteral("0.05") : QStringLiteral("0.025"))
+                .arg(extra)
                 .toUtf8();
         };
         const double vt = KB * 300 / Q;
@@ -1447,6 +1549,14 @@ private slots:
         qInfo("Schottky: %.4g A reversed (q vn Nc e^-φB/kT %.4g), %.4g and %.4g forward (ideality %.3f)", I[0], -js, I[1], I[2], ideality);
         QVERIFY2(std::abs(I[0] / -js - 1) < 0.15, qPrintable(QString::number(I[0] / -js)));
         QVERIFY(ideality > 0.98 && ideality < 1.1);
+        // A surface's recombination at it: none - its thermionic velocities
+        // the contact's recombination already, said.
+        const Run lossy = run(modelOf(diode(va[0], QStringLiteral(R"(, {"type": "surfacerec", "Sn": "1e5[cm/s]", "Sp": "1e5[cm/s]", )"
+                                                                  R"("selection": {"of": ["bar"], "side": "left"}})"))));
+        QVERIFY2(lossy.error.isEmpty(), qPrintable(lossy.error));
+        QCOMPARE(global(*lossy.solution, QStringLiteral("semi.I_a")), I[0]);
+        QVERIFY2(lossy.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("its recombination none at a Schottky contact's")),
+                 qPrintable(lossy.solution->log.join(QLatin1Char('\n'))));
     }
 
     void fixedOxideCharge()

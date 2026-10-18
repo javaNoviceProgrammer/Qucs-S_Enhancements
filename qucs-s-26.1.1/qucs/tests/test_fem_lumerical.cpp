@@ -512,6 +512,8 @@ private slots:
               {"type": "auger", "label": "own Auger", "Cn": "3e-31[cm^6/s]", "Cp": "1e-31[cm^6/s]", "selection": {"only": ["si"]}},
               {"type": "surfacerec", "label": "oxide surface", "Sn": "1000[m/s]*(T/300[K])^(-2)", "Sp": "500[m/s]*(T/300[K])^(-2)",
                "selection": {"between": [["si"], ["ox"]]}},
+              {"type": "surfacerec", "label": "back contact", "Sn": "1e5[m/s]", "Sp": "1e5[m/s]", "majority": false,
+               "selection": {"between": [["si"], ["bottom"]]}},
               {"type": "generation", "label": "light", "G": "Pin/1[W]*1e27[1/(m^3*s)]*exp(-(1 - y/1[um])/0.3)", "selection": {"only": ["si"]}},
               {"type": "ohmic", "name": "anode", "V0": "Va", "selection": {"between": [["si"], ["top"]]}},
               {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"between": [["si"], ["bottom"]]}}]}],
@@ -534,6 +536,13 @@ private slots:
         QVERIFY(near(rec->number(QStringLiteral("electron velocity")), 1000, 1e-9) && near(rec->number(QStringLiteral("hole velocity")), 500, 1e-9));
         QVERIFY(rec->number(QStringLiteral("enable temperature model")) == 1 && near(rec->number(QStringLiteral("electron eta")), -2, 1e-9)
                 && near(rec->number(QStringLiteral("hole eta")), -2, 1e-9));
+        // (Its "apply to majority carriers" set: on at the oxide - Lumerical's
+        // default off -, off at the metal, the contact's minority alone.)
+        QCOMPARE(rec->number(QStringLiteral("apply to majority carriers")), 1.0);
+        const lum::Object* back = object(sc, QStringLiteral("surfacerec"), QStringLiteral("back contact"));
+        QVERIFY(back);
+        QCOMPARE(back->number(QStringLiteral("apply to majority carriers")), 0.0);
+        QCOMPARE(back->text(QStringLiteral("material 1")) + QLatin1Char(' ') + back->text(QStringLiteral("material 2")), QStringLiteral("Aluminium Silicon"));
         const lum::Object* gen = object(sc, QStringLiteral("generation"), QStringLiteral("light"));
         QVERIFY(gen && gen->prop(QStringLiteral("@dataset")) && gen->prop(QStringLiteral("@dataset"))->field(QStringLiteral("G")));
         const lum::Object* solver = object(sc, QStringLiteral("charge"));
@@ -550,6 +559,7 @@ private slots:
                  QStringLiteral("1e18[1/cm^3]*exp(-((y/1[um]) - 1)^2/0.15^2)"));
         QCOMPARE(named(fs, QStringLiteral("label"), QStringLiteral("own SRH")).value(QStringLiteral("taun")).toString(), QStringLiteral("5[ns]"));
         QCOMPARE(named(fs, QStringLiteral("label"), QStringLiteral("oxide surface")).value(QStringLiteral("Sn")).toString(), QStringLiteral("1000[m/s]*(T/300[K])^(-2)"));
+        QCOMPARE(named(fs, QStringLiteral("label"), QStringLiteral("back contact")).value(QStringLiteral("majority")).toBool(), false);
         // (Between the domains each owns: the oxide's two, either side of the
         // metal - not the metal its rectangle covers too.)
         const QJsonArray between = named(fs, QStringLiteral("label"), QStringLiteral("oxide surface")).value(QStringLiteral("selection")).toObject().value(QStringLiteral("between")).toArray();
@@ -583,6 +593,14 @@ private slots:
         const QJsonArray bs = features(bare.model);
         QVERIFY(named(bs, QStringLiteral("label"), QStringLiteral("graded p")).value(QStringLiteral("N")).toString().startsWith(QLatin1String("N_graded_p(x, y)")));
         QCOMPARE(named(bs, QStringLiteral("label"), QStringLiteral("oxide surface")).value(QStringLiteral("Sn")).toString(), QStringLiteral("1000[m/s]*(T/300[K])^(-2)"));
+        QVERIFY(named(bs, QStringLiteral("label"), QStringLiteral("oxide surface")).value(QStringLiteral("majority")).toBool());
+        // (At the metal: the contact's minority carriers alone, said.)
+        const QJsonObject bareBack = named(bs, QStringLiteral("label"), QStringLiteral("back contact"));
+        QVERIFY(!bareBack.isEmpty() && !bareBack.value(QStringLiteral("majority")).toBool(true));
+        QVERIFY2(bare.notes.join(QLatin1Char('\n')).contains(QLatin1String("1 of them at a metal: its contact's minority carriers by it")),
+                 qPrintable(bare.notes.join(QLatin1Char('\n'))));
+        const Solved c = solve(modelOfImport(bare));
+        QVERIFY2(c.error.isEmpty(), qPrintable(c.error));
         QVERIFY(named(bs, QStringLiteral("label"), QStringLiteral("light")).value(QStringLiteral("G")).toString().startsWith(QLatin1String("G_light(x, y)")));
         QVERIFY(named(bs, QStringLiteral("label"), QStringLiteral("own SRH")).isEmpty());
     }
@@ -1524,6 +1542,48 @@ plot(r, r); somethingunknown;
             if (const std::optional<Hdf5File::Value> v = h5.dataset(objects[k])) QVERIFY(v->raw.size() <= 20715);
         }
         QVERIFY(objects.size() > 1);
+        // (The fuzzer's MQW project of 18 October: a stored result's second
+        // dimension 0xFFFFFF0000000001 and its numbers taken complex - 260
+        // times that wrapped past 2^64, their bytes past a qint64 negative,
+        // checked as fitting: a vector of 2^63 doubles, length_error, Qucs-S
+        // gone. Each of its three stored datasets so damaged: the project
+        // read, those left out.)
+        {
+            QFile f(QStringLiteral(QUCS_TEST_DATA "/lumerical_mqw_offsets.ldev"));
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QByteArray bytes = f.readAll();
+            const QByteArray blob("null\0\xff\xff\xff\xff\x02", 10);
+            int damagedBlobs = 0;
+            for (qsizetype at = bytes.indexOf(blob); at >= 0; at = bytes.indexOf(blob, at + 1), ++damagedBlobs)
+                for (int k = 30; k < 38; ++k) bytes[at + k] = char(0xff);   // the second dimension's high bytes, real, the first number
+            QCOMPARE(damagedBlobs, 3);
+            const QString path = dir.filePath(QStringLiteral("stored.ldev"));
+            QFile out(path);
+            QVERIFY(out.open(QIODevice::WriteOnly) && out.write(bytes) == bytes.size());
+            out.close();
+            const LumericalImport im = importLumerical(path);
+            QVERIFY2(im.error.isEmpty(), qPrintable(im.error));
+        }
+        // (And the same day's other: its layer table's count 3 overwritten
+        // by the bytes "lue\0" - 1819632896 empty layers pushed, minutes
+        // in a loop. Refused at the first not there.)
+        {
+            QFile f(QStringLiteral(QUCS_TEST_DATA "/lumerical_mqw_offsets.ldev"));
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QByteArray bytes = f.readAll();
+            const QByteArray size("\x08\0s\0i\0z\0e\0\0\0\x02\0\0\0\0\x03", 18);
+            const qsizetype at = bytes.indexOf(size, bytes.indexOf("layers_value"));
+            QVERIFY(at > 0);
+            bytes.replace(at + 14, 4, QByteArray("lue\0", 4));
+            const QString path = dir.filePath(QStringLiteral("layers.ldev"));
+            QFile out(path);
+            QVERIFY(out.open(QIODevice::WriteOnly) && out.write(bytes) == bytes.size());
+            out.close();
+            QElapsedTimer t;
+            t.start();
+            QCOMPARE(importLumerical(path).error, QStringLiteral("layers.ldev: its MQW solver's layer table lists 1819632896 layers, 3 there"));
+            QVERIFY(t.elapsed() < 5000);
+        }
         // Scripts: sizes and indexes out of an int's range, NaN, a reshape
         // past size_t - each refused, with why.
         const QList<std::pair<QString, QString>> scripts{
