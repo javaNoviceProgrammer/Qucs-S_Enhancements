@@ -752,6 +752,13 @@ private slots:
         const double I = global(s, QStringLiteral("semi.I_k")), Iop = global(s, QStringLiteral("semi.Iop"));
         const double neff = global(s, QStringLiteral("emw.neff")), loss = global(s, QStringLiteral("emw.loss"));
         const double hLow = global(s, QStringLiteral("semi.Hop_k"));
+        // Its capacitance at 1 GHz under the 1 mW: the diode's 1.93 fF and
+        // the carriers it holds (2.29 fF; dark, 1.93 to 200 GHz). The example
+        // said 6.6 fF, unchecked, after it had moved (the capability review's
+        // recheck of 18 October).
+        const double C1 = global(s, QStringLiteral("semi.Ckk"));
+        qInfo("its capacitance at 1 GHz %.4g fF", C1 * 1e15);
+        QVERIFY2(std::abs(C1 * 1e15 - 2.29) < (slow ? 0.3 : 0.1), qPrintable(QString::number(C1 * 1e15)));
         double h24 = NAN;
         for (int k = 0; k < s.snapshotCount(); ++k) {
             s.select(k);
@@ -784,7 +791,7 @@ private slots:
             if (std::abs(point->sweptValues.value(QStringLiteral("Va")) + 1) < 1e-9) {
                 const double Idark = global(*point, QStringLiteral("semi.I_k"));
                 qInfo("its dark current at -1 V %.4g nA", Idark * 1e9);
-                QVERIFY(std::abs(Idark * 1e9 - 7.4) < (slow ? 1.5 : 0.5));
+                QVERIFY(std::abs(Idark * 1e9 - 7.15) < (slow ? 1.5 : 0.5));
                 seen = true;
             }
         QVERIFY(seen);
