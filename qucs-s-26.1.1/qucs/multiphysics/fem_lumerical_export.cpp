@@ -33,13 +33,17 @@
 #include <QDateTime>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <complex>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <set>
 
 namespace qucs_s::fem {
@@ -942,6 +946,181 @@ std::vector<double> sweptValues(const Model& model, const QString& text, const D
     return {here};
 }
 
+/// A selection \a rule of the model, at \a level, in the exported
+/// structures' names (each domain its own structure; \a drawn those
+/// drawn), for the script's Qucs-S line: a domain rule its domains', a
+/// boundary rule its objects' (a box's corners in metres). None where it
+/// cannot be: boundaries or points by number or by a named selection.
+std::optional<QJsonObject> carriedRule(const QJsonObject& rule, Level level, const Topology& t, const Model& model, const std::set<int>& drawn)
+{
+    auto structures = [&t, &drawn](const QVector<int>& domains) {
+        QJsonArray out;
+        for (int d : domains)
+            if (drawn.count(d)) out.append(structureName(t, d));
+        return out;
+    };
+    auto domainsOf = [&t, &model](const QJsonObject& r) {
+        QString why;
+        return resolveSelection(t, model, Level::Domain, r, &why);
+    };
+    if (level == Level::Domain) {
+        if (rule.size() == 1 && rule.value(QStringLiteral("all")).toBool()) return rule;
+        return QJsonObject{{QStringLiteral("only"), structures(domainsOf(rule))}};
+    }
+    QJsonObject out;
+    for (auto it = rule.begin(); it != rule.end(); ++it) {
+        const QString key = it.key();
+        // (An object's domains: those it owns - "only", and "between" by its
+        // domains' owners -, or those its region covers - "objects", "of".)
+        auto objects = [&structures, &domainsOf](const QJsonValue& names, bool owned) {
+            return structures(domainsOf(QJsonObject{{owned ? QStringLiteral("only") : QStringLiteral("objects"), names.isArray() ? names : QJsonArray{names}}}));
+        };
+        if (key == QLatin1String("all") || key == QLatin1String("exterior") || key == QLatin1String("interior") || key == QLatin1String("side"))
+            out.insert(key, it.value());
+        else if (level == Level::Boundary && (key == QLatin1String("objects") || key == QLatin1String("only") || key == QLatin1String("of")))
+            out.insert(key, objects(it.value(), key == QLatin1String("only")));
+        else if (level == Level::Boundary && key == QLatin1String("between")) {
+            const QJsonArray pair = it.value().toArray();
+            out.insert(key, QJsonArray{objects(pair.at(0), true), objects(pair.at(1), true)});
+        } else if (level == Level::Boundary && key == QLatin1String("adjacent"))
+            out.insert(key, QJsonObject{{QStringLiteral("only"), structures(domainsOf(it.value().toObject()))}});
+        else if (key == QLatin1String("box")) {
+            QJsonArray metres;
+            for (const QJsonValue& v : it.value().toArray()) metres.append((v.isDouble() ? v.toDouble() : v.toString().toDouble()) * t.unitScale);
+            out.insert(key, metres);
+        } else if (key == QLatin1String("except")) {
+            const std::optional<QJsonObject> e = carriedRule(it.value().toObject(), level, t, model, drawn);
+            if (!e) return std::nullopt;
+            out.insert(key, *e);
+        } else
+            return std::nullopt;
+    }
+    return out;
+}
+
+/// A field over domains sampled on a grid in the plane: its x and z
+/// lines (the model's x and y, its unit) and its values, x fastest, then y
+/// (two lines, out of the plane), then z.
+struct Sampled {
+    std::vector<double> xs, zs, values;
+};
+
+/// \a value (at a point of the model, in its unit; \a counted: a grid's
+/// point, not a probe's; \a in: whether it is on the domains) sampled over
+/// \a r, the bounds of domains \a on (their outlines \a o). The grid: evenly
+/// 20 to 200 lines along each axis (by its aspect), lines at the domains'
+/// corners and a hair either side (their edges kept sharp), each interval
+/// then halved while the value midway, along lines across it, is more than
+/// 1 % off the straight line between its ends (Lumerical's interpolation)
+/// - a Gaussian's σ three samples and more -, what is less than 1e-5 of the
+/// largest value met let be (a tail's). Across the other axis' lines in
+/// turn (an implant's edges, a thin layer's).
+Sampled sampleOver(const QRectF& r, const std::vector<int>& on, const std::vector<Outline>& o,
+                   const std::function<double(QPointF, bool, bool*)>& value)
+{
+    const double extent = std::max(r.width(), r.height());
+    auto lines = [&r, &on, &o, extent](int axis) {
+        const double lo = axis == 0 ? r.left() : r.top(), hi = axis == 0 ? r.right() : r.bottom();
+        const double ratio = axis == 0 ? r.width() / r.height() : r.height() / r.width();
+        const int even = std::clamp(int(std::ceil(ratio * 80)), 20, 200);
+        std::vector<double> at;
+        for (int i = 0; i < even; ++i) at.push_back(lo + (hi - lo) * i / (even - 1));
+        for (int d : on)
+            for (const auto& loop : o[std::size_t(d)].loops)
+                for (const QPointF& q : loop) {
+                    const double c = axis == 0 ? q.x() : q.y();
+                    for (double e : {c - 1e-4 * extent, c, c + 1e-4 * extent})
+                        if (e >= lo && e <= hi) at.push_back(e);
+                }
+        std::sort(at.begin(), at.end());
+        at.erase(std::unique(at.begin(), at.end(), [extent](double a, double b) { return b - a < 1e-9 * extent; }), at.end());
+        return at;
+    };
+    Sampled g;
+    g.xs = lines(0);
+    g.zs = lines(1);
+    double largest = 0;
+    for (double a : g.xs)
+        for (double c : g.zs) largest = std::max(largest, std::abs(value(QPointF(a, c), false, nullptr)));
+    auto refined = [&r, &value, &largest](std::vector<double> along, const std::vector<double>& acrossLines, int axis) {
+        // (At most 48 lines across, evenly among the other axis' own.)
+        std::vector<double> across;
+        const std::size_t m = acrossLines.size();
+        for (std::size_t i = 0; i < std::min<std::size_t>(m, 48); ++i) across.push_back(acrossLines[m <= 48 ? i : i * (m - 1) / 47]);
+        for (double c : {0.25, 0.5, 0.75}) across.push_back((axis == 0 ? r.top() : r.left()) + c * (axis == 0 ? r.height() : r.width()));
+        auto at = [&value, axis](double a, double c, bool* in) { return value(axis == 0 ? QPointF(a, c) : QPointF(c, a), false, in); };
+        const double least = 1e-5 * (axis == 0 ? r.width() : r.height());
+        for (int round = 0; round < 24 && along.size() < 400; ++round) {
+            std::vector<double> next{along.front()};
+            bool split = false;
+            for (std::size_t i = 1; i < along.size(); ++i) {
+                const double a = along[i - 1], b = along[i], mid = (a + b) / 2;
+                bool off = false;
+                if (b - a > 2 * least)
+                    for (double c : across) {
+                        // (Across the domains' edge a step: their own lines' - not halved for.)
+                        bool ia = false, ib = false, im = false;
+                        const double va = at(a, c, &ia), vb = at(b, c, &ib), vm = at(mid, c, &im);
+                        largest = std::max({largest, std::abs(va), std::abs(vb), std::abs(vm)});
+                        if (!ia || !ib || !im) continue;
+                        if (std::abs(vm - (va + vb) / 2) > 0.01 * std::max({std::abs(va), std::abs(vb), std::abs(vm)}) + 1e-5 * largest) {
+                            off = true;
+                            break;
+                        }
+                    }
+                if (off && next.size() + (along.size() - i) < 400) {
+                    next.push_back(mid);
+                    split = true;
+                }
+                next.push_back(b);
+            }
+            along = next;
+            if (!split) break;
+        }
+        return along;
+    };
+    g.zs = refined(g.zs, g.xs, 1);
+    g.xs = refined(g.xs, g.zs, 0);
+    g.zs = refined(g.zs, g.xs, 1);
+    g.values.reserve(g.xs.size() * 2 * g.zs.size());
+    for (double z : g.zs) {
+        std::vector<double> row;
+        for (double x : g.xs) row.push_back(value(QPointF(x, z), true, nullptr));
+        for (int j = 0; j < 2; ++j) g.values.insert(g.values.end(), row.begin(), row.end());
+    }
+    return g;
+}
+
+/// \a g as object \a object's imported data: a rectilinear dataset \a var
+/// (named \a name; x, y, z in metres - its y two lines well past the
+/// model, of size \a size, out of the plane), its attribute \a attribute.
+void writeDataset(Writer& w, const QString& object, const QString& var, const QString& name, const QString& attribute, const Sampled& g, double sc,
+                  double size)
+{
+    // (Its lines to the last digit: where it is steep, a rounded line's
+    // value is not the one sampled.)
+    auto column = [sc](const std::vector<double>& v) {
+        QStringList c;
+        for (double x : v) c << QString::number(x * sc, 'g', 17);
+        return c.join(QLatin1String("; "));
+    };
+    w.line(QStringLiteral("x = [%1];").arg(column(g.xs)));
+    w.line(QStringLiteral("y = [%1; %2];").arg(num(-5 * size * sc), num(5 * size * sc)));
+    w.line(QStringLiteral("z = [%1];").arg(column(g.zs)));
+    QStringList chunks;
+    for (std::size_t i = 0; i < g.values.size(); i += 16) {
+        QStringList c;
+        for (std::size_t j = i; j < std::min(g.values.size(), i + 16); ++j) c << num(g.values[j]);
+        chunks << c.join(QLatin1Char(','));
+    }
+    w.line(QStringLiteral("%1 = reshape([%2], [%3, 2, %4]);").arg(attribute, chunks.join(QStringLiteral(",\n    "))).arg(g.xs.size()).arg(g.zs.size()));
+    w.line(QStringLiteral("%1 = rectilineardataset(%2, x, y, z);").arg(var, str(name)));
+    w.line(QStringLiteral("%1.addparameter(\"a\", 1);").arg(var));
+    w.line(QStringLiteral("%1.addattribute(%2, %3);").arg(var, str(attribute), attribute));
+    w.line(QStringLiteral("select(%1);").arg(str(QStringLiteral("CHARGE::") + object)));
+    w.line(QStringLiteral("importdataset(%1);").arg(var));
+}
+
 /// An implant's doping at a point (m), as the semiconductor has it.
 struct Implant {
     double dose = 0, Rp = 0, sd = 0, sl = 0, ys = 0, w1 = -INFINITY, w2 = INFINITY;
@@ -1158,6 +1337,19 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     w.line(QStringLiteral("addchargesolver;"));
     w.set(QStringLiteral("norm length"), thickness > 0 ? thickness : 1.0);
     w.line(QStringLiteral("try { set(\"simulation temperature\", %1); } catch(err);").arg(num(T)));
+    // (Its mesh's edges: the semiconductors' size the largest, the model's
+    // least the smallest - Lumerical refines between them where the
+    // doping changes.)
+    {
+        QString why;
+        const MeshSizes ms = meshSizes(model, *b.parameters, t, &why);
+        double largest = ms.hmax;
+        for (int d : semi)
+            if (d < int(ms.domainMax.size()) && std::isfinite(ms.domainMax[std::size_t(d)])) largest = std::min(largest, ms.domainMax[std::size_t(d)]);
+        const double least = ms.hmin > 0 ? std::min(ms.hmin, largest) : largest / 20;
+        if (largest > 0 && std::isfinite(largest))
+            w.line(QStringLiteral("try { set(\"min edge length\", %1); set(\"max edge length\", %2); } catch(err);").arg(num(least * sc), num(largest * sc)));
+    }
     w.line(QStringLiteral("addsimulationregion;"));
     w.setText(QStringLiteral("name"), QStringLiteral("qucs-s region"));
     w.set(QStringLiteral("dimension"), 2.0);
@@ -1337,116 +1529,19 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
                 }
                 return 0.0;
             };
-            // The grid: evenly 20 to 200 lines along each axis (by its
-            // aspect), lines at the doped domains' corners and a hair either
-            // side (their edges kept sharp), each interval then halved while
-            // the profile midway, along lines across it, is more than 1 % off
-            // the straight line between its ends (Lumerical's interpolation)
-            // - a Gaussian's σ three samples and more -, what is less than
-            // 1e-5 of the largest value met let be (a tail's). Across the
-            // other axis' lines in turn (an implant's edges, a thin layer's).
-            auto lines = [&r, &on, &o, &extent](int axis) {
-                const double lo = axis == 0 ? r.left() : r.top(), hi = axis == 0 ? r.right() : r.bottom();
-                const double ratio = axis == 0 ? r.width() / r.height() : r.height() / r.width();
-                const int even = std::clamp(int(std::ceil(ratio * 80)), 20, 200);
-                std::vector<double> at;
-                for (int i = 0; i < even; ++i) at.push_back(lo + (hi - lo) * i / (even - 1));
-                for (int d : on)
-                    for (const auto& loop : o[std::size_t(d)].loops)
-                        for (const QPointF& q : loop) {
-                            const double c = axis == 0 ? q.x() : q.y();
-                            for (double e : {c - 1e-4 * extent, c, c + 1e-4 * extent})
-                                if (e >= lo && e <= hi) at.push_back(e);
-                        }
-                std::sort(at.begin(), at.end());
-                at.erase(std::unique(at.begin(), at.end(), [&](double a, double b) { return b - a < 1e-9 * extent; }), at.end());
-                return at;
-            };
-            std::vector<double> xs = lines(0), zs = lines(1);
-            double largest = 0;
-            for (double a : xs)
-                for (double c : zs) largest = std::max(largest, value(QPointF(a, c), false));
-            auto refined = [&r, &value, &largest](std::vector<double> along, const std::vector<double>& acrossLines, int axis) {
-                // (At most 48 lines across, evenly among the other axis' own.)
-                std::vector<double> across;
-                const std::size_t m = acrossLines.size();
-                for (std::size_t i = 0; i < std::min<std::size_t>(m, 48); ++i) across.push_back(acrossLines[m <= 48 ? i : i * (m - 1) / 47]);
-                for (double c : {0.25, 0.5, 0.75}) across.push_back((axis == 0 ? r.top() : r.left()) + c * (axis == 0 ? r.height() : r.width()));
-                auto at = [&](double a, double c, bool* in) { return value(axis == 0 ? QPointF(a, c) : QPointF(c, a), false, in); };
-                const double least = 1e-5 * (axis == 0 ? r.width() : r.height());
-                for (int round = 0; round < 24 && along.size() < 400; ++round) {
-                    std::vector<double> next{along.front()};
-                    bool split = false;
-                    for (std::size_t i = 1; i < along.size(); ++i) {
-                        const double a = along[i - 1], b = along[i], mid = (a + b) / 2;
-                        bool off = false;
-                        if (b - a > 2 * least)
-                            for (double c : across) {
-                                // (Across the selection's edge a step: its own lines' - not halved for.)
-                                bool ia = false, ib = false, im = false;
-                                const double va = at(a, c, &ia), vb = at(b, c, &ib), vm = at(mid, c, &im);
-                                largest = std::max({largest, va, vb, vm});
-                                if (!ia || !ib || !im) continue;
-                                if (std::abs(vm - (va + vb) / 2) > 0.01 * std::max({va, vb, vm}) + 1e-5 * largest) {
-                                    off = true;
-                                    break;
-                                }
-                            }
-                        if (off && next.size() + (along.size() - i) < 400) {
-                            next.push_back(mid);
-                            split = true;
-                        }
-                        next.push_back(b);
-                    }
-                    along = next;
-                    if (!split) break;
-                }
-                return along;
-            };
-            zs = refined(zs, xs, 1);
-            xs = refined(xs, zs, 0);
-            zs = refined(zs, xs, 1);
-            const int nx = int(xs.size()), nz = int(zs.size());
-            std::vector<double> values;   // x fastest, then y (two), then z
-            values.reserve(std::size_t(nx * 2 * nz));
-            for (int k = 0; k < nz; ++k) {
-                std::vector<double> row;
-                for (int i = 0; i < nx; ++i) row.push_back(value(QPointF(xs[std::size_t(i)], zs[std::size_t(k)]), true));
-                for (int j = 0; j < 2; ++j) values.insert(values.end(), row.begin(), row.end());
-            }
+            const Sampled g = sampleOver(r, on, o, value);
             if (missing > 0)
                 w.note(tr("%1: its N not had at %2 of the grid's points (another physics' field, not solved here): nought there").arg(f.name()).arg(missing));
             ++dopings;
             w.comment(tr("%1: %2, sampled on %3 x %4 points (finer where it changes: within 1 % between them)")
                           .arg(f.name(), profile == QLatin1String("implant") ? tr("an implant (annealed)") : tr("an expression"))
-                          .arg(nx)
-                          .arg(nz));
+                          .arg(g.xs.size())
+                          .arg(g.zs.size()));
             w.line(QStringLiteral("addimportdope;"));
             w.setText(QStringLiteral("name"), fname);
             w.setText(QStringLiteral("dopant type"), type);
             w.line(QStringLiteral("try { set(\"use relative coordinates\", 0); } catch(err);"));
-            // (Its lines to the last digit: where it is steep, a rounded line's
-            // value is not the one sampled.)
-            auto column = [&](const std::vector<double>& v) {
-                QStringList c;
-                for (double x : v) c << QString::number(x * sc, 'g', 17);
-                return c.join(QLatin1String("; "));
-            };
-            w.line(QStringLiteral("x = [%1];").arg(column(xs)));
-            w.line(QStringLiteral("y = [%1; %2];").arg(num(-5 * size * sc), num(5 * size * sc)));
-            w.line(QStringLiteral("z = [%1];").arg(column(zs)));
-            QStringList chunks;
-            for (std::size_t i = 0; i < values.size(); i += 16) {
-                QStringList c;
-                for (std::size_t j = i; j < std::min(values.size(), i + 16); ++j) c << num(values[j]);
-                chunks << c.join(QLatin1Char(','));
-            }
-            w.line(QStringLiteral("N = reshape([%1], [%2, 2, %3]);").arg(chunks.join(QStringLiteral(",\n    "))).arg(nx).arg(nz));
-            w.line(QStringLiteral("doping = rectilineardataset(\"dope\", x, y, z);"));
-            w.line(QStringLiteral("doping.addparameter(\"a\", 1);"));
-            w.line(QStringLiteral("doping.addattribute(\"N\", N);"));
-            w.line(QStringLiteral("select(%1);").arg(str(QStringLiteral("CHARGE::") + fname)));
-            w.line(QStringLiteral("importdataset(doping);"));
+            writeDataset(w, fname, QStringLiteral("doping"), QStringLiteral("dope"), QStringLiteral("N"), g, sc, size);
         }
     }
     if (restricted) w.note(tr("a doping box reaching past its domain is kept to the domain's solid (its volume type \"solid\", tried)"));
@@ -1475,12 +1570,135 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
         w.setText(QStringLiteral("surface type"), QStringLiteral("solid"));
         w.setText(QStringLiteral("solid"), cs.solid);
     }
+    // Surface recombination: a boundary condition between two materials -
+    // Lumerical's on each of their interfaces -, its velocities S, or S
+    // (T/300 K)^η where the model's are of that form in T.
+    const std::set<int> drawnSet(drawn.begin(), drawn.end());
+    int recombinations = 0;
+    for (const Node& f : phys->children) {
+        if (!f.enabled || f.type != QLatin1String("semiconductor/surfacerec")) continue;
+        const QVector<int> bs = resolveSelection(t, model, Level::Boundary, f.selection(), &why);
+        std::set<std::pair<QString, QString>> pairs;
+        std::set<std::pair<const Node*, const Node*>> materialPairs;
+        for (int bb : bs) {
+            const Topology::Boundary& bd = t.boundaries[std::size_t(bb)];
+            if (bd.up < 0 || bd.down < 0) continue;
+            const Node *ma = mats[std::size_t(bd.up)], *mb = mats[std::size_t(bd.down)];
+            if (!ma || !mb || ma == mb || !material.count(ma) || !material.count(mb)) continue;
+            QString a = material.at(ma).name, c = material.at(mb).name;
+            if (c < a) std::swap(a, c);
+            pairs.insert({a, c});
+            materialPairs.insert({std::min(ma, mb), std::max(ma, mb)});
+        }
+        if (pairs.empty()) {
+            w.note(tr("%1: on no interface of two materials - not taken").arg(f.name()));
+            continue;
+        }
+        // (Every interface of those materials: more than its own, said.)
+        int all = 0;
+        for (int bb = 0; bb < int(t.boundaries.size()); ++bb) {
+            const Topology::Boundary& bd = t.boundaries[std::size_t(bb)];
+            if (bd.up < 0 || bd.down < 0 || !mats[std::size_t(bd.up)] || !mats[std::size_t(bd.down)]) continue;
+            const Node *ma = mats[std::size_t(bd.up)], *mb = mats[std::size_t(bd.down)];
+            if (materialPairs.count({std::min(ma, mb), std::max(ma, mb)})) ++all;
+        }
+        if (all > int(bs.size())) w.note(tr("%1: a Lumerical surface recombination is on every interface of its two materials: %2 boundaries here, its own %3")
+                                              .arg(f.name()).arg(all).arg(bs.size()));
+        auto velocity = [&f, &scope, &w, T](const QString& key, double* S, double* eta) {
+            auto at = [&f, &scope, &key](double kelvin) {
+                const MaterialScope warm(scope, kelvin);
+                return evaluateConstant(f.text(key), warm, Dim::of(1, 0, -1)).value_or(NAN);
+            };
+            const double s300 = at(300), s600 = at(600), s450 = at(450);
+            *eta = 0;
+            *S = s300;
+            if (s300 > 0 && s600 > 0 && s600 != s300) {
+                const double e = std::log(s600 / s300) / std::log(2.0);
+                if (std::abs(s300 * std::pow(1.5, e) / s450 - 1) < 1e-9) *eta = e;
+                else {
+                    *S = at(T);
+                    w.note(tr("%1: its %2 of T not S (T/300 K)^η - taken at %3 K").arg(f.name(), key).arg(num(T)));
+                }
+            }
+        };
+        double Sn, Sp, etaN, etaP;
+        velocity(QStringLiteral("Sn"), &Sn, &etaN);
+        velocity(QStringLiteral("Sp"), &Sp, &etaP);
+        const double Et = energyIn(f.text(QStringLiteral("Et")), scope);
+        int k = 0;
+        for (const auto& [a, c] : pairs) {
+            ++recombinations;
+            w.line(QStringLiteral("addsurfacerecombinationbc;"));
+            w.setText(QStringLiteral("name"), pairs.size() > 1 ? QStringLiteral("%1 %2").arg(objectName(f.name())).arg(++k) : objectName(f.name()));
+            w.setText(QStringLiteral("surface type"), QStringLiteral("material:material"));
+            w.setText(QStringLiteral("material 1"), a);
+            w.setText(QStringLiteral("material 2"), c);
+            w.set(QStringLiteral("electron velocity"), Sn);
+            w.set(QStringLiteral("hole velocity"), Sp);
+            if (std::isfinite(Et)) w.line(QStringLiteral("try { set(\"trap offset\", %1); } catch(err); # (eV)").arg(num(Et)));
+            if (etaN != 0 || etaP != 0)
+                w.line(QStringLiteral("try { set(\"enable temperature model\", 1); set(\"electron eta\", %1); set(\"hole eta\", %2); } catch(err);")
+                           .arg(num(etaN), num(etaP)));
+        }
+    }
+    // An optical generation: sampled as the doping is, imported data
+    // (1/(m3 s)); off where the model's is.
+    int generations = 0;
+    for (const Node& f : phys->children) {
+        if (f.type != QLatin1String("semiconductor/generation")) continue;
+        const QVector<int> sel = resolveSelection(t, model, Level::Domain, f.selection(), &why);
+        std::vector<int> on;
+        for (int d : sel)
+            if (semi.count(d)) on.push_back(d);
+        if (on.empty()) continue;
+        QRectF r;
+        for (int d : on) r = r.isNull() ? t.domains[std::size_t(d)].bounds : r.united(t.domains[std::size_t(d)].bounds);
+        if (!sol) {
+            sol = std::make_unique<Solution>(model, b.parameters, b.mesh);
+            locator = std::make_unique<Locator>(*b.mesh);
+        }
+        const Expression G = Expression::compile(f.text(QStringLiteral("G")), sol->scope());
+        const double hair = 1e-6 * std::max(r.width(), r.height());
+        int missing = 0;
+        auto value = [&t, &on, &sol, &locator, &G, &missing, hair](QPointF p, bool counted, bool* in) {
+            const QPointF tries[] = {p, p + QPointF(hair, 0), p - QPointF(hair, 0), p + QPointF(0, hair), p - QPointF(0, hair)};
+            if (in) *in = false;
+            for (const QPointF& q : tries) {
+                const int d = t.domainAt(q);
+                if (d < 0 || std::find(on.begin(), on.end(), d) == on.end()) continue;
+                if (in) *in = true;
+                const std::optional<double> e = evaluateAt(*sol, *locator, G, q);
+                if (e) return *e;
+                if (counted) ++missing;
+                return 0.0;
+            }
+            return 0.0;
+        };
+        const Sampled g = sampleOver(r, on, o, value);
+        if (missing > 0) w.note(tr("%1: its G not had at %2 of the grid's points (another physics' field, not solved here): nought there").arg(f.name()).arg(missing));
+        // (Of the model's parameters - a power swept -: at their values.)
+        QStringList reads;
+        for (const QJsonValue& row : model.root.child(QStringLiteral("definitions"))->child(QStringLiteral("parameters"))->value(QStringLiteral("rows")).toArray()) {
+            const QString name = row.toObject().value(QStringLiteral("name")).toString();
+            if (!name.isEmpty() && f.text(QStringLiteral("G")).contains(QRegularExpression(QStringLiteral("\\b%1\\b").arg(QRegularExpression::escape(name)))))
+                reads << tr("%1 %2").arg(name, row.toObject().value(QStringLiteral("expression")).toString());
+        }
+        if (!reads.isEmpty()) w.note(tr("%1: its G sampled with the model's parameters as they are (%2) - its scale factor 1").arg(f.name(), reads.join(QStringLiteral(", "))));
+        ++generations;
+        const QString fname = objectName(f.name());
+        w.comment(tr("%1: its generation, sampled on %2 x %3 points").arg(f.name()).arg(g.xs.size()).arg(g.zs.size()));
+        w.line(QStringLiteral("addimportgen;"));
+        w.setText(QStringLiteral("name"), fname);
+        if (!f.enabled) w.line(QStringLiteral("try { set(\"enabled\", 0); } catch(err);"));
+        w.line(QStringLiteral("try { set(\"use relative coordinates\", 0); } catch(err);"));
+        writeDataset(w, fname, QStringLiteral("generation"), QStringLiteral("gen"), QStringLiteral("G"), g, sc, size);
+    }
     // What is not taken.
     QStringList own, left;
     for (const Node& f : phys->children) {
         if (!f.enabled) continue;
         static const QStringList notTaken = {QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/btbt"), QStringLiteral("semiconductor/quantum"),
-                                             QStringLiteral("semiconductor/generation"), QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/charge"),
+                                             QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/charge"),
                                              QStringLiteral("semiconductor/polarization"), QStringLiteral("semiconductor/fn"), QStringLiteral("semiconductor/traps")};
         const QString kind = f.kind() ? f.kind()->title : f.type;
         const QString named = f.name() == kind ? kind : tr("%1 (%2)").arg(f.name(), kind);
@@ -1492,6 +1710,86 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
     if (!own.isEmpty())
         w.note(tr("the materials' models and parameters (mobility, recombination) the Lumerical ones: check them against the model's %1").arg(own.join(QStringLiteral(", "))));
     if (!left.isEmpty()) w.note(tr("not taken - set them there: %1").arg(left.join(QStringLiteral(", "))));
+    // For Qucs-S: what the script does not carry - the semiconductor's own
+    // models, recombination and other features, its settings, the model's
+    // parameters, functions and mesh -, its selections in the structures'
+    // names: one line of JSON that Lumerical passes over (a comment) and
+    // Qucs-S's import reads back. (The doping, contacts, surface
+    // recombination and generation are the script's own objects: taken
+    // from them, as edited.)
+    {
+        const QJsonObject whole = model.toObject();
+        const QJsonObject comp = whole.value(QStringLiteral("components")).toArray().at(0).toObject();
+        QJsonObject physJson;
+        for (const QJsonValue& v : comp.value(QStringLiteral("physics")).toArray())
+            if (v.toObject().value(QStringLiteral("tag")).toString() == phys->tag) physJson = v.toObject();
+        // (The contacts the script's own, a study sweeping them; a doping,
+        // a surface recombination, a generation carried too, exact - the
+        // script's are sampled, or on every interface of two materials -,
+        // with the script's object they stand for, here in its place.)
+        static const QStringList contactTypes = {QStringLiteral("ohmic"), QStringLiteral("schottky"), QStringLiteral("gate")};
+        static const QStringList approximated = {QStringLiteral("doping"), QStringLiteral("surfacerec"), QStringLiteral("generation")};
+        auto levelNamed = [](const QString& l) { return l == QLatin1String("boundary") ? Level::Boundary : l == QLatin1String("point") ? Level::Point : Level::Domain; };
+        QJsonArray carried;
+        QStringList notCarried;
+        for (const QJsonValue& v : physJson.value(QStringLiteral("features")).toArray()) {
+            QJsonObject f = v.toObject();
+            const QString type = f.value(QStringLiteral("type")).toString();
+            if (contactTypes.contains(type)) continue;
+            if (approximated.contains(type)) {
+                const auto node = std::find_if(phys->children.begin(), phys->children.end(),
+                                               [&f](const Node& n) { return n.tag == f.value(QStringLiteral("tag")).toString(); });
+                if (node == phys->children.end()) continue;
+                f.insert(QStringLiteral("native"), objectName(node->name()));
+            }
+            const NodeKind* k = nodeKind(QStringLiteral("semiconductor/") + type);
+            if (f.contains(QStringLiteral("selection")) && k && k->selection != Level::None) {
+                const std::optional<QJsonObject> r = carriedRule(f.value(QStringLiteral("selection")).toObject(), k->selection, t, model, drawnSet);
+                if (!r) {
+                    notCarried << f.value(QStringLiteral("label")).toString(type);
+                    continue;
+                }
+                f.insert(QStringLiteral("selection"), *r);
+            }
+            carried.append(f);
+        }
+        QJsonObject settings = physJson;
+        for (const char* key : {"features", "selection", "tag", "type", "label"}) settings.remove(QLatin1String(key));
+        QJsonObject meshJson = comp.value(QStringLiteral("mesh")).toObject();
+        QJsonArray meshFeatures;
+        for (const QJsonValue& v : meshJson.value(QStringLiteral("features")).toArray()) {
+            QJsonObject f = v.toObject();
+            const QString type = f.value(QStringLiteral("type")).toString();
+            const NodeKind* k = nodeKind(QStringLiteral("mesh/") + type);
+            Level level = k ? k->selection : Level::Domain;
+            if (f.contains(QStringLiteral("level"))) level = levelNamed(f.value(QStringLiteral("level")).toString());
+            if (f.contains(QStringLiteral("selection")) && level != Level::None) {
+                const std::optional<QJsonObject> r = carriedRule(f.value(QStringLiteral("selection")).toObject(), level, t, model, drawnSet);
+                if (!r) {
+                    notCarried << f.value(QStringLiteral("label")).toString(type);
+                    continue;
+                }
+                f.insert(QStringLiteral("selection"), *r);
+            }
+            meshFeatures.append(f);
+        }
+        meshJson.remove(QStringLiteral("tag"));
+        meshJson.insert(QStringLiteral("features"), meshFeatures);
+        const QJsonObject block{{QStringLiteral("unit"), comp.value(QStringLiteral("unit"))},
+                                {QStringLiteral("tag"), phys->tag},
+                                {QStringLiteral("settings"), settings},
+                                {QStringLiteral("features"), carried},
+                                {QStringLiteral("parameters"), whole.value(QStringLiteral("parameters"))},
+                                {QStringLiteral("functions"), whole.value(QStringLiteral("functions"))},
+                                {QStringLiteral("mesh"), meshJson}};
+        w.line();
+        w.comment(tr("For Qucs-S: the model's own semiconductor features (%1), its parameters, functions and mesh - the line below, a comment "
+                     "Lumerical passes over; Qucs-S's import reads it back.")
+                      .arg(carried.size()));
+        w.line(QStringLiteral("#qucs-s %1").arg(QString::fromUtf8(QJsonDocument(block).toJson(QJsonDocument::Compact))));
+        if (!notCarried.isEmpty())
+            w.note(tr("not carried for Qucs-S (selections by number, or by a named selection of boundaries): %1").arg(notCarried.join(QStringLiteral(", "))));
+    }
     w.line();
     w.line(QStringLiteral("save(%1);").arg(str(saved)));
     if (node.flag(QStringLiteral("run"))) w.line(QStringLiteral("run(\"CHARGE\");"));
@@ -1499,7 +1797,12 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
                               tr("the Lumerical Finite Element IDE (CHARGE)")),
                        w);
     out.notes = w.notes;
-    out.summary = tr("a CHARGE script: %1 structures, %2 doping objects, %3 contacts").arg(drawn.size()).arg(dopings).arg(contacts.size());
+    out.summary = tr("a CHARGE script: %1 structures, %2 doping objects, %3 contacts, %4 surface recombinations, %5 generations")
+                      .arg(drawn.size())
+                      .arg(dopings)
+                      .arg(contacts.size())
+                      .arg(recombinations)
+                      .arg(generations);
     return out;
 }
 

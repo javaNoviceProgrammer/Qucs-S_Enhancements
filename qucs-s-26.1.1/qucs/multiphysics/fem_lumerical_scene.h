@@ -17,6 +17,7 @@
 #include "fem_materials.h"
 
 #include <QByteArray>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -133,6 +134,9 @@ struct Scene {
     std::vector<Material> materials;
     Value stack, params, config;  // mqwindex's (Null: none)
     std::vector<double> fields;   // a script's swept fields (V/m)
+    /// A Qucs-S export's own line ("#qucs-s {...}", a comment to Lumerical):
+    /// what its script does not carry, read back (empty: none).
+    QJsonObject carried;
     QStringList notes;
     QString error;
 };
