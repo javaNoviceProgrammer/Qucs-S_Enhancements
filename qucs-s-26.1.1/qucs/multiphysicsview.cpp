@@ -15,7 +15,8 @@
 #include "ink.h"
 #include "settings.h"
 #ifdef QUCS_GPU_VIEW
-#include "multiphysicsviewgl.h"
+#include "multiphysicsviewgpu.h"
+#include "rhicanvas.h"
 #endif
 
 #include <QApplication>
@@ -26,7 +27,6 @@
 #include <QNativeGestureEvent>
 #include <QPainter>
 #include <QPalette>
-#include <QSurfaceFormat>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -112,7 +112,7 @@ GraphicsView::GraphicsView(QWidget* parent) : QWidget(parent)
 #ifdef QUCS_GPU_VIEW
     // The GPU's canvas over it, where there can be one and it is wanted.
     if (qEnvironmentVariable("QUCS_GPU") != QLatin1String("0") && gpu::wanted(gpu::Viewer::Multiphysics) && gpuAvailable())
-        a_canvas = new GlCanvas(this);
+        a_canvas = new GpuCanvas(this);
 #endif
 }
 
@@ -128,20 +128,9 @@ GraphicsView::~GraphicsView()
 bool GraphicsView::gpuAvailable()
 {
 #ifdef QUCS_GPU_VIEW
-    return GlCanvas::available();
+    return gpu::rhiAvailable();
 #else
     return false;
-#endif
-}
-
-void GraphicsView::prepareGpu()
-{
-#ifdef QUCS_GPU_VIEW
-    if (qEnvironmentVariable("QUCS_GPU") == QLatin1String("0")) return;
-    QSurfaceFormat f = QSurfaceFormat::defaultFormat();
-    f.setVersion(3, 3);
-    f.setProfile(QSurfaceFormat::CoreProfile);
-    QSurfaceFormat::setDefaultFormat(f);
 #endif
 }
 
@@ -150,7 +139,7 @@ void GraphicsView::setGpu(bool on)
     QucsSettingsFile().setValue(gpu::settingKey(gpu::Viewer::Multiphysics), on);
 #ifdef QUCS_GPU_VIEW
     if (on && !a_canvas && !a_gpuBroken && gpuAvailable()) {
-        a_canvas = new GlCanvas(this);
+        a_canvas = new GpuCanvas(this);
         a_canvas->setGeometry(rect());
         a_canvas->show();
     } else if (!on && a_canvas) {
@@ -511,7 +500,7 @@ void GraphicsView::contextMenuEvent(QContextMenuEvent* event)
 {
     QMenu menu(this);
     menu.addAction(tr("Fit"), this, [this] { fit(); });
-    QAction* gpuAction = menu.addAction(tr("Draw with the GPU (OpenGL)"));
+    QAction* gpuAction = menu.addAction(tr("Draw with the GPU"));
     gpuAction->setCheckable(true);
     gpuAction->setChecked(gpu());
     gpuAction->setEnabled(gpuAvailable() && !a_gpuBroken);
@@ -543,7 +532,7 @@ void GraphicsView::paintEvent(QPaintEvent*)
     paintFrame(p, nullptr);
 }
 
-void GraphicsView::paintFrame(QPainter& p, GlCanvas* gl)
+void GraphicsView::paintFrame(QPainter& p, GpuCanvas* gl)
 {
     a_gl = gl;
     p.setFont(font());
@@ -664,7 +653,7 @@ void GraphicsView::paintGeometry(QPainter& p, const Colors& c, bool faded)
         std::vector<QColor> fills(a_domainPaths.size());
         for (int d = 0; d < int(fills.size()); ++d) fills[std::size_t(d)] = domainFill(d, c, faded);
         a_gl->drawDomains(p, fills);
-        std::vector<GlCanvas::Stroke> strokes(a_boundaryPaths.size());
+        std::vector<GpuCanvas::Stroke> strokes(a_boundaryPaths.size());
         for (int b = 0; b < int(strokes.size()); ++b) {
             const auto [color, w] = boundaryPen(b);
             strokes[std::size_t(b)] = {color, float(w)};
@@ -866,7 +855,7 @@ void GraphicsView::paintResults(QPainter& p, const Colors& c)
     };
 #ifdef QUCS_GPU_VIEW
     if (a_gl) {
-        std::vector<GlCanvas::Stroke> strokes(a_boundaryPaths.size());
+        std::vector<GpuCanvas::Stroke> strokes(a_boundaryPaths.size());
         for (int b = 0; b < int(strokes.size()); ++b) {
             const auto [color, w] = boundaryPen(b);
             strokes[std::size_t(b)] = {color, float(w)};

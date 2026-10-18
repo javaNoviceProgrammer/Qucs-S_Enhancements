@@ -32,7 +32,7 @@ MultiphysicsSettingsDialog::MultiphysicsSettingsDialog(QWidget* parent) : QDialo
     auto* layout = new QVBoxLayout(this);
     auto* view = new QGroupBox(tr("Graphics view"), this);
     auto* inside = new QVBoxLayout(view);
-    a_gpu = new QCheckBox(tr("Draw with the GPU (OpenGL)"), view);
+    a_gpu = new QCheckBox(tr("Draw with the GPU"), view);
     a_gpu->setObjectName(QStringLiteral("mpGpuBox"));
     a_gpu->setChecked(gpuWanted());
     inside->addWidget(a_gpu);
@@ -89,9 +89,10 @@ QString MultiphysicsSettingsDialog::gpuHindrance()
 {
     if (qEnvironmentVariable("QUCS_GPU") == QLatin1String("0")) return tr("QUCS_GPU=0 is set: the CPU draws, whatever the setting.");
 #ifndef QUCS_GPU_VIEW
-    return tr("This build draws with the CPU alone (built without OpenGL).");
+    return tr("This build draws with the CPU alone (built without Qt's RHI).");
 #else
-    if (!GraphicsView::gpuAvailable()) return tr("No OpenGL 3.3 here (a remote or offscreen display, or no such driver): the CPU draws.");
+    if (!GraphicsView::gpuAvailable())
+        return tr("No GPU backend here (Metal, Direct3D, OpenGL: a remote or offscreen display, or no such driver): the CPU draws.");
     return QString();
 #endif
 }

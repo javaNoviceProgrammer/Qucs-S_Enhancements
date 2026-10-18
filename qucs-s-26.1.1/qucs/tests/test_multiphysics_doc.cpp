@@ -230,9 +230,9 @@ private slots:
     }
 
     // The Multiphysics menu's Settings…: the Graphics view drawn with the
-    // GPU (OpenGL) or the CPU - the setting the view's own menu sets
+    // GPU (Qt's RHI) or the CPU - the setting the view's own menu sets
     // (Viewers/multiphysicsGpu), kept on OK, not on Cancel; what keeps the GPU from
-    // drawing here said (offscreen: no OpenGL 3.3; QUCS_GPU=0). The item no
+    // drawing here said (offscreen: no GPU backend; QUCS_GPU=0). The item no
     // role: on macOS "Settings…" would be taken to the application's menu.
     void theSettingsHaveTheGpu()
     {
@@ -255,9 +255,9 @@ private slots:
         {
             MultiphysicsSettingsDialog d(app);
             QCOMPARE(d.gpuBox()->isChecked(), before);
-            QCOMPARE(d.gpuBox()->text(), QStringLiteral("Draw with the GPU (OpenGL)"));
+            QCOMPARE(d.gpuBox()->text(), QStringLiteral("Draw with the GPU"));
             if (!GraphicsView::gpuAvailable())
-                QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("No OpenGL 3.3 here")), qPrintable(d.gpuStatus()->text()));
+                QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("No GPU backend here")), qPrintable(d.gpuStatus()->text()));
             else
                 QCOMPARE(d.gpuStatus()->text(), before ? QStringLiteral("The GPU draws the Graphics view.") : QStringLiteral("The CPU draws the Graphics view."));
             d.gpuBox()->setChecked(!before);

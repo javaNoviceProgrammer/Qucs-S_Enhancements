@@ -13,11 +13,14 @@
 
 #include "textdoc.h"
 
+#include <QByteArray>
 #include <QCache>
 #include <QColor>
 #include <QFont>
+#include <QHash>
 #include <QImage>
 #include <QList>
+#include <QPointer>
 #include <QRectF>
 #include <QString>
 #include <QTextObjectInterface>
@@ -30,6 +33,11 @@ class QTextDocument;
 class QTimer;
 
 class QTextEdit;
+class QAbstractTextDocumentLayout;
+
+namespace qucs_s::gpu {
+class Canvas2D;
+}
 
 namespace qucs_s::markdown {
 
@@ -99,7 +107,7 @@ class QuoteBars : public QObject
 {
 public:
     /// \a edit's quotes drawn with their bars from now on (\a on; not:
-    /// none drawn by it - drawPreview draws them on the GPU).
+    /// none drawn by it - PreviewTiles draws them on the GPU).
     static void install(QTextEdit* edit, bool on = true);
     /// Where \a edit draws its bars, in its viewport's coordinates.
     static QList<QRectF> bars(const QTextEdit* edit);
@@ -115,12 +123,38 @@ private:
     bool a_inside = false;   // (its view's own painting, sent on by it)
 };
 
-/// \a edit's viewport drawn on \a p as QTextEdit draws it - its document
-/// scrolled, its selection (and extra ones), in its palette - and the
-/// quotes' bars over it: the preview on the GPU (gpurendering.h), whose
-/// painter is not the viewport's. (A link focused by the keyboard is
-/// marked as a selection is, not by the style's focus format.)
-void drawPreview(const QTextEdit* edit, QPainter& p);
+/*!
+ * \a edit's viewport on the GPU (gpurendering.h): its document drawn as
+ * QTextEdit draws it - scrolled, its selection (and extra ones), in its
+ * palette - by the CPU, in tiles the GPU keeps as textures (rows of the
+ * viewport's width, TileHeight high): a scroll draws none again, only the
+ * rows it brings into sight. The quotes' bars over them, each frame. The
+ * tiles drawn again when what they show changes: the layout's update (an
+ * edit, an image or a formula typeset), the selection, the palette, the
+ * width, the horizontal scroll, the pixel ratio. (A link focused by the
+ * keyboard is marked as a selection is, not by the style's focus format.)
+ */
+class PreviewTiles : public QObject
+{
+public:
+    explicit PreviewTiles(QTextEdit* edit);
+    static constexpr int TileHeight = 256;
+    void draw(gpu::Canvas2D& c);
+    /// Tiles drawn by the CPU since the start (for the tests).
+    int drawn() const { return a_drawn; }
+    /// Tiles kept now (for the tests).
+    int kept() const { return int(a_tiles.size()); }
+
+private:
+    QByteArray state() const;
+    QImage tile(int row, int width, qreal ratio, const QColor& background);
+    QTextEdit* a_edit;
+    QPointer<QAbstractTextDocumentLayout> a_layout;   // its update() told
+    quint64 a_updates = 0;
+    QByteArray a_state;   // what the tiles show
+    QHash<int, QImage> a_tiles;   // by row
+    int a_drawn = 0;
+};
 
 } // namespace qucs_s::markdown
 
@@ -152,11 +186,14 @@ public:
     static Mode defaultMode();
 
     QTextBrowser* preview() const { return a_preview; }
-    /// The preview drawn by the GPU: its viewport an OpenGL widget, its text
-    /// from a glyph atlas, its images textures (Settings… > Viewers:
+    /// The preview drawn by the GPU: its viewport Qt's RHI's (Metal,
+    /// Direct3D, OpenGL), its text and images drawn by the CPU in tiles the
+    /// GPU keeps and scrolls (PreviewTiles; Settings… > Viewers:
     /// Viewers/markdownGpu, off unless chosen).
     void setPreviewGpu(bool on);
     bool previewGpu() const;
+    /// Its tiles (null on the CPU).
+    const qucs_s::markdown::PreviewTiles* previewTiles() const { return a_previewTiles; }
     /// The rendering made again now (it is a moment after each edit).
     void renderNow();
     /// The editor's colours and the rendering's, in the theme's paper and
@@ -181,6 +218,7 @@ private:
     QWidget* a_bar = nullptr;
     QButtonGroup* a_modes = nullptr;
     QTextBrowser* a_preview = nullptr;
+    QPointer<qucs_s::markdown::PreviewTiles> a_previewTiles;   // on the GPU
     QWidget* a_handle = nullptr;
     QScrollBar* a_scroll = nullptr;   // the text's, beside it in Split mode
     QTimer* a_timer = nullptr;
