@@ -147,6 +147,21 @@ private slots:
     // β Rsp. The cavity's stored energy ½ ε0 Re ε h π a² J1(ka)²; each bias
     // point a solution, by voltage; the stimulated rate and the gain at each
     // point (semi.Rst, semi.gain) over the disk Istim/q and the mode's mean.
+    // The toy with abrupt heterojunctions: its claddings' four rows (123 nm,
+    // their Debye length 4 nm) said, once in its L-I - its worst point's
+    // line, not one a point.
+    void itsCoarseHeterojunctionsSaidOnce()
+    {
+        QByteArray json = pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "1.4, 1.6, 1.8"})j"));
+        json.replace(R"("heterojunctions": "element")", R"("heterojunctions": "abrupt")");
+        Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QStringList said;
+        for (const QString& line : r.solution->log)
+            if (line.contains(QLatin1String("where its current crosses a heterojunction"))) said << line;
+        QVERIFY2(said.size() == 1 && said.first().contains(QLatin1String("elements 123 nm across")), qPrintable(r.solution->log.join(QLatin1String(" | "))));
+    }
+
     void aToyLaserAsItsRateEquations()
     {
         QByteArray json = pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "range(1.40, 0.01, 1.60)"})j"));

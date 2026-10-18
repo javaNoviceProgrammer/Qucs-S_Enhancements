@@ -381,6 +381,136 @@ private slots:
         }
     }
 
+    // A heterojunction's elements wider than a Debye length where its
+    // current crosses it: said, its current the mesh's. The double
+    // heterostructure above at 1.6 V on 4 rows each layer - claddings' rows
+    // 75 and 120 nm, their Debye length 4 nm -, said, naming the worse;
+    // on 128 rows (2.3 and 3.8 nm), at rest (no current) or graded over an
+    // element (one bands' side throughout), not. (A toy laser on 4, 16 and
+    // 64 rows passed 72, 55 and 11 % too little current, nothing said: the
+    // update check of a690d27.) (A sanitized build: its two fine meshes,
+    // 128 rows, not solved.)
+    void aCoarseMeshAtAHeterojunctionIsSaid()
+    {
+        const bool slow = slowBuild();
+        auto strip = [](int rows, const QString& va, const QString& kind) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "nclad", "size": ["0.05", "0.3"]},
+                             {"type": "rectangle", "name": "active", "position": ["0", "0.3"], "size": ["0.05", "0.02"]},
+                             {"type": "rectangle", "name": "pclad", "position": ["0", "0.32"], "size": ["0.05", "0.48"]}],
+                "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "selection": {"only": ["nclad", "pclad"]}},
+                              {"material": "Gallium arsenide", "selection": {"only": ["active"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "heterojunctions": "%3", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "2e18[1/cm^3]", "selection": {"only": ["active"]}},
+                  {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
+                  {"type": "ohmic", "name": "anode", "V0": "%2", "selection": {"of": ["pclad"], "side": "top"}},
+                  {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                         "features": [{"type": "layered", "hlateral": "0.05", "count": %1, "selection": {"all": true}}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(rows)
+                               .arg(va, kind)
+                               .toUtf8());
+        };
+        const auto said = [](const Run& r) {
+            for (const QString& line : r.solution->log)
+                if (line.contains(QLatin1String("where its current crosses a heterojunction"))) return line;
+            return QString();
+        };
+        Run r = run(strip(4, QStringLiteral("1.6[V]"), QStringLiteral("abrupt")));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const QString coarse = said(r);
+        qInfo("4 rows: %s", qPrintable(coarse));
+        QVERIFY2(coarse.startsWith(QLatin1String("Warning: Semiconductor: elements 120 nm across")) && coarse.contains(QStringLiteral("“pclad”"))
+                     && coarse.contains(QLatin1String("Debye length there 4 nm")),
+                 qPrintable(coarse));
+        QCOMPARE(int(std::count_if(r.solution->log.cbegin(), r.solution->log.cend(),
+                                   [](const QString& l) { return l.contains(QLatin1String("crosses a heterojunction")); })),
+                 1);
+        for (const auto& [rows, va, kind] : {std::tuple{128, "1.6[V]", "abrupt"}, std::tuple{4, "0[V]", "abrupt"}, std::tuple{4, "1.6[V]", "element"}}) {
+            if (slow && rows == 128) continue;
+            r = run(strip(rows, QLatin1String(va), QLatin1String(kind)));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            QVERIFY2(said(r).isEmpty(), qPrintable(QStringLiteral("%1 rows, %2, %3: %4").arg(rows).arg(QLatin1String(va), QLatin1String(kind), said(r))));
+        }
+        // A GaAs stripe 100 nm wide in Al0.6Ga0.4As, its side walls 50 nm
+        // elements across, its rows fine: not said - the carriers run along
+        // the walls within the stripe, the current crosses at its top and
+        // bottom (the walls' edges' share of it nought, an edge from a
+        // corner along an interface not across one). Swept to 1.6 V on 4
+        // rows: one line, the worst point's.
+        auto stripe = [](int rows, const QString& sweep) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "0[V]"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "nclad", "size": ["0.2", "0.3"]},
+                             {"type": "rectangle", "name": "layer", "position": ["0", "0.3"], "size": ["0.2", "0.02"]},
+                             {"type": "rectangle", "name": "active", "position": ["0.05", "0.3"], "size": ["0.1", "0.02"]},
+                             {"type": "rectangle", "name": "pclad", "position": ["0", "0.32"], "size": ["0.2", "0.48"]},
+                             {"type": "form union"}],
+                "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "selection": {"only": ["nclad", "pclad", "layer"]}},
+                              {"material": "Gallium arsenide", "selection": {"only": ["active"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "2e18[1/cm^3]", "selection": {"only": ["active"]}},
+                  {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
+                  {"type": "ohmic", "name": "anode", "V0": "Va", "selection": {"of": ["pclad"], "side": "top"}},
+                  {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                         "features": [{"type": "layered", "hlateral": "0.05", "count": %1, "selection": {"all": true}}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "%2", "V"]]}, {"type": "stationary"}]}]})json")
+                               .arg(rows)
+                               .arg(sweep)
+                               .toUtf8());
+        };
+        if (!slow) {
+            r = run(stripe(128, QStringLiteral("1.6")));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            QVERIFY2(said(r).isEmpty(), qPrintable(said(r)));
+        }
+        r = run(stripe(4, QStringLiteral("1.2, 1.4, 1.6")));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(int(r.study.solutions.size()), 3);
+        for (const auto& solution : r.study.solutions) {
+            const int lines = int(std::count_if(solution->log.cbegin(), solution->log.cend(),
+                                                [](const QString& l) { return l.contains(QLatin1String("crosses a heterojunction")); }));
+            QVERIFY2(lines <= 1, qPrintable(solution->log.join(QLatin1String(" | "))));
+        }
+        r.solution = r.study.solutions.back();
+        QVERIFY2(said(r).contains(QLatin1String("elements 120 nm across")), qPrintable(said(r)));
+        // The toy laser's disk in Al0.6Ga0.4As (without its laser) at 1.7 V
+        // on 16 rows: a cladding's row said (18.7 or 30 nm) - not the 50 nm
+        // edge from the disk's corner along its top, which runs along the
+        // interface, not across it (refined, nothing changes).
+        r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um", "space": "axisymmetric",
+            "geometry": [{"type": "rectangle", "label": "nclad", "position": ["0", "0"], "size": ["1.2", "0.3"]},
+                         {"type": "rectangle", "label": "layer", "position": ["0", "0.3"], "size": ["1.2", "0.02"]},
+                         {"type": "rectangle", "label": "active", "position": ["0.35", "0.3"], "size": ["0.3", "0.02"]},
+                         {"type": "rectangle", "label": "pclad", "position": ["0", "0.32"], "size": ["1.2", "0.48"]},
+                         {"type": "form union"}],
+            "materials": [{"material": "Aluminium gallium arsenide", "x": "0.6", "selection": {"only": ["nclad", "pclad", "layer"]}},
+                          {"material": "Gallium arsenide", "selection": {"only": ["active"]}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["nclad"]}},
+              {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["pclad"]}},
+              {"type": "doping", "dopant": "acceptor", "N0": "2e18[1/cm^3]", "selection": {"only": ["active"]}},
+              {"type": "radiative", "B": "1e-10[cm^3/s]", "selection": {"only": ["active"]}},
+              {"type": "srh", "source": "user", "taun": "2[ns]", "taup": "2[ns]", "selection": {"only": ["active"]}},
+              {"type": "ohmic", "name": "anode", "V0": "1.7[V]", "selection": {"of": ["pclad"], "side": "top"}},
+              {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["nclad"], "side": "bottom"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.1",
+                     "features": [{"type": "layered", "hlateral": "0.05", "count": 16, "selection": {"all": true}}]}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                                    .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QVERIFY2(said(r).contains(QLatin1String("elements 18.7 nm across")) || said(r).contains(QLatin1String("elements 30 nm across")), qPrintable(said(r)));
+    }
+
     // An edge between two domains of one material - the layer beside a GaAs
     // disk and the cladding under both, Al0.6Ga0.4As - from a node of the
     // disk's heterojunction (its corner): that material's carriers, the
@@ -564,12 +694,18 @@ private slots:
         each << QStringLiteral("at 1 kHz and -0.5 V: G %1 (dI/dV %2)").arg(Glow, 0, 'g', 5).arg(slope, 0, 'g', 5);
         QVERIFY2(std::abs(Glow / slope - 1) < 0.01, qPrintable(each.last()));
         qInfo("contact currents: %s", qPrintable(each.join(QLatin1String("; "))));
-        // An ohmic contact's charge: said to be about nought, its capacitance
-        // the small-signal's.
+        // An ohmic contact's charge: said to be its metal's, not the
+        // junction's, and nought on uniform doping - as it is here, by the
+        // depletion's -, its capacitance the small-signal's.
         bool described = false;
         for (const Variable& v : r.study.solutions.back()->globals())
-            if (v.name == QLatin1String("semi.Q_a")) described = v.description.contains(QLatin1String("about nought")) && v.description.contains(QLatin1String("semi.Caa"));
+            if (v.name == QLatin1String("semi.Q_a"))
+                described = v.description.contains(QLatin1String("not the junction's charge")) && v.description.contains(QLatin1String("nought on uniform"))
+                            && v.description.contains(QLatin1String("semi.Caa"));
         QVERIFY(described);
+        const double depletion = global(*r.study.solutions.back(), QStringLiteral("semi.Caa")) * 0.5;
+        QVERIFY2(std::abs(global(*r.study.solutions.back(), QStringLiteral("semi.Q_a"))) < 0.01 * depletion,
+                 qPrintable(QStringLiteral("Q_a %1, C V %2").arg(global(*r.study.solutions.back(), QStringLiteral("semi.Q_a"))).arg(depletion)));
     }
 
     void currentsInTime()

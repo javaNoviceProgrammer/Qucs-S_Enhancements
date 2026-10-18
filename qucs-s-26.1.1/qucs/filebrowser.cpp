@@ -35,6 +35,7 @@
 #include <QEvent>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIconEngine>
@@ -2321,39 +2322,71 @@ void FileBrowser::setOpenDocumentsProvider(std::function<QList<OpenDocument>()> 
     a_openDocuments = std::move(provider);
 }
 
-void FileBrowser::moveToTrash(const QString& pathGiven)
+void FileBrowser::moveToTrash(const QString& path)
 {
-    const QString path = QDir::cleanPath(pathGiven);
-    const QFileInfo info(path);
-    // The open documents in it: they would be saved again where they were,
-    // in place of what went to the trash. Closed with it - when none holds
-    // unsaved changes, which would be lost.
+    moveToTrash(QStringList{path});
+}
+
+void FileBrowser::moveToTrash(const QStringList& given)
+{
+    // (One inside another chosen with it goes with it.)
+    QStringList paths;
+    for (const QString& p : given) paths << QDir::cleanPath(p);
+    paths.removeDuplicates();
+    paths.removeIf([&paths](const QString& p) {
+        return std::any_of(paths.cbegin(), paths.cend(), [&p](const QString& other) { return !samePath(other, p) && holds(other, p); });
+    });
+    if (paths.isEmpty()) return;
+    // The open documents in them: they would be saved again where they
+    // were, in place of what went to the trash. Closed with them - when none
+    // holds unsaved changes, which would be lost.
     QStringList open, unsaved;
+    QHash<QString, QStringList> openIn;
     if (a_openDocuments)
         for (const OpenDocument& doc : a_openDocuments())
-            if (!doc.path.isEmpty() && holds(path, doc.path)) (doc.modified ? unsaved : open) << doc.path;
-    const auto names = [](const QStringList& paths) {
-        QStringList list;
-        for (const QString& p : paths) list << QFileInfo(p).fileName();
-        return list.join(QStringLiteral(", "));
+            for (const QString& path : paths)
+                if (!doc.path.isEmpty() && holds(path, doc.path)) {
+                    (doc.modified ? unsaved : open) << doc.path;
+                    if (!doc.modified) openIn[path] << doc.path;
+                }
+    const auto names = [](const QStringList& list) {
+        QStringList shown;
+        for (const QString& p : list) shown << QFileInfo(p).fileName();
+        return shown.join(QStringLiteral(", "));
     };
+    const bool one = paths.size() == 1;
+    const QString name = tr("“%1”").arg(QFileInfo(paths.first()).fileName());
     if (!unsaved.isEmpty()) {
         QMessageBox::warning(this, tr("File Browser"),
-                             tr("“%1” is not moved to the trash: %2 open here with unsaved changes. Save or close it first.")
-                                 .arg(info.fileName(), names(unsaved)));
+                             one ? tr("%1 is not moved to the trash: %2 open here with unsaved changes. Save or close it first.")
+                                       .arg(name, names(unsaved))
+                                 : tr("The %1 items (%2) are not moved to the trash: %3 open here with unsaved changes. Save or "
+                                      "close them first.")
+                                       .arg(paths.size())
+                                       .arg(names(paths), names(unsaved)));
         return;
     }
-    QString question = tr("Move “%1” to the trash?").arg(info.fileName());
+    QString question = one ? tr("Move %1 to the trash?").arg(name)
+                           : tr("Move the %1 items (%2) to the trash?").arg(paths.size()).arg(names(paths));
     if (!open.isEmpty())
-        question += QLatin1Char('\n') + tr("It holds documents open here, which close: %1.").arg(names(open));
+        question += QLatin1Char('\n')
+                    + (one ? tr("It holds documents open here, which close: %1.") : tr("They hold documents open here, which close: %1."))
+                          .arg(names(open));
     if (QMessageBox::question(this, tr("File Browser"), question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
         != QMessageBox::Yes)
         return;
-    if (!misc::moveToTrash(path)) {
-        QMessageBox::warning(this, tr("File Browser"), tr("“%1” could not be moved to the trash.").arg(info.fileName()));
-        return;
+    QStringList failed;
+    for (const QString& path : paths) {
+        if (!misc::moveToTrash(path)) {
+            failed << path;
+            continue;
+        }
+        emit trashed(path, openIn.value(path));
     }
-    emit trashed(path, open);
+    if (!failed.isEmpty())
+        QMessageBox::warning(this, tr("File Browser"),
+                             failed.size() == 1 ? tr("“%1” could not be moved to the trash.").arg(QFileInfo(failed.first()).fileName())
+                                                : tr("These could not be moved to the trash: %1.").arg(names(failed)));
 }
 
 // ----------------------------------------------------------------------
@@ -2801,11 +2834,19 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
     else addPaste(info.absolutePath(), tr("Paste"));
     menu->addSeparator();
     menu->addAction(revealLabel(true), this, [path] { revealItem(path); });
-    menu->addAction(tr("Copy Path"), this, [path] { QApplication::clipboard()->setText(QDir::toNativeSeparators(path)); });
+    menu->addAction(chosen.size() > 1 ? tr("Copy %1 Paths").arg(chosen.size()) : tr("Copy Path"), this,
+                    [chosen] {
+                        QStringList lines;
+                        for (const QString& p : chosen) lines << QDir::toNativeSeparators(p);
+                        QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
+                    })
+        ->setObjectName(QStringLiteral("fbCopyPath"));
     addGitMenu(menu, chosen);
     menu->addSeparator();
     menu->addAction(tr("Rename…"), this, [this, path] { rename(path); });
-    menu->addAction(tr("Move to Trash…"), this, [this, path] { moveToTrash(path); });
+    menu->addAction(chosen.size() > 1 ? tr("Move %1 Items to Trash…").arg(chosen.size()) : tr("Move to Trash…"), this,
+                    [this, chosen] { moveToTrash(chosen); })
+        ->setObjectName(QStringLiteral("fbTrash"));
     return menu;
 }
 
@@ -2851,7 +2892,15 @@ void FileBrowser::showContextMenu(QAbstractItemView* view, const QPoint& pos)
 {
     const QModelIndex index = view->indexAt(pos);
     const QString path = index.isValid() ? pathOf(index) : QString();
-    if (index.isValid()) view->setCurrentIndex(index);
+    // On one of the entries chosen: they stay chosen, the menu's for them
+    // all (as Qt's own right press keeps them). setCurrentIndex chose the
+    // one clicked alone: Copy copied it alone, the others no longer shown.
+    if (index.isValid()) {
+        if (view->selectionModel() != nullptr && view->selectionModel()->isSelected(index))
+            view->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
+        else
+            view->setCurrentIndex(index);
+    }
     QMenu* menu = contextMenuFor(path);
     menu->exec(view->viewport()->mapToGlobal(pos));
     menu->deleteLater();

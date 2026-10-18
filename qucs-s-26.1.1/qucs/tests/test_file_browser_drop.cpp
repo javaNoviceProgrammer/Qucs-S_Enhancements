@@ -7,6 +7,8 @@
  * put; a folder held under a drag opens; documents open from what moved
  * follow it.
  */
+#include <QContextMenuEvent>
+#include <QTimer>
 #include <QtTest>
 #include <QAction>
 #include <QClipboard>
@@ -557,6 +559,105 @@ private slots:
 
     // Dropped on the views: on a folder's row, into it; beside the rows,
     // into the folder shown; lit up where it would go.
+    // A right click on one of several entries chosen keeps them all chosen,
+    // its menu for them all: Copy N Items, Copy N Paths, Move N Items to
+    // Trash. (The menu made the one clicked the current entry, which chose
+    // it alone: Copy copied it alone.) On an entry not chosen: that one
+    // alone. In the List, Tree and Details views.
+    void aRightClickKeepsTheChosen()
+    {
+        const QString here = fresh("rightclick");
+        QWidget window;
+        auto* layout = new QVBoxLayout(&window);
+        auto* fb = new FileBrowser;
+        layout->addWidget(fb);
+        window.resize(500, 600);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const QStringList both{here + "/one.sch", here + "/two.txt"};
+        for (const FileBrowser::View view : {FileBrowser::View::List, FileBrowser::View::Tree, FileBrowser::View::Details}) {
+            fb->setView(view);
+            fb->setLocation(here);
+            QVERIFY(shows(*fb, "two.txt"));
+            QAbstractItemView* v = fb->currentView();
+            // The menu at a right click on \a path: its items (by name),
+            // its Copy chosen.
+            const auto rightClick = [fb, v](const QString& path) {
+                QStringList items;
+                const QPoint at = v->visualRect(fb->indexOf(path)).center();
+                QTest::mousePress(v->viewport(), Qt::RightButton, Qt::NoModifier, at);
+                QTest::mouseRelease(v->viewport(), Qt::RightButton, Qt::NoModifier, at);
+                QTimer::singleShot(0, fb, [fb, &items] {
+                    const QList<QMenu*> menus = fb->findChildren<QMenu*>(QStringLiteral("fbContextMenu"));
+                    if (menus.isEmpty()) return;
+                    QMenu* menu = menus.last();
+                    for (const char* name : {"fbCopy", "fbCopyPath", "fbTrash"})
+                        if (auto* a = menu->findChild<QAction*>(QLatin1String(name))) items << a->text();
+                    if (auto* copy = menu->findChild<QAction*>(QStringLiteral("fbCopy"))) copy->trigger();
+                    menu->close();
+                });
+                QContextMenuEvent menuEvent(QContextMenuEvent::Mouse, at, v->viewport()->mapToGlobal(at));
+                QCoreApplication::sendEvent(v->viewport(), &menuEvent);
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+                return items;
+            };
+            fb->selectPath(both[0]);
+            v->selectionModel()->select(fb->indexOf(both[1]), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+            QCOMPARE(fb->selectedPaths().size(), 2);
+            QApplication::clipboard()->setText(QStringLiteral("before"));
+            const QStringList items = rightClick(both[1]);
+            QCOMPARE(items, QStringList({QStringLiteral("Copy 2 Items"), QStringLiteral("Copy 2 Paths"), QStringLiteral("Move 2 Items to Trash…")}));
+            QStringList chosen = fb->selectedPaths();
+            chosen.sort();
+            QCOMPARE(chosen, both);
+            QStringList copied = FileBrowser::clipboardFiles();
+            copied.sort();
+            QCOMPARE(copied, both);
+            // One not chosen: it alone.
+            const QStringList one = rightClick(here + "/a");
+            QCOMPARE(one, QStringList({QStringLiteral("Copy"), QStringLiteral("Copy Path"), QStringLiteral("Move to Trash…")}));
+            QCOMPARE(fb->selectedPaths(), QStringList({here + "/a"}));
+            QCOMPARE(FileBrowser::clipboardFiles(), QStringList({here + "/a"}));
+        }
+        // Copy 2 Paths: a line each.
+        fb->selectPath(both[0]);
+        fb->currentView()->selectionModel()->select(fb->indexOf(both[1]), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QMenu* menu = fb->contextMenuFor(both[1]);
+        menu->findChild<QAction*>(QStringLiteral("fbCopyPath"))->trigger();
+        QStringList lines = QApplication::clipboard()->text().split(QLatin1Char('\n'));
+        lines.sort();
+        QCOMPARE(lines, QStringList({QDir::toNativeSeparators(both[0]), QDir::toNativeSeparators(both[1])}));
+        // Move 2 Items to Trash: asked about both (No: nothing).
+        QString asked;
+        answering([&] { menu->findChild<QAction*>(QStringLiteral("fbTrash"))->trigger(); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr || box->button(QMessageBox::No) == nullptr) return false;
+                      asked = box->text();
+                      box->button(QMessageBox::No)->click();
+                      return true;
+                  });
+        QVERIFY2(asked.contains("2 items") && asked.contains("one.sch") && asked.contains("two.txt"), qPrintable(asked));
+        QVERIFY(QFileInfo::exists(both[0]) && QFileInfo::exists(both[1]));
+        delete menu;
+        // Both to the trash, asked once (one inside a folder chosen with it
+        // goes with the folder).
+        answering([&] { fb->moveToTrash(QStringList{both[0], both[1], here + "/b", here + "/b/deep"}); },
+                  [&](QWidget* w) {
+                      auto* box = qobject_cast<QMessageBox*>(w);
+                      if (box == nullptr || box->button(QMessageBox::Yes) == nullptr) return false;
+                      asked = box->text();
+                      box->button(QMessageBox::Yes)->click();
+                      return true;
+                  });
+        QVERIFY2(asked.contains("3 items") && asked.contains("one.sch") && asked.contains("two.txt"), qPrintable(asked));
+        for (const QString& name : {"one.sch", "two.txt", "b"}) {
+            QVERIFY(!QFileInfo::exists(here + "/" + name));
+            QVERIFY(QFileInfo::exists(qEnvironmentVariable("QUCS_TRASH_DIR") + "/" + name));
+        }
+        QVERIFY(QFileInfo::exists(qEnvironmentVariable("QUCS_TRASH_DIR") + "/b/deep/x.txt"));
+    }
+
     void droppedOnTheView()
     {
         const QString here = fresh("view");

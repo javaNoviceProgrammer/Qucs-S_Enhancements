@@ -225,6 +225,8 @@ public:
     /// Moves \a path to the trash, once asked; the open documents in it
     /// close (trashed()). Refused while one of them has unsaved changes.
     void moveToTrash(const QString& path);
+    /// The same for several, asked once (the menu's on the entries chosen).
+    void moveToTrash(const QStringList& paths);
     /// Why \a sources cannot go into \a target (a folder into itself, the
     /// workspace or the open project moved, all there already), or empty.
     QString refusal(const QStringList& sources, const QString& target, Qt::DropAction action) const;

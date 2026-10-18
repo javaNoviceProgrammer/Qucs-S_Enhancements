@@ -30,6 +30,7 @@
 #include <Eigen/SparseLU>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <complex>
@@ -366,6 +367,9 @@ private:
     void equilibriumSystem(const Eigen::VectorXd& x, double fermi, const std::vector<int>& local, const std::vector<int>& vIndex,
                            const std::vector<char>& fixed, bool keepContacts, Eigen::VectorXd& Fv, Eigen::SparseMatrix<double>& J) const;
     void store(const Eigen::VectorXd& x);
+    /// A solution with current: said when its elements where the current
+    /// crosses a heterojunction are wider than a Debye length there.
+    void heterojunctionMesh(const Eigen::VectorXd& x);
     /// Its ionized dopants at \a x into the field (a_ionAt's; degeneracy
     /// as last assembled).
     void storeIons(const Eigen::VectorXd& x);
@@ -576,6 +580,8 @@ private:
     std::unique_ptr<Lasing> a_laser;
     int a_iS = -1;
     bool a_laserSaid = false;
+    double a_meshSaidRatio = 0;   // heterojunctionMesh()'s worst said, its line
+    QString a_meshSaid;
     /// The lasing's material gain (1/m) at carriers n, p; its derivatives.
     double laserGain(double n, double p, double* dn, double* dp) const;
     /// What the lasing reads of its mode, as its resonator solved it (false and why: none).
@@ -4089,8 +4095,97 @@ bool SemiconductorProblem::stationary(QString* why)
         }
     }
     finish(x, false);
+    heterojunctionMesh(x);
     if (solves > 1) a_s.log << tr("%1: the contacts' voltages reached in %2 steps (%3 of Newton's)").arg(a_node->name()).arg(solves).arg(iterations);
     return true;
+}
+
+void SemiconductorProblem::heterojunctionMesh(const Eigen::VectorXd& x)
+{
+    // Abrupt, a heterojunction's depletion and accumulation beside it vary
+    // over a Debye length: elements wider than that there, its current is
+    // the mesh's. A toy laser at 1.7 V with 4 rows across each layer passed
+    // a third of its current, 10.3 µA for 36.6 at 256 rows, nothing said
+    // (the update check of a690d27). (Graded over an element - one bands'
+    // side throughout -, or solved in 1D on a line of its own: none here.)
+    if (a_1d) return;
+    // Its nodes: where edges of two bands' sides meet; along it, the
+    // direction of its edges (two sides' each), a corner where two meet.
+    std::vector<int> side(std::size_t(a_n), -1);
+    std::vector<char> hetero(std::size_t(a_n), 0), corner(std::size_t(a_n), 0);
+    std::vector<std::array<double, 2>> along(std::size_t(a_n), {0.0, 0.0});
+    for (const Edge& e : a_edges) {
+        for (const int v : {e.i, e.j}) {
+            int& s = side[std::size_t(v)];
+            if (s < 0) s = e.medium;
+            else if (s != e.medium) hetero[std::size_t(v)] = 1;
+            if (e.partner < 0) continue;
+            std::array<double, 2>& t = along[std::size_t(v)];
+            if (t[0] == 0 && t[1] == 0) t = {e.tx, e.ty};
+            else if (std::abs(t[0] * e.tx + t[1] * e.ty) < 0.9) corner[std::size_t(v)] = 1;
+        }
+    }
+    // The edges from one into its side, those that carry the contacts'
+    // current across - their share of it, Σ of which is the current (the
+    // edge's current times its contact weight's change; terminalValues()),
+    // a tenth of the most or more: a side wall the carriers run along within
+    // a well, its weight the same both ends, is not one - and their lengths
+    // against the Debye length at their far nodes, of their carriers or
+    // doping, whichever is more.
+    if (std::find(hetero.cbegin(), hetero.cend(), 1) == hetero.cend()) return;
+    std::size_t biggest = 0;
+    for (std::size_t k = 1; k < a_contacts.size(); ++k)
+        if (std::abs(a_contacts[k].current) > std::abs(a_contacts[biggest].current)) biggest = k;
+    if (a_contacts.empty()) return;
+    const std::vector<std::vector<double>> weights = currentWeights(x);
+    if (biggest >= weights.size() || weights[biggest].empty()) return;
+    const std::vector<double>& weight = weights[biggest];
+    struct Crossing {
+        double current, ratio, length, debye;
+        int node;
+    };
+    std::vector<Crossing> crossings;
+    double most = 0;
+    for (const Edge& e : a_edges) {
+        if (e.w <= 0 || !(e.h > 0) || hetero[std::size_t(e.i)] == hetero[std::size_t(e.j)]) continue;
+        const int o = hetero[std::size_t(e.i)] ? e.j : e.i, at = hetero[std::size_t(e.i)] ? e.i : e.j;
+        // (Across it - more than 60° off it -, not at a corner, where an
+        // edge along one side runs across the other's end.)
+        const std::array<double, 2>& t = along[std::size_t(at)];
+        if (corner[std::size_t(at)] || (t[0] == 0 && t[1] == 0) || std::abs(t[0] * e.tx + t[1] * e.ty) >= 0.5) continue;
+        const std::size_t i = std::size_t(e.i), j = std::size_t(e.j);
+        if (a_iN[i] < 0 || a_iN[j] < 0 || a_nodeDomain[std::size_t(o)] < 0) continue;
+        double dN = 0, dP = 0;
+        edgeSteps(e, x, &dN, &dP);
+        const double fn = e.wn * (e.fNj * x(a_iN[j]) * bern(dN) - e.fNi * x(a_iN[i]) * bern(-dN));
+        const double fp = e.wp * (e.fPi * x(a_iP[i]) * bern(dP) - e.fPj * x(a_iP[j]) * bern(-dP));
+        const double current = std::abs((fn + fp) * (weight[i] - weight[j]));
+        if (!std::isfinite(current)) continue;
+        const double density = std::max(std::abs(doping(o)), x(a_iN[std::size_t(o)]) + x(a_iP[std::size_t(o)]));
+        if (!(density > 0)) continue;
+        const double debye = std::sqrt(Eps0 * a_media[std::size_t(a_nodeDomain[std::size_t(o)])].epsr * a_Vt / (Q * density));
+        crossings.push_back({current, e.h / debye, e.h, debye, o});
+        most = std::max(most, current);
+    }
+    if (!(most > 0)) return;
+    const Crossing* worst = nullptr;
+    for (const Crossing& c : crossings)
+        if (c.current >= 0.1 * most && (worst == nullptr || c.ratio > worst->ratio)) worst = &c;
+    if (worst == nullptr || worst->ratio <= 1 || worst->ratio <= a_meshSaidRatio) return;
+    const Topology& topo = a_s.topology();
+    const int d = a_nodeDomain[std::size_t(worst->node)];
+    const QString where = d < int(topo.domains.size()) ? topo.objectNames.value(topo.domains[std::size_t(d)].owner) : QString();
+    const QString line = tr("Warning: %1: elements %2 nm across where its current crosses a heterojunction%3, its Debye length there "
+                            "%4 nm (its carriers' or doping's): the current depends on the mesh - refine it there to under a Debye "
+                            "length (a Layered Region's rows, a smaller size near the interface) until the current no longer changes")
+                             .arg(a_node->name(), formatNumber(worst->length * 1e9, 3),
+                                  where.isEmpty() ? QString() : tr(" (in “%1”)").arg(where), formatNumber(worst->debye * 1e9, 2));
+    // (One line a study: its worst point's.)
+    const qsizetype at = a_meshSaid.isEmpty() ? -1 : a_s.log.indexOf(a_meshSaid);
+    if (at >= 0) a_s.log[at] = line;
+    else a_s.log << line;
+    a_meshSaid = line;
+    a_meshSaidRatio = worst->ratio;
 }
 
 bool SemiconductorProblem::smallSignal(double frequency, QString* why)
@@ -5141,11 +5236,15 @@ void SemiconductorProblem::setGlobals()
     for (const Contact& c : a_contacts) {
         a_s.setGlobal(p + QStringLiteral("I_") + c.name, c.current, Dim::current(), tr("current into the device at %1").arg(c.name));
         a_s.setGlobal(p + QStringLiteral("V_") + c.name, c.applied, Dim::voltage(), tr("voltage applied at %1").arg(c.name));
-        // (An ohmic contact on neutral silicon holds almost none: the
-        // junction's charge is balanced inside it.)
+        // (An ohmic contact holds the field's flux at it alone: the
+        // junction's charge is balanced inside the semiconductor. Said so -
+        // "about nought" on an implant's contacts, 274 and -502 fC at every
+        // bias, read as the junction's: the update check of a690d27.)
         a_s.setGlobal(p + QStringLiteral("Q_") + c.name, c.charge, Dim::charge(),
-                      c.kind == Contact::Ohmic ? tr("charge on %1's metal - about nought on neutral silicon (a junction's charge is balanced "
-                                                    "inside it); its capacitance is the small-signal %2")
+                      c.kind == Contact::Ohmic ? tr("charge on %1's metal, the field's flux at it - not the junction's charge, which is "
+                                                    "balanced inside the semiconductor: nought on uniform neutral material, a constant "
+                                                    "where the doping changes at the contact (an implant's slope); the junction's "
+                                                    "capacitance is the small-signal %2")
                                                      .arg(c.name, matrixEntryName(field().tag, QStringLiteral("C"), c.name, c.name))
                                                : tr("charge on %1's metal").arg(c.name));
     }
