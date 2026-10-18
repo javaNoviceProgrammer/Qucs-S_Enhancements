@@ -52,6 +52,17 @@
 
 namespace {
 
+// A grab at the view's pixels: on a Retina screen a grab has the device's,
+// two to each, and these checks read the view's coordinates. (Nearest: each
+// pixel a colour drawn.)
+[[maybe_unused]] QImage atViewPixels(const QImage& grabbed)
+{
+    if (grabbed.devicePixelRatio() == 1.0) return grabbed;
+    QImage scaled = grabbed.scaled((QSizeF(grabbed.size()) / grabbed.devicePixelRatio()).toSize(), Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    scaled.setDevicePixelRatio(1.0);
+    return scaled;
+}
+
 // Puts back an environment variable as it was.
 struct EnvironmentGuard {
     QByteArray name, was;
@@ -835,7 +846,7 @@ private slots:
         // The cells ruled off: a line above each # %%, across the text.
         app->showDocument(py);
         {
-            const QImage shown = py->viewport()->grab().toImage();
+            const QImage shown = atViewPixels(py->viewport()->grab().toImage());
             const int y = py->cursorRect(QTextCursor(py->document()->findBlockByNumber(3))).top();   // # %% use
             QCOMPARE(shown.pixelColor(shown.width() / 2, y), QColor(0x8a, 0x94, 0xa6));
             QVERIFY(shown.pixelColor(shown.width() / 2, y + 4) != QColor(0x8a, 0x94, 0xa6));
@@ -965,7 +976,7 @@ private slots:
         QCOMPARE(py->breakpoints(), (QList<int>{2, 4}));
         QCOMPARE(changed.count(), 2);
         {   // Drawn: a red dot at the left of a line with one, none at another.
-            const QImage shown = margin->grab().toImage();
+            const QImage shown = atViewPixels(margin->grab().toImage());
             const int x = (py->viewport()->x() > 0 ? 0 : 0) + std::clamp(py->fontMetrics().height(), 12, 18) / 2 + 1;
             const QColor dot = shown.pixelColor(x, yOf(2));
             QVERIFY2(dot.red() > 150 && dot.green() < 100, qPrintable(dot.name()));
@@ -1023,7 +1034,7 @@ private slots:
         QCOMPARE(run->stack().first().line, 4);
         QCOMPARE(py->executionLine(), 4);
         const auto lineColour = [](PythonDoc* doc, int line) {
-            const QImage shown = doc->viewport()->grab().toImage();
+            const QImage shown = atViewPixels(doc->viewport()->grab().toImage());
             const QRect box = doc->cursorRect(QTextCursor(doc->document()->findBlockByNumber(line - 1)));
             return shown.pixelColor(shown.width() - 4, box.center().y());
         };

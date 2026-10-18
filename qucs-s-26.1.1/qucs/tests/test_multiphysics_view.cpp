@@ -21,12 +21,18 @@
 #include "gpurendering.h"
 
 #include "isolated_settings.h"
+#include "main.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QLabel>
+#include <QMenu>
+#include <QActionEvent>
+#include <QTimer>
+#include <QContextMenuEvent>
 #include <QElapsedTimer>
 #include <QRhiWidget>
+#include <QWheelEvent>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -192,12 +198,153 @@ private slots:
         QVERIFY(!other.gpu());
     }
 
+    // QUCS_GPU=0: the CPU draws the Graphics view whatever asks for the
+    // GPU - the setting, Multiphysics > Settings…, the view's own menu
+    // (each put it on the GPU: the variable read by the view's constructor
+    // alone); the menu's item, "Draw with the GPU", unchecked and off.
+    void qucsGpu0KeepsTheCpu()
+    {
+        qputenv("QUCS_GPU", "0");
+        struct Unset {
+            ~Unset()
+            {
+                qunsetenv("QUCS_GPU");
+                qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Multiphysics, false);
+            }
+        } unset;
+        QVERIFY(!GraphicsView::gpuAvailable());
+        GraphicsView view;
+        view.setMesh(gridMesh(4));
+        view.resize(300, 200);
+        view.show();
+        (void)QTest::qWaitForWindowExposed(&view, 1000);
+        view.setGpu(true);
+        QVERIFY(!view.gpu());
+        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Multiphysics, true);
+        QVERIFY(!view.gpu());
+        {
+            MultiphysicsSettingsDialog d;
+            d.gpuBox()->setChecked(true);
+            QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("QUCS_GPU=0")), qPrintable(d.gpuStatus()->text()));
+            d.apply();
+        }
+        QVERIFY(qucs_s::gpu::wanted(qucs_s::gpu::Viewer::Multiphysics));
+        QVERIFY(!view.gpu());
+        QVERIFY(canvasOf(view) == nullptr);
+        GraphicsView other;
+        QVERIFY(!other.gpu());
+        // The menu: its item read as it is set (on macOS a native menu, its
+        // exec perhaps over at once), the menu closed once open.
+        bool seen = false;
+        struct Watch : QObject {
+            bool* seen;
+            explicit Watch(bool* s) : seen(s) {}
+            bool eventFilter(QObject* o, QEvent* e) override
+            {
+                if (e->type() == QEvent::ChildAdded) {
+                    static_cast<QChildEvent*>(e)->child()->installEventFilter(this);
+                } else if (e->type() == QEvent::ActionAdded || e->type() == QEvent::ActionChanged) {
+                    const QAction* a = static_cast<QActionEvent*>(e)->action();
+                    if (a->text() == QLatin1String("Draw with the GPU")) *seen = a->isCheckable() && !a->isChecked() && !a->isEnabled();
+                    QTimer::singleShot(0, o, [o] {
+                        if (auto* menu = qobject_cast<QMenu*>(o)) menu->close();
+                    });
+                }
+                return false;
+            }
+        } watch(&seen);
+        view.installEventFilter(&watch);
+        QContextMenuEvent e(QContextMenuEvent::Mouse, QPoint(20, 20), view.mapToGlobal(QPoint(20, 20)));
+        QCoreApplication::sendEvent(&view, &e);
+        view.removeEventFilter(&watch);
+        QVERIFY(seen);
+        QVERIFY(!view.gpu());
+    }
+
+    // A wheel zooms or pans as Application Settings' Mouse wheel says, Ctrl
+    // the other way; a trackpad's two fingers pan, and zoom with Ctrl;
+    // Shift pans sideways - as the schematic and the layout viewer. (Every
+    // wheel and scroll zoomed: a trackpad's scroll could not pan.)
+    void aWheelZoomsOrPansAsTheSettingsSay()
+    {
+        const bool kept = QucsSettings.WheelZooms;
+        GraphicsView view;
+        view.setGpu(false);
+        view.resize(400, 300);
+        view.setMesh(gridMesh(4));
+        const QPointF middle(200, 150);
+        const auto send = [&view, middle](QPoint angle, QPoint pixels, Qt::KeyboardModifiers modifiers, Qt::ScrollPhase phase) {
+            view.setView(QPointF(0.5, 0.5), 200);
+            QWheelEvent w(middle, view.mapToGlobal(middle), pixels, angle, Qt::NoButton, modifiers, phase, false);
+            QCoreApplication::sendEvent(&view, &w);
+        };
+        const auto zoomed = [&view] { return std::abs(view.scale() - 200) > 1e-9; };
+        const auto moved = [&view] { return view.center() - QPointF(0.5, 0.5); };
+        for (const bool wheelZooms : {true, false}) {
+            QucsSettings.WheelZooms = wheelZooms;
+            // A mouse wheel.
+            send(QPoint(0, 120), QPoint(), Qt::NoModifier, Qt::NoScrollPhase);
+            QCOMPARE(zoomed(), wheelZooms);
+            if (wheelZooms) {
+                QCOMPARE(view.scale(), 240.0);
+                QCOMPARE(view.center(), QPointF(0.5, 0.5));   // (the point under the pointer kept)
+            } else {
+                QCOMPARE(moved(), QPointF(0, 60 / 200.0));   // half a notch's angle, in pixels
+            }
+            send(QPoint(0, 120), QPoint(), Qt::ControlModifier, Qt::NoScrollPhase);
+            QCOMPARE(zoomed(), !wheelZooms);
+            // Shift: sideways.
+            send(QPoint(0, 120), QPoint(), Qt::ShiftModifier, Qt::NoScrollPhase);
+            QVERIFY(!zoomed());
+            QCOMPARE(moved(), QPointF(-60 / 200.0, 0));
+            // A trackpad: its pixels; with Ctrl, a zoom.
+            send(QPoint(0, 90), QPoint(0, 30), Qt::NoModifier, Qt::ScrollUpdate);
+            QVERIFY(!zoomed());
+            QCOMPARE(moved(), QPointF(0, 30 / 200.0));
+            send(QPoint(-24, 0), QPoint(-8, 0), Qt::NoModifier, Qt::ScrollUpdate);
+            QCOMPARE(moved(), QPointF(8 / 200.0, 0));
+            send(QPoint(0, 90), QPoint(0, 30), Qt::ControlModifier, Qt::ScrollUpdate);
+            QVERIFY(zoomed());
+        }
+        QucsSettings.WheelZooms = kept;
+    }
+
     // The GPU draws what the CPU draws: the geometry (its domain chosen),
     // the mesh, a color surface with its contours and the mesh over it, the
     // view grabbed as a window is - their pictures alike but for the lines'
     // and letters' antialiasing (under 3 % of the pixels more than 40 apart
     // in a channel); a zoom the GPU's frames, no raster made; told so, the
     // setting kept - a view made after drawn by the CPU -, and on again.
+    // A plot with no surface - rays, contours alone - draws the geometry's
+    // boundaries, then the boundaries again over the results with other
+    // strokes: their buffers made again in the frame, the first ones kept
+    // till it is drawn. (Deleted under the frame's first step, Metal wrote
+    // a freed buffer's update: a crash at random, at once on the sanitized
+    // build - test_multiphysics_doc's raysDrawn on the display.)
+    void theBoundariesTwiceAFrame()
+    {
+        if (!GraphicsView::gpuAvailable()) QSKIP("no GPU backend here (the offscreen platform)");
+        GraphicsView view;
+        view.setGpu(true);
+        QVERIFY(view.gpu());
+        view.resize(400, 300);
+        view.setTopology(squareTopology());
+        auto plot = std::make_shared<PlotScene>();
+        plot->surface = false;
+        view.setPlot(plot);
+        view.setShow(GraphicsView::Show::Results);
+        view.setVisible(true);
+        (void)QTest::qWaitForWindowExposed(&view, 1000);
+        QRhiWidget* canvas = canvasOf(view);
+        QVERIFY(canvas != nullptr);
+        for (int k = 0; k < 6; ++k) {
+            view.setView(QPointF(0.5 + 0.01 * k, 0.5), 200);
+            QVERIFY(!canvas->grabFramebuffer().isNull());
+        }
+        const double off = differing(view.picture(), canvas->grabFramebuffer(), 40);
+        QVERIFY2(off < 0.03, qPrintable(QString::number(100 * off)));
+    }
+
     void theGpuDrawsAsTheCpu()
     {
         if (!GraphicsView::gpuAvailable()) QSKIP("no GPU backend here (the offscreen platform)");

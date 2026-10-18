@@ -1537,7 +1537,7 @@ private slots:
             // pixel of it: an edge falling on a pixel's boundary - a half -
             // is rounded by QPainter's rule and the GPU's each its way, and
             // a glyph's grey edge the GL engine's.)
-            int differ = 0, inked = 0;
+            int differ = 0, inked = 0, exact = 0;
             const QColor paper = cpu.pixelColor(1, 1);   // (a corner: nothing drawn there)
             const auto near = [](const QImage& in, int x, int y, QColor want) {
                 for (int dy = -1; dy <= 1; ++dy)
@@ -1553,6 +1553,7 @@ private slots:
                     const QColor a = cpu.pixelColor(x, y), b = gpu.pixelColor(x, y);
                     if (a == paper && b == paper) continue;
                     ++inked;
+                    exact += a != b;
                     if (!near(gpu, x, y, a) || !near(cpu, x, y, b)) ++differ;
                 }
             const QString name = QFileInfo(file).completeBaseName();
@@ -1560,13 +1561,19 @@ private slots:
                 cpu.save(shots + QStringLiteral("/%1_cpu.png").arg(name));
                 gpu.save(shots + QStringLiteral("/%1_gpu.png").arg(name));
             }
-            qInfo("%s: %d of %d pixels inked, %d differ (%.2f %%)", qPrintable(name), inked, cpu.width() * cpu.height(), differ,
-                  100.0 * differ / std::max(1, inked));
+            qInfo("%s: %d of %d pixels inked, %d differ (%.2f %%), %d not exactly alike", qPrintable(name), inked, cpu.width() * cpu.height(), differ,
+                  100.0 * differ / std::max(1, inked), exact);
             QVERIFY(inked > 1000);
             // (On Metal pixel for pixel - none differ -; OpenGL's and
             // Direct3D's rasterization at the edges of shapes may differ.)
             const bool metal = qucs_s::gpu::backendName() == QLatin1String("Metal");
             QVERIFY2(differ < (metal ? inked / 1000 + 1 : inked / 20), qPrintable(QStringLiteral("%1 of %2").arg(differ).arg(inked)));
+            // (On Metal each pixel alike but where a diagonal outline steps
+            // to the next pixel at another place - 1.4 to 4.5 % of the inked
+            // ones, at ratios 1 and 2 -: OpenGL's half-pixel nudge put every
+            // vertical outline a pixel right of the CPU's, 27 to 35 % not
+            // alike, hidden within the pixel the check above allows.)
+            if (metal) QVERIFY2(exact <= inked / 10, qPrintable(QStringLiteral("%1 of %2 inked pixels not alike").arg(exact).arg(inked)));
             // Panned and zoomed: from its buffers, the CPU drawing nothing.
             const int builds = view->canvas()->builds(), renders = view->renders(), frames = view->canvas()->frames();
             view->setView(view->center() + QPointF(3, 2), view->scale() * 1.7);
@@ -1915,6 +1922,73 @@ private slots:
         (void)view->canvas()->grabFramebuffer();
         QCOMPARE(view->canvas()->builds(), builds + 1);
         doc->setLayerVisible(0, true);
+        closeAll();
+#else
+        QSKIP("a build without Qt's RHI");
+#endif
+    }
+
+    // The layered canvas sends the GPU each layer's ink, not the window's
+    // whole picture at each frame (a small layout's pan took twice the
+    // CPU's time at full screen): the background the pass's clear - with no
+    // grid, a frame sends nothing -, a ruler its box. A ruler taken away and
+    // one drawn elsewhere: nothing of the first one shown - the picture a
+    // new canvas draws, exactly.
+    void theGpuCanvasSendsItsInkAlone()
+    {
+#ifdef QUCS_GPU_VIEW
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        // (Shapes alone: a layout's texts are QPainter's, over them.)
+        const QString file = path("blocks.gds");
+        {
+            gdstk::Library lib = {};
+            lib.init("BLOCKS", 1e-6, 1e-9);
+            gdstk::Cell* top = newCell(lib, "BLOCKS");
+            for (int i = 0; i < 6; ++i) addRectangle(top, {i * 3.0, 0}, {i * 3.0 + 2, 2.0 + i}, uint32_t(1 + i % 3));
+            QCOMPARE(lib.write_gds(QFile::encodeName(file).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
+            lib.free_all();
+        }
+        LayoutDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        doc->setGridShown(false);
+        view->resize(640, 480);
+        view->fit();
+        view->setGpu(true);
+        QVERIFY(view->gpu());
+        const QImage first = view->canvas()->grabFramebuffer();
+        const qint64 whole = qint64(first.width()) * first.height();
+        const auto sentBy = [view] {
+            const qint64 before = view->canvas()->sentPixels();
+            (void)view->canvas()->grabFramebuffer();
+            return view->canvas()->sentPixels() - before;
+        };
+        QCOMPARE(sentBy(), 0);
+        view->setView(view->center() + QPointF(0.5, 0), view->scale());
+        QCOMPARE(sentBy(), 0);
+        const QRectF seen = view->visibleRegion();
+        const QPointF a = seen.topLeft() + QPointF(seen.width() * 0.2, seen.height() * 0.2);
+        view->addRuler(QLineF(a, a + QPointF(seen.width() * 0.2, seen.height() * 0.1)));
+        QCOMPARE(sentBy(), whole);   // (its layer's texture new, its texels undefined: once)
+        const qint64 ruler = sentBy();
+        QVERIFY2(ruler > 0 && ruler < whole / 10, qPrintable(QStringLiteral("%1 of %2").arg(ruler).arg(whole)));
+        view->clearRulers();
+        QCOMPARE(sentBy(), 0);
+        const QPointF b = seen.topLeft() + QPointF(seen.width() * 0.25, seen.height() * 0.5);
+        view->addRuler(QLineF(b, b + QPointF(seen.width() * 0.15, -seen.height() * 0.05)));
+        const qint64 other = sentBy();
+        QVERIFY2(other > 0 && other < whole / 10, qPrintable(QStringLiteral("%1 of %2").arg(other).arg(whole)));
+        const QImage shown = view->canvas()->grabFramebuffer();
+        view->setGpu(false);
+        view->setGpu(true);
+        QVERIFY(view->gpu());
+        const QImage fresh = view->canvas()->grabFramebuffer();
+        QCOMPARE(shown.size(), fresh.size());
+        QVERIFY(shown == fresh);
+        // The grid shown: the canvas drawn again, all in sight sent.
+        doc->setGridShown(true);
+        QVERIFY(sentBy() > whole / 2);
+        view->clearRulers();
         closeAll();
 #else
         QSKIP("a build without Qt's RHI");

@@ -11,7 +11,7 @@ set -e
 QSB=${QSB:-qsb}
 cd "$(dirname "$0")/../qucs-s-26.1.1/qucs/shaders"
 for s in *.vert *.frag; do
-    "$QSB" --glsl "300 es,150,330" --hlsl 50 --msl 12 -o "$s.qsb" "$s"
+    "$QSB" --glsl "300 es,130,150,330" --hlsl 50 --msl 12 -o "$s.qsb" "$s"
 done
 shasum -a 256 *.vert *.frag > manifest.sha256
 echo "compiled: $(ls *.qsb | wc -l | tr -d ' ') shaders"

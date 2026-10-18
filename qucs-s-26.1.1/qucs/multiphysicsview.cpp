@@ -13,6 +13,7 @@
 #include "gpurendering.h"
 
 #include "ink.h"
+#include "misc.h"
 #include "settings.h"
 #ifdef QUCS_GPU_VIEW
 #include "multiphysicsviewgpu.h"
@@ -111,8 +112,7 @@ GraphicsView::GraphicsView(QWidget* parent) : QWidget(parent)
     setMinimumSize(200, 150);
 #ifdef QUCS_GPU_VIEW
     // The GPU's canvas over it, where there can be one and it is wanted.
-    if (qEnvironmentVariable("QUCS_GPU") != QLatin1String("0") && gpu::wanted(gpu::Viewer::Multiphysics) && gpuAvailable())
-        a_canvas = new GpuCanvas(this);
+    if (gpu::wanted(gpu::Viewer::Multiphysics) && gpuAvailable()) a_canvas = new GpuCanvas(this);
 #endif
 }
 
@@ -127,11 +127,10 @@ GraphicsView::~GraphicsView()
 
 bool GraphicsView::gpuAvailable()
 {
-#ifdef QUCS_GPU_VIEW
-    return gpu::rhiAvailable();
-#else
-    return false;
-#endif
+    // (Nothing in its way: a backend here, and QUCS_GPU=0 not set - its
+    // menu, Settings… > Viewers and Multiphysics > Settings… put the view on
+    // the GPU whatever the variable said.)
+    return gpu::hindrance().isEmpty();
 }
 
 void GraphicsView::setGpu(bool on)
@@ -411,8 +410,20 @@ void GraphicsView::changeEvent(QEvent* event)
 
 void GraphicsView::wheelEvent(QWheelEvent* event)
 {
-    const double steps = event->angleDelta().y() / 120.0;
-    if (steps != 0) zoomBy(std::pow(1.2, steps), event->position());
+    // As the layout viewer: a wheel zooms or pans as the settings say, with
+    // Ctrl the other way; a trackpad's two fingers pan, and zoom with Ctrl;
+    // sideways - a wheel tilted, or turned with Shift - pans. (Every wheel
+    // and scroll zoomed: a trackpad's scroll could not pan.)
+    const QPoint angle = event->angleDelta();
+    const bool shift = event->modifiers() & Qt::ShiftModifier;
+    if (!shift && angle.x() == 0 && misc::wheelZooms(event)) {
+        if (angle.y() != 0) zoomBy(std::pow(1.2, angle.y() / 120.0), event->position());
+    } else {
+        // A trackpad's pixels, or half a wheel's angle.
+        QPoint d = event->pixelDelta().isNull() ? angle / 2 : event->pixelDelta();
+        if (shift && d.x() == 0) d = QPoint(d.y(), 0);
+        if (!d.isNull()) setView(a_center + QPointF(-d.x() / a_scale, d.y() / a_scale), a_scale);
+    }
     event->accept();
 }
 
@@ -504,7 +515,9 @@ void GraphicsView::contextMenuEvent(QContextMenuEvent* event)
     gpuAction->setCheckable(true);
     gpuAction->setChecked(gpu());
     gpuAction->setEnabled(gpuAvailable() && !a_gpuBroken);
-    connect(gpuAction, &QAction::toggled, this, [this](bool on) { setGpu(on); });
+    // (The setting, every open view told: set here alone, the others kept
+    // theirs.)
+    connect(gpuAction, &QAction::toggled, this, [](bool on) { gpu::setWanted(gpu::Viewer::Multiphysics, on); });
     menu.exec(event->globalPos());
 }
 
@@ -537,7 +550,11 @@ void GraphicsView::paintFrame(QPainter& p, GpuCanvas* gl)
     a_gl = gl;
     p.setFont(font());
     const Colors c = colors();
-    p.fillRect(rect(), c.background);
+#ifdef QUCS_GPU_VIEW
+    if (gl) gl->fillBackground(p, c.background);
+    else
+#endif
+        p.fillRect(rect(), c.background);
     p.setRenderHint(QPainter::Antialiasing, true);
     if (!a_topology && !a_mesh) {
         p.setPen(c.ink);

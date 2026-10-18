@@ -72,6 +72,12 @@ private:
     };
     void sync();
     std::unique_ptr<QRhiBuffer> buffer(const void* data, std::size_t bytes);
+    /// \a b let go - kept till the next frame: a step of this frame may draw
+    /// from it, its upload not yet sent (a plot of rays draws the
+    /// boundaries twice a frame, other strokes the second time: their
+    /// buffers made again, the first ones were deleted under the frame's
+    /// first step - Metal wrote a freed buffer's update).
+    void retire(std::unique_ptr<QRhiBuffer>& b);
     void buildLines(Batch& b, const std::vector<float>& segments, const std::vector<quint32>& colors, const std::vector<float>& widths);
     /// A slot of the uniforms for a draw this frame: its offset (-1, none
     /// left).
@@ -85,6 +91,7 @@ private:
     QRhi* a_rhi = nullptr;
     std::unique_ptr<QRhiBuffer> a_uniforms, a_corners;
     int a_slotsUsed = 0;
+    std::vector<std::unique_ptr<QRhiBuffer>> a_retired;   // let go this frame
     std::unique_ptr<QRhiTexture> a_colormap;
     QString a_colormapName;
     std::unique_ptr<QRhiSampler> a_nearest;

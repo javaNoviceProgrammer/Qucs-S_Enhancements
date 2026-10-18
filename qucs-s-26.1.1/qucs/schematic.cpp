@@ -16,6 +16,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <QRegularExpression>
 #include <QString>
@@ -55,6 +56,11 @@ inline QRect includePoint(const QRect& rect, const QPoint& point) {
   return rect.contains(point)
        ? rect
        : rect.united(QRect{point, point});
+}
+
+// (A point between a unit's parts: the unit it is in.)
+inline QRect includePoint(const QRect& rect, const QPointF& point) {
+  return includePoint(rect, QPoint{static_cast<int>(std::floor(point.x())), static_cast<int>(std::floor(point.y()))});
 }
 
 // A state of the undo stack this long (characters) is a large schematic's:
@@ -1687,7 +1693,7 @@ void Schematic::zoomAroundPoint(double offeredScaleChange, QPoint coords, bool v
     // point of the canvas; renderModel() needs one inside it.
     viewportCoords.setX(std::clamp(viewportCoords.x(), 0, std::max(0, viewport()->width() - 1)));
     viewportCoords.setY(std::clamp(viewportCoords.y(), 0, std::max(0, viewport()->height() - 1)));
-    const auto focusPoint = viewportToModel(viewportCoords);
+    const auto focusPoint = viewportToModelF(viewportCoords);
     const auto model = includePoint(modelRect(), focusPoint);
 
     renderModel(desiredScale, model, focusPoint, viewportCoords);
@@ -1701,7 +1707,7 @@ double Schematic::zoomBy(double s)
 
     const double newScale = a_Scale * s;
     const auto vpCenter = viewportRect().center();
-    const auto centerPoint = viewportToModel(vpCenter);
+    const auto centerPoint = viewportToModelF(vpCenter);
     const auto model = includePoint(modelRect(), centerPoint);
 
     return renderModel(newScale, model, centerPoint, vpCenter);
@@ -1770,7 +1776,7 @@ void Schematic::showNoZoom()
 {
     constexpr double noScale = 1.0;
     const QPoint vpCenter = viewportRect().center();
-    const QPoint displayedInCenter = viewportToModel(vpCenter);
+    const QPointF displayedInCenter = viewportToModelF(vpCenter);
 
     const auto usedArea = allBoundingRect();
 
@@ -1786,7 +1792,7 @@ void Schematic::showNoZoom()
     // If a part of "used" area is currently displayed in the center of the
     // viewport, then keep it in the same place after scaling. Otherwise focus
     // on the center of the used area after scale change.
-    if (usedArea.contains(displayedInCenter)) {
+    if (usedArea.contains(displayedInCenter.toPoint())) {
         renderModel(noScale, newModelBounds, displayedInCenter, vpCenter);
     } else {
         renderModel(noScale, newModelBounds, usedArea.center(), vpCenter);
@@ -1802,7 +1808,7 @@ void Schematic::enlargeView(const Element* e) {
         .united(br.marginsAdded({40, 40, 40, 40}));
 
     const auto vpCenter = viewportRect().center();
-    const auto displayedInCenter = viewportToModel(vpCenter);
+    const auto displayedInCenter = viewportToModelF(vpCenter);
     newModel = includePoint(newModel, displayedInCenter);
     renderModel(a_Scale, newModel, displayedInCenter, vpCenter);
  }
@@ -2795,11 +2801,15 @@ void Schematic::scrollUp(int step)
     // located, the smaller its y-coordinate and vice versa. Keep this in mind
     // while reading the code below.
 
-    const int stepInModel = static_cast<int>(std::round(step/a_Scale));
+    // (Between a unit's parts: in whole units, a step under half a unit -
+    // a touchpad's, zoomed in - scrolled nothing, and the view jumped to a
+    // unit after a zoom.)
+    const double stepInModel = step / a_Scale;
+    const int wholeSteps = static_cast<int>(std::round(stepInModel));
     const QPoint viewportTopLeft = viewportRect().topLeft();
 
     // A point currently displayed in top left corner
-    QPoint mtl = viewportToModel(viewportTopLeft);
+    QPointF mtl = viewportToModelF(viewportTopLeft);
     // A point that should be displayed in top left corner after scrolling
     mtl.setY(mtl.y() - stepInModel);
 
@@ -2807,10 +2817,10 @@ void Schematic::scrollUp(int step)
 
     // If the "should-be-displayed" point is located higher than model upper bound,
     // then extend the model
-    modelBounds.setTop(std::min(mtl.y(), modelBounds.top()));
+    modelBounds.setTop(std::min(static_cast<int>(std::floor(mtl.y())), modelBounds.top()));
 
     // Cut off a bit of unused model space from its bottom side.
-    const auto b = modelBounds.bottom() - stepInModel;
+    const auto b = modelBounds.bottom() - wholeSteps;
     if (b > a_UsedArea.bottom()) {
         modelBounds.setBottom(b);
     }
@@ -2828,11 +2838,12 @@ void Schematic::scrollDown(int step)
     // located, the bigger its y-coordinate and vice versa. Keep this in mind
     // while reading the code below.
 
-    const int stepInModel = static_cast<int>(std::round(step/a_Scale));
+    const double stepInModel = step / a_Scale;
+    const int wholeSteps = static_cast<int>(std::round(stepInModel));
     const QPoint viewportBottomLeft = viewportRect().bottomLeft();
 
     // A point currently displayed in bottom left corner
-    QPoint mbl = viewportToModel(viewportBottomLeft);
+    QPointF mbl = viewportToModelF(viewportBottomLeft);
     // A point that should be displayed in bottom left corner after scrolling
     mbl.setY(mbl.y() + stepInModel);
 
@@ -2840,10 +2851,10 @@ void Schematic::scrollDown(int step)
 
     // If the "should-be-displayed" point is lower than model bottom bound,
     // then extend the model
-    modelBounds.setBottom(std::max(mbl.y(), modelBounds.bottom()));
+    modelBounds.setBottom(std::max(static_cast<int>(std::ceil(mbl.y())) - 1, modelBounds.bottom()));
 
     // Cut off a bit of unused model space from its top side.
-    const auto t = modelBounds.top() + stepInModel;
+    const auto t = modelBounds.top() + wholeSteps;
     if (t < a_UsedArea.top()) {
         modelBounds.setTop(t);
     }
@@ -2862,11 +2873,12 @@ void Schematic::scrollLeft(int step)
     // located, the smaller its x-coordinate and vice versa. Keep this in mind
     // while reading the code below.
 
-    const int stepInModel = static_cast<int>(std::round(step/a_Scale));
+    const double stepInModel = step / a_Scale;
+    const int wholeSteps = static_cast<int>(std::round(stepInModel));
     const QPoint viewportTopLeft = viewportRect().topLeft();
 
     // A point currently displayed in top left corner
-    QPoint mtl = viewportToModel(viewportTopLeft);
+    QPointF mtl = viewportToModelF(viewportTopLeft);
     // A point that should be displayed in top left corner after scrolling
     mtl.setX(mtl.x() - stepInModel);
 
@@ -2874,10 +2886,10 @@ void Schematic::scrollLeft(int step)
 
     // If the "should-be-displayed" point is to the left of model left bound,
     // then extend the model
-    modelBounds.setLeft(std::min(mtl.x(), modelBounds.left()));
+    modelBounds.setLeft(std::min(static_cast<int>(std::floor(mtl.x())), modelBounds.left()));
 
     // Cut off a bit of unused model space from its right side.
-    const auto r = modelBounds.right() - stepInModel;
+    const auto r = modelBounds.right() - wholeSteps;
     if (r > a_UsedArea.right()) {
         modelBounds.setRight(r);
     }
@@ -2895,11 +2907,12 @@ void Schematic::scrollRight(int step)
     // located, the bigger its x-coordinate and vice versa. Keep this in mind
     // while reading the code below.
 
-    const int stepInModel = static_cast<int>(std::round(step/a_Scale));
+    const double stepInModel = step / a_Scale;
+    const int wholeSteps = static_cast<int>(std::round(stepInModel));
     const QPoint viewportTopRight = viewportRect().topRight();
 
     // A point currently displayed in top right corner
-    QPoint mtr = viewportToModel(viewportTopRight);
+    QPointF mtr = viewportToModelF(viewportTopRight);
     // A point that should be displayed in top right corner after scrolling
     mtr.setX(mtr.x() + stepInModel);
 
@@ -2907,10 +2920,10 @@ void Schematic::scrollRight(int step)
 
     // If the "should-be-displayed" point is to the right of the model right bound,
     // then extend the model
-    modelBounds.setRight(std::max(mtr.x(), modelBounds.right()));
+    modelBounds.setRight(std::max(static_cast<int>(std::ceil(mtr.x())) - 1, modelBounds.right()));
 
     // Cut off a bit of unused model space from its left side.
-    const auto l = modelBounds.left() + stepInModel;
+    const auto l = modelBounds.left() + wholeSteps;
     if (l < a_UsedArea.left()) {
         modelBounds.setLeft(l);
     }
@@ -3080,7 +3093,9 @@ void Schematic::contentsNativeGestureZoomEvent( QNativeGestureEvent* Event) {
   a_App->editText->setHidden(true); // disable edit of component property
 
   const auto factor = 1.0 + Event->value();
-  const auto pointer = mapFromGlobal(Event->globalPosition().toPoint());
+  // (The viewport's point, as zoomAroundPoint() takes it: the scroll
+  // area's own put the pinch's anchor its frame away from the pointer.)
+  const auto pointer = viewport()->mapFromGlobal(Event->globalPosition().toPoint());
   zoomAroundPoint(factor,pointer);
   zoomed();
 }

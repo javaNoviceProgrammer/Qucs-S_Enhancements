@@ -57,7 +57,13 @@ bool used(Viewer viewer);
 /// cache key), on its background (its role's colour); the area's own
 /// painting is not used. False when nothing changed. The area's own
 /// filters on its viewport are its to install again.
-bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canvas2D&)> paint = {});
+/// \a failed is called when the GPU's viewport gives up (no QRhi for it,
+/// its pipelines not made): the area is not given the GPU's again, and
+/// \a failed puts the CPU's back (setGpuViewport(area, false), the owner's
+/// filters and state with it); without one the CPU's is put back here.
+bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canvas2D&)> paint = {}, std::function<void()> failed = {});
+/// The area's GPU viewport gave up: the CPU's for good.
+bool gpuViewportBroken(const QAbstractScrollArea* area);
 bool hasGpuViewport(const QAbstractScrollArea* area);
 /// What \a area's GPU viewport shows: a frame of it drawn and read back
 /// (for the tests). Null for a plain viewport.

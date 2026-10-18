@@ -233,11 +233,29 @@ public:
         a_p.drawPolygon(polygon);
         a_p.setBrush(Qt::NoBrush);
     }
-    void drawImage(const QPointF& at, const QImage& image) override { a_p.drawImage(at, image); }
+    void drawImage(const QPointF& at, const QImage& image) override
+    {
+        // At a whole device pixel, a half rounded up, as the GPU's. (An
+        // image of a pixel ratio above 1 Qt draws scaled: its left edge
+        // rounded, then its width - at a half left of nought, -10.5, a tile
+        // 512 pixels wide drawn 513, a column doubled, the text after it a
+        // pixel right of the GPU's.)
+        const QTransform t = a_p.combinedTransform();
+        if (t.type() <= QTransform::TxScale) {
+            const QPointF device = t.map(at);
+            a_p.drawImage(t.inverted().map(QPointF(std::floor(device.x() + 0.5), std::floor(device.y() + 0.5))), image);
+        } else {
+            a_p.drawImage(at, image);
+        }
+    }
     void drawImage(const QRectF& target, const QImage& image) override
     {
+        // (Smooth for this image alone: left on, the rest of the paint's
+        // tiles - at fractions of a pixel - were drawn smoothed too.)
+        const bool smooth = a_p.testRenderHint(QPainter::SmoothPixmapTransform);
         a_p.setRenderHint(QPainter::SmoothPixmapTransform);
         a_p.drawImage(target, image);
+        a_p.setRenderHint(QPainter::SmoothPixmapTransform, smooth);
     }
     void setClip(const QRegion& region) override
     {
@@ -271,10 +289,13 @@ private:
 void PageView::setGpu(bool on)
 {
 #ifdef QUCS_GPU_VIEW
-    gpu::setGpuViewport(this, on && gpu::hindrance().isEmpty(), [this](gpu::Canvas2D& c) {
-        GpuSurface s(c);
-        paintPages(s, viewport()->rect());
-    });
+    gpu::setGpuViewport(
+        this, on && gpu::hindrance().isEmpty(),
+        [this](gpu::Canvas2D& c) {
+            GpuSurface s(c);
+            paintPages(s, viewport()->rect());
+        },
+        [this] { setGpu(false); });
 #else
     Q_UNUSED(on);
 #endif
@@ -1334,7 +1355,10 @@ PdfDoc::~PdfDoc()
     // The view and the models let go of the document before it goes.
     a_view->setSearchModel(nullptr);
     a_view->setDocument(nullptr);
-    a_search->setDocument(nullptr);
+    // (The search model gone first: handed a null document, Qt's connects
+    // to it and warns.)
+    delete a_search;
+    a_search = nullptr;
     a_bookmarks->setDocument(nullptr);
 }
 
@@ -1719,13 +1743,14 @@ bool PdfDoc::reload()
     const PageView::Fit fit = a_view->fit();
     const QPoint position(a_view->horizontalScrollBar()->value(), a_view->verticalScrollBar()->value());
     a_view->setDocument(nullptr);
-    a_search->setDocument(nullptr);
+    // (The search model keeps the document - the same one, read again: its
+    // results cleared and searched again as its pages change. Handed a null
+    // one, Qt's connects to it and warns at each reload.)
     a_bookmarks->setDocument(nullptr);
     const QString password = a_pdf->password();
     a_pdf->close();
     a_pdf->setPassword(password);
     const bool ok = a_pdf->load(a_DocName) == QPdfDocument::Error::None;
-    a_search->setDocument(a_pdf);
     a_bookmarks->setDocument(a_pdf);
     if (!ok) {
         showProblem(tr("%1 cannot be read as a PDF document now.").arg(QFileInfo(a_DocName).fileName()), false);

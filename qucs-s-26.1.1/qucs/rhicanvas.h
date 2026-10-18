@@ -41,6 +41,9 @@ QShader shader(const QString& name);
 /// OpenGL), not on the offscreen or minimal platforms (the tests', a
 /// remote's: the CPU draws there, as it did with OpenGL).
 bool rhiAvailable();
+/// Whether \a rhi can run the viewers' shaders: Metal; Direct3D 11 at
+/// feature level 11; OpenGL 3.0 or OpenGL ES 3.0; instancing.
+bool fitForTheShaders(QRhi* rhi);
 
 /// A pipeline for a canvas: its shaders, vertex input, resources and blend
 /// (premultiplied colors, or straight alpha's).
@@ -49,6 +52,7 @@ struct PipelineSpec {
     QRhiVertexInputLayout input;
     QRhiGraphicsPipeline::Topology topology = QRhiGraphicsPipeline::Triangles;
     bool premultiplied = true;
+    bool scissor = false;   // its draws cut to a scissor (set before them)
 };
 std::unique_ptr<QRhiGraphicsPipeline> makePipeline(QRhi* rhi, QRhiRenderPassDescriptor* pass, int samples, QRhiShaderResourceBindings* layout,
                                                    const PipelineSpec& spec);
@@ -73,6 +77,13 @@ public:
     bool failed() const { return a_failed; }
     /// The frames it has drawn (for the tests).
     int frames() const { return a_frames; }
+    /// The layers' pixels sent to the GPU since the start (for the tests).
+    qint64 sentPixels() const { return a_sent; }
+
+    /// The frame's background filled with \a color, the first thing painted
+    /// on \a p: the pass cleared to it (filled by the CPU, the first layer
+    /// was opaque, sent whole at every frame); on another painter, a fill.
+    void fillBackground(QPainter& p, const QColor& color);
 
 protected:
     /// The view's painting of a frame on \a p, native() called in it.
@@ -107,6 +118,7 @@ private:
     void renderMissed();
     struct Layer {
         QImage image;
+        QRect inked;   // the image's ink: what its next frame clears, and the texture's part drawn
         std::unique_ptr<QRhiTexture> texture;
         std::unique_ptr<QRhiShaderResourceBindings> bindings;
     };
@@ -120,11 +132,13 @@ private:
     int a_samples;
     bool a_failed = false;
     int a_frames = 0;
+    qint64 a_sent = 0;
     int a_misses = 0;   // frames not drawn, no QRhi, since the last one drawn
     QRhi* a_rhi = nullptr;
     std::vector<std::unique_ptr<Layer>> a_layers;
     std::vector<Step> a_steps;
     int a_open = -1;   // the layer painted on now
+    QColor a_clear;    // the frame's background, or the palette's window
     QPainter* a_painter = nullptr;
     QRhiResourceUpdateBatch* a_updates = nullptr;
     std::unique_ptr<QRhiBuffer> a_quad, a_uniforms;
@@ -152,7 +166,8 @@ public:
     void fillPolygon(const QPolygonF& polygon, const QColor& color);
     /// \a source in the image's pixels; the whole image when empty.
     void drawImage(const QRectF& target, const QImage& image, const QRectF& source = QRectF());
-    /// At its device pixel ratio's size.
+    /// At its device pixel ratio's size, on whole device pixels (as QPainter
+    /// draws it).
     void drawImage(const QPointF& at, const QImage& image);
     /// The clip (empty: none).
     void setClip(const QRegion& region) { a_clip = region; }
@@ -194,6 +209,11 @@ public:
     /// run last installed first): after setViewport. Before, it is not
     /// painted (the area's own painting would have the paint).
     void takePaints();
+    /// \a f called once, when it gives up: no QRhi in some 40 tries, its
+    /// pipelines not made (setGpuViewport puts the CPU's viewport back).
+    void onFailure(std::function<void()> f) { a_onFailure = std::move(f); }
+    /// It draws no more, its owner told (for the tests too).
+    void giveUp();
 
 protected:
     void initialize(QRhiCommandBuffer* cb) override;
@@ -217,7 +237,8 @@ private:
 
     std::function<void(Canvas2D&)> a_paint;
     std::vector<qint64> a_gone;   // (under the hook's lock)
-    bool a_failed = false;
+    std::function<void()> a_onFailure;
+    bool a_failed = false, a_toldFailure = false;
     bool a_takesPaints = false;
     int a_frames = 0, a_uploads = 0;
     int a_misses = 0;

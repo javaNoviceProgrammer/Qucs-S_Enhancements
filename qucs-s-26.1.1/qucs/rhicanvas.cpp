@@ -13,6 +13,10 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QOffscreenSurface>
+#include <QSurfaceFormat>
+#if QT_CONFIG(opengl)
+#include <QOpenGLContext>
+#endif
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
@@ -26,6 +30,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <thread>
 
 namespace qucs_s::gpu {
 
@@ -56,17 +61,41 @@ QRhiVertexInputLayout imageInput()
 }
 
 /// No pixel of \a image inked (all transparent).
-bool blank(const QImage& image)
+// The bounds of a 32-bit image's ink - its pixels not wholly transparent -,
+// its rows in bands, one a core: empty for a blank image. A row's read from
+// each end as far as its first ink, or the ink's bounds so far: an opaque
+// layer's two pixels a row, a blank one's whole.
+QRect inkedBounds(const QImage& image)
 {
-    const qsizetype bytes = image.sizeInBytes();
-    const uchar* p = image.constBits();
-    const auto* words = reinterpret_cast<const quint64*>(p);
-    const qsizetype n = bytes / 8;
-    for (qsizetype i = 0; i < n; ++i)
-        if (words[i] != 0) return false;
-    for (qsizetype i = n * 8; i < bytes; ++i)
-        if (p[i] != 0) return false;
-    return true;
+    const int w = image.width(), h = image.height();
+    if (w <= 0 || h <= 0) return {};
+    const int bands = qint64(w) * h >= (1 << 20) ? std::clamp(int(std::thread::hardware_concurrency()), 1, 8) : 1;
+    std::vector<QRect> found(static_cast<std::size_t>(bands));
+    const auto scan = [&image, &found, w, h, bands](int band) {
+        int top = -1, bottom = -1, left = w, right = -1;
+        for (int y = h * band / bands, end = h * (band + 1) / bands; y < end; ++y) {
+            const auto* row = reinterpret_cast<const quint32*>(image.constScanLine(y));
+            int l = 0;
+            while (l < w && row[l] == 0) ++l;
+            if (l == w) continue;
+            for (int r = w - 1; r > right && r >= l; --r)
+                if (row[r] != 0) {
+                    right = r;
+                    break;
+                }
+            left = std::min(left, l);
+            if (top < 0) top = y;
+            bottom = y;
+        }
+        if (top >= 0) found[std::size_t(band)] = QRect(QPoint(left, top), QPoint(right, bottom));
+    };
+    std::vector<std::thread> threads;
+    for (int b = 1; b < bands; ++b) threads.emplace_back(scan, b);
+    scan(0);
+    for (std::thread& t : threads) t.join();
+    QRect bounds;
+    for (const QRect& r : found) bounds |= r;
+    return bounds;
 }
 
 QPointF brushOriginOf(const QPainter& p)
@@ -165,9 +194,34 @@ bool rhiAvailable()
         params.fallbackSurface = surface.get();
         rhi.reset(QRhi::create(QRhi::OpenGLES2, &params));
 #endif
-        return rhi != nullptr;
+        return rhi != nullptr && fitForTheShaders(rhi.get());
     }();
     return can;
+}
+
+bool fitForTheShaders(QRhi* rhi)
+{
+    // (The shaders - shaders/*.qsb - are GLSL 1.30, 1.50, 3.30 and ES 3.0,
+    // HLSL 5.0 and MSL 1.2; a line and a dot are instanced quads. On older
+    // OpenGL - 2.1, ES 2.0: old drivers, some virtual machines - a QRhi is
+    // made but no shader fits: the PDF and the Markdown viewports drew
+    // nothing. Said so here instead, the CPU drawing.)
+    if (!rhi->isFeatureSupported(QRhi::Instancing)) return false;
+#if !defined(Q_OS_MACOS) && QT_CONFIG(opengl)
+    if (rhi->backend() == QRhi::OpenGLES2) {
+        const auto* handles = static_cast<const QRhiGles2NativeHandles*>(rhi->nativeHandles());
+        if (handles == nullptr || handles->context == nullptr) return false;
+        const QSurfaceFormat f = handles->context->format();
+        return f.majorVersion() >= 3;   // (OpenGL 3.0 and later: GLSL 1.30; ES 3.0: GLSL ES 3.00)
+    }
+#endif
+#ifdef Q_OS_WIN
+    if (rhi->backend() == QRhi::D3D11) {
+        const auto* handles = static_cast<const QRhiD3D11NativeHandles*>(rhi->nativeHandles());
+        return handles != nullptr && handles->featureLevel >= 0xb000;   // (D3D_FEATURE_LEVEL_11_0: shader model 5.0)
+    }
+#endif
+    return true;
 }
 
 std::unique_ptr<QRhiGraphicsPipeline> makePipeline(QRhi* rhi, QRhiRenderPassDescriptor* pass, int samples, QRhiShaderResourceBindings* layout,
@@ -187,6 +241,7 @@ std::unique_ptr<QRhiGraphicsPipeline> makePipeline(QRhi* rhi, QRhiRenderPassDesc
     blend.srcAlpha = QRhiGraphicsPipeline::One;
     blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
     p->setTargetBlends({blend});
+    if (spec.scissor) p->setFlags(QRhiGraphicsPipeline::UsesScissor);
     if (!p->create()) return nullptr;
     return p;
 }
@@ -293,6 +348,7 @@ void LayeredCanvas::initialize(QRhiCommandBuffer*)
     spec.fragment = QStringLiteral("composite.frag");
     spec.input = imageInput();
     spec.topology = QRhiGraphicsPipeline::TriangleStrip;
+    spec.scissor = true;
     a_composite = makePipeline(a_rhi, pass(), a_samples, a_layout.get(), spec);
     if (!a_composite) {
         a_failed = true;
@@ -317,12 +373,31 @@ LayeredCanvas::Layer& LayeredCanvas::layer(int index)
     const QSize px = pixels();
     if (l.image.size() != px) {
         l.image = QImage(px, QImage::Format_RGBA8888_Premultiplied);
+        l.inked = l.image.rect();
         l.texture.reset();
         l.bindings.reset();
     }
     l.image.setDevicePixelRatio(devicePixelRatioF());
-    l.image.fill(Qt::transparent);
+    // (Transparent but for its last frame's ink: that cleared alone - its
+    // rows whole when it spans half the width or more, a single memset.)
+    const QRect ink = l.inked & l.image.rect();
+    if (ink.isEmpty()) {
+    } else if (ink.width() * 2 >= l.image.width()) {
+        std::memset(l.image.scanLine(ink.top()), 0, std::size_t(l.image.bytesPerLine()) * std::size_t(ink.height()));
+    } else {
+        for (int y = ink.top(); y <= ink.bottom(); ++y) std::memset(l.image.scanLine(y) + std::size_t(ink.left()) * 4, 0, std::size_t(ink.width()) * 4);
+    }
+    l.inked = QRect();
     return l;
+}
+
+void LayeredCanvas::fillBackground(QPainter& p, const QColor& color)
+{
+    if (&p == a_painter && a_open == 0 && color.alpha() == 255 && p.transform().isIdentity() && !p.hasClipping()) {
+        a_clear = color;
+        return;
+    }
+    p.fillRect(rect(), color);
 }
 
 void LayeredCanvas::native(QPainter& p, std::function<void(QRhiCommandBuffer*)> draw)
@@ -347,6 +422,7 @@ void LayeredCanvas::render(QRhiCommandBuffer* cb)
     if (!a_updates) a_updates = a_rhi->nextResourceUpdateBatch();
     a_steps.clear();
     a_open = 0;
+    a_clear = QColor();
     Layer& first = layer(0);
     a_steps.push_back({0, {}});
     {
@@ -356,13 +432,20 @@ void LayeredCanvas::render(QRhiCommandBuffer* cb)
         paintFrame(p);
         a_painter = nullptr;
     }
-    // The layers inked, sent; those not, passed over.
+    // The layers inked, their ink's part sent - the texture drawn there
+    // alone, the scissor's -; those not, passed over. (Each layer the whole
+    // window's size, sent whole: a small layout's pan twice the CPU's time
+    // at full screen.)
     std::vector<char> inked(a_layers.size(), 0);
     for (const Step& s : a_steps) {
         if (s.layer < 0) continue;
         Layer& l = *a_layers[std::size_t(s.layer)];
-        if (blank(l.image)) continue;
+        l.inked = inkedBounds(l.image);
+        if (l.inked.isEmpty()) continue;
         inked[std::size_t(s.layer)] = 1;
+        QRect send = l.inked;
+        // (Rows whole when it spans half the width or more: one copy.)
+        if (send.width() * 2 >= l.image.width()) send = QRect(0, send.top(), l.image.width(), send.height());
         if (!l.texture) {
             l.texture.reset(a_rhi->newTexture(QRhiTexture::RGBA8, l.image.size()));
             l.texture->create();
@@ -372,12 +455,18 @@ void LayeredCanvas::render(QRhiCommandBuffer* cb)
                                      QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, l.texture.get(),
                                                                                a_sampler.get())});
             l.bindings->create();
+            send = l.image.rect();   // (its texels undefined)
         }
-        a_updates->uploadTexture(l.texture.get(), l.image);
+        QRhiTextureSubresourceUploadDescription part(l.image);
+        part.setSourceTopLeft(send.topLeft());
+        part.setSourceSize(send.size());
+        part.setDestinationTopLeft(send.topLeft());
+        a_updates->uploadTexture(l.texture.get(), QRhiTextureUploadDescription({0, 0, part}));
+        a_sent += qint64(send.width()) * send.height();
     }
     QRhiResourceUpdateBatch* u = a_updates;
     a_updates = nullptr;
-    const QColor clear = palette().color(QPalette::Window);
+    const QColor clear = a_clear.isValid() ? a_clear : palette().color(QPalette::Window);
     cb->beginPass(renderTarget(), clear, {1.0f, 0}, u);
     const QRhiViewport viewport = fullViewport();
     const QRhiCommandBuffer::VertexInput quad(a_quad.get(), 0);
@@ -387,8 +476,12 @@ void LayeredCanvas::render(QRhiCommandBuffer* cb)
             continue;
         }
         if (!inked[std::size_t(s.layer)]) continue;
+        const QRect ink = a_layers[std::size_t(s.layer)]->inked;
         cb->setGraphicsPipeline(a_composite.get());
         cb->setViewport(viewport);
+        // (Its ink alone: the rest transparent. The scissor's rows from the
+        // bottom, as OpenGL's.)
+        cb->setScissor(QRhiScissor(ink.left(), int(viewport.viewport()[3]) - ink.bottom() - 1, ink.width(), ink.height()));
         cb->setShaderResources(a_layers[std::size_t(s.layer)]->bindings.get());
         cb->setVertexInput(0, 1, &quad);
         cb->draw(4);
@@ -416,8 +509,16 @@ void Canvas2D::addTriangles(const QPolygonF& closed, const QColor& color)
         for (const QPointF& p : {polygon[0], polygon[k], polygon[k + 1]}) f.insert(f.end(), {float(p.x()), float(p.y()), r, g, b, a});
 }
 
-void Canvas2D::fillRect(const QRectF& rect, const QColor& color)
+void Canvas2D::fillRect(const QRectF& given, const QColor& color)
 {
+    // (Its edges on whole device pixels, a half rounded up, as QPainter
+    // fills a rectangle without antialiasing where it is in sight: at a
+    // ratio of 1.5 a page's edge at 1099.5 filled its last column there, the
+    // GPU's triangles not. Left of nought QPainter rounds a half down - out
+    // of sight.)
+    const auto snap = [this](qreal v) { return std::floor(v * a_ratio + 0.5) / a_ratio; };
+    const QRectF rect(QPointF(snap(given.left()), snap(given.top())), QPointF(snap(given.right()), snap(given.bottom())));
+    if (rect.isEmpty()) return;
     if (a_clip.isEmpty()) {
         addTriangles(QPolygonF(rect), color);
         return;
@@ -486,7 +587,15 @@ void Canvas2D::drawImage(const QRectF& target, const QImage& image, const QRectF
 
 void Canvas2D::drawImage(const QPointF& at, const QImage& image)
 {
-    drawImage(QRectF(at, QSizeF(image.size()) / image.devicePixelRatio()), image);
+    // (On whole device pixels, as QPainter draws an image at its own size:
+    // at a fraction of one - a PDF's later pages, whose tops add up the
+    // heights above them; a Markdown tile at a ratio of 1.5 - the sampler
+    // spread each pixel over two, the text soft and a pixel lower. A half
+    // rounded up: a Markdown tile above the view, at -355.5, holds glyphs
+    // QTextEdit puts at 44.5, rounded to 45 - the tile at -355. The PDF
+    // viewer's CPU puts its tiles so too.)
+    const QPointF snapped(std::floor(at.x() * a_ratio + 0.5) / a_ratio, std::floor(at.y() * a_ratio + 0.5) / a_ratio);
+    drawImage(QRectF(snapped, QSizeF(image.size()) / image.devicePixelRatio()), image);
 }
 
 // ----------------------------------------------------------------------
@@ -528,9 +637,19 @@ Viewport2D::Viewport2D(std::function<void(Canvas2D&)> paint) : a_paint(std::move
     }
     connect(this, &QRhiWidget::renderFailed, this, [this] {
         if (a_failed || !missed(this, a_misses)) return;
-        qWarning("GPU viewport: no backend for Qt's RHI here");
-        a_failed = true;
+        qWarning("GPU viewport: no backend for Qt's RHI here; drawn by the CPU");
+        giveUp();
     });
+}
+
+void Viewport2D::giveUp()
+{
+    if (a_failed && a_toldFailure) return;
+    a_failed = true;
+    a_toldFailure = true;
+    // (Its owner told, to draw with the CPU: a viewport that gave up drew
+    // nothing more, the viewer blank.)
+    if (a_onFailure) a_onFailure();
 }
 
 void Viewport2D::takePaints()
@@ -636,7 +755,10 @@ void Viewport2D::initialize(QRhiCommandBuffer*)
     a_solid = makePipeline(a_rhi, renderTarget()->renderPassDescriptor(), sampleCount(), a_solidBindings.get(), solid);
     PipelineSpec image{QStringLiteral("composite.vert"), QStringLiteral("composite.frag"), imageInput(), QRhiGraphicsPipeline::TriangleStrip, true};
     a_image = makePipeline(a_rhi, renderTarget()->renderPassDescriptor(), sampleCount(), a_imageLayout.get(), image);
-    if (!a_solid || !a_image) a_failed = true;
+    if (!a_solid || !a_image) {
+        qWarning("GPU viewport: its pipelines not made; drawn by the CPU");
+        giveUp();
+    }
 }
 
 void Viewport2D::render(QRhiCommandBuffer* cb)
@@ -668,9 +790,13 @@ void Viewport2D::render(QRhiCommandBuffer* cb)
     u->updateDynamicBuffer(a_uniforms.get(), quint32(part), sizeof(cu), &cu);
     // The vertices, all the frame's in one buffer: the fills' triangles in
     // clip space, each image's quad.
-    const double w = std::max(1, width()), h = std::max(1, height());
-    const auto clipX = [w](double x) { return float(x / w * 2 - 1); };
-    const auto clipY = [h](double y) { return float(1 - y / h * 2); };
+    // (Through the framebuffer's own pixels: at a ratio of 1.5 a width of
+    // 871 is 1306.5 of them, the framebuffer 1307 - through the widget's,
+    // each place drifted up to half a pixel across it, the tiles soft.)
+    const double ratio = devicePixelRatioF();
+    const double w = std::max(1, px.width()), h = std::max(1, px.height());
+    const auto clipX = [w, ratio](double x) { return float(x * ratio / w * 2 - 1); };
+    const auto clipY = [h, ratio](double y) { return float(1 - y * ratio / h * 2); };
     std::vector<float> data;
     struct Draw {
         qsizetype offset;   // bytes

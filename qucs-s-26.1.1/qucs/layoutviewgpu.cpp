@@ -462,6 +462,7 @@ bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
     const QSize px = pixels();
     const QMatrix4x4 corrMatrix = corr();
     const float up = yUp() ? 1.0f : 0.0f;
+    const bool openGl = a_rhi->backend() == QRhi::OpenGLES2;
     // The frame's draws, a slot of uniforms each.
     struct Draw {
         QRhiGraphicsPipeline* pipeline;
@@ -472,7 +473,7 @@ bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
     };
     std::vector<Draw> draws;
     // (Its captures named: GCC 12 and 13 crash on long lambdas capturing all.)
-    const auto uniforms = [this, &corrMatrix, &center, s, ratio, &px, up](QColor k, bool nudged, bool patterned) {
+    const auto uniforms = [this, &corrMatrix, &center, s, ratio, &px, up, openGl](QColor k, bool nudged, bool patterned) {
         Uniforms u{};
         std::memcpy(u.corr, corrMatrix.constData(), sizeof(u.corr));
         u.color[0] = float(k.redF());
@@ -483,9 +484,15 @@ bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
         u.center[1] = float(center.y());
         u.scale[0] = float(2 * s / std::max(1, width()));
         u.scale[1] = float(2 * s / std::max(1, height()));
-        // (half a device pixel right, in clip space: an edge on a pixel
-        // boundary there inked as QPainter inks it; down none)
-        u.nudge[0] = nudged ? float(1.0 / std::max(1.0, width() * ratio)) : 0.0f;
+        // (A little right, in clip space, so that an edge on a pixel's
+        // boundary is inked on the pixel QPainter inks: on OpenGL half a
+        // device pixel, down none; on Metal and Direct3D, which ink a line's
+        // pixels as QPainter does otherwise, a 64th right and down - their
+        // ties alone. Half a pixel there put every vertical outline a pixel
+        // right of the CPU's.)
+        const double bias = openGl ? 0.5 : 1.0 / 64;
+        u.nudge[0] = nudged ? float(2.0 * bias / std::max(1, px.width())) : 0.0f;
+        u.nudge[1] = nudged && !openGl ? float(-2.0 * bias / std::max(1, px.height())) : 0.0f;
         u.viewport[0] = float(px.width());
         u.viewport[1] = float(px.height());
         u.pixels = float(s * ratio);
