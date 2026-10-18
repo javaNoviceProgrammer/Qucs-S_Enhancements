@@ -1226,7 +1226,7 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
             const QString layouts = tr("Layouts (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)");
             const QString chosen =
                 written ? QFileDialog::getSaveFileName(this, tr("Export to"), dir.absolutePath(),
-                                                       script ? tr("Lumerical scripts (*.lsf);;All files (*)") : tr("All files (*)"))
+                                                       script ? tr("Lumerical™ scripts (*.lsf);;All files (*)") : tr("All files (*)"))
                 : layout ? QFileDialog::getOpenFileName(this, tr("A Layout"), dir.absolutePath(), layouts + tr(";;All files (*)"))
                          : QFileDialog::getOpenFileName(this, tr("Import a Drawing or a Layout"), dir.absolutePath(),
                                                         tr("Drawings and layouts (*.dxf *.svg *.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;"
@@ -1673,7 +1673,7 @@ QWidget* MultiphysicsPanel::materialsLibrary(const Node& node)
     auto* exchange = new QHBoxLayout;
     auto* import = new QPushButton(tr("Import Materials..."), w);
     import->setObjectName(QStringLiteral("mpImportMaterials"));
-    import->setToolTip(tr("Into My Materials: a library file's (.json), or a Lumerical project's materials (.ldev, .lms, .fsp)"));
+    import->setToolTip(tr("Into My Materials: a library file's (.json), or a Lumerical™ project's materials (.ldev, .lms, .fsp)"));
     auto* exportMine = new QPushButton(tr("Export My Materials..."), w);
     exportMine->setObjectName(QStringLiteral("mpExportMaterials"));
     exchange->addWidget(import);
@@ -1681,7 +1681,7 @@ QWidget* MultiphysicsPanel::materialsLibrary(const Node& node)
     v->addLayout(exchange);
     connect(import, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, tr("Import Materials"), QString(),
-                                                          tr("Materials (*.json *.ldev *.lms *.fsp);;A library (*.json);;Lumerical projects (*.ldev *.lms *.fsp)"));
+                                                          tr("Materials (*.json *.ldev *.lms *.fsp);;A library (*.json);;Lumerical™ projects (*.ldev *.lms *.fsp)"));
         if (path.isEmpty()) return;
         QString why;
         QStringList notes;

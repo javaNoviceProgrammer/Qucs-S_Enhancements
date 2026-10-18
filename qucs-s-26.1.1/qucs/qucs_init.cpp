@@ -403,11 +403,11 @@ void QucsApp::initActions() {
          "joined by net labels. What was left out is said."));
   connect(importLTspice, &QAction::triggered, this, &QucsApp::slotImportLTspice);
 
-  importLumerical = new QAction(tr("Import Lumerical Project..."), this);
+  importLumerical = new QAction(tr("Import Lumerical™ Project..."), this);
   importLumerical->setObjectName(QStringLiteral("importLumerical"));
-  importLumerical->setStatusTip(tr("Makes a multiphysics model of a Lumerical project (.ldev, .lms) or script (.lsf)"));
+  importLumerical->setStatusTip(tr("Makes a multiphysics model of a Lumerical™ project (.ldev, .lms) or script (.lsf)"));
   importLumerical->setWhatsThis(
-      tr("Import Lumerical Project\n\nMakes a multiphysics model of a Lumerical project or script: an MQW project (.ldev) its "
+      tr("Import Lumerical™ Project\n\nMakes a multiphysics model of a Lumerical project or script: an MQW project (.ldev) its "
          "layer table a stack of layers, each its material's bands, the k·p order, temperature, field, a valence bands study "
          "and a spectrum; a CHARGE project (.ldev) its cross-section - structures, materials by name, doping, contacts and "
          "their sweeps, temperature, norm length; a MODE project (.lms) its FDE region's cross-section - each material its "

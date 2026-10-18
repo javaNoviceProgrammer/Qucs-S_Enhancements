@@ -943,7 +943,7 @@ QString formatName(Format format, const QString& path)
     case Format::Npz: return tr("NumPy archive");
     case Format::Touchstone: return tr("Touchstone");
     case Format::Dataset: return tr("Qucs-S dataset");
-    case Format::Lumerical: return tr("Lumerical data");
+    case Format::Lumerical: return tr("Lumerical™ data");
     case Format::Unknown: break;
     }
     return tr("unknown");
@@ -955,7 +955,7 @@ QString fileFilter()
            + QStringLiteral(";;") + tr("CSV and TSV (*.csv *.tsv)") + QStringLiteral(";;") + tr("Excel workbooks (*.xlsx *.xlsm)")
            + QStringLiteral(";;") + tr("Text (*.txt *.prn *.asc *.out *.data)") + QStringLiteral(";;")
            + tr("NumPy (*.npy *.npz)") + QStringLiteral(";;") + tr("Touchstone (*.s1p *.s2p *.s3p *.s4p *.snp)")
-           + QStringLiteral(";;") + tr("Qucs-S datasets (*.dat)") + QStringLiteral(";;") + tr("Lumerical data (*.ldf)") + QStringLiteral(";;")
+           + QStringLiteral(";;") + tr("Qucs-S datasets (*.dat)") + QStringLiteral(";;") + tr("Lumerical™ data (*.ldf)") + QStringLiteral(";;")
            + tr("All files (*)");
 }
 
