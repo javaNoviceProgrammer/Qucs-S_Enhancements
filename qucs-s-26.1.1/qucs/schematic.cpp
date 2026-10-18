@@ -1506,6 +1506,8 @@ void Schematic::contentsMouseDoubleClickEvent(QMouseEvent *Event)
 
 void Schematic::print(QPrinter*, QPainter* painter, bool printAll,
                       bool fitToPage, QMargins margins) {
+    // (Printed at any size: a graph's lines as exact as asked.)
+    const qucs_s::lod::VectorOutput vector;
     painter->save();
 
     const QRectF pageSize{0, 0, static_cast<double>(painter->device()->width()),

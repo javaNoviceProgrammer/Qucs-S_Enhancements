@@ -320,7 +320,7 @@ private:
   mutable QList<int> lineCurves;     // the curve (branch) of each line
   mutable QList<int> strokeCurves;   // and of each stroke
   mutable QDateTime     linesCalculated;
-  mutable double        linesScale = 0.0;   // the painter's scale they were thinned for
+  mutable double        linesScale = 0.0;   // the painter's scale they were thinned for, times ten for a vector's output
   void linesInvalidate() {linesCalculated = QDateTime();} //Set to 'null' date
 };
 

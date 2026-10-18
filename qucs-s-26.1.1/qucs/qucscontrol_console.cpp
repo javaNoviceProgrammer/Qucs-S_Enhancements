@@ -169,6 +169,17 @@ void QucsControl::console(const QJsonObject& args, const Done& done)
         done(errorResult(tr("The Octave console takes no interrupt here.")));
         return;
     }
+    // Nothing to stop: said at once. (A Ctrl-C to a console whose program
+    // is not running printed nothing, and the call waited its whole 'wait'
+    // for a prompt - up to 600 s -, then said the run went on.)
+    if (interrupt && !running()) {
+        done(jsonResult(QJsonObject{{QStringLiteral("kind"), kind},
+                                    {QStringLiteral("running"), false},
+                                    {QStringLiteral("finished"), true},
+                                    {QStringLiteral("note"), tr("Nothing runs in the %1 console: nothing to stop.").arg(kind)},
+                                    {QStringLiteral("output"), lastLines(read(), lines)}}));
+        return;
+    }
     // In view, as the user types there.
     if (dock != nullptr) {
         dock->show();
@@ -207,8 +218,9 @@ void QucsControl::console(const QJsonObject& args, const Done& done)
         // Its prompt back (Octave's, which a pipe may not show: quiet for a
         // while after it printed) - a run that prints nothing for long is
         // not over.
+        // (Interrupted and its program gone: over too.)
         const bool settled = w->clock.elapsed() > 300
-                             && ((promptBack && w->quiet.elapsed() > 300)
+                             && ((promptBack && w->quiet.elapsed() > 300) || (interrupt && !running())
                                  || (kind == QLatin1String("octave") && !said.trimmed().isEmpty() && w->quiet.elapsed() > 1500));
         const bool timedOut = w->clock.elapsed() >= qint64(wait) * 1000;
         if (!settled && !timedOut) return;

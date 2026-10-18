@@ -450,6 +450,56 @@ private slots:
                  qPrintable(describe(inkBox(rendered)) + " vs " + describe(expected)));
     }
 
+    // A graph in an SVG, PDF or EPS export is as exact as asked (the hunt of
+    // 2026-10-17, A2 and N3): its lines round-capped and thinned to a tenth
+    // of a pixel. The export is zoomed after; drawn as on a screen's pixels
+    // its thin lines had square caps (since 755bb00) and its points a pixel
+    // apart.
+    void aGraphInAVectorExportIsExact()
+    {
+        constexpr int points = 2000;
+        QString dat = QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n<indep time %1>\n").arg(points);
+        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg(i * 1e-6, 0, 'g', 12);
+        dat += QStringLiteral("</indep>\n<dep v time>\n");
+        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg(std::sin(i * 0.05) * std::cos(i * 0.003), 0, 'g', 10);
+        dat += QStringLiteral("</dep>\n");
+        QFile d(path("exact.dat"));
+        QVERIFY(d.open(QIODevice::WriteOnly));
+        d.write(dat.toUtf8());
+        d.close();
+        QFile f(path("exact.sch"));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,800,600,1,0,0>\n  <Grid=10,10,0>\n  <DataSet=exact.dat>\n"
+                "</Properties>\n<Symbol>\n</Symbol>\n<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
+                "  <Rect 100 400 240 160 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 \"\" \"\" \"\">\n"
+                "\t<\"v\" #0000ff 1 3 0 0 0>\n  </Rect>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        f.close();
+        Schematic exact(nullptr, path("exact.sch"));
+        QVERIFY(exact.load());
+        exact.reloadGraphs(true);   // (its data, as an opened document's)
+        const QByteArray svg = graphicsexport::svg(&exact, Options());
+        // The graph's strokes: those of its colour that draw lines (its
+        // name in the legend is text of that colour).
+        QStringList caps;
+        int lines = 0;
+        static const QRegularExpression group(QStringLiteral(R"re(<g [^>]*stroke="#0000ff"[^>]*>(.*?)</g>)re"),
+                                              QRegularExpression::DotMatchesEverythingOption);
+        static const QRegularExpression cap(QStringLiteral(R"re(stroke-linecap="([a-z]+)")re"));
+        for (auto m = group.globalMatch(QString::fromUtf8(svg)); m.hasNext();) {
+            const QRegularExpressionMatch g = m.next();
+            const int drawn = int(g.captured(1).count(QStringLiteral("<polyline"))) + int(g.captured(1).count(QStringLiteral("<path")));
+            if (drawn == 0) continue;
+            if (const auto c = cap.match(g.captured(0)); c.hasMatch()) caps << c.captured(1);
+            lines += drawn;
+        }
+        caps.removeDuplicates();
+        QCOMPARE(caps, QStringList{QStringLiteral("round")});
+        // (All 1,999. Thinned to a pixel of the export's scale - a point
+        // dropped closer than a pixel to the last both across and up - it
+        // kept 1,662.)
+        QVERIFY2(lines > 1800, qPrintable(QString::number(lines)));
+    }
+
     void anSvgWithTextNamesAFontOthersHave()
     {
         Options options;

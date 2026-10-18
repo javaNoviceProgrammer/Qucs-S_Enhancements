@@ -352,6 +352,7 @@ void LayoutView::canvasFailed()
 void LayoutView::setLayout(std::shared_ptr<const Layout> layout)
 {
     a_layout = std::move(layout);
+    ++a_layoutGeneration;
     a_selection.reset();
     a_selectionOutline.clear();
     a_rulers.clear();

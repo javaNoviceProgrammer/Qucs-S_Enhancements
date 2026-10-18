@@ -406,40 +406,50 @@ struct SparseLu<Scalar>::Impl {
     Eigen::ComputationInfo info = Eigen::InvalidInput;
     std::string error;
     std::unique_ptr<Eigen::SparseLU<Matrix>> eigen;
-    // The pattern Eigen's analysed: its columns' starts and rows. Its
-    // factorization wants that pattern: a matrix of another (a Newton's
-    // Jacobian whose entries come and go) is analysed again. (Factorized
-    // in the old analysis, Eigen wrote past its arrays: a heap overflow
-    // under CI's sanitizers, a SIGSEGV on macOS 15.)
-    std::vector<int> eigenStarts, eigenRows;
-    /// \a m's pattern, compressed or not, into \a starts and \a rows.
-    static void patternOf(const Matrix& m, std::vector<int>& starts, std::vector<int>& rows)
+    // The pattern Eigen's analysed (P, its values nought), as Accelerate's
+    // below: a matrix within it is factorized as P, its other entries
+    // nought (eigenFilled); one with an entry outside it, P becomes their
+    // union, analysed again. (Factorized in an analysis of another pattern,
+    // Eigen wrote past its arrays - a heap overflow under CI's sanitizers,
+    // a SIGSEGV on macOS 15; analysed again at each new pattern, a Newton
+    // whose entries come and go - an avalanche's, 2264 times in 8500 - paid
+    // an analysis each time.)
+    Matrix eigenPattern, eigenFilled;
+    /// \a m within P: eigenFilled P with \a m's values, true; else false.
+    bool fillEigen(const Matrix& m)
     {
-        starts.assign(std::size_t(m.outerSize()) + 1, 0);
-        rows.clear();
-        rows.reserve(std::size_t(m.nonZeros()));
+        if (!eigen || m.rows() != eigenPattern.rows() || m.cols() != eigenPattern.cols()) return false;
+        eigenFilled = eigenPattern;
+        const auto* starts = eigenFilled.outerIndexPtr();
+        const auto* rows = eigenFilled.innerIndexPtr();
+        Scalar* values = eigenFilled.valuePtr();
         for (int j = 0; j < m.outerSize(); ++j) {
-            for (typename Matrix::InnerIterator it(m, j); it; ++it) rows.push_back(int(it.row()));
-            starts[std::size_t(j) + 1] = int(rows.size());
+            const auto* from = rows + starts[j];
+            const auto* to = rows + starts[j + 1];
+            for (typename Matrix::InnerIterator it(m, j); it; ++it) {
+                const auto* at = std::lower_bound(from, to, typename Matrix::StorageIndex(it.row()));
+                if (at == to || *at != it.row()) return false;
+                values[at - rows] = it.value();
+            }
         }
+        return true;
     }
-    /// \a m's pattern Eigen's analysed?
-    bool eigenPatternIs(const Matrix& m) const
+    /// P \a m's pattern - with the old P's when \a unite and of its size -,
+    /// analysed.
+    void analyseEigen(const Matrix& m, bool unite)
     {
-        if (!eigen || m.outerSize() + 1 != long(eigenStarts.size()) || m.nonZeros() != long(eigenRows.size())) return false;
-        std::size_t k = 0;
-        for (int j = 0; j < m.outerSize(); ++j) {
-            if (eigenStarts[std::size_t(j)] != int(k)) return false;
-            for (typename Matrix::InnerIterator it(m, j); it; ++it, ++k)
-                if (k >= eigenRows.size() || eigenRows[k] != int(it.row())) return false;
+        Matrix pattern = m;
+        pattern.makeCompressed();
+        std::fill(pattern.valuePtr(), pattern.valuePtr() + pattern.nonZeros(), Scalar(0));
+        if (unite && eigen && eigenPattern.rows() == m.rows() && eigenPattern.cols() == m.cols()) {
+            // (A sum's pattern is the union; its values nought.)
+            Matrix both = eigenPattern + pattern;
+            pattern = std::move(both);
+            pattern.makeCompressed();
         }
-        return k == eigenRows.size();
-    }
-    void analyseEigen(const Matrix& m)
-    {
+        eigenPattern = std::move(pattern);
         eigen = std::make_unique<Eigen::SparseLU<Matrix>>();
-        eigen->analyzePattern(m);
-        patternOf(m, eigenStarts, eigenRows);
+        eigen->analyzePattern(eigenPattern);
         ++analyses;
     }
 #if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
@@ -579,7 +589,7 @@ template <typename Scalar> void SparseLu<Scalar>::analyzePattern(const Matrix& g
         return;
     }
 #endif
-    d.analyseEigen(given);
+    d.analyseEigen(given, false);
     // (Its info() only after a factorization - asserted in a Debug build;
     // its analysis does not fail.)
     d.info = Eigen::Success;
@@ -648,9 +658,12 @@ template <typename Scalar> void SparseLu<Scalar>::factorize(const Matrix& given)
         }
     }
 #endif
-    if (!d.eigenPatternIs(given)) d.analyseEigen(given);
+    if (!d.fillEigen(given)) {
+        d.analyseEigen(given, true);
+        d.fillEigen(given);
+    }
     ++usedEigenLu;
-    d.eigen->factorize(given);
+    d.eigen->factorize(d.eigenFilled);
     d.info = d.eigen->info();
     if (d.info != Eigen::Success) {
         d.error = d.eigen->lastErrorMessage();

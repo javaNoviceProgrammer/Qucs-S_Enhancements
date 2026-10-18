@@ -190,11 +190,11 @@ private slots:
             const double r = residual(*m, lu.solve(rhs), rhs);
             QVERIFY2(r < 1e-12, qPrintable(QString::number(r)));
         }
-        // (Accelerate's: analysed three times - a, a and b's union, and
-        // with c's; b, c and a within it after. Analysed at each change -
-        // five here -, an analysis was eight factorizations' time. Eigen's:
-        // at each change, six.)
-        QCOMPARE(lu.analyses(), lu.accelerated() ? 3 : 6);
+        // (Analysed three times - a, a and b's union, and with c's; b, c and
+        // a within it after -, Accelerate's and Eigen's alike. Analysed at
+        // each change - five here -, an analysis was eight factorizations'
+        // time; Eigen's was so till the hunt of 2026-10-17, N4.)
+        QCOMPARE(lu.analyses(), 3);
         // Another of the same pattern - a problem made again, a sweep's next
         // point -: its analysis the cache's, none made.
         if (lu.accelerated()) {

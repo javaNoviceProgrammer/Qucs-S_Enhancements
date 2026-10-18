@@ -74,8 +74,31 @@ bool draft();
 
 /// A graph's lines this wide, in pixels of the device, or less have square
 /// caps whatever: a square end differs from a round one by under half a
-/// pixel there.
+/// pixel there - on a raster's pixels (VectorOutput).
 constexpr double kSquareCapsWidth = 3.0;
+
+/*!
+ * \brief Output to be scaled after: drawn as exactly as asked.
+ *
+ * An SVG, PDF or EPS export, or a print, is drawn at its own scale and then
+ * zoomed in a viewer or printed large: a graph's lines squared where a
+ * pixel of that scale hides it, or thinned to a pixel of it, show. While a
+ * VectorOutput lives a graph's lines keep their round caps and are thinned
+ * to a tenth of a pixel. Set by the exports and printing.
+ */
+class VectorOutput
+{
+public:
+    explicit VectorOutput(bool vector = true);
+    ~VectorOutput();
+    VectorOutput(const VectorOutput&) = delete;
+    VectorOutput& operator=(const VectorOutput&) = delete;
+private:
+    bool m_previous;
+};
+
+/// Whether output is a vector's (false when no VectorOutput says so).
+bool vectorOutput();
 
 } // namespace qucs_s::lod
 
