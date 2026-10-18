@@ -965,6 +965,69 @@ private slots:
         QVERIFY(highest < top + 1e-3);
     }
 
+    // A Valence Bands step's "Every bound state too" (the Lumerical MQW
+    // benchmarks' round 2): GaAs 8 nm in Al0.3Ga0.7As, one state asked - as
+    // many pairs as are above the valence band edge where the stack ends,
+    // each above it, the next below; qw.Ev* each of them.
+    void everyBoundState()
+    {
+        auto step = [](const char* tail) { return QStringLiteral(R"({"type": "bands", "kmax": "1[1/nm]", "points": 2%1})").arg(QLatin1String(tail)); };
+        const QString barrier = slowBuild() ? QStringLiteral("10") : QStringLiteral("15");
+        // (Under the sanitizers coarser: 92 s at 0.25 nm.)
+        const QString extra = QStringLiteral(R"(, "valence": "kp4", "h1d": "%1[nm]")").arg(slowBuild() ? 0.5 : 0.1);
+        const Run r = run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                                  QStringLiteral("8"), barrier, extra, step(R"(, "states": 1, "bound": true)"))));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const QString log = r.solution->log.join(QLatin1Char('\n'));
+        const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("(\\d+) valence states bound in the wells at k = 0 \\(above (\\S+) eV")).match(log);
+        QVERIFY2(m.hasMatch(), qPrintable(log));
+        const int bound = m.captured(1).toInt();
+        const double edge = m.captured(2).toDouble();
+        r.solution->select(0);
+        int found = 0;
+        while (r.solution->global(QStringLiteral("qw.Ev%1").arg(found + 1))) ++found;
+        qInfo("%d valence states bound (pairs both), above %.5f eV", bound, edge);
+        QVERIFY2(bound >= 4 && bound % 2 == 0, qPrintable(QString::number(bound)));
+        QCOMPARE(found, bound);
+        for (int j = 1; j <= found; ++j) QVERIFY2(eV(*r.solution, QStringLiteral("qw.Ev%1").arg(j)) > edge, qPrintable(QString::number(j)));
+        // Two more asked for, without: the same states, the next not bound.
+        const Run more = run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                                     QStringLiteral("8"), barrier, extra,
+                                                     step(qPrintable(QStringLiteral(R"(, "states": %1)").arg(bound / 2 + 2))))));
+        QVERIFY2(more.error.isEmpty(), qPrintable(more.error));
+        more.solution->select(0);
+        QVERIFY(!more.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("bound in the wells")));
+        for (int j = 1; j <= found; ++j)
+            QVERIFY(std::abs(eV(*more.solution, QStringLiteral("qw.Ev%1").arg(j)) - eV(*r.solution, QStringLiteral("qw.Ev%1").arg(j))) < 1e-9);
+        QVERIFY2(eV(*more.solution, QStringLiteral("qw.Ev%1").arg(found + 1)) <= edge, qPrintable(QString::number(eV(*more.solution, QStringLiteral("qw.Ev%1").arg(found + 1)))));
+        // More asked for than are bound: as asked.
+        const Run asked = run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                                      QStringLiteral("8"), barrier, extra,
+                                                      step(qPrintable(QStringLiteral(R"(, "states": %1, "bound": true)").arg(bound / 2 + 2))))));
+        QVERIFY2(asked.error.isEmpty(), qPrintable(asked.error));
+        asked.solution->select(0);
+        QVERIFY(asked.solution->global(QStringLiteral("qw.Ev%1").arg(bound + 4)) && !asked.solution->global(QStringLiteral("qw.Ev%1").arg(bound + 5)));
+        // qw.Ev*: the family, in its order (Ev10 after Ev9), as a Derived
+        // Values global; a star of no family, an expression, no solution: as
+        // they are.
+        const QStringList family = expandFamilies({QStringLiteral(" qw.Ev* "), QStringLiteral("qw.k")}, r.solution.get());
+        QCOMPARE(family.size(), found + 1);
+        QCOMPARE(family.front(), QStringLiteral("qw.Ev1"));
+        QCOMPARE(family.at(found - 1), QStringLiteral("qw.Ev%1").arg(found));
+        if (found >= 10) QCOMPARE(family.at(9), QStringLiteral("qw.Ev10"));
+        QCOMPARE(family.back(), QStringLiteral("qw.k"));
+        QCOMPARE(expandFamilies({QStringLiteral("qw.Nothing*"), QStringLiteral("2*qw.k")}, r.solution.get()),
+                 (QStringList{QStringLiteral("qw.Nothing*"), QStringLiteral("2*qw.k")}));
+        QCOMPARE(expandFamilies({QStringLiteral("qw.Ev*")}, nullptr), QStringList{QStringLiteral("qw.Ev*")});
+        Node global;
+        global.type = QStringLiteral("global");
+        global.props.insert(QStringLiteral("expression"), QStringLiteral("qw.Ev*"));
+        const DerivedResult d = evaluateDerived(*r.solution, global);
+        QVERIFY2(d.error.isEmpty(), qPrintable(d.error));
+        QCOMPARE(int(d.values.size()), found);
+        QCOMPARE(d.values.back().name, QStringLiteral("qw.Ev%1").arg(found));
+    }
+
     void strainedWellsGain()
     {
         // The review's case for the k·p bands: InGaAs wells 6 nm on InP

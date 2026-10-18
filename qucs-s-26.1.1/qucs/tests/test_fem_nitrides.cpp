@@ -438,6 +438,13 @@ private slots:
         QVERIFY(std::abs(value(bands, "kmax") - 0.2 * M_PI / 5.71e-10) < 1);
         QCOMPARE(bands.value("points").toInt(), 11);
         QCOMPARE(bands.value("states").toInt(), 5);   // (its 10 eigenvalues' pairs)
+        // Every bound state too, and each drawn (the MQW benchmarks' round 2:
+        // three wells' 9 subbands, where 20 states took 7).
+        QVERIFY(bands.value("bound").toBool());
+        const QJsonObject bandsPlot = zb.model.value("results").toObject().value("plots").toArray().at(0).toObject();
+        QCOMPARE(bandsPlot.value("study").toString(), QStringLiteral("bands"));
+        QCOMPARE(bandsPlot.value("plots").toArray().size(), 1);
+        QCOMPARE(bandsPlot.value("plots").toArray().at(0).toObject().value("expression").toString(), QStringLiteral("qw.Ev*"));
         const QJsonObject spectrum = studies.at(1).toObject().value("steps").toArray().at(0).toObject();
         QVERIFY(std::abs(value(spectrum, "density") / (1e24 * 22 / 6) - 1) < 1e-9 && std::abs(value(spectrum, "linewidth") - 0.0066) < 1e-12);
         QVERIFY2(spectrum.value("energies").toString().startsWith(QStringLiteral("linspace(%1[eV], ").arg(6.62607015e-34 * 3.3e14 / Q, 0, 'g', 10)),
@@ -449,6 +456,9 @@ private slots:
         r.solution->select(0);
         const double hh = eV(*r.solution, QStringLiteral("qw.Ev1"));
         QVERIFY2(hh > -0.75 && hh < -0.70, qPrintable(QString::number(hh)));
+        // (Its bound states counted and said: at least the 5 pairs asked.)
+        QVERIFY2(r.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("bound in the wells at k = 0")), qPrintable(r.solution->log.join(QLatin1Char('\n'))));
+        QVERIFY(r.solution->global(QStringLiteral("qw.Ev10")).has_value());
     }
 
     // data/lumerical_wurtzite.ldev (6x6): its layers wurtzite - A, D, Δ's,
@@ -465,7 +475,13 @@ private slots:
         QCOMPARE(gan.value("A").toString(), QStringLiteral("-6.56, -0.91, 5.65, -2.83, -3.13, -4.86"));
         QCOMPARE(gan.value("exx").toString(), QStringLiteral("-0.00484133952"));
         QVERIFY(std::abs(value(gan, "C13") / value(gan, "C33") - 1.06 / 3.98) < 1e-12);
-        const Run w = run(modelOf(QJsonDocument(wz.model).toJson()));
+        // (Under the sanitizers its bands without the bound ones: 9 pairs
+        // there, 5 asked - 117 s against 49, over a third of QtTest's
+        // limit on CI's.)
+        QByteArray json = QJsonDocument(wz.model).toJson(QJsonDocument::Compact);
+        QVERIFY(json.contains(R"("bound":true)"));
+        if (slowBuild()) json.replace(R"("bound":true)", R"("bound":false)");
+        const Run w = run(modelOf(json));
         QVERIFY2(w.error.isEmpty(), qPrintable(w.error));
     }
 

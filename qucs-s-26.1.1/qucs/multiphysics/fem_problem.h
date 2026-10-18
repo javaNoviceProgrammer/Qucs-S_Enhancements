@@ -159,6 +159,10 @@ struct SpectrumOptions {
     double dlinewidth = 0;  ///< J per V/m: the broadening grown by the field across the wells
     double fade = 0;        ///< continuum bound: the bound steps fade into the bulk over this above the barriers' gap (J)
     double kmax = 0;        ///< a Valence Bands step's: its largest in-plane k (1/m)
+    /// A Valence Bands step's: every state bound in the wells too - above
+    /// the valence band edge at both ends of the stack, at k = 0 -, where
+    /// those are more than \a states.
+    bool bound = false;
     int kpoints = 0;        ///< and how many values of k from 0 (a spectrum's: its k·p bands')
     int continuum = 0;      ///< 0 the states found; 1 bound states' transitions and the barriers' bulk absorption
     bool kramersKronig = true;  ///< its Kramers-Kronig index (its absorption between the energies for it); a laser's gain alone not

@@ -2291,18 +2291,24 @@ LumericalImport buildMqw(const Scene& scene)
                                    {QStringLiteral("steps"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("bands")},
                                                                                     {QStringLiteral("kmax"), num(*std::max_element(kt->m.begin(), kt->m.end())) + QStringLiteral("[1/m]")},
                                                                                     {QStringLiteral("points"), int(kt->m.size())},
-                                                                                    {QStringLiteral("states"), std::max(1, int(conf("numeigenvalues", 8)) / 2)}}}}});
+                                                                                    {QStringLiteral("states"), std::max(1, int(conf("numeigenvalues", 8)) / 2)},
+                                                                                    {QStringLiteral("bound"), true}}}}});
     const QJsonObject component{{QStringLiteral("unit"), QStringLiteral("nm")},
                                 {QStringLiteral("geometry"), geometry},
                                 {QStringLiteral("materials"), materials},
                                 {QStringLiteral("physics"), QJsonArray{physics}},
                                 {QStringLiteral("mesh"), QJsonObject{{QStringLiteral("size"), QStringLiteral("normal")}, {QStringLiteral("custom"), true}, {QStringLiteral("hmax"), QStringLiteral("2")}}}};
-    const QJsonObject results{{QStringLiteral("plots"), QJsonArray{QJsonObject{
-                                                         {QStringLiteral("type"), QStringLiteral("plotgroup1d")},
-                                                         {QStringLiteral("label"), density > 0 ? tr("Gain") : tr("Absorption")},
-                                                         {QStringLiteral("study"), QStringLiteral("gain")},
-                                                         {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("globalgraph")},
-                                                                                                          {QStringLiteral("expression"), density > 0 ? QStringLiteral("qw.gTE; qw.gTM") : QStringLiteral("qw.alphaTE; qw.alphaTM")}}}}}}}};
+    QJsonArray plots{QJsonObject{{QStringLiteral("type"), QStringLiteral("plotgroup1d")},
+                                 {QStringLiteral("label"), density > 0 ? tr("Gain") : tr("Absorption")},
+                                 {QStringLiteral("study"), QStringLiteral("gain")},
+                                 {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("globalgraph")},
+                                                                                  {QStringLiteral("expression"), density > 0 ? QStringLiteral("qw.gTE; qw.gTM") : QStringLiteral("qw.alphaTE; qw.alphaTM")}}}}}};
+    // (Its bands, as the project's import draws them: each state found.)
+    if (studies.size() > 1)
+        plots.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("plotgroup1d")}, {QStringLiteral("label"), tr("Valence bands")}, {QStringLiteral("study"), QStringLiteral("bands")},
+                                 {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("globalgraph")},
+                                                                                  {QStringLiteral("expression"), QStringLiteral("qw.Ev*")}}}}});
+    const QJsonObject results{{QStringLiteral("plots"), plots}};
     out.model = model(tr("%1 (Lumerical MQW)").arg(scene.source), tr("Imported from %1: mqwindex's stack of %2 layers.").arg(scene.source).arg(n), component, studies, results, parameters);
     out.notes = QStringList{tr("%1: an mqwindex stack of %2 layers (%3 nm, its wells %4 nm), 4x4 k·p, %5 K%6; its γ %7 meV a full width: half of it; its density %8 cm⁻³ over the stack %9 cm⁻³ in the wells")
                                 .arg(scene.source)

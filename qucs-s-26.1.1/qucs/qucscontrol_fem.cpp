@@ -374,7 +374,7 @@ QString formatText()
         "the conduction band's remote term would be below a free electron's, said in the log; no excitons), \"inplane\" axial (the "
         "default: Chuang's, the Lumerical one), 100, 110 or average (four directions, four times the work); a k·p spectrum's cost "
         "grows with the line's equations and the step's \"kpoints\" (121): \"h1d\" 0.25[nm] is near 0.1's. A \"bands\" step {\"kmax\": \"1.5[1/nm]\", "
-        "\"points\": 41, \"states\": 4} makes each k a solution: qw.k (shown in 1/nm), qw.Ev1... (each state, Kramers' pairs both). Features zero (ψ = 0 where it ends: a "
+        "\"points\": 41, \"states\": 4} makes each k a solution: qw.k (shown in 1/nm), qw.Ev1... (each state, Kramers' pairs both; \"bound\": true every one bound in the wells too, above the valence band edge where the stack ends - the log says how many; a graph's or a global's qw.Ev* each of them). Features zero (ψ = 0 where it ends: a "
         "hard wall - a state a few meV below the barriers' top feels it; thick barriers) and flux (∂ψ/∂n = 0, 2D). A \"states\" step "
         "{\"states\": 4} makes each state a solution (\"mode\" picks one): qw.Ee1, qw.Ehh1, qw.Elh1... (J, shown in eV), "
         "qw.E_e of the one selected, qw.Eg and qw.lambda (the effective gap), qw.Ee1hh1 and the overlap qw.Oe1hh1, qw.pos_e, "

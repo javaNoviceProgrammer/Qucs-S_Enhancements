@@ -569,8 +569,10 @@ LumericalImport importLumericalMqw(const QString& path)
     // Its studies: the valence bands, the spectrum.
     QJsonArray studies;
     const double ratio = setting(QStringLiteral("brillouin zone ratio"), 0.1);
-    // (Its bands step: as many states as its eigenvalues - Kramers' pairs -,
-    // an MQW's each well's; its spectrum's its subbands'.)
+    // (Its bands step: as many states as its eigenvalues - Kramers' pairs -
+    // and every one bound in the wells where those are more (a stack of
+    // three wells: each subband three states); its spectrum's its
+    // subbands'.)
     const int vb = std::max(1, int(setting(QStringLiteral("max num vb subbands"), 4))), cb = std::max(1, int(setting(QStringLiteral("max num cb subbands"), 2)));
     const int eigenvalues = std::max(vb, int(setting(QStringLiteral("max num eigenvalues"), 2 * vb)) / 2);
     if (std::isfinite(wellA) && wellA > 0)
@@ -580,7 +582,8 @@ LumericalImport importLumericalMqw(const QString& path)
                                    {QStringLiteral("steps"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("bands")},
                                                                                     {QStringLiteral("kmax"), num(ratio * M_PI / wellA) + QStringLiteral("[1/m]")},
                                                                                     {QStringLiteral("points"), int(setting(QStringLiteral("kt num points"), 41))},
-                                                                                    {QStringLiteral("states"), eigenvalues}}}}});
+                                                                                    {QStringLiteral("states"), eigenvalues},
+                                                                                    {QStringLiteral("bound"), true}}}}});
     const double h = 6.62607015e-34, q = 1.602176634e-19;
     const double fmin = setting(QStringLiteral("freq min"), NAN), fmax = setting(QStringLiteral("freq max"), NAN);
     const int nf = std::max(2, int(setting(QStringLiteral("freq num points"), 201)));
@@ -640,13 +643,12 @@ LumericalImport importLumericalMqw(const QString& path)
                                    {QStringLiteral("label"), density > 0 ? tr("Gain") : tr("Absorption")},
                                    {QStringLiteral("steps"), QJsonArray{step}}});
     }
-    // Their plots.
-    QJsonArray plots, bandsGraphs;
-    for (int j = 1; j <= std::min(2 * vb, 8); j += 2)
-        bandsGraphs.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("globalgraph")}, {QStringLiteral("expression"), QStringLiteral("qw.Ev%1").arg(j)}});
+    // Their plots: each state the bands step finds (qw.Ev*).
+    QJsonArray plots;
     if (std::isfinite(wellA) && wellA > 0)
         plots.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("plotgroup1d")}, {QStringLiteral("label"), tr("Valence bands")}, {QStringLiteral("study"), QStringLiteral("bands")},
-                                 {QStringLiteral("plots"), bandsGraphs}});
+                                 {QStringLiteral("plots"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("globalgraph")},
+                                                                                  {QStringLiteral("expression"), QStringLiteral("qw.Ev*")}}}}});
     plots.append(QJsonObject{
         {QStringLiteral("type"), QStringLiteral("plotgroup1d")},
         {QStringLiteral("label"), density > 0 ? tr("Gain") : tr("Absorption")},
