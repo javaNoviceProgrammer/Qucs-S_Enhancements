@@ -1083,7 +1083,11 @@ void Graph::drawLines(QPainter* painter) const {
     bool invertible = false;
     const QTransform toLogical = painter->combinedTransform().inverted(&invertible);
     if (invertible) {
-      sight = toLogical.mapRect(QRectF(0, 0, painter->device()->width(), painter->device()->height()));
+      // (The widget's rectangle in device pixels: combinedTransform has its
+      // pixel ratio in it. In its own pixels, on a Retina screen the lines
+      // past the canvas's top-left quarter were passed over.)
+      const qreal deviceRatio = painter->device()->devicePixelRatio();
+      sight = toLogical.mapRect(QRectF(0, 0, painter->device()->width() * deviceRatio, painter->device()->height() * deviceRatio));
       if (painter->hasClipping()) sight &= painter->clipBoundingRect();
       const double margin = (pen.isCosmetic() || pen.widthF() <= 0 ? 1.0 : pen.widthF()) + 2.0 / std::max(scaleNow, 1e-9);
       sight.adjust(-margin, -margin, margin, margin);
