@@ -17,6 +17,7 @@
 #include "fem_lumerical.h"
 #include "fem_material_plot.h"
 #include "fem_materials.h"
+#include "main.h"
 #include "misc.h"
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
@@ -27,6 +28,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QUndoStack>
 #include <cmath>
 #include <map>
@@ -174,12 +176,19 @@ QString formatText()
         "electrostatics (\"es\" its tag) - σ = C S - eᵀE, D = εE + e S, solved in turn.\n"
         "Magnetic fields (\"magnetic\", tag mf): A out of the plane (round the axis); features ampere (\"constitutive\": \"mur\" or "
         "\"bh\"), current (Je), coil (\"name\", \"conductor\": \"single\" - its current's distribution found, the skin effect - or "
-        "\"multi\" with \"N\" turns; \"I0\"), magnet (\"direction\", Br), insulation (A = 0, on the outside), potential, pmc, "
-        "surfacecurrent. A layout: an \"import\" of a .gds/.oas \"file\" (\"cell\", \"layers\": \"1/0, 2/0\") makes an object per "
+        "\"multi\" with \"N\" turns; \"I0\"; a single one's \"role\": current - the default, a port of the coils' matrix -, voltage "
+        "with \"V0\", floating - no net current - or grounded - no voltage between its ends, as a conductor with no coil, its "
+        "current mf.I_<name> found: an odd mode's half-model's ground, not one fed -1 A), magnet (\"direction\", Br), insulation "
+        "(A = 0, on the outside), potential, pmc, surfacecurrent; the physics' \"reference\" (a coil's name) gives the matrix "
+        "reduced against it, mf.Lr_i_j and mf.Rr_i_j (Z_ij - Z_ir - Z_rj + Z_rr). A layout: an \"import\" of a .gds/.oas \"file\" (\"cell\", \"layers\": \"1/0, 2/0\") makes an object per "
         "layer, name_layer_datatype; a \"crosssection\" cuts one from \"start\" to \"end\" (µm) into its \"stack\" rows [name, layer "
         "(empty: all along the cut), z, thickness] - an object per row. A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
-        "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step; "
-        "\"exports\": touchstone (\"line\", \"length\", \"zref\"), spice (\"what\": line or matrix), qucspart (an RLCG subcircuit), "
+        "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step - "
+        "n_eff = β/k0 (epsilon_eff its square) and epsilon_eff_qs = C/C0; coupled lines: \"terminal\": \"1, 2\" and as many "
+        "\"conductor\" coils, their C, C0, L, R, G matrices (C_1_2...) and modes - a symmetric pair's even and odd (Z0_odd, "
+        "n_eff_even, alpha_odd, epsilon_eff_qs_even, Zdiff, Zcm), others' 1, 2... by n_eff with their V_, I_ and Zc_; "
+        "\"exports\": touchstone (\"line\", \"length\", \"zref\"; coupled lines a 2N-port, a pair's \"mixed\": true mixed-mode), "
+        "spice (\"what\": line or matrix; coupled lines as sections), qucspart (an RLCG subcircuit; a pair's a CTLIN part), "
         "lumericalmode (\"materials\": indices or library, \"step\", \"modes\"), lumericalcharge (\"strip\"), lumericalmqw (\"materials\": model "
         "or database) - their \"physics\", \"run\" and \"file\" too, a Lumerical script of the model - "
         "fem_export writes them.\n"
@@ -618,8 +627,47 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
                     it.value() = tr("an expression of %1 characters (fem_describe what=material plots it)").arg(it.value().toString().size());
             materials.append(QJsonObject{{QStringLiteral("name"), e.name}, {QStringLiteral("category"), e.category}, {QStringLiteral("properties"), properties}});
         }
-        return jsonResult(QJsonObject{{QStringLiteral("format"), formatText()}, {QStringLiteral("kinds"), kinds},
-                                      {QStringLiteral("materials"), materials}});
+        // The text: all of it; of a group, its paragraphs that name the group,
+        // its kinds or their tags ("text": "all" all the same, "none" none).
+        const QString textWanted = args.value(QLatin1String("text")).toString();
+        QString text = formatText();
+        QString textNote;
+        if (textWanted == QLatin1String("none")) {
+            textNote = tr("the format's text left out ('text' none)");
+            text.clear();
+        } else if (!group.isEmpty() && textWanted != QLatin1String("all")) {
+            QStringList words = {group};
+            for (const NodeKind* k : nodeKinds()) {
+                if (k->fixed && k->properties.isEmpty()) continue;
+                if (k->group != group && k->type != group && !k->type.startsWith(group + QLatin1Char('/'))) continue;
+                words << k->type << k->type.section(QLatin1Char('/'), -1);
+                if (!k->prefix.isEmpty() && k->group == QLatin1String("physics")) words << k->prefix;
+            }
+            words.removeDuplicates();
+            QStringList escaped;
+            for (const QString& w : words) escaped << QRegularExpression::escape(w);
+            // (Quoted, as a file writes it - "lineparams" -, or a tag.)
+            const QRegularExpression named(QStringLiteral("\"(%1)\"|\\btag (%1)\\b|\\b(%1)\\.").arg(escaped.join(QLatin1Char('|'))));
+            const QStringList paragraphs = text.split(QLatin1Char('\n'));
+            QStringList kept;
+            for (const QString& p : paragraphs)
+                if (named.match(p).hasMatch()) kept << p;
+            textNote = tr("of the format's text the %1 of %2 paragraphs that name %3 or its kinds ('text' all: the whole, %4 characters)")
+                           .arg(kept.size())
+                           .arg(paragraphs.size())
+                           .arg(group)
+                           .arg(text.size());
+            text = kept.join(QLatin1Char('\n'));
+        }
+        QJsonObject out{{QStringLiteral("kinds"), kinds}};
+        if (!text.isEmpty()) out.insert(QStringLiteral("format"), text);
+        // (The library's materials: with a group not of materials, left out.)
+        QStringList notes;
+        if (!textNote.isEmpty()) notes << textNote;
+        if (group.isEmpty() || group.startsWith(QLatin1String("material"))) out.insert(QStringLiteral("materials"), materials);
+        else notes << tr("the library's materials left out (group material lists them)");
+        if (!notes.isEmpty()) out.insert(QStringLiteral("note"), notes.join(QStringLiteral("; ")));
+        return jsonResult(out);
     }
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
@@ -719,6 +767,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         }
         QString file;
         MultiphysicsDoc* open = nullptr;
+        QStringList notes;
         if (!given.isEmpty()) {
             file = absolute(given);
             if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
@@ -726,6 +775,26 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
                 return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
             const QString busy = tabOf(file, &open);
             if (!busy.isEmpty()) return errorResult(busy);
+            // A relative path whose first folder is one of the workspace's,
+            // not the open project's: it went into the project all the same
+            // (the project first) - said.
+            const QString project = QDir::cleanPath(QucsSettings.QucsWorkDir.absolutePath());
+            const QString workspace = QDir::cleanPath(QucsSettings.qucsWorkspaceDir.absolutePath());
+            const QString first = QDir::fromNativeSeparators(given).section(QLatin1Char('/'), 0, 0);
+            if (!QFileInfo(given).isAbsolute() && given.contains(QRegularExpression(QStringLiteral("[/\\\\]"))) && project != workspace
+                && file.startsWith(project + QLatin1Char('/')) && QFileInfo(QDir(workspace).filePath(first)).isDir()
+                && !QFileInfo(QDir(project).filePath(first)).isDir())
+                notes << tr("%1 is a folder of the workspace, but a relative path is taken in the open project %2 first: written to %3 "
+                            "(the workspace's: %4)")
+                             .arg(first, QFileInfo(project).fileName(), QDir::toNativeSeparators(file),
+                                  QDir::toNativeSeparators(QDir(workspace).filePath(QDir::fromNativeSeparators(given))));
+            // (Its folder made if it is not there.)
+            const QString folder = QFileInfo(file).absolutePath();
+            if (!QFileInfo(folder).isDir()) {
+                if (!QDir().mkpath(folder))
+                    return errorResult(tr("The folder %1 cannot be made: the model is not written.").arg(QDir::toNativeSeparators(folder)));
+                notes << tr("the folder %1 made").arg(QDir::toNativeSeparators(folder));
+            }
         }
         MultiphysicsDoc* doc = open ? open : a_app->newMultiphysicsModel();
         if (open) a_app->DocumentTab->setCurrentWidget(open);
@@ -735,16 +804,26 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         }
         if (!file.isEmpty()) {
             doc->setName(file);
-            if (doc->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
+            if (doc->save() != 0) {
+                // (Not left open, unsaved, in the file's name: a tab of its
+                // own made for it closed.)
+                if (!open) {
+                    doc->setDocChanged(false);
+                    a_app->slotFileClose(a_app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+                }
+                return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
+            }
             a_app->titleDocumentTab(doc);
         }
         QString why;
         doc->buildGeometry(&why);
         // (Its title: what names it to the other tools - 'path' - while it has
         // no file.)
-        return jsonResult(QJsonObject{{QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
-                                      {QStringLiteral("title"), titleOf(doc)},
-                                      {QStringLiteral("geometry"), why.isEmpty() ? tr("built") : why}});
+        QJsonObject out{{QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
+                        {QStringLiteral("title"), titleOf(doc)},
+                        {QStringLiteral("geometry"), why.isEmpty() ? tr("built") : why}};
+        if (!notes.isEmpty()) out.insert(QStringLiteral("note"), notes.join(QStringLiteral("; ")));
+        return jsonResult(out);
     }
     if (action == QLatin1String("materials")) {
         // Into My Materials (the user's library): a library file's, or a

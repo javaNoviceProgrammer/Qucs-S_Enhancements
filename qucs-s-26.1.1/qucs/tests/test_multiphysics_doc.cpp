@@ -1243,11 +1243,18 @@ private slots:
         QCOMPARE(f->size(), n);
         QCOMPARE(r->dependencies, QStringList{QStringLiteral("frequency")});
         QVERIFY(r->re.last() > 5 * r->re.first());
-        // Its Derived Values at each frequency: ten each.
+        // Its Derived Values at each frequency: twelve each (n_eff, the
+        // quasi-static εeff among them; R in Ω/m).
         int rows = 0;
+        bool ohmsPerMetre = false;
         for (int i = 0; i < doc->table()->rowCount(); ++i)
-            if (doc->table()->item(i, 0)->text() == QLatin1String("Line Parameters")) ++rows;
-        QCOMPARE(rows, 10 * n);
+            if (doc->table()->item(i, 0)->text() == QLatin1String("Line Parameters")) {
+                ++rows;
+                for (int c = 1; c < doc->table()->columnCount(); ++c)
+                    if (doc->table()->item(i, c) && doc->table()->item(i, c)->text().endsWith(QStringLiteral("Ω/m"))) ohmsPerMetre = true;
+            }
+        QCOMPARE(rows, 12 * n);
+        QVERIFY(ohmsPerMetre);
         // A metre of it as a Touchstone file, beside the model.
         const QString ts = doc->runExport(QStringLiteral("ts1"), &why);
         QVERIFY2(!ts.isEmpty(), qPrintable(why));
@@ -1285,6 +1292,67 @@ private slots:
         QVERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mpExportButton")) != nullptr);
         panel()->selectNode(QStringLiteral("qp1"));
         QVERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mpCopyPartButton")) != nullptr);
+    }
+
+    // Coupled lines in the window (the reviewer's round of 18 October): a
+    // ground-signal-signal-ground pair solved - its default graphs each
+    // mode's Z0 and α over frequency, its Qucs part a coupled line part,
+    // copied for a paste.
+    void aCoupledPairsGraphsAndPart()
+    {
+        const QJsonObject model = QJsonDocument::fromJson(R"({"format": "qucs-s multiphysics 1",
+            "components": [{"unit": "um",
+              "geometry": [{"type": "rectangle", "label": "air", "position": ["-300", "0"], "size": ["600", "300"]},
+                           {"type": "rectangle", "label": "sub", "position": ["-300", "-300"], "size": ["600", "300"]},
+                           {"type": "rectangle", "label": "s1", "position": ["-35", "0"], "size": ["20", "5"]},
+                           {"type": "rectangle", "label": "s2", "position": ["15", "0"], "size": ["20", "5"]},
+                           {"type": "rectangle", "label": "gL", "position": ["-145", "0"], "size": ["100", "5"]},
+                           {"type": "rectangle", "label": "gR", "position": ["45", "0"], "size": ["100", "5"]}],
+              "materials": [{"material": "Air", "selection": {"only": ["air"]}}, {"material": "Silicon dioxide", "selection": {"only": ["sub"]}},
+                            {"material": "Gold", "selection": {"only": ["s1", "s2", "gL", "gR"]}}],
+              "physics": [{"type": "electrostatics", "tag": "es", "selection": {"all": true, "except": {"objects": ["s1", "s2", "gL", "gR"]}}, "features": [
+                             {"type": "terminal", "name": "1", "selection": {"of": ["s1"]}}, {"type": "terminal", "name": "2", "selection": {"of": ["s2"]}},
+                             {"type": "ground", "selection": {"of": ["gL", "gR"]}}]},
+                          {"type": "magnetic", "tag": "mf", "order": "1", "features": [
+                             {"type": "coil", "name": "1", "selection": {"only": ["s1"]}}, {"type": "coil", "name": "2", "selection": {"only": ["s2"]}},
+                             {"type": "coil", "name": "G", "selection": {"only": ["gL", "gR"]}}]}],
+              "mesh": {"size": "normal", "custom": true, "hmax": "40", "features": [
+                {"type": "size", "level": "domain", "selection": {"only": ["s1", "s2", "gL", "gR"]}, "hmax": "4"},
+                {"type": "size", "level": "boundary", "selection": {"of": ["s1", "s2", "gL", "gR"]}, "hmax": "2"}]}}],
+            "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "stationary", "physics": ["es"]},
+                                                                  {"type": "frequency", "physics": ["mf"], "frequencies": "1[GHz], 20[GHz]"}]}],
+            "results": {"derived": [{"type": "lineparams", "tag": "lp", "method": "rlgc", "terminal": "1, 2", "conductor": "1, 2", "return": "G"}],
+                        "exports": [{"type": "qucspart", "tag": "qp1", "line": "lp", "length": "10[mm]"}]}})").object();
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"path", "gssg_pair"}, {"model", model}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* doc = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        doc->compute();
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        // Its graphs over frequency: each mode's.
+        const QString z0 = tagOf(doc->model(), QStringLiteral("plotgroup1d"), QStringLiteral("Z0 (lp)"));
+        QVERIFY(!z0.isEmpty());
+        QCOMPARE(doc->model().find(z0)->children.front().text(QStringLiteral("expression")), QStringLiteral("lp.Z0_even; lp.Z0_odd"));
+        QString why;
+        const QString display = doc->showGraphs(tagOf(doc->model(), QStringLiteral("plotgroup1d"), QStringLiteral("Attenuation (lp)")), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why));
+        QVERIFY(data.find(QStringLiteral("alpha_even")) && data.find(QStringLiteral("alpha_odd")));
+        QCOMPARE(data.find(QStringLiteral("alpha_odd"))->size(), 2);
+        // Its part: a coupled line part, copied.
+        QVERIFY2(doc->copyPart(QStringLiteral("qp1"), &why), qPrintable(why));
+        QVERIFY(QApplication::clipboard()->text().contains(QStringLiteral("<CTLIN Line1 1 200 100")));
+        const QString sch = doc->runExport(QStringLiteral("qp1"), &why);
+        QVERIFY2(!sch.isEmpty(), qPrintable(why));
+        QVERIFY(app->gotoPage(sch));
+        auto* part = qobject_cast<Schematic*>(app->DocumentTab->currentWidget());
+        QVERIFY(part != nullptr);
+        QStringList models;
+        for (Component* c : part->a_DocComps) models << c->Model;
+        QCOMPARE(models.count(QStringLiteral("CTLIN")), 1);
+        QCOMPARE(models.count(QStringLiteral("Port")), 4);
     }
 
     // A layout cut across along a ruler: a model of its layer stack, its
@@ -2676,6 +2744,85 @@ private slots:
         QCOMPARE(tabsOf().size(), 1);
         first->setDocChanged(false);
         app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(first)));
+    }
+
+    // fem_model new by a relative path (the reviewer's round of 18
+    // October): its folders made; a folder of the workspace's name, not the
+    // open project's, said; a write that fails leaves no tab.
+    void claudesNewModelsFolders()
+    {
+        const QString project = path(QStringLiteral("projA"));
+        QDir().mkpath(project);
+        QDir().mkpath(path(QStringLiteral("gssg_rf")));
+        const QString was = QucsSettings.QucsWorkDir.absolutePath();
+        QucsSettings.QucsWorkDir.setPath(project);
+        auto restore = qScopeGuard([&] { QucsSettings.QucsWorkDir.setPath(was); });
+        auto tabs = [&]() {
+            int n = 0;
+            for (QucsDoc* d : app->allDocuments())
+                if (dynamic_cast<MultiphysicsDoc*>(d)) ++n;
+            return n;
+        };
+        // A folder there is none of: made, in the project.
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"path", "deep/er/a.qfem"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(project + QStringLiteral("/deep/er/a.qfem")));
+        QVERIFY2(json(r).value("note").toString().contains("made"), qPrintable(text(r)));
+        // The workspace's folder's name: it went to the project's, said so.
+        r = call("fem_model", {{"action", "new"}, {"path", "gssg_rf/b.qfem"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(project + QStringLiteral("/gssg_rf/b.qfem")));
+        const QString note = json(r).value("note").toString();
+        QVERIFY2(note.contains("gssg_rf is a folder of the workspace") && note.contains("projA"), qPrintable(note));
+        // A folder that cannot be written: refused, no tab left of it.
+        const QString locked = project + QStringLiteral("/locked");
+        QDir().mkpath(locked);
+        QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+        auto unlock = qScopeGuard([&] { QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner); });
+        const int before = tabs();
+        r = call("fem_model", {{"action", "new"}, {"path", "locked/c.qfem"}});
+        QVERIFY2(failed(r) && text(r).contains("cannot be written"), qPrintable(text(r)));
+        QCOMPARE(tabs(), before);
+        // A folder where a file is: cannot be made, said.
+        QFile blocker(project + QStringLiteral("/afile"));
+        QVERIFY(blocker.open(QIODevice::WriteOnly));
+        blocker.close();
+        r = call("fem_model", {{"action", "new"}, {"path", "afile/d.qfem"}});
+        QVERIFY2(failed(r) && text(r).contains("cannot be made"), qPrintable(text(r)));
+        QCOMPARE(tabs(), before);
+    }
+
+    // fem_describe what=format of a group: its kinds, the text's paragraphs
+    // that name them, no library; 'text' all or none.
+    void claudesFormatOfAGroup()
+    {
+        QJsonObject r = call("fem_describe", {{"what", "format"}});
+        const QString whole = json(r).value("format").toString();
+        const int all = int(text(r).size());
+        QVERIFY(json(r).contains("materials"));
+        r = call("fem_describe", {{"what", "format"}, {"group", "mf"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject mf = json(r);
+        const QString part = mf.value("format").toString();
+        QVERIFY2(part.contains("Magnetic fields (\"magnetic\", tag mf)") && part.size() < whole.size() / 3, qPrintable(part.left(300)));
+        QVERIFY(!part.contains("Semiconductors:"));
+        QVERIFY(!mf.contains("materials"));
+        QVERIFY2(mf.value("note").toString().contains("'text' all"), qPrintable(mf.value("note").toString()));
+        QVERIFY(int(text(r).size()) < all / 4);
+        QStringList types;
+        for (const QJsonValue& k : mf.value("kinds").toArray()) types << k.toObject().value("type").toString();
+        QVERIFY2(types.contains("magnetic/coil") && !types.contains("rectangle"), qPrintable(types.join(", ")));
+        // The derived values: the line's paragraph among them.
+        r = call("fem_describe", {{"what", "format"}, {"group", "derived"}});
+        QVERIFY2(json(r).value("format").toString().contains("lineparams"), qPrintable(text(r).left(300)));
+        // All of it, or none of it.
+        r = call("fem_describe", {{"what", "format"}, {"group", "mf"}, {"text", "all"}});
+        QCOMPARE(json(r).value("format").toString(), whole);
+        r = call("fem_describe", {{"what", "format"}, {"text", "none"}});
+        QVERIFY(!json(r).contains("format") && json(r).contains("kinds"));
+        // The library's materials with a group of materials.
+        r = call("fem_describe", {{"what", "format"}, {"group", "material"}});
+        QVERIFY(json(r).contains("materials"));
     }
 
     void savingTheModelItsPathNames()

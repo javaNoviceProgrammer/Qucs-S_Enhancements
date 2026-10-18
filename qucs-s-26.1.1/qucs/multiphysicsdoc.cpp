@@ -2080,9 +2080,21 @@ bool MultiphysicsDoc::copyPart(const QString& tag, QString* error)
     const std::vector<Instance> chosen = instances(*set, false, n->integer(QStringLiteral("point")), QString(), n->text(QStringLiteral("frequency")));
     Solution* s = chosen.empty() ? nullptr : select(*set, chosen.front());
     if (!s) return fail(tr("%1: nothing is solved").arg(n->name()));
+    const std::optional<double> length = evaluateConstant(n->text(QStringLiteral("length")), s->parameters().scope, Dim::length());
+    if (lineTerminals(*line).size() > 1) {
+        // A symmetric pair: a coupled line part.
+        const CoupledLines c = coupledLines(*s, *line);
+        if (!c.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), c.error));
+        if (!length || !(*length > 0)) return fail(tr("%1: its length must be more than 0").arg(n->name()));
+        QString why;
+        const QString clip = qucsCoupledSchematic(c, *length, QStringLiteral(PACKAGE_VERSION), n->tag, &why, true);
+        if (clip.isEmpty()) return fail(tr("%1: %2").arg(n->name(), why));
+        QApplication::clipboard()->setText(clip);
+        say(tr("%1: a coupled line part of %2 copied - paste it into a schematic").arg(n->name(), formatQuantity(*length, Dim::length())));
+        return true;
+    }
     const LineRLGC l = lineRLGC(*s, *line);
     if (!l.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), l.error));
-    const std::optional<double> length = evaluateConstant(n->text(QStringLiteral("length")), s->parameters().scope, Dim::length());
     if (!length || !(*length > 0)) return fail(tr("%1: its length must be more than 0").arg(n->name()));
     QApplication::clipboard()->setText(qucsLineSchematic(l, *length, QStringLiteral(PACKAGE_VERSION), n->tag, true));
     say(tr("%1: an RLCG part of %2 copied - paste it into a schematic").arg(n->name(), formatQuantity(*length, Dim::length())));
@@ -2370,12 +2382,21 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             for (const Node& d : m.results().child(QStringLiteral("derived"))->children)
                 if (d.type == QLatin1String("lineparams") && d.text(QStringLiteral("method")) == QLatin1String("rlgc")
                     && studyTag(d.text(QStringLiteral("study"))) == study) {
+                    // (Coupled lines: each mode's.)
+                    QStringList modes = {QString()};
+                    if (lineTerminals(d).size() > 1) {
+                        modes.clear();
+                        for (const LineMode& lm : coupledLines(*sol, d).modes) modes << QLatin1Char('_') + lm.name;
+                    }
                     for (const auto& [label, value] : {std::pair{tr("Z0 (%1)").arg(d.tag), QStringLiteral(".Z0")},
                                                        std::pair{tr("Attenuation (%1)").arg(d.tag), QStringLiteral(".alpha")}}) {
+                        QStringList expressions;
+                        for (const QString& mode : modes) expressions << d.tag + value + mode;
+                        if (modes.isEmpty()) continue;
                         Node g = m.make(QStringLiteral("plotgroup1d"));
                         g.label = label;
                         g.props.insert(QStringLiteral("study"), study);
-                        plot(g, QStringLiteral("globalgraph"), {{"expression", d.tag + value}});
+                        plot(g, QStringLiteral("globalgraph"), {{"expression", expressions.join(QLatin1String("; "))}});
                         m.add(m.results().tag, g);
                     }
                 }

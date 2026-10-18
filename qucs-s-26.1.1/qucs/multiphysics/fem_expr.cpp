@@ -309,6 +309,7 @@ const std::vector<DisplayUnit>& displayTable()
         {"S/m", Dim::of(-3, -1, 3, 2), true},
         {"H/m", Dim::of(1, 1, -2, -2), true},
         {"Ω·m", Dim::of(3, 1, -3, -2), true},
+        {"Ω/m", Dim::of(1, 1, -3, -2), true},   // (a line's resistance per metre)
         {"C/m²", Dim::of(-2, 0, 1, 1), true},
         {"C/m³", Dim::of(-3, 0, 1, 1), true},
         {"C/m", Dim::of(-1, 0, 1, 1), true},
