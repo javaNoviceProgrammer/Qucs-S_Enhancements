@@ -70,11 +70,16 @@ QString consoleReply(const QString& shown, const QString& input, const QRegularE
         if (l.endsWith(typed) && prompt.match(l.left(l.size() - typed.size()).trimmed() + QLatin1Char(' ')).hasMatch()) return 2;   // after the prompt
         return 0;
     };
+    // (The echo after its prompt first: a line typed as the program starts
+    // is echoed by the terminal amid its banner, then again after its
+    // prompt - Python's on CI, the banner's second line between them.)
     if (!typed.isEmpty()) {
         const QStringList lines = said.split(QLatin1Char('\n'));
         qsizetype at = -1;
         for (qsizetype i = 0; i < lines.size() && at < 0; ++i)
-            if (echo(lines.at(i)) != 0) at = i;
+            if (echo(lines.at(i)) == 2) at = i;
+        for (qsizetype i = 0; i < lines.size() && at < 0; ++i)
+            if (echo(lines.at(i)) == 1) at = i;
         if (at >= 0) {
             qsizetype from = at + 1;
             if (echo(lines.at(at)) == 1 && from < lines.size() && echo(lines.at(from)) == 2) ++from;   // (shown twice)
