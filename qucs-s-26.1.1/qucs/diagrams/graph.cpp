@@ -836,7 +836,12 @@ void Graph::drawLines(QPainter* painter) const {
   // sweeps, 23 with square caps.
   const double ratio = painter->device() != nullptr ? painter->device()->devicePixelRatioF() : 1.0;
   const double deviceWidth = (pen.isCosmetic() || pen.widthF() <= 0 ? std::max(1.0, pen.widthF()) : pen.widthF() * scaleNow) * ratio;
-  const bool squareCaps = qucs_s::lod::draft() || deviceWidth <= qucs_s::lod::kSquareCapsWidth;
+  // (Only on a raster's pixels: an export to SVG, PDF or EPS, or a print, is
+  // scaled after - its lines round, and thinned ten times finer, below.)
+  const bool vector = qucs_s::lod::vectorOutput();
+  const bool squareCaps = !vector && (qucs_s::lod::draft() || deviceWidth <= qucs_s::lod::kSquareCapsWidth);
+  const double fine = vector ? 10.0 : 1.0;   // pixels thinned to: 1 / fine
+  const double thinScale = scaleNow * fine;
   const auto capped = [squareCaps](QPen& p) {
     if (squareCaps && p.style() == Qt::SolidLine) p.setCapStyle(Qt::SquareCap);
   };
@@ -852,9 +857,9 @@ void Graph::drawLines(QPainter* painter) const {
   if ( ! linesCalculated.isValid()
     || ! lastLoaded.isValid()
     || lastLoaded > linesCalculated
-    || scaleNow > 1.5 * linesScale
-    || scaleNow * 1.5 < linesScale) {//Start lines (re)calculation
-  linesScale = scaleNow;
+    || thinScale > 1.5 * linesScale
+    || thinScale * 1.5 < linesScale) {//Start lines (re)calculation
+  linesScale = thinScale;
 
   // How graphs are drawn
   //
@@ -904,8 +909,8 @@ void Graph::drawLines(QPainter* painter) const {
 
 
   constexpr double min_pixels = 1.0;  // I can be wrong here, but I believe these are pixels…
-  const double x_threshold = std::abs(min_pixels / painter->transform().m11());
-  const double y_threshold = std::abs(min_pixels / painter->transform().m22());
+  const double x_threshold = std::abs(min_pixels / (painter->transform().m11() * fine));
+  const double y_threshold = std::abs(min_pixels / (painter->transform().m22() * fine));
 
   // Helper to quickly calculate whether two points are distant enough to be worth of drawing
   // a graph segment between them
@@ -1008,7 +1013,8 @@ void Graph::drawLines(QPainter* painter) const {
   auto max_points = std::max(parentDiagram()->boundingRect().width(),
                              parentDiagram()->boundingRect().height());
 
-  if (lines.size() > 2*max_points) {
+  // (Not for a vector's output: it is zoomed after.)
+  if (!vector && lines.size() > 2*max_points) {
     // Too many lines for display - we will try join some lines ...
     QList<QLineF> joint_lines;
     QList<int> joint_curves;

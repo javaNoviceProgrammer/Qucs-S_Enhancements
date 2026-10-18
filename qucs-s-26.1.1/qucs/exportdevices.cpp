@@ -166,8 +166,15 @@ public:
             m_target->setBackground(exported(state.backgroundBrush(), m_colours, Role::Fill));
         if (flags & DirtyBackgroundMode)
             m_target->setBackgroundMode(state.backgroundMode());
-        if (flags & DirtyFont)
-            m_target->setFont(state.font());
+        if (flags & DirtyFont) {
+            // (A family only this system has - macOS's ".AppleSystemUIFont",
+            // the canvas's on its display - named as the portable one here
+            // too: an SVG names the state's font on its groups as well as
+            // the text's. Only its texts were, and the file still named it.)
+            QFont font = state.font();
+            if (!m_family.isEmpty() && font.family().startsWith(QLatin1Char('.'))) font.setFamilies({m_family});
+            m_target->setFont(font);
+        }
         if (flags & DirtyHints) {
             m_target->setRenderHints(m_target->renderHints(), false);
             m_target->setRenderHints(state.renderHints(), true);
