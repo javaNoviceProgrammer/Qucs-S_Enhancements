@@ -27,7 +27,7 @@
 
 namespace qucs_s::fem {
 
-class GlCanvas;
+class GpuCanvas;
 
 /// A color table: 256 colors, from the least value to the greatest.
 const std::vector<QRgb>& colorTable(const QString& name);
@@ -126,16 +126,14 @@ public:
     /// The surface's rasterizations so far (for the tests: the cache works).
     int rasters() const { return a_rasters; }
 
-    /// Drawn by the GPU (OpenGL 3.3): its domains, mesh, surface, lines
-    /// from buffers made once, the text over them; where a context can be
-    /// made (not on the offscreen platform), the setting
-    /// Viewers/multiphysicsGpu chooses it and QUCS_GPU=0 does not say no.
+    /// Drawn by the GPU (Qt's RHI: Metal, Direct3D, OpenGL): its domains,
+    /// mesh, surface, lines from buffers made once, the text over them;
+    /// where the RHI has a backend (not on the offscreen platform), the
+    /// setting Viewers/multiphysicsGpu chooses it and QUCS_GPU=0 does not
+    /// say no.
     bool gpu() const { return a_canvas != nullptr; }
     void setGpu(bool on);
     static bool gpuAvailable();
-    /// Before the application is made: every window's OpenGL the core
-    /// profile the GPU's drawing asks for (macOS shares only alike contexts).
-    static void prepareGpu();
     /// The frames the GPU has drawn (for the tests).
     int gpuFrames() const;
 
@@ -159,7 +157,7 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
-    friend class GlCanvas;
+    friend class GpuCanvas;
     struct Colors {
         QColor background, ink, faint, boundary, highlight, hover;
     };
@@ -177,7 +175,7 @@ private:
     QTransform modelToPixel() const;
     void redraw();
     /// The view's picture, by \a gl's GPU (its heavy layers) or the CPU.
-    void paintFrame(QPainter& p, GlCanvas* gl);
+    void paintFrame(QPainter& p, GpuCanvas* gl);
     void canvasFailed();
     void buildMeshPath();
     QColor domainFill(int d, const Colors& c, bool faded) const;
@@ -213,8 +211,8 @@ private:
     QImage a_qualityRaster;
     bool a_exporting = false;        // picture(): the CPU at its best
 
-    GlCanvas* a_canvas = nullptr;    // the GPU's, over the view
-    GlCanvas* a_gl = nullptr;        // the GPU painting now, through it
+    GpuCanvas* a_canvas = nullptr;    // the GPU's, over the view
+    GpuCanvas* a_gl = nullptr;        // the GPU painting now, through it
     bool a_gpuBroken = false;        // its shaders failed: not again
     quint64 a_topologyStamp = 1, a_meshStamp = 1, a_plotStamp = 1;   // changed data, for its buffers
 

@@ -42,7 +42,7 @@ class QTreeWidgetItem;
 
 namespace qucs_s::layout {
 
-class LayoutGl;
+class LayoutGpu;
 
 /*!
  * A cell of a layout drawn as a layout viewer draws it: each layer in its
@@ -151,16 +151,16 @@ public:
     /// The view drawn now, as the screen shows it.
     QImage picture();
 
-    /// Drawn by the GPU (layoutviewgl.h): its canvas over the view, the
+    /// Drawn by the GPU (layoutviewgpu.h): its canvas over the view, the
     /// layers from buffers made once. The setting (Settings… > Viewers:
-    /// Viewers/layoutGpu, off unless chosen) chooses; where there is no OpenGL 3.3, or
+    /// Viewers/layoutGpu, off unless chosen) chooses; where the RHI has no backend, or
     /// QUCS_GPU=0, the CPU draws whatever it says.
     void setGpu(bool on);
     bool gpu() const;
-    LayoutGl* canvas() const { return a_canvas; }
+    LayoutGpu* canvas() const { return a_canvas; }
     /// The view's painting - the canvas's when \a gl, which draws the
     /// layers; else the CPU's, into its picture.
-    void paintFrame(QPainter& p, LayoutGl* gl);
+    void paintFrame(QPainter& p, LayoutGpu* gl);
     /// The canvas could not draw (no context, its shaders): the CPU's again.
     void canvasFailed();
 
@@ -195,7 +195,7 @@ protected:
     bool event(QEvent* event) override;
 
 private:
-    friend class LayoutGl;
+    friend class LayoutGpu;
     void invalidate();
     void paintGrid(QPainter& p, const Colors& c) const;
     void paintScale(QPainter& p, const Colors& c) const;
@@ -223,7 +223,7 @@ private:
 
     QImage a_cache;             // the layout drawn, under the overlays
     bool a_dirty = true;
-    LayoutGl* a_canvas = nullptr;
+    LayoutGpu* a_canvas = nullptr;
     bool a_gpuBroken = false;
     RenderStats a_stats;        // the CPU's last picture's
     mutable RenderStats a_counted;   // lastStats(): the view as it stands

@@ -40,8 +40,10 @@
 #include <QTextDocument>
 #include <QTreeView>
 
-#include "multiphysicsview.h"
 #include "gpurendering.h"
+#ifdef QUCS_GPU_VIEW
+#include "rhicanvas.h"
+#endif
 #include "config.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -166,7 +168,7 @@ int darkPixels(const QImage& image)
 }
 
 // What a page view shows, painted and its tiles all drawn: two grabs
-// alike. (An OpenGL viewport's grab is its last picture, painted when the
+// alike. (A GPU viewport's grab is its last picture, painted when the
 // window was; a plain one's is painted for the grab.)
 QImage shown(PageView* view)
 {
@@ -1207,12 +1209,66 @@ private slots:
         doc->firstPage();
     }
 
-    // Drawn by the GPU as by the CPU (gpurendering.h: an OpenGL viewport,
+    // The GPU's frame of 2D drawing (rhicanvas.h's Canvas2D, the pages'
+    // surface there): its clip cuts each fill and image - an image's source
+    // with it, in proportion -, a polygon to the clip's rectangles; colours
+    // premultiplied; no clip, all of it. (No display needed: run on CI.)
+    void theGpuCanvasClips()
+    {
+#ifndef QUCS_GPU_VIEW
+        QSKIP("a build without Qt's RHI");
+#else
+        using qucs_s::gpu::Canvas2D;
+        Canvas2D c(QSize(100, 100), 2.0);
+        c.fillRect(QRectF(10, 10, 30, 20), QColor(255, 0, 0, 128));
+        QCOMPARE(int(c.ops().size()), 1);
+        const std::vector<float>& f = c.ops()[0].fill;
+        QCOMPARE(int(f.size()), 2 * 3 * 6);   // (two triangles: x y r g b a)
+        QCOMPARE(f[5], 128.0f / 255);
+        QCOMPARE(f[2], 128.0f / 255);   // (red, premultiplied)
+        QCOMPARE(f[3], 0.0f);
+        // Two strips: the image's parts in them, its source in proportion.
+        Canvas2D d(QSize(100, 100), 2.0);
+        d.setClip(QRegion(QRect(0, 0, 20, 100)) + QRegion(QRect(50, 0, 10, 100)));
+        QImage image(200, 200, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::blue);
+        d.drawImage(QRectF(0, 0, 100, 100), image);
+        QCOMPARE(int(d.ops().size()), 2);
+        QCOMPARE(d.ops()[0].target, QRectF(0, 0, 20, 100));
+        QCOMPARE(d.ops()[0].source, QRectF(0, 0, 40, 200));
+        QCOMPARE(d.ops()[1].target, QRectF(50, 0, 10, 100));
+        QCOMPARE(d.ops()[1].source, QRectF(100, 0, 20, 200));
+        // A fill and a polygon cut to them: no vertex outside.
+        d.fillRect(QRectF(0, 40, 100, 10), Qt::black);
+        d.fillPolygon(QPolygonF({QPointF(0, 0), QPointF(100, 50), QPointF(0, 100)}), Qt::black);
+        int vertices = 0;
+        for (std::size_t k = 2; k < d.ops().size(); ++k) {
+            const std::vector<float>& v = d.ops()[k].fill;
+            for (std::size_t i = 0; i < v.size(); i += 6) {
+                const QPointF p(v[i], v[i + 1]);
+                QVERIFY2((p.x() >= -1e-4 && p.x() <= 20 + 1e-4) || (p.x() >= 50 - 1e-4 && p.x() <= 60 + 1e-4), qPrintable(QString::number(p.x())));
+                ++vertices;
+            }
+        }
+        QVERIFY(vertices >= 4 * 6);
+        // No clip again: the image whole, at its pixel ratio's size.
+        d.setClip(QRegion());
+        image.setDevicePixelRatio(2);
+        d.drawImage(QPointF(5, 5), image);
+        QCOMPARE(d.ops().back().target, QRectF(5, 5, 100, 100));
+        QCOMPARE(d.ops().back().source, QRectF(0, 0, 200, 200));
+#endif
+    }
+
+    // Drawn by the GPU as by the CPU (gpurendering.h: an RHI viewport,
     // the page's tiles textures), the setting switching the view open; a
     // scroll's paint timed each way.
     void theGpuDrawsAsTheCpu()
     {
         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        // (The GPU's viewport its own: never painted by QPainter - the
+        // view's painting, as it is switched in and shown.)
+        QTest::failOnWarning(QRegularExpression(QStringLiteral("paintEngine|Paint device returned engine")));
         QVERIFY(app->gotoPage(file));
         PdfDoc* doc = pdf();
         PageView* view = doc->view();
@@ -1222,7 +1278,7 @@ private slots:
             ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Pdf)); }
         } back;
         QVERIFY(view->gpu());
-        QVERIFY(qucs_s::gpu::hasGlViewport(view));
+        QVERIFY(qucs_s::gpu::hasGpuViewport(view));
         doc->firstPage();
         qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, false);
         QVERIFY(!view->gpu());
@@ -1232,6 +1288,18 @@ private slots:
         QVERIFY(view->gpu());
         const QImage gpu = shown(view);
         QCOMPARE(gpu.size(), cpu.size());
+#ifdef QUCS_GPU_VIEW
+        // Its tiles textures, kept: frames of the same view send none again.
+        {
+            auto* viewport = dynamic_cast<qucs_s::gpu::Viewport2D*>(view->viewport());
+            QVERIFY(viewport != nullptr);
+            const int uploads = viewport->uploads();
+            QVERIFY(uploads > 0 && viewport->textures() > 0);
+            (void)qucs_s::gpu::shownFrame(view);
+            (void)qucs_s::gpu::shownFrame(view);
+            QCOMPARE(viewport->uploads(), uploads);
+        }
+#endif
         int differ = 0, dark = 0;
         for (int y = 0; y < cpu.height(); ++y)
             for (int x = 0; x < cpu.width(); ++x) {
@@ -1247,6 +1315,46 @@ private slots:
         qInfo("%d of %d pixels differ; %d dark (the text)", differ, cpu.width() * cpu.height(), dark);
         QVERIFY(dark > 500);
         QVERIFY2(differ < cpu.width() * cpu.height() / 200, qPrintable(QString::number(differ)));
+        // Mid-pinch - its frame from the tiles at hand, scaled, each part
+        // from one source (paintScaled: a clip of rectangles, on the GPU its
+        // quads cut to them) - as the CPU draws it.
+        {
+            const QPoint fingers = view->viewport()->rect().center();
+            const auto gesture = [view, fingers](Qt::NativeGestureType type, qreal value) {
+                QNativeGestureEvent e(type, QPointingDevice::primaryPointingDevice(), 2, fingers, fingers,
+                                      view->viewport()->mapToGlobal(QPointF(fingers)), value, QPointF());
+                QCoreApplication::sendEvent(view->viewport(), &e);
+            };
+            gesture(Qt::BeginNativeGesture, 0);
+            for (int i = 0; i < 6; ++i) gesture(Qt::ZoomNativeGesture, 0.05);
+            // (Its scroll bars laid out - a moment, the zoom going on.)
+            QCoreApplication::processEvents();
+            QVERIFY(view->zooming());
+            const int rendered = view->tilesRendered(), scaled = view->tilesScaled();
+            const QImage onGpu = qucs_s::gpu::shownFrame(view);
+            QVERIFY(view->tilesScaled() > scaled);
+            QCOMPARE(view->tilesRendered(), rendered);
+            view->setGpu(false);
+            QVERIFY(view->zooming());
+            const QImage onCpu = view->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
+            view->setGpu(true);
+            gesture(Qt::EndNativeGesture, 0);
+            QCOMPARE(onGpu.size(), onCpu.size());
+            int apart = 0, inked = 0;
+            for (int y = 0; y < onCpu.height(); ++y)
+                for (int x = 0; x < onCpu.width(); ++x) {
+                    const QColor a = onCpu.pixelColor(x, y), b = onGpu.pixelColor(x, y);
+                    inked += a.lightness() < 100;
+                    apart += std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()) > 24;
+                }
+            if (!shots.isEmpty()) {
+                onCpu.save(shots + "/pdf_pinch_cpu.png");
+                onGpu.save(shots + "/pdf_pinch_gpu.png");
+            }
+            qInfo("mid-pinch: %d of %d pixels apart; %d dark", apart, onCpu.width() * onCpu.height(), inked);
+            QVERIFY(inked > 500);
+            QVERIFY2(apart < onCpu.width() * onCpu.height() / 100, qPrintable(QString::number(apart)));
+        }
         // A scroll's paint, each way.
         qint64 worst[2] = {0, 0}, median[2] = {0, 0};
         for (bool onGpu : {false, true}) {
@@ -1350,9 +1458,6 @@ private slots:
 
 int main(int argc, char** argv)
 {
-    // (As the application: the core profile's OpenGL, before the
-    // application - the GPU's drawing where there is one.)
-    qucs_s::fem::GraphicsView::prepareGpu();
     QApplication app(argc, argv);
     TestPdfViewer test;
     return QTest::qExec(&test, argc, argv);

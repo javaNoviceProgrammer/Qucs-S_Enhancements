@@ -64,6 +64,12 @@ jobs:
       - name: No vendor's files in the repository
         run: python3 scripts/ci/check-third-party.py
 
+      # The GPU viewers' shaders compiled from their sources and in the
+      # resources: CI builds them without Qt Shader Tools (see
+      # scripts/ci/check-shaders.py, scripts/compile-shaders.sh).
+      - name: The shaders are compiled
+        run: python3 scripts/ci/check-shaders.py
+
       - name: Install build dependencies
         run: |
           sudo apt-get update

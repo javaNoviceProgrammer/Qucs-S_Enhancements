@@ -727,9 +727,6 @@ int main(int argc, char *argv[])
     // screen (mcpstdio.h).
     const bool mcpServer = qucs_s::mcp::askedFor(argc, argv);
     if (mcpServer) qucs_s::mcp::prepareHeadless();
-    // The multiphysics view's OpenGL, the core profile, every window's
-    // alike (multiphysicsview.h).
-    else qucs_s::fem::GraphicsView::prepareGpu();
 
     // initially center the application
     QApplication app(argc, argv);

@@ -12,6 +12,9 @@
 #include "pdfdoc.h"
 
 #include "gpurendering.h"
+#ifdef QUCS_GPU_VIEW
+#include "rhicanvas.h"
+#endif
 #include "links.h"
 #include "misc.h"
 #include "qucs.h"
@@ -200,14 +203,86 @@ PageView::PageView(QWidget* parent) : QAbstractScrollArea(parent)
     });
 }
 
+// What the pages are drawn on: fills, images (a tile at its pixel ratio's
+// size, or scaled - smoothly - to a target) and a clip of rectangles.
+class PageView::Surface
+{
+public:
+    virtual ~Surface() = default;
+    virtual void fillRect(const QRectF& rect, const QColor& color) = 0;
+    /// Convex.
+    virtual void fillPolygon(const QPolygonF& polygon, const QColor& color) = 0;
+    virtual void drawImage(const QPointF& at, const QImage& image) = 0;
+    virtual void drawImage(const QRectF& target, const QImage& image) = 0;
+    /// Empty: none.
+    virtual void setClip(const QRegion& region) = 0;
+};
+
+namespace {
+
+// The CPU's: a painter on the viewport.
+class PainterSurface : public PageView::Surface
+{
+public:
+    explicit PainterSurface(QPainter& p) : a_p(p) {}
+    void fillRect(const QRectF& rect, const QColor& color) override { a_p.fillRect(rect, color); }
+    void fillPolygon(const QPolygonF& polygon, const QColor& color) override
+    {
+        a_p.setPen(Qt::NoPen);
+        a_p.setBrush(color);
+        a_p.drawPolygon(polygon);
+        a_p.setBrush(Qt::NoBrush);
+    }
+    void drawImage(const QPointF& at, const QImage& image) override { a_p.drawImage(at, image); }
+    void drawImage(const QRectF& target, const QImage& image) override
+    {
+        a_p.setRenderHint(QPainter::SmoothPixmapTransform);
+        a_p.drawImage(target, image);
+    }
+    void setClip(const QRegion& region) override
+    {
+        if (region.isEmpty()) a_p.setClipping(false);
+        else a_p.setClipRegion(region);
+    }
+
+private:
+    QPainter& a_p;
+};
+
+#ifdef QUCS_GPU_VIEW
+// The GPU's: its frame, the images textures kept by their cache keys.
+class GpuSurface : public PageView::Surface
+{
+public:
+    explicit GpuSurface(gpu::Canvas2D& c) : a_c(c) {}
+    void fillRect(const QRectF& rect, const QColor& color) override { a_c.fillRect(rect, color); }
+    void fillPolygon(const QPolygonF& polygon, const QColor& color) override { a_c.fillPolygon(polygon, color); }
+    void drawImage(const QPointF& at, const QImage& image) override { a_c.drawImage(at, image); }
+    void drawImage(const QRectF& target, const QImage& image) override { a_c.drawImage(target, image); }
+    void setClip(const QRegion& region) override { a_c.setClip(region); }
+
+private:
+    gpu::Canvas2D& a_c;
+};
+#endif
+
+} // namespace
+
 void PageView::setGpu(bool on)
 {
-    gpu::setGlViewport(this, on && gpu::hindrance().isEmpty(), [this](QPainter& p) { paintPages(p, viewport()->rect()); });
+#ifdef QUCS_GPU_VIEW
+    gpu::setGpuViewport(this, on && gpu::hindrance().isEmpty(), [this](gpu::Canvas2D& c) {
+        GpuSurface s(c);
+        paintPages(s, viewport()->rect());
+    });
+#else
+    Q_UNUSED(on);
+#endif
 }
 
 bool PageView::gpu() const
 {
-    return gpu::hasGlViewport(this);
+    return gpu::hasGpuViewport(this);
 }
 
 void PageView::setDocument(QPdfDocument* document)
@@ -882,10 +957,11 @@ QImage PageView::tile(int page, qreal scale, int tx, int ty, bool* cached)
 void PageView::paintEvent(QPaintEvent* event)
 {
     QPainter p(viewport());
-    paintPages(p, event->rect());
+    PainterSurface s(p);
+    paintPages(s, event->rect());
 }
 
-void PageView::paintPages(QPainter& p, const QRect& visible)
+void PageView::paintPages(Surface& p, const QRect& visible)
 {
     const QPalette pal = palette();
     const bool dark = pal.color(QPalette::Window).lightness() < 128;
@@ -946,27 +1022,22 @@ void PageView::paintPages(QPainter& p, const QRect& visible)
         if (a_selectionPage == i && !a_selectionBounds.isEmpty()) {
             QColor c = pal.color(QPalette::Highlight);
             c.setAlpha(90);
-            p.setPen(Qt::NoPen);
-            p.setBrush(c);
             for (const QPolygonF& poly : std::as_const(a_selectionBounds)) {
                 QPolygonF on;
                 for (const QPointF& pt : poly) on << toViewport(i, pt);
-                p.drawPolygon(on);
+                p.fillPolygon(on, c);
             }
-            p.setBrush(Qt::NoBrush);
         }
     }
     if (pending) QTimer::singleShot(0, viewport(), qOverload<>(&QWidget::update));
 }
 
-void PageView::paintScaled(QPainter& p, int page, const QRectF& r, const QRegion& missing, qreal scale, qreal dpr)
+void PageView::paintScaled(Surface& p, int page, const QRectF& r, const QRegion& missing, qreal scale, qreal dpr)
 {
     // (A tile is the page's ink alone, transparent between - on the white
     // paper drawn: each part from one source, the nearest scale's tiles,
     // then the next's where they have none, the preview in what is left.
     // Laid over each other the text showed twice, the preview a halo.)
-    p.save();
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
     QList<qreal> scales = a_tileScales.value(page);
     scales.removeAll(scale);
     // Nearest first, in proportion: twice the scale as near as half.
@@ -981,7 +1052,7 @@ void PageView::paintScaled(QPainter& p, int page, const QRectF& r, const QRegion
         const int tx0 = std::max(0, int(at.left()) / TileSize), tx1 = int(at.right()) / TileSize;
         const int ty0 = std::max(0, int(at.top()) / TileSize), ty1 = int(at.bottom()) / TileSize;
         QRegion covered;
-        p.setClipRegion(left);
+        p.setClip(left);
         for (int ty = ty0; ty <= ty1; ++ty)
             for (int tx = tx0; tx <= tx1; ++tx) {
                 const QImage* image = a_tiles.object(tileKey(page, s, tx, ty));
@@ -996,10 +1067,10 @@ void PageView::paintScaled(QPainter& p, int page, const QRectF& r, const QRegion
     // The preview: a part no tile at a near scale has.
     if (!left.isEmpty()) {
         const QImage low = preview(page);
-        p.setClipRegion(left);
+        p.setClip(left);
         if (!low.isNull()) p.drawImage(r, low);
     }
-    p.restore();
+    p.setClip(QRegion());
 }
 
 void PageView::resizeEvent(QResizeEvent* event)

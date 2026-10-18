@@ -1,5 +1,5 @@
 /*
- * layoutviewgl.cpp - the layout viewer drawn on the GPU
+ * layoutviewgpu.cpp - the layout viewer drawn on the GPU (Qt's RHI)
  *
  * This file is part of Qucs-S.
  *
@@ -8,7 +8,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
-#include "layoutviewgl.h"
+#include "layoutviewgpu.h"
 
 #include "layoutdoc.h"
 
@@ -16,77 +16,32 @@
 
 #include <QFontMetricsF>
 #include <QImage>
-#include <QOpenGLPaintDevice>
 #include <QPainter>
-#include <QVector2D>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace qucs_s::layout {
 
 namespace {
 
-// Fills and outlines: µm from the origin to clip space, y upwards as the
-// layout has it. A fill's pattern Qt's 8 by 8 bitmap in device pixels from
-// the top left, as QPainter draws a brush's.
-// (Lines half a pixel to the right - nudge, in clip space - as QPainter
-// draws an aliased one: on the pixels right of its mathematical place;
-// fills none.)
-const char* shapeVertex = R"(#version 330 core
-layout(location = 0) in vec2 position;
-uniform vec2 center;
-uniform vec2 scale;
-uniform vec2 nudge;
-void main() { gl_Position = vec4((position - center) * scale + nudge, 0.0, 1.0); }
-)";
-const char* shapeFragment = R"(#version 330 core
-uniform vec4 color;
-uniform bool patterned;
-uniform sampler2D pattern;
-uniform float cell;      // a pattern's pixel in device pixels
-uniform float height;    // the framebuffer's
-out vec4 fragColor;
-void main()
-{
-    if (patterned) {
-        vec2 at = floor(vec2(gl_FragCoord.x, height - gl_FragCoord.y) / cell);
-        if (texelFetch(pattern, ivec2(mod(at, 8.0)), 0).r < 0.5) discard;
-    }
-    fragColor = color;
-}
-)";
-// A shape's dot: where the shape is under 1.5 pixels across, a pixel at
-// its middle (else none).
-const char* dotVertex = R"(#version 330 core
-layout(location = 0) in vec2 position;
-layout(location = 1) in float size;
-uniform vec2 center;
-uniform vec2 scale;
-uniform float pixels;    // per µm
-uniform vec2 nudge;
-void main()
-{
-    gl_Position = size * pixels < 1.5 ? vec4((position - center) * scale + nudge, 0.0, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
-    gl_PointSize = 1.0;
-}
-)";
-const char* dotFragment = R"(#version 330 core
-uniform vec4 color;
-out vec4 fragColor;
-void main() { fragColor = color; }
-)";
+// The shaders' uniforms (layout_shape.vert, layout_dot.vert): a draw's.
+struct Uniforms {
+    float corr[16];
+    float color[4];   // straight alpha
+    float center[2];
+    float scale[2];
+    float nudge[2];
+    float viewport[2];   // device pixels
+    float pixels;        // device pixels a µm
+    float cell;          // a pattern's pixel in device pixels
+    float patterned;
+    float yUp;
+};
 
-QSurfaceFormat canvasFormat()
-{
-    QSurfaceFormat f = QSurfaceFormat::defaultFormat();
-    f.setRenderableType(QSurfaceFormat::OpenGL);
-    f.setVersion(3, 3);
-    f.setProfile(QSurfaceFormat::CoreProfile);
-    // (No multisampling: QPainter draws the layout without antialiasing.)
-    f.setSamples(0);
-    return f;
-}
+// A dot's quad: a strip, a device pixel square about it.
+const float kCorners[] = {-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f};
 
 /// Convex - each turn the same way, once round: fanned.
 bool convex(const std::vector<QPointF>& q)
@@ -264,130 +219,116 @@ Flattened flatten(const Layout& layout, int cell, int depth, const QVector<Layer
 
 // ----------------------------------------------------------------------
 
-LayoutGl::LayoutGl(LayoutView* view) : QOpenGLWidget(view), a_view(view)
+LayoutGpu::LayoutGpu(LayoutView* view) : gpu::LayeredCanvas(view, 1), a_view(view)
 {
+    // (No multisampling: QPainter draws the layout without antialiasing.)
     setObjectName(QStringLiteral("layoutCanvas"));
-    setFormat(canvasFormat());
-    setAttribute(Qt::WA_TransparentForMouseEvents);
-    setFocusPolicy(Qt::NoFocus);
-    setGeometry(view->rect());
 }
 
-LayoutGl::~LayoutGl()
+LayoutGpu::~LayoutGpu()
 {
-    disconnect(a_contextLost);
-    if (a_ready) {
-        makeCurrent();
-        release();
-        doneCurrent();
-    }
+    releaseNativeResources();
 }
 
-void LayoutGl::release()
+void LayoutGpu::paintFrame(QPainter& p)
 {
-    auto drop = [](Batch& b) {
-        b.vao.destroy();
-        b.vbo.destroy();
-        b.count = 0;
-    };
-    for (auto& l : a_layers) {
-        drop(l->fills);
-        drop(l->outlines);
-        drop(l->dots);
-    }
+    a_view->paintFrame(p, this);
+}
+
+void LayoutGpu::canvasFailed()
+{
+    QMetaObject::invokeMethod(a_view, [v = a_view] { v->canvasFailed(); }, Qt::QueuedConnection);
+}
+
+void LayoutGpu::releaseNativeResources()
+{
     a_layers.clear();
-    drop(a_frameLines);
-    drop(a_frameDots);
-    for (unsigned t : std::as_const(a_patterns)) {
-        GLuint id = t;
-        glDeleteTextures(1, &id);
-    }
+    a_frameLines = Batch();
+    a_frameDots = Batch();
+    a_bindings.clear();
     a_patterns.clear();
     a_fill.reset();
+    a_line.reset();
     a_dot.reset();
+    a_layoutBindings.reset();
+    a_plain.reset();
+    a_nearest.reset();
+    a_corners.reset();
+    a_uniforms.reset();
+    a_slots = 0;
+    a_rhi = nullptr;
+    // (Made again whole with the next frame's resources.)
     a_madeOf = nullptr;
     a_cell = -2;
-    a_ready = false;
 }
 
-void LayoutGl::initializeGL()
+void LayoutGpu::createResources(QRhi* rhi)
 {
-    initializeOpenGLFunctions();
-    disconnect(a_contextLost);
-    a_contextLost = connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, [this] {
-        makeCurrent();
-        release();
-        doneCurrent();
-    });
-    auto program = [](const char* vertex, const char* fragment) {
-        auto p = std::make_unique<QOpenGLShaderProgram>();
-        if (!p->addShaderFromSourceCode(QOpenGLShader::Vertex, vertex) || !p->addShaderFromSourceCode(QOpenGLShader::Fragment, fragment)
-            || !p->link()) {
-            qWarning("Layout view: OpenGL shaders: %s", qPrintable(p->log()));
-            return std::unique_ptr<QOpenGLShaderProgram>();
-        }
-        return p;
-    };
-    a_fill = program(shapeVertex, shapeFragment);
-    a_dot = program(dotVertex, dotFragment);
-    if (!a_fill || !a_dot) {
-        a_failed = true;
-        QMetaObject::invokeMethod(a_view, [v = a_view] { v->canvasFailed(); }, Qt::QueuedConnection);
-        return;
+    a_rhi = rhi;
+    a_slots = 64;
+    a_uniforms.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, quint32(a_slots * rhi->ubufAligned(sizeof(Uniforms)))));
+    a_uniforms->create();
+    a_corners.reset(rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, sizeof(kCorners)));
+    a_corners->create();
+    updates()->uploadStaticBuffer(a_corners.get(), kCorners);
+    a_nearest.reset(rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::Repeat, QRhiSampler::Repeat));
+    a_nearest->create();
+    a_plain.reset(rhi->newTexture(QRhiTexture::R8, QSize(1, 1)));
+    a_plain->create();
+    QImage one(1, 1, QImage::Format_Grayscale8);
+    one.fill(255);
+    updates()->uploadTexture(a_plain.get(), one);
+    a_layoutBindings.reset(rhi->newShaderResourceBindings());
+    a_layoutBindings->setBindings({QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(
+                                       0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, a_uniforms.get(),
+                                       sizeof(Uniforms)),
+                                   QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, a_plain.get(), a_nearest.get())});
+    a_layoutBindings->create();
+    QRhiVertexInputLayout shapes;
+    shapes.setBindings({QRhiVertexInputBinding(2 * sizeof(float))});
+    shapes.setAttributes({QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0)});
+    QRhiVertexInputLayout dots;
+    dots.setBindings({QRhiVertexInputBinding(2 * sizeof(float)), QRhiVertexInputBinding(3 * sizeof(float), QRhiVertexInputBinding::PerInstance)});
+    dots.setAttributes({QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0), QRhiVertexInputAttribute(1, 1, QRhiVertexInputAttribute::Float3, 0)});
+    const QString vert = QStringLiteral("layout_shape.vert"), frag = QStringLiteral("layout_shape.frag");
+    a_fill = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(), {vert, frag, shapes, QRhiGraphicsPipeline::Triangles, false});
+    a_line = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(), {vert, frag, shapes, QRhiGraphicsPipeline::Lines, false});
+    a_dot = gpu::makePipeline(rhi, pass(), samples(), a_layoutBindings.get(),
+                              {QStringLiteral("layout_dot.vert"), QStringLiteral("layout_dot.frag"), dots, QRhiGraphicsPipeline::TriangleStrip, false});
+    if (!a_fill || !a_line || !a_dot) {
+        qWarning("Layout view: the GPU's pipelines not made; drawn by the CPU");
+        canvasFailed();
     }
     a_madeOf = nullptr;
     a_cell = -2;
-    a_ready = true;
 }
 
-void LayoutGl::paintEvent(QPaintEvent* event)
+QRhiShaderResourceBindings* LayoutGpu::bindingsFor(QRhiTexture* pattern)
 {
-    QOpenGLWidget::paintEvent(event);
-    if (!isValid() && !a_failed) {
-        qWarning("Layout view: no OpenGL context; drawn by the CPU");
-        a_failed = true;
-        QMetaObject::invokeMethod(a_view, [v = a_view] { v->canvasFailed(); }, Qt::QueuedConnection);
-    }
+    auto it = a_bindings.find(pattern);
+    if (it != a_bindings.end()) return it->get();
+    auto b = std::shared_ptr<QRhiShaderResourceBindings>(a_rhi->newShaderResourceBindings());
+    b->setBindings({QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage,
+                                                                               a_uniforms.get(), sizeof(Uniforms)),
+                    QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, pattern, a_nearest.get())});
+    b->create();
+    a_bindings.insert(pattern, b);
+    return b.get();
 }
 
-void LayoutGl::paintGL()
+void LayoutGpu::upload(Batch& b, const std::vector<float>& data, int components)
 {
-    if (!a_ready) {
-        glClearColor(0.5f, 0.5f, 0.5f, 1);
-        glClear(GL_COLOR_BUFFER_BIT);
-        return;
-    }
-    // (A painter on the framebuffer itself: one on the widget, while Qt
-    // grabs the view - QWidget::grab, a screenshot - is the grab's raster
-    // painter, its fills and texts under the framebuffer's old picture.)
-    QOpenGLPaintDevice device(QSize(std::lround(width() * devicePixelRatioF()), std::lround(height() * devicePixelRatioF())));
-    device.setDevicePixelRatio(devicePixelRatioF());
-    QPainter p(&device);
-    p.setFont(font());
-    a_view->paintFrame(p, this);
-    ++a_frames;
-}
-
-void LayoutGl::upload(Batch& b, const std::vector<float>& data, int components, bool withSize)
-{
-    if (!b.vao.isCreated()) b.vao.create();
-    b.vao.bind();
-    if (!b.vbo.isCreated()) b.vbo.create();
-    b.vbo.bind();
-    b.vbo.setUsagePattern(QOpenGLBuffer::StaticDraw);
-    b.vbo.allocate(data.data(), int(data.size() * sizeof(float)));
-    const int stride = components * int(sizeof(float));
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, nullptr);
-    if (withSize) {
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(2 * sizeof(float)));
-    }
     b.count = int(data.size()) / components;
-    b.vao.release();
+    if (data.empty()) {
+        b.buffer.reset();
+        return;
+    }
+    b.buffer.reset(a_rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, quint32(data.size() * sizeof(float))));
+    b.buffer->create();
+    updates()->uploadStaticBuffer(b.buffer.get(), data.data());
 }
 
-void LayoutGl::sync()
+void LayoutGpu::sync()
 {
     // (The buffers made of the cell to its depth and the texts: made again
     // when one changes - not for colours or patterns. A layer hidden keeps
@@ -434,9 +375,9 @@ void LayoutGl::sync()
                 if (i >= a_made.size()) a_made.resize(i + 1, 0);
                 a_made[i] = 1;
                 while (a_layers.size() <= i) a_layers.push_back(std::make_unique<LayerBatches>());
-                upload(a_layers[i]->fills, a_flat.layers[i].fills, 2, false);
-                upload(a_layers[i]->outlines, a_flat.layers[i].outlines, 2, false);
-                upload(a_layers[i]->dots, a_flat.layers[i].dots, 3, true);
+                upload(a_layers[i]->fills, a_flat.layers[i].fills, 2);
+                upload(a_layers[i]->outlines, a_flat.layers[i].outlines, 2);
+                upload(a_layers[i]->dots, a_flat.layers[i].dots, 3);
                 // (The CPU's arrays freed, as a whole build's: the GPU has
                 // them.)
                 std::vector<float>().swap(a_flat.layers[i].fills);
@@ -466,12 +407,12 @@ void LayoutGl::sync()
     for (std::size_t i = 0; i < a_layers.size(); ++i) {
         static const std::vector<float> none;
         const bool has = i < a_flat.layers.size();
-        upload(a_layers[i]->fills, has ? a_flat.layers[i].fills : none, 2, false);
-        upload(a_layers[i]->outlines, has ? a_flat.layers[i].outlines : none, 2, false);
-        upload(a_layers[i]->dots, has ? a_flat.layers[i].dots : none, 3, true);
+        upload(a_layers[i]->fills, has ? a_flat.layers[i].fills : none, 2);
+        upload(a_layers[i]->outlines, has ? a_flat.layers[i].outlines : none, 2);
+        upload(a_layers[i]->dots, has ? a_flat.layers[i].dots : none, 3);
     }
-    upload(a_frameLines, a_flat.frames, 2, false);
-    upload(a_frameDots, a_flat.frameDots, 3, true);
+    upload(a_frameLines, a_flat.frames, 2);
+    upload(a_frameDots, a_flat.frameDots, 3);
     // (The CPU's arrays freed: the GPU has them.)
     for (Flattened::Layer& l : a_flat.layers) {
         std::vector<float>().swap(l.fills);
@@ -482,16 +423,9 @@ void LayoutGl::sync()
     std::vector<float>().swap(a_flat.frameDots);
 }
 
-std::size_t LayoutGl::heldFloats() const
+QRhiTexture* LayoutGpu::patternTexture(Qt::BrushStyle style)
 {
-    std::size_t n = a_flat.frames.size() + a_flat.frameDots.size();
-    for (const Flattened::Layer& l : a_flat.layers) n += l.fills.size() + l.outlines.size() + l.dots.size();
-    return n;
-}
-
-unsigned LayoutGl::patternTexture(Qt::BrushStyle style)
-{
-    if (auto it = a_patterns.constFind(int(style)); it != a_patterns.constEnd()) return *it;
+    if (auto it = a_patterns.constFind(int(style)); it != a_patterns.constEnd()) return it->get();
     // Qt's own bitmap: its brush drawn on 8 by 8 pixels.
     QImage image(8, 8, QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::transparent);
@@ -499,118 +433,120 @@ unsigned LayoutGl::patternTexture(Qt::BrushStyle style)
         QPainter p(&image);
         p.fillRect(image.rect(), QBrush(Qt::black, style));
     }
-    unsigned char bits[64];
+    QImage bits(8, 8, QImage::Format_Grayscale8);
     for (int y = 0; y < 8; ++y)
-        for (int x = 0; x < 8; ++x) bits[y * 8 + x] = qAlpha(image.pixel(x, y)) > 127 ? 255 : 0;
-    GLuint id = 0;
-    glGenTextures(1, &id);
-    glBindTexture(GL_TEXTURE_2D, id);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 8, 8, 0, GL_RED, GL_UNSIGNED_BYTE, bits);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    // (Qt's own uploads - the glyphs QPainter draws texts with after -
-    // take the default alignment.)
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    a_patterns.insert(int(style), id);
-    return id;
+        for (int x = 0; x < 8; ++x) bits.scanLine(y)[x] = qAlpha(image.pixel(x, y)) > 127 ? 255 : 0;
+    auto t = std::shared_ptr<QRhiTexture>(a_rhi->newTexture(QRhiTexture::R8, QSize(8, 8)));
+    t->create();
+    updates()->uploadTexture(t.get(), bits);
+    a_patterns.insert(int(style), t);
+    return t.get();
 }
 
-bool LayoutGl::drawLayout(QPainter& p, RenderStats* stats)
+std::size_t LayoutGpu::heldFloats() const
 {
+    std::size_t n = a_flat.frames.size() + a_flat.frameDots.size();
+    for (const Flattened::Layer& l : a_flat.layers) n += l.fills.size() + l.outlines.size() + l.dots.size();
+    return n;
+}
+
+bool LayoutGpu::drawLayout(QPainter& p, RenderStats* stats)
+{
+    if (!a_rhi || !a_fill) return false;
     sync();
     if (a_flat.tooLarge) return false;
     const LayoutView::Colors c = a_view->colors();
     const double ratio = devicePixelRatioF();
     const double s = a_view->a_scale;
     const QPointF center = a_view->a_center - a_flat.origin;
-    const QVector2D centerUniform(float(center.x()), float(center.y()));
-    const QVector2D scaleUniform(float(2 * s / std::max(1, width())), float(2 * s / std::max(1, height())));
-    const auto color = [](QColor k) { return QVector4D(float(k.redF()), float(k.greenF()), float(k.blueF()), float(k.alphaF())); };
-    // (half a device pixel right, in clip space: an edge on a pixel boundary
-    // there inked as QPainter inks it; down none - the framebuffer's rows
-    // upwards, an edge on their boundary falls as QPainter's already)
-    const QVector2D nudge(float(1.0 / std::max(1.0, width() * ratio)), 0.0f);
-    p.beginNativePainting();
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_STENCIL_TEST);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    glLineWidth(1.0f);
-    const float height = float(std::lround(this->height() * ratio));
+    const QSize px = pixels();
+    const QMatrix4x4 corrMatrix = corr();
+    const float up = yUp() ? 1.0f : 0.0f;
+    // The frame's draws, a slot of uniforms each.
+    struct Draw {
+        QRhiGraphicsPipeline* pipeline;
+        QRhiBuffer* buffer;
+        int count;
+        QRhiTexture* pattern;
+        Uniforms u;
+    };
+    std::vector<Draw> draws;
+    // (Its captures named: GCC 12 and 13 crash on long lambdas capturing all.)
+    const auto uniforms = [this, &corrMatrix, &center, s, ratio, &px, up](QColor k, bool nudged, bool patterned) {
+        Uniforms u{};
+        std::memcpy(u.corr, corrMatrix.constData(), sizeof(u.corr));
+        u.color[0] = float(k.redF());
+        u.color[1] = float(k.greenF());
+        u.color[2] = float(k.blueF());
+        u.color[3] = float(k.alphaF());
+        u.center[0] = float(center.x());
+        u.center[1] = float(center.y());
+        u.scale[0] = float(2 * s / std::max(1, width()));
+        u.scale[1] = float(2 * s / std::max(1, height()));
+        // (half a device pixel right, in clip space: an edge on a pixel
+        // boundary there inked as QPainter inks it; down none)
+        u.nudge[0] = nudged ? float(1.0 / std::max(1.0, width() * ratio)) : 0.0f;
+        u.viewport[0] = float(px.width());
+        u.viewport[1] = float(px.height());
+        u.pixels = float(s * ratio);
+        // (a pattern's pixel a device pixel, as QPainter has it on a
+        // picture of the screen's pixel ratio)
+        u.cell = 1.0f;
+        u.patterned = patterned ? 1.0f : 0.0f;
+        u.yUp = up;
+        return u;
+    };
     for (std::size_t i = 0; i < a_layers.size(); ++i) {
         LayerBatches& l = *a_layers[i];
         if (l.fills.count == 0 && l.outlines.count == 0 && l.dots.count == 0) continue;
         const LayerStyle raw = int(i) < a_view->a_styles.size() ? a_view->a_styles.at(int(i)) : paletteStyle(int(i));
         if (!raw.visible) continue;
         const LayerStyle style = a_view->shownStyle(raw);
-        a_fill->bind();
-        a_fill->setUniformValue("center", centerUniform);
-        a_fill->setUniformValue("scale", scaleUniform);
-        a_fill->setUniformValue("height", height);
-        // (a pattern's pixel a device pixel, as QPainter has it on a picture
-        // of the screen's pixel ratio)
-        a_fill->setUniformValue("cell", 1.0f);
         if (style.pattern != Qt::NoBrush && l.fills.count > 0) {
             const bool patterned = style.pattern != Qt::SolidPattern;
-            a_fill->setUniformValue("patterned", patterned);
-            if (patterned) {
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, patternTexture(style.pattern));
-                a_fill->setUniformValue("pattern", 0);
-            }
-            a_fill->setUniformValue("color", color(style.fill));
-            a_fill->setUniformValue("nudge", QVector2D());
-            l.fills.vao.bind();
-            glDrawArrays(GL_TRIANGLES, 0, l.fills.count);
+            draws.push_back({a_fill.get(), l.fills.buffer.get(), l.fills.count, patterned ? patternTexture(style.pattern) : a_plain.get(),
+                             uniforms(style.fill, false, patterned)});
         }
-        a_fill->setUniformValue("patterned", false);
-        a_fill->setUniformValue("color", color(style.frame));
-        a_fill->setUniformValue("nudge", nudge);
-        if (l.outlines.count > 0) {
-            l.outlines.vao.bind();
-            glDrawArrays(GL_LINES, 0, l.outlines.count);
-        }
-        if (l.dots.count > 0) {
-            a_dot->bind();
-            a_dot->setUniformValue("center", centerUniform);
-            a_dot->setUniformValue("scale", scaleUniform);
-            a_dot->setUniformValue("pixels", float(s * ratio));
-            a_dot->setUniformValue("color", color(style.frame));
-            a_dot->setUniformValue("nudge", nudge);
-            l.dots.vao.bind();
-            glDrawArrays(GL_POINTS, 0, l.dots.count);
-        }
+        if (l.outlines.count > 0) draws.push_back({a_line.get(), l.outlines.buffer.get(), l.outlines.count, a_plain.get(), uniforms(style.frame, true, false)});
+        if (l.dots.count > 0) draws.push_back({a_dot.get(), l.dots.buffer.get(), l.dots.count, a_plain.get(), uniforms(style.frame, true, false)});
     }
     const QColor frameColor = c.frames.isValid() ? c.frames : QColor(Qt::gray);
-    if (a_frameLines.count > 0) {
-        a_fill->bind();
-        a_fill->setUniformValue("center", centerUniform);
-        a_fill->setUniformValue("scale", scaleUniform);
-        a_fill->setUniformValue("patterned", false);
-        a_fill->setUniformValue("color", color(frameColor));
-        a_fill->setUniformValue("nudge", nudge);
-        a_frameLines.vao.bind();
-        glDrawArrays(GL_LINES, 0, a_frameLines.count);
-        a_dot->bind();
-        a_dot->setUniformValue("center", centerUniform);
-        a_dot->setUniformValue("scale", scaleUniform);
-        a_dot->setUniformValue("pixels", float(s * ratio));
-        a_dot->setUniformValue("color", color(frameColor));
-        a_dot->setUniformValue("nudge", nudge);
-        a_frameDots.vao.bind();
-        glDrawArrays(GL_POINTS, 0, a_frameDots.count);
+    if (a_frameLines.count > 0) draws.push_back({a_line.get(), a_frameLines.buffer.get(), a_frameLines.count, a_plain.get(), uniforms(frameColor, true, false)});
+    if (a_frameDots.count > 0) draws.push_back({a_dot.get(), a_frameDots.buffer.get(), a_frameDots.count, a_plain.get(), uniforms(frameColor, true, false)});
+    // The uniforms' slots, the buffer grown as it must be (its bindings
+    // made again with it).
+    const quint32 slot = a_rhi->ubufAligned(sizeof(Uniforms));
+    if (int(draws.size()) > a_slots) {
+        a_slots = int(draws.size()) * 2;
+        a_uniforms.reset(a_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, quint32(a_slots) * slot));
+        a_uniforms->create();
+        a_bindings.clear();
     }
-    glBindVertexArray(0);
-    glUseProgram(0);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    p.endNativePainting();
+    std::vector<QRhiShaderResourceBindings*> bindings;
+    for (std::size_t k = 0; k < draws.size(); ++k) {
+        updates()->updateDynamicBuffer(a_uniforms.get(), quint32(k) * slot, sizeof(Uniforms), &draws[k].u);
+        bindings.push_back(bindingsFor(draws[k].pattern));
+    }
+    QRhiBuffer* corners = a_corners.get();
+    const QRhiViewport viewport = fullViewport();
+    native(p, [draws, bindings, slot, corners, viewport](QRhiCommandBuffer* cb) {
+        for (std::size_t k = 0; k < draws.size(); ++k) {
+            const Draw& d = draws[k];
+            cb->setGraphicsPipeline(d.pipeline);
+            cb->setViewport(viewport);
+            const QRhiCommandBuffer::DynamicOffset offset(0, quint32(k) * slot);
+            cb->setShaderResources(bindings[k], 1, &offset);
+            if (d.pipeline->topology() == QRhiGraphicsPipeline::TriangleStrip) {
+                const QRhiCommandBuffer::VertexInput inputs[] = {{corners, 0}, {d.buffer, 0}};
+                cb->setVertexInput(0, 2, inputs);
+                cb->draw(4, quint32(d.count));
+            } else {
+                const QRhiCommandBuffer::VertexInput input(d.buffer, 0);
+                cb->setVertexInput(0, 1, &input);
+                cb->draw(quint32(d.count));
+            }
+        }
+    });
     // The frames' names and the texts, as the CPU draws them, those in
     // sight.
     const QRectF seen = a_view->visibleRegion();

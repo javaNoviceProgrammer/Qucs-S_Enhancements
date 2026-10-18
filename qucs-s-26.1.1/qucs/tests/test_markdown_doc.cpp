@@ -25,8 +25,10 @@
 #include <QTextDocument>
 #include <QTextTable>
 
-#include "multiphysicsview.h"
 #include "gpurendering.h"
+#ifdef QUCS_GPU_VIEW
+#include "rhicanvas.h"
+#endif
 #include "config.h"
 #include "qucs.h"
 #include "module.h"
@@ -717,8 +719,8 @@ private slots:
         app.closeAllFiles();
     }
 
-    // Drawn by the GPU as by the CPU (gpurendering.h: an OpenGL viewport
-    // drawing the document as QTextEdit does, drawPreview): headings, a
+    // Drawn by the GPU as by the CPU (gpurendering.h: an RHI viewport, the
+    // document drawn as QTextEdit draws it in tiles, PreviewTiles): headings, a
     // table, code, math, a quote's bars, an image, a selection, scrolled; a
     // document shorter than the view; what the screen shows the grab's
     // picture; the setting switching the preview open; a scroll's paint
@@ -726,6 +728,9 @@ private slots:
     void theGpuDrawsAsTheCpu()
     {
         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        // (The GPU's viewport its own: never painted by QPainter - the
+        // area's painting, as it is switched in and shown.)
+        QTest::failOnWarning(QRegularExpression(QStringLiteral("paintEngine|Paint device returned engine")));
         QImage picture(240, 80, QImage::Format_RGB32);
         picture.fill(qRgb(30, 120, 200));
         QVERIFY(picture.save(dir.filePath("picture.png")));
@@ -920,6 +925,89 @@ private slots:
         md->setPreviewGpu(qucs_s::gpu::used(qucs_s::gpu::Viewer::Markdown));
         QVERIFY(!md->previewGpu());
         qInfo("a scroll's paint: the CPU %lld µs (%lld at most), the GPU %lld µs (%lld)", median[0], worst[0], median[1], worst[1]);
+        app.closeAllFiles();
+    }
+
+    // The preview on the GPU draws its tiles once (PreviewTiles: the CPU's
+    // drawing kept by the GPU): a frame with nothing changed draws none; a
+    // scroll only the row it brings into sight, back none; a selection, an
+    // edit, a new width all of those in sight again; the rows far out of
+    // sight let go.
+    void theGpuPreviewDrawsWhatChanged()
+    {
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        using qucs_s::markdown::PreviewTiles;
+        QByteArray text = "# Tiles\n\n";
+        for (int i = 0; i < 300; ++i) text += "Line " + QByteArray::number(i) + " of a long document, drawn in tiles.\n\n";
+        const QString file = write("tiles.md", text);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        md->setPreviewGpu(true);
+        QVERIFY(md->previewGpu());
+        const PreviewTiles* tiles = md->previewTiles();
+        QVERIFY(tiles != nullptr);
+        QTextBrowser* view = md->preview();
+        pump();
+        // (A frame drawn now - grabbed -: the window's paints not waited for.)
+        const auto frame = [view] { return qucs_s::gpu::shownFrame(view); };
+        const int rows = view->viewport()->height() / PreviewTiles::TileHeight + 2;   // in sight, at most
+        (void)frame();
+        int drawn = tiles->drawn();
+        QVERIFY(drawn >= 1);
+        (void)frame();
+        (void)frame();
+        QCOMPARE(tiles->drawn(), drawn);
+        // A scroll of half a row: one row new at most; back: none.
+        QVERIFY(view->verticalScrollBar()->maximum() > 10 * PreviewTiles::TileHeight);
+        view->verticalScrollBar()->setValue(PreviewTiles::TileHeight / 2);
+        (void)frame();
+        QVERIFY2(tiles->drawn() - drawn <= 1, qPrintable(QString::number(tiles->drawn() - drawn)));
+        drawn = tiles->drawn();
+        view->verticalScrollBar()->setValue(0);
+        (void)frame();
+        QCOMPARE(tiles->drawn(), drawn);
+        // A selection: those in sight again, the selection in them.
+        QTextCursor c(view->document());
+        c.setPosition(2);
+        c.setPosition(40, QTextCursor::KeepAnchor);
+        view->setTextCursor(c);
+        const QImage selected = frame();
+        QVERIFY(tiles->drawn() - drawn >= 2 && tiles->drawn() - drawn <= rows);
+        drawn = tiles->drawn();
+        // An edit of the rendering: again.
+        QTextCursor(view->document()).insertText(QStringLiteral("Edited. "));
+        const QImage edited = frame();
+        QVERIFY(tiles->drawn() - drawn >= 2 && tiles->drawn() - drawn <= rows);
+        QVERIFY(edited != selected);
+        drawn = tiles->drawn();
+#ifdef QUCS_GPU_VIEW
+        // The textures of tiles let go dropped with them (at the next
+        // frame): those in sight alone kept.
+        (void)frame();
+        auto* gpuViewport = dynamic_cast<qucs_s::gpu::Viewport2D*>(view->viewport());
+        QVERIFY(gpuViewport != nullptr);
+        QVERIFY2(gpuViewport->textures() <= rows, qPrintable(QString::number(gpuViewport->textures())));
+#endif
+        // A new width: again.
+        app.resize(800, 700);
+        pump();
+        (void)frame();
+        QVERIFY(tiles->drawn() > drawn);
+        // Through the whole document: the rows far out of sight let go.
+        for (int y = 0; y <= view->verticalScrollBar()->maximum(); y += PreviewTiles::TileHeight) {
+            view->verticalScrollBar()->setValue(y);
+            (void)frame();
+        }
+        QVERIFY2(tiles->kept() <= 7 * rows, qPrintable(QString::number(tiles->kept())));
+        md->setPreviewGpu(false);
+        QVERIFY(md->previewTiles() == nullptr);
         app.closeAllFiles();
     }
 
@@ -1328,9 +1416,6 @@ private slots:
 int main(int argc, char** argv)
 {
     int one = 1;   // QucsApp opens every argument as a document
-    // (As the application: the core profile's OpenGL, before the
-    // application - the GPU's drawing where there is one.)
-    qucs_s::fem::GraphicsView::prepareGpu();
     QApplication app(one, argv);
     TestMarkdownDoc test;
     return QTest::qExec(&test, argc, argv);

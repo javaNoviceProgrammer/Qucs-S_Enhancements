@@ -1,10 +1,11 @@
 /*
- * multiphysicsviewgl.h - the multiphysics Graphics view drawn on the GPU:
- *                        its domains, mesh, color surface, boundaries,
- *                        contours and rays from buffers of OpenGL made once,
- *                        so a pan or a zoom costs the GPU a frame and the
- *                        CPU nothing; the text over them (the grid's labels,
- *                        the legend, the title) by QPainter as before
+ * multiphysicsviewgpu.h - the multiphysics Graphics view drawn on the GPU
+ *                         (Qt's RHI: Metal, Direct3D, OpenGL): its domains,
+ *                         mesh, color surface, boundaries, contours and rays
+ *                         from buffers made once, so a pan or a zoom costs
+ *                         the GPU a frame and the CPU little; the text over
+ *                         them (the grid's labels, the legend, the title) by
+ *                         QPainter as before, composed with them
  *
  * This file is part of Qucs-S.
  *
@@ -13,15 +14,12 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
-#ifndef QUCS_MULTIPHYSICSVIEWGL_H
-#define QUCS_MULTIPHYSICSVIEWGL_H
+#ifndef QUCS_MULTIPHYSICSVIEWGPU_H
+#define QUCS_MULTIPHYSICSVIEWGPU_H
+
+#include "rhicanvas.h"
 
 #include <QColor>
-#include <QOpenGLBuffer>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLShaderProgram>
-#include <QOpenGLVertexArrayObject>
-#include <QOpenGLWidget>
 #include <QPointF>
 
 #include <memory>
@@ -36,31 +34,21 @@ class GraphicsView;
 /*!
  * The GPU's canvas over a GraphicsView, the view's size: it paints through
  * the view's own painting (GraphicsView::paintFrame), which hands it the
- * heavy layers between its QPainter's native painting. Mouse and keys go
- * to the view under it.
+ * heavy layers between its QPainter's. Mouse and keys go to the view under
+ * it. Drawn with 4 samples a pixel.
  */
-class GlCanvas : public QOpenGLWidget, protected QOpenGLExtraFunctions
+class GpuCanvas : public gpu::LayeredCanvas
 {
 public:
-    explicit GlCanvas(GraphicsView* view);
-    ~GlCanvas() override;
-
-    /// Whether an OpenGL 3.3 core context can be made here (not on the
-    /// offscreen or minimal platforms).
-    static bool available();
-    /// Its shaders did not build, or its context was lost: the view draws
-    /// itself again.
-    bool failed() const { return a_failed; }
-    /// The frames it has drawn (for the tests).
-    int frames() const { return a_frames; }
+    explicit GpuCanvas(GraphicsView* view);
+    ~GpuCanvas() override;
 
     struct Stroke {
         QColor color;
         float width = 1;   // device pixels (a cosmetic pen's)
         bool operator==(const Stroke& o) const { return color == o.color && width == o.width; }
     };
-    // Drawn now, in the view's painting (its QPainter's native painting
-    // around each).
+    // Drawn now, in the view's painting (between its QPainter's layers).
     void drawDomains(QPainter& p, const std::vector<QColor>& fills);
     void drawBoundaries(QPainter& p, const std::vector<Stroke>& strokes);
     void drawMesh(QPainter& p, QColor ink, float width);
@@ -70,36 +58,38 @@ public:
     void drawRays(QPainter& p);
 
 protected:
-    void initializeGL() override;
-    void paintGL() override;
-    void paintEvent(QPaintEvent* event) override;
+    void paintFrame(QPainter& p) override;
+    void createResources(QRhi* rhi) override;
+    void releaseNativeResources() override;
+    void canvasFailed() override;
 
 private:
     struct Batch {
-        QOpenGLVertexArrayObject vao;
-        QOpenGLBuffer vbo{QOpenGLBuffer::VertexBuffer};
-        QOpenGLBuffer extra{QOpenGLBuffer::VertexBuffer};   // colors, values
-        int count = 0;                                       // vertices or instances
+        std::unique_ptr<QRhiBuffer> vertices;
+        std::unique_ptr<QRhiBuffer> extra;   // colors, values; a line's color and width
+        int count = 0;                       // vertices or instances
         bool built = false;
     };
-    void release();
-    void begin(QPainter& p);
-    void end(QPainter& p);
-    void setView(QOpenGLShaderProgram& program);
     void sync();
+    std::unique_ptr<QRhiBuffer> buffer(const void* data, std::size_t bytes);
     void buildLines(Batch& b, const std::vector<float>& segments, const std::vector<quint32>& colors, const std::vector<float>& widths);
+    /// A slot of the uniforms for a draw this frame: its offset (-1, none
+    /// left).
+    int slot(const void* uniforms, std::size_t bytes);
+    void drawTriangles(QPainter& p, Batch& b, bool surface);
     /// \a cosmetic: widths in device pixels, as QPainter's cosmetic pens;
     /// else in the view's.
-    void drawLines(Batch& b, bool roundCaps, bool cosmetic, const QColor* color = nullptr, float width = 1);
+    void drawLines(QPainter& p, Batch& b, bool roundCaps, bool cosmetic, const QColor* color = nullptr, float width = 1);
 
     GraphicsView* a_view;
-    QMetaObject::Connection a_contextLost;
-    bool a_failed = false;
-    bool a_ready = false;
-    int a_frames = 0;
-    std::unique_ptr<QOpenGLShaderProgram> a_fill, a_surface, a_lines;
-    GLuint a_colormap = 0;
+    QRhi* a_rhi = nullptr;
+    std::unique_ptr<QRhiBuffer> a_uniforms, a_corners;
+    int a_slotsUsed = 0;
+    std::unique_ptr<QRhiTexture> a_colormap;
     QString a_colormapName;
+    std::unique_ptr<QRhiSampler> a_nearest;
+    std::unique_ptr<QRhiShaderResourceBindings> a_plainBindings, a_surfaceBindings;
+    std::unique_ptr<QRhiGraphicsPipeline> a_fill, a_surface, a_lines;
     Batch a_domains, a_quality, a_surfaceBatch, a_mesh, a_boundaries, a_contours, a_rays;
     // What the batches were made of: the view's data's stamps, the origin
     // their coordinates are relative to (floats near it).
@@ -114,4 +104,4 @@ private:
 
 } // namespace qucs_s::fem
 
-#endif // QUCS_MULTIPHYSICSVIEWGL_H
+#endif // QUCS_MULTIPHYSICSVIEWGPU_H

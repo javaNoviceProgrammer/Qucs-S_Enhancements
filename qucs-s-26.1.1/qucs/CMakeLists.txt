@@ -85,18 +85,25 @@ if(QUCS_SCRIPTING AND Qt6Qml_FOUND)
 else()
   message(STATUS "Scripting (run_script): off - no Qt Qml module")
 endif()
-# Qt's OpenGL widgets: the multiphysics Graphics view drawn by the GPU
-# (multiphysicsviewgl.h); without them the CPU draws it.
-option(QUCS_GPU_VIEW "Draw the multiphysics Graphics view with the GPU (OpenGL 3.3)" ON)
-if(QUCS_GPU_VIEW)
-  find_package(Qt6 QUIET COMPONENTS OpenGL OpenGLWidgets)
+# Qt's RHI (Metal on macOS, Direct3D on Windows, OpenGL elsewhere): the
+# viewers drawn by the GPU when chosen - the PDF viewer, the Markdown
+# preview, the layout viewer, the multiphysics Graphics view (rhicanvas.h).
+# QRhiWidget is Qt 6.7's; the RHI's headers Qt's GUI private module's. The
+# shaders are compiled beforehand (shaders/*.qsb, scripts/compile-shaders.sh):
+# no Qt Shader Tools needed. Without it the CPU draws them all.
+option(QUCS_GPU_VIEW "Draw the viewers with the GPU where chosen (Qt's RHI)" ON)
+if(QUCS_GPU_VIEW AND Qt6_VERSION VERSION_GREATER_EQUAL 6.7)
+  # (Its private module asked for knowingly: the RHI's API is Qt's
+  # "semi-public" one, its headers there.)
+  set(QT_NO_PRIVATE_MODULE_WARNING ON)
+  find_package(Qt6 QUIET COMPONENTS GuiPrivate)
 endif()
-if(QUCS_GPU_VIEW AND Qt6OpenGL_FOUND AND Qt6OpenGLWidgets_FOUND)
-  message(STATUS "Multiphysics view on the GPU: on (Qt OpenGL ${Qt6OpenGL_VERSION})")
+if(QUCS_GPU_VIEW AND Qt6_VERSION VERSION_GREATER_EQUAL 6.7 AND TARGET Qt6::GuiPrivate)
+  message(STATUS "Viewers on the GPU: available (Qt's RHI, Qt ${Qt6_VERSION})")
   add_compile_definitions(QUCS_GPU_VIEW)
   set(QUCS_GPU_VIEW_ON TRUE)
 else()
-  message(STATUS "Multiphysics view on the GPU: off - no Qt OpenGL widgets; the CPU draws it")
+  message(STATUS "Viewers on the GPU: off - no Qt RHI (Qt 6.7 and its GUI private module); the CPU draws them")
   set(QUCS_GPU_VIEW_ON FALSE)
 endif()
 include_directories(
@@ -418,7 +425,7 @@ if(QUCS_PDF_VIEWER AND Qt6Pdf_FOUND)
   list(APPEND QUCS_SRCS pdfdoc.cpp)
 endif()
 if(QUCS_GPU_VIEW_ON)
-  list(APPEND QUCS_SRCS multiphysicsviewgl.cpp layoutviewgl.cpp)
+  list(APPEND QUCS_SRCS rhicanvas.cpp multiphysicsviewgpu.cpp layoutviewgpu.cpp)
 endif()
 set(QUCS_CORE_SRCS ${QUCS_SRCS})
 list(REMOVE_ITEM QUCS_CORE_SRCS main.cpp)
@@ -434,7 +441,7 @@ if(QUCS_SCRIPTING AND Qt6Qml_FOUND)
   list(APPEND QUCS_LINK_LIBRARIES Qt6::Qml)
 endif()
 if(QUCS_GPU_VIEW_ON)
-  list(APPEND QUCS_LINK_LIBRARIES Qt6::OpenGL Qt6::OpenGLWidgets)
+  list(APPEND QUCS_LINK_LIBRARIES Qt6::GuiPrivate)
 endif()
 if(UNIX AND NOT APPLE)
   # forkpty() for the Terminal and Python Shell docks (processconsole.cpp)

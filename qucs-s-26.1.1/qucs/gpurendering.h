@@ -22,9 +22,10 @@
 #include <functional>
 
 class QAbstractScrollArea;
-class QPainter;
 
 namespace qucs_s::gpu {
+
+class Canvas2D;
 
 enum class Viewer { Pdf, Markdown, Layout, Multiphysics };
 
@@ -40,25 +41,26 @@ bool wanted(Viewer viewer);
 /// Kept, and told to the open viewers (changed()).
 void setWanted(Viewer viewer, bool gpu);
 /// Why the GPU cannot draw here, whatever is chosen (empty: it can):
-/// QUCS_GPU=0 set, a build without OpenGL, no OpenGL 3.3 here (an offscreen
-/// or remote display, a driver without it).
+/// QUCS_GPU=0 set, a build without Qt's RHI, no backend for it here (an
+/// offscreen or remote display, a driver without one).
 QString hindrance();
+/// The RHI's backend here: "Metal", "Direct3D 11", "OpenGL" (empty: none).
+QString backendName();
 /// Drawn by the GPU: chosen, and nothing in its way.
 bool used(Viewer viewer);
 
-/// \a area's viewport made an OpenGL widget (\a gpu) or a plain one again,
-/// its mouse tracking, cursor, tooltip, menu policy and background kept.
-/// On the GPU \a paint draws all of it, each time it is painted - by the
-/// window, by a grab of it (a screenshot) -, with QPainter on its
-/// framebuffer: the GPU's (its images textures kept there, its glyphs an
-/// atlas), on its background (its role's colour); the area's own painting
-/// is not used. False when nothing changed. The area's own filters on its
-/// viewport are its to install again.
-bool setGlViewport(QAbstractScrollArea* area, bool gpu, std::function<void(QPainter&)> paint = {});
-bool hasGlViewport(const QAbstractScrollArea* area);
-/// What \a area's OpenGL viewport shows: its framebuffer as last painted,
-/// read back - not painted again, as a grab paints it (for the tests).
-/// Null for a plain viewport.
+/// \a area's viewport made the GPU's (\a gpu: Qt's RHI - Metal, Direct3D,
+/// OpenGL) or a plain one again, its mouse tracking, cursor, tooltip, menu
+/// policy and background kept. On the GPU \a paint draws all of it, each
+/// time it is painted - by the window, by a grab of it (a screenshot) -:
+/// fills and images (Canvas2D, rhicanvas.h; an image's texture kept by its
+/// cache key), on its background (its role's colour); the area's own
+/// painting is not used. False when nothing changed. The area's own
+/// filters on its viewport are its to install again.
+bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canvas2D&)> paint = {});
+bool hasGpuViewport(const QAbstractScrollArea* area);
+/// What \a area's GPU viewport shows: a frame of it drawn and read back
+/// (for the tests). Null for a plain viewport.
 QImage shownFrame(QAbstractScrollArea* area);
 
 /// Tells the open viewers that a choice changed.

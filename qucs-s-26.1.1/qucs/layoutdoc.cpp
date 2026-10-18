@@ -14,7 +14,7 @@
 
 #include "gpurendering.h"
 #ifdef QUCS_GPU_VIEW
-#include "layoutviewgl.h"
+#include "layoutviewgpu.h"
 #endif
 #include "links.h"
 #include "misc.h"
@@ -315,7 +315,7 @@ void LayoutView::setGpu(bool on)
 {
 #ifdef QUCS_GPU_VIEW
     if (on && !a_canvas && !a_gpuBroken && gpu::hindrance().isEmpty()) {
-        a_canvas = new LayoutGl(this);
+        a_canvas = new LayoutGpu(this);
         a_canvas->setGeometry(rect());
         a_canvas->show();
     } else if (!on && a_canvas) {
@@ -659,7 +659,7 @@ QImage LayoutView::picture()
     return grab().toImage();
 }
 
-void LayoutView::paintFrame(QPainter& p, LayoutGl* gl)
+void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
 {
     const qreal ratio = devicePixelRatioF();
     const QSize pixels = (QSizeF(size()) * ratio).toSize();
