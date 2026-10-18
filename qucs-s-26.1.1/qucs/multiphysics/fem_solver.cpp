@@ -3315,6 +3315,7 @@ bool bandsStep(Solution& s, const Node& node, const std::function<bool(double, c
     o.kmax = *kmax;
     o.kpoints = std::clamp(node.integer(QStringLiteral("points")), 2, 2000);
     o.states = std::clamp(node.integer(QStringLiteral("states")), 1, 50);
+    o.bound = node.flag(QStringLiteral("bound"));
     for (auto& p : st.problems)
         if (!p->field().solved) p->initialize();
     if (!tell(0.1, tr("%1: the valence bands").arg(node.name()))) {

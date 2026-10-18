@@ -1666,7 +1666,9 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         const QString unitText = graph.text(QStringLiteral("unit"));
         const QString label = graph.label.trimmed();
         if (graph.type == QLatin1String("globalgraph")) {
-            const QStringList exprs = graph.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
+            // (qw.Ev*: each of its family of globals, as the first solution has them.)
+            const QStringList exprs = expandFamilies(graph.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts),
+                                                     every.empty() ? nullptr : select(*set, every.front()));
             const QStringList deps = outerOrIndex();
             for (const QString& raw : exprs) {
                 // (name = expression: the variable's name; else a graph's

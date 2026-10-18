@@ -925,6 +925,34 @@ CoupledLines coupledLines(const Solution& solution, const Node& node)
     return out;
 }
 
+QStringList expandFamilies(const QStringList& items, const Solution* solution)
+{
+    QStringList out;
+    static const QRegularExpression family(QStringLiteral("^\\s*([A-Za-z_][A-Za-z0-9_.]*)\\*\\s*$"));
+    for (const QString& item : items) {
+        const QRegularExpressionMatch m = family.match(item);
+        if (!m.hasMatch() || !solution) {
+            out << item;
+            continue;
+        }
+        const QString prefix = m.captured(1);
+        std::vector<std::pair<qlonglong, QString>> found;
+        for (const Variable& v : solution->globals()) {
+            if (!v.name.startsWith(prefix) || v.name.size() == prefix.size()) continue;
+            bool number = false;
+            const qlonglong n = QStringView(v.name).mid(prefix.size()).toLongLong(&number);
+            if (number && QStringView(v.name).mid(prefix.size()).front().isDigit()) found.emplace_back(n, v.name);
+        }
+        if (found.empty()) {
+            out << item;
+            continue;
+        }
+        std::sort(found.begin(), found.end());
+        for (const auto& [n, name] : found) out << name;
+    }
+    return out;
+}
+
 NamedExpression namedExpression(const QString& item)
 {
     const QString text = item.trimmed();
@@ -956,7 +984,8 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         if (!warning.isEmpty() && out.error.isEmpty()) out.error = warning;
     };
     if (type == QLatin1String("global")) {
-        const QStringList exprs = node.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts);
+        // (qw.Ev*: each of that family of globals.)
+        const QStringList exprs = expandFamilies(node.text(QStringLiteral("expression")).split(QLatin1Char(';'), Qt::SkipEmptyParts), &solution);
         // The unit: one for each expression ("eV; nm"), or one for each it
         // is a unit of ("qw.Ex; qw.Eb; qw.gX" in eV: the energies in it).
         const QStringList units = unitText.split(QLatin1Char(';'));

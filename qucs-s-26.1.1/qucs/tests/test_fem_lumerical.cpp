@@ -827,6 +827,25 @@ private slots:
         QCOMPARE(numberOf(spectrum.value(QStringLiteral("linewidth"))), 0.0066);
         QCOMPARE(spectrum.value(QStringLiteral("states")).toInt(), 6);
         QCOMPARE(spectrum.value(QStringLiteral("energies")).toString().count(QLatin1String("[eV]")), 161);
+        // Its values of k: a Valence Bands study too, every bound state asked
+        // for and each drawn (qw.Ev*) - the MQW benchmarks' round 2.
+        QString withK = s.text;
+        QVERIFY(withK.contains(QLatin1String("params.T = ")));
+        withK.replace(QLatin1String("params.T = "), QLatin1String("params.kt = linspace(0, 1e9, 5);\nparams.T = "));
+        QTemporaryDir dirK;
+        const LumericalImport ik = imported(dirK, withK);
+        QVERIFY2(ik.error.isEmpty(), qPrintable(ik.error));
+        const QJsonArray kStudies = ik.model.value(QStringLiteral("studies")).toArray();
+        QCOMPARE(kStudies.size(), 2);
+        const QJsonObject bandsStep = kStudies.at(1).toObject().value(QStringLiteral("steps")).toArray().at(0).toObject();
+        QCOMPARE(bandsStep.value(QStringLiteral("type")).toString(), QStringLiteral("bands"));
+        QCOMPARE(bandsStep.value(QStringLiteral("states")).toInt(), 12);   // (its 24 eigenvalues' pairs)
+        QVERIFY(bandsStep.value(QStringLiteral("bound")).toBool());
+        bool drawn = false;
+        for (const QJsonValue& g : ik.model.value(QStringLiteral("results")).toObject().value(QStringLiteral("plots")).toArray())
+            if (g.toObject().value(QStringLiteral("study")).toString() == QLatin1String("bands"))
+                drawn = g.toObject().value(QStringLiteral("plots")).toArray().at(0).toObject().value(QStringLiteral("expression")).toString() == QLatin1String("qw.Ev*");
+        QVERIFY(drawn);
     }
 
     // The fields of a study's sweep: a solve and a file for each in a loop
