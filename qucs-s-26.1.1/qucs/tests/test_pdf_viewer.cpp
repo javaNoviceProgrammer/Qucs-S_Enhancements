@@ -29,6 +29,7 @@
 #include <QPdfLinkModel>
 #include <QPdfSearchModel>
 #include <QPdfWriter>
+#include <random>
 #include <QPushButton>
 #include <QTimer>
 #include <QPrinter>
@@ -104,6 +105,42 @@ bool writeOutlinedPdf(const QString& path)
     objects << "<< /Type /Outlines /First 11 0 R /Last 12 0 R /Count 2 >>";
     objects << "<< /Title (1 Introduction) /Parent 10 0 R /Next 12 0 R /Dest [3 0 R /XYZ 0 792 0] >>";
     objects << "<< /Title (2.2.1 Modulation Efficiency) /Parent 10 0 R /Prev 11 0 R /Dest [5 0 R /XYZ 0 420 0] >>";
+    QByteArray out = "%PDF-1.4\n";
+    QList<int> offsets;
+    for (int i = 0; i < objects.size(); ++i) {
+        offsets << int(out.size());
+        out += QByteArray::number(i + 1) + " 0 obj\n" + objects.at(i) + "\nendobj\n";
+    }
+    const int xref = int(out.size());
+    out += "xref\n0 " + QByteArray::number(objects.size() + 1) + "\n0000000000 65535 f \n";
+    for (int o : offsets) out += QByteArray::number(o).rightJustified(10, '0') + " 00000 n \n";
+    out += "trailer\n<< /Size " + QByteArray::number(objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(out) == out.size();
+}
+
+// A page of \a n one-letter labels scattered over it, 4 to 8 points tall,
+// each its own text object (a drawing's labels, a map's): each its own run.
+bool writePagePdf(const QString& path, const QByteArray& stream);
+
+bool writeScatteredPdf(const QString& path, int n)
+{
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> x(20, 590), y(20, 770);
+    QByteArray stream;
+    for (int i = 0; i < n; ++i)
+        stream += "BT /F1 " + QByteArray::number(4 + 2 * (i % 3)) + " Tf " + QByteArray::number(x(rng), 'f', 1) + " " + QByteArray::number(y(rng), 'f', 1)
+                  + " Td (" + char('a' + i % 26) + ") Tj ET\n";
+    return writePagePdf(path, stream);
+}
+
+// One page of Helvetica drawn by \a stream.
+bool writePagePdf(const QString& path, const QByteArray& stream)
+{
+    const QList<QByteArray> objects{"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+                                    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+                                    "<< /Length " + QByteArray::number(stream.size()) + " >>\nstream\n" + stream + "\nendstream"};
     QByteArray out = "%PDF-1.4\n";
     QList<int> offsets;
     for (int i = 0; i < objects.size(); ++i) {
@@ -529,6 +566,102 @@ private slots:
         QCOMPARE(view->zoom(), 1.5);
         delete timer;
         view->setFit(PageView::Fit::Width);
+    }
+
+
+
+    // A drag over a page of labels asks little (the hunt of 2026-10-17,
+    // C2): each of Qt's calls for a character reads the page's text again,
+    // 3 ms on 3,000 runs, 12 on 12,000, and a drag's step took three to five
+    // of them. Now a point in a character met before, or nearest a run of
+    // one character met before, asks none; a step over the same characters
+    // keeps its selection; a point beyond pdfium's reach of every run is
+    // not tried.
+    void aDragOverLabelsAsksLittle()
+    {
+        const QString labels = dir.filePath("ws/labels.pdf");
+        QVERIFY(writeScatteredPdf(labels, 3000));
+        QVERIFY(app->gotoPage(labels));
+        PdfDoc* doc = pdf();
+        PageView* view = doc->view();
+        QTRY_COMPARE(doc->pageCount(), 1);
+        const QList<QPolygonF> runs = doc->document()->getAllText(0).bounds();
+        QVERIFY(runs.size() > 2500);
+        const QPointF from = runs.at(runs.size() / 2).boundingRect().center();
+        const int before = view->textCalls();
+        QElapsedTimer t;
+        t.start();
+        for (int k = 1; k <= 150; ++k) view->selectText(0, from, from + QPointF(k, k * 0.3));
+        const int calls = view->textCalls() - before;
+        qInfo("a drag of 150 steps over 3,000 labels: %d calls of Qt's, %lld ms", calls, t.elapsed());
+        QVERIFY2(calls < 150, qPrintable(QString::number(calls)));
+        // The same selection as asked afresh, nothing kept.
+        const QString dragged = view->selectedText();
+        QVERIFY(!dragged.isEmpty());
+        view->setDocument(doc->document());
+        QVERIFY(view->selectText(0, from, from + QPointF(150, 45)));
+        QCOMPARE(view->selectedText(), dragged);
+        // A point off the text (the page's corner, beyond pdfium's reach
+        // of every label): not tried itself; the nearest runs along them,
+        // six hit tests at most (there were up to 51, 110 ms on 12,000).
+        const int quiet = view->textCalls();
+        QVERIFY(!view->selectText(0, QPointF(2, 2), QPointF(3, 3)));
+        QVERIFY2(view->textCalls() - quiet <= 8, qPrintable(QString::number(view->textCalls() - quiet)));
+        app->slotFileClose(app->DocumentTab->indexOf(doc));
+        QVERIFY(app->findDoc(labels) == nullptr);
+        // A line of letters 200 points apart (one run, its gaps wider than
+        // a search along it reaches): pressed below a gap, six hit tests a
+        // point at most - two of Qt's calls each - where there were 17.
+        const QString spaced = dir.filePath("ws/spaced.pdf");
+        QVERIFY(writePagePdf(spaced, "BT /F1 12 Tf 200 Tc 72 400 Td (abc) Tj ET\n"));
+        QVERIFY(app->gotoPage(spaced));
+        doc = pdf();
+        view = doc->view();
+        QTRY_COMPARE(doc->pageCount(), 1);
+        const QRectF line = doc->document()->getAllText(0).boundingRectangle();
+        QVERIFY(line.width() > 200);
+        const int along = view->textCalls();
+        view->selectText(0, QPointF(175, line.bottom() + 40), QPointF(176, line.bottom() + 40));
+        QVERIFY2(view->textCalls() - along <= 26, qPrintable(QString::number(view->textCalls() - along)));
+        app->slotFileClose(app->DocumentTab->indexOf(doc));
+    }
+
+    // A zoom with the pointer beside a page (the grey margins at Fit Page)
+    // keeps the point under it, as on the page (the hunt of 2026-10-17,
+    // A1: the page in sight's top left corner was thrown under the pointer,
+    // a jump of up to a page). And a file read again during a step's frames
+    // keeps the step's end (N2: it stayed where the frames were).
+    void aZoomBesideAPageKeepsThePointer()
+    {
+        PdfDoc* doc = pdf();
+        PageView* view = doc->view();
+        view->setFit(PageView::Fit::Page);
+        view->goToPage(1, QPointF(0, doc->document()->pagePointSize(1).height() / 2 - 100));
+        shown(view);
+        const QRect page = view->pageRect(1);
+        QVERIFY2(page.left() > 20, "no margin beside the page");
+        const QPoint at(page.left() / 2, view->viewport()->height() / 2);
+        QVERIFY(at.y() > page.top() && at.y() < page.bottom());
+        const qreal f = std::pow(1.0015, 120);
+        QWheelEvent notch(QPointF(at), view->viewport()->mapToGlobal(QPointF(at)), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::ControlModifier,
+                          Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(view->viewport(), &notch);
+        QTRY_VERIFY(!view->zooming());
+        const QRect after = view->pageRect(1);
+        const double wanted = at.y() + (page.top() - at.y()) * f;
+        QVERIFY2(std::abs(after.top() - wanted) <= 2, qPrintable(QStringLiteral("the page's top %1, %2 wanted (it was %3, the pointer at %4)")
+                                                                     .arg(after.top()).arg(wanted).arg(page.top()).arg(at.y())));
+        // Read again in a step's frames: its end.
+        const qreal z = view->zoom();
+        view->zoomSmoothly(1.5);
+        QTest::qWait(30);
+        QVERIFY(view->zooming());
+        QVERIFY(doc->reload());
+        QVERIFY(std::abs(view->zoom() - z * 1.5) < 1e-9);
+        QTest::qWait(300);
+        QVERIFY(std::abs(view->zoom() - z * 1.5) < 1e-9);
+        view->setFit(PageView::Fit::Width);
+        doc->firstPage();
     }
 
     // Found, gone through, wrapped round; the menu's Find brings the bar.

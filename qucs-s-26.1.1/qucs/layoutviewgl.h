@@ -91,6 +91,9 @@ public:
     int layersAdded() const { return a_layersAdded; }
     /// The texts its last frame drew (for the tests).
     int textsDrawn() const { return a_textsDrawn; }
+    /// The vertices the CPU still holds (the GPU has them: none, for the
+    /// tests).
+    std::size_t heldFloats() const;
     /// Past its budget: the CPU draws (its picture shown here).
     bool tooLarge() const { return a_flat.tooLarge; }
     const Flattened& flattened() const { return a_flat; }
@@ -131,9 +134,11 @@ private:
     Flattened a_flat;
     // What the buffers were made of.
     const Layout* a_madeOf = nullptr;
+    quint64 a_generation = 0;   // the view's a_layoutGeneration then
     int a_cell = -2, a_depth = -1;
     bool a_labels = false;
-    std::vector<char> a_made;   // by layer: flattened into the buffers
+    std::vector<char> a_made;    // by layer: flattened into the buffers
+    std::vector<char> a_shown;   // by layer: shown at the last whole build
 };
 
 } // namespace qucs_s::layout

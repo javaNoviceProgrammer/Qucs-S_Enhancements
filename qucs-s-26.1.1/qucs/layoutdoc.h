@@ -204,6 +204,10 @@ private:
     QString rulerText(const QLineF& ruler) const;
 
     std::shared_ptr<const Layout> a_layout;
+    // Counts the layouts set: the GPU's canvas knows a layout by it (by its
+    // address, a layout read again where a freed one was would be taken
+    // for it).
+    quint64 a_layoutGeneration = 0;
     QVector<LayerStyle> a_styles;
     int a_cell = -1;
     int a_depth = 1 << 20;

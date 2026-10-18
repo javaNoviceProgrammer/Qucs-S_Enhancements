@@ -84,6 +84,8 @@ public:
     /// goes on from there.
     void zoomSmoothly(qreal factor, QPoint anchor = QPoint(-1, -1));
     qreal targetZoom() const;
+    /// A step under way ended at once where it was going (its point kept).
+    void finishZoom();
     /// A zoom under way: a step's frames, a pinch or a trackpad's scroll
     /// (till 100 ms after its last frame or event, or the pinch's end). Meanwhile the pages are
     /// drawn from the tiles at hand, another zoom's scaled, none rendered:
@@ -129,6 +131,9 @@ public:
     /// The tiles drawn from another zoom's, scaled, while their own are
     /// not there (for the tests).
     int tilesScaled() const { return a_tilesScaled; }
+    /// Qt's calls for characters and selections since the start, each
+    /// reading the page's text again (for the tests).
+    int textCalls() const { return a_textCalls; }
     /// Drawn by the GPU: its viewport an OpenGL widget, the tiles textures
     /// kept there and scaled by it (Settings… > Viewers: Viewers/pdfGpu, off
     /// unless chosen). The pages themselves are pdfium's, on the CPU.
@@ -179,6 +184,10 @@ private:
     void zoomGesture(qreal factor, QPoint anchor);
     /// The page and point under \a anchor, kept by a zoom's frames.
     void takeAnchor(QPoint anchor);
+    /// The page nearest \a pos (viewport) and its point there (points),
+    /// outside it too - the grey beside or between pages: what a zoom keeps
+    /// under the pointer. -1 without pages.
+    int anchorAt(QPoint pos, QPointF* point) const;
     void zoomed(int settle);
     void settle();
     /// The parts \a missing (viewport) of page \a page (at \a r) whose
@@ -226,6 +235,7 @@ private:
     QHash<int, QImage> a_previews;
     int a_tilesRendered = 0;
     int a_tilesScaled = 0;
+    int a_textCalls = 0;
 
     // A zoom under way: a step's animation (0 to 1, from a_zoomFrom to
     // a_zoomTarget), its anchor's page and point kept; a gesture's end.
@@ -246,8 +256,20 @@ private:
         QPointF point;
         int index;
         bool pastMiddle;
+        QRectF box;   // its character's (points), empty when none
     };
     QList<CharAt> a_charAts;
+    /// The box of character \a index of \a page (points), kept: each of
+    /// Qt's calls reads the page's text again (12 ms a call on a page of
+    /// 12,000 runs).
+    QRectF charBox(int page, int index);
+    QHash<qint64, QRectF> a_charBoxes;
+    // A run of one character (its box the run's), by page and run: its
+    // character's index, found once.
+    QHash<qint64, int> a_runChars;
+    // The selection's characters [first, end) on a_selectionPage: a drag's
+    // step that keeps them asks nothing again.
+    int a_selectionFirst = -1, a_selectionEnd = -1;
 
     // A drag: a selection, a link pressed, the view panned.
     enum class Drag { None, Select, Link, Pan };

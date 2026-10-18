@@ -401,7 +401,15 @@ void LayoutGl::sync()
     bool ok = false;
     const quint64 asked = qEnvironmentVariable("QUCS_LAYOUT_GPU_BUDGET").toULongLong(&ok);
     const quint64 budget = ok ? asked : Budget;
-    const bool same = layout == a_madeOf && a_view->a_cell == a_cell && a_view->a_depth == a_depth && a_view->a_labels == a_labels;
+    const bool same = layout == a_madeOf && a_view->a_layoutGeneration == a_generation && a_view->a_cell == a_cell && a_view->a_depth == a_depth
+                      && a_view->a_labels == a_labels;
+    std::vector<char> shownNow(layout ? layout->layers.size() : 0);
+    for (std::size_t i = 0; i < shownNow.size(); ++i) shownNow[i] = shown(i) ? 1 : 0;
+    // Past the budget (the CPU draws it): made again only when the layers
+    // shown change - one hidden may bring it under. (Made again at every
+    // frame, a chip of more than 2 million shapes was flattened that far
+    // each time before the CPU drew it.)
+    if (same && layout && a_flat.tooLarge && shownNow == a_shown) return;
     if (same && layout && !a_flat.tooLarge) {
         // (Every layer's flag its own: past the list flatten takes a layer
         // as shown.)
@@ -429,6 +437,11 @@ void LayoutGl::sync()
                 upload(a_layers[i]->fills, a_flat.layers[i].fills, 2, false);
                 upload(a_layers[i]->outlines, a_flat.layers[i].outlines, 2, false);
                 upload(a_layers[i]->dots, a_flat.layers[i].dots, 3, true);
+                // (The CPU's arrays freed, as a whole build's: the GPU has
+                // them.)
+                std::vector<float>().swap(a_flat.layers[i].fills);
+                std::vector<float>().swap(a_flat.layers[i].outlines);
+                std::vector<float>().swap(a_flat.layers[i].dots);
             }
             for (int k = 0; k < added.texts.size(); ++k) {
                 if (a_flat.texts.size() >= 100000) break;
@@ -440,6 +453,8 @@ void LayoutGl::sync()
         }
     }
     a_madeOf = layout;
+    a_generation = a_view->a_layoutGeneration;
+    a_shown = shownNow;
     a_cell = a_view->a_cell;
     a_depth = a_view->a_depth;
     a_labels = a_view->a_labels;
@@ -465,6 +480,13 @@ void LayoutGl::sync()
     }
     std::vector<float>().swap(a_flat.frames);
     std::vector<float>().swap(a_flat.frameDots);
+}
+
+std::size_t LayoutGl::heldFloats() const
+{
+    std::size_t n = a_flat.frames.size() + a_flat.frameDots.size();
+    for (const Flattened::Layer& l : a_flat.layers) n += l.fills.size() + l.outlines.size() + l.dots.size();
+    return n;
 }
 
 unsigned LayoutGl::patternTexture(Qt::BrushStyle style)

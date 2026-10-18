@@ -222,6 +222,8 @@ void PageView::setDocument(QPdfDocument* document)
     a_links.clear();
     a_pageTexts.clear();
     a_charAts.clear();
+    a_charBoxes.clear();
+    a_runChars.clear();
     clearSelection();
     a_currentPage = 0;
     relayout();
@@ -262,11 +264,7 @@ void PageView::zoomBy(qreal factor, QPoint anchor)
     // The point under the anchor stays under it.
     if (anchor.x() < 0) anchor = viewport()->rect().center();
     QPointF inPage;
-    int page = pageAt(anchor, &inPage);
-    if (page < 0) {
-        page = a_currentPage;
-        inPage = QPointF(0, 0);
-    }
+    const int page = anchorAt(anchor, &inPage);
     placeZoom(z, anchor, page, inPage);
 }
 
@@ -306,6 +304,15 @@ void PageView::zoomSmoothly(qreal factor, QPoint anchor)
     a_zoomAnimation->start();
 }
 
+void PageView::finishZoom()
+{
+    if (a_zoomAnimation->state() != QAbstractAnimation::Running) return;
+    a_zoomAnimation->stop();
+    if (a_zoomPage < 0) takeAnchor(a_zoomAnchor);
+    placeZoom(a_zoomTarget, a_zoomAnchor, a_zoomPage, a_zoomPoint);
+    a_settle->start(ZoomSettleMs);
+}
+
 qreal PageView::targetZoom() const
 {
     return a_zoomAnimation->state() == QAbstractAnimation::Running ? a_zoomTarget : a_zoom;
@@ -314,11 +321,22 @@ qreal PageView::targetZoom() const
 void PageView::takeAnchor(QPoint anchor)
 {
     a_zoomAnchor = anchor;
-    a_zoomPage = pageAt(anchor, &a_zoomPoint);
-    if (a_zoomPage < 0) {
-        a_zoomPage = a_currentPage;
-        a_zoomPoint = QPointF(0, 0);
-    }
+    a_zoomPage = anchorAt(anchor, &a_zoomPoint);
+}
+
+int PageView::anchorAt(QPoint pos, QPointF* point) const
+{
+    // (Off every page, the nearest one's point - beyond its edge. It was
+    // the page in sight's top left corner: a zoom with the pointer beside
+    // a page threw that corner under it, a jump of up to a page.)
+    if (a_pages.isEmpty()) return -1;
+    const QPointF doc = QPointF(pos) + QPointF(offset());
+    const auto it = std::lower_bound(a_pages.cbegin(), a_pages.cend(), doc.y(), [](const QRectF& r, qreal y) { return r.bottom() < y; });
+    int page = it == a_pages.cend() ? int(a_pages.size()) - 1 : int(it - a_pages.cbegin());
+    // (Between two pages: the nearer.)
+    if (page > 0 && doc.y() < a_pages.at(page).top() && doc.y() - a_pages.at(page - 1).bottom() < a_pages.at(page).top() - doc.y()) --page;
+    if (point != nullptr) *point = (doc - a_pages.at(page).topLeft()) / pixelsPerPoint();
+    return page;
 }
 
 void PageView::zoomGesture(qreal factor, QPoint anchor)
@@ -540,6 +558,8 @@ void PageView::setCurrentSearchResult(int index)
 
 void PageView::setSelection(int page, const QString& text, const QList<QPolygonF>& bounds)
 {
+    // (Its characters' range: selectText's alone sets it, after.)
+    a_selectionFirst = a_selectionEnd = -1;
     const bool had = hasSelection();
     a_selectionPage = page;
     a_selectionText = text;
@@ -554,12 +574,24 @@ void PageView::clearSelection()
     setSelection(-1, QString(), {});
 }
 
+QRectF PageView::charBox(int page, int index)
+{
+    const qint64 key = (qint64(page) << 32) | quint32(index);
+    if (auto it = a_charBoxes.constFind(key); it != a_charBoxes.constEnd()) return *it;
+    const QRectF box = a_document->getSelectionAtIndex(page, index, 1).boundingRectangle();
+    ++a_textCalls;
+    if (a_charBoxes.size() > 4096) a_charBoxes.clear();
+    a_charBoxes.insert(key, box);
+    return box;
+}
+
 const PageView::PageText& PageView::pageText(int page)
 {
     auto it = a_pageTexts.find(page);
     if (it == a_pageTexts.end()) {
         PageText t;
         const QPdfSelection all = a_document->getAllText(page);
+        ++a_textCalls;
         for (const QPolygonF& run : all.bounds()) t.runs << run.boundingRect();
         // (Two anchors for the hit test: a character with a box at each end
         // - the text's first ones may be spaces or a line's end, boxless.)
@@ -590,9 +622,11 @@ int PageView::hitChar(int page, QPointF point)
     const PageText& t = pageText(page);
     if (t.first < 0) return -1;
     QPdfSelection s = a_document->getSelection(page, t.firstAt, point);
+    ++a_textCalls;
     if (s.isValid() && s.endIndex() > t.first) return s.endIndex();
     if (t.last > t.first) {
         s = a_document->getSelection(page, point, t.lastAt);
+        ++a_textCalls;
         if (s.isValid() && s.startIndex() >= t.first && s.startIndex() < t.last) return s.startIndex();
     }
     return -1;
@@ -605,7 +639,43 @@ int PageView::charAt(int page, QPointF point, bool* pastMiddle)
             if (pastMiddle != nullptr) *pastMiddle = c.pastMiddle;
             return c.index;
         }
-    int index = hitChar(page, point);
+    // (Each of Qt's calls reads the page's text again - some 12 ms on a
+    // page of 12,000 runs, 3 on 3,000 -, so as few as can be: a point in
+    // the character found last is it again; one beyond pdfium's reach of
+    // every run - some 8 points - is not tried.)
+    const auto known = [&](int index, const QRectF& box) {
+        const bool past = point.x() > box.center().x();
+        a_charAts.prepend({page, point, index, past, box});
+        if (a_charAts.size() > 4) a_charAts.removeLast();
+        if (pastMiddle != nullptr) *pastMiddle = past;
+        return index;
+    };
+    for (const CharAt& c : std::as_const(a_charAts))
+        if (c.page == page && c.index >= 0 && c.box.contains(point)) return known(c.index, c.box);
+    for (auto it = a_charBoxes.constBegin(); it != a_charBoxes.constEnd(); ++it)
+        if (int(it.key() >> 32) == page && it.value().contains(point)) return known(int(it.key() & 0xffffffff), it.value());
+    // The nearest run, and whether the point is within pdfium's reach of
+    // one. A run of one character met before is that character's: no call
+    // (labels scattered over a drawing, a map - each its own run).
+    const QList<QRectF>& runs = pageText(page).runs;
+    int nearest = -1;
+    qreal best = 0;
+    for (int r = 0; r < runs.size(); ++r) {
+        const QRectF& box = runs.at(r);
+        if (box.isEmpty()) continue;
+        const qreal dx = std::max({box.left() - point.x(), 0.0, point.x() - box.right()});
+        const qreal dy = std::max({box.top() - point.y(), 0.0, point.y() - box.bottom()});
+        const qreal d = dx * dx + dy * dy;
+        if (nearest < 0 || d < best) {
+            nearest = r;
+            best = d;
+        }
+    }
+    const bool inReach = nearest >= 0 && runs.at(nearest).adjusted(-16, -16, 16, 16).contains(point);
+    if (inReach)
+        if (auto it = a_runChars.constFind((qint64(page) << 32) | quint32(nearest)); it != a_runChars.constEnd())
+            return known(*it, runs.at(nearest));
+    int index = inReach ? hitChar(page, point) : -1;
     if (index < 0) {
         // Off the text: the nearest run's - a line's, the line first -,
         // the point brought into it; on a gap there (a space, between
@@ -622,27 +692,41 @@ int PageView::charAt(int page, QPointF point, bool* pastMiddle)
         const std::size_t tried = std::min<std::size_t>(near.size(), 3);
         std::partial_sort(near.begin(), near.begin() + std::ptrdiff_t(tried), near.end(),
                           [](const auto& a, const auto& b) { return a.first < b.first; });
-        for (std::size_t r = 0; r < tried && index < 0; ++r) {
+        // (Six hit tests at most: each reads the page's text again - 51 a
+        // point, as it was, 110 ms on a page of 12,000 runs.)
+        int tests = 0;
+        for (std::size_t r = 0; r < tried && index < 0 && tests < 6; ++r) {
             const QRectF& box = *near[r].second;
             const qreal inset = std::min<qreal>(0.5, box.width() / 4);
             const qreal x0 = std::clamp(point.x(), box.left() + inset, box.right() - inset);
             const qreal step = std::max<qreal>(1.0, box.height() / 2);
-            for (int k = 0; k <= 8 && index < 0; ++k)
+            for (int k = 0; k <= 8 && index < 0 && tests < 6; ++k)
                 for (const int sign : {1, -1}) {
                     if (k == 0 && sign < 0) continue;
                     const qreal x = x0 + sign * k * step;
                     if (x < box.left() || x > box.right()) continue;
+                    ++tests;
                     index = hitChar(page, QPointF(x, box.center().y()));
-                    if (index >= 0) break;
+                    if (index >= 0 || tests >= 6) break;
                 }
         }
     }
     bool past = false;
+    QRectF box;
     if (index >= 0) {
-        const QRectF box = a_document->getSelectionAtIndex(page, index, 1).boundingRectangle();
+        box = charBox(page, index);
         past = !box.isEmpty() && point.x() > box.center().x();
+        // (Its run one character: the run is it.)
+        if (inReach && !box.isEmpty()) {
+            const QRectF run = runs.at(nearest);
+            if (std::abs(run.left() - box.left()) < 0.5 && std::abs(run.right() - box.right()) < 0.5 && std::abs(run.top() - box.top()) < 0.5
+                && std::abs(run.bottom() - box.bottom()) < 0.5) {
+                if (a_runChars.size() > 100000) a_runChars.clear();
+                a_runChars.insert((qint64(page) << 32) | quint32(nearest), index);
+            }
+        }
     }
-    a_charAts.prepend({page, point, index, past});
+    a_charAts.prepend({page, point, index, past, box});
     if (a_charAts.size() > 4) a_charAts.removeLast();
     if (pastMiddle != nullptr) *pastMiddle = past;
     return index;
@@ -670,12 +754,17 @@ bool PageView::selectText(int page, QPointF from, QPointF to)
         clearSelection();
         return false;
     }
+    // (A drag's step over the same characters: the selection it has.)
+    if (page == a_selectionPage && first == a_selectionFirst && end == a_selectionEnd && hasSelection()) return true;
     const QPdfSelection s = a_document->getSelectionAtIndex(page, first, end - first);
+    ++a_textCalls;
     if (!s.isValid() || s.text().isEmpty()) {
         clearSelection();
         return false;
     }
     setSelection(page, s.text(), s.bounds());
+    a_selectionFirst = first;
+    a_selectionEnd = end;
     return true;
 }
 
@@ -1551,6 +1640,9 @@ void PdfDoc::documentLoaded()
 
 bool PdfDoc::reload()
 {
+    // (A step's end, not the zoom and place it shows on its way: read
+    // again during its frames, a file stayed there.)
+    a_view->finishZoom();
     const int page = a_view->currentPage();
     const qreal zoom = a_view->zoom();
     const PageView::Fit fit = a_view->fit();

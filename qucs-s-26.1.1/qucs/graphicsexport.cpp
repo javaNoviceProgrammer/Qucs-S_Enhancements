@@ -15,6 +15,7 @@
 
 #include "graphicsexport.h"
 #include "schematic.h"
+#include "levelofdetail.h"
 #include "components/component.h"
 #include "diagrams/diagram.h"
 #include "diagrams/graph.h"
@@ -369,13 +370,20 @@ QByteArray svg(Schematic* schematic, const Options& options)
         generator.setTitle(title(schematic));
         generator.setDescription(creator());
         QPainter target(&generator);
+        // A font only this system has is named in the file as the reader's
+        // own sans-serif font - the painter's own too: its groups name it,
+        // the page's fill's first (macOS's ".AppleSystemUIFont", on its
+        // display the application's).
+        if (QFont own = target.font(); own.family().startsWith(QLatin1Char('.'))) {
+            own.setFamilies({QStringLiteral("sans-serif")});
+            target.setFont(own);
+        }
         if (!options.transparent)
             target.fillRect(page, Qt::white);
-        // A font only this system has is named in the file as the reader's
-        // own sans-serif font.
         RelayDevice relay(&target, options.textAsOutlines ? TextMode::Outlines : TextMode::Text,
                           options.colours, QStringLiteral("sans-serif"));
         QPainter painter(&relay);
+        const qucs_s::lod::VectorOutput vector;   // (zoomed after: lines as exact as asked)
         paint(schematic, &painter, options.selectionOnly);
     }
     return buffer.data();
@@ -405,6 +413,7 @@ QByteArray pdf(Schematic* schematic, const Options& options, QList<TextRun>* tex
         RelayDevice relay(&target, mode, options.colours);
         {
             QPainter painter(&relay);
+            const qucs_s::lod::VectorOutput vector;
             paint(schematic, &painter, options.selectionOnly);
         }
         if (texts != nullptr)
@@ -428,6 +437,7 @@ QByteArray eps(Schematic* schematic, const Options& options)
             target.fillRect(page, Qt::white);
         RelayDevice relay(&target, TextMode::Outlines, options.colours);
         QPainter painter(&relay);
+        const qucs_s::lod::VectorOutput vector;
         paint(schematic, &painter, options.selectionOnly);
     }
     return buffer.data();

@@ -1807,6 +1807,9 @@ private slots:
         QCOMPARE(view->canvas()->builds(), builds);
         QCOMPARE(view->canvas()->layersAdded(), 1);
         QCOMPARE(view->canvas()->flattened().shapes, quint64(8000));
+        // (Its vertices the GPU's alone, as a whole build leaves them - the
+        // CPU kept a copy: the hunt of 2026-10-17, B1.)
+        QCOMPARE(view->canvas()->heldFloats(), std::size_t(0));
         // Hidden again, shown again: nothing made.
         doc->setLayerVisible(1, false);
         (void)view->canvas()->grabFramebuffer();
@@ -1855,6 +1858,54 @@ private slots:
         qInfo("8,000 curves on the GPU: its first frame %lld ms; a layer hidden %lld ms, shown %lld ms, one shown for the first time %lld ms "
               "(its 2,000 alone); made again whole %lld ms (each layer shown or hidden, before); on the CPU hidden %lld ms",
               build, hide, show, added, whole, cpuHide);
+        closeAll();
+#else
+        QSKIP("a build without OpenGL");
+#endif
+    }
+
+    // The GPU's canvas makes its buffers again when it must, and only then
+    // (the hunt of 2026-10-17): a layout set again - one read anew where a
+    // freed one was, taken for it by its address (N1) - is made again; past
+    // its budget, the CPU drawing the cell, it is not made again at every
+    // frame (F1: each frame flattened 2 million shapes first) but when the
+    // layers shown change, one hidden perhaps bringing it under.
+    void theGpuCanvasMakesWhatItMustOnly()
+    {
+#ifdef QUCS_GPU_VIEW
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+        LayoutDoc* doc = open(path("sample.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        view->resize(640, 480);
+        view->fit();
+        view->setGpu(true);
+        QVERIFY(view->gpu());
+        (void)view->canvas()->grabFramebuffer();
+        int builds = view->canvas()->builds();
+        view->setLayout(doc->layout());
+        (void)view->canvas()->grabFramebuffer();
+        QCOMPARE(view->canvas()->builds(), builds + 1);
+        // Past the budget.
+        qputenv("QUCS_LAYOUT_GPU_BUDGET", "5");
+        struct Unset {
+            ~Unset() { qunsetenv("QUCS_LAYOUT_GPU_BUDGET"); }
+        } unset;
+        view->setLayout(doc->layout());
+        (void)view->canvas()->grabFramebuffer();
+        QVERIFY(view->canvas()->flattened().tooLarge);
+        builds = view->canvas()->builds();
+        for (int i = 0; i < 5; ++i) {
+            view->setView(view->center() + QPointF(0.5, 0), view->scale());
+            (void)view->canvas()->grabFramebuffer();
+        }
+        QCOMPARE(view->canvas()->builds(), builds);
+        doc->setLayerVisible(0, false);
+        (void)view->canvas()->grabFramebuffer();
+        QCOMPARE(view->canvas()->builds(), builds + 1);
+        (void)view->canvas()->grabFramebuffer();
+        QCOMPARE(view->canvas()->builds(), builds + 1);
+        doc->setLayerVisible(0, true);
         closeAll();
 #else
         QSKIP("a build without OpenGL");

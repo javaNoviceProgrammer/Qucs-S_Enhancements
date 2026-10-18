@@ -47,4 +47,21 @@ Draft::~Draft() { drafted() = m_previous; }
 
 bool draft() { return drafted(); }
 
+namespace {
+bool& vectored()
+{
+    static bool vector = false;
+    return vector;
+}
+} // namespace
+
+VectorOutput::VectorOutput(bool vector) : m_previous(vectored())
+{
+    vectored() = vector;
+}
+
+VectorOutput::~VectorOutput() { vectored() = m_previous; }
+
+bool vectorOutput() { return vectored(); }
+
 } // namespace qucs_s::lod

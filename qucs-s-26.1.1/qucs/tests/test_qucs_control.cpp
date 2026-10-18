@@ -5422,6 +5422,17 @@ private slots:
         QVERIFY2(json(r).toObject().value("output").toString().contains("late-2") && json(r).toObject().value("finished").toBool(),
                  qPrintable(text(r)));
         app->terminalConsole()->stop();
+        // An interrupt with nothing running: said at once, nothing to stop
+        // (it waited its whole 'wait' for a prompt, then said the run went
+        // on - the hunt of 2026-10-17, C1).
+        {
+            QElapsedTimer quick;
+            quick.start();
+            r = call("console", {{"kind", "terminal"}, {"interrupt", true}, {"wait", 8}}, 20000);
+            const QJsonObject said = json(r).toObject();
+            QVERIFY2(!failed(r) && !said.value("running").toBool() && said.value("note").toString().contains("Nothing runs"), qPrintable(text(r)));
+            QVERIFY2(quick.elapsed() < 3000, qPrintable(QString::number(quick.elapsed())));
+        }
         // Python, when there is one: a result, a run left going, stopped.
         if (!app->pythonProgram().isEmpty() && !QStandardPaths::findExecutable(app->pythonProgram()).isEmpty()) {
             r = call("console", {{"kind", "python"}, {"input", "print(6*7)"}, {"wait", 30}}, 40000);
