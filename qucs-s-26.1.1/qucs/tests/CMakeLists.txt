@@ -235,6 +235,14 @@ qucs_add_test(test_gui_monkey)
 qucs_add_test(test_stress_findings)
 qucs_add_test(test_large_schematics)
 qucs_add_test(test_canvas_drawing)
+# (macOS: the program links Accelerate weakly - its LU's and complex
+# factorizations' symbols macOS 15.5's, the release built for 13.0: linked
+# strongly, it would not start on an older macOS; multiphysics/CMakeLists.)
+if(APPLE AND QUCS_ACCELERATE_FRAMEWORK)
+  add_test(NAME test_macos_accelerate_weak
+           COMMAND sh -c "otool -l \"$1\" | grep -A2 LC_LOAD_WEAK_DYLIB | grep -q Accelerate.framework && ! nm -m \"$1\" | grep '(from Accelerate)' | grep -vq 'weak external'"
+                   check $<TARGET_FILE:${QUCS_NAME}>)
+endif()
 # (Its zoomed diagrams drawn at a device pixel ratio of 2, as on a Retina
 # screen - QT_SCALE_FACTOR offscreen: the lines in sight taken in the
 # widget's pixels, not the device's, passed over only there.)

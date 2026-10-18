@@ -59,7 +59,15 @@ if(APPLE)
       #include <Accelerate/Accelerate.h>
       int main() { SparseFactorization_t t = SparseFactorizationLU; return int(t) == 80 ? 0 : 1; }" QUCS_ACCELERATE_HAS_LU)
     unset(CMAKE_REQUIRED_LIBRARIES)
-    target_link_libraries(fem PUBLIC ${QUCS_ACCELERATE_FRAMEWORK})
+    # Weakly: its LU's and complex factorizations' functions are macOS
+    # 15.5's, called only where __builtin_available finds them - but their
+    # headers mark none of the internal ones, so a strong link made each a
+    # symbol the program needs to start: built for 13.0, the release would
+    # not start before 15.5 ("Symbol not found:
+    # __SparseDestroyOpaqueNumeric_Complex_Double", an Intel Mac on 13.5).
+    # Weak, those not there are null, never called. (Its Cholesky's, macOS
+    # 10.13's, are there.) test_macos_accelerate_weak checks the program.
+    target_link_libraries(fem PUBLIC "-weak_framework Accelerate")
     set_property(SOURCE fem_sparse.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUCS_ACCELERATE)
     if(QUCS_ACCELERATE_HAS_LU)
       set_property(SOURCE fem_sparse.cpp APPEND PROPERTY COMPILE_DEFINITIONS QUCS_ACCELERATE_LU)
