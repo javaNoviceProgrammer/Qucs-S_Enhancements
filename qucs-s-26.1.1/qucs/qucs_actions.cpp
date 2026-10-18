@@ -31,7 +31,10 @@
 #include <QDesktopServices>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
@@ -578,6 +581,26 @@ void QucsApp::slotEditCut() {
 
 // --------------------------------------------------------------------
 void QucsApp::slotEditCopy() {
+  // Text chosen where the keyboard's focus is - the Claude Code dock's
+  // conversation, a log, a preview, a field (Edit > Copy from the menu; the
+  // key is the text's own there).
+  QWidget *focus = QApplication::focusWidget();
+  if (auto *text = qobject_cast<QTextEdit *>(focus); text != nullptr && text->textCursor().hasSelection()) {
+    text->copy();
+    return;
+  }
+  if (auto *text = qobject_cast<QPlainTextEdit *>(focus); text != nullptr && text->textCursor().hasSelection()) {
+    text->copy();
+    return;
+  }
+  if (auto *field = qobject_cast<QLineEdit *>(focus); field != nullptr && field->hasSelectedText()) {
+    field->copy();
+    return;
+  }
+  if (auto *label = qobject_cast<QLabel *>(focus); label != nullptr && label->hasSelectedText()) {
+    QApplication::clipboard()->setText(label->selectedText());
+    return;
+  }
   // The File Browser's entries chosen, while it has the focus (as the
   // Finder's Edit > Copy).
   if (fileBrowser != nullptr && fileBrowser->hasEditFocus()) {
@@ -974,6 +997,19 @@ void QucsApp::slotCenterVertical() {
 // ---------------------------------------------------------------------
 // Is called when the "select all" action is triggered.
 void QucsApp::slotSelectAll() {
+  // Text one reads with the keyboard's focus: all of it (Edit > Select All
+  // from the menu; the key is the text's own there).
+  QWidget *focus = QApplication::focusWidget();
+  if (misc::isReadOnlyText(focus)) {
+    if (auto *text = qobject_cast<QTextEdit *>(focus)) {
+      text->selectAll();
+      return;
+    }
+    if (auto *text = qobject_cast<QPlainTextEdit *>(focus)) {
+      text->selectAll();
+      return;
+    }
+  }
   slotHideEdit(); // disable text edit of component property
 
   QWidget *Doc = DocumentTab->currentWidget();

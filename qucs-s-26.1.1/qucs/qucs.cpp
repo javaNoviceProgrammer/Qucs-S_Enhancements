@@ -34,6 +34,7 @@
 #include <QFileDialog>
 #include <QStatusBar>
 #include <QShortcut>
+#include <QKeyEvent>
 #include <QApplication>
 #include <QPainter>
 #include <QClipboard>
@@ -197,6 +198,34 @@ protected:
   }
 };
 
+// The editing keys in text one reads (misc::isReadOnlyText): the Claude
+// Code dock's conversation, a log, a preview, a label. Qt claims them
+// before the window's shortcuts for editable text alone, so there Cmd+C
+// was Edit > Copy - the document's selection copied, not the text chosen
+// (right-click > Copy alone worked) -, and Cut, Paste, Delete and Backspace
+// cut, pasted or deleted in the document, out of sight. Claimed for the
+// text: Copy and Select All are its own (Qt's text control does them in
+// read-only text too), the others nothing.
+class ReadOnlyTextKeys : public QObject
+{
+public:
+  explicit ReadOnlyTextKeys(QObject *parent) : QObject(parent) { qApp->installEventFilter(this); }
+  ~ReadOnlyTextKeys() override { qApp->removeEventFilter(this); }
+
+  bool eventFilter(QObject *watched, QEvent *event) override
+  {
+    if (event->type() != QEvent::ShortcutOverride || !watched->isWidgetType()) return false;
+    if (!misc::isReadOnlyText(static_cast<QWidget *>(watched))) return false;
+    auto *key = static_cast<QKeyEvent *>(event);
+    const bool plain = (key->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier;
+    if (key->matches(QKeySequence::Copy) || key->matches(QKeySequence::SelectAll) || key->matches(QKeySequence::Cut)
+        || key->matches(QKeySequence::Paste) || key->matches(QKeySequence::Delete)
+        || (plain && (key->key() == Qt::Key_Backspace || key->key() == Qt::Key_Delete)))
+      key->accept();
+    return false;
+  }
+};
+
 } // namespace
 
 QucsApp::QucsApp(bool netlist2Console) :
@@ -209,6 +238,7 @@ QucsApp::QucsApp(bool netlist2Console) :
   // An eye diagram folds a trace at the Tbit of the PRBS source it comes
   // from (looked for among the open documents).
   qucs_s::prbs::installForEyeDiagrams();
+  new ReadOnlyTextKeys(this);
 
   // Instantiate settings singleton and restore window geometry (unless
   // Application Settings > Workspace says the window starts afresh).

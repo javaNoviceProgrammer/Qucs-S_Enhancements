@@ -32,6 +32,7 @@
 class QDir;
 class QMimeData;
 class QWheelEvent;
+class QWidget;
 class Schematic;
 
 namespace misc {
@@ -272,6 +273,12 @@ namespace misc {
   // (QucsSettings.WheelZooms), and with Ctrl the other; a touchpad's two
   // fingers scroll, as everywhere (its pinch zooms), and with Ctrl zoom.
   bool wheelZooms(const QWheelEvent* event);
+
+  // Text one reads, not edits: a read-only text view (the Claude Code
+  // dock's conversation, a log, a preview), a label whose text can be
+  // chosen. The window's editing keys are its own there (QucsApp's
+  // filter): Copy and Select All its text's, Cut, Paste and Delete nothing.
+  bool isReadOnlyText(const QWidget* widget);
 
 }
 
