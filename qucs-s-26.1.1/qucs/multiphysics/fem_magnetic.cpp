@@ -1265,7 +1265,7 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
     // A solution of sources F (fixed values and held voltages in it, or
     // not) and the conductors' currents; each single conductor's U and
     // current I = S U - jω u·A.
-    auto solveFor = [&](const Eigen::VectorXcd& rhs, const std::vector<cd>& currents, bool fixed, std::vector<double>& re, std::vector<double>& im,
+    auto solveFor = [this, &X, &conductors, &error, &fixedPart, &jw, &mlu, &nc, &ncoils, &nd, &uvec, &held](const Eigen::VectorXcd& rhs, const std::vector<cd>& currents, bool fixed, std::vector<double>& re, std::vector<double>& im,
                         std::vector<cd>& U, std::vector<cd>& I) {
         Eigen::VectorXcd xf;
         if (!a_complex.solve(rhs, xf, a_node->name(), error)) return false;

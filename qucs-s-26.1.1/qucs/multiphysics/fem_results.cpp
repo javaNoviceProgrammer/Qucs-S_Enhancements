@@ -841,7 +841,7 @@ CoupledLines coupledLines(const Solution& solution, const Node& node)
         out.error = tr("the lines' capacitance matrix in vacuum is not positive definite: are the terminals at voltages, a ground beside them?");
         return out;
     }
-    auto finish = [&](LineMode& m) {
+    auto finish = [&N, &Y, &k0, &n, &qs](LineMode& m) {
         m.alphaDb = 20 / std::log(10.0) * m.gamma.real();
         m.nEff = m.gamma.imag() / k0;
         // i = Y v / γ; its impedance vᵀv / vᵀi.
