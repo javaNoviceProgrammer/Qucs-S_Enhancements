@@ -599,8 +599,8 @@ WaveFields waveFieldsAt(PointEvaluator& e, int field);
 /// entry has it (a table: an array).
 QJsonValue materialValue(const Node& m, const QString& key);
 
-/// Electrostatics' C0 (every εr 1) for a line's parameters.
-double scalarVacuumCapacitance(Solution& solution, int field, const QString& terminal, QString* error);
+/// Electrostatics' terminals as a coupled line's (terminalMatrices).
+bool scalarTerminalMatrices(Solution& solution, int field, const QStringList& terminals, bool vacuum, TerminalMatrices* out, QString* error);
 
 } // namespace qucs_s::fem::detail
 

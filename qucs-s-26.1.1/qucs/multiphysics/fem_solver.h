@@ -37,6 +37,12 @@ namespace qucs_s::fem {
 class EdgeSpace;
 class Solution;
 
+/// Electrostatics' terminals at 1 V in turn (terminalMatrices): the charges
+/// C, the dielectrics' loss integrals Gd (per ω) and Gs; by terminal.
+struct TerminalMatrices {
+    std::vector<std::vector<double>> C, Gd, Gs;
+};
+
 /// One physics solved: its field on its space, and what was found.
 struct Field {
     QString tag;           ///< es, ec, ht, solid
@@ -262,6 +268,10 @@ public:
     int snapshotAtFrequency(double f) const;
 
     QStringList log;
+    /// What terminalMatrices found, by its physics, terminals, vacuum or not
+    /// and (not in vacuum) the snapshot and frequency: a line's matrices at
+    /// each frequency of a sweep without solving its vacuum again.
+    mutable std::map<QString, TerminalMatrices> terminalCache;
     QString studyTag;
     double seconds = 0;
     /// Of a sweep: the parameters' values this solution is of ("w = 2 mm").
@@ -442,10 +452,16 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
 /// error in \a error.
 std::optional<std::vector<double>> valueList(const QString& text, const Scope& scope, Dim* dim = nullptr, QString* error = nullptr);
 
-/// The capacitance of terminal \a terminal of the electrostatics \a tag
-/// in \a solution (F, over the thickness) with every relative permittivity
-/// 1: the C0 of a line's quasi-TEM parameters. NaN and \a error on failure.
-double vacuumCapacitance(const Solution& solution, const QString& tag, const QString& terminal, QString* error = nullptr);
+/// Electrostatics' terminals as a coupled line's: each of \a terminals at
+/// 1 V in turn, the others and every fixed value at 0, no sources (one
+/// factorization) - the charges, C (F, over the thickness: C_ij the charge
+/// on i of j's volt); its dielectrics' losses, ∫ ∇φ_i·ε0 εr tan δ ∇φ_j (Gd,
+/// G's per ω) and ∫ ∇φ_i·σ ∇φ_j (Gs, S); with every εr 1 (\a vacuum) C
+/// alone, the line's C0 (TerminalMatrices). Kept in the solution's
+/// terminalCache: C0 once, the others at each snapshot. False and why in
+/// \a error when it cannot.
+bool terminalMatrices(const Solution& solution, const QString& tag, const QStringList& terminals, bool vacuum, TerminalMatrices* out,
+                      QString* error = nullptr);
 
 /// For the tests alone: the semiconductor's Jacobian made inexact on purpose
 /// - band-to-band tunnelling's derivative by the field dropped -, its

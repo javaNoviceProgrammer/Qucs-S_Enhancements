@@ -14,6 +14,8 @@
 
 #include <QCoreApplication>
 
+#include <Eigen/Dense>
+
 #include <cmath>
 #include <cstring>
 
@@ -211,6 +213,260 @@ QString spiceLine(const LineRLGC& line, double length, const QString& name, int 
         }
     }
     out += QStringLiteral(".ends %1\n").arg(sub);
+    return out;
+}
+
+CoupledSweep coupledSweep(const SolutionSet& set, const Node& lineParameters, int point)
+{
+    CoupledSweep out;
+    if (set.solutions.empty()) {
+        out.error = tr("nothing is solved");
+        return out;
+    }
+    const int n = int(set.solutions.size());
+    Solution& s = *set.solutions[std::size_t(point <= 0 || point > n ? n - 1 : point - 1)];
+    const int snaps = s.snapshotCount();
+    const int was = s.selected();
+    for (int k = 0; k < std::max(1, snaps); ++k) {
+        if (snaps > 0) s.select(k);
+        CoupledLines l = coupledLines(s, lineParameters);
+        if (!l.error.isEmpty()) {
+            out.error = l.error;
+            break;
+        }
+        out.points.push_back(l);
+    }
+    if (snaps > 0) s.select(was);
+    std::sort(out.points.begin(), out.points.end(), [](const CoupledLines& a, const CoupledLines& b) { return a.frequency < b.frequency; });
+    return out;
+}
+
+std::vector<std::vector<cd>> coupledSParameters(const CoupledLines& lines, double length, double zref)
+{
+    // By the modes: V = Tv (e^-γz a + e^γz b), I = Ti (e^-γz a - e^γz b),
+    // Ti's columns each mode's currents (Y v / γ). The near ends' and far
+    // ends' currents into the line: Y11 = Ti coth(γℓ) Tv⁻¹, Y12 = -Ti
+    // csch(γℓ) Tv⁻¹, Y21 = Y12, Y22 = Y11; S = (1 + zref Y)⁻¹ (1 - zref Y).
+    const int n = int(lines.modes.size());
+    Eigen::MatrixXcd Tv(n, n), Ti(n, n);
+    Eigen::VectorXcd coth(n), csch(n);
+    for (int k = 0; k < n; ++k) {
+        const LineMode& m = lines.modes[std::size_t(k)];
+        for (int j = 0; j < n; ++j) {
+            Tv(j, k) = m.v[std::size_t(j)];
+            Ti(j, k) = m.i[std::size_t(j)];
+        }
+        // (e^-2γℓ: no overflow of a long lossy line's.)
+        const cd e1 = std::exp(-m.gamma * length), e2 = e1 * e1;
+        coth[k] = (1.0 + e2) / (1.0 - e2);
+        csch[k] = 2.0 * e1 / (1.0 - e2);
+    }
+    const Eigen::MatrixXcd inv = Tv.inverse();
+    const Eigen::MatrixXcd y11 = Ti * coth.asDiagonal() * inv, y12 = -(Ti * csch.asDiagonal() * inv);
+    Eigen::MatrixXcd Y(2 * n, 2 * n);
+    Y << y11, y12, y12, y11;
+    const Eigen::MatrixXcd one = Eigen::MatrixXcd::Identity(2 * n, 2 * n);
+    const Eigen::MatrixXcd S = (one + zref * Y).partialPivLu().solve(one - zref * Y);
+    std::vector<std::vector<cd>> out(std::size_t(2 * n), std::vector<cd>(std::size_t(2 * n)));
+    for (int i = 0; i < 2 * n; ++i)
+        for (int j = 0; j < 2 * n; ++j) out[std::size_t(i)][std::size_t(j)] = S(i, j);
+    return out;
+}
+
+std::vector<std::vector<cd>> mixedModeSParameters(const std::vector<std::vector<cd>>& s)
+{
+    // d = (a1 - a2)/√2 at an end, c = (a1 + a2)/√2: M S Mᵀ, M orthogonal.
+    const double h = 1 / std::sqrt(2.0);
+    Eigen::Matrix4d M;
+    M << h, -h, 0, 0, 0, 0, h, -h, h, h, 0, 0, 0, 0, h, h;
+    Eigen::Matrix4cd S;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) S(i, j) = s[std::size_t(i)][std::size_t(j)];
+    const Eigen::Matrix4cd mm = M.cast<cd>() * S * M.transpose().cast<cd>();
+    std::vector<std::vector<cd>> out(4, std::vector<cd>(4));
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) out[std::size_t(i)][std::size_t(j)] = mm(i, j);
+    return out;
+}
+
+QString touchstoneCoupled(const CoupledSweep& sweep, double length, double zref, bool mixed, const QStringList& comments)
+{
+    QString out = commentLines(comments, QStringLiteral("!"));
+    const int n = sweep.points.empty() ? 0 : int(sweep.points.front().names.size());
+    out += QStringLiteral("! %1 coupled transmission lines %2 long (%3), as a %4-port\n")
+               .arg(n)
+               .arg(formatQuantity(length, Dim::length()), sweep.points.empty() ? QString() : sweep.points.front().names.join(QStringLiteral(", ")))
+               .arg(2 * n);
+    if (mixed) {
+        out += QStringLiteral("! Mixed-mode: ports d1 d2 c1 c2 - the differential mode at the near and far ends (its reference %1), "
+                              "the common mode (%2); [Sdd Sdc; Scd Scc]\n")
+                   .arg(formatQuantity(2 * zref, Dim::resistance()), formatQuantity(zref / 2, Dim::resistance()));
+    } else {
+        QStringList ports;
+        const QStringList names = sweep.points.empty() ? QStringList() : sweep.points.front().names;
+        for (int k = 0; k < n; ++k) ports << QStringLiteral("%1 line %2's near end").arg(k + 1).arg(names[k]);
+        for (int k = 0; k < n; ++k) ports << QStringLiteral("%1 line %2's far end").arg(n + k + 1).arg(names[k]);
+        out += QStringLiteral("! Ports: %1\n").arg(ports.join(QStringLiteral(", ")));
+    }
+    out += QStringLiteral("! f, then the S-matrix by rows (re, im), four to a line\n");
+    out += QStringLiteral("# Hz S RI R %1\n").arg(num(zref));
+    for (const CoupledLines& l : sweep.points) {
+        std::vector<std::vector<cd>> s = coupledSParameters(l, length, zref);
+        if (mixed) s = mixedModeSParameters(s);
+        const int np = int(s.size());
+        for (int i = 0; i < np; ++i) {
+            QString line = i == 0 ? num(l.frequency) : QString();
+            for (int j = 0; j < np; ++j) {
+                if (j > 0 && j % 4 == 0) {
+                    out += line + QLatin1Char('\n');
+                    line.clear();
+                }
+                line += QLatin1Char(' ') + num(s[std::size_t(i)][std::size_t(j)].real()) + QLatin1Char(' ') + num(s[std::size_t(i)][std::size_t(j)].imag());
+            }
+            out += line + QLatin1Char('\n');
+        }
+    }
+    return out;
+}
+
+QString spiceCoupled(const CoupledLines& lines, double length, const QString& name, int sections, const QStringList& comments)
+{
+    const int n = int(lines.names.size());
+    const std::size_t N = std::size_t(n);
+    QString out = commentLines(comments, QStringLiteral("*"));
+    out += QStringLiteral("* %1 coupled transmission lines (%2) %3 long, per metre at %4 - the matrices by rows:\n")
+               .arg(n)
+               .arg(lines.names.join(QStringLiteral(", ")), formatQuantity(length, Dim::length()), formatQuantity(lines.frequency, Dim::of(0, 0, -1)));
+    auto rows = [&](const QString& letter, const CoupledLines::Matrix& m, const Dim& dim) {
+        QStringList r;
+        for (std::size_t i = 0; i < N; ++i) {
+            QStringList row;
+            for (std::size_t j = 0; j < N; ++j) row << formatQuantity(m[i][j], dim);
+            r << row.join(QStringLiteral(", "));
+        }
+        out += QStringLiteral("* %1: %2\n").arg(letter, r.join(QStringLiteral("; ")));
+    };
+    const Dim perMetre = Dim::of(-1);
+    rows(QStringLiteral("R"), lines.R, Dim::resistance() * perMetre);
+    rows(QStringLiteral("L"), lines.L, Dim::of(2, 1, -2, -2) * perMetre);
+    rows(QStringLiteral("G"), lines.G, Dim::conductance() * perMetre);
+    rows(QStringLiteral("C (Maxwell's: off the diagonal, minus the capacitance between)"), lines.C, Dim::capacitance() * perMetre);
+    const QString sub = spiceName(name);
+    QStringList ins, outs;
+    for (const QString& c : lines.names) {
+        ins << QStringLiteral("in_") + spiceName(c);
+        outs << QStringLiteral("out_") + spiceName(c);
+    }
+    out += QStringLiteral(".subckt %1 %2 %3 ref\n").arg(sub, ins.join(QLatin1Char(' ')), outs.join(QLatin1Char(' ')));
+    const int ns = std::max(1, sections);
+    const double dl = length / ns;
+    double largestC = 0, largestG = 0;
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t j = 0; j < N; ++j) {
+            largestC = std::max(largestC, std::abs(lines.C[i][j]));
+            largestG = std::max(largestG, std::abs(lines.G[i][j]));
+        }
+    std::vector<QString> prev(N);
+    for (std::size_t i = 0; i < N; ++i) prev[i] = ins[int(i)];
+    for (int k = 1; k <= ns; ++k) {
+        std::vector<QString> next(N);
+        for (std::size_t i = 0; i < N; ++i) next[i] = k == ns ? outs[int(i)] : QStringLiteral("n%1_%2").arg(k).arg(spiceName(lines.names[int(i)]));
+        // Each line: a source of none (its current), R, the others'
+        // currents' mutual R (H), L.
+        for (std::size_t i = 0; i < N; ++i) {
+            const QString c = spiceName(lines.names[int(i)]);
+            const QString a = QStringLiteral("a%1_%2").arg(k).arg(c);
+            out += QStringLiteral("V%1_%2 %3 %4 0\n").arg(k).arg(c, prev[i], a);
+            QString at = a;
+            if (lines.R[i][i] != 0) {
+                const QString b = QStringLiteral("b%1_%2").arg(k).arg(c);
+                out += QStringLiteral("R%1_%2 %3 %4 %5\n").arg(k).arg(c, at, b, num(lines.R[i][i] * dl));
+                at = b;
+            }
+            for (std::size_t j = 0; j < N; ++j) {
+                if (j == i || lines.R[i][j] == 0) continue;
+                const QString o = spiceName(lines.names[int(j)]);
+                const QString b = QStringLiteral("h%1_%2_%3").arg(k).arg(c, o);
+                out += QStringLiteral("H%1_%2_%3 %4 %5 V%1_%3 %6\n").arg(k).arg(c, o, at, b, num(lines.R[i][j] * dl));
+                at = b;
+            }
+            out += QStringLiteral("L%1_%2 %3 %4 %5\n").arg(k).arg(c, at, next[i], num(lines.L[i][i] * dl));
+        }
+        for (std::size_t i = 0; i < N; ++i)
+            for (std::size_t j = i + 1; j < N; ++j) {
+                const double kk = lines.L[i][j] / std::sqrt(lines.L[i][i] * lines.L[j][j]);
+                if (!std::isfinite(kk) || std::abs(kk) < 1e-9) continue;
+                out += QStringLiteral("K%1_%2_%3 L%1_%2 L%1_%3 %4\n")
+                           .arg(k)
+                           .arg(spiceName(lines.names[int(i)]), spiceName(lines.names[int(j)]), num(std::clamp(kk, -1.0, 1.0)));
+            }
+        // Across: each line to ref (its row's sum), between two (minus their entry).
+        for (std::size_t i = 0; i < N; ++i) {
+            const QString c = spiceName(lines.names[int(i)]);
+            double cref = 0, gref = 0;
+            for (std::size_t j = 0; j < N; ++j) {
+                cref += lines.C[i][j];
+                gref += lines.G[i][j];
+            }
+            if (cref > 1e-9 * largestC) out += QStringLiteral("C%1_%2 %3 ref %4\n").arg(k).arg(c, next[i], num(cref * dl));
+            if (gref > 1e-9 * largestG) out += QStringLiteral("RG%1_%2 %3 ref %4\n").arg(k).arg(c, next[i], num(1 / (gref * dl)));
+            for (std::size_t j = i + 1; j < N; ++j) {
+                const QString o = spiceName(lines.names[int(j)]);
+                if (-lines.C[i][j] > 1e-9 * largestC) out += QStringLiteral("C%1_%2_%3 %4 %5 %6\n").arg(k).arg(c, o, next[i], next[j], num(-lines.C[i][j] * dl));
+                if (-lines.G[i][j] > 1e-9 * largestG)
+                    out += QStringLiteral("RG%1_%2_%3 %4 %5 %6\n").arg(k).arg(c, o, next[i], next[j], num(1 / (-lines.G[i][j] * dl)));
+            }
+        }
+        prev = next;
+    }
+    out += QStringLiteral(".ends %1\n").arg(sub);
+    return out;
+}
+
+QString qucsCoupledSchematic(const CoupledLines& lines, double length, const QString& version, const QString& name, QString* error, bool clip)
+{
+    if (!lines.symmetricPair || lines.modes.size() != 2) {
+        if (error)
+            *error = tr("a Qucs subcircuit of coupled lines is a symmetric pair's (a coupled line part of its even and odd modes): "
+                        "%1 lines not so - export them as Touchstone or SPICE")
+                         .arg(lines.names.size());
+        return {};
+    }
+    const LineMode& e = lines.modes[0];
+    const LineMode& o = lines.modes[1];
+    auto ohm = [](double v) { return num(v) + QStringLiteral(" Ohm"); };
+    // (Its attenuation in dB per metre: the part's "dB" a power ratio per
+    // metre.)
+    const QString part = QStringLiteral("<CTLIN Line1 1 200 100 -26 34 0 0 \"%1\" 1 \"%2\" 1 \"%3\" 1 \"%4\" 1 \"%5\" 1 \"%6 dB\" 1 \"%7 dB\" 1 \"26.85\" 0>\n")
+                             .arg(ohm(e.Z.real()), ohm(o.Z.real()), num(length), num(e.nEff * e.nEff), num(o.nEff * o.nEff), num(e.alphaDb),
+                                  num(o.alphaDb));
+    if (clip)
+        return QStringLiteral("<Qucs Schematic %1>\n<Components>\n  %2</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n")
+            .arg(version, part);
+    QString out = QStringLiteral("<Qucs Schematic %1>\n").arg(version);
+    out += QStringLiteral("<Properties>\n  <View=0,0,400,240,1,0,0>\n  <Grid=10,10,1>\n  <DataSet=%1.dat>\n  <DataDisplay=%1.dpl>\n"
+                          "  <OpenDisplay=0>\n  <Script=%1.m>\n  <RunScript=0>\n  <showFrame=0>\n  <FrameText0=%2>\n"
+                          "  <FrameText1=Drawn By:>\n  <FrameText2=Date:>\n  <FrameText3=Revision:>\n</Properties>\n")
+               .arg(name, tr("Coupled transmission lines from a multiphysics model"));
+    out += QStringLiteral("<Symbol>\n  <.ID -20 34 SUB>\n  <Line -20 -20 40 0 #000080 2 1>\n  <Line 20 -20 0 40 #000080 2 1>\n"
+                          "  <Line -20 20 40 0 #000080 2 1>\n  <Line -20 -20 0 40 #000080 2 1>\n  <Line -30 -10 10 0 #000080 2 1>\n"
+                          "  <Line -30 10 10 0 #000080 2 1>\n  <Line 20 -10 10 0 #000080 2 1>\n  <Line 20 10 10 0 #000080 2 1>\n"
+                          "  <Line -16 -10 32 0 #000080 1 1>\n  <Line -16 10 32 0 #000080 1 1>\n"
+                          "  <.PortSym -30 -10 1 0>\n  <.PortSym -30 10 2 0>\n  <.PortSym 30 -10 3 0>\n  <.PortSym 30 10 4 0>\n</Symbol>\n");
+    // Its ports: 1, 2 the lines' near ends, 3, 4 their far ends (the part's
+    // pins: line 1 left and right at the top, line 2 right and left below).
+    out += QStringLiteral("<Components>\n  <Port P1 1 100 40 -23 12 0 0 \"1\" 1 \"analog\" 0>\n"
+                          "  <Port P2 1 100 160 -23 12 0 0 \"2\" 1 \"analog\" 0>\n"
+                          "  <Port P3 1 300 40 4 12 1 2 \"3\" 1 \"analog\" 0>\n"
+                          "  <Port P4 1 300 160 4 12 1 2 \"4\" 1 \"analog\" 0>\n  %1</Components>\n")
+               .arg(part);
+    out += QStringLiteral("<Wires>\n  <100 40 170 40 \"\" 0 0 0 \"\">\n  <170 40 170 90 \"\" 0 0 0 \"\">\n"
+                          "  <100 160 170 160 \"\" 0 0 0 \"\">\n  <170 160 170 110 \"\" 0 0 0 \"\">\n"
+                          "  <230 40 300 40 \"\" 0 0 0 \"\">\n  <230 40 230 90 \"\" 0 0 0 \"\">\n"
+                          "  <230 160 300 160 \"\" 0 0 0 \"\">\n  <230 160 230 110 \"\" 0 0 0 \"\">\n</Wires>\n");
+    out += QStringLiteral("<Diagrams>\n</Diagrams>\n<Paintings>\n  <Text 100 190 10 #000000 0 \"%1\">\n</Paintings>\n")
+               .arg(tr("The even and odd modes at %1 (Z0 their real parts: %2, %3 Ohm)")
+                        .arg(formatQuantity(lines.frequency, Dim::of(0, 0, -1)), num(e.Z.real()), num(o.Z.real())));
     return out;
 }
 
@@ -592,6 +848,29 @@ ExportText exportText(const Model& model, const SolutionSet& set, const Node& no
             out.error = tr("its reference impedance: %1").arg(z ? tr("it must be more than 0") : why);
             return out;
         }
+        if (lineTerminals(*l).size() > 1) {
+            // Coupled lines: a 2N-port (a pair's mixed-mode 4-port).
+            const CoupledSweep sweep = coupledSweep(set, *l, point);
+            if (!sweep.error.isEmpty()) {
+                out.error = sweep.error;
+                return out;
+            }
+            const int n = int(lineTerminals(*l).size());
+            const bool mixed = node.flag(QStringLiteral("mixed"));
+            if (mixed && n != 2) {
+                out.error = tr("mixed-mode S-parameters are a pair's: %1 has %2 lines").arg(l->name()).arg(n);
+                return out;
+            }
+            out.text = touchstoneCoupled(sweep, len, *z, mixed, comments);
+            out.suffix = QStringLiteral("s%1p").arg(2 * n);
+            out.summary = (mixed ? tr("mixed-mode S-parameters (Sdd, Sdc, Scd, Scc) of %1 of the pair %2 at %3 frequencies, for ports of %4")
+                                 : tr("S-parameters of %1 of the %5 coupled lines %2 at %3 frequencies, for ports of %4"))
+                              .arg(formatQuantity(len, Dim::length()), l->name())
+                              .arg(sweep.points.size())
+                              .arg(formatQuantity(*z, Dim::resistance()))
+                              .arg(n);
+            return out;
+        }
         const LineSweep sweep = lineSweep(set, *l, point);
         if (!sweep.error.isEmpty()) {
             out.error = sweep.error;
@@ -623,13 +902,34 @@ ExportText exportText(const Model& model, const SolutionSet& set, const Node& no
         const Node* l = lineNode();
         double len = 0;
         if (!l || !length(&len)) return out;
+        const QString model = node.text(QStringLiteral("model"));
+        const int sections = std::clamp(node.integer(QStringLiteral("sections")), 1, 10000);
+        if (lineTerminals(*l).size() > 1) {
+            // Coupled lines: sections of their matrices.
+            if (model == QLatin1String("ltra")) {
+                out.error = tr("an LTRA line is one line: coupled lines as sections of R, L, G, C (Line model)");
+                return out;
+            }
+            const CoupledLines c = coupledLines(*s, *l);
+            if (!c.error.isEmpty()) {
+                out.error = c.error;
+                return out;
+            }
+            out.text = spiceCoupled(c, len, name, sections, comments);
+            out.suffix = QStringLiteral("cir");
+            out.summary = tr("subcircuit %1: %2 sections of %3 coupled lines, %4 at %5")
+                              .arg(spiceName(name))
+                              .arg(sections)
+                              .arg(c.names.size())
+                              .arg(formatQuantity(len, Dim::length()), formatQuantity(c.frequency, Dim::of(0, 0, -1)));
+            return out;
+        }
         const LineRLGC r = lineRLGC(*s, *l);
         if (!r.error.isEmpty()) {
             out.error = r.error;
             return out;
         }
-        const bool ltra = node.text(QStringLiteral("model")) == QLatin1String("ltra");
-        const int sections = std::clamp(node.integer(QStringLiteral("sections")), 1, 10000);
+        const bool ltra = model == QLatin1String("ltra");
         out.text = spiceLine(r, len, name, sections, ltra, comments);
         out.suffix = QStringLiteral("cir");
         out.summary = ltra ? tr("subcircuit %1: an LTRA line of %2 at %3").arg(spiceName(name), formatQuantity(len, Dim::length()),
@@ -648,12 +948,26 @@ ExportText exportText(const Model& model, const SolutionSet& set, const Node& no
             if (out.error.isEmpty()) out.error = tr("nothing is solved");
             return out;
         }
+        const QString name = node.text(QStringLiteral("name")).trimmed().isEmpty() ? node.tag : node.text(QStringLiteral("name")).trimmed();
+        if (lineTerminals(*l).size() > 1) {
+            // A symmetric pair: a coupled line part of its modes.
+            const CoupledLines c = coupledLines(*s, *l);
+            if (!c.error.isEmpty()) {
+                out.error = c.error;
+                return out;
+            }
+            out.text = qucsCoupledSchematic(c, len, version, name, &out.error);
+            if (!out.error.isEmpty()) return out;
+            out.suffix = QStringLiteral("sch");
+            out.summary = tr("a Qucs subcircuit: a coupled line part (CTLIN) of %1 of the pair's even and odd modes at %2")
+                              .arg(formatQuantity(len, Dim::length()), formatQuantity(c.frequency, Dim::of(0, 0, -1)));
+            return out;
+        }
         const LineRLGC r = lineRLGC(*s, *l);
         if (!r.error.isEmpty()) {
             out.error = r.error;
             return out;
         }
-        const QString name = node.text(QStringLiteral("name")).trimmed().isEmpty() ? node.tag : node.text(QStringLiteral("name")).trimmed();
         out.text = qucsLineSchematic(r, len, version, name);
         out.suffix = QStringLiteral("sch");
         out.summary = tr("a Qucs subcircuit: an RLCG part of %1 (its values at %2)").arg(formatQuantity(len, Dim::length()),

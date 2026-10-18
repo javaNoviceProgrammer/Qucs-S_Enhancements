@@ -61,8 +61,9 @@ public:
     void setGlobals() override;
     bool hasMass() const override { return a_heat; }
     bool converged() const override { return a_converged; }
-    /// The terminal sweep's matrix entry for terminal \a name alone.
-    double selfMatrix(const QString& name, QString* error);
+    /// Terminals \a names at 1 V in turn: the charges and (not in vacuum)
+    /// the dielectrics' loss integrals (terminalMatrices).
+    bool terminalMatrices(const QStringList& names, TerminalMatrices* out, QString* error);
 
 private:
     bool a_converged = true;
@@ -1227,34 +1228,109 @@ bool ScalarProblem::sweepTerminals(const QString& solver, double tolerance, QStr
     return true;
 }
 
-double ScalarProblem::selfMatrix(const QString& name, QString* error)
+bool ScalarProblem::terminalMatrices(const QStringList& names, TerminalMatrices* out, QString* error)
 {
-    // Assembled without sources; one terminal at 1 V, every other fixed
-    // value at 0; its charge.
+    // Assembled without sources, factorized once; each terminal at 1 V in
+    // turn, every other fixed value at 0.
     elementMatrices(false, 0, nullptr);
-    if (!buildEquations(error)) return NaN;
-    assemble(false, 0);
-    if (!a_system.factorize(a_symmetric, QStringLiteral("direct"), 1e-9, a_node->name(), &a_s.log, error)) return NaN;
-    int g = -1;
-    for (int i = 0; i < int(a_terminals.size()); ++i)
-        if (a_terminals[std::size_t(i)].name == name && !a_terminals[std::size_t(i)].floating) g = i;
-    if (g < 0) {
-        *error = tr("%1 has no terminal %2 at a voltage").arg(a_node->name(), name);
-        return NaN;
+    if (!buildEquations(error)) return false;
+    std::vector<int> groups;
+    for (const QString& name : names) {
+        int g = -1;
+        for (int i = 0; i < int(a_terminals.size()); ++i)
+            if (a_terminals[std::size_t(i)].name == name && !a_terminals[std::size_t(i)].floating) g = i;
+        if (g < 0) {
+            *error = tr("%1 has no terminal %2 at a voltage").arg(a_node->name(), name);
+            return false;
+        }
+        groups.push_back(g);
     }
-    const int nd = field().space->size();
-    std::vector<double> u(std::size_t(nd), 0);
-    for (int dof = 0; dof < nd; ++dof)
-        if (a_eq[std::size_t(dof)] == -3) u[std::size_t(dof)] = a_dofTerminal[std::size_t(dof)] == g ? 1 : 0;
-    Eigen::VectorXd delta;
-    if (!a_system.solve(residual(u, false, 0, nullptr), delta, a_node->name(), error)) return NaN;
-    for (int dof = 0; dof < nd; ++dof)
-        if (a_eq[std::size_t(dof)] >= 0) u[std::size_t(dof)] += delta[a_eq[std::size_t(dof)]];
-    const std::vector<double> r = reactions(u, false);
-    double q = 0;
-    for (int dof = 0; dof < nd; ++dof)
-        if (a_dofTerminal[std::size_t(dof)] == g && a_eq[std::size_t(dof)] == -3) q += r[std::size_t(dof)];
-    return q;
+    assemble(false, 0);
+    if (!a_system.factorize(a_symmetric, QStringLiteral("direct"), 1e-9, a_node->name(), &a_s.log, error)) return false;
+    const Field& fld = field();
+    const Space& sp = *fld.space;
+    const int nd = sp.size();
+    const std::size_t n = groups.size();
+    std::vector<std::vector<double>> u(n);
+    out->C.assign(n, std::vector<double>(n, 0));
+    for (std::size_t j = 0; j < n; ++j) {
+        std::vector<double>& uj = u[j];
+        uj.assign(std::size_t(nd), 0);
+        for (int dof = 0; dof < nd; ++dof)
+            if (a_eq[std::size_t(dof)] == -3) uj[std::size_t(dof)] = a_dofTerminal[std::size_t(dof)] == groups[j] ? 1 : 0;
+        Eigen::VectorXd delta;
+        if (!a_system.solve(residual(uj, false, 0, nullptr), delta, a_node->name(), error)) return false;
+        for (int dof = 0; dof < nd; ++dof)
+            if (a_eq[std::size_t(dof)] >= 0) uj[std::size_t(dof)] += delta[a_eq[std::size_t(dof)]];
+        const std::vector<double> r = reactions(uj, false);
+        for (std::size_t i = 0; i < n; ++i)
+            for (int dof = 0; dof < nd; ++dof)
+                if (a_dofTerminal[std::size_t(dof)] == groups[i] && a_eq[std::size_t(dof)] == -3) out->C[i][j] += r[std::size_t(dof)];
+    }
+    out->Gd.assign(n, std::vector<double>(n, 0));
+    out->Gs.assign(n, std::vector<double>(n, 0));
+    if (a_vacuum || !a_es) return true;
+    // ∫ ∇φ_i·T ∇φ_j over the physics, T the loss tensors in the plane:
+    // ε0 εr tan δ and σ.
+    const Solution::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+    const char* parts[4] = {"xx", "xy", "yx", "yy"};
+    const std::vector<Expression>* loss[2][4];
+    for (int k = 0; k < 4; ++k) {
+        loss[0][k] = &coef.named.at(QStringLiteral("epsim") + QString::fromLatin1(parts[k]));
+        loss[1][k] = &coef.named.at(QStringLiteral("sigma") + QString::fromLatin1(parts[k]));
+    }
+    const Mesh& mesh = a_s.mesh();
+    const int per = sp.perElement();
+    PointEvaluator ev(a_s);
+    Shape sh;
+    double gx[6], gy[6];
+    std::vector<double> ex(n), ey(n);
+    for (int t = 0; t < sp.elements(); ++t) {
+        const int dom = mesh.domain[std::size_t(t)];
+        if (dom < 0 || !fld.domains[std::size_t(dom)]) continue;
+        const Expression* e[2][4];
+        bool any = false, constant = true;
+        for (int m = 0; m < 2; ++m)
+            for (int k = 0; k < 4; ++k) {
+                e[m][k] = &(*loss[m][k])[std::size_t(dom)];
+                if (!e[m][k]->isValid()) continue;
+                constant = constant && e[m][k]->isConstant();
+                any = any || !e[m][k]->isConstant() || e[m][k]->constant() != 0;
+            }
+        if (!any) continue;
+        const int* dofs = sp.dofs(t);
+        const TriangleRule& rule = triangleRule(sp.curved(t) || a_s.axisymmetric() ? 5 : (sp.order() == 1 ? 2 : 4));
+        for (const auto& q : rule.points) {
+            shapeAt(sp.order(), q[0], q[1], sh);
+            const Space::Map m = sp.map(t, q[0], q[1]);
+            const double w = q[2] * std::abs(m.det) * a_s.weight(m.x);
+            if (!constant) ev.moveTo(t, q[0], q[1]);
+            double T[2][4];
+            for (int mm = 0; mm < 2; ++mm)
+                for (int k = 0; k < 4; ++k) {
+                    const Expression& x = *e[mm][k];
+                    double v = !x.isValid() ? 0.0 : x.isConstant() ? x.constant() : ev.eval(x);
+                    T[mm][k] = std::isfinite(v) ? v : 0.0;
+                }
+            for (int k = 0; k < 4; ++k) T[0][k] *= Eps0;
+            for (int i = 0; i < per; ++i) Space::gradient(m, sh.dxi[i], sh.deta[i], gx[i], gy[i]);
+            for (std::size_t a = 0; a < n; ++a) {
+                ex[a] = ey[a] = 0;
+                for (int i = 0; i < per; ++i) {
+                    ex[a] += gx[i] * u[a][std::size_t(dofs[i])];
+                    ey[a] += gy[i] * u[a][std::size_t(dofs[i])];
+                }
+            }
+            for (std::size_t a = 0; a < n; ++a)
+                for (std::size_t b = 0; b < n; ++b) {
+                    for (int mm = 0; mm < 2; ++mm) {
+                        const double v = ex[a] * (T[mm][0] * ex[b] + T[mm][1] * ey[b]) + ey[a] * (T[mm][2] * ex[b] + T[mm][3] * ey[b]);
+                        (mm == 0 ? out->Gd : out->Gs)[a][b] += w * v;
+                    }
+                }
+        }
+    }
+    return true;
 }
 
 // ------------------------------------------------------------------ Globals
@@ -1340,19 +1416,21 @@ std::unique_ptr<Problem> makeScalarProblem(Solution& solution, int field)
     return std::make_unique<ScalarProblem>(solution, field);
 }
 
-double scalarVacuumCapacitance(Solution& s, int fi, const QString& terminal, QString* error)
+bool scalarTerminalMatrices(Solution& s, int fi, const QStringList& terminals, bool vacuum, TerminalMatrices* out, QString* error)
 {
     // A field of its own, on the same space; the coefficients put back after.
     const Field saved = s.fields()[std::size_t(fi)];
     const Solution::Coefficients coefficients = s.coefficients()[std::size_t(fi)];
-    ScalarProblem p(s, fi, true);
     QString why;
-    double c = NaN;
-    if (p.setup(&why)) c = p.selfMatrix(terminal, &why);
+    bool ok = false;
+    {
+        ScalarProblem p(s, fi, vacuum);
+        ok = p.setup(&why) && p.terminalMatrices(terminals, out, &why);
+    }
     s.coefficients()[std::size_t(fi)] = coefficients;
     s.fields()[std::size_t(fi)] = saved;
-    if (std::isnan(c) && error) *error = why;
-    return c;
+    if (!ok && error) *error = why;
+    return ok;
 }
 
 } // namespace qucs_s::fem::detail

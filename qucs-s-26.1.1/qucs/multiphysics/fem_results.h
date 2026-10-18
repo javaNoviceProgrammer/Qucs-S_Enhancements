@@ -165,10 +165,47 @@ struct LineRLGC {
     double R = 0, L = 0, G = 0, C = 0;
     std::complex<double> Zc, gamma;  ///< Ω; 1/m (α + jβ)
     double alphaDb = 0;              ///< dB/m
+    /// (β/k0)², the slow wave of the conductors' loss in it; c/v.
     double epsEff = 0, velocity = 0;
     QString error;
 };
 LineRLGC lineRLGC(const Solution& solution, const Node& node);
+
+/// The signal terminals (conductors) of a Line Parameters node: its
+/// "terminal" split by commas - two or more, coupled lines.
+QStringList lineTerminals(const Node& node);
+
+/// A mode of coupled lines at a frequency: its propagation constant, its
+/// voltages on the conductors (the largest 1) and currents (Y v / γ), its
+/// impedance (vᵀv / vᵀi: a pair's even or odd mode's Z of one line).
+struct LineMode {
+    QString name;                    ///< "even", "odd" (a symmetric pair); "1", "2"... (by n_eff, the highest first)
+    std::complex<double> gamma, Z;   ///< 1/m (α + jβ); Ω
+    std::vector<std::complex<double>> v, i;
+    double alphaDb = 0;              ///< dB/m
+    double nEff = 0;                 ///< β/k0
+    double epsEffQs = 0;             ///< quasi-static: its mode of C v = ε C0 v
+};
+/// Coupled lines per metre at a solution's frequency (a Line Parameters
+/// node with two or more terminals): N signal conductors over a reference
+/// (the grounds, the return coil or the boundaries), their matrices -
+/// C (Maxwell's: C_ij the charge on i of j's volt), C0 (every εr 1), G (the
+/// dielectrics' losses), and of the magnetic fields' coils, reduced against
+/// the return, R and L (quasi-TEM: L = C0⁻¹/c², R and G none) - and their
+/// modes: of (R + jωL)(G + jωC); a symmetric pair's even and odd.
+struct CoupledLines {
+    using Matrix = std::vector<std::vector<double>>;
+    double frequency = 0;            ///< Hz (quasi-TEM: none)
+    bool rlgc = false;
+    QStringList names;               ///< the conductors: their terminals' names
+    Matrix R, L, G, C, C0;
+    std::vector<LineMode> modes;
+    /// The characteristic impedance matrix: V⁺ = Zc I⁺.
+    std::vector<std::vector<std::complex<double>>> Zc;
+    bool symmetricPair = false;
+    QString error;
+};
+CoupledLines coupledLines(const Solution& solution, const Node& node);
 
 /// A study's solutions as results take them: each of its sweep's (one
 /// without a sweep), and of each, each output time (none at rest).
