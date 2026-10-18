@@ -98,7 +98,7 @@ void QucsApp::initMultiphysics()
   });
   settings->setObjectName(QStringLiteral("mpSettingsAction"));
   settings->setMenuRole(QAction::NoRole);
-  settings->setStatusTip(tr("The multiphysics settings: the Graphics view drawn with the GPU (OpenGL) or the CPU"));
+  settings->setStatusTip(tr("The multiphysics settings: the Graphics view drawn with the GPU or the CPU"));
   connect(a_multiphysicsMenu, &QMenu::aboutToShow, this, &QucsApp::updateMultiphysicsMenu);
   const QList<QAction *> bar = menuBar()->actions();
   const int view = int(bar.indexOf(viewMenu->menuAction()));

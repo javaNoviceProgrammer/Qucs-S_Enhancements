@@ -175,5 +175,19 @@
         <file>bitmaps/svg/nocore.svg</file>
         <file>bitmaps/svg/ImagePainting.svg</file>
         <file>bitmaps/svg/systemcommand.svg</file>
+        <file>shaders/composite.frag.qsb</file>
+        <file>shaders/composite.vert.qsb</file>
+        <file>shaders/fem_fill.frag.qsb</file>
+        <file>shaders/fem_fill.vert.qsb</file>
+        <file>shaders/fem_line.frag.qsb</file>
+        <file>shaders/fem_line.vert.qsb</file>
+        <file>shaders/fem_surface.frag.qsb</file>
+        <file>shaders/fem_surface.vert.qsb</file>
+        <file>shaders/layout_dot.frag.qsb</file>
+        <file>shaders/layout_dot.vert.qsb</file>
+        <file>shaders/layout_shape.frag.qsb</file>
+        <file>shaders/layout_shape.vert.qsb</file>
+        <file>shaders/solid.frag.qsb</file>
+        <file>shaders/solid.vert.qsb</file>
     </qresource>
 </RCC>

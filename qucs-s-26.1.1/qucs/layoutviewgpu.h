@@ -1,9 +1,10 @@
 /*
- * layoutviewgl.h - the layout viewer drawn on the GPU: the cell shown,
- *                  flattened to its depth once into buffers of OpenGL, so a
- *                  pan or a zoom costs the GPU a frame and the CPU nothing;
- *                  the grid, the texts, the selection and the rulers over
- *                  it by QPainter as before
+ * layoutviewgpu.h - the layout viewer drawn on the GPU (Qt's RHI: Metal,
+ *                   Direct3D, OpenGL): the cell shown, flattened to its
+ *                   depth once into the GPU's buffers, so a pan or a zoom
+ *                   costs the GPU a frame and the CPU little; the grid, the
+ *                   texts, the selection and the rulers by QPainter as
+ *                   before, composed over and under it
  *
  * This file is part of Qucs-S.
  *
@@ -12,17 +13,13 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
-#ifndef QUCS_LAYOUTVIEWGL_H
-#define QUCS_LAYOUTVIEWGL_H
+#ifndef QUCS_LAYOUTVIEWGPU_H
+#define QUCS_LAYOUTVIEWGPU_H
 
 #include "layout.h"
+#include "rhicanvas.h"
 
 #include <QHash>
-#include <QOpenGLBuffer>
-#include <QOpenGLExtraFunctions>
-#include <QOpenGLShaderProgram>
-#include <QOpenGLVertexArrayObject>
-#include <QOpenGLWidget>
 #include <QPointF>
 #include <QRectF>
 
@@ -66,24 +63,23 @@ Flattened flatten(const Layout& layout, int cell, int depth, const QVector<Layer
 /*!
  * The GPU's canvas over a LayoutView, its size: it paints through the
  * view's own painting (LayoutView::paintFrame), which hands it the layers
- * between its QPainter's native painting. Mouse and keys go to the view
- * under it. Its buffers made again when the layout, the cell, the depth or
- * the texts change; colours and patterns are the shaders' (a theme, a .lyp,
- * the adapted colours: no new buffers). A layer hidden keeps its buffers,
- * not drawn; one shown for the first time is flattened alone and its
- * buffers added - shown or hidden again, nothing made.
+ * in the middle of its QPainter's (the grid under them, the texts, the
+ * selection and the rulers over). Mouse and keys go to the view under it.
+ * Its buffers made again when the layout, the cell, the depth or the texts
+ * change; colours and patterns are the shaders' (a theme, a .lyp, the
+ * adapted colours: no new buffers). A layer hidden keeps its buffers, not
+ * drawn; one shown for the first time is flattened alone and its buffers
+ * added - shown or hidden again, nothing made.
  */
-class LayoutGl : public QOpenGLWidget, protected QOpenGLExtraFunctions
+class LayoutGpu : public gpu::LayeredCanvas
 {
 public:
-    explicit LayoutGl(LayoutView* view);
-    ~LayoutGl() override;
+    explicit LayoutGpu(LayoutView* view);
+    ~LayoutGpu() override;
 
     /// Shapes at most on the GPU: beyond, the CPU's picture is shown.
     static constexpr quint64 Budget = 2000000;
 
-    bool failed() const { return a_failed; }
-    int frames() const { return a_frames; }
     /// Its buffers made, whole (for the tests).
     int builds() const { return a_builds; }
     /// Layers flattened alone and added, shown for the first time (for the
@@ -104,33 +100,37 @@ public:
     bool drawLayout(QPainter& p, RenderStats* stats);
 
 protected:
-    void initializeGL() override;
-    void paintGL() override;
-    void paintEvent(QPaintEvent* event) override;
+    void paintFrame(QPainter& p) override;
+    void createResources(QRhi* rhi) override;
+    void releaseNativeResources() override;
+    void canvasFailed() override;
 
 private:
     struct Batch {
-        QOpenGLVertexArrayObject vao;
-        QOpenGLBuffer vbo{QOpenGLBuffer::VertexBuffer};
-        int count = 0;   // vertices
+        std::unique_ptr<QRhiBuffer> buffer;
+        int count = 0;   // vertices (fills, outlines) or instances (dots)
     };
     struct LayerBatches {
         Batch fills, outlines, dots;
     };
-    void release();
     void sync();
-    void upload(Batch& b, const std::vector<float>& data, int components, bool withSize);
-    unsigned patternTexture(Qt::BrushStyle style);
+    void upload(Batch& b, const std::vector<float>& data, int components);
+    QRhiTexture* patternTexture(Qt::BrushStyle style);
+    QRhiShaderResourceBindings* bindingsFor(QRhiTexture* pattern);
 
     LayoutView* a_view;
-    QMetaObject::Connection a_contextLost;
-    bool a_failed = false;
-    bool a_ready = false;
-    int a_frames = 0, a_builds = 0, a_layersAdded = 0, a_textsDrawn = 0;
-    std::unique_ptr<QOpenGLShaderProgram> a_fill, a_dot;
-    std::vector<std::unique_ptr<LayerBatches>> a_layers;   // (a vertex array object moves not)
+    int a_builds = 0, a_layersAdded = 0, a_textsDrawn = 0;
+    QRhi* a_rhi = nullptr;
+    std::vector<std::unique_ptr<LayerBatches>> a_layers;
     Batch a_frameLines, a_frameDots;
-    QHash<int, unsigned> a_patterns;   // by Qt::BrushStyle: 8 by 8, a byte each
+    std::unique_ptr<QRhiBuffer> a_uniforms, a_corners;
+    int a_slots = 0;   // the uniform buffer's, a draw each
+    std::unique_ptr<QRhiSampler> a_nearest;
+    std::unique_ptr<QRhiTexture> a_plain;   // no pattern
+    QHash<int, std::shared_ptr<QRhiTexture>> a_patterns;   // by Qt::BrushStyle: 8 by 8, a byte each
+    QHash<QRhiTexture*, std::shared_ptr<QRhiShaderResourceBindings>> a_bindings;
+    std::unique_ptr<QRhiShaderResourceBindings> a_layoutBindings;
+    std::unique_ptr<QRhiGraphicsPipeline> a_fill, a_line, a_dot;
     Flattened a_flat;
     // What the buffers were made of.
     const Layout* a_madeOf = nullptr;

@@ -417,13 +417,14 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     t->addTab(appAppearanceTab, tr("Appearance"));
 
     // ...........................................................
-    // The viewers tab: each drawn by the CPU, or by the GPU (OpenGL) where
-    // the user chooses it - an opt-in, each viewer.
+    // The viewers tab: each drawn by the CPU, or by the GPU (Qt's RHI:
+    // Metal, Direct3D, OpenGL) where the user chooses it - an opt-in, each
+    // viewer.
     {
         auto *viewersTab = new QWidget(t);
         viewersTab->setObjectName("viewersTab");
         auto *page = new QVBoxLayout(viewersTab);
-        auto *gpuGroup = new QGroupBox(tr("Drawn by the GPU (OpenGL)"), viewersTab);
+        auto *gpuGroup = new QGroupBox(tr("Drawn by the GPU"), viewersTab);
         gpuGroup->setObjectName("gpuGroup");
         auto *rows = new QVBoxLayout(gpuGroup);
         auto *lead = new QLabel(tr("The CPU draws each viewer unless the GPU is chosen for it here."), gpuGroup);
@@ -435,8 +436,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
         const QString tips[4] = {
             tr("Its tiles kept on the GPU as textures and drawn, scaled and scrolled by it; the pages themselves "
                "are drawn by pdfium on the CPU, as with the CPU."),
-            tr("Its text drawn by the GPU from a glyph atlas, its images as textures: a little quicker than the "
-               "CPU, its glyphs a little heavier than the platform draws them."),
+            tr("Its text and images drawn by the CPU in tiles, kept on the GPU as textures and scrolled by it: "
+               "the same glyphs as the CPU's, a tile drawn again only where the text changes."),
             tr("The cell flattened into the GPU's buffers: a pan or a zoom a frame of the GPU's, the CPU drawing "
                "nothing. Past two million shapes the CPU draws it."),
             tr("The geometry, mesh, surfaces and lines from the GPU's buffers (also in Multiphysics > Settings… and "
@@ -452,8 +453,9 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
         gpuStatus->setObjectName("gpuStatus");
         gpuStatus->setWordWrap(true);
         const QString hindrance = qucs_s::gpu::hindrance();
-        gpuStatus->setText(hindrance.isEmpty() ? tr("The GPU can draw here (OpenGL 3.3). QUCS_GPU=0 in the environment "
+        gpuStatus->setText(hindrance.isEmpty() ? tr("The GPU can draw here (%1, through Qt's RHI). QUCS_GPU=0 in the environment "
                                                     "turns it off for all of them.")
+                                                     .arg(qucs_s::gpu::backendName())
                                                : hindrance);
         rows->addWidget(gpuStatus);
         page->addWidget(gpuGroup);

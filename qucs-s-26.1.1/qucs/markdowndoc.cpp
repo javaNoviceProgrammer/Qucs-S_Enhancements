@@ -11,6 +11,9 @@
 #include "markdowndoc.h"
 
 #include "gpurendering.h"
+#ifdef QUCS_GPU_VIEW
+#include "rhicanvas.h"
+#endif
 #include "links.h"
 
 #include "mathtypeset.h"
@@ -26,6 +29,7 @@
 #include <QTextTable>
 #include <QButtonGroup>
 #include <QCoreApplication>
+#include <QDataStream>
 #include <QDesktopServices>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -353,14 +357,38 @@ bool QuoteBars::eventFilter(QObject* watched, QEvent* event)
     return true;
 }
 
-void drawPreview(const QTextEdit* edit, QPainter& p)
+PreviewTiles::PreviewTiles(QTextEdit* edit) : QObject(edit), a_edit(edit)
+{
+    connect(edit->document(), &QTextDocument::contentsChanged, this, [this] { ++a_updates; });
+}
+
+QByteArray PreviewTiles::state() const
+{
+    // What the tiles show, besides the document's layout: the selections,
+    // the palette, the horizontal scroll, the width, the pixel ratio.
+    QByteArray out;
+    QDataStream s(&out, QIODevice::WriteOnly);
+    const QWidget* viewport = a_edit->viewport();
+    s << a_updates << quintptr(a_edit->document()) << a_edit->palette().cacheKey() << viewport->palette().color(viewport->backgroundRole()).rgba()
+      << viewport->width() << viewport->devicePixelRatioF() << a_edit->horizontalScrollBar()->value() << a_edit->hasFocus() << a_edit->isRightToLeft();
+    const QTextCursor cursor = a_edit->textCursor();
+    s << (cursor.hasSelection() ? cursor.anchor() : -1) << (cursor.hasSelection() ? cursor.position() : -1);
+    for (const QTextEdit::ExtraSelection& extra : a_edit->extraSelections())
+        s << extra.cursor.anchor() << extra.cursor.position() << extra.format.background().color().rgba() << extra.format.foreground().color().rgba()
+          << extra.format.property(QTextFormat::FullWidthSelection).toBool();
+    return out;
+}
+
+QImage PreviewTiles::tile(int row, int width, qreal ratio, const QColor& background)
 {
     // (QTextEdit's painting - QTextEditPrivate::paint, QWidgetTextControl's
-    // drawContents and paint context - by its public parts.)
-    const QWidget* viewport = edit->viewport();
-    const QPoint offset(edit->isRightToLeft() ? edit->horizontalScrollBar()->maximum() - edit->horizontalScrollBar()->value()
-                                              : edit->horizontalScrollBar()->value(),
-                        edit->verticalScrollBar()->value());
+    // drawContents and paint context - by its public parts, the tile's
+    // rows of the document.)
+    const QTextEdit* edit = a_edit;
+    const int x = edit->isRightToLeft() ? edit->horizontalScrollBar()->maximum() - edit->horizontalScrollBar()->value() : edit->horizontalScrollBar()->value();
+    QImage image(QSize(int(std::ceil(width * ratio)), int(std::ceil(TileHeight * ratio))), QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(ratio);
+    image.fill(background);
     QAbstractTextDocumentLayout::PaintContext context;
     context.palette = edit->palette();
     const QPalette::ColorGroup group = edit->hasFocus() ? QPalette::Active : QPalette::Inactive;
@@ -377,15 +405,55 @@ void drawPreview(const QTextEdit* edit, QPainter& p)
             selection.format.setProperty(QTextFormat::FullWidthSelection, true);
         context.selections.append(selection);
     }
-    p.save();
-    p.translate(-offset);
-    context.clip = QRectF(offset, viewport->size());
-    p.setClipRect(context.clip, Qt::IntersectClip);
+    QPainter p(&image);
+    p.setFont(edit->viewport()->font());
+    p.translate(-x, -row * TileHeight);
+    context.clip = QRectF(x, row * TileHeight, width, TileHeight);
+    p.setClipRect(context.clip);
     edit->document()->documentLayout()->draw(&p, context);
-    p.restore();
-    const QColor colour = QuoteBars::colour(edit);
-    for (const QRectF& bar : QuoteBars::bars(edit)) p.fillRect(bar, colour);
+    ++a_drawn;
+    return image;
 }
+
+#ifdef QUCS_GPU_VIEW
+void PreviewTiles::draw(gpu::Canvas2D& c)
+{
+    QAbstractTextDocumentLayout* layout = a_edit->document()->documentLayout();
+    if (layout != a_layout) {
+        if (a_layout) disconnect(a_layout, nullptr, this, nullptr);
+        a_layout = layout;
+        connect(layout, &QAbstractTextDocumentLayout::update, this, [this] { ++a_updates; });
+        connect(layout, &QAbstractTextDocumentLayout::documentSizeChanged, this, [this] { ++a_updates; });
+        ++a_updates;
+    }
+    const QWidget* viewport = a_edit->viewport();
+    const QByteArray now = state();
+    if (now != a_state) {
+        a_tiles.clear();
+        a_state = now;
+    }
+    const int width = viewport->width(), height = viewport->height();
+    const qreal ratio = c.devicePixelRatio();
+    const QColor background = viewport->palette().color(viewport->backgroundRole());
+    const int y = a_edit->verticalScrollBar()->value();
+    const int first = std::max(0, y / TileHeight), last = std::max(first, (y + height - 1) / TileHeight);
+    for (int row = first; row <= last; ++row) {
+        auto it = a_tiles.find(row);
+        if (it == a_tiles.end()) it = a_tiles.insert(row, tile(row, width, ratio, background));
+        c.drawImage(QPointF(0, row * TileHeight - y), *it);
+    }
+    // (Rows three screens away dropped.)
+    const int margin = 3 * (last - first + 1);
+    for (auto it = a_tiles.begin(); it != a_tiles.end();) {
+        if (it.key() < first - margin || it.key() > last + margin) it = a_tiles.erase(it);
+        else ++it;
+    }
+    const QColor colour = QuoteBars::colour(a_edit);
+    for (const QRectF& bar : QuoteBars::bars(a_edit)) c.fillRect(bar, colour);
+}
+#else
+void PreviewTiles::draw(gpu::Canvas2D&) {}
+#endif
 
 void SmoothImages::install(QTextDocument* document)
 {
@@ -695,10 +763,14 @@ void MarkdownDoc::layoutParts()
 
 void MarkdownDoc::setPreviewGpu(bool on)
 {
-    QTextBrowser* preview = a_preview;
-    if (!qucs_s::gpu::setGlViewport(a_preview, on && qucs_s::gpu::hindrance().isEmpty(),
-                                    [preview](QPainter& p) { qucs_s::markdown::drawPreview(preview, p); }))
-        return;
+    const bool gpu = on && qucs_s::gpu::hindrance().isEmpty();
+    if (gpu == previewGpu()) return;
+    delete a_previewTiles;
+    auto* tiles = gpu ? new qucs_s::markdown::PreviewTiles(a_preview) : nullptr;
+    a_previewTiles = tiles;
+    qucs_s::gpu::setGpuViewport(a_preview, gpu, [tiles = QPointer<qucs_s::markdown::PreviewTiles>(tiles)](qucs_s::gpu::Canvas2D& c) {
+        if (tiles) tiles->draw(c);
+    });
     // (The new viewport's own filters: the quotes' bars - the CPU's; the
     // GPU's has them drawn -, the images' width.)
     qucs_s::markdown::QuoteBars::install(a_preview, !previewGpu());
@@ -709,7 +781,7 @@ void MarkdownDoc::setPreviewGpu(bool on)
 
 bool MarkdownDoc::previewGpu() const
 {
-    return qucs_s::gpu::hasGlViewport(a_preview);
+    return qucs_s::gpu::hasGpuViewport(a_preview);
 }
 
 bool MarkdownDoc::eventFilter(QObject* watched, QEvent* event)

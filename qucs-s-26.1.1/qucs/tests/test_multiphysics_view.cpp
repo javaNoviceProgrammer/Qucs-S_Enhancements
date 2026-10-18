@@ -11,13 +11,14 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The GPU's tests need a window system's OpenGL: skipped on the offscreen
+ * The GPU's tests need a window system's GPU (Qt's RHI): skipped on the offscreen
  * platform the suite runs on (QT_QPA_PLATFORM=cocoa, xcb or windows runs
  * them, a window shown a moment). QUCS_VIEW_BENCH=1: a frame's time;
  * QUCS_VIEW_SAVE=<folder>: the GPU's and the CPU's pictures there.
  */
 #include "multiphysicsview.h"
 #include "multiphysicssettings.h"
+#include "gpurendering.h"
 
 #include "isolated_settings.h"
 
@@ -25,7 +26,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QElapsedTimer>
-#include <QOpenGLWidget>
+#include <QRhiWidget>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -96,7 +97,7 @@ std::shared_ptr<Topology> squareTopology()
     return t;
 }
 
-QOpenGLWidget* canvasOf(GraphicsView& view) { return view.findChild<QOpenGLWidget*>(QStringLiteral("multiphysicsCanvas")); }
+QRhiWidget* canvasOf(GraphicsView& view) { return view.findChild<QRhiWidget*>(QStringLiteral("multiphysicsCanvas")); }
 
 /// Of two pictures, the share of pixels apart by more than \a by in a channel.
 double differing(const QImage& a, const QImage& b, int by)
@@ -199,7 +200,7 @@ private slots:
     // setting kept - a view made after drawn by the CPU -, and on again.
     void theGpuDrawsAsTheCpu()
     {
-        if (!GraphicsView::gpuAvailable()) QSKIP("no OpenGL 3.3 here (the offscreen platform)");
+        if (!GraphicsView::gpuAvailable()) QSKIP("no GPU backend here (the offscreen platform)");
         auto mesh = gridMesh(40);
         GraphicsView view;
         view.setGpu(true);
@@ -212,7 +213,7 @@ private slots:
         // (Exposed or not - a display asleep - the canvas draws into its own
         // framebuffer.)
         (void)QTest::qWaitForWindowExposed(&view, 1000);
-        QOpenGLWidget* canvas = canvasOf(view);
+        QRhiWidget* canvas = canvasOf(view);
         QVERIFY(canvas != nullptr);
         QCOMPARE(canvas->geometry(), view.rect());
         QVERIFY(!canvas->grabFramebuffer().isNull());
@@ -230,7 +231,11 @@ private slots:
         };
         view.setShow(GraphicsView::Show::Geometry);
         view.setHighlight(Level::Domain, {0});
-        QVERIFY(compare(QStringLiteral("geometry")) < 0.03);
+        // (On Metal the geometry's picture the CPU's, pixel for pixel - its
+        // grid, words and fills; elsewhere the edges' antialiasing may
+        // differ.)
+        const bool metal = qucs_s::gpu::backendName() == QLatin1String("Metal");
+        QVERIFY(compare(QStringLiteral("geometry")) < (metal ? 0.001 : 0.03));
         // Grabbed as a window is - QWidget::grab of the view, Claude's
         // screenshots -: the same picture, its background and words with it
         // (a painter on the canvas itself was the grab's, under the
@@ -350,7 +355,7 @@ private slots:
             QVERIFY(!d.gpuBox()->isChecked());
             d.gpuBox()->setChecked(true);
             if (GraphicsView::gpuAvailable()) QCOMPARE(d.gpuStatus()->text(), QStringLiteral("The GPU draws the Graphics view."));
-            else QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("No OpenGL 3.3 here")), qPrintable(d.gpuStatus()->text()));
+            else QVERIFY2(d.gpuStatus()->text().contains(QLatin1String("No GPU backend here")), qPrintable(d.gpuStatus()->text()));
             d.apply();
         }
         QVERIFY(MultiphysicsSettingsDialog::gpuWanted());
@@ -378,7 +383,7 @@ private slots:
                 view.fit();
                 view.setVisible(true);
                 (void)QTest::qWaitForWindowExposed(&view, 1000);
-                QOpenGLWidget* canvas = canvasOf(view);
+                QRhiWidget* canvas = canvasOf(view);
                 if (gpu) (void)canvas->grabFramebuffer();   // (its buffers made)
                 QElapsedTimer t;
                 t.start();
@@ -396,8 +401,6 @@ private slots:
 
 int main(int argc, char** argv)
 {
-    // (As the application: the core profile's OpenGL, before the application.)
-    GraphicsView::prepareGpu();
     QApplication app(argc, argv);
     TestMultiphysicsView test;
     return QTest::qExec(&test, argc, argv);

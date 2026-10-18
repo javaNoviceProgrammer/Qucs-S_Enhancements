@@ -18,6 +18,7 @@
  * (at your option) any later version.
  */
 #include <QtTest>
+#include <QWindow>
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QFontDatabase>
@@ -47,7 +48,7 @@
 #include <cmath>
 
 #ifdef QUCS_GPU_VIEW
-#include "layoutviewgl.h"
+#include "layoutviewgpu.h"
 #endif
 #include "multiphysicsview.h"
 #include "gpurendering.h"
@@ -1393,8 +1394,8 @@ private slots:
         LayoutView* view = doc->view();
         // (The CPU's drawing: its dots for shapes under a pixel, what is in
         // sight alone - the GPU's below.)
-        // (Drawn by grab(): a window that has had an OpenGL widget in it is
-        // composed by OpenGL from then on, a repaint() there only asked for.)
+        // (Drawn by grab(): a window that has had a GPU widget in it is
+        // composed by the GPU from then on, a repaint() there only asked for.)
         view->setGpu(false);
         view->fit();   // (drawn again, now)
         const int before = view->renders();
@@ -1440,6 +1441,11 @@ private slots:
             view->fit();
             view->setGpu(true);
             QVERIFY(view->gpu());
+            // (The window composed by the RHI from now on - its canvas's
+            // frames on the screen, not only in its grabs: the window's
+            // surface the GPU's, no longer a raster one.)
+            QVERIFY(view->window()->windowHandle() != nullptr);
+            QVERIFY(view->window()->windowHandle()->surfaceType() != QSurface::RasterSurface);
             const int renders = view->renders();
             t.restart();
             (void)view->canvas()->grabFramebuffer();
@@ -1470,13 +1476,13 @@ private slots:
 #endif
     }
 
-    // The GPU's picture (layoutviewgl.h) the CPU's, pixel for pixel but at
+    // The GPU's picture (layoutviewgpu.h) the CPU's, pixel for pixel but at
     // the edges of shapes (its triangles' rasterization, not QPainter's):
     // the sample, and shapes the GPU must triangulate - an L, a square with
     // a hole by a slit (a GDSII hole), a ring, a bow tie (odd-even) - in
     // each pattern. A pan and a zoom drawn from its buffers, not made
     // again, the CPU drawing nothing; a layer hidden, its buffers kept, not
-    // drawn. Past its budget the CPU's picture. Where there is no OpenGL 3.3
+    // drawn. Past its budget the CPU's picture. Where the RHI has no backend
     // (CI's offscreen display) it is not there to compare. (The GPU chosen
     // for the layout viewer: the CPU's unless it is.)
     void theGpuDrawsAsTheCpu()
@@ -1557,7 +1563,10 @@ private slots:
             qInfo("%s: %d of %d pixels inked, %d differ (%.2f %%)", qPrintable(name), inked, cpu.width() * cpu.height(), differ,
                   100.0 * differ / std::max(1, inked));
             QVERIFY(inked > 1000);
-            QVERIFY2(differ < inked / 20, qPrintable(QStringLiteral("%1 of %2").arg(differ).arg(inked)));
+            // (On Metal pixel for pixel - none differ -; OpenGL's and
+            // Direct3D's rasterization at the edges of shapes may differ.)
+            const bool metal = qucs_s::gpu::backendName() == QLatin1String("Metal");
+            QVERIFY2(differ < (metal ? inked / 1000 + 1 : inked / 20), qPrintable(QStringLiteral("%1 of %2").arg(differ).arg(inked)));
             // Panned and zoomed: from its buffers, the CPU drawing nothing.
             const int builds = view->canvas()->builds(), renders = view->renders(), frames = view->canvas()->frames();
             view->setView(view->center() + QPointF(3, 2), view->scale() * 1.7);
@@ -1678,7 +1687,7 @@ private slots:
             QCOMPARE(boxes[2]->text(), qucs_s::gpu::viewerName(Viewer::Layout));
             auto* status = tab->findChild<QLabel*>("gpuStatus");
             QVERIFY(status != nullptr);
-            if (qucs_s::gpu::hindrance().isEmpty()) QVERIFY2(status->text().contains("OpenGL 3.3"), qPrintable(status->text()));
+            if (qucs_s::gpu::hindrance().isEmpty()) QVERIFY2(status->text().contains(qucs_s::gpu::backendName()) && !qucs_s::gpu::backendName().isEmpty(), qPrintable(status->text()));
             else QCOMPARE(status->text(), qucs_s::gpu::hindrance());
             // The GPU chosen for each.
             for (QCheckBox* box : boxes) box->setChecked(true);
@@ -1860,7 +1869,7 @@ private slots:
               build, hide, show, added, whole, cpuHide);
         closeAll();
 #else
-        QSKIP("a build without OpenGL");
+        QSKIP("a build without Qt's RHI");
 #endif
     }
 
@@ -1908,7 +1917,7 @@ private slots:
         doc->setLayerVisible(0, true);
         closeAll();
 #else
-        QSKIP("a build without OpenGL");
+        QSKIP("a build without Qt's RHI");
 #endif
     }
 
@@ -1969,7 +1978,7 @@ private slots:
         QVERIFY(differ < (cpuPicture.width() / 3) * (cpuPicture.height() / 3) / 10);
         closeAll();
 #else
-        QSKIP("a build without OpenGL");
+        QSKIP("a build without Qt's RHI");
 #endif
     }
 
@@ -2152,9 +2161,6 @@ private slots:
 
 int main(int argc, char** argv)
 {
-    // (As the application: the core profile's OpenGL, before the
-    // application - the GPU's drawing where there is one.)
-    qucs_s::fem::GraphicsView::prepareGpu();
     QApplication app(argc, argv);
     TestLayoutDoc test;
     return QTest::qExec(&test, argc, argv);

@@ -23,10 +23,10 @@ namespace qucs_s::fem {
 
 /*!
  * The multiphysics settings: drawing the Graphics view with the GPU
- * (OpenGL) - the setting Viewers/multiphysicsGpu, as the view's own menu
- * and Settings… > Viewers set it;
+ * (Qt's RHI: Metal, Direct3D, OpenGL) - the setting Viewers/multiphysicsGpu,
+ * as the view's own menu and Settings… > Viewers set it;
  * on OK every open view drawn so. What keeps the GPU from drawing here
- * (QUCS_GPU=0, a build without OpenGL, no OpenGL 3.3) said under it. The
+ * (QUCS_GPU=0, a build without Qt's RHI, no backend for it) said under it. The
  * sparse direct solver - Automatic, Eigen's or Accelerate's at every size
  * (Multiphysics/solver) - and what is in effect: QUCS_FEM_SOLVER over it,
  * Accelerate's LU only on macOS 26 and later.

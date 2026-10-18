@@ -134,11 +134,15 @@ public:
     /// Qt's calls for characters and selections since the start, each
     /// reading the page's text again (for the tests).
     int textCalls() const { return a_textCalls; }
-    /// Drawn by the GPU: its viewport an OpenGL widget, the tiles textures
-    /// kept there and scaled by it (Settings… > Viewers: Viewers/pdfGpu, off
-    /// unless chosen). The pages themselves are pdfium's, on the CPU.
+    /// Drawn by the GPU: its viewport Qt's RHI's (Metal, Direct3D, OpenGL),
+    /// the tiles textures kept there and scaled by it (Settings… > Viewers:
+    /// Viewers/pdfGpu, off unless chosen). The pages themselves are
+    /// pdfium's, on the CPU.
     void setGpu(bool on);
     bool gpu() const;
+    /// What the pages are drawn on (pdfdoc.cpp): the CPU's painter on the
+    /// viewport, or the GPU's frame.
+    class Surface;
 
     static constexpr qreal MinZoom = 0.1;
     static constexpr qreal MaxZoom = 16.0;
@@ -173,9 +177,8 @@ private:
         QPointF location;
     };
 
-    /// The pages in \a visible (the viewport's), on \a p: the CPU's
-    /// painter on the viewport, or the GPU's on its framebuffer.
-    void paintPages(QPainter& p, const QRect& visible);
+    /// The pages in \a visible (the viewport's), on \a s.
+    void paintPages(Surface& s, const QRect& visible);
     void relayout();
     /// The zoom \a zoom, \a inPage of \a page (points) at \a anchor.
     void placeZoom(qreal zoom, QPoint anchor, int page, QPointF inPage);
@@ -193,7 +196,7 @@ private:
     /// The parts \a missing (viewport) of page \a page (at \a r) whose
     /// tiles at \a scale are not there: drawn from its tiles at the
     /// nearest other scales, the preview under them.
-    void paintScaled(QPainter& p, int page, const QRectF& r, const QRegion& missing, qreal scale, qreal dpr);
+    void paintScaled(Surface& s, int page, const QRectF& r, const QRegion& missing, qreal scale, qreal dpr);
     void updateScrollBars();
     void updateCurrentPage();
     QRectF pagePoints(int page) const;   // its rect in document pixels

@@ -13,12 +13,7 @@
 #include "settings.h"
 
 #ifdef QUCS_GPU_VIEW
-#include "multiphysicsviewgl.h"
-
-#include <QOpenGLContext>
-#include <QOpenGLFunctions>
-#include <QOpenGLPaintDevice>
-#include <QOpenGLWidget>
+#include "rhicanvas.h"
 #endif
 
 #include <QAbstractScrollArea>
@@ -75,10 +70,26 @@ QString hindrance()
     if (qEnvironmentVariable("QUCS_GPU") == QLatin1String("0"))
         return QCoreApplication::translate("gpu", "QUCS_GPU=0 is set: the CPU draws, whatever is chosen.");
 #ifndef QUCS_GPU_VIEW
-    return QCoreApplication::translate("gpu", "This build draws with the CPU alone (built without OpenGL).");
+    return QCoreApplication::translate("gpu", "This build draws with the CPU alone (built without Qt's RHI).");
 #else
-    if (!qucs_s::fem::GlCanvas::available())
-        return QCoreApplication::translate("gpu", "No OpenGL 3.3 here (a remote or offscreen display, or no such driver): the CPU draws.");
+    if (!rhiAvailable())
+        return QCoreApplication::translate("gpu", "No GPU backend here (Metal, Direct3D, OpenGL: a remote or offscreen display, or no such driver): the CPU draws.");
+    return QString();
+#endif
+}
+
+QString backendName()
+{
+#ifdef QUCS_GPU_VIEW
+    if (!rhiAvailable()) return QString();
+#if defined(Q_OS_MACOS)
+    return QStringLiteral("Metal");
+#elif defined(Q_OS_WIN)
+    return QStringLiteral("Direct3D 11");
+#else
+    return QStringLiteral("OpenGL");
+#endif
+#else
     return QString();
 #endif
 }
@@ -88,51 +99,10 @@ bool used(Viewer viewer)
     return wanted(viewer) && hindrance().isEmpty();
 }
 
-namespace {
-
-#ifdef QUCS_GPU_VIEW
-// An OpenGL viewport: each paint - the window's, a grab's - its paintGL, a
-// painter on its framebuffer drawing the background and what the area
-// gives it to draw. (Not the area's own painting: Qt's painter on an
-// OpenGL widget outside paintGL is the grab's raster one in a grab, and
-// paintGL - Qt's clears - the only thing a grab paints.)
-class GlViewport : public QOpenGLWidget
-{
-public:
-    explicit GlViewport(std::function<void(QPainter&)> paint) : a_paint(std::move(paint)) {}
-    /// Its paint events taken before the area's filter has them (filters
-    /// run last installed first).
-    void takePaints() { installEventFilter(this); }
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override
-    {
-        if (watched != this || event->type() != QEvent::Paint) return false;
-        QOpenGLWidget::paintEvent(static_cast<QPaintEvent*>(event));
-        return true;
-    }
-    void paintGL() override
-    {
-        const qreal ratio = devicePixelRatioF();
-        QOpenGLPaintDevice device(QSize(int(std::lround(width() * ratio)), int(std::lround(height() * ratio))));
-        device.setDevicePixelRatio(ratio);
-        QPainter p(&device);
-        p.setFont(font());
-        p.fillRect(rect(), palette().color(backgroundRole()));
-        if (a_paint) a_paint(p);
-    }
-
-private:
-    std::function<void(QPainter&)> a_paint;
-};
-#endif
-
-} // namespace
-
-bool hasGlViewport(const QAbstractScrollArea* area)
+bool hasGpuViewport(const QAbstractScrollArea* area)
 {
 #ifdef QUCS_GPU_VIEW
-    return qobject_cast<QOpenGLWidget*>(area->viewport()) != nullptr;
+    return dynamic_cast<Viewport2D*>(area->viewport()) != nullptr;
 #else
     Q_UNUSED(area);
     return false;
@@ -142,21 +112,9 @@ bool hasGlViewport(const QAbstractScrollArea* area)
 QImage shownFrame(QAbstractScrollArea* area)
 {
 #ifdef QUCS_GPU_VIEW
-    auto* gl = qobject_cast<QOpenGLWidget*>(area->viewport());
-    if (gl == nullptr || !gl->isValid()) return QImage();
-    gl->makeCurrent();
-    QOpenGLFunctions* f = gl->context()->functions();
-    const qreal ratio = gl->devicePixelRatioF();
-    const int w = int(std::lround(gl->width() * ratio)), h = int(std::lround(gl->height() * ratio));
-    QImage upwards(w, h, QImage::Format_RGBA8888);
-    f->glBindFramebuffer(GL_FRAMEBUFFER, gl->defaultFramebufferObject());
-    f->glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    f->glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, upwards.bits());
-    gl->doneCurrent();
-    // (OpenGL's rows from the bottom)
-    QImage frame(w, h, QImage::Format_RGBA8888);
-    for (int y = 0; y < h; ++y) std::memcpy(frame.scanLine(y), upwards.constScanLine(h - 1 - y), size_t(frame.bytesPerLine()));
-    frame.setDevicePixelRatio(ratio);
+    auto* gpu = dynamic_cast<Viewport2D*>(area->viewport());
+    if (gpu == nullptr) return QImage();
+    QImage frame = gpu->grabFramebuffer();
     return frame.convertToFormat(QImage::Format_RGB32);
 #else
     Q_UNUSED(area);
@@ -164,16 +122,16 @@ QImage shownFrame(QAbstractScrollArea* area)
 #endif
 }
 
-bool setGlViewport(QAbstractScrollArea* area, bool gpu, std::function<void(QPainter&)> paint)
+bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canvas2D&)> paint)
 {
 #ifdef QUCS_GPU_VIEW
-    if (gpu == hasGlViewport(area)) return false;
+    if (gpu == hasGpuViewport(area)) return false;
     QWidget* old = area->viewport();
-    // (Whether it fills its background: an OpenGL one keeps the plain one's.)
+    // (Whether it fills its background: the GPU's keeps the plain one's.)
     const QVariant kept = old->property("qucsFillsBackground");
     const bool fills = kept.isValid() ? kept.toBool() : old->autoFillBackground();
-    GlViewport* gl = gpu ? new GlViewport(std::move(paint)) : nullptr;
-    QWidget* fresh = gl ? static_cast<QWidget*>(gl) : new QWidget();
+    Viewport2D* rhi = gpu ? new Viewport2D(std::move(paint)) : nullptr;
+    QWidget* fresh = rhi ? static_cast<QWidget*>(rhi) : new QWidget();
     fresh->setObjectName(old->objectName());
     fresh->setMouseTracking(old->hasMouseTracking());
     fresh->setAcceptDrops(old->acceptDrops());
@@ -190,12 +148,11 @@ bool setGlViewport(QAbstractScrollArea* area, bool gpu, std::function<void(QPain
         if (QAbstractTextDocumentLayout* layout = edit->document()->documentLayout(); layout && layout->paintDevice() == old)
             layout->setPaintDevice(fresh);
     area->setViewport(fresh);   // (the old one deleted)
-    if (gl) {
-        // (setViewport has an OpenGL one clear itself at each painter's
-        // start on it, as a graphics view's: its paintGL fills.)
-        gl->setAutoFillBackground(false);
-        gl->setProperty("qucsFillsBackground", fills);
-        gl->takePaints();
+    if (rhi) {
+        // (Its frame all its drawing: no background of the widget's.)
+        rhi->setAutoFillBackground(false);
+        rhi->setProperty("qucsFillsBackground", fills);
+        rhi->takePaints();
     }
     // (The area's own style sheet - its colours, as the Markdown preview's
     // - given to the new viewport as it was to the old: the area polished
