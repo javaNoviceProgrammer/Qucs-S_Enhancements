@@ -69,6 +69,16 @@ bool blank(const QImage& image)
     return true;
 }
 
+QPointF brushOriginOf(const QPainter& p)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+    return p.brushOriginF();
+#else
+    // (Qt 6.10, CI's: whole pixels alone.)
+    return p.brushOrigin();
+#endif
+}
+
 // QPainter's state, kept across the image it paints on: what a view's
 // painting may have set before a step and paint on with after it.
 struct PainterState {
@@ -85,7 +95,7 @@ struct PainterState {
     bool clipping;
     QPainterPath clip;
     explicit PainterState(const QPainter& p)
-        : font(p.font()), pen(p.pen()), brush(p.brush()), background(p.background()), brushOrigin(p.brushOriginF()),
+        : font(p.font()), pen(p.pen()), brush(p.brush()), background(p.background()), brushOrigin(brushOriginOf(p)),
           backgroundMode(p.backgroundMode()), opacity(p.opacity()), composition(p.compositionMode()), hints(p.renderHints()),
           direction(p.layoutDirection()), transform(p.worldTransform()), clipping(p.hasClipping())
     {
