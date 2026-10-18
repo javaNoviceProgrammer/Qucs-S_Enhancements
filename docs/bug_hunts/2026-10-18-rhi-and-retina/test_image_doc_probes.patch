@@ -1,0 +1,51 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_image_doc.cpp b/qucs-s-26.1.1/qucs/tests/test_image_doc.cpp
+index 339914d..8a23782 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_image_doc.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_image_doc.cpp
+@@ -296,6 +296,46 @@ class TestImageDoc : public QObject
+     }
+ 
+ private slots:
++    // PROBE P12: the image viewer's wheel and pinch keep the point under the pointer.
++    void probeImageAnchor()
++    {
++        QImage big(1600, 1200, QImage::Format_RGB32);
++        big.fill(Qt::darkCyan);
++        const QString file = dir.filePath(QStringLiteral("anchor.png"));
++        QVERIFY(big.save(file));
++        ImageDoc* d = open(file);
++        QVERIFY(d != nullptr);
++        ImageView* view = d->view();
++        view->setZoom(1.0);
++        QTest::qWait(50);
++        QWidget* vp = view->viewport();
++        const QPoint at(vp->width() / 3, vp->height() / 3);
++        double worstWheel = 0, worstPinch = 0;
++        int zoomedWheel = 0;
++        for (int k = 0; k < 16; ++k) {
++            const QPointF before = view->toPicture(QPointF(at));
++            const qreal zoom = view->zoom();
++            if (k % 2) {
++                QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, QPointF(at), QPointF(at),
++                                      vp->mapToGlobal(QPointF(at)), k < 8 ? 0.07 : -0.07, QPointF());
++                QCoreApplication::sendEvent(vp, &e);
++            } else {
++                QWheelEvent w(QPointF(at), vp->mapToGlobal(QPointF(at)), QPoint(), QPoint(0, k < 8 ? 120 : -120), Qt::NoButton,
++                              k % 4 == 0 ? Qt::NoModifier : Qt::ControlModifier, Qt::NoScrollPhase, false);
++                QCoreApplication::sendEvent(vp, &w);
++            }
++            QTest::qWait(5);
++            const double off = QLineF(view->toViewport(before), QPointF(at)).length();
++            if (k % 2) worstPinch = std::max(worstPinch, off);
++            else if (view->zoom() != zoom) {
++                ++zoomedWheel;
++                worstWheel = std::max(worstWheel, off);
++            }
++            qInfo("step %d: zoom %.3f, off %.2f px", k, view->zoom(), off);
++        }
++        qInfo("image: wheel notches that zoomed %d of 8, worst %.3f px; pinch worst %.3f px", zoomedWheel, worstWheel, worstPinch);
++    }
++
+     void initTestCase()
+     {
+         QVERIFY(dir.isValid());

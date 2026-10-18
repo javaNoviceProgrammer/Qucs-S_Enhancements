@@ -21,6 +21,7 @@
 #include <QCoreApplication>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QTextEdit>
 
 #include <cmath>
@@ -73,7 +74,8 @@ QString hindrance()
     return QCoreApplication::translate("gpu", "This build draws with the CPU alone (built without Qt's RHI).");
 #else
     if (!rhiAvailable())
-        return QCoreApplication::translate("gpu", "No GPU backend here (Metal, Direct3D, OpenGL: a remote or offscreen display, or no such driver): the CPU draws.");
+        return QCoreApplication::translate("gpu", "No GPU backend here fit for the viewers (Metal; Direct3D 11 at feature level 11; OpenGL 3.0 or "
+                                                  "OpenGL ES 3.0 - a remote or offscreen display, or an older driver): the CPU draws.");
     return QString();
 #endif
 }
@@ -122,9 +124,15 @@ QImage shownFrame(QAbstractScrollArea* area)
 #endif
 }
 
-bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canvas2D&)> paint)
+bool gpuViewportBroken(const QAbstractScrollArea* area)
+{
+    return area->property("qucsGpuBroken").toBool();
+}
+
+bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canvas2D&)> paint, std::function<void()> failed)
 {
 #ifdef QUCS_GPU_VIEW
+    if (gpu && gpuViewportBroken(area)) gpu = false;
     if (gpu == hasGpuViewport(area)) return false;
     QWidget* old = area->viewport();
     // (Whether it fills its background: the GPU's keeps the plain one's.)
@@ -149,6 +157,20 @@ bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canv
             layout->setPaintDevice(fresh);
     area->setViewport(fresh);   // (the old one deleted)
     if (rhi) {
+        // (Given up - no QRhi, no pipelines -: the area's own again, a moment
+        // after, and not the GPU's again; its owner told - its state, its
+        // filters on the viewport.)
+        rhi->onFailure([guarded = QPointer<QAbstractScrollArea>(area), failed] {
+            QMetaObject::invokeMethod(
+                guarded.data(),
+                [guarded, failed] {
+                    if (!guarded) return;
+                    guarded->setProperty("qucsGpuBroken", true);
+                    if (failed) failed();
+                    else setGpuViewport(guarded, false);
+                },
+                Qt::QueuedConnection);
+        });
         // (Its frame all its drawing: no background of the widget's.)
         rhi->setAutoFillBackground(false);
         rhi->setProperty("qucsFillsBackground", fills);
@@ -165,6 +187,7 @@ bool setGpuViewport(QAbstractScrollArea* area, bool gpu, std::function<void(Canv
     Q_UNUSED(area);
     Q_UNUSED(gpu);
     Q_UNUSED(paint);
+    Q_UNUSED(failed);
     return false;
 #endif
 }

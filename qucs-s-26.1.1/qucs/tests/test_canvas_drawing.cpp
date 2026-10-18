@@ -698,6 +698,143 @@ private slots:
         qInfo("%d views of a graph, %d of them some lines passed over", checked, culled);
     }
 
+    // A data display of one graph on the 240 by 160 diagram, its points'
+    // y \a values.
+    Schematic* oneGraph(QucsApp& app, const QString& name, const std::vector<double>& values)
+    {
+        const int points = int(values.size());
+        QString dat = QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n<indep x %1>\n").arg(points);
+        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg(i);
+        dat += QStringLiteral("</indep>\n<dep v x>\n");
+        for (double v : values) dat += QStringLiteral("  %1\n").arg(v, 0, 'g', 12);
+        dat += QStringLiteral("</dep>\n");
+        write(name + QStringLiteral(".dat"), dat);
+        const QString dpl = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,800,600,1,0,0>\n  <Grid=10,10,0>\n"
+                                           "  <DataSet=%1.dat>\n  <DataDisplay=%1.dpl>\n  <OpenDisplay=0>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                                           "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
+                                           "  <Rect 60 240 240 160 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 \"\" \"\" \"\">\n"
+                                           "    <\"v\" #0000ff 1 3 0 0 0>\n  </Rect>\n"
+                                           "</Diagrams>\n<Paintings>\n</Paintings>\n")
+                                .arg(name);
+        return open(app, write(name + QStringLiteral(".dpl"), dpl), {1100, 800});
+    }
+
+    // A slope of 1,000 points zoomed in keeps its slope: lines near in x
+    // joined into a vertical run only when they are within a quarter of a
+    // device pixel - in the diagram's units (a quarter of one), zoomed in
+    // half its lines were made vertical, the count no less. Zoomed out, a
+    // pixel's lines still joined.
+    void aSlopeZoomedInKeepsItsSlope()
+    {
+        std::vector<double> values;
+        for (int i = 0; i < 1000; ++i) values.push_back(-1.0 + 2.0 * i / 999);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        Schematic* s = oneGraph(app, QStringLiteral("slope"), values);
+        QVERIFY(s != nullptr);
+        Diagram* d = s->a_DocDiags.front();
+        const Graph* g = d->Graphs.front();
+        const qreal ratio = s->viewport()->devicePixelRatioF();
+        for (const double scale : {0.25, 2.0, 4.0, 8.0}) {
+            s->zoomBy(scale / s->getScale());
+            s->centerOn(QPoint(d->cx + d->x2 / 2, d->cy - d->y2 / 2));
+            pump();
+            s->viewport()->repaint();
+            int vertical = 0;
+            for (const QLineF& l : g->drawnLines()) vertical += std::abs(l.x1() - l.x2()) < 1e-9;
+            const int lines = int(g->drawnLines().size());
+            qInfo("zoom %g at a ratio of %g: %d lines, %d vertical", s->getScale(), ratio, lines, vertical);
+            if (scale * ratio >= 2) QCOMPARE(vertical, 0);
+            else QVERIFY2(lines < 999 / 2, qPrintable(QString::number(lines)));   // (a quarter of a device pixel a step: joined)
+        }
+    }
+
+    // A curve's points thinned to a device pixel: 0.3 of a point apart -
+    // 0.6 of a device pixel on a Retina screen, a point passed over drawn
+    // to before the next one - all kept there; at a ratio of 1 some half.
+    // (Thinned to a point, two device pixels: half a curve's detail lost on
+    // a Retina screen.) (test_canvas_drawing_ratio2 runs it at a ratio of 2.)
+    void aCurveIsThinnedToADevicePixel()
+    {
+        // (Flat: x alone apart.)
+        const std::vector<double> values(800, 1.0);
+        QucsApp app(false);
+        MainGuard guard(&app);
+        Schematic* s = oneGraph(app, QStringLiteral("flat"), values);
+        QVERIFY(s != nullptr);
+        Diagram* d = s->a_DocDiags.front();
+        const Graph* g = d->Graphs.front();
+        // 800 points across 240 units: 0.3 a step, at a zoom of 1.
+        s->zoomBy(1.0 / s->getScale());
+        s->centerOn(QPoint(d->cx + d->x2 / 2, d->cy - d->y2 / 2));
+        pump();
+        s->viewport()->repaint();
+        const qreal ratio = s->viewport()->devicePixelRatioF();
+        const int lines = int(g->drawnLines().size());
+        qInfo("a ratio of %g: %d lines of 799", ratio, lines);
+        if (ratio >= 2) QVERIFY2(lines >= 795, qPrintable(QString::number(lines)));
+        else QVERIFY2(lines > 300 && lines < 500, qPrintable(QString::number(lines)));
+    }
+
+    // The point under the pointer kept as a data display (a schematic
+    // alike: the canvas is theirs) zooms, wheel notch by notch and pinch by
+    // pinch, up to the largest zoom and back: within half a pixel each way
+    // at each step, the canvas placed to the nearest. In whole model units it moved
+    // up to a unit a step - 6.5 points at a zoom of 5.6, 2 on average. And a
+    // scroll under half a unit, zoomed in, scrolls.
+    void aZoomKeepsThePointUnderThePointer()
+    {
+        const QString dpl = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,800,600,1,0,0>\n  <Grid=10,10,0>\n"
+                                           "  <DataSet=none.dat>\n  <DataDisplay=anchor.dpl>\n  <OpenDisplay=0>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                                           "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
+                                           "  <Rect 60 240 240 160 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 \"\" \"\" \"\">\n  </Rect>\n"
+                                           "</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        Schematic* s = open(app, write(QStringLiteral("anchor.dpl"), dpl), {1100, 800});
+        QVERIFY(s != nullptr);
+        s->zoomBy(2.0 / s->getScale());
+        s->centerOn(QPoint(180, 160));
+        pump();
+        const QPoint at(300, 200);   // in the viewport
+        // (The model's point under it, between a unit's parts.)
+        const auto exact = [s, at] { return s->viewportToModelF(at); };
+        double worst = 0, sum = 0, largest = 0;
+        constexpr int steps = 40;
+        for (int k = 0; k < steps; ++k) {
+            const QPointF before = exact();
+            const int sign = k < steps / 2 ? 1 : -1;
+            if (k % 2) {
+                const QPointF g = s->viewport()->mapToGlobal(QPointF(at));
+                QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, QPointF(at), QPointF(at), g, sign * 0.1, QPointF());
+                QCoreApplication::sendEvent(s->viewport(), &e);
+            } else {
+                const QPointF local = s->viewport()->mapTo(s, QPointF(at));
+                QWheelEvent w(local, s->mapToGlobal(local), QPoint(), QPoint(0, sign * 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(s, &w);
+            }
+            pump();
+            const double off = QLineF(before, exact()).length() * s->getScale();   // viewport pixels
+            worst = std::max(worst, off);
+            sum += off;
+            largest = std::max(largest, s->getScale());
+            QVERIFY2(off <= 0.75, qPrintable(QStringLiteral("step %1 (%2), scale %3: the point moved %4 px").arg(k).arg(k % 2 ? "pinch" : "wheel").arg(s->getScale()).arg(off)));
+        }
+        QCOMPARE(largest, 10.0);   // (the steps reached the largest zoom)
+        QVERIFY(s->getScale() < 2.0);
+        qInfo("the point moved %.2f px a step on average, %.2f at most", sum / steps, worst);
+        // A touchpad's scroll of 3 pixels at the largest zoom (0.3 units):
+        // 3 pixels.
+        s->zoomBy(10.0 / s->getScale());
+        pump();
+        const int y = s->contentsY();
+        const QPointF local = s->viewport()->mapTo(s, QPointF(at));
+        QWheelEvent w(local, s->mapToGlobal(local), QPoint(), QPoint(0, -6), Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+        QCoreApplication::sendEvent(s, &w);
+        pump();
+        QCOMPARE(s->contentsY() - y, 3);
+    }
+
     void aPlotOfManyCurvesZoomsSmoothly()
     {
         constexpr int points = 2000, states = 20;

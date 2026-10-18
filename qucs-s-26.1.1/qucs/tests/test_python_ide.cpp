@@ -51,6 +51,21 @@
 #include "schematic.h"
 #include "settings.h"
 
+namespace {
+
+// A grab at the view's pixels: on a Retina screen a grab has the device's,
+// two to each, and these checks read the view's coordinates. (Nearest: each
+// pixel a colour drawn.)
+QImage atViewPixels(const QImage& grabbed)
+{
+    if (grabbed.devicePixelRatio() == 1.0) return grabbed;
+    QImage scaled = grabbed.scaled((QSizeF(grabbed.size()) / grabbed.devicePixelRatio()).toSize(), Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    scaled.setDevicePixelRatio(1.0);
+    return scaled;
+}
+
+} // namespace
+
 class TestPythonIde : public QObject
 {
     Q_OBJECT
@@ -651,7 +666,7 @@ private slots:
             // for the one off.
             QWidget* margin = marginOf(py);
             QVERIFY(margin != nullptr);
-            const QImage shown = margin->grab().toImage();
+            const QImage shown = atViewPixels(margin->grab().toImage());
             const int room = std::clamp(py->fontMetrics().height(), 12, 18) + 2;
             const auto red = [](const QColor& c) { return c.red() > 150 && c.green() < 110; };
             // (Above the bar across it: red whatever the font's size.)
@@ -963,7 +978,7 @@ private slots:
         for (int k = 2; k <= 5; ++k) QVERIFY(!py->document()->findBlockByNumber(k - 1).isVisible());
         QVERIFY(py->document()->findBlockByNumber(6).isVisible());
         {   // Drawn: dots after the line folded.
-            const QImage shown = py->viewport()->grab().toImage();
+            const QImage shown = atViewPixels(py->viewport()->grab().toImage());
             const QRect line = py->cursorRect(QTextCursor(py->document()->findBlockByNumber(0)));
             const int x = py->fontMetrics().horizontalAdvance("def f(x):") + py->fontMetrics().horizontalAdvance("  ") + line.left() + 6;
             bool marked = false;

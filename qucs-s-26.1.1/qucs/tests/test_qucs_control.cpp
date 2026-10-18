@@ -8602,7 +8602,17 @@ private slots:
             call("close_document", {{"unsaved", "discard"}});
             return kept ? took : -1;
         };
-        const qint64 small = arranged(800), large = arranged(3200);
+        // (Each size's best of three, taken in turn: on CI's shared runner,
+        // other test files beside it, one slow run of the large one made it
+        // 8.6 times the small one's, 287bf23's macOS job. A load only adds
+        // time; four times the parts quadratic is still sixteen.)
+        qint64 small = -1, large = -1;
+        for (int k = 0; k < 3; ++k) {
+            const qint64 s = arranged(800), l = arranged(3200);
+            QVERIFY(s >= 0 && l >= 0);
+            small = small < 0 ? s : std::min(small, s);
+            large = large < 0 ? l : std::min(large, l);
+        }
         QVERIFY(small >= 0 && large >= 0);
         QVERIFY2(large < 8 * std::max<qint64>(small, 20), qPrintable(QStringLiteral("800 parts: %1 ms, 3200: %2 ms").arg(small).arg(large)));
         // A long chain with a ground at every stage (an RLC ladder): each
@@ -8627,7 +8637,13 @@ private slots:
             return kept ? took : -1;
         };
         QString whole;
-        const qint64 short_ = ladder(100, nullptr), long_ = ladder(400, &whole);
+        qint64 short_ = -1, long_ = -1;
+        for (int k = 0; k < 3; ++k) {
+            const qint64 s = ladder(100, nullptr), l = ladder(400, k == 0 ? &whole : nullptr);
+            QVERIFY(s >= 0 && l >= 0);
+            short_ = short_ < 0 ? s : std::min(short_, s);
+            long_ = long_ < 0 ? l : std::min(long_, l);
+        }
         QVERIFY(short_ >= 0 && long_ >= 0);
         QVERIFY2(long_ < 8 * std::max<qint64>(short_, 20), qPrintable(QStringLiteral("100 stages: %1 ms, 400: %2 ms").arg(short_).arg(long_)));
         const QJsonObject read = QJsonDocument::fromJson(whole.toUtf8()).object();

@@ -841,7 +841,9 @@ void Graph::drawLines(QPainter* painter) const {
   const bool vector = qucs_s::lod::vectorOutput();
   const bool squareCaps = !vector && (qucs_s::lod::draft() || deviceWidth <= qucs_s::lod::kSquareCapsWidth);
   const double fine = vector ? 10.0 : 1.0;   // pixels thinned to: 1 / fine
-  const double thinScale = scaleNow * fine;
+  // (A device's pixels: on a Retina screen two to the view's, thinned to
+  // the view's, a curve lost half its detail.)
+  const double thinScale = scaleNow * fine * (vector ? 1.0 : ratio);
   const auto capped = [squareCaps](QPen& p) {
     if (squareCaps && p.style() == Qt::SolidLine) p.setCapStyle(Qt::SquareCap);
   };
@@ -908,9 +910,11 @@ void Graph::drawLines(QPainter* painter) const {
   // With this knowledge we can now calculate thresholds for our dataset.
 
 
-  constexpr double min_pixels = 1.0;  // I can be wrong here, but I believe these are pixels…
-  const double x_threshold = std::abs(min_pixels / (painter->transform().m11() * fine));
-  const double y_threshold = std::abs(min_pixels / (painter->transform().m22() * fine));
+  // (A device's pixel: the scale's and its pixel ratio's, as thinScale.)
+  constexpr double min_pixels = 1.0;
+  const double deviceRatio = vector ? 1.0 : ratio;
+  const double x_threshold = std::abs(min_pixels / (painter->transform().m11() * fine * deviceRatio));
+  const double y_threshold = std::abs(min_pixels / (painter->transform().m22() * fine * deviceRatio));
 
   // Helper to quickly calculate whether two points are distant enough to be worth of drawing
   // a graph segment between them
@@ -1009,9 +1013,13 @@ void Graph::drawLines(QPainter* painter) const {
   finish_stroke();
 
 
-  // Cannot render the points greater than diagram size in pixels
-  auto max_points = std::max(parentDiagram()->boundingRect().width(),
-                             parentDiagram()->boundingRect().height());
+  // Cannot render the points greater than diagram size in pixels - its
+  // device's, at the scale drawn. (In the diagram's units, zoomed in a
+  // quarter of one spans pixels: a slope's lines were made vertical by the
+  // joining below, as many as before.)
+  const double unitsToPixels = thinScale;
+  const double max_points = std::max(parentDiagram()->boundingRect().width(),
+                                     parentDiagram()->boundingRect().height()) * unitsToPixels;
 
   // (Not for a vector's output: it is zoomed after.)
   if (!vector && lines.size() > 2*max_points) {
@@ -1024,7 +1032,8 @@ void Graph::drawLines(QPainter* painter) const {
     int join_curve = 0; // the curve of the lines being joined
     size_t count = 0, final_count = lines.size()-1;
 
-    auto near = [](float x1, float x2) { return std::abs(x1-x2) < 0.25; };
+    const float nearUnits = float(0.25 / std::max(unitsToPixels, 1e-9));   // a quarter of a device pixel
+    auto near = [nearUnits](float x1, float x2) { return std::abs(x1-x2) < nearUnits; };
 
     for (qsizetype li = 0; li < lines.size(); ++li) {
       const QLineF& l = lines.at(li);

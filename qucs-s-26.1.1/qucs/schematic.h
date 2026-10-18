@@ -285,6 +285,8 @@ public:
     displayed at given location of the viewport.
   */
   QPoint viewportToModel(const QPoint& viewportCoordinates);
+  /// As viewportToModel(), between a unit's parts: the point exactly.
+  QPointF viewportToModelF(const QPoint& viewportCoordinates);
 
   /**
     Given coordinates of a point on the view plane (schematic's canvas), this method
@@ -580,19 +582,6 @@ private:
   QFileInfo a_FileInfo;
 
   /**
-    Tells whether the model should be rerendered. Model should be rendered
-    if the given scale differs from the current one or if the point displayed
-    at \a viewportCoords in the viewport differs from the point \a modelCoords.
-    Otherwise there is no changes and no need to rerender.
-
-    @param scale desired scale
-    @param newModelBounds a rectangle describing the desired model bounds
-    @param modelCoords coordinates of a point on the model plane
-    @param viewportCoords coordinates of a point in the viewport.
-  */
-  bool shouldRender(const double& scale, const QRect& newModelBounds, const QPoint& modelCoords, const QPoint& viewportCoords);
-
-  /**
     Renders schematic model on Q3ScrollView's contents at a given scale,
     and positions the contents so that the point \a modelPlaneCoords of the
     model is displayed at location \a viewportCoords of the viewport.
@@ -630,12 +619,13 @@ private:
                              a lower or upperlimit
     @param  newModelBounds   a rectangle describing the desired model bounds
     @param  modelPlaneCoords coordinates of a point somewhere within
-                             \a newModelBounds
+                             \a newModelBounds (between a unit's parts: the
+                             point under the pointer kept as it zooms)
     @param  viewportCoords   coordinates of the point on the viewport where
                              \a modelPlaneCoords should be placed after rendering
     @return new scale value
   */
-  double renderModel(double scale, QRect newModelBounds, QPoint modelPlaneCoords, QPoint viewportCoords);
+  double renderModel(double scale, QRect newModelBounds, QPointF modelPlaneCoords, QPoint viewportCoords);
 
   // Which of the elements drawElements() draws: all of them, or, while a
   // selection is dragged, those that stay or those that move.

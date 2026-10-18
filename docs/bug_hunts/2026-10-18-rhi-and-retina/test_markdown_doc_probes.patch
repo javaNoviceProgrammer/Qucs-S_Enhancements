@@ -1,0 +1,102 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+index 107e8a9..901377b 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+@@ -933,6 +933,97 @@ private slots:
+     // scroll only the row it brings into sight, back none; a selection, an
+     // edit, a new width all of those in sight again; the rows far out of
+     // sight let go.
++    // PROBE P4: the preview's GPU viewport switched on and off while it
++    // scrolls and its text changes, its tab closed on the GPU.
++    void probePreviewStress()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        QByteArray text = "# Stress\n\n> quote\n\n";
++        for (int i = 0; i < 200; ++i) text += "Line " + QByteArray::number(i) + " of the stress, $x^" + QByteArray::number(i % 5) + "$ math.\n\n";
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(900, 700);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        for (int round = 0; round < 6; ++round) {
++            QVERIFY(app.gotoPage(write(QStringLiteral("stress%1.md").arg(round), text)));
++            MarkdownDoc* md = current(app);
++            QVERIFY(md != nullptr);
++            md->setMode(round % 2 ? MarkdownDoc::Mode::Split : MarkdownDoc::Mode::Preview);
++            QTextBrowser* view = md->preview();
++            for (int k = 0; k < 12; ++k) {
++                md->setPreviewGpu(k % 3 != 2);
++                view->verticalScrollBar()->setValue(k * 97);
++                if (k % 4 == 1) md->insertPlainText(QStringLiteral("edit %1 ").arg(k));
++                if (k % 4 == 3) md->renderNow();
++                (void)qucs_s::gpu::shownFrame(view);
++                QTest::qWait(k % 3 * 15);
++            }
++            md->setPreviewGpu(true);
++            QTest::qWait(30);
++            app.slotFileClose(app.DocumentTab->indexOf(md));
++            QTest::qWait(round % 2 ? 0 : 40);
++        }
++        qInfo("preview stress done");
++    }
++
++    // PROBE P11: a selection dragged over the preview, the GPU's tiles
++    // against the CPU: each step's paint.
++    void probeDragSelectTime()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        QByteArray text = "# Drag\n\n";
++        for (int i = 0; i < 120; ++i) text += "Line " + QByteArray::number(i) + " of a document to select across, long enough to fill the width of the preview.\n\n";
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(1200, 900);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        QVERIFY(app.gotoPage(write(QStringLiteral("drag.md"), text)));
++        MarkdownDoc* md = current(app);
++        QVERIFY(md != nullptr);
++        md->setMode(MarkdownDoc::Mode::Preview);
++        QTextBrowser* view = md->preview();
++        for (const bool gpu : {false, true}) {
++            md->setPreviewGpu(gpu);
++            QTest::qWait(200);
++            QWidget* vp = view->viewport();
++            struct Timer : QObject {
++                QList<double> times;
++                QElapsedTimer t;
++                bool eventFilter(QObject* o, QEvent* e) override
++                {
++                    if (e->type() != QEvent::Paint) return false;
++                    t.start();
++                    o->removeEventFilter(this);
++                    QCoreApplication::sendEvent(o, e);
++                    o->installEventFilter(this);
++                    times << t.nsecsElapsed() / 1e6;
++                    return true;
++                }
++            } timer;
++            vp->installEventFilter(&timer);
++            const QPoint from(40, 60);
++            QTest::mousePress(vp, Qt::LeftButton, Qt::NoModifier, from);
++            for (int k = 1; k <= 40; ++k) {
++                const QPoint to = from + QPoint(k * 9, k * 12);
++                QMouseEvent move(QEvent::MouseMove, QPointF(to), vp->mapToGlobal(QPointF(to)), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
++                QCoreApplication::sendEvent(vp, &move);
++                QTest::qWait(16);
++            }
++            QTest::mouseRelease(vp, Qt::LeftButton, Qt::NoModifier, from + QPoint(360, 480));
++            vp->removeEventFilter(&timer);
++            QList<double> t = timer.times;
++            std::sort(t.begin(), t.end());
++            qInfo("%s: %d paints, median %.2f ms, worst %.2f ms; selected %d characters", gpu ? "GPU" : "CPU", int(t.size()),
++                  t.isEmpty() ? 0.0 : t.at(t.size() / 2), t.isEmpty() ? 0.0 : t.last(), int(view->textCursor().selectedText().size()));
++            QTextCursor c = view->textCursor();
++            c.clearSelection();
++            view->setTextCursor(c);
++        }
++        md->setPreviewGpu(false);
++    }
++
+     void theGpuPreviewDrawsWhatChanged()
+     {
+         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));

@@ -1,0 +1,164 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_multiphysics_view.cpp b/qucs-s-26.1.1/qucs/tests/test_multiphysics_view.cpp
+index e3ba361..5e6a92c 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_multiphysics_view.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_multiphysics_view.cpp
+@@ -19,10 +19,13 @@
+ #include "multiphysicsview.h"
+ #include "multiphysicssettings.h"
+ #include "gpurendering.h"
++#include "settings.h"
+ 
+ #include "isolated_settings.h"
+ 
+ #include <QApplication>
++#include <QScreen>
++#include <QGuiApplication>
+ #include <QCheckBox>
+ #include <QLabel>
+ #include <QElapsedTimer>
+@@ -198,6 +201,145 @@ private slots:
+     // and letters' antialiasing (under 3 % of the pixels more than 40 apart
+     // in a channel); a zoom the GPU's frames, no raster made; told so, the
+     // setting kept - a view made after drawn by the CPU -, and on again.
++    // PROBE P5: the Graphics view's GPU canvas made and dropped, resized to
++    // nothing, the view deleted while shown.
++    void probeGraphicsStress()
++    {
++        if (!GraphicsView::gpuAvailable()) QSKIP("no GPU");
++        auto mesh = gridMesh(30);
++        for (int round = 0; round < 10; ++round) {
++            auto* view = new GraphicsView;
++            view->setGpu(round % 3 != 1);
++            view->resize(400 + round * 10, 300);
++            view->setTopology(squareTopology());
++            view->setMesh(mesh);
++            view->setVisible(true);
++            (void)QTest::qWaitForWindowExposed(view, 500);
++            if (round % 2) {
++                view->resize(0, 0);
++                QTest::qWait(10);
++                view->resize(300, 200);
++            }
++            for (int k = 0; k < 4; ++k) {
++                view->setGpu(k % 2 == 0);
++                view->zoomBy(1.2);
++                QTest::qWait(10);
++            }
++            if (round % 2) delete view;
++            else view->deleteLater();
++            QTest::qWait(20);
++        }
++        QTest::qWait(50);
++        qInfo("graphics stress done");
++    }
++
++    // PROBE P8: the Graphics view's wheel and pinch keep the point under the pointer.
++    void probeGraphicsAnchor()
++    {
++        auto mesh = gridMesh(20);
++        GraphicsView owner;
++        GraphicsView* view = &owner;
++        view->resize(600, 400);
++        view->setTopology(squareTopology());
++        view->setMesh(mesh);
++        view->setVisible(true);
++        (void)QTest::qWaitForWindowExposed(view, 500);
++        view->fit();
++        const QPoint at(view->width() / 3, view->height() / 3);
++        double worstWheel = 0, worstPinch = 0;
++        int zoomedWheel = 0;
++        for (int k = 0; k < 16; ++k) {
++            const QPointF before = view->toModel(QPointF(at));
++            const double scale = view->scale();
++            if (k % 2) {
++                QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, QPointF(at), QPointF(at),
++                                      view->mapToGlobal(QPointF(at)), k < 8 ? 0.07 : -0.07, QPointF());
++                QCoreApplication::sendEvent(view, &e);
++            } else {
++                QWheelEvent w(QPointF(at), view->mapToGlobal(QPointF(at)), QPoint(), QPoint(0, k < 8 ? 120 : -120), Qt::NoButton,
++                              k % 4 == 0 ? Qt::NoModifier : Qt::ControlModifier, Qt::NoScrollPhase, false);
++                QCoreApplication::sendEvent(view, &w);
++            }
++            QTest::qWait(5);
++            const double off = QLineF(view->toPixel(before), QPointF(at)).length();
++            if (k % 2) worstPinch = std::max(worstPinch, off);
++            else if (view->scale() != scale) {
++                ++zoomedWheel;
++                worstWheel = std::max(worstWheel, off);
++            }
++        }
++        qInfo("graphics: wheel notches that zoomed %d of 8, worst %.3f px; pinch worst %.3f px (scale now %g)", zoomedWheel, worstWheel, worstPinch, view->scale());
++    }
++
++    // PROBE P10: QUCS_GPU=0 and the Graphics view: made, asked by its menu's
++    // setGpu, by the setting changed (Settings... > Viewers).
++    void probeGpuEnvOff()
++    {
++        qInfo("QUCS_GPU=%s, hindrance: %s", qPrintable(qEnvironmentVariable("QUCS_GPU")), qPrintable(qucs_s::gpu::hindrance()));
++        GraphicsView a;
++        a.resize(300, 200);
++        a.setVisible(true);
++        qInfo("made: gpu %d", a.gpu());
++        a.setGpu(true);
++        qInfo("its menu's setGpu(true): gpu %d", a.gpu());
++        GraphicsView b;
++        b.resize(300, 200);
++        b.setVisible(true);
++        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Multiphysics, true);
++        qInfo("the setting on (Settings... > Viewers): another view's gpu %d", b.gpu());
++        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Multiphysics, false);
++        QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Multiphysics));
++    }
++
++    // PROBE P13: a pan's paint of a large Graphics view, the GPU against the CPU.
++    void probeGraphicsBigPan()
++    {
++        if (!GraphicsView::gpuAvailable()) QSKIP("no GPU");
++        const QRect screen = QGuiApplication::primaryScreen()->availableGeometry();
++        for (const int n : {100, 300}) {
++            auto mesh = gridMesh(n);
++            for (const bool gpu : {false, true}) {
++                GraphicsView view;
++                view.setGpu(gpu);
++                view.setGeometry(screen);
++                view.setMesh(mesh);
++                auto scene = sceneOf(*mesh, [](QPointF p) { return std::sin(9 * p.x()) * std::cos(7 * p.y()); }, true);
++                scene->mesh = true;
++                view.setPlot(scene);
++                view.setShow(GraphicsView::Show::Results);
++                view.fit();
++                view.setVisible(true);
++                (void)QTest::qWaitForWindowExposed(&view, 1000);
++                QTest::qWait(300);
++                QWidget* target = gpu ? view.findChild<QWidget*>(QStringLiteral("multiphysicsCanvas")) : static_cast<QWidget*>(&view);
++                struct Timer : QObject {
++                    QList<double> times;
++                    QElapsedTimer t;
++                    bool eventFilter(QObject* o, QEvent* e) override
++                    {
++                        if (e->type() != QEvent::Paint) return false;
++                        t.start();
++                        o->removeEventFilter(this);
++                        QCoreApplication::sendEvent(o, e);
++                        o->installEventFilter(this);
++                        times << t.nsecsElapsed() / 1e6;
++                        return true;
++                    }
++                } timer;
++                target->installEventFilter(&timer);
++                for (int k = 0; k < 16; ++k) {
++                    view.zoomBy(k % 2 ? 1.02 : 1 / 1.02);
++                    QTest::qWait(40);
++                }
++                target->removeEventFilter(&timer);
++                QList<double> t = timer.times;
++                std::sort(t.begin(), t.end());
++                qInfo("%d by %d mesh, %s: view %d by %d at %g, %d paints, median %.1f ms, worst %.1f", n, n, gpu ? "GPU" : "CPU", view.width(), view.height(),
++                      view.devicePixelRatioF(), int(t.size()), t.isEmpty() ? 0.0 : t.at(t.size() / 2), t.isEmpty() ? 0.0 : t.last());
++            }
++        }
++    }
++
+     void theGpuDrawsAsTheCpu()
+     {
+         if (!GraphicsView::gpuAvailable()) QSKIP("no GPU backend here (the offscreen platform)");

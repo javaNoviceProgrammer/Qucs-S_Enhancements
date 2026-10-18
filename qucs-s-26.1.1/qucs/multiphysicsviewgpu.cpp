@@ -73,6 +73,8 @@ GpuCanvas::~GpuCanvas()
 void GpuCanvas::paintFrame(QPainter& p)
 {
     a_slotsUsed = 0;
+    // (The last frame's sent: its buffers let go now.)
+    a_retired.clear();
     a_view->paintFrame(p, this);
 }
 
@@ -96,6 +98,7 @@ void GpuCanvas::releaseNativeResources()
     a_uniforms.reset();
     a_fills.clear();
     a_strokes.clear();
+    a_retired.clear();
     a_rhi = nullptr;
 }
 
@@ -144,6 +147,11 @@ void GpuCanvas::createResources(QRhi* rhi)
     a_topologyStamp = a_meshStamp = a_plotStamp = 0;
 }
 
+void GpuCanvas::retire(std::unique_ptr<QRhiBuffer>& b)
+{
+    if (b) a_retired.push_back(std::move(b));
+}
+
 std::unique_ptr<QRhiBuffer> GpuCanvas::buffer(const void* data, std::size_t bytes)
 {
     if (bytes == 0) return nullptr;
@@ -186,8 +194,9 @@ void GpuCanvas::sync()
 
 void GpuCanvas::buildLines(Batch& b, const std::vector<float>& segments, const std::vector<quint32>& colors, const std::vector<float>& widths)
 {
+    retire(b.vertices);
+    retire(b.extra);
     b.vertices = buffer(segments.data(), segments.size() * sizeof(float));
-    b.extra.reset();
     if (!colors.empty()) {
         // Each segment's color (four bytes) and width (a float).
         std::vector<char> extra(colors.size() * 8);
@@ -299,8 +308,9 @@ void GpuCanvas::drawDomains(QPainter& p, const std::vector<QColor>& fills)
                     pos.push_back(float(v.y() - a_origin.y()));
                     a_domainOf.push_back(d);
                 }
+        retire(a_domains.vertices);
+        retire(a_domains.extra);
         a_domains.vertices = buffer(pos.data(), pos.size() * sizeof(float));
-        a_domains.extra.reset();
         a_domains.count = int(a_domainOf.size());
         a_domains.built = true;
         a_fills.clear();
@@ -312,6 +322,7 @@ void GpuCanvas::drawDomains(QPainter& p, const std::vector<QColor>& fills)
             const int d = a_domainOf[i];
             colors[i] = d < int(fills.size()) ? rgba(fills[std::size_t(d)]) : 0;
         }
+        retire(a_domains.extra);
         a_domains.extra = buffer(colors.data(), colors.size() * 4);
         a_fills = fills;
     }
@@ -389,6 +400,8 @@ void GpuCanvas::drawQuality(QPainter& p)
                 colors.push_back(c);
             }
         }
+        retire(a_quality.vertices);
+        retire(a_quality.extra);
         a_quality.vertices = buffer(pos.data(), pos.size() * sizeof(float));
         a_quality.extra = buffer(colors.data(), colors.size() * 4);
         a_quality.count = int(colors.size());
@@ -417,6 +430,7 @@ void GpuCanvas::drawSurface(QPainter& p)
                 data.insert(data.end(), {float(q.x() - a_origin.x()), float(q.y() - a_origin.y()), float((v[k] - lo) / span)});
             }
         }
+        retire(a_surfaceBatch.vertices);
         a_surfaceBatch.vertices = buffer(data.data(), data.size() * sizeof(float));
         a_surfaceBatch.count = int(data.size() / 3);
         a_surfaceBatch.built = true;

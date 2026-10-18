@@ -55,6 +55,17 @@ using qucs_s::python::nextIndent;
 
 namespace {
 
+// A grab at the view's pixels: on a Retina screen a grab has the device's,
+// two to each, and these checks read the view's coordinates. (Nearest: each
+// pixel a colour drawn.)
+[[maybe_unused]] QImage atViewPixels(const QImage& grabbed)
+{
+    if (grabbed.devicePixelRatio() == 1.0) return grabbed;
+    QImage scaled = grabbed.scaled((QSizeF(grabbed.size()) / grabbed.devicePixelRatio()).toSize(), Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    scaled.setDevicePixelRatio(1.0);
+    return scaled;
+}
+
 // Puts back an environment variable as it was.
 struct EnvironmentGuard {
     QByteArray name, was;
@@ -473,7 +484,7 @@ private slots:
         QTextCursor home(py->document()->lastBlock());
         py->setTextCursor(home);   // (the current line's shade elsewhere)
         const auto reddish = [py](int line) {
-            const QImage image = py->viewport()->grab().toImage();
+            const QImage image = atViewPixels(py->viewport()->grab().toImage());
             QTextCursor end(py->document()->findBlockByNumber(line - 1));
             end.movePosition(QTextCursor::EndOfBlock);
             const QRect at = py->cursorRect(end);

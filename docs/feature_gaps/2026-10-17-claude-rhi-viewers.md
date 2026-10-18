@@ -50,12 +50,12 @@ On the Retina display, Metal. The OpenGL figures are from `2026-10-17-claude-gpu
 
 | Viewer | What | CPU | OpenGL (before) | RHI (Metal) |
 |---|---|---|---|---|
-| Layout | The GPU's picture against the CPU's | | Edges differed (5 % allowed) | **0 pixels differ** (the sample; the shapes in each pattern) |
+| Layout | The GPU's picture against the CPU's | | Edges differed (5 % allowed) | **0 pixels differ** within a pixel (the sample; the shapes in each pattern) - see the correction below |
 | Layout | A million shapes, a pan or a zoom | 34 to 63 ms | 13 to 18 ms at most; buffers 35 ms | **6 ms at most; buffers 5 ms** |
 | Layout | 8,000 curves of 96 points, a view | 45 ms | 6 to 8 ms; buffers 9 ms | **4 ms; buffers 4 ms** |
 | Layout | A layer hidden, shown, first shown | 34 ms | 4, 4, 128 ms | 4, 4, 124 ms |
 | Graphics view | Pixels more than 40 apart from the CPU's | | Under 3 % | Geometry and boundaries 0.00 %; mesh 1.26 %; surface 0.10 % |
-| PDF | The GPU's picture against the CPU's | | Under 0.5 % allowed | **0 of 2,574,144**; mid-pinch 0 of 2,514,848 |
+| PDF | The GPU's picture against the CPU's | | Under 0.5 % allowed | **0 of 2,574,144**; mid-pinch 0 of 2,514,848 (the first page - see the correction below) |
 | PDF | A scroll's paint (median) | 2.8 ms | 0.12 to 0.22 ms | 1.3 ms |
 | Markdown | Inked pixels differing from the CPU's | | 8 to 20 % (heavier glyphs) | **0** (plain, selected, scrolled) |
 | Markdown | A scroll's paint (median) | 2.2 ms | 1.27 to 1.42 ms | 1.2 ms |
@@ -66,7 +66,7 @@ On the Retina display, Metal. The OpenGL figures are from `2026-10-17-claude-gpu
 
 - **test_layout_doc:**
   - `aMillionShapesAreReadAndDrawnInTime`: the window composes with the RHI once the canvas is in it (its surface no longer a raster one);
-  - `theGpuDrawsAsTheCpu`: on Metal, pixel for pixel (a pixel in a thousand allowed); elsewhere as before.
+  - `theGpuDrawsAsTheCpu`: on Metal, alike within a pixel (a pixel in a thousand allowed); elsewhere as before.
 - **test_multiphysics_view:** the canvas a `QRhiWidget`; on Metal, the geometry's picture the CPU's (under 0.1 %).
 - **test_pdf_viewer:**
   - `theGpuCanvasClips` (new; no display needed, so it runs on CI): Canvas2D's clip cuts fills, polygons and images, each image's source in proportion; colours premultiplied;
@@ -108,3 +108,11 @@ The shader check fails on a shader changed after its compilation, and on a `.qsb
   - offscreen: test_layout_doc, test_pdf_viewer, test_markdown_doc, test_multiphysics_view, test_multiphysics_doc, test_canvas_drawing, test_graphics_export;
   - on the display, the GPU's functions: the layout's six, the PDF's two, the Markdown preview's two, test_multiphysics_view whole.
 - **The lints pass,** the shader check with them.
+
+## Corrected, 18 October
+
+The hunt of 18 October (`docs/bug_hunts/2026-10-18-rhi-and-retina.md`, D1) found two claims above too strong:
+- **The layout viewer** was alike within a pixel, not pixel for pixel: the test found a pixel's colour within a pixel of it, and on Metal every vertical outline was a device pixel right of the CPU's (A1, OpenGL's half-pixel nudge kept).
+- **The PDF viewer** was the CPU's on the first page only: later pages were drawn a device pixel lower at most zooms, softened (B3).
+
+Both are fixed (`docs/feature_gaps/2026-10-18-claude-rhi-hunt-fixes.md`). The PDF is now the CPU's exactly on every page. The layout is the CPU's but for 1 to 5 % of its inked pixels, along diagonal edges, where the two rasterizers differ.

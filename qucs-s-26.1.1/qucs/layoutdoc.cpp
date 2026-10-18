@@ -669,7 +669,7 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
     bool drawn = false;
 #ifdef QUCS_GPU_VIEW
     if (gl) {
-        p.fillRect(rect(), c.background);
+        gl->fillBackground(p, c.background);
         drawn = true;
         if (a_layout && a_cell >= 0) {
             if (a_grid) paintGrid(p, c);

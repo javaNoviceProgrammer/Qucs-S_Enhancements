@@ -748,6 +748,12 @@ private slots:
         QVERIFY(md != nullptr);
         md->setMode(MarkdownDoc::Mode::Preview);
         QTextBrowser* view = md->preview();
+        // (An odd width: at a ratio of 1.5 a fractional number of device
+        // pixels - the GPU's mapping to its framebuffer's pixels tried.)
+        if (view->viewport()->width() % 2 == 0) {
+            app.resize(app.width() + 1, app.height());
+            QTRY_VERIFY(view->viewport()->width() % 2 == 1);
+        }
         QVERIFY(!md->previewGpu());   // (the CPU's unless chosen)
         QVERIFY(!qucs_s::gpu::wanted(qucs_s::gpu::Viewer::Markdown));
         // (Two grabs alike: what a timer renders again - math, images -
@@ -816,8 +822,11 @@ private slots:
                 QCOMPARE(QColor(screen.pixel(at)), QColor(cpu.pixel(at)));
             }
             if (kind != "scrolled") QVERIFY(bars >= 2);
-            // (Pixel by pixel, for the log: alike where a pixel of one has
-            // its colour in the other within a pixel of it.)
+            // Pixel by pixel: alike where a pixel of one has its colour in
+            // the other within a pixel of it - the CPU's glyphs on both, at
+            // most one inked pixel in 200 apart. (At a ratio of 1.5 a tile
+            // half a device pixel off, through the linear sampler: a quarter
+            // of them, the text softer, the blocks below alike.)
             const QColor paper = cpu.pixelColor(cpu.width() - 3, cpu.height() - 3);
             const auto near = [](const QImage& in, int x, int y, QColor want) {
                 for (int dy = -1; dy <= 1; ++dy)
@@ -840,11 +849,8 @@ private slots:
                 }
             QVERIFY2(off == 0, qPrintable(QStringLiteral("the screen's frame and the grab: %1 pixels apart").arg(off)));
             // Alike block by block: the mean colour of each 32 by 32 pixels
-            // within 30 (the channels' sum). (Pixel by pixel the glyphs'
-            // edges differ - the GL engine draws them a little heavier
-            // than the raster one, black on the white paper some 10 % of
-            // the inked pixels -; over a block that is a few levels, a
-            // selection or a scroll missing scores of them.)
+            // within 30 (the channels' sum) - a selection or a scroll
+            // missing scores of them.
             constexpr int n = 32;
             int blocks = 0, apart = 0, worst = 0;
             for (int by = 0; by + n <= cpu.height(); by += n)
@@ -867,6 +873,7 @@ private slots:
             qInfo("%s: %d of %d pixels inked, %d differ (%.2f %%); %d of %d blocks apart, at most %d", qPrintable(kind), inked,
                   cpu.width() * cpu.height(), differ, 100.0 * differ / std::max(1, inked), apart, blocks, worst);
             QVERIFY(inked > 5000);
+            QVERIFY2(differ <= inked / 200, qPrintable(QStringLiteral("%1 of %2 inked pixels apart").arg(differ).arg(inked)));
             if (kind != "scrolled") QVERIFY(blue > 1000);   // (the picture, drawn by the GPU)
             QCOMPARE(view->verticalScrollBar()->value(), kind == "scrolled" ? 237 : 0);
             QVERIFY2(apart < blocks / 100, qPrintable(QStringLiteral("%1 of %2 blocks").arg(apart).arg(blocks)));
@@ -933,6 +940,44 @@ private slots:
     // scroll only the row it brings into sight, back none; a selection, an
     // edit, a new width all of those in sight again; the rows far out of
     // sight let go.
+    // A GPU viewport that gives up leaves the CPU drawing the preview, not
+    // a blank one; the GPU not tried again there.
+    void aGpuPreviewThatGivesUpLeavesTheCpu()
+    {
+        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
+#ifdef QUCS_GPU_VIEW
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(700, 500);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(write("gives-up.md", "# Given up\n\nThe CPU draws this.\n")));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        md->setPreviewGpu(true);
+        QVERIFY(md->previewGpu());
+        auto* viewport = dynamic_cast<qucs_s::gpu::Viewport2D*>(md->preview()->viewport());
+        QVERIFY(viewport != nullptr);
+        viewport->giveUp();
+        QTRY_VERIFY(!md->previewGpu());
+        QVERIFY(md->previewTiles() == nullptr);
+        QVERIFY(qucs_s::gpu::gpuViewportBroken(md->preview()));
+        // Drawn: ink in the preview.
+        pump();
+        const QImage shot = md->preview()->viewport()->grab().toImage();
+        int inked = 0;
+        for (int y = 0; y < shot.height(); y += 2)
+            for (int x = 0; x < shot.width(); x += 2) inked += std::abs(qGray(shot.pixel(x, y)) - qGray(shot.pixel(0, 0))) > 80;
+        QVERIFY2(inked > 20, qPrintable(QString::number(inked)));
+        md->setPreviewGpu(true);
+        QVERIFY(!md->previewGpu());
+        app.closeAllFiles();
+#else
+        QSKIP("a build without Qt's RHI");
+#endif
+    }
+
     void theGpuPreviewDrawsWhatChanged()
     {
         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));
@@ -973,18 +1018,40 @@ private slots:
         view->verticalScrollBar()->setValue(0);
         (void)frame();
         QCOMPARE(tiles->drawn(), drawn);
-        // A selection: those in sight again, the selection in them.
+        // A selection: drawn over the tiles, an image to each block in it
+        // (the heading's and the first line's) - no tile again.
+        const QImage plain = frame();
         QTextCursor c(view->document());
         c.setPosition(2);
         c.setPosition(40, QTextCursor::KeepAnchor);
         view->setTextCursor(c);
         const QImage selected = frame();
-        QVERIFY(tiles->drawn() - drawn >= 2 && tiles->drawn() - drawn <= rows);
-        drawn = tiles->drawn();
+        QCOMPARE(tiles->drawn(), drawn);
+        QCOMPARE(tiles->overlaysDrawn(), 2);
+        QVERIFY(selected != plain);
+        // A drag's step: the block it ends in alone; a frame unchanged: none.
+        c.setPosition(45, QTextCursor::KeepAnchor);
+        view->setTextCursor(c);
+        const QImage dragged = frame();
+        QCOMPARE(tiles->overlaysDrawn(), 3);
+        QVERIFY(dragged != selected);
+        (void)frame();
+        QCOMPARE(tiles->overlaysDrawn(), 3);
+        QCOMPARE(tiles->drawn(), drawn);
+        // Taken away: the tiles as they were.
+        c.clearSelection();
+        view->setTextCursor(c);
+        QCOMPARE(frame(), plain);
+        QCOMPARE(tiles->overlaysDrawn(), 3);
+        c.setPosition(2);
+        c.setPosition(40, QTextCursor::KeepAnchor);
+        view->setTextCursor(c);
+        QCOMPARE(frame(), selected);
         // An edit of the rendering: again.
         QTextCursor(view->document()).insertText(QStringLiteral("Edited. "));
         const QImage edited = frame();
         QVERIFY(tiles->drawn() - drawn >= 2 && tiles->drawn() - drawn <= rows);
+        QVERIFY(tiles->overlaysDrawn() > 4);
         QVERIFY(edited != selected);
         drawn = tiles->drawn();
 #ifdef QUCS_GPU_VIEW
@@ -993,19 +1060,20 @@ private slots:
         (void)frame();
         auto* gpuViewport = dynamic_cast<qucs_s::gpu::Viewport2D*>(view->viewport());
         QVERIFY(gpuViewport != nullptr);
-        QVERIFY2(gpuViewport->textures() <= rows, qPrintable(QString::number(gpuViewport->textures())));
+        QVERIFY2(gpuViewport->textures() <= rows + 2, qPrintable(QString::number(gpuViewport->textures())));   // (and the selection's two)
 #endif
         // A new width: again.
         app.resize(800, 700);
         pump();
         (void)frame();
         QVERIFY(tiles->drawn() > drawn);
-        // Through the whole document: the rows far out of sight let go.
+        // Through the whole document: a row beyond those in sight kept each
+        // side, no more.
         for (int y = 0; y <= view->verticalScrollBar()->maximum(); y += PreviewTiles::TileHeight) {
             view->verticalScrollBar()->setValue(y);
             (void)frame();
+            QVERIFY2(tiles->kept() <= rows + 2, qPrintable(QString::number(tiles->kept())));
         }
-        QVERIFY2(tiles->kept() <= 7 * rows, qPrintable(QString::number(tiles->kept())));
         md->setPreviewGpu(false);
         QVERIFY(md->previewTiles() == nullptr);
         app.closeAllFiles();

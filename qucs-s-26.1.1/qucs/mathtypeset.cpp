@@ -3306,6 +3306,185 @@ QString htmlBalancedOnce(const QString& md);
 
 } // namespace
 
+namespace {
+
+// A line's quote marks - up to three spaces, then '>' and a space each -
+// and its content after them.
+struct QuotedLine {
+    QStringView marks, content;
+    int depth = 0;
+};
+QuotedLine quotedLine(QStringView line)
+{
+    QuotedLine q;
+    qsizetype k = 0;
+    for (;;) {
+        qsizetype p = k, spaces = 0;
+        while (p < line.size() && line.at(p) == QLatin1Char(' ') && spaces < 3) ++p, ++spaces;
+        if (p < line.size() && line.at(p) == QLatin1Char('>')) {
+            k = p + 1;
+            if (k < line.size() && line.at(k) == QLatin1Char(' ')) ++k;
+            ++q.depth;
+            continue;
+        }
+        break;
+    }
+    q.marks = line.first(k);
+    q.content = line.mid(k);
+    return q;
+}
+
+// A row's cells, GitHub's way: split at each pipe not escaped (in a code
+// span too), a pipe at either end leaving no cell.
+QStringList rowCells(QStringView row)
+{
+    const QStringView t = row.trimmed();
+    QStringList cells;
+    QString cell;
+    for (qsizetype i = 0; i < t.size(); ++i) {
+        if (t.at(i) == QLatin1Char('\\') && i + 1 < t.size() && t.at(i + 1) == QLatin1Char('|')) {
+            cell += QStringLiteral("\\|");
+            ++i;
+        } else if (t.at(i) == QLatin1Char('|')) {
+            cells << cell;
+            cell.clear();
+        } else {
+            cell += t.at(i);
+        }
+    }
+    cells << cell;
+    if (t.startsWith(QLatin1Char('|')) && !cells.isEmpty()) cells.removeFirst();
+    if (t.endsWith(QLatin1Char('|')) && !t.endsWith(QStringLiteral("\\|")) && !cells.isEmpty()) cells.removeLast();
+    return cells;
+}
+
+bool hasPipe(QStringView row)
+{
+    for (qsizetype i = 0; i < row.size(); ++i)
+        if (row.at(i) == QLatin1Char('|') && (i == 0 || row.at(i - 1) != QLatin1Char('\\'))) return true;
+    return false;
+}
+
+// A delimiter row: a pipe, and each cell dashes with a colon at either end.
+bool delimiterRow(QStringView row, int* cells)
+{
+    if (!hasPipe(row)) return false;
+    static const QRegularExpression cell(QStringLiteral("^\\s*:?-+:?\\s*$"));
+    const QStringList c = rowCells(row);
+    if (c.isEmpty()) return false;
+    for (const QString& x : c)
+        if (!cell.match(x).hasMatch()) return false;
+    *cells = int(c.size());
+    return true;
+}
+
+// Text a table's header may not be: a heading, a fence, a list item's or
+// an HTML block's start, a rule.
+bool blockStart(QStringView content)
+{
+    static const QRegularExpression starts(QStringLiteral("^[ ]{0,3}(?:#{1,6}(?:[ \\t]|$)|```|~~~|[-*+][ \\t]|\\d{1,9}[.)][ \\t]|<|(?:[-*_][ \\t]*){3,}$)"));
+    return starts.match(content).hasMatch();
+}
+
+// An HTML block's first line, as GitHub's reader starts one: a block
+// element's tag, a comment and its like, or a tag alone on its line (not
+// text that begins with an inline tag).
+bool htmlBlockLine(QStringView bare)
+{
+    static const QRegularExpression block(
+        QStringLiteral("^<(?:!--|\\?|![A-Za-z]|!\\[CDATA\\[|/?(?:script|pre|style|textarea|address|article|aside|blockquote|center|details|dialog|dd|"
+                       "div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|iframe|li|main|nav|ol|p|section|summary|table|tbody|td|"
+                       "tfoot|th|thead|tr|ul)(?:[\\s/>]|$)|/?[A-Za-z][A-Za-z0-9-]*(?:\\s[^<>]*)?/?>\\s*$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    return block.match(bare).hasMatch();
+}
+
+} // namespace
+
+QString tablesApart(const QString& md)
+{
+    if (!md.contains(QLatin1Char('|'))) return md;
+    QList<QStringView> lines;
+    for (qsizetype k = 0; k <= md.size();) {
+        const qsizetype eol = md.indexOf(QLatin1Char('\n'), k);
+        lines << QStringView(md).mid(k, (eol < 0 ? md.size() : eol) - k);
+        if (eol < 0) break;
+        k = eol + 1;
+    }
+    QString out;
+    out.reserve(md.size() + 16);
+    // A fence open (its character and length), an HTML block, a table's body.
+    QChar fenceChar;
+    qsizetype fenceLength = 0;
+    bool html = false, table = false;
+    int tableDepth = 0;
+    for (qsizetype i = 0; i < lines.size(); ++i) {
+        const QStringView line = lines.at(i);
+        const QuotedLine q = quotedLine(line);
+        const QStringView content = q.content;
+        const QStringView bare = content.trimmed();
+        // (Fences: a run of three or more opens one; the same character, as
+        // long or longer and nothing after, closes it.)
+        {
+            qsizetype lead = 0;
+            while (lead < content.size() && content.at(lead) == QLatin1Char(' ')) ++lead;
+            QStringView rest = content.mid(lead);
+            // (A list item's fence: after its marker.)
+            static const QRegularExpression item(QStringLiteral("^(?:[-*+]|\\d{1,9}[.)])[ \\t]+"));
+            if (fenceLength == 0)
+                if (const QRegularExpressionMatch m = item.matchView(rest); m.hasMatch()) rest = rest.mid(m.capturedLength());
+            if (fenceLength > 0) {
+                qsizetype run = 0;
+                while (run < rest.size() && rest.at(run) == fenceChar) ++run;
+                if (run >= fenceLength && rest.mid(run).trimmed().isEmpty()) fenceLength = 0;
+                if (i) out += QLatin1Char('\n');
+                out += line;
+                continue;
+            }
+            if (lead < 4 && rest.size() >= 3 && (rest.at(0) == QLatin1Char('`') || rest.at(0) == QLatin1Char('~'))) {
+                qsizetype run = 0;
+                while (run < rest.size() && rest.at(run) == rest.at(0)) ++run;
+                if (run >= 3 && !(rest.at(0) == QLatin1Char('`') && rest.mid(run).contains(QLatin1Char('`')))) {
+                    fenceChar = rest.at(0);
+                    fenceLength = run;
+                    table = false;
+                }
+            }
+        }
+        if (bare.isEmpty()) {
+            html = false;
+            table = false;
+        } else if (fenceLength == 0 && !html && htmlBlockLine(bare)) {
+            html = true;
+        }
+        // A table's body: rows to a blank line (or out of its quote).
+        if (table && (bare.isEmpty() || q.depth != tableDepth)) table = false;
+        bool apart = false;
+        if (fenceLength == 0 && !html && !table && i + 1 < lines.size() && hasPipe(content) && !blockStart(content)) {
+            int cells = 0;
+            const QuotedLine next = quotedLine(lines.at(i + 1));
+            if (next.depth == q.depth && delimiterRow(next.content, &cells) && rowCells(content).size() == cells) {
+                // (A line of text right above: a paragraph's, a list item's,
+                // a quote's - not a heading's, which ends its block.)
+                if (i > 0) {
+                    const QStringView prevBare = quotedLine(lines.at(i - 1)).content.trimmed();
+                    apart = !prevBare.isEmpty() && !prevBare.startsWith(QLatin1Char('#'));
+                }
+                table = true;
+                tableDepth = q.depth;
+            }
+        }
+        if (i) out += QLatin1Char('\n');
+        if (apart) {
+            // (A quote's marks kept: an empty line would end the quote.)
+            out += q.marks.trimmed();
+            out += QLatin1Char('\n');
+        }
+        out += line;
+    }
+    return out;
+}
+
 QString htmlBalanced(const QString& md)
 {
     // Again till nothing changes: a tag made text can make a line no HTML
@@ -3863,7 +4042,7 @@ void setMarkdown(QTextDocument* document, const QString& markdown)
     // (The marks are its own: noncharacters in the text are taken out.)
     QString md = markdown;
     for (const char16_t mark : {kBlockMark, kInnerBlockMark, kInnerBlockEnd}) md.remove(QChar(mark));
-    document->setMarkdown(htmlBlocksMarked(htmlBalanced(md)), QTextDocument::MarkdownDialectGitHub);
+    document->setMarkdown(htmlBlocksMarked(htmlBalanced(tablesApart(md))), QTextDocument::MarkdownDialectGitHub);
     blocksApart(document);
 }
 

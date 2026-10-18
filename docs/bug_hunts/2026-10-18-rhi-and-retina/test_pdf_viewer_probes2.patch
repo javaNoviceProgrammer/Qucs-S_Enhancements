@@ -1,0 +1,42 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp b/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp
+index b79fc0a..371fb0b 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp
+@@ -1213,6 +1213,37 @@ private slots:
+     // surface there): its clip cuts each fill and image - an image's source
+     // with it, in proportion -, a polygon to the clip's rectangles; colours
+     // premultiplied; no clip, all of it. (No display needed: run on CI.)
++    // PROBE P16: search highlights at odd zooms, the GPU against the CPU.
++    void probeSearchHighlights()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        QVERIFY(app->gotoPage(file));
++        PdfDoc* doc = pdf();
++        PageView* view = doc->view();
++        const struct Back {
++            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Pdf)); }
++        } back;
++        doc->find(QStringLiteral("Hello"));
++        QTRY_VERIFY(doc->searchResultCount() > 0);
++        for (const qreal zoom : {1.0, 1.37, 2.11}) {
++            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, false);
++            view->setZoom(zoom);
++            doc->firstPage();
++            const QImage cpu = shown(view);
++            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, true);
++            const QImage gpu = shown(view);
++            int apart = 0, orangeCpu = 0, orangeGpu = 0;
++            for (int y = 0; y < cpu.height(); ++y)
++                for (int x = 0; x < cpu.width(); ++x) {
++                    const QColor a = cpu.pixelColor(x, y), b = gpu.pixelColor(x, y);
++                    apart += std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()) > 24;
++                    orangeCpu += a.red() > 200 && a.blue() < 170 && a.green() > 120;
++                    orangeGpu += b.red() > 200 && b.blue() < 170 && b.green() > 120;
++                }
++            qInfo("zoom %.2f, %d results: %d pixels apart; highlight pixels CPU %d, GPU %d", zoom, doc->searchResultCount(), apart, orangeCpu, orangeGpu);
++        }
++    }
++
+     void theGpuCanvasClips()
+     {
+ #ifndef QUCS_GPU_VIEW
