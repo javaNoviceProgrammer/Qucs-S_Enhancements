@@ -437,7 +437,8 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
             tr("Its tiles kept on the GPU as textures and drawn, scaled and scrolled by it; the pages themselves "
                "are drawn by pdfium on the CPU, as with the CPU."),
             tr("Its text and images drawn by the CPU in tiles, kept on the GPU as textures and scrolled by it: "
-               "the same glyphs as the CPU's, a tile drawn again only where the text changes."),
+               "the same glyphs as the CPU's. The tiles in sight drawn again when the text, the width or the colours "
+               "change; a selection drawn over them."),
             tr("The cell flattened into the GPU's buffers: a pan or a zoom a frame of the GPU's, the CPU drawing "
                "nothing. Past two million shapes the CPU draws it."),
             tr("The geometry, mesh, surfaces and lines from the GPU's buffers (also in Multiphysics > Settings… and "

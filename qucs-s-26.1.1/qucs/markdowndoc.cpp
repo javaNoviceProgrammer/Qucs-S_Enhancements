@@ -364,55 +364,62 @@ PreviewTiles::PreviewTiles(QTextEdit* edit) : QObject(edit), a_edit(edit)
 
 QByteArray PreviewTiles::state() const
 {
-    // What the tiles show, besides the document's layout: the selections,
-    // the palette, the horizontal scroll, the width, the pixel ratio.
+    // What the tiles show, besides the document's layout: the extra
+    // selections (a search's), the palette, the horizontal scroll, the
+    // width, the pixel ratio. (Not the selection: drawn over them, block by
+    // block - a drag drew every tile in sight again at each step, 7 ms to
+    // the CPU's 0.15.)
     QByteArray out;
     QDataStream s(&out, QIODevice::WriteOnly);
     const QWidget* viewport = a_edit->viewport();
     s << a_updates << quintptr(a_edit->document()) << a_edit->palette().cacheKey() << viewport->palette().color(viewport->backgroundRole()).rgba()
-      << viewport->width() << viewport->devicePixelRatioF() << a_edit->horizontalScrollBar()->value() << a_edit->hasFocus() << a_edit->isRightToLeft();
-    const QTextCursor cursor = a_edit->textCursor();
-    s << (cursor.hasSelection() ? cursor.anchor() : -1) << (cursor.hasSelection() ? cursor.position() : -1);
+      << viewport->width() << viewport->devicePixelRatioF() << a_edit->horizontalScrollBar()->value() << a_edit->isRightToLeft();
     for (const QTextEdit::ExtraSelection& extra : a_edit->extraSelections())
         s << extra.cursor.anchor() << extra.cursor.position() << extra.format.background().color().rgba() << extra.format.foreground().color().rgba()
           << extra.format.property(QTextFormat::FullWidthSelection).toBool();
     return out;
 }
 
-QImage PreviewTiles::tile(int row, int width, qreal ratio, const QColor& background)
+QImage PreviewTiles::render(const QRectF& rect, qreal ratio, const QColor& background, bool selection)
 {
     // (QTextEdit's painting - QTextEditPrivate::paint, QWidgetTextControl's
-    // drawContents and paint context - by its public parts, the tile's
-    // rows of the document.)
+    // drawContents and paint context - by its public parts, \a rect of the
+    // document; \a rect on whole device pixels.)
     const QTextEdit* edit = a_edit;
-    const int x = edit->isRightToLeft() ? edit->horizontalScrollBar()->maximum() - edit->horizontalScrollBar()->value() : edit->horizontalScrollBar()->value();
-    QImage image(QSize(int(std::ceil(width * ratio)), int(std::ceil(TileHeight * ratio))), QImage::Format_ARGB32_Premultiplied);
+    QImage image(QSize(int(std::lround(rect.width() * ratio)), int(std::lround(rect.height() * ratio))), QImage::Format_ARGB32_Premultiplied);
     image.setDevicePixelRatio(ratio);
     image.fill(background);
     QAbstractTextDocumentLayout::PaintContext context;
     context.palette = edit->palette();
-    const QPalette::ColorGroup group = edit->hasFocus() ? QPalette::Active : QPalette::Inactive;
     for (const QTextEdit::ExtraSelection& extra : edit->extraSelections()) context.selections.append({extra.cursor, extra.format});
     const QTextCursor cursor = edit->textCursor();
-    if (cursor.hasSelection()) {
-        QAbstractTextDocumentLayout::Selection selection;
-        selection.cursor = cursor;
-        selection.format.setBackground(context.palette.brush(group, QPalette::Highlight));
-        selection.format.setForeground(context.palette.brush(group, QPalette::HighlightedText));
+    if (selection && cursor.hasSelection()) {
+        const QPalette::ColorGroup group = edit->hasFocus() ? QPalette::Active : QPalette::Inactive;
+        QAbstractTextDocumentLayout::Selection chosen;
+        chosen.cursor = cursor;
+        chosen.format.setBackground(context.palette.brush(group, QPalette::Highlight));
+        chosen.format.setForeground(context.palette.brush(group, QPalette::HighlightedText));
         QStyleOption option;
         option.initFrom(edit);
         if (edit->style()->styleHint(QStyle::SH_RichText_FullWidthSelection, &option, edit))
-            selection.format.setProperty(QTextFormat::FullWidthSelection, true);
-        context.selections.append(selection);
+            chosen.format.setProperty(QTextFormat::FullWidthSelection, true);
+        context.selections.append(chosen);
     }
     QPainter p(&image);
     p.setFont(edit->viewport()->font());
-    p.translate(-x, -row * TileHeight);
-    context.clip = QRectF(x, row * TileHeight, width, TileHeight);
-    p.setClipRect(context.clip);
+    p.translate(-rect.topLeft());
+    context.clip = rect;
+    p.setClipRect(rect);
     edit->document()->documentLayout()->draw(&p, context);
-    ++a_drawn;
     return image;
+}
+
+QImage PreviewTiles::tile(int row, int width, qreal ratio, const QColor& background)
+{
+    const QTextEdit* edit = a_edit;
+    const int x = edit->isRightToLeft() ? edit->horizontalScrollBar()->maximum() - edit->horizontalScrollBar()->value() : edit->horizontalScrollBar()->value();
+    ++a_drawn;
+    return render(QRectF(x, row * TileHeight, width, TileHeight), ratio, background, false);
 }
 
 #ifdef QUCS_GPU_VIEW
@@ -430,11 +437,14 @@ void PreviewTiles::draw(gpu::Canvas2D& c)
     const QByteArray now = state();
     if (now != a_state) {
         a_tiles.clear();
+        a_overlays.clear();
         a_state = now;
     }
     const int width = viewport->width(), height = viewport->height();
     const qreal ratio = c.devicePixelRatio();
     const QColor background = viewport->palette().color(viewport->backgroundRole());
+    const int x = a_edit->isRightToLeft() ? a_edit->horizontalScrollBar()->maximum() - a_edit->horizontalScrollBar()->value()
+                                          : a_edit->horizontalScrollBar()->value();
     const int y = a_edit->verticalScrollBar()->value();
     const int first = std::max(0, y / TileHeight), last = std::max(first, (y + height - 1) / TileHeight);
     for (int row = first; row <= last; ++row) {
@@ -442,12 +452,44 @@ void PreviewTiles::draw(gpu::Canvas2D& c)
         if (it == a_tiles.end()) it = a_tiles.insert(row, tile(row, width, ratio, background));
         c.drawImage(QPointF(0, row * TileHeight - y), *it);
     }
-    // (Rows three screens away dropped.)
-    const int margin = 3 * (last - first + 1);
+    // (A row beyond those in sight kept each side: three screens, a
+    // full-screen preview on a Retina screen held some 230 MB of tiles and
+    // as much in textures.)
     for (auto it = a_tiles.begin(); it != a_tiles.end();) {
-        if (it.key() < first - margin || it.key() > last + margin) it = a_tiles.erase(it);
+        if (it.key() < first - 1 || it.key() > last + 1) it = a_tiles.erase(it);
         else ++it;
     }
+    // The selection over them: each selected block's part of each row in
+    // sight its own image, drawn with it - made again when that block's part
+    // of the selection changes (a drag's step: the block it ends in).
+    std::map<OverlayKey, QImage> used;
+    const QTextCursor cursor = a_edit->textCursor();
+    if (cursor.hasSelection()) {
+        const int start = cursor.selectionStart(), end = cursor.selectionEnd();
+        const bool active = a_edit->hasFocus();
+        const auto snap = [ratio](qreal v, bool up) { return (up ? std::ceil(v * ratio) : std::floor(v * ratio)) / ratio; };
+        for (QTextBlock b = a_edit->document()->findBlock(start); b.isValid() && b.position() < end; b = b.next()) {
+            const int from = std::max(start, b.position()) - b.position(), to = std::min(end, b.position() + b.length()) - b.position();
+            if (to <= from) continue;
+            // (A pixel or two about: a glyph past its line's box.)
+            const QRectF box = layout->blockBoundingRect(b).adjusted(0, -2, 0, 2);
+            const int top = std::max(first, int(std::floor(box.top() / TileHeight))), bottom = std::min(last, int(std::floor(box.bottom() / TileHeight)));
+            for (int row = top; row <= bottom; ++row) {
+                const qreal y0 = snap(std::max<qreal>(box.top(), row * TileHeight), false), y1 = snap(std::min<qreal>(box.bottom(), (row + 1) * TileHeight), true);
+                if (y1 <= y0) continue;
+                const OverlayKey key{b.blockNumber(), from, to, row, active};
+                auto it = a_overlays.find(key);
+                QImage image = it != a_overlays.end() ? it->second : QImage();
+                if (image.isNull()) {
+                    image = render(QRectF(x, y0, width, y1 - y0), ratio, background, true);
+                    ++a_overlaysDrawn;
+                }
+                c.drawImage(QPointF(0, y0 - y), image);
+                used.emplace(key, image);
+            }
+        }
+    }
+    a_overlays.swap(used);
     const QColor colour = QuoteBars::colour(a_edit);
     for (const QRectF& bar : QuoteBars::bars(a_edit)) c.fillRect(bar, colour);
 }
@@ -763,14 +805,18 @@ void MarkdownDoc::layoutParts()
 
 void MarkdownDoc::setPreviewGpu(bool on)
 {
-    const bool gpu = on && qucs_s::gpu::hindrance().isEmpty();
+    // (Not again where its GPU viewport gave up.)
+    const bool gpu = on && qucs_s::gpu::hindrance().isEmpty() && !qucs_s::gpu::gpuViewportBroken(a_preview);
     if (gpu == previewGpu()) return;
     delete a_previewTiles;
     auto* tiles = gpu ? new qucs_s::markdown::PreviewTiles(a_preview) : nullptr;
     a_previewTiles = tiles;
-    qucs_s::gpu::setGpuViewport(a_preview, gpu, [tiles = QPointer<qucs_s::markdown::PreviewTiles>(tiles)](qucs_s::gpu::Canvas2D& c) {
-        if (tiles) tiles->draw(c);
-    });
+    qucs_s::gpu::setGpuViewport(
+        a_preview, gpu,
+        [tiles = QPointer<qucs_s::markdown::PreviewTiles>(tiles)](qucs_s::gpu::Canvas2D& c) {
+            if (tiles) tiles->draw(c);
+        },
+        [this] { setPreviewGpu(false); });
     // (The new viewport's own filters: the quotes' bars - the CPU's; the
     // GPU's has them drawn -, the images' width.)
     qucs_s::markdown::QuoteBars::install(a_preview, !previewGpu());

@@ -53,6 +53,21 @@
 #include "qucs.h"
 #include "settings.h"
 
+namespace {
+
+// A grab at the view's pixels: on a Retina screen a grab has the device's,
+// two to each, and these checks read the view's coordinates. (Nearest: each
+// pixel a colour drawn.)
+QImage atViewPixels(const QImage& grabbed)
+{
+    if (grabbed.devicePixelRatio() == 1.0) return grabbed;
+    QImage scaled = grabbed.scaled((QSizeF(grabbed.size()) / grabbed.devicePixelRatio()).toSize(), Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    scaled.setDevicePixelRatio(1.0);
+    return scaled;
+}
+
+} // namespace
+
 class TestPythonExtras : public QObject
 {
     Q_OBJECT
@@ -537,7 +552,7 @@ private slots:
         {   // Drawn: yellow, where breakpoints go.
             QWidget* margin = marginOf(py);
             QVERIFY(margin != nullptr);
-            const QImage shown = margin->grab().toImage();
+            const QImage shown = atViewPixels(margin->grab().toImage());
             const QRect line = py->cursorRect(QTextCursor(py->document()->findBlockByNumber(0)));
             const int y = margin->mapFromGlobal(py->viewport()->mapToGlobal(line.center())).y() - 2;
             const int room = std::clamp(py->fontMetrics().height(), 12, 18) + 2;

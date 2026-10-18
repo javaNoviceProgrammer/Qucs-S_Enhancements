@@ -87,6 +87,11 @@ QPoint Schematic::viewportToModel(const QPoint& viewportCoordinates)
     return contentsToModel(QPoint{ contentsX(), contentsY() } + viewportCoordinates);
 }
 
+QPointF Schematic::viewportToModelF(const QPoint& viewportCoordinates)
+{
+    return QPointF{a_ViewX1 + (contentsX() + viewportCoordinates.x()) / a_Scale, a_ViewY1 + (contentsY() + viewportCoordinates.y()) / a_Scale};
+}
+
 QPoint Schematic::contentsToModel(const QPoint& coordinates)
 {
     // Sizes in the model and contents are interconnected and obey the rule:
@@ -160,14 +165,7 @@ inline double clipScale(double offeredScale)
     return offeredScale;
 }
 
-bool Schematic::shouldRender(const double& newScale, const QRect& newModelBounds, const QPoint& toBeDisplayed, const QPoint& viewportCoords) {
-    const QRect currentModelBounds = modelRect();
-    // This point currently displayed at "viewportCoords" of the viewport
-    const QPoint currenlyDisplayed = viewportToModel(viewportCoords);
-    return a_Scale != newScale || toBeDisplayed != currenlyDisplayed || currentModelBounds != newModelBounds;
-}
-
-double Schematic::renderModel(const double offeredScale, QRect newModel, QPoint modelPoint, const QPoint viewportPoint)
+double Schematic::renderModel(const double offeredScale, QRect newModel, QPointF modelPoint, const QPoint viewportPoint)
 {
     // DO NOT alter model bounds or scale and DO NOT call resizeContens() outside
     // of this method. It may break the state and lead to hard-to-find bugs.
@@ -176,18 +174,16 @@ double Schematic::renderModel(const double offeredScale, QRect newModel, QPoint 
     // The model plane within its limits, whatever was asked (the point in
     // it stays in it: both are cut alike).
     newModel = withinModelLimit(newModel);
-    modelPoint = withinModelLimit(modelPoint);
+    modelPoint = QPointF{std::clamp<double>(modelPoint.x(), -ModelLimit, ModelLimit), std::clamp<double>(modelPoint.y(), -ModelLimit, ModelLimit)};
 
-    QUCS_ASSERT(modelPoint.x() >= newModel.left() && modelPoint.x() <= newModel.right());
-    QUCS_ASSERT(modelPoint.y() >= newModel.top() && modelPoint.y() <= newModel.bottom());
+    // (The plane reaches a unit beyond its rectangle's right and bottom:
+    // a_ViewX2 is left() + width().)
+    QUCS_ASSERT(modelPoint.x() >= newModel.left() && modelPoint.x() <= newModel.right() + 1);
+    QUCS_ASSERT(modelPoint.y() >= newModel.top() && modelPoint.y() <= newModel.bottom() + 1);
     QUCS_ASSERT(viewportPoint.x() >= 0 && viewportPoint.x() < viewport()->width());
     QUCS_ASSERT(viewportPoint.y() >= 0 && viewportPoint.y() < viewport()->height());
 
-    // Maybe there is no need to do anything
     const double newScale = clipScale(offeredScale);
-    if (!shouldRender(newScale, newModel, modelPoint, viewportPoint)) {
-       return a_Scale;
-    }
 
     // The part below is quite tricky: while working at the model plane scale,
     // we construct a "viewport" rectangle and position it so that it contains the
@@ -198,17 +194,27 @@ double Schematic::renderModel(const double offeredScale, QRect newModel, QPoint 
     //
     // Remember that <size in model plane> * <Scale> = <size in view plane>
 
-    QSize viewportSizeOnModelPlane = viewportRect().size() / newScale;
+    // The viewport's top-left between a unit's parts: rounded to a unit, the
+    // point under the pointer moved by up to a unit at each step of a zoom
+    // (10 points, 20 device pixels on a Retina screen, at the largest).
+    const QPointF vpTopLeftOnModelPlane = modelPoint - QPointF(viewportPoint) / newScale;
+    const QSizeF viewportSizeOnModelPlane = QSizeF(viewportRect().size()) / newScale;
 
-    QPoint vpTopLeftOnModelPlane{
-        modelPoint.x() - static_cast<int>(std::round(viewportPoint.x() / newScale)),
-        modelPoint.y() - static_cast<int>(std::round(viewportPoint.y() / newScale))
-    };
-
-    QRect viewportOnModelPlane{vpTopLeftOnModelPlane, viewportSizeOnModelPlane};
+    const QRect viewportOnModelPlane{
+        QPoint{static_cast<int>(std::floor(vpTopLeftOnModelPlane.x())), static_cast<int>(std::floor(vpTopLeftOnModelPlane.y()))},
+        QPoint{static_cast<int>(std::ceil(vpTopLeftOnModelPlane.x() + viewportSizeOnModelPlane.width())) - 1,
+               static_cast<int>(std::ceil(vpTopLeftOnModelPlane.y() + viewportSizeOnModelPlane.height())) - 1}};
     newModel = withinModelLimit(newModel | viewportOnModelPlane);
 
-    // At this point everything is ready for rendering and positioning
+    // The contents' position: the viewport's top-left, to the nearest pixel.
+    const QPoint contentTopLeft{
+        static_cast<int>(std::lround(std::clamp((vpTopLeftOnModelPlane.x() - newModel.left()) * newScale, -1.0e9, 1.0e9))),
+        static_cast<int>(std::lround(std::clamp((vpTopLeftOnModelPlane.y() - newModel.top()) * newScale, -1.0e9, 1.0e9)))};
+
+    // Maybe there is no need to do anything
+    if (newScale == a_Scale && newModel == modelRect() && contentTopLeft == QPoint{contentsX(), contentsY()}) {
+        return a_Scale;
+    }
 
     // Set new model size
     a_ViewX1 = newModel.left();
@@ -221,7 +227,6 @@ double Schematic::renderModel(const double offeredScale, QRect newModel, QPoint 
     resizeContents(static_cast<int>(std::lround(newModel.width() * a_Scale)),
                    static_cast<int>(std::lround(newModel.height() * a_Scale)));
 
-    auto contentTopLeft = modelToContents(vpTopLeftOnModelPlane);
     setContentsPos(contentTopLeft.x(), contentTopLeft.y());
 
     viewport()->update();

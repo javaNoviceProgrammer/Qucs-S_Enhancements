@@ -1,0 +1,89 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp b/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp
+index b79fc0a..867250a 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_pdf_viewer.cpp
+@@ -1213,6 +1213,84 @@ private slots:
+     // surface there): its clip cuts each fill and image - an image's source
+     // with it, in proportion -, a polygon to the clip's rectangles; colours
+     // premultiplied; no clip, all of it. (No display needed: run on CI.)
++    // PROBE P9: a later page at an odd zoom - its top at a fraction of a
++    // pixel - on the GPU against the CPU.
++    void probeLaterPageSharp()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        QVERIFY(app->gotoPage(file));
++        PdfDoc* doc = pdf();
++        PageView* view = doc->view();
++        const struct Back {
++            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Pdf)); }
++        } back;
++        for (const qreal zoom : {1.0, 1.37, 1.53, 2.11}) {
++            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, false);
++            view->setZoom(zoom);
++            view->goToPage(2);
++            const QImage cpu = shown(view);
++            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, true);
++            const int rendered0 = view->tilesRendered(), scaled0 = view->tilesScaled();
++            QImage gpu = shown(view);
++            qInfo("  after shown: zooming %d, tiles rendered +%d, scaled +%d, zoom %.3f", view->zooming(), view->tilesRendered() - rendered0, view->tilesScaled() - scaled0, view->zoom());
++            const int rendered1 = view->tilesRendered(), scaled1 = view->tilesScaled();
++            QTest::qWait(1500);
++            const QImage later = view->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
++            qInfo("  1.5 s later: tiles rendered +%d, scaled +%d, the frame %s", view->tilesRendered() - rendered1, view->tilesScaled() - scaled1, later == gpu ? "the same" : "changed");
++            gpu = later;
++            int apart = 0, greyCpu = 0, greyGpu = 0;
++            for (int y = 0; y < cpu.height(); ++y)
++                for (int x = 0; x < cpu.width(); ++x) {
++                    const QColor a = cpu.pixelColor(x, y), b = gpu.pixelColor(x, y);
++                    apart += std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()) > 24;
++                    greyCpu += a.lightness() > 60 && a.lightness() < 200;
++                    greyGpu += b.lightness() > 60 && b.lightness() < 200;
++                }
++            const QRectF page = view->pageRect(2);
++            qInfo("zoom %.2f: page 3 at y %.3f (device %.3f): %d of %d pixels apart; mid-grey pixels CPU %d, GPU %d", zoom,
++                  page.top(), page.top() * view->viewport()->devicePixelRatioF(), apart, cpu.width() * cpu.height(), greyCpu, greyGpu);
++            if (!qEnvironmentVariable("QUCS_TEST_SHOTS").isEmpty()) {
++                cpu.save(qEnvironmentVariable("QUCS_TEST_SHOTS") + QStringLiteral("/p3_cpu_%1.png").arg(zoom));
++                gpu.save(qEnvironmentVariable("QUCS_TEST_SHOTS") + QStringLiteral("/p3_gpu_%1.png").arg(zoom));
++            }
++        }
++    }
++
++    // PROBE P14: the GPU's viewport switched during a zoom's steps and a
++    // pinch, the file reloaded mid-zoom, the tab closed mid-zoom.
++    void probePdfStress()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        const struct Back {
++            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Pdf)); }
++        } back;
++        for (int round = 0; round < 4; ++round) {
++            QVERIFY(app->gotoPage(file));
++            PdfDoc* doc = pdf();
++            PageView* view = doc->view();
++            const QPoint mid = view->viewport()->rect().center();
++            for (int k = 0; k < 14; ++k) {
++                qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, k % 3 != 1);
++                if (k % 2) {
++                    QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, QPointF(mid), QPointF(mid),
++                                          view->viewport()->mapToGlobal(QPointF(mid)), k < 7 ? 0.08 : -0.08, QPointF());
++                    QCoreApplication::sendEvent(view->viewport(), &e);
++                } else {
++                    view->setZoom(view->zoom() * (k < 7 ? 1.3 : 0.8));
++                }
++                if (k == 9) doc->reload();
++                QTest::qWait(k % 4 * 12);
++            }
++            qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Pdf, true);
++            QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, QPointF(mid), QPointF(mid),
++                                  view->viewport()->mapToGlobal(QPointF(mid)), 0.1, QPointF());
++            QCoreApplication::sendEvent(view->viewport(), &e);
++            app->slotFileClose(app->DocumentTab->indexOf(doc));
++            QTest::qWait(round % 2 ? 0 : 150);
++        }
++        qInfo("pdf stress done");
++    }
++
+     void theGpuCanvasClips()
+     {
+ #ifndef QUCS_GPU_VIEW

@@ -178,7 +178,9 @@ private slots:
         const QImage canvas = sch.viewport()->grab().toImage();
         // The label's middle, in the view.
         const QPoint middle = sch.modelToViewport(QPoint(d->cx + m->x1 + m->x2 / 2, d->cy + m->y1 + m->y2 / 2));
-        const QRect around = QRect(middle - QPoint(6, 3), QSize(12, 6)).intersected(canvas.rect());
+        // (A grab's pixels the device's: the view's rectangle at the ratio's.)
+        const qreal r = canvas.devicePixelRatio();
+        const QRect around = QRect((QPointF(middle - QPoint(6, 3)) * r).toPoint(), QSize(int(12 * r), int(6 * r))).intersected(canvas.rect());
         QVERIFY(!around.isEmpty());
         QCOMPARE(pixelsOf(canvas, around, [&dark](QColor c) { return c == dark; }), 0);
         QVERIFY(pixelsOf(canvas, around, [](QColor c) { return qGray(c.rgb()) > 200; }) > 0);

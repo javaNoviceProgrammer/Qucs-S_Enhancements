@@ -238,7 +238,8 @@ qucs_add_test(test_canvas_drawing)
 # (Its zoomed diagrams drawn at a device pixel ratio of 2, as on a Retina
 # screen - QT_SCALE_FACTOR offscreen: the lines in sight taken in the
 # widget's pixels, not the device's, passed over only there.)
-add_test(NAME test_canvas_drawing_ratio2 COMMAND test_canvas_drawing aZoomedDiagramDrawsEveryLineInSight aPlotOfManyCurvesZoomsSmoothly)
+add_test(NAME test_canvas_drawing_ratio2 COMMAND test_canvas_drawing aZoomedDiagramDrawsEveryLineInSight aPlotOfManyCurvesZoomsSmoothly
+         aSlopeZoomedInKeepsItsSlope aCurveIsThinnedToADevicePixel)
 set_tests_properties(test_canvas_drawing_ratio2 PROPERTIES
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=2;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude;QUCS_GH=/nonexistent/gh"
   TIMEOUT 300)

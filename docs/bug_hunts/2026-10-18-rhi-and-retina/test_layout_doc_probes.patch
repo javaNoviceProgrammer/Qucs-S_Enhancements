@@ -1,0 +1,212 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_layout_doc.cpp b/qucs-s-26.1.1/qucs/tests/test_layout_doc.cpp
+index f14c3bb..876dd64 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_layout_doc.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_layout_doc.cpp
+@@ -19,6 +19,7 @@
+  */
+ #include <QtTest>
+ #include <QWindow>
++#include <QScreen>
+ #include <QClipboard>
+ #include <QElapsedTimer>
+ #include <QFontDatabase>
+@@ -1485,6 +1486,199 @@ private slots:
+     // drawn. Past its budget the CPU's picture. Where the RHI has no backend
+     // (CI's offscreen display) it is not there to compare. (The GPU chosen
+     // for the layout viewer: the CPU's unless it is.)
++    // PROBE P1: forty layers on the GPU (the uniforms' slots grown past 64).
++    void probeManyLayers()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Layout, true);
++        const struct Back {
++            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Layout)); }
++        } back;
++        const int layers = qEnvironmentVariableIsSet("PROBE_LAYERS") ? qEnvironmentVariableIntValue("PROBE_LAYERS") : 40;
++        const QString file = path(QStringLiteral("many%1.gds").arg(layers));
++        {
++            gdstk::Library lib = {};
++            lib.init("MANY", 1e-6, 1e-9);
++            gdstk::Cell* top = newCell(lib, "MANY");
++            for (int layer = 0; layer < layers; ++layer) {
++                auto* p = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
++                p->tag = gdstk::make_tag(uint32_t(layer), 0);
++                const double x = (layer % 8) * 12.0, y = (layer / 8) * 12.0;
++                for (const gdstk::Vec2& v : {gdstk::Vec2{x, y}, gdstk::Vec2{x + 10, y}, gdstk::Vec2{x + 10, y + 10}, gdstk::Vec2{x, y + 10}}) p->point_array.append(v);
++                top->polygon_array.append(p);
++                // a tiny one too: a dot
++                auto* q = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
++                q->tag = gdstk::make_tag(uint32_t(layer), 0);
++                for (const gdstk::Vec2& v : {gdstk::Vec2{x + 11, y + 11}, gdstk::Vec2{x + 11.01, y + 11}, gdstk::Vec2{x + 11.01, y + 11.01}}) q->point_array.append(v);
++                top->polygon_array.append(q);
++            }
++            QCOMPARE(lib.write_gds(QFile::encodeName(file).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
++            lib.free_all();
++        }
++        LayoutDoc* doc = open(file);
++        QVERIFY(doc != nullptr);
++        LayoutView* view = doc->view();
++        doc->setGridShown(false);
++        view->resize(640, 480);
++        view->fit();
++        view->setGpu(false);
++        const QImage cpu = view->picture().convertToFormat(QImage::Format_RGB32);
++        view->setGpu(true);
++        QVERIFY(view->gpu());
++        QTRY_VERIFY(view->canvas()->frames() > 0);
++        const QImage gpu = view->picture().convertToFormat(QImage::Format_RGB32);
++        int differ = 0, inked = 0;
++        const QColor paper = cpu.pixelColor(1, 1);
++        for (int y = 0; y < cpu.height(); ++y)
++            for (int x = 0; x < cpu.width(); ++x) {
++                if (cpu.pixel(x, y) != paper.rgb() || gpu.pixel(x, y) != paper.rgb()) ++inked;
++                if (cpu.pixel(x, y) != gpu.pixel(x, y)) ++differ;
++            }
++        const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS");
++        if (!shots.isEmpty()) {
++            cpu.save(shots + QStringLiteral("/many%1_cpu.png").arg(layers));
++            gpu.save(shots + QStringLiteral("/many%1_gpu.png").arg(layers));
++        }
++        qInfo("%d layers: %d inked, %d differ; frames %d", layers, inked, differ, view->canvas()->frames());
++    }
++
++    // PROBE P3: the GPU's canvas made and dropped, toggled, resized to
++    // nothing, its tab closed - under the sanitizers on the display.
++    void probeCanvasStress()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Layout, true);
++        const struct Back {
++            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Layout)); }
++        } back;
++        for (int round = 0; round < 15; ++round) {
++            LayoutDoc* doc = open(path("sample.gds"));
++            QVERIFY(doc != nullptr);
++            LayoutView* view = doc->view();
++            QVERIFY(view->gpu());
++            (void)view->canvas()->grabFramebuffer();
++            QTest::qWait(round % 3 * 20);
++            if (round % 2) {
++                view->resize(0, 0);
++                QTest::qWait(10);
++                view->resize(400, 300);
++                (void)view->canvas()->grabFramebuffer();
++            }
++            app->slotFileClose(app->DocumentTab->indexOf(doc));
++            QTest::qWait(round % 2 ? 0 : 30);
++        }
++        LayoutDoc* doc = open(path("sample.gds"));
++        QVERIFY(doc != nullptr);
++        LayoutView* view = doc->view();
++        for (int k = 0; k < 30; ++k) {
++            view->setGpu(k % 2 == 0);
++            if (view->canvas()) (void)view->canvas()->grabFramebuffer();
++            view->setView(view->center() + QPointF(3, 1), view->scale() * (k % 3 ? 1.1 : 0.9));
++            QTest::qWait(k % 4 * 10);
++        }
++        app->slotFileClose(app->DocumentTab->indexOf(doc));
++        QTest::qWait(50);
++        qInfo("stress done");
++    }
++
++    // PROBE P6: a pan's paint in a large window, the GPU's layered canvas
++    // against the CPU.
++    void probeBigWindowPan()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        qucs_s::gpu::setWanted(qucs_s::gpu::Viewer::Layout, true);
++        const struct Back {
++            ~Back() { QucsSettingsFile().remove(qucs_s::gpu::settingKey(qucs_s::gpu::Viewer::Layout)); }
++        } back;
++        const QRect screen = app->screen()->availableGeometry();
++        app->setGeometry(screen);
++        QTest::qWait(300);
++        QString file = path("sample.gds");
++        if (qEnvironmentVariableIsSet("PROBE_SHAPES")) {
++            const int n = qEnvironmentVariableIntValue("PROBE_SHAPES");
++            file = path(QStringLiteral("shapes%1.gds").arg(n));
++            gdstk::Library lib = {};
++            lib.init("MANY", 1e-6, 1e-9);
++            gdstk::Cell* top = newCell(lib, "MANY");
++            const int side = int(std::sqrt(double(n)));
++            for (int i = 0; i < side; ++i)
++                for (int j = 0; j < side; ++j) addRectangle(top, {i * 2.0, j * 2.0}, {i * 2.0 + 1.3, j * 2.0 + 1.3}, uint32_t((i + j) % 5));
++            QCOMPARE(lib.write_gds(QFile::encodeName(file).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
++            lib.free_all();
++        }
++        LayoutDoc* doc = open(file);
++        QVERIFY(doc != nullptr);
++        QTRY_VERIFY_WITH_TIMEOUT(!doc->isLoading(), 60000);
++        LayoutView* view = doc->view();
++        view->fit();
++        view->setView(view->center(), view->scale() * 3);
++        QTest::qWait(100);
++        for (const bool gpu : {false, true}) {
++            view->setGpu(gpu);
++            QTest::qWait(100);
++            QWidget* target = gpu ? static_cast<QWidget*>(view->canvas()) : static_cast<QWidget*>(view);
++            struct Timer : QObject {
++                QList<double> times;
++                QElapsedTimer t;
++                bool eventFilter(QObject* o, QEvent* e) override
++                {
++                    if (e->type() != QEvent::Paint) return false;
++                    t.start();
++                    static_cast<QWidget*>(o)->removeEventFilter(this);
++                    QCoreApplication::sendEvent(o, e);
++                    static_cast<QWidget*>(o)->installEventFilter(this);
++                    times << t.nsecsElapsed() / 1e6;
++                    return true;
++                }
++            } timer;
++            target->installEventFilter(&timer);
++            for (int k = 0; k < 20; ++k) {
++                view->setView(view->center() + QPointF(k % 2 ? 2 : -2, 0), view->scale());
++                QTest::qWait(40);
++            }
++            target->removeEventFilter(&timer);
++            QList<double>& times = timer.times;
++            if (times.size() < 11) { qInfo("%s: only %d paints", gpu ? "GPU" : "CPU", int(times.size())); continue; }
++            std::sort(times.begin(), times.end());
++            qInfo("%s: view %d by %d at %g: a pan's paint %.1f ms median, %.1f worst", gpu ? "GPU" : "CPU", view->width(), view->height(),
++                  view->devicePixelRatioF(), times.at(10), times.last());
++        }
++        app->resize(1200, 800);
++    }
++
++    // PROBE P8: the layout viewer's wheel and pinch keep the point under the pointer.
++    void probeLayoutAnchor()
++    {
++        LayoutDoc* doc = open(path("sample.gds"));
++        QVERIFY(doc != nullptr);
++        LayoutView* view = doc->view();
++        view->fit();
++        const QPoint at(view->width() / 3, view->height() / 3);
++        double worstWheel = 0, worstPinch = 0;
++        int zoomedWheel = 0;
++        for (int k = 0; k < 16; ++k) {
++            const QPointF before = view->toLayout(QPointF(at));
++            const double scale = view->scale();
++            if (k % 2) {
++                QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, QPointF(at), QPointF(at),
++                                      view->mapToGlobal(QPointF(at)), k < 8 ? 0.07 : -0.07, QPointF());
++                QCoreApplication::sendEvent(view, &e);
++            } else {
++                QWheelEvent w(QPointF(at), view->mapToGlobal(QPointF(at)), QPoint(), QPoint(0, k < 8 ? 120 : -120), Qt::NoButton,
++                              k % 4 == 0 ? Qt::NoModifier : Qt::ControlModifier, Qt::NoScrollPhase, false);
++                QCoreApplication::sendEvent(view, &w);
++            }
++            QTest::qWait(5);
++            const double off = QLineF(view->toPixel(before), QPointF(at)).length();
++            if (k % 2) worstPinch = std::max(worstPinch, off);
++            else if (view->scale() != scale) {
++                ++zoomedWheel;
++                worstWheel = std::max(worstWheel, off);
++            }
++        }
++        qInfo("layout: wheel notches that zoomed %d of 8, worst %.3f px; pinch worst %.3f px (scale now %g)", zoomedWheel, worstWheel, worstPinch, view->scale());
++    }
++
+     void theGpuDrawsAsTheCpu()
+     {
+         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));

@@ -26,6 +26,9 @@
 #include <QTextObjectInterface>
 #include <QUrl>
 
+#include <map>
+#include <tuple>
+
 class QButtonGroup;
 class QScrollBar;
 class QTextBrowser;
@@ -144,16 +147,31 @@ public:
     int drawn() const { return a_drawn; }
     /// Tiles kept now (for the tests).
     int kept() const { return int(a_tiles.size()); }
+    /// The selection's images drawn since the start, a block's part of a
+    /// row each (for the tests).
+    int overlaysDrawn() const { return a_overlaysDrawn; }
 
 private:
     QByteArray state() const;
+    QImage render(const QRectF& rect, qreal ratio, const QColor& background, bool selection);
     QImage tile(int row, int width, qreal ratio, const QColor& background);
+    // A selection's image: its block, the block's part of it, the row, the
+    // window active (the highlight's colours).
+    struct OverlayKey {
+        int block, from, to, row;
+        bool active;
+        bool operator<(const OverlayKey& o) const
+        {
+            return std::tie(block, from, to, row, active) < std::tie(o.block, o.from, o.to, o.row, o.active);
+        }
+    };
     QTextEdit* a_edit;
     QPointer<QAbstractTextDocumentLayout> a_layout;   // its update() told
     quint64 a_updates = 0;
     QByteArray a_state;   // what the tiles show
-    QHash<int, QImage> a_tiles;   // by row
-    int a_drawn = 0;
+    QHash<int, QImage> a_tiles;   // by row, without the selection
+    std::map<OverlayKey, QImage> a_overlays;   // the selection's, those of the last frame
+    int a_drawn = 0, a_overlaysDrawn = 0;
 };
 
 } // namespace qucs_s::markdown

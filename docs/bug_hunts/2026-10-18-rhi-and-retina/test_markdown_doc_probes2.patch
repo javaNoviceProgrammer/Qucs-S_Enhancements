@@ -1,0 +1,48 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+index 107e8a9..cb9196c 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+@@ -933,6 +933,43 @@ private slots:
+     // scroll only the row it brings into sight, back none; a selection, an
+     // edit, a new width all of those in sight again; the rows far out of
+     // sight let go.
++    // PROBE P15: a wide code block, scrolled sideways: the GPU's tiles
++    // against the CPU.
++    void probeSidewaysScroll()
++    {
++        if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP("no GPU");
++        QByteArray text = "# Wide\n\n```\n";
++        for (int i = 0; i < 30; ++i) text += "line_" + QByteArray::number(i) + " = " + QByteArray(400, 'x') + ";\n";
++        text += "```\n\nAfter.\n";
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(900, 700);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        QVERIFY(app.gotoPage(write(QStringLiteral("wide.md"), text)));
++        MarkdownDoc* md = current(app);
++        QVERIFY(md != nullptr);
++        md->setMode(MarkdownDoc::Mode::Preview);
++        QTextBrowser* view = md->preview();
++        md->setPreviewGpu(false);
++        QTest::qWait(200);
++        qInfo("horizontal range %d", view->horizontalScrollBar()->maximum());
++        for (const int x : {0, 333, 1001}) {
++            view->horizontalScrollBar()->setValue(x);
++            md->setPreviewGpu(false);
++            QTest::qWait(150);
++            const QImage cpu = view->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
++            md->setPreviewGpu(true);
++            QTest::qWait(150);
++            const QImage gpu = view->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
++            int apart = 0;
++            for (int y = 0; y < std::min(cpu.height(), gpu.height()); ++y)
++                for (int xx = 0; xx < std::min(cpu.width(), gpu.width()); ++xx) apart += cpu.pixel(xx, y) != gpu.pixel(xx, y);
++            qInfo("scrolled %d (now %d): sizes %dx%d %dx%d, %d pixels apart", x, view->horizontalScrollBar()->value(), cpu.width(), cpu.height(), gpu.width(), gpu.height(), apart);
++        }
++        md->setPreviewGpu(false);
++    }
++
+     void theGpuPreviewDrawsWhatChanged()
+     {
+         if (!qucs_s::gpu::hindrance().isEmpty()) QSKIP(qPrintable(qucs_s::gpu::hindrance()));

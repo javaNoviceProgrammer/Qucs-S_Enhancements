@@ -1,0 +1,159 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_canvas_drawing.cpp b/qucs-s-26.1.1/qucs/tests/test_canvas_drawing.cpp
+index a07302d..e0ae0d8 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_canvas_drawing.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_canvas_drawing.cpp
+@@ -18,6 +18,7 @@
+  *   CANVAS_GRABS=<dir>     the images of the first part that differs
+  */
+ #include <QtTest>
++#include <QDir>
+ #include <QDirIterator>
+ #include <QElapsedTimer>
+ #include <QStandardPaths>
+@@ -625,6 +626,146 @@ private slots:
+     // device's: those past the canvas's top-left quarter passed over (the
+     // valence band from 0 to 16 nm, between 23 and 29, all past 50).
+     // (CTest runs it at a pixel ratio of 2 too: test_canvas_drawing_ratio2.)
++    // PROBE P2: a slope's lines zoomed in - how many made vertical by the
++    // joining of lines near in x (0.25 of the diagram's units).
++    void probeSlopeJoined()
++    {
++        constexpr int points = 1000;
++        QString dat = QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n<indep y %1>\n").arg(points);
++        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg(i * 94e-9 / (points - 1), 0, 'g', 12);
++        dat += QStringLiteral("</indep>\n<dep slope y>\n");
++        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg(-1.0 + 2.0 * i / (points - 1), 0, 'g', 12);
++        dat += QStringLiteral("</dep>\n");
++        write(QStringLiteral("slope.dat"), dat);
++        const QString dpl = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,800,600,1,0,0>\n  <Grid=10,10,0>\n"
++                                           "  <DataSet=slope.dat>\n  <DataDisplay=slope.dpl>\n  <OpenDisplay=0>\n</Properties>\n<Symbol>\n</Symbol>\n"
++                                           "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
++                                           "  <Rect 60 240 240 160 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 \"\" \"\" \"\">\n"
++                                           "    <\"slope\" #0000ff 1 3 0 0 0>\n  </Rect>\n"
++                                           "</Diagrams>\n<Paintings>\n</Paintings>\n");
++        QucsApp app(false);
++        MainGuard guard(&app);
++        Schematic* s = open(app, write(QStringLiteral("slope.dpl"), dpl), {1100, 800});
++        QVERIFY(s != nullptr);
++        Diagram* d = s->a_DocDiags.front();
++        const Graph* g = d->Graphs.front();
++        for (const double scale : {0.5, 1.0, 2.0, 4.0, 8.0}) {
++            s->zoomBy(scale / s->getScale());
++            s->centerOn(QPoint(d->cx + d->x2 / 2, d->cy - d->y2 / 2));
++            pump();
++            s->viewport()->repaint();
++            int vertical = 0;
++            double longest = 0;
++            for (const QLineF& l : g->drawnLines()) {
++                if (std::abs(l.x1() - l.x2()) < 1e-9) {
++                    ++vertical;
++                    longest = std::max(longest, std::abs(l.y1() - l.y2()));
++                }
++            }
++            if (qEnvironmentVariableIsSet("PROBE_SHOTS")) canvasImage(s).save(qEnvironmentVariable("PROBE_SHOTS") + QStringLiteral("/slope_%1.png").arg(scale));
++            qInfo("scale %g (ratio %g): %d lines, %d vertical (longest %.3f units = %.1f device pixels)", s->getScale(), s->viewport()->devicePixelRatioF(),
++                  int(g->drawnLines().size()), vertical, longest, longest * s->getScale() * s->viewport()->devicePixelRatioF());
++        }
++    }
++
++    // PROBE P7: a Ctrl-wheel zoom and a pinch keep the model's point under
++    // the pointer (a data display).
++    void probeZoomAnchor()
++    {
++        const QString dpl = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,800,600,1,0,0>\n  <Grid=10,10,0>\n"
++                                           "  <DataSet=none.dat>\n  <DataDisplay=anchor.dpl>\n  <OpenDisplay=0>\n</Properties>\n<Symbol>\n</Symbol>\n"
++                                           "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
++                                           "  <Rect 60 240 240 160 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 \"\" \"\" \"\">\n  </Rect>\n"
++                                           "</Diagrams>\n<Paintings>\n</Paintings>\n");
++        QucsApp app(false);
++        MainGuard guard(&app);
++        Schematic* s = open(app, write(QStringLiteral("anchor.dpl"), dpl), {1100, 800});
++        QVERIFY(s != nullptr);
++        const double start = qEnvironmentVariableIsSet("PROBE_START") ? qEnvironmentVariable("PROBE_START").toDouble() : 2.0;
++        s->zoomBy(start / s->getScale());
++        s->centerOn(QPoint(180, 160));
++        pump();
++        const QPoint at(300, 200);   // viewport
++        double worst = 0;
++        // (The model's point under it, not rounded to a unit.)
++        const auto exact = [s, at] {
++            return QPointF(s->modelRect().left() + (s->contentsX() + at.x()) / s->getScale(), s->modelRect().top() + (s->contentsY() + at.y()) / s->getScale());
++        };
++        const int steps = qEnvironmentVariableIsSet("PROBE_STEPS") ? qEnvironmentVariableIntValue("PROBE_STEPS") : 12;
++        for (int k = 0; k < steps; ++k) {
++            const QPointF before = exact();
++            if (k % 2) {
++                const QPointF g = s->viewport()->mapToGlobal(QPointF(at));
++                QNativeGestureEvent e(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2, QPointF(at), QPointF(at), g, (k < steps / 2 ? 1 : -1) * (qEnvironmentVariableIsSet("PROBE_PINCH") ? qEnvironmentVariable("PROBE_PINCH").toDouble() : 0.1), QPointF());
++                QCoreApplication::sendEvent(s->viewport(), &e);
++            } else {
++                const QPointF local = s->viewport()->mapTo(s, QPointF(at));
++                QWheelEvent w(local, s->mapToGlobal(local), QPoint(), QPoint(0, k < steps / 2 ? 120 : -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
++                QCoreApplication::sendEvent(s, &w);
++            }
++            pump();
++            const QPointF after = exact();
++            const double off = QLineF(before, after).length() * s->getScale();   // viewport pixels
++            worst = std::max(worst, off);
++            qInfo("%s %d: scale %.3f, the point moved %.2f px", k % 2 ? "pinch" : "wheel", k, s->getScale(), off);
++        }
++        qInfo("ratio %g: worst %.2f px", s->viewport()->devicePixelRatioF(), worst);
++    }
++
++    // PROBE (the user's fan1998 page): every graph's lines painted against
++    // those meeting the canvas, at several zooms.
++    void probeUserPage()
++    {
++        const QString from = qEnvironmentVariable("QUCS_PROBE_DIR");
++        const QString page = qEnvironmentVariable("QUCS_PROBE_PAGE");
++        if (from.isEmpty()) QSKIP("QUCS_PROBE_DIR not set");
++        for (const QString& name : QDir(from).entryList({QStringLiteral("*.dat"), QStringLiteral("*.dpl")}, QDir::Files)) {
++            QFile::remove(dir.filePath(name));
++            QVERIFY(QFile::copy(from + "/" + name, dir.filePath(name)));
++        }
++        QucsApp app(false);
++        MainGuard guard(&app);
++        Schematic* s = open(app, dir.filePath(page), {1400, 1000});
++        QVERIFY(s != nullptr);
++        qInfo("ratio %g; %d diagrams", s->viewport()->devicePixelRatioF(), int(s->a_DocDiags.size()));
++        for (Diagram* d : s->a_DocDiags) {
++            QString g;
++            for (const Graph* gr : d->Graphs) g += QStringLiteral(" %1(%2 lines)").arg(gr->Var).arg(gr->drawnLines().size());
++            qInfo("diagram at %d %d, %d by %d:%s", d->cx, d->cy, d->x2, d->y2, qPrintable(g));
++        }
++        for (const double scale : {1.0, 1.5, 2.0, 3.0}) {
++            for (Diagram* target : s->a_DocDiags) {
++                s->zoomBy(scale / s->getScale());
++                s->centerOn(QPoint(target->cx + target->x2 / 2, target->cy - target->y2 / 2));
++                pump();
++                s->viewport()->repaint();
++                const QRectF seen = QRectF(s->viewportToModel(QPoint(0, 0)), s->viewportToModel(QPoint(s->viewport()->width(), s->viewport()->height()))).normalized();
++                QString line = QStringLiteral("scale %1, centred on %2:").arg(s->getScale()).arg(target->cy);
++                for (Diagram* d : s->a_DocDiags)
++                    for (const Graph* g : d->Graphs) {
++                        int meet = 0;
++                        for (const QLineF& l : g->drawnLines()) {
++                            const QRectF box = QRectF(QPointF(d->cx + l.x1(), d->cy - l.y1()), QPointF(d->cx + l.x2(), d->cy - l.y2())).normalized();
++                            if (box.adjusted(-1, -1, 1, 1).intersects(seen)) ++meet;
++                        }
++                        if (g->linesPainted() < meet) line += QStringLiteral(" [%1 %2: %3 painted < %4 in sight]").arg(d->cy).arg(g->Var).arg(g->linesPainted()).arg(meet);
++                    }
++                qInfo("%s", qPrintable(line));
++                if (!qEnvironmentVariable("PROBE_SHOTS").isEmpty() && scale == 1.0)
++                    s->viewport()->grab().save(qEnvironmentVariable("PROBE_SHOTS") + QStringLiteral("/fan_%1.png").arg(target->cy));
++            }
++        }
++        for (Diagram* d : s->a_DocDiags)
++            for (const Graph* g : d->Graphs) {
++                double ylo = 1e9, yhi = -1e9, xlo = 1e9, xhi = -1e9;
++                for (const QLineF& l : g->drawnLines()) {
++                    ylo = std::min({ylo, l.y1(), l.y2()}); yhi = std::max({yhi, l.y1(), l.y2()});
++                    xlo = std::min({xlo, l.x1(), l.x2()}); xhi = std::max({xhi, l.x1(), l.x2()});
++                }
++                qInfo("%d %s: lines x %.1f..%.1f y %.1f..%.1f (diagram %d by %d)", d->cy, qPrintable(g->Var), xlo, xhi, ylo, yhi, d->x2, d->y2);
++            }
++    }
++
+     void aZoomedDiagramDrawsEveryLineInSight()
+     {
+         constexpr int points = 1000;

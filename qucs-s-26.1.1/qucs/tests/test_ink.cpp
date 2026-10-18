@@ -240,7 +240,9 @@ private slots:
 
         QVERIFY(!doc.a_DocDiags.empty());
         const QRect d = doc.a_DocDiags.front()->boundingRect();
-        const QColor card = doc.viewport()->grab().toImage().pixelColor(doc.modelToViewport(d.topLeft() + QPoint(3, 3)));
+        // (A grab's pixels the device's: a point of the view at the ratio's.)
+        const QImage shot = doc.viewport()->grab().toImage();
+        const QColor card = shot.pixelColor((QPointF(doc.modelToViewport(d.topLeft() + QPoint(3, 3))) * shot.devicePixelRatio()).toPoint());
         QCOMPARE(card, QColor(Qt::white));
 
         // A wire, close enough for it to be several pixels wide (at the
@@ -253,7 +255,7 @@ private slots:
         doc.zoomBy(3.0 / doc.getScale());
         doc.centerOn(middle);
         const QImage canvas = doc.viewport()->grab().toImage();
-        const QPoint at = doc.modelToViewport(middle);
+        const QPoint at = (QPointF(doc.modelToViewport(middle)) * canvas.devicePixelRatio()).toPoint();
         QColor wire = kDark;
         for (int dy = -3; dy <= 3; ++dy)
             for (int dx = -3; dx <= 3; ++dx) {

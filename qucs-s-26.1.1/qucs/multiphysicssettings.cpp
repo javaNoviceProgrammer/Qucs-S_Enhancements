@@ -92,7 +92,8 @@ QString MultiphysicsSettingsDialog::gpuHindrance()
     return tr("This build draws with the CPU alone (built without Qt's RHI).");
 #else
     if (!GraphicsView::gpuAvailable())
-        return tr("No GPU backend here (Metal, Direct3D, OpenGL: a remote or offscreen display, or no such driver): the CPU draws.");
+        return tr("No GPU backend here fit for the viewers (Metal; Direct3D 11 at feature level 11; OpenGL 3.0 or OpenGL ES 3.0 - a "
+                  "remote or offscreen display, or an older driver): the CPU draws.");
     return QString();
 #endif
 }
@@ -143,18 +144,12 @@ void MultiphysicsSettingsDialog::showStatus()
 
 void MultiphysicsSettingsDialog::apply()
 {
-    const bool on = a_gpu->isChecked();
-    QucsSettingsFile().setValue(gpu::settingKey(gpu::Viewer::Multiphysics), on);
     QucsSettingsFile().setValue(QStringLiteral("Multiphysics/solver"), a_solver->currentData().toString());
     applySolverSetting();
-    // (Each open view drawn so - setGpu() keeps the setting too; a view
-    // whose shaders failed stays with the CPU. The views found first: one
-    // set off deletes its GPU canvas, a widget of the list - read after, a
-    // crash where there is a GPU.)
-    QList<GraphicsView*> views;
-    for (QWidget* w : QApplication::allWidgets())
-        if (auto* view = qobject_cast<GraphicsView*>(w)) views << view;
-    for (GraphicsView* view : views) view->setGpu(on);
+    // (The setting kept and each open view told, as Settings… > Viewers
+    // does: drawn so where nothing is in the GPU's way - QUCS_GPU=0, no
+    // backend -, a view whose shaders failed with the CPU.)
+    gpu::setWanted(gpu::Viewer::Multiphysics, a_gpu->isChecked());
 }
 
 } // namespace qucs_s::fem

@@ -66,6 +66,9 @@
 #include "claudehistory.h"
 #include "markdowndoc.h"
 #include "mathtypeset.h"
+#include <functional>
+#include <QTextFrame>
+#include <QTextTable>
 #include "config.h"
 #include "isolated_settings.h"
 #include "main.h"
@@ -1869,6 +1872,99 @@ private slots:
     }
 
     // A reply's HTML is read whole (the review of 5 October and its re-check).
+    // A table right under a line of text - "**Label:**" then its header row,
+    // no blank line between - is a table, as GitHub has it (the review of
+    // 2026-10-18): Qt's reader (md4c) starts one only where its header row
+    // is a paragraph's only line, and showed the label, the rows and their
+    // pipes as one paragraph. A blank line is put before such a header row
+    // (tablesApart): in a quote its '>', in a list item none needed (the
+    // table indented stays in it). Not in a fence, an HTML block or a
+    // table's body; nor where the next row is not a delimiter row of as many
+    // cells (GitHub's count: a pipe splits a cell unless escaped).
+    void aTableRightAfterTextIsATable()
+    {
+        const QString t = QStringLiteral("| a | b |\n|---|---|\n| 1 | 2 |\n");
+        const auto tables = [](const QString& md) {
+            QTextDocument doc;
+            qucs_s::markdown::setMarkdown(&doc, md);
+            int n = 0;
+            std::function<void(QTextFrame*)> walk = [&n, &walk](QTextFrame* f) {
+                for (QTextFrame* c : f->childFrames()) {
+                    if (qobject_cast<QTextTable*>(c)) ++n;
+                    walk(c);
+                }
+            };
+            walk(doc.rootFrame());
+            return std::make_pair(n, doc.toPlainText());
+        };
+        struct Case {
+            const char* name;
+            QString md;
+            int tables;
+        };
+        const Case cases[] = {
+            {"A: a blank line between", QStringLiteral("**Head:**\n\n") + t, 1},
+            {"B: a bold line right above", QStringLiteral("**Head:**\n") + t, 1},
+            {"C: two lines of text above", QStringLiteral("one\ntwo\n") + t, 1},
+            {"D: a heading above", QStringLiteral("## Head\n") + t, 1},
+            {"E: a list item above", QStringLiteral("- item\n") + t, 1},
+            {"F: a list item, a blank line", QStringLiteral("- item\n\n") + t, 1},
+            {"G: the table alone", t, 1},
+            {"a quote's text above", QStringLiteral("> Said:\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n"), 1},
+            {"a list item's, the table in it", QStringLiteral("- item\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n"), 1},
+            {"two tables, labels above each", QStringLiteral("**One:**\n") + t + QStringLiteral("\n**Two:**\n") + t, 2},
+            {"in a fence", QStringLiteral("```\ntext\n| a | b |\n|---|---|\n```\n"), 0},
+            {"in a tilde fence in a list", QStringLiteral("- ~~~\n  text\n  | a | b |\n  |---|---|\n  ~~~\n"), 0},
+            {"a delimiter of fewer cells", QStringLiteral("text\n| a | b |\n|---|\n"), 0},
+            {"a code span's pipe a cell's end", QStringLiteral("text\n`a|b` | c\n|---|---|\n"), 0},
+            {"an escaped pipe", QStringLiteral("text\na \\| b | c\n|---|---|\n"), 1},
+            {"a setext heading", QStringLiteral("text | more\n---\n"), 0},
+            {"in an HTML block", QStringLiteral("<div>\n| a | b |\n|---|---|\n</div>\n"), 0},
+        };
+        for (const Case& c : cases) {
+            const auto [n, text] = tables(c.md);
+            QVERIFY2(n == c.tables, qPrintable(QStringLiteral("%1: %2 tables, %3 wanted: %4").arg(c.name).arg(n).arg(c.tables).arg(text)));
+        }
+        // What is put in: a blank line - in a quote its marks -, nothing
+        // else; a table's body left as it is (a delimiter-like row in it is a
+        // row, GitHub's too).
+        using qucs_s::markdown::tablesApart;
+        QCOMPARE(tablesApart(QStringLiteral("**Head:**\n") + t), QStringLiteral("**Head:**\n\n") + t);
+        QCOMPARE(tablesApart(QStringLiteral("> Said:\n> | a | b |\n> |---|---|\n")), QStringLiteral("> Said:\n>\n> | a | b |\n> |---|---|\n"));
+        QCOMPARE(tablesApart(QStringLiteral("> > Said:\n> > | a | b |\n> > |---|---|\n")), QStringLiteral("> > Said:\n> >\n> > | a | b |\n> > |---|---|\n"));
+        for (const QString same : {t, QStringLiteral("**Head:**\n\n") + t, QStringLiteral("| a | b |\n|---|---|\n| 1 | 2 |\n|---|---|\n| 3 | 4 |\n"),
+                                   QStringLiteral("```\ntext\n| a | b |\n|---|---|\n```\n"), QStringLiteral("text\n| a | b |\n|---|\n"),
+                                   QStringLiteral("no pipes here\nat all\n"), QStringLiteral("## Head\n") + t, QString()})
+            QCOMPARE(tablesApart(same), same);
+        // The label kept apart from the table: its paragraph, the table's
+        // cells their own.
+        const auto [n, text] = tables(QStringLiteral("**Archived:**\n| File | Why |\n|---|---|\n| a.md | done |\n"));
+        QCOMPARE(n, 1);
+        QVERIFY2(text.startsWith(QStringLiteral("Archived:\n")) && !text.contains(QLatin1Char('|')), qPrintable(text));
+        // One pass: a long reply of many such tables in a time its length's
+        // (a reply is drawn again every 40 ms as it streams) - four times as
+        // many, under eight times as long (CI's sanitized build alike).
+        const auto apartIn = [&t](int count, QString* out) {
+            QString many;
+            for (int i = 0; i < count; ++i) many += QStringLiteral("**Label %1:**\n").arg(i) + t + QLatin1Char('\n');
+            qint64 best = std::numeric_limits<qint64>::max();
+            for (int k = 0; k < 3; ++k) {
+                QElapsedTimer clock;
+                clock.start();
+                *out = tablesApart(many);
+                best = std::min(best, clock.nsecsElapsed());
+            }
+            return best;
+        };
+        QString apart;
+        const qint64 a = apartIn(2000, &apart);
+        QCOMPARE(apart.count(QStringLiteral(":**\n\n|")), 2000);
+        const qint64 b = apartIn(8000, &apart);
+        QCOMPARE(apart.count(QStringLiteral(":**\n\n|")), 8000);
+        qInfo("tables apart: 2,000 in %.2f ms, 8,000 in %.2f ms", a / 1e6, b / 1e6);
+        QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+    }
+
     // Qt's Markdown importer dropped all the text after a tag it saw opened
     // and never closed, or after a closing tag with nothing open, but the
     // inline code: a <br> in a table's cell blanked the table's other rows

@@ -124,6 +124,16 @@ namespace qucs_s::markdown {
 /// setMarkdown() reads with it.
 QString htmlBalanced(const QString& markdown);
 
+/// \a markdown with a blank line before each table whose header row is
+/// right under a line of text, as GitHub reads it: Qt's reader (md4c)
+/// starts a table only where its header row is a paragraph's only line, and
+/// read "**Label:**" then a table as one paragraph of pipes. A header row is
+/// one with a pipe whose next line is a delimiter row (dashes, a colon at
+/// either end, a pipe) of as many cells, GitHub's way (a pipe splits cells
+/// unless escaped). Not in a fenced block, an HTML block or a table's body;
+/// in a quote the line is the quote's (its '>'s). One pass.
+QString tablesApart(const QString& markdown);
+
 /// Sets \a document to \a markdown (GitHub's) as Qt's importer reads it
 /// whole - htmlBalanced() - and with the blocks apart that it puts into
 /// one: an HTML block into the paragraph, heading or list item before it

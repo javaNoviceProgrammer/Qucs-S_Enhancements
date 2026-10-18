@@ -315,7 +315,10 @@ private slots:
                                                         : status.contains(QLatin1String("Eigen's LU")),
                      qPrintable(status));
             box->setCurrentIndex(1);
-            QCOMPARE(d.solverStatusLabel()->text(), QStringLiteral("Eigen's LU and Cholesky (LDLT) at every size."));
+            // (A build without Accelerate - Linux's, Windows' - says so.)
+            QCOMPARE(d.solverStatusLabel()->text(), accelerateInBuild() ? QStringLiteral("Eigen's LU and Cholesky (LDLT) at every size.")
+                                                                        : QStringLiteral("Eigen's LU and Cholesky (LDLT) at every size: this build "
+                                                                                         "has no Accelerate."));
             d.reject();
         }
         QCOMPARE(MultiphysicsSettingsDialog::solverWanted(), 0);
