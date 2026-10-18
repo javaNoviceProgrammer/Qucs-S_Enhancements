@@ -22,6 +22,7 @@
 #include <functional>
 
 class QAbstractScrollArea;
+class QWidget;
 
 namespace qucs_s::gpu {
 
@@ -48,6 +49,13 @@ QString hindrance();
 QString backendName();
 /// Drawn by the GPU: chosen, and nothing in its way.
 bool used(Viewer viewer);
+/// \a window made for the GPU's viewports from the start, when a viewer
+/// draws with it (used()): a hidden RHI widget in it, before it is first
+/// shown. (Qt makes a window's native window again when the first RHI
+/// widget comes into it - from a plain surface to Metal's, Direct3D's,
+/// OpenGL's -: the whole window gone and back, a flash, as a model or a
+/// layout opened.)
+void readyWindow(QWidget* window);
 
 /// \a area's viewport made the GPU's (\a gpu: Qt's RHI - Metal, Direct3D,
 /// OpenGL) or a plain one again, its mouse tracking, cursor, tooltip, menu

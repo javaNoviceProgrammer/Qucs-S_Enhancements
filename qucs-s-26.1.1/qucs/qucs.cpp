@@ -134,6 +134,7 @@
 #include "graphicsexport.h"
 #include "qucslib_common.h"
 #include "misc.h"
+#include "gpurendering.h"
 #include "extsimkernels/verilogawriter.h"
 #include "extsimkernels/CdlNetlistWriter.h"
 #include "extsimkernels/simsettingsdialog.h"
@@ -239,6 +240,9 @@ QucsApp::QucsApp(bool netlist2Console) :
   // from (looked for among the open documents).
   qucs_s::prbs::installForEyeDiagrams();
   new ReadOnlyTextKeys(this);
+  // The window made for the viewers on the GPU (Settings… > Viewers) before
+  // it is shown: else made again as the first of them opens, a flash.
+  qucs_s::gpu::readyWindow(this);
 
   // Instantiate settings singleton and restore window geometry (unless
   // Application Settings > Workspace says the window starts afresh).
