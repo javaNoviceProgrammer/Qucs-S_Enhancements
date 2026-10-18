@@ -617,6 +617,87 @@ private slots:
     // less) and while a wheel or a pinch zooms, round again 120 ms after;
     // thinned again on the way out; the lines out of sight passed over:
     // 20 and 23 ms there.
+    // A small diagram zoomed in, a band diagram's curves reaching its
+    // bottom and right (as the user's double quantum well: 240 by 160, its
+    // valence band near -1 eV): every line in sight painted, at every zoom
+    // and in each corner, the widget's own paint. On a Retina screen the
+    // lines in sight were taken in the widget's own pixels, not the
+    // device's: those past the canvas's top-left quarter passed over (the
+    // valence band from 0 to 16 nm, between 23 and 29, all past 50).
+    // (CTest runs it at a pixel ratio of 2 too: test_canvas_drawing_ratio2.)
+    void aZoomedDiagramDrawsEveryLineInSight()
+    {
+        constexpr int points = 1000;
+        QString dat = QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n<indep y %1>\n").arg(points);
+        for (int i = 0; i < points; ++i) dat += QStringLiteral("  %1\n").arg(i * 94e-9 / (points - 1), 0, 'g', 12);
+        dat += QStringLiteral("</indep>\n");
+        // Two band edges with steps, a third flat near the bottom.
+        const auto band = [points](double base) {
+            QString d;
+            for (int i = 0; i < points; ++i) {
+                const double x = double(i) / (points - 1);
+                d += QStringLiteral("  %1\n").arg(base + 0.3 * x + ((i / 160) % 2 ? 0.4 : 0.0), 0, 'g', 10);
+            }
+            return d;
+        };
+        dat += QStringLiteral("<dep Ec y>\n") + band(0.2) + QStringLiteral("</dep>\n");
+        dat += QStringLiteral("<dep Ev y>\n") + band(-1.25) + QStringLiteral("</dep>\n");
+        dat += QStringLiteral("<dep low y>\n");
+        for (int i = 0; i < points; ++i) dat += QStringLiteral("  -1.4\n");
+        dat += QStringLiteral("</dep>\n");
+        write(QStringLiteral("bands.dat"), dat);
+        const QString dpl = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <View=0,0,800,600,1,0,0>\n  <Grid=10,10,0>\n"
+                                           "  <DataSet=bands.dat>\n  <DataDisplay=bands.dpl>\n  <OpenDisplay=0>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                                           "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n"
+                                           "  <Rect 60 240 240 160 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 2 -1 \"y (m)\" \"\" \"\">\n"
+                                           "    <\"Ec\" #0000ff 1 3 0 0 0>\n    <\"Ev\" #ff0000 1 3 0 0 0>\n    <\"low\" #00ff00 1 3 0 0 0>\n  </Rect>\n"
+                                           "</Diagrams>\n<Paintings>\n</Paintings>\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        Schematic* s = open(app, write(QStringLiteral("bands.dpl"), dpl), {1100, 800});
+        QVERIFY(s != nullptr);
+        QCOMPARE(s->a_DocDiags.size(), 1);
+        Diagram* d = s->a_DocDiags.front();
+        QCOMPARE(d->Graphs.size(), 3);
+        qInfo("a pixel ratio of %g", s->viewport()->devicePixelRatioF());
+        int checked = 0, culled = 0;
+        for (const double scale : {1.0, 2.0, 3.5, 5.0}) {
+            s->zoomBy(scale / s->getScale());
+            // The middle, then each corner of the diagram in the middle of
+            // the canvas.
+            for (const QPoint at : {QPoint(d->cx + d->x2 / 2, d->cy - d->y2 / 2), QPoint(d->cx, d->cy), QPoint(d->cx + d->x2, d->cy),
+                                    QPoint(d->cx, d->cy - d->y2), QPoint(d->cx + d->x2, d->cy - d->y2)}) {
+                s->centerOn(at);
+                pump();
+                s->viewport()->repaint();
+                const QRectF seen = QRectF(s->viewportToModel(QPoint(0, 0)),
+                                           s->viewportToModel(QPoint(s->viewport()->width(), s->viewport()->height())))
+                                        .normalized();
+                for (const Graph* g : d->Graphs) {
+                    // (A line's box, a unit about, meeting the canvas.)
+                    int meet = 0;
+                    for (const QLineF& l : g->drawnLines()) {
+                        const QRectF box = QRectF(QPointF(d->cx + l.x1(), d->cy - l.y1()), QPointF(d->cx + l.x2(), d->cy - l.y2())).normalized();
+                        if (box.adjusted(-1, -1, 1, 1).intersects(seen)) ++meet;
+                    }
+                    QVERIFY2(g->linesPainted() >= meet,
+                             qPrintable(QStringLiteral("scale %1, at %2 %3: %4 painted, %5 in sight of %6")
+                                            .arg(s->getScale())
+                                            .arg(at.x())
+                                            .arg(at.y())
+                                            .arg(g->linesPainted())
+                                            .arg(meet)
+                                            .arg(g->drawnLines().size())));
+                    culled += g->linesPainted() < g->drawnLines().size();
+                    ++checked;
+                }
+            }
+        }
+        // (The lines out of sight still passed over, zoomed in.)
+        QVERIFY2(culled > 10, qPrintable(QString::number(culled)));
+        qInfo("%d views of a graph, %d of them some lines passed over", checked, culled);
+    }
+
     void aPlotOfManyCurvesZoomsSmoothly()
     {
         constexpr int points = 2000, states = 20;
