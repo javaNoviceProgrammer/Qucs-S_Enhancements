@@ -145,6 +145,11 @@ struct NamedExpression {
     QString name, expression;
 };
 NamedExpression namedExpression(const QString& item);
+/// A family of globals in a list of items: "name*" (a global's name and a
+/// star, alone) each of \a solution's globals name1, name2... in their
+/// order - qw.Ev* a Valence Bands step's every state; any other item as it
+/// is, as is one of no such globals (or no solution).
+QStringList expandFamilies(const QStringList& items, const Solution* solution);
 
 struct DerivedResult {
     QList<DerivedValue> values;

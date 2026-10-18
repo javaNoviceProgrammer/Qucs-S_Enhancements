@@ -3675,8 +3675,35 @@ int QuantumProblem::solveBands(const SpectrumOptions& o, QString* error)
         *error = tr("%1: a Valence Bands step wants the k·p valence bands (its physics' Valence bands: 4x4, 6x6 or 8x8)").arg(a_node->name());
         return -1;
     }
-    // (The 8x8's conduction states too: as many Kramers pairs.)
-    if (!kpBands(std::max(1, o.states), o.kmax, std::max(2, o.kpoints), error, a_valence == 8 ? std::max(1, o.states) : 0)) return -1;
+    // Every bound state too: at k = 0, more asked for till the lowest found
+    // is not bound (above the valence band edges where the physics ends, a
+    // state's own "bound"); then as many pairs as are, where more than
+    // asked.
+    int count = std::max(1, o.states);
+    if (o.bound) {
+        const double edge = std::max(a_barrier[1], a_barrier[2]);
+        constexpr int most = 120;
+        int bound = 0;
+        for (int asked = count;; asked = std::min(most, 2 * asked)) {
+            if (!kpBands(asked, 0, 1, error, 0)) return -1;
+            const std::vector<double>& E = a_kps.front().E.front();
+            bound = int(std::count_if(E.begin(), E.end(), [edge](double e) { return e > edge; }));
+            if (bound < int(E.size()) || int(E.size()) < 2 * asked || asked >= most) {
+                if (bound == int(E.size()) && asked >= most)
+                    a_s.log << tr("Warning: %1: more than %2 states bound in the wells: the highest %2 taken").arg(a_node->name()).arg(most);
+                break;
+            }
+        }
+        const int pairs = (bound + 1) / 2;
+        a_s.log << tr("%1: %2 valence states bound in the wells at k = 0 (above %3 eV, the valence band edge where the stack ends; Kramers' "
+                      "pairs both)")
+                       .arg(a_node->name())
+                       .arg(bound)
+                       .arg(formatNumber(edge, 6));
+        count = std::max(count, pairs);
+    }
+    // (The 8x8's conduction states too: as many Kramers pairs as asked.)
+    if (!kpBands(count, o.kmax, std::max(2, o.kpoints), error, a_valence == 8 ? std::max(1, o.states) : 0)) return -1;
     a_specSelected = -1;
     const KpBands& b0 = a_kps.front();
     QStringList top;

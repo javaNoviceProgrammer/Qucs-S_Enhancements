@@ -2326,11 +2326,14 @@ QList<NodeKind> makeKinds()
                    tr("The wave vector in the wells' plane, from 0 (along x: the in-plane warping left out)")),
               integer(QStringLiteral("points"), tr("Values of k"), 41),
               integer(QStringLiteral("states"), tr("States"), 4, tr("The highest valence states (Kramers' pairs both: twice as many)")),
+              flag(QStringLiteral("bound"), tr("Every bound state too"), false,
+                   tr("Those bound in the wells as well, where they are more than States: above the valence band edge at both "
+                      "ends of the stack, at k = 0 (the log says how many)")),
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6")), before, nonlinear},
              {}, {}, false, false, QStringLiteral("bnd"),
-             tr("A quantum wells physics' k·p valence bands (its Valence bands 4x4 or 6x6) along the wave vector in the wells' "
-                "plane: each value of k a solution, qw.k, the states' energies qw.Ev1, qw.Ev2... - the subbands' dispersion, the "
-                "heavy and light holes mixed away from k = 0.")});
+             tr("A quantum wells physics' k·p valence bands (its Valence bands 4x4, 6x6 or 8x8) along the wave vector in the "
+                "wells' plane: each value of k a solution, qw.k, the states' energies qw.Ev1, qw.Ev2... (a graph of qw.Ev* "
+                "draws each) - the subbands' dispersion, the heavy and light holes mixed away from k = 0.")});
         add({QStringLiteral("spectrum"), tr("Optical Spectrum"), QStringLiteral("step"), QStringLiteral("spectrum"), Level::None,
              {physics,
               text(QStringLiteral("energies"), tr("Photon energies or wavelengths"), QStringLiteral("linspace(1.4[eV], 1.8[eV], 201)"),

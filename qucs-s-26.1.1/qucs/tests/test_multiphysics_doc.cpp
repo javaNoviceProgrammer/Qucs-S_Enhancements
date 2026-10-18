@@ -2973,6 +2973,7 @@ private slots:
           "results": {"derived": [{"type": "global", "tag": "gev1", "label": "Exciton", "study": "spec",
                                    "expression": "qw.Eb; qw.Ex; qw.gX", "solutions": "all"}],
                       "plots": [{"type": "plotgroup1d", "tag": "pgk", "study": "bands", "plots": [{"type": "globalgraph", "tag": "gk", "expression": "qw.Ev1"}]},
+                                {"type": "plotgroup1d", "tag": "pgf", "study": "bands", "plots": [{"type": "globalgraph", "tag": "gf", "expression": "qw.Ev*"}]},
                                 {"type": "plotgroup1d", "tag": "pgg", "study": "gain", "plots": [{"type": "globalgraph", "tag": "gg", "expression": "qw.gTE; qw.Fc"}]},
                                 {"type": "plotgroup1d", "tag": "pgs", "study": "spec", "plots": [{"type": "globalgraph", "tag": "gs", "expression": "qw.alphaTE; qw.dnTE"}]}]}})json");
         QFile f(path(QStringLiteral("ev_wells.qfem")));
@@ -3056,6 +3057,17 @@ private slots:
         QFile dpl(path(QStringLiteral("ev_wells_pgk.dpl")));
         QVERIFY(dpl.open(QIODevice::ReadOnly));
         QVERIFY2(QString::fromUtf8(dpl.readAll()).contains(QLatin1String("k (1/nm)")), "the display's x axis");
+        // qw.Ev*: each state the step found (2, Kramers' pairs both), in eV.
+        qucs_s::dataset::Dataset family;
+        why = dataset("pgf", family, units);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        for (int j = 1; j <= 4; ++j) {
+            const qucs_s::dataset::Variable* ev = family.find(QStringLiteral("qw.Ev%1").arg(j));
+            QVERIFY2(ev && ev->size() == 3 && ev->dependencies == QStringList{QStringLiteral("k")}, qPrintable(QString::number(j)));
+            QCOMPARE(units.value(QStringLiteral("qw.Ev%1").arg(j)).toString(), QStringLiteral("eV"));
+        }
+        QVERIFY(!family.find(QStringLiteral("qw.Ev5")) && !family.find(QStringLiteral("qw.Ev*")));
+        QCOMPARE(family.find(QStringLiteral("qw.Ev1"))->re, ev1->re);
         // The spectrum's: its photon energies in eV, a field swept in V/m,
         // a gain per m and a quasi-Fermi level in eV.
         qucs_s::dataset::Dataset gain;
@@ -3219,6 +3231,38 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains(QLatin1String("is there already")), qPrintable(text(r)));
         r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldev")}, {"to", to}, {"replace", true}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
+        {
+            // A conversation's import over the model open in its tab: its own
+            // write, not told back as the file's; a write from outside told
+            // once, then not again (the MQW benchmarks' round 2, its nit 5).
+            const quint64 us = 303;
+            const auto as = [this](quint64 who, const QString& tool, const QJsonObject& args = {}) { return control->callNow(tool, args, 120000, who); };
+            QVERIFY(!failed(as(us, "fem_describe", {{"path", to}})));
+            QVERIFY(!failed(as(us, "fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldev")}, {"to", to}, {"replace", true}})));
+            for (int i = 0; i < 2; ++i) {
+                const QJsonObject again = as(us, "get_state");
+                QVERIFY2(!text(again).contains("Since your last call"), qPrintable(text(again).right(300)));
+            }
+            MultiphysicsDoc* tab = nullptr;
+            for (QucsDoc* d : app->allDocuments())
+                if (auto* m = dynamic_cast<MultiphysicsDoc*>(d); m && QFileInfo(m->getDocName()) == QFileInfo(to)) tab = m;
+            QVERIFY(tab != nullptr);
+            const auto revision = tab->revision();
+            QTest::qWait(1100);   // (a modification time of its own)
+            QFile file(to);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QByteArray bytes = file.readAll();
+            file.close();
+            bytes.replace("\"Valence bands\"", "\"Valence bands, edited\"");
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            file.write(bytes);
+            file.close();
+            QTRY_VERIFY_WITH_TIMEOUT(tab->revision() > revision, 10000);
+            QJsonObject told = as(us, "get_state");
+            QVERIFY2(text(told).contains("Since your last call") && text(told).contains("changed on disk"), qPrintable(text(told).right(400)));
+            told = as(us, "get_state");
+            QVERIFY2(!text(told).contains("Since your last call"), qPrintable(text(told).right(400)));
+        }
         r = call("fem_solve", {{"path", to}, {"study", slowBuild() ? "bands" : "gain"}, {"timeout", 300}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         r = call("fem_model", {{"action", "import"}, {"path", QStringLiteral(QUCS_TEST_DATA "/lumerical_sample.ldf")}, {"to", path(QStringLiteral("none.qfem"))}});
