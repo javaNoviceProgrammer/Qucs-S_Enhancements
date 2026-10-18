@@ -1636,6 +1636,9 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
             w.set(QStringLiteral("electron velocity"), Sn);
             w.set(QStringLiteral("hole velocity"), Sp);
             if (std::isfinite(Et)) w.line(QStringLiteral("try { set(\"trap offset\", %1); } catch(err); # (eV)").arg(num(Et)));
+            // (Both carriers, or an ohmic contact's minority alone: Lumerical's
+            // default for a new one off - minority alone -, set either way.)
+            w.line(QStringLiteral("try { set(\"apply to majority carriers\", %1); } catch(err);").arg(f.flag(QStringLiteral("majority")) ? 1 : 0));
             if (etaN != 0 || etaP != 0)
                 w.line(QStringLiteral("try { set(\"enable temperature model\", 1); set(\"electron eta\", %1); set(\"hole eta\", %2); } catch(err);")
                            .arg(num(etaN), num(etaP)));

@@ -1441,7 +1441,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         labelsOf[s.material] << s.label;
         if (mm.count(s.material) && !mm.at(s.material).alias.isEmpty() && mm.at(s.material).alias != s.material) labelsOf[mm.at(s.material).alias] << s.label;
     }
-    int recombination = 0, warmed = 0;
+    int recombination = 0, warmed = 0, atContacts = 0;
     QStringList atMetals;
     for (const Object& o : scene.objects) {
         if (o.kind != QLatin1String("surfacerec")) continue;
@@ -1455,7 +1455,11 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                 if ((name == n || m.alias == n) && m.metal) return true;
             return false;
         };
-        if (metalNamed(a) || metalNamed(b)) {
+        // (Its "apply to majority carriers": at a metal off - the contact's
+        // minority carriers alone, its majority held -, elsewhere on.)
+        const bool atMetal = metalNamed(a) || metalNamed(b);
+        const double majority = o.number(QStringLiteral("apply to majority carriers"), NAN);
+        if (atMetal && (!labelsOf.count(a) || !labelsOf.count(b))) {
             atMetals << o.name();
             continue;
         }
@@ -1463,6 +1467,14 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
             notes << tr("%1: between %2 and %3, not both in the region: left out").arg(o.name(), a, b);
             continue;
         }
+        if (atMetal && majority == 1)
+            notes << tr("%1: at a metal its majority carriers too in Lumerical - here the contact holds them, its minority carriers "
+                        "alone recombine")
+                         .arg(o.name());
+        if (!atMetal && majority == 0)
+            notes << tr("%1: its minority carriers alone in Lumerical - here both, as Lumerical advises at an insulator's or a "
+                        "semiconductor's interface")
+                         .arg(o.name());
         const double Sn = o.number(QStringLiteral("electron velocity"), NAN), Sp = o.number(QStringLiteral("hole velocity"), NAN);
         if (!(Sn >= 0) || !(Sp >= 0)) continue;
         // (Its temperature model: S (T/300 K)^η, each carrier's η.)
@@ -1474,16 +1486,24 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                                     {QStringLiteral("Sn"), ofT(Sn, QStringLiteral("m/s"), etaN)},
                                     {QStringLiteral("Sp"), ofT(Sp, QStringLiteral("m/s"), etaP)},
                                     {QStringLiteral("Et"), QStringLiteral("%1[eV]").arg(num(o.number(QStringLiteral("trap offset"), 0)))},
+                                    {QStringLiteral("majority"), !atMetal},
                                     {QStringLiteral("selection"), QJsonObject{{QStringLiteral("between"), QJsonArray{QJsonArray::fromStringList(labelsOf.at(a)), QJsonArray::fromStringList(labelsOf.at(b))}}}}});
         ++recombination;
+        if (atMetal) ++atContacts;
     }
     if (recombination)
         notes << tr("%1 surface recombination objects as Surface Recombination on the boundaries between their materials (each "
-                    "carrier's velocity, the SRH form for both - the Lumerical majority-carrier switch not read)")
+                    "carrier's velocity, the SRH form)")
                      .arg(recombination);
     if (warmed) notes << tr("%1 of them with their temperature model: S (T/300 K)^η").arg(warmed);
+    if (atContacts)
+        notes << tr("%1 of them at a metal: its contact's minority carriers by it, its majority held at equilibrium (Apply to majority "
+                    "carriers off)")
+                     .arg(atContacts);
     if (!atMetals.isEmpty())
-        notes << tr("surface recombination at the metal contacts left out (%1): their carriers at equilibrium already").arg(atMetals.join(QStringLiteral(", ")));
+        notes << tr("surface recombination at the metal contacts left out (%1): their metal not in the region, their carriers at "
+                    "equilibrium")
+                     .arg(atMetals.join(QStringLiteral(", ")));
     // Optical generation imported: the data's slice in the plane (its
     // coordinates its own), a table of two arguments, times its scale
     // factor (the light's power, W), nought outside its data.
