@@ -1606,7 +1606,11 @@ QList<NodeKind> makeKinds()
          Level::Domain,
          {selectionProp(none), spatial(QStringLiteral("G"), tr("Generation rate G"), QStringLiteral("1/(m^3*s)"), QStringLiteral("0"),
                                        tr("Pairs made per volume and time: of x, y, t, other physics' fields (light absorbed)"))},
-         {}, {}, false, false, QStringLiteral("gen"), tr("Electron-hole pairs made: optical generation, say.")});
+         {}, {}, false, false, QStringLiteral("gen"),
+         tr("Electron-hole pairs made: optical generation, say - an imported map as an interpolation of x and y (Definitions). In "
+            "a frequency step after a stationary one it is the light modulated: its pairs' small-signal response, semi.Hop_<contact> "
+            "(and HopRL_ through 50 Ω), each contact's current relative to semi.Iop = q semi.Gop, the pairs made per second - a "
+            "photodiode's bandwidth.")});
     add({QStringLiteral("semiconductor/optical"), tr("Optical Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), text(QStringLiteral("mode"), tr("Mode analysis"), QStringLiteral("emw"), tr("The Electromagnetic Waves, Mode Analysis whose mode is fed")),
@@ -1677,11 +1681,18 @@ QList<NodeKind> makeKinds()
          {selectionProp(none),
           expr(QStringLiteral("Sn"), tr("Electrons' recombination velocity Sn"), QStringLiteral("m/s"), QStringLiteral("100[cm/s]")),
           expr(QStringLiteral("Sp"), tr("Holes' recombination velocity Sp"), QStringLiteral("m/s"), QStringLiteral("100[cm/s]")),
-          expr(QStringLiteral("Et"), tr("Trap level above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("0[eV]"))},
+          expr(QStringLiteral("Et"), tr("Trap level above the intrinsic level"), QStringLiteral("eV"), QStringLiteral("0[eV]")),
+          flag(QStringLiteral("majority"), tr("Apply to majority carriers"), true,
+               tr("On: both carriers recombine (an insulator's or another semiconductor's interface). Off: an ohmic contact's "
+                  "minority carriers alone, its majority held at equilibrium - a contact of a finite recombination velocity (as "
+                  "Lumerical sets a new one)"))},
          {}, {}, false, false, QStringLiteral("srec"),
          tr("Pairs recombined at an interface - a semiconductor's with an insulator or another semiconductor: U = (n p - ni²) / ((n + "
             "n1)/Sp + (p + p1)/Sn) per area, its traps' charge none (Interface Traps for a charged one). Silicon's surface under "
-            "oxide 1-1e4 cm/s; at an ohmic contact the carriers are at equilibrium already.")});
+            "oxide 1-1e4 cm/s. A velocity is a constant of the parameters: of the temperature through the one the physics' T names, "
+            "S0*(Tk/300[K])^η, say. At an ohmic contact the carriers are held at "
+            "equilibrium - unless Apply to majority carriers is off: then its minority carriers recombine at it by U, the majority "
+            "held (a contact's finite surface recombination velocity, the minority current into it q U).")});
     add({QStringLiteral("semiconductor/stimulated"), tr("Stimulated Recombination"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none),

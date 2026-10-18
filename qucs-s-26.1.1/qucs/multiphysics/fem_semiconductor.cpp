@@ -606,8 +606,18 @@ private:
         double area = 0, N = 0, n1 = 0, p1 = 0, cn = 0, cp = 0;
         bool acceptor = true;
         bool charged = true;   // false: a surface's recombination alone (N 1, cn Sn, cp Sp)
+        /// A surface's recombination of its minority carriers alone (its
+        /// "Apply to majority carriers" off): at an ohmic contact, the
+        /// majority held at equilibrium, the minority by this flux.
+        bool minorityOnly = false;
     };
     std::vector<TrapLevel> a_traps;
+    /// By node: an ohmic contact's node whose minority carriers a surface's
+    /// recombination takes - free, not held at equilibrium.
+    std::vector<char> a_minorityFree;
+    /// Whether node \a i's electrons are its minority carriers (its
+    /// equilibrium's: an ohmic contact's values).
+    bool electronsMinority(int i) const { return a_bcN[std::size_t(i)] < a_bcP[std::size_t(i)]; }
     // Fowler-Nordheim tunnelling through an insulator, after the solve: by
     // boundary edge, its length (m², the thickness in) and the insulator's
     // triangle beside it, with J = A E² e^(-B/E) at the barrier's mean field.
@@ -1706,6 +1716,7 @@ bool SemiconductorProblem::setup(QString* error)
     a_surfaceLength.clear();
     a_traps.clear();
     a_fn.clear();
+    std::vector<std::tuple<int, int, QString>> surfaceNames;   // a surface's recombination: its levels' range, its name
     for (const Node* bf : boundaryFeatures) {
         const QString t = bf->type;
         const QVector<int> picked = resolveSelection(topo, model, Level::Boundary, bf->selection(), &why);
@@ -1840,8 +1851,12 @@ bool SemiconductorProblem::setup(QString* error)
         }
         if (t == QLatin1String("semiconductor/surfacerec")) {
             // A trap level of no charge: N 1, cn Sn, cp Sp - (n p - ni²)/((n
-            // + n1)/Sp + (p + p1)/Sn) per area.
+            // + n1)/Sp + (p + p1)/Sn) per area; of both carriers, or (its
+            // "Apply to majority carriers" off) of an ohmic contact's
+            // minority carriers alone, its nodes sorted out once the
+            // contacts are known.
             const QString where = bf->name();
+            const bool majority = bf->props.contains(QStringLiteral("majority")) ? bf->flag(QStringLiteral("majority")) : true;
             const double Sn = number(bf->text(QStringLiteral("Sn")), velocity, where);
             const double Sp = number(bf->text(QStringLiteral("Sp")), velocity, where);
             const double Et = energyOf(bf->text(QStringLiteral("Et")), constants, &why);
@@ -1863,10 +1878,12 @@ bool SemiconductorProblem::setup(QString* error)
                 tl.cn = Sn;
                 tl.cp = Sp;
                 tl.charged = false;
+                tl.minorityOnly = !majority;
                 a_traps.push_back(tl);
                 ++count;
             }
             if (count == 0) problem(tr("%1: none of its boundaries meets a semiconductor").arg(where));
+            surfaceNames.push_back({int(a_traps.size()) - count, int(a_traps.size()), where});
             continue;
         }
         if (t == QLatin1String("semiconductor/traps")) {
@@ -1974,6 +1991,47 @@ bool SemiconductorProblem::setup(QString* error)
         if (c.nodes.empty()) problem(tr("%1 is on no boundary of %2's %3").arg(bf->name(), a_node->name(),
                                                                                 c.kind == Contact::Gate ? tr("domains") : tr("semiconductors")));
         a_contacts.push_back(c);
+    }
+    // A surface's recombination at an ohmic contact: of its minority carriers
+    // alone there (its majority off), freed; of both, nothing (the contact
+    // holds them at equilibrium). Off elsewhere: refused - a sink of one
+    // carrier where no contact takes the other (the Lumerical advice:
+    // "on" at an insulator's and a semiconductor's interface).
+    a_minorityFree.assign(std::size_t(a_n), 0);
+    for (const auto& [from, to, name] : surfaceNames) {
+        int atContacts = 0, minority = 0, elsewhere = 0, schottky = 0;
+        for (int k = from; k < to; ++k) {
+            TrapLevel& tl = a_traps[std::size_t(k)];
+            const int ci = a_nodeContact[std::size_t(tl.node)];
+            const bool ohmic = ci >= 0 && a_contacts[std::size_t(ci)].kind == Contact::Ohmic;
+            if (ci >= 0 && a_contacts[std::size_t(ci)].kind == Contact::Schottky) {
+                tl.cn = tl.cp = 0;   // (its thermionic velocities stand)
+                ++schottky;
+                continue;
+            }
+            if (ohmic) {
+                ++atContacts;
+                if (tl.minorityOnly) {
+                    a_minorityFree[std::size_t(tl.node)] = 1;
+                    ++minority;
+                } else
+                    tl.cn = tl.cp = 0;
+            } else if (tl.minorityOnly)
+                ++elsewhere;
+        }
+        if (elsewhere > 0)
+            problem(tr("%1: its minority carriers alone (Apply to majority carriers off) at an ohmic contact only - %2 of its nodes are on "
+                       "none: at an insulator's or another semiconductor's interface both carriers recombine (on)")
+                        .arg(name)
+                        .arg(elsewhere));
+        else if (atContacts > minority)
+            a_s.log << tr("%1: at its ohmic contacts the carriers held at equilibrium, its recombination none there (Apply to majority "
+                          "carriers off: their minority carriers' by it)")
+                           .arg(name);
+        else if (minority > 0)
+            a_s.log << tr("%1: the minority carriers of %2 contact nodes by its recombination, the majority held at equilibrium").arg(name).arg(minority);
+        if (schottky > 0)
+            a_s.log << tr("%1: its recombination none at a Schottky contact's %2 nodes - the contact's thermionic velocities its").arg(name).arg(schottky);
     }
     bool carriersHeld = false;
     for (const Contact& c : a_contacts) carriersHeld = carriersHeld || c.kind != Contact::Gate;
@@ -3227,6 +3285,20 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             add(rv, rn, -Q * tl.N * st.dfdn / gn * tl.area);
             add(rv, rp, -Q * tl.N * st.dfdp / gp * tl.area);
         }
+        if (tl.cn == 0 && tl.cp == 0) continue;
+        if (tl.minorityOnly) {
+            // (An ohmic contact's minority carriers alone: the majority held.)
+            if (electronsMinority(i)) {
+                F(rn) -= Q * tl.area * st.U;
+                add(rn, rn, -Q * tl.area * st.dUdn / gn);
+                add(rn, rp, -Q * tl.area * st.dUdp / gp);
+            } else {
+                F(rp) += Q * tl.area * st.U;
+                add(rp, rn, Q * tl.area * st.dUdn / gn);
+                add(rp, rp, Q * tl.area * st.dUdp / gp);
+            }
+            continue;
+        }
         F(rn) -= Q * tl.area * st.U;
         F(rp) += Q * tl.area * st.U;
         add(rn, rn, -Q * tl.area * st.dUdn / gn);
@@ -3281,9 +3353,16 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             fixed[std::size_t(a_iV[std::size_t(i)])] = 1;
             target(a_iV[std::size_t(i)]) = a_bcV[std::size_t(i)];
             if (c.kind == Contact::Ohmic) {
-                fixed[std::size_t(a_iN[std::size_t(i)])] = fixed[std::size_t(a_iP[std::size_t(i)])] = 1;
-                target(a_iN[std::size_t(i)]) = a_bcN[std::size_t(i)];
-                target(a_iP[std::size_t(i)]) = a_bcP[std::size_t(i)];
+                // (Its minority carriers a surface's recombination's: free.)
+                const bool freeN = a_minorityFree[std::size_t(i)] && electronsMinority(i), freeP = a_minorityFree[std::size_t(i)] && !electronsMinority(i);
+                if (!freeN) {
+                    fixed[std::size_t(a_iN[std::size_t(i)])] = 1;
+                    target(a_iN[std::size_t(i)]) = a_bcN[std::size_t(i)];
+                }
+                if (!freeP) {
+                    fixed[std::size_t(a_iP[std::size_t(i)])] = 1;
+                    target(a_iP[std::size_t(i)]) = a_bcP[std::size_t(i)];
+                }
             }
         }
     for (int k = 0; k < a_unknowns; ++k)
@@ -4256,7 +4335,11 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
     for (const Contact& c : a_contacts)
         for (int i : c.nodes) {
             fixed[std::size_t(a_iV[std::size_t(i)])] = 1;
-            if (c.kind == Contact::Ohmic) fixed[std::size_t(a_iN[std::size_t(i)])] = fixed[std::size_t(a_iP[std::size_t(i)])] = 1;
+            if (c.kind == Contact::Ohmic) {
+                const bool freed = a_minorityFree[std::size_t(i)];
+                if (!freed || !electronsMinority(i)) fixed[std::size_t(a_iN[std::size_t(i)])] = 1;
+                if (!freed || electronsMinority(i)) fixed[std::size_t(a_iP[std::size_t(i)])] = 1;
+            }
         }
     // J + jω M (M the carriers' boxes: -qA on n's rows, +qA on p's), solved in
     // the quasi-Fermi potentials' changes: δn = n/Vt (δV - δφn), δp = p/Vt
@@ -4454,8 +4537,9 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         for (int i : a_contacts[k].nodes) {
             rhs(a_iV[std::size_t(i)]) = cd(1.0 / rowMax(a_iV[std::size_t(i)]), 0);
             if (a_contacts[k].kind == Contact::Ohmic) {
-                rhs(a_iN[std::size_t(i)]) = cd(1.0 / rowMax(a_iN[std::size_t(i)]), 0);
-                rhs(a_iP[std::size_t(i)]) = cd(1.0 / rowMax(a_iP[std::size_t(i)]), 0);
+                const bool freed = a_minorityFree[std::size_t(i)];
+                if (!freed || !electronsMinority(i)) rhs(a_iN[std::size_t(i)]) = cd(1.0 / rowMax(a_iN[std::size_t(i)]), 0);
+                if (!freed || electronsMinority(i)) rhs(a_iP[std::size_t(i)]) = cd(1.0 / rowMax(a_iP[std::size_t(i)]), 0);
             }
         }
         const std::vector<cd> dI = terminals(lu.solve(rhs));

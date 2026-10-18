@@ -336,8 +336,16 @@ LumericalImport importLumericalMqw(const QString& path)
         double thickness = 0, strain = 0, vbo = 0;
     };
     std::vector<Layer> layers;
-    for (int i = 0; i < table.value(QStringLiteral("size")).toInt(); ++i) {
-        const QVariantMap l = table.value(QStringLiteral("data%1").arg(i)).toMap();
+    // (Its count as the file says, each layer there: a damaged count of
+    // two billion empty layers hung the import.)
+    const int listed = table.value(QStringLiteral("size")).toInt();
+    for (int i = 0; i < listed; ++i) {
+        const auto it = table.constFind(QStringLiteral("data%1").arg(i));
+        if (it == table.constEnd()) {
+            out.error = tr("%1: its MQW solver's layer table lists %2 layers, %3 there").arg(QFileInfo(path).fileName()).arg(listed).arg(i);
+            return out;
+        }
+        const QVariantMap l = it->toMap();
         layers.push_back({l.value(QStringLiteral("material")).toString(), l.value(QStringLiteral("thickness")).toDouble(),
                           l.value(QStringLiteral("strain")).toDouble(), l.value(QStringLiteral("valence band offset")).toDouble()});
     }
@@ -811,6 +819,9 @@ std::optional<std::vector<double>> dataBlob(const QByteArray& b, std::vector<qui
         std::memcpy(&d, b.constData() + at, 8);
         at += 8;
         dims->push_back(d);
+        // (A damaged one's sizes: one or their product past the blob's
+        // bytes, or wrapped round past 2^64 to a few, never allocated.)
+        if (d > quint64(b.size()) || (d && count > quint64(b.size()) / d)) return std::nullopt;
         count *= d;
     }
     const bool real = b.at(int(at)) == 1;
