@@ -18,12 +18,14 @@
  * select, addmaterial, setmaterial, setanalysis, addmodelmaterial,
  * addmaterialproperties, addsemiconductorfromalloy, addchargesolver,
  * addsimulationregion, adddope, adddiffusion, addimportdope,
- * rectilineardataset, importdataset, addelectricalcontact, mqwindex...)
+ * rectilineardataset, importdataset, addelectricalcontact,
+ * addsurfacerecombinationbc, addimportgen, mqwindex...)
  * record what they make; the others (save, run, findmodes, plot...) are
  * passed over, and a command not known said.
  */
 #include "fem_lumerical_scene.h"
 
+#include <QJsonDocument>
 #include <QCoreApplication>
 
 #include <climits>
@@ -1071,6 +1073,8 @@ private:
             {QStringLiteral("adddiffusion"), QStringLiteral("diffusion")},
             {QStringLiteral("addimportdope"), QStringLiteral("importdope")},
             {QStringLiteral("addelectricalcontact"), QStringLiteral("contact")},
+            {QStringLiteral("addsurfacerecombinationbc"), QStringLiteral("surfacerec")},
+            {QStringLiteral("addimportgen"), QStringLiteral("generation")},
             {QStringLiteral("addmodelmaterial"), QStringLiteral("modelmaterial")},
             {QStringLiteral("addmesh"), QStringLiteral("mesh")}};
         if (const auto it = adds.find(name); it != adds.end()) {
@@ -1080,6 +1084,7 @@ private:
                 {QStringLiteral("charge"), QStringLiteral("CHARGE")},   {QStringLiteral("region"), QStringLiteral("simulation region")},
                 {QStringLiteral("dope"), QStringLiteral("constant doping")}, {QStringLiteral("diffusion"), QStringLiteral("diffusion")},
                 {QStringLiteral("importdope"), QStringLiteral("import doping")}, {QStringLiteral("contact"), QStringLiteral("contact")},
+                {QStringLiteral("surfacerec"), QStringLiteral("surface recombination")}, {QStringLiteral("generation"), QStringLiteral("import generation")},
                 {QStringLiteral("modelmaterial"), QStringLiteral("New Material")}, {QStringLiteral("mesh"), QStringLiteral("mesh")}};
             add(it->second, defaults.at(it->second));
             return Value();
@@ -1231,6 +1236,14 @@ Scene readScript(const QString& text, const QString& source)
         return scene;
     }
     Interpreter(scene).run(program);
+    // (A Qucs-S export's line: the model's own, read back.)
+    for (const QStringView line : QStringView(text).split(QLatin1Char('\n'))) {
+        if (!line.startsWith(QLatin1String("#qucs-s "))) continue;
+        QJsonParseError error;
+        const QJsonDocument doc = QJsonDocument::fromJson(line.mid(8).toUtf8(), &error);
+        if (doc.isObject()) scene.carried = doc.object();
+        else scene.notes << tr("its Qucs-S line does not read (%1): passed over").arg(error.errorString());
+    }
     return scene;
 }
 

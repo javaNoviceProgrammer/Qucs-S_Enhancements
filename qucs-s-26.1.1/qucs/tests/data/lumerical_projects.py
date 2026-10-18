@@ -356,8 +356,10 @@ with h5py.File('lumerical_device.ldev', 'w', libver='latest') as f:
               'range start': -1.0, 'range stop': 1.0, 'range num points': 5, 'force ohmic': 0, 'bc mode': 0}, bcs)
     child(2, {'name': 'substrate', 'type': 'Electrical Boundary Condition', 'solid': 'bottom', 'surface type': 3, 'sweep type': 0, 'voltage': 0.0,
               'force ohmic': 1, 'bc mode': 0}, bcs)
+    # (Its temperature model on: S (T/300 K)^η, each carrier's η.)
     child(3, {'name': 'interface', 'type': 'Surface Recombination', 'surface type': 6, 'material 1': 'Si', 'material 2': 'SiO2',
-              'electron velocity': 100.0, 'hole velocity': 200.0, 'trap offset': 0.05, 'enabled': 1}, bcs)
+              'electron velocity': 100.0, 'hole velocity': 200.0, 'trap offset': 0.05, 'enabled': 1, 'enable temperature model': 1,
+              'electron eta': -3.8, 'hole eta': -2.0}, bcs)
     child(4, {'name': 'at metal', 'type': 'Surface Recombination', 'surface type': 6, 'material 1': 'Si', 'material 2': 'Al',
               'electron velocity': 1e5, 'hole velocity': 1e5, 'trap offset': 0.0, 'enabled': 1}, bcs)
     # An imported generation (saved dark: not enabled), its G on x by y by
