@@ -195,9 +195,14 @@ std::shared_ptr<const BHCurve> curveOf(const QJsonValue& value, const Scope& sco
 /// A coil: a conductor fed a current (its distribution found, eddy
 /// currents in it), or turns of wire (the current spread evenly).
 struct CoilDef {
+    /// What holds it: its current, its voltage, no net current, none between
+    /// its ends (a single conductor's; turns are fed a current).
+    enum Role { Current, Voltage, Floating, Grounded };
     QString name;
     bool single = true;
-    double current = 0;     // A (of the actual solution)
+    Role role = Current;
+    double current = 0;     // A (of the actual solution): fed (Current), else found
+    double voltage = 0;     // V: held (Voltage)
     double turns = 1;
     QVector<int> domains;
     double area = 0;        // m²: its cross-section in the plane
@@ -280,8 +285,10 @@ private:
     // What was found.
     double a_energy = 0, a_losses = 0, a_omega = 0;
     bool a_frequency = false;
-    std::vector<cd> a_voltage, a_flux;                   // by coil
-    std::vector<std::vector<cd>> a_matrix;               // the coils' Z (frequency) or L (stationary) matrix
+    std::vector<cd> a_voltage, a_flux, a_current;        // by coil
+    std::vector<int> a_ports;                            // the coils fed a current: the matrix's, in its order
+    QString a_reference;                                 // the coil the matrix is reduced against (its name)
+    std::vector<std::vector<cd>> a_matrix;               // their Z (frequency) or L (stationary) matrix
     bool a_swept = false;
 };
 
@@ -336,12 +343,25 @@ bool MagneticProblem::setup(QString* error)
             for (const CoilDef& other : a_coils)
                 if (other.name == c.name) problem(tr("%1: another coil is named %2").arg(feature.name(), c.name));
             c.single = feature.text(QStringLiteral("conductor")) != QLatin1String("multi");
-            const std::optional<double> i0 = evaluateConstant(feature.text(QStringLiteral("I0")), a_s.parameters().scope, Dim::current(), &why);
-            if (!i0) {
-                problem(tr("%1: its current: %2").arg(feature.name(), why));
-                continue;
+            const QString role = feature.text(QStringLiteral("role"));
+            if (c.single && role == QLatin1String("voltage")) c.role = CoilDef::Voltage;
+            else if (c.single && role == QLatin1String("floating")) c.role = CoilDef::Floating;
+            else if (c.single && role == QLatin1String("grounded")) c.role = CoilDef::Grounded;
+            if (c.role == CoilDef::Current) {
+                const std::optional<double> i0 = evaluateConstant(feature.text(QStringLiteral("I0")), a_s.parameters().scope, Dim::current(), &why);
+                if (!i0) {
+                    problem(tr("%1: its current: %2").arg(feature.name(), why));
+                    continue;
+                }
+                c.current = *i0;
+            } else if (c.role == CoilDef::Voltage) {
+                const std::optional<double> v0 = evaluateConstant(feature.text(QStringLiteral("V0")), a_s.parameters().scope, Dim::voltage(), &why);
+                if (!v0) {
+                    problem(tr("%1: its voltage: %2").arg(feature.name(), why));
+                    continue;
+                }
+                c.voltage = *v0;
             }
-            c.current = *i0;
             if (!c.single) {
                 const std::optional<double> n = evaluateConstant(feature.text(QStringLiteral("N")), a_s.parameters().scope, Dim(), &why);
                 if (!n || !(*n > 0)) {
@@ -559,6 +579,13 @@ bool MagneticProblem::setup(QString* error)
         for (const Expression& e : *list) a_varies = a_varies || (e.isValid() && a_s.varies(e));
     for (const auto& list : a_surface)
         for (const Expression& e : list) a_varies = a_varies || a_s.varies(e);
+    // The reference coil of the reduced matrix: one fed a current.
+    a_reference = a_node->text(QStringLiteral("reference")).trimmed();
+    if (!a_reference.isEmpty()) {
+        bool fed = false;
+        for (const CoilDef& c : a_coils) fed = fed || (c.name == a_reference && c.role == CoilDef::Current);
+        if (!fed) problem(tr("%1: its reference coil %2 is no coil fed a current (one of the coils' matrix)").arg(a_node->name(), a_reference));
+    }
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
         return false;
@@ -937,10 +964,17 @@ bool MagneticProblem::solveStatic(const SolveOptions& o, QString* error)
         if (a_eq[std::size_t(dof)] == -3) u[std::size_t(dof)] = a_fixed[std::size_t(dof)];
         else if (a_eq[std::size_t(dof)] == -1 || !std::isfinite(u[std::size_t(dof)])) u[std::size_t(dof)] = 0;
     }
-    // A single conductor's voltage is what drives its current at rest.
+    // A single conductor's voltage is what drives its current at rest: its
+    // current's (I / S), or held (a voltage over the length); floating or
+    // grounded, none.
     std::vector<double> U(a_coils.size(), 0);
-    for (std::size_t k = 0; k < a_coils.size(); ++k)
-        if (a_coils[k].single && a_coils[k].S > 0) U[k] = a_coils[k].current / a_coils[k].S;
+    a_current.assign(a_coils.size(), 0);
+    for (std::size_t k = 0; k < a_coils.size(); ++k) {
+        const CoilDef& c = a_coils[k];
+        if (c.single && c.role == CoilDef::Voltage) U[k] = c.voltage / (a_s.axisymmetric() ? 1.0 : a_s.thickness());
+        else if (c.single && c.role == CoilDef::Current && c.S > 0) U[k] = c.current / c.S;
+        a_current[k] = c.single && c.role != CoilDef::Current ? c.S * U[k] : c.current;
+    }
     // F - Fint at the element terms as they were made last.
     auto residual = [&](Eigen::VectorXd& r) {
         r = Eigen::VectorXd::Zero(a_ndofEq);
@@ -1052,26 +1086,30 @@ bool MagneticProblem::solveStatic(const SolveOptions& o, QString* error)
         a_flux[k] = fluxLinkage(int(k), u, zero);
         // (At rest a conductor's voltage is its resistance's: U over its length.)
         const double rdc = c.single && c.S > 0 ? c.sigmaG2 / (c.S * c.S) : 0.0;
-        a_voltage[k] = rdc * c.current;
+        a_voltage[k] = rdc * a_current[k];
         Field::Terminal t;
         t.name = c.name;
         t.potential = U[k];
-        t.charge = c.current;
+        t.charge = a_current[k].real();
         fld.terminals.push_back(t);
     }
-    // The coils swept: each at 1 A, the others at none, no other source - an
-    // inductance matrix (Φ_k of coil j's ampere).
+    // The coils fed a current swept: each at 1 A, the others at none, no
+    // other source - an inductance matrix (Φ_k of coil j's ampere).
     a_swept = false;
     a_matrix.clear();
-    if (o.sweep && !a_coils.empty()) {
+    a_ports.clear();
+    for (int k = 0; k < int(a_coils.size()); ++k)
+        if (a_coils[std::size_t(k)].role == CoilDef::Current) a_ports.push_back(k);
+    if (o.sweep && !a_ports.empty()) {
         if (a_nonlinear) {
             a_s.log << tr("%1: no inductance matrix of a B-H curve (each coil's L is its Φ / I at its current)").arg(a_node->name());
         } else {
-            const int n = int(a_coils.size());
+            const int n = int(a_ports.size());
             a_matrix.assign(std::size_t(n), std::vector<cd>(std::size_t(n), 0));
             std::vector<double> keepFext = a_Fext;
             std::vector<EdgeTerm> keepEdges = a_edges;
-            for (int j = 0; j < n; ++j) {
+            for (int jp = 0; jp < n; ++jp) {
+                const int j = a_ports[std::size_t(jp)];
                 const CoilDef& c = a_coils[std::size_t(j)];
                 Eigen::VectorXd rhs = Eigen::VectorXd::Zero(a_ndofEq);
                 for (int t = 0; t < sp.elements(); ++t) {
@@ -1103,7 +1141,7 @@ bool MagneticProblem::solveStatic(const SolveOptions& o, QString* error)
                 std::vector<double> a(std::size_t(nd), 0);
                 for (int dof = 0; dof < nd; ++dof)
                     if (a_eq[std::size_t(dof)] >= 0) a[std::size_t(dof)] = x[a_eq[std::size_t(dof)]];
-                for (int k = 0; k < n; ++k) a_matrix[std::size_t(k)][std::size_t(j)] = fluxLinkage(k, a, zero);
+                for (int kp = 0; kp < n; ++kp) a_matrix[std::size_t(kp)][std::size_t(jp)] = fluxLinkage(a_ports[std::size_t(kp)], a, zero);
             }
             a_Fext = keepFext;
             a_edges = keepEdges;
@@ -1146,14 +1184,24 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
     }
     // (K + jωM: complex symmetric, K positive definite.)
     if (!a_complex.factorize(a_node->name(), error, true)) return false;
-    // The conductors' b (∫ σ g N w) and u (∫ σ N dA) by equation; what the
-    // fixed values give their equations (jω u·A_fixed).
+    // Each single conductor's b (∫ σ g N w) and u (∫ σ N dA) by equation;
+    // what the fixed values give its equation (jω u·A_fixed). Those whose
+    // voltage is found (fed a current, floating) are the conductors; those
+    // held at one (a voltage, grounded) a source: Σ U_l b_l.
+    const std::size_t ncoils = a_coils.size();
     std::vector<int> conductors;
-    for (int k = 0; k < int(a_coils.size()); ++k)
-        if (a_coils[std::size_t(k)].single) conductors.push_back(k);
+    for (int k = 0; k < int(ncoils); ++k) {
+        const CoilDef& c = a_coils[std::size_t(k)];
+        if (c.single && (c.role == CoilDef::Current || c.role == CoilDef::Floating)) conductors.push_back(k);
+    }
     const int nc = int(conductors.size());
-    std::vector<Eigen::VectorXcd> bvec(std::size_t(nc), Eigen::VectorXcd::Zero(a_ndofEq)), uvec(std::size_t(nc), Eigen::VectorXcd::Zero(a_ndofEq));
-    std::vector<cd> fixedPart(std::size_t(nc), 0);
+    std::vector<Eigen::VectorXcd> bvec(ncoils), uvec(ncoils);
+    for (std::size_t k = 0; k < ncoils; ++k)
+        if (a_coils[k].single) {
+            bvec[k] = Eigen::VectorXcd::Zero(a_ndofEq);
+            uvec[k] = Eigen::VectorXcd::Zero(a_ndofEq);
+        }
+    std::vector<cd> fixedPart(ncoils, 0);
     // The sources' right-hand side with the fixed values' part.
     Eigen::VectorXcd F = Eigen::VectorXcd::Zero(a_ndofEq);
     for (int t = 0; t < sp.elements(); ++t) {
@@ -1163,7 +1211,7 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
         const double* M = &a_M[std::size_t(t) * pp];
         const int* dofs = sp.dofs(t);
         const int coil = a_coilOf[std::size_t(dom)];
-        const int c = coil >= 0 ? int(std::find(conductors.begin(), conductors.end(), coil) - conductors.begin()) : nc;
+        const bool single = coil >= 0 && a_coils[std::size_t(coil)].single;
         for (int i = 0; i < per; ++i) {
             const int qi = a_eq[std::size_t(dofs[i])];
             const double bw = a_Bw[std::size_t(t) * std::size_t(per) + std::size_t(i)];
@@ -1174,12 +1222,12 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
                     if (a_eq[std::size_t(dofs[j])] == -3 && a_fixed[std::size_t(dofs[j])] != 0)
                         F[qi] -= cd(K[i * per + j], omega * M[i * per + j]) * a_fixed[std::size_t(dofs[j])];
             }
-            if (c < nc) {
+            if (single) {
                 if (qi >= 0) {
-                    bvec[std::size_t(c)][qi] += bw;
-                    uvec[std::size_t(c)][qi] += bu;
+                    bvec[std::size_t(coil)][qi] += bw;
+                    uvec[std::size_t(coil)][qi] += bu;
                 } else if (a_eq[std::size_t(dofs[i])] == -3) {
-                    fixedPart[std::size_t(c)] += jw * bu * a_fixed[std::size_t(dofs[i])];
+                    fixedPart[std::size_t(coil)] += jw * bu * a_fixed[std::size_t(dofs[i])];
                 }
             }
         }
@@ -1194,25 +1242,38 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
             }
         }
     }
+    // A conductor's U per its voltage: over the length (round the axis: one turn).
+    const double length = a_s.axisymmetric() ? 1.0 : a_s.thickness();
+    std::vector<cd> held(ncoils, 0);
+    for (std::size_t k = 0; k < ncoils; ++k)
+        if (a_coils[k].single && a_coils[k].role == CoilDef::Voltage && a_coils[k].voltage != 0) {
+            held[k] = a_coils[k].voltage / length;
+            F += held[k] * bvec[k];
+        }
     std::vector<Eigen::VectorXcd> X(static_cast<std::size_t>(nc));
     for (int l = 0; l < nc; ++l)
-        if (!a_complex.solve(bvec[std::size_t(l)], X[std::size_t(l)], a_node->name(), error)) return false;
+        if (!a_complex.solve(bvec[std::size_t(conductors[std::size_t(l)])], X[std::size_t(l)], a_node->name(), error)) return false;
     // The conductors' equations: (S δ - jω u_k·X_l) U = I + jω u_k·X_F.
     Eigen::MatrixXcd Mc = Eigen::MatrixXcd::Zero(nc, nc);
     for (int k = 0; k < nc; ++k) {
-        Mc(k, k) += a_coils[std::size_t(conductors[std::size_t(k)])].S;
-        for (int l = 0; l < nc; ++l) Mc(k, l) -= jw * (uvec[std::size_t(k)].transpose() * X[std::size_t(l)])(0);
+        const std::size_t ck = std::size_t(conductors[std::size_t(k)]);
+        Mc(k, k) += a_coils[ck].S;
+        for (int l = 0; l < nc; ++l) Mc(k, l) -= jw * (uvec[ck].transpose() * X[std::size_t(l)])(0);
     }
     Eigen::PartialPivLU<Eigen::MatrixXcd> mlu;
     if (nc > 0) mlu.compute(Mc);
-    // A solution of sources F (fixed values in it or not) and currents I.
+    // A solution of sources F (fixed values and held voltages in it, or
+    // not) and the conductors' currents; each single conductor's U and
+    // current I = S U - jω u·A.
     auto solveFor = [&](const Eigen::VectorXcd& rhs, const std::vector<cd>& currents, bool fixed, std::vector<double>& re, std::vector<double>& im,
-                        std::vector<cd>& U) {
+                        std::vector<cd>& U, std::vector<cd>& I) {
         Eigen::VectorXcd xf;
         if (!a_complex.solve(rhs, xf, a_node->name(), error)) return false;
         Eigen::VectorXcd r(nc);
-        for (int k = 0; k < nc; ++k)
-            r[k] = currents[std::size_t(k)] + jw * (uvec[std::size_t(k)].transpose() * xf)(0) + (fixed ? fixedPart[std::size_t(k)] : cd(0));
+        for (int k = 0; k < nc; ++k) {
+            const std::size_t ck = std::size_t(conductors[std::size_t(k)]);
+            r[k] = currents[std::size_t(k)] + jw * (uvec[ck].transpose() * xf)(0) + (fixed ? fixedPart[ck] : cd(0));
+        }
         Eigen::VectorXcd u = nc > 0 ? Eigen::VectorXcd(mlu.solve(r)) : Eigen::VectorXcd();
         for (int l = 0; l < nc; ++l) xf += u[l] * X[std::size_t(l)];
         re.assign(std::size_t(nd), 0);
@@ -1226,8 +1287,12 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
                 re[std::size_t(dof)] = a_fixed[std::size_t(dof)];
             }
         }
-        U.assign(a_coils.size(), 0);
+        U.assign(ncoils, 0);
+        if (fixed) U = held;
         for (int k = 0; k < nc; ++k) U[std::size_t(conductors[std::size_t(k)])] = u[k];
+        I.assign(ncoils, 0);
+        for (std::size_t k = 0; k < ncoils; ++k)
+            if (a_coils[k].single) I[k] = a_coils[k].S * U[k] - jw * (uvec[k].transpose() * xf)(0) - (fixed ? fixedPart[k] : cd(0));
         if (!xf.allFinite()) {
             *error = tr("%1: the solution is not finite").arg(a_node->name());
             return false;
@@ -1238,36 +1303,46 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
     // turns' jω Φ.
     auto voltageOf = [&](int k, const std::vector<double>& re, const std::vector<double>& im, const std::vector<cd>& U) {
         const CoilDef& c = a_coils[std::size_t(k)];
-        if (c.single) return U[std::size_t(k)] * (a_s.axisymmetric() ? 1.0 : a_s.thickness());
+        if (c.single) return U[std::size_t(k)] * length;
         return jw * fluxLinkage(k, re, im);
     };
     std::vector<cd> currents(static_cast<std::size_t>(nc));
     for (int k = 0; k < nc; ++k) currents[std::size_t(k)] = a_coils[std::size_t(conductors[std::size_t(k)])].current;
     std::vector<double> re, im;
-    std::vector<cd> U;
-    if (!solveFor(F, currents, true, re, im, U)) return false;
+    std::vector<cd> U, I;
+    if (!solveFor(F, currents, true, re, im, U, I)) return false;
     std::copy(re.begin(), re.end(), fld.values.begin());
     std::copy(im.begin(), im.end(), fld.values.begin() + nd);
-    a_voltage.assign(a_coils.size(), 0);
-    a_flux.assign(a_coils.size(), 0);
+    a_voltage.assign(ncoils, 0);
+    a_flux.assign(ncoils, 0);
+    a_current.assign(ncoils, 0);
     fld.terminals.clear();
-    for (int k = 0; k < int(a_coils.size()); ++k) {
+    for (int k = 0; k < int(ncoils); ++k) {
+        const CoilDef& c = a_coils[std::size_t(k)];
         a_flux[std::size_t(k)] = fluxLinkage(k, re, im);
         a_voltage[std::size_t(k)] = voltageOf(k, re, im, U);
+        // (Fed: its current as given - found, it is the same to rounding.)
+        a_current[std::size_t(k)] = c.single && c.role != CoilDef::Current ? I[std::size_t(k)] : cd(c.current);
         Field::Terminal t;
-        t.name = a_coils[std::size_t(k)].name;
+        t.name = c.name;
         t.potential = U[std::size_t(k)].real();
         t.potentialIm = U[std::size_t(k)].imag();
-        t.charge = a_coils[std::size_t(k)].current;
+        t.charge = a_current[std::size_t(k)].real();
         fld.terminals.push_back(t);
     }
-    // Swept: each coil at 1 A in turn, nothing else - the impedance matrix.
+    // Swept: each coil fed a current at 1 A in turn, no other source (the
+    // others as their roles hold them, a voltage at none) - the impedance
+    // matrix of those.
     a_swept = false;
     a_matrix.clear();
-    if (o.sweep && !a_coils.empty()) {
-        const int n = int(a_coils.size());
+    a_ports.clear();
+    for (int k = 0; k < int(ncoils); ++k)
+        if (a_coils[std::size_t(k)].role == CoilDef::Current) a_ports.push_back(k);
+    if (o.sweep && !a_ports.empty()) {
+        const int n = int(a_ports.size());
         a_matrix.assign(std::size_t(n), std::vector<cd>(std::size_t(n), 0));
-        for (int j = 0; j < n; ++j) {
+        for (int jp = 0; jp < n; ++jp) {
+            const int j = a_ports[std::size_t(jp)];
             const CoilDef& c = a_coils[std::size_t(j)];
             Eigen::VectorXcd rhs = Eigen::VectorXcd::Zero(a_ndofEq);
             std::vector<cd> cur(std::size_t(nc), 0);
@@ -1294,9 +1369,9 @@ bool MagneticProblem::solveHarmonic(const SolveOptions& o, QString* error)
                 }
             }
             std::vector<double> rj, ij;
-            std::vector<cd> Uj;
-            if (!solveFor(rhs, cur, false, rj, ij, Uj)) return false;
-            for (int k = 0; k < n; ++k) a_matrix[std::size_t(k)][std::size_t(j)] = voltageOf(k, rj, ij, Uj);
+            std::vector<cd> Uj, Ij;
+            if (!solveFor(rhs, cur, false, rj, ij, Uj, Ij)) return false;
+            for (int kp = 0; kp < n; ++kp) a_matrix[std::size_t(kp)][std::size_t(jp)] = voltageOf(a_ports[std::size_t(kp)], rj, ij, Uj);
         }
         a_swept = true;
     }
@@ -1439,46 +1514,76 @@ void MagneticProblem::setGlobals()
     const QString p = f.tag + QLatin1Char('.');
     const Dim henry = Dim::of(2, 1, -2, -2), weber = Dim::of(2, 1, -2, -1);
     const bool harmonic = a_frequency && a_omega > 0;
-    for (int k = 0; k < int(a_coils.size()) && k < int(a_voltage.size()); ++k) {
+    for (int k = 0; k < int(a_coils.size()) && k < int(a_voltage.size()) && k < int(a_current.size()); ++k) {
         const CoilDef& c = a_coils[std::size_t(k)];
         const QString n = c.name;
-        s.setGlobal(p + QStringLiteral("I_") + n, c.current, Dim::current(), tr("coil %1's current").arg(n));
+        const cd current = a_current[std::size_t(k)];
+        const bool found = c.single && c.role != CoilDef::Current;
+        s.setGlobal(p + QStringLiteral("I_") + n, current.real(), Dim::current(),
+                    found ? (harmonic ? tr("coil %1's current, found (its role holds its voltage), its real part").arg(n)
+                                      : tr("coil %1's current, found (its role holds its voltage)").arg(n))
+                          : tr("coil %1's current").arg(n));
+        if (harmonic && found)
+            s.setGlobal(p + QStringLiteral("I_") + n + QStringLiteral("_im"), current.imag(), Dim::current(), tr("coil %1's current, its imaginary part").arg(n));
         s.setGlobal(p + QStringLiteral("V_") + n, a_voltage[std::size_t(k)].real(), Dim::voltage(),
                     harmonic ? tr("coil %1's voltage, its real part").arg(n) : tr("coil %1's voltage (its resistance's)").arg(n));
         s.setGlobal(p + QStringLiteral("Phi_") + n, a_flux[std::size_t(k)].real(), weber, tr("coil %1's flux linkage").arg(n));
         if (harmonic) {
             s.setGlobal(p + QStringLiteral("V_") + n + QStringLiteral("_im"), a_voltage[std::size_t(k)].imag(), Dim::voltage(),
                         tr("coil %1's voltage, its imaginary part").arg(n));
-            const cd z = c.current != 0 ? a_voltage[std::size_t(k)] / c.current : cd(NaN, NaN);
+            const cd z = std::abs(current) > 0 ? a_voltage[std::size_t(k)] / current : cd(NaN, NaN);
             s.setGlobal(p + QStringLiteral("R_") + n, z.real(), Dim::resistance(), tr("coil %1's resistance, V/I's real part").arg(n));
             s.setGlobal(p + QStringLiteral("L_") + n, z.imag() / a_omega, henry, tr("coil %1's inductance, V/I's imaginary part over ω").arg(n));
             s.setGlobal(p + QStringLiteral("Z_") + n, std::abs(z), Dim::resistance(), tr("coil %1's impedance, |V/I|").arg(n));
         } else {
             const double rdc = c.single && c.S > 0 ? c.sigmaG2 / (c.S * c.S) : NaN;
             if (c.single) s.setGlobal(p + QStringLiteral("R_") + n, rdc, Dim::resistance(), tr("coil %1's resistance").arg(n));
-            if (c.current != 0)
-                s.setGlobal(p + QStringLiteral("L_") + n, a_flux[std::size_t(k)].real() / c.current, henry,
+            if (current.real() != 0)
+                s.setGlobal(p + QStringLiteral("L_") + n, a_flux[std::size_t(k)].real() / current.real(), henry,
                             tr("coil %1's inductance, Φ / I (all the coils at their currents)").arg(n));
         }
     }
     if (a_swept) {
         const int n = int(a_matrix.size());
+        // Each entry: L (the imaginary part over ω) and R (the real part; at
+        // rest a conductor's own resistance on the diagonal, none off it).
+        auto entry = [&](int i, int j, double* l, double* r) {
+            const cd v = a_matrix[std::size_t(i)][std::size_t(j)];
+            const CoilDef& ci = a_coils[std::size_t(a_ports[std::size_t(i)])];
+            *l = harmonic ? v.imag() / a_omega : v.real();
+            *r = harmonic ? v.real() : (i == j && ci.single && ci.S > 0 ? ci.sigmaG2 / (ci.S * ci.S) : 0.0);
+        };
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
-                const QString a = a_coils[std::size_t(i)].name, b = a_coils[std::size_t(j)].name;
-                const cd v = a_matrix[std::size_t(i)][std::size_t(j)];
-                const double l = harmonic ? v.imag() / a_omega : v.real();
+                const QString a = a_coils[std::size_t(a_ports[std::size_t(i)])].name, b = a_coils[std::size_t(a_ports[std::size_t(j)])].name;
+                double l = 0, res = 0;
+                entry(i, j, &l, &res);
                 const QString lName = p + QStringLiteral("L_") + a + QLatin1Char('_') + b;
                 s.setGlobal(lName, l, henry, tr("inductance matrix, %1 %2").arg(a, b));
                 if (a.size() == 1 && b.size() == 1) s.setGlobal(p + QStringLiteral("L") + a + b, l, henry, tr("inductance matrix, %1 %2").arg(a, b));
-                double res = harmonic ? v.real() : NaN;
-                if (!harmonic && i == j && a_coils[std::size_t(i)].single && a_coils[std::size_t(i)].S > 0)
-                    res = a_coils[std::size_t(i)].sigmaG2 / (a_coils[std::size_t(i)].S * a_coils[std::size_t(i)].S);
-                else if (!harmonic)
-                    res = 0;
                 s.setGlobal(p + QStringLiteral("R_") + a + QLatin1Char('_') + b, res, Dim::resistance(), tr("resistance matrix, %1 %2").arg(a, b));
                 if (a.size() == 1 && b.size() == 1) s.setGlobal(p + QStringLiteral("R") + a + b, res, Dim::resistance(), tr("resistance matrix, %1 %2").arg(a, b));
             }
+        // Against the reference coil: each current returning in it, the
+        // voltage between them - Z_ij - Z_ir - Z_rj + Z_rr.
+        int ref = -1;
+        for (int i = 0; i < n; ++i)
+            if (a_coils[std::size_t(a_ports[std::size_t(i)])].name == a_reference) ref = i;
+        if (ref >= 0)
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j) {
+                    if (i == ref || j == ref) continue;
+                    double l[4], r[4];
+                    entry(i, j, &l[0], &r[0]);
+                    entry(i, ref, &l[1], &r[1]);
+                    entry(ref, j, &l[2], &r[2]);
+                    entry(ref, ref, &l[3], &r[3]);
+                    const QString a = a_coils[std::size_t(a_ports[std::size_t(i)])].name, b = a_coils[std::size_t(a_ports[std::size_t(j)])].name;
+                    s.setGlobal(p + QStringLiteral("Lr_") + a + QLatin1Char('_') + b, l[0] - l[1] - l[2] + l[3], henry,
+                                tr("inductance matrix against coil %1 (its return), %2 %3").arg(a_reference, a, b));
+                    s.setGlobal(p + QStringLiteral("Rr_") + a + QLatin1Char('_') + b, r[0] - r[1] - r[2] + r[3], Dim::resistance(),
+                                tr("resistance matrix against coil %1 (its return), %2 %3").arg(a_reference, a, b));
+                }
     }
     s.setGlobal(p + QStringLiteral("W"), a_energy, Dim::of(2, 1, -2),
                 harmonic ? tr("magnetic energy, its time average") : tr("magnetic energy"));

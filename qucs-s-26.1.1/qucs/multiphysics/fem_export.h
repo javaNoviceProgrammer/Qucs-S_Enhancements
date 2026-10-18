@@ -58,6 +58,39 @@ QString spiceMatrix(const Solution& solution, const QString& physics, const QStr
 /// paste.
 QString qucsLineSchematic(const LineRLGC& line, double length, const QString& version, const QString& name, bool clip = false);
 
+/// Coupled lines at each frequency of a set's point (a Line Parameters node
+/// with two or more terminals, of method "rlgc"), by frequency.
+struct CoupledSweep {
+    std::vector<CoupledLines> points;
+    QString error;
+};
+CoupledSweep coupledSweep(const SolutionSet& set, const Node& lineParameters, int point = 0);
+
+/// N coupled lines of \a length (m) as a 2N-port, by their modes: ports 1
+/// to N their near ends (in the conductors' order), N+1 to 2N their far
+/// ends; its S-matrix for ports of \a zref (Ω).
+std::vector<std::vector<std::complex<double>>> coupledSParameters(const CoupledLines& lines, double length, double zref);
+/// A pair's mixed-mode S-matrix of its single-ended 4-port's (ports 1, 2
+/// the near ends, 3, 4 the far ends): ports d1, d2, c1, c2 - the
+/// differential and common modes at each end ([Sdd Sdc; Scd Scc]).
+std::vector<std::vector<std::complex<double>>> mixedModeSParameters(const std::vector<std::vector<std::complex<double>>>& s);
+/// Coupled lines of \a length at each frequency, a Touchstone 1.1 file
+/// (.s4p, .s6p...: # Hz S RI R zref, rows of the matrix); a pair's
+/// mixed-mode matrix (\a mixed: its ports d1, d2, c1, c2, said).
+QString touchstoneCoupled(const CoupledSweep& sweep, double length, double zref, bool mixed, const QStringList& comments = {});
+/// A SPICE subcircuit of coupled lines of \a length, its pins in_<line>,
+/// out_<line> and ref: \a sections of each line's R, L in series (mutual
+/// L by K, mutual R by current-controlled voltage sources), C and G across
+/// (to ref and between the lines).
+QString spiceCoupled(const CoupledLines& lines, double length, const QString& name, int sections, const QStringList& comments = {});
+/// A Qucs schematic of a subcircuit of a symmetric pair: a coupled line part
+/// (CTLIN) of its even and odd modes' Z0 (their real parts), εeff and
+/// attenuation at its frequency, its ports 1, 2 the near ends, 3, 4 the far
+/// ends. As a clip (\a clip): the part alone, for a paste. Empty and why in
+/// \a error for lines that are not a symmetric pair.
+QString qucsCoupledSchematic(const CoupledLines& lines, double length, const QString& version, const QString& name, QString* error,
+                             bool clip = false);
+
 /// What a Results > Export node makes: a file's text and its suffix.
 struct ExportText {
     QString text;

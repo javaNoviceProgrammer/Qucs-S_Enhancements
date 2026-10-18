@@ -15,6 +15,8 @@
 #include <QCoreApplication>
 #include <QJsonArray>
 
+#include <Eigen/Dense>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -688,6 +690,241 @@ LineRLGC lineRLGC(const Solution& solution, const Node& node)
     return out;
 }
 
+QStringList lineTerminals(const Node& node)
+{
+    QStringList out;
+    for (const QString& t : node.text(QStringLiteral("terminal")).split(QLatin1Char(','), Qt::SkipEmptyParts))
+        if (!t.trimmed().isEmpty()) out << t.trimmed();
+    if (out.isEmpty()) out << QStringLiteral("1");
+    return out;
+}
+
+namespace {
+
+using cd = std::complex<double>;
+
+/// The square root of a propagation constant's square: α ≥ 0, a lossless
+/// one's β ≥ 0.
+cd forward(cd gamma2)
+{
+    cd g = std::sqrt(gamma2);
+    if (g.real() < 0 || (g.real() == 0 && g.imag() < 0)) g = -g;
+    return g;
+}
+
+} // namespace
+
+CoupledLines coupledLines(const Solution& solution, const Node& node)
+{
+    CoupledLines out;
+    if (solution.axisymmetric()) {
+        out.error = tr("a line's parameters are per metre of a 2D cross-section in the plane: not about an axis");
+        return out;
+    }
+    const double d = solution.thickness();
+    out.rlgc = node.text(QStringLiteral("method")) == QLatin1String("rlgc");
+    out.frequency = out.rlgc ? solution.frequency() : 0.0;
+    const double omega = 2 * M_PI * out.frequency;
+    const QStringList esTags = node.list(QStringLiteral("physics"));
+    const QString esTag = esTags.isEmpty() ? QStringLiteral("es") : esTags.first();
+    const int ei = solution.fieldIndex(esTag);
+    if (ei < 0 || solution.fields()[std::size_t(ei)].type != QLatin1String("electrostatics") || !solution.fields()[std::size_t(ei)].solved) {
+        out.error = tr("there is no electrostatics %1 solved (its C and G)").arg(esTag);
+        return out;
+    }
+    out.names = lineTerminals(node);
+    const int n = int(out.names.size());
+    // C and the losses with each terminal at 1 V in turn; C0 with every εr 1.
+    TerminalMatrices tm, t0;
+    QString why;
+    if (!terminalMatrices(solution, esTag, out.names, false, &tm, &why) || !terminalMatrices(solution, esTag, out.names, true, &t0, &why)) {
+        out.error = why;
+        return out;
+    }
+    const std::size_t N = std::size_t(n);
+    auto perMetre = [d, N](const std::vector<std::vector<double>>& m, double scale) {
+        CoupledLines::Matrix r(N, std::vector<double>(N, 0));
+        for (std::size_t i = 0; i < N; ++i)
+            for (std::size_t j = 0; j < N; ++j) r[i][j] = scale * 0.5 * (m[i][j] + m[j][i]) / d;
+        return r;
+    };
+    out.C = perMetre(tm.C, 1);
+    out.C0 = perMetre(t0.C, 1);
+    Eigen::MatrixXd C(n, n), C0m(n, n);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            C(i, j) = out.C[std::size_t(i)][std::size_t(j)];
+            C0m(i, j) = out.C0[std::size_t(i)][std::size_t(j)];
+        }
+    Eigen::MatrixXcd Z(n, n), Y(n, n);
+    double w = omega;
+    if (out.rlgc) {
+        if (!(omega > 0)) {
+            out.error = tr("coupled lines' modes want a frequency: solve the magnetic fields in the frequency domain");
+            return out;
+        }
+        out.G = perMetre(tm.Gd, omega);
+        const CoupledLines::Matrix gs = perMetre(tm.Gs, 1);
+        for (std::size_t i = 0; i < N; ++i)
+            for (std::size_t j = 0; j < N; ++j) out.G[i][j] += gs[i][j];
+        // R and L of the coils, each conductor's (by name, as the terminals),
+        // reduced against the return: Z_ij - Z_ir - Z_rj + Z_rr.
+        const QStringList mfTags = node.list(QStringLiteral("magnetic"));
+        const QString mfTag = mfTags.isEmpty() ? QStringLiteral("mf") : mfTags.first();
+        const int mi = solution.fieldIndex(mfTag);
+        if (mi < 0 || solution.fields()[std::size_t(mi)].type != QLatin1String("magnetic") || !solution.fields()[std::size_t(mi)].solved) {
+            out.error = tr("there is no magnetic fields %1 solved (its R and L)").arg(mfTag);
+            return out;
+        }
+        QStringList coils;
+        for (const QString& c : node.text(QStringLiteral("conductor")).split(QLatin1Char(','), Qt::SkipEmptyParts))
+            if (!c.trimmed().isEmpty()) coils << c.trimmed();
+        if (coils.size() != n) {
+            out.error = tr("%1 terminals (%2) want as many coils, in their order (Signal conductor: %3)")
+                            .arg(n)
+                            .arg(out.names.join(QStringLiteral(", ")), coils.isEmpty() ? tr("none") : coils.join(QStringLiteral(", ")));
+            return out;
+        }
+        const QString r = node.text(QStringLiteral("return")).trimmed();
+        const QString p = mfTag + QLatin1Char('.');
+        auto entry = [&](const QString& a, const QString& b, cd* z) {
+            const std::optional<double> re = solution.global(p + QStringLiteral("R_") + a + QLatin1Char('_') + b);
+            const std::optional<double> l = solution.global(p + QStringLiteral("L_") + a + QLatin1Char('_') + b);
+            if (!re || !l) return false;
+            *z = cd(*re, omega * *l);
+            return true;
+        };
+        out.R.assign(N, std::vector<double>(N, 0));
+        out.L.assign(N, std::vector<double>(N, 0));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) {
+                cd z[4];
+                bool ok = entry(coils[i], coils[j], &z[0]);
+                if (!r.isEmpty()) ok = ok && entry(coils[i], r, &z[1]) && entry(r, coils[j], &z[2]) && entry(r, r, &z[3]);
+                if (!ok) {
+                    out.error = r.isEmpty() ? tr("%1 has no impedance matrix of coils %2: keep the study's coil sweep on, each a coil fed a current")
+                                                  .arg(mfTag, coils.join(QStringLiteral(", ")))
+                                            : tr("%1 has no impedance matrix of coils %2 and %3: keep the study's coil sweep on, each a coil fed a current")
+                                                  .arg(mfTag, coils.join(QStringLiteral(", ")), r);
+                    return out;
+                }
+                const cd zij = r.isEmpty() ? z[0] : z[0] - z[1] - z[2] + z[3];
+                out.R[std::size_t(i)][std::size_t(j)] = zij.real() / d;
+                out.L[std::size_t(i)][std::size_t(j)] = zij.imag() / omega / d;
+            }
+        // (Symmetric: the mean of ij and ji.)
+        for (std::size_t i = 0; i < N; ++i)
+            for (std::size_t j = i + 1; j < N; ++j) {
+                out.R[i][j] = out.R[j][i] = 0.5 * (out.R[i][j] + out.R[j][i]);
+                out.L[i][j] = out.L[j][i] = 0.5 * (out.L[i][j] + out.L[j][i]);
+            }
+    } else {
+        // Quasi-TEM: L = C0⁻¹ / c², lossless; its modes at any frequency
+        // (1 GHz).
+        w = 2 * M_PI * 1e9;
+        const Eigen::MatrixXd Linv = C0m.inverse() / (C0 * C0);
+        out.L.assign(N, std::vector<double>(N, 0));
+        out.R.assign(N, std::vector<double>(N, 0));
+        out.G.assign(N, std::vector<double>(N, 0));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) out.L[std::size_t(i)][std::size_t(j)] = 0.5 * (Linv(i, j) + Linv(j, i));
+    }
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            Z(i, j) = cd(out.R[std::size_t(i)][std::size_t(j)], w * out.L[std::size_t(i)][std::size_t(j)]);
+            Y(i, j) = cd(out.G[std::size_t(i)][std::size_t(j)], w * out.C[std::size_t(i)][std::size_t(j)]);
+        }
+    const double k0 = w / C0;
+    // Quasi-static modes: C v = εeff C0 v.
+    Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> qs(C, C0m);
+    if (qs.info() != Eigen::Success) {
+        out.error = tr("the lines' capacitance matrix in vacuum is not positive definite: are the terminals at voltages, a ground beside them?");
+        return out;
+    }
+    auto finish = [&](LineMode& m) {
+        m.alphaDb = 20 / std::log(10.0) * m.gamma.real();
+        m.nEff = m.gamma.imag() / k0;
+        // i = Y v / γ; its impedance vᵀv / vᵀi.
+        Eigen::VectorXcd v(n);
+        for (int k = 0; k < n; ++k) v[k] = m.v[std::size_t(k)];
+        const Eigen::VectorXcd iv = Y * v / m.gamma;
+        m.i.assign(N, 0);
+        for (int k = 0; k < n; ++k) m.i[std::size_t(k)] = iv[k];
+        const cd vv = (v.transpose() * v)(0), vi = (v.transpose() * iv)(0);
+        m.Z = vi != cd(0) ? vv / vi : cd(NAN, NAN);
+        // Its quasi-static mode: the one most like it.
+        double best = -1;
+        for (int k = 0; k < n; ++k) {
+            const Eigen::VectorXd q = qs.eigenvectors().col(k);
+            const double like = std::abs(v.dot(q.cast<cd>())) / (v.norm() * q.norm());
+            if (like > best) {
+                best = like;
+                m.epsEffQs = qs.eigenvalues()[k];
+            }
+        }
+    };
+    // A symmetric pair (to 1 %): its even and odd modes, of the matrices
+    // made symmetric.
+    auto near = [](cd a, cd b, cd scale) { return std::abs(a - b) <= 1e-2 * std::abs(scale); };
+    out.symmetricPair = n == 2 && near(Z(0, 0), Z(1, 1), Z(0, 0)) && near(Y(0, 0), Y(1, 1), Y(0, 0)) && near(C(0, 0), C(1, 1), C(0, 0))
+                        && near(C0m(0, 0), C0m(1, 1), C0m(0, 0));
+    if (out.symmetricPair) {
+        // (Made symmetric: its modes, currents and Zc of one pair.)
+        Z(0, 0) = Z(1, 1) = 0.5 * (Z(0, 0) + Z(1, 1));
+        Y(0, 0) = Y(1, 1) = 0.5 * (Y(0, 0) + Y(1, 1));
+        for (int s = 0; s < 2; ++s) {
+            const double sign = s == 0 ? 1.0 : -1.0;
+            const cd z = Z(0, 0) + sign * Z(0, 1);
+            const cd y = Y(0, 0) + sign * Y(0, 1);
+            LineMode m;
+            m.name = s == 0 ? QStringLiteral("even") : QStringLiteral("odd");
+            m.gamma = forward(z * y);
+            m.v = {1.0, sign};
+            finish(m);
+            // (Exactly the pair's: √(z/y), (C ± C12)/(C0 ± C0_12).)
+            m.Z = std::sqrt(z / y);
+            if (m.Z.real() < 0) m.Z = -m.Z;
+            m.epsEffQs = (0.5 * (C(0, 0) + C(1, 1)) + sign * C(0, 1)) / (0.5 * (C0m(0, 0) + C0m(1, 1)) + sign * C0m(0, 1));
+            out.modes.push_back(m);
+        }
+    } else {
+        Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(Z * Y);
+        if (es.info() != Eigen::Success) {
+            out.error = tr("the lines' modes could not be found ((R + jωL)(G + jωC) has no eigenvectors)");
+            return out;
+        }
+        for (int k = 0; k < n; ++k) {
+            LineMode m;
+            m.gamma = forward(es.eigenvalues()[k]);
+            Eigen::VectorXcd v = es.eigenvectors().col(k);
+            int big = 0;
+            for (int j = 1; j < n; ++j)
+                if (std::abs(v[j]) > std::abs(v[big])) big = j;
+            v /= v[big];
+            m.v.assign(N, 0);
+            for (int j = 0; j < n; ++j) m.v[std::size_t(j)] = v[j];
+            finish(m);
+            out.modes.push_back(m);
+        }
+        std::sort(out.modes.begin(), out.modes.end(), [](const LineMode& a, const LineMode& b) { return a.nEff > b.nEff; });
+        for (int k = 0; k < n; ++k) out.modes[std::size_t(k)].name = QString::number(k + 1);
+    }
+    // Zc = Tv γ⁻¹ Tv⁻¹ Z.
+    {
+        Eigen::MatrixXcd Tv(n, n);
+        Eigen::VectorXcd g(n);
+        for (int k = 0; k < n; ++k) {
+            for (int j = 0; j < n; ++j) Tv(j, k) = out.modes[std::size_t(k)].v[std::size_t(j)];
+            g[k] = out.modes[std::size_t(k)].gamma;
+        }
+        const Eigen::MatrixXcd zc = Tv * g.cwiseInverse().asDiagonal() * Tv.inverse() * Z;
+        out.Zc.assign(N, std::vector<cd>(N, 0));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) out.Zc[std::size_t(i)][std::size_t(j)] = zc(i, j);
+    }
+    return out;
+}
+
 NamedExpression namedExpression(const QString& item)
 {
     const QString text = item.trimmed();
@@ -978,15 +1215,94 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             out.error = tr("there is no electrostatics %1 solved").arg(tag);
             return out;
         }
+        const Dim perMetre = Dim::of(-1);
+        const Dim henry = Dim::of(2, 1, -2, -2);
+        if (lineTerminals(node).size() > 1) {
+            // Coupled lines: their matrices, each mode's Z, γ, n_eff, εeff.
+            const CoupledLines cl = coupledLines(solution, node);
+            if (!cl.error.isEmpty()) {
+                out.error = cl.error;
+                return out;
+            }
+            const int n = int(cl.names.size());
+            auto matrix = [&](const QString& letter, const CoupledLines::Matrix& m, const Dim& dim) {
+                for (int i = 0; i < n; ++i)
+                    for (int j = 0; j < n; ++j)
+                        add(letter + QLatin1Char('_') + cl.names[i] + QLatin1Char('_') + cl.names[j], m[std::size_t(i)][std::size_t(j)], dim, false);
+            };
+            matrix(QStringLiteral("C"), cl.C, Dim::capacitance() * perMetre);
+            matrix(QStringLiteral("C0"), cl.C0, Dim::capacitance() * perMetre);
+            matrix(QStringLiteral("L"), cl.L, henry * perMetre);
+            if (cl.rlgc) {
+                matrix(QStringLiteral("R"), cl.R, Dim::resistance() * perMetre);
+                matrix(QStringLiteral("G"), cl.G, Dim::conductance() * perMetre);
+            }
+            auto complexText = [](std::complex<double> z, const Dim& dim) {
+                const QString re = formatQuantity(z.real(), dim);
+                return std::abs(z.imag()) <= 1e-12 * std::abs(z) ? re
+                                                                  : QStringLiteral("%1 %2 j%3").arg(re, z.imag() < 0 ? QStringLiteral("-") : QStringLiteral("+"),
+                                                                                                    formatQuantity(std::abs(z.imag()), dim));
+            };
+            for (const LineMode& m : cl.modes) {
+                const QString t = QLatin1Char('_') + m.name;
+                add(QStringLiteral("Z0") + t, m.Z.real(), Dim::resistance(), false);
+                out.values.back().text = complexText(m.Z, Dim::resistance());
+                if (cl.rlgc) add(QStringLiteral("Z0") + t + QStringLiteral("_im"), m.Z.imag(), Dim::resistance(), false);
+                add(QStringLiteral("n_eff") + t, m.nEff, Dim(), false);
+                if (cl.rlgc) {
+                    add(QStringLiteral("alpha") + t, m.alphaDb, perMetre, false);
+                    out.values.back().text = formatNumber(m.alphaDb, 4) + QStringLiteral(" dB/m");
+                    add(QStringLiteral("beta") + t, m.gamma.imag(), perMetre, false);
+                    out.values.back().text = formatNumber(m.gamma.imag(), 4) + QStringLiteral(" rad/m");
+                    add(QStringLiteral("epsilon_eff") + t, m.nEff * m.nEff, Dim(), false);
+                }
+                add(QStringLiteral("epsilon_eff_qs") + t, m.epsEffQs, Dim(), false);
+                add(QStringLiteral("v") + t, m.nEff > 0 ? C0 / m.nEff : NAN, Dim::of(1, 0, -1), false);
+            }
+            if (cl.symmetricPair) {
+                // Differential: 2 Z_odd; common: Z_even / 2.
+                const std::complex<double> zd = 2.0 * cl.modes[1].Z, zc = 0.5 * cl.modes[0].Z;
+                add(QStringLiteral("Zdiff"), zd.real(), Dim::resistance(), false);
+                out.values.back().text = complexText(zd, Dim::resistance());
+                if (cl.rlgc) add(QStringLiteral("Zdiff_im"), zd.imag(), Dim::resistance(), false);
+                add(QStringLiteral("Zcm"), zc.real(), Dim::resistance(), false);
+                out.values.back().text = complexText(zc, Dim::resistance());
+                if (cl.rlgc) add(QStringLiteral("Zcm_im"), zc.imag(), Dim::resistance(), false);
+                out.note = tr("a symmetric pair: its even mode (the lines at one voltage) and odd mode (at opposite ones), each line's Z0");
+            } else {
+                // Each mode's voltages and currents on the conductors, the
+                // characteristic impedance matrix.
+                for (const LineMode& m : cl.modes)
+                    for (int k = 0; k < n; ++k) {
+                        const QString t = QLatin1Char('_') + m.name + QLatin1Char('_') + cl.names[k];
+                        add(QStringLiteral("V") + t, m.v[std::size_t(k)].real(), Dim(), false);
+                        out.values.back().text = complexText(m.v[std::size_t(k)], Dim());
+                        add(QStringLiteral("V") + t + QStringLiteral("_im"), m.v[std::size_t(k)].imag(), Dim(), false);
+                        add(QStringLiteral("I") + t, m.i[std::size_t(k)].real(), Dim::conductance(), false);
+                        out.values.back().text = complexText(m.i[std::size_t(k)], Dim::conductance());
+                        add(QStringLiteral("I") + t + QStringLiteral("_im"), m.i[std::size_t(k)].imag(), Dim::conductance(), false);
+                    }
+                for (int i = 0; i < n; ++i)
+                    for (int j = 0; j < n; ++j) {
+                        const QString t = QLatin1Char('_') + cl.names[i] + QLatin1Char('_') + cl.names[j];
+                        add(QStringLiteral("Zc") + t, cl.Zc[std::size_t(i)][std::size_t(j)].real(), Dim::resistance(), false);
+                        out.values.back().text = complexText(cl.Zc[std::size_t(i)][std::size_t(j)], Dim::resistance());
+                        add(QStringLiteral("Zc") + t + QStringLiteral("_im"), cl.Zc[std::size_t(i)][std::size_t(j)].imag(), Dim::resistance(), false);
+                    }
+                out.note = tr("modes 1 to %1 by n_eff, the highest first: V_<mode>_<line> their voltages (the largest 1), I_ their "
+                              "currents (A per volt), Zc the characteristic impedance matrix")
+                               .arg(n);
+            }
+            return out;
+        }
         if (node.text(QStringLiteral("method")) == QLatin1String("rlgc")) {
             const LineRLGC l = lineRLGC(solution, node);
             if (!l.error.isEmpty()) {
                 out.error = l.error;
                 return out;
             }
-            const Dim perMetre = Dim::of(-1);
             add(QStringLiteral("R"), l.R, Dim::resistance() * perMetre, false);
-            add(QStringLiteral("L"), l.L, Dim::of(2, 1, -2, -2) * perMetre, false);
+            add(QStringLiteral("L"), l.L, henry * perMetre, false);
             add(QStringLiteral("G"), l.G, Dim::conductance() * perMetre, false);
             add(QStringLiteral("C"), l.C, Dim::capacitance() * perMetre, false);
             add(QStringLiteral("Z0"), l.Zc.real(), Dim::resistance(), false);
@@ -997,6 +1313,17 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             add(QStringLiteral("v"), l.velocity, Dim::of(1, 0, -1), false);
             out.values[6].text = formatNumber(l.alphaDb, 4) + QStringLiteral(" dB/m");
             out.values[7].text = formatNumber(l.gamma.imag(), 4) + QStringLiteral(" rad/m");
+            // n_eff = β/k0 (εeff its square, the conductors' slow wave in
+            // it); the quasi-static εeff = C/C0, of the dielectric alone.
+            add(QStringLiteral("n_eff"), l.frequency > 0 ? l.gamma.imag() * C0 / (2 * M_PI * l.frequency) : std::sqrt(l.epsEff), Dim(), false);
+            TerminalMatrices t0;
+            QString why;
+            if (terminalMatrices(solution, tag, lineTerminals(node), true, &t0, &why) && !t0.C.empty() && t0.C[0][0] > 0)
+                add(QStringLiteral("epsilon_eff_qs"), l.C / (t0.C[0][0] / solution.thickness()), Dim(), false);
+            else
+                out.error = tr("its quasi-static εeff: %1").arg(why);
+            out.note = tr("epsilon_eff is (β/k0)², n_eff squared - with the conductors' loss slowing the wave; epsilon_eff_qs is C/C0, "
+                          "the dielectric's alone");
             return out;
         }
         const Field& f = solution.fields()[std::size_t(fi)];
@@ -1012,18 +1339,19 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         const double d = solution.thickness();
         const double c = f.matrix[std::size_t(index)][std::size_t(index)] / d;
         QString why;
-        const double c0 = vacuumCapacitance(solution, tag, terminal, &why) / d;
+        TerminalMatrices t0;
+        const double c0 = terminalMatrices(solution, tag, {terminal}, true, &t0, &why) && !t0.C.empty() ? t0.C[0][0] / d : NAN;
         if (!std::isfinite(c0) || c0 <= 0) {
             out.error = why.isEmpty() ? tr("the line's capacitance in vacuum could not be found") : why;
             return out;
         }
-        const Dim perMetre = Dim::of(-1);
         add(QStringLiteral("C"), c, Dim::capacitance() * perMetre, false);
         add(QStringLiteral("C0"), c0, Dim::capacitance() * perMetre, false);
         add(QStringLiteral("epsilon_eff"), c / c0, Dim(), false);
         add(QStringLiteral("Z0"), 1.0 / (C0 * std::sqrt(c * c0)), Dim::resistance(), false);
         add(QStringLiteral("L"), 1.0 / (C0 * C0 * c0), Dim::of(2, 1, -2, -2) * perMetre, false);
         add(QStringLiteral("v"), C0 / std::sqrt(c / c0), Dim::of(1, 0, -1), false);
+        add(QStringLiteral("n_eff"), std::sqrt(c / c0), Dim(), false);
         return out;
     }
     out.error = tr("%1 is not a derived value").arg(node.name());

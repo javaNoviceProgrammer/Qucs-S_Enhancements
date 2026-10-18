@@ -811,7 +811,10 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("magnetic"), tr("Magnetic Fields"), QStringLiteral("physics"), QStringLiteral("mf"), Level::Domain,
          {selectionProp(),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
-                 QStringLiteral("2"))},
+                 QStringLiteral("2")),
+          text(QStringLiteral("reference"), tr("Reference coil"), QString(),
+               tr("A coil's name: the coils' matrix reduced against it - each coil's current returning in it, the voltage "
+                  "between them: mf.Lr_i_j, mf.Rr_i_j = Z_ij - Z_ir - Z_rj + Z_rr (empty: none)"))},
          {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/current"), QStringLiteral("magnetic/coil"),
           QStringLiteral("magnetic/magnet"), QStringLiteral("magnetic/insulation"), QStringLiteral("magnetic/potential"),
           QStringLiteral("magnetic/pmc"), QStringLiteral("magnetic/surfacecurrent")},
@@ -853,12 +856,27 @@ QList<NodeKind> makeKinds()
                  {tr("Single conductor"), tr("Homogenized multi-turn")}, QStringLiteral("single"),
                  tr("A single conductor: its current spread as its voltage drives it (the skin effect in the frequency domain); "
                     "turns of thin wire: evenly, no eddy currents")),
-          expr(QStringLiteral("I0"), tr("Coil current"), QStringLiteral("A"), QStringLiteral("1[A]"),
-               tr("Its amplitude in the frequency domain; out of the plane (round the axis)")),
+          shownIf(choice(QStringLiteral("role"), tr("Role"),
+                         {QStringLiteral("current"), QStringLiteral("voltage"), QStringLiteral("floating"), QStringLiteral("grounded")},
+                         {tr("Fixed current"), tr("Fixed voltage"), tr("Floating (no net current)"), tr("Grounded (no voltage)")},
+                         QStringLiteral("current"),
+                         tr("What holds it: its current (a port of the coils' matrix), its voltage, no net current, or none "
+                            "between its ends - a ground whose current the fields set (an odd mode's half-model: its "
+                            "return partly in the mirror signal, not a fixed -1 A). A conductor with no coil is grounded.")),
+                  QStringLiteral("conductor=single")),
+          shownIf(expr(QStringLiteral("I0"), tr("Coil current"), QStringLiteral("A"), QStringLiteral("1[A]"),
+                       tr("Its amplitude in the frequency domain; out of the plane (round the axis)")),
+                  QStringLiteral("conductor=multi|role=current")),
+          shownIf(expr(QStringLiteral("V0"), tr("Coil voltage"), QStringLiteral("V"), QStringLiteral("1[V]"),
+                       tr("Between its ends, over the model's thickness (round the axis: one turn); its amplitude in the "
+                          "frequency domain")),
+                  QStringLiteral("conductor=single&role=voltage")),
           shownIf(expr(QStringLiteral("N"), tr("Number of turns"), QString(), QStringLiteral("10")), QStringLiteral("conductor=multi"))},
          {}, {}, false, false, QStringLiteral("coil"),
-         tr("A conductor fed a current, its voltage found: mf.V_<name>, mf.R_<name>, mf.L_<name>; with coils swept, the "
-            "inductance (impedance) matrix mf.L_<i>_<j>, mf.R_<i>_<j>.")});
+         tr("A conductor fed a current (or held at a voltage, floating, grounded), the rest found: mf.I_<name>, "
+            "mf.V_<name>, mf.R_<name>, mf.L_<name>; with coils swept, the inductance (impedance) matrix of those fed a "
+            "current, mf.L_<i>_<j>, mf.R_<i>_<j> (the others as their roles hold them, a voltage at none) - against the "
+            "physics' reference coil mf.Lr_<i>_<j>, mf.Rr_<i>_<j>.")});
     add({QStringLiteral("magnetic/magnet"), tr("Magnetization"), QStringLiteral("mf"), QStringLiteral("magnet"), Level::Domain,
          {selectionProp(none), source,
           shownIf(expr(QStringLiteral("Br"), tr("Remanent flux density Br"), QStringLiteral("T"), QStringLiteral("1[T]")),
@@ -2656,6 +2674,7 @@ QList<NodeKind> makeKinds()
         terminal.label = tr("Signal terminal");
         terminal.kind = P::Terminal;
         terminal.defaultValue = QStringLiteral("1");
+        terminal.tooltip = tr("The electrostatics' terminal of the line; coupled lines' several, split by commas (\"1, 2\")");
         P physics;
         physics.key = QStringLiteral("physics");
         physics.label = tr("Physics");
@@ -2675,17 +2694,22 @@ QList<NodeKind> makeKinds()
                      QStringLiteral("quasitem")),
               physics, terminal, magnetic,
               shownIf(text(QStringLiteral("conductor"), tr("Signal conductor (coil)"), QStringLiteral("1"),
-                           tr("The magnetic fields' coil that carries the line's current")),
+                           tr("The magnetic fields' coil that carries the line's current; coupled lines' one for each terminal, in "
+                              "their order, split by commas")),
                       QStringLiteral("method=rlgc")),
               shownIf(text(QStringLiteral("return"), tr("Return conductor (coil)"), QString(),
-                           tr("The coil the current comes back in (empty: the boundaries at A = 0, a perfect ground)")),
+                           tr("The coil the current comes back in, a coil fed a current (empty: the boundaries at A = 0 and the "
+                              "conductors with no coil or grounded - an odd mode's half-model's ground: grounded, not fed -1 A)")),
                       QStringLiteral("method=rlgc")),
               solutions},
              {}, {}, false, false, QStringLiteral("lp"),
              tr("A transmission line's cross-section, per metre. Quasi-TEM: its capacitance C and, with every εr 1, C0 - so "
                 "εeff = C/C0, Z0 = 1/(c0 √(C C0)) and L = 1/(c0² C0). R, L, G, C: C from electrostatics, G = ω C tan δ "
                 "(+ σ) from its dielectrics' losses, R and L from the magnetic fields' coils in the frequency domain (the "
-                "skin effect, internal inductance) - Z0, the attenuation α and β at each frequency.")});
+                "skin effect, internal inductance) - Z0, the attenuation α and β, n_eff = β/k0 (epsilon_eff its square) and "
+                "the quasi-static epsilon_eff_qs = C/C0 at each frequency. Coupled lines (two or more terminals): the C, C0, "
+                "L, R, G matrices and their modes - a symmetric pair's even and odd (Z0, n_eff, α, εeff; Zdiff = 2 Z0_odd, "
+                "Zcm = Z0_even/2), others' of (R + jωL)(G + jωC) with their voltages and currents and Zc.")});
 
         // Exports.
         add({QStringLiteral("exports"), tr("Export"), QString(), QStringLiteral("exports"), Level::None, {},
@@ -2701,7 +2725,7 @@ QList<NodeKind> makeKinds()
         line.kind = P::Reference;
         line.choices = {QStringLiteral("lineparams")};
         line.defaultValue = QStringLiteral("lp1");
-        line.tooltip = tr("A Line Parameters node of method \"R, L, G, C over frequency\"");
+        line.tooltip = tr("A Line Parameters node of method \"R, L, G, C over frequency\" (two or more terminals: coupled lines)");
         const P length = expr(QStringLiteral("length"), tr("Line length"), QStringLiteral("m"), QStringLiteral("10[mm]"));
         P file;
         file.key = QStringLiteral("file");
@@ -2722,10 +2746,14 @@ QList<NodeKind> makeKinds()
                      {tr("A transmission line of a length"), tr("Waves' ports (their S-matrix)")}, QStringLiteral("line")),
               shownIf(line, QStringLiteral("of=line")), shownIf(length, QStringLiteral("of=line")),
               shownIf(expr(QStringLiteral("zref"), tr("Reference impedance"), QStringLiteral("ohm"), QStringLiteral("50[ohm]")), QStringLiteral("of=line")),
+              shownIf(flag(QStringLiteral("mixed"), tr("Mixed-mode"), false,
+                           tr("A pair's: its differential and common modes at each end, ports d1, d2, c1, c2 (Sdd, Sdc, Scd, Scc)")),
+                      QStringLiteral("of=line")),
               portsPhysics, file},
              {}, {}, false, false, QStringLiteral("ts"),
              tr("A line of its length as a two-port: its S-parameters at each frequency of the study, a Touchstone file (.s2p) "
-                "for a schematic's S-parameter file part.")});
+                "for a schematic's S-parameter file part. Coupled lines: a 2N-port (ports 1 to N their near ends, N+1 to 2N "
+                "their far ends), a pair's also mixed-mode.")});
         P physicsMatrix;
         physicsMatrix.key = QStringLiteral("physics");
         physicsMatrix.label = tr("Physics");
@@ -2738,19 +2766,21 @@ QList<NodeKind> makeKinds()
                      {tr("A transmission line"), tr("Terminals' matrix: capacitances, conductances, inductances")}, QStringLiteral("line")),
               shownIf(line, QStringLiteral("what=line")), shownIf(length, QStringLiteral("what=line")),
               shownIf(choice(QStringLiteral("model"), tr("Line model"), {QStringLiteral("ladder"), QStringLiteral("ltra")},
-                             {tr("Sections of R, L, G, C"), tr("A lossy line (LTRA)")}, QStringLiteral("ladder")),
+                             {tr("Sections of R, L, G, C"), tr("A lossy line (LTRA; one line)")}, QStringLiteral("ladder")),
                       QStringLiteral("what=line")),
               shownIf(integer(QStringLiteral("sections"), tr("Sections"), 20, tr("Enough that each is short against a wavelength")),
                       QStringLiteral("what=line&model=ladder")),
               physicsMatrix, name, file},
              {}, {}, false, false, QStringLiteral("sp"),
-             tr("A SPICE subcircuit (.cir): a line as sections of R, L, G, C or an LTRA line at a frequency, or a physics' "
-                "terminals as capacitors (es), resistors (ec) or coupled inductors (mf).")});
+             tr("A SPICE subcircuit (.cir): a line as sections of R, L, G, C or an LTRA line at a frequency - coupled lines as "
+                "sections, their mutual L, C, G and R too -, or a physics' terminals as capacitors (es), resistors (ec) or "
+                "coupled inductors (mf).")});
         add({QStringLiteral("qucspart"), tr("Qucs Subcircuit (RLCG)"), QStringLiteral("export"), QStringLiteral("qucspart"), Level::None,
              {study, point, frequency, line, length, name, file},
              {}, {}, false, false, QStringLiteral("qp"),
              tr("A Qucs subcircuit (.sch): an RLCG part of the line's values at a frequency and its length between ports 1 "
-                "and 2 - a part for a schematic (Subcircuit), or copied to paste.")});
+                "and 2 - a part for a schematic (Subcircuit), or copied to paste. A symmetric pair: a coupled line part "
+                "(CTLIN) of its even and odd modes, ports 1, 2 the near ends, 3, 4 the far ends.")});
         {
             P which = solutions;
             which.defaultValue = QStringLiteral("selected");

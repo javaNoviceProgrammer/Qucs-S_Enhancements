@@ -4370,15 +4370,24 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     return run;
 }
 
-double vacuumCapacitance(const Solution& solution, const QString& tag, const QString& terminal, QString* error)
+bool terminalMatrices(const Solution& solution, const QString& tag, const QStringList& terminals, bool vacuum, TerminalMatrices* out, QString* error)
 {
     Solution& s = const_cast<Solution&>(solution);
     const int fi = s.fieldIndex(tag);
     if (fi < 0) {
         if (error) *error = tr("there is no physics %1").arg(tag);
-        return NaN;
+        return false;
     }
-    return detail::scalarVacuumCapacitance(s, fi, terminal, error);
+    const QString key = QStringLiteral("%1|%2|%3").arg(tag, terminals.join(QLatin1Char(',')),
+                                                       vacuum ? QStringLiteral("vacuum")
+                                                              : QStringLiteral("%1|%2").arg(s.selected()).arg(s.frequency(), 0, 'g', 17));
+    if (const auto it = s.terminalCache.find(key); it != s.terminalCache.end()) {
+        *out = it->second;
+        return true;
+    }
+    if (!detail::scalarTerminalMatrices(s, fi, terminals, vacuum, out, error)) return false;
+    s.terminalCache[key] = *out;
+    return true;
 }
 
 } // namespace qucs_s::fem
