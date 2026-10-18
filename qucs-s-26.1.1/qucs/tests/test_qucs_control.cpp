@@ -5395,6 +5395,11 @@ private slots:
                                   "print(sum([1, 2, 3]))", python, &back), QString("6"));
             QVERIFY(back);
             QCOMPARE(consoleReply("Python 3.14.7 (main)\n>>> print(6*7)\n42\n>>> ", "print(6*7)", python, &back), QString("42"));
+            // (Typed as it starts: the terminal's echo amid its banner, its
+            // own after the prompt - CI's macOS job at 7cbcf76 kept the
+            // banner's second line, the line and 42.)
+            QCOMPARE(consoleReply("Python 3.14.7 (main)\nprint(6*7)\nType \"help\" for more information.\n>>> print(6*7)\n42\n>>> ", "print(6*7)", python, &back),
+                     QString("42"));
             QCOMPARE(consoleReply(">>> print(6*7)\n42\n>>> ", "print(6*7)", python, &back), QString("42"));
             // A result the same as the line typed: kept (one echo, two at most).
             QCOMPARE(consoleReply("1\n>>> 1\n1\n>>> ", "1", python, &back), QString("1"));
