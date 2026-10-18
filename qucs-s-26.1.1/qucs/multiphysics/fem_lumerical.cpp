@@ -461,7 +461,7 @@ LumericalImport importLumericalMqw(const QString& path)
                 vbo = NAN;
         }
         if (!std::isfinite(vbo)) {
-            out.notes << tr("Warning: its band offsets Lumerical's own (\"override band offset\" 0), but %1 has no work function or masses read and "
+            out.notes << tr("Warning: its band offsets the Lumerical ones (\"override band offset\" 0), but %1 has no work function or masses read and "
                             "no band diagram is stored: the layer table's taken there - check them")
                              .arg(l.material);
             vbo = l.vbo;
@@ -546,7 +546,7 @@ LumericalImport importLumericalMqw(const QString& path)
         return out;
     }
     if (ownOffsets)
-        out.notes << tr("its band offsets Lumerical's own (\"override band offset\" 0), not the layer table's: %1 - each layer's Ev %2 eV")
+        out.notes << tr("its band offsets the Lumerical ones (\"override band offset\" 0), not the layer table's: %1 - each layer's Ev %2 eV")
                          .arg(!diagramEv.empty() ? tr("the valence band's steps its last run stored (its band diagram)")
                                                  : tr("its materials' work functions' (no band diagram stored)"),
                               offsetsSaid.join(QStringLiteral(", ")));

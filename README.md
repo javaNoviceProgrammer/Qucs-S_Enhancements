@@ -381,7 +381,7 @@ the combined work is therefore distributed under GPL-3.0.
 
 ## Trademarks
 
-Ansys, Lumerical, Zemax and OpticStudio, and any and all ANSYS, Inc. brand,
+Ansys®, Lumerical™, Zemax™ and OpticStudio™, and any and all ANSYS, Inc. brand,
 product, service and feature names, are registered trademarks or trademarks
 of ANSYS, Inc. or its subsidiaries in the United States or other countries.
 This product is not affiliated with, sponsored or endorsed by ANSYS, Inc. or

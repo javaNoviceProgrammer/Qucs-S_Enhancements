@@ -39,7 +39,8 @@ its commit messages, and the vendor's downloaded files that are kept outside it.
 
   The program's messages, help and tool texts write "Lumerical's" about 60 times ("Lumerical's
   MQW solver"). Whether to follow these guidelines there is a
-  decision to make; it was not made here.
+  decision to make; it was not made here. (Made on 18 October: adjectives, not possessives,
+  and the marks at first use - `2026-10-18-claude-trademark-adjectives-and-marks.md`.)
 - **The vendor's terms** and the
   use of the downloaded examples to work out the formats and to benchmark.
 - **The material parameters read from a vendor's material database** (listed above): whether to

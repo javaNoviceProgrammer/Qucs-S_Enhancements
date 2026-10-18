@@ -3539,7 +3539,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         if (worst > 0.1)
             a_s.log << tr("Warning: %1: the transitions more than 5 half widths above the %2 gain's peak (%3) take %4 % off it by their "
                           "Lorentzian tails alone (qw.alpha%2far): the spectrum depends on how many states the step takes. A Gaussian or "
-                          "a sech line's tails hardly reach; or take the states that matter (Lumerical's MQW keeps 2 conduction and 4 "
+                          "a sech line's tails hardly reach; or take the states that matter (the Lumerical MQW solver keeps 2 conduction and 4 "
                           "valence subbands)")
                                .arg(a_node->name(), which, electronVolts(at))
                                .arg(qRound(100 * worst));

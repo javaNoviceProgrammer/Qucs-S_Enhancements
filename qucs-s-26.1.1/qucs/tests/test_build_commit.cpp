@@ -83,10 +83,12 @@ private slots:
         QVERIFY(tabs != nullptr && notice != nullptr);
         QCOMPARE(tabs->tabText(tabs->indexOf(notice)), QStringLiteral("Trademarks"));
         const QString text = notice->toPlainText().simplified();
-        for (const char* said : {"Ansys, Lumerical, Zemax and OpticStudio", "trademarks of ANSYS, Inc. or its subsidiaries",
-                                 "not affiliated with, sponsored or endorsed by ANSYS, Inc. or Synopsys, Inc.",
-                                 "the property of their respective owners"})
-            QVERIFY2(text.contains(QLatin1String(said)), said);
+        // (Marked at their first use: Ansys a registered mark, the others'
+        // registration not confirmed - ™, which any mark may carry.)
+        for (const QString& said : {QStringLiteral("Ansys®, Lumerical™, Zemax™ and OpticStudio™"), QStringLiteral("trademarks of ANSYS, Inc. or its subsidiaries"),
+                                    QStringLiteral("not affiliated with, sponsored or endorsed by ANSYS, Inc. or Synopsys, Inc."),
+                                    QStringLiteral("the property of their respective owners")})
+            QVERIFY2(text.contains(said), qPrintable(said));
         QFile readme(QStringLiteral(QUCS_EXAMPLES_DIR "/../../README.md"));
         if (!readme.open(QIODevice::ReadOnly)) QSKIP("no README.md above the sources");
         const QString md = QString::fromUtf8(readme.readAll());

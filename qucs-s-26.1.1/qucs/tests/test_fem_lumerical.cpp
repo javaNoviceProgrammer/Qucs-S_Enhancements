@@ -215,7 +215,7 @@ private slots:
         const Model m = modelOf(soi(), QStringLiteral("soi.qfem"));
         const LumericalScript s = exported(m, QStringLiteral("lumericalmode"));
         QVERIFY2(s.error.isEmpty(), qPrintable(s.error));
-        QVERIFY(s.text.startsWith(QLatin1String("# x.lsf - a Lumerical MODE script")) && s.text.contains(QLatin1String("save(\"x.lms\");")));
+        QVERIFY(s.text.startsWith(QStringLiteral("# x.lsf - a Lumerical™ MODE script")) && s.text.contains(QLatin1String("save(\"x.lms\");")));
         const lum::Scene sc = lum::readScript(s.text, QStringLiteral("x.lsf"));
         QVERIFY2(sc.error.isEmpty(), qPrintable(sc.error));
         const lum::Object* core = object(sc, QStringLiteral("rect"), QStringLiteral("core d3"));
@@ -804,7 +804,7 @@ plot(r, r); somethingunknown;
         QVERIFY2(notes.contains(QLatin1String("a structure of a kind not read (7)")) && notes.contains(QLatin1String("mesh override")), qPrintable(notes));
         for (const char* said : {"its model's setup script not run", "LNOI: a structure group - its structures as its script made them",
                                  "temperature: a temperature import", "at the FDE's 310 K", "silicon_thermal: its free carriers' terms (Soref's) not taken",
-                                 "LN_Sellmeier_MgO_Zel: its index of the wavelength, Lumerical's Sellmeier coefficients"})
+                                 "LN_Sellmeier_MgO_Zel: its index of the wavelength, the Lumerical Sellmeier coefficients"})
             QVERIFY2(notes.contains(QString::fromUtf8(said)), said);
         const QJsonObject c = component(im.model);
         const QJsonArray geometry = c.value(QStringLiteral("geometry")).toArray();
@@ -1016,7 +1016,7 @@ plot(r, r); somethingunknown;
         QCOMPARE(si.value(QStringLiteral("epsilonr")).toString(), QStringLiteral("11.7"));
         QCOMPARE(named(materials, QStringLiteral("label"), QStringLiteral("Ge (Germanium)")).value(QStringLiteral("Eg")).toString(), QStringLiteral("0.66[eV]"));
         const QJsonArray fs = features(im.model);
-        const QJsonObject m = named(fs, QStringLiteral("label"), QStringLiteral("Si (Silicon) (Lumerical's models)"));
+        const QJsonObject m = named(fs, QStringLiteral("label"), QStringLiteral("Si (Silicon) (Lumerical models)"));
         const std::pair<const char*, const char*> model[] = {
             {"mobility", "masetti"}, {"m1n", "52.2[cm^2/(V*s)]"}, {"m2n", "52.2[cm^2/(V*s)]"}, {"mu1n", "43.4[cm^2/(V*s)]"}, {"pcn", "0[1/cm^3]"},
             {"crn", "9.68e+16[1/cm^3]"}, {"csn", "3.43e+20[1/cm^3]"}, {"man", "0.68"}, {"mbn", "2"}, {"m1p", "44.9[cm^2/(V*s)]"}, {"mu1p", "29[cm^2/(V*s)]"},
