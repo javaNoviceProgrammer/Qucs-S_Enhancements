@@ -618,9 +618,11 @@ private:
     QList<QWidget*> dialogControls(QWidget* dialog, bool ui = false) const;
     /// get_dialog's answer for \a root: its texts and controls.
     QJsonObject describeControls(QWidget* root, bool ui) const;
-    /// What \a dialog reads, as get_dialog gives it - its buttons alone
-    /// where that is long: an answer that says a dialog waits for one says
-    /// what it is too, and set_dialog answers it at once.
+    /// What \a dialog reads, as get_dialog gives it - its title and push
+    /// buttons alone where that is long: an answer that says a dialog waits
+    /// for one says what it is too, and set_dialog answers it at once.
+    QJsonObject dialogRead(QWidget* dialog) const;
+    /// The same in words, for a text (a refusal).
     QString dialogReads(QWidget* dialog) const;
     /// set_dialog's work on \a root's controls ('set', then 'press').
     void fillControls(QWidget* root, const QJsonObject& args, const Done& done, bool ui);

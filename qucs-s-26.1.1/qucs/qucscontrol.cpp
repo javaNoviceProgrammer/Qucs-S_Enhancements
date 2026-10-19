@@ -3761,9 +3761,19 @@ QJsonArray QucsControl::tools() const
             for (const char* key : kFoldedOptions) {
                 const QJsonObject whole = properties.value(QLatin1String(key)).toObject();
                 if (whole.isEmpty()) continue;
-                // (Its description's first clause: "An eye diagram's own (type eye)".)
+                // (Its description's first clause: "An eye diagram's own (type
+                // eye)" - a ';', '.' or ':' and a space outside any bracket:
+                // smith_circles' "(null: ...)" was cut open.)
                 const QString about = whole.value(QLatin1String("description")).toString();
-                const qsizetype end = about.indexOf(QRegularExpression(QStringLiteral("[;.:] ")));
+                qsizetype end = -1;
+                int depth = 0;
+                for (qsizetype i = 0; i + 1 < about.size() && end < 0; ++i) {
+                    const QChar c = about.at(i);
+                    if (c == QLatin1Char('(') || c == QLatin1Char('[')) ++depth;
+                    else if ((c == QLatin1Char(')') || c == QLatin1Char(']')) && depth > 0) --depth;
+                    else if (depth == 0 && (c == QLatin1Char(';') || c == QLatin1Char('.') || c == QLatin1Char(':')) && about.at(i + 1) == QLatin1Char(' '))
+                        end = i;
+                }
                 properties.insert(QLatin1String(key),
                                   QJsonObject{{QStringLiteral("type"), whole.value(QLatin1String("type"))},
                                               {QStringLiteral("description"), tr("%1; its fields %2 (describe_tool %3 says each)")
@@ -5247,6 +5257,17 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
                                                 ? QJsonValue(QJsonValue::Null)
                                                 : QJsonValue(QJsonObject{{QStringLiteral("name"), a_app->ProjName},
                                                                          {QStringLiteral("folder"), QDir::toNativeSeparators(QucsSettings.QucsWorkDir.absolutePath())}}));
+    // The tools in every turn of a session starting now (a session's tools
+    // listed when its program starts, resumed or new): the core, and a
+    // model's and the wiring as what is open says - seen from inside any
+    // session.
+    {
+        const QSet<QString> every = inEveryTurn();
+        QStringList tiers{tr("the core")};
+        if (every.contains(QStringLiteral("fem_solve"))) tiers << tr("a model's (fem_*)");
+        if (every.contains(QStringLiteral("connect"))) tiers << tr("the wiring");
+        state.insert(QStringLiteral("tools in every turn"), tr("%1 - as a session starting now has them").arg(tiers.join(QStringLiteral(", "))));
+    }
     // Every project of the workspace: one is open at a time.
     QJsonArray projects;
     for (const ProjectFolder& p : std::as_const(projectFolders)) {
@@ -11220,10 +11241,13 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
         if (*answered) return;
         *answered = true;
         QWidget* dialog = openDialog();
-        done(textResult(dialog != nullptr
-                            ? tr("%1: it opened “%2”, which waits for an answer (set_dialog answers it). %3")
-                                  .arg(name, dialog->windowTitle(), dialogReads(dialog))
-                            : tr("%1: done.").arg(name)));
+        // (What the dialog reads an object of the answer: its quotes as
+        // they are, not a text's escaped.)
+        done(dialog != nullptr ? jsonResult(QJsonObject{{QStringLiteral("done"), tr("%1: it opened “%2”, which waits for an answer "
+                                                                                     "(set_dialog answers it)")
+                                                                                      .arg(name, dialog->windowTitle())},
+                                                        {QStringLiteral("dialog"), dialogRead(dialog)}})
+                               : textResult(tr("%1: done.").arg(name)));
     };
     auto* watch = new QTimer(this);
     watch->setInterval(10);
@@ -11713,6 +11737,9 @@ QString labelOf(QWidget* w, QWidget* dialog)
             if (auto* l = qobject_cast<QLabel*>(label)) return cleanText(l->text()).remove(QLatin1Char(':'));
     for (QLabel* l : dialog->findChildren<QLabel*>())
         if (l->buddy() == w) return cleanText(l->text()).remove(QLatin1Char(':'));
+    // A tab widget holds its fields, a label beside or above it none of its
+    // own: "tabs" (the About box's took its license line's).
+    if (qobject_cast<QTabWidget*>(w) != nullptr) return QStringLiteral("tabs");
     auto* check = qobject_cast<QCheckBox*>(w);
     const bool textless = check != nullptr && cleanText(check->text()).isEmpty();
     if (qobject_cast<QAbstractButton*>(w) == nullptr || textless)
@@ -11770,14 +11797,26 @@ QString shownLabel(QWidget* w, QWidget* root, bool ui)
 
 } // namespace
 
+QJsonObject QucsControl::dialogRead(QWidget* dialog) const
+{
+    QJsonObject o = describeControls(dialog, false);
+    o.insert(QStringLiteral("title"), dialog->windowTitle());
+    if (QJsonDocument(o).toJson(QJsonDocument::Compact).size() <= 2000) return o;
+    // (Its push buttons: a check box is a control, set_dialog's 'set'.)
+    QJsonArray buttons;
+    for (const QPushButton* b : dialog->findChildren<QPushButton*>())
+        if (b->isVisible() && !b->text().isEmpty()) buttons.append(b->text().remove(QLatin1Char('&')));
+    return QJsonObject{{QStringLiteral("title"), dialog->windowTitle()},
+                       {QStringLiteral("buttons"), buttons},
+                       {QStringLiteral("more"), tr("get_dialog reads the rest: its controls")}};
+}
+
 QString QucsControl::dialogReads(QWidget* dialog) const
 {
-    QString reads = QString::fromUtf8(QJsonDocument(describeControls(dialog, false)).toJson(QJsonDocument::Compact));
-    if (reads.size() <= 2000) return tr("It reads: %1").arg(reads);
+    const QJsonObject o = dialogRead(dialog);
+    if (!o.contains(QLatin1String("buttons"))) return tr("It reads: %1").arg(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
     QStringList buttons;
-    // (Its push buttons: a check box is a control, set_dialog's 'set'.)
-    for (const QPushButton* b : dialog->findChildren<QPushButton*>())
-        if (b->isVisible() && !b->text().isEmpty()) buttons << b->text().remove(QLatin1Char('&'));
+    for (const QJsonValue& v : o.value(QLatin1String("buttons")).toArray()) buttons << v.toString();
     return tr("Its buttons: %1 (get_dialog reads the rest).").arg(buttons.join(QStringLiteral(", ")));
 }
 

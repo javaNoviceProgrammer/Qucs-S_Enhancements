@@ -610,8 +610,9 @@ void QucsControl::contextMenu(const QJsonObject& args, const Done& done)
         }
         // Chosen: what it opened, or done.
         if (QWidget* dialog = openDialog()) {
-            answer(textResult(tr("%1 on %2: it opened “%3”, which waits for an answer (set_dialog answers it). %4")
-                                  .arg(run->path, what, dialog->windowTitle(), dialogReads(dialog))));
+            answer(jsonResult(QJsonObject{{QStringLiteral("done"), tr("%1 on %2: it opened “%3”, which waits for an answer (set_dialog answers it)")
+                                                                     .arg(run->path, what, dialog->windowTitle())},
+                                          {QStringLiteral("dialog"), dialogRead(dialog)}}));
             return;
         }
         if (QApplication::activePopupWidget() == nullptr && run->clock.elapsed() > 300)

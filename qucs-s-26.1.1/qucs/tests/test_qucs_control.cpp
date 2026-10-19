@@ -656,10 +656,14 @@ private slots:
         });
         const QJsonObject triggered = call("trigger_action", {{"action", settings}}, 20000);
         QVERIFY2(!failed(triggered), qPrintable(text(triggered)));
-        // What it opened, and what that reads (its controls, or its buttons
-        // where they are many): set_dialog answers it at once.
-        QVERIFY2(text(triggered).contains("set_dialog") && text(triggered).contains("OK")
-                     && (text(triggered).contains("horizontal Grid", Qt::CaseInsensitive) || text(triggered).contains("Its buttons")),
+        // What it opened, and what that reads - its controls, or its title
+        // and push buttons where they are many - an object of the answer
+        // (its quotes not escaped in a text): set_dialog answers it at once.
+        const QJsonObject opened = json(triggered).toObject();
+        const QJsonObject read = opened.value("dialog").toObject();
+        QVERIFY2(opened.value("done").toString().contains("set_dialog") && !read.isEmpty(), qPrintable(text(triggered)));
+        QVERIFY2(read.contains("controls") ? QJsonDocument(read).toJson().contains("horizontal Grid")
+                                           : read.value("buttons").toArray().contains(QJsonValue("OK")),
                  qPrintable(text(triggered)));
         // An action not named as it is: the nearest said ("Help > About
         // Qucs..." is Help > About Qucs-S), nothing done.
@@ -667,6 +671,20 @@ private slots:
         QVERIFY(failed(misnamed));
         QVERIFY2(text(misnamed).contains("Meant Help > About Qucs-S?"), qPrintable(text(misnamed)));
         QVERIFY(text(call("trigger_action", {{"action", "Frobnicate the Flux"}})).contains("(list_actions lists them)"));
+        // The About box: its tab widget "tabs" - not the license line beside
+        // it, which a label beside or above gave it. (Answered while the
+        // action waits, as the settings above: its modal loop runs under it.)
+        QJsonObject closed;
+        QTimer::singleShot(800, this, [&] { closed = call("set_dialog", {{"press", "OK"}}); });
+        const QJsonObject about = json(call("trigger_action", {{"action", "Help > About Qucs-S"}}, 20000)).toObject();
+        QTRY_VERIFY_WITH_TIMEOUT(!closed.isEmpty(), 10000);
+        bool tabs = false, license = false;
+        for (const QJsonValue& c : about.value("dialog").toObject().value("controls").toArray()) {
+            if (c.toObject().value("kind").toString() == "tabs") tabs = c.toObject().value("label").toString() == "tabs";
+            license = license || c.toObject().value("label").toString().contains("warranty", Qt::CaseInsensitive);
+        }
+        QVERIFY2(tabs && !license, qPrintable(QJsonDocument(about).toJson()));
+        QVERIFY2(!failed(closed), qPrintable(text(closed)));
         QTRY_VERIFY_WITH_TIMEOUT(!answered.isEmpty(), 10000);
         QVERIFY(!seen.value("title").toString().isEmpty());
         bool grid = false;
@@ -5292,6 +5310,8 @@ private slots:
         QTimer::singleShot(800, this, [&] { answered = call("set_dialog", {{"press", "Cancel"}}); });
         r = call("context_menu", {{"on", QJsonObject{{"part", "R1"}}}, {"choose", "Edit Properties"}}, 20000);
         QVERIFY2(!failed(r) && text(r).contains("it opened") && text(r).contains("Edit Component Properties"), qPrintable(text(r)));
+        // (What it reads an object of the answer, not a text's.)
+        QVERIFY2(json(r).toObject().value("dialog").toObject().value("title").toString().contains("Edit Component Properties"), qPrintable(text(r)));
         QTRY_VERIFY_WITH_TIMEOUT(!answered.isEmpty(), 10000);
         // Not there, or not to be chosen now: said, with what there is.
         r = call("context_menu", {{"on", QJsonObject{{"part", "R1"}}}, {"choose", "Fly Away"}});
@@ -7142,7 +7162,7 @@ private slots:
             if (QWidget* d = QApplication::activeModalWidget()) d->close();
         });
         r = call("send_input", {{"click", QJsonArray{160, 200}}, {"double", true}});
-        QVERIFY2(!failed(r) && text(r).contains("waits for an answer"), qPrintable(text(r)));
+        QVERIFY2(!failed(r) && text(r).contains("waits for an answer") && json(r).toObject().value("dialog").isObject(), qPrintable(text(r)));
         QVERIFY(dialogUp && refusedMeanwhile);
         QTRY_VERIFY(QApplication::activeModalWidget() == nullptr);
         // A right click: its menu read, and closed.
