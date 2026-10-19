@@ -379,6 +379,9 @@ repository are released under the GNU General Public License, version 3
 ([`LICENSE`](LICENSE)), as the upstream "or any later version" terms allow;
 the combined work is therefore distributed under GPL-3.0.
 
+All the code added to Qucs-S as part of this enhancement project is owned
+and copyrighted by Dr. Meisam Bahadori.
+
 ## Trademarks
 
 Ansys®, Lumerical™, Zemax™ and OpticStudio™, and any and all ANSYS, Inc. brand,
