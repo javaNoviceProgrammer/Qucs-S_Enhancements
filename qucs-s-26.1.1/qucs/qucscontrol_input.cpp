@@ -432,8 +432,9 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
             for (int n = 0; n < 5 && QApplication::activePopupWidget() != nullptr; ++n) QApplication::activePopupWidget()->close();
         }
         if (opened)
-            o.insert(QStringLiteral("opened"), tr("“%1”, which waits for an answer: get_dialog reads it, set_dialog answers it.")
-                                                   .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className()) : dialog->windowTitle()));
+            o.insert(QStringLiteral("opened"), tr("“%1”, which waits for an answer: set_dialog answers it. %2")
+                                                   .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className()) : dialog->windowTitle(),
+                                                        dialogReads(dialog)));
         if (run->keysSkipped) o.insert(QStringLiteral("keys"), tr("not sent: the click opened a dialog first"));
         if (!run->given && !opened && menu == nullptr) o.insert(QStringLiteral("note"), tr("Not all of it was given within 10 s."));
         if (closed) o.insert(QStringLiteral("dialog"), tr("closed: it was answered"));

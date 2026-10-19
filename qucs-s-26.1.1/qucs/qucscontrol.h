@@ -75,6 +75,9 @@ public:
 
     QString serverName() const override { return QStringLiteral("qucs"); }
     QJsonArray tools() const override;
+    /// The tools in every turn now: the core, and those of what is open (a
+    /// model's, a schematic's wiring).
+    QSet<QString> inEveryTurn() const;
     QStringList readOnlyTools() const override;
     QString actionOf(const QString& tool) const override;
     QString subjectOf(const QString& tool, const QJsonObject& arguments) const override;
@@ -615,11 +618,16 @@ private:
     QList<QWidget*> dialogControls(QWidget* dialog, bool ui = false) const;
     /// get_dialog's answer for \a root: its texts and controls.
     QJsonObject describeControls(QWidget* root, bool ui) const;
+    /// What \a dialog reads, as get_dialog gives it - its buttons alone
+    /// where that is long: an answer that says a dialog waits for one says
+    /// what it is too, and set_dialog answers it at once.
+    QString dialogReads(QWidget* dialog) const;
     /// set_dialog's work on \a root's controls ('set', then 'press').
     void fillControls(QWidget* root, const QJsonObject& args, const Done& done, bool ui);
 
     QucsApp* a_app;
-    QJsonArray a_tools;
+    QJsonArray a_tools;   // each whole (its _meta and description in every turn: tools())
+    QHash<QString, QString> a_hints;   // words the tool search finds a tool by
     QHash<QString, QString> a_actions;   // tool -> "add a component"
     QStringList a_readOnly;
 };
