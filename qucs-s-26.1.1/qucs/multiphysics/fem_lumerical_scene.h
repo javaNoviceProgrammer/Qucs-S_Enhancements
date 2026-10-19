@@ -29,6 +29,15 @@
 
 namespace qucs_s::fem::lumerical {
 
+/// \a v as a whole number from \a lo to \a hi, else \a fallback: a
+/// script's or project's number - 1e30, NaN - cast to an int unchecked is
+/// undefined (a polygon's first axis of 1e30, a mesh order, a contact's
+/// range of points: the hunt of 19 October, F1).
+inline int whole(double v, int lo, int hi, int fallback)
+{
+    return v >= lo && v <= hi ? int(v) : fallback;
+}
+
 /// A Lumerical "Properties" blob (little-endian): its entries' keys and
 /// values - texts, numbers (one, or a list), matrices (column-major: their
 /// real parts; a complex one's imaginary parts under its key and "@im"),

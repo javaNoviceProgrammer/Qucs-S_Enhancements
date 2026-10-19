@@ -140,6 +140,17 @@ set_tests_properties(test_fem_optoelectronics PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_devices)
 # (Sanitized: some 17 minutes here, CI's Debug about 1.45 times that.)
 set_tests_properties(test_fem_devices PROPERTIES TIMEOUT 3600)
+# (Their peak footprints - the laser test's 2.4 GB, the resonator's 2.0, the
+# quantum test's first part 1.3, the modulator's 1.2, the optoelectronics'
+# 1.1 - two or three at once on CI's macOS runner of three processors and
+# 7 GB: swapping, the VCSEL functions past their 300 s on 91450f4, the
+# quantum test's split having moved the order the tests run in (the hunt of
+# 19 October, C1). One of them at a time there; elsewhere the room is
+# enough.)
+if(APPLE)
+  set_property(TEST test_fem_laser test_fem_resonator test_fem_quantum test_fem_modulator test_fem_optoelectronics
+               APPEND PROPERTY RESOURCE_LOCK fem_memory)
+endif()
 # (It writes a gzipped layout, and an OASIS one with gdstk, to read.)
 find_package(ZLIB REQUIRED)
 target_link_libraries(test_fem_layout gdstk ZLIB::ZLIB)

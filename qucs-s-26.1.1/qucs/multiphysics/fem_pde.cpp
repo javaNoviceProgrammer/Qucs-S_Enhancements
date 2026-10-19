@@ -276,9 +276,24 @@ bool PdeProblem::setup(QString* error)
                           .arg(item(*e, QStringLiteral("f"), k), pairItem(*e, QStringLiteral("beta"), 0, k), ux,
                                pairItem(*e, QStringLiteral("beta"), 1, k), uy, item(*e, QStringLiteral("a"), k), u);
             }
-            q.gx.push_back(compile(gx, *e, QStringLiteral("Gx")));
-            q.gy.push_back(compile(gy, *e, QStringLiteral("Gy")));
-            q.f.push_back(compile(src, *e, QStringLiteral("F")));
+            // (The general form's Γ in the equation's own units, u's over a
+            // length, not a fixed one: the ring of annulus_laplace.qfem, u
+            // without a unit, Γ = -∇u, was warned "Γ is in 1/m, where 1 is
+            // expected" - the hunt of 19 October, N9. Its F as its
+            // coefficients make it, not checked.)
+            q.gx.push_back(compile(gx, *e, QStringLiteral("Gx"), true, false));
+            q.gy.push_back(compile(gy, *e, QStringLiteral("Gy"), true, false));
+            q.f.push_back(compile(src, *e, QStringLiteral("F"), true, false));
+            if (e->type == QLatin1String("pde/general")) {
+                const Dim flux = field().dim / Dim::length();
+                for (const auto& [x, key] : {std::pair<const Expression*, const char*>(&q.gx.back(), "Gx"), {&q.gy.back(), "Gy"}}) {
+                    if (!x->isValid() || x->dim().isNone() || x->dim() == flux) continue;
+                    const PropertyDef* d = e->kind() ? e->kind()->property(QLatin1String(key)) : nullptr;
+                    const QString said = tr("Warning: %1 of %2 is in %3, where %4 is expected")
+                                             .arg(d ? d->label : QLatin1String(key), e->name(), dimName(x->dim()), dimName(flux));
+                    if (!a_s.log.contains(said)) a_s.log << said;
+                }
+            }
             q.da.push_back(compile(item(*e, QStringLiteral("da"), k), *e, QStringLiteral("da")));
             q.ea.push_back(compile(item(*e, QStringLiteral("ea"), k), *e, QStringLiteral("ea")));
             for (const Expression* x : {&q.da.back(), &q.ea.back()})

@@ -1,0 +1,39 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+index 8192d19..f02f806 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+@@ -2778,6 +2778,34 @@ private slots:
+         }
+         qInfo("ionized in part: %s", qPrintable(said.join(QLatin1String("; "))));
+     }
++
++    void huntTransientDriving()
++    {
++        for (const char* drv : {"field", "fermi", "current"}) {
++            const QString feats = QStringLiteral(R"x(, {"type": "impact", "driving": "%1", "selection": {"all": true}}, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}},
++              {"type": "generation", "G": "1e25[1/(m^3*s)]*(t > 0)*(x > 3.1[um])*(x < 3.6[um])", "selection": {"all": true}})x").arg(QLatin1String(drv));
++            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), feats,
++                                    QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 2[ns], 40[ns])", "rtol": "1e-4"})x"), QStringLiteral("0.1"));
++            json.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-45[V]"})");
++            QElapsedTimer t;
++            t.start();
++            const Run r = run(modelOf(json));
++            double first = NAN, last = NAN;
++            if (r.solution) {
++                r.solution->select(0);
++                first = global(*r.solution, QStringLiteral("semi.I_k"));
++                r.solution->select(r.solution->snapshotCount() - 1);
++                last = global(*r.solution, QStringLiteral("semi.I_k"));
++            }
++            // its lit stationary
++            QByteArray lit = json;
++            lit.replace(R"x(*(t > 0))x", "");
++            lit.replace(R"x(, {"type": "transient", "times": "range(0, 2[ns], 40[ns])", "rtol": "1e-4"})x", "");
++            const Run st = run(modelOf(lit));
++            qInfo("%s: transient %lld ms, error '%s', I at 0 %.5g, at 40 ns %.5g; lit stationary %.5g ('%s')", drv, t.elapsed(), qPrintable(r.error), first, last,
++                  st.solution ? global(*st.solution, QStringLiteral("semi.I_k")) : NAN, qPrintable(st.error));
++        }
++    }
+ };
+ 
+ QTEST_GUILESS_MAIN(TestFemDevices)

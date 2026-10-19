@@ -276,6 +276,9 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                     "Settings were set or changed, so none is lost. The files already there "
                                     "are left alone."));
     appSettingsGrid->addWidget(writeDocSettings, 19, 1);
+    // (Its rows at the top, the room below them: a tall dialog spread them
+    // over its height, wide gaps between - the hunt of 19 October, N8.)
+    appSettingsGrid->setRowStretch(appSettingsGrid->rowCount(), 1);
 
     // ...........................................................
     // The appearance settings tab
@@ -413,6 +416,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
                                    "the whole path.\n0 (Never): names are shown whole."));
     fileNameCapSpin->setValue(QucsSettings.FileNameCap);
     appAppearanceGrid->addWidget(fileNameCapSpin, 14, 1);
+    appAppearanceGrid->setRowStretch(appAppearanceGrid->rowCount(), 1);
 
     t->addTab(appAppearanceTab, tr("Appearance"));
 
@@ -632,10 +636,11 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     userButton(tr("Move Down"), "contentCategoryDown", [this] { moveContentCategory(1); });
     userButtons->addStretch();
     userLayout->addLayout(userButtons);
-    contentsColumn->addWidget(userBox);
+    // (The categories of the user's own the rows' room: it went below
+    // Scratch, their table 110 pixels - the hunt of 19 October, B5.)
+    contentsColumn->addWidget(userBox, 1);
 
     contentsColumn->addLayout(builtIn(ProjectView::Others, ProjectView::Scratch));
-    contentsColumn->addStretch(1);
     contentsScroll->setWidget(contentsRows);
     contentsScroll->viewport()->setAutoFillBackground(false);   // on the tab's own background
     contentsRows->setAutoFillBackground(false);
@@ -822,7 +827,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     // It includes a second column for buttons to remove entries
     pathsTableWidget = newPathTable(pathsGroup, tr("Subcircuit Search Path List"), QStringLiteral("subcircuitPaths"),
                                     tr("Subcircuit search paths"));
-    pathsGrid->addWidget(pathsTableWidget, 0, 0, 3, 2);
+    pathsGrid->addWidget(pathsTableWidget, 0, 0, 4, 2);
 
     QPushButton *AddPathButt = new QPushButton(tr("Add Path"));
     pathsGrid->addWidget(AddPathButt, 0, 2);
@@ -837,6 +842,11 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     QPushButton * ClearAllPathsButt = new QPushButton(tr("Clear All Paths"));
     pathsGrid->addWidget(ClearAllPathsButt, 2, 2);
     connect(ClearAllPathsButt, SIGNAL(clicked()), SLOT(slotClearAllPaths()));
+    // (The list takes the group's height: a row of its own below the
+    // buttons, stretched - the room went between them, the list a fifth of
+    // it; the hunt of 19 October, B5, as the File Types tab's.)
+    pathsGrid->addItem(new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding), 3, 2);
+    pathsGrid->setRowStretch(3, 1);
 
     locationsGrid->addWidget(pathsGroup, 1, 0, 1, 3);
 
@@ -846,7 +856,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     QGridLayout *libraryPathsGrid = new QGridLayout(libraryPathsGroup);
     libraryPathsTableWidget = newPathTable(libraryPathsGroup, tr("Library Search Path List"), QStringLiteral("libraryPaths"),
                                            tr("Library search paths"));
-    libraryPathsGrid->addWidget(libraryPathsTableWidget, 0, 0, 3, 2);
+    libraryPathsGrid->addWidget(libraryPathsTableWidget, 0, 0, 4, 2);
     QPushButton *addLibraryPathButt = new QPushButton(tr("Add Path"));
     libraryPathsGrid->addWidget(addLibraryPathButt, 0, 2);
     connect(addLibraryPathButt, &QPushButton::clicked, this, &QucsSettingsDialog::slotAddLibraryPath);
@@ -862,7 +872,12 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
            "save into one."),
         libraryPathsGroup);
     libraryPathsNote->setWordWrap(true);
-    libraryPathsGrid->addWidget(libraryPathsNote, 3, 0, 1, 3);
+    // (Its list the room, its note its lines: the note took the room, the
+    // list 90 pixels however tall the dialog - the hunt of 19 October, B5.)
+    libraryPathsNote->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    libraryPathsGrid->addItem(new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding), 3, 2);
+    libraryPathsGrid->setRowStretch(3, 1);
+    libraryPathsGrid->addWidget(libraryPathsNote, 4, 0, 1, 3);
     locationsGrid->addWidget(libraryPathsGroup, 2, 0, 1, 3);
 
     // create a copy of the current global path list

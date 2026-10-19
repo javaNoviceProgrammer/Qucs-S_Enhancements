@@ -1115,9 +1115,14 @@ private:
         for (int t = 0; t < int(mesh->triangles.size()); ++t)
             if (layered(mesh->domain[std::size_t(t)]))
                 for (int v : mesh->triangles[std::size_t(t)]) fixedNode[std::size_t(v)] = 1;
+        // (Each pass of the smoothing and of the Delaunay edges asks
+        // whether to stop: 349,000 nodes took 1.3 and 3 s without, a model
+        // closed during them waited - the hunt of 19 October, B2.)
         smooth(*mesh, fixedNode);
+        if (a_cancelled) return nullptr;
         alignLayered(*mesh);
         keepDelaunay(*mesh);
+        if (a_cancelled) return nullptr;
         mesh->sharpCorners = a_sharp;
         mesh->computeStatistics();
         return mesh;
@@ -1200,6 +1205,7 @@ private:
             // Flips, a pass at a time (each triangle at most once a pass).
             int flipped = 0;
             for (int pass = 0; pass < 50; ++pass) {
+                if (!step(0.95, tr("Smoothing"))) return;
                 std::map<std::pair<int, int>, std::vector<std::pair<int, int>>> around;   // edge: (triangle, its corner opposite)
                 for (int t = 0; t < int(mesh.triangles.size()); ++t)
                     for (int k = 0; k < 3; ++k)
@@ -1357,6 +1363,7 @@ private:
         for (int t = 0; t < int(mesh.triangles.size()); ++t)
             for (int v : mesh.triangles[std::size_t(t)]) around[std::size_t(v)].push_back(t);
         for (int sweep = 0; sweep < 4; ++sweep) {
+            if (!step(0.9, tr("Smoothing"))) return;
             int moved = 0;
             for (std::size_t n = 0; n < mesh.nodes.size(); ++n) {
                 if (fixedNode[n] || around[n].empty()) continue;

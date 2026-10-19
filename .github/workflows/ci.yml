@@ -42,7 +42,9 @@ jobs:
     # that on the same image and compiler (the build 27 minutes, then 43;
     # test_fem_pde 144 s, then 294) and the job ran out of its 210 minutes:
     # the tests now run four at a time, their limits three times theirs.
-    timeout-minutes: 240
+    # 222.6 of those 240 minutes on 91450f4 (19 October): 330, below the
+    # hosted runners' 360 (the hunt of 19 October, C3).
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
 

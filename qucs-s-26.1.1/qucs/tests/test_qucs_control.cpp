@@ -11294,6 +11294,10 @@ private slots:
             {"make_symbol", {{"sides", QJsonArray{"in"}}}, "make_symbol: sides is an object, not a list."},
             {"make_symbol", {{"sides", QJsonObject{{"in", 3}}}}, "make_symbol: sides.in is a text, not the number 3."},
             {"add_component", {{"type", "R"}, {"x", 150.5}, {"y", 0}}, "add_component: x is a whole number, not the number 150.5."},
+            // (Whole, but past an int and its bounds: read as its default -
+            // a timeout of 1e10 s waited 600, the hunt of 19 October, N5.)
+            {"fem_solve", {{"timeout", 1e10}}, "fem_solve: timeout is at most 7200, not 10000000000."},
+            {"fem_build", {{"timeout", -1e12}}, "fem_build: timeout is at least 1, not -1000000000000."},
         };
         for (const auto& w : wrong) {
             const QJsonObject r = call(w.tool, w.args);

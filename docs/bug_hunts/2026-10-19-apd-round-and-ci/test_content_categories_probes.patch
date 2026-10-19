@@ -1,0 +1,58 @@
+--- a/qucs-s-26.1.1/qucs/tests/test_content_categories.cpp	2026-10-19 06:25:07
++++ b/qucs-s-26.1.1/qucs/tests/test_content_categories.cpp	2026-10-19 06:26:46
+@@ -8,6 +8,7 @@
+  */
+ #include <QtTest>
+ #include <QAction>
++#include <QAbstractItemView>
+ #include <QElapsedTimer>
+ #include <QHeaderView>
+ #include <QLabel>
+@@ -468,6 +469,47 @@
+             QVERIFY2(noteAt.top() < 40, qPrintable(where));
+             QVERIFY2(tableAt.top() < noteAt.bottom() + 40, qPrintable(where));
+             QVERIFY2(tableAt.bottom() > tab->height() - 40, qPrintable(where));
++        }
++    }
++
++    void huntEveryTabTall()
++    {
++        QucsApp app(false);
++        MainGuard mainGuard(&app);
++        QucsSettingsDialog dlg(&app);
++        auto* tabs = dlg.findChild<QTabWidget*>();
++        dlg.resize(900, 1000);
++        dlg.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&dlg));
++        for (int i = 0; i < tabs->count(); ++i) {
++            tabs->setCurrentIndex(i);
++            tabs->widget(i)->layout()->activate();
++            QTest::qWait(50);
++            dlg.grab().save(qEnvironmentVariable("SHOT") + QStringLiteral("-tab%1.png").arg(i));
++            qInfo("tab %d: %s", i, qPrintable(tabs->tabText(i)));
++        }
++    }
++
++    void huntViewsGrow()
++    {
++        QucsApp app(false);
++        MainGuard mainGuard(&app);
++        QucsSettingsDialog dlg(&app);
++        auto* tabs = dlg.findChild<QTabWidget*>();
++        dlg.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&dlg));
++        for (int i = 0; i < tabs->count(); ++i) {
++            tabs->setCurrentIndex(i);
++            QStringList said;
++            for (int h : {700, 1100}) {
++                dlg.resize(900, h);
++                QTest::qWait(50);
++                tabs->widget(i)->layout()->activate();
++                for (QAbstractItemView* v : tabs->widget(i)->findChildren<QAbstractItemView*>())
++                    if (v->isVisible() && !qobject_cast<QAbstractItemView*>(v->parentWidget())) said << QStringLiteral("%1 %2: %3 high").arg(h).arg(QString::fromLatin1(v->metaObject()->className())).arg(v->height());
++                said << QStringLiteral("(tab %1)").arg(tabs->widget(i)->height());
++            }
++            qInfo("%s: %s", qPrintable(tabs->tabText(i)), qPrintable(said.join(QLatin1String(", "))));
+         }
+     }
+ 

@@ -2178,6 +2178,14 @@ std::optional<std::vector<double>> valueList(const QString& text, const Scope& s
         }
         *v = e.constant();
         *d = e.dim();
+        // (Not a number, or infinite, refused: a transient's output time of
+        // 0/0 ran a million steps, "stopped at t = NaN s"; a sweep's point
+        // of it failed as "'nan' is not a parameter" - the hunt of 19
+        // October, B9 and N12.)
+        if (!std::isfinite(*v)) {
+            if (error) *error = tr("%1 is not a finite number").arg(t);
+            return false;
+        }
         return true;
     };
     // (A plain 0 is 0 in whatever unit the others have.)
@@ -2269,9 +2277,14 @@ struct Telling {
     bool stopped() { return !to(fraction, what); }
 };
 
-/// The problems of \a step: its physics (all of them when it names none).
-bool setupStep(Step& st, QString* error)
+/// The problems of \a step: its physics (all of them when it names none);
+/// with \a tell, asked whether to stop and telling as they set up.
+bool setupStep(Step& st, QString* error, Telling* tell = nullptr)
 {
+    if (tell && !(*tell)(tell->fraction, tr("Setting up %1").arg(st.node.name()))) {
+        *error = tr("cancelled");
+        return false;
+    }
     QStringList tags = st.node.list(QStringLiteral("physics"));
     if (tags.isEmpty())
         for (const Field& f : st.s.fields()) tags << f.tag;
@@ -2294,6 +2307,15 @@ bool setupStep(Step& st, QString* error)
                         errors << tr("%1's %2 is %3 - one of %4").arg(node->name(), d.label, v, d.choices.join(QStringLiteral(", ")));
                 }
         auto p = detail::makeProblem(st.s, fi);
+        // (Asked whether to stop, and telling, while it sets up too - a
+        // semiconductor's doping, edges and contacts on 349,000 nodes 2.4 s,
+        // then its equilibrium's: a model closed meanwhile waited for them,
+        // its progress the mesh's "Done" - the hunt of 19 October, B2.)
+        if (tell) {
+            Telling& tl = *tell;
+            p->setCancelled([&tl] { return tl.stopped(); });
+            p->setTold([&tl](const QString& w) { (void)tl.to(tl.fraction, w.isEmpty() ? tl.what : tl.what + QStringLiteral(" - ") + w); });
+        }
         QString why;
         if (!p->setup(&why)) errors << why;
         st.problems.push_back(std::move(p));
@@ -2389,7 +2411,7 @@ bool stationaryStep(Solution& s, const Node& node, const std::function<bool(doub
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     // A field not solved before starts from its initial values (a step
     // before leaves its own as the next one's start).
@@ -2541,7 +2563,7 @@ bool laserStep(Solution& s, const Node& node, const std::function<bool(double, c
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     // Its semiconductor that lases; the physics solved at each point (not
     // modes: the cavity's is its Eigenfrequency step's).
@@ -2777,7 +2799,7 @@ bool modeStep(Solution& s, const Node& node, const std::function<bool(double, co
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     // Frequencies, or free-space wavelengths.
     Dim dim;
@@ -2941,7 +2963,7 @@ bool eigenvalueStep(Solution& s, const Node& node, const std::function<bool(doub
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     std::vector<int> pdes, others;
     for (int i = 0; i < int(st.problems.size()); ++i)
@@ -2986,7 +3008,7 @@ bool eigenfrequencyStep(Solution& s, const Node& node, const std::function<bool(
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     std::vector<int> resonators, others;
     for (int i = 0; i < int(st.problems.size()); ++i)
@@ -3083,7 +3105,7 @@ bool statesStep(Solution& s, const Node& node, const std::function<bool(double, 
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     std::vector<int> quantum, others;
     if (!splitQuantum(st, quantum, others, warnings, error)) return false;
@@ -3271,7 +3293,7 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     std::vector<int> quantum, others;
     if (!splitQuantum(st, quantum, others, warnings, error)) return false;
@@ -3307,7 +3329,7 @@ bool bandsStep(Solution& s, const Node& node, const std::function<bool(double, c
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     std::vector<int> quantum, others;
     if (!splitQuantum(st, quantum, others, warnings, error)) return false;
@@ -3351,7 +3373,7 @@ bool frequencyStep(Solution& s, const Node& node, const std::function<bool(doubl
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     Dim dim;
     QString why;
@@ -3433,7 +3455,7 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
 {
     Telling tell{told, 0, node.name()};
     Step st{s, node, {}, {}, {}, 50, 1e-6};
-    if (!setupStep(st, error)) return false;
+    if (!setupStep(st, error, &tell)) return false;
     cancelWith(st, tell);
     Dim dim;
     QString why;
@@ -4048,7 +4070,8 @@ static void checkPlottedFields(const Model& model, QStringList* warnings)
 }
 
 StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
-                  std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress)
+                  std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress,
+                  const std::vector<std::shared_ptr<Solution>>& resume)
 {
     StudyRun run;
     run.mesh = mesh;
@@ -4113,6 +4136,8 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         QString name;
         std::vector<double> values;
         Dim dim;
+        QString unitText;              // the unit its plain numbers were given in (else empty)
+        double scale = 1, offset = 0;  // that unit's
     };
     std::vector<Swept> lists;
     QStringList known;
@@ -4143,11 +4168,14 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             }
             for (double& v : *values) v = v * u->scale + u->offset;
             dim = u->dim;
+            lists.push_back({name, *values, dim, unitText, u->scale, u->offset});
+            run.swept << name;
+            continue;
         } else if (dim.isNone() && !own.isNone()) {
             run.error = tr("%1: %2 is in %3: give its values a unit (2[mm]), or the row one").arg(sweep->name(), name, dimName(own));
             return run;
         }
-        lists.push_back({name, *values, dim});
+        lists.push_back({name, *values, dim, QString(), 1, 0});
         run.swept << name;
     }
     if (lists.empty()) {
@@ -4201,13 +4229,24 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     // values apart, 4 at least (21.542937, 21.543037 and 21.543137 were each
     // "theta = 21.54", one name for three points: the update check of
     // 8bd5709).
+    // A value as its point's name says it: in SI with a prefix, or - nought,
+    // or where SI says it only with an exponent - in the unit the sweep gave
+    // (a length's nought in mm was "0 m", a doping in 1/cm³ "1e+22 1/m³":
+    // the hunt of 19 October, N4).
+    static const QRegularExpression exponent(QStringLiteral("\\de[+-]?\\d"));
+    auto said = [&lists](std::size_t i, double v, int d) {
+        const Swept& l = lists[i];
+        const QString t = formatQuantity(v, l.dim, d);
+        if (l.unitText.isEmpty() || !(l.scale != 0) || (v != 0 && !exponent.match(t).hasMatch())) return t;
+        return QStringLiteral("%1 %2").arg(formatNumber((v - l.offset) / l.scale, d), l.unitText);
+    };
     std::vector<int> figures(lists.size(), 4);
     for (std::size_t i = 0; i < lists.size(); ++i)
         for (int d = 4; d <= 15; ++d) {
             QHash<QString, double> named;
             bool apart = true;
             for (double v : lists[i].values) {
-                const QString t = formatQuantity(v, lists[i].dim, d);
+                const QString t = said(i, v, d);
                 const auto it = named.constFind(t);
                 if (it != named.constEnd() && *it != v) apart = false;
                 named.insert(t, v);
@@ -4217,6 +4256,22 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         }
     std::shared_ptr<const Mesh> base = mesh;
     std::shared_ptr<const Solution> previous;
+    // (Stopped before, the model as it was since: its points kept, on from
+    // the next - solved again it began at its first, the 7 points kept of a
+    // diode's sweep solved again: the hunt of 19 October, N3.)
+    std::size_t first = 0;
+    if (!resume.empty() && resume.size() < points.size()) {
+        bool same = true;
+        for (std::size_t k = 0; k < resume.size() && same; ++k)
+            for (std::size_t i = 0; i < lists.size() && same; ++i)
+                same = resume[k] && resume[k]->sweptValues.value(lists[i].name, NAN) == points[k][i];
+        if (same) {
+            first = resume.size();
+            run.solutions = resume;
+            previous = resume.back();
+            run.log << tr("%1: on from point %2 of %3, its %4 points before kept as they were").arg(sweep->name()).arg(first + 1).arg(points.size()).arg(first);
+        }
+    }
     // Points at once (the sweep's "parallel"): not where a point starts from
     // the one before - a semiconductor walks from the last point's
     // solution, a mode followed or tracked searches about its index.
@@ -4263,35 +4318,34 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             run.error = tr("%1: %2").arg(where, why);
             return false;
         }
-        run.stopped = tr("%1 stopped at %2 (point %3 of %4): %5 - its %6 points before kept")
-                          .arg(sweep->name(), where)
-                          .arg(k + 1)
-                          .arg(points.size())
-                          .arg(why)
-                          .arg(run.solutions.size());
+        // ("its 1 points" said for one: the hunt of 19 October, N4.)
+        const QString kept = run.solutions.size() == 1 ? tr("its point before kept") : tr("its %1 points before kept").arg(run.solutions.size());
+        run.stopped = tr("%1 stopped at %2 (point %3 of %4): %5 - %6").arg(sweep->name(), where).arg(k + 1).arg(points.size()).arg(why, kept);
         run.error.clear();
         return true;
     };
-    for (std::size_t batch = 0; batch < points.size() && atOnce > 1 && run.stopped.isEmpty(); batch += std::size_t(atOnce)) {
+    for (std::size_t batch = first; batch < points.size() && atOnce > 1 && run.stopped.isEmpty(); batch += std::size_t(atOnce)) {
         const std::size_t end = std::min(points.size(), batch + std::size_t(atOnce));
         std::vector<Ready> ready;
-        std::optional<std::tuple<std::size_t, QString, QString>> meshFailed;   // a point's mesh not made: where, why
+        std::optional<std::tuple<std::size_t, QString, QString>> meshFailed;   // a point not made ready - its mesh, its parameters: where, why
         for (std::size_t k = batch; k < end; ++k) {
             QHash<QString, QString> overrides;
             QStringList label;
             Ready r;
             for (std::size_t i = 0; i < lists.size(); ++i) {
                 overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
-                label << QStringLiteral("%1 = %2").arg(lists[i].name, formatQuantity(points[k][i], lists[i].dim, figures[i]));
+                label << QStringLiteral("%1 = %2").arg(lists[i].name, said(i, points[k][i], figures[i]));
                 r.values.insert(lists[i].name, points[k][i]);
             }
             r.where = label.join(QLatin1String(", "));
             r.ps = evaluateParameters(model, overrides);
             if (!r.ps->errors.isEmpty()) {
+                // (As a mesh not made: the points before kept - they were
+                // lost, the hunt of 19 October, N1.)
                 QStringList list;
                 for (auto it = r.ps->errors.cbegin(); it != r.ps->errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
-                run.error = tr("%1: the parameters: %2").arg(r.where, list.join(QLatin1String("; ")));
-                return run;
+                meshFailed = {k, r.where, tr("the parameters: %1").arg(list.join(QLatin1String("; ")))};
+                break;
             }
             QSet<QString> changed;
             for (auto it = r.ps->values.cbegin(); it != r.ps->values.cend(); ++it)
@@ -4352,20 +4406,20 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             one->atOnce = atOnce;
             one->sweepSeconds = double(wall.elapsed()) / 1000;
         }
-    for (std::size_t k = 0; k < points.size() && atOnce == 1; ++k) {
+    for (std::size_t k = first; k < points.size() && atOnce == 1; ++k) {
         QHash<QString, QString> overrides;
         QStringList label;
         QHash<QString, double> values;
         for (std::size_t i = 0; i < lists.size(); ++i) {
             overrides.insert(lists[i].name, valueText(points[k][i], lists[i].dim));
-            label << QStringLiteral("%1 = %2").arg(lists[i].name, formatQuantity(points[k][i], lists[i].dim, figures[i]));
+            label << QStringLiteral("%1 = %2").arg(lists[i].name, said(i, points[k][i], figures[i]));
             values.insert(lists[i].name, points[k][i]);
         }
         const std::shared_ptr<ParameterScope> ps = evaluateParameters(model, overrides);
         if (!ps->errors.isEmpty()) {
             QStringList list;
             for (auto it = ps->errors.cbegin(); it != ps->errors.cend(); ++it) list << tr("%1: %2").arg(it.key(), it.value());
-            run.error = tr("%1: the parameters: %2").arg(label.join(QLatin1String(", ")), list.join(QLatin1String("; ")));
+            if (stopAt(k, label.join(QLatin1String(", ")), tr("the parameters: %1").arg(list.join(QLatin1String("; "))))) break;
             return run;
         }
         // The parameters it changes, and whether they shape the geometry.
@@ -4407,6 +4461,15 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         r.solution->sweptValues = values;
         run.log << QStringLiteral("%1: %2").arg(where, r.solution->log.join(QLatin1String("; ")));
         run.solutions.push_back(r.solution);
+        // (The point before's walk's last line, taken by this one: let go -
+        // kept, a vector of the unknowns beside each point's values, 43 %
+        // more a point - the hunt of 19 October, B3.)
+        if (run.solutions.size() > 1)
+            for (Field& f : run.solutions[run.solutions.size() - 2]->fields()) {
+                f.walkedFrom.reset();
+                f.walkedFromVolts.clear();
+                f.walkedStep = 0;
+            }
     }
     if (!run.mesh) run.mesh = base;
     return run;

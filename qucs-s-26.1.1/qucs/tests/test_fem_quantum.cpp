@@ -2112,6 +2112,14 @@ private slots:
             const Model m = load(QStringLiteral("strained_laser_gain.qfem"));
             const StudyRun gain = solve(m, QStringLiteral("std1"));
             QCOMPARE(int(gain.solutions.size()), 4);
+            // (Nothing warned: its states, its line shape and its window as
+            // their warnings asked - "ask for more states", the Lorentzian's
+            // tails, "widen the energies" before the hunt of 19 October, N11.)
+            {
+                QStringList said = gain.warnings;
+                for (const auto& s : gain.solutions) said << s->log;
+                QVERIFY2(!said.join(QLatin1Char(' ')).contains(QLatin1String("Warning")), qPrintable(said.filter(QStringLiteral("Warning")).join(QLatin1String("; "))));
+            }
             std::vector<double> peak, at, tm;
             for (const auto& s : gain.solutions) {
                 double best = -1e300, where = 0, bestTM = -1e300;

@@ -957,8 +957,9 @@ public:
             }
         }
     }
-    /// The largest refractive index (real) on these domains, at their middles.
-    double largestIndex(Solution& s, const std::vector<char>& on, double omega) const
+    /// The largest refractive index (real) on these domains, at their middles
+    /// (its domain in \a which).
+    double largestIndex(Solution& s, const std::vector<char>& on, double omega, int* which = nullptr) const
     {
         double best = 1;
         PointEvaluator e(s);
@@ -968,14 +969,32 @@ public:
             if (d < 0 || !on[std::size_t(d)] || domains[std::size_t(d)].pml) continue;
             e.moveTo(t, 1.0 / 3, 1.0 / 3);
             const At a = at(e, d, omega, 1);
-            for (int k = 0; k < 3; ++k) best = std::max(best, std::sqrt(std::abs((a.eps[k] * a.mu[k]).real())));
+            for (int k = 0; k < 3; ++k)
+                if (const double n = std::sqrt(std::abs((a.eps[k] * a.mu[k]).real())); n > best) {
+                    best = n;
+                    if (which) *which = d;
+                }
         }
         return best;
+    }
+    /// Whether domains \a a and \a b are of one material - their index or
+    /// permittivity as written -, its carriers and temperature their own.
+    bool oneMaterial(int a, int b) const
+    {
+        if (a < 0 || b < 0) return false;
+        const Domain &x = domains[std::size_t(a)], &y = domains[std::size_t(b)];
+        if (x.byIndex != y.byIndex) return false;
+        for (int k = 0; k < 3; ++k) {
+            if (x.n[k].text() != y.n[k].text() || x.kappa[k].text() != y.kappa[k].text()) return false;
+            for (int j = 0; j < 3; ++j)
+                if (x.eps[k][j].text() != y.eps[k][j].text()) return false;
+        }
+        return true;
     }
     /// The largest refractive index (real) at the edge of these domains -
     /// the window's, or beside its perfectly matched layers: the cladding's,
     /// which a guided mode's effective index is above.
-    double outerIndex(Solution& s, const std::vector<char>& on, double omega) const
+    double outerIndex(Solution& s, const std::vector<char>& on, double omega, int* which = nullptr) const
     {
         double best = 0;
         PointEvaluator e(s);
@@ -990,7 +1009,11 @@ public:
             const int t = inside(edge.left) ? edge.left : edge.right;
             e.moveTo(t, 1.0 / 3, 1.0 / 3);
             const At a = at(e, mesh.domain[std::size_t(t)], omega, 1);
-            for (int k = 0; k < 3; ++k) best = std::max(best, std::sqrt(std::abs((a.eps[k] * a.mu[k]).real())));
+            for (int k = 0; k < 3; ++k)
+                if (const double n = std::sqrt(std::abs((a.eps[k] * a.mu[k]).real())); n > best) {
+                    best = n;
+                    if (which) *which = mesh.domain[std::size_t(t)];
+                }
         }
         return best;
     }
@@ -1573,10 +1596,15 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     // "te" took 1.4239, Γ 0.0025, nothing said: the update check of
     // 8bd5709). (Where the window's edge is as high as anything - a slab, a
     // rib's - not said: there the material's index is no bound.)
+    // (Nor where it is the core's material, doped or warmed: a phase
+    // shifter's p⁺ and n⁺ slabs at its window's edges, their free carriers
+    // lowering silicon's index a little, warned its rib's mode, neff 2.567
+    // in oxide, "not guided" - the hunt of 19 October, B7.)
     if (!a_modes.empty()) {
-        const double outer = a_media.outerIndex(a_s, f.domains, omega), inner = a_media.largestIndex(a_s, f.domains, omega);
+        int edgeDomain = -1, coreDomain = -1;
+        const double outer = a_media.outerIndex(a_s, f.domains, omega, &edgeDomain), inner = a_media.largestIndex(a_s, f.domains, omega, &coreDomain);
         const double neff = a_modes[std::size_t(a_chosen)].beta.real() / k0;
-        if (outer > 0 && outer < inner * (1 - 1e-9) && neff < outer) {
+        if (outer > 0 && outer < inner * (1 - 1e-9) && !a_media.oneMaterial(edgeDomain, coreDomain) && neff < outer) {
             a_s.log << tr("Warning: %1: the mode chosen is below its cladding's index (at its window's edge) - not guided: no guided mode "
                           "in its set; search about a higher index")
                            .arg(a_node->name());

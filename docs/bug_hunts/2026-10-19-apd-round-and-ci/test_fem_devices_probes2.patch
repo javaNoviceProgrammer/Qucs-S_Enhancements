@@ -1,0 +1,35 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+index 8192d19..c138e04 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+@@ -2778,6 +2778,30 @@ private slots:
+         }
+         qInfo("ionized in part: %s", qPrintable(said.join(QLatin1String("; "))));
+     }
++
++    void huntTemperatureSweep()
++    {
++        for (const char* pts : {"300, 400", "300, 600", "300, 200", "300, 100"})
++            for (const char* va : {"0.7", "-5"}) {
++                QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
++                                        QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"),
++                                        QStringLiteral(R"({"type": "sweep", "parameters": [["Tk", "%1", "K"]]}, {"type": "stationary"})").arg(QLatin1String(pts)), QStringLiteral("0.05"));
++                json.replace(R"("tag": "semi", "features")", R"("tag": "semi", "T": "Tk", "features")");
++                json.replace(R"("parameters": [{"name": "Va", "expression": "0[V]"}])",
++                             QStringLiteral(R"("parameters": [{"name": "Va", "expression": "%1[V]"}, {"name": "Tk", "expression": "300[K]"}])").arg(QLatin1String(va)).toUtf8());
++                const Run r = run(modelOf(json));
++                QStringList got;
++                for (const auto& sol : r.study.solutions) got << QStringLiteral("%1: %2 A").arg(sol->label).arg(global(*sol, QStringLiteral("semi.I_k")), 0, 'g', 6);
++                // the last point alone
++                const QString last = QString::fromLatin1(pts).section(QLatin1String(", "), -1);
++                QByteArray one = json;
++                one.replace(QStringLiteral(R"({"type": "sweep", "parameters": [["Tk", "%1", "K"]]}, )").arg(QLatin1String(pts)).toUtf8(), "");
++                one.replace(R"({"name": "Tk", "expression": "300[K]"})", QStringLiteral(R"({"name": "Tk", "expression": "%1[K]"})").arg(last).toUtf8());
++                const Run alone = run(modelOf(one));
++                qInfo("Va %s, T %s: %s | stopped '%s' error '%s' | alone at %s K: %.6g A '%s'", va, pts, qPrintable(got.join(QLatin1String(", "))), qPrintable(r.study.stopped), qPrintable(r.error),
++                      qPrintable(last), alone.solution ? global(*alone.solution, QStringLiteral("semi.I_k")) : NAN, qPrintable(alone.error));
++            }
++    }
+ };
+ 
+ QTEST_GUILESS_MAIN(TestFemDevices)

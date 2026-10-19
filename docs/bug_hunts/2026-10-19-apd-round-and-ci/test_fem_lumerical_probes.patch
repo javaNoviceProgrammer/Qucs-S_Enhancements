@@ -1,0 +1,86 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_fem_lumerical.cpp b/qucs-s-26.1.1/qucs/tests/test_fem_lumerical.cpp
+index ca7887b..8b75438 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_lumerical.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_lumerical.cpp
+@@ -203,6 +203,70 @@ class TestFemLumerical : public QObject
+     Q_OBJECT
+ 
+ private slots:
++    void huntRangePoints()
++    {
++        const QJsonObject o = QJsonDocument::fromJson(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
++          "parameters": [{"name": "Va", "expression": "0.3[V]"}, {"name": "Pin", "expression": "1e-3[W]"}],
++          "components": [{"unit": "um", "thickness": "10[um]",
++            "geometry": [{"type": "rectangle", "label": "si", "size": ["2", "1"]},
++                         {"type": "rectangle", "label": "ox", "position": ["0", "1"], "size": ["2", "0.2"]},
++                         {"type": "rectangle", "label": "top", "position": ["0.8", "1"], "size": ["0.4", "0.2"]},
++                         {"type": "rectangle", "label": "bottom", "position": ["0", "-0.1"], "size": ["2", "0.1"]}, {"type": "form union"}],
++            "materials": [{"material": "Silicon", "selection": {"only": ["si"]}}, {"material": "Silicon dioxide", "selection": {"only": ["ox"]}},
++                          {"material": "Aluminium", "selection": {"only": ["top", "bottom"]}}],
++            "physics": [{"type": "semiconductor", "tag": "semi", "T": "320[K]", "selection": {"only": ["si", "ox"]}, "features": [
++              {"type": "doping", "label": "substrate", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["si"]}},
++              {"type": "doping", "label": "graded p", "dopant": "acceptor", "profile": "expression",
++               "N": "1e18[1/cm^3]*exp(-((y/1[um]) - 1)^2/0.15^2)", "selection": {"only": ["si"]}},
++              {"type": "srh", "label": "own SRH", "source": "user", "taun": "5[ns]", "taup": "3[ns]", "dependence": "doping",
++               "N0n": "5e16[1/cm^3]", "N0p": "5e16[1/cm^3]", "selection": {"only": ["si"]}},
++              {"type": "auger", "label": "own Auger", "Cn": "3e-31[cm^6/s]", "Cp": "1e-31[cm^6/s]", "selection": {"only": ["si"]}},
++              {"type": "surfacerec", "label": "oxide surface", "Sn": "1000[m/s]*(T/300[K])^(-2)", "Sp": "500[m/s]*(T/300[K])^(-2)",
++               "selection": {"between": [["si"], ["ox"]]}},
++              {"type": "surfacerec", "label": "back contact", "Sn": "1e5[m/s]", "Sp": "1e5[m/s]", "majority": false,
++               "selection": {"between": [["si"], ["bottom"]]}},
++              {"type": "generation", "label": "light", "G": "Pin/1[W]*1e27[1/(m^3*s)]*exp(-(1 - y/1[um])/0.3)", "selection": {"only": ["si"]}},
++              {"type": "ohmic", "name": "anode", "V0": "Va", "selection": {"between": [["si"], ["top"]]}},
++              {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"between": [["si"], ["bottom"]]}}]}],
++            "mesh": {"size": "normal", "custom": true, "hmax": "0.2",
++                     "features": [{"type": "size", "level": "domain", "hmax": "%1", "selection": {"only": ["si"]}}]}}],
++          "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "%2", "V"]]}, {"type": "stationary"}]}]})json").arg(QStringLiteral("0.08"), QStringLiteral("-0.5, 0.6")).toUtf8()).object();
++        const Model m = modelOf(o, QStringLiteral("graded.qfem"));
++        const LumericalScript s = exported(m, QStringLiteral("lumericalcharge"));
++        QVERIFY2(s.error.isEmpty(), qPrintable(s.error));
++        QTemporaryDir dir;
++        for (const char* n : {"10", "10000", "100000", "1000000"}) {
++            const QString text = s.text + QStringLiteral("\nsetnamed(\"anode\", \"sweep type\", \"range\");\nsetnamed(\"anode\", \"range start\", 0);\nsetnamed(\"anode\", \"range stop\", 1);\nsetnamed(\"anode\", \"range num points\", %1);\n").arg(QLatin1String(n));
++            QElapsedTimer t;
++            t.start();
++            const LumericalImport im = imported(dir, text);
++            const QByteArray js = QJsonDocument(im.model).toJson(QJsonDocument::Compact);
++            qInfo("range num points %s: %lld ms, error '%s', model %lld bytes", n, t.elapsed(), qPrintable(im.error), qlonglong(js.size()));
++        }
++    }
++
++    void huntMoreCasts()
++    {
++        QTemporaryDir dir;
++        const QStringList texts = {
++            QStringLiteral("addrect;\nset(\"name\", \"r\");\nset(\"x span\", 1e-6);\nset(\"y span\", 1e-6);\nset(\"z span\", 1e-6);\nset(\"override mesh order from material database\", 1);\nset(\"mesh order\", 1e30);\naddrect;\nset(\"name\", \"q\");\nset(\"x span\", 2e-6);\nset(\"y span\", 2e-6);\nset(\"z span\", 1e-6);\naddfde;\nset(\"x span\", 4e-6);\nset(\"y span\", 4e-6);\n"),
++            QStringLiteral("addrect;\nset(\"name\", \"r\");\nset(\"x span\", 1e-6);\nset(\"y span\", 1e-6);\nset(\"z span\", 1e-6);\naddfde;\nset(\"x span\", 4e-6);\nset(\"y span\", 4e-6);\nset(\"solver type\", 1e30);\n")};
++        for (const QString& t : texts) {
++            const LumericalImport im = imported(dir, t);
++            qInfo("error '%s', notes %d", qPrintable(im.error), int(im.notes.size()));
++        }
++    }
++
++    void huntAxisCast()
++    {
++        QTemporaryDir dir;
++        for (const char* v : {"1e30", "-1e30", "1e400", "3", "2.9e9"}) {
++            const QString text = QStringLiteral("addpoly;\nset(\"name\", \"r\");\nset(\"vertices\", [0, 0; 1e-6, 0; 0, 1e-6]);\nset(\"z span\", 1e-6);\nset(\"first axis\", %1);\nset(\"rotation 1\", 30);\naddfde;\nset(\"x span\", 4e-6);\nset(\"y span\", 4e-6);\n").arg(QLatin1String(v));
++            const LumericalImport im = imported(dir, text);
++            qInfo("first axis %s: error '%s', notes %d", v, qPrintable(im.error), int(im.notes.size()));
++        }
++    }
++
+     // --- Exports --------------------------------------------------------
+ 
+     // MODE: an SOI wire in oxide, its window ended by PML domains: a
+@@ -1382,8 +1446,8 @@ plot(r, r); somethingunknown;
+             case 2: return "for (k = 0; k < " + pick({"2", "1e9", "inf", "k + 1", "nan"}) + "; k = k " + pick({"+ 1", "", "- 1", "* 1"}) + ") { b = b * 2; }";
+             case 3: return "if (" + expr(1) + ") { c = 1; } else { c = 2; }";
+             case 4: return "while (" + pick({"1", "b < 10", "true", "0"}) + ") { b = b + 1; }";
+-            case 5: return "set(\"" + pick({"x", "x span", "y span", "name", "material", "z", "mesh order", "nosuch"}) + "\", " + expr(1) + ");";
+-            case 6: return pick({"addrect;", "addfde;", "addcircle;", "adddevice;", "addchargesolver;", "addmaterial(\"x\");", "selectall; delete;"});
++            case 5: return "set(\"" + pick({"x", "x span", "y span", "name", "material", "z", "mesh order", "nosuch", "first axis", "rotation 1", "override mesh order from material database", "sweep type", "range num points", "source face", "surface type", "vertices", "solver type", "dimension", "active"}) + "\", " + expr(1) + ");";
++            case 6: return pick({"addrect;", "addfde;", "addcircle;", "adddevice;", "addchargesolver;", "addmaterial(\"x\");", "selectall; delete;", "addpoly;", "addelectricalcontact;", "addsimulationregion;"});
+             case 7: return "try { " + expr(1) + "; } catch(err);";
+             default: return expr(0) + ";";
+             }

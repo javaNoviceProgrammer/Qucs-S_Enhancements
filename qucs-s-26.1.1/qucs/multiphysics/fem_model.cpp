@@ -1560,7 +1560,9 @@ QList<NodeKind> makeKinds()
                      tr("What α is of: the field; each carrier's quasi-Fermi gradient - the force that drives its current, as the "
                         "field where it drifts, nought where drift and diffusion balance (a steep doping's own field at rest: a "
                         "heavily doped contact layer's, a graded absorber's; the Lumerical grad phi); or the field along each "
-                        "carrier's current, nought against it (the Lumerical E dot J)")),
+                        "carrier's current, nought against it (the Lumerical E dot J). semi.In and semi.Ip, along the field's "
+                        "lines, are α of |E| whatever this is: their breakdown at 1 is the field's - with the others, as "
+                        "semi.Mion and the currents say")),
               shownIf(expr(QStringLiteral("an"), tr("Electrons' a"), perCm, QStringLiteral("7.03e5[1/cm]")), user),
               shownIf(expr(QStringLiteral("bn"), tr("Electrons' b"), fieldUnit, QStringLiteral("1.231e6[V/cm]")), user),
               shownIf(expr(QStringLiteral("ap"), tr("Holes' a"), perCm, QStringLiteral("1.582e6[1/cm]")), user),

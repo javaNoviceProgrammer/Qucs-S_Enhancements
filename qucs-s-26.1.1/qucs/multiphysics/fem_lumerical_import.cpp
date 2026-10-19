@@ -129,7 +129,7 @@ std::array<double, 9> rotation(const Object& o)
             const QString t = a->s.trimmed().toLower();
             axis = t == QLatin1String("x") ? 1 : t == QLatin1String("y") ? 2 : t == QLatin1String("z") ? 3 : 0;
         } else
-            axis = int(a->toNumber());
+            axis = whole(a->toNumber(), 0, 3, 0);
         if (axis < 1 || axis > 3) continue;
         const double th = o.number(QStringLiteral("rotation %1").arg(k + 1), 0) * M_PI / 180;
         if (th == 0) continue;
@@ -593,14 +593,16 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
     double lambda = 1.55e-6;
     if (const Value* v = analysis("wavelength")) lambda = v->toNumber(lambda);
     else if (const Value* f = analysis("frequency")) lambda = C0 / f->toNumber(C0 / lambda);
-    const int modes = analysis("number of trial modes") ? int(analysis("number of trial modes")->toNumber(4)) : 4;
+    const int askedModes = analysis("number of trial modes") ? whole(analysis("number of trial modes")->toNumber(4), 1, 1000, -1) : 4;
+    if (askedModes < 0) notes << tr("its number of trial modes %1: no more than 1,000 - 4 taken").arg(num(analysis("number of trial modes")->toNumber(4)));
+    const int modes = askedModes < 0 ? 4 : askedModes;
     QString neff;
     if (analysis("search") && analysis("search")->toText().contains(QLatin1String("near")) && analysis("n")) neff = num(analysis("n")->toNumber(1));
     else if (analysis("use max index") && analysis("use max index")->toNumber(1) == 0 && analysis("n")) neff = num(analysis("n")->toNumber(1));
     // The structures, their materials.
     QSet<QString> used = {QStringLiteral("window")};
     auto order = [&](const Object& o) {
-        if (o.number(QStringLiteral("override mesh order from material database"), 0) != 0) return int(o.number(QStringLiteral("mesh order"), 2));
+        if (o.number(QStringLiteral("override mesh order from material database"), 0) != 0) return whole(o.number(QStringLiteral("mesh order"), 2), -1000000000, 1000000000, 2);
         if (const Material* m = materialNamed(scene, o.text(QStringLiteral("material")))) return m->priority;
         return 2;
     };
@@ -802,7 +804,8 @@ LumericalImport buildMode(const Scene& scene, const Object& fde)
     // The study: the wavelength, a sweep from it.
     QString frequency = QStringLiteral("%1[nm]").arg(num(lambda * 1e9));
     if (const Value* stop = analysis("stop wavelength"); stop && analysis("number of points")) {
-        const int n = int(analysis("number of points")->toNumber(1));
+        const int n = whole(analysis("number of points")->toNumber(1), 1, 10000, -1);
+        if (n < 0) notes << tr("its wavelength sweep of %1 points: no more than 10,000 - its wavelength alone").arg(num(analysis("number of points")->toNumber(1)));
         if (n > 1) frequency = QStringLiteral("linspace(%1[Hz], %2[Hz], %3)").arg(num(C0 / lambda), num(C0 / stop->toNumber(lambda))).arg(n);
     }
     QJsonObject step{{QStringLiteral("type"), QStringLiteral("mode")}, {QStringLiteral("frequency"), frequency}, {QStringLiteral("modes"), std::max(1, modes)}};
@@ -1033,7 +1036,7 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
         // 0.35 to 0.7 of it and -10.5 V.)
         const Value* dfn = model(QStringLiteral("impact n"));
         const Value* df = dfn ? dfn->field(QStringLiteral("driving")) : nullptr;
-        const int code = df ? int(df->toNumber()) : 0;
+        const int code = df ? whole(df->toNumber(), -1000000000, 1000000000, -1) : 0;
         const bool gradPhi = code == 1;
         ii.insert(QStringLiteral("driving"), gradPhi ? QStringLiteral("fermi") : QStringLiteral("field"));
         out.features.append(ii);
@@ -1041,7 +1044,7 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
                               : tr("%1: impact ionization driven by the field |E| (the Lumerical driving field %2): the Lumerical APD's "
                                    "dark current and breakdown are |E|'s here; along each carrier's current, E·J/|J|, is Impact "
                                    "Ionization's Driving field too")
-                                    .arg(name, df ? tr("%1, E dot J").arg(code) : tr("not given")));
+                                    .arg(name, !df ? tr("not given") : code == 0 ? tr("0, E dot J") : tr("%1, not one Qucs-S knows").arg(num(df->toNumber()))));
     }
     if (on(QStringLiteral("btbt")) && active(QStringLiteral("btbt")) == QLatin1String("Hurkx"))
         out.features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("btbt")},
@@ -1070,7 +1073,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
         // (A text, or a script's number: 1 2D x-normal, 2 y-normal, 3 z-normal, 4 3D.)
         QString dim = region->text(QStringLiteral("dimension")).toLower();
         if (const Value* d = region->prop(QStringLiteral("dimension")); d && d->isNumber())
-            dim = QStringList{QStringLiteral("x-normal"), QStringLiteral("y-normal"), QStringLiteral("z-normal"), QStringLiteral("3d")}.value(int(d->toNumber(2)) - 1, QStringLiteral("y-normal"));
+            dim = QStringList{QStringLiteral("x-normal"), QStringLiteral("y-normal"), QStringLiteral("z-normal"), QStringLiteral("3d")}.value(whole(d->toNumber(2), 1, 4, 2) - 1, QStringLiteral("y-normal"));
         if (dim.contains(QLatin1String("x-normal")) || dim.contains(QLatin1String("x normal"))) {
             p.normal = 0;
             p.u = 1;
@@ -1158,7 +1161,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
     }
     // The structures (their mesh order the DEVICE's own).
     QSet<QString> used;
-    auto order = [&](const Object& o) { return int(o.number(QStringLiteral("mesh order"), 2)); };
+    auto order = [&](const Object& o) { return whole(o.number(QStringLiteral("mesh order"), 2), -1000000000, 1000000000, 2); };
     std::vector<Shape> shapes = structures(scene, p, order, used, notes);
     if (shapes.empty()) {
         out.error = tr("no structure in its simulation region");
@@ -1422,7 +1425,7 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                 notes << tr("%1: its junction width and reference concentration: left out").arg(name);
                 continue;
             }
-            int face = int(o.number(QStringLiteral("source face"), 6));   // 1 x min ... 6 z max
+            int face = whole(o.number(QStringLiteral("source face"), 6), 1, 6, 6);   // 1 x min ... 6 z max
             const int faceAxis = (face - 1) / 2, faceHigh = (face - 1) % 2;
             double x0 = box.left() + dj, x1 = box.right() - dj, y0 = box.top() + dj, y1 = box.bottom() - dj;
             if (faceAxis == p.u) (faceHigh ? x1 : x0) += faceHigh ? dj : -dj;
@@ -1587,7 +1590,14 @@ LumericalImport buildCharge(const Scene& scene, const Object& solver)
                 for (double v : t->m) values << num(v);
         } else if (sweep == QLatin1String("range") || sweep == QLatin1String("1")) {
             const double a = o.number(QStringLiteral("range start"), 0), b2 = o.number(QStringLiteral("range stop"), 0);
-            const int n = std::max(1, int(o.number(QStringLiteral("range num points"), 1)));
+            // (A sweep's points no more than a sweep takes, 10,000: two
+            // billion were taken, the import building them for minutes - the
+            // hunt of 19 October, F2.)
+            int n = whole(o.number(QStringLiteral("range num points"), 1), 1, 10000, -1);
+            if (n < 0) {
+                notes << tr("contact %1: its range of %2 points more than the 10,000 a sweep takes - its range start alone").arg(c.name, num(o.number(QStringLiteral("range num points"), 1)));
+                n = 1;
+            }
             for (int i = 0; i < n; ++i) values << num(n == 1 ? a : a + (b2 - a) * i / (n - 1));
         }
         if (values.size() > 1) {
@@ -1937,7 +1947,7 @@ LumericalImport buildHeat(const Scene& scene, const Object& solver)
     if (region) {
         QString dim = region->text(QStringLiteral("dimension")).toLower();
         if (const Value* d = region->prop(QStringLiteral("dimension")); d && d->isNumber())
-            dim = QStringList{QStringLiteral("x-normal"), QStringLiteral("y-normal"), QStringLiteral("z-normal"), QStringLiteral("3d")}.value(int(d->toNumber(3)) - 1, QStringLiteral("z-normal"));
+            dim = QStringList{QStringLiteral("x-normal"), QStringLiteral("y-normal"), QStringLiteral("z-normal"), QStringLiteral("3d")}.value(whole(d->toNumber(3), 1, 4, 3) - 1, QStringLiteral("z-normal"));
         if (dim.contains(QLatin1String("3d"))) {
             out.error = tr("its simulation region is 3D: a 2D one's cross-section is read");
             return out;
@@ -2003,7 +2013,7 @@ LumericalImport buildHeat(const Scene& scene, const Object& solver)
         tm[o.name()] = t;
     }
     QSet<QString> used;
-    auto order = [&](const Object& o) { return int(o.number(QStringLiteral("mesh order"), 2)); };
+    auto order = [&](const Object& o) { return whole(o.number(QStringLiteral("mesh order"), 2), -1000000000, 1000000000, 2); };
     std::vector<Shape> shapes = structures(scene, p, order, used, notes);
     if (shapes.empty()) {
         out.error = tr("no structure in its simulation region");
@@ -2051,7 +2061,7 @@ LumericalImport buildHeat(const Scene& scene, const Object& solver)
     // A boundary condition's surfaces: the region's faces (4), between two
     // materials (6), a solid's (3).
     auto surfaces = [&size, &p, &u1, &u0, &v1, &v0, &inUnit, &labelsOf, &shapes](const Object& o, std::vector<QJsonObject>* out) {
-        const int type = int(o.number(QStringLiteral("surface type"), -1));
+        const int type = whole(o.number(QStringLiteral("surface type"), -1), -1000000000, 1000000000, -1);
         const double e = 1e-6 * size;
         if (type == 4) {
             std::vector<QJsonObject>& boxes = *out;

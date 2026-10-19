@@ -24,7 +24,7 @@
     "studies": [
         {"type": "study", "tag": "std1", "label": "Gain", "steps": [
             {"type": "sweep", "parameters": [["N", "1e18, 2e18, 3e18, 4e18", "1/cm^3"]]},
-            {"type": "spectrum", "energies": "range(900[nm], 1[nm], 1060[nm])", "states": 6, "linewidth": "6.6[meV]", "density": "N"}
+            {"type": "spectrum", "energies": "range(800[nm], 1[nm], 1060[nm])", "states": 10, "linewidth": "6.6[meV]", "lineshape": "sech", "continuum": "bound", "density": "N"}
         ]},
         {"type": "study", "tag": "std2", "label": "States", "steps": [{"type": "states", "states": 3}]}
     ],
