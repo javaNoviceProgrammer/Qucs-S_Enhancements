@@ -815,14 +815,16 @@ private slots:
         // (The densities per the stack: the well's 8 of its 48 nm.)
         QCOMPARE(sc.params.field(QStringLiteral("cden"))->m.size(), std::size_t(4));
         for (int i = 0; i < 4; ++i) QVERIFY(near(sc.params.field(QStringLiteral("cden"))->m[std::size_t(i)], (i + 1) * 1e24 * 8 / 48, 1e-9));
-        // (Wavelengths 900 to 1060 nm: their frequencies, not evenly spaced.)
+        // (Wavelengths 800 to 1060 nm: their frequencies, not evenly spaced.
+        // 900 to 1060 before the hunt of 19 October, N11: the example's
+        // window past the barriers' gap and its fade.)
         const std::vector<double> ph = sc.params.field(QStringLiteral("phfreq"))->m;
-        QCOMPARE(ph.size(), std::size_t(161));
-        QVERIFY(near(ph.front(), C0 / 900e-9, 1e-9) && near(ph.back(), C0 / 1060e-9, 1e-9));
+        QCOMPARE(ph.size(), std::size_t(261));
+        QVERIFY(near(ph.front(), C0 / 800e-9, 1e-9) && near(ph.back(), C0 / 1060e-9, 1e-9));
         QCOMPARE(sc.params.field(QStringLiteral("T"))->toNumber(), 300.0);
         QCOMPARE(sc.params.field(QStringLiteral("V"))->m, (std::vector<double>{0, 48e-9, 0, 0}));
         QCOMPARE(sc.config.field(QStringLiteral("dz"))->toNumber(), 1e-10);
-        QCOMPARE(sc.config.field(QStringLiteral("numeigenvalues"))->toNumber(), 24.0);
+        QCOMPARE(sc.config.field(QStringLiteral("numeigenvalues"))->toNumber(), 40.0);   // (4 of each of its 10 states asked)
         QVERIFY(s.notes.join(QLatin1Char('\n')).contains(QLatin1String("holes parabolic")));
         // Back: each layer a Quantum Well Material of its own, the densities a sweep.
         QTemporaryDir dir;
@@ -843,8 +845,8 @@ private slots:
         const QJsonObject spectrum = steps.at(1).toObject();
         QCOMPARE(spectrum.value(QStringLiteral("density")).toString(), QStringLiteral("N"));
         QCOMPARE(numberOf(spectrum.value(QStringLiteral("linewidth"))), 0.0066);
-        QCOMPARE(spectrum.value(QStringLiteral("states")).toInt(), 6);
-        QCOMPARE(spectrum.value(QStringLiteral("energies")).toString().count(QLatin1String("[eV]")), 161);
+        QCOMPARE(spectrum.value(QStringLiteral("states")).toInt(), 10);
+        QCOMPARE(spectrum.value(QStringLiteral("energies")).toString().count(QLatin1String("[eV]")), 261);
         // Its values of k: a Valence Bands study too, every bound state asked
         // for and each drawn (qw.Ev*) - the MQW benchmarks' round 2.
         QString withK = s.text;
@@ -857,7 +859,7 @@ private slots:
         QCOMPARE(kStudies.size(), 2);
         const QJsonObject bandsStep = kStudies.at(1).toObject().value(QStringLiteral("steps")).toArray().at(0).toObject();
         QCOMPARE(bandsStep.value(QStringLiteral("type")).toString(), QStringLiteral("bands"));
-        QCOMPARE(bandsStep.value(QStringLiteral("states")).toInt(), 12);   // (its 24 eigenvalues' pairs)
+        QCOMPARE(bandsStep.value(QStringLiteral("states")).toInt(), 20);   // (its 40 eigenvalues' pairs)
         QVERIFY(bandsStep.value(QStringLiteral("bound")).toBool());
         bool drawn = false;
         for (const QJsonValue& g : ik.model.value(QStringLiteral("results")).toObject().value(QStringLiteral("plots")).toArray())
@@ -1382,8 +1384,10 @@ plot(r, r); somethingunknown;
             case 2: return "for (k = 0; k < " + pick({"2", "1e9", "inf", "k + 1", "nan"}) + "; k = k " + pick({"+ 1", "", "- 1", "* 1"}) + ") { b = b * 2; }";
             case 3: return "if (" + expr(1) + ") { c = 1; } else { c = 2; }";
             case 4: return "while (" + pick({"1", "b < 10", "true", "0"}) + ") { b = b + 1; }";
-            case 5: return "set(\"" + pick({"x", "x span", "y span", "name", "material", "z", "mesh order", "nosuch"}) + "\", " + expr(1) + ");";
-            case 6: return pick({"addrect;", "addfde;", "addcircle;", "adddevice;", "addchargesolver;", "addmaterial(\"x\");", "selectall; delete;"});
+            case 5: return "set(\"" + pick({"x", "x span", "y span", "name", "material", "z", "mesh order", "nosuch", "first axis", "rotation 1", "override mesh order from material database",
+                                                             "sweep type", "range num points", "source face", "surface type", "vertices", "solver type", "dimension"}) + "\", " + expr(1) + ");";
+            case 6: return pick({"addrect;", "addfde;", "addcircle;", "adddevice;", "addchargesolver;", "addmaterial(\"x\");", "selectall; delete;", "addpoly;",
+                                       "addelectricalcontact;"});
             case 7: return "try { " + expr(1) + "; } catch(err);";
             default: return expr(0) + ";";
             }
@@ -1478,6 +1482,42 @@ plot(r, r); somethingunknown;
     // three; a script's hostile sizes and indexes (cast to int out of
     // range: undefined), a reshape whose sizes multiplied past size_t
     // wrapped round to the values' count.
+    // A script's numbers made whole checked: a polygon's first axis and a
+    // mesh order of 1e30 were cast unchecked (undefined: UBSan said so), an
+    // FDE's 1e9 trial modes taken; a contact's range of 1e30 points built
+    // for minutes, two billion values (the hunt of 19 October, F1, F2).
+    void hostileNumbersAreTaken()
+    {
+        QTemporaryDir dir;
+        const LumericalImport fde = imported(dir, QStringLiteral(
+            "addpoly;\nset(\"name\", \"p\");\nset(\"vertices\", [0, 0; 1e-6, 0; 0, 1e-6]);\nset(\"z span\", 1e-6);\nset(\"first axis\", 1e30);\n"
+            "set(\"rotation 1\", 30);\naddrect;\nset(\"name\", \"r\");\nset(\"x span\", 1e-6);\nset(\"y span\", 1e-6);\nset(\"z span\", 1e-6);\n"
+            "set(\"override mesh order from material database\", 1);\nset(\"mesh order\", 1e30);\naddfde;\nset(\"x span\", 4e-6);\nset(\"y span\", 4e-6);\n"
+            "setanalysis(\"number of trial modes\", 1e9);\n"));
+        QVERIFY2(fde.error.isEmpty(), qPrintable(fde.error));
+        QVERIFY2(fde.notes.join(QLatin1Char('\n')).contains(QLatin1String("its number of trial modes 1000000000: no more than 1,000 - 4 taken")),
+                 qPrintable(fde.notes.join(QLatin1Char('\n'))));
+        const Model m = example(QStringLiteral("pn_diode.qfem"));
+        const LumericalScript s = exported(m, QStringLiteral("lumericalcharge"));
+        QVERIFY2(s.error.isEmpty(), qPrintable(s.error));
+        const lum::Scene sc = lum::readScript(s.text, QStringLiteral("x.lsf"));
+        const lum::Object* contact = object(sc, QStringLiteral("contact"));
+        QVERIFY(contact);
+        const QString name = contact->name();
+        QElapsedTimer t;
+        t.start();
+        const LumericalImport charge = imported(dir, s.text + QStringLiteral("\nsetnamed(\"%1\", \"sweep type\", \"range\");\nsetnamed(\"%1\", \"range start\", 0);\n"
+                                                                             "setnamed(\"%1\", \"range stop\", 1);\nsetnamed(\"%1\", \"range num points\", 1e30);\n").arg(name));
+        QVERIFY2(charge.error.isEmpty(), qPrintable(charge.error));
+        QVERIFY2(charge.notes.join(QLatin1Char('\n')).contains(QStringLiteral("contact %1: its range of 1e+30 points more than the 10,000 a sweep takes").arg(name)),
+                 qPrintable(charge.notes.join(QLatin1Char('\n'))));
+        // (Two million, an int: as many values built, 28 MB, before.)
+        const LumericalImport many = imported(dir, s.text + QStringLiteral("\nsetnamed(\"%1\", \"sweep type\", \"range\");\nsetnamed(\"%1\", \"range start\", 0);\n"
+                                                                           "setnamed(\"%1\", \"range stop\", 1);\nsetnamed(\"%1\", \"range num points\", 2e6);\n").arg(name));
+        QVERIFY2(many.notes.join(QLatin1Char('\n')).contains(QStringLiteral("its range of 2000000 points more than the 10,000")), qPrintable(many.notes.join(QLatin1Char('\n'))));
+        QVERIFY(t.elapsed() < 30000);
+    }
+
     void damagedInputsAreRefused()
     {
         QTemporaryDir dir;

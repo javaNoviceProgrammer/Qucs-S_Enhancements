@@ -168,7 +168,13 @@ for i in range(total):
     a = g.args(tool)
     if tool['name'] in ('new_project', 'open_project') and rnd.random() < 0.7: continue
     recent.append((tool['name'], a)); recent = recent[-8:]
-    r = s.rpc('tools/call', {'name': tool['name'], 'arguments': a}, timeout=120 if tool['name'] in SLOW else 90)
+    # (A call asked to wait - wait_for's timeout, 1 to 3600 s - given that
+    # and a margin: a wait_for of 110 s was called a hang at 90, the hunt of
+    # 19 October, T1.)
+    limit = 120 if tool['name'] in SLOW else 90
+    if isinstance(a, dict) and isinstance(a.get('timeout'), (int, float)) and not isinstance(a.get('timeout'), bool) and 0 < a['timeout'] < 3601:
+        limit = max(limit, a['timeout'] + 30)
+    r = s.rpc('tools/call', {'name': tool['name'], 'arguments': a}, timeout=limit)
     hits, pos = sanitizer_lines(pos)
     if isinstance(r, dict) and 'result' in r:
         err = bool(r['result'].get('isError'))

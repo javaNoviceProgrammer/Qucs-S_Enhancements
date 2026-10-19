@@ -2957,7 +2957,7 @@ private slots:
         const std::shared_ptr<SolutionSet> kept = stopped->solutions({});
         QVERIFY2(stopped->lastError().isEmpty() && kept && kept->solutions.size() == 1, qPrintable(stopped->lastError()));
         QVERIFY2(kept->stopped.contains(QLatin1String("(point 2 of 2): ")) && kept->stopped.contains(QLatin1String("cancelled"))
-                     && !kept->stopped.contains(QLatin1String("no solution found")) && kept->stopped.contains(QLatin1String("its 1 points before kept")),
+                     && !kept->stopped.contains(QLatin1String("no solution found")) && kept->stopped.contains(QLatin1String("its point before kept")),
                  qPrintable(kept->stopped));
         QVERIFY2(after < full / 3, qPrintable(QStringLiteral("%1 ms of %2").arg(after).arg(full)));
         // How far, while it solves: fem_solve's "still solving" and

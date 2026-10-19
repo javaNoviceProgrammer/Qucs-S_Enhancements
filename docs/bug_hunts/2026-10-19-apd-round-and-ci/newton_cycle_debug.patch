@@ -1,0 +1,62 @@
+diff --git a/qucs-s-26.1.1/qucs/multiphysics/fem_semiconductor.cpp b/qucs-s-26.1.1/qucs/multiphysics/fem_semiconductor.cpp
+index 68edf9a..02d074a 100644
+--- a/qucs-s-26.1.1/qucs/multiphysics/fem_semiconductor.cpp
++++ b/qucs-s-26.1.1/qucs/multiphysics/fem_semiconductor.cpp
+@@ -3140,6 +3140,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
+             const double g = (an * Jn + ap * Jp) * third;   // A, to each corner
+             a_ionCurrent += 3 * g;
+             a_ionRate[std::size_t(t)] = (an * Jn + ap * Jp) / Q;
++            if (qEnvironmentVariableIsSet("DBG_TRI") && (dof[0] == 2 || dof[1] == 2 || dof[2] == 2) && !a_walkSaid.isEmpty())
++                qInfo("DBGT t %d dofs %d %d %d Jn (%.6g, %.6g) Jp (%.6g, %.6g) an %.4g ap %.4g Ef %.4g gn %.6g gp %.6g n %.4g %.4g %.4g", t, dof[0], dof[1], dof[2], Jnx, Jny, Jpx, Jpy, an, ap, Ef, an * Jn * third, ap * Jp * third, nn(dof[0]), nn(dof[1]), nn(dof[2]));
+             for (int k = 0; k < 3; ++k) {
+                 F(a_iN[std::size_t(dof[k])]) += g;
+                 F(a_iP[std::size_t(dof[k])]) -= g;
+@@ -3654,6 +3656,8 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
+                 double after = before + alpha * dx(k);
+                 if (after < 0.05 * before) after = 0.05 * before;
+                 x(k) = after;
++                if (qEnvironmentVariableIsSet("DBG_NEWTON") && std::abs(after - before) / (before + 1e-10 * a_ni[std::size_t(i)] + 1e-300) > changeC && !a_walkSaid.isEmpty())
++                    qInfo("DBGC node %d %s at (%g, %g) before %.4g after %.4g ni %.3g n %.4g p %.4g dom %d contact? %d", i, k == a_iN[std::size_t(i)] ? "n" : "p", a_s.mesh().nodes[std::size_t(i)].x(), a_s.mesh().nodes[std::size_t(i)].y(), before, after, a_ni[std::size_t(i)], x(a_iN[std::size_t(i)]), x(a_iP[std::size_t(i)]), a_nodeDomain[std::size_t(i)], int(fixed[std::size_t(k)]));
+                 changeC = std::max(changeC, std::abs(after - before) / (before + 1e-10 * a_ni[std::size_t(i)] + 1e-300));
+             }
+         }
+@@ -3677,6 +3681,7 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
+         // short of the solution: band-to-band tunnelling without its field's
+         // term took a reverse current 1e4 times too large for one. On then,
+         // till they are met (or no solution).
++        if (qEnvironmentVariableIsSet("DBG_NEWTON") && !a_walkSaid.isEmpty()) qInfo("DBG it %d alpha %g changeV %.3g changeC %.3g imb %.3g", it, alpha, changeV, changeC, imbalance());
+         if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12) && imbalance() < 1e-6) return true;
+     }
+     *why = tr("%1: Newton's method did not converge in %2 steps").arg(a_node->name()).arg(maxSteps);
+diff --git a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+index 8192d19..42e0ebf 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+@@ -843,15 +843,17 @@ private slots:
+         // and 163 to -48, -50 and -51 V; on the lines 250, 96, 31, 50 and
+         // none (one step).
+         // (A sanitized build: a coarser mesh.)
+-        const QString hmax = slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05");
++        const QString hmax = qEnvironmentVariableIsSet("WALK_HMAX") ? qEnvironmentVariable("WALK_HMAX") : slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05");
+         QStringList told;
+         const StudyRun r = toldRun(modelOf(diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
+                                                  QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}},
+                                                                    {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"),
+-                                                 QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-40, -45, -48, -50, -51", "V"]]}, {"type": "stationary"})"),
++                                                 (qEnvironmentVariableIsSet("WALK_POINTS") ? QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "%1", "V"]]}, {"type": "stationary"})").arg(qEnvironmentVariable("WALK_POINTS")) : QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-40, -45, -48, -50, -51", "V"]]}, {"type": "stationary"})")),
+                                                  hmax)),
+                                    &told);
++        if (qEnvironmentVariableIsSet("WALK_POINTS")) { for (const auto& point : r.solutions) qInfo("PT %s In %.5f Ip %.5f | %s", qPrintable(point->label), global(*point, QStringLiteral("semi.In")), global(*point, QStringLiteral("semi.Ip")), qPrintable(point->log.filter(QStringLiteral("reached")).join(QLatin1String(" | ")))); qInfo("STOP %s", qPrintable(r.stopped)); if (qEnvironmentVariableIsSet("WALK_TOLD")) for (int k = std::max(0, int(told.size()) - qEnvironmentVariableIntValue("WALK_TOLD")); k < told.size(); ++k) qInfo("T %s", qPrintable(told[k])); return; }
+         QVERIFY2(r.ok(), qPrintable(r.error));
++        if (qEnvironmentVariableIsSet("WALK_LOG")) for (const auto& point : r.solutions) qInfo("LOG0 In %.5f Ip %.5f", global(*point, QStringLiteral("semi.In")), global(*point, QStringLiteral("semi.Ip")));
+         QVERIFY2(r.solutions.size() == 5, qPrintable(r.stopped));
+         // Each point's Newton's steps on its way (none said: one step).
+         static const QRegularExpression reached(QStringLiteral("reached in \\d+ steps \\((\\d+) of Newton's"));
+@@ -863,6 +865,7 @@ private slots:
+             newton.push_back(n);
+         }
+         qInfo("toward breakdown, Newton's steps on the way to each point: %d, %d, %d, %d, %d", newton[0], newton[1], newton[2], newton[3], newton[4]);
++        if (qEnvironmentVariableIsSet("WALK_LOG")) for (const auto& point : r.solutions) qInfo("LOG In %.5f Ip %.5f Mion %.4f: %s", global(*point, QStringLiteral("semi.In")), global(*point, QStringLiteral("semi.Ip")), global(*point, QStringLiteral("semi.Mion")), qPrintable(point->log.join(QLatin1String(" | "))));
+         // (On a sanitized build's coarser mesh 228, 48, 20, 21 and none;
+         // from the solution alone 480 to -40 V, from the last point's 43, 36
+         // and 28 to -48, -50 and -51 V.)

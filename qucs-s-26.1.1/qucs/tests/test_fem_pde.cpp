@@ -536,14 +536,16 @@ private slots:
             QVERIFY2(absorbing.error.isEmpty(), qPrintable(absorbing.error));
         }
         qunsetenv("QUCS_FEM_SOLVER");
-        // (the general form's flux checked, as the OLED's was: in 1/m)
+        // (the general form's flux checked, as the OLED's was: in 1/m - Γx
+        // here in 1/m², against u's over a length; Γy, -∇u's, as it should be)
         QString general = QString::fromUtf8(pde(QStringLiteral("1"), 6, QStringLiteral("1")));
         general.replace(QStringLiteral(R"({"type": "coefficient", "c": "1", "a": "1", "f": "1", "selection": {"all": true}})"),
                         QStringLiteral(R"({"type": "general", "Gx": "-ux*1[1/m]", "Gy": "-uy", "F": "1 - u", "selection": {"all": true}})"));
         QVERIFY(general.contains(QLatin1String("\"general\"")));
         const Run units = run(modelOf(general.toUtf8()));
         QVERIFY2(units.error.isEmpty(), qPrintable(units.error));
-        QStringList said = units.solution->log.filter(QStringLiteral("where 1 is expected"));
+        QStringList said = units.solution->log.filter(QStringLiteral("where 1/m is expected"));
+        QVERIFY2(said.size() == 1 && said.front().contains(QStringLiteral("Γ, x")), qPrintable(units.solution->log.join(QLatin1Char('\n'))));
         QVERIFY2(!said.isEmpty(), qPrintable(units.solution->log.join(QLatin1Char('\n'))));
         QVERIFY2(said.removeDuplicates() == 0, qPrintable(units.solution->log.join(QLatin1Char('\n'))));
     }
@@ -674,6 +676,9 @@ private slots:
             timer.start();
             const Model m = load(QStringLiteral("annulus_laplace.qfem"));
             const Run r = solve(m);
+            // (Γ's units, the equation's own, not warned of: "Γ is in 1/m,
+            // where 1 is expected" before the hunt of 19 October, N9.)
+            QVERIFY2(!r.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("Warning")), qPrintable(r.solution->log.join(QLatin1String("; "))));
             const double u = at(*r.solution, QStringLiteral("u"), {1.5, 0}), u2 = at(*r.solution, QStringLiteral("u"), {0, -1.3});
             double flux = NAN;
             for (const Node& d : m.results().child(QStringLiteral("derived"))->children)

@@ -7,6 +7,7 @@
  * from the defaults are saved.
  */
 #include <QtTest>
+#include <map>
 #include <QAction>
 #include <QElapsedTimer>
 #include <QHeaderView>
@@ -469,6 +470,47 @@ private slots:
             QVERIFY2(tableAt.top() < noteAt.bottom() + 40, qPrintable(where));
             QVERIFY2(tableAt.bottom() > tab->height() - 40, qPrintable(where));
         }
+    }
+
+    // As the File Types tab's: the Locations tab's path lists and the
+    // Contents tab's categories take a taller dialog's room - the library
+    // list stayed 90 pixels, its note taking the room -, the Settings tab's
+    // rows stay together at its top (the hunt of 19 October, B5, N8).
+    void theSettingsListsTakeTheRoom()
+    {
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        QucsSettingsDialog dlg(&app);
+        auto* tabs = dlg.findChild<QTabWidget*>();
+        QVERIFY(tabs != nullptr);
+        auto tabOf = [tabs](const char* name) -> QWidget* {
+            for (int i = 0; i < tabs->count(); ++i)
+                if (tabs->tabText(i) == QLatin1String(name)) return tabs->widget(i);
+            return nullptr;
+        };
+        QWidget* locations = tabOf("Locations");
+        QWidget* contents = tabOf("Contents");
+        QWidget* settings = tabOf("Settings");
+        QVERIFY(locations && contents && settings);
+        dlg.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&dlg));
+        std::map<QWidget*, int> heights[2];
+        int lastRow[2] = {0, 0};
+        for (int k = 0; k < 2; ++k) {
+            dlg.resize(900, k ? 1100 : 700);
+            for (QWidget* tab : {locations, contents, settings}) {
+                tabs->setCurrentWidget(tab);
+                QTest::qWait(20);
+                tab->layout()->activate();
+                for (QTableWidget* view : tab->findChildren<QTableWidget*>()) heights[k][view] = view->height();
+            }
+            for (QLabel* l : settings->findChildren<QLabel*>())
+                lastRow[k] = std::max(lastRow[k], l->mapTo(settings, QPoint()).y());
+        }
+        QCOMPARE(int(heights[0].size()), 3);   // (two in Locations, one in Contents)
+        for (const auto& [view, h] : heights[0])
+            QVERIFY2(heights[1][view] > h + 100, qPrintable(QStringLiteral("%1: %2 then %3").arg(view->objectName()).arg(h).arg(heights[1][view])));
+        QVERIFY2(std::abs(lastRow[1] - lastRow[0]) < 5, qPrintable(QStringLiteral("%1 then %2").arg(lastRow[0]).arg(lastRow[1])));
     }
 
     // Above the panel, the File Browser's filter: the files whose names

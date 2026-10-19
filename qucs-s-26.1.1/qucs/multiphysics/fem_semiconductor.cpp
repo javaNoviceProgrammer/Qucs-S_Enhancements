@@ -1272,6 +1272,10 @@ bool SemiconductorProblem::setup(QString* error)
             // (Its weights: edgeWeights(), once the mobilities are known.)
         }
     }
+    if (cancelled()) {
+        *error = tr("cancelled");
+        return false;
+    }
     // Doping, by node: each feature's in its share of the node's box (a node
     // on a junction between two domains doped differently takes their mean)
     // - each triangle's part of the box its corner's circumcentric (Voronoi)
@@ -1581,6 +1585,10 @@ bool SemiconductorProblem::setup(QString* error)
         if (!a_s.log.contains(line)) a_s.log << line;
     }
     if (!(a_scale > 0)) a_scale = 1e16;
+    if (cancelled()) {
+        *error = tr("cancelled");
+        return false;
+    }
     // Mobilities by element (doping: the element's nodes' mean), then by edge.
     std::vector<double> mun(std::size_t(nt), 0), mup(std::size_t(nt), 0);
     for (int t = 0; t < nt; ++t) {
@@ -1726,6 +1734,10 @@ bool SemiconductorProblem::setup(QString* error)
         }
     }
     edgeWeights(nullptr);
+    if (cancelled()) {
+        *error = tr("cancelled");
+        return false;
+    }
     // Contacts and surface charges.
     a_contacts.clear();
     a_nodeContact.assign(std::size_t(a_n), -1);
@@ -2053,6 +2065,10 @@ bool SemiconductorProblem::setup(QString* error)
     bool carriersHeld = false;
     for (const Contact& c : a_contacts) carriersHeld = carriersHeld || c.kind != Contact::Gate;
     if (!carriersHeld && referenced) problem(tr("%1 has no metal contact on a semiconductor (ohmic or Schottky): its carriers' level is not set").arg(a_node->name()));
+    if (cancelled()) {
+        *error = tr("cancelled");
+        return false;
+    }
     // The unknowns: V where the physics is, n and p on its semiconductors.
     a_iV.assign(std::size_t(a_n), -1);
     a_iN.assign(std::size_t(a_n), -1);
@@ -3011,6 +3027,7 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
         // Each edge's current densities along it (A/m²) and their changes.
         struct EdgeCurrent {
             double jn = 0, jp = 0;
+            double fn = 0, fp = 0;   // their rounding: 10⁻¹⁰ of the two terms they are the difference of
             double dn[4] = {0, 0, 0, 0}, dp[4] = {0, 0, 0, 0};   // by (n or p at i, at j, V at i, at j)
         };
         std::vector<EdgeCurrent> ec(a_edges.size());
@@ -3024,6 +3041,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             EdgeCurrent& c = ec[k];
             c.jn = e.wn * (e.fNj * nn(e.j) * bnp - e.fNi * nn(e.i) * bnm) / face;
             c.jp = e.wp * (e.fPi * pp(e.i) * bpp - e.fPj * pp(e.j) * bpm) / face;
+            c.fn = 1e-10 * std::abs(e.wn) * (std::abs(e.fNj * nn(e.j) * bnp) + std::abs(e.fNi * nn(e.i) * bnm)) / face;
+            c.fp = 1e-10 * std::abs(e.wp) * (std::abs(e.fPi * pp(e.i) * bpp) + std::abs(e.fPj * pp(e.j) * bpm)) / face;
             const double dnV = e.wn * (e.fNj * nn(e.j) * dbern(dN) + e.fNi * nn(e.i) * dbern(-dN)) / a_Vt / face;
             const double dpV = e.wp * (e.fPi * pp(e.i) * dbern(dP) + e.fPj * pp(e.j) * dbern(-dP)) / a_Vt / face;
             c.dn[0] = -e.wn * e.fNi * bnm / face;
@@ -3089,13 +3108,68 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
                 wx[k] = (M[2] * e.tx - M[1] * e.ty) / det;
                 wy[k] = (-M[1] * e.tx + M[0] * e.ty) / det;
             }
+            // (The field driving it: each edge's current weighed by how far
+            // it stands above its rounding - where drift and diffusion of
+            // some 10¹² A/m² balance, between two nodes of a p⁺ side, the
+            // current is their difference, its rounding ten thousand times
+            // the current there. Taken whole, a junction's triangles' holes'
+            // currents were that rounding: their pairs counted 99 times
+            // without recombination, Newton's method cycling at the minority
+            // carriers beside them near a breakdown - the hunt of 19 October,
+            // A1 and A2. Weighed, a junction's triangle takes its current from
+            // its edges across the junction; and what still is no more than
+            // the rounding is smoothly nought, J²/√(J² + J0²), J0 the fit's
+            // own rounding. J0 of a triangle's density instead - a p⁺
+            // corner's - took the junction's genuine current with the noise:
+            // 10 % of the multiplication on a mesh of 0.1 µm.)
+            const bool byField = !m.ionAlong && !m.ionFermi;
+            double cnx[3], cny[3], cpx[3], cpy[3];
+            for (int k = 0; k < 3; ++k) {
+                cnx[k] = cpx[k] = wx[k];
+                cny[k] = cpy[k] = wy[k];
+            }
+            double J0Fn = 0, J0Fp = 0;
+            if (byField) {
+                // (Weighed least squares; with fewer than two edges above
+                // their rounding, as they were.)
+                auto weighed = [this, &em, &ec, det](bool holes, double* cx, double* cy) {
+                    double rho = 0, w[3], A[3] = {0, 0, 0}, top = 0;
+                    for (int k = 0; k < 3; ++k) rho = std::max(rho, std::abs(holes ? ec[std::size_t(em.edge[k])].jp : ec[std::size_t(em.edge[k])].jn));
+                    for (int k = 0; k < 3; ++k) {
+                        const double f = holes ? ec[std::size_t(em.edge[k])].fp : ec[std::size_t(em.edge[k])].fn;
+                        w[k] = rho > 0 ? 1 / (1 + (f / rho) * (f / rho)) : 1.0;
+                        top = std::max(top, w[k]);
+                    }
+                    for (int k = 0; k < 3; ++k) {
+                        const Edge& e = a_edges[std::size_t(em.edge[k])];
+                        w[k] /= top;
+                        A[0] += w[k] * e.tx * e.tx;
+                        A[1] += w[k] * e.tx * e.ty;
+                        A[2] += w[k] * e.ty * e.ty;
+                    }
+                    const double d = A[0] * A[2] - A[1] * A[1];
+                    if (!(std::abs(d) > 1e-3 * std::abs(det))) return;
+                    for (int k = 0; k < 3; ++k) {
+                        const Edge& e = a_edges[std::size_t(em.edge[k])];
+                        cx[k] = w[k] * (A[2] * e.tx - A[1] * e.ty) / d;
+                        cy[k] = w[k] * (-A[1] * e.tx + A[0] * e.ty) / d;
+                    }
+                };
+                weighed(false, cnx, cny);
+                weighed(true, cpx, cpy);
+                for (int k = 0; k < 3; ++k) {
+                    const EdgeCurrent& c = ec[std::size_t(em.edge[k])];
+                    J0Fn += std::hypot(cnx[k], cny[k]) * c.fn;
+                    J0Fp += std::hypot(cpx[k], cpy[k]) * c.fp;
+                }
+            }
             double Jnx = 0, Jny = 0, Jpx = 0, Jpy = 0;
             for (int k = 0; k < 3; ++k) {
                 const EdgeCurrent& c = ec[std::size_t(em.edge[k])];
-                Jnx += wx[k] * c.jn;
-                Jny += wy[k] * c.jn;
-                Jpx += wx[k] * c.jp;
-                Jpy += wy[k] * c.jp;
+                Jnx += cnx[k] * c.jn;
+                Jny += cny[k] * c.jn;
+                Jpx += cpx[k] * c.jp;
+                Jpy += cpy[k] * c.jp;
             }
             const double Jn = std::hypot(Jnx, Jny), Jp = std::hypot(Jpx, Jpy);
             // (Along each current, E·J/s - the Lumerical E dot J -, nought
@@ -3136,10 +3210,17 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
                 if (!(En > 0)) dan = 0;
                 if (!(Ep > 0)) dap = 0;
             }
+            double JnI = Jn, JpI = Jp, sFn = Jn, sFp = Jp;
+            if (byField) {
+                sFn = std::hypot(Jn, J0Fn);
+                sFp = std::hypot(Jp, J0Fp);
+                JnI = sFn > 0 ? Jn * Jn / sFn : 0.0;
+                JpI = sFp > 0 ? Jp * Jp / sFp : 0.0;
+            }
             const double third = em.volume / 3;
-            const double g = (an * Jn + ap * Jp) * third;   // A, to each corner
+            const double g = (an * JnI + ap * JpI) * third;   // A, to each corner
             a_ionCurrent += 3 * g;
-            a_ionRate[std::size_t(t)] = (an * Jn + ap * Jp) / Q;
+            a_ionRate[std::size_t(t)] = (an * JnI + ap * JpI) / Q;
             for (int k = 0; k < 3; ++k) {
                 F(a_iN[std::size_t(dof[k])]) += g;
                 F(a_iP[std::size_t(dof[k])]) -= g;
@@ -3188,20 +3269,26 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
                     addTo(a_iP[std::size_t(i)], -dap * Jp * wp * cP * Ef / 3 * third);
                 }
             else if (Ef > 0)
+                // (J0 a rounding's: its own changes left out.)
                 for (int k = 0; k < 3; ++k) {
                     const double dE = -(Ex * em.gx[k] + Ey * em.gy[k]) / Ef;
-                    addTo(a_iV[std::size_t(dof[k])], (dan * Jn + dap * Jp) * dE * third);
+                    addTo(a_iV[std::size_t(dof[k])], (dan * JnI + dap * JpI) * dE * third);
                 }
             for (int k = 0; k < 3; ++k) {
                 const Edge& e = a_edges[std::size_t(em.edge[k])];
                 const EdgeCurrent& c = ec[std::size_t(em.edge[k])];
                 // d|J| = Ĵ·dJ, dJ = (wx, wy) dj; along the current, its
                 // field's change too: dan |J| (E - En û)·dJ/|J|.
-                double sn = Jn > 0 ? an * (Jnx * wx[k] + Jny * wy[k]) / Jn : 0.0;
-                double sp = Jp > 0 ? ap * (Jpx * wx[k] + Jpy * wy[k]) / Jp : 0.0;
+                double sn = Jn > 0 ? an * (Jnx * cnx[k] + Jny * cny[k]) / Jn : 0.0;
+                double sp = Jp > 0 ? ap * (Jpx * cpx[k] + Jpy * cpy[k]) / Jp : 0.0;
+                if (byField) {
+                    // (d(J²/s) = J (J² + 2 J0²)/s³ dJ = (J² + 2 J0²)/s³ J·dJ.)
+                    sn = sFn > 0 ? an * (Jnx * cnx[k] + Jny * cny[k]) * (Jn * Jn + 2 * J0Fn * J0Fn) / (sFn * sFn * sFn) : 0.0;
+                    sp = sFp > 0 ? ap * (Jpx * cpx[k] + Jpy * cpy[k]) * (Jp * Jp + 2 * J0Fp * J0Fp) / (sFp * sFp * sFp) : 0.0;
+                }
                 if (m.ionAlong) {
-                    if (sN > 0) sn += dan * Jn / sN * ((Ex - En * unx) * wx[k] + (Ey - En * uny) * wy[k]);
-                    if (sP > 0) sp += dap * Jp / sP * ((Ex - Ep * upx) * wx[k] + (Ey - Ep * upy) * wy[k]);
+                    if (sN > 0) sn += dan * Jn / sN * ((Ex - En * unx) * cnx[k] + (Ey - En * uny) * cny[k]);
+                    if (sP > 0) sp += dap * Jp / sP * ((Ex - Ep * upx) * cpx[k] + (Ey - Ep * upy) * cpy[k]);
                 }
                 const int cols[4][2] = {{a_iN[std::size_t(e.i)], a_iP[std::size_t(e.i)]}, {a_iN[std::size_t(e.j)], a_iP[std::size_t(e.j)]},
                                         {a_iV[std::size_t(e.i)], a_iV[std::size_t(e.i)]}, {a_iV[std::size_t(e.j)], a_iV[std::size_t(e.j)]}};
@@ -3677,7 +3764,18 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         // short of the solution: band-to-band tunnelling without its field's
         // term took a reverse current 1e4 times too large for one. On then,
         // till they are met (or no solution).
-        if (alpha == 1.0 && changeV < 1e-8 && (changeC < 1e-6 || changeV < 1e-12) && imbalance() < 1e-6) return true;
+        if (alpha == 1.0 && changeV < 1e-8) {
+            const double imb = imbalance();
+            if ((changeC < 1e-6 || changeV < 1e-12) && imb < 1e-6) return true;
+            // (Or the equations met to 10⁻¹⁴ of their flows - their rounding:
+            // what still changes is the linear solve's own. An avalanche
+            // diode's mesh of 10 nm at -32 V met them to 10⁻¹⁶, its
+            // carriers wandering by up to 5·10⁻⁵ step after step, the
+            // potential by 10⁻¹¹ Vt: no solution found - the hunt of 19
+            // October, A1. 10⁻¹² took a current of 10⁻¹³ A among majority
+            // flows of 10⁻² A as it was, 15 % off.)
+            if (imb < 1e-14) return true;
+        }
     }
     *why = tr("%1: Newton's method did not converge in %2 steps").arg(a_node->name()).arg(maxSteps);
     return false;
@@ -3728,6 +3826,10 @@ bool SemiconductorProblem::equilibriumPoisson(Eigen::VectorXd& x, double fermi, 
     SparseLu<double> lu;
     bool analyzed = false;
     for (int it = 0; it < 200; ++it) {
+        if (cancelled()) {
+            *why = tr("cancelled");
+            return false;
+        }
         Eigen::VectorXd Fv;
         Eigen::SparseMatrix<double> J;
         equilibriumSystem(x, fermi, local, vIndex, fixed, false, Fv, J);
@@ -4406,7 +4508,13 @@ bool SemiconductorProblem::stationary(QString* why)
     };
     int solves = 0, iterations = 0, retried = 0;
     QString failed;
-    const QString contactName = a_contacts.empty() ? QString() : a_contacts[moving].name;
+    QString contactName = a_contacts.empty() ? QString() : a_contacts[moving].name;
+    // (From the last solution, then - where none is found - from rest, as a
+    // solve alone: a sweep of a forward-biased diode's temperature stopped
+    // at 400 K, each point alone solved - its voltages there already, no
+    // step to halve but nought: the hunt of 19 October, B8.)
+    bool warmTry = warm, fromRest = false;
+    bool moved = false;   // a step of its own taken (else the line it was handed kept)
     while (true) {
         double left = 0;
         for (std::size_t k = 0; k < goal.size(); ++k) left = std::max(left, std::abs(goal[k] - at[k]));
@@ -4427,7 +4535,7 @@ bool SemiconductorProblem::stationary(QString* why)
         int steps = 0;
         // (At its voltages already - a walk's end solved again, the light's
         // pairs added since or not -: no step where its equations are met.)
-        const bool solved = newton(trial, 0, nullptr, 40, &steps, &failed, warm && frac * left < 1e-12);
+        const bool solved = newton(trial, 0, nullptr, 40, &steps, &failed, warmTry && frac * left < 1e-12);
         iterations += steps;
         if (solved) {
             before = x;
@@ -4435,6 +4543,7 @@ bool SemiconductorProblem::stationary(QString* why)
             x = trial;
             at = next;
             ++solves;
+            moved = moved || frac * left > 1e-12;
             step = std::min(step * (steps <= 5 ? 2.0 : steps <= 10 ? 1.4 : steps <= 20 ? 1.0 : 0.7), 1.0);
         } else if (cancelled()) {
             a_walkSaid.clear();
@@ -4445,6 +4554,22 @@ bool SemiconductorProblem::stationary(QString* why)
             // (Half the step tried: a step capped to what was left, 0.25 V
             // of a 1 V one, halved to 0.5 V was tried again as it was.)
             step = std::min(step, frac * left) / 2;
+            if (step < 1e-5 && warmTry) {
+                warmTry = false;
+                fromRest = true;
+                std::fill(at.begin(), at.end(), 0.0);
+                if (!equilibriumPoisson(x, 0, at, false, why)) return false;
+                for (Contact& c : a_contacts) c.applied = 0;
+                before.resize(0);
+                beforeAt.clear();
+                step = 0.1;
+                solves = 0;
+                moving = 0;
+                for (std::size_t k = 0; k < goal.size(); ++k)
+                    if (std::abs(goal[k]) > std::abs(goal[moving])) moving = k;
+                contactName = a_contacts.empty() ? QString() : a_contacts[moving].name;
+                continue;
+            }
             if (step < 1e-5) {
                 a_walkSaid.clear();
                 // (Not "did not converge", the cause's words too: a step at
@@ -4452,24 +4577,30 @@ bool SemiconductorProblem::stationary(QString* why)
                 // went on with nothing solved, its currents nought.)
                 QString cause = failed.section(QLatin1String(": "), 1);
                 cause.replace(QLatin1String("did not converge"), QLatin1String("failed to converge"));
-                *why = tr("%1: no solution found on the way to the contacts' voltages (steps down to 10 µV): %2").arg(a_node->name(), cause);
+                *why = fromRest ? tr("%1: no solution found on the way to the contacts' voltages (steps down to 10 µV), from the last solution nor from rest: %2").arg(a_node->name(), cause)
+                                : tr("%1: no solution found on the way to the contacts' voltages (steps down to 10 µV): %2").arg(a_node->name(), cause);
                 return false;
             }
         }
     }
     a_walkSaid.clear();
-    // (Its last step kept: the next sweep point's first starts on its line.)
-    if (before.size() == x.size() && beforeAt.size() == at.size()) {
+    // (Its last step kept: the next sweep point's first starts on its line.
+    // A walk that took none - at its voltages already, solved again - leaves
+    // the line it was handed: as a step of nought it lost the first sweep
+    // point's, the second starting as from nothing - the hunt of 19 October,
+    // B4.)
+    if (moved && before.size() == x.size() && beforeAt.size() == at.size()) {
         f.walkedFrom = std::make_shared<const std::vector<double>>(before.data(), before.data() + before.size());
         f.walkedFromVolts = beforeAt;
         f.walkedStep = apart(at, beforeAt);
-    } else {
+    } else if (moved) {
         f.walkedFrom.reset();
         f.walkedFromVolts.clear();
         f.walkedStep = 0;
     }
     finish(x, false);
     heterojunctionMesh(x);
+    if (fromRest) a_s.log << tr("%1: from the last solution no solution found: solved from rest").arg(a_node->name());
     if (solves > 1 || retried > 0)
         a_s.log << (retried > 0 ? tr("%1: the contacts' voltages reached in %2 steps (%3 of Newton's; %4 tried again)").arg(a_node->name()).arg(solves).arg(iterations).arg(retried)
                                 : tr("%1: the contacts' voltages reached in %2 steps (%3 of Newton's)").arg(a_node->name()).arg(solves).arg(iterations));
@@ -5606,9 +5737,10 @@ void SemiconductorProblem::setGlobals()
         const Dim field = Dim::of(1, 1, -3, -1);
         a_s.setGlobal(p + QStringLiteral("In"), a_In, Dim(),
                       tr("electrons' ionization integral, the most of the field lines' through where it ionizes a thousandth of "
-                         "its most or more (%1 lines): breakdown where it reaches 1")
+                         "its most or more (%1 lines), α of the field |E| whatever Impact Ionization's driving field: breakdown "
+                         "where it reaches 1 - the field driving's (the others' as their currents say)")
                           .arg(a_ionLines));
-        a_s.setGlobal(p + QStringLiteral("Ip"), a_Ip, Dim(), tr("holes' ionization integral, the most of those lines': breakdown where it reaches 1"));
+        a_s.setGlobal(p + QStringLiteral("Ip"), a_Ip, Dim(), tr("holes' ionization integral, the most of those lines', α of |E|: breakdown where it reaches 1 - the field driving's"));
         a_s.setGlobal(p + QStringLiteral("Mn"), a_In < 1 ? 1 / (1 - a_In) : Inf, Dim(),
                       tr("multiplication of electrons entering In's line at its end, 1/(1 - In) (infinite: past breakdown)"));
         a_s.setGlobal(p + QStringLiteral("Mp"), a_Ip < 1 ? 1 / (1 - a_Ip) : Inf, Dim(),
@@ -5626,13 +5758,22 @@ void SemiconductorProblem::setGlobals()
                           tr("current of impact ionization's pairs, q ∫ G: at breakdown the whole current"));
             a_s.setGlobal(p + QStringLiteral("Igen"), a_genCurrent, Dim::current(),
                           tr("current of the pairs made otherwise, q ∫ G of their generation: thermal, tunnelling, light, surfaces"));
-            // (At rest - no current, both their rounding - 1.)
+            // (At rest - no current, both their rounding - 1. Where no pairs
+            // are made otherwise, or no more than a rounding's of the current
+            // - a resistor, a diode without recombination, one forward-biased
+            // -, no multiplication to tell: not a number. Infinite there, and
+            // 2.75e18 for a diode at 0.7 V, before the hunt of 19 October, B1.)
             bool still = true;
-            for (const Contact& c : a_contacts) still = still && c.current == 0;
-            a_s.setGlobal(p + QStringLiteral("Mion"), still ? 1.0 : a_genCurrent > 0 ? 1 + a_ionCurrent / a_genCurrent : Inf, Dim(),
+            double most = 0;
+            for (const Contact& c : a_contacts) {
+                still = still && c.current == 0;
+                most = std::max(most, std::abs(c.current));
+            }
+            a_s.setGlobal(p + QStringLiteral("Mion"), still ? 1.0 : a_genCurrent > 1e-12 * most ? 1 + a_ionCurrent / a_genCurrent : NaN, Dim(),
                           tr("impact ionization's multiplication of the pairs made otherwise, 1 + Iion/Igen - of all of them: a "
                              "photocurrent's gain where its light's pairs all reach the field (less where some reach a contact or "
-                             "recombine unmultiplied); rising without bound toward breakdown"));
+                             "recombine unmultiplied); rising without bound toward breakdown; not a number where no pairs are made "
+                             "otherwise (Igen nought, or under 10⁻¹² of the current: no recombination model, a forward bias)"));
         }
     }
     for (const Contact& c : a_contacts) {

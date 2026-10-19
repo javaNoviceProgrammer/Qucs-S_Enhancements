@@ -1,0 +1,190 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+index 8192d19..5c59553 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+@@ -2778,6 +2778,185 @@ private slots:
+         }
+         qInfo("ionized in part: %s", qPrintable(said.join(QLatin1String("; "))));
+     }
++
++    // ---- hunt probes (throwaway) ----
++    void huntWeakLightSweep()
++    {
++        const QString light = QStringLiteral(R"x(, {"type": "generation", "G": "G0*(x > 3.1[um])*(x < 3.6[um])", "selection": {"all": true}},
++          {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})x");
++        const QStringList levels = {QStringLiteral("0"), QStringLiteral("1e14"), QStringLiteral("1e16"), QStringLiteral("1e18"), QStringLiteral("1e20"), QStringLiteral("1e22")};
++        QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), light,
++                                QStringLiteral(R"x({"type": "sweep", "parameters": [["G0", "%1", "1/(m^3*s)"]]}, {"type": "stationary"})x").arg(levels.join(QLatin1String(", "))), QStringLiteral("0.05"));
++        json.replace(R"("parameters": [{"name": "Va", "expression": "0[V]"}])",
++                     R"x("parameters": [{"name": "Va", "expression": "-1[V]"}, {"name": "G0", "expression": "0[1/(m^3*s)]"}])x");
++        const Run r = run(modelOf(json));
++        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
++        for (int k = 0; k < levels.size(); ++k) {
++            QByteArray one = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), light, QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.05"));
++            one.replace(R"("parameters": [{"name": "Va", "expression": "0[V]"}])",
++                        QStringLiteral(R"x("parameters": [{"name": "Va", "expression": "-1[V]"}, {"name": "G0", "expression": "%1[1/(m^3*s)]"}])x").arg(levels[k]).toUtf8());
++            const Run alone = run(modelOf(one));
++            const double swept = global(*r.study.solutions[std::size_t(k)], QStringLiteral("semi.I_k")), single = global(*alone.solution, QStringLiteral("semi.I_k"));
++            qInfo("G0 %s: swept %.6e A, alone %.6e A, ratio %.6f | %s", qPrintable(levels[k]), swept, single, swept / single,
++                  qPrintable(r.study.solutions[std::size_t(k)]->log.join(QLatin1String(" | ")).left(200)));
++        }
++    }
++
++    void huntMionWithoutGeneration()
++    {
++        for (const char* volts : {"0", "-1", "-40"}) {
++            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}})"),
++                                    QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.1"));
++            json.replace(R"({"name": "Va", "expression": "0[V]"})", QStringLiteral(R"({"name": "Va", "expression": "%1[V]"})").arg(QLatin1String(volts)).toUtf8());
++            const Run r = run(modelOf(json));
++            if (!r.error.isEmpty()) { qInfo("%s V: %s", volts, qPrintable(r.error)); continue; }
++            const Solution& s = *r.solution;
++            qInfo("%s V: Iion %.4g Igen %.4g Mion %.6g xion %.4g yion %.4g In %.4g Ip %.4g Mp %.4g Mn %.4g I_k %.4g", volts, global(s, QStringLiteral("semi.Iion")), global(s, QStringLiteral("semi.Igen")),
++                  global(s, QStringLiteral("semi.Mion")), global(s, QStringLiteral("semi.xion")), global(s, QStringLiteral("semi.yion")), global(s, QStringLiteral("semi.In")),
++                  global(s, QStringLiteral("semi.Ip")), global(s, QStringLiteral("semi.Mp")), global(s, QStringLiteral("semi.Mn")), global(s, QStringLiteral("semi.I_k")));
++        }
++    }
++
++    void huntDrivingChoice()
++    {
++        for (const char* d : {"field", "fermi", "Fermi", "grad phi", "current", "", "1"}) {
++            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QStringLiteral(R"(, {"type": "impact", "driving": "%1", "selection": {"all": true}})").arg(QLatin1String(d)),
++                                    QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.1"));
++            json.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-40[V]"})");
++            QString why;
++            std::optional<Model> m = Model::fromJson(json, &why);
++            if (!m) { qInfo("driving '%s': refused: %s", d, qPrintable(why)); continue; }
++            const Run r = run(*m);
++            qInfo("driving '%s': fromJson says '%s'; error '%s' warnings '%s' In %.5g Iion %.4g", d, qPrintable(why), qPrintable(r.error), qPrintable(r.study.warnings.join(QLatin1String("; "))),
++                  r.solution ? global(*r.solution, QStringLiteral("semi.In")) : NAN, r.solution ? global(*r.solution, QStringLiteral("semi.Iion")) : NAN);
++        }
++    }
++
++    void huntIionAgainstCurrent()
++    {
++        for (const char* srh : {"", R"(, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"})
++            for (const char* volts : {"-20", "-40"})
++                for (int on = 0; on < 2; ++on) {
++                    QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
++                                            QStringLiteral(R"(, {"type": "impact", "currents": %1, "selection": {"all": true}}%2)").arg(on ? QStringLiteral("true") : QStringLiteral("false"), QLatin1String(srh)),
++                                            QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.05"));
++                    json.replace(R"({"name": "Va", "expression": "0[V]"})", QStringLiteral(R"({"name": "Va", "expression": "%1[V]"})").arg(QLatin1String(volts)).toUtf8());
++                    const Run r = run(modelOf(json));
++                    if (!r.error.isEmpty()) { qInfo("%s", qPrintable(r.error)); continue; }
++                    const Solution& s = *r.solution;
++                    qInfo("srh %d %s V currents %d: I_k %.5g I_a %.5g Iion %.5g Igen %.5g Mion %.5g Mn %.4g Mp %.4g", int(*srh != 0), volts, on, global(s, QStringLiteral("semi.I_k")), global(s, QStringLiteral("semi.I_a")),
++                          global(s, QStringLiteral("semi.Iion")), global(s, QStringLiteral("semi.Igen")), global(s, QStringLiteral("semi.Mion")), global(s, QStringLiteral("semi.Mn")), global(s, QStringLiteral("semi.Mp")));
++                }
++    }
++
++    void huntIntegralsCost()
++    {
++        for (const char* h : {"0.02", "0.01", "0.005"})
++            for (int ii = 0; ii < 2; ++ii) {
++                QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
++                                        ii ? QStringLiteral(R"(, {"type": "impact", "currents": false, "selection": {"all": true}})") : QString(),
++                                        QStringLiteral(R"({"type": "stationary"})"), QLatin1String(h));
++                json.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-40[V]"})");
++                QElapsedTimer t;
++                t.start();
++                const Run r = run(modelOf(json));
++                qInfo("hmax %s impact %d: %lld ms, %s; In %.5g lines '%s'", h, ii, t.elapsed(), qPrintable(r.error), r.solution ? global(*r.solution, QStringLiteral("semi.In")) : NAN,
++                      r.solution ? qPrintable(r.solution->log.filter(QStringLiteral("degrees")).join(QLatin1String(" | "))) : "");
++            }
++    }
++
++    void huntParallelStop()
++    {
++        const QString json = QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
++      "parameters": [{"name": "L", "expression": "10[mm]"}, {"name": "s", "expression": "1e6[S/m]"}],
++      "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "bar", "size": ["L", "1"]}],
++        "materials": [{"label": "m", "sigma": "s", "selection": {"all": true}}],
++        "physics": [{"type": "currents", "tag": "ec", "features": [
++          {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["bar"], "side": "left"}},
++          {"type": "ground", "selection": {"of": ["bar"], "side": "right"}}]}],
++        "mesh": {"size": "coarse"}}],
++      "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [[%1]] %2}, {"type": "stationary"}]}]})json");
++        const QStringList sweeps = {QStringLiteral(R"("L", "10, 15, -5, 25, 30, 40", "mm")"), QStringLiteral(R"("L", "10, 15, 0, 25, 30, 40", "mm")"),
++                                    QStringLiteral(R"("s", "1e6, 2e6, 0, 4e6, 5e6", "S/m")"), QStringLiteral(R"("s", "1e6, 2e6, -1e6, 4e6", "S/m")"),
++                                    QStringLiteral(R"("L", "-5, 10, 15", "mm")")};
++        for (const QString& sw : sweeps)
++            for (const char* par : {"", R"(, "parallel": 4)"}) {
++                const Run r = run(modelOf(json.arg(sw, QLatin1String(par)).toUtf8()));
++                QStringList g;
++                for (const auto& sol : r.study.solutions) g << QStringLiteral("%1=%2").arg(sol->label).arg(sol->global(QStringLiteral("ec.G11")).value_or(NAN), 0, 'g', 5);
++                qInfo("%s%s: error '%s' stopped '%s' kept %d: %s", qPrintable(sw), par, qPrintable(r.study.error), qPrintable(r.study.stopped), int(r.study.solutions.size()), qPrintable(g.join(QLatin1String(", "))));
++            }
++    }
++
++    void huntUniformBarIntegrals()
++    {
++        for (const char* volts : {"0", "1"}) {
++            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}})"),
++                                    QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.1"));
++            json.replace(R"({"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pplus"]}})",
++                         R"({"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["pplus"]}})");
++            json.replace(R"({"name": "Va", "expression": "0[V]"})", QStringLiteral(R"({"name": "Va", "expression": "%1[V]"})").arg(QLatin1String(volts)).toUtf8());
++            const Run r = run(modelOf(json));
++            if (!r.error.isEmpty()) { qInfo("%s V: %s", volts, qPrintable(r.error)); continue; }
++            const Solution& s = *r.solution;
++            qInfo("uniform bar %s V: In %.4g Ip %.4g Mn %.4g Mp %.4g Emax %.4g xion %.4g Mion %.4g Iion %.4g I_k %.4g", volts, global(s, QStringLiteral("semi.In")), global(s, QStringLiteral("semi.Ip")),
++                  global(s, QStringLiteral("semi.Mn")), global(s, QStringLiteral("semi.Mp")), global(s, QStringLiteral("semi.Emax")), global(s, QStringLiteral("semi.xion")),
++                  global(s, QStringLiteral("semi.Mion")), global(s, QStringLiteral("semi.Iion")), global(s, QStringLiteral("semi.I_k")));
++        }
++    }
++
++    void huntNearBreakdownSweep()
++    {
++        for (const char* h : {"0.05", "0.04"}) {
++            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
++                                    QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}}, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"),
++                                    QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-49, -50, -50.1, -50.2, -50.3, -50.4, -50.5, -50.6, -50.7, -50.8, -50.9, -51, -51.1, -51.2, -51.3, -51.4", "V"]]}, {"type": "stationary"})"), QLatin1String(h));
++            QElapsedTimer t;
++            t.start();
++            const Run r = run(modelOf(json));
++            static const QRegularExpression reached(QStringLiteral("\\((\\d+) of Newton's(; (\\d+) tried again)?"));
++            QStringList pts;
++            for (const auto& sol : r.study.solutions) {
++                const QRegularExpressionMatch m = reached.match(sol->log.join(QLatin1Char(' ')));
++                pts << QStringLiteral("%1 In %2 N%3%4").arg(sol->label.mid(5)).arg(global(*sol, QStringLiteral("semi.In")), 0, 'f', 4).arg(m.hasMatch() ? m.captured(1) : QStringLiteral("1st")).arg(m.captured(3).isEmpty() ? QString() : QStringLiteral(" r") + m.captured(3));
++            }
++            qInfo("hmax %s %lld ms: %s | stopped '%s' error '%s'", h, t.elapsed(), qPrintable(pts.join(QLatin1String(", "))), qPrintable(r.study.stopped), qPrintable(r.study.error));
++        }
++    }
++
++    void huntIionByDriving()
++    {
++        for (const char* drv : {"field", "fermi", "current"}) {
++            double I[2] = {0, 0}, ion = 0;
++            for (int on = 0; on < 2; ++on) {
++                QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
++                                        QStringLiteral(R"(, {"type": "impact", "driving": "%2", "currents": %1, "selection": {"all": true}})").arg(on ? QStringLiteral("true") : QStringLiteral("false"), QLatin1String(drv)),
++                                        QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.05"));
++                json.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-40[V]"})");
++                const Run r = run(modelOf(json));
++                if (!r.error.isEmpty()) { qInfo("%s", qPrintable(r.error)); continue; }
++                I[on] = global(*r.solution, QStringLiteral("semi.I_k"));
++                if (on) ion = global(*r.solution, QStringLiteral("semi.Iion"));
++            }
++            qInfo("driving %s, no SRH, -40 V: I off %.5g, on %.5g, dI %.4g, Iion %.4g (%.1f times)", drv, I[0], I[1], I[1] - I[0], ion, ion / (I[1] - I[0]));
++        }
++    }
++
++    void huntHandoffWithFrequency()
++    {
++        for (const char* more : {"", R"(, {"type": "frequency", "frequencies": "1[MHz]"})"}) {
++            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
++                                    QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"),
++                                    QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-1, -3, -5, -7, -9, -11", "V"]]}, {"type": "stationary"}%1)").arg(QLatin1String(more)), QStringLiteral("0.05"));
++            QStringList told;
++            const StudyRun r = toldRun(modelOf(json), &told);
++            QStringList pts;
++            for (const auto& sol : r.solutions) pts << QStringLiteral("%1: %2").arg(sol->label, sol->log.filter(QStringLiteral("reached")).join(QLatin1String(" ")).mid(14, 50));
++            QStringList firsts;
++            for (const QString& w : told) if (w.contains(QLatin1String("(step 1, ")) && w.contains(QLatin1String("Newton's step 1,"))) firsts << w.section(QLatin1String(" - a at "), 1).section(QLatin1Char(';'), 0, 0);
++            qInfo("%s: %s | first steps: %s | %s", *more ? "with frequency" : "stationary alone", qPrintable(pts.join(QLatin1String(" | "))), qPrintable(firsts.join(QLatin1String("; "))), qPrintable(r.error));
++        }
++    }
+ };
+ 
+ QTEST_GUILESS_MAIN(TestFemDevices)

@@ -841,7 +841,10 @@ private slots:
         // from the solution alone 1367 of Newton's steps to -40 V; each
         // point from the last's solution but on the line within it 74, 45
         // and 163 to -48, -50 and -51 V; on the lines 250, 96, 31, 50 and
-        // none (one step).
+        // none (one step) - since the hunt of 19 October 223, 30, 15, 10 and
+        // none: the second point on the first's line (B4: its walk solved
+        // again handed on a line of nought, 96), Newton's method no longer
+        // cycling near breakdown (A1, A2: CI's mesh 227, 101, 69, 86, 76).
         // (A sanitized build: a coarser mesh.)
         const QString hmax = slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05");
         QStringList told;
@@ -863,12 +866,28 @@ private slots:
             newton.push_back(n);
         }
         qInfo("toward breakdown, Newton's steps on the way to each point: %d, %d, %d, %d, %d", newton[0], newton[1], newton[2], newton[3], newton[4]);
-        // (On a sanitized build's coarser mesh 228, 48, 20, 21 and none;
-        // from the solution alone 480 to -40 V, from the last point's 43, 36
-        // and 28 to -48, -50 and -51 V.)
-        const int first = slowBuild() ? 350 : 800, last = slowBuild() ? 80 : 150;
+        // (On a sanitized build's coarser mesh 214, 25, 14, 8 and none - on
+        // meshes of 0.09 to 0.11 µm 212 to 215, 25, 14 or 15, 8 to 10 -;
+        // before the hunt of 19 October 228, 48, 20, 21: from the solution
+        // alone 480 to -40 V, from the last point's 43, 36 and 28 to -48,
+        // -50 and -51 V.)
+        const int first = slowBuild() ? 350 : 800;
         QVERIFY2(newton[0] < first, qPrintable(QString::number(newton[0])));
-        QVERIFY2(newton[2] + newton[3] + newton[4] < last, qPrintable(QStringLiteral("%1 %2 %3").arg(newton[2]).arg(newton[3]).arg(newton[4])));
+        QVERIFY2(newton[1] < (slowBuild() ? 40 : 45), qPrintable(QString::number(newton[1])));
+        QVERIFY2(newton[2] + newton[3] + newton[4] < 60, qPrintable(QStringLiteral("%1 %2 %3").arg(newton[2]).arg(newton[3]).arg(newton[4])));
+        // (The second point's first step on the first's line - its last
+        // step's length four times, 1 V at most: the first point's walk,
+        // solved again at its end, handed on a line of nought, the second's
+        // first step 100 mV as from nothing - the hunt of 19 October, B4.)
+        const QStringList second = told.filter(QStringLiteral("(point 2 of 5)")).filter(QStringLiteral("(step 1, "));
+        QVERIFY2(!second.isEmpty() && !second.front().contains(QLatin1String("(step 1, 100 mV)")), qPrintable(second.join(QLatin1Char('\n'))));
+        // (Each point's walk's last line let go once the next has taken it:
+        // the last's alone kept - every point kept one, 43 % more memory a
+        // point, the hunt of 19 October, B3.)
+        for (std::size_t k = 0; k < r.solutions.size(); ++k)
+            for (const Field& f : r.solutions[k]->fields())
+                if (f.type == QLatin1String("semiconductor"))
+                    QVERIFY2(bool(f.walkedFrom) == (k + 1 == r.solutions.size()), qPrintable(QString::number(k)));
         // Told as it went.
         bool where = false;
         for (const QString& w : told)
@@ -977,11 +996,16 @@ private slots:
         // gradient or the field along each carrier's current, by a steep
         // contact layer at rest: a p⁺⁺ Gaussian of 6.6 nm (the Lumerical
         // APD's p⁺⁺ Ge, its review), its field some 2e5 V/cm with no current
-        // - germanium's α's (Selberherr's) there. Reversed: the field makes
-        // pairs in that layer; the quasi-Fermi gradient, flat there, none;
+        // - germanium's α's (Selberherr's) there. Reversed and lit, its
+        // current some 10 µA: the field makes pairs in that layer; the
+        // quasi-Fermi gradient, all but flat there, a thousandth as many;
         // nor the field along the current, its holes' drift and diffusion
-        // there balanced to some 1e-13.
-        auto apd = [](const char* driving) {
+        // there balanced to some 1e-9. Dark, 3 nA: none of them - the
+        // holes' current in the layer some 1e-13 of their drift and
+        // diffusion, no more than their rounding (the field's pairs there,
+        // that rounding's, a thousandth of all of them before the hunt of 19
+        // October, A2).
+        auto apd = [](const char* driving, bool lit) {
             return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
               "parameters": [{"name": "Va", "expression": "%4[V]"}],
               "components": [{"unit": "um",
@@ -993,7 +1017,7 @@ private slots:
                   {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["cap", "pplus"]}},
                   {"type": "doping", "dopant": "acceptor", "profile": "expression", "N": "1e20[1/cm^3]*exp(-((x/1[um] + 0.55)/0.0066)^2)", "selection": {"only": ["cap"]}},
                   {"type": "doping", "dopant": "donor", "N0": "3e16[1/cm^3]", "selection": {"only": ["nside"]}},
-                  {"type": "srh", "source": "user", "taun": "1[ns]", "taup": "1[ns]", "selection": {"all": true}},
+                  {"type": "srh", "source": "user", "taun": "1[ns]", "taup": "1[ns]", "selection": {"all": true}}%6,
                   {"type": "impact", "model": "user", "driving": "%1", "an": "1.55e7[1/cm]", "bn": "1.557e6[V/cm]", "ap": "2.15e5[1/cm]", "bp": "7.1e5[V/cm]",
                    "an2": "1.55e7[1/cm]", "bn2": "1.557e6[V/cm]", "ap2": "2.15e5[1/cm]", "bp2": "7.1e5[V/cm]", "selection": {"all": true}},
                   {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["cap"], "side": "left"}},
@@ -1003,6 +1027,7 @@ private slots:
                 .arg(QLatin1String(driving))
                 .arg(slowBuild() ? QStringLiteral("0.04") : QStringLiteral("0.02"), slowBuild() ? QStringLiteral("0.002") : QStringLiteral("0.001"),
                      slowBuild() ? QStringLiteral("-1") : QStringLiteral("-3"), slowBuild() ? QStringLiteral("1") : QStringLiteral("2"))
+                .arg(lit ? QStringLiteral(R"(, {"type": "generation", "G": "3e27[1/(m^3*s)]", "selection": {"only": ["nside"]}})") : QString())
                 .toUtf8();
             // (0.02 µm high: along x alone - 0.1 took a sanitized build past
             // its 300 s; there, coarser, at -1 V, its n side 1 µm.)
@@ -1015,22 +1040,34 @@ private slots:
             const DerivedResult d = evaluateDerived(s, in);
             return d.values.isEmpty() ? NAN : d.values.front().value;
         };
-        double cap[3], ion[3], I[3];
+        double caps[2][3], ions[2][3], Is[2][3];
         const char* drivings[3] = {"field", "fermi", "current"};
-        for (int k = 0; k < 3; ++k) {
-            const Run r = run(modelOf(apd(drivings[k])));
-            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-            cap[k] = inCap(*r.solution);
-            ion[k] = global(*r.solution, QStringLiteral("semi.Iion"));
-            I[k] = global(*r.solution, QStringLiteral("semi.I_a"));
+        // (Lit on an optimized build alone: under the sanitizers its three
+        // solves took it past 300 s - the Release jobs solve them.)
+        const int lights = slowBuild() ? 1 : 2;
+        for (int lit = 0; lit < lights; ++lit) {
+            for (int k = 0; k < 3; ++k) {
+                const Run r = run(modelOf(apd(drivings[k], lit)));
+                QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+                caps[lit][k] = inCap(*r.solution);
+                ions[lit][k] = global(*r.solution, QStringLiteral("semi.Iion"));
+                Is[lit][k] = global(*r.solution, QStringLiteral("semi.I_a"));
+            }
+            qInfo("%s: its pairs' current in the contact layer by the field %.4g A, the quasi-Fermi gradient %.4g, along the current %.4g; in all "
+                  "%.4g, %.4g, %.4g; the current %.4g, %.4g, %.4g A",
+                  lit ? "lit" : "dark", caps[lit][0], caps[lit][1], caps[lit][2], ions[lit][0], ions[lit][1], ions[lit][2], Is[lit][0], Is[lit][1], Is[lit][2]);
         }
-        qInfo("its pairs' current in the contact layer by the field %.4g A, the quasi-Fermi gradient %.4g, along the current %.4g; in all %.4g, %.4g, "
-              "%.4g; the current %.4g, %.4g, %.4g A",
-              cap[0], cap[1], cap[2], ion[0], ion[1], ion[2], I[0], I[1], I[2]);
-        QVERIFY2(cap[0] > 1e-3 * ion[0], qPrintable(QString::number(cap[0] / ion[0])));
-        QVERIFY2(cap[1] < 1e-6 * cap[0] && cap[2] < 1e-6 * cap[0], qPrintable(QStringLiteral("%1 %2").arg(cap[1] / cap[0]).arg(cap[2] / cap[0])));
-        // (Outside the layer the field the most pairs, the gradient the
-        // fewest, the field along the current between: where carriers
+        for (int k = 0; k < 3; ++k) QVERIFY2(caps[0][k] < 1e-5 * ions[0][k], qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(drivings[k])).arg(caps[0][k] / ions[0][k])));
+        if (lights > 1) {
+            QVERIFY2(caps[1][0] > 3e-4 * ions[1][0], qPrintable(QString::number(caps[1][0] / ions[1][0])));
+            QVERIFY2(caps[1][1] < 0.05 * caps[1][0] && caps[1][2] < 0.05 * caps[1][0],
+                     qPrintable(QStringLiteral("%1 %2").arg(caps[1][1] / caps[1][0]).arg(caps[1][2] / caps[1][0])));
+        }
+        const double* cap = caps[0];
+        const double* ion = ions[0];
+        const double* I = Is[0];
+        // (Dark, outside the layer, the field the most pairs, the gradient
+        // the fewest, the field along the current between: where carriers
         // diffuse along the field it drives them, the gradient not.)
         const double outsideF = ion[1] - cap[1], outsideJ = ion[2] - cap[2], outsideE = ion[0] - cap[0];
         QVERIFY2(outsideF < outsideJ && outsideJ < outsideE,
@@ -2529,6 +2566,10 @@ private slots:
         if (slow) setAll(m, QStringLiteral("quantum"), QStringLiteral("h1d"), QStringLiteral("0.2[nm]"));
         const Run r = run(m);
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        // (Its states enough: "its highest e state found holds 0.1 % of its
+        // carriers: ask for more states" with 6 - the hunt of 19 October, N10.)
+        QVERIFY2(!(r.study.warnings + r.study.solutions.back()->log).join(QLatin1Char(' ')).contains(QLatin1String("ask for more states")),
+                 qPrintable((r.study.warnings + r.study.solutions.back()->log).join(QLatin1String("; "))));
         Solution& s = *r.study.solutions.back();
         const Locator locator(s.mesh());
         double most = 0, worst = 0;
@@ -2777,6 +2818,192 @@ private slots:
             QVERIFY2(std::abs(rho) < 1e-6 * Q * carriers, qPrintable(said.join(QLatin1String("; "))));
         }
         qInfo("ionized in part: %s", qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    void theFieldsPairsAreItsCurrents()
+    {
+        // Driven by the field, impact ionization's pairs are the current
+        // they add, and its multiplication the same on any mesh: the holes'
+        // current at a junction's p⁺ edge, the difference of drift and
+        // diffusion of some 10¹² A/m², was their rounding, ten thousand
+        // times the current there - its pairs counted 99 times without
+        // recombination (semi.Iion 3.18e-12 A where they added 3.2e-14),
+        // Newton's method cycling at the minority carriers beside them near
+        // breakdown (the hunt of 19 October, A1, A2). Each edge's current
+        // weighed by how far it stands above its rounding; what is no more
+        // than that, nought - a triangle's density for the rounding took the
+        // junction's genuine current with it: the multiplication at -40 V
+        // 1.431 on a mesh of 0.1 µm, 1.521 on 0.05.
+        auto diodeAt = [](bool pairs, bool srh, const char* h) {
+            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
+                                    QStringLiteral(R"(, {"type": "impact", "currents": %1, "selection": {"all": true}}%2)")
+                                        .arg(pairs ? QStringLiteral("true") : QStringLiteral("false"),
+                                             srh ? QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})") : QString()),
+                                    QStringLiteral(R"({"type": "stationary"})"), QLatin1String(h));
+            json.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-40[V]"})");
+            return modelOf(json);
+        };
+        const bool slow = slowBuild();
+        const char* fine = slow ? "0.1" : "0.05";
+        const Run off = run(diodeAt(false, false, fine)), on = run(diodeAt(true, false, fine));
+        QVERIFY2(off.error.isEmpty() && on.error.isEmpty(), qPrintable(off.error + on.error));
+        const double added = global(*on.solution, QStringLiteral("semi.I_k")) - global(*off.solution, QStringLiteral("semi.I_k"));
+        const double ion = global(*on.solution, QStringLiteral("semi.Iion"));
+        // (The short diode's diffusion current times Mp - 1: 0.368 of 9.88e-14 A.)
+        QVERIFY2(std::abs(ion / added - 1) < 0.02 && std::abs(added / (0.368 * global(*off.solution, QStringLiteral("semi.I_k"))) - 1) < 0.1,
+                 qPrintable(QStringLiteral("Iion %1 A, added %2 A").arg(ion).arg(added)));
+        double M[2] = {0, 0};
+        const char* meshes[2] = {"0.1", "0.05"};
+        for (int k = 0; k < (slow ? 1 : 2); ++k) {
+            const Run d = run(diodeAt(false, true, meshes[k])), l = run(diodeAt(true, true, meshes[k]));
+            QVERIFY2(d.error.isEmpty() && l.error.isEmpty(), qPrintable(d.error + l.error));
+            M[k] = global(*l.solution, QStringLiteral("semi.I_k")) / global(*d.solution, QStringLiteral("semi.I_k"));
+            QVERIFY2(std::abs(global(*l.solution, QStringLiteral("semi.Iion")) / (global(*l.solution, QStringLiteral("semi.I_k")) - global(*d.solution, QStringLiteral("semi.I_k"))) - 1) < 0.01,
+                     qPrintable(QString::number(M[k])));
+        }
+        qInfo("without recombination at -40 V: Iion %.4g A, the pairs added %.4g A; with it, M %.5f on 0.1 µm, %.5f on 0.05", ion, added, M[0], M[1]);
+        QVERIFY2(M[0] > 1.55 && M[0] < 1.65, qPrintable(QString::number(M[0])));
+        if (!slow) QVERIFY2(std::abs(M[0] / M[1] - 1) < 0.02, qPrintable(QStringLiteral("%1 %2").arg(M[0]).arg(M[1])));
+    }
+
+    void aSweepReachesBreakdownsEdge()
+    {
+        // Toward an avalanche breakdown (51.6 V) a sweep reaches its points:
+        // on a mesh of 0.04 µm one stopped at -50 V, on one of 0.098 at
+        // -50.7 and -50.8 V - Newton's method cycling at a p⁺ corner's
+        // electrons, its equations met (the hunt of 19 October, A1).
+        const QString hmax = slowBuild() ? QStringLiteral("0.098") : QStringLiteral("0.04");
+        const QString points = slowBuild() ? QStringLiteral("-50, -50.6, -50.7, -50.8, -51") : QStringLiteral("-49, -50, -50.5, -50.8, -51, -51.4");
+        const Run r = run(modelOf(diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
+                                        QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}}, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"),
+                                        QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "%1", "V"]]}, {"type": "stationary"})").arg(points), hmax)));
+        QVERIFY2(r.error.isEmpty() && r.study.stopped.isEmpty(), qPrintable(r.error + r.study.stopped));
+        QCOMPARE(int(r.study.solutions.size()), int(points.count(QLatin1Char(',')) + 1));
+        const double In = global(*r.study.solutions.back(), QStringLiteral("semi.In"));
+        qInfo("on %s µm to %s, In there %.4f", qPrintable(hmax), qPrintable(r.study.solutions.back()->label), In);
+        QVERIFY(In > 0.98 && In < 1);
+    }
+
+    void aMultiplicationWithoutOtherPairs()
+    {
+        // semi.Mion, 1 + Iion/Igen, where no pairs are made otherwise - no
+        // recombination model, or a forward bias, Igen nought or a rounding
+        // -: not a number. It was infinite for a resistor of 10 A and a
+        // diode without recombination, 2.75e18 for a diode at 0.7 V (the
+        // hunt of 19 October, B1); at rest 1; with recombination reversed,
+        // its multiplication.
+        auto mion = [](const char* volts, bool srh, bool uniform) {
+            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
+                                    QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}}%1)")
+                                        .arg(srh ? QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})") : QString()),
+                                    QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.1"));
+            if (uniform)
+                json.replace(R"({"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pplus"]}})",
+                             R"({"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["pplus"]}})");
+            json.replace(R"({"name": "Va", "expression": "0[V]"})", QStringLiteral(R"({"name": "Va", "expression": "%1[V]"})").arg(QLatin1String(volts)).toUtf8());
+            const Run r = run(modelOf(json));
+            return r.solution ? global(*r.solution, QStringLiteral("semi.Mion")) : -1.0;
+        };
+        const double bar = mion("1", false, true), bare = mion("-40", false, false), forward = mion("0.7", true, false), rest = mion("0", true, false),
+                     reversed = mion("-40", true, false);
+        qInfo("Mion: a bar at 1 V %g, a diode without recombination at -40 V %g, at 0.7 V %g, at rest %g, reversed %g", bar, bare, forward, rest, reversed);
+        QVERIFY(std::isnan(bar) && std::isnan(bare) && std::isnan(forward));
+        QCOMPARE(rest, 1.0);
+        QVERIFY(reversed > 1.3 && reversed < 1.8);
+    }
+
+    void aTemperatureSweep()
+    {
+        // A sweep of a forward-biased diode's temperature: each point as a
+        // solve alone - from 300 K, at 400 K no solution found (steps down to
+        // 10 µV), its voltages there already, no step to halve; from rest it
+        // solved (the hunt of 19 October, B8).
+        QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
+                                QStringLiteral(R"(, {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"),
+                                QStringLiteral(R"({"type": "sweep", "parameters": [["Tk", "300, 400", "K"]]}, {"type": "stationary"})"), QStringLiteral("0.1"));
+        json.replace(R"("tag": "semi", "features")", R"("tag": "semi", "T": "Tk", "features")");
+        json.replace(R"("parameters": [{"name": "Va", "expression": "0[V]"}])", R"("parameters": [{"name": "Va", "expression": "0.7[V]"}, {"name": "Tk", "expression": "300[K]"}])");
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty() && r.study.stopped.isEmpty(), qPrintable(r.error + r.study.stopped));
+        QCOMPARE(int(r.study.solutions.size()), 2);
+        QByteArray alone = json;
+        alone.replace(R"({"type": "sweep", "parameters": [["Tk", "300, 400", "K"]]}, )", "");
+        alone.replace(R"({"name": "Tk", "expression": "300[K]"})", R"({"name": "Tk", "expression": "400[K]"})");
+        const Run one = run(modelOf(alone));
+        QVERIFY2(one.error.isEmpty(), qPrintable(one.error));
+        const double swept = global(*r.study.solutions.back(), QStringLiteral("semi.I_k")), single = global(*one.solution, QStringLiteral("semi.I_k"));
+        qInfo("at 400 K: swept %.6g A, alone %.6g A; %s", swept, single, qPrintable(r.study.solutions.back()->log.filter(QStringLiteral("from rest")).join(QLatin1Char(' '))));
+        QVERIFY(std::abs(swept / single - 1) < 1e-4);
+        QVERIFY(r.study.solutions.back()->log.join(QLatin1Char(' ')).contains(QLatin1String("solved from rest")));
+    }
+
+    void aStoppedSweepGoesOn()
+    {
+        // Solved again, a sweep stopped before goes on from its next point,
+        // its points kept as they were (the hunt of 19 October, N3: it began
+        // at its first again).
+        const QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QString(),
+                                      QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-1, -2, -3, -4", "V"]]}, {"type": "stationary"})"), QStringLiteral("0.2"));
+        const Model model = modelOf(json);
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
+        const GeometryBuild g = buildGeometry(model, *ps);
+        QVERIFY(g.ok());
+        const StudyRun whole = runStudy(model, ps, g.topology, nullptr, QString());
+        QVERIFY2(whole.ok() && whole.solutions.size() == 4, qPrintable(whole.error));
+        const std::vector<std::shared_ptr<Solution>> kept(whole.solutions.begin(), whole.solutions.begin() + 2);
+        const StudyRun on = runStudy(model, ps, g.topology, whole.solutions.front()->meshPtr(), QString(), {}, kept);
+        QVERIFY2(on.ok() && on.solutions.size() == 4, qPrintable(on.error));
+        QVERIFY(on.solutions[0] == kept[0] && on.solutions[1] == kept[1]);
+        QVERIFY2(on.log.join(QLatin1Char(' ')).contains(QLatin1String("on from point 3 of 4, its 2 points before kept")), qPrintable(on.log.join(QLatin1String("; "))));
+        QVERIFY(std::abs(global(*on.solutions[3], QStringLiteral("semi.I_k")) / global(*whole.solutions[3], QStringLiteral("semi.I_k")) - 1) < 1e-6);
+        // (Kept points of other values: from the first.)
+        const StudyRun other = runStudy(model, ps, g.topology, whole.solutions.front()->meshPtr(), QString(), {}, {whole.solutions[1]});
+        QVERIFY(other.ok() && other.solutions.size() == 4 && other.solutions[0] != whole.solutions[1]);
+    }
+
+    void aSweepsNamesAndValues()
+    {
+        // Its points named in the unit it was given where SI says them only
+        // with an exponent, or nought: "L = 0 m" in a sweep of mm, a doping
+        // in 1/cm³ "1e+22 1/m³"; one point kept is one point (N4). A value
+        // not finite refused at once - a sweep's point of 0/0 failed as
+        // "'nan' is not a parameter", a transient's output time of it ran a
+        // million steps (B9, N12; the hunt of 19 October).
+        QByteArray json = diode(QStringLiteral("Nd"), QStringLiteral("4"), QString(),
+                                QStringLiteral(R"({"type": "sweep", "parameters": [["Nd", "1e16, 1e17", "1/cm^3"]]}, {"type": "stationary"})"), QStringLiteral("0.2"));
+        json.replace(R"("parameters": [{"name": "Va", "expression": "0[V]"}])", R"("parameters": [{"name": "Va", "expression": "-1[V]"}, {"name": "Nd", "expression": "1e16[1/cm^3]"}])");
+        const Run doped = run(modelOf(json));
+        QVERIFY2(doped.error.isEmpty(), qPrintable(doped.error));
+        QCOMPARE(doped.study.solutions.front()->label, QStringLiteral("Nd = 1e+16 1/cm^3"));
+        QByteArray zero = json;
+        zero.replace(R"([["Nd", "1e16, 1e17", "1/cm^3"]])", R"([["Va", "-1, 0", "V"]])");
+        const Run atZero = run(modelOf(zero));
+        QVERIFY2(atZero.error.isEmpty(), qPrintable(atZero.error));
+        QCOMPARE(atZero.study.solutions.back()->label, QStringLiteral("Va = 0 V"));
+        QByteArray nan = json;
+        nan.replace(R"([["Nd", "1e16, 1e17", "1/cm^3"]])", R"([["Va", "-1, 0/0, -2", "V"]])");
+        const Run notANumber = run(modelOf(nan));
+        QVERIFY2(notANumber.error.contains(QLatin1String("0/0 is not a finite number")), qPrintable(notANumber.error));
+        QByteArray times = json;
+        times.replace(R"({"type": "sweep", "parameters": [["Nd", "1e16, 1e17", "1/cm^3"]]}, {"type": "stationary"})",
+                      R"({"type": "transient", "times": "0, 1e-9, 0/0", "rtol": "1e-4"})");
+        QElapsedTimer t;
+        t.start();
+        const Run timed = run(modelOf(times));
+        QVERIFY2(timed.error.contains(QLatin1String("0/0 is not a finite number")) && t.elapsed() < 20000, qPrintable(timed.error));
+    }
+
+    void aSolveStopsWhileItSetsUp()
+    {
+        // Asked to stop while it sets up - a semiconductor's doping, edges and
+        // contacts, its equilibrium -, it stops: told "Setting up", the
+        // problems asked; a model closed then waited for them, its progress
+        // the mesh's "Done" (the hunt of 19 October, B2).
+        const QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QString(), QStringLiteral(R"({"type": "stationary"})"), QStringLiteral("0.2"));
+        QStringList told;
+        const StudyRun r = toldRun(modelOf(json), &told, QStringLiteral("Setting up"));
+        QVERIFY2(r.error.contains(QLatin1String("cancelled")), qPrintable(r.error));
+        QVERIFY2(!told.filter(QStringLiteral("Setting up Stationary")).isEmpty(), qPrintable(told.join(QLatin1String("\n"))));
     }
 };
 

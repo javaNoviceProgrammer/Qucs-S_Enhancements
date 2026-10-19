@@ -724,7 +724,7 @@ lumerical::Value recordModels(const Hdf5File& f, quint64 rec)
     int valley = -1;
     if (const quint64 d = f.find(QStringLiteral("Detail"), rec)) {
         const auto a = f.attributes(d);
-        if (const auto it = a.find(QStringLiteral("active")); it != a.end()) valley = int(it->second.number(-1));
+        if (const auto it = a.find(QStringLiteral("active")); it != a.end()) valley = lumerical::whole(it->second.number(-1), -1000000000, 1000000000, -1);
     }
     std::function<void(quint64, const QString&, bool, int)> walk = [&f, &out, &valley, &walk](quint64 g, const QString& path, bool on, int depth) {
         for (const auto& link : f.links(g)) {
@@ -1074,7 +1074,7 @@ lumerical::Scene readChargeProject(const Hdf5File& f, const QString& source, boo
                 later.push_back(*o);
             } else if (type == QLatin1String("Electrical Boundary Condition")) {
                 o->kind = QStringLiteral("contact");
-                const int sweep = int(o->number(QStringLiteral("sweep type"), 0));
+                const int sweep = lumerical::whole(o->number(QStringLiteral("sweep type"), 0), -1000000000, 1000000000, 0);
                 o->props[QStringLiteral("sweep type")] = lumerical::Value::text(sweep == 1 ? QStringLiteral("range") : sweep == 2 ? QStringLiteral("value") : QStringLiteral("single"));
                 later.push_back(*o);
             } else if (type == QLatin1String("Electrical Mesh Constraint") || type == QLatin1String("Thermal Mesh Constraint")) {

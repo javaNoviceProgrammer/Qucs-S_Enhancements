@@ -1,0 +1,23 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+index 8192d19..06b9a8b 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+@@ -2778,6 +2778,18 @@ private slots:
+         }
+         qInfo("ionized in part: %s", qPrintable(said.join(QLatin1String("; "))));
+     }
++
++    void huntNanSweep()
++    {
++        for (const char* pts : {"-1, 0/0, -2", "0/0", "-1, 1/0"}) {
++            QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QString(),
++                                    QStringLiteral(R"x({"type": "sweep", "parameters": [["Va", "%1", "V"]]}, {"type": "stationary"})x").arg(QLatin1String(pts)), QStringLiteral("0.2"));
++            QElapsedTimer t;
++            t.start();
++            const Run r = run(modelOf(json));
++            qInfo("sweep '%s': %lld ms, error '%s', stopped '%s', points %d", pts, t.elapsed(), qPrintable(r.error.left(160)), qPrintable(r.study.stopped.left(160)), int(r.study.solutions.size()));
++        }
++    }
+ };
+ 
+ QTEST_GUILESS_MAIN(TestFemDevices)

@@ -18,6 +18,7 @@
 #include "fem_materials.h"
 #include "fem_results.h"
 
+#include <QDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -179,6 +180,8 @@ private slots:
     void microstripAgainstTranscalc();
     void helpfulErrors();
     void largeModelTiming();
+    void everyExamplesSelectionsResolve();
+    void aMeshStopsWhileItSmooths();
 };
 
 void TestFemEngine::units()
@@ -995,6 +998,79 @@ void TestFemEngine::largeModelTiming()
         QVERIFY(dofs > 100000);
         QVERIFY2(meshMs + solveMs < 20000, "a model of 100,000 unknowns took more than 20 s");
     }
+}
+
+// Each shipped multiphysics example's selections name what its geometry
+// makes, each at its own level: the gapped core inductor's refinement of its
+// gap named "slot", a difference's tool - no object once the core was cut,
+// its gap meshed coarse and only a warning said (the hunt of 19 October, B6).
+void TestFemEngine::everyExamplesSelectionsResolve()
+{
+    const QDir dir(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics"));
+    const QStringList files = dir.entryList({QStringLiteral("*.qfem")}, QDir::Files);
+    QVERIFY(files.size() > 40);
+    QStringList bad;
+    int checked = 0;
+    for (const QString& name : files) {
+        QFile f(dir.filePath(name));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QString why;
+        std::optional<Model> m = Model::fromJson(f.readAll(), &why);
+        if (!m) {
+            bad << QStringLiteral("%1: %2").arg(name, why);
+            continue;
+        }
+        m->fileName = dir.filePath(name);
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(*m);
+        const GeometryBuild g = buildGeometry(*m, *ps);
+        if (!g.ok()) {
+            bad << QStringLiteral("%1: its geometry: %2").arg(name, QStringList(g.errors.values()).join(QLatin1String("; ")));
+            continue;
+        }
+        std::function<void(const Node&)> walk = [&walk, &m, &g, &bad, &name, &checked](const Node& n) {
+            if (n.enabled && n.props.contains(QStringLiteral("selection"))) {
+                Level level = n.kind() ? n.kind()->selection : Level::None;
+                if (n.props.contains(QStringLiteral("level"))) level = levelOf(n.text(QStringLiteral("level")));
+                if (level != Level::None) {
+                    QString error;
+                    (void)resolveSelection(*g.topology, *m, level, n.value(QStringLiteral("selection")).toObject(), &error);
+                    if (!error.isEmpty()) bad << QStringLiteral("%1: %2: %3").arg(name, n.name(), error);
+                    ++checked;
+                }
+            }
+            for (const Node& c : n.children) walk(c);
+        };
+        walk(m->component());
+    }
+    qInfo("%d examples, %d selections", int(files.size()), checked);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad.join(QLatin1Char('\n'))));
+}
+
+// A mesh asked to stop while it smooths, and while it makes its edges
+// Delaunay, stops: each pass asks - 349,000 nodes took 1.3 and 3 s, a model
+// closed then waiting for them (the hunt of 19 October, B2).
+void TestFemEngine::aMeshStopsWhileItSmooths()
+{
+    const Model m = modelOf(R"json({"format": "qucs-s multiphysics 1",
+      "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "a", "size": ["10", "10"]}, {"type": "circle", "name": "b", "position": ["5", "5"], "radius": "2"}, {"type": "form union"}],
+        "physics": [{"type": "electrostatics", "tag": "es", "features": []}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.3"}}],
+      "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json");
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+    const GeometryBuild g = buildGeometry(m, *ps);
+    QVERIFY(g.ok());
+    int smoothing = 0;
+    const MeshBuild whole = buildMesh(m, *ps, g.topology, [&smoothing](double, const QString& w) {
+        if (w == QLatin1String("Smoothing")) ++smoothing;
+        return true;
+    });
+    QVERIFY2(whole.mesh, qPrintable(whole.error));
+    qInfo("asked %d times as it smoothed", smoothing);
+    QVERIFY(smoothing >= 3);
+    int asked = 0;
+    const MeshBuild stopped = buildMesh(m, *ps, g.topology, [&asked](double, const QString& w) { return !(w == QLatin1String("Smoothing") && ++asked == 2); });
+    QVERIFY(!stopped.mesh);
+    QCOMPARE(stopped.error, QStringLiteral("cancelled"));
 }
 
 QTEST_GUILESS_MAIN(TestFemEngine)

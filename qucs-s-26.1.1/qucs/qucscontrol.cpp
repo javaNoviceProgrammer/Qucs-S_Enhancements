@@ -4484,6 +4484,17 @@ QString wrongTypeIn(const QJsonValue& value, const QJsonObject& schema, const QS
     } else if (!types.isEmpty() && std::none_of(types.cbegin(), types.cend(), [&](const QString& t) { return isOfType(value, t); })) {
         return tr("%1 is %2, not %3").arg(where, typeWords(types), whatItIs(value));
     }
+    // A whole number past an int's range and its schema's bounds: a tool
+    // reads it as its default (toInt) - a timeout of 1e10 s waited 600, not
+    // its most, 7200 (the hunt of 19 October, N5). Within an int, a tool
+    // takes it to its bounds itself.
+    if (value.isDouble() && (value.toDouble() > 2147483647.0 || value.toDouble() < -2147483648.0)) {
+        const double v = value.toDouble();
+        if (object.contains(QLatin1String("maximum")) && v > object.value(QLatin1String("maximum")).toDouble())
+            return tr("%1 is at most %2, not %3").arg(where, QString::number(object.value(QLatin1String("maximum")).toDouble(), 'g', 15), QString::number(v, 'g', 15));
+        if (object.contains(QLatin1String("minimum")) && v < object.value(QLatin1String("minimum")).toDouble())
+            return tr("%1 is at least %2, not %3").arg(where, QString::number(object.value(QLatin1String("minimum")).toDouble(), 'g', 15), QString::number(v, 'g', 15));
+    }
     if (value.isArray()) {
         const QJsonObject items = object.value(QLatin1String("items")).toObject();
         if (items.isEmpty()) return {};

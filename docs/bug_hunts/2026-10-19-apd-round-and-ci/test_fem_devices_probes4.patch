@@ -1,0 +1,32 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+index 8192d19..cd2176e 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_fem_devices.cpp
+@@ -2778,6 +2778,27 @@ private slots:
+         }
+         qInfo("ionized in part: %s", qPrintable(said.join(QLatin1String("; "))));
+     }
++
++    void huntHugeSweep()
++    {
++        for (const char* step : {"1e-3", "1e-4", "1e-5"}) {
++            const QString json = QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
++      "parameters": [{"name": "L", "expression": "10[mm]"}],
++      "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "bar", "size": ["10", "1"]}],
++        "materials": [{"label": "m", "sigma": "1e6[S/m]", "selection": {"all": true}}],
++        "physics": [{"type": "currents", "tag": "ec", "features": [
++          {"type": "terminal", "name": "1", "V0": "L/1[mm]*1[V]", "selection": {"of": ["bar"], "side": "left"}},
++          {"type": "ground", "selection": {"of": ["bar"], "side": "right"}}]}],
++        "mesh": {"size": "coarse"}}],
++      "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["L", "range(10, %1, 20)", "mm"]]}, {"type": "stationary"}]}]})json").arg(QLatin1String(step));
++            QStringList told;
++            QElapsedTimer t;
++            t.start();
++            const StudyRun r = toldRun(modelOf(json.toUtf8()), &told, QStringLiteral("point 1 of"));
++            const QString first = told.isEmpty() ? QString() : told.front().left(60);
++            qInfo("step %s mm: %lld ms to the first point's word, '%s'; error '%s' stopped '%s'", step, t.elapsed(), qPrintable(first), qPrintable(r.error.left(100)), qPrintable(r.stopped.left(100)));
++        }
++    }
+ };
+ 
+ QTEST_GUILESS_MAIN(TestFemDevices)

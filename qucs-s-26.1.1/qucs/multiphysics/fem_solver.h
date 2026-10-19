@@ -452,9 +452,12 @@ struct StudyRun {
     bool ok() const { return error.isEmpty() && !solutions.empty(); }
 };
 /// Runs study \a studyTag: \a topology and \a mesh are of the model's own
-/// parameters (a null mesh is made).
+/// parameters (a null mesh is made). \a resume: a sweep's points kept when
+/// it stopped, the model as it was since - on from the next point (where
+/// they are its first points).
 StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Topology> topology,
-                  std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress = {});
+                  std::shared_ptr<const Mesh> mesh, const QString& studyTag, const Progress& progress = {},
+                  const std::vector<std::shared_ptr<Solution>>& resume = {});
 
 /// A list of values as a sweep or a time step gives them: "1, 2, 5",
 /// "range(0, 0.1, 1)" (start, step, stop), "linspace(0, 1, 11)", with units

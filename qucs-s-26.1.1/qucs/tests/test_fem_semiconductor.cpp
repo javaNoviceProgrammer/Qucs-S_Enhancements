@@ -2055,6 +2055,14 @@ private slots:
             timer.start();
             const Run r = run(load(QStringLiteral("pn_phase_shifter.qfem")));
             QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            // (Nothing warned: its p⁺ and n⁺ slabs at its window's edges are
+            // its rib's silicon, its mode guided - "not guided" said before
+            // the hunt of 19 October, B7.)
+            {
+                QStringList said = r.study.warnings;
+                for (const auto& s : r.study.solutions) said << s->log;
+                QVERIFY2(!said.join(QLatin1Char(' ')).contains(QLatin1String("Warning")), qPrintable(said.filter(QStringLiteral("Warning")).join(QLatin1String("; "))));
+            }
             std::vector<double> neff, loss;
             for (const auto& s : r.study.solutions) {
                 s->select(s->snapshotCount() - 1);

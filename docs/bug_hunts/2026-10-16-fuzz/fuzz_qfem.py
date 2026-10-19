@@ -150,6 +150,14 @@ for i in range(total):
         done.append((name_, round(took, 1)))
         st = stats.setdefault(name_, [0, 0, 0.0]); st[0] += 1; st[2] = max(st[2], took)
         if isinstance(r, dict) and r.get('result', {}).get('isError'): st[1] += 1
+        # (A call past 10 s kept beside the findings, not one: a close that
+        # waited 45 s for a mesh's smoothing was seen only as the longest -
+        # the hunt of 19 October, B2 and T2.)
+        if took > 10:
+            keep = os.path.join(FIND, f'slow-{seed}-{i}-{name_}')
+            os.makedirs(keep, exist_ok=True)
+            open(os.path.join(keep, 'mutant.qfem'), 'w', encoding='utf-8').write(text)
+            json.dump({'from': name, 'ops': ops, 'slow': name_, 'took': took, 'calls': done}, open(os.path.join(keep, 'slow.json'), 'w'), indent=1, default=str)
         hits, pos = sanitizer(pos)
         if r in ('EOF', 'HANG'): bad = f'{r} in {name_}'
         elif hits: bad = 'SANITIZER ' + hits[0][:200]

@@ -1602,7 +1602,7 @@ private slots:
             auto strip = [](const Solution& s) { return s.fields()[std::size_t(s.fieldIndex(QStringLiteral("semi")))].line; };
             auto steps = [](const Solution& s) {
                 const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("voltages reached in (\\d+) steps")).match(s.log.join(QLatin1Char('\n')));
-                return m.hasMatch() ? m.captured(1).toInt() : -1;
+                return m.hasMatch() ? m.captured(1).toInt() : 1;   // (none said: one step - 0.5 V from 0.3 V's, since the hunt of 19 October, B4)
             };
             QVERIFY(strip(*sweep.study.solutions[0]) && strip(*sweep.study.solutions[1]) && strip(*one.solution));
             QVERIFY(strip(*sweep.study.solutions[1])->meshPtr() == strip(*sweep.study.solutions[0])->meshPtr());

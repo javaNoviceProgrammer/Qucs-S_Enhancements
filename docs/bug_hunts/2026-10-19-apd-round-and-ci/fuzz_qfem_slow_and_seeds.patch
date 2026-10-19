@@ -1,0 +1,26 @@
+--- /Users/meisam/git/Qucs-S_Enhancements/docs/bug_hunts/2026-10-16-fuzz/fuzz_qfem.py	2026-10-16 14:29:36
++++ fuzz_qfem.py	2026-10-19 06:17:30
+@@ -7,9 +7,9 @@
+ # mutant and the calls kept in findings/.
+ #   QUCS=<qucs-s> HUNT_RUNS=<scratch> python3 fuzz_qfem.py SEED COUNT
+ import json, os, random, re, select, shutil, subprocess, sys, time
+-ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
++ROOT = '/Users/meisam/git/Qucs-S_Enhancements'
+ APP = os.environ['QUCS']   # the app's binary: the ASan/UBSan build's for the reports
+-EX = os.path.join(ROOT, 'qucs-s-26.1.1', 'examples', 'multiphysics')
++EX = '/private/tmp/claude-501/-Users-meisam-git-Qucs-S-Enhancements/271cee43-4af1-4467-91be-58bdac41c606/scratchpad/hunt1019/fuzz/ex'
+ H = os.environ['HUNT_RUNS']   # a scratch folder: the servers' workspaces, settings, HOME, cache, trash and the logs
+ os.makedirs(H, exist_ok=True)
+ seed, total = int(sys.argv[1]), int(sys.argv[2])
+@@ -150,6 +150,11 @@
+         done.append((name_, round(took, 1)))
+         st = stats.setdefault(name_, [0, 0, 0.0]); st[0] += 1; st[2] = max(st[2], took)
+         if isinstance(r, dict) and r.get('result', {}).get('isError'): st[1] += 1
++        if took > 10:
++            keep = os.path.join(FIND, f'slow-{seed}-{i}-{name_}')
++            os.makedirs(keep, exist_ok=True)
++            open(os.path.join(keep, 'mutant.qfem'), 'w', encoding='utf-8').write(text)
++            json.dump({'from': name, 'ops': ops, 'slow': name_, 'took': took, 'calls': done}, open(os.path.join(keep, 'slow.json'), 'w'), indent=1, default=str)
+         hits, pos = sanitizer(pos)
+         if r in ('EOF', 'HANG'): bad = f'{r} in {name_}'
+         elif hits: bad = 'SANITIZER ' + hits[0][:200]
