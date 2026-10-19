@@ -637,10 +637,12 @@ private slots:
             if (slowBuild() && std::strcmp(v, "1.6") != 0) continue;
             const Run r = run(modelOf(pillbox(QStringLiteral(R"j({"type": "laser", "physics": ["semi"], "contact": "anode", "voltages": "%1"})j").arg(QLatin1String(v)))));
             QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
-            const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("reached in (\\d+) steps \\((\\d+) of Newton's\\)")).match(r.solution->log.join(QLatin1Char('\n')));
+            const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("reached in (\\d+) steps \\((\\d+) of Newton's[;)]")).match(r.solution->log.join(QLatin1Char('\n')));
             QVERIFY2(m.hasMatch(), qPrintable(r.solution->log.join(QLatin1Char('\n'))));
             qInfo("one point at %s V: %s steps, %s of Newton's; S %.4g", v, qPrintable(m.captured(1)), qPrintable(m.captured(2)), points(*r.solution).back().S);
-            // (271 for 21 steps at 1.6 V; 484 when each such try ran its forty.)
+            // (271 for 21 steps at 1.6 V; 484 when each such try ran its
+            // forty; 166 for 16, each step started on the line of the last
+            // two.)
             QVERIFY2(m.captured(2).toInt() < 350, qPrintable(m.captured(0)));
             QVERIFY(points(*r.solution).back().S > 1000);
         }

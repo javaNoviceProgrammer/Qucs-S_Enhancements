@@ -82,6 +82,12 @@ struct Field {
     /// Numbers that go with the field, the same in all its snapshots (a
     /// quantum wells physics' bands).
     std::shared_ptr<const std::vector<double>> fixed;
+    /// A semiconductor's way to its contacts' voltages, its last step: its
+    /// unknowns a step before the solution and its contacts' voltages there
+    /// - a sweep's next point starts on their line (empty: no step).
+    std::shared_ptr<const std::vector<double>> walkedFrom;
+    std::vector<double> walkedFromVolts;
+    double walkedStep = 0;   ///< that step's length (V, the contact moved most)
 
     int count() const { return int(components.size()); }
     double value(int component, int dof) const { return values[std::size_t(component) * std::size_t(space->size()) + std::size_t(dof)]; }
@@ -439,6 +445,10 @@ struct StudyRun {
     QString error;
     QStringList warnings;
     QStringList log;
+    /// A sweep stopped before its last point - cancelled, or a point
+    /// without a solution - its points before kept: where and why (empty:
+    /// every point solved, or none kept and why in error).
+    QString stopped;
     bool ok() const { return error.isEmpty() && !solutions.empty(); }
 };
 /// Runs study \a studyTag: \a topology and \a mesh are of the model's own

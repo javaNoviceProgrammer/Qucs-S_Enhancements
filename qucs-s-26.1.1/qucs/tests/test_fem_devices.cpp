@@ -751,7 +751,7 @@ private slots:
         QStringList said;
         const std::vector<const char*> biases = slow ? std::vector<const char*>{"-48"} : std::vector<const char*>{"-46", "-48"};
         for (const char* volts : biases) {
-            double photo[2] = {0, 0}, Mp = NAN;
+            double photo[2] = {0, 0}, Mp = NAN, Mion = NAN;
             for (int on = 0; on < 2; ++on) {
                 const QString ii = QStringLiteral(R"(, {"type": "impact", "currents": %1, "selection": {"all": true}})").arg(on ? QStringLiteral("true") : QStringLiteral("false"));
                 QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), ii + light,
@@ -764,16 +764,38 @@ private slots:
                 const double dark = global(*r.study.solutions.front(), QStringLiteral("semi.I_k")), lit = global(*r.study.solutions.back(), QStringLiteral("semi.I_k"));
                 photo[on] = lit - dark;
                 if (!on) Mp = global(*r.study.solutions.back(), QStringLiteral("semi.Mp"));
+                if (on) {
+                    // Its multiplication from its own equations, 1 + Iion/Igen
+                    // - the pairs of impact ionization against those made
+                    // otherwise, the light's and the dark's -, the gain; and
+                    // its pairs semi.Gion, q ∫ of which is Iion.
+                    const Solution& s = *r.study.solutions.back();
+                    Mion = global(s, QStringLiteral("semi.Mion"));
+                    Node in;
+                    in.type = QStringLiteral("integral");
+                    in.props.insert(QStringLiteral("expression"), QStringLiteral("1.602176634e-19[C]*semi.Gion*1[m]"));
+                    in.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+                    const DerivedResult d = evaluateDerived(s, in);
+                    QVERIFY(!d.values.isEmpty());
+                    const double Iion = global(s, QStringLiteral("semi.Iion"));
+                    QVERIFY2(std::abs(d.values.front().value / Iion - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(d.values.front().value).arg(Iion)));
+                }
             }
             const double M = photo[1] / photo[0];
-            said << QStringLiteral("%1 V: photocurrent %2 A, multiplied %3 A - %4 times (1/(1 - Ip) %5; 1 - 1/M %6, Ip %7)")
+            // (Of all the pairs: the light's that reach the field multiplied,
+            // M times - a share of them, its photocurrent unmultiplied over q
+            // G0 of its 0.5 by 0.2 µm -, the others not: 1 + (M - 1) share.)
+            const double share = photo[0] / (Q * 1e25 * 0.5e-6 * 0.2e-6);
+            QVERIFY2(std::abs(Mion / (1 + (M - 1) * share) - 1) < 0.03, qPrintable(QStringLiteral("Mion %1, M %2, share %3").arg(Mion).arg(M).arg(share)));
+            said << QStringLiteral("%1 V: photocurrent %2 A, multiplied %3 A - %4 times (1/(1 - Ip) %5; 1 - 1/M %6, Ip %7; Mion %8)")
                         .arg(QLatin1String(volts))
                         .arg(photo[0], 0, 'g', 5)
                         .arg(photo[1], 0, 'g', 5)
                         .arg(M, 0, 'f', 3)
                         .arg(Mp, 0, 'f', 3)
                         .arg(1 - 1 / M, 0, 'f', 4)
-                        .arg(1 - 1 / Mp, 0, 'f', 4);
+                        .arg(1 - 1 / Mp, 0, 'f', 4)
+                        .arg(Mion, 0, 'f', 3);
             // (Near breakdown M = 1/(1 - Ip) magnifies: 1 % in Ip is 6 % in M
             // at 6. The ionization's probability, 1 - 1/M, to 2 %.)
             QVERIFY2(Mp > 1.5 && std::abs((1 - 1 / M) / (1 - 1 / Mp) - 1) < (slow ? 0.04 : 0.02), qPrintable(said.join(QLatin1String("; "))));
@@ -787,6 +809,260 @@ private slots:
         beyond.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-60[V]"})");
         const Run broken = run(modelOf(beyond));
         QVERIFY2(broken.error.contains(QLatin1String("no solution found")), qPrintable(broken.error));
+    }
+
+    // A study run with its progress told, each text kept; \a stop: the
+    // text at which it answers false (cancels), empty: never.
+    static StudyRun toldRun(const Model& model, QStringList* told, const QString& stop = {})
+    {
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
+        const GeometryBuild g = buildGeometry(model, *ps);
+        if (!g.ok()) {
+            StudyRun r;
+            r.error = QStringLiteral("geometry: ") + QStringList(g.errors.values()).join(QLatin1String("; "));
+            return r;
+        }
+        return runStudy(model, ps, g.topology, nullptr, QString(), [told, stop](double, const QString& w) {
+            told->append(w);
+            return stop.isEmpty() || !w.contains(stop);
+        });
+    }
+
+    void aWalkStartsOnTheLine()
+    {
+        // The way to the contacts' voltages starts each step on the line of
+        // the last two solutions - the potential on it, the carriers on
+        // their logarithms' (a junction's go as e^(V/Vt)) -, a sweep's next
+        // point on its last step's line, and tells where it is: its point,
+        // its contact's voltage, its step, Newton's step and residual (the
+        // Lumerical APD's review: "Solving Stationary" alone; zeroth-order
+        // steps, 80 of them to -0.5 V, 1270 and 2519 s at its breakdown).
+        // An avalanche diode (51.7 V) toward its breakdown, -40 to -51 V:
+        // from the solution alone 1367 of Newton's steps to -40 V; each
+        // point from the last's solution but on the line within it 74, 45
+        // and 163 to -48, -50 and -51 V; on the lines 250, 96, 31, 50 and
+        // none (one step).
+        // (A sanitized build: a coarser mesh.)
+        const QString hmax = slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05");
+        QStringList told;
+        const StudyRun r = toldRun(modelOf(diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
+                                                 QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}},
+                                                                   {"type": "srh", "source": "user", "taun": "1[us]", "taup": "1[us]", "selection": {"all": true}})"),
+                                                 QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-40, -45, -48, -50, -51", "V"]]}, {"type": "stationary"})"),
+                                                 hmax)),
+                                   &told);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QVERIFY2(r.solutions.size() == 5, qPrintable(r.stopped));
+        // Each point's Newton's steps on its way (none said: one step).
+        static const QRegularExpression reached(QStringLiteral("reached in \\d+ steps \\((\\d+) of Newton's"));
+        std::vector<int> newton;
+        for (const auto& point : r.solutions) {
+            int n = 0;
+            for (const QString& line : point->log)
+                if (const QRegularExpressionMatch m = reached.match(line); m.hasMatch()) n = m.captured(1).toInt();
+            newton.push_back(n);
+        }
+        qInfo("toward breakdown, Newton's steps on the way to each point: %d, %d, %d, %d, %d", newton[0], newton[1], newton[2], newton[3], newton[4]);
+        // (On a sanitized build's coarser mesh 228, 48, 20, 21 and none;
+        // from the solution alone 480 to -40 V, from the last point's 43, 36
+        // and 28 to -48, -50 and -51 V.)
+        const int first = slowBuild() ? 350 : 800, last = slowBuild() ? 80 : 150;
+        QVERIFY2(newton[0] < first, qPrintable(QString::number(newton[0])));
+        QVERIFY2(newton[2] + newton[3] + newton[4] < last, qPrintable(QStringLiteral("%1 %2 %3").arg(newton[2]).arg(newton[3]).arg(newton[4])));
+        // Told as it went.
+        bool where = false;
+        for (const QString& w : told)
+            where = where || (w.startsWith(QLatin1String("Va = -48 V (point 3 of 5): ")) && w.contains(QLatin1String(" - a at "))
+                              && w.contains(QLatin1String(" of -48 V (step ")) && w.contains(QLatin1String("; Newton's step "))
+                              && w.contains(QLatin1String(", its residual ")));
+        QVERIFY2(where, qPrintable(told.filter(QStringLiteral("point 3 of 5")).join(QLatin1String("\n"))));
+        // Without recombination, walked to -40 V and solved there again (its
+        // step's own solve, as its setup walked it): its equations met
+        // already, no step - Newton's from where it was took its forty and
+        // failed, its own rounding some 1e-6 of the flows.
+        QByteArray bare = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"), QStringLiteral(R"(, {"type": "impact", "selection": {"all": true}})"),
+                                QStringLiteral(R"({"type": "stationary"})"), hmax);
+        bare.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-40[V]"})");
+        const Run solved = run(modelOf(bare));
+        QVERIFY2(solved.error.isEmpty(), qPrintable(solved.error));
+    }
+
+    void aSweepStoppedKeepsItsPoints()
+    {
+        // A sweep cancelled, or a point of it without a solution, keeps the
+        // points before, says where and why (the Lumerical APD's review: a
+        // Cancel at -9.5 V lost the 20 points of 42 minutes before it).
+        const QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("Ln"), QString(),
+                                      QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-1, -2, -3", "V"]]}, {"type": "stationary"})"),
+                                      QStringLiteral("0.2"))
+                                    .replace(R"("parameters": [{"name": "Va", "expression": "0[V]"}])",
+                                             R"("parameters": [{"name": "Va", "expression": "0[V]"}, {"name": "Ln", "expression": "4"}])");
+        QStringList told;
+        const StudyRun cancelled = toldRun(modelOf(json), &told, QStringLiteral("(point 3 of 3)"));
+        QVERIFY2(cancelled.ok(), qPrintable(cancelled.error));
+        QCOMPARE(int(cancelled.solutions.size()), 2);
+        QVERIFY2(cancelled.stopped.contains(QLatin1String("stopped at Va = -3 V (point 3 of 3): cancelled - its 2 points before kept")),
+                 qPrintable(cancelled.stopped));
+        QCOMPARE(global(*cancelled.solutions.back(), QStringLiteral("semi.V_a")), -2.0);
+        // At its first point: nothing kept, an error as it was.
+        told.clear();
+        const StudyRun first = toldRun(modelOf(json), &told, QStringLiteral("(point 1 of 3)"));
+        QVERIFY(!first.ok() && first.error.contains(QLatin1String("cancelled")) && first.stopped.isEmpty());
+        // A point whose geometry is not made: the points before kept.
+        QByteArray shaped = json;
+        shaped.replace(R"(["Va", "-1, -2, -3", "V"])", R"(["Ln", "4, 3, -1", ""])");
+        told.clear();
+        const StudyRun broken = toldRun(modelOf(shaped), &told);
+        QVERIFY2(broken.ok(), qPrintable(broken.error));
+        QCOMPARE(int(broken.solutions.size()), 2);
+        QVERIFY2(broken.stopped.contains(QLatin1String("(point 3 of 3): the geometry")) && broken.stopped.contains(QLatin1String("its 2 points before kept")),
+                 qPrintable(broken.stopped));
+    }
+
+    void theMostOfTheFieldLines()
+    {
+        // The ionization integrals, the most of the field lines' from every
+        // corner where it ionizes a thousandth of its most or more: two
+        // junctions side by side (a gap between, not solved), one 1e16 cm⁻³
+        // and 4 µm (silicon's α's), one 1e17 cm⁻³ of 0.1 µm, punched
+        // through - its field and its α the highest, its line short, its In
+        // some 0.4. The integrals the long one's, as it has them alone, and
+        // where (the Lumerical APD's review: the line through the highest
+        // field misses the path that breaks down).
+        auto pair = [](bool both) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "-46[V]"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "pB", "position": ["-0.5", "0"], "size": ["0.5", "0.2"]},
+                             {"type": "rectangle", "label": "nB", "position": ["0", "0"], "size": ["4", "0.2"]}%1],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}%2],
+                "physics": [{"type": "semiconductor", "tag": "semi", "selection": {"only": ["pB", "nB"%7]}, "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pB"%3]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["nB"]}}%4,
+                  {"type": "impact", "currents": false, "selection": {"only": ["pB", "nB"]}}%5,
+                  {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["pB"%3], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nB"%6], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%8"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(both ? QStringLiteral(R"(, {"type": "rectangle", "label": "gap", "position": ["-0.5", "0.2"], "size": ["4.5", "0.2"]},
+                                              {"type": "rectangle", "label": "pA", "position": ["-0.5", "0.4"], "size": ["0.5", "0.2"]},
+                                              {"type": "rectangle", "label": "nA", "position": ["0", "0.4"], "size": ["0.1", "0.2"]})")
+                            : QString(),
+                     both ? QStringLiteral(R"(, {"material": "Silicon dioxide", "selection": {"only": ["gap"]}})") : QString(),
+                     both ? QStringLiteral(R"(, "pA")") : QString(),
+                     both ? QStringLiteral(R"(, {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["nA"]}})") : QString(),
+                     both ? QStringLiteral(R"(, {"type": "impact", "currents": false, "model": "user", "an": "5e4[1/cm]", "bn": "1.231e6[V/cm]",
+                                              "ap": "5e4[1/cm]", "bp": "1.231e6[V/cm]", "an2": "5e4[1/cm]", "bn2": "1.231e6[V/cm]", "ap2": "5e4[1/cm]",
+                                              "bp2": "1.231e6[V/cm]", "selection": {"only": ["pA", "nA"]}})")
+                          : QString(),
+                     both ? QStringLiteral(R"(, "nA")") : QString(), both ? QStringLiteral(R"(, "pA", "nA")") : QString(),
+                     slowBuild() ? QStringLiteral("0.1") : QStringLiteral("0.05"))   // (a sanitized build: coarser)
+                .toUtf8();
+        };
+        const Run alone = run(modelOf(pair(false))), both = run(modelOf(pair(true)));
+        QVERIFY2(alone.error.isEmpty() && both.error.isEmpty(), qPrintable(alone.error + both.error));
+        const double In = global(*both.solution, QStringLiteral("semi.In")), Ip = global(*both.solution, QStringLiteral("semi.Ip"));
+        const double InB = global(*alone.solution, QStringLiteral("semi.In")), IpB = global(*alone.solution, QStringLiteral("semi.Ip"));
+        const double y = global(*both.solution, QStringLiteral("semi.yion")), Emax = global(*both.solution, QStringLiteral("semi.Emax"));
+        qInfo("the most of the lines: In %.5f, Ip %.5f at y %.3g µm (the 1e16 junction alone: %.5f, %.5f); Emax %.4g MV/m (alone %.4g)", In, Ip, y * 1e6, InB,
+              IpB, Emax / 1e6, global(*alone.solution, QStringLiteral("semi.Emax")) / 1e6);
+        QVERIFY(Emax > 1.5 * global(*alone.solution, QStringLiteral("semi.Emax")));   // (the highest field the other's)
+        QVERIFY2(InB > 0.3 && std::abs(In / InB - 1) < 1e-2 && std::abs(Ip / IpB - 1) < 1e-2, qPrintable(QStringLiteral("%1 %2").arg(In).arg(InB)));
+        QVERIFY2(y >= 0 && y <= 0.2e-6, qPrintable(QString::number(y)));
+    }
+
+    void ionizationsDrivingField()
+    {
+        // Impact ionization driven by the field, each carrier's quasi-Fermi
+        // gradient or the field along each carrier's current, by a steep
+        // contact layer at rest: a p⁺⁺ Gaussian of 6.6 nm (the Lumerical
+        // APD's p⁺⁺ Ge, its review), its field some 2e5 V/cm with no current
+        // - germanium's α's (Selberherr's) there. Reversed: the field makes
+        // pairs in that layer; the quasi-Fermi gradient, flat there, none;
+        // nor the field along the current, its holes' drift and diffusion
+        // there balanced to some 1e-13.
+        auto apd = [](const char* driving) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "%4[V]"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "cap", "position": ["-0.55", "0"], "size": ["0.05", "0.02"]},
+                             {"type": "rectangle", "label": "pplus", "position": ["-0.5", "0"], "size": ["0.5", "0.02"]},
+                             {"type": "rectangle", "label": "nside", "position": ["0", "0"], "size": ["%5", "0.02"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["cap", "pplus"]}},
+                  {"type": "doping", "dopant": "acceptor", "profile": "expression", "N": "1e20[1/cm^3]*exp(-((x/1[um] + 0.55)/0.0066)^2)", "selection": {"only": ["cap"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "3e16[1/cm^3]", "selection": {"only": ["nside"]}},
+                  {"type": "srh", "source": "user", "taun": "1[ns]", "taup": "1[ns]", "selection": {"all": true}},
+                  {"type": "impact", "model": "user", "driving": "%1", "an": "1.55e7[1/cm]", "bn": "1.557e6[V/cm]", "ap": "2.15e5[1/cm]", "bp": "7.1e5[V/cm]",
+                   "an2": "1.55e7[1/cm]", "bn2": "1.557e6[V/cm]", "ap2": "2.15e5[1/cm]", "bp2": "7.1e5[V/cm]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["cap"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nside"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%2", "features": [{"type": "size", "level": "domain", "hmax": "%3", "selection": {"only": ["cap"]}}]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(QLatin1String(driving))
+                .arg(slowBuild() ? QStringLiteral("0.04") : QStringLiteral("0.02"), slowBuild() ? QStringLiteral("0.002") : QStringLiteral("0.001"),
+                     slowBuild() ? QStringLiteral("-1") : QStringLiteral("-3"), slowBuild() ? QStringLiteral("1") : QStringLiteral("2"))
+                .toUtf8();
+            // (0.02 µm high: along x alone - 0.1 took a sanitized build past
+            // its 300 s; there, coarser, at -1 V, its n side 1 µm.)
+        };
+        auto inCap = [](const Solution& s) {
+            Node in;
+            in.type = QStringLiteral("integral");
+            in.props.insert(QStringLiteral("expression"), QStringLiteral("1.602176634e-19[C]*semi.Gion*1[m]"));
+            in.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QStringLiteral("cap")}}});
+            const DerivedResult d = evaluateDerived(s, in);
+            return d.values.isEmpty() ? NAN : d.values.front().value;
+        };
+        double cap[3], ion[3], I[3];
+        const char* drivings[3] = {"field", "fermi", "current"};
+        for (int k = 0; k < 3; ++k) {
+            const Run r = run(modelOf(apd(drivings[k])));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            cap[k] = inCap(*r.solution);
+            ion[k] = global(*r.solution, QStringLiteral("semi.Iion"));
+            I[k] = global(*r.solution, QStringLiteral("semi.I_a"));
+        }
+        qInfo("its pairs' current in the contact layer by the field %.4g A, the quasi-Fermi gradient %.4g, along the current %.4g; in all %.4g, %.4g, "
+              "%.4g; the current %.4g, %.4g, %.4g A",
+              cap[0], cap[1], cap[2], ion[0], ion[1], ion[2], I[0], I[1], I[2]);
+        QVERIFY2(cap[0] > 1e-3 * ion[0], qPrintable(QString::number(cap[0] / ion[0])));
+        QVERIFY2(cap[1] < 1e-6 * cap[0] && cap[2] < 1e-6 * cap[0], qPrintable(QStringLiteral("%1 %2").arg(cap[1] / cap[0]).arg(cap[2] / cap[0])));
+        // (Outside the layer the field the most pairs, the gradient the
+        // fewest, the field along the current between: where carriers
+        // diffuse along the field it drives them, the gradient not.)
+        const double outsideF = ion[1] - cap[1], outsideJ = ion[2] - cap[2], outsideE = ion[0] - cap[0];
+        QVERIFY2(outsideF < outsideJ && outsideJ < outsideE,
+                 qPrintable(QStringLiteral("%1 %2 %3").arg(outsideE).arg(outsideF).arg(outsideJ)));
+        // (The current, all but the same.)
+        QVERIFY(std::abs(I[1] / I[0] - 1) < 0.05 && std::abs(I[2] / I[0] - 1) < 0.05);
+    }
+
+    void aSmallSignalsFirstFrequency()
+    {
+        // A small signal's first frequency as its next: Fermi-Dirac's
+        // degeneracy read by the mobilities saturated along the current
+        // before its equations had set it - a fresh step's, Boltzmann's: the
+        // Lumerical APD's response 4.44 at 100 MHz, 6.25 at 100 MHz again
+        // (its review).
+        QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
+                                QStringLiteral(R"x(, {"type": "model", "fermi": true, "saturation": true, "driving": "current", "selection": {"all": true}},
+                                                  {"type": "impact", "selection": {"all": true}},
+                                                  {"type": "generation", "G": "1e24[1/(m^3*s)]*(x > 3[um])", "selection": {"all": true}})x"),
+                                QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[MHz], 1[MHz], 10[MHz]"})"), QStringLiteral("0.1"));
+        json.replace(R"({"name": "Va", "expression": "0[V]"})", R"({"name": "Va", "expression": "-15[V]"})");
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        QCOMPARE(s.snapshotCount(), 3);
+        double h[3];
+        for (int k = 0; k < 3; ++k) {
+            s.select(k);
+            h[k] = global(s, QStringLiteral("semi.Hop_k"));
+        }
+        qInfo("its light's response at 1 MHz %.8g, again %.8g, at 10 MHz %.8g", h[0], h[1], h[2]);
+        QVERIFY2(h[0] == h[1], qPrintable(QStringLiteral("%1 %2").arg(h[0], 0, 'g', 12).arg(h[1], 0, 'g', 12)));
     }
 
     void aMosfetsMobility()
@@ -1739,21 +2015,27 @@ private slots:
               {"type": "btbt", "kind": "generation", "selection": {"all": true}},
               {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "left"}},
               {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
-            "mesh": {"size": "normal", "custom": true, "hmax": "%1"}}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
           "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "0, -2", "V"]]}, {"type": "stationary"}]}]})json")
-                                   .arg(slowBuild() ? QStringLiteral("4") : QStringLiteral("2"))
                                    .toUtf8();
         // The current at -2 V and q ∫ G there (none: no solution found); its
         // way to -2 V's steps in \a steps.
-        auto solve = [&](bool fault, QString* said, int* steps) -> std::pair<double, double> {
+        auto solve = [&pin](bool fault, QString* said, int* steps) -> std::pair<double, double> {
             setSemiconductorJacobianFault(fault);
             const auto back = qScopeGuard([] { setSemiconductorJacobianFault(false); });
-            const Run r = run(modelOf(pin));
-            static const QRegularExpression reached(QStringLiteral("reached in (\\d+) steps"));
+            QStringList told;
+            Run r;
+            r.study = toldRun(modelOf(pin), &told);
+            r.error = r.study.ok() ? QString() : r.study.error;
+            // (Newton's steps of its first step, from rest - the way's after
+            // it each started on the line of the last two since, the fault's
+            // all but none: 19 of Newton's both ways, its first 6 against 4;
+            // on a sanitized build's coarser mesh, 4 and 4: its mesh the
+            // same on every build.)
+            static const QRegularExpression first(QStringLiteral("\\(point 2 of 2\\): .* \\(step 1, .*Newton's step (\\d+),"));
             *steps = 0;
-            if (!r.study.solutions.empty())
-                for (const QString& line : r.study.solutions.back()->log)
-                    if (const QRegularExpressionMatch m = reached.match(line); m.hasMatch()) *steps = m.captured(1).toInt();
+            for (const QString& w : told)
+                if (const QRegularExpressionMatch m = first.match(w); m.hasMatch()) *steps = std::max(*steps, m.captured(1).toInt());
             if (!r.error.isEmpty()) {
                 *said = r.error;
                 return {NAN, NAN};
@@ -1765,7 +2047,7 @@ private slots:
             gen.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
             const DerivedResult d = evaluateDerived(s, gen);
             const double I = global(s, QStringLiteral("semi.I_k")), qG = d.values.isEmpty() ? NAN : d.values.front().value;
-            *said = QStringLiteral("%1 A at -2 V (q ∫ G %2), the voltage reached in %3 steps").arg(I, 0, 'g', 6).arg(qG, 0, 'g', 6).arg(*steps);
+            *said = QStringLiteral("%1 A at -2 V (q ∫ G %2), its first step in %3 of Newton's steps").arg(I, 0, 'g', 6).arg(qG, 0, 'g', 6).arg(*steps);
             return {I, qG};
         };
         QString said;
@@ -1779,9 +2061,8 @@ private slots:
         QVERIFY2(std::abs(whole / wholeG - 1) < 0.01, qPrintable(said));
         if (!noSolution) {
             QVERIFY2(std::abs(broken / whole - 1) < 1e-3, qPrintable(QStringLiteral("%1 %2").arg(broken).arg(whole)));
-            // (The fault at work: its way there harder - smaller steps of the
-            // voltage, its Newton's slower.)
-            QVERIFY2(brokenSteps > wholeSteps, qPrintable(QStringLiteral("%1 and %2 steps").arg(brokenSteps).arg(wholeSteps)));
+            // (The fault at work: its way there harder - its Newton's slower.)
+            QVERIFY2(brokenSteps > wholeSteps, qPrintable(QStringLiteral("%1 and %2 of Newton's steps").arg(brokenSteps).arg(wholeSteps)));
         }
     }
 
