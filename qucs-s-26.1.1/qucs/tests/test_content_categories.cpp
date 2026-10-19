@@ -431,6 +431,46 @@ private slots:
         QVERIFY(!childrenOf(view->model()->item(ProjectView::Text, 0)).contains("readme.md"));
     }
 
+    // The File Types tab's table takes the tab's height, its note kept to
+    // its lines at the top (the user's screenshot, 19 October: the note in
+    // the middle of a tall empty row, the table three rows high at the
+    // bottom - the grid stretched the row of the Set and Remove buttons,
+    // which cannot grow).
+    void theFileTypesTableTakesTheTabsHeight()
+    {
+        QucsApp app(false);
+        MainGuard mainGuard(&app);
+        QucsSettingsDialog dlg(&app);
+        auto* tabs = dlg.findChild<QTabWidget*>();
+        QVERIFY(tabs != nullptr);
+        int types = -1;
+        for (int i = 0; i < tabs->count(); ++i)
+            if (tabs->tabText(i) == "File Types") types = i;
+        QVERIFY(types >= 0);
+        tabs->setCurrentIndex(types);
+        QWidget* tab = tabs->widget(types);
+        auto* table = tab->findChild<QTableWidget*>();
+        QVERIFY(table != nullptr);
+        QLabel* note = nullptr;
+        for (QLabel* label : tab->findChildren<QLabel*>())
+            if (label->text().startsWith("Register filename extensions")) note = label;
+        QVERIFY(note != nullptr);
+        for (const QSize size : {QSize(700, 600), QSize(900, 1100)}) {
+            dlg.resize(size);
+            dlg.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&dlg));
+            tab->layout()->activate();
+            const QRect noteAt(note->mapTo(tab, QPoint()), note->size()), tableAt(table->mapTo(tab, QPoint()), table->size());
+            const QString where = QStringLiteral("tab %1x%2, note %3 to %4, table %5 to %6")
+                                      .arg(tab->width()).arg(tab->height()).arg(noteAt.top()).arg(noteAt.bottom())
+                                      .arg(tableAt.top()).arg(tableAt.bottom());
+            QVERIFY2(noteAt.height() < 3 * note->sizeHint().height() / 2, qPrintable(where));
+            QVERIFY2(noteAt.top() < 40, qPrintable(where));
+            QVERIFY2(tableAt.top() < noteAt.bottom() + 40, qPrintable(where));
+            QVERIFY2(tableAt.bottom() > tab->height() - 40, qPrintable(where));
+        }
+    }
+
     // Above the panel, the File Browser's filter: the files whose names
     // hold what is typed, or in which it finds a match as a regular
     // expression, whatever its case - a folder's name finds what is in
