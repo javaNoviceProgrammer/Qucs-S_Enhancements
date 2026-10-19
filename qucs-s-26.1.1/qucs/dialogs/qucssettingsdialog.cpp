@@ -484,6 +484,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     QLabel *note = new QLabel(
         tr("Register filename extensions here in order to\nopen files with an appropriate program.\n"
            "The program \"%1\" is the text editor built into Qucs.").arg(QucsApp::QucsEditorProgram));
+    note->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);   // (its lines, at the top)
     fileTypesGrid->addWidget(note,0,0,1,3);
 
     // the fileTypesTableWidget displays information on the file types
@@ -504,7 +505,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     fileTypesTableWidget->horizontalHeader()->setSectionsClickable(false); // no action when clicking on the header
     fileTypesTableWidget->verticalHeader()->hide();
     connect(fileTypesTableWidget, SIGNAL(cellClicked(int,int)), SLOT(slotTableClicked(int,int)));
-    fileTypesGrid->addWidget(fileTypesTableWidget,1,0,4,1);
+    fileTypesGrid->addWidget(fileTypesTableWidget,1,0,5,1);
 
     // fill listview with already registered file extensions
     QStringList::Iterator it = QucsSettings.FileTypes.begin();
@@ -549,7 +550,12 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     fileTypesGrid->addWidget(RemoveButt,4,2);
     connect(RemoveButt, SIGNAL(clicked()), SLOT(slotRemoveFileType()));
 
-    fileTypesGrid->setRowStretch(4,4);
+    // The table takes the tab's height: a row of its own below the buttons,
+    // stretched. (The stretch was row 4's - the Set and Remove buttons,
+    // which cannot grow -: the note took the room, the table three rows
+    // high at the bottom.)
+    fileTypesGrid->addItem(new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding), 5, 1, 1, 2);
+    fileTypesGrid->setRowStretch(5, 1);
     t->addTab(fileTypesTab, tr("File Types"));
 
     // ...........................................................
