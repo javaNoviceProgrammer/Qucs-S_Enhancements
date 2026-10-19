@@ -32,6 +32,11 @@ namespace qucs_s::mcp {
 /// that is not one, {error} of an error - and what changed since the
 /// conversation's last call, when it was told.
 QJsonObject structuredOf(const QJsonObject& result);
+/// Whether \a result's answer is JSON (an object or a list): only then, and
+/// for an error, does a tools/call result carry structuredContent - Claude
+/// Code gives the model that in place of the text, a plain text's escaped
+/// in it.
+bool isJsonAnswer(const QJsonObject& result);
 
 /// max_chars as a call gives it: a whole number of characters, 200 or
 /// more (\a most then holds it) - a number, or its digits in a text

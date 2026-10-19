@@ -19,7 +19,7 @@ Where the time goes:
 
 What was already right:
 - **Compact JSON:** the answers are compact JSON, not indented.
-- **No doubling:** the model receives the text alone, and `structuredContent` is kept beside it, not sent again. This was checked in the transcripts.
+- **No doubling** - *corrected by the check of this change ([2026-10-19-claude-mcp-efficiency-check.md](2026-10-19-claude-mcp-efficiency-check.md)):* this said the model receives the text alone. That was checked on a JSON answer only (`get_state`), where the two are alike. Claude Code gives the model a successful result's `structuredContent` in place of its text, so a text answer reached it as `{"summary": ...}` with its quotes and line breaks escaped. Since that check, plain text answers carry no `structuredContent`.
 - **Change notes:** the notes of what changed since the last call are 0.1% of all answers.
 
 ## What changed
