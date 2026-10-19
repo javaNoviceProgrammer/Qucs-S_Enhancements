@@ -144,12 +144,14 @@ private slots:
         for (const QJsonValue& v : tools) {
             const QJsonObject t = v.toObject();
             byName.insert(t.value("name").toString(), t);
-            // In every turn, a summary; found by the tool search when needed,
-            // its whole description - no describe_tool before its first use.
+            // In every turn, a summary - a model's tools, with a model open,
+            // whole -; found by the tool search when needed, its whole
+            // description - no describe_tool before its first use.
             const bool core = t.value("_meta").toObject().value("anthropic/alwaysLoad").toBool();
-            QVERIFY2(!t.value("description").toString().isEmpty() && (!core || t.value("description").toString().size() < 320),
+            const bool whole = !core || t.value("name").toString().startsWith("fem_");
+            QVERIFY2(!t.value("description").toString().isEmpty() && (whole || t.value("description").toString().size() < 320),
                      qPrintable(t.value("name").toString()));
-            if (!core)
+            if (whole)
                 QCOMPARE(t.value("description").toString(),
                          structured(callTool("describe_tool", {{"name", t.value("name").toString()}})).value("description").toString());
             QCOMPARE(t.value("inputSchema").toObject().value("type").toString(), QStringLiteral("object"));
@@ -191,6 +193,94 @@ private slots:
     // loaded again - the window shows those - and the next tool result of
     // each conversation says so (an edit of Claude's with Write or Bash was
     // otherwise not shown, without a word). Told once.
+    // What is in every turn follows what is open (the dock's 106 sessions,
+    // 19 October: a session of a model searched for its tools three times
+    // or more, add_wire went in three sessions' turns): with no model, the
+    // wiring; a model open, its tools - whole, as a search would load them
+    // - and no wiring while no schematic has parts; one with parts, the
+    // wiring again. A kind of diagram's own options folded in add_diagram's
+    // published schema - their names said, the whole in describe_tool and
+    // in what a call is checked against. The instructions: a task's tools
+    // loaded in one search.
+    void inEveryTurnIsWhatIsOpen()
+    {
+        const auto loaded = [this] {
+            QHash<QString, QJsonObject> out;
+            for (const QJsonValue& v : request("tools/list").value("result").toObject().value("tools").toArray())
+                if (v.toObject().value("_meta").toObject().value("anthropic/alwaysLoad").toBool())
+                    out.insert(v.toObject().value("name").toString(), v.toObject());
+            return out;
+        };
+        // (Nothing the tests before left open.)
+        for (const QJsonValue& d : structured(callTool("get_state")).value("documents").toArray()) {
+            const QString title = d.toObject().value("title").toString();
+            QJsonObject closed = callTool("close_document", {{"path", title}, {"unsaved", "discard"}});
+            QVERIFY2(!closed.value("isError").toBool(), qPrintable(title));
+        }
+        for (QucsDoc* d : app->allDocuments())
+            if (auto* sch = dynamic_cast<Schematic*>(d)) QVERIFY(sch->a_DocComps.empty());
+        QHash<QString, QJsonObject> every = loaded();
+        QVERIFY(every.contains("get_state") && every.contains("close_document") && every.contains("new_document") && every.contains("list_actions"));
+        QVERIFY(every.contains("connect") && every.contains("add_wire"));
+        QVERIFY(!every.contains("fem_solve") && !every.contains("fem_model"));
+
+        // A model open: its tools, whole; no wiring.
+        const QJsonObject model = QJsonDocument::fromJson(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm",
+              "geometry": [{"type": "rectangle", "label": "gap", "size": ["10", "1"]}],
+              "materials": [{"label": "glass", "epsilonr": "5", "selection": {"all": true}}],
+              "physics": [{"type": "electrostatics", "tag": "es", "features": [
+                {"type": "terminal", "name": "1", "selection": {"of": ["gap"], "side": "top"}},
+                {"type": "ground", "selection": {"of": ["gap"], "side": "bottom"}}]}]}],
+            "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})").object();
+        const QJsonObject made = callTool("fem_model", {{"action", "new"}, {"path", "every_turn"}, {"model", model}});
+        QVERIFY2(!made.value("isError").toBool(), qPrintable(QJsonDocument(made).toJson()));
+        every = loaded();
+        for (const char* t : {"fem_describe", "fem_model", "fem_edit", "fem_solve", "fem_evaluate", "fem_plot"}) {
+            QVERIFY2(every.contains(t), t);
+            QCOMPARE(every.value(t).value("description").toString(),
+                     structured(callTool("describe_tool", {{"name", QString::fromLatin1(t)}})).value("description").toString());
+        }
+        QVERIFY(!every.contains("connect") && !every.contains("add_wire") && every.contains("get_state"));
+        QVERIFY(!every.contains("fem_export"));
+        // A schematic with a part: the wiring too.
+        QVERIFY(!callTool("new_document", {{"kind", "schematic"}}).value("isError").toBool());
+        QVERIFY(!callTool("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}}).value("isError").toBool());
+        every = loaded();
+        QVERIFY(every.contains("connect") && every.contains("fem_solve"));
+
+        // add_diagram's own options of a kind, folded: their names, the
+        // whole in describe_tool, a call checked against it.
+        QJsonObject published;
+        for (const QJsonValue& v : request("tools/list").value("result").toObject().value("tools").toArray())
+            if (v.toObject().value("name").toString() == "add_diagram") published = v.toObject();
+        const QJsonObject eye = published.value("inputSchema").toObject().value("properties").toObject().value("eye").toObject();
+        QVERIFY2(!eye.contains("properties") && eye.value("description").toString().contains("unit_interval")
+                     && eye.value("description").toString().contains("mask (height, width)"),
+                 qPrintable(QJsonDocument(eye).toJson()));
+        QVERIFY(QJsonDocument(published).toJson(QJsonDocument::Compact).size() < 14000);
+        const QJsonObject whole = structured(callTool("describe_tool", {{"name", "add_diagram"}}));
+        QVERIFY(whole.value("inputSchema").toObject().value("properties").toObject().value("eye").toObject().value("properties").toObject().contains("span"));
+        const QJsonObject wrong = callTool("add_diagram", {{"type", "eye"}, {"eye", QJsonObject{{"span", "wide"}}}});
+        QVERIFY(wrong.value("isError").toBool());
+        QVERIFY2(QJsonDocument(wrong).toJson().contains("eye.span"), qPrintable(QJsonDocument(wrong).toJson()));
+
+        QVERIFY(control->instructions().contains("load a task's together, in one search"));
+        for (const QJsonValue& d : structured(callTool("get_state")).value("documents").toArray())
+            callTool("close_document", {{"path", d.toObject().value("title").toString()}, {"unsaved", "discard"}});
+        // A project of models, none open (its first prompt is often before
+        // one is): a model's tools.
+        QVERIFY(!loaded().contains("fem_solve"));
+        const QJsonObject project = callTool("new_project", {{"name", "models"}});
+        QVERIFY2(!project.value("isError").toBool(), qPrintable(QJsonDocument(project).toJson()));
+        QVERIFY(!loaded().contains("fem_solve"));
+        QFile lens(QucsSettings.QucsWorkDir.filePath("lens.qfem"));
+        QVERIFY(lens.open(QIODevice::WriteOnly));
+        lens.write("{}");
+        lens.close();
+        QVERIFY(loaded().contains("fem_solve"));
+        QVERIFY(lens.remove());
+    }
+
     void anEditNotLoadedIsTold()
     {
         const QString file = write("notloaded.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n"

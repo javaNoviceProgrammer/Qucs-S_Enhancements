@@ -593,21 +593,33 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
             if (!group.isEmpty() && k->group != group && k->type != group && !k->type.startsWith(group + QLatin1Char('/'))) continue;
             QJsonArray props;
             for (const PropertyDef& p : k->properties) {
+                // A line each - "Eg: Band gap Eg [eV] = 1.12[eV]; when
+                // source=user" -, not an object of named fields: a group's
+                // kinds were two thirds JSON's names and marks (semi's 194
+                // properties 34 thousand characters, 22 so).
                 // (As PropertyDef::Kind has them, in its order.)
                 static const char* kindNames[] = {"expression", "pair", "text", "choice", "bool", "integer", "selection", "objects",
                                                   "points", "physics", "study", "rows", "terminal", "file", "time or frequency",
                                                   "sweep point", "dataset", "node tag"};
                 const int ki = int(p.kind);
-                QJsonObject po{{QStringLiteral("key"), p.key}, {QStringLiteral("label"), p.label},
-                               {QStringLiteral("kind"), ki >= 0 && ki < int(std::size(kindNames)) ? QString::fromLatin1(kindNames[ki]) : QStringLiteral("value")}};
-                if (p.kind == PropertyDef::Rows && !p.choiceLabels.isEmpty()) po.insert(QStringLiteral("columns"), QJsonArray::fromStringList(p.choiceLabels));
-                if (!p.unit.isEmpty()) po.insert(QStringLiteral("unit"), p.unit);
-                if (!p.defaultValue.isUndefined() && !(p.defaultValue.isString() && p.defaultValue.toString().isEmpty()))
-                    po.insert(QStringLiteral("default"), p.defaultValue);
-                if (!p.choices.isEmpty()) po.insert(QStringLiteral("choices"), QJsonArray::fromStringList(p.choices));
-                if (!p.showIf.isEmpty()) po.insert(QStringLiteral("when"), p.showIf);
-                if (p.spatial) po.insert(QStringLiteral("may use x, y, fields"), true);
-                props.append(po);
+                QString line = p.key + QStringLiteral(": ") + p.label;
+                if (!p.unit.isEmpty()) line += QStringLiteral(" [%1]").arg(p.unit);
+                if (p.kind != PropertyDef::Expression && p.kind != PropertyDef::Choice)
+                    line += QStringLiteral(" (%1)").arg(ki >= 0 && ki < int(std::size(kindNames)) ? QString::fromLatin1(kindNames[ki]) : QStringLiteral("value"));
+                if (!p.defaultValue.isUndefined() && !(p.defaultValue.isString() && p.defaultValue.toString().isEmpty())) {
+                    const QJsonValue d = p.defaultValue;
+                    line += QStringLiteral(" = ")
+                            + (d.isString() ? d.toString()
+                               : d.isBool() ? (d.toBool() ? QStringLiteral("true") : QStringLiteral("false"))
+                               : d.isDouble() ? formatNumber(d.toDouble(), 15)
+                               : QString::fromUtf8(d.isArray() ? QJsonDocument(d.toArray()).toJson(QJsonDocument::Compact)
+                                                               : QJsonDocument(d.toObject()).toJson(QJsonDocument::Compact)));
+                }
+                if (!p.choices.isEmpty()) line += QStringLiteral("; one of ") + p.choices.join(QStringLiteral(", "));
+                if (p.kind == PropertyDef::Rows && !p.choiceLabels.isEmpty()) line += QStringLiteral("; columns ") + p.choiceLabels.join(QStringLiteral(", "));
+                if (!p.showIf.isEmpty()) line += QStringLiteral("; when ") + p.showIf;
+                if (p.spatial) line += QStringLiteral("; may use x, y, fields");
+                props.append(line);
             }
             QJsonObject ko{{QStringLiteral("type"), k->type}, {QStringLiteral("title"), k->title}};
             if (!k->group.isEmpty()) ko.insert(QStringLiteral("group"), k->group);
@@ -659,7 +671,10 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
                            .arg(text.size());
             text = kept.join(QLatin1Char('\n'));
         }
-        QJsonObject out{{QStringLiteral("kinds"), kinds}};
+        QJsonObject out{{QStringLiteral("kinds"), kinds},
+                        {QStringLiteral("properties as"),
+                         tr("key: label [unit] (its kind, where no expression or choice) = default; one of its choices; columns of "
+                            "rows; when it is shown (another property's value); may use x, y, fields (an expression over space)")}};
         if (!text.isEmpty()) out.insert(QStringLiteral("format"), text);
         // (The library's materials: with a group not of materials, left out.)
         QStringList notes;

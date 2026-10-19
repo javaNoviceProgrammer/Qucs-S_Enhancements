@@ -1144,13 +1144,27 @@ const char* const kPreviewable[] = {"set_schematic", "add_component", "edit_comp
                                     "add_painting", "edit_painting", "add_diagram", "edit_diagram", "add_trace", "edit_trace",
                                     "add_marker", "edit_marker", "delete_marker", "make_symbol", "set_subcircuit_parameters", "batch"};
 
-// The tools most sessions use, loaded into every turn (Claude Code's
-// "anthropic/alwaysLoad"); the others are found by its tool search when a
-// task needs them, each with words to find it by.
-const char* const kCore[] = {"get_state", "get_schematic", "set_schematic", "add_component", "edit_component", "delete",
-                             "connect", "add_wire", "set_label", "move", "batch", "simulate", "get_dataset", "check_schematic",
-                             "get_netlist", "undo", "screenshot", "open_document", "save_document", "describe_component_type",
+// The tools loaded into every turn (Claude Code's "anthropic/alwaysLoad"),
+// by what the dock's sessions used (106 of them, 19 October: get_state in
+// 73, a model's tools in 40, add_wire in 3): those most use, and those of
+// what is open - a model's where one is open or its project has one (a
+// session of a model searched for them three times or more first), a
+// schematic's wiring where one with parts is open or no model is. The
+// others are found by its tool search when a task needs them, each with
+// words to find it by.
+const char* const kCore[] = {"get_state", "get_schematic", "set_schematic", "add_component", "edit_component", "batch",
+                             "simulate", "get_dataset", "check_schematic", "get_netlist", "screenshot", "open_document",
+                             "save_document", "close_document", "new_document", "list_actions", "describe_component_type",
                              "list_component_types", "describe_tool"};
+const char* const kWiring[] = {"connect", "add_wire", "set_label", "move", "delete", "undo"};
+// A kind of diagram's own options (eye, bode...) as add_diagram and
+// edit_diagram publish them: their description and their fields' names,
+// the whole in describe_tool and in what a call is checked against. 13 of
+// 367 diagram calls set one (19 October), and they were three quarters of
+// the two tools' 22 and 20 thousand characters - in every turn after.
+const char* const kFoldedOptions[] = {"eye", "bathtub", "level_histogram", "contour", "spectrogram", "tornado", "smith_circles",
+                                      "spectrum", "constellation", "bode", "box_plot", "nichols", "pole_zero", "nyquist"};
+const char* const kModel[] = {"fem_describe", "fem_model", "fem_edit", "fem_solve", "fem_evaluate", "fem_plot"};
 const struct {
     const char* tool;
     const char* hint;
@@ -3650,11 +3664,9 @@ QucsControl::QucsControl(QucsApp* app) : QObject(app), a_app(app)
     // What each tool is to the client (MCP's annotations: those that only
     // look, only add, or may change or take away), and whether it is in
     // every turn or found when needed.
-    QSet<QString> additive, core;
+    QSet<QString> additive;
     for (const char* t : kAdditive) additive << QString::fromLatin1(t);
-    for (const char* t : kCore) core << QString::fromLatin1(t);
-    QHash<QString, QString> hints;
-    for (const auto& h : kSearchHints) hints.insert(QString::fromLatin1(h.tool), QString::fromLatin1(h.hint));
+    for (const auto& h : kSearchHints) a_hints.insert(QString::fromLatin1(h.tool), QString::fromLatin1(h.hint));
     QSet<QString> previewable;
     for (const char* t : kPreviewable) previewable << QString::fromLatin1(t);
     QHash<QString, QString>& summaries = a_summaries;
@@ -3678,23 +3690,91 @@ QucsControl::QucsControl(QucsApp* app) : QObject(app), a_app(app)
                                                                {QStringLiteral("destructiveHint"), !looks && !additive.contains(name)},
                                                                {QStringLiteral("idempotentHint"), looks},
                                                                {QStringLiteral("openWorldHint"), false}});
-        // In every turn, a summary (the whole kept for describe_tool); a tool
-        // found by the tool search when a task needs it is loaded then, and
-        // only then - with its whole description, not to need describe_tool
-        // before its first use.
+        // (Which are in every turn, and so how they are described, tools()
+        // says when asked: by what is open then.)
         a_details.insert(name, tool);
-        if (summaries.contains(name) && core.contains(name)) tool.insert(QStringLiteral("description"), summaries.value(name));
-        QJsonObject meta;
-        if (core.contains(name)) meta.insert(QStringLiteral("anthropic/alwaysLoad"), true);
-        else meta.insert(QStringLiteral("anthropic/searchHint"), hints.value(name, QStringLiteral("qucs-s schematic %1").arg(name)));
-        tool.insert(QStringLiteral("_meta"), meta);
         a_tools[i] = tool;
     }
 }
 
+namespace {
+
+// An object's fields by name, an object's own in brackets: "drawn, mask
+// (height, width), span".
+QString fieldNames(const QJsonObject& schema)
+{
+    QStringList names;
+    const QJsonObject properties = schema.value(QLatin1String("properties")).toObject();
+    for (auto it = properties.begin(); it != properties.end(); ++it) {
+        const QString inner = fieldNames(it.value().toObject());
+        names << (inner.isEmpty() ? it.key() : QStringLiteral("%1 (%2)").arg(it.key(), inner));
+    }
+    return names.join(QStringLiteral(", "));
+}
+
+} // namespace
+
+QSet<QString> QucsControl::inEveryTurn() const
+{
+    QSet<QString> out;
+    for (const char* t : kCore) out << QString::fromLatin1(t);
+    bool model = false, parts = false;
+    for (QucsDoc* doc : a_app->allDocuments()) {
+        model = model || QucsApp::isMultiphysicsDocument(QucsApp::documentWidget(doc));
+        if (auto* sch = dynamic_cast<Schematic*>(doc)) parts = parts || !sch->a_DocComps.empty();
+    }
+    // (A project of models: its first prompt is often before one is open.)
+    if (!model && !a_app->ProjName.isEmpty())
+        model = !QDir(QucsSettings.QucsWorkDir.absolutePath()).entryList({QStringLiteral("*.qfem")}, QDir::Files).isEmpty();
+    if (model)
+        for (const char* t : kModel) out << QString::fromLatin1(t);
+    if (parts || !model)
+        for (const char* t : kWiring) out << QString::fromLatin1(t);
+    return out;
+}
+
 QJsonArray QucsControl::tools() const
 {
-    return a_tools;
+    // In every turn: a summary (the whole kept for describe_tool) - a
+    // model's tools whole, as its session would load them at once. A tool
+    // found by the tool search when a task needs it is loaded then, and only
+    // then - with its whole description, not to need describe_tool before
+    // its first use.
+    const QSet<QString> every = inEveryTurn();
+    QSet<QString> model;
+    for (const char* t : kModel) model << QString::fromLatin1(t);
+    QJsonArray out;
+    for (const QJsonValue& v : a_tools) {
+        QJsonObject tool = v.toObject();
+        const QString name = tool.value(QLatin1String("name")).toString();
+        QJsonObject meta;
+        if (every.contains(name)) {
+            if (a_summaries.contains(name) && !model.contains(name)) tool.insert(QStringLiteral("description"), a_summaries.value(name));
+            meta.insert(QStringLiteral("anthropic/alwaysLoad"), true);
+        } else {
+            meta.insert(QStringLiteral("anthropic/searchHint"), a_hints.value(name, QStringLiteral("qucs-s schematic %1").arg(name)));
+        }
+        tool.insert(QStringLiteral("_meta"), meta);
+        if (name == QLatin1String("add_diagram") || name == QLatin1String("edit_diagram")) {
+            QJsonObject schema = tool.value(QLatin1String("inputSchema")).toObject();
+            QJsonObject properties = schema.value(QLatin1String("properties")).toObject();
+            for (const char* key : kFoldedOptions) {
+                const QJsonObject whole = properties.value(QLatin1String(key)).toObject();
+                if (whole.isEmpty()) continue;
+                // (Its description's first clause: "An eye diagram's own (type eye)".)
+                const QString about = whole.value(QLatin1String("description")).toString();
+                const qsizetype end = about.indexOf(QRegularExpression(QStringLiteral("[;.:] ")));
+                properties.insert(QLatin1String(key),
+                                  QJsonObject{{QStringLiteral("type"), whole.value(QLatin1String("type"))},
+                                              {QStringLiteral("description"), tr("%1; its fields %2 (describe_tool %3 says each)")
+                                                                                  .arg(end < 0 ? about : about.left(end), fieldNames(whole), name)}});
+            }
+            schema.insert(QStringLiteral("properties"), properties);
+            tool.insert(QStringLiteral("inputSchema"), schema);
+        }
+        out.append(tool);
+    }
+    return out;
 }
 
 const QSet<QString>& QucsControl::previewTools()
@@ -3939,7 +4019,11 @@ QString QucsControl::instructions() const
         "These tools drive the Qucs-S window the user is looking at (or, when run as qucs-s --mcp-server, a Qucs-S "
         "without a window). The tools loaded in every turn have short descriptions; describe_tool returns the full "
         "description of any tool (what it returns, its fields, common mistakes). The other tools are found by the tool "
-        "search when a task needs them and come with their full description. If these instructions end in "
+        "search when a task needs them and come with their full description: load a task's together, in one search "
+        "(select: and each name) - a model's fem_describe, fem_model, fem_edit, fem_solve, fem_evaluate, fem_plot, "
+        "fem_export; a plot's add_diagram, edit_diagram, add_trace, edit_trace, add_marker, edit_marker; the window's "
+        "list_actions, trigger_action, get_dialog, set_dialog, get_ui, set_ui, context_menu; files' new_project, "
+        "open_project, show_document, trash_file, rename_file. If these instructions end in "
         "\"[truncated]\", the client cut them: the resource qucs://instructions holds them whole (Claude Code keeps "
         "2,048 characters unless CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH says more).\n\n"
         "Start with get_state to see what is open. Documents: open_document, show_document, new_document, save_document, "
@@ -4597,12 +4681,16 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     // (send_input with 'target' dialog: the dialog's own clicks and keys.)
     const bool intoTheDialog = tool == QLatin1String("send_input")
                                && args.value(QLatin1String("target")).toString().trimmed().compare(QLatin1String("dialog"), Qt::CaseInsensitive) == 0;
-    if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool) && !intoTheDialog)
-        return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (get_dialog "
-                              "reads it, set_dialog answers it - or ask the user to).")
+    if (QWidget* dialog = QApplication::activeModalWidget(); dialog != nullptr && !whileADialogWaits.contains(tool) && !intoTheDialog) {
+        // (26 calls of the dock's sessions met one, 19 October - "About
+        // Qucs" left open ten times -, then searched for get_dialog, read it,
+        // searched for set_dialog: four turns. What it reads is said.)
+        return errorResult(tr("“%1” is open in Qucs-S and waits for an answer: %2 waits until it is closed (set_dialog "
+                              "answers it - or ask the user to). %3")
                                .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className())
                                                                     : dialog->windowTitle(),
-                                    tool));
+                                    tool, dialogReads(dialog)));
+    }
     // "selection": true - what the user selected, instead of names.
     static const QSet<QString> takeSelection{QStringLiteral("move"), QStringLiteral("delete"), QStringLiteral("create_subcircuit"),
                                              QStringLiteral("get_schematic"), QStringLiteral("add_painting")};
@@ -11084,7 +11172,32 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
         if (tails.size() == 1) action = tails.first();
     }
     if (action == nullptr) {
-        done(errorResult(tr("There is no action %1 (list_actions lists them).").arg(wanted)));
+        // The nearest, by the words of the last part ("Help > About Qucs..."
+        // - Help > About Qucs-S): the name to take, without list_actions
+        // first (a trigger_action of the dock's sessions in two failed so).
+        static const QRegularExpression notWord(QStringLiteral("[^a-z0-9]+"));
+        const QStringList asked = normalized(wanted).section(QLatin1Char('>'), -1).split(notWord, Qt::SkipEmptyParts);
+        QStringList near;
+        int best = 0;
+        for (int i = 0; i < actions.size() && !asked.isEmpty(); ++i) {
+            if (!refusedAction(actions.at(i)).isEmpty()) continue;
+            const QStringList has = normalized(paths.at(i)).section(QLatin1Char('>'), -1).split(notWord, Qt::SkipEmptyParts);
+            int score = 0;
+            for (const QString& w : asked)
+                for (const QString& h : has)
+                    if (h.startsWith(w) || (h.size() >= 3 && w.startsWith(h))) {
+                        ++score;
+                        break;
+                    }
+            if (score * 2 < int(asked.size()) || score < best) continue;
+            if (score > best) near.clear();
+            best = score;
+            near << cleanText(paths.at(i));
+        }
+        if (near.size() > 5) near.clear();
+        done(errorResult(near.isEmpty() ? tr("There is no action %1 (list_actions lists them).").arg(wanted)
+                                        : tr("There is no action %1. Meant %2? (list_actions lists them.)")
+                                              .arg(wanted, near.join(tr(" or ")))));
         return;
     }
     if (const QString why = refusedAction(action); !why.isEmpty()) {
@@ -11108,8 +11221,8 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
         *answered = true;
         QWidget* dialog = openDialog();
         done(textResult(dialog != nullptr
-                            ? tr("%1: it opened “%2”, which waits for an answer (get_dialog reads it, set_dialog answers it).")
-                                  .arg(name, dialog->windowTitle())
+                            ? tr("%1: it opened “%2”, which waits for an answer (set_dialog answers it). %3")
+                                  .arg(name, dialog->windowTitle(), dialogReads(dialog))
                             : tr("%1: done.").arg(name)));
     };
     auto* watch = new QTimer(this);
@@ -11656,6 +11769,17 @@ QString shownLabel(QWidget* w, QWidget* root, bool ui)
 }
 
 } // namespace
+
+QString QucsControl::dialogReads(QWidget* dialog) const
+{
+    QString reads = QString::fromUtf8(QJsonDocument(describeControls(dialog, false)).toJson(QJsonDocument::Compact));
+    if (reads.size() <= 2000) return tr("It reads: %1").arg(reads);
+    QStringList buttons;
+    // (Its push buttons: a check box is a control, set_dialog's 'set'.)
+    for (const QPushButton* b : dialog->findChildren<QPushButton*>())
+        if (b->isVisible() && !b->text().isEmpty()) buttons << b->text().remove(QLatin1Char('&'));
+    return tr("Its buttons: %1 (get_dialog reads the rest).").arg(buttons.join(QStringLiteral(", ")));
+}
 
 QJsonObject QucsControl::getDialog()
 {
