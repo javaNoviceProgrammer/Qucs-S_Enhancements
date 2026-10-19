@@ -2417,12 +2417,20 @@ QList<NodeKind> makeKinds()
                       "pulling them apart weakens it: the quantum-confined Stark effect's), its line 2 |F(0)|² strong (both spin "
                       "pairs) - and the continuum above it raised by the 2D Sommerfeld factor (2 at the edge). Absorption only: with "
                       "carriers they are screened, left out")),
-              shownIf(choice(QStringLiteral("excitonmodel"), tr("Exciton"), {QStringLiteral("two"), QStringLiteral("bastard")},
-                             {tr("Two parameters (λ, γ)"), tr("Bastard's (λ)")}, QStringLiteral("two"),
-                             tr("Its trial function: e^(-√(ρ² + γ²(ze - zh)²)/λ), the electron and hole drawn together along the axis "
-                                "too (Gerlach et al.'s; the Lumerical variational one) - within 2 % of the exact binding and its line "
-                                "near the exact's in wells 2 to 20 nm wide -, or Bastard's e^(-ρ/λ) (γ 0: a narrow well's; |F(0)|² = "
-                                "2/(πλ²)), its line weaker in wide wells")),
+              shownIf(choice(QStringLiteral("excitonmodel"), tr("Exciton"), {QStringLiteral("two"), QStringLiteral("bastard"), QStringLiteral("coupled")},
+                             {tr("Two parameters (λ, γ)"), tr("Bastard's (λ)"), tr("Coupled subbands (k space)")}, QStringLiteral("two"),
+                             tr("Each transition's 1s alone, variational - its trial function e^(-√(ρ² + γ²(ze - zh)²)/λ), the electron "
+                                "and hole drawn together along the axis too (Gerlach et al.'s; the Lumerical variational one): within 2 % "
+                                "of the exact binding and its line near the exact's in wells 2 to 20 nm wide; or Bastard's e^(-ρ/λ) (γ 0: "
+                                "a narrow well's; |F(0)|² = 2/(πλ²)), its line weaker in wide wells. Or the subbands coupled: the "
+                                "electron and hole subbands' pairs on one in-plane k grid, the Coulomb attraction within and between them "
+                                "(their envelopes' form factors), one Hamiltonian's bound states and continuum, each state's line of its "
+                                "pairs' amplitudes together - Chuang, Schmitt-Rink, Miller and Chemla's momentum-space exciton, its "
+                                "subbands coupled as Winkler's: the 2s and higher, the continuum's Sommerfeld factor itself, a dark "
+                                "pair's exciton (indirect, across a barrier) mixing with a bright one's, a Fano line where a bound "
+                                "state meets another pair's continuum. The lowest 12 pairs of each kind of hole, dark ones too (k·p "
+                                "bands: the 16 lowest, their energies and weights averaged over the plane's directions - the axial "
+                                "approximation; not 8x8's)")),
                       QStringLiteral("excitons=true")),
               shownIf(expr(QStringLiteral("epsr"), tr("Excitons' permittivity εr"), QString(), QString(),
                            tr("Static. Empty: the wells' material's (its epsilonr, else its compound's; a Quantum Well Material's "

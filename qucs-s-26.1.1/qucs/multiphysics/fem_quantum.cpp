@@ -21,6 +21,7 @@
  * (at your option) any later version.
  */
 #include "fem_edge.h"
+#include "fem_exciton.h"
 #include "fem_line.h"
 #include "fem_materials.h"
 #include "fem_problem.h"
@@ -38,6 +39,8 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <numeric>
 
 namespace qucs_s::fem::detail {
 
@@ -2944,6 +2947,87 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         double Ep, nr;
         double Eb = 0, radius = NaN, F0 = NaN;   // its 1s exciton's (F0: |F(0)|²)
         bool e1hh1 = false;
+        // Its states (c: its hole's kind), its overlap signed; coupled: its
+        // line and continuum the coupled subbands' excitons'.
+        int ie = -1, ih = -1, c = 0;
+        double ov = 0;
+        bool coupled = false;
+    };
+    // The coupled subbands' excitons (excitonmodel coupled): each block's
+    // states and strengths, its components TE's and TM's, its spin pairs.
+    struct CoupledBlock {
+        exciton::Result r;
+        double spin = 1;
+        std::vector<int> te, tm;
+        // Its least pair's edge; each state's cell - a state above the edge
+        // its continuum's, spread over its cell (its pair's share of the
+        // plane at its k point: as the free continuum's cells, smooth however
+        // far apart its states, each pair's continuum its own where they
+        // interleave), one below it a line.
+        double edge = 0;
+        std::vector<double> lo, hi;
+        void cells()
+        {
+            const std::size_t n = std::size_t(std::lower_bound(r.energy.begin(), r.energy.end(), r.cut) - r.energy.begin());
+            lo.assign(n, 0.0);
+            hi.assign(n, 0.0);
+            for (std::size_t i = 0; i < n && i < r.lo.size(); ++i) {
+                if (r.energy[i] < edge) continue;
+                lo[i] = r.lo[i];
+                hi[i] = r.hi[i];
+            }
+        }
+    };
+    std::vector<CoupledBlock> xBlocks;
+    // (The points along the axis in order: the envelopes' at them, each by
+    // √w - a density between two states their product.)
+    std::vector<std::size_t> xOrder(a_points.size());
+    std::iota(xOrder.begin(), xOrder.end(), std::size_t(0));
+    std::sort(xOrder.begin(), xOrder.end(), [this](std::size_t a, std::size_t b) { return a_points[a].a < a_points[b].a; });
+    auto xEnvelopes = [this, &xOrder] {
+        exciton::Envelopes env;
+        for (std::size_t p : xOrder) env.z.push_back(a_points[p].a);
+        return env;
+    };
+    auto xEnvelope = [this, &xOrder](const Eigen::VectorXd& x) {
+        std::vector<double> v;
+        v.reserve(xOrder.size());
+        for (std::size_t p : xOrder) v.push_back(std::sqrt(a_points[p].w) * at(a_points[p], x));
+        return v;
+    };
+    // (Its continuum to the window's top and 30 line widths past it, 0.3 eV
+    // at least; its states a third of the line's width apart there.)
+    // (Its continuum to the window's top and 30 line widths past it, 0.3 eV
+    // at least; its states half the line's width apart there, 0.5 to 3 meV -
+    // each spread over its cell - 1200 of them at most: a second's solve.)
+    auto xOptions = [gamma, kT, windowHi](double epsr, int components, double lowest) {
+        exciton::Options xo;
+        xo.epsr = epsr;
+        xo.components = components;
+        xo.reach = std::max({60 * gamma, 0.3 * Q, 30 * kT, windowHi - lowest + 30 * gamma});
+        xo.spacing = std::clamp(gamma / 2, 0.5e-3 * Q, 3e-3 * Q);
+        xo.maxSize = 1200;
+        return xo;
+    };
+    // The e1-hh1 exciton's globals of a block: its edge less its strongest
+    // TE line below it, the radius of Bastard's 1s of that |ψ(0)|² (λ:
+    // 2/(πλ²)) - \a weight the pair's TE amplitudes' |·|² summed.
+    auto xGlobals = [this](const CoupledBlock& blk, double edge, double weight) {
+        double best = 0;
+        std::size_t which = blk.r.energy.size();
+        for (std::size_t n = 0; n < blk.r.energy.size() && blk.r.energy[n] < edge; ++n) {
+            double sum = 0;
+            for (int c : blk.te) sum += blk.r.strength[std::size_t(c)][n];
+            if (sum > best) {
+                best = sum;
+                which = n;
+            }
+        }
+        if (which == blk.r.energy.size()) return;
+        a_spec.Ex = blk.r.energy[which];
+        a_spec.Eb = edge - a_spec.Ex;
+        a_spec.radius = weight > 0 ? std::sqrt(2 / (M_PI * best / weight)) : NaN;
+        a_spec.gammaX = NaN;
     };
     std::vector<Transition> transitions;
     for (std::size_t i = 0; i < a_states[0].size(); ++i) {
@@ -2959,6 +3043,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 t.E = t.Ee - t.Eh;
                 const double ov = integral(e.x, h.x, {});
                 t.overlap = ov * ov;
+                t.ov = ov;
+                t.ie = int(i);
+                t.ih = int(j);
+                t.c = c;
                 t.te = c == 1 ? 1.5 : 0.5;
                 // (TM by Kane's Ep along the axis: wurtzite's Ep∥.)
                 t.tm = (c == 1 ? 0.0 : 2.0) * (e.Ep > 0 ? e.EpZ / e.Ep : 1.0);
@@ -2971,7 +3059,9 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 // (The continuum the barriers' bulk absorption: the confined
                 // states' transitions alone.)
                 if (o.continuum == 1 && !(confined(0, e.E, e.pos) && confined(c, h.E, h.pos))) continue;
-                if (t.overlap > 1e-10) transitions.push_back(t);
+                // (Coupled: a dark pair too - an indirect exciton, across a
+                // barrier, bound and mixing with the bright.)
+                if (t.overlap > 1e-10 || (o.excitons && o.excitonModel == 2)) transitions.push_back(t);
             }
     }
     a_spec.nr = o.index > 0 ? o.index : (a_states[0].empty() ? 3.5 : a_states[0].front().nr);
@@ -3003,6 +3093,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         // (Transitions all but forbidden: |<e|h>|² 1e-4 or more - the
         // others' lines and continua next to nothing.)
         for (Transition& t : transitions) {
+            if (o.excitonModel == 2) break;   // (the coupled subbands': below)
             if (t.overlap < 1e-4 && !t.e1hh1) continue;
             const int c = t.tm > 0 ? 2 : 1;
             const State* e = find(0, t.Ee);
@@ -3019,6 +3110,70 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 a_spec.gammaX = x.gamma;
             }
         }
+        // The subbands' excitons coupled (fem_exciton): each kind of hole's
+        // pairs one Hamiltonian in k - heavy and light apart, their Bloch
+        // functions orthogonal: the attraction couples none of one with the
+        // other's -, the lowest 12 of each by energy; the rest free steps.
+        if (o.excitonModel == 2 && !kp)
+            for (int c = 1; c < Carriers; ++c) {
+                std::vector<Transition*> mine;
+                for (Transition& t : transitions)
+                    if (t.c == c) mine.push_back(&t);
+                std::sort(mine.begin(), mine.end(), [](const Transition* a, const Transition* b) { return a->E < b->E; });
+                if (mine.size() > 12) {
+                    a_s.log << tr("%1: the %2 lowest of the %3 pairs of %4 coupled, the others free steps")
+                                   .arg(a_node->name())
+                                   .arg(12)
+                                   .arg(mine.size())
+                                   .arg(c == 1 ? tr("heavy holes") : tr("light holes"));
+                    mine.resize(12);
+                }
+                if (mine.empty()) continue;
+                exciton::Envelopes env = xEnvelopes();
+                std::map<int, int> eIndex, hIndex;
+                std::vector<exciton::Pair> xp;
+                for (Transition* t : mine) {
+                    if (!eIndex.count(t->ie)) {
+                        eIndex[t->ie] = int(env.electrons.size());
+                        env.electrons.push_back(xEnvelope(a_states[0][std::size_t(t->ie)].x));
+                    }
+                    if (!hIndex.count(t->ih)) {
+                        hIndex[t->ih] = int(env.holes.size());
+                        const std::vector<double> h = xEnvelope(a_states[c][std::size_t(t->ih)].x);
+                        env.holes.push_back({std::vector<std::complex<double>>(h.begin(), h.end())});
+                    }
+                    exciton::Pair x;
+                    x.electron = eIndex[t->ie];
+                    x.hole = hIndex[t->ih];
+                    const double E0 = t->E, mr = t->mr;
+                    x.energy = [E0, mr](double k) { return E0 + Hbar * Hbar * k * k / (2 * mr); };
+                    // (Its amplitudes, TE's and TM's: |·|² its overlap, its Kane
+                    // energy, its polarization's weight, over the index.)
+                    const double aTE = t->ov * std::sqrt(t->Ep * t->te / t->nr), aTM = t->ov * std::sqrt(t->Ep * t->tm / t->nr);
+                    x.amplitude = [aTE, aTM](double, std::vector<std::complex<double>>& a) {
+                        a[0] = aTE;
+                        a[1] = aTM;
+                    };
+                    xp.push_back(std::move(x));
+                    t->coupled = true;
+                }
+                CoupledBlock blk;
+                blk.r = exciton::solve(env, xp, xOptions(epsr, 2, mine.front()->E));
+                if (blk.r.energy.empty()) {
+                    *error = tr("%1: the coupled excitons: %2").arg(a_node->name(), blk.r.note);
+                    return -1;
+                }
+                blk.spin = 2;
+                blk.te = {0};
+                blk.tm = {1};
+                blk.edge = mine.front()->E;
+                blk.cells();
+                if (!blk.r.note.isEmpty()) a_s.log << tr("%1: the coupled excitons' %2").arg(a_node->name(), blk.r.note);
+                // The e1-hh1's: its edge less the strongest line below it.
+                for (Transition* t : mine)
+                    if (t->e1hh1) xGlobals(blk, t->E, t->overlap * t->Ep * t->te / t->nr);
+                xBlocks.push_back(std::move(blk));
+            }
     }
     // The 2D Sommerfeld factor of a transition's continuum ε above its edge:
     // 2/(1 + e^(-2π √(R/ε))), R a quarter of its exciton's binding (the
@@ -3114,6 +3269,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         std::vector<double> eps, wte, wtm, ec, ev;
         double Eb = 0, radius = NaN, F0 = NaN, Ep = 0, nr = 3.5;
         double edge = 0;   // its least energy (J)
+        // Its electron and valence states; coupled: the coupled subbands'
+        // excitons' (4x4, 6x6).
+        int ie = -1, jv = -1;
+        bool coupled = false;
     };
     std::vector<KpPair> pairs;
     if (kp && !a_kps.empty() && !a_kps[0].E.empty()) {
@@ -3220,6 +3379,8 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                     pr.weight = b.weight;
                     pr.Ep = e.Ep * Q;
                     pr.nr = o.index > 0 ? o.index : e.nr;
+                    pr.ie = int(i);
+                    pr.jv = int(j);
                     double most = 0;
                     for (std::size_t m = 0; m < b.k.size(); ++m) {
                         const Eigen::VectorXcd& x = b.x[m][j];
@@ -3238,7 +3399,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                     }
                     if (!(most > 1e-10)) continue;
                     pr.edge = *std::min_element(pr.eps.begin(), pr.eps.end());
-                    if (a_spec.excitons && epsr > 0 && pr.wte[0] + pr.wtm[0] > 1e-10) {
+                    if (a_spec.excitons && o.excitonModel != 2 && epsr > 0 && pr.wte[0] + pr.wtm[0] > 1e-10) {
                         if (!bound) {
                             bound = true;
                             const Eigen::VectorXcd& x0 = a_kps[0].x[0][j];
@@ -3282,6 +3443,142 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 }
             }
         }
+        // The coupled subbands' excitons of the k·p bands (4x4, 6x6): each
+        // electron state with each valence state a pair - the electron's
+        // envelope and the valence state's spinor at k = 0 its form factors'
+        // (the attraction keeps each one's Bloch parts: the spinors' product),
+        // its optical amplitudes the k = 0 overlaps' (X, Y, Z of each spin:
+        // the pairs' lines coherent) scaled by each polarization's weight along
+        // k, its energy and weights its directions' averaged; a pair dark at
+        // k = 0 in a polarization its own part there. The lowest 16 by energy.
+        if (a_spec.excitons && o.excitonModel == 2 && a_valence != 8 && epsr > 0 && !pairs.empty()) {
+            // (A direction's value at k: linear in k² between its points; past
+            // the last an energy on along its last interval, a weight held.)
+            auto valueAt = [](const std::vector<double>& ks, const std::vector<double>& v, double k, bool extend) {
+                const std::size_t m = std::min(ks.size(), v.size());
+                if (m < 2) return m == 1 ? v[0] : 0.0;
+                std::size_t i = std::size_t(std::upper_bound(ks.begin(), ks.begin() + std::ptrdiff_t(m), k) - ks.begin());
+                if (i >= m) {
+                    if (!extend) return v[m - 1];
+                    i = m - 1;
+                }
+                i = std::max<std::size_t>(i, 1);
+                const double s0 = ks[i - 1] * ks[i - 1], s1 = ks[i] * ks[i];
+                return v[i - 1] + (s1 > s0 ? (k * k - s0) / (s1 - s0) : 0.0) * (v[i] - v[i - 1]);
+            };
+            struct Series {
+                std::vector<const KpPair*> dirs;
+                double all = 0, edge = 0;
+                int ie = -1, jv = -1;
+            };
+            std::map<std::pair<int, int>, Series> groups;
+            for (const KpPair& pr : pairs) {
+                Series& g = groups[{pr.ie, pr.jv}];
+                g.ie = pr.ie;
+                g.jv = pr.jv;
+                g.dirs.push_back(&pr);
+                g.all += pr.weight;
+                g.edge += pr.weight * pr.eps[0];
+            }
+            std::vector<std::shared_ptr<Series>> chosen;
+            for (auto& [key, g] : groups) {
+                g.edge /= g.all > 0 ? g.all : 1.0;
+                chosen.push_back(std::make_shared<Series>(g));
+            }
+            std::sort(chosen.begin(), chosen.end(), [](const auto& a, const auto& b) { return a->edge < b->edge; });
+            if (chosen.size() > 16) {
+                a_s.log << tr("%1: the 16 lowest of the %2 pairs coupled, the others free steps").arg(a_node->name()).arg(chosen.size());
+                chosen.resize(16);
+            }
+            auto average = [valueAt](const Series& g, double k, int what) {
+                double v = 0;
+                for (const KpPair* d : g.dirs) {
+                    const std::vector<double>& y = what == 0 ? d->eps : what == 1 ? d->wte : d->wtm;
+                    v += d->weight * valueAt(d->bands->k, y, k, what == 0);
+                }
+                return g.all > 0 ? v / g.all : v;
+            };
+            exciton::Envelopes env = xEnvelopes();
+            std::map<int, int> eIndex, hIndex;
+            std::vector<exciton::Pair> xp;
+            CoupledBlock blk;
+            blk.spin = 1;
+            blk.te = {0, 1, 3, 4};
+            blk.tm = {2, 5};
+            int components = 6;
+            double e1hh1 = NaN, e1hh1Weight = 0;
+            for (const std::shared_ptr<Series>& g : chosen) {
+                const State& e = a_states[0][std::size_t(g->ie)];
+                const Eigen::VectorXcd& x0 = a_kps[0].x[0][std::size_t(g->jv)];
+                if (!eIndex.count(g->ie)) {
+                    eIndex[g->ie] = int(env.electrons.size());
+                    env.electrons.push_back(xEnvelope(e.x));
+                }
+                if (!hIndex.count(g->jv)) {
+                    hIndex[g->jv] = int(env.holes.size());
+                    std::vector<std::vector<std::complex<double>>> spinor(6);
+                    for (int c = 0; c < 6; ++c)
+                        for (std::size_t p : xOrder) spinor[std::size_t(c)].push_back(std::sqrt(a_points[p].w) * at(a_points[p], x0, c * n));
+                    env.holes.push_back(std::move(spinor));
+                }
+                // (Its k = 0 overlaps with the valence state's components: Σ w
+                // ψe N on each equation, its dot product.)
+                Eigen::VectorXd load = Eigen::VectorXd::Zero(n);
+                for (const Point& pt : a_points) {
+                    const double fe = pt.w * at(pt, e.x);
+                    if (fe == 0) continue;
+                    for (int q = 0; q < pt.n; ++q)
+                        if (pt.eq[q] >= 0) load(pt.eq[q]) += fe * pt.N[q];
+                }
+                const Eigen::VectorXcd loadc = load.cast<std::complex<double>>();
+                std::array<std::complex<double>, 6> ov;
+                for (int c = 0; c < 6; ++c) ov[std::size_t(c)] = loadc.dot(x0.segment(c * n, n));
+                const double scale = g->dirs.front()->Ep / g->dirs.front()->nr, zr = e.Ep > 0 ? e.EpZ / e.Ep : 1.0;
+                const double w0TE = average(*g, 0, 1), w0TM = average(*g, 0, 2);
+                double mostTE = 0, mostTM = 0;
+                for (const KpPair* d : g->dirs)
+                    for (std::size_t m = 0; m < d->wte.size(); ++m) {
+                        mostTE = std::max(mostTE, d->wte[m]);
+                        mostTM = std::max(mostTM, d->wtm[m]);
+                    }
+                // (Dark at k = 0, bright past it: a part of its own.)
+                const int ownTE = !(w0TE > 1e-6 * mostTE) && mostTE > 1e-10 ? components++ : -1;
+                const int ownTM = !(w0TM > 1e-6 * mostTM) && mostTM > 1e-10 ? components++ : -1;
+                if (ownTE >= 0) blk.te.push_back(ownTE);
+                if (ownTM >= 0) blk.tm.push_back(ownTM);
+                exciton::Pair x;
+                x.electron = eIndex[g->ie];
+                x.hole = hIndex[g->jv];
+                x.energy = [g, average](double k) { return average(*g, k, 0); };
+                x.amplitude = [g, average, ov, scale, zr, w0TE, w0TM, ownTE, ownTM](double k, std::vector<std::complex<double>>& a) {
+                    const double wTE = average(*g, k, 1), wTM = average(*g, k, 2);
+                    const double sTE = w0TE > 0 && ownTE < 0 ? std::sqrt(1.5 * scale * std::max(0.0, wTE) / w0TE) : 0.0;
+                    const double sTM = w0TM > 0 && ownTM < 0 ? std::sqrt(3 * zr * scale * std::max(0.0, wTM) / w0TM) : 0.0;
+                    for (int c : {0, 1, 3, 4}) a[std::size_t(c)] = ov[std::size_t(c)] * sTE;
+                    for (int c : {2, 5}) a[std::size_t(c)] = ov[std::size_t(c)] * sTM;
+                    if (ownTE >= 0) a[std::size_t(ownTE)] = std::sqrt(scale * std::max(0.0, wTE));
+                    if (ownTM >= 0) a[std::size_t(ownTM)] = std::sqrt(scale * std::max(0.0, wTM));
+                };
+                xp.push_back(std::move(x));
+                for (const KpPair* d : g->dirs) const_cast<KpPair*>(d)->coupled = true;
+                // (The first electron state's with its brightest TE valence
+                // state at k = 0 of the lowest: the e1-hh1's.)
+                if (g->ie == 0 && w0TE > 0 && !std::isfinite(e1hh1)) {
+                    e1hh1 = g->edge;
+                    e1hh1Weight = scale * w0TE;
+                }
+            }
+            blk.r = exciton::solve(env, xp, xOptions(epsr, components, chosen.front()->edge));
+            if (blk.r.energy.empty()) {
+                *error = tr("%1: the coupled excitons: %2").arg(a_node->name(), blk.r.note);
+                return -1;
+            }
+            blk.edge = chosen.front()->edge;
+            blk.cells();
+            if (!blk.r.note.isEmpty()) a_s.log << tr("%1: the coupled excitons' %2").arg(a_node->name(), blk.r.note);
+            if (std::isfinite(e1hh1)) xGlobals(blk, e1hh1, e1hh1Weight);
+            xBlocks.push_back(std::move(blk));
+        }
     }
     // A k interval's line at E: its energies' spread [ε0, ε1] its density
     // (1/J), broadened by the line's shape.
@@ -3323,6 +3620,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         const double E = sweep[point];
         double te = 0, tm = 0, ste = 0, stm = 0, teTail = 0, tmTail = 0;
         for (const KpPair& pr : pairs) {
+            if (pr.coupled) continue;   // (its line and continuum the coupled excitons')
             const double te0 = te, tm0 = tm;
             const auto tally = qScopeGuard([&] {
                 if (pr.edge > E + far) {
@@ -3397,6 +3695,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             }
         }
         for (const Transition& t : transitions) {
+            if (t.coupled) continue;   // (its line and continuum the coupled excitons')
             const double te0 = te, tm0 = tm;
             const auto tally = qScopeGuard([&] {
                 if (t.E > E + far) {
@@ -3470,6 +3769,41 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             tm += C * t.tm * dos;
             ste += C * t.te * dosSp;
             stm += C * t.tm * dosSp;
+        }
+        // The coupled subbands' excitons: each state's line - those of the
+        // grid's fine part, below its cut -, and past it each pair's free
+        // continuum, its line's tail: α = (π q² ħ/(c ε0 m0² E)) (m0/6)
+        // Σ |P|² L / (the wells' size), the amplitudes' Kane energy and index
+        // in P.
+        for (const CoupledBlock& blk : xBlocks) {
+            const exciton::Result& r = blk.r;
+            const double Cx = M_PI * Q * Q * Hbar / (C0 * Eps0 * M0 * M0 * E) * (M0 / 6) / per * blk.spin;
+            auto add = [&](double from, double sTE, double sTM, double l) {
+                te += Cx * sTE * l;
+                tm += Cx * sTM * l;
+                if (from > E + far) {
+                    teTail += Cx * sTE * l;
+                    tmTail += Cx * sTM * l;
+                }
+            };
+            for (std::size_t n = 0; n < blk.lo.size(); ++n) {
+                const double En = r.energy[n];
+                if (window && !inWindow(En)) continue;
+                double sTE = 0, sTM = 0;
+                for (int c : blk.te) sTE += r.strength[std::size_t(c)][n];
+                for (int c : blk.tm) sTM += r.strength[std::size_t(c)][n];
+                const double cell = blk.hi[n] - blk.lo[n];
+                add(En, sTE, sTM, (cell > 0 ? (cdf(blk.hi[n] - E) - cdf(blk.lo[n] - E)) / cell : pdf(E - En)) * fadeAt(En));
+            }
+            if (window && !(r.cut < windowHi)) continue;
+            const double from = window ? std::max(r.cut, windowLo) : r.cut;
+            const double l = ((window ? cdf(windowHi - E) : 1.0) - cdf(from - E)) * fadeAt(r.cut);
+            for (const std::vector<double>& b : r.beyond) {
+                double bTE = 0, bTM = 0;
+                for (int c : blk.te) bTE += b[std::size_t(c)];
+                for (int c : blk.tm) bTM += b[std::size_t(c)];
+                add(r.cut, bTE, bTM, l);
+            }
         }
         for (const Bulk& bulk : bulks) {
             // ∫ √ε L(δ - ε) dε in cells (the wells' own as their steps fade,
@@ -3864,11 +4198,11 @@ void QuantumProblem::setGlobals()
             a_s.setGlobal(p + QStringLiteral("gspTM"), a_spec.gspTM[k], perMetre, tr("the spontaneous emission coefficient, TM"));
         }
         if (a_spec.excitons) {
-            a_s.setGlobal(p + QStringLiteral("Eb"), a_spec.Eb, energy, tr("the e1-hh1 exciton's binding energy (1s, variational)"), QStringLiteral("eV"));
+            a_s.setGlobal(p + QStringLiteral("Eb"), a_spec.Eb, energy, tr("the e1-hh1 exciton's binding energy: its 1s, variational - or, its subbands coupled, its edge less the strongest line below it"), QStringLiteral("eV"));
             a_s.setGlobal(p + QStringLiteral("Ex"), a_spec.Ex, energy, tr("the e1-hh1 exciton's line: the transition less its binding"), QStringLiteral("eV"));
-            a_s.setGlobal(p + QStringLiteral("aX"), a_spec.radius, Dim::length(), tr("the e1-hh1 exciton's radius in the wells' plane, λ"));
+            a_s.setGlobal(p + QStringLiteral("aX"), a_spec.radius, Dim::length(), tr("the e1-hh1 exciton's radius in the wells' plane, λ (its subbands coupled: Bastard's λ of its line's |ψ(0)|², 2/(πλ²))"));
             a_s.setGlobal(p + QStringLiteral("gX"), a_spec.gammaX, Dim(),
-                          tr("the e1-hh1 exciton's γ: its electron and hole drawn together along the axis (0: Bastard's)"));
+                          tr("the e1-hh1 exciton's γ: its electron and hole drawn together along the axis (0: Bastard's; its subbands coupled: none)"));
         }
         if (a_spec.carriers) {
             a_s.setGlobal(p + QStringLiteral("Fc"), a_spec.Fc, energy, tr("the electrons' quasi-Fermi level"), QStringLiteral("eV"));

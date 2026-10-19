@@ -3210,7 +3210,8 @@ bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOpt
     const QString shape = node.text(QStringLiteral("lineshape"));
     o.lineshape = shape == QLatin1String("gaussian") ? 1 : shape == QLatin1String("sech") ? 2 : 0;
     o.excitons = node.flag(QStringLiteral("excitons"));
-    o.excitonModel = node.text(QStringLiteral("excitonmodel")) == QLatin1String("bastard") ? 1 : 0;
+    const QString excitonModel = node.text(QStringLiteral("excitonmodel"));
+    o.excitonModel = excitonModel == QLatin1String("bastard") ? 1 : excitonModel == QLatin1String("coupled") ? 2 : 0;
     o.continuum = node.text(QStringLiteral("continuum")) == QLatin1String("bound") ? 1 : 0;
     if (!energy(QStringLiteral("fade"), tr("its fade"), &o.fade)) return false;
     if (!node.text(QStringLiteral("dlinewidth")).trimmed().isEmpty()) {

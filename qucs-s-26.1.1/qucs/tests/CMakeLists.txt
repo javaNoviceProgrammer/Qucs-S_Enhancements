@@ -116,6 +116,10 @@ set_tests_properties(test_fem_quantum_2 PROPERTIES
   TIMEOUT 1800)
 # (The 8x8's and wurtzite's of their own: under the sanitizers each some
 # minutes more than the quantum tests' room.)
+qucs_add_fem_test(test_fem_exciton)
+# (Its coupled excitons' dense solves: some 5 minutes under the sanitizers
+# here.)
+set_tests_properties(test_fem_exciton PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_kp8)
 set_tests_properties(test_fem_kp8 PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_nitrides)
