@@ -13,6 +13,7 @@
 
 #include "fem_lumerical.h"
 #include "fem_material_plot.h"
+#include "fem_results.h"
 #include "fem_solver.h"
 #include "ink.h"
 #include "main.h"
@@ -21,6 +22,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -45,13 +47,16 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeView>
 #include <QTreeWidget>
 #include <QUndoStack>
 #include <QVBoxLayout>
@@ -296,26 +301,242 @@ QString text(const QJsonValue& v)
     return v.toString();
 }
 
-/// A line edit whose text is checked as an expression as it is typed.
+/// A name an expression may use, offered as it is typed: its unit (a
+/// parameter's value, a global's where its study has one solution) and
+/// what it is.
+struct Offered {
+    QString name, unit, about;
+};
+
+/// What an expression of \a doc's model may name: where \a spatial, its
+/// fields' variables (the model's, and a solution's where it has more - a
+/// laser's); where \a globals (a result's expression), the globals its
+/// studies found - with their values where a study has one solution (its
+/// last's would be one of its modes, points or times: their units); its
+/// parameters.
+QList<Offered> offeredNames(MultiphysicsDoc* doc, bool spatial, bool globals)
+{
+    QList<Offered> out;
+    QSet<QString> seen;
+    auto add = [&out, &seen](const QString& name, const QString& unit, const QString& about) {
+        if (name.isEmpty() || seen.contains(name)) return;
+        seen.insert(name);
+        out << Offered{name, unit == QLatin1String("1") ? QString() : unit, about};
+    };
+    auto unitOf = [](const Variable& v) { return !v.unit.isEmpty() ? v.unit : !v.display.isEmpty() ? v.display : dimName(v.dim); };
+    const Model& m = doc->model();
+    struct Solved {
+        std::shared_ptr<Solution> solution;
+        bool stale = false;   // (the model changed since)
+        bool one = false;     // (its only solution)
+    };
+    std::vector<Solved> solved;
+    for (const Node* s : m.studies())
+        if (std::shared_ptr<Solution> sol = doc->solution(s->tag)) {
+            const std::shared_ptr<SolutionSet> set = doc->solutions(s->tag);
+            solved.push_back({sol, doc->solutionStale(s->tag), set && instances(*set, true).size() == 1});
+        }
+    if (spatial) {
+        for (const Variable& v : modelVariables(m)) add(v.name, unitOf(v), v.description);
+        for (const Solved& s : solved)
+            if (!s.stale)
+                for (const Variable& v : s.solution->variables()) add(v.name, unitOf(v), v.description);
+    }
+    if (globals)
+        for (const Solved& s : solved)
+            for (const Variable& v : s.solution->globals())
+                add(v.name, s.one ? QStringLiteral("= ") + s.solution->globalText(v.name) : unitOf(v), v.description);
+    const std::shared_ptr<ParameterScope> ps = doc->parameters();
+    for (const Model::Parameter& p : m.parameters())
+        add(p.name, ps->values.contains(p.name) ? QStringLiteral("= ") + formatQuantity(ps->values.value(p.name), ps->dims.value(p.name)) : QString(),
+            p.description.isEmpty() ? QCoreApplication::translate("MultiphysicsPanel", "a parameter") : p.description);
+    return out;
+}
+
+/// A line edit whose text is checked as an expression as it is typed - and,
+/// given what it may name, offers it: after a name and a dot the names that
+/// go on from it (emw. lists emw's variables and globals), narrowed as one
+/// types; all of them when asked (Ctrl+Space - the Control key on a Mac,
+/// the Command key's being Spotlight's). Return or Tab takes the one
+/// chosen, Escape closes the list.
 class ExpressionEdit : public QLineEdit
 {
 public:
-    ExpressionEdit(const QString& value, std::function<QString(const QString&, bool*)> check, QWidget* parent)
-        : QLineEdit(value, parent), a_check(std::move(check))
+    ExpressionEdit(const QString& value, std::function<QString(const QString&, bool*)> check, QWidget* parent,
+                   std::function<QList<Offered>()> offered = {})
+        : QLineEdit(value, parent), a_check(std::move(check)), a_offered(std::move(offered))
     {
         connect(this, &QLineEdit::textChanged, this, [this] { validate(); });
         validate();
+        if (!a_offered) return;
+        a_names = new QStandardItemModel(this);
+        a_completer = new QCompleter(a_names, this);
+        a_completer->setWidget(this);
+        a_completer->setCompletionMode(QCompleter::PopupCompletion);
+        a_completer->setCaseSensitivity(Qt::CaseInsensitive);
+        a_completer->setModelSorting(QCompleter::UnsortedModel);
+        a_completer->setFilterMode(Qt::MatchStartsWith);
+        a_completer->setMaxVisibleItems(12);
+        a_completer->setWrapAround(false);
+        // (A row for each: the name, its unit or value, what it is.)
+        auto* list = new QTreeView;
+        list->setObjectName(QStringLiteral("mpCompletions"));
+        list->setRootIsDecorated(false);
+        list->setHeaderHidden(true);
+        list->setUniformRowHeights(true);
+        list->setSelectionBehavior(QAbstractItemView::SelectRows);
+        list->setTextElideMode(Qt::ElideRight);
+        a_completer->setPopup(list);
+        connect(a_completer, QOverload<const QModelIndex&>::of(&QCompleter::activated), this,
+                [this](const QModelIndex& index) { take(index.siblingAtColumn(0).data(Qt::UserRole).toString()); });
+        // (Opened as text is added - a dot typed or pasted -, not as it is
+        // deleted; one shown follows either, and the cursor: moved off its
+        // word, an arrow key, it goes.)
+        a_length = int(text().size());
+        connect(this, &QLineEdit::textEdited, this, [this](const QString& now) {
+            const bool added = int(now.size()) > a_length;
+            a_length = int(now.size());
+            offer(false, added);
+        });
+        connect(this, &QLineEdit::textChanged, this, [this](const QString& now) { a_length = int(now.size()); });
+        connect(this, &QLineEdit::cursorPositionChanged, this, [this] {
+            if (listing()) offer(false, false);
+        });
     }
     void validate()
     {
+        if (!a_check) return;   // (its property's tooltip kept)
         bool bad = false;
-        const QString said = a_check ? a_check(text(), &bad) : QString();
+        const QString said = a_check(text(), &bad);
         setToolTip(said);
         setStyleSheet(bad ? QStringLiteral("QLineEdit { border: 1px solid #c62828; }") : QString());
     }
+    bool listing() const { return a_completer != nullptr && a_completer->popup()->isVisible(); }
+    /// The names that go on from the word before the cursor - after a
+    /// name's dot (not a number's: 1.5), text \a added, or all when \a
+    /// asked -, in the list below the box; none, no list.
+    void offer(bool asked, bool added = true)
+    {
+        if (a_completer == nullptr || a_taking || (!asked && !added && !listing())) return;
+        const QString before = text().left(cursorPosition());
+        qsizetype start = before.size();
+        while (start > 0 && (before.at(start - 1).isLetterOrNumber() || before.at(start - 1) == QLatin1Char('_') || before.at(start - 1) == QLatin1Char('.')))
+            --start;
+        const QString word = before.mid(start);
+        const qsizetype dot = word.lastIndexOf(QLatin1Char('.'));
+        const QString stem = word.left(dot + 1);   // (emw. - nothing before a dot)
+        if (asked || !listing() || int(start) != a_start || stem != a_stem || hasSelectedText()) {
+            // (A number's dot - 1.5 - finds none: no name starts with a digit.)
+            if (!asked && (dot <= 0 || hasSelectedText())) {
+                a_completer->popup()->hide();
+                return;
+            }
+            fill(stem);
+            a_start = int(start);
+            a_stem = stem;
+        }
+        a_completer->setCompletionPrefix(word.mid(dot + 1));
+        if (a_completer->completionCount() == 0) {
+            a_completer->popup()->hide();
+            return;
+        }
+        place();
+    }
+
+protected:
+    bool event(QEvent* e) override
+    {
+        // The list's keys while it is shown are its (the completer acts on
+        // a key the box leaves): Return and Tab take the name - not the
+        // text, nor the next box -, Escape closes it.
+        if (e->type() == QEvent::KeyPress && listing() && isListKey(static_cast<QKeyEvent*>(e)->key())) {
+            e->ignore();
+            return true;
+        }
+        if (e->type() == QEvent::ShortcutOverride) {
+            const auto* key = static_cast<QKeyEvent*>(e);
+            if ((listing() && (isListKey(key->key()) || key->key() == Qt::Key_Up || key->key() == Qt::Key_Down)) || (a_completer && isAsk(key))) {
+                e->accept();
+                return true;
+            }
+        }
+        return QLineEdit::event(e);
+    }
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        if (a_completer && isAsk(event)) {
+            offer(true);
+            return;
+        }
+        QLineEdit::keyPressEvent(event);
+    }
 
 private:
+    static bool isListKey(int key)
+    {
+        return key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Tab || key == Qt::Key_Backtab || key == Qt::Key_Escape;
+    }
+    static bool isAsk(const QKeyEvent* key)
+    {
+        const Qt::KeyboardModifiers m = key->modifiers() & ~Qt::KeypadModifier;
+        return key->key() == Qt::Key_Space && (m == Qt::ControlModifier || m == Qt::MetaModifier);
+    }
+    /// The names starting with \a stem, each shown after it.
+    void fill(const QString& stem)
+    {
+        a_names->clear();
+        a_names->setColumnCount(3);
+        const QColor faint = palette().color(QPalette::PlaceholderText);
+        for (const Offered& o : a_offered()) {
+            if (!o.name.startsWith(stem, Qt::CaseInsensitive) || o.name.size() == stem.size()) continue;
+            auto* name = new QStandardItem(o.name.mid(stem.size()));
+            name->setData(o.name, Qt::UserRole);
+            auto* unit = new QStandardItem(o.unit);
+            auto* about = new QStandardItem(o.about);
+            unit->setForeground(faint);
+            about->setForeground(faint);
+            for (QStandardItem* item : {name, unit, about}) {
+                item->setEditable(false);
+                item->setToolTip(o.about);
+            }
+            a_names->appendRow({name, unit, about});
+        }
+    }
+    /// Below the box, as wide as its rows (to 640 px: what each is cut
+    /// short, whole in its tooltip), the first chosen.
+    void place()
+    {
+        auto* list = static_cast<QTreeView*>(a_completer->popup());
+        const QFontMetrics fm = list->fontMetrics();
+        const QAbstractItemModel* shown = a_completer->completionModel();
+        int wide[3] = {0, 0, 0};
+        for (int r = 0; r < shown->rowCount(); ++r)
+            for (int c = 0; c < 3; ++c) wide[c] = std::max(wide[c], fm.horizontalAdvance(shown->index(r, c).data().toString()));
+        const int pad = 16;
+        list->setColumnWidth(0, wide[0] + pad);
+        list->setColumnWidth(1, wide[1] + pad);
+        const int all = wide[0] + wide[1] + wide[2] + 3 * pad + list->verticalScrollBar()->sizeHint().width() + 2 * list->frameWidth();
+        a_completer->complete(QRect(0, 0, std::clamp(all, width(), std::max(width(), 640)), height()));
+        list->setCurrentIndex(shown->index(0, 0));
+    }
+    /// \a name in place of the word it completes.
+    void take(const QString& name)
+    {
+        if (name.isEmpty()) return;
+        a_taking = true;
+        setSelection(a_start, cursorPosition() - a_start);
+        insert(name);
+        a_taking = false;
+    }
+
     std::function<QString(const QString&, bool*)> a_check;
+    std::function<QList<Offered>()> a_offered;
+    QStandardItemModel* a_names = nullptr;
+    QCompleter* a_completer = nullptr;
+    int a_start = 0;   // the word's start, the list's stem
+    QString a_stem;
+    int a_length = 0;   // the text's, as it was
+    bool a_taking = false;
 };
 
 } // namespace
@@ -1078,7 +1299,15 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         const QString inherited = a_doc && a_doc->geometry().topology
                                       ? inheritedParameter(a_doc->model(), *a_doc->geometry().topology, node, key, &materialName)
                                       : QString();
-        auto* edit = new ExpressionEdit(inherited.isEmpty() ? node.text(key) : QString(), check, a_form);
+        // The names it may use offered as it is typed (emw. lists emw's):
+        // a result's - a plot's, a derived value's - the globals too.
+        const NodeKind* kind = node.kind();
+        const bool result = kind
+                            && QStringList{QStringLiteral("plot"), QStringLiteral("graph"), QStringLiteral("derived"), QStringLiteral("dataset"),
+                                           QStringLiteral("export"), QStringLiteral("results")}
+                                   .contains(kind->group);
+        auto offered = [doc, spatial, result] { return doc ? offeredNames(doc, spatial, result) : QList<Offered>(); };
+        auto* edit = new ExpressionEdit(inherited.isEmpty() ? node.text(key) : QString(), check, a_form, offered);
         edit->setObjectName(QStringLiteral("mpEdit_") + key);
         if (!inherited.isEmpty()) edit->setPlaceholderText(tr("%1 (%2's)").arg(inherited, materialName));
         else if (p.unit == QLatin1String("length")) edit->setPlaceholderText(tr("in the geometry's unit, or with one: 3[mm]"));
@@ -1106,7 +1335,17 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
     }
     case PropertyDef::Text:
     case PropertyDef::Terminal: {
-        auto* edit = new QLineEdit(node.text(key), a_form);
+        // (A result's expressions of the globals - a Global Evaluation's, a
+        // global graph's and its x -: the globals and parameters offered as
+        // typed, emw. listing emw's.)
+        const NodeKind* kind = node.kind();
+        const bool ofGlobals = p.kind == PropertyDef::Text && kind
+                               && (kind->group == QLatin1String("derived") || kind->group == QLatin1String("graph"))
+                               && (key == QLatin1String("expression") || key == QLatin1String("x"));
+        QPointer<MultiphysicsDoc> doc = a_doc;
+        QLineEdit* edit = ofGlobals ? new ExpressionEdit(node.text(key), {}, a_form,
+                                                         [doc] { return doc ? offeredNames(doc, false, true) : QList<Offered>(); })
+                                    : new QLineEdit(node.text(key), a_form);
         edit->setObjectName(QStringLiteral("mpEdit_") + key);
         connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text()); });
         return edit;

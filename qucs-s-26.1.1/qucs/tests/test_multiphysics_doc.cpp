@@ -20,6 +20,7 @@
 #include <QClipboard>
 #include <QDialogButtonBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -3159,6 +3160,196 @@ private slots:
         QCOMPARE(props.size(), 3);
         QCOMPARE(props.at(2).toObject().value("axis").toString(), QStringLiteral("x3"));
         QVERIFY(props.at(0).toObject().value("values").toArray().at(1).toDouble() > props.at(2).toObject().value("values").toArray().at(1).toDouble());
+    }
+
+    // The names an expression may use offered as it is typed (asked for on
+    // 19 October): after "emw." the mode analysis's variables - Ex,
+    // normE, Sz..., shown after the stem, with their units and what they
+    // are -, narrowed as the name goes on; Return takes the one chosen in
+    // place of the word, the box committed when it is finished, not while
+    // listed; deleting opens no list. Solved, a result's list has its
+    // globals - with their values where the study has one solution (emw.neff
+    // = 2.4...), else their units (two modes: emw.loss dB/m) -; a number's
+    // dot (1.5)
+    // offers nothing; Ctrl+Space every name - the parameters with theirs;
+    // Escape closes the list.
+    void namesOfferedAsTyped()
+    {
+        const QString file = copyOf(QStringLiteral("soi_waveguide_modes.qfem"));
+        {
+            // (One wavelength, one mode, a coarse mesh: the globals, quickly -
+            // 385 triangles, neff 2.439; on the example's fine mesh the two
+            // solves took 234 s under the sanitizers.)
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            text.replace(QStringLiteral("\"1500[nm], 1550[nm], 1600[nm]\", \"modes\": 2"), QStringLiteral("\"1550[nm]\", \"modes\": 1"))
+                .replace(QStringLiteral("\"size\": \"fine\""), QStringLiteral("\"size\": \"coarse\""))
+                .replace(QStringLiteral("\"hmax\": \"0.03\""), QStringLiteral("\"hmax\": \"0.2\""))
+                .replace(QStringLiteral("\"hmax\": \"0.12\""), QStringLiteral("\"hmax\": \"1.0\""));
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(text.toUtf8());
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        auto tagOf = [doc](const QString& type, const QString& expression) {
+            QString found;
+            std::function<void(const qucs_s::fem::Node&)> walk = [&walk, &found, &type, &expression](const qucs_s::fem::Node& n) {
+                if (found.isEmpty() && n.type == type && (expression.isEmpty() || n.text(QStringLiteral("expression")) == expression)) found = n.tag;
+                for (const qucs_s::fem::Node& c : n.children) walk(c);
+            };
+            walk(doc->model().root);
+            return found;
+        };
+        const QString surface = tagOf(QStringLiteral("surface"), QStringLiteral("emw.normE"));
+        QVERIFY(!surface.isEmpty());
+        panel()->selectNode(surface);
+        auto* edit = qobject_cast<QLineEdit*>(panel()->editorFor(QStringLiteral("expression")));
+        QVERIFY(edit != nullptr);
+        auto* completer = edit->findChild<QCompleter*>();
+        QVERIFY(completer != nullptr);
+        QAbstractItemView* list = completer->popup();
+        // (Each row's name, unit and what it is - of the completer now.)
+        auto rows = [&completer] {
+            QList<QStringList> out;
+            const QAbstractItemModel* m = completer->completionModel();
+            for (int r = 0; r < m->rowCount(); ++r) out << QStringList{m->index(r, 0).data().toString(), m->index(r, 1).data().toString(), m->index(r, 2).data().toString()};
+            return out;
+        };
+        auto names = [&rows] {
+            QStringList out;
+            for (const QStringList& row : rows()) out << row.at(0);
+            return out;
+        };
+        edit->activateWindow();
+        edit->setFocus();
+        edit->selectAll();
+        QTest::keyClicks(edit, QStringLiteral("2*emw."));
+        QTRY_VERIFY(list->isVisible());
+        QCOMPARE(list->currentIndex().row(), 0);   // (Return takes the first)
+        QStringList shown = names();
+        for (const char* name : {"Ex", "Ey", "Ez", "normE", "Sz"}) QVERIFY2(shown.contains(QLatin1String(name)), qPrintable(shown.join(", ")));
+        QVERIFY2(!shown.contains(QStringLiteral("x")) && !shown.contains(QStringLiteral("emw.Ex")), qPrintable(shown.join(", ")));
+        for (const QStringList& row : rows())
+            if (row.at(0) == QLatin1String("normE")) QVERIFY2(row.at(1) == QLatin1String("V/m") && !row.at(2).isEmpty(), qPrintable(row.join(" | ")));
+        QVERIFY(list->width() >= edit->width());
+        QCOMPARE(doc->model().find(surface)->text(QStringLiteral("expression")), QStringLiteral("emw.normE"));
+        QTest::keyClicks(edit, QStringLiteral("no"));
+        shown = names();
+        QVERIFY2(!shown.isEmpty() && shown.contains(QStringLiteral("normE")), qPrintable(shown.join(", ")));
+        for (const QString& n : shown) QVERIFY2(n.startsWith(QLatin1String("no"), Qt::CaseInsensitive), qPrintable(shown.join(", ")));
+        list->setCurrentIndex(completer->completionModel()->index(int(shown.indexOf(QStringLiteral("normE"))), 0));
+        QTest::keyClick(list, Qt::Key_Return);
+        QVERIFY(!list->isVisible());
+        QCOMPARE(edit->text(), QStringLiteral("2*emw.normE"));
+        QCOMPARE(doc->model().find(surface)->text(QStringLiteral("expression")), QStringLiteral("emw.normE"));
+        // A name's dot, not a number's; nothing after the name: no list.
+        QTest::keyClicks(edit, QStringLiteral("+1."));
+        QVERIFY(!list->isVisible());
+        // Deleted back into a name: no list (Return finishes the box).
+        QTest::keyClick(edit, Qt::Key_Backspace);
+        QTest::keyClick(edit, Qt::Key_Backspace);
+        QTest::keyClick(edit, Qt::Key_Backspace);
+        QCOMPARE(edit->text(), QStringLiteral("2*emw.normE"));
+        QVERIFY(!list->isVisible());
+        QTest::keyClick(edit, Qt::Key_Return);
+        QTRY_COMPARE(doc->model().find(surface)->text(QStringLiteral("expression")), QStringLiteral("2*emw.normE"));
+
+        // Solved: a result's list has the globals and their values.
+        const QJsonObject r = call("fem_solve", {}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString global = tagOf(QStringLiteral("global"), QString());
+        QVERIFY(!global.isEmpty());
+        panel()->selectNode(global);
+        edit = qobject_cast<QLineEdit*>(panel()->editorFor(QStringLiteral("expression")));
+        QVERIFY(edit != nullptr);
+        completer = edit->findChild<QCompleter*>();
+        QVERIFY(completer != nullptr);
+        list = completer->popup();
+        edit->setFocus();
+        edit->end(false);
+        QTest::keyClicks(edit, QStringLiteral("; emw.n"));
+        QTRY_VERIFY(list->isVisible());
+        bool neff = false;
+        for (const QStringList& row : rows())
+            if (row.at(0) == QLatin1String("neff")) neff = row.at(1).startsWith(QLatin1String("= 2.4")) && !row.at(2).isEmpty();
+        QStringList said;
+        for (const QStringList& row : rows()) said << row.join(QLatin1String(" | "));
+        QVERIFY2(neff, qPrintable(said.join("\n")));
+        QTest::keyClick(list, Qt::Key_Escape);
+        QVERIFY(!list->isVisible());
+        QVERIFY(edit->text().endsWith(QLatin1String("; emw.n")));
+        edit->undo();
+        // Ctrl+Space (the Control key on a Mac): every name - a Global
+        // Evaluation's the globals, not a point's names -, the parameters
+        // with their values.
+        edit->selectAll();
+        QTest::keyClick(edit, Qt::Key_Delete);
+        // (The box's keys, over a window's shortcut of them - the Python
+        // menu's, a VHDL entity's, where enabled.)
+#ifdef Q_OS_MACOS
+        const Qt::KeyboardModifier control = Qt::MetaModifier;
+#else
+        const Qt::KeyboardModifier control = Qt::ControlModifier;
+#endif
+        auto* window = new QAction(app);
+        window->setShortcut(QKeySequence(control | Qt::Key_Space));
+        window->setShortcutContext(Qt::ApplicationShortcut);   // (offscreen too)
+        app->addAction(window);
+        int fired = 0;
+        connect(window, &QAction::triggered, this, [&fired] { ++fired; });
+        QTest::keyClick(edit, Qt::Key_Space, control);
+        delete window;
+        QCOMPARE(fired, 0);
+        QTRY_VERIFY(list->isVisible());
+        shown = names();
+        QVERIFY2(shown.contains(QStringLiteral("emw.neff")) && !shown.contains(QStringLiteral("emw.normE")) && !shown.contains(QStringLiteral("x")),
+                 qPrintable(shown.join(", ")));
+        bool parameter = false;
+        for (const QStringList& row : rows())
+            if (row.at(0) == QLatin1String("w")) parameter = row.at(1) == QLatin1String("= 500 nm") && row.at(2) == QLatin1String("the wire's width");
+        QVERIFY2(parameter, qPrintable(shown.join(", ")));
+        QTest::keyClick(list, Qt::Key_Escape);
+        QVERIFY(edit->text().isEmpty());
+        edit->undo();
+        // Two modes: a value of one of them is not said, the unit is.
+        const QString step = tagOf(QStringLiteral("mode"), QString());
+        QVERIFY(!step.isEmpty());
+        QJsonObject edited = call("fem_edit", {{"action", "set"}, {"tag", step}, {"props", QJsonObject{{"modes", 2}}}});
+        QVERIFY2(!failed(edited), qPrintable(text(edited)));
+        edited = call("fem_solve", {}, jobWait());
+        QVERIFY2(!failed(edited), qPrintable(text(edited)));
+        panel()->selectNode(global);
+        edit = qobject_cast<QLineEdit*>(panel()->editorFor(QStringLiteral("expression")));
+        QVERIFY(edit != nullptr);
+        completer = edit->findChild<QCompleter*>();
+        list = completer->popup();
+        edit->setFocus();
+        edit->end(false);
+        QTest::keyClicks(edit, QStringLiteral("; emw."));
+        QTRY_VERIFY(list->isVisible());
+        said.clear();
+        for (const QStringList& row : rows()) said << row.join(QLatin1String(" | "));
+        for (const QStringList& row : rows()) {
+            QVERIFY2(!row.at(1).startsWith(QLatin1Char('=')), qPrintable(said.join("\n")));
+            if (row.at(0) == QLatin1String("loss")) QVERIFY2(row.at(1) == QLatin1String("dB/m"), qPrintable(said.join("\n")));
+        }
+        QTest::keyClick(list, Qt::Key_Escape);
+        // A surface's: a point's names, the globals too.
+        panel()->selectNode(surface);
+        edit = qobject_cast<QLineEdit*>(panel()->editorFor(QStringLiteral("expression")));
+        QVERIFY(edit != nullptr);
+        completer = edit->findChild<QCompleter*>();
+        list = completer->popup();
+        edit->setFocus();
+        edit->selectAll();
+        QTest::keyClicks(edit, QStringLiteral("emw."));
+        QTRY_VERIFY(list->isVisible());
+        shown = names();
+        QVERIFY2(shown.contains(QStringLiteral("normE")) && shown.contains(QStringLiteral("neff")), qPrintable(shown.join(", ")));
+        QTest::keyClick(list, Qt::Key_Escape);
+        doc->setDocChanged(false);
     }
 
     void claudeAndTheLibrary()
