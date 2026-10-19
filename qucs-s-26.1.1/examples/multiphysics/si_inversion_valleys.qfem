@@ -38,7 +38,7 @@
     }],
     "studies": [{"type": "study", "label": "Inversion", "steps": [
         {"type": "sweep", "parameters": [["Vg", "1, 1.5, 2", "V"]]},
-        {"type": "states", "states": 6, "consistent": true}
+        {"type": "states", "states": 10, "consistent": true}
     ]}],
     "results": {
         "plots": [

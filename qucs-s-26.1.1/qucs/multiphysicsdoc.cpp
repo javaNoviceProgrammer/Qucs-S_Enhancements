@@ -849,10 +849,17 @@ void MultiphysicsDoc::compute(const QString& study)
     const bool meshIt = a_meshStale || !a_mesh;
     a_jobMeshes = meshIt;
     a_jobStudy = tag;
-    startJob(tr("Computing"), [meshIt, tag](Job& job) {
+    // (A sweep stopped before, nothing changed since: on from where it
+    // stopped, its points kept.)
+    std::vector<std::shared_ptr<qucs_s::fem::Solution>> resume;
+    if (const auto it = a_solutions.find(tag); !meshIt && it != a_solutions.end() && it->second && !it->second->stopped.isEmpty()) {
+        const auto stale = a_stale.find(tag);
+        if (stale != a_stale.end() && !stale->second) resume = it->second->solutions;
+    }
+    startJob(tr("Computing"), [meshIt, tag, resume](Job& job) {
         job.study = tag;
         // (Its mesh made first when it is old: runStudy makes it.)
-        job.run = runStudy(job.model, job.parameters, job.topology, meshIt ? nullptr : job.mesh, tag, job.progress(0, 1));
+        job.run = runStudy(job.model, job.parameters, job.topology, meshIt ? nullptr : job.mesh, tag, job.progress(0, 1), resume);
         job.meshIt = meshIt;
         job.warnings << job.run.warnings;
         if (!job.run.ok())

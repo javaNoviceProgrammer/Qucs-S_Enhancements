@@ -35,7 +35,7 @@
         }],
         "mesh": {"size": "normal", "features": [
             {"type": "size", "level": "domain", "selection": {"only": ["core", "go", "back"]}, "hmax": "1.5"},
-            {"type": "size", "level": "boundary", "selection": {"of": ["slot"]}, "hmax": "0.25"}
+            {"type": "size", "level": "boundary", "label": "The gap", "selection": {"box": [14.9, -1, 30.1, 1]}, "hmax": "0.25"}
         ]}
     }],
     "studies": [{"type": "study", "label": "Study 1", "steps": [
