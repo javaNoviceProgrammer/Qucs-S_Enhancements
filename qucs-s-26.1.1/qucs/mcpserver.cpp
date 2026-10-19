@@ -393,10 +393,27 @@ void Server::send(const QJsonObject& message) const
     if (a_send) a_send(message);
 }
 
+bool isJsonAnswer(const QJsonObject& result)
+{
+    for (const QJsonValue& v : result.value(QLatin1String("content")).toArray())
+        if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("text")) {
+            const QJsonDocument doc = QJsonDocument::fromJson(v.toObject().value(QLatin1String("text")).toString().toUtf8());
+            return doc.isObject() || doc.isArray();
+        }
+    return false;
+}
+
 QJsonObject Server::callResult(const QJsonObject& result) const
 {
+    // Structured where the answer is JSON, and an error (its {error}: shown
+    // as its text anyway), not a text's {summary}: Claude Code gives the
+    // model a result's structuredContent in place of its text - a text's
+    // every quote and line break escaped in it (a netlist's \n, a dialog's
+    // \"), 8.6 % longer (673 answers of the dock's sessions, 19 October) and
+    // harder to read.
     QJsonObject r = result;
-    if (!r.contains(QLatin1String("structuredContent"))) r.insert(QStringLiteral("structuredContent"), structuredOf(result));
+    if (!r.contains(QLatin1String("structuredContent")) && (isJsonAnswer(result) || result.value(QLatin1String("isError")).toBool()))
+        r.insert(QStringLiteral("structuredContent"), structuredOf(result));
     return r;
 }
 

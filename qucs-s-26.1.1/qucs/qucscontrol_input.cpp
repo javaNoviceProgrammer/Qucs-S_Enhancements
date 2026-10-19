@@ -431,13 +431,15 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
             o.insert(QStringLiteral("menu"), tr("A menu came up and was closed: %1. context_menu opens it and chooses from it.").arg(entries.join(QStringLiteral("; "))));
             for (int n = 0; n < 5 && QApplication::activePopupWidget() != nullptr; ++n) QApplication::activePopupWidget()->close();
         }
-        if (opened)
-            o.insert(QStringLiteral("opened"), tr("“%1”, which waits for an answer: set_dialog answers it. %2")
-                                                   .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className()) : dialog->windowTitle(),
-                                                        dialogReads(dialog)));
+        if (opened) {
+            o.insert(QStringLiteral("opened"), tr("“%1”, which waits for an answer: set_dialog answers it")
+                                                   .arg(dialog->windowTitle().isEmpty() ? QString::fromLatin1(dialog->metaObject()->className()) : dialog->windowTitle()));
+            o.insert(QStringLiteral("dialog"), dialogRead(dialog));
+        }
         if (run->keysSkipped) o.insert(QStringLiteral("keys"), tr("not sent: the click opened a dialog first"));
         if (!run->given && !opened && menu == nullptr) o.insert(QStringLiteral("note"), tr("Not all of it was given within 10 s."));
-        if (closed) o.insert(QStringLiteral("dialog"), tr("closed: it was answered"));
+        // (A dialog answered and another opened: 'dialog' the open one's.)
+        if (closed) o.insert(opened ? QStringLiteral("closed") : QStringLiteral("dialog"), tr("closed: it was answered"));
         if (const QString said = a_app->statusBar()->currentMessage(); !said.isEmpty()) o.insert(QStringLiteral("status bar"), said);
         QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                        {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))}}};

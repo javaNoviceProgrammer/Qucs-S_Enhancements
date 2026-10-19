@@ -219,10 +219,13 @@ private slots:
         }
         for (QucsDoc* d : app->allDocuments())
             if (auto* sch = dynamic_cast<Schematic*>(d)) QVERIFY(sch->a_DocComps.empty());
+        // (get_state says it - from inside any session, resumed too.)
+        const auto said = [this] { return structured(callTool("get_state")).value("tools in every turn").toString(); };
         QHash<QString, QJsonObject> every = loaded();
         QVERIFY(every.contains("get_state") && every.contains("close_document") && every.contains("new_document") && every.contains("list_actions"));
         QVERIFY(every.contains("connect") && every.contains("add_wire"));
         QVERIFY(!every.contains("fem_solve") && !every.contains("fem_model"));
+        QVERIFY2(said().contains("the wiring") && !said().contains("a model's"), qPrintable(said()));
 
         // A model open: its tools, whole; no wiring.
         const QJsonObject model = QJsonDocument::fromJson(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "mm",
@@ -242,11 +245,13 @@ private slots:
         }
         QVERIFY(!every.contains("connect") && !every.contains("add_wire") && every.contains("get_state"));
         QVERIFY(!every.contains("fem_export"));
+        QVERIFY2(said().contains("a model's (fem_*)") && !said().contains("the wiring"), qPrintable(said()));
         // A schematic with a part: the wiring too.
         QVERIFY(!callTool("new_document", {{"kind", "schematic"}}).value("isError").toBool());
         QVERIFY(!callTool("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}}).value("isError").toBool());
         every = loaded();
         QVERIFY(every.contains("connect") && every.contains("fem_solve"));
+        QVERIFY2(said().contains("a model's (fem_*), the wiring"), qPrintable(said()));
 
         // add_diagram's own options of a kind, folded: their names, the
         // whole in describe_tool, a call checked against it.
@@ -258,6 +263,18 @@ private slots:
                      && eye.value("description").toString().contains("mask (height, width)"),
                  qPrintable(QJsonDocument(eye).toJson()));
         QVERIFY(QJsonDocument(published).toJson(QJsonDocument::Compact).size() < 14000);
+        // (Each folded kind's first clause cut outside any bracket:
+        // smith_circles' "(null: ...)" was cut open - add_diagram's and
+        // edit_diagram's.)
+        for (const QJsonValue& v : request("tools/list").value("result").toObject().value("tools").toArray()) {
+            const QString name = v.toObject().value("name").toString();
+            if (name != "add_diagram" && name != "edit_diagram") continue;
+            const QJsonObject properties = v.toObject().value("inputSchema").toObject().value("properties").toObject();
+            for (auto it = properties.begin(); it != properties.end(); ++it) {
+                const QString d = it.value().toObject().value("description").toString();
+                if (d.contains("describe_tool")) QVERIFY2(d.count('(') == d.count(')') && d.count('[') == d.count(']'), qPrintable(name + ": " + d));
+            }
+        }
         const QJsonObject whole = structured(callTool("describe_tool", {{"name", "add_diagram"}}));
         QVERIFY(whole.value("inputSchema").toObject().value("properties").toObject().value("eye").toObject().value("properties").toObject().contains("span"));
         const QJsonObject wrong = callTool("add_diagram", {{"type", "eye"}, {"eye", QJsonObject{{"span", "wide"}}}});
@@ -427,10 +444,17 @@ private slots:
         callTool("close_document", {{"unsaved", "discard"}});
     }
 
+    // Structured where the answer is JSON - an object as it is, a list as
+    // its items - and an error as the error; a text answer not: Claude Code
+    // gives the model a result's structuredContent in place of its text, a
+    // text's {"summary"} its every quote and line break escaped (a netlist's
+    // \n, a dialog's \").
     void resultsAreStructured()
     {
         QJsonObject r = callTool("new_document", {{"kind", "schematic"}});
-        QVERIFY(structured(r).value("summary").toString().contains("new document"));
+        QVERIFY(!r.contains("structuredContent"));
+        QVERIFY(r.value("content").toArray().first().toObject().value("text").toString().contains("new document"));
+        QVERIFY(!qucs_s::mcp::isJsonAnswer(r));
         r = callTool("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}});
         QCOMPARE(structured(r).value("name").toString(), QStringLiteral("R1"));
         r = callTool("add_component", {{"type", "NoSuchType"}, {"x", 0}, {"y", 0}});
@@ -438,6 +462,11 @@ private slots:
         QVERIFY(structured(r).value("error").toString().contains("NoSuchType"));
         QCOMPARE(qucs_s::mcp::structuredOf(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "[1,2]"}}}}})
                      .value("items").toArray().size(), 2);
+        QVERIFY(qucs_s::mcp::isJsonAnswer(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "[1,2]"}}}}}));
+        // A schematic's text, its lines as they are, not escaped in a summary.
+        r = callTool("get_schematic", {{"format", "text"}});
+        QVERIFY2(!r.value("isError").toBool() && !r.contains("structuredContent"), qPrintable(QJsonDocument(r).toJson()));
+        QVERIFY(r.value("content").toArray().first().toObject().value("text").toString().contains("<Components>\n"));
         callTool("close_document", {{"unsaved", "discard"}});
     }
 
