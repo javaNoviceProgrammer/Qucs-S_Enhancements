@@ -21,6 +21,7 @@ set(FEM_SRCS
   fem_semiconductor.cpp
   fem_rays.cpp
   fem_quantum.cpp
+  fem_exciton.cpp
   fem_optics.cpp
   fem_line.cpp
   fem_pde.cpp
