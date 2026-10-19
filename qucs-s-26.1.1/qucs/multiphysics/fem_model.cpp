@@ -1327,7 +1327,9 @@ QList<NodeKind> makeKinds()
             "by a lattice temperature TL; recombination, impact ionization, band-to-band tunnelling, interface traps, light's "
             "pairs; the carriers' heat semi.H for a heat physics; a quantum wells physics' states for its carriers "
             "(Schrödinger-Poisson). Domains whose material has no band gap are insulators: the potential alone. Solved by "
-            "Newton's method from equilibrium, the contacts' voltages raised in steps (a sweep's next point from the last); at "
+            "Newton's method from equilibrium, the contacts' voltages raised in steps, each started on the line of the last two "
+            "solutions, longer after easy ones, halved where one fails (a sweep's next point from the last, on its last step's "
+            "line), each told as it goes; at "
             "rest, in time, or small-signal in a frequency step (the contacts' conductance and capacitance matrices; lit, a "
             "photodiode's response).")});
     add({QStringLiteral("semiconductor/model"), tr("Semiconductor Material Model"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
@@ -1552,6 +1554,13 @@ QList<NodeKind> makeKinds()
               flag(QStringLiteral("currents"), tr("In the carriers' continuity"), true,
                    tr("Its pairs in the equations - avalanche multiplication, an APD's gain, up to breakdown; off: the ionization "
                       "integrals alone (a breakdown voltage swept to, the currents as they are without it)")),
+              choice(QStringLiteral("driving"), tr("Driving field"), {QStringLiteral("field"), QStringLiteral("fermi"), QStringLiteral("current")},
+                     {tr("The electric field |E|"), tr("Each carrier's quasi-Fermi gradient |∇φn|, |∇φp|"), tr("The field along each current, E·J/|J|")},
+                     QStringLiteral("field"),
+                     tr("What α is of: the field; each carrier's quasi-Fermi gradient - the force that drives its current, as the "
+                        "field where it drifts, nought where drift and diffusion balance (a steep doping's own field at rest: a "
+                        "heavily doped contact layer's, a graded absorber's; the Lumerical grad phi); or the field along each "
+                        "carrier's current, nought against it (the Lumerical E dot J)")),
               shownIf(expr(QStringLiteral("an"), tr("Electrons' a"), perCm, QStringLiteral("7.03e5[1/cm]")), user),
               shownIf(expr(QStringLiteral("bn"), tr("Electrons' b"), fieldUnit, QStringLiteral("1.231e6[V/cm]")), user),
               shownIf(expr(QStringLiteral("ap"), tr("Holes' a"), perCm, QStringLiteral("1.582e6[1/cm]")), user),
@@ -1564,11 +1573,15 @@ QList<NodeKind> makeKinds()
               shownIf(expr(QStringLiteral("betan"), tr("Electrons' exponent β"), QString(), QStringLiteral("1")), user),
               shownIf(expr(QStringLiteral("betap"), tr("Holes' exponent β"), QString(), QStringLiteral("1")), user)},
              {}, {}, false, false, QStringLiteral("ii"),
-             tr("Carriers a field accelerates make pairs: G = (αn |Jn| + αp |Jp|)/q, α = a e^(-(b/E)^β) (Chynoweth's; silicon's "
-                "van Overstraeten and de Man's, its holes' two ranges about 400 kV/cm), E each triangle's field, Jn and Jp its "
-                "currents - avalanche multiplication, an APD's gain. The ionization integrals along the field line through the highest field, "
-                "semi.In and semi.Ip (electrons', holes': breakdown where they reach 1) and their multiplications semi.Mn, "
-                "semi.Mp, the field semi.Emax: a breakdown voltage found by sweeping toward it, its currents in or not.")});
+             tr("Carriers a field accelerates make pairs: G = (αn |Jn| + αp |Jp|)/q, α = a e^(-(b/F)^β) (Chynoweth's; silicon's "
+                "van Overstraeten and de Man's, its holes' two ranges about 400 kV/cm), F each triangle's driving field - the "
+                "field, each carrier's quasi-Fermi gradient or the field along its current -, Jn and Jp its currents: avalanche "
+                "multiplication, an APD's gain; where they are made, semi.Gion. The ionization integrals, the most of the field "
+                "lines' through where it ionizes, semi.In and semi.Ip (electrons', holes': breakdown where they reach 1 - by the "
+                "field, a field at rest ionizing off their lines can break down first), where, semi.xion and semi.yion, their "
+                "multiplications semi.Mn, semi.Mp, the field semi.Emax; from the equations themselves, its pairs' current "
+                "semi.Iion against those made otherwise, semi.Igen, and the multiplication of all of them, semi.Mion = 1 + "
+                "Iion/Igen: a breakdown voltage found by sweeping toward it, its currents in or not.")});
     }
     add({QStringLiteral("semiconductor/btbt"), tr("Band-to-Band Tunnelling"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,

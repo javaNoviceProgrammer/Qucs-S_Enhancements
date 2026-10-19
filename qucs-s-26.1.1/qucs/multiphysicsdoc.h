@@ -111,6 +111,10 @@ public:
     /// Every solution let go.
     void clearSolutions();
     bool isBusy() const { return a_job != nullptr; }
+    /// The job at work, how far: "61 % - Vc = -9.5 V (point 21 of 34):
+    /// Solving Stationary - collector at -9.31 V of -9.5 V (step 412,
+    /// 300 µV); Newton's step 6, its residual 2.1e-05" (empty: none).
+    QString jobProgress() const;
     /// While a job runs: whether it makes the mesh (Build Mesh, or a study
     /// whose mesh is old), and the study it computes (empty: none).
     bool meshBeingMade() const { return a_job && a_jobMeshes; }

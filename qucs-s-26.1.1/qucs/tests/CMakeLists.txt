@@ -104,8 +104,16 @@ set_tests_properties(test_fem_semiconductor PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_rays)
 qucs_add_fem_test(test_fem_quantum)
 # (697 s on a sanitized Debug build at home, its k·p bands' tests the most:
-# Eigen's complex solves unoptimized; each function under 130 s.)
+# Eigen's complex solves unoptimized; each function under 130 s. 1660 s by
+# 28dab4c, and past its 5400 s on CI's runners: its functions in two parts
+# since - each its own limit, the two at once -, its init() skipping the
+# other part's.)
 set_tests_properties(test_fem_quantum PROPERTIES TIMEOUT 1800)
+set_property(TEST test_fem_quantum APPEND PROPERTY ENVIRONMENT "QUCS_TEST_PART=1")
+add_test(NAME test_fem_quantum_2 COMMAND test_fem_quantum)
+set_tests_properties(test_fem_quantum_2 PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_TEST_PART=2"
+  TIMEOUT 1800)
 # (The 8x8's and wurtzite's of their own: under the sanitizers each some
 # minutes more than the quantum tests' room.)
 qucs_add_fem_test(test_fem_kp8)

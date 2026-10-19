@@ -867,10 +867,13 @@ void MultiphysicsDoc::compute(const QString& study)
         auto set = std::make_shared<SolutionSet>();
         set->solutions = job.run.solutions;
         set->swept = job.run.swept;
+        set->stopped = job.run.stopped;
         a_solutions[job.study] = set;
         a_stale[job.study] = false;
         for (const QString& line : job.run.log) say(line);
         if (set->solutions.size() > 1) say(tr("Swept %1: %2 solutions").arg(set->swept.join(QLatin1String(", "))).arg(set->solutions.size()));
+        // (Stopped before its last point: its points kept, said as an error.)
+        if (!set->stopped.isEmpty()) say(set->stopped, true);
         addDefaultPlots(job.study);
         evaluateAll(job.study);
         // Its first plot group shown.
@@ -928,6 +931,17 @@ bool MultiphysicsDoc::waitForJob(int ms)
     timeout.start(ms);
     while (a_job && timeout.isActive()) loop.exec();
     return !a_job;
+}
+
+QString MultiphysicsDoc::jobProgress() const
+{
+    if (!a_job) return QString();
+    QString stage;
+    {
+        std::lock_guard<std::mutex> lock(a_job->mutex);
+        stage = a_job->stage.isEmpty() ? a_job->what : a_job->stage;
+    }
+    return tr("%1 % - %2").arg(int(std::floor(100 * a_job->fraction.load()))).arg(stage);
 }
 
 void MultiphysicsDoc::cancelJob()

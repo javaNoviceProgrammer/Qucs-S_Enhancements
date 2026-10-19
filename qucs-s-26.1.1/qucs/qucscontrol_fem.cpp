@@ -728,12 +728,20 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
     if (doc->mesh() && !doc->meshStale())
         o.insert(QStringLiteral("mesh"), tr("%1 triangles, smallest angle %2°").arg(doc->mesh()->triangles.size()).arg(doc->mesh()->minAngle, 0, 'f', 1));
     QJsonArray studies;
-    for (const FNode* s : m.studies())
-        studies.append(QJsonObject{{QStringLiteral("tag"), s->tag},
-                                   {QStringLiteral("name"), s->name()},
-                                   {QStringLiteral("solved"), doc->solution(s->tag) != nullptr},
-                                   {QStringLiteral("changed since"), doc->solutionStale(s->tag)}});
+    for (const FNode* s : m.studies()) {
+        QJsonObject so{{QStringLiteral("tag"), s->tag},
+                       {QStringLiteral("name"), s->name()},
+                       {QStringLiteral("solved"), doc->solution(s->tag) != nullptr},
+                       {QStringLiteral("changed since"), doc->solutionStale(s->tag)}};
+        // (A sweep stopped before its last point: its points before kept.)
+        if (const std::shared_ptr<SolutionSet> set = doc->solutions(s->tag); set && !set->stopped.isEmpty())
+            so.insert(QStringLiteral("stopped"), set->stopped);
+        studies.append(so);
+    }
     o.insert(QStringLiteral("studies"), studies);
+    // (Building or solving: how far - the APD's review: "Solving Stationary"
+    // alone for 42 minutes.)
+    if (doc->isBusy()) o.insert(QStringLiteral("at work"), doc->jobProgress());
     if (!doc->lastError().isEmpty()) o.insert(QStringLiteral("last error"), doc->lastError());
     return jsonResult(o);
 }
@@ -1177,7 +1185,10 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
     doc->compute(study);
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(600), 1, 7200);
     if (!doc->waitForJob(timeout * 1000))
-        return errorResult(tr("Still solving after %1 s: it goes on (fem_describe says when it is solved; fem_stop stops it).").arg(timeout));
+        return errorResult(tr("Still solving after %1 s, %2: it goes on (fem_describe says how far, and when it is solved; fem_stop stops "
+                              "it, a sweep's points before kept).")
+                               .arg(timeout)
+                               .arg(doc->jobProgress()));
     if (!doc->lastError().isEmpty()) return errorResult(doc->lastError());
     const std::shared_ptr<SolutionSet> set = doc->solutions(study);
     if (!set || set->solutions.empty()) return errorResult(tr("It was not solved."));
@@ -1304,6 +1315,8 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
                                   {QStringLiteral("derived values"), derived},
                                   {QStringLiteral("shown"), doc->shownPlotGroup().isEmpty() ? QString() : doc->model().find(doc->shownPlotGroup())->name()}};
     for (auto it = extra.begin(); it != extra.end(); ++it) result.insert(it.key(), it.value());
+    // (A sweep stopped before its last point: its points before kept.)
+    if (!set->stopped.isEmpty()) result.insert(QStringLiteral("stopped"), set->stopped);
     // (A Newton's method that did not converge, a coupling that did not
     // agree: said here, not only in the log.)
     if (!doc->lastWarnings().isEmpty()) result.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(doc->lastWarnings()));
