@@ -1565,6 +1565,10 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
             define(p + QStringLiteral("H"), Dim::of(-1, 1, -3), tr("heat the carriers leave: their Joule heat, J·∇φ of each, and q R (φp - φn)"),
                    K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.joule + 1.602176634e-19 * s.R * (s.phip - s.phin); }));
             define(p + QStringLiteral("mup"), mobility, tr("hole mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mup; }));
+            // (Where an avalanche makes its pairs: the triangle's, as solved.)
+            define(p + QStringLiteral("Gion"), Dim::of(-3, 0, -1),
+                   tr("impact ionization's pairs per volume and time, (αn |Jn| + αp |Jp|)/q at the triangle's field"), K::Derived, f,
+                   semi([](const detail::SemiconductorState& s) { return s.Gion; }));
             coefficient(p + QStringLiteral("epsr"), Dim(), tr("relative permittivity"), f, QString());
             continue;
         }
@@ -2313,10 +2317,14 @@ bool setupStep(Step& st, QString* error)
 }
 
 /// The step's problems (their setup too: a semiconductor's way to its
-/// contacts' voltages) asked whether to stop, as its progress is.
+/// contacts' voltages) asked whether to stop, as its progress is - and
+/// telling how far they are within it, after the step's words.
 void cancelWith(Step& st, Telling& tell)
 {
-    for (auto& p : st.problems) p->setCancelled([&tell] { return tell.stopped(); });
+    for (auto& p : st.problems) {
+        p->setCancelled([&tell] { return tell.stopped(); });
+        p->setTold([&tell](const QString& w) { (void)tell.to(tell.fraction, w.isEmpty() ? tell.what : tell.what + QStringLiteral(" - ") + w); });
+    }
 }
 
 /// Whether the step's physics must be solved in turn till they agree:
@@ -3717,6 +3725,9 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
             f.values = g.values;
             f.terminals = g.terminals;
             f.line = g.line;
+            f.walkedFrom = g.walkedFrom;
+            f.walkedFromVolts = g.walkedFromVolts;
+            f.walkedStep = g.walkedStep;
             f.solved = true;
         }
     if (solution->axisymmetric()) {
@@ -4242,9 +4253,29 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     std::mutex told;
     QElapsedTimer wall;
     wall.start();
-    for (std::size_t batch = 0; batch < points.size() && atOnce > 1; batch += std::size_t(atOnce)) {
+    // A point that finds no solution - cancelled, Newton's method failed, its
+    // geometry or mesh not made -: after the first, the sweep stops there,
+    // its points before kept and where and why said (the Lumerical APD's
+    // review: a Cancel at -9.5 V lost the 20 points of 42 minutes before
+    // it). True: stopped so; false: the first, run.error.
+    auto stopAt = [&run, &points, sweep](std::size_t k, const QString& where, const QString& why) {
+        if (run.solutions.empty()) {
+            run.error = tr("%1: %2").arg(where, why);
+            return false;
+        }
+        run.stopped = tr("%1 stopped at %2 (point %3 of %4): %5 - its %6 points before kept")
+                          .arg(sweep->name(), where)
+                          .arg(k + 1)
+                          .arg(points.size())
+                          .arg(why)
+                          .arg(run.solutions.size());
+        run.error.clear();
+        return true;
+    };
+    for (std::size_t batch = 0; batch < points.size() && atOnce > 1 && run.stopped.isEmpty(); batch += std::size_t(atOnce)) {
         const std::size_t end = std::min(points.size(), batch + std::size_t(atOnce));
         std::vector<Ready> ready;
+        std::optional<std::tuple<std::size_t, QString, QString>> meshFailed;   // a point's mesh not made: where, why
         for (std::size_t k = batch; k < end; ++k) {
             QHash<QString, QString> overrides;
             QStringList label;
@@ -4272,8 +4303,10 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             });
             if (mentions(shaping, changed)) {
                 if (!meshOf(*r.ps, nullptr, meshing, &r.mesh)) {
-                    run.error = tr("%1: %2").arg(r.where, run.error);
-                    return run;
+                    // (The batch's points before it solved first.)
+                    meshFailed = {k, r.where, run.error};
+                    run.error.clear();
+                    break;
                 }
             } else {
                 if (!base && !meshOf(*parameters, topology, meshing, &base)) return run;
@@ -4289,9 +4322,9 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             pool.emplace_back([&model, &ready, &results, &progress, &told, study, i, batch, n = points.size()] {
                 const Ready& r = ready[i];
                 const double from = double(batch + i) / double(n), span = 1.0 / double(n);
-                const Progress tell([&progress, &told, &r, from, span](double f, const QString& w) {
+                const Progress tell([&progress, &told, &r, from, span, i, batch, n](double f, const QString& w) {
                     std::lock_guard<std::mutex> lock(told);
-                    return !progress || progress(from + span * f, QStringLiteral("%1: %2").arg(r.where, w));
+                    return !progress || progress(from + span * f, tr("%1 (point %2 of %3): %4").arg(r.where).arg(batch + i + 1).arg(n).arg(w));
                 });
                 results[i] = solveAdaptive(model, r.ps, r.mesh, study->tag, tell, nullptr);
             });
@@ -4301,13 +4334,17 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             for (const QString& w : r.warnings)
                 if (!run.warnings.contains(w)) run.warnings << w;
             if (!r.solution) {
-                run.error = tr("%1: %2").arg(ready[i].where, r.error);
+                if (stopAt(batch + i, ready[i].where, r.error)) break;
                 return run;
             }
             r.solution->label = ready[i].where;
             r.solution->sweptValues = ready[i].values;
             run.log << QStringLiteral("%1: %2").arg(ready[i].where, r.solution->log.join(QLatin1String("; ")));
             run.solutions.push_back(r.solution);
+        }
+        if (run.stopped.isEmpty() && meshFailed) {
+            const auto& [k, where, why] = *meshFailed;
+            if (!stopAt(k, where, why)) return run;
         }
     }
     if (atOnce > 1)
@@ -4337,15 +4374,19 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             if (!parameters->values.contains(it.key()) || parameters->values.value(it.key()) != it.value()) changed.insert(it.key());
         const double from = double(k) / double(points.size()), span = 1.0 / double(points.size());
         const QString where = label.join(QLatin1String(", "));
+        // (Its place among the points told: "Vc = -9.5 V: Solving
+        // Stationary" alone said nothing of the 21 done of 34 - the Lumerical
+        // APD's review.)
+        const QString told = tr("%1 (point %2 of %3)").arg(where).arg(k + 1).arg(points.size());
         auto sub = [&](double a, double b) {
             return Progress([&, a, b](double f, const QString& w) {
-                return !progress || progress(from + span * (a + (b - a) * f), QStringLiteral("%1: %2").arg(where, w));
+                return !progress || progress(from + span * (a + (b - a) * f), QStringLiteral("%1: %2").arg(told, w));
             });
         };
         std::shared_ptr<const Mesh> m;
         if (mentions(shaping, changed)) {
             if (!meshOf(*ps, nullptr, sub(0, 0.3), &m)) {
-                run.error = tr("%1: %2").arg(where, run.error);
+                if (stopAt(k, where, run.error)) break;
                 return run;
             }
         } else {
@@ -4358,7 +4399,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         for (const QString& w : r.warnings)
             if (!run.warnings.contains(w)) run.warnings << w;
         if (!r.solution) {
-            run.error = tr("%1: %2").arg(where, r.error);
+            if (stopAt(k, where, r.error)) break;
             return run;
         }
         previous = r.solution;

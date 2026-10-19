@@ -1227,6 +1227,11 @@ plot(r, r); somethingunknown;
         const QJsonObject ii = named(fs, QStringLiteral("label"), QStringLiteral("Si (Silicon): impact ionization"));
         QVERIFY(ii.value(QStringLiteral("an")).toString() == QLatin1String("703000[1/cm]") && ii.value(QStringLiteral("bp")).toString() == QLatin1String("2036000[V/cm]"));
         QVERIFY(ii.value(QStringLiteral("ap")).toString() == QLatin1String("1582000[1/cm]") && ii.value(QStringLiteral("betan")).toString() == QLatin1String("1"));
+        // (Its driving field not given: the field, as the Lumerical APD's
+        // results have it - said.)
+        QCOMPARE(ii.value(QStringLiteral("driving")).toString(), QStringLiteral("field"));
+        QVERIFY2(im.notes.join(QLatin1Char('\n')).contains(QLatin1String("impact ionization driven by the field |E| (the Lumerical driving field not given)")),
+                 qPrintable(im.notes.join(QLatin1Char('\n'))));
         const QJsonObject bt = named(fs, QStringLiteral("type"), QStringLiteral("btbt"));
         QVERIFY(bt.value(QStringLiteral("A")).toString() == QLatin1String("4e+14") && bt.value(QStringLiteral("B")).toString() == QLatin1String("19000000[V/cm]"));
         // The pyramid: its trapezoid where y = 0 cuts it.

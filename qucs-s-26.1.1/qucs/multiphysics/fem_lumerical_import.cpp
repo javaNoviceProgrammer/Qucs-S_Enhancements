@@ -1024,8 +1024,24 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
             ii.insert(QStringLiteral("b") + C + QStringLiteral("2"), b);
             ii.insert(QStringLiteral("beta") + C, num(param(key, QStringLiteral("beta"), 1)));
         }
+        // (Its driving field: the Lumerical impact ionization's grad phi
+        // (its Driving Field 1, inferred) as each carrier's quasi-Fermi
+        // gradient; its E dot J (0: the APD's, its bandwidth script's) as
+        // the field |E| - the APD so: its dark current 0.95 to 1.16 of the
+        // Lumerical one's from -4.5 to -9.5 V, its breakdown at -9.9 V
+        // (the Lumerical run's past -9.98 V); along each current, E·J/|J|,
+        // 0.35 to 0.7 of it and -10.5 V.)
+        const Value* dfn = model(QStringLiteral("impact n"));
+        const Value* df = dfn ? dfn->field(QStringLiteral("driving")) : nullptr;
+        const int code = df ? int(df->toNumber()) : 0;
+        const bool gradPhi = code == 1;
+        ii.insert(QStringLiteral("driving"), gradPhi ? QStringLiteral("fermi") : QStringLiteral("field"));
         out.features.append(ii);
-        out.notes << tr("%1: impact ionization driven by the field |E| (the Lumerical driving field not read)").arg(name);
+        out.notes << (gradPhi ? tr("%1: impact ionization driven by each carrier's quasi-Fermi gradient (the Lumerical grad phi)").arg(name)
+                              : tr("%1: impact ionization driven by the field |E| (the Lumerical driving field %2): the Lumerical APD's "
+                                   "dark current and breakdown are |E|'s here; along each carrier's current, E·J/|J|, is Impact "
+                                   "Ionization's Driving field too")
+                                    .arg(name, df ? tr("%1, E dot J").arg(code) : tr("not given")));
     }
     if (on(QStringLiteral("btbt")) && active(QStringLiteral("btbt")) == QLatin1String("Hurkx"))
         out.features.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("btbt")},

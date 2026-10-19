@@ -2917,7 +2917,7 @@ private slots:
         // point's solve), solved whole, then a copy asked to stop a tenth of
         // the way in - stopped in a fraction of the rest, said as cancelled
         // (not as a solution not found).
-        auto atOnce = [&](const QString& name) {
+        auto atOnce = [&](const QString& name, const QString& points = QStringLiteral("0, 54")) {
             const QString file = copyOf(QStringLiteral("avalanche_breakdown.qfem"));
             const QString to = path(name);
             QFile::remove(to);
@@ -2926,7 +2926,7 @@ private slots:
             f.open(QIODevice::ReadOnly);
             QString t = QString::fromUtf8(f.readAll());
             f.close();
-            t.replace(QStringLiteral("\"10, 20, 30, 40, 46, 48, 50, 51, 52, 53, 54\""), QStringLiteral("\"0, 54\""));
+            t.replace(QStringLiteral("\"10, 20, 30, 40, 46, 48, 50, 51, 52, 53, 54\""), QStringLiteral("\"%1\"").arg(points));
             t.replace(QStringLiteral("\"hmax\": \"0.05\""), slowBuild() ? QStringLiteral("\"hmax\": \"0.1\"") : QStringLiteral("\"hmax\": \"0.015\""));
             f.open(QIODevice::WriteOnly | QIODevice::Truncate);
             f.write(t.toUtf8());
@@ -2951,8 +2951,41 @@ private slots:
         const qint64 after = clock.elapsed();
         qInfo("at rest: solved whole in %lld ms; asked to stop a tenth of the way in, stopped %lld ms after", full, after);
         QVERIFY2(!failed(r) && json(r).value("stopped").toBool(), qPrintable(text(r)));
-        QVERIFY2(stopped->lastError().contains("cancelled") && !stopped->lastError().contains("no solution found"), qPrintable(stopped->lastError()));
+        // (Its first point kept, the sweep stopped at its second: said so,
+        // not an error - its points the study's - as cancelled, not as a
+        // solution not found.)
+        const std::shared_ptr<SolutionSet> kept = stopped->solutions({});
+        QVERIFY2(stopped->lastError().isEmpty() && kept && kept->solutions.size() == 1, qPrintable(stopped->lastError()));
+        QVERIFY2(kept->stopped.contains(QLatin1String("(point 2 of 2): ")) && kept->stopped.contains(QLatin1String("cancelled"))
+                     && !kept->stopped.contains(QLatin1String("no solution found")) && kept->stopped.contains(QLatin1String("its 1 points before kept")),
+                 qPrintable(kept->stopped));
         QVERIFY2(after < full / 3, qPrintable(QStringLiteral("%1 ms of %2").arg(after).arg(full)));
+        // How far, while it solves: fem_solve's "still solving" and
+        // fem_describe's "at work" say its point of the sweep, its contact's
+        // voltage and step, Newton's step and residual (the Lumerical APD's
+        // review: "Solving Stationary" alone for 42 minutes); stopped, its
+        // points before kept - fem_describe says where it stopped, fem_solve
+        // gives them.
+        MultiphysicsDoc* far = open(atOnce(QStringLiteral("at_once_far.qfem"), QStringLiteral("0, 10, 54")));
+        QVERIFY(far != nullptr);
+        r = call("fem_solve", {{"timeout", 1}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("Still solving after 1 s, ")) && text(r).contains(QLatin1String(" % - ")), qPrintable(text(r)));
+        QString atWork;
+        for (int k = 0; k < 600 && far->isBusy(); ++k) {
+            atWork = json(call("fem_describe")).value("at work").toString();
+            if (atWork.contains(QLatin1String("(point 3 of 3): ")) && atWork.contains(QLatin1String("Newton's step"))) break;
+            QTest::qWait(100);
+        }
+        QVERIFY2(atWork.contains(QLatin1String("(point 3 of 3): ")) && atWork.contains(QLatin1String(" of -54 V (step "))
+                     && atWork.contains(QLatin1String("Newton's step")) && atWork.contains(QLatin1String("its residual")),
+                 qPrintable(atWork));
+        r = call("fem_stop", {{"timeout", 600}});
+        QVERIFY2(!failed(r) && json(r).value("stopped").toBool(), qPrintable(text(r)));
+        QVERIFY2(text(r).contains(QLatin1String("its 2 points before kept")), qPrintable(text(r)));
+        QJsonArray studies = json(call("fem_describe")).value("studies").toArray();
+        QVERIFY2(!studies.isEmpty() && studies.at(0).toObject().value("stopped").toString().contains(QLatin1String("(point 3 of 3): cancelled")),
+                 qPrintable(QJsonDocument(studies).toJson()));
+        QVERIFY(json(call("fem_describe")).value("at work").isUndefined());
     }
 
     void claudesToolsShowTheWellsInEV()

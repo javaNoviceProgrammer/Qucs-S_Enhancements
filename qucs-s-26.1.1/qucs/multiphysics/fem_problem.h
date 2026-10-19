@@ -406,10 +406,19 @@ public:
     /// fem_stop) - a long setup or solve, a semiconductor's way to its
     /// contacts' voltages, looks between its steps.
     void setCancelled(std::function<bool()> asked) { a_cancelled = std::move(asked); }
+    /// Told how far it is within its step - a semiconductor's way to its
+    /// contacts' voltages: where it is, its step, Newton's residual -, shown
+    /// after the step's own words (the model tab's bar, fem_solve's "still
+    /// solving").
+    void setTold(std::function<void(const QString&)> tell) { a_told = std::move(tell); }
 
 protected:
     void problem(const QString& what) { a_problems << what; }
     bool cancelled() const { return a_cancelled && a_cancelled(); }
+    void told(const QString& what) const
+    {
+        if (a_told) a_told(what);
+    }
     /// \a text of property \a key of \a feature compiled in the point
     /// scope, what it reads noted; a field read where \a spatial is not, an
     /// error.
@@ -474,6 +483,7 @@ protected:
     QSet<int> a_reads;
     QStringList a_problems;
     std::function<bool()> a_cancelled;
+    std::function<void(const QString&)> a_told;
 };
 
 /// The problem of field \a field of \a solution (by its type).
@@ -500,6 +510,8 @@ struct SemiconductorState {
     double nB = NaN, pB = NaN;
     /// The carriers' Joule heat as solved, the triangle's (W/m³).
     double joule = 0;
+    /// Impact ionization's pairs as solved, the triangle's (1/(m³ s)).
+    double Gion = 0;
     /// Incomplete ionization's (0: the dopants all ionized): Nd⁺ = Nd/(1 +
     /// gd nB/n1d), Na⁻ = Na/(1 + ga pB/p1a) - filled by the Fermi level.
     double n1d = 0, gd = 0, p1a = 0, ga = 0;

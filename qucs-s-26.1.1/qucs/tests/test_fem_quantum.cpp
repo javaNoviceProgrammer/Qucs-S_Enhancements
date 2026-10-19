@@ -45,6 +45,26 @@ class TestFemQuantum : public QObject
     Q_OBJECT
 
 private slots:
+    // Its functions in two ctest entries on a sanitized build - each its own
+    // time limit, the two at once: QUCS_TEST_PART 1 those before
+    // aBoundContinuum, 2 it and those after, unset all (CI's at 28dab4c,
+    // all of them in one, past its 5400 s: 1660 s sanitized here, the two
+    // some 820 and 840).
+    void init()
+    {
+        const QByteArray part = qgetenv("QUCS_TEST_PART");
+        if (part.isEmpty()) return;
+        const QMetaObject* mo = metaObject();
+        int split = -1, here = -1;
+        for (int k = mo->methodOffset(); k < mo->methodCount(); ++k) {
+            const QByteArray name = mo->method(k).name();
+            if (name == "aBoundContinuum") split = k;
+            if (name == QTest::currentTestFunction()) here = k;
+        }
+        if (split < 0 || here < 0) return;
+        if ((part == "2") != (here >= split)) QSKIP("in the test's other part (QUCS_TEST_PART)");
+    }
+
     void anInfiniteWell()
     {
         // ψ = 0 at both ends of 10 nm: E_n = n² π² ħ²/(2 m L²), each carrier's.

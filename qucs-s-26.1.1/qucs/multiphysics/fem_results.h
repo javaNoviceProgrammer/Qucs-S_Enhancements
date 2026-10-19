@@ -217,6 +217,9 @@ CoupledLines coupledLines(const Solution& solution, const Node& node);
 struct SolutionSet {
     std::vector<std::shared_ptr<Solution>> solutions;
     QStringList swept;   ///< the parameters swept
+    /// A sweep stopped before its last point (cancelled, a point without a
+    /// solution): where and why, its points before kept; empty: whole.
+    QString stopped;
 };
 /// One solution of a set: its sweep point and its snapshot (-1: as it is).
 struct Instance {
