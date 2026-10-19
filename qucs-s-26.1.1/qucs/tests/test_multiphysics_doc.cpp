@@ -2794,7 +2794,9 @@ private slots:
     }
 
     // fem_describe what=format of a group: its kinds, the text's paragraphs
-    // that name them, no library; 'text' all or none.
+    // that name them, no library; 'text' all or none. Each kind's
+    // properties a line each, its fields said once ('properties as'): a
+    // group's kinds were two thirds JSON's names and marks.
     void claudesFormatOfAGroup()
     {
         QJsonObject r = call("fem_describe", {{"what", "format"}});
@@ -2813,6 +2815,15 @@ private slots:
         QStringList types;
         for (const QJsonValue& k : mf.value("kinds").toArray()) types << k.toObject().value("type").toString();
         QVERIFY2(types.contains("magnetic/coil") && !types.contains("rectangle"), qPrintable(types.join(", ")));
+        QVERIFY(mf.value("properties as").toString().startsWith("key: label [unit]"));
+        r = call("fem_describe", {{"what", "format"}, {"group", "semi"}});
+        QStringList lines;
+        for (const QJsonValue& k : json(r).value("kinds").toArray())
+            if (k.toObject().value("type").toString() == "semiconductor/model")
+                for (const QJsonValue& p : k.toObject().value("properties").toArray()) lines << p.toString();
+        QVERIFY2(lines.contains("Eg: Band gap Eg [eV] = 1.12[eV]; when source=user") && lines.contains("source: From = material; one of material, user")
+                     && lines.contains("selection: Selection (selection) = {\"all\":true}"),
+                 qPrintable(lines.join("\n")));
         // The derived values: the line's paragraph among them.
         r = call("fem_describe", {{"what", "format"}, {"group", "derived"}});
         QVERIFY2(json(r).value("format").toString().contains("lineparams"), qPrintable(text(r).left(300)));

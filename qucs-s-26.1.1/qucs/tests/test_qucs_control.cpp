@@ -656,7 +656,17 @@ private slots:
         });
         const QJsonObject triggered = call("trigger_action", {{"action", settings}}, 20000);
         QVERIFY2(!failed(triggered), qPrintable(text(triggered)));
-        QVERIFY2(text(triggered).contains("get_dialog"), qPrintable(text(triggered)));
+        // What it opened, and what that reads (its controls, or its buttons
+        // where they are many): set_dialog answers it at once.
+        QVERIFY2(text(triggered).contains("set_dialog") && text(triggered).contains("OK")
+                     && (text(triggered).contains("horizontal Grid", Qt::CaseInsensitive) || text(triggered).contains("Its buttons")),
+                 qPrintable(text(triggered)));
+        // An action not named as it is: the nearest said ("Help > About
+        // Qucs..." is Help > About Qucs-S), nothing done.
+        const QJsonObject misnamed = call("trigger_action", {{"action", "Help > About Qucs..."}});
+        QVERIFY(failed(misnamed));
+        QVERIFY2(text(misnamed).contains("Meant Help > About Qucs-S?"), qPrintable(text(misnamed)));
+        QVERIFY(text(call("trigger_action", {{"action", "Frobnicate the Flux"}})).contains("(list_actions lists them)"));
         QTRY_VERIFY_WITH_TIMEOUT(!answered.isEmpty(), 10000);
         QVERIFY(!seen.value("title").toString().isEmpty());
         bool grid = false;
@@ -665,6 +675,13 @@ private slots:
         QVERIFY2(grid, QJsonDocument(seen).toJson().constData());
         QVERIFY(failed(refused));
         QVERIFY2(text(refused).contains("waits for an answer"), qPrintable(text(refused)));
+        // What it reads, in the refusal - its controls, or its buttons where
+        // they are many: set_dialog answers it without get_dialog first.
+        QVERIFY2(text(refused).contains("set_dialog") && text(refused).contains("OK")
+                     && (text(refused).contains("horizontal Grid", Qt::CaseInsensitive) || text(refused).contains("Its buttons")),
+                 qPrintable(text(refused)));
+        // (Its buttons its push buttons: a check box is a control to set.)
+        QVERIFY2(!text(refused).contains("Its buttons") || !text(refused).contains("run script after simulation"), qPrintable(text(refused)));
         QVERIFY(failed(undone));
         QVERIFY(!failed(state));
         // The window, and the dialog over it: a picture each.
