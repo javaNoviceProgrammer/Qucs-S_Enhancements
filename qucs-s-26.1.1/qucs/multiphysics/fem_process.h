@@ -40,7 +40,51 @@ struct ProcessRegion {
     double area() const;
 };
 
-struct ProcessDopants;
+/*!
+ * A process flow's dopants, on a grid over its window: cells between the
+ * edges xe (in x) and ye (in y), the geometry's unit; each cell's material
+ * (an index into materials; -1 air). Each field's values by cell, x
+ * fastest: a species' concentration (m⁻³), all of it and its active part;
+ * the point defects' excess over their equilibrium ("I", "V", m⁻³); a III-V
+ * sublattice's share of an element ("x:In", "x:Ga", "x:As"... - an
+ * intermixed well's composition).
+ */
+struct ProcessDopants {
+    std::vector<double> xe, ye;
+    QStringList materials;
+    /// By material: what it is as a host - 4 a group IV semiconductor
+    /// (silicon, germanium, SiGe), 35 a III-V, 26 a II-VI, 0 anything else.
+    std::vector<int> hosts;
+    std::vector<int> material;
+    struct Field {
+        QString name;
+        std::vector<double> total, active;
+    };
+    std::vector<Field> fields;
+    int nx() const { return int(xe.size()) - 1; }
+    int ny() const { return int(ye.size()) - 1; }
+    std::size_t index(int i, int j) const { return std::size_t(j) * std::size_t(nx()) + std::size_t(i); }
+    /// The cell holding (x, y), its column and row; false outside the grid.
+    bool cellAt(double x, double y, int* i, int* j) const;
+    const Field* field(const QString& name) const;
+    Field* field(const QString& name);
+    /// The fields of species (not "I", "V", nor compositions).
+    std::vector<const Field*> species() const;
+    /// A field's value at (x, y) as material \a m has it: bilinear among its
+    /// cells there (the nearest of them, at an interface); NaN where there
+    /// are none near.
+    double at(const Field& f, double x, double y, int m, bool active = true) const;
+    /// The active donors and acceptors at (x, y) in material \a m (m⁻³):
+    /// each species by what it is in that host (boron an acceptor in
+    /// silicon, zinc in InP...).
+    void carriers(double x, double y, int m, double* donors, double* acceptors) const;
+    /// The material holding (x, y) as the grid has it (-1: air).
+    int materialAt(double x, double y) const;
+};
+
+/// What a species is in a host (ProcessDopants::hosts): +1 a donor, -1 an
+/// acceptor, 0 neither (an isolation implant's H, He, Fe...).
+int dopantCharge(const QString& species, int host);
 
 /// A process flow's state after a step: its regions, its window (x0 to
 /// x1, the substrate's bottom at y = bottom), its dopants (null before a

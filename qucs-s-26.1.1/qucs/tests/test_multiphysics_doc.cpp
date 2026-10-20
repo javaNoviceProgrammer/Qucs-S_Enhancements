@@ -1400,6 +1400,87 @@ private slots:
     // by the .lyp's names too -, shown there alone with the cut; its cut
     // along another ruler; a shape picked in the layout naming the steps it
     // is the mask of; its regions' materials made.
+    // A flow's dopants through Claude's tools and the panel: boron
+    // implanted into n-type silicon and driven in - fem_build to the implant
+    // says its moments; fem_evaluate at the anneal its column's junction,
+    // sheet resistance and dose kept (the dose to 1e-3: no loss at an inert
+    // surface); fem_plot its net doping as a colour map and its profile down
+    // the middle on a log axis, a measured SIMS CSV beside it; the panel's
+    // buttons on a step make the same.
+    void aFlowsDopantsThroughTheTools()
+    {
+        const QString file = path(QStringLiteral("flow_dopants.qfem"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+              "geometry": [{"type": "process", "tag": "pf1", "width": "2", "dx": "100[nm]", "dy": "4[nm]", "depth": "1", "features": [
+                  {"type": "substrate", "tag": "sub", "label": "si", "material": "Silicon", "thickness": "2", "dopant": "P", "concentration": "1e15"},
+                  {"type": "implant", "tag": "imp", "label": "Boron", "species": "B", "energy": "40", "dose": "1e15"},
+                  {"type": "diffuse", "tag": "anl", "label": "Drive-in", "temperature": "1000[degC]", "time": "10[min]"}]},
+                {"type": "form union", "tag": "fin"}],
+              "materials": [{"material": "Silicon", "selection": {"all": true}}],
+              "mesh": {"size": "normal", "custom": true, "hmax": "0.1"}}]})");
+        }
+        {
+            QFile csv(path(QStringLiteral("flow_sims.csv")));
+            QVERIFY(csv.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            csv.write("depth,B\n0,1e20\n1e-7,5e19\n2e-7,1e19\n3e-7,1e18\n4e-7,1e17\n");
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QJsonObject r = call("fem_build", {{"until", "imp"}});
+        QVERIFY2(!failed(r) && text(r).contains(QLatin1String("Rp 0.145")) && text(r).contains(QLatin1String("Plummer")), qPrintable(text(r)));
+        r = call("fem_evaluate", {{"step", "Drive-in"}, {"expression", "pf1.xj; pf1.Rs; pf1.dose_B; pf1.tox"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonArray values = json(r).value("values").toArray();
+        auto valueOf = [&](const char* name) {
+            for (const QJsonValue& v : values)
+                if (v.toObject().value("name").toString() == QLatin1String(name)) return v.toObject().value("SI").toDouble(NAN);
+            return double(NAN);
+        };
+        const double xj = valueOf("pf1.xj"), rs = valueOf("pf1.Rs"), dose = valueOf("pf1.dose_B");
+        QVERIFY2(xj > 0.3e-6 && xj < 1.2e-6 && rs > 20 && rs < 500 && std::abs(dose / 1e19 - 1) < 1e-3 && valueOf("pf1.tox") == 0, qPrintable(text(r)));
+        // The net doping changes sign there: acceptors 10 nm above, donors
+        // 10 nm below.
+        r = call("fem_evaluate", {{"step", "anl"}, {"expression", "pf1.net"}, {"at", QJsonArray{QJsonArray{1.0, -xj * 1e6 + 0.01}, QJsonArray{1.0, -xj * 1e6 - 0.01}}}});
+        QVERIFY2(!failed(r) && json(r).value("values").toArray().at(0).toObject().value("SI").toDouble() < 0
+                     && json(r).value("values").toArray().at(1).toObject().value("SI").toDouble() > 0,
+                 qPrintable(text(r)));
+        // At another x, the same (the implant is uniform across).
+        r = call("fem_evaluate", {{"step", "anl"}, {"x", 0.3}, {"expression", "pf1.xj; pf1.x"}});
+        QVERIFY2(!failed(r) && std::abs(json(r).value("values").toArray().at(0).toObject().value("SI").toDouble() / xj - 1) < 1e-6
+                     && std::abs(json(r).value("values").toArray().at(1).toObject().value("SI").toDouble() / 0.3e-6 - 1) < 1e-9,
+                 qPrintable(text(r)));
+        r = call("fem_evaluate", {{"step", "nothing"}, {"expression", "pf1.xj"}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("Drive-in (anl)")), qPrintable(text(r)));
+        // Points: boron near its peak, its net there negative (an acceptor).
+        QJsonArray nearPeak;
+        nearPeak.append(QJsonArray{1.0, -0.15});
+        r = call("fem_evaluate", {{"step", "anl"}, {"expression", "pf1.net"}, {"at", nearPeak}});
+        QVERIFY2(!failed(r) && json(r).value("values").toArray().at(0).toObject().value("SI").toDouble() < -1e24, qPrintable(text(r)));
+        // A colour map, a profile with the measured one.
+        r = call("fem_plot", {{"step", "anl"}});
+        QVERIFY2(!failed(r) && json(r).value("shown").toString().contains(QLatin1String("pf1.net")), qPrintable(text(r)));
+        r = call("fem_plot", {{"step", "anl"}, {"sims", true}, {"active", true}, {"measured", path(QStringLiteral("flow_sims.csv"))}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject o = json(r);
+        QVERIFY2(o.value("graphs").toArray().size() == 4 && o.value("measured").toObject().value("traces").toArray().size() == 1, qPrintable(text(r)));
+        QVERIFY(QFileInfo::exists(o.value("dataset").toString()));
+        // (Its diagram's y axis logarithmic, SIMS's form.)
+        auto* shown = qobject_cast<Schematic*>(app->DocumentTab->currentWidget());
+        QVERIFY(shown != nullptr && !shown->a_DocDiags.empty() && shown->a_DocDiags.front()->yAxis.log);
+        // The panel's buttons on the implant: a map and a profile made.
+        app->DocumentTab->setCurrentWidget(doc);
+        panel()->selectNode(QStringLiteral("imp"));
+        const int before = int(doc->model().results().children.size());
+        QTRY_VERIFY(panel()->findChild<QPushButton*>(QStringLiteral("mpPlotDopants")) != nullptr);
+        panel()->findChild<QPushButton*>(QStringLiteral("mpPlotDopants"))->click();
+        QTRY_COMPARE(int(doc->model().results().children.size()), before + 1);
+        panel()->findChild<QPushButton*>(QStringLiteral("mpDopantProfile"))->click();
+        QTRY_COMPARE(int(doc->model().results().children.size()), before + 3);   // (its cut line and its group)
+    }
+
     void aLayoutsProcessFlow()
     {
         const QString gds = copyOf("thermo_optic_heater.gds");

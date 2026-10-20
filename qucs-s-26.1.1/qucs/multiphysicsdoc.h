@@ -27,6 +27,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 
 class LayoutDoc;
 class QComboBox;
@@ -101,6 +102,25 @@ public:
     /// Every solution of study \a study: each point of its sweep (each with
     /// its output times), or null.
     std::shared_ptr<qucs_s::fem::SolutionSet> solutions(const QString& study = {}) const;
+    /// A process flow's step (or a flow: its last step) as a solution set to
+    /// plot and evaluate - its dopants' variables, the values derived down
+    /// its column at \a x (the window's middle by default) - made when
+    /// first asked, kept until the model changes; null, and why. A step's
+    /// tag given as a study is this.
+    std::shared_ptr<qucs_s::fem::SolutionSet> processSolutions(const QString& tag, std::optional<double> x = {}, QString* error = nullptr) const;
+    /// A process flow's step's state as a plot group made (one step of
+    /// Undo): a colour map of \a expression (its net doping when empty), or
+    /// with \a profile its species down x (\a species, all when empty; \a
+    /// active their active parts too) from the top \a depth down on a log
+    /// axis - SIMS's form. The group's tag, or empty and why.
+    struct ProcessPlot {
+        bool profile = false;
+        QString expression, title, unit, colors;
+        std::optional<double> x, depth;
+        QStringList species;
+        bool active = false;
+    };
+    QString makeProcessPlot(const QString& tag, const ProcessPlot& plot, QString* error = nullptr);
     /// Whether the model changed since \a study was solved.
     bool solutionStale(const QString& study = {}) const;
     /// When \a study was last solved (invalid: not since it was opened).
@@ -259,6 +279,7 @@ private:
     std::shared_ptr<const qucs_s::fem::Mesh> a_mesh;
     bool a_meshStale = true;
     std::map<QString, std::shared_ptr<qucs_s::fem::SolutionSet>> a_solutions;
+    mutable std::map<QString, std::shared_ptr<qucs_s::fem::SolutionSet>> a_processSolutions;
     QString a_instanceLabel;
     QFileSystemWatcher* a_watcher = nullptr;
     std::map<QString, bool> a_stale;

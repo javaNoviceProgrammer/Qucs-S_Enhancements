@@ -11,6 +11,7 @@
 #include "multiphysicsdoc.h"
 #include "fem_import.h"
 #include "fem_materials.h"
+#include "fem_process_results.h"
 #include "layout.h"
 #include "layoutdoc.h"
 
@@ -258,6 +259,7 @@ MultiphysicsDoc::MultiphysicsDoc(QucsApp* app, const QString& name) : QFrame(), 
     connect(a_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString& path) {
         if (QFileInfo::exists(path) && !a_watcher->files().contains(path)) a_watcher->addPath(path);   // (written anew)
         say(tr("%1 changed: the geometry is built again").arg(QFileInfo(path).fileName()));
+        a_processSolutions.clear();
         a_geometryStale = true;
         a_meshStale = true;
         for (auto& [tag, stale] : a_stale) stale = true;
@@ -638,6 +640,7 @@ void MultiphysicsDoc::applyModel(const Model& model, bool read)
 
 void MultiphysicsDoc::invalidate(const Model& before, const Model& after)
 {
+    a_processSolutions.clear();
     const Sections a = sections(before), b = sections(after);
     const bool geometry = a.parameters != b.parameters || a.geometry != b.geometry;
     const bool mesh = geometry || a.mesh != b.mesh;
@@ -923,7 +926,100 @@ std::shared_ptr<Solution> MultiphysicsDoc::solution(const QString& study) const
 std::shared_ptr<SolutionSet> MultiphysicsDoc::solutions(const QString& study) const
 {
     auto it = a_solutions.find(studyTag(study));
-    return it == a_solutions.end() ? nullptr : it->second;
+    if (it != a_solutions.end()) return it->second;
+    // (A process flow's step: its state as a solution.)
+    if (!study.isEmpty() && qucs_s::fem::processFlowOf(a_model, study)) return processSolutions(study);
+    return nullptr;
+}
+
+QString MultiphysicsDoc::makeProcessPlot(const QString& tag, const ProcessPlot& plot, QString* error)
+{
+    auto fail = [&](const QString& why) {
+        if (error) *error = why;
+        return QString();
+    };
+    QString why;
+    const std::shared_ptr<SolutionSet> set = processSolutions(tag, plot.x, &why);
+    if (!set) return fail(why);
+    const Solution& sol = *set->solutions.front();
+    const Node* flow = qucs_s::fem::processFlowOf(a_model, tag);
+    const QString stepName = a_model.find(tag)->name();
+    Model m = a_model;
+    if (!plot.profile) {
+        Node g = m.make(QStringLiteral("plotgroup"));
+        const QString expression = plot.expression.isEmpty() ? flow->tag + QStringLiteral(".net") : plot.expression;
+        g.label = plot.title.isEmpty() ? tr("%1 after %2").arg(expression, stepName) : plot.title;
+        g.props.insert(QStringLiteral("study"), tag);
+        Node sfc = m.make(QStringLiteral("surface"));
+        sfc.tag += QStringLiteral("_") + g.tag;
+        sfc.props.insert(QStringLiteral("expression"), expression);
+        sfc.props.insert(QStringLiteral("unit"), plot.unit.isEmpty() ? QStringLiteral("1/cm^3") : plot.unit);
+        sfc.props.insert(QStringLiteral("colors"), plot.colors.isEmpty() ? QStringLiteral("coolwarm") : plot.colors);
+        g.children.push_back(sfc);
+        Node* added = m.add(m.results().tag, g);
+        if (!added) return fail(tr("the plot group could not be added"));
+        const QString gtag = added->tag;
+        setModel(m, tr("Add %1").arg(g.label));
+        return gtag;
+    }
+    // Down x from the top: each species', all of it (and active).
+    const double unit = sol.mesh().unitScale;
+    const double x = plot.x ? *plot.x : sol.global(flow->tag + QStringLiteral(".x")).value_or(0) / unit;
+    const QRectF b = sol.topology().bounds;
+    const double top = b.y() + b.height();
+    const double depth = plot.depth ? *plot.depth : std::min(b.height(), 1e-6 / unit);
+    QStringList species = plot.species;
+    if (species.isEmpty())
+        for (const qucs_s::fem::Variable& v : sol.variables())
+            if (v.name.startsWith(flow->tag + QLatin1Char('.')) && v.description.endsWith(QLatin1String(", all of it")))
+                species << v.name.mid(flow->tag.size() + 1);
+    if (species.isEmpty()) return fail(tr("%1 leaves no dopants to plot").arg(stepName));
+    Node cl = m.make(QStringLiteral("cutline"));
+    cl.label = tr("Down x = %1").arg(qucs_s::fem::formatNumber(x, 4));
+    cl.props.insert(QStringLiteral("start"), QJsonArray{qucs_s::fem::formatNumber(x, 12), qucs_s::fem::formatNumber(top, 12)});
+    cl.props.insert(QStringLiteral("end"), QJsonArray{qucs_s::fem::formatNumber(x, 12), qucs_s::fem::formatNumber(top - depth, 12)});
+    cl.props.insert(QStringLiteral("points"), 400);
+    Node* clAdded = m.add(m.results().tag, cl);
+    if (!clAdded) return fail(tr("the cut line could not be added"));
+    const QString clTag = clAdded->tag;
+    Node g = m.make(QStringLiteral("plotgroup1d"));
+    g.label = plot.title.isEmpty() ? tr("Profile after %1").arg(stepName) : plot.title;
+    g.props.insert(QStringLiteral("study"), tag);
+    g.props.insert(QStringLiteral("ylog"), true);
+    for (const QString& sp : species)
+        for (int a = 0; a < (plot.active ? 2 : 1); ++a) {
+            Node lg = m.make(QStringLiteral("linegraph"));
+            lg.tag += QStringLiteral("_") + g.tag + QString::number(g.children.size());
+            lg.props.insert(QStringLiteral("data"), clTag);
+            lg.props.insert(QStringLiteral("expression"), flow->tag + QLatin1Char('.') + sp + (a == 1 ? QStringLiteral("_a") : QString()));
+            lg.props.insert(QStringLiteral("unit"), QStringLiteral("1/cm^3"));
+            lg.props.insert(QStringLiteral("xaxis"), QStringLiteral("arc"));
+            g.children.push_back(lg);
+        }
+    Node* added = m.add(m.results().tag, g);
+    if (!added) return fail(tr("the plot group could not be added"));
+    const QString gtag = added->tag;
+    setModel(m, tr("Add %1").arg(g.label));
+    return gtag;
+}
+
+std::shared_ptr<SolutionSet> MultiphysicsDoc::processSolutions(const QString& tag, std::optional<double> x, QString* error) const
+{
+    // (One for each step, its column's values found again at each x asked.)
+    if (auto it = a_processSolutions.find(tag); it != a_processSolutions.end()) {
+        qucs_s::fem::setProcessColumn(*it->second->solutions.front(), x);
+        return it->second;
+    }
+    QString why;
+    const std::shared_ptr<Solution> s = qucs_s::fem::processSolution(a_model, parameters(), tag, x, &why);
+    if (!s) {
+        if (error) *error = why;
+        return nullptr;
+    }
+    auto set = std::make_shared<SolutionSet>();
+    set->solutions.push_back(s);
+    a_processSolutions[tag] = set;
+    return set;
 }
 
 bool MultiphysicsDoc::solutionStale(const QString& study) const
@@ -2144,7 +2240,8 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                                                    {QStringLiteral("title"), title},
                                                                    {QStringLiteral("replace"), true},
                                                                    {QStringLiteral("ylabel"), rect && anyUnit ? axisWords.join(QLatin1String(", ")) : QString()},
-                                                                   {QStringLiteral("xlabel"), rect ? xWords : QString()}},
+                                                                   {QStringLiteral("xlabel"), rect ? xWords : QString()},
+                                                                   {QStringLiteral("ylog"), rect && g->flag(QStringLiteral("ylog"))}},
                                                        &gone);
         if (!shown.isEmpty()) return fail(shown);
         if (!gone.isEmpty()) say(tr("%1: its display's diagrams of traces its dataset no longer has removed: %2").arg(g->name(), gone.join(QLatin1String("; "))));

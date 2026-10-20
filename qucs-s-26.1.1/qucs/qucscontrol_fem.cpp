@@ -17,6 +17,7 @@
 #include "fem_lumerical.h"
 #include "fem_material_plot.h"
 #include "fem_materials.h"
+#include "fem_process_results.h"
 #include "main.h"
 #include "misc.h"
 #include "multiphysicsdoc.h"
@@ -121,6 +122,27 @@ QJsonObject topologyJson(const Topology& t, int most)
 /// A node's parent named as Claude names it: its tag, or a part of the
 /// tree by its kind ("geometry", "materials", "mesh", "results",
 /// "derived", "definitions", "selections", "component", "model").
+/// A process flow's step (or a flow) by its tag or its name; empty, and
+/// why (the steps there are).
+QString processStepTag(const Model& m, const QString& text, QString* why)
+{
+    const QString t = text.trimmed();
+    if (const FNode* n = m.find(t); n && (n->type == QLatin1String("process") || n->type.startsWith(QLatin1String("process/")))) return n->tag;
+    QStringList steps;
+    for (const FNode& f : m.geometry().children) {
+        if (f.type != QLatin1String("process")) continue;
+        if (f.name().compare(t, Qt::CaseInsensitive) == 0) return f.tag;
+        steps << QStringLiteral("%1 (%2)").arg(f.name(), f.tag);
+        for (const FNode& st : f.children) {
+            if (st.name().compare(t, Qt::CaseInsensitive) == 0) return st.tag;
+            steps << QStringLiteral("%1 (%2)").arg(st.name(), st.tag);
+        }
+    }
+    *why = steps.isEmpty() ? QCoreApplication::translate("QucsControl", "The model has no process flow.")
+                           : QCoreApplication::translate("QucsControl", "%1 is no process flow, nor a step of one: %2").arg(t, steps.join(QStringLiteral(", ")));
+    return {};
+}
+
 FNode* parentNamed(Model& m, const QString& name)
 {
     if (FNode* n = m.find(name)) return n;
@@ -192,7 +214,23 @@ QString formatText()
         "\"strip\" (\"material\", where exposed), \"epitaxy\" (\"selective\": on crystal alone), \"fill\" (\"height\" or "
         "\"thickness\"); a step's mask: \"mask\": layer (\"layer\" 1/0, \"polarity\" drawn or undrawn) or openings "
         "(\"openings\": \"1, 2; 4, 5\"), with \"bias\" and \"resist\". Each step's region an object named as its step (its label, "
-        "else its tag; a stack's by its rows); fem_build \"until\" a step shows the structure as it leaves it. "
+        "else its tag; a stack's by its rows); fem_build \"until\" a step shows the structure as it leaves it. Its dopants (on a "
+        "grid of the flow's \"dy\", \"dx\", \"depth\"): a substrate, a stack's row ([name, material, thickness, dopant, "
+        "concentration]), a deposit or epitaxy doped as made (\"dopant\", \"concentration\" cm⁻³); \"implant\" (\"species\" B, P, "
+        "As, BF2, Zn..., \"energy\" keV, \"dose\" cm⁻², \"tilt\" degrees, \"profile\" pearson, gaussian or dual with "
+        "\"channel\" [material, fraction, Rp, ΔRp, γ, β], \"moments\" [material, Rp, ΔRp, γ, β, lateral] over those found - B, P, "
+        "As in silicon a table's, the rest transport theory -, a mask and its resist; its report the moments, where the ions "
+        "stopped, the amorphous depth); \"diffuse\" (\"temperature\" and \"time\", or \"recipe\" [time, temperature] rows; "
+        "\"model\" fermi, constant or defects (+1 interstitials, TED); \"source\" and \"surface\" a predeposition; "
+        "\"parameters\" [species, material, D0|Ea|Dm0|Em|Dmm0|Emm|Dp0|Ep|Dsq0|Esq|Cref|Css0|Ecss|tau0|Etau|loss|fI|m:<material>|"
+        "h:<material>, value]); \"oxidize\" (\"ambient\" dry or wet, \"rates\" massoud or dealgrove, \"pressure\", \"factor\", a "
+        "mask, \"beak\", \"B\" and \"BA\" given - the oxide a region named as the step, 0.44 of it silicon, its dopants swept); "
+        "\"intermix\" (a III-V stack's sublattices: \"diii\", \"eiii\", \"dv\", \"ev\" at \"tref\"; masked, \"enhance\" where "
+        "open). A semiconductor's doping \"profile\": \"process\" takes them (\"species\" a list, else all); a quantum wells "
+        "physics an intermixed well's bands. fem_plot with \"step\" plots a step's state (pf1.net by default; pf1.B, pf1.B_a "
+        "active, pf1.Nd, pf1.Na, pf1.I, pf1.x_In, the flow's tag their prefix), with \"sims\" its profile down x on a log axis "
+        "(\"measured\": a SIMS CSV with it); fem_evaluate with \"step\" (and \"x\") its values there and down its column: pf1.xj, "
+        "pf1.Rs, pf1.tox, pf1.dose_B. "
         "A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
         "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step - "
         "n_eff = β/k0 (epsilon_eff its square) and epsilon_eff_qs = C/C0; coupled lines: \"terminal\": \"1, 2\" and as many "
@@ -1418,7 +1456,20 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     };
     std::shared_ptr<SolutionSet> set = doc->solutions(study);
     QString usedStudy;
-    if (study.trimmed().isEmpty())
+    // A process flow's step: its state - its dopants, the values derived
+    // down its column at 'x'.
+    const QString stepArg = args.value(QLatin1String("step")).toString().trimmed();
+    if (!stepArg.isEmpty()) {
+        QString why;
+        const QString tag = processStepTag(doc->model(), stepArg, &why);
+        if (tag.isEmpty()) return errorResult(why);
+        std::optional<double> x;
+        if (args.contains(QLatin1String("x"))) x = args.value(QLatin1String("x")).toDouble();
+        set = doc->processSolutions(tag, x, &why);
+        if (!set) return errorResult(why);
+        usedStudy = tag;
+    }
+    if (study.trimmed().isEmpty() && stepArg.isEmpty())
         for (const QString& part : args.value(QLatin1String("expression")).toString().split(QLatin1Char(';')))
             if (const FNode* n = derivedOf(namedExpression(part).expression); n != nullptr && !n->text(QStringLiteral("study")).isEmpty()) {
                 if (const std::shared_ptr<SolutionSet> its = doc->solutions(n->text(QStringLiteral("study"))); its && !its->solutions.empty()) {
@@ -1427,7 +1478,7 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                 }
                 break;
             }
-    if ((!set || set->solutions.empty()) && study.trimmed().isEmpty())
+    if ((!set || set->solutions.empty()) && study.trimmed().isEmpty() && stepArg.isEmpty())
         // (No study given and the first not solved: the first that is.)
         for (const Node* st : doc->model().studies())
             if (const std::shared_ptr<SolutionSet> other = doc->solutions(st->tag); other && !other->solutions.empty()) {
@@ -1678,6 +1729,59 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
         return jsonResult(QJsonObject{{QStringLiteral("shown"), tr("the mesh (screenshot takes a picture)")}});
     }
     QString group = args.value(QLatin1String("plot")).toString();
+    // A process flow's step: its state plotted - a colour map (its net
+    // doping by default) or, with 'sims', its profile down x on a log axis,
+    // a measured one with it.
+    if (const QString stepArg = args.value(QLatin1String("step")).toString().trimmed(); !stepArg.isEmpty() && group.isEmpty()) {
+        QString why;
+        const QString tag = processStepTag(doc->model(), stepArg, &why);
+        if (tag.isEmpty()) return errorResult(why);
+        std::optional<double> at;
+        if (args.contains(QLatin1String("x"))) at = args.value(QLatin1String("x")).toDouble();
+        const std::shared_ptr<SolutionSet> set = doc->processSolutions(tag, at, &why);
+        if (!set) return errorResult(why);
+        MultiphysicsDoc::ProcessPlot plot;
+        plot.profile = args.value(QLatin1String("sims")).toBool();
+        plot.expression = args.value(QLatin1String("expression")).toString();
+        plot.title = args.value(QLatin1String("title")).toString();
+        plot.unit = args.value(QLatin1String("unit")).toString();
+        plot.colors = args.value(QLatin1String("colors")).toString();
+        plot.x = at;
+        if (args.contains(QLatin1String("depth"))) plot.depth = args.value(QLatin1String("depth")).toDouble();
+        for (const QString& sp : args.value(QLatin1String("species")).toString().split(QLatin1Char(','), Qt::SkipEmptyParts)) plot.species << sp.trimmed();
+        plot.active = args.value(QLatin1String("active")).toBool();
+        const QString made = doc->makeProcessPlot(tag, plot, &why);
+        if (made.isEmpty()) return errorResult(why);
+        if (plot.profile) {
+            QStringList removed;
+            const QString display = doc->showGraphs(made, &why, true, &removed);
+            if (display.isEmpty()) return errorResult(why);
+            const FNode* g = doc->model().find(made);
+            QJsonArray shown;
+            for (const FNode& lg : g->children) shown.append(lg.text(QStringLiteral("expression")));
+            QJsonObject o{{QStringLiteral("plot group"), made},
+                          {QStringLiteral("display"), QDir::toNativeSeparators(display)},
+                          {QStringLiteral("dataset"), QDir::toNativeSeparators(display.left(display.size() - 4) + QStringLiteral(".dat"))},
+                          {QStringLiteral("graphs"), shown}};
+            // A measured profile with it: imported beside the display, each
+            // of its columns a trace on its diagram.
+            if (const QString measured = args.value(QLatin1String("measured")).toString().trimmed(); !measured.isEmpty()) {
+                const QJsonObject imported = importData(QJsonObject{{QStringLiteral("file"), measured}, {QStringLiteral("path"), display}});
+                if (imported.value(QLatin1String("isError")).toBool()) return imported;
+                const QJsonObject info =
+                    QJsonDocument::fromJson(imported.value(QLatin1String("content")).toArray().at(0).toObject().value(QLatin1String("text")).toString().toUtf8()).object();
+                QJsonArray traces;
+                for (const QJsonValue& t : info.value(QLatin1String("traces")).toArray()) {
+                    const QJsonObject r = addTrace(QJsonObject{{QStringLiteral("path"), display}, {QStringLiteral("variable"), t.toString()}, {QStringLiteral("style"), QStringLiteral("circles")}});
+                    if (!r.value(QLatin1String("isError")).toBool()) traces.append(t);
+                }
+                o.insert(QStringLiteral("measured"), QJsonObject{{QStringLiteral("dataset"), info.value(QLatin1String("name"))}, {QStringLiteral("traces"), traces}});
+            }
+            o.insert(QStringLiteral("see it"), tr("the data display is in front: screenshot takes a picture; get_dataset reads it"));
+            return jsonResult(o);
+        }
+        group = made;
+    }
     if (group.isEmpty()) {
         // A plot group of the expression: added (one step of Undo).
         const QString expression = args.value(QLatin1String("expression")).toString();
