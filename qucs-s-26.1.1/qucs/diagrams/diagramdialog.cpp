@@ -319,7 +319,13 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
     PartBox = new QComboBox();
     PartBox->setObjectName(QStringLiteral("graphValuePart"));
     PartBox->addItems({tr("auto"), tr("magnitude"), tr("dB"), tr("phase (deg)"), tr("real part"), tr("imaginary part")});
-    PartBox->setToolTip(tr("What of each value the graph shows: auto is a complex value's magnitude, and a real one as it is"));
+    // (Last: hidden - kept, its part with it, not drawn; any part shows it again.)
+    if (Graph::hidingApplies(Diag->Name)) PartBox->addItem(tr("hide"));
+    PartBox->setToolTip(Graph::hidingApplies(Diag->Name)
+                            ? tr("What of each value the graph shows: auto is a complex value's magnitude, and a real one as it is. "
+                                 "hide: the graph kept but not drawn, nor in the legend or the axes' limits - choose what it shows "
+                                 "to show it again")
+                            : tr("What of each value the graph shows: auto is a complex value's magnitude, and a real one as it is"));
     Box2Layout->addWidget(PartBox);
     connect(PartBox, QOverload<int>::of(&QComboBox::activated), this, &DiagramDialog::slotSetValuePart);
   }
@@ -2096,7 +2102,7 @@ void DiagramDialog::slotTakeVar(QTableWidgetItem *Item) {
   GraphList->setRowCount(newRow + 1);
 
   Graph *g = new Graph(Diag, GraphInput->text());
-  if (PartBox != nullptr) g->valuePart = Graph::ValuePart(PartBox->currentIndex());
+  if (PartBox != nullptr && PartBox->currentIndex() != hideIndex()) g->valuePart = Graph::ValuePart(PartBox->currentIndex());
 
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
@@ -2200,7 +2206,7 @@ void DiagramDialog::SelectGraph(Graph *g) {
   updateXVar();
   if (PartBox) {
     const QSignalBlocker block(PartBox);
-    PartBox->setCurrentIndex(int(g->valuePart));
+    PartBox->setCurrentIndex(g->hidden && hideIndex() >= 0 ? hideIndex() : int(g->valuePart));
   }
 
   if (Diag->Name != "Tab") {
@@ -2359,7 +2365,7 @@ void DiagramDialog::slotNewGraph() {
   GraphList->setRowCount(newRow + 1);
 
   Graph *g = new Graph(Diag, qualified(GraphInput->text(), QString()));
-  if (PartBox != nullptr) g->valuePart = Graph::ValuePart(PartBox->currentIndex());
+  if (PartBox != nullptr && PartBox->currentIndex() != hideIndex()) g->valuePart = Graph::ValuePart(PartBox->currentIndex());
 
   if (Diag->Name != "Tab" && Diag->Name != "Truth") {
     g->Color = misc::getWidgetBackgroundColor(ColorButt);
@@ -3037,11 +3043,24 @@ void DiagramDialog::slotSetValuePart(int part) {
   const int i = GraphList->currentRow();
   if (i < 0)
     return;
-  Graphs.at(i)->valuePart = Graph::ValuePart(part);
-  Graphs.at(i)->lastLoaded = QDateTime();   // (read again for it)
+  Graph *g = Graphs.at(i).get();
+  // Hidden: its part kept; any part shows it again, as that.
+  if (part == hideIndex()) {
+    g->hidden = true;
+  } else {
+    g->hidden = false;
+    if (g->valuePart != Graph::ValuePart(part)) {
+      g->valuePart = Graph::ValuePart(part);
+      g->lastLoaded = QDateTime();   // (read again for it)
+    }
+  }
   updateGraphListItem(i);
   changed = true;
   toTake = false;
+}
+
+int DiagramDialog::hideIndex() const {
+  return PartBox != nullptr && Graph::hidingApplies(Diag->Name) ? int(Graph::ValuePart::Imaginary) + 1 : -1;
 }
 
 void DiagramDialog::slotSetPointMarker(int marker) {
@@ -3562,8 +3581,13 @@ void DiagramDialog::updateGraphListItem(int row) {
   {
     const QString problem = expressionProblem(g->Var);
     const bool expression = qucs_s::dataset::isExpression(traceFile(g->Var.trimmed()).second);
-    varItem->setForeground(problem.isEmpty() ? QBrush() : QBrush(Qt::red));
+    // (Hidden: in italics, faint.)
+    QFont font = varItem->font();
+    font.setItalic(g->hidden);
+    varItem->setFont(font);
+    varItem->setForeground(!problem.isEmpty() ? QBrush(Qt::red) : g->hidden ? GraphList->palette().brush(QPalette::Disabled, QPalette::Text) : QBrush());
     varItem->setToolTip(!problem.isEmpty() ? tr("Not evaluated: %1").arg(problem)
+                        : g->hidden ? tr("Hidden: not drawn - Shows sets what it shows, and shows it again")
                         : expression ? tr("An expression of the dataset's variables, evaluated at each of their samples")
                                      : QString());
   }

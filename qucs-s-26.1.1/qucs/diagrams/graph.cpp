@@ -134,17 +134,19 @@ QString Graph::save()
   // The part of the value shown a tenth (the two before it then written
   // too, as they are).
   // A stacked diagram's pane an eleventh (when not the top one); a ghost
-  // a twelfth.
-  const bool part = valuePart != ValuePart::Auto || pane > 0 || ghost;
+  // a twelfth; hidden a thirteenth.
+  const bool part = valuePart != ValuePart::Auto || pane > 0 || ghost || hidden;
   if (autoColor || pointMarker != PointMarker::None || part)
     s += autoColor ? " 1" : " 0";
   if (pointMarker != PointMarker::None || part)
     s += " " + QString::number(int(pointMarker));
   if (part)
     s += " " + QString::number(int(valuePart));
-  if (pane > 0 || ghost)
+  if (pane > 0 || ghost || hidden)
     s += " " + QString::number(pane);
-  if (ghost)
+  if (ghost || hidden)
+    s += ghost ? " 1" : " 0";
+  if (hidden)
     s += " 1";
   s += ">";
 
@@ -209,6 +211,7 @@ bool Graph::load(const QString& _s)
   const int inPane = n.toInt(&ok);
   pane = ok && inPane > 0 && inPane < 64 ? inPane : 0;
   ghost = s.section(' ',11,11) == QLatin1String("1");   // drawn dimmed, behind
+  hidden = s.section(' ',12,12) == QLatin1String("1");  // not drawn
 
   return true;
 }
@@ -323,6 +326,7 @@ Graph* Graph::sameNewOne()
   pg->valuePart = valuePart;
   pg->pane = pane;
   pg->ghost = ghost;
+  pg->hidden = hidden;
 
   for (Marker *pm : Markers)
     pg->Markers.append(pm->sameNewOne(pg));
@@ -347,6 +351,11 @@ const QList<QColor>& Graph::autoPalette()
       QColor(0xe3, 0x49, 0x48),   // red
   };
   return palette;
+}
+
+bool Graph::hidingApplies(const QString& diagramName)
+{
+  return diagramName == QLatin1String("Rect") || diagramName == QLatin1String("Stacked");
 }
 
 bool Graph::valuePartApplies(const QString& diagramName)

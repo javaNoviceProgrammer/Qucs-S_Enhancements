@@ -414,7 +414,7 @@ QStringList StackedDiagram::valuesAt(double x, int paneIndex, const QString& ove
 {
     QStringList lines;
     for (const Graph* g : Graphs) {
-        if (paneOf(g) != paneIndex || g->cPointsY == nullptr || g->axis(0) == nullptr) continue;
+        if (g->hidden || paneOf(g) != paneIndex || g->cPointsY == nullptr || g->axis(0) == nullptr) continue;
         if (!over.isEmpty() && g->axis(0)->Var != over) continue;
         const DataX* xs = g->axis(0);
         const double* xp = xs->Points;
@@ -472,7 +472,7 @@ void StackedDiagram::createAxisLabels()
         QStringList shown;
         for (Graph* g : Graphs) {
             const DataX* d = g->axis(0);
-            if (!d || shown.contains(d->Var)) continue;
+            if (!d || g->hidden || shown.contains(d->Var)) continue;
             shown << d->Var;
             y -= lineSpacing;
             const int w = metrics.boundingRect(d->Var).width() >> 1;
@@ -541,7 +541,7 @@ void StackedDiagram::createAxisLabels()
                 put(text, Qt::black, part);
             } else {
                 for (const Graph* g : Graphs) {
-                    if (paneOf(g) != i || (g->yAxisNo != 0) != right) continue;
+                    if (g->hidden || paneOf(g) != i || (g->yAxisNo != 0) != right) continue;
                     if (g->cPointsY) put(nameOf(g), g->colorsEachCurve() ? QColor(Qt::black) : g->Color,
                                          g->colorsEachCurve() ? part : Part::None);
                     else put(g->Var + INVALID_STR, g->Color, Part::None);
@@ -570,7 +570,7 @@ void StackedDiagram::paintInFront(QPainter* painter, const Colors& colors)
     QList<int> xs;
     for (const Graph* g : Graphs)
         for (const Marker* m : g->Markers)
-            if (m->cx > 0 && m->cx < x2 && !xs.contains(m->cx)) xs << m->cx;
+            if (!g->hidden && m->cx > 0 && m->cx < x2 && !xs.contains(m->cx)) xs << m->cx;
     if (xs.isEmpty()) return;
     painter->save();
     QPen pen(colors.of(Part::Frame), 0, Qt::DashLine);

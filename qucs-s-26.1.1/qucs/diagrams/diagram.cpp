@@ -151,7 +151,7 @@ void Diagram::paintDiagram(QPainter *painter) {
         if (paintsGraphs())
             for (const bool ghosts : {true, false})
                 for (Graph *pg: Graphs)
-                    if (pg->ghost == ghosts) pg->paint(painter);
+                    if (pg->ghost == ghosts && !pg->hidden) pg->paint(painter);
         paintLimits(painter);
     }
     painter->restore();  // to translated(cx, cy) with no negative y-scale
@@ -278,6 +278,7 @@ QList<LegendRow> legendRows(const QList<Graph*>& graphs)
     using Row = LegendRow;
     QList<Row> rows;
     for (Graph *pg: graphs) {
+        if (pg->hidden) continue;
         const qsizetype first = rows.size();
         if (pg->distinguishesCurves() && pg->countY > 1) {
             const int shown = std::min(pg->countY, maxCurveRows);
@@ -401,7 +402,7 @@ void Diagram::paintMarkers(QPainter *p, bool paintAll) {
     // draw markers last, so they are at the top of painting layers
     for (Graph *pg: Graphs)
         for (Marker *pm: pg->Markers)
-            if (paintAll || (pm->Type & 1)) {
+            if (!pg->hidden && (paintAll || (pm->Type & 1))) {
                 pm->paint(p);
             }
 }
@@ -440,14 +441,14 @@ void Diagram::createAxisLabels() {
     // in its colour, as before.
     QHash<QString, int> sharing;
     for (const Graph *pg: Graphs)
-        if (const DataX *pD = pg->axis(0); pD && !pg->ghost) ++sharing[pD->Var];
+        if (const DataX *pD = pg->axis(0); pD && !pg->ghost && !pg->hidden) ++sharing[pD->Var];
     QSet<QString> written;
     if (xAxis.Label.isEmpty()) {
         // write all x labels ----------------------------------------
         // (A ghost - a kept run's - no label: it is in the legend.)
         for (Graph *pg: Graphs) {
             DataX const *pD = pg->axis(0);
-            if (!pD || pg->ghost) continue;
+            if (!pD || pg->ghost || pg->hidden) continue;
             if (Name[0] != 'C' && sharing.value(pD->Var) > 1) {   // (a locus curve's is each graph's own: real(...))
                 if (written.contains(pD->Var)) continue;
                 written.insert(pD->Var);
@@ -491,7 +492,7 @@ void Diagram::createAxisLabels() {
     for (const auto pg: Graphs) {
         QString kernel_name;
         const QString var_name = qucs_s::dataset::withoutSimulator(pg->Var, &kernel_name);
-        if (kernel_name.isEmpty() || pg->ghost) continue; // Qucsator data; a kept run's
+        if (kernel_name.isEmpty() || pg->ghost || pg->hidden) continue; // Qucsator data; a kept run's; a hidden one
         for (const QString &sim_name : Graph::analysesOf(var_name))
             if (!used_simulations.contains(sim_name))
                 used_simulations.append(sim_name);
@@ -512,7 +513,7 @@ void Diagram::createAxisLabels() {
         // if all graphs are from the same simulator and simulation
 
         for (Graph *pg: Graphs) {
-            if (pg->yAxisNo != 0 || pg->ghost) continue;
+            if (pg->yAxisNo != 0 || pg->ghost || pg->hidden) continue;
             if (pg->cPointsY) {
                 QString var_name = pg->Var;
                 if (!QucsSettings.fullTraceName) {
@@ -557,7 +558,7 @@ void Diagram::createAxisLabels() {
     if (zAxis.Label.isEmpty()) {
         // draw right y-label for all graphs ------------------------------
         for (Graph *pg: Graphs) {
-            if (pg->yAxisNo != 1 || pg->ghost) continue;
+            if (pg->yAxisNo != 1 || pg->ghost || pg->hidden) continue;
             if (pg->cPointsY) {
                 QString var_name = pg->Var;
                 if (!QucsSettings.fullTraceName) {
@@ -646,6 +647,13 @@ void Diagram::forgetMarker(const Marker* gone)
         }
 }
 
+QVector<bool> Diagram::hiddenNow() const {
+    QVector<bool> hidden;
+    hidden.reserve(Graphs.size());
+    for (const Graph *pg: Graphs) hidden.append(pg->hidden);
+    return hidden;
+}
+
 QList<Marker *> Diagram::markers() const {
     QList<Marker *> all;
     for (Graph *pg: Graphs) all += pg->Markers;
@@ -657,8 +665,9 @@ QList<Marker *> Diagram::markers() const {
 */
 Marker *Diagram::setMarker(int x, int y) {
     if (getSelected(x, y)) {
-        // test all graphs of the diagram
+        // test all graphs of the diagram (those shown)
         for (Graph *pg: Graphs) {
+            if (pg->hidden) continue;
             int n = pg->getSelected(x - cx, cy - y); // sic!
             if (n >= 0) {
                 QUCS_ASSERT(pg->parentDiagram() == this);
@@ -1041,6 +1050,8 @@ void Diagram::getAxisLimits(Graph *pg) {
     //        we should only copy here. better: just wrap, dont use {x,y,z}Axis
     int z;
     double x, y, *p;
+    // (A hidden graph: the axes fit those shown.)
+    if (pg->hidden) return;
     DataX const *pD = pg->axis(0);
     if (pD == nullptr || pD->Points == nullptr || pD->count <= 0) return;  // no data
 
@@ -1129,8 +1140,9 @@ void Diagram::loadGraphData(const QString &defaultDataSet) {
 
     // All dataset files unchanged - and laid out with them once: a diagram
     // without graphs, or whose data did not change, still has to show its
-    // own axes and notation after it was loaded.
-    if (No <= 0 && laidOut) {
+    // own axes and notation after it was loaded. (A graph hidden or shown
+    // since: laid out again, the axes of those shown.)
+    if (No <= 0 && laidOut && hiddenNow() == hiddenLaidOut) {
         yAxis.numGraphs = yNum;  // rebuild scrollbar position
         zAxis.numGraphs = zNum;
 
@@ -1195,6 +1207,7 @@ void Diagram::recalcGraphData() {
 // ------------------------------------------------------------------------
 void Diagram::updateGraphData() {
     laidOut = true;
+    hiddenLaidOut = hiddenNow();
     int valid = calcDiagram();   // do not calculate graph data if invalid
 
     for (Graph *pg: Graphs) {

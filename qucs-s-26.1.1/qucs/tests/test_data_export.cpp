@@ -19,12 +19,14 @@
 #include "diagrams/graph.h"
 #include "diagrams/rectdiagram.h"
 #include "diagrams/smithdiagram.h"
+#include "diagrams/tabdiagram.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 #include "main.h"
 #include "schematic.h"
 
 #include <QComboBox>
+#include <QFontMetricsF>
 #include <QLabel>
 #include <QLocale>
 #include <QProgressDialog>
@@ -681,7 +683,7 @@ private slots:
             auto* dialog = new DiagramDialog(&d, &sch);
             auto* box = dialog->findChild<QComboBox*>("graphValuePart");
             QVERIFY(box != nullptr);
-            QCOMPARE(box->count(), 6);
+            QCOMPARE(box->count(), 7);   // (and last: hide)
             auto* list = dialog->findChild<QTableWidget*>("diagramGraphs");
             QVERIFY(list != nullptr && list->rowCount() == 1);
             QCOMPARE(list->item(0, 0)->text(), QStringLiteral("dB(ngspice/ac.v(out))"));
@@ -707,6 +709,96 @@ private slots:
             SmithDiagram smith;
             auto* dialog = new DiagramDialog(&smith, &sch);
             QVERIFY(dialog->findChild<QComboBox*>("graphValuePart") == nullptr);
+            dialog->close();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+        QucsSettings.DefaultSimulator = simulator;
+    }
+
+    // A trace hidden - the Shows box's last item, a Cartesian diagram's -:
+    // kept with its part, not drawn, left out of the legend and the axes'
+    // limits; through Apply and the file; any part shows it again. Not
+    // offered by a Smith chart (no Shows box) nor a table.
+    void aTraceHiddenInTheDialog()
+    {
+        const QString folder = QFileInfo(dir.filePath("hidden")).absoluteFilePath();
+        write("hidden/amp.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n");
+        write("hidden/amp.dat.ngspice", kDataset);
+        const int simulator = QucsSettings.DefaultSimulator;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        {
+            Schematic sch(nullptr, folder + "/amp.sch");
+            RectDiagram d;
+            d.Graphs.append(new Graph(&d, "ngspice/tran.v(out)"));
+            auto* sw = new Graph(&d, "ngspice/sw");
+            sw->valuePart = Graph::ValuePart::Magnitude;
+            d.Graphs.append(sw);
+            auto* dialog = new DiagramDialog(&d, &sch);
+            auto* box = dialog->findChild<QComboBox*>("graphValuePart");
+            QVERIFY(box != nullptr && box->count() == 7);
+            QCOMPARE(box->itemText(6), QStringLiteral("hide"));
+            auto* list = dialog->findChild<QTableWidget*>("diagramGraphs");
+            QVERIFY(list != nullptr && list->rowCount() == 2);
+            auto select = [&](int row) {
+                list->setCurrentCell(row, 0);
+                QMetaObject::invokeMethod(dialog, "slotSelectGraph", Q_ARG(QTableWidgetItem*, list->item(row, 0)));
+            };
+            auto choose = [&](int index) {
+                box->setCurrentIndex(index);
+                emit box->activated(index);
+            };
+            select(1);
+            QCOMPARE(box->currentIndex(), int(Graph::ValuePart::Magnitude));
+            choose(6);
+            QVERIFY(list->item(1, 0)->font().italic());
+            QVERIFY2(list->item(1, 0)->toolTip().startsWith(QLatin1String("Hidden")), qPrintable(list->item(1, 0)->toolTip()));
+            QVERIFY(!list->item(0, 0)->font().italic());
+            QMetaObject::invokeMethod(dialog, "slotApply");
+            QCOMPARE(d.Graphs.size(), 2);
+            QVERIFY(d.Graphs.at(1)->hidden && !d.Graphs.at(0)->hidden);
+            QCOMPARE(d.Graphs.at(1)->valuePart, Graph::ValuePart::Magnitude);   // (its part kept)
+            // Selected again: the box says so; a part shows it again, as that.
+            select(0);
+            select(1);
+            QCOMPARE(box->currentIndex(), 6);
+            choose(int(Graph::ValuePart::Magnitude));
+            QVERIFY(!list->item(1, 0)->font().italic());
+            QMetaObject::invokeMethod(dialog, "slotApply");
+            QVERIFY(!d.Graphs.at(1)->hidden);
+            QCOMPARE(d.Graphs.at(1)->valuePart, Graph::ValuePart::Magnitude);
+            dialog->close();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            // In the diagram: the axes' limits and the legend of those shown.
+            // (The dialog's own graphs the diagram's since Apply.)
+            Graph* v = d.Graphs.at(0);
+            sw = d.Graphs.at(1);
+            QVERIFY(v->loadDatFile(folder + "/amp.dat") >= 0 && sw->loadDatFile(folder + "/amp.dat") >= 0);
+            d.legendPos = Diagram::LegendTopRight;
+            const QFontMetricsF fm(QFont(QStringLiteral("Helvetica"), 10));
+            d.recalcGraphData();
+            const double both = d.yAxis.max;
+            const qreal legendBoth = d.legendRect(fm).height();
+            sw->hidden = true;
+            d.recalcGraphData();
+            qInfo("the y axis's top with sw shown %g, hidden %g; the legend %g and %g high", both, d.yAxis.max, legendBoth, d.legendRect(fm).height());
+            QVERIFY2(both >= 6 && d.yAxis.max < 2, qPrintable(QStringLiteral("%1 %2").arg(both).arg(d.yAxis.max)));
+            QVERIFY(d.legendRect(fm).height() < legendBoth);
+            // Through the file: hidden, its part and no ghost.
+            Graph back(&d, QString());
+            QVERIFY(back.load(sw->save().trimmed()));
+            QVERIFY(back.hidden && !back.ghost);
+            QCOMPARE(back.valuePart, Graph::ValuePart::Magnitude);
+            sw->hidden = false;
+            Graph shown(&d, QString());
+            QVERIFY(shown.load(sw->save().trimmed()));
+            QVERIFY(!shown.hidden);
+        }
+        {
+            Schematic sch(nullptr, folder + "/amp.sch");
+            TabDiagram table;
+            auto* dialog = new DiagramDialog(&table, &sch);
+            auto* box = dialog->findChild<QComboBox*>("graphValuePart");
+            QVERIFY(box != nullptr && box->count() == 6);   // (a table hides nothing)
             dialog->close();
             QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         }
