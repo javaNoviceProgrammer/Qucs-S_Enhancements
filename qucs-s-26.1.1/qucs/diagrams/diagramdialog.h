@@ -84,6 +84,8 @@ private slots:
   /// The point marker of the selected graph (Graph::PointMarker, in the
   /// order of the box: none, auto, then the shapes).
   void slotSetPointMarker(int marker);
+  /// What the selected graph shows (Graph::ValuePart, in the order of the
+  /// box) - or, its last item where the diagram hides graphs, hidden.
   void slotSetValuePart(int part);
   void slotResetToTake(const QString&);
   void slotSetNumMode(int);
@@ -150,6 +152,9 @@ protected slots:
     void reject();
 
 private:
+  /// The Shows box's item that hides a graph (-1: none - no box, or a
+  /// diagram that does not hide).
+  int hideIndex() const;
   /// Whether the values typed can be taken; one that cannot is said, and
   /// its field given the focus.
   bool valuesTaken();
