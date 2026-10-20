@@ -1417,8 +1417,10 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
             if (v) pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
         }
         // A Laser L-I step's points, by number when no sweep has them (the
-        // last, whatever was asked: the update check of 110e8b9).
-        if (!all && s.biasAxis && n == 1 && point > 0 && at.trimmed().isEmpty()) pick = std::min(point, snaps) - 1;
+        // last, whatever was asked: the update check of 110e8b9); a Valence
+        // Bands step's k points too (the check of a4ff84a, 6.1).
+        const bool numbered = s.biasAxis || (s.frequencyDomain && s.photonAxis == 3);
+        if (!all && numbered && n == 1 && point > 0 && at.trimmed().isEmpty()) pick = std::min(point, snaps) - 1;
         // Modes: at that frequency (the last when none is asked), the mode asked.
         bool several = false;
         if (s.modeAnalysis && s.eigenfrequencies) {

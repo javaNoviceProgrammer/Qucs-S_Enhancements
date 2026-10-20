@@ -2439,8 +2439,9 @@ QList<NodeKind> makeKinds()
                               tr("The unknowns of the coupled excitons' Hamiltonian at most - its pairs times its k points (each J's "
                                  "of k·p bands) -, the continuum's states half the line's width apart within it, else further, said. "
                                  "Each state is spread over its pairs' cells, smooth however far apart; where pairs' continua mix a "
-                                 "narrow line still ripples - some 7 % at 0.5 meV, 2 % at 1, under 1 % at 2 -, a larger size little "
-                                 "help. Its dense solve some 1 s at 1200, 8 s at 2400")),
+                                 "narrow line still ripples about its trend - at its peaks some ±11 % at 0.5 meV, ±4 % at 1, ±1.5 % "
+                                 "at 2 (a 10 nm GaAs well's 4x4 bands), its rms under half that -, a larger size little help. Its "
+                                 "dense solve some 1 s at 1200, 8 s at 2400")),
                       QStringLiteral("excitons=true&excitonmodel=coupled")),
               shownIf(expr(QStringLiteral("epsr"), tr("Excitons' permittivity εr"), QString(), QString(),
                            tr("Static. Empty: the wells' material's (its epsilonr, else its compound's; a Quantum Well Material's "

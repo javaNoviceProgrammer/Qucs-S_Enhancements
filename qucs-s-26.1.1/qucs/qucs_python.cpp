@@ -20,6 +20,7 @@
 #include "qucscontrol.h"
 #include "schematic.h"
 #include "diagrams/diagram.h"
+#include "dataset.h"
 #include "diagrams/graph.h"
 #include "settings.h"
 
@@ -1187,7 +1188,7 @@ void QucsApp::slotPythonEditBreakpoint()
   if (PythonDoc *py = currentPythonDoc()) py->editBreakpoint(py->textCursor().blockNumber() + 1, 0);
 }
 
-QString QucsApp::showPythonDisplay(const QJsonObject &request)
+QString QucsApp::showPythonDisplay(const QJsonObject &request, QStringList *removed)
 {
   const QString display = QFileInfo(request.value(QStringLiteral("display")).toString()).absoluteFilePath();
   const QString dataset = request.value(QStringLiteral("dataset")).toString();
@@ -1227,17 +1228,40 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request)
   }
   // A display of its own (a multiphysics 1D plot group's): its other
   // diagrams of its title - of traces renamed since (emw.loss_100
-  // <invalid>) - gone, the new one where the first was; the user's own kept.
+  // <invalid>) - gone, the new one where the first was; and those of a
+  // trace its dataset no longer has, said - an older plot group's of that
+  // tag (its title another), which stayed over the new one with its traces
+  // of no data (the check of a4ff84a, 6.2). The user's own of its traces
+  // kept.
   QJsonObject at;
   if (own && !title.isEmpty() && a_control != nullptr) {
+    qucs_s::dataset::Dataset data;
+    const bool read = data.read(dataset);
     QJsonArray gone;
     int i = 0;
     for (Diagram *d : shown->a_DocDiags) {
       ++i;
-      if (d == same || d->title != title) continue;
+      if (d == same) continue;
+      QStringList missing;
+      if (read)
+        for (Graph *g : d->Graphs) {
+          // (dataset:variable - of this dataset, the variable; of another,
+          // not this display's to judge.)
+          QString name = qucs_s::dataset::withoutSimulator(g->Var);
+          if (const qsizetype colon = name.indexOf(QLatin1Char(':')); colon > 0) {
+            if (name.left(colon).compare(QFileInfo(dataset).completeBaseName(), Qt::CaseInsensitive) != 0) continue;
+            name = name.mid(colon + 1);
+          }
+          if (data.find(name) == nullptr) missing << name;
+        }
+      if (d->title != title && missing.isEmpty()) continue;
       if (gone.isEmpty()) at = QJsonObject{{QStringLiteral("x"), d->cx}, {QStringLiteral("y"), d->cy},
                                            {QStringLiteral("width"), d->x2}, {QStringLiteral("height"), d->y2}};
       gone.append(i);
+      if (removed != nullptr && d->title != title)
+        removed->append(tr("%1 (its %2 not in %3)")
+                            .arg(d->title.isEmpty() ? tr("diagram %1").arg(i) : QStringLiteral("“%1”").arg(d->title),
+                                 missing.join(QStringLiteral(", ")), QFileInfo(dataset).fileName()));
     }
     if (!gone.isEmpty())
       a_control->callTool(QStringLiteral("delete"), QJsonObject{{QStringLiteral("path"), display}, {QStringLiteral("diagrams"), gone}},
