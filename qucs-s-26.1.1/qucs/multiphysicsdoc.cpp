@@ -1455,7 +1455,7 @@ std::optional<double> coordinate(const QJsonValue& v, const Solution& s, QString
 
 } // namespace
 
-QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool open)
+QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool open, QStringList* removed)
 {
     auto fail = [&](const QString& why) {
         if (error) *error = why;
@@ -1928,6 +1928,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         // (Its own display: its diagram of other traces replaced; the y axis
         // said in the traces' units.)
         const bool rect = g->text(QStringLiteral("diagram")) == QLatin1String("rect");
+        QStringList gone;
         const QString shown = a_App->showPythonDisplay(QJsonObject{{QStringLiteral("display"), dpl},
                                                                    {QStringLiteral("dataset"), dat},
                                                                    {QStringLiteral("traces"), QJsonArray::fromStringList(traces)},
@@ -1935,8 +1936,11 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                                                    {QStringLiteral("title"), title},
                                                                    {QStringLiteral("replace"), true},
                                                                    {QStringLiteral("ylabel"), rect && anyUnit ? axisWords.join(QLatin1String(", ")) : QString()},
-                                                                   {QStringLiteral("xlabel"), rect ? xWords : QString()}});
+                                                                   {QStringLiteral("xlabel"), rect ? xWords : QString()}},
+                                                       &gone);
         if (!shown.isEmpty()) return fail(shown);
+        if (!gone.isEmpty()) say(tr("%1: its display's diagrams of traces its dataset no longer has removed: %2").arg(g->name(), gone.join(QLatin1String("; "))));
+        if (removed != nullptr) *removed = gone;
         // Its diagram kept: the display saved as it is now.
         for (QucsDoc* d : a_App->allDocuments())
             if (QFileInfo(d->getDocName()) == QFileInfo(dpl) && d->getDocChanged()) d->save();
@@ -2135,11 +2139,25 @@ bool MultiphysicsDoc::copyPart(const QString& tag, QString* error)
 
 void MultiphysicsDoc::addDefaultPlots(const QString& study)
 {
+    // None for a study with plot groups - 1D ones too: the user's (they
+    // were made beside its own: the check of a4ff84a, 6.3).
     for (const Node& g : a_model.results().children)
-        if (g.type == QLatin1String("plotgroup") && studyTag(g.text(QStringLiteral("study"))) == study) return;
+        if ((g.type == QLatin1String("plotgroup") || g.type == QLatin1String("plotgroup1d")) && studyTag(g.text(QStringLiteral("study"))) == study)
+            return;
     const std::shared_ptr<Solution> sol = solution(study);
     if (!sol) return;
     Model m = a_model;
+    // One of each: a group (a cut line) of a name the results have - another
+    // study's defaults, of the same physics - not made again; each study
+    // solved made them all again, three of each (6.3).
+    const auto have = [&m](const QString& type, const QString& label) -> const Node* {
+        for (const Node& n : m.results().children)
+            if (n.type == type && n.label == label) return &n;
+        return nullptr;
+    };
+    const auto place = [&m, &have](const Node& n) {
+        if (have(n.type, n.label) == nullptr) m.add(m.results().tag, n);
+    };
     auto group = [&](const QString& title) {
         Node g = m.make(QStringLiteral("plotgroup"));
         g.label = title;
@@ -2160,34 +2178,34 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             Node g = group(tr("Electric Potential (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".V")}});
             plot(g, QStringLiteral("contour"), {{"expression", t + QStringLiteral(".V")}, {"levels", 15}});
-            m.add(m.results().tag, g);
+            place(g);
             const bool es = f.type == QLatin1String("electrostatics");
             Node g2 = group(es ? tr("Electric Field (%1)").arg(t) : tr("Current Density (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + (es ? QStringLiteral(".normE") : QStringLiteral(".normJ"))}});
             plot(g2, QStringLiteral("arrow"), {{"x", t + (es ? QStringLiteral(".Ex") : QStringLiteral(".Jx"))},
                                                {"y", t + (es ? QStringLiteral(".Ey") : QStringLiteral(".Jy"))},
                                                {"scaling", QStringLiteral("normalized")}});
-            m.add(m.results().tag, g2);
+            place(g2);
         } else if (f.type == QLatin1String("heat")) {
             Node g = group(tr("Temperature (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".T")}, {"colors", QStringLiteral("thermal")}});
             plot(g, QStringLiteral("contour"), {{"expression", t + QStringLiteral(".T")}, {"levels", 12}});
-            m.add(m.results().tag, g);
+            place(g);
             Node g2 = group(tr("Heat Flux (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normq")}, {"colors", QStringLiteral("thermal")}});
             plot(g2, QStringLiteral("arrow"), {{"x", t + QStringLiteral(".qx")}, {"y", t + QStringLiteral(".qy")}, {"scaling", QStringLiteral("normalized")}});
-            m.add(m.results().tag, g2);
+            place(g2);
         } else if (f.type == QLatin1String("solid")) {
             // Its stress and displacement, drawn where it has moved.
             const bool axi = sol->axisymmetric();
             Node g = group(tr("Stress (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".mises")}, {"unit", QStringLiteral("MPa")}});
             plot(g, QStringLiteral("deformation"), {{"x", t + QStringLiteral(".u")}, {"y", t + QStringLiteral(".v")}});
-            m.add(m.results().tag, g);
+            place(g);
             Node g2 = group(tr("Displacement (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".disp")}, {"colors", QStringLiteral("viridis")}});
             plot(g2, QStringLiteral("deformation"), {{"x", t + QStringLiteral(".u")}, {"y", t + QStringLiteral(".v")}});
-            m.add(m.results().tag, g2);
+            place(g2);
             Q_UNUSED(axi);
         } else if (f.type == QLatin1String("modes")) {
             // A mode's electric field (its transverse part as arrows) and the
@@ -2195,19 +2213,19 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             Node g = group(tr("Electric Field (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normE")}, {"colors", QStringLiteral("rainbow")}});
             plot(g, QStringLiteral("arrow"), {{"x", t + QStringLiteral(".Ex")}, {"y", t + QStringLiteral(".Ey")}, {"scaling", QStringLiteral("normalized")}});
-            m.add(m.results().tag, g);
+            place(g);
             Node g2 = group(tr("Power Flow (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".Sz")}, {"colors", QStringLiteral("thermal")}});
-            m.add(m.results().tag, g2);
+            place(g2);
         } else if (f.type == QLatin1String("resonator")) {
             // A resonant mode's electric field (its size; no arrows - not
             // wanted), and its part round the axis.
             Node g = group(tr("Electric Field (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normE")}, {"colors", QStringLiteral("rainbow")}});
-            m.add(m.results().tag, g);
+            place(g);
             Node g2 = group(tr("Azimuthal Field (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".Ephi")}, {"colors", QStringLiteral("coolwarm")}});
-            m.add(m.results().tag, g2);
+            place(g2);
         } else if (f.type == QLatin1String("semiconductor")) {
             // The potential with the current's direction; the carriers on a
             // logarithmic scale (per cm³).
@@ -2215,12 +2233,12 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".V")}});
             plot(g, QStringLiteral("arrow"), {{"x", t + QStringLiteral(".Jx")}, {"y", t + QStringLiteral(".Jy")}, {"scaling", QStringLiteral("normalized")},
                                               {"color", QStringLiteral("white")}});
-            m.add(m.results().tag, g);
+            place(g);
             for (const auto& [carrier, title] : {std::pair{QStringLiteral(".n"), tr("Electron Concentration (%1)")},
                                                  std::pair{QStringLiteral(".p"), tr("Hole Concentration (%1)")}}) {
                 Node gc = group(title.arg(t));
                 plot(gc, QStringLiteral("surface"), {{"expression", QStringLiteral("log10(%1%2*1[cm^3])").arg(t, carrier)}, {"colors", QStringLiteral("viridis")}});
-                m.add(m.results().tag, gc);
+                place(gc);
             }
         } else if (f.type == QLatin1String("pde")) {
             // Each variable: over the domains, or (1D) along its line.
@@ -2232,7 +2250,7 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 if (rates) vars /= 2;
             }
             const bool line = f.fixed && !f.fixed->empty() && (*f.fixed)[0] == 1;
-            if (line) {
+            if (line && have(QStringLiteral("plotgroup1d"), tr("Solution (%1)").arg(t)) == nullptr) {
                 const double u = sol->mesh().unitScale;
                 Node cut = m.make(QStringLiteral("cutline"));
                 cut.label = tr("Along the Line (%1)").arg(t);
@@ -2240,21 +2258,23 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 cut.props.insert(QStringLiteral("start"), QJsonArray{num((*f.fixed)[1] / u), num((*f.fixed)[2] / u)});
                 cut.props.insert(QStringLiteral("end"), QJsonArray{num((*f.fixed)[3] / u), num((*f.fixed)[4] / u)});
                 cut.props.insert(QStringLiteral("points"), 500);
-                m.add(m.results().tag, cut);
+                // (One of that name there: its graphs along it.)
+                if (const Node* was = have(cut.type, cut.label)) cut.tag = was->tag;
+                else place(cut);
                 Node g = m.make(QStringLiteral("plotgroup1d"));
                 g.label = tr("Solution (%1)").arg(t);
                 g.props.insert(QStringLiteral("study"), study);
                 for (int c = 0; c < vars && c < f.components.size(); ++c)
                     plot(g, QStringLiteral("linegraph"), {{"data", cut.tag}, {"expression", t + QLatin1Char('.') + f.components[c]},
                                                           {"solutions", QStringLiteral("all")}});
-                m.add(m.results().tag, g);
-            } else
+                place(g);
+            } else if (!line)
                 for (int c = 0; c < vars && c < f.components.size(); ++c) {
                     const QString e = t + QLatin1Char('.') + f.components[c];
                     Node g = group(tr("%1 (%2)").arg(f.components[c], t));
                     plot(g, QStringLiteral("surface"), {{"expression", e}});
                     plot(g, QStringLiteral("contour"), {{"expression", e}, {"levels", 12}});
-                    m.add(m.results().tag, g);
+                    place(g);
                 }
         } else if (f.type == QLatin1String("quantum")) {
             // The states' probability densities; along the growth axis a band
@@ -2268,9 +2288,9 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 if (!(carrier == QLatin1String(".P_e") ? electrons : heavy)) continue;
                 Node g = group(title.arg(t));
                 plot(g, QStringLiteral("surface"), {{"expression", t + carrier}, {"colors", QStringLiteral("viridis")}});
-                m.add(m.results().tag, g);
+                place(g);
             }
-            if (!sol->frequencyDomain || sol->modeAnalysis) {
+            if ((!sol->frequencyDomain || sol->modeAnalysis) && have(QStringLiteral("plotgroup1d"), tr("Band Diagram (%1)").arg(t)) == nullptr) {
                 // The line: the 1D physics' own; in 2D through its middle.
                 const bool alongX = f.fixed && f.fixed->size() > 1 && (*f.fixed)[1] == 0;
                 QPointF a, b;
@@ -2291,7 +2311,9 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 line.props.insert(QStringLiteral("start"), QJsonArray{num(a.x()), num(a.y())});
                 line.props.insert(QStringLiteral("end"), QJsonArray{num(b.x()), num(b.y())});
                 line.props.insert(QStringLiteral("points"), 1000);
-                m.add(m.results().tag, line);
+                // (One of that name there: the band diagram along it.)
+                if (const Node* was = have(line.type, line.label)) line.tag = was->tag;
+                else place(line);
                 Node g = m.make(QStringLiteral("plotgroup1d"));
                 g.label = tr("Band Diagram (%1)").arg(t);
                 g.props.insert(QStringLiteral("study"), study);
@@ -2302,25 +2324,25 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                     plot(g, QStringLiteral("linegraph"), {{"data", line.tag}, {"expression", t + what}, {"unit", QStringLiteral("eV")},
                                                           {"xaxis", axis}, {"solutions", all ? QStringLiteral("all") : QStringLiteral("selected")}});
                 }
-                m.add(m.results().tag, g);
+                place(g);
             }
         } else if (f.type == QLatin1String("rays")) {
             Node g = group(tr("Ray Trajectories (%1)").arg(t));
             plot(g, QStringLiteral("rayplot"), {{"physics", t}});
-            m.add(m.results().tag, g);
+            place(g);
             if (sol->global(t + QStringLiteral(".Pabs")).value_or(0) > 0) {
                 Node g2 = group(tr("Absorbed Power (%1)").arg(t));
                 plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".Q")}, {"colors", QStringLiteral("thermal")}});
                 plot(g2, QStringLiteral("rayplot"), {{"physics", t}, {"by", QStringLiteral("single")}, {"color", QStringLiteral("white")}});
-                m.add(m.results().tag, g2);
+                place(g2);
             }
         } else if (f.type == QLatin1String("waves")) {
             Node g = group(tr("Field (%1)").arg(t));
             plot(g, QStringLiteral("surface"), {{"expression", t + QLatin1Char('.') + f.variable}, {"colors", QStringLiteral("coolwarm")}});
-            m.add(m.results().tag, g);
+            place(g);
             Node g2 = group(tr("Electric Field Norm (%1)").arg(t));
             plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normE")}});
-            m.add(m.results().tag, g2);
+            place(g2);
         } else if (f.type == QLatin1String("magnetic")) {
             // Its flux density, the field lines (A's contours; about an axis
             // the flux function's), and where currents flow.
@@ -2329,11 +2351,11 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             plot(g, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normB")}, {"colors", QStringLiteral("viridis")}});
             plot(g, QStringLiteral("contour"), {{"expression", t + (axi ? QStringLiteral(".psi") : QStringLiteral(".") + f.variable)},
                                                 {"levels", 20}});
-            m.add(m.results().tag, g);
+            place(g);
             if (!f.terminals.empty() || sol->frequencyDomain) {
                 Node g2 = group(tr("Current Density (%1)").arg(t));
                 plot(g2, QStringLiteral("surface"), {{"expression", t + QStringLiteral(".normJ")}, {"colors", QStringLiteral("thermal")}});
-                m.add(m.results().tag, g2);
+                place(g2);
             }
         }
     }
@@ -2369,7 +2391,12 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 // Its eigenvalues.
                 chief = {t + QStringLiteral("lambda")};
             } else if (f.type == QLatin1String("quantum")) {
-                // The states' energies; a spectrum's absorption (gain).
+                // The states' energies; a spectrum's absorption (gain); the
+                // valence bands' E(k) (they were given a spectrum's: 6.3).
+                if (sol->frequencyDomain && sol->photonAxis == 3) {
+                    globals << t + QStringLiteral("Ev*");
+                    continue;
+                }
                 const bool spectrum = sol->frequencyDomain && !sol->modeAnalysis;
                 const bool gain = sol->global(t + QStringLiteral("dF")).has_value();
                 globals << (spectrum ? (gain ? t + QStringLiteral("gTE; ") + t + QStringLiteral("gTM") : t + QStringLiteral("alphaTE; ") + t + QStringLiteral("alphaTM"))
@@ -2401,13 +2428,15 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             Node g = m.make(QStringLiteral("plotgroup1d"));
             g.label = sol->snapshotCount() > 1 ? (sol->quantumStates  ? tr("The States")
                                                   : sol->modeAnalysis ? tr("The Modes")
+                                                  : sol->photonAxis == 3 ? tr("The Valence Bands")
                                                   : sol->photonAxis > 0 ? tr("The Spectrum")
                                                   : sol->frequencyDomain ? tr("Over Frequency")
                                                                           : tr("Over Time"))
                                                : tr("Over the Sweep");
             g.props.insert(QStringLiteral("study"), study);
-            plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}});
-            m.add(m.results().tag, g);
+            if (sol->photonAxis == 3) plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}, {"unit", QStringLiteral("eV")}});
+            else plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}});
+            place(g);
         }
         // A line's characteristic impedance and losses over frequency.
         if (sol->frequencyDomain && sol->snapshotCount() > 1)
@@ -2429,7 +2458,7 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                         g.label = label;
                         g.props.insert(QStringLiteral("study"), study);
                         plot(g, QStringLiteral("globalgraph"), {{"expression", expressions.join(QLatin1String("; "))}});
-                        m.add(m.results().tag, g);
+                        place(g);
                     }
                 }
     }

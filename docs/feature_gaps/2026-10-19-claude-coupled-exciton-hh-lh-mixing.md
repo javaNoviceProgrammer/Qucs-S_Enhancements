@@ -88,6 +88,6 @@ Fourteen changes were broken on purpose, and all fourteen were caught:
 ## What it does not do
 
 - **The axial approximation.** The channels need the plane isotropic. With the bands along [100], [110] or averaged over the plane's directions, the first direction's spinors are taken for every direction, said in the log; the energies and weights are still the directions' average.
-- **A narrow line's continuum, where pairs' continua mix, ripples**: some 7 % at 0.5 meV, 2 % at 1 meV, under 1 % at 2 meV on the reviewer's well. That is the discrete continuum: its states' strengths vary where continua mix, and a larger size does not help. The warning says so.
+- **A narrow line's continuum, where pairs' continua mix, ripples**: some 7 % at 0.5 meV, 2 % at 1 meV, under 1 % at 2 meV on the reviewer's well. That is the discrete continuum: its states' strengths vary where continua mix, and a larger size does not help. The warning says so. (These are the largest departures from a 2 meV local mean. The ripple's peaks about its trend are larger, ±11, ±4 and ±1.5 %, and the warning quotes those since the check of this commit: [its write-up](2026-10-20-claude-coupled-exciton-a4ff84a-check.md).)
 - **Not tested:** a Kramers pair kept whole at the 16-pair cap (its cut moved down to the pair's start); the reach without kT (a speed and resolution change: the binding moved 0.05 %).
 - The 8x8 bands keep their existing warning.

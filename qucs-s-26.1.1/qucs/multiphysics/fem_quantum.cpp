@@ -3871,9 +3871,9 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     }
     if (widest.spacing > 0)
         a_s.log << tr("Warning: %1: the coupled excitons' continuum states %2 meV apart, not the %3 the line's width asks (%4 on %5 k "
-                      "points: its %6 unknowns, \"excitonsize\"): above the edges, where pairs' continua mix, its absorption ripples the "
-                      "more the narrower the line - a line of 1 meV or more smooths it (a 10 nm GaAs well's 4x4 bands: some 7 % at 0.5 "
-                      "meV, 2 % at 1, under 1 % at 2)")
+                      "points: its %6 unknowns, \"excitonsize\"): above the edges, where pairs' continua mix, its absorption ripples about "
+                      "its trend the more the narrower the line - a line of 2 meV or more smooths it (a 10 nm GaAs well's 4x4 bands from "
+                      "1.48 to 1.50 eV, at the ripple's peaks: some ±11 % at 0.5 meV, ±4 % at 1, ±1.5 % at 2; its rms under half that)")
                        .arg(a_node->name())
                        .arg(widest.spacing / Q * 1e3, 0, 'g', 3)
                        .arg(widest.asked / Q * 1e3, 0, 'g', 3)

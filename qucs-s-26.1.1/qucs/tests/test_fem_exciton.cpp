@@ -649,7 +649,8 @@ private slots:
         QVERIFY2(small.error.isEmpty(), qPrintable(small.error));
         const QStringList warned = small.solution->log.filter(QLatin1String("Warning:")).filter(QLatin1String("continuum states"));
         QVERIFY2(warned.size() == 1 && warned.front().contains(QLatin1String("not the 0.5 the line's width asks"))
-                     && warned.front().contains(QLatin1String("unknowns, \"excitonsize\")")) && warned.front().contains(QLatin1String("a line of 1 meV or more smooths it")),
+                     && warned.front().contains(QLatin1String("unknowns, \"excitonsize\")")) && warned.front().contains(QLatin1String("a line of 2 meV or more smooths it"))
+                     && warned.front().contains(QStringLiteral("at the ripple's peaks: some ±11 % at 0.5 meV")),
                  qPrintable(small.solution->log.join(QLatin1Char('\n'))));
         const femtest::Run refused = spectrum("50");
         QVERIFY2(refused.error.contains(QLatin1String("the coupled excitons' size: a whole number from 100 to 20000")), qPrintable(refused.error));
