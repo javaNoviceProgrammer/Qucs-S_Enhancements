@@ -790,7 +790,7 @@ private slots:
     {
         // D t = 4 nm²: 2 min at 750 °C, D there 4/120 nm²/s.
         const double D750 = 4e-18 / 120;
-        auto model = [&](bool mixed) {
+        auto model = [&D750](bool mixed) {
             return QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "nm",
               "geometry": [{"type": "process", "tag": "pf1", "width": "10", "dx": "10", "dy": "0.25[nm]", "depth": "100", "features": [
                 {"type": "stack", "tag": "s1", "layers": [["below", "Indium phosphide", "30"], ["well", "InGaAs", "10"], ["above", "Indium phosphide", "30"]]},
@@ -857,6 +857,13 @@ private slots:
         QVERIFY2(r.ok(), qPrintable(said(r)));
         const double open = cellValue(r, QStringLiteral("P"), 2.0, -0.06), shut = cellValue(r, QStringLiteral("P"), 0.5, -0.06);
         QVERIFY2(open > 1e25 && shut < 1e-9 * open && said(r).contains(QLatin1String("in the mask")), qPrintable(said(r)));
+        // A kurtosis raised to Pearson IV's least said where the dopant
+        // stays, not in the resist it leaves with (B at 40 keV: in both).
+        const ProcessRun b = runFlow(flowModel(Si + QStringLiteral(R"(,
+            {"type": "implant", "tag": "i1", "species": "B", "energy": "40", "dose": "1e15", "mask": "openings", "openings": "1.5, 2.5"})"),
+                                               QStringLiteral(R"("width": "4", "dx": "20[nm]", "dy": "2[nm]", "depth": "0.5")")));
+        QVERIFY2(b.ok() && said(b).contains(QLatin1String("B in Silicon: its kurtosis")) && !said(b).contains(QLatin1String("Photoresist")),
+                 qPrintable(said(b)));
         // A trench 0.5 µm wide and 1 deep; the beam 10° toward +x: its floor
         // lit from 1.93 µm (its wall's shadow tan 10° wide), not at 1.8.
         const ProcessRun t = runFlow(flowModel(Si + QStringLiteral(R"(,
@@ -909,7 +916,7 @@ private slots:
     void aPhaseShifterBuiltByItsProcess()
     {
         const bool modes = !slowBuild();
-        auto model = [&](bool byProcess) {
+        auto model = [&modes](bool byProcess) {
             const QString implants = QStringLiteral(R"(
               {"type": "implant", "tag": "ib", "species": "B", "energy": "20", "dose": "6.6e12", "profile": "gaussian",
                "moments": [["Silicon", "0.09", "0.025", "", "", "0.025"]], "mask": "openings", "openings": "-3, 0"},
@@ -951,7 +958,7 @@ private slots:
                 .toUtf8();
         };
         double dopings[2][2] = {{0, 0}, {0, 0}};   // ∫Na, ∫Nd: the flow's, the typed
-        auto neffs = [&](bool byProcess) -> std::pair<double, double> {
+        auto neffs = [&model, &dopings, &modes](bool byProcess) -> std::pair<double, double> {
             QString why;
             const std::optional<Model> m = Model::fromJson(model(byProcess), &why);
             if (!m) return {NAN, NAN};
