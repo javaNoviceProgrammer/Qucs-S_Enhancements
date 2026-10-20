@@ -10,9 +10,15 @@
  */
 #include "fem_results.h"
 
+#include "fem_modeprofile.h"
+#include "fem_problem.h"
+
 #include <QRegularExpression>
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 
 #include <Eigen/Dense>
@@ -1121,8 +1127,7 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
     if (type == QLatin1String("confinement")) {
         // Γ: of a mode's |E|² (or Sz, or (c ε0/2) n |E|² over Sz) in the
         // domains chosen, over the physics' all.
-        const QStringList tags = node.list(QStringLiteral("physics"));
-        const QString tag = tags.isEmpty() ? QStringLiteral("emw") : tags.first();
+        const QString tag = modeAnalysisOf(solution, node);
         const int fi = solution.fieldIndex(tag);
         if (fi < 0 || !solution.modeAnalysis) {
             out.error = tr("there is no mode analysis %1 solved").arg(tag);
@@ -1160,8 +1165,7 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         // To the first order, each mode at 1 W (∫ Sz over the physics' all):
         // Δneff = (c ε0/2) ∫ n Δn |E|², the power's Δα = (c ε0/2) ∫ n Δα |E|²
         // over the domains chosen.
-        const QStringList tags = node.list(QStringLiteral("physics"));
-        const QString tag = tags.isEmpty() ? QStringLiteral("emw") : tags.first();
+        const QString tag = modeAnalysisOf(solution, node);
         const int fi = solution.fieldIndex(tag);
         if (fi < 0 || !solution.modeAnalysis) {
             out.error = tr("there is no mode analysis %1 solved").arg(tag);
@@ -1230,6 +1234,229 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             }
             add(bias, v.constant(), v.dim(), false);
         }
+        return out;
+    }
+    if (type == QLatin1String("overlap")) {
+        // The mode overlapped with another field (Snyder and Love's, the
+        // overlap of Lumerical MODE): Re[(∫E1×H2*)(∫E2×H1*)/∫E1×H1*]/Re
+        // ∫E2×H2* - the power coupled from the other into the mode at a butt
+        // joint, reflections aside -, over the mode's domains (its perfectly
+        // matched layers left out), the other's own flux its own (what falls
+        // outside the cross-section lost).
+        using cd = std::complex<double>;
+        const QString tag = modeAnalysisOf(solution, node);
+        const int fi = solution.fieldIndex(tag);
+        if (fi < 0 || !solution.modeAnalysis || solution.fields()[std::size_t(fi)].type != QLatin1String("modes")) {
+            out.error = tr("there is no mode analysis %1 solved").arg(tag);
+            return out;
+        }
+        // (Another mode is another snapshot: selected for it, then again the
+        // one it was - as the solutions are each selected to be evaluated.)
+        Solution& s = const_cast<Solution&>(solution);
+        const double scale = s.topology().unitScale;
+        auto lengths = [&node, &s, scale, &out](const QString& key, double* xy) {
+            const QStringList two = node.pair(key);
+            Expression::Options options;
+            options.lengthUnit = scale;
+            options.numbersAreLengths = true;
+            for (int k = 0; k < 2; ++k) {
+                const QString text = two.value(k).trimmed().isEmpty() ? QStringLiteral("0") : two.value(k);
+                const Expression e = Expression::compile(text, s.parameters().scope, options);
+                if (!e.isValid() || !e.isConstant()) {
+                    out.error = tr("%1: %2").arg(text, e.isValid() ? tr("not a constant") : e.error());
+                    return false;
+                }
+                xy[k] = scale * e.constant();
+            }
+            return true;
+        };
+        double offset[2] = {0, 0};
+        if (!lengths(QStringLiteral("offset"), offset)) return out;
+        const bool moved = offset[0] != 0 || offset[1] != 0;
+        // The mode at its quadrature points (m), each's weight (m²).
+        struct At {
+            int t;
+            double xi, eta, w;
+            QPointF x;
+            cd E[3], H[3];
+        };
+        std::vector<At> pts;
+        const std::vector<int> pml = pmlDomainsOf(s, tag);
+        const Field& fld = s.fields()[std::size_t(fi)];
+        const Space& space = *fld.space;
+        const Mesh& mesh = s.mesh();
+        auto inLayer = [&pml](int d) { return std::find(pml.begin(), pml.end(), d) != pml.end(); };
+        PointEvaluator ev(s);
+        for (int t = 0; t < int(mesh.triangles.size()); ++t) {
+            const int d = mesh.domain[std::size_t(t)];
+            if (d < 0 || std::size_t(d) >= fld.domains.size() || !fld.domains[std::size_t(d)] || inLayer(d)) continue;
+            for (const auto& q : triangleRule(space.curved(t) ? 5 : 4).points) {
+                ev.moveTo(t, q[0], q[1]);
+                const detail::ModeFields m = detail::modeFieldsAt(ev, fi);
+                if (!m.defined) continue;
+                const Space::Map map = space.map(t, q[0], q[1]);
+                At a{t, q[0], q[1], q[2] * std::abs(map.det), map.x, {}, {}};
+                for (int k = 0; k < 3; ++k) {
+                    a.E[k] = m.E[k];
+                    a.H[k] = m.H[k];
+                }
+                pts.push_back(a);
+            }
+        }
+        if (pts.empty()) {
+            out.error = tr("%1's mode is not defined anywhere").arg(tag);
+            return out;
+        }
+        // The other field at each point, moved by the offset (its value at x -
+        // offset), its own ∫E2×H2*·z and ∫|E2t|².
+        std::vector<std::array<cd, 6>> other(pts.size());
+        cd n2 = 0;
+        double e2 = 0;
+        QString what;
+        const QString with = node.text(QStringLiteral("with"));
+        if (with == QLatin1String("mode")) {
+            const int wanted = node.integer(QStringLiteral("other"));
+            int was = s.selected(), k = -1;
+            for (int i = 0; i < s.snapshotCount(); ++i) {
+                const bool here = std::abs(s.snapshotFrequency(i) - s.frequency()) <= 1e-9 * std::max(1.0, std::abs(s.frequency()));
+                if (here && was < 0 && s.snapshotMode(i) == s.mode()) was = i;   // (the fields as they are: their own snapshot)
+                if (here && s.snapshotMode(i) == wanted) k = i;
+            }
+            if (k < 0 || was < 0) {
+                out.error = k < 0 ? tr("there is no mode %1 at its frequency (it found %2)").arg(wanted).arg(s.snapshotCount())
+                                  : tr("its mode's own snapshot is not found");
+                return out;
+            }
+            s.select(was);   // (the first, as it is)
+            s.select(k);
+            const Locator locator(mesh);
+            for (std::size_t i = 0; i < pts.size(); ++i) {
+                // (Its own flux at its points unmoved; the overlap's at x - offset.)
+                ev.moveTo(pts[i].t, pts[i].xi, pts[i].eta);
+                const detail::ModeFields own = detail::modeFieldsAt(ev, fi);
+                if (own.defined) {
+                    n2 += pts[i].w * (own.E[0] * std::conj(own.H[1]) - own.E[1] * std::conj(own.H[0]));
+                    e2 += pts[i].w * (std::norm(own.E[0]) + std::norm(own.E[1]));
+                }
+                if (moved) {
+                    int t = -1;
+                    double xi = 0, eta = 0;
+                    const QPointF p((pts[i].x.x() - offset[0]) / scale, (pts[i].x.y() - offset[1]) / scale);
+                    if (!locator.locate(p, &t, &xi, &eta)) continue;
+                    ev.moveTo(t, xi, eta);
+                    if (inLayer(ev.domain())) continue;
+                }
+                const detail::ModeFields m = moved ? detail::modeFieldsAt(ev, fi) : own;
+                if (!m.defined) continue;
+                for (int c = 0; c < 3; ++c) {
+                    other[i][std::size_t(c)] = m.E[c];
+                    other[i][std::size_t(c + 3)] = m.H[c];
+                }
+            }
+            s.select(was);
+            what = tr("mode %1").arg(wanted);
+        } else if (with == QLatin1String("file")) {
+            QString path = node.text(QStringLiteral("file")).trimmed();
+            if (path.isEmpty()) {
+                out.error = tr("choose its mode profile file (.mat)");
+                return out;
+            }
+            if (QFileInfo(path).isRelative()) {
+                if (s.model().fileName.isEmpty()) {
+                    out.error = tr("%1 is relative to the model's folder: save the model first").arg(path);
+                    return out;
+                }
+                path = QFileInfo(s.model().fileName).absoluteDir().absoluteFilePath(path);
+            }
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly)) {
+                out.error = tr("%1 cannot be read: %2").arg(QDir::toNativeSeparators(path), file.errorString());
+                return out;
+            }
+            QString why;
+            const std::optional<ModeProfile> prof = readProfileMat(file.readAll(), std::max(1, node.integer(QStringLiteral("filemode"))), &why);
+            if (!prof) {
+                out.error = tr("%1: %2").arg(QFileInfo(path).fileName(), why);
+                return out;
+            }
+            for (std::size_t i = 0; i < pts.size(); ++i) {
+                cd E[3], H[3];
+                if (!prof->at(QPointF(pts[i].x.x() - offset[0], pts[i].x.y() - offset[1]), E, H)) continue;
+                for (int c = 0; c < 3; ++c) {
+                    other[i][std::size_t(c)] = E[c];
+                    other[i][std::size_t(c + 3)] = H[c];
+                }
+            }
+            n2 = prof->flux();
+            // (Its |E| alone's ∫ over its grid, by the trapezoid rule.)
+            const int nx = prof->nx(), ny = prof->ny();
+            for (int j = 0; j < ny; ++j) {
+                const double wy = 0.5 * ((j > 0 ? prof->y[std::size_t(j)] - prof->y[std::size_t(j - 1)] : 0) +
+                                         (j + 1 < ny ? prof->y[std::size_t(j + 1)] - prof->y[std::size_t(j)] : 0));
+                for (int i = 0; i < nx; ++i) {
+                    const double wx = 0.5 * ((i > 0 ? prof->x[std::size_t(i)] - prof->x[std::size_t(i - 1)] : 0) +
+                                             (i + 1 < nx ? prof->x[std::size_t(i + 1)] - prof->x[std::size_t(i)] : 0));
+                    const std::size_t at = std::size_t(j) * std::size_t(nx) + std::size_t(i);
+                    e2 += wx * wy * (std::norm(prof->F[0][at]) + std::norm(prof->F[1][at]));
+                }
+            }
+            what = tr("%1's mode %2").arg(QFileInfo(path).fileName()).arg(prof->mode);
+        } else {
+            // A Gaussian beam at its waist: E = exp(-r²/w0²) along x or y, H a
+            // plane wave's in its medium, (n/η0) z × E.
+            QString why;
+            const std::optional<double> w0 = evaluateConstant(node.text(QStringLiteral("waist")), s.parameters().scope, Dim::length(), &why);
+            if (!w0 || !(*w0 > 0)) {
+                out.error = tr("its waist: %1").arg(w0 ? tr("it must be more than 0") : why);
+                return out;
+            }
+            double centre[2] = {0, 0};
+            if (!lengths(QStringLiteral("centre"), centre)) return out;
+            double n = s.global(tag + QStringLiteral(".neff")).value_or(1.0);
+            if (!node.text(QStringLiteral("index")).trimmed().isEmpty()) {
+                const std::optional<double> given = evaluateConstant(node.text(QStringLiteral("index")), s.parameters().scope, Dim(), &why);
+                if (!given || !(*given > 0)) {
+                    out.error = tr("its medium's index: %1").arg(given ? tr("it must be more than 0") : why);
+                    return out;
+                }
+                n = *given;
+            }
+            const bool alongY = node.text(QStringLiteral("polarization")) == QLatin1String("y");
+            constexpr double Eta0 = 376.730313412;
+            for (std::size_t i = 0; i < pts.size(); ++i) {
+                const double dx = pts[i].x.x() - offset[0] - centre[0], dy = pts[i].x.y() - offset[1] - centre[1];
+                const double e = std::exp(-(dx * dx + dy * dy) / (*w0 * *w0));
+                other[i][alongY ? 1 : 0] = e;
+                other[i][alongY ? 3 : 4] = (alongY ? -1.0 : 1.0) * n / Eta0 * e;
+            }
+            e2 = M_PI * *w0 * *w0 / 2;
+            n2 = n / Eta0 * e2;
+            what = tr("a Gaussian of waist %1").arg(formatQuantity(*w0, Dim::length()));
+        }
+        cd c12 = 0, c21 = 0, n1 = 0, e12 = 0;
+        double e1 = 0;
+        for (std::size_t i = 0; i < pts.size(); ++i) {
+            const cd* E1 = pts[i].E;
+            const cd* H1 = pts[i].H;
+            const auto& o = other[i];
+            const double w = pts[i].w;
+            c12 += w * (E1[0] * std::conj(o[4]) - E1[1] * std::conj(o[3]));
+            c21 += w * (o[0] * std::conj(H1[1]) - o[1] * std::conj(H1[0]));
+            n1 += w * (E1[0] * std::conj(H1[1]) - E1[1] * std::conj(H1[0]));
+            e12 += w * (E1[0] * std::conj(o[0]) + E1[1] * std::conj(o[1]));
+            e1 += w * (std::norm(E1[0]) + std::norm(E1[1]));
+        }
+        if (!(std::abs(n1) > 0) || !(std::abs(n2.real()) > 0) || !(e1 > 0) || !(e2 > 0)) {
+            out.error = tr("the mode or %1 carries no power").arg(what);
+            return out;
+        }
+        const double eta = (c12 * c21 / n1).real() / n2.real();
+        add(QStringLiteral("overlap"), eta, Dim(), false);
+        add(QStringLiteral("loss"), eta > 0 ? -10 * std::log10(eta) : INFINITY, Dim(), false);
+        out.values.back().text = eta > 0 ? formatNumber(-10 * std::log10(eta), 4) + QStringLiteral(" dB") : tr("no coupling");
+        add(QStringLiteral("overlapE"), std::norm(e12) / (e1 * e2), Dim(), false);
+        out.note = moved ? tr("with %1 moved by (%2, %3)").arg(what, formatQuantity(offset[0], Dim::length()), formatQuantity(offset[1], Dim::length()))
+                         : tr("with %1").arg(what);
         return out;
     }
     if (type == QLatin1String("lineparams")) {
@@ -1514,6 +1741,31 @@ int modesAsked(const SolutionSet& set, const QString& which)
     for (const auto& s : set.solutions)
         if (s->modeAnalysis && s->modeChosen) return -1;
     return 0;
+}
+
+QString modeAnalysisOf(const Solution& solution, const Node& node)
+{
+    const QStringList tags = node.list(QStringLiteral("physics"));
+    const QString tag = tags.isEmpty() ? QString() : tags.first();
+    const int fi = solution.fieldIndex(tag);
+    if ((fi >= 0 && solution.fields()[std::size_t(fi)].type == QLatin1String("modes")) || (node.props.contains(QStringLiteral("physics")) && !tag.isEmpty()))
+        return tag;
+    for (const Field& f : solution.fields())
+        if (f.type == QLatin1String("modes")) return f.tag;
+    return tag;
+}
+
+std::vector<int> pmlDomainsOf(const Solution& solution, const QString& physics)
+{
+    std::vector<int> out;
+    const Node* phys = solution.model().find(physics);
+    if (!phys) return out;
+    for (const Node& f : phys->children) {
+        if (!f.enabled || !f.type.endsWith(QLatin1String("/pml"))) continue;
+        QString why;
+        for (int d : resolveSelection(solution.topology(), solution.model(), Level::Domain, f.selection(), &why)) out.push_back(d);
+    }
+    return out;
 }
 
 Solution* select(const SolutionSet& set, const Instance& instance)

@@ -906,6 +906,27 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
             QString why;
             if (!a_doc->showPlotGroup(tag, &why)) QMessageBox::information(this, tr("Plot"), why);
         });
+    // (A mode analysis's mode as it is shown: its fields on a grid, to a
+    // file - MATLAB, NumPy, CSV.)
+    bool modes = false;
+    for (const Node* p : m.physics()) modes = modes || p->type == QLatin1String("modes");
+    if (n->type == QLatin1String("plotgroup") && modes) {
+        QAction* exporting = menu->addAction(tr("Export Mode Profile..."), this, [this, tag] {
+            const QString model = a_doc->getDocName();
+            const Node* pg = a_doc->model().find(tag);
+            const int mode = pg ? pg->integer(QStringLiteral("mode")) : 0;
+            const QString base = (model.isEmpty() ? QStringLiteral("mode") : QFileInfo(model).completeBaseName()) +
+                                 (mode > 0 ? QStringLiteral("_mode%1").arg(mode) : QStringLiteral("_mode")) + QStringLiteral(".mat");
+            const QDir dir = model.isEmpty() ? QDir::home() : QFileInfo(model).absoluteDir();
+            const QString path = QFileDialog::getSaveFileName(this, tr("Export Mode Profile"), dir.filePath(base),
+                                                              tr("MATLAB, SciPy, Octave, Lumerical™ (*.mat);;NumPy (*.npz);;CSV (*.csv)"));
+            if (path.isEmpty()) return;
+            QString why;
+            const QString said = a_doc->exportModeProfile(tag, path, &why);
+            if (said.isEmpty()) QMessageBox::information(this, tr("Export Mode Profile"), why);
+        });
+        exporting->setObjectName(QStringLiteral("mpExportModeProfile"));
+    }
     if (k && k->group == QLatin1String("derived")) menu->addAction(tr("Evaluate"), this, [this, tag] { a_doc->evaluate(tag); });
     if (n->type == QLatin1String("material"))
         menu->addAction(tr("Plot Properties..."), this, [this, tag] {
@@ -1451,8 +1472,10 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         const bool layout = node.type == QLatin1String("crosssection");
         const bool written = node.kind() && node.kind()->group == QLatin1String("export");
         const bool script = written && node.type.startsWith(QLatin1String("lumerical"));
+        const bool profile = node.type == QLatin1String("overlap");
         edit->setPlaceholderText(layout    ? tr("a GDSII or OASIS layout, beside the model")
                                  : written ? tr("empty: model_%1 beside the model").arg(node.tag)
+                                 : profile ? tr("a mode profile (.mat) a Mode Profile export wrote, beside the model")
                                            : tr("a DXF, SVG, GDSII or OASIS file, beside the model"));
         auto* browse = new QToolButton(w);
         browse->setText(QStringLiteral("…"));
@@ -1460,13 +1483,14 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         h->addWidget(edit, 1);
         h->addWidget(browse);
         connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
-        connect(browse, &QToolButton::clicked, this, [this, key, edit, layout, written, script] {
+        connect(browse, &QToolButton::clicked, this, [this, key, edit, layout, written, script, profile] {
             const QString model = a_doc ? a_doc->getDocName() : QString();
             const QDir dir = model.isEmpty() ? QDir::home() : QFileInfo(model).absoluteDir();
             const QString layouts = tr("Layouts (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)");
             const QString chosen =
                 written ? QFileDialog::getSaveFileName(this, tr("Export to"), dir.absolutePath(),
                                                        script ? tr("Lumerical™ scripts (*.lsf);;All files (*)") : tr("All files (*)"))
+                : profile ? QFileDialog::getOpenFileName(this, tr("A Mode Profile"), dir.absolutePath(), tr("Mode profiles (*.mat);;All files (*)"))
                 : layout ? QFileDialog::getOpenFileName(this, tr("A Layout"), dir.absolutePath(), layouts + tr(";;All files (*)"))
                          : QFileDialog::getOpenFileName(this, tr("Import a Drawing or a Layout"), dir.absolutePath(),
                                                         tr("Drawings and layouts (*.dxf *.svg *.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;"

@@ -242,6 +242,13 @@ Solution* select(const SolutionSet& set, const Instance& instance);
 /// asks of \a set's mode analyses, as instances() takes it: -1 the one its
 /// step chose at each ("chosen"; "auto" where a step chose one), 0 each.
 int modesAsked(const SolutionSet& set, const QString& which);
+/// The mode analysis \a node (a derived value's, an export's) is of: the
+/// physics it names - not named, where the solution has no mode analysis
+/// of its default tag (emw), the solution's first.
+QString modeAnalysisOf(const Solution& solution, const Node& node);
+/// The domains of physics \a physics's perfectly matched layers (its
+/// features of a type ending "/pml"), from 0.
+std::vector<int> pmlDomainsOf(const Solution& solution, const QString& physics);
 /// A Perturbation along a sweep (\a values: evaluateDerived's at each of
 /// \a at, instances of \a set): to each but the first point's of its mode,
 /// that point taken as the reference, its phase from it dphi_sweep = k0 L

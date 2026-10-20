@@ -2959,7 +2959,7 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("derived"), tr("Derived Values"), QString(), QStringLiteral("derived"), Level::None, {},
              {QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
               QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams"), QStringLiteral("confinement"),
-              QStringLiteral("perturbation")},
+              QStringLiteral("perturbation"), QStringLiteral("overlap")},
              {}, true, true, QString(), tr("Numbers of the solution: integrals, averages, a capacitance, a resistance.")});
         add({QStringLiteral("global"), tr("Global Evaluation"), QStringLiteral("derived"), QStringLiteral("global"), Level::None,
              {study, text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("es.C11"),
@@ -3019,6 +3019,47 @@ QList<NodeKind> makeKinds()
                  tr("A mode's change to the first order, for each mode solved: Δneff = (c ε0/2) ∫ n Δn |E|² over ∫ Sz, and the "
                     "power's Δα = (c ε0/2) ∫ n Δα |E|² over ∫ Sz, in the domains chosen - without solving it again; along a bias "
                     "sweep its phase and VπL.")});
+            P profile;
+            profile.key = QStringLiteral("file");
+            profile.label = tr("Mode profile file");
+            profile.kind = P::File;
+            profile.defaultValue = QString();
+            profile.tooltip = tr("A .mat a Mode Profile export wrote (another model's mode: a fibre's for a waveguide), or any MATLAB 5 "
+                                 ".mat of x, y (m) and Ex, Ey (Hx, Hy: else a plane wave's, (neff/η0) z × E) - uncompressed (MATLAB: save "
+                                 "-v6; savemat of SciPy); relative to the model's folder");
+            profile.showIf = QStringLiteral("with=file");
+            add({QStringLiteral("overlap"), tr("Mode Overlap"), QStringLiteral("derived"), QStringLiteral("overlap"), Level::None,
+                 {study, modes,
+                  choice(QStringLiteral("with"), tr("With"), {QStringLiteral("mode"), QStringLiteral("gaussian"), QStringLiteral("file")},
+                         {tr("Another mode of the study (at its frequency and point)"), tr("A Gaussian beam"),
+                          tr("A mode profile file (.mat): another model's mode")},
+                         QStringLiteral("gaussian")),
+                  shownIf(integer(QStringLiteral("other"), tr("Its mode"), 2, tr("From 1: the study's mode at the same frequency and point")),
+                          QStringLiteral("with=mode")),
+                  shownIf(expr(QStringLiteral("waist"), tr("Waist w0"), QStringLiteral("m"), QStringLiteral("2[um]"),
+                               tr("Its radius where the field falls to 1/e (the intensity to 1/e²): E = exp(-r²/w0²), flat - at its waist")),
+                          QStringLiteral("with=gaussian")),
+                  shownIf(pair(QStringLiteral("centre"), tr("Centre (x, y)"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0"),
+                               tr("In the geometry's unit")),
+                          QStringLiteral("with=gaussian")),
+                  shownIf(choice(QStringLiteral("polarization"), tr("E along"), {QStringLiteral("x"), QStringLiteral("y")}, {tr("x"), tr("y")},
+                                 QStringLiteral("x")),
+                          QStringLiteral("with=gaussian")),
+                  shownIf(expr(QStringLiteral("index"), tr("Its medium's index"), QString(), QString(),
+                               tr("Its H: (n/η0) z × E, a plane wave's in it; empty: the mode's neff")),
+                          QStringLiteral("with=gaussian")),
+                  profile,
+                  shownIf(integer(QStringLiteral("filemode"), tr("Its mode in the file"), 1, tr("Of a file holding several: from 1")),
+                          QStringLiteral("with=file")),
+                  pair(QStringLiteral("offset"), tr("Offset (dx, dy)"), QStringLiteral("length"), QStringLiteral("0"), QStringLiteral("0"),
+                       tr("The other field moved by it, in the geometry's unit: a butt joint's misalignment")),
+                  solutions},
+                 {}, {}, false, false, QStringLiteral("ovl"),
+                 tr("Each mode solved overlapped with another field - a mode of the study, a Gaussian beam or another model's mode from "
+                    "a file, moved by an offset: the power coupled from it into the mode at a butt joint (reflections aside), "
+                    "Re[(∫E1×H2*)(∫E2×H1*)/∫E1×H1*]/Re ∫E2×H2* (Snyder and Love's, the overlap of Lumerical™ MODE), its loss in dB, and |E| "
+                    "alone's |∫E1·E2*|²/(∫|E1|² ∫|E2|²). Over the mode's domains, its perfectly matched layers left out; the other "
+                    "field's own power its own: what falls outside the mode's cross-section is lost.")});
         }
         add({QStringLiteral("pointeval"), tr("Point Evaluation"), QStringLiteral("derived"), QStringLiteral("pointeval"), Level::Point,
              {study,
@@ -3072,11 +3113,12 @@ QList<NodeKind> makeKinds()
         // Exports.
         add({QStringLiteral("exports"), tr("Export"), QString(), QStringLiteral("exports"), Level::None, {},
              {QStringLiteral("touchstone"), QStringLiteral("spice"), QStringLiteral("qucspart"), QStringLiteral("fieldexport"),
-              QStringLiteral("lumericalmode"), QStringLiteral("lumericalcharge"), QStringLiteral("lumericalmqw")},
+              QStringLiteral("modeprofile"), QStringLiteral("lumericalmode"), QStringLiteral("lumericalcharge"), QStringLiteral("lumericalmqw")},
              {}, true, true, QString(),
              tr("Results as files and parts of circuits: a line's S-parameters (Touchstone), SPICE subcircuits, a Qucs "
-                "subcircuit, fields on a grid (CSV, NumPy) - each written beside the model (model_tag.s2p, .cir, .sch, .csv); "
-                "and the model as Lumerical scripts (MODE, CHARGE, MQW: model_tag.lsf) that build it there.")});
+                "subcircuit, fields on a grid (CSV, NumPy), a mode's profile (MATLAB, NumPy, CSV) - each written beside the model "
+                "(model_tag.s2p, .cir, .sch, .csv, .mat); and the model as Lumerical scripts (MODE, CHARGE, MQW: model_tag.lsf) "
+                "that build it there.")});
         P line;
         line.key = QStringLiteral("line");
         line.label = tr("Line");
@@ -3168,6 +3210,26 @@ QList<NodeKind> makeKinds()
                  tr("Expressions of the solution on a regular grid or at the mesh's nodes, for a contour outside Qucs-S: "
                     "CSV, NumPy or columns - x and y in the geometry's unit, the values in SI, NaN outside the domains; one "
                     "solution (a point, time, frequency or mode), each, or each point's chosen mode.")});
+            P modes;
+            modes.key = QStringLiteral("physics");
+            modes.label = tr("Mode analysis");
+            modes.kind = P::Physics;
+            modes.defaultValue = QJsonArray{QStringLiteral("emw")};
+            add({QStringLiteral("modeprofile"), tr("Mode Profile"), QStringLiteral("export"), QStringLiteral("modeprofile"), Level::None,
+                 {study, modes, which, shownIf(point, one), shownIf(frequency, one),
+                  shownIf(integer(QStringLiteral("mode"), tr("Mode"), 0, tr("From 1; 0 the one its step chose")), one),
+                  pair(QStringLiteral("from"), tr("Lower left corner"), QStringLiteral("length"), QString(), QString(),
+                       tr("In the geometry's unit; empty, both corners: the mode's domains (its perfectly matched layers left out)")),
+                  pair(QStringLiteral("to"), tr("Upper right corner"), QStringLiteral("length"), QString(), QString()),
+                  integer(QStringLiteral("nx"), tr("Points along x"), 201), integer(QStringLiteral("ny"), tr("Points along y"), 201),
+                  choice(QStringLiteral("format"), tr("Format"), {QStringLiteral("mat"), QStringLiteral("npz"), QStringLiteral("csv")},
+                         {tr("MATLAB .mat (MATLAB, Octave, SciPy, Lumerical™)"), tr("NumPy .npz"), tr("CSV (a row per point)")}, QStringLiteral("mat")),
+                  file},
+                 {}, {}, false, false, QStringLiteral("mpr"),
+                 tr("A mode's fields on a regular grid, all six complex - Ex, Ey, Ez (V/m), Hx, Hy, Hz (A/m), the mode at 1 W - with "
+                    "x, y (m), neff (complex), λ0, its number and power: one mode, each, or each point's chosen. A MATLAB .mat (x the "
+                    "first index: Ex(ix, iy), modes the third), a NumPy .npz (Ex[iy, ix], modes the first) or CSV. A Mode Overlap "
+                    "reads the .mat back: another model's mode against this one's.")});
         }
         // The model as Lumerical scripts (no study need be computed).
         auto physicsOfType = [&](const QString& tag) {
