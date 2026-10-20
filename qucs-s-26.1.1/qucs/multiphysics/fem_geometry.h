@@ -17,6 +17,7 @@
 #define QUCS_FEM_GEOMETRY_H
 
 #include "fem_model.h"
+#include "fem_process.h"
 
 #include <QHash>
 #include <QPointF>
@@ -147,6 +148,10 @@ struct GeometryBuild {
     QString failedAt;
     /// The drawings its Import features read (absolute paths).
     QStringList files;
+    /// A process flow's: its state when the build ended (its regions, its
+    /// dopants), each step's report; null and none without a flow.
+    std::shared_ptr<const ProcessState> process;
+    std::vector<ProcessStepReport> processSteps;
     bool ok() const { return failedAt.isEmpty() && topology != nullptr; }
 };
 

@@ -134,6 +134,9 @@ qucs_add_fem_test(test_fem_anisotropy)
 qucs_add_fem_test(test_fem_modulator)
 qucs_add_fem_test(test_fem_resonator)
 qucs_add_fem_test(test_fem_laser)
+qucs_add_fem_test(test_fem_process)
+# (It writes a layout with gdstk, a mask's layer to read.)
+target_link_libraries(test_fem_process gdstk)
 # (Sanitized here some 800 s - the toy laser walked to 1.6 V, its threshold's
 # cases, a reverse bias -: CI's Debug 2 to 2.5 times that, near 900 times its
 # scale.)

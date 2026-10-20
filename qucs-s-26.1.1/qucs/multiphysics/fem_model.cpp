@@ -9,6 +9,7 @@
  * (at your option) any later version.
  */
 #include "fem_model.h"
+#include "fem_process.h"
 
 #include <QCoreApplication>
 #include <QHash>
@@ -288,7 +289,7 @@ QList<NodeKind> makeKinds()
         QStringLiteral("rectangle"), QStringLiteral("circle"), QStringLiteral("ellipse"), QStringLiteral("polygon"),
         QStringLiteral("point"), QStringLiteral("move"), QStringLiteral("rotate"), QStringLiteral("scale"),
         QStringLiteral("mirror"), QStringLiteral("array"), QStringLiteral("union"), QStringLiteral("difference"),
-        QStringLiteral("intersection"), QStringLiteral("import"), QStringLiteral("crosssection")};
+        QStringLiteral("intersection"), QStringLiteral("import"), QStringLiteral("crosssection"), QStringLiteral("process")};
     add({QStringLiteral("geometry"), tr("Geometry"), QString(), QStringLiteral("geometry"), Level::None, {}, geometryFeatures,
          {QStringLiteral("form union")}, true, true, QString(),
          tr("A sequence of features, built in order: each makes objects of the parameters. Form Union makes them one: "
@@ -414,6 +415,146 @@ QList<NodeKind> makeKinds()
              tr("A slice of a layout along a cut line: x along the cut, y its layer stack's heights - each row of the stack a "
                 "rectangle where its layer lies under the cut (a row without a layer: all along it). Its objects are named as the "
                 "rows, for the materials and the physics. Read again when the layout changes.")});
+    }
+    {
+        // A process flow: its steps in order on a cross-section.
+        P layout;
+        layout.key = QStringLiteral("file");
+        layout.label = tr("Layout");
+        layout.kind = P::File;
+        layout.defaultValue = QString();
+        layout.tooltip = tr("A GDSII or OASIS layout its masks are layers of, its path relative to the model's folder (empty: the "
+                            "window below, the masks' openings typed in)");
+        add({QStringLiteral("process"), tr("Process Flow"), QStringLiteral("geometry"), QStringLiteral("crosssection"), Level::None,
+             {expr(QStringLiteral("grid"), tr("Process grid"), QStringLiteral("length"), QStringLiteral("1[nm]"),
+                   tr("Every point of its regions on it, each step's result snapped")),
+              expr(QStringLiteral("minimum"), tr("Thinnest region kept"), QStringLiteral("length"), QStringLiteral("1[nm]"),
+                   tr("A piece of a region thinner than this everywhere - a sliver a step left - is dropped, said")),
+              shownIf(expr(QStringLiteral("x0"), tr("Window from x"), QStringLiteral("length"), QStringLiteral("0")), QStringLiteral("file=")),
+              shownIf(expr(QStringLiteral("width"), tr("Window's width"), QStringLiteral("length"), QStringLiteral("10")), QStringLiteral("file=")),
+              layout, text(QStringLiteral("cell"), tr("Cell"), QString(), tr("Flattened (empty: its largest top cell)")),
+              pair(QStringLiteral("start"), tr("Cut from (x, y)"), QString(), QStringLiteral("0"), QStringLiteral("0"),
+                   tr("In the layout's coordinates: µm, or with units")),
+              pair(QStringLiteral("end"), tr("Cut to (x, y)"), QString(), QStringLiteral("10"), QStringLiteral("0")),
+              choice(QStringLiteral("origin"), tr("x = 0 at"), {QStringLiteral("start"), QStringLiteral("center")},
+                     {tr("The cut's start"), tr("Its middle")}, QStringLiteral("start"))},
+             {QStringLiteral("process/substrate"), QStringLiteral("process/stack"), QStringLiteral("process/deposit"), QStringLiteral("process/etch"),
+              QStringLiteral("process/planarize"), QStringLiteral("process/strip"), QStringLiteral("process/epitaxy"), QStringLiteral("process/fill")},
+             {QStringLiteral("process/substrate")}, false, false, QStringLiteral("pf"),
+             tr("A cross-section made by its steps in order: a substrate or an epitaxial stack, then deposits, etches, planarizing, "
+                "strips, epitaxy, fills - its masks a layout's layers along its cut, or typed in. Its regions are the geometry's "
+                "objects, each named by the step that made it (its label, else its tag; a stack's by its rows) for the materials and "
+                "the physics. Its window: x along the cut (or from x0, its width), the substrate's surface at y = 0 to start. Each "
+                "step's result is snapped to the process grid; a sliver thinner than the minimum dropped, said.")});
+        // A mask: a layout's layer along the cut, or openings typed in.
+        const P mask = choice(QStringLiteral("mask"), tr("Mask"), {QStringLiteral("none"), QStringLiteral("layer"), QStringLiteral("openings")},
+                              {tr("None"), tr("A layout's layer"), tr("Openings typed in")}, QStringLiteral("none"));
+        const P maskLayer = shownIf(text(QStringLiteral("layer"), tr("Mask's layer"), QStringLiteral("1/0"), tr("Layer/datatype, as 1/0")),
+                                    QStringLiteral("mask=layer"));
+        const P polarity = shownIf(choice(QStringLiteral("polarity"), tr("Open"), {QStringLiteral("drawn"), QStringLiteral("undrawn")},
+                                          {tr("Where the layer is drawn"), tr("Where it is not")}, QStringLiteral("drawn")),
+                                   QStringLiteral("mask=layer"));
+        const P openings = shownIf(text(QStringLiteral("openings"), tr("Openings"), QString(),
+                                        tr("From, to x - pairs split by ';': \"1, 2; 4, 5.5\" (the geometry's unit, or with units)")),
+                                   QStringLiteral("mask=openings"));
+        const P bias = shownIf(expr(QStringLiteral("bias"), tr("Bias"), QStringLiteral("length"), QStringLiteral("0"),
+                                    tr("Each opening grown by this at either edge (shrunk: less than 0) - the lithography's and the etch's")),
+                               QStringLiteral("mask=layer|mask=openings"));
+        const P resistThickness = shownIf(expr(QStringLiteral("resist"), tr("Resist's thickness"), QStringLiteral("length"), QStringLiteral("1[um]"),
+                                               tr("Over the surface where the mask is closed, for the step alone")),
+                                          QStringLiteral("mask=layer|mask=openings"));
+        const P material = text(QStringLiteral("material"), tr("Material"), QStringLiteral("Silicon dioxide"),
+                                tr("A library entry's name, as the materials take it"));
+        const P orientation = choice(QStringLiteral("orientation"), tr("Wafer's surface"), {QStringLiteral("100"), QStringLiteral("110"), QStringLiteral("111")},
+                                     {tr("(100)"), tr("(110)"), tr("(111)")}, QStringLiteral("100"),
+                                     tr("Its crystal plane: what a crystal-plane etch's sidewalls are"));
+        add({QStringLiteral("process/substrate"), tr("Substrate"), QStringLiteral("process"), QStringLiteral("p:Sub"), Level::None,
+             {text(QStringLiteral("material"), tr("Material"), QStringLiteral("Silicon"), tr("A library entry's name, as the materials take it")),
+              expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("length"), QStringLiteral("2[um]"),
+                   tr("Below the surface, y = 0: from -thickness to 0")),
+              orientation},
+             {}, {}, false, false, QStringLiteral("sub"),
+             tr("The wafer: a crystal of a material, across the window, its surface at y = 0. Its region named as the step.")});
+        P layers;
+        layers.key = QStringLiteral("layers");
+        layers.label = tr("Layers");
+        layers.kind = P::Rows;
+        layers.choiceLabels = {tr("Name"), tr("Material"), tr("Thickness")};
+        layers.defaultValue = QJsonArray();
+        layers.tooltip = tr("From the bottom: each layer a region of that name; the geometry's unit, or with units");
+        add({QStringLiteral("process/stack"), tr("Epitaxial Stack"), QStringLiteral("process"), QStringLiteral("p:Epi"), Level::None,
+             {layers, orientation},
+             {}, {}, false, false, QStringLiteral("stk"),
+             tr("A wafer grown as a stack: its layers from the bottom up, each a crystal of its material across the window, the top's "
+                "surface at y = 0. Each a region of its row's name.")});
+        add({QStringLiteral("process/deposit"), tr("Deposit"), QStringLiteral("process"), QStringLiteral("p:+"), Level::None,
+             {material, expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("length"), QStringLiteral("0.1[um]")),
+              choice(QStringLiteral("mode"), tr("Coverage"), {QStringLiteral("conformal"), QStringLiteral("planar"), QStringLiteral("directional")},
+                     {tr("Conformal (every surface)"), tr("Planar (filled to a level)"), tr("Directional (from above)")}, QStringLiteral("conformal"),
+                     tr("Conformal: its thickness from every surface, sidewalls too (CVD, ALD); planar: filled to its thickness above the "
+                        "highest point (spin-on); directional: on what is seen from straight above, its thickness upward (evaporation, "
+                        "sputtering)")),
+              mask, maskLayer, polarity, openings, bias},
+             {}, {}, false, false, QStringLiteral("dep"),
+             tr("A film over the surface, its region named as the step. With a mask, a lift-off: kept where it is open alone.")});
+        P selectivity;
+        selectivity.key = QStringLiteral("selectivity");
+        selectivity.label = tr("Selectivity");
+        selectivity.kind = P::Rows;
+        selectivity.choiceLabels = {tr("Material"), tr("Selectivity")};
+        selectivity.defaultValue = QJsonArray();
+        selectivity.tooltip = tr("A material etched slower: its selectivity S, its rate 1/S of the etched ones'");
+        add({QStringLiteral("process/etch"), tr("Etch"), QStringLiteral("process"), QStringLiteral("p:−"), Level::None,
+             {expr(QStringLiteral("depth"), tr("Depth"), QStringLiteral("length"), QString(),
+                   tr("Into a material it etches at its full rate (empty: until its stop is reached - one or the other given)")),
+              text(QStringLiteral("stop"), tr("Stops on"), QString(), tr("A material (or a region's name) it does not etch; with no depth "
+                                                                         "it runs until that is reached in every opening")),
+              choice(QStringLiteral("mode"), tr("Profile"),
+                     {QStringLiteral("anisotropic"), QStringLiteral("isotropic"), QStringLiteral("tapered"), QStringLiteral("crystal")},
+                     {tr("Anisotropic (straight down)"), tr("Isotropic (every way, under the mask)"), tr("Tapered"),
+                      tr("A crystal plane's")},
+                     QStringLiteral("anisotropic"),
+                     tr("Anisotropic: a dry etch, its walls upright; isotropic: a wet etch's, round, under the mask's edges; tapered: its "
+                        "walls at an angle from the mask's edges; a crystal plane's: {111} sidewalls from the wafer's surface - 54.74° on "
+                        "(100), upright on (110) - a V where they meet (KOH, TMAH; III-V mesas at their planes' angle, given)")),
+              shownIf(expr(QStringLiteral("angle"), tr("Sidewalls' angle"), QStringLiteral("angle"), QStringLiteral("85"),
+                           tr("From the surface, degrees: under 90 the trench narrows going down, over 90 it widens (a dovetail)")),
+                      QStringLiteral("mode=tapered|mode=crystal")),
+              text(QStringLiteral("materials"), tr("Etches"), QString(), tr("The materials (or regions) it etches, split by ','; empty: every "
+                                                                            "one but its stop and its mask")),
+              selectivity,
+              expr(QStringLiteral("stopratio"), tr("Stop's rate"), QString(), QStringLiteral("0"), tr("Of the etched ones': 0, not at all")),
+              expr(QStringLiteral("overetch"), tr("Over-etch"), QString(), QStringLiteral("0"),
+                   tr("Its time this much longer - 0.2: 20 % - after its depth or its stop")),
+              mask, maskLayer, polarity, openings, bias, resistThickness,
+              shownIf(expr(QStringLiteral("maskratio"), tr("Mask's rate"), QString(), QStringLiteral("0"),
+                           tr("The resist's, of the etched ones' (0: not etched)")),
+                      QStringLiteral("mask=layer|mask=openings"))},
+             {}, {}, false, false, QStringLiteral("etch"),
+             tr("Material taken away where the mask is open: a front from the surface into each material at its rate - for a depth, or "
+                "until its stop shows in every opening - then its over-etch. The regions it cuts keep their names.")});
+        add({QStringLiteral("process/planarize"), tr("Planarize (CMP)"), QStringLiteral("process"), QStringLiteral("p:="), Level::None,
+             {expr(QStringLiteral("height"), tr("To height y"), QStringLiteral("length"), QString(), tr("Empty: to its stop's top")),
+              text(QStringLiteral("to"), tr("Stops on"), QString(), tr("A material (or a region): everything above its highest point taken away"))},
+             {}, {}, false, false, QStringLiteral("cmp"), tr("Everything above a height cut away.")});
+        add({QStringLiteral("process/strip"), tr("Strip"), QStringLiteral("process"), QStringLiteral("p:×"), Level::None,
+             {text(QStringLiteral("material"), tr("Material"), QStringLiteral("Photoresist"), tr("A material, or a region's name"))},
+             {}, {}, false, false, QStringLiteral("str"),
+             tr("A material removed wherever it is exposed: each piece of it the air touches (a buried piece stays).")});
+        add({QStringLiteral("process/epitaxy"), tr("Epitaxy"), QStringLiteral("process"), QStringLiteral("p:Epi"), Level::None,
+             {text(QStringLiteral("material"), tr("Material"), QStringLiteral("Silicon"), tr("A library entry's name, as the materials take it")),
+              expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("length"), QStringLiteral("0.1[um]")),
+              flag(QStringLiteral("selective"), tr("On crystal alone"), true,
+                   tr("Grown on exposed crystal only (a substrate's, a stack's, epitaxy's) - selective where a masking film bounds "
+                      "it; off: on every surface"))},
+             {}, {}, false, false, QStringLiteral("epi"),
+             tr("A crystal grown upward on the exposed crystal - planar: its thickness straight up -, its region named as the step.")});
+        add({QStringLiteral("process/fill"), tr("Fill"), QStringLiteral("process"), QStringLiteral("p:▬"), Level::None,
+             {text(QStringLiteral("material"), tr("Material"), QStringLiteral("BCB"), tr("A library entry's name, as the materials take it")),
+              expr(QStringLiteral("height"), tr("To height y"), QStringLiteral("length"), QString(), tr("Empty: its thickness above the highest point")),
+              shownIf(expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("length"), QStringLiteral("0.5[um]")), QStringLiteral("height="))},
+             {}, {}, false, false, QStringLiteral("fill"),
+             tr("A polymer or a glass spun on and reflowed: every open space filled to a level, its region named as the step.")});
     }
     add({QStringLiteral("form union"), tr("Form Union"), QStringLiteral("geometry"), QStringLiteral("formunion"), Level::None,
          {expr(QStringLiteral("tolerance"), tr("Repair tolerance"), QString(), QStringLiteral("1e-6"),
@@ -3348,6 +3489,12 @@ void namesIn(const Node& geometry, const QString& before, QStringList& out)
 {
     for (const Node& f : geometry.children) {
         if (!before.isEmpty() && f.tag == before) return;
+        // (A process flow's: its regions', by its steps.)
+        if (f.type == QLatin1String("process")) {
+            for (const QString& name : processObjectNames(f))
+                if (!out.contains(name)) out << name;
+            continue;
+        }
         if (f.type == QLatin1String("form union") || f.label.isEmpty()) continue;
         if (!out.contains(f.label)) out << f.label;
     }

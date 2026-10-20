@@ -28,6 +28,7 @@
 #include <map>
 #include <memory>
 
+class LayoutDoc;
 class QComboBox;
 class QFileSystemWatcher;
 class QLabel;
@@ -147,6 +148,27 @@ public:
     QString shownPlotGroup() const { return a_plotGroup; }
     std::shared_ptr<const qucs_s::fem::PlotScene> plotScene() const { return a_scene; }
     void showGeometry();
+    /// The geometry as a process flow leaves it after its step \a tag (or
+    /// as a geometry feature does), shown - its build, empty when it did
+    /// not get there (why in \a error). The model's own geometry kept.
+    qucs_s::fem::GeometryBuild showBuiltUpTo(const QString& tag, QString* error = nullptr);
+    // A process flow and its layout.
+    /// The layout a process flow \a flowTag cuts, opened in its tab (not
+    /// brought to the front): null, and why in \a error, when it has none.
+    LayoutDoc* flowLayout(const QString& flowTag, QString* error = nullptr);
+    /// Its cut (µm, the layout's coordinates), when it has a layout.
+    std::optional<QLineF> flowCut(const qucs_s::fem::Node& flow) const;
+    /// The flow \a flowTag cut along the last ruler of its layout's tab (of
+    /// a layout open in front, when it has none): its file, cell, start and
+    /// end - a step of Undo.
+    bool cutAlongRuler(const QString& flowTag, QString* error = nullptr);
+    /// A step's mask, a layout's layer: that layer alone in the layout, its
+    /// cut on it, the layout in front.
+    bool showMaskInLayout(const QString& stepTag, QString* error = nullptr);
+    /// Each material of the flow's regions on them: a node of its own, or
+    /// (one of that library entry there) its regions added to it - those
+    /// with none yet (one step of Undo); how many materials changed.
+    int makeFlowMaterials(const QString& flowTag);
     void showMesh();
     /// Clicks in the view pick the entities of node \a tag's selection
     /// (on: \a pick), each toggled in it.
@@ -231,6 +253,8 @@ private:
     mutable std::shared_ptr<qucs_s::fem::ParameterScope> a_params;
     mutable bool a_paramsStale = true;
     qucs_s::fem::GeometryBuild a_geometry;
+    bool a_viewPartial = false;   // the view a process step's state (showBuiltUpTo), not the whole geometry
+    QPointF a_lastPointer;        // where the pointer was in the model (a process flow's cross-probe)
     bool a_geometryStale = true;
     std::shared_ptr<const qucs_s::fem::Mesh> a_mesh;
     bool a_meshStale = true;

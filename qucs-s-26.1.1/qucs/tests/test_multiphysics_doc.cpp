@@ -1395,6 +1395,91 @@ private slots:
         shoot(app, "32-cross-section");
     }
 
+    // A process flow along a layout's ruler: its cut the ruler's, a silicon
+    // substrate and its material; its steps' masks the layout's layers -
+    // by the .lyp's names too -, shown there alone with the cut; its cut
+    // along another ruler; a shape picked in the layout naming the steps it
+    // is the mask of; its regions' materials made.
+    void aLayoutsProcessFlow()
+    {
+        const QString gds = copyOf("thermo_optic_heater.gds");
+        {
+            QFile lyp(QFileInfo(gds).absoluteDir().filePath(QStringLiteral("thermo_optic_heater.lyp")));
+            QVERIFY(lyp.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            lyp.write("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<layer-properties>\n"
+                      " <properties><frame-color>#ff0000</frame-color><fill-color>#ff0000</fill-color><name>waveguide</name><source>1/0@1</source></properties>\n"
+                      " <properties><frame-color>#00ff00</frame-color><source>Heater 11/0@1</source></properties>\n"
+                      "</layer-properties>\n");
+        }
+        LayoutLayer named;
+        QVERIFY(layoutLayerNamed(QStringLiteral("waveguide"), gds, &named) && named.layer == 1 && named.datatype == 0);
+        QVERIFY(layoutLayerNamed(QStringLiteral("Heater"), gds, &named) && named.layer == 11);
+        QVERIFY(!layoutLayerNamed(QStringLiteral("nothing"), gds, &named));
+        QVERIFY(app->gotoPage(gds));
+        auto* layout = qobject_cast<LayoutDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(layout != nullptr);
+        QVERIFY(layout->waitForLoaded());
+        const QLineF cut(-20, 0, 20, 0);
+        layout->view()->addRuler(cut);
+        QString why;
+        MultiphysicsDoc* doc = layout->processFlow(cut, &why);
+        QVERIFY2(doc != nullptr, qPrintable(why));
+        Model m = doc->model();
+        const qucs_s::fem::Node& flow = m.geometry().children.front();
+        QCOMPARE(flow.type, QStringLiteral("process"));
+        QCOMPARE(flow.text("file"), QFileInfo(gds).absoluteFilePath());
+        QCOMPARE(flow.text("cell"), QStringLiteral("PHASE_SHIFTER"));
+        QCOMPARE(flow.children.front().type, QStringLiteral("process/substrate"));
+        QCOMPARE(int(m.materials().children.size()), 1);
+        // SOI's layers, a rib etched where the waveguide is not drawn - its
+        // mask the layer by its name.
+        const QString flowTag = flow.tag;
+        auto step = [&m](const char* json) {
+            const QJsonObject o = QJsonDocument::fromJson(json).object();
+            qucs_s::fem::Node n = m.make(QStringLiteral("process/") + o.value("type").toString());
+            n.label = o.value("label").toString();
+            for (auto it = o.begin(); it != o.end(); ++it)
+                if (it.key() != QLatin1String("type") && it.key() != QLatin1String("label")) n.props.insert(it.key(), it.value());
+            return n;
+        };
+        QVERIFY(m.add(flowTag, step(R"({"type": "deposit", "label": "box", "material": "Silicon dioxide", "thickness": "2", "mode": "planar"})")));
+        QVERIFY(m.add(flowTag, step(R"({"type": "deposit", "label": "core", "material": "Silicon", "thickness": "0.22", "mode": "planar"})")));
+        const qucs_s::fem::Node* rib = m.add(flowTag, step(R"({"type": "etch", "label": "rib", "stop": "Silicon dioxide", "mask": "layer",
+                                                                 "layer": "waveguide", "polarity": "undrawn"})"));
+        QVERIFY(rib);
+        const QString ribTag = rib->tag;
+        QVERIFY(doc->setModel(m, QStringLiteral("steps")));
+        QVERIFY2(doc->buildGeometry(&why), qPrintable(why));
+        QVERIFY(doc->geometry().topology->objectNames.contains(QStringLiteral("core")));
+        // The waveguide left where its layer is: its width the layer's under the cut.
+        double coreWidth = 0;
+        for (const ProcessRegion& r : doc->geometry().process->regions)
+            if (r.name == QLatin1String("core")) coreWidth = r.area() / 0.22;
+        QVERIFY2(coreWidth > 0.1 && coreWidth < 5, qPrintable(QString::number(coreWidth)));
+        // Its materials: oxide new, silicon's the substrate's extended to
+        // the core; then none left to make.
+        QCOMPARE(doc->makeFlowMaterials(flowTag), 2);
+        QCOMPARE(int(doc->model().materials().children.size()), 2);
+        QCOMPARE(doc->makeFlowMaterials(flowTag), 0);
+        // Its mask in the layout: that layer alone, the cut on it.
+        QVERIFY2(doc->showMaskInLayout(ribTag, &why), qPrintable(why));
+        int shown = 0;
+        for (const qucs_s::layout::LayerStyle& st : layout->view()->styles()) shown += st.visible;
+        QCOMPARE(shown, 1);
+        QCOMPARE(layout->view()->rulers().size(), 1);
+        // A shape of that layer picked: the steps it is the mask of.
+        QVERIFY(layout->view()->selectAt(layout->view()->toPixel(QPointF(0, 0))));
+        QTRY_VERIFY2(layout->infoLabel()->text().contains(QStringLiteral("the mask of rib")), qPrintable(layout->infoLabel()->text()));
+        // The cut along another ruler, of the layout's tab.
+        layout->view()->addRuler(QLineF(-15, 1, 15, 1));
+        QVERIFY2(doc->cutAlongRuler(flowTag, &why), qPrintable(why));
+        QCOMPARE(doc->model().find(flowTag)->pair(QStringLiteral("start")), (QStringList{"-15", "1"}));
+        QCOMPARE(doc->model().find(flowTag)->pair(QStringLiteral("end")), (QStringList{"15", "1"}));
+        // A step shown as it leaves the structure; fem_build until it.
+        const GeometryBuild partial = doc->showBuiltUpTo(ribTag, &why);
+        QVERIFY2(partial.ok() && !partial.processSteps.empty() && partial.processSteps.back().tag == ribTag, qPrintable(why));
+    }
+
     // Claude's tools in frequency, and fem_export.
     void claudesToolsInFrequency()
     {

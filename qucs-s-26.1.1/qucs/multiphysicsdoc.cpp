@@ -9,6 +9,10 @@
  * (at your option) any later version.
  */
 #include "multiphysicsdoc.h"
+#include "fem_import.h"
+#include "fem_materials.h"
+#include "layout.h"
+#include "layoutdoc.h"
 
 #include "config.h"
 #include "dataimport.h"
@@ -1003,10 +1007,35 @@ void MultiphysicsDoc::updateState()
 
 void MultiphysicsDoc::showGeometry()
 {
+    a_viewPartial = false;
     a_view->setTopology(a_geometry.topology);
     a_view->setShow(GraphicsView::Show::Geometry);
     updateState();
     updateHighlight();
+}
+
+qucs_s::fem::GeometryBuild MultiphysicsDoc::showBuiltUpTo(const QString& tag, QString* error)
+{
+    const std::shared_ptr<ParameterScope> ps = parameters();
+    GeometryBuild partial = qucs_s::fem::buildGeometry(a_model, *ps, tag);
+    const Node* n = a_model.find(tag);
+    const QString name = n ? n->name() : tag;
+    if (!partial.ok()) {
+        const Node* at = a_model.find(partial.failedAt);
+        const QString why = tr("%1: %2").arg(at ? at->name() : partial.failedAt, partial.errors.value(partial.failedAt));
+        say(tr("Up to %1, it stopped at %2").arg(name, why), true);
+        if (error) *error = why;
+        return partial;
+    }
+    // (A step's said; the view the state then - the next build shows the
+    // whole again.)
+    for (const ProcessStepReport& s : partial.processSteps)
+        if (s.tag == tag) say(tr("After %1: %2").arg(name, s.said));
+    a_view->setTopology(partial.topology);
+    a_view->setShow(GraphicsView::Show::Geometry);
+    a_viewPartial = true;
+    updateState();
+    return partial;
 }
 
 void MultiphysicsDoc::showMesh()
@@ -1232,11 +1261,14 @@ void MultiphysicsDoc::focusNode(const QString& tag)
             }
         } else if (n->type == QLatin1String("mesh") || group == QLatin1String("mesh")) {
             showMesh();
+        } else if (group == QLatin1String("process")) {
+            // A process step: the structure as it leaves it.
+            showBuiltUpTo(tag);
         } else if (group == QLatin1String("derived")) {
             if (a_view->show() != GraphicsView::Show::Results) showGeometry();
             evaluate(tag);
             a_bottom->setCurrentWidget(a_table);
-        } else if (a_view->show() != GraphicsView::Show::Geometry
+        } else if ((a_view->show() != GraphicsView::Show::Geometry || a_viewPartial)
                    && (group == QLatin1String("geometry") || group == QLatin1String("material") || group == QLatin1String("physics")
                        || group == QLatin1String("es") || group == QLatin1String("ec") || group == QLatin1String("ht")
                        || group == QLatin1String("selection") || n->type == QLatin1String("geometry")
@@ -1283,6 +1315,21 @@ void MultiphysicsDoc::updateHighlight()
     if (!k || !k->property(QStringLiteral("selection"))) {
         if (!(k && k->group == QLatin1String("geometry"))) level = Level::None;
     }
+    // A process step: its region's domains; a flow (a step) of a layout:
+    // a click shows where on it.
+    bool probe = false;
+    if (k && k->group == QLatin1String("process")) {
+        level = Level::None;
+        if (processStepMakesRegion(n->type) && topology->objectNames.contains(n->label.isEmpty() ? n->tag : n->label)) {
+            level = Level::Domain;
+            rule = QJsonObject{{QStringLiteral("only"), QJsonArray{n->label.isEmpty() ? n->tag : n->label}}};
+        }
+        int at = -1;
+        const Node* flow = a_model.parentOf(n->tag, &at);
+        probe = flow && !flow->text(QStringLiteral("file")).trimmed().isEmpty();
+    } else if (n->type == QLatin1String("process")) {
+        probe = !n->text(QStringLiteral("file")).trimmed().isEmpty();
+    }
     QVector<int> picked;
     if (level != Level::None) {
         QString why;
@@ -1290,7 +1337,145 @@ void MultiphysicsDoc::updateHighlight()
     }
     a_view->setHighlight(level, picked);
     const bool pickable = a_picking && k && k->property(QStringLiteral("selection")) && level != Level::None;
-    a_view->setPickLevel(pickable ? level : Level::None);
+    a_view->setPickLevel(probe ? Level::Domain : pickable ? level : Level::None);
+}
+
+std::optional<QLineF> MultiphysicsDoc::flowCut(const Node& flow) const
+{
+    if (flow.text(QStringLiteral("file")).trimmed().isEmpty()) return std::nullopt;
+    const std::shared_ptr<ParameterScope> ps = const_cast<MultiphysicsDoc*>(this)->parameters();
+    Expression::Options options;
+    options.lengthUnit = 1e-6;
+    options.numbersAreLengths = true;
+    auto um = [&](const QString& text) -> std::optional<double> {
+        const Expression e = Expression::compile(text, ps->scope, options);
+        if (!e.isValid() || !e.isConstant()) return std::nullopt;
+        return e.constant();
+    };
+    const QStringList a = flow.pair(QStringLiteral("start")), b = flow.pair(QStringLiteral("end"));
+    const auto x0 = um(a.value(0)), y0 = um(a.value(1)), x1 = um(b.value(0)), y1 = um(b.value(1));
+    if (!x0 || !y0 || !x1 || !y1) return std::nullopt;
+    return QLineF(*x0, *y0, *x1, *y1);
+}
+
+LayoutDoc* MultiphysicsDoc::flowLayout(const QString& flowTag, QString* error)
+{
+    auto fail = [&](const QString& why) -> LayoutDoc* {
+        if (error) *error = why;
+        return nullptr;
+    };
+    const Node* flow = a_model.find(flowTag);
+    if (!flow || flow->type != QLatin1String("process")) return fail(tr("there is no process flow %1").arg(flowTag));
+    QString file = flow->text(QStringLiteral("file")).trimmed();
+    if (file.isEmpty()) return fail(tr("%1 has no layout: its window is typed in").arg(flow->name()));
+    if (QFileInfo(file).isRelative()) {
+        if (getDocName().isEmpty()) return fail(tr("%1 is relative to the model's folder: save the model first").arg(file));
+        file = QFileInfo(getDocName()).absoluteDir().absoluteFilePath(file);
+    }
+    if (a_App == nullptr) return fail(tr("no window"));
+    QucsDoc* d = a_App->findDoc(file);
+    if (d == nullptr) {
+        const QString here = getDocName();
+        if (!a_App->gotoPage(file)) return fail(tr("%1 could not be opened").arg(QFileInfo(file).fileName()));
+        d = a_App->findDoc(file);
+        if (!here.isEmpty()) a_App->gotoPage(here);
+    }
+    auto* layout = dynamic_cast<LayoutDoc*>(d);
+    return layout ? layout : fail(tr("%1 is not a layout").arg(QFileInfo(file).fileName()));
+}
+
+bool MultiphysicsDoc::cutAlongRuler(const QString& flowTag, QString* error)
+{
+    const Node* flow = a_model.find(flowTag);
+    if (!flow || flow->type != QLatin1String("process")) {
+        if (error) *error = tr("there is no process flow %1").arg(flowTag);
+        return false;
+    }
+    // Its layout's tab; with none, a layout open in front.
+    LayoutDoc* layout = nullptr;
+    if (!flow->text(QStringLiteral("file")).trimmed().isEmpty()) layout = flowLayout(flowTag, error);
+    if (!layout && a_App)
+        for (QucsDoc* d : a_App->allDocuments())
+            if (auto* l = dynamic_cast<LayoutDoc*>(d)) {
+                layout = l;
+                break;
+            }
+    if (!layout) {
+        if (error) *error = tr("no layout is open: open one and draw a ruler across it");
+        return false;
+    }
+    if (layout->view()->rulers().isEmpty()) {
+        if (error) *error = tr("%1 has no ruler: draw one across it (its Ruler tool)").arg(QFileInfo(layout->getDocName()).fileName());
+        return false;
+    }
+    const QLineF cut = layout->view()->rulers().last();
+    QString file = QFileInfo(layout->getDocName()).absoluteFilePath();
+    if (!getDocName().isEmpty()) {
+        const QString relative = QFileInfo(getDocName()).absoluteDir().relativeFilePath(file);
+        if (!relative.startsWith(QLatin1String(".."))) file = relative;
+    }
+    const QString cell = layout->shownCellName();
+    auto num = [](double v) { return formatNumber(v, 12); };
+    return editNode(flowTag, [file, cell, cut, &num](Node& node) {
+        node.props.insert(QStringLiteral("file"), file);
+        node.props.insert(QStringLiteral("cell"), cell);
+        node.props.insert(QStringLiteral("start"), QJsonArray{num(cut.x1()), num(cut.y1())});
+        node.props.insert(QStringLiteral("end"), QJsonArray{num(cut.x2()), num(cut.y2())});
+    }, tr("Cut along the ruler"), error);
+}
+
+bool MultiphysicsDoc::showMaskInLayout(const QString& stepTag, QString* error)
+{
+    int at = -1;
+    const Node* step = a_model.find(stepTag);
+    const Node* flow = a_model.parentOf(stepTag, &at);
+    if (!step || !flow || flow->type != QLatin1String("process") || step->text(QStringLiteral("mask")) != QLatin1String("layer")) {
+        if (error) *error = tr("%1's mask is not a layout's layer").arg(step ? step->name() : stepTag);
+        return false;
+    }
+    LayoutDoc* layout = flowLayout(flow->tag, error);
+    if (!layout) return false;
+    LayoutLayer key;
+    if (!layoutLayerNamed(step->text(QStringLiteral("layer")), layout->getDocName(), &key)) {
+        if (error) *error = tr("%1 is not a layer of %2").arg(step->text(QStringLiteral("layer")), QFileInfo(layout->getDocName()).fileName());
+        return false;
+    }
+    if (!layout->showLayerAlone(qucs_s::layout::LayerKey{key.layer, key.datatype}, flowCut(*flow).value_or(QLineF()))) {
+        if (error) *error = tr("%1 has no layer %2").arg(QFileInfo(layout->getDocName()).fileName(), key.text());
+        return false;
+    }
+    if (a_App) a_App->gotoPage(layout->getDocName());
+    return true;
+}
+
+int MultiphysicsDoc::makeFlowMaterials(const QString& flowTag)
+{
+    const Node* flow = a_model.find(flowTag);
+    if (!flow) return 0;
+    Model m = a_model;
+    const QList<Node> made = processMaterialNodes(m, *flow);
+    int changed = 0;
+    for (const Node& n : made) {
+        // (A material of the model of that library entry, on regions by
+        // name: those added to it - not a second one.)
+        Node* same = nullptr;
+        for (Node& mat : m.materials().children)
+            if (mat.selection().contains(QStringLiteral("only"))
+                && ((!n.text(QStringLiteral("library")).isEmpty() && mat.text(QStringLiteral("library")) == n.text(QStringLiteral("library")))
+                    || (n.text(QStringLiteral("library")).isEmpty() && !n.label.isEmpty() && mat.label == n.label)))
+                same = &mat;
+        if (same) {
+            QJsonArray only = same->selection().value(QStringLiteral("only")).toArray();
+            for (const QJsonValue& v : n.selection().value(QStringLiteral("only")).toArray())
+                if (!only.contains(v)) only.append(v);
+            same->props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), only}});
+        } else {
+            m.add(m.materials().tag, n);
+        }
+        ++changed;
+    }
+    if (changed > 0) setModel(m, tr("Materials of %1").arg(flow->name()));
+    return changed;
 }
 
 void MultiphysicsDoc::setPicking(bool pick)
@@ -1305,6 +1490,29 @@ void MultiphysicsDoc::picked(Level level, int entity)
     const Node* n = a_model.find(a_focus);
     std::shared_ptr<const Topology> topology = a_view->topology();
     if (!n || !topology) return;
+    // A process flow's (a step's): the point clicked shown on its layout,
+    // along the cut - the shape there selected.
+    if (n->type == QLatin1String("process") || (n->kind() && n->kind()->group == QLatin1String("process"))) {
+        int at = -1;
+        const Node* flow = n->type == QLatin1String("process") ? n : a_model.parentOf(a_focus, &at);
+        if (flow == nullptr) return;
+        const std::optional<QLineF> cut = flowCut(*flow);
+        QString why;
+        LayoutDoc* layout = cut ? flowLayout(flow->tag, &why) : nullptr;
+        if (!layout) {
+            if (!why.isEmpty()) say(why);
+            return;
+        }
+        // x along the cut from its start (or its middle), the model's unit.
+        const double um = topology->unitScale / 1e-6;
+        const double shift = flow->text(QStringLiteral("origin")) == QLatin1String("center") ? cut->length() / 2 : 0;
+        const double t = a_lastPointer.x() * um + shift;
+        const QPointF p = cut->pointAt(std::clamp(t / cut->length(), 0.0, 1.0));
+        layout->probe(p, *cut);
+        say(tr("x = %1 µm along the cut: (%2, %3) µm in the layout").arg(formatNumber(t, 6), formatNumber(p.x(), 6), formatNumber(p.y(), 6)));
+        if (a_App) a_App->gotoPage(layout->getDocName());
+        return;
+    }
     // The selection as numbers, the one clicked in or out.
     QString why;
     QVector<int> now = resolveSelection(*topology, a_model, level, n->selection(), &why);
@@ -2471,6 +2679,7 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
 
 void MultiphysicsDoc::pointerMoved(QPointF point, bool inside)
 {
+    if (inside) a_lastPointer = point;
     if (!inside) {
         a_status->clear();
         return;

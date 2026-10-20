@@ -1472,6 +1472,7 @@ void LayoutDoc::buildUi()
         if (!a_view->rulers().isEmpty()) {
             menu.addAction(tr("Clear the Rulers"), this, [this] { a_view->clearRulers(); });
             menu.addAction(tr("Cross-Section to Multiphysics…"), this, &LayoutDoc::crossSectionFromRuler);
+            menu.addAction(tr("Process Flow to Multiphysics"), this, &LayoutDoc::processFlowFromRuler);
         }
         menu.addSeparator();
         menu.addAction(tr("Find a Cell…"), this, &LayoutDoc::showSearch);
@@ -1943,7 +1944,38 @@ void LayoutDoc::updateInfo()
         return;
     }
     if (a_view->selection()) {
-        a_info->setText(describe(*a_view->selection()));
+        QString text = describe(*a_view->selection());
+        // (A shape's layer a process flow's mask: its steps, in the open
+        // models of this layout.)
+        const Found& f = *a_view->selection();
+        if (!f.isText() && f.cell >= 0 && f.shape >= 0 && a_App != nullptr) {
+            const quint32 index = a_layout->cells.at(f.cell).shapes.at(f.shape).layer;
+            if (index < quint32(a_layout->layers.size())) {
+                const LayerKey key = a_layout->layers.at(int(index)).key;
+                QStringList steps;
+                for (QucsDoc* d : a_App->allDocuments()) {
+                    auto* m = dynamic_cast<MultiphysicsDoc*>(d);
+                    if (m == nullptr) continue;
+                    const qucs_s::fem::Model& model = m->model();
+                    for (const qucs_s::fem::Node& flow : model.geometry().children) {
+                        if (flow.type != QLatin1String("process") || !flow.enabled) continue;
+                        QString file = flow.text(QStringLiteral("file")).trimmed();
+                        if (file.isEmpty()) continue;
+                        if (QFileInfo(file).isRelative() && !model.fileName.isEmpty()) file = QFileInfo(model.fileName).absoluteDir().absoluteFilePath(file);
+                        if (QFileInfo(file).canonicalFilePath() != QFileInfo(getDocName()).canonicalFilePath()) continue;
+                        for (const qucs_s::fem::Node& step : flow.children) {
+                            qucs_s::fem::LayoutLayer l;
+                            if (step.enabled && step.text(QStringLiteral("mask")) == QLatin1String("layer")
+                                && qucs_s::fem::layoutLayerNamed(step.text(QStringLiteral("layer")), file, &l) && l.layer == key.layer
+                                && l.datatype == key.datatype)
+                                steps << tr("%1 (%2)").arg(step.name(), QFileInfo(model.fileName).fileName().isEmpty() ? tr("an untitled model") : QFileInfo(model.fileName).fileName());
+                        }
+                    }
+                }
+                if (!steps.isEmpty()) text += tr(" - the mask of %1").arg(steps.join(QLatin1String(", ")));
+            }
+        }
+        a_info->setText(text);
         a_info->setToolTip(a_info->text());
         return;
     }
@@ -2230,6 +2262,74 @@ void LayoutDoc::crossSectionFromRuler()
     QString why;
     if (!crossSection(a_view->rulers().last(), nullptr, &why) && !why.isEmpty())
         QMessageBox::warning(this, tr("Cross-Section"), why);
+}
+
+void LayoutDoc::processFlowFromRuler()
+{
+    if (a_view->rulers().isEmpty()) {
+        QMessageBox::information(this, tr("Process Flow"), tr("Draw a ruler across the layout first: the flow's cut is along it."));
+        return;
+    }
+    QString why;
+    if (!processFlow(a_view->rulers().last(), &why) && !why.isEmpty()) QMessageBox::warning(this, tr("Process Flow"), why);
+}
+
+MultiphysicsDoc* LayoutDoc::processFlow(const QLineF& cut, QString* error)
+{
+    auto fail = [&](const QString& why) -> MultiphysicsDoc* {
+        if (error) *error = why;
+        return nullptr;
+    };
+    if (!a_layout || shownCell() < 0) return fail(tr("the layout is not read yet"));
+    if (cut.length() <= 0) return fail(tr("the cut has no length"));
+    if (a_App == nullptr) return fail(tr("no window to open the model in"));
+    const QString cell = a_layout->cells.at(shownCell()).name;
+    const qucs_s::fem::Model model = qucs_s::fem::processFlowModel(QFileInfo(getDocName()).absoluteFilePath(), cell, cut);
+    MultiphysicsDoc* doc = a_App->newMultiphysicsModel();
+    if (!doc) return fail(tr("no model could be made"));
+    doc->setModel(model, tr("Process Flow on %1").arg(cell));
+    return doc;
+}
+
+QString LayoutDoc::shownCellName() const
+{
+    return a_layout && shownCell() >= 0 ? a_layout->cells.at(shownCell()).name : QString();
+}
+
+void LayoutDoc::showCut(const QLineF& cut)
+{
+    a_view->clearRulers();
+    a_view->addRuler(cut);
+    const QRectF around = QRectF(cut.p1(), cut.p2()).normalized();
+    const double margin = std::max(cut.length() * 0.15, 1e-3);
+    a_view->showRegion(around.adjusted(-margin, -margin, margin, margin));
+    updateInfo();
+}
+
+bool LayoutDoc::showLayerAlone(const LayerKey& key, const QLineF& cut)
+{
+    if (!a_layout) return false;
+    int found = -1;
+    for (int i = 0; i < a_layout->layers.size(); ++i)
+        if (a_layout->layers.at(i).key == key) found = i;
+    if (found < 0) return false;
+    for (int i = 0; i < a_layout->layers.size(); ++i) setLayerVisible(i, i == found);
+    if (cut.length() > 0) showCut(cut);
+    return true;
+}
+
+void LayoutDoc::probe(QPointF point, const QLineF& cut)
+{
+    showCut(cut);
+    // (A short ruler across the cut at the point: where it is.)
+    QPointF across(-(cut.p2().y() - cut.p1().y()), cut.p2().x() - cut.p1().x());
+    const double n = std::hypot(across.x(), across.y());
+    if (n > 0) {
+        across *= cut.length() * 0.03 / n;
+        a_view->addRuler(QLineF(point - across, point + across));
+    }
+    a_view->selectAt(a_view->toPixel(point));
+    updateInfo();
 }
 
 MultiphysicsDoc* LayoutDoc::crossSection(const QLineF& cut, const QList<qucs_s::fem::StackRow>* given, QString* error)
