@@ -784,7 +784,11 @@ private slots:
         // n 3.6, Eg 1.520 eV). Here Bastard's one-parameter exciton: bound
         // within 7 % of the exact for 2 to 20 nm; its line's ∫α dE Lw/(2π) -
         // Ivchenko's absorbance 2Γ0Γ/((ω-ω0)² + (Γ+Γ0)²), its integral 2πΓ0
-        // - within 15 % of what was measured.
+        // - within 15 % of what was measured. And the subbands coupled
+        // (one pair each), the electron and hole drawn together along the
+        // axis: bound within 1.5 %, the radiative decay 11 and 13 % short
+        // (32.6 and 30.7 µeV; the products alone 23.0 at 14 nm) - one
+        // function drawing them together, some 95 % of what more would.
         auto stack = [](double L, const QString& energies, const char* model) {
             return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
               "components": [{"unit": "nm",
@@ -798,18 +802,21 @@ private slots:
                    "mhhp": "0.111", "mlhp": "0.21", "Ep": "28.8[eV]", "nr": "3.6", "epsilonr": "12.53", "selection": {"only": ["below", "above"]}}]}],
                 "mesh": {"size": "normal", "custom": true, "hmax": "%3"}}],
               "studies": [{"type": "study", "steps": [{"type": "spectrum", "energies": "%4", "states": 1, "linewidth": "0.2[meV]",
-                                                      "lineshape": "gaussian", "excitons": true, "excitonmodel": "%5"}]}]})json")
+                                                      "lineshape": "gaussian", "excitons": true, "excitonmodel": "%5", "excitonsize": %6}]}]})json")
                 .arg(L)
                 .arg(25 + L)
                 .arg(std::min(0.5, L / 10))
                 .arg(energies, QLatin1String(model))
+                // (Under the sanitizers the coupled excitons' k points fewer:
+                // one pair drawn together, a dense solve of 2500 else.)
+                .arg(femtest::slowBuild() ? 300 : 1200)
                 .toUtf8();
         };
         auto exact = [](double L) { return (3.5431 * L * L + 146.694 * L) / (L * L + 11.1758 * L + 6.0473) * 1e-3 * Q; };
-        double worstEb[2] = {0, 0}, worstG[2] = {0, 0};
+        double worstEb[3] = {0, 0, 0}, worstG[3] = {0, 0, 0};
         int offTheTable = 0;   // γ's found between the Coulomb table's nodes (0.025 apart)
-        for (int model = 0; model < 2; ++model) {
-            const char* name = model == 0 ? "two" : "bastard";
+        for (int model = 0; model < 3; ++model) {
+            const char* name = model == 0 ? "two" : model == 1 ? "bastard" : "coupled";
             for (double L : {2.0, 5.0, 10.0, 14.0, 20.0}) {
                 const Run x = run(modelOf(stack(L, QStringLiteral("1.6[eV]"), name)));
                 QVERIFY2(x.error.isEmpty(), qPrintable(x.error));
@@ -846,6 +853,8 @@ private slots:
         QVERIFY2(worstEb[0] < 0.02, qPrintable(QString::number(worstEb[0])));
         QVERIFY2(worstG[0] < 0.1, qPrintable(QString::number(worstG[0])));
         QVERIFY2(worstEb[1] < 0.07, qPrintable(QString::number(worstEb[1])));
+        QVERIFY2(worstEb[2] < 0.02, qPrintable(QString::number(worstEb[2])));
+        QVERIFY2(worstG[2] < 0.15, qPrintable(QString::number(worstG[2])));
         // The table interpolated smoothly: γ found anywhere, not stuck at its
         // nodes (bilinear, each node a minimum of its own).
         QVERIFY2(offTheTable >= 3, qPrintable(QString::number(offTheTable)));

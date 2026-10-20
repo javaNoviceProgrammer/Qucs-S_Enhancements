@@ -2737,6 +2737,13 @@ QList<NodeKind> makeKinds()
                                 "[100], [110] or averaged the spinors that direction's), the energies and weights averaged over the "
                                 "plane's directions; not 8x8's")),
                       QStringLiteral("excitons=true")),
+              shownIf(flag(QStringLiteral("excitondrawn"), tr("Drawn together along the axis"), true,
+                           tr("The coupled excitons' electron and hole drawn together along the growth axis as well as in the plane: "
+                              "each of the lowest four pairs a second function, itself times e^(-|ze - zh|/σ) (σ the lowest pair's "
+                              "spread of ze - zh) - the attraction pulls the two to one z where they meet, which subbands' products "
+                              "reach only through many more subbands. A 9.4 nm GaAs well's 1s line: 0.70 of a real-space solve's "
+                              "drawn together with its one pair alone, 0.95 drawn together so; off: the products alone")),
+                      QStringLiteral("excitons=true&excitonmodel=coupled")),
               shownIf(integer(QStringLiteral("excitonsize"), tr("Coupled excitons' size"), 1200,
                               tr("The unknowns of the coupled excitons' Hamiltonian at most - its pairs times its k points (each J's "
                                  "of k·p bands) -, the continuum's states half the line's width apart within it, else further, said. "
