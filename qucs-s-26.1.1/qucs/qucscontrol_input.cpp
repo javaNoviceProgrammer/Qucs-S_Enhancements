@@ -400,9 +400,12 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                 if (QWidget* list = openList()) return list;
                 if (run->clicked) return run->clicked;
                 QWidget* f = QApplication::focusWidget();
-                // (A window not active - a list it opened gone, offscreen -
-                // has Qt's focus with none: the field the window keeps it on.)
-                if (f == nullptr && root) f = root->window()->focusWidget();
+                // (A window not active - a list it opened gone, offscreen, or
+                // another window's field with Qt's focus, its activation not
+                // come yet: a loaded runner's half second past - has Qt's
+                // focus with none of its own: the field the window keeps it
+                // on, as a user's keys go there once it is in front.)
+                if (root && (f == nullptr || f->window() != root->window())) f = root->window()->focusWidget();
                 if (canvas) return f != nullptr && canvas->isAncestorOf(f) ? f : static_cast<QWidget*>(canvas.data());
                 return f != nullptr && root && (f == root || root->isAncestorOf(f)) ? f : root.data();
             };
@@ -461,14 +464,15 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         run->since.start();
     };
     // (Given as the window is active - its activation is an event to come
-    // -, or half a second on without it.)
+    // -, or half a second on without it (setActivationWait): then to the
+    // field the window keeps its focus on, as focused() finds it.)
     if (activating) {
         auto* wait = new QTimer(a_app);
         wait->setInterval(10);
         QElapsedTimer asked;
         asked.start();
-        connect(wait, &QTimer::timeout, a_app, [wait, activating, asked, give] {
-            if (activating && QApplication::activeWindow() != activating && asked.elapsed() < 500) return;
+        connect(wait, &QTimer::timeout, a_app, [wait, activating, asked, give, most = a_activationWait] {
+            if (activating && QApplication::activeWindow() != activating && asked.elapsed() < most) return;
             wait->stop();
             wait->deleteLater();
             give();
