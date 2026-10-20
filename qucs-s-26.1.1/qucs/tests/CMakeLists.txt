@@ -102,6 +102,7 @@ qucs_add_fem_test(test_fem_semiconductor)
 # build at home: its contacts' currents, its examples.)
 set_tests_properties(test_fem_semiconductor PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_rays)
+qucs_add_fem_test(test_fem_modeoverlap)
 qucs_add_fem_test(test_fem_quantum)
 # (697 s on a sanitized Debug build at home, its k·p bands' tests the most:
 # Eigen's complex solves unoptimized; each function under 130 s. 1660 s by

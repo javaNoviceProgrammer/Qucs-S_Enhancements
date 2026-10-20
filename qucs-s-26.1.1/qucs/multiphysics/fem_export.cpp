@@ -12,10 +12,14 @@
  */
 #include "fem_export.h"
 
+#include "fem_modeprofile.h"
+
 #include <QCoreApplication>
+#include <QFileInfo>
 
 #include <Eigen/Dense>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -787,6 +791,117 @@ ExportText fieldExport(const SolutionSet& set, const Node& node)
     return out;
 }
 
+/// A Mode Profile export: a mode analysis's modes on a regular grid, all
+/// six components complex, as MATLAB's .mat, NumPy's .npz or CSV.
+ExportText modeProfileExport(const Model& model, const SolutionSet& set, const Node& node)
+{
+    ExportText out;
+    const QString which = node.text(QStringLiteral("solutions"));
+    const bool one = which == QLatin1String("selected") || which.isEmpty();
+    const std::vector<Instance> at = one ? instances(set, false, node.integer(QStringLiteral("point")), {}, node.text(QStringLiteral("frequency")),
+                                                     node.integer(QStringLiteral("mode")))
+                                         : instances(set, true, 0, {}, {}, modesAsked(set, which));
+    Solution* first = at.empty() ? nullptr : select(set, at.front());
+    if (!first) {
+        out.error = tr("no mode to export");
+        return out;
+    }
+    const QString tag = modeAnalysisOf(*first, node);
+    const int fi = first->fieldIndex(tag);
+    if (fi < 0 || !first->modeAnalysis || first->fields()[std::size_t(fi)].type != QLatin1String("modes")) {
+        out.error = tr("there is no mode analysis %1 solved in its study").arg(tag);
+        return out;
+    }
+    const double scale = first->topology().unitScale;
+    // The grid: its corners given (the geometry's unit), else the mode's
+    // domains' extent, its perfectly matched layers left out.
+    const std::vector<int> pml = pmlDomainsOf(*first, tag);
+    const Field& field = first->fields()[std::size_t(fi)];
+    double corner[2][2] = {{INFINITY, INFINITY}, {-INFINITY, -INFINITY}};
+    const Mesh& mesh = first->mesh();
+    for (std::size_t t = 0; t < mesh.triangles.size(); ++t) {
+        const int d = mesh.domain[t];
+        if (d < 0 || std::size_t(d) >= field.domains.size() || !field.domains[std::size_t(d)] || std::find(pml.begin(), pml.end(), d) != pml.end()) continue;
+        for (int v : mesh.triangles[t]) {
+            const QPointF& p = mesh.nodes[std::size_t(v)];
+            corner[0][0] = std::min(corner[0][0], p.x());
+            corner[0][1] = std::min(corner[0][1], p.y());
+            corner[1][0] = std::max(corner[1][0], p.x());
+            corner[1][1] = std::max(corner[1][1], p.y());
+        }
+    }
+    const QStringList from = node.pair(QStringLiteral("from")), to = node.pair(QStringLiteral("to"));
+    bool given = false;
+    for (const QString& t : from + to) given = given || !t.trimmed().isEmpty();
+    if (given) {
+        Expression::Options options;
+        options.lengthUnit = scale;
+        options.numbersAreLengths = true;
+        const QStringList texts[2] = {from, to};
+        for (int c = 0; c < 2; ++c)
+            for (int k = 0; k < 2; ++k) {
+                const Expression e = Expression::compile(texts[c].value(k), first->parameters().scope, options);
+                if (!e.isValid() || !e.isConstant()) {
+                    out.error = tr("the corner %1: %2").arg(texts[c].value(k), e.isValid() ? tr("not a constant") : e.error());
+                    return out;
+                }
+                corner[c][k] = e.constant();
+            }
+    }
+    if (!(corner[1][0] > corner[0][0]) || !(corner[1][1] > corner[0][1])) {
+        out.error = tr("its corners: the second above and right of the first");
+        return out;
+    }
+    const int nx = std::clamp(node.integer(QStringLiteral("nx")), 2, 4000), ny = std::clamp(node.integer(QStringLiteral("ny")), 2, 4000);
+    if (qint64(nx) * ny > 4000000) {
+        out.error = tr("%1 by %2 points: four million at most").arg(nx).arg(ny);
+        return out;
+    }
+    std::vector<double> x(static_cast<std::size_t>(nx)), y(static_cast<std::size_t>(ny));
+    for (int i = 0; i < nx; ++i) x[std::size_t(i)] = scale * (corner[0][0] + (corner[1][0] - corner[0][0]) * i / (nx - 1));
+    for (int j = 0; j < ny; ++j) y[std::size_t(j)] = scale * (corner[0][1] + (corner[1][1] - corner[0][1]) * j / (ny - 1));
+    const QString modelName = model.fileName.isEmpty() ? tr("an unsaved model") : QFileInfo(model.fileName).fileName();
+    std::vector<ModeProfile> modes;
+    QStringList said;
+    for (const Instance& in : at) {
+        Solution* s = select(set, in);
+        const int f = s->fieldIndex(tag);
+        ModeProfile m = sampleMode(*s, f, pmlDomainsOf(*s, tag), x, y);
+        const std::optional<double> n = s->global(tag + QStringLiteral(".neff")), k = s->global(tag + QStringLiteral(".neff_im"));
+        m.neff = std::complex<double>(n.value_or(NAN), -k.value_or(0.0));
+        m.lambda0 = s->global(tag + QStringLiteral(".lambda0")).value_or(NAN);
+        // (Its instance's label names the mode, and a sweep's point: "w = 2 mm, mode 1".)
+        m.label = QStringLiteral("%1: %2, %3").arg(modelName, tag, in.label.isEmpty() ? tr("mode %1").arg(m.mode) : in.label);
+        said << QStringLiteral("%1 (neff %2, %3 W within)").arg(m.mode).arg(formatNumber(m.neff.real(), 6), formatNumber(0.5 * m.flux().real(), 4));
+        modes.push_back(std::move(m));
+    }
+    const QString about = tr("Qucs-S %1: %2's mode profiles (%3) - E (V/m) and H (A/m) complex, the mode at 1 W, as found: E e^(j(wt - beta z)); "
+                             "x, y in m; power: 1/2 Re of the integral of E x H* . z over the grid")
+                              .arg(modelName, tag, node.name());
+    const QString format = node.text(QStringLiteral("format"));
+    const QString where = tr("a %1 by %2 grid from (%3, %4) to (%5, %6) m").arg(nx).arg(ny)
+                              .arg(formatNumber(x.front(), 4), formatNumber(y.front(), 4), formatNumber(x.back(), 4), formatNumber(y.back(), 4));
+    if (format == QLatin1String("npz")) {
+        out.data = profilesNpz(modes, about);
+        out.suffix = QStringLiteral("npz");
+        out.summary = tr("modes %1 of %2 on %3: x, y, Ex... Hz complex of shape %4, neff, lambda0, mode, power, about")
+                          .arg(said.join(QLatin1String(", ")), tag, where,
+                               modes.size() > 1 ? QStringLiteral("(%1, %2, %3)").arg(modes.size()).arg(ny).arg(nx) : QStringLiteral("(%1, %2)").arg(ny).arg(nx));
+    } else if (format == QLatin1String("csv")) {
+        out.text = profilesCsv(modes, about);
+        out.suffix = QStringLiteral("csv");
+        out.summary = tr("modes %1 of %2 on %3: a row per point and mode - mode, x, y, the real and imaginary parts of Ex... Hz")
+                          .arg(said.join(QLatin1String(", ")), tag, where);
+    } else {
+        out.data = profilesMat(modes, about);
+        out.suffix = QStringLiteral("mat");
+        out.summary = tr("modes %1 of %2 on %3: x, y, Ex... Hz complex of dimensions %4 (x the first), neff, lambda0, mode, power, about")
+                          .arg(said.join(QLatin1String(", ")), tag, where,
+                               modes.size() > 1 ? QStringLiteral("[%1 %2 %3]").arg(nx).arg(ny).arg(modes.size()) : QStringLiteral("[%1 %2]").arg(nx).arg(ny));
+    }
+    return out;
+}
+
 } // namespace
 
 ExportText exportText(const Model& model, const SolutionSet& set, const Node& node, const QString& version)
@@ -830,6 +945,7 @@ ExportText exportText(const Model& model, const SolutionSet& set, const Node& no
     };
     const QString type = node.type;
     if (type == QLatin1String("fieldexport")) return fieldExport(set, node);
+    if (type == QLatin1String("modeprofile")) return modeProfileExport(model, set, node);
     if (type == QLatin1String("touchstone") && node.text(QStringLiteral("of")) == QLatin1String("ports")) {
         const QStringList tags = node.list(QStringLiteral("physics"));
         const QString tag = tags.isEmpty() ? QStringLiteral("ewfd") : tags.first();

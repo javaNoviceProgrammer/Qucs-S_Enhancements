@@ -2406,6 +2406,38 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
     return path;
 }
 
+QString MultiphysicsDoc::exportModeProfile(const QString& tag, const QString& path, QString* error)
+{
+    auto fail = [&](const QString& why) {
+        if (error) *error = why;
+        say(why, true);
+        return QString();
+    };
+    const Node* pg = a_model.find(tag);
+    if (!pg || pg->type != QLatin1String("plotgroup")) return fail(tr("there is no 2D plot group %1").arg(tag));
+    // (The mode analysis: the model's first.)
+    QString physics;
+    for (const Node* p : a_model.physics())
+        if (p->type == QLatin1String("modes") && physics.isEmpty()) physics = p->tag;
+    if (physics.isEmpty()) return fail(tr("the model has no Electromagnetic Waves, Mode Analysis"));
+    const std::shared_ptr<SolutionSet> set = solutions(pg->text(QStringLiteral("study")));
+    if (!set || set->solutions.empty()) return fail(tr("%1: its study is not computed yet - Compute it").arg(pg->name()));
+    Node node = a_model.make(QStringLiteral("modeprofile"));
+    node.props.insert(QStringLiteral("physics"), QJsonArray{physics});
+    node.props.insert(QStringLiteral("solutions"), QStringLiteral("selected"));
+    for (const char* key : {"study", "point", "frequency", "mode"})
+        if (pg->props.contains(QLatin1String(key))) node.props.insert(QLatin1String(key), pg->props.value(QLatin1String(key)));
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    node.props.insert(QStringLiteral("format"), suffix == QLatin1String("npz") || suffix == QLatin1String("csv") ? suffix : QStringLiteral("mat"));
+    const ExportText out = exportText(a_model, *set, node, QStringLiteral(PACKAGE_VERSION));
+    if (!out.error.isEmpty()) return fail(tr("%1: %2").arg(pg->name(), out.error));
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(out.data.isEmpty() ? out.text.toUtf8() : out.data) < 0 || !file.commit())
+        return fail(tr("%1 cannot be written: %2").arg(QDir::toNativeSeparators(path), file.errorString()));
+    say(tr("%1: %2 written - %3").arg(pg->name(), QFileInfo(path).fileName(), out.summary));
+    return out.summary;
+}
+
 bool MultiphysicsDoc::copyPart(const QString& tag, QString* error)
 {
     auto fail = [&](const QString& why) {

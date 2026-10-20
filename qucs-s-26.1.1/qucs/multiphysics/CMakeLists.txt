@@ -10,6 +10,7 @@ set(FEM_SRCS
   fem_model.cpp
   fem_geometry.cpp
   fem_mesh.cpp
+  fem_modeprofile.cpp
   fem_fe.cpp
   fem_solver.cpp
   fem_sparse.cpp

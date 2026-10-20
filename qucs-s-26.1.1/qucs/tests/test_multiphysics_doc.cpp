@@ -50,6 +50,7 @@
 #include "multiphysicsdoc.h"
 #include "fem_material_plot.h"
 #include "fem_materials.h"
+#include "fem_modeprofile.h"
 #include "multiphysicspanel.h"
 #include "fem_sparse.h"
 #include "multiphysicssettings.h"
@@ -2505,6 +2506,87 @@ private slots:
         for (const QJsonValue& k : json(r).value("kinds").toArray()) types << k.toObject().value("type").toString();
         for (const char* t : {"modes", "modes/wave", "modes/pml", "waves", "waves/port", "waves/scattering", "mode"})
             QVERIFY2(types.contains(QString::fromLatin1(t)), t);
+    }
+
+    // A mode's profile from its plot group's menu (Export Mode Profile...):
+    // the mode it shows, its six components on a grid over the window - its
+    // perfectly matched layers left out - as a .mat read back; a Mode
+    // Profile node's through fem_export (a binary file: its summary said,
+    // not its bytes); a Mode Overlap's values through fem_evaluate.
+    void aModesProfileExportedAndOverlapped()
+    {
+        const QString file = path(QStringLiteral("wire_profile.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "label": "pml", "base": "center", "size": ["4", "4"]},
+                         {"type": "rectangle", "label": "oxide", "base": "center", "size": ["3", "3"]},
+                         {"type": "rectangle", "label": "core", "base": "center", "size": ["0.5", "0.22"]},
+                         {"type": "form union"}],
+            "materials": [{"label": "oxide", "n": "1.444", "selection": {"only": ["oxide", "pml"]}},
+                          {"label": "silicon", "n": "3.476", "selection": {"only": ["core"]}}],
+            "physics": [{"type": "modes", "tag": "wg", "order": "1", "features": [{"type": "pml", "selection": {"only": ["pml"]}}]}],
+            "mesh": {"size": "coarse", "features": [{"type": "size", "level": "domain", "selection": {"only": ["core"]}, "hmax": "0.06"},
+                                                    {"type": "size", "level": "domain", "selection": {"only": ["oxide"]}, "hmax": "0.4"}]}}],
+          "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "mode", "frequency": "1550[nm]", "modes": 2, "neff": "2.8"}]}],
+          "results": {"plots": [{"type": "plotgroup", "tag": "pg1", "label": "Second Mode", "study": "std1", "mode": 2,
+                                 "plots": [{"type": "surface", "expression": "wg.normE"}]}],
+                      "derived": [{"type": "overlap", "tag": "ovl1", "study": "std1", "with": "gaussian", "waist": "0.6[um]", "solutions": "all"}],
+                      "exports": [{"type": "modeprofile", "tag": "mpr1", "study": "std1", "solutions": "all", "nx": "41", "ny": "31",
+                                   "format": "mat", "file": "wire_profile.mat"}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute(QStringLiteral("std1"));
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        // The plot group's menu has it.
+        QMenu* menu = panel()->menuFor(QStringLiteral("pg1"));
+        QVERIFY(menu != nullptr);
+        bool there = false;
+        for (QAction* a : menu->actions()) there = there || a->objectName() == QLatin1String("mpExportModeProfile");
+        delete menu;
+        QVERIFY(there);
+        // The mode it shows: the second, its effective index the solution's.
+        const QString mat = path(QStringLiteral("wire_mode2.mat"));
+        QString why;
+        const QString said = doc->exportModeProfile(QStringLiteral("pg1"), mat, &why);
+        QVERIFY2(!said.isEmpty(), qPrintable(why));
+        QFile in(mat);
+        QVERIFY(in.open(QIODevice::ReadOnly));
+        const std::optional<ModeProfile> p = readProfileMat(in.readAll(), 1, &why);
+        QVERIFY2(p.has_value(), qPrintable(why));
+        QCOMPARE(p->mode, 2);
+        QJsonObject r = call("fem_evaluate", {{"expression", "wg.neff"}, {"mode", 2}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const double neff2 = json(r).value("values").toArray().at(0).toObject().value("SI").toDouble();
+        QVERIFY2(std::abs(p->neff.real() - neff2) < 1e-9 && neff2 > 1.444 && neff2 < 3.476, qPrintable(QString::number(p->neff.real())));
+        // Over the window (the oxide's 3 µm), not its layers.
+        QCOMPARE(p->nx(), 201);
+        QVERIFY2(std::abs(p->x.front() + 1.5e-6) < 1e-12 && std::abs(p->x.back() - 1.5e-6) < 1e-12, qPrintable(QString::number(p->x.front())));
+        QVERIFY2(std::abs(p->y.front() + 1.5e-6) < 1e-12 && std::abs(p->y.back() - 1.5e-6) < 1e-12, qPrintable(QString::number(p->y.front())));
+        QVERIFY2(std::abs(0.5 * p->flux().real() - 1) < 0.05, qPrintable(QString::number(0.5 * p->flux().real())));
+        // The node through fem_export: both modes; the summary for the bytes.
+        r = call("fem_export", {{"export", "mpr1"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(json(r).value("written").toString().endsWith(QLatin1String("wire_profile.mat")));
+        const QString begins = json(r).value("begins").toString();
+        QVERIFY2(begins.contains(QLatin1String("[41 31 2]")) && begins.contains(QLatin1String("a 41 by 31 grid")), qPrintable(begins));
+        // The overlap: of each mode with a Gaussian along x - the first (TE)
+        // 0.46, the second (TM: its Ex odd) nought but for the mesh's
+        // asymmetry. (A coarse mesh, first-order elements: a complex problem
+        // with its layers, solved by Eigen's LU on the sanitizers' builds.)
+        const DerivedResult o = doc->evaluate(QStringLiteral("ovl1"));
+        QVERIFY2(o.error.isEmpty(), qPrintable(o.error));
+        std::vector<double> overlaps;
+        for (const DerivedValue& v : o.values)
+            if (v.name.endsWith(QLatin1String(": overlap"))) overlaps.push_back(v.value);
+        QCOMPARE(int(overlaps.size()), 2);
+        qInfo("the modes with a Gaussian of 0.6 um along x: %.4f, %.3g", overlaps[0], overlaps[1]);
+        QVERIFY2(overlaps[0] > 0.3 && overlaps[0] < 0.6 && overlaps[1] < 1e-3, qPrintable(QStringLiteral("%1 %2").arg(overlaps[0]).arg(overlaps[1])));
+        r = call("fem_evaluate", {{"expression", "ovl1"}});
+        QVERIFY2(!failed(r) && text(r).contains(QLatin1String("loss")) && text(r).contains(QLatin1String("overlapE")), qPrintable(text(r)));
     }
 
     // A diode's sweep in the window: its carriers drawn, its I-V a dataset.
