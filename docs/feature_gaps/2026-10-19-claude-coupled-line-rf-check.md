@@ -53,7 +53,7 @@ To check the stale one, `MultiphysicsDoc` now keeps when each study was last sol
 
 The panel test makes another window the active one, as when the user is in another window, before its keys. It types a letter after the dot while that window is still in front, and it checks the focus is the field's after the list closes.
 
-**Not done here: a new document's first edit is not recorded.** `QucsDoc::edited()` takes revision 0 to 1 as the content's loading, and records no edit. An opened file gets revision 1 at loading, but a new document starts at 0, so its first edit is lost: `get_state` shows no "last edit" after the first part added to a new schematic, and the changes-since report misses it too. The display test above makes two edits for this reason. Left for a change of its own.
+**Found here, fixed in the change after: a new document's first edit was not recorded.** `QucsDoc::edited()` took revision 0 to 1 as the content's loading, and recorded no edit. An opened file gets revision 1 at loading, but a new document starts at 0, so its first edit was lost: `get_state` showed no "last edit" after the first part added to a new schematic, and the changes-since report missed it too. A sheet lost the first edit after it was opened as well, and did not count being read again. Now `edited()` records every edit, and a document's loading says itself (`contentRead()`: the first read is revision 1, no one's edit; a later one is an edit). The tests `aNewDocumentsFirstEditIsCounted` and `aModelsFirstEditIsCounted`; six changes broken on purpose, all caught.
 
 Twenty changes were broken on purpose, and nineteen were caught:
 
@@ -61,7 +61,7 @@ Twenty changes were broken on purpose, and nineteen were caught:
 |---|---|
 | S1 a derived tag not taken | derivedValuesEvaluatedAndTheirDataset ("'lp1.R' is not a parameter") |
 | S2 a model's dataset judged by its display | derivedValuesEvaluatedAndTheirDataset (no "changed since" after the model's edit) |
-| S3 a display's own edits counted | aStaleDatasetIsSaid (only after its second edit: see the first-edit note above) |
+| S3 a display's own edits counted | aStaleDatasetIsSaid (once the display's edit was on record: see the first-edit note above) |
 | S4 no solve time kept | derivedValuesEvaluatedAndTheirDataset (no "solved again") |
 | S5 the window's shortcut before the field's | thePanelThroughTheTools ("the field's") |
 | S6 keys not to the open list | thePanelThroughTheTools |

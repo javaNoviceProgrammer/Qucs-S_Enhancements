@@ -90,12 +90,20 @@ void QucsDoc::setEditor(quint64 who) { currentEditor() = who; }
 
 void QucsDoc::edited()
 {
+  // (Each one, a new document's first too: taken for its content as it was
+  // opened - no one's -, it was lost, its revision 1 with no edit of it: the
+  // check of 31ba73b. Its file's content read is contentRead().)
+  ++a_revision;
+  a_recentEdits.append({a_revision, currentEditor(), QDateTime::currentDateTime()});
+  if (a_recentEdits.size() > 48) a_recentEdits.removeFirst();
+}
+
+void QucsDoc::contentRead()
+{
   // Its first content, as it was opened: no one's edit.
   if (a_revision == 0) {
     a_revision = 1;
     return;
   }
-  ++a_revision;
-  a_recentEdits.append({a_revision, currentEditor(), QDateTime::currentDateTime()});
-  if (a_recentEdits.size() > 48) a_recentEdits.removeFirst();
+  edited();
 }

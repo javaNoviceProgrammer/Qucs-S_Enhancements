@@ -125,6 +125,10 @@ public:
   void setLastRun(const QDateTime& at, bool failed) { a_lastRun = {at, failed}; }
   /// Counts an edit of the content, made by editor().
   void edited();
+  /// Its content read from its file: the first, as it was opened - no one's
+  /// edit, revision 1 -, or read again: an edit, editor()'s (kOnDisk for a
+  /// file another program changed).
+  void contentRead();
   /// Its revision and latest edits as they were: a preview's changes, put
   /// back, leave it as it was - not edited.
   void rewind(quint64 revision, const QList<Edit>& edits)
