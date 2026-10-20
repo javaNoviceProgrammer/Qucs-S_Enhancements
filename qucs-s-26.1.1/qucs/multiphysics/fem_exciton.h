@@ -39,6 +39,12 @@ struct Envelopes {
     /// component in the attraction's channel of the excitons' J_z less it
     /// (Options' channel) - empty: every component in the s channel.
     std::vector<double> angular;
+    /// Along the axis at the points, ħ²/2m (J m²): the electrons', and each
+    /// hole component's (its kz² coefficient) - the cost of drawing the
+    /// electron and hole together along it (Options' correlated); empty:
+    /// not drawn together.
+    std::vector<double> electronStiffness;
+    std::vector<std::vector<double>> holeStiffness;   ///< [component][point]
 };
 
 /// A subband pair: its electron's and hole's states (Envelopes'), its
@@ -67,6 +73,14 @@ struct Options {
     /// |channel - angular[c]| - the light's excitons' those in which a
     /// bright component's is 0 (s).
     double channel = 0;
+    /// The electron and hole drawn together along the axis: the lowest
+    /// 'correlated' pairs by edge each a second function, itself times
+    /// e^(-β|ze - zh|) (Envelopes' stiffness wanted) - β 'beta' (1/m), or
+    /// 0: 1/σ, σ the lowest pair's spread of ze - zh. The attraction pulls
+    /// the two to one z where they meet (its cusp), which products of
+    /// subbands reach only through many more of them.
+    int correlated = 0;
+    double beta = 0;
     /// Tests': the form factor of pairs a and b at q (1/m) in place of the
     /// envelopes' - 1 within a pair and 0 between pairs: the ideal 2D
     /// exciton.
@@ -101,6 +115,8 @@ struct Result {
     /// widened to fit, said in 'note'.
     double asked = 0;
     bool complex = false;                      ///< its Hamiltonian complex (else real, solved so)
+    double beta = 0;                           ///< 1/m: the pairs drawn together's (Options' correlated; 0: none)
+    int correlated = 0;                        ///< pairs drawn together
 };
 
 /// The excitons of \a pairs: their Hamiltonian in k in the channel of

@@ -192,6 +192,29 @@ double legendreQ(int L, double d)
     return q1;
 }
 
+// Σp ρ_p e^(-q|z_r - z_p|) at each point r (rising z) and each q: two
+// sweeps, O(n) each.
+Eigen::MatrixXd convolved(const std::vector<double>& z, const std::vector<double>& rho, const std::vector<double>& q)
+{
+    const std::size_t n = z.size();
+    Eigen::MatrixXd G(Eigen::Index(n), Eigen::Index(q.size()));
+    std::vector<double> step(n > 0 ? n - 1 : 0);
+    for (std::size_t l = 0; l < q.size(); ++l) {
+        for (std::size_t p = 0; p + 1 < n; ++p) step[p] = std::exp(-q[l] * (z[p + 1] - z[p]));
+        double Lw = 0;
+        for (std::size_t p = 0; p < n; ++p) {
+            Lw = (p > 0 ? Lw * step[p - 1] : 0.0) + rho[p];
+            G(Eigen::Index(p), Eigen::Index(l)) = Lw;
+        }
+        double Rw = 0;
+        for (std::size_t p = n; p-- > 0;) {
+            if (p + 1 < n) Rw = (Rw + rho[p + 1]) * step[p];
+            G(Eigen::Index(p), Eigen::Index(l)) += Rw;
+        }
+    }
+    return G;
+}
+
 } // namespace
 
 double ellipticK(double m)
@@ -337,6 +360,68 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
                 if (cp.col(s).cwiseAbs().maxCoeff() > 0) used[std::size_t(p)].push_back(s);
         }
     }
+    // The electron and hole drawn together along the axis (Options'
+    // correlated): the lowest pairs by edge each a second function, itself
+    // times g = e^(-β|ze - zh|). Products of subbands alone draw them
+    // together only through many more subbands - the attraction's cusp
+    // where they meet (a 10 nm GaAs well's 1s line, against a real-space
+    // solve drawing them together: 0.70 of it with one pair, 0.86 with 12,
+    // 0.90 with 48; one such function 0.95). Its overlaps, energy along the
+    // axis and attraction are the products' form factors at q + β and q +
+    // 2β: for eigenstates f, f' along the axis ⟨f g|H|f' g⟩ = ½(ε + ε')⟨f
+    // g|f' g⟩ + ⟨f|c g'²|f'⟩ (c: ħ²/2m along it, a hole spinor's kz²
+    // coefficients) - exact for one g -, and with a product, an eigenstate,
+    // its energy times their overlap. β 1/σ, σ the lowest pair's spread of
+    // ze - zh (the line's best within a few % in that well; its energy's
+    // least toward 0, the linear term's), or given.
+    const int corrWanted =
+        !given && o.correlated > 0 && !envelopes.electronStiffness.empty() && !envelopes.holeStiffness.empty() ? std::min(P, o.correlated) : 0;
+    std::vector<int> fpar(static_cast<std::size_t>(P)), fcor(static_cast<std::size_t>(P), 0);
+    std::iota(fpar.begin(), fpar.end(), 0);
+    double beta = 0;
+    if (corrWanted > 0) {
+        std::vector<int> byEdge(fpar);
+        std::stable_sort(byEdge.begin(), byEdge.end(), [&edge](int a, int b) { return edge[std::size_t(a)] < edge[std::size_t(b)]; });
+        for (int c = 0; c < corrWanted; ++c) {
+            fpar.push_back(byEdge[std::size_t(c)]);
+            fcor.push_back(1);
+        }
+        beta = o.beta;
+        if (!(beta > 0)) {
+            // (The lowest pair's electron and its hole at k = 0.)
+            const int p0 = byEdge.front();
+            const std::vector<double>& ze = envelopes.z;
+            const std::vector<double>& xe = envelopes.electrons[std::size_t(elec[std::size_t(p0)])];
+            double me = 0, me2 = 0, mh = 0, mh2 = 0, nh = 0;
+            for (std::size_t q = 0; q < ze.size() && q < xe.size(); ++q) {
+                me += xe[q] * xe[q] * ze[q];
+                me2 += xe[q] * xe[q] * ze[q] * ze[q];
+                double h = 0;
+                const std::size_t nc = envelopes.holes.empty() ? 0 : envelopes.holes.front().size();
+                for (std::size_t c = 0; c < nc; ++c) {
+                    std::complex<double> v = 0;
+                    for (int t = 0; t < nb; ++t) v += coef[std::size_t(p0)](0, t) * envelopes.holes[std::size_t(t)][c][q];
+                    h += std::norm(v);
+                }
+                nh += h;
+                mh += h * ze[q];
+                mh2 += h * ze[q] * ze[q];
+            }
+            if (nh > 0) {
+                mh /= nh;
+                mh2 /= nh;
+            }
+            const double var = (me2 - me * me) + (mh2 - mh * mh) + (me - mh) * (me - mh);
+            beta = var > 0 ? 1 / std::sqrt(var) : 0;
+        }
+        if (!(beta > 0)) {
+            fpar.resize(std::size_t(P));
+            fcor.resize(std::size_t(P));
+        }
+    }
+    const int F = int(fpar.size());
+    r.beta = F > P ? beta : 0;
+    r.correlated = F - P;
     auto needed = [&](int a, int b) { return a == b || o.coupled; };
     // Each component's channel, |channel - its J_z| (the s channel without
     // them).
@@ -358,12 +443,13 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
     for (int l = 0; l < nq; ++l) qs[std::size_t(l)] = qlo * std::pow(qhi / qlo, double(l) / (nq - 1));
     using cd = std::complex<double>;
     struct Table {
-        int ea = 0, eb = 0, sa = 0, sb = 0, L = 0;
+        int ea = 0, eb = 0, sa = 0, sb = 0, L = 0, shift = 0;   // shift: at q + shift β (the pairs drawn together's)
         cd F0 = 0, D0 = 0;
         std::vector<cd> D;
     };
     std::vector<Table> tables;
-    std::map<std::array<int, 5>, int> tableOf;   // (ea ≤ eb, sa ≤ sb, L): its index
+    std::map<std::array<int, 6>, int> tableOf;   // (ea ≤ eb, sa ≤ sb, L, shift): its index
+    const int maxShift = F > P ? 2 : 0;
     // (The holes' densities, by their pair and channel.)
     const std::vector<double>& z = envelopes.z;
     const std::size_t n = z.size();
@@ -401,20 +487,22 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
         for (const auto& [ea, eb] : electronPairs)
             for (int s : usedBy[ea])
                 for (int t : usedBy[eb])
-                    for (std::size_t c = 0; c < ncomp; ++c) {
-                        if (!has[std::size_t(s)][c] || !has[std::size_t(t)][c]) continue;
-                        const std::array<int, 5> key{ea, eb, std::min(s, t), std::max(s, t), chan[c]};
-                        if (tableOf.count(key)) continue;
-                        tableOf[key] = int(tables.size());
-                        Table tb;
-                        tb.ea = ea;
-                        tb.eb = eb;
-                        tb.sa = key[2];
-                        tb.sb = key[3];
-                        tb.L = key[4];
-                        tb.D.assign(std::size_t(nq), 0.0);
-                        tables.push_back(std::move(tb));
-                    }
+                    for (std::size_t c = 0; c < ncomp; ++c)
+                        for (int sh = 0; sh <= maxShift; ++sh) {
+                            if (!has[std::size_t(s)][c] || !has[std::size_t(t)][c]) continue;
+                            const std::array<int, 6> key{ea, eb, std::min(s, t), std::max(s, t), chan[c], sh};
+                            if (tableOf.count(key)) continue;
+                            tableOf[key] = int(tables.size());
+                            Table tb;
+                            tb.ea = ea;
+                            tb.eb = eb;
+                            tb.sa = key[2];
+                            tb.sb = key[3];
+                            tb.L = key[4];
+                            tb.shift = sh;
+                            tb.D.assign(std::size_t(nq), 0.0);
+                            tables.push_back(std::move(tb));
+                        }
     }
     if (given) {
         for (Table& t : tables) {
@@ -437,6 +525,7 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
         // F(0) and D(0) = -Σp ρe_p Σr ρh_r |z_p - z_r|, by the holes' sums
         // below and above.
         for (Table& t : tables) {
+            if (t.shift != 0) continue;
             const std::vector<double>& re = electronDensity[{t.ea, t.eb}];
             const std::vector<cd>& rh = holeOf(t.sa, t.sb, t.L);
             cd below = 0, belowZ = 0, all = 0, allZ = 0, d0 = 0;
@@ -456,27 +545,21 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
         }
         // Each electron density's convolution with e^(-q|z|) at every q in
         // two sweeps, O(n), and the holes' densities against them: F = Σp
-        // ρh_p (ρe * e^(-q|z|))_p, all of an electron pair's tables at once.
-        std::map<std::pair<int, int>, std::vector<int>> ofElectrons;
-        for (std::size_t ti = 0; ti < tables.size(); ++ti) ofElectrons[{tables[ti].ea, tables[ti].eb}].push_back(int(ti));
-        std::vector<double> step(n > 0 ? n - 1 : 0);
-        for (const auto& [ee, list] : ofElectrons) {
-            const std::vector<double>& re = electronDensity[ee];
-            Eigen::MatrixXd G(Eigen::Index(n), nq);
-            for (int l = 0; l < nq; ++l) {
-                const double q = qs[std::size_t(l)];
-                for (std::size_t p = 0; p + 1 < n; ++p) step[p] = std::exp(-q * (z[p + 1] - z[p]));
-                double Lw = 0;
-                for (std::size_t p = 0; p < n; ++p) {
-                    Lw = (p > 0 ? Lw * step[p - 1] : 0.0) + re[p];
-                    G(Eigen::Index(p), l) = Lw;
-                }
-                double Rw = 0;
-                for (std::size_t p = n; p-- > 0;) {
-                    if (p + 1 < n) Rw = (Rw + re[p + 1]) * step[p];
-                    G(Eigen::Index(p), l) += Rw;
-                }
+        // ρh_p (ρe * e^(-q|z|))_p, all of an electron pair's tables at once
+        // - each shift's at q + shift β, its F(shift β) and slope there too.
+        std::map<std::pair<std::pair<int, int>, int>, std::vector<int>> ofElectrons;
+        for (std::size_t ti = 0; ti < tables.size(); ++ti) ofElectrons[{{tables[ti].ea, tables[ti].eb}, tables[ti].shift}].push_back(int(ti));
+        for (const auto& [key, list] : ofElectrons) {
+            const std::vector<double>& re = electronDensity[key.first];
+            const int sh = key.second;
+            const double at = sh * beta, dq = 1e-4 * std::max(at, qlo);
+            std::vector<double> qv(qs);
+            for (double& q : qv) q += at;
+            if (sh > 0) {
+                qv.push_back(at);
+                qv.push_back(at + dq);
             }
+            const Eigen::MatrixXd G = convolved(z, re, qv);
             Eigen::MatrixXd Hr(Eigen::Index(list.size()), Eigen::Index(n)), Hi(Eigen::Index(list.size()), Eigen::Index(n));
             for (std::size_t r = 0; r < list.size(); ++r) {
                 const Table& t = tables[std::size_t(list[r])];
@@ -489,8 +572,50 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
             const Eigen::MatrixXd Fr = Hr * G, Fi = Hi * G;
             for (std::size_t r = 0; r < list.size(); ++r) {
                 Table& t = tables[std::size_t(list[r])];
-                for (int l = 0; l < nq; ++l) t.D[std::size_t(l)] = (cd(Fr(Eigen::Index(r), l), Fi(Eigen::Index(r), l)) - t.F0) / qs[std::size_t(l)];
+                const Eigen::Index R = Eigen::Index(r);
+                if (sh > 0) {
+                    t.F0 = cd(Fr(R, nq), Fi(R, nq));
+                    t.D0 = (cd(Fr(R, nq + 1), Fi(R, nq + 1)) - t.F0) / dq;
+                }
+                for (int l = 0; l < nq; ++l) t.D[std::size_t(l)] = (cd(Fr(R, l), Fi(R, l)) - t.F0) / qs[std::size_t(l)];
             }
+        }
+    }
+    // The pairs drawn together's cost along the axis at 2β: KC(s, t) = Σ
+    // (c_e ρe ρh_st + ρe ρh_st with the hole's c) e^(-2β|ze - zh|), each
+    // electron pair's over its holes (every component: at one k).
+    std::map<std::pair<int, int>, Eigen::MatrixXcd> stiffOf;
+    if (F > P) {
+        std::set<std::pair<int, int>> ees;
+        for (const Table& t : tables) ees.insert({t.ea, t.eb});
+        const std::size_t nc = envelopes.holes.empty() ? 0 : envelopes.holes.front().size();
+        for (const auto& ee : ees) {
+            const auto& x = envelopes.electrons[std::size_t(ee.first)];
+            const auto& y = envelopes.electrons[std::size_t(ee.second)];
+            std::vector<double> re(n), rc(n);
+            for (std::size_t p = 0; p < n; ++p) {
+                re[p] = x[p] * y[p];
+                rc[p] = re[p] * (p < envelopes.electronStiffness.size() ? envelopes.electronStiffness[p] : 0.0);
+            }
+            const Eigen::MatrixXd Ge = convolved(z, re, {2 * beta}), Gc = convolved(z, rc, {2 * beta});
+            Eigen::MatrixXcd KC = Eigen::MatrixXcd::Zero(nb, nb);
+            for (int s = 0; s < nb; ++s)
+                for (int t = s; t < nb; ++t) {
+                    cd v = 0;
+                    for (std::size_t c = 0; c < nc; ++c) {
+                        const auto& hs = envelopes.holes[std::size_t(s)][c];
+                        const auto& ht = envelopes.holes[std::size_t(t)][c];
+                        const std::vector<double>* stiff = c < envelopes.holeStiffness.size() ? &envelopes.holeStiffness[c] : nullptr;
+                        for (std::size_t p = 0; p < n; ++p) {
+                            const cd d = std::conj(hs[p]) * ht[p];
+                            if (d == cd(0)) continue;
+                            v += d * (Gc(Eigen::Index(p), 0) + Ge(Eigen::Index(p), 0) * (stiff && p < stiff->size() ? (*stiff)[p] : 0.0));
+                        }
+                    }
+                    KC(s, t) = v;
+                    KC(t, s) = std::conj(v);
+                }
+            stiffOf[ee] = KC;
         }
     }
 
@@ -540,34 +665,50 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
     // angular mean. Hermitian (a hole's phase, any, its coefficients' and
     // amplitudes' alike); real when its holes are, then solved so.
     const double c = Q * Q / (2 * eps);
-    const int N = P * K;
+    const int N = F * K;
     Eigen::MatrixXcd H = Eigen::MatrixXcd::Zero(N, N);
+    // (The overlaps: the pairs drawn together's with each other and the
+    // products at one k - none else.)
+    Eigen::MatrixXcd Sm;
+    if (F > P) Sm = Eigen::MatrixXcd::Identity(N, N);
     for (int p = 0; p < P; ++p)
         for (int i = 0; i < K; ++i) H(p * K + i, p * K + i) = pairs[std::size_t(p)].energy(k[std::size_t(i)]);
     {
-        // Each electron pair's tables; its pairs.
+        // Each electron pair's tables; its pairs, and each pair's place
+        // among its electron's; each electron's functions.
         std::map<std::pair<int, int>, std::vector<int>> byElectrons;
         for (std::size_t ti = 0; ti < tables.size(); ++ti) byElectrons[{tables[ti].ea, tables[ti].eb}].push_back(int(ti));
-        std::map<int, std::vector<int>> ofElectron;
-        for (int p = 0; p < P; ++p) ofElectron[elec[std::size_t(p)]].push_back(p);
-        // (Its F(0)s: all channels', and each channel's past the s.)
+        std::map<int, std::vector<int>> ofElectron, functionsOf;
+        std::vector<int> place(static_cast<std::size_t>(P));
+        for (int p = 0; p < P; ++p) {
+            place[std::size_t(p)] = int(ofElectron[elec[std::size_t(p)]].size());
+            ofElectron[elec[std::size_t(p)]].push_back(p);
+        }
+        for (int f = 0; f < F; ++f) functionsOf[elec[std::size_t(fpar[std::size_t(f)])]].push_back(f);
+        // (Its F(0)s at each shift: all channels', and each channel's past
+        // the s.)
         struct Group {
             int ea, eb;
             std::vector<int> list;
-            Eigen::MatrixXcd F0all;
-            std::vector<Eigen::MatrixXcd> F0of;   // [L]
+            std::array<Eigen::MatrixXcd, 3> F0all;
+            std::array<std::vector<Eigen::MatrixXcd>, 3> F0of;   // [shift][L]
         };
         std::vector<Group> groups;
         for (auto& [ee, list] : byElectrons) {
-            Group gr{ee.first, ee.second, list, Eigen::MatrixXcd::Zero(nb, nb), {}};
-            gr.F0of.assign(std::size_t(Lmax + 1), Eigen::MatrixXcd::Zero(nb, nb));
+            Group gr{ee.first, ee.second, list, {}, {}};
+            for (int sh = 0; sh < 3; ++sh) {
+                gr.F0all[std::size_t(sh)] = Eigen::MatrixXcd::Zero(nb, nb);
+                gr.F0of[std::size_t(sh)].assign(std::size_t(Lmax + 1), Eigen::MatrixXcd::Zero(nb, nb));
+            }
             for (int ti : list) {
                 const Table& t = tables[std::size_t(ti)];
-                gr.F0all(t.sa, t.sb) += t.F0;
-                gr.F0of[std::size_t(t.L)](t.sa, t.sb) += t.F0;
+                Eigen::MatrixXcd& all = gr.F0all[std::size_t(t.shift)];
+                Eigen::MatrixXcd& of = gr.F0of[std::size_t(t.shift)][std::size_t(t.L)];
+                all(t.sa, t.sb) += t.F0;
+                of(t.sa, t.sb) += t.F0;
                 if (t.sa != t.sb) {
-                    gr.F0all(t.sb, t.sa) += std::conj(t.F0);
-                    gr.F0of[std::size_t(t.L)](t.sb, t.sa) += std::conj(t.F0);
+                    all(t.sb, t.sa) += std::conj(t.F0);
+                    of(t.sb, t.sa) += std::conj(t.F0);
                 }
             }
             groups.push_back(std::move(gr));
@@ -579,6 +720,32 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
             for (std::size_t r = 0; r < ps.size(); ++r) m.row(Eigen::Index(r)) = coef[std::size_t(ps[r])].row(i);
             return m;
         };
+        // The pairs drawn together at each k: their overlaps (at β with a
+        // product, 2β with each other) and energies along the axis - a
+        // product's (an eigenstate's) times the overlap; with each other
+        // their mean's, and β² ⟨c⟩ at 2β.
+        if (F > P)
+            for (int i = 0; i < K; ++i)
+                for (const Group& gr : groups)
+                    for (int way = 0; way < (gr.ea == gr.eb ? 1 : 2); ++way) {
+                        const int ea = way == 0 ? gr.ea : gr.eb, eb = way == 0 ? gr.eb : gr.ea;
+                        const Eigen::MatrixXcd ra = rows(ea, i).conjugate(), rb = rows(eb, i).transpose();
+                        const Eigen::MatrixXcd O1 = ra * gr.F0all[1] * rb, O2 = ra * gr.F0all[2] * rb;
+                        const auto st = stiffOf.find({gr.ea, gr.eb});
+                        const Eigen::MatrixXcd Kc = st != stiffOf.end() ? Eigen::MatrixXcd(ra * st->second * rb) : Eigen::MatrixXcd::Zero(ra.rows(), rb.cols());
+                        for (int x : functionsOf[ea])
+                            for (int y : functionsOf[eb]) {
+                                const int sh = fcor[std::size_t(x)] + fcor[std::size_t(y)];
+                                const int a = fpar[std::size_t(x)], b = fpar[std::size_t(y)];
+                                if (sh == 0 || !needed(a, b)) continue;
+                                const Eigen::Index ia = place[std::size_t(a)], ib = place[std::size_t(b)];
+                                const double Ea = pairs[std::size_t(a)].energy(k[std::size_t(i)]), Eb = pairs[std::size_t(b)].energy(k[std::size_t(i)]);
+                                const cd ov = sh == 1 ? O1(ia, ib) : O2(ia, ib);
+                                const cd h = sh == 1 ? (fcor[std::size_t(x)] == 0 ? Ea : Eb) * ov : 0.5 * (Ea + Eb) * ov + beta * beta * Kc(ia, ib);
+                                Sm(x * K + i, y * K + i) = ov;
+                                H(x * K + i, y * K + i) = h;
+                            }
+                    }
         std::vector<int> lq(static_cast<std::size_t>(nt));
         std::vector<double> w0(static_cast<std::size_t>(nt)), wa(static_cast<std::size_t>(nt)), wb(static_cast<std::size_t>(nt));
         std::vector<cd> R(tables.size());
@@ -619,36 +786,38 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
                     }
                     R[ti] = v;
                 }
-                for (const Group& gr : groups) {
-                    M.setZero();
-                    for (int ti : gr.list) {
-                        const Table& t = tables[std::size_t(ti)];
-                        M(t.sa, t.sb) += R[std::size_t(ti)];
-                        if (t.sa != t.sb) M(t.sb, t.sa) += std::conj(R[std::size_t(ti)]);
+                for (const Group& gr : groups)
+                    for (int sh = 0; sh <= maxShift; ++sh) {
+                        M.setZero();
+                        for (int ti : gr.list) {
+                            const Table& t = tables[std::size_t(ti)];
+                            if (t.shift != sh) continue;
+                            M(t.sa, t.sb) += R[std::size_t(ti)];
+                            if (t.sa != t.sb) M(t.sb, t.sa) += std::conj(R[std::size_t(ti)]);
+                        }
+                        if (i != j) M += A(i, j) * gr.F0all[std::size_t(sh)];
+                        for (int L = 1; L <= Lmax; ++L) M += dA[std::size_t(L)](i, j) * gr.F0of[std::size_t(sh)][std::size_t(L)];
+                        // (Both ways round when the electrons differ: their
+                        // product the same.)
+                        for (int way = 0; way < (gr.ea == gr.eb ? 1 : 2); ++way) {
+                            const int ea = way == 0 ? gr.ea : gr.eb, eb = way == 0 ? gr.eb : gr.ea;
+                            const Eigen::MatrixXcd X = rows(ea, i).conjugate() * M;
+                            const Eigen::MatrixXcd Wm = X * rows(eb, j).transpose();
+                            Eigen::MatrixXcd O;
+                            if (i == j) O = rows(ea, i).conjugate() * gr.F0all[std::size_t(sh)] * rows(eb, i).transpose();
+                            for (int x : functionsOf[ea])
+                                for (int y : functionsOf[eb]) {
+                                    if (fcor[std::size_t(x)] + fcor[std::size_t(y)] != sh) continue;
+                                    const int a = fpar[std::size_t(x)], b = fpar[std::size_t(y)];
+                                    if (!needed(a, b)) continue;
+                                    const Eigen::Index ia = place[std::size_t(a)], ib = place[std::size_t(b)];
+                                    cd h = -c * S[std::size_t(i)] * S[std::size_t(j)] * Wm(ia, ib);
+                                    if (i == j) h -= c * dsub[std::size_t(i)] * O(ia, ib);
+                                    H(x * K + i, y * K + j) += h;
+                                    if (i != j) H(y * K + j, x * K + i) += std::conj(h);
+                                }
+                        }
                     }
-                    if (i != j) M += A(i, j) * gr.F0all;
-                    for (int L = 1; L <= Lmax; ++L) M += dA[std::size_t(L)](i, j) * gr.F0of[std::size_t(L)];
-                    // (Both ways round when the electrons differ: their
-                    // product the same.)
-                    for (int way = 0; way < (gr.ea == gr.eb ? 1 : 2); ++way) {
-                        const int ea = way == 0 ? gr.ea : gr.eb, eb = way == 0 ? gr.eb : gr.ea;
-                        const std::vector<int>& pa = ofElectron[ea];
-                        const std::vector<int>& pb = ofElectron[eb];
-                        const Eigen::MatrixXcd X = rows(ea, i).conjugate() * M;
-                        const Eigen::MatrixXcd Wm = X * rows(eb, j).transpose();
-                        Eigen::MatrixXcd O;
-                        if (i == j) O = rows(ea, i).conjugate() * gr.F0all * rows(eb, i).transpose();
-                        for (std::size_t x = 0; x < pa.size(); ++x)
-                            for (std::size_t y = 0; y < pb.size(); ++y) {
-                                const int a = pa[x], b = pb[y];
-                                if (!needed(a, b)) continue;
-                                cd h = -c * S[std::size_t(i)] * S[std::size_t(j)] * Wm(Eigen::Index(x), Eigen::Index(y));
-                                if (i == j) h -= c * dsub[std::size_t(i)] * O(Eigen::Index(x), Eigen::Index(y));
-                                H(a * K + i, b * K + j) += h;
-                                if (i != j) H(b * K + j, a * K + i) += std::conj(h);
-                            }
-                    }
-                }
             }
     }
 
@@ -662,14 +831,22 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
             largest = std::max(largest, std::abs(H(rr, cc).real()));
             imaginary = std::max(imaginary, std::abs(H(rr, cc).imag()));
         }
-    r.complex = imaginary > 1e-13 * largest;
+    double imaginaryS = 0;
+    if (F > P)
+        for (Eigen::Index cc = 0; cc < N; ++cc)
+            for (Eigen::Index rr = 0; rr < N; ++rr) imaginaryS = std::max(imaginaryS, std::abs(Sm(rr, cc).imag()));
+    r.complex = imaginary > 1e-13 * largest || imaginaryS > 1e-13;
+    // (A pair drawn together meets at one z as its product does: its
+    // amplitudes the product's.)
     Eigen::MatrixXcd B = Eigen::MatrixXcd::Zero(N, C);
     std::vector<std::complex<double>> amp(static_cast<std::size_t>(C));
     for (int p = 0; p < P; ++p)
         for (int i = 0; i < K; ++i) {
             std::fill(amp.begin(), amp.end(), 0.0);
             pairs[std::size_t(p)].amplitude(k[std::size_t(i)], amp);
-            for (int cc = 0; cc < C; ++cc) B(p * K + i, cc) = S[std::size_t(i)] * amp[std::size_t(cc)];
+            for (int f = 0; f < F; ++f)
+                if (fpar[std::size_t(f)] == p)
+                    for (int cc = 0; cc < C; ++cc) B(f * K + i, cc) = S[std::size_t(i)] * amp[std::size_t(cc)];
         }
     Eigen::MatrixXcd proj;
     // (Each state's largest parts: those holding 90 % of it, 8 at most,
@@ -689,27 +866,46 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
             held += w;
         }
     };
-    if (r.complex) {
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(H);
-        if (es.info() != Eigen::Success) {
-            r.note = tr("the excitons' Hamiltonian did not diagonalize");
-            return r;
-        }
+    // (With pairs drawn together, H u = E S u: its states S-normalized.)
+    auto take = [&r, &proj, &B, &mainParts, N](const auto& es, bool real) {
         r.energy.assign(es.eigenvalues().data(), es.eigenvalues().data() + N);
-        proj = es.eigenvectors().transpose() * B;
+        if (real) {
+            const Eigen::MatrixXd pr = es.eigenvectors().real().transpose() * B.real(), pi = es.eigenvectors().real().transpose() * B.imag();
+            proj = pr.cast<cd>() + cd(0, 1) * pi.cast<cd>();
+        } else
+            proj = es.eigenvectors().transpose() * B;
         for (int nn = 0; nn < N; ++nn) mainParts(nn, es.eigenvectors().col(nn));
+    };
+    bool solved = true;
+    if (r.complex) {
+        if (F > P) {
+            Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXcd> es(H, Sm);
+            solved = es.info() == Eigen::Success;
+            if (solved) take(es, false);
+        } else {
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(H);
+            solved = es.info() == Eigen::Success;
+            if (solved) take(es, false);
+        }
     } else {
         const Eigen::MatrixXd Hr = H.real();
         H.resize(0, 0);
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(Hr);
-        if (es.info() != Eigen::Success) {
-            r.note = tr("the excitons' Hamiltonian did not diagonalize");
-            return r;
+        if (F > P) {
+            const Eigen::MatrixXd Sr = Sm.real();
+            Sm.resize(0, 0);
+            Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> es(Hr, Sr);
+            solved = es.info() == Eigen::Success;
+            if (solved) take(es, true);
+        } else {
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(Hr);
+            solved = es.info() == Eigen::Success;
+            if (solved) take(es, true);
         }
-        r.energy.assign(es.eigenvalues().data(), es.eigenvalues().data() + N);
-        const Eigen::MatrixXd pr = es.eigenvectors().transpose() * B.real(), pi = es.eigenvectors().transpose() * B.imag();
-        proj = pr.cast<cd>() + cd(0, 1) * pi.cast<cd>();
-        for (int nn = 0; nn < N; ++nn) mainParts(nn, es.eigenvectors().col(nn));
+    }
+    if (!solved) {
+        r.energy.clear();
+        r.note = tr("the excitons' Hamiltonian did not diagonalize");
+        return r;
     }
     // Each state's cells: each of its largest parts' - a pair at a k point -
     // share of the plane, k from kl to kh (kh² - kl² = 4π W, from k 0 on: the
@@ -737,7 +933,7 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
         double all = 0;
         for (const auto& [row, w] : parts[std::size_t(nn)]) all += w;
         for (const auto& [row, w] : parts[std::size_t(nn)]) {
-            const int p = row / K, i = row % K;
+            const int p = fpar[std::size_t(row / K)], i = row % K;
             const auto& E = pairs[std::size_t(p)].energy;
             const double shift = r.energy[std::size_t(nn)] - E(k[std::size_t(i)]);
             const double a = E(kl[std::size_t(i)]) + shift, b = E(kh[std::size_t(i)]) + shift;

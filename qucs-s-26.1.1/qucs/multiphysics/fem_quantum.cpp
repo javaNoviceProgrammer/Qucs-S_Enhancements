@@ -479,6 +479,14 @@ private:
         // S parts (S↑ S↓, 2n).
         std::vector<std::vector<double>> C;
         std::vector<std::vector<Eigen::VectorXcd>> xc, xs;
+        // Each state along k (a spectrum's subband): order[m][j] the state at
+        // k m - its index in E[m], x[m] - continuing k = 0's state j, by their
+        // overlaps through crossings (a high field's states in a barrier's
+        // notch cross the wells' subbands); orderC the 8x8's conduction
+        // states'. E, x and C stay by energy.
+        std::vector<std::vector<int>> order, orderC;
+        std::size_t at(std::size_t m, std::size_t j) const { return m < order.size() && j < order[m].size() ? std::size_t(order[m][j]) : j; }
+        std::size_t atC(std::size_t m, std::size_t i) const { return m < orderC.size() && i < orderC[m].size() ? std::size_t(orderC[m][i]) : i; }
     };
     std::vector<KpBands> a_kps;   // each direction's: one, or the average's
     QString kpDirection() const;   // the in-plane k's, said
@@ -2274,6 +2282,57 @@ bool QuantumProblem::kpBands(int count, double kmax, int nk, QString* error, int
             out.xs.push_back(std::move(sParts));
         }
     }
+    // The states along k (KpBands::order): each k's matched to the k
+    // before's by their overlaps |<a|b>|² (the mass matrix lumped), largest
+    // first, among the 8 either side by energy; one leaving the states found
+    // given what is left.
+    {
+        Eigen::VectorXd lumped = Eigen::VectorXd::Zero(n);
+        for (int c = 0; c < Mr.outerSize(); ++c)
+            for (Eigen::SparseMatrix<double>::InnerIterator it(Mr, c); it; ++it)
+                if (it.row() < n && it.col() < n) lumped(it.row()) += it.value();
+        auto track = [n, &lumped](const std::vector<std::vector<Eigen::VectorXcd>>& xs) {
+            std::vector<std::vector<int>> order(xs.size());
+            if (xs.empty()) return order;
+            order[0].resize(xs[0].size());
+            std::iota(order[0].begin(), order[0].end(), 0);
+            for (std::size_t m = 1; m < xs.size(); ++m) {
+                const std::vector<int>& before = order[m - 1];
+                const std::size_t nb4 = before.size(), now = xs[m].size();
+                std::vector<std::tuple<double, int, int>> o;
+                for (std::size_t a = 0; a < nb4; ++a) {
+                    const Eigen::VectorXcd& x = xs[m - 1][std::size_t(before[a])];
+                    const int at0 = before[a];
+                    for (int b = std::max(0, at0 - 8); b < std::min(int(now), at0 + 9); ++b) {
+                        const Eigen::VectorXcd& y = xs[m][std::size_t(b)];
+                        std::complex<double> v = 0;
+                        for (Eigen::Index c = 0; c * n < x.size() && c * n < y.size(); ++c)
+                            v += (x.segment(c * n, n).conjugate().cwiseProduct(lumped).cwiseProduct(y.segment(c * n, n))).sum();
+                        o.emplace_back(std::norm(v), int(a), b);
+                    }
+                }
+                std::sort(o.begin(), o.end(), [](const auto& p, const auto& q) { return std::get<0>(p) > std::get<0>(q); });
+                std::vector<int> to(nb4, -1);
+                std::vector<char> taken(now, 0);
+                for (const auto& [w, a, b] : o)
+                    if (to[std::size_t(a)] < 0 && !taken[std::size_t(b)]) {
+                        to[std::size_t(a)] = b;
+                        taken[std::size_t(b)] = 1;
+                    }
+                std::size_t free = 0;
+                for (int& t : to) {
+                    if (t >= 0) continue;
+                    while (free < now && taken[free]) ++free;
+                    t = free < now ? int(free) : 0;
+                    if (free < now) taken[free] = 1;
+                }
+                order[m] = std::move(to);
+            }
+            return order;
+        };
+        out.order = track(out.x);
+        if (nb == 8) out.orderC = track(out.xc);
+    }
     a_kps.push_back(std::move(out));
     }
     return true;
@@ -2716,6 +2775,11 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     const bool window = o.broaden == 1;
     // (The k·p valence states, each Kramers pair: below, once found.)
     std::vector<char> keepV;
+    // (k·p: the next valence pair that would pass, left out by the count -
+    // its edge's depth below the last taken's at k = 0, eV, and how many
+    // pairs would take it.)
+    double nextVGap = NaN;
+    int nextVCount = 0;
     // The line's shape, its half width at half maximum γ: its cumulative
     // and density at x (J) from its middle.
     const double sigma = gamma / std::sqrt(2 * std::log(2.0)), width = gamma / std::acosh(2.0);
@@ -2757,7 +2821,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         for (const KpBands& b : a_kps) {
             if (b.k.size() < 2 || j >= b.E[0].size()) return NaN;
             const double k1 = b.k[1] * 1e-9;
-            inverse += b.weight * (b.E[0][j] - b.E[1][j]) / (HB2M * k1 * k1);
+            inverse += b.weight * (b.E[0][j] - b.E[1][b.at(1, j)]) / (HB2M * k1 * k1);
         }
         return inverse > 0 ? 1 / inverse : NaN;
     };
@@ -2770,7 +2834,9 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         // ones in the 6x6 and 8x8 - each a Kramers pair; the 8x8's electrons
         // its own, as many as the effective mass's found.)
         const int wantV = o.vstates > 0 ? o.vstates : (a_valence == 4 ? 2 : 3) * std::max(1, o.states);
-        const int count0 = wantV + (choosing ? 4 : 0);
+        // (One pair more for the coupled excitons: the next, said if it is
+        // near.)
+        const int count0 = wantV + (choosing ? 4 : o.excitons && o.excitonModel == 2 ? 1 : 0);
         const int electrons = a_valence == 8 ? int(a_states[0].size()) : 0;
         // The 8x8's electrons: each state's energy its Kramers pair's at k =
         // 0, its mass in the plane their curvature's there (over the
@@ -2849,6 +2915,25 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 for (std::size_t q = j; q < std::min(j + 2, keepV.size()); ++q) keepV[q] = 1;
                 ++kept;
             }
+            // (The next that would pass: the coupled excitons' warning.)
+            std::size_t last = keepV.size();
+            for (std::size_t j = 0; j < keepV.size(); j += 2)
+                if (keepV[j]) last = j;
+            for (std::size_t j = last + 2; last < keepV.size() && j < keepV.size(); j += 2) {
+                double wall = 0, inWells = 1;
+                if (choosing)
+                    measure(
+                        [&b0, &nq, j, this](const Point& pt) {
+                            double v = 0;
+                            for (int c = 0; c < 6; ++c) v += std::norm(at(pt, b0.x[0][j], c * nq));
+                            return std::sqrt(v);
+                        },
+                        &wall, &inWells);
+                if (!passes(wall, inWells, o.cutoffV)) continue;
+                nextVGap = b0.E[0][last] - b0.E[0][j];
+                nextVCount = kept + 1;
+                break;
+            }
         }
         if (a_valence == 8) {
             kp8Electrons(true);
@@ -2906,7 +2991,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 for (std::size_t i = 0; i < (b.C.empty() ? 0 : b.C[0].size()); ++i) {
                     if (i / 2 < keepE.size() && !keepE[i / 2]) continue;
                     for (std::size_t m = 1; m < b.k.size(); ++m) {
-                        const double Ea = b.C[m - 1][i] * Q, Eb = b.C[m][i] * Q, dk2 = b.k[m] * b.k[m] - b.k[m - 1] * b.k[m - 1];
+                        const double Ea = b.C[m - 1][b.atC(m - 1, i)] * Q, Eb = b.C[m][b.atC(m, i)] * Q, dk2 = b.k[m] * b.k[m] - b.k[m - 1] * b.k[m - 1];
                         const double in = std::abs(Eb - Ea) > 1e-6 * kT ? kT * (softplus((F - Ea) / kT) - softplus((F - Eb) / kT)) / (Eb - Ea)
                                                                        : fermi((0.5 * (Ea + Eb) - F) / kT);
                         nn += b.weight * dk2 / (4 * M_PI) * in;
@@ -2925,7 +3010,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 for (std::size_t j = 0; j < (b.E.empty() ? 0 : b.E[0].size()); ++j) {
                     if (j < keepV.size() && !keepV[j]) continue;
                     for (std::size_t m = 1; m < b.k.size(); ++m) {
-                        const double Ea = b.E[m - 1][j] * Q, Eb = b.E[m][j] * Q, dk2 = b.k[m] * b.k[m] - b.k[m - 1] * b.k[m - 1];
+                        const double Ea = b.E[m - 1][b.at(m - 1, j)] * Q, Eb = b.E[m][b.at(m, j)] * Q, dk2 = b.k[m] * b.k[m] - b.k[m - 1] * b.k[m - 1];
                         const double holes = std::abs(Eb - Ea) > 1e-6 * kT ? kT * (softplus((Eb - F) / kT) - softplus((Ea - F) / kT)) / (Eb - Ea)
                                                                           : 1 - fermi((0.5 * (Ea + Eb) - F) / kT);
                         p += b.weight * dk2 / (4 * M_PI) * holes;
@@ -3082,6 +3167,26 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         for (std::size_t p : xOrder) env.z.push_back(a_points[p].a);
         return env;
     };
+    // (Along the axis, ħ²/2m at the points: the electrons', and a hole's -
+    // parabolic, its kind's (1 heavy, 2 light); k·p (0), each spinor
+    // component's kz² coefficient, e± γ1 - 2γ2 and Z γ1 + 4γ2, wurtzite's
+    // -(A1 + A3) and -A1.)
+    auto xStiffness = [this, &xOrder](exciton::Envelopes& env, int kind) {
+        const double hb = Hbar * Hbar / (2 * M0);
+        env.electronStiffness.clear();
+        env.holeStiffness.assign(kind > 0 ? 1 : 6, {});
+        for (std::size_t p : xOrder) {
+            const Band& b = a_bands[std::size_t(std::max(0, a_points[p].d))];
+            env.electronStiffness.push_back(b.me > 0 ? hb / b.me : 0.0);
+            if (kind > 0) {
+                const double m = kind == 1 ? b.mhhZ : b.mlhZ;
+                env.holeStiffness[0].push_back(m > 0 ? hb / m : 0.0);
+                continue;
+            }
+            const double xy = b.wz ? -(b.A[0] + b.A[2]) * hb : (b.g1 - 2 * b.g2) * hb, zz = b.wz ? -b.A[0] * hb : (b.g1 + 4 * b.g2) * hb;
+            for (int c = 0; c < 6; ++c) env.holeStiffness[std::size_t(c)].push_back(c == 1 || c == 4 ? zz : xy);
+        }
+    };
     auto xEnvelope = [this, &xOrder](const Eigen::VectorXd& x) {
         std::vector<double> v;
         v.reserve(xOrder.size());
@@ -3094,10 +3199,12 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // to 3 meV - each spread over its cells - "excitonsize" of them at most,
     // 1200: a second's solve.)
     const int xSize = o.excitonSize > 0 ? o.excitonSize : 1200;
-    auto xOptions = [gamma, windowHi, xSize](double epsr, int components, double lowest) {
+    const bool drawn = o.excitonDrawn;
+    auto xOptions = [gamma, windowHi, xSize, drawn](double epsr, int components, double lowest) {
         exciton::Options xo;
         xo.epsr = epsr;
         xo.components = components;
+        xo.correlated = drawn ? 4 : 0;
         xo.reach = std::max({60 * gamma, 0.3 * Q, windowHi - lowest + 30 * gamma});
         xo.spacing = std::clamp(gamma / 2, 0.5e-3 * Q, 3e-3 * Q);
         xo.maxSize = xSize;
@@ -3109,6 +3216,18 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         double spacing = 0, asked = 0;
         int pairs = 0, points = 0, size = 0;
     } widest;
+    // (The pairs drawn together, said once: how many, and β.)
+    bool drawnSaid = false;
+    auto xDrawn = [this, &drawnSaid](const CoupledBlock& blk) {
+        if (drawnSaid || blk.r.correlated <= 0) return;
+        drawnSaid = true;
+        const QString g = formatQuantity(1 / blk.r.beta, Dim::length());
+        a_s.log << (blk.r.correlated == 1 ? tr("%1: the coupled excitons' pair drawn together along the axis, e^(-|ze - zh|/%2)").arg(a_node->name(), g)
+                                          : tr("%1: the coupled excitons' lowest %2 pairs drawn together along the axis, e^(-|ze - zh|/%3)")
+                                                .arg(a_node->name())
+                                                .arg(blk.r.correlated)
+                                                .arg(g));
+    };
     auto xSpacing = [&widest](const CoupledBlock& blk, int pairs, int size) {
         if (!(blk.r.spacing > blk.r.asked * (1 + 1e-9)) || !(blk.r.spacing / blk.r.asked > widest.spacing / std::max(widest.asked, 1e-300))) return;
         widest = {blk.r.spacing, blk.r.asked, pairs, blk.r.points, size};
@@ -3262,6 +3381,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                     xp.push_back(std::move(x));
                     t->coupled = true;
                 }
+                xStiffness(env, c);
                 CoupledBlock blk;
                 blk.r = exciton::solve(env, xp, xOptions(epsr, 2, mine.front()->E));
                 if (blk.r.energy.empty()) {
@@ -3274,6 +3394,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 blk.edge = mine.front()->E;
                 blk.cells();
                 xSpacing(blk, int(mine.size()), xSize);
+                xDrawn(blk);
                 // The e1-hh1's: its edge less the strongest line below it.
                 for (Transition* t : mine)
                     if (t->e1hh1) xGlobals({&blk}, t->E, t->overlap * t->Ep * t->te / t->nr);
@@ -3431,10 +3552,11 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                         // (M times the valence state's parts, once for every
                         // conduction state.)
                         Eigen::VectorXcd mv[8];
-                        for (int c = 0; c < 6; ++c) mv[c] = Mnc * b.x[m][j].segment(c * n, n);
-                        for (int sp = 0; sp < 2; ++sp) mv[6 + sp] = Mnc * b.xs[m][j].segment(sp * n, n);
+                        const std::size_t jm = b.at(m, j);
+                        for (int c = 0; c < 6; ++c) mv[c] = Mnc * b.x[m][jm].segment(c * n, n);
+                        for (int sp = 0; sp < 2; ++sp) mv[6 + sp] = Mnc * b.xs[m][jm].segment(sp * n, n);
                         for (std::size_t i = 0; i < nc; ++i) {
-                            const Eigen::VectorXcd& c8 = b.xc[m][i];
+                            const Eigen::VectorXcd& c8 = b.xc[m][b.atC(m, i)];
                             std::complex<double> A[3] = {0.0, 0.0, 0.0};
                             for (int sp = 0; sp < 2; ++sp)
                                 for (int a = 0; a < 3; ++a)
@@ -3442,8 +3564,8 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                             KpPair& pr = prs[i];
                             pr.wte.push_back(1.5 * (std::norm(A[0]) + std::norm(A[1])));
                             pr.wtm.push_back(3 * std::norm(A[2]));
-                            pr.ec.push_back(b.C[m][i] * Q);
-                            pr.ev.push_back(b.E[m][j] * Q);
+                            pr.ec.push_back(b.C[m][b.atC(m, i)] * Q);
+                            pr.ev.push_back(b.E[m][jm] * Q);
                             pr.eps.push_back(pr.ec.back() - pr.ev.back());
                         }
                     }
@@ -3488,13 +3610,13 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                     pr.jv = int(j);
                     double most = 0;
                     for (std::size_t m = 0; m < b.k.size(); ++m) {
-                        const Eigen::VectorXcd& x = b.x[m][j];
+                        const Eigen::VectorXcd& x = b.x[m][b.at(m, j)];
                         std::complex<double> ov[6];
                         for (int c = 0; c < 6; ++c) ov[c] = loadc.dot(x.segment(c * n, n));
                         const double wte = 1.5 * (std::norm(ov[0]) + std::norm(ov[1]) + std::norm(ov[3]) + std::norm(ov[4]));
                         const double wtm = 3 * (std::norm(ov[2]) + std::norm(ov[5])) * (e.Ep > 0 ? e.EpZ / e.Ep : 1.0);
                         const double k = b.k[m];
-                        const double Ec = e.E * Q + Hbar * Hbar * k * k / (2 * e.mPar * M0), Ev = b.E[m][j] * Q;
+                        const double Ec = e.E * Q + Hbar * Hbar * k * k / (2 * e.mPar * M0), Ev = b.E[m][b.at(m, j)] * Q;
                         pr.eps.push_back(Ec - Ev);
                         pr.wte.push_back(wte);
                         pr.wtm.push_back(wtm);
@@ -3531,9 +3653,11 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                             xc = exciton([&](const Point& pt) { return std::pow(at(pt, e.x), 2); }, hole,
                                          [&](const Point& pt) { return 1 / a_bands[std::size_t(std::max(0, pt.d))].me; }, inverse, mr, epsr,
                                          o.excitonModel == 0);
-                            // (The first electron state's with the highest
-                            // hole's: the e1-hh1 exciton's globals.)
-                            if (i == 0 && j < 2 && !std::isfinite(a_spec.Eb)) {
+                            // (The first electron state kept with the highest
+                            // hole kept - a high field's notch states left
+                            // out before them -: the e1-hh1 exciton's
+                            // globals.)
+                            if (!std::isfinite(a_spec.Eb)) {
                                 a_spec.Eb = xc.Eb;
                                 a_spec.Ex = pr.eps[0] - xc.Eb;
                                 a_spec.radius = xc.radius;
@@ -3641,8 +3765,8 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 std::size_t use = std::size_t(states.back()) + 1;
                 for (bool more = true; more;) {
                     more = false;
-                    for (const std::vector<double>& E : b0.E)
-                        while (use < nv && std::abs(E[use] - E[use - 1]) < 1e-7) {
+                    for (std::size_t m = 0; m < b0.E.size(); ++m)
+                        while (use < nv && std::abs(b0.E[m][b0.at(m, use)] - b0.E[m][b0.at(m, use - 1)]) < 1e-7) {
                             ++use;
                             more = true;
                         }
@@ -3721,10 +3845,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             // (Procrustes').
             auto statesAt = [&b0, nv, &circular, &realify, &mass6](int m, bool realMode, const std::vector<Eigen::VectorXcd>* prev, bool* ok) {
                 std::vector<Eigen::VectorXcd> y(nv);
-                for (std::size_t j = 0; j < nv; ++j) y[j] = circular(b0.x[std::size_t(m)][j]);
+                for (std::size_t j = 0; j < nv; ++j) y[j] = circular(b0.x[std::size_t(m)][b0.at(std::size_t(m), j)]);
                 for (std::size_t a = 0; a < nv;) {
                     std::size_t e = a + 1;
-                    while (e < nv && std::abs(b0.E[std::size_t(m)][e] - b0.E[std::size_t(m)][e - 1]) < 1e-7) ++e;
+                    while (e < nv && std::abs(b0.E[std::size_t(m)][b0.at(std::size_t(m), e)] - b0.E[std::size_t(m)][b0.at(std::size_t(m), e - 1)]) < 1e-7) ++e;
                     std::vector<Eigen::VectorXcd> v(y.begin() + std::ptrdiff_t(a), y.begin() + std::ptrdiff_t(e));
                     if (realMode && !realify(v)) *ok = false;
                     const int g = int(e - a);
@@ -3869,12 +3993,14 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 env.holes.push_back(std::move(spinor));
             }
             env.angular.assign(std::begin(mu), std::end(mu));
-            // The e1-hh1's edge: the first electron state's with its brightest
-            // TE valence state at k = 0, of the lowest.
+            xStiffness(env, 0);
+            // The e1-hh1's edge: the first electron state's taken with its
+            // brightest TE valence state at k = 0, of the lowest.
             double e1hh1 = NaN, e1hh1Weight = 0;
+            const int firstE = electrons.empty() ? 0 : electrons.front();
             for (const std::shared_ptr<Series>& g : chosen) {
                 const double w0TE = average(*g, 0, 1);
-                if (g->ie == 0 && w0TE > 0 && !std::isfinite(e1hh1)) {
+                if (g->ie == firstE && w0TE > 0 && !std::isfinite(e1hh1)) {
                     e1hh1 = g->edge;
                     e1hh1Weight = g->dirs.front()->Ep / g->dirs.front()->nr * w0TE;
                 }
@@ -3941,10 +4067,21 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 blk.edge = chosen.front()->edge;
                 blk.cells();
                 if (ch.J == 1.5) xSpacing(blk, int(chosen.size()), xo.maxSize);
+                xDrawn(blk);
                 xBlocks.push_back(std::move(blk));
             }
             for (std::size_t b = xBlocks.size() - 2; b < xBlocks.size(); ++b) mine.push_back(&xBlocks[b]);
             if (std::isfinite(e1hh1)) xGlobals(mine, e1hh1, e1hh1Weight);
+            // (A valence pair in the wells the count left out, near the last
+            // taken: it mixes with them along k within the excitons' reach.)
+            if (std::isfinite(nextVGap) && nextVGap < 0.03)
+                a_s.log << tr("Warning: %1: the coupled excitons take the spectrum's %2 valence subbands; the next in the wells, %3 meV "
+                              "below the last taken, mixes with them along k within the excitons' reach - their lines want it: \"vstates\" "
+                              "%4 or more (a 9.4 nm GaAs well's hh2, 8 meV below its lh1: with it the TM line 28 % stronger, TE 4 %)")
+                               .arg(a_node->name())
+                               .arg(nextVCount - 1)
+                               .arg(formatNumber(nextVGap * 1e3, 3))
+                               .arg(nextVCount);
             }
         }
     }
