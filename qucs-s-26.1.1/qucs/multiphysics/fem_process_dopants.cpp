@@ -106,7 +106,7 @@ double ProcessDopants::at(const Field& f, double x, double y, int m, bool active
         return std::max(0.0, v1 + (v2 - v1) * (p - c1) / (c2 - c1));
     };
     // Down column \a col at y.
-    auto along = [&](int col, double* out) {
+    auto along = [&j, this, &m, &cy, &y, &line, &v](int col, double* out) {
         int below = -1, above = -1;
         for (int k = j; k >= std::max(0, j - 3) && below < 0; --k)
             if (material[index(col, k)] == m && cy(k) <= y) below = k;
@@ -432,7 +432,7 @@ void Dopants::remapRows(const std::vector<double>& ye)
 {
     ProcessDopants& d = *a_d;
     const int nx = d.nx(), ny0 = d.ny(), ny1 = int(ye.size()) - 1;
-    auto remap = [&](std::vector<double>& v) {
+    auto remap = [&nx, &ny1, &ye, &ny0, &d](std::vector<double>& v) {
         if (v.empty()) return;
         std::vector<double> out(std::size_t(nx) * std::size_t(ny1), 0.0);
         for (int i = 0; i < nx; ++i) {
@@ -571,7 +571,7 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         ImplantMoments m;
     };
     std::map<int, Profile> profiles;
-    auto profileOf = [&](int m) -> const Profile* {
+    auto profileOf = [&profiles, this, &error, &ion, &E, &spec, &warnings, &resistIndex](int m) -> const Profile* {
         if (auto it = profiles.find(m); it != profiles.end()) return it->second.ok ? &it->second : nullptr;
         Profile& p = profiles[m];
         const MaterialInfo& mi = info(m);
@@ -605,11 +605,12 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         double gamma = spec.gaussian ? 0 : p.m.gamma, beta = spec.gaussian ? 3 : p.m.beta;
         if (!spec.gaussian && !(std::abs(gamma) < 1e-9 && beta > 3) && !Pearson::typeIV(gamma, beta)) {
             const double least = Pearson::leastBeta(gamma);
-            if (beta < least * 1.001) {
+            // (Said where the dopant stays: not the mask's resist.)
+            if (beta < least * 1.001 && m != resistIndex) {
                 warnings->append(tr("%1 in %2: its kurtosis %3 is below Pearson IV's least at skewness %4 - %5 taken")
                                      .arg(ion->atom, mi.name, formatNumber(beta, 3), formatNumber(gamma, 3), formatNumber(least * 1.01, 3)));
-                beta = least * 1.01;
             }
+            if (beta < least * 1.001) beta = least * 1.01;
         }
         if (std::abs(gamma) < 1e-9 && beta <= 3 && !spec.gaussian) beta = 3;
         const double unit = 1 / a_unitScale;   // m to the geometry's unit
@@ -695,7 +696,7 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         // layer to layer - entering a material with a fraction G, at the
         // depth of its own profile that leaves G beyond (its profile in a
         // target of it alone, what falls above its surface folded back).
-        auto march = [&](bool channelled, auto&& visit) {
+        auto march = [&samples, &profileOf, &crystal](bool channelled, auto&& visit) {
             double G = 1, z = 0;
             int current = -3;
             const Profile* prof = nullptr;
@@ -767,7 +768,7 @@ QString Dopants::implant(const ImplantSpec& spec, const std::vector<Region>& reg
         // the tilt small); a channelled part where the crystal is not
         // made amorphous.
         double G = 1;
-        if (!march(!anyAmorphous, [&](const Sample& sm, double fraction, double zz, const Profile& p, bool) {
+        if (!march(!anyAmorphous, [&ions, &G, &resistIndex, &stoppedIn, &sy, &crystal, &samples, &d, this, &added, &amorphous, &plus, &spec, &nx, &X0, &X1](const Sample& sm, double fraction, double zz, const Profile& p, bool) {
                 const double dN = ions * fraction;
                 G -= fraction;
                 if (sm.material == resistIndex && resistIndex >= 0) {
@@ -1001,7 +1002,7 @@ struct Dopants::Solver {
     void faces(const std::vector<double>& D, const std::vector<double>* psi, int charge, Interface&& interface, Air&& air)
     {
         clear();
-        auto between = [&](std::size_t kl, std::size_t kr, double hl, double hr, double* alpha, double* beta) {
+        auto between = [this, &D, &psi, &charge, &interface](std::size_t kl, std::size_t kr, double hl, double hr, double* alpha, double* beta) {
             const int ml = d.material[kl], mr = d.material[kr];
             *alpha = *beta = 0;
             if (ml < 0 || mr < 0) return;
@@ -1358,7 +1359,7 @@ public:
             std::vector<std::vector<double>> D;
             std::vector<double> psi;
             coefficients(T, &D, &psi);
-            auto advance = [&](const std::vector<std::vector<double>>& Ds, const std::vector<double>& ps) {
+            auto advance = [this, &before, &solver, &T, &h, &stiff](const std::vector<std::vector<double>>& Ds, const std::vector<double>& ps) {
                 for (std::size_t s = 0; s < a_species.size(); ++s) {
                     const Sp& sp = a_species[s];
                     std::vector<double>& C = a_d.fields[std::size_t(sp.field)].active;
@@ -1797,7 +1798,7 @@ QString Dopants::oxidize(const OxideSpec& spec, std::vector<Region>& regions, cI
     for (int k = 0; k <= steps; ++k) times.push_back(duration * k / steps);
     std::map<long long, std::vector<double>> byStart;   // x0 in 1e-4 of the geometry's unit
     QString start;
-    auto trajectory = [&](double xi) -> const std::vector<double>& {
+    auto trajectory = [this, &spec, &start, &byStart, &times, &notes](double xi) -> const std::vector<double>& {
         double x0m = xi * a_unitScale;
         // Deal and Grove's dry oxide starts at 25 nm (their τ).
         if (!spec.wet && spec.model == QLatin1String("dealgrove") && !(spec.givenB && spec.givenBA) && x0m < 25e-9) {
@@ -1895,7 +1896,7 @@ QString Dopants::oxidize(const OxideSpec& spec, std::vector<Region>& regions, cI
         const std::size_t k = std::min(std::size_t(u), std::size_t(steps - 1));
         return x[k] + (x[k + 1] - x[k]) * (u - double(k));
     };
-    auto hook = [&](double t, double h) {
+    auto hook = [&nx, &from, &firstSilicon, &cols, &path, &at, &share, &delta, &converted, &d, &silicon, &a, &spec, &names, &oxideIndex](double t, double h) {
         for (int i = 0; i < nx; ++i) {
             if (from[std::size_t(i)] < 0 || firstSilicon[std::size_t(i)] < 0) continue;
             const Column& c = cols[std::size_t(i)];
