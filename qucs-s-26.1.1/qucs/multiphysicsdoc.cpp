@@ -877,6 +877,7 @@ void MultiphysicsDoc::compute(const QString& study)
         set->stopped = job.run.stopped;
         a_solutions[job.study] = set;
         a_stale[job.study] = false;
+        a_solvedAt[job.study] = QDateTime::currentDateTime();
         for (const QString& line : job.run.log) say(line);
         if (set->solutions.size() > 1) say(tr("Swept %1: %2 solutions").arg(set->swept.join(QLatin1String(", "))).arg(set->solutions.size()));
         // (Stopped before its last point: its points kept, said as an error.)
@@ -898,6 +899,7 @@ void MultiphysicsDoc::clearSolutions()
 {
     a_solutions.clear();
     a_stale.clear();
+    a_solvedAt.clear();
     a_scene.reset();
     a_plotGroup.clear();
     a_table->setRowCount(0);
@@ -923,6 +925,12 @@ bool MultiphysicsDoc::solutionStale(const QString& study) const
 {
     auto it = a_stale.find(studyTag(study));
     return it != a_stale.end() && it->second;
+}
+
+QDateTime MultiphysicsDoc::solvedAt(const QString& study) const
+{
+    auto it = a_solvedAt.find(studyTag(study));
+    return it != a_solvedAt.end() ? it->second : QDateTime();
 }
 
 bool MultiphysicsDoc::waitForJob(int ms)

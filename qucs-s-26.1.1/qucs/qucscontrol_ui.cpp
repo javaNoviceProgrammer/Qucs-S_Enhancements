@@ -20,13 +20,16 @@
 #include "qucs.h"
 #include "schematic.h"
 
+#include <QAbstractItemView>
 #include <QApplication>
+#include <QCompleter>
 #include <QCursor>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QListView>
 #include <QMenu>
 #include <QMouseEvent>
@@ -161,6 +164,11 @@ QJsonArray QucsControl::uiAreas() const
                                     {QStringLiteral("shown"), !bar->isHidden()}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("statusbar")}, {QStringLiteral("shown"), a_app->statusBar()->isVisible()}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("tabs")}, {QStringLiteral("note"), tr("the documents' tabs, in each pane")}});
+    list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("list")},
+                            {QStringLiteral("open"), openList() != nullptr},
+                            {QStringLiteral("note"), tr("the list below a field that offers names as they are typed (a model's expression: a name "
+                                                        "and a dot), while it is open: get_ui reads it, set_ui takes a row, send_input's keys go "
+                                                        "to it")}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("document")},
                             {QStringLiteral("note"), tr("the tab in front's own bar: a PDF's page field, find and zoom; a layout's, a picture's; a "
                                                         "multiphysics model's buttons (Build Geometry, Build Mesh, Compute, Show...) and, "
@@ -318,11 +326,21 @@ QJsonObject QucsControl::getUi(const QJsonObject& args)
                                                                                                "Appearance); either name finds them.")}});
         return jsonResult(result);
     }
+    if (area.compare(QLatin1String("list"), Qt::CaseInsensitive) == 0) {
+        QAbstractItemView* list = openList();
+        if (list == nullptr) return errorResult(tr("No list is open: one opens below a field that offers names as they are typed (a model's "
+                                                   "expression: a name and a dot - send_input types it), and goes as one is taken."));
+        QJsonObject o = listRead(list);
+        o.insert(QStringLiteral("area"), QStringLiteral("list"));
+        return jsonResult(o);
+    }
     QString name, error;
     QWidget* root = uiArea(area, &name, &error, false);
     if (root == nullptr) return errorResult(error);
     QJsonObject o = describeControls(root, true);
     o.insert(QStringLiteral("area"), name);
+    // (A list open below a field - a window of its own, not among them.)
+    if (QAbstractItemView* list = openList()) o.insert(QStringLiteral("list"), listRead(list));
     bool hidden = false;
     for (QWidget* w = root; w != nullptr; w = w->parentWidget())
         if (auto* dock = qobject_cast<QDockWidget*>(w); dock != nullptr && dock->isHidden()) hidden = true;
@@ -363,6 +381,53 @@ void QucsControl::setUi(const QJsonObject& args, const Done& done)
         QString report = changed.isEmpty() ? tr("Nothing changed.") : tr("In front: %1.").arg(changed.join(QStringLiteral(", ")));
         if (!problems.isEmpty()) report += QLatin1Char(' ') + tr("Not done: %1.").arg(problems.join(QStringLiteral("; ")));
         done(textResult(report, changed.isEmpty() && !problems.isEmpty()));
+        return;
+    }
+    if (area.compare(QLatin1String("list"), Qt::CaseInsensitive) == 0) {
+        // A row of the list open below a field taken, as Return takes the
+        // one chosen: its number, or its name (whole, es.normE, or as the
+        // row shows it, normE).
+        QCompleter* completer = nullptr;
+        QAbstractItemView* list = openList(&completer);
+        if (list == nullptr) {
+            done(errorResult(tr("No list is open: one opens below a field that offers names as they are typed (send_input types a name "
+                                "and a dot).")));
+            return;
+        }
+        const QJsonValue value = args.value(QLatin1String("set")).toArray().first().toObject().value(QLatin1String("value"));
+        const QAbstractItemModel* m = list->model();
+        QModelIndex row;
+        if (value.isDouble()) {
+            if (const int r = value.toInt(-1); r >= 0 && r < m->rowCount()) row = m->index(r, 0);
+        } else {
+            const QString t = value.toString().trimmed();
+            for (int r = 0; r < m->rowCount() && !row.isValid(); ++r) {
+                const QModelIndex i = m->index(r, 0);
+                if (i.data(Qt::UserRole).toString().compare(t, Qt::CaseInsensitive) == 0 || i.data().toString().compare(t, Qt::CaseInsensitive) == 0) row = i;
+            }
+        }
+        if (!row.isValid()) {
+            done(errorResult(tr("The list has no row %1: get_ui area list reads its rows (a number from 0, or a name).")
+                                 .arg(value.isDouble() ? QString::number(value.toInt()) : value.toString())));
+            return;
+        }
+        const QString taken = row.data(Qt::UserRole).toString().isEmpty() ? row.data().toString() : row.data(Qt::UserRole).toString();
+        QPointer<QWidget> field = completer->widget();
+        list->setCurrentIndex(row);
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(list, &down);
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+        if (openList() == list) QApplication::sendEvent(list, &up);
+        // (Its field keeps the focus, as the keyboard's: its window active
+        // again - offscreen a popup's going leaves none.)
+        if (field && openList() == nullptr && QApplication::focusWidget() != field) {
+            if (QApplication::activeWindow() != field->window()) field->activateWindow();
+            field->setFocus(Qt::PopupFocusReason);
+        }
+        QJsonObject o{{QStringLiteral("took"), taken}};
+        if (auto* e = qobject_cast<QLineEdit*>(field.data())) o.insert(QStringLiteral("text"), e->text());
+        o.insert(QStringLiteral("note"), tr("Taken into the field, not yet done with: Return there (send_input), or set_ui on it, commits it."));
+        done(jsonResult(o));
         return;
     }
     QString name, error;

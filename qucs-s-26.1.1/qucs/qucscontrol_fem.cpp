@@ -1259,7 +1259,7 @@ QJsonObject QucsControl::femSolve(const QJsonObject& args)
         const int from = std::max(0, int(r.values.size()) - 40);
         for (int i = from; i < int(r.values.size()); ++i) values.insert(r.values[i].name, r.values[i].text);
         QJsonObject o{{QStringLiteral("tag"), d.tag}, {QStringLiteral("name"), d.name()}, {QStringLiteral("values"), values}};
-        if (from > 0) o.insert(QStringLiteral("note"), tr("%1 values: the last 40 here; fem_evaluate with 'all' gives each").arg(r.values.size()));
+        if (from > 0) o.insert(QStringLiteral("note"), tr("%1 values: the last 40 here; fem_evaluate %2 with 'all' gives each (%2.<name> one)").arg(r.values.size()).arg(d.tag));
         else if (!r.note.isEmpty()) o.insert(QStringLiteral("note"), r.note);
         if (!r.error.isEmpty()) o.insert(QStringLiteral("error"), r.error);
         derived.append(o);
@@ -1352,8 +1352,26 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
     const QString study = args.value(QLatin1String("study")).toString();
+    // A Derived Values node's values: each (its tag, lp1) or one (lp1.Z0_odd)
+    // - as a Global graph takes them -, of its study when none is given.
+    const auto derivedOf = [doc](const QString& text) -> const FNode* {
+        static const QRegularExpression form(QStringLiteral("^([A-Za-z_]\\w*)(\\.\\w+)?$"));
+        const QRegularExpressionMatch m = form.match(text.trimmed());
+        if (!m.hasMatch()) return nullptr;
+        const FNode* n = doc->model().find(m.captured(1));
+        return n != nullptr && n->kind() != nullptr && n->kind()->group == QLatin1String("derived") ? n : nullptr;
+    };
     std::shared_ptr<SolutionSet> set = doc->solutions(study);
     QString usedStudy;
+    if (study.trimmed().isEmpty())
+        for (const QString& part : args.value(QLatin1String("expression")).toString().split(QLatin1Char(';')))
+            if (const FNode* n = derivedOf(namedExpression(part).expression); n != nullptr && !n->text(QStringLiteral("study")).isEmpty()) {
+                if (const std::shared_ptr<SolutionSet> its = doc->solutions(n->text(QStringLiteral("study"))); its && !its->solutions.empty()) {
+                    set = its;
+                    usedStudy = doc->studyTag(n->text(QStringLiteral("study")));
+                }
+                break;
+            }
     if ((!set || set->solutions.empty()) && study.trimmed().isEmpty())
         // (No study given and the first not solved: the first that is.)
         for (const Node* st : doc->model().studies())
@@ -1392,7 +1410,7 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
         QString name;
         int index;   // in the values
     };
-    auto evaluateIn = [&](const SolutionSet& in) {
+    auto evaluateIn = [&all, &args, &frequency, &items, &mode, &over, &time, &unit, &derivedOf](const SolutionSet& in) {
         Found out;
         std::vector<Global> global;
         const std::vector<Instance> which = instances(in, all, args.value(QLatin1String("point")).toInt(0), time, frequency, mode);
@@ -1435,24 +1453,63 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                 }
                 continue;
             }
-            // Over domains or boundaries, or a global value.
-            FNode node;
-            if (over.isEmpty()) {
-                node.type = QStringLiteral("global");
-            } else {
-                node.type = args.value(QLatin1String("kind")).toString(QStringLiteral("integral"));
-                node.props.insert(QStringLiteral("level"), over);
-                node.props.insert(QStringLiteral("selection"), args.value(QLatin1String("selection")).toObject(QJsonObject{{QStringLiteral("all"), true}}));
+            // Over domains or boundaries, or a global value - and a Derived
+            // Values node's, each item in its order.
+            QStringList plain;
+            const auto evaluatePlain = [&plain, &over, &args, &unit, &sol, &at, &global, &out, &prefix] {
+                if (plain.isEmpty()) return;
+                FNode node;
+                if (over.isEmpty()) {
+                    node.type = QStringLiteral("global");
+                } else {
+                    node.type = args.value(QLatin1String("kind")).toString(QStringLiteral("integral"));
+                    node.props.insert(QStringLiteral("level"), over);
+                    node.props.insert(QStringLiteral("selection"),
+                                      args.value(QLatin1String("selection")).toObject(QJsonObject{{QStringLiteral("all"), true}}));
+                }
+                node.props.insert(QStringLiteral("expression"), plain.join(QLatin1String("; ")));
+                node.props.insert(QStringLiteral("unit"), unit);
+                plain.clear();
+                const DerivedResult r = evaluateDerived(*sol, node);
+                for (const DerivedValue& v : r.values) {
+                    if (over.isEmpty() && at.snapshot >= 0) global.push_back({at.point, v.name, int(out.values.size())});
+                    out.values.append(QJsonObject{{QStringLiteral("name"), prefix + v.name}, {QStringLiteral("value"), v.text}, {QStringLiteral("SI"), v.value}});
+                }
+                if (!r.error.isEmpty()) out.errors << prefix + r.error;
+                if (out.note.isEmpty()) out.note = r.note;
+            };
+            for (const QString& text : items) {
+                const NamedExpression item = namedExpression(text);
+                const FNode* derived = over.isEmpty() ? derivedOf(item.expression) : nullptr;
+                if (derived == nullptr) {
+                    plain << text;
+                    continue;
+                }
+                evaluatePlain();
+                // (Each named tag.name; one named as asked: "z = lp1.Z0_odd".)
+                const QString only = item.expression.trimmed().section(QLatin1Char('.'), 1);
+                const DerivedResult r = evaluateDerived(*sol, *derived);
+                QStringList names;
+                bool any = false;
+                for (const DerivedValue& v : r.values) {
+                    names << v.name;
+                    if (!only.isEmpty() && v.name.compare(only, Qt::CaseInsensitive) != 0) continue;
+                    any = true;
+                    QString shown = v.text;
+                    if (!unit.trimmed().isEmpty()) {
+                        QString warning;
+                        const DisplayUnit du = displayUnit(unit, v.dim, &warning);
+                        if (!du.name.isEmpty()) shown = formatNumber((v.value - du.offset) / du.scale, 6) + QLatin1Char(' ') + du.name;
+                        else if (!warning.isEmpty()) out.errors << prefix + tr("%1.%2: %3").arg(derived->tag, v.name, warning);
+                    }
+                    const QString name = !only.isEmpty() && item.name != item.expression ? item.name : derived->tag + QLatin1Char('.') + v.name;
+                    out.values.append(QJsonObject{{QStringLiteral("name"), prefix + name}, {QStringLiteral("value"), shown}, {QStringLiteral("SI"), v.value}});
+                }
+                if (!r.error.isEmpty()) out.errors << prefix + tr("%1: %2").arg(derived->name(), r.error);
+                else if (!any) out.errors << prefix + tr("%1 has no value %2: it has %3").arg(derived->name(), only, names.join(QStringLiteral(", ")));
+                if (out.note.isEmpty()) out.note = r.note;
             }
-            node.props.insert(QStringLiteral("expression"), expression);
-            node.props.insert(QStringLiteral("unit"), unit);
-            const DerivedResult r = evaluateDerived(*sol, node);
-            for (const DerivedValue& v : r.values) {
-                if (over.isEmpty() && at.snapshot >= 0) global.push_back({at.point, v.name, int(out.values.size())});
-                out.values.append(QJsonObject{{QStringLiteral("name"), prefix + v.name}, {QStringLiteral("value"), v.text}, {QStringLiteral("SI"), v.value}});
-            }
-            if (!r.error.isEmpty()) out.errors << prefix + r.error;
-            if (out.note.isEmpty()) out.note = r.note;
+            evaluatePlain();
         }
         // A global the same at each mode (state) of a point - a states
         // study's qw.Ee1, a mode step's wavelength - once per point.

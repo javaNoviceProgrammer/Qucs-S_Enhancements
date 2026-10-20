@@ -64,6 +64,7 @@
 #include <QCheckBox>
 #include <QCollator>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDockWidget>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -84,6 +85,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
@@ -329,7 +331,7 @@ const char* const kTools = R"JSON([
  "description": "Stops a simulation - the one 'id' names (followed since simulate's 'background' or its timeout), or without it the one running now, the user's too (as Simulation > Stop Simulation, or Qucsator's Abort) - and returns its outcome once it has ended.",
  "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The run's id; the one running when not given"}}}},
 {"name": "send_input",
- "description": "Raw mouse and keyboard input - the last resort, for what no other tool does, or to do something exactly as the user did: a 'click' (left unless 'button' says right or middle; 'double'; 'drag_to' drags from it, in steps; 'modifiers' held), then 'keys' (as list_actions writes shortcuts: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" - at most four; Ctrl is Command on a Mac; a key that is an action's shortcut sets off that action, as the keyboard does), then 'text' typed into what has the focus there. On a schematic's canvas ('target' canvas, the default; points in the schematic's coordinates as get_schematic gives them, brought into view - or with 'pixels' the canvas picture's pixels) or on a part of the window as get_ui names it (dock:Content, toolbar:Simulate, statusbar; points in its picture's pixels), or on the dialog that waits for an answer ('target' dialog: points in its picture's pixels - get_dialog's 'at' -, keys and text into its field with the focus, which a click gives; the window's shortcuts are not set off; the only input that reaches a dialog besides set_dialog). Returns what it opened (a dialog: get_dialog reads it; a menu: read and closed - context_menu chooses from one), the status bar's message, and a picture of the target as it is after, with how its pixels map. Not the consoles (console types there), not the Claude Code panel, not keys that would quit Qucs-S or set off what trigger_action refuses: then nothing is sent. Asked about each time.",
+ "description": "Raw mouse and keyboard input - the last resort, for what no other tool does, or to do something exactly as the user did: a 'click' (left unless 'button' says right or middle; 'double'; 'drag_to' drags from it, in steps; 'modifiers' held), then 'keys' (as list_actions writes shortcuts: \"Ctrl+Z\", \"Delete\", \"Escape, Return\" - at most four; Ctrl is Command on a Mac; a key that is an action's shortcut sets off that action unless the field with the focus claims it - its own Ctrl+A, Ctrl+C -, as the keyboard does), then 'text' typed into what has the focus there - while a list is open below a field (names offered as they are typed: a model's expression after a name and a dot), keys and text go to it, as the keyboard's do: Return or Tab takes the one chosen, Up and Down move, Escape closes it, a letter goes on into the field. On a schematic's canvas ('target' canvas, the default; points in the schematic's coordinates as get_schematic gives them, brought into view - or with 'pixels' the canvas picture's pixels) or on a part of the window as get_ui names it (dock:Content, toolbar:Simulate, statusbar; points in its picture's pixels), or on the dialog that waits for an answer ('target' dialog: points in its picture's pixels - get_dialog's 'at' -, keys and text into its field with the focus, which a click gives; the window's shortcuts are not set off; the only input that reaches a dialog besides set_dialog). Returns what it opened (a dialog: get_dialog reads it; a menu: read and closed - context_menu chooses from one; a list below a field: 'list', its rows and the one chosen, drawn into the picture), the status bar's message, and a picture of the target as it is after, with how its pixels map. Not the consoles (console types there), not the Claude Code panel, not keys that would quit Qucs-S or set off what trigger_action refuses: then nothing is sent. Asked about each time.",
  "inputSchema": {"type": "object", "properties": {
    "target": {"type": "string", "description": "canvas (the default), dock:<title>, a panel's name, toolbar:<title>, statusbar, or dialog (the one open)"},
    "path": {"type": "string", "description": "For the canvas: the schematic, the one in front unless given"},
@@ -348,10 +350,10 @@ const char* const kTools = R"JSON([
    "page": {"type": "string", "description": "One page of the manual whole, by its name (overview/simulation-types/index, as the sections found name them)"},
    "refresh": {"type": "boolean", "description": "Fetch the manual again"}}}},
 {"name": "get_ui",
- "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), the documents' tabs (tabs), or the document in front's own bar (document: a PDF's page field, find and zoom; a layout's, a picture's; a multiphysics model's buttons and, while it builds or solves, its Cancel - fem_stop stops it too). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open; the first 200 rows or items of each, and 'rows not shown' / 'items not shown' how many more), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
- "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar, tabs or document (the tab in front's own bar); none: the list"}}}},
+ "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), the documents' tabs (tabs), the document in front's own bar (document: a PDF's page field, find and zoom; a layout's, a picture's; a multiphysics model's buttons and, while it builds or solves, its Cancel - fem_stop stops it too), or the list open below a field that offers names as they are typed (list: its rows - each its whole name, unit and what it is - and the one chosen; any area's answer has it while it is open). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open; the first 200 rows or items of each, and 'rows not shown' / 'items not shown' how many more), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
+ "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar, tabs, document (the tab in front's own bar) or list (the one open below a field); none: the parts there are"}}}},
 {"name": "set_ui",
- "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row (its text, its number in get_ui's rows, or a tree's path \"Schematics > amp.sch\") is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button. Area tabs: 'value' a tab's title brings that document to the front. Area document: the tab in front's own bar - a field set is entered, as typing it and pressing Enter (a PDF's page field: that page). Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
+ "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters; a panel's field is then done with, as Return leaves it - a model's node takes it), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row - a table's or tree's too (its text, its number in get_ui's rows, or a tree's path from any row, \"Results > Electric Potential (es) > Surface\") - is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button. Area tabs: 'value' a tab's title brings that document to the front. Area document: the tab in front's own bar - a field set is entered, as typing it and pressing Enter (a PDF's page field: that page). Area list: 'set' [{\"control\": \"row\", \"value\": a row's number or name}] takes that row of the list open below a field, as Return takes the one chosen. Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "As get_ui's"},
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate", "expand", "collapse"]}}, "required": ["control", "value"]}, "description": "[{\"control\": id or label, \"value\": ..., \"action\": for a view's row: select (the default), activate, expand or collapse}]"},
    "press": {"type": "string", "description": "A button pressed after, by its label or id"}}, "required": ["area"]}},
@@ -917,7 +919,7 @@ const char* const kTools = R"JSON([
 {"name": "fem_build", "description": "Builds a multiphysics model's geometry ('what' geometry, the default: its domains, boundaries and points with their numbers, as fem_describe what=geometry gives them, shown in the Graphics view) or its mesh (mesh: built in the background, waited for up to 'timeout' seconds; its triangles, nodes, smallest angle and quality). fem_solve builds what it needs itself.", "inputSchema": {"type": "object", "properties": {"what": {"type": "string", "enum": ["geometry", "mesh"], "description": "What is built; geometry when not given"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "mesh: seconds it is waited for (300)"}, "max": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "geometry: domains and boundaries listed at most (100)"}}}},
 {"name": "fem_solve", "description": "Solves a study of a multiphysics model (its geometry and mesh built first when they changed), in the background, waiting up to 'timeout' seconds (past it, how far it is: its sweep's point, a semiconductor's contact voltage and step, Newton's step and residual - fem_describe's 'at work' says it again): the time, the unknowns, the log (a coupled study's iterations, Newton's steps, the time steps), the global values (es.C11 and the capacitance matrix, terminals' charges, ec.R, ec.I_1, ec.P, ht.Tmax, ht.P, ht.Rth, solid.dmax, solid.Ry...; of a study in time at its last output time), a sweep's solutions each with its globals (a sweep stopped before its last point - cancelled, a point without a solution: its points before, and 'stopped' where and why), every Derived Values node's values (a line's Z0, εeff...; at each time and parameter value), and the plot group shown. Errors are said as the model has them: a domain without a material, a material without a property the physics needs, no ground.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "study": {"type": "string", "description": "The study's tag; the first when not given"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 7200, "description": "Seconds it is waited for (600)"}}}},
 {"name": "fem_stop", "description": "Stops what a multiphysics model is building or solving in the background - after fem_solve's or fem_build's timeout, or the user's own run - as the model tab's Cancel does, and waits up to 'timeout' seconds for it to end: it stops at its next check - a time step, a frequency, a sweep's point, a coupled loop's iteration, a semiconductor's Newton step (on its way to its contacts' voltages too), each step of a mode or eigenfrequency search (not inside a matrix's factorization, a large model's some seconds). Returns whether it stopped and what the model said; nothing running, it says so.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds it is waited for to end (30)"}}}},
-{"name": "fem_evaluate", "description": "Evaluates an expression of a solved multiphysics model: 'at' points ([[x, y], ...] in the geometry's unit), or 'over' domain or boundary ('selection' a rule, all when not given; 'kind' integral - over the area or the length, not the thickness -, average, maximum or minimum), or neither: a global value (es.C11, ec.R, 1/ec.G11, ht.Tmax - several split by ';', each named if wanted: loss_dBcm = emw.loss/100). Expressions of the variables fem_describe what=variables lists: V, es.normE, ec.Qrh, T, ht.normq, x, y... 'unit' shows it in another (mV, kV/mm, degC). Each value as shown and in SI.", "inputSchema": {"type": "object", "properties": {"expression": {"type": "string", "description": "What is evaluated (V, es.normE, T, ht.qy, es.C11, ec.P...)"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "study": {"type": "string", "description": "The study's tag; the first when not given"}, "at": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Points [[x, y], ...] in the geometry's unit"}, "over": {"type": "string", "enum": ["domain", "boundary"], "description": "Domains or boundaries: with 'selection' and 'kind'"}, "selection": {"type": "object", "description": "over: which ({\"only\": [\"film\"]}, {\"numbers\": [2]}); all when not given"}, "kind": {"type": "string", "enum": ["integral", "average", "maximum", "minimum"], "description": "over: what of it (integral)"}, "unit": {"type": "string", "description": "The unit it is shown in (SI's when not given)"}, "time": {"type": "string", "description": "A study in time: the output time (s, or with a unit: 0.5, 500[ms]; the last when not given)"}, "frequency": {"type": "string", "description": "A study in frequency: the frequency (Hz, or with a unit: 1e6, 1[MHz]; a mode analysis's also as a wavelength, 1550[nm]; the last when not given)"}, "mode": {"type": "integer", "minimum": 1, "description": "A mode analysis: the mode, from 1 by effective index (a resonator's by frequency; the first when not given); with 'all', that mode alone at each point"}, "state": {"type": "integer", "minimum": 1, "description": "A quantum states study: the state (as 'mode')"}, "point": {"type": "integer", "minimum": 0, "description": "A sweep: its point, from 1 (the last when not given)"}, "all": {"type": "boolean", "description": "At every output time or frequency and every point of the sweep; a global the same at each mode or state of a point once for the point"}}, "required": ["expression"]}},
+{"name": "fem_evaluate", "description": "Evaluates an expression of a solved multiphysics model: 'at' points ([[x, y], ...] in the geometry's unit), or 'over' domain or boundary ('selection' a rule, all when not given; 'kind' integral - over the area or the length, not the thickness -, average, maximum or minimum), or neither: a global value (es.C11, ec.R, 1/ec.G11, ht.Tmax - several split by ';', each named if wanted: loss_dBcm = emw.loss/100) or a Derived Values node's: its tag (each of its values: lp1) or tag.name (one: lp1.Z0_odd), of its study unless 'study' says. Expressions of the variables fem_describe what=variables lists: V, es.normE, ec.Qrh, T, ht.normq, x, y... 'unit' shows it in another (mV, kV/mm, degC). Each value as shown and in SI.", "inputSchema": {"type": "object", "properties": {"expression": {"type": "string", "description": "What is evaluated (V, es.normE, T, ht.qy, es.C11, ec.P...)"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "study": {"type": "string", "description": "The study's tag; the first when not given"}, "at": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Points [[x, y], ...] in the geometry's unit"}, "over": {"type": "string", "enum": ["domain", "boundary"], "description": "Domains or boundaries: with 'selection' and 'kind'"}, "selection": {"type": "object", "description": "over: which ({\"only\": [\"film\"]}, {\"numbers\": [2]}); all when not given"}, "kind": {"type": "string", "enum": ["integral", "average", "maximum", "minimum"], "description": "over: what of it (integral)"}, "unit": {"type": "string", "description": "The unit it is shown in (SI's when not given)"}, "time": {"type": "string", "description": "A study in time: the output time (s, or with a unit: 0.5, 500[ms]; the last when not given)"}, "frequency": {"type": "string", "description": "A study in frequency: the frequency (Hz, or with a unit: 1e6, 1[MHz]; a mode analysis's also as a wavelength, 1550[nm]; the last when not given)"}, "mode": {"type": "integer", "minimum": 1, "description": "A mode analysis: the mode, from 1 by effective index (a resonator's by frequency; the first when not given); with 'all', that mode alone at each point"}, "state": {"type": "integer", "minimum": 1, "description": "A quantum states study: the state (as 'mode')"}, "point": {"type": "integer", "minimum": 0, "description": "A sweep: its point, from 1 (the last when not given)"}, "all": {"type": "boolean", "description": "At every output time or frequency and every point of the sweep; a global the same at each mode or state of a point once for the point"}}, "required": ["expression"]}},
 {"name": "fem_plot", "description": "Shows a multiphysics model's results in its Graphics view: 'plot' a plot group (by its tag; a 1D Plot Group's graphs are written as a Qucs dataset beside the model and shown in a data display), or 'expression' - a plot group of it made (a color map, with 'contours' its contours too; 'unit', 'colors' rainbow, viridis, thermal, coolwarm or gray; one step of Undo) - or 'show' geometry or mesh. Returns what is shown and the color map's range; screenshot takes a picture of it.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "plot": {"type": "string", "description": "A plot group's tag (fem_describe lists them)"}, "expression": {"type": "string", "description": "A plot group of this expression made and shown"}, "title": {"type": "string", "description": "expression: the plot group's name (the expression when not given)"}, "unit": {"type": "string", "description": "expression: the unit it is shown in"}, "colors": {"type": "string", "enum": ["rainbow", "viridis", "thermal", "coolwarm", "gray"], "description": "expression: the color table"}, "contours": {"type": "boolean", "description": "expression: its contours too"}, "study": {"type": "string", "description": "expression: the study (the first when not given)"}, "show": {"type": "string", "enum": ["geometry", "mesh"], "description": "The geometry or the mesh in place of a plot"}, "time": {"type": "string", "description": "A study in time: the output time shown (s, or with a unit; empty: the last)"}, "frequency": {"type": "string", "description": "A study in frequency: the frequency shown (Hz, or with a unit; a mode analysis's also as a wavelength, 1550[nm]; empty: the last)"}, "mode": {"type": "integer", "minimum": 1, "description": "A mode analysis: the mode shown, from 1"}, "point": {"type": "integer", "minimum": 0, "description": "A sweep: the point shown, from 1 (0: the last)"}}}},
 {"name": "fem_export", "description": "Runs an Export node of a multiphysics model (Results > Export: touchstone - a line of its length as an .s2p of S-parameters at each frequency, for an S-parameter file part; spice - a .cir subcircuit of a line, sections of R, L, G, C or an LTRA line, or of terminals' capacitance, conductance or coupled-inductance matrix; qucspart - a Qucs subcircuit .sch of an RLCG part; fieldexport - expressions (\"expressions\": \"emw.normE; semi.n\") on a regular grid (\"where\": grid, \"from\", \"to\" corners in the geometry's unit, \"nx\", \"ny\") or at the mesh's nodes, as \"format\" csv, npy (NumPy: a grid's array [solution,] expression, y, x) or dat (columns, gnuplot), for one solution (\"point\", \"time\", \"frequency\", \"mode\"), each (\"solutions\": all) or each point's chosen mode (chosen) - these of a solved study's; lumericalmode, lumericalcharge, lumericalmqw - a Lumerical script, .lsf, of the model alone, that builds it in MODE (an FDE region over its cross-section, each domain's index at the mode step's wavelength), in CHARGE (its cross-section in the x-z plane, electrical materials by name, doping, contacts on metal strips at their voltages, a sweep a value table) or for mqwindex (the wells' stack, 4x4 k·p) and saves the project): its file written (where its 'file' says, else model_tag beside the model) and its first lines returned. With 'copy', a qucspart's RLCG part goes on the clipboard to paste into a schematic. fem_edit adds export nodes under \"exports\".", "inputSchema": {"type": "object", "properties": {"export": {"type": "string", "description": "The export node's tag (fem_describe lists them)"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "copy": {"type": "boolean", "description": "A qucspart: its part copied to the clipboard, not written"}}}}
 ])JSON";
@@ -10601,6 +10603,13 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
             content.append(pngContent(fitted(w->grab().toImage())));
             shown << tr("the dialog \"%1\"").arg(w->windowTitle().isEmpty() ? QString::fromLatin1(w->metaObject()->className()) : w->windowTitle());
         }
+        // (A list open below a field - names offered as typed -: a window of
+        // its own, the window's picture without it.)
+        if (QAbstractItemView* list = openList()) {
+            content.append(pngContent(fitted(list->grab().toImage())));
+            const QString of = listRead(list).value(QStringLiteral("of")).toString();
+            shown << (of.isEmpty() ? tr("the list open below a field") : tr("the list open below %1").arg(of));
+        }
         content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                    {QStringLiteral("text"), tr("Pictures of %1.").arg(shown.join(QStringLiteral(", ")))}});
         return {{QStringLiteral("content"), content}, {QStringLiteral("isError"), false}};
@@ -11797,6 +11806,71 @@ QString shownLabel(QWidget* w, QWidget* root, bool ui)
 
 } // namespace
 
+QAbstractItemView* QucsControl::openList(QCompleter** completer) const
+{
+    // A completer's list (names offered as typed): a popup, a window of its
+    // own that has the keyboard while it is open - not the Claude Code
+    // panel's.
+    auto* view = qobject_cast<QAbstractItemView*>(QApplication::activePopupWidget());
+    if (view == nullptr || !view->isVisible() || view->model() == nullptr) return nullptr;
+    QDockWidget* claude = a_app->claudeDockWidget();
+    for (QCompleter* c : a_app->findChildren<QCompleter*>())
+        if (c->popup() == view) {
+            if (claude != nullptr && c->widget() != nullptr && claude->isAncestorOf(c->widget())) return nullptr;
+            if (completer != nullptr) *completer = c;
+            return view;
+        }
+    return nullptr;
+}
+
+QJsonObject QucsControl::listRead(QAbstractItemView* list) const
+{
+    QCompleter* completer = nullptr;
+    if (list == nullptr || openList(&completer) != list) return {};
+    // Each row: the name it takes (its whole name, the list's row showing
+    // what goes on from the stem typed), then the rest of what it shows.
+    const QAbstractItemModel* m = list->model();
+    QJsonArray rows;
+    const int count = m->rowCount();
+    for (int r = 0; r < count && r < 200; ++r) {
+        QJsonArray row;
+        const QString whole = m->index(r, 0).data(Qt::UserRole).toString();
+        row.append(whole.isEmpty() ? m->index(r, 0).data().toString() : whole);
+        for (int c = 1; c < m->columnCount(); ++c)
+            if (const QString t = m->index(r, c).data().toString(); !t.isEmpty()) row.append(t);
+        rows.append(row.size() == 1 ? row.at(0) : QJsonValue(row));
+    }
+    QJsonObject o{{QStringLiteral("rows"), rows}, {QStringLiteral("chosen"), list->currentIndex().isValid() ? list->currentIndex().row() : -1}};
+    if (count > 200) o.insert(QStringLiteral("rows not shown"), count - 200);
+    if (QWidget* field = completer->widget()) {
+        const QString label = labelOf(field, field->window());
+        o.insert(QStringLiteral("of"), label.isEmpty() ? field->objectName() : label);
+        if (auto* e = qobject_cast<QLineEdit*>(field)) o.insert(QStringLiteral("text"), e->text());
+    }
+    o.insert(QStringLiteral("note"), tr("The list below the field, open as the names were offered: Return or Tab takes the one chosen, Up and "
+                                        "Down move, Escape closes it (send_input's keys go to it while it is open); set_ui area list takes a "
+                                        "row by its number or name."));
+    return o;
+}
+
+QImage QucsControl::withList(QWidget* root, const QImage& image) const
+{
+    // (A window of its own: the picture of root has it not.)
+    QAbstractItemView* list = openList();
+    if (list == nullptr || root == nullptr || image.isNull()) return image;
+    const QRect at(root->mapFromGlobal(list->mapToGlobal(QPoint(0, 0))), list->size());
+    const QRect all = QRect(QPoint(0, 0), image.size()).united(at);
+    QImage drawn = list->grab().toImage();
+    if (!drawn.isNull() && drawn.size() != list->size()) drawn = drawn.scaled(list->size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    QImage out(all.size(), QImage::Format_ARGB32_Premultiplied);
+    out.fill(Qt::white);
+    QPainter p(&out);
+    p.drawImage(-all.topLeft(), image);
+    p.drawImage(at.topLeft() - all.topLeft(), drawn);
+    p.end();
+    return out;
+}
+
 QJsonObject QucsControl::dialogRead(QWidget* dialog) const
 {
     QJsonObject o = describeControls(dialog, false);
@@ -11874,27 +11948,50 @@ int depthOf(const QAbstractItemView* view, QModelIndex index)
 // A view's row named by \a value: its number in viewRows()' order, a path
 // of names ("Schematics > amp.sch") from the top, or a name among the rows
 // shown (exactly, else the first that has it).
+// Every row of \a parent's on, in order, each before its children however
+// shut: a tree widget's rows as get_ui gives them.
+void allRows(const QAbstractItemModel* model, const QModelIndex& parent, int most, QList<QModelIndex>* rows)
+{
+    for (int r = 0; r < model->rowCount(parent) && rows->size() < most; ++r) {
+        const QModelIndex index = model->index(r, 0, parent);
+        rows->append(index);
+        allRows(model, index, most, rows);
+    }
+}
+
 QModelIndex viewRow(QAbstractItemView* view, const QJsonValue& value)
 {
+    // (A tree widget's numbered as get_ui numbers them - every item, a shut
+    // one's children too -, a view's as shown: they were the shown ones'
+    // for both, and get_ui's row 45 chose another.)
     QList<QModelIndex> rows;
-    viewRows(view, view->rootIndex(), 0, 5000, &rows);
+    if (qobject_cast<QTreeWidget*>(view) != nullptr && view->model() != nullptr) allRows(view->model(), view->rootIndex(), 5000, &rows);
+    else viewRows(view, view->rootIndex(), 0, 5000, &rows);
     if (value.isDouble()) {
         const int n = value.toInt();
         return n >= 0 && n < rows.size() ? rows.at(n) : QModelIndex();
     }
     const QString text = value.toString().trimmed();
     if (text.contains(QLatin1String(" > "))) {
-        QModelIndex at = view->rootIndex();
-        for (const QString& part : text.split(QStringLiteral(" > "))) {
-            QModelIndex found;
-            for (int r = 0; r < view->model()->rowCount(at) && !found.isValid(); ++r) {
-                const QModelIndex child = view->model()->index(r, 0, at);
-                if (child.data().toString().trimmed().compare(part.trimmed(), Qt::CaseInsensitive) == 0) found = child;
+        // From the top, else from any row the path's first names.
+        const QStringList parts = text.split(QStringLiteral(" > "));
+        const auto down = [view, &parts](QModelIndex at, int from) {
+            for (int p = from; p < parts.size(); ++p) {
+                QModelIndex found;
+                for (int r = 0; r < view->model()->rowCount(at) && !found.isValid(); ++r) {
+                    const QModelIndex child = view->model()->index(r, 0, at);
+                    if (child.data().toString().trimmed().compare(parts.at(p).trimmed(), Qt::CaseInsensitive) == 0) found = child;
+                }
+                if (!found.isValid()) return QModelIndex();
+                at = found;
             }
-            if (!found.isValid()) return {};
-            at = found;
-        }
-        return at;
+            return at;
+        };
+        if (const QModelIndex found = down(view->rootIndex(), 0); found.isValid()) return found;
+        for (const QModelIndex& start : rows)
+            if (start.data().toString().trimmed().compare(parts.first().trimmed(), Qt::CaseInsensitive) == 0)
+                if (const QModelIndex found = down(start, 1); found.isValid()) return found;
+        return {};
     }
     for (const QModelIndex& index : rows)
         if (index.data().toString().trimmed().compare(text, Qt::CaseInsensitive) == 0) return index;
@@ -12507,7 +12604,12 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
         auto* view = qobject_cast<QAbstractItemView*>(w);
         const bool widgetView = qobject_cast<QTableWidget*>(w) != nullptr || qobject_cast<QTreeWidget*>(w) != nullptr
                                 || qobject_cast<QListWidget*>(w) != nullptr;
-        if (view != nullptr && (widgetView || !ui) && !change.contains(QLatin1String("action")))
+        // (A table's or a tree's row alone - its number as get_ui gives it,
+        // its path, its text - chosen as a click would: the check of
+        // 31ba73b's addendum, 4; a cell or a tick, [row, column, value], its
+        // own way; a list's item alone too.)
+        const bool bareRow = widgetView && qobject_cast<QListWidget*>(w) == nullptr && !value.isArray() && !value.isBool();
+        if (view != nullptr && (widgetView || !ui) && !change.contains(QLatin1String("action")) && !bareRow)
             view = nullptr;   // (their own way, unless an action is asked)
         const QString action = change.value(QLatin1String("action")).toString(QStringLiteral("select"));
         if (auto* secret = qobject_cast<QLineEdit*>(w); secret != nullptr && secret->echoMode() != QLineEdit::Normal) {
@@ -12523,7 +12625,8 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             const QModelIndex index = viewRow(view, value);
             if (!index.isValid()) {
                 ok = false;
-                why = tr("no row %1 (get_ui lists the rows shown; a tree's hidden one by its path, \"Schematics > amp.sch\")").arg(text);
+                why = tr("no row %1 (get_ui lists the rows: its number there, its text, or a tree's path from any row, \"Results > "
+                         "Electric Potential (es) > Surface\")").arg(text);
             } else if (action == QLatin1String("expand") || action == QLatin1String("collapse")) {
                 auto* tree = qobject_cast<QTreeView*>(view);
                 if (tree == nullptr) {
@@ -12556,6 +12659,13 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
                 ok = false;
                 why = tr("'action' is select, activate, expand or collapse");
             }
+            if (ok) {
+                // (Which row: its path, as a tree shows it.)
+                QStringList path;
+                for (QModelIndex up = index; up.isValid() && up != view->rootIndex(); up = up.parent()) path.prepend(up.data().toString().trimmed());
+                said = tr("%1's row %2").arg(shownLabel(w, dialog, ui).isEmpty() ? QStringLiteral("c%1").arg(list.indexOf(w) + 1) : shownLabel(w, dialog, ui),
+                                             path.join(QStringLiteral(" > ")));
+            }
         } else if (auto* slider = ui ? qobject_cast<QAbstractSlider*>(w) : nullptr) {
             // As a drag would: pressed, moved, let go.
             const int to = text.toInt(&ok);
@@ -12568,11 +12678,20 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
                 slider->setSliderDown(false);
             }
         } else if (auto* e = qobject_cast<QLineEdit*>(w)) {
+            QPointer<QLineEdit> field = e;
             e->setText(text);
             e->setModified(true);
             if (ui) emit e->textEdited(text);   // (as typed: a panel's search goes by it)
+            // (A list the text opened below it - names offered - closed: the
+            // text given is the one meant.)
+            QCompleter* offering = nullptr;
+            if (QAbstractItemView* open = ui ? openList(&offering) : nullptr; open != nullptr && offering->widget() == e) open->hide();
             if (ui && a_uiEnter) emit e->returnPressed();   // (a document's bar: entered)
-            commitEditor(e);
+            if (field) commitEditor(field);
+            // (A panel's field done with, as Return or a click elsewhere
+            // leaves it: what it is of takes its text - it kept its old one:
+            // the check of 31ba73b's addendum, 3.)
+            if (ui && !a_uiEnter && field && field->hasAcceptableInput()) emit field->editingFinished();
         } else if (auto* p = qobject_cast<QPlainTextEdit*>(w)) {
             p->setPlainText(text);
         } else if (auto* t = qobject_cast<QTextEdit*>(w)) {

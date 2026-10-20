@@ -299,8 +299,10 @@ QString touchstoneCoupled(const CoupledSweep& sweep, double length, double zref,
                .arg(2 * n);
     if (mixed) {
         out += QStringLiteral("! Mixed-mode: ports d1 d2 c1 c2 - the differential mode at the near and far ends (its reference %1), "
-                              "the common mode (%2); [Sdd Sdc; Scd Scc]\n")
-                   .arg(formatQuantity(2 * zref, Dim::resistance()), formatQuantity(zref / 2, Dim::resistance()));
+                              "the common mode (%2); [Sdd Sdc; Scd Scc]\n"
+                              "! (The option line's R %3 is the single-ended reference the modes' are of - twice it, half it: "
+                              "Touchstone 1 has one reference)\n")
+                   .arg(formatQuantity(2 * zref, Dim::resistance()), formatQuantity(zref / 2, Dim::resistance()), num(zref));
     } else {
         QStringList ports;
         const QStringList names = sweep.points.empty() ? QStringList() : sweep.points.front().names;

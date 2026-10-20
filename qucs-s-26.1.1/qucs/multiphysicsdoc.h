@@ -19,6 +19,7 @@
 #include "multiphysicsview.h"
 #include "qucsdoc.h"
 
+#include <QDateTime>
 #include <QFrame>
 #include <QPointer>
 
@@ -101,6 +102,8 @@ public:
     std::shared_ptr<qucs_s::fem::SolutionSet> solutions(const QString& study = {}) const;
     /// Whether the model changed since \a study was solved.
     bool solutionStale(const QString& study = {}) const;
+    /// When \a study was last solved (invalid: not since it was opened).
+    QDateTime solvedAt(const QString& study = {}) const;
     /// Builds the geometry now; false and its error when it fails.
     bool buildGeometry(QString* error = nullptr);
     /// Starts building the mesh (the geometry first, when stale).
@@ -234,6 +237,7 @@ private:
     QString a_instanceLabel;
     QFileSystemWatcher* a_watcher = nullptr;
     std::map<QString, bool> a_stale;
+    std::map<QString, QDateTime> a_solvedAt;
     std::unique_ptr<qucs_s::fem::Locator> a_locator;
     std::shared_ptr<Job> a_job;
     bool a_jobMeshes = false;

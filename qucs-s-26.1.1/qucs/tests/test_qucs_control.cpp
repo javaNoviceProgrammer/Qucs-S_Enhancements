@@ -10662,6 +10662,19 @@ private slots:
         QCOMPARE(certain(), QJsonValue(true));
         QVERIFY2(json(call("simulate", {}, 120000)).toObject().value("succeeded").toBool(), "the second run");
         QVERIFY2(stale().isEmpty(), qPrintable(stale()));
+        // Its data display: its own edits - a diagram added after the run -
+        // leave the dataset as it was; read through it, the circuit's
+        // schematic tells (a display's edit after its dataset was "edited
+        // after" it: the check of 31ba73b, 2).
+        QTest::qWait(1100);
+        QVERIFY(!failed(call("new_document", {{"kind", "data_display"}})));
+        QVERIFY(!failed(call("add_diagram", {{"path", "stale.dpl"}, {"type", "rect"}, {"traces", QJsonArray{"tran.i(V1)"}}})));
+        // (A second: a document's first edit is its content, not an edit.)
+        QVERIFY(!failed(call("add_diagram", {{"path", "stale.dpl"}, {"type", "rect"}, {"traces", QJsonArray{"tran.i(V1)"}}})));
+        r = call("get_dataset", {{"path", "stale.dpl"}});
+        QVERIFY2(!failed(r) && !json(r).toObject().contains("stale"), qPrintable(text(r).left(800)));
+        QVERIFY(!failed(call("close_document", {{"path", "stale.dpl"}, {"unsaved", "discard"}})));
+        QVERIFY(!failed(call("show_document", {{"path", "stale.sch"}})));
         // A preview that changes nothing is no edit.
         QTest::qWait(1100);
         QVERIFY(!failed(call("set_schematic", {{"text", front()->documentText()}, {"preview", true}})));

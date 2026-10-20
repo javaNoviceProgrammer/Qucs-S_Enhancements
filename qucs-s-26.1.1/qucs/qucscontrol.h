@@ -15,6 +15,7 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QImage>
 #include <QJsonArray>
 #include <QObject>
 #include <QPoint>
@@ -43,6 +44,8 @@ struct Layout;
 }
 class QWidget;
 class QTabWidget;
+class QAbstractItemView;
+class QCompleter;
 
 /*!
  * The Qucs-S window as tools for Claude (qucs_s::claude::ToolHost, an MCP
@@ -527,6 +530,9 @@ private:
     /// not the one it ran, or an edit after it - or empty. \a certain: the
     /// first two, not the edit's time alone (which may be of no value).
     QString staleness(Schematic* sch, const QString& file, bool* certain = nullptr);
+    /// A multiphysics \a model's dataset \a file (a 1D plot group's): what makes it stale, when
+    /// something does.
+    QString modelStaleness(const QString& file, const QString& model) const;
     QJsonObject reloadData(const QJsonObject& args);
     // Diagrams and their traces.
     QJsonObject addDiagram(const QJsonObject& args);
@@ -611,6 +617,16 @@ private:
     bool tabIs(const QTabWidget* pane, int i, const QString& title) const;
     QList<QAction*> menuActions(QStringList* paths) const;
     QWidget* openDialog() const;
+    /// The list open below a field - a completer's, names offered as typed:
+    /// a popup of its own, with the keyboard while it is open -, or null;
+    /// its completer in \a completer.
+    QAbstractItemView* openList(QCompleter** completer = nullptr) const;
+    /// It read: its rows (each its whole name, unit, what it is), the one
+    /// chosen, the field it is of and its text; empty when it is not open.
+    QJsonObject listRead(QAbstractItemView* list) const;
+    /// \a image, a picture of \a root, with the list open over it drawn in
+    /// where it is (beyond it: the picture grown).
+    QImage withList(QWidget* root, const QImage& image) const;
     /// The controls of \a dialog that get_dialog tells of, in a fixed order.
     /// The controls of \a dialog get_dialog lists and set_dialog fills, in
     /// order. \a ui (get_ui, set_ui: a part of the window): item views,
