@@ -1760,10 +1760,16 @@ private slots:
         // (The list gone, the keyboard's next key the field's.)
         QCOMPARE(QApplication::focusWidget(), panel()->editorFor(QStringLiteral("expression")));
         // (The other window in front again: a letter after the dot goes
-        // from the list on to the field, which keeps the list open.)
+        // from the list on to the field, which keeps the list open. The keys
+        // given before the panel's window is active again, as on a loaded
+        // runner, past the half second send_input waits for it - CI's Linux:
+        // they went to the panel, not its field, Qt's focus the other
+        // window's: no list.)
         elsewhere->activateWindow();
         QTRY_VERIFY(QApplication::activeWindow() == elsewhere);
+        control->setActivationWait(0);
         r = call("send_input", {{"target", area}, {"text", "+es.n"}});
+        control->setActivationWait(500);
         list = answer(r).value("list").toObject();
         QVERIFY2(list.value("text").toString() == QStringLiteral("3*") + offered.at(1) + QStringLiteral("+es.n"), qPrintable(text(r)));
         for (const QJsonValue& v : list.value("rows").toArray()) QVERIFY2(v.toArray().at(0).toString().startsWith(QLatin1String("es.n")), qPrintable(text(r)));
