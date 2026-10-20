@@ -446,8 +446,16 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
                     run->keys << tr("%1: pressed").arg(k.name);
                 }
             }
-            for (const QChar c : typed)
-                if (QWidget* w = focused()) press(w, QKeyCombination(Qt::Key(c.toUpper().unicode())), QString(c));
+            // (A character typed with a list open: its field's, as the list
+            // hands a letter on to it - not through the list, which closed at
+            // it when the field had not Qt's focus: its window's activation
+            // not come yet, as on CI's macOS runner, or behind another
+            // program. Its field's completer narrows the list.)
+            for (const QChar c : typed) {
+                QCompleter* completer = nullptr;
+                QWidget* w = openList(&completer) != nullptr && completer != nullptr && completer->widget() != nullptr ? completer->widget() : focused();
+                if (w != nullptr) press(w, QKeyCombination(Qt::Key(c.toUpper().unicode())), QString(c));
+            }
         }
         run->given = true;
         run->since.start();

@@ -1562,9 +1562,12 @@ private slots:
         // its field has not the focus, as in a window not active.)
         auto* elsewhere = new QWidget;
         elsewhere->resize(200, 100);
+        auto* itsField = new QLineEdit(elsewhere);   // (the focus its own)
         elsewhere->show();
         elsewhere->activateWindow();
         QTRY_VERIFY(QApplication::activeWindow() == elsewhere);
+        itsField->setFocus();
+        QTRY_VERIFY(QApplication::focusWidget() == itsField);
         r = call("send_input", {{"target", area}, {"click", click}, {"keys", "Ctrl+A"}, {"text", "3*es."}});
         delete window;
         QCOMPARE(fired, 0);
@@ -1598,6 +1601,14 @@ private slots:
         list = answer(r).value("list").toObject();
         QVERIFY2(list.value("text").toString() == QStringLiteral("3*") + offered.at(1) + QStringLiteral("+es.n"), qPrintable(text(r)));
         for (const QJsonValue& v : list.value("rows").toArray()) QVERIFY2(v.toArray().at(0).toString().startsWith(QLatin1String("es.n")), qPrintable(text(r)));
+        // (Its field without Qt's focus while its list is open - its window's
+        // activation not come yet, as on CI's macOS runner, or behind another
+        // program's: a letter typed is the field's all the same, its list
+        // kept - it went through the list, which closed at it.)
+        panel()->editorFor(QStringLiteral("expression"))->clearFocus();
+        r = call("send_input", {{"target", area}, {"text", "o"}});
+        list = answer(r).value("list").toObject();
+        QVERIFY2(list.value("text").toString() == QStringLiteral("3*") + offered.at(1) + QStringLiteral("+es.no"), qPrintable(text(r)));
         r = call("screenshot", {{"area", "window"}});
         QVERIFY2(text(r).contains(QLatin1String("the list open below Expression")), qPrintable(text(r)));
         r = call("set_ui", {{"area", "list"}, {"set", QJsonArray{QJsonObject{{"control", "row"}, {"value", "normE"}}}}});
