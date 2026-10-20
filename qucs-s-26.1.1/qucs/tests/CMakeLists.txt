@@ -360,3 +360,19 @@ if(NOT QUCS_TEST_TIMEOUT_SCALE EQUAL 1)
     set_property(TEST ${_qucs_test} APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_function_ms}")
   endforeach()
 endif()
+# (On macOS the memory-heavy tests above run one at a time, but beside the
+# others, and on CI's runner of three processors their solves are some 15
+# times as slow as on a workstation's many: the VCSEL example's two
+# functions 200 to 300 s there, 14 s here - QtTest's 300 s left them no
+# room, and 34e9659's run went red by one (the gain table's ends). Their
+# functions 900 s there, three times the default, a hang still ended by the
+# test's TIMEOUT of 900 s or more; and appended after the scale's, its value
+# when larger.)
+if(APPLE)
+  math(EXPR _qucs_memory_ms "300000 * ${QUCS_TEST_TIMEOUT_SCALE}")
+  if(_qucs_memory_ms LESS 900000)
+    set(_qucs_memory_ms 900000)
+  endif()
+  set_property(TEST test_fem_laser test_fem_resonator test_fem_quantum test_fem_modulator test_fem_optoelectronics
+               APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_memory_ms}")
+endif()
