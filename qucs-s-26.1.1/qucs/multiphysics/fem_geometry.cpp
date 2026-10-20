@@ -382,6 +382,9 @@ public:
         }
         QString why;
         out.topology = formUnion(tolerance, &why);
+        // (A process flow's state goes with the objects: its dopants for a
+        // semiconductor's doping, its composition for the quantum wells.)
+        if (out.topology) out.topology->process = out.process;
         if (!out.topology) {
             const QString tag = a_model.geometry().children.back().tag;
             out.errors.insert(tag, why);

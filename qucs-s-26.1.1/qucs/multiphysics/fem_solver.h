@@ -172,6 +172,21 @@ public:
     QList<Variable> variables() const;
     QList<Variable> globals() const;
     void setGlobal(const QString& name, double value, const Dim& dim, const QString& description = {}, const QString& unit = {});
+    /// A process flow's state as variables, each read where it is (the
+    /// grid's cells of the domain's material there), \a tag their prefix:
+    /// each species all of it (pf1.B) and active (pf1.B_a), the active
+    /// donors and acceptors as each host has them (pf1.Nd, pf1.Na) and
+    /// their difference (pf1.net), the interstitials (pf1.I, pf1.Icl), a
+    /// III-V's sublattices' shares (pf1.x_In...).
+    void addProcessVariables(std::shared_ptr<const ProcessState> state, const QString& tag);
+    /// A process step's solution: its state and its flow's tag (null else).
+    void setProcess(std::shared_ptr<const ProcessState> state, const QString& tag)
+    {
+        a_process = std::move(state);
+        a_processTag = tag;
+    }
+    std::shared_ptr<const ProcessState> process() const { return a_process; }
+    QString processTag() const { return a_processTag; }
     /// A global's value as it is shown: in its unit (dB/m) where it has one.
     QString globalText(const QString& name, int digits = 4) const;
     std::optional<double> global(const QString& name) const;
@@ -313,6 +328,8 @@ private:
                std::function<double(PointEvaluator&)> derived = {});
 
     Model a_model;
+    std::shared_ptr<const ProcessState> a_process;
+    QString a_processTag;
     std::shared_ptr<ParameterScope> a_params;
     std::shared_ptr<const Mesh> a_mesh;
     std::vector<Field> a_fields;

@@ -25,6 +25,7 @@
 #include "fem_line.h"
 #include "fem_materials.h"
 #include "fem_problem.h"
+#include "fem_process_p.h"
 #include "fem_results.h"
 
 #include <Eigen/Dense>
@@ -399,6 +400,17 @@ private:
     std::vector<double> polarizationEnergy(const std::vector<double>* rho, std::vector<double>* fields = nullptr) const;
     Expression a_V;
     std::vector<Band> a_bands;   // by domain
+    // An intermixed well's (a process flow's Intermix): the flow's
+    // composition, each domain's material on its grid and its bands'
+    // edges as made (Ec, Ev, eV), its band set.
+    std::shared_ptr<const ProcessDopants> a_mix;
+    std::vector<int> a_mixMaterial;
+    std::vector<std::array<double, 2>> a_mixNominal;
+    std::vector<BandSet> a_mixSet;
+    double a_mixScale = 1;
+    /// The edges' move at \a p (the geometry's unit) of domain \a d: the
+    /// alloy's there less the layer's.
+    bool mixShift(QPointF p, int d, double* dEc, double* dEv) const;
     std::vector<int> a_flux;     // boundaries whose wavefunction is free
     // 1D: the line (m) and its nodes (m from its start), its elements' domains (-1 a gap).
     QPointF a_S, a_E;
@@ -953,6 +965,40 @@ bool QuantumProblem::setup(QString* error)
         if (wurtzites > 0 && (a_valence == 4 || a_valence == 8))
             problem(tr("%1: the k·p 4x4 and 8x8 are zinc blende's: wurtzite's is the 6x6").arg(a_node->name()));
     }
+    // An intermixed well (a process flow's Intermix): at each point the
+    // edges of the alloy there, moved from its layer's as its composition's
+    // move (unstrained; the masses the layer's).
+    a_mix.reset();
+    a_mixMaterial.assign(topo.domains.size(), -1);
+    a_mixNominal.assign(topo.domains.size(), {0.0, 0.0});
+    a_mixSet.assign(topo.domains.size(), BandSet::Vurgaftman);
+    if (topo.process && topo.process->dopants) {
+        const ProcessDopants& pd = *topo.process->dopants;
+        bool mixed = false;
+        for (const ProcessDopants::Field& f : pd.fields) mixed = mixed || f.name.startsWith(QLatin1String("x:"));
+        for (int d = 0; mixed && d < int(topo.domains.size()); ++d) {
+            const Band& b = a_bands[std::size_t(d)];
+            const Node* mat = material[std::size_t(d)];
+            if (!b.on || b.user || b.wz || !mat) continue;
+            const QString compound = materialProperty(*mat, QStringLiteral("compound")).trimmed();
+            if (compound.isEmpty()) continue;
+            const double x = evaluateConstant(materialProperty(*mat, QStringLiteral("x")), constants, Dim()).value_or(0);
+            const double y = evaluateConstant(materialProperty(*mat, QStringLiteral("y")), constants, Dim()).value_or(0);
+            const BandSet set = bandSetOf(materialProperty(*mat, QStringLiteral("bands")));
+            QString c;
+            double cx = 0, cy = 0;
+            const process::Sublattices nominal = process::sublatticesOf(compound, x, y);
+            if (!nominal.ok || nominal.anion.empty() || !process::compoundOf(nominal, &c, &cx, &cy)) continue;
+            const std::optional<BandParameters> p = bandParameters(c, cx, cy, a_T, nullptr, set);
+            const int m = pd.materialAt(topo.domains[std::size_t(d)].inside.x(), topo.domains[std::size_t(d)].inside.y());
+            if (!p || m < 0) continue;
+            a_mixMaterial[std::size_t(d)] = m;
+            a_mixNominal[std::size_t(d)] = {p->VBO + p->Eg, p->VBO};
+            a_mixSet[std::size_t(d)] = set;
+            a_mix = topo.process->dopants;
+            a_mixScale = topo.unitScale;
+        }
+    }
     a_sets = 0;
     for (const Band& b : a_bands) a_sets = std::max(a_sets, int(b.valleys.size()));
     if (a_sets > 0 && !a_1d) problem(tr("%1: the electrons' valleys are a well's (1D): a wire's electrons one valley").arg(a_node->name()));
@@ -1102,6 +1148,14 @@ void QuantumProblem::bandsAt(PointEvaluator& ev, int d, double a, double out[Car
         ehh += b.hhOver;
         elh += b.lhOver;
     }
+    if (a_mix && a_mixMaterial[std::size_t(d)] >= 0) {
+        double dEc = 0, dEv = 0;
+        if (mixShift(ev.point() / a_mixScale, d, &dEc, &dEv)) {
+            ec += dEc;
+            ehh += dEv;
+            elh += dEv;
+        }
+    }
     double U = a_F * (a - a_s0);
     if (a_V.isValid()) {
         const double v = ev.eval(a_V);
@@ -1110,6 +1164,31 @@ void QuantumProblem::bandsAt(PointEvaluator& ev, int d, double a, double out[Car
     out[0] = ec + U;
     out[1] = ehh + U;
     out[2] = elh + U;
+}
+
+bool QuantumProblem::mixShift(QPointF p, int d, double* dEc, double* dEv) const
+{
+    const int m = a_mixMaterial[std::size_t(d)];
+    process::Sublattices s;
+    s.ok = true;
+    for (const ProcessDopants::Field& f : a_mix->fields) {
+        if (!f.name.startsWith(QLatin1String("x:"))) continue;
+        const process::Element* e = process::element(f.name.mid(2));
+        if (!e) continue;
+        const double v = a_mix->at(f, p.x(), p.y(), m, false);
+        if (!std::isfinite(v) || v <= 0) continue;
+        // (Group III on the cations' sublattice, group V on the anions'.)
+        const bool cation = e->Z == 5 || e->Z == 13 || e->Z == 31 || e->Z == 49;
+        (cation ? s.cation : s.anion).emplace_back(e->Z, v);
+    }
+    QString c;
+    double x = 0, y = 0;
+    if (s.cation.empty() || s.anion.empty() || !process::compoundOf(s, &c, &x, &y)) return false;
+    const std::optional<BandParameters> b = bandParameters(c, x, y, a_T, nullptr, a_mixSet[std::size_t(d)]);
+    if (!b) return false;
+    *dEc = b->VBO + b->Eg - a_mixNominal[std::size_t(d)][0];
+    *dEv = b->VBO - a_mixNominal[std::size_t(d)][1];
+    return true;
 }
 
 bool QuantumProblem::prepare(QString* error)

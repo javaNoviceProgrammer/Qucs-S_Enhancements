@@ -437,15 +437,24 @@ QList<NodeKind> makeKinds()
                    tr("In the layout's coordinates: µm, or with units")),
               pair(QStringLiteral("end"), tr("Cut to (x, y)"), QString(), QStringLiteral("10"), QStringLiteral("0")),
               choice(QStringLiteral("origin"), tr("x = 0 at"), {QStringLiteral("start"), QStringLiteral("center")},
-                     {tr("The cut's start"), tr("Its middle")}, QStringLiteral("start"))},
+                     {tr("The cut's start"), tr("Its middle")}, QStringLiteral("start")),
+              expr(QStringLiteral("dy"), tr("Dopants' cells: height"), QStringLiteral("length"), QStringLiteral("2[nm]"),
+                   tr("The dopants' grid's rows near the surfaces (down to its depth below the lowest one, taller below)")),
+              expr(QStringLiteral("dx"), tr("Dopants' cells: width"), QStringLiteral("length"), QString(),
+                   tr("Its columns (empty: the window's 200th, no narrower than the height)")),
+              expr(QStringLiteral("depth"), tr("Dopants' fine rows: depth"), QStringLiteral("length"), QStringLiteral("2[um]"),
+                   tr("Below the lowest surface: the rows dy tall reach this far"))},
              {QStringLiteral("process/substrate"), QStringLiteral("process/stack"), QStringLiteral("process/deposit"), QStringLiteral("process/etch"),
-              QStringLiteral("process/planarize"), QStringLiteral("process/strip"), QStringLiteral("process/epitaxy"), QStringLiteral("process/fill")},
+              QStringLiteral("process/planarize"), QStringLiteral("process/strip"), QStringLiteral("process/epitaxy"), QStringLiteral("process/fill"),
+              QStringLiteral("process/implant"), QStringLiteral("process/diffuse"), QStringLiteral("process/oxidize"), QStringLiteral("process/intermix")},
              {QStringLiteral("process/substrate")}, false, false, QStringLiteral("pf"),
              tr("A cross-section made by its steps in order: a substrate or an epitaxial stack, then deposits, etches, planarizing, "
-                "strips, epitaxy, fills - its masks a layout's layers along its cut, or typed in. Its regions are the geometry's "
-                "objects, each named by the step that made it (its label, else its tag; a stack's by its rows) for the materials and "
-                "the physics. Its window: x along the cut (or from x0, its width), the substrate's surface at y = 0 to start. Each "
-                "step's result is snapped to the process grid; a sliver thinner than the minimum dropped, said.")});
+                "strips, epitaxy, fills - its masks a layout's layers along its cut, or typed in - and its dopants: implants, anneals, "
+                "oxidation, a quantum well's intermixing, on a grid of their own carried through every step. Its regions are the "
+                "geometry's objects, each named by the step that made it (its label, else its tag; a stack's by its rows) for the "
+                "materials and the physics; a semiconductor's doping \"From the process flow\" its dopants. Its window: x along the cut "
+                "(or from x0, its width), the substrate's surface at y = 0 to start. Each step's result is snapped to the process grid; a "
+                "sliver thinner than the minimum dropped, said.")});
         // A mask: a layout's layer along the cut, or openings typed in.
         const P mask = choice(QStringLiteral("mask"), tr("Mask"), {QStringLiteral("none"), QStringLiteral("layer"), QStringLiteral("openings")},
                               {tr("None"), tr("A layout's layer"), tr("Openings typed in")}, QStringLiteral("none"));
@@ -468,20 +477,27 @@ QList<NodeKind> makeKinds()
         const P orientation = choice(QStringLiteral("orientation"), tr("Wafer's surface"), {QStringLiteral("100"), QStringLiteral("110"), QStringLiteral("111")},
                                      {tr("(100)"), tr("(110)"), tr("(111)")}, QStringLiteral("100"),
                                      tr("Its crystal plane: what a crystal-plane etch's sidewalls are"));
+        // A region's doping as it is made (a wafer's background, an
+        // epitaxial layer's, a doped film's: a source for a drive-in).
+        const P dopant = text(QStringLiteral("dopant"), tr("Doped with"), QString(),
+                              tr("An element (B, P, As, Sb, Zn, Si...) in it as it is made; empty: undoped"));
+        const P dopantConcentration = expr(QStringLiteral("concentration"), tr("Its concentration"), QStringLiteral("1/m^3"), QString(),
+                                           tr("A plain number: cm⁻³"));
         add({QStringLiteral("process/substrate"), tr("Substrate"), QStringLiteral("process"), QStringLiteral("p:Sub"), Level::None,
              {text(QStringLiteral("material"), tr("Material"), QStringLiteral("Silicon"), tr("A library entry's name, as the materials take it")),
               expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("length"), QStringLiteral("2[um]"),
                    tr("Below the surface, y = 0: from -thickness to 0")),
-              orientation},
+              orientation, dopant, dopantConcentration},
              {}, {}, false, false, QStringLiteral("sub"),
              tr("The wafer: a crystal of a material, across the window, its surface at y = 0. Its region named as the step.")});
         P layers;
         layers.key = QStringLiteral("layers");
         layers.label = tr("Layers");
         layers.kind = P::Rows;
-        layers.choiceLabels = {tr("Name"), tr("Material"), tr("Thickness")};
+        layers.choiceLabels = {tr("Name"), tr("Material"), tr("Thickness"), tr("Dopant"), tr("Concentration")};
         layers.defaultValue = QJsonArray();
-        layers.tooltip = tr("From the bottom: each layer a region of that name; the geometry's unit, or with units");
+        layers.tooltip = tr("From the bottom: each layer a region of that name; the geometry's unit, or with units; doped (optional) with "
+                            "an element at a concentration (a plain number: cm⁻³)");
         add({QStringLiteral("process/stack"), tr("Epitaxial Stack"), QStringLiteral("process"), QStringLiteral("p:Epi"), Level::None,
              {layers, orientation},
              {}, {}, false, false, QStringLiteral("stk"),
@@ -494,7 +510,7 @@ QList<NodeKind> makeKinds()
                      tr("Conformal: its thickness from every surface, sidewalls too (CVD, ALD); planar: filled to its thickness above the "
                         "highest point (spin-on); directional: on what is seen from straight above, its thickness upward (evaporation, "
                         "sputtering)")),
-              mask, maskLayer, polarity, openings, bias},
+              mask, maskLayer, polarity, openings, bias, dopant, dopantConcentration},
              {}, {}, false, false, QStringLiteral("dep"),
              tr("A film over the surface, its region named as the step. With a mask, a lift-off: kept where it is open alone.")});
         P selectivity;
@@ -546,7 +562,8 @@ QList<NodeKind> makeKinds()
               expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("length"), QStringLiteral("0.1[um]")),
               flag(QStringLiteral("selective"), tr("On crystal alone"), true,
                    tr("Grown on exposed crystal only (a substrate's, a stack's, epitaxy's) - selective where a masking film bounds "
-                      "it; off: on every surface"))},
+                      "it; off: on every surface")),
+              dopant, dopantConcentration},
              {}, {}, false, false, QStringLiteral("epi"),
              tr("A crystal grown upward on the exposed crystal - planar: its thickness straight up -, its region named as the step.")});
         add({QStringLiteral("process/fill"), tr("Fill"), QStringLiteral("process"), QStringLiteral("p:▬"), Level::None,
@@ -555,6 +572,145 @@ QList<NodeKind> makeKinds()
               shownIf(expr(QStringLiteral("thickness"), tr("Thickness"), QStringLiteral("length"), QStringLiteral("0.5[um]")), QStringLiteral("height="))},
              {}, {}, false, false, QStringLiteral("fill"),
              tr("A polymer or a glass spun on and reflowed: every open space filled to a level, its region named as the step.")});
+        // The dopant steps.
+        P recipe;
+        recipe.key = QStringLiteral("recipe");
+        recipe.label = tr("Recipe");
+        recipe.kind = P::Rows;
+        recipe.choiceLabels = {tr("Time"), tr("Temperature")};
+        recipe.defaultValue = QJsonArray();
+        recipe.tooltip = tr("Its temperature in time: each row a time (from 0) and the temperature reached then, ramps between - 0, 800[degC]; "
+                            "10[min], 1000[degC]; 40[min], 1000[degC]; 50[min], 800[degC]. Empty: the temperature below for its time");
+        const P temperature = expr(QStringLiteral("temperature"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("1000[degC]"),
+                                   tr("With no recipe: held for its time"));
+        const P time = expr(QStringLiteral("time"), tr("Time"), QStringLiteral("s"), QStringLiteral("30[min]"));
+        const P model = choice(QStringLiteral("model"), tr("Diffusion"), {QStringLiteral("fermi"), QStringLiteral("constant"), QStringLiteral("defects")},
+                               {tr("Fermi level (several dopants, their field)"), tr("Intrinsic diffusivities"),
+                                tr("Fermi level and interstitials (transient enhanced)")},
+                               QStringLiteral("fermi"),
+                               tr("In silicon, Fair's: a donor's D = D0 + D-(n/ni) + D=(n/ni)², an acceptor's D0 + D+(p/ni), n from all of them "
+                                  "(ni 3.87e16 T^1.5 e^(-0.605 eV/kT) cm⁻³, Morin and Maita), each drifting in the field their own gradient "
+                                  "makes; intrinsic: n = ni, no field; with interstitials: as the Fermi level's, times fI CI/CI* + (1 - fI) "
+                                  "CI*/CI - an implant's +1 interstitials held in clusters that release them (their lifetime below), "
+                                  "diffusing to the surfaces (TSUPREM-4's D_I and CI*)"));
+        P parameters;
+        parameters.key = QStringLiteral("parameters");
+        parameters.label = tr("Parameters");
+        parameters.kind = P::Rows;
+        parameters.choiceLabels = {tr("Species"), tr("Material"), tr("Parameter"), tr("Value")};
+        parameters.defaultValue = QJsonArray();
+        parameters.tooltip = tr("A species' parameter in a material, over its default: D0, Ea (neutral), Dm0, Em (the - state), Dmm0, Emm (=), "
+                                "Dp0, Ep (+); Dsq0, Esq, Cref (a square law, D (C/Cref)² - zinc's kick-out in InP); Css0, Ecss (its "
+                                "solid solubility: the rest inactive), tau0, Etau (its clusters' time constant); loss (a surface's "
+                                "dose loss, cm/s); fI (its share with interstitials); m:<material> (C here / C there at the "
+                                "interface), h:<material> (its transport, cm/s). Plain numbers: cm²/s, eV, cm⁻³, s. Defaults: B, P, "
+                                "As, Sb in silicon Fair's, segregation into its oxide B 0.3, P, As, Sb 10 (Grove et al.) - none "
+                                "elsewhere: a species there does not move, said");
+        const P source = text(QStringLiteral("source"), tr("Source at the surface"), QString(),
+                              tr("A predeposition: this element held at the concentration below wherever a surface is exposed; empty: "
+                                 "an inert anneal"));
+        const P surface = expr(QStringLiteral("surface"), tr("Its surface concentration"), QStringLiteral("1/m^3"), QStringLiteral("1e20[1/cm^3]"),
+                               tr("The source's (its solid solubility, typically); a plain number: cm⁻³"));
+        const P clusterLife = shownIf(expr(QStringLiteral("clusterlife"), tr("Clusters' lifetime"), QStringLiteral("s"), QStringLiteral("10[min]"),
+                                           tr("At the temperature below: an estimate from transient enhanced diffusion's known lengths "
+                                              "(minutes at 800 °C, about a second at 1000 °C) - calibrate it")),
+                                      QStringLiteral("model=defects"));
+        const P clusterT = shownIf(expr(QStringLiteral("clustertemperature"), tr("At"), QStringLiteral("K"), QStringLiteral("800[degC]")),
+                                   QStringLiteral("model=defects"));
+        const P clusterE = shownIf(expr(QStringLiteral("clusterenergy"), tr("Its activation energy"), QStringLiteral("eV"), QStringLiteral("3.8[eV]"),
+                                        tr("{311} clusters' dissolution: Eaglesham et al. (Appl. Phys. Lett. 65, 2305, 1994); 3.6 to 4.2 eV "
+                                           "reported")),
+                                   QStringLiteral("model=defects"));
+        P moments;
+        moments.key = QStringLiteral("moments");
+        moments.label = tr("Moments given");
+        moments.kind = P::Rows;
+        moments.choiceLabels = {tr("Material"), tr("Rp"), tr("ΔRp"), tr("γ"), tr("β"), tr("Lateral")};
+        moments.defaultValue = QJsonArray();
+        moments.tooltip = tr("A material's moments over those found (empty cells found): lengths with units, or µm");
+        P channel;
+        channel.key = QStringLiteral("channel");
+        channel.label = tr("Channelled part");
+        channel.kind = P::Rows;
+        channel.choiceLabels = {tr("Material"), tr("Fraction"), tr("Rp"), tr("ΔRp"), tr("γ"), tr("β")};
+        channel.defaultValue = QJsonArray();
+        channel.tooltip = tr("In a crystal: the share of the dose channelled and its Pearson's moments (its tilt's, twist's, screen's - no "
+                             "defaults); none where the implant makes the crystal amorphous");
+        add({QStringLiteral("process/implant"), tr("Implant"), QStringLiteral("process"), QStringLiteral("p:↓"), Level::None,
+             {text(QStringLiteral("species"), tr("Ion"), QStringLiteral("B"),
+                   tr("An element's symbol - B, P, As, Sb, In, Ga, Zn, Be, Mg, Si, Se, Te, S, Ge, N, F, C, O, H, He... - or BF2 (its boron at "
+                      "11/49 of the energy)")),
+              expr(QStringLiteral("energy"), tr("Energy"), QStringLiteral("eV"), QStringLiteral("40[keV]"), tr("A plain number: keV")),
+              expr(QStringLiteral("dose"), tr("Dose"), QStringLiteral("1/m^2"), QStringLiteral("1e15[1/cm^2]"), tr("A plain number: cm⁻²")),
+              expr(QStringLiteral("tilt"), tr("Tilt"), QStringLiteral("angle"), QStringLiteral("0"),
+                   tr("From the normal, degrees, the beam toward +x as it goes down: shadowed by sidewalls")),
+              choice(QStringLiteral("profile"), tr("Profile"), {QStringLiteral("pearson"), QStringLiteral("gaussian"), QStringLiteral("dual")},
+                     {tr("Pearson IV"), tr("Gaussian"), tr("Dual Pearson (channelling)")}, QStringLiteral("pearson"),
+                     tr("Along the beam, its four moments; Gaussian: Rp and ΔRp alone; dual: a channelled part too")),
+              moments, shownIf(channel, QStringLiteral("profile=dual")),
+              expr(QStringLiteral("plus"), tr("Interstitials an ion leaves"), QString(), QStringLiteral("1"),
+                   tr("Giles's +1: beyond the amorphous layer, clustered, released in an anneal with interstitials (TED)")),
+              expr(QStringLiteral("amorphize"), tr("Amorphous above"), QStringLiteral("eV/cm^3"), QStringLiteral("6e23[eV/cm^3]"),
+                   tr("The nuclear energy a crystal takes to go amorphous: Dennis and Hale's critical density (J. Appl. Phys. 49, 1119, "
+                      "1978)")),
+              mask, maskLayer, polarity, openings, bias, resistThickness},
+             {}, {}, false, false, QStringLiteral("imp"),
+             tr("Ions through the actual surface: along each column of the beam a Pearson profile in each layer it crosses - "
+                "its moments its own in that material, dose-matched from layer to layer (Ryssel et al.) -, spread across with the "
+                "lateral straggle its depth has; a mask's resist stops them, sidewalls shadow a tilted beam. Moments: boron, "
+                "phosphorus, arsenic in silicon from Plummer et al.'s LSS tables (their skewness, kurtosis and lateral straggle by "
+                "transport theory); every other ion and target by transport theory (the ZBL potential's scattering, Lindhard and "
+                "Scharff's electronic stopping - fitted to the tables for those ions; Bragg's rule for compounds). Its damage: the "
+                "energy into nuclear collisions where it goes, amorphous above the critical density (no channelling then), +1 "
+                "interstitials beyond.")});
+        add({QStringLiteral("process/diffuse"), tr("Diffuse (Anneal)"), QStringLiteral("process"), QStringLiteral("p:≈"), Level::None,
+             {recipe, temperature, time, model, source, surface, parameters, clusterLife, clusterT, clusterE},
+             {}, {}, false, false, QStringLiteral("anl"),
+             tr("The dopants moved in time by their recipe's temperatures: in silicon by the Fermi level (several dopants, their "
+                "field), elsewhere as their parameters say; at interfaces segregated, at surfaces a source held or dose lost; "
+                "each's active part by its solubility. Peaceman and Rachford's alternating directions on the dopants' grid.")});
+        add({QStringLiteral("process/oxidize"), tr("Oxidize"), QStringLiteral("process"), QStringLiteral("p:Ox"), Level::None,
+             {choice(QStringLiteral("ambient"), tr("Ambient"), {QStringLiteral("dry"), QStringLiteral("wet")}, {tr("Dry (O2)"), tr("Wet (H2O)")},
+                     QStringLiteral("dry")),
+              shownIf(choice(QStringLiteral("rates"), tr("Rates"), {QStringLiteral("massoud"), QStringLiteral("dealgrove")},
+                             {tr("Massoud's (thin-regime terms)"), tr("Deal and Grove's")}, QStringLiteral("massoud"),
+                             tr("Dry: Massoud, Plummer and Irene's B and B/A with Massoud and Plummer's thin-regime terms (800 to "
+                                "1000 °C; as Hollauer's thesis tabulates them), or Deal and Grove's with their initial 25 nm. Wet: "
+                                "Deal and Grove's")),
+                      QStringLiteral("ambient=dry")),
+              recipe, temperature, time,
+              expr(QStringLiteral("pressure"), tr("Oxidant's pressure"), QStringLiteral("Pa"), QStringLiteral("1[atm]"),
+                   tr("Both rates go as it (Henry's law)")),
+              expr(QStringLiteral("factor"), tr("Rates' factor"), QString(), QStringLiteral("1"), tr("On both (HCl's, measured)")),
+              text(QStringLiteral("material"), tr("Oxide's material"), QStringLiteral("Silicon dioxide")),
+              expr(QStringLiteral("beak"), tr("Bird's beak length"), QStringLiteral("length"), QString(),
+                   tr("Under a mask's edge the oxide falls as erfc(d/L) - an analytic taper, approximate; empty: L the oxide's thickness")),
+              expr(QStringLiteral("B"), tr("B given"), QStringLiteral("m^2/s"), QString(), tr("Deal and Grove's parabolic rate (a plain number: µm²/h), with B/A")),
+              expr(QStringLiteral("BA"), tr("B/A given"), QStringLiteral("m/s"), QString(), tr("Its linear rate (a plain number: µm/h); both empty: found")),
+              mask, maskLayer, polarity, openings, bias, model, parameters, clusterLife, clusterT, clusterE},
+             {}, {}, false, false, QStringLiteral("ox"),
+             tr("Silicon exposed to the oxidant (bare, or under oxide; not under nitride or a mask) grown into oxide - planar, each "
+                "column's thickness from its own start: 0.44 of it silicon consumed, the rest lifting what is above; under a mask's "
+                "edge a bird's beak (approximate). The dopants move meanwhile, the interface sweeping them: the oxide takes C/m of "
+                "the silicon's (B depleted, P and As piling up). Its region named as the step.")});
+        add({QStringLiteral("process/intermix"), tr("Intermix (QWI)"), QStringLiteral("process"), QStringLiteral("p:QW"), Level::None,
+             {recipe, expr(QStringLiteral("temperature"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("750[degC]"), tr("With no recipe: held for its time")),
+              expr(QStringLiteral("time"), tr("Time"), QStringLiteral("s"), QStringLiteral("2[min]")),
+              expr(QStringLiteral("diii"), tr("Group III's D"), QStringLiteral("m^2/s"), QStringLiteral("9.5e-23[m^2/s]"),
+                   tr("At the reference temperature: Peyre et al.'s InGaAs/InGaAsP wells, one D for every atom (J. Appl. Phys. 73, 3760, "
+                      "1993: 9.5e-3 Å²/s at 650 °C, 2.54 eV); a plain number: cm²/s")),
+              expr(QStringLiteral("eiii"), tr("Its activation energy"), QStringLiteral("eV"), QStringLiteral("2.54[eV]")),
+              expr(QStringLiteral("dv"), tr("Group V's D"), QStringLiteral("m^2/s"), QStringLiteral("9.5e-23[m^2/s]")),
+              expr(QStringLiteral("ev"), tr("Its activation energy"), QStringLiteral("eV"), QStringLiteral("2.54[eV]")),
+              expr(QStringLiteral("tref"), tr("Reference temperature"), QStringLiteral("K"), QStringLiteral("650[degC]")),
+              mask, maskLayer, polarity, openings, bias,
+              shownIf(expr(QStringLiteral("enhance"), tr("Where open: D times"), QString(), QStringLiteral("1"),
+                           tr("A cap's or an implant's enhancement in the mask's openings (no default: it depends on the cap)")),
+                      QStringLiteral("mask=layer|mask=openings"))},
+             {}, {}, false, false, QStringLiteral("qwi"),
+             tr("A III-V stack's sublattices interdiffused by an anneal: each element's share on its sublattice (group III's, "
+                "group V's) diffusing in the III-V layers alone. The quantum wells physics reads the composition: its bands at "
+                "each point those of the alloy there (the edges moved; the masses the layer's).")});
     }
     add({QStringLiteral("form union"), tr("Form Union"), QStringLiteral("geometry"), QStringLiteral("formunion"), Level::None,
          {expr(QStringLiteral("tolerance"), tr("Repair tolerance"), QString(), QStringLiteral("1e-6"),
@@ -1598,8 +1754,13 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("dopant"), tr("Impurity"), {QStringLiteral("acceptor"), QStringLiteral("donor")},
                  {tr("Acceptors (p-type)"), tr("Donors (n-type)")}, QStringLiteral("acceptor")),
           choice(QStringLiteral("profile"), tr("Profile"),
-                 {QStringLiteral("uniform"), QStringLiteral("box"), QStringLiteral("implant"), QStringLiteral("expression")},
-                 {tr("Uniform"), tr("A box, Gaussian outside it"), tr("An implant, annealed"), tr("User defined")}, QStringLiteral("uniform")),
+                 {QStringLiteral("uniform"), QStringLiteral("box"), QStringLiteral("implant"), QStringLiteral("expression"), QStringLiteral("process")},
+                 {tr("Uniform"), tr("A box, Gaussian outside it"), tr("An implant, annealed"), tr("User defined"), tr("From the process flow")},
+                 QStringLiteral("uniform"),
+                 tr("From the process flow: its dopants as the flow leaves them, each active one a donor or an acceptor as it is in "
+                    "its domain's material (boron an acceptor in silicon, zinc in InP) - the Impurity above not used")),
+          shownIf(text(QStringLiteral("species"), tr("Its dopants"), QString(), tr("Those of the flow's, split by ','; empty: all")),
+                  QStringLiteral("profile=process")),
           shownIf(expr(QStringLiteral("dose"), tr("Dose"), QStringLiteral("1/m^2"), QStringLiteral("1e14[1/cm^2]")), QStringLiteral("profile=implant")),
           shownIf(expr(QStringLiteral("Rp"), tr("Projected range Rp"), QStringLiteral("m"), QStringLiteral("0.1[um]"),
                        tr("A range table's (SRIM's) for the ion, its energy and the target")),
@@ -2710,6 +2871,7 @@ QList<NodeKind> makeKinds()
              {study, point, time, frequency, text(QStringLiteral("title"), tr("Title"), QString()),
               choice(QStringLiteral("diagram"), tr("Diagram"), {QStringLiteral("rect"), QStringLiteral("tab")},
                      {tr("Cartesian"), tr("Table")}, QStringLiteral("rect")),
+              flag(QStringLiteral("ylog"), tr("Logarithmic y axis"), false, tr("A Cartesian diagram's y axis logarithmic (a doping's profile, SIMS's form)")),
               // (A global's or a point's graph: what is along x - automatic: a
               // sweep's parameter (of two of several values the last listed, a
               // curve per the other's) before a frequency step's frequencies, the

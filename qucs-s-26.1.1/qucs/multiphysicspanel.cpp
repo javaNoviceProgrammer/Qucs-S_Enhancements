@@ -2078,6 +2078,19 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
         });
     if (k && k->group == QLatin1String("process"))
         action(tr("Show After This Step"), "mpShowStep", [this, tag] { a_doc->showBuiltUpTo(tag); });
+    if ((k && k->group == QLatin1String("process")) || node.type == QLatin1String("process")) {
+        // Its dopants then: a colour map of the net doping, a profile down
+        // the window's middle (SIMS's form).
+        auto plot = [this, tag](bool profile) {
+            QString why;
+            MultiphysicsDoc::ProcessPlot p;
+            p.profile = profile;
+            const QString made = a_doc->makeProcessPlot(tag, p, &why);
+            if (made.isEmpty() || !a_doc->showPlotGroup(made, &why)) QMessageBox::information(this, tr("Its Dopants"), why);
+        };
+        action(tr("Plot Its Dopants"), "mpPlotDopants", [plot] { plot(false); });
+        action(tr("Its Profile (SIMS)"), "mpDopantProfile", [plot] { plot(true); });
+    }
     if (k && k->group == QLatin1String("process") && node.text(QStringLiteral("mask")) == QLatin1String("layer"))
         action(tr("Show Its Mask in the Layout"), "mpShowMask", [this, tag] {
             QString why;
