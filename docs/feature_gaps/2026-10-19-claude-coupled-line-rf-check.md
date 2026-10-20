@@ -29,6 +29,7 @@ To check the stale one, `MultiphysicsDoc` now keeps when each study was last sol
 - **The keys wait for the window.** `send_input` activates the target's window before its keys (unless a dialog or a list is the target). The activation is a window-system event still to come, so the keys go once the window is active, or half a second on without it.
 - **The field keeps the focus as its list closes.** A key into the list that closes it, or `set_ui` taking a row, activates the field's window again and gives the field the focus, so the keyboard's next key is the field's.
 - **A key with no focus anywhere** goes to the field the window keeps its focus on.
+- **Since: a character typed with the list open goes to its field**, as the list hands a letter on, and the field's completer narrows the list. Through the list, the list closed at it whenever the field had not Qt's focus. That happened on CI's macOS runner (b5acf84's run: the window's activation had not come yet), and it would on a Mac with Qucs-S behind another program, where it never comes. The panel test now takes the field's focus away with its list open and types on, and the other window in front has a field with the focus, as a real one does. The arrows, Return, Tab and Escape still go to the list.
 
 ## Tests
 
