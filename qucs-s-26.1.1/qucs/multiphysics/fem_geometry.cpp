@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "fem_geometry.h"
+#include "fem_process.h"
 
 #include "fem_import.h"
 
@@ -358,10 +359,18 @@ public:
                 if (!a_error.isEmpty() || tolerance <= 0) tolerance = 1e-6;
                 break;
             }
+            // (Up to a step of a process flow: the flow run to it.)
+            const bool inside = f.type == QLatin1String("process") && !upTo.isEmpty() && f.tag != upTo && f.find(upTo) != nullptr;
+            a_until = inside ? upTo : QString();
             feature(f);
             if (!a_file.isEmpty()) {
                 out.files << a_file;
                 a_file.clear();
+            }
+            if (a_processRun) {
+                out.process = std::make_shared<ProcessState>(a_processRun->state);
+                out.processSteps = a_processRun->steps;
+                a_processRun.reset();
             }
             if (!a_warning.isEmpty()) out.warnings.insert(f.tag, a_warning);
             if (!a_error.isEmpty()) {
@@ -369,7 +378,7 @@ public:
                 out.failedAt = f.tag;
                 break;
             }
-            if (!upTo.isEmpty() && f.tag == upTo) break;
+            if (!upTo.isEmpty() && (f.tag == upTo || inside)) break;
         }
         QString why;
         out.topology = formUnion(tolerance, &why);
@@ -519,6 +528,7 @@ private:
             boolean(f);
         else if (t == QLatin1String("import")) importDrawing(f);
         else if (t == QLatin1String("crosssection")) crossSection(f);
+        else if (t == QLatin1String("process")) processFlow(f);
         else fail(tr("%1 is not a geometry feature").arg(t));
     }
     void addObject(GObject o, const Node& f)
@@ -896,6 +906,29 @@ private:
         }
     }
 
+    /// A process flow run (up to a_until's step): each of its regions an
+    /// object of its name.
+    void processFlow(const Node& f)
+    {
+        a_processRun = std::make_shared<ProcessRun>(runProcess(f, a_model, a_ps, a_scale, a_until));
+        const ProcessRun& run = *a_processRun;
+        if (!run.files.isEmpty()) a_file = run.files.front();
+        for (const QString& w : run.warnings) warn(w);
+        if (!run.ok()) return fail(run.error);
+        for (const ProcessRegion& r : run.state.regions) {
+            GObject o;
+            for (const auto& loop : r.loops) {
+                double area = 0;
+                for (std::size_t i = 0; i < loop.size(); ++i) area += cross(loop[i], loop[(i + 1) % loop.size()]);
+                if (loop.size() >= 3 && area != 0) o.loops.push_back(orientedLoop(loop, area < 0));
+            }
+            if (o.loops.empty()) continue;
+            o.name = r.name;
+            a_objects.push_back(std::move(o));
+        }
+        if (run.state.regions.empty()) fail(tr("the flow leaves nothing"));
+    }
+
     /// The objects named in \a key, taken out of the list (when \a take)
     /// or copied; an error when one is not there.
     std::vector<GObject> inputs(const Node& f, const QString& key, bool take)
@@ -1172,6 +1205,8 @@ private:
     QString a_tag;
     QString a_error, a_warning;
     QString a_file;   // a drawing read by the feature
+    QString a_until;  // a process flow's step the build stops after
+    std::shared_ptr<ProcessRun> a_processRun;   // a process flow's, run by the feature
     std::vector<Curve> a_curves;
     std::vector<GObject> a_objects;
 };

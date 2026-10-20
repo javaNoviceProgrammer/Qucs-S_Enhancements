@@ -182,7 +182,18 @@ QString formatText()
         "(A = 0, on the outside), potential, pmc, surfacecurrent; the physics' \"reference\" (a coil's name) gives the matrix "
         "reduced against it, mf.Lr_i_j and mf.Rr_i_j (Z_ij - Z_ir - Z_rj + Z_rr). A layout: an \"import\" of a .gds/.oas \"file\" (\"cell\", \"layers\": \"1/0, 2/0\") makes an object per "
         "layer, name_layer_datatype; a \"crosssection\" cuts one from \"start\" to \"end\" (µm) into its \"stack\" rows [name, layer "
-        "(empty: all along the cut), z, thickness] - an object per row. A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
+        "(empty: all along the cut), z, thickness] - an object per row. A process: a \"process\" (Process Flow: \"grid\", \"minimum\"; "
+        "its window \"x0\", \"width\", or a layout's cut - \"file\", \"start\", \"end\", \"origin\") of \"features\", its steps in order: "
+        "\"substrate\" (\"material\", \"thickness\", \"orientation\": 100, 110, 111; its surface at y = 0) or \"stack\" (\"layers\": "
+        "[name, material, thickness] from the bottom), then \"deposit\" (\"thickness\", \"mode\": conformal, planar or "
+        "directional; masked: a lift-off), \"etch\" (\"depth\" or \"stop\" - a material it runs to; \"mode\": anisotropic, "
+        "isotropic, tapered with \"angle\", crystal - {111} walls from the wafer's surface; \"materials\" it etches, "
+        "\"selectivity\" [material, S], \"stopratio\", \"overetch\"), \"planarize\" (\"height\" or \"to\" a material), "
+        "\"strip\" (\"material\", where exposed), \"epitaxy\" (\"selective\": on crystal alone), \"fill\" (\"height\" or "
+        "\"thickness\"); a step's mask: \"mask\": layer (\"layer\" 1/0, \"polarity\" drawn or undrawn) or openings "
+        "(\"openings\": \"1, 2; 4, 5\"), with \"bias\" and \"resist\". Each step's region an object named as its step (its label, "
+        "else its tag; a stack's by its rows); fem_build \"until\" a step shows the structure as it leaves it. "
+        "A line's R, L, G, C: a \"lineparams\" of \"method\": \"rlgc\" "
         "(es's \"terminal\", mf's \"conductor\" coil and \"return\"), its study a stationary es step then a frequency mf step - "
         "n_eff = β/k0 (epsilon_eff its square) and epsilon_eff_qs = C/C0; coupled lines: \"terminal\": \"1, 2\" and as many "
         "\"conductor\" coils, their C, C0, L, R, G matrices (C_1_2...) and modes - a symmetric pair's even and odd (Z0_odd, "
@@ -1131,6 +1142,50 @@ QJsonObject QucsControl::femBuild(const QJsonObject& args)
     if (doc == nullptr) return errorResult(error);
     const QString what = args.value(QLatin1String("what")).toString(QStringLiteral("geometry"));
     QString why;
+    // Up to a feature, or a process flow's step: the structure then, each
+    // step's report, its regions (the model's geometry kept as it is).
+    if (const QString until = args.value(QLatin1String("until")).toString().trimmed(); !until.isEmpty()) {
+        const FNode* n = doc->model().find(until);
+        if (n == nullptr || n->kind() == nullptr || (n->kind()->group != QLatin1String("geometry") && n->kind()->group != QLatin1String("process")))
+            return errorResult(tr("'until' is a geometry feature's tag or a process flow's step's (fem_describe lists them): %1 is neither.").arg(until));
+        if (what != QLatin1String("geometry")) return errorResult(tr("'until' builds the geometry: no mesh of a part of it."));
+        const GeometryBuild partial = doc->showBuiltUpTo(until, &why);
+        if (!partial.ok()) return errorResult(tr("Up to %1, it stopped at %2").arg(n->name(), why));
+        QJsonObject o{{QStringLiteral("until"), QStringLiteral("%1 (%2)").arg(n->name(), n->tag)},
+                      {QStringLiteral("geometry"), tr("%1 domains, %2 boundaries, %3 points").arg(partial.topology->domains.size())
+                                                       .arg(partial.topology->boundaries.size()).arg(partial.topology->points.size())},
+                      {QStringLiteral("shown"), tr("in the Graphics view (the whole geometry again: fem_build without 'until')")}};
+        QJsonArray steps;
+        for (const ProcessStepReport& s : partial.processSteps) {
+            QJsonObject step{{QStringLiteral("step"), QStringLiteral("%1 (%2)").arg(s.name, s.tag)}, {QStringLiteral("did"), s.said},
+                             {QStringLiteral("ms"), std::round(s.ms * 10) / 10}};
+            if (!s.warnings.isEmpty()) step.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(s.warnings));
+            steps.append(step);
+        }
+        if (!steps.isEmpty()) o.insert(QStringLiteral("steps"), steps);
+        if (partial.process) {
+            const double u = partial.topology->unitScale;
+            QJsonArray regions;
+            for (const ProcessRegion& r : partial.process->regions) {
+                double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
+                for (const auto& loop : r.loops)
+                    for (const QPointF& p : loop) {
+                        x0 = std::min(x0, p.x());
+                        x1 = std::max(x1, p.x());
+                        y0 = std::min(y0, p.y());
+                        y1 = std::max(y1, p.y());
+                    }
+                QJsonObject region{{QStringLiteral("name"), r.name}, {QStringLiteral("material"), r.material},
+                                   {QStringLiteral("area"), formatQuantity(r.area() * u * u, Dim::of(2))},
+                                   {QStringLiteral("spans"), tr("x %1 to %2, y %3 to %4").arg(formatQuantity(x0 * u, Dim::length()), formatQuantity(x1 * u, Dim::length()),
+                                                                                              formatQuantity(y0 * u, Dim::length()), formatQuantity(y1 * u, Dim::length()))}};
+                if (r.crystal) region.insert(QStringLiteral("crystal"), true);
+                regions.append(region);
+            }
+            o.insert(QStringLiteral("regions"), regions);
+        }
+        return jsonResult(o);
+    }
     if (!doc->buildGeometry(&why)) return errorResult(tr("The geometry stopped at %1").arg(why));
     if (what == QLatin1String("geometry")) {
         doc->showGeometry();

@@ -318,6 +318,20 @@ public:
     /// tab of its own: its layer stack \a rows, or (none) the one a dialog
     /// asks for. Null, and why in \a error, when there is none.
     MultiphysicsDoc* crossSection(const QLineF& cut, const QList<qucs_s::fem::StackRow>* rows = nullptr, QString* error = nullptr);
+    /// A new multiphysics model of a process flow along \a cut (µm) of the
+    /// cell shown, in a tab of its own: a silicon substrate to begin with.
+    /// Null, and why in \a error, when there is none.
+    MultiphysicsDoc* processFlow(const QLineF& cut, QString* error = nullptr);
+    /// The cell shown's name (empty: none yet).
+    QString shownCellName() const;
+    /// \a cut shown: the only ruler, the view round it.
+    void showCut(const QLineF& cut);
+    /// The layer \a key alone shown - the others hidden - and \a cut with
+    /// it; false when the layout has no such layer.
+    bool showLayerAlone(const qucs_s::layout::LayerKey& key, const QLineF& cut);
+    /// A point of a cut: \a cut shown, the point marked by a short ruler
+    /// across it, the shape there selected.
+    void probe(QPointF point, const QLineF& cut);
 
     /// A layer's swatch as the layer list shows it, \a ratio device pixels
     /// a pixel: 16 by 12, its frame the outermost pixel all round in \a
@@ -347,6 +361,8 @@ public slots:
     /// A new multiphysics model of the cell shown cut along the last ruler
     /// (its layer stack asked for).
     void crossSectionFromRuler();
+    /// A new multiphysics model of a process flow along the last ruler.
+    void processFlowFromRuler();
     void cancelLoading();
     void chooseLayerProperties();
 
