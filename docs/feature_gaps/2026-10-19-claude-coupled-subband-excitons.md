@@ -67,6 +67,7 @@ with
   - At 14 nm the radiative decay ħΓ₀ = ∫α dE · L/(2π) comes to 23.0 µeV with one pair, 27.8 with 2 states, 29.7 with 4 and 30.2 with 6. Khramtsov et al. measured 36.6.
   - The two-parameter variational model gives 36.1; the coupled model levels off near 30.
   - I have not tracked down which side the remaining gap is on: the experiment, or z-correlation the subbands do not reach.
+  - *(Answered on 2026-10-20: the z-correlation. The products of subbands converge on it slowly; a real-space solve drawing the two together finds the line 1.43 times one pair's in a 9.4 nm well. The coupled excitons now draw the electron and hole together along the axis: 32.6 µeV at 14 nm with one pair. See [the coupled excitons' TE line](2026-10-20-claude-coupled-exciton-strength.md).)*
 
 **Speed.** In Release a spectrum's coupled solve takes about 1 to 3 s: hundreds to 1,200 unknowns, dense. The cost is the eigenvector accumulation, about 100 times slower in the sanitizers' Debug build. So under the sanitizers the tests use wider lines and fewer states, and skip the k·p cases. A solve whose size would pass four times the cap is refused with an error, not attempted.
 

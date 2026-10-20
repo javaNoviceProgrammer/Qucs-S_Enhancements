@@ -27,6 +27,8 @@
 
 #include <QtTest>
 
+#include <cstring>
+
 #include <cmath>
 
 using namespace qucs_s::fem;
@@ -415,27 +417,40 @@ private slots:
     }
 
     // One pair - an infinite well 10 nm wide, its e1-hh1 (me 0.067, the heavy
-    // hole's in-plane mass 0.11, εr 12.9) - against the same exciton found
-    // another way: its radial equation in real space by finite volumes
-    // (0.01 nm, to 200 nm; 0.02 nm the same to 1e-5), the potential of the
-    // sin² envelopes' separation, its lowest state by Sturm bisection:
-    // bound by 8.4451 meV, |ψ(0)|² 3.28688e15 /m². (Bastard's variational:
-    // 8.316 meV, 4.01e15 - its line 22 % too strong.)
+    // hole's in-plane mass 0.11, along the axis 0.35, εr 12.9) - against the
+    // same exciton found another way: its radial equation in real space by
+    // finite volumes (0.01 nm, to 200 nm; 0.02 nm the same to 1e-5), the
+    // potential of the sin² envelopes' separation, its lowest state by Sturm
+    // bisection: bound by 8.4451 meV, |ψ(0)|² 3.28688e15 /m². (Bastard's
+    // variational: 8.316 meV, 4.01e15 - its line 22 % too strong.) Drawn
+    // together along the axis - its second function e^(-|ze - zh|/σ), σ
+    // 2.556 nm -, as a real-space solve of the same two functions (coupled
+    // radial equations, 0.02 nm to 250 nm: their overlaps, energies along
+    // the axis and attraction from the separation's distribution, 0.01 nm
+    // bins) finds it: 8.4904 meV, 4.0030e15 - 1.22 times the products'
+    // line; with three such functions (1/10, 1/3.3, 1 /nm) 8.5151, 4.1169e15.
     void onePairAgainstRealSpace()
     {
-        const femtest::Run x = femtest::run(femtest::modelOf(femtest::box(
-            QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"),
-            QString::fromUtf8(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 1, "linewidth": "%1", "lineshape": "gaussian",
-                                  "excitons": true, "excitonmodel": "coupled", "epsr": "12.9"})x")
-                .arg(femtest::slowBuild() ? "6[meV]" : "1[meV]"))));
-        QVERIFY2(x.error.isEmpty(), qPrintable(x.error));
-        x.solution->select(0);
-        const double Eb = femtest::global(*x.solution, "qw.Eb"), aX = femtest::global(*x.solution, "qw.aX");
-        const double psi0 = 2 / (M_PI * aX * aX);
-        qInfo("one pair: bound by %.4f meV (8.4451), |ψ(0)|² %.5g /m² (3.28688e15)", Eb / Q * 1e3, psi0);
-        QVERIFY2(std::abs(Eb / (8.4451e-3 * Q) - 1) < 1e-3, qPrintable(QString::number(Eb / Q * 1e3)));
-        QVERIFY2(std::abs(psi0 / 3.28688e15 - 1) < 3e-3, qPrintable(QString::number(psi0)));
-        QVERIFY(std::isnan(femtest::global(*x.solution, "qw.gX")));
+        for (const bool drawn : {false, true}) {
+            const femtest::Run x = femtest::run(femtest::modelOf(femtest::box(
+                QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"),
+                QString::fromUtf8(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 1, "linewidth": "%1", "lineshape": "gaussian",
+                                      "excitons": true, "excitonmodel": "coupled", "excitondrawn": %2, "epsr": "12.9"})x")
+                    .arg(femtest::slowBuild() ? "6[meV]" : "1[meV]", drawn ? "true" : "false"))));
+            QVERIFY2(x.error.isEmpty(), qPrintable(x.error));
+            x.solution->select(0);
+            const double Eb = femtest::global(*x.solution, "qw.Eb"), aX = femtest::global(*x.solution, "qw.aX");
+            const double psi0 = 2 / (M_PI * aX * aX);
+            const double wantEb = drawn ? 8.4904e-3 : 8.4451e-3, wantPsi = drawn ? 4.0030e15 : 3.28688e15;
+            qInfo("one pair%s: bound by %.4f meV (%.4f), |ψ(0)|² %.5g /m² (%.5g)", drawn ? ", drawn together" : "", Eb / Q * 1e3, wantEb * 1e3, psi0,
+                  wantPsi);
+            QVERIFY2(std::abs(Eb / (wantEb * Q) - 1) < 1e-3, qPrintable(QString::number(Eb / Q * 1e3)));
+            QVERIFY2(std::abs(psi0 / wantPsi - 1) < 3e-3, qPrintable(QString::number(psi0)));
+            QVERIFY(std::isnan(femtest::global(*x.solution, "qw.gX")));
+            // (Said: how many drawn together, and β's length.)
+            const QString log = x.solution->log.join(QLatin1Char('\n'));
+            QVERIFY2(log.contains(QLatin1String("the coupled excitons' pair drawn together along the axis, e^(-|ze - zh|/2.556 nm)")) == drawn, qPrintable(log));
+        }
     }
 
     // The subbands coupled converge on the exact exciton: Khramtsov et al.,
@@ -447,10 +462,13 @@ private slots:
     // 1.6 and 3.7 % below: a wide well's exciton draws on its higher
     // subbands); 2 states, under the sanitizers (20 nm alone), within
     // 2.5 %. And its 1s
-    // line stronger the more subbands - the electron and hole correlated
-    // along the axis: |ψ(0)|² 1.14 times one pair's at 10 nm with 4 states;
-    // 23.0 µeV of radiative decay at 14 nm with one pair, 29.7 with 4
-    // states, 30.2 with 6 (measured 36.6).
+    // line, the electron and hole drawn together along the axis
+    // (excitondrawn), with one pair within 3 % of 4 states' at 10 nm, 7 % at
+    // 20 (a wide well's exciton draws on its higher subbands) - the subbands'
+    // products alone drew them together slowly: |ψ(0)|² 1.14 times one
+    // pair's at 10 nm with 4 states; 23.0 µeV of radiative decay at 14 nm
+    // with one pair, 29.7 with 4 states, 30.2 with 6 (measured 36.6; drawn
+    // together: test_fem_quantum's excitonsAgainstKhramtsov).
     void subbandsAgainstKhramtsov()
     {
         auto stack = [](double L, const QString& energies, int states) {
@@ -466,13 +484,17 @@ private slots:
                    "mhhp": "0.111", "mlhp": "0.21", "Ep": "28.8[eV]", "nr": "3.6", "epsilonr": "12.53", "selection": {"only": ["below", "above"]}}]}],
                 "mesh": {"size": "normal", "custom": true, "hmax": "%3"}}],
               "studies": [{"type": "study", "steps": [{"type": "spectrum", "energies": "%4", "states": %5, "linewidth": "%6",
-                                                      "lineshape": "gaussian", "excitons": true, "excitonmodel": "coupled"}]}]})json")
+                                                      "lineshape": "gaussian", "excitons": true, "excitonmodel": "coupled",
+                                                      "excitonsize": %7}]}]})json")
                 .arg(L)
                 .arg(25 + L)
                 .arg(std::min(0.5, L / 10))
                 .arg(energies)
                 .arg(states)
                 .arg(femtest::slowBuild() ? "6[meV]" : "0.2[meV]")   // (its continuum 3 meV apart: the bound states the same)
+                // (Under the sanitizers its k points fewer: the pairs drawn
+                // together's functions double its dense solve's size.)
+                .arg(femtest::slowBuild() ? 400 : 1200)
                 .toUtf8();
         };
         auto exact = [](double L) { return (3.5431 * L * L + 146.694 * L) / (L * L + 11.1758 * L + 6.0473) * 1e-3 * Q; };
@@ -499,7 +521,7 @@ private slots:
                   Eb[1] / Q * 1e3, more, exact(L) / Q * 1e3, strength[0], strength[1]);
             QVERIFY(Eb[1] > Eb[0]);
             QVERIFY2(std::abs(Eb[1] / exact(L) - 1) < (more == 4 ? 0.01 : 0.025), qPrintable(QString::number(Eb[1] / exact(L))));
-            QVERIFY2(strength[1] > 1.05 * strength[0], qPrintable(QString::number(strength[1] / strength[0])));
+            QVERIFY2(strength[1] >= strength[0] && strength[1] < (L < 15 ? 1.03 : 1.08) * strength[0], qPrintable(QString::number(strength[1] / strength[0])));
         }
     }
 
@@ -533,9 +555,9 @@ private slots:
         qInfo("k·p: bound by %.3f meV (two parameters %.3f, parabolic coupled %.3f)", Eb / Q * 1e3, Eb2 / Q * 1e3, EbP / Q * 1e3);
         QVERIFY(Eb > EbP);
         QVERIFY2(std::abs(Eb / Eb2 - 1) < 0.1, qPrintable(QString::number(Eb / Eb2)));
-        // (Its own value, the mixing's measure: 8.687 meV; its spinors at k =
-        // 0 instead, as in ac8ce07, 8.895.)
-        QVERIFY2(std::abs(Eb / (8.687e-3 * Q) - 1) < 3e-3, qPrintable(QString::number(Eb / Q * 1e3, 'f', 4)));
+        // (Its own value, the mixing's measure: 8.721 meV - its products
+        // alone 8.687; its spinors at k = 0 instead, as in ac8ce07, 8.895.)
+        QVERIFY2(std::abs(Eb / (8.721e-3 * Q) - 1) < 3e-3, qPrintable(QString::number(Eb / Q * 1e3, 'f', 4)));
         double best = 0, at = 0;
         for (int k = 0; k < kp.solution->snapshotCount(); ++k) {
             kp.solution->select(k);
@@ -632,6 +654,120 @@ private slots:
         }
         qInfo("mixed continua: TE within %.2f %%, TM %.2f %% of their means over 2 meV", worst[0] * 100, worst[1] * 100);
         QVERIFY2(worst[0] < 0.03 && worst[1] < 0.02, qPrintable(QString("%1, %2").arg(worst[0]).arg(worst[1])));
+    }
+
+    // Lumerical's GaAs/AlGaAs electroabsorption modulator's well, its
+    // materials as it gives them (9.4 nm GaAs, 20 nm Al0.3Ga0.7As each side,
+    // 4x4 bands), in a field F (V/m).
+    static QByteArray eamWell(const QString& field, const QString& step)
+    {
+        return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "F", "expression": "%1[V/m]"}],
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "name": "below", "size": ["10", "20"]},
+                         {"type": "rectangle", "name": "well", "position": ["0", "20"], "size": ["10", "9.4"]},
+                         {"type": "rectangle", "name": "above", "position": ["0", "29.4"], "size": ["10", "20"]}],
+            "materials": [{"type": "material", "library": "Aluminium gallium arsenide", "x": "0.3", "Eg": "1.8966495[eV]", "Ep": "24.32[eV]",
+                           "VBO": "-0.165427[eV]", "epsilonr": "12.27", "gamma1": "5.83", "gamma2": "1.674", "gamma3": "2.417", "me": "0.0879",
+                           "selection": {"only": ["below", "above"]}},
+                          {"type": "material", "library": "Gallium arsenide", "Eg": "1.424[eV]", "Ep": "25.7[eV]", "VBO": "0[eV]", "epsilonr": "13.2",
+                           "gamma1": "6.85", "gamma2": "2.1", "gamma3": "2.9", "me": "0.063", "selection": {"only": ["well"]}}],
+            "physics": [{"type": "quantum", "tag": "qw", "valence": "kp4", "F": "F", "T": "300[K]"}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+          "studies": [{"type": "study", "steps": [%2]}]})json")
+            .arg(field, step)
+            .toUtf8();
+    }
+
+    // At 99 kV/cm (the modulator's -10.25 V) the barrier's notch holds valence
+    // states above the well's hh1 at k = 0, and they cross it along k. The
+    // localized selection leaves them out, its subbands followed along k by
+    // their overlaps (KpBands::order): its free TE absorption near the
+    // e1-hh1 edge, 1 + 2 subbands, within 3 % of every state's to 8 (by
+    // energy, the notch's too: theirs next to nothing) - by index, each k's
+    // states by energy, past the crossing the subbands were others: 0.15 to
+    // 0.31 of it. Its excitons there: the coupled bound within 15 % of the
+    // two-parameter one (whose e1-hh1 globals the first kept pair's: they
+    // were NaN, the hh1 its third and fourth state).
+    void aHighFieldSubbandFollowed()
+    {
+        if (femtest::slowBuild()) QSKIP("the k·p bands' and pairs' solves: minutes under the sanitizers");
+        auto spectrum = [](const QString& how) {
+            return femtest::run(femtest::modelOf(eamWell(QStringLiteral("9.92813e6"),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.445[eV], 1.47[eV], 6)", "linewidth": "3[meV]",
+                                    "lineshape": "gaussian", "epsr": "10", "index": "3.5038", %1})x").arg(how))));
+        };
+        const femtest::Run taken = spectrum(QStringLiteral(R"("select": "localized", "pmin": "0.6", "cstates": 1, "vstates": 2, "states": 4)"));
+        const femtest::Run every = spectrum(QStringLiteral(R"("select": "energy", "states": 8)"));
+        QVERIFY2(taken.error.isEmpty() && every.error.isEmpty(), qPrintable(taken.error + every.error));
+        double worst = 0;
+        for (int k = 0; k < taken.solution->snapshotCount(); ++k) {
+            taken.solution->select(k);
+            every.solution->select(k);
+            worst = std::max(worst, std::abs(femtest::global(*taken.solution, "qw.alphaTE") / femtest::global(*every.solution, "qw.alphaTE") - 1));
+        }
+        qInfo("99 kV/cm: the localized subbands' TE within %.2f %% of every state's", worst * 100);
+        QVERIFY2(worst < 0.03, qPrintable(QString::number(worst)));
+        const QString excitons = QStringLiteral(R"("select": "localized", "pmin": "0.6", "cstates": 1, "vstates": 2, "states": 4, "excitons": true, )");
+        const femtest::Run coupled = spectrum(excitons + QStringLiteral(R"("excitonmodel": "coupled")"));
+        const femtest::Run two = spectrum(excitons + QStringLiteral(R"("excitonmodel": "two")"));
+        QVERIFY2(coupled.error.isEmpty() && two.error.isEmpty(), qPrintable(coupled.error + two.error));
+        coupled.solution->select(0);
+        two.solution->select(0);
+        const double Eb = femtest::global(*coupled.solution, "qw.Eb"), Eb2 = femtest::global(*two.solution, "qw.Eb");
+        qInfo("99 kV/cm: bound by %.3f meV (two parameters %.3f)", Eb / Q * 1e3, Eb2 / Q * 1e3);
+        QVERIFY2(std::isfinite(Eb2) && std::abs(Eb / Eb2 - 1) < 0.15, qPrintable(QString("%1 %2").arg(Eb).arg(Eb2)));
+    }
+
+    // Too few subbands for the coupled excitons: a 10 nm GaAs/Al0.3Ga0.7As
+    // well's, its hh2 7 meV below its lh1 - mixing with it along k within the
+    // excitons' reach. With 2 valence pairs (hh1, lh1) the 1s line draws its
+    // strength from the continuum near the edge - the TE weight the mixing
+    // moves to the left-out subbands not there to draw on -: TE 20 to 50 meV
+    // above the e1-hh1 edge 0.91 to 0.94 of the free one, said; with 4,
+    // 0.97 to 1.08, 1.02 on the mean (its next, within 30 meV of hh3, said
+    // too; with 8, 1.06
+    // to 1.11; an independent real-space solve,
+    // the axial 4x4 on 16 states at k = 0 as the hole's basis, 1.14, 1.13,
+    // 1.10 - an attraction's Sommerfeld factor, above 1).
+    void tooFewSubbandsSaid()
+    {
+        if (femtest::slowBuild()) QSKIP("the k·p pairs' dense solves: minutes under the sanitizers");
+        auto spectrum = [](int vstates, const char* model) {
+            return femtest::run(femtest::modelOf(femtest::heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("10"), QStringLiteral("25"),
+                QStringLiteral(R"(, "valence": "kp4")"),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.4812[eV], 1.5112[eV], 4)", "states": 8, "cstates": 1, "vstates": %1,
+                                    "linewidth": "4[meV]", "lineshape": "gaussian", "excitons": %2, "excitonmodel": "coupled", "excitondrawn": false,
+                                    "epsr": "12.9"})x")
+                    .arg(vstates)
+                    .arg(QLatin1String(std::strcmp(model, "none") == 0 ? "false" : "true")))));
+        };
+        double ratio[2][4] = {};
+        for (int v = 0; v < 2; ++v) {
+            const femtest::Run x = spectrum(v == 0 ? 2 : 4, "coupled"), free = spectrum(v == 0 ? 2 : 4, "none");
+            QVERIFY2(x.error.isEmpty() && free.error.isEmpty(), qPrintable(x.error + free.error));
+            for (int k = 0; k < 4; ++k) {
+                x.solution->select(k);
+                free.solution->select(k);
+                ratio[v][k] = femtest::global(*x.solution, "qw.alphaTE") / femtest::global(*free.solution, "qw.alphaTE");
+            }
+            const QStringList said = x.solution->log.filter(QLatin1String("Warning:")).filter(QLatin1String("the coupled excitons take"));
+            if (v == 0)
+                QVERIFY2(said.size() == 1 && said.front().contains(QLatin1String("the spectrum's 2 valence subbands"))
+                             && said.front().contains(QLatin1String("\"vstates\" 3 or more")),
+                         qPrintable(x.solution->log.join(QLatin1Char('\n'))));
+            qInfo("%d valence pairs: TE 20, 30, 40, 50 meV above the edge %.3f %.3f %.3f %.3f of the free", v == 0 ? 2 : 4, ratio[v][0], ratio[v][1],
+                  ratio[v][2], ratio[v][3]);
+        }
+        // (Each below the free with 2; with 4 their mean above it - a
+        // point of it rippling some ±5 % with the continuum's states.)
+        double mean[2] = {0, 0};
+        for (int k = 0; k < 4; ++k) {
+            QVERIFY2(ratio[0][k] < 0.97, qPrintable(QString::number(ratio[0][k])));
+            for (int v = 0; v < 2; ++v) mean[v] += ratio[v][k] / 4;
+        }
+        QVERIFY2(mean[0] < 0.95 && mean[1] > 1.0, qPrintable(QString("%1 %2").arg(mean[0]).arg(mean[1])));
     }
 
     // A continuum wider than the line asks, to fit the coupled excitons'
