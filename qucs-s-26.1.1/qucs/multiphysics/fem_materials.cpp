@@ -70,6 +70,7 @@
  * are the semiconductor features' own defaults.
  */
 #include "fem_materials.h"
+#include "fem_process.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -1739,6 +1740,65 @@ Model crossSectionModel(const QString& layout, const QString& cell, const QLineF
     }
     m.root.label = QStringLiteral("A cross-section of %1").arg(QFileInfo(layout).fileName());
     return m;
+}
+
+Model processFlowModel(const QString& layout, const QString& cell, const QLineF& cut)
+{
+    Model m = Model::blank();
+    m.component().props.insert(QStringLiteral("unit"), QStringLiteral("um"));
+    Node flow = m.make(QStringLiteral("process"));
+    flow.label = QStringLiteral("process");
+    flow.props.insert(QStringLiteral("file"), layout);
+    if (!cell.isEmpty()) flow.props.insert(QStringLiteral("cell"), cell);
+    auto num = [](double v) { return formatNumber(v, 12); };
+    flow.props.insert(QStringLiteral("start"), QJsonArray{num(cut.x1()), num(cut.y1())});
+    flow.props.insert(QStringLiteral("end"), QJsonArray{num(cut.x2()), num(cut.y2())});
+    // (Its substrate, as a new flow comes with one; named.)
+    for (Node& step : flow.children)
+        if (step.type == QLatin1String("process/substrate")) step.label = QStringLiteral("substrate");
+    const Node* added = m.add(m.geometry().tag, flow);
+    if (added)
+        for (const Node& mat : processMaterialNodes(m, *added)) m.add(m.materials().tag, mat);
+    m.root.label = QStringLiteral("A process flow on %1").arg(QFileInfo(layout).fileName());
+    return m;
+}
+
+QList<Node> processMaterialNodes(const Model& model, const Node& flow)
+{
+    // Each step's region: its name and material (a stack's rows each theirs).
+    QStringList order;
+    QHash<QString, QStringList> regions;
+    auto add = [&order, &regions](const QString& name, const QString& material) {
+        if (name.isEmpty() || material.trimmed().isEmpty()) return;
+        if (!order.contains(material)) order << material;
+        if (!regions[material].contains(name)) regions[material] << name;
+    };
+    for (const Node& step : flow.children) {
+        if (!step.enabled) continue;
+        if (step.type == QLatin1String("process/stack")) {
+            for (const QJsonValue& v : step.value(QStringLiteral("layers")).toArray())
+                add(v.toArray().at(0).toString().trimmed(), v.toArray().at(1).toString().trimmed());
+        } else if (processStepMakesRegion(step.type)) {
+            add(step.label.isEmpty() ? step.tag : step.label, step.text(QStringLiteral("material")));
+        }
+    }
+    // (Regions a material of the model has already: not again.)
+    QStringList taken;
+    for (const Node& mat : model.materials().children)
+        for (const QJsonValue& v : mat.selection().value(QStringLiteral("only")).toArray()) taken << v.toString();
+    QList<Node> out;
+    for (const QString& name : order) {
+        QJsonArray only;
+        for (const QString& r : regions.value(name))
+            if (!taken.contains(r)) only.append(r);
+        if (only.isEmpty()) continue;
+        const std::optional<MaterialEntry> entry = findMaterial(name);
+        Node mat = entry ? materialNode(model, *entry) : model.make(QStringLiteral("material"));
+        if (!entry) mat.label = name;
+        mat.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), only}});
+        out << mat;
+    }
+    return out;
 }
 
 QStringList compounds()

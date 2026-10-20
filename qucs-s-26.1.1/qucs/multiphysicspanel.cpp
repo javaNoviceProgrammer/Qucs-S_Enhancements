@@ -201,6 +201,7 @@ QIcon glyph(const QString& icon)
             p.drawLine(QPointF(13, y), QPointF(10.5, y + 2));
         }
     }
+    else if (icon.startsWith(QLatin1String("p:"))) letters(icon.mid(2), dark ? QColor(220, 170, 110) : QColor(140, 85, 20));   // a process step
     else if (icon == QLatin1String("crosssection")) {
         // Layers cut across.
         p.setPen(Qt::NoPen);
@@ -2075,6 +2076,23 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
             QString why;
             if (a_doc->buildGeometry(&why)) a_doc->showGeometry();
         });
+    if (k && k->group == QLatin1String("process"))
+        action(tr("Show After This Step"), "mpShowStep", [this, tag] { a_doc->showBuiltUpTo(tag); });
+    if (k && k->group == QLatin1String("process") && node.text(QStringLiteral("mask")) == QLatin1String("layer"))
+        action(tr("Show Its Mask in the Layout"), "mpShowMask", [this, tag] {
+            QString why;
+            if (!a_doc->showMaskInLayout(tag, &why)) QMessageBox::information(this, tr("Its Mask"), why);
+        });
+    if (node.type == QLatin1String("process")) {
+        action(tr("Cut Along the Layout's Ruler"), "mpFlowCut", [this, tag] {
+            QString why;
+            if (!a_doc->cutAlongRuler(tag, &why)) QMessageBox::information(this, tr("Its Cut"), why);
+        });
+        action(tr("Make Its Materials"), "mpFlowMaterials", [this, tag] {
+            const int made = a_doc->makeFlowMaterials(tag);
+            if (made == 0) QMessageBox::information(this, tr("Its Materials"), tr("Every region of the flow has a material already."));
+        });
+    }
     if (node.type == QLatin1String("mesh") || (k && k->group == QLatin1String("mesh"))) action(tr("Build Mesh"), "mpBuildMeshButton", [this] { a_doc->buildMesh(); });
     if (node.type == QLatin1String("study")) action(tr("Compute"), "mpComputeButton", [this, tag] { a_doc->compute(tag); });
     if (k && k->group == QLatin1String("step")) {

@@ -25,6 +25,7 @@ set(FEM_SRCS
   fem_optics.cpp
   fem_line.cpp
   fem_pde.cpp
+  fem_process.cpp
   fem_import.cpp
   fem_hdf5.cpp
   fem_lumerical.cpp

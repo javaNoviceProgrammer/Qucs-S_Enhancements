@@ -1014,6 +1014,62 @@ bool parseLayoutLayer(const QString& text, LayoutLayer* layer, bool* anyDatatype
     return true;
 }
 
+QString layoutLayerPropertiesFile(const QString& layoutFile)
+{
+    const QFileInfo info(layoutFile);
+    QString base = info.fileName();
+    for (const QString& suffix : {QStringLiteral(".gz"), QStringLiteral(".gds"), QStringLiteral(".gds2"), QStringLiteral(".gdsii"),
+                                  QStringLiteral(".oas"), QStringLiteral(".oasis")})
+        if (base.endsWith(suffix, Qt::CaseInsensitive)) base.chop(suffix.size());
+    const QDir dir = info.absoluteDir();
+    const QString own = dir.filePath(base + QStringLiteral(".lyp"));
+    if (QFileInfo::exists(own)) return own;
+    const QStringList all = dir.entryList({QStringLiteral("*.lyp")}, QDir::Files);
+    return all.size() == 1 ? dir.filePath(all.first()) : QString();
+}
+
+bool layoutLayerNamed(const QString& text, const QString& layoutFile, LayoutLayer* layer)
+{
+    if (parseLayoutLayer(text, layer)) return true;
+    const QString wanted = text.trimmed();
+    const QString lyp = layoutFile.isEmpty() ? QString() : layoutLayerPropertiesFile(layoutFile);
+    if (wanted.isEmpty() || lyp.isEmpty()) return false;
+    QFile f(lyp);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    // Each <properties>: its <name> and its <source> ("1/0@1", "Metal1 1/0"),
+    // a group's members their own.
+    QXmlStreamReader xml(&f);
+    bool found = false;
+    std::function<void()> properties = [&xml, &wanted, layer, &found, &properties] {
+        QString name, source;
+        while (xml.readNextStartElement()) {
+            const QString element = xml.name().toString();
+            if (element == QLatin1String("group-members")) {
+                properties();
+                continue;
+            }
+            const QString t = xml.readElementText(QXmlStreamReader::SkipChildElements).trimmed();
+            if (element == QLatin1String("name")) name = t;
+            else if (element == QLatin1String("source")) source = t;
+        }
+        static const QRegularExpression key(QStringLiteral("(\\d+)\\s*/\\s*(\\d+)"));
+        const QRegularExpressionMatch m = key.match(source.section(QLatin1Char('@'), 0, 0));
+        if (!m.hasMatch() || found) return;
+        // Its name, else the source's words before its numbers.
+        if (name.isEmpty()) name = source.section(QLatin1Char('@'), 0, 0).left(m.capturedStart()).trimmed();
+        if (name.compare(wanted, Qt::CaseInsensitive) != 0) return;
+        layer->layer = m.captured(1).toUInt();
+        layer->datatype = m.captured(2).toUInt();
+        found = true;
+    };
+    if (xml.readNextStartElement() && xml.name() == QLatin1String("layer-properties"))
+        while (xml.readNextStartElement()) {
+            if (xml.name() == QLatin1String("properties")) properties();
+            else xml.skipCurrentElement();
+        }
+    return found;
+}
+
 const LayoutShapes::Layer* LayoutShapes::layer(const LayoutLayer& key) const
 {
     for (const Layer& l : layers)

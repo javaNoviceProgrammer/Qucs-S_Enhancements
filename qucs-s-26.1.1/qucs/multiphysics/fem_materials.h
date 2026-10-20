@@ -208,6 +208,14 @@ QList<StackRow> suggestedStack(const LayoutShapes& shapes, const QLineF& cut);
 /// (µm): a Layout Cross-Section of \a rows, a material for each one named
 /// (on the rows that name it).
 Model crossSectionModel(const QString& layout, const QString& cell, const QLineF& cut, const QList<StackRow>& rows);
+/// A model of a process flow along \a cut (µm) of \a layout's \a cell: its
+/// window the cut, a silicon substrate to begin with and its material.
+Model processFlowModel(const QString& layout, const QString& cell, const QLineF& cut);
+/// The materials of a process flow's regions: a node for each material its
+/// steps make (a library entry's, else one of that name), on the regions
+/// that are of it - by name, as the steps name them. Those \a model has on
+/// those regions already are left out.
+QList<Node> processMaterialNodes(const Model& model, const Node& flow);
 
 } // namespace qucs_s::fem
 

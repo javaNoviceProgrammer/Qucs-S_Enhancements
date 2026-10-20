@@ -61,6 +61,15 @@ struct LayoutLayer {
 /// it is not one.
 bool parseLayoutLayer(const QString& text, LayoutLayer* layer, bool* anyDatatype = nullptr);
 
+/// The .lyp that goes with \a layoutFile, as the layout viewer finds it:
+/// its own (chip.lyp beside chip.gds), else the only one in its folder;
+/// empty when there is none.
+QString layoutLayerPropertiesFile(const QString& layoutFile);
+/// A layer as a mask names it: "1/0", or a name the layout's layer
+/// properties (layoutLayerPropertiesFile) give one - one map for the
+/// viewer, the cross-sections and the masks. False when it is neither.
+bool layoutLayerNamed(const QString& text, const QString& layoutFile, LayoutLayer* layer);
+
 /*!
  * A layout's cell as shapes on layers: GDSII (gzipped too) or OASIS, read by
  * gdstk, the cell flattened (its placements and arrays, paths as their
