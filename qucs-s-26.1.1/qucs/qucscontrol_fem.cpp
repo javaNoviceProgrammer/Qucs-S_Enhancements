@@ -1381,6 +1381,22 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                 break;
             }
     if (!set || set->solutions.empty()) return errorResult(tr("The study is not solved yet: fem_solve solves it."));
+    // A point past the last: refused - the last was taken, and answered as
+    // if asked (the check of a4ff84a, 6.1). A sweep's points; with none, a
+    // Laser L-I's or a Valence Bands step's.
+    if (const int point = args.value(QLatin1String("point")).toInt(0); point > 0 && !args.value(QLatin1String("all")).toBool()) {
+        const Solution& first = *set->solutions.front();
+        const int n = int(set->solutions.size());
+        const bool bands = first.frequencyDomain && first.photonAxis == 3;
+        const int count = n > 1 ? n : first.biasAxis || bands ? first.snapshotCount() : 1;
+        if (point > count)
+            return errorResult(n > 1          ? tr("There is no point %1: its sweep has %2 points (from 1).").arg(point).arg(count)
+                               : bands         ? tr("There is no point %1: its valence bands have %2 values of k (from 1).").arg(point).arg(count)
+                               : first.biasAxis ? tr("There is no point %1: its L-I has %2 points (from 1).").arg(point).arg(count)
+                                                : tr("There is no point %1: the study has one solution, no sweep - 'point' picks a sweep's "
+                                                     "('time' or 'frequency' one of its own).")
+                                                      .arg(point));
+    }
     const QString expression = args.value(QLatin1String("expression")).toString();
     if (expression.trimmed().isEmpty()) return errorResult(tr("What? ('expression': V, es.normE, T, es.C11...)"));
     // Several, split by ';': each at each point, or each a global value.
@@ -1666,12 +1682,16 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
     QString why;
     if (const FNode* g = doc->model().find(group); g && g->type == QLatin1String("plotgroup1d")) {
         // Graphs: a dataset and its data display.
-        const QString display = doc->showGraphs(group, &why);
+        QStringList removed;
+        const QString display = doc->showGraphs(group, &why, true, &removed);
         if (display.isEmpty()) return errorResult(why);
-        return jsonResult(QJsonObject{{QStringLiteral("plot group"), group},
-                                      {QStringLiteral("display"), QDir::toNativeSeparators(display)},
-                                      {QStringLiteral("dataset"), QDir::toNativeSeparators(display.left(display.size() - 4) + QStringLiteral(".dat"))},
-                                      {QStringLiteral("see it"), tr("the data display is in front: screenshot takes a picture; get_dataset reads it")}});
+        QJsonObject o{{QStringLiteral("plot group"), group},
+                      {QStringLiteral("display"), QDir::toNativeSeparators(display)},
+                      {QStringLiteral("dataset"), QDir::toNativeSeparators(display.left(display.size() - 4) + QStringLiteral(".dat"))},
+                      {QStringLiteral("see it"), tr("the data display is in front: screenshot takes a picture; get_dataset reads it")}};
+        // (Its display's diagrams of an older group of this tag: gone, said.)
+        if (!removed.isEmpty()) o.insert(QStringLiteral("removed from its display"), QJsonArray::fromStringList(removed));
+        return jsonResult(o);
     }
     if (!doc->showPlotGroup(group, &why)) return errorResult(why);
     const std::shared_ptr<const PlotScene> scene = doc->plotScene();

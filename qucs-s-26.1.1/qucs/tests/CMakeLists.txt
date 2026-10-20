@@ -193,8 +193,10 @@ qucs_add_test(test_multiphysics_doc)
 qucs_add_test(test_multiphysics_view)
 # (The window's multiphysics end to end - every physics' examples solved:
 # five minutes and more under the sanitizers on CI's runners, as the
-# engine's tests.)
-set_tests_properties(test_multiphysics_doc PROPERTIES TIMEOUT 900)
+# engine's tests. There 1131 to 2254 s of its 2700 (900 times the scale of
+# 3) from 28dab4c to d3e35fe, its time growing with its functions and
+# twice as long on a slow runner: 1200, room for a slow one's.)
+set_tests_properties(test_multiphysics_doc PROPERTIES TIMEOUT 1200)
 # (a layout KLayout wrote, data/klayout_sample.oas: another program's OASIS)
 target_compile_definitions(test_layout_doc PRIVATE QUCS_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 # (Lumerical's files: data/lumerical_sample.py writes them - an MQW project

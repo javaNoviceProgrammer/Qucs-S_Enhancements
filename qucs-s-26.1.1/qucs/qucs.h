@@ -493,8 +493,10 @@ public:
   PythonDataViewer *viewShellTable(const QString &expression);
   /// qucs.display()'s request: the dataset shown in its data display (made
   /// when there is none) - a diagram of its traces placed, unless one
-  /// showing them is there already. Its answer: an error, or empty.
-  QString showPythonDisplay(const QJsonObject &request);
+  /// showing them is there already. Its answer: an error, or empty. A
+  /// display of its own ("replace"): \a removed says its diagrams taken
+  /// away, of traces its dataset no longer has.
+  QString showPythonDisplay(const QJsonObject &request, QStringList *removed = nullptr);
   /// The other files a rename of \a doc's name changes, changed (opened,
   /// left unsaved, one edit each); why not, or empty.
   QString applyPythonRename(PythonDoc *doc);

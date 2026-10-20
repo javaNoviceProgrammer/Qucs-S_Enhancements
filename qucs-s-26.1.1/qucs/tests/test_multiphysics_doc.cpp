@@ -3183,6 +3183,124 @@ private slots:
         QVERIFY(json(call("fem_describe")).value("at work").isUndefined());
     }
 
+    // A well's studies through the tools (the check of a4ff84a, 6): each
+    // study solved adds its kind's default plots once - one of each name, none
+    // for a study that has plot groups of its own (1D ones too), the valence
+    // bands their E(k), not a spectrum's; fem_evaluate's 'point' a bands
+    // step's k, one past the last refused; fem_plot's display rid of an
+    // older group's diagram, the user's kept; a brief batch's save says what.
+    void aWellsStudiesThroughTheTools()
+    {
+        const QString model = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "nm", "geometry": [{"type": "rectangle", "name": "well", "size": ["20", "10"]}],
+            "physics": [{"type": "quantum", "tag": "qw", "valence": "kp4", "features": [
+              {"type": "material", "source": "user", "Ec": "0[eV]", "Ev": "-1.5[eV]", "me": "0.067", "mhh": "0.35", "mlh": "0.09",
+               "mhhp": "0.11", "mlhp": "0.21", "gamma3": "2.93", "Ep": "25[eV]", "nr": "3.6", "epsilonr": "12.9", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+          "studies": [{"type": "study", "tag": "spec", "steps": [{"type": "spectrum", "energies": "linspace(1.60[eV], 1.70[eV], 3)", "states": 2,
+                         "linewidth": "5[meV]", "kpoints": 21}]},
+                      {"type": "study", "tag": "own", "steps": [{"type": "states", "states": 2}]},
+                      {"type": "study", "tag": "states", "steps": [{"type": "states", "states": 2}]},
+                      {"type": "study", "tag": "bands", "steps": [{"type": "bands", "kmax": "1[1/nm]", "points": 5, "states": 2}]}],
+          "results": {"plots": [{"type": "plotgroup1d", "tag": "mine", "label": "My levels", "study": "own",
+                                 "plots": [{"type": "globalgraph", "tag": "gm", "expression": "qw.E_e"}]}]}})json");
+        QFile f(path(QStringLiteral("wells_studies.qfem")));
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(model.toUtf8());
+        f.close();
+        MultiphysicsDoc* doc = open(path(QStringLiteral("wells_studies.qfem")));
+        QVERIFY(doc != nullptr);
+        const auto count = [doc](const char* type, const QString& label) {
+            int n = 0;
+            for (const qucs_s::fem::Node& g : doc->model().results().children) n += g.type == QLatin1String(type) && g.name() == label;
+            return n;
+        };
+        const auto groups = [doc](const QString& study) {
+            QStringList out;
+            for (const qucs_s::fem::Node& g : doc->model().results().children)
+                if (g.text(QStringLiteral("study")) == study) out << g.name();
+            return out;
+        };
+        const auto solve = [this](const char* study) {
+            const QJsonObject r = call("fem_solve", {{"path", "wells_studies.qfem"}, {"study", study}, {"timeout", 600}});
+            return failed(r) ? text(r) : QString();
+        };
+        // The spectrum: its set.
+        QString why = solve("spec");
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(groups(QStringLiteral("spec")), (QStringList{"Electron Probability (qw)", "Heavy Hole Probability (qw)", "The Spectrum"}));
+        // A study with a plot group of the user's (a 1D one): none added.
+        why = solve("own");
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(groups(QStringLiteral("own")), QStringList{"My levels"});
+        // The states: their band diagram and levels; the probabilities not again.
+        why = solve("states");
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(groups(QStringLiteral("states")), (QStringList{"Band Diagram (qw)", "The States"}));
+        QCOMPARE(count("plotgroup", QStringLiteral("Electron Probability (qw)")), 1);
+        QCOMPARE(count("cutline", QStringLiteral("Growth Axis (qw)")), 1);
+        // Its groups deleted, its cut line kept: made again, along that line.
+        {
+            Model m = doc->model();
+            for (const char* label : {"Band Diagram (qw)", "The States"})
+                QVERIFY(m.remove(tagOf(m, QStringLiteral("plotgroup1d"), QLatin1String(label))));
+            QVERIFY(doc->setModel(m, QStringLiteral("deleted")));
+        }
+        why = solve("states");
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(groups(QStringLiteral("states")), (QStringList{"Band Diagram (qw)", "The States"}));
+        QCOMPARE(count("cutline", QStringLiteral("Growth Axis (qw)")), 1);
+        const QString axis = tagOf(doc->model(), QStringLiteral("cutline"), QStringLiteral("Growth Axis (qw)"));
+        for (const qucs_s::fem::Node& p : doc->model().find(tagOf(doc->model(), QStringLiteral("plotgroup1d"), QStringLiteral("Band Diagram (qw)")))->children)
+            QCOMPARE(p.text(QStringLiteral("data")), axis);
+        // The bands: their E(k) in eV, not a spectrum's absorption.
+        why = solve("bands");
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(groups(QStringLiteral("bands")), QStringList{"The Valence Bands"});
+        const QString bands = tagOf(doc->model(), QStringLiteral("plotgroup1d"), QStringLiteral("The Valence Bands"));
+        const qucs_s::fem::Node& ek = doc->model().find(bands)->children.front();
+        QVERIFY2(ek.text(QStringLiteral("expression")) == QLatin1String("qw.Ev*") && ek.text(QStringLiteral("unit")) == QLatin1String("eV"),
+                 qPrintable(ek.text(QStringLiteral("expression"))));
+        QCOMPARE(count("plotgroup1d", QStringLiteral("The Spectrum")), 1);
+        QCOMPARE(count("plotgroup", QStringLiteral("Electron Probability (qw)")), 1);
+
+        // 'point': the bands' k by number; one past the last refused.
+        QJsonObject r = call("fem_evaluate", {{"path", "wells_studies.qfem"}, {"study", "bands"}, {"expression", "qw.k"}, {"point", 2}});
+        QVERIFY2(!failed(r) && json(r).value("solutions").toString() == QLatin1String("k = 0.25 /nm"), qPrintable(text(r)));
+        QCOMPARE(json(r).value("values").toArray().at(0).toObject().value("SI").toDouble(), 2.5e8);
+        r = call("fem_evaluate", {{"path", "wells_studies.qfem"}, {"study", "bands"}, {"expression", "qw.k"}, {"point", 6}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("its valence bands have 5 values of k")), qPrintable(text(r)));
+        r = call("fem_evaluate", {{"path", "wells_studies.qfem"}, {"study", "states"}, {"expression", "qw.E_e"}, {"point", 2}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("the study has one solution, no sweep")), qPrintable(text(r)));
+
+        // Its display: an older group's diagram (a trace its dataset no
+        // longer has, another title) gone and said; the user's own kept.
+        r = call("fem_plot", {{"path", "wells_studies.qfem"}, {"plot", bands}});
+        QVERIFY2(!failed(r) && !json(r).contains("removed from its display"), qPrintable(text(r)));
+        const QString display = json(r).value("display").toString();
+        QVERIFY(!failed(call("add_diagram", {{"path", display}, {"traces", QJsonArray{"qucsator/qw.E_old1", "qucsator/qw.Ev1"}}, {"title", "An older group"}})));
+        QVERIFY(!failed(call("add_diagram", {{"path", display}, {"traces", QJsonArray{"qucsator/qw.Ev1"}}, {"title", "Mine"}})));
+        r = call("fem_plot", {{"path", "wells_studies.qfem"}, {"plot", bands}});
+        const QJsonArray removed = json(r).value("removed from its display").toArray();
+        QVERIFY2(!failed(r) && removed.size() == 1 && removed.at(0).toString().contains(QStringLiteral("“An older group” (its qw.E_old1 not in")),
+                 qPrintable(text(r)));
+        QStringList titles;
+        for (const QJsonValue& d : json(call("get_schematic", {{"path", display}})).value("diagrams").toArray()) titles << d.toObject().value("title").toString();
+        QVERIFY2(titles.contains(QLatin1String("Mine")) && titles.contains(QLatin1String("The Valence Bands")) && !titles.contains(QLatin1String("An older group")),
+                 qPrintable(titles.join(" | ")));
+
+        // A brief batch's save: which model it saved.
+        // (And a node set, by its name; a build by its counts: not "done (3
+        // fields)".)
+        r = call("batch", {{"brief", true}, {"calls", QJsonArray{QJsonObject{{"tool", "fem_model"}, {"arguments", QJsonObject{{"action", "save"}, {"path", "wells_studies.qfem"}}}},
+                                                                 QJsonObject{{"tool", "fem_edit"}, {"arguments", QJsonObject{{"path", "wells_studies.qfem"}, {"action", "set"},
+                                                                                                                              {"tag", "mine"}, {"label", "My levels, again"}}}},
+                                                                 QJsonObject{{"tool", "fem_build"}, {"arguments", QJsonObject{{"path", "wells_studies.qfem"}}}}}}});
+        QVERIFY2(text(r).contains(QLatin1String("[1] fem_model: saved ")) && text(r).contains(QLatin1String("wells_studies.qfem")), qPrintable(text(r)));
+        QVERIFY2(text(r).contains(QLatin1String("[2] fem_edit: set My levels, again (mine)")), qPrintable(text(r)));
+        QVERIFY2(text(r).contains(QLatin1String("[3] fem_build: boundaries 4, domains 1")), qPrintable(text(r)));
+    }
+
     void claudesToolsShowTheWellsInEV()
     {
         const QString model = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
@@ -3224,6 +3342,10 @@ private slots:
         QVERIFY2(solved.value("globals").toObject().value("qw.Ee1hh1").toString().endsWith(QLatin1String(" eV")), qPrintable(text(r)));
         QVERIFY2(solved.value("globals").toObject().value("qw.Ee1").toString().endsWith(QLatin1String(" eV")), qPrintable(text(r)));
         QVERIFY2(text(r).contains(QLatin1String("between 1.55 eV and 1.75 eV")) && !text(r).contains(QLatin1String("1.75 V")), qPrintable(text(r)));
+        // (A point past the sweep's last: refused, not its last answered -
+        // the check of a4ff84a, 6.1.)
+        r = call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "spec"}, {"expression", "qw.Eb"}, {"point", 3}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("its sweep has 2 points")), qPrintable(text(r)));
         // Units: one for those it fits, one for each, none for a number.
         QJsonArray v = json(call("fem_evaluate", {{"path", "ev_wells.qfem"}, {"study", "spec"}, {"expression", "qw.Ex; qw.Eb"}, {"unit", "meV"}}))
                            .value("values").toArray();

@@ -159,7 +159,7 @@ public:
     /// A 1D Plot Group's graphs: written as a Qucs dataset beside the model
     /// (name_tag.dat; in the cache when it is not saved), shown in a data
     /// display (name_tag.dpl). The display's path; empty and why on failure.
-    QString showGraphs(const QString& tag, QString* error = nullptr, bool open = true);
+    QString showGraphs(const QString& tag, QString* error = nullptr, bool open = true, QStringList* removed = nullptr);
     /// \a material's properties \a keys along \a sweep (Lumerical's
     /// visualizer's): a dataset beside the model and a display of it; its
     /// path, or empty and why.
