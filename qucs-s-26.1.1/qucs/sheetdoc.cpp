@@ -340,7 +340,13 @@ SheetDoc::SheetDoc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, n
     rebuild();
 }
 
-SheetDoc::~SheetDoc() = default;
+SheetDoc::~SheetDoc()
+{
+    // Its undo stack goes with it, saying it is clean: not to this, half
+    // gone by then (UBSan's "not an object of type SheetDoc" on closing an
+    // edited sheet, the first-edit test of b5acf84 on CI Linux).
+    a_undo->disconnect(this);
+}
 
 void SheetDoc::setName(const QString& name)
 {
