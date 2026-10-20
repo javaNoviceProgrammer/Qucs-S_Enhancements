@@ -12230,8 +12230,13 @@ private slots:
             QVERIFY2(t.value("points").toInt() == 11 && !t.contains("no data"), qPrintable(text(r)));
         }
         // The first diagram's trace: why it shows nothing, and edit_trace
-        // takes the prefix off (it put it back).
-        const QJsonObject blank = json(call("reload_data")).toObject().value("reloaded").toArray().at(0).toObject();
+        // takes the prefix off (it put it back). (This schematic's among
+        // those reload_data reloads: another test's left open with its
+        // diagrams came first.)
+        QJsonObject blank;
+        for (const QJsonValue& d : json(call("reload_data")).toObject().value("reloaded").toArray())
+            if (d.toObject().value("document").toString() == QLatin1String("csv_plot.sch")) blank = d.toObject();
+        QVERIFY(!blank.isEmpty());
         const QString why = blank.value("traces without data").toArray().at(0).toObject().value("why").toString();
         QVERIFY2(why.contains("dummy_data.dat is imported (from dummy_data.csv)") && why.contains("dummy_data:v1, without a simulator's prefix")
                      && !why.contains("simulate to make it"),
