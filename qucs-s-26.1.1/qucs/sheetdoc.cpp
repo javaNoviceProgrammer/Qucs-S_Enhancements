@@ -361,6 +361,9 @@ bool SheetDoc::load()
     rebuild();
     a_view->setCurrentIndex(a_model->index(0, 0));
     a_lastSaved = QFileInfo(a_DocName).lastModified();
+    // Its content, the first: an edit after it is one - a sheet's first
+    // was its content, lost (the check of 31ba73b).
+    contentRead();
     return true;
 }
 
@@ -380,6 +383,7 @@ bool SheetDoc::reload()
     a_sheet = sheet >= 0 ? sheet : std::clamp(a_sheet, 0, int(a_book.sheets.size()) - 1);
     a_undo->clear();   // (its steps were of the cells as they were)
     rebuild();
+    contentRead();   // (read again: an edit, its file's - not counted before)
     if (at.isValid())
         a_view->setCurrentIndex(a_model->index(std::min(at.row(), a_model->rowCount() - 1), std::min(at.column(), a_model->columnCount() - 1)));
     a_view->horizontalScrollBar()->setValue(across);

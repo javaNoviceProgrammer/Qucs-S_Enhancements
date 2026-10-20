@@ -2194,7 +2194,7 @@ bool Schematic::load()
         // file, which is not what the tab shows.)
     }
     ++a_sceneGeneration;
-    edited();
+    contentRead();
     emit signalDocumentRebuilt(this);
     if (!loaded)
         return false;

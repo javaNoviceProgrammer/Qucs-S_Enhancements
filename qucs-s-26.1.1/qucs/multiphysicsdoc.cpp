@@ -489,7 +489,7 @@ bool MultiphysicsDoc::load()
     a_readNotes = why;
     m->fileName = a_DocName;
     a_undo->clear();
-    applyModel(*m);
+    applyModel(*m, true);
     a_undo->setClean();
     setDocChanged(false);
     a_lastSaved = QFileInfo(a_DocName).lastModified();
@@ -512,7 +512,7 @@ bool MultiphysicsDoc::reload()
     m->fileName = a_DocName;
     const QString focus = a_focus;
     a_undo->clear();   // (its steps were of the model as it was)
-    applyModel(*m);
+    applyModel(*m, true);
     setDocChanged(false);
     emit signalFileChanged(false);
     a_lastSaved = QFileInfo(a_DocName).lastModified();
@@ -616,7 +616,7 @@ bool MultiphysicsDoc::editNode(const QString& tag, const std::function<void(Node
     return true;
 }
 
-void MultiphysicsDoc::applyModel(const Model& model)
+void MultiphysicsDoc::applyModel(const Model& model, bool read)
 {
     const Model before = a_model;
     a_model = model;
@@ -624,7 +624,8 @@ void MultiphysicsDoc::applyModel(const Model& model)
     a_paramsStale = true;
     a_view->setAxisymmetric(a_model.axisymmetric());
     invalidate(before, a_model);
-    edited();
+    if (read) contentRead();
+    else edited();
     fillPlotBox();
     emit modelChanged();
     updateState();

@@ -1426,6 +1426,31 @@ private slots:
         QVERIFY(json(r).value("format").toString().contains("Magnetic fields"));
     }
 
+    // A model read from its file is no one's edit, the next one is; a new
+    // model's first edit is counted as its others are (it was taken for the
+    // content it was opened with, and lost: the check of 31ba73b).
+    void aModelsFirstEditIsCounted()
+    {
+        MultiphysicsDoc* doc = open(coaxCopy());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->revision(), quint64(1));
+        QVERIFY(doc->recentEdits().isEmpty());
+        Model m = doc->model();
+        QList<Model::Parameter> params = m.parameters();
+        params[0].expression = QStringLiteral("0.6[mm]");
+        m.setParameters(params);
+        QVERIFY(doc->setModel(m, QStringLiteral("a")));
+        QCOMPARE(doc->revision(), quint64(2));
+        QCOMPARE(doc->recentEdits().size(), 1);
+        MultiphysicsDoc* fresh = app->newMultiphysicsModel();
+        QVERIFY(fresh != nullptr);
+        QCOMPARE(fresh->revision(), quint64(0));
+        QVERIFY(fresh->setModel(m, QStringLiteral("pasted")));
+        QCOMPARE(fresh->revision(), quint64(1));
+        QCOMPARE(fresh->recentEdits().size(), 1);
+        QCOMPARE(fresh->recentEdits().last().by, quint64(0));   // (the user's: no conversation's call)
+    }
+
     // A Derived Values node's values through fem_evaluate - its tag (each
     // value), tag.name (one), at each frequency with 'all', named as asked
     // among other expressions (they were "not a parameter, a variable or a

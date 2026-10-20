@@ -84,6 +84,7 @@
 #include "paintings/graphictext.h"
 #include "dialogs/simmessage.h"
 #include "qucsshortcutmanager.h"
+#include "sheetdoc.h"
 #include "textdoc.h"
 #include "projectView.h"
 #include "processconsole.h"
@@ -1332,6 +1333,82 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"path", "watched.cir"}})));
         QVERIFY(text(as(us, "get_state")).contains("watched.cir has been closed"));
         QVERIFY(!failed(call("close_document", {{"path", path}, {"unsaved", "discard"}})));
+    }
+
+    // A new document's first edit is counted as its others are: told to the
+    // conversation, its last edit said - it was taken for the content the
+    // document was opened with, no one's, and lost (its revision 1, no edit
+    // of it). One read from its file is no one's edit, the next one is: a
+    // sheet's too, and a sheet read again, changed on disk, its file's.
+    void aNewDocumentsFirstEditIsCounted()
+    {
+        const quint64 us = 101;
+        const auto as = [this](quint64 who, const QString& tool, const QJsonObject& args = {}) { return control->callNow(tool, args, 30000, who); };
+        const auto inFront = [this](const QJsonObject& state) {
+            for (const QJsonValue& d : json(state).toObject().value("documents").toArray())
+                if (d.toObject().value("in front").toBool()) return d.toObject();
+            return QJsonObject();
+        };
+        // A new schematic, the conversation's; the user's first part in it.
+        QVERIFY(!failed(as(us, "new_document", {{"kind", "schematic"}})));
+        QJsonObject r = as(us, "get_state");
+        QCOMPARE(inFront(r).value("revision").toInteger(), 0);
+        QVERIFY(!inFront(r).contains("last edit"));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 100}})));
+        r = as(us, "get_state");
+        QVERIFY2(text(r).contains("Since your last call") && text(r).contains("changed by the user - 1 edit(s)"), qPrintable(text(r).right(400)));
+        QCOMPARE(inFront(r).value("revision").toInteger(), 1);
+        QCOMPARE(inFront(r).value("last edit").toObject().value("by").toString(), QStringLiteral("the user"));
+        // Saved and opened again: read from its file, no one's edit.
+        QVERIFY(!failed(call("save_document", {{"as", "first_edit"}, {"replace", true}})));
+        QVERIFY(!failed(call("close_document")));
+        QVERIFY(!failed(as(us, "open_document", {{"path", "first_edit.sch"}})));
+        r = as(us, "get_state");
+        QCOMPARE(inFront(r).value("revision").toInteger(), 1);
+        QVERIFY(!inFront(r).contains("last edit"));
+        QVERIFY(!failed(call("close_document")));
+        // The conversation's own first edit: its, not told back.
+        QVERIFY(!failed(as(us, "new_document", {{"kind", "schematic"}})));
+        QVERIFY(!failed(as(us, "add_component", {{"type", "C"}, {"name", "C1"}, {"x", 200}, {"y", 100}})));
+        r = as(us, "get_state");
+        QVERIFY2(!text(r).contains("Since your last call"), qPrintable(text(r).right(400)));
+        QCOMPARE(inFront(r).value("last edit").toObject().value("by").toString(), QStringLiteral("you"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // A new text document: the first line typed.
+        QVERIFY(!failed(as(us, "new_document", {{"kind", "text"}})));
+        auto* typed = dynamic_cast<TextDoc*>(app->getDoc());
+        QVERIFY(typed != nullptr);
+        typed->insertPlainText("* a note\n");
+        r = as(us, "get_state");
+        QVERIFY2(text(r).contains("changed by the user - 1 edit(s)"), qPrintable(text(r).right(400)));
+        QCOMPARE(inFront(r).value("last edit").toObject().value("by").toString(), QStringLiteral("the user"));
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
+
+        // A sheet read from its file: no one's edit; read again, changed on
+        // disk, its file's; then the user's first cell.
+        const QString csv = dir.filePath("workspace/first_edit.csv");
+        const auto write = [&csv](const QByteArray& content) {
+            QFile f(csv);
+            return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(content) == content.size();
+        };
+        QVERIFY(write("a,b\n1,2\n"));
+        QVERIFY(!failed(as(us, "open_document", {{"path", csv}})));
+        auto* sheet = dynamic_cast<SheetDoc*>(app->getDoc());
+        QVERIFY(sheet != nullptr);
+        r = as(us, "get_state");
+        QCOMPARE(inFront(r).value("revision").toInteger(), 1);
+        QVERIFY(!inFront(r).contains("last edit"));
+        QTest::qWait(1100);   // (a newer date than its load's)
+        QVERIFY(write("a,b\n1,5\n"));
+        QTRY_VERIFY_WITH_TIMEOUT(sheet->revision() > 1, 6000);
+        r = as(us, "get_state");
+        QVERIFY2(text(r).contains("first_edit.csv was changed by its file, changed on disk"), qPrintable(text(r).right(400)));
+        sheet->setCell(1, 0, QStringLiteral("3"));
+        r = as(us, "get_state");
+        QVERIFY2(text(r).contains("first_edit.csv was changed by the user - 1 edit(s)"), qPrintable(text(r).right(400)));
+        QCOMPARE(inFront(r).value("revision").toInteger(), 3);
+        QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
     // The text and JSON forms of some parts - named, or in a region: their
@@ -10668,8 +10745,6 @@ private slots:
         // after" it: the check of 31ba73b, 2).
         QTest::qWait(1100);
         QVERIFY(!failed(call("new_document", {{"kind", "data_display"}})));
-        QVERIFY(!failed(call("add_diagram", {{"path", "stale.dpl"}, {"type", "rect"}, {"traces", QJsonArray{"tran.i(V1)"}}})));
-        // (A second: a document's first edit is its content, not an edit.)
         QVERIFY(!failed(call("add_diagram", {{"path", "stale.dpl"}, {"type", "rect"}, {"traces", QJsonArray{"tran.i(V1)"}}})));
         r = call("get_dataset", {{"path", "stale.dpl"}});
         QVERIFY2(!failed(r) && !json(r).toObject().contains("stale"), qPrintable(text(r).left(800)));
