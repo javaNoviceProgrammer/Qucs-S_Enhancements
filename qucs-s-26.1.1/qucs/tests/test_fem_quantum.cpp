@@ -817,7 +817,11 @@ private slots:
         int offTheTable = 0;   // γ's found between the Coulomb table's nodes (0.025 apart)
         for (int model = 0; model < 3; ++model) {
             const char* name = model == 0 ? "two" : model == 1 ? "bastard" : "coupled";
-            for (double L : {2.0, 5.0, 10.0, 14.0, 20.0}) {
+            // (Under the sanitizers the coupled excitons at 10 and 14 nm alone:
+            // the function's time.)
+            const std::vector<double> widths = model == 2 && femtest::slowBuild() ? std::vector<double>{10.0, 14.0}
+                                                                                  : std::vector<double>{2.0, 5.0, 10.0, 14.0, 20.0};
+            for (double L : widths) {
                 const Run x = run(modelOf(stack(L, QStringLiteral("1.6[eV]"), name)));
                 QVERIFY2(x.error.isEmpty(), qPrintable(x.error));
                 x.solution->select(0);
