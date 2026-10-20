@@ -1787,6 +1787,59 @@ void Solution::defineVariables()
     a_globalScope = std::make_unique<Scope>(a_pointScope.get());
 }
 
+void Solution::addProcessVariables(std::shared_ptr<const ProcessState> state, const QString& tag)
+{
+    if (!state || !state->dopants) return;
+    const std::shared_ptr<const ProcessDopants> d = state->dopants;
+    // Each domain's material on the grid: the cells' at a point inside it.
+    auto materials = std::make_shared<std::vector<int>>();
+    for (const Topology::Domain& dom : a_mesh->topology->domains) materials->push_back(d->materialAt(dom.inside.x(), dom.inside.y()));
+    const double scale = a_mesh->unitScale;
+    auto where = [materials, scale](PointEvaluator& e, int* m, QPointF* p) {
+        const int dom = e.domain();
+        if (dom < 0 || dom >= int(materials->size()) || (*materials)[std::size_t(dom)] < 0) return false;
+        *m = (*materials)[std::size_t(dom)];
+        *p = e.point() / scale;
+        return true;
+    };
+    const QString pre = tag + QLatin1Char('.');
+    const Dim conc = Dim::of(-3);
+    for (const ProcessDopants::Field& f : d->fields) {
+        const ProcessDopants::Field* fp = &f;
+        auto read = [d, fp, where](bool active) {
+            return [d, fp, where, active](PointEvaluator& e) {
+                int m = -1;
+                QPointF p;
+                return where(e, &m, &p) ? d->at(*fp, p.x(), p.y(), m, active) : NaN;
+            };
+        };
+        if (f.name.startsWith(QLatin1String("x:"))) {
+            define(pre + QStringLiteral("x_") + f.name.mid(2), Dim(), tr("%1's share of its sublattice (an intermixed III-V's)").arg(f.name.mid(2)),
+                   VariableDef::Derived, -1, read(false));
+        } else if (f.name == QLatin1String("I")) {
+            define(pre + QStringLiteral("I"), conc, tr("free interstitials over their equilibrium"), VariableDef::Derived, -1, read(false));
+        } else if (f.name == QLatin1String("Icl")) {
+            define(pre + QStringLiteral("Icl"), conc, tr("interstitials held in clusters (an implant's +1)"), VariableDef::Derived, -1, read(false));
+        } else {
+            define(pre + f.name, conc, tr("%1, all of it").arg(f.name), VariableDef::Derived, -1, read(false));
+            define(pre + f.name + QStringLiteral("_a"), conc, tr("%1, its active part").arg(f.name), VariableDef::Derived, -1, read(true));
+        }
+    }
+    auto carriers = [d, where](int which) {
+        return [d, where, which](PointEvaluator& e) {
+            int m = -1;
+            QPointF p;
+            if (!where(e, &m, &p)) return NaN;
+            double nd = 0, na = 0;
+            d->carriers(p.x(), p.y(), m, &nd, &na);
+            return which == 0 ? nd : which == 1 ? na : nd - na;
+        };
+    };
+    define(pre + QStringLiteral("Nd"), conc, tr("active donors (each species as its host has it)"), VariableDef::Derived, -1, carriers(0));
+    define(pre + QStringLiteral("Na"), conc, tr("active acceptors"), VariableDef::Derived, -1, carriers(1));
+    define(pre + QStringLiteral("net"), conc, tr("net doping, donors less acceptors"), VariableDef::Derived, -1, carriers(2));
+}
+
 bool Solution::varies(const Expression& e) const
 {
     for (int slot : e.variables()) {

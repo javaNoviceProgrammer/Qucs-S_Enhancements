@@ -1289,8 +1289,11 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request, QStringList *remo
   if (!title.isEmpty()) args.insert(QStringLiteral("title"), title);
   // (Its traces' units on the y axis; a legend for several, the label no
   // longer naming them in their colours.)
-  if (!yLabel.isEmpty()) {
-    args.insert(QStringLiteral("y_axis"), QJsonObject{{QStringLiteral("label"), yLabel}});
+  if (!yLabel.isEmpty() || request.value(QStringLiteral("ylog")).toBool()) {
+    QJsonObject axis;
+    if (!yLabel.isEmpty()) axis.insert(QStringLiteral("label"), yLabel);
+    if (request.value(QStringLiteral("ylog")).toBool()) axis.insert(QStringLiteral("log"), true);
+    args.insert(QStringLiteral("y_axis"), axis);
     if (traces.size() > 1) args.insert(QStringLiteral("legend"), QStringLiteral("top_right"));
   }
   // (Its axis' unit: "k (1/nm)".)

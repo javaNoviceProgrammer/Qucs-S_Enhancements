@@ -25,7 +25,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
+#include <memory>
 
 namespace qucs_s::fem {
 
@@ -237,6 +239,7 @@ public:
             else doStep(step);
             started = started || start;
             if (a_error.isEmpty()) finish(step);
+            if (a_error.isEmpty()) dopantsAfter(step);
             ProcessStepReport report{step.tag, step.name(), a_said, double(clock.nsecsElapsed()) / 1e6, a_warnings};
             out.steps.push_back(report);
             for (const QString& w : a_warnings) out.warnings << tr("%1: %2").arg(step.name(), w);
@@ -319,6 +322,14 @@ private:
         a_minimum = length(a_flow.text(QStringLiteral("minimum")));
         if (!(a_minimum >= 0)) a_minimum = 0;
         a_arc = std::max(1.0, 0.05 * 64);
+        // The dopants' grid: dy near the surfaces, dx across (empty: the
+        // window's 200th, no finer than dy), down to depth below the lowest.
+        a_dopingDy = length(a_flow.text(QStringLiteral("dy")));
+        a_dopingDepth = length(a_flow.text(QStringLiteral("depth")));
+        a_dopingDx = a_flow.text(QStringLiteral("dx")).trimmed().isEmpty() ? 0 : length(a_flow.text(QStringLiteral("dx")));
+        if (!a_error.isEmpty()) return;
+        if (!(a_dopingDy > 0) || !(a_dopingDepth > 0) || a_dopingDx < 0) return fail(tr("its dopants' grid: dy, depth (and dx) must be more than 0"));
+        a_dopants = std::make_unique<Dopants>(a_model, a_ps, a_unitScale, a_k);
         const QString file = a_flow.text(QStringLiteral("file")).trimmed();
         if (file.isEmpty()) {
             const double x0 = length(a_flow.text(QStringLiteral("x0")));
@@ -386,6 +397,7 @@ private:
     ProcessState state() const
     {
         ProcessState s;
+        if (a_dopants && a_dopants->made()) s.dopants = a_dopants->state();
         s.x0 = toGeom(a_x0);
         s.x1 = toGeom(a_x1);
         s.bottom = toGeom(a_bottom);
@@ -499,6 +511,10 @@ private:
         else if (t == QLatin1String("process/strip")) strip(step);
         else if (t == QLatin1String("process/epitaxy")) epitaxy(step);
         else if (t == QLatin1String("process/fill")) fill(step);
+        else if (t == QLatin1String("process/implant")) implant(step);
+        else if (t == QLatin1String("process/diffuse")) diffuse(step);
+        else if (t == QLatin1String("process/oxidize")) oxidize(step);
+        else if (t == QLatin1String("process/intermix")) intermix(step);
         else fail(tr("%1 is not a process step").arg(t));
     }
     QString material(const Node& step)
@@ -858,6 +874,274 @@ private:
                                              masked ? tr(", through %1 openings").arg(open.size()) : QString()));
     }
 
+    // --- Dopants ----------------------------------------------------------
+    void makeDopants()
+    {
+        if (a_dopants->made()) return;
+        const double width = toGeom(a_x1 - a_x0);
+        const double dx = a_dopingDx > 0 ? a_dopingDx : std::max(width / 200, a_dopingDy);
+        a_dopants->make(a_x0, a_x1, a_bottom, a_regions, dx, a_dopingDy, a_dopingDepth);
+    }
+    /// After a step: the dopants' cells as the shapes now are; a region the
+    /// step made doped as it says.
+    void dopantsAfter(const Node& step)
+    {
+        const QString& t = step.type;
+        QStringList w;
+        if (a_dopants->made() && t != QLatin1String("process/oxidize")) a_dopants->reshape(a_regions, &w);
+        for (const QString& x : w) warn(x);
+        auto doped = [&](const QString& region, const QString& species, const QString& text) {
+            if (species.trimmed().isEmpty() || text.trimmed().isEmpty()) return;
+            const double c = concentration(text);
+            if (!a_error.isEmpty()) return;
+            if (!(c > 0)) return fail(tr("%1: its doping must be more than 0").arg(region));
+            if (!ionOf(species)) return fail(tr("%1: %2 is not a dopant known (an element's symbol: B, P, As, Zn...)").arg(region, species));
+            makeDopants();
+            a_dopants->dope(region, a_regions, species, c);
+        };
+        if (t == QLatin1String("process/substrate") || t == QLatin1String("process/deposit") || t == QLatin1String("process/epitaxy"))
+            doped(regionName(step), step.text(QStringLiteral("dopant")), step.text(QStringLiteral("concentration")));
+        else if (t == QLatin1String("process/stack"))
+            for (const QJsonValue& v : step.value(QStringLiteral("layers")).toArray()) {
+                const QJsonArray r = v.toArray();
+                auto cell = [&](int i) { return r.at(i).isDouble() ? formatNumber(r.at(i).toDouble(), 15) : r.at(i).toString().trimmed(); };
+                doped(cell(0), cell(3), cell(4));
+            }
+    }
+    /// A concentration: a plain number in cm⁻³.
+    double concentration(const QString& text)
+    {
+        Expression::Options o;
+        const Expression e = Expression::compile(text, a_ps.scope, o);
+        if (!e.isValid() || !e.isConstant()) {
+            fail(tr("%1: %2").arg(text, e.isValid() ? tr("not a constant") : e.error()));
+            return 0;
+        }
+        return e.dim().isNone() ? e.constant() * 1e6 : e.constant();
+    }
+    /// A value of \a dim: a plain number in \a plain of it (its SI value per
+    /// plain unit).
+    double quantity(const QString& text, const Dim& dim, double plain)
+    {
+        const Expression e = Expression::compile(text, a_ps.scope, Expression::Options());
+        if (!e.isValid() || !e.isConstant()) {
+            fail(tr("%1: %2").arg(text, e.isValid() ? tr("not a constant") : e.error()));
+            return 0;
+        }
+        if (e.dim().isNone()) return e.constant() * plain;
+        if (!(e.dim() == dim)) warn(tr("%1 is in %2, where %3 is expected").arg(text, dimName(e.dim()), dimName(dim)));
+        return e.constant();
+    }
+    double kelvin(const QString& text) { return quantity(text, Dim::temperature(), 1); }
+    double seconds(const QString& text) { return quantity(text, Dim::of(0, 0, 1), 1); }
+    double electronVolts(const QString& text) { return quantity(text, Dim::of(2, 1, -2), 1.602176634e-19) / 1.602176634e-19; }
+    /// A thermal step's recipe: its rows (time, temperature: from 0, each
+    /// time where the temperature is reached), else its temperature for its
+    /// time.
+    Thermal thermal(const Node& step)
+    {
+        Thermal th;
+        const QJsonArray rows = step.value(QStringLiteral("recipe")).toArray();
+        auto cell = [](const QJsonArray& r, int i) { return r.at(i).isDouble() ? formatNumber(r.at(i).toDouble(), 15) : r.at(i).toString().trimmed(); };
+        for (const QJsonValue& v : rows) {
+            const QJsonArray r = v.toArray();
+            if (cell(r, 0).isEmpty() && cell(r, 1).isEmpty()) continue;
+            const double t = seconds(cell(r, 0)), T = kelvin(cell(r, 1));
+            if (!a_error.isEmpty()) return th;
+            if (!th.points.empty() && t < th.points.back().first) {
+                fail(tr("its recipe's times must not go back (%1)").arg(cell(r, 0)));
+                return th;
+            }
+            th.points.emplace_back(t, T);
+        }
+        if (th.points.empty()) {
+            const double T = kelvin(step.text(QStringLiteral("temperature"))), t = seconds(step.text(QStringLiteral("time")));
+            if (!a_error.isEmpty()) return th;
+            th.points = {{0, T}, {t, T}};
+        } else if (th.points.front().first > 0) {
+            th.points.insert(th.points.begin(), {0, th.points.front().second});
+        }
+        if (a_error.isEmpty() && !(th.duration() > 0)) fail(tr("its time must be more than 0"));
+        if (a_error.isEmpty() && !(th.lowest() > 0)) fail(tr("its temperatures must be above 0 K"));
+        return th;
+    }
+    /// The parameters a step's table gives: species, material, parameter,
+    /// value (with its units; a plain number in the parameter's own: D0
+    /// cm²/s, energies eV, concentrations cm⁻³, times s, velocities cm/s).
+    std::vector<Override> overrides(const Node& step)
+    {
+        std::vector<Override> out;
+        auto cell = [](const QJsonArray& r, int i) { return r.at(i).isDouble() ? formatNumber(r.at(i).toDouble(), 15) : r.at(i).toString().trimmed(); };
+        for (const QJsonValue& v : step.value(QStringLiteral("parameters")).toArray()) {
+            const QJsonArray r = v.toArray();
+            Override o{cell(r, 0), cell(r, 1), cell(r, 2), 0};
+            if (o.species.isEmpty() && o.key.isEmpty()) continue;
+            const QString value = cell(r, 3);
+            const QString k = o.key;
+            if (k == QLatin1String("D0") || k == QLatin1String("Dm0") || k == QLatin1String("Dmm0") || k == QLatin1String("Dp0") || k == QLatin1String("Dsq0"))
+                o.value = quantity(value, Dim::of(2, 0, -1), 1e-4);
+            else if (k == QLatin1String("Ea") || k == QLatin1String("Em") || k == QLatin1String("Emm") || k == QLatin1String("Ep") || k == QLatin1String("Esq")
+                     || k == QLatin1String("Ecss") || k == QLatin1String("Etau"))
+                o.value = electronVolts(value);
+            else if (k == QLatin1String("Css0") || k == QLatin1String("Cref")) o.value = quantity(value, Dim::of(-3), 1e6);
+            else if (k == QLatin1String("tau0")) o.value = seconds(value);
+            else if (k == QLatin1String("loss") || k.startsWith(QLatin1String("h:"))) o.value = quantity(value, Dim::of(1, 0, -1), 1e-2);
+            else if (k == QLatin1String("fI") || k.startsWith(QLatin1String("m:"))) o.value = number(value);
+            else {
+                fail(tr("%1 is not a parameter: D0, Ea, Dm0, Em, Dmm0, Emm, Dp0, Ep, Dsq0, Esq, Cref, Css0, Ecss, tau0, Etau, loss, fI, "
+                        "m:<material>, h:<material>")
+                         .arg(k));
+                return out;
+            }
+            if (!a_error.isEmpty()) return out;
+            out.push_back(o);
+        }
+        return out;
+    }
+    void implant(const Node& step)
+    {
+        ImplantSpec s;
+        s.species = step.text(QStringLiteral("species")).trimmed();
+        s.energy = electronVolts(step.text(QStringLiteral("energy")).trimmed().isEmpty() ? QStringLiteral("0") : step.text(QStringLiteral("energy")));
+        // (A plain energy in keV, a plain dose in cm⁻².)
+        if (Expression::compile(step.text(QStringLiteral("energy")), a_ps.scope).dim().isNone()) s.energy *= 1e3;
+        s.dose = quantity(step.text(QStringLiteral("dose")), Dim::of(-2), 1e4);
+        s.tilt = step.text(QStringLiteral("tilt")).trimmed().isEmpty() ? 0 : angle(step.text(QStringLiteral("tilt")));
+        s.gaussian = step.text(QStringLiteral("profile")) == QLatin1String("gaussian");
+        s.plus = number(step.text(QStringLiteral("plus")), 1);
+        s.critical = quantity(step.text(QStringLiteral("amorphize")), Dim::of(-1, 1, -2), 1.602176634e-19 * 1e6) / 1.602176634e-19;
+        auto cell = [](const QJsonArray& r, int i) { return r.at(i).isDouble() ? formatNumber(r.at(i).toDouble(), 15) : r.at(i).toString().trimmed(); };
+        auto opt = [&](const QString& t, bool len) {
+            if (t.isEmpty()) return std::numeric_limits<double>::quiet_NaN();
+            return len ? quantity(t, Dim::length(), 1e-6) : number(t);
+        };
+        for (const QJsonValue& v : step.value(QStringLiteral("moments")).toArray()) {
+            const QJsonArray r = v.toArray();
+            if (cell(r, 0).isEmpty()) continue;
+            s.given.push_back({cell(r, 0), opt(cell(r, 1), true), opt(cell(r, 2), true), opt(cell(r, 3), false), opt(cell(r, 4), false), opt(cell(r, 5), true)});
+        }
+        if (step.text(QStringLiteral("profile")) == QLatin1String("dual"))
+            for (const QJsonValue& v : step.value(QStringLiteral("channel")).toArray()) {
+                const QJsonArray r = v.toArray();
+                if (cell(r, 0).isEmpty()) continue;
+                ImplantSpec::Channel c;
+                c.material = cell(r, 0);
+                c.fraction = number(cell(r, 1));
+                c.Rp = quantity(cell(r, 2), Dim::length(), 1e-6);
+                c.dRp = quantity(cell(r, 3), Dim::length(), 1e-6);
+                c.gamma = cell(r, 4).isEmpty() ? 0 : number(cell(r, 4));
+                c.beta = cell(r, 5).isEmpty() ? 3 : number(cell(r, 5));
+                if (!(c.fraction >= 0 && c.fraction <= 1) || !(c.Rp > 0) || !(c.dRp > 0)) return fail(tr("%1: a channelled part's fraction (0 to 1), Rp and ΔRp").arg(c.material));
+                s.channel.push_back(c);
+            }
+        bool masked = false;
+        const auto open = maskOpenings(step, &masked);
+        const double resistThickness = step.text(QStringLiteral("resist")).trimmed().isEmpty() ? 1e-6 / a_unitScale : length(step.text(QStringLiteral("resist")));
+        if (!a_error.isEmpty()) return;
+        const Paths mask = masked ? resist(open, resistThickness, solids()) : Paths();
+        makeDopants();
+        a_dopants->refine(a_regions);
+        QString why;
+        QStringList w;
+        const QString said = a_dopants->implant(s, a_regions, mask, &w, &why);
+        for (const QString& x : w) warn(x);
+        if (!why.isEmpty()) return fail(why);
+        say(said + (masked ? tr(" (through %1 openings, %2 of resist)").arg(open.size()).arg(lengthText(resistThickness)) : QString()));
+    }
+    AnnealSpec annealOf(const Node& step)
+    {
+        AnnealSpec s;
+        s.thermal = thermal(step);
+        s.model = step.text(QStringLiteral("model"));
+        if (s.model.isEmpty()) s.model = QStringLiteral("fermi");
+        s.source = step.text(QStringLiteral("source")).trimmed();
+        if (!s.source.isEmpty()) {
+            if (!ionOf(s.source)) fail(tr("its source, %1, is not a dopant known").arg(s.source));
+            s.surface = concentration(step.text(QStringLiteral("surface")));
+            if (a_error.isEmpty() && !(s.surface > 0)) fail(tr("its source's surface concentration must be more than 0"));
+        }
+        s.overrides = overrides(step);
+        if (s.model == QLatin1String("defects")) {
+            s.clusterLife = seconds(step.text(QStringLiteral("clusterlife")));
+            s.clusterLifeT = kelvin(step.text(QStringLiteral("clustertemperature")));
+            s.clusterE = electronVolts(step.text(QStringLiteral("clusterenergy")));
+            if (a_error.isEmpty() && (!(s.clusterLife > 0) || !(s.clusterLifeT > 0))) fail(tr("its clusters' lifetime and its temperature must be more than 0"));
+        }
+        return s;
+    }
+    void diffuse(const Node& step)
+    {
+        const AnnealSpec s = annealOf(step);
+        if (!a_error.isEmpty()) return;
+        makeDopants();
+        a_dopants->refine(a_regions);
+        QString why;
+        QStringList w;
+        const QString said = a_dopants->anneal(s, a_regions, &w, &why);
+        for (const QString& x : w) warn(x);
+        if (!why.isEmpty()) return fail(why);
+        say(said);
+    }
+    void oxidize(const Node& step)
+    {
+        OxideSpec s;
+        s.dopants = annealOf(step);
+        s.thermal = s.dopants.thermal;
+        s.wet = step.text(QStringLiteral("ambient")) == QLatin1String("wet");
+        s.model = step.text(QStringLiteral("rates"));
+        if (s.model.isEmpty()) s.model = QStringLiteral("massoud");
+        s.orientation = a_orientation.isEmpty() ? QStringLiteral("100") : a_orientation;
+        s.pressure = step.text(QStringLiteral("pressure")).trimmed().isEmpty() ? 1 : quantity(step.text(QStringLiteral("pressure")), Dim::of(-1, 1, -2), 101325) / 101325;
+        s.factor = number(step.text(QStringLiteral("factor")), 1);
+        s.beak = step.text(QStringLiteral("beak")).trimmed().isEmpty() ? -1 : length(step.text(QStringLiteral("beak")));
+        s.material = step.text(QStringLiteral("material")).trimmed().isEmpty() ? QStringLiteral("Silicon dioxide") : step.text(QStringLiteral("material")).trimmed();
+        s.name = regionName(step);
+        if (!step.text(QStringLiteral("B")).trimmed().isEmpty() || !step.text(QStringLiteral("BA")).trimmed().isEmpty()) {
+            s.givenB = quantity(step.text(QStringLiteral("B")), Dim::of(2, 0, -1), 1e-12 / 3600);
+            s.givenBA = quantity(step.text(QStringLiteral("BA")), Dim::of(1, 0, -1), 1e-6 / 3600);
+            if (a_error.isEmpty() && (!(*s.givenB > 0) || !(*s.givenBA > 0))) fail(tr("its rates B and B/A, given, must both be more than 0"));
+        }
+        s.open = maskOpenings(step, &s.masked);
+        if (!(s.pressure > 0) || !(s.factor > 0)) fail(tr("its pressure and factor must be more than 0"));
+        if (!a_error.isEmpty()) return;
+        makeDopants();
+        a_dopants->refine(a_regions);
+        QString why;
+        QStringList w;
+        const QString said = a_dopants->oxidize(s, a_regions, a_x0, a_x1, a_bottom, &w, &why);
+        for (const QString& x : w) warn(x);
+        if (!why.isEmpty()) return fail(why);
+        say(said);
+    }
+    void intermix(const Node& step)
+    {
+        IntermixSpec s;
+        s.thermal = thermal(step);
+        const double Tref = kelvin(step.text(QStringLiteral("tref")));
+        const double DIII = quantity(step.text(QStringLiteral("diii")), Dim::of(2, 0, -1), 1e-4), EIII = electronVolts(step.text(QStringLiteral("eiii")));
+        const double DV = quantity(step.text(QStringLiteral("dv")), Dim::of(2, 0, -1), 1e-4), EV = electronVolts(step.text(QStringLiteral("ev")));
+        if (!a_error.isEmpty()) return;
+        if (!(Tref > 0) || !(DIII >= 0) || !(DV >= 0)) return fail(tr("its interdiffusion's D and reference temperature"));
+        // D at Tref, its activation energy: D0 = D(Tref) e^(Ea/kTref).
+        constexpr double kB = 8.617333262e-5;
+        s.D0III = DIII * std::exp(EIII / (kB * Tref));
+        s.EIII = EIII;
+        s.D0V = DV * std::exp(EV / (kB * Tref));
+        s.EV = EV;
+        s.open = maskOpenings(step, &s.masked);
+        s.enhance = number(step.text(QStringLiteral("enhance")), 1);
+        if (!a_error.isEmpty()) return;
+        if (!(s.enhance > 0)) return fail(tr("its enhancement must be more than 0"));
+        makeDopants();
+        a_dopants->refine(a_regions);
+        QString why;
+        QStringList w;
+        const QString said = a_dopants->intermix(s, a_regions, &w, &why);
+        for (const QString& x : w) warn(x);
+        if (!why.isEmpty()) return fail(why);
+        say(said);
+    }
+
     /// After a step: each region on the grid, cleaned, rid of slivers - a
     /// piece thinner than the minimum everywhere -, regions of one name and
     /// material one, the empty gone.
@@ -919,6 +1203,9 @@ private:
     QPointF a_cutA, a_cutB;
     double a_um = 1, a_shift = 0;
     LayoutShapes a_shapes;
+    // The dopants, on their grid.
+    std::unique_ptr<Dopants> a_dopants;
+    double a_dopingDx = 0, a_dopingDy = 0, a_dopingDepth = 0;
 };
 
 } // namespace

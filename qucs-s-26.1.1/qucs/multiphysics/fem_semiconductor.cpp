@@ -1364,6 +1364,25 @@ bool SemiconductorProblem::setup(QString* error)
         double N0 = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0, sigma = 0;
         // An implant: its dose, range, spreads (annealed), surface and window.
         double dose = 0, Rp = 0, sd = 0, sl = 0, ys = 0, w1 = -Inf, w2 = Inf;
+        // From a process flow: its dopants' grid, each domain's material
+        // there (the grid's at a point inside it); its species those listed.
+        std::shared_ptr<const ProcessDopants> flow;
+        std::vector<int> flowMaterial;
+        QStringList flowSpecies;
+        if (profile == QLatin1String("process")) {
+            if (!topo.process || !topo.process->dopants) {
+                problem(tr("%1: its doping is from the process flow, but the geometry has no flow with dopants (an implant, a doped "
+                           "substrate, a source...)")
+                            .arg(df.name()));
+                continue;
+            }
+            flow = topo.process->dopants;
+            for (const Topology::Domain& dom : topo.domains) flowMaterial.push_back(flow->materialAt(dom.inside.x(), dom.inside.y()));
+            for (const QString& sp : df.text(QStringLiteral("species")).split(QLatin1Char(','), Qt::SkipEmptyParts))
+                flowSpecies << (sp.trimmed().compare(QLatin1String("BF2"), Qt::CaseInsensitive) == 0 ? QStringLiteral("B") : sp.trimmed());
+            for (const QString& sp : flowSpecies)
+                if (!flow->field(sp)) problem(tr("%1: the flow has no %2").arg(df.name(), sp));
+        }
         if (profile == QLatin1String("expression")) N = compile(df.text(QStringLiteral("N")), df, QStringLiteral("N"));
         else if (profile == QLatin1String("implant")) {
             auto length = [&](const QString& text) {
@@ -1430,6 +1449,31 @@ bool SemiconductorProblem::setup(QString* error)
                 }
             }
             if (!where || !(all > 0)) continue;
+            if (flow) {
+                // Each selected domain's share of the node: its material's
+                // dopants there, donors and acceptors as that host has them.
+                const QPointF p = sp.point(i) / topo.unitScale;
+                double nd = 0, na = 0;
+                for (const Share& sh : shares[std::size_t(i)]) {
+                    if (!on[std::size_t(sh.domain)]) continue;
+                    const int m = flowMaterial[std::size_t(sh.domain)];
+                    if (m < 0) continue;
+                    double dn = 0, ac = 0;
+                    if (flowSpecies.isEmpty()) flow->carriers(p.x(), p.y(), m, &dn, &ac);
+                    else
+                        for (const QString& name : flowSpecies)
+                            if (const ProcessDopants::Field* f = flow->field(name)) {
+                                const double v = flow->at(*f, p.x(), p.y(), m, true);
+                                const int q = dopantCharge(name, flow->hosts[std::size_t(m)]);
+                                if (v > 0 && q != 0) (q > 0 ? dn : ac) += v;
+                            }
+                    nd += sh.area * dn;
+                    na += sh.area * ac;
+                }
+                a_Nd[std::size_t(i)] += nd / all;
+                a_Na[std::size_t(i)] += na / all;
+                continue;
+            }
             const double frac = inside / all;
             double v = 0;
             if (profile == QLatin1String("expression")) {

@@ -135,8 +135,13 @@ qucs_add_fem_test(test_fem_modulator)
 qucs_add_fem_test(test_fem_resonator)
 qucs_add_fem_test(test_fem_laser)
 qucs_add_fem_test(test_fem_process)
-# (It writes a layout with gdstk, a mask's layer to read.)
+# (It writes a layout with gdstk, a mask's layer to read; it reads the
+# flow's insides - Clipper's polygons, the ions' moments.)
 target_link_libraries(test_fem_process gdstk)
+target_include_directories(test_fem_process SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/third_party/gdstk/external)
+# (Sanitized here some 400 s - anneals on fine grids, two phase shifters'
+# semiconductors -: CI's Debug some 2.5 times that.)
+set_tests_properties(test_fem_process PROPERTIES TIMEOUT 1800)
 # (Sanitized here some 800 s - the toy laser walked to 1.6 V, its threshold's
 # cases, a reverse bias -: CI's Debug 2 to 2.5 times that, near 900 times its
 # scale.)

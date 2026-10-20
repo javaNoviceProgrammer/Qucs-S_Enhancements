@@ -123,6 +123,9 @@ struct Topology {
     };
     std::vector<Point> points;
     std::vector<Curve> curves;
+    /// The process flow's state it was built from (its dopants, its
+    /// composition), or null.
+    std::shared_ptr<const ProcessState> process;
     QStringList objectNames;          ///< the objects, in the order made (later overrides)
     std::vector<GObject> objects;
     QRectF bounds;
