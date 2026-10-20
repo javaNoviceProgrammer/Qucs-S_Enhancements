@@ -38,6 +38,7 @@
 #include "misc.h"
 #include "osdiselection.h"
 #include "module.h"
+#include "multiphysicsdoc.h"
 #include "node.h"
 #include "oppoint.h"
 #include "projectView.h"
@@ -3622,21 +3623,67 @@ QString QucsControl::datasetPath(const QJsonObject& args, QString* error) const
     return QString();
 }
 
+namespace {
+// Whether \a sch - a schematic, or a data display - names \a file its dataset.
+bool namesDataset(Schematic* sch, const QString& file)
+{
+    if (sch == nullptr || sch->getDocName().isEmpty()) return false;
+    for (int sim : {int(spicecompat::simNgspice), int(spicecompat::simXyce), int(spicecompat::simSpiceOpus), int(spicecompat::simQucsator)})
+        if (sameFile(datasetFile(sch->getDocName(), sch->getDataSet(), sim), file)) return true;
+    return false;
+}
+
+bool isDisplay(const Schematic* sch)
+{
+    return sch != nullptr && sch->getDocName().endsWith(QLatin1String(".dpl"), Qt::CaseInsensitive);
+}
+} // namespace
+
 Schematic* QucsControl::schematicOfDataset(const QString& file, const QJsonObject& args) const
 {
     // The document asked for, when it is the one whose dataset this is;
     // else an open schematic that writes this dataset.
     QString ignored;
-    const auto writes = [&file](Schematic* sch) {
-        if (sch == nullptr || sch->getDocName().isEmpty()) return false;
-        for (int sim : {int(spicecompat::simNgspice), int(spicecompat::simXyce), int(spicecompat::simSpiceOpus), int(spicecompat::simQucsator)})
-            if (sameFile(datasetFile(sch->getDocName(), sch->getDataSet(), sim), file)) return true;
-        return false;
-    };
-    if (auto* sch = dynamic_cast<Schematic*>(document(args, &ignored)); writes(sch)) return sch;
+    if (auto* sch = dynamic_cast<Schematic*>(document(args, &ignored)); namesDataset(sch, file)) return sch;
     for (QucsDoc* doc : a_app->allDocuments())
-        if (auto* sch = dynamic_cast<Schematic*>(doc); writes(sch)) return sch;
+        if (auto* sch = dynamic_cast<Schematic*>(doc); namesDataset(sch, file)) return sch;
     return nullptr;
+}
+
+QString QucsControl::modelStaleness(const QString& file, const QString& model) const
+{
+    // A 1D plot group's, model_tag.dat: stale when the model, open, changed
+    // since that group's study was solved, or was solved again after it was
+    // written; not open, saved after it.
+    const QFileInfo info(file);
+    const QDateTime written = info.lastModified();
+    const QString when = written.toString(QStringLiteral("HH:mm:ss")), title = QFileInfo(model).fileName();
+    MultiphysicsDoc* doc = nullptr;
+    for (QucsDoc* d : a_app->allDocuments())
+        if (auto* m = dynamic_cast<MultiphysicsDoc*>(d); m != nullptr && !m->getDocName().isEmpty() && sameFile(m->getDocName(), model)) doc = m;
+    if (doc == nullptr) {
+        const QDateTime saved = QFileInfo(model).lastModified();
+        if (saved.isValid() && saved > written)
+            return tr("%1 was saved at %2, after this dataset was written (%3): if the model changed, the dataset is not of the model as it "
+                      "is - fem_solve and fem_plot write it anew.")
+                .arg(title, saved.toString(QStringLiteral("HH:mm:ss")), when);
+        return {};
+    }
+    const QString stem = QFileInfo(model).completeBaseName() + QLatin1Char('_');
+    const QString base = info.fileName().section(QStringLiteral(".dat"), 0, 0);
+    const qucs_s::fem::Node* group = base.startsWith(stem) ? doc->model().find(base.mid(stem.size())) : nullptr;
+    if (group == nullptr) return {};
+    const QString study = group->text(QStringLiteral("study"));
+    const qucs_s::fem::Node* st = doc->model().find(doc->studyTag(study));
+    const QString studyName = st != nullptr ? st->name() : doc->studyTag(study);
+    if (doc->solutionStale(study))
+        return tr("%1 changed since %2 was solved: this dataset (written at %3) is of the model as it was - fem_solve, then fem_plot %4, "
+                  "writes it anew.")
+            .arg(title, studyName, when, group->tag);
+    if (const QDateTime at = doc->solvedAt(study); at.isValid() && at > written)
+        return tr("%1's %2 was solved again at %3, after this dataset was written (%4): fem_plot %5 writes it of that solution.")
+            .arg(title, studyName, at.toString(QStringLiteral("HH:mm:ss")), when, group->tag);
+    return {};
 }
 
 QList<Schematic*> QucsControl::showingDataOf(Schematic* sch) const
@@ -3916,9 +3963,25 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
     if (args.value(QLatin1String("decibels")).isBool()) o.decibels = args.value(QLatin1String("decibels")).toBool();
 
     Schematic* sch = schematicOfDataset(file, args);
-    if (sch != nullptr) {
+    // Stale: a simulation's dataset by its circuit - a data display's own
+    // edits (its diagrams, markers) leave it as it was: the circuit's
+    // schematic's, when one is open, else nothing told (a .dpl written by
+    // the plot that wrote its dataset was "edited after" it: the check of
+    // 31ba73b, 2) -; a multiphysics model's by the model; an imported one's
+    // never.
+    {
         bool certain = false;
-        if (const QString stale = staleness(sch, file, &certain); !stale.isEmpty()) {
+        QString stale;
+        if (di::Origin origin; di::originOf(file, &origin)) {
+            if (origin.source.endsWith(QLatin1String(".qfem"), Qt::CaseInsensitive)) stale = modelStaleness(file, origin.source);
+        } else if (sch != nullptr) {
+            Schematic* circuit = isDisplay(sch) ? nullptr : sch;
+            for (QucsDoc* doc : a_app->allDocuments())
+                if (auto* other = dynamic_cast<Schematic*>(doc); circuit == nullptr && other != nullptr && !isDisplay(other) && namesDataset(other, file))
+                    circuit = other;
+            if (circuit != nullptr) stale = staleness(circuit, file, &certain);
+        }
+        if (!stale.isEmpty()) {
             result.insert(QStringLiteral("stale"), stale);
             result.insert(QStringLiteral("stale certain"), certain);
         }

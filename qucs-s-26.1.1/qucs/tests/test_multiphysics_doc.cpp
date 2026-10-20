@@ -1426,6 +1426,164 @@ private slots:
         QVERIFY(json(r).value("format").toString().contains("Magnetic fields"));
     }
 
+    // A Derived Values node's values through fem_evaluate - its tag (each
+    // value), tag.name (one), at each frequency with 'all', named as asked
+    // among other expressions (they were "not a parameter, a variable or a
+    // function here": the check of 31ba73b, 1) -; and a 1D plot group's
+    // dataset not stale as it is written (its display, written by the same
+    // plot, "edited after" it: 2), stale once the model changes or is
+    // solved again.
+    void derivedValuesEvaluatedAndTheirDataset()
+    {
+        open(coaxCopy());
+        QJsonObject r = call("fem_solve", {{"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_evaluate", {{"expression", "lp1.R"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonArray values = json(r).value("values").toArray();
+        QCOMPARE(values.size(), 1);
+        QCOMPARE(values.at(0).toObject().value("name").toString(), QStringLiteral("lp1.R"));
+        const double R = values.at(0).toObject().value("SI").toDouble();
+        QVERIFY2(values.at(0).toObject().value("value").toString().endsWith(QStringLiteral("Ω/m")), qPrintable(text(r)));
+        r = call("fem_evaluate", {{"expression", "lp1.R"}, {"all", true}});
+        values = json(r).value("values").toArray();
+        QCOMPARE(int(values.size()), coaxFrequencies());
+        QVERIFY2(values.at(0).toObject().value("name").toString().endsWith(QLatin1String(": lp1.R")), qPrintable(text(r)));
+        // (The last frequency's the one alone gave.)
+        QCOMPARE(values.last().toObject().value("SI").toDouble(), R);
+        r = call("fem_evaluate", {{"expression", "lp1"}, {"frequency", "100[kHz]"}});
+        QStringList names;
+        for (const QJsonValue& v : json(r).value("values").toArray()) names << v.toObject().value("name").toString();
+        QVERIFY2(names.size() > 5 && names.contains(QStringLiteral("lp1.Z0")) && names.contains(QStringLiteral("lp1.L")), qPrintable(text(r)));
+        r = call("fem_evaluate", {{"expression", "z = lp1.Z0; es.C11"}});
+        names.clear();
+        for (const QJsonValue& v : json(r).value("values").toArray()) names << v.toObject().value("name").toString();
+        QCOMPARE(names, (QStringList{QStringLiteral("z"), QStringLiteral("es.C11")}));
+        r = call("fem_evaluate", {{"expression", "lp1.nothing"}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains(QLatin1String("has no value nothing: it has")) && text(r).contains(QLatin1String("Z0")), qPrintable(text(r)));
+
+        r = call("fem_plot", {{"plot", tagOf(open(path("coax_rlgc.qfem"))->model(), "plotgroup1d", "Resistance per metre")}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString dat = json(r).value("dataset").toString();
+        QVERIFY2(dat.endsWith(QLatin1String(".dat")), qPrintable(text(r)));
+        r = call("get_dataset", {{"path", json(r).value("display").toString()}});
+        QVERIFY2(!failed(r) && !json(r).contains("stale"), qPrintable(text(r)));
+        r = call("fem_edit", {{"path", "coax_rlgc.qfem"}, {"action", "parameters"},
+                              {"parameters", QJsonArray{QJsonObject{{"name", "a"}, {"expression", "0.6[mm]"}}, QJsonObject{{"name", "b"}, {"expression", "1.75[mm]"}},
+                                                        QJsonObject{{"name", "c"}, {"expression", "2[mm]"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("get_dataset", {{"path", dat}});
+        QVERIFY2(json(r).value("stale").toString().contains(QLatin1String("coax_rlgc.qfem changed since")), qPrintable(text(r)));
+        r = call("fem_solve", {{"timeout", 300}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("get_dataset", {{"path", dat}});
+        QVERIFY2(json(r).value("stale").toString().contains(QLatin1String("was solved again at")), qPrintable(text(r)));
+    }
+
+    // The model panel through Claude's tools, as the reviewer drove it (the
+    // check of 31ba73b's addendum): a tree's row by get_ui's number - which
+    // chose another, the shown rows' -, by a path from any row; a field set
+    // is done with (it kept its old text); a field's Ctrl+A the field's, not
+    // the window's Select All; the list a name and a dot open read in
+    // send_input's answer, get_ui (area list) and a screenshot, its keys -
+    // send_input's into it, set_ui taking a row - and the field's after it.
+    void thePanelThroughTheTools()
+    {
+        MultiphysicsDoc* doc = open(coaxCopy());
+        QVERIFY(doc != nullptr);
+        const QString area = QStringLiteral("dock:Multiphysics");
+        auto controls = [&] {
+            QMap<QString, QJsonObject> out;
+            for (const QJsonValue& v : json(call("get_ui", {{"area", area}})).value("controls").toArray()) out.insert(v.toObject().value("label").toString(), v.toObject());
+            return out;
+        };
+        QJsonArray rows = controls().value(QStringLiteral("mpTree")).value("rows").toArray();
+        int row = -1;
+        for (int i = 0, group = -1; i < rows.size() && row < 0; ++i) {
+            const QString name = rows.at(i).toArray().at(0).toString();
+            if (name == QLatin1String("Electric Field")) group = i;
+            if (group >= 0 && name == QLatin1String("Surface")) row = i;
+        }
+        QVERIFY2(row > 0, qPrintable(QJsonDocument(rows).toJson()));
+        QJsonObject r = call("set_ui", {{"area", area}, {"set", QJsonArray{QJsonObject{{"control", "mpTree"}, {"value", row}}}}});
+        QVERIFY2(text(r).contains(QLatin1String("> Results > Electric Field > Surface")), qPrintable(text(r)));
+        QCOMPARE(controls().value(QStringLiteral("Expression")).value("value").toString(), QStringLiteral("es.normE"));
+        r = call("set_ui", {{"area", area}, {"set", QJsonArray{QJsonObject{{"control", "mpTree"}, {"value", "Results > Current Density > Surface"}}}}});
+        QVERIFY2(text(r).contains(QLatin1String("Current Density > Surface")), qPrintable(text(r)));
+        QCOMPARE(controls().value(QStringLiteral("Expression")).value("value").toString(), QStringLiteral("mf.normJ"));
+        r = call("set_ui", {{"area", area}, {"set", QJsonArray{QJsonObject{{"control", "mpTree"}, {"value", "Electric Field > Surface"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("set_ui", {{"area", area}, {"set", QJsonArray{QJsonObject{{"control", "Expression"}, {"value", "es.normE*2"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QString expression;
+        for (const qucs_s::fem::Node& g : doc->model().results().children)
+            if (g.name() == QLatin1String("Electric Field"))
+                for (const qucs_s::fem::Node& p : g.children)
+                    if (p.type == QLatin1String("surface")) expression = p.text(QStringLiteral("expression"));
+        QCOMPARE(expression, QStringLiteral("es.normE*2"));
+
+        // (A window's Select All of Ctrl+A, live wherever the focus is.)
+        auto* window = new QAction(app);
+        window->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_A));
+        window->setShortcutContext(Qt::ApplicationShortcut);
+        app->addAction(window);
+        int fired = 0;
+        connect(window, &QAction::triggered, this, [&fired] { ++fired; });
+        const QJsonArray at = controls().value(QStringLiteral("Expression")).value("at").toArray();
+        const QJsonArray click{at.at(0).toInt() + at.at(2).toInt() / 2, at.at(1).toInt() + at.at(3).toInt() / 2};
+        // (Another window in front, the user's: the keys reach the panel's
+        // field all the same - a completer closes its list at a key while
+        // its field has not the focus, as in a window not active.)
+        auto* elsewhere = new QWidget;
+        elsewhere->resize(200, 100);
+        elsewhere->show();
+        elsewhere->activateWindow();
+        QTRY_VERIFY(QApplication::activeWindow() == elsewhere);
+        r = call("send_input", {{"target", area}, {"click", click}, {"keys", "Ctrl+A"}, {"text", "3*es."}});
+        delete window;
+        QCOMPARE(fired, 0);
+        // (Its answer's first text: then the picture's.)
+        const auto answer = [](const QJsonObject& reply) {
+            for (const QJsonValue& c : reply.value("content").toArray())
+                if (c.toObject().value("type").toString() == QLatin1String("text"))
+                    return QJsonDocument::fromJson(c.toObject().value("text").toString().toUtf8()).object();
+            return QJsonObject();
+        };
+        QJsonObject said = answer(r);
+        QVERIFY2(said.value("given").toString().contains(QLatin1String(": the field's")), qPrintable(text(r)));
+        QJsonObject list = said.value("list").toObject();
+        QCOMPARE(list.value("of").toString(), QStringLiteral("Expression"));
+        QCOMPARE(list.value("text").toString(), QStringLiteral("3*es."));
+        QStringList offered;
+        for (const QJsonValue& v : list.value("rows").toArray()) offered << v.toArray().at(0).toString();
+        QVERIFY2(offered.size() > 3 && offered.contains(QStringLiteral("es.normE")), qPrintable(offered.join(", ")));
+        r = call("get_ui", {{"area", "list"}});
+        QVERIFY2(!failed(r) && json(r).value("chosen").toInt() == 0, qPrintable(text(r)));
+        r = call("send_input", {{"target", area}, {"keys", "Down, Return"}});
+        QVERIFY2(answer(r).value("given").toString().count(QLatin1String("in the list")) == 2, qPrintable(text(r)));
+        QCOMPARE(controls().value(QStringLiteral("Expression")).value("value").toString(), QStringLiteral("3*") + offered.at(1));
+        // (The list gone, the keyboard's next key the field's.)
+        QCOMPARE(QApplication::focusWidget(), panel()->editorFor(QStringLiteral("expression")));
+        // (The other window in front again: a letter after the dot goes
+        // from the list on to the field, which keeps the list open.)
+        elsewhere->activateWindow();
+        QTRY_VERIFY(QApplication::activeWindow() == elsewhere);
+        r = call("send_input", {{"target", area}, {"text", "+es.n"}});
+        list = answer(r).value("list").toObject();
+        QVERIFY2(list.value("text").toString() == QStringLiteral("3*") + offered.at(1) + QStringLiteral("+es.n"), qPrintable(text(r)));
+        for (const QJsonValue& v : list.value("rows").toArray()) QVERIFY2(v.toArray().at(0).toString().startsWith(QLatin1String("es.n")), qPrintable(text(r)));
+        r = call("screenshot", {{"area", "window"}});
+        QVERIFY2(text(r).contains(QLatin1String("the list open below Expression")), qPrintable(text(r)));
+        r = call("set_ui", {{"area", "list"}, {"set", QJsonArray{QJsonObject{{"control", "row"}, {"value", "normE"}}}}});
+        QVERIFY2(json(r).value("took").toString() == QLatin1String("es.normE")
+                     && json(r).value("text").toString() == QStringLiteral("3*") + offered.at(1) + QStringLiteral("+es.normE"),
+                 qPrintable(text(r)));
+        QVERIFY(failed(call("get_ui", {{"area", "list"}})));
+        QTRY_COMPARE(QApplication::focusWidget(), panel()->editorFor(QStringLiteral("expression")));
+        delete elsewhere;
+    }
+
     // A guide's modes at two frequencies: each in the box, the plot group's
     // mode and frequency; its default plots; the modes as a dataset.
     void aWaveguidesModes()

@@ -742,6 +742,9 @@ private slots:
         QCOMPARE(rows[0].split(QLatin1Char(' ')).size(), 9);
         QCOMPARE(rows[1].trimmed().split(QLatin1Char(' ')).size(), 8);
         QVERIFY(touchstoneCoupled(sweep, 0.01, 50, true).contains(QStringLiteral("ports d1 d2 c1 c2")));
+        // (Its option line's R 50 the single-ended reference of the modes'
+        // 100 and 25 Ω, said: the check of 31ba73b, 1.)
+        QVERIFY(touchstoneCoupled(sweep, 0.01, 50, true).contains(QStringLiteral("The option line's R 50 is the single-ended reference")));
         const QString cir = spiceCoupled(top, 0.01, QStringLiteral("pair"), 3);
         QVERIFY(cir.contains(QStringLiteral(".subckt pair in_1 in_2 out_1 out_2 ref\n")));
         QCOMPARE(cir.count(QRegularExpression(QStringLiteral("^K\\d_1_2 L\\d_1 L\\d_2 0\\.\\d+"), QRegularExpression::MultilineOption)), 3);

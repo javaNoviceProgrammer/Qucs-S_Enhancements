@@ -21,9 +21,11 @@
 #include "qucs.h"
 #include "schematic.h"
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
+#include <QCompleter>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -327,6 +329,7 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         QElapsedTimer clock, since;
         QPointer<QWidget> dialogBefore;
         QPointer<QWidget> clicked;   // what the click focused: the keys go there
+        QStringList keys;            // what each key did, as given
     };
     auto run = std::make_shared<Run>();
     run->clock.start();
@@ -373,46 +376,116 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
             }
         });
     QPointer<Schematic> canvas = sch;
-    QTimer::singleShot(0, a_app, [this, run, pressed, typed, root, canvas] {
+    // (Keys want their window active, as a user's typing has it: a field of
+    // one not active has not Qt's focus - a list it opens below closes at
+    // the first key; offscreen none is once a list has closed.)
+    QPointer<QWidget> activating;
+    if ((!pressed.isEmpty() || !typed.isEmpty()) && root && !intoDialog && openList() == nullptr)
+        if (QWidget* window = root->window(); window != nullptr && QApplication::activeWindow() != window) {
+            window->activateWindow();
+            activating = window;
+        }
+    const auto give = [this, run, pressed, typed, root, canvas] {
         const QtFileDialogs qt;
         // (Not into a dialog the click opened: the keys were for here.)
         if (QWidget* d = openDialog(); d != nullptr && d != run->dialogBefore && (!pressed.isEmpty() || !typed.isEmpty())) {
             run->keysSkipped = true;
         } else {
             // What has the focus there takes the keys (the canvas: the
-            // schematic; a panel: its field).
-            const auto focused = [root, canvas, run]() -> QWidget* {
+            // schematic; a panel: its field) - a list open below a field
+            // (names offered as typed: a popup with the keyboard) before it,
+            // as a keyboard's keys go to it: Return takes a name, an arrow
+            // moves, a letter goes on to the field.
+            const auto focused = [this, root, canvas, run]() -> QWidget* {
+                if (QWidget* list = openList()) return list;
                 if (run->clicked) return run->clicked;
                 QWidget* f = QApplication::focusWidget();
+                // (A window not active - a list it opened gone, offscreen -
+                // has Qt's focus with none: the field the window keeps it on.)
+                if (f == nullptr && root) f = root->window()->focusWidget();
                 if (canvas) return f != nullptr && canvas->isAncestorOf(f) ? f : static_cast<QWidget*>(canvas.data());
                 return f != nullptr && root && (f == root || root->isAncestorOf(f)) ? f : root.data();
             };
+            // (A key into the list: the field it is of keeps the focus when
+            // it closes, as the keyboard's - its window active again: a
+            // popup's going leaves none offscreen, and Qt's focus with no
+            // widget.)
+            const auto press = [this, run](QWidget* w, QKeyCombination key, const QString& text) {
+                QCompleter* completer = nullptr;
+                QPointer<QWidget> field = openList(&completer) == w && completer != nullptr ? completer->widget() : nullptr;
+                keyPress(w, key, text);
+                if (field && openList() == nullptr) {
+                    if (QApplication::focusWidget() != field) {
+                        if (QApplication::activeWindow() != field->window()) field->activateWindow();
+                        field->setFocus(Qt::PopupFocusReason);
+                    }
+                    run->clicked = field;
+                }
+            };
             for (const Key& k : pressed) {
-                if (k.action) k.action->trigger();
-                else if (k.shortcut) emit k.shortcut->activated();
-                else if (QWidget* w = focused()) keyPress(w, k.combination, keyText(k.combination));
+                // A key is the field's first when it claims it (a field's
+                // Ctrl+A selects its text, not the window's all), as the
+                // keyboard offers it - not a list's, whose keys are its own.
+                QWidget* w = focused();
+                bool claimed = w != nullptr && openList() != nullptr;
+                if (w != nullptr && !claimed && (k.action || k.shortcut)) {
+                    QKeyEvent over(QEvent::ShortcutOverride, int(k.combination.key()), k.combination.keyboardModifiers(), keyText(k.combination));
+                    over.ignore();
+                    QApplication::sendEvent(w, &over);
+                    claimed = over.isAccepted();
+                }
+                if (claimed || (!k.action && !k.shortcut)) {
+                    const bool toList = w != nullptr && w == openList();
+                    if (w != nullptr) press(w, k.combination, keyText(k.combination));
+                    run->keys << (toList ? tr("%1: in the list").arg(k.name) : claimed ? tr("%1: the field's").arg(k.name) : tr("%1: pressed").arg(k.name));
+                } else if (k.action) {
+                    k.action->trigger();
+                    run->keys << tr("%1: %2").arg(k.name, named(k.action->text()));
+                } else {
+                    emit k.shortcut->activated();
+                    run->keys << tr("%1: pressed").arg(k.name);
+                }
             }
             for (const QChar c : typed)
-                if (QWidget* w = focused()) keyPress(w, QKeyCombination(Qt::Key(c.toUpper().unicode())), QString(c));
+                if (QWidget* w = focused()) press(w, QKeyCombination(Qt::Key(c.toUpper().unicode())), QString(c));
         }
         run->given = true;
         run->since.start();
-    });
+    };
+    // (Given as the window is active - its activation is an event to come
+    // -, or half a second on without it.)
+    if (activating) {
+        auto* wait = new QTimer(a_app);
+        wait->setInterval(10);
+        QElapsedTimer asked;
+        asked.start();
+        connect(wait, &QTimer::timeout, a_app, [wait, activating, asked, give] {
+            if (activating && QApplication::activeWindow() != activating && asked.elapsed() < 500) return;
+            wait->stop();
+            wait->deleteLater();
+            give();
+        });
+        wait->start();
+    } else {
+        QTimer::singleShot(0, a_app, give);
+    }
 
     // Answered: what it opened, or a moment after it was all given - with a
     // picture of it.
     auto* watch = new QTimer(this);
     watch->setInterval(50);
-    const QString report = QStringLiteral("%1%2%3")
-                               .arg(hasClick ? tr("%1%2 %3 at %4, %5%6")
-                                                   .arg(doubleClick ? tr("double ") : QString(), buttonName, tr("click"))
-                                                   .arg(click.x()).arg(click.y())
-                                                   .arg(drag ? tr(", dragged to %1, %2").arg(dragTo.x()).arg(dragTo.y()) : QString())
-                                             : QString(),
-                                    sets.isEmpty() ? QString() : (hasClick ? QStringLiteral("; ") : QString()) + tr("keys %1").arg(sets.join(QStringLiteral(", "))),
-                                    typed.isEmpty() ? QString() : (hasClick || !sets.isEmpty() ? QStringLiteral("; ") : QString()) + tr("typed \"%1\"").arg(typed.left(80)));
-    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, where, report, intoDialog] {
+    const QString clicked = hasClick ? tr("%1%2 %3 at %4, %5%6")
+                                           .arg(doubleClick ? tr("double ") : QString(), buttonName, tr("click"))
+                                           .arg(click.x()).arg(click.y())
+                                           .arg(drag ? tr(", dragged to %1, %2").arg(dragTo.x()).arg(dragTo.y()) : QString())
+                                     : QString();
+    connect(watch, &QTimer::timeout, this, [this, watch, run, done, root, canvas, where, clicked, sets, typed, intoDialog] {
         if (run->answered) return;
+        // (Each key as it went: an action, the field's, the list's.)
+        const QStringList keysSaid = run->keys.isEmpty() ? sets : run->keys;
+        const QString report = QStringLiteral("%1%2%3").arg(
+            clicked, keysSaid.isEmpty() ? QString() : (clicked.isEmpty() ? QString() : QStringLiteral("; ")) + tr("keys %1").arg(keysSaid.join(QStringLiteral(", "))),
+            typed.isEmpty() ? QString() : (clicked.isEmpty() && keysSaid.isEmpty() ? QString() : QStringLiteral("; ")) + tr("typed \"%1\"").arg(typed.left(80)));
         QJsonObject o{{QStringLiteral("on"), where}, {QStringLiteral("given"), report}};
         // (The dialog answered: closed - its picture no longer shown.)
         const bool closed = intoDialog && (!root || !root->isVisible());
@@ -441,10 +514,14 @@ void QucsControl::sendInput(const QJsonObject& args, const Done& done)
         // (A dialog answered and another opened: 'dialog' the open one's.)
         if (closed) o.insert(opened ? QStringLiteral("closed") : QStringLiteral("dialog"), tr("closed: it was answered"));
         if (const QString said = a_app->statusBar()->currentMessage(); !said.isEmpty()) o.insert(QStringLiteral("status bar"), said);
+        // (A list it opened below a field: what it offers - it is a window
+        // of its own, drawn into the picture where it is.)
+        QAbstractItemView* list = openList();
+        if (list != nullptr) o.insert(QStringLiteral("list"), listRead(list));
         QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                        {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))}}};
         if (root && !closed) {
-            content.append(picture(grabbed(root)));
+            content.append(picture(list != nullptr ? withList(root, grabbed(root)) : grabbed(root)));
             QString how = tr("The picture: %1 as it is now, %2 x %3 pixels").arg(where).arg(root->width()).arg(root->height());
             if (canvas) {
                 const QPoint topLeft = canvas->viewportToModel(QPoint(0, 0)), bottomRight = canvas->viewportToModel(QPoint(root->width(), root->height()));
