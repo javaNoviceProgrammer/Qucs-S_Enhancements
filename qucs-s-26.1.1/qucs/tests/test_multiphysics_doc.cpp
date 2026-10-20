@@ -2779,6 +2779,9 @@ private slots:
         QVERIFY2(failed(r) && doc->isBusy(), qPrintable(text(r)));
         QCOMPARE(status(QStringLiteral("Mesh")), QStringLiteral("being made"));
         QCOMPARE(status(study), QStringLiteral("computing"));
+        // (Stopped once its mesh is made - past its first 30 % -: stopped
+        // while meshing, as CI Linux's sanitized build was, there is none.)
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isBusy() || doc->jobProgress().section(QLatin1Char(' '), 0, 0).toInt() >= 30, 600000);
         r = call("fem_stop", {{"timeout", 600}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(status(QStringLiteral("Mesh")).endsWith(QLatin1String("triangles")));
