@@ -3212,6 +3212,11 @@ bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOpt
     o.excitons = node.flag(QStringLiteral("excitons"));
     const QString excitonModel = node.text(QStringLiteral("excitonmodel"));
     o.excitonModel = excitonModel == QLatin1String("bastard") ? 1 : excitonModel == QLatin1String("coupled") ? 2 : 0;
+    o.excitonSize = node.integer(QStringLiteral("excitonsize"));
+    if (o.excitonSize != 0 && (o.excitonSize < 100 || o.excitonSize > 20000)) {
+        *error = tr("%1: the coupled excitons' size: a whole number from 100 to 20000").arg(node.name());
+        return false;
+    }
     o.continuum = node.text(QStringLiteral("continuum")) == QLatin1String("bound") ? 1 : 0;
     if (!energy(QStringLiteral("fade"), tr("its fade"), &o.fade)) return false;
     if (!node.text(QStringLiteral("dlinewidth")).trimmed().isEmpty()) {

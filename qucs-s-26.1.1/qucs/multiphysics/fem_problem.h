@@ -155,6 +155,7 @@ struct SpectrumOptions {
     int lineshape = 0;      ///< 0 Lorentzian, 1 Gaussian, 2 hyperbolic secant
     bool excitons = false;  ///< each transition's 1s exciton and its continuum's Sommerfeld factor
     int excitonModel = 0;   ///< 0 two parameters (λ, γ), 1 Bastard's one (λ), 2 the subbands coupled in k (fem_exciton)
+    int excitonSize = 0;    ///< the coupled excitons' unknowns (pairs × k points) at most, each channel's (0: 1200)
     double epsr = 0;        ///< the excitons' static permittivity (0: the wells' material's)
     double dlinewidth = 0;  ///< J per V/m: the broadening grown by the field across the wells
     double fade = 0;        ///< continuum bound: the bound steps fade into the bulk over this above the barriers' gap (J)

@@ -34,7 +34,7 @@ with
 
 **The two paths:**
 - **Parabolic bands:** heavy and light holes are two separate solves, since the attraction does not couple their orthogonal Bloch functions. Each solve takes the lowest 12 pairs, dark ones too: a pair's overlap may be 0 (parity, or a barrier) and its exciton still mixes. A pair's amplitudes, TE and TM, are its signed overlap times √(Ep · weight/n).
-- **k·p bands (4x4, 6x6):** one solve of the lowest 16 pairs. Each pair is an electron state with a valence state.
+- **k·p bands (4x4, 6x6):** one solve of the lowest 16 pairs. Each pair is an electron state with a valence state. (Since the check of this commit, the heavy and light holes' mixing is in the attraction too: the spinors at each k, in channels of the exciton's J_z - [its write-up](2026-10-19-claude-coupled-exciton-hh-lh-mixing.md). What follows is this commit's.)
   - Their energies and polarization weights along k are averaged over the plane's directions (the axial approximation).
   - The form factors are of the electron's envelope and the valence spinor's at k = 0.
   - The amplitudes are the k = 0 overlaps with X, Y and Z of each spin, coherent between pairs, scaled along k by each polarization's weight. A pair dark at k = 0 in a polarization gets an incoherent part of its own.
