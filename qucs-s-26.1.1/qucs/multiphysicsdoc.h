@@ -210,7 +210,8 @@ private:
     QString a_readNotes;
     struct Job;
     void buildUi();
-    void applyModel(const qucs_s::fem::Model& model);
+    /// The model in place: \a read, its file's content (the first: no edit), else an edit.
+    void applyModel(const qucs_s::fem::Model& model, bool read = false);
     void invalidate(const qucs_s::fem::Model& before, const qucs_s::fem::Model& after);
     void say(const QString& text, bool error = false);
     void startJob(const QString& what, std::function<void(Job&)> work, std::function<void(Job&)> done);

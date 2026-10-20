@@ -463,7 +463,7 @@ bool TextDoc::load ()
   // Its content: the first, or, read again, an edit.
   a_textRevision = document()->revision();
   a_countsEdits = true;
-  edited();
+  contentRead();
   showLibraryOrigin();
   return true;
 }
