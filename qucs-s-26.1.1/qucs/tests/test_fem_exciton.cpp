@@ -1,13 +1,19 @@
 /*
  * test_fem_exciton.cpp - the excitons of subband pairs coupled, in momentum
- *                        space (fem_exciton): the ideal 2D exciton's exact
+ *                        space (fem_exciton): the Coulomb kernel's angular
+ *                        channels; a hole of two components mixed along k
+ *                        against the same exciton in real space; any phase
+ *                        of the holes the same; the ideal 2D exciton's exact
  *                        states, strength and Sommerfeld factor; the free
  *                        continuum without the attraction; the form factors
  *                        of envelopes; two pairs coupled - and a quantum
  *                        wells spectrum's "excitonmodel": "coupled": its
  *                        free limit, one pair against the same exciton in
  *                        real space, the subbands against Khramtsov et al.'s
- *                        exact binding, the k·p bands'
+ *                        exact binding, the k·p bands' (no TM on the heavy
+ *                        hole's line; without their mixing the parabolic
+ *                        bands'), mixed continua spread, a continuum
+ *                        widened said
  *
  * This file is part of Qucs-S.
  *
@@ -51,6 +57,103 @@ double bohr(double mr, double epsr)
     return 4 * M_PI * Eps0 * epsr * Hbar * Hbar / (mr * Q * Q);
 }
 
+// A hole of two components mixed along k: J_z 3/2 and -1/2, coupled by g
+// k₋² as Luttinger's R couples them - the pair's kinetic matrix at θ 0
+// [[a1 k², g k²], [g k², D + a2 k²]] (eV, nm; the electron's 0.067, the
+// components' 0.11 and 0.21 in the plane). Its two bands (the lower's
+// spinor (cos φ, -sin φ), the upper's (sin φ, cos φ), tan 2φ = 2gk²/(D +
+// (a2 - a1) k²)), TE by the first component. Strictly 2D: the envelopes
+// at one point. \a phased: each band's spinor and amplitude by a phase of
+// their own at every k, the basis' second state by another (its
+// coefficients by its conjugate) - the same exciton.
+exciton::Envelopes mixedHoles(bool phased)
+{
+    exciton::Envelopes env;
+    env.z = {0};
+    env.electrons = {{1.0}};
+    const std::complex<double> turn = phased ? std::polar(1.0, 0.7) : std::complex<double>(1);
+    env.holes = {{{1.0}, {0.0}}, {{0.0}, {turn}}};
+    env.angular = {1.5, -0.5};
+    return env;
+}
+
+std::vector<exciton::Pair> mixedPairs(double g, double D, bool phased)
+{
+    const double hb2m = 0.0380998212, a1 = hb2m / 0.067 + hb2m / 0.11, a2 = hb2m / 0.067 + hb2m / 0.21;
+    std::vector<exciton::Pair> pairs;
+    for (int band = 0; band < 2; ++band) {
+        exciton::Pair p;
+        auto angle = [g, D, a1, a2](double k) { return 0.5 * std::atan2(2 * g * k * k * 1e-18, D + (a2 - a1) * k * k * 1e-18); };
+        auto phase = [phased, band](double k) {
+            return phased ? std::polar(1.0, 2 * M_PI * std::fmod(std::abs(std::sin(k * 1e-7 * (band + 1.3))) * 43758.5453, 1.0))
+                          : std::complex<double>(1);
+        };
+        p.energy = [g, D, a1, a2, band](double k) {
+            const double s = k * k * 1e-18, A = a1 * s, C = D + a2 * s, B = g * s;
+            const double half = std::sqrt(0.25 * (C - A) * (C - A) + B * B);
+            return (0.5 * (A + C) + (band == 0 ? -half : half)) * Q;
+        };
+        const std::complex<double> unturn = phased ? std::polar(1.0, -0.7) : std::complex<double>(1);
+        p.holeAt = [angle, phase, band, unturn](double k, std::vector<std::complex<double>>& c) {
+            const double f = angle(k);
+            c[0] = phase(k) * (band == 0 ? std::cos(f) : std::sin(f));
+            c[1] = phase(k) * (band == 0 ? -std::sin(f) : std::cos(f)) * unturn;
+        };
+        p.amplitude = [angle, phase, band](double k, std::vector<std::complex<double>>& a) {
+            a[0] = phase(k) * (band == 0 ? std::cos(angle(k)) : std::sin(angle(k)));
+        };
+        pairs.push_back(std::move(p));
+    }
+    return pairs;
+}
+
+// (Its continuum coarse and short - 4 meV apart, to 0.15 eV: its 1s as
+// near as with 1 meV to 0.3 eV, its solves 50 times as fast.)
+exciton::Options mixedOptions()
+{
+    exciton::Options o;
+    o.epsr = 12.9;
+    o.channel = 1.5;
+    o.reach = 0.15 * Q;
+    o.spacing = 4e-3 * Q;
+    o.maxSize = 4000;
+    return o;
+}
+
+// ∫ dθ/(2π) cos(Lθ)/|k - k'|, by 20 Gauss-Legendre points on each of [0,
+// w], [w, 2w], [2w, 4w] ... to π - w = |k - k'|/√(kk') its peak's width at
+// 0, the nearest singularity a panel's width off: geometric convergence.
+double channelByQuadrature(int L, double k, double kp)
+{
+    static std::vector<double> x, wt;
+    if (x.empty()) {
+        const int n = 20;
+        for (int i = 0; i < n; ++i) {
+            double z = std::cos(M_PI * (i + 0.75) / (n + 0.5)), dp = 1;
+            for (int it = 0; it < 100; ++it) {
+                double p0 = 1, p1 = 0;
+                for (int j = 0; j < n; ++j) {
+                    const double p2 = p1;
+                    p1 = p0;
+                    p0 = ((2 * j + 1) * z * p1 - j * p2) / (j + 1);
+                }
+                dp = n * (z * p0 - p1) / (z * z - 1);
+                const double dz = p0 / dp;
+                z -= dz;
+                if (std::abs(dz) < 1e-16) break;
+            }
+            x.push_back(z);
+            wt.push_back(2 / ((1 - z * z) * dp * dp));
+        }
+    }
+    auto f = [L, k, kp](double t) { return std::cos(L * t) / (M_PI * std::sqrt(k * k + kp * kp - 2 * k * kp * std::cos(t))); };
+    const double width = std::abs(k - kp) / std::sqrt(k * kp);
+    double sum = 0;
+    for (double a = 0, b = std::min(M_PI, width); a < M_PI; a = b, b = std::min(M_PI, 2 * b))
+        for (std::size_t i = 0; i < x.size(); ++i) sum += 0.5 * (b - a) * wt[i] * f(0.5 * (a + b) + 0.5 * (b - a) * x[i]);
+    return sum;
+}
+
 } // namespace
 
 class TestFemExciton : public QObject
@@ -63,6 +166,89 @@ private slots:
         QVERIFY(std::abs(exciton::ellipticK(0) - M_PI / 2) < 1e-14);
         QVERIFY(std::abs(exciton::ellipticK(0.5) - 1.8540746773013719) < 1e-12);
         QVERIFY(std::abs(exciton::ellipticK(0.99) - 3.6956373629898747) < 1e-11);
+    }
+
+    // The 2D Coulomb kernel's channels L 0-3 (Legendre's Q_{L-1/2} of K and
+    // E near k' = k, of its series far off) against the angle's integral
+    // done numerically; the s channel's (2/π) K(m)/(k + k'); at k' → k each
+    // channel's excess over the s channel's (ψ(1/2) - ψ(L + 1/2))/(πk).
+    void theCoulombChannels()
+    {
+        double worst = 0;
+        for (double kp : {0.05, 0.3, 0.9, 0.999, 1.001, 1.5, 2.5, 40.0})
+            for (int L = 0; L <= 3; ++L) {
+                const double a = exciton::coulombChannel(L, 1.0, kp), b = channelByQuadrature(L, 1.0, kp);
+                worst = std::max(worst, std::abs(a / b - 1));
+                QVERIFY2(std::abs(a / b - 1) < 1e-9, qPrintable(QString("L %1, k' %2: %3 against %4").arg(L).arg(kp).arg(a, 0, 'g', 15).arg(b, 0, 'g', 15)));
+            }
+        qInfo("the channels within %.1e of the angle's integral", worst);
+        // (Far off the quadrature cancels - a channel's part 1e-8 of its
+        // integrand: there 1/|k - k'|'s series in k/k', Legendre's P_n,
+        // their cos 2θ parts 3/4 and 5/16 - P_2's and P_4's.)
+        const double x = 1e-4;
+        QVERIFY(std::abs(exciton::coulombChannel(2, 1.0, 1e4) / (x * (0.375 * x * x + 0.15625 * x * x * x * x)) - 1) < 1e-12);
+        for (double kp : {0.2, 0.7, 3.0}) {
+            const double m = 4 * kp / ((1 + kp) * (1 + kp));
+            QVERIFY(std::abs(exciton::coulombChannel(0, 1.0, kp) / (2 / M_PI * exciton::ellipticK(m) / (1 + kp)) - 1) < 1e-13);
+        }
+        for (int L = 1; L <= 3; ++L) {
+            double psi = 0;
+            for (int n = 0; n < L; ++n) psi -= 2.0 / (2 * n + 1);
+            const double excess = exciton::coulombChannel(L, 2.0, 2.0 * (1 + 1e-7)) - exciton::coulombChannel(0, 2.0, 2.0 * (1 + 1e-7));
+            QVERIFY2(std::abs(excess / (psi / (M_PI * 2.0)) - 1) < 1e-5, qPrintable(QString::number(excess / (psi / (M_PI * 2.0)))));
+        }
+    }
+
+    // A hole of two components mixed along k (mixedPairs: J_z 3/2 and -1/2,
+    // g k₋² between them) - its lower band's 1s in the channel J 3/2, its
+    // first component s, its second d - against the same exciton in real
+    // space: its radial equations, the derivative couplings in them (the
+    // energy functional's finite volumes, to 0.01 nm, Richardson; with g 0
+    // the ideal 2D's to 1e-6): D 15 meV, with g 0.2 eV nm² bound by
+    // 14.10853 meV, |ψ1(0)|² 1.042958e16 /m²; with 0.4, 16.03751 meV and
+    // 1.464738e16 (unmixed 13.61744, 9.4743e15). The second component taken
+    // in the s channel too (its J_z not given) instead: far off.
+    void aMixedHoleAgainstRealSpace()
+    {
+        struct Case {
+            double g, Eb, psi0;
+        };
+        for (const Case& c : {Case{0.2, 14.10853e-3, 1.042958e16}, Case{0.4, 16.03751e-3, 1.464738e16}}) {
+            const exciton::Result r = exciton::solve(mixedHoles(false), mixedPairs(c.g, 0.015, false), mixedOptions());
+            QVERIFY2(!r.energy.empty(), qPrintable(r.note));
+            QVERIFY(!r.complex);
+            const double Eb = -r.energy[0] / Q, psi0 = r.strength[0][0];
+            qInfo("g %.1f eV nm²: bound by %.5f meV (%.5f), |ψ1(0)|² %.6g /m² (%.6g)", c.g, Eb * 1e3, c.Eb * 1e3, psi0, c.psi0);
+            QVERIFY2(std::abs(Eb / c.Eb - 1) < 1e-3, qPrintable(QString::number(Eb / c.Eb)));
+            QVERIFY2(std::abs(psi0 / c.psi0 - 1) < 0.01, qPrintable(QString::number(psi0 / c.psi0)));
+            exciton::Envelopes s = mixedHoles(false);
+            s.angular.clear();
+            const exciton::Result one = exciton::solve(s, mixedPairs(c.g, 0.015, false), mixedOptions());
+            QVERIFY2(std::abs(-one.energy[0] / Q / c.Eb - 1) > 0.02, qPrintable(QString::number(-one.energy[0] / Q / c.Eb)));
+        }
+    }
+
+    // The holes' phases are anyone's: each band's spinor and amplitude by a
+    // phase of their own at every k, a basis state by another - the
+    // Hamiltonian complex then - the same states and strengths (the hole
+    // densities' real parts alone, as before, were not: the update check of
+    // ac8ce07, 2).
+    void anyPhaseTheSame()
+    {
+        const exciton::Result plain = exciton::solve(mixedHoles(false), mixedPairs(0.4, 0.015, false), mixedOptions());
+        const exciton::Result phased = exciton::solve(mixedHoles(true), mixedPairs(0.4, 0.015, true), mixedOptions());
+        QVERIFY(!plain.complex && phased.complex);
+        QCOMPARE(phased.energy.size(), plain.energy.size());
+        double worstE = 0, worstS = 0, most = 0;
+        for (std::size_t n = 0; n < plain.energy.size(); ++n) most = std::max(most, plain.strength[0][n]);
+        for (std::size_t n = 0; n < 40; ++n) {
+            worstE = std::max(worstE, std::abs(phased.energy[n] - plain.energy[n]) / Q);
+            worstS = std::max(worstS, std::abs(phased.strength[0][n] - plain.strength[0][n]) / most);
+        }
+        qInfo("phased: the lowest 40 states within %.1e eV, their strengths within %.1e of the most", worstE, worstS);
+        // (The complex solve's rounding against the real's: its tail's
+        // energies some 500 eV.)
+        QVERIFY2(worstE < 1e-9 && worstS < 1e-9, qPrintable(QString("%1 eV, %2").arg(worstE).arg(worstS)));
     }
 
     // The ideal 2D exciton (a form factor of 1: no thickness): its 1s bound
@@ -319,8 +505,13 @@ private slots:
 
     // The k·p bands' coupled excitons (4x4, a 10 nm infinite well): bound
     // more than the parabolic bands' (the holes heavier in the plane past k
-    // 0, their mixing's), within 10 % of the two-parameter variational one
-    // on the same bands; its line where the spectrum peaks.
+    // 0), within 10 % of the two-parameter variational one on the same
+    // bands - the heavy and light holes' mixing in the attraction too (its
+    // channels J 3/2 and 1/2); its line where the spectrum peaks, and no TM
+    // there: the heavy-hole exciton's light-hole part is p-like about it, its
+    // TM gone by the angle (an incoherent part of its own along k gave it
+    // TM 0.18 of TE: the update check of ac8ce07, 3). The log's transitions
+    // the k·p pairs (it said 0), the coupled among them.
     void kpBandsCoupled()
     {
         if (femtest::slowBuild()) QSKIP("the k·p pairs' dense solve: minutes under the sanitizers");
@@ -342,6 +533,9 @@ private slots:
         qInfo("k·p: bound by %.3f meV (two parameters %.3f, parabolic coupled %.3f)", Eb / Q * 1e3, Eb2 / Q * 1e3, EbP / Q * 1e3);
         QVERIFY(Eb > EbP);
         QVERIFY2(std::abs(Eb / Eb2 - 1) < 0.1, qPrintable(QString::number(Eb / Eb2)));
+        // (Its own value, the mixing's measure: 8.687 meV; its spinors at k =
+        // 0 instead, as in ac8ce07, 8.895.)
+        QVERIFY2(std::abs(Eb / (8.687e-3 * Q) - 1) < 3e-3, qPrintable(QString::number(Eb / Q * 1e3, 'f', 4)));
         double best = 0, at = 0;
         for (int k = 0; k < kp.solution->snapshotCount(); ++k) {
             kp.solution->select(k);
@@ -352,6 +546,113 @@ private slots:
             }
         }
         QVERIFY2(std::abs(at - Ex) < 1.5e-3 * Q, qPrintable(QString("peak %1, Ex %2").arg(at / Q).arg(Ex / Q)));
+        double te = 0, tm = 0;
+        for (int k = 0; k < kp.solution->snapshotCount(); ++k) {
+            kp.solution->select(k);
+            if (std::abs(femtest::global(*kp.solution, "qw.Ephoton") - at) > 1e-6 * Q) continue;
+            te = femtest::global(*kp.solution, "qw.alphaTE");
+            tm = femtest::global(*kp.solution, "qw.alphaTM");
+        }
+        qInfo("k·p: at its line TM %.3g of TE", tm / te);
+        QVERIFY2(te > 0 && tm < 0.01 * te, qPrintable(QString("TM %1 of TE").arg(tm / te)));
+        const QString log = kp.solution->log.join(QLatin1Char('\n'));
+        const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("a spectrum of (\\d+) transitions \\((\\d+) of them the coupled excitons'\\)")).match(log);
+        QVERIFY2(m.hasMatch() && m.captured(2).toInt() > 0 && m.captured(1).toInt() >= m.captured(2).toInt(), qPrintable(log));
+    }
+
+    // The k·p bands without their mixing - γ2 = γ3 = 0: the heavy and light
+    // holes of one mass, 0.2, along the axis and in the plane, one energy -
+    // the parabolic bands of that mass: their coupled excitons the same, the
+    // k·p's in their channels of every k's four states lined up along k (J
+    // 3/2: the heavy hole's in s; 1/2: the light's), the parabolic's of the
+    // two kinds of hole apart.
+    void kpWithoutMixingAsParabolic()
+    {
+        if (femtest::slowBuild()) QSKIP("the k·p pairs' dense solves: minutes under the sanitizers");
+        auto spectrum = [](bool kp) {
+            QByteArray json = femtest::box(QStringLiteral("20"), QStringLiteral("10"), kp ? QStringLiteral(R"(, "valence": "kp4")") : QString(),
+                                           QStringLiteral("0[eV]"),
+                                           QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.555[eV], 1.60[eV], 46)", "states": 1,
+                                                              "linewidth": "1[meV]", "lineshape": "gaussian", "excitons": true,
+                                                              "excitonmodel": "coupled", "epsr": "12.9"})x"));
+            json.replace(R"("mhh": "0.35", "mlh": "0.09")", R"("mhh": "0.2", "mlh": "0.2", "gamma3": "0")");
+            json.replace(R"("mhhp": "0.11", "mlhp": "0.21")", R"("mhhp": "0.2", "mlhp": "0.2")");
+            return femtest::run(femtest::modelOf(json));
+        };
+        const femtest::Run kp = spectrum(true), para = spectrum(false);
+        QVERIFY2(kp.error.isEmpty() && para.error.isEmpty(), qPrintable(kp.error + para.error));
+        kp.solution->select(0);
+        para.solution->select(0);
+        const double Eb = femtest::global(*kp.solution, "qw.Eb"), EbP = femtest::global(*para.solution, "qw.Eb");
+        double most = 0, worst = 0;
+        for (int k = 0; k < para.solution->snapshotCount(); ++k) {
+            para.solution->select(k);
+            most = std::max(most, femtest::global(*para.solution, "qw.alphaTE"));
+        }
+        for (int k = 0; k < para.solution->snapshotCount(); ++k) {
+            kp.solution->select(k);
+            para.solution->select(k);
+            for (const char* g : {"qw.alphaTE", "qw.alphaTM"})
+                worst = std::max(worst, std::abs(femtest::global(*kp.solution, g) - femtest::global(*para.solution, g)) / most);
+        }
+        qInfo("k·p without mixing: bound by %.4f meV, parabolic %.4f; its spectrum within %.2g of the most", Eb / Q * 1e3, EbP / Q * 1e3, worst);
+        QVERIFY2(std::abs(Eb / EbP - 1) < 1e-3, qPrintable(QString::number(Eb / EbP)));
+        QVERIFY2(worst < 0.01, qPrintable(QString::number(worst)));
+    }
+
+    // Where pairs' continua mix (a 10 nm GaAs/Al0.3Ga0.7As well's, 4
+    // states, a 1 meV Lorentzian; e1-hh1's and e1-lh1's continua and e1-hh2's,
+    // dark, from 1.48 eV) each continuum state spread over its largest
+    // parts' cells, weighted by their shares: its absorption within 3 % (TE)
+    // and 2 % (TM) of its own mean over 2 meV - each over its largest part's
+    // cell alone, 3.4 % and 2.4 % (the update check of ac8ce07, 4: ±16 % at
+    // 0.5 meV, then).
+    void aMixedContinuumSpread()
+    {
+        if (femtest::slowBuild()) QSKIP("its dense solves, minutes under the sanitizers");
+        const femtest::Run x = femtest::run(femtest::modelOf(femtest::heterostructure(
+            QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("10"), QStringLiteral("25"),
+            QString(),
+            QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.48[eV], 1.50[eV], 81)", "states": 4, "linewidth": "1[meV]",
+                               "lineshape": "lorentzian", "excitons": true, "excitonmodel": "coupled", "epsr": "12.9"})x"))));
+        QVERIFY2(x.error.isEmpty(), qPrintable(x.error));
+        double worst[2] = {0, 0};
+        const char* names[2] = {"qw.alphaTE", "qw.alphaTM"};
+        for (int g = 0; g < 2; ++g) {
+            std::vector<double> a;
+            for (int k = 0; k < x.solution->snapshotCount(); ++k) {
+                x.solution->select(k);
+                a.push_back(femtest::global(*x.solution, names[g]));
+            }
+            for (std::size_t i = 4; i + 4 < a.size(); ++i) {
+                double mean = 0;
+                for (std::size_t j = i - 4; j <= i + 4; ++j) mean += a[j] / 9;
+                worst[g] = std::max(worst[g], std::abs(a[i] / mean - 1));
+            }
+        }
+        qInfo("mixed continua: TE within %.2f %%, TM %.2f %% of their means over 2 meV", worst[0] * 100, worst[1] * 100);
+        QVERIFY2(worst[0] < 0.03 && worst[1] < 0.02, qPrintable(QString("%1, %2").arg(worst[0]).arg(worst[1])));
+    }
+
+    // A continuum wider than the line asks, to fit the coupled excitons'
+    // size: a warning naming what would smooth it (it was a line of the log:
+    // the update check of ac8ce07, 4); a size out of its range refused.
+    void theContinuumWidenedSaid()
+    {
+        auto spectrum = [](const char* size) {
+            return femtest::run(femtest::modelOf(femtest::box(
+                QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"),
+                QString::fromUtf8(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 1, "linewidth": "1[meV]", "lineshape": "gaussian",
+                                      "excitons": true, "excitonmodel": "coupled", "epsr": "12.9", "excitonsize": %1})x").arg(QLatin1String(size)))));
+        };
+        const femtest::Run small = spectrum("100");
+        QVERIFY2(small.error.isEmpty(), qPrintable(small.error));
+        const QStringList warned = small.solution->log.filter(QLatin1String("Warning:")).filter(QLatin1String("continuum states"));
+        QVERIFY2(warned.size() == 1 && warned.front().contains(QLatin1String("not the 0.5 the line's width asks"))
+                     && warned.front().contains(QLatin1String("unknowns, \"excitonsize\")")) && warned.front().contains(QLatin1String("a line of 1 meV or more smooths it")),
+                 qPrintable(small.solution->log.join(QLatin1Char('\n'))));
+        const femtest::Run refused = spectrum("50");
+        QVERIFY2(refused.error.contains(QLatin1String("the coupled excitons' size: a whole number from 100 to 20000")), qPrintable(refused.error));
     }
 };
 

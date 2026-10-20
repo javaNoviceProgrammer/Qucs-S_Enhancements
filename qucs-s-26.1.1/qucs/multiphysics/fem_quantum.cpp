@@ -56,6 +56,24 @@ constexpr int Carriers = 3;               // electrons, heavy holes, light holes
 /// The band data kept with the field: its header's length.
 constexpr int Header = 10;
 
+/// Catmull and Rom's cubic through values on k from 0, dk apart, at k: the
+/// first held before it, the last past it.
+template <class T>
+T cubicAt(const std::vector<T>& v, double dk, double k)
+{
+    const int m = int(v.size());
+    if (m == 1 || !(dk > 0) || !(k > 0)) return v.front();
+    const double u = k / dk;
+    if (u >= m - 1) return v.back();
+    const int i = int(u);
+    const double t = u - i;
+    const T& p0 = v[std::size_t(std::max(0, i - 1))];
+    const T& p1 = v[std::size_t(i)];
+    const T& p2 = v[std::size_t(i + 1)];
+    const T& p3 = v[std::size_t(std::min(m - 1, i + 2))];
+    return T(0.5 * (2.0 * p1 + t * (p2 - p0) + (t * t) * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) + (t * t * t) * (3.0 * (p1 - p2) + p3 - p0)));
+}
+
 /// A domain's bands (eV) and masses (m0) as solved.
 struct Band {
     bool on = false;
@@ -2959,23 +2977,19 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         exciton::Result r;
         double spin = 1;
         std::vector<int> te, tm;
-        // Its least pair's edge; each state's cell - a state above the edge
-        // its continuum's, spread over its cell (its pair's share of the
-        // plane at its k point: as the free continuum's cells, smooth however
-        // far apart its states, each pair's continuum its own where they
-        // interleave), one below it a line.
+        // Its least pair's edge; each state's cells - a state above the edge
+        // its continuum's, spread over its cells (its largest parts' pairs'
+        // shares of the plane at their k points: as the free continuum's
+        // cells, smooth however far apart its states, each pair's continuum
+        // its own where they interleave), one below it a line (none).
         double edge = 0;
-        std::vector<double> lo, hi;
+        std::vector<std::vector<exciton::Result::Cell>> spread;
         void cells()
         {
             const std::size_t n = std::size_t(std::lower_bound(r.energy.begin(), r.energy.end(), r.cut) - r.energy.begin());
-            lo.assign(n, 0.0);
-            hi.assign(n, 0.0);
-            for (std::size_t i = 0; i < n && i < r.lo.size(); ++i) {
-                if (r.energy[i] < edge) continue;
-                lo[i] = r.lo[i];
-                hi[i] = r.hi[i];
-            }
+            spread.assign(n, {});
+            for (std::size_t i = 0; i < n && i < r.cells.size(); ++i)
+                if (r.energy[i] >= edge) spread[i] = r.cells[i];
         }
     };
     std::vector<CoupledBlock> xBlocks;
@@ -2996,35 +3010,47 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         return v;
     };
     // (Its continuum to the window's top and 30 line widths past it, 0.3 eV
-    // at least; its states a third of the line's width apart there.)
-    // (Its continuum to the window's top and 30 line widths past it, 0.3 eV
-    // at least; its states half the line's width apart there, 0.5 to 3 meV -
-    // each spread over its cell - 1200 of them at most: a second's solve.)
-    auto xOptions = [gamma, kT, windowHi](double epsr, int components, double lowest) {
+    // at least - not 30 kT: excitons have no carriers, and that took it to
+    // 0.78 eV at 300 K -; its states half the line's width apart there, 0.5
+    // to 3 meV - each spread over its cells - "excitonsize" of them at most,
+    // 1200: a second's solve.)
+    const int xSize = o.excitonSize > 0 ? o.excitonSize : 1200;
+    auto xOptions = [gamma, windowHi, xSize](double epsr, int components, double lowest) {
         exciton::Options xo;
         xo.epsr = epsr;
         xo.components = components;
-        xo.reach = std::max({60 * gamma, 0.3 * Q, 30 * kT, windowHi - lowest + 30 * gamma});
+        xo.reach = std::max({60 * gamma, 0.3 * Q, windowHi - lowest + 30 * gamma});
         xo.spacing = std::clamp(gamma / 2, 0.5e-3 * Q, 3e-3 * Q);
-        xo.maxSize = 1200;
+        xo.maxSize = xSize;
         return xo;
     };
-    // The e1-hh1 exciton's globals of a block: its edge less its strongest
-    // TE line below it, the radius of Bastard's 1s of that |ψ(0)|² (λ:
-    // 2/(πλ²)) - \a weight the pair's TE amplitudes' |·|² summed.
-    auto xGlobals = [this](const CoupledBlock& blk, double edge, double weight) {
-        double best = 0;
-        std::size_t which = blk.r.energy.size();
-        for (std::size_t n = 0; n < blk.r.energy.size() && blk.r.energy[n] < edge; ++n) {
-            double sum = 0;
-            for (int c : blk.te) sum += blk.r.strength[std::size_t(c)][n];
-            if (sum > best) {
-                best = sum;
-                which = n;
+    // A block's continuum widened to fit its size: the widest said once, in
+    // a warning, what would smooth it with it.
+    struct Widened {
+        double spacing = 0, asked = 0;
+        int pairs = 0, points = 0, size = 0;
+    } widest;
+    auto xSpacing = [&widest](const CoupledBlock& blk, int pairs, int size) {
+        if (!(blk.r.spacing > blk.r.asked * (1 + 1e-9)) || !(blk.r.spacing / blk.r.asked > widest.spacing / std::max(widest.asked, 1e-300))) return;
+        widest = {blk.r.spacing, blk.r.asked, pairs, blk.r.points, size};
+    };
+    // The e1-hh1 exciton's globals of its blocks: its edge less its
+    // strongest TE line below it, the radius of Bastard's 1s of that
+    // |ψ(0)|² (λ: 2/(πλ²)) - \a weight the pair's TE amplitudes' |·|²
+    // summed.
+    auto xGlobals = [this](const std::vector<const CoupledBlock*>& blocks, double edge, double weight) {
+        double best = 0, at = NaN;
+        for (const CoupledBlock* blk : blocks)
+            for (std::size_t n = 0; n < blk->r.energy.size() && blk->r.energy[n] < edge; ++n) {
+                double sum = 0;
+                for (int c : blk->te) sum += blk->r.strength[std::size_t(c)][n];
+                if (sum > best) {
+                    best = sum;
+                    at = blk->r.energy[n];
+                }
             }
-        }
-        if (which == blk.r.energy.size()) return;
-        a_spec.Ex = blk.r.energy[which];
+        if (!std::isfinite(at)) return;
+        a_spec.Ex = at;
         a_spec.Eb = edge - a_spec.Ex;
         a_spec.radius = weight > 0 ? std::sqrt(2 / (M_PI * best / weight)) : NaN;
         a_spec.gammaX = NaN;
@@ -3168,10 +3194,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 blk.tm = {1};
                 blk.edge = mine.front()->E;
                 blk.cells();
-                if (!blk.r.note.isEmpty()) a_s.log << tr("%1: the coupled excitons' %2").arg(a_node->name(), blk.r.note);
+                xSpacing(blk, int(mine.size()), xSize);
                 // The e1-hh1's: its edge less the strongest line below it.
                 for (Transition* t : mine)
-                    if (t->e1hh1) xGlobals(blk, t->E, t->overlap * t->Ep * t->te / t->nr);
+                    if (t->e1hh1) xGlobals({&blk}, t->E, t->overlap * t->Ep * t->te / t->nr);
                 xBlocks.push_back(std::move(blk));
             }
     }
@@ -3444,14 +3470,27 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             }
         }
         // The coupled subbands' excitons of the k·p bands (4x4, 6x6): each
-        // electron state with each valence state a pair - the electron's
-        // envelope and the valence state's spinor at k = 0 its form factors'
-        // (the attraction keeps each one's Bloch parts: the spinors' product),
-        // its optical amplitudes the k = 0 overlaps' (X, Y, Z of each spin:
-        // the pairs' lines coherent) scaled by each polarization's weight along
-        // k, its energy and weights its directions' averaged; a pair dark at
-        // k = 0 in a polarization its own part there. The lowest 16 by energy.
-        if (a_spec.excitons && o.excitonModel == 2 && a_valence != 8 && epsr > 0 && !pairs.empty()) {
+        // electron state with each valence state a pair, in the axial
+        // approximation's channels of the excitons' angular momentum about the
+        // axis, J (Winkler's). A valence state's spinor at k - its components
+        // e+↑ (J_z 3/2), Z↑ (1/2), e-↑ (-1/2), e+↓ (1/2), Z↓ (-1/2), e-↓ (-3/2),
+        // e± = (X ± iY)/√2 - at the angle θ e^(-iμθ) times its own at 0: two
+        // pairs' attraction in channel J of each component's Coulomb channel
+        // |J - μ|, of their spinors at their k - the heavy and light holes'
+        // Bloch parts, mixing along k, coupled. The light's excitons those of
+        // J 3/2 (TE by e+↑) and 1/2 (TE by e+↓, TM by Z↑), each twice (-J's
+        // the same, by time reversal). The spinors: the bands' first
+        // direction's at each k (axial: their own; along [100], [110] or
+        // averaged, that direction's taken for all, said), turned onto x, in
+        // phases making the bands real (e± by -i on spin up, Z by -i on spin
+        // down: the k·p's X-Z terms imaginary, spin and orbit real) - each
+        // degenerate set made real and lined up with the k before's -, on a
+        // basis of each μ's parts (their principal components at some k),
+        // cubic between the bands' k points. The pairs' energies their
+        // directions' averaged; the lowest 16 pairs by energy, a Kramers pair
+        // not parted.
+        if (a_spec.excitons && o.excitonModel == 2 && a_valence != 8 && epsr > 0 && !pairs.empty() && !a_kps.front().k.empty()) {
+            using cd = std::complex<double>;
             // (A direction's value at k: linear in k² between its points; past
             // the last an energy on along its last interval, a weight held.)
             auto valueAt = [](const std::vector<double>& ks, const std::vector<double>& v, double k, bool extend) {
@@ -3487,8 +3526,11 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             }
             std::sort(chosen.begin(), chosen.end(), [](const auto& a, const auto& b) { return a->edge < b->edge; });
             if (chosen.size() > 16) {
-                a_s.log << tr("%1: the 16 lowest of the %2 pairs coupled, the others free steps").arg(a_node->name()).arg(chosen.size());
-                chosen.resize(16);
+                // (A Kramers pair - one edge - kept whole.)
+                std::size_t cut = 16;
+                while (cut > 1 && std::abs(chosen[cut]->edge - chosen[cut - 1]->edge) < 1e-6 * Q) --cut;
+                a_s.log << tr("%1: the %2 lowest of the %3 pairs coupled, the others free steps").arg(a_node->name()).arg(cut).arg(chosen.size());
+                chosen.resize(cut);
             }
             auto average = [valueAt](const Series& g, double k, int what) {
                 double v = 0;
@@ -3498,88 +3540,346 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 }
                 return g.all > 0 ? v / g.all : v;
             };
-            exciton::Envelopes env = xEnvelopes();
-            std::map<int, int> eIndex, hIndex;
-            std::vector<exciton::Pair> xp;
-            CoupledBlock blk;
-            blk.spin = 1;
-            blk.te = {0, 1, 3, 4};
-            blk.tm = {2, 5};
-            int components = 6;
-            double e1hh1 = NaN, e1hh1Weight = 0;
-            for (const std::shared_ptr<Series>& g : chosen) {
-                const State& e = a_states[0][std::size_t(g->ie)];
-                const Eigen::VectorXcd& x0 = a_kps[0].x[0][std::size_t(g->jv)];
-                if (!eIndex.count(g->ie)) {
-                    eIndex[g->ie] = int(env.electrons.size());
-                    env.electrons.push_back(xEnvelope(e.x));
+            const KpBands& b0 = a_kps.front();
+            const int M = int(b0.k.size());
+            const double dk = M > 1 ? b0.k[1] - b0.k[0] : 0.0;
+            std::size_t nv = b0.E[0].size();
+            for (const std::vector<double>& E : b0.E) nv = std::min(nv, E.size());
+            std::vector<int> states, electrons;
+            for (const auto& g : chosen) {
+                states.push_back(g->jv);
+                electrons.push_back(g->ie);
+            }
+            for (std::vector<int>* v : {&states, &electrons}) {
+                std::sort(v->begin(), v->end());
+                v->erase(std::unique(v->begin(), v->end()), v->end());
+            }
+            const auto indexOf = [](const std::vector<int>& v, int x) { return int(std::lower_bound(v.begin(), v.end(), x) - v.begin()); };
+            // (The states to the deepest used and, at each k, its degenerate
+            // partner: deeper ones the bands' solve may have found one of a
+            // Kramers pair of.)
+            if (!states.empty() && states.back() + 1 < int(nv)) {
+                std::size_t use = std::size_t(states.back()) + 1;
+                for (bool more = true; more;) {
+                    more = false;
+                    for (const std::vector<double>& E : b0.E)
+                        while (use < nv && std::abs(E[use] - E[use - 1]) < 1e-7) {
+                            ++use;
+                            more = true;
+                        }
                 }
-                if (!hIndex.count(g->jv)) {
-                    hIndex[g->jv] = int(env.holes.size());
-                    std::vector<std::vector<std::complex<double>>> spinor(6);
-                    for (int c = 0; c < 6; ++c)
-                        for (std::size_t p : xOrder) spinor[std::size_t(c)].push_back(std::sqrt(a_points[p].w) * at(a_points[p], x0, c * n));
-                    env.holes.push_back(std::move(spinor));
+                nv = use;
+            }
+            if (nv == 0 || states.back() >= int(nv)) {
+                a_s.log << tr("Warning: %1: the coupled excitons want the k·p bands' every state at every k: some k lacks one - left out")
+                               .arg(a_node->name());
+            } else {
+                if (b0.theta != 0 || a_inplane != 0)
+                    a_s.log << tr("%1: the coupled excitons' hole spinors the bands' at θ %2° (%3), taken for every direction: the axial "
+                                  "approximation")
+                                   .arg(a_node->name())
+                                   .arg(b0.theta * 180 / M_PI, 0, 'f', 1)
+                                   .arg(kpDirection());
+                // The mass matrix, by equation; of six components each.
+                Eigen::SparseMatrix<double> Mn(n, n);
+                {
+                    std::vector<Eigen::Triplet<double>> tm;
+                    for (const Point& pt : a_points)
+                        for (int q = 0; q < pt.n; ++q)
+                            for (int r = 0; r < pt.n; ++r)
+                                if (pt.eq[q] >= 0 && pt.eq[r] >= 0) tm.emplace_back(pt.eq[q], pt.eq[r], pt.w * pt.N[q] * pt.N[r]);
+                    Mn.setFromTriplets(tm.begin(), tm.end());
+            }
+            const Eigen::SparseMatrix<cd> Mnc = Mn.cast<cd>();
+            auto mass6 = [&Mnc, n](const Eigen::VectorXcd& v) {
+                Eigen::VectorXcd r(v.size());
+                for (int c = 0; c < int(v.size()) / n; ++c) r.segment(c * n, n) = Mnc * v.segment(c * n, n);
+                return r;
+            };
+            // (Circular, in the real phases, turned onto x.)
+            const double mu[6] = {1.5, 0.5, -0.5, 0.5, -0.5, -1.5};
+            const double theta0 = b0.theta;
+            auto circular = [n, theta0, &mu](const Eigen::VectorXcd& x) {
+                const cd I(0, 1);
+                const double r2 = 1 / std::sqrt(2.0);
+                Eigen::VectorXcd y(6 * n);
+                for (int sp = 0; sp < 2; ++sp) {
+                    const cd te = sp == 0 ? -I : cd(1), tz = sp == 0 ? cd(1) : -I;
+                    const auto X = x.segment(3 * sp * n, n), Y = x.segment((3 * sp + 1) * n, n), Z = x.segment((3 * sp + 2) * n, n);
+                    y.segment(3 * sp * n, n) = te * r2 * (X - I * Y);
+                    y.segment((3 * sp + 1) * n, n) = tz * Z;
+                    y.segment((3 * sp + 2) * n, n) = te * r2 * (X + I * Y);
                 }
-                // (Its k = 0 overlaps with the valence state's components: Σ w
-                // ψe N on each equation, its dot product.)
+                if (theta0 != 0)
+                    for (int c = 0; c < 6; ++c) y.segment(c * n, n) *= std::exp(I * (mu[c] * theta0));
+                return y;
+            };
+            // A degenerate set's real basis: its vectors' real and imaginary
+            // parts' span, M-orthonormal - false if wider than the set (the
+            // bands not real in these phases).
+            double unreal = 0;
+            auto realify = [&mass6, &unreal](std::vector<Eigen::VectorXcd>& v) {
+                const int g = int(v.size());
+                const Eigen::Index len = v.front().size();
+                Eigen::MatrixXcd cand(len, 2 * g), mc(len, 2 * g);
+                for (int i = 0; i < g; ++i) {
+                    cand.col(2 * i) = v[std::size_t(i)].real().cast<cd>();
+                    cand.col(2 * i + 1) = v[std::size_t(i)].imag().cast<cd>();
+                }
+                for (int i = 0; i < 2 * g; ++i) mc.col(i) = mass6(cand.col(i));
+                const Eigen::MatrixXd G = (cand.adjoint() * mc).real();
+                Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(0.5 * (G + G.transpose()));
+                const double top = es.eigenvalues()(2 * g - 1), rest = es.eigenvalues()(g - 1);
+                unreal = std::max(unreal, rest / top);
+                if (!(rest <= 1e-6 * top)) return false;
+                for (int i = 0; i < g; ++i)
+                    v[std::size_t(i)] = (cand * es.eigenvectors().col(2 * g - 1 - i)).real().cast<cd>() / std::sqrt(es.eigenvalues()(2 * g - 1 - i));
+                return true;
+            };
+            // The states at the bands' k point m: circular, each degenerate
+            // set (one energy to 0.1 µeV) made real (realMode) and lined up
+            // with prev's (given) - the unitary nearest their overlaps
+            // (Procrustes').
+            auto statesAt = [&b0, nv, &circular, &realify, &mass6](int m, bool realMode, const std::vector<Eigen::VectorXcd>* prev, bool* ok) {
+                std::vector<Eigen::VectorXcd> y(nv);
+                for (std::size_t j = 0; j < nv; ++j) y[j] = circular(b0.x[std::size_t(m)][j]);
+                for (std::size_t a = 0; a < nv;) {
+                    std::size_t e = a + 1;
+                    while (e < nv && std::abs(b0.E[std::size_t(m)][e] - b0.E[std::size_t(m)][e - 1]) < 1e-7) ++e;
+                    std::vector<Eigen::VectorXcd> v(y.begin() + std::ptrdiff_t(a), y.begin() + std::ptrdiff_t(e));
+                    if (realMode && !realify(v)) *ok = false;
+                    const int g = int(e - a);
+                    Eigen::MatrixXcd R = Eigen::MatrixXcd::Identity(g, g);
+                    if (prev) {
+                        Eigen::MatrixXcd O(g, g);
+                        for (int r = 0; r < g; ++r) {
+                            const Eigen::VectorXcd mp = mass6((*prev)[a + std::size_t(r)]);
+                            for (int c = 0; c < g; ++c) O(r, c) = mp.dot(v[std::size_t(c)]);
+                        }
+                        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(O, Eigen::ComputeFullU | Eigen::ComputeFullV);
+                        R = svd.matrixV() * svd.matrixU().adjoint();
+                    }
+                    for (int c = 0; c < g; ++c) {
+                        Eigen::VectorXcd s = Eigen::VectorXcd::Zero(v.front().size());
+                        for (int r = 0; r < g; ++r) s += v[std::size_t(r)] * R(r, c);
+                        y[a + std::size_t(c)] = realMode ? Eigen::VectorXcd(s.real().cast<cd>()) : s;
+                    }
+                    a = e;
+                }
+                return y;
+            };
+            // Each electron's overlaps with an equation's: Σ w ψe N.
+            std::vector<Eigen::VectorXcd> loads;
+            for (int ie : electrons) {
                 Eigen::VectorXd load = Eigen::VectorXd::Zero(n);
                 for (const Point& pt : a_points) {
-                    const double fe = pt.w * at(pt, e.x);
+                    const double fe = pt.w * at(pt, a_states[0][std::size_t(ie)].x);
                     if (fe == 0) continue;
                     for (int q = 0; q < pt.n; ++q)
                         if (pt.eq[q] >= 0) load(pt.eq[q]) += fe * pt.N[q];
                 }
-                const Eigen::VectorXcd loadc = load.cast<std::complex<double>>();
-                std::array<std::complex<double>, 6> ov;
-                for (int c = 0; c < 6; ++c) ov[std::size_t(c)] = loadc.dot(x0.segment(c * n, n));
-                const double scale = g->dirs.front()->Ep / g->dirs.front()->nr, zr = e.Ep > 0 ? e.EpZ / e.Ep : 1.0;
-                const double w0TE = average(*g, 0, 1), w0TM = average(*g, 0, 2);
-                double mostTE = 0, mostTM = 0;
-                for (const KpPair* d : g->dirs)
-                    for (std::size_t m = 0; m < d->wte.size(); ++m) {
-                        mostTE = std::max(mostTE, d->wte[m]);
-                        mostTM = std::max(mostTM, d->wtm[m]);
+                loads.push_back(load.cast<cd>());
+            }
+            // The basis, each μ's (the components of one J_z); the states'
+            // coefficients on it and the electrons' overlaps with each
+            // component at each k point - real phases if the bands allow,
+            // else complex.
+            const std::vector<std::vector<int>> muOf = {{0}, {1, 3}, {2, 4}, {5}};
+            std::vector<Eigen::VectorXcd> basis;
+            std::vector<std::vector<Eigen::VectorXcd>> coefs;                         // [state][m]
+            std::vector<std::vector<std::vector<Eigen::Matrix<cd, 6, 1>>>> overlaps;   // [electron][state][m]
+            std::vector<std::vector<std::array<std::vector<double>, 2>>> weights;      // [electron][state]: TE's, TM's [m]
+            double captured = 1;   // the least share of a state the basis holds (k to the bands' top)
+            bool realMode = true;
+            for (int attempt = 0; attempt < 2; ++attempt) {
+                realMode = attempt == 0;
+                bool ok = true;
+                unreal = 0;
+                // Its principal components at k points 0, 1, 2, 4, 8, ... and the
+                // last: those holding all but 1e-5 of them, 12 at most.
+                basis.clear();
+                std::vector<std::vector<Eigen::VectorXcd>> samples;
+                for (int m = 0;; m = std::max(1, 2 * m)) {
+                    const int at = std::min(m, M - 1);
+                    samples.push_back(statesAt(at, realMode, nullptr, &ok));
+                    if (at == M - 1) break;
+                }
+                if (!ok) continue;
+                for (const std::vector<int>& comps : muOf) {
+                    const Eigen::Index len = Eigen::Index(comps.size()) * n;
+                    const Eigen::Index cols = Eigen::Index(samples.size() * states.size());
+                    Eigen::MatrixXcd S(len, cols), MS(len, cols);
+                    Eigen::Index col = 0;
+                    for (const std::vector<Eigen::VectorXcd>& y : samples)
+                        for (int j : states) {
+                            for (std::size_t c = 0; c < comps.size(); ++c) {
+                                S.col(col).segment(Eigen::Index(c) * n, n) = y[std::size_t(j)].segment(comps[c] * n, n);
+                                MS.col(col).segment(Eigen::Index(c) * n, n) = Mnc * y[std::size_t(j)].segment(comps[c] * n, n);
+                            }
+                            ++col;
+                        }
+                    // (Real: a real solve, its vectors real.)
+                    const Eigen::MatrixXcd G = S.adjoint() * MS;
+                    Eigen::VectorXd lam;
+                    Eigen::MatrixXcd vec;
+                    if (realMode) {
+                        const Eigen::MatrixXd Gr = G.real();
+                        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(0.5 * (Gr + Gr.transpose()));
+                        lam = es.eigenvalues();
+                        vec = es.eigenvectors().cast<cd>();
+                    } else {
+                        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(0.5 * (G + G.adjoint()));
+                        lam = es.eigenvalues();
+                        vec = es.eigenvectors();
                     }
-                // (Dark at k = 0, bright past it: a part of its own.)
-                const int ownTE = !(w0TE > 1e-6 * mostTE) && mostTE > 1e-10 ? components++ : -1;
-                const int ownTM = !(w0TM > 1e-6 * mostTM) && mostTM > 1e-10 ? components++ : -1;
-                if (ownTE >= 0) blk.te.push_back(ownTE);
-                if (ownTM >= 0) blk.tm.push_back(ownTM);
-                exciton::Pair x;
-                x.electron = eIndex[g->ie];
-                x.hole = hIndex[g->jv];
-                x.energy = [g, average](double k) { return average(*g, k, 0); };
-                x.amplitude = [g, average, ov, scale, zr, w0TE, w0TM, ownTE, ownTM](double k, std::vector<std::complex<double>>& a) {
-                    const double wTE = average(*g, k, 1), wTM = average(*g, k, 2);
-                    const double sTE = w0TE > 0 && ownTE < 0 ? std::sqrt(1.5 * scale * std::max(0.0, wTE) / w0TE) : 0.0;
-                    const double sTM = w0TM > 0 && ownTM < 0 ? std::sqrt(3 * zr * scale * std::max(0.0, wTM) / w0TM) : 0.0;
-                    for (int c : {0, 1, 3, 4}) a[std::size_t(c)] = ov[std::size_t(c)] * sTE;
-                    for (int c : {2, 5}) a[std::size_t(c)] = ov[std::size_t(c)] * sTM;
-                    if (ownTE >= 0) a[std::size_t(ownTE)] = std::sqrt(scale * std::max(0.0, wTE));
-                    if (ownTM >= 0) a[std::size_t(ownTM)] = std::sqrt(scale * std::max(0.0, wTM));
-                };
-                xp.push_back(std::move(x));
-                for (const KpPair* d : g->dirs) const_cast<KpPair*>(d)->coupled = true;
-                // (The first electron state's with its brightest TE valence
-                // state at k = 0 of the lowest: the e1-hh1's.)
+                    double total = 0;
+                    for (Eigen::Index i = 0; i < cols; ++i) total += std::max(0.0, lam(i));
+                    double left = total;
+                    for (Eigen::Index i = cols - 1; i >= 0 && i >= cols - 12 && left > 1e-5 * total && lam(i) > 1e-12 * total; --i) {
+                        const Eigen::VectorXcd b = S * vec.col(i) / std::sqrt(lam(i));
+                        Eigen::VectorXcd full = Eigen::VectorXcd::Zero(6 * n);
+                        for (std::size_t c = 0; c < comps.size(); ++c) full.segment(comps[c] * n, n) = b.segment(Eigen::Index(c) * n, n);
+                        basis.push_back(realMode ? Eigen::VectorXcd(full.real().cast<cd>()) : full);
+                        left -= lam(i);
+                    }
+                }
+                std::vector<Eigen::VectorXcd> mb;
+                for (const Eigen::VectorXcd& b : basis) mb.push_back(mass6(b));
+                coefs.assign(states.size(), std::vector<Eigen::VectorXcd>(std::size_t(M)));
+                overlaps.assign(electrons.size(), std::vector<std::vector<Eigen::Matrix<cd, 6, 1>>>(states.size(), std::vector<Eigen::Matrix<cd, 6, 1>>(std::size_t(M))));
+                captured = 1;
+                std::vector<Eigen::VectorXcd> prev;
+                for (int m = 0; m < M && ok; ++m) {
+                    std::vector<Eigen::VectorXcd> y = statesAt(m, realMode, m > 0 ? &prev : nullptr, &ok);
+                    for (std::size_t s = 0; s < states.size(); ++s) {
+                        const Eigen::VectorXcd& x = y[std::size_t(states[s])];
+                        Eigen::VectorXcd cf(Eigen::Index(basis.size()));
+                        for (std::size_t b = 0; b < basis.size(); ++b) cf(Eigen::Index(b)) = mb[b].dot(x);
+                        captured = std::min(captured, cf.squaredNorm());
+                        coefs[s][std::size_t(m)] = cf;
+                        for (std::size_t e = 0; e < electrons.size(); ++e)
+                            for (int c = 0; c < 6; ++c) overlaps[e][s][std::size_t(m)](c) = loads[e].dot(x.segment(c * n, n));
+                    }
+                    prev = std::move(y);
+                }
+                if (ok) break;
+            }
+            a_s.log << tr("%1: the coupled excitons' spinors on %2 functions of their J_z, holding %3 % of each at least%4")
+                           .arg(a_node->name())
+                           .arg(basis.size())
+                           .arg(100 * captured, 0, 'f', 2)
+                           .arg(realMode ? QString() : tr("; the bands not real in their phases: complex"));
+            // Each pair's own weights at the bands' k points: TE (3/2) Σ |<e|e±>|²,
+            // TM 3 Σ |<e|Z>|² by Kane's Ep along the axis - the bands' own.
+            weights.assign(electrons.size(), std::vector<std::array<std::vector<double>, 2>>(states.size()));
+            for (std::size_t e = 0; e < electrons.size(); ++e) {
+                const State& st = a_states[0][std::size_t(electrons[e])];
+                const double zr = st.Ep > 0 ? st.EpZ / st.Ep : 1.0;
+                for (std::size_t s = 0; s < states.size(); ++s)
+                    for (const Eigen::Matrix<cd, 6, 1>& v : overlaps[e][s]) {
+                        weights[e][s][0].push_back(1.5 * (std::norm(v(0)) + std::norm(v(2)) + std::norm(v(3)) + std::norm(v(5))));
+                        weights[e][s][1].push_back(3 * zr * (std::norm(v(1)) + std::norm(v(4))));
+                    }
+            }
+            exciton::Envelopes env = xEnvelopes();
+            for (int ie : electrons) env.electrons.push_back(xEnvelope(a_states[0][std::size_t(ie)].x));
+            for (const Eigen::VectorXcd& b : basis) {
+                std::vector<std::vector<cd>> spinor(6);
+                for (int c = 0; c < 6; ++c)
+                    for (std::size_t p : xOrder) spinor[std::size_t(c)].push_back(std::sqrt(a_points[p].w) * at(a_points[p], b, c * n));
+                env.holes.push_back(std::move(spinor));
+            }
+            env.angular.assign(std::begin(mu), std::end(mu));
+            // The e1-hh1's edge: the first electron state's with its brightest
+            // TE valence state at k = 0, of the lowest.
+            double e1hh1 = NaN, e1hh1Weight = 0;
+            for (const std::shared_ptr<Series>& g : chosen) {
+                const double w0TE = average(*g, 0, 1);
                 if (g->ie == 0 && w0TE > 0 && !std::isfinite(e1hh1)) {
                     e1hh1 = g->edge;
-                    e1hh1Weight = scale * w0TE;
+                    e1hh1Weight = g->dirs.front()->Ep / g->dirs.front()->nr * w0TE;
                 }
+                for (const KpPair* d : g->dirs) const_cast<KpPair*>(d)->coupled = true;
             }
-            blk.r = exciton::solve(env, xp, xOptions(epsr, components, chosen.front()->edge));
-            if (blk.r.energy.empty()) {
-                *error = tr("%1: the coupled excitons: %2").arg(a_node->name(), blk.r.note);
-                return -1;
+            // The channels: J, its TE component and TM (-1: none).
+            struct Channel {
+                double J;
+                int te, tm;
+            };
+            std::vector<const CoupledBlock*> mine;
+            for (const Channel& ch : {Channel{1.5, 0, -1}, Channel{0.5, 3, 1}}) {
+                std::vector<exciton::Pair> xp;
+                for (const std::shared_ptr<Series>& g : chosen) {
+                    const int si = indexOf(states, g->jv), ei = indexOf(electrons, g->ie);
+                    const double scale = g->dirs.front()->Ep / g->dirs.front()->nr;
+                    exciton::Pair x;
+                    x.electron = ei;
+                    x.energy = [g, average](double k) { return average(*g, k, 0); };
+                    const std::vector<Eigen::VectorXcd>* cs = &coefs[std::size_t(si)];
+                    x.holeAt = [cs, dk](double k, std::vector<cd>& c) {
+                        const Eigen::VectorXcd v = cubicAt(*cs, dk, k);
+                        const double norm = v.norm();
+                        for (Eigen::Index i = 0; i < v.size() && i < Eigen::Index(c.size()); ++i) c[std::size_t(i)] = norm > 0 ? v(i) / norm : cd(0);
+                    };
+                    // (Its amplitudes: the spinor's overlaps, cubic between the
+                    // bands' k points, each polarization's |·|² scaled to its own
+                    // at the points linear in k² between them - as the bands'
+                    // weights: the free continuum the spectrum's without
+                    // excitons - and by the directions' average over this
+                    // direction's. Its own, not the bands' state's: where states
+                    // are one energy the bands' are any mixture of them.)
+                    const std::vector<Eigen::Matrix<cd, 6, 1>>* ovs = &overlaps[std::size_t(ei)][std::size_t(si)];
+                    const std::array<std::vector<double>, 2>* own = &weights[std::size_t(ei)][std::size_t(si)];
+                    const KpPair* d0 = nullptr;
+                    for (const KpPair* d : g->dirs)
+                        if (d->bands == &b0) d0 = d;
+                    const int te = ch.te, tm = ch.tm;
+                    x.amplitude = [g, average, valueAt, d0, own, ovs, &b0, dk, scale, te, tm](double k, std::vector<cd>& a) {
+                        const Eigen::Matrix<cd, 6, 1> v = cubicAt(*ovs, dk, k);
+                        const double sTE = 1.5 * (std::norm(v(0)) + std::norm(v(2)) + std::norm(v(3)) + std::norm(v(5)));
+                        const double sTM = 3 * (std::norm(v(1)) + std::norm(v(4)));
+                        double w[2] = {valueAt(b0.k, (*own)[0], k, false), valueAt(b0.k, (*own)[1], k, false)};
+                        for (int c = 0; c < 2; ++c) {
+                            const double here = d0 ? valueAt(b0.k, c == 0 ? d0->wte : d0->wtm, k, false) : 0.0;
+                            if (here > 0) w[c] *= average(*g, k, c + 1) / here;
+                        }
+                        a[0] = sTE > 0 ? std::sqrt(1.5 * scale * std::max(0.0, w[0]) / sTE) * v(te) : cd(0);
+                        a[1] = tm >= 0 && sTM > 0 ? std::sqrt(3 * scale * std::max(0.0, w[1]) / sTM) * v(tm) : cd(0);
+                    };
+                    xp.push_back(std::move(x));
+                }
+                exciton::Options xo = xOptions(epsr, 2, chosen.front()->edge);
+                xo.channel = ch.J;
+                CoupledBlock blk;
+                blk.r = exciton::solve(env, xp, xo);
+                if (blk.r.energy.empty()) {
+                    *error = tr("%1: the coupled excitons: %2").arg(a_node->name(), blk.r.note);
+                    return -1;
+                }
+                blk.spin = 2;
+                blk.te = {0};
+                blk.tm = {1};
+                blk.edge = chosen.front()->edge;
+                blk.cells();
+                if (ch.J == 1.5) xSpacing(blk, int(chosen.size()), xo.maxSize);
+                xBlocks.push_back(std::move(blk));
             }
-            blk.edge = chosen.front()->edge;
-            blk.cells();
-            if (!blk.r.note.isEmpty()) a_s.log << tr("%1: the coupled excitons' %2").arg(a_node->name(), blk.r.note);
-            if (std::isfinite(e1hh1)) xGlobals(blk, e1hh1, e1hh1Weight);
-            xBlocks.push_back(std::move(blk));
+            for (std::size_t b = xBlocks.size() - 2; b < xBlocks.size(); ++b) mine.push_back(&xBlocks[b]);
+            if (std::isfinite(e1hh1)) xGlobals(mine, e1hh1, e1hh1Weight);
+            }
         }
     }
+    if (widest.spacing > 0)
+        a_s.log << tr("Warning: %1: the coupled excitons' continuum states %2 meV apart, not the %3 the line's width asks (%4 on %5 k "
+                      "points: its %6 unknowns, \"excitonsize\"): above the edges, where pairs' continua mix, its absorption ripples the "
+                      "more the narrower the line - a line of 1 meV or more smooths it (a 10 nm GaAs well's 4x4 bands: some 7 % at 0.5 "
+                      "meV, 2 % at 1, under 1 % at 2)")
+                       .arg(a_node->name())
+                       .arg(widest.spacing / Q * 1e3, 0, 'g', 3)
+                       .arg(widest.asked / Q * 1e3, 0, 'g', 3)
+                       .arg(widest.pairs == 1 ? tr("1 pair") : tr("%1 pairs").arg(widest.pairs))
+                       .arg(widest.points)
+                       .arg(widest.size);
     // A k interval's line at E: its energies' spread [ε0, ε1] its density
     // (1/J), broadened by the line's shape.
     auto spread = [&](double e0, double e1, double E) {
@@ -3786,14 +4086,16 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                     tmTail += Cx * sTM * l;
                 }
             };
-            for (std::size_t n = 0; n < blk.lo.size(); ++n) {
+            for (std::size_t n = 0; n < blk.spread.size(); ++n) {
                 const double En = r.energy[n];
                 if (window && !inWindow(En)) continue;
                 double sTE = 0, sTM = 0;
                 for (int c : blk.te) sTE += r.strength[std::size_t(c)][n];
                 for (int c : blk.tm) sTM += r.strength[std::size_t(c)][n];
-                const double cell = blk.hi[n] - blk.lo[n];
-                add(En, sTE, sTM, (cell > 0 ? (cdf(blk.hi[n] - E) - cdf(blk.lo[n] - E)) / cell : pdf(E - En)) * fadeAt(En));
+                double l = blk.spread[n].empty() ? pdf(E - En) : 0.0;
+                for (const exciton::Result::Cell& cell : blk.spread[n])
+                    l += cell.share * (cell.hi > cell.lo ? (cdf(cell.hi - E) - cdf(cell.lo - E)) / (cell.hi - cell.lo) : pdf(E - En));
+                add(En, sTE, sTM, l * fadeAt(En));
             }
             if (window && !(r.cut < windowHi)) continue;
             const double from = window ? std::max(r.cut, windowLo) : r.cut;
@@ -3981,9 +4283,22 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                                .arg(fading ? tr(" past the barriers' gap and the fade, %1").arg(electronVolts(barrierGap + o.fade)) : QString());
         }
     }
-    a_s.log << tr("%1: a spectrum of %2 transitions at %3 photon energies, %4%5")
+    // (The k·p bands' transitions their pairs', one direction's; the coupled
+    // excitons' among them.)
+    std::size_t count = transitions.size(), joined = 0;
+    for (const Transition& t : transitions) joined += t.coupled ? 1 : 0;
+    if (kp) {
+        count = 0;
+        for (const KpPair& pr : pairs)
+            if (pr.bands == &a_kps.front()) {
+                ++count;
+                joined += pr.coupled ? 1 : 0;
+            }
+    }
+    a_s.log << tr("%1: a spectrum of %2 transitions%3 at %4 photon energies, %5%6")
                    .arg(a_node->name())
-                   .arg(transitions.size())
+                   .arg(count)
+                   .arg(joined > 0 ? tr(" (%1 of them the coupled excitons')").arg(joined) : QString())
                    .arg(o.energies.size())
                    .arg(a_spec.carriers ? tr("the quasi-Fermi levels %1 apart").arg(electronVolts(a_spec.Fc - a_spec.Fv))
                                         : tr("no carriers"))

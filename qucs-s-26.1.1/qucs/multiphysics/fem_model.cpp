@@ -2428,10 +2428,20 @@ QList<NodeKind> makeKinds()
                                 "pairs' amplitudes together - Chuang, Schmitt-Rink, Miller and Chemla's momentum-space exciton, its "
                                 "subbands coupled as Winkler's: the 2s and higher, the continuum's Sommerfeld factor itself, a dark "
                                 "pair's exciton (indirect, across a barrier) mixing with a bright one's, a Fano line where a bound "
-                                "state meets another pair's continuum. The lowest 12 pairs of each kind of hole, dark ones too (k·p "
-                                "bands: the 16 lowest, their energies and weights averaged over the plane's directions - the axial "
-                                "approximation; not 8x8's)")),
+                                "state meets another pair's continuum. The lowest 12 pairs of each kind of hole, dark ones too. "
+                                "k·p bands (4x4, 6x6): the 16 lowest pairs, the heavy and light holes' mixing along k in the "
+                                "attraction as well as the bands - each hole spinor's J_z components in their own angular "
+                                "channels of the exciton's J_z, the light's J 3/2 and 1/2 apart - in the axial approximation (along "
+                                "[100], [110] or averaged the spinors that direction's), the energies and weights averaged over the "
+                                "plane's directions; not 8x8's")),
                       QStringLiteral("excitons=true")),
+              shownIf(integer(QStringLiteral("excitonsize"), tr("Coupled excitons' size"), 1200,
+                              tr("The unknowns of the coupled excitons' Hamiltonian at most - its pairs times its k points (each J's "
+                                 "of k·p bands) -, the continuum's states half the line's width apart within it, else further, said. "
+                                 "Each state is spread over its pairs' cells, smooth however far apart; where pairs' continua mix a "
+                                 "narrow line still ripples - some 7 % at 0.5 meV, 2 % at 1, under 1 % at 2 -, a larger size little "
+                                 "help. Its dense solve some 1 s at 1200, 8 s at 2400")),
+                      QStringLiteral("excitons=true&excitonmodel=coupled")),
               shownIf(expr(QStringLiteral("epsr"), tr("Excitons' permittivity εr"), QString(), QString(),
                            tr("Static. Empty: the wells' material's (its epsilonr, else its compound's; a Quantum Well Material's "
                               "own, else nr²)")),
