@@ -1876,7 +1876,7 @@ QJsonObject QucsControl::femExport(const QJsonObject& args)
         QStringList list;
         if (exports)
             for (const FNode& e : exports->children) list << QStringLiteral("%1 (%2)").arg(e.name(), e.tag);
-        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (touchstone, spice, qucspart, fieldexport, lumericalmode, lumericalcharge, lumericalmqw).")
+        return errorResult(tr("Which export? 'export': %1 - fem_edit adds one under \"exports\" (touchstone, spice, qucspart, fieldexport, modeprofile, lumericalmode, lumericalcharge, lumericalmqw).")
                                .arg(list.isEmpty() ? tr("none yet") : list.join(QStringLiteral(", "))));
     }
     if (args.value(QLatin1String("copy")).toBool()) {
@@ -1895,6 +1895,10 @@ QJsonObject QucsControl::femExport(const QJsonObject& args)
         if (bytes.startsWith("\x93NUMPY") && bytes.size() > 10) {
             const int length = quint8(bytes[8]) | (quint8(bytes[9]) << 8);
             head = QString::fromLatin1(bytes.mid(10, length)).trimmed();
+        } else if (bytes.startsWith("MATLAB 5.0 MAT-file") || bytes.startsWith("PK\x03\x04")) {
+            // (A .mat or .npz: what it holds, as its export said it - not its bytes.)
+            const QStringList said = doc->messages();
+            head = said.isEmpty() ? QString() : said.last().section(QStringLiteral(" written - "), 1);
         } else {
             head = QString::fromUtf8(bytes);
         }

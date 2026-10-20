@@ -212,6 +212,11 @@ public:
     /// model_tag.s2p, .cir, .sch (in the cache when it is not saved). The
     /// path; empty and why on failure.
     QString runExport(const QString& tag, QString* error = nullptr);
+    /// The mode plot group \a tag shows - its study's mode at its point and
+    /// frequency - as a Mode Profile export would write it, to \a path: its
+    /// format by its suffix (.mat, .npz, .csv), a 201 by 201 grid over the
+    /// mode's domains. What it wrote, said; empty and why in \a error.
+    QString exportModeProfile(const QString& tag, const QString& path, QString* error = nullptr);
     /// A Qucs Subcircuit (RLCG) node's part alone on the clipboard, to paste
     /// into a schematic.
     bool copyPart(const QString& tag, QString* error = nullptr);
