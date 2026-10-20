@@ -376,3 +376,14 @@ if(APPLE)
   set_property(TEST test_fem_laser test_fem_resonator test_fem_quantum test_fem_modulator test_fem_optoelectronics
                APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_memory_ms}")
 endif()
+# (The toy laser's threshold cases - three walks to 1.4 V and more, one of
+# them failing on purpose, halved to 10 µV and tried again from rest - some
+# 300 s sanitized here; CI's sanitized Debug runner twice that or so, and a
+# slow one past QtTest's 900 s there (d3e35fe's run, its tests 188 minutes
+# where 953c8c9's took 90). The laser test's functions twice the scale's,
+# within its TIMEOUT; on macOS 900 s at least, as above.)
+math(EXPR _qucs_laser_ms "600000 * ${QUCS_TEST_TIMEOUT_SCALE}")
+if(APPLE AND _qucs_laser_ms LESS 900000)
+  set(_qucs_laser_ms 900000)
+endif()
+set_property(TEST test_fem_laser APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_laser_ms}")
