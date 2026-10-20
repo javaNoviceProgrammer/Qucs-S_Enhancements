@@ -1933,6 +1933,17 @@ bool applyTrace(Graph* g, const Diagram* d, const QJsonObject& o, QString* error
         }
         g->ghost = o.value(QLatin1String("ghost")).toBool();
     }
+    if (o.contains(QLatin1String("hidden"))) {
+        if (!o.value(QLatin1String("hidden")).isBool()) {
+            *error = tr("'hidden' is true (kept, not drawn) or false (shown).");
+            return false;
+        }
+        if (o.value(QLatin1String("hidden")).toBool() && !Graph::hidingApplies(d->Name)) {
+            *error = tr("A %1 diagram does not hide a trace: 'hidden' is for a Cartesian or a stacked diagram's.").arg(kindName(d));
+            return false;
+        }
+        g->hidden = o.value(QLatin1String("hidden")).toBool();
+    }
     if (o.contains(QLatin1String("part"))) {
         const int part = indexIn(kParts, o.value(QLatin1String("part")).toString().trimmed().toLower());
         if (part < 0) {
@@ -2173,6 +2184,7 @@ QJsonObject traceJson(Schematic* sch, const Diagram* d, Graph* g, int number)
         if (hasRightAxis(d)) t.insert(QStringLiteral("axis"), g->yAxisNo == 1 ? QStringLiteral("right") : QStringLiteral("left"));
         if (const auto* stacked = dynamic_cast<const StackedDiagram*>(d)) t.insert(QStringLiteral("pane"), stacked->paneOf(g) + 1);
         if (g->ghost) t.insert(QStringLiteral("ghost"), true);
+        if (g->hidden) t.insert(QStringLiteral("hidden"), true);
     } else if (d->Name == QLatin1String("Tab")) {
         t.insert(QStringLiteral("precision"), g->Precision);
         if (g->numMode >= 0 && g->numMode < int(std::size(kNumbers))) t.insert(QStringLiteral("numbers"), QString::fromLatin1(kNumbers[g->numMode]));

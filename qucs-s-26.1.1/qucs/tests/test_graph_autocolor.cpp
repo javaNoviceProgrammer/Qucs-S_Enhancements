@@ -215,6 +215,39 @@ private slots:
         for (const QColor& c : Graph::autoPalette()) QVERIFY2(countColor(img, img.rect(), c.rgb()) > 10, qPrintable(c.name()));
     }
 
+    // Hidden (a thirteenth field): kept, not drawn - its curve and its
+    // name on the axis none -, the others as they were; shown again.
+    void aHiddenGraphNotDrawn()
+    {
+        const QString data = dir.filePath("hidden.dat");
+        QVERIFY(writeDataset(data, 1));
+        // (The y axis 0 to 25: both within it, hidden or not.)
+        QScopedPointer<RectDiagram> d(makeDiagram("<\"v\" #0000ff 2 3 0 0 0>\n<\"w\" #ff0000 2 3 0 0 0 0 0 0 0 0 1>\n", 0, 25));
+        QVERIFY(d);
+        QCOMPARE(d->Graphs.size(), 2);
+        QVERIFY(!d->Graphs.at(0)->hidden && d->Graphs.at(1)->hidden);
+        d->loadGraphData(data);
+        QImage img = render(d.data());
+        QVERIFY(countColor(img, img.rect(), qRgb(0, 0, 255)) > 100);
+        QCOMPARE(countColor(img, img.rect(), qRgb(255, 0, 0)), 0);
+        d->Graphs.at(1)->hidden = false;
+        d->loadGraphData(data);
+        img = render(d.data());
+        QVERIFY(countColor(img, img.rect(), qRgb(255, 0, 0)) > 100);
+        QVERIFY(countColor(img, img.rect(), qRgb(0, 0, 255)) > 100);
+        // Scaled to its data: hidden, the axis v's alone (w at 20 off it);
+        // shown again, its data unchanged, laid out again - w on it.
+        QScopedPointer<RectDiagram> scaled(makeDiagram("<\"v\" #0000ff 2 3 0 0 0>\n<\"w\" #ff0000 2 3 0 0 0 0 0 0 0 0 1>\n"));
+        QVERIFY(scaled);
+        scaled->loadGraphData(data);
+        QVERIFY2(scaled->yAxis.max < 5, qPrintable(QString::number(scaled->yAxis.max)));
+        scaled->Graphs.at(1)->hidden = false;
+        scaled->loadGraphData(data);
+        QVERIFY2(scaled->yAxis.max >= 21, qPrintable(QString::number(scaled->yAxis.max)));
+        img = render(scaled.data());
+        QVERIFY(countColor(img, img.rect(), qRgb(255, 0, 0)) > 100);
+    }
+
     // Point markers: a ninth field (the eighth written with it); the auto
     // shapes in their order, going on across a diagram's graphs; with auto
     // colors no two of the first 56 curves alike; not on symbols, not in a

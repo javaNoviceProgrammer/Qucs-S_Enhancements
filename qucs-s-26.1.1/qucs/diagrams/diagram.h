@@ -277,6 +277,10 @@ public:
   // Whether updateGraphData() has laid the diagram out since it was made:
   // until then its axes and labels are the constructor's defaults.
   bool laidOut = false;
+  // Which of its graphs were hidden as it was laid out: one hidden or shown
+  // since, its data unchanged, lays it out again (the axes of those shown).
+  QVector<bool> hiddenLaidOut;
+  QVector<bool> hiddenNow() const;
 
   bool hideLines;       // for "Rect3D": hide invisible lines ?
   int rotX, rotY, rotZ; // for "Rect3D": rotation around x, y and z axis

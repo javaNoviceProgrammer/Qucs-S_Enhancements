@@ -178,6 +178,14 @@ public:
   /// same variable from simulate's keep_as, a before for an after).
   bool ghost = false;
   static constexpr double GhostOpacity = 0.35;
+  /// Hidden: kept in the diagram, its settings with it, but not drawn - no
+  /// curve, no row in the legend, no name on an axis, no markers - nor in
+  /// the axes' automatic limits; shown again as it was. A thirteenth field
+  /// of the graph's line, which versions before it do not read.
+  bool hidden = false;
+  /// Whether a diagram of \a diagramName can hide a graph: the curves of a
+  /// Cartesian or a stacked one.
+  static bool hidingApplies(const QString& diagramName);
   double *cPointsY;
   int     countY;    // number of curves
   QString Var;
