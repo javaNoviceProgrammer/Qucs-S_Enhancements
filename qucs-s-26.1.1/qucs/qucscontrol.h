@@ -129,6 +129,10 @@ public:
     /// Served with no window (qucs-s --mcp-server): no one answers a
     /// message box at all.
     void setHeadless(bool headless) { a_headless = headless; }
+    /// How long send_input waits for its window's activation before its
+    /// keys (ms, 500): 0 gives them before it comes, as a loaded runner's
+    /// does (tests).
+    void setActivationWait(int ms) { a_activationWait = ms; }
 
 protected:
     /// A message box that opens while a tool call runs (one no one would
@@ -262,6 +266,7 @@ private:
     int a_alone = 0;   // calls that run alone, under way
     void runWaiting();
     bool a_headless = false;
+    int a_activationWait = 500;   // ms (setActivationWait)
     // Event loops a call runs while it waits (a script's call of a
     // simulation, a question to the user): a box the user opens meanwhile
     // is theirs, not the call's.
