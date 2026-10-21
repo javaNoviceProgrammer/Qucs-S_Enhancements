@@ -943,6 +943,176 @@ private slots:
         QVERIFY2(delta > 0.1, qPrintable(QString::number(delta)));
         QVERIFY2(std::abs((Ru - Rd) / ((Rt - Rd) / (1 + delta)) - 1) < within, qPrintable(QStringLiteral("%1 %2").arg(Ru - Rd).arg((Rt - Rd) / (1 + delta))));
     }
+
+    // Hot electrons where all is uniform: a bar of n-silicon (1e17 cm⁻³, 2
+    // µm) at 1 V (5 kV/cm, 0.57 vsat), their temperature an energy
+    // balance's (τw 0.3 ps). In its middle, far from its contacts' cool
+    // electrons (some vsat τw), their heating (2/3) q τw v F/k, v and F the
+    // bar's own there, to 1 %; its current the field-driven saturation's
+    // to 1 %. (Nearer saturation the field settles along the bar slowly -
+    // at 4 V 10 % above its mean in its middle; at 10 V the current is
+    // past q Nd vsat, the electrons cooler than the field they enter a
+    // little faster than vsat: the bar fills with 2.5 % more electrons
+    // than its donors, its field rising along it, the energy carried
+    // along the rise 4 % of the field's gift - (5/3) τw v F'/F.)
+    void hotElectronsWhereUniform()
+    {
+        auto bar = [](const QString& driving) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "bar", "size": ["2", "0.2"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "model", "saturation": true, "driving": "%1", "selection": {"all": true}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "1[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.02"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(driving)
+                               .toUtf8());
+        };
+        const Run hot = run(bar(QStringLiteral("energy"))), field = run(bar(QStringLiteral("field")));
+        for (const Run* r : {&hot, &field}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        const Solution& s = *hot.study.solutions.back();
+        const double Ih = global(s, QStringLiteral("semi.I_2")), If = global(*field.study.solutions.back(), QStringLiteral("semi.I_2"));
+        const double Tn = at(s, QStringLiteral("semi.Tn"), 1, 0.1), F = at(s, QStringLiteral("semi.normE"), 1, 0.1);
+        const double v = std::abs(at(s, QStringLiteral("semi.Jnx"), 1, 0.1)) / (Q * at(s, QStringLiteral("semi.n"), 1, 0.1));
+        const double expected = 300 + 2.0 / 3.0 * Q * 0.3e-12 * v * F / 1.380649e-23;
+        qInfo("hot electrons at 1 V: %.6g A (driven by the field %.6g A); in the middle %.2f K (%.2f), v %.5g m/s, F %.5g V/m", Ih, If, Tn, expected, v, F);
+        QVERIFY2(std::abs((Tn - 300) / (expected - 300) - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(Tn).arg(expected)));
+        // Entering at the cathode, cool, they warm over 1/|λ|: κ λ² - (5/2) k
+        // n v λ - (3/2) k n/τw = 0, κ = (5/2)(k²/q) µ n T - carried with their
+        // current and conducted, some 60 nm (41 conducted alone): fitted to
+        // its rise 30 and 60 nm in, to 10 %.
+        const double kB = 1.380649e-23, nmid = at(s, QStringLiteral("semi.n"), 1, 0.1), mu = v / F;
+        const double kappa = 2.5 * kB * kB / Q * mu * nmid * 0.5 * (300 + Tn), a = 2.5 * kB * nmid * v, c = 1.5 * kB * nmid / 0.3e-12;
+        const double length = 2 * kappa / (std::sqrt(a * a + 4 * kappa * c) - a);
+        const double d30 = Tn - at(s, QStringLiteral("semi.Tn"), 0.03, 0.1), d60 = Tn - at(s, QStringLiteral("semi.Tn"), 0.06, 0.1);
+        const double fitted = 30e-9 / std::log(d30 / d60);
+        qInfo("warming in: over %.4g nm (%.4g nm)", fitted * 1e9, length * 1e9);
+        QVERIFY2(std::abs(fitted / length - 1) < 0.1, qPrintable(QStringLiteral("%1 %2").arg(fitted).arg(length)));
+        QVERIFY2(std::abs(Ih / If - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(Ih).arg(If)));
+    }
+
+    // Hot electrons in time: the bar at 1 V stepped on from rest, 3 ps -
+    // its temperatures solved with each step's Newton's method - its
+    // current its rest's to 1e-4; its start's temperature and mobility
+    // shown as at rest (they were setup's, 300 K and the low field's).
+    void hotElectronsInTime()
+    {
+        const QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "bar", "size": ["2", "0.2"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "model", "saturation": true, "driving": "energy", "selection": {"all": true}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "1[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.04"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}, {"type": "transient", "times": "range(0, 1[ps], 3[ps])"}]}]})json")
+                                    .toUtf8();
+        const Run r = run(modelOf(json));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.study.solutions.back();
+        s.select(0);
+        const double I0 = global(s, QStringLiteral("semi.I_2")), T0 = at(s, QStringLiteral("semi.Tn"), 1, 0.1);
+        s.select(s.snapshotCount() - 1);
+        const double I3 = global(s, QStringLiteral("semi.I_2")), T3 = at(s, QStringLiteral("semi.Tn"), 1, 0.1);
+        s.select(0);
+        const double mu0 = at(s, QStringLiteral("semi.mun"), 1, 0.1);
+        s.select(s.snapshotCount() - 1);
+        const double mu3 = at(s, QStringLiteral("semi.mun"), 1, 0.1);
+        qInfo("in time: %.9g A at rest, %.9g A at 3 ps; %.3f K and %.3f K; mun %.6g and %.6g", I0, I3, T0, T3, mu0, mu3);
+        QVERIFY2(std::abs(mu3 / mu0 - 1) < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(mu3).arg(mu0)));
+        QVERIFY2(std::abs(I3 / I0 - 1) < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(I3).arg(I0)));
+        QVERIFY2(std::abs(T3 - T0) < 0.1, qPrintable(QStringLiteral("%1 %2").arg(T3).arg(T0)));
+    }
+
+    // Velocity overshoot: n⁺-n-n⁺ silicon (1e19, 1e16 cm⁻³; 100, 200, 100
+    // nm) at 3 V. The electrons entering the n layer from the cool n⁺ run
+    // past vsat (1e5 m/s) with the energy balance - their temperature lags
+    // the field by some vsat τw -, and no faster than it driven by the
+    // field; their current the more (68.7 A against 41.6).
+    void velocityOvershoot()
+    {
+        if (slowBuild()) QSKIP("hot carriers' turns: Release builds only (past 300 s sanitized)");
+        auto nnn = [](const QString& driving) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "a", "size": ["0.1", "0.02"]},
+                             {"type": "rectangle", "label": "n", "position": ["0.1", "0"], "size": ["0.2", "0.02"]},
+                             {"type": "rectangle", "label": "b", "position": ["0.3", "0"], "size": ["0.1", "0.02"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "model", "saturation": true, "driving": "%1", "selection": {"all": true}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e19[1/cm^3]", "selection": {"only": ["a", "b"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["n"]}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["a"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "3[V]", "selection": {"of": ["b"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.004"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(driving)
+                               .toUtf8());
+        };
+        const Run hot = run(nnn(QStringLiteral("energy"))), field = run(nnn(QStringLiteral("current")));
+        for (const Run* r : {&hot, &field}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        auto fastest = [](const Solution& s) {
+            double most = 0;
+            // (Inside the layer, 30 nm from its junctions: n beside them
+            // a thousand times over a triangle, J/q n there no velocity.)
+            for (int k = 0; k <= 140; ++k) {
+                const double x = 0.13 + 0.14 * k / 140;
+                most = std::max(most, std::abs(at(s, QStringLiteral("semi.Jnx"), x, 0.01)) / (Q * at(s, QStringLiteral("semi.n"), x, 0.01)));
+            }
+            return most;
+        };
+        const double vh = fastest(*hot.study.solutions.back()), vf = fastest(*field.study.solutions.back());
+        const double Ih = global(*hot.study.solutions.back(), QStringLiteral("semi.I_2")), If = global(*field.study.solutions.back(), QStringLiteral("semi.I_2"));
+        const double Tmax = at(*hot.study.solutions.back(), QStringLiteral("semi.Tn"), 0.3, 0.01);
+        qInfo("n+ n n+ at 3 V: the fastest electrons %.4g m/s hot, %.4g m/s driven by the field; the current %.6g and %.6g A; %.1f K at the n layer's end",
+              vh, vf, Ih, If, Tmax);
+        QVERIFY2(vh > 1.2e5, qPrintable(QString::number(vh)));
+        QVERIFY2(vf < 1.01e5, qPrintable(QString::number(vf)));
+        QVERIFY2(Ih > If, qPrintable(QStringLiteral("%1 %2").arg(Ih).arg(If)));
+    }
+
+    // Transferred electrons: a bar of n-GaAs (1e16 cm⁻³, 10 µm), its
+    // velocity (µ0 F + vsat (F/E0)⁴)/(1 + (F/E0)⁴), E0 4 kV/cm, vsat its
+    // 7.2e6 cm/s, µ0 its own (at 10 mV): at 2, 4, 6 and 8 kV/cm its current
+    // q n v A to 1e-3 - past the peak, at 6 and 8, less.
+    void transferredElectrons()
+    {
+        const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "V", "expression": "0.01[V]"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "bar", "size": ["10", "1"]}],
+                "materials": [{"material": "Gallium arsenide", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "model", "saturation": true, "driving": "field", "velocity": "transferred", "selection": {"all": true}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "V", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.5"}}],
+              "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["V", "0.01, 2, 4, 6, 8", "V"]]}, {"type": "stationary"}]}]})json")
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(int(r.study.solutions.size()), 5);
+        const double n = 1e22, A = 1e-6, L = 10e-6, E0 = 4e5, vsat = 7.2e4;
+        const double mu0 = global(*r.study.solutions[0], QStringLiteral("semi.I_2")) / (Q * n * A * 0.01 / L);
+        QStringList said;
+        double I[5];
+        for (int k = 1; k < 5; ++k) {
+            const double V = 2.0 * k, F = V / L, r4 = std::pow(F / E0, 4);
+            const double expected = Q * n * A * (mu0 * F + vsat * r4) / (1 + r4);
+            I[k] = global(*r.study.solutions[std::size_t(k)], QStringLiteral("semi.I_2"));
+            said << QStringLiteral("%1 kV/cm %2 A (%3)").arg(F / 1e5).arg(I[k], 0, 'g', 6).arg(expected, 0, 'g', 6);
+            QVERIFY2(std::abs(I[k] / expected - 1) < 1e-3, qPrintable(said.last()));
+        }
+        qInfo("transferred electrons, µ0 %.5g m²/(V s): %s", mu0, qPrintable(said.join(QLatin1String("; "))));
+        QVERIFY2(I[3] < I[2] && I[4] < I[3], qPrintable(said.join(QLatin1String("; "))));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestFemPhotodiodePower)

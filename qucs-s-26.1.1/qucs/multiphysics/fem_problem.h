@@ -519,6 +519,9 @@ struct SemiconductorState {
     /// The light's part of it: its pairs' energy as made less what they
     /// carry, q G (φp - φn) (W/m³).
     double lightHeat = 0;
+    /// Hot carriers' temperatures (K): an energy balance's, else the
+    /// physics' T.
+    double Tn = std::numeric_limits<double>::quiet_NaN(), Tp = std::numeric_limits<double>::quiet_NaN();
     /// Impact ionization's pairs as solved, the triangle's (1/(m³ s)).
     double Gion = 0;
     /// Incomplete ionization's (0: the dopants all ionized): Nd⁺ = Nd/(1 +
