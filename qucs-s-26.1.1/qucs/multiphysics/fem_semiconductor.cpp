@@ -26,6 +26,7 @@
 #include "fem_mesh.h"
 
 #include <Eigen/SparseCholesky>
+#include <Eigen/LU>
 #include <Eigen/QR>
 #include <Eigen/SparseLU>
 
@@ -61,7 +62,7 @@ const double Inf = std::numeric_limits<double>::infinity();
 // Fermi-Dirac's degeneracy in it, as solved), a laser's gain and
 // stimulated rate by node and its photons, then incomplete ionization's
 // Nd⁺ and Na⁻ by node (a_ionAt).
-constexpr int ExtraHead = 3, PerTriangle = 33;
+constexpr int ExtraHead = 3, PerTriangle = 34;
 
 /// Bernoulli's function x / (e^x - 1) and its derivative, safe at 0 and far
 /// from it.
@@ -262,6 +263,7 @@ struct OpticalSource {
     Expression absorbed;             // its <tag>.Qgap (W/m³, the mode at 1 W)
     Expression power;                // P0's
     double P0 = 0, eta = 1, RL = 50;
+    int slices = 1;                  // the device cut along its length into
 };
 
 struct Contact {
@@ -274,8 +276,35 @@ struct Contact {
     double phim = 0;                 // a gate's work function (J)
     std::vector<int> nodes;
     std::vector<double> length;      // by node: the contact's area there (m²: a length times the thickness)
-    double applied = 0;              // the voltage the solution is at (V)
+    double applied = 0;              // the voltage the solution is at (V): a circuit's source's
     double current = 0, charge = 0;  // A into the device, C on the metal
+    // Its circuit: held at V0, or V0 through Rs and a load RL in series (at
+    // rest and for a signal alike), or through a bias tee (Rs at rest, the
+    // signal into RL); a capacitance Cp across the device at the contact.
+    // Its own voltage then an unknown (iC), solved with the carriers.
+    enum Circuit { Held, Series, BiasTee };
+    Circuit circuit = Held;
+    double Rs = 0, RL = 0, Cp = 0;   // Ω, Ω, F
+    int iC = -1;
+    double voltage = 0;              // the contact's own voltage as solved (V)
+    double teeCurrent = 0;           // a bias tee's current at rest (A): in time its load carries the change from it
+    double capCurrent = 0;           // Cp's, Cp dVc/dt (A, in time)
+    double solvedR = 0;              // its resistance at rest as last solved with (Ω)
+    double walkR = NaN;              // on a walk, its resistance at rest on the way there (NaN: its own)
+    /// Its resistance in the current's path at rest: Rs and RL in series, a
+    /// bias tee's Rs.
+    double restR() const { return circuit == Series ? Rs + RL : circuit == BiasTee ? Rs : 0.0; }
+    /// The current through its series resistance toward the device: the
+    /// device's and Cp's (A).
+    double seriesCurrent() const { return current + capCurrent; }
+    /// Its load's current toward the device (A): the series current, or a
+    /// bias tee's change from rest (none at rest).
+    double loadCurrent(bool inTime) const
+    {
+        if (circuit == Series) return seriesCurrent();
+        if (circuit == BiasTee) return inTime ? seriesCurrent() - teeCurrent : 0.0;
+        return 0.0;
+    }
 };
 
 class SemiconductorProblem : public Problem
@@ -346,7 +375,10 @@ private:
     /// in \a steps.
     /// Newton's method from x; \a met first: none of its steps where x
     /// meets the equations already.
-    bool newton(Eigen::VectorXd& x, double mass, const std::vector<double>* history, int maxSteps, int* steps, QString* why, bool met = false);
+    /// \a consistent: its mobilities, held once settled, its solution's own
+    /// at its end (a walk's last solve).
+    bool newton(Eigen::VectorXd& x, double mass, const std::vector<double>* history, int maxSteps, int* steps, QString* why, bool met = false,
+                bool consistent = false);
     /// Poisson's equation alone, the carriers at equilibrium with a Fermi
     /// level of -q \a fermi, the contacts at \a applied; from \a x's
     /// potential (\a warm) or charge neutrality's.
@@ -358,6 +390,11 @@ private:
     /// At rest: from where the solution is to the contacts' voltages, in steps.
     bool stationary(QString* why);
     bool smallSignal(double frequency, QString* why);
+    /// One slice's small signal at its own \a x and pairs (useSlice()'s):
+    /// the contacts' admittance \a Y (S) and the light's currents \a H (A,
+    /// the light modulated wholly; empty without it).
+    bool smallSignalSlice(const Eigen::VectorXd& x, double frequency, std::vector<std::vector<std::complex<double>>>& Y,
+                          std::vector<std::complex<double>>& H, QString* why);
     /// At equilibrium: the gates' quasi-static capacitance - the carriers
     /// following, their Fermi level held at \a fermi - from Poisson's equation
     /// linearized: the low-frequency limit, well conditioned (the small-signal
@@ -513,6 +550,52 @@ private:
     // current: each continuity's store the carriers' less their dopants'
     // ions, n - Nd⁺ and p - Na⁻, as its charge is.
     std::size_t a_ionAt = 0;
+    // Circuits: the field's values from here, each contact's own voltage
+    // and a bias tee's current at rest (0: none); the voltages the contacts'
+    // values were last set at (contactValues(): a circuit's source's, its
+    // nodes' offsets from it); the circuits' rows' worst residual, last
+    // assembled (in units of their voltages).
+    std::size_t a_circuitAt = 0;
+    std::size_t a_lightAt = 0;
+    // The last of Newton's solves held its mobilities before its potential
+    // settled (from its fifteenth step): its solution theirs, not its own.
+    bool a_heldUnsettled = false;
+    double a_lightScale = 1;           // a walk's share of the light, on its way to it (1: all of it)
+    std::vector<double> a_lastApplied;
+    double a_circuitResidual = 0;
+    /// Each circuit's row at \a x - V0 - Vc - R I (I into the device, Cp's
+    /// with it in time), R its resistance in the current's path (Rs and RL
+    /// in series; a bias tee's Rs at rest, Rs and RL in time, its load
+    /// carrying the current's change from rest) - into \a G, its Jacobian's
+    /// entries into \a kept (scaled by Newton's columns); I as reported (the
+    /// edges' currents weighed, the carriers' change and the metal's charge's
+    /// in time) from \a F and \a trip as assembled at x (the contacts' rows
+    /// their reactions).
+    struct CircuitCurrent {
+        double I = 0, gross = 0;      // A; its terms' sizes summed (A)
+        std::map<int, double> dI;     // its change by unknown, among all slices'
+    };
+    /// Slice \a s's share of each circuit's current (\a share its length's):
+    /// I at its own \a x, with \a F and \a trip as assembled there - into
+    /// \a out.
+    void sliceCurrents(int s, double share, const Eigen::VectorXd& x, double mass, const std::vector<double>* history, const Eigen::VectorXd& F,
+                       const std::vector<Eigen::Triplet<double>>& trip, std::vector<CircuitCurrent>& out);
+    void circuitRows(const Eigen::VectorXd& X, double mass, const std::vector<double>* history, const std::vector<CircuitCurrent>& currents,
+                     const Eigen::VectorXd& colScale, Eigen::VectorXd& G, std::vector<Eigen::Triplet<double>>& kept);
+    /// Whether any contact is behind a circuit.
+    bool hasCircuits() const
+    {
+        for (const Contact& c : a_contacts)
+            if (c.iC >= 0) return true;
+        return false;
+    }
+    /// The circuits' contacts' own voltages at equilibrium: their sources'
+    /// (\a applied - no current through their resistances).
+    void circuitsAtRest(Eigen::VectorXd& x, const std::vector<double>& applied) const
+    {
+        for (std::size_t k = 0; k < a_contacts.size(); ++k)
+            if (a_contacts[k].iC >= 0) x(a_contacts[k].iC) = applied[k];
+    }
     // By node, across heterojunctions: the intrinsic level's offset from the
     // first semiconductor's (V: Ei = -q (V + δ)), and the electrons' and
     // holes' band potentials θn = δ + Vt ln(ni/ni_ref), θp = δ - Vt ln(ni/ni_ref)
@@ -655,10 +738,79 @@ private:
     };
     std::vector<Stimulated> a_stimulated;
     mutable std::vector<double> a_lastR;
+    // By node: its recombination as last assembled (pairs per second over
+    // its box's recombining parts - the thermal generation's less, the
+    // light's apart).
+    mutable std::vector<double> a_recombined;
     /// Each node's stimulated rate (1/m³ s) from a_lastR; none without it.
     std::vector<double> stimulatedRates() const;
     double a_Gop = 0, a_Pin = 0;       // the optical generation's pairs per second, the light fed (W)
     std::vector<std::complex<double>> a_Hop;   // small-signal: each contact's current, the light modulated wholly (A)
+    std::vector<std::complex<double>> a_Hc;    // the same through each circuit's load (A; empty: no circuit)
+    bool a_inTime = false;                     // the last solve a step in time's
+    // Slices along the length (an Optical Generation's): each the cross-
+    // section at its place along the device, the light falling along it.
+    // The first's unknowns a solution's vector's (with the circuits'), each
+    // other's a_sliceSize after (a_total in all); each slice its share of
+    // the length (its currents weighed by it), its pairs by node, its start
+    // along the device (then the end), and - their mobilities saturated by
+    // their own fields - its edges' weights. The field's values: the first's
+    // as one slice's, the others' V, n, p (and ions) in blocks after
+    // (a_sliceBlock each from a_slicesAt).
+    int a_slices = 1;
+    int a_sliceSize = 0;
+    int a_total = 0;
+    std::vector<double> a_sliceWeight, a_sliceZ;
+    std::vector<std::vector<double>> a_sliceGeneration;
+    std::vector<std::vector<std::pair<double, double>>> a_sliceEdges;
+    std::vector<std::vector<double>> a_sliceCurrent;   // by slice: each contact's current, its own length's (A)
+    std::size_t a_slicesAt = 0, a_sliceBlock = 0;
+    mutable int a_sliceNow = 0;
+    int sliceOffset(int s) const { return s == 0 ? 0 : a_unknowns + (s - 1) * a_sliceSize; }
+    /// Slice \a s's share of the length (its currents weighed by it): even
+    /// before the light has set them.
+    double sliceWeight(int s) const
+    {
+        if (a_slices <= 1) return 1.0;
+        return std::size_t(s) < a_sliceWeight.size() && a_sliceWeight.size() == std::size_t(a_slices) ? a_sliceWeight[std::size_t(s)] : 1.0 / a_slices;
+    }
+    /// Slice \a s's unknown \a k (its own vector's) among all of them.
+    int globalIndex(int s, int k) const { return k < a_sliceSize ? sliceOffset(s) + k : k; }
+    /// Slice \a s's own vector (a_unknowns long: its V, n, p, the circuits'
+    /// voltages) from all of them \a X.
+    Eigen::VectorXd sliceOf(const Eigen::VectorXd& X, int s) const
+    {
+        Eigen::VectorXd x = X.head(a_unknowns);
+        if (s > 0) x.head(a_sliceSize) = X.segment(sliceOffset(s), a_sliceSize);
+        return x;
+    }
+    /// The first slice's V, n and p in each other's (at rest, no light: all alike).
+    void broadcastSlices(Eigen::VectorXd& X) const
+    {
+        for (int s = 1; s < a_slices; ++s) X.segment(sliceOffset(s), a_sliceSize) = X.head(a_sliceSize);
+    }
+    /// A step in time's history for slice \a s: its own blocks in the
+    /// first's places.
+    std::vector<double> sliceHistory(const std::vector<double>& h, int s) const;
+    /// Slice \a s assembled next: its pairs, its edges' weights (as its
+    /// mobilities last were).
+    void useSlice(int s);
+    /// Slice \a s's edges' weights kept, as they are now.
+    void keepSliceEdges(int s);
+    /// The pairs made by node (1/(m³ s)) for the slice assembled now.
+    const std::vector<double>& generationNow() const
+    {
+        return a_slices > 1 && std::size_t(a_sliceNow) < a_sliceGeneration.size() && !a_sliceGeneration[std::size_t(a_sliceNow)].empty()
+                   ? a_sliceGeneration[std::size_t(a_sliceNow)]
+                   : a_generation;
+    }
+    /// The contacts' currents and charges at all slices' \a X: each slice's
+    /// weighed by its share of the length (terminalValues()'s), in time
+    /// with its metal's charge's change.
+    void terminalAll(const Eigen::VectorXd& X, double mass, const std::vector<double>* history, bool still = false);
+    /// In time, each contact's metal's charge's change (mass Q(x) - Q at the
+    /// history's) into its current, and its dopants' ions'.
+    void displacementCurrents(const Eigen::VectorXd& x, double mass, const std::vector<double>& history);
     bool a_saturation = false, a_lombardi = false;
     bool a_alongCurrent = false;       // a saturation driven by the field along the current
     double a_refDEc = 0, a_refChi = 0; // the first semiconductor's: Ec - Ei, χ (J)
@@ -862,6 +1014,9 @@ bool SemiconductorProblem::setup(QString* error)
             if (o.power.isValid() && o.power.isConstant()) o.P0 = o.power.constant();
             o.eta = number(feature.text(QStringLiteral("eta")), Dim(), feature.name());
             o.RL = number(feature.text(QStringLiteral("RL")), Dim::of(2, 1, -3, -2), feature.name());
+            o.slices = feature.integer(QStringLiteral("slices"));
+            if (o.slices < 1 || o.slices > 100) problem(tr("%1: its slices along the length from 1 to 100").arg(feature.name()));
+            a_slices = std::max(a_slices, std::clamp(o.slices, 1, 100));
             if (!(o.P0 >= 0) || !(o.eta >= 0 && o.eta <= 1)) problem(tr("%1: its power at least 0, its efficiency between 0 and 1").arg(feature.name()));
             const int index = int(a_optical.size());
             a_optical.push_back(o);
@@ -2047,6 +2202,20 @@ bool SemiconductorProblem::setup(QString* error)
                 c.phim = energyOf(bf->text(QStringLiteral("phim")), constants, &why);
             if (!std::isfinite(c.phim)) problem(tr("%1: its work function: %2").arg(bf->name(), why));
         }
+        // Its circuit (a metal contact's, a Schottky one's): V0 through
+        // resistances, a capacitance across.
+        if (c.kind != Contact::Gate) {
+            const QString circuit = bf->text(QStringLiteral("circuit"));
+            c.circuit = circuit == QLatin1String("series") ? Contact::Series : circuit == QLatin1String("biastee") ? Contact::BiasTee : Contact::Held;
+            if (c.circuit != Contact::Held) {
+                const Dim ohm = Dim::of(2, 1, -3, -2);
+                c.Rs = number(bf->text(QStringLiteral("Rs")), ohm, bf->name());
+                c.RL = number(bf->text(QStringLiteral("RL")), ohm, bf->name());
+                c.Cp = number(bf->text(QStringLiteral("Cp")), Dim::capacitance(), bf->name());
+                if (!(c.Rs >= 0) || !(c.RL >= 0) || !(c.Cp >= 0))
+                    problem(tr("%1: its circuit's Rs, RL and Cp must be 0 or more").arg(bf->name()));
+            }
+        }
         for (const Contact& other : a_contacts)
             if (other.name == c.name) problem(tr("two contacts are named %1").arg(c.name));
         const int index = int(a_contacts.size());
@@ -2125,8 +2294,21 @@ bool SemiconductorProblem::setup(QString* error)
             a_iN[std::size_t(i)] = a_unknowns++;
             a_iP[std::size_t(i)] = a_unknowns++;
         }
-    // (A laser's photons: the last.)
+    // (A laser's photons: the last; then each circuit's contact's voltage;
+    // then the other slices'.)
+    a_sliceSize = a_unknowns;
     a_iS = a_laser ? a_unknowns++ : -1;
+    for (Contact& c : a_contacts) c.iC = c.circuit != Contact::Held ? a_unknowns++ : -1;
+    a_total = a_unknowns + (a_slices - 1) * a_sliceSize;
+    if (a_slices > 1) {
+        // (Slices are cross-sections the light alone tells apart: what one
+        // solves across them all - a laser's photons, quantum states, the
+        // recombination stimulated by a threshold - is not cut.)
+        if (a_laser) problem(tr("%1: %2 lases as a whole - its Optical Generation's slices 1").arg(a_node->name(), a_laser->name));
+        if (a_quantumElectrons || a_quantumHoles) problem(tr("%1: its Schrödinger-Poisson states are not cut into slices - its Optical Generation's slices 1").arg(a_node->name()));
+        if (!a_stimulated.empty()) problem(tr("%1: its stimulated recombination is not cut into slices - its Optical Generation's slices 1").arg(a_node->name()));
+        if (a_s.axisymmetric()) problem(tr("%1: about an axis it has no length to cut into slices - its Optical Generation's slices 1").arg(a_node->name()));
+    }
     a_bcV.assign(std::size_t(a_n), 0);
     a_bcN.assign(std::size_t(a_n), 0);
     a_bcP.assign(std::size_t(a_n), 0);
@@ -2137,7 +2319,17 @@ bool SemiconductorProblem::setup(QString* error)
     // time's history then none of them: a 10 ps ramp did not converge.)
     const std::size_t base = std::size_t(a_laser ? 9 : 7) * std::size_t(a_n) + (a_laser ? 1 : 0);
     a_ionAt = a_incomplete ? base : 0;
-    f.values.resize(base + (a_incomplete ? 2 * std::size_t(a_n) : 0), 0.0);
+    // (Then the pairs per second the solution was solved with - a walk to
+    // it ramps the light from there -, and the circuits': each contact's own
+    // voltage, a bias tee's current at rest and the resistance at rest it
+    // was solved with - their history a step in time's, as the carriers'.)
+    bool circuits = false;
+    for (const Contact& c : a_contacts) circuits = circuits || c.iC >= 0;
+    a_lightAt = base + (a_incomplete ? 2 * std::size_t(a_n) : 0);
+    a_circuitAt = circuits ? a_lightAt + 1 : 0;
+    a_sliceBlock = (a_incomplete ? 5 : 3) * std::size_t(a_n);
+    a_slicesAt = a_lightAt + 1 + (circuits ? 3 * a_contacts.size() : 0);
+    f.values.resize(a_slicesAt + std::size_t(a_slices - 1) * a_sliceBlock, 0.0);
     for (int i = 0; i < a_n; ++i) {
         f.values[std::size_t(3 * a_n + i)] = a_Nd[std::size_t(i)];
         f.values[std::size_t(4 * a_n + i)] = a_Na[std::size_t(i)];
@@ -2190,6 +2382,7 @@ bool SemiconductorProblem::setup(QString* error)
         e[17] = m.fermi ? m.Nv : 0.0;
         e[18] = 0;
         e[32] = 0;   // (impact ionization's pairs per volume, as solved)
+        e[33] = NaN; // (sliced: the heat the carriers leave, as solved - their mean)
         e[19] = m.tunnelling ? (m.btGeneration ? -m.btA : m.btA) : 0.0;   // (negative: generation alone)
         e[20] = m.btB;
         e[21] = m.btGamma;
@@ -2217,13 +2410,22 @@ bool SemiconductorProblem::setup(QString* error)
             f.terminals.push_back(term);
         }
     }
-    // (Kept with them: the voltage applied, the current, the metal's charge.)
-    for (std::size_t k = 0; k < a_contacts.size(); ++k)
-        if (f.terminals[k].name == a_contacts[k].name) {
-            a_contacts[k].applied = f.terminals[k].potential;
-            a_contacts[k].current = f.terminals[k].charge;
-            a_contacts[k].charge = f.terminals[k].chargeIm;
+    // (Kept with them: the voltage applied, the current, the metal's charge;
+    // a circuit's contact's own voltage and its tee's current at rest.)
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        Contact& c = a_contacts[k];
+        if (f.terminals[k].name == c.name) {
+            c.applied = f.terminals[k].potential;
+            c.current = f.terminals[k].charge;
+            c.charge = f.terminals[k].chargeIm;
         }
+        c.voltage = c.applied;
+        if (c.iC >= 0 && f.solved && f.values.size() >= a_circuitAt + 3 * a_contacts.size()) {
+            c.voltage = f.values[a_circuitAt + 3 * k];
+            c.teeCurrent = f.values[a_circuitAt + 3 * k + 1];
+            c.solvedR = f.values[a_circuitAt + 3 * k + 2];
+        }
+    }
     // Solved in 1D: its line across its domains (no gap in it), and what a
     // strip of its own cannot take.
     a_1d = a_node->text(QStringLiteral("space")) == QLatin1String("1d");
@@ -2232,6 +2434,8 @@ bool SemiconductorProblem::setup(QString* error)
         if (a_s.axisymmetric()) problem(tr("%1: solved in 1D in a plane's model alone (not about an axis)").arg(a_node->name()));
         if (a_laser) problem(tr("%1: %2 lases in its cavity's 2D solution - not solved in 1D").arg(a_node->name(), a_laser->name));
         if (a_TL.isValid()) problem(tr("%1: solved in 1D it takes no lattice temperature (TL)").arg(a_node->name()));
+        if (circuits) problem(tr("%1: solved in 1D its contacts are held at their voltages - no circuit").arg(a_node->name()));
+        if (a_slices > 1) problem(tr("%1: solved in 1D it is not cut along its length into slices").arg(a_node->name()));
         for (const Node& feature : a_node->children) {
             if (!feature.enabled) continue;
             if (feature.type == QLatin1String("semiconductor/optical") || feature.type == QLatin1String("semiconductor/quantum"))
@@ -2513,6 +2717,7 @@ bool SemiconductorProblem::targets(std::vector<double>& out, QString* error)
 
 void SemiconductorProblem::contactValues(const std::vector<double>& applied)
 {
+    a_lastApplied = applied;
     for (std::size_t k = 0; k < a_contacts.size(); ++k) {
         const Contact& c = a_contacts[k];
         for (int i : c.nodes) {
@@ -3450,7 +3655,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             dRnV += Vk * dRn;
             dRpV += Vk * dRp;
         }
-        const double G = a_generation.empty() ? 0.0 : a_generation[std::size_t(i)];
+        const std::vector<double>& generated = generationNow();
+        const double G = (generated.empty() ? 0.0 : generated[std::size_t(i)]) * a_lightScale;
         // (Stimulated: the last iterate's mean, its own derivative left out -
         // over the parts that recombine.)
         const double AR = a_recVolume[std::size_t(i)];
@@ -3458,6 +3664,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             a_lastR[std::size_t(i)] = AR > 0 ? RV / AR : 0.0;
             RV += AR * stimulated[std::size_t(i)];
         }
+        if (a_recombined.size() != std::size_t(a_n)) a_recombined.assign(std::size_t(a_n), 0.0);
+        a_recombined[std::size_t(i)] = RV;
         F(rn) -= Q * (RV - A * G);
         F(rp) += Q * (RV - A * G);
         a_genCurrent += Q * (std::max(-RV, 0.0) + std::max(A * G, 0.0));
@@ -3592,20 +3800,71 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
     }
 }
 
-bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::vector<double>* history, int maxSteps, int* steps, QString* why, bool met)
+std::vector<double> SemiconductorProblem::sliceHistory(const std::vector<double>& h, int s) const
 {
+    std::vector<double> out = h;
+    if (s == 0) return out;
+    const std::size_t N = std::size_t(a_n), at = a_slicesAt + std::size_t(s - 1) * a_sliceBlock;
+    if (h.size() < at + a_sliceBlock) return out;
+    for (std::size_t k = 0; k < 3 * N; ++k) out[k] = h[at + k];
+    if (a_ionAt > 0)
+        for (std::size_t k = 0; k < 2 * N; ++k) out[a_ionAt + k] = h[at + 3 * N + k];
+    return out;
+}
+
+void SemiconductorProblem::useSlice(int s)
+{
+    a_sliceNow = s;
+    if (a_slices <= 1 || std::size_t(s) >= a_sliceEdges.size() || a_sliceEdges[std::size_t(s)].size() != a_edges.size()) return;
+    const std::vector<std::pair<double, double>>& w = a_sliceEdges[std::size_t(s)];
+    for (std::size_t k = 0; k < a_edges.size(); ++k) {
+        a_edges[k].wn = w[k].first;
+        a_edges[k].wp = w[k].second;
+    }
+}
+
+void SemiconductorProblem::keepSliceEdges(int s)
+{
+    if (a_slices <= 1) return;
+    if (a_sliceEdges.size() != std::size_t(a_slices)) a_sliceEdges.assign(std::size_t(a_slices), {});
+    std::vector<std::pair<double, double>>& w = a_sliceEdges[std::size_t(s)];
+    w.resize(a_edges.size());
+    for (std::size_t k = 0; k < a_edges.size(); ++k) w[k] = {a_edges[k].wn, a_edges[k].wp};
+}
+
+bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::vector<double>* history, int maxSteps, int* steps, QString* why, bool met,
+                                  bool consistent)
+{
+    // (All slices' unknowns in x - the first's and the circuits' as one
+    // slice's, the others' after: each slice assembled at its own vector,
+    // its rows and columns placed among all of them; a circuit's row takes
+    // each slice's current weighed by its share of the length.)
+    const int S = a_slices, total = a_total;
+    std::vector<std::vector<double>> histories;
+    if (history && S > 1) {
+        histories.resize(std::size_t(S));
+        for (int s = 1; s < S; ++s) histories[std::size_t(s)] = sliceHistory(*history, s);
+    }
+    auto historyOf = [&history, &histories](int s) -> const std::vector<double>* {
+        return !history ? nullptr : s == 0 ? history : &histories[std::size_t(s)];
+    };
+    auto g = [this](int s, int k) { return globalIndex(s, k); };
     // Unknowns in units of Vt and of each node's own carriers (a relative
     // change: minority carriers 10^14 below the majority keep their digits);
     // each row divided by its largest entry.
-    Eigen::VectorXd colScale(a_unknowns);
-    auto carrierScales = [&]() {
-        for (int i = 0; i < a_n; ++i) {
-            if (a_iV[std::size_t(i)] >= 0) colScale(a_iV[std::size_t(i)]) = a_Vt;
-            for (int k : {a_iN[std::size_t(i)], a_iP[std::size_t(i)]})
-                if (k >= 0) colScale(k) = std::max(std::abs(x(k)), 1e-20 * a_scale);
-        }
-        // (A laser's photons: as the carriers, by their own number.)
+    Eigen::VectorXd colScale(total);
+    auto carrierScales = [this, &x, &colScale, &g, S]() {
+        for (int s = 0; s < S; ++s)
+            for (int i = 0; i < a_n; ++i) {
+                if (a_iV[std::size_t(i)] >= 0) colScale(g(s, a_iV[std::size_t(i)])) = a_Vt;
+                for (int k : {a_iN[std::size_t(i)], a_iP[std::size_t(i)]})
+                    if (k >= 0) colScale(g(s, k)) = std::max(std::abs(x(g(s, k))), 1e-20 * a_scale);
+            }
+        // (A laser's photons: as the carriers, by their own number; a
+        // circuit's contact's voltage as the potential.)
         if (a_iS >= 0) colScale(a_iS) = std::max(std::abs(x(a_iS)), 1e-6);
+        for (const Contact& c : a_contacts)
+            if (c.iC >= 0) colScale(c.iC) = a_Vt;
     };
     // A laser's photons from nothing (a solution without them): those its
     // spontaneous emission keeps below threshold, τp β Rsp/(1 - τp G).
@@ -3614,27 +3873,48 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         const Lasing& L = *a_laser;
         x(a_iS) = L.tauP * L.beta * ls.Rsp / std::max(1 - L.tauP * ls.G, 1e-3);
     }
-    std::vector<char> fixed(std::size_t(a_unknowns), 0);
-    Eigen::VectorXd target = Eigen::VectorXd::Zero(a_unknowns);
-    for (const Contact& c : a_contacts)
-        for (int i : c.nodes) {
-            fixed[std::size_t(a_iV[std::size_t(i)])] = 1;
-            target(a_iV[std::size_t(i)]) = a_bcV[std::size_t(i)];
-            if (c.kind == Contact::Ohmic) {
-                // (Its minority carriers a surface's recombination's: free.)
-                const bool freeN = a_minorityFree[std::size_t(i)] && electronsMinority(i), freeP = a_minorityFree[std::size_t(i)] && !electronsMinority(i);
-                if (!freeN) {
-                    fixed[std::size_t(a_iN[std::size_t(i)])] = 1;
-                    target(a_iN[std::size_t(i)]) = a_bcN[std::size_t(i)];
-                }
-                if (!freeP) {
-                    fixed[std::size_t(a_iP[std::size_t(i)])] = 1;
-                    target(a_iP[std::size_t(i)]) = a_bcP[std::size_t(i)];
+    std::vector<char> fixed(std::size_t(total), 0);
+    Eigen::VectorXd target = Eigen::VectorXd::Zero(total);
+    // A circuit's contact's nodes: their potentials its own voltage's, Vc
+    // plus each one's offset at the voltage its values were set at (its
+    // source's) - their rows V - Vc - offset; its own row the circuit's.
+    std::vector<int> circuitOf(std::size_t(total), -1);
+    const bool circuits = hasCircuits();
+    if (circuits && a_lastApplied.size() != a_contacts.size()) {
+        *why = tr("%1: its contacts' values are not set").arg(a_node->name());
+        return false;
+    }
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        const Contact& c = a_contacts[k];
+        if (c.iC < 0) continue;
+        if (!std::isfinite(x(c.iC))) x(c.iC) = a_lastApplied[k];
+        for (int s = 0; s < S; ++s)
+            for (int i : c.nodes) {
+                circuitOf[std::size_t(g(s, a_iV[std::size_t(i)]))] = int(k);
+                target(g(s, a_iV[std::size_t(i)])) = a_bcV[std::size_t(i)] - a_lastApplied[k];   // (the offset)
+            }
+    }
+    for (int s = 0; s < S; ++s)
+        for (const Contact& c : a_contacts)
+            for (int i : c.nodes) {
+                const int rv = g(s, a_iV[std::size_t(i)]);
+                fixed[std::size_t(rv)] = 1;
+                if (c.iC < 0) target(rv) = a_bcV[std::size_t(i)];
+                if (c.kind == Contact::Ohmic) {
+                    // (Its minority carriers a surface's recombination's: free.)
+                    const bool freeN = a_minorityFree[std::size_t(i)] && electronsMinority(i), freeP = a_minorityFree[std::size_t(i)] && !electronsMinority(i);
+                    if (!freeN) {
+                        fixed[std::size_t(g(s, a_iN[std::size_t(i)]))] = 1;
+                        target(g(s, a_iN[std::size_t(i)])) = a_bcN[std::size_t(i)];
+                    }
+                    if (!freeP) {
+                        fixed[std::size_t(g(s, a_iP[std::size_t(i)]))] = 1;
+                        target(g(s, a_iP[std::size_t(i)])) = a_bcP[std::size_t(i)];
+                    }
                 }
             }
-        }
-    for (int k = 0; k < a_unknowns; ++k)
-        if (fixed[std::size_t(k)]) x(k) = target(k);
+    for (int k = 0; k < total; ++k)
+        if (fixed[std::size_t(k)]) x(k) = circuitOf[std::size_t(k)] >= 0 ? x(a_contacts[std::size_t(circuitOf[std::size_t(k)])].iC) + target(k) : target(k);
     Eigen::VectorXd F;
     std::vector<Eigen::Triplet<double>> trip;
     SparseLu<double> lu;
@@ -3648,40 +3928,49 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
     // nothing cycling about 1e-4. Held once the potential has settled to
     // 1e-6 Vt, or after fifteen steps, Newton finishing with them.)
     bool held = false;
+    a_heldUnsettled = false;
+    int refreshed = 0;   // the held mobilities found not their solution's, and updated
     // The equations' own imbalance at x: each row's |F| against the gross
     // flows through it - |J x| summed over its terms: a node's currents in
     // and out, its charge -, the worst (the rows held to the contacts'
-    // values aside).
-    auto imbalance = [&]() {
-        Eigen::VectorXd G;
-        std::vector<Eigen::Triplet<double>> terms;
-        assemble(x, mass, history, G, &terms);
-        Eigen::VectorXd gross = Eigen::VectorXd::Zero(a_unknowns);
-        for (const auto& t : terms) gross(t.row()) += std::abs(t.value() * x(t.col()));
-        // (A step in time's ionized dopants: their change's own size - its
-        // term's derivative times the carriers is no measure of it where
-        // they are few, a depletion's: its rounding above 1e-6 of that, a
-        // 10 ps ramp never met.)
-        if (mass > 0 && history && a_ionAt > 0)
-            for (int i = 0; i < a_n; ++i) {
-                const int d = a_nodeDomain[std::size_t(i)];
-                if (d < 0 || !a_media[std::size_t(d)].incomplete) continue;
-                double nd = 0, na = 0, dnd = 0, dna = 0;
-                ionizedAt(i, x, &nd, &dnd, &na, &dna);
-                const double A = a_box[std::size_t(i)];
-                if (a_iN[std::size_t(i)] >= 0) gross(a_iN[std::size_t(i)]) += Q * A * mass * nd;
-                if (a_iP[std::size_t(i)] >= 0) gross(a_iP[std::size_t(i)]) += Q * A * mass * na;
-            }
+    // values aside), of each slice's.
+    auto imbalance = [this, &x, mass, &historyOf, &fixed, S]() {
         double worst = 0;
-        for (int k = 0; k < a_unknowns; ++k)
-            if (!fixed[std::size_t(k)] && gross(k) > 0) worst = std::max(worst, std::abs(G(k)) / gross(k));
+        for (int s = 0; s < S; ++s) {
+            useSlice(s);
+            const Eigen::VectorXd xs = sliceOf(x, s);
+            const std::vector<double>* hs = historyOf(s);
+            Eigen::VectorXd G;
+            std::vector<Eigen::Triplet<double>> terms;
+            assemble(xs, mass, hs, G, &terms);
+            Eigen::VectorXd gross = Eigen::VectorXd::Zero(a_unknowns);
+            for (const auto& t : terms) gross(t.row()) += std::abs(t.value() * xs(t.col()));
+            // (A step in time's ionized dopants: their change's own size - its
+            // term's derivative times the carriers is no measure of it where
+            // they are few, a depletion's: its rounding above 1e-6 of that, a
+            // 10 ps ramp never met.)
+            if (mass > 0 && hs && a_ionAt > 0)
+                for (int i = 0; i < a_n; ++i) {
+                    const int d = a_nodeDomain[std::size_t(i)];
+                    if (d < 0 || !a_media[std::size_t(d)].incomplete) continue;
+                    double nd = 0, na = 0, dnd = 0, dna = 0;
+                    ionizedAt(i, xs, &nd, &dnd, &na, &dna);
+                    const double A = a_box[std::size_t(i)];
+                    if (a_iN[std::size_t(i)] >= 0) gross(a_iN[std::size_t(i)]) += Q * A * mass * nd;
+                    if (a_iP[std::size_t(i)] >= 0) gross(a_iP[std::size_t(i)]) += Q * A * mass * na;
+                }
+            for (int k = 0; k < a_unknowns; ++k) {
+                if (s > 0 && k >= a_sliceSize) continue;
+                if (!fixed[std::size_t(globalIndex(s, k))] && gross(k) > 0) worst = std::max(worst, std::abs(G(k)) / gross(k));
+            }
+        }
         return worst;
     };
     // (Its equations met where it is: no step - a solution just walked to,
     // solved again at its voltages, Newton's own rounding about 1e-6 of its
     // flows, took its forty steps and failed: an avalanche diode without
     // recombination at -40 V.)
-    if (met && imbalance() < 1e-6) {
+    if (met && !circuits && !consistent && imbalance() < 1e-6) {
         if (steps) *steps = 0;
         return true;
     }
@@ -3692,26 +3981,52 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             return false;
         }
         carrierScales();
-        if (!held) updateMobilities(x);
-        assemble(x, mass, history, F, &trip);
-        // Dirichlet rows: x - target.
+        if (!held)
+            for (int s = 0; s < S; ++s) {
+                useSlice(s);
+                updateMobilities(sliceOf(x, s));
+                keepSliceEdges(s);
+            }
+        // Each slice assembled: its rows and columns among all; the
+        // circuits' rows from the contacts' rows as assembled, before they
+        // are replaced. Dirichlet rows: x - target (a circuit's contact's,
+        // x - Vc - its offset).
+        F = Eigen::VectorXd::Zero(total);
         std::vector<Eigen::Triplet<double>> kept;
-        kept.reserve(trip.size() + std::size_t(a_unknowns));
-        for (const auto& t : trip)
-            if (!fixed[std::size_t(t.row())]) kept.emplace_back(t.row(), t.col(), t.value() * colScale(t.col()));
-        for (int k = 0; k < a_unknowns; ++k)
+        std::vector<CircuitCurrent> currents;
+        for (int s = 0; s < S; ++s) {
+            useSlice(s);
+            const Eigen::VectorXd xs = sliceOf(x, s);
+            Eigen::VectorXd Fs;
+            assemble(xs, mass, historyOf(s), Fs, &trip);
+            kept.reserve(kept.size() + trip.size() + std::size_t(a_unknowns));
+            for (const auto& t : trip) {
+                const int r = g(s, t.row()), c = g(s, t.col());
+                if (!fixed[std::size_t(r)]) kept.emplace_back(r, c, t.value() * colScale(c));
+            }
+            for (int k = 0; k < a_unknowns; ++k)
+                if (k < a_sliceSize || s == 0) F(g(s, k)) = Fs(k);
+            if (circuits) sliceCurrents(s, sliceWeight(s), xs, mass, historyOf(s), Fs, trip, currents);
+        }
+        if (circuits) circuitRows(x, mass, history, currents, colScale, F, kept);
+        for (int k = 0; k < total; ++k)
             if (fixed[std::size_t(k)]) {
                 kept.emplace_back(k, k, colScale(k));
-                F(k) = x(k) - target(k);
+                if (const int ck = circuitOf[std::size_t(k)]; ck >= 0) {
+                    const int ic = a_contacts[std::size_t(ck)].iC;
+                    kept.emplace_back(k, ic, -colScale(ic));
+                    F(k) = x(k) - x(ic) - target(k);
+                } else
+                    F(k) = x(k) - target(k);
             }
-        Eigen::SparseMatrix<double> J(a_unknowns, a_unknowns);
+        Eigen::SparseMatrix<double> J(total, total);
         J.setFromTriplets(kept.begin(), kept.end());
         // Row equilibration.
-        Eigen::VectorXd rowMax = Eigen::VectorXd::Zero(a_unknowns);
+        Eigen::VectorXd rowMax = Eigen::VectorXd::Zero(total);
         for (int k = 0; k < J.outerSize(); ++k)
             for (Eigen::SparseMatrix<double>::InnerIterator itr(J, k); itr; ++itr)
                 rowMax(itr.row()) = std::max(rowMax(itr.row()), std::abs(itr.value()));
-        for (int k = 0; k < a_unknowns; ++k)
+        for (int k = 0; k < total; ++k)
             if (!(rowMax(k) > 0)) rowMax(k) = 1;
         for (int k = 0; k < J.outerSize(); ++k)
             for (Eigen::SparseMatrix<double>::InnerIterator itr(J, k); itr; ++itr) itr.valueRef() /= rowMax(itr.row());
@@ -3720,7 +4035,7 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             // (Its residual: each equation's by its largest term - the
             // unknowns' units, Vt and each node's own carriers.)
             double residual = 0;
-            for (int k = 0; k < a_unknowns; ++k)
+            for (int k = 0; k < total; ++k)
                 if (!fixed[std::size_t(k)]) residual = std::max(residual, std::abs(rhs(k)));
             told(tr("%1; Newton's step %2, its residual %3").arg(a_walkSaid).arg(it + 1).arg(QString::number(residual, 'g', 2)));
         }
@@ -3743,8 +4058,9 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         // Damping: the potential moved no more than 10 Vt at once; the
         // carriers kept positive.
         double maxDV = 0;
-        for (int i = 0; i < a_n; ++i)
-            if (a_iV[std::size_t(i)] >= 0) maxDV = std::max(maxDV, std::abs(dx(a_iV[std::size_t(i)])));
+        for (int s = 0; s < S; ++s)
+            for (int i = 0; i < a_n; ++i)
+                if (a_iV[std::size_t(i)] >= 0) maxDV = std::max(maxDV, std::abs(dx(g(s, a_iV[std::size_t(i)]))));
         const double alpha = maxDV > 10 * a_Vt ? 10 * a_Vt / maxDV : 1.0;
         double changeV = 0, changeC = 0;
         if (a_iS >= 0) {
@@ -3773,21 +4089,28 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             x(a_iS) = std::max(after, 0.0);
             changeC = std::max(changeC, std::abs(x(a_iS) - before) / (before + 1e-6));
         }
-        for (int i = 0; i < a_n; ++i) {
-            if (a_iV[std::size_t(i)] >= 0) {
-                const int k = a_iV[std::size_t(i)];
-                x(k) += alpha * dx(k);
-                changeV = std::max(changeV, std::abs(alpha * dx(k)) / a_Vt);
+        for (const Contact& c : a_contacts)
+            if (c.iC >= 0) {
+                x(c.iC) += alpha * dx(c.iC);
+                changeV = std::max(changeV, std::abs(alpha * dx(c.iC)) / a_Vt);
             }
-            for (int k : {a_iN[std::size_t(i)], a_iP[std::size_t(i)]}) {
-                if (k < 0) continue;
-                const double before = x(k);
-                double after = before + alpha * dx(k);
-                if (after < 0.05 * before) after = 0.05 * before;
-                x(k) = after;
-                changeC = std::max(changeC, std::abs(after - before) / (before + 1e-10 * a_ni[std::size_t(i)] + 1e-300));
+        for (int s = 0; s < S; ++s)
+            for (int i = 0; i < a_n; ++i) {
+                if (a_iV[std::size_t(i)] >= 0) {
+                    const int k = g(s, a_iV[std::size_t(i)]);
+                    x(k) += alpha * dx(k);
+                    changeV = std::max(changeV, std::abs(alpha * dx(k)) / a_Vt);
+                }
+                for (int kk : {a_iN[std::size_t(i)], a_iP[std::size_t(i)]}) {
+                    if (kk < 0) continue;
+                    const int k = g(s, kk);
+                    const double before = x(k);
+                    double after = before + alpha * dx(k);
+                    if (after < 0.05 * before) after = 0.05 * before;
+                    x(k) = after;
+                    changeC = std::max(changeC, std::abs(after - before) / (before + 1e-10 * a_ni[std::size_t(i)] + 1e-300));
+                }
             }
-        }
         if (steps) *steps = it + 1;
         // Ten steps in a row crawling: it is going nowhere - said at once,
         // the voltage's step taken again smaller (its forty steps were a
@@ -3800,6 +4123,7 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         // steps: a Laser L-I of one point at 1.9 V 110 s, 72 of them in nine
         // tries at its threshold - the update check of 110e8b9, 12.
         if (fading >= 8) break;
+        if (!held && a_alongCurrent && alpha == 1.0 && changeV >= 1e-6 && it >= 15) a_heldUnsettled = true;
         held = held || (a_alongCurrent && alpha == 1.0 && (changeV < 1e-6 || it >= 15));
         // Converged: the potential still to 1e-8 Vt and the carriers to 1e-6
         // (or the potential to 1e-12 Vt: the carriers' last digits are noise)
@@ -3808,9 +4132,10 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
         // short of the solution: band-to-band tunnelling without its field's
         // term took a reverse current 1e4 times too large for one. On then,
         // till they are met (or no solution).
-        if (alpha == 1.0 && changeV < 1e-8) {
+        // (A circuit's row met too: its voltages to 10⁻⁹ - its residual as
+        // assembled before this step, the step itself under 10⁻⁸ Vt.)
+        if (alpha == 1.0 && changeV < 1e-8 && (!circuits || a_circuitResidual < 1e-9)) {
             const double imb = imbalance();
-            if ((changeC < 1e-6 || changeV < 1e-12) && imb < 1e-6) return true;
             // (Or the equations met to 10⁻¹⁴ of their flows - their rounding:
             // what still changes is the linear solve's own. An avalanche
             // diode's mesh of 10 nm at -32 V met them to 10⁻¹⁶, its
@@ -3818,7 +4143,31 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             // potential by 10⁻¹¹ Vt: no solution found - the hunt of 19
             // October, A1. 10⁻¹² took a current of 10⁻¹³ A among majority
             // flows of 10⁻² A as it was, 15 % off.)
-            if (imb < 1e-14) return true;
+            const bool met = ((changeC < 1e-6 || changeV < 1e-12) && imb < 1e-6) || imb < 1e-14;
+            // (Its mobilities held: the solution's own? Held from fifteen
+            // steps on they may not be, and the solution theirs, not its own
+            // - a sliced photodiode's first slice 0.5 % off itself solved
+            // alone. Updated at it, and on, while they move by more than
+            // 10⁻⁶ - at most eight times: a MOSFET's channel's cycle.)
+            if (met && held && consistent && refreshed < 8) {
+                double moved = 0;
+                for (int s = 0; s < S; ++s) {
+                    useSlice(s);
+                    std::vector<std::pair<double, double>> was(a_edges.size());
+                    for (std::size_t k = 0; k < a_edges.size(); ++k) was[k] = {a_edges[k].wn, a_edges[k].wp};
+                    updateMobilities(sliceOf(x, s));
+                    keepSliceEdges(s);
+                    for (std::size_t k = 0; k < a_edges.size(); ++k) {
+                        if (was[k].first > 0) moved = std::max(moved, std::abs(a_edges[k].wn / was[k].first - 1));
+                        if (was[k].second > 0) moved = std::max(moved, std::abs(a_edges[k].wp / was[k].second - 1));
+                    }
+                }
+                if (moved > 1e-6) {
+                    ++refreshed;
+                    continue;
+                }
+            }
+            if (met) return true;
         }
     }
     *why = tr("%1: Newton's method did not converge in %2 steps").arg(a_node->name()).arg(maxSteps);
@@ -3997,13 +4346,38 @@ Eigen::VectorXd SemiconductorProblem::stateVector() const
 {
     const Field& f = a_s.fields()[std::size_t(a_fi)];
     const std::size_t N = std::size_t(a_n);
-    Eigen::VectorXd x = Eigen::VectorXd::Zero(a_unknowns);
+    Eigen::VectorXd x = Eigen::VectorXd::Zero(a_total);
     for (int i = 0; i < a_n; ++i) {
         if (a_iV[std::size_t(i)] >= 0) x(a_iV[std::size_t(i)]) = f.values[std::size_t(i)];
         if (a_iN[std::size_t(i)] >= 0) x(a_iN[std::size_t(i)]) = f.values[N + std::size_t(i)];
         if (a_iP[std::size_t(i)] >= 0) x(a_iP[std::size_t(i)]) = f.values[2 * N + std::size_t(i)];
     }
     if (a_iS >= 0 && f.values.size() > 9 * N) x(a_iS) = f.values[9 * N];
+    // (A circuit's contact's own voltage: as solved, else its source's.)
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        const Contact& c = a_contacts[k];
+        if (c.iC < 0) continue;
+        x(c.iC) = f.solved && a_circuitAt > 0 && f.values.size() >= a_circuitAt + 3 * a_contacts.size() ? f.values[a_circuitAt + 3 * k] : c.applied;
+    }
+    // (The other slices': their blocks as solved - their carriers there -,
+    // else the first's.)
+    for (int s = 1; s < a_slices; ++s) {
+        const std::size_t at = a_slicesAt + std::size_t(s - 1) * a_sliceBlock;
+        bool kept = f.solved && f.values.size() >= at + a_sliceBlock;
+        for (int i = 0; kept && i < a_n; ++i)
+            if (a_iN[std::size_t(i)] >= 0) {
+                kept = f.values[at + N + std::size_t(i)] > 0;
+                break;
+            }
+        for (int i = 0; i < a_n; ++i) {
+            const std::size_t k = std::size_t(i);
+            if (a_iV[k] >= 0) x(globalIndex(s, a_iV[k])) = kept ? f.values[at + k] : x(a_iV[k]);
+            if (a_iN[k] >= 0) {
+                x(globalIndex(s, a_iN[k])) = kept ? f.values[at + N + k] : x(a_iN[k]);
+                x(globalIndex(s, a_iP[k])) = kept ? f.values[at + 2 * N + k] : x(a_iP[k]);
+            }
+        }
+    }
     return x;
 }
 
@@ -4062,23 +4436,42 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
     // I V less the pairs' recombination heat, exactly - shared among the
     // edge's triangles as their conductances are, over each one's volume.
     // (J²/(q n µ) at a point took a depletion region's drift and diffusion,
-    // cancelling, for current: its heat thousands of times too much.)
-    {
+    // cancelling, for current: its heat thousands of times too much.) Cut
+    // into slices, their mean by their shares of the length: a cross-
+    // section's heat is the whole length's.
+    // With it the pairs' recombination's, q R (φp - φn), by the nodes as
+    // assembled - their sum with the edges' I V exactly -, each triangle's
+    // the mean of its corners': semi.H as solved (read at a point the
+    // first slice's carriers alone would be, sliced; and R there, between
+    // the nodes, took ∫ semi.H to 1e-3 of I V only).
+    std::vector<double> heatOf(a_elements.size(), 0.0), wholeOf(a_elements.size(), 0.0);
+    for (int sl = 0; sl < a_slices; ++sl) {
+        const Eigen::VectorXd sliced = a_slices > 1 ? sliceOf(x, sl) : Eigen::VectorXd();
+        const Eigen::VectorXd& xx = a_slices > 1 ? sliced : x;
+        if (a_slices > 1) useSlice(sl);
+        {
+            // (Its recombination by node, a_recombined; the pairs' currents kept.)
+            const double generated = a_genCurrent, ionized = a_ionCurrent;
+            Eigen::VectorXd Fs;
+            assemble(xx, 0, nullptr, Fs, nullptr);
+            a_genCurrent = generated;
+            a_ionCurrent = ionized;
+        }
         std::vector<double> phin(N, 0.0), phip(N, 0.0);
         for (std::size_t i = 0; i < N; ++i) {
             if (a_iN[i] < 0) continue;
-            phin[i] = x(a_iV[i]) + a_thetaN[i] + a_Vt * a_lgN[i] - a_Vt * std::log(std::max(x(a_iN[i]), 1e-300) / a_refNi);
-            phip[i] = x(a_iV[i]) + a_thetaP[i] - a_Vt * a_lgP[i] + a_Vt * std::log(std::max(x(a_iP[i]), 1e-300) / a_refNi);
+            phin[i] = xx(a_iV[i]) + a_thetaN[i] + a_Vt * a_lgN[i] - a_Vt * std::log(std::max(xx(a_iN[i]), 1e-300) / a_refNi);
+            phip[i] = xx(a_iV[i]) + a_thetaP[i] - a_Vt * a_lgP[i] + a_Vt * std::log(std::max(xx(a_iP[i]), 1e-300) / a_refNi);
         }
         std::vector<double> pn(a_edges.size(), 0.0), pp(a_edges.size(), 0.0);
         for (std::size_t k = 0; k < a_edges.size(); ++k) {
             const Edge& e = a_edges[k];
             if (e.w <= 0) continue;
             double dN = 0, dP = 0;
-            edgeSteps(e, x, &dN, &dP);
+            edgeSteps(e, xx, &dN, &dP);
             const std::size_t i = std::size_t(e.i), j = std::size_t(e.j);
-            const double fn = e.wn * (e.fNj * x(a_iN[j]) * bern(dN) - e.fNi * x(a_iN[i]) * bern(-dN));
-            const double fp = e.wp * (e.fPi * x(a_iP[i]) * bern(dP) - e.fPj * x(a_iP[j]) * bern(-dP));
+            const double fn = e.wn * (e.fNj * xx(a_iN[j]) * bern(dN) - e.fNi * xx(a_iN[i]) * bern(-dN));
+            const double fp = e.wp * (e.fPi * xx(a_iP[i]) * bern(dP) - e.fPj * xx(a_iP[j]) * bern(-dP));
             pn[k] = fn * (phin[i] - phin[j]);
             pp[k] = fp * (phip[i] - phip[j]);
         }
@@ -4086,21 +4479,64 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
             const ElementMobility& em = a_elements[std::size_t(t)];
             if (em.domain < 0 || f.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1)) || !(em.volume > 0)) continue;
             double mun = 0, mup = 0;
-            elementMobilities(t, &x, &mun, &mup);
+            elementMobilities(t, &xx, &mun, &mup);
             double heat = 0;
             for (int k = 0; k < 3; ++k) {
                 const Edge& e = a_edges[std::size_t(em.edge[k])];
                 if (e.wn > 0) heat += em.cot[k] * mun * Q * a_Vt / e.wn * pn[std::size_t(em.edge[k])];
                 if (e.wp > 0) heat += em.cot[k] * mup * Q * a_Vt / e.wp * pp[std::size_t(em.edge[k])];
             }
-            f.extra[std::size_t(ExtraHead + PerTriangle * t + 18)] = heat / em.volume;
+            heatOf[std::size_t(t)] += sliceWeight(sl) * heat / em.volume;
+            if (a_recombined.size() == N) {
+                double recombination = 0;
+                const int* tdof = field().space->dofs(t);
+                for (int k = 0; k < 3; ++k) {
+                    const std::size_t c = std::size_t(tdof[k]);
+                    if (a_iN[c] < 0 || a_nodeContact[c] >= 0 || !(a_recVolume[c] > 0)) continue;
+                    recombination += Q * a_recombined[c] / a_recVolume[c] * (phip[c] - phin[c]) / 3;
+                }
+                wholeOf[std::size_t(t)] += sliceWeight(sl) * (heat / em.volume + recombination);
+            }
         }
+    }
+    for (int t = 0; t < int(a_elements.size()); ++t)
+        if (a_elements[std::size_t(t)].domain >= 0 && f.extra.size() >= std::size_t(ExtraHead + PerTriangle * (t + 1)) && a_elements[std::size_t(t)].volume > 0)
+        {
+            f.extra[std::size_t(ExtraHead + PerTriangle * t + 18)] = heatOf[std::size_t(t)];
+            f.extra[std::size_t(ExtraHead + PerTriangle * t + 33)] = a_recombined.size() == N ? wholeOf[std::size_t(t)] : NaN;
+        }
+    // (The other slices' own blocks; the first slice's then as assembled.)
+    for (int sl = 1; sl < a_slices; ++sl) {
+        const std::size_t at = a_slicesAt + std::size_t(sl - 1) * a_sliceBlock;
+        if (f.values.size() < at + a_sliceBlock) break;
+        const Eigen::VectorXd xs = sliceOf(x, sl);
+        degeneracy(xs);
+        for (int i = 0; i < a_n; ++i) {
+            const std::size_t k = std::size_t(i);
+            f.values[at + k] = a_iV[k] >= 0 ? xs(a_iV[k]) : 0.0;
+            f.values[at + N + k] = a_iN[k] >= 0 ? xs(a_iN[k]) : 0.0;
+            f.values[at + 2 * N + k] = a_iP[k] >= 0 ? xs(a_iP[k]) : 0.0;
+            if (a_ionAt > 0) {
+                double nd = 0, na = 0, dn = 0, dp = 0;
+                if (a_nodeDomain[k] >= 0) ionizedAt(i, xs, &nd, &dn, &na, &dp);
+                f.values[at + 3 * N + k] = nd;
+                f.values[at + 4 * N + k] = na;
+            }
+        }
+    }
+    if (a_slices > 1) {
+        useSlice(0);
+        degeneracy(x);
     }
     // Impact ionization's pairs by triangle, as solved (semi.Gion: where an
     // avalanche makes them).
     if (a_ionization) {
+        // (The pairs' currents as the slices together had them, kept.)
+        const double generated = a_genCurrent, ionized = a_ionCurrent;
         Eigen::VectorXd F;
-        assemble(x, 0, nullptr, F, nullptr);
+        assemble(a_slices > 1 ? sliceOf(x, 0) : x, 0, nullptr, F, nullptr);
+        a_genCurrent = generated;
+        a_ionCurrent = ionized;
         for (int t = 0; t < int(a_elements.size()) && std::size_t(t) < a_ionRate.size(); ++t)
             if (f.extra.size() >= std::size_t(ExtraHead + PerTriangle * (t + 1))) f.extra[std::size_t(ExtraHead + PerTriangle * t + 32)] = a_ionRate[std::size_t(t)];
     }
@@ -4116,6 +4552,20 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
         f.terminals[k].potential = a_contacts[k].applied;
         f.terminals[k].charge = a_contacts[k].current;
         f.terminals[k].chargeIm = a_contacts[k].charge;
+    }
+    // A circuit's contact's own voltage, and its bias tee's current at rest.
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        Contact& c = a_contacts[k];
+        if (c.iC < 0) {
+            c.voltage = c.applied;
+            continue;
+        }
+        c.voltage = x(c.iC);
+        if (a_circuitAt > 0 && f.values.size() >= a_circuitAt + 3 * a_contacts.size()) {
+            f.values[a_circuitAt + 3 * k] = c.voltage;
+            f.values[a_circuitAt + 3 * k + 1] = c.teeCurrent;
+            f.values[a_circuitAt + 3 * k + 2] = c.solvedR;
+        }
     }
 }
 
@@ -4198,6 +4648,97 @@ std::vector<std::vector<double>> SemiconductorProblem::currentWeights(const Eige
     return weight;
 }
 
+void SemiconductorProblem::displacementCurrents(const Eigen::VectorXd& x, double mass, const std::vector<double>& history)
+{
+    // Q at the step's start from the history's charge: the BDF
+    // formula applied to Q (affine in the unknowns) is mass Q(x) - Q(history).
+    const std::vector<double>& hv = history;
+    Eigen::VectorXd xh = Eigen::VectorXd::Zero(a_unknowns);
+    const std::size_t N = std::size_t(a_n);
+    for (int i = 0; i < a_n; ++i) {
+        if (a_iV[std::size_t(i)] >= 0) xh(a_iV[std::size_t(i)]) = hv[std::size_t(i)];
+        if (a_iN[std::size_t(i)] >= 0) xh(a_iN[std::size_t(i)]) = hv[N + std::size_t(i)];
+        if (a_iP[std::size_t(i)] >= 0) xh(a_iP[std::size_t(i)]) = hv[2 * N + std::size_t(i)];
+    }
+    // The charges' linear parts: Poisson's rows less the dopants' ions
+    // (their charge, not affine where they are ionized in part, of v
+    // itself: at the history's v - the carriers over the step - it
+    // was nonsense, a junction's contacts' currents 14 times C dV/dt
+    // and not each other's).
+    auto charges = [this](const Eigen::VectorXd& v) {
+        Eigen::VectorXd F;
+        assemble(v, 0, nullptr, F, nullptr);
+        std::vector<double> q(a_contacts.size(), 0);
+        for (std::size_t k = 0; k < a_contacts.size(); ++k)
+            for (int i : a_contacts[k].nodes) {
+                double fv = F(a_iV[std::size_t(i)]);
+                if (a_nodeDomain[std::size_t(i)] >= 0) {
+                    double nd = 0, na = 0, dnd = 0, dna = 0;
+                    ionizedAt(i, v, &nd, &dnd, &na, &dna);
+                    fv -= Q * a_box[std::size_t(i)] * (nd - na);
+                }
+                q[k] -= fv;
+            }
+        return q;
+    };
+    const std::vector<double> now = charges(x), before = charges(xh);
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) a_contacts[k].current += mass * now[k] - before[k];
+    // Their ions' change, by their own history (incomplete ionization's).
+    if (a_ionAt > 0 && hv.size() >= a_ionAt + 2 * N) {
+        Eigen::VectorXd F;
+        assemble(x, 0, nullptr, F, nullptr);
+        for (std::size_t k = 0; k < a_contacts.size(); ++k)
+            for (int i : a_contacts[k].nodes) {
+                if (a_nodeDomain[std::size_t(i)] < 0 || !a_media[std::size_t(a_nodeDomain[std::size_t(i)])].incomplete) continue;
+                double nd = 0, na = 0, dnd = 0, dna = 0;
+                ionizedAt(i, x, &nd, &dnd, &na, &dna);
+                const double dNd = mass * nd - hv[a_ionAt + std::size_t(i)], dNa = mass * na - hv[a_ionAt + N + std::size_t(i)];
+                a_contacts[k].current -= Q * a_box[std::size_t(i)] * (dNd - dNa);
+            }
+    }
+}
+
+void SemiconductorProblem::terminalAll(const Eigen::VectorXd& X, double mass, const std::vector<double>* history, bool still)
+{
+    const std::size_t nc = a_contacts.size();
+    const bool inTime = mass > 0 && history;
+    if (a_slices <= 1) {
+        terminalValues(X, mass, history, still);
+        if (inTime) displacementCurrents(X, mass, *history);
+        a_sliceCurrent.clear();
+        return;
+    }
+    // Each slice's at its own vector (its edges' weights, its history), its
+    // currents and charges weighed by its share of the length - and the
+    // pairs' currents (impact ionization's, the others') with them.
+    std::vector<double> I(nc, 0.0), charge(nc, 0.0);
+    a_sliceCurrent.assign(std::size_t(a_slices), std::vector<double>(nc, 0.0));
+    double generated = 0, ionized = 0;
+    for (int s = 0; s < a_slices; ++s) {
+        useSlice(s);
+        const Eigen::VectorXd xs = sliceOf(X, s);
+        std::vector<double> hs;
+        if (inTime) hs = sliceHistory(*history, s);
+        terminalValues(xs, mass, inTime ? &hs : nullptr, still);
+        if (inTime) displacementCurrents(xs, mass, hs);
+        const double w = sliceWeight(s);
+        for (std::size_t k = 0; k < nc; ++k) {
+            I[k] += w * a_contacts[k].current;
+            charge[k] += w * a_contacts[k].charge;
+            a_sliceCurrent[std::size_t(s)][k] = w * a_contacts[k].current;
+        }
+        generated += w * a_genCurrent;
+        ionized += w * a_ionCurrent;
+    }
+    for (std::size_t k = 0; k < nc; ++k) {
+        a_contacts[k].current = I[k];
+        a_contacts[k].charge = charge[k];
+    }
+    a_genCurrent = generated;
+    a_ionCurrent = ionized;
+    useSlice(0);
+}
+
 void SemiconductorProblem::terminalValues(const Eigen::VectorXd& x, double mass, const std::vector<double>* history, bool still)
 {
     Eigen::VectorXd F;
@@ -4245,6 +4786,159 @@ void SemiconductorProblem::terminalValues(const Eigen::VectorXd& x, double mass,
                 }
             }
         a_contacts[k].current = I;
+    }
+}
+
+void SemiconductorProblem::sliceCurrents(int s, double share, const Eigen::VectorXd& x, double mass, const std::vector<double>* history,
+                                         const Eigen::VectorXd& F, const std::vector<Eigen::Triplet<double>>& trip, std::vector<CircuitCurrent>& out)
+{
+    const std::size_t N = std::size_t(a_n);
+    const bool inTime = mass > 0 && history;
+    const std::vector<std::vector<double>> weight = currentWeights(x);
+    // In time, each circuit's metal's charge: its nodes' Poisson rows as
+    // assembled, -F (their entries -J), less their dopants' ions - affine in
+    // the unknowns: at the history's state its value at x plus its entries
+    // times the difference (as the step's own current takes it).
+    std::map<int, int> contactOfRow;
+    std::vector<std::map<int, double>> charge(a_contacts.size());
+    Eigen::VectorXd xh;
+    if (inTime) {
+        for (std::size_t k = 0; k < a_contacts.size(); ++k)
+            if (a_contacts[k].iC >= 0)
+                for (int i : a_contacts[k].nodes) contactOfRow[a_iV[std::size_t(i)]] = int(k);
+        for (const auto& t : trip)
+            if (const auto it = contactOfRow.find(t.row()); it != contactOfRow.end()) charge[std::size_t(it->second)][t.col()] -= t.value();
+        xh = Eigen::VectorXd::Zero(a_unknowns);
+        for (int i = 0; i < a_n; ++i) {
+            if (a_iV[std::size_t(i)] >= 0) xh(a_iV[std::size_t(i)]) = (*history)[std::size_t(i)];
+            if (a_iN[std::size_t(i)] >= 0) xh(a_iN[std::size_t(i)]) = (*history)[N + std::size_t(i)];
+            if (a_iP[std::size_t(i)] >= 0) xh(a_iP[std::size_t(i)]) = (*history)[2 * N + std::size_t(i)];
+        }
+    }
+    out.resize(a_contacts.size());
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        const Contact& c = a_contacts[k];
+        if (c.iC < 0) continue;
+        // Its current into the device, I, and its change with the unknowns:
+        // the edges' currents (Scharfetter and Gummel's) times its weight's
+        // change along them - the weights held (any one, 1 on the contact
+        // and 0 on the others, gives the current where the equations hold).
+        std::map<int, double> dI;
+        double I = 0;
+        // (Its terms' sizes summed: its rounding's measure - in time a heavily
+        // doped region's carriers' change, each node's tens of amperes at a
+        // femtosecond's step, cancel to its current: their last digits times
+        // a megohm are microvolts.)
+        double gross = 0;
+        const std::vector<double>& w = weight[k];
+        if (!w.empty()) {
+            for (const Edge& e : a_edges) {
+                if (e.w <= 0) continue;
+                const std::size_t i = std::size_t(e.i), j = std::size_t(e.j);
+                const double dw = w[i] - w[j];
+                if (dw == 0) continue;
+                double dN = 0, dP = 0;
+                edgeSteps(e, x, &dN, &dP);
+                const int ni = a_iN[i], nj = a_iN[j], pi = a_iP[i], pj = a_iP[j];
+                const double fn = e.wn * (e.fNj * x(nj) * bern(dN) - e.fNi * x(ni) * bern(-dN));
+                const double fp = e.wp * (e.fPi * x(pi) * bern(dP) - e.fPj * x(pj) * bern(-dP));
+                I += (fn + fp) * dw;
+                gross += (std::abs(fn) + std::abs(fp)) * std::abs(dw);
+                // (Their change with each step dN, dP: the potential's, and
+                // Fermi-Dirac's ln γ at each end with its carriers.)
+                const double gN = e.wn * (e.fNj * x(nj) * dbern(dN) + e.fNi * x(ni) * dbern(-dN));
+                const double gP = e.wp * (e.fPi * x(pi) * dbern(dP) + e.fPj * x(pj) * dbern(-dP));
+                dI[nj] += dw * (e.wn * e.fNj * bern(dN) + gN * a_dlgN[j]);
+                dI[ni] += dw * (-e.wn * e.fNi * bern(-dN) - gN * a_dlgN[i]);
+                dI[pi] += dw * (e.wp * e.fPi * bern(dP) + gP * a_dlgP[i]);
+                dI[pj] += dw * (-e.wp * e.fPj * bern(-dP) - gP * a_dlgP[j]);
+                dI[a_iV[j]] += dw * (gN + gP) / a_Vt;
+                dI[a_iV[i]] -= dw * (gN + gP) / a_Vt;
+            }
+            // (In time the carriers' change where it weighs, and their dopants'.)
+            if (inTime)
+                for (int i = 0; i < a_n; ++i) {
+                    const std::size_t s = std::size_t(i);
+                    if (w[s] == 0 || a_iN[s] < 0) continue;
+                    const int rn = a_iN[s], rp = a_iP[s];
+                    I += w[s] * Q * (a_boxP[s] * (mass * x(rp) - (*history)[2 * N + s]) - a_boxN[s] * (mass * x(rn) - (*history)[N + s]));
+                    gross += std::abs(w[s]) * Q *
+                             (a_boxP[s] * (std::abs(mass * x(rp)) + std::abs((*history)[2 * N + s])) + a_boxN[s] * (std::abs(mass * x(rn)) + std::abs((*history)[N + s])));
+                    dI[rp] += w[s] * Q * a_boxP[s] * mass;
+                    dI[rn] -= w[s] * Q * a_boxN[s] * mass;
+                    if (a_ionAt > 0 && history->size() >= a_ionAt + 2 * N && a_media[std::size_t(a_nodeDomain[s])].incomplete) {
+                        double nd = 0, na = 0, dnd = 0, dna = 0;
+                        ionizedAt(i, x, &nd, &dnd, &na, &dna);
+                        I += w[s] * Q * a_box[s] * ((mass * nd - (*history)[a_ionAt + s]) - (mass * na - (*history)[a_ionAt + N + s]));
+                        dI[rn] += w[s] * Q * a_box[s] * mass * dnd;
+                        dI[rp] -= w[s] * Q * a_box[s] * mass * dna;
+                    }
+                }
+        }
+        if (inTime) {
+            // The metal's charge's change, mass Q(x) - Q(history).
+            std::map<int, double> A = charge[k];
+            double Qx = 0;
+            for (int i : c.nodes) {
+                const std::size_t s = std::size_t(i);
+                double fv = F(a_iV[s]);
+                if (a_nodeDomain[s] >= 0) {
+                    double nd = 0, na = 0, dnd = 0, dna = 0;
+                    ionizedAt(i, x, &nd, &dnd, &na, &dna);
+                    fv -= Q * a_box[s] * (nd - na);
+                    if (a_iN[s] >= 0) {
+                        A[a_iN[s]] += Q * a_box[s] * dnd;
+                        A[a_iP[s]] -= Q * a_box[s] * dna;
+                    }
+                    // (Their ions' own change, by their history.)
+                    if (a_ionAt > 0 && history->size() >= a_ionAt + 2 * N && a_media[std::size_t(a_nodeDomain[s])].incomplete && a_iN[s] >= 0) {
+                        I -= Q * a_box[s] * ((mass * nd - (*history)[a_ionAt + s]) - (mass * na - (*history)[a_ionAt + N + s]));
+                        dI[a_iN[s]] -= Q * a_box[s] * mass * dnd;
+                        dI[a_iP[s]] += Q * a_box[s] * mass * dna;
+                    }
+                }
+                Qx -= fv;
+            }
+            double shift = 0;
+            for (const auto& [col, a] : A) shift += a * (xh(col) - x(col));
+            I += mass * Qx - (Qx + shift);
+            gross += std::abs(mass * Qx) + std::abs(Qx) + std::abs(shift);
+            for (const auto& [col, a] : A) dI[col] += mass * a;
+        }
+        CircuitCurrent& to = out[k];
+        to.I += share * I;
+        to.gross += share * gross;
+        for (const auto& [col, d] : dI)
+            if (d != 0 && col >= 0) to.dI[globalIndex(s, col)] += share * d;
+    }
+}
+
+void SemiconductorProblem::circuitRows(const Eigen::VectorXd& X, double mass, const std::vector<double>* history, const std::vector<CircuitCurrent>& currents,
+                                       const Eigen::VectorXd& colScale, Eigen::VectorXd& G, std::vector<Eigen::Triplet<double>>& kept)
+{
+    const bool inTime = mass > 0 && history;
+    a_circuitResidual = 0;
+    for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+        const Contact& c = a_contacts[k];
+        if (c.iC < 0 || k >= currents.size()) continue;
+        const double I = currents[k].I, gross = currents[k].gross;
+        const std::map<int, double>& dI = currents[k].dI;
+        const Eigen::VectorXd& x = X;
+        // Its row: V0 - Vc - R (I + Cp dVc/dt) [+ a bias tee's RL I0 in time].
+        double Ic = 0, dIcdV = 0;
+        if (inTime && c.Cp > 0 && a_circuitAt > 0 && history->size() >= a_circuitAt + 3 * a_contacts.size()) {
+            Ic = c.Cp * (mass * x(c.iC) - (*history)[a_circuitAt + 3 * k]);
+            dIcdV = c.Cp * mass;
+        }
+        const double R = inTime ? c.Rs + c.RL : std::isfinite(c.walkR) ? c.walkR : c.restR();
+        double g = a_lastApplied[k] - x(c.iC) - R * (I + Ic);
+        if (inTime && c.circuit == Contact::BiasTee) g += c.RL * c.teeCurrent;
+        G(c.iC) = g;
+        kept.emplace_back(c.iC, c.iC, (-1 - R * dIcdV) * colScale(c.iC));
+        if (R > 0)
+            for (const auto& [col, d] : dI)
+                if (d != 0 && col >= 0) kept.emplace_back(c.iC, col, -R * d * colScale(col));
+        a_circuitResidual = std::max(a_circuitResidual, std::abs(g) / std::max({a_Vt, std::abs(a_lastApplied[k]), R * std::abs(I + Ic), 1e-5 * R * gross}));
     }
 }
 
@@ -4464,9 +5158,30 @@ bool SemiconductorProblem::stationary(QString* why)
     std::vector<double> goal;
     if (!targets(goal, why)) return false;
     Eigen::VectorXd x = stateVector();
+    const std::size_t nc = a_contacts.size();
+    // (Whatever way it ends: all the light, the circuits' own resistances.)
+    struct Ended {
+        SemiconductorProblem* p;
+        ~Ended()
+        {
+            p->a_lightScale = 1;
+            for (Contact& c : p->a_contacts) c.walkR = NaN;
+        }
+    } ended{this};
     auto finish = [&](const Eigen::VectorXd& solved, bool still) {
+        a_lightScale = 1;
+        for (Contact& c : a_contacts) c.walkR = NaN;
         for (std::size_t k = 0; k < a_contacts.size(); ++k) a_contacts[k].applied = goal[k];
-        terminalValues(solved, 0, nullptr, still);
+        // (Kept with it: the light it was solved with, each circuit's resistance.)
+        if (a_lightAt > 0 && f.values.size() > a_lightAt) f.values[a_lightAt] = a_Gop;
+        for (Contact& c : a_contacts) c.solvedR = c.restR();
+        terminalAll(solved, 0, nullptr, still);
+        // (At rest no current in Cp; a bias tee's current at rest is its
+        // series current - its load's in time is the change from it.)
+        for (Contact& c : a_contacts) {
+            c.capCurrent = 0;
+            if (c.iC >= 0) c.teeCurrent = c.current;
+        }
         store(solved);
     };
     double fermi = 0;
@@ -4476,12 +5191,32 @@ bool SemiconductorProblem::stationary(QString* why)
         // dark.
         if (!equilibriumPoisson(x, fermi, goal, f.solved, why)) return false;
         if (a_iS >= 0) x(a_iS) = 0;
+        circuitsAtRest(x, goal);
+        broadcastSlices(x);
         finish(x, true);
         quasiStatic(x, fermi, goal);
         return true;
     }
     a_C0.clear();
-    std::vector<double> at(a_contacts.size(), 0.0);
+    // On the way, beside the voltages, λ from 0 to 1: the light from what
+    // the solution was solved with to all of it, each circuit's resistance
+    // at rest from its as solved to its own (the light switched on with no
+    // voltage to walk, or a resistance swept: from the last solution Newton
+    // may find none at once - tried first all at once, as it was).
+    double lightFrom = a_Gop > 0 && f.solved && a_lightAt > 0 && f.values.size() > a_lightAt ? f.values[a_lightAt] / a_Gop : a_Gop > 0 ? 0.0 : 1.0;
+    std::vector<double> fromR(nc, 0.0);
+    for (std::size_t k = 0; k < nc; ++k) fromR[k] = f.solved ? a_contacts[k].solvedR : a_contacts[k].restR();
+    bool homotopy = std::abs(lightFrom - 1) > 1e-12;
+    for (std::size_t k = 0; k < nc; ++k)
+        if (a_contacts[k].iC >= 0 && std::abs(fromR[k] - a_contacts[k].restR()) > 1e-12 * std::max(1.0, a_contacts[k].restR())) homotopy = true;
+    auto along = [&](double lambda) {
+        a_lightScale = lightFrom + lambda * (1 - lightFrom);
+        for (std::size_t k = 0; k < nc; ++k)
+            if (a_contacts[k].iC >= 0) a_contacts[k].walkR = fromR[k] + lambda * (a_contacts[k].restR() - fromR[k]);
+    };
+    goal.push_back(1.0);
+    std::vector<double> at(nc + 1, 0.0);
+    at[nc] = homotopy ? 0.0 : 1.0;
     // A laser ready on a state solved without it - its photons none, its
     // carriers perhaps past their clamp: initialize()'s walk to the voltages
     // went before its mode was read - walked again from equilibrium, with
@@ -4490,8 +5225,15 @@ bool SemiconductorProblem::stationary(QString* why)
     const bool laserFresh = a_laser && a_laser->ready && a_iS >= 0 && !(x(a_iS) > 0);
     const bool warm = f.solved && !laserFresh;
     if (!warm) {
-        if (!equilibriumPoisson(x, 0, at, false, why)) return false;
+        // (From rest: the light from none, the resistances carrying nothing.)
+        const std::vector<double> rest(nc, 0.0);
+        if (!equilibriumPoisson(x, 0, rest, false, why)) return false;
         for (Contact& c : a_contacts) c.applied = 0;
+        circuitsAtRest(x, rest);
+        broadcastSlices(x);
+        lightFrom = a_Gop > 0 ? 0.0 : 1.0;
+        for (std::size_t k = 0; k < nc; ++k) fromR[k] = a_contacts[k].restR();
+        at[nc] = std::abs(lightFrom - 1) > 1e-12 ? 0.0 : 1.0;
     } else {
         for (std::size_t k = 0; k < a_contacts.size(); ++k) at[k] = a_contacts[k].applied;
     }
@@ -4511,15 +5253,21 @@ bool SemiconductorProblem::stationary(QString* why)
     Eigen::VectorXd before;
     std::vector<double> beforeAt;
     double step = 0.1;
-    if (warm && f.walkedFrom && int(f.walkedFrom->size()) == a_unknowns && f.walkedFromVolts.size() == at.size()) {
-        before = Eigen::Map<const Eigen::VectorXd>(f.walkedFrom->data(), a_unknowns);
+    if (warm && f.walkedFrom && int(f.walkedFrom->size()) == a_total && f.walkedFromVolts.size() == at.size()) {
+        before = Eigen::Map<const Eigen::VectorXd>(f.walkedFrom->data(), a_total);
         beforeAt = f.walkedFromVolts;
+        beforeAt[nc] = at[nc];   // (the last walk's λ another's: its line the voltages' alone)
         if (f.walkedStep > 0) step = std::min(4 * f.walkedStep, 1.0);
     }
-    // The way's length in volts: the contact that moves most.
+    // The way's length in volts (λ's as one): the contact that moves most.
     std::size_t moving = 0;
-    for (std::size_t k = 0; k < goal.size(); ++k)
+    bool voltsMove = false;
+    for (std::size_t k = 0; k < nc; ++k) {
         if (std::abs(goal[k] - at[k]) > std::abs(goal[moving] - at[moving])) moving = k;
+        voltsMove = voltsMove || std::abs(goal[k] - at[k]) > 1e-12;
+    }
+    // (The light or a resistance alone changed: tried all at once first.)
+    if (!voltsMove && at[nc] < 1) step = 1.0;
     auto apart = [](const std::vector<double>& a, const std::vector<double>& b) {
         double d = 0;
         for (std::size_t k = 0; k < a.size(); ++k) d = std::max(d, std::abs(a[k] - b[k]));
@@ -4542,12 +5290,22 @@ bool SemiconductorProblem::stationary(QString* why)
         if (!(dot > 0.999 * std::sqrt(la * lb))) return false;
         const double r = std::min(ahead / last, 4.0);
         trial = x;
-        for (int i = 0; i < a_n; ++i) {
-            if (const int k = a_iV[std::size_t(i)]; k >= 0) trial(k) = x(k) + r * (x(k) - before(k));
-            for (const int k : {a_iN[std::size_t(i)], a_iP[std::size_t(i)]})
-                if (k >= 0 && x(k) > 0 && before(k) > 0) trial(k) = x(k) * std::clamp(std::pow(x(k) / before(k), r), 1e-3, 1e3);
-        }
+        for (int s = 0; s < a_slices; ++s)
+            for (int i = 0; i < a_n; ++i) {
+                if (a_iV[std::size_t(i)] >= 0) {
+                    const int k = globalIndex(s, a_iV[std::size_t(i)]);
+                    trial(k) = x(k) + r * (x(k) - before(k));
+                }
+                for (const int kk : {a_iN[std::size_t(i)], a_iP[std::size_t(i)]}) {
+                    if (kk < 0) continue;
+                    const int k = globalIndex(s, kk);
+                    if (x(k) > 0 && before(k) > 0) trial(k) = x(k) * std::clamp(std::pow(x(k) / before(k), r), 1e-3, 1e3);
+                }
+            }
         if (a_iS >= 0 && x(a_iS) > 0 && before(a_iS) > 0) trial(a_iS) = x(a_iS) * std::clamp(std::pow(x(a_iS) / before(a_iS), r), 1e-3, 1e3);
+        // (A circuit's contact's own voltage on the line, as the potential.)
+        for (const Contact& c : a_contacts)
+            if (c.iC >= 0) trial(c.iC) = x(c.iC) + r * (x(c.iC) - before(c.iC));
         return true;
     };
     int solves = 0, iterations = 0, retried = 0;
@@ -4566,16 +5324,19 @@ bool SemiconductorProblem::stationary(QString* why)
         const double frac = left > 0 ? std::min(1.0, step / left) : 1.0;
         std::vector<double> next(at.size());
         for (std::size_t k = 0; k < at.size(); ++k) next[k] = at[k] + frac * (goal[k] - at[k]);
-        contactValues(next);
+        contactValues(std::vector<double>(next.begin(), next.begin() + std::ptrdiff_t(nc)));
+        along(next[nc]);
         Eigen::VectorXd trial = x;
         (void)predicted(next, trial);
         // (Told: where on its way, the step, Newton's residual - the APD's
         // review: "Solving Stationary" alone for 42 minutes.)
-        if (!contactName.isEmpty())
+        if (!contactName.isEmpty()) {
             a_walkSaid = tr("%1 at %2 of %3 (step %4, %5)")
                              .arg(contactName, formatQuantity(next[moving], Dim::voltage()), formatQuantity(goal[moving], Dim::voltage()))
                              .arg(solves + 1)
                              .arg(formatQuantity(frac * left, Dim::voltage(), 3));
+            if (next[nc] < 1) a_walkSaid += tr(", the light and circuits %1 % of their way").arg(formatNumber(100 * next[nc], 3));
+        }
         int steps = 0;
         // (At its voltages already - a walk's end solved again, the light's
         // pairs added since or not -: no step where its equations are met.)
@@ -4602,14 +5363,21 @@ bool SemiconductorProblem::stationary(QString* why)
                 warmTry = false;
                 fromRest = true;
                 std::fill(at.begin(), at.end(), 0.0);
-                if (!equilibriumPoisson(x, 0, at, false, why)) return false;
+                const std::vector<double> rest(nc, 0.0);
+                if (!equilibriumPoisson(x, 0, rest, false, why)) return false;
                 for (Contact& c : a_contacts) c.applied = 0;
+                circuitsAtRest(x, rest);
+                broadcastSlices(x);
+                // (From rest: the light from none, the resistances carrying nothing.)
+                lightFrom = a_Gop > 0 ? 0.0 : 1.0;
+                for (std::size_t k = 0; k < nc; ++k) fromR[k] = a_contacts[k].restR();
+                at[nc] = std::abs(lightFrom - 1) > 1e-12 ? 0.0 : 1.0;
                 before.resize(0);
                 beforeAt.clear();
                 step = 0.1;
                 solves = 0;
                 moving = 0;
-                for (std::size_t k = 0; k < goal.size(); ++k)
+                for (std::size_t k = 0; k < nc; ++k)
                     if (std::abs(goal[k]) > std::abs(goal[moving])) moving = k;
                 contactName = a_contacts.empty() ? QString() : a_contacts[moving].name;
                 continue;
@@ -4628,6 +5396,31 @@ bool SemiconductorProblem::stationary(QString* why)
         }
     }
     a_walkSaid.clear();
+    // (At its end its mobilities its solution's own: held from fifteen of
+    // Newton's steps on, before the potential settled, the solution was
+    // theirs - solved again with them updated at it while they move. Held
+    // settled, they are its own already.)
+    if ((a_saturation || a_lombardi) && solves > 0 && a_heldUnsettled) {
+        // (Not polished: the mobilities as the solution had them again.)
+        std::vector<std::pair<double, double>> edges(a_edges.size());
+        for (std::size_t k = 0; k < a_edges.size(); ++k) edges[k] = {a_edges[k].wn, a_edges[k].wp};
+        const std::vector<std::vector<std::pair<double, double>>> sliceEdges = a_sliceEdges;
+        Eigen::VectorXd polished = x;
+        int steps = 0;
+        QString failedPolish;
+        // (Each update met again in a few steps: their room for eight.)
+        if (newton(polished, 0, nullptr, 120, &steps, &failedPolish, false, true)) {
+            x = polished;
+            iterations += steps;
+        } else {
+            for (std::size_t k = 0; k < a_edges.size(); ++k) {
+                a_edges[k].wn = edges[k].first;
+                a_edges[k].wp = edges[k].second;
+            }
+            a_sliceEdges = sliceEdges;
+            a_s.log << tr("%1: its mobilities, held as it converged, not made its solution's own (%2)").arg(a_node->name(), failedPolish);
+        }
+    }
     // (Its last step kept: the next sweep point's first starts on its line.
     // A walk that took none - at its voltages already, solved again - leaves
     // the line it was handed: as a step of nought it lost the first sweep
@@ -4741,7 +5534,72 @@ void SemiconductorProblem::heterojunctionMesh(const Eigen::VectorXd& x)
 
 bool SemiconductorProblem::smallSignal(double frequency, QString* why)
 {
-    const Eigen::VectorXd x = stateVector();
+    // Each slice's at its own state and pairs (the contacts held: each
+    // alone), weighed by its share of the length; then the circuits.
+    using cd = std::complex<double>;
+    const Eigen::VectorXd X = stateVector();
+    const std::size_t nc = a_contacts.size();
+    std::vector<std::vector<cd>> Y(nc, std::vector<cd>(nc, cd(0, 0)));
+    std::vector<cd> H;
+    for (int sl = 0; sl < a_slices; ++sl) {
+        useSlice(sl);
+        std::vector<std::vector<cd>> Ys;
+        std::vector<cd> Hs;
+        if (!smallSignalSlice(a_slices > 1 ? sliceOf(X, sl) : X, frequency, Ys, Hs, why)) {
+            useSlice(0);
+            return false;
+        }
+        const double w = sliceWeight(sl);
+        for (std::size_t a = 0; a < nc; ++a)
+            for (std::size_t b = 0; b < nc; ++b) Y[a][b] += w * Ys[a][b];
+        if (!Hs.empty()) {
+            if (H.empty()) H.assign(nc, cd(0, 0));
+            for (std::size_t c = 0; c < nc; ++c) H[c] += w * Hs[c];
+        }
+    }
+    useSlice(0);
+    a_Y = Y;
+    a_Hop = H;
+    const double omega = 2 * M_PI * frequency;
+    // Behind circuits: each one's contact's voltage follows - its series
+    // impedance Z (Rs and RL; a bias tee's signal into RL too), Cp across -
+    // from the contacts' admittance and the light's currents: (Y + jωCp +
+    // 1/Z) v = -h on those contacts, the others held; the current through Z
+    // into the device, -v/Z: the light's through the load. (Z nought: held,
+    // all of it.)
+    a_Hc.clear();
+    if (!a_Hop.empty()) {
+        std::vector<std::size_t> ckt;
+        for (std::size_t k = 0; k < nc; ++k)
+            if (a_contacts[k].iC >= 0 && a_contacts[k].Rs + a_contacts[k].RL > 0) ckt.push_back(k);
+        bool any = false;
+        for (const Contact& c : a_contacts) any = any || c.iC >= 0;
+        if (any) a_Hc = a_Hop;
+        if (!ckt.empty()) {
+            const Eigen::Index m = Eigen::Index(ckt.size());
+            Eigen::MatrixXcd M(m, m);
+            Eigen::VectorXcd b(m);
+            for (Eigen::Index a = 0; a < m; ++a) {
+                const Contact& c = a_contacts[ckt[std::size_t(a)]];
+                for (Eigen::Index e = 0; e < m; ++e) M(a, e) = a_Y[ckt[std::size_t(a)]][ckt[std::size_t(e)]];
+                M(a, a) += cd(0, omega * c.Cp) + 1.0 / (c.Rs + c.RL);
+                b(a) = -a_Hop[ckt[std::size_t(a)]];
+            }
+            const Eigen::VectorXcd v = M.fullPivLu().solve(b);
+            for (Eigen::Index a = 0; a < m; ++a) {
+                const Contact& c = a_contacts[ckt[std::size_t(a)]];
+                a_Hc[ckt[std::size_t(a)]] = -v(a) / (c.Rs + c.RL);
+            }
+        }
+    }
+    a_frequency = frequency;
+    a_inTime = false;
+    return true;
+}
+
+bool SemiconductorProblem::smallSignalSlice(const Eigen::VectorXd& x, double frequency, std::vector<std::vector<std::complex<double>>>& Y,
+                                            std::vector<std::complex<double>>& H, QString* why)
+{
     std::vector<double> at(a_contacts.size());
     for (std::size_t k = 0; k < a_contacts.size(); ++k) at[k] = a_contacts[k].applied;
     contactValues(at);
@@ -4893,9 +5751,12 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         if (rp >= 0 && !fixed[std::size_t(rp)]) put(rp, rp, cd(0, omega * Q * kp));
     }
     // Fixed: δV at a contact; δφn = δφp = δVa at an ohmic one (its carriers
-    // fixed).
+    // fixed). (A circuit's contact's own voltage held with its nodes: the
+    // circuit taken after, on the contacts' admittance.)
     for (int k = 0; k < a_unknowns; ++k)
         if (fixed[std::size_t(k)]) ct.emplace_back(k, k, cd(a_Vt, 0));
+    for (const Contact& c : a_contacts)
+        if (c.iC >= 0) ct.emplace_back(c.iC, c.iC, cd(a_Vt, 0));
     Eigen::SparseMatrix<cd> A(a_unknowns, a_unknowns);
     A.setFromTriplets(ct.begin(), ct.end());
     Eigen::VectorXd rowMax = Eigen::VectorXd::Zero(a_unknowns);
@@ -5002,7 +5863,7 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
         }
         return out;
     };
-    a_Y.assign(nc, std::vector<cd>(nc, cd(0, 0)));
+    Y.assign(nc, std::vector<cd>(nc, cd(0, 0)));
     for (std::size_t k = 0; k < nc; ++k) {
         Eigen::VectorXcd rhs = Eigen::VectorXcd::Zero(a_unknowns);
         // (A fixed row reads Vt y = 1 V: y in units of Vt.)
@@ -5015,24 +5876,24 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
             }
         }
         const std::vector<cd> dI = terminals(lu.solve(rhs));
-        for (std::size_t c = 0; c < nc; ++c) a_Y[c][k] = dI[c];
+        for (std::size_t c = 0; c < nc; ++c) Y[c][k] = dI[c];
     }
     // The light modulated wholly (δG = G), the contacts held: each one's
     // current - a photodiode's response, its carriers' transit.
-    a_Hop.clear();
+    H.clear();
     if (a_Gop > 0) {
         Eigen::VectorXcd rhs = Eigen::VectorXcd::Zero(a_unknowns);
+        const std::vector<double>& generated = generationNow();
         for (int i = 0; i < a_n; ++i) {
-            const double g = a_generation.empty() ? 0.0 : a_generation[std::size_t(i)];
+            const double g = generated.empty() ? 0.0 : generated[std::size_t(i)];
             if (g == 0 || a_iN[std::size_t(i)] < 0) continue;
             const int rn = a_iN[std::size_t(i)], rp = a_iP[std::size_t(i)];
             // (F's rows hold -qA (R - G) and qA (R - G): ∂F/∂G qA and -qA; J δx = -∂F/∂G δG.)
             if (!fixed[std::size_t(rn)]) rhs(rn) = cd(-Q * a_box[std::size_t(i)] * g / rowMax(rn), 0);
             if (!fixed[std::size_t(rp)]) rhs(rp) = cd(Q * a_box[std::size_t(i)] * g / rowMax(rp), 0);
         }
-        a_Hop = terminals(lu.solve(rhs));
+        H = terminals(lu.solve(rhs));
     }
-    a_frequency = frequency;
     return true;
 }
 
@@ -5077,6 +5938,8 @@ void SemiconductorProblem::latticeTemperature()
         em.tp = std::pow(T / a_T, -m.zetap);
     }
     edgeWeights(nullptr);
+    // (The slices' own then of these: set again as their fields saturate them.)
+    a_sliceEdges.clear();
 }
 
 bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
@@ -5125,7 +5988,7 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
         // device its power falls as e^(-2αz): over its length L (the
         // thickness) the mean (1 - e^(-2αL))/2αL of what it starts with. A
         // mode not solved yet (the dark current's step): none.
-        std::vector<double> perWatt(a_optical.size(), 0.0);
+        std::vector<double> perWatt(a_optical.size(), 0.0), alphaOf(a_optical.size(), 0.0);
         a_Pin = 0;
         for (std::size_t k = 0; k < a_optical.size(); ++k) {
             OpticalSource& o = a_optical[k];
@@ -5157,6 +6020,7 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
             }
             const double L = a_s.axisymmetric() ? 1.0 : a_s.thickness(), x = 2 * std::max(*alpha, 0.0) * L;
             const double mean = x > 1e-9 ? -std::expm1(-x) / x : 1.0;
+            alphaOf[k] = std::max(*alpha, 0.0);
             const double photon = 6.62607015e-34 * 299792458.0 / *lambda;
             perWatt[k] = o.eta * o.P0 * mean / photon;
             a_Pin += o.P0;
@@ -5214,13 +6078,54 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
                 }
             }
         }
+        const std::vector<double> userAmount = amount;
+        std::vector<double> scaleOf(a_optical.size(), 0.0);
         for (std::size_t o = 0; o < a_optical.size(); ++o) {
             if (lit[o].empty() || !(discrete[o] > 0)) continue;
             const double scale = perWatt[o] * exact[o] / discrete[o];
+            scaleOf[o] = scale;
             for (int i = 0; i < a_n; ++i) amount[std::size_t(i)] += lit[o][std::size_t(i)] * scale;
         }
         for (int i = 0; i < a_n; ++i)
             if (a_box[std::size_t(i)] > 0) a_generation[std::size_t(i)] = amount[std::size_t(i)] / a_box[std::size_t(i)];
+        // Slices along the length: each absorbing an equal share of the
+        // first lit source's light (its power falling as e^(-2αz)) - the
+        // finer where it is the stronger, at the start -, in each the light
+        // of each source the mean of e^(-2αz) over it against the whole
+        // length's (each slice's length its share; their pairs together all
+        // of them).
+        a_sliceGeneration.clear();
+        if (a_slices > 1) {
+            const std::size_t S = std::size_t(a_slices);
+            const double L = a_s.thickness();
+            double first = 0;
+            for (std::size_t o = 0; o < a_optical.size() && !(first > 0); ++o)
+                if (scaleOf[o] > 0) first = alphaOf[o];
+            a_sliceZ.assign(S + 1, 0.0);
+            for (std::size_t k = 0; k <= S; ++k) {
+                const double share = double(k) / double(S);
+                a_sliceZ[k] = first * L > 1e-9 ? -std::log1p(share * std::expm1(-2 * first * L)) / (2 * first) : share * L;
+            }
+            a_sliceZ[S] = L;
+            a_sliceWeight.assign(S, 0.0);
+            for (std::size_t k = 0; k < S; ++k) a_sliceWeight[k] = (a_sliceZ[k + 1] - a_sliceZ[k]) / L;
+            // (The mean of e^(-2αz) from z0 to z1.)
+            auto mean = [](double alpha, double z0, double z1) {
+                const double x = 2 * alpha * (z1 - z0);
+                return x > 1e-12 ? std::exp(-2 * alpha * z0) * -std::expm1(-x) / x : std::exp(-2 * alpha * z0);
+            };
+            a_sliceGeneration.assign(S, std::vector<double>(std::size_t(a_n), 0.0));
+            for (std::size_t k = 0; k < S; ++k) {
+                std::vector<double> here = userAmount;
+                for (std::size_t o = 0; o < a_optical.size(); ++o) {
+                    if (!(scaleOf[o] > 0)) continue;
+                    const double factor = mean(alphaOf[o], a_sliceZ[k], a_sliceZ[k + 1]) / mean(alphaOf[o], 0, L);
+                    for (int i = 0; i < a_n; ++i) here[std::size_t(i)] += lit[o][std::size_t(i)] * scaleOf[o] * factor;
+                }
+                for (int i = 0; i < a_n; ++i)
+                    if (a_box[std::size_t(i)] > 0) a_sliceGeneration[k][std::size_t(i)] = here[std::size_t(i)] / a_box[std::size_t(i)];
+            }
+        }
         a_Gop = 0;
         for (int i = 0; i < a_n; ++i) a_Gop += a_generation[std::size_t(i)] * a_box[std::size_t(i)];
     }
@@ -5229,6 +6134,7 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
         return smallSignal(o.frequency, error);
     }
     a_Y.clear();
+    a_inTime = o.mass > 0 && o.history;
     if (o.mass > 0 && o.history) {
         // A step in time: straight to the contacts' voltages now.
         std::vector<double> goal;
@@ -5241,57 +6147,15 @@ bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
             *error = why;   // ("did not converge": the step is taken again, smaller)
             return false;
         }
-        for (std::size_t k = 0; k < a_contacts.size(); ++k) a_contacts[k].applied = goal[k];
-        terminalValues(x, o.mass, o.history);
-        // (Displacement current: the contact's charge's change.)
-        {
-            // Q at the step's start from the history's charge: the BDF
-            // formula applied to Q (affine in the unknowns) is mass Q(x) - Q(history).
-            std::vector<double> hv = *o.history;
-            Eigen::VectorXd xh = Eigen::VectorXd::Zero(a_unknowns);
-            const std::size_t N = std::size_t(a_n);
-            for (int i = 0; i < a_n; ++i) {
-                if (a_iV[std::size_t(i)] >= 0) xh(a_iV[std::size_t(i)]) = hv[std::size_t(i)];
-                if (a_iN[std::size_t(i)] >= 0) xh(a_iN[std::size_t(i)]) = hv[N + std::size_t(i)];
-                if (a_iP[std::size_t(i)] >= 0) xh(a_iP[std::size_t(i)]) = hv[2 * N + std::size_t(i)];
-            }
-            // The charges' linear parts: Poisson's rows less the dopants' ions
-            // (their charge, not affine where they are ionized in part, of v
-            // itself: at the history's v - the carriers over the step - it
-            // was nonsense, a junction's contacts' currents 14 times C dV/dt
-            // and not each other's).
-            auto charges = [&](const Eigen::VectorXd& v) {
-                Eigen::VectorXd F;
-                assemble(v, 0, nullptr, F, nullptr);
-                std::vector<double> q(a_contacts.size(), 0);
-                for (std::size_t k = 0; k < a_contacts.size(); ++k)
-                    for (int i : a_contacts[k].nodes) {
-                        double fv = F(a_iV[std::size_t(i)]);
-                        if (a_nodeDomain[std::size_t(i)] >= 0) {
-                            double nd = 0, na = 0, dnd = 0, dna = 0;
-                            ionizedAt(i, v, &nd, &dnd, &na, &dna);
-                            fv -= Q * a_box[std::size_t(i)] * (nd - na);
-                        }
-                        q[k] -= fv;
-                    }
-                return q;
-            };
-            const std::vector<double> now = charges(x), before = charges(xh);
-            for (std::size_t k = 0; k < a_contacts.size(); ++k) a_contacts[k].current += o.mass * now[k] - before[k];
-            // Their ions' change, by their own history (incomplete ionization's).
-            if (a_ionAt > 0 && hv.size() >= a_ionAt + 2 * N) {
-                Eigen::VectorXd F;
-                assemble(x, 0, nullptr, F, nullptr);
-                for (std::size_t k = 0; k < a_contacts.size(); ++k)
-                    for (int i : a_contacts[k].nodes) {
-                        if (a_nodeDomain[std::size_t(i)] < 0 || !a_media[std::size_t(a_nodeDomain[std::size_t(i)])].incomplete) continue;
-                        double nd = 0, na = 0, dnd = 0, dna = 0;
-                        ionizedAt(i, x, &nd, &dnd, &na, &dna);
-                        const double dNd = o.mass * nd - hv[a_ionAt + std::size_t(i)], dNa = o.mass * na - hv[a_ionAt + N + std::size_t(i)];
-                        a_contacts[k].current -= Q * a_box[std::size_t(i)] * (dNd - dNa);
-                    }
-            }
+        for (std::size_t k = 0; k < a_contacts.size(); ++k) {
+            Contact& c = a_contacts[k];
+            c.applied = goal[k];
+            // (Cp's current, Cp dVc/dt.)
+            c.capCurrent = c.iC >= 0 && c.Cp > 0 && a_circuitAt > 0 && o.history->size() >= a_circuitAt + 3 * a_contacts.size()
+                               ? c.Cp * (o.mass * x(c.iC) - (*o.history)[a_circuitAt + 3 * k])
+                               : 0.0;
         }
+        terminalAll(x, o.mass, o.history);
         store(x);
         return true;
     }
@@ -5628,6 +6492,19 @@ QString matrixEntryName(const QString& tag, const QString& letter, const QString
 void SemiconductorProblem::setGlobals()
 {
     const QString p = field().tag + QLatin1Char('.');
+    // Cut into slices along the length: each one's start and its share of
+    // each contact's current (its own length's).
+    if (a_slices > 1 && a_sliceZ.size() == std::size_t(a_slices) + 1) {
+        a_s.setGlobal(p + QStringLiteral("slices"), a_slices, Dim(), tr("slices along the length, each the cross-section at its place"));
+        for (int sl = 0; sl < a_slices; ++sl) {
+            a_s.setGlobal(p + QStringLiteral("zs%1").arg(sl + 1), a_sliceZ[std::size_t(sl)], Dim::length(),
+                          tr("where slice %1 starts along the device (the light fed at 0)").arg(sl + 1));
+            if (std::size_t(sl) < a_sliceCurrent.size())
+                for (std::size_t k = 0; k < a_contacts.size(); ++k)
+                    a_s.setGlobal(p + QStringLiteral("Is%1_%2").arg(sl + 1).arg(a_contacts[k].name), a_sliceCurrent[std::size_t(sl)][k], Dim::current(),
+                                  tr("current into the device at %1 through slice %2 (its length's share)").arg(a_contacts[k].name).arg(sl + 1));
+        }
+    }
     // Fowler-Nordheim: through each edge J = A E² e^(-B/E) at the barrier's
     // mean field - φB over the distance into the insulator, along the
     // edge's normal from its middle, at which the potential has moved by
@@ -5822,7 +6699,20 @@ void SemiconductorProblem::setGlobals()
     }
     for (const Contact& c : a_contacts) {
         a_s.setGlobal(p + QStringLiteral("I_") + c.name, c.current, Dim::current(), tr("current into the device at %1").arg(c.name));
-        a_s.setGlobal(p + QStringLiteral("V_") + c.name, c.applied, Dim::voltage(), tr("voltage applied at %1").arg(c.name));
+        a_s.setGlobal(p + QStringLiteral("V_") + c.name, c.applied, Dim::voltage(),
+                      c.iC >= 0 ? tr("its circuit's source's voltage V0 at %1").arg(c.name) : tr("voltage applied at %1").arg(c.name));
+        if (c.iC >= 0) {
+            // Behind a circuit: the contact's own voltage, and its load's
+            // current, voltage and power (a bias tee's at rest none).
+            const double IL = c.loadCurrent(a_inTime);
+            a_s.setGlobal(p + QStringLiteral("Vc_") + c.name, c.voltage, Dim::voltage(),
+                          tr("the contact %1's own voltage: its source's less its circuit's drop").arg(c.name));
+            a_s.setGlobal(p + QStringLiteral("IL_") + c.name, IL, Dim::current(),
+                          c.circuit == Contact::BiasTee ? tr("current through %1's load RL toward the device: in time the change from rest, through its bias tee").arg(c.name)
+                                                        : tr("current through %1's load RL toward the device").arg(c.name));
+            a_s.setGlobal(p + QStringLiteral("VL_") + c.name, c.RL * IL, Dim::voltage(), tr("voltage across %1's load RL, RL IL").arg(c.name));
+            a_s.setGlobal(p + QStringLiteral("PL_") + c.name, c.RL * IL * IL, Dim::power(), tr("power into %1's load RL, RL IL²").arg(c.name));
+        }
         // (An ohmic contact holds the field's flux at it alone: the
         // junction's charge is balanced inside the semiconductor. Said so -
         // "about nought" on an implant's contacts, 274 and -502 fC at every
@@ -5873,6 +6763,11 @@ void SemiconductorProblem::setGlobals()
                           tr("small-signal photocurrent at %1 per pair made, the light modulated (1 at low frequency, every pair "
                              "collected): its transit's roll-off")
                               .arg(name));
+            if (a_Hc.size() > c && a_contacts[c].iC >= 0)
+                a_s.setGlobal(p + QStringLiteral("Hc_") + name, std::abs(a_Hc[c] / (Q * a_Gop)), Dim(),
+                              tr("the small-signal photocurrent through %1's circuit's load per pair made: its RC and the device's, Cp "
+                                 "across - a photodiode's bandwidth where it is 1/√2 of its low frequency's")
+                                  .arg(name));
             if (RL > 0 && a_Y.size() > c) {
                 const std::complex<double> yl = 1 / RL, loaded = h * yl / (yl + a_Y[c][c]);
                 a_s.setGlobal(p + QStringLiteral("HopRL_") + name, std::abs(loaded), Dim(),
@@ -5952,6 +6847,7 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     // Fermi-Dirac's: γ = ℱ(η)/e^η, the carriers' Boltzmann densities n/γ.
     double gn = 1, gp = 1;
     s.joule = ex[18];
+    s.heat = ex[33];
     s.Gion = std::isfinite(ex[32]) ? ex[32] : 0.0;
     if (ex[16] > 0 && ex[17] > 0) {
         const FermiHalf& fh = fermiHalf();
