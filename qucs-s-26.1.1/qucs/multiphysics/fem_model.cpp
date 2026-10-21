@@ -1937,7 +1937,12 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("P0"), tr("Power fed"), QStringLiteral("W"), QStringLiteral("1[mW]"), tr("The mode's at the device's start; of t in time (a pulse)")),
           expr(QStringLiteral("eta"), tr("Internal quantum efficiency η"), QString(), QStringLiteral("1"), tr("Pairs made per photon absorbed across the gap")),
           expr(QStringLiteral("RL"), tr("Load resistance"), QStringLiteral("Ohm"), QStringLiteral("50[Ohm]"),
-               tr("A frequency step's response through it: semi.HopRL_<contact>, the device's capacitance charged through it"))},
+               tr("A frequency step's response through it: semi.HopRL_<contact>, the device's capacitance charged through it")),
+          integer(QStringLiteral("slices"), tr("Slices along the length"), 1,
+                  tr("1: each cross-section the length's mean light. More: the device cut along its length into cross-sections, "
+                     "each absorbing an equal share of the light - the finer where it is the stronger, at the start - solved "
+                     "together, their contacts one metal: under strong light the start saturates first. The fields shown the "
+                     "first slice's; each slice's current semi.Is<k>_<contact>, its start semi.zs<k>"))},
          {}, {}, false, false, QStringLiteral("opg"),
          tr("A waveguide photodiode's light: a mode fed P0, solved before (a Mode Analysis step) - each photon it loses across the gap "
             "(emw.Qgap: the media's κ and a direct gap's, not the free carriers') a pair, its power falling along the device as "
@@ -1950,12 +1955,35 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("semiconductor/insulation"), tr("Insulation"), QStringLiteral("semi"), QStringLiteral("boundaryfeature"), Level::Boundary,
          {selectionProp()}, {}, {}, false, false, QStringLiteral("ins"),
          tr("No current and no charge through the boundary. Where no other condition is.")});
+    // A contact's circuit: held at V0, or V0 through resistances - a load in
+    // series, or a bias tee's - a capacitance across the device.
+    const P circuit = choice(QStringLiteral("circuit"), tr("Circuit"), {QStringLiteral("none"), QStringLiteral("series"), QStringLiteral("biastee")},
+                             {tr("None: held at V0"), tr("V0 through Rs and the load RL in series"),
+                              tr("A bias tee: V0 through Rs at rest, the signal into RL")},
+                             QStringLiteral("none"),
+                             tr("Behind a circuit the contact's own voltage is solved with the carriers: its source's less the drop the "
+                                "current makes - a photodiode's bias falling under strong light. In series RL carries the current at rest "
+                                "and in time alike; through a bias tee only Rs at rest, and in time RL carries the current's change "
+                                "from rest (the tee ideal: its rest current the stationary solution's before the step). Small-signal "
+                                "the contact sees Rs + RL with Cp across, either way."));
+    const P circuitRs = shownIf(expr(QStringLiteral("Rs"), tr("Series resistance Rs"), QStringLiteral("Ohm"), QStringLiteral("0[Ohm]"),
+                                     tr("The contact's and its access's, in the current's path at rest and in time")),
+                                QStringLiteral("circuit=series|circuit=biastee"));
+    const P circuitRL = shownIf(expr(QStringLiteral("RL"), tr("Load resistance RL"), QStringLiteral("Ohm"), QStringLiteral("50[Ohm]"),
+                                     tr("What the signal is delivered to: semi.IL_<name>, semi.VL_<name>, semi.PL_<name>")),
+                                QStringLiteral("circuit=series|circuit=biastee"));
+    const P circuitCp = shownIf(expr(QStringLiteral("Cp"), tr("Capacitance across Cp"), QStringLiteral("F"), QStringLiteral("0[F]"),
+                                     tr("A pad's or a package's, from the contact to ground beside the device")),
+                                QStringLiteral("circuit=series|circuit=biastee"));
     add({QStringLiteral("semiconductor/ohmic"), tr("Metal Contact"), QStringLiteral("semi"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("1")),
-          expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]"), tr("A parameter to sweep it; of t in time"))},
+          expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]"), tr("A parameter to sweep it; of t in time")),
+          circuit, circuitRs, circuitRL, circuitCp},
          {}, {}, false, false, QStringLiteral("mc"),
-         tr("An ohmic contact: the carriers at equilibrium and charge neutrality, the quasi-Fermi levels at -q V0. Its current "
-            "semi.I_<name> (into the device), its charge semi.Q_<name>.")});
+         tr("An ohmic contact: the carriers at equilibrium and charge neutrality, the quasi-Fermi levels at -q V0 - or behind a "
+            "circuit at its own voltage, solved: semi.Vc_<name>, its load's semi.IL_<name>, semi.VL_<name>, semi.PL_<name>, and "
+            "small-signal the light's response through the load, semi.Hc_<name>. Its current semi.I_<name> (into the device), its "
+            "charge semi.Q_<name>.")});
     add({QStringLiteral("semiconductor/schottky"), tr("Schottky Contact"), QStringLiteral("semi"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("1")),
           expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]")),
@@ -1964,8 +1992,10 @@ QList<NodeKind> makeKinds()
                   "4.28 eV) less the semiconductor's χ, else 0.8 eV")),
           expr(QStringLiteral("vn"), tr("Electrons' recombination velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]"),
                tr("A* T² / (q Nc): Richardson's")),
-          expr(QStringLiteral("vp"), tr("Holes' recombination velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]"))},
-         {}, {}, false, false, QStringLiteral("sc"), tr("A metal on the semiconductor with a barrier: thermionic emission over it.")});
+          expr(QStringLiteral("vp"), tr("Holes' recombination velocity"), QStringLiteral("m/s"), QStringLiteral("1e7[cm/s]")),
+          circuit, circuitRs, circuitRL, circuitCp},
+         {}, {}, false, false, QStringLiteral("sc"),
+         tr("A metal on the semiconductor with a barrier: thermionic emission over it. Behind a circuit as a Metal Contact.")});
     add({QStringLiteral("semiconductor/gate"), tr("Gate Contact"), QStringLiteral("semi"), QStringLiteral("terminal"), Level::Boundary,
          {selectionProp(none), text(QStringLiteral("name"), tr("Contact name"), QStringLiteral("g")),
           expr(QStringLiteral("V0"), tr("Voltage"), QStringLiteral("V"), QStringLiteral("0[V]")),
