@@ -32,24 +32,36 @@ QString tr(const char* text, const char* disambiguation = nullptr, int n = -1)
 
 // ------------------------------------------------------------------ Dim
 
+namespace {
+
+// A power held at ±127, not wrapped: m^100 * m^100 was m^-56 (and m to
+// 2147483647 squared undefined) - the fuzz of 21 October, E5. No unit has
+// such powers; one held there is as wrong, and plainly so.
+std::int8_t held(long long power)
+{
+    return std::int8_t(std::clamp(power, -127LL, 127LL));
+}
+
+} // namespace
+
 Dim Dim::operator*(const Dim& o) const
 {
     Dim d;
-    for (int i = 0; i < BaseCount; ++i) d.p[i] = std::int8_t(p[i] + o.p[i]);
+    for (int i = 0; i < BaseCount; ++i) d.p[i] = held(p[i] + o.p[i]);
     return d;
 }
 
 Dim Dim::operator/(const Dim& o) const
 {
     Dim d;
-    for (int i = 0; i < BaseCount; ++i) d.p[i] = std::int8_t(p[i] - o.p[i]);
+    for (int i = 0; i < BaseCount; ++i) d.p[i] = held(p[i] - o.p[i]);
     return d;
 }
 
 Dim Dim::pow(int n) const
 {
     Dim d;
-    for (int i = 0; i < BaseCount; ++i) d.p[i] = std::int8_t(p[i] * n);
+    for (int i = 0; i < BaseCount; ++i) d.p[i] = held(p[i] * static_cast<long long>(n));
     return d;
 }
 
@@ -231,7 +243,12 @@ private:
                 a_error = tr("a power in the unit must be a whole number");
                 return std::nullopt;
             }
-            const int n = sign * a_text.mid(from, a_at - from).toInt();
+            bool ok = false;
+            const int n = sign * a_text.mid(from, a_at - from).toInt(&ok);
+            if (!ok || std::abs(n) >= 64) {
+                a_error = tr("a power in the unit must be less than 64");
+                return std::nullopt;
+            }
             u = Unit{std::pow(u->scale, n), u->dim.pow(n), 0};
         }
         return u;
@@ -641,6 +658,7 @@ struct Ast {
     Unit unit;
     bool literal = false;     // a number as written (for 20[degC])
     int at = 0;               // where it is in the text
+    int height = 1;           // its deepest path down
     std::vector<std::shared_ptr<Ast>> args;
 };
 using AstPtr = std::shared_ptr<Ast>;
@@ -649,6 +667,14 @@ class Parser
 {
 public:
     explicit Parser(const QString& text) : a_text(text) {}
+
+    // How deep it reads: nested brackets, signs and powers each a level of
+    // its recursion; and the tree's height - a long sum is as deep as it is
+    // long, compiled and freed by recursion. (Unbounded, 2247 brackets
+    // overflowed a sanitized build's stack - the fuzz of 21 October, E1 -,
+    // a thread's of 512 kB sooner; the compiler takes 256 levels,
+    // functions written out.)
+    static constexpr int MaxNesting = 100, MaxHeight = 200;
 
     AstPtr parse(QString* error)
     {
@@ -685,11 +711,16 @@ private:
     }
     AstPtr node(Ast::Kind kind, Expression::Op op, std::vector<AstPtr> args = {})
     {
+        int height = 1;
+        for (const AstPtr& a : args)
+            if (a) height = std::max(height, a->height + 1);
+        if (height > MaxHeight) return fail(tr("the expression is too deep (more than %1 levels)").arg(MaxHeight));
         auto n = std::make_shared<Ast>();
         n->kind = kind;
         n->op = op;
         n->args = std::move(args);
         n->at = a_at;
+        n->height = height;
         return n;
     }
     AstPtr binary(Expression::Op op, AstPtr a, AstPtr b)
@@ -744,6 +775,12 @@ private:
     }
     AstPtr parseUnary()
     {
+        struct Level {
+            int& depth;
+            explicit Level(int& d) : depth(d) { ++depth; }
+            ~Level() { --depth; }
+        } level(a_nesting);
+        if (a_nesting > MaxNesting) return fail(tr("the expression nests too deeply (more than %1 levels)").arg(MaxNesting));
         if (take("-")) {
             AstPtr a = parseUnary();
             return a ? node(Ast::Unary, Expression::Op::Neg, {a}) : nullptr;
@@ -775,6 +812,7 @@ private:
             if (!unit) return fail(why);
             a_at = close + 1;
             AstPtr u = node(Ast::WithUnit, Expression::Op::Mul, {a});
+            if (!u) return nullptr;
             u->unit = *unit;
             a = u;
         }
@@ -808,6 +846,9 @@ private:
                     do {
                         AstPtr arg = parseOr();
                         if (!arg) return nullptr;
+                        // (Its height its arguments' more.)
+                        n->height = std::max(n->height, arg->height + 1);
+                        if (n->height > MaxHeight) return fail(tr("the expression is too deep (more than %1 levels)").arg(MaxHeight));
                         n->args.push_back(arg);
                     } while (take(","));
                     if (!take(")")) return fail(tr("a ')' is missing after the arguments of %1").arg(n->name));
@@ -872,6 +913,7 @@ private:
 
     QString a_text;
     int a_at = 0;
+    int a_nesting = 0;
     QString a_error;
 };
 
@@ -916,7 +958,15 @@ public:
 
     std::optional<Value> compile(const AstPtr& ast, int depth = 0)
     {
-        if (depth > 64) return failed(tr("the functions call each other too deeply"));
+        // (Its depth the tree's, its functions written out - a sum of 65
+        // terms refused as functions calling each other, before the fuzz of
+        // 21 October -; the functions' calls within each other counted
+        // apart, in call().)
+        if (depth > MaxDepth) return failed(tr("the expression is too deep with its functions written out (more than %1 levels)").arg(MaxDepth));
+        // (Its functions written out: one that reads its argument twice,
+        // nested, doubles at each call - sq(u) = u*u + 1 eighteen deep took
+        // 33 s, its 2^18 copies (the fuzz of 21 October, E2).)
+        if (++a_nodes > MaxNodes) return failed(tr("the expression grows too large with its functions written out (more than %1 terms)").arg(MaxNodes));
         switch (ast->kind) {
         case Ast::Number: {
             Value v;
@@ -1099,6 +1149,12 @@ private:
             QString why;
             AstPtr body = Parser(f->body).parse(&why);
             if (!body) return failed(tr("in the function %1: %2").arg(ast->name, why));
+            struct Calling {
+                int& calls;
+                explicit Calling(int& c) : calls(c) { ++calls; }
+                ~Calling() { --calls; }
+            } calling(a_calls);
+            if (a_calls > MaxCalls) return failed(tr("the functions call each other too deeply"));
             return compile(substitute(body, f->arguments, ast->args), depth + 1);
         }
         if (ast->name == QLatin1String("interp")) return interpolation(ast, depth);
@@ -1317,6 +1373,10 @@ public:
 private:
     const Scope& a_scope;
     Expression& a_out;
+    static constexpr long MaxNodes = 50000;
+    static constexpr int MaxDepth = 256, MaxCalls = 64;
+    long a_nodes = 0;   // compiled so far
+    int a_calls = 0;    // functions within each other, here
     Expression::Options a_options;
 };
 
@@ -1532,7 +1592,9 @@ Expression::Linearity Expression::linearity(const std::function<SlotKind(int)>& 
 double Expression::Table::at(double u, double v) const
 {
     const std::size_t nx = x.size(), ny = grid.size();
-    if (nx == 0 || ny == 0 || z.size() < nx * ny) return std::nan("");
+    // (Not a number: none - its search past the grid's end otherwise, every
+    // comparison false.)
+    if (nx == 0 || ny == 0 || z.size() < nx * ny || std::isnan(u) || std::isnan(v)) return std::nan("");
     // Each axis: its cell and the share across it, clamped to the grid.
     auto locate = [](const std::vector<double>& g, double w, std::size_t* i, double* t) {
         if (g.size() == 1 || w <= g.front()) {
@@ -1560,7 +1622,10 @@ double Expression::Table::at(double u, double v) const
 
 double Expression::Table::at(double v) const
 {
-    if (x.empty()) return std::nan("");
+    // (Not a number: none - upper_bound, every comparison false, gave the
+    // end and a read past it: a diverged solve's temperature in a
+    // material's table - the fuzz of 21 October, E4.)
+    if (x.empty() || y.size() < x.size() || std::isnan(v)) return std::nan("");
     if (v <= x.front()) return y.front();
     if (v >= x.back()) return y.back();
     const auto it = std::upper_bound(x.begin(), x.end(), v);

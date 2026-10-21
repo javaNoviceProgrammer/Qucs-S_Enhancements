@@ -782,14 +782,14 @@ bool RayProblem::solve(const SolveOptions& o, QString* error)
     };
     if (threads == 1) work(0, 0, count);
     else {
-        std::vector<std::thread> pool;
+        Threads pool;
         const int chunk = (count + threads - 1) / threads;
         for (int k = 0; k < threads; ++k) {
             const int b = k * chunk, e = std::min(count, b + chunk);
             if (b >= e) break;
-            pool.emplace_back(work, k, b, e);
+            pool.start([&work, k, b, e] { work(k, b, e); });
         }
-        for (std::thread& t : pool) t.join();
+        pool.join();
     }
     // The power absorbed by triangle, as a density at the nodes: each node
     // the mean of its absorbing triangles', by area - its integral over the

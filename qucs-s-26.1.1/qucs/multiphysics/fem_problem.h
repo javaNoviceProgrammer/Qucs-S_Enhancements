@@ -24,6 +24,7 @@
 #include "fem_sparse.h"
 
 #include <QSet>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +43,25 @@ inline const double NaN = std::numeric_limits<double>::quiet_NaN();
 
 /// Runs \a work(begin, end) on parts of [0, n) in threads.
 void parallelFor(int n, const std::function<void(int, int)>& work);
+
+/// Threads of 8 MB stacks, a main thread's - std::thread's are the
+/// system's, 512 kB on macOS, and a solve on one parses and compiles its
+/// expressions by recursion (a sweep's points each on its own: the fuzz
+/// of 21 October, E3). Each started at once; all waited for by join(), or
+/// when it goes.
+class Threads
+{
+public:
+    Threads() = default;
+    Threads(const Threads&) = delete;
+    Threads& operator=(const Threads&) = delete;
+    ~Threads() { join(); }
+    void start(std::function<void()> work);
+    void join();
+
+private:
+    std::vector<std::unique_ptr<QThread>> a_threads;
+};
 
 /// The elements of a system: called with a function each element gives
 /// its equations to (negative ones left out).

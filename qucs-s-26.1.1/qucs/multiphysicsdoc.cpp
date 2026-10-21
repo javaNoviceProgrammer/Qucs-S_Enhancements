@@ -96,6 +96,8 @@ QByteArray compact(const QJsonValue& v)
 
 struct Sections {
     QByteArray parameters, geometry, mesh, physics, studies, results;
+    QByteArray materials;   // (in physics too)
+    bool flow = false;      // a process flow in its geometry
 };
 
 Sections sections(const Model& m)
@@ -110,6 +112,9 @@ Sections sections(const Model& m)
                 + compact(c.value(QStringLiteral("thickness"))) + compact(c.value(QStringLiteral("selections")));
     s.studies = compact(o.value(QStringLiteral("studies")));
     s.results = compact(o.value(QStringLiteral("results")));
+    s.materials = compact(c.value(QStringLiteral("materials")));
+    for (const Node& g : m.geometry().children)
+        if (g.type == QLatin1String("process")) s.flow = true;
     return s;
 }
 
@@ -642,7 +647,10 @@ void MultiphysicsDoc::invalidate(const Model& before, const Model& after)
 {
     a_processSolutions.clear();
     const Sections a = sections(before), b = sections(after);
-    const bool geometry = a.parameters != b.parameters || a.geometry != b.geometry;
+    // (A process flow reads the materials - a III-V's composition, for its
+    // intermixing: changed, it runs again; it was left as it was, found
+    // reading the flow for the fuzz of 21 October.)
+    const bool geometry = a.parameters != b.parameters || a.geometry != b.geometry || (b.flow && a.materials != b.materials);
     const bool mesh = geometry || a.mesh != b.mesh;
     const bool physics = mesh || a.physics != b.physics;
     if (geometry && !a_geometryStale) {
@@ -729,6 +737,15 @@ bool MultiphysicsDoc::buildGeometry(QString* error)
     return ok;
 }
 
+bool MultiphysicsDoc::currentGeometry(QString* error)
+{
+    if (a_geometryStale) return buildGeometry(error);
+    if (a_geometry.ok()) return true;
+    const Node* n = a_model.find(a_geometry.failedAt);
+    if (error) *error = tr("%1: %2").arg(n ? n->name() : a_geometry.failedAt, a_geometry.errors.value(a_geometry.failedAt));
+    return false;
+}
+
 void MultiphysicsDoc::watchFiles()
 {
     const QStringList now = a_watcher->files();
@@ -755,6 +772,11 @@ void MultiphysicsDoc::startJob(const QString& what, std::function<void(Job&)> wo
     job->mesh = a_meshStale ? nullptr : a_mesh;
     a_job = job;
     job->thread = QThread::create([job, work] { work(*job); });
+    // (A main thread's stack, 8 MB: a worker's 512 kB on macOS. The
+    // material library's expressions, compiled by recursion on its first
+    // solve there, overflowed it under the sanitizers - the fuzz of 21
+    // October, E3.)
+    job->thread->setStackSize(8u << 20);
     connect(job->thread, &QThread::finished, this, &MultiphysicsDoc::jobFinished);
     a_progress->setValue(0);
     static_cast<StageLabel*>(a_stage)->setStage(what);

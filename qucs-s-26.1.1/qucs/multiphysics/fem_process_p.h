@@ -274,6 +274,8 @@ class Dopants
 public:
     Dopants(const Model& model, const ParameterScope& ps, double unitScale, double k);
     bool made() const { return a_d != nullptr; }
+    /// The grid refused, past its budget of cells (a flow failed so): said.
+    const QString& tooLarge() const { return a_tooLarge; }
     std::shared_ptr<const ProcessDopants> state() const;
     /// The grid over the window x0..x1 from the bottom up: dx across, dy
     /// down to depth below the lowest surface, coarser below.
@@ -299,6 +301,7 @@ private:
     const MaterialInfo& info(int m);
     void assign(const std::vector<Region>& regions, std::vector<int>* material) const;
     void addRows(double top);
+    bool fits(double nx, double ny);
     void remapRows(const std::vector<double>& ye);
     double cellWidth(int i) const;    // m
     double cellHeight(int j) const;   // m
@@ -309,6 +312,7 @@ private:
     double a_dy = 0, a_depth = 0;
     std::shared_ptr<ProcessDopants> a_d;
     std::vector<std::shared_ptr<MaterialInfo>> a_info;
+    QString a_tooLarge;
 };
 
 } // namespace qucs_s::fem::process

@@ -1590,6 +1590,10 @@ void LayoutDoc::startReading()
     QThread* thread = QThread::create([job] {
         job->result = read(job->path, &job->error, &job->cancelled, &job->progress);
     });
+    // (A main thread's stack, 8 MB: a thread's is 512 kB on macOS, where a
+    // layout's hierarchy was walked by recursion - the fuzz of 21 October,
+    // E3, L1.)
+    thread->setStackSize(8u << 20);
     connect(thread, &QThread::finished, this, [this, job] {
         if (job == a_job) readingDone();
     });

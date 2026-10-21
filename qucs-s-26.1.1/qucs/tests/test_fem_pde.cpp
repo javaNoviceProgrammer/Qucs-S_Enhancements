@@ -137,6 +137,22 @@ private slots:
         QVERIFY(coarse / fine > 5);
     }
 
+    // A line's elements, 2147483647 of them: refused at once, the line's
+    // 400,000 at most (the counts a model gives, read for the fuzz of 21
+    // October, X1: this one was bounded); 50 solved.
+    void aLinesElementsAreBounded()
+    {
+        auto line = [](const char* elements) {
+            return run(modelOf(model(QStringLiteral(R"x("1", "0.1")x"), QStringLiteral(R"x(, "space": "1d", "elements": %1)x").arg(QLatin1String(elements)),
+                                     QStringLiteral(R"x({"type": "coefficient", "f": "1", "selection": {"all": true}}, )x") + Ends, Stationary,
+                                     QStringLiteral("0.05"))));
+        };
+        const Run many = line("2147483647");
+        QVERIFY2(many.error.contains(QLatin1String("2147483647 elements along its line: a larger element size")), qPrintable(many.error));
+        const Run fine = line("50");
+        QVERIFY2(fine.error.isEmpty(), qPrintable(fine.error));
+    }
+
     void bratu()
     {
         // -u'' = e^u on (0, 1), u = 0 at both ends - nonlinear: u =

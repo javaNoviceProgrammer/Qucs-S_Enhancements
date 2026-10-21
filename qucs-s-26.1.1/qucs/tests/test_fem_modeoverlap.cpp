@@ -19,6 +19,8 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
+#include <QRandomGenerator>
+#include <QElapsedTimer>
 #include <QtTest>
 
 #include <cmath>
@@ -416,6 +418,39 @@ private slots:
         QVERIFY(c.text.contains(QStringLiteral("mode,x (m),y (m),Re Ex (V/m),Im Ex (V/m)")));
     }
 
+    // A profile whose "about" is UTF-32 (MATLAB's miUTF32): a character
+    // past 16 bits read as UTF-16's two, one past Unicode's as the
+    // replacement. (Cast to char16_t, undefined - the fuzz of 21 October,
+    // P1.)
+    void aUtf32AboutIsRead()
+    {
+        ModeProfile g;
+        g.x = {0, 1e-6, 2e-6};
+        g.y = {0, 1e-6};
+        for (auto& f : g.F) f.assign(6, 0.0);
+        g.F[0].assign(6, 1.0);
+        g.neff = 1.5;
+        g.mode = 1;
+        QByteArray mat = profilesMat({g}, QStringLiteral("first"));
+        // "about" again, after the first: a char array 1 by 3 in miUTF32.
+        auto u32 = [](QByteArray& b, quint32 v) {
+            for (int k = 0; k < 4; ++k) b.append(char((v >> (8 * k)) & 0xff));
+        };
+        QByteArray sub;
+        for (quint32 v : {6u, 8u, 4u, 0u}) u32(sub, v);   // its flags: mxCHAR
+        for (quint32 v : {5u, 8u, 1u, 3u}) u32(sub, v);   // 1 by 3
+        for (quint32 v : {1u, 5u}) u32(sub, v);           // its name
+        sub += QByteArray("about") + QByteArray(3, '\0');
+        for (quint32 v : {18u, 12u, quint32('A'), 0x1f600u, 0x110000u, 0u}) u32(sub, v);   // miUTF32
+        u32(mat, 14);
+        u32(mat, quint32(sub.size()));
+        mat += sub;
+        QString why;
+        const std::optional<ModeProfile> p = readProfileMat(mat, 1, &why);
+        QVERIFY2(p, qPrintable(why));
+        QCOMPARE(p->label, QString(u"A\U0001F600\uFFFD"));
+    }
+
     // A Gaussian written as a file (its E and H a plane wave's in the
     // cladding) and read back: the fibre's mode with it as with the Mode
     // Overlap's own Gaussian - and a file of E alone, its H made from neff.
@@ -479,6 +514,84 @@ private slots:
         QVERIFY2(std::abs(fileE / file - 1) < 1e-12, qPrintable(QString::number(fileE / file - 1)));
         QFile::remove(path);
         QFile::remove(ePath);
+    }
+
+    // The .mat reader's fuzzer (QUCS_PROFILE_FUZZ seconds,
+    // QUCS_PROFILE_FUZZ_SEED): profiles of any grid (one point, one row,
+    // fields not numbers) written by profilesMat, profilesNpz and
+    // profilesCsv, then damaged - bytes flipped, cut, repeated, sizes and
+    // types written over with hostile numbers - and read back as any of its
+    // modes, each read one asked its fields at hostile points and its flux.
+    // The current file in QUCS_FUZZ_OUT/profile-current.mat.
+    void fuzz()
+    {
+        const int seconds = qEnvironmentVariableIntValue("QUCS_PROFILE_FUZZ");
+        if (seconds <= 0) QSKIP("set QUCS_PROFILE_FUZZ to a number of seconds");
+        QRandomGenerator rng(quint32(qEnvironmentVariableIntValue("QUCS_PROFILE_FUZZ_SEED") + 1));
+        const QString out = qEnvironmentVariable("QUCS_FUZZ_OUT");
+        auto hostile = [&rng]() {
+            static const double v[] = {0, -0.0, 1, -1, 1e308, -1e308, 1e-320, std::numeric_limits<double>::infinity(), std::nan("")};
+            return rng.bounded(3u) == 0 ? v[rng.bounded(quint32(std::size(v)))] : rng.generateDouble() * 2 - 1;
+        };
+        QElapsedTimer timer;
+        timer.start();
+        long files = 0, read = 0;
+        while (timer.elapsed() < seconds * 1000LL) {
+            std::vector<ModeProfile> modes(1 + rng.bounded(3u));
+            const int nx = rng.bounded(6u) == 0 ? 1 : int(1 + rng.bounded(rng.bounded(10u) == 0 ? 300u : 12u));
+            const int ny = rng.bounded(6u) == 0 ? 1 : int(1 + rng.bounded(rng.bounded(10u) == 0 ? 300u : 12u));
+            for (ModeProfile& m : modes) {
+                for (int i = 0; i < nx; ++i) m.x.push_back(i * 1e-7 * (rng.bounded(10u) == 0 ? -1 : 1));
+                for (int j = 0; j < ny; ++j) m.y.push_back(j * 1e-7);
+                for (auto& f : m.F) {
+                    f.resize(std::size_t(nx) * std::size_t(ny));
+                    for (auto& c : f) c = {hostile(), hostile()};
+                }
+                m.neff = {hostile(), hostile()};
+                m.lambda0 = hostile();
+                m.mode = int(rng.bounded(5u));
+                m.label = QStringLiteral("fuzz");
+            }
+            QByteArray bytes = profilesMat(modes, QStringLiteral("about"));
+            if (rng.bounded(4u) == 0) (void)profilesNpz(modes, QStringLiteral("about"));
+            if (rng.bounded(4u) == 0) (void)profilesCsv(modes, QStringLiteral("about"));
+            // Damaged.
+            const int damages = int(rng.bounded(6u));
+            for (int k = 0; k < damages && !bytes.isEmpty(); ++k) {
+                const qsizetype at = qsizetype(rng.bounded(quint32(bytes.size())));
+                switch (rng.bounded(6u)) {
+                case 0: bytes[at] = char(rng.bounded(256u)); break;
+                case 1: bytes.truncate(at); break;
+                case 2: bytes.insert(at, bytes.mid(at, qsizetype(rng.bounded(200u)))); break;
+                case 3: bytes.remove(at, qsizetype(rng.bounded(64u))); break;
+                default: {
+                    // A 32-bit field written over: a size, a type, a count.
+                    static const quint32 values[] = {0, 1, 2, 3, 4, 5, 6, 7, 9, 14, 15, 16, 0x7fffffffu, 0x80000000u, 0xffffffffu, 0xfffffff8u, 65536, 8, 24};
+                    const quint32 v = values[rng.bounded(quint32(std::size(values)))];
+                    const qsizetype aligned = at & ~qsizetype(3);
+                    if (aligned + 4 <= bytes.size()) std::memcpy(bytes.data() + aligned, &v, 4);
+                    break;
+                }
+                }
+            }
+            if (!out.isEmpty()) {
+                QFile f(QDir(out).filePath(QStringLiteral("profile-current.mat")));
+                if (f.open(QIODevice::WriteOnly)) f.write(bytes);
+            }
+            ++files;
+            QString error;
+            const int index = int(rng.bounded(7u)) - 1;
+            const std::optional<ModeProfile> p = readProfileMat(bytes, index, &error);
+            if (!p) continue;
+            ++read;
+            for (const auto& f : p->F) QVERIFY2(f.size() == std::size_t(p->nx()) * std::size_t(p->ny()), "a field's size not its grid's");
+            for (int k = 0; k < 20; ++k) {
+                std::complex<double> E[3], H[3];
+                (void)p->at(QPointF(hostile() * 1e-6, hostile() * 1e-6), E, H);
+            }
+            (void)p->flux();
+        }
+        qInfo("profiles: %ld files, %ld read back, in %d s", files, read, seconds);
     }
 };
 

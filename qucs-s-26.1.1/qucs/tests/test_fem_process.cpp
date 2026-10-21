@@ -1134,6 +1134,38 @@ private slots:
         QVERIFY2(as.ok() && b.ok(), qPrintable(said(as) + said(b)));
         QVERIFY2(said(as).contains(QLatin1String("amorphous to")) && !said(b).contains(QLatin1String("amorphous")), qPrintable(said(as) + said(b)));
     }
+
+    // Flows the fuzz of 21 October found. One narrower than a dopants'
+    // column (1e-6 µm wide, cells 2.5 nm), intermixed through openings past
+    // it: its grid of no rows read at row -1 (PF1) - run. One whose
+    // dopants' grid would have 8 million cells (0.1 nm rows 2 µm down),
+    // annealed for an hour: minutes; and one filled to 300 µm after its
+    // dopants were made in 1 nm rows - 10⁷ cells, memory past a machine's
+    // at 0.1 nm (PF2): each refused at once, said why.
+    void hostileFlows()
+    {
+        const ProcessRun narrow = runFlow(flowModel(QStringLiteral(R"(
+            {"type": "substrate", "tag": "s1", "label": "pr", "material": "Photoresist", "thickness": "0.5"},
+            {"type": "intermix", "tag": "i1", "diii": "9.5e-20[m^2/s]", "ev": "0.0254[eV]", "mask": "openings", "openings": "1, 2; 6, 8"},
+            {"type": "etch", "tag": "e1", "depth": "1e-6", "angle": "0.85", "mask": "openings", "openings": "4.9, 5.1"},
+            {"type": "substrate", "tag": "s2", "label": "sin", "material": "Silicon nitride"})"),
+                                                    QStringLiteral(R"("width": "1e-6", "dx": "2.5[nm]", "dy": "1[nm]", "depth": "1")")));
+        QVERIFY(narrow.ok() || !narrow.error.isEmpty());
+        QElapsedTimer timer;
+        timer.start();
+        const ProcessRun fine = runFlow(flowModel(Si + QStringLiteral(R"(,
+            {"type": "diffuse", "tag": "d1", "temperature": "1000[degC]", "time": "60[min]", "model": "constant", "source": "B", "surface": "2e20"})"),
+                                                  QStringLiteral(R"("width": "1", "dx": "2.5[nm]", "dy": "0.1[nm]", "depth": "100")")));
+        QVERIFY(!fine.ok());
+        QVERIFY2(fine.error.contains(QLatin1String("its dopants' grid would have 8e+06 cells (400 across, 20001 down)")), qPrintable(fine.error));
+        const ProcessRun tall = runFlow(flowModel(Si + QStringLiteral(R"(,
+            {"type": "diffuse", "tag": "d1", "temperature": "900[degC]", "time": "1[s]", "model": "constant", "source": "B", "surface": "1e18"},
+            {"type": "fill", "tag": "f1", "label": "gaas", "material": "Gallium arsenide", "height": "300", "thickness": "1"})"),
+                                                  QStringLiteral(R"("width": "0.1", "dx": "2.5[nm]", "dy": "1[nm]", "depth": "100")")));
+        QVERIFY(!tall.ok());
+        QVERIFY2(tall.error.contains(QLatin1String("its dopants' grid would have")), qPrintable(tall.error));
+        QVERIFY(timer.elapsed() < 60000);
+    }
 };
 
 QTEST_GUILESS_MAIN(TestFemProcess)

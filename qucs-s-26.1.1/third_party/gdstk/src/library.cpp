@@ -1578,6 +1578,25 @@ Library read_oas(const char* filename, double unit, double tolerance, ErrorCode*
     auto resolve = [&]() {
         if (resolved) return;
         resolved = true;
+        // (Qucs-S: the properties' names and values first - a text's are
+        // copied below, a name still a number then copied as a string: a
+        // null one at 0 - the fuzz of 21 October, L2.)
+        Property** prop_p = unfinished_property_name.items;
+        for (uint64_t i = unfinished_property_name.count; i > 0; i--) {
+            Property* property = *prop_p++;
+            ByteArray* prop_name = table_bytes(property_name_table, (uint64_t)property->name);
+            property->name = copy_string(prop_name && prop_name->bytes ? (char*)prop_name->bytes : "?", NULL);
+        }
+        PropertyValue** prop_value_p = unfinished_property_value.items;
+        for (uint64_t i = unfinished_property_value.count; i > 0; i--) {
+            PropertyValue* property_value = *prop_value_p++;
+            ByteArray* prop_string = table_bytes(property_value_table, property_value->unsigned_integer);
+            if (!prop_string) continue;   // (its number stays: an unsigned integer)
+            property_value->type = PropertyType::String;
+            property_value->count = prop_string->count;
+            property_value->bytes = (uint8_t*)allocate(prop_string->count > 0 ? prop_string->count : 1);
+            if (prop_string->count > 0) memcpy(property_value->bytes, prop_string->bytes, prop_string->count);
+        }
         uint64_t c_size = library.cell_array.count;
         Map<Cell*> map = {};
         map.resize((uint64_t)(2.0 + 10.0 / GDSTK_MAP_CAPACITY_THRESHOLD * c_size));
@@ -1650,23 +1669,6 @@ Library read_oas(const char* filename, double unit, double tolerance, ErrorCode*
             }
         }
         map.clear();
-
-        Property** prop_p = unfinished_property_name.items;
-        for (uint64_t i = unfinished_property_name.count; i > 0; i--) {
-            Property* property = *prop_p++;
-            ByteArray* prop_name = table_bytes(property_name_table, (uint64_t)property->name);
-            property->name = copy_string(prop_name && prop_name->bytes ? (char*)prop_name->bytes : "?", NULL);
-        }
-        PropertyValue** prop_value_p = unfinished_property_value.items;
-        for (uint64_t i = unfinished_property_value.count; i > 0; i--) {
-            PropertyValue* property_value = *prop_value_p++;
-            ByteArray* prop_string = table_bytes(property_value_table, property_value->unsigned_integer);
-            if (!prop_string) continue;   // (its number stays: an unsigned integer)
-            property_value->type = PropertyType::String;
-            property_value->count = prop_string->count;
-            property_value->bytes = (uint8_t*)allocate(prop_string->count > 0 ? prop_string->count : 1);
-            if (prop_string->count > 0) memcpy(property_value->bytes, prop_string->bytes, prop_string->count);
-        }
     };
 
     OasisRecord record;
@@ -2507,6 +2509,14 @@ Library read_oas(const char* filename, double unit, double tolerance, ErrorCode*
                     uint64_t num_values = info >> 4;
                     if (num_values == 15) {
                         num_values = oasis_read_unsigned_integer(in);
+                        // Qucs-S: no more than the bytes left (each value
+                        // takes one at least) - a damaged count's values were
+                        // made until memory ran out (the fuzz of 21 October,
+                        // L3).
+                        if (!oasis_count_fits(in, num_values)) {
+                            num_values = 0;
+                            if (error_code) *error_code = ErrorCode::InvalidFile;
+                        }
                     }
                     PropertyValue** next = &property->value;
                     for (; num_values > 0; num_values--) {

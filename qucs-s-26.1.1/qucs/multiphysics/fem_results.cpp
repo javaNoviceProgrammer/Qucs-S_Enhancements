@@ -57,13 +57,13 @@ void parallel(int n, const std::function<void(int, int)>& work)
         work(0, n);
         return;
     }
-    std::vector<std::thread> pool;
+    detail::Threads pool;
     const int chunk = (n + threads - 1) / threads;
     for (int k = 0; k < threads; ++k) {
         const int b = k * chunk, e = std::min(n, b + chunk);
-        if (b < e) pool.emplace_back(work, b, e);
+        if (b < e) pool.start([&work, b, e] { work(b, e); });
     }
-    for (std::thread& t : pool) t.join();
+    pool.join();
 }
 
 /// (xi, eta) of \a p (the geometry's unit) in triangle \a t made exact
