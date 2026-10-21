@@ -2571,7 +2571,18 @@ QList<NodeKind> makeKinds()
               integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50,
                       tr("Of the nonlinear iterations: a material that depends on a field")),
               adaptive(tr("Solved, the mesh made finer where the error is largest, solved again: the study's last solution on the finest")),
-              adaptSteps, adaptPhysics},
+              adaptSteps, adaptPhysics,
+              flag(QStringLiteral("lightloop"), tr("Light and carriers in turn"), false,
+                   tr("After a Mode Analysis whose light a semiconductor absorbs (its Optical Generation): that mode step and "
+                      "this one solved again, in turn, until the pairs made, semi.Gop, change by less than the tolerance - the "
+                      "mode absorbed in the lit device's own field (Franz-Keldysh's, Fea semi.normE), its carriers (free "
+                      "carriers, band filling) and its temperature (an absorber's, ht.T), as strong light leaves them. Sliced, "
+                      "the field and carriers the mode sees are the first slice's")),
+              shownIf(expr(QStringLiteral("lighttol"), tr("Light tolerance"), QString(), QStringLiteral("1e-4"),
+                           tr("Of the pairs made from one pass to the next, relative")),
+                      QStringLiteral("lightloop=true")),
+              shownIf(integer(QStringLiteral("lightmax"), tr("Most passes"), 20, tr("Unsettled after them: said, as a warning")),
+                      QStringLiteral("lightloop=true"))},
              {}, {}, false, false, QStringLiteral("stat"), tr("The fields at rest: the steady state.")});
         add({QStringLiteral("transient"), tr("Time Dependent"), QStringLiteral("step"), QStringLiteral("transient"), Level::None,
              {physics,

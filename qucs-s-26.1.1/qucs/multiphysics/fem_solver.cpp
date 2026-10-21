@@ -3770,6 +3770,61 @@ bool transientStep(Solution& s, const Node& node, const std::function<bool(doubl
 
 } // namespace
 
+/// The light and the carriers in turn: \a mode, the Mode Analysis whose
+/// light a semiconductor absorbs, and \a node, the stationary step after
+/// it, solved again until each semiconductor's pairs made, its Gop, change
+/// by less than the step's light tolerance - the mode absorbed in the lit
+/// device's own field (Franz-Keldysh), carriers and temperature, the
+/// device lit by it. (The first pass was the steps' own.)
+bool lightLoop(Solution& s, const Node& mode, const Node& node, const std::function<bool(double, const QString&)>& told, QStringList* warnings,
+               QString* error)
+{
+    QStringList names;
+    for (const Field& f : s.fields())
+        if (f.type == QLatin1String("semiconductor") && s.global(f.tag + QStringLiteral(".Gop"))) names << f.tag + QStringLiteral(".Gop");
+    if (names.isEmpty()) {
+        *error = tr("%1: the light and the carriers in turn - no semiconductor is lit by %2 (an Optical Generation)").arg(node.name(), mode.name());
+        return false;
+    }
+    auto pairs = [&s, &names]() {
+        std::vector<double> v;
+        for (const QString& n : names) v.push_back(s.global(n).value_or(0.0));
+        return v;
+    };
+    double tolerance = 1e-4;
+    if (const std::optional<double> t = evaluateConstant(node.text(QStringLiteral("lighttol")), s.parameters().scope, Dim()); t && *t > 0)
+        tolerance = *t;
+    const int most = node.kind() && node.kind()->property(QStringLiteral("lightmax")) ? std::clamp(node.integer(QStringLiteral("lightmax")), 1, 200) : 20;
+    std::vector<double> before = pairs();
+    double change = 0;
+    int passes = 0;
+    while (passes < most) {
+        ++passes;
+        if (!modeStep(s, mode, told, warnings, error) || !stationaryStep(s, node, told, warnings, error)) return false;
+        const std::vector<double> after = pairs();
+        change = 0;
+        for (std::size_t k = 0; k < after.size(); ++k) {
+            const double scale = std::max({std::abs(after[k]), std::abs(before[k]), 1e-300});
+            change = std::max(change, std::abs(after[k] - before[k]) / scale);
+        }
+        before = after;
+        if (change < tolerance) break;
+    }
+    QStringList made;
+    for (int k = 0; k < names.size(); ++k) made << QStringLiteral("%1 %2 /s").arg(names[k], formatNumber(before[std::size_t(k)], 6));
+    const QString line = tr("%1: the light and the carriers in turn, %2 more passes of %3 and the step: %4, the last pass's change %5")
+                             .arg(node.name())
+                             .arg(passes)
+                             .arg(mode.name(), made.join(QStringLiteral(", ")), formatNumber(change, 3));
+    s.log << line;
+    if (!(change < tolerance))
+        *warnings << tr("%1: the light and the carriers did not settle in %2 passes (the pairs made changed %3 in the last, the tolerance %4)")
+                         .arg(node.name())
+                         .arg(passes)
+                         .arg(formatNumber(change, 3), formatNumber(tolerance, 3));
+    return true;
+}
+
 StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> parameters, std::shared_ptr<const Mesh> mesh,
                        const QString& studyTag, const Progress& progress, const Solution* start)
 {
@@ -3865,6 +3920,20 @@ StudyResult solveStudy(const Model& model, std::shared_ptr<ParameterScope> param
         else if (step.type == QLatin1String("spectrum")) ok = spectrumStep(*solution, step, tell, &out.warnings, &why);
         else if (step.type == QLatin1String("bands")) ok = bandsStep(*solution, step, tell, &out.warnings, &why);
         else why = tr("%1: a %2 step is not solved yet").arg(study->name(), step.name());
+        if (ok && step.type == QLatin1String("stationary") && step.flag(QStringLiteral("lightloop"))) {
+            // (The mode analysis before it, the nearest.)
+            const Node* mode = nullptr;
+            for (std::size_t j = k; j-- > 0;)
+                if (steps[j]->type == QLatin1String("mode")) {
+                    mode = steps[j];
+                    break;
+                }
+            if (!mode) {
+                why = tr("%1: the light and the carriers in turn - no Mode Analysis step before it").arg(step.name());
+                ok = false;
+            } else
+                ok = lightLoop(*solution, *mode, step, tell, &out.warnings, &why);
+        }
         if (!ok) {
             out.error = why;
             return out;
