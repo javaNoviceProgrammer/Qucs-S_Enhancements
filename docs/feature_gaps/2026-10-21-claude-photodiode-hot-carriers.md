@@ -58,7 +58,7 @@ The tests are in `test_fem_photodiode_power`:
 | Check | Result |
 |---|---|
 | n-silicon (1e17), 2 µm at 1 V (0.57 vsat): the electrons' heating in its middle | 367.67 K against TL + (2/3) q τw v F/k = 367.67 K (v and F its own there), to 1 % of the heating |
-| The same: warming in at the cathode | Over 55.5 nm against 1/\|λ\| = 57.5 nm, from κλ² − (5/2)k n v λ − (3/2)k n/τw = 0 (conducted alone, 41 nm) |
+| The same: warming in at the cathode | Over 70.5 nm (its rise from 40 to 160 nm in, fitted) against 1/\|λ\| = 68.9 nm, from κλ² − (5/2)k n v λ − c′ = 0 linearized about the middle. c′ is the relaxation's (3/2)k n/τw less the gift's own rise with T: with the current held, a hotter electron's lower mobility steepens its field, so c′ = c·2(1 + s)/(2 + s), s = d ln µ/d ln F = −(v/vsat)². Conducted alone, 47.6 nm |
 | The same: the current | 185.0 A against 183.8 A driven by the field, to 1 % (the contacts' cool electrons) |
 | n⁺-n-n⁺ silicon (1e19, 1e16; 100, 200, 100 nm) at 3 V | The fastest electrons inside the n layer 2.07·10⁵ m/s, past vsat (1·10⁵); driven by the field 1.003·10⁵. Current 68.7 A against 41.6 A |
 | The same bar in time, stepped on from rest 3 ps | The current its rest's to 10⁻⁹; its start's temperature and mobility shown as at rest (367.726 K, 0.114294) |
@@ -66,12 +66,18 @@ The tests are in `test_fem_photodiode_power`:
 
 **Sanitized builds:** the uniform bar takes 122 s, the bar in time 62 s and the transferred electrons 6 s. The n⁺-n-n⁺'s 500 Newton steps took past QtTest's 300 s there, so it runs on Release builds alone.
 
+**Corrected after CI's run of 21 October.** The first check took the rise from two points, 30 and 60 nm in, on a 20 nm mesh:
+- this machine's mesh gave 55.5 nm, against 57.5 nm from a balance without the gift's rise;
+- CI's Linux mesh gave 75.9 nm, and meshes of 17.5 to 25 nm here gave 55 to 85.
+
+Fitted from 40 to 160 nm across four lines along the bar, the solution's length is 70.0 to 71.6 nm on meshes of 5 to 25 nm (70.4 at 5 and 10). The balance with the gift's rise gives 68.9; the check holds to 5 %.
+
 ## Break checks
 
 | Break | Caught by |
 |---|---|
 | The relaxation without its 3/2 | `hotElectronsWhereUniform`: 395 against 363 K |
-| No energy carried with the current | `hotElectronsWhereUniform`: warming in over 38.6 nm against 57.5 |
+| No energy carried with the current | `hotElectronsWhereUniform`: warming in over 49.1 nm against 68.9 (conducted alone, 47.6) |
 | The temperature's field the local field's | `velocityOvershoot`: no overshoot, 1.003·10⁵ m/s |
 | The transferred electrons' square, not fourth power | `transferredElectrons`: 241 against 263 A at 2 kV/cm |
 | The flux fit unweighed by the faces | `velocityOvershoot`: 2.6 m/s, the temperatures run away |
