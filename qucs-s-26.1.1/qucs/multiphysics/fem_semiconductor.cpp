@@ -479,7 +479,14 @@ private:
     /// the contacts' admittance \a Y (S) and the light's currents \a H (A,
     /// the light modulated wholly; empty without it).
     bool smallSignalSlice(const Eigen::VectorXd& x, double frequency, std::vector<std::vector<std::complex<double>>>& Y,
-                          std::vector<std::complex<double>>& H, QString* why);
+                          std::vector<std::complex<double>>& H, QString* why,
+                          std::vector<std::vector<std::complex<double>>>* noise = nullptr);
+    // Noise (the physics' option): each contact's short-circuit noise
+    // currents' correlations (A²/Hz) at the last frequency, and through each
+    // circuit's load.
+    bool a_noise = false;
+    std::vector<std::vector<std::complex<double>>> a_noiseC;
+    std::vector<double> a_noiseL;
     /// At equilibrium: the gates' quasi-static capacitance - the carriers
     /// following, their Fermi level held at \a fermi - from Poisson's equation
     /// linearized: the low-frequency limit, well conditioned (the small-signal
@@ -1048,6 +1055,7 @@ bool SemiconductorProblem::setup(QString* error)
         const QString tl = a_node->text(QStringLiteral("TL")).trimmed();
         a_TL = tl.isEmpty() ? Expression() : compile(tl, *a_node, QStringLiteral("TL"));
     }
+    a_noise = a_node->flag(QStringLiteral("noise"));
     // Its materials' and features' texts read T, its temperature (the
     // library's gaps, densities of states, mobilities... are of it).
     const MaterialScope atT(constants, a_T);
@@ -6111,17 +6119,25 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
     const std::size_t nc = a_contacts.size();
     std::vector<std::vector<cd>> Y(nc, std::vector<cd>(nc, cd(0, 0)));
     std::vector<cd> H;
+    // (Noise: each slice's sources its own length's - their powers by the
+    // slices' shares.)
+    a_noiseC.clear();
+    a_noiseL.clear();
+    if (a_noise) a_noiseC.assign(nc, std::vector<cd>(nc, cd(0, 0)));
     for (int sl = 0; sl < a_slices; ++sl) {
         useSlice(sl);
-        std::vector<std::vector<cd>> Ys;
+        std::vector<std::vector<cd>> Ys, Ns;
         std::vector<cd> Hs;
-        if (!smallSignalSlice(a_slices > 1 ? sliceOf(X, sl) : X, frequency, Ys, Hs, why)) {
+        if (!smallSignalSlice(a_slices > 1 ? sliceOf(X, sl) : X, frequency, Ys, Hs, why, a_noise ? &Ns : nullptr)) {
             useSlice(0);
             return false;
         }
         const double w = sliceWeight(sl);
         for (std::size_t a = 0; a < nc; ++a)
             for (std::size_t b = 0; b < nc; ++b) Y[a][b] += w * Ys[a][b];
+        if (a_noise && Ns.size() == nc)
+            for (std::size_t a = 0; a < nc; ++a)
+                for (std::size_t b = 0; b < nc; ++b) a_noiseC[a][b] += w * Ns[a][b];
         if (!Hs.empty()) {
             if (H.empty()) H.assign(nc, cd(0, 0));
             for (std::size_t c = 0; c < nc; ++c) H[c] += w * Hs[c];
@@ -6160,6 +6176,21 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
                 const Contact& c = a_contacts[ckt[std::size_t(a)]];
                 a_Hc[ckt[std::size_t(a)]] = -v(a) / (c.Rs + c.RL);
             }
+            // (Noise through the loads: a short-circuit noise current i at
+            // the contacts the same way, I_L = (1/Z) M⁻¹ i - its powers D
+            // M⁻¹ C M⁻ᴴ D; the circuit's own resistors' not in it.)
+            if (!a_noiseC.empty()) {
+                Eigen::MatrixXcd C(m, m);
+                for (Eigen::Index a = 0; a < m; ++a)
+                    for (Eigen::Index e = 0; e < m; ++e) C(a, e) = a_noiseC[ckt[std::size_t(a)]][ckt[std::size_t(e)]];
+                const Eigen::MatrixXcd Mi = M.fullPivLu().inverse();
+                const Eigen::MatrixXcd S = Mi * C * Mi.adjoint();
+                a_noiseL.assign(nc, NaN);
+                for (Eigen::Index a = 0; a < m; ++a) {
+                    const Contact& c = a_contacts[ckt[std::size_t(a)]];
+                    a_noiseL[ckt[std::size_t(a)]] = S(a, a).real() / ((c.Rs + c.RL) * (c.Rs + c.RL));
+                }
+            }
         }
     }
     a_frequency = frequency;
@@ -6168,7 +6199,8 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
 }
 
 bool SemiconductorProblem::smallSignalSlice(const Eigen::VectorXd& x, double frequency, std::vector<std::vector<std::complex<double>>>& Y,
-                                            std::vector<std::complex<double>>& H, QString* why)
+                                            std::vector<std::complex<double>>& H, QString* why,
+                                            std::vector<std::vector<std::complex<double>>>* noise)
 {
     std::vector<double> at(a_contacts.size());
     for (std::size_t k = 0; k < a_contacts.size(); ++k) at[k] = a_contacts[k].applied;
@@ -6464,6 +6496,196 @@ bool SemiconductorProblem::smallSignalSlice(const Eigen::VectorXd& x, double fre
         }
         H = terminals(lu.solve(rhs));
     }
+    if (!noise) return true;
+    // Noise, by the impedance field: each microscopic source a Poisson
+    // process - every edge's carriers' hops each way (diffusion's noise,
+    // Nyquist's 4kT G at equilibrium), every node's pairs made and
+    // recombined, every ionization - its current to each contact its
+    // Green's function's, λ_c^T b, λ_c from the transposed system (A^T λ =
+    // the contact's current's coefficients g): S_ab = Σ 2 (rate) h_a h_b*.
+    // (The current's coefficients in dx, as terminals() takes them: the
+    // edges' changes weighed, the carriers' and traps' at jω, the metal's
+    // charge.)
+    std::vector<Eigen::VectorXcd> gdx(nc, Eigen::VectorXcd::Zero(a_unknowns));
+    std::vector<cd> slope(a_edges.size(), cd(0, 0));   // (scratch)
+    for (std::size_t c = 0; c < nc; ++c) {
+        Eigen::VectorXcd& g = gdx[c];
+        const std::vector<double>& w = weight[c];
+        for (int i : a_contacts[c].nodes) {
+            auto it = rows.find(a_iV[std::size_t(i)]);
+            if (it == rows.end()) continue;
+            for (const auto& [col, v] : it->second) g(col) -= cd(0, omega) * v;
+        }
+        if (w.empty()) continue;
+        std::vector<cd> dwOf(a_edges.size(), cd(0, 0));
+        for (std::size_t m = 0; m < a_edges.size(); ++m) {
+            const Edge& e = a_edges[m];
+            if (e.w <= 0) continue;
+            const double dw = w[std::size_t(e.i)] - w[std::size_t(e.j)];
+            if (dw == 0) continue;
+            dwOf[m] = dw;
+            double dN = 0, dP = 0;
+            edgeSteps(e, x, &dN, &dP);
+            const std::size_t i = std::size_t(e.i), j = std::size_t(e.j);
+            const int ni = a_iN[i], nj = a_iN[j], pi = a_iP[i], pj = a_iP[j], vi = a_iV[i], vj = a_iV[j];
+            const double Cn = e.fNj * x(nj) * dbern(dN) + e.fNi * x(ni) * dbern(-dN);
+            const double Cp = e.fPi * x(pi) * dbern(dP) + e.fPj * x(pj) * dbern(-dP);
+            g(nj) += dw * e.wn * (e.fNj * bern(dN) + Cn * a_dlgN[j]);
+            g(ni) += dw * e.wn * (-e.fNi * bern(-dN) - Cn * a_dlgN[i]);
+            g(pi) += dw * e.wp * (e.fPi * bern(dP) + Cp * a_dlgP[i]);
+            g(pj) += dw * e.wp * (-e.fPj * bern(-dP) - Cp * a_dlgP[j]);
+            g(vj) += dw * (e.wn * Cn + e.wp * Cp) / a_Vt;
+            g(vi) -= dw * (e.wn * Cn + e.wp * Cp) / a_Vt;
+        }
+        for (const MobilityChange& mc : moving) {
+            const ElementMobility& em = a_elements[std::size_t(mc.t)];
+            for (int k = 0; k < 3; ++k) {
+                const std::size_t m = std::size_t(em.edge[k]);
+                if (dwOf[m] == cd(0, 0)) continue;
+                for (int cc = 0; cc < 9; ++cc) g(mc.col[cc]) += dwOf[m] * em.cot[k] * (perWn[m] * mc.dn[cc] + perWp[m] * mc.dp[cc]);
+            }
+        }
+        for (int i = 0; i < a_n; ++i)
+            if (w[std::size_t(i)] != 0 && a_iN[std::size_t(i)] >= 0) {
+                const auto [kn, kp] = stores(i);
+                g(a_iP[std::size_t(i)]) += w[std::size_t(i)] * cd(0, omega) * Q * kp;
+                g(a_iN[std::size_t(i)]) -= w[std::size_t(i)] * cd(0, omega) * Q * kn;
+            }
+        for (const TrapLevel& tl : a_traps) {
+            const std::size_t k = std::size_t(tl.node);
+            if (w[k] == 0 || !tl.charged) continue;
+            const double gn = std::exp(a_lgN[k]), gp = std::exp(a_lgP[k]);
+            const double n = x(a_iN[k]) / gn, p = x(a_iP[k]) / gp;
+            cd dsn, dsp, dun, dup, dvn, dvp;
+            trapChanges(tl, trapState(tl, n, p), n, p, &dsn, &dsp, &dun, &dup, &dvn, &dvp);
+            g(a_iN[k]) += w[k] * cd(0, omega) * tl.area * dsn / gn;
+            g(a_iP[k]) += w[k] * cd(0, omega) * tl.area * dsp / gp;
+        }
+    }
+    // (In the system's columns: dx of dy.)
+    std::vector<Eigen::VectorXcd> gdy(nc, Eigen::VectorXcd::Zero(a_unknowns));
+    for (std::size_t c = 0; c < nc; ++c)
+        for (int j = 0; j < a_unknowns; ++j) {
+            const cd v = gdx[c](j);
+            if (v == cd(0, 0)) continue;
+            const int i = colNode[std::size_t(j)];
+            if (colKind[std::size_t(j)] == 0) gdy[c](j) += v * a_Vt;
+            else if (colKind[std::size_t(j)] == 1) {
+                const double s = x(j) * a_rN[std::size_t(i)];
+                gdy[c](a_iV[std::size_t(i)]) += v * s;
+                gdy[c](j) -= v * s;
+            } else {
+                const double s = x(j) * a_rP[std::size_t(i)];
+                gdy[c](j) += v * s;
+                gdy[c](a_iV[std::size_t(i)]) -= v * s;
+            }
+        }
+    Eigen::SparseMatrix<cd> At = A.transpose();
+    At.makeCompressed();
+    SparseLu<cd> lut;
+    lut.analyzePattern(At);
+    lut.factorize(At);
+    if (lut.info() != Eigen::Success) {
+        *why = tr("%1: the noise's transposed small-signal matrix is singular").arg(a_node->name());
+        return false;
+    }
+    std::vector<Eigen::VectorXcd> lambda(nc);
+    for (std::size_t c = 0; c < nc; ++c) lambda[c] = lut.solve(gdy[c]);
+    noise->assign(nc, std::vector<cd>(nc, cd(0, 0)));
+    std::vector<cd> h(nc);
+    // (A source's currents to the contacts: b on rows r, unscaled; an
+    // edge's flux itself a current too, through each contact's weights -
+    // Ramo's, w_i - w_j - the carriers' answer to it besides.)
+    auto add = [&](double strength, int r1, double b1, int r2, double b2, const Edge* along) {
+        if (!(strength > 0)) return;
+        for (std::size_t c = 0; c < nc; ++c) {
+            h[c] = cd(0, 0);
+            if (r1 >= 0 && !fixed[std::size_t(r1)]) h[c] += lambda[c](r1) * b1 / rowMax(r1);
+            if (r2 >= 0 && !fixed[std::size_t(r2)]) h[c] += lambda[c](r2) * b2 / rowMax(r2);
+            if (along && !weight[c].empty()) h[c] += weight[c][std::size_t(along->i)] - weight[c][std::size_t(along->j)];
+        }
+        for (std::size_t a = 0; a < nc; ++a)
+            for (std::size_t b = 0; b < nc; ++b) (*noise)[a][b] += 2 * strength * h[a] * std::conj(h[b]);
+    };
+    // Each edge's diffusion noise, each carrier: an extra flux δ on it
+    // (F(i) += δ, F(j) -= δ: b = -δ, +δ) of 4q² D n per volume - along the
+    // edge, its constant current's density profile n(s) = ni + (nj - ni)
+    // (e^(ds) - 1)/(e^d - 1), the sources' weight there 1/n: 4q w n_h, n_h
+    // its harmonic mean, d ni/((1 - e^(-d)) φ(r)), r = nj/(ni e^d), φ = ln
+    // r/(r - 1). At equilibrium (r 1) the edge's own conductance's 4kT G,
+    // Nyquist's; drifting in a uniform density, n's. (Its two streams as
+    // Poisson hops, 2q (forward + backward), the same at equilibrium but
+    // each edge its drift current's shot noise in a field - d/2 = ΔV/2Vt
+    // times too much: an APD's excess 5.1 against McIntyre's 2.1.)
+    auto harmonic = [](double ni, double nj, double d) {
+        ni = std::max(ni, 1e-300);
+        nj = std::max(nj, 1e-300);
+        const double r = nj / ni * std::exp(-d), lr = std::log(r);
+        const double phi = std::abs(r - 1) > 1e-8 ? lr / (r - 1) : 1 - 0.5 * (r - 1);
+        const double spread = std::abs(d) > 1e-8 ? -std::expm1(-d) / d : 1 - 0.5 * d;
+        return ni / (spread * phi);
+    };
+    // (Not where it ionizes - an edge of a triangle making pairs more than
+    // 10⁻⁶ of the most: in a local model the carriers' diffusion there
+    // changes no ionization - carried forward, a carrier ionizes on the way
+    // what its shorter way ahead loses -, and at a junction's dense side it
+    // is thermal motion, which the field heats nothing; the discrete forms
+    // leaked it, multiplied - an APD's excess 3 to 10 against McIntyre's
+    // 2.1, with the mesh. There the noise is its ionizations' and the
+    // primary's, McIntyre's.)
+    std::vector<char> ionizes(a_edges.size(), 0);
+    if (a_ionRate.size() == a_elements.size()) {
+        const double most = *std::max_element(a_ionRate.begin(), a_ionRate.end());
+        if (most > 0)
+            for (int t = 0; t < int(a_elements.size()); ++t)
+                if (a_elements[std::size_t(t)].domain >= 0 && a_ionRate[std::size_t(t)] > 1e-6 * most)
+                    for (int k = 0; k < 3; ++k) ionizes[std::size_t(a_elements[std::size_t(t)].edge[k])] = 1;
+    }
+    for (std::size_t m = 0; m < a_edges.size(); ++m) {
+        const Edge& e = a_edges[m];
+        if (e.w <= 0 || ionizes[m]) continue;
+        double dN = 0, dP = 0;
+        edgeSteps(e, x, &dN, &dP);
+        const std::size_t i = std::size_t(e.i), j = std::size_t(e.j);
+        if (e.wn > 0 && a_iN[i] >= 0 && a_iN[j] >= 0)
+            add(2 * Q * e.wn * harmonic(e.fNi * x(a_iN[i]), e.fNj * x(a_iN[j]), dN), a_iN[i], -1, a_iN[j], 1, &e);
+        if (e.wp > 0 && a_iP[i] >= 0 && a_iP[j] >= 0)
+            add(2 * Q * e.wp * harmonic(e.fPi * x(a_iP[i]), e.fPj * x(a_iP[j]), -dP), a_iP[i], -1, a_iP[j], 1, &e);
+    }
+    // Each node's pairs, made or recombined (each a pair at it: b = -q, +q
+    // per event a second): the light's and the others' made, the thermal
+    // ones both ways - SRH's (np + ni²)/D, Auger's, radiative's - and the
+    // ionizations at its triangles' corners.
+    std::vector<double> events(std::size_t(a_n), 0.0);
+    const std::vector<double>& generated = generationNow();
+    for (int i = 0; i < a_n; ++i) {
+        if (a_iN[std::size_t(i)] < 0 || a_nodeDomain[std::size_t(i)] < 0) continue;
+        if (!generated.empty()) events[std::size_t(i)] += std::abs(generated[std::size_t(i)]) * a_box[std::size_t(i)] * a_lightScale;
+        const double n = x(a_iN[std::size_t(i)]), p = x(a_iP[std::size_t(i)]), ni = a_ni[std::size_t(i)];
+        const double both = n * p + ni * ni * std::exp(a_lgN[std::size_t(i)] + a_lgP[std::size_t(i)]);
+        for (int k = a_recStart[std::size_t(i)]; k < a_recStart[std::size_t(i) + 1]; ++k) {
+            const RecombiningPart& part = a_rec[std::size_t(k)];
+            const Medium& in = a_media[std::size_t(part.domain)];
+            double rate = 0;
+            if (in.srh && std::isfinite(part.tn) && std::isfinite(part.tp)) {
+                const double n1 = part.domain == a_nodeDomain[std::size_t(i)] ? a_n1[std::size_t(i)] : ni * std::exp(in.Et / (KB * a_T));
+                const double p1 = part.domain == a_nodeDomain[std::size_t(i)] ? a_p1[std::size_t(i)] : ni * std::exp(-in.Et / (KB * a_T));
+                rate += both / (part.tp * (n + n1) + part.tn * (p + p1));
+            }
+            rate += (in.Cn * n + in.Cp * p) * both + in.B * both;
+            events[std::size_t(i)] += part.volume * rate;
+        }
+    }
+    if (a_ionRate.size() == std::size_t(field().space->elements()))
+        for (int t = 0; t < int(a_elements.size()); ++t) {
+            const ElementMobility& em = a_elements[std::size_t(t)];
+            if (em.domain < 0 || !(a_ionRate[std::size_t(t)] > 0)) continue;
+            const int* tdof = field().space->dofs(t);
+            for (int k = 0; k < 3; ++k) events[std::size_t(tdof[k])] += a_ionRate[std::size_t(t)] * em.volume / 3;
+        }
+    for (int i = 0; i < a_n; ++i)
+        if (events[std::size_t(i)] > 0) add(events[std::size_t(i)], a_iN[std::size_t(i)], -Q, a_iP[std::size_t(i)], Q, nullptr);
+    (void)slope;
     return true;
 }
 
@@ -7526,6 +7748,35 @@ void SemiconductorProblem::setGlobals()
                                  "bandwidth, where it is 1/√2 of its low frequency's")
                                   .arg(name));
             }
+        }
+    }
+    // Noise at the frequency: each contact's short-circuit noise current,
+    // its ratio to its current's full shot noise 2q|I|, through a circuit's
+    // load; lit, its noise-equivalent power. (Per √Hz plain numbers: a
+    // dimension's powers whole.)
+    if (a_noiseC.size() == a_contacts.size() && a_frequency > 0) {
+        const Dim density = Dim::current() * Dim::current() * Dim::of(0, 0, 1);
+        for (std::size_t c = 0; c < a_contacts.size(); ++c) {
+            const QString name = a_contacts[c].name;
+            const double S = a_noiseC[c][c].real();
+            a_s.setGlobal(p + QStringLiteral("Sn_") + name, S, density,
+                          tr("noise current spectral density at %1, short-circuited (A²/Hz, one-sided): the carriers' diffusion "
+                             "(thermal at equilibrium), their pairs' generation and recombination (shot: the light's), impact "
+                             "ionization's (an APD's excess)")
+                              .arg(name));
+            a_s.setGlobal(p + QStringLiteral("in_") + name, std::sqrt(std::max(S, 0.0)), Dim(), tr("noise current at %1, A/√Hz").arg(name));
+            const double I = std::abs(a_contacts[c].current);
+            if (I > 0)
+                a_s.setGlobal(p + QStringLiteral("Fshot_") + name, S / (2 * Q * I), Dim(),
+                              tr("its noise over its current's full shot noise, 2q|I|: 1 a photodiode's, M F an APD's (McIntyre's "
+                                 "excess F), less where carriers recombine or diffuse back")
+                                  .arg(name));
+            if (a_noiseL.size() > c && std::isfinite(a_noiseL[c]))
+                a_s.setGlobal(p + QStringLiteral("SnL_") + name, a_noiseL[c], density,
+                              tr("the device's noise current through %1's circuit's load (A²/Hz; the circuit's own resistors' not in it)").arg(name));
+            if (a_Pin > 0 && a_Hop.size() > c && std::abs(a_Hop[c]) > 0)
+                a_s.setGlobal(p + QStringLiteral("NEP_") + name, std::sqrt(std::max(S, 0.0)) / (std::abs(a_Hop[c]) / a_Pin), Dim(),
+                              tr("noise-equivalent power at %1, W/√Hz: its noise current over its responsivity at the frequency").arg(name));
         }
     }
 }
