@@ -1604,8 +1604,11 @@ QList<NodeKind> makeKinds()
                        tr("A depletion region's edge wants a few Debye lengths' worth: 1 nm is 4 at 1e18 per cm³. A plain number is metres")),
                   QStringLiteral("space=1d")),
           expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"), tr("The lattice's, the same everywhere")),
-          choice(QStringLiteral("heterojunctions"), tr("Heterojunctions"), {QStringLiteral("abrupt"), QStringLiteral("element")},
-                 {tr("Abrupt: the bands' step at the interface"), tr("Graded over an element: the step along the wider gap's first")},
+          choice(QStringLiteral("heterojunctions"), tr("Heterojunctions"),
+                 {QStringLiteral("abrupt"), QStringLiteral("thermionic"), QStringLiteral("tunnelling"), QStringLiteral("element")},
+                 {tr("Abrupt: the bands' step at the interface"), tr("Abrupt, its carriers emitted over the step (thermionic)"),
+                  tr("Abrupt, emitted over the step and tunnelling through its spike"),
+                  tr("Graded over an element: the step along the wider gap's first")},
                  QStringLiteral("abrupt"),
                  tr("Abrupt: each side's carriers on its own bands up to the interface, their quasi-Fermi levels continuous across "
                     "it - drift-diffusion's heterojunction, the same with the mesh refined; a step's depletion and accumulation want "
@@ -1613,10 +1616,16 @@ QList<NodeKind> makeKinds()
                     "the wider gap's first edges, a node on the interface the narrower gap's carriers over its whole box - an "
                     "intermixed interface the mesh's width, the current through it the mesh's (a laser's at 1.7 V from 2.2 mA to "
                     "77 µA as its rows were refined); a valence band's step a hole current crosses at high density (germanium's "
-                    "holes into p⁺ silicon, its 0.5 eV) graded away, as tunnelling and intermixing make a real one's")),
-          spatial(QStringLiteral("TL"), tr("Lattice temperature for the mobilities"), QStringLiteral("K"), QString(),
-                  tr("Where it varies - a heat physics' ht.T, its source semi.H: self-heating. The mobilities (TL/300 K)^-ζ there (each "
-                     "material model's ζ); the carriers' statistics at T. Empty: none")) },
+                    "holes into p⁺ silicon, its 0.5 eV) graded away, as tunnelling and intermixing make a real one's. "
+                    "Thermionic: abrupt, its carriers crossing the step no faster than they arrive at it thermally, q v_R n "
+                    "e^(-ΔE/kT) - v_R = √(kT/2π m*), m* the barrier's density of states' mass (Crowell and Sze's emission in series "
+                    "with diffusion, the quasi-Fermi levels apart across it as the current asks): carriers piling up at an InP/InGaAs "
+                    "step, a photodiode's under strong light. Tunnelling: and those beneath its top through its spike, (1 + δ) "
+                    "times, a triangle's WKB transmission at the field beside it")),
+          spatial(QStringLiteral("TL"), tr("Lattice temperature"), QStringLiteral("K"), QString(),
+                  tr("Where it varies - a heat physics' ht.T, its source semi.H: self-heating. There the mobilities (TL/T)^-ζ (each "
+                     "material model's ζ), the intrinsic density its material's at TL (its gap shown so), the saturation velocities "
+                     "Quay's and impact ionization's coefficients van Overstraeten and de Man's γ; the carriers' kT T's. Empty: none")) },
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
           QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/btbt"),
