@@ -1191,7 +1191,9 @@ private slots:
         // electrons at 1e17 cm⁻³ (Pc 0: Lumerical's form) and at 1e20 (where
         // its µ1 term, of Cs, counts: 5 %), holes at 1e17 (Pc 9.23e16 cm⁻³:
         // e^(-Pc/N) counts) - the bar's current and semi.mun, semi.mup at
-        // its middle.
+        // its middle. µmax Masetti's 1417 and 470.5 cm²/(V s), the library
+        // Silicon's own (the lattice's 1400 and 450 before the update check
+        // of 21 October).
         auto masetti = [](double N, double m1, double m2, double mu1, double pc, double cr, double cs, double a, double b, double mu) {
             return m1 * std::exp(-pc / N) + (mu - m2) / (1 + std::pow(N / cr, a)) - mu1 / (1 + std::pow(cs / N, b));
         };
@@ -1199,9 +1201,9 @@ private slots:
             const char* dopant;
             double N, mu;   // (cm⁻³, Masetti's µ)
         };
-        const Case cases[] = {{"donor", 1e17, masetti(1e17, 52.2, 52.2, 43.4, 0, 9.68e16, 3.43e20, 0.68, 2, 1400)},
-                              {"donor", 1e20, masetti(1e20, 52.2, 52.2, 43.4, 0, 9.68e16, 3.43e20, 0.68, 2, 1400)},
-                              {"acceptor", 1e17, masetti(1e17, 44.9, 0, 29.0, 9.23e16, 2.23e17, 6.1e20, 0.719, 2, 450)}};
+        const Case cases[] = {{"donor", 1e17, masetti(1e17, 52.2, 52.2, 43.4, 0, 9.68e16, 3.43e20, 0.68, 2, 1417)},
+                              {"donor", 1e20, masetti(1e20, 52.2, 52.2, 43.4, 0, 9.68e16, 3.43e20, 0.68, 2, 1417)},
+                              {"acceptor", 1e17, masetti(1e17, 44.9, 0, 29.0, 9.23e16, 2.23e17, 6.1e20, 0.719, 2, 470.5)}};
         const QString hmax = slowBuild() ? QStringLiteral("0.25") : QStringLiteral("0.1");
         for (const Case& c : cases) {
             const bool n = QLatin1String(c.dopant) == QLatin1String("donor");

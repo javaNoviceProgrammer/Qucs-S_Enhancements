@@ -344,6 +344,7 @@ const std::vector<DisplayUnit>& displayTable()
         {"m³", Dim::of(3), false},
         {"1/m", Dim::of(-1), false},
         {"m/s", Dim::of(1, 0, -1), true},
+        {"m²/(V·s)", Dim::of(0, -1, 2, 1), false},   // (a mobility: s²·A/kg)
     };
     return units;
 }

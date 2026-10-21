@@ -94,10 +94,12 @@ struct Medium {
     double mun = 0, mup = 0;         // m²/(V s): the lattice's (most)
     bool dopingMobility = false;     // Caughey and Thomas's
     double munMin = 0, nRefN = 1, alphaN = 1, mupMin = 0, nRefP = 1, alphaP = 1;
-    // Masetti's: µmin1 e^(-Pc/N) + (µ - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β),
-    // by carrier: µmin1, µmin2, µ1, Pc, Cr, Cs, α, β.
+    // Masetti's: µmin1 e^(-Pc/N) + (µmax - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β),
+    // by carrier: µmin1, µmin2, µ1, Pc, Cr, Cs, α, β; µmax its own or the
+    // lattice's (m²/(V s), at the physics' T).
     bool masetti = false;
     double ms[2][8] = {};
+    double msMax[2] = {0, 0};
     // The low-field mobility's models beyond these, by carrier (SI unless
     // said): Arora's µmin, a, µd, b, Nref, c, α, d - µmin Tn^a + µd Tn^b/(1
     // + (N/(Nref Tn^c))^(α Tn^d)), Tn = TL/300 K; Dorkel and Leturcq's µL,
@@ -110,6 +112,7 @@ struct Medium {
     double klNrefD = 4e26, klNrefA = 7.2e26, klCD = 0.21, klCA = 0.5, klMe = 1, klMh = 1.258;
     Expression muExpr[2];
     bool exprState = false;          // the expression reads n, p, Epar, Eperp or dsurf
+    bool exprAcross = false;         // ... Eperp or dsurf: the nearest interface
     // Shirahata's surface model (else Lombardi's): µ0, θ, E1, E2, P1, P2.
     bool shirahata = false;
     double sh[2][6] = {};
@@ -147,7 +150,7 @@ struct Medium {
                || (lowField == LowField::Expression && exprState);
     }
     /// Whether it reads the field across the nearest interface.
-    bool perpendicular() const { return surface || lowField == LowField::Yamaguchi || (lowField == LowField::Expression && exprState); }
+    bool perpendicular() const { return surface || lowField == LowField::Yamaguchi || (lowField == LowField::Expression && exprAcross); }
     double sBn = 0, sCn = 0, sLn = 0, sDn = 0, sBp = 0, sCp = 0, sLp = 0, sDp = 0, lcrit = 1e-8;
     // Slotboom's band gap narrowing: ΔEg = E (ln(N/Nref) + √(ln²(N/Nref) +
     // C)) (J), N the donors and acceptors - ni raised by e^(ΔEg/2kT), the
@@ -352,7 +355,7 @@ double klaassenF(double P, double ratio)
 {
     // (r5 -0.8552, device simulators' - Klaassen's paper's -0.01552.)
     const double q = std::pow(P, 0.6478);
-    return (0.7643 * q + 2.2999 + 6.5502 * ratio) / (q + 2.3670 - 0.8552 * ratio);
+    return (0.7643 * q + 2.2999 + 6.5505 * ratio) / (q + 2.3670 - 0.8552 * ratio);
 }
 
 /// Klaassen's unified mobility (1992) of carrier \a c (0 electrons, 1
@@ -1491,6 +1494,13 @@ bool SemiconductorProblem::setup(QString* error)
             for (int c = 0; c < 2; ++c)
                 for (int k = 0; k < 8; ++k)
                     m.ms[c][k] = value(mf, QString::fromLatin1(keys[c][k]), k < 3 ? mobility : k < 6 ? conc : Dim(), tr("Masetti's mobility"));
+            // (Its µmax: empty, the lattice's - the Lumerical Masetti model's.)
+            for (int c = 0; c < 2; ++c) {
+                const QString key = c == 0 ? QStringLiteral("mmaxn") : QStringLiteral("mmaxp");
+                const QString text = param(mf, key, d, tr("Masetti's mobility"));
+                m.msMax[c] = text.trimmed().isEmpty() ? (c == 0 ? m.mun : m.mup) : number(text, mobility, where);
+                if (!(m.msMax[c] > 0)) problem(tr("%1: Masetti's µmax must be more than 0").arg(where));
+            }
             for (int c = 0; c < 2; ++c)
                 if (!(m.ms[c][4] > 0) || !(m.ms[c][5] > 0) || !std::isfinite(m.ms[c][6]) || !std::isfinite(m.ms[c][7]))
                     problem(tr("%1: Masetti's Cr and Cs must be more than 0").arg(where));
@@ -1563,6 +1573,13 @@ bool SemiconductorProblem::setup(QString* error)
             }
             if (!(m.lcrit > 0)) problem(tr("%1: Yamaguchi's lcrit must be more than 0").arg(where));
             a_lombardi = true;   // (the field across the nearest interface: its side's normal and distance)
+            // (A fit at 300 K, of no temperature: said where it is not; a
+            // lattice temperature's in latticeTemperature.)
+            if (!a_TL.isValid() && std::abs(a_T - 300) > 0.05) {
+                const QString w = tr("Warning: %1, %2: Yamaguchi's mobility is of no temperature - its 300 K fit's at %3 K")
+                                      .arg(a_node->name(), where, formatNumber(a_T, 4));
+                if (!a_s.log.contains(w)) a_s.log << w;
+            }
         } else if (lowField == QLatin1String("expression")) {
             m.lowField = Medium::LowField::Expression;
             for (int c = 0; c < 2; ++c) {
@@ -1578,11 +1595,10 @@ bool SemiconductorProblem::setup(QString* error)
                                 .arg(where, c == 0 ? tr("electrons'") : tr("holes'"), dimName(m.muExpr[c].dim())));
                 for (int slot : {a_slotn, a_slotp, a_slotEpar, a_slotEperp, a_slotD})
                     m.exprState = m.exprState || m.muExpr[c].uses(slot);
+                m.exprAcross = m.exprAcross || m.muExpr[c].uses(a_slotEperp) || m.muExpr[c].uses(a_slotD);
             }
-            if (m.exprState) {
-                m.lcrit = 1e-8;
-                a_lombardi = true;
-            }
+            if (m.exprState) m.lcrit = 1e-8;
+            if (m.exprAcross) a_lombardi = true;
         }
         if (mf) {
             // (Said only where a lattice temperature TL scales them.)
@@ -2296,14 +2312,14 @@ bool SemiconductorProblem::setup(QString* error)
             mup[std::size_t(t)] = m.mupMin + (m.mup - m.mupMin) / (1 + std::pow(N / m.nRefP, m.alphaP));
         }
         if (m.masetti) {
-            // µmin1 e^(-Pc/N) + (µ - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β); no
-            // doping: the lattice's µ (less µmin2 and its terms of N).
+            // µmin1 e^(-Pc/N) + (µmax - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β); no
+            // doping: µmax (less µmin2 and its terms of N).
             auto masetti = [&](const double* c, double lattice) {
                 if (!(N > 0)) return lattice - c[1] + (c[3] > 0 ? 0.0 : c[0]);
                 return c[0] * std::exp(-c[3] / N) + (lattice - c[1]) / (1 + std::pow(N / c[4], c[6])) - c[2] / (1 + std::pow(c[5] / N, c[7]));
             };
-            mun[std::size_t(t)] = std::max(masetti(m.ms[0], m.mun), 1e-8);
-            mup[std::size_t(t)] = std::max(masetti(m.ms[1], m.mup), 1e-8);
+            mun[std::size_t(t)] = std::max(masetti(m.ms[0], m.msMax[0]), 1e-8);
+            mup[std::size_t(t)] = std::max(masetti(m.ms[1], m.msMax[1]), 1e-8);
         }
         // (Arora's at the physics' T - a lattice temperature's own below -;
         // Yamaguchi's low-field one, its fields' in elementMobilities.)
@@ -2426,7 +2442,17 @@ bool SemiconductorProblem::setup(QString* error)
             }
         }
         if (sides.empty()) {
-            const QString line = tr("%1: surface scattering, but no semiconductor meets an insulator: none").arg(a_node->name());
+            // (What reads it, named: its scattering none, Eperp 0, dsurf 1 m.)
+            QStringList readers;
+            for (const Medium& m : a_media) {
+                if (!m.semiconductor) continue;
+                QString what;
+                if (m.surface) what = m.shirahata ? tr("Shirahata's surface scattering") : tr("Lombardi's surface scattering");
+                if (m.lowField == Medium::LowField::Yamaguchi) what = tr("Yamaguchi's field across the interface");
+                if (m.lowField == Medium::LowField::Expression && m.exprAcross) what = tr("the mobility's expression of Eperp or dsurf (0 and 1 m)");
+                if (!what.isEmpty() && !readers.contains(what)) readers << what;
+            }
+            const QString line = tr("%1: %2, but no semiconductor meets an insulator: none").arg(a_node->name(), readers.join(QStringLiteral(", ")));
             if (!a_s.log.contains(line)) a_s.log << line;
         }
         for (int t = 0; t < nt && !sides.empty(); ++t) {
@@ -7436,6 +7462,7 @@ void SemiconductorProblem::latticeTemperature()
     // ionization's (van Overstraeten and de Man's γ), the edges weighed
     // again.
     PointEvaluator ev(a_s);
+    double yamaguchiFrom = Inf, yamaguchiTo = -Inf;   // (its lattice's temperatures, K)
     for (int t = 0; t < int(a_elements.size()); ++t) {
         ElementMobility& em = a_elements[std::size_t(t)];
         if (em.domain < 0) continue;
@@ -7443,6 +7470,10 @@ void SemiconductorProblem::latticeTemperature()
         const double T = ev.eval(a_TL);
         if (!(T > 0)) continue;
         const Medium& m = a_media[std::size_t(em.domain)];
+        if (m.lowField == Medium::LowField::Yamaguchi) {
+            yamaguchiFrom = std::min(yamaguchiFrom, T);
+            yamaguchiTo = std::max(yamaguchiTo, T);
+        }
         // (Its mobilities, saturation velocities and coefficients are its
         // material's at the physics' T: scaled from there.)
         em.tn = std::pow(T / a_T, -m.zetan);
@@ -7464,6 +7495,13 @@ void SemiconductorProblem::latticeTemperature()
         if (m.vsatExp) em.vn = em.vp = expVsat(T) / expVsat(a_T);
         em.ii = phononGamma(m.ionPhonon, T) / phononGamma(m.ionPhonon, a_T);
         em.TL = T;
+    }
+    if (yamaguchiFrom <= yamaguchiTo && std::max(std::abs(yamaguchiFrom - 300), std::abs(yamaguchiTo - 300)) > 0.05) {
+        const QString range = yamaguchiTo - yamaguchiFrom < 0.05 ? formatNumber(yamaguchiTo, 4)
+                                                                 : tr("%1 to %2").arg(formatNumber(yamaguchiFrom, 4), formatNumber(yamaguchiTo, 4));
+        const QString w = tr("Warning: %1: Yamaguchi's mobility is of no temperature - its 300 K fit's at a lattice temperature of %2 K")
+                              .arg(a_node->name(), range);
+        if (!a_s.log.contains(w)) a_s.log << w;
     }
     edgeWeights(nullptr);
     // Each node's, its bands made again where it changed (its intrinsic
