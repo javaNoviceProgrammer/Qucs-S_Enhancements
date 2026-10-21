@@ -384,6 +384,8 @@ private:
     /// A reply's Markdown, its math typeset.
     void renderMarkdown(QTextCursor& c, const QString& text);
     qucs_s::math::Typeset typesetMath(const QString& tex, const QFont& font, bool display);
+    /// \a spans' math typeset where their marks are, after \a from.
+    void placeMath(QTextCursor& c, const QList<qucs_s::math::Span>& spans, int from);
     void append(const Entry& e);
     /// A prompt's line, with where the conversation stands before it -
     /// and, when a prompt was being edited, the conversation taken back to
