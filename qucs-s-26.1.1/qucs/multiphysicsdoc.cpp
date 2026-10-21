@@ -1158,6 +1158,7 @@ void MultiphysicsDoc::buildMesh()
         job.mesh = m.mesh;
         job.error = m.mesh ? QString() : QCoreApplication::translate("MultiphysicsDoc", "The mesh failed: %1").arg(m.error);
         job.warnings = m.warnings;
+        job.run.warnings = m.warnings;   // (lastWarnings: fem_build's answer's)
         if (m.mesh)
             job.warnings << QCoreApplication::translate("MultiphysicsDoc", "Mesh: %1 triangles, %2 nodes; smallest angle %3°, mean quality %4 (%5 ms)")
                                 .arg(m.mesh->triangles.size())

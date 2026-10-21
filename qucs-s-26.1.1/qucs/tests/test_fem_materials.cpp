@@ -128,7 +128,7 @@ private slots:
     // Silicon at 300 K as before - its gap to the last digit, its densities
     // of states, mobilities, conductivity of heat -, and its models'
     // parameters the semiconductor features' own defaults: a model of it
-    // solves as it did.
+    // solves as it did (but Masetti's µmax, its own now).
     void siliconAsItWas()
     {
         QCOMPARE(valueOf(QStringLiteral("Silicon"), QStringLiteral("Eg")), 1.12);
@@ -145,6 +145,14 @@ private slots:
             for (const PropertyDef& p : k->properties) {
                 const QString mk = materialKeyOf(type, p.key);
                 if (mk.isEmpty() || mk == QLatin1String("taun") || mk == QLatin1String("taup") || mk == QLatin1String("Et")) continue;
+                // (Masetti's µmax: the feature's empty - the lattice's, the
+                // Lumerical Masetti model's -, Silicon's Masetti's fit's own,
+                // 1417 and 470.5 cm²/(V s): the update check of 21 October.)
+                if (mk == QLatin1String("mmaxn") || mk == QLatin1String("mmaxp")) {
+                    QVERIFY2(p.defaultValue.toString().isEmpty(), qPrintable(p.defaultValue.toString()));
+                    QCOMPARE(valueOf(QStringLiteral("Silicon"), mk), mk.endsWith(QLatin1Char('n')) ? 0.1417 : 0.04705);
+                    continue;
+                }
                 // (An energy in eV, as valueOf has it.)
                 const Expression d = Expression::compile(p.defaultValue.toString(), Scope::builtins());
                 const double feature = d.isValid() && d.isConstant() ? (d.dim() == Dim::of(2, 1, -2) ? d.constant() / Q : d.constant()) : NAN;
@@ -751,6 +759,34 @@ private slots:
             QVERIFY(near(c.curves[0].values[std::size_t(i)], 40 + (8500 - 40) / (1 + N / 8.1e16), 1e-9));
         }
         QVERIFY(c.notes.join(QLatin1Char(' ')).contains(QLatin1String("Caughey and Thomas's")));
+        // Masetti's of a material that gives it: its own µmax where it gives
+        // one (the library's Silicon's 1417 cm²/(V s)), else the lattice's -
+        // as the solver's (the update check of 21 October).
+        {
+            Node masetti;
+            masetti.type = QStringLiteral("material");
+            masetti.props = {{"label", "M"},
+                             {"mun", "1400[cm^2/(V*s)]"},
+                             {"m1n", "52.2[cm^2/(V*s)]"},
+                             {"m2n", "52.2[cm^2/(V*s)]"},
+                             {"mu1n", "43.4[cm^2/(V*s)]"},
+                             {"pcn", "0[1/cm^3]"},
+                             {"crn", "9.68e16[1/cm^3]"},
+                             {"csn", "3.43e20[1/cm^3]"},
+                             {"man", "0.68"},
+                             {"mbn", "2"}};
+            sweep.points = 7;
+            for (double mumax : {1400.0, 1417.0}) {
+                if (mumax != 1400) masetti.props.insert(QStringLiteral("mmaxn"), QStringLiteral("1417[cm^2/(V*s)]"));
+                c = materialCurves(masetti, {QStringLiteral("mun")}, sweep, Scope::builtins());
+                QVERIFY2(c.error.isEmpty() && c.curves.size() == 1, qPrintable(c.error));
+                QVERIFY(c.notes.join(QLatin1Char(' ')).contains(QLatin1String("Masetti's")));
+                for (int i = 0; i < 7; ++i) {
+                    const double N = c.at[std::size_t(i)];   // (1/cm³)
+                    QVERIFY(near(c.curves[0].values[std::size_t(i)], 52.2 + (mumax - 52.2) / (1 + std::pow(N / 9.68e16, 0.68)) - 43.4 / (1 + std::pow(3.43e20 / N, 2)), 1e-9));
+                }
+            }
+        }
         // An alloy against x; a field's ionization.
         const Node algaas = materialNode(Model::blank(), *findMaterial(QStringLiteral("Aluminium gallium arsenide")));
         sweep = MaterialSweep();

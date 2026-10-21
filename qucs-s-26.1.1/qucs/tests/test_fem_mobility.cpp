@@ -150,11 +150,13 @@ double arora(bool electrons, double N, double T)
 }
 
 /// Masetti, Severi and Solmi (1983): silicon's arsenic (electrons) and
-/// boron (holes).
-double masetti(bool electrons, double N)
+/// boron (holes) - their µmax 1417 and 470.5 at 300 K, (T/300 K)^-ζ at \a T
+/// (ζ 2.5 and 2.2), else \a mumax.
+double masetti(bool electrons, double N, double T = 300, double mumax = 0)
 {
-    if (electrons) return 52.2 + (1417 - 52.2) / (1 + std::pow(N / 9.68e16, 0.68)) - 43.4 / (1 + std::pow(3.43e20 / N, 2));
-    return 44.9 * std::exp(-9.23e16 / N) + 470.5 / (1 + std::pow(N / 2.23e17, 0.719)) - 29.0 / (1 + std::pow(6.1e20 / N, 2));
+    const double top = mumax > 0 ? mumax : (electrons ? 1417 : 470.5) * std::pow(T / 300, electrons ? -2.5 : -2.2);
+    if (electrons) return 52.2 + (top - 52.2) / (1 + std::pow(N / 9.68e16, 0.68)) - 43.4 / (1 + std::pow(3.43e20 / N, 2));
+    return 44.9 * std::exp(-9.23e16 / N) + top / (1 + std::pow(N / 2.23e17, 0.719)) - 29.0 / (1 + std::pow(6.1e20 / N, 2));
 }
 
 /// Dorkel and Leturcq (1981).
@@ -194,7 +196,9 @@ double klaassen(bool electrons, double Nd, double Na, double n, double p, double
     const double Nsc = attract + repel + other;
     const double P = tn * tn / (2.459 / (3.97e13 * std::pow(Nsc, -2.0 / 3.0)) + 3.828 / (1.36e20 / (n + p) * m));
     const double q = std::pow(P, 0.6478);
-    const double F = (0.7643 * q + 2.2999 + 6.5502 * ratio) / (q + 2.3670 - 0.8552 * ratio);
+    // (r3 6.5505: Klaassen's Table 2 - the code's 6.5502, 2e-5 on a minority
+    // mobility, was the code's own here: the update check of 21 October.)
+    const double F = (0.7643 * q + 2.2999 + 6.5505 * ratio) / (q + 2.3670 - 0.8552 * ratio);
     const double Neff = attract + (P < pmin ? gmin : G(P)) * repel + other / F;
     const double muL = mumax * std::pow(tn, -theta);
     const double muN = mumax * mumax / (mumax - mumin) * std::pow(tn, 3 * alpha - 1.5), muC = mumax * mumin / (mumax - mumin) / std::sqrt(tn);
@@ -271,10 +275,10 @@ private slots:
 
     // Klaassen's: its formula's (the test's own) at each bar's state - n-type
     // 1e15, 1e17, 1e19, 1e20 cm⁻³ (its minority holes' screening P below
-    // G's minimum: G held there) and p-type 1e19, dark, and lit -, to 1e-4;
-    // the majority electrons to 1e19 within 5 % of Masetti's arsenic fit,
-    // whose its parameters are; the minority electrons in p⁺ 1e19 more
-    // mobile than the majority in n⁺ 1e19 (Swirhun's and others'
+    // G's minimum: G held there) and p-type 1e19, dark, and lit -, to 1e-9
+    // (lit 1e-2); the majority electrons to 1e19 within 5 % of Masetti's
+    // arsenic fit, whose its parameters are; the minority electrons in p⁺
+    // 1e19 more mobile than the majority in n⁺ 1e19 (Swirhun's and others'
     // measurements: its reason).
     void klaassenMajorityAndMinority()
     {
@@ -297,9 +301,11 @@ private slots:
             const double n = at(s, QStringLiteral("semi.n"), 1, 0.1) * 1e-6, p = at(s, QStringLiteral("semi.p"), 1, 0.1) * 1e-6;
             const double mun = at(s, QStringLiteral("semi.mun"), 1, 0.1) * 1e4, mup = at(s, QStringLiteral("semi.mup"), 1, 0.1) * 1e4;
             const double en = klaassen(true, Nd, Na, n, p, 300), ep = klaassen(false, Nd, Na, n, p, 300);
-            qInfo("Klaassen at Nd %s, Na %s cm^-3%s (n %.4g, p %.4g): electrons %.6g (%.6g), holes %.6g (%.6g) cm^2/(V s)", c.Nd, c.Na, c.lit ? ", lit" : "", n, p, mun,
-                  en, mup, ep);
-            const double tolerance = c.lit ? 0.01 : 1e-4;   // (lit: its triangles' carriers their corners' mean)
+            qInfo("Klaassen at Nd %s, Na %s cm^-3%s (n %.4g, p %.4g): electrons %.8g (%.8g, %.2g), holes %.8g (%.8g, %.2g) cm^2/(V s)", c.Nd, c.Na,
+                  c.lit ? ", lit" : "", n, p, mun, en, mun / en - 1, mup, ep, mup / ep - 1);
+            // (Lit: its triangles' carriers their corners' mean. Dark: to
+            // 1e-9 - r3's 2e-5 on the minority electrons in p⁺ caught.)
+            const double tolerance = c.lit ? 0.01 : 1e-9;
             QVERIFY2(std::abs(mun / en - 1) < tolerance, qPrintable(QStringLiteral("%1 %2").arg(mun).arg(en)));
             QVERIFY2(std::abs(mup / ep - 1) < tolerance, qPrintable(QStringLiteral("%1 %2").arg(mup).arg(ep)));
             if (Na == 0 && !c.lit && Nd <= 1e19)
@@ -495,6 +501,109 @@ private slots:
             qInfo("an expression of Eperp: within %.3g", worst);
             QVERIFY2(worst < 1e-9, qPrintable(QString::number(worst)));
         }
+    }
+
+    // Masetti's on the library's Silicon: its own µmax, Masetti's fit's 1417
+    // and 470.5 cm²/(V s) - the lattice's 1400 and 450 were taken (the
+    // update check of 21 October: 718.65 at 1e17 cm⁻³ for 727.05, holes 4 %
+    // low at 1e15) -, a bar's mobilities its formula's at 1e15, 1e17 and
+    // 1e19 cm⁻³ to 1e-9; at 350 K its µmax (T/300 K)^-ζ, the rest as at
+    // 300 K. µmax empty: the lattice's (the Lumerical Masetti model's);
+    // given on the feature, that.
+    void masettisOwnMaximum()
+    {
+        const QString model = QStringLiteral(R"("mobility": "masetti",)");
+        auto check = [](const Run& r, double N, double T, double mumaxn, double mumaxp) {
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.study.solutions.back();
+            const double mun = at(s, QStringLiteral("semi.mun"), 1, 0.1) * 1e4, mup = at(s, QStringLiteral("semi.mup"), 1, 0.1) * 1e4;
+            const double en = masetti(true, N, T, mumaxn), ep = masetti(false, N, T, mumaxp);
+            qInfo("Masetti at %.3g cm^-3, %g K, µmax %s: electrons %.8g (%.8g), holes %.8g (%.8g) cm^2/(V s)", N, T,
+                  mumaxn > 0 ? qPrintable(QStringLiteral("%1, %2").arg(mumaxn).arg(mumaxp)) : "its own", mun, en, mup, ep);
+            QVERIFY2(std::abs(mun / en - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(mun, 0, 'g', 12).arg(en, 0, 'g', 12)));
+            QVERIFY2(std::abs(mup / ep - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(mup, 0, 'g', 12).arg(ep, 0, 'g', 12)));
+        };
+        for (const char* N : {"1e15", "1e17", "1e19"}) {
+            check(run(modelOf(bar(QLatin1String(N), QStringLiteral("0"), QStringLiteral("1[mV]"), model))), std::atof(N), 300, 0, 0);
+            if (QTest::currentTestFailed()) return;
+        }
+        check(run(modelOf(bar(QStringLiteral("1e17"), QStringLiteral("0"), QStringLiteral("1[mV]"), model, QStringLiteral(R"(, "T": "350[K]")")))), 1e17, 350, 0, 0);
+        if (QTest::currentTestFailed()) return;
+        check(run(modelOf(bar(QStringLiteral("1e17"), QStringLiteral("0"), QStringLiteral("1[mV]"),
+                              QStringLiteral(R"("mobility": "masetti", "mmaxn": "", "mmaxp": "",)")))),
+              1e17, 300, 1400, 450);
+        if (QTest::currentTestFailed()) return;
+        check(run(modelOf(bar(QStringLiteral("1e17"), QStringLiteral("0"), QStringLiteral("1[mV]"),
+                              QStringLiteral(R"("mobility": "masetti", "mmaxn": "1000[cm^2/(V*s)]", "mmaxp": "400[cm^2/(V*s)]",)")))),
+              1e17, 300, 1000, 400);
+    }
+
+    // Yamaguchi's is of no temperature, its 300 K fit's: said where the
+    // physics' T or a lattice temperature is another (the update check of
+    // 21 October: at 400 K the 300 K mobilities to the last digit, not a
+    // word) - its mobility the same; at 300 K nothing said.
+    void yamaguchiSaysItHasNoTemperature()
+    {
+        const double expect = 1400 / std::sqrt(1 + 1e17 / (1e17 / 350 + 3e16));
+        for (const char* physics : {"", R"(, "T": "400[K]")", R"(, "TL": "350[K]")"}) {
+            const Run r = run(modelOf(bar(QStringLiteral("1e17"), QStringLiteral("0"), QStringLiteral("1[mV]"), QStringLiteral(R"("mobility": "yamaguchi",)"),
+                                          QLatin1String(physics))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const double mun = at(*r.study.solutions.back(), QStringLiteral("semi.mun"), 1, 0.1) * 1e4;
+            const QString said = r.study.warnings.join(QLatin1Char('\n'));
+            qInfo("Yamaguchi%s: %.8g (%.8g) cm^2/(V s); %s", physics, mun, expect, qPrintable(said));
+            QVERIFY2(std::abs(mun / expect - 1) < 1e-6, qPrintable(QString::number(mun)));
+            const QString warning = QStringLiteral("Yamaguchi's mobility is of no temperature - its 300 K fit's");
+            if (!*physics) QVERIFY2(!said.contains(warning), qPrintable(said));
+            else if (!QLatin1String(physics).contains(QLatin1String("TL"))) QVERIFY2(said.contains(warning + QStringLiteral(" at 400 K")), qPrintable(said));
+            else QVERIFY2(said.contains(warning + QStringLiteral(" at a lattice temperature of 350 K")), qPrintable(said));
+        }
+    }
+
+    // What reads the nearest insulator, named where none meets a
+    // semiconductor: Lombardi's surface scattering, Yamaguchi's field
+    // across it, an expression of Eperp or dsurf - an expression of n
+    // alone nothing (the update check of 21 October: "surface scattering,
+    // but no semiconductor meets an insulator" with Yamaguchi's and with an
+    // expression of n and p, no surface scattering on).
+    void interfaceReadersAreNamed()
+    {
+        struct Case {
+            const char* model;
+            const char* said;   // (empty: nothing)
+        };
+        for (const Case& c : {Case{R"("mobility": "constant", "surface": true, "surfmodel": "lombardi",)", "Lombardi's surface scattering"},
+                              Case{R"("mobility": "yamaguchi",)", "Yamaguchi's field across the interface"},
+                              Case{R"x("mobility": "expression", "muexpn": "1400[cm^2/(V*s)]/(1 + Eperp/1e7[V/m])",)x", "the mobility's expression of Eperp or dsurf (0 and 1 m)"},
+                              Case{R"x("mobility": "expression", "muexpn": "1400[cm^2/(V*s)]/(1 + n/1e17[1/cm^3])",)x", ""}}) {
+            const Run r = run(modelOf(bar(QStringLiteral("1e15"), QStringLiteral("0"), QStringLiteral("1[mV]"), QLatin1String(c.model))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const QStringList lines = r.study.solutions.back()->log.filter(QStringLiteral("no semiconductor meets an insulator"));
+            qInfo("%s: %s", c.model, qPrintable(lines.join(QLatin1Char(' '))));
+            if (!*c.said) QVERIFY2(lines.isEmpty(), qPrintable(lines.join(QLatin1Char(' '))));
+            else
+                QVERIFY2(lines.size() == 1 && lines.first().contains(QLatin1String(c.said) + QStringLiteral(", but no semiconductor meets an insulator: none")),
+                         qPrintable(lines.join(QLatin1Char(' '))));
+        }
+    }
+
+    // A mobility shown in m²/(V·s), not s²·A/kg (the update check of 21
+    // October): the variables' unit, a value's, and typed back.
+    void mobilityIsShownInItsUnit()
+    {
+        const Run r = run(modelOf(bar(QStringLiteral("1e15"), QStringLiteral("0"), QStringLiteral("1[mV]"), QStringLiteral(R"("mobility": "constant",)"))));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Dim mobility = Dim::of(0, -1, 2, 1);
+        int found = 0;
+        for (const Variable& v : r.study.solutions.back()->variables())
+            if (v.name == QLatin1String("semi.mun") || v.name == QLatin1String("semi.mup")) {
+                QCOMPARE(dimName(v.dim), QStringLiteral("m²/(V·s)"));
+                ++found;
+            }
+        QCOMPARE(found, 2);
+        QCOMPARE(formatQuantity(0.14, mobility), QStringLiteral("0.14 m²/(V·s)"));
+        const std::optional<Unit> typed = parseUnit(QStringLiteral("m²/(V·s)"));
+        QVERIFY(typed && typed->dim == mobility && typed->scale == 1);
     }
 
     // The review's "not checked": parameters as expressions of the

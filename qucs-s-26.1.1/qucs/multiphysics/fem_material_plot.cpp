@@ -186,6 +186,7 @@ MaterialCurves materialCurves(const Node& material, const QStringList& keys, con
                 const double a = value(QStringLiteral("m") + (c == 0 ? QStringLiteral("an") : QStringLiteral("ap"))).value_or(1);
                 const double b = value(QStringLiteral("mb") + C).value_or(1);
                 const double n = std::max(N, 1e-30);
+                mu = value(QStringLiteral("mmax") + C).value_or(mu);   // (its own µmax, else the lattice's)
                 mu = m1 * std::exp(-pc / n) + (mu - m2) / (1 + std::pow(n / cr, a)) - u1 / (1 + std::pow(cs / n, b));
                 said(tr("mobilities by doping Masetti's"));
             }

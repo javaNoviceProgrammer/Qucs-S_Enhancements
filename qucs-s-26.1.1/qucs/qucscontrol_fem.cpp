@@ -1242,12 +1242,16 @@ QJsonObject QucsControl::femBuild(const QJsonObject& args)
     if (!mesh) return errorResult(tr("The mesh failed."));
     QJsonArray histogram;
     for (int c : mesh->histogram) histogram.append(c);
-    return jsonResult(QJsonObject{{QStringLiteral("triangles"), int(mesh->triangles.size())},
-                                  {QStringLiteral("nodes"), int(mesh->nodes.size())},
-                                  {QStringLiteral("smallest angle"), QStringLiteral("%1°").arg(mesh->minAngle, 0, 'f', 1)},
-                                  {QStringLiteral("quality"), QJsonObject{{QStringLiteral("worst"), mesh->minQuality},
-                                                                          {QStringLiteral("mean"), mesh->meanQuality},
-                                                                          {QStringLiteral("tenths"), histogram}}}});
+    QJsonObject o{{QStringLiteral("triangles"), int(mesh->triangles.size())},
+                  {QStringLiteral("nodes"), int(mesh->nodes.size())},
+                  {QStringLiteral("smallest angle"), QStringLiteral("%1°").arg(mesh->minAngle, 0, 'f', 1)},
+                  {QStringLiteral("quality"), QJsonObject{{QStringLiteral("worst"), mesh->minQuality},
+                                                          {QStringLiteral("mean"), mesh->meanQuality},
+                                                          {QStringLiteral("tenths"), histogram}}}};
+    // (Its sizes' warnings: an hmax not used, said - the update check of
+    // 21 October's mesh was the preset's without a word.)
+    if (!doc->lastWarnings().isEmpty()) o.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(doc->lastWarnings()));
+    return jsonResult(o);
 }
 
 QJsonObject QucsControl::femStop(const QJsonObject& args)

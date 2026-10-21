@@ -1527,6 +1527,16 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
         s.growth = std::max(1.0, number(m.text(QStringLiteral("growth")), tr("the growth rate"), s.growth));
         s.curvature = number(m.text(QStringLiteral("curvature")), tr("the curvature factor"), s.curvature);
         s.narrow = number(m.text(QStringLiteral("narrow")), tr("the resolution of narrow regions"), s.narrow);
+    } else {
+        // (Set but not used, said: a preset's mesh, its hmax given, was
+        // meshed as the preset's without a word.)
+        QStringList unused;
+        for (const char* key : {"hmax", "hmin", "growth", "curvature", "narrow"})
+            if (!m.text(QString::fromLatin1(key)).trimmed().isEmpty()) unused << QString::fromLatin1(key);
+        if (!unused.isEmpty())
+            problems << (unused.size() == 1 ? tr("%1's %2 is not used: Customize is off (\"custom\": true) - the %3 preset's sizes taken")
+                                            : tr("%1's %2 are not used: Customize is off (\"custom\": true) - the %3 preset's sizes taken"))
+                            .arg(m.name(), unused.join(QStringLiteral(", ")), QString::fromLatin1(p->name));
     }
     s.hmin = std::min(s.hmin, s.hmax);
     s.domainMax.assign(topology.domains.size(), Infinity);

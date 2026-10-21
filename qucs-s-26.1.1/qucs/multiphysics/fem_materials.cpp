@@ -1262,7 +1262,9 @@ const QList<MaterialEntry>& builtinMaterials()
                          {"Nv", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(1400, QStringLiteral("cm^2/(V*s)"), -2.5)},
                          {"mup", ofT(450, QStringLiteral("cm^2/(V*s)"), -2.2)}, {"k", ofT(130, QStringLiteral("W/(m*K)"), -1.65)},
                          {"n", siliconIndex()}, {"kappa", siliconExtinction()}, {"nrange", QStringLiteral("0.25[um] 14[um]")},
-                         // (Masetti's: arsenic's and boron's, the feature's defaults.)
+                         // (Masetti's: arsenic's and boron's, the feature's defaults;
+                         // its µmax its own fit's, of T as the lattice's.)
+                         {"mmaxn", ofT(1417, QStringLiteral("cm^2/(V*s)"), -2.5)}, {"mmaxp", ofT(470.5, QStringLiteral("cm^2/(V*s)"), -2.2)},
                          {"m1n", QStringLiteral("52.2[cm^2/(V*s)]")}, {"m2n", QStringLiteral("52.2[cm^2/(V*s)]")},
                          {"mu1n", QStringLiteral("43.4[cm^2/(V*s)]")}, {"pcn", QStringLiteral("0[1/cm^3]")},
                          {"crn", QStringLiteral("9.68e16[1/cm^3]")}, {"csn", QStringLiteral("3.43e20[1/cm^3]")}, {"man", QStringLiteral("0.68")},
@@ -2519,7 +2521,8 @@ QStringList semiconductorModelKeys()
 {
     static const QStringList keys = {
         QStringLiteral("munmin"), QStringLiteral("nrefn"), QStringLiteral("alphan"), QStringLiteral("mupmin"), QStringLiteral("nrefp"),
-        QStringLiteral("alphap"), QStringLiteral("m1n"),   QStringLiteral("m2n"),    QStringLiteral("mu1n"),   QStringLiteral("pcn"),
+        QStringLiteral("alphap"), QStringLiteral("mmaxn"), QStringLiteral("mmaxp"),  QStringLiteral("m1n"),    QStringLiteral("m2n"),
+        QStringLiteral("mu1n"),   QStringLiteral("pcn"),
         QStringLiteral("crn"),    QStringLiteral("csn"),   QStringLiteral("man"),    QStringLiteral("mbn"),    QStringLiteral("m1p"),
         QStringLiteral("m2p"),    QStringLiteral("mu1p"),  QStringLiteral("pcp"),    QStringLiteral("crp"),    QStringLiteral("csp"),
         QStringLiteral("map"),    QStringLiteral("mbp"),   QStringLiteral("zetan"),  QStringLiteral("zetap"),  QStringLiteral("vsatn"),

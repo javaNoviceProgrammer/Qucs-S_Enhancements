@@ -1672,6 +1672,41 @@ private slots:
         app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
     }
 
+    // A mesh's hmax without Customize: not used, and said - fem_build's
+    // answer's warnings (the update check of 21 October: a 1 by 40 µm
+    // sample's hmax 0.1, 0.05 and 0.025 the same 234 triangles, not a word).
+    // Customized: used, nothing said.
+    void aMeshsUnusedSizesAreSaid()
+    {
+        const QString file = path(QStringLiteral("mesh_unused.qfem"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+              "geometry": [{"type": "rectangle", "tag": "r1", "size": ["40", "1"]}, {"type": "form union", "tag": "fin"}],
+              "materials": [{"tag": "m1", "material": "Silicon", "selection": {"all": true}}],
+              "mesh": {"tag": "mesh1", "size": "normal", "hmax": "0.1"}}]})");
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QJsonObject r = call("fem_build", {{"what", "mesh"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const int preset = json(r).value("triangles").toInt();
+        const QJsonArray warnings = json(r).value("warnings").toArray();
+        QVERIFY2(warnings.size() == 1
+                     && warnings.first().toString()
+                            == QStringLiteral("Mesh's hmax is not used: Customize is off (\"custom\": true) - the normal preset's sizes taken"),
+                 qPrintable(text(r)));
+        r = call("fem_edit", {{"action", "set"}, {"tag", "mesh1"}, {"props", QJsonObject{{"custom", true}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_build", {{"what", "mesh"}});
+        QVERIFY2(!failed(r) && !json(r).contains(QLatin1String("warnings")), qPrintable(text(r)));
+        qInfo("hmax 0.1 µm: the preset's %d triangles, customized %d", preset, json(r).value("triangles").toInt());
+        QVERIFY2(json(r).value("triangles").toInt() > 10 * preset, qPrintable(text(r)));
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
     void aFlowsDopantsThroughTheTools()
     {
         const QString file = path(QStringLiteral("flow_dopants.qfem"));

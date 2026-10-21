@@ -1683,8 +1683,9 @@ QList<NodeKind> makeKinds()
                   tr("Unified (Klaassen)"), tr("Inversion layers (Yamaguchi)"), tr("An expression")},
                  QStringLiteral("constant"),
                  tr("By doping: µmin + (µ - µmin)/(1 + (N/Nref)^α), N the donors and acceptors together; Masetti's µmin1 e^(-Pc/N) + "
-                    "(µ - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β) - silicon's arsenic and boron (Masetti, Severi and Solmi "
-                    "1983) by default; the Lumerical Masetti model is this with µmin1 = µmin2 and Pc 0. Arora's: µmin Tn^a + µd "
+                    "(µmax - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β) - silicon's arsenic and boron (Masetti, Severi and Solmi "
+                    "1983) by default, µmax its own or the lattice's µ; the Lumerical Masetti model is this with µmax the lattice's, "
+                    "µmin1 = µmin2 and Pc 0. Arora's: µmin Tn^a + µd "
                     "Tn^b/(1 + (N/(Nref Tn^c))^(α Tn^d)), Tn = TL/300 K, each element at its lattice's temperature (Arora, Hauser "
                     "and Roulston 1982). Dorkel and Leturcq's: the lattice's, the dopants' and the carriers' own scattering of "
                     "each other - µ falls where both carriers are many (Dorkel and Leturcq 1981). Klaassen's: lattice, dopants "
@@ -1701,6 +1702,10 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("nrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("2.23e17[1/cm^3]")), QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("alphap"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=doping")),
+          shownIf(expr(QStringLiteral("mmaxn"), tr("Electrons' µmax"), QStringLiteral("m^2/(V*s)"), QString(),
+                       tr("Empty: the material's lattice mobility µn (the Lumerical Masetti model's); silicon's 1417 cm²/(V s) (T/300 K)^-2.5 "
+                          "on the library's Silicon, Masetti's fit")),
+                  QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("m1n"), tr("Electrons' µmin1"), QStringLiteral("m^2/(V*s)"), QStringLiteral("52.2[cm^2/(V*s)]")),
                   QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("m2n"), tr("Electrons' µmin2"), QStringLiteral("m^2/(V*s)"), QStringLiteral("52.2[cm^2/(V*s)]")),
@@ -1712,6 +1717,10 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("csn"), tr("Electrons' Cs"), QStringLiteral("1/m^3"), QStringLiteral("3.43e20[1/cm^3]")), QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("man"), tr("Electrons' α"), QString(), QStringLiteral("0.68")), QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("mbn"), tr("Electrons' β"), QString(), QStringLiteral("2")), QStringLiteral("mobility=masetti")),
+          shownIf(expr(QStringLiteral("mmaxp"), tr("Holes' µmax"), QStringLiteral("m^2/(V*s)"), QString(),
+                       tr("Empty: the material's lattice mobility µp (the Lumerical Masetti model's); silicon's 470.5 cm²/(V s) (T/300 K)^-2.2 "
+                          "on the library's Silicon, Masetti's fit")),
+                  QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("m1p"), tr("Holes' µmin1"), QStringLiteral("m^2/(V*s)"), QStringLiteral("44.9[cm^2/(V*s)]")),
                   QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("m2p"), tr("Holes' µmin2"), QStringLiteral("m^2/(V*s)"), QStringLiteral("0[cm^2/(V*s)]")),
