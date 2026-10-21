@@ -84,6 +84,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 
 namespace qucs_s::fem {
 
@@ -108,6 +109,7 @@ const QStringList BasicKeys = {QStringLiteral("epsilonr"), QStringLiteral("tand"
                                   QStringLiteral("a0"),       QStringLiteral("ac"),   QStringLiteral("av"),
                                   QStringLiteral("b"),        QStringLiteral("C11"),  QStringLiteral("C12"),
                                   QStringLiteral("Egd"),      QStringLiteral("mr"),   QStringLiteral("Afk"),
+                                  QStringLiteral("Egdalpha"), QStringLiteral("Egdbeta"),
                                   QStringLiteral("bands"),    QStringLiteral("lambdag"), QStringLiteral("phi"),
                                   QStringLiteral("composition"), QStringLiteral("lattice"),
                                   QStringLiteral("nrange"),   QStringLiteral("sigmaFCn"), QStringLiteral("sigmaFCp"),
@@ -255,6 +257,29 @@ const std::vector<ModelSet>& modelSets()
     return list;
 }
 
+/// A model set's temperature models: Quay's saturation velocities,
+/// vsat300/((1 - A) + A T/300 K) - A of electrons and holes, Quay et al.
+/// 2000 (Palankovski's table 3.31, Lumerical's own alternative for Si and
+/// Ge); the optical phonon (eV) of its impact ionization's γ(T), van
+/// Overstraeten and de Man's tanh(ħω/2k 300 K)/tanh(ħω/2kT) - silicon's 63
+/// meV theirs, the others' LO phonons at Γ. None: nought.
+struct TemperatureModel {
+    const char* name;
+    double vsatA[2];
+    double phonon;
+};
+
+const TemperatureModel* temperatureModel(const char* name)
+{
+    static const TemperatureModel table[] = {{"Si", {0.26, 0.63}, 0.063},  {"Ge", {0.55, 0.61}, 0.037},  {"GaAs", {0.56, 0.41}, 0.036},
+                                             {"AlAs", {0.55, 0.3}, 0.050}, {"InAs", {0.57, 0.3}, 0.030}, {"InP", {0.68, 0.3}, 0.043},
+                                             {"GaP", {0.30, 0.3}, 0.050},  {"GaN", {0.15, 0}, 0.092},    {"AlN", {0.135, 0}, 0.110},
+                                             {"InN", {0, 0}, 0.073},       {"GaSb", {0, 0}, 0.029}};
+    for (const TemperatureModel& t : table)
+        if (std::strcmp(t.name, name) == 0) return &t;
+    return nullptr;
+}
+
 const ModelSet* modelSet(const QString& name)
 {
     for (const ModelSet& m : modelSets())
@@ -319,6 +344,11 @@ void addModels(QJsonObject& p, const ModelSet& m)
             p.insert(QStringLiteral("iibeta") + C, number(m.ii[3 * k + 2]));
         }
     }
+    // (Quay's A for every set, nought where none is published: not
+    // silicon's taken.)
+    const TemperatureModel* t = temperatureModel(m.name);
+    for (int k = 0; k < 2; ++k) p.insert(QStringLiteral("Av") + QLatin1String(c[k]), number(t ? t->vsatA[k] : 0.0));
+    if (t && (m.ii[0] > 0 || m.ii[3] > 0)) put("iiEph", ofT(t->phonon, QStringLiteral("eV"), 0));
     if (m.bgn[0] > 0) {
         put("Ebgn", ofT(m.bgn[0], QStringLiteral("eV"), 0));
         put("Nbgn", ofT(m.bgn[1], QStringLiteral("1/cm^3"), 0));
@@ -1251,10 +1281,12 @@ const QList<MaterialEntry>& builtinMaterials()
                               "conductivity of heat of T; its models' parameters (from the Lumerical database); n and κ from 0.3 to 14 µm (Nunley et al.'s "
                               "measured to 1.9 µm - its direct gap's absorption, 2000 /cm at 1550 nm -, Burnett et al.'s Sellmeier from 2 µm). "
                               "Its direct gap for a Wave Equation's Direct-gap absorption (the Franz-Keldysh effect; κ then the option's): "
-                              "Egd 0.80 eV, A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
+                              "Egd 0.80 eV at 300 K (of a temperature given there, Varshni's 5.82e-4 eV/K and 296 K - the Ioffe "
+                              "Institute's), A 2e4 /cm (8000 /cm at 1310 nm), µ 0.03",
                               {{"epsilonr", "16.2"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
                                {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"nrange", "0.3[um] 14[um]"}, {"dndT", "4.2e-4[1/K]"},
-                               {"chi", "4.0[eV]"}, {"taun", "1[ms]"}, {"taup", "1[ms]"}, {"Egd", "0.80[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
+                               {"chi", "4.0[eV]"}, {"taun", "1[ms]"}, {"taup", "1[ms]"}, {"Egd", "0.80[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"},
+                               {"Egdalpha", "5.82e-4[eV/K]"}, {"Egdbeta", "296[K]"}}),
                         {{"Eg", varshniOfT(0.66, 4.774e-4, 235)}, {"n", germaniumIndex()}, {"kappa", germaniumExtinction()},
                          {"Nc", ofT(1.04e19, QStringLiteral("1/cm^3"), 1.5)},
                          {"Nv", ofT(6.0e18, QStringLiteral("1/cm^3"), 1.5)}, {"mun", ofT(3900, QStringLiteral("cm^2/(V*s)"), -1.66)},
@@ -1267,7 +1299,8 @@ const QList<MaterialEntry>& builtinMaterials()
                               "lifetimes the threading dislocations'; of T as Germanium",
                               {{"epsilonr", "16.2"}, {"rho", "5323[kg/m^3]"}, {"Cp", "320[J/(kg*K)]"}, {"mur", "1"}, {"E", "103[GPa]"},
                                {"nu", "0.26"}, {"alpha", "5.9e-6[1/K]"}, {"nrange", "0.3[um] 14[um]"}, {"dndT", "4.2e-4[1/K]"},
-                               {"chi", "4.0[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"Egd", "0.773[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"}}),
+                               {"chi", "4.0[eV]"}, {"taun", "1[ns]"}, {"taup", "1[ns]"}, {"Egd", "0.773[eV]"}, {"mr", "0.03"}, {"Afk", "2e4[1/cm]"},
+                               {"Egdalpha", "5.82e-4[eV/K]"}, {"Egdbeta", "296[K]"}}),
                         {{"Eg", varshniOfT(0.65, 4.774e-4, 235)},
                          // (Bulk germanium's, its spectrum moved 27 meV down with
                          // its direct gap: the index's peak at the gap there.)
@@ -2107,6 +2140,14 @@ QString alloyModel(const std::vector<std::pair<const ModelSet*, double>>& parts,
         if (k == QLatin1String("bbtA")) return {m.bbt[0] > 0, m.bbt[0], 0};
         if (k == QLatin1String("bbtB")) return {m.bbt[0] > 0, m.bbt[1], 0};
         if (k == QLatin1String("bbtgamma")) return {m.bbt[0] > 0, m.bbt[2], 0};
+        if (k == QLatin1String("Avn") || k == QLatin1String("Avp")) {
+            const TemperatureModel* t = temperatureModel(m.name);
+            return {true, t ? t->vsatA[c] : 0.0, 0};
+        }
+        if (k == QLatin1String("iiEph")) {
+            const TemperatureModel* t = temperatureModel(m.name);
+            return {t && (m.ii[0] > 0 || m.ii[3] > 0), t ? t->phonon : 0.0, 0};
+        }
         return {};
     };
     double total = 0, value = 0, inverse = 0, eta = 0;
@@ -2131,6 +2172,7 @@ QString alloyModel(const std::vector<std::pair<const ModelSet*, double>>& parts,
     if (k == QLatin1String("copt")) return ofT(v, QStringLiteral("cm^3/s"), eta);
     if (k == QLatin1String("iian") || k == QLatin1String("iiap")) return ofT(v, QStringLiteral("1/cm"), 0);
     if (k == QLatin1String("iibn") || k == QLatin1String("iibp") || k == QLatin1String("bbtB")) return ofT(v, QStringLiteral("V/cm"), 0);
+    if (k == QLatin1String("iiEph")) return ofT(v, QStringLiteral("eV"), 0);
     return ofT(v, QString(), eta);
 }
 
@@ -2487,7 +2529,8 @@ QStringList semiconductorModelKeys()
         QStringLiteral("caun"),   QStringLiteral("caup"),  QStringLiteral("copt"),   QStringLiteral("iian"),   QStringLiteral("iibn"),
         QStringLiteral("iian2"),  QStringLiteral("iibn2"), QStringLiteral("iiap"),   QStringLiteral("iibp"),   QStringLiteral("iiap2"),
         QStringLiteral("iibp2"),  QStringLiteral("iiE0"),  QStringLiteral("iibetan"), QStringLiteral("iibetap"), QStringLiteral("bbtA"),
-        QStringLiteral("bbtB"),   QStringLiteral("bbtgamma"), QStringLiteral("cstim"), QStringLiteral("jthreshold"), QStringLiteral("tgain")};
+        QStringLiteral("bbtB"),   QStringLiteral("bbtgamma"), QStringLiteral("cstim"), QStringLiteral("jthreshold"), QStringLiteral("tgain"),
+        QStringLiteral("Avn"),    QStringLiteral("Avp"),   QStringLiteral("iiEph")};
     return keys;
 }
 
@@ -2506,7 +2549,7 @@ QString materialKeyOf(const QString& type, const QString& key)
             {QStringLiteral("an2"), QStringLiteral("iian2")}, {QStringLiteral("bn2"), QStringLiteral("iibn2")},
             {QStringLiteral("ap2"), QStringLiteral("iiap2")}, {QStringLiteral("bp2"), QStringLiteral("iibp2")},
             {QStringLiteral("E0"), QStringLiteral("iiE0")},   {QStringLiteral("betan"), QStringLiteral("iibetan")},
-            {QStringLiteral("betap"), QStringLiteral("iibetap")}};
+            {QStringLiteral("betap"), QStringLiteral("iibetap")}, {QStringLiteral("Eph"), QStringLiteral("iiEph")}};
         return map.value(key);
     }
     if (type == QLatin1String("semiconductor/btbt")) {

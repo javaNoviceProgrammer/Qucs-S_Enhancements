@@ -959,6 +959,9 @@ SemiconductorModels semiconductorModels(const Object& o, double T, bool fermi)
             const QString vkey = QStringLiteral("vsat ") + C;
             const double v = active(vkey) == QLatin1String("Constant") ? param(vkey, QStringLiteral("A0")) : param(vkey, QStringLiteral("vsat300"));
             if (std::isfinite(v)) m.insert(QStringLiteral("vsat") + C, QStringLiteral("%1[cm/s]").arg(num(v)));
+            // (Of the temperature: Quay's A, its Av; Constant, none.)
+            const double A = active(vkey) == QLatin1String("Constant") ? 0.0 : param(vkey, QStringLiteral("Av"));
+            m.insert(QStringLiteral("Av") + C, num(std::isfinite(A) ? A : 0.0));
             const double beta = param(QStringLiteral("high field ") + C, QStringLiteral("beta"));
             if (beta > 0) m.insert(QStringLiteral("beta") + C, num(beta));
         }
@@ -2940,6 +2943,8 @@ std::vector<MaterialEntry> libraryEntries(const Scene& scene, QStringList* notes
                 const QString vkey = QStringLiteral("vsat ") + C;
                 const double v = active(vkey) == QLatin1String("Constant") ? param(vkey, "A0") : param(vkey, "vsat300");
                 if (std::isfinite(v)) e.properties.insert(QStringLiteral("vsat") + C, ofT(v, QStringLiteral("cm/s"), 0));
+                const double A = active(vkey) == QLatin1String("Constant") ? 0.0 : param(vkey, "Av");
+                e.properties.insert(QStringLiteral("Av") + C, num(std::isfinite(A) ? A : 0.0));
                 const double beta = param(QStringLiteral("high field ") + C, "beta");
                 if (beta > 0) e.properties.insert(QStringLiteral("beta") + C, num(beta));
                 e.properties.insert(QStringLiteral("tau") + C, ofTemperature(QStringLiteral("srh tau ") + C, QStringLiteral("s")));

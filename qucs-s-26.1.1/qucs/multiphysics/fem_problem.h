@@ -512,9 +512,13 @@ struct SemiconductorState {
     double nB = NaN, pB = NaN;
     /// The carriers' Joule heat as solved, the triangle's (W/m³).
     double joule = 0;
-    /// The heat the carriers leave, Joule and recombination, as solved - by
-    /// the nodes, sliced the slices' mean (W/m³; NaN: not stored).
+    /// The heat the carriers and the light leave, Joule, recombination and
+    /// the pairs' energy as made, as solved - by the nodes, sliced the
+    /// slices' mean (W/m³; NaN: not stored).
     double heat = std::numeric_limits<double>::quiet_NaN();
+    /// The light's part of it: its pairs' energy as made less what they
+    /// carry, q G (φp - φn) (W/m³).
+    double lightHeat = 0;
     /// Impact ionization's pairs as solved, the triangle's (1/(m³ s)).
     double Gion = 0;
     /// Incomplete ionization's (0: the dopants all ionized): Nd⁺ = Nd/(1 +
