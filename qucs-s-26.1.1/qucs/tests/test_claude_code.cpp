@@ -1815,6 +1815,37 @@ private slots:
         QVERIFY(centredBlock);
     }
 
+    // The user's prompt's math typeset too, as a reply's (the user,
+    // 2026-10-21: "$\Delta x$" stayed as typed): inline and display; not in
+    // code, not money; the rest as typed - and the prompt kept as typed, its
+    // TeX in the Markdown export and the tool tips.
+    void aPromptsMathIsTypeset()
+    {
+        ClaudeCodePanel panel;
+        const QString work = fresh("promptmath");
+        panel.setDefaultDirectory(work);
+        panel.resize(420, 700);
+        const QString typed = "What is $\\Delta x$ here, with\n$$E = mc^2$$\nnot `$code$`, and it costs $5 or $10?";
+        panel.restoreConversation({{"sessionId", "s-math"}, {"folder", work}, {"entries", QJsonArray{
+            QJsonObject{{"kind", 0}, {"text", typed}, {"session", ""}, {"at", ""}},
+            QJsonObject{{"kind", 1}, {"text", "A reply with $\\omega$."}}}}});
+        panel.renderNow();
+        QCOMPARE(mathIn(panel.transcript()->document()), (QStringList{"\\Delta x", "E = mc^2", "\\omega"}));
+        const QString shown = panel.transcriptText();
+        QVERIFY(!shown.contains("\\Delta"));
+        QVERIFY(!shown.contains("mc^2"));
+        QVERIFY(shown.contains("What is"));
+        QVERIFY(shown.contains("`$code$`"));
+        QVERIFY(shown.contains("costs $5 or $10?"));
+        // (The display math on its line, centred in the bubble.)
+        bool centred = false;
+        QTextDocument* doc = panel.transcript()->document();
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+            if (b.text().trimmed() == QString(QChar::ObjectReplacementCharacter) && b.blockFormat().alignment() & Qt::AlignHCenter) centred = true;
+        QVERIFY(centred);
+        QVERIFY(panel.conversationMarkdown().contains("> What is $\\Delta x$ here, with"));
+    }
+
     // A reply's block quote has its bar, as in the viewer (the update check
     // of 7451b1c): Qt's Markdown sets a quote in by its margin alone.
     void quotesHaveTheirBar()

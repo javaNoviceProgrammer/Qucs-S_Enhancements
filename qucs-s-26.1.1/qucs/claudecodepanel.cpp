@@ -2501,11 +2501,19 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
         frame.setBorder(0);
         frame.setMargin(0);
         c.insertFrame(frame);
-        const QStringList lines = e.text.split(QLatin1Char('\n'));
+        // Its math typeset, as a reply's is - $\Delta x$, $$...$$, \(...\),
+        // \[...\]; not in code, not money -; the rest as it was typed.
+        const QList<qucs_s::math::Span> spans = qucs_s::math::findMath(e.text);
+        QString typed = e.text;
+        for (qsizetype k = spans.size(); k-- > 0;)
+            typed.replace(spans.at(k).start, spans.at(k).length, QString(QChar(char16_t(kMathMark + k))));
+        const int from = c.position();
+        const QStringList lines = typed.split(QLatin1Char('\n'));
         for (int i = 0; i < lines.size(); ++i) {
             if (i > 0) c.insertBlock();
             c.insertText(lines.at(i), plain);
         }
+        placeMath(c, spans, from);
         // Its images, small (fitted to the line, never bigger than they
         // are) - the file's name where it is gone.
         if (!e.images.isEmpty()) {
@@ -2926,8 +2934,16 @@ void ClaudeCodePanel::renderMarkdown(QTextCursor& c, const QString& text)
         }
         if (b == c.block()) break;
     }
+    placeMath(c, spans, from);
+}
+
+void ClaudeCodePanel::placeMath(QTextCursor& c, const QList<qucs_s::math::Span>& spans, int from)
+{
     // The math, typeset where its marks are, in the size of the text
-    // around it (a heading's is bigger); its TeX in the tool tip.
+    // around it (a heading's is bigger); its TeX in the tool tip. Display
+    // math on a line of its own centred.
+    const QFont base = a_view->font();
+    QTextDocument* target = c.document();
     for (qsizetype k = 0; k < spans.size(); ++k) {
         QTextCursor hit = target->find(QString(QChar(char16_t(kMathMark + k))), from);
         if (hit.isNull()) continue;
