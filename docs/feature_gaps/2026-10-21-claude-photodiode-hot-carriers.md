@@ -1,6 +1,6 @@
 # A photodiode under strong light, 5: hot carriers
 
-The eighth of the nine missing pieces of a photodiode's physics (`2026-10-20-claude-photodiode-circuit-and-slices.md` lists them).
+The third of the nine missing pieces of a photodiode's physics (`2026-10-20-claude-photodiode-circuit-and-slices.md` lists them).
 
 **Before:** a carrier's velocity was its local field's. Saturation was Caughey and Thomas's, driven by the field along its current or by the whole field.
 - Carriers entering a high field cool could not run past vsat. A short transit layer's velocity overshoot, the reason a thin collector beats the saturated drift time, was missing.
