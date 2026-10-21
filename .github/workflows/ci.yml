@@ -92,6 +92,24 @@ jobs:
           cache: true
           install-deps: true
 
+      # More memory for the build: its job was killed three times on bacbec0
+      # (21 October) at the same point - "the runner has received a shutdown
+      # signal", mid-build, four compilers at once (a sanitized Debug
+      # qcustomplot.cpp among them) while the tests linked -, as a runner
+      # out of memory is. An 8 GB swap file on the spare disk (/mnt, else
+      # the root's), beside the image's own; the memory and disks said.
+      - name: Swap for the build
+        run: |
+          free -h
+          df -h / /mnt 2>/dev/null || true
+          target=/swapfile-ci
+          if [ -d /mnt ] && [ "$(df --output=avail -BG /mnt | tail -1 | tr -dc 0-9)" -gt 20 ]; then target=/mnt/swapfile-ci; fi
+          sudo fallocate -l 8G "$target"
+          sudo chmod 600 "$target"
+          sudo mkswap "$target" > /dev/null
+          sudo swapon "$target"
+          free -h
+
       # The tests share one library of the core (QUCS_SHARED_TEST_CORE):
       # each linking its own copy, with this build's debug info, came to
       # 89 GB, more than the runner's free disk ("No space left on device"
@@ -118,6 +136,7 @@ jobs:
       # shows here first.
       - name: Disk left after the build
         run: |
+          free -h
           df -h /
           du -sh build
           du -sh build/qucs/tests build/qucs/CMakeFiles build/qucsator_rf 2>/dev/null || true
