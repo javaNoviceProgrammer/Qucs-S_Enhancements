@@ -1970,6 +1970,34 @@ void Solution::select(int i)
     a_selected = i;
 }
 
+std::vector<double> Solution::globalSeries(const QString& text, Dim* dim, QString* why) const
+{
+    std::vector<double> out;
+    if (a_snapshots.empty()) {
+        *why = tr("no snapshots: a step in time first");
+        return out;
+    }
+    // (Each snapshot's globals into the scope - its constants, the
+    // expression compiled again at each -, those of the one the fields are
+    // of again after.)
+    std::vector<double> now;
+    for (const Variable& v : a_globals) now.push_back(a_globalScope->constant(v.name) ? a_globalScope->constant(v.name)->value : 0.0);
+    for (const Snapshot& s : a_snapshots) {
+        for (int g = 0; g < int(a_globals.size()) && g < int(s.globals.size()); ++g)
+            a_globalScope->setConstant(a_globals[g].name, s.globals[std::size_t(g)], a_globals[g].dim);
+        const Expression e = Expression::compile(text, *a_globalScope);
+        if (!e.isValid() || !e.isConstant()) {
+            *why = e.isValid() ? tr("%1 varies over the model: a global, or an integral as one").arg(text) : e.error();
+            out.clear();
+            break;
+        }
+        if (dim) *dim = e.dim();
+        out.push_back(e.constant());
+    }
+    for (int g = 0; g < int(a_globals.size()) && g < int(now.size()); ++g) a_globalScope->setConstant(a_globals[g].name, now[std::size_t(g)], a_globals[g].dim);
+    return out;
+}
+
 void Solution::replaceLastSnapshot()
 {
     if (a_snapshots.empty()) return;

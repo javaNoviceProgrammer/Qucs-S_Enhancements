@@ -267,6 +267,10 @@ public:
     }
     /// The fields and globals of snapshot \a i (out of range: the last).
     void select(int i);
+    /// \a text, an expression of the globals (and parameters), at each
+    /// snapshot - its globals' (none: empty, and why); its dimension in \a
+    /// dim. The selected snapshot's as they were after.
+    std::vector<double> globalSeries(const QString& text, Dim* dim, QString* why) const;
     /// The fields and globals as they are now, kept as a snapshot at time()
     /// (frequency()).
     void addSnapshot();

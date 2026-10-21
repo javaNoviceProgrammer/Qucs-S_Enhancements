@@ -3054,13 +3054,28 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("derived"), tr("Derived Values"), QString(), QStringLiteral("derived"), Level::None, {},
              {QStringLiteral("global"), QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"),
               QStringLiteral("minimum"), QStringLiteral("pointeval"), QStringLiteral("lineparams"), QStringLiteral("confinement"),
-              QStringLiteral("perturbation"), QStringLiteral("overlap")},
+              QStringLiteral("perturbation"), QStringLiteral("overlap"), QStringLiteral("harmonics")},
              {}, true, true, QString(), tr("Numbers of the solution: integrals, averages, a capacitance, a resistance.")});
         add({QStringLiteral("global"), tr("Global Evaluation"), QStringLiteral("derived"), QStringLiteral("global"), Level::None,
              {study, text(QStringLiteral("expression"), tr("Expressions"), QStringLiteral("es.C11"),
                           tr("Split by ';': es.C11; ec.R; ht.Rth... - each named if wanted: C_pF = es.C11/1[pF]")),
               unit, solutions},
              {}, {}, false, false, QStringLiteral("gev"), tr("Values of the whole model: a capacitance matrix, a resistance.")});
+        add({QStringLiteral("harmonics"), tr("Harmonics"), QStringLiteral("derived"), QStringLiteral("harmonics"), Level::None,
+             {study, text(QStringLiteral("expression"), tr("Expression"), QStringLiteral("semi.IL_1"),
+                          tr("A global in time: a photodiode's current through its load (semi.IL_<contact>), its contact's (semi.I_)...")),
+              expr(QStringLiteral("f0"), tr("Fundamental f0"), QStringLiteral("Hz"), QStringLiteral("1[GHz]"),
+                   tr("The light's or the source's modulation")),
+              integer(QStringLiteral("count"), tr("Harmonics"), 5, tr("H1 to Hn and HD2 to HDn")),
+              integer(QStringLiteral("periods"), tr("Periods"), 1,
+                      tr("The last whole periods of the solution's times analysed - after its start's transient: output times evenly "
+                         "spaced over them, a few tens a period, exact")),
+              unit},
+             {}, {}, false, false, QStringLiteral("harm"),
+             tr("A global's distortion in time: over its last whole periods its mean, each harmonic's amplitude H1 ... Hn, HDn = "
+                "20 log10(Hn/H1) in dBc and THD = √(ΣHn²)/H1 - a photodiode's harmonics under strong modulated light. Along a "
+                "sweep of the light's power, H1's against the power's: its compression (1 dB: H1 1 dB below its low power's "
+                "times the power's ratio).")});
         const P level = choice(QStringLiteral("level"), tr("Over"), {QStringLiteral("domain"), QStringLiteral("boundary")},
                                {tr("Domains"), tr("Boundaries")}, QStringLiteral("domain"));
         const QStringList over = {QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"), QStringLiteral("minimum")};
