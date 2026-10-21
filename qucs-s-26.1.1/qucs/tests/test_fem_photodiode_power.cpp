@@ -991,17 +991,38 @@ private slots:
         const double expected = 300 + 2.0 / 3.0 * Q * 0.3e-12 * v * F / 1.380649e-23;
         qInfo("hot electrons at 1 V: %.6g A (driven by the field %.6g A); in the middle %.2f K (%.2f), v %.5g m/s, F %.5g V/m", Ih, If, Tn, expected, v, F);
         QVERIFY2(std::abs((Tn - 300) / (expected - 300) - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(Tn).arg(expected)));
-        // Entering at the cathode, cool, they warm over 1/|λ|: κ λ² - (5/2) k
-        // n v λ - (3/2) k n/τw = 0, κ = (5/2)(k²/q) µ n T - carried with their
-        // current and conducted, some 60 nm (41 conducted alone): fitted to
-        // its rise 30 and 60 nm in, to 10 %.
-        const double kB = 1.380649e-23, nmid = at(s, QStringLiteral("semi.n"), 1, 0.1), mu = v / F;
-        const double kappa = 2.5 * kB * kB / Q * mu * nmid * 0.5 * (300 + Tn), a = 2.5 * kB * nmid * v, c = 1.5 * kB * nmid / 0.3e-12;
+        // Entering at the cathode, cool, they warm over 1/|λ|, the balance
+        // linearized about the middle's: κ λ² - (5/2) k n v λ - c' = 0, κ =
+        // (5/2)(k²/q) µ n T - carried with their current and conducted -, c'
+        // the relaxation's (3/2) k n/τw less the field's gift's own rise
+        // with T: the current held, F = J/(q n µ(T)), a hotter electron's
+        // lower mobility a steeper field - c' = c 2(1 + s)/(2 + s), s = d ln
+        // µ/d ln F = -(v/vsat)² (Caughey and Thomas's β of 2, vsat 10⁵ m/s):
+        // 68.9 nm (59.4 without the gift's rise, 47.6 conducted alone). Its
+        // rise fitted, ln(Tn - T) along x from 40 to 160 nm in, T the mean
+        // of four lines along the bar: 70.0 to 71.6 nm on meshes of 5 to 25
+        // nm (70.4 at 5 and 10), to 5 %. (Two points of it, 30 and 60 nm
+        // in, took 55 to 85 nm with the mesh - CI's Linux mesh 75.9 nm.)
+        const double kB = 1.380649e-23, nmid = at(s, QStringLiteral("semi.n"), 1, 0.1), mu = v / F, vsat = 1e5;
+        const double kappa = 2.5 * kB * kB / Q * mu * nmid * Tn, a = 2.5 * kB * nmid * v, sl = -(v / vsat) * (v / vsat);
+        const double c = 1.5 * kB * nmid / 0.3e-12 * 2 * (1 + sl) / (2 + sl);
         const double length = 2 * kappa / (std::sqrt(a * a + 4 * kappa * c) - a);
-        const double d30 = Tn - at(s, QStringLiteral("semi.Tn"), 0.03, 0.1), d60 = Tn - at(s, QStringLiteral("semi.Tn"), 0.06, 0.1);
-        const double fitted = 30e-9 / std::log(d30 / d60);
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        int points = 0;
+        for (int k = 0; k <= 24; ++k) {
+            const double x = 0.04 + 0.005 * k;
+            double T = 0;
+            for (double y : {0.04, 0.08, 0.12, 0.16}) T += at(s, QStringLiteral("semi.Tn"), x, y) / 4;
+            const double ln = std::log(Tn - T);
+            sx += x;
+            sy += ln;
+            sxx += x * x;
+            sxy += x * ln;
+            ++points;
+        }
+        const double fitted = -1e-6 * (points * sxx - sx * sx) / (points * sxy - sx * sy);
         qInfo("warming in: over %.4g nm (%.4g nm)", fitted * 1e9, length * 1e9);
-        QVERIFY2(std::abs(fitted / length - 1) < 0.1, qPrintable(QStringLiteral("%1 %2").arg(fitted).arg(length)));
+        QVERIFY2(std::abs(fitted / length - 1) < 0.05, qPrintable(QStringLiteral("%1 %2").arg(fitted).arg(length)));
         QVERIFY2(std::abs(Ih / If - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(Ih).arg(If)));
     }
 
