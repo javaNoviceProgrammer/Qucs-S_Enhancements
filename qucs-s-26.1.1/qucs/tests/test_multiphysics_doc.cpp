@@ -1408,6 +1408,64 @@ private slots:
     // surface); fem_plot its net doping as a colour map and its profile down
     // the middle on a log axis, a measured SIMS CSV beside it; the panel's
     // buttons on a step make the same.
+    // fem_build of a geometry built and not changed since: as it is - its
+    // process flow not run again (18.7 s for one of the fuzz of 21 October,
+    // N2), its mesh still current. Its materials changed - a flow reads
+    // them, a III-V's composition -: built again; a model without a flow's
+    // not.
+    void aBuiltGeometryIsNotBuiltAgain()
+    {
+        const QString file = path(QStringLiteral("flow_built.qfem"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+              "geometry": [{"type": "process", "tag": "pf1", "width": "2", "dx": "100[nm]", "dy": "4[nm]", "depth": "1", "features": [
+                  {"type": "substrate", "tag": "sub", "label": "si", "material": "Silicon", "thickness": "2", "dopant": "P", "concentration": "1e15"},
+                  {"type": "diffuse", "tag": "anl", "temperature": "1000[degC]", "time": "10[min]", "source": "B", "surface": "1e19"}]},
+                {"type": "form union", "tag": "fin"}],
+              "materials": [{"tag": "m1", "material": "Silicon", "selection": {"all": true}}],
+              "mesh": {"size": "normal", "custom": true, "hmax": "0.2"}}]})");
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QJsonObject r = call("fem_build", {{"what", "mesh"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!doc->meshStale());
+        r = call("fem_build", {});
+        QVERIFY2(!failed(r) && text(r).contains(QLatin1String("domains")), qPrintable(text(r)));
+        QVERIFY(!doc->meshStale());
+        // (Built again or not: its topology another, after the 120 ms the
+        // view waits.)
+        const Topology* was = doc->geometry().topology.get();
+        r = call("fem_edit", {{"action", "set"}, {"tag", "m1"}, {"props", QJsonObject{{"x", "0.3"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTest::qWait(400);
+        QVERIFY(doc->geometry().topology.get() != was);
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+        // (Without a flow: the geometry as it was.)
+        const QString plain = path(QStringLiteral("plain_built.qfem"));
+        {
+            QFile f(plain);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+              "geometry": [{"type": "rectangle", "tag": "r1", "size": ["2", "1"]}, {"type": "form union", "tag": "fin"}],
+              "materials": [{"tag": "m1", "material": "Silicon", "selection": {"all": true}}]}]})");
+        }
+        doc = open(plain);
+        QVERIFY(doc != nullptr);
+        r = call("fem_build", {});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const Topology* plainWas = doc->geometry().topology.get();
+        r = call("fem_edit", {{"action", "set"}, {"tag", "m1"}, {"props", QJsonObject{{"x", "0.3"}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QTest::qWait(400);
+        QVERIFY(doc->geometry().topology.get() == plainWas);
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
     void aFlowsDopantsThroughTheTools()
     {
         const QString file = path(QStringLiteral("flow_dopants.qfem"));

@@ -20,11 +20,14 @@
 
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QRandomGenerator>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QtTest>
 
 #include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -161,6 +164,8 @@ class TestFemEngine : public QObject
 private slots:
     void units();
     void expressions();
+    void hostileExpressions();
+    void hostilePositions();
     void constantsWithTheirUnits();
     void modelRoundTrip();
     void proposalFormat();
@@ -182,6 +187,8 @@ private slots:
     void largeModelTiming();
     void everyExamplesSelectionsResolve();
     void aMeshStopsWhileItSmooths();
+    void fuzz();
+    void dumpKinds();
 };
 
 void TestFemEngine::units()
@@ -334,6 +341,160 @@ void TestFemEngine::expressions()
     QCOMPARE(ps->dims.value(QStringLiteral("a")), Dim::of(-3));
     QVERIFY2(ps->errors.value(QStringLiteral("bad")).contains(QLatin1String("not a grid of every x with every y (3 points for 2 x 2)")),
              qPrintable(ps->errors.value(QStringLiteral("bad"))));
+}
+
+// What the expressions' fuzzer found (the fuzz of 21 October), each
+// refused or answered at once: brackets and signs nested thousands deep
+// (E1: the parser's recursion overflowed a stack), a sum thousands long (as
+// deep a tree, compiled and freed by recursion), a function reading its
+// argument twice nested eighteen deep (E2: written out, 2^18 copies, 33 s),
+// a table at no number and a table short of values (E4: a read past its
+// end), powers past any unit's (E5: wrapped, or undefined).
+void TestFemEngine::hostileExpressions()
+{
+    const Scope& b = Scope::builtins();
+    auto error = [&b](const QString& text) {
+        const Expression e = Expression::compile(text, b);
+        return e.isValid() ? QString() : e.error();
+    };
+    auto value = [&b](const QString& text) {
+        const Expression e = Expression::compile(text, b);
+        return e.isValid() && e.isConstant() ? e.constant() : NAN;
+    };
+    // E1.
+    const int deep = 2247;
+    QVERIFY(error(QString(deep, QLatin1Char('(')) + QLatin1Char('1') + QString(deep, QLatin1Char(')'))).contains(QLatin1String("nests too deeply")));
+    QVERIFY(error(QString(deep, QLatin1Char('-')) + QLatin1Char('1')).contains(QLatin1String("nests too deeply")));
+    QVERIFY(error(QStringLiteral("2^").repeated(deep) + QLatin1Char('1')).contains(QLatin1String("nests too deeply")));
+    QVERIFY(error(QStringLiteral("1+").repeated(5000) + QLatin1Char('1')).contains(QLatin1String("the expression is too deep (more than 200 levels)")));
+    // (A sum of 65 terms was refused as functions calling each other.)
+    QCOMPARE(value(QString(50, QLatin1Char('(')) + QLatin1Char('7') + QString(50, QLatin1Char(')'))), 7.0);
+    QCOMPARE(value(QStringLiteral("1+").repeated(198) + QLatin1Char('1')), 199.0);
+    QCOMPARE(value(QString(50, QLatin1Char('-')) + QLatin1Char('3')), 3.0);
+    // E2.
+    Scope f(&b);
+    const int x = f.addVariable(QStringLiteral("x"), Dim());
+    Scope::Function sq;
+    sq.arguments << QStringLiteral("u");
+    sq.body = QStringLiteral("u*u + 1");
+    f.setFunction(QStringLiteral("sq"), sq);
+    auto nested = [](int n) {
+        QString text = QStringLiteral("x");
+        for (int k = 0; k < n; ++k) text = QStringLiteral("sq(") + text + QLatin1Char(')');
+        return text;
+    };
+    QElapsedTimer timer;
+    timer.start();
+    const Expression big = Expression::compile(nested(18), f);
+    QVERIFY(!big.isValid());
+    QVERIFY2(big.error().contains(QLatin1String("too large")), qPrintable(big.error()));
+    QVERIFY(timer.elapsed() < 10000);
+    const Expression four = Expression::compile(nested(4), f);
+    QVERIFY2(four.isValid(), qPrintable(four.error()));
+    double v[1];
+    v[x] = 1;
+    QCOMPARE(four.eval(v), 677.0);   // 1, 2, 5, 26, 677
+    Scope::Function loop;
+    loop.arguments << QStringLiteral("u");
+    loop.body = QStringLiteral("again(u) + 1");
+    f.setFunction(QStringLiteral("again"), loop);
+    const Expression endless = Expression::compile(QStringLiteral("again(x)"), f);
+    QVERIFY(!endless.isValid());
+    QVERIFY2(endless.error().contains(QLatin1String("call each other too deeply")), qPrintable(endless.error()));
+    // E4.
+    Scope::Function tab;
+    tab.arguments << QStringLiteral("t");
+    auto table = std::make_shared<Expression::Table>();
+    table->x = {0, 1, 2};
+    table->y = {0, 10, 40};
+    tab.table = table;
+    f.setFunction(QStringLiteral("tab"), tab);
+    const Expression read = Expression::compile(QStringLiteral("tab(x)"), f);
+    QVERIFY(read.isValid());
+    v[x] = 1.5;
+    QCOMPARE(read.eval(v), 25.0);
+    v[x] = NAN;
+    QVERIFY(std::isnan(read.eval(v)));
+    Expression::Table shortOfValues;
+    shortOfValues.x = {0, 1, 2};
+    shortOfValues.y = {0, 10};
+    QVERIFY(std::isnan(shortOfValues.at(1.5)));
+    Expression::Table grid;
+    grid.x = {0, 1, 3};
+    grid.grid = {0, 2};
+    grid.z = {0, 4, 10, 18, 30, 46};
+    QCOMPARE(grid.at(2, 1), 26.0);
+    QVERIFY(std::isnan(grid.at(NAN, 1)));
+    QVERIFY(std::isnan(grid.at(1, NAN)));
+    // E5.
+    QVERIFY(!parseUnit(QStringLiteral("m^2147483647")));
+    QVERIFY(!parseUnit(QStringLiteral("m^99999999999")));
+    QVERIFY(!parseUnit(QStringLiteral("m^64")));
+    QVERIFY(!parseUnit(QStringLiteral("m^-64")));
+    const std::optional<Unit> u63 = parseUnit(QStringLiteral("m^63"));
+    QVERIFY(u63 && u63->dim == Dim::of(63));
+    QCOMPARE(int((Dim::of(100) * Dim::of(100)).p[0]), 127);
+    QCOMPARE(int((Dim::of(-100) / Dim::of(100)).p[0]), -127);
+    QCOMPARE(int(Dim::of(3).pow(63).p[0]), 127);
+    QCOMPARE(int(Dim::of(-2).pow(std::numeric_limits<int>::max()).p[0]), -127);
+    QVERIFY(error(QStringLiteral("2[m^999]")).contains(QLatin1String("less than 64")));
+    // The deepest: 99 brackets, signs and powers; functions written out
+    // to the compiler's 256 levels, and past them.
+    QCOMPARE(value(QString(99, QLatin1Char('(')) + QLatin1Char('1') + QString(99, QLatin1Char(')'))), 1.0);
+    QCOMPARE(value(QString(99, QLatin1Char('-')) + QLatin1Char('1')), -1.0);
+    QCOMPARE(value(QStringLiteral("1^").repeated(99) + QLatin1Char('1')), 1.0);
+    Scope::Function plus;
+    plus.arguments << QStringLiteral("u");
+    plus.body = QStringLiteral("u + 1 + 0");
+    f.setFunction(QStringLiteral("plus"), plus);
+    // (Read 191 high; written out, three levels a call: 311.)
+    QString wrapped = QStringLiteral("1+").repeated(130) + QLatin1Char('x');
+    for (int k = 0; k < 60; ++k) wrapped = QStringLiteral("plus(") + wrapped + QLatin1Char(')');
+    const Expression past = Expression::compile(wrapped, f);
+    QVERIFY(!past.isValid());
+    QVERIFY2(past.error().contains(QLatin1String("too deep with its functions written out")), qPrintable(past.error()));
+}
+
+// The shipped implant's silicon a kilometre's million off in its model of
+// micrometres, and further: built and meshed, or refused - said. (Its
+// vertices' cells, rounded to a long long's largest, overflowed with a
+// neighbour's index: UBSan; the fuzz of 21 October, G1.) At 1e300 its
+// width is lost in its coordinates' digits: said so (G2). A mesh's hmax of
+// 1e308 (M1).
+void TestFemEngine::hostilePositions()
+{
+    QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/boron_implant_anneal.qfem"));
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    const QByteArray json = f.readAll();
+    const QByteArray at = R"("position": ["0", "-0.8"])";
+    QVERIFY(json.contains(at));
+    // (Under the sanitizers, two: a build of the implant is 18 s there.)
+    const std::vector<const char*> positions =
+        slowBuild() ? std::vector<const char*>{"1e9[m]", "-1e300"} : std::vector<const char*>{"1e9[m]", "-1e9[m]", "1e300", "-1e300", "1e15", "0/0"};
+    for (const char* x : positions) {
+        QByteArray moved = json;
+        moved.replace(at, QByteArray(R"("position": [")") + x + R"(", "-0.8"])");
+        const Run r = run(modelOf(moved), false);
+        QVERIFY2(r.mesh || !r.error.isEmpty(), x);
+        // (Its width lost in its coordinates' digits at 1e300: said so,
+        // not in the triangulation's words - "#1 is a duplicate of
+        // #4294967295".)
+        if (QByteArray(x).endsWith("1e300")) QVERIFY2(r.error.contains(QLatin1String("si: thinner than the union's tolerance")), qPrintable(r.error));
+    }
+    // The implant meshed with an hmax of 1e308: its rays across the narrow
+    // regions reached as far, their grid's cells cast past an int's range
+    // (UBSan; the fuzz of 21 October, M1, the photodiode's) - meshed.
+    QJsonObject o = QJsonDocument::fromJson(json).object();
+    QJsonArray components = o.value(QStringLiteral("components")).toArray();
+    QJsonObject c = components.first().toObject();
+    QJsonObject mesh = c.value(QStringLiteral("mesh")).toObject();
+    mesh.insert(QStringLiteral("custom"), true);
+    mesh.insert(QStringLiteral("hmax"), 1e308);
+    c.insert(QStringLiteral("mesh"), mesh);
+    components[0] = c;
+    o.insert(QStringLiteral("components"), components);
+    const Run far = run(modelOf(QJsonDocument(o).toJson()), false);
+    QVERIFY2(far.mesh, qPrintable(far.error));
 }
 
 void TestFemEngine::modelRoundTrip()
@@ -1071,6 +1232,203 @@ void TestFemEngine::aMeshStopsWhileItSmooths()
     const MeshBuild stopped = buildMesh(m, *ps, g.topology, [&asked](double, const QString& w) { return !(w == QLatin1String("Smoothing") && ++asked == 2); });
     QVERIFY(!stopped.mesh);
     QCOMPARE(stopped.error, QStringLiteral("cancelled"));
+}
+
+// The node kinds as JSON (QUCS_KINDS_DUMP: the file): each kind's type,
+// group, children and properties - key, kind, unit, default, choices,
+// showIf - for the model fuzzers (docs/bug_hunts/2026-10-21-fuzz).
+void TestFemEngine::dumpKinds()
+{
+    const QString file = qEnvironmentVariable("QUCS_KINDS_DUMP");
+    if (file.isEmpty()) QSKIP("set QUCS_KINDS_DUMP to a file");
+    QJsonArray kinds;
+    for (const NodeKind* k : nodeKinds()) {
+        QJsonArray props;
+        for (const PropertyDef& p : k->properties)
+            props.append(QJsonObject{{"key", p.key}, {"kind", int(p.kind)}, {"unit", p.unit}, {"default", p.defaultValue},
+                                     {"choices", QJsonArray::fromStringList(p.choices)}, {"showIf", p.showIf}, {"spatial", p.spatial}});
+        kinds.append(QJsonObject{{"type", k->type}, {"group", k->group}, {"children", QJsonArray::fromStringList(k->children)},
+                                 {"defaults", QJsonArray::fromStringList(k->defaults)}, {"selection", int(k->selection)}, {"properties", props}});
+    }
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(QJsonDocument(kinds).toJson());
+}
+
+// The expressions' fuzzer (QUCS_EXPR_FUZZ seconds, QUCS_EXPR_FUZZ_SEED):
+// text made of the language's pieces and junk - numbers hostile, units
+// real and not, every function with any number of arguments, the
+// scope's variables, constants and model functions (one calling itself,
+// two calling each other, a table) -, nested deep and chained long; each
+// compiled, its unit and linearity asked, evaluated at hostile values; the
+// units, constants and quantities' formatting too. The current text in
+// QUCS_FUZZ_OUT/expr-current.txt, a slow one (over 2 s) beside it.
+void TestFemEngine::fuzz()
+{
+    const int seconds = qEnvironmentVariableIntValue("QUCS_EXPR_FUZZ");
+    if (seconds <= 0) QSKIP("set QUCS_EXPR_FUZZ to a number of seconds");
+    QRandomGenerator rng(quint32(qEnvironmentVariableIntValue("QUCS_EXPR_FUZZ_SEED") + 1));
+    const QString out = qEnvironmentVariable("QUCS_FUZZ_OUT");
+    auto pick = [&rng](const QStringList& from) { return from.at(int(rng.bounded(quint32(from.size())))); };
+    Scope base(&Scope::builtins());
+    base.setConstant(QStringLiteral("a"), 2.5, Dim::length());
+    base.setConstant(QStringLiteral("Vg"), 1, Dim::voltage());
+    const int sx = base.addVariable(QStringLiteral("x"), Dim::length()), sy = base.addVariable(QStringLiteral("y"), Dim::length());
+    const int sT = base.addVariable(QStringLiteral("T"), Dim::temperature()), st = base.addVariable(QStringLiteral("t"), Dim::of(0, 0, 1));
+    const int sV = base.addVariable(QStringLiteral("es.V"), Dim::voltage());
+    Scope::Function sq;
+    sq.arguments << QStringLiteral("u");
+    sq.body = QStringLiteral("u*u + 1");
+    base.setFunction(QStringLiteral("sq"), sq);
+    Scope::Function self;
+    self.arguments << QStringLiteral("u");
+    self.body = QStringLiteral("rec(u) + 1");
+    base.setFunction(QStringLiteral("rec"), self);
+    Scope::Function ping, pong;
+    ping.arguments << QStringLiteral("u");
+    ping.body = QStringLiteral("pong(u*2)");
+    pong.arguments << QStringLiteral("v") << QStringLiteral("w");
+    pong.body = QStringLiteral("ping(v) - w");
+    base.setFunction(QStringLiteral("ping"), ping);
+    base.setFunction(QStringLiteral("pong"), pong);
+    Scope::Function tab;
+    tab.arguments << QStringLiteral("x");
+    auto table = std::make_shared<Expression::Table>();
+    table->x = {0, 1, 2, 3};
+    table->y = {0, 1e300, -1e300, std::nan("")};
+    tab.table = table;
+    base.setFunction(QStringLiteral("tab"), tab);
+    Scope::Function empty;
+    empty.arguments << QStringLiteral("x");
+    empty.table = std::make_shared<Expression::Table>();
+    base.setFunction(QStringLiteral("none"), empty);
+    const QStringList numbers{"0", "1", "-1", "2.5", "1e308", "1e309", "1e-320", "4.9e-324", "1e-400", "0x10", "1e", "1e+", ".", "..", "1.2.3",
+                              "10u", "3k", "2.2M", "1G", "5f", "9999999999999999999999999999", "0.0000000000000000000000001", "1_0", "NaN",
+                              "inf", "1e2147483648", "1e-2147483649"};
+    const QStringList units{"mm", "m", "V/m", "W/(m*K)", "1/K", "degC", "degF", "Ω", "kΩ", "µm", "um^2", "GHz", "S/m", "nosuch", "", " ",
+                            "m^1e9", "m^-2147483648", "m^2147483647", "(", ")", "m/", "/m", "m^", "m^^2", "1/0", "kg*m^2/s^3/A", "K^-1",
+                            "m^0.5", "cm^2/(V*s)", "1/cm^3", "eV", "T", "A/m^2"};
+    const QStringList functions{"sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "exp", "log", "log10",
+                                "sqrt", "abs", "sign", "min", "max", "pow", "floor", "ceil", "round", "mod", "if", "interp", "neps",
+                                "keps", "sq", "rec", "ping", "pong", "tab", "none", "nosuch", "x", "pi"};
+    const QStringList names{"x", "y", "T", "t", "es.V", "a", "Vg", "pi", "eps0", "mu0", "c0", "kB", "q0", "e_const", "h_const", "N_A_const",
+                            "nosuch", "es", "es.", ".V", "x.y", "T.T", "rec", "sq"};
+    const QStringList operators{"+", "-", "*", "/", "^", "<", "<=", ">", ">=", "==", "!=", "&&", "||", "!", ",", "(", ")", "[", "]",
+                                " ", "\t", "\n", "**", "^^", "--", "e", "E", ";", "=", "?", ":", "@", "#", "\\", "'", "\"", "µ", "Ω"};
+    // A grammar's expression to depth d.
+    std::function<QString(int)> grammar = [&](int d) -> QString {
+        const quint32 c = rng.bounded(d <= 0 ? 3u : 9u);
+        switch (c) {
+        case 0: return pick(numbers) + (rng.bounded(3u) == 0 ? "[" + pick(units) + "]" : QString());
+        case 1: return pick(names);
+        case 2: return pick(numbers);
+        case 3: return "(" + grammar(d - 1) + ")";
+        case 4: return grammar(d - 1) + pick({"+", "-", "*", "/", "^", "<", "==", "&&", "||"}) + grammar(d - 1);
+        case 5: return pick({"-", "!", "+"}) + grammar(d - 1);
+        case 6: {
+            QStringList args;
+            const int n = int(rng.bounded(rng.bounded(8u) == 0 ? 40u : 5u));
+            for (int k = 0; k < n; ++k) args << grammar(d - 1);
+            return pick(functions) + "(" + args.join(QLatin1Char(',')) + ")";
+        }
+        case 7: return grammar(d - 1) + "[" + pick(units) + "]";
+        default: return pick(names) + pick(operators) + grammar(d - 1);
+        }
+    };
+    auto hostile = [&rng]() {
+        static const double values[] = {0, -0.0, 1, -1, 1e308, -1e308, 1e-320, std::numeric_limits<double>::infinity(),
+                                        -std::numeric_limits<double>::infinity(), std::nan(""), 293.15, 0.5};
+        return rng.bounded(3u) == 0 ? rng.generateDouble() * 2e3 - 1e3 : values[rng.bounded(quint32(std::size(values)))];
+    };
+    auto save = [&out](const QString& name, const QString& text) {
+        if (out.isEmpty()) return;
+        QFile f(QDir(out).filePath(name));
+        if (f.open(QIODevice::WriteOnly)) f.write(text.toUtf8());
+    };
+    QElapsedTimer timer;
+    timer.start();
+    long compiled = 0, valid = 0, evaluated = 0, slow = 0;
+    while (timer.elapsed() < seconds * 1000LL) {
+        QString text;
+        const quint32 kind = rng.bounded(10u);
+        if (kind < 4) text = grammar(int(rng.bounded(7u)));
+        else if (kind < 7) {
+            const int n = int(rng.bounded(60u)) + 1;
+            for (int k = 0; k < n; ++k) {
+                const quint32 c = rng.bounded(5u);
+                text += c == 0 ? pick(numbers) : c == 1 ? pick(names) : c == 2 ? pick(functions) : c == 3 ? "[" + pick(units) + "]" : pick(operators);
+            }
+        } else if (kind < 9) {
+            // Deep and long: nesting, unary chains, powers, sums.
+            const int n = int(rng.bounded(4u)) == 0 ? int(rng.bounded(200000u)) : int(rng.bounded(3000u));
+            switch (rng.bounded(7u)) {
+            case 0: text = QString(n, QLatin1Char('(')) + "1" + QString(n, QLatin1Char(')')); break;
+            case 1: text = QString(n, QLatin1Char('-')) + "x"; break;
+            case 2: text = QString(n, QLatin1Char('!')) + "1"; break;
+            case 3: {
+                QStringList parts;
+                for (int k = 0; k < n; ++k) parts << "x";
+                text = parts.join(rng.bounded(2u) ? "^" : "+");
+                break;
+            }
+            case 4: text = QString(QStringLiteral("sin(")).repeated(n) + "x" + QString(n, QLatin1Char(')')); break;
+            case 5: text = QString(QStringLiteral("sq(")).repeated(n) + "x" + QString(n, QLatin1Char(')')); break;
+            default: text = QString(n, QLatin1Char('(')); break;
+            }
+        } else {
+            // A good one damaged.
+            text = grammar(4);
+            for (int k = int(rng.bounded(4u)); k >= 0 && !text.isEmpty(); --k) {
+                const int at = int(rng.bounded(quint32(text.size())));
+                const quint32 c = rng.bounded(3u);
+                if (c == 0) text.remove(at, int(rng.bounded(5u)) + 1);
+                else if (c == 1) text.insert(at, pick(operators));
+                else text[at] = QChar(char16_t(rng.bounded(0x3000u)));
+            }
+        }
+        save(QStringLiteral("expr-current.txt"), text);
+        QElapsedTimer one;
+        one.start();
+        Expression e = Expression::compile(text, base);
+        ++compiled;
+        (void)e.error();
+        (void)e.warnings();
+        (void)e.dim();
+        if (e.isValid()) {
+            ++valid;
+            (void)e.linearity([&rng](int) { return Expression::SlotKind(rng.bounded(4u)); });
+            for (int k = 0; k < 3; ++k) {
+                double values[16];
+                for (double& v : values) v = hostile();
+                (void)e.eval(values);
+                ++evaluated;
+            }
+        }
+        // Its pieces: a unit, a constant of a unit, the bare constants, a
+        // quantity of any unit formatted.
+        QString why, warning;
+        (void)parseUnit(pick(units) + (rng.bounded(4u) == 0 ? pick(operators) : QString()), &why);
+        Dim d = Dim::of(int(rng.bounded(9u)) - 4, int(rng.bounded(5u)) - 2, int(rng.bounded(9u)) - 4, int(rng.bounded(5u)) - 2, int(rng.bounded(3u)) - 1);
+        if (rng.bounded(20u) == 0)
+            for (auto& power : d.p) power = std::int8_t(int(rng.bounded(256u)) - 128);
+        (void)evaluateConstant(text.left(2000), base, d, &why, &warning);
+        (void)formatQuantity(hostile(), d, int(rng.bounded(20u)) - 2);
+        (void)formatNumber(hostile(), int(rng.bounded(20u)) - 2);
+        (void)dimName(d);
+        (void)unitName(d);
+        (void)bareConstants(text.left(2000));
+        if (one.elapsed() > 2000) {
+            ++slow;
+            save(QStringLiteral("expr-slow-%1.txt").arg(slow), text);
+            qWarning("slow: %lld ms for %lld characters", qint64(one.elapsed()), qint64(text.size()));
+        }
+    }
+    (void)sx;
+    (void)sy;
+    (void)sT;
+    (void)st;
+    (void)sV;
+    qInfo("expressions: %ld compiled, %ld valid, %ld evaluations, %ld slow, in %d s", compiled, valid, evaluated, slow, seconds);
 }
 
 QTEST_GUILESS_MAIN(TestFemEngine)

@@ -337,7 +337,15 @@ bool readMatrix(const QByteArray& b, const Tag& m, QString* name, MatArray* out,
         if (!tagAt(b, at, &t)) return false;
         const int w = t.type == miUTF8 || t.type == miUINT8 || t.type == miINT8 ? 1 : t.type == miUTF32 || t.type == miUINT32 ? 4 : 2;
         QString s;
-        for (quint32 i = 0; i + quint32(w) <= t.bytes; i += quint32(w)) s += QChar(char16_t(readNumber(b.constData() + t.data + i, w == 1 ? miUINT8 : w == 2 ? miUINT16 : miUINT32)));
+        for (quint32 i = 0; i + quint32(w) <= t.bytes; i += quint32(w)) {
+            // (A character past 16 bits, a UTF-32 text's: two of UTF-16's;
+            // past Unicode's - a damaged one's - the replacement character.
+            // Cast to char16_t, undefined - the fuzz of 21 October, P1.)
+            const double c = readNumber(b.constData() + t.data + i, w == 1 ? miUINT8 : w == 2 ? miUINT16 : miUINT32);
+            if (c >= 0 && c <= 0xffff) s += QChar(char16_t(c));
+            else if (c > 0xffff && c <= 0x10ffff) s += QStringView(QChar::fromUcs4(char32_t(c)));
+            else s += QChar(QChar::ReplacementCharacter);
+        }
         out->text = s;
         out->isText = true;
         return true;

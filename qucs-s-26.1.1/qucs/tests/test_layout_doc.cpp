@@ -21,6 +21,7 @@
 #include <QWindow>
 #include <QClipboard>
 #include <QElapsedTimer>
+#include <QRandomGenerator>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -40,11 +41,13 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTreeWidget>
 
 #include <gdstk/gdstk.hpp>
 #include <zlib.h>
 
+#include <algorithm>
 #include <cmath>
 
 #ifdef QUCS_GPU_VIEW
@@ -180,6 +183,49 @@ void writeSample(const QString& path, bool oasis, int deflate = 6, bool extra = 
     const gdstk::ErrorCode written = oasis ? lib.write_oas(file.constData(), 0, uint8_t(deflate), OASIS_CONFIG_DETECT_ALL | OASIS_CONFIG_STANDARD_PROPERTIES)
                                            : lib.write_gds(file.constData(), 0, nullptr);
     QCOMPARE(written, gdstk::ErrorCode::NoError);
+    lib.free_all();
+}
+
+/// A hostile hierarchy: a chain of \a depth cells, each placing the next
+/// (the last a rectangle on 1/0); \a cycle a pair placing each other and
+/// one placing itself; \a array a reference repeated 65535 by 65535.
+void writeHierarchy(const QString& path, bool oasis, int depth, bool cycle, bool array)
+{
+    gdstk::Library lib = {};
+    lib.init("HOSTILE", 1e-6, 1e-9);
+    gdstk::Cell* leaf = newCell(lib, "LEAF");
+    addRectangle(leaf, {0, 0}, {1, 1}, 1);
+    gdstk::Cell* below = leaf;
+    for (int k = 0; k < depth; ++k) {
+        gdstk::Cell* c = newCell(lib, QStringLiteral("C%1").arg(k).toLatin1().constData());
+        place(c, below, {0.5, 0.5});
+        below = c;
+    }
+    if (cycle) {
+        gdstk::Cell* a = newCell(lib, "PING");
+        gdstk::Cell* b = newCell(lib, "PONG");
+        place(a, b, {1, 0});
+        place(b, a, {0, 1});
+        addRectangle(a, {0, 0}, {1, 1}, 2);
+        gdstk::Cell* self = newCell(lib, "SELF");
+        place(self, self, {2, 2});
+        place(below, a, {3, 3});
+    }
+    if (array) {
+        gdstk::Reference* r = place(below, leaf, {0, 0});
+        r->repetition.type = gdstk::RepetitionType::Rectangular;
+        r->repetition.columns = 65535;
+        r->repetition.rows = 65535;
+        r->repetition.spacing = {1e-3, 1e-3};
+    }
+    // (Written top down, the leaf last: read so, a chain's bounds found by
+    // recursion went the whole way down - bottom up, each cell's below was
+    // done already.)
+    std::reverse(lib.cell_array.items, lib.cell_array.items + lib.cell_array.count);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    const QByteArray file = QFile::encodeName(path);
+    if (oasis) lib.write_oas(file.constData(), 0, 6, OASIS_CONFIG_DETECT_ALL);
+    else lib.write_gds(file.constData(), 0, nullptr);
     lib.free_all();
 }
 
@@ -628,6 +674,109 @@ private slots:
         }
         qInfo("Damaged files: %d read, %d refused", read_, refused);
         QVERIFY(refused > 0);
+    }
+
+    // A chain of cells 20,000 deep, each placing the one below half a
+    // micrometre up and right: read on a thread of 512 kB (a pool's on
+    // macOS, as the viewer's reading thread was), its bounds and depth
+    // found, drawn and searched - no recursion as deep (its bounds, a level
+    // a call, overflowed a thread's stack at 3,000 - the fuzz of 21
+    // October, L1); drawn and searched 256 levels down at most.
+    void aHierarchyThousandsDeepIsReadAndDrawn()
+    {
+        for (const bool oasis : {false, true}) {
+            const QString file = path(oasis ? "deep/chain.oas" : "deep/chain.gds");
+            writeHierarchy(file, oasis, 20000, false, false);
+            QString error;
+            std::shared_ptr<Layout> layout;
+            QThread* reader = QThread::create([&layout, &error, &file] { layout = read(file, &error); });
+            reader->setStackSize(512u << 10);
+            reader->start();
+            QVERIFY(reader->wait(120000));
+            delete reader;
+            QVERIFY2(layout, qPrintable(error));
+            const int top = layout->cellIndex("C19999");
+            QVERIFY(top >= 0);
+            QCOMPARE(layout->cells.at(top).depth, 20000);
+            QCOMPARE(layout->cells.at(top).bounds, QRectF(10000, 10000, 1, 1));
+            const QVector<LayerStyle> styles = stylesFor(*layout, {});
+            RenderOptions o;
+            o.cell = top;
+            o.depth = 1 << 20;
+            o.device = QRectF(0, 0, 64, 64);
+            o.toDevice = viewTransform(QPointF(10000.5, 10000.5), 10, o.device);
+            o.styles = &styles;
+            QImage image(64, 64, QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::white);
+            QPainter painter(&image);
+            (void)render(painter, *layout, o);
+            painter.end();
+            (void)countDrawn(*layout, o);
+            // The leaf 20,000 levels down: past the 256 searched.
+            auto count = [&layout](int cell) {
+                Query q;
+                q.cell = cell;
+                q.depth = 1 << 20;
+                int found = 0;
+                search(*layout, q, [&found](const Found&) {
+                    ++found;
+                    return true;
+                });
+                return found;
+            };
+            QCOMPARE(count(top), 0);
+            QCOMPARE(count(layout->cellIndex("C200")), 1);
+        }
+    }
+
+    // OASIS written by hand: its header and START (version 1.0, 1000 units
+    // a micrometre, the offsets in END), then \a records, then END.
+    static QByteArray oasis(const QByteArray& records)
+    {
+        return QByteArray("%SEMI-OASIS\r\n") + QByteArray::fromHex("01" "03" "312e30" "00e807" "01") + records + QByteArray::fromHex("02");
+    }
+
+    // A text string's property named by a number (PROPNAME's, and no
+    // PROPNAME given): read, the property's name "?". (Copied with the text
+    // before the names were looked up: its name the number, 0, read as a
+    // string - the fuzz of 21 October, L2.)
+    void anOasisTextsPropertyNamedByNumberIsRead()
+    {
+        const QString file = path("hostile/textproperty.oas");
+        QVERIFY(write(file, oasis(QByteArray::fromHex("05" "01" "41"         // TEXTSTRING "A", number 0
+                                                      "1c" "06" "00"         // PROPERTY: its name PROPNAME 0, no values
+                                                      "0e" "01" "54"         // CELL "T"
+                                                      "13" "63" "00" "00" "00"))));   // TEXT TEXTSTRING 0, layer 0, type 0
+        QString error;
+        const auto layout = read(file, &error);
+        QVERIFY2(layout, qPrintable(error));
+        const int t = layout->cellIndex("T");
+        QVERIFY(t >= 0);
+        const Cell& cell = layout->cells.at(t);
+        QCOMPARE(cell.labels.size(), 1);
+        QCOMPARE(cell.labels.at(0).text, QString("A"));
+        QVERIFY(cell.labels.at(0).properties >= 0);
+        QCOMPARE(cell.properties.at(cell.labels.at(0).properties).first().first, QString("?"));
+    }
+
+    // A property of 2⁶² values in a file of 40 bytes: the file said damaged
+    // at once, its cell before shown. (Its values were made, one by one,
+    // until memory ran out - the fuzz of 21 October, L3.)
+    void anOasisPropertysCountPastTheFileIsSaidDamaged()
+    {
+        const QString file = path("hostile/propertycount.oas");
+        QVERIFY(write(file, oasis(QByteArray::fromHex("0e" "01" "54"                        // CELL "T"
+                                                      "1c" "f4" "01" "6e"                   // PROPERTY "n", 15 values or more:
+                                                      "808080808080808040"))));             // 2⁶² of them
+        QElapsedTimer timer;
+        timer.start();
+        QString error;
+        const auto layout = read(file, &error);
+        QVERIFY2(layout, qPrintable(error));
+        QVERIFY(timer.elapsed() < 10000);
+        QVERIFY(layout->cellIndex("T") >= 0);
+        QVERIFY(!layout->warnings.isEmpty());
+        QVERIFY2(layout->warnings.first().contains("damaged"), qPrintable(layout->warnings.first()));
     }
 
     // A grid of a million copies with a few in sight: those few visited,
@@ -2230,6 +2379,137 @@ private slots:
         QCOMPARE(json(call("get_layout", {{"path", "sample.gds"}})).value("tab").toObject().value("grid").toString(),
                  micrometres(*doc->layout(), doc->view()->gridStep()) + " µm");
         QVERIFY(failed(call("show_layout", {{"path", "sample.gds"}, {"grid", "yes"}})));
+    }
+
+    // The layouts' fuzzer (QUCS_LAYOUT_FUZZ seconds, QUCS_LAYOUT_FUZZ_SEED):
+    // the sample as GDSII and OASIS (compressed or not), a chain of cells
+    // thousands deep, cells placing each other and themselves, an array of
+    // 65535 by 65535 - each damaged (bytes flipped, cut, repeated, records'
+    // lengths and types written over), gzipped at times, read, then drawn,
+    // counted, searched and its shapes outlined. The current file in
+    // QUCS_FUZZ_OUT/layout-current.*, a slow one (over 10 s) beside it.
+    void fuzz()
+    {
+        const int seconds = qEnvironmentVariableIntValue("QUCS_LAYOUT_FUZZ");
+        if (seconds <= 0) QSKIP("set QUCS_LAYOUT_FUZZ to a number of seconds");
+        QRandomGenerator rng(quint32(qEnvironmentVariableIntValue("QUCS_LAYOUT_FUZZ_SEED") + 1));
+        const QString out = qEnvironmentVariable("QUCS_FUZZ_OUT");
+        QTemporaryDir dir;
+        struct Seed {
+            QByteArray bytes;
+            bool oasis;
+        };
+        std::vector<Seed> seeds;
+        auto add = [&dir, &seeds](const QString& name, bool oasis) {
+            QFile f(dir.filePath(name));
+            if (f.open(QIODevice::ReadOnly)) seeds.push_back({f.readAll(), oasis});
+        };
+        writeSample(dir.filePath("s.gds"), false);
+        writeSample(dir.filePath("s.oas"), true, 6);
+        writeSample(dir.filePath("s0.oas"), true, 0, true);
+        writeSample(dir.filePath("x.gds"), false, 6, true);
+        writeHierarchy(dir.filePath("deep.gds"), false, 3000, false, false);
+        writeHierarchy(dir.filePath("deep.oas"), true, 3000, false, false);
+        writeHierarchy(dir.filePath("cycle.gds"), false, 3, true, false);
+        writeHierarchy(dir.filePath("cycle.oas"), true, 3, true, false);
+        writeHierarchy(dir.filePath("array.gds"), false, 2, false, true);
+        for (const char* n : {"s.gds", "x.gds", "deep.gds", "cycle.gds", "array.gds"}) add(QLatin1String(n), false);
+        for (const char* n : {"s.oas", "s0.oas", "deep.oas", "cycle.oas"}) add(QLatin1String(n), true);
+        QVERIFY(!seeds.empty());
+        QElapsedTimer timer;
+        timer.start();
+        long files = 0, read_ = 0, slow = 0;
+        QImage image(256, 256, QImage::Format_ARGB32_Premultiplied);
+        while (timer.elapsed() < seconds * 1000LL) {
+            const Seed& seed = seeds[rng.bounded(quint32(seeds.size()))];
+            QByteArray bytes = seed.bytes;
+            const int damages = rng.bounded(5u) == 0 ? 0 : int(1 + rng.bounded(5u));
+            for (int k = 0; k < damages && !bytes.isEmpty(); ++k) {
+                const qsizetype at = qsizetype(rng.bounded(quint32(bytes.size())));
+                switch (rng.bounded(6u)) {
+                case 0: bytes[at] = char(rng.bounded(256u)); break;
+                case 1: bytes.truncate(at); break;
+                case 2: bytes.insert(at, bytes.mid(at, qsizetype(rng.bounded(300u)))); break;
+                case 3: bytes.remove(at, qsizetype(rng.bounded(64u))); break;
+                case 4: {
+                    // A record's length or type (GDSII's 16-bit words; OASIS's bytes).
+                    static const quint16 words[] = {0, 1, 2, 3, 4, 0x7fff, 0x8000, 0xffff, 0x0600, 0x0800, 0x0a00, 0x1203, 0x0d02, 0x1a01};
+                    const quint16 w = words[rng.bounded(quint32(std::size(words)))];
+                    const qsizetype even = at & ~qsizetype(1);
+                    if (even + 2 <= bytes.size()) {
+                        bytes[even] = char(w >> 8);
+                        bytes[even + 1] = char(w & 0xff);
+                    }
+                    break;
+                }
+                default: bytes.insert(at, QByteArray(qsizetype(1 + rng.bounded(16u)), char(rng.bounded(256u)))); break;
+                }
+            }
+            const bool zipped = !seed.oasis && rng.bounded(8u) == 0;
+            const QString ext = seed.oasis ? QStringLiteral("oas") : QStringLiteral("gds");
+            const QString path = dir.filePath(QStringLiteral("current.") + ext);
+            {
+                QFile f(path);
+                QVERIFY(f.open(QIODevice::WriteOnly));
+                f.write(bytes);
+            }
+            QString file = path;
+            if (zipped) {
+                file = path + QStringLiteral(".gz");
+                QFile::remove(file);
+                QVERIFY(gzip(path, file));
+            }
+            if (!out.isEmpty()) {
+                QFile::remove(QDir(out).filePath(QStringLiteral("layout-current.") + ext));
+                QFile::copy(file, QDir(out).filePath(QStringLiteral("layout-current.") + ext + (zipped ? QStringLiteral(".gz") : QString())));
+            }
+            ++files;
+            QElapsedTimer one;
+            one.start();
+            QString error;
+            const std::shared_ptr<Layout> layout = read(file, &error);
+            if (layout) {
+                ++read_;
+                const QVector<LayerStyle> styles = stylesFor(*layout, {});
+                for (int pass = 0; pass < 3 && !layout->cells.isEmpty(); ++pass) {
+                    const int cell = pass == 0 ? layout->mainCell() : int(rng.bounded(quint32(layout->cells.size())));
+                    if (cell < 0) continue;
+                    RenderOptions o;
+                    o.cell = cell;
+                    o.depth = rng.bounded(3u) == 0 ? int(rng.bounded(4u)) : 1 << 20;
+                    o.device = QRectF(0, 0, 256, 256);
+                    o.toDevice = viewTransform(QPointF(rng.generateDouble() * 10, rng.generateDouble() * 10), std::pow(10.0, rng.generateDouble() * 8 - 3), o.device);
+                    o.styles = &styles;
+                    o.budget = 200000;
+                    image.fill(Qt::white);
+                    QPainter painter(&image);
+                    (void)render(painter, *layout, o);
+                    painter.end();
+                    (void)countDrawn(*layout, o);
+                    Query q;
+                    q.cell = cell;
+                    q.depth = o.depth;
+                    if (rng.bounded(2u)) q.region = QRectF(-5, -5, 20, 20);
+                    long found = 0;
+                    search(*layout, q, [&](const Found& f) {
+                        if (found < 50) {
+                            (void)outlineOf(*layout, f);
+                            (void)spineOf(*layout, f);
+                            (void)hits(*layout, f, QPointF(1, 1), 0.1);
+                            (void)kindName(f);
+                        }
+                        return ++found < 20000;
+                    });
+                    (void)snap(*layout, q, QPointF(0.3, 0.3), 1);
+                }
+            }
+            if (one.elapsed() > 10000) {
+                ++slow;
+                if (!out.isEmpty()) QFile::copy(file, QDir(out).filePath(QStringLiteral("layout-slow-%1.").arg(slow) + ext + (zipped ? QStringLiteral(".gz") : QString())));
+                qWarning("slow: %lld ms", qint64(one.elapsed()));
+            }
+        }
+        qInfo("layouts: %ld files, %ld read, %ld slow, in %d s", files, read_, slow, seconds);
     }
 };
 

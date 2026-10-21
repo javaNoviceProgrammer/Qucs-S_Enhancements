@@ -280,7 +280,11 @@ public:
 private:
     std::pair<int, int> cell(double x, double y) const
     {
-        return {std::clamp(int((x - a_box.left()) / a_cw), 0, a_n - 1), std::clamp(int((y - a_box.top()) / a_ch), 0, a_n - 1)};
+        // (Clamped before the cast: a ray reaching 1e308 - a mesh's hmax of
+        // 1e308 - was cast past an int's range, undefined: the fuzz of 21
+        // October, M1. Not a number: the first.)
+        auto index = [this](double v) { return v >= 0 ? int(std::min(v, double(a_n - 1))) : 0; };
+        return {index((x - a_box.left()) / a_cw), index((y - a_box.top()) / a_ch)};
     }
     const Topology& a_t;
     QRectF a_box;
@@ -887,7 +891,15 @@ private:
         const double snap = std::max(diag * 1e-11, 1e-300);
         std::unordered_set<unsigned long long> taken;
         auto keyOf = [snap](double x, double y, long long dx, long long dy) {
-            const long long ix = std::llround(std::floor(x / snap)) + dx, iy = std::llround(std::floor(y / snap)) + dy;
+            // (Each index well inside a long long's range: a point not a
+            // number, or 1e15 µm off - a hostile position -, rounded to the
+            // largest and overflowed with its neighbour's - the fuzz of 21
+            // October, G1.)
+            auto cell = [snap](double v) {
+                const double c = std::floor(v / snap);
+                return std::isfinite(c) ? static_cast<long long>(std::clamp(c, -4e18, 4e18)) : 0LL;
+            };
+            const long long ix = cell(x) + dx, iy = cell(y) + dy;
             return (static_cast<unsigned long long>(ix) * 0x9E3779B97F4A7C15ull) ^ static_cast<unsigned long long>(iy);
         };
         auto isTaken = [&](double x, double y) {

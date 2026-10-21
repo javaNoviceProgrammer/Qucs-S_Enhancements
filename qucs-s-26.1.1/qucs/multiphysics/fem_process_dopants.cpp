@@ -380,24 +380,27 @@ void Dopants::assign(const std::vector<Region>& regions, std::vector<int>* mater
 
 void Dopants::make(cInt x0, cInt x1, cInt bottom, const std::vector<Region>& regions, double dx, double dy, double depth)
 {
-    if (a_d) return;
-    a_d = std::make_shared<ProcessDopants>();
+    if (a_d || !a_tooLarge.isEmpty()) return;
     a_dy = dy;
     a_depth = depth;
     const double X0 = double(x0) / a_k, X1 = double(x1) / a_k;
     const int nx = std::clamp(int(std::ceil((X1 - X0) / dx - 1e-9)), 1, 4000);
-    for (int i = 0; i <= nx; ++i) a_d->xe.push_back(X0 + (X1 - X0) * i / nx);
-    for (const Region& r : regions) materialIndex(r.material);
+    std::vector<double> xe;
+    for (int i = 0; i <= nx; ++i) xe.push_back(X0 + (X1 - X0) * i / nx);
     // Rows: dy from the top down to depth below the lowest surface, then
     // each a quarter taller to the bottom.
     double low = std::numeric_limits<double>::max();
     for (int i = 0; i < nx; ++i) {
-        const double t = columnTop(regions, 0.5 * (a_d->xe[std::size_t(i)] + a_d->xe[std::size_t(i + 1)]) * a_k) / a_k;
+        const double t = columnTop(regions, 0.5 * (xe[std::size_t(i)] + xe[std::size_t(i + 1)]) * a_k) / a_k;
         if (std::isfinite(t)) low = std::min(low, t);
     }
     const double top = regionsTop(regions) / a_k, B = double(bottom) / a_k;
     if (!std::isfinite(low) || low > top) low = top;
     const double fineFrom = std::max(B, std::floor((low - depth) / dy) * dy);
+    if (!fits(nx, (std::ceil(top / dy) * dy + dy - fineFrom) / dy)) return;
+    a_d = std::make_shared<ProcessDopants>();
+    a_d->xe = std::move(xe);
+    for (const Region& r : regions) materialIndex(r.material);
     std::vector<double> ye;
     for (double y = std::ceil(top / dy) * dy + dy; y > fineFrom + 1e-9 * dy; y -= dy) ye.push_back(y);
     double y = fineFrom, h = dy;
@@ -417,6 +420,7 @@ void Dopants::addRows(double top)
 {
     ProcessDopants& d = *a_d;
     if (top + 1e-9 * a_dy <= d.ye.back()) return;
+    if (!fits(d.nx(), d.ny() + (top - d.ye.back()) / a_dy + 1)) return;
     const std::size_t nx = std::size_t(d.nx());
     while (d.ye.back() < top + 1e-9 * a_dy) {
         d.ye.push_back(d.ye.back() + a_dy);
@@ -426,6 +430,19 @@ void Dopants::addRows(double top)
             if (!f.active.empty()) f.active.insert(f.active.end(), nx, 0.0);
         }
     }
+}
+
+/// The grid's budget: a flow whose cells would pass it refused (a dy of
+/// 0.1 nm under 300 µm filled: 10⁹ cells, minutes to make and memory past
+/// any machine's - the fuzz of 21 October, PF2).
+bool Dopants::fits(double nx, double ny)
+{
+    constexpr double MaxCells = 5e6;
+    if (nx * ny <= MaxCells) return true;
+    if (a_tooLarge.isEmpty())
+        a_tooLarge = tr("its dopants' grid would have %1 cells (%2 across, %3 down), more than %4: a coarser dx or dy, or less depth")
+                         .arg(formatNumber(nx * ny, 3), QString::number(qint64(nx)), QString::number(qint64(std::ceil(ny))), formatNumber(MaxCells, 3));
+    return false;
 }
 
 void Dopants::remapRows(const std::vector<double>& ye)
@@ -460,12 +477,19 @@ void Dopants::remapRows(const std::vector<double>& ye)
 void Dopants::refine(const std::vector<Region>& regions)
 {
     ProcessDopants& d = *a_d;
+    // (No grid - a flow narrower than a column, no rows -: nothing to
+    // refine. Its row -1 was read: the fuzz of 21 October, PF1.)
+    if (d.nx() <= 0 || d.ny() <= 0) return;
     double low = std::numeric_limits<double>::max();
+    bool any = false;
     for (int i = 0; i < d.nx(); ++i) {
         const double t = columnTop(regions, 0.5 * (d.xe[std::size_t(i)] + d.xe[std::size_t(i + 1)]) * a_k) / a_k;
-        if (std::isfinite(t)) low = std::min(low, t);
+        if (std::isfinite(t)) {
+            low = std::min(low, t);
+            any = true;
+        }
     }
-    if (!std::isfinite(low)) return;
+    if (!any) return;
     const double want = std::max(d.ye.front(), low - a_depth);
     // The fine rows' bottom: the lowest of the rows a dy tall up to the top.
     int j = d.ny() - 1;
@@ -473,6 +497,7 @@ void Dopants::refine(const std::vector<Region>& regions)
     const double fineFrom = d.ye[std::size_t(j)];
     if (fineFrom <= want + a_dy) return;
     const double from = std::max(d.ye.front(), std::floor(want / a_dy) * a_dy);
+    if (!fits(d.nx(), d.ny() + (fineFrom - from) / a_dy)) return;
     std::vector<double> ye;
     for (int k = int(d.ye.size()) - 1; k >= 0 && d.ye[std::size_t(k)] > fineFrom - 1e-9 * a_dy; --k) ye.push_back(d.ye[std::size_t(k)]);
     for (double y = fineFrom - a_dy; y > from + 1e-9 * a_dy; y -= a_dy) ye.push_back(y);
@@ -1863,6 +1888,10 @@ QString Dopants::oxidize(const OxideSpec& spec, std::vector<Region>& regions, cI
     }
     // The rows to hold the grown top.
     addRows(regionsTop(regions) / a_k + 0.56 * grownMax + a_dy);
+    if (!a_tooLarge.isEmpty()) {
+        *error = a_tooLarge;
+        return {};
+    }
     // The dopants meanwhile: diffused, the interface swept through each
     // column's silicon - a cell made oxide as the interface passes its
     // middle, its dopant shared as the interface's ratio m says (the

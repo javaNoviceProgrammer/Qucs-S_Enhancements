@@ -1278,6 +1278,16 @@ private slots:
             .toUtf8();
     }
 
+    // A scan's kF points, a solve each, from 2 to 1000: 2147483646 was a
+    // list past memory (the fuzz of 21 October, X1) - refused, said.
+    void aScansPointsAreBounded()
+    {
+        for (const char* n : {"2147483646", "1002", "0"}) {
+            const Run r = run(modelOf(scanStack(1, QStringLiteral(R"("floquet": "scan", "points": %1)").arg(QLatin1String(n)))));
+            QVERIFY2(r.error.contains(QLatin1String("an even number from 2 to 1000")), qPrintable(r.error));
+        }
+    }
+
     void anArrayScanIsASupercell()
     {
         // N kF points on one cell, the mean of their fields, are a supercell

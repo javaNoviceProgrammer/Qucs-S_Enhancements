@@ -875,12 +875,19 @@ private:
     }
 
     // --- Dopants ----------------------------------------------------------
-    void makeDopants()
+    /// The dopants' grid made (and its fine rows reaching the depth asked,
+    /// \a refine), or the flow failed: a grid past its budget.
+    bool makeDopants(bool refine = true)
     {
-        if (a_dopants->made()) return;
-        const double width = toGeom(a_x1 - a_x0);
-        const double dx = a_dopingDx > 0 ? a_dopingDx : std::max(width / 200, a_dopingDy);
-        a_dopants->make(a_x0, a_x1, a_bottom, a_regions, dx, a_dopingDy, a_dopingDepth);
+        if (!a_dopants->made()) {
+            const double width = toGeom(a_x1 - a_x0);
+            const double dx = a_dopingDx > 0 ? a_dopingDx : std::max(width / 200, a_dopingDy);
+            a_dopants->make(a_x0, a_x1, a_bottom, a_regions, dx, a_dopingDy, a_dopingDepth);
+        }
+        if (refine && a_dopants->made()) a_dopants->refine(a_regions);
+        if (a_dopants->tooLarge().isEmpty()) return true;
+        fail(a_dopants->tooLarge());
+        return false;
     }
     /// After a step: the dopants' cells as the shapes now are; a region the
     /// step made doped as it says.
@@ -890,13 +897,14 @@ private:
         QStringList w;
         if (a_dopants->made() && t != QLatin1String("process/oxidize")) a_dopants->reshape(a_regions, &w);
         for (const QString& x : w) warn(x);
+        if (!a_dopants->tooLarge().isEmpty()) return fail(a_dopants->tooLarge());
         auto doped = [&](const QString& region, const QString& species, const QString& text) {
             if (species.trimmed().isEmpty() || text.trimmed().isEmpty()) return;
             const double c = concentration(text);
             if (!a_error.isEmpty()) return;
             if (!(c > 0)) return fail(tr("%1: its doping must be more than 0").arg(region));
             if (!ionOf(species)) return fail(tr("%1: %2 is not a dopant known (an element's symbol: B, P, As, Zn...)").arg(region, species));
-            makeDopants();
+            if (!makeDopants(false)) return;
             a_dopants->dope(region, a_regions, species, c);
         };
         if (t == QLatin1String("process/substrate") || t == QLatin1String("process/deposit") || t == QLatin1String("process/epitaxy"))
@@ -1039,8 +1047,7 @@ private:
         const double resistThickness = step.text(QStringLiteral("resist")).trimmed().isEmpty() ? 1e-6 / a_unitScale : length(step.text(QStringLiteral("resist")));
         if (!a_error.isEmpty()) return;
         const Paths mask = masked ? resist(open, resistThickness, solids()) : Paths();
-        makeDopants();
-        a_dopants->refine(a_regions);
+        if (!makeDopants()) return;
         QString why;
         QStringList w;
         const QString said = a_dopants->implant(s, a_regions, mask, &w, &why);
@@ -1073,8 +1080,7 @@ private:
     {
         const AnnealSpec s = annealOf(step);
         if (!a_error.isEmpty()) return;
-        makeDopants();
-        a_dopants->refine(a_regions);
+        if (!makeDopants()) return;
         QString why;
         QStringList w;
         const QString said = a_dopants->anneal(s, a_regions, &w, &why);
@@ -1104,8 +1110,7 @@ private:
         s.open = maskOpenings(step, &s.masked);
         if (!(s.pressure > 0) || !(s.factor > 0)) fail(tr("its pressure and factor must be more than 0"));
         if (!a_error.isEmpty()) return;
-        makeDopants();
-        a_dopants->refine(a_regions);
+        if (!makeDopants()) return;
         QString why;
         QStringList w;
         const QString said = a_dopants->oxidize(s, a_regions, a_x0, a_x1, a_bottom, &w, &why);
@@ -1132,8 +1137,7 @@ private:
         s.enhance = number(step.text(QStringLiteral("enhance")), 1);
         if (!a_error.isEmpty()) return;
         if (!(s.enhance > 0)) return fail(tr("its enhancement must be more than 0"));
-        makeDopants();
-        a_dopants->refine(a_regions);
+        if (!makeDopants()) return;
         QString why;
         QStringList w;
         const QString said = a_dopants->intermix(s, a_regions, &w, &why);
