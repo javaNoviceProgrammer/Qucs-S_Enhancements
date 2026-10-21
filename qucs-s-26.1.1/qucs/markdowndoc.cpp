@@ -32,9 +32,11 @@
 #include <QDataStream>
 #include <QDesktopServices>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QSet>
 #include <QStyle>
 #include <QStyleOption>
 #include <QTextBlock>
@@ -89,6 +91,12 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
                              : QColor::fromRgbF(colours.paper.redF() * 0.93 + colours.ink.redF() * 0.07,
                                                 colours.paper.greenF() * 0.93 + colours.ink.greenF() * 0.07,
                                                 colours.paper.blueF() * 0.93 + colours.ink.blueF() * 0.07);
+    // The shading and the math one edit, laid out once at its end. (Laid
+    // out at each formula, from it to the end: 3000 lines of a formula each
+    // took 4 s to render, 0.4 s now - a long file written again, its
+    // preview seemed never to come, the window frozen meanwhile.)
+    QTextCursor edit(document);
+    edit.beginEditBlock();
     // Code on a shade, set off from the text.
     for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
         const QTextBlockFormat bf = b.blockFormat();
@@ -102,10 +110,23 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
         }
     }
     // The math, typeset where its marks are, in the size of the text
-    // around it (a heading's is bigger); its TeX in the tool tip.
+    // around it (a heading's is bigger); its TeX in the tool tip. The marks
+    // found in one pass, each formula's first (a search from the start for
+    // each: as slow again).
+    std::vector<int> markAt(spans.size(), -1);
+    for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
+        const QString text = b.text();
+        for (qsizetype i = 0; i < text.size(); ++i) {
+            const qsizetype k = qsizetype(text.at(i).unicode()) - kMathMark;
+            if (k >= 0 && k < spans.size() && markAt[size_t(k)] < 0) markAt[size_t(k)] = b.position() + int(i);
+        }
+    }
     for (qsizetype k = 0; k < spans.size(); ++k) {
-        QTextCursor hit = document->find(QString(QChar(char16_t(kMathMark + k))));
-        if (hit.isNull()) continue;
+        if (markAt[size_t(k)] < 0) continue;
+        // (Each mark one character, as its formula is: the others stay where they were.)
+        QTextCursor hit(document);
+        hit.setPosition(markAt[size_t(k)]);
+        hit.setPosition(markAt[size_t(k)] + 1, QTextCursor::KeepAnchor);
         const qucs_s::math::Span& sp = spans.at(k);
         const QFont at = hit.charFormat().font().resolve(font);
         const qucs_s::math::Typeset t = qucs_s::math::typeset(sp.tex, at, colours.ink, sp.display, devicePixelRatio);
@@ -114,6 +135,7 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
             qucs_s::math::placeDisplay(hit);
         }
     }
+    edit.endEditBlock();
 }
 
 namespace {
@@ -678,6 +700,15 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     a_timer->setInterval(250);
     connect(a_timer, &QTimer::timeout, this, &MarkdownDoc::renderNow);
     connect(document(), &QTextDocument::contentsChanged, a_timer, qOverload<>(&QTimer::start));
+    // Its images' files, and their folders (one written anew: renamed over
+    // the file watched, or made after the rendering).
+    a_imageWatcher = new QFileSystemWatcher(this);
+    a_imageTimer = new QTimer(this);
+    a_imageTimer->setSingleShot(true);
+    a_imageTimer->setInterval(400);   // (a file is often written in pieces)
+    connect(a_imageTimer, &QTimer::timeout, this, &MarkdownDoc::imagesChanged);
+    connect(a_imageWatcher, &QFileSystemWatcher::fileChanged, a_imageTimer, qOverload<>(&QTimer::start));
+    connect(a_imageWatcher, &QFileSystemWatcher::directoryChanged, a_imageTimer, qOverload<>(&QTimer::start));
 
     a_readOnly = isReadOnly();
     setMode(defaultMode());
@@ -907,6 +938,83 @@ void MarkdownDoc::renderNow()
     qucs_s::markdown::render(doc, toPlainText(), font, colours, a_preview->devicePixelRatioF());
     fitImages();
     bar->setValue(at);
+    watchImages();
+}
+
+namespace {
+// The most image files a rendering has watched (Linux gives a user 8192
+// watches in all).
+constexpr qsizetype kMostWatchedImages = 256;
+
+// The file an image of \a document named \a name is read from, as the
+// preview reads it (its base URL, then its search path \a dir); none for
+// one of the web, data or Qt's resources.
+QString imageFile(const QTextDocument* document, const QString& name, const QString& dir)
+{
+    const QUrl url = document->baseUrl().resolved(QUrl(name));
+    QString file;
+    if (url.isLocalFile()) file = url.toLocalFile();
+    else if (url.scheme().isEmpty()) file = url.path();
+    if (file.isEmpty()) return {};
+    if (QFileInfo(file).isRelative()) {
+        if (dir.isEmpty()) return {};
+        file = dir + QLatin1Char('/') + file;
+    }
+    return QFileInfo(file).absoluteFilePath();
+}
+} // namespace
+
+MarkdownDoc::ImageStamp MarkdownDoc::stampOf(const QString& file)
+{
+    const QFileInfo info(file);
+    ImageStamp stamp;
+    if ((stamp.exists = info.exists())) {
+        stamp.modified = info.lastModified();
+        stamp.changed = info.metadataChangeTime();
+        stamp.size = info.size();
+    }
+    return stamp;
+}
+
+void MarkdownDoc::watchImages()
+{
+    if (a_imageWatcher == nullptr) return;
+    const QString dir = a_DocName.isEmpty() ? QString() : QFileInfo(a_DocName).absolutePath();
+    const QTextDocument* doc = a_preview->document();
+    QHash<QString, ImageStamp> images;
+    for (QTextBlock b = doc->begin(); b.isValid() && images.size() < kMostWatchedImages; b = b.next())
+        for (QTextBlock::iterator it = b.begin(); !it.atEnd() && images.size() < kMostWatchedImages; ++it) {
+            const QTextFragment f = it.fragment();
+            if (!f.isValid() || !f.charFormat().isImageFormat()) continue;
+            const QString file = imageFile(doc, f.charFormat().toImageFormat().name(), dir);
+            if (!file.isEmpty() && !images.contains(file)) images.insert(file, stampOf(file));
+        }
+    a_images = images;
+    QSet<QString> wanted;
+    for (auto it = images.cbegin(); it != images.cend(); ++it) {
+        if (it->exists) wanted.insert(it.key());
+        const QString folder = QFileInfo(it.key()).absolutePath();
+        if (QFileInfo(folder).isDir()) wanted.insert(folder);
+    }
+    QStringList gone, added;
+    const QStringList watched = a_imageWatcher->files() + a_imageWatcher->directories();
+    for (const QString& path : watched)
+        if (!wanted.contains(path)) gone << path;
+    for (const QString& path : std::as_const(wanted))
+        if (!watched.contains(path)) added << path;
+    if (!gone.isEmpty()) a_imageWatcher->removePaths(gone);
+    if (!added.isEmpty()) a_imageWatcher->addPaths(added);
+}
+
+void MarkdownDoc::imagesChanged()
+{
+    // (Read again: a rendering clears the images it read; their watches set
+    // again - one written anew, its watch is lost.)
+    for (auto it = a_images.cbegin(); it != a_images.cend(); ++it)
+        if (!(stampOf(it.key()) == it.value())) {
+            renderNow();
+            return;
+        }
 }
 
 void MarkdownDoc::fitImages()

@@ -16,6 +16,7 @@
 #include <QByteArray>
 #include <QCache>
 #include <QColor>
+#include <QDateTime>
 #include <QFont>
 #include <QHash>
 #include <QImage>
@@ -30,6 +31,7 @@
 #include <tuple>
 
 class QButtonGroup;
+class QFileSystemWatcher;
 class QScrollBar;
 class QTextBrowser;
 class QTextDocument;
@@ -214,6 +216,10 @@ public:
     const qucs_s::markdown::PreviewTiles* previewTiles() const { return a_previewTiles; }
     /// The rendering made again now (it is a moment after each edit).
     void renderNow();
+    /// The image files the rendering shows, watched: one written again,
+    /// made or taken away renders it again a moment after (a plot made
+    /// again; the Markdown's own file is the window's to watch).
+    QStringList watchedImages() const { return a_images.keys(); }
     /// The editor's colours and the rendering's, in the theme's paper and
     /// ink (black on white under the platform's themes, light or dark).
     void applyDocumentColors() override;
@@ -241,6 +247,16 @@ private:
     QScrollBar* a_scroll = nullptr;   // the text's, beside it in Split mode
     QTimer* a_timer = nullptr;
     bool a_fitting = false;   // its images being fitted (a resize they make not followed)
+    // An image file as the rendering read it.
+    struct ImageStamp {
+        bool exists = false;
+        QDateTime modified, changed;
+        qint64 size = -1;
+        bool operator==(const ImageStamp&) const = default;
+    };
+    QHash<QString, ImageStamp> a_images;
+    QFileSystemWatcher* a_imageWatcher = nullptr;   // their files and folders
+    QTimer* a_imageTimer = nullptr;
 
     int barHeight() const;
     /// The text's width in Split mode.
@@ -249,6 +265,11 @@ private:
     void followScroll();
     /// The rendering's images to its width.
     void fitImages();
+    static ImageStamp stampOf(const QString& file);
+    /// The rendering's image files (watchedImages()) found and watched.
+    void watchImages();
+    /// Rendered again when one of them is not as it was read.
+    void imagesChanged();
 };
 
 #endif // QUCS_MARKDOWNDOC_H

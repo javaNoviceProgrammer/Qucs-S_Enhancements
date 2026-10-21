@@ -442,15 +442,16 @@ bool TextDoc::load ()
   setLanguage (a_DocName);
 
   a_countsEdits = false;
+  // The file's date before it is read: written again while it is (a long
+  // one's text set and highlighted), it is newer and loaded again. (Dated
+  // after, that writing was taken for the one read, and lost.)
+  lastLoadModTime = QFileInfo(a_DocName).lastModified();
   // Read as its bytes are (textcodec.h), to be written back so. Set, not
   // inserted: the undo history starts at the file as it was read - an
   // Undo does not take the document to empty.
   const QByteArray bytes = file.readAll();
   a_crlf = bytes.contains("\r\n");
   setPlainText(qucs_s::textcodec::decode(bytes, &a_encoding));
-  // Store timestamp
-  QFileInfo fileInfo(a_DocName);
-  lastLoadModTime = fileInfo.lastModified();
   document()->setModified(false);
   slotSetChanged ();
   file.close ();
