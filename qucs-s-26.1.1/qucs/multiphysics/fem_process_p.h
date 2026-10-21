@@ -20,6 +20,7 @@
 #include <QString>
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -294,6 +295,10 @@ public:
     QString intermix(const IntermixSpec& spec, const std::vector<Region>& regions, QStringList* warnings, QString* error);
     /// The material index of a name (added).
     int materialIndex(const QString& name);
+    /// Told how far a step is through its time (0 to 1) at each of its
+    /// time steps - an anneal's, an oxidation's, an intermixing's -: false
+    /// from it stops the step, its error "cancelled".
+    void setTicker(std::function<bool(double)> ticker) { a_ticker = std::move(ticker); }
     struct Solver;
 
 private:
@@ -313,6 +318,7 @@ private:
     std::shared_ptr<ProcessDopants> a_d;
     std::vector<std::shared_ptr<MaterialInfo>> a_info;
     QString a_tooLarge;
+    std::function<bool(double)> a_ticker;
 };
 
 } // namespace qucs_s::fem::process

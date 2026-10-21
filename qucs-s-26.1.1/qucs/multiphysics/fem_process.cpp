@@ -210,8 +210,9 @@ QString regionName(const Node& step)
 class Runner
 {
 public:
-    Runner(const Node& flow, const Model& model, const ParameterScope& ps, double unitScale)
-        : a_flow(flow), a_model(model), a_ps(ps), a_unitScale(unitScale)
+    Runner(const Node& flow, const Model& model, const ParameterScope& ps, double unitScale,
+           const std::function<bool(double, const QString&)>& progress)
+        : a_flow(flow), a_model(model), a_ps(ps), a_unitScale(unitScale), a_progress(progress)
     {
     }
 
@@ -226,11 +227,32 @@ public:
             return out;
         }
         bool started = false;
+        // (Its steps counted for its progress: those it runs.)
+        int count = 0, done = 0;
+        for (const Node& step : a_flow.children) {
+            if (!step.enabled) continue;
+            ++count;
+            if (!until.isEmpty() && step.tag == until) break;
+        }
         for (const Node& step : a_flow.children) {
             if (!step.enabled) continue;
             a_error.clear();
             a_warnings.clear();
             a_said.clear();
+            if (a_progress) {
+                const QString what = tr("%1, step %2 of %3").arg(step.name()).arg(done + 1).arg(count);
+                if (!a_progress(double(done) / std::max(count, 1), what)) {
+                    out.error = tr("%1: cancelled").arg(step.name());
+                    out.failedAt = step.tag;
+                    break;
+                }
+                // (Through an anneal's time: its share of the step.)
+                if (a_dopants)
+                    a_dopants->setTicker([this, done, count, what](double f) {
+                        return a_progress((done + std::clamp(f, 0.0, 1.0)) / std::max(count, 1), what);
+                    });
+            }
+            ++done;
             QElapsedTimer clock;
             clock.start();
             const bool start = step.type == QLatin1String("process/substrate") || step.type == QLatin1String("process/stack");
@@ -1210,13 +1232,16 @@ private:
     // The dopants, on their grid.
     std::unique_ptr<Dopants> a_dopants;
     double a_dopingDx = 0, a_dopingDy = 0, a_dopingDepth = 0;
+    // How far it is told; false: stop.
+    std::function<bool(double, const QString&)> a_progress;
 };
 
 } // namespace
 
-ProcessRun runProcess(const Node& flow, const Model& model, const ParameterScope& parameters, double unitScale, const QString& until)
+ProcessRun runProcess(const Node& flow, const Model& model, const ParameterScope& parameters, double unitScale, const QString& until,
+                      const std::function<bool(double, const QString&)>& progress)
 {
-    return Runner(flow, model, parameters, unitScale).run(until);
+    return Runner(flow, model, parameters, unitScale, progress).run(until);
 }
 
 bool processStepMakesRegion(const QString& type)

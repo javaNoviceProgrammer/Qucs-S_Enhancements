@@ -828,7 +828,9 @@ void MultiphysicsPanel::updateStatusColumn()
         QString status;
         QColor color = grey;
         if (n->type == QLatin1String("geometry")) {
-            if (a_doc->geometryStale()) status = tr("not built");
+            // (A process flow's built in the background: being built.)
+            if (a_doc->geometryBeingBuilt()) status = tr("being built");
+            else if (a_doc->geometryStale()) status = tr("not built");
             else if (!a_doc->geometry().ok()) {
                 status = tr("failed");
                 color = QColor(198, 40, 40);
@@ -894,8 +896,11 @@ QMenu* MultiphysicsPanel::menuFor(const QString& tag)
     // What it does.
     if (n->type == QLatin1String("geometry") || (k && k->group == QLatin1String("geometry")))
         menu->addAction(tr("Build All"), this, [this] {
-            QString why;
-            if (a_doc->buildGeometry(&why)) a_doc->showGeometry();
+            // (A process flow's in the background, shown once built.)
+            QPointer<MultiphysicsDoc> doc = a_doc;
+            a_doc->requestGeometry([doc](bool built) {
+                if (doc && built) doc->showGeometry();
+            });
         });
     if (n->type == QLatin1String("mesh") || (k && k->group == QLatin1String("mesh"))) menu->addAction(tr("Build Mesh"), a_doc.data(), &MultiphysicsDoc::buildMesh);
     if (n->type == QLatin1String("study")) {
@@ -1318,8 +1323,9 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         // A semiconductor feature's parameter not set on it: its material's
         // where it gives one (shown, not set: typed, it is the feature's).
         QString materialName;
-        const QString inherited = a_doc && a_doc->geometry().topology
-                                      ? inheritedParameter(a_doc->model(), *a_doc->geometry().topology, node, key, &materialName)
+        // (As built: not built here, as the form is made.)
+        const QString inherited = a_doc && a_doc->builtGeometry().topology
+                                      ? inheritedParameter(a_doc->model(), *a_doc->builtGeometry().topology, node, key, &materialName)
                                       : QString();
         // The names it may use offered as it is typed (emw. lists emw's):
         // a result's - a plot's, a derived value's - the globals too.
@@ -2097,11 +2103,13 @@ void MultiphysicsPanel::addActions(QVBoxLayout* layout, const Node& node)
     const QString tag = node.tag;
     if (node.type == QLatin1String("geometry") || (k && k->group == QLatin1String("geometry")))
         action(tr("Build All"), "mpBuildAll", [this] {
-            QString why;
-            if (a_doc->buildGeometry(&why)) a_doc->showGeometry();
+            QPointer<MultiphysicsDoc> doc = a_doc;
+            a_doc->requestGeometry([doc](bool built) {
+                if (doc && built) doc->showGeometry();
+            });
         });
     if (k && k->group == QLatin1String("process"))
-        action(tr("Show After This Step"), "mpShowStep", [this, tag] { a_doc->showBuiltUpTo(tag); });
+        action(tr("Show After This Step"), "mpShowStep", [this, tag] { a_doc->showStep(tag); });
     if ((k && k->group == QLatin1String("process")) || node.type == QLatin1String("process")) {
         // Its dopants then: a colour map of the net doping, a profile down
         // the window's middle (SIMS's form).

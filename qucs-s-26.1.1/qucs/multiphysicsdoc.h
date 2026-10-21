@@ -28,6 +28,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <vector>
 
 class LayoutDoc;
 class QComboBox;
@@ -51,6 +52,14 @@ class QUndoStack;
  * once: it is quick), the mesh, the solutions (kept on show, marked old,
  * till computed again). The mesh and the studies are built in the
  * background, one job at a time, with progress and a Cancel.
+ *
+ * A geometry with a process flow is built in the background too - its
+ * anneals and oxidations take seconds to minutes -, beside that job, with
+ * the same progress and Cancel; so is a flow's step's state (shown, or as a
+ * solution). What needs the geometry built waits for it: Build Mesh and
+ * Compute go on once it is; buildGeometry() and geometry(), as the tools
+ * call them, wait with the window going on. A change of the model while it
+ * is built stops that build for one of the model as it is.
  */
 class MultiphysicsDoc : public QFrame, public QucsDoc
 {
@@ -91,9 +100,16 @@ public:
 
     // Building and solving.
     std::shared_ptr<qucs_s::fem::ParameterScope> parameters() const;
-    /// The geometry as built now (built when stale); its errors in it.
+    /// The geometry as built now (built when stale; a process flow's in the
+    /// background, waited for - the window going on); its errors in it.
     const qucs_s::fem::GeometryBuild& geometry();
+    /// The geometry as last built, stale or not: not built here.
+    const qucs_s::fem::GeometryBuild& builtGeometry() const { return a_geometry; }
     bool geometryStale() const { return a_geometryStale; }
+    /// The geometry being built in the background (a process flow's).
+    bool geometryBeingBuilt() const { return a_build && a_buildWhole; }
+    /// A geometry, or a flow's step's state, being built in the background.
+    bool building() const { return a_build != nullptr; }
     std::shared_ptr<const qucs_s::fem::Mesh> mesh() const { return a_mesh; }
     bool meshStale() const { return a_meshStale || a_geometryStale; }
     /// The solution of study \a study (empty: the first) - its sweep's last
@@ -125,8 +141,14 @@ public:
     bool solutionStale(const QString& study = {}) const;
     /// When \a study was last solved (invalid: not since it was opened).
     QDateTime solvedAt(const QString& study = {}) const;
-    /// Builds the geometry now; false and its error when it fails.
+    /// Builds the geometry now; false and its error when it fails. A process
+    /// flow's on a thread of its own, waited for with the window going on:
+    /// cancelled, false and "cancelled".
     bool buildGeometry(QString* error = nullptr);
+    /// Builds the geometry: at once, or with a process flow in the
+    /// background (its progress and Cancel below the toolbar); \a then once
+    /// it is built (true), or not (failed, cancelled: false).
+    void requestGeometry(std::function<void(bool built)> then = {});
     /// The geometry as it is built, built again only when stale: false, and
     /// why, when it stopped.
     bool currentGeometry(QString* error = nullptr);
@@ -146,9 +168,19 @@ public:
     /// whose mesh is old), and the study it computes (empty: none).
     bool meshBeingMade() const { return a_job && a_jobMeshes; }
     QString computing() const { return a_job ? a_jobStudy : QString(); }
-    /// Waits for the job running to end, \a ms at most; whether it ended.
+    /// Waits for the job running - and a geometry being built in the
+    /// background, and what waits for it - to end, \a ms at most; whether
+    /// they ended.
     bool waitForJob(int ms = 120000);
+    /// Stops the job running, else what is built in the background.
     void cancelJob();
+    /// Waited for now (a tool waiting for its geometry or its solve, the
+    /// window going on): not to be deleted under the one waiting.
+    bool beingWaitedFor() const { return a_waiting > 0; }
+    /// Its tab closed while it is waited for: its work stopped, none started,
+    /// deleted once the waiting is over.
+    void closeWhenFree();
+    bool closedWhenFree() const { return a_closed; }
     /// The last job's error, or empty.
     QString lastError() const { return a_lastError; }
     /// The last job's warnings: a Newton's method that did not converge...
@@ -173,8 +205,13 @@ public:
     void showGeometry();
     /// The geometry as a process flow leaves it after its step \a tag (or
     /// as a geometry feature does), shown - its build, empty when it did
-    /// not get there (why in \a error). The model's own geometry kept.
+    /// not get there (why in \a error). The model's own geometry kept. A
+    /// flow's built in the background, waited for.
     qucs_s::fem::GeometryBuild showBuiltUpTo(const QString& tag, QString* error = nullptr);
+    /// The same, not waited for: shown once built - when \a whileFocused, if
+    /// the panel's node is still \a tag. A step asked for before it is shown
+    /// stops it.
+    void showStep(const QString& tag, bool whileFocused = false);
     // A process flow and its layout.
     /// The layout a process flow \a flowTag cuts, opened in its tab (not
     /// brought to the front): null, and why in \a error, when it has none.
@@ -265,7 +302,20 @@ private:
     void invalidate(const qucs_s::fem::Model& before, const qucs_s::fem::Model& after);
     void say(const QString& text, bool error = false);
     void startJob(const QString& what, std::function<void(Job&)> work, std::function<void(Job&)> done);
+    void launch(const std::shared_ptr<Job>& job, std::function<void(Job&)> work);
     void jobFinished();
+    // In the background: the geometry (whole), or a flow's step's state.
+    void startBuild();
+    std::shared_ptr<Job> startStep(const QString& tag, bool solution, std::optional<double> x);
+    void startAside(const std::shared_ptr<Job>& job, std::function<void(Job&)> work);
+    std::shared_ptr<qucs_s::fem::SolutionSet> stepSolutions(const QString& tag, std::optional<double> x, QString* error, bool background) const;
+    bool waitForBuildSlot();
+    bool waitFor(const std::shared_ptr<Job>& job);
+    void buildFinished();
+    bool buildNow(QString* error);
+    bool installGeometry(const qucs_s::fem::GeometryBuild& built, qint64 ms, QString* error);
+    QString geometryError() const;
+    qucs_s::fem::GeometryBuild presentStep(const QString& tag, const qucs_s::fem::GeometryBuild& partial, QString* error);
     void updateState();
     void updateHighlight();
     void addDefaultPlots(const QString& study);
@@ -281,6 +331,19 @@ private:
     mutable std::shared_ptr<qucs_s::fem::ParameterScope> a_params;
     mutable bool a_paramsStale = true;
     qucs_s::fem::GeometryBuild a_geometry;
+    // Built in the background (a process flow's): the geometry, or a step's
+    // state; whether whole; what waits for the whole; a whole one wanted
+    // after the one at work, a step to show. Counted: the geometry's
+    // changes, the model's.
+    std::shared_ptr<Job> a_build;
+    bool a_buildWhole = false;
+    std::vector<std::function<void(bool)>> a_afterBuild;
+    bool a_buildWanted = false;
+    QString a_stepWanted;
+    bool a_stepWantedFocused = false;
+    quint64 a_geometryRevision = 0, a_revision = 0, a_builtRevision = ~quint64(0);
+    int a_waiting = 0;        // waits under way (waitFor, waitForJob)
+    bool a_closed = false;    // its tab closed: deleted when no wait is
     bool a_viewPartial = false;   // the view a process step's state (showBuiltUpTo), not the whole geometry
     QPointF a_lastPointer;        // where the pointer was in the model (a process flow's cross-probe)
     bool a_geometryStale = true;
