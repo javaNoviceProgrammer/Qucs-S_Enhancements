@@ -117,6 +117,10 @@ struct Result {
     bool complex = false;                      ///< its Hamiltonian complex (else real, solved so)
     double beta = 0;                           ///< 1/m: the pairs drawn together's (Options' correlated; 0: none)
     int correlated = 0;                        ///< pairs drawn together
+    /// The k points whose functions drawn together were left out, their
+    /// overlaps there nought or below - its products kept, the excitons
+    /// there as without them (0: none).
+    int dropped = 0;
 };
 
 /// The excitons of \a pairs: their Hamiltonian in k in the channel of

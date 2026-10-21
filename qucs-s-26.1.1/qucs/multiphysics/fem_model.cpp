@@ -812,9 +812,10 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("bands"), tr("Band gaps"), {QStringLiteral("vurgaftman"), QStringLiteral("measured")},
                  {tr("Vurgaftman et al. (2001)"), tr("Fitted to gaps measured at 300 K")}, QStringLiteral("vurgaftman"),
                  tr("Vurgaftman's: 0 K values and Varshni's law, 9-16 meV off at 300 K in the InP family (InP 1.353 eV, "
-                    "In0.53Ga0.47As 0.737). The fit: InP 1.344, In0.53Ga0.47As 0.750, In0.52Al0.48As 1.46, InGaAsP on InP's "
-                    "lattice within 7 meV of Nahory's, the 1.3 µm AlGaInAs 0.954 - Varshni's slope kept; the masses, offsets and "
-                    "deformation potentials Vurgaftman's either way")),
+                    "In0.53Ga0.47As 0.737), 43 meV high for Al0.3Ga0.7As (1.841). The fit: InP 1.344, In0.53Ga0.47As 0.750, "
+                    "In0.52Al0.48As 1.46, InGaAsP on InP's lattice within 7 meV of Nahory's, the 1.3 µm AlGaInAs 0.954, AlGaAs "
+                    "Casey and Panish's 1.424 + 1.247x (x below 0.45: Al0.3Ga0.7As 1.798) - Varshni's slope kept; the masses, "
+                    "offsets and deformation potentials Vurgaftman's either way")),
           expr(QStringLiteral("x"), tr("Composition x"), QString(), QString(),
                tr("An alloy's: AlGaAs, Al's share; InGaAs, InAlAs, In's; GaInP, Ga's; GaAsP, InAsP, GaAsSb, As's; InGaAsP "
                   "(In1-x Gax Asy P1-y), Ga's; AlGaInAs (Alx Gay In1-x-y As), Al's")),
@@ -2449,6 +2450,13 @@ QList<NodeKind> makeKinds()
           shownIf(choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                          QStringLiteral("2")),
                   QStringLiteral("space=2d")),
+          shownIf(choice(QStringLiteral("ends"), tr("The line's ends"), {QStringLiteral("walls"), QStringLiteral("periodic")},
+                         {tr("Hard walls (ψ 0 there)"), tr("Periodic: one period of a superlattice")}, QStringLiteral("walls"),
+                         tr("Periodic: the line's two ends one point - its states a superlattice's at the centre of its mini-zone (kz 0): one "
+                            "period drawn stands for the whole stack; M periods drawn, M points of the mini-zone (kz 2πj/ML), the "
+                            "transitions between them none - their minibands' widths. Its potential must repeat: its ends in one material, "
+                            "no field along the axis")),
+                  QStringLiteral("space=1d")),
           flag(QStringLiteral("electrons"), tr("Electrons"), true), flag(QStringLiteral("heavy"), tr("Heavy holes"), true),
           flag(QStringLiteral("light"), tr("Light holes"), true),
           expr(QStringLiteral("T"), tr("Temperature"), QStringLiteral("K"), QStringLiteral("300[K]"),
@@ -2958,6 +2966,10 @@ QList<NodeKind> makeKinds()
               expr(QStringLiteral("dlinewidth"), tr("Broadening's growth with the field"), QString(), QString(),
                    tr("Added to the broadening per field across the wells (qw.Fw, their band edge's slope): 1[meV]/(1e7[V/m]) - "
                       "an electroabsorption edge broadens as the field pulls the states apart. Empty: none")),
+              expr(QStringLiteral("linewidthslope"), tr("Broadening's growth with the photon's energy"), QString(), QString(),
+                   tr("The lines' width at a photon's energy ħω: the broadening plus this times ħω above the lowest edge (meV per "
+                      "meV; 0.05: 5 meV wider 0.1 eV above it) - the higher subbands' lines wider, as measured (Miller's n = 2 and 3 "
+                      "wider than n = 1). A line near ħω the width there, each line its own. Empty: one width")),
               choice(QStringLiteral("continuum"), tr("Continuum"), {QStringLiteral("states"), QStringLiteral("bound")},
                      {tr("The states found (a box's)"), tr("Bound states', and the bulk absorption")}, QStringLiteral("states"),
                      tr("The states found above the barriers are a box's - the line's ends hard walls -, moving with a field: a "
@@ -2968,6 +2980,16 @@ QList<NodeKind> makeKinds()
                         "field - Δn between fields converges as the window widens")),
               shownIf(expr(QStringLiteral("fade"), tr("Fade above the barriers' gap"), QStringLiteral("eV"), QStringLiteral("0.1[eV]"),
                            tr("Over this above the barriers' gap the bound states' 2D steps give way to the wells' 3D absorption (cos²)")),
+                      QStringLiteral("continuum=bound")),
+              shownIf(flag(QStringLiteral("bulkexcitons"), tr("The bulk's excitons (Elliott's)"), false,
+                           tr("The barriers' (and the wells' own) 3D absorption with its excitons: Elliott's - its 1s, 2s ... lines "
+                              "below its gap (each its material's Rydberg, its reduced mass's in its permittivity, heavy and light holes "
+                              "apart) and Sommerfeld's factor above it, 2π√(R/ε)/(1 - e^(-2π√(R/ε))) - the barriers' own edge, not a "
+                              "bare √ε. Off: the free carriers' √ε")),
+                      QStringLiteral("continuum=bound")),
+              shownIf(expr(QStringLiteral("urbach"), tr("The bulk's Urbach width"), QStringLiteral("eV"), QString(),
+                           tr("The 3D absorption's lines broadened as Urbach's edge, e^(-|x|/E_U)/2E_U: the exponential tail below "
+                              "the gap of a material at room temperature (GaAs some 6-7 meV). Empty: the spectrum's line")),
                       QStringLiteral("continuum=bound")),
               choice(QStringLiteral("lineshape"), tr("Line shape"), {QStringLiteral("lorentzian"), QStringLiteral("gaussian"), QStringLiteral("sech")},
                      {tr("Lorentzian"), tr("Gaussian"), tr("Hyperbolic secant")}, QStringLiteral("lorentzian"),
@@ -3004,6 +3026,11 @@ QList<NodeKind> makeKinds()
                               "spread of ze - zh) - the attraction pulls the two to one z where they meet, which subbands' products "
                               "reach only through many more subbands. A 9.4 nm GaAs well's 1s line: 0.70 of a real-space solve's "
                               "drawn together with its one pair alone, 0.95 drawn together so; off: the products alone")),
+                      QStringLiteral("excitons=true&excitonmodel=coupled")),
+              shownIf(integer(QStringLiteral("excitonpairs"), tr("Coupled excitons' pairs"), 0,
+                              tr("The lowest pairs by their edges coupled, the others free steps: 0 the default, 12 of each kind of "
+                                 "hole (k·p 16); up to 64 - a superlattice's minibands above its barriers (Miller's n = 3) above "
+                                 "the default's. More pairs on the same size, fewer k points each (excitonsize)")),
                       QStringLiteral("excitons=true&excitonmodel=coupled")),
               shownIf(integer(QStringLiteral("excitonsize"), tr("Coupled excitons' size"), 1200,
                               tr("The unknowns of the coupled excitons' Hamiltonian at most - its pairs times its k points (each J's "
