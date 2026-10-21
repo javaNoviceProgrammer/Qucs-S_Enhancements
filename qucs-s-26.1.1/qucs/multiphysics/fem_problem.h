@@ -176,10 +176,14 @@ struct SpectrumOptions {
     bool excitons = false;  ///< each transition's 1s exciton and its continuum's Sommerfeld factor
     int excitonModel = 0;   ///< 0 two parameters (λ, γ), 1 Bastard's one (λ), 2 the subbands coupled in k (fem_exciton)
     int excitonSize = 0;    ///< the coupled excitons' unknowns (pairs × k points) at most, each channel's (0: 1200)
+    int excitonPairs = 0;   ///< the coupled excitons' pairs, the lowest (0: 12 of each kind of hole; k·p 16)
     bool excitonDrawn = true;  ///< the coupled excitons' electron and hole drawn together along the axis (fem_exciton's correlated)
     double epsr = 0;        ///< the excitons' static permittivity (0: the wells' material's)
     double dlinewidth = 0;  ///< J per V/m: the broadening grown by the field across the wells
+    double linewidthSlope = 0;   ///< the broadening grown with the photon's energy above the lowest edge (J per J)
     double fade = 0;        ///< continuum bound: the bound steps fade into the bulk over this above the barriers' gap (J)
+    bool bulkExcitons = false;   ///< continuum bound: the bulk's absorption Elliott's (its excitons' lines, Sommerfeld's factor)
+    double urbach = 0;      ///< continuum bound: the bulk's lines Urbach's exponential of this width (J; 0: the spectrum's line)
     double kmax = 0;        ///< a Valence Bands step's: its largest in-plane k (1/m)
     /// A Valence Bands step's: every state bound in the wells too - above
     /// the valence band edge at both ends of the stack, at k = 0 -, where

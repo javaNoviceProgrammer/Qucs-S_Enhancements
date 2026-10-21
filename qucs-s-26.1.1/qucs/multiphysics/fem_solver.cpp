@@ -2571,7 +2571,8 @@ int litMode(const Solution& s, const QString& tag)
     return 0;
 }
 
-bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error);
+bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error, QStringList* warnings = nullptr);
+void countsCapped(const Node& node, std::initializer_list<const char*> keys, int most, QStringList* warnings);
 
 /// A spectrum's energies with the photon's \a photon among them - not again
 /// when one is it to rounding (the spectrum's value there is the photon's:
@@ -2607,7 +2608,10 @@ bool laserGainTable(Step& st, detail::Problem& laser, const detail::GainRequest&
     }
     detail::SpectrumOptions o;
     int axis = 1;
-    if (!spectrumOptionsOf(*spectrum, s.parameters().scope, o, &axis, error)) return false;
+    QStringList capped;
+    if (!spectrumOptionsOf(*spectrum, s.parameters().scope, o, &axis, error, &capped)) return false;
+    for (const QString& w : capped)
+        if (!s.log.contains(QStringLiteral("Warning: ") + w)) s.log << QStringLiteral("Warning: ") + w;
     o.solve = st.options;
     // (Its own energies with the photon's; its gain alone: no index.)
     addPhoton(o.energies, photon);
@@ -2850,7 +2854,10 @@ bool wellTables(Step& st, detail::Problem& modes, double frequency, QString* err
         }
         detail::SpectrumOptions o;
         int axis = 1;
-        if (!spectrumOptionsOf(*spectrum, s.parameters().scope, o, &axis, error)) return false;
+        QStringList capped;
+        if (!spectrumOptionsOf(*spectrum, s.parameters().scope, o, &axis, error, &capped)) return false;
+        for (const QString& w : capped)
+            if (!s.log.contains(QStringLiteral("Warning: ") + w)) s.log << QStringLiteral("Warning: ") + w;
         o.solve = st.options;
         const auto [lo, hi] = std::minmax_element(o.energies.begin(), o.energies.end());
         if (photon < *lo || photon > *hi) {
@@ -3227,6 +3234,7 @@ bool statesStep(Solution& s, const Node& node, const std::function<bool(double, 
     if (!others.empty() && !solveTogether(st, others, [&](int) { return st.options; }, false, error)) return false;
     if (!solvedBefore(st, others, error)) return false;
     detail::Problem& q = *st.problems[std::size_t(quantum.front())];
+    countsCapped(node, {"states"}, 100, warnings);
     const int count = std::clamp(node.integer(QStringLiteral("states")), 1, 100);
     // Self-consistent: the states, then the semiconductor's carriers moved
     // to theirs and it solved again, until those rest.
@@ -3273,8 +3281,21 @@ bool statesStep(Solution& s, const Node& node, const std::function<bool(double, 
 /// A Spectrum step's options (\a node's) but its solve's: its photon
 /// energies (\a photonAxis: 0 frequencies, 1 energies, 2 wavelengths),
 /// broadening, excitons, carriers, subbands, what the absorption is per.
-bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error)
+/// A step's counts taken as their most (said: the check of 21 October's
+/// "vstates" 120 was 50 without a word).
+void countsCapped(const Node& node, std::initializer_list<const char*> keys, int most, QStringList* warnings)
 {
+    if (!warnings) return;
+    for (const char* key : keys) {
+        const QString k = QString::fromLatin1(key);
+        if (!node.text(k).trimmed().isEmpty() && node.integer(k) > most)
+            *warnings << tr("%1: its %2 %3 taken as %4, the most it takes").arg(node.name(), k).arg(node.integer(k)).arg(most);
+    }
+}
+
+bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOptions& o, int* photonAxis, QString* error, QStringList* warnings)
+{
+    countsCapped(node, {"states", "cstates", "vstates"}, 50, warnings);
     constexpr double q = 1.602176634e-19, h = 6.62607015e-34, c0 = 299792458.0;
     // Photon energies (eV, J), free-space wavelengths or frequencies.
     Dim dim;
@@ -3322,12 +3343,22 @@ bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOpt
     o.excitonModel = excitonModel == QLatin1String("bastard") ? 1 : excitonModel == QLatin1String("coupled") ? 2 : 0;
     o.excitonSize = node.integer(QStringLiteral("excitonsize"));
     o.excitonDrawn = node.flag(QStringLiteral("excitondrawn"));
+    countsCapped(node, {"excitonpairs"}, 64, warnings);
+    o.excitonPairs = std::clamp(node.integer(QStringLiteral("excitonpairs")), 0, 64);
     if (o.excitonSize != 0 && (o.excitonSize < 100 || o.excitonSize > 20000)) {
         *error = tr("%1: the coupled excitons' size: a whole number from 100 to 20000").arg(node.name());
         return false;
     }
     o.continuum = node.text(QStringLiteral("continuum")) == QLatin1String("bound") ? 1 : 0;
     if (!energy(QStringLiteral("fade"), tr("its fade"), &o.fade)) return false;
+    o.bulkExcitons = node.flag(QStringLiteral("bulkexcitons"));
+    if (!node.text(QStringLiteral("urbach")).trimmed().isEmpty()) {
+        if (!energy(QStringLiteral("urbach"), tr("its Urbach width"), &o.urbach)) return false;
+        if (!(o.urbach > 0)) {
+            *error = tr("%1: its Urbach width must be more than 0 (empty: the spectrum's line)").arg(node.name());
+            return false;
+        }
+    }
     if (!node.text(QStringLiteral("dlinewidth")).trimmed().isEmpty()) {
         // (Energy per field: C m.)
         const std::optional<double> d = evaluateConstant(node.text(QStringLiteral("dlinewidth")), scope, Dim::of(1, 0, 1, 1), &why);
@@ -3336,6 +3367,14 @@ bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOpt
             return false;
         }
         o.dlinewidth = *d;
+    }
+    if (!node.text(QStringLiteral("linewidthslope")).trimmed().isEmpty()) {
+        const std::optional<double> d = evaluateConstant(node.text(QStringLiteral("linewidthslope")), scope, Dim(), &why);
+        if (!d || !(*d >= 0 && *d <= 10)) {
+            *error = tr("%1: the broadening's growth with the photon's energy: %2").arg(node.name(), d ? tr("it is from 0 to 10 (meV per meV)") : why);
+            return false;
+        }
+        o.linewidthSlope = *d;
     }
     if (!node.text(QStringLiteral("epsr")).trimmed().isEmpty()) {
         const std::optional<double> e = evaluateConstant(node.text(QStringLiteral("epsr")), scope, Dim(), &why);
@@ -3416,7 +3455,7 @@ bool spectrumStep(Solution& s, const Node& node, const std::function<bool(double
     detail::SpectrumOptions o;
     o.solve = st.options;
     int axis = 1;
-    if (!spectrumOptionsOf(node, s.parameters().scope, o, &axis, error)) return false;
+    if (!spectrumOptionsOf(node, s.parameters().scope, o, &axis, error, warnings)) return false;
     for (auto& p : st.problems)
         if (!p->field().solved) p->initialize();
     if (!tell(0.1, tr("%1: the spectrum").arg(node.name()))) {
@@ -3459,6 +3498,8 @@ bool bandsStep(Solution& s, const Node& node, const std::function<bool(double, c
     }
     o.kmax = *kmax;
     o.kpoints = std::clamp(node.integer(QStringLiteral("points")), 2, 2000);
+    countsCapped(node, {"states"}, 50, warnings);
+    countsCapped(node, {"points"}, 2000, warnings);
     o.states = std::clamp(node.integer(QStringLiteral("states")), 1, 50);
     o.bound = node.flag(QStringLiteral("bound"));
     for (auto& p : st.problems)
