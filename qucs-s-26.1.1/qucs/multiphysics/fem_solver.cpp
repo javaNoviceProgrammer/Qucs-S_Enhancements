@@ -1568,6 +1568,11 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
                       "light's (semi.Hlight) - its integral the contacts' I V and the power absorbed, semi.Pabs"),
                    K::Derived, f,
                    semi([](const detail::SemiconductorState& s) { return std::isfinite(s.heat) ? s.heat : s.joule + 1.602176634e-19 * s.R * (s.phip - s.phin); }));
+            define(p + QStringLiteral("Tn"), Dim::temperature(),
+                   tr("the electrons' temperature: hot carriers' energy balance (the Mobility Model's driving force), else the physics' T"),
+                   K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.Tn; }));
+            define(p + QStringLiteral("Tp"), Dim::temperature(), tr("the holes' temperature: hot carriers' energy balance, else the physics' T"),
+                   K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.Tp; }));
             define(p + QStringLiteral("Hlight"), Dim::of(-1, 1, -3),
                    tr("the light's heat: the energy its pairs are made with (ħω/η each for a mode's light) less what they carry, "
                       "q G (φp - φn) - their excess over the gap as they cool, at once"),

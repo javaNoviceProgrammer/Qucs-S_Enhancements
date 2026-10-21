@@ -30,6 +30,8 @@
 #include <Eigen/QR>
 #include <Eigen/SparseLU>
 
+#include <functional>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -62,7 +64,7 @@ const double Inf = std::numeric_limits<double>::infinity();
 // Fermi-Dirac's degeneracy in it, as solved), a laser's gain and
 // stimulated rate by node and its photons, then incomplete ionization's
 // Nd⁺ and Na⁻ by node (a_ionAt).
-constexpr int ExtraHead = 3, PerTriangle = 35;
+constexpr int ExtraHead = 3, PerTriangle = 37;
 
 /// Bernoulli's function x / (e^x - 1) and its derivative, safe at 0 and far
 /// from it.
@@ -99,6 +101,13 @@ struct Medium {
     bool saturation = false;         // high fields: Caughey and Thomas's too
     double vsatn = 1e5, vsatp = 8e4, betan = 2, betap = 1;
     bool wholeField = false;         // saturated by |E|, not by the force along the current
+    // Hot carriers: each carrier's saturation by its temperature, an energy
+    // balance's (energy relaxation times τw, s); the electrons' velocity the
+    // transferred electrons' - negative differential mobility past E0 (V/m).
+    bool energyN = false, energyP = false;
+    double tauWn = 0.3e-12, tauWp = 0.25e-12;
+    bool transferred = false;
+    double E0n = 4e5;
     double zetan = 2.5, zetap = 2.2;   // the mobilities' (TL/T)^-ζ
     // Quay's saturation velocities of the lattice's temperature, vsat300/((1
     // - A) + A TL/300 K): A of each carrier (0: none).
@@ -504,6 +513,22 @@ private:
     std::vector<std::vector<double>> currentWeights(const Eigen::VectorXd& x);
     /// The edge mobilities at the fields of \a x (high fields lower them).
     void updateMobilities(const Eigen::VectorXd& x);
+    /// Hot carriers: each carrier's temperature by node from its energy
+    /// balance at \a x, the edges' fluxes as weighed now (a_Tn, a_Tp; empty
+    /// where no medium has it).
+    void carrierTemperatures(const Eigen::VectorXd& x);
+    std::vector<double> a_Tn, a_Tp;
+    // (Each node's last temperature and its update's, solved less used: a
+    // secant's slope for the next.)
+    std::vector<double> a_TnWas, a_TpWas, a_dTnWas, a_dTpWas;
+    // (And all of them at most ω of the way: halved where the updates grew
+    // - a space-charge-limited layer's current, all its temperatures'
+    // together -, half again where they fell; the last's largest.)
+    double a_omegaT[2] = {1, 1}, a_residualT[2] = {0, 0};
+    bool a_energy = false;
+    // (Off along a stationary walk, its mobilities the field's: the
+    // temperatures solved at its end, in turn with its Newton's method.)
+    bool a_energyActive = true;
     /// Medium \a m's gap narrowing at node \a i, by its doping (J).
     /// And under a lattice temperature, its thermal shift.
     double narrowing(const Medium& m, int i) const
@@ -730,6 +755,7 @@ private:
         // The lattice's temperature's: (TL/T)^-ζ of each carrier's, its
         // saturation velocities' and impact ionization's (γ(TL)/γ(T)) factors.
         double tn = 1, tp = 1, vn = 1, vp = 1, ii = 1;
+        double TL = 0;   // (its lattice's temperature, K; 0: the physics' T)
         // A corner on another semiconductor's bands: a heterojunction's step
         // in it, its carriers over it emitted, not drifting - not saturated.
         bool step = false;
@@ -1306,6 +1332,19 @@ bool SemiconductorProblem::setup(QString* error)
             if (!(m.betan > 0) || !(m.betap > 0)) problem(tr("%1: its saturation exponents β must be more than 0").arg(where));
             m.wholeField = mf->text(QStringLiteral("driving")) == QLatin1String("field");
             a_alongCurrent = a_alongCurrent || !m.wholeField;
+            // (Hot carriers: driven by their temperatures, an energy balance's.)
+            if (mf->text(QStringLiteral("driving")) == QLatin1String("energy")) {
+                const Dim time = Dim::of(0, 0, 1);
+                m.energyN = m.energyP = a_energy = true;
+                m.tauWn = number(mf->text(QStringLiteral("tauwn")), time, where);
+                m.tauWp = number(mf->text(QStringLiteral("tauwp")), time, where);
+                if (!(m.tauWn > 0) || !(m.tauWp > 0)) problem(tr("%1: its energy relaxation times must be more than 0").arg(where));
+            }
+            if (mf->text(QStringLiteral("velocity")) == QLatin1String("transferred")) {
+                m.transferred = true;
+                m.E0n = number(mf->text(QStringLiteral("E0n")), Dim::of(1, 1, -3, -1), where);
+                if (!(m.E0n > 0)) problem(tr("%1: its transferred electrons' field E0 must be more than 0").arg(where));
+            }
         }
         if (mf && mf->flag(QStringLiteral("surface"))) {
             m.surface = a_lombardi = true;
@@ -3065,9 +3104,44 @@ void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, do
             Fn = std::min(whole, std::hypot(gn[0], gn[1]));
             Fp = std::min(whole, std::hypot(gp[0], gp[1]));
         }
+        // (Caughey and Thomas's, or the transferred electrons' - (µ0 +
+        // (vsat/F)(F/E0)⁴)/(1 + (F/E0)⁴), GaAs's E0 4 kV/cm: past its peak
+        // the velocity falls, the electrons in the heavier valleys.)
         auto reduce = [](double mu, double F, double vsat, double beta) { return mu / std::pow(1 + std::pow(mu * F / vsat, beta), 1 / beta); };
-        *mun = reduce(*mun, Fn, m.vsatn * em.vn, m.betan);
-        *mup = reduce(*mup, Fp, m.vsatp * em.vp, m.betap);
+        const double mun0 = *mun, mup0 = *mup, vsn = m.vsatn * em.vn, vsp = m.vsatp * em.vp;
+        auto electrons = [&m, mun0, vsn, &reduce](double F) {
+            if (!m.transferred) return reduce(mun0, F, vsn, m.betan);
+            const double r4 = std::pow(F / m.E0n, 4);
+            return F > 0 ? (mun0 + vsn / F * r4) / (1 + r4) : mun0;
+        };
+        auto holes = [mup0, vsp, &m, &reduce](double F) { return reduce(mup0, F, vsp, m.betap); };
+        // (Hot carriers: the field their temperature stands for, the one
+        // that heats them so at rest and alone, µ(F) F² = (3/2) k (T - TL)/
+        // (q τw) - the same as the field's where it is uniform; entering a
+        // high field still cool, faster than saturated: overshoot.)
+        auto heated = [](const std::function<double(double)>& mobility, double w) {
+            if (!(w > 0)) return 0.0;
+            double lo = 0, hi = 1e3;
+            while (mobility(hi) * hi * hi < w && hi < 1e12) hi *= 4;
+            for (int k = 0; k < 80; ++k) {
+                const double mid = 0.5 * (lo + hi);
+                (mobility(mid) * mid * mid < w ? lo : hi) = mid;
+            }
+            return 0.5 * (lo + hi);
+        };
+        const double TL = em.TL > 0 ? em.TL : a_T;
+        if (m.energyN && a_Tn.size() == std::size_t(a_n)) {
+            double T = 0;
+            for (int k = 0; k < 3; ++k) T += a_Tn[std::size_t(dof[k])] / 3;
+            Fn = heated(electrons, 1.5 * KB * (T - TL) / (Q * m.tauWn));
+        }
+        if (m.energyP && a_Tp.size() == std::size_t(a_n)) {
+            double T = 0;
+            for (int k = 0; k < 3; ++k) T += a_Tp[std::size_t(dof[k])] / 3;
+            Fp = heated(holes, 1.5 * KB * (T - TL) / (Q * m.tauWp));
+        }
+        *mun = electrons(Fn);
+        *mup = holes(Fp);
     }
 }
 
@@ -3136,7 +3210,198 @@ void SemiconductorProblem::updateMobilities(const Eigen::VectorXd& x)
     // mobilities than its next: an APD's response 4.44 at 100 MHz, 6.25 at
     // 100 MHz again, the Lumerical APD's review.)
     degeneracy(x);
+    if (a_energy && a_energyActive) carrierTemperatures(x);
     edgeWeights(&x);
+}
+
+void SemiconductorProblem::carrierTemperatures(const Eigen::VectorXd& x)
+{
+    // Each carrier's energy balance by its nodes' boxes, its fluxes the
+    // edges' as weighed now (their mobilities a Newton step behind):
+    //   Σ S + (3/2) k n V (T - TL)/τw = what the field gives it,
+    // S the energy each edge carries, the particles' (5/2) kT each and the
+    // carriers' conduction of heat, κ = (5/2)(k²/q) µ n T (Wiedemann and
+    // Franz's) - Scharfetter and Gummel's fitting for convection and
+    // conduction together, D (B(-P) Ti - B(P) Tj), P its particles' (5/2) k
+    // F over D; the field's gift each triangle's: its particles' flux,
+    // fitted to its edges' (each over its face), times its band's slope,
+    // over its volume - a third to each corner, V its corners' volume. (By
+    // edge, each one's particles times its band's drop, half to each end,
+    // summed to the device's J E exactly but not node by node: a uniform
+    // bar's electrons 3 % cool in its middle, its mesh's arrangement's.)
+    // Contacts and media without it at the lattice's temperature. (Linear
+    // in T: κ's T and n the last's.)
+    const std::size_t N = std::size_t(a_n);
+    std::vector<double> TL(N, a_T);
+    if (!a_nodeTL.empty())
+        for (std::size_t i = 0; i < N; ++i)
+            if (a_nodeTL[i] > 0) TL[i] = a_nodeTL[i];
+    for (int carrier = 0; carrier < 2; ++carrier) {
+        const bool electrons = carrier == 0;
+        bool any = false;
+        for (const Medium& m : a_media) any = any || (electrons ? m.energyN : m.energyP);
+        std::vector<double>& T = electrons ? a_Tn : a_Tp;
+        if (!any) {
+            T.clear();
+            continue;
+        }
+        if (T.size() != N) T = TL;
+        std::vector<int> row(N, -1);
+        int rows = 0;
+        auto heats = [this, electrons](int i) {
+            const int d = a_nodeDomain[std::size_t(i)];
+            return d >= 0 && a_iN[std::size_t(i)] >= 0 && a_nodeContact[std::size_t(i)] < 0 && (electrons ? a_media[std::size_t(d)].energyN : a_media[std::size_t(d)].energyP);
+        };
+        for (int i = 0; i < a_n; ++i)
+            if (heats(i)) row[std::size_t(i)] = rows++;
+        if (rows == 0) {
+            T = TL;
+            continue;
+        }
+        std::vector<Eigen::Triplet<double>> trip;
+        Eigen::VectorXd b = Eigen::VectorXd::Zero(rows);
+        std::vector<double> flows(a_edges.size(), 0.0), corners(N, 0.0);
+        // (Into row r of node i: its coefficient of node j's T, or a known T.)
+        auto put = [&row, &trip, &b, &T](int r, int j, double c) {
+            if (r < 0) return;
+            if (row[std::size_t(j)] >= 0) trip.emplace_back(r, row[std::size_t(j)], c);
+            else b(r) -= c * T[std::size_t(j)];
+        };
+        for (const Edge& e : a_edges) {
+            if (e.w <= 0 || (electrons ? e.wn : e.wp) <= 0) continue;
+            const int i = e.i, j = e.j;
+            const int ri = row[std::size_t(i)], rj = row[std::size_t(j)];
+            if (ri < 0 && rj < 0) continue;
+            double dN = 0, dP = 0;
+            edgeSteps(e, x, &dN, &dP);
+            double flow = 0, gain = 0, ci = 0, cj = 0;   // particles i to j (1/s); each one's energy gained (J); densities on its bands
+            if (electrons) {
+                ci = e.fNi * x(a_iN[std::size_t(i)]);
+                cj = e.fNj * x(a_iN[std::size_t(j)]);
+                flow = -e.wn * (cj * bern(dN) - ci * bern(-dN)) / Q;
+                gain = Q * a_Vt * (dN - (a_lgN[std::size_t(j)] - a_lgN[std::size_t(i)]));
+            } else {
+                ci = e.fPi * x(a_iP[std::size_t(i)]);
+                cj = e.fPj * x(a_iP[std::size_t(j)]);
+                flow = e.wp * (ci * bern(dP) - cj * bern(-dP)) / Q;
+                gain = -Q * a_Vt * (dP + (a_lgP[std::size_t(j)] - a_lgP[std::size_t(i)]));
+            }
+            flows[std::size_t(&e - a_edges.data())] = flow;
+            (void)gain;
+            const double c = std::sqrt(std::max(ci, 1e-300) * std::max(cj, 1e-300));
+            const double Te = 0.5 * (T[std::size_t(i)] + T[std::size_t(j)]);
+            const double D = std::max(2.5 * KB * KB / Q * ((electrons ? e.wn : e.wp) / (Q * a_Vt)) * c * Te, 1e-300);
+            const double P = 2.5 * KB * flow / D;
+            const double bi = D * bern(-P), bj = D * bern(P);
+            // S_ij = bi Ti - bj Tj leaves i, enters j.
+            put(ri, i, bi);
+            put(ri, j, -bj);
+            put(rj, i, -bi);
+            put(rj, j, bj);
+        }
+        // The field's gift, by triangle.
+        const Space& tsp = *field().space;
+        for (int t = 0; t < int(a_elements.size()); ++t) {
+            const ElementMobility& em = a_elements[std::size_t(t)];
+            if (em.domain < 0 || !(em.volume > 0)) continue;
+            const int* dof = tsp.dofs(t);
+            for (int k = 0; k < 3; ++k) corners[std::size_t(dof[k])] += em.volume / 3;
+            // (Its particles' flux density: least squares over its edges,
+            // each weighed by its face, its flow along its direction - exact
+            // for a uniform flux, an edge of a sliver of a face, a boundary's,
+            // not the fit's: unweighed, its flow over its face took one
+            // boundary node to 10¹² K.)
+            double M[3] = {0, 0, 0}, rhs[2] = {0, 0};
+            for (int k = 0; k < 3; ++k) {
+                const Edge& e = a_edges[std::size_t(em.edge[k])];
+                const double face = e.w * e.h;
+                if (!(face > 0) || (electrons ? e.wn : e.wp) <= 0) continue;
+                const double flow = flows[std::size_t(em.edge[k])];
+                M[0] += face * e.tx * e.tx;
+                M[1] += face * e.tx * e.ty;
+                M[2] += face * e.ty * e.ty;
+                rhs[0] += e.tx * flow;
+                rhs[1] += e.ty * flow;
+            }
+            const double det = M[0] * M[2] - M[1] * M[1];
+            if (!(det > 1e-6 * (M[0] + M[2]) * (M[0] + M[2]))) continue;
+            const double fx = (M[2] * rhs[0] - M[1] * rhs[1]) / det, fy = (-M[1] * rhs[0] + M[0] * rhs[1]) / det;
+            // (Its band's edge, -q (V + θ): an electron's gift the drop along
+            // its flux, a hole's the rise.)
+            double gx = 0, gy = 0;
+            for (int k = 0; k < 3; ++k) {
+                const std::size_t c = std::size_t(dof[k]);
+                const double u = x(a_iV[c]) + (electrons ? a_thetaN[c] : a_thetaP[c]);
+                gx += em.gx[k] * u;
+                gy += em.gy[k] * u;
+            }
+            const double gift = (electrons ? Q : -Q) * (fx * gx + fy * gy) * em.volume;
+            for (int k = 0; k < 3; ++k) {
+                const int r = row[std::size_t(dof[k])];
+                if (r >= 0) b(r) += gift / 3;
+            }
+        }
+        for (int i = 0; i < a_n; ++i) {
+            const int r = row[std::size_t(i)];
+            if (r < 0) continue;
+            const Medium& m = a_media[std::size_t(a_nodeDomain[std::size_t(i)])];
+            const double c = electrons ? x(a_iN[std::size_t(i)]) : x(a_iP[std::size_t(i)]);
+            const double box = corners[std::size_t(i)];
+            // (Its relaxation; a node all but empty held by a millionth of
+            // its doping's, near the lattice.)
+            const double floor = 1e-6 * std::max(std::abs(doping(i)), a_ni[std::size_t(i)]);
+            const double k = 1.5 * KB * std::max(c, floor) * box / (electrons ? m.tauWn : m.tauWp);
+            trip.emplace_back(r, r, k);
+            b(r) += k * TL[std::size_t(i)];
+        }
+        Eigen::SparseMatrix<double> A(rows, rows);
+        A.setFromTriplets(trip.begin(), trip.end());
+        // (Each row by its largest: the densities span twenty decades.)
+        Eigen::VectorXd scale = Eigen::VectorXd::Zero(rows);
+        for (int k = 0; k < A.outerSize(); ++k)
+            for (Eigen::SparseMatrix<double>::InnerIterator it(A, k); it; ++it) scale(it.row()) = std::max(scale(it.row()), std::abs(it.value()));
+        for (int k = 0; k < A.outerSize(); ++k)
+            for (Eigen::SparseMatrix<double>::InnerIterator it(A, k); it; ++it) it.valueRef() /= scale(it.row()) > 0 ? scale(it.row()) : 1.0;
+        for (int r = 0; r < rows; ++r) b(r) /= scale(r) > 0 ? scale(r) : 1.0;
+        Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+        lu.compute(A);
+        if (lu.info() != Eigen::Success) continue;   // (the last kept)
+        const Eigen::VectorXd t = lu.solve(b);
+        if (lu.info() != Eigen::Success || !t.allFinite()) continue;
+        // (Saturated, a velocity's temperature's mobility gives back about
+        // vsat²/v - the update's slope -1, a plain one swinging about the
+        // solution without end; unsaturated nought. Each node's step, of
+        // its update r = solved - T, its secant's: T - r/r' - ω r, ω =
+        // 1/(1 - slope) from a half to one; the first a half.)
+        std::vector<double>& was = electrons ? a_TnWas : a_TpWas;
+        std::vector<double>& rWas = electrons ? a_dTnWas : a_dTpWas;
+        const bool secant = was.size() == N && rWas.size() == N;
+        std::vector<double> now = T, rNow(N, 0.0);
+        double residual = 0;
+        for (int i = 0; i < a_n; ++i) {
+            const std::size_t k = std::size_t(i);
+            const double solved = row[k] >= 0 ? std::max(t(row[k]), 0.5 * TL[k]) : TL[k];
+            rNow[k] = solved - T[k];
+            residual = std::max(residual, std::abs(rNow[k]) / TL[k]);
+        }
+        double& omegaAll = a_omegaT[carrier];
+        if (!secant) omegaAll = 1;
+        else if (residual > a_residualT[carrier]) omegaAll = std::max(0.02, 0.5 * omegaAll);
+        else omegaAll = std::min(1.0, 1.5 * omegaAll);
+        a_residualT[carrier] = residual;
+        for (int i = 0; i < a_n; ++i) {
+            const std::size_t k = std::size_t(i);
+            const double r = rNow[k];
+            double omega = 0.5;
+            if (secant && std::abs(T[k] - was[k]) > 1e-9 * T[k]) {
+                const double slope = (r - rWas[k]) / (T[k] - was[k]);   // r' = g' - 1
+                if (slope < 0) omega = std::clamp(-1 / slope, 0.5, 1.0);
+            }
+            T[k] += std::min(omega, omegaAll) * r;
+        }
+        was = std::move(now);
+        rWas = std::move(rNow);
+    }
 }
 
 std::vector<double> SemiconductorProblem::stimulatedRates() const
@@ -4370,7 +4635,11 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             // - a sliced photodiode's first slice 0.5 % off itself solved
             // alone. Updated at it, and on, while they move by more than
             // 10⁻⁶ - at most eight times: a MOSFET's channel's cycle.)
-            if (met && held && consistent && refreshed < 8) {
+            // (Hot carriers always, held or not: their temperatures and
+            // mobilities each other's only so, a temperature halfway each
+            // time - at most sixty times.)
+            const bool hot = a_energy && a_energyActive;
+            if (met && ((held && consistent) || hot) && refreshed < (hot ? 200 : 8)) {
                 double moved = 0;
                 for (int s = 0; s < S; ++s) {
                     useSlice(s);
@@ -4385,6 +4654,13 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
                 }
                 if (moved > 1e-6) {
                     ++refreshed;
+                    // (Hot carriers unsettled after all: not a solution.)
+                    if (hot && refreshed >= 200) {
+                        *why = tr("%1: its hot carriers' temperatures did not settle (their mobilities still moving by %2)")
+                                   .arg(a_node->name())
+                                   .arg(moved, 0, 'g', 3);
+                        return false;
+                    }
                     continue;
                 }
             }
@@ -4801,6 +5077,22 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
         a_ionCurrent = ionized;
         for (int t = 0; t < int(a_elements.size()) && std::size_t(t) < a_ionRate.size(); ++t)
             if (f.extra.size() >= std::size_t(ExtraHead + PerTriangle * (t + 1))) f.extra[std::size_t(ExtraHead + PerTriangle * t + 32)] = a_ionRate[std::size_t(t)];
+    }
+    // Hot carriers' temperatures as solved, the first slice's (each
+    // triangle its corners' mean): semi.Tn, semi.Tp.
+    if (a_energy) {
+        if (a_slices > 1) useSlice(0);
+        const Eigen::VectorXd x0 = a_slices > 1 ? sliceOf(x, 0) : x;
+        degeneracy(x0);
+        carrierTemperatures(x0);
+        const Space& tsp = *f.space;
+        for (int t = 0; t < int(a_elements.size()); ++t) {
+            if (a_elements[std::size_t(t)].domain < 0 || f.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1))) continue;
+            const int* tdof = tsp.dofs(t);
+            double* e = &f.extra[std::size_t(ExtraHead + PerTriangle * t)];
+            e[35] = a_Tn.size() == N ? (a_Tn[std::size_t(tdof[0])] + a_Tn[std::size_t(tdof[1])] + a_Tn[std::size_t(tdof[2])]) / 3 : NaN;
+            e[36] = a_Tp.size() == N ? (a_Tp[std::size_t(tdof[0])] + a_Tp[std::size_t(tdof[1])] + a_Tp[std::size_t(tdof[2])]) / 3 : NaN;
+        }
     }
     // The mobilities as solved, for what is read at a point (semi.mun, the
     // current densities).
@@ -5419,6 +5711,18 @@ void SemiconductorProblem::ionizationIntegrals(const Eigen::VectorXd& x)
 bool SemiconductorProblem::stationary(QString* why)
 {
     Field& f = field();
+    // (Hot carriers: walked with the field's mobilities, their temperatures
+    // anew at its end.)
+    struct Hot {
+        bool& active;
+        ~Hot() { active = true; }
+    } hot{a_energyActive};
+    if (a_energy) {
+        a_energyActive = false;
+        for (auto* v : {&a_Tn, &a_Tp, &a_TnWas, &a_TpWas, &a_dTnWas, &a_dTpWas}) v->clear();
+        a_omegaT[0] = a_omegaT[1] = 1;
+        a_residualT[0] = a_residualT[1] = 0;
+    }
     std::vector<double> goal;
     if (!targets(goal, why)) return false;
     Eigen::VectorXd x = stateVector();
@@ -5663,8 +5967,10 @@ bool SemiconductorProblem::stationary(QString* why)
     // (At its end its mobilities its solution's own: held from fifteen of
     // Newton's steps on, before the potential settled, the solution was
     // theirs - solved again with them updated at it while they move. Held
-    // settled, they are its own already.)
-    if ((a_saturation || a_lombardi) && solves > 0 && a_heldUnsettled) {
+    // settled, they are its own already. Hot carriers always: their
+    // temperatures, halfway each update, lag a walk's steps.)
+    if (((a_saturation || a_lombardi) && a_heldUnsettled && solves > 0) || a_energy) {
+        a_energyActive = true;
         // (Not polished: the mobilities as the solution had them again.)
         std::vector<std::pair<double, double>> edges(a_edges.size());
         for (std::size_t k = 0; k < a_edges.size(); ++k) edges[k] = {a_edges[k].wn, a_edges[k].wp};
@@ -5673,7 +5979,7 @@ bool SemiconductorProblem::stationary(QString* why)
         int steps = 0;
         QString failedPolish;
         // (Each update met again in a few steps: their room for eight.)
-        if (newton(polished, 0, nullptr, 120, &steps, &failedPolish, false, true)) {
+        if (newton(polished, 0, nullptr, a_energy ? 1000 : 120, &steps, &failedPolish, false, true)) {
             x = polished;
             iterations += steps;
         } else {
@@ -6172,6 +6478,24 @@ void SemiconductorProblem::initialize()
             degeneracy(x);
             storeIons(x);
         }
+        // (Its mobilities - and hot carriers' temperatures, theirs again
+        // at it - as they were: the start's snapshot showed setup's, the
+        // low field's, and its first step began from them.)
+        if ((a_saturation || a_lombardi || a_energy) && a_slices == 1) {
+            const Eigen::VectorXd x = stateVector();
+            for (int k = 0; k < (a_energy ? 100 : 1); ++k) {
+                std::vector<std::pair<double, double>> was(a_edges.size());
+                for (std::size_t e = 0; e < a_edges.size(); ++e) was[e] = {a_edges[e].wn, a_edges[e].wp};
+                updateMobilities(x);
+                double moved = 0;
+                for (std::size_t e = 0; e < a_edges.size(); ++e) {
+                    if (was[e].first > 0) moved = std::max(moved, std::abs(a_edges[e].wn / was[e].first - 1));
+                    if (was[e].second > 0) moved = std::max(moved, std::abs(a_edges[e].wp / was[e].second - 1));
+                }
+                if (moved < 1e-9) break;
+            }
+            store(x);
+        }
         return;
     }
     // (A laser's walk to its voltages is its step's, its mode read - no
@@ -6316,6 +6640,7 @@ void SemiconductorProblem::latticeTemperature()
         em.vn = quayVsat(m.vsatAn, T) / quayVsat(m.vsatAn, a_T);
         em.vp = quayVsat(m.vsatAp, T) / quayVsat(m.vsatAp, a_T);
         em.ii = phononGamma(m.ionPhonon, T) / phononGamma(m.ionPhonon, a_T);
+        em.TL = T;
     }
     edgeWeights(nullptr);
     // Each node's, its bands made again where it changed (its intrinsic
@@ -7275,6 +7600,8 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     s.joule = ex[18];
     s.heat = ex[33];
     s.lightHeat = std::isfinite(ex[34]) ? ex[34] : 0.0;
+    s.Tn = std::isfinite(ex[35]) ? ex[35] : (field.extra.size() > 1 ? field.extra[1] : NaN);
+    s.Tp = std::isfinite(ex[36]) ? ex[36] : (field.extra.size() > 1 ? field.extra[1] : NaN);
     s.Gion = std::isfinite(ex[32]) ? ex[32] : 0.0;
     if (ex[16] > 0 && ex[17] > 0) {
         const FermiHalf& fh = fermiHalf();

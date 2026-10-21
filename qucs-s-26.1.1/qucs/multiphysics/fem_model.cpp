@@ -1719,13 +1719,33 @@ QList<NodeKind> makeKinds()
                           "(Quay et al. 2000); 0 where none is known. 0: the same at any temperature")),
                   QStringLiteral("saturation=true")),
           shownIf(expr(QStringLiteral("Avp"), tr("Holes' vsat temperature coefficient A"), QString(), QStringLiteral("0.63")), QStringLiteral("saturation=true")),
-          shownIf(choice(QStringLiteral("driving"), tr("Driving force"), {QStringLiteral("current"), QStringLiteral("field")},
-                         {tr("Along the current"), tr("The whole field |E|")}, QStringLiteral("current"),
+          shownIf(choice(QStringLiteral("driving"), tr("Driving force"), {QStringLiteral("current"), QStringLiteral("field"), QStringLiteral("energy")},
+                         {tr("Along the current"), tr("The whole field |E|"), tr("The carriers' temperature (energy balance)")},
+                         QStringLiteral("current"),
                          tr("Along the current: each carrier's quasi-Fermi potential's gradient, J/(q n µ) - the field along its "
                             "current where it drifts (E·J/|J|), nought at equilibrium, no more than |E| - so a MOSFET's gate field "
                             "across its channel heats nothing. The whole field: as it was, right where field and current lie along "
-                            "each other (a diode, a bar)")),
+                            "each other (a diode, a bar). The carriers' temperature: hot carriers - each carrier's temperature "
+                            "from its energy balance (what the field gives it, carried with its current and conducted, relaxing "
+                            "to the lattice in τw), its mobility the one at the field that heats it so where all is uniform: the "
+                            "same there, but carriers entering a high field still cool run faster than saturated - velocity "
+                            "overshoot, a short transit layer's; semi.Tn, semi.Tp")),
                   QStringLiteral("saturation=true")),
+          shownIf(expr(QStringLiteral("tauwn"), tr("Electrons' energy relaxation time τw"), QStringLiteral("s"), QStringLiteral("0.3[ps]"),
+                       tr("How fast hot electrons give their energy to the lattice: their overshoot's length about vsat τw (silicon's "
+                          "0.3 ps, 30 nm)")),
+                  QStringLiteral("saturation=true&driving=energy")),
+          shownIf(expr(QStringLiteral("tauwp"), tr("Holes' energy relaxation time τw"), QStringLiteral("s"), QStringLiteral("0.25[ps]")),
+                  QStringLiteral("saturation=true&driving=energy")),
+          shownIf(choice(QStringLiteral("velocity"), tr("Electrons' velocity"), {QStringLiteral("ct"), QStringLiteral("transferred")},
+                         {tr("Saturating (Caughey and Thomas)"), tr("Transferred electrons (negative differential mobility)")},
+                         QStringLiteral("ct"),
+                         tr("Transferred electrons: (µ0 + (vsat/F)(F/E0)⁴)/(1 + (F/E0)⁴) - past its peak near E0 the velocity "
+                            "falls as the electrons move to the heavier valleys (GaAs, InP: Gunn's effect), to vsat")),
+                  QStringLiteral("saturation=true")),
+          shownIf(expr(QStringLiteral("E0n"), tr("Transferred electrons' field E0"), QStringLiteral("V/m"), QStringLiteral("4e3[V/cm]"),
+                       tr("GaAs's 4 kV/cm")),
+                  QStringLiteral("saturation=true&velocity=transferred")),
           flag(QStringLiteral("surface"), tr("Surface scattering (Lombardi)"), false,
                tr("At an insulator's surface - a MOSFET's channel - acoustic phonons and the surface's roughness scatter the "
                   "carriers by the field across it: 1/µ = 1/µbulk + D/µac + D/µsr, µac = B/E⊥ + C (N/1 cm⁻³)^λ / (T E⊥^⅓), µsr = "
