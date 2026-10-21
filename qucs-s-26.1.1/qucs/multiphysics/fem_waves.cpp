@@ -135,6 +135,10 @@ public:
         // (J, or eV as a number), the reduced mass (m0), the edge's strength (1/m).
         bool electroabsorption = false;
         Expression eaField, eaGap, eaMass, eaStrength, eaBroadening;
+        // (Its gap of the absorber's temperature: Varshni's α (J/K) and β
+        // (K) about 300 K; none without eaT.)
+        Expression eaT;
+        double eaAlpha = 0, eaBeta = 0;
         // (Its value without a field, the same wherever the photon, gap,
         // mass, strength and broadening are: the last kept.)
         mutable double eaZeroKey[5] = {NaN, NaN, NaN, NaN, NaN};
@@ -306,7 +310,12 @@ public:
                 const double v = value(x, fallback);
                 return x.isValid() && x.dim() != Dim::of(2, 1, -2) ? v * 1.602176634e-19 : v;
             };
-            const double gap = energy(m.eaGap, NaN), sigma = std::max(energy(m.eaBroadening, 0.0), 0.0);
+            double gap = energy(m.eaGap, NaN);
+            const double sigma = std::max(energy(m.eaBroadening, 0.0), 0.0);
+            if (m.eaT.isValid() && m.eaAlpha > 0) {
+                const double T = value(m.eaT, NaN), b = m.eaBeta;
+                if (T > 0) gap -= m.eaAlpha * (T * T / (T + b) - 300.0 * 300.0 / (300 + b));
+            }
             const double mr = value(m.eaMass, NaN), A = value(m.eaStrength, NaN), F = value(m.eaField, 0.0);
             if (std::isfinite(gap) && mr > 0 && A > 0) {
                 // κ = α λ/4π = α c/2ω.
@@ -813,6 +822,28 @@ public:
                 m.eaField = c.compile(feat->text(QStringLiteral("Fea")), *feat, QStringLiteral("Fea"));
                 if (!feat->text(QStringLiteral("Ebroad")).trimmed().isEmpty())
                     m.eaBroadening = c.compile(feat->text(QStringLiteral("Ebroad")), *feat, QStringLiteral("Ebroad"));
+                // (At the absorber's temperature: the gap's Varshni α and β,
+                // the feature's or its material's; none, its gap at any.)
+                if (!feat->text(QStringLiteral("Tea")).trimmed().isEmpty()) {
+                    m.eaT = c.compile(feat->text(QStringLiteral("Tea")), *feat, QStringLiteral("Tea"));
+                    const QString at = own ? feat->text(QStringLiteral("Egdalpha")) : mat ? c.property(*mat, QStringLiteral("Egdalpha")) : QString();
+                    const QString bt = own ? feat->text(QStringLiteral("Egdbeta")) : mat ? c.property(*mat, QStringLiteral("Egdbeta")) : QString();
+                    if (at.trimmed().isEmpty() || bt.trimmed().isEmpty())
+                        c.problem(tr("domain %1 (%2): its material has no Varshni α and β for its direct gap's temperature (Egdalpha, "
+                                     "Egdbeta: Germanium has them)")
+                                      .arg(d + 1)
+                                      .arg(object));
+                    else {
+                        QString err;
+                        const std::optional<double> a = evaluateConstant(at, s.parameters().scope, Dim::of(2, 1, -2) / Dim::temperature(), &err);
+                        const std::optional<double> b = evaluateConstant(bt, s.parameters().scope, Dim::temperature(), &err);
+                        if (!a || !b || !(*a >= 0) || !(*b >= 0)) c.problem(tr("%1: its direct gap's Varshni α and β: %2").arg(feat->name(), err));
+                        else {
+                            m.eaAlpha = *a;
+                            m.eaBeta = *b;
+                        }
+                    }
+                }
                 m.electroabsorption = true;
             }
             if (feat->flag(QStringLiteral("thermooptic"))) {

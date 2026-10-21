@@ -1385,6 +1385,16 @@ QList<NodeKind> makeKinds()
               shownIf(expr(QStringLiteral("Afk"), tr("Edge's strength A"), QStringLiteral("1/m"), QStringLiteral("2e4[1/cm]"),
                            tr("α = A √((ħω - Eg)/1 eV) (1 eV/ħω) above the gap without a field")),
                       QStringLiteral("electroabsorption=true&easource=user")),
+              shownIf(expr(QStringLiteral("Egdalpha"), tr("Gap's Varshni α"), QStringLiteral("eV/K"), QStringLiteral("5.82e-4[eV/K]"),
+                           tr("The direct gap of a temperature T: Eg - α (T²/(T + β) - (300 K)²/(300 K + β)), Eg the 300 K one - "
+                              "germanium's 5.82e-4 eV/K and 296 K (the Ioffe Institute's)")),
+                      QStringLiteral("electroabsorption=true&easource=user")),
+              shownIf(expr(QStringLiteral("Egdbeta"), tr("Gap's Varshni β"), QStringLiteral("K"), QStringLiteral("296[K]")),
+                      QStringLiteral("electroabsorption=true&easource=user")),
+              shownIf(spatial(QStringLiteral("Tea"), tr("Absorber's temperature"), QStringLiteral("K"), QString(),
+                              tr("Where the direct gap is taken (Varshni's: germanium's some 0.44 meV less a kelvin, its edge at 1550 nm "
+                                 "moving with it) - a heat physics' ht.T, say. Empty: its gap as given, at 300 K")),
+                      QStringLiteral("electroabsorption=true")),
               shownIf(spatial(QStringLiteral("Fea"), tr("Electric field"), QStringLiteral("V/m"), QStringLiteral("semi.normE"),
                               tr("A semiconductor physics' (semi.normE), or as given")),
                       QStringLiteral("electroabsorption=true")),
@@ -1694,6 +1704,12 @@ QList<NodeKind> makeKinds()
                        tr("µ0 / (1 + (µ0 F/vsat)^β)^(1/β): 2 for silicon's electrons, 1 for its holes (Caughey and Thomas)")),
                   QStringLiteral("saturation=true")),
           shownIf(expr(QStringLiteral("betap"), tr("Holes' saturation exponent β"), QString(), QStringLiteral("1")), QStringLiteral("saturation=true")),
+          shownIf(expr(QStringLiteral("Avn"), tr("Electrons' vsat temperature coefficient A"), QString(), QStringLiteral("0.26"),
+                       tr("Quay's: vsat(T) = vsat/((1 - A) + A T/300 K), vsat the 300 K one - at the physics' T and at a lattice "
+                          "temperature TL. The library's: silicon's 0.26 and 0.63, germanium's 0.55 and 0.61, GaAs's 0.56 and 0.41 "
+                          "(Quay et al. 2000); 0 where none is known. 0: the same at any temperature")),
+                  QStringLiteral("saturation=true")),
+          shownIf(expr(QStringLiteral("Avp"), tr("Holes' vsat temperature coefficient A"), QString(), QStringLiteral("0.63")), QStringLiteral("saturation=true")),
           shownIf(choice(QStringLiteral("driving"), tr("Driving force"), {QStringLiteral("current"), QStringLiteral("field")},
                          {tr("Along the current"), tr("The whole field |E|")}, QStringLiteral("current"),
                          tr("Along the current: each carrier's quasi-Fermi potential's gradient, J/(q n µ) - the field along its "
@@ -1875,7 +1891,13 @@ QList<NodeKind> makeKinds()
               shownIf(expr(QStringLiteral("bp2"), tr("Holes' b above E0"), fieldUnit, QStringLiteral("1.693e6[V/cm]")), user),
               shownIf(expr(QStringLiteral("E0"), tr("The ranges' field E0"), fieldUnit, QStringLiteral("4e5[V/cm]")), user),
               shownIf(expr(QStringLiteral("betan"), tr("Electrons' exponent β"), QString(), QStringLiteral("1")), user),
-              shownIf(expr(QStringLiteral("betap"), tr("Holes' exponent β"), QString(), QStringLiteral("1")), user)},
+              shownIf(expr(QStringLiteral("betap"), tr("Holes' exponent β"), QString(), QStringLiteral("1")), user),
+              shownIf(expr(QStringLiteral("Eph"), tr("Optical phonon energy ħω"), QStringLiteral("eV"), QStringLiteral("0.063[eV]"),
+                           tr("The coefficients' temperature: a and b, given at 300 K, times γ = tanh(ħω/2k 300 K)/tanh(ħω/2kT) at "
+                              "the physics' T and at a lattice temperature TL (van Overstraeten and de Man's; the carriers' mean "
+                              "free path between phonons, shorter as the lattice warms). The material's: its LO phonon - "
+                              "silicon's 63 meV, germanium's 37, GaAs's 36, InP's 43. 0: the same at any temperature")),
+                      user)},
              {}, {}, false, false, QStringLiteral("ii"),
              tr("Carriers a field accelerates make pairs: G = (αn |Jn| + αp |Jp|)/q, α = a e^(-(b/F)^β) (Chynoweth's; silicon's "
                 "van Overstraeten and de Man's, its holes' two ranges about 400 kV/cm), F each triangle's driving field - the "
@@ -1922,7 +1944,10 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("semiconductor/generation"), tr("User-Defined Generation"), QStringLiteral("semi"), QStringLiteral("domainfeature"),
          Level::Domain,
          {selectionProp(none), spatial(QStringLiteral("G"), tr("Generation rate G"), QStringLiteral("1/(m^3*s)"), QStringLiteral("0"),
-                                       tr("Pairs made per volume and time: of x, y, t, other physics' fields (light absorbed)"))},
+                                       tr("Pairs made per volume and time: of x, y, t, other physics' fields (light absorbed)")),
+          expr(QStringLiteral("Eph"), tr("Photon energy"), QStringLiteral("eV"), QString(),
+               tr("The energy each pair is made with, for the light's heat in semi.H (its excess over what the pair carries "
+                  "heat at once): light's photon energy, hc/λ. Empty: the gap's, the pairs made at the band edges"))},
          {}, {}, false, false, QStringLiteral("gen"),
          tr("Electron-hole pairs made: optical generation, say - an imported map as an interpolation of x and y (Definitions). In "
             "a frequency step after a stationary one it is the light modulated: its pairs' small-signal response, semi.Hop_<contact> "
