@@ -443,10 +443,15 @@ private slots:
 
         // Per the stack: a GaAs well 8 nm between AlGaAs barriers 8 nm each,
         // the absorption the wells' times 8/24; per a length, times 8/length.
+        // (Sanitized, its line's elements 0.25 nm, not 0.1: each run's dense
+        // states some 40 s there, the function 236 s - past CI's limit on
+        // a slower runner, bc35507's; now 87. Not the padded well's below:
+        // coarser, its states' search 13 times as long.)
+        const QString line = slowBuild() ? QStringLiteral(R"(, "h1d": "0.25[nm]")") : QString();
         const QString spec = QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.45[eV], 1.75[eV], 7)", "states": 2, "linewidth": "5[meV]" %1})x");
         auto well = [&](const QString& more) {
             return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
-                                               QStringLiteral("8"), QStringLiteral("8"), QString(), spec.arg(more))));
+                                               QStringLiteral("8"), QStringLiteral("8"), line, spec.arg(more))));
         };
         const Run wells = well(QString()), stack = well(QStringLiteral(R"(, "normalize": "stack")")),
                   length = well(QStringLiteral(R"(, "normalize": "length", "normlength": "100[nm]")"));
