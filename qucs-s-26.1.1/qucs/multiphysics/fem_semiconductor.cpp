@@ -442,6 +442,11 @@ private:
         // the interface: i, else j.)
         double across = 0;
         bool emitsAtI = false;
+        // Its triangles' largest mobility of each carrier, times q Vt: its
+        // own, wn/w, bounded by it where its current density is taken - a
+        // ratio of two sums of cotangents, where they all but cancel (a
+        // sliver of a face) two triangles' mobilities apart made it anything.
+        double muN = 0, muP = 0;
     };
     int nodes() const { return a_n; }
     double doping(int i) const { return a_Nd[std::size_t(i)] - a_Na[std::size_t(i)]; }
@@ -913,7 +918,7 @@ private:
     int a_total = 0;
     std::vector<double> a_sliceWeight, a_sliceZ;
     std::vector<std::vector<double>> a_sliceGeneration;
-    std::vector<std::vector<std::pair<double, double>>> a_sliceEdges;
+    std::vector<std::vector<std::array<double, 4>>> a_sliceEdges;   // by slice: each edge's wn, wp, muN, muP
     std::vector<std::vector<double>> a_sliceCurrent;   // by slice: each contact's current, its own length's (A)
     std::size_t a_slicesAt = 0, a_sliceBlock = 0;
     mutable int a_sliceNow = 0;
@@ -2971,7 +2976,7 @@ void SemiconductorProblem::contactValues(const std::vector<double>& applied)
 
 void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
 {
-    for (Edge& e : a_edges) e.wn = e.wp = 0;
+    for (Edge& e : a_edges) e.wn = e.wp = e.muN = e.muP = 0;
     std::vector<double> geometric(a_edges.size(), 0.0), magnitude(a_edges.size(), 0.0);
     // (Tunnelling: each emitting edge's field, its triangles' mean |E|.)
     std::vector<double> field(a_emission == 2 && x ? a_edges.size() : 0, 0.0), fields(field.size(), 0.0);
@@ -2994,6 +2999,8 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
             Edge& e = a_edges[std::size_t(em.edge[k])];
             e.wn += em.cot[k] * mun;
             e.wp += em.cot[k] * mup;
+            e.muN = std::max(e.muN, mun);
+            e.muP = std::max(e.muP, mup);
             geometric[std::size_t(em.edge[k])] += em.cot[k];
             magnitude[std::size_t(em.edge[k])] += std::abs(em.cot[k]) + em.half;
             if (!field.empty() && (e.vRn > 0 || e.vRp > 0)) {
@@ -3013,6 +3020,8 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
         magnitude[o] += magnitude[k];
         a_edges[o].wn += e.wn;
         a_edges[o].wp += e.wp;
+        a_edges[o].muN = std::max(a_edges[o].muN, e.muN);
+        a_edges[o].muP = std::max(a_edges[o].muP, e.muP);
         geometric[k] = magnitude[k] = e.wn = e.wp = 0;
     }
     a_clamped = 0;
@@ -3027,6 +3036,8 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
         e.w = std::max(geometric[k], 0.0);
         e.wn = e.w > 0 ? std::max(e.wn, 0.0) * Q * a_Vt : 0.0;
         e.wp = e.w > 0 ? std::max(e.wp, 0.0) * Q * a_Vt : 0.0;
+        e.muN *= Q * a_Vt;
+        e.muP *= Q * a_Vt;
         // An edge into a heterojunction's other side: the step's emission,
         // G = q v_R (1 + δ) over the edge's face across the interface, in
         // series at its end there with the edge's Scharfetter and Gummel
@@ -3777,21 +3788,28 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             if (e.w <= 0 || e.domain < 0 || !a_media[std::size_t(e.domain)].ionizationCurrents) continue;
             double dN = 0, dP = 0;
             edgeSteps(e, x, &dN, &dP);
-            const double face = e.w * e.h;   // the dual face's area (m²)
+            // (Its flux over its dual face, w h: its mobility (Σ cot µ)/(Σ
+            // cot) q Vt over its length - bounded by its triangles' largest.
+            // Unbounded, saturated mobilities apart across an edge of a
+            // sliver of a face, 10⁻¹⁵ of its neighbours', made a triangle's
+            // holes' current 7·10⁵ A/m² in a diode carrying 0.04: the
+            // electrons beside it no solution, an avalanche diode's wall past
+            // -22.7 V.)
+            const double gn = std::min(e.wn / e.w, e.muN) / e.h, gp = std::min(e.wp / e.w, e.muP) / e.h;
             const double bnp = bern(dN), bnm = bern(-dN), bpp = bern(dP), bpm = bern(-dP);
             EdgeCurrent& c = ec[k];
-            c.jn = e.wn * (e.fNj * nn(e.j) * bnp - e.fNi * nn(e.i) * bnm) / face;
-            c.jp = e.wp * (e.fPi * pp(e.i) * bpp - e.fPj * pp(e.j) * bpm) / face;
-            c.fn = 1e-10 * std::abs(e.wn) * (std::abs(e.fNj * nn(e.j) * bnp) + std::abs(e.fNi * nn(e.i) * bnm)) / face;
-            c.fp = 1e-10 * std::abs(e.wp) * (std::abs(e.fPi * pp(e.i) * bpp) + std::abs(e.fPj * pp(e.j) * bpm)) / face;
-            const double dnV = e.wn * (e.fNj * nn(e.j) * dbern(dN) + e.fNi * nn(e.i) * dbern(-dN)) / a_Vt / face;
-            const double dpV = e.wp * (e.fPi * pp(e.i) * dbern(dP) + e.fPj * pp(e.j) * dbern(-dP)) / a_Vt / face;
-            c.dn[0] = -e.wn * e.fNi * bnm / face;
-            c.dn[1] = e.wn * e.fNj * bnp / face;
+            c.jn = gn * (e.fNj * nn(e.j) * bnp - e.fNi * nn(e.i) * bnm);
+            c.jp = gp * (e.fPi * pp(e.i) * bpp - e.fPj * pp(e.j) * bpm);
+            c.fn = 1e-10 * gn * (std::abs(e.fNj * nn(e.j) * bnp) + std::abs(e.fNi * nn(e.i) * bnm));
+            c.fp = 1e-10 * gp * (std::abs(e.fPi * pp(e.i) * bpp) + std::abs(e.fPj * pp(e.j) * bpm));
+            const double dnV = gn * (e.fNj * nn(e.j) * dbern(dN) + e.fNi * nn(e.i) * dbern(-dN)) / a_Vt;
+            const double dpV = gp * (e.fPi * pp(e.i) * dbern(dP) + e.fPj * pp(e.j) * dbern(-dP)) / a_Vt;
+            c.dn[0] = -gn * e.fNi * bnm;
+            c.dn[1] = gn * e.fNj * bnp;
             c.dn[2] = -dnV;
             c.dn[3] = dnV;
-            c.dp[0] = e.wp * e.fPi * bpp / face;
-            c.dp[1] = -e.wp * e.fPj * bpm / face;
+            c.dp[0] = gp * e.fPi * bpp;
+            c.dp[1] = -gp * e.fPj * bpm;
             c.dp[2] = -dpV;
             c.dp[3] = dpV;
         }
@@ -4310,10 +4328,12 @@ void SemiconductorProblem::useSlice(int s)
 {
     a_sliceNow = s;
     if (a_slices <= 1 || std::size_t(s) >= a_sliceEdges.size() || a_sliceEdges[std::size_t(s)].size() != a_edges.size()) return;
-    const std::vector<std::pair<double, double>>& w = a_sliceEdges[std::size_t(s)];
+    const std::vector<std::array<double, 4>>& w = a_sliceEdges[std::size_t(s)];
     for (std::size_t k = 0; k < a_edges.size(); ++k) {
-        a_edges[k].wn = w[k].first;
-        a_edges[k].wp = w[k].second;
+        a_edges[k].wn = w[k][0];
+        a_edges[k].wp = w[k][1];
+        a_edges[k].muN = w[k][2];
+        a_edges[k].muP = w[k][3];
     }
 }
 
@@ -4321,9 +4341,9 @@ void SemiconductorProblem::keepSliceEdges(int s)
 {
     if (a_slices <= 1) return;
     if (a_sliceEdges.size() != std::size_t(a_slices)) a_sliceEdges.assign(std::size_t(a_slices), {});
-    std::vector<std::pair<double, double>>& w = a_sliceEdges[std::size_t(s)];
+    std::vector<std::array<double, 4>>& w = a_sliceEdges[std::size_t(s)];
     w.resize(a_edges.size());
-    for (std::size_t k = 0; k < a_edges.size(); ++k) w[k] = {a_edges[k].wn, a_edges[k].wp};
+    for (std::size_t k = 0; k < a_edges.size(); ++k) w[k] = {a_edges[k].wn, a_edges[k].wp, a_edges[k].muN, a_edges[k].muP};
 }
 
 bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::vector<double>* history, int maxSteps, int* steps, QString* why, bool met,
@@ -5744,7 +5764,7 @@ bool SemiconductorProblem::stationary(QString* why)
             for (Contact& c : p->a_contacts) c.walkR = NaN;
         }
     } ended{this};
-    auto finish = [&](const Eigen::VectorXd& solved, bool still) {
+    auto finish = [this, &goal, &f](const Eigen::VectorXd& solved, bool still) {
         a_lightScale = 1;
         for (Contact& c : a_contacts) c.walkR = NaN;
         for (std::size_t k = 0; k < a_contacts.size(); ++k) a_contacts[k].applied = goal[k];
@@ -5980,9 +6000,9 @@ bool SemiconductorProblem::stationary(QString* why)
     if (((a_saturation || a_lombardi) && a_heldUnsettled && solves > 0) || a_energy) {
         a_energyActive = true;
         // (Not polished: the mobilities as the solution had them again.)
-        std::vector<std::pair<double, double>> edges(a_edges.size());
-        for (std::size_t k = 0; k < a_edges.size(); ++k) edges[k] = {a_edges[k].wn, a_edges[k].wp};
-        const std::vector<std::vector<std::pair<double, double>>> sliceEdges = a_sliceEdges;
+        std::vector<std::array<double, 4>> edges(a_edges.size());
+        for (std::size_t k = 0; k < a_edges.size(); ++k) edges[k] = {a_edges[k].wn, a_edges[k].wp, a_edges[k].muN, a_edges[k].muP};
+        const std::vector<std::vector<std::array<double, 4>>> sliceEdges = a_sliceEdges;
         Eigen::VectorXd polished = x;
         int steps = 0;
         QString failedPolish;
@@ -5992,8 +6012,10 @@ bool SemiconductorProblem::stationary(QString* why)
             iterations += steps;
         } else {
             for (std::size_t k = 0; k < a_edges.size(); ++k) {
-                a_edges[k].wn = edges[k].first;
-                a_edges[k].wp = edges[k].second;
+                a_edges[k].wn = edges[k][0];
+                a_edges[k].wp = edges[k][1];
+                a_edges[k].muN = edges[k][2];
+                a_edges[k].muP = edges[k][3];
             }
             a_sliceEdges = sliceEdges;
             a_s.log << tr("%1: its mobilities, held as it converged, not made its solution's own (%2)").arg(a_node->name(), failedPolish);

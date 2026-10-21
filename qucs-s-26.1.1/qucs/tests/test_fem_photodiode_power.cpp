@@ -1355,6 +1355,74 @@ private slots:
         QVERIFY2(M > 3, qPrintable(QString::number(M)));
         QVERIFY2(std::abs(F / mcintyre - 1) < 0.03, qPrintable(QStringLiteral("%1 %2").arg(F).arg(mcintyre)));
     }
+
+    // The avalanche diode's wall (the APD round's, 18 October): a one-sided
+    // silicon junction (p⁺ 1e19, n 1e16 over 4 µm, its breakdown 51.7 V),
+    // velocity saturation along the current, impact ionization, lit beyond
+    // its depletion (1e24 pairs/(m³ s) past 3 µm), meshed at 0.1 µm. Its
+    // sweep found no solution past -22.7 V (Fermi-Dirac's) or -25 V
+    // (Boltzmann's): one edge's two triangles' cotangents all but cancelled,
+    // its face 10⁻¹⁵ of its neighbours', and their mobilities, saturated
+    // apart, made its current density - the ionization's fit's - anything:
+    // a triangle's holes' current 7·10⁵ A/m² in a diode carrying 0.04, the
+    // electrons beside it no solution but a negative one. Now each edge's
+    // mobility there no more than its triangles' largest.
+    // Swept to -50 V: its multiplication, the current over the same diode's
+    // without its pairs in the continuity, McIntyre's for holes entering
+    // the field, 1/(1 - Ip), its ionization integral (semi.Mp).
+    void anAvalanchePastTheWall()
+    {
+        auto diode = [](bool fermi, bool currents) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "Va", "expression": "0[V]"}],
+      "components": [{"unit": "um",
+        "geometry": [{"type": "rectangle", "label": "pplus", "position": ["-0.5", "0"], "size": ["0.5", "0.2"]},
+                     {"type": "rectangle", "label": "nside", "position": ["0", "0"], "size": ["4", "0.2"]}],
+        "materials": [{"material": "Silicon", "selection": {"all": true}}],
+        "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+          {"type": "model", "saturation": true, "driving": "current", "fermi": %1, "selection": {"all": true}},
+          {"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["pplus"]}},
+          {"type": "doping", "dopant": "donor", "N0": "1e16[1/cm^3]", "selection": {"only": ["nside"]}},
+          {"type": "impact", "currents": %2, "selection": {"all": true}},
+          {"type": "generation", "G": "1e24[1/(m^3*s)]*(x > 3[um])", "selection": {"all": true}},
+          {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["pplus"], "side": "left"}},
+          {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["nside"], "side": "right"}}]}],
+        "mesh": {"size": "normal", "custom": true, "hmax": "0.1"}}],
+      "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["Va", "-10, -20, -25, -30, -40, -50", "V"]]}, {"type": "stationary"}]}]})json")
+                               .arg(fermi ? QLatin1String("true") : QLatin1String("false"), currents ? QLatin1String("true") : QLatin1String("false"))
+                               .toUtf8());
+        };
+        // (A sanitized build: Boltzmann's alone - 114 s for the three
+        // sweeps, two thirds of it.)
+        const bool slow = slowBuild();
+        const Run boltzmann = run(diode(false, true)), bare = run(diode(false, false));
+        const Run fermi = slow ? Run() : run(diode(true, true));
+        for (const Run* r : {&boltzmann, &fermi, &bare}) {
+            if (r == &fermi && slow) continue;
+            QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+            QVERIFY2(r->study.stopped.isEmpty(), qPrintable(r->study.stopped));
+            QCOMPARE(r->study.solutions.size(), std::size_t(6));
+        }
+        static const double volts[6] = {-10, -20, -25, -30, -40, -50};
+        for (int k = 0; k < 6; ++k) {
+            const double I = std::abs(global(*boltzmann.study.solutions[std::size_t(k)], QStringLiteral("semi.I_k")));
+            const double If = slow ? I : std::abs(global(*fermi.study.solutions[std::size_t(k)], QStringLiteral("semi.I_k")));
+            const double I0 = std::abs(global(*bare.study.solutions[std::size_t(k)], QStringLiteral("semi.I_k")));
+            const double Mp = global(*boltzmann.study.solutions[std::size_t(k)], QStringLiteral("semi.Mp"));
+            const double M = I / I0;
+            qInfo("at %g V: %.6g A (Fermi-Dirac's %.6g), without its pairs %.6g A: M %.4f, McIntyre's Mp %.4f", volts[k], I, If, I0, M, Mp);
+            // (To -40 V the two to 1 %; at -50 V, a volt and a half from
+            // breakdown, M - its ionization integral 1 - 1/M - to 3 %: 5.87
+            // against 6.65, 2.4 % in the integral, 1.0 % at 0.05 µm, 0.3 % at
+            // 0.025.) Fermi-Dirac's, its n side not degenerate, the same.
+            if (k < 5) QVERIFY2(std::abs(M / Mp - 1) < 0.01, qPrintable(QStringLiteral("%1 V: %2 %3").arg(volts[k]).arg(M).arg(Mp)));
+            else {
+                QVERIFY2(M > 5, qPrintable(QString::number(M)));
+                QVERIFY2(std::abs((1 - 1 / M) / (1 - 1 / Mp) - 1) < 0.03, qPrintable(QStringLiteral("%1 %2").arg(M).arg(Mp)));
+            }
+            QVERIFY2(std::abs(If / I - 1) < 0.01, qPrintable(QStringLiteral("%1 V: %2 %3").arg(volts[k]).arg(If).arg(I)));
+        }
+    }
 };
 
 QTEST_GUILESS_MAIN(TestFemPhotodiodePower)
