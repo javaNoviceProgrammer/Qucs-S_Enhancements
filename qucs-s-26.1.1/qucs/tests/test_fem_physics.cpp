@@ -133,6 +133,7 @@ private slots:
     void sphericalCapacitor();
     void sweeps();
     void sweepPointsAtOnce();
+    void aSweepsPointsAtOnceCompileDeepExpressions();
     void aPartLeftFloating();
     void cutLines();
     void dxfImport();
@@ -465,6 +466,33 @@ void TestFemPhysics::aPartLeftFloating()
                                                 + QStringLiteral(R"({"type": "flux", "kind": "convective", "h": "10[W/(m^2*K)]", "selection": {"of": ["b"], "side": "top"}})"))));
     QVERIFY2(cooled.error.isEmpty(), qPrintable(cooled.error));
     QVERIFY(at(cooled, QStringLiteral("T"), QPointF(17, 5)) > 293.15);
+}
+
+// A sweep's points at once, each on its own thread, each compiling its
+// material's conductivity: a sum of 190 terms, compiled by recursion - on
+// std::thread's 512 kB of macOS a stack overflow under the sanitizers (a
+// frame of 5 kB a level); the fuzz of 21 October, E3. Its threads have a
+// main thread's 8 MB.
+void TestFemPhysics::aSweepsPointsAtOnceCompileDeepExpressions()
+{
+    const QByteArray json = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+      "parameters": [{"name": "L", "expression": "10[mm]"}],
+      "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "bar", "size": ["L", "1"]}],
+        "materials": [{"label": "m", "sigma": "1e6[S/m]*(%1)", "selection": {"all": true}}],
+        "physics": [{"type": "currents", "tag": "ec", "features": [
+          {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["bar"], "side": "left"}},
+          {"type": "ground", "selection": {"of": ["bar"], "side": "right"}}]}],
+        "mesh": {"size": "coarse"}}],
+      "studies": [{"type": "study", "steps": [{"type": "sweep", "parameters": [["L", "10, 20", "mm"]], "parallel": 2}, {"type": "stationary"}]}]})json")
+                                .arg(QStringLiteral("0+").repeated(189) + QLatin1Char('1'))
+                                .toUtf8();
+    const Run r = run(modelOf(json));
+    QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+    QCOMPARE(int(r.study.solutions.size()), 2);
+    // G = σ w t / L, the bar 1 mm wide, a metre deep (2D).
+    QVERIFY(std::abs(r.study.solutions[0]->global(QStringLiteral("ec.G11")).value_or(NAN) - 1e6 * 1e-3 / 10e-3) < 1);
+    QVERIFY(std::abs(r.study.solutions[1]->global(QStringLiteral("ec.G11")).value_or(NAN) - 1e6 * 1e-3 / 20e-3) < 1);
+    QCOMPARE(r.study.solutions[1]->atOnce, 2);
 }
 
 void TestFemPhysics::sweepPointsAtOnce()

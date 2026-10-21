@@ -39,6 +39,12 @@ namespace qucs_s::layout {
 
 namespace {
 
+// How deep a drawing or a search goes down the hierarchy at most, whatever
+// it was asked: deeper cells drawn as frames, not looked into. (A file's
+// chain of 3000 cells, by recursion, overflowed even a main thread's
+// stack - the fuzz of 21 October, L1.)
+constexpr int MaxLevels = 256;
+
 QString tr(const char* text)
 {
     return QCoreApplication::translate("Layout", text);
@@ -382,12 +388,21 @@ void takeCell(const gdstk::Cell& from, Cell& cell, const QHash<const gdstk::Cell
 }
 
 // The bounds of every cell, bottom up; a placement that makes a cell its
-// own ancestor is taken out (the file is wrong).
+// own ancestor is taken out (the file is wrong). (Down the hierarchy on a
+// stack of its own: a file's chain of cells thousands deep, by recursion,
+// could overflow a thread's - the fuzz of 21 October, L1.)
 void finish(Layout& layout)
 {
     const int n = int(layout.cells.size());
     QVector<char> state(n, 0);   // 0 not seen, 1 on the way down, 2 done
-    std::function<void(int)> visit = [&](int c) {
+    struct Going {
+        int cell;
+        int next = 0;            // its instance looked at
+        Box box;
+        int depth = 0;
+    };
+    std::vector<Going> path;
+    auto enter = [&layout, &state, &path](int c) {
         state[c] = 1;
         Cell& cell = layout.cells[c];
         Box box;
@@ -400,29 +415,47 @@ void finish(Layout& layout)
             box.add(l.repetition >= 0 ? cell.repetitions[l.repetition].extent(at) : at);
         }
         cell.ownBounds = box.rect();
-        int depth = 0;
-        for (Instance& inst : cell.instances) {
-            if (inst.cell < 0) continue;
-            if (state[inst.cell] == 1) {
-                layout.warnings << tr("%1 places %2, which places it: that placement is left out.")
-                                       .arg(cell.name, layout.cells[inst.cell].name);
-                inst.cell = -1;
+        path.push_back({c, 0, box, 0});
+    };
+    for (int root = 0; root < n; ++root) {
+        if (state[root] != 0) continue;
+        enter(root);
+        while (!path.empty()) {
+            Going& g = path.back();
+            Cell& cell = layout.cells[g.cell];
+            if (g.next < cell.instances.size()) {
+                Instance& inst = cell.instances[g.next];
+                if (inst.cell < 0) {
+                    ++g.next;
+                    continue;
+                }
+                if (state[inst.cell] == 1) {
+                    layout.warnings << tr("%1 places %2, which places it: that placement is left out.")
+                                           .arg(cell.name, layout.cells[inst.cell].name);
+                    inst.cell = -1;
+                    ++g.next;
+                    continue;
+                }
+                if (state[inst.cell] == 0) {
+                    // (Down to it; back at this instance once it is done.)
+                    enter(inst.cell);
+                    continue;
+                }
+                const Cell& child = layout.cells[inst.cell];
+                g.depth = std::max(g.depth, child.depth + 1);
+                ++g.next;
+                if (child.bounds.isNull() && child.shapes.isEmpty() && child.labels.isEmpty() && child.instances.isEmpty()) continue;
+                const QRectF one = inst.transform().mapRect(child.bounds);
+                inst.bounds = inst.repetition >= 0 ? cell.repetitions[inst.repetition].extent(one) : one;
+                g.box.add(inst.bounds);
                 continue;
             }
-            if (state[inst.cell] == 0) visit(inst.cell);
-            const Cell& child = layout.cells[inst.cell];
-            depth = std::max(depth, child.depth + 1);
-            if (child.bounds.isNull() && child.shapes.isEmpty() && child.labels.isEmpty() && child.instances.isEmpty()) continue;
-            const QRectF one = inst.transform().mapRect(child.bounds);
-            inst.bounds = inst.repetition >= 0 ? cell.repetitions[inst.repetition].extent(one) : one;
-            box.add(inst.bounds);
+            cell.bounds = g.box.rect();
+            cell.depth = g.depth;
+            state[g.cell] = 2;
+            path.pop_back();
         }
-        cell.bounds = box.rect();
-        cell.depth = depth;
-        state[c] = 2;
-    };
-    for (int c = 0; c < n; ++c)
-        if (state[c] == 0) visit(c);
+    }
 
     for (Cell& cell : layout.cells) {
         QSet<int> placed;
@@ -1087,7 +1120,7 @@ public:
                     if (!counting) frameDots.append(T.map(one.center() + off));
                     return true;
                 }
-                if (level + 1 > O.depth) {
+                if (level + 1 > std::min(O.depth, MaxLevels)) {
                     ++used;
                     stats.frames++;
                     if (counting) return true;
@@ -1271,7 +1304,7 @@ void search(const Layout& layout, const Query& query, const std::function<bool(c
                 });
             }
         }
-        if (level < query.depth) {
+        if (level < std::min(query.depth, MaxLevels)) {
             for (const Instance& inst : cell.instances) {
                 if (!going) break;
                 if (inst.cell < 0 || !inSight(inst.bounds)) continue;

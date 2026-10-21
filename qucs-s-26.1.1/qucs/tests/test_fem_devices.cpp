@@ -1367,6 +1367,19 @@ private slots:
         qInfo("degenerate channel: %s", qPrintable(said.join(QLatin1String("; "))));
     }
 
+    // A trap distribution's levels from 1 to 1000: 2147483647, made at
+    // every node, took memory without end (the fuzz of 21 October, X1);
+    // more, or none, refused at once, said.
+    void trapLevelsAreBounded()
+    {
+        for (const char* n : {"2147483647", "1001", "0"}) {
+            const QString traps = QStringLiteral(R"(, {"type": "traps", "kind": "acceptor", "distribution": "uniform", "Dit": "5e11[1/(cm^2*eV)]",
+                "Elow": "0[eV]", "Ehigh": "0.5[eV]", "levels": %1, "selection": {"of": ["surface"], "side": "top"}})").arg(QLatin1String(n));
+            const Run r = run(modelOf(mosCapacitor(traps, QStringLiteral(R"({"type": "stationary"})"))));
+            QVERIFY2(r.error.contains(QStringLiteral("its levels from 1 to 1000, not %1").arg(QLatin1String(n))), qPrintable(r.error));
+        }
+    }
+
     void interfaceTrapsStretchOut()
     {
         // The MOS capacitor at rest from flat band to weak inversion, with

@@ -127,6 +127,9 @@ public:
     QDateTime solvedAt(const QString& study = {}) const;
     /// Builds the geometry now; false and its error when it fails.
     bool buildGeometry(QString* error = nullptr);
+    /// The geometry as it is built, built again only when stale: false, and
+    /// why, when it stopped.
+    bool currentGeometry(QString* error = nullptr);
     /// Starts building the mesh (the geometry first, when stale).
     void buildMesh();
     /// Starts solving \a study (the first: empty) - its geometry and mesh

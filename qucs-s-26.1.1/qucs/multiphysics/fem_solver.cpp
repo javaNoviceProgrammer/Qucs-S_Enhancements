@@ -60,9 +60,23 @@ void parallelFor(int n, const std::function<void(int, int)>& work)
     auto run = [&next, &work, chunk, n] {
         for (int k = next++; k * chunk < n; k = next++) work(k * chunk, std::min(n, (k + 1) * chunk));
     };
-    std::vector<std::thread> pool;
-    for (int k = 0; k < threads; ++k) pool.emplace_back(run);
-    for (std::thread& t : pool) t.join();
+    Threads pool;
+    for (int k = 0; k < threads; ++k) pool.start(run);
+    pool.join();
+}
+
+void Threads::start(std::function<void()> work)
+{
+    std::unique_ptr<QThread> t(QThread::create(std::move(work)));
+    t->setStackSize(8u << 20);
+    t->start();
+    a_threads.push_back(std::move(t));
+}
+
+void Threads::join()
+{
+    for (const std::unique_ptr<QThread>& t : a_threads) t->wait();
+    a_threads.clear();
 }
 
 // ------------------------------------------------------------------ LinearSystem
@@ -4541,9 +4555,9 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         }
         // Each on its own thread; what each tells, one at a time.
         std::vector<StudyResult> results(ready.size());
-        std::vector<std::thread> pool;
+        detail::Threads pool;
         for (std::size_t i = 0; i < ready.size(); ++i)
-            pool.emplace_back([&model, &ready, &results, &progress, &told, study, i, batch, n = points.size()] {
+            pool.start([&model, &ready, &results, &progress, &told, study, i, batch, n = points.size()] {
                 const Ready& r = ready[i];
                 const double from = double(batch + i) / double(n), span = 1.0 / double(n);
                 const Progress tell([&progress, &told, &r, from, span, i, batch, n](double f, const QString& w) {
@@ -4552,7 +4566,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
                 });
                 results[i] = solveAdaptive(model, r.ps, r.mesh, study->tag, tell, nullptr);
             });
-        for (std::thread& t : pool) t.join();
+        pool.join();
         for (std::size_t i = 0; i < ready.size(); ++i) {
             const StudyResult& r = results[i];
             for (const QString& w : r.warnings)

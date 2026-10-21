@@ -1224,7 +1224,9 @@ QJsonObject QucsControl::femBuild(const QJsonObject& args)
         }
         return jsonResult(o);
     }
-    if (!doc->buildGeometry(&why)) return errorResult(tr("The geometry stopped at %1").arg(why));
+    // (Built again only when changed: a process flow's anneals ran again
+    // each time, 18.7 s for the fuzz of 21 October's, its mesh made stale.)
+    if (!doc->currentGeometry(&why)) return errorResult(tr("The geometry stopped at %1").arg(why));
     if (what == QLatin1String("geometry")) {
         doc->showGeometry();
         return femDescribe(QJsonObject{{QStringLiteral("path"), doc->getDocName().isEmpty() ? QString() : doc->getDocName()},

@@ -2705,8 +2705,11 @@ bool SemiconductorProblem::setup(QString* error)
                 const double Dit = number(bf->text(QStringLiteral("Dit")), Dim::of(-4, -1, 2), where);
                 const double lo = energyOf(bf->text(QStringLiteral("Elow")), constants, &why);
                 const double hi = energyOf(bf->text(QStringLiteral("Ehigh")), constants, &why);
-                const int count = std::max(1, bf->integer(QStringLiteral("levels")));
+                // (Its levels from 1 to 1000: 2147483647 made at every node
+                // took memory without end - the fuzz of 21 October.)
+                const int count = bf->integer(QStringLiteral("levels"));
                 if (!(Dit >= 0) || !std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo)) problem(tr("%1: its density and range").arg(where));
+                else if (count < 1 || count > 1000) problem(tr("%1: its levels from 1 to 1000, not %2").arg(where).arg(count));
                 else
                     for (int k = 0; k < count; ++k) levels.emplace_back(lo + (k + 0.5) * (hi - lo) / count, Dit * (hi - lo) / count);
             }

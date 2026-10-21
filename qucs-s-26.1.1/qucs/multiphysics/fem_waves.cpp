@@ -2589,8 +2589,10 @@ bool WaveProblem::setup(QString* error)
             if (pc.floquet == 3) {
                 pc.points = feature.integer(QStringLiteral("points"));
                 pc.evenly = feature.text(QStringLiteral("sampling")) == QLatin1String("even");
-                if (pc.points < 2 || pc.points % 2)
-                    problem(tr("%1: %2 kF points - an even number, 2 or more (N points: a supercell of N cells)").arg(feature.name()).arg(pc.points));
+                // (At most 1000, a solve each: 2147483646 was a list of them
+                // past memory - the fuzz of 21 October.)
+                if (pc.points < 2 || pc.points % 2 || pc.points > 1000)
+                    problem(tr("%1: %2 kF points - an even number from 2 to 1000 (N points: a supercell of N cells)").arg(feature.name()).arg(pc.points));
             }
             if (pc.floquet == 2) {
                 const std::optional<double> kx = evaluateConstant(feature.text(QStringLiteral("kx")), a_s.parameters().scope, Dim::of(-1), &why);
@@ -3368,8 +3370,8 @@ bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const E
         Lu own;
         for (int i = next++; i < n && !stop; i = next++) one(i, own);
     };
-    std::vector<std::thread> pool;
-    for (int k = 1; k < std::min(threads, n); ++k) pool.emplace_back(work);
+    Threads pool;
+    for (int k = 1; k < std::min(threads, n); ++k) pool.start(work);
     // (this thread too, asking between its points whether to stop)
     Lu own;
     for (int i = next++; i < n; i = next++) {
@@ -3379,7 +3381,7 @@ bool WaveProblem::scanSolve(const std::vector<Eigen::Triplet<cd>>& trip, const E
         }
         one(i, own);
     }
-    for (std::thread& t : pool) t.join();
+    pool.join();
     if (stop) {
         *error = tr("cancelled");
         return false;

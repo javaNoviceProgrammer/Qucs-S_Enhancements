@@ -1228,7 +1228,14 @@ public:
     explicit VertexPool(double eps) : a_eps(eps) {}
     int add(QPointF p)
     {
-        const long long ix = std::llround(std::floor(p.x() / a_eps)), iy = std::llround(std::floor(p.y() / a_eps));
+        // (Each cell's index well inside a long long's range: a point 1e308
+        // away - a hostile position - rounded to its largest and overflowed
+        // a neighbour's index - the fuzz of 21 October, G1.)
+        auto cell = [this](double v) {
+            const double c = std::floor(v / a_eps);
+            return std::isfinite(c) ? static_cast<long long>(std::clamp(c, -4e18, 4e18)) : 0LL;
+        };
+        const long long ix = cell(p.x()), iy = cell(p.y());
         for (long long dx = -1; dx <= 1; ++dx)
             for (long long dy = -1; dy <= 1; ++dy) {
                 auto it = a_cells.find(key(ix + dx, iy + dy));
@@ -1272,6 +1279,20 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
     }
     const double diag = std::max(std::hypot(box.width(), box.height()), 1e-300);
     const double eps = relTolerance * diag;
+    // Objects thinner than the tolerance, a share of the whole extent: lost
+    // to it, said - and one so far off its width is lost in its
+    // coordinates' digits. (A rectangle at 1e300 failed the union in the
+    // triangulation's words, "#1 is a duplicate of #4294967295": the fuzz
+    // of 21 October.)
+    QStringList lost;
+    for (const GObject& o : a_objects) {
+        const QRectF b = o.bounds();
+        if (o.solid() && !(std::min(b.width(), b.height()) >= 2 * eps)) lost << o.name;
+    }
+    const QString lostText = lost.isEmpty() ? QString()
+        : tr("%1: thinner than the union's tolerance, %2 %3 (%4 of the geometry's extent, %5 %3), lost to it - a position far off, or a smaller tolerance (Form Union's)")
+              .arg(lost.size() <= 3 ? lost.join(QStringLiteral(", ")) : lost.mid(0, 3).join(QStringLiteral(", ")) + tr(" and %1 more").arg(lost.size() - 3),
+                   formatNumber(eps, 3), a_unitName, formatNumber(relTolerance, 3), formatNumber(diag, 3));
     VertexPool pool(eps);
     std::vector<RawSegment> segs;
     for (int oi = 0; oi < int(a_objects.size()); ++oi) {
@@ -1401,7 +1422,7 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
         cdt.insertEdges(edges);
         cdt.eraseSuperTriangle();
     } catch (const std::exception& e) {
-        *why = tr("Form Union failed: %1").arg(QString::fromLocal8Bit(e.what()));
+        *why = tr("Form Union failed: %1").arg(lostText.isEmpty() ? QString::fromLocal8Bit(e.what()) : lostText);
         return nullptr;
     }
     // Vertices CDT added (where segments still crossed): ours too, the
@@ -1754,7 +1775,8 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
         }
     topo->curves = a_curves;
     topo->bounds = box;
-    if (topo->domains.empty()) *why = tr("the geometry has no domains: no solid object");
+    if (!lostText.isEmpty()) *why = lostText;
+    else if (topo->domains.empty()) *why = tr("the geometry has no domains: no solid object");
     return topo;
 }
 

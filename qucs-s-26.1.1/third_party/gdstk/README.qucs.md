@@ -44,6 +44,12 @@ the read ends with an error (or what was read before the damage):
     modal value not set yet; a path of no points after its start; a circle
     of no radius (`ellipse()` asserts it); a table number, or a compressed
     block's sizes, beyond what a file of its size has.
+  - The properties' names and values are resolved before anything copies
+    them: a text string's properties were copied to its texts with a name
+    still a number, and the number 0 read as a string (the fuzz of 21
+    October 2026, L2).
+  - A property's count of values past the bytes left: its values were made
+    one by one until memory ran out (L3).
   - The file's size is kept in `OasisStream::file_size`, for those checks.
 - GDSII, `read_gds()` in `src/library.cpp`:
   - Each record it uses is read only if it has the data type and length it is
@@ -56,7 +62,9 @@ the read ends with an error (or what was read before the damage):
 - `include/gdstk/utils.hpp`: `FTELL64`, beside `FSEEK64`.
 
 `test_layout_doc` reads every cut of its sample files and 400 changed copies
-of each, the same each run, in CI's sanitizer build too.
+of each, the same each run, in CI's sanitizer build too; L2's and L3's files
+are written by hand in it. Its `fuzz` (`QUCS_LAYOUT_FUZZ` seconds) damages
+the samples and hostile hierarchies at random.
 
 **Built without UBSan's alignment check** (`CMakeLists.txt`): the GDSII
 reader reads 8-byte reals 4 bytes into a record, as x86-64 and ARM64 do.

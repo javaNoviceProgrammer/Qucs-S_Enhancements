@@ -233,6 +233,7 @@ void QucsControl::withLayout(const QJsonObject& args, bool open,
     };
     auto reading = std::make_shared<Reading>();
     QThread* thread = QThread::create([reading, file] { reading->layout = read(file, &reading->error); });
+    thread->setStackSize(8u << 20);   // (a main thread's: a thread's 512 kB on macOS - the fuzz of 21 October, E3)
     connect(thread, &QThread::finished, this, [reading, file, then, done] {
         if (!reading->layout) {
             done(errorResult(reading->error));
