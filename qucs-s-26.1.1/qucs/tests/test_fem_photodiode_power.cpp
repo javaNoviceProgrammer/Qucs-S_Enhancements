@@ -832,6 +832,51 @@ private slots:
         QVERIFY2(std::abs(H - (-5 * I + P)) < 1e-6 * (std::abs(5 * I) + P), qPrintable(QStringLiteral("%1 %2").arg(H).arg(-5 * I + P)));
         QVERIFY2(Tmid > 303, qPrintable(QString::number(Tmid)));
     }
+
+    // The light and the carriers in turn: germanium on silicon,
+    // Franz-Keldysh's in its own field, 5 mW through 100 Ω - its bias
+    // falling from -1 V to -0.4, its field with it. One pass absorbs in the
+    // dark field; in turn, in the lit one: its mode's α 6 % less (the photon
+    // above the edge, a weaker field's oscillation), settled to 1e-6 in
+    // three passes, one pass more the same to 1e-5. (Its 15 µm absorb the
+    // light nearly whole either way: its pairs 0.09 % fewer.)
+    void theLightInTurn()
+    {
+        if (slowBuild()) QSKIP("strong light's passes: Release builds only (each some 50 s sanitized)");
+        const QString anode = QStringLiteral(R"(, "circuit": "series", "Rs": "100[Ohm]", "RL": "0[Ohm]")");
+        auto lit = [&anode](const QString& steps) {
+            QByteArray j = waveguidePd(1, QStringLiteral("5[mW]"), anode, steps, true);
+            j.replace(R"({"type": "wave", "electroabsorption": false,)", R"({"type": "wave", "electroabsorption": true,)");
+            return j;
+        };
+        const QString once = QStringLiteral(R"(, {"type": "stationary", "physics": ["semi"]})");
+        const QString turns = QStringLiteral(R"(, {"type": "stationary", "physics": ["semi"], "lightloop": true, "lighttol": "1e-6"})");
+        const QString more = turns + QStringLiteral(R"(, {"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 1, "neff": "3.9"},
+            {"type": "stationary", "physics": ["semi"]})");
+        const Run a = run(modelOf(lit(once))), b = run(modelOf(lit(turns))), c = run(modelOf(lit(more)));
+        for (const Run* r : {&a, &b, &c}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        auto of = [](const Run& r, const char* name) { return global(*r.study.solutions.back(), QString::fromLatin1(name)); };
+        QString said;
+        for (const QString& line : b.study.solutions.back()->log)
+            if (line.contains(QLatin1String("in turn"))) said = line;
+        qInfo("5 mW through 100 Ω: one pass Gop %.9g /s, α %.6g /m, Vc %.6f V; in turn %.9g /s, α %.6g /m, Vc %.6f V (%s); a pass more %.9g /s",
+              of(a, "semi.Gop"), of(a, "emw.alpha"), of(a, "semi.Vc_a"), of(b, "semi.Gop"), of(b, "emw.alpha"), of(b, "semi.Vc_a"), qPrintable(said),
+              of(c, "semi.Gop"));
+        QVERIFY2(!said.isEmpty(), "no passes said");
+        QVERIFY2(std::abs(of(c, "semi.Gop") / of(b, "semi.Gop") - 1) < 1e-5, qPrintable(QStringLiteral("%1 %2").arg(of(c, "semi.Gop")).arg(of(b, "semi.Gop"))));
+        QVERIFY2(of(b, "emw.alpha") < 0.95 * of(a, "emw.alpha"), qPrintable(QStringLiteral("%1 %2").arg(of(b, "emw.alpha")).arg(of(a, "emw.alpha"))));
+    }
+
+    // In turn with no mode analysis before it, or no light: said.
+    void theLightInTurnNeedsALight()
+    {
+        const Run none = run(modelOf(pin(QString(), QStringLiteral(R"({"type": "stationary", "lightloop": true})"))));
+        QVERIFY2(none.error.contains(QLatin1String("no Mode Analysis step before it")), qPrintable(none.error));
+        QByteArray j = waveguidePd(1, QStringLiteral("1[uW]"), QString(), QStringLiteral(R"(, {"type": "stationary", "physics": ["semi"], "lightloop": true})"), true);
+        j.replace(R"({"type": "optical", "mode": "emw", "P0": "P", "slices": 1, "selection": {"only": ["pplus", "absorber", "nplus"]}},)", "");
+        const Run dark = run(modelOf(j));
+        QVERIFY2(dark.error.contains(QLatin1String("no semiconductor is lit")), qPrintable(dark.error));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestFemPhotodiodePower)
