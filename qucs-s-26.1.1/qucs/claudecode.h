@@ -20,6 +20,7 @@
 #include <QList>
 #include <QObject>
 #include <QProcessEnvironment>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -416,6 +417,17 @@ public:
     void answerElicitation(const QString& id, const QString& action, const QJsonObject& content = {});
     /// Stops the turn under way (the program ends if it does not stop).
     void interrupt();
+    /// Whether a tool Claude waits on can be sent to the background now: a
+    /// command or an agent of the program's own, or one of the host's tools.
+    bool canSendToBackground() const;
+    /// Sends the tools Claude waits on to the background, so that the turn
+    /// goes on - and ends - without them. The program's own commands and
+    /// agents it is asked to run on by themselves (as its terminal's
+    /// Ctrl+B does); it says when one ends, and goes on with a turn of its
+    /// own. A host's tool is answered at once that it goes on, and its own
+    /// answer is a message to Claude when it comes (backgroundFinished()).
+    /// How many it sent: 0 when none was waited on.
+    int sendToBackground();
     /// Ends the program; the next prompt continues the conversation.
     void stop();
     /// Ends the program and forgets the conversation.
@@ -452,6 +464,9 @@ signals:
     /// Something to tell the user: a permission denied, a limit reached.
     void notice(const QString& text);
     void turnFinished(const qucs_s::claude::TurnResult& result);
+    /// A host's tool sent to the background has finished: \a output, given
+    /// to Claude in a message - unless Claude Code had ended (\a told false).
+    void backgroundFinished(const QString& tool, bool failed, const QString& output, bool told);
     /// The program could not start or ended unexpectedly.
     void failed(const QString& message);
     /// rewind() could not go back where it was asked to (the program's
@@ -480,7 +495,15 @@ private:
     QString hostTool(const QString& tool) const;
     void handleResult(const QJsonObject& m);
     void handleSystem(const QJsonObject& m);
+    /// A turn begins: one of the user's (send()), or one the program
+    /// begins by itself (a task sent to the background has ended).
+    void beginTurn();
     void endTurn();
+    /// Writes a user message of \a content (\a prompt: its text).
+    bool sendContent(const QJsonValue& content, const QString& prompt);
+    /// Asks the program to send the tool use \a id to the background.
+    void askBackground(const QString& id);
+    bool asksBackground(const QString& id) const;   // (asked, not answered yet)
 
     QProcess* a_process = nullptr;
     QByteArray a_buffer;       // output not yet a whole line
@@ -540,6 +563,22 @@ private:
     QHash<QString, QString> a_editedFiles;  // tool use id -> file, until its result
     QStringList a_changedFiles;             // this turn's
     QHash<QString, PermissionRequest> a_pending;   // permission requests not yet answered
+    QSet<QString> a_running;                // this turn's tool uses not yet answered
+    // A call of the host's tools, by the tool use it answers (Claude Code
+    // says which: "claudecode/toolUseId"), until it is answered.
+    struct HostCall {
+        QJsonValue rpcId;
+        QString tool;
+        std::function<void(const QJsonObject&)> reply;
+        bool background = false;   // answered already: sent to the background
+    };
+    QHash<QString, HostCall> a_hostCalls;
+    void hostCallDone(const HostCall& call, const QJsonObject& rpc);
+    QHash<QString, QString> a_backgroundAsked;   // background_tasks not answered yet: request id -> tool use id
+    QSet<QString> a_backgroundWanted;            // tool uses sent to the background, until they are
+    QHash<QString, QString> a_tasks;             // the program's tasks (commands, agents): id -> what
+    QHash<QString, QString> a_taskOf;            // a tool use's task
+    QSet<QString> a_backgroundTasks;             // those in the background
     ToolHost* a_host = nullptr;
     mcp::Server* a_mcp = nullptr;   // the host's tools as an MCP server, over this stream
     QString a_document;        // pinned: the host's tools act on it
