@@ -272,8 +272,11 @@ private slots:
         // In0.53Ga0.47As 0.750 (Goetz et al.), In0.52Al0.48As 1.46 (of 1.45
         // to 1.47), InGaAsP on InP's lattice Nahory et al.'s 1.35 - 0.72 y +
         // 0.12 y² (its ends InP's and InGaAs's: within 7 meV), the 1.3 µm
-        // AlGaInAs 0.954 - where Vurgaftman's are 9-16 meV off. Varshni's
-        // slope kept; the default still Vurgaftman's.
+        // AlGaInAs 0.954 - where Vurgaftman's are 9-16 meV off -, AlGaAs
+        // Casey and Panish's 1.424 + 1.247x below x 0.45, 1.147 (x - 0.45)²
+        // more above (Vurgaftman's 1.841 at x 0.3 for 1.798: Miller's
+        // barriers, the check of 21 October). Varshni's slope kept; the
+        // default still Vurgaftman's.
         const BandSet fit = BandSet::Measured;
         auto eg = [](const char* c, double x, double y, double T, BandSet set) { return bandParameters(QString::fromLatin1(c), x, y, T, nullptr, set)->Eg; };
         struct Known {
@@ -282,13 +285,14 @@ private slots:
         };
         const Known known[] = {{"InP", 0, 0, 1.344, 1e-6},          {"GaAs", 0, 0, 1.424, 1e-6},         {"InAs", 0, 0, 0.354, 1e-6},
                                {"InGaAs", 0.53, 0, 0.750, 1e-3},    {"InAlAs", 0.52, 0, 1.460, 1e-3},    {"InGaAsP", 0.28, 0.61, 0.9555, 7e-3},
-                               {"AlGaInAs", 0.165, 0.305, 0.954, 1e-3}};
+                               {"AlGaInAs", 0.165, 0.305, 0.954, 1e-3}, {"AlGaAs", 0.3, 0, 1.7981, 1e-9},  {"AlGaAs", 0.6, 0, 2.1980075, 1e-9}};
         for (const Known& k : known) {
             const double v = eg(k.compound, k.x, k.y, 300, BandSet::Vurgaftman), m = eg(k.compound, k.x, k.y, 300, fit);
             qInfo("%s (%g, %g): Vurgaftman's %.4f eV, the fit %.4f, measured %.4f", k.compound, k.x, k.y, v, m, k.measured);
             QVERIFY2(std::abs(m - k.measured) < k.tolerance, k.compound);
         }
         QVERIFY(std::abs(eg("InP", 0, 0, 300, BandSet::Vurgaftman) - 1.3529) < 1e-4);
+        QVERIFY(std::abs(eg("AlGaAs", 0.3, 0, 300, BandSet::Vurgaftman) - 1.841) < 1e-3);
         QCOMPARE(eg("InP", 0, 0, 300, BandSet::Vurgaftman), bandParameters(QStringLiteral("InP"), 0, 0, 300)->Eg);
         double worst = 0;
         for (int i = 1; i < 10; ++i) {
@@ -298,8 +302,8 @@ private slots:
         qInfo("InGaAsP on InP's lattice: within %.4f eV of Nahory's", worst);
         QVERIFY(worst < 7.5e-3);
         // At 77 K: Varshni's change from 300 K, either set.
-        for (const char* c : {"InP", "GaAs"})
-            QVERIFY(std::abs((eg(c, 0, 0, 77, fit) - eg(c, 0, 0, 300, fit)) - (eg(c, 0, 0, 77, BandSet::Vurgaftman) - eg(c, 0, 0, 300, BandSet::Vurgaftman))) < 1e-12);
+        for (const auto& [c, x] : {std::pair{"InP", 0.0}, std::pair{"GaAs", 0.0}, std::pair{"AlGaAs", 0.3}})
+            QVERIFY(std::abs((eg(c, x, 0, 77, fit) - eg(c, x, 0, 300, fit)) - (eg(c, x, 0, 77, BandSet::Vurgaftman) - eg(c, x, 0, 300, BandSet::Vurgaftman))) < 1e-12);
         // Only the gaps: the masses, offsets and lattice the same.
         const BandParameters a = *bandParameters(QStringLiteral("InGaAs"), 0.53, 0, 300), b = *bandParameters(QStringLiteral("InGaAs"), 0.53, 0, 300, nullptr, fit);
         QVERIFY(a.me == b.me && a.VBO == b.VBO && a.a0 == b.a0 && a.gamma1 == b.gamma1);
@@ -2253,6 +2257,142 @@ private slots:
             QVERIFY(e2 - e1 > 0.005 && e2 - e1 < 0.05);
             QVERIFY(left * right < 0);
             QVERIFY(te > 0);
+        }
+    }
+
+    // A count past its most taken as the most, and said (the check of 21
+    // October: "vstates" 120, "cstates" 60 gave 50 each, not a word): a
+    // spectrum's states, cstates and vstates (50), a States step's states
+    // (100).
+    void countsPastTheirMostSaid()
+    {
+        const Run spectrum = run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                                         QStringLiteral("8"), QStringLiteral("10"), QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                                                         QStringLiteral(R"x({"type": "spectrum", "energies": "1.5[eV]", "states": 2, "cstates": 55,
+                                                                            "vstates": 60, "linewidth": "5[meV]"})x"))));
+        QVERIFY2(spectrum.error.isEmpty(), qPrintable(spectrum.error));
+        const QString said = spectrum.study.warnings.join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QLatin1String("its cstates 55 taken as 50, the most it takes")) && said.contains(QLatin1String("its vstates 60 taken as 50, the most it takes"))
+                     && !said.contains(QLatin1String("its states ")),
+                 qPrintable(said));
+        const Run states = run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                                       QStringLiteral("8"), QStringLiteral("10"), QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                                                       QStringLiteral(R"({"type": "states", "states": 120})"))));
+        QVERIFY2(states.error.isEmpty(), qPrintable(states.error));
+        QVERIFY2(states.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("its states 120 taken as 100, the most it takes")),
+                 qPrintable(states.study.warnings.join(QLatin1Char('\n'))));
+    }
+
+    // Periodic ends (wishlist 4.1 of the check of 21 October): the line one
+    // superlattice's period, its states Bloch's at kz 0 - a well a between
+    // halves of a barrier b (Ec 0.3 eV, its mass 0.092, the well's 0.067),
+    // its electrons the Kronig and Penney equation's roots at cos(kz L) 1
+    // (BenDaniel and Duke's: cos ka cosh κb + (η² - 1)/2η sin ka sinh κb, η
+    // = (κ/mb)/(k/mw)); two periods drawn, kz 0 and π/L - its first
+    // miniband's bottom and top, cos(kz L) -1 -, each to 20 µeV. A field
+    // along the axis refused; hard walls as before; no wall to leave a
+    // state out at (a spectrum's wall cutoff takes them all).
+    void periodicEnds()
+    {
+        const double a = 6e-9, b = 2e-9, V0 = 0.3, mw = 0.067, mb = 0.092;
+        auto kp = [&](double E) {   // (cos ka cosh κb + ..., E in eV below V0)
+            const double k = std::sqrt(2 * mw * M0 * E * Q) / Hbar, kappa = std::sqrt(2 * mb * M0 * (V0 - E) * Q) / Hbar;
+            const double eta = (kappa / mb) / (k / mw);
+            return std::cos(k * a) * std::cosh(kappa * b) + (eta * eta - 1) / (2 * eta) * std::sin(k * a) * std::sinh(kappa * b);
+        };
+        auto model = [](int periods, const QString& ends, const QString& more = QString(),
+                        const QString& step = QStringLiteral(R"({"type": "states", "states": 4})")) {
+            QString geometry, wells, barriers;
+            for (int p = 0; p < periods; ++p) {
+                const double z = p * 8.0;
+                geometry += QStringLiteral(R"({"type": "rectangle", "name": "b%1", "position": ["0", "%2"], "size": ["10", "1"]},
+                                              {"type": "rectangle", "name": "w%1", "position": ["0", "%3"], "size": ["10", "6"]},
+                                              {"type": "rectangle", "name": "c%1", "position": ["0", "%4"], "size": ["10", "1"]},)")
+                                .arg(p)
+                                .arg(z)
+                                .arg(z + 1)
+                                .arg(z + 7);
+                wells += QStringLiteral(R"("w%1",)").arg(p);
+                barriers += QStringLiteral(R"("b%1", "c%1",)").arg(p);
+            }
+            geometry.chop(1);
+            wells.chop(1);
+            barriers.chop(1);
+            const QString material = QStringLiteral(R"({"type": "material", "source": "user", "Ec": "%1", "Ev": "-1.5[eV]", "me": "%2", "mhh": "0.35", "mlh": "0.09",
+                                                        "Ep": "25[eV]", "nr": "3.6", "selection": {"only": [%3]}})");
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "nm", "geometry": [%1],
+                "physics": [{"type": "quantum", "tag": "qw", "h1d": "0.05[nm]", "ends": "%2" %3, "features": [%4, %5]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+              "studies": [{"type": "study", "steps": [%6]}]})json")
+                               .arg(geometry, ends, more, material.arg(QStringLiteral("0[eV]"), QStringLiteral("0.067"), wells),
+                                    material.arg(QStringLiteral("0.3[eV]"), QStringLiteral("0.092"), barriers), step)
+                               .toUtf8());
+        };
+        // (Its roots: bisection near the found energy, at cos(kz L) c.)
+        auto rootNear = [&](double E, double c) {
+            double lo = std::max(1e-6, E - 0.01), hi = std::min(V0 - 1e-6, E + 0.01);
+            const double flo = kp(lo) - c;
+            for (int it = 0; it < 200; ++it) {
+                const double mid = (lo + hi) / 2;
+                ((kp(mid) - c > 0) == (flo > 0) ? lo : hi) = mid;
+            }
+            return (lo + hi) / 2;
+        };
+        const Run one = run(model(1, QStringLiteral("periodic")));
+        QVERIFY2(one.error.isEmpty(), qPrintable(one.error));
+        const double e1 = eV(*one.solution, QStringLiteral("qw.Ee1")), want1 = rootNear(e1, 1);
+        const Run two = run(model(2, QStringLiteral("periodic")));
+        QVERIFY2(two.error.isEmpty(), qPrintable(two.error));
+        const double bottom = eV(*two.solution, QStringLiteral("qw.Ee1")), top = eV(*two.solution, QStringLiteral("qw.Ee2")), wantTop = rootNear(top, -1);
+        const Run walls = run(model(1, QStringLiteral("walls")));
+        QVERIFY2(walls.error.isEmpty(), qPrintable(walls.error));
+        const double walled = eV(*walls.solution, QStringLiteral("qw.Ee1"));
+        qInfo("one period: e1 %.6f eV (Kronig and Penney's %.6f); two: %.6f, %.6f (%.6f, %.6f); walled %.6f", e1, want1, bottom, top, want1, wantTop, walled);
+        QVERIFY2(std::abs(e1 - want1) < 2e-5 && std::abs(bottom - want1) < 2e-5 && std::abs(top - wantTop) < 2e-5,
+                 qPrintable(QStringLiteral("%1 %2 %3 %4 %5").arg(e1).arg(want1).arg(bottom).arg(top).arg(wantTop)));
+        QVERIFY2(wantTop - want1 > 0.01 && walled > want1 + 0.005, qPrintable(QStringLiteral("%1 %2 %3").arg(wantTop).arg(want1).arg(walled)));
+        const Run field = run(model(1, QStringLiteral("periodic"), QStringLiteral(R"(, "F": "1e6[V/m]")")));
+        QVERIFY2(field.error.contains(QLatin1String("a periodic line takes no field along its axis")), qPrintable(field.error));
+        const Run cut = run(model(2, QStringLiteral("periodic"), QString(),
+                                  QStringLiteral(R"x({"type": "spectrum", "energies": "1.6[eV]", "cstates": 2, "vstates": 2, "cutoff_c": "0.05", "cutoff_v": "0.05",
+                                                     "linewidth": "5[meV]"})x")));
+        QVERIFY2(cut.error.isEmpty(), qPrintable(cut.error));
+        const QStringList kept = cut.solution->log.filter(QLatin1String("the spectrum's subbands"));
+        QVERIFY2(kept.size() == 1 && kept.front().contains(QLatin1String("2 conduction")) && !kept.front().contains(QLatin1String("left out")),
+                 qPrintable(cut.solution->log.join(QLatin1Char('\n'))));
+    }
+
+    // The lines wider with the photon's energy (wishlist 4.5 of the check
+    // of 21 October: Miller's n = 2 and 3 lines wider than n = 1, one width
+    // for all): at each energy the width there, γ + s (ħω - E1) from the
+    // lowest edge E1 - a spectrum with s 0.1 the one of that width at each,
+    // to 1e-9; at and below the edge the base width's.
+    void linesWiderWithEnergy()
+    {
+        auto spectrum = [](const QString& energies, const char* width, const char* slope) {
+            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                               QStringLiteral("8"), QStringLiteral("10"), QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                                               QStringLiteral(R"x({"type": "spectrum", "energies": "%1", "states": 3, "linewidth": "%2",
+                                                                  "lineshape": "gaussian", "linewidthslope": "%3"})x")
+                                                   .arg(energies, QLatin1String(width), QLatin1String(slope)))));
+        };
+        const Run edge = spectrum(QStringLiteral("1.5[eV]"), "5[meV]", "0");
+        QVERIFY2(edge.error.isEmpty(), qPrintable(edge.error));
+        const double E1 = eV(*edge.solution, QStringLiteral("qw.Ee1hh1"));
+        const double at[3] = {E1 - 0.01, E1 + 0.05, E1 + 0.12};
+        const Run grown = spectrum(QStringLiteral("%1[eV], %2[eV], %3[eV]").arg(at[0], 0, 'g', 12).arg(at[1], 0, 'g', 12).arg(at[2], 0, 'g', 12), "5[meV]", "0.1");
+        QVERIFY2(grown.error.isEmpty(), qPrintable(grown.error));
+        QVERIFY2(grown.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("and 0.1 meV more per meV above it")), qPrintable(grown.solution->log.join(QLatin1Char('\n'))));
+        for (int k = 0; k < 3; ++k) {
+            const double g = 5 + 100 * std::max(0.0, at[k] - E1);   // (meV)
+            const Run fixed = spectrum(QStringLiteral("%1[eV]").arg(at[k], 0, 'g', 12), qPrintable(QStringLiteral("%1[meV]").arg(g, 0, 'g', 12)), "0");
+            QVERIFY2(fixed.error.isEmpty(), qPrintable(fixed.error));
+            grown.solution->select(k);
+            fixed.solution->select(0);
+            const double a = global(*grown.solution, QStringLiteral("qw.alphaTE")), b = global(*fixed.solution, QStringLiteral("qw.alphaTE"));
+            qInfo("%.4f eV: grown %.6g, a %.3f meV line %.6g /cm", at[k], a / 100, g, b / 100);
+            QVERIFY2(std::abs(a / b - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(a).arg(b)));
         }
     }
 };

@@ -1963,7 +1963,17 @@ std::optional<BandParameters> bandParameters(const QString& compound, double x, 
     auto inRange = [](double v) { return v >= -1e-12 && v <= 1 + 1e-12; };
     if (const Ternary* t = ternary(name)) {
         if (!inRange(x)) return fail(tr("%1: x = %2 is not between 0 and 1").arg(name).arg(x));
-        return ternaryAt(*t, std::clamp(x, 0.0, 1.0), T, set);
+        x = std::clamp(x, 0.0, 1.0);
+        BandParameters p = ternaryAt(*t, x, T, set);
+        // (AlGaAs's Γ gap at 300 K Casey and Panish's, Aspnes's: 1.424 +
+        // 1.247x below x 0.45, 1.147 (x - 0.45)² more above - Vurgaftman's 0
+        // K bowing and Varshni's laws interpolated gave 1.841 eV at x 0.3
+        // for the 1.798 measured: Miller's barriers 43 meV high, his n = 3
+        // line 45 meV, in the check of 21 October. Of T as Vurgaftman's; the
+        // ternary in AlGaInAs as it was, its quaternary's fit on it.)
+        if (set == BandSet::Measured && qstrcmp(t->name, "AlGaAs") == 0)
+            p.Eg += 1.424 + 1.247 * x + (x > 0.45 ? 1.147 * (x - 0.45) * (x - 0.45) : 0.0) - ternaryAt(*t, x, 300, set).Eg;
+        return p;
     }
     if (name.compare(QLatin1String("InGaAsP"), Qt::CaseInsensitive) == 0) {
         // In1-x Gax Asy P1-y from its four ternaries (Vurgaftman's (6.4)).

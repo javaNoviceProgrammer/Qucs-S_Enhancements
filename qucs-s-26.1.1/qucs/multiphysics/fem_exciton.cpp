@@ -867,25 +867,77 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
         }
     };
     // (With pairs drawn together, H u = E S u: its states S-normalized.)
-    auto take = [&r, &proj, &B, &mainParts, N](const auto& es, bool real) {
-        r.energy.assign(es.eigenvalues().data(), es.eigenvalues().data() + N);
+    auto take = [&r, &proj, &B, &mainParts, &parts](const auto& values, const auto& vectors, bool real) {
+        const Eigen::Index ns = values.size();
+        r.energy.assign(values.data(), values.data() + ns);
+        parts.assign(std::size_t(ns), {});
         if (real) {
-            const Eigen::MatrixXd pr = es.eigenvectors().real().transpose() * B.real(), pi = es.eigenvectors().real().transpose() * B.imag();
+            const Eigen::MatrixXd pr = vectors.real().transpose() * B.real(), pi = vectors.real().transpose() * B.imag();
             proj = pr.cast<cd>() + cd(0, 1) * pi.cast<cd>();
         } else
-            proj = es.eigenvectors().transpose() * B;
-        for (int nn = 0; nn < N; ++nn) mainParts(nn, es.eigenvectors().col(nn));
+            proj = vectors.transpose() * B;
+        for (Eigen::Index nn = 0; nn < ns; ++nn) mainParts(int(nn), vectors.col(nn));
     };
+    // The overlaps are of one k alone: S a block of F functions at each k.
+    // Their products' spinors, truncated, can leave a block short of
+    // positive (the check of 21 October: two eigenvalues -0.037, an
+    // exciton bound by 62.6 eV - fem_quantum's spinors orthonormal since):
+    // at such a k the functions drawn together left out, its products
+    // kept - the excitons there as without them -, H solved on the rest,
+    // said. (S's own directions below 0 left out instead mix products and
+    // those, and lost a doubled product's bound states.)
+    bool canonical = false;
+    std::vector<char> fallBack(std::size_t(K), 0);   // [k]: its functions drawn together left out
+    int droppedK = 0;
+    if (F > P) {
+        for (int i = 0; i < K; ++i) {
+            Eigen::MatrixXcd blk(F, F);
+            for (int x = 0; x < F; ++x)
+                for (int y = 0; y < F; ++y) blk(x, y) = Sm(x * K + i, y * K + i);
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> ss(0.5 * (blk + blk.adjoint()), Eigen::EigenvaluesOnly);
+            const Eigen::VectorXd& lam = ss.eigenvalues();
+            if (!(lam(0) > 1e-6 * lam(F - 1))) {
+                fallBack[std::size_t(i)] = 1;
+                ++droppedK;
+                canonical = true;
+            }
+        }
+    }
     bool solved = true;
-    if (r.complex) {
+    if (canonical) {
+        // (The functions kept, those of the k points that fall back left
+        // out: H u = E S u on them - S positive there.)
+        std::vector<Eigen::Index> kept;
+        for (int x = 0; x < F; ++x)
+            for (int i = 0; i < K; ++i)
+                if (x < P || !fallBack[std::size_t(i)]) kept.push_back(Eigen::Index(x) * K + i);
+        const Eigen::Index nk = Eigen::Index(kept.size());
+        Eigen::MatrixXcd Hk(nk, nk), Sk(nk, nk);
+        for (Eigen::Index c = 0; c < nk; ++c)
+            for (Eigen::Index rr = 0; rr < nk; ++rr) {
+                Hk(rr, c) = H(kept[std::size_t(rr)], kept[std::size_t(c)]);
+                Sk(rr, c) = Sm(kept[std::size_t(rr)], kept[std::size_t(c)]);
+            }
+        H.resize(0, 0);
+        Sm.resize(0, 0);
+        Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXcd> es(Hk, Sk);
+        solved = es.info() == Eigen::Success;
+        if (solved) {
+            // (Its states on all N functions: none on those left out.)
+            Eigen::MatrixXcd U = Eigen::MatrixXcd::Zero(N, nk);
+            for (Eigen::Index rr = 0; rr < nk; ++rr) U.row(kept[std::size_t(rr)]) = es.eigenvectors().row(rr);
+            take(es.eigenvalues(), U, false);
+            r.dropped = droppedK;
+        }
+    } else if (r.complex) {
         if (F > P) {
             Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXcd> es(H, Sm);
             solved = es.info() == Eigen::Success;
-            if (solved) take(es, false);
+            if (solved) take(es.eigenvalues(), es.eigenvectors(), false);
         } else {
             Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(H);
             solved = es.info() == Eigen::Success;
-            if (solved) take(es, false);
+            if (solved) take(es.eigenvalues(), es.eigenvectors(), false);
         }
     } else {
         const Eigen::MatrixXd Hr = H.real();
@@ -895,11 +947,11 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
             Sm.resize(0, 0);
             Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> es(Hr, Sr);
             solved = es.info() == Eigen::Success;
-            if (solved) take(es, true);
+            if (solved) take(es.eigenvalues(), es.eigenvectors(), true);
         } else {
             Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(Hr);
             solved = es.info() == Eigen::Success;
-            if (solved) take(es, true);
+            if (solved) take(es.eigenvalues(), es.eigenvectors(), true);
         }
     }
     if (!solved) {
@@ -928,8 +980,9 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
             kh[std::size_t(i)] = below;
         }
     }
-    r.cells.assign(std::size_t(N), {});
-    for (int nn = 0; nn < N; ++nn) {
+    const int Ns = int(r.energy.size());   // (the states: N, or fewer with directions left out)
+    r.cells.assign(std::size_t(Ns), {});
+    for (int nn = 0; nn < Ns; ++nn) {
         double all = 0;
         for (const auto& [row, w] : parts[std::size_t(nn)]) all += w;
         for (const auto& [row, w] : parts[std::size_t(nn)]) {
@@ -940,9 +993,9 @@ Result solve(const Envelopes& envelopes, const std::vector<Pair>& pairs, const O
             r.cells[std::size_t(nn)].push_back({std::min(a, b), std::max(a, b), w / all});
         }
     }
-    r.strength.assign(std::size_t(C), std::vector<double>(std::size_t(N), 0.0));
+    r.strength.assign(std::size_t(C), std::vector<double>(std::size_t(Ns), 0.0));
     for (int cc = 0; cc < C; ++cc)
-        for (int nn = 0; nn < N; ++nn) r.strength[std::size_t(cc)][std::size_t(nn)] = std::norm(proj(nn, cc));
+        for (int nn = 0; nn < Ns; ++nn) r.strength[std::size_t(cc)][std::size_t(nn)] = std::norm(proj(nn, cc));
 
     // Past kmax: each pair's free continuum, k/(2π |dE/dk|) |A|² - the
     // states above the least pair's top the tail's, coarse: not lines.

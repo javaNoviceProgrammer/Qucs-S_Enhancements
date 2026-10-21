@@ -791,6 +791,239 @@ private slots:
         const femtest::Run refused = spectrum("50");
         QVERIFY2(refused.error.contains(QLatin1String("the coupled excitons' size: a whole number from 100 to 20000")), qPrintable(refused.error));
     }
+
+    // Miller's 96 Å well at a point of the check of 21 October's sweep -
+    // Al0.24 barriers 30 nm, their gap 1.798 eV, Chao and Chuang's Luttinger
+    // parameters, 4 conduction and 14 valence subbands coupled: its e1-hh1
+    // exciton was bound by 62.6 eV (the sweep's others 8.70-8.76 meV). The
+    // hole spinors' basis holds some at its grid's top little (0.5 %): their
+    // projections, noise, were not orthogonal (0.75 apart), the excitons'
+    // overlaps no longer positive, their generalized solve broken. The
+    // spinors on their basis orthonormal now (Gram and Schmidt's, those it
+    // holds most of first): bound by 8.7 meV, no k point's functions drawn
+    // together left out (without them orthonormal some were, here, on 1200
+    // unknowns; on the check's 4000 the 62.6 eV).
+    void aSweepPointsExciton()
+    {
+        if (femtest::slowBuild()) QSKIP("its 14 valence subbands' coupled excitons: minutes under the sanitizers");
+        QByteArray json = femtest::heterostructure(
+            QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.24"), QStringLiteral("9.6"), QStringLiteral("30"),
+            QStringLiteral(R"(, "valence": "kp4", "h1d": "0.25[nm]", "T": "300[K]")"),
+            QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.42[eV], 1.78[eV], 37)", "cstates": 4, "vstates": 14, "continuum": "bound",
+                               "excitons": true, "excitonmodel": "coupled", "excitonsize": 1200, "linewidth": "5.5[meV]", "lineshape": "gaussian"})x"));
+        json.replace(R"("compound": "GaAs", "x": "0")", R"("compound": "GaAs", "x": "0", "gamma1": "6.80", "gamma2": "1.90", "gamma3": "2.73")");
+        json.replace(R"("compound": "AlGaAs", "x": "0.24")",
+                     R"("compound": "AlGaAs", "x": "0.24", "Eg": "1.798[eV]", "gamma1": "5.795", "gamma2": "1.534", "gamma3": "2.568")");
+        const femtest::Run x = femtest::run(femtest::modelOf(json));
+        QVERIFY2(x.error.isEmpty(), qPrintable(x.error));
+        x.solution->select(0);
+        const double Eb = femtest::global(*x.solution, "qw.Eb") / Q;
+        const QString log = x.solution->log.join(QLatin1Char('\n'));
+        qInfo("the sweep's point: e1-hh1 bound by %.4f meV; %s", Eb * 1e3, qPrintable(x.solution->log.filter(QLatin1String("spinors on")).join(QString())));
+        QVERIFY2(Eb > 0.008 && Eb < 0.0095, qPrintable(QString::number(Eb)));
+        QVERIFY2(!log.contains(QLatin1String("functions drawn together left out")), qPrintable(log));
+    }
+
+    // Two pairs of one electron and one hole, both drawn together: products
+    // one function, taken as two orthonormal - their overlaps with the
+    // functions drawn together short of positive at every k (S's least
+    // eigenvalue below 0, as the 62.6 eV exciton's of the check of 21
+    // October at some). There the functions drawn together are left out,
+    // said (Result::dropped): the states those of the products alone - the
+    // two not drawn together's, to 1e-9. Solved generalized, S not
+    // positive, they ran away (or the solve failed).
+    void overlapsShortOfPositiveLeftOut()
+    {
+        const double mr = 0.0567 * M0, epsr = 12.9, ry = rydberg(mr, epsr), hb2m = Hbar * Hbar / (2 * M0);
+        exciton::Envelopes env;
+        for (int p = 0; p <= 400; ++p) env.z.push_back(-20e-9 + 40e-9 * p / 400);
+        auto layer = [&env](double width) {
+            std::vector<double> x;
+            double norm = 0;
+            for (double z : env.z) {
+                x.push_back(std::exp(-0.5 * z * z / (width * width)));
+                norm += x.back() * x.back();
+            }
+            for (double& v : x) v /= std::sqrt(norm);
+            return x;
+        };
+        env.electrons = {layer(2e-9)};
+        const std::vector<double> h = layer(1.5e-9);
+        env.holes = {{std::vector<std::complex<double>>(h.begin(), h.end())}};
+        env.electronStiffness.assign(env.z.size(), hb2m / 0.067);
+        env.holeStiffness = {std::vector<double>(env.z.size(), hb2m / 0.35)};
+        exciton::Options o;
+        o.epsr = epsr;
+        o.reach = 0.15 * Q;
+        o.spacing = 4e-3 * Q;
+        o.maxSize = 4000;
+        o.correlated = 1;
+        o.beta = 1 / 2.5e-9;
+        const exciton::Result one = exciton::solve(env, {parabolic(0, mr)}, o);
+        o.correlated = 2;
+        const exciton::Result two = exciton::solve(env, {parabolic(0, mr), parabolic(0, mr)}, o);
+        o.correlated = 0;
+        const exciton::Result plain = exciton::solve(env, {parabolic(0, mr), parabolic(0, mr)}, o);
+        QVERIFY2(!one.energy.empty() && !two.energy.empty() && !plain.energy.empty(), qPrintable(one.note + two.note + plain.note));
+        qInfo("one pair drawn together %.4f Ry; its product twice, drawn together %.6f Ry (%d k points fall back, the grid's %d and its tail's), not "
+              "drawn %.6f Ry",
+              one.energy[0] / ry, two.energy[0] / ry, two.dropped, two.points, plain.energy[0] / ry);
+        QVERIFY2(one.dropped == 0 && two.dropped >= two.points, qPrintable(QStringLiteral("%1 %2 %3").arg(one.dropped).arg(two.dropped).arg(two.points)));
+        QVERIFY2(std::abs(two.energy[0] / plain.energy[0] - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(two.energy[0] / ry).arg(plain.energy[0] / ry)));
+    }
+
+    // Miller's 96 Å well between Al0.3Ga0.7As barriers to hard walls 20 nm
+    // off (the check of 21 October): of the 14 valence subbands asked
+    // ("vstates"), 6 in the well, the rest the barriers' box states - the
+    // coupled excitons take those in the well alone ("continuum": bound),
+    // and the warning asked for "vstates" 15 or more each time, chasing the
+    // next box state ("the next in the wells, 4.18 meV below the last
+    // taken"). Now none: the next in the wells, mostly in them and above
+    // the barriers' valence top, is not near.
+    void boxStatesNotAskedFor()
+    {
+        if (femtest::slowBuild()) QSKIP("its 14 valence subbands' coupled excitons: minutes under the sanitizers");
+        const femtest::Run x = femtest::run(femtest::modelOf(femtest::heterostructure(
+            QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("9.6"), QStringLiteral("20"),
+            QStringLiteral(R"(, "valence": "kp4", "h1d": "0.25[nm]")"),
+            QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.44[eV], 1.50[eV], 3)", "cstates": 2, "vstates": 14, "continuum": "bound",
+                               "excitons": true, "excitonmodel": "coupled", "excitonsize": 600, "linewidth": "5.5[meV]", "lineshape": "gaussian"})x"))));
+        QVERIFY2(x.error.isEmpty(), qPrintable(x.error));
+        const QStringList said = x.solution->log.filter(QLatin1String("the coupled excitons take"));
+        qInfo("%s", qPrintable(x.solution->log.filter(QLatin1String("the spectrum's subbands")).join(QString())));
+        QVERIFY2(said.isEmpty(), qPrintable(said.join(QLatin1Char('\n'))));
+    }
+
+    // The coupled excitons on a superlattice's states (wishlist 4.2 of the
+    // check of 21 October): one period, its ends periodic - a 10 nm GaAs
+    // well between halves of 30 nm of Al0.3Ga0.7As, its wells apart: its
+    // e1-hh1 exciton the single walled well's, bound alike to 1 %; its
+    // spectrum's transitions there.
+    void aSuperlatticesExcitons()
+    {
+        if (femtest::slowBuild()) QSKIP("two k·p spectra's coupled excitons: minutes under the sanitizers");
+        auto spectrum = [](const char* ends) {
+            return femtest::run(femtest::modelOf(femtest::heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("10"), QStringLiteral("15"),
+                QStringLiteral(R"(, "valence": "kp4", "h1d": "0.25[nm]", "ends": "%1")").arg(QLatin1String(ends)),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.45[eV], 1.52[eV], 8)", "cstates": 1, "vstates": 2,
+                                   "excitons": true, "excitonmodel": "coupled", "excitonsize": 600, "linewidth": "5[meV]", "lineshape": "gaussian"})x"))));
+        };
+        const femtest::Run periodic = spectrum("periodic"), walls = spectrum("walls");
+        QVERIFY2(periodic.error.isEmpty() && walls.error.isEmpty(), qPrintable(periodic.error + walls.error));
+        periodic.solution->select(0);
+        walls.solution->select(0);
+        const double ep = femtest::global(*periodic.solution, "qw.Eb") / Q, ew = femtest::global(*walls.solution, "qw.Eb") / Q;
+        qInfo("one period, periodic: e1-hh1 bound by %.4f meV; the walled well %.4f meV", ep * 1e3, ew * 1e3);
+        QVERIFY2(ep > 0.005 && std::abs(ep / ew - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(ep).arg(ew)));
+        QVERIFY(!periodic.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("a spectrum of 0 ")));
+    }
+
+    // How many pairs are coupled, given ("excitonpairs" - the lowest 12 of
+    // each kind of hole, k·p 16, a superlattice's above-barrier minibands
+    // past them: the check of 21 October's n = 3): 2 of each kind here,
+    // said; past 64 taken as 64, said.
+    void pairsCoupledGiven()
+    {
+        auto spectrum = [](int pairs) {
+            return femtest::run(femtest::modelOf(femtest::heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("10"), QStringLiteral("10"),
+                QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "1.5[eV]", "states": 2, "excitons": true, "excitonmodel": "coupled",
+                                   "excitonpairs": %1, "excitonsize": %2, "linewidth": "5[meV]", "lineshape": "gaussian"})x")
+                    .arg(pairs)
+                    .arg(femtest::slowBuild() ? 200 : 400))));
+        };
+        const femtest::Run two = spectrum(2), many = spectrum(80);
+        QVERIFY2(two.error.isEmpty() && many.error.isEmpty(), qPrintable(two.error + many.error));
+        const QString said = two.solution->log.join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QRegularExpression(QStringLiteral("the 2 lowest of the [0-9]+ pairs of heavy holes coupled"))), qPrintable(said));
+        QVERIFY2(many.study.warnings.join(QLatin1Char(' ')).contains(QLatin1String("its excitonpairs 80 taken as 64, the most it takes")),
+                 qPrintable(many.study.warnings.join(QLatin1Char('\n'))));
+    }
+
+    // The bulk's absorption against GaAs's measured: Aspnes and Studna's
+    // (Phys. Rev. B 27, 985, 1983), the library's fit to it from 0.05 to
+    // 0.45 eV above the gap - α = 6.578e4/cm √(E - Eg)/E (eV), 15.1, 18.4
+    // and 20.3 ×10³/cm at 1.55, 1.63 and 1.70 eV. A slab of GaAs alone
+    // ("continuum": bound, the stack's thickness): its free carriers' √ε
+    // 0.66 of it, Elliott's (its excitons, Sommerfeld's factor; Urbach's 6
+    // meV) within 10 % (1.094, 0.989, 0.939) - the 3D absorption's absolute
+    // strength, Kane's Ep 28.8 eV, n and |Mb|², checked against a
+    // measurement. And the wells' with it: a wide well's free absorption per
+    // its thickness the bulk's free carriers' (30, 40, 60 nm at 1.63 eV: 0.94,
+    // 0.97, 0.98 of it) - their 2D steps' sum its 3D density of states
+    // (wishlist 4.6 of the check of 21 October; W7 of the 20 October one).
+    void theBulksAbsoluteStrength()
+    {
+        auto slab = [](const char* more) {
+            return femtest::run(femtest::modelOf(femtest::heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("20"), QStringLiteral("20"),
+                QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "1.55[eV], 1.63[eV], 1.70[eV]", "states": 1, "continuum": "bound", "normalize": "stack",
+                                   "linewidth": "2[meV]", "lineshape": "gaussian" %1})x").arg(QLatin1String(more)))));
+        };
+        const femtest::Run free = slab(""), elliott = slab(R"(, "bulkexcitons": true, "urbach": "6[meV]")");
+        QVERIFY2(free.error.isEmpty() && elliott.error.isEmpty(), qPrintable(free.error + elliott.error));
+        for (int k = 0; k < 3; ++k) {
+            free.solution->select(k);
+            elliott.solution->select(k);
+            const double E = femtest::global(*free.solution, "qw.Ephoton") / Q, measured = 6.578e4 * std::sqrt(E - 1.424) / E * 100;   // (1/m)
+            const double a0 = femtest::global(*free.solution, "qw.alphaTE"), ae = femtest::global(*elliott.solution, "qw.alphaTE");
+            qInfo("%.2f eV: measured %.0f /cm; free carriers %.0f (%.3f), Elliott's %.0f (%.3f)", E, measured / 100, a0 / 100, a0 / measured, ae / 100, ae / measured);
+            QVERIFY2(a0 / measured > 0.6 && a0 / measured < 0.72 && std::abs(ae / measured - 1) < 0.1, qPrintable(QStringLiteral("%1 %2").arg(a0 / measured).arg(ae / measured)));
+        }
+        free.solution->select(1);
+        const double bulk = femtest::global(*free.solution, "qw.alphaTE");
+        double last = 0;
+        for (const char* L : {"30", "40", "60"}) {
+            const femtest::Run well = femtest::run(femtest::modelOf(femtest::heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QLatin1String(L), QStringLiteral("10"),
+                QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "1.60[eV], 1.63[eV], 1.66[eV]", "states": 16, "linewidth": "10[meV]", "lineshape": "gaussian"})x"))));
+            QVERIFY2(well.error.isEmpty(), qPrintable(well.error));
+            QStringList r;
+            for (int k = 0; k < 3; ++k) {
+                well.solution->select(k);
+                r << QString::number(femtest::global(*well.solution, "qw.alphaTE") / 100, 'f', 0);
+            }
+            well.solution->select(1);
+            const double at = femtest::global(*well.solution, "qw.alphaTE");
+            qInfo("a %s nm well at 1.60, 1.63, 1.66 eV: %s /cm (the bulk's free carriers at 1.63: %.0f; %.3f of it)", L, qPrintable(r.join(", ")), bulk / 100, at / bulk);
+            QVERIFY2(at > last && std::abs(at / bulk - 1) < 0.07, qPrintable(QStringLiteral("%1 %2").arg(at / bulk).arg(last / bulk)));
+            last = at;
+        }
+        QVERIFY2(std::abs(last / bulk - 1) < 0.03, qPrintable(QString::number(last / bulk)));
+    }
+
+    // The bulk's edge (wishlist 4.3 of the check of 21 October: Miller's
+    // barriers' own at 1.74-1.76 eV, the bare √ε none below the gap): below
+    // its lines Urbach's tail, e^(E/E_U) whatever lines lie above - a
+    // GaAs slab's 52 and 42 meV under its gap e^(10/6) apart, to 1 %; with
+    // neither, nothing there (the spectrum's 2 meV Gaussian's).
+    void theBulksEdge()
+    {
+        auto slab = [](const char* more) {
+            return femtest::run(femtest::modelOf(femtest::heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("20"), QStringLiteral("20"),
+                QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "1.3705[eV], 1.3805[eV]", "states": 1, "continuum": "bound", "normalize": "stack",
+                                   "linewidth": "2[meV]", "lineshape": "gaussian" %1})x").arg(QLatin1String(more)))));
+        };
+        const femtest::Run urbach = slab(R"(, "bulkexcitons": true, "urbach": "6[meV]")"), plain = slab("");
+        QVERIFY2(urbach.error.isEmpty() && plain.error.isEmpty(), qPrintable(urbach.error + plain.error));
+        double a[2], b[2];
+        for (int k = 0; k < 2; ++k) {
+            urbach.solution->select(k);
+            plain.solution->select(k);
+            a[k] = femtest::global(*urbach.solution, "qw.alphaTE");
+            b[k] = femtest::global(*plain.solution, "qw.alphaTE");
+        }
+        qInfo("below the gap: Urbach's %.4g, %.4g /cm (their ratio %.4f, e^(10/6) %.4f); the plain √ε's %.3g, %.3g", a[0] / 100, a[1] / 100, a[1] / a[0],
+              std::exp(10.0 / 6), b[0] / 100, b[1] / 100);
+        QVERIFY2(std::abs(a[1] / a[0] / std::exp(10.0 / 6) - 1) < 0.01 && a[0] > 1, qPrintable(QStringLiteral("%1 %2").arg(a[0]).arg(a[1])));
+        QVERIFY2(b[1] < 1e-6 * a[1], qPrintable(QStringLiteral("%1 %2").arg(b[1]).arg(a[1])));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestFemExciton)
