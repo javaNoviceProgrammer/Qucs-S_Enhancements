@@ -104,6 +104,10 @@ set_tests_properties(test_fem_semiconductor PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_rays)
 qucs_add_fem_test(test_fem_modeoverlap)
 qucs_add_fem_test(test_fem_photodiode_power)
+# (1050 s on a sanitized Debug build at home, ten of the semiconductors'
+# tests beside it: strong light's circuits, slices, heat, hot carriers,
+# noise and the avalanche diode's sweeps; CI's runners some twice that.)
+set_tests_properties(test_fem_photodiode_power PROPERTIES TIMEOUT 1800)
 qucs_add_fem_test(test_fem_quantum)
 # (697 s on a sanitized Debug build at home, its k·p bands' tests the most:
 # Eigen's complex solves unoptimized; each function under 130 s. 1660 s by

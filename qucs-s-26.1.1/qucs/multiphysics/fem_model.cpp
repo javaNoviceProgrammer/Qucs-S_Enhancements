@@ -1198,7 +1198,7 @@ QList<NodeKind> makeKinds()
          {}, {}, false, false, QStringLiteral("scd"), tr("A current sheet on the boundary, out of the plane.")});
 
     // Electromagnetic waves: a cross-section's modes, waves in the plane.
-    auto waveEquation = [&](const QString& physics, const QString& title) {
+    auto waveEquation = [&add, &none, &source](const QString& physics, const QString& title) {
         const QString p = physics + QLatin1Char('/');
         const QString tag = physics == QLatin1String("modes") ? QStringLiteral("emw") : physics == QLatin1String("resonator") ? QStringLiteral("emr") : QStringLiteral("ewfd");
         add({p + QStringLiteral("wave"), title, tag,
