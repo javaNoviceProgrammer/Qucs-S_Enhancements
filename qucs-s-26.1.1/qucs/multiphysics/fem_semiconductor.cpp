@@ -261,6 +261,27 @@ double phononGamma(double phonon, double T)
     return std::tanh(phonon / (2 * KB * 300)) / std::tanh(phonon / (2 * KB * T));
 }
 
+/// What tunnels through a heterojunction's spike \a step (J) high under a
+/// field \a F (V/m), against what is emitted over it: δ = (1/kT) ∫0^step
+/// e^(u/kT) T(u) du, u the depth below its top, T(u) = e^(-4√(2m) u^(3/2) /
+/// 3qħF) a triangle's WKB transmission (m its mass, kg) - the carriers
+/// beneath its top through its tip (Grinberg et al., a heterojunction
+/// bipolar transistor's emitter).
+double tunnelling(double F, double step, double m, double kT)
+{
+    if (!(F > 0) || !(step > 0) || !(m > 0)) return 0;
+    const double hbar = 1.054571817e-34, c = 4 * std::sqrt(2 * m) / (3 * Q * hbar * F);
+    const int n = 400;   // (Simpson's)
+    const double du = step / n;
+    double sum = 0;
+    for (int k = 0; k <= n; ++k) {
+        const double u = k * du;
+        const double f = std::exp(u / kT - c * u * std::sqrt(u));
+        sum += (k == 0 || k == n ? 1 : k % 2 ? 4 : 2) * f;
+    }
+    return sum * du / 3 / kT;
+}
+
 /// Chynoweth's ionization rate at field \a E (V/m) in its range, and its
 /// change with E.
 void ionizationRate(double E, double a, double b, double a2, double b2, double E0, double beta, double* alpha, double* dalpha)
@@ -401,6 +422,17 @@ private:
         int partner = -1;            // the same nodes' edge on the other side
         double sNi = 0, sNj = 0, sPi = 0, sPj = 0;
         double fNi = 1, fNj = 1, fPi = 1, fPj = 1;
+        // From a heterojunction's node into its other side, emitted over its
+        // step (thermionic, tunnelling): each carrier's Richardson velocity
+        // v_R = √(kT/2π m*), its step (J) and tunnelling mass (kg) - its own
+        // side's (the barrier's) density of states' mass. 0: drift and
+        // diffusion alone.
+        double vRn = 0, vRp = 0, stepN = 0, stepP = 0, massN = 0, massP = 0;
+        // (Its face's share across the interface, |t·n|: an edge at an
+        // angle to it carries the current across as much less. Its end on
+        // the interface: i, else j.)
+        double across = 0;
+        bool emitsAtI = false;
     };
     int nodes() const { return a_n; }
     double doping(int i) const { return a_Nd[std::size_t(i)] - a_Na[std::size_t(i)]; }
@@ -904,6 +936,10 @@ private:
     /// history's) into its current, and its dopants' ions'.
     void displacementCurrents(const Eigen::VectorXd& x, double mass, const std::vector<double>& history);
     bool a_saturation = false, a_lombardi = false;
+    // Heterojunctions: 0 drift and diffusion (the step at the node, the
+    // quasi-Fermi levels continuous), 1 thermionic emission over it in
+    // series with each edge into it, 2 and tunnelling through its spike.
+    int a_emission = 0;
     bool a_alongCurrent = false;       // a saturation driven by the field along the current
     double a_refDEc = 0, a_refChi = 0; // the first semiconductor's: Ec - Ei, χ (J)
     // Impact ionization: whether its pairs are in the equations; the
@@ -2042,6 +2078,57 @@ bool SemiconductorProblem::setup(QString* error)
             em.damp = std::exp(-best / a_media[std::size_t(em.domain)].lcrit);
         }
     }
+    // Heterojunctions' emission: each edge from a node of the other bands
+    // into its own, its side's Richardson velocities and masses (of its
+    // densities of states: Nc = 2 (2π m* kT/h²)^(3/2)), its steps.
+    a_emission = a_node->text(QStringLiteral("heterojunctions")) == QLatin1String("thermionic") ? 1
+                 : a_node->text(QStringLiteral("heterojunctions")) == QLatin1String("tunnelling") ? 2
+                                                                                                  : 0;
+    // (Each interface node's normal into each other side: the other side's
+    // triangles' edges along the interface, two of its nodes the node's
+    // bands', turned, weighed by their lengths.)
+    std::map<std::pair<int, int>, QPointF> normals;   // (node, bands): the normal into those bands
+    if (a_emission > 0)
+        for (int t = 0; t < nt; ++t) {
+            if (!a_elemSemi[std::size_t(t)]) continue;
+            const int bands = a_bandsOf[std::size_t(mesh.domain[std::size_t(t)])];
+            const int* dof = sp.dofs(t);
+            for (int k = 0; k < 3; ++k) {
+                const int i = dof[k], j = dof[(k + 1) % 3], o = dof[(k + 2) % 3];
+                if (a_nodeDomain[std::size_t(i)] < 0 || a_nodeDomain[std::size_t(j)] < 0) continue;
+                if (a_bandsOf[std::size_t(a_nodeDomain[std::size_t(i)])] == bands || a_bandsOf[std::size_t(a_nodeDomain[std::size_t(j)])] == bands) continue;
+                if (a_nodeDomain[std::size_t(o)] >= 0 && a_bandsOf[std::size_t(a_nodeDomain[std::size_t(o)])] != bands) continue;
+                const QPointF pi = sp.point(i), pj = sp.point(j), po = sp.point(o);
+                QPointF nrm(-(pj.y() - pi.y()), pj.x() - pi.x());   // (its length the edge's)
+                if (QPointF::dotProduct(nrm, po - pi) < 0) nrm = -nrm;
+                normals[{i, bands}] += nrm;
+                normals[{j, bands}] += nrm;
+            }
+        }
+    for (Edge& e : a_edges) {
+        e.vRn = e.vRp = e.stepN = e.stepP = e.massN = e.massP = e.across = 0;
+        if (a_emission == 0 || e.medium < 0) continue;
+        const bool atI = a_bandsOf[std::size_t(a_nodeDomain[std::size_t(e.i)])] != e.medium;
+        const bool atJ = a_bandsOf[std::size_t(a_nodeDomain[std::size_t(e.j)])] != e.medium;
+        // (Along the interface, both its ends the other bands': it crosses nothing.)
+        if (atI == atJ) continue;
+        const auto found = normals.find({atI ? e.i : e.j, e.medium});
+        if (found == normals.end()) continue;
+        const double len = std::hypot(found->second.x(), found->second.y());
+        if (!(len > 0)) continue;
+        e.across = std::abs(e.tx * found->second.x() + e.ty * found->second.y()) / len;
+        if (!(e.across > 1e-6)) continue;
+        e.emitsAtI = atI;
+        const Medium& m = a_media[std::size_t(e.medium)];
+        const double kT = KB * a_T, h = 6.62607015e-34;
+        auto mass = [kT, h](double N) { return std::pow(N / 2, 2.0 / 3.0) * h * h / (2 * M_PI * kT); };
+        e.massN = mass(m.Nc);
+        e.massP = mass(m.Nv);
+        e.vRn = std::sqrt(kT / (2 * M_PI * e.massN));
+        e.vRp = std::sqrt(kT / (2 * M_PI * e.massP));
+        e.stepN = Q * std::abs(atI ? e.sNi : e.sNj);
+        e.stepP = Q * std::abs(atI ? e.sPi : e.sPj);
+    }
     edgeWeights(nullptr);
     if (cancelled()) {
         *error = tr("cancelled");
@@ -2839,17 +2926,33 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
 {
     for (Edge& e : a_edges) e.wn = e.wp = 0;
     std::vector<double> geometric(a_edges.size(), 0.0), magnitude(a_edges.size(), 0.0);
+    // (Tunnelling: each emitting edge's field, its triangles' mean |E|.)
+    std::vector<double> field(a_emission == 2 && x ? a_edges.size() : 0, 0.0), fields(field.size(), 0.0);
     for (int t = 0; t < int(a_elements.size()); ++t) {
         const ElementMobility& em = a_elements[std::size_t(t)];
         if (em.domain < 0) continue;
         double mun = 0, mup = 0;
         elementMobilities(t, x, &mun, &mup);
+        double E = 0;
+        if (!field.empty()) {
+            const int* dof = a_s.fields()[std::size_t(a_fi)].space->dofs(t);
+            double ex = 0, ey = 0;
+            for (int k = 0; k < 3; ++k) {
+                ex -= em.gx[k] * (*x)(a_iV[std::size_t(dof[k])]);
+                ey -= em.gy[k] * (*x)(a_iV[std::size_t(dof[k])]);
+            }
+            E = std::hypot(ex, ey);
+        }
         for (int k = 0; k < 3; ++k) {
             Edge& e = a_edges[std::size_t(em.edge[k])];
             e.wn += em.cot[k] * mun;
             e.wp += em.cot[k] * mup;
             geometric[std::size_t(em.edge[k])] += em.cot[k];
             magnitude[std::size_t(em.edge[k])] += std::abs(em.cot[k]) + em.half;
+            if (!field.empty() && (e.vRn > 0 || e.vRp > 0)) {
+                field[std::size_t(em.edge[k])] += E;
+                fields[std::size_t(em.edge[k])] += 1;
+            }
         }
     }
     // (An edge along a heterojunction whose one side's weight is negative -
@@ -2877,6 +2980,29 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
         e.w = std::max(geometric[k], 0.0);
         e.wn = e.w > 0 ? std::max(e.wn, 0.0) * Q * a_Vt : 0.0;
         e.wp = e.w > 0 ? std::max(e.wp, 0.0) * Q * a_Vt : 0.0;
+        // An edge into a heterojunction's other side: the step's emission,
+        // G = q v_R (1 + δ) over the edge's face across the interface, in
+        // series at its end there with the edge's Scharfetter and Gummel
+        // flux - the carriers crossing it no faster than they arrive at it
+        // thermally (Crowell and Sze's thermionic emission and diffusion),
+        // δ what tunnels through it. The two together the edge's flux times
+        // G/(G + w B), B its Bernoulli toward that end at the step d: of x,
+        // as solved (held a Newton step, as saturated mobilities are; 1
+        // without it).
+        if (e.w > 0 && (e.vRn > 0 || e.vRp > 0)) {
+            const double face = e.w * e.h * e.across;
+            const double F = !field.empty() && fields[k] > 0 ? field[k] / fields[k] : 0.0;
+            double dN = 0, dP = 0;
+            if (x) edgeSteps(e, *x, &dN, &dP);
+            if (e.wn > 0 && e.vRn > 0) {
+                const double G = Q * e.vRn * (1 + (field.empty() ? 0.0 : tunnelling(F, e.stepN, e.massN, KB * a_T))) * face;
+                e.wn *= G / (G + e.wn * bern(e.emitsAtI ? -dN : dN));
+            }
+            if (e.wp > 0 && e.vRp > 0) {
+                const double G = Q * e.vRp * (1 + (field.empty() ? 0.0 : tunnelling(F, e.stepP, e.massP, KB * a_T))) * face;
+                e.wp *= G / (G + e.wp * bern(e.emitsAtI ? dP : -dP));
+            }
+        }
     }
 }
 
@@ -3003,7 +3129,7 @@ std::vector<SemiconductorProblem::MobilityChange> SemiconductorProblem::mobility
 
 void SemiconductorProblem::updateMobilities(const Eigen::VectorXd& x)
 {
-    if (!(a_saturation || a_lombardi)) return;
+    if (!(a_saturation || a_lombardi || a_emission > 0)) return;
     // (Fermi-Dirac's degeneracy at x, which a carrier's quasi-Fermi potential
     // reads: else that of the state last assembled - after a stationary
     // step another's, and a small signal's first frequency had other

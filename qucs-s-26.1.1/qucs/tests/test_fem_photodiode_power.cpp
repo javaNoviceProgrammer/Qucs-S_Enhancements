@@ -877,6 +877,72 @@ private slots:
         const Run dark = run(modelOf(j));
         QVERIFY2(dark.error.contains(QLatin1String("no semiconductor is lit")), qPrintable(dark.error));
     }
+
+    // Thermionic emission over a heterojunction: n-GaAs | n-Al0.3Ga0.7As
+    // (1e18 cm⁻³ each, 40 nm - the barrier's depletion some 17 nm -, 5 nm
+    // high), 1 mV across. Emitted over its step the interface adds Vt/(q
+    // v_R n' A) to the abrupt drift and diffusion's resistance, to 2 % - n'
+    // the barrier's electrons at it, v_R = √(kT/2π m*), m* of its Nc (read
+    // back: n e^((Ec - Efn)/kT)) -, the same to 1 % as its mesh is halved
+    // (0.183, 0.170, 0.166, 0.164 Ω at 2, 1, 0.5 and 0.25 nm, the first
+    // coarser than its Debye length); tunnelling through its spike divides
+    // that by 1 + δ, δ of the field beside it (15 at 2.2e7 V/m), to 1 %.
+    void emittedOverAHeterojunction()
+    {
+        auto junction = [](const QString& kind, const QString& hmax) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "label": "a", "size": ["40", "5"]},
+                             {"type": "rectangle", "label": "b", "position": ["40", "0"], "size": ["40", "5"]}],
+                "materials": [{"material": "Gallium arsenide", "selection": {"only": ["a"]}},
+                              {"material": "Aluminium gallium arsenide", "x": "0.3", "selection": {"only": ["b"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "heterojunctions": "%1", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["a"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "1[mV]", "selection": {"of": ["b"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%2"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(kind, hmax)
+                               .toUtf8());
+        };
+        // (Sanitized, 0.5 and 1 nm: 2.6 % apart there, the finer pair's
+        // runs past QtTest's 300 s.)
+        const bool slow = slowBuild();
+        const QString fine = slow ? QStringLiteral("0.5") : QStringLiteral("0.25"), coarse = slow ? QStringLiteral("1") : QStringLiteral("0.5");
+        const double within = slow ? 0.03 : 0.01;
+        const Run dd = run(junction(QStringLiteral("abrupt"), fine)), te = run(junction(QStringLiteral("thermionic"), fine));
+        const Run teCoarse = run(junction(QStringLiteral("thermionic"), coarse)), tun = run(junction(QStringLiteral("tunnelling"), fine));
+        for (const Run* r : {&dd, &te, &teCoarse, &tun}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        const Solution &sd = *dd.study.solutions.back(), &st = *te.study.solutions.back(), &su = *tun.study.solutions.back();
+        const double V = 1e-3, A = 5e-9, kT = 1.380649e-23 * 300, Vt = kT / Q, h = 6.62607015e-34;
+        const double Rd = V / global(sd, QStringLiteral("semi.I_2")), Rt = V / global(st, QStringLiteral("semi.I_2"));
+        const double Rtc = V / global(*teCoarse.study.solutions.back(), QStringLiteral("semi.I_2")), Ru = V / global(su, QStringLiteral("semi.I_2"));
+        // (The barrier's Nc in its bulk; its electrons at the interface.)
+        const double Nc = at(st, QStringLiteral("semi.n"), 70, 2.5) * std::exp((at(st, QStringLiteral("semi.Ec"), 70, 2.5) - at(st, QStringLiteral("semi.Efn"), 70, 2.5)) / kT);
+        const double m = std::pow(Nc / 2, 2.0 / 3.0) * h * h / (2 * M_PI * kT), vR = std::sqrt(kT / (2 * M_PI * m));
+        const double n = at(st, QStringLiteral("semi.n"), 40.0001, 2.5);
+        const double r = Vt / (Q * vR * n * A);
+        qInfo("1 mV across: drift-diffusion %.6g Ω, thermionic %.6g Ω (a coarser mesh %.6g), with tunnelling %.6g Ω; the barrier's Nc %.4g /m³ "
+              "(m* %.4f m0), v_R %.4g m/s, n' %.4g /m³: Vt/(q v_R n' A) %.6g Ω",
+              Rd, Rt, Rtc, Ru, Nc, m / 9.1093837e-31, vR, n, r);
+        QVERIFY2(std::abs((Rt - Rd) / r - 1) < std::max(0.02, within), qPrintable(QStringLiteral("%1 %2").arg(Rt - Rd).arg(r)));
+        QVERIFY2(std::abs(Rtc / Rt - 1) < within, qPrintable(QStringLiteral("%1 %2").arg(Rtc).arg(Rt)));
+        // Tunnelling: the interface's (Rt - Rd)/(1 + δ), δ at the field in
+        // the barrier's first triangles, its step Ec's there.
+        const double F = at(su, QStringLiteral("semi.normE"), 40.05, 2.5);
+        const double step = at(su, QStringLiteral("semi.Ec"), 40.0001, 2.5) - at(su, QStringLiteral("semi.Ec"), 39.9999, 2.5);
+        const double c = 4 * std::sqrt(2 * m) / (3 * Q * 1.054571817e-34 * F);
+        double delta = 0;
+        const int steps = 2000;
+        for (int k = 0; k < steps; ++k) {
+            const double u = (k + 0.5) * step / steps;
+            delta += std::exp(u / kT - c * std::pow(u, 1.5)) * step / steps / kT;
+        }
+        qInfo("tunnelling: its field %.4g V/m, its step %.4f eV, δ %.4f; the interface %.6g Ω, (Rt - Rd)/(1 + δ) %.6g Ω", F, step / Q, delta, Ru - Rd,
+              (Rt - Rd) / (1 + delta));
+        QVERIFY2(delta > 0.1, qPrintable(QString::number(delta)));
+        QVERIFY2(std::abs((Ru - Rd) / ((Rt - Rd) / (1 + delta)) - 1) < within, qPrintable(QStringLiteral("%1 %2").arg(Ru - Rd).arg((Rt - Rd) / (1 + delta))));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestFemPhotodiodePower)
