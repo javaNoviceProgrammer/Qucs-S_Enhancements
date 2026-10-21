@@ -6,6 +6,7 @@
  * document they name; the mode chosen is kept for the next file.
  */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QAbstractButton>
 #include <QDesktopServices>
 #include <QMessageBox>
@@ -1439,6 +1440,170 @@ private slots:
         QFile saved(file);
         QVERIFY(saved.open(QIODevice::ReadOnly));
         QVERIFY(saved.readAll().contains("## Added *later*"));
+        app.closeAllFiles();
+    }
+
+    // The images it shows, written again, made or put in place by a
+    // rename: the rendering is made again. (The Markdown's own file the
+    // window watches; its pictures were no one's - a plot made again stayed
+    // as it was until the file itself changed.) A file beside them changed
+    // alone, or an image of the web or a data URL, is not followed.
+    void imagesWrittenAgainRenderAgain()
+    {
+        const auto picture = [this](const QString& name, QColor colour, bool rename) {
+            QImage image(240, 160, QImage::Format_RGB32);
+            image.fill(colour);
+            if (!rename) return image.save(dir.filePath(name), "PNG");
+            const QString part = dir.filePath(name + QStringLiteral(".part"));
+            if (!image.save(part, "PNG")) return false;
+            QFile::remove(dir.filePath(name));
+            return QFile::rename(part, dir.filePath(name));
+        };
+        QVERIFY(QDir().mkpath(dir.filePath("pictures")));
+        QVERIFY(picture("pictures/plot.png", Qt::red, false));
+        QFile::remove(dir.filePath("pictures/later.png"));
+        const QString file = write("pictures.md", "# Pictures\n\n![plot](pictures/plot.png)\n\n![later](pictures/later.png)\n\n"
+                                                  "![web](https://example.com/badge.png)\n\n![data](data:image/png;base64,iVBORw0KGgo=)\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        pump();
+        // (The pixels of the rendering in \a colour.)
+        const auto shown = [md](QColor colour) {
+            const QImage grab = md->preview()->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
+            int n = 0;
+            for (int y = 0; y < grab.height(); ++y)
+                for (int x = 0; x < grab.width(); ++x) n += (grab.pixel(x, y) & 0xffffff) == (colour.rgb() & 0xffffff);
+            return n;
+        };
+        QTRY_VERIFY(shown(Qt::red) > 10000);
+        QStringList watched;
+        for (const QString& image : md->watchedImages()) watched << QFileInfo(image).fileName();
+        watched.sort();
+        QCOMPARE(watched, QStringList({"later.png", "plot.png"}));
+
+        int renderings = 0;
+        connect(md->preview()->document(), &QTextDocument::contentsChange, this, [&renderings] { ++renderings; });
+        write("pictures/notes.txt", "beside them\n");
+        QTest::qWait(1500);
+        QCOMPARE(renderings, 0);
+
+        // Written again where it is; renamed over it; one made after.
+        QVERIFY(picture("pictures/plot.png", Qt::blue, false));
+        QTRY_VERIFY_WITH_TIMEOUT(shown(Qt::blue) > 10000, 10000);
+        QCOMPARE(shown(Qt::red), 0);
+        QVERIFY(renderings > 0);
+        QVERIFY(picture("pictures/plot.png", Qt::green, true));
+        QTRY_VERIFY_WITH_TIMEOUT(shown(Qt::green) > 10000, 10000);
+        // (Before it is rendered again, Qt draws one that came at its own
+        // size in the place of the missing one's mark, over the one above.)
+        QVERIFY(picture("pictures/later.png", Qt::magenta, false));
+        QTRY_VERIFY_WITH_TIMEOUT(shown(Qt::magenta) > 30000 && shown(Qt::green) > 30000, 10000);
+        disconnect(md->preview()->document(), nullptr, this, nullptr);
+        app.closeAllFiles();
+    }
+
+    // A long document - a formula on each line, code blocks - is laid out
+    // once a rendering, its formulas found in one pass. (Laid out again
+    // after each formula from it to the end, each searched for from the
+    // start: 3000 lines took 4 s - its rendering after a change on disk
+    // seemed never to come.)
+    void longDocumentsRenderAtOnce()
+    {
+        const auto text = [](int lines) {
+            QByteArray t = "# Long\n\n";
+            for (int i = 0; i < lines; ++i) {
+                t += "Line " + QByteArray::number(i) + " of some text, *emphasis* and $x_{" + QByteArray::number(i) + "}^2$.\n\n";
+                if (i % 100 == 0) t += "```\ncode " + QByteArray::number(i) + "\n```\n\n";
+            }
+            return t;
+        };
+        const QString file = write("long.md", text(1000));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        pump();
+        QTextDocument* shown = md->preview()->document();
+        int changes = 0;
+        connect(shown, &QTextDocument::contentsChange, this, [&changes] { ++changes; });
+        md->renderNow();
+        disconnect(shown, nullptr, this, nullptr);
+        // (Qt's reading of it, its HTML apart, the shading and the math: a
+        // change each.)
+        QVERIFY2(changes < 20, qPrintable(QString::number(changes)));
+        QVERIFY(blockWith(shown, "Line 999 of some text").isValid());
+        QCOMPARE(shown->toPlainText().count(QChar::ObjectReplacementCharacter), 1000);
+
+        // Four times the length, some four times the time (searched from
+        // the start, ten times and more).
+        const auto best = [md] {
+            qint64 least = std::numeric_limits<qint64>::max();
+            for (int i = 0; i < 2; ++i) {
+                QElapsedTimer t;
+                t.start();
+                md->renderNow();
+                least = std::min(least, t.nsecsElapsed());
+            }
+            return least;
+        };
+        const qint64 shorter = best();
+        write("long.md", text(4000));
+        QVERIFY(md->reload());
+        QCOMPARE(md->preview()->document()->toPlainText().count(QChar::ObjectReplacementCharacter), 4000);
+        const qint64 longer = best();
+        QVERIFY2(longer < 7 * shorter, qPrintable(QStringLiteral("%1 ms, a quarter of it %2 ms").arg(longer / 1e6).arg(shorter / 1e6)));
+        app.closeAllFiles();
+    }
+
+    // The file written again while it is read (a long one's text set,
+    // highlighted and rendered): read again. Its date was taken after the
+    // reading, the writing's - taken for the one read, and never loaded.
+    void aFileWrittenWhileReadIsReadAgain()
+    {
+        const QString file = write("race.md", "# Race\n\nMark zero\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        QTRY_VERIFY(blockWith(md->preview()->document(), "Mark zero").isValid());
+        // As the text read is set, the file written again (dated a second
+        // on: the same millisecond is no change).
+        bool written = false;
+        connect(md->document(), &QTextDocument::contentsChanged, this, [&] {
+            if (written || !md->toPlainText().contains(QLatin1String("Mark one"))) return;
+            written = true;
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("# Race\n\nMark two\n");
+            QVERIFY(f.setFileTime(QDateTime::currentDateTime().addSecs(1), QFileDevice::FileModificationTime));
+        });
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("# Race\n\nMark one\n");
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(written, 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(blockWith(md->preview()->document(), "Mark two").isValid(), 10000);
+        QVERIFY(md->toPlainText().contains(QLatin1String("Mark two")));
+        QVERIFY(!md->getDocChanged());
+        disconnect(md->document(), nullptr, this, nullptr);
         app.closeAllFiles();
     }
 
