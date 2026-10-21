@@ -275,6 +275,10 @@ public slots:
     void sendComposer();
     /// Stops the turn under way.
     void stopTurn();
+    /// Sends what Claude waits on - a command, an agent, a Qucs-S tool -
+    /// to the background: it goes on by itself, and Claude without it (the
+    /// Stop button's menu; Session::sendToBackground()).
+    void sendToBackground();
     void newConversation();
 
 signals:

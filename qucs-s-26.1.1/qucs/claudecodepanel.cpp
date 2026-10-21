@@ -613,6 +613,13 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     connect(a_session, &qucs_s::claude::Session::failed, this, [this](const QString& message) {
         append({Entry::Problem, message, {}, {}});
     });
+    connect(a_session, &qucs_s::claude::Session::backgroundFinished, this,
+            [this](const QString& tool, bool failed, const QString&, bool told) {
+                addNote(!told  ? tr("%1, sent to the background, has ended, but Claude Code had ended too: its result was not "
+                                    "given to Claude.").arg(tool)
+                        : failed ? tr("%1, sent to the background, has failed: Claude is told what it said.").arg(tool)
+                                 : tr("%1, sent to the background, has finished: Claude is given its result.").arg(tool));
+            });
     connect(a_session, &qucs_s::claude::Session::turnFinished, this, &ClaudeCodePanel::onTurnFinished);
     // Kept again as it changes (ClaudeCodeTabs keeps it).
     connect(this, &ClaudeCodePanel::titleChanged, this, &ClaudeCodePanel::conversationChanged);
@@ -971,6 +978,25 @@ void ClaudeCodePanel::buildComposer()
     connect(a_send, &QToolButton::clicked, this, [this] {
         if (a_session->isBusy()) stopTurn();
         else sendComposer();
+    });
+    // Stop's menu: Send to Background - what Claude waits on goes on by
+    // itself, the turn without it, and the composer is free once it ends.
+    a_send->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(a_send, &QToolButton::customContextMenuRequested, this, [this](const QPoint& at) {
+        if (!a_session->isBusy()) return;
+        QMenu menu(this);
+        menu.setObjectName(QStringLiteral("claudeStopMenu"));
+        menu.setToolTipsVisible(true);
+        QAction* background = menu.addAction(tr("Send to Background"), this, &ClaudeCodePanel::sendToBackground);
+        background->setObjectName(QStringLiteral("claudeSendToBackground"));
+        const bool can = a_session->canSendToBackground();
+        background->setEnabled(can);
+        background->setToolTip(can ? tr("What Claude waits on - a command, an agent, a Qucs-S tool - goes on by itself; Claude "
+                                        "goes on without it, and is told when it ends")
+                                   : tr("Claude is not waiting on a command, an agent or a Qucs-S tool"));
+        QAction* stop = menu.addAction(tr("Stop"), this, &ClaudeCodePanel::stopTurn);
+        stop->setObjectName(QStringLiteral("claudeStopTurn"));
+        menu.exec(a_send->mapToGlobal(at));
     });
 }
 
@@ -1767,7 +1793,7 @@ void ClaudeCodePanel::updateComposer()
 {
     const bool busy = a_session->isBusy();
     a_send->setText(busy ? tr("Stop") : tr("Send"));
-    a_send->setToolTip(busy ? tr("Stop Claude (Esc)") : tr("Send (Enter)"));
+    a_send->setToolTip(busy ? tr("Stop Claude (Esc); right-click to send what it waits on to the background") : tr("Send (Enter)"));
     a_send->setProperty("stop", busy);
     a_send->setEnabled(busy || !a_input->toPlainText().trimmed().isEmpty() || !a_images.isEmpty());
     a_send->style()->unpolish(a_send);
@@ -2116,6 +2142,15 @@ bool ClaudeCodePanel::sendText(const QString& text, bool withDocument, const QSt
 void ClaudeCodePanel::stopTurn()
 {
     a_session->interrupt();
+}
+
+void ClaudeCodePanel::sendToBackground()
+{
+    const int sent = a_session->sendToBackground();
+    addNote(sent == 0   ? tr("Nothing to send to the background: Claude is not waiting on a command, an agent or a Qucs-S tool.")
+            : sent == 1 ? tr("Sent to the background: it goes on by itself, Claude without it, and Claude is told when it ends.")
+                        : tr("%1 sent to the background: they go on by themselves, Claude without them, and Claude is told "
+                             "when each ends.").arg(sent));
 }
 
 void ClaudeCodePanel::newConversation()
