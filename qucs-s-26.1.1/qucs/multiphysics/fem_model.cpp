@@ -1631,7 +1631,12 @@ QList<NodeKind> makeKinds()
           spatial(QStringLiteral("TL"), tr("Lattice temperature"), QStringLiteral("K"), QString(),
                   tr("Where it varies - a heat physics' ht.T, its source semi.H: self-heating. There the mobilities (TL/T)^-ζ (each "
                      "material model's ζ), the intrinsic density its material's at TL (its gap shown so), the saturation velocities "
-                     "Quay's and impact ionization's coefficients van Overstraeten and de Man's γ; the carriers' kT T's. Empty: none")) },
+                     "Quay's and impact ionization's coefficients van Overstraeten and de Man's γ; the carriers' kT T's. Empty: none")),
+          expr(QStringLiteral("Bz"), tr("Magnetic flux density Bz"), QStringLiteral("T"), QStringLiteral("0[T]"),
+               tr("Out of the plane: its Lorentz force turns each carrier's current, J = (J0 ∓ µH Bz ẑ×J0)/(1 + (µH Bz)²) - "
+                  "electrons' minus, holes' plus -, µH = r µ the Hall mobility (the material model's Hall factors r): a Hall bar's "
+                  "voltage across r I Bz/(q n t), its sign its carriers'. (In the plane a field turns the current out of it: "
+                  "nothing in 2D.)")) },
          {QStringLiteral("semiconductor/model"), QStringLiteral("semiconductor/doping"), QStringLiteral("semiconductor/srh"),
           QStringLiteral("semiconductor/auger"), QStringLiteral("semiconductor/radiative"), QStringLiteral("semiconductor/generation"),
           QStringLiteral("semiconductor/optical"), QStringLiteral("semiconductor/impact"), QStringLiteral("semiconductor/btbt"),
@@ -1670,11 +1675,24 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("source=user")),
           shownIf(expr(QStringLiteral("mup"), tr("Hole mobility µp"), QStringLiteral("m^2/(V*s)"), QStringLiteral("450[cm^2/(V*s)]")),
                   QStringLiteral("source=user")),
-          choice(QStringLiteral("mobility"), tr("Mobility"), {QStringLiteral("constant"), QStringLiteral("doping"), QStringLiteral("masetti")},
-                 {tr("Constant (the lattice's)"), tr("By doping (Caughey and Thomas)"), tr("By doping (Masetti)")}, QStringLiteral("constant"),
+          choice(QStringLiteral("mobility"), tr("Mobility"),
+                 {QStringLiteral("constant"), QStringLiteral("doping"), QStringLiteral("masetti"), QStringLiteral("arora"), QStringLiteral("dorkel"),
+                  QStringLiteral("klaassen"), QStringLiteral("yamaguchi"), QStringLiteral("expression")},
+                 {tr("Constant (the lattice's)"), tr("By doping (Caughey and Thomas)"), tr("By doping (Masetti)"),
+                  tr("By doping and temperature (Arora)"), tr("With carrier-carrier scattering (Dorkel and Leturcq)"),
+                  tr("Unified (Klaassen)"), tr("Inversion layers (Yamaguchi)"), tr("An expression")},
+                 QStringLiteral("constant"),
                  tr("By doping: µmin + (µ - µmin)/(1 + (N/Nref)^α), N the donors and acceptors together; Masetti's µmin1 e^(-Pc/N) + "
                     "(µ - µmin2)/(1 + (N/Cr)^α) - µ1/(1 + (Cs/N)^β) - silicon's arsenic and boron (Masetti, Severi and Solmi "
-                    "1983) by default; the Lumerical Masetti model is this with µmin1 = µmin2 and Pc 0")),
+                    "1983) by default; the Lumerical Masetti model is this with µmin1 = µmin2 and Pc 0. Arora's: µmin Tn^a + µd "
+                    "Tn^b/(1 + (N/(Nref Tn^c))^(α Tn^d)), Tn = TL/300 K, each element at its lattice's temperature (Arora, Hauser "
+                    "and Roulston 1982). Dorkel and Leturcq's: the lattice's, the dopants' and the carriers' own scattering of "
+                    "each other - µ falls where both carriers are many (Dorkel and Leturcq 1981). Klaassen's: lattice, dopants "
+                    "(screened, clustered at high doping) and carriers together - a majority's and a minority's mobility each "
+                    "its own (Klaassen 1992). Yamaguchi's: a doping's low-field mobility, the field across the nearest "
+                    "interface and the field along the current - on its own, without saturation's or a surface's. An "
+                    "expression: of N, Nd, Na (1/m³), T (the lattice's, K), n, p (1/m³), Epar (the force along each carrier's "
+                    "current, V/m) and Eperp (the field across the nearest interface, V/m)")),
           shownIf(expr(QStringLiteral("munmin"), tr("Electrons' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("68.5[cm^2/(V*s)]")),
                   QStringLiteral("mobility=doping")),
           shownIf(expr(QStringLiteral("nrefn"), tr("Electrons' Nref"), QStringLiteral("1/m^3"), QStringLiteral("9.2e16[1/cm^3]")), QStringLiteral("mobility=doping")),
@@ -1705,6 +1723,105 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("csp"), tr("Holes' Cs"), QStringLiteral("1/m^3"), QStringLiteral("6.1e20[1/cm^3]")), QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("map"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=masetti")),
           shownIf(expr(QStringLiteral("mbp"), tr("Holes' β"), QString(), QStringLiteral("2")), QStringLiteral("mobility=masetti")),
+          // Arora's (Arora, Hauser and Roulston 1982, silicon's).
+          shownIf(expr(QStringLiteral("arminn"), tr("Electrons' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("88[cm^2/(V*s)]"),
+                       tr("µmin Tn^a + µd Tn^b/(1 + (N/(Nref Tn^c))^(α Tn^d)), Tn = TL/300 K")),
+                  QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("aran"), tr("Electrons' µmin exponent a"), QString(), QStringLiteral("-0.57")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("ardn"), tr("Electrons' µd"), QStringLiteral("m^2/(V*s)"), QStringLiteral("1252[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arbn"), tr("Electrons' µd exponent b"), QString(), QStringLiteral("-2.33")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arnrefn"), tr("Electrons' Nref"), QStringLiteral("1/m^3"), QStringLiteral("1.26e17[1/cm^3]")),
+                  QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arcn"), tr("Electrons' Nref exponent c"), QString(), QStringLiteral("2.4")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("aralphan"), tr("Electrons' α"), QString(), QStringLiteral("0.88")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("ardexpn"), tr("Electrons' α exponent d"), QString(), QStringLiteral("-0.146")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arminp"), tr("Holes' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("54.3[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arap"), tr("Holes' µmin exponent a"), QString(), QStringLiteral("-0.57")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("ardp"), tr("Holes' µd"), QStringLiteral("m^2/(V*s)"), QStringLiteral("407[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arbp"), tr("Holes' µd exponent b"), QString(), QStringLiteral("-2.23")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arnrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("2.35e17[1/cm^3]")),
+                  QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("arcp"), tr("Holes' Nref exponent c"), QString(), QStringLiteral("2.4")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("aralphap"), tr("Holes' α"), QString(), QStringLiteral("0.88")), QStringLiteral("mobility=arora")),
+          shownIf(expr(QStringLiteral("ardexpp"), tr("Holes' α exponent d"), QString(), QStringLiteral("-0.146")), QStringLiteral("mobility=arora")),
+          // Dorkel and Leturcq's (1981, silicon's).
+          shownIf(expr(QStringLiteral("dlmun"), tr("Electrons' lattice mobility µL"), QStringLiteral("m^2/(V*s)"), QStringLiteral("1430[cm^2/(V*s)]"),
+                       tr("µL (TL/300 K)^-γ; the dopants' µI = A T^1.5/N (ln(1 + B T²/N) - B T²/(N + B T²))⁻¹; the carriers' µcc = 2e17 "
+                          "T^1.5/√(np) / ln(1 + 8.28e8 T² (np)^-⅓) (cm, V, s, K); µ = µL (1.025/(1 + (X/1.68)^1.43) - 0.025), X = "
+                          "√(6 µL (µI + µcc)/(µI µcc))")),
+                  QStringLiteral("mobility=dorkel")),
+          shownIf(expr(QStringLiteral("dlgamman"), tr("Electrons' lattice exponent γ"), QString(), QStringLiteral("2.2")), QStringLiteral("mobility=dorkel")),
+          shownIf(expr(QStringLiteral("dlan"), tr("Electrons' A (cm, V, s, K)"), QString(), QStringLiteral("4.61e17")), QStringLiteral("mobility=dorkel")),
+          shownIf(expr(QStringLiteral("dlbn"), tr("Electrons' B (cm, K)"), QString(), QStringLiteral("1.52e15")), QStringLiteral("mobility=dorkel")),
+          shownIf(expr(QStringLiteral("dlmup"), tr("Holes' lattice mobility µL"), QStringLiteral("m^2/(V*s)"), QStringLiteral("495[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=dorkel")),
+          shownIf(expr(QStringLiteral("dlgammap"), tr("Holes' lattice exponent γ"), QString(), QStringLiteral("2.2")), QStringLiteral("mobility=dorkel")),
+          shownIf(expr(QStringLiteral("dlap"), tr("Holes' A (cm, V, s, K)"), QString(), QStringLiteral("1e17")), QStringLiteral("mobility=dorkel")),
+          shownIf(expr(QStringLiteral("dlbp"), tr("Holes' B (cm, K)"), QString(), QStringLiteral("6.25e14")), QStringLiteral("mobility=dorkel")),
+          // Klaassen's (1992, silicon's: arsenic's electrons, boron's holes).
+          shownIf(expr(QStringLiteral("klmaxn"), tr("Electrons' µmax"), QStringLiteral("m^2/(V*s)"), QStringLiteral("1417[cm^2/(V*s)]"),
+                       tr("1/µ = 1/µL + 1/µDA: the lattice's µmax Tn^-θ; the dopants' and carriers' µN (Nsc/Nsc,eff) (Nref/Nsc)^α + "
+                          "µc (n + p)/Nsc,eff, Nsc the dopants (clustered) and the other carriers, Nsc,eff those screened")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klminn"), tr("Electrons' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("52.2[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klthetan"), tr("Electrons' θ"), QString(), QStringLiteral("2.285")), QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klnrefn"), tr("Electrons' Nref"), QStringLiteral("1/m^3"), QStringLiteral("9.68e16[1/cm^3]")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klalphan"), tr("Electrons' α"), QString(), QStringLiteral("0.68")), QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klmaxp"), tr("Holes' µmax"), QStringLiteral("m^2/(V*s)"), QStringLiteral("470.5[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klminp"), tr("Holes' µmin"), QStringLiteral("m^2/(V*s)"), QStringLiteral("44.9[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klthetap"), tr("Holes' θ"), QString(), QStringLiteral("2.247")), QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klnrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("2.23e17[1/cm^3]")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klalphap"), tr("Holes' α"), QString(), QStringLiteral("0.719")), QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klnrefd"), tr("Donors' clustering Nref,D"), QStringLiteral("1/m^3"), QStringLiteral("4e20[1/cm^3]"),
+                       tr("Nd* = Nd (1 + 1/(cD + (Nref,D/Nd)²)): their clustering at high doping")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klnrefa"), tr("Acceptors' clustering Nref,A"), QStringLiteral("1/m^3"), QStringLiteral("7.2e20[1/cm^3]")),
+                  QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klcd"), tr("Donors' clustering cD"), QString(), QStringLiteral("0.21")), QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klca"), tr("Acceptors' clustering cA"), QString(), QStringLiteral("0.5")), QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klme"), tr("Electrons' mass me/m0"), QString(), QStringLiteral("1")), QStringLiteral("mobility=klaassen")),
+          shownIf(expr(QStringLiteral("klmh"), tr("Holes' mass mh/m0"), QString(), QStringLiteral("1.258")), QStringLiteral("mobility=klaassen")),
+          // Yamaguchi's (1979, 1983; silicon's).
+          shownIf(expr(QStringLiteral("ymuln"), tr("Electrons' µL"), QStringLiteral("m^2/(V*s)"), QStringLiteral("1400[cm^2/(V*s)]"),
+                       tr("µ0 = µL (1 + N/(N/S + Nref))^-½; µs = µ0 (1 + as E⊥)^-½, E⊥ the field across the nearest interface (faded "
+                          "e^(-d/lcrit) from it); µ = µs (1 + x²/(x + G) + (µs E∥/vs)²)^-½, x = µs E∥/uL, E∥ the force along the "
+                          "current")),
+                  QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ysn"), tr("Electrons' S"), QString(), QStringLiteral("350")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ynrefn"), tr("Electrons' Nref"), QStringLiteral("1/m^3"), QStringLiteral("3e16[1/cm^3]")),
+                  QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("yasn"), tr("Electrons' as"), QStringLiteral("m/V"), QStringLiteral("1.54e-5[cm/V]")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("yuln"), tr("Electrons' uL"), QStringLiteral("m/s"), QStringLiteral("4.9e6[cm/s]")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("yvsn"), tr("Electrons' vs"), QStringLiteral("m/s"), QStringLiteral("1.036e7[cm/s]")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ygn"), tr("Electrons' G"), QString(), QStringLiteral("8.8")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ymulp"), tr("Holes' µL"), QStringLiteral("m^2/(V*s)"), QStringLiteral("480[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ysp"), tr("Holes' S"), QString(), QStringLiteral("81")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ynrefp"), tr("Holes' Nref"), QStringLiteral("1/m^3"), QStringLiteral("4e16[1/cm^3]")),
+                  QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("yasp"), tr("Holes' as"), QStringLiteral("m/V"), QStringLiteral("5.35e-5[cm/V]")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("yulp"), tr("Holes' uL"), QStringLiteral("m/s"), QStringLiteral("2.928e6[cm/s]")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("yvsp"), tr("Holes' vs"), QStringLiteral("m/s"), QStringLiteral("1.2e7[cm/s]")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ygp"), tr("Holes' G"), QString(), QStringLiteral("1.6")), QStringLiteral("mobility=yamaguchi")),
+          shownIf(expr(QStringLiteral("ylcrit"), tr("Depth lcrit"), QStringLiteral("m"), QStringLiteral("10[nm]"),
+                       tr("How far from the interface its field across it reaches: e^(-d/lcrit)")),
+                  QStringLiteral("mobility=yamaguchi")),
+          // An expression of the state.
+          shownIf(expr(QStringLiteral("muexpn"), tr("Electrons' mobility"), QStringLiteral("m^2/(V*s)"), QStringLiteral("1400[cm^2/(V*s)]"),
+                       tr("Of N, Nd, Na (1/m³), T (the lattice's, K), n, p (1/m³), Epar (the force along the electrons' current, "
+                          "V/m), Eperp (the field across the nearest interface, V/m) and the parameters: each element's at its "
+                          "state, held a Newton step as saturated mobilities are")),
+                  QStringLiteral("mobility=expression")),
+          shownIf(expr(QStringLiteral("muexpp"), tr("Holes' mobility"), QStringLiteral("m^2/(V*s)"), QStringLiteral("450[cm^2/(V*s)]")),
+                  QStringLiteral("mobility=expression")),
           expr(QStringLiteral("zetan"), tr("Electrons' mobility's temperature exponent ζ"), QString(), QStringLiteral("2.5"),
                tr("µ(TL) = µ(300 K) (TL/300 K)^-ζ where the physics' lattice temperature TL is given")),
           expr(QStringLiteral("zetap"), tr("Holes' mobility's temperature exponent ζ"), QString(), QStringLiteral("2.2")),
@@ -1719,12 +1836,20 @@ QList<NodeKind> makeKinds()
                        tr("µ0 / (1 + (µ0 F/vsat)^β)^(1/β): 2 for silicon's electrons, 1 for its holes (Caughey and Thomas)")),
                   QStringLiteral("saturation=true")),
           shownIf(expr(QStringLiteral("betap"), tr("Holes' saturation exponent β"), QString(), QStringLiteral("1")), QStringLiteral("saturation=true")),
+          shownIf(choice(QStringLiteral("vsatmodel"), tr("Saturation velocities' temperature"), {QStringLiteral("quay"), QStringLiteral("exponential")},
+                         {tr("Quay's (vsat at 300 K and A)"), tr("2.4e7/(1 + 0.8 e^(TL/600 K)) cm/s")}, QStringLiteral("quay"),
+                         tr("Quay's: the velocities given at 300 K, each scaled by its A. The exponential: both carriers' "
+                            "2.4e7/(1 + 0.8 e^(TL/600 K)) cm/s (1.035e7 at 300 K), the velocities given not used - the mobility "
+                            "overview's eq. 15, a device simulator's default. Either at the physics' T and each element's lattice "
+                            "temperature TL")),
+                  QStringLiteral("saturation=true")),
           shownIf(expr(QStringLiteral("Avn"), tr("Electrons' vsat temperature coefficient A"), QString(), QStringLiteral("0.26"),
                        tr("Quay's: vsat(T) = vsat/((1 - A) + A T/300 K), vsat the 300 K one - at the physics' T and at a lattice "
                           "temperature TL. The library's: silicon's 0.26 and 0.63, germanium's 0.55 and 0.61, GaAs's 0.56 and 0.41 "
                           "(Quay et al. 2000); 0 where none is known. 0: the same at any temperature")),
-                  QStringLiteral("saturation=true")),
-          shownIf(expr(QStringLiteral("Avp"), tr("Holes' vsat temperature coefficient A"), QString(), QStringLiteral("0.63")), QStringLiteral("saturation=true")),
+                  QStringLiteral("saturation=true&vsatmodel=quay")),
+          shownIf(expr(QStringLiteral("Avp"), tr("Holes' vsat temperature coefficient A"), QString(), QStringLiteral("0.63")),
+                  QStringLiteral("saturation=true&vsatmodel=quay")),
           shownIf(choice(QStringLiteral("driving"), tr("Driving force"), {QStringLiteral("current"), QStringLiteral("field"), QStringLiteral("energy")},
                          {tr("Along the current"), tr("The whole field |E|"), tr("The carriers' temperature (energy balance)")},
                          QStringLiteral("current"),
@@ -1752,24 +1877,50 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("E0n"), tr("Transferred electrons' field E0"), QStringLiteral("V/m"), QStringLiteral("4e3[V/cm]"),
                        tr("GaAs's 4 kV/cm")),
                   QStringLiteral("saturation=true&velocity=transferred")),
-          flag(QStringLiteral("surface"), tr("Surface scattering (Lombardi)"), false,
+          flag(QStringLiteral("surface"), tr("Surface scattering"), false,
                tr("At an insulator's surface - a MOSFET's channel - acoustic phonons and the surface's roughness scatter the "
-                  "carriers by the field across it: 1/µ = 1/µbulk + D/µac + D/µsr, µac = B/E⊥ + C (N/1 cm⁻³)^λ / (T E⊥^⅓), µsr = "
-                  "δ/E⊥², E⊥ the field across the nearest interface, D = e^(-d/lcrit) its distance's. Silicon's (Lombardi et "
-                  "al. 1988) by default")),
-          shownIf(expr(QStringLiteral("Bn"), tr("Electrons' B"), QStringLiteral("m/s"), QStringLiteral("4.75e7[cm/s]")), QStringLiteral("surface=true")),
+                  "carriers by the field across it, E⊥ the field across the nearest interface, D = e^(-d/lcrit) its "
+                  "distance's. Lombardi's: 1/µ = 1/µbulk + D/µac + D/µsr, µac = B/E⊥ + C (N/1 cm⁻³)^λ / (TL E⊥^⅓), µsr = δ/E⊥² "
+                  "(Lombardi et al. 1988). Shirahata's: 1/µ = 1/µbulk + D (1/µE - 1/µE(0)), µE = µ0 (TL/300 K)^-θ / ((1 + "
+                  "E⊥/E1)^P1 + (E⊥/E2)^P2) (Shirahata et al. 1992). Silicon's by default")),
+          shownIf(choice(QStringLiteral("surfmodel"), tr("Surface model"), {QStringLiteral("lombardi"), QStringLiteral("shirahata")},
+                         {tr("Lombardi (CVT)"), tr("Shirahata")}, QStringLiteral("lombardi")),
+                  QStringLiteral("surface=true")),
+          shownIf(expr(QStringLiteral("shmu0n"), tr("Electrons' µ0"), QStringLiteral("m^2/(V*s)"), QStringLiteral("1430[cm^2/(V*s)]")),
+                  QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("shthetan"), tr("Electrons' θ"), QString(), QStringLiteral("2.285")), QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("she1n"), tr("Electrons' E1"), QStringLiteral("V/m"), QStringLiteral("6.3e3[V/cm]")),
+                  QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("she2n"), tr("Electrons' E2"), QStringLiteral("V/m"), QStringLiteral("7.7e5[V/cm]")),
+                  QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("shp1n"), tr("Electrons' P1"), QString(), QStringLiteral("0.28")), QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("shp2n"), tr("Electrons' P2"), QString(), QStringLiteral("2.9")), QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("shmu0p"), tr("Holes' µ0"), QStringLiteral("m^2/(V*s)"), QStringLiteral("500[cm^2/(V*s)]")),
+                  QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("shthetap"), tr("Holes' θ"), QString(), QStringLiteral("2.247")), QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("she1p"), tr("Holes' E1"), QStringLiteral("V/m"), QStringLiteral("8e3[V/cm]")),
+                  QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("she2p"), tr("Holes' E2"), QStringLiteral("V/m"), QStringLiteral("3.9e5[V/cm]")),
+                  QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("shp1p"), tr("Holes' P1"), QString(), QStringLiteral("0.3")), QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("shp2p"), tr("Holes' P2"), QString(), QStringLiteral("1")), QStringLiteral("surface=true&surfmodel=shirahata")),
+          shownIf(expr(QStringLiteral("Bn"), tr("Electrons' B"), QStringLiteral("m/s"), QStringLiteral("4.75e7[cm/s]")), QStringLiteral("surface=true&surfmodel=lombardi")),
           shownIf(expr(QStringLiteral("Cn"), tr("Electrons' C (cm, V, s, K)"), QString(), QStringLiteral("1.74e5"),
                        tr("In cm²/(V s) K (V/cm)^⅓: C/T 580 at 300 K")),
-                  QStringLiteral("surface=true")),
-          shownIf(expr(QStringLiteral("lambdan"), tr("Electrons' λ"), QString(), QStringLiteral("0.125")), QStringLiteral("surface=true")),
-          shownIf(expr(QStringLiteral("deltan"), tr("Electrons' δ"), QStringLiteral("V/s"), QStringLiteral("5.82e14[V/s]")), QStringLiteral("surface=true")),
-          shownIf(expr(QStringLiteral("Bp"), tr("Holes' B"), QStringLiteral("m/s"), QStringLiteral("9.925e6[cm/s]")), QStringLiteral("surface=true")),
-          shownIf(expr(QStringLiteral("Cp"), tr("Holes' C (cm, V, s, K)"), QString(), QStringLiteral("8.842e5")), QStringLiteral("surface=true")),
-          shownIf(expr(QStringLiteral("lambdap"), tr("Holes' λ"), QString(), QStringLiteral("0.0317")), QStringLiteral("surface=true")),
-          shownIf(expr(QStringLiteral("deltap"), tr("Holes' δ"), QStringLiteral("V/s"), QStringLiteral("2.0546e14[V/s]")), QStringLiteral("surface=true")),
+                  QStringLiteral("surface=true&surfmodel=lombardi")),
+          shownIf(expr(QStringLiteral("lambdan"), tr("Electrons' λ"), QString(), QStringLiteral("0.125")), QStringLiteral("surface=true&surfmodel=lombardi")),
+          shownIf(expr(QStringLiteral("deltan"), tr("Electrons' δ"), QStringLiteral("V/s"), QStringLiteral("5.82e14[V/s]")), QStringLiteral("surface=true&surfmodel=lombardi")),
+          shownIf(expr(QStringLiteral("Bp"), tr("Holes' B"), QStringLiteral("m/s"), QStringLiteral("9.925e6[cm/s]")), QStringLiteral("surface=true&surfmodel=lombardi")),
+          shownIf(expr(QStringLiteral("Cp"), tr("Holes' C (cm, V, s, K)"), QString(), QStringLiteral("8.842e5")), QStringLiteral("surface=true&surfmodel=lombardi")),
+          shownIf(expr(QStringLiteral("lambdap"), tr("Holes' λ"), QString(), QStringLiteral("0.0317")), QStringLiteral("surface=true&surfmodel=lombardi")),
+          shownIf(expr(QStringLiteral("deltap"), tr("Holes' δ"), QStringLiteral("V/s"), QStringLiteral("2.0546e14[V/s]")), QStringLiteral("surface=true&surfmodel=lombardi")),
           shownIf(expr(QStringLiteral("lcrit"), tr("Depth lcrit"), QStringLiteral("m"), QStringLiteral("10[nm]"),
                        tr("How far from the interface the surface's scattering reaches: e^(-d/lcrit)")),
                   QStringLiteral("surface=true")),
+          expr(QStringLiteral("rhalln"), tr("Electrons' Hall factor r"), QString(), QStringLiteral("1"),
+               tr("µH = r µ, ⟨τ²⟩/⟨τ⟩² of the carriers' scattering times (the mobility overview's eq. 3): about 1.1 to 1.2 for "
+                  "silicon's electrons and 0.7 to 0.8 for its holes at 300 K. With the physics' Bz alone")),
+          expr(QStringLiteral("rhallp"), tr("Holes' Hall factor r"), QString(), QStringLiteral("1")),
           flag(QStringLiteral("fermi"), tr("Fermi-Dirac statistics"), false,
                tr("The carriers as Fermi-Dirac's, n = Nc ℱ1/2((Efn - Ec)/kT), not Boltzmann's Nc e^((Efn - Ec)/kT): fewer "
                   "where the Fermi level nears or enters a band (silicon's 1e20 cm⁻³ 0.30 of Boltzmann's np), their diffusion "
