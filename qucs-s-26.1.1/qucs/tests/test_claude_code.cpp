@@ -147,6 +147,95 @@ while IFS= read -r line; do
 done
 )SH";
 
+// claude whose command can go to the background (background_tasks, as
+// its terminal's Ctrl+B): asked before the command is a task, it says not
+// - and then that it is one; asked again, it is sent, the turn ends, and a
+// moment later the command ends and claude goes on with a turn of its own.
+// A prompt saying "Refuse" has a command that will not go; one saying
+// "Think" only writes, until it is stopped. What it reads goes to bg-in.
+const char* const kBackgrounder = R"SH(#!/bin/sh
+echo start >> "$QUCS_FAKE_DIR/bg-starts"
+n=0
+refuse=
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/bg-in"
+  id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"user"'*)
+      echo '{"type":"system","subtype":"init","session_id":"bg-1","model":"claude-test-1"}'
+      case "$line" in
+        *Think*)
+          echo '{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}'
+          ;;
+        *Refuse*)
+          refuse=1
+          echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b2","name":"Bash","input":{"command":"make test"}}]}}'
+          echo '{"type":"system","subtype":"task_started","task_id":"k2","tool_use_id":"b2","description":"make test","is_backgrounded":false,"task_type":"local_bash"}'
+          ;;
+        *)
+          echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"make all"}}]}}'
+          ;;
+      esac
+      ;;
+    *'"subtype":"interrupt"'*)
+      echo '{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":300,"num_turns":1,"result":"","total_cost_usd":0.001,"permission_denials":[]}'
+      ;;
+    *'"subtype":"background_tasks"'*)
+      n=$((n+1))
+      if [ -n "$refuse" ]; then
+        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"backgrounded":false}}}'
+        echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b2","content":"tested","is_error":false}]}}'
+        echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"bg-1"}'
+      elif [ $n = 1 ]; then
+        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"backgrounded":false}}}'
+        echo '{"type":"system","subtype":"task_started","task_id":"k1","tool_use_id":"b1","description":"make all","is_backgrounded":false,"task_type":"local_bash"}'
+      else
+        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"backgrounded":true}}}'
+        echo '{"type":"system","subtype":"task_updated","task_id":"k1","patch":{"is_backgrounded":true}}'
+        echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"Command was manually backgrounded by user with ID: k1.","is_error":false}]}}'
+        echo '{"type":"assistant","message":{"content":[{"type":"text","text":"It builds in the background."}]}}'
+        echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"bg-1"}'
+        sleep 1
+        echo '{"type":"system","subtype":"task_notification","task_id":"k1","tool_use_id":"b1","status":"completed"}'
+        echo '{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}'
+        echo '{"type":"assistant","message":{"content":[{"type":"text","text":"The build has finished."}]}}'
+        echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.002,"session_id":"bg-1"}'
+      fi
+      ;;
+  esac
+done
+)SH";
+
+// claude that calls the host's tool "change" (Claude Code says the tool
+// use a call answers: "claudecode/toolUseId") and waits for it; answered,
+// the turn ends. The result of a call sent to the background, when it
+// comes as a message, has a turn of its own. What it reads goes to hw-in.
+const char* const kHostWaiter = R"SH(#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/hw-in"
+  case "$line" in
+    *'"subtype":"initialize"'*)
+      echo '{"type":"control_request","request_id":"m1","request":{"subtype":"mcp_message","server_name":"fake","message":{"method":"initialize","params":{"protocolVersion":"2025-11-25"},"jsonrpc":"2.0","id":0}}}'
+      echo '{"type":"control_request","request_id":"m3","request":{"subtype":"mcp_message","server_name":"fake","message":{"method":"tools/list","jsonrpc":"2.0","id":1}}}'
+      ;;
+    *'which the user sent to the background'*)
+      echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Thanks: it is changed."}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"hw-1"}'
+      ;;
+    *'"type":"user"'*)
+      echo '{"type":"system","subtype":"init","session_id":"hw-1","model":"claude-test-1"}'
+      echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"u1","name":"mcp__fake__change","input":{"what":"slowly"}}]}}'
+      echo '{"type":"control_request","request_id":"m4","request":{"subtype":"mcp_message","server_name":"fake","message":{"method":"tools/call","params":{"name":"change","arguments":{"what":"slowly"},"_meta":{"claudecode/toolUseId":"u1"}},"jsonrpc":"2.0","id":2}}}'
+      ;;
+    *'"request_id":"m4"'*)
+      echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u1","content":"(answered)","is_error":false}]}}'
+      echo '{"type":"assistant","message":{"content":[{"type":"text","text":"It goes on in the background."}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"hw-1"}'
+      ;;
+  esac
+done
+)SH";
+
 // claude that changes its model and mode as it runs, when told: a turn
 // says which it works with; "claude-refused" it will not change to - and
 // a turn under way then ends at the refusal. Each start is a line in
@@ -316,6 +405,19 @@ public:
     }
     QStringList calls;
     QList<QJsonObject> arguments;
+};
+
+// ... whose "change" takes its time: answered when the test says.
+class SlowHost : public FakeHost
+{
+public:
+    void callTool(const QString& tool, const QJsonObject& a, std::function<void(const QJsonObject&)> done) override
+    {
+        calls << tool;
+        arguments << a;
+        waiting = std::move(done);
+    }
+    std::function<void(const QJsonObject&)> waiting;
 };
 
 // ... whose "change" cannot be undone when it wipes.
@@ -963,6 +1065,191 @@ private slots:
         QVERIFY(turns.last().at(0).value<TurnResult>().stopped);
         QCOMPARE(s.state(), State::Ready);
         s.stop();
+    }
+
+    // A command Claude waits on, sent to the background: the program is
+    // asked to (background_tasks, with the tool use) - again once the
+    // command is its task, when asked before -, the turn ends, and when the
+    // command ends the program's own turn is a turn as busy as the user's.
+    // One the program will not send is said, and the program goes on.
+    void aCommandGoesToTheBackground()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("bg-in"));
+        QFile::remove(dir.filePath("bg-starts"));
+        Session s;
+        s.setProgram(script("backgrounder", kBackgrounder));
+        s.setWorkingDirectory(fresh("bgwork"));
+        QSignalSpy tools(&s, &Session::toolStarted);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QSignalSpy notices(&s, &Session::notice);
+        QVERIFY(!s.canSendToBackground());
+        QCOMPARE(s.sendToBackground(), 0);
+        QVERIFY(s.send("Build it"));
+        QVERIFY(tools.wait(10000));
+        QVERIFY(s.canSendToBackground());
+        QStringList busyAt;   // each state and whether a turn was under way
+        connect(&s, &Session::stateChanged, this, [&](State state) { busyAt << QString::number(int(state)) + (s.isBusy() ? "b" : ""); });
+        QCOMPARE(s.sendToBackground(), 1);
+        QVERIFY(!s.canSendToBackground());   // (asked once)
+        QVERIFY(turns.wait(10000));
+        QVERIFY(turns.last().at(0).value<TurnResult>().ok);
+        QVERIFY(!s.isBusy());
+        // The command's end: said, and the program's own turn.
+        QTRY_COMPARE_WITH_TIMEOUT(turns.count(), 2, 10000);
+        QVERIFY(turns.last().at(0).value<TurnResult>().ok);
+        QVERIFY(!s.isBusy());
+        QVERIFY2(busyAt.mid(busyAt.size() - 3) == QStringList({QString::number(int(State::Ready)), QString::number(int(State::Thinking)) + "b",
+                                                                QString::number(int(State::Ready))}),
+                 qPrintable(busyAt.join(' ')));
+        QStringList said;
+        for (const QList<QVariant>& n : std::as_const(notices)) said << n.at(0).toString();
+        QCOMPARE(said, QStringList{QString::fromUtf8("“make all”, sent to the background, has finished.")});
+        int asked = 0;
+        for (const QString& line : read(dir.filePath("bg-in")).split('\n', Qt::SkipEmptyParts)) {
+            const QJsonObject request = QJsonDocument::fromJson(line.toUtf8()).object().value("request").toObject();
+            if (request.value("subtype").toString() != "background_tasks") continue;
+            ++asked;
+            QCOMPARE(request.value("tool_use_id").toString(), QStringLiteral("b1"));
+        }
+        QCOMPARE(asked, 2);
+
+        // One it will not send: said; the program goes on as it was.
+        QVERIFY(s.send("Refuse to go"));
+        QTRY_VERIFY_WITH_TIMEOUT(s.canSendToBackground(), 10000);
+        QCOMPARE(s.sendToBackground(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(turns.count(), 3, 10000);
+        QVERIFY(turns.last().at(0).value<TurnResult>().ok);
+        QCOMPARE(notices.last().at(0).toString(), QStringLiteral("Bash could not be sent to the background."));
+        QVERIFY(s.isRunning());
+        QCOMPARE(read(dir.filePath("bg-starts")).count("start"), 1);
+        s.stop();
+    }
+
+    // A tool of the host's Claude waits on, sent to the background: the
+    // call is answered at once that it goes on, the turn ends; the tool's
+    // own answer, when it comes, is a message to Claude - a turn - and is
+    // not written as a second answer to the call. A call not sent there is
+    // answered as ever.
+    void aHostsToolGoesToTheBackground()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("hw-in"));
+        SlowHost host;
+        Session s;
+        s.setProgram(script("hostwaiter", kHostWaiter));
+        s.setWorkingDirectory(fresh("hwwork"));
+        s.setToolHost(&host);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QSignalSpy finished(&s, &Session::backgroundFinished);
+        QVERIFY(s.send("Change it slowly"));
+        QTRY_VERIFY_WITH_TIMEOUT(host.waiting != nullptr, 10000);
+        QVERIFY(s.isBusy());
+        QVERIFY(s.canSendToBackground());
+        QCOMPARE(s.sendToBackground(), 1);
+        QVERIFY(!s.canSendToBackground());
+        QVERIFY(turns.wait(10000));
+        QVERIFY(!s.isBusy());
+        QCOMPARE(host.calls, QStringList{"change"});
+
+        // Its answer comes: a message, a turn.
+        host.waiting(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "changed slowly: 42"}}}}, {"isError", false}});
+        QCOMPARE(finished.count(), 1);
+        QCOMPARE(finished.last().at(0).toString(), QStringLiteral("change"));
+        QCOMPARE(finished.last().at(1).toBool(), false);
+        QCOMPARE(finished.last().at(2).toString(), QStringLiteral("changed slowly: 42"));
+        QCOMPARE(finished.last().at(3).toBool(), true);
+        QVERIFY(s.isBusy());
+        QTRY_COMPARE_WITH_TIMEOUT(turns.count(), 2, 10000);
+        QVERIFY(turns.last().at(0).value<TurnResult>().ok);
+
+        int answers = 0;
+        QString answered, told;
+        for (const QString& line : read(dir.filePath("hw-in")).split('\n', Qt::SkipEmptyParts)) {
+            const QJsonObject m = QJsonDocument::fromJson(line.toUtf8()).object();
+            const QJsonObject r = m.value("response").toObject();
+            if (m.value("type").toString() == "control_response" && r.value("request_id").toString() == "m4") {
+                ++answers;
+                answered = r.value("response").toObject().value("mcp_response").toObject().value("result").toObject()
+                               .value("content").toArray().at(0).toObject().value("text").toString();
+            }
+            if (m.value("type").toString() == "user")
+                told = m.value("message").toObject().value("content").toArray().at(0).toObject().value("text").toString();
+        }
+        QCOMPARE(answers, 1);
+        QVERIFY2(answered.startsWith("The user sent this call to the background"), qPrintable(answered));
+        QVERIFY2(told.startsWith("(Qucs-S: change, which the user sent to the background, has finished. Its result:)"), qPrintable(told));
+        QVERIFY(told.endsWith("changed slowly: 42"));
+
+        // Not sent to the background: answered as ever, and nothing more.
+        host.waiting = nullptr;
+        QVERIFY(s.send("Change it slowly"));
+        QTRY_VERIFY_WITH_TIMEOUT(host.waiting != nullptr, 10000);
+        host.waiting(QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", "changed: 7"}}}}, {"isError", false}});
+        QTRY_COMPARE_WITH_TIMEOUT(turns.count(), 3, 10000);
+        QCOMPARE(finished.count(), 1);
+        s.stop();
+    }
+
+    // The Stop button's menu (a right click while Claude works): Send to
+    // Background - on only while Claude waits on what can go - and Stop.
+    void stopsMenuSendsToTheBackground()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("bg-in"));
+        QFile::remove(dir.filePath("bg-starts"));
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("stopmenu"));
+        panel.session()->setProgram(script("backgrounder", kBackgrounder));
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        auto* button = panel.findChild<QToolButton*>("claudeSend");
+        QVERIFY(button != nullptr);
+        // (The menu's items, and the one named triggered; none shown, none.)
+        const auto rightClick = [&](const QString& trigger) {
+            QStringList items;
+            bool looked = false;
+            QTimer::singleShot(50, &panel, [&items, &looked, trigger] {
+                looked = true;
+                auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+                if (menu == nullptr) return;
+                for (QAction* a : menu->actions())
+                    if (!a->isSeparator()) items << a->text() + (a->isEnabled() ? QString() : QStringLiteral(" (off)"));
+                if (!trigger.isEmpty()) menu->findChild<QAction*>(trigger)->trigger();
+                menu->close();
+            });
+            const QPoint at = button->rect().center();
+            QContextMenuEvent right(QContextMenuEvent::Mouse, at, button->mapToGlobal(at));
+            QApplication::sendEvent(button, &right);
+            for (int i = 0; i < 200 && !looked; ++i) QTest::qWait(10);
+            return items;
+        };
+        panel.composer()->setPlainText("Build it");
+        QVERIFY(button->isEnabled());
+        QCOMPARE(rightClick(QString()), QStringList());   // (Send: none)
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(panel.session()->canSendToBackground(), 10000);
+        QCOMPARE(button->text(), QStringLiteral("Stop"));
+        QVERIFY(button->toolTip().contains("right-click"));
+        QCOMPARE(rightClick("claudeSendToBackground"), QStringList({"Send to Background", "Stop"}));
+        // Sent: the turn ends, the composer is free; the command's end is
+        // said, and Claude's turn after it.
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.session()->isBusy() && button->text() == QStringLiteral("Send"), 10000);
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains("Sent to the background: it goes on by itself"));
+        QTRY_VERIFY_WITH_TIMEOUT(panel.transcriptText().contains("The build has finished."), 10000);
+        panel.renderNow();
+        QVERIFY(panel.transcriptText().contains(QString::fromUtf8("“make all”, sent to the background, has finished.")));
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.session()->isBusy(), 10000);
+
+        // Claude writing, waiting on nothing: the item off; Stop stops.
+        panel.composer()->setPlainText("Think it over");
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(panel.session()->state() == State::Thinking, 10000);
+        QCOMPARE(rightClick("claudeStopTurn"), QStringList({"Send to Background (off)", "Stop"}));
+        QTRY_VERIFY_WITH_TIMEOUT(!panel.session()->isBusy(), 10000);
+        panel.session()->stop();
     }
 
     // A program that fails says why: its exit code and what it wrote.

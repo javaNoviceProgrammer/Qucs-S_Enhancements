@@ -752,6 +752,18 @@ void Session::askProgram(const QString& subtype, const QJsonObject& fields)
 void Session::handleControlResponse(const QJsonObject& m)
 {
     const QJsonObject response = m.value(QLatin1String("response")).toObject();
+    // A tool asked to go to the background (askBackground()): sent, or -
+    // not a task yet - asked again when it is one (handleSystem()), or not.
+    if (const QString toolUse = a_backgroundAsked.take(response.value(QLatin1String("request_id")).toString()); !toolUse.isEmpty()) {
+        const bool ok = response.value(QLatin1String("subtype")).toString() == QLatin1String("success");
+        if (ok && response.value(QLatin1String("response")).toObject().value(QLatin1String("backgrounded")).toBool()) return;
+        if (ok && a_running.contains(toolUse) && !a_taskOf.contains(toolUse)) return;   // (its task to come)
+        a_backgroundWanted.remove(toolUse);
+        const QString error = response.value(QLatin1String("error")).toString().trimmed();
+        emit notice(error.isEmpty() ? tr("%1 could not be sent to the background.").arg(a_tools.value(toolUse, tr("The tool")))
+                                    : tr("%1 could not be sent to the background: %2").arg(a_tools.value(toolUse, tr("The tool")), oneLine(error, 200)));
+        return;
+    }
     const QString subtype = a_asked.take(response.value(QLatin1String("request_id")).toString());
     if (subtype.isEmpty()) return;
     if (response.value(QLatin1String("subtype")).toString() == QLatin1String("success")) {
@@ -893,6 +905,11 @@ void Session::answerElicitation(const QString& id, const QString& action, const 
 bool Session::send(const QString& prompt, const QStringList& images)
 {
     if (a_busy || (prompt.trimmed().isEmpty() && images.isEmpty())) return false;
+    return sendContent(promptContent(prompt, images), prompt);
+}
+
+bool Session::sendContent(const QJsonValue& content, const QString& prompt)
+{
     if (a_program.isEmpty()) {
         setState(State::NotFound);
         return false;
@@ -901,22 +918,28 @@ bool Session::send(const QString& prompt, const QStringList& images)
         start();
         if (!isRunning()) return false;
     }
-    a_busy = true;
-    a_interrupted = false;
+    beginTurn();
     a_lastPrompt = prompt;
-    a_turnClock.start();
-    a_tools.clear();
-    a_editedFiles.clear();
-    a_changedFiles.clear();
-    a_streamed.clear();
-    a_streaming = false;
     write({{QStringLiteral("type"), QStringLiteral("user")},
            {QStringLiteral("message"), QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
-                                                   {QStringLiteral("content"), promptContent(prompt, images)}}},
+                                                   {QStringLiteral("content"), content}}},
            {QStringLiteral("parent_tool_use_id"), QJsonValue::Null},
            {QStringLiteral("session_id"), a_sessionId}});
     setState(State::Thinking);
     return true;
+}
+
+void Session::beginTurn()
+{
+    a_busy = true;
+    a_interrupted = false;
+    a_turnClock.start();
+    a_tools.clear();
+    a_running.clear();
+    a_editedFiles.clear();
+    a_changedFiles.clear();
+    a_streamed.clear();
+    a_streaming = false;
 }
 
 void Session::allowRequest(const QString& id, const QJsonObject& input)
@@ -995,6 +1018,111 @@ void Session::interrupt()
     a_stopTimer->start(4000);
 }
 
+namespace {
+// The program's own tools it runs on in the background when asked
+// (background_tasks): commands, agents.
+bool backgroundable(const QString& tool)
+{
+    return tool == QLatin1String("Bash") || tool == QLatin1String("PowerShell") || tool == QLatin1String("Agent")
+           || tool == QLatin1String("Task");
+}
+} // namespace
+
+bool Session::canSendToBackground() const
+{
+    if (!a_busy || !isRunning()) return false;
+    for (const QString& id : a_running) {
+        const auto call = a_hostCalls.constFind(id);
+        if (call != a_hostCalls.cend() ? !call->background : backgroundable(a_tools.value(id)) && !a_backgroundWanted.contains(id))
+            return true;
+    }
+    return false;
+}
+
+int Session::sendToBackground()
+{
+    if (!canSendToBackground()) return 0;
+    int sent = 0;
+    for (const QString& id : std::as_const(a_running)) {
+        const auto call = a_hostCalls.find(id);
+        if (call != a_hostCalls.end()) {
+            if (call->background) continue;
+            // Answered now; its own answer, when it comes, a message.
+            call->background = true;
+            const QString text = tr("The user sent this call to the background: it goes on in Qucs-S, and its result comes "
+                                    "in a message of its own when it is done. Do not call it again meanwhile; go on with "
+                                    "what does not need it, or end your turn.");
+            call->reply({{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), call->rpcId},
+                         {QStringLiteral("result"),
+                          QJsonObject{{QStringLiteral("content"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                                                                          {QStringLiteral("text"), text}}}}}}});
+            ++sent;
+        } else if (backgroundable(a_tools.value(id)) && !a_backgroundWanted.contains(id)) {
+            a_backgroundWanted.insert(id);
+            askBackground(id);
+            ++sent;
+        }
+    }
+    return sent;
+}
+
+bool Session::asksBackground(const QString& id) const
+{
+    for (const QString& asked : a_backgroundAsked)
+        if (asked == id) return true;
+    return false;
+}
+
+void Session::askBackground(const QString& id)
+{
+    static int count = 0;
+    const QString request = QStringLiteral("qucs-background-%1").arg(++count);
+    a_backgroundAsked.insert(request, id);
+    write({{QStringLiteral("type"), QStringLiteral("control_request")},
+           {QStringLiteral("request_id"), request},
+           {QStringLiteral("request"), QJsonObject{{QStringLiteral("subtype"), QStringLiteral("background_tasks")},
+                                                   {QStringLiteral("tool_use_id"), id}}}});
+}
+
+void Session::hostCallDone(const HostCall& call, const QJsonObject& rpc)
+{
+    const QJsonObject result = rpc.value(QLatin1String("result")).toObject();
+    const bool error = rpc.contains(QLatin1String("error"));
+    const bool failed = error || result.value(QLatin1String("isError")).toBool();
+    const QJsonArray content = result.value(QLatin1String("content")).toArray();
+    const QString output = error ? rpc.value(QLatin1String("error")).toObject().value(QLatin1String("message")).toString() : textOf(content);
+    // Its text, and its images as the program takes a prompt's.
+    QJsonArray blocks{QJsonObject{
+        {QStringLiteral("type"), QStringLiteral("text")},
+        {QStringLiteral("text"), (failed ? tr("(Qucs-S: %1, which the user sent to the background, has failed. What it said:)")
+                                         : tr("(Qucs-S: %1, which the user sent to the background, has finished. Its result:)"))
+                                         .arg(call.tool)
+                                     + QStringLiteral("\n\n") + output}}};
+    for (const QJsonValue& v : content) {
+        const QJsonObject block = v.toObject();
+        if (block.value(QLatin1String("type")).toString() != QLatin1String("image")) continue;
+        blocks.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
+                                  {QStringLiteral("source"), QJsonObject{{QStringLiteral("type"), QStringLiteral("base64")},
+                                                                         {QStringLiteral("media_type"), block.value(QLatin1String("mimeType"))},
+                                                                         {QStringLiteral("data"), block.value(QLatin1String("data"))}}}});
+    }
+    bool told = false;
+    if (isRunning()) {
+        if (a_busy) {
+            // In a turn: the program reads it when it can.
+            write({{QStringLiteral("type"), QStringLiteral("user")},
+                   {QStringLiteral("message"), QJsonObject{{QStringLiteral("role"), QStringLiteral("user")}, {QStringLiteral("content"), blocks}}},
+                   {QStringLiteral("parent_tool_use_id"), QJsonValue::Null},
+                   {QStringLiteral("session_id"), a_sessionId}});
+            told = true;
+        } else {
+            told = sendContent(blocks, QString());
+        }
+    }
+    emit backgroundFinished(call.tool, failed, output, told);
+}
+
 void Session::stop()
 {
     QProcess* process = a_process;
@@ -1033,6 +1161,8 @@ void Session::endTurn()
     a_busy = false;
     a_stopTimer->stop();
     a_streaming = false;
+    a_running.clear();
+    a_backgroundWanted.clear();
     withdrawRequests();
 }
 
@@ -1092,6 +1222,17 @@ void Session::processFinished(int exitCode)
         }
     }
 
+    // The host's calls sent to the background: they go on, but their
+    // answers have no program to go to.
+    for (auto it = a_hostCalls.cbegin(); it != a_hostCalls.cend(); ++it)
+        if (it->background)
+            emit notice(tr("%1, sent to the background, goes on in Qucs-S, but Claude will not be given its result: "
+                           "Claude Code has ended.").arg(it->tool));
+    a_hostCalls.clear();
+    a_backgroundAsked.clear();
+    a_tasks.clear();
+    a_taskOf.clear();
+    a_backgroundTasks.clear();
     const bool wasBusy = a_busy;
     const bool stopping = a_stopping;
     a_stopping = false;
@@ -1122,6 +1263,13 @@ void Session::handleLine(const QByteArray& line)
     }
     const QJsonObject m = doc.object();
     const QString type = m.value(QLatin1String("type")).toString();
+    // A turn the program begins by itself - a task sent to the background
+    // has ended, and it goes on -: as busy as one of the user's (Stop stops
+    // it, a prompt waits).
+    if (!a_busy && isRunning() && (type == QLatin1String("stream_event") || type == QLatin1String("assistant")) && !fromSubagent(m)) {
+        beginTurn();
+        setState(State::Thinking);
+    }
     if (type == QLatin1String("system")) handleSystem(m);
     else if (type == QLatin1String("stream_event")) handleStreamEvent(m);
     else if (type == QLatin1String("assistant")) handleAssistant(m);
@@ -1174,6 +1322,29 @@ void Session::handleSystem(const QJsonObject& m)
                                       : message);
     } else if (subtype == QLatin1String("status")) {
         if (a_busy && a_state == State::Starting) setState(State::Thinking);
+    } else if (subtype == QLatin1String("task_started")) {
+        // A command or an agent the program runs as a task (a moment after
+        // it starts): sent to the background before it was one, asked again.
+        const QString task = m.value(QLatin1String("task_id")).toString();
+        const QString toolUse = m.value(QLatin1String("tool_use_id")).toString();
+        a_tasks.insert(task, m.value(QLatin1String("description")).toString());
+        if (!toolUse.isEmpty()) a_taskOf.insert(toolUse, task);
+        if (m.value(QLatin1String("is_backgrounded")).toBool()) a_backgroundTasks.insert(task);
+        else if (a_backgroundWanted.contains(toolUse) && !asksBackground(toolUse)) askBackground(toolUse);
+    } else if (subtype == QLatin1String("task_updated")) {
+        const QString task = m.value(QLatin1String("task_id")).toString();
+        if (m.value(QLatin1String("patch")).toObject().value(QLatin1String("is_backgrounded")).toBool()) a_backgroundTasks.insert(task);
+    } else if (subtype == QLatin1String("task_notification")) {
+        // One in the background has ended: said (the program goes on with
+        // a turn of its own).
+        const QString task = m.value(QLatin1String("task_id")).toString();
+        const QString what = a_tasks.take(task);
+        if (!a_backgroundTasks.remove(task)) return;
+        const QString status = m.value(QLatin1String("status")).toString();
+        const QString name = what.isEmpty() ? tr("A task") : QStringLiteral("\u201C%1\u201D").arg(oneLine(what, 80));
+        emit notice(status == QLatin1String("completed") ? tr("%1, sent to the background, has finished.").arg(name)
+                    : status == QLatin1String("failed")  ? tr("%1, sent to the background, has failed.").arg(name)
+                                                         : tr("%1, sent to the background, has ended (%2).").arg(name, status));
     }
 }
 
@@ -1237,6 +1408,7 @@ void Session::handleAssistant(const QJsonObject& m)
             const QString tool = block.value(QLatin1String("name")).toString();
             const QJsonObject input = block.value(QLatin1String("input")).toObject();
             a_tools.insert(id, tool);
+            a_running.insert(id);
             if (isFileTool(tool)) a_editedFiles.insert(id, fileOf(input));
             const QString own = hostTool(tool);
             emit toolStarted(id, tool, own.isEmpty() ? toolSubject(tool, input, a_workDir) : a_host->subjectOf(own, forDocument(own, input)),
@@ -1261,6 +1433,8 @@ void Session::handleUser(const QJsonObject& m)
             if (!file.isEmpty() && !a_changedFiles.contains(file)) a_changedFiles << file;
         }
         a_editedFiles.remove(id);
+        a_running.remove(id);
+        a_backgroundWanted.remove(id);
         emit toolFinished(id, failed, textOf(block.value(QLatin1String("content"))));
     }
     if (a_busy && a_state == State::Working && a_pending.isEmpty()) setState(State::Thinking);
@@ -1355,7 +1529,32 @@ void Session::handleMcpMessage(const QString& requestId, const QJsonObject& requ
                                                      {QStringLiteral("message"), QStringLiteral("No server %1 here").arg(server)}}}});
         return;
     }
-    a_mcp->handle(message, reply);
+    // A call of a tool, by the tool use it answers: kept until it is
+    // answered - sent to the background, answered at once
+    // (sendToBackground()), and its own answer then a message to Claude.
+    const QString toolUse = message.value(QLatin1String("method")).toString() == QLatin1String("tools/call")
+                                ? message.value(QLatin1String("params")).toObject().value(QLatin1String("_meta")).toObject()
+                                      .value(QLatin1String("claudecode/toolUseId")).toString()
+                                : QString();
+    if (toolUse.isEmpty()) {
+        a_mcp->handle(message, reply);
+        return;
+    }
+    a_hostCalls.insert(toolUse, {message.value(QLatin1String("id")),
+                                 message.value(QLatin1String("params")).toObject().value(QLatin1String("name")).toString(), reply});
+    QPointer<Session> self(this);
+    a_mcp->handle(message, [self, toolUse, reply](const QJsonObject& rpc) {
+        if (!self) return;
+        const auto it = self->a_hostCalls.find(toolUse);
+        if (it == self->a_hostCalls.end() || !it->background) {
+            if (it != self->a_hostCalls.end()) self->a_hostCalls.erase(it);
+            reply(rpc);
+            return;
+        }
+        const HostCall call = *it;
+        self->a_hostCalls.erase(it);
+        self->hostCallDone(call, rpc);
+    });
 }
 
 void Session::handleResult(const QJsonObject& m)
