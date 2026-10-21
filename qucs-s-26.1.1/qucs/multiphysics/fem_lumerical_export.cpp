@@ -508,8 +508,13 @@ struct Built {
     std::shared_ptr<const Mesh> mesh;
     QString error;
 };
-Built build(const Model& model, bool meshed)
+Built build(const Model& model, bool meshed, const Progress& progress)
 {
+    // (Its geometry - a process flow's - most of the time, its mesh the rest.)
+    auto part = [&progress](double from, double to) -> Progress {
+        if (!progress) return {};
+        return [&progress, from, to](double f, const QString& what) { return progress(from + (to - from) * std::clamp(f, 0.0, 1.0), what); };
+    };
     Built b;
     b.parameters = evaluateParameters(model);
     if (!b.parameters->errors.isEmpty()) {
@@ -518,14 +523,14 @@ Built build(const Model& model, bool meshed)
         b.error = tr("its parameters: %1").arg(list.join(QStringLiteral("; ")));
         return b;
     }
-    const GeometryBuild g = buildGeometry(model, *b.parameters);
+    const GeometryBuild g = buildGeometry(model, *b.parameters, {}, part(0, 0.8));
     if (!g.ok()) {
         b.error = tr("its geometry: %1").arg(QStringList(g.errors.values()).join(QStringLiteral("; ")));
         return b;
     }
     b.topology = g.topology;
     if (meshed) {
-        const MeshBuild m = buildMesh(model, *b.parameters, g.topology);
+        const MeshBuild m = buildMesh(model, *b.parameters, g.topology, part(0.8, 1));
         if (!m.mesh) {
             b.error = tr("its mesh: %1").arg(m.error);
             return b;
@@ -537,7 +542,7 @@ Built build(const Model& model, bool meshed)
 
 // --- MODE -------------------------------------------------------------------
 
-LumericalScript exportMode(const Model& model, const Node& node, const QString& base, const QString& version)
+LumericalScript exportMode(const Model& model, const Node& node, const QString& base, const QString& version, const Progress& progress)
 {
     LumericalScript out;
     Writer w;
@@ -550,7 +555,7 @@ LumericalScript exportMode(const Model& model, const Node& node, const QString& 
         out.error = why;
         return out;
     }
-    const Built b = build(model, true);
+    const Built b = build(model, true, progress);
     if (!b.error.isEmpty()) {
         out.error = b.error;
         return out;
@@ -1134,7 +1139,7 @@ struct Implant {
     }
 };
 
-LumericalScript exportCharge(const Model& model, const Node& node, const QString& base, const QString& version)
+LumericalScript exportCharge(const Model& model, const Node& node, const QString& base, const QString& version, const Progress& progress)
 {
     LumericalScript out;
     Writer w;
@@ -1147,7 +1152,7 @@ LumericalScript exportCharge(const Model& model, const Node& node, const QString
         out.error = why;
         return out;
     }
-    const Built b = build(model, true);
+    const Built b = build(model, true, progress);
     if (!b.error.isEmpty()) {
         out.error = b.error;
         return out;
@@ -1826,7 +1831,7 @@ std::optional<Alloy> mqwCompound(const QString& compound, double x, double y)
     return std::nullopt;
 }
 
-LumericalScript exportMqw(const Model& model, const Node& node, const QString& base, const QString& version)
+LumericalScript exportMqw(const Model& model, const Node& node, const QString& base, const QString& version, const Progress& progress)
 {
     LumericalScript out;
     Writer w;
@@ -1835,7 +1840,7 @@ LumericalScript exportMqw(const Model& model, const Node& node, const QString& b
         out.error = tr("the model has no Quantum Wells physics");
         return out;
     }
-    const Built b = build(model, true);
+    const Built b = build(model, true, progress);
     if (!b.error.isEmpty()) {
         out.error = b.error;
         return out;
@@ -2144,11 +2149,11 @@ QString compoundOf(const QString& lumerical, double x, double y, double* cx, dou
 
 } // namespace lumerical
 
-LumericalScript lumericalScript(const Model& model, const Node& node, const QString& base, const QString& version)
+LumericalScript lumericalScript(const Model& model, const Node& node, const QString& base, const QString& version, const Progress& progress)
 {
-    if (node.type == QLatin1String("lumericalmode")) return exportMode(model, node, base, version);
-    if (node.type == QLatin1String("lumericalcharge")) return exportCharge(model, node, base, version);
-    if (node.type == QLatin1String("lumericalmqw")) return exportMqw(model, node, base, version);
+    if (node.type == QLatin1String("lumericalmode")) return exportMode(model, node, base, version, progress);
+    if (node.type == QLatin1String("lumericalcharge")) return exportCharge(model, node, base, version, progress);
+    if (node.type == QLatin1String("lumericalmqw")) return exportMqw(model, node, base, version, progress);
     LumericalScript out;
     out.error = tr("%1 is not a Lumerical export").arg(node.name());
     return out;

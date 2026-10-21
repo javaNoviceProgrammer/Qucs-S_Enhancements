@@ -344,6 +344,8 @@ public:
         a_scale = u && u->dim == Dim::length() ? u->scale : 1e-3;
         a_unitName = unit;
     }
+    /// A process flow's progress told to it; false from it stops the flow.
+    void setProgress(const std::function<bool(double, const QString&)>& progress) { a_progress = progress; }
 
     GeometryBuild build(const QString& upTo)
     {
@@ -913,7 +915,7 @@ private:
     /// object of its name.
     void processFlow(const Node& f)
     {
-        a_processRun = std::make_shared<ProcessRun>(runProcess(f, a_model, a_ps, a_scale, a_until));
+        a_processRun = std::make_shared<ProcessRun>(runProcess(f, a_model, a_ps, a_scale, a_until, a_progress));
         const ProcessRun& run = *a_processRun;
         if (!run.files.isEmpty()) a_file = run.files.front();
         for (const QString& w : run.warnings) warn(w);
@@ -1210,6 +1212,7 @@ private:
     QString a_file;   // a drawing read by the feature
     QString a_until;  // a process flow's step the build stops after
     std::shared_ptr<ProcessRun> a_processRun;   // a process flow's, run by the feature
+    std::function<bool(double, const QString&)> a_progress;   // told to its flow
     std::vector<Curve> a_curves;
     std::vector<GObject> a_objects;
 };
@@ -1782,9 +1785,11 @@ std::shared_ptr<Topology> Builder::formUnion(double relTolerance, QString* why)
 
 } // namespace
 
-GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters, const QString& upTo)
+GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters, const QString& upTo,
+                            const std::function<bool(double, const QString&)>& progress)
 {
     Builder builder(model, parameters);
+    builder.setProgress(progress);
     return builder.build(upTo);
 }
 

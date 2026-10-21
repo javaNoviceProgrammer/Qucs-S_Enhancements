@@ -1408,6 +1408,212 @@ private slots:
     // surface); fem_plot its net doping as a colour map and its profile down
     // the middle on a log axis, a measured SIMS CSV beside it; the panel's
     // buttons on a step make the same.
+    // A process flow's geometry built in the background - its anneals take
+    // seconds to minutes (71 s an opening for one of the fuzz of 21
+    // October's, the window frozen): the model open at once, its structure
+    // there once built, the window going on meanwhile and its progress said;
+    // Cancel stopping it in its anneal, the geometry left stale, not built
+    // again by itself; a change of the model as it is built stopping that
+    // build for one of the model as it is; the tools waiting for it - a
+    // mesh, a study, after it -; fem_stop stopping it; a step chosen shown
+    // once built; closed while it is built, at once.
+    void aFlowsGeometryIsBuiltInTheBackground()
+    {
+        const QString file = path(QStringLiteral("flow_background.qfem"));
+        {
+            // (Under the sanitizers, a coarser grid: the same a fifth of the time.)
+            const QString grid = slowBuild() ? QStringLiteral(R"("dx": "100[nm]", "dy": "4[nm]")") : QStringLiteral(R"("dx": "50[nm]", "dy": "2[nm]")");
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+              "geometry": [{"type": "process", "tag": "pf1", "width": "2", %1, "depth": "1", "features": [
+                  {"type": "substrate", "tag": "sub", "label": "si", "material": "Silicon", "thickness": "2", "dopant": "P", "concentration": "1e15"},
+                  {"type": "implant", "tag": "imp", "species": "B", "energy": "40", "dose": "1e15"},
+                  {"type": "diffuse", "tag": "anl", "temperature": "1000[degC]", "time": "30[min]"}]},
+                {"type": "form union", "tag": "fin"}],
+              "materials": [{"tag": "m1", "material": "Silicon", "selection": {"all": true}}],
+              "physics": [{"type": "electrostatics", "tag": "es", "features": [
+                  {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["si"], "side": "top"}},
+                  {"type": "ground", "selection": {"of": ["si"], "side": "bottom"}}]}],
+              "mesh": {"size": "normal", "custom": true, "hmax": "0.2"}}],
+              "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "stationary"}]}]})")
+                        .arg(grid)
+                        .toUtf8());
+        }
+        auto said = [](MultiphysicsDoc* d, const QString& text) {
+            for (const QString& m : d->messages())
+                if (m.contains(text)) return true;
+            return false;
+        };
+        auto anneal = [](const QString& time) {
+            return [time](qucs_s::fem::Node& n) { n.props.insert(QStringLiteral("time"), time); };
+        };
+        // (What stops at once stops within this: a build here takes 1.6 s,
+        // ten under the sanitizers.)
+        const qint64 prompt = slowBuild() ? 5000 : 500;
+        auto count = [](MultiphysicsDoc* d, const QString& text) { return int(d->messages().filter(text).size()); };
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        // Open, not built yet: being built, its progress shown.
+        QVERIFY(doc->geometryBeingBuilt());
+        QVERIFY(doc->geometryStale());
+        // (Shown once it has taken a quarter of a second.)
+        QVERIFY(QTest::qWaitFor([doc] { return !doc->progressRow()->isHidden(); }, jobWait()));
+        QVERIFY(doc->geometryBeingBuilt());
+        int ticks = 0;
+        QStringList progress;
+        QTimer tick;
+        tick.setInterval(10);
+        connect(&tick, &QTimer::timeout, this, [&ticks, &progress, doc] {
+            ++ticks;
+            if (const QString p = doc->jobProgress(); !p.isEmpty()) progress << p;
+        });
+        tick.start();
+        QVERIFY(doc->waitForJob(jobWait()));
+        tick.stop();
+        QVERIFY2(ticks > 0, "the window went on");
+        QVERIFY2(!progress.filter(QStringLiteral("Building the geometry: Diffuse (Anneal), step 3 of 3")).isEmpty(), qPrintable(progress.join(QLatin1Char('\n'))));
+        QVERIFY(!doc->geometryStale() && doc->geometry().ok() && doc->builtGeometry().process);
+        QVERIFY(said(doc, QStringLiteral("Geometry: 1 domains")));
+        // Cancelled in its anneal: at once, stale, said; not built again.
+        QVERIFY(doc->editNode(QStringLiteral("anl"), anneal(QStringLiteral("31[min]")), QStringLiteral("time")));
+        QVERIFY(QTest::qWaitFor([doc] { return doc->jobProgress().contains(QLatin1String("step 3 of 3")); }, jobWait()));
+        QElapsedTimer stopping;
+        stopping.start();
+        doc->cancelJob();
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY2(stopping.elapsed() < prompt, qPrintable(QString::number(stopping.elapsed())));
+        QVERIFY(doc->geometryStale());
+        QVERIFY(said(doc, QStringLiteral("The geometry's build was cancelled")));
+        QTest::qWait(400);
+        QVERIFY(!doc->building() && doc->geometryStale());
+        // A change as it is built: that build stopped (not shown), one of the
+        // model as it is.
+        const int builtBefore = count(doc, QStringLiteral("Geometry: 1 domains"));
+        doc->requestGeometry();
+        QVERIFY(doc->geometryBeingBuilt());
+        QVERIFY(doc->editNode(QStringLiteral("anl"), anneal(QStringLiteral("20[min]")), QStringLiteral("time")));
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY(!doc->geometryStale());
+        QCOMPARE(count(doc, QStringLiteral("Geometry: 1 domains")), builtBefore + 1);
+        QString annealSaid;
+        for (const ProcessStepReport& r : doc->geometry().processSteps)
+            if (r.tag == QLatin1String("anl")) annealSaid = r.said;
+        QVERIFY2(annealSaid.contains(QLatin1String("20 min")), qPrintable(annealSaid));
+        // Build Mesh, Compute and the toolbar's Build Geometry: at once, the
+        // mesh made, the study solved, once the geometry is built.
+        QVERIFY(doc->editNode(QStringLiteral("anl"), anneal(QStringLiteral("19[min]")), QStringLiteral("time")));
+        doc->buildMesh();
+        QVERIFY(doc->geometryBeingBuilt() && !doc->isBusy());
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY(!doc->meshStale() && doc->mesh());
+        QVERIFY(doc->editNode(QStringLiteral("anl"), anneal(QStringLiteral("18[min]")), QStringLiteral("time")));
+        doc->compute();
+        QVERIFY(doc->geometryBeingBuilt() && !doc->isBusy());
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY(doc->solution() && !doc->solutionStale());
+        auto* build = doc->findChild<QToolButton*>(QStringLiteral("mpBuildGeometry"));
+        QVERIFY(build);
+        build->click();
+        QVERIFY(doc->geometryBeingBuilt());
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY(!doc->geometryStale());
+        // The tools wait: a mesh, a study, after it.
+        QVERIFY(doc->editNode(QStringLiteral("anl"), anneal(QStringLiteral("21[min]")), QStringLiteral("time")));
+        QJsonObject r = call("fem_build", {{"what", "mesh"}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!doc->geometryStale() && !doc->meshStale() && doc->mesh());
+        QVERIFY(doc->editNode(QStringLiteral("anl"), anneal(QStringLiteral("22[min]")), QStringLiteral("time")));
+        r = call("fem_solve", {{"timeout", jobWait() / 1000}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(doc->solution() && !doc->solutionStale());
+        // fem_stop: the geometry being built stopped.
+        QVERIFY(doc->editNode(QStringLiteral("anl"), anneal(QStringLiteral("23[min]")), QStringLiteral("time")));
+        doc->requestGeometry();
+        QVERIFY(doc->geometryBeingBuilt());
+        r = call("fem_stop");
+        QVERIFY2(!failed(r) && json(r).value("stopped").toBool(), qPrintable(text(r)));
+        QVERIFY(!doc->building() && doc->geometryStale());
+        // A step chosen in the panel: built in the background, shown.
+        doc->focusNode(QStringLiteral("imp"));
+        QVERIFY(doc->building() && !doc->geometryBeingBuilt());
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY(said(doc, QStringLiteral("After Implant:")));
+        // Closed while it is built: at once.
+        doc->requestGeometry();
+        QVERIFY(doc->geometryBeingBuilt());
+        doc->setDocChanged(false);
+        QElapsedTimer closing;
+        closing.start();
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+        QVERIFY2(closing.elapsed() < prompt, qPrintable(QString::number(closing.elapsed())));
+        QTest::qWait(100);
+        // Closed while a tool waits on its build (the window going on, the
+        // tab can be): the build stopped, the tool told, the model not
+        // deleted under it - once it is done.
+        QPointer<MultiphysicsDoc> held = open(file);
+        QVERIFY(held && held->geometryBeingBuilt());
+        QTimer::singleShot(150, this, [this, held] {
+            if (!held) return;
+            QVERIFY(held->beingWaitedFor());
+            held->setDocChanged(false);
+            app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(held)));
+        });
+        r = call("fem_build", {{"path", file}}, jobWait());
+        QVERIFY2(failed(r) && (text(r).contains(QLatin1String("closed")) || text(r).contains(QLatin1String("cancelled"))), qPrintable(text(r)));
+        QTRY_VERIFY(held.isNull());
+        QVERIFY(app->DocumentTab->indexOf(QucsApp::documentWidget(held)) < 0);
+    }
+
+    // A process flow's model exported as a Lumerical script: its geometry
+    // and mesh built for it in the background, the window going on, its
+    // progress said - the script written.
+    void aFlowsExportIsBuiltInTheBackground()
+    {
+        const QString file = path(QStringLiteral("flow_export.qfem"));
+        {
+            const QString grid = slowBuild() ? QStringLiteral(R"("dx": "100[nm]", "dy": "4[nm]")") : QStringLiteral(R"("dx": "50[nm]", "dy": "2[nm]")");
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+              "geometry": [{"type": "process", "tag": "pf1", "width": "2", %1, "depth": "1", "features": [
+                  {"type": "substrate", "tag": "sub", "label": "si", "material": "Silicon", "thickness": "2", "dopant": "P", "concentration": "1e15"},
+                  {"type": "implant", "tag": "imp", "species": "B", "energy": "40", "dose": "1e15"},
+                  {"type": "diffuse", "tag": "anl", "temperature": "1000[degC]", "time": "30[min]"}]},
+                {"type": "form union", "tag": "fin"}],
+              "materials": [{"tag": "m1", "material": "Silicon", "selection": {"all": true}}],
+              "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "ohmic", "name": "a", "V0": "0[V]", "selection": {"of": ["si"], "side": "top"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["si"], "side": "bottom"}}]}],
+              "mesh": {"size": "normal", "custom": true, "hmax": "0.2"}}]})")
+                        .arg(grid)
+                        .toUtf8());
+        }
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QJsonObject r = call("fem_edit", {{"action", "add"}, {"parent", "exports"}, {"type", "lumericalcharge"}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QString tag = json(r).value("added").toObject().value("tag").toString();
+        QVERIFY(doc->waitForJob(jobWait()));
+        int ticks = 0;
+        QStringList progress;
+        QTimer tick;
+        tick.setInterval(10);
+        connect(&tick, &QTimer::timeout, this, [&ticks, &progress, doc] {
+            ++ticks;
+            if (const QString p = doc->jobProgress(); !p.isEmpty()) progress << p;
+        });
+        tick.start();
+        r = call("fem_export", {{"export", tag}}, jobWait());
+        tick.stop();
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).value("begins").toString().contains(QStringLiteral("a Lumerical™ CHARGE script")), qPrintable(text(r)));
+        QVERIFY2(ticks > 0, "the window went on");
+        QVERIFY2(!progress.filter(QStringLiteral("Exporting")).isEmpty(), qPrintable(progress.join(QLatin1Char('\n'))));
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
     // fem_build of a geometry built and not changed since: as it is - its
     // process flow not run again (18.7 s for one of the fuzz of 21 October,
     // N2), its mesh still current. Its materials changed - a flow reads

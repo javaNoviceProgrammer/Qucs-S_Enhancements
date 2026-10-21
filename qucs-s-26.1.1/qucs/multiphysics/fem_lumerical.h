@@ -17,6 +17,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 
 namespace qucs_s::fem {
 
@@ -111,7 +113,10 @@ struct LumericalScript {
     QStringList notes;
     QString error;
 };
-LumericalScript lumericalScript(const Model& model, const Node& node, const QString& base, const QString& version);
+/// \a progress told how far its geometry (a process flow's) and mesh are
+/// built - false from it stops them.
+LumericalScript lumericalScript(const Model& model, const Node& node, const QString& base, const QString& version,
+                                const std::function<bool(double fraction, const QString& what)>& progress = {});
 
 } // namespace qucs_s::fem
 

@@ -20,6 +20,7 @@
 #include "fem_model.h"
 #include "fem_process.h"
 #include "fem_process_p.h"
+#include "fem_process_results.h"
 #include "fem_results.h"
 #include "fem_solver.h"
 
@@ -1133,6 +1134,112 @@ private slots:
         const ProcessRun b = runFlow(flowModel(Si + QStringLiteral(R"(, {"type": "implant", "tag": "i1", "species": "B", "energy": "40", "dose": "1e13"})"), column));
         QVERIFY2(as.ok() && b.ok(), qPrintable(said(as) + said(b)));
         QVERIFY2(said(as).contains(QLatin1String("amorphous to")) && !said(b).contains(QLatin1String("amorphous")), qPrintable(said(as) + said(b)));
+    }
+
+    // A flow's progress told (for its build in the background): before each
+    // step, its share of the steps and the step at work, then through its
+    // anneal's time - each share no less than the last -; the state the
+    // same, told or not. False from it stops the flow: before a step, there;
+    // in the anneal, at its next time step, once asked. Through the
+    // geometry's build, and a step's state as a solution.
+    void aFlowsProgressAndItsCancel()
+    {
+        const Model m = flowModel(Si + QStringLiteral(R"(,
+            {"type": "implant", "tag": "i1", "species": "B", "energy": "40", "dose": "1e15"},
+            {"type": "diffuse", "tag": "d1", "temperature": "1000[degC]", "time": "30[min]"})"),
+                                  column);
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+        const Node& flow = *m.find(QStringLiteral("pf1"));
+        std::vector<std::pair<double, QString>> told;
+        const ProcessRun quiet = runProcess(flow, m, *ps, 1e-6);
+        const ProcessRun loud = runProcess(flow, m, *ps, 1e-6, {}, [&told](double f, const QString& what) {
+            told.emplace_back(f, what);
+            return true;
+        });
+        QVERIFY2(quiet.ok() && loud.ok() && quiet.state.dopants && loud.state.dopants, qPrintable(said(quiet) + said(loud)));
+        QVERIFY(told.size() > 10);
+        QCOMPARE(told.front().first, 0.0);
+        QCOMPARE(told.front().second, QStringLiteral("si, step 1 of 3"));   // (its label)
+        bool implant = false;
+        for (std::size_t k = 0; k < told.size(); ++k) {
+            QVERIFY(told[k].first >= 0 && told[k].first <= 1);
+            if (k > 0) QVERIFY2(told[k].first >= told[k - 1].first, qPrintable(told[k].second));
+            implant = implant || told[k].second == QLatin1String("Implant, step 2 of 3");
+        }
+        QVERIFY(implant);
+        QVERIFY(told.back().second.endsWith(QLatin1String("step 3 of 3")));
+        const ProcessDopants &a = *quiet.state.dopants, &b = *loud.state.dopants;
+        QCOMPARE(a.fields.size(), b.fields.size());
+        for (std::size_t f = 0; f < a.fields.size(); ++f) {
+            QVERIFY(a.fields[f].total == b.fields[f].total);
+            QVERIFY(a.fields[f].active == b.fields[f].active);
+        }
+        // Stopped before the implant: there.
+        const ProcessRun before = runProcess(flow, m, *ps, 1e-6, {}, [](double, const QString& what) { return !what.contains(QLatin1String("step 2")); });
+        QCOMPARE(before.error, QStringLiteral("Implant: cancelled"));
+        QCOMPARE(before.failedAt, QStringLiteral("i1"));
+        // Stopped a third through the anneal: at its next time step.
+        int after = 0;
+        const ProcessRun within = runProcess(flow, m, *ps, 1e-6, {}, [&after](double f, const QString&) {
+            if (f < (2 + 1.0 / 3) / 3) return true;
+            ++after;
+            return false;
+        });
+        QVERIFY2(within.error.endsWith(QLatin1String("cancelled")) && within.failedAt == QLatin1String("d1"), qPrintable(within.error));
+        QCOMPARE(after, 1);
+        // The geometry's build, and a step's state as a solution, told and stopped the same.
+        const GeometryBuild g = buildGeometry(m, *ps, {}, [](double, const QString& what) { return !what.contains(QLatin1String("step 3")); });
+        QVERIFY(!g.ok());
+        QCOMPARE(g.failedAt, QStringLiteral("pf1"));
+        QVERIFY2(g.errors.value(QStringLiteral("pf1")).endsWith(QLatin1String("cancelled")), qPrintable(g.errors.value(QStringLiteral("pf1"))));
+        QString why;
+        QVERIFY(!processSolution(m, ps, QStringLiteral("d1"), {}, &why, [](double, const QString& what) { return !what.contains(QLatin1String("step 3 of 3")); }));
+        QVERIFY2(why.startsWith(QLatin1String("the geometry up to it")) && why.endsWith(QLatin1String("cancelled")), qPrintable(why));
+        double last = 0;
+        QVERIFY2(processSolution(m, ps, QStringLiteral("i1"), {}, &why, [&last](double f, const QString&) {
+                     last = std::max(last, f);
+                     return true;
+                 }),
+                 qPrintable(why));
+        QVERIFY(last > 0.9);   // (its mesh the last tenth)
+    }
+
+    // A sweep of a flow's anneal time: each point's geometry built again,
+    // its flow's progress told through the study's - a Cancel there stops it
+    // in that point's anneal.
+    void aSweepsFlowStopsInItsAnneal()
+    {
+        QString why;
+        const std::optional<Model> m = Model::fromJson(QStringLiteral(R"({"format": "qucs-s multiphysics 1",
+            "parameters": [{"name": "ta", "expression": "30[min]"}],
+            "components": [{"unit": "um", "geometry": [{"type": "process", "tag": "pf1", %1, "features": [%2,
+                {"type": "implant", "tag": "i1", "species": "B", "energy": "40", "dose": "1e15"},
+                {"type": "diffuse", "tag": "d1", "temperature": "1000[degC]", "time": "ta"}]}, {"type": "form union", "tag": "fin"}],
+              "materials": [{"material": "Silicon", "selection": {"all": true}}],
+              "physics": [{"type": "electrostatics", "tag": "es", "features": [
+                  {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["si"], "side": "top"}},
+                  {"type": "ground", "selection": {"of": ["si"], "side": "bottom"}}]}],
+              "mesh": {"size": "coarse"}}],
+            "studies": [{"type": "study", "tag": "s1", "steps": [{"type": "sweep", "parameters": [["ta", "10, 20", "min"]]}, {"type": "stationary"}]}]})")
+                                                           .arg(column, Si)
+                                                           .toUtf8(),
+                                                       &why);
+        QVERIFY2(m, qPrintable(why));
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(*m);
+        const GeometryBuild g = buildGeometry(*m, *ps);
+        QVERIFY(g.ok());
+        // Solved whole, told; stopped in the first point's anneal.
+        QStringList told;
+        const StudyRun whole = runStudy(*m, ps, g.topology, nullptr, QStringLiteral("s1"), [&told](double, const QString& what) {
+            told << what;
+            return true;
+        });
+        QVERIFY2(whole.ok() && whole.solutions.size() == 2, qPrintable(whole.error));
+        QVERIFY2(!told.filter(QStringLiteral("Diffuse (Anneal), step 3 of 3")).isEmpty(), qPrintable(told.join(QLatin1Char('\n'))));
+        const StudyRun stopped = runStudy(*m, ps, g.topology, nullptr, QStringLiteral("s1"),
+                                          [](double, const QString& what) { return !what.contains(QLatin1String("step 3 of 3")); });
+        QVERIFY(!stopped.ok());
+        QVERIFY2(stopped.error.contains(QLatin1String("cancelled")), qPrintable(stopped.error));
     }
 
     // Flows the fuzz of 21 October found. One narrower than a dopants'

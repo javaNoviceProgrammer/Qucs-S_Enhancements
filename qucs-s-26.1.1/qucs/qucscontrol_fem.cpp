@@ -1258,7 +1258,7 @@ QJsonObject QucsControl::femStop(const QJsonObject& args)
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
-    if (!doc->isBusy())
+    if (!doc->isBusy() && !doc->building())
         return jsonResult(QJsonObject{{QStringLiteral("stopped"), false},
                                       {QStringLiteral("note"), tr("Nothing is being built or solved in %1.").arg(titleOf(doc))}});
     const qsizetype before = doc->messages().size();
