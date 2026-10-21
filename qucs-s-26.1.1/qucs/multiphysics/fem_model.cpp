@@ -1622,6 +1622,12 @@ QList<NodeKind> makeKinds()
                     "with diffusion, the quasi-Fermi levels apart across it as the current asks): carriers piling up at an InP/InGaAs "
                     "step, a photodiode's under strong light. Tunnelling: and those beneath its top through its spike, (1 + δ) "
                     "times, a triangle's WKB transmission at the field beside it")),
+          flag(QStringLiteral("noise"), tr("Noise"), false,
+               tr("In each frequency step its noise too, by the impedance field: every edge's carriers' hops (diffusion's noise, "
+                  "4kT/R at equilibrium), every node's pairs made and recombined (the light's shot noise), every ionization "
+                  "(an APD's excess) - each carried to the contacts by its own Green's function: semi.Sn_<contact> (A²/Hz), "
+                  "semi.in_, semi.Fshot_ (over 2q|I|), semi.SnL_ through a circuit's load, semi.NEP_ lit. A frequency step's "
+                  "cost twice")),
           spatial(QStringLiteral("TL"), tr("Lattice temperature"), QStringLiteral("K"), QString(),
                   tr("Where it varies - a heat physics' ht.T, its source semi.H: self-heating. There the mobilities (TL/T)^-ζ (each "
                      "material model's ζ), the intrinsic density its material's at TL (its gap shown so), the saturation velocities "

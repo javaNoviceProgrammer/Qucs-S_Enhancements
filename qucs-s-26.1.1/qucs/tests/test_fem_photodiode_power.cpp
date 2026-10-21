@@ -1230,6 +1230,131 @@ private slots:
         QVERIFY2(v[1][QStringLiteral("HD2")] > -20, qPrintable(QString::number(v[1][QStringLiteral("HD2")])));
         QVERIFY2(perPair < 0.8, qPrintable(QString::number(perPair)));
     }
+
+    // Noise by the impedance field. A bar of n-silicon (1e17, 2 µm) at
+    // equilibrium: its noise current Nyquist's, 4kT Re Y, at 1 MHz.
+    void thermalNoiseOfABar()
+    {
+        const Run r = run(modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "bar", "size": ["2", "0.2"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "noise": true, "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "0[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}, {"type": "frequency", "frequencies": "1[MHz]"}]}]})json")
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Solution& s = *r.study.solutions.back();
+        const double S = global(s, QStringLiteral("semi.Sn_2")), G = global(s, QStringLiteral("semi.G22")), kT = 1.380649e-23 * 300;
+        qInfo("at equilibrium: %.9g A²/Hz, 4kT G %.9g (G %.6g S)", S, 4 * kT * G, G);
+        QVERIFY2(std::abs(S / (4 * kT * G) - 1) < 1e-3, qPrintable(QStringLiteral("%1 %2").arg(S).arg(4 * kT * G)));
+        // At 3 V across (Ohm's, its mobility the low field's): its noise
+        // still its thermal noise, 4kT I/V, whatever its current - its
+        // diffusion's, not its drift's (each edge's two streams as hops:
+        // some twice as much) - to 1 %: 0.4 % above, as the field squared
+        // (at 10 V 3.8 %).
+        QByteArray biased = QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "bar", "size": ["2", "0.2"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "noise": true, "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "3[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}, {"type": "frequency", "frequencies": "1[MHz]"}]}]})json")
+                                    .toUtf8();
+        const Run b = run(modelOf(biased));
+        QVERIFY2(b.error.isEmpty(), qPrintable(b.error));
+        const double Sb = global(*b.study.solutions.back(), QStringLiteral("semi.Sn_2")), Ib = global(*b.study.solutions.back(), QStringLiteral("semi.I_2"));
+        qInfo("at 3 V: %.6g A, %.9g A²/Hz, 4kT I/V %.9g (%.4f)", Ib, Sb, 4 * kT * Ib / 3, Sb / (4 * kT * Ib / 3));
+        QVERIFY2(std::abs(Sb / (4 * kT * Ib / 3) - 1) < 1e-2, qPrintable(QStringLiteral("%1 %2").arg(Sb).arg(4 * kT * Ib / 3)));
+    }
+
+    // A photodiode's shot noise: the p-i-n reversed 2 V, lit (some 10 µA's
+    // worth): its noise 2q I at 1 MHz - each pair collected once.
+    void shotNoiseOfAPhotodiode()
+    {
+        QByteArray j = pin(QString(), QStringLiteral(R"({"type": "stationary"}, {"type": "frequency", "frequencies": "1[MHz]"})"));
+        j.replace("6e29[1/(m^3*s)]", "6e30[1/(m^3*s)]");
+        j.replace(R"("tag": "semi", "features": [)", R"("tag": "semi", "noise": true, "features": [)");
+        const Run r = run(modelOf(j));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Solution& s = *r.study.solutions.back();
+        const double S = global(s, QStringLiteral("semi.Sn_a")), I = global(s, QStringLiteral("semi.I_a")), F = global(s, QStringLiteral("semi.Fshot_a"));
+        qInfo("lit at -2 V: %.6g A, %.6g A²/Hz, 2q I %.6g (%.5f)", I, S, 2 * Q * std::abs(I), F);
+        QVERIFY2(std::abs(F - 1) < 0.01, qPrintable(QString::number(F)));
+        // Through 50 Ω in series - far less than the device's impedance at 1
+        // MHz -: the load's the same.
+        QByteArray loaded = j;
+        loaded.replace(R"("V0": "Va", "selection": {"of": ["p"], "side": "left"})",
+                       R"("V0": "Va", "selection": {"of": ["p"], "side": "left"}, "circuit": "series", "Rs": "0[Ohm]", "RL": "50[Ohm]")");
+        const Run l = run(modelOf(loaded));
+        QVERIFY2(l.error.isEmpty(), qPrintable(l.error));
+        const double SL = global(*l.study.solutions.back(), QStringLiteral("semi.SnL_a"));
+        qInfo("through 50 Ω: %.6g A²/Hz", SL);
+        QVERIFY2(std::abs(SL / S - 1) < 1e-3, qPrintable(QStringLiteral("%1 %2").arg(SL).arg(S)));
+        // Germanium on silicon at 1550 nm, 10 µW: its noise-equivalent
+        // power Pin √(2q/I) at 1 MHz (its noise 2q I, its responsivity I/Pin).
+        QByteArray g = waveguidePd(1, QStringLiteral("10[uW]"), QString(), QStringLiteral(R"(, {"type": "stationary", "physics": ["semi"]}, {"type": "frequency", "physics": ["semi"], "frequencies": "1[MHz]"})"), true);
+        g.replace(R"("tag": "semi", "selection")", R"("tag": "semi", "noise": true, "selection")");
+        const Run w = run(modelOf(g));
+        QVERIFY2(w.error.isEmpty(), qPrintable(w.error));
+        const Solution& ws = *w.study.solutions.back();
+        const double Ik = std::abs(global(ws, QStringLiteral("semi.I_k"))), NEP = global(ws, QStringLiteral("semi.NEP_k"));
+        const double expected = 10e-6 * std::sqrt(2 * Q / Ik);
+        qInfo("germanium, 10 µW: %.6g A, NEP %.6g W/√Hz (%.6g)", Ik, NEP, expected);
+        QVERIFY2(std::abs(NEP / expected - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(NEP).arg(expected)));
+    }
+
+    // An APD's excess noise: silicon p⁺-i-n⁺ (its i layer 2 µm of 1e13
+    // cm⁻³, its field all but uniform), lit in its p⁺ alone - electrons
+    // injected -, van Overstraeten and de Man's ionization, reversed so its
+    // gain is some 5. Its noise 2q I M F at 1 MHz, F McIntyre's, k M + (1
+    // - k)(2 - 1/M), k = αp/αn at its field, M its current over the same
+    // device's without ionization - to 3 % on elements of 5 nm (F 4.03,
+    // 2.92, 2.39, 2.10 at 40, 20, 10, 5 nm; McIntyre's 2.10).
+    void excessNoiseOfAnApd()
+    {
+        if (slowBuild()) QSKIP("an avalanche's walk: Release builds only");
+        auto apd = [](const QString& ii) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "-52[V]"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "p", "size": ["0.3", "0.05"]},
+                             {"type": "rectangle", "label": "i", "position": ["0.3", "0"], "size": ["2", "0.05"]},
+                             {"type": "rectangle", "label": "n", "position": ["2.3", "0"], "size": ["0.3", "0.05"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "noise": true, "features": [
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e19[1/cm^3]", "selection": {"only": ["p"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e13[1/cm^3]", "selection": {"only": ["i"]}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e19[1/cm^3]", "selection": {"only": ["n"]}},
+                  {"type": "srh", "selection": {"all": true}},
+                  {"type": "generation", "G": "1e29[1/(m^3*s)]", "selection": {"only": ["p"]}} %1,
+                  {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "left"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.005"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}, {"type": "frequency", "frequencies": "1[MHz]"}]}]})json")
+                               .arg(ii)
+                               .toUtf8());
+        };
+        const Run with = run(apd(QStringLiteral(R"(, {"type": "impact", "model": "silicon", "selection": {"all": true}})")));
+        const Run without = run(apd(QString()));
+        for (const Run* r : {&with, &without}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        const Solution& s = *with.study.solutions.back();
+        const double I = std::abs(global(s, QStringLiteral("semi.I_k"))), I0 = std::abs(global(*without.study.solutions.back(), QStringLiteral("semi.I_k")));
+        const double Fshot = global(s, QStringLiteral("semi.Fshot_k")), M = I / I0, F = Fshot / M;
+        double E = 0;
+        for (int k = 0; k < 20; ++k) E += at(s, QStringLiteral("semi.normE"), 0.35 + 1.9 * (k + 0.5) / 20, 0.025) / 20;
+        const double an = 7.03e7 * std::exp(-1.231e8 / E), ap = E < 4e7 ? 1.582e8 * std::exp(-2.036e8 / E) : 6.71e7 * std::exp(-1.693e8 / E);
+        const double k = ap / an, mcintyre = k * M + (1 - k) * (2 - 1 / M);
+        qInfo("APD: M %.4f, its field %.4g V/m (k %.4f); its noise over 2q I %.4f, F %.4f, McIntyre's %.4f", M, E, k, Fshot, F, mcintyre);
+        QVERIFY2(M > 3, qPrintable(QString::number(M)));
+        QVERIFY2(std::abs(F / mcintyre - 1) < 0.03, qPrintable(QStringLiteral("%1 %2").arg(F).arg(mcintyre)));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestFemPhotodiodePower)
