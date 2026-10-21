@@ -318,6 +318,16 @@ private slots:
               amplitude / expected, mean);
         QVERIFY2(std::abs(amplitude / expected - 1) < (slow ? 0.03 : 0.01), qPrintable(QString::number(amplitude / expected)));
         QVERIFY2(std::abs(mean) < 0.02 * amplitude, qPrintable(QString::number(mean)));
+        // (A Harmonics node's H1 and mean the same, its trapezoids over the
+        // last period's evenly spaced times the sum's.)
+        Node harm;
+        harm.type = QStringLiteral("harmonics");
+        harm.props.insert(QStringLiteral("expression"), QStringLiteral("semi.IL_a"));
+        harm.props.insert(QStringLiteral("f0"), QStringLiteral("2[GHz]"));
+        const DerivedResult d = evaluateDerived(s, harm);
+        QVERIFY2(d.error.isEmpty() && d.values.size() >= 2, qPrintable(d.error));
+        QVERIFY2(std::abs(d.values[1].value / amplitude - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(d.values[1].value).arg(amplitude)));
+        QVERIFY2(std::abs(d.values[0].value - mean) < 1e-9 * amplitude, qPrintable(QStringLiteral("%1 %2").arg(d.values[0].value).arg(mean)));
     }
 
     // Dark, its source stepped from -1 to -1.1 V through 1 MΩ with 10 fF
@@ -1112,6 +1122,113 @@ private slots:
         }
         qInfo("transferred electrons, µ0 %.5g m²/(V s): %s", mu0, qPrintable(said.join(QLatin1String("; "))));
         QVERIFY2(I[3] < I[2] && I[4] < I[3], qPrintable(said.join(QLatin1String("; "))));
+    }
+
+    // A global's harmonics in time: a silicon bar (1e17, 2 µm) driven by 10
+    // mV at 1 GHz and 2 mV at 2 GHz - Ohm's alone at these fields -: its
+    // current's mean nought, H1 and H2 the voltages over its resistance (at
+    // 10 mV at rest), HD2 20 log10(0.2) = -13.98 dBc, H3 none; THD 0.2.
+    void harmonicsOfABar()
+    {
+        if (slowBuild()) QSKIP("in time: Release builds only (minutes sanitized)");
+        auto bar = [](const QString& V0, const QString& steps) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "bar", "size": ["2", "0.2"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "%1", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.1"}}],
+              "studies": [{"type": "study", "steps": [%2]}]})json")
+                               .arg(V0, steps)
+                               .toUtf8());
+        };
+        const Run rest = run(bar(QStringLiteral("10[mV]"), QStringLiteral(R"({"type": "stationary"})")));
+        QVERIFY2(rest.error.isEmpty(), qPrintable(rest.error));
+        const double R = 0.01 / global(*rest.study.solutions.back(), QStringLiteral("semi.I_2"));
+        const Run r = run(bar(QStringLiteral("10[mV]*sin(2*pi*1[GHz]*t) + 2[mV]*sin(2*pi*2[GHz]*t)"),
+                              QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 25[ps], 2[ns])", "stepping": "fixed", "dt": "5[ps]"})x")));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Node harm;
+        harm.type = QStringLiteral("harmonics");
+        harm.props.insert(QStringLiteral("expression"), QStringLiteral("semi.I_2"));
+        harm.props.insert(QStringLiteral("f0"), QStringLiteral("1[GHz]"));
+        harm.props.insert(QStringLiteral("count"), 3);
+        harm.props.insert(QStringLiteral("periods"), 1);
+        Solution& sol = *r.study.solutions.back();
+        sol.select(sol.snapshotCount() / 2);
+        const double before = global(sol, QStringLiteral("semi.I_2"));
+        const DerivedResult d = evaluateDerived(sol, harm);
+        QVERIFY2(d.error.isEmpty(), qPrintable(d.error));
+        // (The snapshot selected as it was: its globals its own again.)
+        QCOMPARE(global(sol, QStringLiteral("semi.I_2")), before);
+        std::map<QString, double> v;
+        QStringList said;
+        for (const DerivedValue& x : d.values) {
+            v[x.name] = x.value;
+            said << x.name + QLatin1Char(' ') + x.text;
+        }
+        qInfo("the bar's current, R %.6g Ω: %s (%s)", R, qPrintable(said.join(QLatin1String(", "))), qPrintable(d.note));
+        QVERIFY2(std::abs(v[QStringLiteral("H1")] * R / 0.01 - 1) < 1e-3, qPrintable(QString::number(v[QStringLiteral("H1")] * R)));
+        QVERIFY2(std::abs(v[QStringLiteral("H2")] * R / 0.002 - 1) < 1e-3, qPrintable(QString::number(v[QStringLiteral("H2")] * R)));
+        QVERIFY2(std::abs(v[QStringLiteral("HD2")] - 20 * std::log10(0.2)) < 0.01, qPrintable(QString::number(v[QStringLiteral("HD2")])));
+        QVERIFY2(v[QStringLiteral("H3")] < 1e-4 * v[QStringLiteral("H1")], qPrintable(QString::number(v[QStringLiteral("H3")])));
+        QVERIFY2(std::abs(v[QStringLiteral("mean")]) < 1e-4 * v[QStringLiteral("H1")], qPrintable(QString::number(v[QStringLiteral("mean")])));
+        QVERIFY2(std::abs(v[QStringLiteral("THD")] / 0.2 - 1) < 2e-3, qPrintable(QString::number(v[QStringLiteral("THD")])));
+        // Its times not on the window's start (32 ps to 2.24 ns: the window
+        // from 1.24 ns, between two, the current near its peak): its first
+        // value interpolated there - to 5e-3 (the trapezoids' ends uneven).
+        const Run shifted = run(bar(QStringLiteral("10[mV]*sin(2*pi*1[GHz]*t) + 2[mV]*sin(2*pi*2[GHz]*t)"),
+                                    QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 32[ps], 2.24[ns])", "stepping": "fixed", "dt": "5[ps]"})x")));
+        QVERIFY2(shifted.error.isEmpty(), qPrintable(shifted.error));
+        const DerivedResult e = evaluateDerived(*shifted.study.solutions.back(), harm);
+        QVERIFY2(e.error.isEmpty() && e.values.size() >= 3, qPrintable(e.error));
+        qInfo("its times off the window: H1 %s, H2 %s", qPrintable(e.values[1].text), qPrintable(e.values[2].text));
+        QVERIFY2(std::abs(e.values[1].value * R / 0.01 - 1) < 5e-3, qPrintable(QString::number(e.values[1].value * R)));
+        QVERIFY2(std::abs(e.values[2].value * R / 0.002 - 1) < 5e-3, qPrintable(QString::number(e.values[2].value * R)));
+    }
+
+    // A photodiode's distortion and compression: the p-i-n lit 50 %
+    // modulated at 1 GHz through 100 kΩ in series at -2 V - weakly (10 nA's
+    // worth) linear, HD2 -92 dBc; strongly (20 µA's worth, its drop all but
+    // the bias) compressed: its fundamental per pair 0.30 of the weak one's,
+    // HD2 -19 dBc, HD3 -37.
+    void aPhotodiodesDistortion()
+    {
+        if (slowBuild()) QSKIP("in time: Release builds only (minutes sanitized)");
+        auto lit = [](const QString& G0) {
+            QByteArray j = pin(QStringLiteral(R"(, "circuit": "series", "Rs": "100[kOhm]", "RL": "0[Ohm]")"),
+                               QStringLiteral(R"x({"type": "stationary"}, {"type": "transient", "times": "range(0, 25[ps], 3[ns])", "stepping": "fixed", "dt": "5[ps]"})x"));
+            j.replace("6e29[1/(m^3*s)]", G0.toUtf8());
+            j.replace(R"("G": "G0",)", R"x("G": "G0*(1 + 0.5*sin(2*pi*1[GHz]*t))",)x");
+            return j;
+        };
+        Node harm;
+        harm.type = QStringLiteral("harmonics");
+        harm.props.insert(QStringLiteral("expression"), QStringLiteral("semi.I_a"));
+        harm.props.insert(QStringLiteral("f0"), QStringLiteral("1[GHz]"));
+        harm.props.insert(QStringLiteral("count"), 3);
+        std::map<QString, double> v[2];
+        const char* G0[2] = {"6e27[1/(m^3*s)]", "1.2e31[1/(m^3*s)]"};
+        for (int k = 0; k < 2; ++k) {
+            const Run r = run(modelOf(lit(QString::fromLatin1(G0[k]))));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const DerivedResult d = evaluateDerived(*r.study.solutions.back(), harm);
+            QVERIFY2(d.error.isEmpty(), qPrintable(d.error));
+            QStringList said;
+            for (const DerivedValue& x : d.values) {
+                v[k][x.name] = x.value;
+                said << x.name + QLatin1Char(' ') + x.text;
+            }
+            qInfo("G0 %s: %s", G0[k], qPrintable(said.join(QLatin1String(", "))));
+        }
+        const double perPair = (v[1][QStringLiteral("H1")] / 1.2e31) / (v[0][QStringLiteral("H1")] / 6e27);
+        qInfo("strong light's fundamental per pair %.4f of the weak's", perPair);
+        QVERIFY2(v[0][QStringLiteral("HD2")] < -50, qPrintable(QString::number(v[0][QStringLiteral("HD2")])));
+        QVERIFY2(v[1][QStringLiteral("HD2")] > -20, qPrintable(QString::number(v[1][QStringLiteral("HD2")])));
+        QVERIFY2(perPair < 0.8, qPrintable(QString::number(perPair)));
     }
 };
 

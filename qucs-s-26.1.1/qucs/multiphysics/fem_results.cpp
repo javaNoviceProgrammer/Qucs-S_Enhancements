@@ -1035,6 +1035,77 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         if (!problems.isEmpty()) out.error = problems.join(QLatin1String("; "));
         return out;
     }
+    if (type == QLatin1String("harmonics")) {
+        // A global's harmonics in time: over the last whole periods of the
+        // fundamental f0 its Fourier coefficients, (2/T) ∫ y e^(-j n 2π f0 t)
+        // dt by the trapezoids of its snapshots (its first at the window's
+        // start, interpolated) - spectrally exact for evenly spaced times
+        // over whole periods -: its mean, each harmonic's amplitude, HDn =
+        // 20 log10(|Hn|/|H1|) in dBc, THD = √(Σ |Hn|²)/|H1|.
+        const QString text = node.text(QStringLiteral("expression")).trimmed();
+        if (solution.frequencyDomain || solution.snapshotCount() < 3) {
+            out.error = tr("Harmonics: a step in time's solution, three output times at least");
+            return out;
+        }
+        Dim dim;
+        QString why;
+        const std::vector<double> y = solution.globalSeries(text, &dim, &why);
+        if (y.empty()) {
+            out.error = tr("Harmonics: %1").arg(why);
+            return out;
+        }
+        const std::optional<double> f0 = evaluateConstant(node.text(QStringLiteral("f0")), solution.scope(), Dim::of(0, 0, -1), &why);
+        if (!f0 || !(*f0 > 0)) {
+            out.error = tr("Harmonics: its fundamental %1").arg(f0 ? tr("must be more than 0") : why);
+            return out;
+        }
+        const int count = std::clamp(node.integer(QStringLiteral("count")), 1, 50), periods = std::max(node.integer(QStringLiteral("periods")), 1);
+        const int last = solution.snapshotCount() - 1;
+        const double tb = solution.snapshotTime(last), ta = tb - periods / *f0;
+        if (ta < solution.snapshotTime(0) - 1e-9 * (tb - solution.snapshotTime(0))) {
+            out.error = tr("Harmonics: its %1 periods of %2 Hz are longer than the solution's times").arg(periods).arg(*f0);
+            return out;
+        }
+        std::vector<std::pair<double, double>> pts;
+        for (int k = 0; k <= last; ++k) {
+            const double t = solution.snapshotTime(k);
+            if (t < ta) continue;
+            if (pts.empty() && t > ta && k > 0) {
+                const double t0 = solution.snapshotTime(k - 1), r = (ta - t0) / (t - t0);
+                pts.emplace_back(ta, y[std::size_t(k - 1)] + r * (y[std::size_t(k)] - y[std::size_t(k - 1)]));
+            }
+            pts.emplace_back(t, y[std::size_t(k)]);
+        }
+        if (pts.size() < 3) {
+            out.error = tr("Harmonics: fewer than three output times in its last %1 periods").arg(periods);
+            return out;
+        }
+        const double T = tb - ta, w = 2 * M_PI * *f0;
+        double mean = 0;
+        std::vector<std::complex<double>> c(std::size_t(count) + 1, 0.0);
+        for (std::size_t k = 1; k < pts.size(); ++k) {
+            const auto [t0, y0] = pts[k - 1];
+            const auto [t1, y1] = pts[k];
+            const double h = t1 - t0;
+            mean += 0.5 * (y0 + y1) * h / T;
+            for (int n = 1; n <= count; ++n)
+                c[std::size_t(n)] += (2 / T) * 0.5 * h * (y0 * std::exp(std::complex<double>(0, -n * w * t0)) + y1 * std::exp(std::complex<double>(0, -n * w * t1)));
+        }
+        add(QStringLiteral("mean"), mean, dim);
+        double rest = 0;
+        for (int n = 1; n <= count; ++n) {
+            add(QStringLiteral("H%1").arg(n), std::abs(c[std::size_t(n)]), dim);
+            if (n > 1) rest += std::norm(c[std::size_t(n)]);
+        }
+        const double h1 = std::abs(c[1]);
+        for (int n = 2; n <= count; ++n)
+            out.values << DerivedValue{QStringLiteral("HD%1").arg(n), h1 > 0 ? 20 * std::log10(std::abs(c[std::size_t(n)]) / h1) : NAN, Dim(),
+                                       h1 > 0 ? QStringLiteral("%1 dBc").arg(20 * std::log10(std::abs(c[std::size_t(n)]) / h1), 0, 'f', 2) : QStringLiteral("-")};
+        if (count > 1) out.values << DerivedValue{QStringLiteral("THD"), h1 > 0 ? std::sqrt(rest) / h1 : NAN, Dim(),
+                                                  h1 > 0 ? QStringLiteral("%1 %").arg(100 * std::sqrt(rest) / h1, 0, 'g', 4) : QStringLiteral("-")};
+        out.note = tr("over %1 periods of %2 Hz, %3 output times").arg(periods).arg(*f0).arg(pts.size());
+        return out;
+    }
     if (type == QLatin1String("integral") || type == QLatin1String("average") || type == QLatin1String("maximum")
         || type == QLatin1String("minimum")) {
         const QString text = node.text(QStringLiteral("expression"));

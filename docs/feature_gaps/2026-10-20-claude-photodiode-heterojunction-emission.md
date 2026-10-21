@@ -1,6 +1,6 @@
 # A photodiode under strong light, 4: emission and tunnelling across heterojunctions
 
-The seventh of the nine missing pieces of a photodiode's physics (`2026-10-20-claude-photodiode-circuit-and-slices.md` lists them).
+The fourth of the nine missing pieces of a photodiode's physics (`2026-10-20-claude-photodiode-circuit-and-slices.md` lists them).
 
 **Before:** an abrupt heterojunction was drift and diffusion's. Each side's carriers sat on their own bands up to the interface, and their quasi-Fermi levels were continuous across it. The interface itself had no resistance: any current crossed the step, however few carriers stood at its top.
 
