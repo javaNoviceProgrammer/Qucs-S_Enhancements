@@ -4283,7 +4283,8 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     auto meshOf = [&](const ParameterScope& ps, std::shared_ptr<const Topology> topo, const Progress& p,
                       std::shared_ptr<const Mesh>* out) {
         if (!topo) {
-            const GeometryBuild g = buildGeometry(model, ps);
+            // (A process flow's progress told: Cancel stops it in its anneal.)
+            const GeometryBuild g = buildGeometry(model, ps, {}, p);
             if (!g.ok()) {
                 const Node* n = model.find(g.failedAt);
                 run.error = tr("the geometry: %1: %2").arg(n ? n->name() : g.failedAt, g.errors.value(g.failedAt));

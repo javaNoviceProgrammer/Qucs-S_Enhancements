@@ -129,7 +129,7 @@ ProcessColumn processColumn(const ProcessState& state, double x)
 }
 
 std::shared_ptr<Solution> processSolution(const Model& model, std::shared_ptr<ParameterScope> parameters, const QString& step,
-                                          std::optional<double> x, QString* error)
+                                          std::optional<double> x, QString* error, const std::function<bool(double, const QString&)>& progress)
 {
     auto fail = [&](const QString& why) -> std::shared_ptr<Solution> {
         if (error) *error = why;
@@ -137,13 +137,18 @@ std::shared_ptr<Solution> processSolution(const Model& model, std::shared_ptr<Pa
     };
     const Node* flow = processFlowOf(model, step);
     if (!flow) return fail(tr("%1 is no process flow, nor a step of one").arg(step));
-    const GeometryBuild g = buildGeometry(model, *parameters, step);
+    // (Its flow nine tenths of the time, its mesh the rest.)
+    auto part = [&progress](double from, double to) -> std::function<bool(double, const QString&)> {
+        if (!progress) return {};
+        return [&progress, from, to](double f, const QString& what) { return progress(from + (to - from) * std::clamp(f, 0.0, 1.0), what); };
+    };
+    const GeometryBuild g = buildGeometry(model, *parameters, step, part(0, 0.9));
     if (!g.ok()) {
         const Node* n = model.find(g.failedAt);
         return fail(tr("the geometry up to it: %1: %2").arg(n ? n->name() : g.failedAt, g.errors.value(g.failedAt)));
     }
     if (!g.process) return fail(tr("%1: the flow made nothing").arg(step));
-    const MeshBuild m = buildMesh(model, *parameters, g.topology);
+    const MeshBuild m = buildMesh(model, *parameters, g.topology, part(0.9, 1));
     if (!m.mesh) return fail(tr("its mesh: %1").arg(m.error));
     // (A model of no physics: the flow's variables alone.)
     Model bare = model;

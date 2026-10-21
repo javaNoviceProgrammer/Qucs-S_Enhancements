@@ -23,6 +23,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -119,8 +120,12 @@ struct ProcessRun {
 /// Runs the process flow \a flow (a "process" node) of \a model, its
 /// parameters evaluated in \a parameters, the geometry's unit \a unitScale
 /// metres: up to the step \a until (inclusive; empty: all of them).
+/// \a progress, when given, is told how far it is - the share of its steps
+/// done, the step at work ("Diffuse (Anneal), step 3 of 8") - before each
+/// step and at each time step of its anneals, oxidations and intermixings:
+/// false from it stops the run there, its error "cancelled".
 ProcessRun runProcess(const Node& flow, const Model& model, const ParameterScope& parameters, double unitScale,
-                      const QString& until = {});
+                      const QString& until = {}, const std::function<bool(double fraction, const QString& what)>& progress = {});
 
 /// The objects' names a flow makes, in order: each step's that makes a
 /// region (for the materials' and physics' selections).

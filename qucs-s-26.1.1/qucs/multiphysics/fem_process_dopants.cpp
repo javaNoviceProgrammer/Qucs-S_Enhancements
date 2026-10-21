@@ -1200,6 +1200,9 @@ public:
         : a_d(d), a_spec(spec), a_silicon(silicon), a_oxide(oxide), a_names(names), a_warnings(warnings)
     {
     }
+    /// Asked at each time step how far it is (a share of the time): false
+    /// stops it. (Not the hook: that makes each step stiff.)
+    void setTicker(std::function<bool(double)> ticker) { a_ticker = std::move(ticker); }
 
     QString setUp()
     {
@@ -1447,6 +1450,12 @@ public:
             if (hook) hook(t, h);
             t += h;
             ++k;
+            // (Asked to stop - a model closed, its build cancelled -: at
+            // once, not an hour's anneal later.)
+            if (a_ticker && !a_ticker(t / duration)) {
+                *error = tr("cancelled");
+                return false;
+            }
             // (Backward Euler's first order: no more than a hundredth of the
             // anneal a step - a square law's front 13 % off its √t at a
             // twentieth.)
@@ -1574,6 +1583,7 @@ private:
     std::vector<QString> a_names;
     QStringList* a_warnings;
     std::vector<Sp> a_species;
+    std::function<bool(double)> a_ticker;
     mutable std::vector<double> a_ratio, a_ss;   // by cell: n/ni, CI/CI*
 };
 
@@ -1621,6 +1631,7 @@ QString Dopants::anneal(const AnnealSpec& spec, const std::vector<Region>& regio
     const std::map<QString, double> before = amounts(false);
     Solver solver(*this);
     int steps = 0;
+    a.setTicker(a_ticker);
     if (!a.run(solver, {}, &steps, error)) return {};
     const std::map<QString, double> after = amounts(false), active = amounts(true);
     QStringList changed;
@@ -1979,6 +1990,7 @@ QString Dopants::oxidize(const OxideSpec& spec, std::vector<Region>& regions, cI
     };
     Solver solver(*this);
     int steps2 = 0;
+    a.setTicker(a_ticker);
     if (!a.run(solver, hook, &steps2, error)) return {};
     // Then the oxide grown to its thickness: per column, what was silicon
     // above the interface stretched by 1/0.44, everything above the old
@@ -2201,6 +2213,10 @@ QString Dopants::intermix(const IntermixSpec& spec, const std::vector<Region>& r
         t += h;
         ++steps;
         dt = std::min(h * 1.1, duration / 20);
+        if (a_ticker && !a_ticker(t / duration)) {
+            *error = tr("cancelled");
+            return {};
+        }
     }
     Q_UNUSED(warnings);
     const double nm = 1e9;

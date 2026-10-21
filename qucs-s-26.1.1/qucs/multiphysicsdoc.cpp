@@ -61,6 +61,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <utility>
 
 using namespace qucs_s::fem;
 
@@ -198,6 +199,16 @@ private:
     }
 };
 
+/// A geometry with a process flow: built in the background - its anneals
+/// and oxidations take seconds to minutes (71 s for one of the fuzz of 21
+/// October's, the window frozen).
+bool slowGeometry(const Model& m)
+{
+    for (const Node& g : m.geometry().children)
+        if (g.enabled && g.type == QLatin1String("process")) return true;
+    return false;
+}
+
 } // namespace
 
 struct MultiphysicsDoc::Job {
@@ -218,6 +229,18 @@ struct MultiphysicsDoc::Job {
     QString error;
     QStringList warnings;
     std::function<void(Job&)> done;
+    bool ended = false;   // its end handled (on the window's thread)
+    // Built in the background: the whole geometry, or a flow's step's state
+    // (\a upTo; as a solution, at \a x) - for the model of these revisions;
+    // stopped for a newer model (superseded), not by the user.
+    bool whole = false, solution = false, superseded = false;
+    bool preview = false;   // a step chosen, shown once built: a newer choice stops it
+    quint64 geometryRevision = 0, revision = 0;
+    QString upTo;
+    std::optional<double> x;
+    GeometryBuild geometry;
+    std::shared_ptr<Solution> stepSolution;
+    qint64 ms = 0;
 
     Progress progress(double from, double to)
     {
@@ -252,12 +275,16 @@ MultiphysicsDoc::MultiphysicsDoc(QucsApp* app, const QString& name) : QFrame(), 
     a_geometryTimer->setSingleShot(true);
     a_geometryTimer->setInterval(120);
     connect(a_geometryTimer, &QTimer::timeout, this, [this] {
-        if (a_geometryStale && !isBusy()) {
-            QString why;
-            buildGeometry(&why);
+        if (!a_geometryStale) return;
+        auto shown = [this](bool) {
             if (a_view->show() != GraphicsView::Show::Results || a_plotGroup.isEmpty()) showGeometry();
             updateHighlight();
-        }
+        };
+        // (A process flow's in the background, shown once built.)
+        if (slowGeometry(a_model) || a_build) return requestGeometry(shown);
+        if (isBusy()) return;
+        QString why;
+        shown(buildGeometry(&why));
     });
     // A drawing an Import reads, changed: the geometry made again.
     a_watcher = new QFileSystemWatcher(this);
@@ -265,6 +292,12 @@ MultiphysicsDoc::MultiphysicsDoc(QucsApp* app, const QString& name) : QFrame(), 
         if (QFileInfo::exists(path) && !a_watcher->files().contains(path)) a_watcher->addPath(path);   // (written anew)
         say(tr("%1 changed: the geometry is built again").arg(QFileInfo(path).fileName()));
         a_processSolutions.clear();
+        ++a_geometryRevision;
+        ++a_revision;
+        if (a_build) {
+            a_build->superseded = true;
+            a_build->cancel = true;
+        }
         a_geometryStale = true;
         a_meshStale = true;
         for (auto& [tag, stale] : a_stale) stale = true;
@@ -282,11 +315,15 @@ MultiphysicsDoc::~MultiphysicsDoc()
     // not to this, half gone (a cast UBSan calls undefined), nor to the
     // window, which may be going too.
     disconnect(a_undo, nullptr, this, nullptr);
-    if (a_job && a_job->thread) {
-        a_job->cancel = true;
-        a_job->thread->wait();
-        delete a_job->thread;
-    }
+    // (Both stopped, then waited for: a process flow stops at its next step
+    // or time step.)
+    for (const std::shared_ptr<Job>& job : {a_job, a_build})
+        if (job && job->thread) job->cancel = true;
+    for (const std::shared_ptr<Job>& job : {a_job, a_build})
+        if (job && job->thread) {
+            job->thread->wait();
+            delete job->thread;
+        }
 }
 
 Model MultiphysicsDoc::starterModel()
@@ -319,8 +356,9 @@ void MultiphysicsDoc::buildUi()
     a_buildMesh = button(tr("Build Mesh"), tr("Mesh the geometry as the Mesh node says"), "mpBuildMesh");
     a_compute = button(tr("Compute"), tr("Solve the first study: its geometry and mesh first, when they changed (F2)"), "mpCompute");
     connect(a_buildGeometry, &QToolButton::clicked, this, [this] {
-        QString why;
-        if (buildGeometry(&why)) showGeometry();
+        requestGeometry([this](bool built) {
+            if (built) showGeometry();
+        });
     });
     connect(a_buildMesh, &QToolButton::clicked, this, &MultiphysicsDoc::buildMesh);
     connect(a_compute, &QToolButton::clicked, this, [this] { compute(); });
@@ -454,15 +492,17 @@ void MultiphysicsDoc::buildUi()
     a_progressTimer = new QTimer(this);
     a_progressTimer->setInterval(100);
     connect(a_progressTimer, &QTimer::timeout, this, [this] {
-        if (!a_job) return;
-        a_progress->setValue(int(a_job->fraction * 1000));
+        // (The job's, else what is built in the background.)
+        const std::shared_ptr<Job> job = a_job ? a_job : a_build;
+        if (!job) return;
+        a_progress->setValue(int(job->fraction * 1000));
         QString stage;
         {
-            std::lock_guard<std::mutex> lock(a_job->mutex);
-            stage = a_job->stage.isEmpty() ? a_job->what : a_job->stage;
+            std::lock_guard<std::mutex> lock(job->mutex);
+            stage = job->stage.isEmpty() ? job->what : job->stage;
         }
         static_cast<StageLabel*>(a_stage)->setStage(stage);
-        if (a_progressRow->isHidden() && a_job->started.elapsed() >= 250) a_progressRow->show();
+        if (a_progressRow->isHidden() && job->started.elapsed() >= 250) a_progressRow->show();
     });
     updateState();
 }
@@ -504,11 +544,21 @@ bool MultiphysicsDoc::load()
     a_undo->setClean();
     setDocChanged(false);
     a_lastSaved = QFileInfo(a_DocName).lastModified();
+    say(tr("Opened %1").arg(QFileInfo(a_DocName).fileName()));
+    // (A process flow's geometry in the background: the tab open at once,
+    // the structure shown when built.)
+    if (slowGeometry(a_model)) {
+        showGeometry();
+        requestGeometry([this](bool) {
+            showGeometry();
+            a_view->fit();
+        });
+        return true;
+    }
     QString error;
     buildGeometry(&error);
     showGeometry();
     a_view->fit();
-    say(tr("Opened %1").arg(QFileInfo(a_DocName).fileName()));
     return true;
 }
 
@@ -645,7 +695,6 @@ void MultiphysicsDoc::applyModel(const Model& model, bool read)
 
 void MultiphysicsDoc::invalidate(const Model& before, const Model& after)
 {
-    a_processSolutions.clear();
     const Sections a = sections(before), b = sections(after);
     // (A process flow reads the materials - a III-V's composition, for its
     // intermixing: changed, it runs again; it was left as it was, found
@@ -653,6 +702,17 @@ void MultiphysicsDoc::invalidate(const Model& before, const Model& after)
     const bool geometry = a.parameters != b.parameters || a.geometry != b.geometry || (b.flow && a.materials != b.materials);
     const bool mesh = geometry || a.mesh != b.mesh;
     const bool physics = mesh || a.physics != b.physics;
+    // (A step's state as a solution: its flow and its mesh's. A plot of it
+    // changed, kept - it was built again, the flow's minutes.)
+    if (mesh) a_processSolutions.clear();
+    // (What is built in the background of the model as it was: stopped, for
+    // one of it as it is - a step's state, meshed, its mesh's changes too.)
+    ++a_revision;
+    if (geometry) ++a_geometryRevision;
+    if (a_build && (geometry || (mesh && !a_buildWhole))) {
+        a_build->superseded = true;
+        a_build->cancel = true;
+    }
     if (geometry && !a_geometryStale) {
         a_geometryStale = true;
         a_geometryTimer->start();
@@ -702,12 +762,83 @@ const GeometryBuild& MultiphysicsDoc::geometry()
 
 bool MultiphysicsDoc::buildGeometry(QString* error)
 {
+    if (!slowGeometry(a_model) && !a_build && !a_closed) return buildNow(error);
+    // A process flow's: on a thread of its own, waited for with the window
+    // going on - one of the model as it is (a build of it at work already,
+    // that one; one stopped for a newer model, again).
+    for (;;) {
+        if (a_closed) {
+            if (error) *error = tr("the model was closed");
+            return false;
+        }
+        std::shared_ptr<Job> job = a_build;
+        if (!(job && job->whole && job->geometryRevision == a_geometryRevision && !job->cancel)) {
+            if (job) {
+                // (Something else at work: after it - which may have built
+                // the model as it is.)
+                if (!waitForBuildSlot()) {
+                    if (error) *error = tr("the model was closed");
+                    return false;
+                }
+                if (!a_geometryStale && a_builtRevision == a_geometryRevision) break;
+            }
+            startBuild();
+            job = a_build;
+            if (!job) continue;
+        }
+        if (!waitFor(job)) {
+            if (error) *error = tr("the model was closed");
+            return false;
+        }
+        if (job->superseded) continue;
+        if (job->cancel) {
+            if (error) *error = tr("cancelled");
+            return false;
+        }
+        if (!a_geometryStale) break;
+    }
+    const bool ok = a_geometry.ok();
+    if (!ok && error) *error = geometryError();
+    return ok;
+}
+
+void MultiphysicsDoc::requestGeometry(std::function<void(bool)> then)
+{
+    if (a_closed) {
+        if (then) then(false);
+        return;
+    }
+    if (!slowGeometry(a_model) && !a_build) {
+        QString why;
+        const bool built = buildNow(&why);
+        if (then) then(built);
+        return;
+    }
+    if (then) a_afterBuild.push_back(std::move(then));
+    // (Being built as the model is: that one. Something else at work: after it.)
+    if (a_build && a_build->whole && a_build->geometryRevision == a_geometryRevision && !a_build->cancel) return;
+    if (a_build) {
+        a_buildWanted = true;
+        return;
+    }
+    startBuild();
+}
+
+bool MultiphysicsDoc::buildNow(QString* error)
+{
     a_geometryTimer->stop();
     const std::shared_ptr<ParameterScope> ps = parameters();
     for (auto it = ps->errors.cbegin(); it != ps->errors.cend(); ++it) say(tr("Parameter %1: %2").arg(it.key(), it.value()), true);
     QElapsedTimer timer;
     timer.start();
-    a_geometry = qucs_s::fem::buildGeometry(a_model, *ps);
+    const GeometryBuild built = qucs_s::fem::buildGeometry(a_model, *ps);
+    a_builtRevision = a_geometryRevision;
+    return installGeometry(built, timer.elapsed(), error);
+}
+
+bool MultiphysicsDoc::installGeometry(const GeometryBuild& built, qint64 ms, QString* error)
+{
+    a_geometry = built;
     a_geometryStale = false;
     a_meshStale = true;
     a_locator.reset();
@@ -717,8 +848,7 @@ bool MultiphysicsDoc::buildGeometry(QString* error)
     }
     bool ok = a_geometry.ok();
     if (!ok) {
-        const Node* n = a_model.find(a_geometry.failedAt);
-        const QString why = tr("%1: %2").arg(n ? n->name() : a_geometry.failedAt, a_geometry.errors.value(a_geometry.failedAt));
+        const QString why = geometryError();
         say(tr("The geometry stopped at %1").arg(why), true);
         if (error) *error = why;
     } else {
@@ -727,7 +857,7 @@ bool MultiphysicsDoc::buildGeometry(QString* error)
                 .arg(t.domains.size())
                 .arg(t.boundaries.size())
                 .arg(t.points.size())
-                .arg(timer.elapsed()));
+                .arg(ms));
     }
     a_view->setTopology(a_geometry.topology);
     if (a_view->show() == GraphicsView::Show::Mesh) a_view->setMesh(nullptr);
@@ -737,12 +867,18 @@ bool MultiphysicsDoc::buildGeometry(QString* error)
     return ok;
 }
 
+QString MultiphysicsDoc::geometryError() const
+{
+    if (a_geometry.failedAt.isEmpty()) return a_geometry.topology ? QString() : tr("the geometry is not built");
+    const Node* n = a_model.find(a_geometry.failedAt);
+    return tr("%1: %2").arg(n ? n->name() : a_geometry.failedAt, a_geometry.errors.value(a_geometry.failedAt));
+}
+
 bool MultiphysicsDoc::currentGeometry(QString* error)
 {
     if (a_geometryStale) return buildGeometry(error);
     if (a_geometry.ok()) return true;
-    const Node* n = a_model.find(a_geometry.failedAt);
-    if (error) *error = tr("%1: %2").arg(n ? n->name() : a_geometry.failedAt, a_geometry.errors.value(a_geometry.failedAt));
+    if (error) *error = geometryError();
     return false;
 }
 
@@ -760,7 +896,7 @@ void MultiphysicsDoc::watchFiles()
 
 void MultiphysicsDoc::startJob(const QString& what, std::function<void(Job&)> work, std::function<void(Job&)> done)
 {
-    if (a_job) return;
+    if (a_job || a_closed) return;
     a_lastError.clear();
     a_lastWarnings.clear();
     auto job = std::make_shared<Job>();
@@ -771,29 +907,40 @@ void MultiphysicsDoc::startJob(const QString& what, std::function<void(Job&)> wo
     job->topology = a_geometry.topology;
     job->mesh = a_meshStale ? nullptr : a_mesh;
     a_job = job;
+    a_progress->setValue(0);
+    static_cast<StageLabel*>(a_stage)->setStage(what);
+    launch(job, std::move(work));
+    updateState();
+    emit stateChanged();
+}
+
+void MultiphysicsDoc::launch(const std::shared_ptr<Job>& job, std::function<void(Job&)> work)
+{
     job->thread = QThread::create([job, work] { work(*job); });
     // (A main thread's stack, 8 MB: a worker's 512 kB on macOS. The
     // material library's expressions, compiled by recursion on its first
     // solve there, overflowed it under the sanitizers - the fuzz of 21
     // October, E3.)
     job->thread->setStackSize(8u << 20);
-    connect(job->thread, &QThread::finished, this, &MultiphysicsDoc::jobFinished);
-    a_progress->setValue(0);
-    static_cast<StageLabel*>(a_stage)->setStage(what);
+    connect(job->thread, &QThread::finished, this, [this, job] {
+        if (job == a_job) jobFinished();
+        else if (job == a_build) buildFinished();
+    });
     job->started.start();
     a_progressTimer->start();
     job->thread->start();
-    updateState();
-    emit stateChanged();
 }
 
 void MultiphysicsDoc::jobFinished()
 {
     std::shared_ptr<Job> job = a_job;
     a_job.reset();
-    a_progressTimer->stop();
-    a_progressRow->hide();
+    if (!a_build) {
+        a_progressTimer->stop();
+        a_progressRow->hide();
+    }
     if (!job) return;
+    job->ended = true;
     job->thread->deleteLater();
     for (const QString& w : job->warnings) say(w);
     a_lastWarnings = job->run.warnings;
@@ -802,6 +949,172 @@ void MultiphysicsDoc::jobFinished()
         say(job->error, true);
     }
     if (job->done) job->done(*job);
+    // (The model's geometry changed while it worked: built now.)
+    if (a_geometryStale && !a_build) a_geometryTimer->start();
+    updateState();
+    emit stateChanged();
+}
+
+void MultiphysicsDoc::startBuild()
+{
+    if (a_closed) return;
+    a_geometryTimer->stop();
+    a_buildWanted = false;
+    auto job = std::make_shared<Job>();
+    job->what = tr("Building the geometry");
+    job->whole = true;
+    job->model = a_model;
+    job->parameters = parameters();
+    job->geometryRevision = a_geometryRevision;
+    job->revision = a_revision;
+    for (auto it = job->parameters->errors.cbegin(); it != job->parameters->errors.cend(); ++it)
+        say(tr("Parameter %1: %2").arg(it.key(), it.value()), true);
+    a_build = job;
+    a_buildWhole = true;
+    if (!a_job) {
+        a_progress->setValue(0);
+        static_cast<StageLabel*>(a_stage)->setStage(job->what);
+    }
+    launch(job, [](Job& j) {
+        QElapsedTimer timer;
+        timer.start();
+        const Progress told = j.progress(0, 1);
+        j.geometry = qucs_s::fem::buildGeometry(j.model, *j.parameters, {}, [&told](double f, const QString& what) {
+            return told(f, QCoreApplication::translate("MultiphysicsDoc", "Building the geometry: %1").arg(what));
+        });
+        j.ms = timer.elapsed();
+    });
+    updateState();
+    emit stateChanged();
+}
+
+std::shared_ptr<MultiphysicsDoc::Job> MultiphysicsDoc::startStep(const QString& tag, bool solution, std::optional<double> x)
+{
+    const Node* n = a_model.find(tag);
+    const QString name = n ? n->name() : tag;
+    auto job = std::make_shared<Job>();
+    job->what = tr("Building up to %1").arg(name);
+    job->upTo = tag;
+    job->solution = solution;
+    job->x = x;
+    startAside(job, [name](Job& j) {
+        const Progress told = j.progress(0, 1);
+        const Progress said = [&told, &name](double f, const QString& what) {
+            return told(f, QCoreApplication::translate("MultiphysicsDoc", "Up to %1: %2").arg(name, what));
+        };
+        if (j.solution) j.stepSolution = qucs_s::fem::processSolution(j.model, j.parameters, j.upTo, j.x, &j.error, said);
+        else j.geometry = qucs_s::fem::buildGeometry(j.model, *j.parameters, j.upTo, said);
+    });
+    return job;
+}
+
+void MultiphysicsDoc::startAside(const std::shared_ptr<Job>& job, std::function<void(Job&)> work)
+{
+    // (Its tab closed: not started - it ends at once, cancelled.)
+    if (a_closed) {
+        job->cancel = true;
+        job->ended = true;
+        return;
+    }
+    // (Of the model as it is; in the background slot, beside the job.)
+    job->model = a_model;
+    job->model.fileName = getDocName();
+    job->parameters = parameters();
+    job->geometryRevision = a_geometryRevision;
+    job->revision = a_revision;
+    a_build = job;
+    a_buildWhole = false;
+    if (!a_job) {
+        a_progress->setValue(0);
+        static_cast<StageLabel*>(a_stage)->setStage(job->what);
+    }
+    launch(job, std::move(work));
+    updateState();
+    emit stateChanged();
+}
+
+bool MultiphysicsDoc::waitForBuildSlot()
+{
+    while (a_build) {
+        const std::shared_ptr<Job> job = a_build;
+        if (!waitFor(job)) return false;
+    }
+    return true;
+}
+
+namespace {
+
+/// A wait under way: counted (a model closed meanwhile is deleted once
+/// none is), its end letting a closed model go.
+struct Waiting {
+    int& count;
+    QPointer<MultiphysicsDoc> doc;
+    Waiting(int& c, MultiphysicsDoc* d) : count(c), doc(d) { ++count; }
+    ~Waiting()
+    {
+        if (doc && --count == 0 && doc->closedWhenFree()) doc->deleteLater();
+    }
+};
+
+} // namespace
+
+bool MultiphysicsDoc::waitFor(const std::shared_ptr<Job>& job)
+{
+    // (The window goes on meanwhile; this is not deleted under it - its tab
+    // closed, closeWhenFree.)
+    const Waiting waiting(a_waiting, this);
+    QPointer<MultiphysicsDoc> self(this);
+    QEventLoop loop;
+    connect(this, &MultiphysicsDoc::stateChanged, &loop, [&loop, job] {
+        if (job->ended) loop.quit();
+    });
+    connect(this, &QObject::destroyed, &loop, &QEventLoop::quit);
+    while (self && !job->ended) loop.exec();
+    return !self.isNull();
+}
+
+void MultiphysicsDoc::buildFinished()
+{
+    std::shared_ptr<Job> job = a_build;
+    a_build.reset();
+    if (!a_job) {
+        a_progressTimer->stop();
+        a_progressRow->hide();
+    }
+    if (!job) return;
+    job->ended = true;
+    job->thread->deleteLater();
+    if (job->whole) {
+        if (job->superseded) {
+            // (For a newer model: built for it, what waits waiting on.)
+            a_buildWanted = true;
+        } else if (job->cancel) {
+            say(tr("The geometry's build was cancelled: Build Geometry builds it, as does a change of the model."), true);
+            for (auto& then : std::exchange(a_afterBuild, {})) then(false);
+            a_buildWanted = false;
+        } else {
+            QString why;
+            a_builtRevision = job->geometryRevision;
+            const bool ok = installGeometry(job->geometry, job->ms, &why);
+            if (job->geometryRevision != a_geometryRevision) {
+                // (The model changed as it was built, not stopped in time.)
+                a_geometryStale = true;
+                a_buildWanted = true;
+            } else {
+                for (auto& then : std::exchange(a_afterBuild, {})) then(ok);
+            }
+        }
+    } else if (job->done) {
+        job->done(*job);
+    }
+    // What was asked meanwhile: the geometry, else a step shown.
+    if (a_closed) {
+    } else if (!a_build && a_buildWanted) {
+        startBuild();
+    } else if (!a_build && !a_stepWanted.isEmpty()) {
+        const QString tag = std::exchange(a_stepWanted, QString());
+        if (a_model.find(tag)) showStep(tag, a_stepWantedFocused);
+    }
     updateState();
     emit stateChanged();
 }
@@ -809,6 +1122,18 @@ void MultiphysicsDoc::jobFinished()
 void MultiphysicsDoc::buildMesh()
 {
     if (isBusy()) return;
+    // (A process flow's geometry built first, in the background: meshed
+    // once it is.)
+    if (a_geometryStale && (slowGeometry(a_model) || a_build)) {
+        a_lastError.clear();
+        say(tr("Meshing once the geometry is built…"));
+        requestGeometry([this](bool built) {
+            if (built) return buildMesh();
+            a_lastError = a_geometryStale ? tr("the geometry was not built: cancelled") : geometryError();
+            emit stateChanged();
+        });
+        return;
+    }
     if (a_geometryStale) {
         QString why;
         if (!buildGeometry(&why)) {
@@ -866,13 +1191,32 @@ void MultiphysicsDoc::compute(const QString& study)
         emit stateChanged();
         return;
     }
-    if (a_geometryStale || !a_geometry.ok()) {
+    // (A process flow's geometry built first, in the background: computed
+    // once it is.)
+    if (a_geometryStale && (slowGeometry(a_model) || a_build)) {
+        a_lastError.clear();
+        const Node* node = a_model.find(tag);
+        say(tr("Computing %1 once the geometry is built…").arg(node ? node->name() : tag));
+        requestGeometry([this, study](bool built) {
+            if (built) return compute(study);
+            a_lastError = a_geometryStale ? tr("the geometry was not built: cancelled") : geometryError();
+            emit stateChanged();
+        });
+        return;
+    }
+    if (a_geometryStale || (!a_geometry.ok() && !slowGeometry(a_model))) {
         QString why;
         if (!buildGeometry(&why)) {
             a_lastError = why;
             emit stateChanged();
             return;
         }
+    }
+    if (!a_geometry.ok()) {
+        a_lastError = geometryError();
+        say(tr("The geometry stopped at %1").arg(a_lastError), true);
+        emit stateChanged();
+        return;
     }
     const Node* node = a_model.find(tag);
     say(tr("Computing %1…").arg(node ? node->name() : tag));
@@ -949,8 +1293,11 @@ std::shared_ptr<SolutionSet> MultiphysicsDoc::solutions(const QString& study) co
 {
     auto it = a_solutions.find(studyTag(study));
     if (it != a_solutions.end()) return it->second;
-    // (A process flow's step: its state as a solution.)
-    if (!study.isEmpty() && qucs_s::fem::processFlowOf(a_model, study)) return processSolutions(study);
+    // (A process flow's step: its state as a solution - here, not waited
+    // for in the background: this is asked while the panel's form is made,
+    // as the model changes. The tools and the panel's plots ask
+    // processSolutions(), which is.)
+    if (!study.isEmpty() && qucs_s::fem::processFlowOf(a_model, study)) return stepSolutions(study, {}, nullptr, false);
     return nullptr;
 }
 
@@ -965,6 +1312,8 @@ QString MultiphysicsDoc::makeProcessPlot(const QString& tag, const ProcessPlot& 
     if (!set) return fail(why);
     const Solution& sol = *set->solutions.front();
     const Node* flow = qucs_s::fem::processFlowOf(a_model, tag);
+    // (Its state was built in the background: the step gone meanwhile.)
+    if (!flow || !a_model.find(tag)) return fail(tr("there is no step %1 now").arg(tag));
     const QString stepName = a_model.find(tag)->name();
     Model m = a_model;
     if (!plot.profile) {
@@ -1027,13 +1376,51 @@ QString MultiphysicsDoc::makeProcessPlot(const QString& tag, const ProcessPlot& 
 
 std::shared_ptr<SolutionSet> MultiphysicsDoc::processSolutions(const QString& tag, std::optional<double> x, QString* error) const
 {
+    return stepSolutions(tag, x, error, true);
+}
+
+std::shared_ptr<SolutionSet> MultiphysicsDoc::stepSolutions(const QString& tag, std::optional<double> x, QString* error, bool background) const
+{
     // (One for each step, its column's values found again at each x asked.)
     if (auto it = a_processSolutions.find(tag); it != a_processSolutions.end()) {
         qucs_s::fem::setProcessColumn(*it->second->solutions.front(), x);
         return it->second;
     }
     QString why;
-    const std::shared_ptr<Solution> s = qucs_s::fem::processSolution(a_model, parameters(), tag, x, &why);
+    std::shared_ptr<Solution> s;
+    if (!background || !slowGeometry(a_model)) {
+        s = qucs_s::fem::processSolution(a_model, parameters(), tag, x, &why);
+    } else {
+        // (Its flow run, and meshed, in the background, waited for with the
+        // window going on - again when the model changed under it. Its
+        // cache is the model's, logically const.)
+        auto* self = const_cast<MultiphysicsDoc*>(this);
+        for (;;) {
+            if (!self->waitForBuildSlot()) {
+                if (error) *error = tr("the model was closed");
+                return nullptr;
+            }
+            const std::shared_ptr<Job> job = self->startStep(tag, true, x);
+            if (!self->waitFor(job)) {
+                if (error) *error = tr("the model was closed");
+                return nullptr;
+            }
+            if (job->superseded) {
+                if (!a_model.find(tag)) {
+                    if (error) *error = tr("there is no step %1 now").arg(tag);
+                    return nullptr;
+                }
+                continue;
+            }
+            if (job->cancel) {
+                if (error) *error = tr("cancelled");
+                return nullptr;
+            }
+            s = job->stepSolution;
+            why = job->error;
+            break;
+        }
+    }
     if (!s) {
         if (error) *error = why;
         return nullptr;
@@ -1058,34 +1445,57 @@ QDateTime MultiphysicsDoc::solvedAt(const QString& study) const
 
 bool MultiphysicsDoc::waitForJob(int ms)
 {
-    if (!a_job) return true;
+    if (!a_job && !a_build) return true;
+    // (A geometry built in the background, and what waits for it - a mesh,
+    // a study - started as it ends: waited for too.)
+    const Waiting waiting(a_waiting, this);
+    QPointer<MultiphysicsDoc> self(this);
     QEventLoop loop;
     QTimer timeout;
     timeout.setSingleShot(true);
     connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
     connect(this, &MultiphysicsDoc::stateChanged, &loop, [this, &loop] {
-        if (!a_job) loop.quit();
+        if (!a_job && !a_build) loop.quit();
     });
+    connect(this, &QObject::destroyed, &loop, &QEventLoop::quit);
     timeout.start(ms);
-    while (a_job && timeout.isActive()) loop.exec();
-    return !a_job;
+    while (self && (a_job || a_build) && timeout.isActive()) loop.exec();
+    return self && !a_job && !a_build;
 }
 
 QString MultiphysicsDoc::jobProgress() const
 {
-    if (!a_job) return QString();
+    const std::shared_ptr<Job> job = a_job ? a_job : a_build;
+    if (!job) return QString();
     QString stage;
     {
-        std::lock_guard<std::mutex> lock(a_job->mutex);
-        stage = a_job->stage.isEmpty() ? a_job->what : a_job->stage;
+        std::lock_guard<std::mutex> lock(job->mutex);
+        stage = job->stage.isEmpty() ? job->what : job->stage;
     }
-    return tr("%1 % - %2").arg(int(std::floor(100 * a_job->fraction.load()))).arg(stage);
+    return tr("%1 % - %2").arg(int(std::floor(100 * job->fraction.load()))).arg(stage);
+}
+
+void MultiphysicsDoc::closeWhenFree()
+{
+    // (Its work stopped - a process flow at its next time step -, none
+    // started; deleted as the last wait ends.)
+    a_closed = true;
+    a_geometryTimer->stop();
+    a_afterBuild.clear();
+    a_buildWanted = false;
+    a_stepWanted.clear();
+    for (const std::shared_ptr<Job>& job : {a_job, a_build})
+        if (job) job->cancel = true;
+    if (a_waiting == 0) deleteLater();
 }
 
 void MultiphysicsDoc::cancelJob()
 {
     if (a_job) {
         a_job->cancel = true;
+        say(tr("Cancelling…"));
+    } else if (a_build) {
+        a_build->cancel = true;
         say(tr("Cancelling…"));
     }
 }
@@ -1134,8 +1544,65 @@ void MultiphysicsDoc::showGeometry()
 
 qucs_s::fem::GeometryBuild MultiphysicsDoc::showBuiltUpTo(const QString& tag, QString* error)
 {
-    const std::shared_ptr<ParameterScope> ps = parameters();
-    GeometryBuild partial = qucs_s::fem::buildGeometry(a_model, *ps, tag);
+    if (!slowGeometry(a_model)) {
+        const std::shared_ptr<ParameterScope> ps = parameters();
+        return presentStep(tag, qucs_s::fem::buildGeometry(a_model, *ps, tag), error);
+    }
+    // (A process flow's: in the background, waited for - again when the
+    // model changed under it.)
+    for (;;) {
+        if (!waitForBuildSlot()) return {};
+        const std::shared_ptr<Job> job = startStep(tag, false, {});
+        if (!waitFor(job)) return {};
+        if (job->superseded && a_model.find(tag)) continue;
+        if (job->cancel) {
+            if (error) *error = job->superseded ? tr("there is no step %1 now").arg(tag) : tr("cancelled");
+            return {};
+        }
+        return presentStep(tag, job->geometry, error);
+    }
+}
+
+void MultiphysicsDoc::showStep(const QString& tag, bool whileFocused)
+{
+    if (a_closed) return;
+    if (!slowGeometry(a_model)) {
+        showBuiltUpTo(tag);
+        return;
+    }
+    // (Another step on its way: stopped for this one. The geometry at work:
+    // this after it.)
+    if (a_build) {
+        if (a_build->preview && a_build->upTo != tag) {
+            a_build->superseded = true;
+            a_build->cancel = true;
+        }
+        a_stepWanted = tag;
+        a_stepWantedFocused = whileFocused;
+        return;
+    }
+    const std::shared_ptr<Job> job = startStep(tag, false, {});
+    job->preview = true;
+    job->done = [this, tag, whileFocused](Job& j) {
+        if (whileFocused && a_focus != tag) return;
+        if (j.superseded) {
+            // (The model changed: built again, if it is still wanted.)
+            if (a_model.find(tag) && a_stepWanted.isEmpty()) {
+                a_stepWanted = tag;
+                a_stepWantedFocused = whileFocused;
+            }
+            return;
+        }
+        if (j.cancel) {
+            say(tr("Building up to %1 was cancelled.").arg(a_model.find(tag) ? a_model.find(tag)->name() : tag), true);
+            return;
+        }
+        presentStep(tag, j.geometry, nullptr);
+    };
+}
+
+qucs_s::fem::GeometryBuild MultiphysicsDoc::presentStep(const QString& tag, const GeometryBuild& partial, QString* error)
+{
     const Node* n = a_model.find(tag);
     const QString name = n ? n->name() : tag;
     if (!partial.ok()) {
@@ -1380,8 +1847,9 @@ void MultiphysicsDoc::focusNode(const QString& tag)
         } else if (n->type == QLatin1String("mesh") || group == QLatin1String("mesh")) {
             showMesh();
         } else if (group == QLatin1String("process")) {
-            // A process step: the structure as it leaves it.
-            showBuiltUpTo(tag);
+            // A process step: the structure as it leaves it (a flow's built
+            // in the background, shown if it is still the one chosen).
+            showStep(tag, true);
         } else if (group == QLatin1String("derived")) {
             if (a_view->show() != GraphicsView::Show::Results) showGeometry();
             evaluate(tag);
@@ -2400,7 +2868,36 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
         // The script names the project it saves as itself (beside it).
         Model m = a_model;
         m.fileName = getDocName();
-        const LumericalScript ls = lumericalScript(m, *n, QFileInfo(path).completeBaseName(), QStringLiteral(PACKAGE_VERSION));
+        const QString base = QFileInfo(path).completeBaseName();
+        LumericalScript ls;
+        if (!slowGeometry(a_model)) {
+            ls = lumericalScript(m, *n, base, QStringLiteral(PACKAGE_VERSION));
+        } else {
+            // (A process flow's geometry and its mesh built for it: in the
+            // background, waited for - again when the model changed.)
+            for (;;) {
+                if (!waitForBuildSlot()) return QString();
+                n = a_model.find(tag);
+                if (!n) return fail(tr("there is no export %1 now").arg(tag));
+                auto job = std::make_shared<Job>();
+                job->what = tr("Exporting %1").arg(n->name());
+                auto made = std::make_shared<LumericalScript>();
+                startAside(job, [node = *n, base, made](Job& j) {
+                    const Progress told = j.progress(0, 1);
+                    const QString name = node.name();
+                    *made = lumericalScript(j.model, node, base, QStringLiteral(PACKAGE_VERSION), [&told, &name](double f, const QString& what) {
+                        return told(f, QCoreApplication::translate("MultiphysicsDoc", "Exporting %1: %2").arg(name, what));
+                    });
+                });
+                if (!waitFor(job)) return QString();
+                n = a_model.find(tag);
+                if (!n) return fail(tr("there is no export %1 now").arg(tag));
+                if (job->superseded) continue;
+                if (job->cancel) return fail(tr("%1: cancelled").arg(n->name()));
+                ls = *made;
+                break;
+            }
+        }
         if (!ls.error.isEmpty()) return fail(tr("%1: %2").arg(n->name(), ls.error));
         out.text = ls.text;
         out.summary = ls.summary;

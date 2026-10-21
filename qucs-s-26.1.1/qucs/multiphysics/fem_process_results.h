@@ -45,9 +45,11 @@ ProcessColumn processColumn(const ProcessState& state, double x);
  * variables on it (Solution::addProcessVariables: pf1.B, pf1.net...), its
  * globals the values derived down the column at \a x (the window's middle
  * when none): pf1.xj, pf1.Rs, pf1.tox, pf1.dose_B... Null, and why.
+ * \a progress is told how far - the flow, then the mesh -: false stops it.
  */
 std::shared_ptr<Solution> processSolution(const Model& model, std::shared_ptr<ParameterScope> parameters, const QString& step,
-                                          std::optional<double> x, QString* error);
+                                          std::optional<double> x, QString* error,
+                                          const std::function<bool(double fraction, const QString& what)>& progress = {});
 /// A process solution's column values found again at \a x (the window's
 /// middle when none): its globals pf1.x, pf1.xj, pf1.Rs... - one solution
 /// for every x.

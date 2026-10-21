@@ -17,6 +17,8 @@ ASAN = {'build': 'build-asan'}
 # (hard_rss_limit_mb does nothing on macOS: a test past 3 GB is stopped here.)
 CAPPED = {'build': 'build-asan', 'rss': 3 << 20}
 E = 'test_fem_engine:hostileExpressions'
+BG = 'test_multiphysics_doc:aFlowsGeometryIsBuiltInTheBackground'
+PROC = 'test_fem_process:aFlowsProgressAndItsCancel'
 LAY = 'test_layout_doc:'
 
 
@@ -90,7 +92,49 @@ BREAKS = [
      ['test_fem_devices:trapLevelsAreBounded'], CAPPED),
     ("a scan's points unbounded (X1, build-asan, capped)", 'multiphysics/fem_waves.cpp', ' || pc.points > 1000)', ')',
      ['test_fem_waves:aScansPointsAreBounded'], CAPPED),
-    # The tools (N2).
+    # N2's flow off the GUI thread (the commit after the hunt's).
+    ('a flow opened, built at once (N2 GUI)', 'multiphysicsdoc.cpp',
+     '    if (slowGeometry(a_model)) {\n        showGeometry();\n        requestGeometry([this](bool) {',
+     '    if (false) {\n        showGeometry();\n        requestGeometry([this](bool) {', [BG], {}),
+    ('a tool builds a flow here, not waiting (N2 GUI)', 'multiphysicsdoc.cpp',
+     '    if (!slowGeometry(a_model) && !a_build && !a_closed) return buildNow(error);', '    if (!a_closed) return buildNow(error);', [BG], {}),
+    ("an anneal's time steps not asked (N2 GUI)", 'multiphysics/fem_process_dopants.cpp',
+     '            if (a_ticker && !a_ticker(t / duration)) {\n                *error = tr("cancelled");\n                return false;\n            }\n', '',
+     [PROC, BG], {}),
+    ("a flow's steps not asked (N2 GUI)", 'multiphysics/fem_process.cpp',
+     '                if (!a_progress(double(done) / std::max(count, 1), what)) {', '                if (false) {', [PROC], {}),
+    ("the geometry's builder not passing it on (N2 GUI)", 'multiphysics/fem_geometry.cpp',
+     'runProcess(f, a_model, a_ps, a_scale, a_until, a_progress)', 'runProcess(f, a_model, a_ps, a_scale, a_until)', [PROC], {}),
+    ("a step's state not passing it on (N2 GUI)", 'multiphysics/fem_process_results.cpp',
+     'buildGeometry(model, *parameters, step, part(0, 0.9))', 'buildGeometry(model, *parameters, step)', [PROC], {}),
+    ("a sweep's point not passing it on (N2 GUI)", 'multiphysics/fem_solver.cpp',
+     '            const GeometryBuild g = buildGeometry(model, ps, {}, p);', '            const GeometryBuild g = buildGeometry(model, ps);',
+     ['test_fem_process:aSweepsFlowStopsInItsAnneal'], {}),
+    ('a change not stopping the build (N2 GUI)', 'multiphysicsdoc.cpp',
+     '    if (a_build && (geometry || (mesh && !a_buildWhole))) {', '    if (false) {', [BG], {}),
+    ('Build Mesh waiting for the geometry (N2 GUI)', 'multiphysicsdoc.cpp',
+     '    if (a_geometryStale && (slowGeometry(a_model) || a_build)) {\n        a_lastError.clear();\n        say(tr("Meshing once',
+     '    if (false) {\n        a_lastError.clear();\n        say(tr("Meshing once', [BG], {}),
+    ('Compute waiting for the geometry (N2 GUI)', 'multiphysicsdoc.cpp',
+     '    if (a_geometryStale && (slowGeometry(a_model) || a_build)) {\n        a_lastError.clear();\n        const Node* node',
+     '    if (false) {\n        a_lastError.clear();\n        const Node* node', [BG], {}),
+    ("the toolbar's Build Geometry waiting (N2 GUI)", 'multiphysicsdoc.cpp',
+     '        requestGeometry([this](bool built) {\n            if (built) showGeometry();\n        });\n    });',
+     '        QString why;\n        if (buildGeometry(&why)) showGeometry();\n    });', [BG], {}),
+    ('a step chosen, waited for (N2 GUI)', 'multiphysicsdoc.cpp', '            showStep(tag, true);', '            showBuiltUpTo(tag);', [BG], {}),
+    ('closed, the build not stopped (N2 GUI)', 'multiphysicsdoc.cpp',
+     '    for (const std::shared_ptr<Job>& job : {a_job, a_build})\n        if (job && job->thread) job->cancel = true;\n', '', [BG], {}),
+    ('closed, deleted under a wait (N2 GUI, build-asan)', 'qucs.cpp',
+     '    if (auto *model = dynamic_cast<MultiphysicsDoc *>(Doc); model && model->beingWaitedFor())\n      model->closeWhenFree();\n    else\n      delete Doc;',
+     '    delete Doc;', [BG], ASAN),
+    ("Cancel not reaching the build (N2 GUI)", 'multiphysicsdoc.cpp',
+     '    } else if (a_build) {\n        a_build->cancel = true;\n        say(tr("Cancelling…"));\n    }', '    }', [BG], {}),
+    ('fem_stop not seeing the build (N2 GUI)', 'qucscontrol_fem.cpp', '    if (!doc->isBusy() && !doc->building())', '    if (!doc->isBusy())', [BG], {}),
+    ("a flow's export here, not waiting (N2 GUI)", 'multiphysicsdoc.cpp',
+     '        if (!slowGeometry(a_model)) {\n            ls = lumericalScript(m, *n, base, QStringLiteral(PACKAGE_VERSION));',
+     '        if (true) {\n            ls = lumericalScript(m, *n, base, QStringLiteral(PACKAGE_VERSION));',
+     ['test_multiphysics_doc:aFlowsExportIsBuiltInTheBackground'], {}),
+    # The tools (N2, N5).
     ("a flow's materials changed, not built again (N5)", 'multiphysicsdoc.cpp', ' || (b.flow && a.materials != b.materials);', ';',
      ['test_multiphysics_doc:aBuiltGeometryIsNotBuiltAgain'], {}),
     ('fem_build builds again (N2)', 'qucscontrol_fem.cpp', '    if (!doc->currentGeometry(&why)) return errorResult(', '    if (!doc->buildGeometry(&why)) return errorResult(',

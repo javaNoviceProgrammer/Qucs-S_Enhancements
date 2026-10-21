@@ -67,10 +67,11 @@ void QucsApp::initMultiphysics()
   a_multiphysicsMenu->addAction(tr("Open Model…"), this, [this] { emit a_multiphysicsPanel->openModelRequested(QString()); });
   a_multiphysicsMenu->addSeparator();
   QAction *geometry = a_multiphysicsMenu->addAction(tr("Build Geometry"), this, [model] {
-    if (MultiphysicsDoc *doc = model()) {
-      QString why;
-      if (doc->buildGeometry(&why)) doc->showGeometry();
-    }
+    // (A process flow's in the background, shown once built.)
+    if (QPointer<MultiphysicsDoc> doc = model())
+      doc->requestGeometry([doc](bool built) {
+        if (doc && built) doc->showGeometry();
+      });
   });
   geometry->setObjectName(QStringLiteral("mpBuildGeometryAction"));
   QAction *mesh = a_multiphysicsMenu->addAction(tr("Build Mesh"), this, [model] {

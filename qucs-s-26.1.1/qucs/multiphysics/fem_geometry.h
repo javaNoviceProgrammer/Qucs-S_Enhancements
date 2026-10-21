@@ -160,8 +160,10 @@ struct GeometryBuild {
 
 /// Builds \a model's geometry (its parameters evaluated in \a parameters).
 /// Up to the feature \a upTo (inclusive; empty: all): the objects then,
-/// made one.
-GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters, const QString& upTo = {});
+/// made one. A process flow's progress told to \a progress (runProcess):
+/// false from it stops the build there, the flow's error "cancelled".
+GeometryBuild buildGeometry(const Model& model, const ParameterScope& parameters, const QString& upTo = {},
+                            const std::function<bool(double fraction, const QString& what)>& progress = {});
 
 /*!
  * A selection resolved: the domains, boundaries or points of \a level that

@@ -3583,7 +3583,13 @@ void QucsApp::closeFile(int index)
     if (pane->count() == 1 && pane == a_maximizedPane) setDocumentMaximized(false);
     pane->removeTab(index);
     view->forgetDocumentElements();
-    delete Doc;
+    // (A multiphysics model waited for - a tool waiting on its geometry,
+    // built in the background, or on its solve, the window going on -: its
+    // work stopped, let go once the wait is over, not deleted under it.)
+    if (auto *model = dynamic_cast<MultiphysicsDoc *>(Doc); model && model->beingWaitedFor())
+      model->closeWhenFree();
+    else
+      delete Doc;
     misc::releaseFreedMemory();   // (its parts' memory, offered back to the system)
     // Saved or discarded on purpose: the autosave copy is obsolete.
     if (closingName.isEmpty())
