@@ -64,7 +64,7 @@ const double Inf = std::numeric_limits<double>::infinity();
 // Fermi-Dirac's degeneracy in it, as solved), a laser's gain and
 // stimulated rate by node and its photons, then incomplete ionization's
 // Nd⁺ and Na⁻ by node (a_ionAt).
-constexpr int ExtraHead = 3, PerTriangle = 37;
+constexpr int ExtraHead = 3, PerTriangle = 39;
 
 /// Bernoulli's function x / (e^x - 1) and its derivative, safe at 0 and far
 /// from it.
@@ -98,8 +98,24 @@ struct Medium {
     // by carrier: µmin1, µmin2, µ1, Pc, Cr, Cs, α, β.
     bool masetti = false;
     double ms[2][8] = {};
+    // The low-field mobility's models beyond these, by carrier (SI unless
+    // said): Arora's µmin, a, µd, b, Nref, c, α, d - µmin Tn^a + µd Tn^b/(1
+    // + (N/(Nref Tn^c))^(α Tn^d)), Tn = TL/300 K; Dorkel and Leturcq's µL,
+    // γ, A, B (A and B in cm, V, s and K); Klaassen's µmax, µmin, θ, Nref,
+    // α (and its dopants' clustering, its masses); Yamaguchi's µL, S, Nref,
+    // as, uL, vs, G (and its lcrit); an expression of the state's.
+    enum class LowField { Plain, Arora, Dorkel, Klaassen, Yamaguchi, Expression };
+    LowField lowField = LowField::Plain;
+    double ar[2][8] = {}, dl[2][4] = {}, kl[2][5] = {}, ya[2][7] = {};
+    double klNrefD = 4e26, klNrefA = 7.2e26, klCD = 0.21, klCA = 0.5, klMe = 1, klMh = 1.258;
+    Expression muExpr[2];
+    bool exprState = false;          // the expression reads n, p, Epar, Eperp or dsurf
+    // Shirahata's surface model (else Lombardi's): µ0, θ, E1, E2, P1, P2.
+    bool shirahata = false;
+    double sh[2][6] = {};
     bool saturation = false;         // high fields: Caughey and Thomas's too
     double vsatn = 1e5, vsatp = 8e4, betan = 2, betap = 1;
+    double rHn = 1, rHp = 1;         // Hall factors: µH = r µ (a magnetic field's)
     bool wholeField = false;         // saturated by |E|, not by the force along the current
     // Hot carriers: each carrier's saturation by its temperature, an energy
     // balance's (energy relaxation times τw, s); the electrons' velocity the
@@ -109,6 +125,9 @@ struct Medium {
     bool transferred = false;
     double E0n = 4e5;
     double zetan = 2.5, zetap = 2.2;   // the mobilities' (TL/T)^-ζ
+    // The saturation velocities by temperature: 2.4e7/(1 + 0.8 e^(TL/600 K))
+    // cm/s both, not Quay's of the velocities given.
+    bool vsatExp = false;
     // Quay's saturation velocities of the lattice's temperature, vsat300/((1
     // - A) + A TL/300 K): A of each carrier (0: none).
     double vsatAn = 0, vsatAp = 0;
@@ -120,6 +139,15 @@ struct Medium {
     // cm⁻³)^λ / (T E⊥^⅓) (C in cm, V, s and K), µsr = δ/E⊥², E⊥ the field
     // across the nearest interface, each faded as e^(-d/lcrit) away from it.
     bool surface = false;
+    /// Whether its mobility changes with the state (the carriers, the
+    /// fields): updated with it, held a Newton step.
+    bool varies() const
+    {
+        return saturation || surface || lowField == LowField::Dorkel || lowField == LowField::Klaassen || lowField == LowField::Yamaguchi
+               || (lowField == LowField::Expression && exprState);
+    }
+    /// Whether it reads the field across the nearest interface.
+    bool perpendicular() const { return surface || lowField == LowField::Yamaguchi || (lowField == LowField::Expression && exprState); }
     double sBn = 0, sCn = 0, sLn = 0, sDn = 0, sBp = 0, sCp = 0, sLp = 0, sDp = 0, lcrit = 1e-8;
     // Slotboom's band gap narrowing: ΔEg = E (ln(N/Nref) + √(ln²(N/Nref) +
     // C)) (J), N the donors and acceptors - ni raised by e^(ΔEg/2kT), the
@@ -258,6 +286,113 @@ double tabulated(const std::vector<double>& v, double T)
 double quayVsat(double A, double T)
 {
     return 1 / ((1 - A) + A * T / 300);
+}
+
+/// The saturation velocity of both carriers at \a T (K), m/s: 2.4e7/(1 +
+/// 0.8 e^(T/600 K)) cm/s - the mobility overview's eq. 15, a device
+/// simulator's default (1.035e7 cm/s at 300 K).
+double expVsat(double T)
+{
+    return 2.4e5 / (1 + 0.8 * std::exp(T / 600));
+}
+
+/// Arora, Hauser and Roulston's mobility (1982) of \a c (µmin, a, µd, b,
+/// Nref, c, α, d; SI) at \a N dopants (1/m³) and \a T (K): µmin Tn^a + µd
+/// Tn^b/(1 + (N/(Nref Tn^c))^(α Tn^d)), Tn = T/300 K.
+double aroraMobility(const double* c, double N, double T)
+{
+    const double tn = T / 300;
+    return c[0] * std::pow(tn, c[1]) + c[2] * std::pow(tn, c[3]) / (1 + std::pow(N / (c[4] * std::pow(tn, c[5])), c[6] * std::pow(tn, c[7])));
+}
+
+/// Dorkel and Leturcq's mobility (1981) of \a c (µL in m²/(V s), γ, A, B
+/// in cm, V, s and K) at \a N dopants, carriers \a n and \a p (1/m³) and
+/// \a T (K): the lattice's µL (T/300 K)^-γ; the dopants' µI = A T^1.5/N
+/// (ln(1 + B T²/N) - B T²/(N + B T²))⁻¹; the carriers' µcc = 2e17 T^1.5/√(np)
+/// / ln(1 + 8.28e8 T² (np)^-⅓); together µL (1.025/(1 + (X/1.68)^1.43) -
+/// 0.025), X = √(6 µL (µI + µcc)/(µI µcc)) - in cm, as its paper's.
+double dorkelMobility(const double* c, double N, double n, double p, double T)
+{
+    const double lattice = c[0] * 1e4 * std::pow(T / 300, -c[1]);   // cm²/(V s)
+    const double Ncm = N * 1e-6, np = std::max(n, 0.0) * std::max(p, 0.0) * 1e-12;
+    // (Each scattering's inverse: none where there is nothing to scatter.)
+    double invI = 0, invCC = 0;
+    if (Ncm > 1) {
+        const double bt = c[3] * T * T / Ncm;
+        invI = (std::log1p(bt) - bt / (1 + bt)) * Ncm / (c[2] * std::pow(T, 1.5));
+    }
+    if (np > 1) invCC = std::log1p(8.28e8 * T * T / std::cbrt(np)) * std::sqrt(np) / (2e17 * std::pow(T, 1.5));
+    const double X = std::sqrt(6 * lattice * (invI + invCC));
+    return lattice * (1.025 / (1 + std::pow(X / 1.68, 1.43)) - 0.025) * 1e-4;
+}
+
+/// Klaassen's screening functions (1992): G(P) at \a T (K) of a carrier of
+/// mass \a m (m0), its minimum's P (below it G is the minimum's: as
+/// device simulators take it), and F(P) of the mass ratio \a ratio.
+double klaassenG(double P, double T, double m)
+{
+    return 1 - 0.89233 / std::pow(0.41372 + P * std::pow(T / (300 * m), 0.28227), 0.19778)
+           + 0.005978 / std::pow(P * std::pow(300 * m / T, 0.72169), 1.80618);
+}
+double klaassenPmin(double T, double m)
+{
+    // (G' changes sign once: bisected in ln P.)
+    double lo = std::log(1e-4), hi = std::log(1e2);
+    auto slope = [T, m](double u) {
+        const double P = std::exp(u), h = 1e-6 * P;
+        return klaassenG(P + h, T, m) - klaassenG(P - h, T, m);
+    };
+    for (int k = 0; k < 60; ++k) {
+        const double mid = 0.5 * (lo + hi);
+        (slope(mid) < 0 ? lo : hi) = mid;
+    }
+    return std::exp(0.5 * (lo + hi));
+}
+double klaassenF(double P, double ratio)
+{
+    // (r5 -0.8552, device simulators' - Klaassen's paper's -0.01552.)
+    const double q = std::pow(P, 0.6478);
+    return (0.7643 * q + 2.2999 + 6.5502 * ratio) / (q + 2.3670 - 0.8552 * ratio);
+}
+
+/// Klaassen's unified mobility (1992) of carrier \a c (0 electrons, 1
+/// holes) of \a m at donors \a Nd, acceptors \a Na, carriers \a n and \a p
+/// (1/m³) and \a T (K), \a pmin its G's minimum's P there: 1/µ = 1/µL +
+/// 1/µDA, the lattice's µmax Tn^-θ; the dopants' (clustered: Nd (1 + 1/(cD
+/// + (Nref,D/Nd)²))) and the other carriers' µN (Nsc/Nsc,eff) (Nref/Nsc)^α
+/// + µc (n + p)/Nsc,eff - Nsc those that scatter it, attracting and
+/// repelling, Nsc,eff the repelling screened by G(P) and the other
+/// carriers by F(P), P Conwell and Weisskopf's and Brooks and Herring's
+/// screening together. (As device simulators have it - Xyce's.)
+double klaassenMobility(const Medium& m, int c, double Nd, double Na, double n, double p, double T, double pmin)
+{
+    const double* k = m.kl[c];   // µmax, µmin, θ, Nref, α
+    const double tn = T / 300;
+    auto cluster = [](double N, double cl, double Nref) { return N > 0 ? N * (1 + 1 / (cl + (Nref / N) * (Nref / N))) : 0.0; };
+    const double nd = cluster(Nd, m.klCD, m.klNrefD), na = cluster(Na, m.klCA, m.klNrefA);
+    // (A carrier per cm³ at least.)
+    n = std::max(n, 1e6);
+    p = std::max(p, 1e6);
+    const double mass = c == 0 ? m.klMe : m.klMh, ratio = c == 0 ? m.klMe / m.klMh : m.klMh / m.klMe;
+    const double attract = c == 0 ? nd : na, repel = c == 0 ? na : nd, other = c == 0 ? p : n;
+    const double Nsc = std::max(attract + repel + other, 1e6);
+    const double cm3 = Nsc * 1e-6;
+    const double Pcw = 3.97e13 / std::cbrt(cm3 * cm3), Pbh = 1.36e20 / ((n + p) * 1e-6) * mass;
+    const double P = tn * tn / (2.459 / Pcw + 3.828 / Pbh);
+    const double G = klaassenG(std::max(P, pmin), T, mass), F = klaassenF(P, ratio);
+    const double Neff = attract + G * repel + other / F;
+    const double muL = k[0] * std::pow(tn, -k[2]);
+    const double muN = k[0] * k[0] / (k[0] - k[1]) * std::pow(tn, 3 * k[4] - 1.5);
+    const double muC = k[0] * k[1] / (k[0] - k[1]) / std::sqrt(tn);
+    const double muDA = muN * (Nsc / Neff) * std::pow(k[3] / Nsc, k[4]) + muC * (n + p) / Neff;
+    return 1 / (1 / muL + 1 / muDA);
+}
+
+/// Yamaguchi's low-field mobility (1979) of \a c (µL, S, Nref, as, uL, vs,
+/// G; SI) at \a N dopants (1/m³): µL (1 + N/(N/S + Nref))^-½.
+double yamaguchiLowField(const double* c, double N)
+{
+    return c[0] / std::sqrt(1 + N / (N / c[1] + c[2]));
 }
 
 /// Van Overstraeten and de Man's γ at \a T (K) for an optical phonon of
@@ -490,6 +625,15 @@ private:
     // currents' correlations (A²/Hz) at the last frequency, and through each
     // circuit's load.
     bool a_noise = false;
+    // A magnetic flux density out of the plane (T): each carrier's current
+    // turned, J = (J0 + c ẑ×J0)/(1 + c²), c = -rn µn Bz for electrons, rp µp
+    // Bz for holes; each triangle's low-field mobilities as the edges were
+    // weighed (its J0's), and the turned currents along the edges at x (A,
+    // i to j; electrons at 2e, holes at 2e + 1) with their change in \a d
+    // (rows those indices).
+    double a_Bz = 0;
+    std::vector<std::array<double, 2>> a_triMu;
+    void hallFluxes(const Eigen::VectorXd& x, std::vector<double>& flux, std::vector<Eigen::Triplet<double>>* d) const;
     std::vector<std::vector<std::complex<double>>> a_noiseC;
     std::vector<double> a_noiseL;
     /// At equilibrium: the gates' quasi-static capacitance - the carriers
@@ -762,8 +906,12 @@ private:
         int domain = -1;
         double volume = 0;           // its area times the thickness (m³)
         double N = 0;                // its donors and acceptors (1/m³)
-        // Surface scattering's: the nearest interface's normal, e^(-d/lcrit).
-        double nx = 0, ny = 0, damp = 0;
+        double Nd = 0, Na = 0;       // each (Klaassen's, an expression's)
+        double n0 = 0, p0 = 0;       // its carriers at rest (its corners' neutral ones' mean)
+        double pmin[2] = {0, 0};     // Klaassen's G's minimum's P, by carrier, at its temperature
+        // Surface scattering's: the nearest interface's normal, e^(-d/lcrit),
+        // its distance d (m; infinite where none is near).
+        double nx = 0, ny = 0, damp = 0, dist = Inf;
         // The lattice's temperature's: (TL/T)^-ζ of each carrier's, its
         // saturation velocities' and impact ionization's (γ(TL)/γ(T)) factors.
         double tn = 1, tp = 1, vn = 1, vp = 1, ii = 1;
@@ -974,11 +1122,25 @@ private:
     /// history's) into its current, and its dopants' ions'.
     void displacementCurrents(const Eigen::VectorXd& x, double mass, const std::vector<double>& history);
     bool a_saturation = false, a_lombardi = false;
+    bool a_varying = false;   // some domain's mobility changes with the state (Medium::varies)
+    // A mobility's expression's variables' slots (N, Nd, Na, T, n, p, Epar,
+    // Eperp, dsurf) and how many there are.
+    int a_slotN = -1, a_slotNd = -1, a_slotNa = -1, a_slotT = -1, a_slotn = -1, a_slotp = -1, a_slotEpar = -1, a_slotEperp = -1,
+        a_slotD = -1, a_exprSlots = 0;
+    /// A low-field model's mobilities of an element at \a T, its carriers \a
+    /// n and \a p (1/m³), the force along each carrier's current \a Fn,
+    /// \a Fp and the field across the nearest interface \a perp (V/m).
+    void lowFieldMobilities(const Medium& m, const ElementMobility& em, double T, double n, double p, double Fn, double Fp, double perp,
+                            double* mun, double* mup) const;
     // Heterojunctions: 0 drift and diffusion (the step at the node, the
     // quasi-Fermi levels continuous), 1 thermionic emission over it in
     // series with each edge into it, 2 and tunnelling through its spike.
     int a_emission = 0;
-    bool a_alongCurrent = false;       // a saturation driven by the field along the current
+    // A mobility held once settled in Newton's method, made its solution's
+    // own at the end: a saturation driven by the field along the current, a
+    // low-field mobility of the carriers or the fields (Dorkel and
+    // Leturcq's, Klaassen's, Yamaguchi's, an expression of them).
+    bool a_alongCurrent = false;
     double a_refDEc = 0, a_refChi = 0; // the first semiconductor's: Ec - Ei, χ (J)
     // Impact ionization: whether its pairs are in the equations; the
     // ionization integrals, the most of the field lines' through where it
@@ -1061,6 +1223,16 @@ bool SemiconductorProblem::setup(QString* error)
         a_TL = tl.isEmpty() ? Expression() : compile(tl, *a_node, QStringLiteral("TL"));
     }
     a_noise = a_node->flag(QStringLiteral("noise"));
+    {
+        a_Bz = 0;
+        const QString bz = a_node->text(QStringLiteral("Bz")).trimmed();
+        if (!bz.isEmpty()) {
+            const std::optional<double> b = evaluateConstant(bz, constants, Dim::of(0, 1, -2, -1), &why);
+            if (!b) problem(tr("%1: its magnetic flux density Bz: %2").arg(a_node->name(), why));
+            else a_Bz = *b;
+        }
+        if (a_Bz != 0 && a_noise) problem(tr("%1: a magnetic field and noise are not solved together").arg(a_node->name()));
+    }
     // Its materials' and features' texts read T, its temperature (the
     // library's gaps, densities of states, mobilities... are of it).
     const MaterialScope atT(constants, a_T);
@@ -1234,6 +1406,20 @@ bool SemiconductorProblem::setup(QString* error)
         }
         return f->text(key);
     };
+    // A mobility's expression's variables (its parameters' and constants'
+    // names below them).
+    Scope exprScope(&constants);
+    a_slotN = exprScope.addVariable(QStringLiteral("N"), conc);
+    a_slotNd = exprScope.addVariable(QStringLiteral("Nd"), conc);
+    a_slotNa = exprScope.addVariable(QStringLiteral("Na"), conc);
+    a_slotT = exprScope.addVariable(QStringLiteral("T"), Dim::temperature());
+    a_slotn = exprScope.addVariable(QStringLiteral("n"), conc);
+    a_slotp = exprScope.addVariable(QStringLiteral("p"), conc);
+    a_slotEpar = exprScope.addVariable(QStringLiteral("Epar"), Dim::of(1, 1, -3, -1));
+    a_slotEperp = exprScope.addVariable(QStringLiteral("Eperp"), Dim::of(1, 1, -3, -1));
+    a_slotD = exprScope.addVariable(QStringLiteral("dsurf"), Dim::length());
+    a_exprSlots = exprScope.slotCount();
+    a_varying = false;
     for (int d : domains) {
         Medium& m = a_media[std::size_t(d)];
         const Node* mf = modelOf[std::size_t(d)];
@@ -1319,6 +1505,85 @@ bool SemiconductorProblem::setup(QString* error)
             m.nRefP = value(mf, QStringLiteral("nrefp"), conc, ct);
             m.alphaP = value(mf, QStringLiteral("alphap"), Dim(), ct);
         }
+        const QString lowField = mf ? mf->text(QStringLiteral("mobility")) : QString();
+        if (lowField == QLatin1String("arora")) {
+            m.lowField = Medium::LowField::Arora;
+            const QString arora = tr("Arora's mobility");
+            const char* keys[2][8] = {{"arminn", "aran", "ardn", "arbn", "arnrefn", "arcn", "aralphan", "ardexpn"},
+                                      {"arminp", "arap", "ardp", "arbp", "arnrefp", "arcp", "aralphap", "ardexpp"}};
+            for (int c = 0; c < 2; ++c)
+                for (int k = 0; k < 8; ++k)
+                    m.ar[c][k] = value(mf, QString::fromLatin1(keys[c][k]), k == 0 || k == 2 ? mobility : k == 4 ? conc : Dim(), arora);
+            for (int c = 0; c < 2; ++c) {
+                bool finite = true;
+                for (double v : m.ar[c]) finite = finite && std::isfinite(v);
+                if (!finite || !(m.ar[c][0] >= 0) || !(m.ar[c][2] > 0) || !(m.ar[c][4] > 0) || !(m.ar[c][6] > 0))
+                    problem(tr("%1: Arora's µmin at least 0, µd, Nref and α more than 0").arg(where));
+            }
+        } else if (lowField == QLatin1String("dorkel")) {
+            m.lowField = Medium::LowField::Dorkel;
+            const QString dorkel = tr("Dorkel and Leturcq's mobility");
+            const char* keys[2][4] = {{"dlmun", "dlgamman", "dlan", "dlbn"}, {"dlmup", "dlgammap", "dlap", "dlbp"}};
+            for (int c = 0; c < 2; ++c)
+                for (int k = 0; k < 4; ++k) m.dl[c][k] = value(mf, QString::fromLatin1(keys[c][k]), k == 0 ? mobility : Dim(), dorkel);
+            for (int c = 0; c < 2; ++c)
+                if (!(m.dl[c][0] > 0) || !std::isfinite(m.dl[c][1]) || !(m.dl[c][2] > 0) || !(m.dl[c][3] > 0))
+                    problem(tr("%1: Dorkel and Leturcq's µL, A and B must be more than 0").arg(where));
+        } else if (lowField == QLatin1String("klaassen")) {
+            m.lowField = Medium::LowField::Klaassen;
+            const QString klaassen = tr("Klaassen's mobility");
+            const char* keys[2][5] = {{"klmaxn", "klminn", "klthetan", "klnrefn", "klalphan"}, {"klmaxp", "klminp", "klthetap", "klnrefp", "klalphap"}};
+            for (int c = 0; c < 2; ++c)
+                for (int k = 0; k < 5; ++k)
+                    m.kl[c][k] = value(mf, QString::fromLatin1(keys[c][k]), k < 2 ? mobility : k == 3 ? conc : Dim(), klaassen);
+            m.klNrefD = value(mf, QStringLiteral("klnrefd"), conc, klaassen);
+            m.klNrefA = value(mf, QStringLiteral("klnrefa"), conc, klaassen);
+            m.klCD = value(mf, QStringLiteral("klcd"), Dim(), klaassen);
+            m.klCA = value(mf, QStringLiteral("klca"), Dim(), klaassen);
+            m.klMe = value(mf, QStringLiteral("klme"), Dim(), klaassen);
+            m.klMh = value(mf, QStringLiteral("klmh"), Dim(), klaassen);
+            for (int c = 0; c < 2; ++c)
+                if (!(m.kl[c][0] > m.kl[c][1]) || !(m.kl[c][1] > 0) || !std::isfinite(m.kl[c][2]) || !(m.kl[c][3] > 0) || !(m.kl[c][4] > 0))
+                    problem(tr("%1: Klaassen's µmax more than µmin, µmin, Nref and α more than 0").arg(where));
+            if (!(m.klNrefD > 0) || !(m.klNrefA > 0) || !(m.klCD >= 0) || !(m.klCA >= 0) || !(m.klMe > 0) || !(m.klMh > 0))
+                problem(tr("%1: Klaassen's clustering's Nref more than 0, its c at least 0, its masses more than 0").arg(where));
+        } else if (lowField == QLatin1String("yamaguchi")) {
+            m.lowField = Medium::LowField::Yamaguchi;
+            const QString yamaguchi = tr("Yamaguchi's mobility");
+            const Dim perField = Dim::of(-1, -1, 3, 1);   // m/V
+            const char* keys[2][7] = {{"ymuln", "ysn", "ynrefn", "yasn", "yuln", "yvsn", "ygn"}, {"ymulp", "ysp", "ynrefp", "yasp", "yulp", "yvsp", "ygp"}};
+            const Dim dims[7] = {mobility, Dim(), conc, perField, velocity, velocity, Dim()};
+            for (int c = 0; c < 2; ++c)
+                for (int k = 0; k < 7; ++k) m.ya[c][k] = value(mf, QString::fromLatin1(keys[c][k]), dims[k], yamaguchi);
+            m.lcrit = value(mf, QStringLiteral("ylcrit"), Dim::length(), yamaguchi);
+            for (int c = 0; c < 2; ++c) {
+                bool positive = true;
+                for (int k = 0; k < 7; ++k) positive = positive && (k == 3 ? m.ya[c][k] >= 0 : m.ya[c][k] > 0);
+                if (!positive) problem(tr("%1: Yamaguchi's µL, S, Nref, uL, vs and G must be more than 0, as at least 0").arg(where));
+            }
+            if (!(m.lcrit > 0)) problem(tr("%1: Yamaguchi's lcrit must be more than 0").arg(where));
+            a_lombardi = true;   // (the field across the nearest interface: its side's normal and distance)
+        } else if (lowField == QLatin1String("expression")) {
+            m.lowField = Medium::LowField::Expression;
+            for (int c = 0; c < 2; ++c) {
+                const QString key = c == 0 ? QStringLiteral("muexpn") : QStringLiteral("muexpp");
+                const QString text = mf->text(key);
+                m.muExpr[c] = Expression::compile(text.trimmed().isEmpty() ? QStringLiteral("0") : text, exprScope);
+                if (!m.muExpr[c].isValid()) {
+                    problem(tr("%1: its %2 mobility's expression: %3").arg(where, c == 0 ? tr("electrons'") : tr("holes'"), m.muExpr[c].error()));
+                    continue;
+                }
+                if (!m.muExpr[c].dim().isNone() && !(m.muExpr[c].dim() == mobility))
+                    problem(tr("%1: its %2 mobility's expression is in %3, not m²/(V s)")
+                                .arg(where, c == 0 ? tr("electrons'") : tr("holes'"), dimName(m.muExpr[c].dim())));
+                for (int slot : {a_slotn, a_slotp, a_slotEpar, a_slotEperp, a_slotD})
+                    m.exprState = m.exprState || m.muExpr[c].uses(slot);
+            }
+            if (m.exprState) {
+                m.lcrit = 1e-8;
+                a_lombardi = true;
+            }
+        }
         if (mf) {
             // (Said only where a lattice temperature TL scales them.)
             const QString zetas = a_TL.isValid() ? tr("the mobilities' temperature exponents") : QString();
@@ -1336,7 +1601,9 @@ bool SemiconductorProblem::setup(QString* error)
             // (Quay's A: the velocities given at 300 K, at T and TL of it.)
             m.vsatAn = value(mf, QStringLiteral("Avn"), Dim(), sat);
             m.vsatAp = value(mf, QStringLiteral("Avp"), Dim(), sat);
-            if (!(m.vsatAn >= 0 && m.vsatAn < 1) || !(m.vsatAp >= 0 && m.vsatAp < 1))
+            m.vsatExp = mf->text(QStringLiteral("vsatmodel")) == QLatin1String("exponential");
+            if (m.vsatExp) m.vsatn = m.vsatp = expVsat(a_T);
+            else if (!(m.vsatAn >= 0 && m.vsatAn < 1) || !(m.vsatAp >= 0 && m.vsatAp < 1))
                 problem(tr("%1: its saturation velocities' temperature coefficients A from 0 to less than 1").arg(where));
             else {
                 m.vsatn *= quayVsat(m.vsatAn, a_T);
@@ -1359,7 +1626,20 @@ bool SemiconductorProblem::setup(QString* error)
                 if (!(m.E0n > 0)) problem(tr("%1: its transferred electrons' field E0 must be more than 0").arg(where));
             }
         }
-        if (mf && mf->flag(QStringLiteral("surface"))) {
+        if (mf && mf->flag(QStringLiteral("surface")) && mf->text(QStringLiteral("surfmodel")) == QLatin1String("shirahata")) {
+            m.surface = m.shirahata = a_lombardi = true;
+            const QString shirahata = tr("Shirahata's surface scattering");
+            const Dim field = Dim::of(1, 1, -3, -1);
+            const char* keys[2][6] = {{"shmu0n", "shthetan", "she1n", "she2n", "shp1n", "shp2n"}, {"shmu0p", "shthetap", "she1p", "she2p", "shp1p", "shp2p"}};
+            for (int c = 0; c < 2; ++c)
+                for (int k = 0; k < 6; ++k)
+                    m.sh[c][k] = value(mf, QString::fromLatin1(keys[c][k]), k == 0 ? mobility : k == 2 || k == 3 ? field : Dim(), shirahata);
+            m.lcrit = value(mf, QStringLiteral("lcrit"), Dim::length(), shirahata);
+            for (int c = 0; c < 2; ++c)
+                if (!(m.sh[c][0] > 0) || !std::isfinite(m.sh[c][1]) || !(m.sh[c][2] > 0) || !(m.sh[c][3] > 0) || !(m.sh[c][4] > 0) || !(m.sh[c][5] > 0))
+                    problem(tr("%1: Shirahata's µ0, E1, E2, P1 and P2 must be more than 0").arg(where));
+            if (!(m.lcrit > 0)) problem(tr("%1: its surface scattering's lcrit must be more than 0").arg(where));
+        } else if (mf && mf->flag(QStringLiteral("surface"))) {
             m.surface = a_lombardi = true;
             const Dim perSecond = Dim::voltage() / Dim::of(0, 0, 1);
             const QString lombardi = tr("Lombardi's surface scattering");
@@ -1385,6 +1665,12 @@ bool SemiconductorProblem::setup(QString* error)
             if (!(m.bgnN > 0) || !(m.bgnC >= 0)) problem(tr("%1: its band gap narrowing's Nref must be more than 0, C no less").arg(where));
         }
         if (mf && mf->flag(QStringLiteral("fermi"))) m.fermi = a_fermi = true;
+        if (a_Bz != 0) {
+            const QString hall = tr("Hall factors");
+            m.rHn = mf ? value(mf, QStringLiteral("rhalln"), Dim(), hall) : 1.0;
+            m.rHp = mf ? value(mf, QStringLiteral("rhallp"), Dim(), hall) : 1.0;
+            if (!(m.rHn >= 0) || !(m.rHp >= 0)) problem(tr("%1: its Hall factors must be at least 0").arg(where));
+        }
         if (mf && mf->flag(QStringLiteral("incomplete"))) {
             m.incomplete = a_incomplete = true;
             const QString levels = tr("its dopants' levels");
@@ -1986,6 +2272,15 @@ bool SemiconductorProblem::setup(QString* error)
         *error = tr("cancelled");
         return false;
     }
+    if (a_Bz != 0 && a_slices > 1) problem(tr("%1: a magnetic field and a device in slices are not solved together").arg(a_node->name()));
+    // Whose mobilities change with the state; held in Newton's method.
+    for (int d : domains) {
+        const Medium& m = a_media[std::size_t(d)];
+        a_varying = a_varying || m.varies();
+        if (m.lowField == Medium::LowField::Dorkel || m.lowField == Medium::LowField::Klaassen || m.lowField == Medium::LowField::Yamaguchi
+            || (m.lowField == Medium::LowField::Expression && m.exprState))
+            a_alongCurrent = true;
+    }
     // Mobilities by element (doping: the element's nodes' mean), then by edge.
     std::vector<double> mun(std::size_t(nt), 0), mup(std::size_t(nt), 0);
     for (int t = 0; t < nt; ++t) {
@@ -2010,6 +2305,16 @@ bool SemiconductorProblem::setup(QString* error)
             mun[std::size_t(t)] = std::max(masetti(m.ms[0], m.mun), 1e-8);
             mup[std::size_t(t)] = std::max(masetti(m.ms[1], m.mup), 1e-8);
         }
+        // (Arora's at the physics' T - a lattice temperature's own below -;
+        // Yamaguchi's low-field one, its fields' in elementMobilities.)
+        if (m.lowField == Medium::LowField::Arora) {
+            mun[std::size_t(t)] = std::max(aroraMobility(m.ar[0], N, a_T), 1e-8);
+            mup[std::size_t(t)] = std::max(aroraMobility(m.ar[1], N, a_T), 1e-8);
+        }
+        if (m.lowField == Medium::LowField::Yamaguchi) {
+            mun[std::size_t(t)] = yamaguchiLowField(m.ya[0], N);
+            mup[std::size_t(t)] = yamaguchiLowField(m.ya[1], N);
+        }
     }
     a_elements.assign(std::size_t(nt), ElementMobility());
     for (int t = 0; t < nt; ++t) {
@@ -2020,6 +2325,21 @@ bool SemiconductorProblem::setup(QString* error)
         em.domain = mesh.domain[std::size_t(t)];
         const int* dof = sp.dofs(t);
         for (int k = 0; k < 3; ++k) em.N += (a_Nd[std::size_t(dof[k])] + a_Na[std::size_t(dof[k])]) / 3;
+        for (int k = 0; k < 3; ++k) {
+            double n0 = 0, p0 = 0;
+            neutral(dof[k], &n0, &p0);
+            em.Nd += a_Nd[std::size_t(dof[k])] / 3;
+            em.Na += a_Na[std::size_t(dof[k])] / 3;
+            em.n0 += n0 / 3;
+            em.p0 += p0 / 3;
+        }
+        {
+            const Medium& m = a_media[std::size_t(em.domain)];
+            if (m.lowField == Medium::LowField::Klaassen) {
+                em.pmin[0] = klaassenPmin(a_T, m.klMe);
+                em.pmin[1] = klaassenPmin(a_T, m.klMh);
+            }
+        }
         for (int k = 0; k < 3; ++k) em.step = em.step || bandsOf[std::size_t(a_nodeDomain[std::size_t(dof[k])])] != bandsOf[std::size_t(em.domain)];
         QPointF x[3];
         for (int k = 0; k < 3; ++k) x[k] = mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * scale;
@@ -2111,7 +2431,7 @@ bool SemiconductorProblem::setup(QString* error)
         }
         for (int t = 0; t < nt && !sides.empty(); ++t) {
             ElementMobility& em = a_elements[std::size_t(t)];
-            if (em.domain < 0 || !a_media[std::size_t(em.domain)].surface) continue;
+            if (em.domain < 0 || !a_media[std::size_t(em.domain)].perpendicular()) continue;
             QPointF c;
             for (int k = 0; k < 3; ++k) c += mesh.nodes[std::size_t(mesh.triangles[std::size_t(t)][std::size_t(k)])] * scale / 3.0;
             double best = Inf;
@@ -2128,6 +2448,7 @@ bool SemiconductorProblem::setup(QString* error)
             em.nx = nearest->nx;
             em.ny = nearest->ny;
             em.damp = std::exp(-best / a_media[std::size_t(em.domain)].lcrit);
+            em.dist = best;
         }
     }
     // Heterojunctions' emission: each edge from a node of the other bands
@@ -2977,6 +3298,7 @@ void SemiconductorProblem::contactValues(const std::vector<double>& applied)
 void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
 {
     for (Edge& e : a_edges) e.wn = e.wp = e.muN = e.muP = 0;
+    if (a_Bz != 0) a_triMu.assign(a_elements.size(), {0.0, 0.0});
     std::vector<double> geometric(a_edges.size(), 0.0), magnitude(a_edges.size(), 0.0);
     // (Tunnelling: each emitting edge's field, its triangles' mean |E|.)
     std::vector<double> field(a_emission == 2 && x ? a_edges.size() : 0, 0.0), fields(field.size(), 0.0);
@@ -2985,6 +3307,15 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
         if (em.domain < 0) continue;
         double mun = 0, mup = 0;
         elementMobilities(t, x, &mun, &mup);
+        // (A magnetic field: the current along the field's own, J0/(1 + c²);
+        // its turned part ẑ×J0 c/(1 + c²) in hallFluxes.)
+        if (a_Bz != 0) {
+            a_triMu[std::size_t(t)] = {mun, mup};
+            const Medium& m = a_media[std::size_t(em.domain)];
+            const double cn = m.rHn * mun * a_Bz, cp = m.rHp * mup * a_Bz;
+            mun /= 1 + cn * cn;
+            mup /= 1 + cp * cp;
+        }
         double E = 0;
         if (!field.empty()) {
             const int* dof = a_s.fields()[std::size_t(a_fi)].space->dofs(t);
@@ -3064,13 +3395,163 @@ void SemiconductorProblem::edgeWeights(const Eigen::VectorXd* x)
     }
 }
 
+void SemiconductorProblem::lowFieldMobilities(const Medium& m, const ElementMobility& em, double T, double n, double p, double Fn, double Fp,
+                                              double perp, double* mun, double* mup) const
+{
+    switch (m.lowField) {
+    case Medium::LowField::Dorkel:
+        *mun = dorkelMobility(m.dl[0], em.N, n, p, T);
+        *mup = dorkelMobility(m.dl[1], em.N, n, p, T);
+        break;
+    case Medium::LowField::Klaassen:
+        *mun = klaassenMobility(m, 0, em.Nd, em.Na, n, p, T, em.pmin[0]);
+        *mup = klaassenMobility(m, 1, em.Nd, em.Na, n, p, T, em.pmin[1]);
+        break;
+    case Medium::LowField::Yamaguchi: {
+        // Its low-field mobility (em's), the field across the interface's
+        // (faded from it), the force along the current's: µs = µ0 (1 + as D
+        // E⊥)^-½, µ = µs (1 + x²/(x + G) + (µs E∥/vs)²)^-½, x = µs E∥/uL.
+        auto yamaguchi = [&em, perp](double mu0, const double* c, double F) {
+            const double ms = mu0 / std::sqrt(1 + c[3] * em.damp * perp);
+            const double u = ms * F / c[4], v = ms * F / c[5];
+            return ms / std::sqrt(1 + (u > 0 ? u * u / (u + c[6]) : 0.0) + v * v);
+        };
+        *mun = yamaguchi(em.mun, m.ya[0], Fn);
+        *mup = yamaguchi(em.mup, m.ya[1], Fp);
+        break;
+    }
+    case Medium::LowField::Expression: {
+        std::vector<double> v(std::size_t(std::max(a_exprSlots, 1)), 0.0);
+        auto set = [&v](int slot, double value) {
+            if (slot >= 0 && slot < int(v.size())) v[std::size_t(slot)] = value;
+        };
+        set(a_slotN, em.N);
+        set(a_slotNd, em.Nd);
+        set(a_slotNa, em.Na);
+        set(a_slotT, T);
+        set(a_slotn, n);
+        set(a_slotp, p);
+        set(a_slotEperp, perp);
+        set(a_slotD, em.dist < Inf ? em.dist : 1.0);
+        set(a_slotEpar, Fn);
+        const double en = m.muExpr[0].isValid() ? m.muExpr[0].eval(v.data()) : 0.0;
+        set(a_slotEpar, Fp);
+        const double ep = m.muExpr[1].isValid() ? m.muExpr[1].eval(v.data()) : 0.0;
+        // (Positive: a mobility of nought or less, or not a number, a
+        // millionth of a cm²/(V s).)
+        *mun = std::isfinite(en) && en > 1e-10 ? en : 1e-10;
+        *mup = std::isfinite(ep) && ep > 1e-10 ? ep : 1e-10;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void SemiconductorProblem::hallFluxes(const Eigen::VectorXd& x, std::vector<double>& flux, std::vector<Eigen::Triplet<double>>* d) const
+{
+    flux.assign(2 * a_edges.size(), 0.0);
+    if (d) d->clear();
+    if (a_Bz == 0 || a_triMu.size() != a_elements.size()) return;
+    auto nn = [&](int i) { return a_iN[std::size_t(i)] >= 0 ? x(a_iN[std::size_t(i)]) : 0.0; };
+    auto pp = [&](int i) { return a_iP[std::size_t(i)] >= 0 ? x(a_iP[std::size_t(i)]) : 0.0; };
+    for (int t = 0; t < int(a_elements.size()); ++t) {
+        const ElementMobility& em = a_elements[std::size_t(t)];
+        if (em.domain < 0 || em.step) continue;
+        const Medium& m = a_media[std::size_t(em.domain)];
+        // Its current density without the field, fitted to its three
+        // edges' (each Scharfetter and Gummel's at its own mobility): J0 =
+        // (Σ t tᵀ)⁻¹ Σ t j - exact where it is uniform; turned, ẑ×J0 =
+        // (J0y, -J0x), through its share of each edge's face (its
+        // cotangent's, signed: a uniform one's divergence nought).
+        double M[3] = {0, 0, 0};
+        for (int k = 0; k < 3; ++k) {
+            const Edge& e = a_edges[std::size_t(em.edge[k])];
+            M[0] += e.tx * e.tx;
+            M[1] += e.tx * e.ty;
+            M[2] += e.ty * e.ty;
+        }
+        const double det = M[0] * M[2] - M[1] * M[1];
+        if (!(std::abs(det) > 1e-12)) continue;
+        double wx[3], wy[3];
+        for (int k = 0; k < 3; ++k) {
+            const Edge& e = a_edges[std::size_t(em.edge[k])];
+            wx[k] = (M[2] * e.tx - M[1] * e.ty) / det;
+            wy[k] = (-M[1] * e.tx + M[0] * e.ty) / det;
+        }
+        for (int c = 0; c < 2; ++c) {
+            const double mu = a_triMu[std::size_t(t)][std::size_t(c)], r = c == 0 ? m.rHn : m.rHp;
+            const double cc = (c == 0 ? -1.0 : 1.0) * r * mu * a_Bz, share = cc / (1 + cc * cc);
+            if (share == 0) continue;
+            double j[3] = {0, 0, 0}, dj[3][4] = {};
+            int col[3][4];
+            for (int k = 0; k < 3; ++k) {
+                const Edge& e = a_edges[std::size_t(em.edge[k])];
+                const int i = e.i, o = e.j;
+                double dN = 0, dP = 0;
+                edgeSteps(e, x, &dN, &dP);
+                const double g = mu * Q * a_Vt / e.h;
+                col[k][2] = a_iV[std::size_t(i)];
+                col[k][3] = a_iV[std::size_t(o)];
+                if (c == 0) {
+                    const double bp = bern(dN), bm = bern(-dN);
+                    j[k] = g * (e.fNj * nn(o) * bp - e.fNi * nn(i) * bm);
+                    const double dv = g * (e.fNj * nn(o) * dbern(dN) + e.fNi * nn(i) * dbern(-dN)) / a_Vt;
+                    col[k][0] = a_iN[std::size_t(i)];
+                    col[k][1] = a_iN[std::size_t(o)];
+                    dj[k][0] = -g * e.fNi * bm - dv * a_Vt * a_dlgN[std::size_t(i)];
+                    dj[k][1] = g * e.fNj * bp + dv * a_Vt * a_dlgN[std::size_t(o)];
+                    dj[k][2] = -dv;
+                    dj[k][3] = dv;
+                } else {
+                    const double bp = bern(dP), bm = bern(-dP);
+                    j[k] = g * (e.fPi * pp(i) * bp - e.fPj * pp(o) * bm);
+                    const double dv = g * (e.fPi * pp(i) * dbern(dP) + e.fPj * pp(o) * dbern(-dP)) / a_Vt;
+                    col[k][0] = a_iP[std::size_t(i)];
+                    col[k][1] = a_iP[std::size_t(o)];
+                    dj[k][0] = g * e.fPi * bp + dv * a_Vt * a_dlgP[std::size_t(i)];
+                    dj[k][1] = -g * e.fPj * bm - dv * a_Vt * a_dlgP[std::size_t(o)];
+                    dj[k][2] = -dv;
+                    dj[k][3] = dv;
+                }
+            }
+            double Jx = 0, Jy = 0;
+            for (int k = 0; k < 3; ++k) {
+                Jx += wx[k] * j[k];
+                Jy += wy[k] * j[k];
+            }
+            for (int k = 0; k < 3; ++k) {
+                const Edge& e = a_edges[std::size_t(em.edge[k])];
+                const double face = em.cot[k] * e.h;
+                const std::size_t row = 2 * std::size_t(em.edge[k]) + std::size_t(c);
+                flux[row] += share * (Jy * e.tx - Jx * e.ty) * face;
+                if (!d) continue;
+                for (int q = 0; q < 3; ++q) {
+                    const double dH = share * (wy[q] * e.tx - wx[q] * e.ty) * face;
+                    for (int u = 0; u < 4; ++u)
+                        if (col[q][u] >= 0 && dj[q][u] != 0) d->emplace_back(int(row), col[q][u], dH * dj[q][u]);
+                }
+            }
+        }
+    }
+}
+
 void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, double* mun, double* mup) const
 {
     const ElementMobility& em = a_elements[std::size_t(t)];
     *mun = em.mun * em.tn;
     *mup = em.mup * em.tp;
     const Medium& m = a_media[std::size_t(em.domain)];
-    if (!x || (!m.saturation && !(m.surface && em.damp > 0))) return;
+    // (Its lattice's temperature: TL's where one is given.)
+    const double TL = em.TL > 0 ? em.TL : a_T;
+    const bool state = m.lowField == Medium::LowField::Dorkel || m.lowField == Medium::LowField::Klaassen
+                       || m.lowField == Medium::LowField::Yamaguchi || m.lowField == Medium::LowField::Expression;
+    if (!x) {
+        // (Without a state: at rest - its carriers its dopants', no field.)
+        if (state) lowFieldMobilities(m, em, TL, em.n0, em.p0, 0, 0, 0, mun, mup);
+        return;
+    }
+    if (!m.saturation && !(m.surface && em.damp > 0) && !state) return;
     // (Lagged a Newton step: the field and the carriers at x.)
     const int* dof = a_s.fields()[std::size_t(a_fi)].space->dofs(t);
     double V[3], ex = 0, ey = 0;
@@ -3079,13 +3560,60 @@ void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, do
         ex -= em.gx[k] * V[k];
         ey -= em.gy[k] * V[k];
     }
-    if (m.surface && em.damp > 0) {
+    // Each carrier's force along its current: its quasi-Fermi potential's
+    // gradient, no more than the field (saturation's, below).
+    auto alongCurrent = [this, x, dof, &V, &em](double whole, double* Fn, double* Fp) {
+        double gn[2] = {0, 0}, gp[2] = {0, 0};
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t i = std::size_t(dof[k]);
+            const double n = std::max((*x)(a_iN[i]), 1e-300), p = std::max((*x)(a_iP[i]), 1e-300);
+            const double phin = V[k] + a_thetaN[i] + a_Vt * a_lgN[i] - a_Vt * std::log(n / a_refNi);
+            const double phip = V[k] + a_thetaP[i] - a_Vt * a_lgP[i] + a_Vt * std::log(p / a_refNi);
+            gn[0] += em.gx[k] * phin;
+            gn[1] += em.gy[k] * phin;
+            gp[0] += em.gx[k] * phip;
+            gp[1] += em.gy[k] * phip;
+        }
+        *Fn = std::min(whole, std::hypot(gn[0], gn[1]));
+        *Fp = std::min(whole, std::hypot(gp[0], gp[1]));
+    };
+    if (state) {
+        // Of its carriers (its corners' mean), the forces along their
+        // currents and the field across the nearest interface: Dorkel and
+        // Leturcq's, Klaassen's, Yamaguchi's (on its own: neither a
+        // surface's scattering nor saturation's after it), an expression's.
+        double n = 0, p = 0;
+        for (int k = 0; k < 3; ++k) {
+            n += std::max((*x)(a_iN[std::size_t(dof[k])]), 0.0) / 3;
+            p += std::max((*x)(a_iP[std::size_t(dof[k])]), 0.0) / 3;
+        }
+        double Fn = 0, Fp = 0;
+        if (m.lowField == Medium::LowField::Yamaguchi || m.lowField == Medium::LowField::Expression) alongCurrent(std::hypot(ex, ey), &Fn, &Fp);
+        const double perp = em.dist < Inf ? std::abs(ex * em.nx + ey * em.ny) : 0.0;
+        lowFieldMobilities(m, em, TL, n, p, Fn, Fp, perp, mun, mup);
+        if (m.lowField == Medium::LowField::Yamaguchi) return;
+    }
+    if (m.surface && em.damp > 0 && m.shirahata) {
+        // 1/µ = 1/µbulk + D (1/µE - 1/µE(0)), µE = µ0 (TL/300 K)^-θ / ((1 +
+        // E⊥/E1)^P1 + (E⊥/E2)^P2): the field across the interface's
+        // scattering more than none's - at none the bulk's. (The other
+        // reading, (E⊥/E1)^P1 for (1 + E⊥/E1)^P1, cuts it by a quarter at
+        // 63 V/m, its slope infinite at none.)
+        const double across = std::abs(ex * em.nx + ey * em.ny), tn = TL / 300;
+        auto shirahata = [&em, across, tn](double mu, const double* c) {
+            const double base = c[0] * std::pow(tn, -c[1]);
+            const double field = base / (std::pow(1 + across / c[2], c[4]) + std::pow(across / c[3], c[5]));
+            return 1 / (1 / mu + em.damp * (1 / field - 1 / base));
+        };
+        *mun = shirahata(*mun, m.sh[0]);
+        *mup = shirahata(*mup, m.sh[1]);
+    } else if (m.surface && em.damp > 0) {
         // 1/µ = 1/µbulk + D/µac + D/µsr (Matthiessen's rule), D = e^(-d/lcrit);
-        // E⊥ no less than 1 V/cm.
+        // E⊥ no less than 1 V/cm; T the lattice's.
         const double across = std::max(std::abs(ex * em.nx + ey * em.ny), 100.0);
         const double perCm3 = std::max(em.N * 1e-6, 1.0), vPerCm = across / 100;
         auto scatter = [&](double mu, double B, double C, double lambda, double delta) {
-            const double ac = B / across + 1e-4 * C * std::pow(perCm3, lambda) / (a_T * std::cbrt(vPerCm));
+            const double ac = B / across + 1e-4 * C * std::pow(perCm3, lambda) / (TL * std::cbrt(vPerCm));
             const double sr = delta / (across * across);
             return 1 / (1 / mu + em.damp / ac + em.damp / sr);
         };
@@ -3108,21 +3636,7 @@ void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, do
         // all - for current: the channel's mobility halved.)
         const double whole = std::hypot(ex, ey);
         double Fn = whole, Fp = whole;
-        if (!m.wholeField) {
-            double gn[2] = {0, 0}, gp[2] = {0, 0};
-            for (int k = 0; k < 3; ++k) {
-                const std::size_t i = std::size_t(dof[k]);
-                const double n = std::max((*x)(a_iN[i]), 1e-300), p = std::max((*x)(a_iP[i]), 1e-300);
-                const double phin = V[k] + a_thetaN[i] + a_Vt * a_lgN[i] - a_Vt * std::log(n / a_refNi);
-                const double phip = V[k] + a_thetaP[i] - a_Vt * a_lgP[i] + a_Vt * std::log(p / a_refNi);
-                gn[0] += em.gx[k] * phin;
-                gn[1] += em.gy[k] * phin;
-                gp[0] += em.gx[k] * phip;
-                gp[1] += em.gy[k] * phip;
-            }
-            Fn = std::min(whole, std::hypot(gn[0], gn[1]));
-            Fp = std::min(whole, std::hypot(gp[0], gp[1]));
-        }
+        if (!m.wholeField) alongCurrent(whole, &Fn, &Fp);
         // (Caughey and Thomas's, or the transferred electrons' - (µ0 +
         // (vsat/F)(F/E0)⁴)/(1 + (F/E0)⁴), GaAs's E0 4 kV/cm: past its peak
         // the velocity falls, the electrons in the heavier valleys.)
@@ -3167,14 +3681,18 @@ void SemiconductorProblem::elementMobilities(int t, const Eigen::VectorXd* x, do
 std::vector<SemiconductorProblem::MobilityChange> SemiconductorProblem::mobilityChanges(const Eigen::VectorXd& x) const
 {
     std::vector<MobilityChange> out;
-    if (!a_saturation && !a_lombardi) return out;
+    if (!a_varying) return out;
     const Space& sp = *a_s.fields()[std::size_t(a_fi)].space;
     Eigen::VectorXd y = x;
     for (int t = 0; t < int(a_elements.size()); ++t) {
         const ElementMobility& em = a_elements[std::size_t(t)];
         if (em.domain < 0) continue;
         const Medium& m = a_media[std::size_t(em.domain)];
-        if ((!m.saturation || em.step) && !(m.surface && em.damp > 0)) continue;
+        // (A low-field mobility of the carriers or the fields: Dorkel and
+        // Leturcq's, Klaassen's, Yamaguchi's, an expression of them.)
+        const bool lowField = m.lowField == Medium::LowField::Dorkel || m.lowField == Medium::LowField::Klaassen
+                              || m.lowField == Medium::LowField::Yamaguchi || (m.lowField == Medium::LowField::Expression && m.exprState);
+        if ((!m.saturation || em.step) && !(m.surface && em.damp > 0) && !lowField) continue;
         const int* dof = sp.dofs(t);
         MobilityChange mc;
         mc.t = t;
@@ -3222,7 +3740,7 @@ std::vector<SemiconductorProblem::MobilityChange> SemiconductorProblem::mobility
 
 void SemiconductorProblem::updateMobilities(const Eigen::VectorXd& x)
 {
-    if (!(a_saturation || a_lombardi || a_emission > 0)) return;
+    if (!(a_varying || a_emission > 0)) return;
     // (Fermi-Dirac's degeneracy at x, which a carrier's quasi-Fermi potential
     // reads: else that of the state last assembled - after a stationary
     // step another's, and a small signal's first frequency had other
@@ -3699,6 +4217,26 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
                 add(row, vj, sign * dvj);
                 add(row, vi, -sign * dvj);
             }
+        }
+    }
+    // A magnetic field: each edge's currents turned, as the edges' own.
+    if (a_Bz != 0) {
+        std::vector<double> hall;
+        std::vector<Eigen::Triplet<double>> dh;
+        hallFluxes(x, hall, jac ? &dh : nullptr);
+        for (std::size_t k = 0; k < a_edges.size(); ++k) {
+            const Edge& e = a_edges[k];
+            const int rows[2][2] = {{a_iN[std::size_t(e.i)], a_iN[std::size_t(e.j)]}, {a_iP[std::size_t(e.i)], a_iP[std::size_t(e.j)]}};
+            for (int c = 0; c < 2; ++c) {
+                if (rows[c][0] >= 0) F(rows[c][0]) += hall[2 * k + std::size_t(c)];
+                if (rows[c][1] >= 0) F(rows[c][1]) -= hall[2 * k + std::size_t(c)];
+            }
+        }
+        for (const auto& t : dh) {
+            const Edge& e = a_edges[std::size_t(t.row() / 2)];
+            const bool holes = t.row() % 2 == 1;
+            add(holes ? a_iP[std::size_t(e.i)] : a_iN[std::size_t(e.i)], t.col(), t.value());
+            add(holes ? a_iP[std::size_t(e.j)] : a_iN[std::size_t(e.j)], t.col(), -t.value());
         }
     }
     // Band-to-band tunnelling, by triangle: A E^γ e^(-B/E) at its field, the
@@ -4394,6 +4932,10 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
     // source's) - their rows V - Vc - offset; its own row the circuit's.
     std::vector<int> circuitOf(std::size_t(total), -1);
     const bool circuits = hasCircuits();
+    if (circuits && a_Bz != 0) {
+        *why = tr("%1: a magnetic field and contacts behind circuits are not solved together").arg(a_node->name());
+        return false;
+    }
     if (circuits && a_lastApplied.size() != a_contacts.size()) {
         *why = tr("%1: its contacts' values are not set").arg(a_node->name());
         return false;
@@ -5124,11 +5666,23 @@ void SemiconductorProblem::store(const Eigen::VectorXd& x)
     }
     // The mobilities as solved, for what is read at a point (semi.mun, the
     // current densities).
-    if (a_saturation || a_lombardi || a_TL.isValid())
+    if (a_varying || a_TL.isValid())
         for (int t = 0; t < int(a_elements.size()); ++t) {
             if (a_elements[std::size_t(t)].domain < 0 || f.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1))) continue;
             double* e = &f.extra[std::size_t(ExtraHead + PerTriangle * t)];
             elementMobilities(t, &x, &e[0], &e[1]);
+        }
+    // (A magnetic field's: each triangle's c, its current density's turn.)
+    if (a_Bz != 0)
+        for (int t = 0; t < int(a_elements.size()); ++t) {
+            const ElementMobility& em = a_elements[std::size_t(t)];
+            if (em.domain < 0 || em.step || f.extra.size() < std::size_t(ExtraHead + PerTriangle * (t + 1))) continue;
+            double* e = &f.extra[std::size_t(ExtraHead + PerTriangle * t)];
+            double mun = 0, mup = 0;
+            elementMobilities(t, &x, &mun, &mup);
+            const Medium& m = a_media[std::size_t(em.domain)];
+            e[37] = -m.rHn * mun * a_Bz;
+            e[38] = m.rHp * mup * a_Bz;
         }
     for (std::size_t k = 0; k < a_contacts.size() && k < f.terminals.size(); ++k) {
         f.terminals[k].potential = a_contacts[k].applied;
@@ -5339,10 +5893,14 @@ void SemiconductorProblem::terminalValues(const Eigen::VectorXd& x, double mass,
     // recombination's share is the electrons' and the holes' alike: none).
     const std::vector<std::vector<double>> weight = currentWeights(x);
     const std::size_t N = std::size_t(a_n);
+    std::vector<double> hall;   // (a magnetic field's turned currents)
+    if (a_Bz != 0) hallFluxes(x, hall, nullptr);
     for (std::size_t k = 0; k < a_contacts.size(); ++k) {
         const std::vector<double>& w = weight[k];
         if (w.empty()) continue;
         double I = 0;
+        if (!hall.empty())
+            for (std::size_t m = 0; m < a_edges.size(); ++m) I += (hall[2 * m] + hall[2 * m + 1]) * (w[std::size_t(a_edges[m].i)] - w[std::size_t(a_edges[m].j)]);
         for (const Edge& e : a_edges) {
             if (e.w <= 0) continue;
             const double dw = w[std::size_t(e.i)] - w[std::size_t(e.j)];
@@ -5997,7 +6555,7 @@ bool SemiconductorProblem::stationary(QString* why)
     // theirs - solved again with them updated at it while they move. Held
     // settled, they are its own already. Hot carriers always: their
     // temperatures, halfway each update, lag a walk's steps.)
-    if (((a_saturation || a_lombardi) && a_heldUnsettled && solves > 0) || a_energy) {
+    if ((a_varying && a_heldUnsettled && solves > 0) || a_energy) {
         a_energyActive = true;
         // (Not polished: the mobilities as the solution had them again.)
         std::vector<std::array<double, 4>> edges(a_edges.size());
@@ -6224,6 +6782,11 @@ bool SemiconductorProblem::smallSignalSlice(const Eigen::VectorXd& x, double fre
                                             std::vector<std::complex<double>>& H, QString* why,
                                             std::vector<std::vector<std::complex<double>>>* noise)
 {
+    // (A magnetic field's turned currents: at rest and in time alone.)
+    if (a_Bz != 0) {
+        *why = tr("%1: a small signal in a magnetic field is not solved (at rest and in time it is)").arg(a_node->name());
+        return false;
+    }
     std::vector<double> at(a_contacts.size());
     for (std::size_t k = 0; k < a_contacts.size(); ++k) at[k] = a_contacts[k].applied;
     contactValues(at);
@@ -6725,7 +7288,7 @@ void SemiconductorProblem::initialize()
         // (Its mobilities - and hot carriers' temperatures, theirs again
         // at it - as they were: the start's snapshot showed setup's, the
         // low field's, and its first step began from them.)
-        if ((a_saturation || a_lombardi || a_energy) && a_slices == 1) {
+        if ((a_varying || a_energy) && a_slices == 1) {
             const Eigen::VectorXd x = stateVector();
             for (int k = 0; k < (a_energy ? 100 : 1); ++k) {
                 std::vector<std::pair<double, double>> was(a_edges.size());
@@ -6881,8 +7444,21 @@ void SemiconductorProblem::latticeTemperature()
         // material's at the physics' T: scaled from there.)
         em.tn = std::pow(T / a_T, -m.zetan);
         em.tp = std::pow(T / a_T, -m.zetap);
+        // (Arora's its own temperature's; Dorkel and Leturcq's, Klaassen's
+        // and an expression's of TL in elementMobilities; Yamaguchi's of
+        // none - its 300 K.)
+        if (m.lowField == Medium::LowField::Arora) {
+            em.tn = aroraMobility(m.ar[0], em.N, T) / aroraMobility(m.ar[0], em.N, a_T);
+            em.tp = aroraMobility(m.ar[1], em.N, T) / aroraMobility(m.ar[1], em.N, a_T);
+        } else if (m.lowField != Medium::LowField::Plain)
+            em.tn = em.tp = 1;
+        if (m.lowField == Medium::LowField::Klaassen) {
+            em.pmin[0] = klaassenPmin(T, m.klMe);
+            em.pmin[1] = klaassenPmin(T, m.klMh);
+        }
         em.vn = quayVsat(m.vsatAn, T) / quayVsat(m.vsatAn, a_T);
         em.vp = quayVsat(m.vsatAp, T) / quayVsat(m.vsatAp, a_T);
+        if (m.vsatExp) em.vn = em.vp = expVsat(T) / expVsat(a_T);
         em.ii = phononGamma(m.ionPhonon, T) / phononGamma(m.ionPhonon, a_T);
         em.TL = T;
     }
@@ -7953,6 +8529,15 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
         s.Jn[1] = (a11 * bn[1] - a12 * bn[0]) / det;
         s.Jp[0] = (a22 * bp[0] - a12 * bp[1]) / det;
         s.Jp[1] = (a11 * bp[1] - a12 * bp[0]) / det;
+        // (A magnetic field's turn: (J0 + c ẑ×J0)/(1 + c²).)
+        auto turn = [](double* J, double c) {
+            if (!std::isfinite(c) || c == 0) return;
+            const double x = (J[0] + c * J[1]) / (1 + c * c), y = (J[1] - c * J[0]) / (1 + c * c);
+            J[0] = x;
+            J[1] = y;
+        };
+        turn(s.Jn, ex[37]);
+        turn(s.Jp, ex[38]);
     }
     // Band-to-band tunnelling's share of R at the triangle's field.
     if (ex[19] != 0) {
