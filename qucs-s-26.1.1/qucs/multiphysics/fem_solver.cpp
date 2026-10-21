@@ -1558,13 +1558,20 @@ void declareVariables(const std::vector<FieldInfo>& fields, bool axisymmetric, c
             define(p + QStringLiteral("taup"), Dim::of(0, 0, 1), tr("holes' SRH lifetime: by doping, over 1 + Γ with trap-assisted tunnelling"),
                    K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.taup; }));
             define(p + QStringLiteral("mun"), mobility, tr("electron mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mun; }));
-            // The heat the carriers leave: their Joule heat as solved (each
-            // edge's current times its quasi-Fermi potential's drop, by
-            // triangle) and the pairs' recombination's, q R (φp - φn) - a
-            // heat physics' source (the generation's share not in it).
-            define(p + QStringLiteral("H"), Dim::of(-1, 1, -3), tr("heat the carriers leave: their Joule heat, J·∇φ of each, and q R (φp - φn)"),
+            // The heat the carriers and the light leave: the carriers' Joule
+            // heat as solved (each edge's current times its quasi-Fermi
+            // potential's drop, by triangle), the pairs' recombination's, q R
+            // (φp - φn), and the light's, its pairs' energy as made less q G
+            // (φp - φn) - a heat physics' source.
+            define(p + QStringLiteral("H"), Dim::of(-1, 1, -3),
+                   tr("heat the carriers and the light leave: the Joule heat, J·∇φ of each carrier, q R (φp - φn), and the "
+                      "light's (semi.Hlight) - its integral the contacts' I V and the power absorbed, semi.Pabs"),
                    K::Derived, f,
                    semi([](const detail::SemiconductorState& s) { return std::isfinite(s.heat) ? s.heat : s.joule + 1.602176634e-19 * s.R * (s.phip - s.phin); }));
+            define(p + QStringLiteral("Hlight"), Dim::of(-1, 1, -3),
+                   tr("the light's heat: the energy its pairs are made with (ħω/η each for a mode's light) less what they carry, "
+                      "q G (φp - φn) - their excess over the gap as they cool, at once"),
+                   K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.lightHeat; }));
             define(p + QStringLiteral("mup"), mobility, tr("hole mobility"), K::Derived, f, semi([](const detail::SemiconductorState& s) { return s.mup; }));
             // (Where an avalanche makes its pairs: the triangle's, as solved.)
             define(p + QStringLiteral("Gion"), Dim::of(-3, 0, -1),

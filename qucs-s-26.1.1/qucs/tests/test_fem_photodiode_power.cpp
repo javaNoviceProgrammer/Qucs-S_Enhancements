@@ -105,8 +105,8 @@ QByteArray pin(const QString& anode, const QString& steps, const QString& parame
         .toUtf8();
 }
 
-/// ∫ \a expression over the domains (times the thickness: the whole
-/// device's).
+/// ∫ \a expression over the domains' cross-section: per metre of the
+/// length (the currents are the thickness's).
 double integral(const Solution& s, const QString& expression)
 {
     Node in;
@@ -157,6 +157,26 @@ QByteArray waveguidePd(int slices, const QString& power, const QString& anode, c
                                               {"type": "mode", "physics": ["emw"], "frequency": "1550[nm]", "modes": 1, "neff": "3.9"} %4]}]})json")
         .arg(QString::number(slices), power, anode, steps, hmax)
         .toUtf8();
+}
+
+/// \a expression at (\a x, \a y) (the model's µm).
+double at(const Solution& s, const QString& expression, double x, double y)
+{
+    const Locator locator(s.mesh());
+    const std::optional<double> v = evaluateAt(s, locator, expression, QPointF(x, y));
+    return v ? *v : NAN;
+}
+
+/// The p-i-n of pin() dark at \a Va, its physics at \a T, its lattice at
+/// \a TL (empty: the physics' T); \a features more.
+QByteArray darkPin(const QString& Va, const QString& T, const QString& TL, const QString& features = QString())
+{
+    QByteArray j = pin(QString(), QStringLiteral(R"({"type": "stationary"})"));
+    j.replace("6e29[1/(m^3*s)]", "0[1/(m^3*s)]");
+    j.replace(R"("expression": "-2[V]")", QStringLiteral(R"("expression": "%1")").arg(Va).toUtf8());
+    j.replace(R"("tag": "semi", "features": [)",
+              QStringLiteral(R"("tag": "semi", "T": "%1", "TL": "%2", "features": [%3)").arg(T, TL, features).toUtf8());
+    return j;
 }
 
 /// The fundamental of \a y at \a f over its samples' last whole period
@@ -552,6 +572,7 @@ private slots:
     // the current at 300 ps the sliced stationary solution's.
     void slicesInTime()
     {
+        if (slowBuild()) QSKIP("in time: Release builds only (minutes sanitized)");
         const QString light = QStringLiteral("100[uW]");
         const Run rest = run(modelOf(waveguidePd(3, light, QString(), QStringLiteral(R"(, {"type": "stationary", "physics": ["semi"]})"))));
         QVERIFY2(rest.error.isEmpty(), qPrintable(rest.error));
@@ -568,6 +589,248 @@ private slots:
         qInfo("three slices at 300 ps %.6g A (at rest %.6g, %.2e apart; the slices' sum %.6g)", It, I, It / I - 1, sum);
         QVERIFY2(std::abs(It / I - 1) < 1e-3, qPrintable(QString::number(It / I - 1)));
         QVERIFY2(std::abs(sum / It - 1) < 1e-12, qPrintable(QString::number(sum / It - 1)));
+    }
+
+    // The light's heat in semi.H: the device's ∫ semi.H its contacts' I V
+    // and the power its pairs are made with, semi.Pabs, together - lit
+    // reversed and short-circuited, a User-Defined Generation's pairs at
+    // the gap (silicon's 1.12 eV) or at a photon energy given, a mode's at
+    // ħω each (germanium on silicon: a heterojunction's, saturated); and
+    // sliced. (Dark, the germanium's ∫ semi.H was 3 % off I V before: its
+    // recombination heat by the recombining parts' volume, not the
+    // corners' the integral takes.)
+    void theLightsHeat()
+    {
+        const Run gap = run(modelOf(pin(QString(), QStringLiteral(R"({"type": "sweep", "parameters": [["Va", "-2, 0", "V"]]}, {"type": "stationary"})"))));
+        QVERIFY2(gap.error.isEmpty(), qPrintable(gap.error));
+        QCOMPARE(int(gap.study.solutions.size()), 2);
+        const double Va[2] = {-2, 0};
+        for (int k = 0; k < 2; ++k) {
+            const Solution& s = *gap.study.solutions[std::size_t(k)];
+            const double I = global(s, QStringLiteral("semi.I_a")), P = global(s, QStringLiteral("semi.Pabs")), G = global(s, QStringLiteral("semi.Gop"));
+            const double H = integral(s, QStringLiteral("semi.H")) * 10e-6, light = integral(s, QStringLiteral("semi.Hlight")) * 10e-6;
+            qInfo("at %g V: ∫ semi.H %.9g W, I V %.6g W, Pabs %.9g W (%.6f eV a pair), the light's %.6g W", Va[k], H, I * Va[k], P, P / (Q * G), light);
+            QVERIFY2(P > 0 && std::abs(P / (Q * G) - 1.12) < 0.01, qPrintable(QString::number(P / (Q * G))));
+            QVERIFY2(std::abs(H - (I * Va[k] + P)) < 1e-9 * (std::abs(I * Va[k]) + P), qPrintable(QStringLiteral("%1 %2").arg(H).arg(I * Va[k] + P)));
+            QVERIFY2(light > 0 && light < P, qPrintable(QStringLiteral("%1 %2").arg(light).arg(P)));
+        }
+        QByteArray json = pin(QString(), QStringLiteral(R"({"type": "stationary"})"));
+        json.replace(R"("G": "G0",)", R"("G": "G0", "Eph": "2.5[eV]",)");
+        const Run photon = run(modelOf(json));
+        QVERIFY2(photon.error.isEmpty(), qPrintable(photon.error));
+        {
+            const Solution& s = *photon.study.solutions.back();
+            const double I = global(s, QStringLiteral("semi.I_a")), P = global(s, QStringLiteral("semi.Pabs")), G = global(s, QStringLiteral("semi.Gop"));
+            const double H = integral(s, QStringLiteral("semi.H")) * 10e-6;
+            qInfo("2.5 eV photons: ∫ semi.H %.9g W, I V %.6g W, Pabs %.9g W", H, -2 * I, P);
+            QVERIFY2(std::abs(P / (Q * G * 2.5) - 1) < 1e-12, qPrintable(QString::number(P / (Q * G * 2.5) - 1)));
+            QVERIFY2(std::abs(H - (-2 * I + P)) < 1e-9 * (std::abs(2 * I) + P), qPrintable(QStringLiteral("%1 %2").arg(H).arg(-2 * I + P)));
+        }
+        const QString rest = QStringLiteral(R"(, {"type": "stationary", "physics": ["semi"]})");
+        // (η 0.8 too: the photons absorbed that make no pair heat as well.
+        // Sanitized, that one alone: each some 50 s there.)
+        std::vector<std::pair<int, double>> cases = {{1, 0.8}};
+        if (!slowBuild()) cases = {{1, 1.0}, {2, 1.0}, {1, 0.8}};
+        for (const auto& [slices, eta] : cases) {
+            QByteArray json = waveguidePd(slices, QStringLiteral("1[mW]"), QString(), rest, true);
+            if (eta != 1) json.replace(R"("type": "optical", "mode": "emw",)", R"("type": "optical", "mode": "emw", "eta": "0.8",)");
+            const Run r = run(modelOf(json));
+            QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+            const Solution& s = *r.study.solutions.back();
+            const double I = global(s, QStringLiteral("semi.I_a")), P = global(s, QStringLiteral("semi.Pabs")), G = global(s, QStringLiteral("semi.Gop"));
+            const double H = integral(s, QStringLiteral("semi.H")) * 15e-6, photon = 6.62607015e-34 * 299792458.0 / 1550e-9;
+            qInfo("%d slice(s), η %g, 1 mW at 1550 nm: ∫ semi.H %.9g W, I V %.9g W, Pabs %.9g W (%.6g of a photon a pair; %.2e apart)", slices, eta,
+                  H, -I, P, P / (G * photon), H / (-I + P) - 1);
+            QVERIFY2(std::abs(P / (G * photon) - 1 / eta) < 1e-12, qPrintable(QString::number(P / (G * photon) - 1 / eta)));
+            // (Its mobilities held where saturated: Newton's tolerance, 2e-9.)
+            QVERIFY2(std::abs(H - (-I + P)) < 1e-8 * (std::abs(I) + P), qPrintable(QStringLiteral("%1 %2").arg(H).arg(-I + P)));
+        }
+        // Dark, saturated: ∫ semi.H I V. (Each triangle's share of an edge's
+        // Joule heat over the edge's conductance with its mobilities held,
+        // not their own sum: 2e-6 off.)
+        const Run dark = run(modelOf(waveguidePd(1, QStringLiteral("0[W]"), QString(), rest, true)));
+        QVERIFY2(dark.error.isEmpty(), qPrintable(dark.error));
+        const double Id = global(*dark.study.solutions.back(), QStringLiteral("semi.I_a"));
+        const double Hd = integral(*dark.study.solutions.back(), QStringLiteral("semi.H")) * 15e-6;
+        qInfo("dark: ∫ semi.H %.9g W, I V %.9g W (%.2e apart)", Hd, -Id, Hd / -Id - 1);
+        QVERIFY2(std::abs(Hd / -Id - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(Hd).arg(-Id)));
+    }
+
+    // A lattice temperature TL in the bands: the p-i-n dark, reversed 5 V
+    // (its i layer depleted), its physics at 300 K and its lattice at 350 K
+    // against the physics at 350 K - its intrinsic density and its gap
+    // shown (Varshni's, silicon's) the same; its current - the i layer's
+    // thermal generation, q ∫ ni/(τn + τp) - 35 times the current at 300 K,
+    // as ni, and the same to 2 %: where n or p is near ni at the layer's
+    // edges is of the carriers' kT, the physics'.
+    void theLatticeInTheBands()
+    {
+        const Run cold = run(modelOf(darkPin(QStringLiteral("-5[V]"), QStringLiteral("300[K]"), QString())));
+        const Run lattice = run(modelOf(darkPin(QStringLiteral("-5[V]"), QStringLiteral("300[K]"), QStringLiteral("350[K]"))));
+        const Run warm = run(modelOf(darkPin(QStringLiteral("-5[V]"), QStringLiteral("350[K]"), QString())));
+        for (const Run* r : {&cold, &lattice, &warm}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        const Solution &c = *cold.study.solutions.back(), &l = *lattice.study.solutions.back(), &w = *warm.study.solutions.back();
+        const double Ic = global(c, QStringLiteral("semi.I_k")), Il = global(l, QStringLiteral("semi.I_k")), Iw = global(w, QStringLiteral("semi.I_k"));
+        const double nil = at(l, QStringLiteral("semi.ni"), 1.3, 0.25), niw = at(w, QStringLiteral("semi.ni"), 1.3, 0.25), nic = at(c, QStringLiteral("semi.ni"), 1.3, 0.25);
+        const QString gap = QStringLiteral("semi.Ec - semi.Ev");
+        const double Egl = at(l, gap, 1.3, 0.25), Egw = at(w, gap, 1.3, 0.25), Egc = at(c, gap, 1.3, 0.25);
+        qInfo("dark at -5 V: %.6g A at 300 K, %.6g A its lattice at 350 K, %.6g A at 350 K (%.2e apart); ni %.6g, %.6g, %.6g /m³; "
+              "the gap %.6f, %.6f, %.6f eV",
+              Ic, Il, Iw, Il / Iw - 1, nic, nil, niw, Egc / Q, Egl / Q, Egw / Q);
+        QVERIFY2(std::abs(nil / niw - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(nil).arg(niw)));
+        QVERIFY2(std::abs(Egl - Egw) < 1e-9 * Q, qPrintable(QStringLiteral("%1 %2").arg(Egl / Q).arg(Egw / Q)));
+        // (Silicon's Varshni: 4.73e-4 eV/K, 636 K.)
+        const double varshni = 1.12 - 4.73e-4 * (350.0 * 350 / 986 - 300.0 * 300 / 936);
+        QVERIFY2(std::abs(Egl / Q - varshni) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(Egl / Q, 0, 'g', 12).arg(varshni, 0, 'g', 12)));
+        QVERIFY2(std::abs(Il / Iw - 1) < 0.03, qPrintable(QStringLiteral("%1 %2").arg(Il).arg(Iw)));
+        QVERIFY2(Il / Ic > 10, qPrintable(QStringLiteral("%1 %2").arg(Il).arg(Ic)));
+    }
+
+    // Saturated at its lattice's temperature: a bar of n-type silicon
+    // (1e17 cm⁻³, 20 µm, 1 µm high, a metre thick) at 20 V, its electrons'
+    // velocity µE/√(1 + (µE/vsat)²), µ 0.14 m²/(V s) (TL/300 K)^-2.5, vsat
+    // Quay's 1e5 m/s /(0.74 + 0.26 TL/300 K) - its lattice at 400 K
+    // (the physics at 300 K) and the physics at 400 K, to 1e-4; at 300 K.
+    void saturationOfTheLattice()
+    {
+        auto bar = [](const QString& T, const QString& TL) {
+            return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "label": "bar", "size": ["20", "1"]}],
+                "materials": [{"material": "Silicon", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "T": "%1", "TL": "%2", "features": [
+                  {"type": "model", "saturation": true, "driving": "field", "selection": {"all": true}},
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+                  {"type": "ohmic", "name": "2", "V0": "20[V]", "selection": {"of": ["bar"], "side": "right"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "0.5"}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                .arg(T, TL)
+                .toUtf8();
+        };
+        auto expected = [](double T) {
+            const double mu = 0.14 * std::pow(T / 300, -2.5), vsat = 1e5 / (0.74 + 0.26 * T / 300), E = 20 / 20e-6;
+            return Q * 1e23 * mu * E / std::sqrt(1 + std::pow(mu * E / vsat, 2)) * 1e-6;
+        };
+        const double I300 = expected(300), I400 = expected(400);
+        const Run cold = run(modelOf(bar(QStringLiteral("300[K]"), QString())));
+        const Run lattice = run(modelOf(bar(QStringLiteral("300[K]"), QStringLiteral("400[K]"))));
+        const Run warm = run(modelOf(bar(QStringLiteral("400[K]"), QString())));
+        for (const Run* r : {&cold, &lattice, &warm}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        const double Ic = global(*cold.study.solutions.back(), QStringLiteral("semi.I_2"));
+        const double Il = global(*lattice.study.solutions.back(), QStringLiteral("semi.I_2"));
+        const double Iw = global(*warm.study.solutions.back(), QStringLiteral("semi.I_2"));
+        qInfo("saturated: %.6g A at 300 K (%.6g); its lattice at 400 K %.6g A, the physics at 400 K %.6g A (%.6g)", Ic, I300, Il, Iw, I400);
+        QVERIFY2(std::abs(Ic / I300 - 1) < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(Ic).arg(I300)));
+        QVERIFY2(std::abs(Il / I400 - 1) < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(Il).arg(I400)));
+        QVERIFY2(std::abs(Iw / I400 - 1) < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(Iw).arg(I400)));
+    }
+
+    // Impact ionization at its lattice's temperature: the p-i-n dark at
+    // -25 V (its i layer's field some 1.5e5 V/cm), the ionization integrals
+    // alone - silicon's van Overstraeten and de Man, γ of 63 meV: its
+    // lattice at 400 K the same as its coefficients times γ(400 K) =
+    // tanh(ħω/2k 300 K)/tanh(ħω/2k 400 K) given at 300 K, to 1e-9 (the
+    // same field); the physics at 400 K likewise; a sixth fewer pairs a
+    // micrometre than at 300 K. (Its lattice and the physics at 400 K
+    // apart: the built-in potential's kT, the physics', its field 1.7 %
+    // weaker - α ten times as steep.)
+    void ionizationOfTheLattice()
+    {
+        const double phonon = 0.063 * Q, kB = 1.380649e-23;
+        const double g = std::tanh(phonon / (2 * kB * 300)) / std::tanh(phonon / (2 * kB * 400));
+        const QString silicon = QStringLiteral(R"({"type": "impact", "model": "silicon", "currents": false, "selection": {"all": true}},)");
+        const QString scaled = QStringLiteral(R"({"type": "impact", "model": "user", "currents": false, "Eph": "0[eV]",
+            "an": "%1[1/cm]", "bn": "%2[V/cm]", "an2": "%1[1/cm]", "bn2": "%2[V/cm]", "ap": "%3[1/cm]", "bp": "%4[V/cm]",
+            "ap2": "%5[1/cm]", "bp2": "%6[V/cm]", "E0": "4e5[V/cm]", "betan": "1", "betap": "1", "selection": {"all": true}},)")
+                                   .arg(7.03e5 * g, 0, 'g', 17)
+                                   .arg(1.231e6 * g, 0, 'g', 17)
+                                   .arg(1.582e6 * g, 0, 'g', 17)
+                                   .arg(2.036e6 * g, 0, 'g', 17)
+                                   .arg(6.71e5 * g, 0, 'g', 17)
+                                   .arg(1.693e6 * g, 0, 'g', 17);
+        const QString V = QStringLiteral("-25[V]"), T300 = QStringLiteral("300[K]"), T400 = QStringLiteral("400[K]");
+        // (Sanitized, not against 300 K: each run some 22 s there.)
+        const Run cold = slowBuild() ? Run() : run(modelOf(darkPin(V, T300, QString(), silicon)));
+        const Run lattice = run(modelOf(darkPin(V, T300, T400, silicon)));
+        const Run latticeGiven = run(modelOf(darkPin(V, T300, T400, scaled)));
+        const Run warm = run(modelOf(darkPin(V, T400, QString(), silicon)));
+        const Run warmGiven = run(modelOf(darkPin(V, T400, QString(), scaled)));
+        for (const Run* r : {&cold, &lattice, &latticeGiven, &warm, &warmGiven}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        auto of = [](const Run& r, const char* name) { return r.study.solutions.empty() ? NAN : global(*r.study.solutions.back(), QString::fromLatin1(name)); };
+        qInfo("ionization integrals at -25 V, γ(400 K) %.6f: In %.6g at 300 K; its lattice at 400 K %.9g (given %.9g); the physics at "
+              "400 K %.9g (given %.9g); Ip %.6g, %.9g (%.9g), %.9g (%.9g)",
+              g, of(cold, "semi.In"), of(lattice, "semi.In"), of(latticeGiven, "semi.In"), of(warm, "semi.In"), of(warmGiven, "semi.In"),
+              of(cold, "semi.Ip"), of(lattice, "semi.Ip"), of(latticeGiven, "semi.Ip"), of(warm, "semi.Ip"), of(warmGiven, "semi.Ip"));
+        for (const char* name : {"semi.In", "semi.Ip"}) {
+            QVERIFY2(std::abs(of(lattice, name) / of(latticeGiven, name) - 1) < 1e-9,
+                     qPrintable(QStringLiteral("%1 %2 %3").arg(QLatin1String(name)).arg(of(lattice, name)).arg(of(latticeGiven, name))));
+            QVERIFY2(std::abs(of(warm, name) / of(warmGiven, name) - 1) < 1e-9,
+                     qPrintable(QStringLiteral("%1 %2 %3").arg(QLatin1String(name)).arg(of(warm, name)).arg(of(warmGiven, name))));
+        }
+        if (!slowBuild())
+            QVERIFY2(of(lattice, "semi.In") < 0.5 * of(cold, "semi.In"), qPrintable(QStringLiteral("%1 %2").arg(of(lattice, "semi.In")).arg(of(cold, "semi.In"))));
+    }
+
+    // The direct gap's absorption at the absorber's temperature: the
+    // germanium photodiode's mode at 1550 nm, Franz-Keldysh's on in the
+    // device's own field, its absorber at 350 K - its gap 0.773 eV less
+    // Varshni's 5.82e-4 eV/K (T²/(T + 296 K) - ...) - the same as the gap
+    // so lowered given, to 1e-9; more than at 300 K (the photon above the
+    // edge by 27 meV, then by 49).
+    void theEdgeOfTheLattice()
+    {
+        auto lit = [](const QString& wave) {
+            QByteArray j = waveguidePd(1, QStringLiteral("1[uW]"), QString(), QString(), true);
+            j.replace(R"({"type": "wave", "electroabsorption": false,)", QStringLiteral(R"({"type": "wave", "electroabsorption": true, %1)").arg(wave).toUtf8());
+            return j;
+        };
+        const double shift = 5.82e-4 * (350.0 * 350 / 646 - 300.0 * 300 / 596);
+        const Run warm = run(modelOf(lit(QStringLiteral(R"("Tea": "350[K]",)"))));
+        const Run given = run(modelOf(lit(QStringLiteral(R"("easource": "user", "Egd": "%1[eV]", "mr": "0.03", "Afk": "2e4[1/cm]",)").arg(0.773 - shift, 0, 'g', 17))));
+        for (const Run* r : {&warm, &given}) QVERIFY2(r->error.isEmpty(), qPrintable(r->error));
+        const double aw = global(*warm.study.solutions.back(), QStringLiteral("emw.alpha"));
+        const double ag = global(*given.study.solutions.back(), QStringLiteral("emw.alpha"));
+        qInfo("the mode's α at 1550 nm: its absorber at 350 K %.9g /m (the gap %.6f eV given: %.9g)", aw, 0.773 - shift, ag);
+        QVERIFY2(std::abs(aw / ag - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(aw).arg(ag)));
+        // (Sanitized, not against 300 K: each run some 47 s there.)
+        if (slowBuild()) return;
+        const Run cold = run(modelOf(lit(QString())));
+        QVERIFY2(cold.error.isEmpty(), qPrintable(cold.error));
+        const double ac = global(*cold.study.solutions.back(), QStringLiteral("emw.alpha"));
+        qInfo("at 300 K %.9g /m", ac);
+        QVERIFY2(aw > 1.1 * ac, qPrintable(QStringLiteral("%1 %2").arg(aw).arg(ac)));
+    }
+
+    // The whole loop: the p-i-n under strong light (3 mA's worth, its
+    // photons 1.5 eV) reversed 5 V, a heat physics its source semi.H, its
+    // ends at 300 K, the semiconductor's lattice at its temperature (TL =
+    // ht.T) - solved in turn to rest: ∫ semi.H its I V and Pabs together;
+    // its middle some 10 K warmer.
+    void aLitDiodeWarmsItself()
+    {
+        if (slowBuild()) QSKIP("self-heating's turns: Release builds only");
+        QByteArray j = pin(QString(), QStringLiteral(R"({"type": "stationary"})"));
+        j.replace("6e29[1/(m^3*s)]", "2e33[1/(m^3*s)]");
+        j.replace(R"("expression": "-2[V]")", R"("expression": "-5[V]")");
+        j.replace(R"("G": "G0",)", R"("G": "G0", "Eph": "1.5[eV]",)");
+        j.replace(R"("tag": "semi", "features": [)", R"("tag": "semi", "TL": "ht.T", "features": [)");
+        j.replace(R"({"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]})",
+                  R"({"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "right"}}]},
+            {"type": "heat", "tag": "ht", "features": [
+              {"type": "source", "Q0": "semi.H", "selection": {"all": true}},
+              {"type": "init", "T0": "300[K]", "selection": {"all": true}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["p"], "side": "left"}},
+              {"type": "temperature", "T0": "300[K]", "selection": {"of": ["n"], "side": "right"}}]})");
+        const Run r = run(modelOf(j));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const Solution& s = *r.study.solutions.back();
+        const double I = global(s, QStringLiteral("semi.I_a")), P = global(s, QStringLiteral("semi.Pabs"));
+        const double H = integral(s, QStringLiteral("semi.H")) * 10e-6;
+        const double Tmid = at(s, QStringLiteral("ht.T"), 1.3, 0.25);
+        qInfo("lit and warm: %.6g A at -5 V, ∫ semi.H %.9g W (I V %.6g W, Pabs %.6g W); %.3f K at its middle", I, H, -5 * I, P, Tmid);
+        QVERIFY2(std::abs(H - (-5 * I + P)) < 1e-6 * (std::abs(5 * I) + P), qPrintable(QStringLiteral("%1 %2").arg(H).arg(-5 * I + P)));
+        QVERIFY2(Tmid > 303, qPrintable(QString::number(Tmid)));
     }
 };
 
