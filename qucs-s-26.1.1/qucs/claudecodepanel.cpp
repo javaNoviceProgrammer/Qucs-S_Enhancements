@@ -31,6 +31,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QDataStream>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QImageReader>
@@ -207,7 +208,7 @@ QJsonObject tokensJson(const qucs_s::claude::TokenUsage& t)
 
 qucs_s::claude::TokenUsage tokensFromJson(const QJsonObject& o)
 {
-    const auto count = [&o](const char* name) { return std::max<qint64>(0, qint64(o.value(QLatin1String(name)).toDouble())); };
+    const auto count = [&o](const char* name) { return qucs_s::claude::tokenCount(o.value(QLatin1String(name))); };
     qucs_s::claude::TokenUsage t;
     t.input = count("input");
     t.output = count("output");
@@ -248,7 +249,10 @@ constexpr char16_t kMathMark = 0xE000;
 void startBlock(QTextCursor& c, const QTextBlockFormat& format)
 {
     if (c.atBlockStart() && c.block().length() <= 1) c.setBlockFormat(format);
-    else c.insertBlock(format);
+    // (After an image, not its format for the block's own: fitted to the
+    // width once all is drawn, it would be as the image was then - one way
+    // drawn whole, another drawn after it.)
+    else c.insertBlock(format, c.charFormat().isImageFormat() ? QTextCharFormat() : c.charFormat());
 }
 
 void leaveFrame(QTextCursor& c)
@@ -456,7 +460,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     openPanels().append(this);
     a_renderTimer->setSingleShot(true);
     a_renderTimer->setInterval(40);
-    connect(a_renderTimer, &QTimer::timeout, this, &ClaudeCodePanel::render);
+    connect(a_renderTimer, &QTimer::timeout, this, [this] { render(); });
     a_clock->setInterval(1000);
     connect(a_clock, &QTimer::timeout, this, &ClaudeCodePanel::updateState);
 
@@ -2206,8 +2210,8 @@ void ClaudeCodePanel::append(const Entry& e)
     const bool firstPrompt = e.kind == Entry::You
                              && std::none_of(a_entries.cbegin(), a_entries.cend(), [](const Entry& x) { return x.kind == Entry::You; });
     a_entries.append(e);
-    // (A prompt sent: the conversation's end followed again.)
-    if (e.kind == Entry::You) a_following = true;
+    // (A prompt sent leaves the view where the reader has it: at the end it
+    // follows the end, above it stays there.)
     scheduleRender();
     if (firstPrompt) emit titleChanged();
     emit conversationChanged();
@@ -2397,32 +2401,170 @@ void ClaudeCodePanel::scheduleRender()
     if (!a_renderTimer->isActive()) a_renderTimer->start();
 }
 
-void ClaudeCodePanel::renderNow()
+void ClaudeCodePanel::renderNow(bool whole)
 {
-    render();
+    render(whole);
 }
 
-void ClaudeCodePanel::render()
+namespace {
+// A local image's file as it is: changed when written again.
+QByteArray imageStamp(const QString& file)
+{
+    const QFileInfo info(file);
+    if (!info.isFile()) return QByteArrayLiteral("-");
+    return QByteArray::number(info.size()) + ' ' + QByteArray::number(info.lastModified().toMSecsSinceEpoch()) + ' '
+           + QByteArray::number(info.metadataChangeTime().toMSecsSinceEpoch());
+}
+} // namespace
+
+QByteArray ClaudeCodePanel::lookKey() const
+{
+    QByteArray key;
+    QDataStream s(&key, QIODevice::WriteOnly);
+    const Colours col = colours(drawingPalette());
+    for (const QColor& c : {col.base, col.text, col.muted, col.faint, col.border, col.accent, col.onAccent, col.bubble, col.code,
+                            col.ok, col.warn, col.error})
+        s << c.rgba();
+    s << a_view->font().toString() << QFontDatabase::systemFont(QFontDatabase::FixedFont).toString() << a_view->devicePixelRatioF();
+    return key;
+}
+
+QByteArray ClaudeCodePanel::partKey(qsizetype from, qsizetype to, bool captioned) const
+{
+    QByteArray key;
+    QDataStream s(&key, QIODevice::WriteOnly);
+    s << qint64(from) << captioned;
+    if (a_entries.at(from).kind == Entry::Tool && to - from > 1) s << isOpen(QStringLiteral("group:") + a_entries.at(from).id);
+    for (qsizetype i = from; i < to; ++i) {
+        const Entry& e = a_entries.at(i);
+        s << int(e.kind) << e.text << e.extra << e.id << e.output << int(e.tool) << e.streaming << e.detail << e.result << canEdit(i);
+        if (e.kind == Entry::Tool) s << isOpen(QStringLiteral("tool:") + e.id);
+        if (e.kind == Entry::Summary)
+            for (const auto& [part, tip] : summaryParts(e)) s << part << tip;
+        for (const QString& image : e.images) s << image << imageStamp(image);
+    }
+    return key;
+}
+
+void ClaudeCodePanel::render(bool whole)
 {
     a_renderTimer->stop();
     QScrollBar* bar = a_view->verticalScrollBar();
     const int keep = bar->value();
     // (The document made again: the bar's moves its, not the reader's.)
     a_scrolling = true;
-
     QTextDocument* doc = a_view->document();
-    doc->clear();
-    doc->setDocumentMargin(12);
+
+    // The conversation in parts - an entry, a row of tools -, each with all
+    // it is drawn from: drawn again from the first that has changed alone.
+    // (All of it drawn at each event - a streamed reply's every piece -,
+    // laid out four times over as the bar went and came back: 0.26 s a
+    // render at 40 replies, 0.72 s at 120, the panel busy all the while.)
+    QList<std::pair<qsizetype, qsizetype>> parts;
+    QList<QByteArray> keys;
+    bool captioned = false;
+    for (qsizetype i = 0; i < a_entries.size();) {
+        qsizetype j = i + 1;
+        if (a_entries.at(i).kind == Entry::Tool)
+            while (j < a_entries.size() && a_entries.at(j).kind == Entry::Tool) ++j;
+        parts.append({i, j});
+        keys.append(partKey(i, j, captioned));
+        // (As renderEntry() and renderCaption() leave it.)
+        if (a_entries.at(i).kind == Entry::You) captioned = false;
+        else if (a_entries.at(i).kind == Entry::Claude || a_entries.at(i).kind == Entry::Tool) captioned = true;
+        i = j;
+    }
+    const QByteArray look = lookKey();
+    // An image shown whose file has changed (a plot written again under its
+    // name): all drawn again, the images read again.
+    bool imagesChanged = false;
+    for (auto it = a_drawnImages.cbegin(); it != a_drawnImages.cend() && !imagesChanged; ++it)
+        imagesChanged = imageStamp(it.key()) != it.value();
+    qsizetype same = 0;
+    const bool afresh = whole || parts.isEmpty() || a_drawn.isEmpty() || imagesChanged;
+    if (!afresh && look == a_drawnLook)
+        while (same < parts.size() && same < a_drawn.size() && keys.at(same) == a_drawn.at(same).key) ++same;
+    if (!afresh && same == parts.size() && same == a_drawn.size()) {
+        a_renderedFrom = same;
+        a_renderedAt = doc->characterCount() - 1;
+        a_scrolling = false;
+        return;
+    }
+
     QTextCursor c(doc);
+    if (afresh) {
+        // (Its images let go of: read again.)
+        doc->clear();
+        doc->setDocumentMargin(12);
+        a_drawn.clear();
+        a_drawnImages.clear();
+        c = QTextCursor(doc);
+    }
     // One edit, laid out once at its end. (Laid out at each insertion, from
     // it to the end - a formula, a reply's fragment -: a reply of 1000
     // formulas took 9.5 s a render, at each event - the hunt of 21 October,
     // B1.)
     c.beginEditBlock();
-    if (a_entries.isEmpty()) renderWelcome(c);
-    else renderConversation(c);
-    c.endEditBlock();
+    if (parts.isEmpty()) {
+        renderWelcome(c);
+        a_renderedFrom = -1;
+        a_renderedAt = 0;
+    } else {
+        if (same < a_drawn.size()) {
+            // What follows the parts unchanged taken out, the block the
+            // first changed one started in as it was before it.
+            const Drawn& first = a_drawn.at(same);
+            c.setPosition(first.start);
+            c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+            c.removeSelectedText();
+            c.setBlockFormat(first.blockFormat);
+            c.setBlockCharFormat(first.blockCharFormat);
+            a_drawn.resize(same);
+        }
+        c.movePosition(QTextCursor::End);
+        const int drawnFrom = c.position();
+        bool apart = true;
+        captioned = false;
+        for (qsizetype k = 0; k < parts.size(); ++k) {
+            const auto [from, to] = parts.at(k);
+            if (k >= same) {
+                // (Each part starts at the end, in the root frame: else it
+                // could not be taken out alone - drawn whole next time.)
+                if (c.position() != doc->characterCount() - 1 || c.currentFrame() != doc->rootFrame()) apart = false;
+                a_drawn.append({keys.at(k), c.position(), c.blockFormat(), c.blockCharFormat()});
+                if (a_entries.at(from).kind == Entry::Tool) renderTools(c, from, to, captioned);
+                else renderEntry(c, a_entries.at(from), captioned, from);
+            } else {
+                if (a_entries.at(from).kind == Entry::You) captioned = false;
+                else if (a_entries.at(from).kind == Entry::Claude || a_entries.at(from).kind == Entry::Tool) captioned = true;
+            }
+        }
+        // The local images it shows, as their files are now.
+        for (QTextBlock b = doc->findBlock(drawnFrom); b.isValid(); b = b.next())
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+                const QTextCharFormat f = it.fragment().charFormat();
+                if (!f.isImageFormat()) continue;
+                const QUrl url(f.toImageFormat().name());
+                const QString file = url.isLocalFile()                                         ? url.toLocalFile()
+                                     : url.scheme().isEmpty() && QDir::isAbsolutePath(url.path()) ? url.path()
+                                                                                                  : QString();
+                if (!file.isEmpty() && !a_drawnImages.contains(file)) a_drawnImages.insert(file, imageStamp(file));
+            }
+        if (!apart) a_drawn.clear();
+        a_renderedFrom = same;
+        a_renderedAt = drawnFrom;
+    }
+    a_drawnLook = look;
+    // (In the same edit: laid out once.)
     fitImages();
+    c.endEditBlock();
+    // Laid out whole now, and the view told its size: laid out in steps after
+    // the render (Qt's own, from the document's start), its height grew from
+    // part of it to all - the bar's range shrank and came back at each reply,
+    // its handle jumping down and up under a reader scrolled up, and a view
+    // following the end showed the middle first.
+    QAbstractTextDocumentLayout* layout = doc->documentLayout();
+    emit layout->documentSizeChanged(layout->documentSize());
     bar->setValue(a_following ? bar->maximum() : keep);
     a_scrolling = false;
 }

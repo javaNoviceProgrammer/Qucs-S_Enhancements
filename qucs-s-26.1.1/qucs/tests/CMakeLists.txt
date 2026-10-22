@@ -292,6 +292,9 @@ set_tests_properties(test_canvas_drawing_ratio2 PROPERTIES
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=2;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude;QUCS_GH=/nonexistent/gh"
   TIMEOUT 300)
 qucs_add_test(test_claude_code)
+# The Claude Code panel fuzzed: a short pass of a fixed seed here, long ones by
+# QUCS_FUZZ_SECONDS (test_claude_fuzz.cpp).
+qucs_add_test(test_claude_fuzz)
 qucs_add_test(test_qucs_control)
 # The Tools menu's programs as Claude's tools (their --json): built first
 # (the top CMakeLists.txt, once they are known).

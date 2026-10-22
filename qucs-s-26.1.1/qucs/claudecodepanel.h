@@ -21,6 +21,7 @@
 #include <QPair>
 #include <QPixmap>
 #include <QSet>
+#include <QTextFormat>
 #include <QWidget>
 
 #include <functional>
@@ -265,8 +266,17 @@ public:
     /// Formulas typeset so far (not found typeset already): for tests.
     int typesetCount() const { return a_typesetCount; }
     QString transcriptText() const;
-    /// The conversation drawn now rather than a moment later.
-    void renderNow();
+    /// The conversation drawn now rather than a moment later: from the
+    /// first part of it that has changed (\a whole: all of it, as at first).
+    void renderNow(bool whole = false);
+    /// The part of the conversation (an entry, a row of tools) the last
+    /// render drew from: 0 all of it, the number of parts when nothing had
+    /// changed, -1 the welcome. For tests.
+    qsizetype renderedFrom() const { return a_renderedFrom; }
+    /// Where in the transcript the last render drew from (its end: nothing
+    /// drawn); whether the view follows the conversation's end. For tests.
+    int renderedAt() const { return a_renderedAt; }
+    bool followsTheEnd() const { return a_following; }
     /// Opens or folds a line of tools ("group:<first tool's id>") or a
     /// tool ("tool:<id>"), as a click on it does.
     void toggle(const QString& key);
@@ -359,7 +369,12 @@ private:
     void completeCommand(bool send);
     void restyle();
     void scheduleRender();
-    void render();
+    void render(bool whole = false);
+    /// All a part of the conversation - entries \a from to \a to, an entry
+    /// or a row of tools, after a caption or not - is drawn from; and all
+    /// of the drawing they share (the colours, the fonts).
+    QByteArray partKey(qsizetype from, qsizetype to, bool captioned) const;
+    QByteArray lookKey() const;
     /// Each image of a reply no wider than the transcript (as the Markdown
     /// preview's).
     void fitImages();
@@ -516,10 +531,24 @@ private:
     QTextBrowser* a_view = nullptr;
     bool a_fitting = false;
     // Whether the transcript follows the conversation's end: the reader's
-    // scrolling alone says (up: not; to the end again: so), a prompt sent
-    // too. (a_scrolling: the panel's own scrolling, not the reader's.)
+    // scrolling alone says (up: not; to the end again: so). (a_scrolling:
+    // the panel's own scrolling, not the reader's.)
     bool a_following = true;
     bool a_scrolling = false;
+    // What the transcript shows: each part drawn - its key, where it starts,
+    // the block it starts in as that was before it -, the look they were
+    // drawn in, and each local image shown as its file was then.
+    struct Drawn {
+        QByteArray key;
+        int start = 0;
+        QTextBlockFormat blockFormat;
+        QTextCharFormat blockCharFormat;
+    };
+    QList<Drawn> a_drawn;
+    QByteArray a_drawnLook;
+    QHash<QString, QByteArray> a_drawnImages;
+    qsizetype a_renderedFrom = -1;
+    int a_renderedAt = 0;
     // The permission card.
     QFrame* a_card;
     QLabel* a_cardTitle;
