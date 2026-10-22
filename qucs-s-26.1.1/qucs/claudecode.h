@@ -575,6 +575,7 @@ private:
     QHash<QString, HostCall> a_hostCalls;
     void hostCallDone(const HostCall& call, const QJsonObject& rpc);
     QHash<QString, QString> a_backgroundAsked;   // background_tasks not answered yet: request id -> tool use id
+    QSet<QString> a_backgroundAskedOfTask;       // those asked when its task was known
     QSet<QString> a_backgroundWanted;            // tool uses sent to the background, until they are
     QHash<QString, QString> a_tasks;             // the program's tasks (commands, agents): id -> what
     QHash<QString, QString> a_taskOf;            // a tool use's task

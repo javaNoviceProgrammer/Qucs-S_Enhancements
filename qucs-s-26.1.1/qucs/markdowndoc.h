@@ -17,6 +17,7 @@
 #include <QCache>
 #include <QColor>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QFont>
 #include <QHash>
 #include <QImage>
@@ -257,6 +258,7 @@ private:
     QHash<QString, ImageStamp> a_images;
     QFileSystemWatcher* a_imageWatcher = nullptr;   // their files and folders
     QTimer* a_imageTimer = nullptr;
+    QElapsedTimer a_imageFirst;   // since the first change it waits for
 
     int barHeight() const;
     /// The text's width in Split mode.

@@ -4276,7 +4276,8 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
     // simulated) edits nothing while it waits: what is edited meanwhile is
     // the user's - or another call's -, not its caller's. (A run's own
     // edit at its end - apply_optimum's - is said to be its caller's.)
-    if (!*over && (tool == QLatin1String("wait_for") || tool == QLatin1String("console") || tool == QLatin1String("simulate"))) {
+    if (!*over && (tool == QLatin1String("wait_for") || tool == QLatin1String("console") || tool == QLatin1String("simulate")
+                   || tool == QLatin1String("fem_build") || tool == QLatin1String("fem_solve") || tool == QLatin1String("fem_stop"))) {
         *released = true;
         a_callers.removeOne(caller);
         QucsDoc::setEditor(a_callers.isEmpty() ? 0 : a_callers.last());
@@ -4865,9 +4866,6 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("fem_describe")) return femDescribe(args);
     if (tool == QLatin1String("fem_model")) return femModel(args);
     if (tool == QLatin1String("fem_edit")) return femEdit(args);
-    if (tool == QLatin1String("fem_build")) return femBuild(args);
-    if (tool == QLatin1String("fem_solve")) return femSolve(args);
-    if (tool == QLatin1String("fem_stop")) return femStop(args);
     if (tool == QLatin1String("fem_evaluate")) return femEvaluate(args);
     if (tool == QLatin1String("fem_plot")) return femPlot(args);
     if (tool == QLatin1String("fem_export")) return femExport(args);
@@ -4883,6 +4881,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     else if (tool == QLatin1String("set_settings")) setSettings(args, done);
     else if (tool == QLatin1String("context_menu")) contextMenu(args, done);
     else if (tool == QLatin1String("simulate")) simulate(args, done);
+    else if (tool == QLatin1String("fem_build")) femBuild(args, done);
+    else if (tool == QLatin1String("fem_solve")) femSolve(args, done);
+    else if (tool == QLatin1String("fem_stop")) femStop(args, done);
     else if (tool == QLatin1String("stop_simulation")) stopSimulation(args, done);
     else if (tool == QLatin1String("wait_for")) waitFor(args, done);
     else if (tool == QLatin1String("send_input")) sendInput(args, done);
