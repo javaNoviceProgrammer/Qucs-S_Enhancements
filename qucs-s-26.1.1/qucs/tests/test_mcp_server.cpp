@@ -15,6 +15,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
+#include <QPdfWriter>
 #include <QDirIterator>
 #include <QProcess>
 #include <QRegularExpression>
@@ -252,6 +254,21 @@ private slots:
         every = loaded();
         QVERIFY(every.contains("connect") && every.contains("fem_solve"));
         QVERIFY2(said().contains("a model's (fem_*), the wiring"), qPrintable(said()));
+        QVERIFY(!every.contains("read_pdf") && !every.contains("show_pdf"));
+        // A PDF open: its reading and showing (each session with a paper open
+        // searched for them first); closed, not.
+        {
+            QPdfWriter pdf(dir.filePath("every_turn.pdf"));
+            QPainter painter(&pdf);
+            painter.drawText(100, 100, "a page");
+        }
+        QVERIFY(!callTool("open_document", {{"path", dir.filePath("every_turn.pdf")}}).value("isError").toBool());
+        every = loaded();
+        QVERIFY(every.contains("read_pdf") && every.contains("show_pdf") && every.contains("fem_solve"));
+        QVERIFY2(said().contains("a PDF's"), qPrintable(said()));
+        QVERIFY(!callTool("close_document", {{"path", dir.filePath("every_turn.pdf")}}).value("isError").toBool());
+        every = loaded();
+        QVERIFY(!every.contains("read_pdf") && !said().contains("a PDF's"));
 
         // add_diagram's own options of a kind, folded: their names, the
         // whole in describe_tool, a call checked against it.

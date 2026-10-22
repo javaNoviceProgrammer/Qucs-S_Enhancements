@@ -322,7 +322,18 @@ QJsonObject trimmedTo(const QJsonObject& result, int most)
     return r;
 }
 
-QJsonObject structuredOf(const QJsonObject& result)
+namespace {
+// A result's first text read as JSON (none: a null document).
+QJsonDocument firstTextJson(const QJsonObject& result)
+{
+    for (const QJsonValue& v : result.value(QLatin1String("content")).toArray())
+        if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("text"))
+            return QJsonDocument::fromJson(v.toObject().value(QLatin1String("text")).toString().toUtf8());
+    return {};
+}
+
+// structuredOf(), its first text read already: \a doc.
+QJsonObject structuredOf(const QJsonObject& result, const QJsonDocument& doc)
 {
     QStringList texts;
     for (const QJsonValue& v : result.value(QLatin1String("content")).toArray())
@@ -331,11 +342,9 @@ QJsonObject structuredOf(const QJsonObject& result)
     QJsonObject structured;
     if (result.value(QLatin1String("isError")).toBool()) {
         // (An error told as JSON - a script's, with its line - as its fields.)
-        const QJsonDocument doc = QJsonDocument::fromJson(texts.value(0).toUtf8());
         if (doc.isObject() && doc.object().contains(QLatin1String("error"))) structured = doc.object();
         else structured.insert(QStringLiteral("error"), texts.isEmpty() ? QString() : texts.first());
     } else if (!texts.isEmpty()) {
-        const QJsonDocument doc = QJsonDocument::fromJson(texts.first().toUtf8());
         if (doc.isObject()) structured = doc.object();
         else if (doc.isArray()) structured.insert(QStringLiteral("items"), doc.array());
         else structured.insert(QStringLiteral("summary"), texts.first());
@@ -351,6 +360,12 @@ QJsonObject structuredOf(const QJsonObject& result)
     }
     if (!notes.isEmpty()) structured.insert(QStringLiteral("notes"), notes);
     return structured;
+}
+} // namespace
+
+QJsonObject structuredOf(const QJsonObject& result)
+{
+    return structuredOf(result, firstTextJson(result));
 }
 
 Server::Server(claude::ToolHost* host, QObject* parent) : QObject(parent), a_host(host)
@@ -395,12 +410,8 @@ void Server::send(const QJsonObject& message) const
 
 bool isJsonAnswer(const QJsonObject& result)
 {
-    for (const QJsonValue& v : result.value(QLatin1String("content")).toArray())
-        if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("text")) {
-            const QJsonDocument doc = QJsonDocument::fromJson(v.toObject().value(QLatin1String("text")).toString().toUtf8());
-            return doc.isObject() || doc.isArray();
-        }
-    return false;
+    const QJsonDocument doc = firstTextJson(result);
+    return doc.isObject() || doc.isArray();
 }
 
 QJsonObject Server::callResult(const QJsonObject& result) const
@@ -411,9 +422,13 @@ QJsonObject Server::callResult(const QJsonObject& result) const
     // every quote and line break escaped in it (a netlist's \n, a dialog's
     // \"), 8.6 % longer (673 answers of the dock's sessions, 19 October) and
     // harder to read.
+    // (Its first text read once: twice, a long answer's JSON - a model's
+    // description, a dataset - was parsed twice at each call.)
     QJsonObject r = result;
-    if (!r.contains(QLatin1String("structuredContent")) && (isJsonAnswer(result) || result.value(QLatin1String("isError")).toBool()))
-        r.insert(QStringLiteral("structuredContent"), structuredOf(result));
+    if (r.contains(QLatin1String("structuredContent"))) return r;
+    const QJsonDocument first = firstTextJson(result);
+    if (first.isObject() || first.isArray() || result.value(QLatin1String("isError")).toBool())
+        r.insert(QStringLiteral("structuredContent"), structuredOf(result, first));
     return r;
 }
 
