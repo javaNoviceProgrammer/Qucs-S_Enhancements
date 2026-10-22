@@ -25,6 +25,7 @@
 #include <QHash>
 #include <QMap>
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <limits>
@@ -50,11 +51,14 @@ struct TerminalMatrices {
 struct AlongLine {
     bool alongY = true;
     double scale = 1;   ///< m per the model's unit
-    std::vector<double> c, V, n, p;
-    /// At \a x (m): V, n and p (\a value) and their slopes along the line
-    /// (\a slope, per m) - V linear between its nodes, the carriers in
-    /// their logarithm; false where it has fewer than two.
-    bool read(QPointF x, double value[3], double slope[3]) const;
+    std::vector<double> c;   ///< its nodes, ascending
+    /// Each segment's ends (c[j], c[j + 1]) as its own material reads them:
+    /// V, n, p, φn, φp - a heterojunction's node one value each side.
+    std::vector<std::array<double, 5>> from, to;
+    /// At \a x (m): V, n, p, φn and φp (\a value) and their slopes along
+    /// the line (\a slope, per m) - linear in its segment, the carriers in
+    /// their logarithm; false where it has fewer than two nodes.
+    bool read(QPointF x, double value[5], double slope[5]) const;
 };
 
 /// One physics solved: its field on its space, and what was found.
