@@ -1235,7 +1235,7 @@ private slots:
         auto* button = panel.findChild<QToolButton*>("claudeSend");
         QVERIFY(button != nullptr);
         // (The menu's items, and the one named triggered; none shown, none.)
-        const auto rightClick = [&](const QString& trigger) {
+        const auto rightClick = [&panel, button](const QString& trigger) {
             QStringList items;
             bool looked = false;
             QTimer::singleShot(50, &panel, [&items, &looked, trigger] {
