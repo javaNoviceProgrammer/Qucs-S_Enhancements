@@ -2969,28 +2969,41 @@ QList<NodeKind> makeKinds()
               expr(QStringLiteral("linewidthslope"), tr("Broadening's growth with the photon's energy"), QString(), QString(),
                    tr("The lines' width at a photon's energy ħω: the broadening plus this times ħω above the lowest edge (meV per "
                       "meV; 0.05: 5 meV wider 0.1 eV above it) - the higher subbands' lines wider, as measured (Miller's n = 2 and 3 "
-                      "wider than n = 1). A line near ħω the width there, each line its own. Empty: one width")),
+                      "wider than n = 1). A line near ħω the width there, each line its own. A step broadened so has its "
+                      "maximum the higher the wider it is: Miller's n = 3 at 0.05 some 14 meV above its edge. Empty: one width")),
               choice(QStringLiteral("continuum"), tr("Continuum"), {QStringLiteral("states"), QStringLiteral("bound")},
                      {tr("The states found (a box's)"), tr("Bound states', and the bulk absorption")}, QStringLiteral("states"),
                      tr("The states found above the barriers are a box's - the line's ends hard walls -, moving with a field: a "
                         "Kramers-Kronig index from them moves too. Bound: the transitions of states confined by their own well's "
-                        "barriers alone (in a field too: below its barriers' edges, not the line's far ends'), their 2D steps fading "
+                        "barriers (in a field too: below its barriers' edges, not the line's far ends' - or held in its well, the "
+                        "Least share in the wells of its |ψ|² there, 0.6 unless given): a bound electron's with every hole, an unbound "
+                        "one's the barriers' bulk's - each electron's strength counted once, kept whole in a field -, their 2D steps fading "
                         "above the barriers' gap into the wells' own 3D absorption, the barriers' 3D absorption over their thickness "
                         "(per the wells' thickness, as the states' was): far enough above, the absorption the bulk's, the same in any "
                         "field - Δn between fields converges as the window widens")),
               shownIf(expr(QStringLiteral("fade"), tr("Fade above the barriers' gap"), QStringLiteral("eV"), QStringLiteral("0.1[eV]"),
                            tr("Over this above the barriers' gap the bound states' 2D steps give way to the wells' 3D absorption (cos²)")),
                       QStringLiteral("continuum=bound")),
-              shownIf(flag(QStringLiteral("bulkexcitons"), tr("The bulk's excitons (Elliott's)"), false,
-                           tr("The barriers' (and the wells' own) 3D absorption with its excitons: Elliott's - its 1s, 2s ... lines "
-                              "below its gap (each its material's Rydberg, its reduced mass's in its permittivity, heavy and light holes "
-                              "apart) and Sommerfeld's factor above it, 2π√(R/ε)/(1 - e^(-2π√(R/ε))) - the barriers' own edge, not a "
-                              "bare √ε. Off: the free carriers' √ε")),
-                      QStringLiteral("continuum=bound")),
-              shownIf(expr(QStringLiteral("urbach"), tr("The bulk's Urbach width"), QStringLiteral("eV"), QString(),
-                           tr("The 3D absorption's lines broadened as Urbach's edge, e^(-|x|/E_U)/2E_U: the exponential tail below "
-                              "the gap of a material at room temperature (GaAs some 6-7 meV). Empty: the spectrum's line")),
-                      QStringLiteral("continuum=bound")),
+              flag(QStringLiteral("bulkexcitons"), tr("The bulk's excitons (Elliott's)"), false,
+                   tr("The barriers' (and the wells' own) 3D absorption with its excitons: Elliott's - its 1s, 2s ... lines "
+                      "below its gap (each its material's Rydberg, its reduced mass's in its permittivity, heavy and light holes "
+                      "apart) and Sommerfeld's factor above it, 2π√(R/ε)/(1 - e^(-2π√(R/ε))) - the barriers' own edge, not a "
+                      "bare √ε. Off: the free carriers' √ε. With the continuum \"states\" the barriers' excitons alone are added - "
+                      "Elliott's less the free carriers', which the box's states give: a superlattice's minibands above its barriers "
+                      "(its n = 3) and the barriers' excitonic edge in one run")),
+              expr(QStringLiteral("urbach"), tr("The bulk's Urbach width"), QStringLiteral("eV"), QString(),
+                   tr("The 3D absorption's lines broadened as Urbach's edge, e^(-|x|/E_U)/2E_U: the exponential tail below "
+                      "the gap of a material at room temperature (GaAs some 6-7 meV); with the continuum \"states\", the barriers' "
+                      "excitons' lines (Bulk's excitons). Empty: the spectrum's line")),
+              pair(QStringLiteral("dnwindow"), tr("Local index's window"), QStringLiteral("eV"), QString(), QString(),
+                   tr("In a sweep (a field's): the index between each point and the first by Kramers and Kronig of their "
+                      "absorptions' difference over this window alone - around the excitons, as the electrorefraction literature "
+                      "takes it (qw.dnTEloc, qw.dnTMloc), what lies above it (a box's states moving with the field, the barriers) "
+                      "left out. Empty: none")),
+              flag(QStringLiteral("conservearea"), tr("The local window's area kept"), false,
+                   tr("Each point's absorption over the local index's window scaled to the first point's area there before their "
+                      "difference is taken - Weiner, Miller and Chemla's: what strength the window gains or loses in a field not "
+                      "counted")),
               choice(QStringLiteral("lineshape"), tr("Line shape"), {QStringLiteral("lorentzian"), QStringLiteral("gaussian"), QStringLiteral("sech")},
                      {tr("Lorentzian"), tr("Gaussian"), tr("Hyperbolic secant")}, QStringLiteral("lorentzian"),
                      tr("Each transition's broadening. With carriers a Lorentzian's slow tails move the gain's zero below the "
