@@ -124,6 +124,8 @@ struct Node {
     /// A property's value, or its default.
     QJsonValue value(const QString& key) const;
     QString text(const QString& key) const;
+    /// A flag as such: true, 1 (as a text or a number, any but 0); not one
+    /// given as an expression of the parameters - flagIn() reads that.
     bool flag(const QString& key) const;
     int integer(const QString& key) const;
     /// A Pair's two texts.
@@ -225,6 +227,23 @@ struct ParameterScope {
     QHash<QString, Dim> dims;
 };
 std::shared_ptr<ParameterScope> evaluateParameters(const Model& model, const QHash<QString, QString>& overrides = {});
+
+/// Whether \a text is a flag as such: true, false (in any case), 1, 0, or
+/// none.
+bool flagWord(const QString& text);
+/// \a node's flag \a key read in \a scope: a flag as such (Node::flag), else
+/// an expression of the parameters, true where not 0 ("ex", "ex > 0"). One
+/// that is not a constant there is false, and \a error says why (its key and
+/// text, not the node's name).
+bool flagIn(const Node& node, const QString& key, const Scope& scope, QString* error = nullptr);
+/// Whether \a node (or a child) has a flag given as an expression - of the
+/// enabled nodes alone, of the study \a study's alone (empty: every study's),
+/// and with \a results the results' too.
+bool hasExpressionFlags(const Node& node, const QString& study = {}, bool results = true);
+/// \a node's flags given as expressions (the same nodes) read in \a scope,
+/// each set to true or false; one that is not a constant there said in
+/// \a errors, the node named.
+void readExpressionFlags(Node& node, const Scope& scope, const QString& study, bool results, QStringList* errors);
 
 } // namespace qucs_s::fem
 

@@ -1520,7 +1520,13 @@ private slots:
         QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_build"), {}), 300);
         QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_stop"), {}), 30);
         QCOMPARE(QucsControl::waitsFor(QStringLiteral("simulate"), {{"timeout", 45}}), 45);
-        QCOMPARE(QucsControl::waitsFor(QStringLiteral("simulate"), {}), 0);
+        // (The other tools that wait by themselves, by their defaults too: cut
+        // at a caller's 30 s - the hunt of 22 October, N3.)
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("simulate"), {}), 120);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("wait_for"), {}), 60);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("git_remote"), {}), 300);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("git_clone"), {}), 600);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("get_state"), {}), 0);
         const QString quick = flowModel(QStringLiteral("flow_own_wait.qfem"), QStringLiteral("10[min]"));
         MultiphysicsDoc* doc = open(quick);
         QVERIFY(doc);
@@ -1530,6 +1536,328 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY2(json(r).contains(QLatin1String("globals")), qPrintable(text(r)));
         qInfo("solved through callNow in %lld ms, its own timeout 1 ms", t.elapsed());
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // A wait for a model's job when the model goes: deleted in the very answer
+    // to the wait (the client gone, the application quitting closes every
+    // document in it), or while the wait is under way (closed then) - told
+    // once, the second from the event loop once the model is gone, its count
+    // never taken off a freed model. (The first read the freed model - a
+    // heap-use-after-free under ASan, at every quit of a client during a
+    // solve; the second told the call of a model half destroyed: the hunt of
+    // 22 October, B1.)
+    void aWaitOutlivesItsModel()
+    {
+        const QString inAnswer = flowModel(QStringLiteral("flow_gone_in_answer.qfem"), QStringLiteral("600[min]"));
+        MultiphysicsDoc* doc = open(inAnswer);
+        QVERIFY(doc != nullptr && doc->geometryBeingBuilt());
+        QPointer<MultiphysicsDoc> d(doc);
+        int told = 0;
+        bool ended = false;
+        doc->whenJobEnds(jobWait(), [&](bool e) {
+            ++told;
+            ended = e;
+            if (d) {
+                d->setDocChanged(false);
+                delete d.data();   // (as closeAllFiles does as the application quits)
+            }
+        });
+        doc->cancelJob();
+        QTRY_VERIFY_WITH_TIMEOUT(told > 0, jobWait());
+        QTest::qWait(50);
+        QCOMPARE(told, 1);
+        QVERIFY(ended && d.isNull());
+
+        // Deleted while a fem_build waits for its geometry: told it was
+        // closed, once, from the event loop.
+        const QString underWay = flowModel(QStringLiteral("flow_gone_waiting.qfem"), QStringLiteral("600[min]"));
+        doc = open(underWay);
+        QVERIFY(doc != nullptr && doc->geometryBeingBuilt());
+        int answers = 0;
+        QJsonObject answer;
+        control->callTool(QStringLiteral("fem_build"), {{"path", underWay}, {"timeout", 600}}, [&](const QJsonObject& r) {
+            ++answers;
+            answer = r;
+        });
+        QCOMPARE(answers, 0);
+        doc->setDocChanged(false);
+        delete doc;
+        QTRY_VERIFY_WITH_TIMEOUT(answers > 0, 10000);
+        QTest::qWait(50);
+        QCOMPARE(answers, 1);
+        QVERIFY2(failed(answer) && text(answer) == QLatin1String("The model was closed."), qPrintable(text(answer)));
+    }
+
+    // fem_stop stops what it stops alone, and what waits behind it: a fem_solve
+    // waiting for the model to be free is told it was stopped, not started,
+    // and fem_stop answers once the job it stopped ends. (The waiting solve
+    // started as the stopped job ended, and fem_stop waited for it too and
+    // said "stopped" once it was solved: the hunt of 22 October, B2.) The
+    // window's Cancel is the same stop.
+    void aStopStopsWhatWaitsBehindIt()
+    {
+        // (A junction swept over 1600 biases: a solve of some seconds and
+        // more, stopped at its next point.)
+        const QString file = path(QStringLiteral("stop_queue.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "Va", "expression": "0[V]"}],
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "name": "p", "position": ["0", "0"], "size": ["1", "0.5"]},
+                         {"type": "rectangle", "name": "n", "position": ["0", "0.5"], "size": ["1", "0.5"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "acceptor", "N0": "1e17[1/cm^3]", "selection": {"only": ["p"]}},
+              {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"only": ["n"]}},
+              {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["p"], "side": "bottom"}},
+              {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["n"], "side": "top"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.05"}}],
+          "studies": [{"type": "study", "tag": "s", "steps": [{"type": "sweep", "parameters": [["Va", "range(0, 0.0005, 0.8)", "V"]]}, {"type": "stationary"}]}]})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        int first = 0, queued = 0;
+        QJsonObject firstAnswer, queuedAnswer;
+        control->callTool(QStringLiteral("fem_solve"), {{"path", file}, {"timeout", 600}}, [&](const QJsonObject& r) {
+            ++first;
+            firstAnswer = r;
+        });
+        QVERIFY(doc->isBusy());
+        control->callTool(QStringLiteral("fem_solve"), {{"path", file}, {"timeout", 600}}, [&](const QJsonObject& r) {
+            ++queued;
+            queuedAnswer = r;
+        });
+        QCOMPARE(queued, 0);
+        QElapsedTimer t;
+        t.start();
+        const QJsonObject stopped = call("fem_stop", {{"path", file}});
+        QVERIFY2(!failed(stopped) && json(stopped).value("stopped").toBool(), qPrintable(text(stopped)));
+        QVERIFY2(t.elapsed() < 5000, qPrintable(QString::number(t.elapsed())));
+        QTRY_VERIFY_WITH_TIMEOUT(queued > 0 && first > 0, 10000);
+        // (Sanitized, a point may outlast the queued call's second of waiting:
+        // it says so instead - and starts nothing either.)
+        QVERIFY2(failed(queuedAnswer)
+                     && (text(queuedAnswer).contains(QLatin1String("Not solved: the work it waited behind was stopped"))
+                         || (slowBuild() && text(queuedAnswer).contains(QLatin1String("It is busy")))),
+                 qPrintable(text(queuedAnswer)));
+        QVERIFY2(failed(firstAnswer), qPrintable(text(firstAnswer)));
+        QTest::qWait(300);
+        QVERIFY2(!doc->isBusy(), "a job started after the stop");
+        // The window's Cancel: the same stop.
+        int again = 0, afterCancel = 0;
+        QJsonObject cancelled;
+        control->callTool(QStringLiteral("fem_solve"), {{"path", file}, {"timeout", 600}}, [&](const QJsonObject&) { ++again; });
+        QVERIFY(doc->isBusy());
+        control->callTool(QStringLiteral("fem_solve"), {{"path", file}, {"timeout", 600}}, [&](const QJsonObject& r) {
+            ++afterCancel;
+            cancelled = r;
+        });
+        doc->cancelJob();
+        QTRY_VERIFY_WITH_TIMEOUT(afterCancel > 0 && again > 0, 10000);
+        QVERIFY2(failed(cancelled)
+                     && (text(cancelled).contains(QLatin1String("Not solved: the work it waited behind was stopped"))
+                         || (slowBuild() && text(cancelled).contains(QLatin1String("It is busy")))),
+                 qPrintable(text(cancelled)));
+        QTest::qWait(300);
+        QVERIFY2(!doc->isBusy(), "a job started after Cancel");
+        // Another caller, waiting before fem_stop came, starting a solve as
+        // the stopped job ends (as the queued fem_solve did): fem_stop answers
+        // as the job it stopped ends, not once the other is solved (it waited
+        // for any job, and said "stopped" after that solve).
+        int solving = 0, stopAnswers = 0;
+        control->callTool(QStringLiteral("fem_solve"), {{"path", file}, {"timeout", 600}}, [&](const QJsonObject&) { ++solving; });
+        QVERIFY(doc->isBusy());
+        QPointer<MultiphysicsDoc> d(doc);
+        doc->whenJobEnds(jobWait(), [d](bool) {
+            if (d) d->compute(QStringLiteral("s"));
+        });
+        control->callTool(QStringLiteral("fem_stop"), {{"path", file}}, [&](const QJsonObject&) { ++stopAnswers; });
+        QTRY_VERIFY_WITH_TIMEOUT(stopAnswers > 0 && solving > 0, 10000);
+        QVERIFY(doc->isBusy());   // (the other's solve)
+        QVERIFY2(!failed(call("fem_stop", {{"path", file}})), "stopped again");
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isBusy(), 10000);
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // A whole run's derived value - Harmonics, of all its times - is listed
+    // once a point, all its values (H1 first), not at each output time: 30
+    // harmonics over 81 times were 4941 values, fem_solve showing the last
+    // 40, H1 and H2 not among them (the hunt of 22 October, B5).
+    void harmonicsListedOnceARun()
+    {
+        if (slowBuild()) QSKIP("in time: Release builds only (minutes sanitized)");
+        const QString file = path(QStringLiteral("bar_harmonics.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "components": [{"unit": "um",
+            "geometry": [{"type": "rectangle", "label": "bar", "size": ["2", "0.2"]}],
+            "materials": [{"material": "Silicon", "selection": {"all": true}}],
+            "physics": [{"type": "semiconductor", "tag": "semi", "features": [
+              {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+              {"type": "ohmic", "name": "1", "V0": "0[V]", "selection": {"of": ["bar"], "side": "left"}},
+              {"type": "ohmic", "name": "2", "V0": "10[mV]*sin(2*pi*1[GHz]*t) + 2[mV]*sin(2*pi*2[GHz]*t)", "selection": {"of": ["bar"], "side": "right"}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "0.1"}}],
+          "studies": [{"type": "study", "tag": "s", "steps": [{"type": "stationary"},
+                        {"type": "transient", "times": "range(0, 25[ps], 2[ns])", "stepping": "fixed", "dt": "5[ps]"}]}],
+          "results": {"derived": [{"type": "harmonics", "tag": "h30", "study": "s", "expression": "semi.I_2", "f0": "1[GHz]", "count": 30, "periods": 1}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        const QJsonObject r = call("fem_solve", {{"path", file}, {"timeout", 600}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject h = json(r).value("derived values").toArray().at(0).toObject();
+        const QJsonObject values = h.value("values").toObject();
+        QVERIFY2(values.size() == 61 && values.contains("H1") && values.contains("H2") && values.contains("THD") && values.contains("mean"),
+                 qPrintable(QJsonDocument(h).toJson()));
+        for (auto it = values.begin(); it != values.end(); ++it) QVERIFY2(!it.key().contains(QLatin1String("t = ")), qPrintable(it.key()));
+        QVERIFY2(h.value("note").toString().startsWith(QLatin1String("over 1 periods of 1e+09 Hz, 41 output times; past H19")), qPrintable(QJsonDocument(h).toJson()));
+        // Its times asked as the answers write them, or refused, said (B9).
+        QJsonObject e = call("fem_evaluate", {{"path", file}, {"expression", "semi.I_2"}, {"time", "0.5 ns"}});
+        QVERIFY2(!failed(e) && json(e).value("solutions").toString() == QLatin1String("t = 500 ps"), qPrintable(text(e)));
+        e = call("fem_evaluate", {{"path", file}, {"expression", "semi.I_2"}, {"time", "5[ns]"}});
+        QVERIFY2(failed(e) && text(e) == QLatin1String("time: \"5[ns]\" lies past its outputs: from t = 0 s to t = 2 ns"), qPrintable(text(e)));
+        e = call("fem_evaluate", {{"path", file}, {"expression", "semi.I_2"}, {"time", "1[V]"}});
+        QVERIFY2(failed(e) && text(e) == QLatin1String("time: \"1[V]\" is not a time"), qPrintable(text(e)));
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // fem_evaluate's photon energy or time: text it cannot read, a value of
+    // another unit or a plain number for a spectrum, one past the outputs -
+    // refused, said; "1.5 eV" as its answers write one read; with 'all', at
+    // that energy at each point. (Each gave the last output or the nearest
+    // end without a word, a plain number taken as hertz; with 'all' the
+    // energy was ignored, every output given: the hunt of 22 October, B9 and
+    // N4.) And fem_plot of a global over the outputs graphs it against them
+    // (a surface of it, one colour at the last energy: N11).
+    void outputsAskedAsAnswersSayThem()
+    {
+        const QString file = path(QStringLiteral("asked_outputs.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "F", "expression": "0[V/m]"}],
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "name": "below", "size": ["10", "8"]},
+                         {"type": "rectangle", "name": "well", "position": ["0", "8"], "size": ["10", "9.4"]},
+                         {"type": "rectangle", "name": "above", "position": ["0", "17.4"], "size": ["10", "8"]}],
+            "materials": [{"material": "barrier", "compound": "AlGaAs", "x": "0.3", "selection": {"only": ["below", "above"]}},
+                          {"material": "well", "compound": "GaAs", "x": "0", "selection": {"only": ["well"]}}],
+            "physics": [{"type": "quantum", "tag": "qw", "h1d": "0.25[nm]", "F": "F"}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+          "studies": [{"type": "study", "tag": "s", "steps": [{"type": "sweep", "parameters": [["F", "0, 1e7", "V/m"]]},
+                        {"type": "spectrum", "energies": "linspace(1.40[eV], 1.60[eV], 5)", "states": 4, "linewidth": "5[meV]", "lineshape": "gaussian"}]}]})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QJsonObject r = call("fem_solve", {{"path", file}, {"study", "s"}, {"timeout", 600}}, jobWait());
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto at = [&](const QString& frequency, bool all = false) {
+            QJsonObject args{{"path", file}, {"study", "s"}, {"expression", "qw.alphaTE"}, {"frequency", frequency}};
+            if (all) args.insert("all", true);
+            return call("fem_evaluate", args);
+        };
+        for (const char* ok : {"1.45[eV]", "1.45 eV", "855.1[nm]"}) {
+            r = at(QString::fromLatin1(ok));
+            QVERIFY2(!failed(r) && json(r).value("solutions").toString().endsWith(QLatin1String("E = 1.45 eV")), qPrintable(QStringLiteral("%1: %2").arg(ok, text(r))));
+        }
+        r = at("x");
+        QVERIFY2(failed(r) && text(r).startsWith(QLatin1String("frequency: \"x\" is not read:")), qPrintable(text(r)));
+        r = at("1.5");
+        QVERIFY2(failed(r) && text(r).startsWith(QLatin1String("frequency: \"1.5\" is not a photon energy, wavelength or frequency")), qPrintable(text(r)));
+        r = at("1[V]");
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("is not a photon energy")), qPrintable(text(r)));
+        r = at("3[eV]");
+        QVERIFY2(failed(r) && text(r) == QLatin1String("frequency: \"3[eV]\" lies past its outputs: from E = 1.4 eV to E = 1.6 eV"), qPrintable(text(r)));
+        r = at("1.45[eV]", true);
+        const QJsonArray each = json(r).value("values").toArray();
+        QVERIFY2(!failed(r) && each.size() == 2 && each.at(0).toObject().value("name").toString().contains(QLatin1String("E = 1.45 eV"))
+                     && each.at(1).toObject().value("name").toString().contains(QLatin1String("F = 10 MV/m, E = 1.45 eV")),
+                 qPrintable(text(r)));
+        // The plot of a global: a graph against the photon energy.
+        r = call("fem_plot", {{"path", file}, {"study", "s"}, {"expression", "qw.alphaTE"}});
+        QVERIFY2(!failed(r) && json(r).contains(QLatin1String("display")), qPrintable(text(r)));
+        const qucs_s::fem::Node* g = doc->model().find(json(r).value("plot group").toString());
+        QVERIFY(g != nullptr && g->type == QLatin1String("plotgroup1d") && !g->children.empty() && g->children.front().type == QLatin1String("globalgraph"));
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // The panel shows a flag given as an expression of the parameters as its
+    // text, to edit - and what is shown only while the flag is on as shown:
+    // "excitons": "ex" (on) was an unchecked box, the exciton model hidden
+    // (the hunt of 22 October, B8). "true" typed makes it a box again. Under
+    // the continuum "bound", "pmin" is shown: it is read there (N2).
+    void thePanelShowsAnExpressionFlag()
+    {
+        const QString file = path(QStringLiteral("panel_flags.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "ex", "expression": "1"}],
+          "components": [{"unit": "nm",
+            "geometry": [{"type": "rectangle", "name": "below", "size": ["10", "8"]},
+                         {"type": "rectangle", "name": "well", "position": ["0", "8"], "size": ["10", "9.4"]},
+                         {"type": "rectangle", "name": "above", "position": ["0", "17.4"], "size": ["10", "8"]}],
+            "materials": [{"material": "barrier", "compound": "AlGaAs", "x": "0.3", "selection": {"only": ["below", "above"]}},
+                          {"material": "well", "compound": "GaAs", "x": "0", "selection": {"only": ["well"]}}],
+            "physics": [{"type": "quantum", "tag": "qw", "h1d": "0.5[nm]"}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+          "studies": [{"type": "study", "steps": [{"type": "spectrum", "tag": "sp", "energies": "1.45[eV]", "excitons": "ex", "continuum": "bound"}]}]})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        panel()->selectNode(QStringLiteral("sp"));
+        QWidget* area = panel()->settingsArea();
+        auto* flag = area->findChild<QLineEdit*>(QStringLiteral("mpEdit_excitons"));
+        QVERIFY2(flag != nullptr && area->findChild<QCheckBox*>(QStringLiteral("mpEdit_excitons")) == nullptr, "not a line edit");
+        QCOMPARE(flag->text(), QStringLiteral("ex"));
+        QVERIFY(area->findChild<QWidget*>(QStringLiteral("mpEdit_excitonmodel")) != nullptr);
+        QVERIFY(area->findChild<QWidget*>(QStringLiteral("mpEdit_pmin")) != nullptr);
+        // "true" typed: a flag as such, a box again.
+        flag->setText(QStringLiteral("true"));
+        emit flag->editingFinished();
+        QCOMPARE(doc->model().find(QStringLiteral("sp"))->value(QStringLiteral("excitons")), QJsonValue(true));
+        // (The form made again after the change, from the event loop.)
+        QTRY_VERIFY(panel()->settingsArea()->findChild<QCheckBox*>(QStringLiteral("mpEdit_excitons")) != nullptr);
+        QVERIFY(panel()->settingsArea()->findChild<QCheckBox*>(QStringLiteral("mpEdit_excitons"))->isChecked());
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // A process flow's geometry being built is not waited for by the calls
+    // that read or change the model: fem_describe, fem_edit, fem_model set
+    // answer at once, the build said - and a stopped build stays stopped.
+    // (fem_describe waited for the whole build in a loop of its own, 9.1 s
+    // here, minutes sanitized, and after fem_stop built it all again: the
+    // hunt of 22 October, B3.)
+    void aFlowsBuildIsNotWaitedForByReads()
+    {
+        const QString file = flowModel(QStringLiteral("flow_reads.qfem"), QStringLiteral("600[min]"));
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr && doc->geometryBeingBuilt());
+        QElapsedTimer t;
+        t.start();
+        QJsonObject r = call("fem_describe", {{"path", file}});
+        QVERIFY2(!failed(r) && json(r).value("geometry").toString().startsWith(QLatin1String("being built in the background")), qPrintable(text(r)));
+        r = call("fem_describe", {{"path", file}, {"what", "geometry"}});
+        QVERIFY2(failed(r) && text(r).startsWith(QLatin1String("The geometry is being built in the background")), qPrintable(text(r)));
+        r = call("fem_edit", {{"path", file}, {"action", "set"}, {"tag", "anl"}, {"props", QJsonObject{{"time", "590[min]"}}}});
+        QVERIFY2(!failed(r) && json(r).value("geometry").toString() == QLatin1String("being built in the background (fem_build waits for it)"),
+                 qPrintable(text(r)));
+        QVERIFY2(t.elapsed() < 5000, qPrintable(QString::number(t.elapsed())));
+        QVERIFY(doc->geometryBeingBuilt());
+        // Stopped, it stays so: a read starts nothing.
+        r = call("fem_stop", {{"path", file}});
+        QVERIFY2(!failed(r) && json(r).value("stopped").toBool(), qPrintable(text(r)));
+        t.restart();
+        r = call("fem_describe", {{"path", file}});
+        QVERIFY2(!failed(r) && json(r).value("geometry").toString() == QLatin1String("not built (fem_build builds it)"), qPrintable(text(r)));
+        QVERIFY2(t.elapsed() < 2000, qPrintable(QString::number(t.elapsed())));
+        QTest::qWait(300);
+        QVERIFY2(!doc->building(), "built again by a read");
         doc->setDocChanged(false);
         app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
     }

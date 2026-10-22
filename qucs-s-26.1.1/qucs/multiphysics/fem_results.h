@@ -233,9 +233,12 @@ struct Instance {
 /// picked: the point \a point (from 1; 0 the last), the time \a time or (in
 /// the frequency domain) the frequency \a frequency (empty: the last), of a
 /// mode analysis the mode \a mode (from 1; 0: the one its step chose, the
-/// first unless it says; -1, all: the one chosen at each frequency).
+/// first unless it says; -1, all: the one chosen at each frequency). With
+/// \a all, a time or frequency given picks it at each point. A time or
+/// frequency that is not read, of another unit, or past the solution's: none,
+/// and why in \a error.
 std::vector<Instance> instances(const SolutionSet& set, bool all, int point = 0, const QString& time = {}, const QString& frequency = {},
-                                int mode = 0);
+                                int mode = 0, QString* error = nullptr);
 /// The solution of \a instance, its snapshot selected.
 Solution* select(const SolutionSet& set, const Instance& instance);
 /// The mode a "solutions" (or a 1D plot group's "modes") choice \a which

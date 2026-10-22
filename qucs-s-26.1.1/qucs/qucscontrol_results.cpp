@@ -2157,10 +2157,12 @@ bool runKept(Schematic* sch, const QString& var, const QString& run, QString* er
     return false;
 }
 
-// Why a trace with data is not drawn: its diagram could not lay out the
-// axis it is drawn against.
-QString notDrawnWhy(const Diagram* d)
+// Why a trace with data is not drawn: hidden, or its diagram could not lay
+// out the axis it is drawn against. (A hidden one was said a layout's
+// failure: the hunt of 22 October, N8.)
+QString notDrawnWhy(const Diagram* d, const Graph* g)
 {
+    if (g->hidden) return tr("it is hidden (edit_trace 'hidden': false shows it)");
     const bool log = d->xAxis.log || d->yAxis.log || d->zAxis.log;
     return log ? tr("its diagram cannot lay out a log axis over it: no value above 0, or limits at or below 0 (edit_diagram's "
                     "x_axis or y_axis 'log': false shows it)")
@@ -2193,7 +2195,7 @@ QJsonObject traceJson(Schematic* sch, const Diagram* d, Graph* g, int number)
         t.insert(QStringLiteral("points"), int(g->count(0)));
         if (g->countY > 1) t.insert(QStringLiteral("curves"), g->countY);
         if (drawsCurves(d)) {
-            if (g->cPointsY == nullptr) t.insert(QStringLiteral("not drawn"), notDrawnWhy(d));
+            if (g->cPointsY == nullptr && !g->hidden) t.insert(QStringLiteral("not drawn"), notDrawnWhy(d, g));
             else if (const int off = d->leftOffLogAxis(g); off > 0)
                 t.insert(QStringLiteral("left off the log axis"),
                          QucsControl::tr("%n point(s) at or below 0, which a log axis has no place for", nullptr, off));
@@ -5476,7 +5478,7 @@ QJsonObject QucsControl::addMarker(const QJsonObject& args)
     Graph* g = traceOf(d, args.value(QLatin1String("trace")), &error);
     if (g == nullptr) return errorResult(error);
     if (g->isEmpty()) return errorResult(tr("%1 shows no data (%2): a marker needs it.").arg(g->Var, whyNoData(sch, g)));
-    if (g->cPointsY == nullptr) return errorResult(tr("%1 is not drawn (%2): a marker needs it drawn.").arg(g->Var, notDrawnWhy(d)));
+    if (g->cPointsY == nullptr) return errorResult(tr("%1 is not drawn (%2): a marker needs it drawn.").arg(g->Var, notDrawnWhy(d, g)));
     double x = NaN;
     QJsonObject found;
     if (!markerPlace(sch, g, args.value(QLatin1String("at")), &x, &found, &error, args.value(QLatin1String("reference"))))

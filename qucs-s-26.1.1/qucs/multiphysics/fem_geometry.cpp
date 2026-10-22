@@ -447,6 +447,16 @@ private:
     {
         if (a_error.isEmpty()) a_error = why;
     }
+    /// A flag, given as an expression of the parameters too (it was false
+    /// here, read for a solve alone: the hunt of 22 October, A7); one not a
+    /// constant fails.
+    bool flag(const Node& f, const QString& key)
+    {
+        QString why;
+        const bool on = flagIn(f, key, a_ps.scope, &why);
+        if (!why.isEmpty()) fail(why);
+        return on;
+    }
     void warn(const QString& what)
     {
         if (!a_warning.contains(what)) a_warning += (a_warning.isEmpty() ? QString() : QStringLiteral("; ")) + what;
@@ -633,7 +643,8 @@ private:
             corners.push_back({length(txt(p.at(0))), length(txt(p.at(1)))});
         }
         if (!a_error.isEmpty()) return;
-        const bool closed = f.flag(QStringLiteral("closed"));
+        const bool closed = flag(f, QStringLiteral("closed"));
+        if (!a_error.isEmpty()) return;
         if (corners.size() < (closed ? 3u : 2u))
             return fail(closed ? tr("a polygon needs three corners at least") : tr("a polyline needs two points at least"));
         GObject o;
@@ -991,7 +1002,8 @@ private:
     }
     void transform(const Node& f)
     {
-        const bool keep = f.flag(QStringLiteral("keep"));
+        const bool keep = flag(f, QStringLiteral("keep"));
+        if (!a_error.isEmpty()) return;
         std::vector<Affine> maps;
         if (f.type == QLatin1String("move")) {
             const QPointF d = lengths(f.pair(QStringLiteral("displacement")));
@@ -1151,7 +1163,8 @@ private:
     }
     void boolean(const Node& f)
     {
-        const bool keep = f.flag(QStringLiteral("keep"));
+        const bool keep = flag(f, QStringLiteral("keep"));
+        if (!a_error.isEmpty()) return;
         const bool unite = f.type == QLatin1String("union");
         std::vector<GObject> in = inputs(f, QStringLiteral("input"), !keep || unite);
         if (!a_error.isEmpty()) return;
@@ -1163,7 +1176,9 @@ private:
         for (const GObject& o : in)
             if (!o.solid()) return fail(tr("%1 is not a solid: only solids are united, cut or intersected").arg(o.name));
         GObject result;
-        if (unite && f.flag(QStringLiteral("interior"))) {
+        const bool interior = unite && flag(f, QStringLiteral("interior"));
+        if (!a_error.isEmpty()) return;
+        if (interior) {
             // Its interior boundaries kept: every input's loops, one object.
             for (const GObject& o : in)
                 for (const auto& loop : o.loops) result.loops.push_back(loop);

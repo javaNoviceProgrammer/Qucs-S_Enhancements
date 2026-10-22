@@ -321,6 +321,15 @@ private:
     {
         if (a_error.isEmpty()) a_error = why;
     }
+    /// A flag, given as an expression of the parameters too (the hunt of 22
+    /// October, A7); one not a constant fails.
+    bool flag(const Node& step, const QString& key)
+    {
+        QString why;
+        const bool on = flagIn(step, key, a_ps.scope, &why);
+        if (!why.isEmpty()) fail(why);
+        return on;
+    }
     void warn(const QString& what)
     {
         if (!a_warnings.contains(what)) a_warnings << what;
@@ -641,7 +650,8 @@ private:
         const QString m = material(step);
         const double t = positiveLength(step, QStringLiteral("thickness"), tr("thickness"));
         if (!a_error.isEmpty()) return;
-        const bool selective = step.flag(QStringLiteral("selective"));
+        const bool selective = flag(step, QStringLiteral("selective"));
+        if (!a_error.isEmpty()) return;
         const Paths all = solids();
         Paths seed;
         for (const Region& r : a_regions)

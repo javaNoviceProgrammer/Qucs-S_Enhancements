@@ -1564,6 +1564,49 @@ private slots:
         QVERIFY(std::abs(at(*pairs.study.solutions[1], QStringLiteral("semi.V"), QPointF(5, 104.9)) - at(*alone.solution, QStringLiteral("semi.V"), QPointF(5, 104.9))) < 1e-6);
     }
 
+    /// A semiconductor solved in 1D read along its line across a
+    /// heterojunction: each side's carriers its own, as the 2D solution reads
+    /// them - n-GaAs on n-Al0.3GaAs, 1e17, at 0.1 V on a 70 nm mesh, the line
+    /// every 2.5 nm. (The line kept one value at the interface node, the
+    /// GaAs side's, and read the AlGaAs's from it: 46 times too many 1.5 nm
+    /// in - the hunt of 22 October, A3.) Its "at" not finite, said as such
+    /// (it was "its domains have no extent along the line": N10); a failure
+    /// at a low temperature, the temperature said (N9).
+    void semiconductorIn1DAcrossAHeterojunction()
+    {
+        auto hj = [](const char* space, const QString& mesh, const QString& hmax, const QString& more, const QString& T = QStringLiteral("300[K]")) {
+            return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "Va", "expression": "0.1[V]"}],
+              "components": [{"unit": "um",
+                "geometry": [{"type": "rectangle", "name": "g", "position": ["-1", "0"], "size": ["2", "0.2"]},
+                             {"type": "rectangle", "name": "b", "position": ["-1", "0.2"], "size": ["2", "0.2"]}],
+                "materials": [{"material": "GaAs", "compound": "GaAs", "x": "0", "selection": {"only": ["g"]}},
+                              {"material": "AlGaAs", "compound": "AlGaAs", "x": "0.3", "selection": {"only": ["b"]}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "space": "%1", "T": "%5" %4, "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e17[1/cm^3]", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "a", "V0": "Va", "selection": {"of": ["g"], "side": "bottom"}},
+                  {"type": "ohmic", "name": "k", "V0": "0[V]", "selection": {"of": ["b"], "side": "top"}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "%3", "features": [%2]}}],
+              "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                               .arg(QLatin1String(space), mesh, hmax, more, T)
+                               .toUtf8());
+        };
+        const Run plane = run(hj("2d", QStringLiteral(R"({"type": "layered", "hlateral": "0.25", "count": 80, "selection": {"only": ["g", "b"]}})"), QStringLiteral("0.5"), QString()));
+        const Run coarse = run(hj("1d", QString(), QStringLiteral("0.07"), QStringLiteral(R"(, "h1d": "2.5[nm]")")));
+        QVERIFY2(plane.error.isEmpty() && coarse.error.isEmpty(), qPrintable(plane.error + coarse.error));
+        double dn = 0, dV = 0;
+        for (const double y : {0.17, 0.19, 0.1985, 0.2015, 0.205, 0.21, 0.25}) {
+            const QPointF q(0.3, y), p(0, y);
+            dn = std::max(dn, relative(at(*coarse.solution, QStringLiteral("semi.n"), q), at(*plane.solution, QStringLiteral("semi.n"), p)));
+            dV = std::max(dV, std::abs(at(*coarse.solution, QStringLiteral("semi.phin"), q) - at(*plane.solution, QStringLiteral("semi.phin"), p)));
+        }
+        qInfo("across GaAs/Al0.3GaAs: n within %.3g of the 2D's, φn within %.3g V", dn, dV);
+        QVERIFY2(dn < 1e-3 && dV < 1e-4, qPrintable(QStringLiteral("%1 %2").arg(dn).arg(dV)));
+        const Run infinite = run(hj("1d", QString(), QStringLiteral("0.07"), QStringLiteral(R"(, "h1d": "2.5[nm]", "at": "1/0")")));
+        QVERIFY2(infinite.error.contains(QLatin1String("where its line runs: it is inf, not a finite number")), qPrintable(infinite.error));
+        const Run cold = run(hj("2d", QString(), QStringLiteral("0.07"), QString(), QStringLiteral("1[K]")));
+        QVERIFY2(!cold.error.isEmpty() && cold.error.contains(QLatin1String("at 1 K its materials' intrinsic density is e^(-")), qPrintable(cold.error));
+    }
+
     /// A semiconductor solved in 1D: along its line, on a strip of its own,
     /// each node taking the line's values at its coordinate - the 2D
     /// solution of a layered stack (uniform across it, away from its sides)
@@ -1659,6 +1702,11 @@ private slots:
             for (double y = 0.0031; y < 0.4; y += 0.0127) {
                 const QPointF q(0.3, y), p(0, y);
                 dV = std::max(dV, std::abs(at(*coarse.solution, QStringLiteral("semi.V"), q) - at(*plane.solution, QStringLiteral("semi.V"), p)));
+                // (The quasi-Fermi potentials the line's too, with V and the
+                // carriers - from this mesh's nodes φn was 0.389 V for 0.059:
+                // the hunt of 22 October, A4.)
+                for (const char* name : {"semi.phin", "semi.phip"})
+                    dV = std::max(dV, std::abs(at(*coarse.solution, QLatin1String(name), q) - at(*plane.solution, QLatin1String(name), p)));
                 // (The bands too: of V.)
                 dV = std::max(dV, std::abs(at(*coarse.solution, QStringLiteral("semi.Ec"), q) - at(*plane.solution, QStringLiteral("semi.Ec"), p)) / Q);
                 for (const char* name : {"semi.n", "semi.p"})

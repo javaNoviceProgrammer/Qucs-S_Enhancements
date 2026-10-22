@@ -2957,7 +2957,12 @@ QList<NodeKind> makeKinds()
                      {tr("Energy alone"), tr("Energy, of those in the wells")}, QStringLiteral("energy"),
                      tr("Localized: the subbands counted are the lowest (highest) of the states with at least a share of their |ψ|² in "
                         "the wells and the barriers between them - not a high field's triangle against the line's end")),
-              shownIf(expr(QStringLiteral("pmin"), tr("Least share in the wells"), QString(), QStringLiteral("0.6")), QStringLiteral("select=localized")),
+              // (Read under the continuum "bound" too, for the states a field
+              // holds in their wells: shown there - the hunt of 22 October, N2.)
+              shownIf(expr(QStringLiteral("pmin"), tr("Least share in the wells"), QString(), QStringLiteral("0.6"),
+                           tr("The share of a state's |ψ|² in the wells that makes it localized (select: localized) and, under the "
+                              "continuum bound, makes a state a field tilts past its lower barrier bound - held in its well")),
+                      QStringLiteral("select=localized|continuum=bound")),
               integer(QStringLiteral("kpoints"), tr("k points (k·p)"), 121,
                       tr("The k·p valence bands' in-plane k from 0 past the highest photon and the holes' reach, at this many values: "
                          "fewer, quicker - each interval's occupations and the line's tail are integrated within it")),
@@ -3272,16 +3277,16 @@ QList<NodeKind> makeKinds()
                           tr("A global in time: a photodiode's current through its load (semi.IL_<contact>), its contact's (semi.I_)...")),
               expr(QStringLiteral("f0"), tr("Fundamental f0"), QStringLiteral("Hz"), QStringLiteral("1[GHz]"),
                    tr("The light's or the source's modulation")),
-              integer(QStringLiteral("count"), tr("Harmonics"), 5, tr("H1 to Hn and HD2 to HDn")),
+              integer(QStringLiteral("count"), tr("Harmonics"), 5, tr("H1 to Hn and HD2 to HDn: from 1 to 50")),
               integer(QStringLiteral("periods"), tr("Periods"), 1,
                       tr("The last whole periods of the solution's times analysed - after its start's transient: output times evenly "
                          "spaced over them, a few tens a period, exact")),
               unit},
              {}, {}, false, false, QStringLiteral("harm"),
              tr("A global's distortion in time: over its last whole periods its mean, each harmonic's amplitude H1 ... Hn, HDn = "
-                "20 log10(Hn/H1) in dBc and THD = √(ΣHn²)/H1 - a photodiode's harmonics under strong modulated light. Along a "
-                "sweep of the light's power, H1's against the power's: its compression (1 dB: H1 1 dB below its low power's "
-                "times the power's ratio).")});
+                "20 log10(Hn/H1) in dBc and THD = √(ΣHn²)/H1 - a photodiode's harmonics under strong modulated light. Once a "
+                "point of a sweep, of all its times. Its compression is not computed: along a sweep of the light's power, plot H1 "
+                "against the power - 1 dB where H1 falls 1 dB below the low power's H1 times the power's ratio.")});
         const P level = choice(QStringLiteral("level"), tr("Over"), {QStringLiteral("domain"), QStringLiteral("boundary")},
                                {tr("Domains"), tr("Boundaries")}, QStringLiteral("domain"));
         const QStringList over = {QStringLiteral("integral"), QStringLiteral("average"), QStringLiteral("maximum"), QStringLiteral("minimum")};
@@ -3683,8 +3688,84 @@ QString Node::text(const QString& key) const
 bool Node::flag(const QString& key) const
 {
     const QJsonValue v = value(key);
-    if (v.isString()) return v.toString() == QLatin1String("true") || v.toString() == QLatin1String("1");
+    // (A number - "excitons": 1, from fem_edit or a file - true where not 0,
+    // and "True" true: the first was false, said nowhere, the second refused
+    // as an expression - the hunt of 22 October, A8 and N5.)
+    if (v.isDouble()) return v.toDouble() != 0;
+    if (v.isString()) {
+        const QString t = v.toString().trimmed();
+        return t.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0 || t == QLatin1String("1");
+    }
     return v.toBool();
+}
+
+bool flagWord(const QString& text)
+{
+    const QString t = text.trimmed();
+    return t.isEmpty() || t.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0
+           || t.compare(QLatin1String("false"), Qt::CaseInsensitive) == 0 || t == QLatin1String("1") || t == QLatin1String("0");
+}
+
+bool flagIn(const Node& node, const QString& key, const Scope& scope, QString* error)
+{
+    const QJsonValue v = node.value(key);
+    if (!v.isString() || flagWord(v.toString())) return node.flag(key);
+    // (An expression of the parameters, read where the flag is: it was read
+    // for a solve alone, false to the mesh, the geometry, a plot - the hunt
+    // of 22 October, A7.)
+    QString why;
+    const std::optional<double> x = evaluateConstant(v.toString(), scope, Dim(), &why);
+    if (!x) {
+        if (error)
+            *error = QObject::tr("its \"%1\" is \"%2\" - true, false or an expression of the parameters: %3").arg(key, v.toString(), why);
+        return false;
+    }
+    return *x != 0;
+}
+
+namespace {
+
+/// Whether \a node is skipped by the flags' reading: a node disabled, another
+/// study, the results unless \a results. (A disabled step's or a plot's
+/// malformed flag failed every study: the hunt of 22 October, B4.)
+bool flagsSkipped(const Node& node, const QString& study, bool results)
+{
+    if (!node.enabled) return true;
+    if (!study.isEmpty() && node.type == QLatin1String("study") && node.tag != study) return true;
+    return !results && node.type == QLatin1String("results");
+}
+
+} // namespace
+
+bool hasExpressionFlags(const Node& node, const QString& study, bool results)
+{
+    if (flagsSkipped(node, study, results)) return false;
+    if (const NodeKind* kind = node.kind())
+        for (auto it = node.props.begin(); it != node.props.end(); ++it)
+            if (const PropertyDef* def = kind->property(it.key());
+                def && def->kind == PropertyDef::Bool && it.value().isString() && !flagWord(it.value().toString()))
+                return true;
+    for (const Node& c : node.children)
+        if (hasExpressionFlags(c, study, results)) return true;
+    return false;
+}
+
+void readExpressionFlags(Node& node, const Scope& scope, const QString& study, bool results, QStringList* errors)
+{
+    if (flagsSkipped(node, study, results)) return;
+    if (const NodeKind* kind = node.kind())
+        for (auto it = node.props.begin(); it != node.props.end(); ++it) {
+            const PropertyDef* def = kind->property(it.key());
+            if (!def || def->kind != PropertyDef::Bool || !it.value().isString() || flagWord(it.value().toString())) continue;
+            QString why;
+            const bool on = flagIn(node, it.key(), scope, &why);
+            if (!why.isEmpty()) {
+                if (errors) *errors << QObject::tr("%1: %2").arg(node.name(), why);
+                continue;
+            }
+            it.value() = on;
+        }
+    for (Node& c : node.children) readExpressionFlags(c, scope, study, results, errors);
 }
 
 int Node::integer(const QString& key) const

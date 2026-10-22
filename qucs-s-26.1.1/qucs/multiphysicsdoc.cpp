@@ -315,6 +315,15 @@ MultiphysicsDoc::~MultiphysicsDoc()
     // not to this, half gone (a cast UBSan calls undefined), nor to the
     // window, which may be going too.
     disconnect(a_undo, nullptr, this, nullptr);
+    // A call waiting for its job told it is gone - once this is, from the
+    // event loop, where the call's own pointer to it reads null. (Deleted
+    // under a wait - the application closing every document as it quits, in
+    // the very answer to that wait -, the wait took its count off the freed
+    // model, and its timer, deleted with this, told it of a model half
+    // destroyed: the hunt of 22 October, B1.)
+    const std::map<quint64, std::function<void()>> waits = std::move(a_jobWaits);
+    a_jobWaits.clear();
+    for (const auto& [id, abandon] : waits) abandon();
     // (Both stopped, then waited for: a process flow stops at its next step
     // or time step.)
     for (const std::shared_ptr<Job>& job : {a_job, a_build})
@@ -758,6 +767,36 @@ const GeometryBuild& MultiphysicsDoc::geometry()
 {
     if (a_geometryStale) buildGeometry();
     return a_geometry;
+}
+
+const GeometryBuild* MultiphysicsDoc::geometryWithoutWaiting(QString* pending)
+{
+    // (A process flow's waited for here held the call - fem_describe a whole
+    // anneal, 9.1 s, and after a stop built it all again: the hunt of 22
+    // October, B3.)
+    if (!a_geometryStale) return &a_geometry;
+    if (!slowGeometry(a_model) && !a_build && !a_closed) {
+        buildNow(nullptr);
+        return &a_geometry;
+    }
+    if (pending)
+        *pending = geometryBeingBuilt() ? tr("being built in the background, %1 (fem_build waits for it)").arg(jobProgress())
+                                        : tr("not built (fem_build builds it)");
+    return nullptr;
+}
+
+QString MultiphysicsDoc::geometryAfterChange()
+{
+    if (!a_geometryStale) return a_geometry.ok() ? QString() : geometryError();
+    if (!slowGeometry(a_model) && !a_build && !a_closed) {
+        QString why;
+        buildNow(&why);
+        return why;
+    }
+    // (A process flow's in the background, as the window builds it after a
+    // change: not waited for - the hunt of 22 October, B3.)
+    if (!a_closed && !geometryBeingBuilt()) requestGeometry();
+    return tr("being built in the background (fem_build waits for it)");
 }
 
 bool MultiphysicsDoc::buildGeometry(QString* error)
@@ -1464,11 +1503,22 @@ bool MultiphysicsDoc::waitForJob(int ms)
     return self && !a_job && !a_build;
 }
 
-void MultiphysicsDoc::whenJobEnds(int ms, std::function<void(bool ended)> then)
+void MultiphysicsDoc::whenJobEnds(int ms, std::function<void(bool ended)> then, bool runningNow)
 {
     if (!a_job && !a_build) {
         then(true);
         return;
+    }
+    // (Those running now alone: fem_stop's - it waited for a solve another
+    // call started as the stopped one ended, and said it stopped once that
+    // was solved: the hunt of 22 October, B2.)
+    std::function<bool()> over = [this] { return !a_job && !a_build; };
+    if (runningNow) {
+        const std::weak_ptr<Job> job = a_job, build = a_build;
+        over = [job, build] {
+            const std::shared_ptr<Job> j = job.lock(), b = build.lock();
+            return (!j || j->ended) && (!b || b->ended);
+        };
     }
     // (Not a loop of its own, as waitForJob's: a tool waiting so held back
     // every call begun after it, and was held back by them - a call sent to
@@ -1479,30 +1529,44 @@ void MultiphysicsDoc::whenJobEnds(int ms, std::function<void(bool ended)> then)
         QPointer<MultiphysicsDoc> doc;
         QMetaObject::Connection changed;
         QPointer<QTimer> timer;
+        quint64 id = 0;
         bool done = false;
     };
     auto st = std::make_shared<State>();
     st->then = std::move(then);
     st->doc = this;
+    st->id = ++a_jobWaitIds;
     ++a_waiting;
     const auto end = [st](bool ended) {
         if (st->done) return;
         st->done = true;
         QObject::disconnect(st->changed);
         if (st->timer) st->timer->deleteLater();
-        MultiphysicsDoc* doc = st->doc;
         const std::function<void(bool)> told = std::move(st->then);
-        told(ended && doc != nullptr);
-        if (doc && --doc->a_waiting == 0 && doc->closedWhenFree()) doc->deleteLater();
+        told(ended && st->doc);
+        // (Read again: the answer may have closed it - the client gone, the
+        // application quits, closing every document -: the hunt of 22
+        // October, B1.)
+        if (MultiphysicsDoc* doc = st->doc) {
+            doc->a_jobWaits.erase(st->id);
+            if (--doc->a_waiting == 0 && doc->closedWhenFree()) doc->deleteLater();
+        }
     };
+    // The model deleted first (the window closed): told it went, from the
+    // event loop once it has.
+    a_jobWaits.emplace(st->id, [st] {
+        if (st->done) return;
+        st->done = true;
+        QObject::disconnect(st->changed);
+        st->doc = nullptr;
+        QTimer::singleShot(0, QCoreApplication::instance(), [told = std::move(st->then)] { told(false); });
+    });
     auto* timer = new QTimer(this);
     st->timer = timer;
     timer->setSingleShot(true);
     connect(timer, &QTimer::timeout, this, [end] { end(false); });
-    // (The model deleted - the window closed -: its timer with it, told.)
-    connect(timer, &QObject::destroyed, [end] { end(false); });
-    st->changed = connect(this, &MultiphysicsDoc::stateChanged, this, [this, end] {
-        if (!a_job && !a_build) end(true);
+    st->changed = connect(this, &MultiphysicsDoc::stateChanged, this, [over, end] {
+        if (over()) end(true);
     });
     timer->start(std::max(1, ms));
 }
@@ -1524,6 +1588,7 @@ void MultiphysicsDoc::closeWhenFree()
     // (Its work stopped - a process flow at its next time step -, none
     // started; deleted as the last wait ends.)
     a_closed = true;
+    ++a_stops;
     a_geometryTimer->stop();
     a_afterBuild.clear();
     a_buildWanted = false;
@@ -1535,11 +1600,19 @@ void MultiphysicsDoc::closeWhenFree()
 
 void MultiphysicsDoc::cancelJob()
 {
+    if (a_job || a_build) ++a_stops;
     if (a_job) {
         a_job->cancel = true;
         say(tr("Cancelling…"));
     } else if (a_build) {
         a_build->cancel = true;
+        // (And the build waiting to start - a change's, on the timer, one
+        // wanted after this, this one's for a model changed since -: a stop
+        // stops the building. It started again a moment after, as the
+        // change's: the hunt of 22 October, B3.)
+        a_build->superseded = false;
+        a_geometryTimer->stop();
+        a_buildWanted = false;
         say(tr("Cancelling…"));
     }
 }
@@ -1711,10 +1784,11 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
         return false;
     }
     // The solution it shows: its time and parameter value.
+    QString asked;
     const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
-                                                     g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")));
+                                                     g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")), &asked);
     if (chosen.empty()) {
-        if (error) *error = tr("%1: no solution to show").arg(g->name());
+        if (error) *error = asked.isEmpty() ? tr("%1: no solution to show").arg(g->name()) : tr("%1: its %2").arg(g->name(), asked);
         return false;
     }
     Solution* sol = select(*set, chosen.front());
@@ -1791,7 +1865,10 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
             scene->arrows.push_back(a);
         } else if (p.type == QLatin1String("meshplot")) {
             scene->mesh = true;
-            scene->quality = p.flag(QStringLiteral("quality"));
+            // (Read with the parameters: the hunt of 22 October, A7.)
+            QString why;
+            scene->quality = qucs_s::fem::flagIn(p, QStringLiteral("quality"), parameters()->scope, &why);
+            if (!why.isEmpty()) scene->problems << tr("%1: %2").arg(p.name(), why);
         } else if (p.type == QLatin1String("rayplot")) {
             const QString tag = p.text(QStringLiteral("physics"));
             const Field* rf = nullptr;
@@ -2187,7 +2264,19 @@ DerivedResult MultiphysicsDoc::evaluate(const QString& tag)
             int index;
         };
         std::vector<Row> rows;
-        const std::vector<Instance> each = instances(in, all, 0, {}, {}, mode);
+        std::vector<Instance> each = instances(in, all, 0, {}, {}, mode);
+        // (A whole run's value - Harmonics, of all its times -: once a point,
+        // named by it. It was listed at each output time, 4941 values of
+        // which fem_solve showed the last 40, H1 and H2 not among them: the
+        // hunt of 22 October, B5.)
+        if (n->type == QLatin1String("harmonics")) {
+            std::vector<Instance> once;
+            for (const Instance& at : each)
+                if (once.empty() || once.back().point != at.point) once.push_back(at);
+                else once.back() = at;
+            for (Instance& at : once) at.label = std::size_t(at.point) < in.solutions.size() && in.solutions.size() > 1 ? in.solutions[std::size_t(at.point)]->label : QString();
+            each = once;
+        }
         std::vector<DerivedResult> ones(each.size());
         std::vector<char> found(each.size(), 0);
         for (std::size_t i = 0; i < each.size(); ++i)
@@ -2483,9 +2572,11 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         }
         return QStringList{QStringLiteral("solution")};
     };
+    QString asked;
     const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
-                                                     g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")));
+                                                     g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")), &asked);
     QStringList problems;
+    if (!asked.isEmpty()) problems << tr("%1: its %2").arg(g->name(), asked);
     // Against a global (x): its one axis's values each solution's value of
     // it - a laser's light against its current, not its voltage.
     if (const QString xText = g->text(QStringLiteral("x")).trimmed(); !xText.isEmpty()) {
@@ -2766,6 +2857,11 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         // (Its own display: its diagram of other traces replaced; the y axis
         // said in the traces' units.)
         const bool rect = g->text(QStringLiteral("diagram")) == QLatin1String("rect");
+        // (A flag given as an expression of the parameters: read with them -
+        // it was false here, the hunt of 22 October, A7.)
+        QString ylogWhy;
+        const bool ylog = rect && qucs_s::fem::flagIn(*g, QStringLiteral("ylog"), parameters()->scope, &ylogWhy);
+        if (!ylogWhy.isEmpty()) return fail(ylogWhy);
         QStringList gone;
         const QString shown = a_App->showPythonDisplay(QJsonObject{{QStringLiteral("display"), dpl},
                                                                    {QStringLiteral("dataset"), dat},
@@ -2775,7 +2871,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                                                    {QStringLiteral("replace"), true},
                                                                    {QStringLiteral("ylabel"), rect && anyUnit ? axisWords.join(QLatin1String(", ")) : QString()},
                                                                    {QStringLiteral("xlabel"), rect ? xWords : QString()},
-                                                                   {QStringLiteral("ylog"), rect && g->flag(QStringLiteral("ylog"))}},
+                                                                   {QStringLiteral("ylog"), ylog}},
                                                        &gone);
         if (!shown.isEmpty()) return fail(shown);
         if (!gone.isEmpty()) say(tr("%1: its display's diagrams of traces its dataset no longer has removed: %2").arg(g->name(), gone.join(QLatin1String("; "))));
@@ -3013,8 +3109,10 @@ bool MultiphysicsDoc::copyPart(const QString& tag, QString* error)
     if (!set || set->solutions.empty()) return fail(tr("%1: its study is not computed yet - Compute it").arg(n->name()));
     const Node* line = a_model.find(n->text(QStringLiteral("line")));
     if (!line || line->type != QLatin1String("lineparams")) return fail(tr("%1: choose its Line Parameters node").arg(n->name()));
-    const std::vector<Instance> chosen = instances(*set, false, n->integer(QStringLiteral("point")), QString(), n->text(QStringLiteral("frequency")));
+    QString asked;
+    const std::vector<Instance> chosen = instances(*set, false, n->integer(QStringLiteral("point")), QString(), n->text(QStringLiteral("frequency")), 0, &asked);
     Solution* s = chosen.empty() ? nullptr : select(*set, chosen.front());
+    if (!asked.isEmpty()) return fail(tr("%1: its %2").arg(n->name(), asked));
     if (!s) return fail(tr("%1: nothing is solved").arg(n->name()));
     const std::optional<double> length = evaluateConstant(n->text(QStringLiteral("length")), s->parameters().scope, Dim::length());
     if (lineTerminals(*line).size() > 1) {
@@ -3181,8 +3279,8 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
             // diagram - the band edges with each state's level and |ψ|² on it.
             // (Of the carriers it solves.)
             const Node* physics = m.find(t);
-            const bool electrons = !physics || physics->flag(QStringLiteral("electrons"));
-            const bool heavy = !physics || physics->flag(QStringLiteral("heavy"));
+            const bool electrons = !physics || qucs_s::fem::flagIn(*physics, QStringLiteral("electrons"), parameters()->scope);
+            const bool heavy = !physics || qucs_s::fem::flagIn(*physics, QStringLiteral("heavy"), parameters()->scope);
             for (const auto& [carrier, title] : {std::pair{QStringLiteral(".P_e"), tr("Electron Probability (%1)")},
                                                  std::pair{QStringLiteral(".P_hh"), tr("Heavy Hole Probability (%1)")}}) {
                 if (!(carrier == QLatin1String(".P_e") ? electrons : heavy)) continue;

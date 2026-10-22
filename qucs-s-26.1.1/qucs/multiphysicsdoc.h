@@ -105,6 +105,14 @@ public:
     const qucs_s::fem::GeometryBuild& geometry();
     /// The geometry as last built, stale or not: not built here.
     const qucs_s::fem::GeometryBuild& builtGeometry() const { return a_geometry; }
+    /// The geometry for a call that does not wait: as built now (built at
+    /// once when stale), but a process flow's, to be built in the background,
+    /// null - \a pending then how far it is. Nothing is started: a build
+    /// stopped stays so.
+    const qucs_s::fem::GeometryBuild* geometryWithoutWaiting(QString* pending);
+    /// The geometry after a change or an opening: built at once, or a process
+    /// flow's asked for in the background; what it is (empty: built).
+    QString geometryAfterChange();
     bool geometryStale() const { return a_geometryStale; }
     /// The geometry being built in the background (a process flow's).
     bool geometryBeingBuilt() const { return a_build && a_buildWhole; }
@@ -174,10 +182,14 @@ public:
     bool waitForJob(int ms = 120000);
     /// As waitForJob(), but returning at once: \a then is told when they
     /// ended (true), or \a ms passed or the model went (false) - once. Held
-    /// meanwhile as a wait is (closeWhenFree()).
-    void whenJobEnds(int ms, std::function<void(bool ended)> then);
+    /// meanwhile as a wait is (closeWhenFree()). \a runningNow: the job and
+    /// the build running now alone, not one started after them.
+    void whenJobEnds(int ms, std::function<void(bool ended)> then, bool runningNow = false);
     /// Stops the job running, else what is built in the background.
     void cancelJob();
+    /// The stops so far (cancelJob(), its tab closed): a call waiting behind
+    /// a job, a stop meanwhile, starts nothing.
+    quint64 stops() const { return a_stops; }
     /// Waited for now (a tool waiting for its geometry or its solve, the
     /// window going on): not to be deleted under the one waiting.
     bool beingWaitedFor() const { return a_waiting > 0; }
@@ -346,7 +358,11 @@ private:
     QString a_stepWanted;
     bool a_stepWantedFocused = false;
     quint64 a_geometryRevision = 0, a_revision = 0, a_builtRevision = ~quint64(0);
-    int a_waiting = 0;        // waits under way (waitFor, waitForJob)
+    int a_waiting = 0;        // waits under way (waitFor, waitForJob, whenJobEnds)
+    // whenJobEnds's waits under way, each to be told if this goes first.
+    std::map<quint64, std::function<void()>> a_jobWaits;
+    quint64 a_jobWaitIds = 0;
+    quint64 a_stops = 0;
     bool a_closed = false;    // its tab closed: deleted when no wait is
     bool a_viewPartial = false;   // the view a process step's state (showBuiltUpTo), not the whole geometry
     QPointF a_lastPointer;        // where the pointer was in the model (a process flow's cross-probe)

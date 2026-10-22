@@ -1059,7 +1059,17 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             out.error = tr("Harmonics: its fundamental %1").arg(f0 ? tr("must be more than 0") : why);
             return out;
         }
-        const int count = std::clamp(node.integer(QStringLiteral("count")), 1, 50), periods = std::max(node.integer(QStringLiteral("periods")), 1);
+        // (Outside them: said - clamped, without a word, a count of 0 gave H1:
+        // the hunt of 22 October, N6.)
+        const int count = node.integer(QStringLiteral("count")), periods = node.integer(QStringLiteral("periods"));
+        if (count < 1 || count > 50) {
+            out.error = tr("Harmonics: its count, %1, from 1 to 50").arg(count);
+            return out;
+        }
+        if (periods < 1) {
+            out.error = tr("Harmonics: its periods, %1, one at least").arg(periods);
+            return out;
+        }
         const int last = solution.snapshotCount() - 1;
         const double tb = solution.snapshotTime(last), ta = tb - periods / *f0;
         if (ta < solution.snapshotTime(0) - 1e-9 * (tb - solution.snapshotTime(0))) {
@@ -1104,6 +1114,27 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
         if (count > 1) out.values << DerivedValue{QStringLiteral("THD"), h1 > 0 ? std::sqrt(rest) / h1 : NAN, Dim(),
                                                   h1 > 0 ? QStringLiteral("%1 %").arg(100 * std::sqrt(rest) / h1, 0, 'g', 4) : QStringLiteral("-")};
         out.note = tr("over %1 periods of %2 Hz, %3 output times").arg(periods).arg(*f0).arg(pts.size());
+        // (What the samples cannot resolve, and a signal not periodic in f0:
+        // said - given without a word, the hunt of 22 October, N6.)
+        QStringList said;
+        double shortest = T;
+        for (std::size_t k = 1; k < pts.size(); ++k) shortest = std::min(shortest, pts[k].first - pts[k - 1].first);
+        const int resolved = shortest > 0 ? int(std::floor(1 / (2 * shortest * *f0) - 1e-9)) : count;
+        if (resolved < count)
+            said << (resolved < 1 ? tr("its output times, %1 apart, resolve no harmonic of %2 Hz").arg(formatQuantity(shortest, Dim::of(0, 0, 1))).arg(*f0)
+                                  : tr("past H%1 its output times, %2 apart, resolve nothing (half their rate): H%3 to H%4 aliased")
+                                        .arg(resolved).arg(formatQuantity(shortest, Dim::of(0, 0, 1))).arg(resolved + 1).arg(count));
+        double lo = pts.front().second, hi = lo;
+        for (const auto& p : pts) {
+            lo = std::min(lo, p.second);
+            hi = std::max(hi, p.second);
+        }
+        const double swing = hi - lo, gap = std::abs(pts.back().second - pts.front().second);
+        if (swing > 0 && gap > 0.01 * swing)
+            said << tr("the signal is not periodic over its window: its ends %1 % of its swing apart (a start's transient not settled, "
+                       "or an f0 not the signal's own nor a whole fraction of it) - its harmonics leak")
+                        .arg(100 * gap / swing, 0, 'g', 3);
+        if (!said.isEmpty()) out.note += QStringLiteral("; ") + said.join(QStringLiteral("; "));
         return out;
     }
     if (type == QLatin1String("integral") || type == QLatin1String("average") || type == QLatin1String("maximum")
@@ -1121,7 +1152,13 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
             out.error = why;
             return out;
         }
-        const bool revolved = solution.axisymmetric() && node.flag(QStringLiteral("revolved"));
+        // (Read with the solution's parameters: an expression was false here,
+        // the hunt of 22 October, A7.)
+        const bool revolved = solution.axisymmetric() && flagIn(node, QStringLiteral("revolved"), solution.scope(), &why);
+        if (!why.isEmpty()) {
+            out.error = why;
+            return out;
+        }
         const Over o = level == Level::Boundary ? overBoundaries(solution, e, picked, revolved) : overDomains(solution, e, picked, revolved);
         if (!o.any) {
             out.error = tr("%1 is defined on none of them").arg(text);
@@ -1685,7 +1722,73 @@ DerivedResult evaluateDerived(const Solution& solution, const Node& node)
     return out;
 }
 
-std::vector<Instance> instances(const SolutionSet& set, bool all, int point, const QString& time, const QString& frequency, int mode)
+namespace {
+
+/// The time or frequency \a text asks of \a s, in SI (a frequency's a
+/// wavelength's or a photon energy's too; "1.5 eV", as the answers write
+/// one, as "1.5[eV]"); none, and why, when it is not one or lies past the
+/// solution's. (Not read, it was the last; of another unit, or a plain number
+/// for a spectrum, taken as hertz; past the run, the nearest end - each
+/// without a word: the hunt of 22 October, B9.)
+std::optional<double> snapshotAsked(const Solution& s, QString text, QString* why)
+{
+    static const QRegularExpression spaced(QStringLiteral("^\\s*([-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?)\\s+([A-Za-zµΩÅ°][A-Za-z0-9µΩÅ°/^.*]*)\\s*$"));
+    if (const QRegularExpressionMatch m = spaced.match(text); m.hasMatch()) text = m.captured(1) + QLatin1Char('[') + m.captured(2) + QLatin1Char(']');
+    // (A Valence Bands step's outputs its k points, in 1/m; a Laser L-I
+    // step's its biases.)
+    const bool spectrum = s.frequencyDomain && (s.photonAxis == 1 || s.photonAxis == 2), bands = s.frequencyDomain && s.photonAxis == 3;
+    const QString what = bands              ? QObject::tr("a k, in 1/m or with its unit (\"0.5[1/nm]\")")
+                         : s.biasAxis       ? QObject::tr("a bias, in V")
+                         : !s.frequencyDomain ? QObject::tr("a time")
+                         : spectrum         ? QObject::tr("a photon energy, wavelength or frequency, with its unit (\"1.5[eV]\", \"826.6[nm]\")")
+                                            : QObject::tr("a frequency (or a free-space wavelength, a photon's energy)");
+    QString error, unlike;
+    std::optional<double> v = evaluateConstant(text, s.parameters().scope, bands ? Dim::of(-1) : s.snapshotDim(), &error, &unlike);
+    if (s.frequencyDomain && !bands && (!v || !unlike.isEmpty())) {
+        // (A frequency as a free-space wavelength, or a photon's energy, too.)
+        QString notLength, notEnergy;
+        const std::optional<double> lambda = evaluateConstant(text, s.parameters().scope, Dim::length(), nullptr, &notLength);
+        const std::optional<double> energy = evaluateConstant(text, s.parameters().scope, Dim::of(2, 1, -2), nullptr, &notEnergy);
+        if (lambda && notLength.isEmpty() && *lambda > 0) {
+            v = 299792458.0 / *lambda;
+            unlike.clear();
+        } else if (energy && notEnergy.isEmpty() && *energy > 0) {
+            v = *energy / 6.62607015e-34;
+            unlike.clear();
+        }
+    }
+    if (!v) {
+        *why = QObject::tr("\"%1\" is not read: %2 - %3 wanted").arg(text, error, what);
+        return std::nullopt;
+    }
+    if (!unlike.isEmpty() || (spectrum && Expression::compile(text, s.parameters().scope).dim() == Dim())) {
+        *why = QObject::tr("\"%1\" is not %2").arg(text, what);
+        return std::nullopt;
+    }
+    // Past the outputs by more than half a step at the end: said.
+    const int snaps = s.snapshotCount();
+    double lo = s.snapshotValue(0), hi = lo;
+    for (int k = 1; k < snaps; ++k) {
+        lo = std::min(lo, s.snapshotValue(k));
+        hi = std::max(hi, s.snapshotValue(k));
+    }
+    const double slack = snaps > 1 ? 0.5 * (hi - lo) / (snaps - 1) : 0.5 * std::abs(hi);
+    if (*v < lo - slack - 1e-12 * std::abs(lo) || *v > hi + slack + 1e-12 * std::abs(hi)) {
+        int first = 0, last = 0;
+        for (int k = 1; k < snaps; ++k) {
+            if (s.snapshotValue(k) < s.snapshotValue(first)) first = k;
+            if (s.snapshotValue(k) > s.snapshotValue(last)) last = k;
+        }
+        *why = QObject::tr("\"%1\" lies past its outputs: from %2 to %3").arg(text, s.snapshotText(first), s.snapshotText(last));
+        return std::nullopt;
+    }
+    return v;
+}
+
+} // namespace
+
+std::vector<Instance> instances(const SolutionSet& set, bool all, int point, const QString& time, const QString& frequency, int mode,
+                                QString* error)
 {
     std::vector<Instance> out;
     const int n = int(set.solutions.size());
@@ -1701,18 +1804,17 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
         }
         int pick = snaps - 1;
         const QString& at = s.frequencyDomain ? frequency : time;
-        if (!all && !at.trimmed().isEmpty()) {
-            QString unlike;
-            std::optional<double> v = evaluateConstant(at, s.parameters().scope, s.snapshotDim(), nullptr, &unlike);
-            // (A frequency as a free-space wavelength, or a photon's energy, too.)
-            if (s.frequencyDomain && (!v || !unlike.isEmpty())) {
-                QString notLength, notEnergy;
-                const std::optional<double> lambda = evaluateConstant(at, s.parameters().scope, Dim::length(), nullptr, &notLength);
-                const std::optional<double> energy = evaluateConstant(at, s.parameters().scope, Dim::of(2, 1, -2), nullptr, &notEnergy);
-                if (lambda && notLength.isEmpty() && *lambda > 0) v = 299792458.0 / *lambda;
-                else if (energy && notEnergy.isEmpty() && *energy > 0) v = *energy / 6.62607015e-34;
+        // (With all too: at each point that one - it was ignored, every output
+        // given: the hunt of 22 October, N4.)
+        const bool asked = !at.trimmed().isEmpty();
+        if (asked) {
+            QString why;
+            const std::optional<double> v = snapshotAsked(s, at, &why);
+            if (!v) {
+                if (error) *error = (s.frequencyDomain ? QObject::tr("frequency: %1") : QObject::tr("time: %1")).arg(why);
+                return {};
             }
-            if (v) pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
+            pick = s.frequencyDomain ? s.snapshotAtFrequency(*v) : s.snapshotAt(*v);
         }
         // A Laser L-I step's points, by number when no sweep has them (the
         // last, whatever was asked: the update check of 110e8b9); a Valence
@@ -1746,7 +1848,7 @@ std::vector<Instance> instances(const SolutionSet& set, bool all, int point, con
             else if (s.snapshotMode(pick) != mode && first >= 0) pick = first;
         }
         for (int k = 0; k < snaps; ++k) {
-            if (!all && k != pick) continue;
+            if ((!all || (asked && !s.modeAnalysis)) && k != pick) continue;
             // (All, a mode asked: that mode alone at each - or the one chosen at each.)
             if (all && mode > 0 && s.modeAnalysis && s.snapshotMode(k) != mode) continue;
             if (all && mode < 0 && s.modeAnalysis && !s.snapshotChosen(k)) continue;

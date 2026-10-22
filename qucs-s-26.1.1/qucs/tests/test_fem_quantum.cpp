@@ -1766,9 +1766,14 @@ private slots:
         };
         const Run held = tilted(""), strict = tilted(R"(, "pmin": "0.99")");
         QVERIFY2(held.error.isEmpty() && strict.error.isEmpty(), qPrintable(held.error + strict.error));
-        QVERIFY2(held.solution->log.join(QLatin1Char(' ')).contains(QStringLiteral("held in their wells, so bound: e3 (their |ψ|² there 0.6 at least, \"pmin\")")),
+        // (Each with its share, the barriers' own count beside: the states'
+        // count said "0 bound" before it - the hunt of 22 October, N16.)
+        const QString heldLog = held.solution->log.join(QLatin1Char(' ')), strictLog = strict.solution->log.join(QLatin1Char(' '));
+        QVERIFY2(heldLog.contains(QStringLiteral("so bound where their well holds 0.6 of their |ψ|² at least (\"pmin\"), beside the "))
+                     && heldLog.contains(QStringLiteral(": held e3 (")),
                  qPrintable(held.solution->log.join(QLatin1Char('\n'))));
-        QVERIFY2(!strict.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("so bound")), qPrintable(strict.solution->log.join(QLatin1Char('\n'))));
+        QVERIFY2(strictLog.contains(QStringLiteral(": none held; not held e3 (")) && strictLog.contains(QStringLiteral("hangs on \"pmin\"")),
+                 qPrintable(strict.solution->log.join(QLatin1Char('\n'))));
         // A box's states above both barriers stay its continuum: a 30 nm well
         // between 3 nm barriers holds most of each, but at 10 kV/cm none is
         // bound (e8 to e16 were, by their share alone).
@@ -1802,7 +1807,7 @@ private slots:
         const Run few = sweep(1.95, 2, "");
         QVERIFY2(few.error.isEmpty(), qPrintable(few.error));
         const QString said = few.study.warnings.join(QLatin1Char('\n'));
-        QVERIFY2(said.contains(QStringLiteral("qw.: the absorption's sum over the photons' window (∫α dE) at F = 15 MV/m is"))
+        QVERIFY2(said.contains(QStringLiteral("qw: the absorption's sum over the photons' window (∫α dE) at F = 15 MV/m is"))
                      && said.contains(QLatin1String("more keep them: \"cstates\", \"vstates\"")),
                  qPrintable(said));
         // A window not of two rising energies: said, none made.
@@ -1810,6 +1815,107 @@ private slots:
         QVERIFY2(wrong.error.isEmpty() && wrong.study.warnings.join(QLatin1Char(' ')).contains(QLatin1String("two energies, the first the lower - none made"))
                      && !wrong.study.solutions[1]->global(QStringLiteral("qw.dnTMloc")),
                  qPrintable(wrong.study.warnings.join(QLatin1Char('\n'))));
+    }
+
+    // Each point's spectrum against the first's, by photon energy: energies
+    // that move with the sweep compared where both have them, said (by index,
+    // a point 0.1 eV up read as the first's: a local Δn of 0.037 - the hunt
+    // of 22 October, A5); conservearea where the first point absorbs nothing
+    // in the window not scaled to nothing, said (every Δn exactly 0: A6); the
+    // sum's change of a sweep with no field said by what the sweep changes
+    // (a carrier density was told of a field: B6); a local window that makes
+    // nothing said - no sweep, a single energy, too narrow, past the
+    // spectrum - and one in nm made (B7); the physics said by its own tag,
+    // not "qw." (N1).
+    void spectraComparedByEnergy()
+    {
+        auto well = [](const char* tag, const QString& params, const QString& steps) {
+            QByteArray json = heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("9.4"),
+                                              QStringLiteral("8"), QStringLiteral(R"(, "F": "F", "h1d": "0.5[nm]")"), steps);
+            json.replace(R"("parameters": [{"name": "Lw")", (QStringLiteral(R"("parameters": [{"name": "F", "expression": "0[V/m]"}%1, {"name": "Lw")").arg(params)).toUtf8());
+            json.replace(R"("tag": "qw")", (QStringLiteral(R"("tag": "%1")").arg(QLatin1String(tag))).toUtf8());
+            return run(modelOf(json));
+        };
+        const QString spectrum = QStringLiteral(R"({"type": "spectrum", "energies": "%1", "states": 4, "linewidth": "5.5[meV]", "lineshape": "gaussian" %2})");
+        auto said = [](const Run& r) { return r.study.warnings.join(QLatin1Char('\n')); };
+        auto at = [](Solution& s, double E, const char* name) {
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                if (std::abs(global(s, QStringLiteral("qw.Ephoton")) / Q - E) < 1e-6) return global(s, QLatin1String(name));
+            }
+            return double(NAN);
+        };
+        // A5: energies from E0, swept with the field.
+        const Run moving = well("qw", QStringLiteral(R"(, {"name": "E0", "expression": "1.38[eV]"})"),
+                                QStringLiteral(R"({"type": "sweep", "combination": "specified", "parameters": [["F", "0, 1e7", "V/m"], ["E0", "1.38, 1.48", "eV"]]}, )")
+                                    + spectrum.arg(QStringLiteral("linspace(E0, E0 + 0.3[eV], 31)"), QStringLiteral(R"(, "dnwindow": ["1.38[eV]", "1.58[eV]"])")));
+        QVERIFY2(moving.error.isEmpty(), qPrintable(moving.error));
+        QVERIFY2(said(moving).contains(QLatin1String("qw: the points' photon energies differ (they move with the sweep)")), qPrintable(said(moving)));
+        // (Its index there that of the same sweep at fixed energies, over the
+        // energies both points have, 1.48 to 1.58 eV.)
+        const Run fixed = well("qw", QString(), QStringLiteral(R"({"type": "sweep", "parameters": [["F", "0, 1e7", "V/m"]]}, )")
+                                                    + spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.78[eV], 41)"), QStringLiteral(R"(, "dnwindow": ["1.48[eV]", "1.58[eV]"])")));
+        QVERIFY2(fixed.error.isEmpty(), qPrintable(fixed.error));
+        for (const double E : {1.50, 1.55, 1.70}) {
+            const double dnMoved = at(*moving.study.solutions[1], E, "qw.dnTMloc"), dnFixed = at(*fixed.study.solutions[1], E, "qw.dnTMloc");
+            QVERIFY2(std::isfinite(dnFixed) && std::abs(dnMoved - dnFixed) <= 1e-9 * std::abs(dnFixed) + 1e-15,
+                     qPrintable(QStringLiteral("%1 eV: %2 against %3").arg(E).arg(dnMoved).arg(dnFixed)));
+        }
+        // A6: a window the first point does not absorb in, its area kept.
+        const QString below = spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.44[eV], 7)"), QStringLiteral(R"(, "dnwindow": ["1.38[eV]", "1.44[eV]"], "conservearea": true)"));
+        const Run dark = well("qw", QString(), QStringLiteral(R"({"type": "sweep", "parameters": [["F", "0, 4e7", "V/m"]]}, )") + below);
+        QVERIFY2(dark.error.isEmpty(), qPrintable(dark.error));
+        const double dnDark = at(*dark.study.solutions[1], 1.40, "qw.dnTMloc");
+        QVERIFY2(dnDark != 0 && std::isfinite(dnDark), qPrintable(QString::number(dnDark)));
+        QVERIFY2(said(dark).contains(QLatin1String("qw: \"conservearea\" over the local window: the first point absorbs nothing there")), qPrintable(said(dark)));
+        // B6: a sweep of the carriers, the field the same at each.
+        const Run filled = well("qw", QStringLiteral(R"(, {"name": "N", "expression": "0[1/cm^3]"})"),
+                                QStringLiteral(R"({"type": "sweep", "parameters": [["N", "0, 3e18", "1/cm^3"]]}, )")
+                                    + spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.95[eV], 20)"), QStringLiteral(R"(, "density": "N")")));
+        QVERIFY2(filled.error.isEmpty(), qPrintable(filled.error));
+        QVERIFY2(said(filled).contains(QLatin1String("the field the same at each: what the sweep changes changes it")) && !said(filled).contains(QLatin1String("a state's partners in a field")),
+                 qPrintable(said(filled)));
+        // B7: windows that make nothing, said; one in nm made.
+        const Run single = well("qw", QString(), spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.60[eV], 23)"), QStringLiteral(R"(, "dnwindow": ["1.38[eV]", "1.50[eV]"])")));
+        QVERIFY2(single.error.isEmpty() && said(single).contains(QLatin1String("its local index's window (\"dnwindow\") is a sweep's")), qPrintable(said(single)));
+        auto windowed = [&](const char* window) {
+            return well("qw", QString(), QStringLiteral(R"({"type": "sweep", "parameters": [["F", "0, 1e7", "V/m"]]}, )")
+                                             + spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.60[eV], 23)"), QStringLiteral(R"(, "dnwindow": %1)").arg(QLatin1String(window))));
+        };
+        const Run narrow = windowed(R"(["1.45[eV]", "1.46[eV]"])"), above = windowed(R"(["2.5[eV]", "3[eV]"])"), one = windowed(R"(["1.38[eV]"])"),
+                  nm = windowed(R"(["900[nm]", "826[nm]"])");
+        QVERIFY2(said(narrow).contains(QLatin1String("holds 2 of the spectrum's photon energies (1.38 to 1.6 eV), three at least wanted - none made")), qPrintable(said(narrow)));
+        QVERIFY2(said(above).contains(QLatin1String("holds 0 of the spectrum's photon energies")), qPrintable(said(above)));
+        QVERIFY2(said(one).contains(QLatin1String("its local index's window (\"dnwindow\") wants two energies, it has 1 - none made")), qPrintable(said(one)));
+        QVERIFY2(nm.error.isEmpty() && nm.study.solutions[1]->global(QStringLiteral("qw.dnTMloc")) && !said(nm).contains(QLatin1String("its local index")), qPrintable(said(nm)));
+        for (const Run* r : {&narrow, &above, &one}) QVERIFY(!r->study.solutions[1]->global(QStringLiteral("qw.dnTMloc")));
+        // N1: another tag's own name.
+        const Run qd = well("qd", QString(), QStringLiteral(R"({"type": "sweep", "parameters": [["F", "0, 1.5e7", "V/m"]]}, )")
+                                                 + spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.60[eV], 12)"), QString()));
+        QVERIFY2(qd.error.isEmpty(), qPrintable(qd.error));
+        const QString all = said(qd) + qd.solution->log.join(QLatin1Char('\n'));
+        QVERIFY2(all.contains(QLatin1String("(qd.dnTE, qd.dnTM)")) && !all.contains(QLatin1String("qw.")), qPrintable(all));
+    }
+
+    // A field whose drop over the line passes the gap: the lowest electron
+    // state below the highest hole state, said - its spectrum was computed and
+    // given, the transitions below zero, said nowhere (the hunt of 22
+    // October, A10: e1-hh1 -0.22 eV at 300 MV/m over 10 nm). Not at 10 MV/m.
+    void aFieldPastTheGapSaid()
+    {
+        auto tilted = [](const char* F) {
+            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.1"), QStringLiteral("9.4"),
+                                               QStringLiteral("0.3"), QStringLiteral(R"(, "F": "%1", "h1d": "0.25[nm]")").arg(QLatin1String(F)),
+                                               QStringLiteral(R"({"type": "spectrum", "energies": "1.4[eV], 1.5[eV]", "states": 6, "linewidth": "2[meV]", "lineshape": "lorentzian"})"))));
+        };
+        const Run strong = tilted("3e8[V/m]"), usual = tilted("1e7[V/m]");
+        QVERIFY2(strong.error.isEmpty() && usual.error.isEmpty(), qPrintable(strong.error + usual.error));
+        const QString said = strong.study.warnings.join(QLatin1Char('\n'));
+        // (e1-hh1 at -0.22 eV, the hunt's.)
+        QVERIFY2(said.contains(QStringLiteral("Quantum Wells (Schrödinger): in its field, 300 MV/m (3 V over the line's 10 nm), the lowest electron state lies 2"))
+                     && said.contains(QLatin1String(" meV below the highest hole state - the gap gone across the line")),
+                 qPrintable(said));
+        QVERIFY2(!usual.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("the gap gone across the line")), qPrintable(usual.study.warnings.join(QLatin1Char('\n'))));
     }
 
     void fadingInEveryPath()

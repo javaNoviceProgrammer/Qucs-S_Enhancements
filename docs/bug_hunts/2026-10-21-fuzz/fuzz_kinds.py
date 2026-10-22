@@ -204,8 +204,9 @@ for i in range(count_):
         if isinstance(r, dict) and r.get('result', {}).get('isError'):
             st[1] += 1
             # (Why, each call's first words: what the generator should make valid.)
-            text = (r['result'].get('content') or [{}])[0].get('text', '')
-            key = f"{name_} {'plausible' if PLAUSIBLE else 'hostile'}: {text[:110]}"
+            # (Its own name: the model's text, kept for a slow call or a finding, was this refusal's - the hunt of 22 October, N12.)
+            said = (r['result'].get('content') or [{}])[0].get('text', '')
+            key = f"{name_} {'plausible' if PLAUSIBLE else 'hostile'}: {said[:110]}"
             refusals[key] = refusals.get(key, 0) + 1
         if took > 20:
             keep = os.path.join(FIND, f'slow-{kind_}-{seed_}-{i}-{name_}')

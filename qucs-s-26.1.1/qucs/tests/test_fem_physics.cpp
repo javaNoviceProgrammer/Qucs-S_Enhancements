@@ -140,7 +140,58 @@ private slots:
     void svgImport();
     void importedGeometry();
     void theExamples();
+    void flagsOfTheParametersBuild();
 };
+
+// A flag given as an expression of the parameters, read where it is used:
+// the mesh's Customize, a polygon's Closed, a boolean's Keep - as true or
+// false at once; one not a constant fails, said. (Read for a solve alone,
+// it was false to the mesh and the geometry: "custom": "c" at c = 1 made
+// 717 triangles for 8746, its warning saying Customize was off - the hunt
+// of 22 October, A7. A number 1 was false, "True" refused: A8, N5.)
+void TestFemPhysics::flagsOfTheParametersBuild()
+{
+    auto model = [](const QString& custom, const QString& closed, const QString& c) {
+        return modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1", "parameters": [{"name": "c", "expression": "%3"}],
+          "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "name": "box", "size": ["10", "10"]},
+              {"type": "polygon", "name": "tri", "points": [["12", "0"], ["16", "0"], ["14", "3"]], "closed": %2}],
+            "materials": [{"label": "m", "k": "1[W/(m*K)]", "selection": {"all": true}}],
+            "physics": [{"type": "heat", "tag": "ht"}],
+            "mesh": {"size": "normal", "custom": %1, "hmax": "0.2"}}],
+          "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})json")
+                           .arg(custom, closed, c)
+                           .toUtf8());
+    };
+    auto built = [](const Model& m, int* triangles, int* domains, QString* error) {
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+        const GeometryBuild g = buildGeometry(m, *ps);
+        *error = g.ok() ? QString() : QStringList(g.errors.values()).join(QLatin1String("; "));
+        if (!g.ok()) return;
+        *domains = int(g.topology->domains.size());
+        const MeshBuild mb = buildMesh(m, *ps, g.topology);
+        *triangles = mb.mesh ? int(mb.mesh->triangles.size()) : -1;
+        if (!mb.warnings.isEmpty() || !mb.error.isEmpty()) *error = mb.warnings.join(QLatin1String("; ")) + mb.error;
+    };
+    int fineT = 0, fineD = 0, coarseT = 0, coarseD = 0;
+    QString why;
+    built(model(QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("1")), &fineT, &fineD, &why);
+    QVERIFY2(why.isEmpty() && fineD == 2, qPrintable(why));
+    built(model(QStringLiteral("false"), QStringLiteral("false"), QStringLiteral("1")), &coarseT, &coarseD, &why);
+    QVERIFY2(coarseD == 1 && coarseT < fineT / 2, qPrintable(QStringLiteral("%1 %2: %3").arg(coarseT).arg(fineT).arg(why)));
+    for (const char* on : {R"("c")", R"("c > 0")", "1", R"("True")", R"("TRUE")"}) {
+        int t = 0, d = 0;
+        built(model(QString::fromLatin1(on), QString::fromLatin1(on), QStringLiteral("1")), &t, &d, &why);
+        QVERIFY2(why.isEmpty() && t == fineT && d == 2, qPrintable(QStringLiteral("%1: %2 triangles, %3 domains %4").arg(on).arg(t).arg(d).arg(why)));
+    }
+    for (const char* off : {R"("c")", "0", R"("False")"}) {
+        int t = 0, d = 0;
+        built(model(QString::fromLatin1(off), QString::fromLatin1(off), QStringLiteral("0")), &t, &d, &why);
+        QVERIFY2(t == coarseT && d == 1, qPrintable(QStringLiteral("%1: %2 triangles, %3 domains").arg(off).arg(t).arg(d)));
+    }
+    int t = 0, d = 0;
+    built(model(QStringLiteral("true"), QStringLiteral(R"("maybe")"), QStringLiteral("1")), &t, &d, &why);
+    QVERIFY2(why.contains(QLatin1String(R"(its "closed" is "maybe" - true, false or an expression of the parameters)")), qPrintable(why));
+}
 
 void TestFemPhysics::valueLists()
 {

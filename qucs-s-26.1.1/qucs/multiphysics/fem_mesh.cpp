@@ -1521,7 +1521,12 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
         }
         return e.constant();
     };
-    if (m.flag(QStringLiteral("custom"))) {
+    // (Given as an expression of the parameters, read with them - false here
+    // while the solve read it true: the hunt of 22 October, A7.)
+    QString customWhy;
+    const bool custom = flagIn(m, QStringLiteral("custom"), parameters.scope, &customWhy);
+    if (!customWhy.isEmpty()) problems << customWhy;
+    if (custom) {
         s.hmax = length(m.text(QStringLiteral("hmax")), tr("the maximum element size"), s.hmax);
         s.hmin = length(m.text(QStringLiteral("hmin")), tr("the minimum element size"), s.hmin);
         s.growth = std::max(1.0, number(m.text(QStringLiteral("growth")), tr("the growth rate"), s.growth));

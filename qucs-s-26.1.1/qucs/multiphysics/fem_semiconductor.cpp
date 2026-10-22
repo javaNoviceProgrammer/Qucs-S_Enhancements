@@ -527,6 +527,10 @@ public:
     bool setup(QString* error) override;
     void initialize() override;
     bool solve(const SolveOptions& options, QString* error) override;
+    bool solveAt(const SolveOptions& options, QString* error);
+    /// Its materials' largest Eg/2kT: past some 150 its carriers' statistics
+    /// give out (ni e^(-Eg/2kT) of its states').
+    double a_gapOverKT = 0;
     void setGlobals() override;
     bool hasMass() const override { return true; }
     bool harmonic() const override { return true; }
@@ -1459,6 +1463,7 @@ bool SemiconductorProblem::setup(QString* error)
             continue;
         }
         m.ni = std::sqrt(m.Nc * m.Nv) * std::exp(-m.Eg / (2 * KB * a_T));
+        a_gapOverKT = std::max(a_gapOverKT, m.Eg / (2 * KB * a_T));
         m.dEc = m.Eg / 2 + KB * a_T / 2 * std::log(m.Nc / m.Nv);
         if (a_TL.isValid()) {
             // (Under a lattice temperature: its ni and gap through the
@@ -6769,27 +6774,32 @@ bool SemiconductorProblem::smallSignal(double frequency, QString* why)
     // into the device, -v/Z: the light's through the load. (Z nought: held,
     // all of it.)
     a_Hc.clear();
-    if (!a_Hop.empty()) {
+    // (The noise through the loads also with no light: it was made under the
+    // light's modulation alone - a dark device behind a load, thermal or a
+    // dark current's shot, had none: the hunt of 22 October, A9.)
+    if (!a_Hop.empty() || !a_noiseC.empty()) {
         std::vector<std::size_t> ckt;
         for (std::size_t k = 0; k < nc; ++k)
             if (a_contacts[k].iC >= 0 && a_contacts[k].Rs + a_contacts[k].RL > 0) ckt.push_back(k);
         bool any = false;
         for (const Contact& c : a_contacts) any = any || c.iC >= 0;
-        if (any) a_Hc = a_Hop;
+        if (any && !a_Hop.empty()) a_Hc = a_Hop;
         if (!ckt.empty()) {
             const Eigen::Index m = Eigen::Index(ckt.size());
             Eigen::MatrixXcd M(m, m);
-            Eigen::VectorXcd b(m);
             for (Eigen::Index a = 0; a < m; ++a) {
                 const Contact& c = a_contacts[ckt[std::size_t(a)]];
                 for (Eigen::Index e = 0; e < m; ++e) M(a, e) = a_Y[ckt[std::size_t(a)]][ckt[std::size_t(e)]];
                 M(a, a) += cd(0, omega * c.Cp) + 1.0 / (c.Rs + c.RL);
-                b(a) = -a_Hop[ckt[std::size_t(a)]];
             }
-            const Eigen::VectorXcd v = M.fullPivLu().solve(b);
-            for (Eigen::Index a = 0; a < m; ++a) {
-                const Contact& c = a_contacts[ckt[std::size_t(a)]];
-                a_Hc[ckt[std::size_t(a)]] = -v(a) / (c.Rs + c.RL);
+            if (!a_Hop.empty()) {
+                Eigen::VectorXcd b(m);
+                for (Eigen::Index a = 0; a < m; ++a) b(a) = -a_Hop[ckt[std::size_t(a)]];
+                const Eigen::VectorXcd v = M.fullPivLu().solve(b);
+                for (Eigen::Index a = 0; a < m; ++a) {
+                    const Contact& c = a_contacts[ckt[std::size_t(a)]];
+                    a_Hc[ckt[std::size_t(a)]] = -v(a) / (c.Rs + c.RL);
+                }
             }
             // (Noise through the loads: a short-circuit noise current i at
             // the contacts the same way, I_L = (1/Z) M⁻¹ i - its powers D
@@ -7535,6 +7545,20 @@ void SemiconductorProblem::latticeTemperature()
 
 bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
 {
+    // (A failure at a low temperature said by it: at 1 mK "the equilibrium's
+    // potential: a singular matrix", the temperature not named - the hunt of
+    // 22 October, N9. A silicon or GaAs junction solves at 77 K, not at 40.)
+    const bool ok = solveAt(o, error);
+    if (!ok && error && a_gapOverKT > 150 && !error->contains(QLatin1String("cancelled")) && !error->contains(QLatin1String("(Eg/2kT)")))
+        *error += tr(" - at %1 its materials' intrinsic density is e^(-%2) of their states' (Eg/2kT): drift and diffusion's carrier "
+                     "statistics give out at such a temperature (a junction of silicon or GaAs solves at 77 K, not at 40)")
+                      .arg(formatQuantity(a_T, Dim::temperature()))
+                      .arg(qRound(a_gapOverKT));
+    return ok;
+}
+
+bool SemiconductorProblem::solveAt(const SolveOptions& o, QString* error)
+{
     if (!a_initError.isEmpty()) {
         *error = a_initError;
         return false;
@@ -7996,16 +8020,68 @@ bool SemiconductorProblem::solve1d(QString* error)
         return false;
     }
     {
-        // (Read at a point along the line itself - PointEvaluator.)
+        // Read at a point along the line itself - PointEvaluator,
+        // semiconductorAt -: each segment's ends as its own material reads
+        // them (a heterojunction's node of the other semiconductor on this
+        // one's bands, as a triangle's), and the quasi-Fermi potentials with
+        // V and the carriers. (One value a node read the AlGaAs's carriers
+        // from the GaAs's, 46 times too many, and φn came from this mesh's
+        // nodes, 0.389 V for 0.059: the hunt of 22 October, A3 and A4.)
         auto along = std::make_shared<AlongLine>();
         along->alongY = alongY;
         along->scale = a_s.mesh().unitScale;
-        for (const Sample& sm : profile) {
-            if (!along->c.empty() && sm.c <= along->c.back()) continue;
-            along->c.push_back(sm.c);
-            along->V.push_back(sm.V);
-            along->n.push_back(sm.n);
-            along->p.push_back(sm.p);
+        for (const Sample& sm : profile)
+            if (along->c.empty() || sm.c > along->c.back()) along->c.push_back(sm.c);
+        const std::size_t segments = along->c.size() >= 2 ? along->c.size() - 1 : 0;
+        along->from.assign(segments, {NaN, NaN, NaN, NaN, NaN});
+        along->to.assign(segments, {NaN, NaN, NaN, NaN, NaN});
+        const double Vt = lfield.extra.size() > 2 ? lfield.extra[0] : NaN, niRef = lfield.extra.size() > 2 ? lfield.extra[2] : NaN;
+        const bool banded = lfield.values.size() >= 7 * LN;
+        auto end = [&](int t, int k) {
+            const std::size_t dof = std::size_t(lsp.dofs(t)[k]);
+            double V = lfield.values[dof], n = lfield.values[LN + dof], p = lfield.values[2 * LN + dof];
+            double thn = banded ? lfield.values[5 * LN + dof] : 0.0, thp = banded ? lfield.values[6 * LN + dof] : 0.0;
+            if (lfield.extra.size() >= std::size_t(ExtraHead + PerTriangle * (t + 1))) {
+                const double* ex = &lfield.extra[std::size_t(ExtraHead + PerTriangle * t)];
+                if (std::isfinite(ex[0]) && (ex[26 + k] != 0 || ex[29 + k] != 0)) {
+                    thn += ex[26 + k];
+                    thp += ex[29 + k];
+                    n *= std::exp(ex[26 + k] / Vt);
+                    p *= std::exp(-ex[29 + k] / Vt);
+                }
+            }
+            return std::array<double, 5>{V, n, p, V + thn - Vt * std::log(std::max(n, 1e-300) / niRef),
+                                         V + thp + Vt * std::log(std::max(p, 1e-300) / niRef)};
+        };
+        std::vector<char> filled(segments, 0);
+        for (int t = 0; t < lsp.elements() && segments > 0; ++t) {
+            int on[3], count = 0;
+            for (int k = 0; k < 3; ++k) {
+                const QPointF q = lmesh.nodes[std::size_t(lmesh.triangles[std::size_t(t)][std::size_t(k)])];
+                if (std::abs((alongY ? q.x() : q.y()) - across) <= tolerance) on[count++] = k;
+            }
+            if (count < 2) continue;
+            auto coord = [&](int k) {
+                const QPointF q = lmesh.nodes[std::size_t(lmesh.triangles[std::size_t(t)][std::size_t(k)])];
+                return alongY ? q.y() : q.x();
+            };
+            int ka = on[0], kb = on[1];
+            if (coord(ka) > coord(kb)) std::swap(ka, kb);
+            const auto it = std::lower_bound(along->c.begin(), along->c.end(), coord(ka) - tolerance);
+            const std::size_t j = std::size_t(it - along->c.begin());
+            if (j >= segments || filled[j] || std::abs(along->c[j] - coord(ka)) > tolerance || std::abs(along->c[j + 1] - coord(kb)) > tolerance)
+                continue;
+            along->from[j] = end(t, ka);
+            along->to[j] = end(t, kb);
+            filled[j] = 1;
+        }
+        // (A segment no triangle of the strip lies along: its nodes' values.)
+        for (std::size_t j = 0; j < segments; ++j) {
+            if (filled[j]) continue;
+            for (const Sample& sm : profile) {
+                if (sm.c == along->c[j]) along->from[j] = {sm.V, sm.n, sm.p, NaN, NaN};
+                if (sm.c == along->c[j + 1]) along->to[j] = {sm.V, sm.n, sm.p, NaN, NaN};
+            }
         }
         a_s.fields()[std::size_t(a_fi)].along = along;
     }
@@ -8420,12 +8496,16 @@ void SemiconductorProblem::setGlobals()
         for (std::size_t c = 0; c < a_contacts.size(); ++c) {
             const QString name = a_contacts[c].name;
             const double S = a_noiseC[c][c].real();
+            // (In A²/Hz and A/√Hz: shown "s·A²" and as a plain number - the
+            // hunt of 22 October, N7.)
             a_s.setGlobal(p + QStringLiteral("Sn_") + name, S, density,
                           tr("noise current spectral density at %1, short-circuited (A²/Hz, one-sided): the carriers' diffusion "
                              "(thermal at equilibrium), their pairs' generation and recombination (shot: the light's), impact "
                              "ionization's (an APD's excess)")
-                              .arg(name));
-            a_s.setGlobal(p + QStringLiteral("in_") + name, std::sqrt(std::max(S, 0.0)), Dim(), tr("noise current at %1, A/√Hz").arg(name));
+                              .arg(name),
+                          QStringLiteral("A²/Hz"));
+            a_s.setGlobal(p + QStringLiteral("in_") + name, std::sqrt(std::max(S, 0.0)), Dim(), tr("noise current at %1, A/√Hz").arg(name),
+                          QStringLiteral("A/√Hz"));
             const double I = std::abs(a_contacts[c].current);
             if (I > 0)
                 a_s.setGlobal(p + QStringLiteral("Fshot_") + name, S / (2 * Q * I), Dim(),
@@ -8434,10 +8514,12 @@ void SemiconductorProblem::setGlobals()
                                   .arg(name));
             if (a_noiseL.size() > c && std::isfinite(a_noiseL[c]))
                 a_s.setGlobal(p + QStringLiteral("SnL_") + name, a_noiseL[c], density,
-                              tr("the device's noise current through %1's circuit's load (A²/Hz; the circuit's own resistors' not in it)").arg(name));
+                              tr("the device's noise current through %1's circuit's load (A²/Hz; the circuit's own resistors' not in it)").arg(name),
+                              QStringLiteral("A²/Hz"));
             if (a_Pin > 0 && a_Hop.size() > c && std::abs(a_Hop[c]) > 0)
                 a_s.setGlobal(p + QStringLiteral("NEP_") + name, std::sqrt(std::max(S, 0.0)) / (std::abs(a_Hop[c]) / a_Pin), Dim(),
-                              tr("noise-equivalent power at %1, W/√Hz: its noise current over its responsivity at the frequency").arg(name));
+                              tr("noise-equivalent power at %1, W/√Hz: its noise current over its responsivity at the frequency").arg(name),
+                              QStringLiteral("W/√Hz"));
         }
     }
 }
@@ -8486,7 +8568,7 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     // Solved along a line of its own (in 1D): V and the carriers its, read
     // at this point - not this mesh's nodes, up to some nm apart (the
     // update check of 21 October, 6).
-    double along[3], slope[3];
+    double along[5], slope[5];
     const bool alongLine = field.along && field.along->read(e.point(), along, slope);
     if (alongLine) s.V = along[0];
     s.defined = true;
@@ -8543,6 +8625,13 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
         s.phin += w[k] * (V[k] + thn[k] - Vt * std::log(std::max(n[k], 1e-300) / niRef));
         s.phip += w[k] * (V[k] + thp[k] + Vt * std::log(std::max(p[k], 1e-300) / niRef));
     }
+    // (Along the line: its own, with its V and carriers - from this mesh's
+    // nodes φn was 0.389 V where the line's gave 0.059: the hunt of 22
+    // October, A4.)
+    if (alongLine && std::isfinite(along[3]) && std::isfinite(along[4])) {
+        s.phin = along[3];
+        s.phip = along[4];
+    }
     double taun = ex[5], taup = ex[6];
     const double Et = ex[7], Cn = ex[8], Cp = ex[9], B = ex[10];
     const double excess = s.n * s.p - s.ni * s.ni * gn * gp;
@@ -8563,6 +8652,11 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
                     Ex -= (a.y() - b.y()) / area2 * V[k];
                     Ey -= (b.x() - a.x()) / area2 * V[k];
                 }
+            // (Along the line: its field, A4.)
+            if (alongLine) {
+                Ex = field.along->alongY ? 0.0 : -slope[0];
+                Ey = field.along->alongY ? -slope[0] : 0.0;
+            }
             double g = 0, dg = 0;
             hurkx(std::hypot(Ex, Ey), ex[22] > 0 ? ex[22] : Inf, ex[24], &g, &dg);
             taun /= 1 + g;

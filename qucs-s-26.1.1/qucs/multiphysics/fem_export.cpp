@@ -639,11 +639,12 @@ ExportText fieldExport(const SolutionSet& set, const Node& node)
     // each, or at each point the mode its step chose.
     const QString which = node.text(QStringLiteral("solutions"));
     const bool one = which == QLatin1String("selected") || which.isEmpty();
+    QString asked;
     const std::vector<Instance> at = one ? instances(set, false, node.integer(QStringLiteral("point")), node.text(QStringLiteral("time")),
-                                                     node.text(QStringLiteral("frequency")), node.integer(QStringLiteral("mode")))
+                                                     node.text(QStringLiteral("frequency")), node.integer(QStringLiteral("mode")), &asked)
                                          : instances(set, true, 0, {}, {}, modesAsked(set, which));
     if (at.empty()) {
-        out.error = tr("no solution to export");
+        out.error = asked.isEmpty() ? tr("no solution to export") : tr("its %1").arg(asked);
         return out;
     }
     const Solution& first = *set.solutions[std::size_t(at.front().point)];
@@ -804,12 +805,13 @@ ExportText modeProfileExport(const Model& model, const SolutionSet& set, const N
     ExportText out;
     const QString which = node.text(QStringLiteral("solutions"));
     const bool one = which == QLatin1String("selected") || which.isEmpty();
+    QString asked;
     const std::vector<Instance> at = one ? instances(set, false, node.integer(QStringLiteral("point")), {}, node.text(QStringLiteral("frequency")),
-                                                     node.integer(QStringLiteral("mode")))
+                                                     node.integer(QStringLiteral("mode")), &asked)
                                          : instances(set, true, 0, {}, {}, modesAsked(set, which));
     Solution* first = at.empty() ? nullptr : select(set, at.front());
     if (!first) {
-        out.error = tr("no mode to export");
+        out.error = asked.isEmpty() ? tr("no mode to export") : tr("its %1").arg(asked);
         return out;
     }
     const QString tag = modeAnalysisOf(*first, node);
@@ -858,7 +860,17 @@ ExportText modeProfileExport(const Model& model, const SolutionSet& set, const N
         out.error = tr("its corners: the second above and right of the first");
         return out;
     }
-    const int nx = std::clamp(node.integer(QStringLiteral("nx")), 2, 4000), ny = std::clamp(node.integer(QStringLiteral("ny")), 2, 4000);
+    // (Fewer than two a side: said - a cross-section, which a Mode Overlap
+    // reads back, two by two at the least. It was made 2 without a word, while
+    // a Field on a Grid takes one column: the hunt of 22 October, N13.)
+    const int nx = node.integer(QStringLiteral("nx")), ny = node.integer(QStringLiteral("ny"));
+    if (nx < 2 || ny < 2 || nx > 4000 || ny > 4000) {
+        out.error = tr("%1 by %2 points: a mode's profile is a cross-section - from 2 to 4000 along x and y (a Field on a Grid exports one "
+                       "column or row)")
+                        .arg(nx)
+                        .arg(ny);
+        return out;
+    }
     if (qint64(nx) * ny > 4000000) {
         out.error = tr("%1 by %2 points: four million at most").arg(nx).arg(ny);
         return out;
@@ -980,7 +992,13 @@ ExportText exportText(const Model& model, const SolutionSet& set, const Node& no
                 return out;
             }
             const int n = int(lineTerminals(*l).size());
-            const bool mixed = node.flag(QStringLiteral("mixed"));
+            // (Read with the parameters: an expression was false here - the
+            // hunt of 22 October, A7.)
+            const bool mixed = flagIn(node, QStringLiteral("mixed"), set.solutions.front()->parameters().scope, &why);
+            if (!why.isEmpty()) {
+                out.error = why;
+                return out;
+            }
             if (mixed && n != 2) {
                 out.error = tr("mixed-mode S-parameters are a pair's: %1 has %2 lines").arg(l->name()).arg(n);
                 return out;

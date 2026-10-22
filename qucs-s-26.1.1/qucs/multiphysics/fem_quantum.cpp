@@ -1765,6 +1765,28 @@ int QuantumProblem::solveModes(const SolveOptions& options, int count, double gu
                    .arg(a_neq)
                    .arg(a_1d ? tr(" along a line of %1").arg(formatQuantity(a_L, Dim::length())) : QString())
                    .arg(kpSaid);
+    // A field past the gap's drop: the lowest electron state below the
+    // highest hole's, each held by the line's ends alone - its spectrum was
+    // computed from them and given, the transitions below zero, said nowhere
+    // (the hunt of 22 October, A10).
+    if (a_F != 0) {
+        double lowest = Inf(), highest = -Inf();
+        for (int c = 0; c < Carriers; ++c)
+            if (a_on[c])
+                for (const State& st : a_states[c]) {
+                    if (c == 0) lowest = std::min(lowest, st.E);
+                    else highest = std::max(highest, st.E);
+                }
+        if (std::isfinite(lowest) && std::isfinite(highest) && lowest <= highest)
+            a_s.log << tr("Warning: %1: in its field, %2%3, the lowest electron state lies %4 below the highest hole state - the gap gone "
+                          "across the line, each state held by its ends alone: not a well's states, nor what they absorb (a field in "
+                          "kV/cm meant? 1 kV/cm is 0.1 MV/m)")
+                           .arg(a_node->name(), formatQuantity(a_F, Dim::of(1, 1, -3, -1)))
+                           .arg(a_1d && a_L > 0 ? tr(" (%1 over the line's %2)").arg(formatQuantity(std::abs(a_F) * a_L, Dim::voltage()),
+                                                                                    formatQuantity(a_L, Dim::length()))
+                                                : QString())
+                           .arg(electronVolts((highest - lowest) * Q));
+    }
     densities();
     field().solved = true;
     a_spec = Spectrum();
@@ -3060,12 +3082,32 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // cos² over o.fade, into the bulk absorption: far enough above, the
     // absorption the bulk's, the same in any field (Δn between fields
     // converges as the window widens).
+    // (The barriers' lowest gap - the first, along the line, of it -, not
+    // the line's start's: a well there was taken for the barriers, its steps
+    // faded above its own gap - the hunt of 22 October, A1.)
+    auto barrierPoint = [&]() -> const Point* {
+        const Point* best = nullptr;
+        double least = Inf();
+        for (const Point& pt : a_points) {
+            if (pt.d < 0 || (std::size_t(pt.d) < a_active.size() && a_active[std::size_t(pt.d)])) continue;
+            const double gap = pt.pot[0] - std::max(-pt.pot[1], -pt.pot[2]);
+            if (gap < least - 1e-9 || (gap <= least + 1e-9 && best && pt.a < best->a)) {
+                least = std::min(least, gap);
+                best = &pt;
+            }
+        }
+        // (A slab of one gap - no barrier -: where the line starts, its bulk
+        // whole.)
+        if (!best && !a_points.empty())
+            best = &*std::min_element(a_points.begin(), a_points.end(), [](const Point& a, const Point& b) { return a.a < b.a; });
+        return best;
+    };
     double barrierGap = NaN, barrierTop = NaN;   // (J; the barriers' valence top, eV)
-    if (o.continuum == 1 && wells && !a_points.empty()) {
-        const Point& end = *std::min_element(a_points.begin(), a_points.end(), [](const Point& a, const Point& b) { return a.a < b.a; });
-        barrierTop = std::max(-end.pot[1], -end.pot[2]);
-        barrierGap = (end.pot[0] - barrierTop) * Q;
-    }
+    if (o.continuum == 1 && wells && !a_points.empty())
+        if (const Point* end = barrierPoint()) {
+            barrierTop = std::max(-end->pot[1], -end->pot[2]);
+            barrierGap = (end->pot[0] - barrierTop) * Q;
+        }
     const bool fading = std::isfinite(barrierGap);
     auto fadeAt = [&](double x) {
         if (!fading || x <= barrierGap) return 1.0;
@@ -3429,13 +3471,36 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     // (Said: the electrons a field tilts past their barriers' edges whose
     // wells hold them - bound, their pairs taken.)
     if (o.continuum == 1 && a_F != 0) {
-        QStringList heldOnes;
-        for (std::size_t i = 0; i < a_states[0].size(); ++i)
-            if (!confined(0, a_states[0][i].E, a_states[0][i].pos) && held(0, a_states[0][i])) heldOnes << QStringLiteral("e%1").arg(i + 1);
-        if (!heldOnes.isEmpty())
-            a_s.log << tr("%1: in this field past their lower barrier's edge, below their higher one's and held in their wells, so "
-                          "bound: %2 (their |ψ|² there %3 at least, \"pmin\")")
-                           .arg(a_node->name(), heldOnes.join(QLatin1String(", ")), formatNumber(o.localized, 3));
+        // (Each with its share in its well, and the barriers' own count: the
+        // states' count said "0 bound" before it, and nothing said how much
+        // "pmin" decides - the spectrum 5 times apart at 0.5 and 0.9: the
+        // hunt of 22 October, N16.)
+        QStringList heldOnes, near;
+        int barriers = 0;
+        for (std::size_t i = 0; i < a_states[0].size(); ++i) {
+            const State& st = a_states[0][i];
+            if (confined(0, st.E, st.pos)) {
+                ++barriers;
+                continue;
+            }
+            if (stretches.empty()) continue;
+            const Stretch* best = nearest(st.pos);
+            if (!(st.E < best->far[0])) continue;
+            const double all = integral(st.x, st.x, {});
+            const double in = integral(st.x, st.x, [best](int, double a) { return a >= best->lo && a <= best->hi ? 1.0 : 0.0; });
+            if (!(all > 0)) continue;
+            const QString one = QStringLiteral("e%1 (%2)").arg(i + 1).arg(formatNumber(in / all, 2));
+            if (in / all >= o.localized) heldOnes << one;
+            else near << one;
+        }
+        if (!heldOnes.isEmpty() || !near.isEmpty())
+            a_s.log << tr("%1: in this field past their lower barrier's edge and below their higher one's, so bound where their well holds "
+                          "%2 of their |ψ|² at least (\"pmin\"), beside the %3 the barriers bind: %4%5. Which are taken in hangs on \"pmin\" "
+                          "between their shares, and the absorption with it")
+                           .arg(a_node->name(), formatNumber(o.localized, 3))
+                           .arg(barriers)
+                           .arg(heldOnes.isEmpty() ? tr("none held") : tr("held %1").arg(heldOnes.join(QLatin1String(", "))))
+                           .arg(near.isEmpty() ? QString() : tr("; not held %1").arg(near.join(QLatin1String(", "))));
     }
     // The transitions e_i to hh_j and lh_j: their overlaps, polarizations
     // (at the band edge: TE 3/2 and 1/2 of |Mb|², TM 0 and 2) and masses.
@@ -3807,7 +3872,6 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             k.fadesIn = fadesIn;
             return k;
         };
-        const Point& end = *std::min_element(a_points.begin(), a_points.end(), [](const Point& a, const Point& b) { return a.a < b.a; });
         double walled = 0;
         const Stretch* well = nullptr;
         for (const Stretch& st : stretches)
@@ -3815,19 +3879,60 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 walled += st.size;
                 if (!well) well = &st;
             }
-        if (fading) {
-            bulks.push_back(of(a_bands[std::size_t(std::max(0, end.d))], barrierGap, (a_L - walled) / per, false));
-            if (well && well->domain >= 0 && std::isfinite(well->gap))
-                bulks.push_back(of(a_bands[std::size_t(well->domain)], well->gap, walled / per, true));
-        } else {
-            // (The barriers' gap where the line ends, as the continuum
-            // "bound" takes it.)
-            const double gap = (end.pot[0] - std::max(-end.pot[1], -end.pot[2])) * Q;
-            if (std::isfinite(gap) && a_L - walled > 0) {
-                bulks.push_back(of(a_bands[std::size_t(std::max(0, end.d))], gap, (a_L - walled) / per, false));
-                bulks.back().excess = true;
+        // The barriers: each run of one material outside the wells its own
+        // bulk - its gap, masses and Rydberg - over its own thickness. (The
+        // line's start's for all: a well there gave its own excitons over the
+        // barriers' thickness, and barriers of two alloys were 11 times
+        // apart mirrored - the hunt of 22 October, A1.)
+        struct Run {
+            int d = -1;
+            double size = 0, gap = NaN;
+        };
+        std::vector<Run> runs;
+        {
+            std::vector<const Point*> line;
+            for (const Point& pt : a_points)
+                if (pt.d >= 0) line.push_back(&pt);
+            std::sort(line.begin(), line.end(), [](const Point* a, const Point* b) { return a->a < b->a; });
+            for (const Point* pt : line) {
+                if (std::size_t(pt->d) < a_active.size() && a_active[std::size_t(pt->d)]) {
+                    runs.push_back(Run());   // (a well between: a run ends)
+                    continue;
+                }
+                if (runs.empty() || runs.back().d != pt->d) runs.push_back(Run{pt->d, 0, NaN});
+                runs.back().size += pt->w * 1e-9;
+                const double gap = (pt->pot[0] - std::max(-pt->pot[1], -pt->pot[2])) * Q;
+                if (!std::isfinite(runs.back().gap)) runs.back().gap = gap;
             }
         }
+        // (Runs of one material together: its bulk once, their thickness.)
+        std::map<int, Run> byMaterial;
+        for (const Run& r : runs) {
+            if (r.d < 0 || !(r.size > 0) || !std::isfinite(r.gap)) continue;
+            Run& m = byMaterial[r.d];
+            if (m.d < 0) m = r;
+            else m.size += r.size;
+        }
+        // (Their thicknesses the barriers' whole, the line's less its walled
+        // wells, as before: the points' weights alone missed the line's ends.)
+        double counted = 0;
+        for (const auto& [d, r] : byMaterial) counted += r.size;
+        const double scale = counted > 0 && a_L - walled > 0 ? (a_L - walled) / counted : 1.0;
+        for (const auto& [d, r] : byMaterial) {
+            bulks.push_back(of(a_bands[std::size_t(d)], r.gap, r.size * scale / per, false));
+            bulks.back().excess = !fading;
+        }
+        // (A slab of one gap - no barrier, no well -: its bulk whole.)
+        if (byMaterial.empty() && a_L - walled > 0)
+            if (const Point* end = barrierPoint(); end && end->d >= 0) {
+                const double gap = (end->pot[0] - std::max(-end->pot[1], -end->pot[2])) * Q;
+                if (std::isfinite(gap)) {
+                    bulks.push_back(of(a_bands[std::size_t(end->d)], gap, (a_L - walled) / per, false));
+                    bulks.back().excess = !fading;
+                }
+            }
+        if (fading && well && well->domain >= 0 && std::isfinite(well->gap))
+            bulks.push_back(of(a_bands[std::size_t(well->domain)], well->gap, walled / per, true));
     }
     // The k·p bands' transitions: each electron state with each valence
     // state at each k of each direction - its energy (J), its TE and TM
@@ -4789,7 +4894,9 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             };
             auto pdfL = [&](double x) { return EU > 0 ? std::exp(-std::abs(x) / EU) / (2 * EU) : pdf(x); };
             auto lineL = [&](double a, double b) { return cdfL(b - delta) - cdfL(a - delta); };
-            double rho = 0;
+            // (An excess bulk's two parts: Elliott's and the free carriers' it
+            // takes off.)
+            double rho = 0, taken = 0;
             for (double mr : {bulk.mrHH, bulk.mrLH}) {
                 for (int pass = 0; pass < (bulk.excess ? 2 : 1); ++pass) {
                     // (An excess bulk: its free carriers' taken off - pass 1.)
@@ -4831,9 +4938,16 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                         }
                     } else if (delta > 0)
                         sum = f(delta) * in(delta);
-                    rho += sign * std::pow(2 * mr / (Hbar * Hbar), 1.5) / (2 * M_PI * M_PI) * sum;
+                    (sign > 0 ? rho : taken) += std::pow(2 * mr / (Hbar * Hbar), 1.5) / (2 * M_PI * M_PI) * sum;
                 }
             }
+            // An excess only adds: where the free part, broadened by the
+            // spectrum's line, is more than Elliott's with Urbach's tail -
+            // below the gap under a wide line, a Lorentzian's tail far below
+            // it -, nothing. (It took more than the box gave: -468 /cm with
+            // no carriers, 115 /cm off half an eV below the barriers' gap -
+            // the hunt of 22 October, A2.)
+            rho = std::max(0.0, rho - taken);
             const double C = M_PI * Q * Q * Hbar / (bulk.nr * C0 * Eps0 * M0 * M0 * E) * (M0 * bulk.Ep / 6) * rho * bulk.weight;
             te += C;
             tm += C;
@@ -4878,11 +4992,12 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         }
         if (worst > 0.1)
             a_s.log << tr("Warning: %1: the transitions more than 5 half widths above the %2 gain's peak (%3) take %4 % off it by their "
-                          "Lorentzian tails alone (qw.alpha%2far): the spectrum depends on how many states the step takes. A Gaussian or "
+                          "Lorentzian tails alone (%5.alpha%2far): the spectrum depends on how many states the step takes. A Gaussian or "
                           "a sech line's tails hardly reach; or take the states that matter (the Lumerical MQW solver keeps 2 conduction and 4 "
                           "valence subbands)")
                                .arg(a_node->name(), which, electronVolts(at))
-                               .arg(qRound(100 * worst));
+                               .arg(qRound(100 * worst))
+                               .arg(a_node->tag);
     }
     // With carriers, the spontaneous emission per volume of the wells, per
     // energy and time: (n² E²/(π² ħ³ c²)) of the emission's α averaged over
@@ -4949,19 +5064,20 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             if (fading && hi >= barrierGap + o.fade)
                 // (Above the barriers' gap and the fade the bulk's alone: the
                 // same in any field.)
-                a_s.log << tr("%1: the Kramers-Kronig index (qw.dnTE, qw.dnTM) of the absorption between %2 and %3: its top the bulk's "
+                a_s.log << tr("%1: the Kramers-Kronig index (%5.dnTE, %5.dnTM) of the absorption between %2 and %3: its top the bulk's "
                               "alone (above the barriers' gap and the fade), the same in any field - Δn between fields leaves none of "
-                              "it out; the index itself what lies above would raise by some %4 at %2 (qw.dnTEtail)")
-                               .arg(a_node->name(), electronVolts(lo), electronVolts(hi), formatNumber(tail, 3));
+                              "it out; the index itself what lies above would raise by some %4 at %2 (%5.dnTEtail)")
+                               .arg(a_node->name(), electronVolts(lo), electronVolts(hi), formatNumber(tail, 3), a_node->tag);
             else
-                a_s.log << tr("Warning: %1: the Kramers-Kronig index (qw.dnTE, qw.dnTM) of the absorption between %2 and %3: the window's "
+                a_s.log << tr("Warning: %1: the Kramers-Kronig index (%7.dnTE, %7.dnTM) of the absorption between %2 and %3: the window's "
                               "top still absorbs %4 % of its most - what changes above it is left out (were it its top's all the way, "
-                              "some %5 at %2: qw.dnTEtail, qw.dnTMtail; between fields their difference what Δn misses), and near "
+                              "some %5 at %2: %7.dnTEtail, %7.dnTMtail; between fields their difference what Δn misses), and near "
                               "the window's ends the index is uncertain: widen the energies%6")
                                .arg(a_node->name(), electronVolts(lo), electronVolts(hi))
                                .arg(qRound(100 * atTop / most))
                                .arg(formatNumber(tail, 3))
-                               .arg(fading ? tr(" past the barriers' gap and the fade, %1").arg(electronVolts(barrierGap + o.fade)) : QString());
+                               .arg(fading ? tr(" past the barriers' gap and the fade, %1").arg(electronVolts(barrierGap + o.fade)) : QString())
+                               .arg(a_node->tag);
         }
     }
     // (The k·p bands' transitions their pairs', one direction's; the coupled
@@ -5185,15 +5301,15 @@ void QuantumProblem::setGlobals()
                              "electrorefraction's change"));
             a_s.setGlobal(p + QStringLiteral("dnTM"), a_spec.dnTM[k], Dim(), tr("the wells' index the absorption in the window makes, TM"));
             a_s.setGlobal(p + QStringLiteral("dnTEtail"), a_spec.dnTEtail[k], Dim(),
-                          tr("what the absorption above the window would add to qw.dnTE were it its top's all the way: between two "
-                             "fields their difference what Δn leaves out"));
-            a_s.setGlobal(p + QStringLiteral("dnTMtail"), a_spec.dnTMtail[k], Dim(), tr("the same of qw.dnTM"));
+                          tr("what the absorption above the window would add to %1dnTE were it its top's all the way: between two "
+                             "fields their difference what Δn leaves out").arg(p));
+            a_s.setGlobal(p + QStringLiteral("dnTMtail"), a_spec.dnTMtail[k], Dim(), tr("the same of %1dnTM").arg(p));
         }
         if (k < a_spec.farTE.size()) {
             a_s.setGlobal(p + QStringLiteral("alphaTEfar"), a_spec.farTE[k], perMetre,
-                          tr("what the transitions more than 5 half widths above the photon add to qw.alphaTE: their lines' tails "
-                             "alone - a Lorentzian's reach far, a Gaussian's and a sech's hardly"));
-            a_s.setGlobal(p + QStringLiteral("alphaTMfar"), a_spec.farTM[k], perMetre, tr("the same of qw.alphaTM"));
+                          tr("what the transitions more than 5 half widths above the photon add to %1alphaTE: their lines' tails "
+                             "alone - a Lorentzian's reach far, a Gaussian's and a sech's hardly").arg(p));
+            a_s.setGlobal(p + QStringLiteral("alphaTMfar"), a_spec.farTM[k], perMetre, tr("the same of %1alphaTM").arg(p));
         }
         a_s.setGlobal(p + QStringLiteral("Fw"), a_spec.field, Dim::of(1, 1, -3, -1), tr("the field across the wells (their band edge's slope)"));
         a_s.setGlobal(p + QStringLiteral("linewidth"), a_spec.gamma, energy, tr("the broadening: its half width at half maximum"), QStringLiteral("eV"));
