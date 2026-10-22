@@ -13,6 +13,7 @@
 
 #include "claudecode.h"
 
+#include <QDeadlineTimer>
 #include <QDateTime>
 #include <QHash>
 #include <QImage>
@@ -493,9 +494,18 @@ private:
     QJsonObject femDescribe(const QJsonObject& args);
     QJsonObject femModel(const QJsonObject& args);
     QJsonObject femEdit(const QJsonObject& args);
-    QJsonObject femBuild(const QJsonObject& args);
-    QJsonObject femSolve(const QJsonObject& args);
-    QJsonObject femStop(const QJsonObject& args);
+    // (Answered when what they wait for ends, not in a loop of their own.)
+    void femBuild(const QJsonObject& args, const Done& done);
+    void femSolve(const QJsonObject& args, const Done& done);
+    void femStop(const QJsonObject& args, const Done& done);
+    /// fem_build's answer once its geometry is current (and 'until''s).
+    QJsonObject femBuilt(MultiphysicsDoc* doc, const QJsonObject& args);
+    QJsonObject femMeshBuilt(MultiphysicsDoc* doc);
+    QJsonObject femSolved(MultiphysicsDoc* doc, const QJsonObject& args, const QString& study);
+    /// \a doc's geometry made current - a process flow's waited for up to
+    /// \a deadline - then \a then told why it is not (empty: it is).
+    void femGeometryThen(MultiphysicsDoc* doc, const QDeadlineTimer& deadline, int timeout, bool first,
+                         std::function<void(const QString& stopped)> then);
     QJsonObject femEvaluate(const QJsonObject& args);
     QJsonObject femPlot(const QJsonObject& args);
     QJsonObject femExport(const QJsonObject& args);

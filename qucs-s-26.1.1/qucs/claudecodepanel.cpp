@@ -74,6 +74,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <vector>
 #include <iterator>
 
 using qucs_s::claude::ModelChoice;
@@ -2392,8 +2393,14 @@ void ClaudeCodePanel::render()
     doc->clear();
     doc->setDocumentMargin(12);
     QTextCursor c(doc);
+    // One edit, laid out once at its end. (Laid out at each insertion, from
+    // it to the end - a formula, a reply's fragment -: a reply of 1000
+    // formulas took 9.5 s a render, at each event - the hunt of 21 October,
+    // B1.)
+    c.beginEditBlock();
     if (a_entries.isEmpty()) renderWelcome(c);
     else renderConversation(c);
+    c.endEditBlock();
     fitImages();
 
     if (follow) {
@@ -2916,11 +2923,10 @@ qucs_s::math::Typeset ClaudeCodePanel::typesetMath(const QString& tex, const QFo
     const qreal dpr = a_exporting ? 4.0 : a_view->devicePixelRatioF();   // (on paper: sharp at 300 dpi)
     const QString key = tex + QChar(0) + font.key() + QChar(0) + colour.name() + (display ? QLatin1Char('D') : QLatin1Char('T'))
                         + QString::number(dpr);
-    auto found = a_math.constFind(key);
-    if (found != a_math.cend()) return *found;
-    if (a_math.size() > 400) a_math.clear();
+    if (const qucs_s::math::Typeset* found = a_math.object(key)) return *found;
     const qucs_s::math::Typeset t = qucs_s::math::typeset(tex, font, colour, display, dpr);
-    a_math.insert(key, t);
+    ++a_typesetCount;
+    a_math.insert(key, new qucs_s::math::Typeset(t), int(std::max<qsizetype>(1, t.image.sizeInBytes() / 1024)));
     return t;
 }
 
@@ -2979,9 +2985,22 @@ void ClaudeCodePanel::placeMath(QTextCursor& c, const QList<qucs_s::math::Span>&
     // math on a line of its own centred.
     const QFont base = a_view->font();
     QTextDocument* target = c.document();
+    // The marks found in one pass from \a from, each formula's first (a
+    // search for each from there: as slow again).
+    std::vector<int> markAt(spans.size(), -1);
+    for (QTextBlock b = target->findBlock(from); b.isValid() && b.position() <= c.position(); b = b.next()) {
+        const QString text = b.text();
+        for (qsizetype i = std::max(0, from - b.position()); i < text.size(); ++i) {
+            const qsizetype k = qsizetype(text.at(i).unicode()) - kMathMark;
+            if (k >= 0 && k < spans.size() && markAt[size_t(k)] < 0) markAt[size_t(k)] = b.position() + int(i);
+        }
+    }
     for (qsizetype k = 0; k < spans.size(); ++k) {
-        QTextCursor hit = target->find(QString(QChar(char16_t(kMathMark + k))), from);
-        if (hit.isNull()) continue;
+        if (markAt[size_t(k)] < 0) continue;
+        // (Each mark one character, as its formula is: the others stay where they were.)
+        QTextCursor hit(target);
+        hit.setPosition(markAt[size_t(k)]);
+        hit.setPosition(markAt[size_t(k)] + 1, QTextCursor::KeepAnchor);
         const qucs_s::math::Span& sp = spans.at(k);
         const QFont font = hit.charFormat().font().resolve(base);
         const qucs_s::math::Typeset t = typesetMath(sp.tex, font, sp.display);

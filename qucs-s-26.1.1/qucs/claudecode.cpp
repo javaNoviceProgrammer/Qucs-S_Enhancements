@@ -754,10 +754,19 @@ void Session::handleControlResponse(const QJsonObject& m)
     const QJsonObject response = m.value(QLatin1String("response")).toObject();
     // A tool asked to go to the background (askBackground()): sent, or -
     // not a task yet - asked again when it is one (handleSystem()), or not.
-    if (const QString toolUse = a_backgroundAsked.take(response.value(QLatin1String("request_id")).toString()); !toolUse.isEmpty()) {
+    const QString requestId = response.value(QLatin1String("request_id")).toString();
+    if (const QString toolUse = a_backgroundAsked.take(requestId); !toolUse.isEmpty()) {
         const bool ok = response.value(QLatin1String("subtype")).toString() == QLatin1String("success");
+        // (Final only when asked of the task: a refusal of a request made
+        // before it was one - the task said between the asking and the
+        // answer - was taken for final, and not asked again: the hunt of
+        // 21 October, B3.)
+        const bool ofTask = a_backgroundAskedOfTask.remove(requestId);
         if (ok && response.value(QLatin1String("response")).toObject().value(QLatin1String("backgrounded")).toBool()) return;
-        if (ok && a_running.contains(toolUse) && !a_taskOf.contains(toolUse)) return;   // (its task to come)
+        if (ok && a_running.contains(toolUse) && !ofTask) {
+            if (a_taskOf.contains(toolUse)) askBackground(toolUse);   // (a task now: again)
+            return;                                                   // (its task to come)
+        }
         a_backgroundWanted.remove(toolUse);
         const QString error = response.value(QLatin1String("error")).toString().trimmed();
         emit notice(error.isEmpty() ? tr("%1 could not be sent to the background.").arg(a_tools.value(toolUse, tr("The tool")))
@@ -1079,6 +1088,7 @@ void Session::askBackground(const QString& id)
     static int count = 0;
     const QString request = QStringLiteral("qucs-background-%1").arg(++count);
     a_backgroundAsked.insert(request, id);
+    if (a_taskOf.contains(id)) a_backgroundAskedOfTask.insert(request);
     write({{QStringLiteral("type"), QStringLiteral("control_request")},
            {QStringLiteral("request_id"), request},
            {QStringLiteral("request"), QJsonObject{{QStringLiteral("subtype"), QStringLiteral("background_tasks")},
@@ -1230,6 +1240,7 @@ void Session::processFinished(int exitCode)
                            "Claude Code has ended.").arg(it->tool));
     a_hostCalls.clear();
     a_backgroundAsked.clear();
+    a_backgroundAskedOfTask.clear();
     a_tasks.clear();
     a_taskOf.clear();
     a_backgroundTasks.clear();

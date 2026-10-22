@@ -15,6 +15,7 @@
 #include "claudecode.h"
 #include "mathtypeset.h"
 
+#include <QCache>
 #include <QHash>
 #include <QList>
 #include <QPair>
@@ -261,6 +262,8 @@ public:
     QList<QAction*> modelActions() const;
     QList<QAction*> permissionActions() const;
     qucs_s::claude::ModelQuery* modelQuery() const { return a_modelQuery; }
+    /// Formulas typeset so far (not found typeset already): for tests.
+    int typesetCount() const { return a_typesetCount; }
     QString transcriptText() const;
     /// The conversation drawn now rather than a moment later.
     void renderNow();
@@ -478,7 +481,11 @@ private:
     bool a_rewinding = false;
     qsizetype a_rewindIndex = -1;
     QSet<QString> a_expanded;  // the tool lines opened
-    QHash<QString, qucs_s::math::Typeset> a_math;   // typeset math, by TeX, size and colour
+    // Typeset math, by TeX, size and colour; its images' bytes the cost, in
+    // KB. (Cleared past 400 formulas: a conversation of more typeset most of
+    // them again at each render - the hunt of 21 October, B7.)
+    QCache<QString, qucs_s::math::Typeset> a_math{64 * 1024};
+    int a_typesetCount = 0;
     bool a_newInTab = false;
     QString a_name;            // given by the user; empty: the first prompt
     bool a_exporting = false;  // drawing for paper: no links

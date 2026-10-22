@@ -24,6 +24,7 @@
 #include "multiphysicspanel.h"
 #include "qucs.h"
 
+#include <QPointer>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -1173,11 +1174,63 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     return jsonResult(answer);
 }
 
-QJsonObject QucsControl::femBuild(const QJsonObject& args)
+void QucsControl::femGeometryThen(MultiphysicsDoc* doc, const QDeadlineTimer& deadline, int timeout, bool first,
+                                  std::function<void(const QString& stopped)> then)
+{
+    // Current: at once.
+    if (!doc->building() && !doc->geometryStale()) {
+        QString why;
+        then(doc->currentGeometry(&why) ? QString() : tr("The geometry stopped at %1").arg(why));
+        return;
+    }
+    // Stale, nothing at work: asked for - a process flow's on its thread,
+    // another's at once. (Not asked again after: stopped, it stays so.)
+    if (first && !doc->building()) doc->requestGeometry();
+    if (!doc->building()) {
+        QString why;
+        if (doc->geometryStale()) then(tr("The geometry was not built (stopped)."));
+        else then(doc->currentGeometry(&why) ? QString() : tr("The geometry stopped at %1").arg(why));
+        return;
+    }
+    // A process flow's: waited for up to 'timeout', as a mesh is - its
+    // anneals took minutes, waited for without a limit (the hunt of 21
+    // October, B4).
+    QPointer<MultiphysicsDoc> d(doc);
+    doc->whenJobEnds(int(std::max<qint64>(1, deadline.remainingTime())), [this, d, deadline, timeout, then](bool ended) {
+        if (!d || d->closedWhenFree()) return then(tr("The model was closed."));
+        if (!ended)
+            return then(tr("The geometry is still being built after %1 s, %2: it goes on (fem_build again waits more; fem_stop stops it).")
+                            .arg(timeout)
+                            .arg(d->jobProgress()));
+        // (Another build wanted after it - the model changed -: that one.)
+        femGeometryThen(d, deadline, timeout, false, then);
+    });
+}
+
+void QucsControl::femBuild(const QJsonObject& args, const Done& done)
 {
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
-    if (doc == nullptr) return errorResult(error);
+    if (doc == nullptr) return done(errorResult(error));
+    if (!args.value(QLatin1String("until")).toString().trimmed().isEmpty()) return done(femBuilt(doc, args));
+    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(300), 1, 3600);
+    const QDeadlineTimer deadline(qint64(timeout) * 1000);
+    QPointer<MultiphysicsDoc> d(doc);
+    femGeometryThen(doc, deadline, timeout, true, [this, d, args, done, deadline, timeout](const QString& stopped) {
+        if (!stopped.isEmpty()) return done(errorResult(stopped));
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        if (args.value(QLatin1String("what")).toString(QStringLiteral("geometry")) != QLatin1String("mesh")) return done(femBuilt(d, args));
+        d->buildMesh();
+        d->whenJobEnds(int(std::max<qint64>(1, deadline.remainingTime())), [this, d, done, timeout](bool ended) {
+            if (!d) return done(errorResult(tr("The model was closed.")));
+            if (!ended) return done(errorResult(tr("The mesh is still being built after %1 s (fem_build again waits more).").arg(timeout)));
+            done(femMeshBuilt(d));
+        });
+    });
+}
+
+QJsonObject QucsControl::femBuilt(MultiphysicsDoc* doc, const QJsonObject& args)
+{
     const QString what = args.value(QLatin1String("what")).toString(QStringLiteral("geometry"));
     QString why;
     // Up to a feature, or a process flow's step: the structure then, each
@@ -1233,10 +1286,11 @@ QJsonObject QucsControl::femBuild(const QJsonObject& args)
                                        {QStringLiteral("what"), QStringLiteral("geometry")},
                                        {QStringLiteral("max"), args.value(QLatin1String("max")).toInt(100)}});
     }
-    if (what != QLatin1String("mesh")) return errorResult(tr("'what' is geometry or mesh."));
-    doc->buildMesh();
-    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(300), 1, 3600);
-    if (!doc->waitForJob(timeout * 1000)) return errorResult(tr("The mesh is still being built after %1 s (fem_build again waits more).").arg(timeout));
+    return errorResult(tr("'what' is geometry or mesh."));
+}
+
+QJsonObject QucsControl::femMeshBuilt(MultiphysicsDoc* doc)
+{
     if (!doc->lastError().isEmpty()) return errorResult(doc->lastError());
     const std::shared_ptr<const Mesh> mesh = doc->mesh();
     if (!mesh) return errorResult(tr("The mesh failed."));
@@ -1254,29 +1308,33 @@ QJsonObject QucsControl::femBuild(const QJsonObject& args)
     return jsonResult(o);
 }
 
-QJsonObject QucsControl::femStop(const QJsonObject& args)
+void QucsControl::femStop(const QJsonObject& args, const Done& done)
 {
     // As the model tab's Cancel: the job asked to stop, waited for - it
     // stops at its next check (a time step, a frequency, a sweep's point, a
     // coupled loop's iteration, a semiconductor's Newton step).
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
-    if (doc == nullptr) return errorResult(error);
+    if (doc == nullptr) return done(errorResult(error));
     if (!doc->isBusy() && !doc->building())
-        return jsonResult(QJsonObject{{QStringLiteral("stopped"), false},
-                                      {QStringLiteral("note"), tr("Nothing is being built or solved in %1.").arg(titleOf(doc))}});
+        return done(jsonResult(QJsonObject{{QStringLiteral("stopped"), false},
+                                           {QStringLiteral("note"), tr("Nothing is being built or solved in %1.").arg(titleOf(doc))}}));
     const qsizetype before = doc->messages().size();
     doc->cancelJob();
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(30), 1, 600);
-    if (!doc->waitForJob(timeout * 1000))
-        return errorResult(tr("Asked to stop, still at work after %1 s: it stops at its next check (fem_stop again waits more).").arg(timeout));
-    QJsonObject o{{QStringLiteral("stopped"), true}};
-    // What it said as it stopped (the solutions it had kept stay).
-    QJsonArray said;
-    const QStringList messages = doc->messages();
-    for (qsizetype i = std::max<qsizetype>(0, std::min(before, messages.size()) - 1); i < messages.size(); ++i) said.append(messages.at(i));
-    if (!said.isEmpty()) o.insert(QStringLiteral("log"), said);
-    return jsonResult(o);
+    QPointer<MultiphysicsDoc> d(doc);
+    doc->whenJobEnds(timeout * 1000, [this, d, done, before, timeout](bool ended) {
+        if (!d) return done(jsonResult(QJsonObject{{QStringLiteral("stopped"), true}, {QStringLiteral("note"), tr("The model was closed.")}}));
+        if (!ended)
+            return done(errorResult(tr("Asked to stop, still at work after %1 s: it stops at its next check (fem_stop again waits more).").arg(timeout)));
+        QJsonObject o{{QStringLiteral("stopped"), true}};
+        // What it said as it stopped (the solutions it had kept stay).
+        QJsonArray said;
+        const QStringList messages = d->messages();
+        for (qsizetype i = std::max<qsizetype>(0, std::min(before, messages.size()) - 1); i < messages.size(); ++i) said.append(messages.at(i));
+        if (!said.isEmpty()) o.insert(QStringLiteral("log"), said);
+        done(jsonResult(o));
+    });
 }
 
 /// A mode (state) asked of \a set, of modes: from 1 to the most it has -
@@ -1297,20 +1355,39 @@ static QString modeAsked(const SolutionSet& set, int mode)
     return QString();
 }
 
-QJsonObject QucsControl::femSolve(const QJsonObject& args)
+void QucsControl::femSolve(const QJsonObject& args, const Done& done)
 {
     QString error;
     MultiphysicsDoc* doc = femDocument(args, &error);
-    if (doc == nullptr) return errorResult(error);
+    if (doc == nullptr) return done(errorResult(error));
     const QString study = args.value(QLatin1String("study")).toString();
-    if (doc->isBusy() && !doc->waitForJob(1000)) return errorResult(tr("It is busy building or solving; fem_solve again in a while."));
-    doc->compute(study);
     const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(600), 1, 7200);
-    if (!doc->waitForJob(timeout * 1000))
-        return errorResult(tr("Still solving after %1 s, %2: it goes on (fem_describe says how far, and when it is solved; fem_stop stops "
-                              "it, a sweep's points before kept).")
-                               .arg(timeout)
-                               .arg(doc->jobProgress()));
+    QPointer<MultiphysicsDoc> d(doc);
+    // (Waited for without a loop of its own: whenJobEnds - the hunt of 21
+    // October, B6.)
+    const auto solve = [this, d, study, timeout, args, done] {
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        d->compute(study);
+        d->whenJobEnds(timeout * 1000, [this, d, study, timeout, args, done](bool ended) {
+            if (!d) return done(errorResult(tr("The model was closed.")));
+            if (!ended)
+                return done(errorResult(tr("Still solving after %1 s, %2: it goes on (fem_describe says how far, and when it is solved; "
+                                           "fem_stop stops it, a sweep's points before kept).")
+                                            .arg(timeout)
+                                            .arg(d->jobProgress())));
+            done(femSolved(d, args, study));
+        });
+    };
+    if (!doc->isBusy()) return solve();
+    doc->whenJobEnds(1000, [this, d, done, solve](bool ended) {
+        if (!d) return done(errorResult(tr("The model was closed.")));
+        if (!ended) return done(errorResult(tr("It is busy building or solving; fem_solve again in a while.")));
+        solve();
+    });
+}
+
+QJsonObject QucsControl::femSolved(MultiphysicsDoc* doc, const QJsonObject& args, const QString& study)
+{
     if (!doc->lastError().isEmpty()) return errorResult(doc->lastError());
     const std::shared_ptr<SolutionSet> set = doc->solutions(study);
     if (!set || set->solutions.empty()) return errorResult(tr("It was not solved."));

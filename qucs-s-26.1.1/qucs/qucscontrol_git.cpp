@@ -207,7 +207,7 @@ void QucsControl::reloadGitChanged(const QString& root, QJsonObject* answer)
         bool inside = false;
         git::relativePath(root, file, &inside);
         const QFileInfo info(file);
-        if (!inside || !info.exists() || (doc->getLastSaved().isValid() && info.lastModified() <= doc->getLastSaved())) continue;
+        if (!inside || !info.exists() || (doc->getLastSaved().isValid() && !doc->changedOnDisk(info.lastModified()))) continue;
         const QString name = native(file);
         if (doc->getDocChanged()) {
             unsaved.append(name);

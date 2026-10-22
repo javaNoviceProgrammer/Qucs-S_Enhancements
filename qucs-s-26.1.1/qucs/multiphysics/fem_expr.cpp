@@ -1647,6 +1647,14 @@ std::optional<double> evaluateConstant(const QString& text, const Scope& scope, 
         if (error) *error = tr("it must be a constant here, not depend on %1").arg(QStringLiteral("x, y or a field"));
         return std::nullopt;
     }
+    // (Not a number, or infinite - 1/0, sqrt(-1) -: refused here, not at
+    // each caller's range check; "x < 0" passed NaN, "!(x > 0)" infinity:
+    // an infinite carrier density gave a well gain - the hunt of 21
+    // October, A1.)
+    if (!std::isfinite(e.constant())) {
+        if (error) *error = tr("it is %1, not a finite number").arg(formatNumber(e.constant()));
+        return std::nullopt;
+    }
     QStringList said = e.warnings();
     if (!e.dim().isNone() && !(e.dim() == expected))
         said << tr("its unit is %1, where %2 is expected").arg(dimName(e.dim()), dimName(expected));

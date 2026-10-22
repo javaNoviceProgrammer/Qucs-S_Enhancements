@@ -981,7 +981,7 @@ void QucsApp::initView()
   connect(a_changedTimer, &QTimer::timeout, this, &QucsApp::documentsChangedOnDisk);
   connect(a_docWatcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &file) {
     a_changedOnDisk.insert(file);
-    a_changedTimer->start();
+    misc::restartUpTo(a_changedTimer, a_changedFirst, 1500);
   });
   auto *watchSync = new QTimer(this);   // documents opened, closed, saved under another name
   connect(watchSync, &QTimer::timeout, this, &QucsApp::watchDocuments);
@@ -3153,7 +3153,7 @@ bool QucsApp::saveFile(QucsDoc *Doc, bool writeOverConflict)
   // an editor) - its changes would be lost without a word: the user says.
   // (Claude's own save_document asks no one.)
   if (!misc::ErrorCapture::active() && onDisk.exists()
-      && (conflict || (Doc->getLastSaved().isValid() && onDisk.lastModified() > Doc->getLastSaved()))) {
+      && (conflict || (Doc->getLastSaved().isValid() && Doc->changedOnDisk(onDisk.lastModified())))) {
     QMessageBox box(QMessageBox::Warning, tr("Save"),
                     conflict ? tr("%1 is in conflict: git's merge left its conflict marks in the file.").arg(onDisk.fileName())
                              : tr("%1 was changed by another program since it was loaded here.").arg(onDisk.fileName()),
@@ -4297,7 +4297,7 @@ void QucsApp::documentsChangedOnDisk()
       if (doc->getDocName().isEmpty()
           || QFileInfo(doc->getDocName()).canonicalFilePath() != info.canonicalFilePath()) continue;
       // Written by Qucs-S itself (saved), or loaded since.
-      if (doc->getLastSaved().isValid() && info.lastModified() <= doc->getLastSaved()) break;
+      if (doc->getLastSaved().isValid() && !doc->changedOnDisk(info.lastModified())) break;
       const QString name = info.fileName();
       if (doc->getDocChanged()) {
         statusBar()->showMessage(tr("%1 was changed by another program; it has unsaved changes here, so it was not loaded again.")
@@ -4892,7 +4892,7 @@ void QucsApp::slotSimulate(QWidget *w)
   QFileInfo Info(Doc->getDocName());
   QString ext = Info.suffix();
   if(Doc->getLastSaved().isValid()) {
-    if(Doc->getLastSaved() < Info.lastModified()) {
+    if(Doc->changedOnDisk(Info.lastModified())) {
       int No = QMessageBox::warning(this, tr("Warning"),
                tr("The document was modified by another program !") + '\n' +
                tr("Do you want to reload or keep this version ?"),

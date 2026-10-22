@@ -24,6 +24,7 @@
 #include "projectlibraries.h"
 #include <QFileSystemModel>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
@@ -983,6 +984,7 @@ private:
   QSet<QString> a_changedOnDisk;                // changed, waiting for the files to settle
   QHash<QString, std::pair<QDateTime, Reloaded>> a_notReloaded;   // a file's state that was not read, and why
   QTimer *a_changedTimer = nullptr;
+  QElapsedTimer a_changedFirst;                 // since the first change it waits for
   void watchDocuments();                        // the watched files: the open documents
   void tellClaudeNotLoaded(const QString &name); // a file changed on disk, not loaded: Claude told
   FileBrowser *fileBrowser = nullptr;   // the left dock's File Browser tab

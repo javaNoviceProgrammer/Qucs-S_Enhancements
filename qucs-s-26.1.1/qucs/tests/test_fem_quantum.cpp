@@ -2283,6 +2283,77 @@ private slots:
                  qPrintable(states.study.warnings.join(QLatin1Char('\n'))));
     }
 
+    // The spectrum's constants not a finite number refused, each said (the
+    // hunt of 21 October, A1: an infinite carrier density gave the well
+    // gain, an infinite index no absorption, a NaN broadening none - and
+    // "x < 0", "!(x > 0)" let them by); the excitonpairs below 0 said (N2);
+    // a temperature not a number said as such, one past 2000 K warned of
+    // (N7).
+    void constantsNotFiniteRefused()
+    {
+        auto spectrum = [this](const QString& extra) {
+            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                               QStringLiteral("8"), QStringLiteral("10"), QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                                               QStringLiteral(R"({"type": "spectrum", "energies": "1.5[eV]", "states": 2, "linewidth": "5[meV]"%1})").arg(extra))));
+        };
+        const struct {
+            const char* extra;
+            const char* said;
+        } cases[] = {
+            {R"(, "density": "1/0[1/m^3]")", "the carriers: it is inf, not a finite number"},
+            {R"x(, "density": "sqrt(-1)")x", "the carriers: it is NaN, not a finite number"},
+            {R"(, "nr": "1/0")", "the refractive index: it is inf, not a finite number"},
+            {R"(, "epsr": "1/0")", "the excitons' permittivity: it is inf, not a finite number"},
+            {R"x(, "linewidth": "sqrt(-1)")x", "its broadening: it must be a constant of 0 or more"},
+            {R"(, "linewidth": "1/0")", "its broadening: it must be a constant of 0 or more"},
+            {R"x(, "fade": "sqrt(-1)")x", "its fade: it must be a constant of 0 or more"},
+            {R"(, "bulkexcitons": true, "urbach": "1/0")", "its Urbach width: it must be a constant of 0 or more"},
+        };
+        for (const auto& c : cases) {
+            const Run r = spectrum(QLatin1String(c.extra));
+            QVERIFY2(r.error.contains(QLatin1String(c.said)), qPrintable(QLatin1String(c.extra) + QLatin1String(": ") + r.error));
+        }
+        // (N2; one not a whole number the model refuses.)
+        // (Said as the options are read: no excitons solved - coupled ones
+        // take minutes under the sanitizers.)
+        const Run negative = spectrum(QStringLiteral(R"(, "excitonpairs": -3)"));
+        QVERIFY2(negative.error.isEmpty(), qPrintable(negative.error));
+        QVERIFY2(negative.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("its excitonpairs -3 taken as 0, the defaults")),
+                 qPrintable(negative.study.warnings.join(QLatin1Char('\n'))));
+        QVERIFY(spectrum(QStringLiteral(R"(, "excitons": true, "excitonmodel": "coupled", "excitonpairs": "lots")")).error.contains(QLatin1String("a whole number")));
+        // (N7.)
+        const auto states = [this](const QString& T) {
+            return run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                               QStringLiteral("8"), QStringLiteral("10"), QStringLiteral(R"(, "h1d": "0.5[nm]", "T": "%1")").arg(T),
+                                               QStringLiteral(R"({"type": "states", "states": 2})"))));
+        };
+        const Run infinite = states(QStringLiteral("1/0"));
+        QVERIFY2(infinite.error.contains(QLatin1String("its temperature: it is inf, not a finite number")) && !infinite.error.contains(QLatin1String("band gap"))
+                     && !infinite.error.contains(QLatin1String("must be more than 0")),
+                 qPrintable(infinite.error));
+        // (The quantum node's own energies, compiled where they are read:
+        // the height its waves are drawn at.)
+        const Run drawn = run(modelOf(heterostructure(QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"),
+                                                      QStringLiteral("8"), QStringLiteral("10"), QStringLiteral(R"(, "h1d": "0.5[nm]", "drawn": "1/0")"),
+                                                      QStringLiteral(R"({"type": "states", "states": 2})"))));
+        QVERIFY2(drawn.error.contains(QLatin1String("the height its waves are drawn: it must be a finite constant")), qPrintable(drawn.error));
+        const Run hot = states(QStringLiteral("1e9[K]"));
+        QVERIFY2(hot.error.isEmpty(), qPrintable(hot.error));
+        QVERIFY2(hot.study.log.join(QLatin1Char('\n')).contains(QLatin1String("a temperature of 1e+09 K, past the material library's fits")),
+                 qPrintable(hot.study.log.join(QLatin1Char('\n'))));
+    }
+
+    // Periodic ends in 2D: walls, said (the hunt of 21 October, N1: a file or
+    // a tool set them, and they were left out without a word).
+    void periodicEndsOfALineAlone()
+    {
+        const Run r = run(modelOf(box(QStringLiteral("10"), QStringLiteral("6"), QStringLiteral(R"(, "space": "2d", "ends": "periodic")"), QStringLiteral("0[eV]"),
+                                      QStringLiteral(R"({"type": "states", "states": 2})"))));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QVERIFY2(r.study.log.join(QLatin1Char('\n')).contains(QLatin1String("periodic ends are a line's (1D): the walls bound this one")),
+                 qPrintable(r.study.log.join(QLatin1Char('\n'))));
+    }
+
     // Periodic ends (wishlist 4.1 of the check of 21 October): the line one
     // superlattice's period, its states Bloch's at kz 0 - a well a between
     // halves of a barrier b (Ec 0.3 eV, its mass 0.092, the well's 0.067),

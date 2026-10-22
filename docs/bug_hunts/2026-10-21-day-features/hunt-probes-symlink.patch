@@ -1,0 +1,53 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+index 2602ba6..f28c6a3 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+@@ -1509,6 +1509,48 @@ private slots:
+         app.closeAllFiles();
+     }
+ 
++    void huntSymlinkImage()   // HUNT
++    {
++        QVERIFY(QDir().mkpath(dir.filePath("results")));
++        QVERIFY(QDir().mkpath(dir.filePath("report")));
++        QImage red(240, 160, QImage::Format_RGB32); red.fill(Qt::red);
++        QImage blue(240, 160, QImage::Format_RGB32); blue.fill(Qt::blue);
++        QVERIFY(red.save(dir.filePath("results/plot.png"), "PNG"));
++        QFile::remove(dir.filePath("report/plot.png"));
++        QVERIFY(QFile::link(dir.filePath("results/plot.png"), dir.filePath("report/plot.png")));
++        const QString file = write("report/r.md", "# Report\n\n![plot](plot.png)\n");
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(1000, 800);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        QVERIFY(app.gotoPage(file));
++        MarkdownDoc* md = current(app);
++        md->setMode(MarkdownDoc::Mode::Preview);
++        pump();
++        const auto shown = [md](QColor colour) {
++            const QImage grab = md->preview()->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
++            int n = 0;
++            for (int y = 0; y < grab.height(); ++y)
++                for (int x = 0; x < grab.width(); ++x) n += (grab.pixel(x, y) & 0xffffff) == (colour.rgb() & 0xffffff);
++            return n;
++        };
++        QTRY_VERIFY(shown(Qt::red) > 10000);
++        // The target written again in place; then replaced by a rename.
++        QVERIFY(blue.save(dir.filePath("results/plot.png"), "PNG"));
++        QElapsedTimer t; t.start();
++        while (t.elapsed() < 4000 && shown(Qt::blue) < 10000) QTest::qWait(100);
++        qInfo("HUNT symlinked image, its target written in place: %s after %lld ms", shown(Qt::blue) > 10000 ? "shown" : "NOT shown", t.elapsed());
++        QImage green(240, 160, QImage::Format_RGB32); green.fill(Qt::green);
++        QVERIFY(green.save(dir.filePath("results/plot.part"), "PNG"));
++        QFile::remove(dir.filePath("results/plot.png"));
++        QVERIFY(QFile::rename(dir.filePath("results/plot.part"), dir.filePath("results/plot.png")));
++        t.start();
++        while (t.elapsed() < 4000 && shown(Qt::green) < 10000) QTest::qWait(100);
++        qInfo("HUNT symlinked image, its target renamed over: %s after %lld ms", shown(Qt::green) > 10000 ? "shown" : "NOT shown", t.elapsed());
++        app.closeAllFiles();
++    }
++
+     // A long document - a formula on each line, code blocks - is laid out
+     // once a rendering, its formulas found in one pass. (Laid out again
+     // after each formula from it to the end, each searched for from the

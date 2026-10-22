@@ -1,0 +1,321 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp b/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp
+index f57953a..bc391a0 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp
+@@ -236,6 +236,31 @@ while IFS= read -r line; do
+ done
+ )SH";
+ 
++const char* const kHuntRace = R"SH(#!/bin/sh
++n=0
++while IFS= read -r line; do
++  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/race-in"
++  id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
++  case "$line" in
++    *'"type":"user"'*)
++      echo '{"type":"system","subtype":"init","session_id":"race-1","model":"claude-test-1"}'
++      echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r1","name":"Bash","input":{"command":"make all"}}]}}'
++      ;;
++    *'"subtype":"background_tasks"'*)
++      n=$((n+1))
++      if [ $n = 1 ]; then
++        echo '{"type":"system","subtype":"task_started","task_id":"k9","tool_use_id":"r1","description":"make all","is_backgrounded":false,"task_type":"local_bash"}'
++        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"backgrounded":false}}}'
++      else
++        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"backgrounded":true}}}'
++        echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"Command was manually backgrounded by user with ID: k9.","is_error":false}]}}'
++        echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"race-1"}'
++      fi
++      ;;
++  esac
++done
++)SH";
++
+ // claude that changes its model and mode as it runs, when told: a turn
+ // says which it works with; "claude-refused" it will not change to - and
+ // a turn under way then ends at the refusal. Each start is a line in
+@@ -1252,6 +1277,102 @@ private slots:
+         panel.session()->stop();
+     }
+ 
++    void huntMathReply()   // HUNT
++    {
++        for (const auto& [replies, each] : {std::pair{10, 25}, std::pair{40, 25}}) {
++            ClaudeCodePanel panel;
++            panel.setDefaultDirectory(fresh(QStringLiteral("huntmathc%1").arg(replies)));
++            panel.session()->setProgram("claude");
++            panel.resize(440, 700);
++            panel.show();
++            QVERIFY(QTest::qWaitForWindowExposed(&panel));
++            for (int r = 0; r < replies; ++r) {
++                QString text = QStringLiteral("Reply %1:").arg(r);
++                for (int i = 0; i < each; ++i) text += QStringLiteral(" with $E_{%1} = \\hbar\\omega_{%1}$,").arg(i);
++                const QJsonObject m{{"type", "assistant"}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", text}}}}}}};
++                panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact));
++            }
++            QElapsedTimer t; t.start();
++            panel.renderNow();
++            qInfo("HUNT %d replies of %d formulas: a render %lld ms", replies, each, t.elapsed());
++        }
++        if (qEnvironmentVariableIsSet("HUNT_SPREAD_ONLY")) return;
++        for (int n : {250, 500, 1000, 2000}) {
++            ClaudeCodePanel panel;
++            panel.setDefaultDirectory(fresh(QStringLiteral("huntmath%1").arg(n)));
++            panel.session()->setProgram("claude");   // (not run)
++            panel.resize(440, 700);
++            panel.show();
++            QVERIFY(QTest::qWaitForWindowExposed(&panel));
++            QString text = "Here:";
++            for (int i = 0; i < n; ++i) text += QStringLiteral(" term $x_{%1}^2$ and").arg(i);
++            const QJsonObject m{{"type", "assistant"}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", text}}}}}}};
++            panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact));
++            QElapsedTimer t; t.start();
++            panel.renderNow();
++            const qint64 first = t.elapsed();
++            t.start();
++            panel.renderNow();
++            const qint64 again = t.elapsed();
++            // A note appended: the transcript drawn again.
++            panel.addNote("a note");
++            t.start();
++            panel.renderNow();
++            qInfo("HUNT %d formulas in one reply: render %lld ms, again %lld ms, after a note %lld ms", n, first, again, t.elapsed());
++        }
++    }
++
++    void huntBackgroundRace()   // HUNT
++    {
++        skipWithoutShell();
++        // Refused (not a task yet), but the task announced just before the refusal reaches the dock.
++        QFile::remove(dir.filePath("race-in"));
++        Session s;
++        s.setProgram(script("racer", kHuntRace));
++        s.setWorkingDirectory(fresh("racework"));
++        QSignalSpy tools(&s, &Session::toolStarted);
++        QSignalSpy notices(&s, &Session::notice);
++        QSignalSpy turns(&s, &Session::turnFinished);
++        QVERIFY(s.send("Build it"));
++        QVERIFY(tools.wait(10000));
++        QCOMPARE(s.sendToBackground(), 1);
++        QTest::qWait(1500);
++        QStringList said;
++        for (const QList<QVariant>& n : std::as_const(notices)) said << n.at(0).toString();
++        qInfo("HUNT notices: [%s]; turn ended %d; can send again %d; asked %lld times", qPrintable(said.join(" | ")), int(turns.count()),
++              int(s.canSendToBackground()), read(dir.filePath("race-in")).count("background_tasks"));
++        s.stop();
++    }
++
++    void huntPromptMath()   // HUNT
++    {
++        skipWithoutShell();
++        ClaudeCodePanel panel;
++        panel.setDefaultDirectory(fresh("huntprompt"));
++        panel.session()->setProgram(script("switcher", kSwitcher));
++        panel.resize(440, 700);
++        panel.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&panel));
++        const QStringList prompts = {
++            "Compare <b>x</b> &amp; y < z with $\\alpha$ here",
++            "Price $5 and $10, with $\\beta$",
++            "A path C:\\Users\\$HOME\\x$ and $\\gamma$",
++            "Line one $a$\n<!-- not a comment -->\nline three $$b$$ end",
++        };
++        for (const QString& p : prompts) {
++            panel.composer()->setPlainText(p);
++            panel.sendComposer();
++            QTRY_VERIFY_WITH_TIMEOUT(!panel.session()->isBusy(), 10000);
++            panel.renderNow();
++        }
++        const QString text = panel.transcriptText();
++        for (const QString& want : {QStringLiteral("<b>x</b>"), QStringLiteral("&amp;"), QStringLiteral("< z"), QStringLiteral("$5 and $10"),
++                                    QStringLiteral("C:\\Users\\$HOME\\x$"), QStringLiteral("<!-- not a comment -->")})
++            qInfo("HUNT shown as typed %s: %d", qPrintable(want), int(text.contains(want)));
++        qInfo("HUNT formulas (object marks) in the transcript: %lld", text.count(QChar::ObjectReplacementCharacter));
++        panel.session()->stop();
++    }
++
+     // A program that fails says why: its exit code and what it wrote.
+     void aFailingProgramIsReported()
+     {
+diff --git a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+index 2602ba6..0c771b7 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_markdown_doc.cpp
+@@ -1509,6 +1509,177 @@ private slots:
+         app.closeAllFiles();
+     }
+ 
++    void huntStarve()   // HUNT
++    {
++        QImage red(240, 160, QImage::Format_RGB32); red.fill(Qt::red);
++        QImage blue(240, 160, QImage::Format_RGB32); blue.fill(Qt::blue);
++        QVERIFY(QDir().mkpath(dir.filePath("busy")));
++        QVERIFY(red.save(dir.filePath("busy/plot.png"), "PNG"));
++        const QString file = write("busy/busy.md", "# Busy\n\n![plot](plot.png)\n\nMark zero\n");
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(1000, 800);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        QVERIFY(app.gotoPage(file));
++        MarkdownDoc* md = current(app);
++        md->setMode(MarkdownDoc::Mode::Preview);
++        pump();
++        const auto shown = [md](QColor colour) {
++            const QImage grab = md->preview()->viewport()->grab().toImage().convertToFormat(QImage::Format_RGB32);
++            int n = 0;
++            for (int y = 0; y < grab.height(); ++y)
++                for (int x = 0; x < grab.width(); ++x) n += (grab.pixel(x, y) & 0xffffff) == (colour.rgb() & 0xffffff);
++            return n;
++        };
++        QTRY_VERIFY(shown(Qt::red) > 10000);
++        // The image changed once; a log beside it written every 150 ms for 6 s.
++        QVERIFY(blue.save(dir.filePath("busy/plot.png"), "PNG"));
++        QElapsedTimer t; t.start();
++        qint64 seenAt = -1;
++        int k = 0;
++        while (t.elapsed() < 6000) {
++            write("busy/solver.log", QByteArray("line ") + QByteArray::number(++k) + "\n");
++            QTest::qWait(150);
++            if (seenAt < 0 && shown(Qt::blue) > 10000) seenAt = t.elapsed();
++        }
++        qInfo("HUNT image with a busy folder: shown at %lld ms (-1: not in 6 s)", seenAt);
++        QTRY_VERIFY_WITH_TIMEOUT(shown(Qt::blue) > 10000, 5000);
++        qInfo("HUNT after the writes stopped: shown at %lld ms", t.elapsed());
++        // The .md itself appended every 150 ms for 6 s (a log written as it goes).
++        t.start(); seenAt = -1;
++        QByteArray text = "# Busy\n\n![plot](plot.png)\n\nMark one\n";
++        for (int i = 0; t.elapsed() < 6000; ++i) {
++            text += "Line " + QByteArray::number(i) + "\n\n";
++            write("busy/busy.md", text);
++            QTest::qWait(150);
++            if (seenAt < 0 && blockWith(md->preview()->document(), "Mark one").isValid()) seenAt = t.elapsed();
++        }
++        qInfo("HUNT .md appended every 150 ms: first refresh at %lld ms (-1: none in 6 s)", seenAt);
++        app.closeAllFiles();
++    }
++
++    void huntEmptyImage()   // HUNT
++    {
++        QVERIFY(QDir().mkpath(dir.filePath("empty")));
++        const QString file = write("empty/draft.md", "# Draft\n\n![a figure to come]()\n\n![](.)\n\nText.\n");
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(1000, 800);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        QVERIFY(app.gotoPage(file));
++        MarkdownDoc* md = current(app);
++        md->setMode(MarkdownDoc::Mode::Preview);
++        pump();
++        qInfo("HUNT watched: %s", qPrintable(md->watchedImages().join(" | ")));
++        int renderings = 0;
++        connect(md->preview()->document(), &QTextDocument::contentsChange, this, [&renderings] { ++renderings; });
++        // Files made beside it, as a script's outputs.
++        for (int i = 0; i < 5; ++i) {
++            write(QStringLiteral("empty/out%1.csv").arg(i).toUtf8().constData(), "1,2\n");
++            QTest::qWait(700);
++        }
++        QTest::qWait(800);
++        qInfo("HUNT renderings after five files made beside it: %d", renderings);
++        disconnect(md->preview()->document(), nullptr, this, nullptr);
++        app.closeAllFiles();
++    }
++
++    void huntFutureDate()   // HUNT
++    {
++        const QString file = write("future.md", "# Future\n\nMark zero\n");
++        {
++            QFile f(file);
++            QVERIFY(f.open(QIODevice::ReadWrite));
++            QVERIFY(f.setFileTime(QDateTime::currentDateTime().addSecs(3 * 3600), QFileDevice::FileModificationTime));
++        }
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(1000, 800);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        QVERIFY(app.gotoPage(file));
++        MarkdownDoc* md = current(app);
++        md->setMode(MarkdownDoc::Mode::Preview);
++        QTRY_VERIFY(blockWith(md->preview()->document(), "Mark zero").isValid());
++        QTest::qWait(1600);
++        write("future.md", "# Future\n\nMark one\n");   // (dated now: three hours before the file's date)
++        QElapsedTimer t; t.start();
++        bool seen = false;
++        while (t.elapsed() < 6000 && !(seen = blockWith(md->preview()->document(), "Mark one").isValid())) QTest::qWait(100);
++        qInfo("HUNT a file dated 3 h ahead, edited now: %s after %lld ms", seen ? "refreshed" : "NOT refreshed", t.elapsed());
++        app.closeAllFiles();
++    }
++
++    void huntBigImages()   // HUNT
++    {
++        QVERIFY(QDir().mkpath(dir.filePath("photos")));
++        QByteArray text = "# Photos\n\n";
++        for (int i = 0; i < 8; ++i) {
++            QImage photo(4000, 3000, QImage::Format_RGB32);
++            for (int y = 0; y < photo.height(); ++y) {
++                QRgb* line = reinterpret_cast<QRgb*>(photo.scanLine(y));
++                for (int x = 0; x < photo.width(); ++x) line[x] = qRgb((x * 7 + y * 3 + i) & 255, (x ^ y) & 255, (x * y + i) & 255);
++            }
++            QVERIFY(photo.save(dir.filePath(QStringLiteral("photos/p%1.png").arg(i)), "PNG"));
++            text += "![p](p" + QByteArray::number(i) + ".png)\n\nSome text.\n\n";
++        }
++        const QString file = write("photos/photos.md", text);
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(1200, 800);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        QVERIFY(app.gotoPage(file));
++        MarkdownDoc* md = current(app);
++        md->setMode(MarkdownDoc::Mode::Split);
++        pump();
++        for (int k = 0; k < 3; ++k) {
++            QElapsedTimer t; t.start();
++            md->renderNow();
++            const qint64 render = t.elapsed();
++            md->preview()->viewport()->repaint();
++            qInfo("HUNT 8 photos of 4000x3000, Split: a render %lld ms, with its paint %lld ms", render, t.elapsed());
++        }
++        // A key typed in the text: the render 250 ms after.
++        QElapsedTimer t; t.start();
++        md->textCursor().insertText("x");
++        QTest::qWait(300);
++        qInfo("HUNT a key typed: the event loop back after %lld ms (300 waited)", t.elapsed());
++        app.closeAllFiles();
++    }
++
++    void huntManyImages()   // HUNT
++    {
++        QVERIFY(QDir().mkpath(dir.filePath("many")));
++        QImage small(1600, 400, QImage::Format_RGB32);
++        small.fill(Qt::darkGreen);
++        QVERIFY(small.save(dir.filePath("many/fig.png"), "PNG"));
++        QucsApp app(false);
++        MainGuard guard(&app);
++        app.resize(1200, 800);
++        app.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&app));
++        for (int n : {100, 200, 400}) {
++            QByteArray text = "# Figures\n\n";
++            for (int i = 0; i < n; ++i) text += "Figure " + QByteArray::number(i) + ", some words about it.\n\n![f](fig.png)\n\n";
++            const QString file = write(QStringLiteral("many/many%1.md").arg(n).toUtf8().constData(), text);
++            QVERIFY(app.gotoPage(file));
++            MarkdownDoc* md = current(app);
++            md->setMode(MarkdownDoc::Mode::Preview);
++            pump();
++            QTextDocument* shown = md->preview()->document();
++            int changes = 0;
++            connect(shown, &QTextDocument::contentsChange, this, [&changes] { ++changes; });
++            QElapsedTimer t; t.start();
++            md->renderNow();
++            qInfo("HUNT %d images (wider than the view: fitted), a render %lld ms, %d changes", n, t.elapsed(), changes);
++            disconnect(shown, nullptr, this, nullptr);
++        }
++        app.closeAllFiles();
++    }
++
+     // A long document - a formula on each line, code blocks - is laid out
+     // once a rendering, its formulas found in one pass. (Laid out again
+     // after each formula from it to the end, each searched for from the
