@@ -66,6 +66,13 @@ another's `timeout` given), as it did while these were answered within the call.
 `test_multiphysics_doc aToolsOwnWaitIsWaitedFor` (a solve called with 1 ms answered; the old wait fails it, and with
 the old storage ASan reports the write).
 
+The same CI's `test_claude_code aLongReplyIsReadInLinearTime` read 4 times the unclosed comments 8.05 and 7.9 times
+as long, its code unchanged since the last green run. Here the reading is linear to 400,000 characters, 4.0 a step,
+in Release and sanitized alike. Under the sanitizers each access touches their shadow too, and the larger text may
+outgrow a cache: the comments searched to the end again (a quadratic reading) read 9.9 times as long sanitized here,
+14.6 in Release, so no bound tells the two apart there. The test now times the two lengths in turn, judges the ratio
+(under 8) in Release builds, CI's macOS among them, and only says it under the sanitizers.
+
 **B7. Streaming over a math-heavy conversation.** The panel's typeset formulas are kept in a
 `QCache` bounded by their images' size (64 MB). The old cache was cleared past 400 formulas, so a
 longer conversation typeset most of its math again at each render, every 40 ms while a reply was
