@@ -451,8 +451,12 @@ target_link_libraries(qucs-core PUBLIC ${QUCS_LINK_LIBRARIES})
 add_dependencies(qucs-core qucs-commit)
 set_target_properties(qucs-core PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
 
+# (The tests' AddressSanitizer options too, empty but on macOS under it: a
+# tool's process forked by the sanitized application died in fork() as a
+# test's did - the hunt of 22 October, N15.)
 ADD_EXECUTABLE( ${QUCS_NAME} MACOSX_BUNDLE WIN32
   main.cpp
+  tests/sanitizer_options.cpp
   $<TARGET_OBJECTS:qucs-core>
   ${RESOURCES_SRCS}
   ${APP_EXTRA_SRCS}

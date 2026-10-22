@@ -67,6 +67,12 @@ bool buildLine(const Solution& s, const std::vector<char>& on, int axis, const Q
             *error = tr("where its line runs: %1").arg(e.isValid() ? tr("it must be a constant") : e.error());
             return false;
         }
+        // (Not finite: said so - "1/0" was "its domains have no extent
+        // along the line", the hunt of 22 October, N10.)
+        if (!std::isfinite(e.constant())) {
+            *error = tr("where its line runs: it is %1, not a finite number").arg(formatNumber(e.constant()));
+            return false;
+        }
         across = e.constant() * unit;
     }
     Line& l = *line;

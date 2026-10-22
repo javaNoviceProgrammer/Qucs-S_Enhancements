@@ -7,6 +7,8 @@
  */
 #include <QtTest>
 #include <QElapsedTimer>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QAbstractButton>
 #include <QDesktopServices>
 #include <QMessageBox>
@@ -1613,6 +1615,80 @@ private slots:
         misc::restartUpTo(&timer, first, 1500);
         QTRY_VERIFY(fired >= 0);
         QVERIFY2(fired >= 370 && fired < 900, qPrintable(QString::number(fired)));
+    }
+
+    // A long run with no break - letters, braces -, where quotes narrow the
+    // column, is laid out in time linear in its length: read into a document
+    // of no view and given a break every 64 letters (a zero-width space). Qt
+    // laid it out as it read it, and broke each line searching the run to its
+    // end: a letter a line, 32 kB three quotes deep 8.9 s, a list and 105 kB
+    // of display math's braces 24 s (the hunt of 22 October, C1 and C2).
+    // Copied, the run is whole, without the breaks. A hundred images in one
+    // long block are fitted in one edit (each laid the block out again: 10 s).
+    // (Its times' ratios judged in Release builds: sanitized, cache effects.)
+    void longRunsRenderInLinearTime()
+    {
+        const auto runOf = [](int letters, const QByteArray& before) {
+            QByteArray t = before;
+            for (int i = 0; i < letters; ++i) t += char('a' + i % 26);
+            return t + "\n";
+        };
+        const QString file = write("runs.md", runOf(8000, "> > > "));
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(528, 479);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Split);
+        pump();
+        const auto best = [md] {
+            qint64 least = std::numeric_limits<qint64>::max();
+            for (int i = 0; i < 2; ++i) {
+                QElapsedTimer t;
+                t.start();
+                md->renderNow();
+                least = std::min(least, t.nsecsElapsed());
+            }
+            return least;
+        };
+        const qint64 shorter = best();
+        write("runs.md", runOf(32000, "> > > "));
+        QVERIFY(md->reload());
+        const qint64 longer = best();
+        qInfo("a run three quotes deep: 8000 letters %.1f ms, 32000 %.1f ms", shorter / 1e6, longer / 1e6);
+#if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
+        QVERIFY2(longer < 8 * shorter, qPrintable(QStringLiteral("%1 ms, a quarter of it %2 ms").arg(longer / 1e6).arg(shorter / 1e6)));
+#endif
+        QTextDocument* shown = md->preview()->document();
+        QVERIFY2(shown->toPlainText().count(QChar(0x200B)) >= 32000 / 64 - 2, qPrintable(QString::number(shown->toPlainText().count(QChar(0x200B)))));
+        // Copied whole, without them.
+        md->preview()->selectAll();
+        md->preview()->copy();
+        const QString copied = QGuiApplication::clipboard()->text();
+        QVERIFY2(!copied.contains(QChar(0x200B)) && copied.contains(QString::fromLatin1(runOf(32000, "").chopped(1))), qPrintable(copied.left(80)));
+        // A hundred, then four hundred images in one block: fitted in one edit.
+        QImage dot(4, 4, QImage::Format_RGB32);
+        dot.fill(Qt::red);
+        QVERIFY(dot.save(dir.filePath("dot.png")));
+        const auto images = [](int n) {
+            QByteArray t = "x";
+            for (int i = 0; i < n; ++i) t += " ![d](dot.png)`";
+            return t + "\n";
+        };
+        write("runs.md", images(100));
+        QVERIFY(md->reload());
+        const qint64 few = best();
+        write("runs.md", images(400));
+        QVERIFY(md->reload());
+        const qint64 many = best();
+        qInfo("images in one block: 100 %.1f ms, 400 %.1f ms", few / 1e6, many / 1e6);
+#if defined(NDEBUG) && !defined(__SANITIZE_ADDRESS__)
+        QVERIFY2(many < 8 * few, qPrintable(QStringLiteral("%1 ms, a quarter of them %2 ms").arg(many / 1e6).arg(few / 1e6)));
+#endif
+        app.closeAllFiles();
     }
 
     // A long document - a formula on each line, code blocks - is laid out

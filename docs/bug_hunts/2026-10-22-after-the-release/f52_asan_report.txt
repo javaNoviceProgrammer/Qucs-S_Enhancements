@@ -1,0 +1,275 @@
+Info: environment from the login shell: PATH, LANG (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/main.cpp:1131, int main(int, char **))
+Debug: Saved geometry is:  "\x01\xD9\xD0\xCB\x00\x03\x00\x00\x00\x00\x00\x01\x00\x00\x00\xC6\x00\x00\x03r\x00\x00\x02\xDD\x00\x00\x00\x03\x00\x00\x00\xC8\x00\x00\x03p\x00\x00\x02\xDB\x00\x00\x00\x00\x00\x00\x00\x00\x03 \x00\x00\x00\x03\x00\x00\x00\xC8\x00\x00\x03p\x00\x00\x02\xDB" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucs.cpp:252, QucsApp::QucsApp(bool))
+Warning: Populating font family aliases took 81 ms. Replace uses of missing font family "Sans Serif" with one that exists to avoid this cost.  (:0, )
+Warning: QFSFileEngine::open: No file name specified (:0, )
+Warning: QFSFileEngine::open: No file name specified (:0, )
+Debug: Module::registerDynamicComponents() (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/module.cpp:130, static void Module::registerDynamicComponents())
+Debug: Registered command: "File.New" Category: "File" Shortcut: "Ctrl+N" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.NewTextDocument" Category: "File" Shortcut: "Ctrl+Shift+V" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.Open" Category: "File" Shortcut: "Ctrl+O" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.Close" Category: "File" Shortcut: "Ctrl+E" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.CloseAll" Category: "File" Shortcut: "Ctrl+Shift+Q" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.CloseOthers" Category: "File" Shortcut: "Alt+W" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.CloseLeft" Category: "File" Shortcut: "Alt+Shift+F1" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.CloseRight" Category: "File" Shortcut: "Alt+Shift+F2" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.ClearRecent" Category: "File" Shortcut: "Ctrl+Shift+Del" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.FirstTab" Category: "File" Shortcut: "Ctrl+Shift+PgUp" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.PrevTab" Category: "File" Shortcut: "Ctrl+PgUp" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.NextTab" Category: "File" Shortcut: "Ctrl+PgDown" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.LastTab" Category: "File" Shortcut: "Ctrl+Shift+PgDown" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.Save" Category: "File" Shortcut: "Ctrl+S" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.SaveAll" Category: "File" Shortcut: "Ctrl+Shift+S" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.SaveAs" Category: "File" Shortcut: "Ctrl+Shift+S" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.ExportImage" Category: "File" Shortcut: "Ctrl+Shift+I" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.Print" Category: "File" Shortcut: "Ctrl+P" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.PrintFit" Category: "File" Shortcut: "Ctrl+Shift+P" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.Examples" Category: "File" Shortcut: "Ctrl+Alt+E" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.DocumentSettings" Category: "File" Shortcut: "Ctrl+." (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.ShortcutManager" Category: "File" Shortcut: "Ctrl+Alt+S" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.EditSymbol" Category: "File" Shortcut: "F9" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.RecreateSymbol" Category: "File" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.PinOrder" Category: "File" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.SaveSymbolAs" Category: "File" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.LoadSymbol" Category: "File" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.AppSettings" Category: "File" Shortcut: "Ctrl+," (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.ExportSettings" Category: "File" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.ImportSettings" Category: "File" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.Refresh" Category: "File" Shortcut: "Ctrl+Shift+R" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "File.Exit" Category: "File" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Undo" Category: "Edit" Shortcut: "Ctrl+Z" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Redo" Category: "Edit" Shortcut: "Ctrl+Y" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Cut" Category: "Edit" Shortcut: "Ctrl+X" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Copy" Category: "Edit" Shortcut: "Ctrl+C" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.CopyImage" Category: "Edit" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.CopyCircuitImage" Category: "Edit" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Paste" Category: "Edit" Shortcut: "Ctrl+V" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Delete" Category: "Edit" Shortcut: "Backspace" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Select" Category: "Edit" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.SelectAll" Category: "Edit" Shortcut: "Ctrl+A" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.SelectMarkers" Category: "Edit" Shortcut: "Ctrl+Shift+M" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Find" Category: "Edit" Shortcut: "Ctrl+F" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Replace" Category: "Edit" Shortcut: "F7" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.MoveStretch" Category: "Edit" Shortcut: "M" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Move" Category: "Edit" Shortcut: "Shift+M" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Rotate" Category: "Edit" Shortcut: "Ctrl+R" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.MirrorX" Category: "Edit" Shortcut: "Ctrl+J" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.MirrorY" Category: "Edit" Shortcut: "Ctrl+M" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.Activate" Category: "Edit" Shortcut: "Ctrl+D" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.EnterSubcircuit" Category: "Edit" Shortcut: "Ctrl+I" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Edit.PopOut" Category: "Edit" Shortcut: "Ctrl+H" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.MoveText" Category: "Positioning" Shortcut: "Ctrl+K" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.Grid" Category: "Positioning" Shortcut: "Ctrl+U" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.CenterH" Category: "Positioning" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.CenterV" Category: "Positioning" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.AlignTop" Category: "Positioning" Shortcut: "Ctrl+Up" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.AlignBottom" Category: "Positioning" Shortcut: "Ctrl+Down" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.AlignLeft" Category: "Positioning" Shortcut: "Ctrl+Left" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.AlignRight" Category: "Positioning" Shortcut: "Ctrl+Right" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.DistributeH" Category: "Positioning" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Pos.DistributeV" Category: "Positioning" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Insert.Wire" Category: "Insert" Shortcut: "Ctrl+W" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Insert.Label" Category: "Insert" Shortcut: "Ctrl+L" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Insert.Equation" Category: "Insert" Shortcut: "Ctrl+<" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Insert.Ground" Category: "Insert" Shortcut: "Ctrl+G" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Insert.Port" Category: "Insert" Shortcut: "P" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Insert.Marker" Category: "Insert" Shortcut: "Ctrl+B" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Insert.VHDL" Category: "Insert" Shortcut: "Ctrl+Space" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.New" Category: "Project" Shortcut: "Ctrl+Shift+N" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.Open" Category: "Project" Shortcut: "Ctrl+Shift+O" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.AddFiles" Category: "Project" Shortcut: "Ctrl+Shift+A" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.Close" Category: "Project" Shortcut: "Ctrl+Shift+W" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.Delete" Category: "Project" Shortcut: "Ctrl+Shift+D" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.Import" Category: "Project" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.Link" Category: "Project" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.SwitchWorkspace" Category: "Project" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.CreateLib" Category: "Project" Shortcut: "Ctrl+Shift+L" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.ExportCSV" Category: "Project" Shortcut: "Ctrl+Shift+C" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.BuildVA" Category: "Project" Shortcut: "Ctrl+Alt+B" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Project.LoadVA" Category: "Project" Shortcut: "Ctrl+Alt+M" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.TextEditor" Category: "Tools" Shortcut: "Ctrl+1" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.Filter" Category: "Tools" Shortcut: "Ctrl+2" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.ActiveFilter" Category: "Tools" Shortcut: "Ctrl+3" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.LineCalc" Category: "Tools" Shortcut: "Ctrl+4" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.Matching" Category: "Tools" Shortcut: "Ctrl+5" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.Attenuator" Category: "Tools" Shortcut: "Ctrl+6" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.PowerCombine" Category: "Tools" Shortcut: "Ctrl+7" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.DataConverter" Category: "Tools" Shortcut: "Ctrl+8" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.RFLayout" Category: "Tools" Shortcut: "Ctrl+9" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.SParam" Category: "Tools" Shortcut: "Ctrl+Alt+1" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Tools.RXCalc" Category: "Tools" Shortcut: "Ctrl+Alt+2" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.Simulate" Category: "Simulation" Shortcut: "F2" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.Tune" Category: "Simulation" Shortcut: "F3" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.Stop" Category: "Simulation" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.ClearConsole" Category: "Simulation" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.ViewDisplay" Category: "Simulation" Shortcut: "F4" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.DCbias" Category: "Simulation" Shortcut: "F8" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.Messages" Category: "Simulation" Shortcut: "F5" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.Netlist" Category: "Simulation" Shortcut: "F6" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.ReloadData" Category: "Simulation" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.Probe" Category: "Simulation" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.CursorValues" Category: "Simulation" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.Check" Category: "Simulation" Shortcut: "F10" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.GenerateNetlist" Category: "Simulation" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.CheckHierarchy" Category: "Simulation" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Sim.ResetLimits" Category: "Simulation" Shortcut: "Ctrl+Shift+E" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.All" Category: "View" Shortcut: "0" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.OneToOne" Category: "View" Shortcut: "1" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.ZoomIn" Category: "View" Shortcut: "Ctrl++" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.ZoomOut" Category: "View" Shortcut: "Ctrl+-" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.ZoomSelection" Category: "View" Shortcut: "Z" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.Grid" Category: "View" Shortcut: "Alt+G" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.Dock" Category: "View" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.Octave" Category: "View" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.LockToolbars" Category: "View" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.SplitRight" Category: "View" Shortcut: "Ctrl+\\" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.SplitDown" Category: "View" Shortcut: "Ctrl+Shift+\\" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.ClosePane" Category: "View" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.MoveToNextPane" Category: "View" Shortcut: "Ctrl+Alt+\\" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.NextPane" Category: "View" Shortcut: "Ctrl+`" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "View.MaximizeDocument" Category: "View" Shortcut: "Ctrl+Shift+F12" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Help.Index" Category: "Help" Shortcut: "F1" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Help.GettingStarted" Category: "Help" Shortcut: "Shift+F1" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Help.AboutQucs" Category: "Help" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Debug: Registered command: "Help.AboutQt" Category: "Help" Shortcut: "" (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/qucsshortcutmanager.cpp:128, void QucsShortcutManager::registerCommand(const QString &, const QString &, const QString &, QAction *, const QKeySequence &))
+Warning: This plugin does not support propagateSizeHints() (:0, )
+Warning: This plugin does not support propagateSizeHints() (:0, )
+Warning: This plugin does not support propagateSizeHints() (:0, )
+Warning: This plugin does not support propagateSizeHints() (:0, )
+Warning: QFSFileEngine::open: No file name specified (:0, )
+Warning: QFSFileEngine::open: No file name specified (:0, )
+Debug: Module::registerDynamicComponents() (/Users/meisam/git/Qucs-S_Enhancements/qucs-s-26.1.1/qucs/module.cpp:130, static void Module::registerDynamicComponents())
+=================================================================
+==9568==ERROR: AddressSanitizer: heap-use-after-free on address 0x61a0000a8938 at pc 0x000103123c14 bp 0x00016dba35b0 sp 0x00016dba35a8
+READ of size 4 at 0x61a0000a8938 thread T0
+    #0 0x000103123c10 in MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_2::operator()(bool) const multiphysicsdoc.cpp:1496
+    #1 0x000103125d04 in MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1::operator()() const multiphysicsdoc.cpp:1505
+    #2 0x000103125b74 in QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1>::call(MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1&, void**)::'lambda'()::operator()() const qobjectdefs_impl.h:117
+    #3 0x000103125a9c in void QtPrivate::FunctorCallBase::call_internal<void, QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1>::call(MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1&, void**)::'lambda'()>(void**, QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1>::call(MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1&, void**)::'lambda'()&&) qobjectdefs_impl.h:66
+    #4 0x0001031259b4 in QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1>::call(MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1&, void**) qobjectdefs_impl.h:116
+    #5 0x0001031256dc in void QtPrivate::FunctorCallable<MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1>::call<QtPrivate::List<>, void>(MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1&, void*, void**) qobjectdefs_impl.h:338
+    #6 0x000103125598 in QtPrivate::QCallableObject<MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_1, QtPrivate::List<>, void>::impl(int, QtPrivate::QSlotObjectBase*, QObject*, void**, bool*) qobjectdefs_impl.h:548
+    #7 0x00011a397494 in void doActivate<false>(QObject*, int, void**)+0x4dc (QtCore:arm64+0xcb494)
+    #8 0x000106970ff4 in MultiphysicsDoc::stateChanged() moc_multiphysicsdoc.cpp:153
+    #9 0x000102f585d0 in MultiphysicsDoc::jobFinished() multiphysicsdoc.cpp:955
+    #10 0x0001030ed094 in MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0::operator()() const multiphysicsdoc.cpp:926
+    #11 0x0001030ecf5c in QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0>::call(MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0&, void**)::'lambda'()::operator()() const qobjectdefs_impl.h:117
+    #12 0x0001030ece84 in void QtPrivate::FunctorCallBase::call_internal<void, QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0>::call(MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0&, void**)::'lambda'()>(void**, QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0>::call(MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0&, void**)::'lambda'()&&) qobjectdefs_impl.h:66
+    #13 0x0001030ecd9c in QtPrivate::FunctorCall<std::__1::integer_sequence<unsigned long>, QtPrivate::List<>, void, MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0>::call(MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0&, void**) qobjectdefs_impl.h:116
+    #14 0x0001030ecac4 in void QtPrivate::FunctorCallable<MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0>::call<QtPrivate::List<>, void>(MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0&, void*, void**) qobjectdefs_impl.h:338
+    #15 0x0001030ec980 in QtPrivate::QCallableObject<MultiphysicsDoc::launch(std::__1::shared_ptr<MultiphysicsDoc::Job> const&, std::__1::function<void (MultiphysicsDoc::Job&)>)::$_0, QtPrivate::List<>, void>::impl(int, QtPrivate::QSlotObjectBase*, QObject*, void**, bool*) qobjectdefs_impl.h:548
+    #16 0x00011a390b60 in QObject::event(QEvent*)+0x13c (QtCore:arm64+0xc4b60)
+    #17 0x000119c869b4 in QWidget::event(QEvent*)+0xc60 (QtWidgets:arm64+0x4e9b4)
+    #18 0x000119ccc27c in QFrame::event(QEvent*)+0x34 (QtWidgets:arm64+0x9427c)
+    #19 0x000119c43d3c in QApplicationPrivate::notify_helper(QObject*, QEvent*)+0xf8 (QtWidgets:arm64+0xbd3c)
+    #20 0x000119c44cfc in QApplication::notify(QObject*, QEvent*)+0x1f4 (QtWidgets:arm64+0xccfc)
+    #21 0x00011a355a2c in QCoreApplication::notifyInternal2(QObject*, QEvent*)+0xa0 (QtCore:arm64+0x89a2c)
+    #22 0x00011a356818 in QCoreApplicationPrivate::sendPostedEvents(QObject*, int, QThreadData*)+0x1dc (QtCore:arm64+0x8a818)
+    #23 0x00011a56013c in postEventSourceDispatch(_GSource*, int (*)(void*), void*)+0x20 (QtCore:arm64+0x29413c)
+    #24 0x000118325d9c in g_main_context_dispatch_unlocked+0xec (libglib-2.0.0.dylib:arm64+0x31d9c)
+    #25 0x0001183260cc in g_main_context_iterate_unlocked+0x1fc (libglib-2.0.0.dylib:arm64+0x320cc)
+    #26 0x00011832612c in g_main_context_iteration+0x38 (libglib-2.0.0.dylib:arm64+0x3212c)
+    #27 0x00011a55fd00 in QEventDispatcherGlib::processEvents(QFlags<QEventLoop::ProcessEventsFlag>)+0x58 (QtCore:arm64+0x293d00)
+    #28 0x00011a35d5b4 in QEventLoop::exec(QFlags<QEventLoop::ProcessEventsFlag>)+0x1c0 (QtCore:arm64+0x915b4)
+    #29 0x00011a35605c in QCoreApplication::exec()+0xd8 (QtCore:arm64+0x8a05c)
+    #30 0x0001038a26c8 in qucs_s::mcp::runStdio(QApplication&, QucsApp*, QTimer*) mcpstdio.cpp:197
+    #31 0x0001069b44c8 in main main.cpp:1143
+    #32 0x00018901fdfc in start+0x1b4c (dyld:arm64e+0x1fdfc)
+
+0x61a0000a8938 is located 696 bytes inside of 1292-byte region [0x61a0000a8680,0x61a0000a8b8c)
+freed by thread T0 here:
+    #0 0x00011b1a9258 in free+0x7c (libclang_rt.asan_osx_dynamic.dylib:arm64e+0x41258)
+    #1 0x00011aa38fac in QImageData::~QImageData()+0x60 (QtGui:arm64+0x24fac)
+    #2 0x00011aa3a44c in QImage::~QImage()+0x3c (QtGui:arm64+0x2644c)
+    #3 0x00011ad022d0 in QCoreTextFontEngine::alphaMapForGlyph(unsigned int, QFixedPoint const&, QTransform const&)+0x184 (QtGui:arm64+0x2ee2d0)
+    #4 0x00011abc4000 in QImageTextureGlyphCache::fillTexture(QTextureGlyphCache::Coord const&, unsigned int, QFixedPoint const&)+0x50 (QtGui:arm64+0x1b0000)
+    #5 0x00011abc3ce8 in QTextureGlyphCache::fillInPendingGlyphs()+0x31c (QtGui:arm64+0x1afce8)
+    #6 0x00011ab612ac in QRasterPaintEngine::drawCachedGlyphs(int, unsigned int const*, QFixedPoint const*, QFontEngine*)+0x2c0 (QtGui:arm64+0x14d2ac)
+    #7 0x00011ab61e4c in QRasterPaintEngine::drawTextItem(QPointF const&, QTextItem const&)+0x15c (QtGui:arm64+0x14de4c)
+    #8 0x00011ab757f0 in QPainterPrivate::drawTextItem(QPointF const&, QTextItem const&, QTextEngine*)+0x504 (QtGui:arm64+0x1617f0)
+    #9 0x00011ac99730 in QTextLine::draw_internal(QPainter*, QPointF const&, QTextLayout::FormatRange const*) const+0xa7c (QtGui:arm64+0x285730)
+    #10 0x00011ab77810 in qt_format_text(QFont const&, QRectF const&, int, int, QTextOption const*, QString const&, QRectF*, int, int*, int, QPainter*)+0x9e0 (QtGui:arm64+0x163810)
+    #11 0x00011ab75108 in QPainter::drawText(QRect const&, int, QString const&, QRect*)+0xd4 (QtGui:arm64+0x161108)
+    #12 0x000102306be0 in QPainter::drawText(int, int, int, int, int, QString const&, QRect*) qpainter.h:862
+    #13 0x000105c5ac68 in misc::draw_richtext(QPainter*, int, int, QString const&, QRectF*) misc.cpp:1384
+    #14 0x0001022ab0dc in Text::draw(QPainter*, QRectF*) const element.cpp:85
+    #15 0x0001022aab1c in Text::draw(QPainter*) const element.cpp:69
+    #16 0x000106dc614c in Component::paintIcon(QPixmap*) component.cpp:564
+    #17 0x0001057c2c3c in Module::registerComponent(QString, Element* (*)(QString&, char*&, bool)) module.cpp:96
+    #18 0x0001057c7db0 in Module::registerModules() module.cpp:370
+    #19 0x0001035809cc in QucsApp::fillComboBox(bool)+0x38c (qucs-s:arm64+0x1013289cc)
+    #20 0x0001035edb14 in QucsApp::switchEditMode(bool)+0x9c (qucs-s:arm64+0x101395b14)
+    #21 0x0001035bca9c in QucsApp::closeAllFiles(int)+0x1054 (qucs-s:arm64+0x101364a9c)
+    #22 0x000103606c14 in QucsApp::closeEvent(QCloseEvent*)+0x160 (qucs-s:arm64+0x1013aec14)
+    #23 0x000119c86880 in QWidget::event(QEvent*)+0xb2c (QtWidgets:arm64+0x4e880)
+    #24 0x000119c43d3c in QApplicationPrivate::notify_helper(QObject*, QEvent*)+0xf8 (QtWidgets:arm64+0xbd3c)
+    #25 0x000119c44cfc in QApplication::notify(QObject*, QEvent*)+0x1f4 (QtWidgets:arm64+0xccfc)
+    #26 0x00011a355a2c in QCoreApplication::notifyInternal2(QObject*, QEvent*)+0xa0 (QtCore:arm64+0x89a2c)
+    #27 0x000119c85bc4 in QWidgetPrivate::handleClose(QWidgetPrivate::CloseMode)+0x170 (QtWidgets:arm64+0x4dbc4)
+    #28 0x000119c9c540 in QWidgetWindow::closeEvent(QCloseEvent*)+0x6c (QtWidgets:arm64+0x64540)
+    #29 0x00011aad9ce0 in QWindow::event(QEvent*)+0x158 (QtGui:arm64+0xc5ce0)
+
+previously allocated by thread T0 here:
+    #0 0x00011b1a9164 in malloc+0x78 (libclang_rt.asan_osx_dynamic.dylib:arm64e+0x41164)
+    #1 0x00011aa38e48 in QImageData::create(QSize const&, QImage::Format)+0x12c (QtGui:arm64+0x24e48)
+    #2 0x00011aa395a0 in QImage::QImage(int, int, QImage::Format)+0x44 (QtGui:arm64+0x255a0)
+    #3 0x00011ad01b8c in QCoreTextFontEngine::imageForGlyph(unsigned int, QFixedPoint const&, QTransform const&, QColor const&)+0xb4 (QtGui:arm64+0x2edb8c)
+    #4 0x00011ad02210 in QCoreTextFontEngine::alphaMapForGlyph(unsigned int, QFixedPoint const&, QTransform const&)+0xc4 (QtGui:arm64+0x2ee210)
+    #5 0x00011abc4000 in QImageTextureGlyphCache::fillTexture(QTextureGlyphCache::Coord const&, unsigned int, QFixedPoint const&)+0x50 (QtGui:arm64+0x1b0000)
+    #6 0x00011abc3ce8 in QTextureGlyphCache::fillInPendingGlyphs()+0x31c (QtGui:arm64+0x1afce8)
+    #7 0x00011ab612ac in QRasterPaintEngine::drawCachedGlyphs(int, unsigned int const*, QFixedPoint const*, QFontEngine*)+0x2c0 (QtGui:arm64+0x14d2ac)
+    #8 0x00011ab61e4c in QRasterPaintEngine::drawTextItem(QPointF const&, QTextItem const&)+0x15c (QtGui:arm64+0x14de4c)
+    #9 0x00011ab757f0 in QPainterPrivate::drawTextItem(QPointF const&, QTextItem const&, QTextEngine*)+0x504 (QtGui:arm64+0x1617f0)
+    #10 0x00011ac99730 in QTextLine::draw_internal(QPainter*, QPointF const&, QTextLayout::FormatRange const*) const+0xa7c (QtGui:arm64+0x285730)
+    #11 0x00011ab77810 in qt_format_text(QFont const&, QRectF const&, int, int, QTextOption const*, QString const&, QRectF*, int, int*, int, QPainter*)+0x9e0 (QtGui:arm64+0x163810)
+    #12 0x00011ab75108 in QPainter::drawText(QRect const&, int, QString const&, QRect*)+0xd4 (QtGui:arm64+0x161108)
+    #13 0x000102306be0 in QPainter::drawText(int, int, int, int, int, QString const&, QRect*) qpainter.h:862
+    #14 0x000105c5ac68 in misc::draw_richtext(QPainter*, int, int, QString const&, QRectF*) misc.cpp:1384
+    #15 0x0001022ab0dc in Text::draw(QPainter*, QRectF*) const element.cpp:85
+    #16 0x0001022aab1c in Text::draw(QPainter*) const element.cpp:69
+    #17 0x000106dc614c in Component::paintIcon(QPixmap*) component.cpp:564
+    #18 0x0001057c2c3c in Module::registerComponent(QString, Element* (*)(QString&, char*&, bool)) module.cpp:96
+    #19 0x0001057c7db0 in Module::registerModules() module.cpp:370
+    #20 0x0001035809cc in QucsApp::fillComboBox(bool)+0x38c (qucs-s:arm64+0x1013289cc)
+    #21 0x0001035edb14 in QucsApp::switchEditMode(bool)+0x9c (qucs-s:arm64+0x101395b14)
+    #22 0x0001035bca9c in QucsApp::closeAllFiles(int)+0x1054 (qucs-s:arm64+0x101364a9c)
+    #23 0x000103606c14 in QucsApp::closeEvent(QCloseEvent*)+0x160 (qucs-s:arm64+0x1013aec14)
+    #24 0x000119c86880 in QWidget::event(QEvent*)+0xb2c (QtWidgets:arm64+0x4e880)
+    #25 0x000119c43d3c in QApplicationPrivate::notify_helper(QObject*, QEvent*)+0xf8 (QtWidgets:arm64+0xbd3c)
+    #26 0x000119c44cfc in QApplication::notify(QObject*, QEvent*)+0x1f4 (QtWidgets:arm64+0xccfc)
+    #27 0x00011a355a2c in QCoreApplication::notifyInternal2(QObject*, QEvent*)+0xa0 (QtCore:arm64+0x89a2c)
+    #28 0x000119c85bc4 in QWidgetPrivate::handleClose(QWidgetPrivate::CloseMode)+0x170 (QtWidgets:arm64+0x4dbc4)
+    #29 0x000119c9c540 in QWidgetWindow::closeEvent(QCloseEvent*)+0x6c (QtWidgets:arm64+0x64540)
+
+SUMMARY: AddressSanitizer: heap-use-after-free multiphysicsdoc.cpp:1496 in MultiphysicsDoc::whenJobEnds(int, std::__1::function<void (bool)>)::$_2::operator()(bool) const
+Shadow bytes around the buggy address:
+  0x61a0000a8680: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8700: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8780: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8800: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8880: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+=>0x61a0000a8900: fd fd fd fd fd fd fd[fd]fd fd fd fd fd fd fd fd
+  0x61a0000a8980: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8a00: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8a80: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8b00: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x61a0000a8b80: fd fd fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==9568==ABORTING

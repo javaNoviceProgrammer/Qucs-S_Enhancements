@@ -40,7 +40,10 @@
 #include <QSet>
 #include <QStyle>
 #include <QStyleOption>
+#include <QMimeData>
 #include <QTextBlock>
+#include <QTextBoundaryFinder>
+#include <QTextFragment>
 #include <QTextBrowser>
 #include <QTextList>
 #include <QTextDocument>
@@ -59,6 +62,10 @@ namespace {
 // use area: never in a text).
 constexpr char16_t kMathMark = 0xE000;
 constexpr qsizetype kMostMath = 0x1800;
+// The longest run of a paragraph without a break opportunity laid out as it
+// is; past it, given one (kRunBreak) every so many letters.
+constexpr int kLongestRun = 64;
+constexpr char16_t kRunBreak = 0x200B;   // (a zero-width space)
 } // namespace
 
 void render(QTextDocument* document, const QString& markdown, const QFont& font, const Colours& colours, qreal devicePixelRatio)
@@ -85,7 +92,59 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
     }
 
     document->setDefaultFont(font);
-    qucs_s::markdown::setMarkdown(document, md);
+    // Read into a document of no view, then put in the preview's at once. (Read
+    // into the preview's, Qt laid each block out as it came, and a long one
+    // again at each of its pieces, the scroll bars' coming laying it all out
+    // again - the hunt of 22 October, C1 and C2.)
+    QTextDocument staged;
+    staged.setDefaultFont(font);
+    qucs_s::markdown::setMarkdown(&staged, md);
+    // A long run with no break - a hash, a blob, braces - given one every
+    // kLongestRun letters, a zero-width space (taken out of what is copied).
+    // Where a quote or a list narrows the column, Qt broke its lines anywhere,
+    // searching the run to its end for each: a letter a line, in the square
+    // of its length - 32 kB three quotes deep 8.9 s to open (C2).
+    for (QTextBlock b = staged.begin(); b.isValid(); b = b.next()) {
+        const QTextBlockFormat bf = b.blockFormat();
+        if (bf.nonBreakableLines() || bf.hasProperty(QTextFormat::BlockCodeFence)) continue;   // (code: not wrapped)
+        const QString text = b.text();
+        if (text.size() <= kLongestRun) continue;
+        QTextBoundaryFinder finder(QTextBoundaryFinder::Line, text);
+        std::vector<int> at;
+        int last = 0;
+        for (int i = 1; i < int(text.size()); ++i) {
+            finder.setPosition(i);
+            if (finder.isAtBoundary() || text.at(i).isSpace()) last = i;
+            else if (i - last >= kLongestRun) {
+                at.push_back(i);
+                last = i;
+            }
+        }
+        if (at.empty()) continue;
+        // (Each fragment's text put in again, its breaks in it, from the
+        // block's end: put one at a time, each cost the block's length - 128
+        // kB 3.7 s with no layout at all.)
+        std::vector<QTextFragment> pieces;
+        for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) pieces.push_back(it.fragment());
+        const int start = b.position();
+        for (auto piece = pieces.rbegin(); piece != pieces.rend(); ++piece) {
+            const int from = piece->position() - start, to = from + piece->length();
+            const QTextCharFormat f = piece->charFormat();
+            if (f.isImageFormat() || f.objectType() != QTextFormat::NoObject) continue;
+            QString t = piece->text();
+            bool any = false;
+            for (auto k = at.rbegin(); k != at.rend(); ++k)
+                if (*k > from && *k < to) {
+                    t.insert(*k - from, QChar(kRunBreak));
+                    any = true;
+                }
+            if (!any) continue;
+            QTextCursor put(&staged);
+            put.setPosition(piece->position());
+            put.setPosition(piece->position() + piece->length(), QTextCursor::KeepAnchor);
+            put.insertText(t, f);
+        }
+    }
 
     const QColor shade = colours.code.isValid()
                              ? colours.code
@@ -96,8 +155,14 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
     // out at each formula, from it to the end: 3000 lines of a formula each
     // took 4 s to render, 0.4 s now - a long file written again, its
     // preview seemed never to come, the window frozen meanwhile.)
+    // (Its steps not kept: a fragment put in at each render, never undone.
+    // Cleared first, its images' resources with it: an image file written
+    // again is read again.)
+    document->setUndoRedoEnabled(false);
+    document->clear();
     QTextCursor edit(document);
     edit.beginEditBlock();
+    edit.insertFragment(QTextDocumentFragment(&staged));
     // Code on a shade, set off from the text.
     for (QTextBlock b = document->begin(); b.isValid(); b = b.next()) {
         const QTextBlockFormat bf = b.blockFormat();
@@ -278,6 +343,15 @@ public:
     using QTextBrowser::QTextBrowser;
 
 protected:
+    // Copied without the breaks a long run was given (render's kRunBreak).
+    QMimeData* createMimeDataFromSelection() const override
+    {
+        QMimeData* data = QTextBrowser::createMimeDataFromSelection();
+        if (data != nullptr && data->hasText()) data->setText(QString(data->text()).remove(QChar(kRunBreak)));
+        if (data != nullptr && data->hasHtml()) data->setHtml(QString(data->html()).remove(QChar(kRunBreak)));
+        return data;
+    }
+
     QVariant loadResource(int type, const QUrl& name) override
     {
         if (type != QTextDocument::ImageResource || !name.isLocalFile()) return QTextBrowser::loadResource(type, name);
@@ -333,6 +407,10 @@ bool fitImages(QTextDocument* document, qreal width)
     }
     bool changed = false;
     QTextCursor c(document);
+    // (One edit, laid out once at its end: each image's size set, its block
+    // was laid out again - a hundred images in one long block, 10 s to open,
+    // the window frozen: the hunt of 22 October, C1.)
+    c.beginEditBlock();
     for (Image& im : images) {
         QTextImageFormat& f = im.format;
         if (!f.hasProperty(kOwnWidth)) {
@@ -358,6 +436,7 @@ bool fitImages(QTextDocument* document, qreal width)
         c.setCharFormat(f);
         changed = true;
     }
+    c.endEditBlock();
     return changed;
 }
 

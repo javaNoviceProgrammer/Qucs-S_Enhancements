@@ -1087,6 +1087,99 @@ private slots:
                  qPrintable(statesEdge.study.warnings.join(QLatin1Char('\n'))));
     }
 
+    // The barriers' bulk is each barrier's own - its material, gap and
+    // thickness -, not the material where the line starts: a well there got
+    // its own excitons over the barriers' thickness and its steps faded above
+    // its own gap, and barriers of two alloys were 11 times apart mirrored
+    // (the hunt of 22 October, A1). And their excess under "states" only
+    // adds: a wide line's free part, or a Lorentzian's tail, took more than
+    // the box gave - -468 /cm with no carriers, 115 /cm off half an eV below
+    // the barriers' gap (A2).
+    void theBarriersEachTheirOwn()
+    {
+        auto stack = [](const char* first, const char* firstX, const char* second, const char* secondX, const char* third, const char* thirdX,
+                        const QString& sizes, const QString& spectrum) {
+            const QStringList s = sizes.split(QLatin1Char(','));
+            return femtest::modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "name": "r1", "size": ["10", "%7"]},
+                             {"type": "rectangle", "name": "r2", "position": ["0", "%7"], "size": ["10", "%8"]},
+                             {"type": "rectangle", "name": "r3", "position": ["0", "%7 + %8"], "size": ["10", "%9"]}],
+                "materials": [{"material": "a", "compound": "%1", "x": "%2", "selection": {"only": ["r1"]}},
+                              {"material": "b", "compound": "%3", "x": "%4", "selection": {"only": ["r2"]}},
+                              {"material": "c", "compound": "%5", "x": "%6", "selection": {"only": ["r3"]}}],
+                "physics": [{"type": "quantum", "tag": "qw", "h1d": "0.5[nm]"}], "mesh": {"size": "normal", "custom": true, "hmax": "3"}}],
+              "studies": [{"type": "study", "steps": [%10]}]})json")
+                                          .arg(QLatin1String(first), QLatin1String(firstX), QLatin1String(second), QLatin1String(secondX),
+                                               QLatin1String(third), QLatin1String(thirdX), s.value(0), s.value(1), s.value(2))
+                                          .arg(spectrum)
+                                          .toUtf8());
+        };
+        auto alphas = [](const femtest::Run& r) {
+            std::vector<double> a;
+            Solution& s = *r.solution;
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                a.push_back(femtest::global(s, "qw.alphaTE"));
+            }
+            return a;
+        };
+        auto same = [](const std::vector<double>& a, const std::vector<double>& b) {
+            if (a.size() != b.size()) return false;
+            for (std::size_t k = 0; k < a.size(); ++k)
+                if (std::abs(a[k] - b[k]) > 1e-6 * std::max(std::abs(b[k]), 1.0)) return false;
+            return true;
+        };
+        auto said = [](const std::vector<double>& a) {
+            QStringList out;
+            for (double x : a) out << QString::number(x / 100, 'g', 5);
+            return out.join(QLatin1String(", "));
+        };
+        // Mirrored barriers of two alloys (8 nm GaAs between 30 nm of Al0.3 and
+        // of Al0.1): the same spectrum either way round, each continuum.
+        for (const char* continuum : {R"("bound")", R"("states", "bulkexcitons": true, "urbach": "6[meV]")"}) {
+            const QString spectrum = QStringLiteral(R"({"type": "spectrum", "energies": "1.50[eV], 1.65[eV], 1.72[eV], 1.85[eV]", "states": 30, "linewidth": "5[meV]",
+                                                       "lineshape": "gaussian", "normalize": "stack", "continuum": %1})")
+                                         .arg(QLatin1String(continuum));
+            const femtest::Run ab = femtest::run(stack("AlGaAs", "0.3", "GaAs", "0", "AlGaAs", "0.1", QStringLiteral("30,8,30"), spectrum));
+            const femtest::Run ba = femtest::run(stack("AlGaAs", "0.1", "GaAs", "0", "AlGaAs", "0.3", QStringLiteral("30,8,30"), spectrum));
+            QVERIFY2(ab.error.isEmpty() && ba.error.isEmpty(), qPrintable(ab.error + ba.error));
+            qInfo("%s: Al0.3 first %s, Al0.1 first %s /cm", continuum, qPrintable(said(alphas(ab))), qPrintable(said(alphas(ba))));
+            QVERIFY2(same(alphas(ab), alphas(ba)), qPrintable(said(alphas(ab)) + QLatin1String(" against ") + said(alphas(ba))));
+        }
+        // A well where the line starts (9.4 nm GaAs, 16 nm Al0.3): as the
+        // barrier first - nothing below the well's first transition at 1.44 eV.
+        for (const char* continuum : {R"("bound")", R"("states", "bulkexcitons": true, "urbach": "6[meV]")"}) {
+            const QString spectrum = QStringLiteral(R"({"type": "spectrum", "energies": "1.40[eV], 1.44[eV], 1.60[eV], 1.85[eV]", "states": 8, "linewidth": "5[meV]",
+                                                       "lineshape": "gaussian", "normalize": "stack", "continuum": %1})")
+                                         .arg(QLatin1String(continuum));
+            const femtest::Run wellFirst = femtest::run(stack("GaAs", "0", "AlGaAs", "0.3", "AlGaAs", "0.3", QStringLiteral("9.4,8,8"), spectrum));
+            const femtest::Run barrierFirst = femtest::run(stack("AlGaAs", "0.3", "AlGaAs", "0.3", "GaAs", "0", QStringLiteral("8,8,9.4"), spectrum));
+            QVERIFY2(wellFirst.error.isEmpty() && barrierFirst.error.isEmpty(), qPrintable(wellFirst.error + barrierFirst.error));
+            qInfo("%s: the well first %s, the barrier first %s /cm", continuum, qPrintable(said(alphas(wellFirst))), qPrintable(said(alphas(barrierFirst))));
+            QVERIFY2(same(alphas(wellFirst), alphas(barrierFirst)) && alphas(wellFirst)[1] < 1,
+                     qPrintable(said(alphas(wellFirst)) + QLatin1String(" against ") + said(alphas(barrierFirst))));
+        }
+        // A2: few states, a wide line and a narrow Urbach (2 nm GaAs in 50 nm
+        // of Al0.3): never negative; a Lorentzian line: nothing taken off half
+        // an eV below the barriers' gap.
+        const QString thin = QStringLiteral("50,2,50");
+        const femtest::Run wide = femtest::run(stack("AlGaAs", "0.3", "GaAs", "0", "AlGaAs", "0.3", thin,
+            QStringLiteral(R"x({"type": "spectrum", "energies": "linspace(1.78[eV], 1.88[eV], 11)", "states": 2, "linewidth": "30[meV]", "lineshape": "gaussian",
+                               "continuum": "states", "normalize": "stack", "bulkexcitons": true, "urbach": "0.5[meV]"})x")));
+        QVERIFY2(wide.error.isEmpty(), qPrintable(wide.error));
+        for (double a : alphas(wide)) QVERIFY2(a >= 0, qPrintable(said(alphas(wide))));
+        auto lorentzian = [&](bool edge) {
+            return femtest::run(stack("AlGaAs", "0.3", "GaAs", "0", "AlGaAs", "0.3", thin,
+                QStringLiteral(R"({"type": "spectrum", "energies": "1.30[eV], 1.40[eV]", "states": 1, "linewidth": "2[meV]", "lineshape": "lorentzian",
+                                   "continuum": "states", "normalize": "stack" %1})")
+                    .arg(edge ? QLatin1String(R"(, "bulkexcitons": true, "urbach": "6[meV]")") : QLatin1String(""))));
+        };
+        const femtest::Run plain = lorentzian(false), withEdge = lorentzian(true);
+        QVERIFY2(plain.error.isEmpty() && withEdge.error.isEmpty(), qPrintable(plain.error + withEdge.error));
+        QVERIFY2(same(alphas(withEdge), alphas(plain)) && alphas(withEdge)[0] > 0, qPrintable(said(alphas(withEdge)) + QLatin1String(" against ") + said(alphas(plain))));
+    }
+
     // A flag given as an expression of the parameters, read at each point
     // of a sweep: "bulkexcitons": "ex" swept 0, 1 - its first point the
     // plain √ε's, its second Elliott's with its Urbach tail (it was false at
@@ -1142,6 +1235,21 @@ private slots:
         QVERIFY2(mine.ok(), qPrintable(mine.error));
         const StudyRun theirs = runStudy(model, ps, g.topology, nullptr, QStringLiteral("other"));
         QVERIFY2(theirs.error.contains(QLatin1String(R"("bulkexcitons" is "maybe")")), qPrintable(theirs.error));
+        // A number 1, "True": on (a number was false, said nowhere; "True"
+        // refused as an expression - the hunt of 22 October, A8 and N5).
+        for (const char* on : {"1", R"("True")", R"("1")"}) {
+            const femtest::Run r = femtest::run(femtest::modelOf(slab(on, "")));
+            QVERIFY2(r.error.isEmpty() && alphas(r, 0) == elliott, qPrintable(QStringLiteral("%1: %2").arg(on, r.error)));
+        }
+        const femtest::Run zero = femtest::run(femtest::modelOf(slab("0", "")));
+        QVERIFY2(zero.error.isEmpty() && alphas(zero, 0) == plain, qPrintable(zero.error));
+        // A disabled step's, a disabled physics feature's or a plot's
+        // malformed flag: not this solve's to refuse (each failed every study:
+        // B4).
+        QByteArray others = slab(R"("ex")", R"({"type": "spectrum", "enabled": false, "energies": "1.4[eV]", "bulkexcitons": "maybe"},)");
+        others.replace(R"("studies": [)", R"("results": {"plots": [{"type": "plotgroup1d", "tag": "pg", "ylog": "maybe", "plots": []}]}, "studies": [)");
+        const femtest::Run quiet = femtest::run(femtest::modelOf(others));
+        QVERIFY2(quiet.error.isEmpty() && alphas(quiet, quiet.study.solutions.size() - 1) == elliott, qPrintable(quiet.error));
     }
 };
 

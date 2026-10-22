@@ -3095,6 +3095,25 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("is not drawn"), qPrintable(text(r)));
     }
 
+    // A hidden trace is said hidden, not "not drawn" for a layout's failure,
+    // and a marker on it says why it cannot sit there (the hunt of 22
+    // October, N8: "its diagram cannot lay out its axes over it").
+    void aHiddenTraceIsSaidHidden()
+    {
+        const auto h = [](double f) { return std::complex<double>(1.0) / std::complex<double>(1.0, f / 1e3); };
+        QVERIFY(schematicWith("hiddentrace", datasetText("frequency", range(1, 1e5, 101),
+                                                         {{"ac.v(out)", [&](double f) { return h(f).real(); }, [&](double f) { return h(f).imag(); }}})));
+        QJsonObject r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"ac.v(out)"}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonValue diagram = json(r).value("diagram");
+        r = call("edit_trace", {{"diagram", diagram}, {"trace", 1}, {"hidden", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QString answer = text(r);
+        QVERIFY2(answer.contains(QLatin1String("\"hidden\":true")) && !answer.contains(QLatin1String("not drawn")), qPrintable(answer));
+        r = call("add_marker", {{"diagram", diagram}, {"at", 1000}});
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("is not drawn (it is hidden (edit_trace 'hidden': false shows it))")), qPrintable(text(r)));
+    }
+
     // F2: a spectrogram's segment far below the sampling took time growing
     // as 1/segment - a file keeping one could not be opened; and the answer
     // asked for a shorter one. B7: an AC sweep is no transient to cut.

@@ -1209,6 +1209,27 @@ private slots:
         qInfo("its times off the window: H1 %s, H2 %s", qPrintable(e.values[1].text), qPrintable(e.values[2].text));
         QVERIFY2(std::abs(e.values[1].value * R / 0.01 - 1) < 5e-3, qPrintable(QString::number(e.values[1].value * R)));
         QVERIFY2(std::abs(e.values[2].value * R / 0.002 - 1) < 5e-3, qPrintable(QString::number(e.values[2].value * R)));
+        // What its times do not resolve, a signal not periodic in f0, a
+        // count or periods out of range: said (given without a word - H21 to
+        // H30 of 40 samples a period -, and clamped: the hunt of 22 October,
+        // N6). 40 a period resolve H19 at most (H20 their half rate).
+        QVERIFY2(!d.note.contains(QLatin1String("resolve")) && !d.note.contains(QLatin1String("periodic")), qPrintable(d.note));
+        Node many = harm;
+        many.props.insert(QStringLiteral("count"), 30);
+        const DerivedResult m = evaluateDerived(sol, many);
+        QVERIFY2(m.error.isEmpty() && m.note.contains(QLatin1String("past H19 its output times, 25 ps apart, resolve nothing (half their rate): H20 to H30 aliased")),
+                 qPrintable(m.error + m.note));
+        Node off = harm;
+        off.props.insert(QStringLiteral("f0"), QStringLiteral("0.7[GHz]"));
+        const DerivedResult o = evaluateDerived(sol, off);
+        QVERIFY2(o.error.isEmpty() && o.note.contains(QLatin1String("the signal is not periodic over its window")), qPrintable(o.error + o.note));
+        for (const auto& [key, value, said] : {std::tuple{"count", 0, "Harmonics: its count, 0, from 1 to 50"}, std::tuple{"count", 51, "Harmonics: its count, 51, from 1 to 50"},
+                                               std::tuple{"periods", 0, "Harmonics: its periods, 0, one at least"}}) {
+            Node bad = harm;
+            bad.props.insert(QString::fromLatin1(key), value);
+            const DerivedResult b = evaluateDerived(sol, bad);
+            QVERIFY2(b.error == QLatin1String(said) && b.values.isEmpty(), qPrintable(b.error));
+        }
     }
 
     // A photodiode's distortion and compression: the p-i-n lit 50 %
@@ -1293,6 +1314,25 @@ private slots:
         const double Sb = global(*b.study.solutions.back(), QStringLiteral("semi.Sn_2")), Ib = global(*b.study.solutions.back(), QStringLiteral("semi.I_2"));
         qInfo("at 3 V: %.6g A, %.9g A²/Hz, 4kT I/V %.9g (%.4f)", Ib, Sb, 4 * kT * Ib / 3, Sb / (4 * kT * Ib / 3));
         QVERIFY2(std::abs(Sb / (4 * kT * Ib / 3) - 1) < 1e-2, qPrintable(QStringLiteral("%1 %2").arg(Sb).arg(4 * kT * Ib / 3)));
+        // Unlit behind a series circuit of its own resistance: its noise
+        // through the load a quarter of its own (half its current through
+        // the divider) - made with no light too (it was made under the
+        // light's modulation alone: the hunt of 22 October, A9). In A²/Hz
+        // and A/√Hz (shown "s·A²" and as a plain number: N7).
+        const double Rbar = 1 / G;
+        QByteArray behind = biased;
+        behind.replace(R"("V0": "3[V]", "selection")", QStringLiteral(R"("V0": "0[V]", "circuit": "series", "Rs": "%1[Ohm]", "RL": "0[Ohm]", "selection")")
+                                                           .arg(Rbar, 0, 'g', 12)
+                                                           .toUtf8());
+        const Run c = run(modelOf(behind));
+        QVERIFY2(c.error.isEmpty(), qPrintable(c.error));
+        const Solution& sc = *c.study.solutions.back();
+        const double SL = global(sc, QStringLiteral("semi.SnL_2")), Sn = global(sc, QStringLiteral("semi.Sn_2"));
+        qInfo("behind Rs = R: through the load %.6g A²/Hz, its own %.6g (%.4f)", SL, Sn, SL / Sn);
+        QVERIFY2(std::abs(SL / Sn - 0.25) < 1e-3, qPrintable(QStringLiteral("%1 %2").arg(SL).arg(Sn)));
+        QVERIFY2(sc.globalText(QStringLiteral("semi.Sn_2")).endsWith(QStringLiteral(" A²/Hz")) && sc.globalText(QStringLiteral("semi.SnL_2")).endsWith(QStringLiteral(" A²/Hz"))
+                     && sc.globalText(QStringLiteral("semi.in_2")).endsWith(QStringLiteral(" A/√Hz")),
+                 qPrintable(sc.globalText(QStringLiteral("semi.Sn_2")) + QLatin1Char(' ') + sc.globalText(QStringLiteral("semi.in_2"))));
     }
 
     // A photodiode's shot noise: the p-i-n reversed 2 V, lit (some 10 µA's

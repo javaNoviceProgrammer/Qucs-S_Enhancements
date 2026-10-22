@@ -4407,6 +4407,12 @@ int QucsControl::waitsFor(const QString& tool, const QJsonObject& arguments)
     if (tool == QLatin1String("fem_build")) return std::clamp(t.toInt(300), 1, 3600);
     if (tool == QLatin1String("fem_solve")) return std::clamp(t.toInt(600), 1, 7200);
     if (tool == QLatin1String("fem_stop")) return std::clamp(t.toInt(30), 1, 600);
+    // (The others that wait by themselves, by their defaults too - cut at a
+    // caller's 30 s, "no answer in time": the hunt of 22 October, N3.)
+    if (tool == QLatin1String("wait_for")) return std::clamp(t.toInt(60), 1, 3600);
+    if (tool == QLatin1String("simulate")) return std::clamp(t.toInt(120), 5, 7 * 86400);
+    if (tool == QLatin1String("git_remote")) return std::clamp(t.toInt(300), 5, 1800);
+    if (tool == QLatin1String("git_clone")) return std::clamp(t.toInt(600), 5, 3600);
     return t.isDouble() ? std::clamp(t.toInt(), 0, 7 * 86400) : 0;
 }
 

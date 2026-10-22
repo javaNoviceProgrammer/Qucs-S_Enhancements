@@ -747,7 +747,11 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
     if (doc == nullptr) return errorResult(error);
     const Model& m = doc->model();
     if (what == QLatin1String("geometry")) {
-        const GeometryBuild& g = doc->geometry();
+        // (A process flow's not waited for: the hunt of 22 October, B3.)
+        QString pending;
+        const GeometryBuild* built = doc->geometryWithoutWaiting(&pending);
+        if (!built) return errorResult(tr("The geometry is %1.").arg(pending));
+        const GeometryBuild& g = *built;
         if (!g.topology) return errorResult(tr("The geometry has not been built."));
         QJsonObject o = topologyJson(*g.topology, std::clamp(args.value(QLatin1String("max")).toInt(100), 1, 5000));
         if (!g.ok()) o.insert(QStringLiteral("error"), g.errors.value(g.failedAt));
@@ -791,13 +795,21 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
         params.append(po);
     }
     o.insert(QStringLiteral("parameters"), params);
-    const GeometryBuild& g = doc->geometry();
-    if (g.topology)
-        o.insert(QStringLiteral("geometry"), QJsonObject{{QStringLiteral("domains"), int(g.topology->domains.size())},
-                                                         {QStringLiteral("boundaries"), int(g.topology->boundaries.size())},
-                                                         {QStringLiteral("points"), int(g.topology->points.size())},
-                                                         {QStringLiteral("objects"), QJsonArray::fromStringList(g.topology->objectNames)}});
-    if (!g.ok()) o.insert(QStringLiteral("geometry error"), tr("%1: %2").arg(g.failedAt, g.errors.value(g.failedAt)));
+    // (A process flow's not waited for - fem_describe waited out its whole
+    // build, and after a stop built it all again: the hunt of 22 October,
+    // B3.)
+    QString pending;
+    if (const GeometryBuild* built = doc->geometryWithoutWaiting(&pending); !built) {
+        o.insert(QStringLiteral("geometry"), pending);
+    } else {
+        const GeometryBuild& g = *built;
+        if (g.topology)
+            o.insert(QStringLiteral("geometry"), QJsonObject{{QStringLiteral("domains"), int(g.topology->domains.size())},
+                                                             {QStringLiteral("boundaries"), int(g.topology->boundaries.size())},
+                                                             {QStringLiteral("points"), int(g.topology->points.size())},
+                                                             {QStringLiteral("objects"), QJsonArray::fromStringList(g.topology->objectNames)}});
+        if (!g.ok()) o.insert(QStringLiteral("geometry error"), tr("%1: %2").arg(g.failedAt, g.errors.value(g.failedAt)));
+    }
     if (doc->mesh() && !doc->meshStale())
         o.insert(QStringLiteral("mesh"), tr("%1 triangles, smallest angle %2°").arg(doc->mesh()->triangles.size()).arg(doc->mesh()->minAngle, 0, 'f', 1));
     QJsonArray studies;
@@ -896,8 +908,9 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
             }
             a_app->titleDocumentTab(doc);
         }
-        QString why;
-        doc->buildGeometry(&why);
+        // (A process flow's in the background, not waited for: the hunt of
+        // 22 October, B3.)
+        const QString why = doc->geometryAfterChange();
         // (Its title: what names it to the other tools - 'path' - while it has
         // no file.)
         QJsonObject out{{QStringLiteral("file"), doc->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(doc->getDocName())},
@@ -966,8 +979,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
             return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
         }
         a_app->titleDocumentTab(doc);
-        QString built;
-        doc->buildGeometry(&built);
+        const QString built = doc->geometryAfterChange();
         return jsonResult(QJsonObject{{QStringLiteral("file"), QDir::toNativeSeparators(file)},
                                       {QStringLiteral("read"), QJsonArray::fromStringList(imported.notes)},
                                       {QStringLiteral("geometry"), built.isEmpty() ? tr("built") : built}});
@@ -1031,8 +1043,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         std::optional<Model> m = Model::fromJson(QJsonDocument(args.value(QLatin1String("model")).toObject()).toJson(), &why);
         if (!m) return errorResult(tr("'model': %1").arg(why));
         doc->setModel(*m, tr("Model"));
-        QString built;
-        doc->buildGeometry(&built);
+        const QString built = doc->geometryAfterChange();
         QJsonObject o{{QStringLiteral("set"), tr("the whole model, one step of Undo")},
                       {QStringLiteral("geometry"), built.isEmpty() ? tr("built") : built}};
         if (!why.isEmpty()) o.insert(QStringLiteral("notes"), why);
@@ -1163,11 +1174,14 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
         return errorResult(tr("'action' is add, set, delete, move or parameters."));
     }
     doc->setModel(m, what);
-    // The geometry built at once: its errors said with the change.
-    QString built;
-    if (doc->geometryStale()) doc->buildGeometry(&built);
-    const GeometryBuild& g = doc->geometry();
-    if (g.topology)
+    // The geometry built at once: its errors said with the change. (A
+    // process flow's in the background, not waited for: the hunt of 22
+    // October, B3.)
+    const QString built = doc->geometryAfterChange();
+    const GeometryBuild& g = doc->builtGeometry();
+    if (doc->geometryStale())
+        answer.insert(QStringLiteral("geometry"), built);
+    else if (g.topology)
         answer.insert(QStringLiteral("geometry"), g.ok() ? tr("%1 domains, %2 boundaries, %3 points").arg(g.topology->domains.size()).arg(g.topology->boundaries.size()).arg(g.topology->points.size())
                                                          : tr("stopped at %1: %2").arg(g.failedAt, g.errors.value(g.failedAt)));
     answer.insert(QStringLiteral("undo"), tr("one step of Edit > Undo; not saved (fem_model save)"));
@@ -1323,6 +1337,9 @@ void QucsControl::femStop(const QJsonObject& args, const Done& done)
     doc->cancelJob();
     const int timeout = waitsFor(QStringLiteral("fem_stop"), args);
     QPointer<MultiphysicsDoc> d(doc);
+    // (What it stopped alone: a solve another call started as that one ended
+    // was waited for too, and it said "stopped" once that was solved - the
+    // hunt of 22 October, B2.)
     doc->whenJobEnds(timeout * 1000, [this, d, done, before, timeout](bool ended) {
         if (!d) return done(jsonResult(QJsonObject{{QStringLiteral("stopped"), true}, {QStringLiteral("note"), tr("The model was closed.")}}));
         if (!ended)
@@ -1334,7 +1351,7 @@ void QucsControl::femStop(const QJsonObject& args, const Done& done)
         for (qsizetype i = std::max<qsizetype>(0, std::min(before, messages.size()) - 1); i < messages.size(); ++i) said.append(messages.at(i));
         if (!said.isEmpty()) o.insert(QStringLiteral("log"), said);
         done(jsonResult(o));
-    });
+    }, true);
 }
 
 /// A mode (state) asked of \a set, of modes: from 1 to the most it has -
@@ -1379,9 +1396,15 @@ void QucsControl::femSolve(const QJsonObject& args, const Done& done)
         });
     };
     if (!doc->isBusy()) return solve();
-    doc->whenJobEnds(1000, [this, d, done, solve](bool ended) {
+    // (Stopped meanwhile - fem_stop, Cancel -: not started. It started as the
+    // stopped job ended, undoing the stop: the hunt of 22 October, B2.)
+    const quint64 stops = doc->stops();
+    doc->whenJobEnds(1000, [this, d, done, solve, stops](bool ended) {
         if (!d) return done(errorResult(tr("The model was closed.")));
         if (!ended) return done(errorResult(tr("It is busy building or solving; fem_solve again in a while.")));
+        if (d->stops() != stops)
+            return done(errorResult(tr("Not solved: the work it waited behind was stopped (fem_stop, Cancel), and a stop stops what "
+                                       "waits for it too; fem_solve again to solve.")));
         solve();
     });
 }
@@ -1431,8 +1454,12 @@ QJsonObject QucsControl::femSolved(MultiphysicsDoc* doc, const QJsonObject& args
         if (!d.enabled) continue;
         const DerivedResult r = doc->evaluate(d.tag);
         QJsonObject values;
-        // (Of many times or parameter values: the last 40.)
-        const int from = std::max(0, int(r.values.size()) - 40);
+        // (Of many times or parameter values: the last 40. Of one run - a
+        // Harmonics' 30, each named by itself alone -: all, H1 first; the
+        // last 40 left H1 and H2 out - the hunt of 22 October, B5.)
+        bool labelled = false;
+        for (const DerivedValue& v : r.values) labelled = labelled || v.name.contains(QLatin1String(": "));
+        const int from = std::max(0, int(r.values.size()) - (labelled ? 40 : 200));
         for (int i = from; i < int(r.values.size()); ++i) values.insert(r.values[i].name, r.values[i].text);
         QJsonObject o{{QStringLiteral("tag"), d.tag}, {QStringLiteral("name"), d.name()}, {QStringLiteral("values"), values}};
         if (from > 0) o.insert(QStringLiteral("note"), tr("%1 values: the last 40 here; fem_evaluate %2 with 'all' gives each (%2.<name> one)").arg(r.values.size()).arg(d.tag));
@@ -1618,9 +1645,10 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     auto evaluateIn = [&all, &args, &frequency, &items, &mode, &over, &time, &unit, &derivedOf](const SolutionSet& in) {
         Found out;
         std::vector<Global> global;
-        const std::vector<Instance> which = instances(in, all, args.value(QLatin1String("point")).toInt(0), time, frequency, mode);
+        QString asked;
+        const std::vector<Instance> which = instances(in, all, args.value(QLatin1String("point")).toInt(0), time, frequency, mode, &asked);
         if (which.empty()) {
-            out.errors << tr("No such solution.");
+            out.errors << (asked.isEmpty() ? tr("No such solution.") : asked);
             return out;
         }
         out.any = true;
@@ -1875,6 +1903,31 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
             return errorResult(tr("Which plot? 'plot' (a plot group: %1), 'expression' (one made), or 'show' geometry or mesh.")
                                    .arg(groups.isEmpty() ? tr("none yet") : groups.join(QStringLiteral(", "))));
         }
+        Model m = doc->model();
+        // A global over a solution's outputs - a spectrum's qw.alphaTE, a
+        // current in time -: graphed against them. (A surface of it was one
+        // colour at the last energy: the hunt of 22 October, N11.)
+        if (const std::shared_ptr<Solution> sol = doc->solution(args.value(QLatin1String("study")).toString()); sol && sol->snapshotCount() > 1) {
+            Dim dim;
+            QString why;
+            if (!sol->globalSeries(expression, &dim, &why).empty()) {
+                FNode g = m.make(QStringLiteral("plotgroup1d"));
+                g.label = args.value(QLatin1String("title")).toString(expression);
+                if (args.contains(QLatin1String("study"))) g.props.insert(QStringLiteral("study"), args.value(QLatin1String("study")).toString());
+                FNode gg = m.make(QStringLiteral("globalgraph"));
+                gg.tag += QStringLiteral("_") + g.tag;
+                gg.props.insert(QStringLiteral("expression"), expression);
+                if (args.contains(QLatin1String("unit"))) gg.props.insert(QStringLiteral("unit"), args.value(QLatin1String("unit")).toString());
+                g.children.push_back(gg);
+                FNode* added = m.add(m.results().tag, g);
+                if (!added) return errorResult(tr("The plot group could not be added."));
+                group = added->tag;
+                doc->setModel(m, tr("Add %1").arg(g.label));
+            }
+        }
+    }
+    if (group.isEmpty()) {
+        const QString expression = args.value(QLatin1String("expression")).toString();
         Model m = doc->model();
         FNode g = m.make(QStringLiteral("plotgroup"));
         g.label = args.value(QLatin1String("title")).toString(expression);

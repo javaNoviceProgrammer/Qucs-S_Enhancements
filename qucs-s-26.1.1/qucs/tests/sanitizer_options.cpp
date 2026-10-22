@@ -1,6 +1,6 @@
 /*
- * AddressSanitizer's options for a test, on macOS: allocation stacks of
- * eight frames, not thirty.
+ * AddressSanitizer's options for a test - and the application, which links
+ * it too -, on macOS: allocation stacks of eight frames, not thirty.
  *
  * A process started there is forked, and macOS's own fork handlers
  * (notify, xpc, dispatch, CoreServices) allocate and free in the child,

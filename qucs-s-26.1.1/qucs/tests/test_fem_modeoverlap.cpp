@@ -416,6 +416,14 @@ private slots:
             if (!l.startsWith(QLatin1Char('#')) && !l.startsWith(QLatin1String("mode,"))) ++rows;
         QCOMPARE(rows, 3 * 121 * 101);
         QVERIFY(c.text.contains(QStringLiteral("mode,x (m),y (m),Re Ex (V/m),Im Ex (V/m)")));
+        // One column: refused, said - a cross-section, which its overlap reads
+        // two by two at the least (it was made 2 without a word, while a Field
+        // on a Grid takes one column: the hunt of 22 October, N13).
+        Node column = *m.find(QStringLiteral("mp"));
+        column.props.insert(QStringLiteral("nx"), 1);
+        const ExportText one = exportText(m, set, column, QStringLiteral("27.0.2"));
+        QVERIFY2(one.error.startsWith(QLatin1String("1 by 101 points: a mode's profile is a cross-section - from 2 to 4000 along x and y")) && one.data.isEmpty(),
+                 qPrintable(one.error));
     }
 
     // A profile whose "about" is UTF-32 (MATLAB's miUTF32): a character

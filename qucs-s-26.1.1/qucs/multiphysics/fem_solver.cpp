@@ -2184,7 +2184,7 @@ void PointEvaluator::component(int f, int comp, double& u, double& gx, double& g
             // linear between the line's nodes, the carriers in their
             // logarithm, as they were set on the nodes.
             // (Its carriers' own reading, semiconductorAt, the same.)
-            double value[3], slope[3];
+            double value[5], slope[5];
             if (field.along && field.along->read(m.x, value, slope))
                 for (int k = 0; k < 3 && k < std::min(int(std::size(c.u)), field.count()); ++k) {
                     c.u[k] = value[k];
@@ -2203,19 +2203,21 @@ void PointEvaluator::component(int f, int comp, double& u, double& gx, double& g
     gy = c.gy[comp] + shiftOf(f, comp, 2);
 }
 
-bool AlongLine::read(QPointF x, double value[3], double slope[3]) const
+bool AlongLine::read(QPointF x, double value[5], double slope[5]) const
 {
-    if (c.size() < 2 || V.size() != c.size() || n.size() != c.size() || p.size() != c.size()) return false;
+    if (c.size() < 2 || from.size() != c.size() - 1 || to.size() != from.size()) return false;
     const double at = std::clamp((alongY ? x.y() : x.x()) / scale, c.front(), c.back());
     const auto upper = std::upper_bound(c.begin(), c.end(), at);
     const std::size_t j = std::min<std::size_t>(std::size_t(std::max<std::ptrdiff_t>(upper - c.begin(), 1)) - 1, c.size() - 2);
     const double span = (c[j + 1] - c[j]) * scale, u = span > 0 ? std::clamp((at - c[j]) * scale / span, 0.0, 1.0) : 0.0;
-    const std::vector<double>* lines[3] = {&V, &n, &p};
-    for (int k = 0; k < 3; ++k) {
-        const double a = (*lines[k])[j], b = (*lines[k])[j + 1];
+    // (Its segment's own ends: across a heterojunction the carriers were
+    // read from the other side's value at the node, 46 times too many 1.5 nm
+    // into the AlGaAs - the hunt of 22 October, A3.)
+    for (int k = 0; k < 5; ++k) {
+        const double a = from[j][std::size_t(k)], b = to[j][std::size_t(k)];
         value[k] = (1 - u) * a + u * b;
         slope[k] = span > 0 ? (b - a) / span : 0.0;
-        if (k > 0 && a > 0 && b > 0) {
+        if ((k == 1 || k == 2) && a > 0 && b > 0) {
             value[k] = std::exp((1 - u) * std::log(a) + u * std::log(b));
             slope[k] = span > 0 ? value[k] * (std::log(b) - std::log(a)) / span : 0.0;
         }
@@ -4323,50 +4325,6 @@ static void checkProperties(const Node& node, QStringList* errors, QStringList* 
     for (const Node& c : node.children) checkProperties(c, errors, warnings);
 }
 
-/// Whether \a text is a flag as such: true, false, 1, 0 (or none).
-static bool flagWord(const QString& text)
-{
-    const QString t = text.trimmed();
-    return t.isEmpty() || t == QLatin1String("true") || t == QLatin1String("false") || t == QLatin1String("1") || t == QLatin1String("0");
-}
-
-/// Whether \a node (or a child) has a flag given as an expression - a
-/// parameter's name, "ex > 0" -, of the studies \a study's alone.
-static bool expressionFlags(const Node& node, const QString& study)
-{
-    if (node.type == QLatin1String("study") && node.tag != study) return false;
-    if (const NodeKind* kind = node.kind())
-        for (auto it = node.props.begin(); it != node.props.end(); ++it)
-            if (const PropertyDef* def = kind->property(it.key());
-                def && def->kind == PropertyDef::Bool && it.value().isString() && !flagWord(it.value().toString()))
-                return true;
-    for (const Node& c : node.children)
-        if (expressionFlags(c, study)) return true;
-    return false;
-}
-
-/// \a node's flags given as expressions read in \a scope: true where not 0;
-/// one that is not a constant there said in \a errors. Of the studies
-/// \a study's alone (another's mistake not this one's).
-static void readFlags(Node& node, const Scope& scope, const QString& study, QStringList* errors)
-{
-    if (node.type == QLatin1String("study") && node.tag != study) return;
-    if (const NodeKind* kind = node.kind())
-        for (auto it = node.props.begin(); it != node.props.end(); ++it) {
-            const PropertyDef* def = kind->property(it.key());
-            if (!def || def->kind != PropertyDef::Bool || !it.value().isString() || flagWord(it.value().toString())) continue;
-            QString why;
-            const std::optional<double> v = evaluateConstant(it.value().toString(), scope, Dim(), &why);
-            if (!v) {
-                *errors << QObject::tr("%1: its \"%2\" is \"%3\" - true, false or an expression of the parameters: %4")
-                               .arg(node.name(), def->key, it.value().toString(), why);
-                continue;
-            }
-            it.value() = *v != 0;
-        }
-    for (Node& c : node.children) readFlags(c, scope, study, errors);
-}
-
 /// \a model with its flags given as expressions read with \a ps, each
 /// point's own (a parameter as a flag - "bulkexcitons": "ex" - was false at
 /// every point, said nowhere: the update check of 21 October, 1); null and
@@ -4375,7 +4333,10 @@ static std::shared_ptr<const Model> flagsRead(const Model& model, const Paramete
 {
     auto read = std::make_shared<Model>(model);
     QStringList errors;
-    readFlags(read->root, ps.scope, study, &errors);
+    // (The studied nodes' alone: a disabled one's, a plot's, another study's
+    // mistake not this one's - the hunt of 22 October, B4. The results' flags
+    // are read where they are used, with the solution's parameters.)
+    readExpressionFlags(read->root, ps.scope, study, false, &errors);
     if (!errors.isEmpty()) {
         *error = errors.join(QLatin1String("; "));
         return nullptr;
@@ -4423,76 +4384,160 @@ static void checkPlottedFields(const Model& model, QStringList* warnings)
 /// asks (7b).
 static void spectraAgainstTheFirst(const Node& study, StudyRun& run)
 {
-    if (run.solutions.size() < 2) return;
     const Node* step = nullptr;
     for (const Node& c : study.children)
         if (c.enabled && c.type == QLatin1String("spectrum")) step = &c;
-    if (!step) return;
+    if (!step || run.solutions.empty()) return;
     Solution& first = *run.solutions.front();
     if (!first.frequencyDomain || first.photonAxis <= 0 || first.photonAxis == 3 || first.snapshotCount() < 3) return;
-    constexpr double h = 6.62607015e-34;
-    // The snapshots by energy, ascending (a spectrum of wavelengths descends).
-    std::vector<int> order(std::size_t(first.snapshotCount()));
-    for (int i = 0; i < first.snapshotCount(); ++i) order[std::size_t(i)] = i;
-    std::sort(order.begin(), order.end(), [&first](int a, int b) { return first.snapshotFrequency(a) < first.snapshotFrequency(b); });
-    std::vector<double> E;
-    for (int i : order) E.push_back(first.snapshotFrequency(i) * h);
-    auto sorted = [&order](const std::vector<double>& v) {
-        std::vector<double> out;
-        for (int i : order) out.push_back(i < int(v.size()) ? v[std::size_t(i)] : std::nan(""));
-        return out;
+    const QJsonArray rawWindow = step->value(QStringLiteral("dnwindow")).toArray();
+    bool windowGiven = false;
+    for (const QJsonValue& v : rawWindow) windowGiven = windowGiven || (v.isDouble() || !v.toString().trimmed().isEmpty());
+    // (A window and no sweep: said - nothing was made, nothing said: the hunt
+    // of 22 October, B7.)
+    if (run.solutions.size() < 2) {
+        if (windowGiven)
+            run.warnings << QObject::tr("%1: its local index's window (\"dnwindow\") is a sweep's - the index between each point and the "
+                                        "first: none made without a sweep")
+                                .arg(step->name());
+        return;
+    }
+    constexpr double h = 6.62607015e-34, c0 = 299792458.0, q = 1.602176634e-19;
+    // A point's photon energies (J) ascending, and a series of its by them.
+    auto energies = [](const Solution& s, std::vector<int>* order) {
+        order->resize(std::size_t(s.snapshotCount()));
+        for (int i = 0; i < s.snapshotCount(); ++i) (*order)[std::size_t(i)] = i;
+        std::sort(order->begin(), order->end(), [&s](int a, int b) { return s.snapshotFrequency(a) < s.snapshotFrequency(b); });
+        std::vector<double> e;
+        for (int i : *order) e.push_back(s.snapshotFrequency(i) * h);
+        return e;
     };
-    auto series = [&sorted](const Solution& s, const QString& name) {
+    std::vector<int> order;
+    const std::vector<double> E = energies(first, &order);
+    // Its series on the first point's energies: interpolated where its own
+    // differ - they may move with the sweep -, NaN past its own. (By index,
+    // a point 0.1 eV higher read as the first's: Δn 0.037 - the hunt of 22
+    // October, A5.)
+    bool moved = false;
+    auto series = [&](const Solution& s, const QString& name) {
         Dim d;
         QString why;
-        return sorted(s.globalSeries(name, &d, &why));
+        const std::vector<double> raw = s.globalSeries(name, &d, &why);
+        std::vector<int> own;
+        const std::vector<double> e = energies(s, &own);
+        std::vector<double> v;
+        for (int i : own) v.push_back(i < int(raw.size()) ? raw[std::size_t(i)] : std::nan(""));
+        std::vector<double> out(E.size(), std::nan(""));
+        const bool same = e.size() == E.size() && std::equal(e.begin(), e.end(), E.begin(), [](double a, double b) {
+                              return std::abs(a - b) <= 1e-9 * std::max(std::abs(a), std::abs(b));
+                          });
+        if (same) return v;
+        moved = true;
+        for (std::size_t k = 0; k < E.size(); ++k) {
+            if (e.empty() || E[k] < e.front() || E[k] > e.back()) continue;
+            const auto it = std::lower_bound(e.begin(), e.end(), E[k]);
+            const std::size_t j = std::size_t(it - e.begin());
+            if (j == 0 || e[j] == E[k]) {
+                out[k] = v[j];
+                continue;
+            }
+            const double r = (E[k] - e[j - 1]) / (e[j] - e[j - 1]);
+            out[k] = v[j - 1] + r * (v[j] - v[j - 1]);
+        }
+        return out;
     };
-    auto area = [&E](const std::vector<double>& a, double lo, double hi) {
-        double sum = 0;
+    // Over [lo, hi], where both are known: their areas alike.
+    auto areas = [&E](const std::vector<double>& a, const std::vector<double>& b, double lo, double hi) {
+        double sa = 0, sb = 0;
         for (std::size_t k = 1; k < E.size(); ++k)
-            if (E[k - 1] >= lo && E[k] <= hi) sum += 0.5 * (a[k] + a[k - 1]) * (E[k] - E[k - 1]);
-        return sum;
+            if (E[k - 1] >= lo && E[k] <= hi && std::isfinite(a[k]) && std::isfinite(a[k - 1]) && std::isfinite(b[k]) && std::isfinite(b[k - 1])) {
+                sa += 0.5 * (a[k] + a[k - 1]) * (E[k] - E[k - 1]);
+                sb += 0.5 * (b[k] + b[k - 1]) * (E[k] - E[k - 1]);
+            }
+        return std::pair{sa, sb};
     };
-    // The local window, J (a plain number eV).
+    // The local window, J: an energy, a free-space wavelength or a frequency
+    // (a length was taken as a number of eV, the window empty, nothing said:
+    // the hunt of 22 October, B7).
     double lo = NaN, hi = NaN;
-    const QStringList window = step->pair(QStringLiteral("dnwindow"));
-    if (window.size() == 2 && !window[0].trimmed().isEmpty() && !window[1].trimmed().isEmpty()) {
+    if (windowGiven && rawWindow.size() != 2) {
+        run.warnings << QObject::tr("%1: its local index's window (\"dnwindow\") wants two energies, it has %2 - none made")
+                            .arg(step->name())
+                            .arg(rawWindow.size());
+    } else if (windowGiven) {
+        const QStringList window = step->pair(QStringLiteral("dnwindow"));
         double v[2] = {NaN, NaN};
+        bool length = false;
+        QString bad;
         for (int i = 0; i < 2; ++i) {
             const Expression e = Expression::compile(window[i], first.parameters().scope);
-            if (e.isValid() && e.isConstant() && std::isfinite(e.constant()))
-                v[i] = e.dim() == Dim::of(2, 1, -2) ? e.constant() : e.constant() * 1.602176634e-19;
+            if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
+                bad = window[i];
+                continue;
+            }
+            if (e.dim() == Dim::of(2, 1, -2)) v[i] = e.constant();
+            else if (e.dim() == Dim()) v[i] = e.constant() * q;
+            else if (e.dim() == Dim::length() && e.constant() > 0) {
+                v[i] = h * c0 / e.constant();
+                length = true;
+            }
+            else if (e.dim() == Dim::of(0, 0, -1) && e.constant() > 0) v[i] = h * e.constant();
+            else bad = window[i];
         }
-        if (!(v[0] < v[1]))
-            run.warnings << QObject::tr("%1: its local index's window \"%2\" to \"%3\": two energies, the first the lower - none made")
-                                .arg(step->name(), window[0], window[1]);
-        else {
-            lo = v[0];
-            hi = v[1];
+        if (!bad.isEmpty()) {
+            run.warnings << QObject::tr("%1: its local index's window: \"%2\" is not a photon energy, wavelength or frequency - none made")
+                                .arg(step->name(), bad);
+        } else {
+            // (Wavelengths descend: taken either way round, but for one of
+            // no width.)
+            if (length && v[0] > v[1]) std::swap(v[0], v[1]);
+            // (Its ends taken in to rounding: a window given at the
+            // spectrum's own energies holds them.)
+            const double slack = 1e-9 * std::max(std::abs(v[0]), std::abs(v[1]));
+            int inside = 0;
+            for (double e : E) inside += e >= v[0] - slack && e <= v[1] + slack;
+            if (!(v[0] < v[1]))
+                run.warnings << QObject::tr("%1: its local index's window \"%2\" to \"%3\": two energies, the first the lower - none made")
+                                    .arg(step->name(), window[0], window[1]);
+            else if (inside < 3)
+                run.warnings << QObject::tr("%1: its local index's window, %2 to %3 eV, holds %4 of the spectrum's photon energies (%5 to %6 eV), "
+                                            "three at least wanted - none made")
+                                    .arg(step->name(), formatNumber(v[0] / q, 4), formatNumber(v[1] / q, 4))
+                                    .arg(inside)
+                                    .arg(formatNumber(E.front() / q, 4), formatNumber(E.back() / q, 4));
+            else {
+                lo = v[0] - slack;
+                hi = v[1] + slack;
+            }
         }
     }
-    // (An expression of the parameters: the first point's - flagsRead().)
-    bool conserve = step->flag(QStringLiteral("conservearea"));
-    if (const QJsonValue v = step->value(QStringLiteral("conservearea")); v.isString() && !flagWord(v.toString())) {
-        const std::optional<double> read = evaluateConstant(v.toString(), first.parameters().scope, Dim());
-        conserve = read && *read != 0;
-    }
+    // (An expression of the parameters: the first point's.)
+    const bool conserve = flagIn(*step, QStringLiteral("conservearea"), first.parameters().scope);
     QStringList tags;
     for (const Variable& v : first.globals())
         if (v.name.endsWith(QLatin1String(".alphaTE"))) tags << v.name.chopped(int(QStringLiteral("alphaTE").size()));
     for (const QString& tag : tags) {
         const std::vector<double> refTE = series(first, tag + QStringLiteral("alphaTE")), refTM = series(first, tag + QStringLiteral("alphaTM"));
-        const double allTE = area(refTE, E.front(), E.back()), allTM = area(refTM, E.front(), E.back());
         double worst = 0, worstRatio = 1;
         QString worstAt, worstPol;
+        QStringList unscaled;
+        // (Does the field change along the sweep? The warning's cause is said
+        // by it - a sweep of the carriers was told of a field: the hunt of 22
+        // October, B6.)
+        bool fieldMoves = false;
+        const std::optional<double> F0 = first.global(tag + QStringLiteral("Fw"));
+        for (const auto& one : run.solutions) {
+            const std::optional<double> F = one->global(tag + QStringLiteral("Fw"));
+            if (F0 && F && std::abs(*F - *F0) > 1e-9 * std::max({std::abs(*F), std::abs(*F0), 1.0})) fieldMoves = true;
+        }
         for (std::size_t p = 0; p < run.solutions.size(); ++p) {
             Solution& s = *run.solutions[p];
-            if (s.snapshotCount() != first.snapshotCount()) continue;
             const std::vector<double> te = series(s, tag + QStringLiteral("alphaTE")), tm = series(s, tag + QStringLiteral("alphaTM"));
-            // Its sum against the first's.
-            for (const auto& [pol, a, ref] : {std::tuple{QStringLiteral("TE"), &te, allTE}, std::tuple{QStringLiteral("TM"), &tm, allTM}}) {
-                if (!(std::abs(ref) > 0)) continue;
-                const double ratio = area(*a, E.front(), E.back()) / ref;
+            // Its sum against the first's, over the energies both have.
+            for (const auto& [pol, a, ref] : {std::tuple{QStringLiteral("TE"), &te, &refTE}, std::tuple{QStringLiteral("TM"), &tm, &refTM}}) {
+                const auto [own, theirs] = areas(*a, *ref, E.front(), E.back());
+                if (!(std::abs(theirs) > 0)) continue;
+                const double ratio = own / theirs;
                 if (std::abs(ratio - 1) > worst) {
                     worst = std::abs(ratio - 1);
                     worstRatio = ratio;
@@ -4505,22 +4550,37 @@ static void spectraAgainstTheFirst(const Node& study, StudyRun& run)
             std::vector<double> x;
             std::vector<std::size_t> inside;
             for (std::size_t k = 0; k < E.size(); ++k)
-                if (E[k] >= lo && E[k] <= hi) {
+                if (E[k] >= lo && E[k] <= hi && std::isfinite(te[k]) && std::isfinite(tm[k])) {
                     x.push_back(E[k]);
                     inside.push_back(k);
                 }
-            if (x.size() < 3) continue;
+            if (x.size() < 3) {
+                if (p > 0) unscaled << QObject::tr("%1 (its energies leave the window)").arg(s.label);
+                continue;
+            }
             for (const auto& [name, a, ref] : {std::tuple{QStringLiteral("dnTEloc"), &te, &refTE}, std::tuple{QStringLiteral("dnTMloc"), &tm, &refTM}}) {
-                const double own = area(*a, lo, hi), theirs = area(*ref, lo, hi);
-                const double scale = conserve && std::abs(own) > 0 ? theirs / own : 1.0;
+                const auto [own, theirs] = areas(*a, *ref, lo, hi);
+                // (The first absorbing nothing there: not scaled to nothing -
+                // every Δn was 0, said nowhere: the hunt of 22 October, A6.)
+                double scale = 1.0;
+                if (conserve && std::abs(own) > 0) {
+                    if (std::abs(theirs) > 1e-9 * std::abs(own)) scale = theirs / own;
+                    else if (p > 0 && !unscaled.contains(s.label)) unscaled << s.label;
+                }
                 std::vector<double> delta;
                 for (std::size_t k : inside) delta.push_back(scale * (*a)[k] - (*ref)[k]);
-                std::vector<double> values(order.size(), 0.0);
-                for (std::size_t k = 0; k < E.size(); ++k) {
+                // At the point's own energies (the first's, unless they move):
+                // Δα between the window's, interpolated.
+                std::vector<int> ownOrder;
+                const std::vector<double> Es = energies(s, &ownOrder);
+                std::vector<double> values(std::size_t(s.snapshotCount()), 0.0);
+                for (std::size_t j = 0; j < Es.size(); ++j) {
                     double aE = 0;
-                    for (std::size_t j = 0; j < inside.size(); ++j)
-                        if (inside[j] == k) aE = delta[j];
-                    values[std::size_t(order[k])] = p == 0 ? 0.0 : detail::kramersKronig(x, delta, E[k], aE);
+                    if (Es[j] >= x.front() && Es[j] <= x.back()) {
+                        const std::size_t i = std::size_t(std::lower_bound(x.begin(), x.end(), Es[j]) - x.begin());
+                        aE = i == 0 || x[i] == Es[j] ? delta[i] : delta[i - 1] + (Es[j] - x[i - 1]) / (x[i] - x[i - 1]) * (delta[i] - delta[i - 1]);
+                    }
+                    values[std::size_t(ownOrder[j])] = p == 0 ? 0.0 : detail::kramersKronig(x, delta, Es[j], aE);
                 }
                 s.setSeriesGlobal(tag + name, values, Dim(),
                                   QObject::tr("the index between this point and the sweep's first by Kramers and Kronig of their absorptions' "
@@ -4529,13 +4589,27 @@ static void spectraAgainstTheFirst(const Node& study, StudyRun& run)
                                            conserve ? QObject::tr(", its area the first's") : QString()));
             }
         }
+        // (Its physics by its tag, not "qw.:" - the hunt of 22 October, N1.)
+        const QString physics = tag.endsWith(QLatin1Char('.')) ? tag.chopped(1) : tag;
+        if (!unscaled.isEmpty())
+            run.warnings << QObject::tr("%1: \"conservearea\" over the local window: the first point absorbs nothing there (or the point's "
+                                        "energies leave it), so its area is not kept at %2 - the index there of the difference as it is")
+                                .arg(physics, unscaled.join(QLatin1String("; ")));
+        if (moved)
+            run.warnings << QObject::tr("%1: the points' photon energies differ (they move with the sweep): each point's absorption "
+                                        "compared with the first's at the first's energies, interpolated - past its own, left out")
+                                .arg(physics);
         if (worst > 0.03)
-            run.warnings << QObject::tr("%1: the absorption's sum over the photons' window (∫α dE) at %2 is %3 of the first point's (%4): its "
-                                        "strength not kept - a state's partners in a field past the subbands taken (more keep them: "
-                                        "\"cstates\", \"vstates\"), or a box's states above the barriers moving. The index between the points "
-                                        "(%1dnTE, %1dnTM) moves with it, not with the field's shift alone; a local one: \"dnwindow\", "
-                                        "\"conservearea\"")
-                                .arg(tag, worstAt, formatNumber(worstRatio, 3), worstPol);
+            run.warnings << (fieldMoves ? QObject::tr("%1: the absorption's sum over the photons' window (∫α dE) at %2 is %3 of the first point's "
+                                                      "(%4): its strength not kept - a state's partners in a field past the subbands taken "
+                                                      "(more keep them: \"cstates\", \"vstates\"), or a box's states above the barriers moving. "
+                                                      "The index between the points (%5dnTE, %5dnTM) moves with it, not with the field's shift "
+                                                      "alone; a local one: \"dnwindow\", \"conservearea\"")
+                                        : QObject::tr("%1: the absorption's sum over the photons' window (∫α dE) at %2 is %3 of the first point's "
+                                                      "(%4), the field the same at each: what the sweep changes changes it (the carriers filling "
+                                                      "the states, the temperature, the excitons). The index between the points (%5dnTE, %5dnTM) "
+                                                      "is that change's"))
+                                .arg(physics, worstAt, formatNumber(worstRatio, 3), worstPol, tag);
     }
 }
 
@@ -4567,7 +4641,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
     for (const Node& c : study->children)
         if (c.type == QLatin1String("sweep") && c.enabled) sweep = &c;
     // (Flags given as expressions: read at each point - flagsRead().)
-    const bool flagged = expressionFlags(model.root, study->tag);
+    const bool flagged = hasExpressionFlags(model.root, study->tag, false);
     auto meshOf = [&](const ParameterScope& ps, std::shared_ptr<const Topology> topo, const Progress& p,
                       std::shared_ptr<const Mesh>* out) {
         if (!topo) {
@@ -4604,6 +4678,8 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
         }
         run.log = r.solution->log;
         run.solutions.push_back(r.solution);
+        // (A local window without a sweep: said - the hunt of 22 October, B7.)
+        spectraAgainstTheFirst(*study, run);
         return run;
     }
     // The sweep's points.
@@ -4771,7 +4847,7 @@ StudyRun runStudy(const Model& model, std::shared_ptr<ParameterScope> parameters
             if (!st.enabled || st.type != QLatin1String("mode") || !starts.isEmpty()) continue;
             const QJsonObject t = st.value(QStringLiteral("track")).toObject();
             const bool tracking = !(t.isEmpty() || (t.size() == 1 && t.contains(QStringLiteral("numbers")) && t.value(QStringLiteral("numbers")).toArray().isEmpty()));
-            if (st.flag(QStringLiteral("follow")) && st.integer(QStringLiteral("modes")) == 1 && !tracking) starts = st.name();
+            if (flagIn(st, QStringLiteral("follow"), parameters->scope) && st.integer(QStringLiteral("modes")) == 1 && !tracking) starts = st.name();
         }
         if (!starts.isEmpty()) {
             run.log << tr("%1: one point after another - %2 starts from the point before").arg(sweep->name(), starts);

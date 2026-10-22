@@ -2151,6 +2151,18 @@ QString compoundOf(const QString& lumerical, double x, double y, double* cx, dou
 
 LumericalScript lumericalScript(const Model& model, const Node& node, const QString& base, const QString& version, const Progress& progress)
 {
+    // (Flags given as expressions read with the parameters: "run" as "r"
+    // was false here - the hunt of 22 October, A7.)
+    if (hasExpressionFlags(model.root)) {
+        Model read = model;
+        QStringList errors;
+        readExpressionFlags(read.root, evaluateParameters(model)->scope, {}, true, &errors);
+        const Node* n = read.find(node.tag);
+        if (errors.isEmpty() && n && !hasExpressionFlags(read.root)) return lumericalScript(read, *n, base, version, progress);
+        LumericalScript out;
+        out.error = errors.join(QLatin1String("; "));
+        if (!errors.isEmpty() || !n) return out;
+    }
     if (node.type == QLatin1String("lumericalmode")) return exportMode(model, node, base, version, progress);
     if (node.type == QLatin1String("lumericalcharge")) return exportCharge(model, node, base, version, progress);
     if (node.type == QLatin1String("lumericalmqw")) return exportMqw(model, node, base, version, progress);

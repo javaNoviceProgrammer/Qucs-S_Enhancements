@@ -1140,7 +1140,21 @@ bool MultiphysicsPanel::visible(const Node& node, const PropertyDef& p) const
             const bool negate = cond.contains(QLatin1String("!="));
             const QStringList kv = cond.split(negate ? QStringLiteral("!=") : QStringLiteral("="));
             if (kv.size() != 2) continue;
-            const bool equal = node.text(kv[0].trimmed()) == kv[1].trimmed();
+            const QString key = kv[0].trimmed(), wanted = kv[1].trimmed();
+            // A flag by its value - 1, "True" as true -, and one given as an
+            // expression of the parameters either: what it shows wanted at
+            // some point. (Compared as a text, the exciton model, its size
+            // and pairs were hidden while "excitons": "ex" had them on: the
+            // hunt of 22 October, B8.)
+            const PropertyDef* def = node.kind() ? node.kind()->property(key) : nullptr;
+            if (def && def->kind == PropertyDef::Bool && (wanted == QLatin1String("true") || wanted == QLatin1String("false"))) {
+                const QJsonValue v = node.value(key);
+                if (v.isString() && !qucs_s::fem::flagWord(v.toString())) continue;
+                const bool equal = node.flag(key) == (wanted == QLatin1String("true"));
+                all = all && (negate ? !equal : equal);
+                continue;
+            }
+            const bool equal = node.text(key) == wanted;
             all = all && (negate ? !equal : equal);
         }
         if (all) return true;
@@ -1387,6 +1401,22 @@ QWidget* MultiphysicsPanel::makeEditor(const Node& node, const PropertyDef& p)
         return box;
     }
     case PropertyDef::Bool: {
+        // A flag given as an expression of the parameters ("ex", "ex > 0"):
+        // its text, to edit - it showed as a box unchecked, and a click would
+        // have put true or false over it (the hunt of 22 October, B8).
+        if (const QJsonValue v = node.value(key); v.isString() && !qucs_s::fem::flagWord(v.toString())) {
+            auto* edit = new QLineEdit(v.toString(), a_form);
+            edit->setObjectName(QStringLiteral("mpEdit_") + key);
+            edit->setToolTip(tr("Given as an expression of the parameters: on where it is not 0, read at each point of a sweep. "
+                                "true or false makes it a box again."));
+            connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] {
+                const QString t = edit->text().trimmed();
+                if (t.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0 || t == QLatin1String("1")) return commit(key, true);
+                if (t.isEmpty() || t.compare(QLatin1String("false"), Qt::CaseInsensitive) == 0 || t == QLatin1String("0")) return commit(key, false);
+                commit(key, t);
+            });
+            return edit;
+        }
         auto* check = new QCheckBox(a_form);
         check->setObjectName(QStringLiteral("mpEdit_") + key);
         check->setChecked(node.flag(key));
