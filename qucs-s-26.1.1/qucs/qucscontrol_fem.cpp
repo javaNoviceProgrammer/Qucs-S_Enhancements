@@ -1213,7 +1213,7 @@ void QucsControl::femBuild(const QJsonObject& args, const Done& done)
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return done(errorResult(error));
     if (!args.value(QLatin1String("until")).toString().trimmed().isEmpty()) return done(femBuilt(doc, args));
-    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(300), 1, 3600);
+    const int timeout = waitsFor(QStringLiteral("fem_build"), args);
     const QDeadlineTimer deadline(qint64(timeout) * 1000);
     QPointer<MultiphysicsDoc> d(doc);
     femGeometryThen(doc, deadline, timeout, true, [this, d, args, done, deadline, timeout](const QString& stopped) {
@@ -1321,7 +1321,7 @@ void QucsControl::femStop(const QJsonObject& args, const Done& done)
                                            {QStringLiteral("note"), tr("Nothing is being built or solved in %1.").arg(titleOf(doc))}}));
     const qsizetype before = doc->messages().size();
     doc->cancelJob();
-    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(30), 1, 600);
+    const int timeout = waitsFor(QStringLiteral("fem_stop"), args);
     QPointer<MultiphysicsDoc> d(doc);
     doc->whenJobEnds(timeout * 1000, [this, d, done, before, timeout](bool ended) {
         if (!d) return done(jsonResult(QJsonObject{{QStringLiteral("stopped"), true}, {QStringLiteral("note"), tr("The model was closed.")}}));
@@ -1361,7 +1361,7 @@ void QucsControl::femSolve(const QJsonObject& args, const Done& done)
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return done(errorResult(error));
     const QString study = args.value(QLatin1String("study")).toString();
-    const int timeout = std::clamp(args.value(QLatin1String("timeout")).toInt(600), 1, 7200);
+    const int timeout = waitsFor(QStringLiteral("fem_solve"), args);
     QPointer<MultiphysicsDoc> d(doc);
     // (Waited for without a loop of its own: whenJobEnds - the hunt of 21
     // October, B6.)

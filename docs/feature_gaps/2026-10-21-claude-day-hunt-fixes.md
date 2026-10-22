@@ -57,6 +57,15 @@ meanwhile is deleted once the call is answered. If the model is deleted meanwhil
 The three run with the dispatcher's other asynchronous tools (`simulate`, `console`), and like them do
 not count as their conversation's edits while they wait.
 
+*After the release (CI of 38491ef):* `QucsControl::callNow`, which the tests, scripts and menu actions use,
+gave up on an asynchronous tool after its own timeout. A sanitized Linux `fem_solve` outlasted a test's 120 s, and
+its answer, at the job's end, wrote into `callNow`'s frame, gone: a stack-use-after-return. `callNow` now keeps
+what the answer writes past its own return, and waits as long as the tool waits by itself
+(`QucsControl::waitsFor`: `fem_solve`'s `timeout`, 600 s unless given; `fem_build`'s, 300; `fem_stop`'s, 30;
+another's `timeout` given), as it did while these were answered within the call. Test:
+`test_multiphysics_doc aToolsOwnWaitIsWaitedFor` (a solve called with 1 ms answered; the old wait fails it, and with
+the old storage ASan reports the write).
+
 **B7. Streaming over a math-heavy conversation.** The panel's typeset formulas are kept in a
 `QCache` bounded by their images' size (64 MB). The old cache was cleared past 400 formulas, so a
 longer conversation typeset most of its math again at each render, every 40 ms while a reply was
