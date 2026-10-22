@@ -842,10 +842,20 @@ private slots:
         QVERIFY(!failed(call("open_document", {{"path", path("beta_prj/beta.sch")}})));
         QVERIFY(!failed(call("open_document", {{"path", path("alpha_prj/alpha.sch")}})));
         const QJsonObject state = json(call("get_state"));
+        // (By name, the folder named in a note where it is another; the open
+        // one is 'project'.)
         QStringList projects;
-        for (const QJsonValue& v : state.value("projects").toArray())
-            projects << v.toObject().value("name").toString() + (v.toObject().value("open").toBool() ? "*" : "");
-        QVERIFY2(projects.contains("alpha*") && projects.contains("beta"), qPrintable(projects.join(", ")));
+        for (const QJsonValue& v : state.value("projects").toArray()) projects << v.toString();
+        QVERIFY2(projects.contains("alpha (folder alpha_prj)") && projects.contains("beta (folder beta_prj)"), qPrintable(projects.join(", ")));
+        QCOMPARE(state.value("project").toObject().value("name").toString(), QStringLiteral("alpha"));
+        // Many projects: their names, no paths. (A workspace's 92 were 7.4 kB
+        // of each get_state as {name, folder} with the full path.)
+        for (int i = 0; i < 40; ++i) QVERIFY(writeFile(path(QStringLiteral("many%1_prj/m.sch").arg(i)), empty));
+        const QJsonArray many = json(call("get_state")).value("projects").toArray();
+        QVERIFY(many.size() >= 42);
+        const QByteArray field = QJsonDocument(many).toJson(QJsonDocument::Compact);
+        QVERIFY2(!field.contains('/') && field.size() < 42 * 32, field.constData());
+        for (int i = 0; i < 40; ++i) QDir(path(QStringLiteral("many%1_prj").arg(i))).removeRecursively();
         for (const QJsonValue& v : state.value("documents").toArray()) {
             const QJsonObject d = v.toObject();
             if (d.value("title").toString() == "beta.sch")

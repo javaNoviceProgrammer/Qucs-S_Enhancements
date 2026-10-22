@@ -2133,7 +2133,7 @@ private slots:
         listed = json(call("list_documents")).toObject();
         bool project = false, open = false;
         for (const QJsonValue& v : listed.value("projects").toArray())
-            project = project || (v.toObject().value("project").toString() == "amp" && v.toObject().value("folder").toString() == "amp_prj");
+            project = project || v.toString() == "amp (folder amp_prj)";
         for (const QJsonValue& v : listed.value("files").toArray())
             open = open || (v.toObject().value("path").toString() == "amp_prj/amp.sch" && v.toObject().value("open").toBool());
         QVERIFY2(project && open, qPrintable(QJsonDocument(listed).toJson()));
@@ -7179,7 +7179,7 @@ private slots:
                  qPrintable(text(r)));
         bool inside = false, listed = false;
         for (const QJsonValue& v : json(r).toObject().value("files").toArray()) inside = inside || v.toObject().value("path").toString() == "inside.cir";
-        for (const QJsonValue& v : json(r).toObject().value("projects").toArray()) listed = listed || v.toObject().value("project").toString() == "state_demo";
+        for (const QJsonValue& v : json(r).toObject().value("projects").toArray()) listed = listed || v.toString() == "state_demo (folder state_demo_prj)";
         QVERIFY2(inside && listed, qPrintable(text(r)));
         // The workspace by its path.
         r = call("list_documents", {{"folder", QucsSettings.qucsWorkspaceDir.absolutePath()}});

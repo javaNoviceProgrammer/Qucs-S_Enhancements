@@ -119,7 +119,7 @@ namespace {
 // The tools, as MCP's tools/list gives them.
 const char* const kTools = R"JSON([
 {"name": "get_state",
- "description": "Returns the state of the Qucs-S window. Panes: each pane's number, row, column, rectangle and documents, with the active one marked (move_to_pane rearranges them). Documents: path, title, kind, whether it has unsaved changes, whether it is in front, its pane, its revision (a counter of every edit, undo and reload, by anyone), who made the last edit (you, the user, another conversation, or its file changed on disk and loaded again) and when its dataset was last written. Also the simulator chosen in the settings, the workspace folder, the open project ('project': its name and folder, null when none is open; relative paths are resolved against its folder - one is open at a time), the workspace's projects ('projects', the open one marked; each document's 'project' is the one its file is in, and 'project not open' says when that is not the open one), any simulation in progress, the simulations followed in the background (their ids) and any dialog waiting for an answer. Start here. Every tool result also reports what changed since your last call that you did not do yourself, such as the user's edits or a simulation the user ran.",
+ "description": "Returns the state of the Qucs-S window. Panes: each pane's number, row, column, rectangle and documents, with the active one marked (move_to_pane rearranges them). Documents: path, title, kind, whether it has unsaved changes, whether it is in front, its pane, its revision (a counter of every edit, undo and reload, by anyone), who made the last edit (you, the user, another conversation, or its file changed on disk and loaded again) and when its dataset was last written. Also the simulator chosen in the settings, the workspace folder, the open project ('project': its name and folder, null when none is open; relative paths are resolved against its folder - one is open at a time), the workspace's projects ('projects': each by name, in the workspace's folder of that name unless its note names another; each document's 'project' is the one its file is in, and 'project not open' says when that is not the open one), any simulation in progress, the simulations followed in the background (their ids) and any dialog waiting for an answer. Start here. Every tool result also reports what changed since your last call that you did not do yourself, such as the user's edits or a simulation the user ran.",
  "inputSchema": {"type": "object", "properties": {}}},
 {"name": "move_to_pane",
  "description": "Moves a document (the one in front unless 'path' names another) to another pane, to show documents side by side. 'pane' is a pane number from get_state, or \"right\" or \"below\" for a new pane next to the document's current one (at most two panes per row, and two rows). Returns the state with the panes.",
@@ -1168,6 +1168,9 @@ const char* const kWiring[] = {"connect", "add_wire", "set_label", "move", "dele
 const char* const kFoldedOptions[] = {"eye", "bathtub", "level_histogram", "contour", "spectrogram", "tornado", "smith_circles",
                                       "spectrum", "constellation", "bode", "box_plot", "nichols", "pole_zero", "nyquist"};
 const char* const kModel[] = {"fem_describe", "fem_model", "fem_edit", "fem_solve", "fem_evaluate", "fem_plot"};
+// A PDF's, where one is open: the sessions of 21 and 22 October with a paper
+// open each searched for them first (four of four).
+const char* const kPdf[] = {"read_pdf", "show_pdf"};
 const struct {
     const char* tool;
     const char* hint;
@@ -3721,11 +3724,14 @@ QSet<QString> QucsControl::inEveryTurn() const
 {
     QSet<QString> out;
     for (const char* t : kCore) out << QString::fromLatin1(t);
-    bool model = false, parts = false;
+    bool model = false, parts = false, pdf = false;
     for (QucsDoc* doc : a_app->allDocuments()) {
         model = model || QucsApp::isMultiphysicsDocument(QucsApp::documentWidget(doc));
+        pdf = pdf || QucsApp::isPdfDocument(QucsApp::documentWidget(doc));
         if (auto* sch = dynamic_cast<Schematic*>(doc)) parts = parts || !sch->a_DocComps.empty();
     }
+    if (pdf)
+        for (const char* t : kPdf) out << QString::fromLatin1(t);
     // (A project of models: its first prompt is often before one is open.)
     if (!model && !a_app->ProjName.isEmpty())
         model = !QDir(QucsSettings.QucsWorkDir.absolutePath()).entryList({QStringLiteral("*.qfem")}, QDir::Files).isEmpty();
@@ -5173,6 +5179,31 @@ QJsonObject QucsControl::moveToPane(const QJsonObject& args)
     return getState(QJsonObject());
 }
 
+namespace {
+// The workspace's projects as get_state and list_documents give them, by
+// name - each in the workspace's folder of that name, or as its note says:
+// "Project2 (folder Project2_prj)", "shared (linked)". (As {name, folder}
+// each - get_state's folder a full path, the open one marked as 'project'
+// says it already -, the 92 projects of the user's workspace were 7.4 kB of
+// every session's first get_state, 94 % of it.)
+QJsonArray projectNames(const QList<std::pair<QString, bool>>& folders, int most)
+{
+    QJsonArray out;
+    for (const auto& [folder, linked] : folders) {
+        if (out.size() == most) {
+            out.append(QucsControl::tr("… %1 more (list_documents lists them all)").arg(folders.size() - most));
+            break;
+        }
+        const QString name = qucs_s::workspace::projectName(folder);
+        QStringList notes;
+        if (folder != name) notes << QucsControl::tr("folder %1").arg(folder);
+        if (linked) notes << QucsControl::tr("linked");
+        out.append(notes.isEmpty() ? name : QStringLiteral("%1 (%2)").arg(name, notes.join(QStringLiteral(", "))));
+    }
+    return out;
+}
+} // namespace
+
 QJsonObject QucsControl::getState(const QJsonObject& args)
 {
     QJsonArray docs;
@@ -5298,18 +5329,13 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
         QStringList tiers{tr("the core")};
         if (every.contains(QStringLiteral("fem_solve"))) tiers << tr("a model's (fem_*)");
         if (every.contains(QStringLiteral("connect"))) tiers << tr("the wiring");
+        if (every.contains(QStringLiteral("read_pdf"))) tiers << tr("a PDF's");
         state.insert(QStringLiteral("tools in every turn"), tr("%1 - as a session starting now has them").arg(tiers.join(QStringLiteral(", "))));
     }
-    // Every project of the workspace: one is open at a time.
-    QJsonArray projects;
-    for (const ProjectFolder& p : std::as_const(projectFolders)) {
-        if (projects.size() >= 100) break;
-        QJsonObject o{{QStringLiteral("name"), p.name}, {QStringLiteral("folder"), QDir::toNativeSeparators(p.folder)}};
-        if (p.real == openFolder && !openFolder.isEmpty()) o.insert(QStringLiteral("open"), true);
-        if (p.linked) o.insert(QStringLiteral("linked"), true);
-        projects.append(o);
-    }
-    state.insert(QStringLiteral("projects"), projects);
+    // Every project of the workspace: one is open at a time ('project').
+    QList<std::pair<QString, bool>> folders;
+    for (const ProjectFolder& p : std::as_const(projectFolders)) folders.append({QFileInfo(p.folder).fileName(), p.linked});
+    state.insert(QStringLiteral("projects"), projectNames(folders, 100));
     // Simulations followed in the background, while they run.
     QJsonArray following;
     for (const SimRun& r : std::as_const(a_simRuns))
@@ -10961,13 +10987,10 @@ QJsonObject QucsControl::listDocuments(const QJsonObject& args)
                       tr("%1, open now: its files ('folder' with the workspace's path, %2, lists the workspace)")
                           .arg(a_app->ProjName, QDir::toNativeSeparators(workspace)));
     if (sameFile(root, workspace) || ofProject) {
-        QJsonArray projects;
+        QList<std::pair<QString, bool>> folders;
         for (const QFileInfo& fi : QDir(workspace).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
-            if (qucs_s::workspace::isProjectFolder(fi.filePath()))
-                projects.append(QJsonObject{{QStringLiteral("project"), qucs_s::workspace::projectName(fi.fileName())},
-                                            {QStringLiteral("folder"), fi.fileName()},
-                                            {QStringLiteral("linked"), fi.isSymLink()}});
-        result.insert(QStringLiteral("projects"), projects);
+            if (qucs_s::workspace::isProjectFolder(fi.filePath())) folders.append({fi.fileName(), fi.isSymLink()});
+        result.insert(QStringLiteral("projects"), projectNames(folders, std::numeric_limits<int>::max()));
     }
     QStringList left;
     if (entries.size() > kMost) left << tr("%1 more files (kind, search or folder narrows the list)").arg(entries.size() - kMost);
