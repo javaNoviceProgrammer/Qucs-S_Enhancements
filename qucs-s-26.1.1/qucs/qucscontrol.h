@@ -115,6 +115,23 @@ public:
     /// Files deleted or written over, unsaved changes discarded.
     bool irreversible(const QString& tool, const QJsonObject& arguments) const override;
     QString askedEachTime(const QString& tool, const QJsonObject& arguments) const override;
+    void setGuards(const qucs_s::claude::Guards& guards) override { a_guards = guards; }
+    void setAsking(quint64 caller, bool asking) override;
+    /// Why \a tool, called within the call under way (a batch's call, a
+    /// script's), is not made: it comes to a use the guards name that was
+    /// not asked about when the outer call began (a part with a command
+    /// added and the schematic simulated, a document opened from outside
+    /// the workspace and saved). Empty: it may be made.
+    QString unaskedWithin(const QString& tool, const QJsonObject& arguments) const;
+    /// Why the window's Simulate is not run on \a w while a call of a
+    /// conversation asked about the guards is under way: it would run what
+    /// the call was not asked about (QucsApp::slotSimulate() - Simulate,
+    /// its button, F2, Calculate DC Bias, a tuner step, reached by
+    /// trigger_action, set_ui or send_input). Empty: it may.
+    QString runRefused(QWidget* w) const;
+    /// Told after the answer of the call that answers next (a run its keys
+    /// set off and runRefused() refused, after the call returned).
+    void noteForCall(const QString& text) { a_callNotes << text; }
     void setAsker(quint64 caller, Asker asker) override;
 
     /// The result of a call, the event loop run until it comes (for the
@@ -175,6 +192,69 @@ private:
     QJsonObject askUser(const QString& message, const QJsonObject& schema);
     /// The user asked yes or no (true only for a yes).
     bool confirmed(const QString& question);
+    // The guards the user chose (setGuards()), and the conversations whose
+    // mode asks about them (setAsking()).
+    qucs_s::claude::Guards a_guards;
+    QSet<quint64> a_asking;
+    /// What a use of a tool comes to that the guards name: the commands a
+    /// simulation runs besides the simulator, each after its schematic's
+    /// name; the files outside the workspace and the open project it reads
+    /// and writes, their links resolved.
+    struct Guarded {
+        QStringList commands, read, written;
+        bool isEmpty() const { return commands.isEmpty() && read.isEmpty() && written.isEmpty(); }
+        void add(const Guarded& other);
+        /// What of \a other is not in it: a file written in a folder one
+        /// is written in is (a pdf_tex's .tex beside its .pdf, a copy's
+        /// data display beside it), and a file read that is written.
+        Guarded beyond(const Guarded& other) const;
+    };
+    /// What \a tool with \a args comes to that the guards on name (a
+    /// batch: all its calls).
+    Guarded guarded(const QString& tool, const QJsonObject& args) const;
+    /// \a g as the user is asked about it.
+    QString guardedSaid(const Guarded& g) const;
+    /// The commands simulating \a sch runs (erc::commandsRun()), after its name.
+    QStringList commandsNamed(Schematic* sch) const;
+    /// What the window's Simulate on \a w runs besides a simulator, as
+    /// commandsNamed() names it: a schematic's commands (a data display's
+    /// schematic's), a Python document's script, an Octave script.
+    QStringList runOf(QWidget* w) const;
+    /// The files outside the workspace that \a tool with \a args reads and
+    /// writes (guarded()).
+    void filesOutside(const QString& tool, const QJsonObject& args, Guarded* g) const;
+    /// The files fem_model (new, import, save) and fem_export would write,
+    /// as they take them: an export's its node names, else beside its model
+    /// (each model it may be, when none is named).
+    QStringList femFilesWritten(const QString& tool, const QJsonObject& args) const;
+    /// Whether \a file (absolute) is outside the workspace, the open
+    /// project and the scratch folders - read, outside Qucs-S's own
+    /// folders (examples, libraries, documentation) too.
+    bool outsideWorkspace(const QString& file, bool written) const;
+    /// The call under way's: whether its conversation is asked about the
+    /// guards, and what they named when it began - what the user was asked
+    /// about, when anything. A use it comes to beyond that is refused
+    /// (unaskedWithin(), unaskedCommands(), unaskedWrite()). Kept while a
+    /// call that runs alone (a batch, a script, tune) runs.
+    struct CallGuard {
+        bool on = false;
+        Guarded seen;
+        bool kept = false;   // (a call that runs alone: until it answers)
+        int id = 0;
+    };
+    CallGuard a_callGuard;
+    // The calls that drive the window (send_input, set_ui, context_menu,
+    // trigger_action, set_dialog) until they answer: a Simulate they set off
+    // later, their keys given after the call returned, is theirs
+    // (runRefused()).
+    QList<CallGuard> a_driving;
+    bool a_ownRun = false;   // simulate's own run of the window's Simulate, checked already
+    /// Why the call under way does not simulate \a sch: it runs commands
+    /// the user was not asked about. Empty: it may.
+    QString unaskedCommands(Schematic* sch) const;
+    /// Why the call under way does not write \a file: it is outside the
+    /// workspace, and writing it was not asked about. Empty: it may.
+    QString unaskedWrite(const QString& file) const;
     /// The user asked to choose one of \a options (empty: declined, or
     /// cannot be asked).
     QString choice(const QString& question, const QStringList& options);
@@ -638,6 +718,9 @@ private:
     /// name, or what the tab shows (any case).
     bool tabIs(const QTabWidget* pane, int i, const QString& title) const;
     QList<QAction*> menuActions(QStringList* paths) const;
+    /// The menu action \a wanted names (its path, its object's name, or the
+    /// last part of its path when one action alone has it), or null.
+    QAction* actionNamed(const QString& wanted) const;
     QWidget* openDialog() const;
     /// The list open below a field - a completer's, names offered as typed:
     /// a popup of its own, with the keyboard while it is open -, or null;

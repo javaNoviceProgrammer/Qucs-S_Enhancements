@@ -1599,8 +1599,18 @@ const QRegularExpression& programRun()
     return runs;
 }
 
-// The lines of the .control blocks of SPICE text that start a program: what
-// ngspice runs as it reads the text - a netlist, or a file it includes.
+// ngspice's commands that run what a file holds: its commands (source),
+// or native code (codemodel, osdi - and pre_ before the circuit is read).
+const QRegularExpression& codeLoaded()
+{
+    static const QRegularExpression loads(QStringLiteral("^\\s*(source|codemodel|pre_codemodel|osdi|pre_osdi)(\\s|$)"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    return loads;
+}
+
+// The lines of the .control blocks of SPICE text that start a program, or
+// run a file's commands or code: what ngspice runs as it reads the text - a
+// netlist, or a file it includes.
 QStringList controlCommands(const QString& spice)
 {
     QStringList lines;
@@ -1609,7 +1619,7 @@ QStringList controlCommands(const QString& spice)
         const QString line = raw.trimmed();
         if (line.startsWith(QLatin1String(".control"), Qt::CaseInsensitive)) control = true;
         else if (line.startsWith(QLatin1String(".endc"), Qt::CaseInsensitive)) control = false;
-        else if (control && programRun().match(line).hasMatch()) lines << line;
+        else if (control && (programRun().match(line).hasMatch() || codeLoaded().match(line).hasMatch())) lines << line;
     }
     return lines;
 }
@@ -1801,7 +1811,20 @@ QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
             QStringList values;
             for (const Property* p : c->Props) values << p->Value;
             if (const QStringList lines = partCommands(c->Model, values, doc->getFileInfo().dir().path(), visited); !lines.isEmpty())
-                list.append({tr("%1 brings SPICE text into the netlist whose .control block runs a command in a shell: %2")
+                list.append({tr("%1 brings SPICE text into the netlist whose .control block runs a command in a shell, or a file's "
+                                "commands or code: %2")
+                                 .arg(c->Name, commandShown(lines)),
+                             c});
+            continue;
+        }
+        // Its SPICE text put into the netlist as it is - a .control block
+        // runs -, and the files it includes.
+        if (c->Model == QLatin1String("INCLSCR")) {
+            const QString text = c->Props.isEmpty() ? QString() : c->Props.at(0)->Value;
+            QStringList lines = controlCommands(text);
+            lines << commandsInFiles(qucs_s::osdi::includedFiles(text, doc->getFileInfo().dir().path()));
+            if (!lines.isEmpty())
+                list.append({tr("%1's SPICE text runs a command in a shell, or a file's commands or code, in a .control block: %2")
                                  .arg(c->Name, commandShown(lines)),
                              c});
             continue;
@@ -1816,13 +1839,34 @@ QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
             if (!lines.isEmpty())
                 list.append({tr("%1 runs a command in a shell after each simulation: %2").arg(c->Name, commandShown(lines)), c});
         } else if (c->Model == QLatin1String(".CUSTOMSIM") || c->Model == QLatin1String("NutmegEq") || c->Model == QLatin1String("SPICEINIT")) {
-            QStringList lines;
+            QStringList lines, loads;
             for (const Property* p : c->Props)
-                for (const QString& l : p->Value.split(QLatin1Char('\n')))
+                for (const QString& l : p->Value.split(QLatin1Char('\n'))) {
                     if (runs.match(l).hasMatch()) lines << l.trimmed();
+                    else if (codeLoaded().match(l).hasMatch()) loads << l.trimmed();
+                }
             if (!lines.isEmpty())
                 list.append({tr("%1's ngspice text runs a command in a shell: %2").arg(c->Name, commandShown(lines)), c});
+            if (!loads.isEmpty())
+                list.append({tr("%1's ngspice text runs a file's commands or code: %2").arg(c->Name, commandShown(loads)), c});
         }
+    }
+    // A .spiceinit in the folder ngspice runs in, which it reads first - one
+    // left there, Qucs-S writing none for a schematic without a SPICE init
+    // part (Ngspice::createSpiceinit()).
+    const bool initPart = std::any_of(doc->a_DocComps.begin(), doc->a_DocComps.end(), [](const Component* c) {
+        return inCircuit(c) && c->Model == QLatin1String("SPICEINIT");
+    });
+    if (const QFileInfo init(QDir(misc::scratchDirFor(doc->getDocName())).filePath(QStringLiteral(".spiceinit")));
+        !initPart && init.isFile() && init.size() < 1024 * 1024) {
+        QStringList lines;
+        if (QFile f(init.absoluteFilePath()); f.open(QIODevice::ReadOnly))
+            for (const QString& l : QString::fromUtf8(f.readAll()).split(QLatin1Char('\n')))
+                if (runs.match(l).hasMatch() || codeLoaded().match(l).hasMatch()) lines << l.trimmed();
+        if (!lines.isEmpty())
+            list.append({tr("ngspice reads %1, in the folder it runs in, which runs a command in a shell, or a file's commands or code: %2")
+                             .arg(QDir::toNativeSeparators(init.absoluteFilePath()), commandShown(lines)),
+                         nullptr});
     }
     if (doc->getSimRunScript() && !doc->getScript().trimmed().isEmpty())
         list.append({tr("Octave runs the script %1 after each simulation (Document Settings: run script after simulation)")

@@ -2963,7 +2963,7 @@ void MultiphysicsDoc::evaluateAll(const QString& study)
         if (d.enabled && studyTag(d.text(QStringLiteral("study"))) == study) evaluate(d.tag);
 }
 
-QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
+QString MultiphysicsDoc::runExport(const QString& tag, QString* error, const std::function<QString(const QString&)>& beforeWrite)
 {
     auto fail = [&](const QString& why) {
         if (error) *error = why;
@@ -3051,6 +3051,8 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error)
         static const QRegularExpression names(QStringLiteral("<(DataSet|DataDisplay|Script)=[^>]*\\.(dat|dpl|m)>"));
         text.replace(names, QStringLiteral("<\\1=") + base + QStringLiteral(".\\2>"));
     }
+    if (beforeWrite)
+        if (const QString no = beforeWrite(path); !no.isEmpty()) return fail(no);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(out.data.isEmpty() ? text.toUtf8() : out.data) < 0 || !file.commit())
         return fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(path), file.errorString()));

@@ -398,6 +398,66 @@ private slots:
         QVERIFY(qucs_s::erc::commandsRun(&doc).isEmpty());
     }
 
+    // What else a run executes (the Claude panel's guard of a schematic's
+    // commands, 22 October): an Include Script's SPICE text, put into the
+    // netlist as it is - a .control block of its own, or one of a file it
+    // includes -; a file's commands or native code in ngspice's text
+    // (source, codemodel, osdi: a SPICE init part's code model library);
+    // a .spiceinit left in the folder ngspice runs in, which it reads -
+    // not where a SPICE init part has Qucs-S write it anew. Nothing of an
+    // Include Script without them, or turned off. (Read here, never run.)
+    void moreThatARunExecutesIsSaid()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.S4Qworkdir = dir.filePath("guard-s4q");
+        QDir().mkpath(QucsSettings.S4Qworkdir);
+        write(dir.filePath("guard-included.cir"), "* included\n.control\nshell echo qucs-included\npre_osdi guard.osdi\n.endc\n");
+        const QString file = dir.filePath("guard-more.sch");
+        const auto schematic = [&](const QByteArray& components) {
+            write(file, "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Components>\n" + components
+                            + "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+        };
+        schematic("  <INCLSCR INCLSCR1 1 100 100 -30 16 0 0 \"\\n.PARAM a = 1\\n.control\\nshell echo qucs-script\\n.endc\" 1 \"\" 0 \"\" 0>\n"
+                  "  <INCLSCR INCLSCR2 1 100 200 -30 16 0 0 \"\\n.include guard-included.cir\" 1 \"\" 0 \"\" 0>\n"
+                  "  <INCLSCR INCLSCR3 1 100 300 -30 16 0 0 \"\\n.PARAM Temperature = 27\\n.TEMP {Temperature}\" 1 \"\" 0 \"\" 0>\n"
+                  "  <INCLSCR INCLSCR4 0 100 400 -30 16 0 0 \"\\n.control\\nshell echo off\\n.endc\" 1 \"\" 0 \"\" 0>\n"
+                  "  <SPICEINIT SPICEINIT1 1 300 100 -30 16 0 0 \"codemodel /somewhere/library.cm\" 1>\n"
+                  "  <.CUSTOMSIM CUSTOM1 1 300 200 0 40 0 0 \"\\nsource guard-included.cir\\nlet a=1\\n\" 1 \"V(out)\" 0 \"\" 0>\n");
+        {
+            Schematic doc(nullptr, file);
+            QVERIFY(doc.load());
+            QCOMPARE(qucs_s::erc::commandsRun(&doc),
+                     (QStringList{"INCLSCR1's SPICE text runs a command in a shell, or a file's commands or code, in a .control block: shell echo qucs-script",
+                                  "INCLSCR2's SPICE text runs a command in a shell, or a file's commands or code, in a .control block: shell echo qucs-included (in guard-included.cir) (and 1 more lines)",
+                                  "SPICEINIT1's ngspice text runs a file's commands or code: codemodel /somewhere/library.cm",
+                                  "CUSTOM1's ngspice text runs a file's commands or code: source guard-included.cir"}));
+        }
+        // A .spiceinit left where ngspice runs (no project: the simulator's
+        // work folder): said - but not where a SPICE init part is.
+        const QString init = QDir(QucsSettings.S4Qworkdir).filePath(".spiceinit");
+        write(init, "set ngbehavior=hsa\nshell echo qucs-init\n");
+        schematic("  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n");
+        {
+            Schematic doc(nullptr, file);
+            QVERIFY(doc.load());
+            const QStringList said = qucs_s::erc::commandsRun(&doc);
+            QCOMPARE(said.size(), 1);
+            QVERIFY2(said.first().startsWith("ngspice reads ") && said.first().endsWith(": shell echo qucs-init")
+                         && said.first().contains(".spiceinit"),
+                     qPrintable(said.first()));
+        }
+        schematic("  <SPICEINIT SPICEINIT1 1 100 100 -30 16 0 0 \"set ngbehavior=ps\" 1>\n");
+        {
+            Schematic doc(nullptr, file);
+            QVERIFY(doc.load());
+            QVERIFY(qucs_s::erc::commandsRun(&doc).isEmpty());
+        }
+        QFile::remove(init);
+    }
+
     // The SPICE file part's preprocessor (bug hunt 2026-09-30, D5): Perl
     // running the script on the file - the list was added to itself, and
     // the script was the program started. (Built here, not run.)

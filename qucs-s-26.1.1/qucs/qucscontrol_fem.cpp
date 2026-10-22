@@ -831,6 +831,55 @@ QJsonObject QucsControl::femDescribe(const QJsonObject& args)
     return jsonResult(o);
 }
 
+QStringList QucsControl::femFilesWritten(const QString& tool, const QJsonObject& args) const
+{
+    const QString action = args.value(QLatin1String("action")).toString();
+    const QString given = args.value(QLatin1String("path")).toString().trimmed();
+    const auto qfem = [](QString file) { return QucsApp::isMultiphysicsFile(file) ? file : file + QStringLiteral(".qfem"); };
+    // The model named, or each it may be (femDocument(): the one in front,
+    // else one of those open).
+    QList<MultiphysicsDoc*> models;
+    QString none;
+    if (!given.isEmpty()) {
+        if (auto* m = dynamic_cast<MultiphysicsDoc*>(document(QJsonObject{{QStringLiteral("path"), given}}, &none))) models << m;
+    } else {
+        for (QucsDoc* doc : a_app->allDocuments())
+            if (auto* m = dynamic_cast<MultiphysicsDoc*>(doc)) models << m;
+        if (a_app->DocumentTab->count() > 0)
+            if (auto* front = qobject_cast<MultiphysicsDoc*>(a_app->DocumentTab->currentWidget())) models = {front};
+    }
+    QStringList files;
+    if (tool == QLatin1String("fem_model")) {
+        const QString as = args.value(QLatin1String("as")).toString().trimmed();
+        if (action == QLatin1String("new") && !given.isEmpty()) files << qfem(absolute(given));
+        else if (action == QLatin1String("import") && !given.isEmpty()) {
+            const QString to = args.value(QLatin1String("to")).toString().trimmed();
+            const QString source = absolute(given);
+            files << (to.isEmpty() ? QFileInfo(source).dir().filePath(QFileInfo(source).completeBaseName() + QStringLiteral(".qfem")) : absolute(to));
+        } else if (action == QLatin1String("save")) {
+            if (!as.isEmpty()) files << qfem(absolute(as));
+            else if (!given.isEmpty() && models.isEmpty()) files << qfem(absolute(given));   // (the untitled model saved as it)
+            else
+                for (MultiphysicsDoc* m : std::as_const(models))
+                    if (!m->getDocName().isEmpty()) files << m->getDocName();
+        }
+        return files;
+    }
+    // fem_export: where its node says (relative: to the model's folder),
+    // else beside the model; the clipboard writes nothing.
+    if (args.value(QLatin1String("copy")).toBool()) return files;
+    const QString tag = args.value(QLatin1String("export")).toString().trimmed();
+    for (MultiphysicsDoc* m : std::as_const(models)) {
+        const FNode* n = m->model().find(tag);
+        if (n == nullptr) continue;
+        const QString folder = m->getDocName().isEmpty() ? misc::cacheDir() + QStringLiteral("/multiphysics") : QFileInfo(m->getDocName()).absolutePath();
+        const QString file = n->text(QStringLiteral("file")).trimmed();
+        if (file.isEmpty()) files << QDir(folder).filePath(QFileInfo(m->getDocName()).completeBaseName() + QLatin1Char('_') + tag);
+        else files << (QFileInfo(file).isRelative() ? QDir::cleanPath(QDir(folder).filePath(file)) : QDir::cleanPath(file));
+    }
+    return files;
+}
+
 QJsonObject QucsControl::femModel(const QJsonObject& args)
 {
     const QString action = args.value(QLatin1String("action")).toString();
@@ -866,6 +915,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
             if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
             if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
                 return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
+            if (const QString no = unaskedWrite(file); !no.isEmpty()) return errorResult(no);
             const QString busy = tabOf(file, &open);
             if (!busy.isEmpty()) return errorResult(busy);
             // A relative path whose first folder is one of the workspace's,
@@ -956,6 +1006,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         if (!m) return errorResult(tr("The model made of it does not read: %1").arg(why));
         const QString to = args.value(QLatin1String("to")).toString().trimmed();
         QString file = to.isEmpty() ? QFileInfo(source).dir().filePath(QFileInfo(source).completeBaseName() + QStringLiteral(".qfem")) : absolute(to);
+        if (const QString no = unaskedWrite(file); !no.isEmpty()) return errorResult(no);
         if (!QucsApp::isMultiphysicsFile(file)) file += QStringLiteral(".qfem");
         if (QFileInfo::exists(file) && !args.value(QLatin1String("replace")).toBool())
             return errorResult(tr("%1 is there already ('replace' writes over it).").arg(QDir::toNativeSeparators(file)));
@@ -1031,6 +1082,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
                     return errorResult(tr("%1 is open: another document's file.").arg(QDir::toNativeSeparators(file)));
         }
         if (file.isEmpty()) return errorResult(tr("%1 has no file yet: give 'as'.").arg(was));
+        if (const QString no = unaskedWrite(file); !no.isEmpty()) return errorResult(no);
         doc->setName(file);
         if (doc->save() != 0) return errorResult(tr("%1 cannot be written.").arg(QDir::toNativeSeparators(file)));
         a_app->titleDocumentTab(doc);
@@ -2021,7 +2073,7 @@ QJsonObject QucsControl::femExport(const QJsonObject& args)
         return jsonResult(QJsonObject{{QStringLiteral("copied"), tr("the RLCG part is on the clipboard: paste it into a schematic")}});
     }
     QString why;
-    const QString path = doc->runExport(tag, &why);
+    const QString path = doc->runExport(tag, &why, [this](const QString& file) { return unaskedWrite(file); });
     if (path.isEmpty()) return errorResult(why);
     QFile f(path);
     QString head;

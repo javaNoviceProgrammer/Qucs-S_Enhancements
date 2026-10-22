@@ -92,6 +92,8 @@ const QString kModels = QStringLiteral("ClaudeCode/models");          // what th
 const QString kOtherModels = QStringLiteral("ClaudeCode/otherModels"); // chosen by name, the latest first
 const QString kAttach = QStringLiteral("ClaudeCode/attachDocument");
 const QString kAutoCompact = QStringLiteral("ClaudeCode/autoCompact");  // the conversation compacted as its context fills
+const QString kAskCommands = QStringLiteral("ClaudeCode/askBeforeCommands");   // Guards::commands
+const QString kAskOutside = QStringLiteral("ClaudeCode/askOutsideWorkspace");  // Guards::outside
 const QString kExportDir = QStringLiteral("ClaudeCode/exportFolder");
 const QString kExportDetails = QStringLiteral("ClaudeCode/exportToolDetails");
 const QString kCommands = QStringLiteral("ClaudeCode/slashCommands");   // Claude Code's, as it last said
@@ -704,6 +706,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     a_session->setPermissionMode(settings.value(kMode).toString());
     a_session->setModel(settings.value(kModel).toString());
     a_session->setAutoCompact(settings.value(kAutoCompact, true).toBool());
+    applyGuards();
     a_listedModels = QJsonDocument::fromJson(settings.value(kModels).toString().toUtf8()).array();
     rebuildModelMenu();
     a_attach->setChecked(settings.value(kAttach, true).toBool());
@@ -1023,6 +1026,15 @@ void ClaudeCodePanel::buildComposer()
     });
 }
 
+void ClaudeCodePanel::applyGuards()
+{
+    const QucsSettingsFile settings;
+    qucs_s::claude::Guards guards;
+    guards.commands = settings.value(kAskCommands, true).toBool();
+    guards.outside = settings.value(kAskOutside, true).toBool();
+    a_session->setGuards(guards);
+}
+
 void ClaudeCodePanel::buildMenu()
 {
     a_menu = new QMenu(this);
@@ -1060,6 +1072,33 @@ void ClaudeCodePanel::buildMenu()
             return;
         }
         setPermissionMode(mode);
+    });
+    // The uses asked about whatever the mode (but Bypass Permissions): on
+    // unless set off here; for every conversation, at once.
+    modes->addSeparator();
+    QAction* askCommands = modes->addAction(tr("Ask Before a Schematic's Commands Run"));
+    askCommands->setObjectName(QStringLiteral("claudeAskCommands"));
+    askCommands->setCheckable(true);
+    askCommands->setToolTip(tr("Before Claude simulates a schematic that runs commands besides the simulator - a System "
+                               "Command part, ngspice's shell, an Octave script - you are asked, with the commands, in "
+                               "every mode but Bypass Permissions"));
+    QAction* askOutside = modes->addAction(tr("Ask Before Files Outside the Workspace"));
+    askOutside->setObjectName(QStringLiteral("claudeAskOutside"));
+    askOutside->setCheckable(true);
+    askOutside->setToolTip(tr("Before Claude reads or writes a file outside the workspace and the open project with "
+                              "Qucs-S's tools, you are asked, with the files, in every mode but Bypass Permissions"));
+    connect(askCommands, &QAction::triggered, this, [this](bool on) {
+        QucsSettingsFile().setValue(kAskCommands, on);
+        applyGuards();
+    });
+    connect(askOutside, &QAction::triggered, this, [this](bool on) {
+        QucsSettingsFile().setValue(kAskOutside, on);
+        applyGuards();
+    });
+    connect(modes, &QMenu::aboutToShow, this, [this, askCommands, askOutside] {
+        applyGuards();   // (another tab may have changed them)
+        askCommands->setChecked(a_session->guards().commands);
+        askOutside->setChecked(a_session->guards().outside);
     });
 
     a_modelMenu = a_menu->addMenu(tr("Model"));
@@ -1396,6 +1435,7 @@ void ClaudeCodePanel::reloadSettings()
     const QucsSettingsFile settings;
     a_attach->setChecked(settings.value(kAttach, true).toBool());
     a_session->setAutoCompact(settings.value(kAutoCompact, true).toBool());
+    applyGuards();
     if (!hasConversation() && !a_session->isRunning()) {
         a_session->setPermissionMode(settings.value(kMode).toString());
         a_session->setModel(settings.value(kModel).toString());
