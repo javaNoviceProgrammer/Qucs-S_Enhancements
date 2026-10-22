@@ -2771,15 +2771,30 @@ private slots:
     // characters took 1.6 s -, and a long paragraph's inline code, a table's,
     // was looked for to its end from each backtick, each comment. Four times
     // the text now takes about four times as long, not sixteen. (Times on the
-    // same machine, the best of five: the sanitizers slow both alike - the
-    // two lengths timed in turn, so that a slow stretch of a loaded machine
-    // slows both: timed one after the other, CI's sanitized Linux, its
-    // tests run side by side, once had 346 then 2783 ms, 8.05 times, for
-    // what here takes 4.0.) A lone surrogate in the text is no UTF-16, and
-    // read as U+FFFD.
+    // same machine, the best of five, the two lengths timed in turn so
+    // that a slow stretch of a loaded machine slows both.) Under the
+    // sanitizers the times are said, not judged: each access touches their
+    // shadow too, and four times the text may outgrow a cache - CI's
+    // sanitized Linux read the unclosed comments 8.05 and 7.9 times as long
+    // (346 then 2783 ms), linear here to 400,000 characters, 4.0 a step;
+    // sanitized here, each comment searched to the end again read them 9.9
+    // times as long, Release 14.6: no bound tells them apart there. (The
+    // Release builds - CI's macOS - judge.) A lone surrogate in the text is
+    // no UTF-16, and read as U+FFFD.
     void aLongReplyIsReadInLinearTime()
     {
         using qucs_s::markdown::htmlBalanced;
+#if defined(__SANITIZE_ADDRESS__)
+        const bool judged = false;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+        const bool judged = false;
+#else
+        const bool judged = true;
+#endif
+#else
+        const bool judged = true;
+#endif
         // (Each of two texts' best of five, in turn: ns.)
         const auto inTurn = [](const auto& read, const QString& small, const QString& large) {
             qint64 a = std::numeric_limits<qint64>::max(), b = a;
@@ -2812,14 +2827,14 @@ private slots:
             const QString small = unit.repeated(int(25000 / unit.size())) + tail, large = unit.repeated(4 * int(25000 / unit.size())) + tail;
             const auto [a, b] = inTurn(bothRead, small, large);
             qInfo("%lld, then %lld characters: %.2f ms, %.2f ms", qlonglong(small.size()), qlonglong(large.size()), a / 1e6, b / 1e6);
-            QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+            if (judged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         // (findMath alone, on tags with one '>' at the end: a <code>'s, a
         // <pre>'s tag looked for no further than it.)
         {
             const auto [a, b] = inTurn([](const QString& md) { (void)qucs_s::math::findMath(md); }, quoted.repeated(2000) + ">", quoted.repeated(8000) + ">");
             qInfo("findMath, one '>' at the end: %.2f ms, then %.2f ms", a / 1e6, b / 1e6);
-            QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+            if (judged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         // (An HTML block's tags, for its marks: looked over to a '>' - none.)
         {
@@ -2829,7 +2844,7 @@ private slots:
             };
             const auto [a, b] = inTurn(marked, "<div>\n" + quoted.repeated(2000), "<div>\n" + quoted.repeated(8000));
             qInfo("an HTML block: %.2f ms, then %.2f ms", a / 1e6, b / 1e6);
-            QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
+            if (judged) QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         const QString lone = QString("a <name> b ") + QChar(0xD800) + " c $x" + QChar(0xDC00) + "$\n\nEND";
         const QChar fffd(QChar::ReplacementCharacter);
