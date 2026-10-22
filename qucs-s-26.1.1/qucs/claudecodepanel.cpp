@@ -1035,7 +1035,7 @@ void ClaudeCodePanel::buildMenu()
     } modeList[] = {
         {QT_TR_NOOP("Ask Before Acting"), "", QT_TR_NOOP("Claude asks before it runs a command or changes a file")},
         {QT_TR_NOOP("Accept Edits"), "acceptEdits", QT_TR_NOOP("Claude changes files without asking; commands still need permission")},
-        {QT_TR_NOOP("Auto"), "auto", QT_TR_NOOP("Claude acts without asking; a safety check reviews each action first and blocks risky ones")},
+        {QT_TR_NOOP("Auto"), "auto", QT_TR_NOOP("Claude acts without asking: edits of Qucs-S that can be undone at once, the rest after a safety check that blocks risky actions")},
         {QT_TR_NOOP("Plan Only"), "plan", QT_TR_NOOP("Claude reads and plans, and changes nothing")},
         {QT_TR_NOOP("Bypass Permissions"), "bypassPermissions", QT_TR_NOOP("Claude does anything without asking")},
     };

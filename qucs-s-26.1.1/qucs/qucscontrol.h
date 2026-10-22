@@ -83,6 +83,7 @@ public:
     /// model's, a schematic's wiring).
     QSet<QString> inEveryTurn() const;
     QStringList readOnlyTools() const override;
+    QStringList autonomousTools() const override;
     QString actionOf(const QString& tool) const override;
     QString subjectOf(const QString& tool, const QJsonObject& arguments) const override;
     QString instructions() const override;

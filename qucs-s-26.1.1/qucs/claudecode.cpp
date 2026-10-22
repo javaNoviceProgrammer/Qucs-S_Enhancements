@@ -726,6 +726,18 @@ void Session::setPermissionMode(const QString& mode)
         else stop();
         return;
     }
+    // The tools allowed with auto mode go with it, and come with it: the
+    // program started again (by the next prompt), with those of the mode
+    // it is in then. Meanwhile the dock asks as the mode says (asksItself()).
+    const bool allowing = !a_autoAllowed.isEmpty();
+    const bool wanted = a_host != nullptr && mode == QLatin1String("auto") && !a_host->autonomousTools().isEmpty();
+    if (allowing != wanted) {
+        if (!a_busy) {
+            stop();
+            return;
+        }
+        a_restartAfterTurn = true;
+    }
     askProgram(QStringLiteral("set_permission_mode"),
                {{QStringLiteral("mode"), isAskMode(mode) ? QStringLiteral("default") : mode}});
 }
@@ -865,6 +877,15 @@ void Session::start()
                                                   .toJson(QJsonDocument::Compact));
         for (const QString& tool : a_host->readOnlyTools())
             options.allowedTools << QStringLiteral("mcp__") + name + QStringLiteral("__") + tool;
+        // In auto mode, also those it may use without the program's own
+        // check, which took 0.64 s an editing call (the median of 22
+        // October; 0.03 s allowed by a rule): a use of one that cannot be
+        // undone the dock asks about itself (asksItself()).
+        a_autoAllowed = a_mode == QLatin1String("auto") ? a_host->autonomousTools() : QStringList();
+        for (const QString& tool : std::as_const(a_autoAllowed))
+            options.allowedTools << QStringLiteral("mcp__") + name + QStringLiteral("__") + tool;
+    } else {
+        a_autoAllowed.clear();
     }
     process->setArguments(arguments(options));
     process->setProcessEnvironment(claudeEnvironment(QProcessEnvironment::systemEnvironment(), a_host));
@@ -984,9 +1005,25 @@ void Session::answer(const QString& id, bool allow, bool allowEdits, bool allowT
         const QStringList ids = a_pending.keys();
         for (const QString& other : ids) {
             if (!a_pending.value(other).canAllowTools) continue;
-            allowRequest(other, a_pending.take(other).input);
+            const PermissionRequest asked = a_pending.take(other);
+            if (a_held.contains(other)) {
+                const HeldCall call = a_held.take(other);
+                callHost(call.message, call.reply);
+            } else {
+                allowRequest(other, asked.input);
+            }
             emit permissionWithdrawn(other);
         }
+    }
+    if (a_held.contains(id)) {
+        // A call the dock asked about itself: made, or answered as not.
+        const HeldCall call = a_held.take(id);
+        if (allow) callHost(call.message, call.reply);
+        else refuseHeld(call, tr("The user did not allow this."));
+        if (!a_busy) return;
+        if (!a_pending.isEmpty()) setState(State::Waiting, a_pending.cbegin().value().tool);
+        else setState(allow ? State::Working : State::Thinking, request.tool);
+        return;
     }
     QJsonObject response;
     if (allow) {
@@ -1021,7 +1058,21 @@ void Session::withdrawRequests()
 {
     const QStringList ids = a_pending.keys();
     a_pending.clear();
+    // (A call asked about by the dock: answered, not left waiting.)
+    const auto held = std::exchange(a_held, {});
+    for (const HeldCall& call : held) refuseHeld(call, tr("Not made: the turn was stopped."));
     for (const QString& id : ids) emit permissionWithdrawn(id);
+}
+
+void Session::refuseHeld(const HeldCall& call, const QString& why)
+{
+    const QJsonValue id = call.message.value(QLatin1String("id"));
+    call.reply({{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                {QStringLiteral("id"), id.isUndefined() ? QJsonValue(QJsonValue::Null) : id},
+                {QStringLiteral("result"),
+                 QJsonObject{{QStringLiteral("content"),
+                              QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), why}}}},
+                             {QStringLiteral("isError"), true}}}});
 }
 
 void Session::interrupt()
@@ -1497,28 +1548,11 @@ void Session::handleControlRequest(const QJsonObject& m)
     p.subject = toolSubject(p.tool, p.input, a_workDir);
     p.detail = detailOf(p.tool, p.input);
     if (const QString tool = hostTool(p.tool); !tool.isEmpty()) {
-        // The host's own tools: those that look, and all of them once
-        // allowed (or where edits need no asking), without a question;
-        // the others may be allowed all at once.
-        const bool autonomous = a_mode == QLatin1String("auto") || a_mode == QLatin1String("bypassPermissions");
-        const bool editsFree = autonomous || a_mode == QLatin1String("acceptEdits");
-        // A use that cannot be undone (files deleted or written over,
-        // unsaved changes discarded) is asked about all the same, but where
-        // Claude acts on its own.
-        const bool lasting = a_host->irreversible(tool, forDocument(tool, p.input));
-        // (One asked about every time: also where Claude acts on its own.)
-        const QString always = a_host->askedEachTime(tool, forDocument(tool, p.input));
-        const bool unasked = !always.isEmpty() ? a_mode == QLatin1String("bypassPermissions")
-                                            : (lasting ? autonomous : (a_toolsAllowed || editsFree));
-        if (a_host->readOnlyTools().contains(tool) || unasked) {
+        if (hostAllowsUnasked(tool, p.input)) {
             allowRequest(id, p.input);
             return;
         }
-        p.action = a_host->actionOf(tool);
-        p.subject = a_host->subjectOf(tool, forDocument(tool, p.input));
-        p.canAllowTools = !lasting && always.isEmpty();
-        if (!always.isEmpty()) p.detail = always;
-        else if (lasting) p.detail = tr("This cannot be undone: files are deleted or written over, or unsaved changes discarded.");
+        p = hostRequest(id, tool, p.input);
     }
     for (const QJsonValue& s : request.value(QLatin1String("permission_suggestions")).toArray()) {
         const QJsonObject suggestion = s.toObject();
@@ -1553,6 +1587,78 @@ void Session::handleMcpMessage(const QString& requestId, const QJsonObject& requ
                                                      {QStringLiteral("message"), QStringLiteral("No server %1 here").arg(server)}}}});
         return;
     }
+    // A call the program let through by a rule that the dock asks about
+    // itself: made once allowed.
+    if (message.value(QLatin1String("method")).toString() == QLatin1String("tools/call")) {
+        const QJsonObject params = message.value(QLatin1String("params")).toObject();
+        const QString tool = params.value(QLatin1String("name")).toString();
+        const QJsonObject input = params.value(QLatin1String("arguments")).toObject();
+        if (asksItself(tool, input)) {
+            static int count = 0;
+            const QString id = QStringLiteral("qucs-held-%1").arg(++count);
+            const PermissionRequest p = hostRequest(id, tool, input);
+            a_held.insert(id, {message, reply});
+            a_pending.insert(id, p);
+            setState(State::Waiting, p.tool);
+            emit permissionRequested(p);
+            return;
+        }
+    }
+    callHost(message, reply);
+}
+
+bool Session::hostAllowsUnasked(const QString& tool, const QJsonObject& input) const
+{
+    // The host's own tools: those that look, and all of them once allowed
+    // (or where edits need no asking), without a question; the others may
+    // be allowed all at once.
+    const bool autonomous = a_mode == QLatin1String("auto") || a_mode == QLatin1String("bypassPermissions");
+    const bool editsFree = autonomous || a_mode == QLatin1String("acceptEdits");
+    const QJsonObject in = forDocument(tool, input);
+    // (One asked about every time: also where Claude acts on its own.)
+    if (!a_host->askedEachTime(tool, in).isEmpty()) return a_mode == QLatin1String("bypassPermissions");
+    // A use that cannot be undone (files deleted or written over, unsaved
+    // changes discarded) is asked about all the same, but where Claude acts
+    // on its own.
+    if (a_host->irreversible(tool, in)) return autonomous;
+    return a_host->readOnlyTools().contains(tool) || a_toolsAllowed || editsFree;
+}
+
+bool Session::asksItself(const QString& tool, const QJsonObject& input) const
+{
+    const bool looks = a_host->readOnlyTools().contains(tool);
+    if ((!looks && !a_autoAllowed.contains(tool)) || a_mode == QLatin1String("bypassPermissions")) return false;
+    // A use that cannot be undone or is asked about each time: the program's
+    // own check spared by the rule, the dock's question in its place (where
+    // Claude acts on its own too: a file written over - get_netlist's
+    // save_as, a batch's trash_file - went unasked).
+    const QJsonObject in = forDocument(tool, input);
+    if (a_host->irreversible(tool, in) || !a_host->askedEachTime(tool, in).isEmpty()) return true;
+    // Allowed with auto mode, which is no longer the mode (until the program
+    // starts again): as the dock answers now.
+    return !looks && a_mode != QLatin1String("auto") && !hostAllowsUnasked(tool, input);
+}
+
+PermissionRequest Session::hostRequest(const QString& id, const QString& tool, const QJsonObject& input) const
+{
+    PermissionRequest p;
+    p.id = id;
+    p.tool = QStringLiteral("mcp__") + a_host->serverName() + QStringLiteral("__") + tool;
+    p.input = input;
+    p.detail = detailOf(p.tool, input);
+    const QJsonObject in = forDocument(tool, input);
+    const bool lasting = a_host->irreversible(tool, in);
+    const QString always = a_host->askedEachTime(tool, in);
+    p.action = a_host->actionOf(tool);
+    p.subject = a_host->subjectOf(tool, in);
+    p.canAllowTools = !lasting && always.isEmpty();
+    if (!always.isEmpty()) p.detail = always;
+    else if (lasting) p.detail = tr("This cannot be undone: files are deleted or written over, or unsaved changes discarded.");
+    return p;
+}
+
+void Session::callHost(const QJsonObject& message, const std::function<void(const QJsonObject&)>& reply)
+{
     // A call of a tool, by the tool use it answers: kept until it is
     // answered - sent to the background, answered at once
     // (sendToBackground()), and its own answer then a message to Claude.

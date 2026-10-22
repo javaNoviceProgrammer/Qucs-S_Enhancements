@@ -241,6 +241,15 @@ QString QucsControl::resourceVersion(const QString& uri) const
 
 QString QucsControl::askedEachTime(const QString& tool, const QJsonObject& a) const
 {
+    // A batch: as the first of its calls that is.
+    if (tool == QLatin1String("batch")) {
+        for (const QJsonValue& v : a.value(QLatin1String("calls")).toArray())
+            if (const QString why = askedEachTime(v.toObject().value(QLatin1String("tool")).toString(),
+                                                  v.toObject().value(QLatin1String("arguments")).toObject());
+                !why.isEmpty())
+                return why;
+        return {};
+    }
     if ((tool == QLatin1String("git_remote") && a.value(QLatin1String("action")).toString() == QLatin1String("push"))
         || (tool == QLatin1String("git_commit") && a.value(QLatin1String("push")).toBool()))
         return tr("A push publishes the branch's commits on the remote, for everyone who can read it: asked about each time.");
@@ -254,6 +263,19 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
 {
     const auto exists = [this](const QString& path) { return !path.trimmed().isEmpty() && QFileInfo::exists(absolute(path.trimmed())); };
     if (tool == QLatin1String("clean_scratch") || tool == QLatin1String("trash_file")) return true;
+    // A batch: when one of its calls is. (Taken as undoable whatever it
+    // held, a trash_file in one went unasked where the host's tools were
+    // allowed.)
+    if (tool == QLatin1String("batch")) {
+        for (const QJsonValue& v : a.value(QLatin1String("calls")).toArray())
+            if (irreversible(v.toObject().value(QLatin1String("tool")).toString(), v.toObject().value(QLatin1String("arguments")).toObject()))
+                return true;
+        return false;
+    }
+    // A file written over, 'replace' says.
+    if ((tool == QLatin1String("fem_model") || tool == QLatin1String("create_subcircuit") || tool == QLatin1String("import_netlist"))
+        && a.value(QLatin1String("replace")).toBool())
+        return true;
     // Git: changes thrown away, a branch's commits lost, a stash dropped,
     // the work published - asked about each time.
     if (tool == QLatin1String("git_discard")) return true;

@@ -238,6 +238,26 @@ while IFS= read -r line; do
 done
 )SH";
 
+// claude that writes its arguments (one a line) to auto-args, a line to
+// auto-starts at each start, and what it reads to auto-in; a prompt ends
+// its turn at once, but one that says "Hold", which the test ends.
+const char* const kAutoProgram = R"SH(#!/bin/sh
+printf '%s\n' "$@" > "$QUCS_FAKE_DIR/auto-args"
+echo start >> "$QUCS_FAKE_DIR/auto-starts"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/auto-in"
+  case "$line" in
+    *'"type":"user"'*)
+      echo '{"type":"system","subtype":"init","session_id":"auto-1","model":"claude-test-1"}'
+      case "$line" in
+        *Hold*) ;;
+        *) echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"auto-1"}' ;;
+      esac
+      ;;
+  esac
+done
+)SH";
+
 // claude whose command becomes a task between the asking and the answer:
 // the first background_tasks refused (not a task when asked) after its
 // task_started; asked again, sent. What it reads goes to race-in.
@@ -470,6 +490,18 @@ public:
         return tool == QLatin1String("change") && a.value("what").toString() == QLatin1String("type")
                    ? QStringLiteral("What is typed runs with your rights.")
                    : QString();
+    }
+};
+
+// ... whose "change" may be used without Claude Code's own check in auto
+// mode, and whose "look" writes over a file when it overwrites.
+class AutoHost : public TypingHost
+{
+public:
+    QStringList autonomousTools() const override { return {QStringLiteral("change")}; }
+    bool irreversible(const QString& tool, const QJsonObject& a) const override
+    {
+        return TypingHost::irreversible(tool, a) || (tool == QLatin1String("look") && a.value("what").toString() == QLatin1String("overwrite"));
     }
 };
 
@@ -1960,6 +1992,140 @@ private slots:
         s.setPermissionMode("bypassPermissions");
         request("r3", "type");
         QCOMPARE(asks.count(), 1);
+    }
+
+    // Auto mode: the host's undoable tools allowed from the program's start
+    // (ToolHost::autonomousTools(): Claude Code's own check spared, 0.64 s
+    // an editing call); a use the dock would ask about - one that cannot be
+    // undone, one asked about each time, a tool that only looks writing over
+    // a file - asked by the dock itself, made once allowed, answered as not
+    // allowed else. Out of auto mode they go: the program started again
+    // without them, and meanwhile asked as the new mode says.
+    void autoModeAllowsTheUndoableTools()
+    {
+        skipWithoutShell();
+        for (const char* f : {"auto-args", "auto-starts", "auto-in"}) QFile::remove(dir.filePath(f));
+        AutoHost host;
+        Session s;
+        s.setProgram(script("auto", kAutoProgram));
+        s.setWorkingDirectory(fresh("autowork"));
+        s.setToolHost(&host);
+        s.setPermissionMode("auto");
+        QSignalSpy asks(&s, &Session::permissionRequested);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        const auto allowed = [this] {
+            const QStringList args = read(dir.filePath("auto-args")).split('\n');
+            return args.value(args.indexOf("--allowedTools") + 1);
+        };
+        const auto starts = [this] { return int(read(dir.filePath("auto-starts")).count(QLatin1String("start"))); };
+        int rpc = 0;
+        const auto call = [&s, &rpc](const QString& tool, const QString& what) {
+            ++rpc;
+            s.handleLine(QStringLiteral(R"({"type":"control_request","request_id":"c%1","request":{"subtype":"mcp_message","server_name":"fake","message":{"jsonrpc":"2.0","id":%1,"method":"tools/call","params":{"name":"%2","arguments":{"what":"%3"}}}}})")
+                             .arg(rpc)
+                             .arg(tool, what)
+                             .toUtf8());
+            return QStringLiteral("c%1").arg(rpc);
+        };
+        // The answer the program was given to a request of the dock's server.
+        const auto answered = [this](const QString& id) {
+            for (const QString& line : read(dir.filePath("auto-in")).split('\n', Qt::SkipEmptyParts)) {
+                const QJsonObject r = QJsonDocument::fromJson(line.toUtf8()).object().value("response").toObject();
+                if (r.value("request_id").toString() == id) return r.value("response").toObject().value("mcp_response").toObject().value("result").toObject();
+            }
+            return QJsonObject();
+        };
+        const auto text = [](const QJsonObject& result) { return result.value("content").toArray().at(0).toObject().value("text").toString(); };
+
+        QVERIFY(s.send("Hold on"));
+        QTRY_VERIFY(read(dir.filePath("auto-in")).contains("Hold on"));
+        QCOMPARE(allowed(), QStringLiteral("mcp__fake__look,mcp__fake__change"));
+        // Undoable: made at once.
+        QString id = call("change", "x");
+        QTRY_VERIFY(!answered(id).isEmpty());
+        QCOMPARE(text(answered(id)), QStringLiteral("changed x"));
+        QCOMPARE(asks.count(), 0);
+        // Not undoable: the dock asks, without "allow all"; allowed, made.
+        id = call("change", "wipe");
+        QCOMPARE(asks.count(), 1);
+        auto asked = asks.last().at(0).value<PermissionRequest>();
+        QCOMPARE(asked.tool, QStringLiteral("mcp__fake__change"));
+        QCOMPARE(asked.subject, QStringLiteral("what: wipe"));
+        QVERIFY(asked.detail.contains("cannot be undone") && !asked.canAllowTools);
+        QCOMPARE(s.state(), State::Waiting);
+        QCOMPARE(host.calls, QStringList{"change"});
+        s.answer(asked.id, true);
+        QTRY_COMPARE(host.calls, (QStringList{"change", "change"}));
+        QTRY_COMPARE(text(answered(id)), QStringLiteral("changed wipe"));
+        // Not allowed: answered so, not made.
+        id = call("change", "wipe");
+        QCOMPARE(asks.count(), 2);
+        s.answer(asks.last().at(0).value<PermissionRequest>().id, false);
+        QTRY_VERIFY(!answered(id).isEmpty());
+        QVERIFY(answered(id).value("isError").toBool() && text(answered(id)).contains("did not allow"));
+        QTest::qWait(50);
+        QCOMPARE(host.calls.size(), 2);
+        // Asked about each time: with its reason.
+        call("change", "type");
+        QCOMPARE(asks.count(), 3);
+        QCOMPARE(asks.last().at(0).value<PermissionRequest>().detail, QStringLiteral("What is typed runs with your rights."));
+        s.answer(asks.last().at(0).value<PermissionRequest>().id, false);
+        // A tool that only looks, writing over a file: asked too.
+        call("look", "overwrite");
+        QCOMPARE(asks.count(), 4);
+        s.answer(asks.last().at(0).value<PermissionRequest>().id, false);
+        call("look", "around");
+        QCOMPARE(asks.count(), 4);
+
+        // Asking now, during the turn: the tools allowed with auto mode asked
+        // as asking says - and all of them allowed at once; the program
+        // started again after the turn, without them.
+        s.setPermissionMode("default");
+        QVERIFY(s.isRunning());
+        id = call("change", "y");
+        const QString second = call("change", "y2");
+        QCOMPARE(asks.count(), 6);
+        asked = asks.at(4).at(0).value<PermissionRequest>();
+        QVERIFY(asked.canAllowTools);
+        s.answer(asked.id, true, false, true);
+        QTRY_COMPARE(text(answered(id)), QStringLiteral("changed y"));
+        QTRY_COMPARE(text(answered(second)), QStringLiteral("changed y2"));
+        call("change", "z");
+        QCOMPARE(asks.count(), 6);
+        s.handleLine(R"({"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"auto-1"})");
+        QTRY_VERIFY(!s.isRunning());
+        QCOMPARE(starts(), 1);
+        QVERIFY(s.send("Again"));
+        QVERIFY(turns.wait(10000));
+        QCOMPARE(starts(), 2);
+        QCOMPARE(allowed(), QStringLiteral("mcp__fake__look"));
+        // Back to auto, between turns: started again with them at once.
+        s.setPermissionMode("auto");
+        QTRY_VERIFY(!s.isRunning());
+        QVERIFY(s.send("Once more"));
+        QVERIFY(turns.wait(10000));
+        QCOMPARE(starts(), 3);
+        QCOMPARE(allowed(), QStringLiteral("mcp__fake__look,mcp__fake__change"));
+        // A call asked about when the turn ends: answered, not made.
+        QVERIFY(s.send("Hold three"));
+        QTRY_VERIFY(read(dir.filePath("auto-in")).contains("Hold three"));
+        const int made = int(host.calls.size());
+        id = call("change", "wipe");
+        QVERIFY(s.state() == State::Waiting);
+        s.handleLine(R"({"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"auto-1"})");
+        QTRY_VERIFY(!answered(id).isEmpty());
+        QVERIFY(answered(id).value("isError").toBool() && text(answered(id)).contains("stopped"));
+        QCOMPARE(host.calls.size(), made);
+        // Where nothing is asked: not by the dock either.
+        s.stop();
+        s.setPermissionMode("bypassPermissions");
+        QVERIFY(s.send("Hold it"));
+        QTRY_VERIFY(read(dir.filePath("auto-in")).contains("Hold it"));
+        const int before = int(asks.count());
+        call("change", "wipe");
+        call("look", "overwrite");
+        QCOMPARE(asks.count(), before);
+        s.stop();
     }
 
     // A question the server asks (elicitation) is a card in the dock: yes

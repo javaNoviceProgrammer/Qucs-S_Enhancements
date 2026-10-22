@@ -606,6 +606,47 @@ private slots:
         QVERIFY(!control->irreversible("add_component", {{"type", "R"}}));
     }
 
+    // The tools Claude may use without Claude Code's own check in auto mode
+    // (autonomousTools()): tools of the server's that change something -
+    // none that drives the window, changes the settings, moves, renames or
+    // deletes files, writes libraries, runs a command, a script, a compiler
+    // or git. A batch is as its calls: not undoable when one is not, asked
+    // about each time when one is; a model, a subcircuit or a netlist's
+    // schematic written over ('replace') is not undoable.
+    void theToolsAllowedInAutoMode()
+    {
+        QSet<QString> listed;
+        for (const QJsonValue& v : request("tools/list").value("result").toObject().value("tools").toArray())
+            listed << v.toObject().value("name").toString();
+        const QStringList looks = control->readOnlyTools();
+        const QStringList autonomous = control->autonomousTools();
+        QVERIFY(autonomous.size() > 40);
+        for (const QString& t : autonomous) {
+            QVERIFY2(listed.contains(t), qPrintable(t));
+            QVERIFY2(!looks.contains(t), qPrintable(t));
+            QVERIFY2(!t.startsWith(QLatin1String("git_")), qPrintable(t));
+        }
+        for (const char* t : {"trigger_action", "set_dialog", "set_ui", "context_menu", "send_input", "console", "set_settings", "set_simulator",
+                              "run_script", "trash_file", "rename_file", "clean_scratch", "create_library", "import_library", "build_verilog_a", "xml"})
+            QVERIFY2(!autonomous.contains(QString::fromLatin1(t)), t);
+        for (const char* t : {"batch", "fem_edit", "fem_model", "fem_solve", "add_component", "simulate", "save_document", "close_document"})
+            QVERIFY2(autonomous.contains(QString::fromLatin1(t)), t);
+        // A batch, as its calls.
+        const auto batch = [](const QString& tool, const QJsonObject& arguments) {
+            return QJsonObject{{"calls", QJsonArray{QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"type", "R"}}}},
+                                                   QJsonObject{{"tool", tool}, {"arguments", arguments}}}}};
+        };
+        QVERIFY(control->irreversible("batch", batch("trash_file", {{"path", "x.sch"}})));
+        QVERIFY(!control->irreversible("batch", batch("connect", {{"from", "R1.1"}, {"to", "ground"}})));
+        QVERIFY(control->askedEachTime("batch", batch("trash_file", {{"path", "x.sch"}})).isEmpty());
+        QVERIFY(!control->askedEachTime("batch", batch("console", {{"console", "terminal"}, {"input", "ls"}})).isEmpty());
+        // 'replace': a file written over.
+        for (const char* t : {"fem_model", "create_subcircuit", "import_netlist"}) {
+            QVERIFY2(control->irreversible(QString::fromLatin1(t), {{"replace", true}}), t);
+            QVERIFY2(!control->irreversible(QString::fromLatin1(t), {}), t);
+        }
+    }
+
     // A change previewed: what it would do, and nothing done - the parts,
     // the undo history and the unsaved flag as they were. And diffed.
     void aChangeIsPreviewedAndDiffed()

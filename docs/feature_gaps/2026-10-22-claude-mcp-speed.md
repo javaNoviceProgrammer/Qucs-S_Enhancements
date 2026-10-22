@@ -46,16 +46,64 @@ thousand characters) show it.
 The panel now draws only what changed, 1 ms at 120 replies (`87e3d9e`,
 [its report](../bug_hunts/2026-10-22-claude-panel-fuzz.md), P1).
 
-## M2: Claude Code's check in auto mode (not changed: the user's choice)
+## M2: Qucs-S's undoable tools allowed in auto mode (asked of the user, and answered yes)
 
 In auto mode, Claude Code's classifier decides every call that no rule allows, before the call reaches
-Qucs-S: about 0.6 s per editing call. The dock then allows its own tools that can be undone at once,
-without asking. It still asks about those that cannot be undone: files deleted or written over, unsaved
-changes discarded.
+Qucs-S: about 0.6 s per editing call (0.64 s median on 22 October, against 0.03 s for a call allowed by
+a rule). The user was asked whether to spare it for Qucs-S's own undoable tools, and said *"yes,
+pre-allow them in auto mode"*.
 
-Passing those undoable tools as allowed when the dock starts Claude Code in auto mode would save the
-0.6 s. Claude Code's classifier would then no longer review them. That is a question for the user, so
-this round does not change it.
+**Which tools.** `QucsControl::autonomousTools()` names them, through `ToolHost::autonomousTools()`. It
+is an explicit list, so a tool added later is not pre-allowed until someone names it. A tool is on it
+when each use of it does one of these:
+- changes open documents by steps of Edit › Undo (`fem_edit`, `add_component`, `batch`, ...);
+- adds a document, a project, or a dataset or export written anew (`new_document`, `simulate`,
+  `fem_solve`, `import_data`, ...);
+- shows something (`open_document`, `show_pdf`, ...).
+
+Left out, and so checked as before:
+- what moves, renames or deletes files (`trash_file`, `rename_file`, `clean_scratch`);
+- what writes libraries;
+- what drives the window as the user would (`trigger_action`, `set_dialog`, `set_ui`, `context_menu`,
+  `send_input`, `console`);
+- the settings (`set_settings`, `set_simulator`);
+- git, `run_script`, `build_verilog_a`, `xml`.
+
+**Started with them.** When the dock starts Claude Code in auto mode, those tools are in its
+`--allowedTools`, beside the tools that only look.
+
+**What the dock asks about itself.** A call that Claude Code lets through by a rule is checked by the
+dock before it is made. That is any call of these tools or of the reading tools.
+- **A use that cannot be undone, or that is asked about each time,** waits on the dock's permission
+  card. Examples: a file written over, unsaved changes discarded, a batch holding such a call, a console
+  line. Allowed, it is made; refused, Claude is told "The user did not allow this."
+- **This covers two cases that went unasked before.** `get_netlist` writing over a file with `save_as`
+  is one of the reading tools, which were always allowed. A `batch` was counted undoable whatever it
+  held.
+- **The Session's functions.** `asksItself()` makes this check, `hostRequest()` builds the question,
+  and `a_held` keeps the call until it is answered.
+- **A turn that ends** with a call waiting answers it "Not made: the turn was stopped."
+
+**Rules that follow the mode.** Claude Code is started again, with `--resume`, when the mode moves into
+or out of auto. That is at once between turns, and after the turn during one.
+- Meanwhile a pre-allowed call is asked about as the new mode says.
+- "Allow all Qucs-S tools" on such a card makes the other waiting calls too.
+- Bypass mode asks nothing, the dock included.
+
+**Rule changes that came with it.** `irreversible()` now counts:
+- a batch, as its calls;
+- `fem_model`, `create_subcircuit` and `import_netlist` with `replace`, which writes over a file.
+
+`askedEachTime()` counts a batch as its calls too. The mode menu's tooltip for Auto says what is checked
+now.
+
+**Tests.**
+- `autoModeAllowsTheUndoableTools`: the arguments; an undoable call made at once; calls that cannot be
+  undone or are asked each time held, allowed, then refused; a reading tool's overwrite; a switch to
+  asking during a turn, with two held calls and allow-all; the restarts both ways; a turn ending on a
+  held call; bypass.
+- `theToolsAllowedInAutoMode`: the list (every name a changing tool of the server's, none of the left-out
+  kinds, no git); a batch's calls; `replace`.
 
 ## M3: `get_state` lists the workspace's projects by name
 
@@ -107,7 +155,7 @@ answers it saves a parse per call.
 
 ## Breaks
 
-5 breaks, all caught:
+5 breaks of M3 and M4, all caught:
 - the projects with their full folders again;
 - a folder named otherwise not said;
 - `list_documents`' objects;
@@ -115,6 +163,17 @@ answers it saves a parse per call.
 - `get_state` not naming them.
 
 M5 changes no answer and has no break.
+
+18 breaks of M2, all caught (bypass's once a reading tool's overwrite was tried there):
+- the tools not given at the start, or given in every mode;
+- no restart leaving auto, or only after the next turn;
+- each of the dock's own checks taken out in turn: the irreversible use, the use asked each time, the
+  reading tools, the changed mode, bypass;
+- a held call allowed but not made, refused but not answered, left at the turn's end, or answered as a
+  `can_use_tool`;
+- a batch's calls not looked at, either way;
+- `replace` not counted;
+- `trigger_action` or a git tool on the list.
 
 The suites that read these answers pass: `test_qucs_control`, `test_mcp_server`, `test_wishlist_tools`,
 `test_multiphysics_doc`, `test_claude_code`, the PDF, image and layout viewers. The changed ones pass on

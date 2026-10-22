@@ -3811,6 +3811,35 @@ QStringList QucsControl::readOnlyTools() const
     return a_readOnly;
 }
 
+namespace {
+// The tools Claude Code lets Claude use without its own check in auto mode
+// (where it took 0.64 s an editing call, the median of 22 October; 0.03 s
+// allowed by a rule): those that change open documents by steps of Edit >
+// Undo, add (a document, a project, a dataset or export written anew) or
+// show. A use of one that cannot be undone - a file written over, unsaved
+// changes discarded, a batch holding such a call - the dock asks about
+// itself (irreversible()). Not here: what moves, renames or deletes files,
+// writes libraries, drives the window as the user would (menus, dialogs,
+// docks, raw input, consoles), changes the settings, git, scripts, the
+// Verilog-A compiler. A tool not named here is checked as before.
+const char* const kAutonomous[] = {
+    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf",
+    "set_schematic", "add_component", "edit_component", "replace_component", "delete", "move", "arrange", "connect",
+    "add_wire", "set_label", "rename_net", "add_analysis", "create_subcircuit", "make_symbol", "set_subcircuit_parameters",
+    "add_painting", "edit_painting", "add_diagram", "edit_diagram", "add_trace", "edit_trace", "add_marker",
+    "edit_marker", "delete_marker", "probe", "edit_text", "undo", "redo", "batch", "simulate", "stop_simulation", "tune",
+    "import_netlist", "import_data", "export_image", "export_netlist", "export_data", "copy_document",
+    "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner",
+    "new_project", "open_project", "fem_model", "fem_edit", "fem_build", "fem_solve", "fem_stop", "fem_export"};
+} // namespace
+
+QStringList QucsControl::autonomousTools() const
+{
+    QStringList out;
+    for (const char* t : kAutonomous) out << QString::fromLatin1(t);
+    return out;
+}
+
 QString QucsControl::actionOf(const QString& tool) const
 {
     return a_actions.value(tool, tr("use Qucs-S (%1)").arg(tool));

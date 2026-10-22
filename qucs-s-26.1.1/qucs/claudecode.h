@@ -221,6 +221,14 @@ public:
         Q_UNUSED(arguments);
         return false;
     }
+    /// The tools Claude Code lets Claude use without its own check where
+    /// Claude acts on its own (auto mode), beyond readOnlyTools(): those
+    /// each use of which is undone by Edit > Undo, adds (a document, a
+    /// project, a dataset written anew) or shows. A use of one that cannot
+    /// be undone or is asked about each time (irreversible(),
+    /// askedEachTime()) the dock asks about itself. None unless the host
+    /// names them.
+    virtual QStringList autonomousTools() const { return {}; }
     /// Why this use of \a tool is asked about every time - also where
     /// Claude acts on its own (auto), not where the user said to ask
     /// nothing (bypassPermissions): a line typed into a console, which runs
@@ -495,7 +503,20 @@ private:
     /// A notice when the program works in \a inUse, not the mode asked for.
     void reportMode(const QString& inUse);
     void handleMcpMessage(const QString& requestId, const QJsonObject& request);
+    /// An MCP message of the program's to the host's server answered by
+    /// \a reply: a tool call kept by the tool use it answers.
+    void callHost(const QJsonObject& message, const std::function<void(const QJsonObject&)>& reply);
     void allowRequest(const QString& id, const QJsonObject& input);
+    /// Whether the dock lets a use of the host's \a tool go unasked in the
+    /// mode it is in now (what it answers the program's can_use_tool).
+    bool hostAllowsUnasked(const QString& tool, const QJsonObject& input) const;
+    /// Whether a call the program lets through by a rule - a tool that only
+    /// looks, one allowed with auto mode - is asked about by the dock
+    /// itself: a use that cannot be undone or is asked about each time, or
+    /// the mode changed since the program started.
+    bool asksItself(const QString& tool, const QJsonObject& input) const;
+    /// The question of a use of the host's \a tool.
+    PermissionRequest hostRequest(const QString& id, const QString& tool, const QJsonObject& input) const;
     /// The host's tool that \a tool (mcp__server__name) is, or empty.
     QString hostTool(const QString& tool) const;
     void handleResult(const QJsonObject& m);
@@ -587,6 +608,17 @@ private:
     QSet<QString> a_backgroundTasks;             // those in the background
     ToolHost* a_host = nullptr;
     mcp::Server* a_mcp = nullptr;   // the host's tools as an MCP server, over this stream
+    // The host's tools the program was started with allowed beyond those
+    // that only look (autonomousTools(), in auto mode).
+    QStringList a_autoAllowed;
+    // A call the dock asks about itself (asksItself()), until answered:
+    // allowed, it is made; not, answered as not allowed.
+    struct HeldCall {
+        QJsonObject message;
+        std::function<void(const QJsonObject&)> reply;
+    };
+    QHash<QString, HeldCall> a_held;
+    void refuseHeld(const HeldCall& call, const QString& why);
     QString a_document;        // pinned: the host's tools act on it
     bool a_toolsAllowed = false;
     /// \a input of the host's \a tool, for the document pinned.
