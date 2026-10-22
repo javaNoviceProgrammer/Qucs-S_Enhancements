@@ -1099,6 +1099,31 @@ private slots:
         fx.props.insert(QStringLiteral("where"), QStringLiteral("grid"));
         fx.props.insert(QStringLiteral("to"), QJsonArray{QStringLiteral("-3"), QStringLiteral("1")});
         QVERIFY(exportText(model, set, fx, QStringLiteral("test")).error.contains(QLatin1String("corner")));
+        // One column, along a line: its corners' x - their middle where they
+        // differ (refused, and nx 1 divided by nought: the update check of
+        // 21 October, 6).
+        fx.props.insert(QStringLiteral("expressions"), QStringLiteral("E = emw.normE"));
+        fx.props.insert(QStringLiteral("nx"), 1);
+        fx.props.insert(QStringLiteral("ny"), 4);
+        for (const char* right : {"0.5", "0.7"}) {
+            fx.props.insert(QStringLiteral("from"), QJsonArray{QStringLiteral("0.3"), QStringLiteral("-1.5")});
+            fx.props.insert(QStringLiteral("to"), QJsonArray{QLatin1String(right), QStringLiteral("1.5")});
+            if (!std::strcmp(right, "0.5")) fx.props.insert(QStringLiteral("from"), QJsonArray{QStringLiteral("0.5"), QStringLiteral("-1.5")});
+            const ExportText column = exportText(model, set, fx, QStringLiteral("test"));
+            QVERIFY2(column.error.isEmpty(), qPrintable(column.error));
+            const QStringList rows = column.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            QCOMPARE(rows.size(), 1 + 4);
+            for (int n = 0; n < 4; ++n) {
+                const QStringList c = rows[n + 1].split(QLatin1Char(','));
+                QVERIFY2(std::abs(c[0].toDouble() - 0.5) < 1e-12 && std::abs(c[1].toDouble() - (-1.5 + n)) < 1e-12, qPrintable(rows[n + 1]));
+                QVERIFY(relative(c[2].toDouble(), *evaluateAt(*r.solution, locator, QStringLiteral("emw.normE"), QPointF(0.5, -1.5 + n))) < 1e-8);
+            }
+        }
+        // (Two columns at one x: refused still.)
+        fx.props.insert(QStringLiteral("nx"), 2);
+        fx.props.insert(QStringLiteral("from"), QJsonArray{QStringLiteral("0.5"), QStringLiteral("-1.5")});
+        fx.props.insert(QStringLiteral("to"), QJsonArray{QStringLiteral("0.5"), QStringLiteral("1.5")});
+        QVERIFY(exportText(model, set, fx, QStringLiteral("test")).error.contains(QLatin1String("corner")));
     }
 
     /// An alloy's composition solved for its gap: on InP's lattice by
@@ -1489,6 +1514,56 @@ private slots:
         }
     }
 
+    /// A sweep of two parameters, the outer stepping (the update check of 21
+    /// October, 6: the background doping outer, the bias inner - the next
+    /// doping's equilibrium walked from -10 V found none in 200 steps, the
+    /// sweep stopped): its first point starts from that inner value's at the
+    /// outer value before, all four solved, the third as solved alone; a
+    /// point that finds no solution from the one before (a sweep of
+    /// specified pairs: -10 V then 0 V) solved from the start, said.
+    void aSweepsOuterStepStartsWell()
+    {
+        auto pin = [](const char* sweep) {
+            return modelOf(QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
+              "parameters": [{"name": "Va", "expression": "0[V]"}, {"name": "Nb", "expression": "1e15[1/cm^3]"}],
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "name": "n", "size": ["10", "100"]},
+                             {"type": "rectangle", "name": "i", "position": ["0", "100"], "size": ["10", "9.8"]},
+                             {"type": "rectangle", "name": "p", "position": ["0", "109.8"], "size": ["10", "100"]}],
+                "materials": [{"material": "Aluminium gallium arsenide", "x": "0.3", "Eg": "1.798[eV]", "chi": "3.855[eV]", "selection": {"all": true}}],
+                "physics": [{"type": "semiconductor", "tag": "semi", "space": "1d", "axis": "y", "at": "5", "h1d": "1[nm]", "features": [
+                  {"type": "doping", "dopant": "donor", "N0": "1e18[1/cm^3]", "selection": {"only": ["n"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "1e18[1/cm^3]", "selection": {"only": ["p"]}},
+                  {"type": "doping", "dopant": "acceptor", "N0": "Nb", "selection": {"only": ["i"]}},
+                  {"type": "srh", "selection": {"all": true}},
+                  {"type": "ohmic", "name": "cathode", "V0": "0[V]", "selection": {"of": ["n"], "side": "bottom"}},
+                  {"type": "ohmic", "name": "anode", "V0": "Va", "selection": {"of": ["p"], "side": "top"}}]}],
+                "mesh": {"size": "normal"}}],
+              "studies": [{"type": "study", "steps": [%1 {"type": "stationary"}]}]})json")
+                               .arg(QLatin1String(sweep))
+                               .toUtf8());
+        };
+        const Run both = run(pin(R"({"type": "sweep", "parameters": [["Nb", "1e14, 1e15", "1/cm^3"], ["Va", "0, -10", "V"]]},)"));
+        QVERIFY2(both.error.isEmpty(), qPrintable(both.error));
+        QCOMPARE(both.study.solutions.size(), std::size_t(4));
+        const QString said = both.study.warnings.join(QLatin1Char('\n'));
+        QVERIFY2(!said.contains(QLatin1String("no solution from the point before")), qPrintable(said));
+        const Run alone = run(pin(""));
+        QVERIFY2(alone.error.isEmpty(), qPrintable(alone.error));
+        for (const double y : {50.0, 104.9, 160.0})
+            QVERIFY2(std::abs(at(*both.study.solutions[2], QStringLiteral("semi.V"), QPointF(5, y)) - at(*alone.solution, QStringLiteral("semi.V"), QPointF(5, y))) < 1e-6,
+                     qPrintable(QString::number(y)));
+        // (From -10 V to the next doping's 0 V: none from there, solved from
+        // the start.)
+        const Run pairs = run(pin(R"({"type": "sweep", "combination": "specified", "parameters": [["Nb", "1e14, 1e15", "1/cm^3"], ["Va", "-10, 0", "V"]]},)"));
+        QVERIFY2(pairs.error.isEmpty(), qPrintable(pairs.error));
+        QCOMPARE(pairs.study.solutions.size(), std::size_t(2));
+        const QString again = pairs.study.warnings.join(QLatin1Char('\n'));
+        QVERIFY2(again.contains(QLatin1String("Nb = 1e+15 1/cm^3, Va = 0 V: no solution from the point before (")) && again.contains(QLatin1String("): solved from the start")),
+                 qPrintable(again));
+        QVERIFY(std::abs(at(*pairs.study.solutions[1], QStringLiteral("semi.V"), QPointF(5, 104.9)) - at(*alone.solution, QStringLiteral("semi.V"), QPointF(5, 104.9))) < 1e-6);
+    }
+
     /// A semiconductor solved in 1D: along its line, on a strip of its own,
     /// each node taking the line's values at its coordinate - the 2D
     /// solution of a layered stack (uniform across it, away from its sides)
@@ -1552,9 +1627,9 @@ private slots:
             const Run coarse = run(modelOf(junction1d(QStringLiteral("1d"), QString(), false, QStringLiteral(R"({"type": "stationary"})"), line, QStringLiteral("0.07"))));
             QVERIFY2(coarse.error.isEmpty(), qPrintable(coarse.error));
             // (Said: what reads it here sees it as coarse as this mesh.)
-            QVERIFY2(coarse.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("set on this mesh's nodes up to")),
+            QVERIFY2(coarse.solution->log.join(QLatin1Char('\n')).contains(QLatin1String("this mesh's nodes up to")),
                      qPrintable(coarse.solution->log.join(QLatin1Char('\n'))));
-            QVERIFY2(coarse.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("set on this mesh's nodes up to")),
+            QVERIFY2(coarse.study.warnings.join(QLatin1Char('\n')).contains(QLatin1String("this mesh's nodes up to")),
                      qPrintable(coarse.study.warnings.join(QLatin1Char('\n'))));
             QVERIFY(relative(global(*coarse.solution, QStringLiteral("semi.I_a")), I1) < 1e-9);
             // Its nodes', between the line's: V linear, the carriers in their
@@ -1576,6 +1651,23 @@ private slots:
                              qPrintable(QStringLiteral("%1 at %2: %3 %4").arg(QLatin1String(name)).arg(q.y()).arg(fc.values[index]).arg(at(*plane.solution, QString::fromLatin1(name), QPointF(0, q.y())))));
             }
             QVERIFY(compared >= 2);
+            // Between its nodes, at any point: the line's values (V linear,
+            // the carriers in their logarithm, the field the line's slope) -
+            // its 5 nm, not this mesh's 70 (the update check of 21 October,
+            // 6: a model of "h1d" 0.5 nm read its fields on nodes 5 nm apart).
+            double dV = 0, dn = 0, dE = 0;
+            for (double y = 0.0031; y < 0.4; y += 0.0127) {
+                const QPointF q(0.3, y), p(0, y);
+                dV = std::max(dV, std::abs(at(*coarse.solution, QStringLiteral("semi.V"), q) - at(*plane.solution, QStringLiteral("semi.V"), p)));
+                // (The bands too: of V.)
+                dV = std::max(dV, std::abs(at(*coarse.solution, QStringLiteral("semi.Ec"), q) - at(*plane.solution, QStringLiteral("semi.Ec"), p)) / Q);
+                for (const char* name : {"semi.n", "semi.p"})
+                    dn = std::max(dn, relative(at(*coarse.solution, QLatin1String(name), q), at(*plane.solution, QLatin1String(name), p)));
+                const double Ey = at(*plane.solution, QStringLiteral("semi.Ey"), p);
+                if (std::abs(Ey) > 1e6) dE = std::max(dE, relative(at(*coarse.solution, QStringLiteral("semi.Ey"), q), Ey));
+            }
+            qInfo("between the coarse mesh's nodes: V and Ec within %.3g V, n and p %.3g, Ey %.3g of the 2D's", dV, dn, dE);
+            QVERIFY2(dV < 1e-4 && dn < 1e-3 && dE < 0.02, qPrintable(QStringLiteral("%1 %2 %3").arg(dV).arg(dn).arg(dE)));
         }
         // Under a mesa (the n layer 4 µm wide): the stack's current, the
         // mesa's 2 µm - the cathode's as the anode's.

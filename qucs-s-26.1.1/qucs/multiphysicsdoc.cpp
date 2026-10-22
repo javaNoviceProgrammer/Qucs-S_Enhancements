@@ -3263,6 +3263,7 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
     const std::shared_ptr<SolutionSet> set = solutions(study);
     if (set && (sol->snapshotCount() > 1 || set->solutions.size() > 1)) {
         QStringList globals;
+        bool perCm = false;   // (a quantum spectrum's absorption or gain)
         for (const Field& f : sol->fields()) {
             if (!f.solved) continue;
             const QString t = f.tag + QLatin1Char('.');
@@ -3301,6 +3302,7 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                 const bool gain = sol->global(t + QStringLiteral("dF")).has_value();
                 globals << (spectrum ? (gain ? t + QStringLiteral("gTE; ") + t + QStringLiteral("gTM") : t + QStringLiteral("alphaTE; ") + t + QStringLiteral("alphaTM"))
                                      : t + QStringLiteral("E_e; ") + t + QStringLiteral("E_hh; ") + t + QStringLiteral("E_lh"));
+                perCm = perCm || spectrum;
                 continue;
             } else if (f.type == QLatin1String("rays")) {
                 chief = {t + QStringLiteral("Pabs"), t + QStringLiteral("Pin")};
@@ -3335,6 +3337,10 @@ void MultiphysicsDoc::addDefaultPlots(const QString& study)
                                                : tr("Over the Sweep");
             g.props.insert(QStringLiteral("study"), study);
             if (sol->photonAxis == 3) plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}, {"unit", QStringLiteral("eV")}});
+            // (A spectrum's absorption or gain in 1/cm, as the panel and the
+            // plots made by hand show it - its data were in 1/m, 100 times
+            // another's: the update check of 21 October, 5.)
+            else if (perCm && globals.size() == 1) plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}, {"unit", QStringLiteral("1/cm")}});
             else plot(g, QStringLiteral("globalgraph"), {{"expression", globals.join(QLatin1String("; "))}});
             place(g);
         }

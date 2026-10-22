@@ -3344,13 +3344,19 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
     struct Stretch {
         double lo = 0, hi = 0;
         double edge[Carriers] = {Inf(), -Inf(), -Inf()};
+        double far[Carriers] = {-Inf(), Inf(), Inf()};   // (its higher side's: in a field the other)
         bool walled = false;   // a barrier one side or both: a well (not a slab of one gap)
         double size = 0;       // its thickness (m)
         int domain = -1;       // its middle's
         double gap = NaN;      // its own gap there (J)
     };
     std::vector<Stretch> stretches;
-    if (o.continuum == 1 && wells) {
+    // (The continuum "states" with the bulk's excitons: the barriers' Elliott
+    // edge less their free carriers', the box's states the free continuum
+    // already - n = 3 above a superlattice's barriers and the barriers' own
+    // excitonic edge in one run, the update check of 21 October, 3.)
+    const bool barrierExcitons = o.continuum == 0 && wells && o.bulkExcitons && !a_points.empty();
+    if ((o.continuum == 1 || barrierExcitons) && wells) {
         std::vector<const Point*> along;
         for (const Point& pt : a_points)
             if (pt.d >= 0) along.push_back(&pt);
@@ -3375,7 +3381,11 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 if (!side) continue;
                 ++sides;
                 st.edge[0] = std::min(st.edge[0], side->pot[0]);
-                for (int c = 1; c < Carriers; ++c) st.edge[c] = std::max(st.edge[c], -side->pot[c]);
+                st.far[0] = std::max(st.far[0], side->pot[0]);
+                for (int c = 1; c < Carriers; ++c) {
+                    st.edge[c] = std::max(st.edge[c], -side->pot[c]);
+                    st.far[c] = std::min(st.far[c], -side->pot[c]);
+                }
             }
             st.walled = sides > 0;
             // (No barrier either side - a slab of one gap: nothing confined.)
@@ -3387,16 +3397,46 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             i = j + 1;
         }
     }
-    auto confined = [&](int c, double E, double pos) {
-        if (stretches.empty()) return true;
+    auto nearest = [&](double pos) {
         const Stretch* best = &stretches.front();
         for (const Stretch& st : stretches) {
             auto distance = [&](const Stretch& x) { return pos < x.lo ? x.lo - pos : pos > x.hi ? pos - x.hi : 0.0; };
             if (distance(st) < distance(*best)) best = &st;
         }
+        return best;
+    };
+    auto confined = [&](int c, double E, double pos) {
+        if (stretches.empty()) return true;
+        const Stretch* best = nearest(pos);
         // (Carrier 3: the k·p holes, mixed - the valence band's top.)
         return c == 0 ? E < best->edge[0] : E > (c == 3 ? std::max(best->edge[1], best->edge[2]) : best->edge[c]);
     };
+    // In a field, a state is bound also when its well holds it: tilted past
+    // its lower barrier's edge, below its higher one's, and "localized" of
+    // its |ψ|² there (select's) - it was left out with its strength, not
+    // given back by the bulk's (the update check of 21 October, 7a). Above
+    // both, a state the box's continuum, held or not.
+    auto held = [&](int c, const State& st) {
+        if (stretches.empty() || a_F == 0) return false;
+        const Stretch* best = nearest(st.pos);
+        // (A slab of one gap - no barrier, no edges - holds nothing.)
+        if (!(c == 0 ? st.E < best->far[0] : st.E > (c == 3 ? std::max(best->far[1], best->far[2]) : best->far[c]))) return false;
+        const double all = integral(st.x, st.x, {});
+        const double in = integral(st.x, st.x, [best](int, double a) { return a >= best->lo && a <= best->hi ? 1.0 : 0.0; });
+        return all > 0 && in / all >= o.localized;
+    };
+    auto bound = [&](int c, const State& st) { return confined(c, st.E, st.pos) || held(c, st); };
+    // (Said: the electrons a field tilts past their barriers' edges whose
+    // wells hold them - bound, their pairs taken.)
+    if (o.continuum == 1 && a_F != 0) {
+        QStringList heldOnes;
+        for (std::size_t i = 0; i < a_states[0].size(); ++i)
+            if (!confined(0, a_states[0][i].E, a_states[0][i].pos) && held(0, a_states[0][i])) heldOnes << QStringLiteral("e%1").arg(i + 1);
+        if (!heldOnes.isEmpty())
+            a_s.log << tr("%1: in this field past their lower barrier's edge, below their higher one's and held in their wells, so "
+                          "bound: %2 (their |ψ|² there %3 at least, \"pmin\")")
+                           .arg(a_node->name(), heldOnes.join(QLatin1String(", ")), formatNumber(o.localized, 3));
+    }
     // The transitions e_i to hh_j and lh_j: their overlaps, polarizations
     // (at the band edge: TE 3/2 and 1/2 of |Mb|², TM 0 and 2) and masses.
     struct Transition {
@@ -3534,6 +3574,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         a_spec.gammaX = NaN;
     };
     std::vector<Transition> transitions;
+    // (Each electron's "bound" once: held() integrates.)
+    std::vector<char> boundOf[Carriers];
+    if (o.continuum == 1)
+        for (const State& st : a_states[0]) boundOf[0].push_back(bound(0, st));
     for (std::size_t i = 0; i < a_states[0].size(); ++i) {
         if (!keepE[i]) continue;
         const State& e = a_states[0][i];
@@ -3560,9 +3604,15 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 t.Ep = e.Ep * Q;
                 t.nr = o.index > 0 ? o.index : e.nr;
                 t.e1hh1 = i == 0 && c == 1 && j == 0;
-                // (The continuum the barriers' bulk absorption: the confined
-                // states' transitions alone.)
-                if (o.continuum == 1 && !(confined(0, e.E, e.pos) && confined(c, h.E, h.pos))) continue;
+                // (The continuum the barriers' bulk absorption: an unbound
+                // electron's pairs its. A bound electron's with every hole -
+                // its strength theirs whatever the field, Σ|<e|h>|² 1 over
+                // them: in a field it moves to holes the field frees, and was
+                // lost with them - 11 % of a well's TM absorption at 150
+                // kV/cm, the update check of 21 October, 7a. Each electron
+                // once, the sum kept; a bound hole's with unbound electrons
+                // too would count again what the bulk has.)
+                if (o.continuum == 1 && !boundOf[0][i]) continue;
                 // (Coupled: a dark pair too - an indirect exciton, across a
                 // barrier, bound and mixing with the bright.)
                 if (t.overlap > 1e-10 || (o.excitons && o.excitonModel == 2)) transitions.push_back(t);
@@ -3740,9 +3790,10 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         double Eg = NaN, mrHH = 0, mrLH = 0, Ep = 0, nr = 3.5, weight = 0;
         double epsr = 12.9;   // (its excitons')
         bool fadesIn = false;
+        bool excess = false;  // Elliott's less the free carriers': the continuum "states"
     };
     std::vector<Bulk> bulks;
-    if (fading) {
+    if (fading || barrierExcitons) {
         auto of = [&](const Band& b, double gap, double weight, bool fadesIn) {
             Bulk k;
             const double mhh = std::cbrt(b.mhhZ * b.mhhP * b.mhhP), mlh = std::cbrt(b.mlhZ * b.mlhP * b.mlhP);
@@ -3764,9 +3815,19 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 walled += st.size;
                 if (!well) well = &st;
             }
-        bulks.push_back(of(a_bands[std::size_t(std::max(0, end.d))], barrierGap, (a_L - walled) / per, false));
-        if (well && well->domain >= 0 && std::isfinite(well->gap))
-            bulks.push_back(of(a_bands[std::size_t(well->domain)], well->gap, walled / per, true));
+        if (fading) {
+            bulks.push_back(of(a_bands[std::size_t(std::max(0, end.d))], barrierGap, (a_L - walled) / per, false));
+            if (well && well->domain >= 0 && std::isfinite(well->gap))
+                bulks.push_back(of(a_bands[std::size_t(well->domain)], well->gap, walled / per, true));
+        } else {
+            // (The barriers' gap where the line ends, as the continuum
+            // "bound" takes it.)
+            const double gap = (end.pot[0] - std::max(-end.pot[1], -end.pot[2])) * Q;
+            if (std::isfinite(gap) && a_L - walled > 0) {
+                bulks.push_back(of(a_bands[std::size_t(std::max(0, end.d))], gap, (a_L - walled) / per, false));
+                bulks.back().excess = true;
+            }
+        }
     }
     // The k·p bands' transitions: each electron state with each valence
     // state at each k of each direction - its energy (J), its TE and TM
@@ -3792,19 +3853,6 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         if (a_spec.excitons && !(epsr > 0))
             for (std::size_t d = 0; d < a_bands.size() && !(epsr > 0); ++d)
                 if (d < a_active.size() && a_active[d] && a_bands[d].on) epsr = a_bands[d].epsr;
-        // A valence state's place (its mean along the axis, the heavy holes'
-        // edge at k = 0): the continuum "bound"'s.
-        auto boundHole = [&](std::size_t j) {
-            if (o.continuum != 1) return true;
-            double pos = 0, all = 0;
-            for (const Point& pt : a_points) {
-                double v = 0;
-                for (int c = 0; c < 6; ++c) v += std::norm(at(pt, a_kps[0].x[0][j], c * n));
-                pos += pt.w * pt.a * v;
-                all += pt.w * v;
-            }
-            return confined(3, a_kps[0].E[0][j], all > 0 ? pos / all : 0.0);
-        };
         if (a_valence == 8 && !a_states[0].empty()) {
             // The 8x8's: each conduction state (its own spin) with each
             // valence state at each k - <c|p_α|v> = (i m0 P/ħ) Σs (<c_Ss|v_αs>
@@ -3826,7 +3874,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                 if (b.C.empty()) continue;
                 const std::size_t nc = b.C[0].size();
                 for (std::size_t j = 0; j < b.E[0].size(); ++j) {
-                    if (!boundHole(j) || (j < keepV.size() && !keepV[j])) continue;
+                    if (j < keepV.size() && !keepV[j]) continue;
                     std::vector<KpPair> prs(nc);
                     for (std::size_t i = 0; i < nc; ++i) {
                         const State& e = a_states[0][std::min(i / 2, a_states[0].size() - 1)];
@@ -3860,7 +3908,12 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
                     for (std::size_t i = 0; i < nc; ++i) {
                         KpPair& pr = prs[i];
                         if (pr.eps.size() != b.k.size() || (i / 2 < keepE.size() && !keepE[i / 2])) continue;
-                        if (o.continuum == 1 && !confined(0, b.C[0][i], a_states[0][std::min(i / 2, a_states[0].size() - 1)].pos)) continue;
+                        // (A bound electron's with every hole: as the
+                        // parabolic bands'.)
+                        if (o.continuum == 1) {
+                            const State& e = a_states[0][std::min(i / 2, a_states[0].size() - 1)];
+                            if (!confined(0, b.C[0][i], e.pos) && !held(0, e)) continue;
+                        }
                         double most = 0;
                         for (std::size_t m = 0; m < pr.wte.size(); ++m) most = std::max(most, pr.wte[m] + pr.wtm[m]);
                         if (!(most > 1e-10)) continue;
@@ -3918,7 +3971,8 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
         } else
         for (std::size_t i = 0; i < a_states[0].size(); ++i) {
             const State& e = a_states[0][i];
-            if (!keepE[i] || (o.continuum == 1 && !confined(0, e.E, e.pos))) continue;
+            // (A bound electron's with every hole: as the parabolic bands'.)
+            if (!keepE[i] || (o.continuum == 1 && !bound(0, e))) continue;
             // <e| on each equation: Σ w ψe N_eq over the points - an overlap
             // with a hole's component its dot product.
             Eigen::VectorXd load = Eigen::VectorXd::Zero(n);
@@ -3930,7 +3984,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             }
             const Eigen::VectorXcd loadc = load.cast<std::complex<double>>();
             for (std::size_t j = 0; j < a_kps[0].E[0].size(); ++j) {
-                if (!boundHole(j) || (j < keepV.size() && !keepV[j])) continue;
+                if (j < keepV.size() && !keepV[j]) continue;
                 bool bound = false;
                 Exciton xc;
                 for (const KpBands& b : a_kps) {
@@ -4446,17 +4500,36 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             }
         }
     }
-    if (widest.spacing > 0)
-        a_s.log << tr("Warning: %1: the coupled excitons' continuum states %2 meV apart, not the %3 the line's width asks (%4 on %5 k "
-                      "points: its %6 unknowns, \"excitonsize\"): above the edges, where pairs' continua mix, its absorption ripples about "
-                      "its trend the more the narrower the line - a line of 2 meV or more smooths it (a 10 nm GaAs well's 4x4 bands from "
-                      "1.48 to 1.50 eV, at the ripple's peaks: some ±11 % at 0.5 meV, ±4 % at 1, ±1.5 % at 2; its rms under half that)")
-                       .arg(a_node->name())
-                       .arg(widest.spacing / Q * 1e3, 0, 'g', 3)
-                       .arg(widest.asked / Q * 1e3, 0, 'g', 3)
-                       .arg(widest.pairs == 1 ? tr("1 pair") : tr("%1 pairs").arg(widest.pairs))
-                       .arg(widest.points)
-                       .arg(widest.size);
+    // The continuum's ripple at this line's width, by what was measured (a
+    // 10 nm GaAs well's 4x4 bands: at the ripple's peaks ±11 % at 0.5 meV,
+    // ±4 % at 1, ±1.5 % at 2 - each state spread over its pairs' cells, a
+    // larger size little help), past 2 meV on that slope: said where some 2 %
+    // or more. (Said by the widened spacing against the line's, 152 meV
+    // "apart" warned of a spectrum that a size of 4000 moved by 1 % at most:
+    // the update check of 21 October, 4.)
+    if (widest.spacing > 0 && gamma > 0) {
+        const double meV = gamma / Q * 1e3;
+        const double at[3] = {0.5, 1, 2}, ripple[3] = {11, 4, 1.5};
+        double percent = ripple[0];
+        if (meV >= at[2]) percent = ripple[2] * std::pow(at[2] / meV, std::log(ripple[1] / ripple[2]) / std::log(at[2] / at[1]));
+        else if (meV > at[0]) {
+            const int i = meV < at[1] ? 0 : 1;
+            const double u = std::log(meV / at[i]) / std::log(at[i + 1] / at[i]);
+            percent = std::exp((1 - u) * std::log(ripple[i]) + u * std::log(ripple[i + 1]));
+        }
+        if (percent >= 2)
+            a_s.log << tr("Warning: %1: the coupled excitons' continuum states %2 meV apart (%3 on %4 k points: its %5 unknowns, "
+                          "\"excitonsize\"): above the edges, where pairs' continua mix, its absorption ripples about its trend some "
+                          "±%6 % at the ripple's peaks at this line's %7 meV - a wider line smooths it, a larger size little (a 10 nm "
+                          "GaAs well's 4x4 bands from 1.48 to 1.50 eV: ±11 % at 0.5 meV, ±4 % at 1, ±1.5 % at 2; its rms under half that)")
+                           .arg(a_node->name())
+                           .arg(widest.spacing / Q * 1e3, 0, 'g', 3)
+                           .arg(widest.pairs == 1 ? tr("1 pair") : tr("%1 pairs").arg(widest.pairs))
+                           .arg(widest.points)
+                           .arg(widest.size)
+                           .arg(qRound(percent))
+                           .arg(formatNumber(meV, 3));
+    }
     // A k interval's line at E: its energies' spread [ε0, ε1] its density
     // (1/J), broadened by the line's shape.
     auto spread = [&](double e0, double e1, double E) {
@@ -4707,52 +4780,59 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             const double delta = E - bulk.Eg, reach = std::max(top, delta + top);
             const int n = std::clamp(int(std::ceil(reach / step)), 50, 40000);
             auto in = [&](double eps) { return bulk.fadesIn ? 1 - fadeAt(bulk.Eg + eps) : 1.0; };
-            const double EU = o.urbach;
+            // (An excess bulk's free carriers, taken off, broadened as the
+            // box's states that are theirs: by the spectrum's line.)
+            double EU = o.urbach;
             auto cdfL = [&](double x) {
                 if (!(EU > 0)) return cdf(x);
                 return x < 0 ? 0.5 * std::exp(x / EU) : 1 - 0.5 * std::exp(-x / EU);
             };
             auto pdfL = [&](double x) { return EU > 0 ? std::exp(-std::abs(x) / EU) / (2 * EU) : pdf(x); };
             auto lineL = [&](double a, double b) { return cdfL(b - delta) - cdfL(a - delta); };
-            const bool broadened = gamma > 0 || EU > 0;
             double rho = 0;
             for (double mr : {bulk.mrHH, bulk.mrLH}) {
-                const double R = o.bulkExcitons ? mr * std::pow(Q * Q / (4 * M_PI * Eps0 * bulk.epsr), 2) / (2 * Hbar * Hbar) : 0.0;
-                auto f = [R](double eps) {
-                    if (!(R > 0)) return std::sqrt(std::max(0.0, eps));
-                    if (!(eps > 0)) return 2 * M_PI * std::sqrt(R);
-                    const double x = 2 * M_PI * std::sqrt(R / eps);
-                    return x > 700 ? 2 * M_PI * std::sqrt(R) : 2 * M_PI * std::sqrt(R) / (1 - std::exp(-x));
-                };
-                double sum = 0;
-                if (broadened) {
-                    for (int k = 0; k < n; ++k) {
-                        double a = reach * k / n, b = reach * (k + 1) / n, part = 1;
-                        if (window) {
-                            double ea = bulk.Eg + a, eb = bulk.Eg + b;
-                            if (!clip(ea, eb, &part)) continue;
-                            a = ea - bulk.Eg;
-                            b = eb - bulk.Eg;
+                for (int pass = 0; pass < (bulk.excess ? 2 : 1); ++pass) {
+                    // (An excess bulk: its free carriers' taken off - pass 1.)
+                    EU = pass == 0 ? o.urbach : 0.0;
+                    const bool broadened = gamma > 0 || EU > 0;
+                    const double R = pass == 0 && o.bulkExcitons ? mr * std::pow(Q * Q / (4 * M_PI * Eps0 * bulk.epsr), 2) / (2 * Hbar * Hbar) : 0.0;
+                    const double sign = pass == 0 ? 1.0 : -1.0;
+                    auto f = [R](double eps) {
+                        if (!(R > 0)) return std::sqrt(std::max(0.0, eps));
+                        if (!(eps > 0)) return 2 * M_PI * std::sqrt(R);
+                        const double x = 2 * M_PI * std::sqrt(R / eps);
+                        return x > 700 ? 2 * M_PI * std::sqrt(R) : 2 * M_PI * std::sqrt(R) / (1 - std::exp(-x));
+                    };
+                    double sum = 0;
+                    if (broadened) {
+                        for (int k = 0; k < n; ++k) {
+                            double a = reach * k / n, b = reach * (k + 1) / n, part = 1;
+                            if (window) {
+                                double ea = bulk.Eg + a, eb = bulk.Eg + b;
+                                if (!clip(ea, eb, &part)) continue;
+                                a = ea - bulk.Eg;
+                                b = eb - bulk.Eg;
+                            }
+                            sum += f((a + b) / 2) * lineL(a, b) * in((a + b) / 2);
                         }
-                        sum += f((a + b) / 2) * lineL(a, b) * in((a + b) / 2);
-                    }
-                    const double beyond = window ? (bulk.Eg + reach < windowHi ? cdfL(windowHi - bulk.Eg - delta) - cdfL(std::max(reach, windowLo - bulk.Eg) - delta) : 0.0)
-                                                 : 1 - cdfL(reach - delta);
-                    sum += f(reach) * beyond * in(reach);
-                    if (R > 0) {
-                        // (Its excitons' lines, and their series' rest up to the gap.)
-                        const int lines = 30;
-                        for (int m = 1; m <= lines; ++m) {
-                            const double at = -R / (m * m);
-                            if (window && !inWindow(bulk.Eg + at)) continue;
-                            sum += 4 * M_PI * std::pow(R, 1.5) / (m * m * m) * pdfL(delta - at) * in(at);
+                        const double beyond = window ? (bulk.Eg + reach < windowHi ? cdfL(windowHi - bulk.Eg - delta) - cdfL(std::max(reach, windowLo - bulk.Eg) - delta) : 0.0)
+                                                     : 1 - cdfL(reach - delta);
+                        sum += f(reach) * beyond * in(reach);
+                        if (R > 0) {
+                            // (Its excitons' lines, and their series' rest up to the gap.)
+                            const int lines = 30;
+                            for (int m = 1; m <= lines; ++m) {
+                                const double at = -R / (m * m);
+                                if (window && !inWindow(bulk.Eg + at)) continue;
+                                sum += 4 * M_PI * std::pow(R, 1.5) / (m * m * m) * pdfL(delta - at) * in(at);
+                            }
+                            const double from = -R / (lines * lines);
+                            if (!window || inWindow(bulk.Eg)) sum += 2 * M_PI * std::sqrt(R) * lineL(from, 0) * in(0);
                         }
-                        const double from = -R / (lines * lines);
-                        if (!window || inWindow(bulk.Eg)) sum += 2 * M_PI * std::sqrt(R) * lineL(from, 0) * in(0);
-                    }
-                } else if (delta > 0)
-                    sum = f(delta) * in(delta);
-                rho += std::pow(2 * mr / (Hbar * Hbar), 1.5) / (2 * M_PI * M_PI) * sum;
+                    } else if (delta > 0)
+                        sum = f(delta) * in(delta);
+                    rho += sign * std::pow(2 * mr / (Hbar * Hbar), 1.5) / (2 * M_PI * M_PI) * sum;
+                }
             }
             const double C = M_PI * Q * Q * Hbar / (bulk.nr * C0 * Eps0 * M0 * M0 * E) * (M0 * bulk.Ep / 6) * rho * bulk.weight;
             te += C;
@@ -4840,30 +4920,7 @@ int QuantumProblem::solveSpectrum(const SpectrumOptions& o, QString* error)
             aTM.push_back(allTM[k]);
         }
         const double lo = x.front(), hi = x.back();
-        auto kk = [&x, lo, hi](const std::vector<double>& alpha, double E, double aE) {
-            // (At E and within rounding of it - an energy given twice, the
-            // photon's beside its own - the integrand's limit, α'(E)/2E, α'
-            // by the energies either side: not 0, nor a quotient of two
-            // roundings.)
-            constexpr double Rounding = 1e-9;
-            const std::size_t at = std::size_t(std::lower_bound(x.begin(), x.end(), E * (1 - Rounding)) - x.begin());
-            std::size_t past = at;
-            while (past < x.size() && std::abs(x[past] - E) <= Rounding * E) ++past;
-            double limit = 0;
-            if (at > 0 && past < x.size()) limit = (alpha[past] - alpha[at - 1]) / (x[past] - x[at - 1]);
-            else if (at > 0) limit = (aE - alpha[at - 1]) / (E - x[at - 1]);
-            else if (past < x.size()) limit = (alpha[past] - aE) / (x[past] - E);
-            if (E > 0) limit /= 2 * E;
-            double sum = 0;
-            for (std::size_t k = 1; k < x.size(); ++k) {
-                auto f = [&](std::size_t i) { return i >= at && i < past ? limit : (alpha[i] - aE) / (x[i] * x[i] - E * E); };
-                sum += 0.5 * (f(k) + f(k - 1)) * (x[k] - x[k - 1]);
-            }
-            // P∫_lo^hi dE'/(E'² - E²) = ln|((hi - E)(lo + E))/((hi + E)(lo - E))| / 2E.
-            if (E > 0 && std::abs(hi - E) > 1e-12 * Q && std::abs(lo - E) > 1e-12 * Q)
-                sum += aE * std::log(std::abs((hi - E) * (lo + E) / ((hi + E) * (lo - E)))) / (2 * E);
-            return C0 * Hbar / M_PI * sum;
-        };
+        auto kk = [&x](const std::vector<double>& alpha, double E, double aE) { return kramersKronig(x, alpha, E, aE); };
         a_spec.dnTE.assign(a_spec.E.size(), 0.0);
         a_spec.dnTM.assign(a_spec.E.size(), 0.0);
         for (std::size_t k = 0; k < a_spec.E.size(); ++k) {
@@ -5166,6 +5223,33 @@ void QuantumProblem::setGlobals()
 }
 
 } // namespace
+
+double kramersKronig(const std::vector<double>& x, const std::vector<double>& alpha, double E, double aE)
+{
+    if (x.size() < 2) return 0;
+    const double lo = x.front(), hi = x.back();
+    // (At E and within rounding of it - an energy given twice, the photon's
+    // beside its own - the integrand's limit, α'(E)/2E, α' by the energies
+    // either side: not 0, nor a quotient of two roundings.)
+    constexpr double Rounding = 1e-9;
+    const std::size_t at = std::size_t(std::lower_bound(x.begin(), x.end(), E * (1 - Rounding)) - x.begin());
+    std::size_t past = at;
+    while (past < x.size() && std::abs(x[past] - E) <= Rounding * E) ++past;
+    double limit = 0;
+    if (at > 0 && past < x.size()) limit = (alpha[past] - alpha[at - 1]) / (x[past] - x[at - 1]);
+    else if (at > 0) limit = (aE - alpha[at - 1]) / (E - x[at - 1]);
+    else if (past < x.size()) limit = (alpha[past] - aE) / (x[past] - E);
+    if (E > 0) limit /= 2 * E;
+    double sum = 0;
+    for (std::size_t k = 1; k < x.size(); ++k) {
+        auto f = [&](std::size_t i) { return i >= at && i < past ? limit : (alpha[i] - aE) / (x[i] * x[i] - E * E); };
+        sum += 0.5 * (f(k) + f(k - 1)) * (x[k] - x[k - 1]);
+    }
+    // P∫_lo^hi dE'/(E'² - E²) = ln|((hi - E)(lo + E))/((hi + E)(lo - E))| / 2E.
+    if (E > 0 && std::abs(hi - E) > 1e-12 * Q && std::abs(lo - E) > 1e-12 * Q)
+        sum += aE * std::log(std::abs((hi - E) * (lo + E) / ((hi + E) * (lo - E)))) / (2 * E);
+    return C0 * Hbar / M_PI * sum;
+}
 
 std::unique_ptr<Problem> makeQuantumProblem(Solution& solution, int field)
 {

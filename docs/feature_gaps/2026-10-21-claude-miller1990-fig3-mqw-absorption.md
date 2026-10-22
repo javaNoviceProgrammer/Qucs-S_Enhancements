@@ -52,11 +52,19 @@ It took 2 minutes in the app.
 | valley | 1.525, 5.5 | 1.53, 6.0 |
 | n = 2 | 1.570, 9.4 | 1.582, 12.6 |
 | plateau after it | 1.610, 8.0 | 1.63, 12.2 |
-| n = 3 | a line at 1.745, 8.7 | 1.710, 18.2 |
+| n = 3 | a line at 1.745, 8.7 (*corrected below*: the e3-hh3 step at 1.729, 9.3) | 1.710, 18.2 |
 
 - **The 10 meV offset:** the same uniform 10 meV low at n = 1 and n = 2 as the check found.
 - **The fit:** the check's own, a α + b + c (E − 1.45) over 1.44-1.66 eV with QFEM shifted 10 meV, gives a = 0.99 and c 21 per eV, rms 0.62 ×10³/cm (the check's 0.65).
-- **n = 3:** there now, as a line at the superlattice's Γ point, but 35 meV above the measured. The check's 7-period box had its step at 1.72-1.73; one period is one point of each miniband, and M periods drawn sample them.
+- **n = 3:** there now, at the superlattice's Γ point. The check's 7-period box had its step at 1.72-1.73; one period is one point of each miniband, and M periods drawn sample them.
+
+  *Corrected by the update check of the same evening*
+  ([2026-10-21-claude-miller1990-update-check.md](2026-10-21-claude-miller1990-update-check.md), 2). The "line at
+  1.745 eV, 35 meV high" was `linewidthslope`'s doing. The free e3-hh3 edge is at 1.7236 eV at kz = 0, and
+  nothing else with an overlap lies near 1.745 eV (e3-lh2 at 1.737 and e4-hh1 at 1.746 have overlaps near 0).
+  The slope widens the lines there to 5.5 + 0.05 × 260 ≈ 18.5 meV, which smears the step and moves its apparent
+  maximum 14 meV up. Without the slope, n = 3 is at 1.729 eV, 9.3 ×10³/cm. With the 10 meV offset of n = 1 and
+  n = 2, it is some 25-30 meV above the measured 1.710 eV, not 35, and about half as high.
 - **The barriers' edge:** under `continuum: bound` with the bulk's excitons and Urbach 10 meV, it rises from 1.76 eV (7.0 to 8.8 at 1.78). The measured rises from 1.74 to over 24: the excess above 1.6 eV the check found above the bulk-GaAs ceiling remains outside a model of the wells.
 
 ## Tests

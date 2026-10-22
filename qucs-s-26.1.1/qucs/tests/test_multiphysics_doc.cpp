@@ -3895,6 +3895,14 @@ private slots:
         QString why = solve("spec");
         QVERIFY2(why.isEmpty(), qPrintable(why));
         QCOMPARE(groups(QStringLiteral("spec")), (QStringList{"Electron Probability (qw)", "Heavy Hole Probability (qw)", "The Spectrum"}));
+        // (Its absorption in 1/cm, as the panel shows it and plots made by
+        // hand: it was 1/m, 100 times another's - the update check of 21
+        // October, 5.)
+        {
+            const qucs_s::fem::Node& alpha = doc->model().find(tagOf(doc->model(), QStringLiteral("plotgroup1d"), QStringLiteral("The Spectrum")))->children.front();
+            QVERIFY2(alpha.text(QStringLiteral("expression")) == QLatin1String("qw.alphaTE; qw.alphaTM") && alpha.text(QStringLiteral("unit")) == QLatin1String("1/cm"),
+                     qPrintable(alpha.text(QStringLiteral("expression")) + QLatin1Char(' ') + alpha.text(QStringLiteral("unit"))));
+        }
         // A study with a plot group of the user's (a 1D one): none added.
         why = solve("own");
         QVERIFY2(why.isEmpty(), qPrintable(why));
