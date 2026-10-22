@@ -1507,6 +1507,33 @@ private slots:
         }
     }
 
+    // A tool that waits by itself, called through callNow with a shorter
+    // timeout of the caller's: waited for as long as the tool waits (its
+    // "timeout"), not given up on - fem_solve, asynchronous since 27968ca,
+    // was cut at a test's 120 s on CI's sanitized Linux, and its answer at
+    // the job's end wrote into callNow's frame, gone: a
+    // stack-use-after-return (CI of 38491ef).
+    void aToolsOwnWaitIsWaitedFor()
+    {
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), {}), 600);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), {{"timeout", 5}}), 5);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_build"), {}), 300);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_stop"), {}), 30);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("simulate"), {{"timeout", 45}}), 45);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("simulate"), {}), 0);
+        const QString quick = flowModel(QStringLiteral("flow_own_wait.qfem"), QStringLiteral("10[min]"));
+        MultiphysicsDoc* doc = open(quick);
+        QVERIFY(doc);
+        QElapsedTimer t;
+        t.start();
+        const QJsonObject r = control->callNow(QStringLiteral("fem_solve"), {{"path", quick}, {"timeout", int(jobWait() / 1000)}}, 1);
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(json(r).contains(QLatin1String("globals")), qPrintable(text(r)));
+        qInfo("solved through callNow in %lld ms, its own timeout 1 ms", t.elapsed());
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
     // A process flow's geometry built in the background - its anneals take
     // seconds to minutes (71 s an opening for one of the fuzz of 21
     // October's, the window frozen): the model open at once, its structure

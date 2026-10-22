@@ -2771,21 +2771,30 @@ private slots:
     // characters took 1.6 s -, and a long paragraph's inline code, a table's,
     // was looked for to its end from each backtick, each comment. Four times
     // the text now takes about four times as long, not sixteen. (Times on the
-    // same machine, the best of five: the sanitizers slow both alike.) A lone
-    // surrogate in the text is no UTF-16, and read as U+FFFD.
+    // same machine, the best of five: the sanitizers slow both alike - the
+    // two lengths timed in turn, so that a slow stretch of a loaded machine
+    // slows both: timed one after the other, CI's sanitized Linux, its
+    // tests run side by side, once had 346 then 2783 ms, 8.05 times, for
+    // what here takes 4.0.) A lone surrogate in the text is no UTF-16, and
+    // read as U+FFFD.
     void aLongReplyIsReadInLinearTime()
     {
         using qucs_s::markdown::htmlBalanced;
-        const auto best = [](const QString& md) {
-            qint64 t = std::numeric_limits<qint64>::max();
-            for (int k = 0; k < 5; ++k) {
-                QElapsedTimer clock;
-                clock.start();
-                (void)htmlBalanced(md);
-                (void)qucs_s::math::findMath(md);
-                t = std::min(t, clock.nsecsElapsed());
-            }
-            return t;
+        // (Each of two texts' best of five, in turn: ns.)
+        const auto inTurn = [](const auto& read, const QString& small, const QString& large) {
+            qint64 a = std::numeric_limits<qint64>::max(), b = a;
+            for (int k = 0; k < 5; ++k)
+                for (qint64* t : {&a, &b}) {
+                    QElapsedTimer clock;
+                    clock.start();
+                    read(t == &a ? small : large);
+                    *t = std::min(*t, clock.nsecsElapsed());
+                }
+            return std::pair{a, b};
+        };
+        const auto bothRead = [](const QString& md) {
+            (void)htmlBalanced(md);
+            (void)qucs_s::math::findMath(md);
         };
         const QString mixed = "Line with <name> and QList<Span> and <b>bold</b> `code <x>` text, $x^2$.\n\n"
                               "- item with `code` and **bold** <!-- a comment --> <br>\n- <kbd>F9</kbd> and a/b\n\n"
@@ -2801,41 +2810,24 @@ private slots:
                                                        {"<code x ", ""}, {"[l](<a ", ""}};
         for (const auto& [unit, tail] : units) {
             const QString small = unit.repeated(int(25000 / unit.size())) + tail, large = unit.repeated(4 * int(25000 / unit.size())) + tail;
-            const qint64 a = best(small), b = best(large);
+            const auto [a, b] = inTurn(bothRead, small, large);
             qInfo("%lld, then %lld characters: %.2f ms, %.2f ms", qlonglong(small.size()), qlonglong(large.size()), a / 1e6, b / 1e6);
             QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         // (findMath alone, on tags with one '>' at the end: a <code>'s, a
         // <pre>'s tag looked for no further than it.)
         {
-            const auto found = [](const QString& md) {
-                qint64 t = std::numeric_limits<qint64>::max();
-                for (int k = 0; k < 5; ++k) {
-                    QElapsedTimer clock;
-                    clock.start();
-                    (void)qucs_s::math::findMath(md);
-                    t = std::min(t, clock.nsecsElapsed());
-                }
-                return t;
-            };
-            const qint64 a = found(quoted.repeated(2000) + ">"), b = found(quoted.repeated(8000) + ">");
+            const auto [a, b] = inTurn([](const QString& md) { (void)qucs_s::math::findMath(md); }, quoted.repeated(2000) + ">", quoted.repeated(8000) + ">");
             qInfo("findMath, one '>' at the end: %.2f ms, then %.2f ms", a / 1e6, b / 1e6);
             QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }
         // (An HTML block's tags, for its marks: looked over to a '>' - none.)
         {
             const auto marked = [](const QString& md) {
-                qint64 t = std::numeric_limits<qint64>::max();
-                for (int k = 0; k < 5; ++k) {
-                    QElapsedTimer clock;
-                    clock.start();
-                    QTextDocument doc;
-                    qucs_s::markdown::setMarkdown(&doc, md);
-                    t = std::min(t, clock.nsecsElapsed());
-                }
-                return t;
+                QTextDocument doc;
+                qucs_s::markdown::setMarkdown(&doc, md);
             };
-            const qint64 a = marked("<div>\n" + quoted.repeated(2000)), b = marked("<div>\n" + quoted.repeated(8000));
+            const auto [a, b] = inTurn(marked, "<div>\n" + quoted.repeated(2000), "<div>\n" + quoted.repeated(8000));
             qInfo("an HTML block: %.2f ms, then %.2f ms", a / 1e6, b / 1e6);
             QVERIFY2(b < 8 * a, qPrintable(QString("%1 ms, then %2 ms").arg(a / 1e6).arg(b / 1e6)));
         }

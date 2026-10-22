@@ -117,8 +117,13 @@ public:
     void setAsker(quint64 caller, Asker asker) override;
 
     /// The result of a call, the event loop run until it comes (for the
-    /// tests); an error result after \a timeoutMs.
+    /// tests); an error result after \a timeoutMs - or after what the tool
+    /// itself waits (waitsFor), if longer.
     QJsonObject callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs = 30000, quint64 caller = 0);
+    /// How long \a tool waits by itself before it answers (s): fem_build's,
+    /// fem_solve's and fem_stop's "timeout" or its default, another's
+    /// "timeout" given; 0 where it does not.
+    static int waitsFor(const QString& tool, const QJsonObject& arguments);
     /// The text of a result (its text parts, joined).
     static QString textOf(const QJsonObject& result);
     /// Whether run_script is in this build (Qt's Qml module found).

@@ -106,6 +106,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <queue>
@@ -4400,28 +4401,50 @@ void QucsControl::noteSeen(quint64 caller)
     a_seen.insert(caller, seen);
 }
 
+int QucsControl::waitsFor(const QString& tool, const QJsonObject& arguments)
+{
+    const QJsonValue t = arguments.value(QLatin1String("timeout"));
+    if (tool == QLatin1String("fem_build")) return std::clamp(t.toInt(300), 1, 3600);
+    if (tool == QLatin1String("fem_solve")) return std::clamp(t.toInt(600), 1, 7200);
+    if (tool == QLatin1String("fem_stop")) return std::clamp(t.toInt(30), 1, 600);
+    return t.isDouble() ? std::clamp(t.toInt(), 0, 7 * 86400) : 0;
+}
+
 QJsonObject QucsControl::callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs, quint64 caller)
 {
-    QJsonObject result;
-    bool finished = false;
+    // What the answer finds - kept past this call: one that comes after it
+    // has given up writes here, not into a frame gone (a fem_solve answered
+    // after the test's 120 s, at its job's end: a stack-use-after-return
+    // under ASan, CI of 38491ef).
+    struct Wait {
+        QJsonObject result;
+        bool finished = false;
+        QEventLoop* loop = nullptr;
+    };
+    const auto wait = std::make_shared<Wait>();
     QEventLoop loop;
     QTimer timer;
     timer.setSingleShot(true);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    const auto take = [&](const QJsonObject& r) {
-        result = r;
-        finished = true;
-        loop.quit();
+    const auto take = [wait](const QJsonObject& r) {
+        wait->result = r;
+        wait->finished = true;
+        if (wait->loop) wait->loop->quit();
     };
     if (caller != 0) callToolFor(caller, tool, arguments, take);
     else callTool(tool, arguments, take);
-    if (!finished) {
-        timer.start(timeoutMs);
+    if (!wait->finished) {
+        // (A tool that waits by itself answers by its own end: given that
+        // and a little more - fem_solve, waited for in the call before
+        // 27968ca, was cut at the caller's 120 s.)
+        timer.start(int(std::min<qint64>(std::max<qint64>(timeoutMs, qint64(waitsFor(tool, arguments)) * 1000 + 10000), qint64(std::numeric_limits<int>::max()))));
+        wait->loop = &loop;
         ++a_spinning;
         loop.exec();
         --a_spinning;
+        wait->loop = nullptr;
     }
-    return finished ? result : errorResult(QStringLiteral("no answer in time"));
+    return wait->finished ? wait->result : errorResult(QStringLiteral("no answer in time"));
 }
 
 QString QucsControl::textOf(const QJsonObject& result)
