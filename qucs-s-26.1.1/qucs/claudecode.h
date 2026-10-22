@@ -85,6 +85,11 @@ struct TokenUsage {
     TokenUsage& operator+=(const TokenUsage& other);
     bool operator==(const TokenUsage&) const = default;
 };
+/// A count of tokens as a message gives it: whole, not below nought, not
+/// past 1e15 (a garbled 1e308 was converted past qint64's range, and sums
+/// of such wrapped round - the fuzzing of 22 October). Sums of them stop at
+/// 1e18, so that a total of four never wraps either.
+qint64 tokenCount(const QJsonValue& value);
 /// The tokens a result reports (its "modelUsage", every model's summed:
 /// the program's totals since it started; or, from a program that has
 /// none, its "usage": the turn's, of the main loop alone). \a running

@@ -242,29 +242,42 @@ QJsonValue promptContent(const QString& prompt, const QStringList& images)
     return blocks;
 }
 
+namespace {
+// A whole number a message gives, 0 to \a most (a double past qint64's
+// range converted is undefined).
+qint64 wholeOf(const QJsonValue& value, double most)
+{
+    const double v = value.toDouble();
+    return std::isfinite(v) && v > 0 ? qint64(std::min(v, most)) : 0;
+}
+} // namespace
+
+qint64 tokenCount(const QJsonValue& value)
+{
+    return wholeOf(value, 1e15);
+}
+
 TokenUsage& TokenUsage::operator+=(const TokenUsage& other)
 {
-    input += other.input;
-    output += other.output;
-    cacheRead += other.cacheRead;
-    cacheWrite += other.cacheWrite;
+    static constexpr qint64 most = 1'000'000'000'000'000'000;
+    const auto add = [](qint64& a, qint64 b) { a = std::min(most, std::clamp<qint64>(a, 0, most) + std::clamp<qint64>(b, 0, most)); };
+    add(input, other.input);
+    add(output, other.output);
+    add(cacheRead, other.cacheRead);
+    add(cacheWrite, other.cacheWrite);
     return *this;
 }
 
 TokenUsage tokensOf(const QJsonObject& result, bool* running)
 {
-    const auto count = [](const QJsonObject& o, const char* name) {
-        return std::max<qint64>(0, qint64(o.value(QLatin1String(name)).toDouble()));
-    };
+    const auto count = [](const QJsonObject& o, const char* name) { return tokenCount(o.value(QLatin1String(name))); };
     TokenUsage tokens;
     const QJsonObject models = result.value(QLatin1String("modelUsage")).toObject();
     if (!models.isEmpty()) {
         for (auto it = models.begin(); it != models.end(); ++it) {
             const QJsonObject m = it.value().toObject();
-            tokens.input += count(m, "inputTokens");
-            tokens.output += count(m, "outputTokens");
-            tokens.cacheRead += count(m, "cacheReadInputTokens");
-            tokens.cacheWrite += count(m, "cacheCreationInputTokens");
+            tokens += TokenUsage{count(m, "inputTokens"), count(m, "outputTokens"), count(m, "cacheReadInputTokens"),
+                                 count(m, "cacheCreationInputTokens")};
         }
         if (running != nullptr) *running = true;
         return tokens;
@@ -1295,7 +1308,7 @@ void Session::handleLine(const QByteArray& line)
         const QJsonObject info = m.value(QLatin1String("rate_limit_info")).toObject();
         const QString status = info.value(QLatin1String("status")).toString();
         if (!status.isEmpty() && status != QLatin1String("allowed") && status != QLatin1String("allowed_warning")) {
-            const qint64 resets = qint64(info.value(QLatin1String("resetsAt")).toDouble());
+            const qint64 resets = wholeOf(info.value(QLatin1String("resetsAt")), 1e11);
             emit notice(resets > 0 ? tr("Usage limit reached; it resets at %1.")
                                          .arg(QLocale().toString(QDateTime::fromSecsSinceEpoch(resets).time(),
                                                                  QLocale::ShortFormat))
@@ -1574,10 +1587,12 @@ void Session::handleResult(const QJsonObject& m)
     r.subtype = m.value(QLatin1String("subtype")).toString();
     r.ok = !m.value(QLatin1String("is_error")).toBool() && r.subtype == QLatin1String("success");
     r.text = m.value(QLatin1String("result")).toString();
-    r.durationMs = qint64(m.value(QLatin1String("duration_ms")).toDouble());
+    r.durationMs = wholeOf(m.value(QLatin1String("duration_ms")), 1e13);
     // The program reports what it has cost since it started: the turn's
-    // is what was added.
-    const double reported = m.value(QLatin1String("total_cost_usd")).toDouble();
+    // is what was added. (Not a sum past any conversation's: taken as
+    // what was reported before.)
+    double reported = m.value(QLatin1String("total_cost_usd")).toDouble();
+    if (!(reported >= 0 && reported < 1e9)) reported = a_reportedCost;
     r.costUsd = std::max(0.0, reported - a_reportedCost);
     a_reportedCost = std::max(a_reportedCost, reported);
     a_conversationCost += r.costUsd;

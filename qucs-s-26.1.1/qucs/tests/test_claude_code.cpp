@@ -69,6 +69,7 @@
 #include "mathtypeset.h"
 #include <functional>
 #include <QTextFrame>
+#include <QTextList>
 #include <QTextTable>
 #include "config.h"
 #include "isolated_settings.h"
@@ -890,6 +891,36 @@ private slots:
         }
     }
 
+    void numbersPastAnyRangeAreBounded()
+    {
+        // The fuzzing of 22 October: a garbled result's 1e308 tokens were
+        // converted past qint64's range, and two of them summed wrapped
+        // round (undefined both; CI's sanitizers stop at the first) - so too
+        // a rate limit's reset time and a turn's duration.
+        using qucs_s::claude::TokenUsage;
+        QCOMPARE(qucs_s::claude::tokenCount(QJsonValue(1e308)), qint64(1e15));
+        QCOMPARE(qucs_s::claude::tokenCount(QJsonValue(-5.0)), qint64(0));
+        QCOMPARE(qucs_s::claude::tokenCount(QJsonValue(QStringLiteral("12"))), qint64(0));
+        QCOMPARE(qucs_s::claude::tokenCount(QJsonValue(42.7)), qint64(42));
+        TokenUsage sum{std::numeric_limits<qint64>::max(), 0, 0, 0};
+        sum += TokenUsage{std::numeric_limits<qint64>::max(), 1, 1, 1};
+        QCOMPARE(sum.input, qint64(1'000'000'000'000'000'000));
+        QVERIFY(sum.total() > 0);
+        Session s;
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QSignalSpy notices(&s, &Session::notice);
+        const QByteArray huge = R"({"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"x","duration_ms":1e308,"total_cost_usd":1e308,)"
+                                R"("modelUsage":{"a":{"inputTokens":1e308,"outputTokens":1e308},"b":{"inputTokens":1e308,"outputTokens":1e308}}})";
+        for (int i = 0; i < 3; ++i) s.handleLine(huge);
+        QCOMPARE(turns.count(), 3);
+        const auto r = turns.last().at(0).value<TurnResult>();
+        QVERIFY(r.conversationTokens.total() > 0);
+        QVERIFY(r.durationMs > 0);
+        QVERIFY(r.conversationCostUsd >= 0 && r.conversationCostUsd < 1e9);
+        s.handleLine(R"({"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1e308}})");
+        QCOMPARE(notices.count(), 1);
+    }
+
     // A whole turn with the program: the prompt goes in, the permission
     // request comes out and its answer goes back (edits allowed for the
     // session), the turn ends with the file it wrote. Stopped, the program
@@ -1356,13 +1387,342 @@ private slots:
         panel.renderNow();
         QTest::qWait(60);
         QCOMPARE(bar->value(), kept);
-        // A prompt sent: the end followed again.
+        // Back at the end, a prompt sent: the end still followed. (Sent from
+        // above, the view stays there: aReaderScrolledUpStaysPut.)
+        bar->setValue(bar->maximum());
         panel.session()->setProgram(script("follow-broken", kBroken));
         panel.composer()->setPlainText(QStringLiteral("Where were we?"));
         panel.sendComposer();
         panel.renderNow();
         QTest::qWait(60);
         QVERIFY2(atEnd(), qPrintable(QStringLiteral("at %1 of %2").arg(bar->value()).arg(bar->maximum())));
+    }
+
+    void aReaderScrolledUpStaysPut_data()
+    {
+        QTest::addColumn<bool>("over");
+        QTest::newRow("scroll bars beside the text") << false;
+        QTest::newRow("scroll bars over the text (macOS)") << true;
+    }
+
+    void aReaderScrolledUpStaysPut()
+    {
+        // (Scroll bars over the text, as macOS has them: one shown or hidden
+        // makes the view no narrower, nothing laid out again for it.)
+        QFETCH(bool, over);
+        const QString style = QApplication::style()->name();
+        struct Over : QProxyStyle {
+            using QProxyStyle::QProxyStyle;
+            int styleHint(StyleHint hint, const QStyleOption* option, const QWidget* widget, QStyleHintReturn* data) const override
+            {
+                return hint == SH_ScrollBar_Transient ? 1 : QProxyStyle::styleHint(hint, option, widget, data);
+            }
+        };
+        if (over) QApplication::setStyle(new Over(QStringLiteral("Fusion")));
+        const auto restore = qScopeGuard([&style, over] { if (over) QApplication::setStyle(style); });
+        // The user's two reports of 22 October: scrolled up, a reply coming
+        // in moved the scroll bar down and back up; a prompt sent took the
+        // view to the end. What the reader sees - the bar's place and range,
+        // the paragraph at the view's top - looked at each pass of the event
+        // loop while replies, an image, notes and a prompt come in.
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("stayput"));
+        panel.session()->setProgram("claude");   // (not run)
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        auto reply = [&panel](const QString& text) {
+            const QJsonObject m{{"type", "assistant"}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", text}}}}}}};
+            panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact));
+        };
+        QImage picture(600, 900, QImage::Format_RGB32);
+        picture.fill(Qt::darkBlue);
+        const QString png = fresh("stayput") + QStringLiteral("/plot.png");
+        QVERIFY(picture.save(png));
+        for (int r = 0; r < 6; ++r) {
+            QString text;
+            for (int i = 0; i < 150; ++i) text += QStringLiteral("Reply %1 paragraph %2, some words to wrap across the panel's width.\n\n").arg(r).arg(i);
+            reply(text);
+        }
+        panel.renderNow();
+        QTest::qWait(300);
+        QTextBrowser* view = panel.transcript();
+        QScrollBar* bar = view->verticalScrollBar();
+        QVERIFY(bar->maximum() > 5000);
+        bar->setValue(bar->maximum() / 3);
+        QTest::qWait(50);
+        const int kept = bar->value();
+        const int range = bar->maximum();
+        auto top = [view] { return view->cursorForPosition(QPoint(20, 20)).block().text(); };
+        const QString reading = top();
+        QVERIFY(reading.startsWith(QLatin1String("Reply")));
+        QStringList seen;
+        QTimer look;
+        look.setInterval(0);
+        int lastRange = range;
+        connect(&look, &QTimer::timeout, this, [&bar, &kept, &reading, &lastRange, &seen, &top] {
+            if (bar->value() != kept || top() != reading || bar->maximum() < lastRange)
+                if (seen.size() < 8) seen << QStringLiteral("at %1 of %2 (was %3 of %4), top \"%5\"").arg(bar->value()).arg(bar->maximum()).arg(kept).arg(lastRange).arg(top().left(40));
+            lastRange = bar->maximum();
+        });
+        look.start();
+        for (int k = 0; k < 6; ++k) {
+            if (k % 2 == 0) reply(QStringLiteral("A plot:\n\n![plot](%1)\n\nand after it %2.").arg(QUrl::fromLocalFile(png).toString()).arg(k));
+            else {
+                QString text;
+                for (int i = 0; i < 80; ++i) text += QStringLiteral("Later %1 paragraph %2, words.\n\n").arg(k).arg(i);
+                reply(text);
+            }
+            panel.addNote(QStringLiteral("note %1").arg(k));
+            QTest::qWait(150);
+        }
+        // A prompt sent while reading above: left where it is too.
+        panel.session()->setProgram(script("stayput-broken", kBroken));
+        panel.composer()->setPlainText(QStringLiteral("Where were we?"));
+        panel.sendComposer();
+        QTest::qWait(400);
+        // The plot written again (Claude made it anew): all of it drawn
+        // afresh, the view where it was. (Laid out by Qt in steps after it,
+        // the bar's range was first a guess - 40072 for 33107 -, its handle
+        // moving as it came right.)
+        QImage again(600, 900, QImage::Format_RGB32);
+        again.fill(Qt::darkRed);
+        QTest::qWait(20);
+        QVERIFY(again.save(png));
+        panel.addNote(QStringLiteral("the plot made again"));
+        panel.renderNow();
+        QCOMPARE(panel.renderedFrom(), qsizetype(0));
+        QTest::qWait(300);
+        look.stop();
+        QVERIFY2(seen.isEmpty(), qPrintable(seen.join(QLatin1String("; "))));
+        QCOMPARE(bar->value(), kept);
+        QVERIFY(bar->maximum() > range);
+        // Back at the end: followed again.
+        bar->setValue(bar->maximum());
+        reply(QStringLiteral("At the end again."));
+        QTest::qWait(150);
+        QVERIFY2(bar->value() >= bar->maximum() - 2, qPrintable(QStringLiteral("at %1 of %2").arg(bar->value()).arg(bar->maximum())));
+    }
+
+    // The transcript as drawn: each block - its frame, list, formats,
+    // fragments. (Not the document's numbers for its lists and frames, which
+    // go on counting as some are taken out.)
+    static QString drawn(QTextDocument* doc)
+    {
+        const auto props = [](const QTextFormat& f) {
+            QMap<int, QVariant> p = f.properties();
+            p.remove(QTextFormat::ObjectIndex);
+            return p;
+        };
+        QString out;
+        QDebug d(&out);
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+            QTextFrame* frame = QTextCursor(b).currentFrame();
+            int depth = 0;
+            for (QTextFrame* f = frame; f != nullptr; f = f->parentFrame()) ++depth;
+            d << "\nblock" << depth << props(frame->frameFormat()) << props(b.blockFormat()) << props(b.charFormat());
+            if (QTextList* list = b.textList()) d << "list" << props(list->format()) << list->itemNumber(b) << list->count();
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) d << "\n  " << it.fragment().text() << props(it.fragment().charFormat());
+        }
+        return out;
+    }
+
+    void aRenderDrawsWhatChangedAlone()
+    {
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("parts"));
+        panel.session()->setProgram("claude");   // (not run)
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QTextDocument* doc = panel.transcript()->document();
+        auto feed = [&panel](const QJsonObject& m) { panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact)); };
+        auto reply = [&feed](const QString& text) {
+            feed({{"type", "assistant"}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", text}}}}}}});
+        };
+        auto delta = [&feed](const QString& text) {
+            feed({{"type", "stream_event"},
+                  {"event", QJsonObject{{"type", "content_block_delta"}, {"delta", QJsonObject{{"type", "text_delta"}, {"text", text}}}}}});
+        };
+        auto begin = [&feed] {
+            feed({{"type", "stream_event"},
+                  {"event", QJsonObject{{"type", "content_block_start"}, {"content_block", QJsonObject{{"type", "text"}, {"text", ""}}}}}});
+        };
+        auto tool = [&feed](const QString& id, const QString& name, const QJsonObject& input) {
+            feed({{"type", "assistant"},
+                  {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "tool_use"}, {"id", id}, {"name", name}, {"input", input}}}}}}});
+        };
+        auto result = [&feed](const QString& id, const QString& text) {
+            feed({{"type", "user"},
+                  {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "tool_result"}, {"tool_use_id", id}, {"content", text}}}}}}});
+        };
+        QImage red(120, 80, QImage::Format_RGB32);
+        red.fill(Qt::red);
+        const QString png = fresh("parts") + QStringLiteral("/plot.png");
+        QVERIFY(red.save(png));
+        // Each change drawn in part and drawn whole: the same transcript.
+        int checks = 0;
+        auto same = [&panel, &doc, &checks](const char* what, qsizetype from) {
+            panel.renderNow();
+            const QString part = drawn(doc);
+            const qsizetype drewFrom = panel.renderedFrom();
+            panel.renderNow(true);
+            const QString whole = drawn(doc);
+            if (part != whole) {
+                const QStringList a = part.split(QLatin1Char('\n')), b = whole.split(QLatin1Char('\n'));
+                qsizetype i = 0;
+                while (i < a.size() && i < b.size() && a.at(i) == b.at(i)) ++i;
+                qWarning("%s: line %lld\n  in part: %s\n  whole:   %s", what, qint64(i), qPrintable(a.value(i).left(400)), qPrintable(b.value(i).left(400)));
+            }
+            QVERIFY2(part == whole, what);
+            if (from >= 0) QVERIFY2(drewFrom == from, qPrintable(QStringLiteral("%1: drawn from part %2, not %3").arg(what).arg(drewFrom).arg(from)));
+            ++checks;
+        };
+        panel.addNote(QStringLiteral("a note first"));
+        same("a note", -1);
+        reply(QStringLiteral("# A reply\n\n- one\n- two with $x^2$\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```cpp\nint x;\n```\n\n![plot](%1)\n\n$$\\int_0^1 f\\,dx$$").arg(QUrl::fromLocalFile(png).toString()));
+        same("a reply after it", 1);
+        tool(QStringLiteral("t1"), QStringLiteral("Bash"), QJsonObject{{"command", "ls"}});
+        same("a tool", 2);
+        tool(QStringLiteral("t2"), QStringLiteral("Read"), QJsonObject{{"file_path", "/x/a.sch"}});
+        same("a second tool: one row", 2);
+        result(QStringLiteral("t1"), QStringLiteral("a.sch\nb.sch"));
+        result(QStringLiteral("t2"), QStringLiteral("<Qucs Schematic>"));
+        same("their results", 2);
+        // (A click draws at once.)
+        panel.toggle(QStringLiteral("group:t1"));
+        QCOMPARE(panel.renderedFrom(), 2);
+        same("the row opened", -1);
+        panel.toggle(QStringLiteral("tool:t1"));
+        QCOMPARE(panel.renderedFrom(), 2);
+        same("a tool opened", -1);
+        begin();
+        delta(QStringLiteral("Streaming "));
+        same("a reply begun", 3);
+        QVERIFY(panel.transcriptText().contains(QLatin1String("Streaming")));
+        for (int i = 0; i < 6; ++i) {
+            delta(QStringLiteral("piece %1 of it with **bold** and $y_%1$. ").arg(i));
+            same("a piece of it", 3);
+        }
+        QVERIFY(panel.transcriptText().contains(QLatin1String("piece 5 of it")));
+        feed({{"type", "result"}, {"subtype", "success"}, {"is_error", false}, {"result", "done"}, {"duration_ms", 4000}, {"num_turns", 3},
+              {"total_cost_usd", 0.01}, {"usage", QJsonObject{{"input_tokens", 100}, {"output_tokens", 50}}}});
+        same("the turn's end", 3);
+        panel.addNote(QStringLiteral("a note after"));
+        same("a note after", -1);
+        // An earlier row folded again: drawn from it.
+        panel.toggle(QStringLiteral("group:t1"));
+        QCOMPARE(panel.renderedFrom(), 2);
+        same("an earlier row folded", -1);
+        // Nothing changed: nothing drawn.
+        panel.renderNow();
+        const qsizetype nothing = panel.renderedFrom();
+        panel.renderNow();
+        QCOMPARE(panel.renderedFrom(), nothing);
+        QVERIFY(nothing >= 5);
+        // The plot written again: read again, all drawn afresh.
+        QImage blue(60, 240, QImage::Format_RGB32);
+        blue.fill(Qt::blue);
+        QTest::qWait(20);
+        QVERIFY(blue.save(png));
+        panel.addNote(QStringLiteral("the plot made again"));
+        same("an image written again", 0);
+        const QVariant shown = doc->resource(QTextDocument::ImageResource, QUrl::fromLocalFile(png));
+        const QSize size = shown.typeId() == QMetaType::QImage ? shown.value<QImage>().size() : shown.value<QPixmap>().size();
+        QCOMPARE(size, QSize(60, 240));
+        // Another theme: all drawn again.
+        QPalette dark = panel.palette();
+        dark.setColor(QPalette::Base, QColor(20, 20, 20));
+        dark.setColor(QPalette::Text, QColor(230, 230, 230));
+        panel.setPalette(dark);
+        same("another theme", 0);
+        // A reply ending in an image (fitted once drawn), one streamed after
+        // it: the block that starts it not of the image's format, fitted or
+        // not (the fuzzing: a block's own format the image's, as it was).
+        panel.renderNow();
+        const qsizetype before = panel.renderedFrom();   // (nothing to draw: the parts there are)
+        reply(QStringLiteral("The plot:\n\n![plot](%1)").arg(QUrl::fromLocalFile(png).toString()));
+        same("a reply ending in an image", before);
+        begin();
+        delta(QStringLiteral("And after it."));
+        same("a reply after the image", before + 1);
+        delta(QStringLiteral(" More."));
+        same("more of it", before + 1);
+        // A prompt (a frame, the block after it the next part's first), a
+        // reply streamed after it drawn again and again.
+        panel.session()->setProgram(script("parts-broken", kBroken));
+        panel.composer()->setPlainText(QStringLiteral("A question"));
+        panel.sendComposer();
+        QTRY_VERIFY(panel.transcriptText().contains(QLatin1String("Invalid API key")));
+        same("a prompt", -1);
+        panel.renderNow();
+        const qsizetype prompt = panel.renderedFrom();
+        begin();
+        delta(QStringLiteral("Answer"));
+        same("an answer begun", prompt);
+        delta(QStringLiteral(" more."));
+        same("an answer after a prompt", prompt);
+        // (Drawn in part again and again: nothing kept to undo.)
+        QCOMPARE(doc->availableUndoSteps(), 0);
+
+        // A prompt edited and sent again: while the conversation goes back,
+        // no prompt before it can be edited - their Edit links drawn again,
+        // gone and back.
+        const auto you = [](const QString& text, const QString& at) {
+            return QJsonObject{{"kind", 0}, {"text", text}, {"session", "s-1"}, {"at", at}};
+        };
+        const auto said = [](const QString& text) { return QJsonObject{{"kind", 1}, {"text", text}}; };
+        panel.restoreConversation(QJsonObject{{"entries", QJsonArray{you("First", ""), said("One."), you("Second", "u-1"), said("Two.")}}});
+        same("a conversation kept", 0);
+        QVERIFY(panel.transcriptText().contains(QLatin1String("Edit")));
+        QVERIFY(panel.editPrompt(2));
+        same("a prompt being edited", -1);
+        panel.composer()->setPlainText(QStringLiteral("Second, changed"));
+        panel.sendComposer();
+        same("sent again: no prompt to edit while it goes back", 0);
+        QVERIFY(!panel.transcriptText().contains(QLatin1String("Edit")));
+        QTRY_VERIFY(panel.transcriptText().contains(QLatin1String("Invalid API key")));
+        same("its program failed", -1);
+
+        // A turn's line drawn right after a prompt (in the block after its
+        // frame), then all it tells hidden: that block as it was before.
+        const int usage = ClaudeCodePanel::usageShown();
+        ClaudeCodePanel::setUsageShown(ClaudeCodePanel::PromptTokens);
+        panel.restoreConversation(QJsonObject{{"entries", QJsonArray{you("Third", ""),
+                                                                     QJsonObject{{"kind", 5}, {"text", ""},
+                                                                                 {"tokens", QJsonObject{{"input", 5}, {"output", 7}}},
+                                                                                 {"allTokens", QJsonObject{{"input", 5}, {"output", 7}}}}}}});
+        same("a prompt and its turn's line", 0);
+        QVERIFY(panel.transcriptText().contains(QLatin1String("12 tokens")));
+        ClaudeCodePanel::setUsageShown(0);
+        same("its turn's line hidden", 1);
+        QVERIFY(!panel.transcriptText().contains(QLatin1String("tokens")));
+        ClaudeCodePanel::setUsageShown(usage);
+        QVERIFY(checks > 25);
+
+        // A long conversation: a streamed piece drawn in a moment.
+        panel.newConversation();
+        for (int r = 0; r < 120; ++r) {
+            QString text;
+            for (int i = 0; i < 30; ++i) text += QStringLiteral("Reply %1 paragraph %2 with **bold** words and `code` to wrap across the panel's width.\n\n").arg(r).arg(i);
+            reply(text);
+        }
+        panel.renderNow();
+        begin();
+        QElapsedTimer t;
+        qint64 slowest = 0;
+        for (int i = 0; i < 10; ++i) {
+            delta(QStringLiteral("more %1 ").arg(i));
+            t.start();
+            panel.renderNow();
+            slowest = std::max(slowest, t.elapsed());
+            QCOMPARE(panel.renderedFrom(), 120);
+        }
+        QVERIFY(panel.transcriptText().contains(QLatin1String("more 9")));
+        qInfo("a streamed piece after 120 replies: %lld ms at most", slowest);
+#ifdef NDEBUG
+        QVERIFY2(slowest < 60, qPrintable(QString::number(slowest)));
+#endif
     }
 
     void longRepliesMathRendersAtOnce()
