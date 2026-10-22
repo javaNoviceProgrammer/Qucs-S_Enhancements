@@ -1,0 +1,41 @@
+diff --git a/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp b/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp
+index f57953a..0d91a6b 100644
+--- a/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp
++++ b/qucs-s-26.1.1/qucs/tests/test_claude_code.cpp
+@@ -1252,6 +1252,36 @@ private slots:
+         panel.session()->stop();
+     }
+ 
++    void huntStreaming()   // HUNT
++    {
++        ClaudeCodePanel panel;
++        panel.setDefaultDirectory(fresh("huntstream"));
++        panel.session()->setProgram("claude");
++        panel.resize(440, 700);
++        panel.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&panel));
++        for (int r = 0; r < 40; ++r) {
++            QString text = QStringLiteral("Reply %1:").arg(r);
++            for (int i = 0; i < 25; ++i) text += QStringLiteral(" with $E_{%1} = \\hbar\\omega_{%1}$,").arg(i);
++            const QJsonObject m{{"type", "assistant"}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", text}}}}}}};
++            panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact));
++        }
++        panel.renderNow();
++        panel.session()->handleLine(R"({"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}})");
++        // 50 pieces of a reply, one each 20 ms (a reply as it is written): the event loop's longest stall.
++        QElapsedTimer t; t.start();
++        qint64 worst = 0, last = 0;
++        for (int i = 0; i < 50; ++i) {
++            const QJsonObject delta{{"type", "stream_event"}, {"event", QJsonObject{{"type", "content_block_delta"}, {"delta", QJsonObject{{"type", "text_delta"}, {"text", QStringLiteral("word%1 ").arg(i)}}}}}};
++            panel.session()->handleLine(QJsonDocument(delta).toJson(QJsonDocument::Compact));
++            QTest::qWait(20);
++            const qint64 now = t.elapsed();
++            worst = std::max(worst, now - last);
++            last = now;
++        }
++        qInfo("HUNT 50 streamed pieces 20 ms apart over 1000 formulas in 40 replies: %lld ms in all (1000 meant), the longest step %lld ms", t.elapsed(), worst);
++    }
++
+     // A program that fails says why: its exit code and what it wrote.
+     void aFailingProgramIsReported()
+     {

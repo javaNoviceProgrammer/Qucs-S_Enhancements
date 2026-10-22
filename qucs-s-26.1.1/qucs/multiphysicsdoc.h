@@ -172,6 +172,10 @@ public:
     /// background, and what waits for it - to end, \a ms at most; whether
     /// they ended.
     bool waitForJob(int ms = 120000);
+    /// As waitForJob(), but returning at once: \a then is told when they
+    /// ended (true), or \a ms passed or the model went (false) - once. Held
+    /// meanwhile as a wait is (closeWhenFree()).
+    void whenJobEnds(int ms, std::function<void(bool ended)> then);
     /// Stops the job running, else what is built in the background.
     void cancelJob();
     /// Waited for now (a tool waiting for its geometry or its solve, the

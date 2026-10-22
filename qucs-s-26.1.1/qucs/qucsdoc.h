@@ -96,6 +96,16 @@ public:
   void setSimTime(const QString& value) { a_SimTime = value; }
   QDateTime getLastSaved() const { return a_lastSaved; }
   void setLastSaved(const QDateTime& value) { a_lastSaved = value; }
+  /// Whether a file dated \a onDisk is not as it was last loaded or saved
+  /// here (getLastSaved() valid): newer than then - or, that date in the
+  /// future (a file unpacked from a time zone ahead, a fast clock), any
+  /// other date. (Newer alone: every later change, dated now, was taken for
+  /// older and never loaded until the clock passed it - the hunt of 21
+  /// October, B5.)
+  bool changedOnDisk(const QDateTime& onDisk) const
+  {
+    return a_lastSaved > QDateTime::currentDateTime() ? onDisk != a_lastSaved : onDisk > a_lastSaved;
+  }
 
   /// The revision of the content: it counts every edit, undo, redo and
   /// reload, whoever made it - so that a reader can tell the document

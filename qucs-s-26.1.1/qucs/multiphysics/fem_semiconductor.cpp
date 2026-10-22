@@ -1487,7 +1487,11 @@ bool SemiconductorProblem::setup(QString* error)
             a_refNi = m.ni;
             referenced = true;
         }
-        auto value = [&](const Node* f, const QString& key, const Dim& dim, const QString& model) { return number(param(f, key, d, model), dim, where); };
+        // (Its model and key named: "it is inf, not a finite number" said
+        // which domain alone.)
+        auto value = [&](const Node* f, const QString& key, const Dim& dim, const QString& model) {
+            return number(param(f, key, d, model), dim, tr("%1: %2, %3").arg(where, model, key));
+        };
         if (mf && mf->text(QStringLiteral("mobility")) == QLatin1String("masetti")) {
             m.masetti = true;
             const char* keys[2][8] = {{"m1n", "m2n", "mu1n", "pcn", "crn", "csn", "man", "mbn"}, {"m1p", "m2p", "mu1p", "pcp", "crp", "csp", "map", "mbp"}};
@@ -1498,8 +1502,10 @@ bool SemiconductorProblem::setup(QString* error)
             for (int c = 0; c < 2; ++c) {
                 const QString key = c == 0 ? QStringLiteral("mmaxn") : QStringLiteral("mmaxp");
                 const QString text = param(mf, key, d, tr("Masetti's mobility"));
-                m.msMax[c] = text.trimmed().isEmpty() ? (c == 0 ? m.mun : m.mup) : number(text, mobility, where);
-                if (!(m.msMax[c] > 0)) problem(tr("%1: Masetti's µmax must be more than 0").arg(where));
+                m.msMax[c] = text.trimmed().isEmpty() ? (c == 0 ? m.mun : m.mup)
+                                                       : number(text, mobility, tr("%1: %2, %3").arg(where, tr("Masetti's mobility"), key));
+                // (Not a number: said already.)
+                if (!std::isnan(m.msMax[c]) && !(m.msMax[c] > 0)) problem(tr("%1: Masetti's µmax must be more than 0").arg(where));
             }
             for (int c = 0; c < 2; ++c)
                 if (!(m.ms[c][4] > 0) || !(m.ms[c][5] > 0) || !std::isfinite(m.ms[c][6]) || !std::isfinite(m.ms[c][7]))

@@ -3288,7 +3288,8 @@ void countsCapped(const Node& node, std::initializer_list<const char*> keys, int
     if (!warnings) return;
     for (const char* key : keys) {
         const QString k = QString::fromLatin1(key);
-        if (!node.text(k).trimmed().isEmpty() && node.integer(k) > most)
+        if (node.text(k).trimmed().isEmpty()) continue;
+        if (node.integer(k) > most)
             *warnings << tr("%1: its %2 %3 taken as %4, the most it takes").arg(node.name(), k).arg(node.integer(k)).arg(most);
     }
 }
@@ -3328,7 +3329,7 @@ bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOpt
     // An energy: eV as a plain number or a voltage, J as such.
     auto energy = [&](const QString& key, const QString& what, double* out) {
         const Expression e = Expression::compile(node.text(key), scope);
-        if (!e.isValid() || !e.isConstant() || e.constant() < 0) {
+        if (!e.isValid() || !e.isConstant() || !(e.constant() >= 0) || !std::isfinite(e.constant())) {
             *error = tr("%1: %2: %3").arg(node.name(), what, e.isValid() ? tr("it must be a constant of 0 or more") : e.error());
             return false;
         }
@@ -3344,6 +3345,8 @@ bool spectrumOptionsOf(const Node& node, const Scope& scope, detail::SpectrumOpt
     o.excitonSize = node.integer(QStringLiteral("excitonsize"));
     o.excitonDrawn = node.flag(QStringLiteral("excitondrawn"));
     countsCapped(node, {"excitonpairs"}, 64, warnings);
+    if (warnings && node.integer(QStringLiteral("excitonpairs")) < 0)
+        *warnings << tr("%1: its excitonpairs %2 taken as 0, the defaults").arg(node.name()).arg(node.integer(QStringLiteral("excitonpairs")));
     o.excitonPairs = std::clamp(node.integer(QStringLiteral("excitonpairs")), 0, 64);
     if (o.excitonSize != 0 && (o.excitonSize < 100 || o.excitonSize > 20000)) {
         *error = tr("%1: the coupled excitons' size: a whole number from 100 to 20000").arg(node.name());

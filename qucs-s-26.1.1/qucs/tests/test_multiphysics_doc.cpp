@@ -1408,6 +1408,105 @@ private slots:
     // surface); fem_plot its net doping as a colour map and its profile down
     // the middle on a log axis, a measured SIMS CSV beside it; the panel's
     // buttons on a step make the same.
+    // A process flow of a substrate, an implant and an anneal of \a time,
+    // its electrostatics solved: \a name in the workspace.
+    QString flowModel(const QString& name, const QString& time)
+    {
+        const QString file = path(name);
+        const QString grid = slowBuild() ? QStringLiteral(R"("dx": "100[nm]", "dy": "4[nm]")") : QStringLiteral(R"("dx": "50[nm]", "dy": "2[nm]")");
+        QFile f(file);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return {};
+        f.write(QStringLiteral(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "um",
+          "geometry": [{"type": "process", "tag": "pf1", "width": "2", %1, "depth": "1", "features": [
+              {"type": "substrate", "tag": "sub", "label": "si", "material": "Silicon", "thickness": "2", "dopant": "P", "concentration": "1e15"},
+              {"type": "implant", "tag": "imp", "species": "B", "energy": "40", "dose": "1e15"},
+              {"type": "diffuse", "tag": "anl", "temperature": "1000[degC]", "time": "%2"}]},
+            {"type": "form union", "tag": "fin"}],
+          "materials": [{"tag": "m1", "material": "Silicon", "selection": {"all": true}}],
+          "physics": [{"type": "electrostatics", "tag": "es", "features": [
+              {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["si"], "side": "top"}},
+              {"type": "ground", "selection": {"of": ["si"], "side": "bottom"}}]}],
+          "mesh": {"size": "normal", "custom": true, "hmax": "0.2"}}],
+          "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "stationary"}]}]})")
+                    .arg(grid, time)
+                    .toUtf8());
+        return file;
+    }
+
+    // A model saved here is not read again by the window's watcher: its
+    // save is dated by the clock, not by the file (a change on disk is a date
+    // newer than it - or, that date in the future, any other: the hunt of 21
+    // October, B5). Read again, its steps of Undo were gone.
+    void aModelSavedHereIsNotReadAgain()
+    {
+        MultiphysicsDoc* doc = open(copyOf(QStringLiteral("bratu_ode.qfem")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->editNode(QStringLiteral("cln1"), [](qucs_s::fem::Node& n) { n.props.insert(QStringLiteral("points"), 400); }, QStringLiteral("points")));
+        QVERIFY(doc->undoStack()->count() > 0);
+        QCOMPARE(doc->save(), 0);
+        QTest::qWait(2500);   // (the watcher's 400 ms, its sync's 1.5 s)
+        QVERIFY2(doc->undoStack()->count() > 0, "read again");
+        QVERIFY(!app->statusBar()->currentMessage().contains(QLatin1String("loaded again")));
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // fem_build waits for a process flow's geometry up to its 'timeout', as
+    // for a mesh: past it, how far it is (its step) - it went on (it waited
+    // without a limit: the hunt of 21 October, B4).
+    void aFlowsBuildWaitedForUpToItsTimeout()
+    {
+        MultiphysicsDoc* doc = open(flowModel(QStringLiteral("flow_timeout.qfem"), QStringLiteral("600[min]")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->geometryBeingBuilt());
+        QElapsedTimer t;
+        t.start();
+        const QJsonObject r = call("fem_build", {{"timeout", 1}}, jobWait());
+        QVERIFY2(failed(r) && text(r).contains(QLatin1String("The geometry is still being built after 1 s"))
+                     && text(r).contains(QLatin1String("Building the geometry")) && text(r).contains(QLatin1String("it goes on")),
+                 qPrintable(text(r)));
+        QVERIFY2(t.elapsed() < 3000, qPrintable(QString::number(t.elapsed())));
+        QVERIFY(doc->geometryBeingBuilt());
+        QVERIFY2(!failed(call("fem_stop")), "stopped");
+        QVERIFY(!doc->building());
+        doc->setDocChanged(false);
+        app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(doc)));
+    }
+
+    // A call waiting for a model's job is told when that job ends, whatever
+    // is called after it meanwhile: it waited in a loop of its own, so a
+    // later call - a long one's, or a dialog's - held it back until it was
+    // over (a call sent to the background answered only then: the hunt of
+    // 21 October, B6).
+    void aWaitingCallIsNotHeldBackByLaterOnes()
+    {
+        const QString quick = flowModel(QStringLiteral("flow_quick.qfem"), QStringLiteral("10[min]"));
+        const QString slow = flowModel(QStringLiteral("flow_slow.qfem"), QStringLiteral("600[min]"));
+        MultiphysicsDoc* a = open(quick);
+        MultiphysicsDoc* b = open(slow);
+        QVERIFY(a && b);
+        QElapsedTimer t;
+        t.start();
+        qint64 solvedAt = -1;
+        QJsonObject solved;
+        control->callTool(QStringLiteral("fem_solve"), {{"path", quick}, {"timeout", int(jobWait() / 1000)}}, [&](const QJsonObject& r) {
+            solvedAt = t.elapsed();
+            solved = r;
+        });
+        QCOMPARE(solvedAt, qint64(-1));   // (not answered within the call: no loop of its own)
+        // A later call that waits longer - the slow flow's geometry -, its
+        // own loop (callNow's) running meanwhile.
+        const QJsonObject built = call("fem_build", {{"path", slow}, {"timeout", int(jobWait() / 1000)}}, jobWait());
+        const qint64 builtAt = t.elapsed();
+        QVERIFY2(!failed(built), qPrintable(text(built)));
+        QVERIFY2(solvedAt >= 0 && !failed(solved), qPrintable(text(solved)));
+        QVERIFY2(solvedAt < builtAt - 500, qPrintable(QStringLiteral("solved at %1 ms, the later build at %2 ms").arg(solvedAt).arg(builtAt)));
+        for (MultiphysicsDoc* d : {a, b}) {
+            d->setDocChanged(false);
+            app->slotFileClose(app->DocumentTab->indexOf(QucsApp::documentWidget(d)));
+        }
+    }
+
     // A process flow's geometry built in the background - its anneals take
     // seconds to minutes (71 s an opening for one of the fuzz of 21
     // October's, the window frozen): the model open at once, its structure

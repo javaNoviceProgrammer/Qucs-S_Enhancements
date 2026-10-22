@@ -1462,8 +1462,12 @@ private slots:
         QVERIFY(QDir().mkpath(dir.filePath("pictures")));
         QVERIFY(picture("pictures/plot.png", Qt::red, false));
         QFile::remove(dir.filePath("pictures/later.png"));
+        // (And links of no file: an empty one, a part, the folder - each
+        // the folder resolved, watched as an image: every file made beside
+        // the document rendered it again - the hunt of 21 October, B2.)
         const QString file = write("pictures.md", "# Pictures\n\n![plot](pictures/plot.png)\n\n![later](pictures/later.png)\n\n"
-                                                  "![web](https://example.com/badge.png)\n\n![data](data:image/png;base64,iVBORw0KGgo=)\n");
+                                                  "![web](https://example.com/badge.png)\n\n![data](data:image/png;base64,iVBORw0KGgo=)\n\n"
+                                                  "![a figure to come]()\n\n![part](#part)\n\n![folder](.)\n\n![up](pictures/..)\n");
         QucsApp app(false);
         MainGuard guard(&app);
         app.resize(1000, 800);
@@ -1491,6 +1495,7 @@ private slots:
         int renderings = 0;
         connect(md->preview()->document(), &QTextDocument::contentsChange, this, [&renderings] { ++renderings; });
         write("pictures/notes.txt", "beside them\n");
+        write("notes.txt", "beside the document\n");
         QTest::qWait(1500);
         QCOMPARE(renderings, 0);
 
@@ -1507,6 +1512,107 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(shown(Qt::magenta) > 30000 && shown(Qt::green) > 30000, 10000);
         disconnect(md->preview()->document(), nullptr, this, nullptr);
         app.closeAllFiles();
+    }
+
+    // An image is read once while its file is as it was: each render
+    // cleared the document's resources and decoded every image again (eight
+    // photos of 4000x3000, 0.53 s a render, 250 ms after each pause in
+    // typing - the hunt of 21 October, C1). Its file changed, it is read
+    // again.
+    void imagesDecodedOnce()
+    {
+        QImage picture(400, 300, QImage::Format_RGB32);
+        picture.fill(Qt::darkRed);
+        QVERIFY(picture.save(dir.filePath("once.png"), "PNG"));
+        const QString file = write("once.md", "# Once\n\n![p](once.png)\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        pump();
+        const auto shown = [md] {
+            const QVariant v = md->preview()->document()->resource(QTextDocument::ImageResource, QUrl(QStringLiteral("once.png")));
+            return v.typeId() == QMetaType::QImage ? v.value<QImage>() : QImage();
+        };
+        const QImage first = shown();
+        QVERIFY(!first.isNull());
+        md->renderNow();
+        QCOMPARE(shown().cacheKey(), first.cacheKey());
+        md->renderNow();
+        QCOMPARE(shown().cacheKey(), first.cacheKey());
+        picture.fill(Qt::darkBlue);
+        QVERIFY(picture.save(dir.filePath("once.png"), "PNG"));
+        QTRY_VERIFY_WITH_TIMEOUT(shown().cacheKey() != first.cacheKey() && shown().pixelColor(5, 5) == QColor(Qt::darkBlue), 10000);
+        app.closeAllFiles();
+    }
+
+    // A file dated in the future (unpacked from a time zone ahead, a fast
+    // clock), written again by another program - dated now, before it -: read
+    // again. (Only a newer date was a change: every later one was missed
+    // until the clock passed its date - the hunt of 21 October, B5.) Not
+    // changed, it is not read again.
+    void aFileDatedInTheFutureIsReadAgain()
+    {
+        const QString file = write("future.md", "# Future\n\nMark zero\n");
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadWrite));
+            QVERIFY(f.setFileTime(QDateTime::currentDateTime().addSecs(3 * 3600), QFileDevice::FileModificationTime));
+        }
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1000, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        QTRY_VERIFY(blockWith(md->preview()->document(), "Mark zero").isValid());
+        QVERIFY(md->getLastSaved() > QDateTime::currentDateTime());
+        QVERIFY(!md->changedOnDisk(QFileInfo(file).lastModified()));
+        int loads = 0;
+        connect(md->document(), &QTextDocument::contentsChanged, this, [&loads] { ++loads; });
+        QTest::qWait(2000);   // (the watch set; nothing changed: not read again)
+        QCOMPARE(loads, 0);
+        write("future.md", "# Future\n\nMark one\n");
+        QTRY_VERIFY_WITH_TIMEOUT(blockWith(md->preview()->document(), "Mark one").isValid(), 10000);
+        disconnect(md->document(), nullptr, this, nullptr);
+        app.closeAllFiles();
+    }
+
+    // A change waited for 400 ms after the last, as a file is written in
+    // pieces - but not past 1.5 s after the first: where each change is told
+    // at once (Linux's inotify), a file written to all the time held it off
+    // for good (the hunt of 21 October, N5).
+    void changesPutOffAtMostOneAndAHalfSeconds()
+    {
+        QTimer timer;
+        timer.setSingleShot(true);
+        timer.setInterval(400);
+        QElapsedTimer first, clock;
+        qint64 fired = -1;
+        connect(&timer, &QTimer::timeout, this, [&] {
+            if (fired < 0) fired = clock.elapsed();
+        });
+        clock.start();
+        while (clock.elapsed() < 3500 && fired < 0) {
+            misc::restartUpTo(&timer, first, 1500);
+            QTest::qWait(100);
+        }
+        QVERIFY2(fired >= 1500 && fired < 2400, qPrintable(QString::number(fired)));
+        // Changes apart: each waited for 400 ms, as before (a coarse timer's
+        // 5 % early at most).
+        fired = -1;
+        clock.start();
+        misc::restartUpTo(&timer, first, 1500);
+        QTRY_VERIFY(fired >= 0);
+        QVERIFY2(fired >= 370 && fired < 900, qPrintable(QString::number(fired)));
     }
 
     // A long document - a formula on each line, code blocks - is laid out

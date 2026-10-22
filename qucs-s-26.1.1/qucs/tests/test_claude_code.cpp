@@ -236,6 +236,34 @@ while IFS= read -r line; do
 done
 )SH";
 
+// claude whose command becomes a task between the asking and the answer:
+// the first background_tasks refused (not a task when asked) after its
+// task_started; asked again, sent. What it reads goes to race-in.
+const char* const kTaskBetween = R"SH(#!/bin/sh
+n=0
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$QUCS_FAKE_DIR/race-in"
+  id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"user"'*)
+      echo '{"type":"system","subtype":"init","session_id":"race-1","model":"claude-test-1"}'
+      echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r1","name":"Bash","input":{"command":"make all"}}]}}'
+      ;;
+    *'"subtype":"background_tasks"'*)
+      n=$((n+1))
+      if [ $n = 1 ]; then
+        echo '{"type":"system","subtype":"task_started","task_id":"k9","tool_use_id":"r1","description":"make all","is_backgrounded":false,"task_type":"local_bash"}'
+        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"backgrounded":false}}}'
+      else
+        echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"backgrounded":true}}}'
+        echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"Command was manually backgrounded by user with ID: k9.","is_error":false}]}}'
+        echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"result":"ok","total_cost_usd":0.001,"session_id":"race-1"}'
+      fi
+      ;;
+  esac
+done
+)SH";
+
 // claude that changes its model and mode as it runs, when told: a turn
 // says which it works with; "claude-refused" it will not change to - and
 // a turn under way then ends at the refusal. Each start is a line in
@@ -1250,6 +1278,96 @@ private slots:
         QCOMPARE(rightClick("claudeStopTurn"), QStringList({"Send to Background (off)", "Stop"}));
         QTRY_VERIFY_WITH_TIMEOUT(!panel.session()->isBusy(), 10000);
         panel.session()->stop();
+    }
+
+    // A refusal of a request made before the command was a task, the task
+    // said between the asking and the answer: asked again, sent - not taken
+    // for final ("could not be sent", and not asked again: the hunt of 21
+    // October, B3).
+    void aRefusalBeforeTheTaskIsAskedAgain()
+    {
+        skipWithoutShell();
+        QFile::remove(dir.filePath("race-in"));
+        Session s;
+        s.setProgram(script("taskbetween", kTaskBetween));
+        s.setWorkingDirectory(fresh("taskbetweenwork"));
+        QSignalSpy tools(&s, &Session::toolStarted);
+        QSignalSpy notices(&s, &Session::notice);
+        QSignalSpy turns(&s, &Session::turnFinished);
+        QVERIFY(s.send("Build it"));
+        QVERIFY(tools.wait(10000));
+        QCOMPARE(s.sendToBackground(), 1);
+        QVERIFY(turns.wait(10000));
+        QVERIFY(turns.last().at(0).value<TurnResult>().ok);
+        QCOMPARE(notices.count(), 0);
+        QCOMPARE(read(dir.filePath("race-in")).count("background_tasks"), 2);
+        s.stop();
+    }
+
+    // A reply of many formulas rendered at once: one edit laid out once, its
+    // marks found in one pass (laid out at each formula, each searched for
+    // from the reply's start: 1000 formulas 9.5 s a render, 2000 34 s, at
+    // every event - the hunt of 21 October, B1); and the formulas typeset
+    // kept, more than 400 of them (the cache was cleared past 400: a long
+    // conversation typeset most of its math again at each render, 40 ms
+    // apart while a reply was written - B7).
+    void longRepliesMathRendersAtOnce()
+    {
+        const auto reply = [](ClaudeCodePanel& panel, int from, int n) {
+            QString text = QStringLiteral("Here:");
+            // (A derivation: a paragraph each - a search from the reply's
+            // start for each goes over them all, block by block.)
+            for (int i = from; i < from + n; ++i) text += QStringLiteral("\n\nThen $x_{%1}^2$ follows.").arg(i);
+            const QJsonObject m{{"type", "assistant"}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", text}}}}}}};
+            panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact));
+        };
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("longmath"));
+        panel.session()->setProgram("claude");   // (not run)
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        reply(panel, 0, 1000);
+        QTextDocument* transcript = panel.transcript()->document();
+        int changes = 0;
+        connect(transcript, &QTextDocument::contentsChange, this, [&changes] { ++changes; });
+        panel.renderNow();
+        disconnect(transcript, nullptr, this, nullptr);
+        QVERIFY2(changes < 20, qPrintable(QString::number(changes)));
+        QCOMPARE(panel.transcriptText().count(QChar::ObjectReplacementCharacter), 1000);
+        // Typeset once: drawn again, none typeset again.
+        const int typeset = panel.typesetCount();
+        QVERIFY(typeset >= 1000);
+        panel.addNote(QStringLiteral("a note"));
+        panel.renderNow();
+        QCOMPARE(panel.typesetCount(), typeset);
+        // Four times the formulas, some four times the time (searched from
+        // the reply's start, ten times and more): typeset first, then timed.
+        ClaudeCodePanel shorter, longer;
+        for (auto* p : {&shorter, &longer}) {
+            p->setDefaultDirectory(fresh(p == &shorter ? "mathshort" : "mathlong"));
+            p->session()->setProgram("claude");
+            p->resize(440, 700);
+            p->show();
+            QVERIFY(QTest::qWaitForWindowExposed(p));
+        }
+        reply(shorter, 0, 500);
+        reply(longer, 0, 2000);
+        shorter.renderNow();
+        longer.renderNow();
+        const auto bestOf = [](ClaudeCodePanel& p) {
+            qint64 least = std::numeric_limits<qint64>::max();
+            for (int i = 0; i < 2; ++i) {
+                QElapsedTimer t;
+                t.start();
+                p.renderNow();
+                least = std::min(least, t.nsecsElapsed());
+            }
+            return least;
+        };
+        const qint64 quarter = bestOf(shorter), whole = bestOf(longer);
+        qInfo("2000 formulas: %g ms, 500: %g ms", whole / 1e6, quarter / 1e6);
+        QVERIFY2(whole < 8 * quarter, qPrintable(QStringLiteral("%1 ms, a quarter of it %2 ms").arg(whole / 1e6).arg(quarter / 1e6)));
     }
 
     // A program that fails says why: its exit code and what it wrote.

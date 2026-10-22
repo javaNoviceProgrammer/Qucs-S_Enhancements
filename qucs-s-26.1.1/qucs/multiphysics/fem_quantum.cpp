@@ -590,14 +590,20 @@ bool QuantumProblem::setup(QString* error)
     // An energy in eV: a plain number or a voltage as eV, joules as such.
     auto energy = [&](const QString& text, const QString& what) {
         const Expression e = Expression::compile(text, *reading);
-        if (!e.isValid() || !e.isConstant()) {
-            problem(tr("%1: %2: %3").arg(a_node->name(), what, e.isValid() ? tr("it must be a constant") : e.error()));
+        if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
+            problem(tr("%1: %2: %3").arg(a_node->name(), what, e.isValid() ? tr("it must be a finite constant") : e.error()));
             return NaN;
         }
         return e.dim() == Dim::of(2, 1, -2) ? e.constant() / Q : e.constant();
     };
     a_T = number(a_node->text(QStringLiteral("T")), Dim::temperature(), tr("its temperature"));
-    if (!(a_T > 0)) problem(tr("%1: its temperature must be more than 0").arg(a_node->name()));
+    // (Not a number: said already.)
+    if (!std::isnan(a_T) && !(a_T > 0)) problem(tr("%1: its temperature must be more than 0").arg(a_node->name()));
+    // (Solved as given, but said: 1e9 K solved without a word - the hunt of
+    // 21 October, N7.)
+    else if (a_T > 2000)
+        a_s.log << tr("Warning: %1: a temperature of %2 K, past the material library's fits (they hold to about 1000 K)")
+                       .arg(a_node->name(), formatNumber(a_T, 4));
     // Its materials' texts read T, the wells' temperature (the library's
     // gaps, densities of states and mobilities are expressions of it).
     const MaterialScope materialsAtT(constants, a_T > 0 ? a_T : 300), materialsAt300(constants, 300);
@@ -613,6 +619,10 @@ bool QuantumProblem::setup(QString* error)
     a_drawn = energy(a_node->text(QStringLiteral("drawn")), tr("the height its waves are drawn"));
     if (!std::isfinite(a_drawn)) a_drawn = 0.05;
     a_periodic = a_1d && a_node->text(QStringLiteral("ends")) == QLatin1String("periodic");
+    // (A line's alone: in 2D, walls - said; a file or a tool can set it,
+    // the dialog hides it - the hunt of 21 October, N1.)
+    if (!a_1d && a_node->text(QStringLiteral("ends")) == QLatin1String("periodic"))
+        a_s.log << tr("Warning: %1: periodic ends are a line's (1D): the walls bound this one").arg(a_node->name());
     if (a_1d) {
         a_h1d = number(a_node->text(QStringLiteral("h1d")), Dim::length(), tr("its element size"));
         if (!(a_h1d > 0)) {

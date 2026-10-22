@@ -436,16 +436,19 @@ QMenu *TextDoc::createStandardContextMenu()
  */
 bool TextDoc::load ()
 {
+  // The file's date before it is opened, and read: written again while it
+  // is (a long one's text set and highlighted), it is newer and loaded
+  // again. (Dated after the reading, that writing was taken for the one
+  // read, and lost; dated after the opening, a file renamed over it just
+  // then was - the hunt of 21 October, N3.)
+  const QDateTime dated = QFileInfo(a_DocName).lastModified();
   QFile file (a_DocName);
   if (!file.open (QIODevice::ReadOnly))
     return false;
   setLanguage (a_DocName);
 
   a_countsEdits = false;
-  // The file's date before it is read: written again while it is (a long
-  // one's text set and highlighted), it is newer and loaded again. (Dated
-  // after, that writing was taken for the one read, and lost.)
-  lastLoadModTime = QFileInfo(a_DocName).lastModified();
+  lastLoadModTime = dated;
   // Read as its bytes are (textcodec.h), to be written back so. Set, not
   // inserted: the undo history starts at the file as it was read - an
   // Undo does not take the document to empty.

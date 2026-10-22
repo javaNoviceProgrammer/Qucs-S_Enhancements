@@ -17,6 +17,7 @@
 #include "links.h"
 
 #include "mathtypeset.h"
+#include "misc.h"
 #include "qucs.h"
 #include "settings.h"
 
@@ -263,6 +264,49 @@ qreal roomIn(QTextDocument* document, QTextFrame* frame, int position, qreal wid
     return roomIn(document, parent, outside, width, tables) - f.leftMargin() - f.rightMargin() - 2 * f.border() - 2 * f.padding();
 }
 
+} // namespace
+
+namespace {
+// The preview: its images read once, kept while their files are as they
+// were read. (Each render cleared the document's resources, and read and
+// decoded every image again: eight photos of 4000x3000 took 0.53 s a
+// render, 250 ms after each pause in typing - the hunt of 21 October, C1.)
+// A kept image shares its pixels with the document's while it is shown.
+class PreviewBrowser : public QTextBrowser
+{
+public:
+    using QTextBrowser::QTextBrowser;
+
+protected:
+    QVariant loadResource(int type, const QUrl& name) override
+    {
+        if (type != QTextDocument::ImageResource || !name.isLocalFile()) return QTextBrowser::loadResource(type, name);
+        const QFileInfo info(name.toLocalFile());
+        if (!info.isFile()) return QTextBrowser::loadResource(type, name);
+        const Stamp stamp{info.lastModified(), info.metadataChangeTime(), info.size()};
+        const QString file = info.absoluteFilePath();
+        if (const Kept* kept = a_kept.object(file); kept != nullptr && kept->stamp == stamp) return kept->image;
+        const QVariant v = QTextBrowser::loadResource(type, name);
+        QImage image;
+        if (v.typeId() == QMetaType::QByteArray) image = QImage::fromData(v.toByteArray());
+        else if (v.typeId() == QMetaType::QImage) image = v.value<QImage>();
+        if (image.isNull()) return v;
+        a_kept.insert(file, new Kept{stamp, image}, int(std::max<qsizetype>(1, image.sizeInBytes() / 1024)));
+        return image;
+    }
+
+private:
+    struct Stamp {
+        QDateTime modified, changed;
+        qint64 size = -1;
+        bool operator==(const Stamp&) const = default;
+    };
+    struct Kept {
+        Stamp stamp;
+        QImage image;
+    };
+    QCache<QString, Kept> a_kept{512 * 1024};   // (in KB)
+};
 } // namespace
 
 bool fitImages(QTextDocument* document, qreal width)
@@ -660,7 +704,7 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
         settings.setValue(QLatin1String(kModeKey), id);
     });
 
-    a_preview = new QTextBrowser(this);
+    a_preview = new qucs_s::markdown::PreviewBrowser(this);
     a_preview->setObjectName(QStringLiteral("markdownRendering"));
     a_preview->setOpenLinks(false);
     a_preview->setFrameShape(QFrame::NoFrame);
@@ -707,8 +751,10 @@ MarkdownDoc::MarkdownDoc(QucsApp* app, const QString& name) : TextDoc(app, name)
     a_imageTimer->setSingleShot(true);
     a_imageTimer->setInterval(400);   // (a file is often written in pieces)
     connect(a_imageTimer, &QTimer::timeout, this, &MarkdownDoc::imagesChanged);
-    connect(a_imageWatcher, &QFileSystemWatcher::fileChanged, a_imageTimer, qOverload<>(&QTimer::start));
-    connect(a_imageWatcher, &QFileSystemWatcher::directoryChanged, a_imageTimer, qOverload<>(&QTimer::start));
+    // (Not put off past 1.5 s after the first change: misc::restartUpTo.)
+    const auto changed = [this] { misc::restartUpTo(a_imageTimer, a_imageFirst, 1500); };
+    connect(a_imageWatcher, &QFileSystemWatcher::fileChanged, this, changed);
+    connect(a_imageWatcher, &QFileSystemWatcher::directoryChanged, this, changed);
 
     a_readOnly = isReadOnly();
     setMode(defaultMode());
@@ -960,7 +1006,13 @@ QString imageFile(const QTextDocument* document, const QString& name, const QStr
         if (dir.isEmpty()) return {};
         file = dir + QLatin1Char('/') + file;
     }
-    return QFileInfo(file).absoluteFilePath();
+    // A file, or none yet: not a folder - ".", "..", or a link of no path of
+    // its own ("", "#part", "?v=2"), resolved to the document's: watched as
+    // an image, every file made beside the document rendered it again (the
+    // hunt of 21 October, B2).
+    const QFileInfo info(file);
+    if (info.exists() && !info.isFile()) return {};
+    return info.absoluteFilePath();
 }
 } // namespace
 

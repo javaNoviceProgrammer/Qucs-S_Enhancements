@@ -503,6 +503,22 @@ private slots:
         }
     }
 
+    // Masetti's constants not a finite number - µ1 or µmax 1/0, m1 or Pc
+    // sqrt(-1) - refused, the constant named (the hunt of 21 October, A2:
+    // an infinite µ1 solved, a diode's current 170 times too small; the
+    // others failed as "its Jacobian is singular", naming nothing).
+    void masettisConstantsFinite()
+    {
+        for (const char* given : {R"("mobility": "masetti", "mu1n": "1/0",)", R"("mobility": "masetti", "mmaxn": "1/0",)",
+                                  R"x("mobility": "masetti", "m1p": "sqrt(-1)",)x", R"x("mobility": "masetti", "pcn": "sqrt(-1)",)x"}) {
+            const Run r = run(modelOf(bar(QStringLiteral("1e17"), QStringLiteral("0"), QStringLiteral("1[mV]"), QLatin1String(given))));
+            const QString key = QString::fromLatin1(given).section(QLatin1Char('"'), 5, 5);
+            QVERIFY2(r.error.contains(QStringLiteral("Masetti's mobility, %1").arg(key)) && r.error.contains(QLatin1String("not a finite number"))
+                         && !r.error.contains(QLatin1String("singular")) && !r.error.contains(QLatin1String("must be more than 0")),
+                     qPrintable(QString::fromLatin1(given) + QLatin1String(": ") + r.error));
+        }
+    }
+
     // Masetti's on the library's Silicon: its own µmax, Masetti's fit's 1417
     // and 470.5 cm²/(V s) - the lattice's 1400 and 450 were taken (the
     // update check of 21 October: 718.65 at 1e17 cm⁻³ for 727.05, holes 4 %

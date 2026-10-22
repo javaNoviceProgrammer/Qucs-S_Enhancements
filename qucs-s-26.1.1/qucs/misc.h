@@ -24,6 +24,8 @@
 
 #include <functional>
 #include <QDateTime>
+#include <QElapsedTimer>
+#include <QTimer>
 #include <QFileDialog>
 #include <QPushButton>
 
@@ -49,6 +51,16 @@ namespace misc {
   /// for its next allocations (its footprint, not its memory in use).
   void releaseFreedMemory();
   QColor ColorFromString(const QString& color);
+  /// \a timer started again - a file changed, written in pieces maybe -
+  /// but not past \a most ms after the first change it waits for
+  /// (\a first): where each change is told at once (Linux's inotify), a
+  /// file or a folder written to all the time held it off for good (the
+  /// hunt of 21 October, N5).
+  inline void restartUpTo(QTimer* timer, QElapsedTimer& first, qint64 most)
+  {
+    if (!timer->isActive()) first.start();
+    if (!timer->isActive() || first.elapsed() < most) timer->start();
+  }
   QString StringNiceNum(double);
   void    convert2Unicode(QString&);
   void    convert2ASCII(QString&);

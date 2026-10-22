@@ -1464,6 +1464,49 @@ bool MultiphysicsDoc::waitForJob(int ms)
     return self && !a_job && !a_build;
 }
 
+void MultiphysicsDoc::whenJobEnds(int ms, std::function<void(bool ended)> then)
+{
+    if (!a_job && !a_build) {
+        then(true);
+        return;
+    }
+    // (Not a loop of its own, as waitForJob's: a tool waiting so held back
+    // every call begun after it, and was held back by them - a call sent to
+    // the background answered only once each of those had: the hunt of 21
+    // October, B6.)
+    struct State {
+        std::function<void(bool)> then;
+        QPointer<MultiphysicsDoc> doc;
+        QMetaObject::Connection changed;
+        QPointer<QTimer> timer;
+        bool done = false;
+    };
+    auto st = std::make_shared<State>();
+    st->then = std::move(then);
+    st->doc = this;
+    ++a_waiting;
+    const auto end = [st](bool ended) {
+        if (st->done) return;
+        st->done = true;
+        QObject::disconnect(st->changed);
+        if (st->timer) st->timer->deleteLater();
+        MultiphysicsDoc* doc = st->doc;
+        const std::function<void(bool)> told = std::move(st->then);
+        told(ended && doc != nullptr);
+        if (doc && --doc->a_waiting == 0 && doc->closedWhenFree()) doc->deleteLater();
+    };
+    auto* timer = new QTimer(this);
+    st->timer = timer;
+    timer->setSingleShot(true);
+    connect(timer, &QTimer::timeout, this, [end] { end(false); });
+    // (The model deleted - the window closed -: its timer with it, told.)
+    connect(timer, &QObject::destroyed, [end] { end(false); });
+    st->changed = connect(this, &MultiphysicsDoc::stateChanged, this, [this, end] {
+        if (!a_job && !a_build) end(true);
+    });
+    timer->start(std::max(1, ms));
+}
+
 QString MultiphysicsDoc::jobProgress() const
 {
     const std::shared_ptr<Job> job = a_job ? a_job : a_build;
