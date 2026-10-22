@@ -515,6 +515,11 @@ private:
     // The conversation.
     QTextBrowser* a_view = nullptr;
     bool a_fitting = false;
+    // Whether the transcript follows the conversation's end: the reader's
+    // scrolling alone says (up: not; to the end again: so), a prompt sent
+    // too. (a_scrolling: the panel's own scrolling, not the reader's.)
+    bool a_following = true;
+    bool a_scrolling = false;
     // The permission card.
     QFrame* a_card;
     QLabel* a_cardTitle;
