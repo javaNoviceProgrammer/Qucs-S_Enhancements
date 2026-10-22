@@ -266,8 +266,9 @@ public:
     /// Runs the Export node \a tag: its file written (a Touchstone file, a
     /// SPICE or Qucs subcircuit) where it says, or beside the model as
     /// model_tag.s2p, .cir, .sch (in the cache when it is not saved). The
-    /// path; empty and why on failure.
-    QString runExport(const QString& tag, QString* error = nullptr);
+    /// path; empty and why on failure. \a beforeWrite, when given, is told
+    /// the file before it is written: what it says (why not) fails it.
+    QString runExport(const QString& tag, QString* error = nullptr, const std::function<QString(const QString&)>& beforeWrite = {});
     /// The mode plot group \a tag shows - its study's mode at its point and
     /// frequency - as a Mode Profile export would write it, to \a path: its
     /// format by its suffix (.mat, .npz, .csv), a 201 by 201 grid over the

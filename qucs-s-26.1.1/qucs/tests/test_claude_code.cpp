@@ -453,8 +453,13 @@ public:
         with.insert("document", document);
         return with;
     }
+    // What the session told it of the guards and of its mode.
+    void setGuards(const qucs_s::claude::Guards& g) override { guards = g; }
+    void setAsking(quint64 caller, bool on) override { asking.insert(caller, on); }
     QStringList calls;
     QList<QJsonObject> arguments;
+    qucs_s::claude::Guards guards{false, false};
+    QHash<quint64, bool> asking;
 };
 
 // ... whose "change" takes its time: answered when the test says.
@@ -741,6 +746,65 @@ private slots:
         QCOMPARE(args.value(args.indexOf("--settings") + 1), QStringLiteral(R"({"autoCompactEnabled":false})"));
         s.stop();
 #endif
+    }
+
+    // The guards under ⋯ > Permissions - a schematic's commands, files
+    // outside the workspace - on unless set off: each item checked at
+    // first; off, kept in the settings and given to the host at once (for
+    // every conversation), another tab's item as its menu shows, a new
+    // tab's at its start. The host is told whether the conversation's mode
+    // asks: not in Bypass Permissions.
+    void guardsAreChosenUnderPermissions()
+    {
+        QucsSettingsFile().remove("ClaudeCode/askBeforeCommands");
+        QucsSettingsFile().remove("ClaudeCode/askOutsideWorkspace");
+        ClaudeCodePanel panel, other;
+        FakeHost host;
+        panel.session()->setToolHost(&host);
+        QVERIFY(host.guards.commands && host.guards.outside);
+        QCOMPARE(host.asking.size(), 1);
+        QVERIFY(host.asking.begin().value());
+        auto* commands = panel.findChild<QAction*>(QStringLiteral("claudeAskCommands"));
+        auto* outside = panel.findChild<QAction*>(QStringLiteral("claudeAskOutside"));
+        QVERIFY(commands != nullptr && outside != nullptr);
+        auto* menu = qobject_cast<QMenu*>(commands->parent());
+        QVERIFY(menu != nullptr && menu == outside->parent() && menu->title() == ClaudeCodePanel::tr("Permissions"));
+        emit menu->aboutToShow();
+        QVERIFY(commands->isCheckable() && commands->isChecked() && outside->isCheckable() && outside->isChecked());
+        QVERIFY(commands->actionGroup() == nullptr);   // (not one of the modes)
+        commands->trigger();
+        QVERIFY(!commands->isChecked() && outside->isChecked());
+        QVERIFY(!panel.session()->guards().commands && panel.session()->guards().outside);
+        QVERIFY(!host.guards.commands && host.guards.outside);
+        QCOMPARE(QucsSettingsFile().value("ClaudeCode/askBeforeCommands").toBool(), false);
+        outside->trigger();
+        QVERIFY(!host.guards.outside);
+        auto* otherCommands = other.findChild<QAction*>(QStringLiteral("claudeAskCommands"));
+        emit qobject_cast<QMenu*>(otherCommands->parent())->aboutToShow();
+        QVERIFY(!otherCommands->isChecked() && !other.session()->guards().commands && !other.session()->guards().outside);
+        ClaudeCodePanel third;
+        QVERIFY(!third.session()->guards().commands && !third.session()->guards().outside);
+        QucsSettingsFile().setValue("ClaudeCode/askBeforeCommands", true);
+        third.reloadSettings();
+        QVERIFY(third.session()->guards().commands && !third.session()->guards().outside);
+        // The mode: asking but where nothing is asked.
+        Session* s = panel.session();
+        s->setPermissionMode("bypassPermissions");
+        QVERIFY(!host.asking.begin().value());
+        s->setPermissionMode("auto");
+        QVERIFY(host.asking.begin().value());
+        s->setPermissionMode("acceptEdits");
+        QVERIFY(host.asking.begin().value());
+        // A session given the host in bypass: told so at once.
+        FakeHost second;   // (outlives the session)
+        Session bypassing;
+        bypassing.setPermissionMode("bypassPermissions");
+        bypassing.setToolHost(&second);
+        QCOMPARE(second.asking.size(), 1);
+        QVERIFY(!second.asking.begin().value());
+        panel.session()->setToolHost(nullptr);
+        QucsSettingsFile().remove("ClaudeCode/askBeforeCommands");
+        QucsSettingsFile().remove("ClaudeCode/askOutsideWorkspace");
     }
 
     // The program the settings name, else claude on PATH, else where its

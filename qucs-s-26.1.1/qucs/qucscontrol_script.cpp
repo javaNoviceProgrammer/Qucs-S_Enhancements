@@ -72,6 +72,8 @@ public:
         if (const QJsonValue given = arguments.take(QStringLiteral("max_chars"));
             !given.isUndefined() && !qucs_s::mcp::readMaxChars(given, &most))
             return fail(QStringLiteral("%1: %2").arg(tool, qucs_s::mcp::maxCharsRefusal(given)));
+        // (A use the guards name: not unasked from a script.)
+        if (const QString no = a_control->unaskedWithin(tool, arguments); !no.isEmpty()) return fail(no);
         QJsonObject result = a_control->callNow(tool, arguments, 10 * 60 * 1000);
         if (most > 0) result = qucs_s::mcp::trimmedTo(result, most);
         QStringList texts;
