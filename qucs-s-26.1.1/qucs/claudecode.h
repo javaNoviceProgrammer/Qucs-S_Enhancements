@@ -146,6 +146,17 @@ QString toolSubject(const QString& tool, const QJsonObject& input, const QString
 /// What Claude is told about where it runs, after its own system prompt.
 QString qucsSystemPrompt();
 
+/// The uses of the host's tools the user chose to be asked about each
+/// time (the Claude panel's Permissions menu), in every conversation whose
+/// mode asks at all (not bypassPermissions).
+struct Guards {
+    /// A simulation of a schematic that runs commands besides the
+    /// simulator: a System Command part, ngspice's shell, an Octave script.
+    bool commands = true;
+    /// A file read or written outside the workspace and the open project.
+    bool outside = true;
+};
+
 /*!
  * Tools the host application offers Claude: an MCP server that runs in
  * the host. The claude program is told of it as an "sdk" server and sends
@@ -232,13 +243,26 @@ public:
     /// Why this use of \a tool is asked about every time - also where
     /// Claude acts on its own (auto), not where the user said to ask
     /// nothing (bypassPermissions): a line typed into a console, which runs
-    /// with the user's rights outside Claude Code's own rules for commands.
-    /// Empty: as the other uses.
+    /// with the user's rights outside Claude Code's own rules for commands;
+    /// and what the guards the user chose name (setGuards()). Empty: as the
+    /// other uses.
     virtual QString askedEachTime(const QString& tool, const QJsonObject& arguments) const
     {
         Q_UNUSED(tool);
         Q_UNUSED(arguments);
         return {};
+    }
+    /// The guards the user chose, for every conversation.
+    virtual void setGuards(const Guards& guards) { Q_UNUSED(guards); }
+    /// Whether the conversation \a caller is asked what askedEachTime()
+    /// names (its mode is not bypassPermissions): a call of its that comes
+    /// to a use the guards name that was not asked about when the call
+    /// began - a part with a command placed and simulated in one batch, a
+    /// file outside the workspace saved by a script - is then refused.
+    virtual void setAsking(quint64 caller, bool asking)
+    {
+        Q_UNUSED(caller);
+        Q_UNUSED(asking);
     }
     /// How the conversation \a caller asks its user a question (MCP
     /// elicitation: a message and a JSON schema of the answer; \a done gets
@@ -359,6 +383,10 @@ public:
     /// it after the turn when it refuses).
     void setAutoCompact(bool on);
     bool autoCompact() const { return a_autoCompact; }
+    /// The guards the user chose (Guards): given to the host, at once and
+    /// whenever it is set.
+    void setGuards(const Guards& guards);
+    Guards guards() const { return a_guards; }
     void setAppendSystemPrompt(const QString& prompt) { a_systemPrompt = prompt; }
     /// The host's tools, offered from the next start on (not owned; it
     /// outlives the session).
@@ -541,6 +569,7 @@ private:
     QString a_mode;
     QString a_model;
     bool a_autoCompact = true;
+    Guards a_guards;
     QString a_systemPrompt;
     bool a_restartAfterTurn = false;   // the program would not take another mode or model
     QHash<QString, QString> a_asked;   // askProgram() not answered yet: request id -> subtype

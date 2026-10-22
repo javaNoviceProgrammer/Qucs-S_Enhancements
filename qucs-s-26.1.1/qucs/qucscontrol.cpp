@@ -4090,7 +4090,10 @@ QString QucsControl::instructions() const
         "change the settings (application, simulators, a document's, CDL) by typed keys, each change with its old "
         "value. send_input is the last resort: a raw click, drag or keys on the canvas or a part of the window, with a "
         "picture after (asked each time). read_help finds what this build's help says (menu actions, component types, "
-        "examples). "
+        "examples). Unless the user set it off, the user is also asked each time before a simulation runs a schematic's "
+        "commands (a System Command part, ngspice's shell, an Octave script) and before a file outside the workspace and the "
+        "open project is read or written - a batch for all its calls as they stand when it begins: what a batch or a script "
+        "comes to only as it runs is refused, so make that call by itself. "
         "simulate runs the simulator and reports errors; with 'background' it answers at once with an id, which "
         "simulation_status, wait_for and stop_simulation follow (a long run: Monte Carlo, a long transient), and a run "
         "past its timeout goes on the same way. wait_for waits until a run ends, a dialog comes up, a document changes "
@@ -4289,9 +4292,27 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
     const QStringList changes = changesSince(caller) + notesFor(caller);
     a_callers.append(caller);
     QucsDoc::setEditor(caller);
+    // What the guards name of it, where its conversation is asked about
+    // them: what the user was asked about (or would have been). A use it
+    // comes to beyond that is refused - kept while it runs alone (a batch,
+    // a script, tune), until its synchronous part is over else.
+    CallGuard guard;
+    guard.on = a_asking.contains(caller) && (a_guards.commands || a_guards.outside);
+    if (guard.on) guard.seen = guarded(tool, arguments);
+    guard.kept = alone;
+    static const QSet<QString> driving{QStringLiteral("send_input"), QStringLiteral("set_ui"), QStringLiteral("context_menu"),
+                                       QStringLiteral("trigger_action"), QStringLiteral("set_dialog")};
+    static int calls = 0;
+    if (guard.on && !alone && driving.contains(tool)) {
+        guard.id = ++calls;
+        a_driving.append(guard);
+    }
+    const CallGuard before = std::exchange(a_callGuard, guard);
     auto over = std::make_shared<bool>(false), released = std::make_shared<bool>(false);
-    callTool(tool, arguments, [this, caller, changes, done, alone, over, released](const QJsonObject& r) {
+    callTool(tool, arguments, [this, caller, changes, done, alone, over, released, before, id = guard.id](const QJsonObject& r) {
         *over = true;
+        if (alone) a_callGuard = before;
+        if (id != 0) a_driving.removeIf([id](const CallGuard& g) { return g.id == id; });
         if (alone && --a_alone == 0 && !a_waiting.isEmpty())
             QTimer::singleShot(0, this, [this] { runWaiting(); });
         if (!*released) a_callers.removeOne(caller);
@@ -4308,6 +4329,7 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         }
         done(result);
     });
+    if (!alone) a_callGuard = before;
     // A call that only waits (wait_for; a console's line running; a run
     // simulated) edits nothing while it waits: what is edited meanwhile is
     // the user's - or another call's -, not its caller's. (A run's own
@@ -5935,6 +5957,7 @@ QJsonObject QucsControl::closeDocument(const QJsonObject& args)
     if (doc->getDocChanged()) {
         if (unsaved == QLatin1String("save")) {
             if (doc->getDocName().isEmpty()) return errorResult(tr("%1 has no file: save_document with 'as' first.").arg(title));
+            if (const QString no = unaskedWrite(doc->getDocName()); !no.isEmpty()) return errorResult(no);
             if (!a_app->saveFile(doc)) return errorResult(tr("%1 could not be saved; it stays open.").arg(title));
         } else if (unsaved == QLatin1String("discard")) {
             if (auto* sch = dynamic_cast<Schematic*>(doc)) sch->setChanged(false);
@@ -11257,6 +11280,19 @@ QString QucsControl::refusedAction(QAction* action) const
     return {};
 }
 
+QAction* QucsControl::actionNamed(const QString& wanted) const
+{
+    QStringList paths;
+    const QList<QAction*> actions = menuActions(&paths);
+    for (int i = 0; i < actions.size(); ++i)
+        if (normalized(paths.at(i)) == normalized(wanted) || actions.at(i)->objectName() == wanted) return actions.at(i);
+    // Only the last part of the path, when it names one action alone.
+    QList<QAction*> tails;
+    for (int i = 0; i < actions.size(); ++i)
+        if (normalized(paths.at(i)).section(QLatin1Char('>'), -1) == normalized(wanted)) tails << actions.at(i);
+    return tails.size() == 1 ? tails.first() : nullptr;
+}
+
 void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
 {
     // The document it is for in front first: the menus act on that one.
@@ -11273,16 +11309,7 @@ void QucsControl::triggerAction(const QJsonObject& args, const Done& done)
     const QString wanted = args.value(QLatin1String("action")).toString().trimmed();
     QStringList paths;
     const QList<QAction*> actions = menuActions(&paths);
-    QAction* action = nullptr;
-    for (int i = 0; i < actions.size() && action == nullptr; ++i)
-        if (normalized(paths.at(i)) == normalized(wanted) || actions.at(i)->objectName() == wanted) action = actions.at(i);
-    // Only the last part of the path, when it names one action alone.
-    if (action == nullptr) {
-        QList<QAction*> tails;
-        for (int i = 0; i < actions.size(); ++i)
-            if (normalized(paths.at(i)).section(QLatin1Char('>'), -1) == normalized(wanted)) tails << actions.at(i);
-        if (tails.size() == 1) action = tails.first();
-    }
+    QAction* action = actionNamed(wanted);
     if (action == nullptr) {
         // The nearest, by the words of the last part ("Help > About Qucs..."
         // - Help > About Qucs-S): the name to take, without list_actions
@@ -11423,6 +11450,8 @@ public:
         // (A batch runs alone: every other call would wait with it.)
         else if (tool == QLatin1String("wait_for")) answered(errorResult(tr("wait_for is not for a batch, which every other call waits for: call it alone.")));
         else if (badMost) answered(errorResult(qucs_s::mcp::maxCharsRefusal(given)));
+        // (A use the guards name that the batch came to after it began.)
+        else if (const QString no = a_control->unaskedWithin(tool, arguments); !no.isEmpty()) answered(errorResult(no));
         else a_control->callTool(tool, arguments, after);
     }
 
@@ -13262,7 +13291,12 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
         doneGiven(errorResult(error));
         return;
     }
-    // Commands a run executes besides the simulator: not run unasked.
+    // Commands a run executes besides the simulator: not run unasked - by
+    // the guard the user chose, by the Simulator Settings' check.
+    if (const QString refused = unaskedCommands(sch); !refused.isEmpty()) {
+        doneGiven(errorResult(refused));
+        return;
+    }
     if (const QString refused = commandsRefused(sch, args); !refused.isEmpty()) {
         doneGiven(errorResult(refused));
         return;
@@ -13556,14 +13590,16 @@ void QucsControl::simulate(const QJsonObject& args, const Done& given)
         const QList<SimMessage*> before = a_app->findChildren<SimMessage*>();
         // (Its own schematic, in front: closed meanwhile, none - not the
         // document then in front.)
-        QTimer::singleShot(0, a_app, [app = a_app, doc] {
+        QTimer::singleShot(0, a_app, [this, app = a_app, doc] {
             if (!doc) return;
             app->showDocument(doc);
             // (Its netlist is made now, after this call: what that says in a
             // box - a subcircuit not there - in the run's errors. The box
             // waited for an answer, and the run with it, past its timeout.)
             misc::ErrorCapture capture;
+            a_ownRun = true;   // (its commands checked: unaskedCommands())
             app->slotSimulate();
+            a_ownRun = false;
         });
         QTimer::singleShot(0, this, [=, this] {
             SimMessage* sim = nullptr;

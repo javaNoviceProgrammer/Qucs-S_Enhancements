@@ -16,8 +16,14 @@
 #include "qucscontrol_p.h"
 
 #include "qucs.h"
+#include "erc.h"
+#include "main.h"
+#include "misc.h"
 #include "projectView.h"
 #include "projectlibraries.h"
+#include "pythondoc.h"
+#include "textdoc.h"
+#include "workspace.h"
 #include "qucsdoc.h"
 #include "schematic.h"
 #include "wire.h"
@@ -241,22 +247,345 @@ QString QucsControl::resourceVersion(const QString& uri) const
 
 QString QucsControl::askedEachTime(const QString& tool, const QJsonObject& a) const
 {
-    // A batch: as the first of its calls that is.
+    const std::function<QString(const QString&, const QJsonObject&)> always = [&always](const QString& tool, const QJsonObject& a) {
+        // A batch: as the first of its calls that is.
+        if (tool == QLatin1String("batch")) {
+            for (const QJsonValue& v : a.value(QLatin1String("calls")).toArray())
+                if (const QString why = always(v.toObject().value(QLatin1String("tool")).toString(), v.toObject().value(QLatin1String("arguments")).toObject());
+                    !why.isEmpty())
+                    return why;
+            return QString();
+        }
+        if ((tool == QLatin1String("git_remote") && a.value(QLatin1String("action")).toString() == QLatin1String("push"))
+            || (tool == QLatin1String("git_commit") && a.value(QLatin1String("push")).toBool()))
+            return tr("A push publishes the branch's commits on the remote, for everyone who can read it: asked about each time.");
+        if (tool == QLatin1String("console") && (!a.value(QLatin1String("input")).toString().isEmpty() || a.value(QLatin1String("interrupt")).toBool()))
+            return tr("What is typed into a console runs with your rights, outside Claude Code's own rules for commands: asked about each "
+                      "time.");
+        return QString();
+    };
+    QStringList why;
+    if (const QString said = always(tool, a); !said.isEmpty()) why << said;
+    // And what the guards the user chose name (a batch: of all its calls).
+    if (const QString said = guardedSaid(guarded(tool, a)); !said.isEmpty()) why << said;
+    return why.join(QLatin1Char(' '));
+}
+
+// ---- the guards: a schematic's commands, files outside the workspace
+
+namespace {
+
+// \a path as it is on disk: as far as it is there, its links resolved
+// (canonical), the rest as named.
+QString resolvedPath(const QString& path)
+{
+    const QString clean = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    QString rest;
+    QFileInfo at(clean);
+    while (!at.exists()) {
+        const QString parent = at.absolutePath();
+        if (parent == at.absoluteFilePath()) return clean;   // (the root)
+        rest = rest.isEmpty() ? at.fileName() : at.fileName() + QLatin1Char('/') + rest;
+        at = QFileInfo(parent);
+    }
+    const QString real = at.canonicalFilePath();
+    return rest.isEmpty() ? real : QDir::cleanPath(real + QLatin1Char('/') + rest);
+}
+
+// Whether \a file is \a folder or in it.
+bool within(const QString& file, const QString& folder)
+{
+#ifdef Q_OS_WIN
+    const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+    const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+    if (folder.isEmpty()) return false;
+    return file.compare(folder, cs) == 0 || file.startsWith(folder.endsWith(QLatin1Char('/')) ? folder : folder + QLatin1Char('/'), cs);
+}
+
+QStringList native(const QStringList& paths)
+{
+    QStringList out;
+    for (const QString& p : paths) out << QDir::toNativeSeparators(p);
+    return out;
+}
+
+} // namespace
+
+void QucsControl::Guarded::add(const Guarded& other)
+{
+    for (const QString& c : other.commands)
+        if (!commands.contains(c)) commands << c;
+    for (const QString& f : other.read)
+        if (!read.contains(f)) read << f;
+    for (const QString& f : other.written)
+        if (!written.contains(f)) written << f;
+}
+
+QucsControl::Guarded QucsControl::Guarded::beyond(const Guarded& other) const
+{
+    Guarded out;
+    QStringList folders;
+    for (const QString& f : written) folders << QFileInfo(f).absolutePath();
+    for (const QString& c : other.commands)
+        if (!commands.contains(c)) out.commands << c;
+    for (const QString& f : other.read)
+        if (!read.contains(f) && !written.contains(f)) out.read << f;
+    for (const QString& f : other.written)
+        if (!folders.contains(QFileInfo(f).absolutePath())) out.written << f;
+    return out;
+}
+
+void QucsControl::setAsking(quint64 caller, bool asking)
+{
+    if (asking) a_asking.insert(caller);
+    else a_asking.remove(caller);
+}
+
+QucsControl::Guarded QucsControl::guarded(const QString& tool, const QJsonObject& a) const
+{
+    Guarded g;
     if (tool == QLatin1String("batch")) {
         for (const QJsonValue& v : a.value(QLatin1String("calls")).toArray())
-            if (const QString why = askedEachTime(v.toObject().value(QLatin1String("tool")).toString(),
-                                                  v.toObject().value(QLatin1String("arguments")).toObject());
-                !why.isEmpty())
-                return why;
+            g.add(guarded(v.toObject().value(QLatin1String("tool")).toString(), v.toObject().value(QLatin1String("arguments")).toObject()));
+        return g;
+    }
+    if (a_guards.commands && (tool == QLatin1String("simulate") || tool == QLatin1String("tune"))) {
+        QString error;
+        if (Schematic* sch = schematic(a, &error, false)) {
+            g.commands = commandsNamed(sch);
+        } else {
+            // A file not open, which simulate opens first: as it is there.
+            const QString path = a.value(QLatin1String("path")).toString().trimmed();
+            const QString file = path.isEmpty() ? QString() : absolute(path);
+            if (!file.isEmpty() && QFileInfo(file).isFile() && QFileInfo(file).suffix().compare(QLatin1String("sch"), Qt::CaseInsensitive) == 0) {
+                Schematic there(nullptr, file);
+                misc::ErrorCapture quiet;
+                if (there.loadDocument()) g.commands = commandsNamed(&there);
+            }
+        }
+    }
+    // The window's Simulate, Calculate DC Bias, the tuner: what Simulate
+    // runs on the document ('path''s, else the one in front).
+    if (a_guards.commands && tool == QLatin1String("trigger_action"))
+        if (QAction* action = actionNamed(a.value(QLatin1String("action")).toString().trimmed());
+            action != nullptr && (action == a_app->simulate || action == a_app->dcbias || action == a_app->tune)) {
+            QString error;
+            if (QucsDoc* doc = document(a, &error)) g.commands = runOf(QucsApp::documentWidget(doc));
+        }
+    if (a_guards.outside) filesOutside(tool, a, &g);
+    return g;
+}
+
+QStringList QucsControl::runOf(QWidget* w) const
+{
+    QucsDoc* doc = w != nullptr ? QucsApp::docIn(w) : nullptr;
+    if (doc == nullptr) return {};
+    const QString file = doc->getDocName();
+    const QString name = file.isEmpty() ? titleOf(doc) : QFileInfo(file).fileName();
+    const QString suffix = QFileInfo(file).suffix().toLower();
+    if (qobject_cast<PythonDoc*>(w) != nullptr) return {tr("Python runs the script, with your rights (%1)").arg(name)};
+    if (qobject_cast<TextDoc*>(w) != nullptr) {
+        if (suffix == QLatin1String("m") || suffix == QLatin1String("oct")) return {tr("Octave runs the script, with your rights (%1)").arg(name)};
         return {};
     }
-    if ((tool == QLatin1String("git_remote") && a.value(QLatin1String("action")).toString() == QLatin1String("push"))
-        || (tool == QLatin1String("git_commit") && a.value(QLatin1String("push")).toBool()))
-        return tr("A push publishes the branch's commits on the remote, for everyone who can read it: asked about each time.");
-    if (tool == QLatin1String("console") && (!a.value(QLatin1String("input")).toString().isEmpty() || a.value(QLatin1String("interrupt")).toBool()))
-        return tr("What is typed into a console runs with your rights, outside Claude Code's own rules for commands: asked about each "
-                  "time.");
-    return {};
+    auto* sch = dynamic_cast<Schematic*>(doc);
+    if (sch == nullptr) return {};
+    if (suffix != QLatin1String("dpl")) return commandsNamed(sch);
+    // A data display: its schematic, beside it by its name - open, or as
+    // it is there.
+    const QString beside = QFileInfo(file).absoluteDir().filePath(QFileInfo(file).completeBaseName() + QStringLiteral(".sch"));
+    for (QucsDoc* d : a_app->allDocuments())
+        if (auto* s = dynamic_cast<Schematic*>(d); s != nullptr && !d->getDocName().isEmpty() && sameFile(d->getDocName(), beside))
+            return commandsNamed(s);
+    if (!QFileInfo(beside).isFile()) return {};
+    Schematic there(nullptr, beside);
+    misc::ErrorCapture quiet;
+    return there.loadDocument() ? commandsNamed(&there) : QStringList();
+}
+
+QString QucsControl::runRefused(QWidget* w) const
+{
+    // The calls it may be of: the one under way (its synchronous part, or
+    // all of it when it runs alone - a batch, a script) and those that
+    // drive the window, until they answer. (The user's own Simulate,
+    // clicked meanwhile, is taken as theirs.)
+    if (!a_guards.commands || a_ownRun) return {};
+    bool any = false;
+    Guarded seen;
+    if (a_callGuard.on && (a_callDepth > 0 || a_callGuard.kept)) {
+        any = true;
+        seen.add(a_callGuard.seen);
+    }
+    for (const CallGuard& g : a_driving) {
+        any = true;
+        seen.add(g.seen);
+    }
+    if (!any) return {};
+    Guarded now;
+    now.commands = runOf(w);
+    const Guarded unseen = seen.beyond(now);
+    if (unseen.isEmpty()) return {};
+    return tr("Not simulated: it runs what the user was not asked about when this call began (%1). Make the call that runs it by "
+              "itself - simulate, or trigger_action of Simulation > Simulate -, and the user is asked first.")
+        .arg(unseen.commands.join(QStringLiteral("; ")));
+}
+
+QStringList QucsControl::commandsNamed(Schematic* sch) const
+{
+    const QString name = sch->getDocName().isEmpty() ? titleOf(sch) : QFileInfo(sch->getDocName()).fileName();
+    QStringList out;
+    for (const QString& what : qucs_s::erc::commandsRun(sch)) out << QStringLiteral("%1 (%2)").arg(what, name);
+    return out;
+}
+
+bool QucsControl::outsideWorkspace(const QString& file, bool written) const
+{
+    // (A link in the workspace is the user's: where it is named counts, as
+    // does where it leads. A folder setting not set - a QDir made empty,
+    // its path ".", or any relative one - is none: its absolutePath() is the
+    // program's working folder, / when started from the Finder.)
+    const auto folder = [](const QDir& d) { return d.path().isEmpty() || QDir::isRelativePath(d.path()) ? QString() : d.absolutePath(); };
+    QStringList roots{folder(QucsSettings.qucsWorkspaceDir), folder(QucsSettings.QucsWorkDir), misc::scratchDir(),
+                      QucsSettings.S4Qworkdir, misc::cacheDir(), folder(QucsSettings.tempFilesDir)};
+    if (!written)
+        roots << QucsSettings.LibDir << QucsSettings.SpiceLibDir << QucsSettings.ExamplesDir << QucsSettings.DocDir << QucsSettings.OctaveDir
+              << QucsSettings.LangDir;
+    const QString named = QDir::cleanPath(QFileInfo(file).absoluteFilePath()), real = resolvedPath(file);
+    for (const QString& root : std::as_const(roots)) {
+        if (root.trimmed().isEmpty()) continue;
+        if (within(named, QDir::cleanPath(QFileInfo(root).absoluteFilePath())) || within(real, resolvedPath(root))) return false;
+    }
+    return true;
+}
+
+void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarded* g) const
+{
+    const auto text = [&a](const char* key) { return a.value(QLatin1String(key)).toString().trimmed(); };
+    const QString action = text("action");
+    // The document it acts on ('path''s, else the one in front): a relative
+    // name may be taken beside it.
+    QString none;
+    QucsDoc* doc = document(a, &none);
+    const QString beside = doc != nullptr && !doc->getDocName().isEmpty() ? QFileInfo(doc->getDocName()).absolutePath() : QString();
+    const auto isOpen = [this](const QString& file) {
+        for (QucsDoc* d : a_app->allDocuments())
+            if (!d->getDocName().isEmpty() && sameFile(d->getDocName(), file)) return true;
+        return false;
+    };
+    // Read: a file or folder named that is there (not a document open in
+    // the window, which the user - or a call asked about - opened).
+    const auto read = [&](const QString& value) {
+        if (value.isEmpty()) return;
+        QString error;
+        if (document(QJsonObject{{QStringLiteral("path"), value}}, &error) != nullptr) return;
+        QStringList candidates{absolute(value)};
+        if (QFileInfo(value).isRelative() && !beside.isEmpty()) candidates << QDir::cleanPath(QDir(beside).filePath(value));
+        for (const QString& c : std::as_const(candidates))
+            if (QFileInfo::exists(c) && !isOpen(c) && outsideWorkspace(c, false))
+                if (const QString r = resolvedPath(c); !g->read.contains(r)) g->read << r;
+    };
+    const auto write = [&](const QString& file) {
+        if (file.isEmpty() || !outsideWorkspace(file, true)) return;
+        if (const QString r = resolvedPath(file); !g->written.contains(r)) g->written << r;
+    };
+    for (const char* key : {"path", "file", "against", "compare", "dataset", "folder", "symbols", "library", "measured"})
+        if (!(tool == QLatin1String("fem_model") && action == QLatin1String("new") && qstrcmp(key, "path") == 0)) read(text(key));
+    if (tool == QLatin1String("describe_component_type")) read(text("type"));   // (a Verilog-A module's file)
+    if (tool == QLatin1String("open_project")) read(text("name"));             // (a project's folder)
+
+    // Written: where each tool writes, as it resolves it.
+    const QString saveAs = text("save_as");
+    if (tool == QLatin1String("save_document")) {
+        write(!text("as").isEmpty() ? absolute(text("as")) : doc != nullptr ? doc->getDocName() : QString());
+    } else if (tool == QLatin1String("close_document")) {
+        if (text("unsaved") == QLatin1String("save") && doc != nullptr && doc->getDocChanged()) write(doc->getDocName());
+    } else if (tool == QLatin1String("export_image") || tool == QLatin1String("export_netlist") || tool == QLatin1String("export_data")
+               || tool == QLatin1String("get_netlist") || tool == QLatin1String("import_netlist") || tool.startsWith(QLatin1String("synthesize_"))) {
+        if (!saveAs.isEmpty()) write(absolute(saveAs));
+    } else if (tool == QLatin1String("create_subcircuit")) {
+        // (Beside the schematic, a name or a relative path.)
+        if (!saveAs.isEmpty())
+            write(QFileInfo(saveAs).isAbsolute() ? QDir::cleanPath(saveAs)
+                                                 : QDir::cleanPath(QFileInfo(doc != nullptr ? doc->getDocName() : QString()).absoluteDir().filePath(saveAs)));
+    } else if (tool == QLatin1String("copy_document")) {
+        // As copyDocument() takes 'to': a folder or project to copy into, a
+        // path, or a name beside the schematic.
+        const QString from = doc != nullptr ? doc->getDocName() : absolute(text("path"));
+        QString to = text("to");
+        if (!to.isEmpty() && !from.isEmpty()) {
+            const QString asProject = QucsSettings.qucsWorkspaceDir.absoluteFilePath(qucs_s::workspace::folderFor(to));
+            if (QFileInfo(absolute(to)).isDir()) to = QDir(absolute(to)).filePath(QFileInfo(from).fileName());
+            else if (!to.contains(QLatin1Char('/')) && QFileInfo(asProject).isDir() && !to.endsWith(QLatin1String(".sch")))
+                to = QDir(asProject).filePath(QFileInfo(from).fileName());
+            else if (to.contains(QLatin1Char('/')) || to.contains(QLatin1Char('\\'))) to = absolute(to);
+            else to = QFileInfo(from).absoluteDir().filePath(to);
+            write(to);
+        }
+    } else if ((tool == QLatin1String("edit_component") && !text("rename").isEmpty()) || tool == QLatin1String("rename_net")) {
+        // (The traces renamed in the data display beside it, not open:
+        // renameEverywhere().)
+        if (auto* sch = dynamic_cast<Schematic*>(doc); sch != nullptr && !sch->getDocName().isEmpty() && !sch->getDataDisplay().isEmpty()) {
+            const QString dpl = QFileInfo(sch->getDocName()).absoluteDir().filePath(sch->getDataDisplay());
+            if (QFileInfo::exists(dpl) && !isOpen(dpl)) write(dpl);
+        }
+    } else if (tool == QLatin1String("import_data")) {
+        // (Its dataset beside the schematic - written, read again, or taken
+        // away.)
+        if (!beside.isEmpty()) {
+            const QString name = !text("name").isEmpty() ? text("name") : QFileInfo(text("file")).completeBaseName();
+            write(QDir(beside).filePath((name.isEmpty() ? QStringLiteral("imported") : name) + QStringLiteral(".dat")));
+        }
+    } else if (tool == QLatin1String("fem_model") || tool == QLatin1String("fem_export")) {
+        for (const QString& file : femFilesWritten(tool, a)) write(file);
+    }
+}
+
+QString QucsControl::guardedSaid(const Guarded& g) const
+{
+    QStringList said;
+    if (!g.commands.isEmpty())
+        said << tr("Simulated, it runs commands besides the simulator, with your rights: %1.").arg(g.commands.join(QStringLiteral("; ")));
+    QStringList files;
+    if (!g.read.isEmpty()) files << tr("reads %1").arg(native(g.read).join(QStringLiteral(", ")));
+    if (!g.written.isEmpty()) files << tr("writes %1").arg(native(g.written).join(QStringLiteral(", ")));
+    if (!files.isEmpty()) said << tr("Outside the workspace and the open project, it %1.").arg(files.join(tr(" and ")));
+    if (said.isEmpty()) return {};
+    return said.join(QLatin1Char(' ')) + QLatin1Char(' ') + tr("Asked about each time, as the Permissions menu says.");
+}
+
+QString QucsControl::unaskedWithin(const QString& tool, const QJsonObject& arguments) const
+{
+    if (!a_callGuard.on) return {};
+    const Guarded unseen = a_callGuard.seen.beyond(guarded(tool, arguments));
+    if (unseen.isEmpty()) return {};
+    return tr("%1 was not made: %2 That was not asked about when the call it is part of began - make it by itself, and the user is "
+              "asked first.")
+        .arg(tool, guardedSaid(unseen));
+}
+
+QString QucsControl::unaskedCommands(Schematic* sch) const
+{
+    if (!a_callGuard.on || !a_guards.commands) return {};
+    Guarded now;
+    now.commands = commandsNamed(sch);
+    const Guarded unseen = a_callGuard.seen.beyond(now);
+    if (unseen.isEmpty()) return {};
+    return tr("%1 was not simulated: it runs commands besides the simulator that the user was not asked about when this call began "
+              "(%2). Simulate it with a call of its own, and the user is asked first.")
+        .arg(titleOf(sch), unseen.commands.join(QStringLiteral("; ")));
+}
+
+QString QucsControl::unaskedWrite(const QString& file) const
+{
+    if (!a_callGuard.on || !a_guards.outside || a_callDepth == 0 || file.isEmpty() || !outsideWorkspace(file, true)) return {};
+    Guarded now;
+    now.written << resolvedPath(file);
+    if (a_callGuard.seen.beyond(now).isEmpty()) return {};
+    return tr("%1 was not written: it is outside the workspace and the open project, and writing it was not asked about when this "
+              "call began. Write it with a call of its own that names it, and the user is asked first.")
+        .arg(QDir::toNativeSeparators(file));
 }
 
 bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
@@ -518,6 +847,7 @@ QString QucsControl::aboutToWrite(const QString& file)
 {
     if (const QString why = qucs_s::projectlibraries::notToWrite(file); !why.isEmpty()) return why;
     if (a_previewing > 0 || a_callDepth == 0 || file.isEmpty()) return {};
+    if (const QString no = unaskedWrite(file); !no.isEmpty()) return no;
     const QString path = QFileInfo(file).absoluteFilePath();
     for (const auto& kept : std::as_const(a_openStep.before))
         if (kept.first == path) return {};   // (as it was when the call began)

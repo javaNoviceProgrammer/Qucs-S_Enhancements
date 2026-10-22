@@ -5577,6 +5577,303 @@ private slots:
         }
     }
 
+    // The guards the user chooses in the Claude panel's Permissions menu
+    // (both on unless set off): a simulation of a schematic that runs
+    // commands besides the simulator, and a file read or written outside the
+    // workspace and the open project, are asked about each time, with the
+    // commands and the files; a call that comes to such a use it was not
+    // asked about - a command placed and simulated in one batch, a save from
+    // a script - is refused, in a conversation whose mode asks. Nothing runs
+    // a command here: the schematics have no analysis, every simulation is
+    // refused, and the Simulator Settings' check of commands stands behind
+    // the guard.
+    void guardsAskAboutCommandsAndFilesOutside()
+    {
+        constexpr quint64 kAsked = 0x5eed0001;   // a conversation whose mode asks
+        const bool checkWas = QucsSettings.CheckCommands;
+        const QString examplesWas = QucsSettings.ExamplesDir;
+        QucsSettings.CheckCommands = true;
+        const auto closeAll = [this] {
+            for (QucsDoc* doc : app->allDocuments()) {
+                if (auto* sch = dynamic_cast<Schematic*>(doc)) sch->setChanged(false);
+                doc->setDocChanged(false);
+            }
+            app->closeAllFiles();
+        };
+        auto restore = qScopeGuard([&] {
+            QucsSettings.CheckCommands = checkWas;
+            QucsSettings.ExamplesDir = examplesWas;
+            control->setGuards({});
+            control->setAsking(kAsked, false);
+            closeAll();
+        });
+        closeAll();
+        const auto write = [](const QString& file, const QByteArray& bytes) {
+            QDir().mkpath(QFileInfo(file).absolutePath());
+            QFile f(file);
+            return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+        };
+        const auto read = [](const QString& file) {
+            QFile f(file);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        const auto asked = [this](const QString& tool, const QJsonObject& a) { return control->askedEachTime(tool, a); };
+        const auto callAsked = [this](const QString& tool, const QJsonObject& a) { return control->callNow(tool, a, 30000, kAsked); };
+        const auto shown = [](const QString& path) { return QDir::toNativeSeparators(path); };
+        control->setGuards({});
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString outside = dir.filePath("outside");
+        const QString real = QFileInfo(dir.path()).canonicalFilePath() + "/outside";   // (as the question names it: /private/var on macOS)
+
+        // -- A schematic's commands.
+        const QByteArray empty = "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Components>\n</Components>\n"
+                                 "<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const QByteArray withCommand = "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Components>\n"
+                                       "  <CMD CMD1 1 100 200 -30 20 0 0 \"echo qucs-guard\" 1 \"no\" 1 \"no\" 0>\n"
+                                       "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const QString cmd = QDir(ws).filePath("guard-cmd.sch"), plain = QDir(ws).filePath("guard-plain.sch");
+        QVERIFY(write(cmd, withCommand) && write(plain, empty));
+        // A file not open, which simulate opens first: as it is there.
+        QString said = asked("simulate", {{"path", cmd}});
+        QVERIFY2(said.contains("runs commands besides the simulator") && said.contains("echo qucs-guard") && said.contains("guard-cmd.sch"),
+                 qPrintable(said));
+        QVERIFY(!failed(call("open_document", {{"path", cmd}})));
+        // Open; tune too; whatever 'allow_commands' says; a batch's call.
+        for (const char* tool : {"simulate", "tune"})
+            QVERIFY2(asked(tool, {{"path", cmd}, {"allow_commands", true}}).contains("echo qucs-guard"), tool);
+        QVERIFY(asked("batch", {{"calls", QJsonArray{QJsonObject{{"tool", "get_state"}},
+                                                     QJsonObject{{"tool", "simulate"}, {"arguments", QJsonObject{{"path", cmd}}}}}}})
+                    .contains("echo qucs-guard"));
+        QVERIFY(asked("simulate", {{"path", plain}}).isEmpty());
+        QVERIFY(!control->irreversible("simulate", {{"path", cmd}}));   // (asked each time, not "cannot be undone")
+        control->setGuards({false, true});
+        QVERIFY(asked("simulate", {{"path", cmd}}).isEmpty());
+        control->setGuards({});
+
+        // A command placed and simulated in one batch, the user asked about
+        // nothing when it began: the simulation not made.
+        QVERIFY(!failed(call("open_document", {{"path", plain}})));
+        control->setAsking(kAsked, true);
+        const QJsonArray placeAndRun{
+            QJsonObject{{"tool", "add_component"}, {"arguments", QJsonObject{{"path", plain}, {"type", "CMD"}, {"name", "CMD7"}, {"x", 100}, {"y", 100}}}},
+            QJsonObject{{"tool", "edit_component"},
+                        {"arguments", QJsonObject{{"path", plain}, {"name", "CMD7"}, {"properties", QJsonObject{{"cmd", "echo qucs-guard-2"}}}}}},
+            QJsonObject{{"tool", "simulate"}, {"arguments", QJsonObject{{"path", plain}}}}};
+        QVERIFY(asked("batch", {{"calls", placeAndRun}}).isEmpty());
+        QJsonObject r = callAsked("batch", {{"calls", placeAndRun}});
+        QVERIFY2(failed(r) && text(r).contains("simulate was not made") && text(r).contains("echo qucs-guard-2") && text(r).contains("by itself"),
+                 qPrintable(text(r)));
+        // Where the mode asks nothing, or the guard is off: as before (here
+        // the Simulator Settings' check refuses it).
+        for (const bool off : {true, false}) {
+            if (off) control->setAsking(kAsked, false);
+            else control->setGuards({false, true});
+            r = callAsked("simulate", {{"path", plain}});
+            QVERIFY2(failed(r) && text(r).contains("'allow_commands'") && !text(r).contains("was not"), qPrintable(text(r)));
+            control->setAsking(kAsked, true);
+            control->setGuards({});
+        }
+        // Asked about when the call began: let through by the guard (to the
+        // Simulator Settings' check) - open, and a file not open, opened
+        // first, its commands as they were read from the file.
+        const QString closed = QDir(ws).filePath("guard-cmd2.sch");
+        QVERIFY(write(closed, withCommand));
+        for (const QString& path : {cmd, closed}) {
+            r = callAsked("simulate", {{"path", path}});
+            QVERIFY2(failed(r) && text(r).contains("'allow_commands'") && !text(r).contains("was not"), qPrintable(text(r)));
+        }
+        QVERIFY(app->findDoc(closed) != nullptr);
+        // The command changed within a call that runs the schematic: tune's
+        // run not made (simulate()'s own check).
+        QVERIFY(!failed(call("edit_component", {{"path", plain}, {"name", "CMD7"}, {"properties", QJsonObject{{"cmd", ""}}}})));
+        QVERIFY(asked("tune", {{"path", plain}}).isEmpty());
+        r = callAsked("tune", {{"path", plain}, {"component", "CMD7"}, {"property", "cmd"}, {"values", QJsonArray{"echo qucs-guard-4"}},
+                               {"measure", QJsonObject{{"variable", "v(out)"}, {"what", "max"}}}});
+        QVERIFY2(json(r).toObject().value("stopped").toString().contains("was not simulated") && text(r).contains("echo qucs-guard-4")
+                     && json(r).toObject().value("runs").toArray().isEmpty(),
+                 qPrintable(text(r)));
+        // A script's simulation, likewise.
+        if (QucsControl::scriptingBuilt()) {
+            const QString script = QStringLiteral("qucs.call('edit_component', {path: %1, name: 'CMD7', properties: {cmd: 'echo qucs-guard-3'}});"
+                                                  " qucs.call('simulate', {path: %1})")
+                                       .arg(QString::fromUtf8(QJsonDocument(QJsonArray{plain}).toJson(QJsonDocument::Compact)).mid(1).chopped(1));
+            r = callAsked("run_script", {{"script", script}});
+            QVERIFY2(failed(r) && text(r).contains("simulate was not made") && text(r).contains("echo qucs-guard-3"), qPrintable(text(r)));
+        }
+        // The window's Simulate, reached by a call: trigger_action of it
+        // asked about as simulate is; its key (F2) refused. What it would
+        // run here is a .spiceinit left in the run folder - the fixture's
+        // ngspice is false, which reads none: nothing could run even so.
+        QVERIFY(!failed(call("delete", {{"path", plain}, {"names", QJsonArray{"CMD7"}}})));
+        const QString init = QDir(misc::scratchDirFor(plain)).filePath(".spiceinit");
+        auto noInit = qScopeGuard([init] { QFile::remove(init); });
+        QVERIFY(write(init, "shell echo qucs-guard-5\n"));
+        QVERIFY(asked("simulate", {{"path", plain}}).contains("echo qucs-guard-5"));
+        said = asked("trigger_action", {{"action", "Simulation > Simulate"}, {"path", plain}});
+        QVERIFY2(said.contains("echo qucs-guard-5"), qPrintable(said));
+        QVERIFY(asked("trigger_action", {{"action", "Simulation > Calculate DC bias"}, {"path", plain}}).contains("echo qucs-guard-5"));
+        QVERIFY(asked("trigger_action", {{"action", "Edit > Rotate"}, {"path", plain}}).isEmpty());
+        QVERIFY(!failed(call("show_document", {{"path", plain}})));
+        const QList<SimMessage*> simsBefore = app->findChildren<SimMessage*>();   // (earlier tests' left)
+        const bool runningBefore = app->simulationConsole()->isRunning();
+        r = callAsked("send_input", {{"keys", "F2"}});
+        // (Its keys given after the call returned: told with its answer - no
+        // box opened, which it waited for.)
+        QVERIFY2(text(r).contains("Not simulated") && text(r).contains("echo qucs-guard-5") && text(r).contains("trigger_action")
+                     && !text(r).contains("\"dialog\""),
+                 qPrintable(text(r)));
+        QCOMPARE(app->findChildren<SimMessage*>(), simsBefore);   // (no run started)
+        QCOMPARE(app->simulationConsole()->isRunning(), runningBefore);
+        // A Python document's Run is the window's Simulate too. (Asked, not run.)
+        const QString py = QDir(ws).filePath("guard.py");
+        QVERIFY(write(py, "pass\n"));
+        QVERIFY(!failed(call("open_document", {{"path", py}})));
+        said = asked("trigger_action", {{"action", "Simulation > Simulate"}, {"path", py}});
+        QVERIFY2(said.contains("Python runs the script, with your rights (guard.py)"), qPrintable(said));
+        closeAll();
+
+        // -- Files outside the workspace: what is asked.
+        const QString plist = outside + "/LaunchAgents/agent.plist";
+        said = asked("save_document", {{"as", plist}});
+        QVERIFY2(said.contains("Outside the workspace and the open project") && said.contains("writes " + shown(real + "/LaunchAgents/agent.plist")),
+                 qPrintable(said));
+        QVERIFY(!control->irreversible("save_document", {{"as", plist}}));
+        QVERIFY(!asked("save_document", {{"as", "guard-inside.txt"}}).contains("Outside"));
+        QVERIFY(asked("save_document", {{"as", "../outside/up.txt"}}).contains("writes " + shown(real + "/up.txt")));   // (a relative path out)
+        QVERIFY(asked("export_netlist", {{"save_as", outside + "/new.cir"}}).contains("writes"));
+        QVERIFY(asked("export_image", {{"save_as", outside + "/new.png"}}).contains("writes"));
+        QVERIFY(asked("export_data", {{"save_as", outside + "/new.csv"}}).contains("writes"));
+        QVERIFY(asked("get_netlist", {{"save_as", outside + "/look.cir"}}).contains("writes"));   // (a tool that looks)
+        QVERIFY(asked("synthesize_attenuator", {{"save_as", outside + "/att.sch"}}).contains("writes"));
+        QVERIFY(asked("create_subcircuit", {{"save_as", outside + "/sub.sch"}}).contains("writes"));
+        QVERIFY(asked("fem_model", {{"action", "new"}, {"path", outside + "/m"}}).contains("writes " + shown(real + "/m.qfem")));
+        QVERIFY(asked("fem_model", {{"action", "save"}, {"as", outside + "/m2"}}).contains("writes"));
+        QVERIFY(write(outside + "/.aws/credentials", "[default]\nkey = NOT-A-REAL-KEY\n"));
+        QVERIFY(write(outside + "/paper.pdf", "%PDF-1.4\n"));
+        QVERIFY(write(outside + "/m.csv", "x,y\n1,2\n"));
+        said = asked("open_document", {{"path", outside + "/.aws/credentials"}});
+        QVERIFY2(said.contains("reads " + shown(real + "/.aws/credentials")), qPrintable(said));
+        QVERIFY(asked("read_pdf", {{"path", outside + "/paper.pdf"}}).contains("reads"));   // (a tool that looks)
+        QVERIFY(asked("list_documents", {{"folder", outside}}).contains("reads"));
+        QVERIFY(asked("open_project", {{"name", outside}}).contains("reads"));
+        QVERIFY(asked("import_data", {{"file", outside + "/m.csv"}}).contains("reads"));
+        QVERIFY(asked("open_document", {{"path", outside + "/not-there.sch"}}).isEmpty());   // (nothing read)
+        // Into the folder: copied there.
+        QVERIFY(asked("copy_document", {{"path", cmd}, {"to", outside}}).contains("writes " + shown(real + "/guard-cmd.sch")));
+        // Inside: the workspace, Qucs-S's own folders to read (not to write).
+        QVERIFY(asked("open_document", {{"path", cmd}}).isEmpty());
+        QucsSettings.ExamplesDir = dir.filePath("examples") + "/";
+        QVERIFY(write(dir.filePath("examples/ex.sch"), empty));
+        QVERIFY(asked("open_document", {{"path", dir.filePath("examples/ex.sch")}}).isEmpty());
+        QVERIFY(asked("save_document", {{"as", dir.filePath("examples/ex2.sch")}}).contains("writes"));
+        // A document open from outside: read as it is open, written asked about.
+        const QString rc = outside + "/dot_zshrc";
+        QVERIFY(write(rc, "export PATH=/usr/bin\n"));
+        QVERIFY(!failed(call("open_document", {{"path", rc}})));
+        QVERIFY(asked("get_text", {{"path", rc}}).isEmpty());
+        QVERIFY(asked("save_document", {{"path", rc}}).contains("writes " + shown(real + "/dot_zshrc")));
+        QVERIFY(asked("close_document", {{"path", rc}}).isEmpty());   // (nothing to save)
+        // A folder setting not set is no folder - not the program's working
+        // folder, which an empty QDir's absolutePath() is (its path ".").
+        {
+            const QDir tempWas = QucsSettings.tempFilesDir;
+            QucsSettings.tempFilesDir = QDir();
+            const bool working = QucsSettings.tempFilesDir.absolutePath() == QDir::currentPath();
+            const bool written = write(QDir::current().filePath("guard-cwd.txt"), "x\n");
+            said = asked("open_document", {{"path", QDir::current().filePath("guard-cwd.txt")}});
+            QucsSettings.tempFilesDir = tempWas;
+            QFile::remove(QDir::current().filePath("guard-cwd.txt"));
+            QVERIFY(working && written);
+            QVERIFY2(said.contains("reads"), qPrintable(QDir::currentPath() + ": " + said));
+        }
+        // The guard off.
+        control->setGuards({true, false});
+        QVERIFY(asked("open_document", {{"path", outside + "/.aws/credentials"}}).isEmpty());
+        QVERIFY(asked("save_document", {{"as", plist}}).isEmpty());
+        control->setGuards({});
+
+        // -- Written: what was asked about, and not what was not.
+        QVERIFY(!failed(call("edit_text", {{"path", rc}, {"edits", QJsonArray{QJsonObject{{"find", "/usr/bin"}, {"replace", "/usr/local/bin"}}}}})));
+        r = callAsked("save_document", {{"path", rc}});
+        QVERIFY2(!failed(r) && read(rc).contains("/usr/local/bin"), qPrintable(text(r)));
+        QVERIFY(!failed(call("new_document", {{"kind", "text"}})));
+        QVERIFY(!failed(call("edit_text", {{"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 0}}, {"text", "<plist/>"}}}}})));
+        QVERIFY(QDir().mkpath(outside + "/LaunchAgents"));
+        r = callAsked("save_document", {{"as", plist}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(plist), qPrintable(text(r)));
+        // A document opened from outside and saved in one batch: read asked
+        // about, its writing not - not saved.
+        const QString notes = outside + "/notes/notes.txt";
+        QVERIFY(write(notes, "one\n"));
+        QVERIFY(!failed(call("open_document", {{"path", cmd}})));   // (in front when the batch begins: inside)
+        const QJsonArray openEditSave{QJsonObject{{"tool", "open_document"}, {"arguments", QJsonObject{{"path", notes}}}},
+                                      QJsonObject{{"tool", "edit_text"}, {"arguments", QJsonObject{{"edits", QJsonArray{QJsonObject{{"find", "one"}, {"replace", "two"}}}}}}},
+                                      QJsonObject{{"tool", "save_document"}}};
+        said = asked("batch", {{"calls", openEditSave}});
+        QVERIFY2(said.contains("reads") && !said.contains("writes"), qPrintable(said));
+        r = callAsked("batch", {{"calls", openEditSave}});
+        QVERIFY2(failed(r) && text(r).contains("save_document was not made") && text(r).contains("writes " + shown(real + "/notes/notes.txt")),
+                 qPrintable(text(r)));
+        QCOMPARE(read(notes), QByteArray("one\n"));
+        // Saved by closing it: asked about, as it names it.
+        QVERIFY(asked("close_document", {{"path", notes}, {"unsaved", "save"}}).contains("writes " + shown(real + "/notes/notes.txt")));
+        // A part or net renamed in a schematic from outside: its data
+        // display beside it, not open, written too.
+        QVERIFY(write(outside + "/amp.sch", QByteArray(empty).replace("<Properties>\n", "<Properties>\n  <DataDisplay=amp.dpl>\n")));
+        QVERIFY(write(outside + "/amp.dpl", "<Qucs Schematic " PACKAGE_VERSION ">\n"));
+        QVERIFY(!failed(call("open_document", {{"path", outside + "/amp.sch"}})));
+        QVERIFY(asked("edit_component", {{"path", outside + "/amp.sch"}, {"name", "R1"}, {"rename", "R2"}}).contains("writes " + shown(real + "/amp.dpl")));
+        QVERIFY(asked("rename_net", {{"path", outside + "/amp.sch"}, {"from", "a"}, {"to", "b"}}).contains("writes " + shown(real + "/amp.dpl")));
+        QVERIFY(asked("edit_component", {{"path", outside + "/amp.sch"}, {"name", "R1"}, {"properties", QJsonObject{{"R", "1k"}}}}).isEmpty());
+        // A dataset imported beside it.
+        QVERIFY(write(QDir(ws).filePath("m2.csv"), "x,y\n1,2\n"));
+        QVERIFY(asked("import_data", {{"path", outside + "/amp.sch"}, {"file", QDir(ws).filePath("m2.csv")}}).contains("writes " + shown(real + "/m2.dat")));
+        // What a call asked about writes beside its file in that folder: a
+        // pdf_tex's PDF beside its LaTeX.
+        QVERIFY(QDir().mkpath(outside + "/pictures"));
+        r = callAsked("export_image", {{"path", cmd}, {"save_as", outside + "/pictures/c.pdf_tex"}});
+        QVERIFY2(!failed(r) && QFileInfo::exists(outside + "/pictures/c.pdf") && QFileInfo::exists(outside + "/pictures/c.pdf_tex"),
+                 qPrintable(text(r)));
+        // A script's save.
+        if (QucsControl::scriptingBuilt()) {
+            const QString script = QStringLiteral("qucs.call('save_document', {path: %1, as: %2})")
+                                       .arg(QString::fromUtf8(QJsonDocument(QJsonArray{notes}).toJson(QJsonDocument::Compact)).mid(1).chopped(1),
+                                            QString::fromUtf8(QJsonDocument(QJsonArray{outside + "/s/script.txt"}).toJson(QJsonDocument::Compact)).mid(1).chopped(1));
+            r = callAsked("run_script", {{"script", script}});
+            QVERIFY2(failed(r) && text(r).contains("save_document was not made") && !QFileInfo::exists(outside + "/s/script.txt"), qPrintable(text(r)));
+        }
+        // Where the mode asks nothing: saved, as before.
+        control->setAsking(kAsked, false);
+        r = callAsked("save_document", {{"path", notes}});
+        QVERIFY2(!failed(r) && read(notes).startsWith("two"), qPrintable(text(r)));
+        control->setAsking(kAsked, true);
+
+        // -- The dock: a tool that looks, let through by Claude Code's rule,
+        // held with the question; not where the user said to ask nothing.
+        {
+            qucs_s::claude::Session s;
+            s.setToolHost(control);
+            s.setPermissionMode("auto");
+            QSignalSpy asks(&s, &qucs_s::claude::Session::permissionRequested);
+            const auto listOutside = [&s, &outside](int id) {
+                const QJsonObject message{{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/call"},
+                                          {"params", QJsonObject{{"name", "list_documents"}, {"arguments", QJsonObject{{"folder", outside}}}}}};
+                s.handleLine(QJsonDocument(QJsonObject{{"type", "control_request"}, {"request_id", QString("g%1").arg(id)},
+                                                       {"request", QJsonObject{{"subtype", "mcp_message"}, {"server_name", "qucs"}, {"message", message}}}})
+                                 .toJson(QJsonDocument::Compact));
+            };
+            listOutside(1);
+            QCOMPARE(asks.count(), 1);
+            const auto p = asks.last().at(0).value<qucs_s::claude::PermissionRequest>();
+            QVERIFY2(p.detail.contains("reads " + shown(real)) && !p.canAllowTools, qPrintable(p.detail));
+            s.answer(p.id, false);
+            s.setPermissionMode("bypassPermissions");
+            listOutside(2);
+            QTest::qWait(50);
+            QCOMPARE(asks.count(), 1);
+        }
+    }
+
     // Settings by typed keys ("Tab/Label"): read without a dialog shown;
     // set through their own dialog and its OK, each change told with what
     // it was and what it is now, read again; a key that is not, a value it

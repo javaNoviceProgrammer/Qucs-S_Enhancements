@@ -672,6 +672,8 @@ void Session::setToolHost(ToolHost* host)
     if (host == nullptr) return;
     a_mcp = new mcp::Server(host, this);
     a_mcp->setCaller(a_caller);
+    host->setGuards(a_guards);
+    host->setAsking(a_caller, a_mode != QLatin1String("bypassPermissions"));
     // A call: not from within the reading of the output (a tool may open a
     // dialog - an event loop of its own - or take its time), for this
     // conversation (what changed since its last call, the document it is
@@ -717,6 +719,7 @@ void Session::setPermissionMode(const QString& mode)
 {
     if (mode == a_mode) return;
     a_mode = mode;
+    if (a_host != nullptr) a_host->setAsking(a_caller, mode != QLatin1String("bypassPermissions"));
     if (!isRunning()) return;
     // Asking is "default" to every version. The one it works in, it says.
     a_modeInUse.clear();
@@ -760,6 +763,12 @@ void Session::setAutoCompact(bool on)
     if (!isRunning()) return;
     askProgram(QStringLiteral("apply_flag_settings"),
                {{QStringLiteral("settings"), QJsonObject{{QStringLiteral("autoCompactEnabled"), on}}}});
+}
+
+void Session::setGuards(const Guards& guards)
+{
+    a_guards = guards;
+    if (a_host != nullptr) a_host->setGuards(guards);
 }
 
 void Session::askProgram(const QString& subtype, const QJsonObject& fields)

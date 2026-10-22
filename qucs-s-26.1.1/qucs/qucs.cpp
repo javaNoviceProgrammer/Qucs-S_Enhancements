@@ -4822,6 +4822,21 @@ void QucsApp::slotSimulate(QWidget *w)
 
   if (w == nullptr)
       w = DocumentTab->currentWidget();
+  // Reached by a call of Claude's that was not asked about what it runs (a
+  // schematic's commands, a script): not run (the guards of the Claude
+  // panel's Permissions menu).
+  // (Within the call, in its answer; set off after it returned - keys
+  // given later -, told with its answer, no box waiting.)
+  if (a_control != nullptr)
+      if (const QString refused = a_control->runRefused(w); !refused.isEmpty()) {
+          if (misc::ErrorCapture::active()) {
+              misc::reportError(refused);
+          } else {
+              a_control->noteForCall(refused);
+              statusBar()->showMessage(refused, 10000);
+          }
+          return;
+      }
   // A Python script is run (the Python toolbar's Run).
   if (auto *py = qobject_cast<PythonDoc *>(w)) {
       runPython(py);
