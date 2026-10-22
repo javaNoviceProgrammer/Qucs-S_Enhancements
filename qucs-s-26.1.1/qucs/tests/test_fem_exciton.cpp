@@ -770,25 +770,32 @@ private slots:
         QVERIFY2(mean[0] < 0.95 && mean[1] > 1.0, qPrintable(QString("%1 %2").arg(mean[0]).arg(mean[1])));
     }
 
-    // A continuum wider than the line asks, to fit the coupled excitons'
-    // size: a warning naming what would smooth it (it was a line of the log:
-    // the update check of ac8ce07, 4); a size out of its range refused.
+    // The coupled excitons' continuum: its ripple at the line's width
+    // warned of where some 2 % or more (it was a line of the log: the update
+    // check of ac8ce07, 4), not by the spacing alone (152 meV "apart" warned
+    // of a spectrum a larger size moved 1 % at most: the update check of 21
+    // October, 4); a size out of its range refused.
     void theContinuumWidenedSaid()
     {
-        auto spectrum = [](const char* size) {
+        auto spectrum = [](const char* size, const char* width) {
             return femtest::run(femtest::modelOf(femtest::box(
                 QStringLiteral("20"), QStringLiteral("10"), QString(), QStringLiteral("0[eV]"),
-                QString::fromUtf8(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 1, "linewidth": "1[meV]", "lineshape": "gaussian",
-                                      "excitons": true, "excitonmodel": "coupled", "epsr": "12.9", "excitonsize": %1})x").arg(QLatin1String(size)))));
+                QString::fromUtf8(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 1, "linewidth": "%2[meV]", "lineshape": "gaussian",
+                                      "excitons": true, "excitonmodel": "coupled", "epsr": "12.9", "excitonsize": %1})x")
+                    .arg(QLatin1String(size), QLatin1String(width)))));
         };
-        const femtest::Run small = spectrum("100");
+        const femtest::Run small = spectrum("100", "1");
         QVERIFY2(small.error.isEmpty(), qPrintable(small.error));
         const QStringList warned = small.solution->log.filter(QLatin1String("Warning:")).filter(QLatin1String("continuum states"));
-        QVERIFY2(warned.size() == 1 && warned.front().contains(QLatin1String("not the 0.5 the line's width asks"))
-                     && warned.front().contains(QLatin1String("unknowns, \"excitonsize\")")) && warned.front().contains(QLatin1String("a line of 2 meV or more smooths it"))
-                     && warned.front().contains(QStringLiteral("at the ripple's peaks: some ±11 % at 0.5 meV")),
+        QVERIFY2(warned.size() == 1 && warned.front().contains(QLatin1String("unknowns, \"excitonsize\")"))
+                     && warned.front().contains(QStringLiteral("ripples about its trend some ±4 % at the ripple's peaks at this line's 1 meV"))
+                     && warned.front().contains(QLatin1String("a wider line smooths it")),
                  qPrintable(small.solution->log.join(QLatin1Char('\n'))));
-        const femtest::Run refused = spectrum("50");
+        // (At 2 meV ±1.5 %: not said.)
+        const femtest::Run wide = spectrum("100", "2");
+        QVERIFY2(wide.error.isEmpty(), qPrintable(wide.error));
+        QVERIFY2(wide.solution->log.filter(QLatin1String("continuum states")).isEmpty(), qPrintable(wide.solution->log.join(QLatin1Char('\n'))));
+        const femtest::Run refused = spectrum("50", "1");
         QVERIFY2(refused.error.contains(QLatin1String("the coupled excitons' size: a whole number from 100 to 20000")), qPrintable(refused.error));
     }
 
@@ -1023,6 +1030,118 @@ private slots:
               std::exp(10.0 / 6), b[0] / 100, b[1] / 100);
         QVERIFY2(std::abs(a[1] / a[0] / std::exp(10.0 / 6) - 1) < 0.01 && a[0] > 1, qPrintable(QStringLiteral("%1 %2").arg(a[0]).arg(a[1])));
         QVERIFY2(b[1] < 1e-6 * a[1], qPrintable(QStringLiteral("%1 %2").arg(b[1]).arg(a[1])));
+    }
+
+    // The barriers' edge under the continuum "states" (the update check of
+    // 21 October, 3: Miller's n = 3, a miniband above the barriers, and the
+    // barriers' excitonic edge 30 meV above it, one only under each
+    // continuum): the box's states their free carriers, the barriers' bulk
+    // adds its excitons' excess - Elliott's with Urbach's tail less the free
+    // carriers' -, counted once. Against a slab of the barrier alone
+    // ("bound": Elliott's in place of its free carriers'), what each adds is
+    // the same per the barriers' share of the line (50 of 60 nm): below
+    // their gap Urbach's tail (52 and 42 meV under it e^(10/6) apart), 150
+    // meV above it the Sommerfeld factor's excess. Urbach's width without
+    // the bulk's excitons, unused under "states", said.
+    void theBarriersEdgeUnderStates()
+    {
+        auto stack = [](bool slab, const char* continuum, const char* more) {
+            return femtest::modelOf(QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
+              "components": [{"unit": "nm",
+                "geometry": [{"type": "rectangle", "name": "below", "size": ["10", "25"]},
+                             {"type": "rectangle", "name": "well", "position": ["0", "25"], "size": ["10", "10"]},
+                             {"type": "rectangle", "name": "above", "position": ["0", "35"], "size": ["10", "25"]}],
+                "physics": [{"type": "quantum", "tag": "qw", "h1d": "0.5[nm]", "features": [
+                  {"type": "material", "source": "user", "Ec": "1.520[eV]", "Ev": "0[eV]", "me": "0.067", "mhh": "0.377", "mlh": "0.09",
+                   "mhhp": "0.111", "mlhp": "0.21", "Ep": "28.8[eV]", "nr": "3.6", "epsilonr": "12.53", "selection": {"only": ["well"]}},
+                  {"type": "material", "source": "user", "Ec": "1.757575[eV]", "Ev": "-0.127925[eV]", "me": "0.0836", "mhh": "0.444", "mlh": "0.11",
+                   "mhhp": "0.13", "mlhp": "0.24", "Ep": "27[eV]", "nr": "3.5", "epsilonr": "12.0", "selection": {"only": %1}}]}],
+                "mesh": {"size": "normal", "custom": true, "hmax": "2"}}],
+              "studies": [{"type": "study", "steps": [{"type": "spectrum", "energies": "1.8335[eV], 1.8435[eV], 2.0355[eV]", "states": 4,
+                                                      "continuum": "%2", "normalize": "stack", "linewidth": "2[meV]", "lineshape": "gaussian" %3}]}]})json")
+                                          .arg(slab ? QStringLiteral(R"(["below", "well", "above"])") : QStringLiteral(R"(["below", "above"])"),
+                                               QLatin1String(continuum), QLatin1String(more))
+                                          .toUtf8());
+        };
+        const char* edge = R"(, "bulkexcitons": true, "urbach": "6[meV]")";
+        const femtest::Run states = femtest::run(stack(false, "states", "")), statesEdge = femtest::run(stack(false, "states", edge));
+        const femtest::Run slab = femtest::run(stack(true, "bound", "")), slabEdge = femtest::run(stack(true, "bound", edge));
+        QVERIFY2(states.error.isEmpty() && statesEdge.error.isEmpty() && slab.error.isEmpty() && slabEdge.error.isEmpty(),
+                 qPrintable(states.error + statesEdge.error + slab.error + slabEdge.error));
+        double added[3], alone[3];
+        for (int k = 0; k < 3; ++k) {
+            for (const femtest::Run* r : {&states, &statesEdge, &slab, &slabEdge}) r->solution->select(k);
+            added[k] = femtest::global(*statesEdge.solution, "qw.alphaTE") - femtest::global(*states.solution, "qw.alphaTE");
+            alone[k] = femtest::global(*slabEdge.solution, "qw.alphaTE") - femtest::global(*slab.solution, "qw.alphaTE");
+            qInfo("%.4f eV: the barriers' edge adds %.5g /cm under \"states\", the slab's %.5g - %.4f of it", femtest::global(*states.solution, "qw.Ephoton") / Q,
+                  added[k] / 100, alone[k] / 100, added[k] / alone[k]);
+            QVERIFY2(alone[k] > 0 && std::abs(added[k] / alone[k] / (50.0 / 60) - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(added[k]).arg(alone[k])));
+        }
+        QVERIFY2(std::abs(added[1] / added[0] / std::exp(10.0 / 6) - 1) < 0.01, qPrintable(QStringLiteral("%1 %2").arg(added[0]).arg(added[1])));
+        const femtest::Run unused = femtest::run(stack(false, "states", R"(, "urbach": "6[meV]")"));
+        QVERIFY2(unused.error.isEmpty(), qPrintable(unused.error));
+        const QString said = (unused.study.warnings + unused.solution->log).join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QLatin1String("its Urbach width is not used: with the continuum \"states\" it broadens the bulk's excitons' lines alone")),
+                 qPrintable(said));
+        QVERIFY2(!(statesEdge.study.warnings + statesEdge.solution->log).join(QLatin1Char(' ')).contains(QLatin1String("Urbach width is not used")),
+                 qPrintable(statesEdge.study.warnings.join(QLatin1Char('\n'))));
+    }
+
+    // A flag given as an expression of the parameters, read at each point
+    // of a sweep: "bulkexcitons": "ex" swept 0, 1 - its first point the
+    // plain √ε's, its second Elliott's with its Urbach tail (it was false at
+    // both, said nowhere: the update check of 21 October, 1). One that is
+    // not a constant refused, the flag named; another study's not this one's
+    // to refuse.
+    void flagsOfTheParameters()
+    {
+        auto slab = [](const char* flag, const char* sweep) {
+            QByteArray json = femtest::heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("20"), QStringLiteral("20"),
+                QStringLiteral(R"(, "h1d": "0.5[nm]")"),
+                QStringLiteral(R"x(%2 {"type": "spectrum", "energies": "1.3705[eV], 1.3805[eV]", "states": 1, "continuum": "bound", "normalize": "stack",
+                                   "linewidth": "2[meV]", "lineshape": "gaussian", "bulkexcitons": %1, "urbach": "6[meV]"})x")
+                    .arg(QLatin1String(flag), QLatin1String(sweep)));
+            json.replace(R"("parameters": [{"name": "Lw")", R"("parameters": [{"name": "ex", "expression": "1"}, {"name": "Lw")");
+            return json;
+        };
+        auto alphas = [](const femtest::Run& r, int point) {
+            Solution& s = *r.study.solutions[std::size_t(point)];
+            std::vector<double> a;
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                a.push_back(femtest::global(s, "qw.alphaTE"));
+            }
+            return a;
+        };
+        const femtest::Run swept = femtest::run(femtest::modelOf(slab(R"("ex")", R"({"type": "sweep", "parameters": [["ex", "0, 1", ""]]},)")));
+        const femtest::Run off = femtest::run(femtest::modelOf(slab("false", ""))), on = femtest::run(femtest::modelOf(slab("true", "")));
+        QVERIFY2(swept.error.isEmpty() && off.error.isEmpty() && on.error.isEmpty(), qPrintable(swept.error + off.error + on.error));
+        QCOMPARE(swept.study.solutions.size(), std::size_t(2));
+        const std::vector<double> a0 = alphas(swept, 0), a1 = alphas(swept, 1), plain = alphas(off, 0), elliott = alphas(on, 0);
+        for (std::size_t k = 0; k < 2; ++k) {
+            QVERIFY2(a0[k] == plain[k] && a1[k] == elliott[k] && elliott[k] > 10 * plain[k],
+                     qPrintable(QStringLiteral("%1 %2 %3 %4").arg(a0[k]).arg(plain[k]).arg(a1[k]).arg(elliott[k])));
+        }
+        // (A comparison of the parameters: ex > 0.5 at ex 1 on.)
+        const femtest::Run compared = femtest::run(femtest::modelOf(slab(R"("ex > 0.5")", "")));
+        QVERIFY2(compared.error.isEmpty() && alphas(compared, 0) == elliott, qPrintable(compared.error));
+        const femtest::Run refused = femtest::run(femtest::modelOf(slab(R"("maybe")", "")));
+        QVERIFY2(refused.error.contains(QLatin1String(R"(its "bulkexcitons" is "maybe" - true, false or an expression of the parameters)")),
+                 qPrintable(refused.error));
+        // (Another study's mistake: this one, of flags as expressions too,
+        // solves.)
+        QByteArray two = slab(R"("ex")", "");
+        two.replace(R"("studies": [)", R"("studies": [{"type": "study", "tag": "other", "steps": [{"type": "spectrum", "energies": "1.4[eV]", "bulkexcitons": "maybe"}]}, )");
+        two.replace(R"({"type": "study", "steps")", R"({"type": "study", "tag": "this", "steps")");
+        const Model model = femtest::modelOf(two);
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(model);
+        const GeometryBuild g = buildGeometry(model, *ps);
+        QVERIFY(g.ok());
+        const StudyRun mine = runStudy(model, ps, g.topology, nullptr, QStringLiteral("this"));
+        QVERIFY2(mine.ok(), qPrintable(mine.error));
+        const StudyRun theirs = runStudy(model, ps, g.topology, nullptr, QStringLiteral("other"));
+        QVERIFY2(theirs.error.contains(QLatin1String(R"("bulkexcitons" is "maybe")")), qPrintable(theirs.error));
     }
 };
 

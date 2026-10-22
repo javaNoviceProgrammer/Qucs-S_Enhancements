@@ -1700,6 +1700,118 @@ private slots:
         QVERIFY2(negative.error.contains(QLatin1String("its fade")), qPrintable(negative.error));
     }
 
+    // A bound state's strength kept whole in a field under the continuum
+    // "bound" (the update check of 21 October, 7a: a pair of a bound state
+    // and one the field frees was left out - 11 % of a 9.4 nm well's TM
+    // absorption lost at 150 kV/cm, Δn between fields the wrong sign): the
+    // window's ∫α dE at 150 kV/cm the zero field's within 3 %, the sum's
+    // warning not raised; with too few subbands raised, naming them (7c).
+    // The local index of Δα over the excitons' window (dnwindow, its area
+    // kept: conservearea): nought at the first point, at 150 kV/cm above it
+    // at 1.40 eV below them - Weiner, Miller and Chemla's sign - whatever
+    // the spectrum's top, the whole window's index not (7b).
+    void aBoundStatesStrengthInAField()
+    {
+        const double step = slowBuild() ? 0.01 : 0.005;
+        auto sweep = [step](double top, int states, const char* more) {
+            QByteArray json = heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("9.4"), QStringLiteral("8"),
+                QStringLiteral(R"(, "F": "F", "h1d": "0.25[nm]")"),
+                QString::fromUtf8(R"x({"type": "sweep", "parameters": [["F", "0, 1.5e7", "V/m"]]},
+                                      {"type": "spectrum", "energies": "linspace(1.38[eV], %1[eV], %2)", "states": %3, "linewidth": "5.5[meV]",
+                                       "lineshape": "gaussian", "continuum": "bound", "normalize": "length", "normlength": "18.8[nm]" %4})x")
+                    .arg(top)
+                    .arg(qRound((top - 1.38) / step) + 1)
+                    .arg(states)
+                    .arg(QLatin1String(more)));
+            json.replace(R"("parameters": [{"name": "Lw")", R"("parameters": [{"name": "F", "expression": "0[V/m]"}, {"name": "Lw")");
+            return run(modelOf(json));
+        };
+        auto sum = [](Solution& s, const char* name) {
+            double a = 0;
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                a += global(s, QLatin1String(name));
+            }
+            return a;
+        };
+        auto at = [](Solution& s, double E, const char* name) {
+            for (int k = 0; k < s.snapshotCount(); ++k) {
+                s.select(k);
+                if (std::abs(global(s, QStringLiteral("qw.Ephoton")) / Q - E) < 1e-9) return global(s, QLatin1String(name));
+            }
+            return double(NAN);
+        };
+        const char* local = R"(, "dnwindow": ["1.38[eV]", "1.50[eV]"], "conservearea": true)";
+        const Run whole = sweep(1.95, 16, local);
+        QVERIFY2(whole.error.isEmpty(), qPrintable(whole.error));
+        QCOMPARE(whole.study.solutions.size(), std::size_t(2));
+        Solution &off = *whole.study.solutions[0], &on = *whole.study.solutions[1];
+        for (const char* pol : {"qw.alphaTE", "qw.alphaTM"}) {
+            const double ratio = sum(on, pol) / sum(off, pol);
+            qInfo("%s: ∫α dE at 150 kV/cm %.4f of the zero field's", pol, ratio);
+            QVERIFY2(std::abs(ratio - 1) < 0.03, qPrintable(QString::number(ratio)));
+        }
+        QVERIFY2(!whole.study.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("∫α dE")), qPrintable(whole.study.warnings.join(QLatin1Char('\n'))));
+        // At 250 kV/cm e3, past its lower barrier's edge, below the higher
+        // one's: held in its well (its |ψ|² there 0.6 at least), so bound;
+        // asked for 0.99 of it, not.
+        auto tilted = [](const char* pmin) {
+            QByteArray json = heterostructure(
+                QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("9.4"), QStringLiteral("8"),
+                QStringLiteral(R"(, "F": "2.5e7[V/m]", "h1d": "0.25[nm]")"),
+                QStringLiteral(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 16, "linewidth": "5.5[meV]", "continuum": "bound" %1})x")
+                    .arg(QLatin1String(pmin)));
+            return run(modelOf(json));
+        };
+        const Run held = tilted(""), strict = tilted(R"(, "pmin": "0.99")");
+        QVERIFY2(held.error.isEmpty() && strict.error.isEmpty(), qPrintable(held.error + strict.error));
+        QVERIFY2(held.solution->log.join(QLatin1Char(' ')).contains(QStringLiteral("held in their wells, so bound: e3 (their |ψ|² there 0.6 at least, \"pmin\")")),
+                 qPrintable(held.solution->log.join(QLatin1Char('\n'))));
+        QVERIFY2(!strict.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("so bound")), qPrintable(strict.solution->log.join(QLatin1Char('\n'))));
+        // A box's states above both barriers stay its continuum: a 30 nm well
+        // between 3 nm barriers holds most of each, but at 10 kV/cm none is
+        // bound (e8 to e16 were, by their share alone).
+        const Run wide = run(modelOf(heterostructure(
+            QStringLiteral("GaAs"), QStringLiteral("0"), QStringLiteral("AlGaAs"), QStringLiteral("0.3"), QStringLiteral("30"), QStringLiteral("3"),
+            QStringLiteral(R"(, "F": "1e6[V/m]", "h1d": "0.25[nm]")"),
+            QStringLiteral(R"x({"type": "spectrum", "energies": "1.6[eV]", "states": 16, "linewidth": "5.5[meV]", "continuum": "bound"})x"))));
+        QVERIFY2(wide.error.isEmpty(), qPrintable(wide.error));
+        QVERIFY2(!wide.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("so bound")), qPrintable(wide.solution->log.join(QLatin1Char('\n'))));
+        // The local index: nought at the first point, above it at 1.40 eV.
+        const double dn = at(on, 1.40, "qw.dnTMloc");
+        qInfo("Δn TM at 1.40 eV, 150 kV/cm: %.4g local (its area kept), %.4g of the whole window", dn, at(on, 1.40, "qw.dnTM") - at(off, 1.40, "qw.dnTM"));
+        QVERIFY2(at(off, 1.40, "qw.dnTMloc") == 0 && dn > 1e-4, qPrintable(QString::number(dn)));
+        // Whatever the spectrum's top: the local index the same, the whole
+        // window's not.
+        const Run lower = sweep(1.70, 16, local);
+        QVERIFY2(lower.error.isEmpty(), qPrintable(lower.error));
+        Solution &off2 = *lower.study.solutions[0], &on2 = *lower.study.solutions[1];
+        QVERIFY2(std::abs(at(on2, 1.40, "qw.dnTMloc") / dn - 1) < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(at(on2, 1.40, "qw.dnTMloc")).arg(dn)));
+        const double moved = (at(on2, 1.40, "qw.dnTM") - at(off2, 1.40, "qw.dnTM")) / (at(on, 1.40, "qw.dnTM") - at(off, 1.40, "qw.dnTM"));
+        QVERIFY2(std::abs(moved - 1) > 0.1, qPrintable(QString::number(moved)));
+        // (Its area not kept: another index. Kept by an expression of the
+        // parameters: the same.)
+        const Run kept = sweep(1.70, 16, R"(, "dnwindow": ["1.38[eV]", "1.50[eV]"])");
+        QVERIFY2(kept.error.isEmpty(), qPrintable(kept.error));
+        QVERIFY2(std::abs(at(*kept.study.solutions[1], 1.40, "qw.dnTMloc") / dn - 1) > 0.05, qPrintable(QString::number(at(*kept.study.solutions[1], 1.40, "qw.dnTMloc"))));
+        const Run expressed = sweep(1.70, 16, R"(, "dnwindow": ["1.38[eV]", "1.50[eV]"], "conservearea": "F >= 0[V/m]")");
+        QVERIFY2(expressed.error.isEmpty(), qPrintable(expressed.error));
+        QCOMPARE(at(*expressed.study.solutions[1], 1.40, "qw.dnTMloc"), at(on2, 1.40, "qw.dnTMloc"));
+        // Too few subbands: the strength past them said.
+        const Run few = sweep(1.95, 2, "");
+        QVERIFY2(few.error.isEmpty(), qPrintable(few.error));
+        const QString said = few.study.warnings.join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QStringLiteral("qw.: the absorption's sum over the photons' window (∫α dE) at F = 15 MV/m is"))
+                     && said.contains(QLatin1String("more keep them: \"cstates\", \"vstates\"")),
+                 qPrintable(said));
+        // A window not of two rising energies: said, none made.
+        const Run wrong = sweep(1.70, 4, R"(, "dnwindow": ["1.50[eV]", "1.38[eV]"])");
+        QVERIFY2(wrong.error.isEmpty() && wrong.study.warnings.join(QLatin1Char(' ')).contains(QLatin1String("two energies, the first the lower - none made"))
+                     && !wrong.study.solutions[1]->global(QStringLiteral("qw.dnTMloc")),
+                 qPrintable(wrong.study.warnings.join(QLatin1Char('\n'))));
+    }
+
     void fadingInEveryPath()
     {
         // The fade in each of the spectrum's paths - the parabolic bands'

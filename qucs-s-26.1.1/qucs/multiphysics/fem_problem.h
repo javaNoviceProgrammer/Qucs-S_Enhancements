@@ -164,6 +164,12 @@ struct SolveOptions {
     int choose = 0;
 };
 
+/// The index an absorption \a alpha (1/m) at energies \a x (J, ascending)
+/// makes at \a E by Kramers and Kronig, (c ħ/π) P∫ α(E')/(E'² - E²) dE'
+/// over \a x: the principal value with \a aE - α at E, 0 outside - taken
+/// out, its own integral analytic.
+double kramersKronig(const std::vector<double>& x, const std::vector<double>& alpha, double E, double aE);
+
 /// An optical spectrum of quantum states: at photon energies (J), from so
 /// many states of each carrier, broadened (a Lorentzian's half width, J),
 /// with carriers in the wells (1/m³; 0: none - absorption) and a refractive

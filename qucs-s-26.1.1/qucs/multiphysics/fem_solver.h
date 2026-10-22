@@ -43,6 +43,20 @@ struct TerminalMatrices {
     std::vector<std::vector<double>> C, Gd, Gs;
 };
 
+/// A field solved along a line of its own (a semiconductor in 1D): the
+/// coordinate along it (the model's unit, ascending), its potential (V)
+/// and carriers (1/m³) there - read at a point rather than its mesh's
+/// nodes, which may be coarser.
+struct AlongLine {
+    bool alongY = true;
+    double scale = 1;   ///< m per the model's unit
+    std::vector<double> c, V, n, p;
+    /// At \a x (m): V, n and p (\a value) and their slopes along the line
+    /// (\a slope, per m) - V linear between its nodes, the carriers in
+    /// their logarithm; false where it has fewer than two.
+    bool read(QPointF x, double value[3], double slope[3]) const;
+};
+
 /// One physics solved: its field on its space, and what was found.
 struct Field {
     QString tag;           ///< es, ec, ht, solid
@@ -74,6 +88,8 @@ struct Field {
     /// sweep's next point starts from it).
     int unknowns = -1;
     std::shared_ptr<const Solution> line;
+    /// Its V, n and p along that line, as solved: read there (AlongLine).
+    std::shared_ptr<const AlongLine> along;
     /// A mode's tangential field on edge elements (its values first in
     /// values, Ez's after them); null for a field of nodes alone.
     std::shared_ptr<const EdgeSpace> edges;
@@ -172,6 +188,9 @@ public:
     QList<Variable> variables() const;
     QList<Variable> globals() const;
     void setGlobal(const QString& name, double value, const Dim& dim, const QString& description = {}, const QString& unit = {});
+    /// A global of a value at each snapshot (\a values, as many), set after
+    /// them - what the points of a sweep make together.
+    void setSeriesGlobal(const QString& name, const std::vector<double>& values, const Dim& dim, const QString& description = {});
     /// A process flow's state as variables, each read where it is (the
     /// grid's cells of the domain's material there), \a tag their prefix:
     /// each species all of it (pf1.B) and active (pf1.B_a), the active
@@ -354,6 +373,7 @@ private:
         bool chosen = false;
         std::vector<std::vector<double>> extra;    // by field
         std::vector<std::vector<double>> values;   // by field
+        std::vector<std::shared_ptr<const AlongLine>> along;   // by field
         std::vector<std::vector<Field::Terminal>> terminals;
         std::vector<double> globals;               // by a_globals' order
     };

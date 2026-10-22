@@ -656,8 +656,9 @@ ExportText fieldExport(const SolutionSet& set, const Node& node)
     std::vector<QPointF> points;
     int nx = 0, ny = 0;
     if (grid) {
-        nx = std::clamp(node.integer(QStringLiteral("nx")), 2, 10000);
-        ny = std::clamp(node.integer(QStringLiteral("ny")), 2, 10000);
+        // (One column or one row: a line's - its x or y the corners'.)
+        nx = std::clamp(node.integer(QStringLiteral("nx")), 1, 10000);
+        ny = std::clamp(node.integer(QStringLiteral("ny")), 1, 10000);
         if (qint64(nx) * ny > 4000000) {
             out.error = tr("%1 by %2 points: four million at most").arg(nx).arg(ny);
             return out;
@@ -688,14 +689,19 @@ ExportText fieldExport(const SolutionSet& set, const Node& node)
                     corner[c][k] = e.constant();
                 }
         }
-        if (!(corner[1][0] > corner[0][0]) || !(corner[1][1] > corner[0][1])) {
-            out.error = tr("its corners: the second above and right of the first");
+        // (A grid of one column - one row - along a line: its x (y) the
+        // corners', their middle where they differ; the corners may share it.
+        // It was refused, and nx 1 divided by nought: the update check of 21
+        // October, 6.)
+        if (!(nx == 1 ? corner[1][0] >= corner[0][0] : corner[1][0] > corner[0][0])
+            || !(ny == 1 ? corner[1][1] >= corner[0][1] : corner[1][1] > corner[0][1])) {
+            out.error = tr("its corners: the second above and right of the first (a grid of one column or one row: the same x or y)");
             return out;
         }
         for (int j = 0; j < ny; ++j)
             for (int i = 0; i < nx; ++i)
-                points.emplace_back(corner[0][0] + (corner[1][0] - corner[0][0]) * i / (nx - 1),
-                                    corner[0][1] + (corner[1][1] - corner[0][1]) * j / (ny - 1));
+                points.emplace_back(nx == 1 ? 0.5 * (corner[0][0] + corner[1][0]) : corner[0][0] + (corner[1][0] - corner[0][0]) * i / (nx - 1),
+                                    ny == 1 ? 0.5 * (corner[0][1] + corner[1][1]) : corner[0][1] + (corner[1][1] - corner[0][1]) * j / (ny - 1));
     } else {
         points = first.mesh().nodes;
         for (const Instance& in : at)

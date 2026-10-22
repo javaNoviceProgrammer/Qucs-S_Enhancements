@@ -7995,6 +7995,20 @@ bool SemiconductorProblem::solve1d(QString* error)
         *error = tr("%1: its line's solution has no nodes along it").arg(a_node->name());
         return false;
     }
+    {
+        // (Read at a point along the line itself - PointEvaluator.)
+        auto along = std::make_shared<AlongLine>();
+        along->alongY = alongY;
+        along->scale = a_s.mesh().unitScale;
+        for (const Sample& sm : profile) {
+            if (!along->c.empty() && sm.c <= along->c.back()) continue;
+            along->c.push_back(sm.c);
+            along->V.push_back(sm.V);
+            along->n.push_back(sm.n);
+            along->p.push_back(sm.p);
+        }
+        a_s.fields()[std::size_t(a_fi)].along = along;
+    }
     // Each node of its own by its coordinate: V linear between the line's
     // nodes, the carriers in their logarithm (held beyond its ends).
     const Field& f = field();
@@ -8081,9 +8095,11 @@ bool SemiconductorProblem::solve1d(QString* error)
         double gap = 0;
         for (std::size_t k = 1; k < along.size(); ++k) gap = std::max(gap, (along[k] - along[k - 1]) * unit);
         if (gap > 4 * a_h1d) {
-            const QString w = tr("Warning: %1: solved in 1D every %2 nm along its line, set on this mesh's nodes up to %3 nm apart - read here "
-                                 "(fem_evaluate, a plot, another physics) it is that coarse (its currents are its line's): a Layered "
-                                 "Region along the line as fine keeps its detail")
+            const QString w = tr("Warning: %1: solved in 1D every %2 nm along its line, this mesh's nodes up to %3 nm apart: at a point "
+                                 "(fem_evaluate, a plot, a cut line, an export) its potential, carriers and what follows from them - the "
+                                 "field, the bands - are read along its line; its currents and another physics coupled to it are this "
+                                 "mesh's, that coarse (its terminals' currents its line's): a Layered Region along the line as fine keeps "
+                                 "their detail")
                                   .arg(a_node->name(), formatNumber(a_h1d * 1e9, 3), formatNumber(gap * 1e9, 3));
             if (!a_s.log.contains(w)) a_s.log << w;
         }
@@ -8467,6 +8483,12 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
         }
     }
     s.V = w[0] * V[0] + w[1] * V[1] + w[2] * V[2];
+    // Solved along a line of its own (in 1D): V and the carriers its, read
+    // at this point - not this mesh's nodes, up to some nm apart (the
+    // update check of 21 October, 6).
+    double along[3], slope[3];
+    const bool alongLine = field.along && field.along->read(e.point(), along, slope);
+    if (alongLine) s.V = along[0];
     s.defined = true;
     if (!std::isfinite(ex[0])) return s;   // an insulator
     s.semiconductor = true;
@@ -8479,6 +8501,10 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
     }
     s.n = std::exp(ln);
     s.p = std::exp(lp);
+    if (alongLine && along[1] > 0 && along[2] > 0) {
+        s.n = along[1];
+        s.p = along[2];
+    }
     s.mun = ex[0];
     s.mup = ex[1];
     s.dEc = ex[2];
