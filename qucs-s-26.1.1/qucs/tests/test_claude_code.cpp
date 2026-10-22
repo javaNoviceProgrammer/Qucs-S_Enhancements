@@ -8,6 +8,7 @@
  * program is a shell script here that answers as claude does.
  */
 #include <QtTest>
+#include <QScrollBar>
 #include <QFrame>
 #include <QCheckBox>
 #include <QDialog>
@@ -1311,6 +1312,59 @@ private slots:
     // kept, more than 400 of them (the cache was cleared past 400: a long
     // conversation typeset most of its math again at each render, 40 ms
     // apart while a reply was written - B7).
+    // The conversation followed to its end as it grows - a reply streamed, a
+    // tool's line, a note - while the view is at its end, whatever the
+    // layout does after a render (a long transcript laid out in steps, an
+    // image's size known once read); not while the reader has scrolled up;
+    // a prompt sent takes it to the end again.
+    void followsTheConversationsEnd()
+    {
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(fresh("follow"));
+        panel.session()->setProgram("claude");   // (not run)
+        panel.resize(440, 700);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        auto reply = [&panel](const QString& text) {
+            const QJsonObject m{{"type", "assistant"}, {"message", QJsonObject{{"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", text}}}}}}};
+            panel.session()->handleLine(QJsonDocument(m).toJson(QJsonDocument::Compact));
+        };
+        QImage picture(600, 900, QImage::Format_RGB32);
+        picture.fill(Qt::darkBlue);
+        const QString png = fresh("follow") + QStringLiteral("/plot.png");
+        QVERIFY(picture.save(png));
+        QString text;
+        for (int i = 0; i < 400; ++i) text += QStringLiteral("Paragraph %1 of a long reply, some words to wrap across the panel's width.\n\n").arg(i);
+        reply(text);
+        panel.renderNow();
+        QTest::qWait(100);
+        QScrollBar* bar = panel.transcript()->verticalScrollBar();
+        QVERIFY(bar->maximum() > 1000);
+        bar->setValue(bar->maximum());
+        auto atEnd = [bar] { return bar->value() >= bar->maximum() - 2; };
+        for (int k = 0; k < 12; ++k) {
+            if (k % 3 == 1) reply(QStringLiteral("A plot:\n\n![plot](%1)\n\nand after it %2.").arg(QUrl::fromLocalFile(png).toString()).arg(k));
+            else panel.addNote(QStringLiteral("note %1, after a long one: %2").arg(k).arg(QString(200, QLatin1Char('x'))));
+            panel.renderNow();
+            QTest::qWait(60);
+            QVERIFY2(atEnd(), qPrintable(QStringLiteral("step %1: at %2 of %3").arg(k).arg(bar->value()).arg(bar->maximum())));
+        }
+        // Scrolled up: left where it is.
+        bar->setValue(bar->maximum() / 2);
+        const int kept = bar->value();
+        panel.addNote(QStringLiteral("while reading above"));
+        panel.renderNow();
+        QTest::qWait(60);
+        QCOMPARE(bar->value(), kept);
+        // A prompt sent: the end followed again.
+        panel.session()->setProgram(script("follow-broken", kBroken));
+        panel.composer()->setPlainText(QStringLiteral("Where were we?"));
+        panel.sendComposer();
+        panel.renderNow();
+        QTest::qWait(60);
+        QVERIFY2(atEnd(), qPrintable(QStringLiteral("at %1 of %2").arg(bar->value()).arg(bar->maximum())));
+    }
+
     void longRepliesMathRendersAtOnce()
     {
         const auto reply = [](ClaudeCodePanel& panel, int from, int n) {

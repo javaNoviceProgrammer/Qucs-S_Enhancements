@@ -522,6 +522,24 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     a_view->setOpenExternalLinks(false);
     a_view->setTextInteractionFlags(Qt::TextBrowserInteraction);
     connect(a_view, &QTextBrowser::anchorClicked, this, &ClaudeCodePanel::handleLink);
+    // Following the conversation's end: kept there as the transcript grows
+    // after a render - a long one laid out in steps, an image's size known
+    // once read -, the reader's scrolling alone ending it. (Decided at each
+    // render by where the view was, a growth after it left the view short of
+    // the end, and the next render took that for the reader's scrolling: the
+    // newest messages below, out of sight, from then on.)
+    {
+        QScrollBar* bar = a_view->verticalScrollBar();
+        connect(bar, &QScrollBar::valueChanged, this, [this, bar](int value) {
+            if (!a_scrolling) a_following = value >= bar->maximum() - 16;
+        });
+        connect(bar, &QScrollBar::rangeChanged, this, [this, bar](int, int maximum) {
+            if (!a_following || bar->value() == maximum) return;
+            a_scrolling = true;
+            bar->setValue(maximum);
+            a_scrolling = false;
+        });
+    }
     qucs_s::math::MathObject::install(a_view->document());
     qucs_s::markdown::SmoothImages::install(a_view->document());
     qucs_s::markdown::QuoteBars::install(a_view);
@@ -2188,6 +2206,8 @@ void ClaudeCodePanel::append(const Entry& e)
     const bool firstPrompt = e.kind == Entry::You
                              && std::none_of(a_entries.cbegin(), a_entries.cend(), [](const Entry& x) { return x.kind == Entry::You; });
     a_entries.append(e);
+    // (A prompt sent: the conversation's end followed again.)
+    if (e.kind == Entry::You) a_following = true;
     scheduleRender();
     if (firstPrompt) emit titleChanged();
     emit conversationChanged();
@@ -2386,8 +2406,9 @@ void ClaudeCodePanel::render()
 {
     a_renderTimer->stop();
     QScrollBar* bar = a_view->verticalScrollBar();
-    const bool follow = bar->value() >= bar->maximum() - 16;
     const int keep = bar->value();
+    // (The document made again: the bar's moves its, not the reader's.)
+    a_scrolling = true;
 
     QTextDocument* doc = a_view->document();
     doc->clear();
@@ -2402,14 +2423,8 @@ void ClaudeCodePanel::render()
     else renderConversation(c);
     c.endEditBlock();
     fitImages();
-
-    if (follow) {
-        QTimer::singleShot(0, this, [this] {
-            a_view->verticalScrollBar()->setValue(a_view->verticalScrollBar()->maximum());
-        });
-    } else {
-        bar->setValue(keep);
-    }
+    bar->setValue(a_following ? bar->maximum() : keep);
+    a_scrolling = false;
 }
 
 void ClaudeCodePanel::fitImages()
