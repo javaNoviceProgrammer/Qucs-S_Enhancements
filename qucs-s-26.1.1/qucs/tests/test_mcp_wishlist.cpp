@@ -100,6 +100,42 @@ class TestMcpWishlist : public QObject
         f.write(what.toUtf8());
         return true;
     }
+    /// A PDF of one page with four lines at known heights (points from the
+    /// bottom: 700, 660, 620, 580), written by hand so that their boxes
+    /// are where the test says.
+    static bool writeLinedPdf(const QString& path)
+    {
+        const QList<QPair<QByteArray, int>> lines{{"First line of the page, near the top.", 700},
+                                                  {"Second line, a little lower down.", 660},
+                                                  {"Third line, lower still.", 620},
+                                                  {"Fourth and last line of this page.", 580}};
+        QByteArray content;
+        for (const auto& [words, y] : lines)
+            content += "BT /F1 14 Tf 50 " + QByteArray::number(y) + " Td (" + words + ") Tj ET ";
+        QList<QByteArray> objects{"<< /Type /Catalog /Pages 2 0 R >>",
+                                  "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                                  "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> "
+                                  "/Contents 4 0 R >>",
+                                  "<< /Length " + QByteArray::number(content.size()) + " >>\nstream\n" + content + "\nendstream",
+                                  "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"};
+        QByteArray out = "%PDF-1.4\n";
+        QList<int> offsets;
+        for (int i = 0; i < objects.size(); ++i) {
+            offsets << out.size();
+            out += QByteArray::number(i + 1) + " 0 obj\n" + objects.at(i) + "\nendobj\n";
+        }
+        const int start = out.size();
+        out += "xref\n0 " + QByteArray::number(objects.size() + 1) + "\n0000000000 65535 f \n";
+        for (int o : std::as_const(offsets)) out += QByteArray::number(o).rightJustified(10, '0') + " 00000 n \n";
+        out += "trailer\n<< /Size " + QByteArray::number(objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n"
+               + QByteArray::number(start) + "\n%%EOF\n";
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        f.write(out);
+        return true;
+    }
+
     void closeAll()
     {
         for (QucsDoc* doc : app->allDocuments()) {
@@ -158,6 +194,11 @@ private slots:
         // Energy per field (C·m): a bare 2e-10 is nothing anyone means.
         QVERIFY(!evaluateConstant(QStringLiteral("2e-10"), b, Dim::of(1, 0, 1, 1), &why).has_value());
         QVERIFY2(why.contains(QStringLiteral("read in SI")) && why.contains(QStringLiteral("brackets")), qPrintable(why));
+        // Its unit by the name it has, not spelled out of the base units,
+        // and no "give the number in SI" of a number that already is
+        // (the check of 23 October, 3).
+        QVERIFY2(why.contains(QString::fromUtf8("C\u00b7m")) && !why.contains(QString::fromUtf8("m\u00b7s\u00b7A")), qPrintable(why));
+        QVERIFY2(why.contains(QStringLiteral("within that range")) && !why.contains(QStringLiteral("the number in SI")), qPrintable(why));
         // With its unit: read, and nothing said.
         why.clear();
         const std::optional<double> meant = evaluateConstant(QStringLiteral("1[meV]/(1e7[V/m])"), b, Dim::of(1, 0, 1, 1), &why);
@@ -219,6 +260,26 @@ private slots:
         // (A name of nothing is no singular of anything: synthesize_matching
         // takes 's', which "" + "s" would otherwise be read as.)
         QVERIFY(control->asPlural(QStringLiteral("synthesize_matching"), QJsonObject{{"", QJsonObject{}}}).isEmpty());
+        // A number given as text where a number is taken, which is how a
+        // client sends a field the tool does not declare: read as that
+        // number, not left to be read as 0 (the check of 23 October, 5).
+        QVERIFY(!failed(must("new_document")));
+        QVERIFY(!failed(must("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(must("add_component", {{"type", "C"}, {"x", 200}, {"y", 100}})));
+        const QJsonObject asText = call("undo", {{"step", "2"}});
+        QVERIFY2(!failed(asText), qPrintable(text(asText)));
+        QVERIFY2(text(asText).contains(QStringLiteral("Undone 2 steps")), qPrintable(text(asText)));
+        QVERIFY2(text(asText).contains(QStringLiteral("given as text")), qPrintable(text(asText)));
+        QCOMPARE(json(call("get_schematic")).value("components").toArray().size(), 0);
+        QCOMPARE(control->asNumbers(QStringLiteral("undo"), QJsonObject{{"steps", "3"}}).value("steps").toInt(), 3);
+        QCOMPARE(control->asNumbers(QStringLiteral("get_dataset"), QJsonObject{{"from", "1e-9"}}).value("from").toDouble(), 1e-9);
+        // What is not a whole number for a whole number, what is not a
+        // number at all, and a field that takes text are left alone.
+        QVERIFY(control->asNumbers(QStringLiteral("undo"), QJsonObject{{"steps", "1.5"}}).isEmpty());
+        QVERIFY(control->asNumbers(QStringLiteral("undo"), QJsonObject{{"steps", "a lot"}}).isEmpty());
+        QVERIFY(control->asNumbers(QStringLiteral("fem_evaluate"), QJsonObject{{"time", "500[ms]"}}).isEmpty());
+        QVERIFY(control->asNumbers(QStringLiteral("open_document"), QJsonObject{{"path", "1"}}).isEmpty());
+        QVERIFY(failed(call("get_dataset", {{"path", "none.dat"}, {"points", "abc"}})));
         // And a word that is no singular of anything it takes is refused
         // as before, with what it does take.
         const QJsonObject no = call("delete", {{"nmae", "R1"}});
@@ -623,6 +684,14 @@ private slots:
         }
         // A coax's capacitance is a closed form: it has settled.
         QVERIFY2(converged.value("converged").toBool(), qPrintable(QJsonDocument(converged).toJson(QJsonDocument::Compact)));
+        // The mesh really is finer, and the answer says by how much (the
+        // check of 23 October, 1: it called values "converged" that could
+        // not move, on a mesh that had hardly changed).
+        QVERIFY2(converged.value("the finest mesh").toString().contains(QStringLiteral("times the unknowns")),
+                 qPrintable(converged.value("the finest mesh").toString()));
+        QVERIFY(meshes.last().toObject().value("unknowns").toInt()
+                > 2 * meshes.at(meshes.size() - 2).toObject().value("unknowns").toInt());
+        QVERIFY(!converged.contains("not shown"));
         const QJsonObject moved = converged.value("between the last two meshes").toObject();
         QVERIFY(moved.value("es.C11").toObject().value("converged").toBool());
         QVERIFY(std::abs(moved.value("es.C11").toObject().value("changed by %").toDouble()) < 0.01);
@@ -634,10 +703,149 @@ private slots:
                  qPrintable(femDoc->model().mesh().text(QStringLiteral("hmax"))));
         QVERIFY(!femDoc->model().mesh().props.value(QStringLiteral("custom")).toBool());
         QCOMPARE(app->getDoc()->getDocChanged(), wasChanged);
+        // A reference row no value answers to is named, not only counted
+        // (the check of 23 October, 4).
+        QVERIFY(writeFile(path("left.csv"), QStringLiteral("name,value\nes.C11,9.7e-11\nZ,5\n")));
+        const QJsonObject over = json(must("fem_evaluate", {{"expression", "es.C11"}, {"reference", "left.csv"}}));
+        QCOMPARE(over.value("ignored").toObject().keys(), QStringList{QStringLiteral("Z")});
+        QVERIFY2(over.value("ignored").toObject().value("Z").toString().contains(QStringLiteral("es.C11")),
+                 qPrintable(QJsonDocument(over).toJson(QJsonDocument::Compact)));
         // What is refused.
         QVERIFY(failed(call("fem_converge", {{"values", QJsonArray{}}})));
         QVERIFY(failed(call("fem_converge", {{"values", QJsonArray{"es.C11"}}, {"refine", QJsonArray{0.5}}})));
         QVERIFY(failed(call("fem_converge", {{"values", QJsonArray{"es.C11"}}, {"tolerance", 0}})));
+    }
+
+    // The check of 23 October, 1 and 2: a mesh that hardly changes shows
+    // nothing, and a value implausible for its unit is said where it is
+    // written and not only when a solve reads it.
+    void aWeakRefinementShowsNothingAndAnEditIsChecked()
+    {
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/coax.qfem"), path("weak.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "weak.qfem"}})));
+        // A refinement of five per cent: the values cannot move, so
+        // nothing is shown either way and 'converged' says so.
+        const QJsonObject weak = json(must("fem_converge", {{"values", QJsonArray{"es.C11"}},
+                                                            {"refine", QJsonArray{1.05}}, {"timeout", 600}}, 900000));
+        QCOMPARE(weak.value("converged").toBool(), false);
+        QVERIFY2(weak.value("not shown").toString().contains(QStringLiteral("could not move")),
+                 qPrintable(QJsonDocument(weak).toJson(QJsonDocument::Compact)));
+        QVERIFY(weak.value("the finest mesh").toString().contains(QStringLiteral("times the unknowns")));
+        closeAll();
+
+        // Every size the mesh is given is divided, not its own alone: a
+        // model whose mesh is set by Size features grows all the same.
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/coax_rlgc.qfem"), path("local.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "local.qfem"}})));
+        const QJsonObject local = json(must("fem_converge", {{"values", QJsonArray{"es.C11"}},
+                                                             {"refine", QJsonArray{2}}, {"timeout", 900}}, 1200000));
+        QVERIFY2(local.value("the finest mesh").toString().contains(QStringLiteral("sizes divided")),
+                 qPrintable(local.value("the finest mesh").toString()));
+        const QJsonArray grew = local.value("meshes").toArray();
+        QCOMPARE(grew.size(), 2);
+        QVERIFY2(grew.at(1).toObject().value("unknowns").toInt() > 2 * grew.at(0).toObject().value("unknowns").toInt(),
+                 qPrintable(QJsonDocument(grew).toJson(QJsonDocument::Compact)));
+        QVERIFY(local.value("converged").toBool());
+        closeAll();
+
+        // A mesh set by a Distribution's count, and a node that is not
+        // custom but still holds what an earlier try left in its hidden
+        // fields: the count is multiplied, and the stale size is not
+        // applied by turning custom on to set the largest element.
+        QVERIFY(writeFile(path("counted.qfem"), QStringLiteral(R"json({"format": "qucs-s multiphysics 1", "components": [{
+            "unit": "mm", "geometry": [{"type": "rectangle", "name": "box", "position": ["0", "0"], "size": ["10", "10"]},
+                                       {"type": "rectangle", "name": "dot", "position": ["5", "5"], "size": ["0.2", "0.2"]}],
+            "materials": [{"material": "Air", "selection": {"all": true}}],
+            "physics": [{"type": "electrostatics", "tag": "es", "features": [
+                {"type": "terminal", "name": "1", "V0": "1[V]", "selection": {"of": ["dot"]}},
+                {"type": "ground", "label": "Bottom", "selection": {"of": ["box"], "side": "bottom"}}]}],
+            "mesh": {"size": "coarse", "custom": false, "hmin": "4", "growth": "1.01",
+                     "features": [{"type": "size", "tag": "sz1", "level": "domain", "selection": {"only": ["dot"]}, "hmax": "0.05"},
+                                  {"type": "distribution", "tag": "dis1", "count": 12,
+                                   "selection": {"of": ["box"], "side": "top"}}]}}],
+            "studies": [{"type": "study", "tag": "std1", "steps": [{"type": "stationary"}]}]})json")));
+        QVERIFY(!failed(must("open_document", {{"path", "counted.qfem"}})));
+        const QJsonObject counted = json(must("fem_converge", {{"values", QJsonArray{"es.C11"}},
+                                                               {"refine", QJsonArray{2}}, {"timeout", 600}}, 900000));
+        const QJsonObject set = counted.value("meshes").toArray().at(1).toObject().value("sizes set").toObject();
+        QVERIFY2(!set.isEmpty(), qPrintable(QJsonDocument(counted).toJson(QJsonDocument::Compact)));
+        // The Distribution's elements doubled with the sizes halved - the
+        // mesh's own and the Size feature's on the small rectangle.
+        QCOMPARE(set.value("dis1.count").toInt(), 24);
+        QCOMPARE(set.value("sz1.hmax").toString(), QStringLiteral("0.025"));
+        QCOMPARE(set.value("hmax").toString(), QStringLiteral("0.5"));
+        // Its hidden hmin left where it was: the node was not custom, so
+        // the preset's own smallest element is meant, not the 4 mm an
+        // earlier try wrote into a field that was not shown.
+        QVERIFY2(!set.contains("hmin"), qPrintable(QJsonDocument(set).toJson(QJsonDocument::Compact)));
+        // And the mesh really is finer for it: the stale 4 mm applied as a
+        // smallest element holds the small rectangle's own elements away,
+        // and the unknowns then grow 1.7 times where they grow 2.6 here.
+        const QJsonArray both = counted.value("meshes").toArray();
+        QVERIFY2(both.at(1).toObject().value("unknowns").toInt() > 22 * both.at(0).toObject().value("unknowns").toInt() / 10,
+                 qPrintable(QJsonDocument(both).toJson(QJsonDocument::Compact)));
+        // A value that evaluates at no mesh is not convergence either: the
+        // table is empty, and "converged" would be a word about nothing.
+        const QJsonObject nothing = json(must("fem_converge", {{"values", QJsonArray{"es.nosuch"}},
+                                                               {"refine", QJsonArray{2}}, {"timeout", 600}}, 900000));
+        QCOMPARE(nothing.value("converged").toBool(), false);
+        QVERIFY2(nothing.value("not shown").toString().contains(QStringLiteral("No value could be compared")),
+                 qPrintable(QJsonDocument(nothing).toJson(QJsonDocument::Compact)));
+        auto* stale = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(stale != nullptr);
+        QCOMPARE(stale->model().mesh().text(QStringLiteral("hmin")), QStringLiteral("4"));
+        QVERIFY(!stale->model().mesh().props.value(QStringLiteral("custom")).toBool());
+        closeAll();
+
+        // A number implausible for the unit its property is in: said by
+        // the edit that writes it, and not a refusal.
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/gaas_quantum_well.qfem"), path("well.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "well.qfem"}})));
+        const QJsonObject wrote = json(must("fem_edit", {{"action", "set"}, {"tag", "spec1"},
+                                                         {"props", QJsonObject{{"dlinewidth", "2e-10"}}}}));
+        const QJsonArray said = wrote.value("check").toArray();
+        QCOMPARE(said.size(), 1);
+        QVERIFY2(said.first().toString().contains(QStringLiteral("dlinewidth"))
+                     && said.first().toString().contains(QString::fromUtf8("C·m")),
+                 qPrintable(said.first().toString()));
+        // Written all the same (it may name a parameter yet to come): said
+        // is not refused.
+        auto* model = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(model != nullptr && model->model().find(QStringLiteral("spec1")) != nullptr);
+        QCOMPARE(model->model().find(QStringLiteral("spec1"))->text(QStringLiteral("dlinewidth")), QStringLiteral("2e-10"));
+        // With its unit, and for a value that is plausible: nothing said.
+        QVERIFY(!json(must("fem_edit", {{"action", "set"}, {"tag", "spec1"},
+                                        {"props", QJsonObject{{"dlinewidth", "1[meV]/(1e7[V/m])"}}}})).contains("check"));
+        QVERIFY(!json(must("fem_edit", {{"action", "set"}, {"tag", "spec1"},
+                                        {"props", QJsonObject{{"linewidth", "6.6[meV]"}}}})).contains("check"));
+        QVERIFY(json(must("fem_edit", {{"action", "set"}, {"tag", "spec1"},
+                                       {"props", QJsonObject{{"linewidth", "6.6e-3"}}}})).contains("check"));
+    }
+
+    // The check of 23 October, 6 and 7: a PDF's lines end in one line
+    // ending, and 'region' keeps the text to the lines it holds - so the
+    // lines a selection gives are read by one call.
+    void aRegionKeepsThePdfsLinesAndOneLineEnding()
+    {
+        const QString file = path("lines.pdf");
+        QVERIFY(writeLinedPdf(file));
+        const QJsonObject whole = json(must("read_pdf", {{"path", file}}));
+        const QString all = whole.value("pages").toArray().first().toObject().value("text").toString();
+        QVERIFY2(!all.contains(QLatin1Char('\r')), qPrintable(all.left(80)));
+        QCOMPARE(all.split(QLatin1Char('\n')).size(), 4);
+        // The top half: the lines whose box meets it, and no other.
+        const QJsonObject part = json(must("read_pdf", {{"path", file}, {"region", QJsonArray{40, 120, 560, 200}}}));
+        const QString kept = part.value("pages").toArray().first().toObject().value("text").toString();
+        QCOMPARE(kept.split(QLatin1Char('\n')), (QStringList{all.split(QLatin1Char('\n')).at(0), all.split(QLatin1Char('\n')).at(1)}));
+        QVERIFY2(part.value("of the region").toString().contains(QStringLiteral("whose box meets it")),
+                 qPrintable(part.value("of the region").toString()));
+        QCOMPARE(part.value("region").toArray(), (QJsonArray{40, 120, 560, 200}));
+        // The lower half gives the other two.
+        const QJsonObject low = json(must("read_pdf", {{"path", file}, {"region", QJsonArray{40, 210, 560, 300}}}));
+        QCOMPARE(low.value("pages").toArray().first().toObject().value("text").toString().split(QLatin1Char('\n')),
+                 (QStringList{all.split(QLatin1Char('\n')).at(2), all.split(QLatin1Char('\n')).at(3)}));
+        // A region outside the page is refused, as it is for a picture.
+        QVERIFY(failed(call("read_pdf", {{"path", file}, {"region", QJsonArray{900, 900, 1000, 1000}}})));
     }
 
     // N10. A script stopped says what it was doing, and the time the user

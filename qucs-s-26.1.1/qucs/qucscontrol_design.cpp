@@ -1417,8 +1417,37 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
     int size = 0;
     QJsonArray read, found;
     QStringList skipped;
+    // 'region' narrows the text to the lines it holds, as it narrows a
+    // picture: the lines a selection gives (get_state's "selection", whose
+    // boxes are in these very points) are then read by one call (the check
+    // of 23 October, 7). Empty: the whole page.
+    QList<double> corners;
+    for (const QJsonValue& v : args.value(QLatin1String("region")).toArray()) corners << v.toDouble();
+    bool wholeLines = false;
     for (int page : std::as_const(pages)) {
-        const QString text = pdf.getAllText(page - 1).text();
+        const QPdfSelection all = pdf.getAllText(page - 1);
+        // (Its lines end CR LF, as the page has them; one line ending is
+        // enough for a reader - the check of 23 October, 6.)
+        QString text = all.text().replace(QLatin1String("\r\n"), QLatin1String("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+        if (!corners.isEmpty()) {
+            const QSizeF paper = pdf.pagePointSize(page - 1);
+            const QRectF region = qucs_s::pdf::regionOf(corners, paper).intersected(QRectF(QPointF(0, 0), paper));
+            if (region.isEmpty())
+                return errorResult(tr("'region' is [x1, y1, x2, y2] of a page: points from its top left (page %1 is %2 x %3), or "
+                                      "fractions of it.")
+                                       .arg(page).arg(paper.width()).arg(paper.height()));
+            const QStringList lines = text.split(QLatin1Char('\n'));
+            const QList<QPolygonF> boxes = all.bounds();
+            // (One box to a line: where the PDF module gives another
+            // number of them, the page is read whole and the answer says so.)
+            if (boxes.size() != lines.size()) wholeLines = true;
+            else {
+                QStringList kept;
+                for (int i = 0; i < lines.size(); ++i)
+                    if (boxes.at(i).boundingRect().intersects(region)) kept << lines.at(i);
+                text = kept.join(QLatin1Char('\n'));
+            }
+        }
         if (!search.isEmpty()) {
             // The lines that have it, with the one before and after.
             const QStringList lines = text.split(QLatin1Char('\n'));
@@ -1441,6 +1470,13 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
         if (found.isEmpty()) result.insert(QStringLiteral("note"), tr("Not found on the pages looked at (a scanned page has no text)."));
     } else {
         result.insert(QStringLiteral("pages"), read);
+        if (!corners.isEmpty()) {
+            result.insert(QStringLiteral("region"), args.value(QLatin1String("region")));
+            result.insert(QStringLiteral("of the region"),
+                          wholeLines ? tr("the whole page: its lines and their boxes do not answer to each other here, so the "
+                                          "region could not be applied to the text (the picture, with 'image', is cropped to it)")
+                                     : tr("the lines whose box meets it, of each page asked for"));
+        }
         if (!skipped.isEmpty()) result.insert(QStringLiteral("left out"), tr("pages %1: too much text at once - ask for them").arg(skipped.join(QStringLiteral(", "))));
         bool empty = true;
         for (const QJsonValue& v : std::as_const(read)) empty = empty && v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty();
@@ -1448,8 +1484,6 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
     }
     // The pages drawn too: a figure, a scanned page (four at most).
     if (args.value(QLatin1String("image")).toBool()) {
-        QList<double> corners;
-        for (const QJsonValue& v : args.value(QLatin1String("region")).toArray()) corners << v.toDouble();
         QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                        {QStringLiteral("text"), QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact))}}};
         QStringList drawn;

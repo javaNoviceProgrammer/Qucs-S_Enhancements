@@ -1223,12 +1223,23 @@ private slots:
         // 1, without a word. (C3) A table has no axes: no notation.
         QVERIFY(!failed(call("edit_marker", {{"marker", 2}, {"precision", 0}})));
         QCOMPARE(markers().at(1).toObject().value("precision").toInt(), 0);
-        for (const QJsonValue& bad : {QJsonValue(13), QJsonValue(-1), QJsonValue(2.7), QJsonValue("5")}) {
+        // ("13" and "2.7" among them: a number written as text is read as
+        // that number where the field takes one - the check of 23 October,
+        // 5 - and then met by the same rules, so these are refused all the
+        // same. "2.7" is not whole, so it is not even read as a number.)
+        for (const QJsonValue& bad : {QJsonValue(13), QJsonValue(-1), QJsonValue(2.7), QJsonValue("13"), QJsonValue("2.7"),
+                                      QJsonValue("five")}) {
             const QJsonObject r = call("edit_marker", {{"marker", 2}, {"precision", bad}});
             QVERIFY2(failed(r) && (text(r).contains("'precision' is a whole number from 0 to 12") || text(r).contains("precision is a whole number")),
                      qPrintable(text(r)));
         }
         QCOMPARE(markers().at(1).toObject().value("precision").toInt(), 0);
+        // A whole number written as text is read as that number, and said.
+        const QJsonObject asText = call("edit_marker", {{"marker", 2}, {"precision", "5"}});
+        QVERIFY2(!failed(asText), qPrintable(text(asText)));
+        QVERIFY2(text(asText).contains("given as text"), qPrintable(text(asText)));
+        QCOMPARE(markers().at(1).toObject().value("precision").toInt(), 5);
+        QVERIFY(!failed(call("edit_marker", {{"marker", 2}, {"precision", 0}})));
         QVERIFY(!failed(call("edit_marker", {{"marker", 2}, {"precision", 3}})));
         const QJsonObject table = json(call("add_diagram", {{"type", "tab"}, {"x", 100}, {"y", 900}, {"traces", QJsonArray{"v(out)"}}})).toObject();
         QVERIFY2(!table.isEmpty(), qPrintable(QJsonDocument(table).toJson()));

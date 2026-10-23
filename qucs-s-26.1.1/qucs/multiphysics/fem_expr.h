@@ -235,6 +235,14 @@ private:
     int a_slots = 0;
 };
 
+/// Why \a si, read in SI from a number with no unit of its own, is not a
+/// value of \a expected that anyone means - an energy of 6.6e-3 J is 41
+/// PeV, not the 6.6 meV meant - with how to write the unit; empty when it
+/// may be, when it is 0, and for the units whose scale is not in doubt (a
+/// density's SI value spans everything a device holds). evaluateConstant()
+/// refuses such a value; the panel and the tools say it at edit time.
+QString outsideItsScale(double si, const Dim& expected);
+
 /// A value as a property wants it: \a text in \a scope, a constant of
 /// unit \a expected. A plain number is taken as in that unit ("1" for a
 /// voltage is 1 V). Its SI value; on an error none, and why
