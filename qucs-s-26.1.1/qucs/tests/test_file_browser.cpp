@@ -22,6 +22,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QLineEdit>
+#include <QInputDialog>
 #include <QPushButton>
 #include <QMessageBox>
 #include <QToolButton>
@@ -776,19 +777,41 @@ private slots:
                 return editor != nullptr && editor->isVisible() && editor->hasFocus();
             }, 5000));
             if (editor == nullptr) return QStringLiteral("(no editor)");
-            // (The selection is set once the editor is shown.)
-            static_cast<void>(QTest::qWaitFor([editor] { return editor->selectedText() != editor->text(); }, 1000));
+            QTest::qWait(60);   // (the choice is made once the editor is shown)
             const QString chosen = editor->selectedText();
             QTest::keyClick(editor, Qt::Key_Escape);
+            QTest::qWait(10);
             return chosen;
         };
         QCOMPARE(chosenOf(here + "/amp.sch"), QStringLiteral("amp"));
+        const auto chosenInDialog = [&fb](const QString& path) -> QString {
+            QString chosen = QStringLiteral("(no dialog)");
+            QTimer::singleShot(0, &fb, [&chosen] {
+                for (QWidget* w : QApplication::topLevelWidgets())
+                    if (auto* box = qobject_cast<QInputDialog*>(w))
+                        if (auto* line = box->findChild<QLineEdit*>()) {
+                            chosen = line->selectedText();
+                            box->reject();
+                        }
+            });
+            fb.rename(path);
+            return chosen;
+        };
         QCOMPARE(chosenOf(here + "/data.tar.gz"), QStringLiteral("data.tar"));
         // All suffix, no name: the whole of it.
         QCOMPARE(chosenOf(here + "/.spiceinit"), QStringLiteral(".spiceinit"));
         QCOMPARE(chosenOf(here + "/plain"), QStringLiteral("plain"));
         // A folder keeps its whole name, dot and all.
         QCOMPARE(chosenOf(here + "/folder.old"), QStringLiteral("folder.old"));
+        // The dialog, for an entry that is not in sight (another folder's):
+        // the same choice, which showing the dialog does not undo.
+        const QString elsewhere = top + "/renaming_elsewhere";
+        QVERIFY(QDir().mkpath(elsewhere + "/inner.d"));
+        touch(elsewhere + "/filter.sch");
+        touch(elsewhere + "/notes");
+        QCOMPARE(chosenInDialog(elsewhere + "/filter.sch"), QStringLiteral("filter"));
+        QCOMPARE(chosenInDialog(elsewhere + "/notes"), QStringLiteral("notes"));
+        QCOMPARE(chosenInDialog(elsewhere + "/inner.d"), QStringLiteral("inner.d"));
     }
 
     // Refresh reads the folders again, whatever the file system's watcher
@@ -804,12 +827,18 @@ private slots:
         fb.setLocation(live);
         QVERIFY(settled(fb, "a.txt").contains("a.txt"));
         fb.selectPath(live + "/a.txt");
-        // Written while nothing watches: the model is told to read again.
+        // Nothing watching the folder - which is the state Refresh is for:
+        // a file written then is not shown until the folders are read
+        // again, and Refresh is what reads them.
+        fb.fileModel()->setOption(QFileSystemModel::DontWatchForChanges, true);
         touch(live + "/b.txt");
         QVERIFY(QDir().mkpath(live + "/newfolder"));
+        QTest::qWait(300);
+        QVERIFY2(!fb.shownNames().contains("b.txt"), qPrintable(fb.shownNames().join(QLatin1Char(' '))));
         fb.refresh();
-        QTRY_VERIFY(fb.shownNames().contains("b.txt"));
-        QVERIFY(fb.shownNames().contains("newfolder"));
+        QTRY_VERIFY2(fb.shownNames().contains("b.txt"), qPrintable(fb.shownNames().join(QLatin1Char(' '))));
+        QVERIFY2(fb.shownNames().contains("newfolder"), qPrintable(fb.shownNames().join(QLatin1Char(' '))));
+        fb.fileModel()->setOption(QFileSystemModel::DontWatchForChanges, false);
         // Where it stood: the folder shown and what was chosen.
         QCOMPARE(QDir::cleanPath(fb.location()), QDir::cleanPath(live));
         QTRY_COMPARE(QDir::cleanPath(fb.selectedPath()), QDir::cleanPath(live + "/a.txt"));
@@ -872,12 +901,21 @@ private slots:
         QVERIFY2(files.contains("own.sch"), qPrintable(files.join(", ")));
         QVERIFY2(files.contains("shared/brought.sch"), qPrintable(files.join(", ")));
         QVERIFY2(files.contains("shared/sub/deeper.txt"), qPrintable(files.join(", ")));
-        // A link that leads back to the project: walked once, and the walk
-        // ends.
+        // A link that leads back to the project: each real folder walked
+        // once, so the walk ends and names nothing twice (without that it
+        // went down through back/shared/back/... until the paths grew too
+        // long, naming every file again at each turn).
         QVERIFY(QFile::link(project, other + "/back"));
         bool complete = false;
         files = misc::projectFiles(QDir(project), QStringList(), &complete);
         QVERIFY2(complete, "the walk did not end");
+        QStringList sorted = files;
+        sorted.sort();
+        QStringList once = sorted;
+        once.removeDuplicates();
+        QCOMPARE(sorted, once);
+        for (const QString& f : files) QVERIFY2(!f.contains(QLatin1String("back/")), qPrintable(f));
+        QCOMPARE(files.size(), 3);   // own.sch, shared/brought.sch, shared/sub/deeper.txt
         QVERIFY(files.contains("own.sch"));
     }
 
