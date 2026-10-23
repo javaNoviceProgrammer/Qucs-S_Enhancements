@@ -25,6 +25,7 @@
 #include "module.h"
 #include "node.h"
 #include "paintings/painting.h"
+#include "pptxdoc.h"
 #include "qucs.h"
 #ifdef QUCS_HAVE_QTPDF
 #include "pdfdoc.h"
@@ -126,7 +127,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "pane": {"description": "A pane's number, or \"right\" or \"below\""}}, "required": ["pane"]}},
 {"name": "open_document",
  "description": "Opens a file in a Qucs-S tab, or brings it to the front if it is already open: a schematic (.sch), a symbol (.sym), a data display (.dpl), a netlist or any text file, or a PDF (shown in Qucs-S's own viewer, for example a datasheet or a report). A relative path is resolved against the open project's folder, otherwise the workspace folder; a bare file name finds an open document with that name. If a component line in a schematic has more values than its type has properties, the result says so: values are read in order, so one extra value shifts every value after it. A schematic whose dataset and data display are named after another file (copied outside Qucs-S) is pointed out: its runs and its diagrams would use that file; 'own_data_names' names them after this one.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"}, "own_data_names": {"type": "boolean", "description": "A schematic whose dataset and data display are named after another file (a copy made outside Qucs-S, which the answer points out): name them after this one, as the window offers when it opens such a file"}, "page": {"description": "A PDF: opened at this page - a number, a page's label, or an outline destination's title (as show_pdf)"}, "find": {"type": "string", "description": "A PDF: opened at the first hit of this text, every hit's page returned (as show_pdf)"}}, "required": ["path"]}},
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The file"}, "own_data_names": {"type": "boolean", "description": "A schematic whose dataset and data display are named after another file (a copy made outside Qucs-S, which the answer points out): name them after this one, as the window offers when it opens such a file"}, "page": {"description": "A PDF: opened at this page - a number, a page's label, or an outline destination's title (as show_pdf); a presentation: at this slide - a number or a title (as show_pptx)"}, "find": {"type": "string", "description": "A PDF or a presentation: opened at the first hit of this text, every hit's page or slide returned (as show_pdf, show_pptx)"}}, "required": ["path"]}},
 {"name": "new_document",
  "description": "Creates a new, untitled document and brings it to the front: a schematic or a text document. An untitled schematic nothing was done in (the one Qucs-S opens at start) is closed, so there is one \"untitled\" to name. With kind data_display it opens a schematic's data display instead (its .dpl file, created if it has none; 'path' is the schematic, the one in front if not given). A data display holds diagrams and paintings for a report and keeps the schematic itself clean; export_image can write a picture of it.",
  "inputSchema": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["schematic", "text", "data_display"], "description": "schematic (the default), text, or data_display: a schematic's data display (.dpl)"}, "path": {"type": "string", "description": "With data_display: the schematic whose data display opens; the one in front when not given"}}}},
@@ -289,9 +290,9 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to redo, 1 by default"},
    "to": {"type": "integer", "minimum": 0, "description": "A later step as undo_history lists them: the schematic as it was after it"}}}},
 {"name": "screenshot",
- "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document or a PDF, paper and screen show what its tab shows; for a PDF, 'page' and 'region' draw that page, or a part of it, from the file at a resolution to read it, the tab left as it is.",
+ "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document, a PDF or a presentation, paper and screen show what its tab shows; for a PDF, 'page' and 'region' draw that page, or a part of it, from the file at a resolution to read it, the tab left as it is - for a presentation, 'slide' and 'region' a slide, or a part of it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"], "description": "paper (or all): the whole schematic as printed, the default; screen (or visible): the canvas as the user sees it; window: the whole Qucs-S window and its dialogs"},
-   "diagram": {"type": "integer", "description": "Only this diagram, by its number, as printed"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of the schematic, as printed; of a PDF's page, in points from its top left or as fractions of it"}, "page": {"type": "integer", "minimum": 1, "description": "A PDF: this page (from 1) drawn, all of it or 'region' of it, without moving its tab"}}}},
+   "diagram": {"type": "integer", "description": "Only this diagram, by its number, as printed"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of the schematic, as printed; of a PDF's page or a presentation's slide, in points from its top left or as fractions of it"}, "page": {"type": "integer", "minimum": 1, "description": "A PDF: this page (from 1) drawn, all of it or 'region' of it, without moving its tab"}, "slide": {"type": "integer", "minimum": 1, "description": "A presentation: this slide (from 1) drawn, all of it or 'region' of it, without moving its tab"}}}},
 {"name": "list_component_types",
  "description": "Lists the library's components: the type to give add_component, what it is, and its category. 'search' keeps only those whose type, name or category contains it. describe_component_type describes a type's properties.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Only types whose type, name or category contains it (resistor, BJT, source)"}}}},
@@ -310,7 +311,7 @@ const char* const kTools = R"JSON([
  "description": "Fills in the open dialog and presses a button. 'set' changes controls, each by its id or label from get_dialog: a field takes text, a list an item (or [item or row, true or false] to tick it or not), a check box true or false, a spin box a number, tabs a tab's title, a table [row, column, text] (a cell with a check box: true or false), and a tree [row, column, true or false] to check a row or not (or [row, column, text]); a field that edits a table's cell (Edit Component Properties' values) gives the cell its value, as Return would. With 'action' (select or activate - a double click) a table's, list's or tree's row is chosen by its text or number as a click would: Diagram Properties' variables take a trace activated. 'press' names the button to press afterwards (OK, Cancel, Apply, ... or its id). The answer names each control set as get_dialog does (its label, else its id; a cell with its row and column).",
  "inputSchema": {"type": "object", "properties": {
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate"]}}, "required": ["control", "value"]}, "description": "Controls to change: [{\"control\": id or label from get_dialog, \"value\": text, an item, true or false, a number, a tab's title, [row, column, text] for a table, [row, column, true or false] for a tree's check box, or [item or row, true or false] for a list's}]; with \"action\" select or activate, \"value\" is a row of a table, list or tree - its text or number - clicked or double-clicked"},
-   "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id"}}}},
+   "press": {"type": "string", "description": "The button pressed after: OK, Cancel, Apply, ... or its id; \"Button > entry\" chooses an entry of its menu"}}}},
 {"name": "get_settings",
  "description": "Reads the settings of Qucs-S, typed: 'scope' app (Application Settings), simulators (Simulators Settings), document (the settings of the document 'path' names, the one in front unless given) or cdl (CDL Settings). Each setting by its key - \"Tab/Label\" as the dialog shows it (\"Settings/Maximum undo operations\", \"Simulators/Ngspice executable location\") - with its type (text, bool, option, choice, number, integer, table, folders - a list of folders, such as \"Locations/Library search paths\"), its value, and its choices or range. 'keys' and 'search' give only some (app alone has about 70): 'keys' by key, * for any part (\"Locations/*\"), or by label alone (\"Maximum undo operations\"); 'search' those with each word in the key, value or choices (\"ngspice\"). Without 'scope', 'keys' or 'search' look through app, simulators and cdl, each setting saying its scope. Nothing is shown or changed.",
  "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["app", "simulators", "document", "cdl"], "description": "Application Settings, Simulators Settings, a document's own, or CDL Settings; not given, 'keys' or 'search' looks through app, simulators and cdl"}, "path": {"type": "string", "description": "For scope document: the document; the one in front when not given"},
@@ -351,18 +352,18 @@ const char* const kTools = R"JSON([
    "page": {"type": "string", "description": "One page of the manual whole, by its name (overview/simulation-types/index, as the sections found name them)"},
    "refresh": {"type": "boolean", "description": "Fetch the manual again"}}}},
 {"name": "get_ui",
- "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), the documents' tabs (tabs), the document in front's own bar (document: a PDF's page field, find and zoom; a layout's, a picture's; a multiphysics model's buttons and, while it builds or solves, its Cancel - fem_stop stops it too), or the list open below a field that offers names as they are typed (list: its rows - each its whole name, unit and what it is - and the one chosen; any area's answer has it while it is open). It gives the controls - fields, lists, buttons, check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open; the first 200 rows or items of each, and 'rows not shown' / 'items not shown' how many more), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
+ "description": "Reads a part of the Qucs-S window as get_dialog reads a dialog: a dock or a panel of one (dock:Simulation, dock:Content, dock:Problems, dock:Tuner, dock:Main Dock/Projects), a toolbar (toolbar:Simulate), the status bar (statusbar), the documents' tabs (tabs), the document in front's own bar (document: a PDF's page field, find and zoom; a presentation's slide field, zoom, notes, thumbnails, find bar and ⋯ menu; a layout's, a picture's; a multiphysics model's buttons and, while it builds or solves, its Cancel - fem_stop stops it too), or the list open below a field that offers names as they are typed (list: its rows - each its whole name, unit and what it is - and the one chosen; any area's answer has it while it is open). It gives the controls - fields, lists, buttons (one with a menu: its entries), check boxes, sliders - each with an id for set_ui, the views of files, projects and parts with their rows (a tree's with depth and whether open; the first 200 rows or items of each, and 'rows not shown' / 'items not shown' how many more), the logs (their end), and the texts. Without 'area': the parts there are. Secret fields show as hidden. The Claude Code panel is the user's and is not among them.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "dock:<title> or a panel's name (dock:Content), toolbar:<title>, statusbar, tabs, document (the tab in front's own bar) or list (the one open below a field); none: the parts there are"}}}},
 {"name": "set_ui",
- "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters; a panel's field is then done with, as Return leaves it - a model's node takes it), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row - a table's or tree's too (its text, its number in get_ui's rows, or a tree's path from any row, \"Results > Electric Potential (es) > Surface\") - is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button. Area tabs: 'value' a tab's title brings that document to the front. Area document: the tab in front's own bar - a field set is entered, as typing it and pressing Enter (a PDF's page field: that page). Area list: 'set' [{\"control\": \"row\", \"value\": a row's number or name}] takes that row of the list open below a field, as Return takes the one chosen. Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
+ "description": "Uses a part of the window as set_dialog answers a dialog - its dock is shown first. 'set' changes controls by their id or label from get_ui: a field takes text (a filter's: the panel filters; a panel's field is then done with, as Return leaves it - a model's node takes it), a list an item, a check box true or false, a slider a number, tabs a tab's title; a view's row - a table's or tree's too (its text, its number in get_ui's rows, or a tree's path from any row, \"Results > Electric Potential (es) > Surface\") - is selected, or with 'action' activated (a double click: a file opens), expanded or collapsed. 'press' presses a button - one that opens a menu (a document bar's ⋯) is not pressed: its entries are said, and \"Button > entry\" (\"More > Reload\") chooses one, as the menu would. Area tabs: 'value' a tab's title brings that document to the front. Area document: the tab in front's own bar - a field set is entered, as typing it and pressing Enter (a PDF's page field: that page). Area list: 'set' [{\"control\": \"row\", \"value\": a row's number or name}] takes that row of the list open below a field, as Return takes the one chosen. Refused: the Claude Code panel, a secret field, and the consoles (Terminal, Python Shell, Octave), whose typing runs commands - the console tool types there.",
  "inputSchema": {"type": "object", "properties": {"area": {"type": "string", "description": "As get_ui's"},
    "set": {"type": "array", "items": {"type": "object", "properties": {"control": {"type": "string"}, "value": {}, "action": {"type": "string", "enum": ["select", "activate", "expand", "collapse"]}}, "required": ["control", "value"]}, "description": "[{\"control\": id or label, \"value\": ..., \"action\": for a view's row: select (the default), activate, expand or collapse}]"},
-   "press": {"type": "string", "description": "A button pressed after, by its label or id"}}, "required": ["area"]}},
+   "press": {"type": "string", "description": "A button pressed after, by its label or id; \"Button > entry\" chooses an entry of its menu"}}, "required": ["area"]}},
 {"name": "context_menu",
- "description": "Opens the right-click menu the user would get on something, lists its entries (submenus as 'A > B', with whether each can be chosen and is checked), and with 'choose' chooses one - as the keyboard would. A dialog it opens goes on through get_dialog and set_dialog. 'on': {\"part\": \"R1\"}, {\"diagram\": 2} or {\"canvas\": [x, y]} on the schematic ('path'; the one in front), {\"project_item\": \"amp.sch\"} in the Content panel, {\"project\": \"amp_prj\"} in the Projects panel, {\"tab\": \"amp.sch\"} on a document's tab, or {\"file\": path} in the File Browser.",
- "inputSchema": {"type": "object", "properties": {"on": {"type": "object", "properties": {"part": {"type": "string"}, "diagram": {"type": ["integer", "string"]}, "canvas": {"type": "array", "items": {"type": "number"}}, "project_item": {"type": "string"}, "project": {"type": "string"}, "tab": {"type": "string"}, "file": {"type": "string"}}, "description": "What is right-clicked: one of part, diagram, canvas, project_item, project, tab, file"},
+ "description": "Opens the right-click menu the user would get on something, lists its entries (submenus as 'A > B', with whether each can be chosen and is checked), and with 'choose' chooses one - as the keyboard would. A dialog it opens goes on through get_dialog and set_dialog. 'on': {\"part\": \"R1\"}, {\"diagram\": 2} or {\"canvas\": [x, y]} on the schematic ('path'; the one in front), {\"project_item\": \"amp.sch\"} in the Content panel, {\"project\": \"amp_prj\"} in the Projects panel, {\"tab\": \"amp.sch\"} on a document's tab, {\"file\": path} in the File Browser, or {\"slide\": 3} on a presentation's slide in its tab ('path'; the one in front): the menu of its ⋯ too.",
+ "inputSchema": {"type": "object", "properties": {"on": {"type": "object", "properties": {"part": {"type": "string"}, "diagram": {"type": ["integer", "string"]}, "canvas": {"type": "array", "items": {"type": "number"}}, "project_item": {"type": "string"}, "project": {"type": "string"}, "tab": {"type": "string"}, "file": {"type": "string"}, "slide": {"type": "integer"}}, "description": "What is right-clicked: one of part, diagram, canvas, project_item, project, tab, file, slide"},
    "choose": {"type": "string", "description": "The entry chosen, by its path in the menu (\"Edit Properties\", \"Toggle hierarchy search view > Flat\") or its name alone; none: the menu is only read"},
-   "path": {"type": "string", "description": "The schematic, for part, diagram and canvas: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
+   "path": {"type": "string", "description": "The schematic, for part, diagram and canvas, or the presentation, for slide: its file or tab's title; the one in front when not given"}}, "required": ["on"]}},
 {"name": "simulate",
  "description": "Simulates a schematic (the one in front unless 'path' names another - a file not open is opened first, as open_document opens it, and the answer says so; an untitled one is saved in the scratch folder first, and the answer says where) with the simulator from the settings - or 'simulator' for this run only, leaving the setting unchanged - like Simulation > Simulate, and waits for it to finish (Qucsator too). Check Schematic runs first and its errors and warnings are reported ('before the run' - and, when the run fails, first in its 'errors': a pin connected to nothing before the simulator's complaint it led to). The result says whether it succeeded (the simulator ran to the end and reported no error); lists its errors and warnings, each with its message and, where the simulator names them, the netlist line (number and text), the schematic part and the node; names the dataset it wrote (name.dat.ngspice for ngspice, .dat.xyce, .dat.spopus; name.dat for Qucsator) and its variables; lists diagram traces that show no data and why; says whether the schematic was changed while it ran (by the user or another conversation - the results are then of the schematic as it was when the run began); and gives the last lines of the output. 'operating_point' runs only the DC operating point instead (like Simulation > Calculate DC bias, also for a transient-only schematic) and returns it structured: node voltages, branch currents and, with ngspice, each transistor's gm, ic, vbe, gpi and so on under its component, with re = 1/gm, rpi, beta and ro computed - the numbers that explain a gain; the datasets are left untouched. 'timeout' is in seconds, 120 by default. 'keep_as' keeps a copy of the dataset under that name for comparing runs: get_dataset reads it by its file name, and a trace can show it next to the current run as ngspice/<name>:tran.v(out). With the Simulator Settings' check of commands on, a schematic that runs commands besides the simulator - a System command part, ngspice's shell in its text, an Octave script after the run - is refused unless 'allow_commands' says so (check_schematic lists them). An ngspice optimize block's result comes back as 'optimum': each knob's value found, and with 'apply_optimum' the parameter or part it was written into. 'background' answers at once with the run's id - for a long run (Monte Carlo, a long transient): simulation_status gives how it goes and its outcome once it has ended, wait_for waits for its end, stop_simulation stops it; meanwhile other calls go on. A run still going at its timeout goes on the same way, the answer giving its id. A run going - the user's too - is stopped by stop_simulation (as Simulation > Stop Simulation).",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The schematic: its file or its tab's title; the one in front when not given; an untitled one is saved in the scratch folder first"}, "timeout": {"type": "integer", "description": "Seconds to wait for it, 120 by default (5 to 3600); a run still going then goes on, followed by the id the answer gives. With background: the most it may run, stopped then (none unless given)"},
@@ -575,12 +576,13 @@ const char* const kTools = R"JSON([
    "kind": {"type": "string", "enum": ["schematic", "symbol", "data display", "dataset", "netlist", "text", "pdf", "spreadsheet", "markdown", "picture", "verilog-a"], "description": "Only files of this kind"},
    "search": {"type": "string", "description": "Only files whose name contains it"}, "sort": {"type": "string", "enum": ["newest", "name"], "description": "newest first (the default) or by name"}}}},
 {"name": "export_image",
- "description": "Writes a picture of a schematic, symbol or data display (the one in front unless 'path' names another) to a file, like File > Export as image without its dialog. 'save_as' is a path, or a name in the project's folder (otherwise the workspace's); an existing file is overwritten, and its suffix gives the format when 'format' is not given. 'format' is png, jpeg, bmp, tiff, webp, svg, pdf, eps or pdf_tex (a PDF with its text in a LaTeX file next to it). 'scale' is a raster image's pixels per schematic unit (1 is 96 dpi; 2 by default). 'colours' is colour (the default), grayscale or monochrome. 'transparent' leaves out the paper where the format allows it. 'diagram' (its number from get_schematic) exports that diagram alone, for example a frequency response for a report, and 'selection' only what is selected. Returns the file, its format and its size in pixels or units.",
+ "description": "Writes a picture of a schematic, symbol or data display (the one in front unless 'path' names another) to a file, like File > Export as image without its dialog - or a presentation's slides ('slides': 7, [3, 4], \"2-5\", \"all\"; the slide shown by default, a PDF's all): a picture each (png, jpeg, bmp, tiff, webp; several numbered after the name: talk-03.png), or one pdf of a slide a page, 'scale' their pixels a point (2 by default, 4 a PDF's), the presentation open or not. 'save_as' is a path, or a name in the project's folder (otherwise the workspace's); an existing file is overwritten, and its suffix gives the format when 'format' is not given. 'format' is png, jpeg, bmp, tiff, webp, svg, pdf, eps or pdf_tex (a PDF with its text in a LaTeX file next to it). 'scale' is a raster image's pixels per schematic unit (1 is 96 dpi; 2 by default). 'colours' is colour (the default), grayscale or monochrome. 'transparent' leaves out the paper where the format allows it. 'diagram' (its number from get_schematic) exports that diagram alone, for example a frequency response for a report, and 'selection' only what is selected. Returns the file, its format and its size in pixels or units.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "save_as": {"type": "string", "description": "The file: a path, or a name in the project's folder (else the workspace's); written over when it is there. Its suffix gives the format when 'format' is not given"},
    "format": {"type": "string", "enum": ["png", "jpeg", "bmp", "tiff", "webp", "svg", "pdf", "eps", "pdf_tex"], "description": "The picture's format; pdf_tex is a PDF with its text in a LaTeX file beside it"},
    "scale": {"type": "number", "minimum": 0.1, "maximum": 20, "description": "A raster picture's pixels per schematic unit: 2 by default (1 is 96 dpi)"}, "colours": {"type": "string", "enum": ["colour", "grayscale", "monochrome"], "description": "colour (the default), grayscale or monochrome"},
-   "transparent": {"type": "boolean", "description": "No paper behind it, where the format allows"}, "diagram": {"type": "integer", "description": "Only this diagram, by its number"}, "selection": {"type": "boolean", "description": "Only what is selected"}},
+   "transparent": {"type": "boolean", "description": "No paper behind it, where the format allows"}, "diagram": {"type": "integer", "description": "Only this diagram, by its number"}, "selection": {"type": "boolean", "description": "Only what is selected"},
+   "slides": {"description": "A presentation's slides written: 7, [3, 4], \"2-5\" or \"all\"; the slide shown by default (a PDF: all)"}},
    "required": ["save_as"]}},
 {"name": "build_verilog_a",
  "description": "Compiles a Verilog-A source with OpenVAF (the one set under Application Settings > Locations), like Build Verilog-A, and waits for it, so a syntax error shows up now rather than at the next simulation. 'file' is the .va file (relative to the project, otherwise the workspace; the .va document in front if not given); an open file with unsaved changes needs 'unsaved': save or as_saved. Returns whether it compiled, its errors and warnings - each with message, line, column, the source line and OpenVAF's marks - the .osdi file written and its modules: beside the source, or in Qucs-S's cache when the source's folder cannot be written (a read-only library folder) or the .osdi beside it is another platform's (kept; 'into the cache' says which) - where a simulation loads it from either way. describe_component_type with a module's name then lists its parameters.",
@@ -636,14 +638,17 @@ const char* const kTools = R"JSON([
    "page": {"description": "A page number (from 1), a page's label as printed, or an outline destination's title (or its start)"}, "find": {"type": "string", "description": "Text found on every page: the hits' pages returned, the first shown"},
    "zoom": {"description": "A percentage (150) or \"fit width\" / \"fit page\""}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] of the page (the one asked, the first hit's, or the one in sight): points from its top left, or fractions of it"}}}},
 {"name": "read_pptx",
- "description": "Reads a PowerPoint presentation (.pptx, .pptm, .ppsx, .potx) - a talk, a review deck, a lecture: each slide's title, its text paragraph by paragraph (a table's rows as cells | cells, a chart's title), its speaker notes, whether it is hidden, how many pictures, tables and charts it holds, and what of it is not drawn as PowerPoint draws it (an EMF picture). An open one is read as its tab shows it. 'path' is relative to the project, otherwise the workspace (the presentation in front if not given); 'slides' is [3, 4], \"2-5\" or 7 (all by default, 40,000 characters at most - the rest named); 'search' finds a word or value in the slides' text and notes. 'image' draws the slides too, as pictures (four at most). show_pptx shows a slide in its tab, or plays them.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The presentation, relative to the project (else the workspace), or its tab's title; the one in front when not given"}, "slides": {"description": "Which slides: [3, 4], \"2-5\" or 7; all by default"}, "search": {"type": "string", "description": "A word or value to find in the slides' text and notes: the paragraphs that have it"}, "image": {"type": "boolean", "description": "The slides drawn as pictures too (four at most)"}}}},
+ "description": "Reads a PowerPoint presentation (.pptx, .pptm, .ppsx, .potx) - a talk, a review deck, a lecture: each slide's title, its text paragraph by paragraph (a table's rows as cells | cells, a chart's title), its speaker notes, whether it is hidden, how many pictures, tables and charts it holds, and what of it is not drawn as PowerPoint draws it (an EMF picture). An open one is read as its tab shows it. 'path' is relative to the project, otherwise the workspace (the presentation in front if not given); 'slides' is [3, 4], \"2-5\" or 7 (all by default, 40,000 characters at most - the rest named); 'search' finds a word or value in the slides' text and notes. An open one's answer has 'its tab': the slide shown, the zoom, the panes, the find bar, a slide show playing. 'image' draws the slides too, as pictures (four at most; 'region' a part of each, sharp enough to read). show_pptx drives its tab; screenshot draws a slide, export_image writes slides to files.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The presentation, relative to the project (else the workspace), or its tab's title; the one in front when not given"}, "slides": {"description": "Which slides: [3, 4], \"2-5\" or 7; all by default"}, "search": {"type": "string", "description": "A word or value to find in the slides' text and notes: the paragraphs that have it"}, "image": {"type": "boolean", "description": "The slides drawn as pictures too (four at most)"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "image: only [x1, y1, x2, y2] of each slide, in points from its top left or as fractions of it"}}}},
 {"name": "show_pptx",
- "description": "Shows a PowerPoint presentation in its tab - opened when it is not, brought to the front - at what is asked: 'slide' a number (1 the first) or a slide's title (its start); 'find' text: the slides with it in their text or notes returned, the first shown; 'zoom' a percentage (150) or \"fit width\" / \"fit slide\"; 'notes' shows or hides the pane of the slide's speaker notes; 'play' true plays the slides full screen from the one shown (hidden ones left out; Escape ends it), false ends it. Returns the slide shown, its title, the slides there are, the zoom, the hits. screenshot of it then takes a picture of the tab.",
+ "description": "Drives a PowerPoint presentation's tab as the user does - opened when it is not, brought to the front: 'slide' a number (1 the first), a slide's title (or its start), or next, previous, first, last - while a slide show plays, the show's slide; 'find' text: the tab's find bar open with it, the first slide with it from the one shown on (the slides with it returned), \"\" closes the bar; 'find_next' next or previous: the next slide with it, or the one before; 'zoom' a percentage (150) or \"fit width\" / \"fit slide\"; 'region' [x1, y1, x2, y2] of the slide shown as large as the tab takes it (points from its top left, or fractions of it); 'notes' and 'sidebar' show or hide the speaker notes' pane and the thumbnails; 'play' true plays the slides full screen from the one shown, \"first\" from the first (hidden ones left out; the user's Escape ends it), false ends it; 'reload' reads its file again first; 'copy' picture or text puts the slide shown on the clipboard. Done in that order, none of it when an argument is wrong. Returns what the tab shows then: the slide and its title, the slides there are, the zoom, the panes, the find bar and its hits, the show playing. screenshot takes a picture of the tab, or with 'slide' of a slide; get_ui and set_ui with area \"document\" use its bar (its ⋯ menu as press \"More > Reload\"); context_menu {\"slide\": n} its right-click menu.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The presentation, relative to the project (else the workspace), or its tab's title; the one in front when not given"},
-   "slide": {"description": "A slide's number (from 1), or a slide's title (or its start)"}, "find": {"type": "string", "description": "Text found in the slides' text and notes: the slides with it returned, the first shown"},
-   "zoom": {"description": "A percentage (150) or \"fit width\" / \"fit slide\""}, "notes": {"type": "boolean", "description": "The speaker notes' pane shown (true) or hidden (false)"},
-   "play": {"type": "boolean", "description": "true: the slides played full screen from the one shown; false: the slide show ended"}}}},
+   "slide": {"description": "A slide's number (from 1), a slide's title (or its start), or next, previous, first, last; the show's slide while one plays"}, "find": {"type": "string", "description": "Text found in the slides' text and notes, the find bar open with it: the slides with it returned, the first from the one shown on shown; \"\" closes the bar"},
+   "find_next": {"type": "string", "enum": ["next", "previous"], "description": "The next slide with the find bar's text, or the one before (Return, Shift+Return in the bar)"},
+   "zoom": {"description": "A percentage (150) or \"fit width\" / \"fit slide\""}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] of the slide shown, as large as the tab takes it: points from its top left, or fractions of it"},
+   "notes": {"type": "boolean", "description": "The speaker notes' pane shown (true) or hidden (false)"}, "sidebar": {"type": "boolean", "description": "The thumbnails shown (true) or hidden (false)"},
+   "play": {"type": ["boolean", "string"], "description": "true: the slides played full screen from the one shown; \"first\": from the first; false: the slide show ended"},
+   "reload": {"type": "boolean", "description": "Its file read again first (changed elsewhere)"}, "copy": {"type": "string", "enum": ["picture", "text"], "description": "The slide shown to the clipboard: a picture 1920 pixels wide, or its text with its notes"}}}},
 {"name": "describe_part",
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
@@ -942,7 +947,7 @@ const struct {
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "show a layout in Qucs-S")},
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "show a PDF's page in Qucs-S")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "read a presentation's slides in Qucs-S")},
-    {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "show or play a presentation's slides in Qucs-S")},
+    {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "drive a presentation's tab in Qucs-S")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "open a new document in Qucs-S")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "save a document in Qucs-S")},
     {"close_document", QT_TRANSLATE_NOOP("QucsControl", "close a document in Qucs-S")},
@@ -1122,7 +1127,7 @@ const struct {
     {"add_painting", QT_TRANSLATE_NOOP("QucsControl", "Draws a text, arrow, line, box, text box, table, dimension or formula on a schematic, or on its symbol with 'symbol'.")},
     {"edit_painting", QT_TRANSLATE_NOOP("QucsControl", "Changes a painting's fields; can also move a symbol port and set its label.")},
     {"list_documents", QT_TRANSLATE_NOOP("QucsControl", "Lists the files of the workspace, a project or a folder: kinds, sizes, dates, and which dataset belongs to which schematic.")},
-    {"export_image", QT_TRANSLATE_NOOP("QucsControl", "Writes a picture of a schematic, symbol, data display or single diagram to a file (PNG, SVG, PDF and others).")},
+    {"export_image", QT_TRANSLATE_NOOP("QucsControl", "Writes a picture of a schematic, symbol, data display or single diagram to a file (PNG, SVG, PDF and others), or a presentation's slides as pictures or a PDF.")},
     {"build_verilog_a", QT_TRANSLATE_NOOP("QucsControl", "Compiles a Verilog-A file with OpenVAF, reporting each error with its line and column.")},
     {"tune", QT_TRANSLATE_NOOP("QucsControl", "Adjusts a component value, simulating and measuring until a measurement reaches its target (or measures a table of values).")},
     {"read_pdf", QT_TRANSLATE_NOOP("QucsControl", "Reads the text of a PDF, such as a datasheet, page by page.")},
@@ -1131,7 +1136,7 @@ const struct {
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "Shows a cell, a region or some layers of a GDSII or OASIS layout in its tab, for a screenshot.")},
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "Shows a PDF in its tab at a page, an outline's destination, the hits of a search, a zoom or a region of a page.")},
     {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "Reads a PowerPoint presentation's slides - titles, text, tables' rows, notes, what is not drawn - and draws them with 'image'.")},
-    {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "Shows a presentation in its tab at a slide, a search's first hit or a zoom, its notes shown or hidden; plays it full screen.")},
+    {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "Drives a presentation's tab: a slide (next, previous, by title), its find bar, the zoom or a region, its panes; plays it full screen and steps the show; reloads; copies a slide.")},
     {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
     {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
     {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
@@ -1268,7 +1273,7 @@ const struct {
     {"add_painting", "drawing text arrow line box callout table formula dimension symbol"},
     {"edit_painting", "change drawing text arrow symbol port label"},
     {"export_netlist", "write netlist file spice cdl"},
-    {"export_image", "picture png svg pdf export diagram"},
+    {"export_image", "picture png svg pdf export diagram slides presentation pptx"},
     {"list_documents", "files workspace project datasets list"},
     {"set_simulator", "simulator ngspice xyce qucsator choose"},
     {"move_to_pane", "split pane window layout"},
@@ -1292,7 +1297,7 @@ const struct {
     {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
     {"read_pptx", "powerpoint pptx presentation slides deck talk notes text read"},
-    {"show_pptx", "powerpoint pptx presentation slide show play deck go to find zoom notes"},
+    {"show_pptx", "powerpoint pptx presentation slide show play deck go to next previous find zoom region notes thumbnails reload copy clipboard"},
     {"get_text", "text document tab read cir va verilog-a netlist script lines unsaved"},
     {"edit_text", "text document tab edit change replace lines cir va verilog-a netlist script"},
     {"goto_line", "text document line cursor show error"},
@@ -4052,9 +4057,11 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
     else if (tool == QLatin1String("read_pptx")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
     else if (tool == QLatin1String("show_pptx"))
         subject = (s("path").isEmpty() ? tr("the presentation in front") : s("path"))
-                  + (a.value(QLatin1String("play")).toBool() ? tr(", played") : QString())
+                  + (a.value(QLatin1String("play")).toBool() || s("play") == QLatin1String("first") ? tr(", played") : QString())
                   + (s("find").isEmpty() ? (a.value(QLatin1String("slide")).isUndefined() ? QString() : tr(", slide %1").arg(a.value(QLatin1String("slide")).toVariant().toString()))
-                                         : tr(", %1").arg(s("find")));
+                                         : tr(", %1").arg(s("find")))
+                  + (s("copy").isEmpty() ? QString() : tr(", its slide copied as %1").arg(s("copy")))
+                  + (a.value(QLatin1String("reload")).toBool() ? tr(", read again") : QString());
     else if (tool == QLatin1String("show_pdf"))
         subject = (s("path").isEmpty() ? tr("the PDF in front") : s("path"))
                   + (s("find").isEmpty() ? (a.value(QLatin1String("page")).isUndefined() ? QString() : tr(", page %1").arg(a.value(QLatin1String("page")).toVariant().toString()))
@@ -4142,7 +4149,7 @@ QString QucsControl::instructions() const
         "write the library's own file), and taken away with its model when no "
         "schematic uses the device; a part named by its library's name is taken from the first library of that name that "
         "has the part (of two that have it, the one the project linked its Verilog-A from: check_schematic warns which); "
-        "read_pdf reads a datasheet's text; read_pptx a presentation's slides and notes (show_pptx shows or plays them); fem_describe, fem_model, fem_edit, fem_solve, fem_evaluate, fem_plot and fem_export "
+        "read_pdf reads a datasheet's text; read_pptx a presentation's slides and notes (show_pptx drives its tab and plays them; export_image writes slides as pictures or a PDF); fem_describe, fem_model, fem_edit, fem_solve, fem_evaluate, fem_plot and fem_export "
         "read, make, change, solve, show and export a 2D multiphysics model (.qfem: electrostatics, currents, heat at rest or in "
         "time, solid mechanics, magnetic fields at rest - B-H curves - or in frequency - eddy currents -, waveguides' modes "
         "(effective index, loss) and waves in the plane with ports (S-parameters), in the plane or about an axis, swept, its mesh "
@@ -5484,6 +5491,22 @@ QJsonObject QucsControl::openDocument(const QJsonObject& args)
         }
     }
 #endif
+    // A presentation opened at a slide ('page'), or at a text's first hit.
+    if (auto* deck = dynamic_cast<PptxDoc*>(doc); deck != nullptr && (args.contains(QLatin1String("page")) || args.contains(QLatin1String("find")))) {
+        QJsonObject view, at;
+        if (args.contains(QLatin1String("page"))) view.insert(QStringLiteral("slide"), args.value(QLatin1String("page")));
+        if (args.contains(QLatin1String("find"))) view.insert(QStringLiteral("find"), args.value(QLatin1String("find")));
+        QString why;
+        if (!viewPptx(deck, view, &at, &why)) return errorResult(text + QLatin1Char(' ') + why);
+        text += QLatin1Char(' ') + tr("At slide %1 of %2.").arg(at.value(QStringLiteral("slide shown")).toInt()).arg(at.value(QStringLiteral("slides in all")).toInt());
+        if (args.contains(QLatin1String("find"))) {
+            QStringList slides;
+            for (const QJsonValue& v : at.value(QStringLiteral("hits")).toArray()) slides << QString::number(v.toObject().value(QStringLiteral("slide")).toInt());
+            text += QLatin1Char(' ') + (slides.isEmpty() ? tr("%1 is not in its slides' text or notes.").arg(args.value(QLatin1String("find")).toString())
+                                                         : tr("%1: on slides %2 - the first from it shown, the find bar open.")
+                                                               .arg(args.value(QLatin1String("find")).toString(), slides.join(QStringLiteral(", "))));
+        }
+    }
     // (What the window says in a box - which would wait for no one here.)
     if (!QFileInfo(path).isWritable() && dynamic_cast<Schematic*>(doc) != nullptr)
         text += QLatin1Char(' ') + tr("It is read-only: it cannot be saved there, and its simulations cannot write their data "
@@ -10757,6 +10780,11 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
     if (doc == nullptr) return errorResult(error);
     QImage image;
     auto* sch = dynamic_cast<Schematic*>(doc);
+    // A presentation's slide, or a region of it: drawn from the file, its
+    // tab left as it is.
+    if (auto* deck = dynamic_cast<PptxDoc*>(doc); deck != nullptr && (args.contains(QLatin1String("slide")) || args.contains(QLatin1String("region"))))
+        return slidePicture(deck, args);
+    if (args.contains(QLatin1String("slide"))) return errorResult(tr("%1 is not a presentation: 'slide' is of a presentation.").arg(titleOf(doc)));
 #ifdef QUCS_HAVE_QTPDF
     // A PDF's page, or a region of it: drawn from the file, its tab left as
     // it is.
@@ -10880,6 +10908,9 @@ QString kindOfFile(const QString& name, QString* simulator = nullptr)
         {QStringLiteral("gdsii"), QStringLiteral("layout")},   {QStringLiteral("oas"), QStringLiteral("layout")},
         {QStringLiteral("oasis"), QStringLiteral("layout")},
         {QStringLiteral("pdf"), QStringLiteral("pdf")},        {QStringLiteral("md"), QStringLiteral("markdown")},
+        {QStringLiteral("pptx"), QStringLiteral("presentation")}, {QStringLiteral("pptm"), QStringLiteral("presentation")},
+        {QStringLiteral("ppsx"), QStringLiteral("presentation")}, {QStringLiteral("ppsm"), QStringLiteral("presentation")},
+        {QStringLiteral("potx"), QStringLiteral("presentation")}, {QStringLiteral("potm"), QStringLiteral("presentation")},
         {QStringLiteral("markdown"), QStringLiteral("markdown")}, {QStringLiteral("csv"), QStringLiteral("spreadsheet")},
         {QStringLiteral("tsv"), QStringLiteral("spreadsheet")}, {QStringLiteral("xlsx"), QStringLiteral("spreadsheet")},
         {QStringLiteral("xls"), QStringLiteral("spreadsheet")}, {QStringLiteral("png"), QStringLiteral("picture")},
@@ -11086,6 +11117,8 @@ QJsonObject QucsControl::listDocuments(const QJsonObject& args)
 QJsonObject QucsControl::exportImage(const QJsonObject& args)
 {
     namespace gx = qucs_s::graphicsexport;
+    // A presentation's slides: pictures, or a PDF.
+    if (isSlideExport(args)) return exportSlides(args);
     QString error;
     Schematic* sch = schematic(args, &error, false);
     if (sch == nullptr) return errorResult(error);
@@ -12428,6 +12461,15 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             } else {
                 o.insert(QStringLiteral("kind"), QStringLiteral("button"));
                 if (b->isCheckable()) o.insert(QStringLiteral("value"), b->isChecked());
+                // Its menu: press "Button > entry" chooses one.
+                if (QMenu* m = menuOfButton(b)) {
+                    emit m->aboutToShow();
+                    QJsonArray entries;
+                    QList<QAction*> actions;
+                    QStringList paths;
+                    menuEntries(m, QString(), &entries, &actions, &paths);
+                    o.insert(QStringLiteral("menu"), QJsonArray::fromStringList(paths));
+                }
             }
         } else if (auto* tabs = qobject_cast<QTabWidget*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("tabs"));
@@ -12979,13 +13021,19 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
     }
     const QString press = args.value(QLatin1String("press")).toString().trimmed();
     QAbstractButton* button = nullptr;
+    QString entry;   // "More > Reload": an entry of the menu the button has
+    const auto buttonNamed = [&find, &list](const QString& name) -> QAbstractButton* {
+        if (auto* b = qobject_cast<QAbstractButton*>(find(name))) return b;
+        for (QWidget* c : list)
+            if (auto* b = qobject_cast<QAbstractButton*>(c); b != nullptr && cleanText(b->text()).compare(name, Qt::CaseInsensitive) == 0) return b;
+        return nullptr;
+    };
     if (!press.isEmpty()) {
-        QWidget* w = find(press);
-        button = qobject_cast<QAbstractButton*>(w);
-        if (button == nullptr)
-            for (QWidget* c : list)
-                if (auto* b = qobject_cast<QAbstractButton*>(c); b != nullptr && cleanText(b->text()).compare(press, Qt::CaseInsensitive) == 0)
-                    button = b;
+        button = buttonNamed(press);
+        if (button == nullptr && press.contains(QStringLiteral(" > "))) {
+            button = buttonNamed(press.section(QStringLiteral(" > "), 0, 0).trimmed());
+            if (button != nullptr) entry = press.section(QStringLiteral(" > "), 1).trimmed();
+        }
         if (button == nullptr) problems << tr("no button %1").arg(press);
     }
     QString report = changed.isEmpty() ? QString() : tr("Set: %1.").arg(changed.join(QStringLiteral(", ")));
@@ -12994,13 +13042,52 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
         done(textResult(report.isEmpty() ? tr("Nothing changed.") : report, !problems.isEmpty() && changed.isEmpty()));
         return;
     }
-    // Pressed from the event loop: it may close the dialog, or open another.
+    QString name = cleanText(button->text()).isEmpty() ? button->toolTip() : cleanText(button->text());
+    // A button with a menu (a document bar's ⋯): pressed, the menu would
+    // wait over the window for a click, the call with it - its entries
+    // said instead; "Button > entry" chooses one, as the menu would.
+    bool opens = false;
+    QMenu* menu = menuOfButton(button, &opens);
+    QAction* chosen = nullptr;
+    if (!entry.isEmpty() && menu == nullptr) {
+        done(errorResult(tr("%1 has no menu to choose %2 from.").arg(name, entry)));
+        return;
+    }
+    if (menu != nullptr && (opens || !entry.isEmpty())) {
+        emit menu->aboutToShow();   // (a menu filled as it opens)
+        QJsonArray entries;
+        QList<QAction*> actions;
+        QStringList paths;
+        menuEntries(menu, QString(), &entries, &actions, &paths);
+        if (entry.isEmpty()) {
+            QJsonObject o{{QStringLiteral("button"), name}, {QStringLiteral("menu"), entries},
+                          {QStringLiteral("note"), tr("Not pressed: it opens this menu, which waits for a click. press \"%1 > <entry>\" chooses "
+                                                      "an entry, as the menu would.").arg(name)}};
+            if (!report.isEmpty()) o.insert(QStringLiteral("done"), report);
+            done(jsonResult(o));
+            return;
+        }
+        const int found = menuEntryNamed(paths, entry);
+        if (found < 0 || !actions.at(found)->isEnabled()) {
+            done(errorResult((found < 0 ? tr("%1's menu has no %2; it has: %3.") : tr("%2 cannot be chosen now in %1's menu; it has: %3."))
+                                 .arg(name, entry, paths.join(QStringLiteral("; ")))));
+            return;
+        }
+        chosen = actions.at(found);
+        name += QStringLiteral(" > ") + paths.at(found);
+    }
+    // Pressed (or its entry chosen) from the event loop: it may close the
+    // dialog, or open another.
     QPointer<QAbstractButton> target(button);
+    QPointer<QAction> action(chosen);
     QPointer<QWidget> was(dialog);
-    const QString name = cleanText(button->text()).isEmpty() ? button->toolTip() : cleanText(button->text());
-    QTimer::singleShot(0, a_app, [target] {
+    QTimer::singleShot(0, a_app, [target, action] {
         const QtFileDialogs qt;
-        if (target && target->isEnabled()) target->click();
+        if (action) {
+            if (action->isEnabled()) action->trigger();
+        } else if (target && target->isEnabled()) {
+            target->click();
+        }
     });
     QTimer::singleShot(500, this, [this, done, report, name, was, ui] {
         QWidget* now = openDialog();

@@ -1103,7 +1103,7 @@ private slots:
         QCOMPARE(json(call("show_pptx", {{"notes", false}})).value("notes shown").toBool(), false);
         QVERIFY(!doc->notesShown());
         o = json(call("show_pptx", {{"slide", 1}, {"play", true}}));
-        QVERIFY2(o.value("playing").toString().startsWith("slide 1"), qPrintable(o.value("playing").toString()));
+        QCOMPARE(o.value("playing").toObject().value("slide").toInt(), 1);
         QVERIFY(doc->slideShow() != nullptr);
         call("show_pptx", {{"play", false}});
         QTRY_VERIFY(doc->slideShow() == nullptr);
@@ -1119,6 +1119,239 @@ private slots:
         QVERIFY2(control->askedEachTime("read_pptx", {{"path", outside}}).contains("reads"), qPrintable(control->askedEachTime("read_pptx", {{"path", outside}})));
         app.closeAllFiles();
         QVERIFY(!control->inEveryTurn().contains("read_pptx"));
+    }
+
+    // Claude drives the tab as the user does: slides by number, title and
+    // step; the find bar and its hits; the zoom and a region; the panes; the
+    // file read again; the slide copied; the show played and stepped to its
+    // end; the bar through get_ui/set_ui (its ⋯ menu listed, not left open,
+    // an entry chosen); the right-click menu; slides drawn and written
+    // (pictures, numbered; a PDF; a deck not open); opened at a slide;
+    // listed among the files.
+    void claudeDrivesTheTab()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1200, 800);
+        app.show();
+        auto* control = app.findChild<QucsControl*>();
+        QVERIFY(control != nullptr);
+        const auto call = [control](const QString& tool, const QJsonObject& args) { return control->callNow(tool, args, 30000); };
+        const auto json = [](const QJsonObject& r) { return QJsonDocument::fromJson(QucsControl::textOf(r).section(QLatin1Char('\n'), 0, 0).toUtf8()).object(); };
+        const auto failed = [](const QJsonObject& r) { return r.value("isError").toBool(); };
+        const auto picture = [](const QJsonObject& r) {
+            for (const QJsonValue& v : r.value("content").toArray())
+                if (v.toObject().value("type").toString() == "image")
+                    return QImage::fromData(QByteArray::fromBase64(v.toObject().value("data").toString().toLatin1()), "PNG");
+            return QImage();
+        };
+        // Five slides, the fifth hidden; a red box on slide 2's lower right.
+        const auto deckOf = [](int slides) {
+            Deck d;
+            const char* titles[] = {"Introduction", "Method", "Results", "Discussion", "Backup", "Appendix"};
+            for (int i = 0; i < slides; ++i) {
+                Deck::SlideSpec s;
+                s.tree = shape(2, QByteArray(), text(para(run(titles[i]))), "<p:ph type=\"title\"/>");
+                if (i == 1 || i == 3 || i == 4) s.tree += shape(3, QByteArray(), text(para(run("A point"))), "<p:ph idx=\"1\"/>");
+                if (i == 1) s.tree += shape(4, xfrm(600, 300, 300, 200) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>" + solid("FF0000"));
+                if (i == 2) s.notes = QStringLiteral("The measured loss is 3 dB.");
+                if (i == 4) s.attrs = "show=\"0\"";
+                d.slides << s;
+            }
+            return d.build();
+        };
+        const QString file = dir.filePath("workspace/drive.pptx");
+        QVERIFY(write(file, deckOf(5)));
+        QJsonObject o = json(call("show_pptx", {{"path", "drive.pptx"}}));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(o.value("slides in all").toInt(), 5);
+        QCOMPARE(o.value("slide shown").toInt(), 1);
+        QCOMPARE(o.value("zoom").toString(), QStringLiteral("fit width"));
+        QVERIFY(o.value("thumbnails shown").toBool());
+        // Slides: steps, a title's start, the hidden one said.
+        QCOMPARE(json(call("show_pptx", {{"slide", "next"}})).value("slide shown").toInt(), 2);
+        o = json(call("show_pptx", {{"slide", "last"}}));
+        QCOMPARE(o.value("slide shown").toInt(), 5);
+        QVERIFY(o.contains("it is hidden"));
+        QCOMPARE(json(call("show_pptx", {{"slide", "previous"}})).value("slide shown").toInt(), 4);
+        QCOMPARE(json(call("show_pptx", {{"slide", "first"}})).value("slide shown").toInt(), 1);
+        QCOMPARE(json(call("show_pptx", {{"slide", "Res"}})).value("slide shown").toInt(), 3);
+        QCOMPARE(doc->currentSlide(), 2);
+        // A wrong argument: nothing done.
+        QVERIFY(failed(call("show_pptx", {{"slide", 4}, {"zoom", "huge"}})));
+        QVERIFY(failed(call("show_pptx", {{"slide", 9}})));
+        QVERIFY(failed(call("show_pptx", {{"slide", QJsonObject{}}})));
+        QVERIFY(failed(call("show_pptx", {{"slide", 1}, {"copy", "bogus"}})));
+        QCOMPARE(doc->currentSlide(), 2);
+        // The find bar: from the slide shown on; on, back; closed.
+        QVERIFY(failed(call("show_pptx", {{"find_next", "next"}})));
+        o = json(call("show_pptx", {{"find", "point"}}));
+        QVERIFY(doc->findShown());
+        QCOMPARE(doc->findText(), QStringLiteral("point"));
+        QCOMPARE(o.value("slide shown").toInt(), 4);
+        QCOMPARE(o.value("hits").toArray().size(), 3);
+        QCOMPARE(o.value("find bar").toObject().value("slides with it").toArray(), (QJsonArray{2, 4, 5}));
+        QCOMPARE(json(call("show_pptx", {{"find_next", "next"}})).value("slide shown").toInt(), 5);
+        QCOMPARE(json(call("show_pptx", {{"find_next", "next"}})).value("slide shown").toInt(), 2);   // (round again)
+        QCOMPARE(json(call("show_pptx", {{"find_next", "previous"}})).value("slide shown").toInt(), 5);
+        QCOMPARE(json(call("show_pptx", {{"find", "measured loss"}})).value("slide shown").toInt(), 3);   // (its notes)
+        o = json(call("show_pptx", {{"find", ""}}));
+        QVERIFY(!doc->findShown());
+        QVERIFY(!o.contains("find bar"));
+        // Zoom; a region as large as the tab takes it - the red box filling it.
+        QCOMPARE(json(call("show_pptx", {{"zoom", 150}})).value("zoom").toString(), QStringLiteral("150%"));
+        o = json(call("show_pptx", {{"slide", 2}, {"region", QJsonArray{620, 320, 880, 480}}}));
+        QCOMPARE(o.value("slide shown").toInt(), 2);
+        QVERIFY(doc->view()->zoom() > 2);
+        const QImage seen = doc->view()->viewport()->grab().toImage();
+        QVERIFY2(near(seen.pixelColor(seen.width() / 2, seen.height() / 2), QColor(255, 0, 0), 30), qPrintable(str(seen.pixelColor(seen.width() / 2, seen.height() / 2))));
+        QVERIFY(failed(call("show_pptx", {{"region", QJsonArray{1, 2}}})));
+        call("show_pptx", {{"zoom", "fit width"}});
+        // The panes.
+        o = json(call("show_pptx", {{"notes", false}, {"sidebar", false}}));
+        QVERIFY(!doc->notesShown() && !doc->sidebarShown());
+        QVERIFY(!o.value("notes shown").toBool() && !o.value("thumbnails shown").toBool());
+        call("show_pptx", {{"notes", true}, {"sidebar", true}});
+        QVERIFY(doc->notesShown() && doc->sidebarShown());
+        // Copied: a picture, the text.
+        QApplication::clipboard()->clear();
+        call("show_pptx", {{"slide", 3}, {"copy", "picture"}});
+        QCOMPARE(QApplication::clipboard()->image().width(), 1920);
+        call("show_pptx", {{"copy", "text"}});
+        QVERIFY(QApplication::clipboard()->text().contains("Results") && QApplication::clipboard()->text().contains("measured loss"));
+        // Played: from slide 2; the show stepped (the hidden fifth left
+        // out: past the fourth its end), ended by a step more; from the first.
+        o = json(call("show_pptx", {{"slide", 2}, {"play", true}}));
+        QPointer<pptx::SlideShow> show = doc->slideShow();
+        QVERIFY(show != nullptr);
+        QCOMPARE(o.value("playing").toObject().value("slide").toInt(), 2);
+        QCOMPARE(json(call("show_pptx", {{"slide", "next"}})).value("playing").toObject().value("slide").toInt(), 3);
+        QCOMPARE(show->current(), 2);
+        QCOMPARE(doc->currentSlide(), 1);   // (the tab's left as it was)
+        QCOMPARE(json(call("show_pptx", {{"slide", "last"}})).value("playing").toObject().value("slide").toInt(), 4);   // (the fifth hidden)
+        QCOMPARE(json(call("show_pptx", {{"slide", "first"}})).value("playing").toObject().value("slide").toInt(), 1);
+        QCOMPARE(json(call("show_pptx", {{"slide", "Discussion"}})).value("playing").toObject().value("slide").toInt(), 4);
+        o = json(call("show_pptx", {{"slide", "next"}}));
+        QVERIFY(o.value("playing").toObject().contains("at the end"));
+        o = json(call("show_pptx", {{"slide", "next"}}));
+        QVERIFY(!o.contains("playing"));
+        QTRY_VERIFY(show == nullptr);
+        QCOMPARE(json(call("show_pptx", {{"play", "first"}})).value("playing").toObject().value("slide").toInt(), 1);
+        show = doc->slideShow();
+        QVERIFY(failed(call("show_pptx", {{"play", "later"}})));
+        call("show_pptx", {{"play", false}});
+        QTRY_VERIFY(show == nullptr);
+        // Read again: what its file holds now.
+        QVERIFY(write(file, deckOf(6)));
+        o = json(call("show_pptx", {{"reload", true}}));
+        QCOMPARE(o.value("slides in all").toInt(), 6);
+        QVERIFY(o.value("done").toString().contains("again"));
+        QVERIFY(write(file, deckOf(5)));
+        call("show_pptx", {{"reload", true}});
+        QCOMPARE(doc->slideCount(), 5);
+        // read_pptx: the tab's state; a region of a slide drawn.
+        o = json(call("read_pptx", {{"slides", 1}}));
+        QVERIFY(o.value("its tab").toObject().contains("slide shown"));
+        QJsonObject r = call("read_pptx", {{"slides", 2}, {"image", true}, {"region", QJsonArray{620, 320, 880, 480}}});
+        QImage part = picture(r);
+        QVERIFY(!part.isNull());
+        QVERIFY2(near(part.pixelColor(part.width() / 2, part.height() / 2), QColor(255, 0, 0), 20), qPrintable(str(part.pixelColor(part.width() / 2, part.height() / 2))));
+        // screenshot: a slide, a region of one (in fractions), the tab as it was.
+        call("show_pptx", {{"slide", 1}});
+        r = call("screenshot", {{"slide", 2}, {"region", QJsonArray{0.625, 0.556, 0.917, 0.889}}});
+        part = picture(r);
+        QVERIFY(!part.isNull() && part.width() > 800);
+        QVERIFY(near(part.pixelColor(part.width() / 2, part.height() / 2), QColor(255, 0, 0), 20));
+        QCOMPARE(doc->currentSlide(), 0);
+        QVERIFY(QucsControl::textOf(r).contains("slide 2 of 5"));
+        QVERIFY(failed(call("screenshot", {{"slide", 9}})));
+        // get_ui: the bar named; its ⋯ menu listed.
+        o = json(call("get_ui", {{"area", "document"}}));
+        QStringList labels;
+        QJsonObject more;
+        for (const QJsonValue& v : o.value("controls").toArray()) {
+            labels << v.toObject().value("label").toString();
+            if (v.toObject().value("label").toString() == "More") more = v.toObject();
+        }
+        QVERIFY2(labels.contains("Slide") && labels.contains("Zoom") && labels.contains("Slides"), qPrintable(labels.join(" | ")));
+        QVERIFY2(more.value("menu").toArray().contains("Reload"), qPrintable(QJsonDocument(more).toJson()));
+        // set_ui: the slide field, the zoom, a thumbnail; the ⋯ pressed - its
+        // entries said, at once, no menu left open -, an entry chosen.
+        QVERIFY(!failed(call("set_ui", {{"area", "document"}, {"set", QJsonArray{QJsonObject{{"control", "Slide"}, {"value", "4"}}}}})));
+        QCOMPARE(doc->currentSlide(), 3);
+        call("set_ui", {{"area", "document"}, {"set", QJsonArray{QJsonObject{{"control", "Zoom"}, {"value", "200%"}}}}});
+        QCOMPARE(qRound(doc->view()->zoom() * 100), 200);
+        call("set_ui", {{"area", "document"}, {"set", QJsonArray{QJsonObject{{"control", "Slides"}, {"value", "2"}}}}});
+        QCOMPARE(doc->currentSlide(), 1);
+        QElapsedTimer clock;
+        clock.start();
+        r = call("set_ui", {{"area", "document"}, {"press", "More"}});
+        QVERIFY(clock.elapsed() < 5000);
+        QVERIFY(QApplication::activePopupWidget() == nullptr);
+        QVERIFY2(QucsControl::textOf(r).contains("Copy the Slide's Text") && QucsControl::textOf(r).contains("More > "), qPrintable(QucsControl::textOf(r)));
+        QApplication::clipboard()->clear();
+        r = call("set_ui", {{"area", "document"}, {"press", "More > Copy the Slide's Text"}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        QTRY_VERIFY(QApplication::clipboard()->text().contains("Method"));
+        QVERIFY(QucsControl::textOf(call("set_ui", {{"area", "document"}, {"press", "More > Nothing"}})).contains("Reload"));
+        QVERIFY(failed(call("set_ui", {{"area", "document"}, {"press", "Zoom in > Reload"}})));
+        // The right-click menu on a slide: all the ⋯ has; an entry chosen.
+        o = json(call("context_menu", {{"on", QJsonObject{{"slide", 3}}}}));
+        QStringList entries;
+        for (const QJsonValue& v : o.value("menu").toArray()) entries << v.toObject().value("entry").toString();
+        for (const char* e : {"Copy the Slide as a Picture", "Copy the Slide's Text", "Play from This Slide", "Play from the First Slide", "Reload", "Show in File Manager", "Copy Path"})
+            QVERIFY2(entries.contains(QString::fromLatin1(e)), qPrintable(entries.join(" | ")));
+        QApplication::clipboard()->clear();
+        r = call("context_menu", {{"on", QJsonObject{{"slide", 3}}}, {"choose", "Copy the Slide's Text"}});
+        QVERIFY2(!failed(r), qPrintable(QucsControl::textOf(r)));
+        QTRY_VERIFY(QApplication::clipboard()->text().contains("Results"));
+        QVERIFY(failed(call("context_menu", {{"on", QJsonObject{{"slide", 9}}}})));
+        // export_image: the slide shown; two, numbered; all as a PDF; in
+        // grey; a deck not open; what is not a slide's format refused.
+        QDir().mkpath(dir.filePath("workspace/out"));
+        call("show_pptx", {{"slide", 2}});
+        o = json(call("export_image", {{"save_as", "out/slide.png"}}));
+        QCOMPARE(o.value("slides").toArray(), QJsonArray{2});
+        QCOMPARE(QImage(dir.filePath("workspace/out/slide.png")).size(), QSize(1920, 1080));
+        QVERIFY(near(QImage(dir.filePath("workspace/out/slide.png")).pixelColor(1500, 800), QColor(255, 0, 0)));
+        QVERIFY(!control->irreversible("export_image", {{"slides", "2-3"}, {"save_as", "out/deck.png"}}));
+        o = json(call("export_image", {{"slides", "2-3"}, {"save_as", "out/deck.png"}, {"scale", 1}}));
+        QCOMPARE(o.value("written").toArray().size(), 2);
+        QVERIFY(QFileInfo::exists(dir.filePath("workspace/out/deck-2.png")) && QFileInfo::exists(dir.filePath("workspace/out/deck-3.png")));
+        QCOMPARE(QImage(dir.filePath("workspace/out/deck-3.png")).width(), 960);
+        QVERIFY(control->irreversible("export_image", {{"slides", "2-3"}, {"save_as", "out/deck.png"}}));
+        o = json(call("export_image", {{"slides", "all"}, {"save_as", "out/deck.pdf"}, {"scale", 1}}));
+        QCOMPARE(read(dir.filePath("workspace/out/deck.pdf")).count("/Type /Page") - read(dir.filePath("workspace/out/deck.pdf")).count("/Type /Pages"), 5);
+        QCOMPARE(o.value("hidden slides among them").toString(), QStringLiteral("5"));
+        call("export_image", {{"save_as", "out/grey.png"}, {"colours", "grayscale"}});
+        QVERIFY(QImage(dir.filePath("workspace/out/grey.png")).isGrayscale());
+        QVERIFY(QucsControl::textOf(call("export_image", {{"save_as", "out/slide.svg"}})).contains("pdf"));
+        QVERIFY(failed(call("export_image", {{"save_as", "out/x.png"}, {"slides", 9}})));
+        QVERIFY(failed(call("export_image", {{"save_as", "out/x.png"}, {"diagram", 1}})));
+        QVERIFY(write(dir.filePath("workspace/closed.pptx"), deckOf(3)));
+        o = json(call("export_image", {{"path", "closed.pptx"}, {"slides", 3}, {"save_as", "out/closed.jpg"}}));
+        QVERIFY(QFileInfo::exists(dir.filePath("workspace/out/closed.jpg")));
+        QVERIFY(app.findDoc(dir.filePath("workspace/closed.pptx")) == nullptr);
+        QVERIFY(control->askedEachTime("export_image", {{"save_as", dir.filePath("outside/x.png")}}).contains("writes"));
+        QDir().mkpath(dir.filePath("outside"));
+        QVERIFY2(control->askedEachTime("export_image", {{"slides", "2-3"}, {"save_as", dir.filePath("outside/x.png")}}).contains("x-2.png"),
+                 qPrintable(control->askedEachTime("export_image", {{"slides", "2-3"}, {"save_as", dir.filePath("outside/x.png")}})));
+        // Opened at a slide; at a find's first hit.
+        app.closeAllFiles();
+        QVERIFY(QucsControl::textOf(call("open_document", {{"path", "drive.pptx"}, {"page", 3}})).contains("At slide 3 of 5"));
+        doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->currentSlide(), 2);
+        QVERIFY(QucsControl::textOf(call("open_document", {{"path", "drive.pptx"}, {"find", "Discussion"}})).contains("on slides 4"));
+        QCOMPARE(doc->currentSlide(), 3);
+        // Listed among the workspace's files.
+        o = json(call("list_documents", {}));
+        bool listed = false;
+        for (const QJsonValue& v : o.value("files").toArray())
+            listed = listed || (v.toObject().value("kind").toString() == "presentation" && v.toObject().value("path").toString() == "drive.pptx");
+        QVERIFY2(listed, qPrintable(QJsonDocument(o).toJson()));
+        app.closeAllFiles();
     }
 
     // A deck of one's own in its tab, the window's picture taken: the first

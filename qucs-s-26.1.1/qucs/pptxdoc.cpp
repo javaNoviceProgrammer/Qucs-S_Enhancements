@@ -71,7 +71,7 @@ const char* const kSidebarKey = "Viewers/pptxSidebar";
 class Glyph : public QIconEngine
 {
 public:
-    enum Kind { Sidebar, Previous, Next, Minus, Plus, Notes, Play, Find, More };
+    enum Kind { Sidebar, Previous, Next, Minus, Plus, Notes, Play, Find, More, Close };
     explicit Glyph(Kind kind) : a_kind(kind) {}
     QIconEngine* clone() const override { return new Glyph(a_kind); }
     void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State) override
@@ -115,6 +115,10 @@ public:
             p->setBrush(c);
             p->setPen(Qt::NoPen);
             for (qreal x : {4.0, 8.0, 12.0}) p->drawEllipse(QPointF(x, 8), 1.2, 1.2);
+            break;
+        case Close:
+            p->drawLine(QPointF(4.5, 4.5), QPointF(11.5, 11.5));
+            p->drawLine(QPointF(11.5, 4.5), QPointF(4.5, 11.5));
             break;
         }
         p->restore();
@@ -289,6 +293,30 @@ void SlideView::goToSlide(int index)
         a_current = index;
         emit currentSlideChanged(index);
     }
+    viewport()->update();
+}
+
+void SlideView::showRegion(int index, const QRectF& region)
+{
+    if (a_presentation == nullptr || a_presentation->slideCount() == 0 || region.isEmpty()) return;
+    index = std::clamp(index, 0, a_presentation->slideCount() - 1);
+    const QSize view = viewport()->size();
+    const qreal zoom = std::clamp(std::min((view.width() - 2.0 * Gap) / region.width(), (view.height() - 2.0 * Gap) / region.height()), MinZoom, MaxZoom);
+    a_fit = Fit::None;
+    const bool changed = !qFuzzyCompare(zoom, a_zoom);
+    a_zoom = zoom;
+    relayout();
+    // Its middle at the view's.
+    const QRectF slide = contentRect(index);
+    const QPointF middle = slide.topLeft() + region.center() * a_zoom;
+    horizontalScrollBar()->setValue(int(std::lround(middle.x() - view.width() / 2.0)));
+    verticalScrollBar()->setValue(int(std::lround(middle.y() - view.height() / 2.0)));
+    // (The slide shown is the one asked, wherever a third of the view is.)
+    if (a_current != index) {
+        a_current = index;
+        emit currentSlideChanged(index);
+    }
+    if (changed) emit zoomChanged(a_zoom);
     viewport()->update();
 }
 
@@ -476,6 +504,16 @@ void SlideShow::goTo(int index)
     update();
 }
 
+void SlideShow::first()
+{
+    goTo(step(-1, 1));
+}
+
+void SlideShow::last()
+{
+    goTo(step(a_presentation != nullptr ? a_presentation->slideCount() : 0, -1));
+}
+
 void SlideShow::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
@@ -529,8 +567,8 @@ void SlideShow::keyPressEvent(QKeyEvent* event)
     case Qt::Key_PageUp:
     case Qt::Key_Backspace:
     case Qt::Key_P: previous(); return;
-    case Qt::Key_Home: goTo(step(-1, 1)); return;
-    case Qt::Key_End: goTo(step(a_presentation != nullptr ? a_presentation->slideCount() : 0, -1)); return;
+    case Qt::Key_Home: first(); return;
+    case Qt::Key_End: last(); return;
     default: break;
     }
     QWidget::keyPressEvent(event);
@@ -630,6 +668,12 @@ void PptxDoc::buildUi()
     a_slideField->setAlignment(Qt::AlignCenter);
     a_slideField->setToolTip(tr("The slide in sight: type a number and press Return to go to it"));
     a_slideCount = new QLabel(a_toolbar);
+    // (Named for Claude's get_ui and a screen reader: by labels of their
+    // own, hidden - not the "of N" beside them.)
+    a_slideField->setAccessibleName(tr("Slide"));
+    auto* slideName = new QLabel(tr("Slide"), a_toolbar);
+    slideName->setBuddy(a_slideField);
+    slideName->hide();
     a_zoomOutButton = toolButton(a_toolbar, glyph(Glyph::Minus), tr("Zoom out"));
     a_zoomInButton = toolButton(a_toolbar, glyph(Glyph::Plus), tr("Zoom in"));
     a_zoomBox = new QComboBox(a_toolbar);
@@ -642,6 +686,10 @@ void PptxDoc::buildUi()
     a_zoomBox->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     a_zoomBox->setFocusPolicy(Qt::ClickFocus);
     a_zoomBox->setToolTip(tr("The zoom: pick a fit or a scale, or type one"));
+    a_zoomBox->setAccessibleName(tr("Zoom"));
+    auto* zoomName = new QLabel(tr("Zoom"), a_toolbar);
+    zoomName->setBuddy(a_zoomBox);
+    zoomName->hide();
     a_notesButton = toolButton(a_toolbar, glyph(Glyph::Notes), tr("The speaker notes of the slide in sight"));
     a_notesButton->setCheckable(true);
     a_playButton = toolButton(a_toolbar, glyph(Glyph::Play), tr("Play the slides full screen from the one in sight (F5 from the first)"));
@@ -649,22 +697,7 @@ void PptxDoc::buildUi()
     a_menuButton = toolButton(a_toolbar, glyph(Glyph::More), tr("More"));
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
     a_moreMenu = new QMenu(a_menuButton);
-    QAction* copy = a_moreMenu->addAction(tr("Copy the Slide as a Picture"), this, &PptxDoc::copySlide);
-    // Shown, its keys the window's Copy's (which copies the slide here):
-    // taken while the menu is open alone, not twice (ambiguous) otherwise.
-    copy->setShortcut(QKeySequence::Copy);
-    copy->setShortcutContext(Qt::WidgetShortcut);
-    copy->setShortcutVisibleInContextMenu(true);
-    a_moreMenu->addAction(tr("Copy the Slide's Text"), this, &PptxDoc::copySlideText);
-    a_moreMenu->addAction(tr("Export the Slide as a Picture…"), this, &PptxDoc::exportSlide);
-    a_moreMenu->addAction(tr("Copy Path"), this, &PptxDoc::copyPath);
-    a_moreMenu->addSeparator();
-    a_moreMenu->addAction(tr("Play from the First Slide"), this, [this] { startShow(0); });
-    a_moreMenu->addSeparator();
-    a_moreMenu->addAction(tr("Open with the System's Viewer"), this, &PptxDoc::openExternally);
-    a_moreMenu->addAction(tr("Show in File Manager"), this, &PptxDoc::revealInFileManager);
-    a_moreMenu->addSeparator();
-    a_moreMenu->addAction(tr("Reload"), this, [this] { reload(); });
+    fillMenu(a_moreMenu);
     a_menuButton->setMenu(a_moreMenu);
 
     bar->addWidget(a_sidebarButton);
@@ -691,14 +724,12 @@ void PptxDoc::buildUi()
     search->setContentsMargins(6, 3, 6, 3);
     a_searchField = new QLineEdit(a_searchBar);
     a_searchField->setPlaceholderText(tr("Find in the slides and notes"));
+    a_searchField->setAccessibleName(tr("Find"));
     a_searchField->setClearButtonEnabled(true);
     a_searchLabel = new QLabel(a_searchBar);
     auto* up = toolButton(a_searchBar, glyph(Glyph::Previous), tr("The slide with it before (Shift+Return)"));
     auto* down = toolButton(a_searchBar, glyph(Glyph::Next), tr("The next slide with it (Return)"));
-    auto* closeSearch = new QToolButton(a_searchBar);
-    closeSearch->setText(QStringLiteral("✕"));
-    closeSearch->setAutoRaise(true);
-    closeSearch->setToolTip(tr("Close (Escape)"));
+    auto* closeSearch = toolButton(a_searchBar, glyph(Glyph::Close), tr("Close the find bar (Escape)"));
     search->addWidget(a_searchField, 1);
     search->addWidget(a_searchLabel);
     search->addWidget(up);
@@ -719,6 +750,7 @@ void PptxDoc::buildUi()
     a_splitter->setChildrenCollapsible(false);
     a_thumbnails = new QListWidget(a_splitter);
     a_thumbnails->setObjectName(QStringLiteral("pptxThumbnails"));
+    a_thumbnails->setAccessibleName(tr("Slides"));
     a_thumbnails->setViewMode(QListView::IconMode);
     a_thumbnails->setFlow(QListView::TopToBottom);
     a_thumbnails->setWrapping(false);
@@ -1060,17 +1092,34 @@ void PptxDoc::showMenu(QPoint globalPos, int slide)
     if (a_presentation == nullptr) return;
     if (slide >= 0 && slide != a_view->currentSlide()) a_view->goToSlide(slide);
     QMenu menu(this);
-    menu.addAction(tr("Copy the Slide as a Picture"), this, &PptxDoc::copySlide);
-    menu.addAction(tr("Copy the Slide's Text"), this, &PptxDoc::copySlideText);
-    menu.addAction(tr("Export the Slide as a Picture…"), this, &PptxDoc::exportSlide);
-    menu.addSeparator();
-    menu.addAction(tr("Play from This Slide"), this, [this] { startShow(-1); });
-    menu.addSeparator();
-    menu.addAction(tr("Fit Width"), this, [this] { a_view->setFit(SlideView::Fit::Width); });
-    menu.addAction(tr("Fit Slide"), this, [this] { a_view->setFit(SlideView::Fit::Slide); });
-    menu.addSeparator();
-    menu.addAction(tr("Open with the System's Viewer"), this, &PptxDoc::openExternally);
+    fillMenu(&menu);
     menu.exec(globalPos);
+}
+
+void PptxDoc::fillMenu(QMenu* menu)
+{
+    // The ⋯ menu and the right-click one alike: all the tab does that its
+    // bar does not.
+    QAction* copy = menu->addAction(tr("Copy the Slide as a Picture"), this, &PptxDoc::copySlide);
+    // Shown, its keys the window's Copy's (which copies the slide here):
+    // taken while the menu is open alone, not twice (ambiguous) otherwise.
+    copy->setShortcut(QKeySequence::Copy);
+    copy->setShortcutContext(Qt::WidgetShortcut);
+    copy->setShortcutVisibleInContextMenu(true);
+    menu->addAction(tr("Copy the Slide's Text"), this, &PptxDoc::copySlideText);
+    menu->addAction(tr("Export the Slide as a Picture…"), this, &PptxDoc::exportSlide);
+    menu->addAction(tr("Copy Path"), this, &PptxDoc::copyPath);
+    menu->addSeparator();
+    menu->addAction(tr("Play from This Slide"), this, [this] { startShow(-1); });
+    menu->addAction(tr("Play from the First Slide"), this, [this] { startShow(0); });
+    menu->addSeparator();
+    menu->addAction(tr("Fit Width"), this, [this] { a_view->setFit(SlideView::Fit::Width); });
+    menu->addAction(tr("Fit Slide"), this, [this] { a_view->setFit(SlideView::Fit::Slide); });
+    menu->addSeparator();
+    menu->addAction(tr("Open with the System's Viewer"), this, &PptxDoc::openExternally);
+    menu->addAction(tr("Show in File Manager"), this, &PptxDoc::revealInFileManager);
+    menu->addSeparator();
+    menu->addAction(tr("Reload"), this, [this] { reload(); });
 }
 
 // ----------------------------------------------------------------------
@@ -1179,6 +1228,28 @@ void PptxDoc::findNext(bool backwards)
                                               : tr("Slide %1: %2 of %3 slides with it").arg(a_hits.at(a_hit) + 1).arg(a_hit + 1).arg(a_hits.size()));
 }
 
+void PptxDoc::setFindText(const QString& text)
+{
+    a_searchBar->show();
+    if (a_searchField->text() == text) find(text);
+    else a_searchField->setText(text);   // (found as typed: textChanged)
+}
+
+bool PptxDoc::findShown() const
+{
+    return !a_searchBar->isHidden();
+}
+
+QString PptxDoc::findText() const
+{
+    return a_searchField->text();
+}
+
+void PptxDoc::showRegion(int index, const QRectF& region)
+{
+    a_view->showRegion(index, region);
+}
+
 void PptxDoc::showSearch()
 {
     a_searchBar->show();
@@ -1188,8 +1259,11 @@ void PptxDoc::showSearch()
 
 void PptxDoc::hideSearch()
 {
+    // (The focus to the slides from the field alone: closed by Claude, it
+    // stays where the user has it.)
+    const bool had = a_searchField->hasFocus();
     a_searchBar->hide();
-    a_view->setFocus();
+    if (had) a_view->setFocus();
 }
 
 // ----------------------------------------------------------------------

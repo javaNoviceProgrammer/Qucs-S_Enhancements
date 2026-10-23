@@ -19,10 +19,14 @@
 #include <QList>
 #include <QCoreApplication>
 #include <QString>
+#include <QStringList>
 
 #include <list>
 
 class Component;
+class QAbstractButton;
+class QAction;
+class QMenu;
 class Diagram;
 class Graph;
 class Marker;
@@ -210,6 +214,17 @@ private:
     bool a_was;
 };
 
+/// \a menu's entries (a right-click menu's, a button's), each by its path
+/// ("Toggle hierarchy search view > Flat") with whether it can be chosen
+/// and is checked; their actions and paths alike (qucscontrol_ui.cpp).
+void menuEntries(const QMenu* menu, const QString& prefix, QJsonArray* entries, QList<QAction*>* actions, QStringList* paths);
+/// Which of \a paths \a wanted names: a whole path, else its last step
+/// ("Reload" for "View > Reload"); -1 for none.
+int menuEntryNamed(const QStringList& paths, const QString& wanted);
+/// The menu \a button has (a tool button's, a push button's), else null;
+/// \a opens whether pressing it opens that menu (the ⋯ of a document's
+/// bar), a loop of its own that waits for a click.
+QMenu* menuOfButton(QAbstractButton* button, bool* opens = nullptr);
 
 } // namespace qucs_s::control
 
