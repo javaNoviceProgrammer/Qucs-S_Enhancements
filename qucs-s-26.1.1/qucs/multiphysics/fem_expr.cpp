@@ -330,6 +330,9 @@ const std::vector<DisplayUnit>& displayTable()
         {"C/m²", Dim::of(-2, 0, 1, 1), true},
         {"C/m³", Dim::of(-3, 0, 1, 1), true},
         {"C/m", Dim::of(-1, 0, 1, 1), true},
+        // (A dipole moment, and an energy per field: "m·s·A" from the base
+        // units read badly - the check of 23 October, 3.)
+        {"C·m", Dim::of(1, 0, 1, 1), true},
         {"J/m³", Dim::of(-1, 1, -2), false},
         {"J/m", Dim::of(1, 1, -2), true},
         {"W/(m·K)", Dim::of(1, 1, -3, 0, -1), false},
@@ -1644,6 +1647,8 @@ double Expression::Table::at(double v) const
 // and only for the units whose scale is not in doubt (a density's or a
 // dose's SI value spans everything from the intrinsic carriers to a
 // metal, and a bare number for one cannot be judged). MCP wishlist N1.
+namespace {
+
 struct Scaled {
     Dim dim;
     double least, most;
@@ -1671,8 +1676,8 @@ const std::vector<Scaled>& scales()
     return table;
 }
 
-// Why \a si, read in SI from a number with no unit of its own, is not a
-// value of \a expected that anyone means; empty when it may be.
+} // namespace
+
 QString outsideItsScale(double si, const Dim& expected)
 {
     if (si == 0 || expected.isNone()) return {};
@@ -1680,7 +1685,7 @@ QString outsideItsScale(double si, const Dim& expected)
         if (!(s.dim == expected)) continue;
         if (std::abs(si) >= s.least && std::abs(si) <= s.most) return {};
         return tr("it has no unit, so it is read in SI - %1 -, which is not %2 anyone means (%3 to %4): write its unit in "
-                  "brackets, as %5, or give the number in SI")
+                  "brackets, as %5, or give a value within that range")
             .arg(formatQuantity(si, expected), tr(s.what), formatQuantity(s.least, expected), formatQuantity(s.most, expected),
                  QString::fromLatin1(s.instead));
     }

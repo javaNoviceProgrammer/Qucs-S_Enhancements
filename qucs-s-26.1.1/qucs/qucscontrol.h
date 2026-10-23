@@ -125,6 +125,10 @@ public:
     /// name in the plural ('name' as delete's 'names', of the one; 'step'
     /// as undo's 'steps'); empty when there is none to read so (N11).
     QJsonObject asPlural(const QString& tool, const QJsonObject& args) const;
+    /// \a args with a number given as text read as that number, where
+    /// \a tool takes a number there (undo's 'steps' as "1"); what was read
+    /// so in \a said. Empty when there is none.
+    QJsonObject asNumbers(const QString& tool, const QJsonObject& args, QStringList* said = nullptr) const;
     void setGuards(const qucs_s::claude::Guards& guards) override { a_guards = guards; }
     void setAsking(quint64 caller, bool asking) override;
     /// Why \a tool, called within the call under way (a batch's call, a
