@@ -633,6 +633,25 @@ public:
 
 // A row with its git mark: the letter at its end (its name drawn in the
 // room left), a repository's branch after its folder's name, muted.
+// Keeps the name chosen without its suffix in a line that is about to be
+// shown: showing it gives it the focus, which chooses all of it.
+class NameChosen : public QObject
+{
+public:
+    NameChosen(QLineEdit* line, int upTo) : QObject(line), a_line(line), a_upTo(upTo) {}
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched == a_line && (event->type() == QEvent::Show || event->type() == QEvent::FocusIn)
+            && a_line->selectedText().size() == a_line->text().size())
+            a_line->setSelection(0, a_upTo);
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QLineEdit* a_line;
+    int a_upTo;
+};
+
 class GitDelegate : public QStyledItemDelegate
 {
 public:
@@ -2139,8 +2158,8 @@ void FileBrowser::refresh()
             else a_expandPending << p;
         }
     }
-    a_selectPending = !was.selected.isEmpty() && !indexOf(was.selected).isValid();
-    selectPath(was.selected);
+    // (What was chosen comes back on its own: the model tells each folder
+    // it has read, and that is where a_selected is chosen again.)
     const int scroll = was.scroll;
     QPointer<QAbstractItemView> view = currentView();
     QTimer::singleShot(0, this, [view, scroll] {
@@ -2358,9 +2377,12 @@ void FileBrowser::rename(const QString& path)
     box.setTextValue(info.fileName());
     const qsizetype dot = info.fileName().lastIndexOf(QLatin1Char('.'));
     if (dot > 0 && !info.isDir())
-        QTimer::singleShot(0, &box, [&box, dot] {
-            if (auto* line = box.findChild<QLineEdit*>()) line->setSelection(0, int(dot));
-        });
+        if (auto* line = box.findChild<QLineEdit*>(); line != nullptr) {
+            line->setSelection(0, int(dot));
+            // Again once it is shown: showing the dialog gives the line the
+            // focus, which chooses all of it.
+            line->installEventFilter(new NameChosen(line, int(dot)));
+        }
     if (box.exec() != QDialog::Accepted) return;
     const QString name = box.textValue().trimmed();
     if (name.isEmpty() || name == info.fileName()) return;

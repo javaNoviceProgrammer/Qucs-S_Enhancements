@@ -175,13 +175,45 @@ round.
 | `test_pptx_doc` `absurdNumbersAreHeld` | a cache of two thousand million points, a point's index, a paragraph's level, a run's baseline, a bar's gap and overlap: read, drawn, within 30 s (and no report under UndefinedBehaviorSanitizer) |
 | `test_pptx_doc` `manyRunsAreLaidOutOnce` | 5,000 runs in one paragraph drawn within 10 s (36,000 ms before, some 140 ms now), and all of the text there |
 | `test_pptx_doc` `aTabIsNotFreedUnderItsOwnDialog` | the window closed from inside the tab's own save panel: the tab goes, nothing is freed under the dialog, and the call returns |
-| `test_file_browser` `renamingChoosesTheNameNotTheSuffix` | in place: "amp" of "amp.sch", "data.tar" of "data.tar.gz", the whole of ".spiceinit", of "plain" and of a folder's "folder.old" |
-| `test_file_browser` `refreshReadsTheFoldersAgain` | a file and a folder written behind the watcher's back appear on Refresh, the folder shown and the choice kept |
+| `test_file_browser` `renamingChoosesTheNameNotTheSuffix` | in place and in the dialog: "amp" of "amp.sch", "data.tar" of "data.tar.gz", "filter" of "filter.sch", the whole of ".spiceinit", of "plain", of "notes" and of the folders "folder.old" and "inner.d" |
+| `test_file_browser` `refreshReadsTheFoldersAgain` | with the model's watcher off, a file written is shown only after Refresh; the folder shown, the choice and the scroll kept |
 | `test_file_browser` `aLinkedFolderIsShownAndUnlinked` | a linked folder is shown, listed among the links here, entered, and unlinked - leaving what it led to |
-| `test_file_browser` `aLinkedFoldersFilesBelongToTheProject` | `misc::projectFiles` holds `shared/brought.sch` and `shared/sub/deeper.txt`; a link that leads back to the project ends the walk |
+| `test_file_browser` `aLinkedFoldersFilesBelongToTheProject` | `misc::projectFiles` holds exactly `own.sch`, `shared/brought.sch` and `shared/sub/deeper.txt`; with a link that leads back, nothing is named twice and nothing comes from under `back/` |
 | `test_file_browser` `entriesAreMadeAndTheirMenusOffered` | Refresh, Import Folder and Link Folder in the menus; Unlink Folder only where a link is there |
+| `test_pptx_doc` `aBigShadowIsStillDrawn` | a slide-sized shape's shadow read at 1, 4 and 6 pixels a point, where the mask passes what is held |
+| `test_pptx_doc` `aZoomKeepsTheSlideItWasOn` | four slides at three zooms each from fit width, and `show_pptx` with a slide and a zoom in one call |
 
-The suites that use what was touched pass: `test_erc` (25), `test_pptx_doc`, `test_image_doc`,
+## The breaks, and what they found in the tests
+
+Each fix was broken on purpose, built and run against the tests named above. The first pass caught 32
+of 44; the misses were nearly all tests too weak, and sharpening them is where the rest of the value
+was:
+
+| the break that got through | what the test was missing | now |
+|---|---|---|
+| A4's bound taken off | a 30 s bound, where the broken read takes 15 s and the held one 0.03 s | the same deck with three points is read beside it, and the absurd one must stay within twenty times that, plus two seconds - so the test measures the machine it runs on |
+| B5's clamp after the conversion | nothing in Release can see it, and the break script set no `halt_on_error`, so UndefinedBehaviorSanitizer only printed | the break script runs with `UBSAN_OPTIONS=halt_on_error=1`; against `build-asan` the break is caught |
+| B1's shadow not drawn past the mask | `shadowsDrawn` draws at 2 pixels a point, where no mask comes near the limit | `aBigShadowIsStillDrawn`: a shape of nearly the whole slide, read at 1, 4 and 7 pixels a point - 21 million mask pixels at 7, so the smaller mask is what is drawn. **This found a fault in the fix**: the picture the mask is coloured into was still made the size of the area, not of the mask, so past the limit it was read beyond its end and the shadow came out blank. The first try at the test had a shape of 9.3 million pixels at its largest - under the limit - so it proved nothing |
+| B2's zoom opening above the slide | no test zoomed at all | `aZoomKeepsTheSlideItWasOn`: four slides, three zooms each from fit width, and the tool's own `{"slide": 5, "zoom": 100}` |
+| the file browser's refresh gutted | the file system's watcher brought the new file in anyway, so the test could not tell | the model's watcher is turned off (`DontWatchForChanges`), the file is written, and it is shown only after Refresh |
+| the walk going round a link that leads back | the walk ended anyway (the paths grow too long to follow), so "it ended" proved nothing | the test holds the list to exactly three names, with nothing named twice and nothing under `back/` |
+| the rename dialog choosing the suffix | only the editor in place was tested | the dialog is driven too - and it **was** broken: the selection was set on a zero timer that the dialog's own showing undid. It is now set on the line and kept by an event filter when the line is shown |
+| refresh losing what was chosen | nothing lost it: the model tells each folder it has read, and the choice is made again there | the two lines were redundant, and are taken out |
+
+Of the second pass, 17 of 21 are caught, and the four that are not are each accounted for:
+- the clamp after the conversion is caught against `build-asan`, not in Release, where nothing can see
+  it;
+- clipping the shadow's mask to what can be seen changes no pixel - it only saves building what is not
+  drawn - so no test of the output can tell;
+- two patterns no longer match the code: one because the lines it broke were redundant and are gone,
+  one of my own writing, which is caught once it is right.
+
+Across both passes, 44 breaks: 40 caught, 2 accounted for above, 2 patterns corrected. Breaking the
+fixes is what found the blank shadow and the rename dialog that never worked.
+
+## The suites
+
+They pass: `test_erc` (26), `test_pptx_doc`, `test_image_doc`,
 `test_markdown_doc`, `test_claude_code`, `test_qucs_control`, `test_mcp_server`, `test_netlist_audit`,
 `test_netlist_fixes`, `test_symbol_image`, `test_loader`, `test_spice_options`, `test_simulator_modes`,
 `test_subcircuit_dialog`, `test_file_browser`.

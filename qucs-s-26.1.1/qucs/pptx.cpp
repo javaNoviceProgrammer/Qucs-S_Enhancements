@@ -3081,7 +3081,9 @@ void drawShadow(QPainter& p, const Element& e, const QRectF& box)
         }
     }
     // In its colour.
-    QImage shadow(area.size(), QImage::Format_ARGB32_Premultiplied);
+    // As large as the mask, which may be smaller than the area it covers:
+    // it is drawn over the whole of it.
+    QImage shadow(mask.size(), QImage::Format_ARGB32_Premultiplied);
     const QRgb colour = s.color.rgba();
     for (int y = 0; y < shadow.height(); ++y) {
         const uchar* a = mask.constScanLine(y);
