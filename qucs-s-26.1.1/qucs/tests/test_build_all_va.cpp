@@ -528,19 +528,29 @@ private slots:
         write(project + "/unseen.va", "module unseen(p, n);\nendmodule\n");
         QTest::qWait(2500);
         QVERIFY(!children(view, ProjectView::VerilogA).contains("unseen.va"));
-        // ...until Refresh, which is on the panel menu only.
-        QAction* refresh = nullptr;
-        for (QAction* a : app.findChildren<QAction*>())
-            if (a->text() == "Refresh") { refresh = a; break; }
+        // ...until Refresh, which is on the panel menu only. (By its name:
+        // the File Browser has a Refresh of its own since 63c2d2c, so the
+        // first action whose text is "Refresh" may be that one - this very
+        // check failed on CI at 1be35c3 for no fault of either panel.)
+        QAction* refresh = app.findChild<QAction*>(QStringLiteral("contentRefresh"));
         QVERIFY(refresh != nullptr);
+        QCOMPARE(refresh->text(), QStringLiteral("Refresh"));
         int holders = 0;
+        QMenu* panelMenu = nullptr;
         for (QMenu* m : app.findChildren<QMenu*>())
-            if (m->actions().contains(refresh)) ++holders;
+            if (m->actions().contains(refresh)) {
+                ++holders;
+                panelMenu = m;
+            }
         QCOMPARE(holders, 1);
         QVERIFY(!menuWithAction(&app, "Open")->actions().contains(refresh));
         QVERIFY(!menuWithAction(&app, "Build All")->actions().contains(refresh));
-        QMenu* panelMenu = menuWithAction(&app, "Refresh");
+        QVERIFY(panelMenu != nullptr);
         QVERIFY(panelMenu->actions().contains(menuWithAction(&app, "Sub-trees per folder")->menuAction()));
+        // And it is the panel's, not the File Browser's: that one has its
+        // own, in its own menu, which this must not have found.
+        if (QAction* browsers = app.findChild<QAction*>(QStringLiteral("fbRefreshAction")); browsers != nullptr)
+            QVERIFY(browsers != refresh && !panelMenu->actions().contains(browsers));
         refresh->trigger();
         QVERIFY(children(view, ProjectView::VerilogA).contains("unseen.va"));
 

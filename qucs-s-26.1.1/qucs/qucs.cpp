@@ -1794,6 +1794,9 @@ void QucsApp::initCursorMenu()
   // (The panel does it by itself every few seconds when a file came or
   // went, unless that is turned off under Application Settings.)
   ActionCMenuRefresh = new QAction(tr("Refresh"), this);
+  // (Named: the File Browser has a Refresh of its own, so "the action whose
+  // text is Refresh" is no longer this one - CI of 1be35c3.)
+  ActionCMenuRefresh->setObjectName("contentRefresh");
   ActionCMenuRefresh->setStatusTip(tr("Lists the files of the project again"));
   connect(ActionCMenuRefresh, SIGNAL(triggered()), SLOT(slotUpdateTreeview()));
 
