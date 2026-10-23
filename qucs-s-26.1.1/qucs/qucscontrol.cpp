@@ -635,6 +635,15 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"},
    "page": {"description": "A page number (from 1), a page's label as printed, or an outline destination's title (or its start)"}, "find": {"type": "string", "description": "Text found on every page: the hits' pages returned, the first shown"},
    "zoom": {"description": "A percentage (150) or \"fit width\" / \"fit page\""}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "[x1, y1, x2, y2] of the page (the one asked, the first hit's, or the one in sight): points from its top left, or fractions of it"}}}},
+{"name": "read_pptx",
+ "description": "Reads a PowerPoint presentation (.pptx, .pptm, .ppsx, .potx) - a talk, a review deck, a lecture: each slide's title, its text paragraph by paragraph (a table's rows as cells | cells, a chart's title), its speaker notes, whether it is hidden, how many pictures, tables and charts it holds, and what of it is not drawn as PowerPoint draws it (an EMF picture). An open one is read as its tab shows it. 'path' is relative to the project, otherwise the workspace (the presentation in front if not given); 'slides' is [3, 4], \"2-5\" or 7 (all by default, 40,000 characters at most - the rest named); 'search' finds a word or value in the slides' text and notes. 'image' draws the slides too, as pictures (four at most). show_pptx shows a slide in its tab, or plays them.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The presentation, relative to the project (else the workspace), or its tab's title; the one in front when not given"}, "slides": {"description": "Which slides: [3, 4], \"2-5\" or 7; all by default"}, "search": {"type": "string", "description": "A word or value to find in the slides' text and notes: the paragraphs that have it"}, "image": {"type": "boolean", "description": "The slides drawn as pictures too (four at most)"}}}},
+{"name": "show_pptx",
+ "description": "Shows a PowerPoint presentation in its tab - opened when it is not, brought to the front - at what is asked: 'slide' a number (1 the first) or a slide's title (its start); 'find' text: the slides with it in their text or notes returned, the first shown; 'zoom' a percentage (150) or \"fit width\" / \"fit slide\"; 'notes' shows or hides the pane of the slide's speaker notes; 'play' true plays the slides full screen from the one shown (hidden ones left out; Escape ends it), false ends it. Returns the slide shown, its title, the slides there are, the zoom, the hits. screenshot of it then takes a picture of the tab.",
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The presentation, relative to the project (else the workspace), or its tab's title; the one in front when not given"},
+   "slide": {"description": "A slide's number (from 1), or a slide's title (or its start)"}, "find": {"type": "string", "description": "Text found in the slides' text and notes: the slides with it returned, the first shown"},
+   "zoom": {"description": "A percentage (150) or \"fit width\" / \"fit slide\""}, "notes": {"type": "boolean", "description": "The speaker notes' pane shown (true) or hidden (false)"},
+   "play": {"type": "boolean", "description": "true: the slides played full screen from the one shown; false: the slide show ended"}}}},
 {"name": "describe_part",
  "description": "What a library part is, in one call: its pins in order, each with its name, the side of the symbol it is on and its role (input, output, supply); its supply pins; what its model is - one component placed as that component, a macromodel of controlled sources, a transistor-level subcircuit - with the count of its elements; how the test of every library part under ngspice found it; its description; and 'place' for add_component. find_library_component finds the part.",
  "inputSchema": {"type": "object", "properties": {"library": {"type": "string", "description": "The library, as find_library_component gives it: OpAmps"}, "part": {"type": "string", "description": "The part in it: uA741"}}, "required": ["library", "part"]}},
@@ -932,6 +941,8 @@ const struct {
     {"open_document", QT_TRANSLATE_NOOP("QucsControl", "open a document in Qucs-S")},
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "show a layout in Qucs-S")},
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "show a PDF's page in Qucs-S")},
+    {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "read a presentation's slides in Qucs-S")},
+    {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "show or play a presentation's slides in Qucs-S")},
     {"new_document", QT_TRANSLATE_NOOP("QucsControl", "open a new document in Qucs-S")},
     {"save_document", QT_TRANSLATE_NOOP("QucsControl", "save a document in Qucs-S")},
     {"close_document", QT_TRANSLATE_NOOP("QucsControl", "close a document in Qucs-S")},
@@ -1022,7 +1033,7 @@ const struct {
 const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "list_component_types", "list_actions",
                                  "get_dialog", "show_document", "select", "zoom", "get_netlist", "get_dataset",
                                  "reload_data", "describe_component_type", "describe_format", "list_documents", "check_schematic",
-                                 "read_pdf", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
+                                 "read_pdf", "read_pptx", "find_library_component", "describe_part", "undo_history", "describe_tool", "diff",
                                  "get_text", "goto_line", "get_ui", "get_settings", "wait_for", "simulation_status", "read_help",
                                  "ngspice_commands", "list_libraries", "line_calc", "receiver_budget", "get_layout",
                                  "find_shapes", "git_status", "git_diff", "git_log", "git_show", "git_blame",
@@ -1034,7 +1045,7 @@ const char* const kReadOnly[] = {"get_state", "get_schematic", "screenshot", "li
 const char* const kAdditive[] = {"add_component", "add_wire", "connect", "set_label", "add_diagram", "add_trace", "add_marker",
                                  "add_painting", "add_analysis", "new_document", "open_document", "new_project", "open_project",
                                  "simulate", "synthesize_filter", "synthesize_attenuator", "synthesize_matching", "synthesize_power_combiner",
-                                 "show_layout", "show_pdf", "git_init", "git_clone"};
+                                 "show_layout", "show_pdf", "show_pptx", "git_init", "git_clone"};
 
 // Each tool's description in the tool list: a summary (the list is in
 // every turn); describe_tool gives the whole of it.
@@ -1119,6 +1130,8 @@ const struct {
     {"find_shapes", QT_TRANSLATE_NOOP("QucsControl", "Finds the shapes and texts of a GDSII or OASIS layout at a point, in a region or on a layer, with their points in µm.")},
     {"show_layout", QT_TRANSLATE_NOOP("QucsControl", "Shows a cell, a region or some layers of a GDSII or OASIS layout in its tab, for a screenshot.")},
     {"show_pdf", QT_TRANSLATE_NOOP("QucsControl", "Shows a PDF in its tab at a page, an outline's destination, the hits of a search, a zoom or a region of a page.")},
+    {"read_pptx", QT_TRANSLATE_NOOP("QucsControl", "Reads a PowerPoint presentation's slides - titles, text, tables' rows, notes, what is not drawn - and draws them with 'image'.")},
+    {"show_pptx", QT_TRANSLATE_NOOP("QucsControl", "Shows a presentation in its tab at a slide, a search's first hit or a zoom, its notes shown or hidden; plays it full screen.")},
     {"get_text", QT_TRANSLATE_NOOP("QucsControl", "Reads a text tab (.cir, .va, ...) with its unsaved edits, line by line.")},
     {"edit_text", QT_TRANSLATE_NOOP("QucsControl", "Edits a text tab as one undo step, keeping the user's unsaved edits.")},
     {"goto_line", QT_TRANSLATE_NOOP("QucsControl", "Shows a line of a text tab, the cursor there.")},
@@ -1171,6 +1184,8 @@ const char* const kModel[] = {"fem_describe", "fem_model", "fem_edit", "fem_solv
 // A PDF's, where one is open: the sessions of 21 and 22 October with a paper
 // open each searched for them first (four of four).
 const char* const kPdf[] = {"read_pdf", "show_pdf"};
+// A presentation's, where one is open.
+const char* const kPptx[] = {"read_pptx", "show_pptx"};
 const struct {
     const char* tool;
     const char* hint;
@@ -1276,6 +1291,8 @@ const struct {
     {"import_library", "import add install bring library lib file vendor colleague spice subckt copy user_lib"},
     {"describe_part", "library part pins order names supply model macromodel transistor tested bench roles input output"},
     {"read_pdf", "datasheet pdf text read"},
+    {"read_pptx", "powerpoint pptx presentation slides deck talk notes text read"},
+    {"show_pptx", "powerpoint pptx presentation slide show play deck go to find zoom notes"},
     {"get_text", "text document tab read cir va verilog-a netlist script lines unsaved"},
     {"edit_text", "text document tab edit change replace lines cir va verilog-a netlist script"},
     {"goto_line", "text document line cursor show error"},
@@ -2233,6 +2250,7 @@ QString kindOf(QucsDoc* doc)
     if (QucsApp::isLayoutDocument(QucsApp::documentWidget(doc))) return QStringLiteral("layout");
     if (QucsApp::isMultiphysicsDocument(QucsApp::documentWidget(doc))) return QStringLiteral("multiphysics model");
     if (QucsApp::isImageDocument(QucsApp::documentWidget(doc))) return QStringLiteral("picture");
+    if (QucsApp::isPresentationDocument(QucsApp::documentWidget(doc))) return QStringLiteral("presentation");
     const QString suffix = QFileInfo(doc->getDocName()).suffix().toLower();
     if (suffix == QLatin1String("dpl")) return QStringLiteral("data display");
     if (suffix == QLatin1String("sym")) return QStringLiteral("symbol");
@@ -3724,14 +3742,17 @@ QSet<QString> QucsControl::inEveryTurn() const
 {
     QSet<QString> out;
     for (const char* t : kCore) out << QString::fromLatin1(t);
-    bool model = false, parts = false, pdf = false;
+    bool model = false, parts = false, pdf = false, deck = false;
     for (QucsDoc* doc : a_app->allDocuments()) {
         model = model || QucsApp::isMultiphysicsDocument(QucsApp::documentWidget(doc));
         pdf = pdf || QucsApp::isPdfDocument(QucsApp::documentWidget(doc));
+        deck = deck || QucsApp::isPresentationDocument(QucsApp::documentWidget(doc));
         if (auto* sch = dynamic_cast<Schematic*>(doc)) parts = parts || !sch->a_DocComps.empty();
     }
     if (pdf)
         for (const char* t : kPdf) out << QString::fromLatin1(t);
+    if (deck)
+        for (const char* t : kPptx) out << QString::fromLatin1(t);
     // (A project of models: its first prompt is often before one is open.)
     if (!model && !a_app->ProjName.isEmpty())
         model = !QDir(QucsSettings.QucsWorkDir.absolutePath()).entryList({QStringLiteral("*.qfem")}, QDir::Files).isEmpty();
@@ -3823,7 +3844,7 @@ namespace {
 // docks, raw input, consoles), changes the settings, git, scripts, the
 // Verilog-A compiler. A tool not named here is checked as before.
 const char* const kAutonomous[] = {
-    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf",
+    "move_to_pane", "open_document", "new_document", "save_document", "close_document", "show_layout", "show_pdf", "show_pptx",
     "set_schematic", "add_component", "edit_component", "replace_component", "delete", "move", "arrange", "connect",
     "add_wire", "set_label", "rename_net", "add_analysis", "create_subcircuit", "make_symbol", "set_subcircuit_parameters",
     "add_painting", "edit_painting", "add_diagram", "edit_diagram", "add_trace", "edit_trace", "add_marker",
@@ -4028,6 +4049,12 @@ QString QucsControl::subjectOf(const QString& tool, const QJsonObject& a) const
             subject += tr(": %n edit(s)", "", int(a.value(QLatin1String("edits")).toArray().size()));
         else if (tool == QLatin1String("goto_line")) subject += tr(", line %1").arg(a.value(QLatin1String("line")).toInt());
     } else if (tool == QLatin1String("read_pdf")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
+    else if (tool == QLatin1String("read_pptx")) subject = s("search").isEmpty() ? s("path") : tr("%1 in %2").arg(s("search"), s("path"));
+    else if (tool == QLatin1String("show_pptx"))
+        subject = (s("path").isEmpty() ? tr("the presentation in front") : s("path"))
+                  + (a.value(QLatin1String("play")).toBool() ? tr(", played") : QString())
+                  + (s("find").isEmpty() ? (a.value(QLatin1String("slide")).isUndefined() ? QString() : tr(", slide %1").arg(a.value(QLatin1String("slide")).toVariant().toString()))
+                                         : tr(", %1").arg(s("find")));
     else if (tool == QLatin1String("show_pdf"))
         subject = (s("path").isEmpty() ? tr("the PDF in front") : s("path"))
                   + (s("find").isEmpty() ? (a.value(QLatin1String("page")).isUndefined() ? QString() : tr(", page %1").arg(a.value(QLatin1String("page")).toVariant().toString()))
@@ -4115,7 +4142,7 @@ QString QucsControl::instructions() const
         "write the library's own file), and taken away with its model when no "
         "schematic uses the device; a part named by its library's name is taken from the first library of that name that "
         "has the part (of two that have it, the one the project linked its Verilog-A from: check_schematic warns which); "
-        "read_pdf reads a datasheet's text; fem_describe, fem_model, fem_edit, fem_solve, fem_evaluate, fem_plot and fem_export "
+        "read_pdf reads a datasheet's text; read_pptx a presentation's slides and notes (show_pptx shows or plays them); fem_describe, fem_model, fem_edit, fem_solve, fem_evaluate, fem_plot and fem_export "
         "read, make, change, solve, show and export a 2D multiphysics model (.qfem: electrostatics, currents, heat at rest or in "
         "time, solid mechanics, magnetic fields at rest - B-H curves - or in frequency - eddy currents -, waveguides' modes "
         "(effective index, loss) and waves in the plane with ports (S-parameters), in the plane or about an axis, swept, its mesh "
@@ -4772,7 +4799,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
         QStringLiteral("list_component_types"), QStringLiteral("list_actions"), QStringLiteral("get_dialog"),
         QStringLiteral("set_dialog"), QStringLiteral("get_netlist"), QStringLiteral("get_dataset"), QStringLiteral("get_ui"),
         QStringLiteral("describe_component_type"), QStringLiteral("describe_format"), QStringLiteral("batch"),
-        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("get_text"),
+        QStringLiteral("list_documents"), QStringLiteral("check_schematic"), QStringLiteral("read_pdf"), QStringLiteral("read_pptx"), QStringLiteral("get_text"),
         QStringLiteral("find_library_component"), QStringLiteral("describe_part"), QStringLiteral("undo_history"),
         QStringLiteral("ngspice_commands"), QStringLiteral("wait_for"), QStringLiteral("simulation_status"), QStringLiteral("read_help"),
         QStringLiteral("list_libraries"), QStringLiteral("get_layout"), QStringLiteral("find_shapes"), QStringLiteral("git_status"),
@@ -4906,6 +4933,8 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     if (tool == QLatin1String("set_simulator")) return setSimulator(args);
     if (tool == QLatin1String("read_pdf")) return readPdf(args);
     if (tool == QLatin1String("show_pdf")) return showPdf(args);
+    if (tool == QLatin1String("read_pptx")) return readPptx(args);
+    if (tool == QLatin1String("show_pptx")) return showPptx(args);
     if (tool == QLatin1String("get_text")) return getText(args);
     if (tool == QLatin1String("edit_text")) return editText(args);
     if (tool == QLatin1String("goto_line")) return gotoLine(args);
@@ -5381,6 +5410,7 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
         if (every.contains(QStringLiteral("fem_solve"))) tiers << tr("a model's (fem_*)");
         if (every.contains(QStringLiteral("connect"))) tiers << tr("the wiring");
         if (every.contains(QStringLiteral("read_pdf"))) tiers << tr("a PDF's");
+        if (every.contains(QStringLiteral("read_pptx"))) tiers << tr("a presentation's");
         state.insert(QStringLiteral("tools in every turn"), tr("%1 - as a session starting now has them").arg(tiers.join(QStringLiteral(", "))));
     }
     // Every project of the workspace: one is open at a time ('project').

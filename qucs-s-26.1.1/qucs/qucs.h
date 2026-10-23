@@ -66,6 +66,7 @@ namespace qucs_s::python { class Exchange; }
 class ClaudeCodeTabs;
 class FileBrowser;
 class ZipDoc;
+class PptxDoc;
 class MultiphysicsDoc;
 class MultiphysicsPanel;
 class StatusPanel;
@@ -519,6 +520,11 @@ public:
   /// Whether a file of that name is a layout opened in a LayoutDoc (.gds,
   /// .gds2, .gdsii, .gds.gz, .oas, .oasis).
   static bool isLayoutFile(const QString &name);
+  /// Whether \a w is a PowerPoint presentation in a tab (pptxdoc.h).
+  static bool isPresentationDocument(QWidget *);
+  /// Whether a file of that name is a presentation opened in a PptxDoc
+  /// (.pptx, .pptm, .ppsx, .ppsm, .potx, .potm).
+  static bool isPresentationFile(const QString &name);
   /// Whether \a w is a picture in a tab (imagedoc.h).
   static bool isImageDocument(QWidget *);
   /// Whether a file of that name is a picture opened in an ImageDoc (.png,
