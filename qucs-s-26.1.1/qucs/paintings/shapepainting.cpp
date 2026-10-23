@@ -10,6 +10,8 @@
  */
 #include "shapepainting.h"
 
+#include <optional>
+
 #include "geometry/geometry.h"
 #include "ink.h"
 #include "misc.h"
@@ -101,6 +103,17 @@ void ShapePainting::paint(QPainter* painter)
 {
   painter->save();
   const QPainterPath path = worldPath();
+  // A shape filled with a colour of its own is paper itself: its border
+  // and what it holds - a text box's words, a table's cells - are fitted
+  // to that fill, not to the canvas behind it. A black text on a white
+  // box was drawn pale grey on the dark canvas, almost unreadable, while
+  // prints and exports had it black (the check of 22 October, 1). The
+  // fill is judged against the canvas first, as it is drawn there.
+  const QBrush fill = fillable() && m_filled ? qucs_s::ink::on(m_brush) : QBrush(Qt::NoBrush);
+  // (See-through enough and the canvas shows through it: the canvas is
+  // the paper then, as before.)
+  std::optional<qucs_s::ink::Paper> inside;
+  if (fill.style() != Qt::NoBrush && fill.color().alpha() >= 192) inside.emplace(fill.color());
   {
     const QSizeF size = frameSize();
     painter->save();
@@ -109,7 +122,7 @@ void ShapePainting::paint(QPainter* painter)
     painter->restore();
   }
   painter->setPen(qucs_s::ink::on(m_pen));
-  painter->setBrush(fillable() && m_filled ? qucs_s::ink::on(m_brush) : QBrush(Qt::NoBrush));
+  painter->setBrush(fill);
   painter->drawPath(path);
   {
     const QSizeF size = frameSize();

@@ -655,6 +655,26 @@ void TestFemEngine::selectionRules()
     QVERIFY(why.contains(QStringLiteral("nothing")));
     pick(Level::Domain, R"({"numbers": [7]})");
     QVERIFY(why.contains(QStringLiteral("7")));
+    // A second rule in one selection: the first that fits is read and the
+    // others were dropped without a word - {"all": true, "of": [...]}
+    // picked everything, not the object's boundaries (MCP wishlist N2).
+    QVERIFY(pick(Level::Boundary, R"({"all": true, "of": ["trace"]})").size() > 4);   // all of them, not the trace's 4
+    QVERIFY2(why.contains(QStringLiteral("all was read")) && why.contains(QStringLiteral("of")), qPrintable(why));
+    // (The first rule that fits, in the order the answer names: 'numbers'
+    // before 'of'.)
+    QCOMPARE(pick(Level::Boundary, R"({"of": ["trace"], "numbers": [1]})").size(), 1);
+    QVERIFY2(why.contains(QStringLiteral("numbers was read")) && why.contains(QStringLiteral("of")), qPrintable(why));
+    // 'side' goes with 'of' alone; given with another rule it is left out.
+    QCOMPARE(pick(Level::Boundary, R"({"numbers": [1], "side": "top"})").size(), 1);
+    QVERIFY2(why.contains(QStringLiteral("side")), qPrintable(why));
+    // What goes together is not complained of: 'of' with a side, 'except'
+    // with any of them, and 'all' false beside a rule that is read.
+    QVERIFY(pick(Level::Boundary, R"({"of": ["trace"], "side": "top"})").size() == 1);
+    QVERIFY2(why.isEmpty(), qPrintable(why));
+    QVERIFY(pick(Level::Boundary, R"({"of": ["trace"], "except": {"of": ["trace"], "side": "bottom"}})").size() == 3);
+    QVERIFY2(why.isEmpty(), qPrintable(why));
+    QVERIFY(pick(Level::Boundary, R"({"all": false, "of": ["trace"]})").size() == 4);
+    QVERIFY2(why.isEmpty(), qPrintable(why));
     QCOMPARE(describeSelection(QJsonObject{{QStringLiteral("of"), QJsonArray{QStringLiteral("trace")}}, {QStringLiteral("side"), QStringLiteral("top")}},
                                Level::Boundary),
              QStringLiteral("the boundaries of trace (top)"));

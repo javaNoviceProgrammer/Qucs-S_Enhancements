@@ -37,6 +37,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QMenu>
 #include <QMenuBar>
 #include <QStatusBar>
@@ -1188,7 +1189,7 @@ void QucsApp::slotPythonEditBreakpoint()
   if (PythonDoc *py = currentPythonDoc()) py->editBreakpoint(py->textCursor().blockNumber() + 1, 0);
 }
 
-QString QucsApp::showPythonDisplay(const QJsonObject &request, QStringList *removed)
+QString QucsApp::showPythonDisplay(const QJsonObject &request, QStringList *removed, QStringList *kept)
 {
   const QString display = QFileInfo(request.value(QStringLiteral("display")).toString()).absoluteFilePath();
   const QString dataset = request.value(QStringLiteral("dataset")).toString();
@@ -1268,13 +1269,34 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request, QStringList *remo
                           [](const QJsonObject &) {});
   }
   if (same != nullptr) {
-    if (own && (same->yAxis.Label != yLabel || same->xAxis.Label != xLabel)) {
-      same->yAxis.Label = yLabel;
-      same->xAxis.Label = xLabel;
+    // Its labels as asked - but words of the user's own are not written
+    // over: a unit changed ("I (mA)" for "I (A)") is the same label of
+    // another unit, while "Anode current" is theirs and stays (MCP
+    // wishlist N5: shown again, the plot group's display lost its
+    // styling). What is kept is said by the plot group's own words
+    // standing beside what is drawn.
+    const auto stem = [](const QString &label) {
+      static const QRegularExpression unit(QStringLiteral("\\s*\\([^()]*\\)"));
+      return QString(label).remove(unit).simplified();
+    };
+    const auto ours = [&stem](const QString &now, const QString &asked) {
+      return now.isEmpty() || stem(now) == stem(asked);
+    };
+    QStringList theirs;
+    if (own) {
+      if (same->yAxis.Label != yLabel) {
+        if (ours(same->yAxis.Label, yLabel)) same->yAxis.Label = yLabel;
+        else theirs << tr("the y axis' label “%1”").arg(same->yAxis.Label);
+      }
+      if (same->xAxis.Label != xLabel) {
+        if (ours(same->xAxis.Label, xLabel)) same->xAxis.Label = xLabel;
+        else theirs << tr("the x axis' label “%1”").arg(same->xAxis.Label);
+      }
       same->updateGraphData();
       shown->setChanged(true, true);
       shown->viewport()->update();
     }
+    if (kept != nullptr) *kept = theirs;
     return {};
   }
   if (a_control == nullptr || traces.isEmpty()) return {};

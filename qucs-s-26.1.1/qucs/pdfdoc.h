@@ -111,6 +111,11 @@ public:
 
     bool hasSelection() const { return !a_selectionText.isEmpty(); }
     QString selectedText() const { return a_selectionText; }
+    /// The page the selection is on (from 0); -1 without one.
+    int selectionPage() const { return hasSelection() ? a_selectionPage : -1; }
+    /// Where the selection is on that page, line by line (points from its
+    /// top left) - what read_pdf's 'region' takes.
+    const QList<QPolygonF>& selectionBounds() const { return a_selectionBounds; }
     /// Selects the text of the page between \a from and \a to (points);
     /// false when there is none there.
     bool selectText(int page, QPointF from, QPointF to);

@@ -1635,6 +1635,58 @@ double Expression::Table::at(double v) const
     return y[i - 1] + t * (y[i] - y[i - 1]);
 }
 
+// What a quantity of a unit is worth, at the very outside: a bare number
+// read in SI far beyond it was meant in another unit. A dlinewidth of
+// "2e-10" (energy per field, C\u00b7m) was 1.2 GeV per V/m, and the gain of
+// a well with it took all the memory there was; "6.6e-3" for a broadening
+// is 41 PeV, not 6.6 meV. The bounds are generous - several orders past
+// anything a device has - so that only a number no one means is refused,
+// and only for the units whose scale is not in doubt (a density's or a
+// dose's SI value spans everything from the intrinsic carriers to a
+// metal, and a bare number for one cannot be judged). MCP wishlist N1.
+struct Scaled {
+    Dim dim;
+    double least, most;
+    const char* what;
+    const char* instead;   ///< how to write it with a unit
+};
+
+const std::vector<Scaled>& scales()
+{
+    static const std::vector<Scaled> table{
+        {Dim::of(2, 1, -2), 1e-26, 1e-12, "an energy", "1.7[eV]"},
+        {Dim::of(1, 0, 1, 1), 1e-35, 1e-22, "an energy per field (a dipole moment)", "1[meV]/(1e7[V/m])"},
+        {Dim::of(2, 1, -3, -1), 1e-15, 1e9, "a voltage", "3.3[V]"},
+        {Dim::of(1, 1, -3, -1), 1e-9, 1e15, "a field", "1e7[V/m]"},
+        {Dim::of(0, 0, 0, 1), 1e-21, 1e9, "a current", "10[mA]"},
+        {Dim::of(2, 1, -3), 1e-21, 1e12, "a power", "10[mW]"},
+        {Dim::of(0, 0, 0, 0, 1), 1e-3, 1e9, "a temperature", "300[K]"},
+        {Dim::of(0, 0, 1), 1e-21, 1e15, "a time", "1[ps]"},
+        {Dim::of(0, 1), 1e-33, 1e9, "a mass", "0.067*m0"},
+        {Dim::of(-2, -1, 4, 2), 1e-21, 1e3, "a capacitance", "1[pF]"},
+        {Dim::of(2, 1, -3, -2), 1e-12, 1e18, "a resistance", "50[ohm]"},
+        {Dim::of(-3, -1, 3, 2), 1e-24, 1e12, "a conductivity", "5.8e7[S/m]"},
+        {Dim::of(1, 1, -3, 0, -1), 1e-9, 1e9, "a thermal conductivity", "150[W/(m*K)]"},
+    };
+    return table;
+}
+
+// Why \a si, read in SI from a number with no unit of its own, is not a
+// value of \a expected that anyone means; empty when it may be.
+QString outsideItsScale(double si, const Dim& expected)
+{
+    if (si == 0 || expected.isNone()) return {};
+    for (const Scaled& s : scales()) {
+        if (!(s.dim == expected)) continue;
+        if (std::abs(si) >= s.least && std::abs(si) <= s.most) return {};
+        return tr("it has no unit, so it is read in SI - %1 -, which is not %2 anyone means (%3 to %4): write its unit in "
+                  "brackets, as %5, or give the number in SI")
+            .arg(formatQuantity(si, expected), tr(s.what), formatQuantity(s.least, expected), formatQuantity(s.most, expected),
+                 QString::fromLatin1(s.instead));
+    }
+    return {};
+}
+
 std::optional<double> evaluateConstant(const QString& text, const Scope& scope, const Dim& expected, QString* error,
                                        QString* warning)
 {
@@ -1655,6 +1707,14 @@ std::optional<double> evaluateConstant(const QString& text, const Scope& scope, 
         if (error) *error = tr("it is %1, not a finite number").arg(formatNumber(e.constant()));
         return std::nullopt;
     }
+    // A number with no unit of its own, read in SI far outside what the
+    // unit expected ever is: refused, where it was taken and solved with
+    // (MCP wishlist N1).
+    if (e.dim().isNone())
+        if (const QString why = outsideItsScale(e.constant(), expected); !why.isEmpty()) {
+            if (error) *error = why;
+            return std::nullopt;
+        }
     QStringList said = e.warnings();
     if (!e.dim().isNone() && !(e.dim() == expected))
         said << tr("its unit is %1, where %2 is expected").arg(dimName(e.dim()), dimName(expected));

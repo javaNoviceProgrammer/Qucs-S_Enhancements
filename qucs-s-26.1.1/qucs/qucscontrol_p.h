@@ -55,10 +55,24 @@ QJsonObject textResult(const QString& text, bool error = false);
 QJsonObject jsonResult(const QJsonValue& value, bool indented = false);
 QJsonObject errorResult(const QString& text);
 bool sameFile(const QString& a, const QString& b);
-/// A picture as a tool's content: a PNG, base64.
-QJsonObject pngContent(const QImage& image);
-/// Not wider than a picture to look at needs to be (1800 pixels).
-QImage fitted(const QImage& image);
+/// How a picture is sent: smaller, in grey, as a JPEG - what a reader of
+/// it asked for (screenshot's 'max_width', 'scale', 'gray', 'format';
+/// MCP wishlist N13: a Retina window's shot came back 2782 x 2372, larger
+/// than it could be used).
+struct PictureAsked {
+    int longest = 1500;    ///< the longer side at most this many pixels
+    double scale = 1;      ///< the natural size times this, before 'longest'
+    bool gray = false;
+    bool jpeg = false;
+    /// How it was asked for, by 'max_width', 'scale', 'gray' and 'format'
+    /// of \a args; empty, the defaults. Why in \a error (none: as asked).
+    static PictureAsked of(const QJsonObject& args, QString* error);
+};
+/// A picture as a tool's content: a PNG (or a JPEG), base64.
+QJsonObject pngContent(const QImage& image, const PictureAsked& asked = {});
+/// \a image as \a asked wants it: no longer than its longest side, in
+/// grey where that is asked (a picture to look at needs no more).
+QImage fitted(const QImage& image, const PictureAsked& asked = {});
 /// Whether \a file is a document of Qucs-S (a schematic, symbol, data
 /// display or dataset - its first line <Qucs ...>, or its suffix says so),
 /// or Verilog-A or VHDL code: what a netlist or a picture must not replace.

@@ -2017,8 +2017,18 @@ QString Diagram::save() {
     // Then its title, and the colours chosen for its parts (older versions
     // read the title, and no more).
     const QString colors = a_theme.toString();
-    if (!title.isEmpty() || !colors.isEmpty()) s += " \"" + title + "\"";
-    if (!colors.isEmpty()) s += " \"" + colors + "\"";
+    // An axis that writes its numbers in its own notation: a field of its
+    // own after the colours, which versions before it do not read (MCP
+    // wishlist N4). Written only when there is one.
+    QStringList own;
+    for (const auto& [key, axis] : {std::pair<const char*, const Axis*>{"x", &xAxis}, {"y", &yAxis}, {"y2", &zAxis}}) {
+        if (axis->notation >= 0) own << QLatin1String(key) + QStringLiteral("n=") + QString::number(axis->notation);
+        if (axis->decimals >= -1) own << QLatin1String(key) + QStringLiteral("d=") + QString::number(axis->decimals);
+    }
+    const QString options = own.join(QLatin1Char(' '));
+    if (!title.isEmpty() || !colors.isEmpty() || !options.isEmpty()) s += " \"" + title + "\"";
+    if (!colors.isEmpty() || !options.isEmpty()) s += " \"" + colors + "\"";
+    if (!options.isEmpty()) s += " \"" + options + "\"";
     s += ">\n";
 
     for (Graph *pg: Graphs)
@@ -2182,6 +2192,18 @@ bool Diagram::load(const QString &Line, QTextStream *stream) {
     Theme read = Theme::fromString(s.section('"', 9, 9));
     read.choose(Part::Grid, GridPen.color() == qucs_s::diagramtheme::defaultGridColor() ? QColor() : GridPen.color());
     setTheme(read);
+    // An axis' own notation and decimals (none in older files): "xn=1 yd=2".
+    for (const QString& item : s.section('"', 11, 11).split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+        const QString key = item.section(QLatin1Char('='), 0, 0);
+        bool read = false;
+        const int value = item.section(QLatin1Char('='), 1).toInt(&read);
+        if (!read) continue;
+        Axis* axis = key.startsWith(QLatin1String("y2")) ? &zAxis : key.startsWith(QLatin1Char('y')) ? &yAxis
+                   : key.startsWith(QLatin1Char('x'))   ? &xAxis : nullptr;
+        if (axis == nullptr) continue;
+        if (key.endsWith(QLatin1Char('n'))) axis->notation = value >= 0 && value == int(qucs_s::numberformat::fromInt(value)) ? value : -1;
+        else if (key.endsWith(QLatin1Char('d'))) axis->decimals = value >= -1 && value <= 15 ? value : -2;
+    }
 
     Graph *pg;
     // .......................................................

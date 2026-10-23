@@ -18,6 +18,7 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QList>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 
@@ -81,6 +82,10 @@ struct Data {
     QStringList sheets;    ///< a workbook's sheets
     QString x;             ///< the variable that is x ("row" for the row)
     QStringList notes;     ///< what was left out, and why
+    /// The columns whose name in the file is not the name they are read
+    /// under (safeName(), or a number after a name taken twice): the
+    /// file's name, each to the name used. Told, not left silent.
+    QMap<QString, QString> renamed;
 };
 /// Reads \a path as \a options say; false and why in \a error when it
 /// holds nothing that reads (no numbers, a format not known).

@@ -1601,6 +1601,102 @@ QJsonObject QucsControl::femSolved(MultiphysicsDoc* doc, const QJsonObject& args
     return jsonResult(result);
 }
 
+namespace {
+
+// The reference numbers a call is measured against (MCP wishlist N8:
+// every benchmark needed a script of its own): a number (the one value's),
+// an object of name to number, or a table file - its rows a name and a
+// number, apart by a comma, a semicolon, a tab or spaces, with comment
+// lines (# ! % //) and a header left out. False and why in \a error.
+bool referenceNumbers(const QJsonValue& given, const QString& beside, QJsonObject* into, QString* error)
+{
+    if (given.isDouble()) {
+        into->insert(QString(), given.toDouble());
+        return true;
+    }
+    if (given.isObject()) {
+        const QJsonObject o = given.toObject();
+        for (auto it = o.begin(); it != o.end(); ++it) {
+            if (!it.value().isDouble()) {
+                *error = QucsControl::tr("'reference': %1 is not a number (each name's value is one).").arg(it.key());
+                return false;
+            }
+            into->insert(it.key(), it.value().toDouble());
+        }
+        if (into->isEmpty()) *error = QucsControl::tr("'reference' is empty: a number, {name: number}, or a table's file.");
+        return !into->isEmpty();
+    }
+    const QString name = given.toString().trimmed();
+    if (name.isEmpty()) {
+        *error = QucsControl::tr("'reference' is a number (the one value's), {name: number}, or the file of a table of names and "
+                                 "numbers.");
+        return false;
+    }
+    const QString file = QFileInfo(name).isAbsolute() ? name : QDir(beside).absoluteFilePath(name);
+    QFile f(QFileInfo(file).isFile() ? file : absolute(name));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        *error = QucsControl::tr("'reference': %1 could not be read (%2).").arg(QDir::toNativeSeparators(file), f.errorString());
+        return false;
+    }
+    const QStringList lines = QString::fromUtf8(f.read(4 << 20)).split(QLatin1Char('\n'));
+    static const QRegularExpression between(QStringLiteral("[,;\\t]|\\s{1,}"));
+    for (const QString& line : lines) {
+        const QString row = line.trimmed();
+        if (row.isEmpty() || row.startsWith(QLatin1Char('#')) || row.startsWith(QLatin1Char('!')) || row.startsWith(QLatin1Char('%'))
+            || row.startsWith(QLatin1String("//")))
+            continue;
+        const QStringList cells = row.split(between, Qt::SkipEmptyParts);
+        if (cells.size() < 2) continue;
+        bool number = false;
+        const double value = cells.at(1).toDouble(&number);
+        // (A header - "name,value" - and a row of words: left out.)
+        if (!number) continue;
+        into->insert(cells.at(0), value);
+    }
+    if (into->isEmpty()) {
+        *error = QucsControl::tr("'reference': %1 holds no row of a name and a number.").arg(QDir::toNativeSeparators(file));
+        return false;
+    }
+    return true;
+}
+
+// \a values measured against \a reference: each one's reference, the
+// difference and the difference in per cent; the largest in \a worst with
+// its name in \a worstName, and how many were matched.
+QJsonArray valuesAgainst(const QJsonArray& values, const QJsonObject& reference, const QString& expression, double* worst,
+                         QString* worstName, int* matched)
+{
+    QJsonArray out;
+    for (const QJsonValue& v : values) {
+        QJsonObject one = v.toObject();
+        const QString name = one.contains(QLatin1String("name")) ? one.value(QLatin1String("name")).toString() : expression;
+        // (One number for one value: whatever it is named.)
+        QJsonValue want = reference.value(name);
+        if (want.isUndefined() && reference.size() == 1 && values.size() == 1) want = reference.constBegin().value();
+        if (!want.isDouble() || !one.contains(QLatin1String("SI"))) {
+            out.append(one);
+            continue;
+        }
+        const double is = one.value(QLatin1String("SI")).toDouble(), should = want.toDouble();
+        const double by = is - should;
+        one.insert(QStringLiteral("reference"), should);
+        one.insert(QStringLiteral("difference"), by);
+        if (should != 0) {
+            const double relative = std::abs(by / should);
+            one.insert(QStringLiteral("difference %"), std::round(by / should * 1e6) / 1e4);
+            if (relative > *worst) {
+                *worst = relative;
+                *worstName = name;
+            }
+        }
+        ++*matched;
+        out.append(one);
+    }
+    return out;
+}
+
+} // namespace
+
 QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
 {
     QString error;
@@ -1873,7 +1969,212 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
     found.errors.removeDuplicates();
     if (!found.errors.isEmpty()) o.insert(QStringLiteral("error"), found.errors.join(QLatin1String("; ")));
     if (found.values.isEmpty()) return errorResult(found.errors.join(QLatin1String("; ")));
+    // Measured against reference numbers, where some are given: each
+    // value's reference, the difference and the difference in per cent
+    // (MCP wishlist N8).
+    if (args.contains(QLatin1String("reference"))) {
+        QJsonObject want;
+        QString why;
+        const QString beside = doc->getDocName().isEmpty() ? QucsSettings.QucsWorkDir.absolutePath()
+                                                           : QFileInfo(doc->getDocName()).absolutePath();
+        if (!referenceNumbers(args.value(QLatin1String("reference")), beside, &want, &why)) return errorResult(why);
+        double worst = 0;
+        QString worstName;
+        int matched = 0;
+        o.insert(QStringLiteral("values"), valuesAgainst(found.values, want, expression, &worst, &worstName, &matched));
+        QJsonObject against{{QStringLiteral("references"), want.size()}, {QStringLiteral("values measured"), matched}};
+        if (matched == 0)
+            against.insert(QStringLiteral("none matched"),
+                           tr("No value's name is among the references (%1): a value is named by 'name = expression', a Derived "
+                              "Values node names its own, and one number alone is taken for one value whatever it is named.")
+                               .arg(QStringList(want.keys()).join(QStringLiteral(", "))));
+        else if (!worstName.isEmpty())
+            against.insert(QStringLiteral("largest difference"),
+                           tr("%1, %2 % of its reference").arg(worstName).arg(worst * 100, 0, 'g', 4));
+        o.insert(QStringLiteral("against the reference"), against);
+    }
     return jsonResult(o);
+}
+
+// Mesh convergence in one call: the study solved at the mesh as it is and
+// at finer ones, and how far the values watched moved between them (MCP
+// wishlist N7 - the VCSEL threshold, the laser currents and the a_box wall
+// error each needed a hand-written loop). The mesh node is put back as it
+// was, whatever happens.
+void QucsControl::femConverge(const QJsonObject& args, const Done& done)
+{
+    QString error;
+    MultiphysicsDoc* doc = femDocument(args, &error);
+    if (doc == nullptr) return done(errorResult(error));
+    QStringList watched;
+    for (const QJsonValue& v : args.value(QLatin1String("values")).toArray())
+        if (const QString e = v.toString().trimmed(); !e.isEmpty()) watched << e;
+    if (watched.isEmpty())
+        return done(errorResult(tr("'values' are what is watched, as fem_evaluate takes them (es.C11, emw.neff, ec.R, a Derived "
+                                   "Values node's lp1.Z0): give at least one.")));
+    if (watched.size() > 20) return done(errorResult(tr("'values': 20 at most (%1 given).").arg(watched.size())));
+    // The element size divided by each: 2 (one finer mesh) unless given.
+    QList<double> finer;
+    const QJsonArray asked = args.value(QLatin1String("refine")).toArray();
+    for (const QJsonValue& v : asked) {
+        const double f = v.toDouble(0);
+        if (!(f > 1 && f <= 100))
+            return done(errorResult(tr("'refine' are the factors the element size is divided by, each above 1 and at most 100 "
+                                       "([2], [2, 4]).")));
+        finer << f;
+    }
+    if (finer.isEmpty()) finer << 2.0;
+    if (finer.size() > 5) return done(errorResult(tr("'refine': 5 meshes at most (%1 given).").arg(finer.size())));
+    const double tolerance = args.contains(QLatin1String("tolerance")) ? args.value(QLatin1String("tolerance")).toDouble(-1) : 0.01;
+    if (!(tolerance > 0 && tolerance < 1))
+        return done(errorResult(tr("'tolerance' is the relative change that counts as converged, above 0 and below 1 (0.01 is 1 %).")));
+    // The mesh as it is: its largest element, whatever says it (the preset,
+    // or 'hmax' where it is customized), in the geometry's unit.
+    const GeometryBuild& built = doc->geometry();
+    if (!built.topology)
+        return done(errorResult(tr("%1 has no geometry yet: fem_build builds it (and says what stopped it).").arg(titleOf(doc))));
+    QString why;
+    const qucs_s::fem::MeshSizes sizes = qucs_s::fem::meshSizes(doc->model(), *doc->parameters(), *built.topology, &why);
+    if (!(sizes.hmax > 0))
+        return done(errorResult(tr("The mesh's element size could not be read: %1").arg(why.isEmpty() ? tr("it is not a number") : why)));
+
+    // Each mesh in turn: set, solved, the values read; the mesh node put
+    // back at the end.
+    struct Run {
+        QucsControl* control;
+        QPointer<MultiphysicsDoc> doc;
+        QString study;
+        QStringList watched;
+        QList<double> finer;      // the factors, the first mesh as it is
+        double h0 = 0;            // the largest element now (geometry's unit)
+        double tolerance = 0.01;
+        int timeout = 600;
+        QJsonObject meshProps;    // the mesh node's, as it was
+        bool changed = false;     // whether the model was changed by us
+        bool wasChanged = false;  // whether the model had unsaved changes before
+        QJsonArray steps;
+        Done done;
+    };
+    const auto run = std::make_shared<Run>();
+    run->control = this;
+    run->doc = doc;
+    run->study = args.value(QLatin1String("study")).toString();
+    run->watched = watched;
+    run->finer = finer;
+    run->h0 = sizes.hmax;
+    run->tolerance = tolerance;
+    run->timeout = waitsFor(QStringLiteral("fem_solve"), args);
+    if (const Node* mesh = doc->model().find(doc->model().mesh().tag)) run->meshProps = mesh->props;
+    run->wasChanged = doc->getDocChanged();
+    run->done = done;
+
+    // The mesh node put back as it was, and the answer given.
+    const auto finish = std::make_shared<std::function<void(const QJsonObject&)>>([run](const QJsonObject& answer) {
+        if (run->doc && run->changed) {
+            Model m = run->doc->model();
+            if (Node* mesh = m.find(m.mesh().tag)) mesh->props = run->meshProps;
+            run->doc->setModel(m, tr("Mesh as it was"));
+            // (The model holds what it held: as unsaved as it was before.)
+            run->doc->setDocChanged(run->wasChanged);
+        }
+        run->done(answer);
+    });
+    // One step: mesh i (0: as it is), solved, the values read, then i + 1.
+    const auto step = std::make_shared<std::function<void(int)>>();
+    *step = [run, step, finish](int i) {
+        if (!run->doc) return (*finish)(errorResult(tr("The model was closed.")));
+        MultiphysicsDoc* d = run->doc;
+        const double factor = i == 0 ? 1.0 : run->finer.at(i - 1);
+        const double h = run->h0 / factor;
+        if (i > 0) {
+            // Customized to that size: the preset's other sizes stay as the
+            // preset has them (one knob moved, not the mesh made anew).
+            Model m = d->model();
+            Node* mesh = m.find(m.mesh().tag);
+            if (mesh == nullptr) return (*finish)(errorResult(tr("The model has no mesh node.")));
+            mesh->props = run->meshProps;
+            mesh->props.insert(QStringLiteral("custom"), true);
+            mesh->props.insert(QStringLiteral("hmax"), formatNumber(h, 6));
+            run->changed = true;
+            d->setModel(m, tr("Mesh refined %1 times").arg(formatNumber(factor, 4)));
+        }
+        QJsonObject solve{{QStringLiteral("path"), d->getDocName()}, {QStringLiteral("timeout"), run->timeout}};
+        if (!run->study.isEmpty()) solve.insert(QStringLiteral("study"), run->study);
+        run->control->callTool(QStringLiteral("fem_solve"), solve, [run, step, finish, i, h, factor](const QJsonObject& solved) {
+            if (!run->doc) return (*finish)(errorResult(tr("The model was closed.")));
+            const QJsonObject report = QJsonDocument::fromJson(textOf(solved).toUtf8()).object();
+            if (solved.value(QLatin1String("isError")).toBool())
+                return (*finish)(errorResult(tr("At the %1 mesh (largest element %2): %3")
+                                                 .arg(i == 0 ? tr("mesh as it is") : tr("mesh %1 times finer").arg(formatNumber(factor, 4)),
+                                                      formatNumber(h, 6), textOf(solved))));
+            QJsonObject at{{QStringLiteral("mesh"), i == 0 ? tr("as it is") : tr("%1 times finer").arg(formatNumber(factor, 4))},
+                           {QStringLiteral("largest element"), formatNumber(h, 6)},
+                           {QStringLiteral("triangles"), report.value(QLatin1String("triangles"))},
+                           {QStringLiteral("unknowns"), report.value(QLatin1String("unknowns"))},
+                           {QStringLiteral("seconds"), report.value(QLatin1String("seconds"))}};
+            QJsonObject values;
+            for (const QString& expression : run->watched) {
+                QJsonObject ask{{QStringLiteral("path"), run->doc->getDocName()}, {QStringLiteral("expression"), expression}};
+                if (!run->study.isEmpty()) ask.insert(QStringLiteral("study"), run->study);
+                const QJsonObject answer = run->control->femEvaluate(ask);
+                if (answer.value(QLatin1String("isError")).toBool()) {
+                    values.insert(expression, QJsonObject{{QStringLiteral("error"), textOf(answer)}});
+                    continue;
+                }
+                const QJsonArray got = QJsonDocument::fromJson(textOf(answer).toUtf8()).object().value(QLatin1String("values")).toArray();
+                for (const QJsonValue& v : got) {
+                    const QJsonObject one = v.toObject();
+                    const QString name = got.size() == 1 ? expression
+                                                         : expression + QLatin1Char(' ') + one.value(QLatin1String("name")).toString();
+                    values.insert(name, QJsonObject{{QStringLiteral("value"), one.value(QLatin1String("value"))},
+                                                    {QStringLiteral("SI"), one.value(QLatin1String("SI"))}});
+                }
+            }
+            at.insert(QStringLiteral("values"), values);
+            run->steps.append(at);
+            if (i + 1 <= run->finer.size()) return (*step)(i + 1);
+            // Done: how far each value moved from one mesh to the next.
+            QJsonObject moved;
+            QStringList notConverged;
+            double worst = 0;
+            const QJsonObject last = run->steps.last().toObject().value(QLatin1String("values")).toObject();
+            const QJsonObject before = run->steps.at(run->steps.size() - 2).toObject().value(QLatin1String("values")).toObject();
+            for (auto it = last.begin(); it != last.end(); ++it) {
+                if (!it.value().toObject().contains(QLatin1String("SI")) || !before.value(it.key()).toObject().contains(QLatin1String("SI")))
+                    continue;
+                const double now = it.value().toObject().value(QLatin1String("SI")).toDouble();
+                const double was = before.value(it.key()).toObject().value(QLatin1String("SI")).toDouble();
+                const double by = now - was;
+                const double relative = was == 0 ? (now == 0 ? 0 : qInf()) : std::abs(by / was);
+                QJsonObject m{{QStringLiteral("at the finest"), now}, {QStringLiteral("at the mesh before"), was},
+                              {QStringLiteral("changed by"), by}};
+                if (std::isfinite(relative)) m.insert(QStringLiteral("changed by %"), std::round(relative * 1e6) / 1e4);
+                m.insert(QStringLiteral("converged"), std::isfinite(relative) && relative <= run->tolerance);
+                moved.insert(it.key(), m);
+                if (std::isfinite(relative)) worst = std::max(worst, relative);
+                if (!(std::isfinite(relative) && relative <= run->tolerance)) notConverged << it.key();
+            }
+            QJsonObject answer{{QStringLiteral("study"), run->study.isEmpty() ? tr("the first") : run->study},
+                               {QStringLiteral("meshes"), run->steps},
+                               {QStringLiteral("between the last two meshes"), moved},
+                               {QStringLiteral("tolerance"), run->tolerance},
+                               {QStringLiteral("converged"), notConverged.isEmpty()}};
+            if (!notConverged.isEmpty())
+                answer.insert(QStringLiteral("not converged"),
+                              tr("%1 moved more than %2 % between the last two meshes (the largest move %3 %): refine further "
+                                 "('refine' with a larger factor) to see where it settles.")
+                                  .arg(notConverged.join(QStringLiteral(", "))).arg(run->tolerance * 100, 0, 'g', 3)
+                                  .arg(worst * 100, 0, 'g', 3));
+            answer.insert(QStringLiteral("mesh"),
+                          tr("The mesh node holds what it held before this call (and the model is as unsaved as it was); each finer "
+                             "mesh was its element size divided by the factor, the preset's other sizes kept. The %1 steps it took "
+                             "are in Edit > Undo. The solution kept is the finest mesh's, so the model counts as changed since it "
+                             "was solved: fem_solve solves the mesh as it is again.")
+                              .arg(run->finer.size() + 1));
+            (*finish)(jsonResult(answer));
+        });
+    };
+    (*step)(0);
 }
 
 QJsonObject QucsControl::femPlot(const QJsonObject& args)
@@ -2029,8 +2330,8 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
     QString why;
     if (const FNode* g = doc->model().find(group); g && g->type == QLatin1String("plotgroup1d")) {
         // Graphs: a dataset and its data display.
-        QStringList removed;
-        const QString display = doc->showGraphs(group, &why, true, &removed);
+        QStringList removed, kept;
+        const QString display = doc->showGraphs(group, &why, true, &removed, &kept);
         if (display.isEmpty()) return errorResult(why);
         QJsonObject o{{QStringLiteral("plot group"), group},
                       {QStringLiteral("display"), QDir::toNativeSeparators(display)},
@@ -2038,6 +2339,11 @@ QJsonObject QucsControl::femPlot(const QJsonObject& args)
                       {QStringLiteral("see it"), tr("the data display is in front: screenshot takes a picture; get_dataset reads it")}};
         // (Its display's diagrams of an older group of this tag: gone, said.)
         if (!removed.isEmpty()) o.insert(QStringLiteral("removed from its display"), QJsonArray::fromStringList(removed));
+        // The diagram was there: what of it is the user's and was left
+        // alone (MCP wishlist N5). Its ranges, colours and paintings stay
+        // in any case - the diagram is shown again, not made anew.
+        if (!kept.isEmpty())
+            o.insert(QStringLiteral("kept as the user set it"), QJsonArray::fromStringList(kept));
         return jsonResult(o);
     }
     if (!doc->showPlotGroup(group, &why)) return errorResult(why);

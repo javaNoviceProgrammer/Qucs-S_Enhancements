@@ -32,6 +32,9 @@
 #include "paintings/painting.h"
 
 #include <QDir>
+#include <QElapsedTimer>
+
+#include <chrono>
 #include <QFile>
 #include <QPointer>
 #include <QSet>
@@ -548,6 +551,57 @@ void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarde
     }
 }
 
+QJsonObject QucsControl::guardsState() const
+{
+    const quint64 caller = a_callers.isEmpty() ? 0 : a_callers.last();
+    const bool asked = caller == 0 || a_asking.contains(caller);
+    QStringList what;
+    what << (a_guards.commands
+                 ? tr("commands: on - the user is asked before a simulation that runs commands besides the simulator (a System "
+                      "Command part, ngspice's shell, an Octave or Python script after a run)")
+                 : tr("commands: off - such a simulation runs without a question"));
+    what << (a_guards.outside ? tr("files outside the workspace: on - the user is asked before a file outside the workspace and the "
+                                   "open project is read or written, the file named")
+                              : tr("files outside the workspace: off - such a file is read and written without a question"));
+    if (!asked)
+        what << tr("this conversation is not asked at all (its session runs with permissions bypassed): nothing above is put to the "
+                   "user");
+    return QJsonObject{{QStringLiteral("commands"), a_guards.commands},
+                       {QStringLiteral("files outside the workspace"), a_guards.outside},
+                       {QStringLiteral("this conversation is asked"), asked},
+                       {QStringLiteral("what they watch"), what.join(QStringLiteral("; "))},
+                       {QStringLiteral("note"),
+                        tr("The user sets these in the Claude panel's Permissions menu. describe_tool with 'arguments' says what "
+                           "they name for one call, before it is made.")}};
+}
+
+QJsonObject QucsControl::callGuarded(const QString& tool, const QJsonObject& arguments) const
+{
+    QJsonObject o;
+    if (const QString always = askedEachTime(tool, arguments); !always.isEmpty()) {
+        o.insert(QStringLiteral("treated as"), tr("asked about each time"));
+        o.insert(QStringLiteral("why"), always);
+    } else if (irreversible(tool, arguments)) {
+        o.insert(QStringLiteral("treated as"), tr("asked about, unless Claude acts on its own"));
+        o.insert(QStringLiteral("why"), tr("It cannot be undone: files are deleted or written over, or unsaved changes discarded. "
+                                           "In auto mode it is let through."));
+    } else if (readOnlyTools().contains(tool)) {
+        o.insert(QStringLiteral("treated as"), tr("let through"));
+        o.insert(QStringLiteral("why"), tr("It only looks: the guards name nothing in it."));
+    } else {
+        o.insert(QStringLiteral("treated as"), tr("let through once the tools are allowed"));
+        o.insert(QStringLiteral("why"), tr("It changes something, and the guards name nothing in it: asked once for the tool (or "
+                                           "let through where edits are allowed - acceptEdits, auto)."));
+    }
+    // Inside a call that runs alone (a batch, a script, tune): what was not
+    // asked about when that call began is refused outright. (Not this
+    // call's own guard, which is describe_tool's and names nothing.)
+    if (a_callGuard.kept)
+        if (const QString within = unaskedWithin(tool, arguments); !within.isEmpty())
+            o.insert(QStringLiteral("refused here"), within);
+    return o;
+}
+
 QString QucsControl::guardedSaid(const Guarded& g) const
 {
     QStringList said;
@@ -663,6 +717,13 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
     return false;
 }
 
+qint64 QucsControl::monotonicMs()
+{
+    static const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    // (From 1, never 0: 0 is "no wait under way" to the readers.)
+    return 1 + std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+}
+
 void QucsControl::setAsker(quint64 caller, Asker asker)
 {
     if (asker) a_askers.insert(caller, std::move(asker));
@@ -683,9 +744,18 @@ QJsonObject QucsControl::askUser(const QString& message, const QJsonObject& sche
         loop.quit();
     });
     if (!answered) {
+        // The user's time, told apart from the call's own: a script's clock
+        // does not count it (MCP wishlist N10 - a script that waited on a
+        // card was "stopped after 60 s"). When it began is published while
+        // it waits, so that the script's watchdog - another thread - sees
+        // the wait as it goes and not only once it is over; a card asked
+        // for within one is inside its time already.
+        if (a_askedUserDepth++ == 0) a_askedUserSince.store(monotonicMs());
         ++a_spinning;
         loop.exec();
         --a_spinning;
+        if (--a_askedUserDepth == 0)
+            if (const qint64 since = a_askedUserSince.exchange(0); since > 0) a_askedUserMs += monotonicMs() - since;
     }
     return answer;
 }

@@ -22,6 +22,8 @@
 #include <QPoint>
 #include <QPointer>
 
+#include <algorithm>
+#include <atomic>
 #include <functional>
 #include <list>
 #include <memory>
@@ -119,6 +121,10 @@ public:
     /// Files deleted or written over, unsaved changes discarded.
     bool irreversible(const QString& tool, const QJsonObject& arguments) const override;
     QString askedEachTime(const QString& tool, const QJsonObject& arguments) const override;
+    /// \a args with a singular read as the field \a tool takes of that
+    /// name in the plural ('name' as delete's 'names', of the one; 'step'
+    /// as undo's 'steps'); empty when there is none to read so (N11).
+    QJsonObject asPlural(const QString& tool, const QJsonObject& args) const;
     void setGuards(const qucs_s::claude::Guards& guards) override { a_guards = guards; }
     void setAsking(quint64 caller, bool asking) override;
     /// Why \a tool, called within the call under way (a batch's call, a
@@ -136,6 +142,25 @@ public:
     /// Told after the answer of the call that answers next (a run its keys
     /// set off and runRefused() refused, after the call returned).
     void noteForCall(const QString& text) { a_callNotes << text; }
+    /// An input read under another name - import_data's columns ('v-out'
+    /// as 'v_out'), a singular argument whose plural the tool takes -,
+    /// said in the answer's "renamed" (MCP wishlist N2: renamed silently).
+    void renamedForCall(const QString& from, const QString& to) const { a_renamed.insert(from, to); }
+    /// How long, in all, calls have waited for the user to answer a card
+    /// (askUser()): the user's time, not the script's - the wait under way
+    /// counted as far as it has gone, so that a watchdog of another thread
+    /// sees it while it waits and not only after.
+    qint64 askedUserMs() const
+    {
+        const qint64 since = a_askedUserSince.load();
+        return a_askedUserMs.load() + (since > 0 ? std::max<qint64>(0, monotonicMs() - since) : 0);
+    }
+    /// Milliseconds on a clock of this process (monotonic, from its first
+    /// use): a time two threads can compare.
+    static qint64 monotonicMs();
+    /// An input that had no effect, and why: the answer's "ignored" (a
+    /// second rule in one selection, a field a format has not).
+    void ignoredForCall(const QString& what, const QString& why) const { a_ignored.insert(what, why); }
     void setAsker(quint64 caller, Asker asker) override;
 
     /// The result of a call, the event loop run until it comes (for the
@@ -185,6 +210,18 @@ private:
     // What a tool did beside what was asked (a document switched from its
     // symbol to its schematic): told after its result.
     mutable QStringList a_callNotes;
+    // An input read under another name, and one that had no effect: in the
+    // answer itself (its JSON's "renamed" and "ignored"), not a note -
+    // what was asked for and what was done are told apart there.
+    mutable QJsonObject a_renamed, a_ignored;
+    // How long calls have waited for the user's answer (askUser(), a card
+    // of the Claude panel's): the user's time, which a script's own clock
+    // does not count (MCP wishlist N10). Read from the watchdog's thread.
+    std::atomic<qint64> a_askedUserMs{0};
+    // The wait under way: when it began (monotonicMs(); 0 when none), and
+    // how deep (a card asked for within one).
+    std::atomic<qint64> a_askedUserSince{0};
+    int a_askedUserDepth = 0;
     // How each conversation asks its user (its MCP server's elicitation).
     QHash<quint64, Asker> a_askers;
     // Each tool as it was written, its description in full (describe_tool).
@@ -218,6 +255,23 @@ private:
     Guarded guarded(const QString& tool, const QJsonObject& args) const;
     /// \a g as the user is asked about it.
     QString guardedSaid(const Guarded& g) const;
+    /// The guards as they stand, for get_state: which are on, what each
+    /// watches for, and whether this conversation is asked at all (MCP
+    /// wishlist N3 - the settings file had to be read to learn that).
+    QJsonObject guardsState() const;
+    /// What a picture of \a doc's window shows, in the document's own
+    /// measures: the PDF pages in view and each one's part in points, the
+    /// slides of a presentation, the lines of a text, with the zoom;
+    /// empty for a document that has none of these.
+    QString shownInView(QucsDoc* doc) const;
+    /// What the user selected in \a doc, as data: its text, where it is,
+    /// and a PDF's lines' boxes in page points; empty when nothing is
+    /// selected or the kind of document has no selection.
+    QJsonObject selectionOf(QucsDoc* doc) const;
+    /// How a call of \a tool with \a arguments would be treated before it
+    /// is made: let through, asked about (and why), or refused outright
+    /// within the call under way (describe_tool's 'arguments').
+    QJsonObject callGuarded(const QString& tool, const QJsonObject& arguments) const;
     /// The commands simulating \a sch runs (erc::commandsRun()), after its name.
     QStringList commandsNamed(Schematic* sch) const;
     /// What the window's Simulate on \a w runs besides a simulator, as
@@ -630,6 +684,9 @@ private:
     void femGeometryThen(MultiphysicsDoc* doc, const QDeadlineTimer& deadline, int timeout, bool first,
                          std::function<void(const QString& stopped)> then);
     QJsonObject femEvaluate(const QJsonObject& args);
+    /// A study solved at the mesh as it is and at finer ones, and how far
+    /// the values watched moved between them (MCP wishlist N7).
+    void femConverge(const QJsonObject& args, const Done& done);
     QJsonObject femPlot(const QJsonObject& args);
     QJsonObject femExport(const QJsonObject& args);
     /// A path a git tool names: relative, from the open project's folder,

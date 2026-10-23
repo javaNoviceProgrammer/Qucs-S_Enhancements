@@ -255,7 +255,9 @@ def main():
     problems = []
     for tool, (props, open_ended, items) in sorted(tools.items()):
         if tool == "describe_tool":
-            read = {"name"}
+            # Answered in call() itself: its 'name', and the 'arguments' a
+            # call would be made with (how the guards would treat it).
+            read = {"name", "arguments"}
         elif tool not in handlers:
             problems.append(f"{tool}: no handler found in call()")
             continue

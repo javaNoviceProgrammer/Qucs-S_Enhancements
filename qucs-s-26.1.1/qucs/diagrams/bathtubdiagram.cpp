@@ -83,6 +83,8 @@ double BathtubDiagram::floorRate() const
 qucs_s::numberformat::Notation BathtubDiagram::notationOf(const Axis* axis) const
 {
     using qucs_s::numberformat::Notation;
+    // (One the axis was given itself comes first.)
+    if (axis != nullptr && axis->notation >= 0) return qucs_s::numberformat::fromInt(axis->notation);
     if (notation != Notation::Automatic || notationDecimals >= 0) return notation;
     // (On its side, the thresholds in the signal's unit as any axis has it.)
     if (axis == &xAxis) return direction == Voltage ? Notation::Automatic : Notation::Decimal;
