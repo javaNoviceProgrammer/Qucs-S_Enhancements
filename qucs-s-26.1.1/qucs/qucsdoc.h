@@ -46,6 +46,32 @@ public:
   virtual void  zoomToSelection() {};
   virtual void  showNoZoom() {};
 
+  /// Whether the document's own code is inside a dialog of its own, and
+  /// so inside an event loop below the call that is running now. Such a
+  /// document is not freed until its own call returns: the dialog is
+  /// often a local object of that call, and freeing the document would
+  /// free what the call owns (bug hunt 2026-10-23 A6). Held by
+  /// InADialog, around every dialog a document opens.
+  bool inADialog() const { return a_inADialog > 0; }
+  /// Holds inADialog() while it lives.
+  class InADialog
+  {
+  public:
+    explicit InADialog(QucsDoc* doc) : a_doc(doc)
+    {
+      if (a_doc != nullptr) ++a_doc->a_inADialog;
+    }
+    ~InADialog()
+    {
+      if (a_doc != nullptr) --a_doc->a_inADialog;
+    }
+    InADialog(const InADialog&) = delete;
+    InADialog& operator=(const InADialog&) = delete;
+
+  private:
+    QucsDoc* a_doc;
+  };
+
   static QString fileSuffix (const QString&);
   QString fileSuffix (void);
   static QString fileBase (const QString&);
@@ -158,6 +184,7 @@ public:
   static void setEditor(quint64 who);
 
 protected:
+  int a_inADialog = 0;   ///< > 0 while a dialog of its own is open
   QString a_DocName;
   QString a_DataSet;     // name of the default dataset
   QString a_DataDisplay; // name of the default data display

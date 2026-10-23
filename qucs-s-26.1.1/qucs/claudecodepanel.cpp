@@ -10,6 +10,8 @@
  * (at your option) any later version.
  */
 #include "claudecodepanel.h"
+
+#include "svgguard.h"
 #include "claudegitbar.h"
 #include "claudehistory.h"
 
@@ -1893,6 +1895,9 @@ namespace {
 // which its PDF reader takes as its first page alone.
 bool isPicture(const QString& path)
 {
+    // (An SVG asking for more than is drawn here is none: QImageReader
+    // would read it through QtSvg, which expands its <use> references.)
+    if (qucs_s::svg::fileExpandsTooFar(path)) return false;
     QImageReader reader(path);
     return QFileInfo(path).isFile() && reader.canRead() && reader.format().toLower() != "pdf";
 }
@@ -2761,6 +2766,13 @@ void ClaudeCodePanel::renderEntry(QTextCursor& c, const Entry& e, bool& captione
             if (e.text.isEmpty()) c.setBlockFormat(bf);
             else c.insertBlock(bf);
             for (const QString& path : e.images) {
+                // (An SVG asking for more than is drawn here is not read:
+                // one a conversation of before holds, say.)
+                if (qucs_s::svg::fileExpandsTooFar(path)) {
+                    c.insertText(tr("[%1: not drawn]").arg(QFileInfo(path).fileName()), muted);
+                    c.insertText(QStringLiteral(" "), plain);
+                    continue;
+                }
                 const QSize own = QImageReader(path).size();
                 if (!QFileInfo(path).isFile() || !own.isValid()) {
                     c.insertText(tr("[%1: its file is gone]").arg(QFileInfo(path).fileName()), muted);

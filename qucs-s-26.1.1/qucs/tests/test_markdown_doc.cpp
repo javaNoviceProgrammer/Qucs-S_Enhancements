@@ -409,6 +409,54 @@ private slots:
         app.closeAllFiles();
     }
 
+    // An SVG whose <use> references ask for more than is drawn here: the
+    // note still opens, and at once, with the picture left out. QtSvg
+    // reads it on this thread and expands each reference as it goes (bug
+    // hunt 2026-10-23 A3).
+    void anSvgAskingTooMuchIsLeftOut()
+    {
+        QByteArray defs = "<rect id='r0' width='1' height='1' fill='#ff0000'/>";
+        for (int i = 1; i <= 15; ++i) {
+            defs += "<g id='r" + QByteArray::number(i) + "'>";
+            for (int k = 0; k < 4; ++k) defs += "<use xlink:href='#r" + QByteArray::number(i - 1) + "'/>";
+            defs += "</g>";
+        }
+        write("bomb.svg", "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='100' height='100'>"
+                          "<defs>" + defs + "</defs><use xlink:href='#r15'/></svg>");
+        write("fine.svg", "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='20'><rect width='40' height='20' fill='#00ff00'/></svg>");
+        QImage plain(30, 10, QImage::Format_RGB32);
+        plain.fill(Qt::darkRed);
+        QVERIFY(plain.save(dir.filePath("plain.png")));
+        const QString file = write("svgs.md", "# Pictures\n\n![bomb](bomb.svg)\n\n![fine](fine.svg)\n\n![plain](plain.png)\n");
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(1200, 800);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        QElapsedTimer clock;
+        clock.start();
+        QVERIFY(app.gotoPage(file));
+        MarkdownDoc* md = current(app);
+        QVERIFY(md != nullptr);
+        md->setMode(MarkdownDoc::Mode::Preview);
+        pump();
+        QVERIFY2(clock.elapsed() < 20000, qPrintable(QString::number(clock.elapsed())));
+        // The other two are drawn at their own size; the one that asks too
+        // much has no picture of its own.
+        QTextDocument* doc = md->preview()->document();
+        QHash<QString, QSizeF> sizes;
+        for (QTextBlock b = doc->begin(); b.isValid(); b = b.next())
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                if (it.fragment().charFormat().isImageFormat()) {
+                    const QTextImageFormat f = it.fragment().charFormat().toImageFormat();
+                    sizes.insert(f.name(), QSizeF(f.width(), f.height()));
+                }
+        QCOMPARE(sizes.value(QStringLiteral("fine.svg")), QSizeF(40, 20));
+        QCOMPARE(sizes.value(QStringLiteral("plain.png")), QSizeF(30, 10));
+        QVERIFY2(sizes.value(QStringLiteral("bomb.svg")) != QSizeF(100, 100), qPrintable(QString("%1").arg(sizes.value("bomb.svg").width())));
+        app.closeAllFiles();
+    }
+
     // Images in a table's cells fit their cells (they were fitted to the
     // whole width: a table with one ran past the rendering's edge, its
     // pictures not shrinking with it): a column of text its words' width,

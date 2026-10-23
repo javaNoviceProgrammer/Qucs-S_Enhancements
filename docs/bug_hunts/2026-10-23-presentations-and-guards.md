@@ -64,6 +64,15 @@ commands warning too, in two cases:
 A2 to A5 let a small file freeze or crash the program. A2 and A3 can do so through `read_pptx` and
 `open_document` alone.
 
+*Later the same day:* every finding but B3 and N5 is fixed (the user: "Let's resolve A1, A2, A3", then
+"let's dig into and resolve all of remaining items"). See
+[2026-10-23-hunt-fixes-a1-a2-a3.md](../feature_gaps/2026-10-23-hunt-fixes-a1-a2-a3.md). A1's fix also
+covers the netlist's other paths, found while fixing it: a global parameter, an `.OPTIONS`, an `.IC`, a
+`.NODESET`, a `.FUNC` and an `.INCLUDE`'s file name write their own lines, so the commands check now
+reads every value of every part. **B3** (a part's XML held at 37 times its size) and **N5** (a deck with
+one damaged part refused whole) are not fixed, and the write-up says why. A7's table above claimed two
+holes that are not holes, corrected in place below.
+
 ## A. Wrong or unsafe without a word
 
 **A1. A newline in a property is a line of the netlist.**
@@ -222,13 +231,26 @@ Script's text to each form below, with the check of commands on, and read `check
 | `shell true` with no `.endc` | yes |
 | `alias zz shell`, then `zz true` | no |
 | ``echo `true` `` (a backquote) | no |
-| `echo a ; shell true` | no |
+| `echo a ; shell true` | no (and it runs nothing: see below) |
 | `set c = shell`, then `$c true` | no |
-| the lines split by carriage returns alone | no |
+| the lines split by carriage returns alone | no (and they are no lines: see below) |
 
-ngspice's control language has aliases, backquote substitution and variables. How ngspice reads each
-of these lines was not tried, since nothing was run. Bare carriage returns may well be one line to
-ngspice, and so harmless. The guard asks about what this check finds, so a form it misses runs unasked
+ngspice's control language has aliases, backquote substitution and variables.
+
+*Corrected while fixing this (23 October).* ngspice 46's own sources settle what each of these does,
+and two of the five above are **not** holes - this table claimed more than it should have:
+- a backquote **does** run a command: `cp_bquote` passes what stands between them to `popen`
+  (`src/frontend/parser/backq.c`);
+- an **alias** is expanded before the command is looked up (`parser/cshpar.c`, `cp_doalias`), and a
+  **variable** where the command's name belongs is substituted first (`control.c`,
+  `cp_variablesubst`) - a line beginning `$` is no comment, since only `#` and `*` begin one
+  (`parser/lexical.c`);
+- a **`;`** outside brackets is part of a word, not another command (`parser/lexical.c`, its `case
+  ';'`), so `echo a ; shell true` runs nothing;
+- a bare **carriage return** is dropped as it is read (`frontend/inpcom.c`, `if (c == '\r') continue;`),
+  so it divides no line.
+
+The three that are holes are now named by the check. The guard asks about what this check finds, so a form it misses runs unasked
 in auto mode. The parked wishlist of 22 October names the alias and the backquote.
 
 *Proposed fix:* a pattern for each line can be got round this way. Taking any `.control` block in text

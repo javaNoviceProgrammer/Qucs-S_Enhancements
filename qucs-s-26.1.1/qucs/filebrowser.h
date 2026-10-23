@@ -143,9 +143,30 @@ public:
 
     bool showHidden() const { return a_showHidden; }
     void setShowHidden(bool on);
+    /// Reads the folders again, whatever the file system's watcher said,
+    /// and puts the view back as it stood: Refresh, in both menus and on
+    /// the bar.
+    void refresh();
     /// The folders' kinds (and icons) looked at again: which are projects
     /// changed (QucsSettings.AnyFolderIsProject).
     void refreshKinds();
+    /// "Import Folder…": folders chosen in a dialog, copied into the
+    /// folder shown.
+    void importFolders();
+    /// "Link Folder…": folders chosen in a dialog, linked into the folder
+    /// shown (a symbolic link each). What they hold is then shown here,
+    /// and is part of the workspace for the Content panel and for Claude.
+    void linkFolders();
+    /// Renames \a path: in place where it is in sight, else in a dialog.
+    /// Either way the name is chosen without its suffix, so typing
+    /// replaces the name and leaves the suffix.
+    void rename(const QString& path);
+    /// "Unlink Folder…": the link \a link taken away - or one chosen from
+    /// those in the folder shown. What it led to is not touched.
+    void unlinkFolder(const QString& link = QString());
+    /// The folders linked into the folder shown (symbolic links that lead
+    /// to a folder), by their paths here.
+    QStringList linkedFoldersHere() const;
     /// Only the files Qucs-S makes or reads (folders stay).
     bool qucsFilesOnly() const { return a_qucsOnly; }
     void setQucsFilesOnly(bool on);
@@ -199,6 +220,9 @@ public:
     /// both, skip); an entry copied into its own folder becomes "name
     /// copy". Returns where they went. Open documents moved follow (moved()).
     QStringList transfer(const QStringList& sources, const QString& target, Qt::DropAction action);
+    /// One or more folders chosen in a dialog (Qt's own, which allows
+    /// several): Import Folder's and Link Folder's.
+    QStringList chooseFolders(const QString& title, const QString& button);
     /// Puts \a paths on the clipboard as files: Paste copies them, here or
     /// in the Finder (the Explorer, a file manager).
     void copyEntries(const QStringList& paths);
@@ -270,6 +294,8 @@ public slots:
 signals:
     /// A file was double-clicked (or opened from its menu).
     void openRequested(const QString& path);
+    /// The folders were read again (Refresh).
+    void refreshed();
     /// "New Zip…": a new, empty archive asked for, to be saved in \a folder.
     void newArchiveRequested(const QString& folder);
     /// "Open as Project": the folder \a folder to be linked into the
@@ -315,7 +341,6 @@ private:
     void keepRoot();
     /// The Git submenu of \a paths' context menu.
     void addGitMenu(QMenu* menu, const QStringList& paths);
-    void rename(const QString& path);
     QAbstractItemView* viewFor(View view) const;
     /// A drag over \a watched (a view's viewport, a button of the path):
     /// lit up and accepted where it can drop; dropped.
@@ -378,6 +403,8 @@ private:
     QToolButton* a_homeButton = nullptr;
     QToolButton* a_placesButton = nullptr;
     QToolButton* a_viewButton = nullptr;
+    QToolButton* a_refreshButton = nullptr;
+    QAction* a_unlinkAction = nullptr;
     QToolButton* a_menuButton = nullptr;
     QMenu* a_viewMenu = nullptr;
     QActionGroup* a_viewActions = nullptr;

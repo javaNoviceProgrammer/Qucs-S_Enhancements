@@ -10,6 +10,8 @@
  * (at your option) any later version.
  */
 #include "claudecode.h"
+
+#include "svgguard.h"
 #include "mcpserver.h"
 #include "main.h"
 
@@ -176,6 +178,13 @@ QByteArray imageForClaude(const QString& path, QString* mediaType, QString* why)
 {
     constexpr qint64 kMostBytes = 3932160;   // 3.75 MB: 5 MB in base64
     constexpr int kMostSide = 2000;
+    // An SVG is read by QtSvg, which expands every <use> reference as it
+    // reads: one asking for too many is refused before QImageReader opens
+    // it (bug hunt 2026-10-23 A3).
+    if (qint64 found = 0; qucs_s::svg::fileExpandsTooFar(path, &found)) {
+        if (why != nullptr) *why = tr("%1 is not sent: %2").arg(QFileInfo(path).fileName(), qucs_s::svg::tooFarSaid(found));
+        return {};
+    }
     QImageReader reader(path);
     reader.setAutoTransform(true);   // (a photo's orientation)
     const QByteArray format = reader.format().toLower();

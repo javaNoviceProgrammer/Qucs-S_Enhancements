@@ -46,6 +46,13 @@ public:
   virtual void recreate() {};
   QString getNetlist();
   QString getSpiceNetlist(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);
+  /// Whether the property \a name of this part is SPICE source the user
+  /// writes in lines - an Include Script's text, a model's continuation
+  /// lines - which the netlist takes as written. Every other value is one
+  /// token of its line: getSpiceNetlist() keeps it on that line, so a
+  /// newline left in a value (a resistor's Tc1, a diode's Area) cannot
+  /// write a line of its own into the netlist (bug hunt 2026-10-23 A1).
+  virtual bool propertyHoldsLines(const QString& name) const;
   QString getVerilogACode();
   virtual QString getExpression(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);
   virtual QString getEquations(QString sim, QStringList &dep_vars);

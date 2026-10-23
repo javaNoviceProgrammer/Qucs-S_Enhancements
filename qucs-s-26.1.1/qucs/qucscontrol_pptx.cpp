@@ -39,13 +39,22 @@ using qucs_s::pptx::Presentation;
 
 namespace {
 
+/// The most slides one call reads or writes.
+constexpr int kMostSlides = 500;
+
 /// The slides a 'slides' argument names: 7, [3, 4], "2-5" (from 1), each
-/// once, in order; "all" all of them; \a fallback when it names none.
-QList<int> slidesNamed(const QJsonValue& v, int count, const QList<int>& fallback)
+/// once, in order; "all" all of them; \a fallback when it names none. No
+/// more than kMostSlides of them: \a left takes how many were named
+/// beyond that, which the answer says (bug hunt 2026-10-23 B4 - a deck of
+/// 3,000 slides gave 500 and said nothing).
+QList<int> slidesNamed(const QJsonValue& v, int count, const QList<int>& fallback, int* left = nullptr)
 {
     QList<int> out;
-    const auto add = [&out, count](int n) {
-        if (n >= 1 && n <= count && !out.contains(n) && out.size() < 500) out << n;
+    int over = 0;
+    const auto add = [&out, &over, count](int n) {
+        if (n < 1 || n > count || out.contains(n)) return;
+        if (out.size() < kMostSlides) out << n;
+        else ++over;
     };
     if (v.isDouble()) add(v.toInt());
     else if (v.isArray())
@@ -56,9 +65,10 @@ QList<int> slidesNamed(const QJsonValue& v, int count, const QList<int>& fallbac
         for (const QString& part : v.toString().split(QLatin1Char(','), Qt::SkipEmptyParts)) {
             const QStringList ends = part.split(QLatin1Char('-'));
             const int a = ends.value(0).trimmed().toInt(), b = ends.size() > 1 ? ends.at(1).trimmed().toInt() : a;
-            for (int k = a; k <= b && k - a < 500; ++k) add(k);
+            for (int k = a; k <= b; ++k) add(k);
         }
     else return fallback;
+    if (left != nullptr) *left = over;
     return out;
 }
 
@@ -134,6 +144,7 @@ struct ExportPlan {
     QList<int> slides;   // from 1
     QStringList files;
     qreal scale = 2;
+    int left = 0;   ///< slides named beyond kMostSlides, said in the answer
 };
 
 /// The plan of export_image's \a args for \a deck (its file \a file, the
@@ -202,7 +213,8 @@ bool planExport(const Presentation& deck, int current, const QJsonObject& args, 
     const int count = deck.slideCount();
     QList<int> all;
     for (int n = 1; n <= count; ++n) all << n;
-    plan->slides = slidesNamed(args.value(QLatin1String("slides")), count, pdf ? all : QList<int>{std::clamp(current + 1, 1, std::max(1, count))});
+    plan->slides = slidesNamed(args.value(QLatin1String("slides")), count,
+                               pdf ? all : QList<int>{std::clamp(current + 1, 1, std::max(1, count))}, &plan->left);
     if (count == 0 || plan->slides.isEmpty()) {
         *error = count == 0 ? tr("The presentation has no slides.") : tr("'slides': the presentation has slides 1 to %1.").arg(count);
         return false;
@@ -297,7 +309,8 @@ QJsonObject QucsControl::readPptx(const QJsonObject& args)
     const QString search = args.value(QLatin1String("search")).toString().trimmed();
     QList<int> all;
     for (int i = 1; i <= count; ++i) all << i;
-    const QList<int> slides = slidesNamed(args.value(QLatin1String("slides")), count, all);
+    int leftOut = 0;
+    const QList<int> slides = slidesNamed(args.value(QLatin1String("slides")), count, all, &leftOut);
     if (slides.isEmpty()) return errorResult(count == 0 ? tr("%1 has no slides.").arg(QFileInfo(file).fileName())
                                                         : tr("%1 has slides 1 to %2.").arg(QFileInfo(file).fileName()).arg(count));
     const QSizeF size = deck->slideSize();
@@ -351,7 +364,11 @@ QJsonObject QucsControl::readPptx(const QJsonObject& args)
             read.append(o);
         }
         result.insert(QStringLiteral("slides"), read);
-        if (!left.isEmpty()) result.insert(QStringLiteral("left out"), tr("slides %1: too much text at once - ask for them").arg(left.join(QStringLiteral(", "))));
+        QStringList over;
+        if (!left.isEmpty()) over << tr("slides %1: too much text at once").arg(left.join(QStringLiteral(", ")));
+        if (leftOut > 0) over << tr("%1 slides more, %2 at a time at most").arg(leftOut).arg(kMostSlides);
+        if (!over.isEmpty())
+            result.insert(QStringLiteral("left out"), over.join(QStringLiteral("; ")) + tr(" - ask for them by their numbers"));
     }
     // The slides drawn too (four at most), or 'region' of each.
     if (args.value(QLatin1String("image")).toBool()) {
@@ -403,8 +420,15 @@ QJsonObject QucsControl::pptxView(PptxDoc* deck) const
         QJsonArray hits;
         for (int h : deck->hits()) hits.append(h + 1);
         f.insert(QStringLiteral("slides with it"), hits);
-        if (deck->hitShown() >= 0 && deck->hitShown() < deck->hits().size())
-            f.insert(QStringLiteral("shown"), tr("slide %1, the %2 of %3").arg(deck->hits().at(deck->hitShown()) + 1).arg(deck->hitShown() + 1).arg(deck->hits().size()));
+        if (deck->hitShown() >= 0 && deck->hitShown() < deck->hits().size()) {
+            const int at = deck->hits().at(deck->hitShown());
+            // "shown" only where the tab is on that slide: after a reload
+            // the hits are counted again without the view moving, and the
+            // one it would go to next is not the one shown (bug hunt
+            // 2026-10-23 N4).
+            f.insert(at == deck->currentSlide() ? QStringLiteral("shown") : QStringLiteral("next"),
+                     tr("slide %1, the %2 of %3").arg(at + 1).arg(deck->hitShown() + 1).arg(deck->hits().size()));
+        }
         o.insert(QStringLiteral("find bar"), f);
     }
     if (const qucs_s::pptx::SlideShow* show = deck->slideShow()) {
@@ -515,11 +539,18 @@ bool QucsControl::viewPptx(PptxDoc* deck, const QJsonObject& args, QJsonObject* 
             if (deck->slideShow() == nullptr) done << tr("The show ended (past its end).");
             else if (show->atEnd()) done << tr("The show is at its end (black).");
         } else {
+            const int was = deck->currentSlide();
             if (step == QLatin1String("next")) deck->nextSlide();
             else if (step == QLatin1String("previous")) deck->previousSlide();
             else if (step == QLatin1String("first")) deck->firstSlide();
             else if (step == QLatin1String("last")) deck->lastSlide();
             else if (target >= 0) deck->goToSlide(target);
+            // A step that moved nothing is said, so a step at an end is not
+            // read as one that moved (bug hunt 2026-10-23 N1).
+            if (!step.isEmpty() && deck->currentSlide() == was)
+                done << (step == QLatin1String("next") || step == QLatin1String("last")
+                             ? tr("Already the last slide (%1).").arg(was + 1)
+                             : tr("Already the first slide."));
         }
     }
     // 'find': the find bar with it, the first slide with it from the one
@@ -543,7 +574,9 @@ bool QucsControl::viewPptx(PptxDoc* deck, const QJsonObject& args, QJsonObject* 
         }
         deck->findNext(findNext == QLatin1String("previous"));
     }
-    // 'zoom', then 'region' of the slide shown.
+    // 'zoom', then 'region' of the slide shown. (A zoom keeps the slide it
+    // was on in sight: SlideView::setZoom, which no longer opens on the
+    // end of the slide before - bug hunt 2026-10-23 B2.)
     if (fit) deck->view()->setFit(*fit);
     else if (scale > 0) deck->view()->setZoom(scale);
     if (!region.isEmpty()) {
@@ -696,6 +729,10 @@ QJsonObject QucsControl::exportSlides(const QJsonObject& args)
         result.insert(QStringLiteral("pixels"), pixels);
     }
     if (!hidden.isEmpty()) result.insert(QStringLiteral("hidden slides among them"), hidden.join(QStringLiteral(", ")));
+    if (plan.left > 0)
+        result.insert(QStringLiteral("left out"),
+                      tr("%1 slides more were asked for: %2 at a time at most - ask for the rest by their numbers")
+                          .arg(plan.left).arg(kMostSlides));
     if (args.value(QLatin1String("transparent")).toBool()) result.insert(QStringLiteral("transparent"), tr("no: a slide keeps its background"));
     return jsonResult(result);
 }

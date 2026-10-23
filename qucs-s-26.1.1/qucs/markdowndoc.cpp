@@ -20,6 +20,7 @@
 #include "misc.h"
 #include "qucs.h"
 #include "settings.h"
+#include "svgguard.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QFontMetricsF>
@@ -354,13 +355,31 @@ protected:
 
     QVariant loadResource(int type, const QUrl& name) override
     {
-        if (type != QTextDocument::ImageResource || !name.isLocalFile()) return QTextBrowser::loadResource(type, name);
+        // What the base class fetched, unless it is an SVG asking for more
+        // than is drawn here: QtSvg reads it on this thread and expands
+        // every <use> reference as it goes, so a small picture can hold a
+        // tree without end (a relative name is fetched here too, and
+        // decoded by whoever asked for the resource).
+        const auto fetched = [this, type, &name] {
+            const QVariant got = QTextBrowser::loadResource(type, name);
+            if (type == QTextDocument::ImageResource && got.typeId() == QMetaType::QByteArray
+                && qucs_s::svg::expandsTooFar(got.toByteArray())) {
+                // Nothing in its place, rather than no resource at all:
+                // QTextDocument reads the file itself for a resource that
+                // came back empty, and that read is the one to avoid.
+                QImage nothing(1, 1, QImage::Format_ARGB32_Premultiplied);
+                nothing.fill(Qt::transparent);
+                return QVariant(nothing);
+            }
+            return got;
+        };
+        if (type != QTextDocument::ImageResource || !name.isLocalFile()) return fetched();
         const QFileInfo info(name.toLocalFile());
-        if (!info.isFile()) return QTextBrowser::loadResource(type, name);
+        if (!info.isFile()) return fetched();
         const Stamp stamp{info.lastModified(), info.metadataChangeTime(), info.size()};
         const QString file = info.absoluteFilePath();
         if (const Kept* kept = a_kept.object(file); kept != nullptr && kept->stamp == stamp) return kept->image;
-        const QVariant v = QTextBrowser::loadResource(type, name);
+        const QVariant v = fetched();
         QImage image;
         if (v.typeId() == QMetaType::QByteArray) image = QImage::fromData(v.toByteArray());
         else if (v.typeId() == QMetaType::QImage) image = v.value<QImage>();

@@ -5645,6 +5645,20 @@ private slots:
                                                      QJsonObject{{"tool", "simulate"}, {"arguments", QJsonObject{{"path", cmd}}}}}}})
                     .contains("echo qucs-guard"));
         QVERIFY(asked("simulate", {{"path", plain}}).isEmpty());
+        // A schematic whose commands are in an ordinary value, or in a
+        // model's continuation lines: asked about too, however the netlist
+        // writes them (bug hunt 2026-10-23 A1).
+        const QByteArray inAValue = "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Components>\n"
+                                    "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"\" 0 \"0\\n.control\\nshell echo qucs-guard-value\\n.endc\" 0 \"0\" 0>\n"
+                                    "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const QByteArray inModelLines = "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Components>\n"
+                                        "  <DIODE_SPICE D1 1 100 100 -26 14 0 0 \"D\" 1 \".control\" 1 \"shell echo qucs-guard-lines\" 1 "
+                                        "\".endc\" 1 \"\" 0 \"D\" 0>\n"
+                                        "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const QString valued = QDir(ws).filePath("guard-value.sch"), lined = QDir(ws).filePath("guard-lines.sch");
+        QVERIFY(write(valued, inAValue) && write(lined, inModelLines));
+        QVERIFY2(asked("simulate", {{"path", valued}}).contains("shell echo qucs-guard-value"), qPrintable(asked("simulate", {{"path", valued}})));
+        QVERIFY2(asked("simulate", {{"path", lined}}).contains("shell echo qucs-guard-lines"), qPrintable(asked("simulate", {{"path", lined}})));
         QVERIFY(!control->irreversible("simulate", {{"path", cmd}}));   // (asked each time, not "cannot be undone")
         control->setGuards({false, true});
         QVERIFY(asked("simulate", {{"path", cmd}}).isEmpty());

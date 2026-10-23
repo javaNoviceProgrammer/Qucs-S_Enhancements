@@ -337,6 +337,176 @@ private slots:
     // only begins so. Check Schematic warns of them when the Simulator
     // Settings say so - off by default; the setting kept in the settings
     // file and set by its box in the dialog. (Read here, never run.)
+    // A value is one token of its line, whatever is written in it: a
+    // newline in an ordinary property cannot write a line of the netlist,
+    // and the lines a part does take as SPICE source are read for the
+    // commands they run (bug hunt 2026-10-23 A1).
+    void aValueWritesNoLineOfTheNetlist()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        const QByteArray head = "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n";
+        const QByteArray tail = "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
+        const auto netlistOf = [](Schematic* doc) {
+            GroundProbe<Ngspice> ngspice(doc);
+            return ngspice.netlist();
+        };
+        // A resistor's Tc1, a hidden property: its newlines would have put
+        // a .control block of its own into the netlist.
+        const QString inTc1 = dir.filePath("in_tc1.sch");
+        write(inTc1, head
+                         + "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"\" 0 \"0\\n.control\\nshell true\\n.endc\\n\" 0 \"0\" 0>\n"
+                           "  <GND * 1 100 130 0 0 0 0>\n"
+                         + tail);
+        Schematic tc1(nullptr, inTc1);
+        QVERIFY(tc1.load());
+        // The value is kept as it was written, and the netlist holds it on
+        // R1's own line.
+        const Component* r1 = *tc1.a_DocComps.begin();
+        QCOMPARE(r1->Name, QString("R1"));
+        QVERIFY(r1->Props.at(2)->Value.contains('\n'));
+        const QStringList lines = netlistOf(&tc1).split('\n');
+        const QStringList ofR1 = lines.filter(QRegularExpression("^R1 "));
+        QCOMPARE(ofR1.size(), 1);
+        QVERIFY2(ofR1.first().contains(".control shell true .endc"), qPrintable(ofR1.first()));
+        for (const QString& line : lines)
+            QVERIFY2(!line.trimmed().startsWith(".control") || line.trimmed() == ".control", qPrintable(line));
+        QVERIFY(lines.filter(QRegularExpression("^\\s*shell")).isEmpty());
+        // The same for an equation's and an analysis's values.
+        const QString inEqn = dir.filePath("in_eqn.sch");
+        write(inEqn, head
+                         + "  <Eqn Eqn1 1 300 100 -30 15 0 0 \"x=1\\n.control\\nshell true\\n.endc\" 1 \"yes\" 0>\n"
+                           "  <.TR TR1 1 100 300 0 50 0 0 \"lin\" 1 \"0\" 1 \"1m\" 1 \"201\" 0 \"Trapezoidal\" 0 \"2\" 0 \"1 ns\" 0 "
+                           "\"1e-16\" 0 \"150\" 0 \"0\\n.control\\nshell true\\n.endc\" 0 \"0.001\" 0 \"1 pA\" 0 \"1 uV\" 0 \"26.85\" 0 "
+                           "\"1e-3\" 0 \"1e-6\" 0 \"1\" 0 \"CroutLU\" 0 \"no\" 0 \"yes\" 0 \"0\" 0>\n"
+                           "  <GND * 1 100 130 0 0 0 0>\n"
+                         + tail);
+        Schematic eqn(nullptr, inEqn);
+        QVERIFY(eqn.load());
+        for (const QString& line : netlistOf(&eqn).split('\n'))
+            QVERIFY2(!line.trimmed().startsWith("shell"), qPrintable(line));
+        // A carriage return is no line of its own either (an old Mac's
+        // text, a value pasted from one).
+        Schematic withReturn(nullptr, inTc1);
+        QVERIFY(withReturn.load());
+        for (Component* c : withReturn.a_DocComps)
+            if (c->Name == "R1") c->Props.at(2)->Value = QStringLiteral("0\r.control\rshell true\r.endc");
+        const QStringList returnLines = netlistOf(&withReturn).split(QRegularExpression("[\\n\\r]"));
+        int controls = 0;
+        for (const QString& line : returnLines) {
+            QVERIFY2(!line.trimmed().startsWith("shell"), qPrintable(line));
+            if (line.trimmed().startsWith(".control")) ++controls;
+        }
+        QCOMPARE(controls, 1);   // the netlist's own block, no other
+        // The parts whose text is SPICE source keep their lines: a custom
+        // simulation's text goes into the netlist as written (it is
+        // written through getSpiceNetlist, where a value is held on one
+        // line unless the part says otherwise).
+        const QString custom = dir.filePath("custom.sch");
+        write(custom, head
+                          + "  <.CUSTOMSIM CUSTOM1 1 300 30 0 40 0 0 \"let a=1\\nac dec 10 1 1k\\nprint a\\n\" 1 \"V(out)\" 0 \"\" 0>\n"
+                            "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1>\n  <GND * 1 100 130 0 0 0 0>\n"
+                          + tail);
+        Schematic withCustom(nullptr, custom);
+        QVERIFY(withCustom.load());
+        QStringList customLines;
+        for (const QString& line : netlistOf(&withCustom).split('\n')) customLines << line.trimmed();
+        QVERIFY2(customLines.count(QStringLiteral("let a=1")) == 1, qPrintable(netlistOf(&withCustom)));
+        QVERIFY2(customLines.count(QStringLiteral("ac dec 10 1 1k")) == 1, qPrintable(netlistOf(&withCustom)));
+        QVERIFY2(customLines.count(QStringLiteral("print a")) == 1, qPrintable(netlistOf(&withCustom)));
+        // And an Include Script's, by its own path into the netlist.
+        const QString script = dir.filePath("script.sch");
+        write(script, head
+                          + "  <INCLSCR INCLSCR1 1 300 200 -60 16 0 0 \"* a model\\n.model mine D (is=1e-14)\\n\" 1 \"\" 0 \"\" 0>\n"
+                            "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1>\n  <GND * 1 100 130 0 0 0 0>\n"
+                          + tail);
+        Schematic withScript(nullptr, script);
+        QVERIFY(withScript.load());
+        QStringList scriptLines;
+        for (const QString& line : netlistOf(&withScript).split('\n')) scriptLines << line.trimmed();
+        QVERIFY2(scriptLines.count(QStringLiteral("* a model")) == 1, qPrintable(netlistOf(&withScript)));
+        QVERIFY2(scriptLines.count(QStringLiteral(".model mine D (is=1e-14)")) == 1, qPrintable(netlistOf(&withScript)));
+        // A model's continuation lines are lines by design - and are read
+        // for what they run, so the guard asks about them.
+        QucsSettings.CheckCommands = true;
+        const QString inLines = dir.filePath("in_lines.sch");
+        write(inLines, head
+                           + "  <DIODE_SPICE D1 1 100 100 -26 14 0 0 \"D\" 1 \".control\" 1 \"shell echo marker\" 1 \".endc\" 1 \"\" 0 \"D\" 0>\n"
+                             "  <GND * 1 100 130 0 0 0 0>\n"
+                           + tail);
+        Schematic withLines(nullptr, inLines);
+        QVERIFY(withLines.load());
+        const QStringList said = qucs_s::erc::commandsRun(&withLines);
+        QVERIFY2(said.filter("shell echo marker").size() == 1, qPrintable(said.join(" | ")));
+        const QList<Issue> issues = check(&withLines);
+        QVERIFY2(std::any_of(issues.cbegin(), issues.cend(),
+                             [](const Issue& i) { return i.severity == Severity::Warning && i.message.contains("shell echo marker"); }),
+                 qPrintable(messages(issues).join(" | ")));
+        // A part whose netlist is written by a path of its own (a global
+        // parameter, an .OPTIONS, an .INCLUDE's file name): its values are
+        // read the same way, so nothing reaches the netlist unasked.
+        const QString inParam = dir.filePath("in_param.sch");
+        write(inParam, head
+                           + "  <SpGlobPar Par1 1 100 300 -30 14 0 0 \"q=1\\n.control\\nshell echo marker\\n.endc\" 1>\n"
+                             "  <GND * 1 100 130 0 0 0 0>\n"
+                           + tail);
+        Schematic withParam(nullptr, inParam);
+        QVERIFY(withParam.load());
+        QVERIFY2(qucs_s::erc::commandsRun(&withParam).filter("shell echo marker").size() == 1,
+                 qPrintable(qucs_s::erc::commandsRun(&withParam).join(" | ")));
+        // The resistor of the start: its value cannot write a line of the
+        // netlist any more, and it is named all the same, so the user is
+        // asked before such a schematic is simulated either way.
+        QVERIFY2(qucs_s::erc::commandsRun(&tc1).filter("shell true").size() == 1,
+                 qPrintable(qucs_s::erc::commandsRun(&tc1).join(" | ")));
+        // Nothing of the kind in a part whose values are plain.
+        const QString ordinary = dir.filePath("ordinary.sch");
+        write(ordinary, head + "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1>\n  <GND * 1 100 130 0 0 0 0>\n" + tail);
+        Schematic plain(nullptr, ordinary);
+        QVERIFY(plain.load());
+        QVERIFY2(qucs_s::erc::commandsRun(&plain).isEmpty(), qPrintable(qucs_s::erc::commandsRun(&plain).join(" | ")));
+    }
+
+    // A .control block can run a command without naming one: ngspice
+    // passes what stands between backquotes to popen, expands an alias
+    // before it looks the command up, and substitutes a variable where the
+    // command's name belongs. Each is said (bug hunt 2026-10-23 A7).
+    void commandsByAnotherNameAreSaid()
+    {
+        struct Restore {
+            tQucsSettings saved = QucsSettings;
+            ~Restore() { QucsSettings = saved; }
+        } restore;
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        QucsSettings.CheckCommands = true;
+        const auto said = [this](const QByteArray& script) {
+            const QString file = dir.filePath("another_name.sch");
+            write(file, "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                        "  <INCLSCR INCLSCR1 1 300 200 -60 16 0 0 \"" + script + "\" 1 \"\" 0 \"\" 0>\n"
+                        "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1>\n  <GND * 1 100 130 0 0 0 0>\n"
+                        "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n");
+            Schematic doc(nullptr, file);
+            return doc.load() ? qucs_s::erc::commandsRun(&doc).join(QStringLiteral(" | ")) : QStringLiteral("(not loaded)");
+        };
+        // The three that get round a pattern reading the command's name.
+        QVERIFY2(said(".control\\nalias zz shell\\nzz true\\n.endc\\n").contains("alias zz shell"), "an alias");
+        QVERIFY2(said(".control\\necho `true`\\n.endc\\n").contains("echo `true`"), "a backquote");
+        QVERIFY2(said(".control\\nset c = shell\\n$c true\\n.endc\\n").contains("$c true"), "a variable as the command");
+        // And the plain ones, still.
+        QVERIFY(said(".control\\nshell true\\n.endc\\n").contains("shell true"));
+        QVERIFY(said(".control\\nsource other.sp\\n.endc\\n").contains("source other.sp"));
+        // A block that only plots and prints says nothing: ngspice reads
+        // ';' outside brackets as part of a word, not as another command
+        // (parser/lexical.c), and drops a bare carriage return altogether
+        // (inpcom.c), so neither divides a line.
+        QVERIFY2(said(".control\\nac dec 10 1 1k\\nplot v(out)\\nprint v(out)\\n.endc\\n").isEmpty(), "a plotting block");
+        QVERIFY2(said(".control\\necho a ; shell true\\n.endc\\n").contains("echo a ; shell true") == false, "a semicolon is no separator");
+        QVERIFY2(said(".control\\rshell true\\r.endc\\r").isEmpty(), "a carriage return is no line break");
+    }
+
     void commandsARunExecutesAreSaid()
     {
         struct Restore {

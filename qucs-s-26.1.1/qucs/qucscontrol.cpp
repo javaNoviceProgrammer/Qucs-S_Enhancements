@@ -580,7 +580,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "save_as": {"type": "string", "description": "The file: a path, or a name in the project's folder (else the workspace's); written over when it is there. Its suffix gives the format when 'format' is not given"},
    "format": {"type": "string", "enum": ["png", "jpeg", "bmp", "tiff", "webp", "svg", "pdf", "eps", "pdf_tex"], "description": "The picture's format; pdf_tex is a PDF with its text in a LaTeX file beside it"},
-   "scale": {"type": "number", "minimum": 0.1, "maximum": 20, "description": "A raster picture's pixels per schematic unit: 2 by default (1 is 96 dpi)"}, "colours": {"type": "string", "enum": ["colour", "grayscale", "monochrome"], "description": "colour (the default), grayscale or monochrome"},
+   "scale": {"type": "number", "minimum": 0.1, "maximum": 20, "description": "A raster picture's pixels per schematic unit: 2 by default (1 is 96 dpi). A presentation's slides: pixels a point, 0.1 to 12 (2 by default, a PDF's pages 4)"}, "colours": {"type": "string", "enum": ["colour", "grayscale", "monochrome"], "description": "colour (the default), grayscale or monochrome"},
    "transparent": {"type": "boolean", "description": "No paper behind it, where the format allows"}, "diagram": {"type": "integer", "description": "Only this diagram, by its number"}, "selection": {"type": "boolean", "description": "Only what is selected"},
    "slides": {"description": "A presentation's slides written: 7, [3, 4], \"2-5\" or \"all\"; the slide shown by default (a PDF: all)"}},
    "required": ["save_as"]}},
@@ -1366,6 +1366,15 @@ QString badFileName(const QString& name)
             .arg(name, m.captured(0).at(0).isPrint() ? m.captured(0) : tr("control character"));
     if (name.endsWith(QLatin1Char(' ')) || name.endsWith(QLatin1Char('.')) || name.startsWith(QLatin1Char(' ')))
         return tr("\"%1\" is no file's name: it begins with a space or ends with a space or a dot").arg(name);
+    // The characters that are not drawn but change how the rest reads: a
+    // right-to-left override turns a name round in every list that shows
+    // it, so "x\u202Egnp.sch" looks like "xhcs.png" (bug hunt 2026-10-23
+    // N3). Unicode's own formatting characters and the zero-width ones.
+    static const QRegularExpression unseen(QStringLiteral("[\\x{200b}-\\x{200f}\\x{202a}-\\x{202e}\\x{2066}-\\x{2069}\\x{feff}]"));
+    if (unseen.match(name).hasMatch())
+        return tr("%1 is no file's name: it holds a character that is not drawn but changes how the name reads (a "
+                  "right-to-left override, a zero-width space)")
+            .arg(name);
     static const QRegularExpression device(QStringLiteral("^(con|prn|aux|nul|com\\d|lpt\\d)(\\..*)?$"), QRegularExpression::CaseInsensitiveOption);
     if (device.match(name).hasMatch()) return tr("%1 is no file's name: Windows keeps it for a device").arg(name);
     // (Before its suffix: "'.sch" is "'" and a suffix.)
@@ -5497,9 +5506,15 @@ QJsonObject QucsControl::openDocument(const QJsonObject& args)
         if (args.contains(QLatin1String("page"))) view.insert(QStringLiteral("slide"), args.value(QLatin1String("page")));
         if (args.contains(QLatin1String("find"))) view.insert(QStringLiteral("find"), args.value(QLatin1String("find")));
         QString why;
-        if (!viewPptx(deck, view, &at, &why)) return errorResult(text + QLatin1Char(' ') + why);
-        text += QLatin1Char(' ') + tr("At slide %1 of %2.").arg(at.value(QStringLiteral("slide shown")).toInt()).arg(at.value(QStringLiteral("slides in all")).toInt());
-        if (args.contains(QLatin1String("find"))) {
+        // The file is open, whatever 'page' said: a slide it has not is
+        // said with the rest, not answered as though nothing had been
+        // opened (bug hunt 2026-10-23 N6).
+        const bool went = viewPptx(deck, view, &at, &why);
+        if (!went) text += QLatin1Char(' ') + why;
+        else
+            text += QLatin1Char(' ')
+                    + tr("At slide %1 of %2.").arg(at.value(QStringLiteral("slide shown")).toInt()).arg(at.value(QStringLiteral("slides in all")).toInt());
+        if (went && args.contains(QLatin1String("find"))) {
             QStringList slides;
             for (const QJsonValue& v : at.value(QStringLiteral("hits")).toArray()) slides << QString::number(v.toObject().value(QStringLiteral("slide")).toInt());
             text += QLatin1Char(' ') + (slides.isEmpty() ? tr("%1 is not in its slides' text or notes.").arg(args.value(QLatin1String("find")).toString())
@@ -13015,8 +13030,23 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
         // Named as get_dialog names it: its label, else its id (a control
         // with none - a frame's field, a list in a table).
         const QString name = shownLabel(w, dialog, ui).isEmpty() ? QStringLiteral("c%1").arg(list.indexOf(w) + 1) : shownLabel(w, dialog, ui);
-        if (ok) changed << (said.isEmpty() ? name : said);
-        else if (why.isEmpty()) problems << tr("%1 does not take %2").arg(name, text);
+        if (ok) {
+            // What the control took, where that is not what was asked: a
+            // field of numbers holds its value within its own bounds, or
+            // ignores one it cannot read, and saying it was set alone read
+            // as though it had taken it (bug hunt 2026-10-23 N7).
+            QString now;
+            if (auto* sp = qobject_cast<QAbstractSpinBox*>(w)) now = sp->text().trimmed();
+            else if (auto* cb = qobject_cast<QComboBox*>(w); cb != nullptr && cb->isEditable()) now = cb->currentText().trimmed();
+            QString note;
+            if (!now.isEmpty() && !text.isEmpty()) {
+                bool readAsked = false, readNow = false;
+                const double asked = text.toDouble(&readAsked), has = now.toDouble(&readNow);
+                const bool same = readAsked && readNow ? qFuzzyCompare(asked + 1, has + 1) : now.compare(text, Qt::CaseInsensitive) == 0;
+                if (!same) note = tr(" (it took %1, not %2)").arg(now, text);
+            }
+            changed << (said.isEmpty() ? name : said) + note;
+        } else if (why.isEmpty()) problems << tr("%1 does not take %2").arg(name, text);
         else problems << tr("%1 does not take %2: %3").arg(name, text, why);
     }
     const QString press = args.value(QLatin1String("press")).toString().trimmed();
