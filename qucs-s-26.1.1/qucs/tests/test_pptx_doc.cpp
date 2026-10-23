@@ -997,13 +997,23 @@ private slots:
         QElapsedTimer clock;
         clock.start();
         const auto deck = readDeck(d, &why);
+        const qint64 absurd = clock.elapsed();
         QVERIFY2(deck != nullptr, qPrintable(why));
         QCOMPARE(deck->slideCount(), 1);
         QVERIFY(!deck->render(0, 1).isNull());
-        // A cache of two thousand million points is read as a million at
-        // most, so it is read at all.
-        QVERIFY2(clock.elapsed() < 30000, qPrintable(QString::number(clock.elapsed())));
         QVERIFY(deck->slide(0).paragraphs.contains("Deep"));
+        // The same deck with three points, to measure this machine by: a
+        // cache of two thousand million points is read as a million at
+        // most, so it costs about what three do, not the thousands of
+        // times more that filling it would (15 s where this is 0.03 s).
+        Deck plain = d;
+        for (zip::Entry& e : plain.extra)
+            if (e.name.endsWith(QLatin1String("chart1.xml"))) e.data.replace("<c:ptCount val=\"2000000000\"/>", "<c:ptCount val=\"3\"/>");
+        clock.restart();
+        const auto few = readDeck(plain, &why);
+        const qint64 three = clock.elapsed();
+        QVERIFY2(few != nullptr, qPrintable(why));
+        QVERIFY2(absurd <= three * 20 + 2000, qPrintable(QStringLiteral("%1 ms against %2 ms for three points").arg(absurd).arg(three)));
     }
 
     // A deck is read by walking its elements: one nesting them deeper than
@@ -1155,6 +1165,38 @@ private slots:
         QVERIFY2(near(at(image, {805, 150}, 2), QColor(0, 0, 255), 10), qPrintable(str(at(image, {805, 150}, 2))));
         QVERIFY(near(at(image, {813, 150}, 2), Qt::white, 3));
         QVERIFY(near(at(image, {750, 150}, 2), QColor(0, 0xAA, 0), 10));   // (the shape over its shadow)
+    }
+
+    // A shadow of a shape as large as the slide, drawn where its mask
+    // would be more pixels than are worth holding: it is built smaller and
+    // drawn scaled up, not left out altogether (bug hunt 2026-10-23 B1 -
+    // a slide's own shape lost its shadow at 8 pixels a point).
+    void aBigShadowIsStillDrawn()
+    {
+        Deck d;
+        Deck::SlideSpec s;
+        // Nearly the whole of the 960 x 540 slide, its shadow 30 points
+        // down and to the right, in red so it is told from the shape. At
+        // 7 pixels a point its silhouette is 21 million pixels, past what
+        // a mask is allowed, so the picture built smaller is what is drawn.
+        s.tree = shape(2, xfrm(10, 10, 900, 480) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>" + solid("1F4E9C")
+                              + "<a:effectLst><a:outerShdw blurRad=\"0\" dist=\"381000\" dir=\"2700000\" algn=\"tl\" rotWithShape=\"0\">"
+                                "<a:srgbClr val=\"FF0000\"/></a:outerShdw></a:effectLst>");
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        // In the shadow, past the shape's corner at 910, 490.
+        const QPointF inShadow(920, 500), inShape(400, 200);
+        for (const qreal scale : {1.0, 4.0, 7.0}) {
+            const QImage image = deck->render(0, scale);
+            QVERIFY(!image.isNull());
+            // At 7 pixels a point the mask would be 21 million pixels,
+            // past what is held: built smaller, and still drawn.
+            const QColor shadow = at(image, inShadow, scale);
+            const QColor shape = at(image, inShape, scale);
+            QVERIFY2(near(shadow, QColor(0xFF, 0, 0), 24), qPrintable(QStringLiteral("at %1: %2").arg(scale).arg(str(shadow))));
+            QVERIFY2(near(shape, QColor(0x1F, 0x4E, 0x9C), 10), qPrintable(QStringLiteral("at %1: %2").arg(scale).arg(str(shape))));
+        }
     }
 
     // A font not installed: drawn by a stand-in as wide as the font asked
@@ -1339,6 +1381,56 @@ private slots:
     // again when its file changes (the slide kept), a problem shown when it
     // cannot be read, gone when it can; saved under another name, a copy;
     // printed, a page a slide; played full screen, hidden slides left out.
+    // A zoom keeps the slide it was on in sight: it used to open a hair
+    // above a slide standing at the view's top, on the end of the slide
+    // before, which was then the slide shown (bug hunt 2026-10-23 B2).
+    void aZoomKeepsTheSlideItWasOn()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        Deck d;
+        for (int i = 0; i < 7; ++i) {
+            Deck::SlideSpec s;
+            s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("Slide %1").arg(i + 1)))), "<p:ph type=\"title\"/>");
+            d.slides << s;
+        }
+        const QString file = dir.filePath("workspace/zooming.pptx");
+        QDir().mkpath(QFileInfo(file).absolutePath());
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly) && f.write(d.build()) > 0);
+        f.close();
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        // From "fit width", where a slide goes to the view's very top.
+        doc->view()->setFit(pptx::SlideView::Fit::Width);
+        for (const int slide : {4, 6, 2, 0}) {
+            doc->goToSlide(slide);
+            QCOMPARE(doc->currentSlide(), slide);
+            for (const qreal zoom : {1.0, 2.5, 0.5}) {
+                doc->view()->setZoom(zoom);
+                QApplication::processEvents();
+                QVERIFY2(doc->currentSlide() == slide,
+                         qPrintable(QStringLiteral("slide %1 at zoom %2 became %3").arg(slide + 1).arg(zoom).arg(doc->currentSlide() + 1)));
+            }
+            doc->view()->setFit(pptx::SlideView::Fit::Width);
+        }
+        // And through the tool, which is how it was found: "fit width"
+        // again, then a slide and a zoom in one call.
+        doc->view()->setFit(pptx::SlideView::Fit::Width);
+        doc->goToSlide(0);
+        auto* control = app.findChild<QucsControl*>();
+        QVERIFY(control != nullptr);
+        const QJsonObject said = control->callNow(QStringLiteral("show_pptx"),
+                                                  QJsonObject{{QStringLiteral("slide"), 5}, {QStringLiteral("zoom"), 100}}, 30000);
+        QVERIFY2(!said.value(QStringLiteral("isError")).toBool(), qPrintable(QucsControl::textOf(said)));
+        QCOMPARE(doc->currentSlide(), 4);
+        app.closeAllFiles();
+    }
+
     // The window closed while a tab's own dialog is open: the tab is freed
     // once its own call has returned, not under the dialog - which is a
     // local object of that call, and freeing it killed the program (bug

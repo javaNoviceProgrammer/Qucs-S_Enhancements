@@ -44,8 +44,11 @@ Probed through the real server on a project with `shared -> .../outside/shared`:
 **Renaming** (`filebrowser.cpp`). `GitDelegate::setEditorData` - the delegate already on every file
 view - chooses the name up to its last dot once the editor is shown (a zero timer, since the view
 selects all of it as it opens, and only if it did select all). The dialog for an entry out of sight is
-now a `QInputDialog` of its own, so its line can be given the same selection. A folder is told from a
-file by the model's `FilePathRole`.
+now a `QInputDialog` of its own: its line is given the same selection, and a small event filter
+(`NameChosen`) sets it again when the line is shown, since showing the dialog gives the line the focus
+and that chooses all of it. (The dialog first had the zero timer too, and the break run showed it did
+nothing: the dialog's own showing undid it.) A folder is told from a file by the model's
+`FilePathRole`.
 
 ## Tests
 
@@ -53,10 +56,10 @@ file by the model's `FilePathRole`.
 
 | test | what it holds to |
 |---|---|
-| `renamingChoosesTheNameNotTheSuffix` | "amp" of "amp.sch"; "data.tar" of "data.tar.gz"; the whole of ".spiceinit", of "plain" and of the folder "folder.old" |
-| `refreshReadsTheFoldersAgain` | a file and a folder made behind the watcher's back are shown after Refresh; the folder shown and what was chosen are kept |
+| `renamingChoosesTheNameNotTheSuffix` | in place and in the dialog: "amp" of "amp.sch"; "data.tar" of "data.tar.gz"; "filter" of "filter.sch"; the whole of ".spiceinit", of "plain", of "notes" and of the folders "folder.old" and "inner.d" |
+| `refreshReadsTheFoldersAgain` | with the model's watcher turned off - the state Refresh is for - a file and a folder written are shown only once Refresh has read them; the folder shown, the choice and the scroll kept |
 | `aLinkedFolderIsShownAndUnlinked` | a link is shown, listed by `linkedFoldersHere()`, entered (its files and subfolder shown), then unlinked - the link gone, the target's files still there |
-| `aLinkedFoldersFilesBelongToTheProject` | `misc::projectFiles` holds `shared/brought.sch` and `shared/sub/deeper.txt`; with a link from the shared folder back to the project the walk still ends |
+| `aLinkedFoldersFilesBelongToTheProject` | `misc::projectFiles` holds exactly `own.sch`, `shared/brought.sch` and `shared/sub/deeper.txt`; with a link from the shared folder back to the project nothing is named twice and nothing comes from under `back/` |
 | `entriesAreMadeAndTheirMenusOffered` | Refresh, Import Folder and Link Folder in the menus; Unlink Folder only where a link is there, on the folder's menu and on the link's own |
 
 `test_file_browser` (20), `test_project_folders`, `test_workspace_projects`, `test_content_categories`,
