@@ -68,6 +68,8 @@
 #include "multiphysicsdoc.h"
 #include "multiphysicspanel.h"
 #include "imagedoc.h"
+#include "pptx.h"
+#include "pptxdoc.h"
 #include "gitrepo.h"
 #include "gitui.h"
 #endif
@@ -275,6 +277,7 @@ QucsApp::QucsApp(bool netlist2Console) :
 #endif
     tr("Layouts") + " (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;" +
     tr("Images") + " (*." + qucs_s::image::suffixes().join(" *.") + ");;" +
+    tr("Presentations") + " (*.pptx *.pptm *.ppsx *.ppsm *.potx *.potm);;" +
     tr("Any File")+" (*)";
 
   //updateSchNameHash();
@@ -3017,6 +3020,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     i = addDocumentTab(image, Info.fileName());
     is_pdf = true;   // (no word about simulating a read-only one)
   }
+  else if (isPresentationFile(Name)) {
+    // Its slides, their notes, played (pptxdoc.h).
+    auto *deck = new PptxDoc(this, Name);
+    d = deck;
+    i = addDocumentTab(deck, Info.fileName());
+    is_pdf = true;   // (no word about simulating a read-only one)
+  }
   else if (isSheetFile(Name)) {
     // Its cells in a table (sheetdoc.h).
     auto *sheet = new SheetDoc(this, Name);
@@ -3250,6 +3260,11 @@ bool QucsApp::saveAs()
     } else if (isMultiphysicsDocument (w)) {
       Filter = tr("Multiphysics models") + " (*.qfem)";
       selfilter = Filter;
+    } else if (isPresentationDocument (w)) {
+      // A copy, of its kind.
+      const QString own = Info.suffix().toLower();
+      Filter = tr("Presentations") + " (*." + (own.isEmpty() ? QStringLiteral("pptx") : own) + ")";
+      selfilter = Filter;
     } else if (isImageDocument (w)) {
       // Its own kind first (a copy); the others it is converted to.
       const QString own = Info.suffix().toLower();
@@ -3314,6 +3329,10 @@ bool QucsApp::saveAs()
     }
     else if (isMultiphysicsDocument (w)) {
       if (ext.compare("qfem", Qt::CaseInsensitive) != 0) s += ".qfem";
+    }
+    else if (isPresentationDocument (w)) {
+      // A copy of the file: of its kind.
+      if (!isPresentationFile(s)) s += "." + QFileInfo(Doc->getDocName()).suffix();
     }
     else if (isImageDocument (w)) {
       // A picture: of its kind unless the name says another.
@@ -3496,7 +3515,7 @@ void QucsApp::slotFileSaveAll()
     for (int i = 0; i < pane->count(); ++i) {
       QWidget *w = pane->widget(i);
       QucsDoc *Doc = docIn(w);
-      if (Doc == nullptr || isPdfDocument(w) || isLayoutDocument(w) || isImageDocument(w)) continue;   // a PDF, a layout, a picture: only read
+      if (Doc == nullptr || isPdfDocument(w) || isLayoutDocument(w) || isImageDocument(w) || isPresentationDocument(w)) continue;   // a PDF, a layout, a picture, a presentation: only read
       if(Doc->getDocName().isEmpty()) {  // make document the current ?
         setActivePane(pane);
         pane->setCurrentIndex(i);
@@ -3801,7 +3820,7 @@ void QucsApp::slotChangeView()
   // width; for spreadsheets: cells; for a picture: Copy as Image copies
   // it, Print Fit prints it as large as the page goes
   else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-           || isImageDocument (w) || isMultiphysicsDocument (w)) {
+           || isImageDocument (w) || isMultiphysicsDocument (w) || isPresentationDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
@@ -3858,7 +3877,7 @@ void QucsApp::slotFileSettings ()
 
   QWidget * w = DocumentTab->currentWidget ();
   if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-      || isImageDocument (w) || isMultiphysicsDocument (w)) return;   // nothing to set
+      || isImageDocument (w) || isMultiphysicsDocument (w) || isPresentationDocument (w)) return;   // nothing to set
   if (qobject_cast<PythonDoc *> (w)) {
     statusBar()->showMessage(tr("A Python script has no document settings: the Python toolbar chooses the Python it "
                                 "runs with."), 5000);
@@ -4214,6 +4233,8 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
     loaded = layout->reload();   // (in the background, the cell and view kept)
   } else if (auto *image = dynamic_cast<ImageDoc *>(doc)) {
     loaded = image->reload();   // (the zoom, the turns, the frame kept)
+  } else if (auto *deck = dynamic_cast<PptxDoc *>(doc)) {
+    loaded = deck->reload();   // (the slide and the zoom kept)
   }
   return loaded;
 }
@@ -4862,6 +4883,10 @@ void QucsApp::slotSimulate(QWidget *w)
       statusBar()->showMessage(tr("A picture is not simulated."), 3000);
       return;
   }
+  if (isPresentationDocument(w)) {
+      statusBar()->showMessage(tr("A presentation is not simulated: Play shows its slides."), 3000);
+      return;
+  }
   if (isArchiveDocument(w)) {
       statusBar()->showMessage(tr("An archive is not simulated: open a schematic of it."), 3000);
       return;
@@ -5170,6 +5195,7 @@ void QucsApp::slotToPage()
       || isArchiveDocument(DocumentTab->currentWidget())
       || isLayoutDocument(DocumentTab->currentWidget())
       || isImageDocument(DocumentTab->currentWidget())
+      || isPresentationDocument(DocumentTab->currentWidget())
       || isMultiphysicsDocument(DocumentTab->currentWidget())) return;   // no data display
   if(d->getDataDisplay().isEmpty()) {
     QMessageBox::critical(this, tr("Error"), tr("No page set !"));
@@ -5277,7 +5303,7 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   // imagedoc.h), whatever the text editor of the settings.
   if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath) || qucs_s::xml::isXmlFile(absolutePath)
       || isArchiveFile(absolutePath) || isLayoutFile(absolutePath) || isImageFile(absolutePath)
-      || isMultiphysicsFile(absolutePath)) {
+      || isMultiphysicsFile(absolutePath) || isPresentationFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
@@ -5516,6 +5542,7 @@ void QucsApp::openDroppedFile(const QString &file)
   const bool known = ext == "sch" || ext == "dpl" || ext == "sym" || ext == "dat"
                      || textDocumentSuffixes().contains(ext) || textFileSuffixes().contains(ext)
                      || isImageFile(file)   // (an SVG is text: its picture all the same)
+                     || isPresentationFile(file)
                      || !userProgramFor(ext).isEmpty();
   if (known || !misc::isTextFile(info.absoluteFilePath()))
     openFileFromProjectView(info, QString());   // its viewer, the user's or the system's handler
@@ -5803,6 +5830,14 @@ bool QucsApp::isLayoutFile(const QString &name) {
 
 bool QucsApp::isImageDocument(QWidget *w) {
   return w != nullptr && w->inherits("ImageDoc");
+}
+
+bool QucsApp::isPresentationDocument(QWidget *w) {
+  return w != nullptr && w->inherits("PptxDoc");
+}
+
+bool QucsApp::isPresentationFile(const QString &name) {
+  return qucs_s::pptx::isPresentationFile(name);
 }
 
 bool QucsApp::isImageFile(const QString &name) {

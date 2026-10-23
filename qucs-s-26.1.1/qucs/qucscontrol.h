@@ -40,6 +40,7 @@ class TextDoc;
 class LayoutDoc;
 class MultiphysicsDoc;
 class PdfDoc;
+class PptxDoc;
 namespace qucs_s::layout {
 struct Layout;
 }
@@ -503,6 +504,14 @@ private:
     /// A PDF's tab shown at a page, a hit, a zoom or a region
     /// (qucscontrol_design.cpp).
     QJsonObject showPdf(const QJsonObject& args);
+    /// read_pptx, show_pptx (qucscontrol_pptx.cpp): a presentation's slides
+    /// read - the open one's as its tab shows it -, shown, played.
+    QJsonObject readPptx(const QJsonObject& args);
+    QJsonObject showPptx(const QJsonObject& args);
+    /// The presentation \a args name ('path': its file or its tab's title;
+    /// the one in front when not given), open - opened first when \a open
+    /// says so. Null and why (empty: a file not open, which may be read).
+    PptxDoc* presentationDocument(const QJsonObject& args, bool open, QString* error);
     /// \a pdf's view set as args asks - 'page' (a number, a page's label or
     /// an outline's destination), 'find', 'zoom', 'region' - into \a out;
     /// false, with \a error, when it cannot be.

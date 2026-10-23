@@ -22,6 +22,8 @@
 
 #include "printerwriter.h"
 #include "imagedoc.h"
+#include "pptx.h"
+#include "pptxdoc.h"
 #include "schematic.h"
 #include "textdoc.h"
 #include "qucs.h"
@@ -114,6 +116,11 @@ PrinterWriter::print(QWidget *doc)
     if (auto *image = qobject_cast<ImageDoc *>(doc)) {
       const QSize shown = image->view()->shownSize();
       orientation = shown.width() > shown.height() ? QPageLayout::Landscape : QPageLayout::Portrait;
+    }
+    // A presentation's slides as they are laid: wide ones across.
+    if (auto *deck = qobject_cast<PptxDoc *>(doc); deck != nullptr && deck->presentation() != nullptr) {
+      const QSizeF s = deck->presentation()->slideSize();
+      orientation = s.width() >= s.height() ? QPageLayout::Landscape : QPageLayout::Portrait;
     }
     Printer->setPageOrientation(orientation);
 

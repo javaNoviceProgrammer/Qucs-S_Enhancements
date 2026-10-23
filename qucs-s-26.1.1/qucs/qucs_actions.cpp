@@ -86,6 +86,7 @@
 #include "layoutdoc.h"
 #include "multiphysicsdoc.h"
 #include "imagedoc.h"
+#include "pptxdoc.h"
 #include "wire.h"
 #include "wirelabel.h"
 
@@ -502,7 +503,7 @@ void QucsApp::slotMoveText(bool on) {
 void QucsApp::slotZoomIn(bool on) {
   QWidget *w = DocumentTab->currentWidget();
   if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w) || isArchiveDocument(w) || isLayoutDocument(w)
-      || isImageDocument(w) || isMultiphysicsDocument(w)) {
+      || isImageDocument(w) || isMultiphysicsDocument(w) || isPresentationDocument(w)) {
     docIn(w)->zoomBy(1.5f);
     magPlus->blockSignals(true);
     magPlus->setChecked(false);
@@ -529,7 +530,7 @@ void QucsApp::slotEscape() {
 void QucsApp::slotSelect(bool on) {
   QWidget *w = DocumentTab->currentWidget();
   if (isTextDocument(w) || isPdfDocument(w) || isSheetDocument(w) || isArchiveDocument(w) || isLayoutDocument(w)
-      || isImageDocument(w) || isMultiphysicsDocument(w)) {
+      || isImageDocument(w) || isMultiphysicsDocument(w) || isPresentationDocument(w)) {
     if (auto *text = qobject_cast<TextDoc *>(w)) text->viewport()->setFocus();
     else w->setFocus();
     select->blockSignals(true);
@@ -620,6 +621,8 @@ void QucsApp::slotEditCopy() {
     sheet->copy();
   } else if (auto *image = qobject_cast<ImageDoc *>(Doc)) {
     image->copyImage();   // the selection, or the whole picture
+  } else if (auto *deck = qobject_cast<PptxDoc *>(Doc)) {
+    deck->copySlide();   // the slide in sight, as a picture
   } else if (auto *model = qobject_cast<MultiphysicsDoc *>(Doc)) {
     QApplication::clipboard()->setImage(model->view()->picture());   // the Graphics view
   } else if (Schematic *sch = schematicIn(Doc)) {
@@ -643,7 +646,8 @@ void QucsApp::slotEditPaste(bool on) {
   QWidget *Doc = DocumentTab->currentWidget();
 
   // Nothing is pasted into a PDF document, a layout or a picture.
-  if (Doc == nullptr || isPdfDocument(Doc) || isLayoutDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc)) {
+  if (Doc == nullptr || isPdfDocument(Doc) || isLayoutDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc)
+      || isPresentationDocument(Doc)) {
     editPaste->blockSignals(true);
     editPaste->setChecked(false);
     editPaste->blockSignals(false);
@@ -1484,8 +1488,8 @@ void QucsApp::slotGettingStarted() {
 // its pane (a component by name, a net by label, a property value).
 void QucsApp::slotEditFind() {
   QWidget *Doc = DocumentTab->currentWidget();
-  if (isPdfDocument(Doc) || isLayoutDocument(Doc)) {
-    QMetaObject::invokeMethod(Doc, "showSearch");   // its own find bar (a layout's: its cells)
+  if (isPdfDocument(Doc) || isLayoutDocument(Doc) || isPresentationDocument(Doc)) {
+    QMetaObject::invokeMethod(Doc, "showSearch");   // its own find bar (a layout's: its cells; a presentation's: its slides' text)
     return;
   }
   if (isSheetDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc)) return;   // not searched (yet); a picture has no text
@@ -1511,7 +1515,7 @@ void QucsApp::slotChangeProps() {
     QMetaObject::invokeMethod(Doc, "showSearch");   // nothing to replace in it
     return;
   }
-  if (isSheetDocument(Doc) || isArchiveDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc)) return;
+  if (isSheetDocument(Doc) || isArchiveDocument(Doc) || isImageDocument(Doc) || isMultiphysicsDocument(Doc) || isPresentationDocument(Doc)) return;
   if (isTextDocument(Doc)) {
     ((TextDoc *)Doc)->viewport()->setFocus();
 
@@ -2154,7 +2158,7 @@ void QucsApp::slotBuildModule() {
   if (getDoc() == nullptr || isPdfDocument(DocumentTab->currentWidget())
       || isSheetDocument(DocumentTab->currentWidget()) || isArchiveDocument(DocumentTab->currentWidget())
       || isLayoutDocument(DocumentTab->currentWidget()) || isImageDocument(DocumentTab->currentWidget())
-      || isMultiphysicsDocument(DocumentTab->currentWidget())) return;
+      || isMultiphysicsDocument(DocumentTab->currentWidget()) || isPresentationDocument(DocumentTab->currentWidget())) return;
 
   // reset message dock on entry
   messageDock->reset();
