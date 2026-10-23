@@ -298,6 +298,8 @@ qucs_add_test(test_qucs_control)
 # The Tools menu's programs as Claude's tools (their --json): built first
 # (the top CMakeLists.txt, once they are known).
 qucs_add_test(test_wishlist_tools)
+# More of the MCP tools (test_mcp_wishlist.cpp).
+qucs_add_test(test_mcp_wishlist)
 qucs_add_test(test_file_browser)
 qucs_add_test(test_file_browser_drop)
 qucs_add_test(test_file_browser_tabs)
