@@ -16,6 +16,7 @@
 #include "qucscontrol.h"
 #include "qucscontrol_p.h"
 #include "filebrowser.h"
+#include "pptxdoc.h"
 #include "projectView.h"
 #include "qucs.h"
 #include "schematic.h"
@@ -23,6 +24,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCompleter>
+#include <QContextMenuEvent>
 #include <QCursor>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -34,17 +36,74 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPointer>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeView>
 
 #include <memory>
 
 using namespace qucs_s::control;
+
+namespace {
+
+QString plain(QString text);
+
+} // namespace
+
+namespace qucs_s::control {
+
+void menuEntries(const QMenu* menu, const QString& prefix, QJsonArray* entries, QList<QAction*>* actions, QStringList* paths)
+{
+    for (QAction* a : menu->actions()) {
+        if (a->isSeparator() || !a->isVisible() || plain(a->text()).isEmpty()) continue;
+        const QString path = prefix.isEmpty() ? plain(a->text()) : prefix + QStringLiteral(" > ") + plain(a->text());
+        if (a->menu() != nullptr) {
+            menuEntries(a->menu(), path, entries, actions, paths);
+            continue;
+        }
+        QJsonObject o{{QStringLiteral("entry"), path}};
+        if (!a->isEnabled()) o.insert(QStringLiteral("enabled"), false);
+        if (a->isCheckable()) o.insert(QStringLiteral("checked"), a->isChecked());
+        if (!a->shortcut().isEmpty()) o.insert(QStringLiteral("shortcut"), a->shortcut().toString(QKeySequence::NativeText));
+        entries->append(o);
+        actions->append(a);
+        paths->append(path);
+    }
+}
+
+int menuEntryNamed(const QStringList& paths, const QString& wanted)
+{
+    const QString w = plain(wanted);
+    for (int i = 0; i < paths.size(); ++i)
+        if (plain(paths.at(i)).compare(w, Qt::CaseInsensitive) == 0) return i;
+    for (int i = 0; i < paths.size(); ++i)
+        if (plain(paths.at(i).section(QStringLiteral(" > "), -1)).compare(w, Qt::CaseInsensitive) == 0) return i;
+    return -1;
+}
+
+QMenu* menuOfButton(QAbstractButton* button, bool* opens)
+{
+    QMenu* menu = nullptr;
+    bool pressOpens = false;
+    if (auto* tool = qobject_cast<QToolButton*>(button)) {
+        menu = tool->menu();
+        if (menu == nullptr && tool->defaultAction() != nullptr) menu = tool->defaultAction()->menu();
+        pressOpens = menu != nullptr && tool->popupMode() == QToolButton::InstantPopup;
+    } else if (auto* push = qobject_cast<QPushButton*>(button)) {
+        menu = push->menu();
+        pressOpens = menu != nullptr;
+    }
+    if (opens != nullptr) *opens = pressOpens;
+    return menu;
+}
+
+} // namespace qucs_s::control
 
 namespace {
 
@@ -71,27 +130,6 @@ QTabWidget* panelsOf(QDockWidget* dock)
     if (dock->widget() == nullptr) return nullptr;
     if (auto* tabs = qobject_cast<QTabWidget*>(dock->widget())) return tabs;
     return dock->widget()->findChild<QTabWidget*>();
-}
-
-// A right-click menu's entries, each by its path ("Toggle hierarchy
-// search view > Flat"), with whether it can be chosen and is checked.
-void menuEntries(const QMenu* menu, const QString& prefix, QJsonArray* entries, QList<QAction*>* actions, QStringList* paths)
-{
-    for (QAction* a : menu->actions()) {
-        if (a->isSeparator() || !a->isVisible() || plain(a->text()).isEmpty()) continue;
-        const QString path = prefix.isEmpty() ? plain(a->text()) : prefix + QStringLiteral(" > ") + plain(a->text());
-        if (a->menu() != nullptr) {
-            menuEntries(a->menu(), path, entries, actions, paths);
-            continue;
-        }
-        QJsonObject o{{QStringLiteral("entry"), path}};
-        if (!a->isEnabled()) o.insert(QStringLiteral("enabled"), false);
-        if (a->isCheckable()) o.insert(QStringLiteral("checked"), a->isChecked());
-        if (!a->shortcut().isEmpty()) o.insert(QStringLiteral("shortcut"), a->shortcut().toString(QKeySequence::NativeText));
-        entries->append(o);
-        actions->append(a);
-        paths->append(path);
-    }
 }
 
 void closeMenus()
@@ -170,7 +208,8 @@ QJsonArray QucsControl::uiAreas() const
                                                         "and a dot), while it is open: get_ui reads it, set_ui takes a row, send_input's keys go "
                                                         "to it")}});
     list.append(QJsonObject{{QStringLiteral("area"), QStringLiteral("document")},
-                            {QStringLiteral("note"), tr("the tab in front's own bar: a PDF's page field, find and zoom; a layout's, a picture's; a "
+                            {QStringLiteral("note"), tr("the tab in front's own bar: a PDF's page field, find and zoom; a presentation's slide "
+                                                        "field, zoom, notes, thumbnails, find bar and ⋯ menu; a layout's, a picture's; a "
                                                         "multiphysics model's buttons (Build Geometry, Build Mesh, Compute, Show...) and, "
                                                         "while it builds or solves, its Cancel")}});
     return list;
@@ -573,9 +612,35 @@ void QucsControl::contextMenu(const QJsonObject& args, const Done& done)
             emit view->customContextMenuRequested(view->visualRect(index).center());
             return true;
         };
+    } else if (on.contains(QLatin1String("slide"))) {
+        // A presentation's slide ('path'; the one in front), right-clicked
+        // in its tab: the menu of the tab's ⋯ too.
+        PptxDoc* deck = presentationDocument(args, true, &error);
+        if (deck == nullptr || deck->presentation() == nullptr) {
+            done(errorResult(deck == nullptr ? error : deck->problem()));
+            return;
+        }
+        const int n = on.value(QLatin1String("slide")).toInt();
+        if (n < 1 || n > deck->slideCount()) {
+            done(errorResult(tr("%1 has slides 1 to %2.").arg(titleOf(deck)).arg(deck->slideCount())));
+            return;
+        }
+        a_app->showDocument(QucsApp::documentWidget(deck));
+        deck->goToSlide(n - 1);
+        what = tr("slide %1 of %2").arg(n).arg(titleOf(deck));
+        QPointer<PptxDoc> target(deck);
+        open = [target, n] {
+            if (!target) return false;
+            QWidget* viewport = target->view()->viewport();
+            const QRect r = target->view()->slideRect(n - 1).intersected(viewport->rect());
+            if (r.isEmpty()) return false;
+            QContextMenuEvent event(QContextMenuEvent::Mouse, r.center(), viewport->mapToGlobal(r.center()));
+            QApplication::sendEvent(viewport, &event);
+            return true;
+        };
     } else {
         done(errorResult(tr("'on' is {\"part\": name}, {\"diagram\": n}, {\"canvas\": [x, y]}, {\"project_item\": file}, "
-                            "{\"project\": name}, {\"tab\": title} or {\"file\": path}.")));
+                            "{\"project\": name}, {\"tab\": title}, {\"file\": path} or a presentation's {\"slide\": n}.")));
         return;
     }
 

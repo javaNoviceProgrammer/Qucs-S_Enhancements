@@ -41,6 +41,9 @@ class LayoutDoc;
 class MultiphysicsDoc;
 class PdfDoc;
 class PptxDoc;
+namespace qucs_s::pptx {
+class Presentation;
+}
 namespace qucs_s::layout {
 struct Layout;
 }
@@ -512,6 +515,30 @@ private:
     /// the one in front when not given), open - opened first when \a open
     /// says so. Null and why (empty: a file not open, which may be read).
     PptxDoc* presentationDocument(const QJsonObject& args, bool open, QString* error);
+    /// The same, never opened: the open one, or null and why (empty: a
+    /// presentation's file there, not open).
+    PptxDoc* presentationFound(const QJsonObject& args, QString* error) const;
+    /// \a deck's tab set as args asks - 'reload', 'slide' (the show's while
+    /// it plays), 'find', 'find_next', 'zoom', 'region', 'notes', 'sidebar',
+    /// 'play', 'copy' - and what it shows then into \a out; false, with
+    /// \a error, when it cannot be.
+    bool viewPptx(PptxDoc* deck, const QJsonObject& args, QJsonObject* out, QString* error);
+    /// What \a deck's tab shows: the slide, the zoom, the panes, the find
+    /// bar, the show.
+    QJsonObject pptxView(PptxDoc* deck) const;
+    /// screenshot of a presentation's 'slide' or 'region': drawn from the
+    /// file, its tab left as it is.
+    QJsonObject slidePicture(PptxDoc* deck, const QJsonObject& args);
+    /// export_image of a presentation: whether args name one (open, or its
+    /// file), and its slides written - one picture each, or a PDF.
+    bool isSlideExport(const QJsonObject& args) const;
+    /// The presentation \a args name: the open one's as its tab shows it,
+    /// else its file read; its file and the slide in sight (from 0) too.
+    std::shared_ptr<const qucs_s::pptx::Presentation> presentationOf(const QJsonObject& args, QString* file, int* current, QString* error) const;
+    QJsonObject exportSlides(const QJsonObject& args);
+    /// The files exportSlides() writes for \a args (empty: none, or what is
+    /// asked is not right - it says why).
+    QStringList slideExportFiles(const QJsonObject& args) const;
     /// \a pdf's view set as args asks - 'page' (a number, a page's label or
     /// an outline's destination), 'find', 'zoom', 'region' - into \a out;
     /// false, with \a error, when it cannot be.
