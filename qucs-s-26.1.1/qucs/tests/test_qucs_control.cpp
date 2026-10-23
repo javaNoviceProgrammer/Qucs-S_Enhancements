@@ -5577,7 +5577,7 @@ private slots:
         }
     }
 
-    // The guards the user chooses in the Claude panel's Permissions menu
+    // The guards the user chooses in the Claude panel's Extras menu
     // (both on unless set off): a simulation of a schematic that runs
     // commands besides the simulator, and a file read or written outside the
     // workspace and the open project, are asked about each time, with the

@@ -571,7 +571,7 @@ QJsonObject QucsControl::guardsState() const
                        {QStringLiteral("this conversation is asked"), asked},
                        {QStringLiteral("what they watch"), what.join(QStringLiteral("; "))},
                        {QStringLiteral("note"),
-                        tr("The user sets these in the Claude panel's Permissions menu. describe_tool with 'arguments' says what "
+                        tr("The user sets these in the Claude panel's Extras menu. describe_tool with 'arguments' says what "
                            "they name for one call, before it is made.")}};
 }
 
@@ -612,7 +612,7 @@ QString QucsControl::guardedSaid(const Guarded& g) const
     if (!g.written.isEmpty()) files << tr("writes %1").arg(native(g.written).join(QStringLiteral(", ")));
     if (!files.isEmpty()) said << tr("Outside the workspace and the open project, it %1.").arg(files.join(tr(" and ")));
     if (said.isEmpty()) return {};
-    return said.join(QLatin1Char(' ')) + QLatin1Char(' ') + tr("Asked about each time, as the Permissions menu says.");
+    return said.join(QLatin1Char(' ')) + QLatin1Char(' ') + tr("Asked about each time, as the Extras menu says.");
 }
 
 QString QucsControl::unaskedWithin(const QString& tool, const QJsonObject& arguments) const

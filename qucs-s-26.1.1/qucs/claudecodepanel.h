@@ -354,7 +354,7 @@ private:
     void buildComposer();
     void buildPermissionCard();
     void buildMenu();
-    /// The guards chosen in the Permissions menu (settings), given to the
+    /// The guards chosen in the Extras menu (settings), given to the
     /// session - and so to the host, for every conversation.
     void applyGuards();
     void fillPinMenu();

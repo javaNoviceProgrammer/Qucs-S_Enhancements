@@ -754,7 +754,7 @@ private slots:
     // every conversation), another tab's item as its menu shows, a new
     // tab's at its start. The host is told whether the conversation's mode
     // asks: not in Bypass Permissions.
-    void guardsAreChosenUnderPermissions()
+    void guardsAreChosenUnderExtras()
     {
         QucsSettingsFile().remove("ClaudeCode/askBeforeCommands");
         QucsSettingsFile().remove("ClaudeCode/askOutsideWorkspace");
@@ -767,8 +767,31 @@ private slots:
         auto* commands = panel.findChild<QAction*>(QStringLiteral("claudeAskCommands"));
         auto* outside = panel.findChild<QAction*>(QStringLiteral("claudeAskOutside"));
         QVERIFY(commands != nullptr && outside != nullptr);
+        // Their own menu, Extras, right under Model and not among the
+        // modes (the user, 23 October: "add another menu item called
+        // 'Extras' right underneath 'Model' ... move the two extra
+        // permission settings to under 'Extras'").
         auto* menu = qobject_cast<QMenu*>(commands->parent());
-        QVERIFY(menu != nullptr && menu == outside->parent() && menu->title() == ClaudeCodePanel::tr("Permissions"));
+        QVERIFY(menu != nullptr && menu == outside->parent() && menu->title() == ClaudeCodePanel::tr("Extras"));
+        auto* top = panel.findChild<QMenu*>(QString(), Qt::FindDirectChildrenOnly);
+        QVERIFY(top != nullptr);
+        QStringList titles;
+        QMenu* permissions = nullptr;
+        for (QAction* a : top->actions())
+            if (QMenu* sub = a->menu(); sub != nullptr) {
+                titles << sub->title();
+                if (sub->title() == ClaudeCodePanel::tr("Permissions")) permissions = sub;
+            }
+        // Extras right under Model, and the menus below it where they were.
+        QCOMPARE(titles.mid(0, 3), (QStringList{ClaudeCodePanel::tr("Permissions"), ClaudeCodePanel::tr("Model"),
+                                                ClaudeCodePanel::tr("Extras")}));
+        // The Permissions menu holds the modes alone now.
+        QVERIFY(permissions != nullptr);
+        for (QAction* a : permissions->actions()) {
+            QVERIFY2(a->objectName() != QLatin1String("claudeAskCommands")
+                         && a->objectName() != QLatin1String("claudeAskOutside"), qPrintable(a->text()));
+            QVERIFY2(a->isSeparator() || a->actionGroup() != nullptr, qPrintable(a->text()));
+        }
         emit menu->aboutToShow();
         QVERIFY(commands->isCheckable() && commands->isChecked() && outside->isCheckable() && outside->isChecked());
         QVERIFY(commands->actionGroup() == nullptr);   // (not one of the modes)
@@ -2428,7 +2451,7 @@ private slots:
 
     // Allow All Edits on a card is that conversation's alone, as its note
     // says: the saved permissions - what every new conversation starts
-    // with, after a restart too - stay as the Permissions menu set them.
+    // with, after a restart too - stay as the Extras menu set them.
     // They became every conversation's (bug hunt 2026-09-26, B3).
     void allowAllEditsIsOneConversationsAlone()
     {

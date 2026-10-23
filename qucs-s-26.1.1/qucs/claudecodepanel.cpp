@@ -629,7 +629,7 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     connect(a_session, &qucs_s::claude::Session::permissionWithdrawn, this, &ClaudeCodePanel::onPermissionWithdrawn);
     // Allow All Edits on a card: this conversation's alone, as the note
     // says. The saved default - what every new conversation starts with,
-    // after a restart too - is the Permissions menu's to change.
+    // after a restart too - is the Extras menu's to change.
     connect(a_session, &qucs_s::claude::Session::permissionModeChanged, this, [this](const QString&) {
         addNote(tr("Claude may change files without asking for the rest of this conversation."));
         updateState();
@@ -750,7 +750,7 @@ void ClaudeCodePanel::buildHeader()
     a_menuButton = new QToolButton(a_header);
     a_menuButton->setObjectName(QStringLiteral("claudeHeaderButton"));
     a_menuButton->setText(QStringLiteral("⋯"));
-    a_menuButton->setToolTip(tr("Permissions, model, folder, program, export"));
+    a_menuButton->setToolTip(tr("Permissions, model, extras, folder, program, export"));
     a_menuButton->setAutoRaise(true);
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
     // (The dock's title bar names it: the state comes first.)
@@ -1075,34 +1075,6 @@ void ClaudeCodePanel::buildMenu()
         }
         setPermissionMode(mode);
     });
-    // The uses asked about whatever the mode (but Bypass Permissions): on
-    // unless set off here; for every conversation, at once.
-    modes->addSeparator();
-    QAction* askCommands = modes->addAction(tr("Ask Before a Schematic's Commands Run"));
-    askCommands->setObjectName(QStringLiteral("claudeAskCommands"));
-    askCommands->setCheckable(true);
-    askCommands->setToolTip(tr("Before Claude simulates a schematic that runs commands besides the simulator - a System "
-                               "Command part, ngspice's shell, an Octave script - you are asked, with the commands, in "
-                               "every mode but Bypass Permissions"));
-    QAction* askOutside = modes->addAction(tr("Ask Before Files Outside the Workspace"));
-    askOutside->setObjectName(QStringLiteral("claudeAskOutside"));
-    askOutside->setCheckable(true);
-    askOutside->setToolTip(tr("Before Claude reads or writes a file outside the workspace and the open project with "
-                              "Qucs-S's tools, you are asked, with the files, in every mode but Bypass Permissions"));
-    connect(askCommands, &QAction::triggered, this, [this](bool on) {
-        QucsSettingsFile().setValue(kAskCommands, on);
-        applyGuards();
-    });
-    connect(askOutside, &QAction::triggered, this, [this](bool on) {
-        QucsSettingsFile().setValue(kAskOutside, on);
-        applyGuards();
-    });
-    connect(modes, &QMenu::aboutToShow, this, [this, askCommands, askOutside] {
-        applyGuards();   // (another tab may have changed them)
-        askCommands->setChecked(a_session->guards().commands);
-        askOutside->setChecked(a_session->guards().outside);
-    });
-
     a_modelMenu = a_menu->addMenu(tr("Model"));
     a_modelMenu->setToolTipsVisible(true);
     a_models = new QActionGroup(this);
@@ -1132,6 +1104,36 @@ void ClaudeCodePanel::buildMenu()
     });
     // Asked again when the menu opens: a program installed meanwhile.
     connect(a_modelMenu, &QMenu::aboutToShow, this, &ClaudeCodePanel::listModels);
+
+    // Extras: what is neither a mode nor the model. The uses asked about
+    // whatever the mode (but Bypass Permissions) are here - each on unless
+    // set off, for every conversation, at once -, and what comes later.
+    QMenu* extras = a_menu->addMenu(tr("Extras"));
+    extras->setToolTipsVisible(true);
+    QAction* askCommands = extras->addAction(tr("Ask Before a Schematic's Commands Run"));
+    askCommands->setObjectName(QStringLiteral("claudeAskCommands"));
+    askCommands->setCheckable(true);
+    askCommands->setToolTip(tr("Before Claude simulates a schematic that runs commands besides the simulator - a System "
+                               "Command part, ngspice's shell, an Octave script - you are asked, with the commands, in "
+                               "every mode but Bypass Permissions"));
+    QAction* askOutside = extras->addAction(tr("Ask Before Files Outside the Workspace"));
+    askOutside->setObjectName(QStringLiteral("claudeAskOutside"));
+    askOutside->setCheckable(true);
+    askOutside->setToolTip(tr("Before Claude reads or writes a file outside the workspace and the open project with "
+                              "Qucs-S's tools, you are asked, with the files, in every mode but Bypass Permissions"));
+    connect(askCommands, &QAction::triggered, this, [this](bool on) {
+        QucsSettingsFile().setValue(kAskCommands, on);
+        applyGuards();
+    });
+    connect(askOutside, &QAction::triggered, this, [this](bool on) {
+        QucsSettingsFile().setValue(kAskOutside, on);
+        applyGuards();
+    });
+    connect(extras, &QMenu::aboutToShow, this, [this, askCommands, askOutside] {
+        applyGuards();   // (another tab may have changed them)
+        askCommands->setChecked(a_session->guards().commands);
+        askOutside->setChecked(a_session->guards().outside);
+    });
     // Auto-compact: on unless set off here, whatever Claude Code's own
     // settings say; for every conversation, at once.
     QAction* compact = a_menu->addAction(tr("Auto-Compact"));
