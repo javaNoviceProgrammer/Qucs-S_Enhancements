@@ -29,6 +29,8 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <memory>
+#include <QTextImageFormat>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -530,6 +532,15 @@ ClaudeCodePanel::ClaudeCodePanel(QWidget* parent)
     a_view->setOpenExternalLinks(false);
     a_view->setTextInteractionFlags(Qt::TextBrowserInteraction);
     connect(a_view, &QTextBrowser::anchorClicked, this, &ClaudeCodePanel::handleLink);
+    // A picture in the conversation: its own entry above the usual ones,
+    // which opens it in a tab of its own (the user, 23 October: "if I
+    // right click on an image in the chat it shows me an extra menu
+    // option ... it will load the image in a new tab in the default
+    // built-in image viewer").
+    a_view->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(a_view, &QTextBrowser::customContextMenuRequested, this, [this](const QPoint& at) {
+        if (std::unique_ptr<QMenu> menu = transcriptMenu(at)) menu->exec(a_view->viewport()->mapToGlobal(at));
+    });
     // Following the conversation's end: kept there as the transcript grows
     // after a render - a long one laid out in steps, an image's size known
     // once read -, the reader's scrolling alone ending it. (Decided at each
@@ -2412,6 +2423,45 @@ void ClaudeCodePanel::onTurnFinished(const qucs_s::claude::TurnResult& r)
 }
 
 // ----------------------------------------------------------------------
+std::unique_ptr<QMenu> ClaudeCodePanel::transcriptMenu(const QPoint& at)
+{
+    std::unique_ptr<QMenu> menu(a_view->createStandardContextMenu(at));
+    if (menu == nullptr) return menu;
+    // A picture under the pointer: opened in a tab of its own, above the
+    // usual entries (the user, 23 October).
+    const QString picture = imageAt(at);
+    if (picture.isEmpty()) return menu;
+    auto* open = new QAction(tr("Open in Viewer"), menu.get());
+    open->setObjectName(QStringLiteral("claudeOpenImage"));
+    open->setStatusTip(tr("Opens %1 in a tab of its own").arg(QDir::toNativeSeparators(picture)));
+    open->setToolTip(open->statusTip());
+    connect(open, &QAction::triggered, this, [this, picture] { emit openFileRequested(picture); });
+    QAction* first = menu->actions().value(0);
+    menu->insertAction(first, open);
+    if (first != nullptr) menu->insertSeparator(first);
+    return menu;
+}
+
+QString ClaudeCodePanel::imageAt(const QPoint& at) const
+{
+    // The character either side of the place clicked: a picture is one
+    // character, and the cursor for a point in it lands before or after it
+    // by which half was hit.
+    const QTextCursor where = a_view->cursorForPosition(at);
+    for (QTextCursor::MoveOperation to : {QTextCursor::Right, QTextCursor::Left}) {
+        QTextCursor c = where;
+        if (!c.movePosition(to, QTextCursor::KeepAnchor)) continue;
+        const QTextImageFormat picture = c.charFormat().toImageFormat();
+        if (!picture.isValid() || picture.name().isEmpty()) continue;
+        const QUrl url(picture.name());
+        const QString file = url.isLocalFile() ? url.toLocalFile() : picture.name();
+        // (Gone since it was drawn: no entry for it, as there is nothing
+        // to open.)
+        if (QFileInfo(file).isFile()) return file;
+    }
+    return {};
+}
+
 void ClaudeCodePanel::handleLink(const QUrl& url)
 {
     if (url.scheme() == QLatin1String("toggle")) {
