@@ -1475,15 +1475,37 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
                     if (ofLines.at(i).intersects(region)) kept << lines.at(i);
                 text = kept.join(QLatin1Char('\n'));
                 how = tr("the lines whose box meets it");
-            } else if (const QPdfSelection between = pdf.getSelection(page - 1, region.topLeft(), region.bottomRight());
-                       between.isValid() && !between.text().isEmpty()) {
-                text = between.text().replace(QLatin1String("\r\n"), QLatin1String("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
-                how = tr("the text between its corners, as a drag over it selects: the lines at its ends come whole, so there may "
-                         "be a little more than the region holds (its boxes are one to a text run here, not one to a line - an "
-                         "italic word, a symbol or an equation splits one - so they could not be matched to the lines)");
             } else {
-                how = tr("the whole page: its boxes are not one to a line here, and the text between its corners could not be read "
-                         "either (the picture, with 'image', is cropped to the region all the same)");
+                // Between two points that are on the text, not the
+                // region's own corners: Qt reads between the characters
+                // nearest them, and a corner in the margin - which is
+                // where a region drawn by hand usually starts - is near
+                // no character at all, so nothing came back (the second
+                // re-check of 23 October, 1). The first and last run the
+                // region meets, in reading order, give the two points.
+                QRectF first, last;
+                for (const QPolygonF& drawn : all.bounds()) {
+                    const QRectF box = drawn.boundingRect();
+                    if (box.isNull() || !box.intersects(region)) continue;
+                    if (first.isNull()) first = box;
+                    last = box;
+                }
+                if (first.isNull()) {
+                    text.clear();
+                    how = tr("nothing: no text of the page is in it");
+                } else if (const QPdfSelection between =
+                               pdf.getSelection(page - 1, QPointF(first.left() + 1, first.center().y()),
+                                                QPointF(last.right() - 1, last.center().y()));
+                           between.isValid() && !between.text().isEmpty()) {
+                    text = between.text().replace(QLatin1String("\r\n"), QLatin1String("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+                    how = tr("the text from the first run of the page the region meets to the last, as a drag between them "
+                             "selects: the lines at its ends come whole, so there may be a little more than the region holds "
+                             "(its boxes are one to a text run here, not one to a line - an italic word, a symbol or an equation "
+                             "splits one - so they could not be matched to the lines)");
+                } else {
+                    how = tr("the whole page: its boxes are not one to a line here, and the text between the runs it meets could "
+                             "not be read either (the picture, with 'image', is cropped to the region all the same)");
+                }
             }
         }
         if (!search.isEmpty()) {
