@@ -263,10 +263,6 @@ BREAKS = [
     ('R1 the boxes paired run by run', 'qucscontrol_design.cpp',
      '                    if (over > 0.5 * std::min(last.height(), box.height())) {',
      '                    if (false) {', [W + 'aRegionKeepsThePdfsLinesAndOneLineEnding'], {}),
-    ('R1 the third way says nothing of itself', 'qucscontrol_design.cpp',
-     '                how = tr("the whole page: its boxes are not one to a line here, and the text between its corners could not be read "',
-     '                how = QString(); (void)tr("the whole page: its boxes are not one to a line here, and the text between its corners could not be read "',
-     [W + 'aRegionKeepsThePdfsLinesAndOneLineEnding'], {}),
     ('R1 how the region was read not said', 'qucscontrol_design.cpp',
      '            result.insert(QStringLiteral("of the region"), how);', '',
      [W + 'aRegionKeepsThePdfsLinesAndOneLineEnding'], {}),
@@ -284,6 +280,25 @@ BREAKS = [
      '            return fail(why.startsWith(tool + QLatin1Char(\':\')) ? why : QStringLiteral("%1: %2").arg(tool, why));',
      '            return fail(QStringLiteral("%1: %2").arg(tool, why));',
      [W + 'aStoppedScriptSaysWhatItWasDoing'], {}),
+    # The second re-check of 23 October.
+    ('S1 the corners not moved onto the text', 'qucscontrol_design.cpp',
+     '                               pdf.getSelection(page - 1, QPointF(first.left() + 1, first.center().y()),\n'
+     '                                                QPointF(last.right() - 1, last.center().y()));',
+     '                               pdf.getSelection(page - 1, region.topLeft(), region.bottomRight());',
+     [W + 'aRegionKeepsThePdfsLinesAndOneLineEnding'], {}),
+    ('S1 a region with no text of the page read all the same', 'qucscontrol_design.cpp',
+     '                if (first.isNull()) {\n                    text.clear();', '                if (false) {\n                    text.clear();',
+     [W + 'aRegionKeepsThePdfsLinesAndOneLineEnding'], {}),
+    ('S1 every run taken, not those the region meets', 'qucscontrol_design.cpp',
+     '                    if (box.isNull() || !box.intersects(region)) continue;', '                    if (box.isNull()) continue;',
+     [W + 'aRegionKeepsThePdfsLinesAndOneLineEnding'], {}),
+    ('S3 a model not watched on disk', 'qucs.cpp',
+     '            || dynamic_cast<MultiphysicsDoc *>(doc) != nullptr)', '            )',
+     [W + 'aModelTabFollowsItsFileOnDisk'], {}),
+    ('S3 a model not read again', 'qucs.cpp',
+     '  } else if (auto *model = dynamic_cast<MultiphysicsDoc *>(doc)) {\n    loaded = model->reload();',
+     '  } else if (auto *model = dynamic_cast<MultiphysicsDoc *>(doc); false) {\n    loaded = model->reload();',
+     [W + 'aModelTabFollowsItsFileOnDisk'], {}),
 ]
 
 

@@ -916,8 +916,61 @@ private slots:
             QVERIFY2(line.trimmed().isEmpty() || allRich.contains(line.trimmed()), qPrintable(line));
         QVERIFY2(!middle.value("of the region").toString().isEmpty(), "the answer did not say how it read the region");
 
+        // A region that starts in the margin, which is where one drawn by
+        // hand usually starts: the two points are moved onto the first and
+        // last run it meets, since Qt reads between the characters nearest
+        // them and a corner in the margin is near none (the second
+        // re-check of 23 October, 1). Here the whole page is one margin
+        // wider than the text, and the text comes back all the same.
+        const QJsonObject wide = json(must("read_pdf", {{"path", rich}, {"region", QJsonArray{0.0, 0.08, 1.0, 0.17}}}));
+        const QString fromMargin = wide.value("pages").toArray().first().toObject().value("text").toString();
+        QVERIFY2(!fromMargin.isEmpty(), qPrintable(wide.value("of the region").toString()));
+        // Less than the page: with the region's own corners, which lie in
+        // the margin, nothing is found there and the whole page comes back.
+        QVERIFY2(fromMargin.size() < allRich.size(),
+                 qPrintable(QStringLiteral("%1 of %2 chars, by \"%3\"").arg(fromMargin.size()).arg(allRich.size())
+                                .arg(wide.value("of the region").toString().left(40))));
+        QVERIFY2(!wide.value("of the region").toString().startsWith(QStringLiteral("nothing")),
+                 qPrintable(wide.value("of the region").toString()));
+        // A region with no text of the page in it says so, and is not the
+        // page (a corner above the first line; the foot has the page
+        // number Qt's writer puts there).
+        const QJsonObject empty = json(must("read_pdf", {{"path", rich}, {"region", QJsonArray{0.01, 0.005, 0.06, 0.02}}}));
+        QCOMPARE(empty.value("pages").toArray().first().toObject().value("text").toString(), QString());
+        QVERIFY2(empty.value("of the region").toString().startsWith(QStringLiteral("nothing")),
+                 qPrintable(empty.value("of the region").toString()));
+
         // A region outside the page is refused, as it is for a picture.
         QVERIFY(failed(call("read_pdf", {{"path", file}, {"region", QJsonArray{900, 900, 1000, 1000}}})));
+    }
+
+    // The second re-check of 23 October, 3: a model whose file changes
+    // under it is read again, and the conversation is told - as a
+    // schematic's is. (The report was of a tab that kept what it had; it
+    // does not happen here, and the one case where a reload is refused -
+    // unsaved changes - says so in the answer.)
+    void aModelTabFollowsItsFileOnDisk()
+    {
+        const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+        QVERIFY(QFile::copy(from + QStringLiteral("coax.qfem"), path("follows.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "follows.qfem"}})));
+        auto* doc = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->model().objectNames().size(), 2);   // shield, core
+        const quint64 was = doc->revision();
+
+        // Another model written over it, as a command of Claude's or
+        // another program would.
+        QVERIFY(QFile::remove(path("follows.qfem")));
+        QVERIFY(QFile::copy(from + QStringLiteral("coax_rlgc.qfem"), path("follows.qfem")));
+        QTRY_VERIFY_WITH_TIMEOUT(doc->model().objectNames().size() == 3, 15000);   // outer, dielectric, inner
+        QVERIFY(doc->revision() > was);
+        QVERIFY(!doc->getDocChanged());
+        // The tools see the model of the file, not the one that was there.
+        const QJsonObject now = json(must("fem_describe", {{"what", "tree"}}));
+        const QJsonArray objects = now.value("geometry").toObject().value("objects").toArray();
+        QVERIFY2(objects.contains(QJsonValue(QStringLiteral("dielectric"))),
+                 qPrintable(QJsonDocument(objects).toJson(QJsonDocument::Compact)));
     }
 
     // N10. A script stopped says what it was doing, and the time the user
