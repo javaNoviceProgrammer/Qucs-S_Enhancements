@@ -22,7 +22,10 @@
 #include <QPixmap>
 #include <QSet>
 #include <QTextFormat>
+#include <QMenu>
 #include <QWidget>
+
+#include <memory>
 
 #include <functional>
 
@@ -32,7 +35,6 @@ class QActionGroup;
 class QFrame;
 class QLabel;
 class QListWidget;
-class QMenu;
 class QMimeData;
 class QPlainTextEdit;
 class QTextBrowser;
@@ -293,6 +295,15 @@ public slots:
     /// Stop button's menu; Session::sendToBackground()).
     void sendToBackground();
     void newConversation();
+
+    /// The file of the picture at \a at in the conversation (viewport
+    /// coordinates), for the menu's "Open in Viewer"; empty where there is
+    /// none there, or its file is gone.
+    QString imageAt(const QPoint& at) const;
+    /// The conversation's own menu for \a at: the usual entries, with
+    /// "Open in Viewer" above them where a picture is there. Shown by the
+    /// view's context menu; built here so that a test can read it.
+    std::unique_ptr<QMenu> transcriptMenu(const QPoint& at);
 
 signals:
     /// Claude changed these files in a turn.

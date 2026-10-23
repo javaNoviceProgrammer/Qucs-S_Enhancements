@@ -4820,6 +4820,84 @@ private slots:
     // conversation and back in the box when the prompt is edited. One too
     // large for the API is scaled and written smaller; what is no image is
     // not taken; text pasted or dropped is text.
+    // A picture in the conversation has an entry of its own in the view's
+    // menu, which opens it in a tab (the user, 23 October: "if I right
+    // click on an image in the chat it shows me an extra menu option that
+    // is called \"Open in Viewer\"").
+    void aPictureInTheConversationOpensInAViewer()
+    {
+        const QString work = fresh("menuwork");
+        QImage drawn(200, 90, QImage::Format_RGB32);
+        drawn.fill(Qt::white);
+        for (int x = 0; x < 200; ++x) drawn.setPixel(x, 45, qRgb(0, 0, 200));
+        const QString file = work + "/picture.png";
+        QVERIFY(drawn.save(file));
+
+        ClaudeCodePanel panel;
+        panel.setDefaultDirectory(work);
+        panel.resize(700, 500);
+        panel.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        QSignalSpy opened(&panel, &ClaudeCodePanel::openFileRequested);
+        // Dropped on the box and sent: the prompt's line holds it.
+        QMimeData files;
+        files.setUrls({QUrl::fromLocalFile(file)});
+        QDragEnterEvent enter(QPoint(10, 10), Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.composer()->viewport(), &enter);
+        QDropEvent drop(QPointF(10, 10), Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.composer()->viewport(), &drop);
+        QCOMPARE(panel.attachedImages(), QStringList{file});
+        panel.composer()->setPlainText(QStringLiteral("Here it is."));
+        panel.session()->setProgram(script("writer", kWriter));
+        panel.sendComposer();
+        QTRY_VERIFY_WITH_TIMEOUT(read(dir.filePath("prompts")).contains("Here it is"), 10000);
+        panel.renderNow();
+
+        // Where the picture is in the view.
+        QTextDocument* doc = panel.transcript()->document();
+        QTextCursor at;
+        for (QTextBlock b = doc->begin(); b.isValid() && at.isNull(); b = b.next())
+            for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it)
+                if (it.fragment().isValid() && it.fragment().charFormat().isImageFormat()) {
+                    at = QTextCursor(doc);
+                    at.setPosition(it.fragment().position() + 1);
+                    break;
+                }
+        QVERIFY2(!at.isNull(), "the picture was not drawn in the conversation");
+        const QRect box = panel.transcript()->cursorRect(at);
+        const QPoint on(std::max(0, box.center().x() - 20), box.center().y());
+
+        // Its file is found there, and the menu holds the entry first.
+        QCOMPARE(panel.imageAt(on), file);
+        const std::unique_ptr<QMenu> menu = panel.transcriptMenu(on);
+        QVERIFY(menu != nullptr);
+        auto* open = menu->findChild<QAction*>(QStringLiteral("claudeOpenImage"));
+        QVERIFY2(open != nullptr, "no Open in Viewer entry on the picture");
+        QCOMPARE(menu->actions().value(0), open);
+        QCOMPARE(open->text(), ClaudeCodePanel::tr("Open in Viewer"));
+        QVERIFY(menu->actions().value(1) != nullptr && menu->actions().value(1)->isSeparator());
+        QVERIFY(menu->actions().size() > 2);   // (the usual entries are still under it)
+        // It asks for that very file to be opened, which the window gives
+        // to gotoPage - a picture opens in a tab of the built-in viewer.
+        open->trigger();
+        QCOMPARE(opened.size(), 1);
+        QCOMPARE(opened.first().first().toString(), file);
+
+        // Not on the words: the menu is the usual one there.
+        QTextCursor words(doc);
+        words.movePosition(QTextCursor::End);
+        const QPoint elsewhere = panel.transcript()->cursorRect(words).center();
+        QVERIFY(panel.imageAt(elsewhere).isEmpty());
+        const std::unique_ptr<QMenu> plain = panel.transcriptMenu(elsewhere);
+        QVERIFY(plain != nullptr && plain->findChild<QAction*>(QStringLiteral("claudeOpenImage")) == nullptr);
+
+        // Its file gone since it was drawn: no entry, since there is
+        // nothing to open.
+        QVERIFY(QFile::remove(file));
+        QVERIFY(panel.imageAt(on).isEmpty());
+        QVERIFY(panel.transcriptMenu(on)->findChild<QAction*>(QStringLiteral("claudeOpenImage")) == nullptr);
+    }
+
     void imagesDroppedAreShownToClaude()
     {
         const QString work = fresh("dropwork");
