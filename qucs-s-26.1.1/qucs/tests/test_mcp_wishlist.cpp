@@ -23,6 +23,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPainter>
+#include <QPageSize>
+#include <QTextDocument>
+#include <QPdfWriter>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -46,6 +49,7 @@
 #include "schematic.h"
 #include "textdoc.h"
 
+using FemNode = qucs_s::fem::Node;
 using qucs_s::fem::Dim;
 using qucs_s::fem::Scope;
 using qucs_s::fem::evaluateConstant;
@@ -105,13 +109,17 @@ class TestMcpWishlist : public QObject
     /// are where the test says.
     static bool writeLinedPdf(const QString& path)
     {
-        const QList<QPair<QByteArray, int>> lines{{"First line of the page, near the top.", 700},
-                                                  {"Second line, a little lower down.", 660},
-                                                  {"Third line, lower still.", 620},
-                                                  {"Fourth and last line of this page.", 580}};
+        // (The first line is drawn in two goes, so that the page has a
+        // line of more than one text run - what splits a box on a real
+        // page, where an italic word or a symbol does it.)
+        const QList<std::tuple<QByteArray, int, int>> lines{{"First line of the page,", 50, 700},
+                                                            {"near the top.", 230, 700},
+                                                            {"Second line, a little lower down.", 50, 660},
+                                                            {"Third line, lower still.", 50, 620},
+                                                            {"Fourth and last line of this page.", 50, 580}};
         QByteArray content;
-        for (const auto& [words, y] : lines)
-            content += "BT /F1 14 Tf 50 " + QByteArray::number(y) + " Td (" + words + ") Tj ET ";
+        for (const auto& [words, x, y] : lines)
+            content += "BT /F1 14 Tf " + QByteArray::number(x) + " " + QByteArray::number(y) + " Td (" + words + ") Tj ET ";
         QList<QByteArray> objects{"<< /Type /Catalog /Pages 2 0 R >>",
                                   "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                                   "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> "
@@ -774,16 +782,45 @@ private slots:
         QCOMPARE(set.value("dis1.count").toInt(), 24);
         QCOMPARE(set.value("sz1.hmax").toString(), QStringLiteral("0.025"));
         QCOMPARE(set.value("hmax").toString(), QStringLiteral("0.5"));
-        // Its hidden hmin left where it was: the node was not custom, so
-        // the preset's own smallest element is meant, not the 4 mm an
-        // earlier try wrote into a field that was not shown.
-        QVERIFY2(!set.contains("hmin"), qPrintable(QJsonDocument(set).toJson(QJsonDocument::Compact)));
+        // The smallest element is the preset's, divided - not the 4 mm an
+        // earlier try left in a field that was not shown, which the node
+        // still holds though it is not custom.
+        QVERIFY2(set.value("hmin").toString().toDouble() > 0 && set.value("hmin").toString().toDouble() < 0.1,
+                 qPrintable(QJsonDocument(set).toJson(QJsonDocument::Compact)));
         // And the mesh really is finer for it: the stale 4 mm applied as a
         // smallest element holds the small rectangle's own elements away,
         // and the unknowns then grow 1.7 times where they grow 2.6 here.
         const QJsonArray both = counted.value("meshes").toArray();
-        QVERIFY2(both.at(1).toObject().value("unknowns").toInt() > 22 * both.at(0).toObject().value("unknowns").toInt() / 10,
+        const int before = both.at(0).toObject().value("unknowns").toInt();
+        const int after = both.at(1).toObject().value("unknowns").toInt();
+        QVERIFY2(after > 22 * before / 10 && after < 10 * before,
                  qPrintable(QJsonDocument(both).toJson(QJsonDocument::Compact)));
+        // Each factor divides the sizes the model began with, not the
+        // ones the mesh before it was given, and the mesh node and its
+        // features are put back whole (the re-check of 23 October, 2).
+        const QJsonObject twice = json(must("fem_converge", {{"values", QJsonArray{"es.C11"}},
+                                                             {"refine", QJsonArray{2, 4}}, {"timeout", 900}}, 1200000));
+        const QJsonArray steps = twice.value("meshes").toArray();
+        QCOMPARE(steps.size(), 3);
+        const QJsonObject at2 = steps.at(1).toObject().value("sizes set").toObject();
+        const QJsonObject at4 = steps.at(2).toObject().value("sizes set").toObject();
+        QCOMPARE(at2.value("hmax").toString().toDouble(), at4.value("hmax").toString().toDouble() * 2);
+        QCOMPARE(at2.value("dis1.count").toInt() * 2, at4.value("dis1.count").toInt());
+        QCOMPARE(at2.value("sz1.hmax").toString().toDouble(), at4.value("sz1.hmax").toString().toDouble() * 2);
+        // The smallest element goes with them, or it holds the finer
+        // meshes back and the steps come out uneven.
+        QVERIFY2(at2.contains("hmin") && at2.value("hmin").toString().toDouble()
+                                             == at4.value("hmin").toString().toDouble() * 2,
+                 qPrintable(QJsonDocument(at2).toJson(QJsonDocument::Compact)));
+        // The features are as they were, not as the finest mesh left them.
+        auto* put = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(put != nullptr);
+        const FemNode* size = put->model().find(QStringLiteral("sz1"));
+        QVERIFY2(size != nullptr && size->text(QStringLiteral("hmax")) == QStringLiteral("0.05"),
+                 size == nullptr ? "no sz1" : qPrintable(size->text(QStringLiteral("hmax"))));
+        const FemNode* dis = put->model().find(QStringLiteral("dis1"));
+        QVERIFY(dis != nullptr && dis->props.value(QStringLiteral("count")).toInt() == 12);
+
         // A value that evaluates at no mesh is not convergence either: the
         // table is empty, and "converged" would be a word about nothing.
         const QJsonObject nothing = json(must("fem_converge", {{"values", QJsonArray{"es.nosuch"}},
@@ -844,6 +881,41 @@ private slots:
         const QJsonObject low = json(must("read_pdf", {{"path", file}, {"region", QJsonArray{40, 210, 560, 300}}}));
         QCOMPARE(low.value("pages").toArray().first().toObject().value("text").toString().split(QLatin1Char('\n')),
                  (QStringList{all.split(QLatin1Char('\n')).at(2), all.split(QLatin1Char('\n')).at(3)}));
+        // A page whose lines are made of several runs - an italic word
+        // among upright ones, as a paper's are - cannot be paired box to
+        // line, and the text between the region's corners is read instead
+        // (the re-check of 23 October, 1). Written by Qt, which gives its
+        // font the widths that reading between two points needs.
+        const QString rich = path("rich.pdf");
+        {
+            QPdfWriter writer(rich);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            QTextDocument doc;
+            QFont font(QStringLiteral("Helvetica"));
+            font.setPointSize(13);
+            doc.setDefaultFont(font);
+            doc.setHtml(QStringLiteral("<p>Alpha one of the page and it runs on for a while so that it wraps onto a second "
+                                       "line of its own.</p><p>Beta two with an <i>italic</i> word in the middle of it, and "
+                                       "more words after that one.</p><p>Gamma three, the last of them.</p>"));
+            doc.print(&writer);
+        }
+        QVERIFY(QFileInfo(rich).size() > 0);
+        const QString allRich = json(must("read_pdf", {{"path", rich}})).value("pages").toArray().first()
+                                    .toObject().value("text").toString();
+        QVERIFY2(allRich.contains(QStringLiteral("italic")), qPrintable(allRich.left(200)));
+        const QJsonObject middle = json(must("read_pdf", {{"path", rich}, {"region", QJsonArray{0.05, 0.08, 0.95, 0.17}}}));
+        const QString someOfIt = middle.value("pages").toArray().first().toObject().value("text").toString();
+        // Its boxes are not one to a line, so the region cannot be applied
+        // that way; what comes back is of the page and the answer says how
+        // it was read. (Which of the two other ways it takes is the
+        // document's to decide: reading between two points answers nothing
+        // on a PDF a writer made here, and does answer on a real paper -
+        // the one the re-check used, tried by hand.)
+        QVERIFY2(!someOfIt.isEmpty(), "nothing came back for the region");
+        for (const QString& line : someOfIt.split(QLatin1Char('\n')))
+            QVERIFY2(line.trimmed().isEmpty() || allRich.contains(line.trimmed()), qPrintable(line));
+        QVERIFY2(!middle.value("of the region").toString().isEmpty(), "the answer did not say how it read the region");
+
         // A region outside the page is refused, as it is for a picture.
         QVERIFY(failed(call("read_pdf", {{"path", file}, {"region", QJsonArray{900, 900, 1000, 1000}}})));
     }
@@ -867,6 +939,14 @@ private slots:
                  qPrintable(inCall.value("error").toString()));
         QVERIFY2(inCall.value("error").toString().contains(QStringLiteral("its call")),
                  qPrintable(inCall.value("error").toString()));
+        // A tool's refusal inside a script names it once: the tool says its
+        // own name already (the re-check of 23 October, 3).
+        const QJsonObject refused = json(call("run_script",
+                                              {{"script", "qucs.call('get_dataset', {path: 'none.dat', points: 'abc'})"}},
+                                              30000));
+        const QString why = refused.value("error").toString();
+        QVERIFY2(why.contains(QStringLiteral("get_dataset")), qPrintable(why));
+        QCOMPARE(why.count(QStringLiteral("get_dataset:")), 1);
         QVERIFY(inCall.value("calls").toInt() > 1);
         // The user's time is not the script's: a card answered after a
         // while does not stop a script whose own timeout is shorter, and

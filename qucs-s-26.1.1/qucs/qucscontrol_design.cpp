@@ -1423,7 +1423,7 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
     // of 23 October, 7). Empty: the whole page.
     QList<double> corners;
     for (const QJsonValue& v : args.value(QLatin1String("region")).toArray()) corners << v.toDouble();
-    bool wholeLines = false;
+    QString how;   // how the region was applied to the text, as the answer says
     for (int page : std::as_const(pages)) {
         const QPdfSelection all = pdf.getAllText(page - 1);
         // (Its lines end CR LF, as the page has them; one line ending is
@@ -1436,16 +1436,54 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
                 return errorResult(tr("'region' is [x1, y1, x2, y2] of a page: points from its top left (page %1 is %2 x %3), or "
                                       "fractions of it.")
                                        .arg(page).arg(paper.width()).arg(paper.height()));
-            const QStringList lines = text.split(QLatin1Char('\n'));
-            const QList<QPolygonF> boxes = all.bounds();
-            // (One box to a line: where the PDF module gives another
-            // number of them, the page is read whole and the answer says so.)
-            if (boxes.size() != lines.size()) wholeLines = true;
-            else {
+            // Two ways, because neither holds everywhere.
+            //
+            // The boxes QPdfSelection gives are one to a text run, not one
+            // to a line: an italic word, a symbol or an equation splits a
+            // line into several, and page 2 of a paper gave 201 boxes for
+            // 42 lines (the re-check of 23 October, 1). Where they do
+            // answer to the lines - grouped by the line they sit on - the
+            // lines whose box meets the region are kept, which is exactly
+            // what the region asks for.
+            //
+            // Where they do not, the text between the region's corners, as
+            // a drag over it selects: Qt reads it from the characters
+            // between those points, which is how the viewer's own selection
+            // is made. Its ends come whole, so it may hold a little more.
+            // (That one answers nothing on some documents - a PDF written
+            // by hand, with no widths for its font - where the first way
+            // works, which is why both are here.)
+            QStringList lines = text.split(QLatin1Char('\n'));
+            if (!lines.isEmpty() && lines.last().isEmpty()) lines.removeLast();
+            QList<QRectF> ofLines;
+            for (const QPolygonF& drawn : all.bounds()) {
+                const QRectF box = drawn.boundingRect();
+                if (box.isNull()) continue;
+                if (!ofLines.isEmpty()) {
+                    QRectF& last = ofLines.last();
+                    const double over = std::min(last.bottom(), box.bottom()) - std::max(last.top(), box.top());
+                    if (over > 0.5 * std::min(last.height(), box.height())) {
+                        last = last.united(box);
+                        continue;
+                    }
+                }
+                ofLines << box;
+            }
+            if (ofLines.size() == lines.size()) {
                 QStringList kept;
                 for (int i = 0; i < lines.size(); ++i)
-                    if (boxes.at(i).boundingRect().intersects(region)) kept << lines.at(i);
+                    if (ofLines.at(i).intersects(region)) kept << lines.at(i);
                 text = kept.join(QLatin1Char('\n'));
+                how = tr("the lines whose box meets it");
+            } else if (const QPdfSelection between = pdf.getSelection(page - 1, region.topLeft(), region.bottomRight());
+                       between.isValid() && !between.text().isEmpty()) {
+                text = between.text().replace(QLatin1String("\r\n"), QLatin1String("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+                how = tr("the text between its corners, as a drag over it selects: the lines at its ends come whole, so there may "
+                         "be a little more than the region holds (its boxes are one to a text run here, not one to a line - an "
+                         "italic word, a symbol or an equation splits one - so they could not be matched to the lines)");
+            } else {
+                how = tr("the whole page: its boxes are not one to a line here, and the text between its corners could not be read "
+                         "either (the picture, with 'image', is cropped to the region all the same)");
             }
         }
         if (!search.isEmpty()) {
@@ -1472,10 +1510,7 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
         result.insert(QStringLiteral("pages"), read);
         if (!corners.isEmpty()) {
             result.insert(QStringLiteral("region"), args.value(QLatin1String("region")));
-            result.insert(QStringLiteral("of the region"),
-                          wholeLines ? tr("the whole page: its lines and their boxes do not answer to each other here, so the "
-                                          "region could not be applied to the text (the picture, with 'image', is cropped to it)")
-                                     : tr("the lines whose box meets it, of each page asked for"));
+            result.insert(QStringLiteral("of the region"), how);
         }
         if (!skipped.isEmpty()) result.insert(QStringLiteral("left out"), tr("pages %1: too much text at once - ask for them").arg(skipped.join(QStringLiteral(", "))));
         bool empty = true;

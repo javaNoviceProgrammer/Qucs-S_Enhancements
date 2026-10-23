@@ -2062,27 +2062,36 @@ QString dividedBy(const QString& text, double factor)
 // local sizes set it almost as it was - 34,373 triangles to 37,450 at a
 // factor of four in the check of 23 October - and the answer then called
 // values that could not move "converged". Each size it set, by name.
-QJsonObject refineMesh(Model& m, const QJsonObject& meshProps, double h0, double factor)
+QJsonObject refineMesh(Model& m, const Node& meshWas, double h0, double hmin0, double factor)
 {
     QJsonObject set;
     Node* mesh = m.find(m.mesh().tag);
     if (mesh == nullptr) return set;
-    mesh->props = meshProps;
-    const bool wasCustom = meshProps.value(QLatin1String("custom")).toBool();
+    // The whole node as it was, its features with it: each factor divides
+    // the sizes the model began with, not the ones the mesh before it was
+    // given. Restoring the node's own properties alone had the second mesh
+    // divide the first's again - 0.05 to 0.025 to 0.00625 at two and four
+    // - so the steps compounded and came out uneven (the re-check of 23
+    // October, 2), and the model was left holding the finest one's.
+    *mesh = meshWas;
+    const bool wasCustom = meshWas.props.value(QLatin1String("custom")).toBool();
     // (Not custom before: the other fields may hold what an earlier try
     // left there, which turning it on would suddenly apply - the preset's
     // are meant. Custom: its own hmin divided too, or it clamps the rest.)
-    for (const char* key : {"hmin", "growth", "curvature", "narrow"}) {
+    for (const char* key : {"hmin", "growth", "curvature", "narrow"})
         if (!wasCustom) mesh->props.remove(QLatin1String(key));
-        else if (QLatin1String(key) == QLatin1String("hmin"))
-            if (const QString hmin = mesh->props.value(QLatin1String(key)).toString(); !hmin.trimmed().isEmpty()) {
-                mesh->props.insert(QLatin1String(key), dividedBy(hmin, factor));
-                set.insert(QStringLiteral("hmin"), mesh->props.value(QLatin1String(key)));
-            }
-    }
     mesh->props.insert(QStringLiteral("custom"), true);
     mesh->props.insert(QStringLiteral("hmax"), formatNumber(h0 / factor, 6));
     set.insert(QStringLiteral("hmax"), mesh->props.value(QLatin1String("hmax")));
+    // The smallest element divided too, whatever says it - the preset's,
+    // or the node's own. It is a floor: left where it was, it holds the
+    // finer meshes back and the steps come out uneven (138k to 360k
+    // unknowns at twice, then 4.47M at four times - the re-check of 23
+    // October, 2 - where each halving should give about four).
+    if (hmin0 > 0 && hmin0 / factor < h0 / factor) {
+        mesh->props.insert(QStringLiteral("hmin"), formatNumber(hmin0 / factor, 6));
+        set.insert(QStringLiteral("hmin"), mesh->props.value(QLatin1String("hmin")));
+    }
     const std::function<void(Node&)> under = [&](Node& n) {
         for (Node& c : n.children) {
             const QString named = c.tag.isEmpty() ? c.type : c.tag;
@@ -2160,9 +2169,10 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
         QStringList watched;
         QList<double> finer;      // the factors, the first mesh as it is
         double h0 = 0;            // the largest element now (geometry's unit)
+        double hmin0 = 0;         // and the smallest, whatever says it
         double tolerance = 0.01;
         int timeout = 600;
-        QJsonObject meshProps;    // the mesh node's, as it was
+        std::optional<FNode> meshWas;   // the mesh node and its features, as they were
         bool changed = false;     // whether the model was changed by us
         bool wasChanged = false;  // whether the model had unsaved changes before
         QJsonObject sizes;        // the sizes the last refinement set, by name
@@ -2176,17 +2186,18 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
     run->watched = watched;
     run->finer = finer;
     run->h0 = sizes.hmax;
+    run->hmin0 = sizes.hmin;
     run->tolerance = tolerance;
     run->timeout = waitsFor(QStringLiteral("fem_solve"), args);
-    if (const Node* mesh = doc->model().find(doc->model().mesh().tag)) run->meshProps = mesh->props;
+    if (const Node* mesh = doc->model().find(doc->model().mesh().tag)) run->meshWas = *mesh;
     run->wasChanged = doc->getDocChanged();
     run->done = done;
 
     // The mesh node put back as it was, and the answer given.
     const auto finish = std::make_shared<std::function<void(const QJsonObject&)>>([run](const QJsonObject& answer) {
-        if (run->doc && run->changed) {
+        if (run->doc && run->changed && run->meshWas) {
             Model m = run->doc->model();
-            if (Node* mesh = m.find(m.mesh().tag)) mesh->props = run->meshProps;
+            if (Node* mesh = m.find(m.mesh().tag)) *mesh = *run->meshWas;
             run->doc->setModel(m, tr("Mesh as it was"));
             // (The model holds what it held: as unsaved as it was before.)
             run->doc->setDocChanged(run->wasChanged);
@@ -2205,7 +2216,8 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
             // own: the preset's other sizes stay as the preset has them.
             Model m = d->model();
             if (m.find(m.mesh().tag) == nullptr) return (*finish)(errorResult(tr("The model has no mesh node.")));
-            run->sizes = refineMesh(m, run->meshProps, run->h0, factor);
+            if (!run->meshWas) return (*finish)(errorResult(tr("The model has no mesh node.")));
+            run->sizes = refineMesh(m, *run->meshWas, run->h0, run->hmin0, factor);
             run->changed = true;
             d->setModel(m, tr("Mesh refined %1 times").arg(formatNumber(factor, 4)));
         }
