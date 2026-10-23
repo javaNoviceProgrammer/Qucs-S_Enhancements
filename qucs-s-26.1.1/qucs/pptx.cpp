@@ -277,7 +277,7 @@ private:
 struct Theme {
     QHash<QString, QColor> colors;
     QString major = QStringLiteral("Calibri Light"), minor = QStringLiteral("Calibri");
-    QList<const Node*> fills, lines, bgFills;
+    QList<const Node*> fills, lines, bgFills, effects;
 };
 
 Theme readTheme(const Node* root)
@@ -314,6 +314,8 @@ Theme readTheme(const Node* root)
             for (const auto& k : l->kids) t.lines << k.get();
         if (const Node* l = fmt->child(u"bgFillStyleLst"))
             for (const auto& k : l->kids) t.bgFills << k.get();
+        if (const Node* l = fmt->child(u"effectStyleLst"))
+            for (const auto& k : l->kids) t.effects << k.get();
     }
     return t;
 }
@@ -671,6 +673,8 @@ struct Chart {
     qreal fontSize = 10;
     QColor textColor = QColor(0x59, 0x59, 0x59);
     QString family;
+    int stretch = 100;   // a stand-in's, as wide as the font asked
+    qreal lineFactor = 1;   // its lines' height against the font asked's
     Fill area, plotArea;
     Stroke border;
     QList<QColor> accents;
@@ -679,6 +683,19 @@ struct Chart {
 // ---------------------------------------------------------------------------
 // What is drawn.
 
+/// An outer shadow (a:outerShdw): the element's silhouette under it,
+/// offset and blurred.
+struct Shadow {
+    bool on = false;
+    QColor color;          // its alpha too
+    qreal blur = 0;        // points
+    qreal dist = 0;        // points
+    qreal dir = 0;         // degrees, clockwise from the right
+    qreal sx = 1, sy = 1;  // its size against the element's
+    QString align = QStringLiteral("b");   // what stays put as it is scaled
+    bool rotWithShape = true;
+};
+
 struct Element {
     enum Kind { Shape, Picture, Group, TableFrame, ChartFrame, Missing };
     Kind kind = Shape;
@@ -686,9 +703,11 @@ struct Element {
     qreal rotation = 0;
     bool flipH = false, flipV = false;
     QPainterPath path;   // its outline, in its own coordinates (0, 0, width, height)
+    QPainterPath strokeOnly;   // stroked, not filled (a cloud's inner arcs)
     bool open = false;   // a line, an arc: stroked, not filled
     Fill fill;
     Stroke stroke;
+    Shadow shadow;
     std::shared_ptr<TextFrame> text;
     std::shared_ptr<const Media> media;
     QRectF crop;   // a picture's part left out on each side: fractions (l, t, r, b)
@@ -974,6 +993,8 @@ struct StyleRefs {
     Fill fill;
     std::optional<QColor> fontColor;
     QString font;
+    const Node* effects = nullptr;   // the theme's effect style's effectLst
+    std::optional<QColor> effectColor;
 };
 
 StyleRefs styleRefs(const Node* style, const Ctx& c)
@@ -999,7 +1020,30 @@ StyleRefs styleRefs(const Node* style, const Ctx& c)
         r.fontColor = colorOf(font, c);
         r.font = font->attr(u"idx") == QLatin1String("major") ? c.theme->major : c.theme->minor;
     }
+    if (const Node* ef = style->child(u"effectRef")) {
+        const int i = int(ef->num(u"idx"));
+        if (i >= 1 && i <= c.theme->effects.size()) r.effects = c.theme->effects.at(i - 1)->child(u"effectLst");
+        r.effectColor = colorOf(ef, c);
+    }
     return r;
+}
+
+/// The outer shadow an effect list holds (none: off).
+Shadow shadowOf(const Node* effectLst, const Ctx& c, const std::optional<QColor>& ph = std::nullopt)
+{
+    Shadow s;
+    const Node* o = effectLst != nullptr ? effectLst->child(u"outerShdw") : nullptr;
+    if (o == nullptr) return s;
+    s.on = true;
+    s.color = colorOf(o, c, ph).value_or(QColor(0, 0, 0, 128));
+    s.blur = pt(o->num(u"blurRad"));
+    s.dist = pt(o->num(u"dist"));
+    s.dir = o->num(u"dir") / 60000;
+    s.sx = o->num(u"sx", 100000) / 100000;
+    s.sy = o->num(u"sy", 100000) / 100000;
+    s.align = o->attr(u"algn", QStringLiteral("b"));
+    s.rotWithShape = o->flag(u"rotWithShape", true);
+    return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,7 +1052,9 @@ StyleRefs styleRefs(const Node* style, const Ctx& c)
 
 struct Outline {
     QPainterPath path;
+    QPainterPath strokeOnly;   // stroked, not filled: a cloud's inner arcs
     bool open = false;
+    std::optional<QRectF> text;   // where its text goes, where not its whole box
 };
 
 QPainterPath polygon(std::initializer_list<QPointF> points)
@@ -1033,6 +1079,62 @@ QPainterPath star(int points, qreal w, qreal h, qreal inner)
     return p;
 }
 
+/// An arc as DrawingML's arcTo draws it, from \a p's current point: of the
+/// ellipse of radii \a wr and \a hr (its path's units), from the angle \a st
+/// sweeping \a sw (degrees, clockwise) - true angles on the ellipse, not
+/// its parameter's, which QPainterPath::arcTo takes (a cloud's arcs close
+/// so, and not otherwise). \a sx, \a sy: the path's units in points.
+void ooxmlArc(QPainterPath& p, qreal wr, qreal hr, qreal st, qreal sw, qreal sx = 1, qreal sy = 1)
+{
+    const auto param = [wr, hr](qreal deg) {
+        const qreal a = qDegreesToRadians(deg);
+        return qRadiansToDegrees(std::atan2(wr * std::sin(a), hr * std::cos(a)));
+    };
+    const qreal t0 = param(st);
+    // The end's parameter, the sweep's direction and turns kept.
+    qreal dt = param(st + sw) - t0;
+    while (dt - sw > 180) dt -= 360;
+    while (dt - sw <= -180) dt += 360;
+    const qreal rx = wr * sx, ry = hr * sy;
+    const QPointF cur = p.currentPosition();
+    const qreal r0 = qDegreesToRadians(t0);
+    const QPointF centre(cur.x() - rx * std::cos(r0), cur.y() - ry * std::sin(r0));
+    p.arcTo(QRectF(centre.x() - rx, centre.y() - ry, 2 * rx, 2 * ry), -t0, -dt);
+}
+
+/// The cloud of presetShapeDefinitions.xml in a box \a w by \a h: its
+/// outline of eleven arcs, and the arcs inside it, stroked alone.
+Outline cloud(qreal w, qreal h)
+{
+    Outline o;
+    const qreal sx = w / 43200, sy = h / 43200;
+    struct Arc {
+        qreal wr, hr, st, sw;
+    };
+    static const Arc outline[] = {{6753, 9190, -11429249, 7426832}, {5333, 7267, -8646143, 5396714}, {4365, 5945, -8748475, 5983381},
+                                  {4857, 6595, -7859164, 7034504},  {5333, 7273, -4722533, 6541615}, {6775, 9220, -2776035, 7816140},
+                                  {5785, 7867, 37501, 6842000},     {6752, 9215, 1347096, 6910353},  {7720, 10543, 3974558, 4542661},
+                                  {4360, 5918, -16496525, 8804134}, {4345, 5945, -14809710, 9151131}};
+    o.path.moveTo(3900 * sx, 14370 * sy);
+    for (const Arc& a : outline) ooxmlArc(o.path, a.wr, a.hr, a.st / 60000, a.sw / 60000, sx, sy);
+    o.path.closeSubpath();
+    o.text = QRectF(QPointF(w * 2977 / 21600, h * 3262 / 21600), QPointF(w * 17087 / 21600, h * 17337 / 21600));
+    struct Inner {
+        qreal x, y, wr, hr, st, sw;
+    };
+    static const Inner inner[] = {{4693, 26177, 4345, 5945, 5204520, 1585770},   {6928, 34899, 4360, 5918, 4416628, 686848},
+                                  {16478, 39090, 6752, 9215, 8257449, 844866},   {28827, 34751, 6752, 9215, 387196, 959901},
+                                  {34129, 22954, 5785, 7867, -4217541, 4255042}, {41798, 15354, 5333, 7273, 1819082, 1665090},
+                                  {38324, 5426, 4857, 6595, -824660, 891534},    {29078, 3952, 4857, 6595, -8950887, 1091722},
+                                  {22141, 4720, 4365, 5945, -9809656, 1061181},  {14000, 5192, 6753, 9190, -4002417, 739161},
+                                  {4127, 15789, 6753, 9190, 9459261, 711490}};
+    for (const Inner& a : inner) {
+        o.strokeOnly.moveTo(a.x * sx, a.y * sy);
+        ooxmlArc(o.strokeOnly, a.wr, a.hr, a.st / 60000, a.sw / 60000, sx, sy);
+    }
+    return o;
+}
+
 /// An arc of the ellipse in \a box from \a start sweeping \a sweep (degrees,
 /// clockwise as Office measures), added to \a p.
 void arcOf(QPainterPath& p, const QRectF& box, qreal start, qreal sweep, bool move)
@@ -1054,11 +1156,37 @@ Outline preset(const QString& prst, qreal w, qreal h, const QHash<QString, qreal
     } else if (s == QLatin1String("roundRect") || s == QLatin1String("flowChartAlternateProcess")) {
         const qreal r = ss * std::clamp(a("adj", 16667), 0.0, 50000.0) / 100000;
         p.addRoundedRect(QRectF(0, 0, w, h), r, r);
+        const qreal in = r * 0.29289;   // (its text clear of the corners)
+        o.text = QRectF(in, in, w - 2 * in, h - 2 * in);
     } else if (s == QLatin1String("flowChartTerminator")) {
         p.addRoundedRect(QRectF(0, 0, w, h), ss / 2, ss / 2);
-    } else if (s == QLatin1String("ellipse") || s == QLatin1String("flowChartConnector") || s == QLatin1String("cloud")
-               || s == QLatin1String("flowChartOr") || s == QLatin1String("flowChartSummingJunction")) {
+    } else if (s == QLatin1String("ellipse") || s == QLatin1String("flowChartConnector") || s == QLatin1String("flowChartOr")
+               || s == QLatin1String("flowChartSummingJunction")) {
         p.addEllipse(QRectF(0, 0, w, h));
+        // (Its text in the square at 45 degrees.)
+        o.text = QRectF(w * 0.14645, h * 0.14645, w * 0.7071, h * 0.7071);
+    } else if (s == QLatin1String("cloud")) {
+        o = cloud(w, h);
+    } else if (s == QLatin1String("cloudCallout")) {
+        // The cloud, and three bubbles from it towards the callout's point
+        // (adj1, adj2: from the middle, in 1/100000 of the width and height).
+        o = cloud(w, h);
+        const qreal dx = w * a("adj1", -20833) / 100000, dy = h * a("adj2", 62500) / 100000;
+        const QPointF tip(w / 2 + dx, h / 2 + dy);
+        // Where the line from the middle to the point leaves the ellipse.
+        const qreal t = std::atan2(w / 2 * dy, h / 2 * dx);
+        const QPointF edge(w / 2 + w / 2 * std::cos(t), h / 2 + h / 2 * std::sin(t));
+        const QPointF v = edge - tip;
+        const qreal l = std::hypot(v.x(), v.y());
+        const qreal g11 = (l - ss * 6600 / 21600) / 3;
+        const qreal r1 = ss * 600 / 21600, r2 = ss * 1200 / 21600, r3 = ss * 1800 / 21600;
+        const QPointF u = l > 0 ? v / l : QPointF(0, 0);
+        QPainterPath bubbles;
+        bubbles.setFillRule(Qt::WindingFill);   // (where they meet, filled)
+        bubbles.addEllipse(tip, r1, r1);
+        bubbles.addEllipse(tip + u * (g11 + r3), r2, r2);
+        bubbles.addEllipse(tip + u * (ss * 4800 / 21600 + 2 * g11), r3, r3);
+        o.path = o.path.united(bubbles);
     } else if (s == QLatin1String("line") || s == QLatin1String("straightConnector1")) {
         p.moveTo(0, 0);
         p.lineTo(w, h);
@@ -1094,6 +1222,7 @@ Outline preset(const QString& prst, qreal w, qreal h, const QHash<QString, qreal
         p = polygon({QPointF(0, 0), QPointF(w, h), QPointF(0, h)});
     } else if (s == QLatin1String("diamond") || s == QLatin1String("flowChartDecision")) {
         p = polygon({QPointF(w / 2, 0), QPointF(w, h / 2), QPointF(w / 2, h), QPointF(0, h / 2)});
+        o.text = QRectF(w / 4, h / 4, w / 2, h / 2);
     } else if (s == QLatin1String("parallelogram") || s == QLatin1String("flowChartInputOutput")) {
         const qreal x = s == QLatin1String("parallelogram") ? ss * a("adj", 25000) / 100000 : w / 5;
         p = polygon({QPointF(x, 0), QPointF(w, 0), QPointF(w - x, h), QPointF(0, h)});
@@ -1348,6 +1477,7 @@ Outline custom(const Node* cg, qreal w, qreal h)
     const Node* list = cg->child(u"pathLst");
     if (list == nullptr) return o;
     bool anyClosed = false, anyOpen = false;
+    QPainterPath unfilled;
     for (const Node* path : list->children(u"path")) {
         const double pw = path->num(u"w"), ph = path->num(u"h");
         const qreal sx = pw > 0 ? w / pw : 1 / kEmuPerPoint, sy = ph > 0 ? h / ph : 1 / kEmuPerPoint;
@@ -1361,23 +1491,21 @@ Outline custom(const Node* cg, qreal w, qreal h)
             else if (n == QLatin1String("lnTo") && !pts.isEmpty()) sub.lineTo(point(pts.at(0)));
             else if (n == QLatin1String("cubicBezTo") && pts.size() >= 3) sub.cubicTo(point(pts.at(0)), point(pts.at(1)), point(pts.at(2)));
             else if (n == QLatin1String("quadBezTo") && pts.size() >= 2) sub.quadTo(point(pts.at(0)), point(pts.at(1)));
-            else if (n == QLatin1String("arcTo")) {
-                const qreal wr = cmd->num(u"wR") * sx, hr = cmd->num(u"hR") * sy;
-                const qreal st = cmd->num(u"stAng") / 60000, sw = cmd->num(u"swAng") / 60000;
-                const QPointF cur = sub.currentPosition();
-                const qreal rad = qDegreesToRadians(st);
-                const QPointF centre(cur.x() - wr * std::cos(rad), cur.y() - hr * std::sin(rad));
-                sub.arcTo(QRectF(centre.x() - wr, centre.y() - hr, 2 * wr, 2 * hr), -st, -sw);
-            } else if (n == QLatin1String("close")) {
+            else if (n == QLatin1String("arcTo"))
+                ooxmlArc(sub, cmd->num(u"wR"), cmd->num(u"hR"), cmd->num(u"stAng") / 60000, cmd->num(u"swAng") / 60000, sx, sy);
+            else if (n == QLatin1String("close")) {
                 sub.closeSubpath();
                 closed = true;
             }
         }
         const bool filled = path->attr(u"fill") != QLatin1String("none");
         (filled && closed ? anyClosed : anyOpen) = true;
-        o.path.addPath(sub);
+        (filled ? o.path : unfilled).addPath(sub);
     }
     o.open = anyOpen && !anyClosed;
+    // (A path not filled beside one that is: stroked alone, over it.)
+    if (anyClosed) o.strokeOnly = unfilled;
+    else o.path.addPath(unfilled);
     return o;
 }
 
@@ -1546,40 +1674,165 @@ ParaSpec levelOf(const Node* lst, int level, const Ctx& c)
 
 /// The family a typeface comes out in: the theme's for +mj-lt and +mn-lt,
 /// one with its metrics or its look where it is not here.
-QString familyOf(QString face, const Ctx& c)
+/// How a font a deck asks for is drawn here: by itself, or by a stand-in
+/// - as wide as the font asked and its lines as far apart, where that
+/// font's measures are known (lines then break where PowerPoint breaks
+/// them).
+struct FontChoice {
+    QString family;
+    int stretch[4] = {100, 100, 100, 100};   // regular, bold, italic, bold italic
+    qreal lineFactor = 1;
+    bool substituted = false;
+    bool kept = false;   // as wide as the font asked
+};
+
+/// What Office's fonts make of a sample - its width (regular, bold, italic,
+/// bold italic) and their line height, in ems - measured on the fonts
+/// themselves (none of them is here): a stand-in is drawn as wide in each,
+/// its lines as far apart.
+const char* const kFontSample = "The quick brown fox jumps over the lazy dog. Measured loss 3.2 dB at 1550 nm; ABCDEFGHIJ 0123456789";
+struct FontMeasure {
+    double width[4];
+    double line;
+};
+const QHash<QString, FontMeasure>& officeFonts()
 {
-    if (face.isEmpty() || face.startsWith(QLatin1String("+mn"))) face = c.theme->minor;
-    else if (face.startsWith(QLatin1String("+mj"))) face = c.theme->major;
-    static QHash<QString, QString> chosen;
+    // (Calibri Light is Calibri's, near enough; Aptos Display Aptos's.)
+    static const QHash<QString, FontMeasure> measured{
+        {QStringLiteral("Calibri"), {{42.832, 43.603, 42.659, 43.509}, 1.221}},
+        {QStringLiteral("Calibri Light"), {{42.832, 43.603, 42.659, 43.509}, 1.221}},
+        {QStringLiteral("Aptos"), {{45.095, 46.899, 45.051, 46.921}, 1.221}},
+        {QStringLiteral("Aptos Display"), {{45.095, 46.899, 45.051, 46.921}, 1.221}},
+        {QStringLiteral("Aptos Narrow"), {{41.647, 42.683, 41.535, 42.404}, 1.221}},
+        {QStringLiteral("Cambria"), {{45.310, 48.351, 43.754, 46.945}, 1.172}},
+        {QStringLiteral("Candara"), {{43.981, 44.265, 42.053, 43.071}, 1.221}},
+        {QStringLiteral("Corbel"), {{43.069, 44.977, 41.853, 43.884}, 1.208}},
+        {QStringLiteral("Constantia"), {{44.831, 47.892, 44.033, 47.541}, 1.221}},
+        {QStringLiteral("Consolas"), {{54.430, 54.430, 54.430, 54.430}, 1.171}},
+        {QStringLiteral("Century Gothic"), {{50.190, 50.377, 50.190, 50.377}, 1.226}},
+        {QStringLiteral("Franklin Gothic Book"), {{45.384, 45.384, 45.521, 45.521}, 1.134}},
+        {QStringLiteral("Franklin Gothic Medium"), {{45.947, 45.947, 45.859, 45.859}, 1.134}},
+        {QStringLiteral("Gill Sans MT"), {{43.436, 49.306, 40.958, 46.342}, 1.160}},
+        {QStringLiteral("Garamond"), {{42.465, 45.123, 38.489, 43.278}, 1.125}},
+        {QStringLiteral("Rockwell"), {{48.046, 51.317, 46.441, 49.605}, 1.174}},
+        {QStringLiteral("Perpetua"), {{39.162, 44.117, 35.189, 40.967}, 1.146}},
+        {QStringLiteral("Century Schoolbook"), {{49.806, 54.565, 49.520, 53.747}, 1.202}},
+        {QStringLiteral("Bookman Old Style"), {{53.078, 56.082, 51.978, 56.763}, 1.174}},
+        {QStringLiteral("Book Antiqua"), {{47.047, 48.331, 43.831, 46.932}, 1.206}},
+        {QStringLiteral("Tw Cen MT"), {{43.350, 44.835, 42.387, 41.674}, 1.089}},
+        {QStringLiteral("Lucida Sans"), {{52.127, 54.541, 51.941, 54.939}, 1.178}},
+        {QStringLiteral("News Gothic MT"), {{50.771, 51.669, 48.985, 51.475}, 1.209}},
+        {QStringLiteral("Goudy Old Style"), {{42.839, 43.893, 39.577, 39.577}, 1.200}},
+        {QStringLiteral("Century"), {{49.751, 49.751, 49.751, 49.751}, 1.202}},
+    };
+    return measured;
+}
+
+/// The stretch (QFont's) that makes \a family \a ratio as wide: as it does
+/// it to that family, measured - Qt applies a stretch twice over to a font
+/// it stretches itself on macOS (90: 0.81 as wide), once to one that has
+/// narrower widths of its own.
+int stretchFor(qreal ratio, const QString& family)
+{
+    if (std::abs(ratio - 1) < 0.01) return 100;
+    QFont f(family);
+    f.setPixelSize(1000);
+    const qreal plain = QFontMetricsF(f).horizontalAdvance(QLatin1String(kFontSample));
+    f.setStretch(80);
+    const qreal narrow = QFontMetricsF(f).horizontalAdvance(QLatin1String(kFontSample));
+    qreal power = plain > 0 && narrow > 0 ? std::log(narrow / plain) / std::log(0.8) : 1;
+    if (!(power > 0.3 && power < 3)) power = 1;
+    return std::clamp(int(std::lround(100 * std::pow(ratio, 1 / power))), 50, 200);
+}
+
+const FontChoice& choiceOf(const QString& face)
+{
+    static QHash<QString, FontChoice> chosen;
     if (auto it = chosen.constFind(face); it != chosen.constEnd()) return *it;
     static const QStringList families = QFontDatabase::families();
     const auto here = [](const QString& f) { return families.contains(f, Qt::CaseInsensitive); };
-    QString family = face;
+    FontChoice ch;
+    ch.family = face;
     if (!here(face)) {
+        // Metric-compatible fonts first (Carlito is Calibri's widths), then
+        // what looks most alike of macOS's (measured: PT Sans is Calibri's
+        // and Aptos's kind, near their widths), then Linux's.
         static const QHash<QString, QStringList> alike{
-            {QStringLiteral("Calibri"), {QStringLiteral("Carlito"), QStringLiteral("Helvetica Neue"), QStringLiteral("Arial")}},
-            {QStringLiteral("Calibri Light"), {QStringLiteral("Carlito"), QStringLiteral("Helvetica Neue"), QStringLiteral("Arial")}},
-            {QStringLiteral("Aptos"), {QStringLiteral("Helvetica Neue"), QStringLiteral("Arial")}},
-            {QStringLiteral("Aptos Display"), {QStringLiteral("Helvetica Neue"), QStringLiteral("Arial")}},
-            {QStringLiteral("Cambria"), {QStringLiteral("Caladea"), QStringLiteral("Georgia"), QStringLiteral("Times New Roman")}},
-            {QStringLiteral("Cambria Math"), {QStringLiteral("STIX Two Math"), QStringLiteral("Times New Roman")}},
-            {QStringLiteral("Segoe UI"), {QStringLiteral("Helvetica Neue"), QStringLiteral("Arial")}},
-            {QStringLiteral("Consolas"), {QStringLiteral("Menlo"), QStringLiteral("Monaco"), QStringLiteral("Courier New")}},
-            {QStringLiteral("Century Gothic"), {QStringLiteral("Avenir Next"), QStringLiteral("Futura")}},
-            {QStringLiteral("Tahoma"), {QStringLiteral("Verdana"), QStringLiteral("Arial")}},
-            {QStringLiteral("Franklin Gothic Book"), {QStringLiteral("Helvetica Neue"), QStringLiteral("Arial")}},
-            {QStringLiteral("Garamond"), {QStringLiteral("EB Garamond"), QStringLiteral("Georgia")}},
+            {QStringLiteral("Calibri"), {"Carlito", "PT Sans", "Helvetica Neue", "Liberation Sans", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Calibri Light"), {"Carlito", "PT Sans", "Helvetica Neue", "Liberation Sans", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Aptos"), {"PT Sans", "Helvetica Neue", "Liberation Sans", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Aptos Display"), {"PT Sans", "Helvetica Neue", "Liberation Sans", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Aptos Narrow"), {"PT Sans Narrow", "Arial Narrow", "Liberation Sans Narrow", "PT Sans", "Arial"}},
+            {QStringLiteral("Cambria"), {"Caladea", "Charter", "PT Serif", "Georgia", "Liberation Serif", "DejaVu Serif", "Times New Roman"}},
+            {QStringLiteral("Cambria Math"), {"STIX Two Math", "Cambria", "Times New Roman"}},
+            {QStringLiteral("Candara"), {"PT Sans", "Helvetica Neue", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Corbel"), {"PT Sans", "Helvetica Neue", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Constantia"), {"Charter", "PT Serif", "Georgia", "DejaVu Serif", "Times New Roman"}},
+            {QStringLiteral("Segoe UI"), {"Selawik", "Helvetica Neue", "Liberation Sans", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Consolas"), {"Inconsolata", "Menlo", "Monaco", "DejaVu Sans Mono", "Liberation Mono", "Courier New"}},
+            {QStringLiteral("Century Gothic"), {"Avenir Next", "Futura", "URW Gothic", "DejaVu Sans"}},
+            {QStringLiteral("Tahoma"), {"Verdana", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("Franklin Gothic Book"), {"Libre Franklin", "Helvetica Neue", "Liberation Sans", "Arial"}},
+            {QStringLiteral("Franklin Gothic Medium"), {"Libre Franklin", "Helvetica Neue", "Liberation Sans", "Arial"}},
+            {QStringLiteral("Gill Sans MT"), {"Gill Sans", "PT Sans", "Helvetica Neue", "Arial"}},
+            {QStringLiteral("Garamond"), {"EB Garamond", "Baskerville", "Georgia", "Times New Roman"}},
+            {QStringLiteral("Rockwell"), {"Roboto Slab", "Georgia", "Times New Roman"}},
+            {QStringLiteral("Perpetua"), {"Baskerville", "Georgia", "Times New Roman"}},
+            {QStringLiteral("Century Schoolbook"), {"TeX Gyre Schola", "New Century Schoolbook", "Georgia", "Times New Roman"}},
+            {QStringLiteral("Century"), {"TeX Gyre Schola", "New Century Schoolbook", "Georgia", "Times New Roman"}},
+            {QStringLiteral("Bookman Old Style"), {"TeX Gyre Bonum", "Bookman", "Georgia", "Times New Roman"}},
+            {QStringLiteral("Book Antiqua"), {"Palatino", "Palatino Linotype", "TeX Gyre Pagella", "Georgia"}},
+            {QStringLiteral("Tw Cen MT"), {"Futura", "Avenir Next", "DejaVu Sans"}},
+            {QStringLiteral("Lucida Sans"), {"Lucida Grande", "DejaVu Sans", "Arial"}},
+            {QStringLiteral("News Gothic MT"), {"Helvetica Neue", "Liberation Sans", "Arial"}},
+            {QStringLiteral("Goudy Old Style"), {"Baskerville", "Georgia", "Times New Roman"}},
         };
-        family = QStringLiteral("Helvetica Neue");
-        if (!here(family)) family = QStringLiteral("Arial");
+        ch.substituted = true;
+        ch.family = QStringLiteral("Helvetica Neue");
+        if (!here(ch.family)) ch.family = QStringLiteral("Arial");
         for (const QString& f : alike.value(face))
             if (here(f)) {
-                family = f;
+                ch.family = f;
                 break;
             }
+        // As wide as the font asked, in each style; its lines as far apart.
+        if (const auto m = officeFonts().constFind(face); m != officeFonts().constEnd()) {
+            bool measured = true;
+            for (int style = 0; style < 4; ++style) {
+                QFont f(ch.family);
+                f.setPixelSize(1000);
+                f.setBold(style & 1);
+                f.setItalic(style & 2);
+                const QFontMetricsF fm(f);
+                const qreal width = fm.horizontalAdvance(QLatin1String(kFontSample)) / 1000;
+                if (style == 0 && fm.lineSpacing() > 0) ch.lineFactor = m->line / (fm.lineSpacing() / 1000);
+                if (width > 0) ch.stretch[style] = stretchFor(m->width[style] / width, ch.family);
+                else measured = false;
+            }
+            ch.kept = measured;
+        }
     }
-    chosen.insert(face, family);
-    return family;
+    return *chosen.insert(face, ch);
+}
+
+/// The font \a face (a theme's +mn-lt, +mj-lt too) is drawn with - a
+/// stand-in said among what the slide does not draw as PowerPoint does.
+FontChoice fontOf(QString face, const Ctx& c)
+{
+    if (face.isEmpty() || face.startsWith(QLatin1String("+mn"))) face = c.theme->minor;
+    else if (face.startsWith(QLatin1String("+mj"))) face = c.theme->major;
+    const FontChoice& ch = choiceOf(face);
+    if (ch.substituted && c.counting && c.info != nullptr) {
+        const QString said = ch.kept ? QObject::tr("the font %1, not installed: drawn as %2, as wide (lines break as in PowerPoint)").arg(face, ch.family)
+                                     : QObject::tr("the font %1, not installed: drawn as %2 (lines may break elsewhere)").arg(face, ch.family);
+        if (!c.info->notShown.contains(said)) c.info->notShown << said;
+    }
+    return ch;
+}
+
+QString familyOf(const QString& face, const Ctx& c)
+{
+    return fontOf(face, c).family;
 }
 
 /// A bullet character in a symbol font that is not here: what it stands for.
@@ -1641,7 +1894,10 @@ QString autoNumber(const QString& scheme, int n)
 QTextCharFormat charFormat(const RunSpec& r, qreal scale, const Ctx& c)
 {
     QTextCharFormat f;
-    QFont font(familyOf(r.face.value_or(QString()), c));
+    const FontChoice choice = fontOf(r.face.value_or(QString()), c);
+    QFont font(choice.family);
+    if (const int stretch = choice.stretch[(r.bold.value_or(false) ? 1 : 0) + (r.italic.value_or(false) ? 2 : 0)]; stretch != 100)
+        font.setStretch(stretch);
     font.setPointSizeF(std::max(1.0, r.size.value_or(18) * scale));
     font.setBold(r.bold.value_or(false));
     font.setItalic(r.italic.value_or(false));
@@ -1729,11 +1985,13 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         spec.over(readPara(pPr, c));
         TextPara para;
         QString said;
+        RunSpec firstRun = spec.run;   // (its font: the paragraph's lines)
         // Runs.
         for (const auto& k : p->kids) {
             if (k->name == QLatin1String("r") || k->name == QLatin1String("fld")) {
                 RunSpec r = spec.run;
                 r.over(readRun(k->child(u"rPr"), c));
+                if (para.runs.isEmpty()) firstRun = r;
                 QString text = k->child(u"t") != nullptr ? k->child(u"t")->text : QString();
                 if (k->name == QLatin1String("fld") && k->attr(u"type") == QLatin1String("slidenum")) text = QString::number(c.number);
                 para.runs << TextRun{text, charFormat(r, fontScale, c), false};
@@ -1761,7 +2019,8 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         para.indent = spec.indent.value_or(0);
         b.setLeftMargin(para.marL);
         if (const Spacing line = spec.line.value_or(Spacing()); line.percent) {
-            const qreal pct = std::max(0.1, line.value - lineReduction) * 100;
+            // (A stand-in's lines as far apart as the font asked has them.)
+            const qreal pct = std::max(0.1, line.value - lineReduction) * 100 * fontOf((para.runs.isEmpty() ? end : firstRun).face.value_or(QString()), c).lineFactor;
             if (std::abs(pct - 100) > 0.5) b.setLineHeight(pct, QTextBlockFormat::ProportionalHeight);
         } else {
             b.setLineHeight(line.value * fontScale, QTextBlockFormat::FixedHeight);
@@ -1918,10 +2177,15 @@ std::shared_ptr<Chart> readChart(const Node* space, Ctx& c)
 {
     auto chart = std::make_shared<Chart>();
     for (int i = 1; i <= 6; ++i) chart->accents << schemeColor(QStringLiteral("accent%1").arg(i), c, std::nullopt);
-    chart->family = familyOf(QString(), c);
+    const FontChoice font = fontOf(QString(), c);
+    chart->family = font.family;
+    chart->stretch = font.stretch[0];
+    chart->lineFactor = font.lineFactor;
     if (space == nullptr) return chart;
     textStyle(space->child(u"txPr"), c, &chart->fontSize, &chart->textColor);
-    chart->titleSize = chart->fontSize * 1.4;
+    // (PowerPoint's own where the chart says nothing: its title 1.2 times its
+    // text, its axes' labels as large as its text.)
+    chart->titleSize = chart->fontSize * 1.2;
     chart->titleColor = chart->textColor;
     if (const Node* sp = space->child(u"spPr")) {
         chart->area = fillOf(sp, c);
@@ -2031,7 +2295,7 @@ std::shared_ptr<Chart> readChart(const Node* space, Ctx& c)
             a.line.color = QColor(0xBF, 0xBF, 0xBF);
             applyLine(a.line, k->at({"spPr", "ln"}), c);
             a.textColor = chart->textColor;
-            a.fontSize = chart->fontSize * 0.9;
+            a.fontSize = chart->fontSize;
             textStyle(k->child(u"txPr"), c, &a.fontSize, &a.textColor);
             chart->axes << a;
         }
@@ -2139,8 +2403,15 @@ Element buildShape(const Node* sp, Layer layer, Ctx& c, bool* skip)
         applyLine(e.stroke, pr->child(u"ln"), c);
     }
     if (sp->flag(u"useBgFill")) e.fill.kind = Fill::None;   // (the slide's own background, under it)
+    // Its shadow: its style's, under the master's and the layout's
+    // placeholder's effects and its own (an empty list: none).
+    e.shadow = shadowOf(refs.effects, c, refs.effectColor);
+    for (const Node* from : {ph.masterSp, ph.layoutSp, sp})
+        if (const Node* pr = from != nullptr ? from->child(u"spPr") : nullptr; pr != nullptr && pr->child(u"effectLst") != nullptr)
+            e.shadow = shadowOf(pr->child(u"effectLst"), c);
     // Its outline.
     const QRectF box(0, 0, e.rect.width(), e.rect.height());
+    std::optional<QRectF> textBox;   // its preset's own, for its text
     const Node* geomHolder = spPr;
     for (const Node* from : {ph.layoutSp, ph.masterSp})
         if ((geomHolder == nullptr || (geomHolder->child(u"prstGeom") == nullptr && geomHolder->child(u"custGeom") == nullptr)) && from != nullptr
@@ -2149,6 +2420,7 @@ Element buildShape(const Node* sp, Layer layer, Ctx& c, bool* skip)
     if (const Node* cg = geomHolder != nullptr ? geomHolder->child(u"custGeom") : nullptr) {
         const Outline o = custom(cg, box.width(), box.height());
         e.path = o.path;
+        e.strokeOnly = o.strokeOnly;
         e.open = o.open;
     } else {
         const Node* pg = geomHolder != nullptr ? geomHolder->child(u"prstGeom") : nullptr;
@@ -2162,7 +2434,9 @@ Element buildShape(const Node* sp, Layer layer, Ctx& c, bool* skip)
         bool known = true;
         const Outline o = preset(prst, box.width(), box.height(), av, &known);
         e.path = o.path;
+        e.strokeOnly = o.strokeOnly;
         e.open = o.open;
+        textBox = o.text;
         if (!known) c.approximated.insert(prst);
     }
     if (e.open) e.fill.kind = Fill::None;
@@ -2184,6 +2458,7 @@ Element buildShape(const Node* sp, Layer layer, Ctx& c, bool* skip)
         QStringList said;
         chain.paragraphs = layer == Layer::Slide && c.counting ? &said : nullptr;
         e.text = buildText(tx, chain, c);
+        if (textBox) e.text->box = textBox;
         if (const Node* txX = sp->child(u"txXfrm")) {
             // A diagram's own text box, in the drawing's coordinates: in the
             // shape's.
@@ -2228,6 +2503,8 @@ Element buildPicture(const Node* pic, Layer layer, Ctx& c, bool* skip)
     const StyleRefs refs = styleRefs(pic->child(u"style"), c);
     e.stroke = refs.line;
     if (spPr != nullptr) applyLine(e.stroke, spPr->child(u"ln"), c);
+    e.shadow = shadowOf(refs.effects, c, refs.effectColor);
+    if (spPr != nullptr && spPr->child(u"effectLst") != nullptr) e.shadow = shadowOf(spPr->child(u"effectLst"), c);
     if (e.stroke.kind == Stroke::Unset) e.stroke.kind = Stroke::None;
     const Node* blipFill = pic->child(u"blipFill");
     const Node* blip = blipFill != nullptr ? blipFill->child(u"blip") : nullptr;
@@ -2638,6 +2915,7 @@ void drawStroke(QPainter& p, const Element& e)
 {
     if (!e.stroke.visible()) return;
     p.strokePath(e.path, e.stroke.pen());
+    if (!e.strokeOnly.isEmpty()) p.strokePath(e.strokeOnly, e.stroke.pen());
     const bool head = !e.stroke.head.type.isEmpty() && e.stroke.head.type != QLatin1String("none");
     const bool tail = !e.stroke.tail.type.isEmpty() && e.stroke.tail.type != QLatin1String("none");
     if (!(head || tail) || e.path.elementCount() < 2) return;
@@ -2656,6 +2934,96 @@ void drawStroke(QPainter& p, const Element& e)
         const QPointF dir = unit(tip - e.path.pointAtPercent(0.98));
         drawArrow(p, e.stroke.tail, tip, dir, e.stroke);
     }
+}
+
+/// \a e's outer shadow, under it: its silhouette - what its fill, its
+/// line or its picture covers - in the shadow's colour, scaled, offset and
+/// blurred (a box blur three times over, near enough a Gaussian), drawn
+/// through an image at the device's resolution.
+void drawShadow(QPainter& p, const Element& e, const QRectF& box)
+{
+    const Shadow& s = e.shadow;
+    QPainterPath silhouette;
+    if (e.kind == Element::Picture) silhouette = e.path;
+    else if (!e.open && e.fill.visible()) silhouette = e.path;
+    if (e.stroke.visible()) {
+        QPainterPathStroker stroker(e.stroke.pen());
+        silhouette = silhouette.united(stroker.createStroke(e.path));
+    }
+    if (silhouette.isEmpty() || s.color.alpha() == 0) return;
+    // Scaled about its alignment's point of the box.
+    if (!qFuzzyCompare(s.sx, 1.0) || !qFuzzyCompare(s.sy, 1.0)) {
+        const QString& a = s.align;
+        const qreal ax = a.endsWith(QLatin1Char('l')) ? box.left() : a.endsWith(QLatin1Char('r')) ? box.right() : box.center().x();
+        const qreal ay = a.startsWith(QLatin1Char('t')) ? box.top() : a.startsWith(QLatin1Char('b')) ? box.bottom() : box.center().y();
+        QTransform t;
+        t.translate(ax, ay);
+        t.scale(s.sx, s.sy);
+        t.translate(-ax, -ay);
+        silhouette = t.map(silhouette);
+    }
+    // Offset: along its direction on the slide - turned with the shape
+    // only where it says so.
+    const qreal rad = qDegreesToRadians(s.dir);
+    QPointF offset(s.dist * std::cos(rad), s.dist * std::sin(rad));
+    const QTransform world = p.worldTransform();
+    QTransform linear(world.m11(), world.m12(), world.m21(), world.m22(), 0, 0);
+    const qreal scale = std::sqrt(std::abs(linear.determinant()));
+    if (scale <= 0) return;
+    // (Not turned: on the slide, at the device's scale - the slide's own
+    // transform a scale alone.)
+    const QPointF deviceOffset = s.rotWithShape ? linear.map(offset) : offset * scale;
+    // The silhouette in the device's pixels, room around it for the blur.
+    const qreal blur = s.blur * scale;
+    const QRectF device = world.map(silhouette).boundingRect().adjusted(-blur - 2, -blur - 2, blur + 2, blur + 2);
+    const QRect area = device.toAlignedRect();
+    if (area.width() < 1 || area.height() < 1 || qint64(area.width()) * area.height() > 16ll * 1000 * 1000) return;
+    QImage mask(area.size(), QImage::Format_Alpha8);
+    mask.fill(0);
+    {
+        QPainter m(&mask);
+        m.setRenderHint(QPainter::Antialiasing);
+        m.setTransform(world * QTransform::fromTranslate(-area.left(), -area.top()));
+        m.fillPath(silhouette, Qt::black);
+    }
+    // Three box blurs, each across and down.
+    const int r = std::max(0, int(std::lround(blur / 2)));
+    if (r > 0) {
+        const int w = mask.width(), h = mask.height();
+        std::vector<int> line(std::max(w, h));
+        const auto pass = [&mask, &line, r](int count, int length, bool across) {
+            for (int i = 0; i < count; ++i) {
+                uchar* base = across ? mask.scanLine(i) : mask.bits() + i;
+                const qsizetype step = across ? 1 : mask.bytesPerLine();
+                int sum = 0;
+                for (int k = -r; k <= r; ++k) sum += base[std::clamp(k, 0, length - 1) * step];
+                for (int k = 0; k < length; ++k) {
+                    line[k] = sum / (2 * r + 1);
+                    sum += base[std::min(k + r + 1, length - 1) * step] - base[std::max(k - r, 0) * step];
+                }
+                for (int k = 0; k < length; ++k) base[k * step] = uchar(line[k]);
+            }
+        };
+        for (int n = 0; n < 3; ++n) {
+            pass(h, w, true);
+            pass(w, h, false);
+        }
+    }
+    // In its colour.
+    QImage shadow(area.size(), QImage::Format_ARGB32_Premultiplied);
+    const QRgb colour = s.color.rgba();
+    for (int y = 0; y < shadow.height(); ++y) {
+        const uchar* a = mask.constScanLine(y);
+        auto* out = reinterpret_cast<QRgb*>(shadow.scanLine(y));
+        for (int x = 0; x < shadow.width(); ++x) {
+            const int alpha = qAlpha(colour) * a[x] / 255;
+            out[x] = qRgba(qRed(colour) * alpha / 255, qGreen(colour) * alpha / 255, qBlue(colour) * alpha / 255, alpha);
+        }
+    }
+    p.save();
+    p.resetTransform();
+    p.drawImage(QPointF(area.topLeft()) + deviceOffset, shadow);
+    p.restore();
 }
 
 void drawTable(QPainter& p, const Element& e)
@@ -2764,7 +3132,13 @@ struct Scale {
     }
 };
 
-Scale scaleOf(double lo, double hi, const ChartAxis* axis, bool fromZero)
+/// An axis's scale for values \a lo to \a hi, as PowerPoint's own: from
+/// zero when that is near; a little room above the highest (and below the
+/// lowest); a step of 1, 2 or 5 times a power of ten, the smallest that
+/// keeps to \a most steps (what the axis's length gives its labels); the
+/// ends whole steps. What the axis sets itself (min, max, majorUnit, a log
+/// base) kept.
+Scale scaleOf(double lo, double hi, const ChartAxis* axis, bool fromZero, int most = 5)
 {
     Scale s;
     s.reversed = axis != nullptr && axis->reversed;
@@ -2787,18 +3161,27 @@ Scale scaleOf(double lo, double hi, const ChartAxis* axis, bool fromZero)
     }
     if (fromZero && lo > 0 && lo < hi * 5 / 6) lo = 0;
     if (fromZero && hi < 0 && hi > lo * 5 / 6) hi = 0;
-    if (axis != nullptr && axis->min) lo = *axis->min;
-    if (axis != nullptr && axis->max) hi = *axis->max;
+    const bool fixedLo = axis != nullptr && axis->min, fixedHi = axis != nullptr && axis->max;
+    if (fixedLo) lo = *axis->min;
+    if (fixedHi) hi = *axis->max;
     if (hi <= lo) {
         hi = lo + (lo == 0 ? 1 : std::abs(lo) * 0.1);
         lo = lo - (lo == 0 ? 0 : std::abs(lo) * 0.1);
     }
+    // (Room: 4 at the top of 0 to 4 is not the axis's end.)
+    const double room = (hi - lo) * 0.05;
+    if (!fixedHi && hi > 0) hi += room;
+    if (!fixedLo && lo < 0) lo -= room;
     double step = axis != nullptr && axis->major && *axis->major > 0 ? *axis->major : 0;
     if (step <= 0) {
-        const double raw = (hi - lo) / 6;
-        const double mag = std::pow(10, std::floor(std::log10(raw)));
-        const double norm = raw / mag;
-        step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+        most = std::max(1, most);
+        const double from = std::pow(10, std::floor(std::log10((hi - lo) / most)) - 1);
+        step = from;
+        for (int i = 0; i < 40; ++i) {
+            step = from * std::pow(10, i / 3) * (i % 3 == 0 ? 1 : i % 3 == 1 ? 2 : 5);
+            const double a = fixedLo ? lo : std::floor(lo / step + 1e-9) * step, b = fixedHi ? hi : std::ceil(hi / step - 1e-9) * step;
+            if ((b - a) / step <= most + 1e-9) break;
+        }
     }
     if (!(axis != nullptr && axis->min)) lo = std::floor(lo / step + 1e-9) * step;
     if (!(axis != nullptr && axis->max)) hi = std::ceil(hi / step - 1e-9) * step;
@@ -2841,6 +3224,14 @@ QPainterPath smoothed(const QList<QPointF>& pts)
     return path;
 }
 
+/// A chart's text's font: its family, a stand-in as wide as the font asked.
+QFont chartFont(const Chart& chart)
+{
+    QFont f(chart.family);
+    if (chart.stretch != 100) f.setStretch(chart.stretch);
+    return f;
+}
+
 void drawChart(QPainter& p, const Chart& chart, const QRectF& box)
 {
     p.save();
@@ -2855,19 +3246,21 @@ void drawChart(QPainter& p, const Chart& chart, const QRectF& box)
         p.setBrush(Qt::NoBrush);
         p.drawRect(box);
     }
-    QFont font(chart.family);
+    QFont font = chartFont(chart);
     font.setPointSizeF(chart.fontSize);
-    QRectF area = box.adjusted(chart.fontSize * 0.8, chart.fontSize * 0.6, -chart.fontSize * 0.8, -chart.fontSize * 0.6);
+    // Its margins near PowerPoint's (some 5 points, whatever its text's size).
+    const qreal marginX = std::min(chart.fontSize * 0.8, 7.0), marginY = std::min(chart.fontSize * 0.6, 5.0);
+    QRectF area = box.adjusted(marginX, marginY, -marginX, -marginY);
     // The title.
     if (chart.hasTitle && !chart.title.isEmpty()) {
-        QFont tf(chart.family);
+        QFont tf = chartFont(chart);
         tf.setPointSizeF(chart.titleSize);
         p.setFont(tf);
         p.setPen(chart.titleColor);
         const QFontMetricsF fm(tf, pointDevice());
         const QRectF r = fm.boundingRect(area, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, chart.title);
         p.drawText(QRectF(area.left(), area.top(), area.width(), r.height()), Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, chart.title);
-        area.setTop(area.top() + r.height() + chart.fontSize * 0.4);
+        area.setTop(area.top() + r.height() + std::min(chart.fontSize * 0.4, 4.0));
     }
     // Series in order, each with its colour.
     struct Drawn {
@@ -2908,7 +3301,7 @@ void drawChart(QPainter& p, const Chart& chart, const QRectF& box)
     } else {
         for (const Drawn& d : all) entries << std::make_pair(d.s->name, d.color);
     }
-    QFont legendFont(chart.family);
+    QFont legendFont = chartFont(chart);
     legendFont.setPointSizeF(chart.legendSize);
     p.setFont(legendFont);
     const QFontMetricsF fm(legendFont, pointDevice());
@@ -3056,12 +3449,22 @@ void drawChart(QPainter& p, const Chart& chart, const QRectF& box)
             }
     }
     const bool percentAxis = first.grouping == QLatin1String("percentStacked");
-    const Scale ys = scaleOf(ylo, yhi, ay, true);
-    const Scale xs = scatter ? scaleOf(xlo, xhi, ax, true) : Scale();
     // Room for the labels and the titles.
-    QFont lf(chart.family);
-    lf.setPointSizeF(ay != nullptr ? ay->fontSize : chart.fontSize * 0.9);
+    QFont lf = chartFont(chart);
+    lf.setPointSizeF(ay != nullptr ? ay->fontSize : chart.fontSize);
     const QFontMetricsF lm(lf, pointDevice());
+    // As many steps as the axis's length gives labels room for (each 1.2
+    // lines high, or a label and its gap wide), five at most - as
+    // PowerPoint's own: 0 to 4 in a plot of 116 points with labels of 18
+    // points, 0 to 6 by 2 (five steps, 1.05 lines each, were too close;
+    // three, 1.77 lines, were not).
+    const auto steps = [](qreal length, qreal label) { return std::clamp(int(length / std::max(1.0, label)), 1, 5); };
+    const qreal bottomGuess = lm.height() * 1.3 + (ax != nullptr && !ax->title.isEmpty() && !ax->deleted ? lm.height() * 1.4 : 0);
+    const qreal valueLength = horizontal ? area.width() * 0.8 : area.height() - bottomGuess - lm.height() * 0.5;
+    // (The font asked's line spacing, its leading too: the steps PowerPoint's,
+    // whatever stands in.)
+    const qreal valueLabel = horizontal ? lm.horizontalAdvance(QStringLiteral("0.00")) + lm.height() * 2 : lm.lineSpacing() * chart.lineFactor * 1.2;
+    const Scale ys = scaleOf(ylo, yhi, ay, true, steps(valueLength, valueLabel));
     const auto yLabel = [&](double v) { return formatted(v, ay != nullptr ? (percentAxis && ay->format == QLatin1String("General") ? QStringLiteral("0%") : ay->format) : QStringLiteral("General")); };
     const auto xLabel = [&](double v) { return formatted(v, ax != nullptr ? ax->format : QStringLiteral("General")); };
     qreal left = 0, bottom = lm.height() * 1.3;
@@ -3078,6 +3481,10 @@ void drawChart(QPainter& p, const Chart& chart, const QRectF& box)
     if (!xShown) bottom = lm.height() * 0.3;
     if (ay != nullptr && !ay->title.isEmpty() && !ay->deleted) left += lm.height() * 1.4;
     if (ax != nullptr && !ax->title.isEmpty() && !ax->deleted) bottom += lm.height() * 1.4;
+    // A scatter's x axis: its steps for the width left.
+    const Scale xs = scatter ? scaleOf(xlo, xhi, ax, true,
+                                       steps(area.width() - left - lm.height() * 0.8, lm.horizontalAdvance(formatted(xhi, ax != nullptr ? ax->format : QStringLiteral("General")) + QStringLiteral("0")) + lm.height() * 2))
+                             : Scale();
     QRectF plotBox(area.left() + left, area.top() + lm.height() * 0.5, area.width() - left - lm.height() * 0.8, area.height() - bottom - lm.height() * 0.5);
     if (plotBox.width() < 5 || plotBox.height() < 5) {
         p.restore();
@@ -3304,6 +3711,7 @@ void paintElement(QPainter& p, const Element& e)
     p.save();
     p.setTransform(e.transform(), true);
     const QRectF box(0, 0, e.rect.width(), e.rect.height());
+    if (e.shadow.on && (e.kind == Element::Shape || e.kind == Element::Picture)) drawShadow(p, e, box);
     switch (e.kind) {
     case Element::Shape:
         fillPath(p, e.path, e.fill, box);
