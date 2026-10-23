@@ -2968,7 +2968,9 @@ QList<NodeKind> makeKinds()
                          "fewer, quicker - each interval's occupations and the line's tail are integrated within it")),
               expr(QStringLiteral("linewidth"), tr("Broadening"), QStringLiteral("eV"), QStringLiteral("6.6[meV]"),
                    tr("The line's half width at half maximum: a Lorentzian's ħ/τ, 6.6 meV for 0.1 ps")),
-              expr(QStringLiteral("dlinewidth"), tr("Broadening's growth with the field"), QString(), QString(),
+              // (Its SI unit, which is what a bare number here is read as:
+              // "1[meV]/(1e7[V/m])" is the readable way to write one.)
+              expr(QStringLiteral("dlinewidth"), tr("Broadening's growth with the field"), QStringLiteral("C*m"), QString(),
                    tr("Added to the broadening per field across the wells (qw.Fw, their band edge's slope): 1[meV]/(1e7[V/m]) - "
                       "an electroabsorption edge broadens as the field pulls the states apart. Empty: none")),
               expr(QStringLiteral("linewidthslope"), tr("Broadening's growth with the photon's energy"), QString(), QString(),
