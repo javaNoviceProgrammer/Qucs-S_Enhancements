@@ -82,8 +82,13 @@ public:
         for (const QJsonValue& v : result.value(QLatin1String("content")).toArray())
             if (v.toObject().value(QLatin1String("type")).toString() == QLatin1String("text"))
                 texts << v.toObject().value(QLatin1String("text")).toString();
-        if (result.value(QLatin1String("isError")).toBool())
-            return fail(QStringLiteral("%1: %2").arg(tool, texts.isEmpty() ? QStringLiteral("failed") : texts.first()));
+        if (result.value(QLatin1String("isError")).toBool()) {
+            // (Its own name once: a tool's refusal names it already, and
+            // "get_dataset: get_dataset: ..." came of saying it again -
+            // the re-check of 23 October, 3.)
+            const QString why = texts.isEmpty() ? QStringLiteral("failed") : texts.first();
+            return fail(why.startsWith(tool + QLatin1Char(':')) ? why : QStringLiteral("%1: %2").arg(tool, why));
+        }
         // Its answer as an object: its JSON, or {text} - with notes told beside it.
         const QJsonDocument doc = QJsonDocument::fromJson(texts.value(0).toUtf8());
         QJsonObject answer = doc.isObject() ? doc.object() : QJsonObject{{QStringLiteral("text"), texts.value(0)}};
