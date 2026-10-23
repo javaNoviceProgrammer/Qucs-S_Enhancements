@@ -63,6 +63,14 @@ struct Axis {
 
   bool   autoScale;    // manual limits or auto-scale ?
   double limit_min, limit_max, step;   // if not auto-scale
+
+  // How this axis' numbers are written, where not the diagram's: a
+  // numberformat::Notation, -1 the diagram's; and the places after the
+  // point, -1 as many as each needs, -2 the diagram's. So that x may be
+  // in SI prefixes while y is decimal (MCP wishlist N4).
+  int notation = -1;
+  int decimals = -2;
+  bool writesItsOwnNumbers() const { return notation >= 0 || decimals >= -1; }
 };
 
 struct MappedPoint {
@@ -224,14 +232,23 @@ public:
   {
       return qucs_s::numberformat::format(value, notation, notationDecimals, step);
   }
-  /// ... on \a axis' ticks: in notationOf(axis).
+  /// ... on \a axis' ticks: in notationOf(axis), to decimalsOf(axis).
   QString numberText(const Axis* axis, double value, double step = 0.0) const
   {
-      return qucs_s::numberformat::format(value, notationOf(axis), notationDecimals, step);
+      return qucs_s::numberformat::format(value, notationOf(axis), decimalsOf(axis), step);
   }
-  /// The notation \a axis' numbers are written in: the diagram's (a
-  /// bathtub's rates have an exponent when it is automatic).
-  virtual qucs_s::numberformat::Notation notationOf(const Axis*) const { return notation; }
+  /// The notation \a axis' numbers are written in: its own where it has
+  /// one, else the diagram's (a bathtub's rates have an exponent when it
+  /// is automatic).
+  virtual qucs_s::numberformat::Notation notationOf(const Axis* axis) const
+  {
+      return axis != nullptr && axis->notation >= 0 ? qucs_s::numberformat::fromInt(axis->notation) : notation;
+  }
+  /// The places after the point on \a axis: its own, else the diagram's.
+  int decimalsOf(const Axis* axis) const
+  {
+      return axis != nullptr && axis->decimals >= -1 ? axis->decimals : notationDecimals;
+  }
 
   /// Where the legend (a colour/style sample and the variable of every
   /// graph) is drawn: LegendOff, a corner of the diagram, or outside it,

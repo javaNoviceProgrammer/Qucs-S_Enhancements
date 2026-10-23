@@ -378,6 +378,12 @@ QJsonObject QucsControl::getUi(const QJsonObject& args)
     if (root == nullptr) return errorResult(error);
     QJsonObject o = describeControls(root, true);
     o.insert(QStringLiteral("area"), name);
+    // What the user selected in the document in front, as data (MCP
+    // wishlist N12: neither get_state nor this said there was a selection).
+    if (name == QLatin1String("document"))
+        if (QucsDoc* doc = QucsApp::docIn(root); doc != nullptr)
+            if (const QJsonObject selected = selectionOf(doc); !selected.isEmpty())
+                o.insert(QStringLiteral("selection"), selected);
     // (A list open below a field - a window of its own, not among them.)
     if (QAbstractItemView* list = openList()) o.insert(QStringLiteral("list"), listRead(list));
     bool hidden = false;

@@ -257,7 +257,10 @@ public:
     /// A 1D Plot Group's graphs: written as a Qucs dataset beside the model
     /// (name_tag.dat; in the cache when it is not saved), shown in a data
     /// display (name_tag.dpl). The display's path; empty and why on failure.
-    QString showGraphs(const QString& tag, QString* error = nullptr, bool open = true, QStringList* removed = nullptr);
+    /// \a removed: the diagrams of its display taken away; \a kept: what
+    /// of it was left as the user set it (MCP wishlist N5).
+    QString showGraphs(const QString& tag, QString* error = nullptr, bool open = true, QStringList* removed = nullptr,
+                       QStringList* kept = nullptr);
     /// \a material's properties \a keys along \a sweep (Lumerical's
     /// visualizer's): a dataset beside the model and a display of it; its
     /// path, or empty and why.

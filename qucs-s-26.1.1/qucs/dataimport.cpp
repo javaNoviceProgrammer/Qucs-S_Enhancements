@@ -797,6 +797,9 @@ void variablesOf(QList<Column> columns, const Options& options, Data* data)
         const QString base = name;
         for (int n = 2; used.contains(name.toLower()); ++n) name = QStringLiteral("%1_%2").arg(base).arg(n);
         used.insert(name.toLower());
+        // Not the file's name: told, so that a column asked for by the
+        // name it has there is found (MCP wishlist N2).
+        if (name != c.name.trimmed()) data->renamed.insert(c.name.trimmed(), name);
         c.name = name;
     }
     for (const Column& c : std::as_const(columns))

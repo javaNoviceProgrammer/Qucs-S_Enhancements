@@ -25,6 +25,7 @@
 #include "module.h"
 #include "node.h"
 #include "paintings/painting.h"
+#include "pptx.h"
 #include "pptxdoc.h"
 #include "qucs.h"
 #ifdef QUCS_HAVE_QTPDF
@@ -290,9 +291,13 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "steps": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "How many changes to redo, 1 by default"},
    "to": {"type": "integer", "minimum": 0, "description": "A later step as undo_history lists them: the schematic as it was after it"}}}},
 {"name": "screenshot",
- "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document, a PDF or a presentation, paper and screen show what its tab shows; for a PDF, 'page' and 'region' draw that page, or a part of it, from the file at a resolution to read it, the tab left as it is - for a presentation, 'slide' and 'region' a slide, or a part of it.",
+ "description": "Takes a picture (PNG). 'diagram' (its number) or 'region' ([x1, y1, x2, y2] in schematic units) captures only that, as printed, to check a plot without the whole page. 'area' chooses what is captured: paper (or all, the default) is the whole schematic as it is printed and exported, on white paper in its print colors whatever the theme; screen (or visible) is the canvas exactly as the user sees it now, with the theme's colors (a dark canvas in the dark theme), its zoom and what is scrolled into view - use it to see what the user sees, especially for a problem with how something looks on screen; window is the whole Qucs-S window (panes, tabs, docks, status bar), plus each dialog open over it as a separate picture. For a text document, a PDF or a presentation, paper and screen show what its tab shows, and the answer says what is in view in the document's own measures - the pages or slides, each one's part in points, and the zoom - so that read_pdf or read_pptx can follow the same lines; for a PDF, 'page' and 'region' draw that page, or a part of it, from the file at a resolution to read it, the tab left as it is - for a presentation, 'slide' and 'region' a slide, or a part of it. Every picture's longer side is 1500 pixels at most; 'max_width', 'scale', 'gray' and 'format' make it smaller still, which costs fewer tokens.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "area": {"type": "string", "enum": ["paper", "screen", "window", "all", "visible"], "description": "paper (or all): the whole schematic as printed, the default; screen (or visible): the canvas as the user sees it; window: the whole Qucs-S window and its dialogs"},
-   "diagram": {"type": "integer", "description": "Only this diagram, by its number, as printed"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of the schematic, as printed; of a PDF's page or a presentation's slide, in points from its top left or as fractions of it"}, "page": {"type": "integer", "minimum": 1, "description": "A PDF: this page (from 1) drawn, all of it or 'region' of it, without moving its tab"}, "slide": {"type": "integer", "minimum": 1, "description": "A presentation: this slide (from 1) drawn, all of it or 'region' of it, without moving its tab"}}}},
+   "diagram": {"type": "integer", "description": "Only this diagram, by its number, as printed"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of the schematic, as printed; of a PDF's page or a presentation's slide, in points from its top left or as fractions of it"}, "page": {"type": "integer", "minimum": 1, "description": "A PDF: this page (from 1) drawn, all of it or 'region' of it, without moving its tab"}, "slide": {"type": "integer", "minimum": 1, "description": "A presentation: this slide (from 1) drawn, all of it or 'region' of it, without moving its tab"},
+   "max_width": {"type": "integer", "minimum": 100, "maximum": 4000, "description": "The picture's longer side at most this many pixels (1500 unless given): a smaller one costs fewer tokens and is as readable for a whole page"},
+   "scale": {"type": "number", "minimum": 0.05, "maximum": 4, "description": "The natural size times this (0.5: half as wide and high), instead of the 1500-pixel default; with 'max_width', cut to it after"},
+   "gray": {"type": "boolean", "description": "In grey, not colour: smaller again, for text"},
+   "format": {"type": "string", "enum": ["png", "jpeg"], "description": "jpeg: about a third of a PNG's tokens, for a page of text; png (the default) for a schematic or a plot"}}}},
 {"name": "list_component_types",
  "description": "Lists the library's components: the type to give add_component, what it is, and its category. 'search' keeps only those whose type, name or category contains it. describe_component_type describes a type's properties.",
  "inputSchema": {"type": "object", "properties": {"search": {"type": "string", "description": "Only types whose type, name or category contains it (resistor, BJT, source)"}}}},
@@ -411,14 +416,14 @@ const char* const kTools = R"JSON([
  "description": "Re-reads the datasets and redraws the diagrams of a document (the one 'path' names, or every open one), like Simulation > Reload Simulation Data - after a simulation run outside Qucs-S, or when a plot is blank. Reports which traces still show no data, and why.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document whose data are read again; every open one when not given"}}}},
 {"name": "add_diagram",
- "description": "Places a diagram on a schematic or a data display (a .dpl in 'path', opened if it is not - or 'document': \"data_display\" for the schematic's, made when it has none); its traces show the dataset's data right away. 'type' is rect (x-y, the default), polar (a Nyquist plot with 'nyquist'), smith (its two-port's circles: 'smith_circles'), admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus, histogram, eye, stacked (panes on one x axis: 'panes', and each trace's 'pane'), pole_zero, bode, nichols, spectrum, bathtub, level_histogram, contour, spectrogram, box_plot, constellation or tornado; a type's own settings go in an object of its name ('eye', 'bode', 'spectrum', ...), whose description says what it draws. 'x' and 'y' are its lower left corner; if left out, it goes below everything on the schematic, in a free spot (the result says where, and warns when a diagram lies over another one or over parts). 'width' and 'height' default to 240 x 160. 'title' is drawn above it and moves with it as part of the diagram. 'traces' lists variables (as get_dataset names them - tran.v(out), or v(out) or out when that is unambiguous) or objects as add_trace accepts them. The axes, grid, legend and theme are set as edit_diagram accepts them; it starts in the user's default theme for new diagrams. Returns the diagram as get_schematic lists it: its number, and each trace's points or why it has none.",
+ "description": "Places a diagram on a schematic or a data display (a .dpl in 'path', opened if it is not - or 'document': \"data_display\" for the schematic's, made when it has none); its traces show the dataset's data right away. 'type' is rect (x-y, the default), polar (a Nyquist plot with 'nyquist'), smith (its two-port's circles: 'smith_circles'), admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus, histogram, eye, stacked (panes on one x axis: 'panes', and each trace's 'pane'), pole_zero, bode, nichols, spectrum, bathtub, level_histogram, contour, spectrogram, box_plot, constellation or tornado; a type's own settings go in an object of its name ('eye', 'bode', 'spectrum', ...), whose description says what it draws. 'x' and 'y' are its lower left corner; if left out, it goes below everything on the schematic, in a free spot (the result says where, and warns when a diagram lies over another one or over parts). 'width' and 'height' default to 240 x 160. 'title' is drawn above it and moves with it as part of the diagram. 'traces' lists variables (as get_dataset names them - tran.v(out), or v(out) or out when that is unambiguous), expressions of them (v(out)/v(in), semi.I_anode*1e3 to plot a current in mA without copying the data, which a re-solve then follows) or objects as add_trace accepts them. The axes, grid, legend and theme are set as edit_diagram accepts them; it starts in the user's default theme for new diagrams. Returns the diagram as get_schematic lists it: its number, and each trace's points or why it has none.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given (a schematic or a data display - a .dpl not open is opened)"}, "document": {"type": "string", "enum": ["schematic", "data_display"], "description": "data_display: on the data display of the schematic 'path' names (its .dpl: opened, made when it has none) - the plots of a report apart from the circuit; schematic (the default): on the document 'path' names"}, "type": {"type": "string", "description": "rect (x-y, the default), polar, smith, admittance_smith, polar_smith, smith_polar, tab (a table), timing, truth, 3d, locus, histogram, eye (an eye diagram: a transient folded at its unit interval; its own settings in 'eye'), stacked, pole_zero, bode, nichols, spectrum, bathtub, level_histogram, contour, spectrogram, box_plot, constellation or tornado (each with its own settings under its name)"}, "x": {"type": "integer", "description": "Its lower left corner (with 'y'); below everything, in a free spot, when not given"}, "y": {"type": "integer", "description": "Its lower left corner (with 'x')"},
    "width": {"type": "integer", "description": "240 by default"}, "height": {"type": "integer", "description": "160 by default"}, "title": {"type": "string", "description": "Drawn above it, and moved, selected and exported with it"},
    "traces": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object", "properties": {"variable": {"type": "string"}, "axis": {"type": "string"}, "pane": {"type": "integer"}, "color": {"type": "string"}, "auto_color": {"type": "boolean"}, "thickness": {"type": "integer"}, "style": {"type": "string"}, "marker": {"type": "string"}, "part": {"type": "string"}, "numbers": {"type": "string"}, "precision": {"type": "integer"}, "ghost": {"type": "boolean"}, "hidden": {"type": "boolean"}, "run": {"type": "string"}}}]}, "description": "Variables as get_dataset names them (tran.v(out); v(out) or out when that is one), or objects as add_trace takes them: {\"variable\": \"ac.v(out)\", \"axis\": \"right\", \"color\": \"#ff0000\", \"part\": \"db\", \"run\": \"before\"}"},
-   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
-   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
-   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis (for traces with axis right): Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
+   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}, "notation": {"type": ["string", "null"], "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent", null]}, "decimals": {"type": ["integer", "null"], "minimum": -1, "maximum": 15}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB. Its own 'notation' and 'decimals' write this axis' numbers in another form than the diagram's (x in SI prefixes while y is decimal); null gives it the diagram's back"},
+   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}, "notation": {"type": ["string", "null"], "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent", null]}, "decimals": {"type": ["integer", "null"], "minimum": -1, "maximum": 15}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
+   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}, "notation": {"type": ["string", "null"], "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent", null]}, "decimals": {"type": ["integer", "null"], "minimum": -1, "maximum": 15}}, "description": "The right y axis (for traces with axis right): Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB"},
    "panes": {"type": ["integer", "array"], "items": {"type": "object", "properties": {"y_axis": {"type": "object"}, "y2_axis": {"type": "object"}}}, "description": "A stacked diagram's panes (type stacked, 2 by default, at most 8): how many, or a list of them, the top one first, each with its own y_axis (left) and y2_axis (right) as an axis is given - label, log, auto, from, to, step, units; as many panes as are listed, what is not given staying. They share the x axis, its zoom and the markers: a marker reads out every pane's traces where it is. A trace's pane is its 'pane' (add_trace)"},
    "limits": {"type": "array", "items": {"type": "object", "properties": {"upper": {"type": ["number", "array"]}, "lower": {"type": ["number", "array"]}, "label": {"type": "string"}, "axis": {"type": "string", "enum": ["left", "right"]}, "pane": {"type": "integer"}}}, "description": "Spec limits its traces keep within (a rect or stacked diagram): each \"upper\" or \"lower\" - a level (1.2) or points [[x, y], ...], x rising, straight between them as drawn (on a log axis, in its logarithm) and holding from the first x to the last; two points of one x are a mask's step - with a 'label', its 'axis' (left, right) and a stacked diagram's 'pane'; y in the units the axis shows (dB on an axis of dB). Drawn dashed, the traces red where beyond them, PASS or FAIL in the corner; get_schematic gives the verdict and each stretch beyond (from, to, worst, at). The list given replaces them; [] none"},
    "pole_zero": {"type": "object", "properties": {"guides": {"type": "boolean", "description": "Lines of constant damping (zeta) and circles of constant natural frequency (omega n), on by default"}}, "description": "A pole-zero map's own (type pole_zero): each trace's values roots in the s-plane - a pole-zero analysis' pole as crosses, zero as circles - with the j omega axis and the right half-plane shaded; a marker on a root reads its omega n, f, zeta and Q, and get_schematic gives each trace's roots"},
@@ -440,14 +445,14 @@ const char* const kTools = R"JSON([
    "decimals": {"type": "integer", "minimum": -1, "maximum": 15, "description": "Their places after the point; -1 as many as each needs"},
    "theme": {"type": "object", "properties": {"preset": {"type": "string", "enum": ["automatic", "light", "dark", "no_background", "default"]}, "background": {"type": "string"}, "plot_area": {"type": "string"}, "frame": {"type": "string"}, "grid": {"type": "string"}, "x_axis": {"type": "string"}, "y_axis": {"type": "string"}, "y2_axis": {"type": "string"}, "title": {"type": "string"}, "text": {"type": "string"}, "legend_background": {"type": "string"}, "legend_border": {"type": "string"}, "legend_text": {"type": "string"}}, "description": "The colours of its parts, each #rrggbb, #aarrggbb (see-through), a name (white, darkgray, ...) or auto (as Qucs-S draws it: no background on light paper, a white one on dark paper, the rest in colours that show on the background). background is under all of it, plot_area inside its frame; an axis' colour is that of its ticks, numbers and label; text is a table's. preset first sets them all - automatic, light, dark, no_background (the canvas shows through), default (the user's for new diagrams) - and the parts given then change that. A part the diagram does not have (a table's legend) is left out"}}}},
 {"name": "edit_diagram",
- "description": "Changes a diagram; whatever is not given stays. You can change its position (x, y: the lower left corner) and size, its title (drawn above it, moving with it), its axes (x_axis, y_axis, and y2_axis on the right, each with label, log, auto, from, to, step and units), the notation of its numbers and their decimals, grid, legend and theme (the colours of its background, plot area, frame, grid, axes, title and legend: a preset - light, dark, no_background - and each part's). 'diagram' is its number from get_schematic (it can be left out when there is only one). One undo step; the traces are re-read from the dataset.",
+ "description": "Changes a diagram; whatever is not given stays. You can change its position (x, y: the lower left corner) and size, its title (drawn above it, moving with it), its axes (x_axis, y_axis, and y2_axis on the right, each with label, log, auto, from, to, step, units and - where that axis' numbers are not written as the rest's - its own notation and decimals), the notation of its numbers and their decimals, grid, legend and theme (the colours of its background, plot area, frame, grid, axes, title and legend: a preset - light, dark, no_background - and each part's). 'diagram' is its number from get_schematic (it can be left out when there is only one). One undo step; the traces are re-read from the dataset.",
  "inputSchema": {"type": "object", "properties": {
    "path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "diagram": {"type": "integer", "description": "Its number from get_schematic; may be left out when there is one"},
    "overlay": {"type": ["string", "null"], "description": "A run simulate's keep_as kept (before): a ghost of each trace from it - the same variable, colour and axis, drawn faint behind - for a before and after while tuning (traces of it already left); null: the ghosts taken away"},
    "x": {"type": "integer", "description": "Its lower left corner's x"}, "y": {"type": "integer", "description": "Its lower left corner's y"}, "width": {"type": "integer", "description": "Its width"}, "height": {"type": "integer", "description": "Its height"}, "title": {"type": "string", "description": "\"\" takes it away"},
-   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
-   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
-   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}}, "description": "The right y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
+   "x_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}, "notation": {"type": ["string", "null"], "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent", null]}, "decimals": {"type": ["integer", "null"], "minimum": -1, "maximum": 15}}, "description": "The x axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
+   "y_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}, "notation": {"type": ["string", "null"], "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent", null]}, "decimals": {"type": ["integer", "null"], "minimum": -1, "maximum": 15}}, "description": "The left y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
+   "y2_axis": {"type": "object", "properties": {"label": {"type": "string"}, "log": {"type": "boolean"}, "auto": {"type": "boolean"}, "from": {"type": "number"}, "to": {"type": "number"}, "step": {"type": "number"}, "units": {"type": "string", "enum": ["none", "dB", "dBuV", "dBm"]}, "notation": {"type": ["string", "null"], "enum": ["automatic", "decimal", "scientific", "power_of_ten", "engineering", "engineering_exponent", null]}, "decimals": {"type": ["integer", "null"], "minimum": -1, "maximum": 15}}, "description": "The right y axis: Its label, log (a logarithmic scale), auto (the range from the data) or from, to and step, and units (dB, dBuV, dBm): with log, its numbers are the values in dB (20 log10); a linear axis shows the values as they are - a trace's 'part' db plots them in dB; what is not given stays"},
    "panes": {"type": ["integer", "array"], "items": {"type": "object", "properties": {"y_axis": {"type": "object"}, "y2_axis": {"type": "object"}}}, "description": "A stacked diagram's panes (type stacked, 2 by default, at most 8): how many, or a list of them, the top one first, each with its own y_axis (left) and y2_axis (right) as an axis is given - label, log, auto, from, to, step, units; as many panes as are listed, what is not given staying. They share the x axis, its zoom and the markers: a marker reads out every pane's traces where it is. A trace's pane is its 'pane' (add_trace)"},
    "limits": {"type": "array", "items": {"type": "object", "properties": {"upper": {"type": ["number", "array"]}, "lower": {"type": ["number", "array"]}, "label": {"type": "string"}, "axis": {"type": "string", "enum": ["left", "right"]}, "pane": {"type": "integer"}}}, "description": "Spec limits its traces keep within (a rect or stacked diagram): each \"upper\" or \"lower\" - a level (1.2) or points [[x, y], ...], x rising, straight between them as drawn (on a log axis, in its logarithm) and holding from the first x to the last; two points of one x are a mask's step - with a 'label', its 'axis' (left, right) and a stacked diagram's 'pane'; y in the units the axis shows (dB on an axis of dB). Drawn dashed, the traces red where beyond them, PASS or FAIL in the corner; get_schematic gives the verdict and each stretch beyond (from, to, worst, at). The list given replaces them; [] none"},
    "pole_zero": {"type": "object", "properties": {"guides": {"type": "boolean", "description": "Lines of constant damping (zeta) and circles of constant natural frequency (omega n), on by default"}}, "description": "A pole-zero map's own (type pole_zero): each trace's values roots in the s-plane - a pole-zero analysis' pole as crosses, zero as circles - with the j omega axis and the right half-plane shaded; a marker on a root reads its omega n, f, zeta and Q, and get_schematic gives each trace's roots"},
@@ -934,8 +939,9 @@ const char* const kTools = R"JSON([
 {"name": "fem_build", "description": "Builds a multiphysics model's geometry ('what' geometry, the default: its domains, boundaries and points with their numbers, as fem_describe what=geometry gives them, shown in the Graphics view; 'until' a feature's or a process flow's step's tag: the structure as it leaves it, each step's report) or its mesh (mesh: built in the background, waited for up to 'timeout' seconds; its triangles, nodes, smallest angle and quality). A process flow's geometry is built in the background too (its anneals take seconds to minutes) and waited for: the model's window goes on meanwhile. fem_solve builds what it needs itself.", "inputSchema": {"type": "object", "properties": {"what": {"type": "string", "enum": ["geometry", "mesh"], "description": "What is built; geometry when not given"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "mesh: seconds it is waited for (300)"}, "max": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "geometry: domains and boundaries listed at most (100)"}, "until": {"type": "string", "description": "geometry: built up to this feature's tag, or a process flow's step's - the structure as it leaves it, shown, each step's report and its regions (name, material, area, where); the model's geometry kept whole"}}}},
 {"name": "fem_solve", "description": "Solves a study of a multiphysics model (its geometry and mesh built first when they changed), in the background, waiting up to 'timeout' seconds (past it, how far it is: its sweep's point, a semiconductor's contact voltage and step, Newton's step and residual - fem_describe's 'at work' says it again): the time, the unknowns, the log (a coupled study's iterations, Newton's steps, the time steps), the global values (es.C11 and the capacitance matrix, terminals' charges, ec.R, ec.I_1, ec.P, ht.Tmax, ht.P, ht.Rth, solid.dmax, solid.Ry...; of a study in time at its last output time), a sweep's solutions each with its globals (a sweep stopped before its last point - cancelled, a point without a solution: its points before, and 'stopped' where and why), every Derived Values node's values (a line's Z0, εeff...; at each time and parameter value), and the plot group shown. Errors are said as the model has them: a domain without a material, a material without a property the physics needs, no ground.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "study": {"type": "string", "description": "The study's tag; the first when not given"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 7200, "description": "Seconds it is waited for (600)"}}}},
 {"name": "fem_stop", "description": "Stops what a multiphysics model is building or solving in the background - after fem_solve's or fem_build's timeout, or the user's own run - as the model tab's Cancel does, and waits up to 'timeout' seconds for it to end: it stops at its next check - a time step, a frequency, a sweep's point, a coupled loop's iteration, a semiconductor's Newton step (on its way to its contacts' voltages too), each step of a mode or eigenfrequency search (not inside a matrix's factorization, a large model's some seconds), a process flow's step or its anneal's time step (a flow's geometry is built in the background, as is a step's state). Returns whether it stopped and what the model said; nothing running, it says so.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Seconds it is waited for to end (30)"}}}},
-{"name": "fem_evaluate", "description": "Evaluates an expression of a solved multiphysics model: 'at' points ([[x, y], ...] in the geometry's unit), or 'over' domain or boundary ('selection' a rule, all when not given; 'kind' integral - over the area or the length, not the thickness -, average, maximum or minimum), or neither: a global value (es.C11, ec.R, 1/ec.G11, ht.Tmax - several split by ';', each named if wanted: loss_dBcm = emw.loss/100) or a Derived Values node's: its tag (each of its values: lp1) or tag.name (one: lp1.Z0_odd), of its study unless 'study' says. Expressions of the variables fem_describe what=variables lists: V, es.normE, ec.Qrh, T, ht.normq, x, y... 'unit' shows it in another (mV, kV/mm, degC). With 'step' a process flow's step's state, no study needed. Each value as shown and in SI.", "inputSchema": {"type": "object", "properties": {"expression": {"type": "string", "description": "What is evaluated (V, es.normE, T, ht.qy, es.C11, ec.P...)"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "study": {"type": "string", "description": "The study's tag; the first when not given"}, "step": {"type": "string", "description": "A process flow's step (its tag or name; a flow: its last): its state in place of a study's - its dopants (pf1.B, pf1.B_a, pf1.net...) and the values derived down its column at 'x': pf1.xj (junction depth), pf1.Rs (sheet resistance), pf1.tox (oxide over the semiconductor), pf1.dose_B (each species' dose kept)"}, "x": {"type": "number", "description": "step: where its column is (the geometry's unit; the window's middle when not given)"}, "at": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Points [[x, y], ...] in the geometry's unit"}, "over": {"type": "string", "enum": ["domain", "boundary"], "description": "Domains or boundaries: with 'selection' and 'kind'"}, "selection": {"type": "object", "description": "over: which ({\"only\": [\"film\"]}, {\"numbers\": [2]}); all when not given"}, "kind": {"type": "string", "enum": ["integral", "average", "maximum", "minimum"], "description": "over: what of it (integral)"}, "unit": {"type": "string", "description": "The unit it is shown in (SI's when not given)"}, "time": {"type": "string", "description": "A study in time: the output time (s, or with a unit: 0.5, 500[ms]; the last when not given)"}, "frequency": {"type": "string", "description": "A study in frequency: the frequency (Hz, or with a unit: 1e6, 1[MHz]; a mode analysis's also as a wavelength, 1550[nm]; the last when not given)"}, "mode": {"type": "integer", "minimum": 1, "description": "A mode analysis: the mode, from 1 by effective index (a resonator's by frequency; the first when not given); with 'all', that mode alone at each point"}, "state": {"type": "integer", "minimum": 1, "description": "A quantum states study: the state (as 'mode')"}, "point": {"type": "integer", "minimum": 0, "description": "A sweep: its point, from 1 (the last when not given); with no sweep, a Laser L-I's points or a Valence Bands step's values of k. One past the last is refused"}, "all": {"type": "boolean", "description": "At every output time or frequency and every point of the sweep; a global the same at each mode or state of a point once for the point"}}, "required": ["expression"]}},
-{"name": "fem_plot", "description": "Shows a multiphysics model's results in its Graphics view: 'plot' a plot group (by its tag; a 1D Plot Group's graphs are written as a Qucs dataset beside the model and shown in a data display), or 'expression' - a plot group of it made (a color map, with 'contours' its contours too; 'unit', 'colors' rainbow, viridis, thermal, coolwarm or gray; one step of Undo) - or 'show' geometry or mesh; 'step' a process flow's step's state: a color map of 'expression' (its net doping, pf1.net, by default), or with 'sims' its profile down x - each species on a logarithmic axis, SIMS's form, a 'measured' CSV with it. Returns what is shown and the color map's range; screenshot takes a picture of it.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "plot": {"type": "string", "description": "A plot group's tag (fem_describe lists them)"}, "step": {"type": "string", "description": "A process flow's step (its tag or name; a flow: its last): its state plotted, no study needed"}, "sims": {"type": "boolean", "description": "step: its profile down x (a 1D plot group, a log axis) in place of a color map"}, "x": {"type": "number", "description": "step: where its profile runs down (the geometry's unit; the window's middle when not given)"}, "depth": {"type": "number", "description": "sims: how far down from the top (the geometry's unit; 1 µm when not given)"}, "species": {"type": "string", "description": "sims: which, split by ',' (B, P...); all when not given"}, "active": {"type": "boolean", "description": "sims: each species' active part too"}, "measured": {"type": "string", "description": "sims: a measured profile's file (CSV: depth, then a column per species) imported beside the display, its columns traces on the diagram"}, "expression": {"type": "string", "description": "A plot group of this expression made and shown"}, "title": {"type": "string", "description": "expression: the plot group's name (the expression when not given)"}, "unit": {"type": "string", "description": "expression: the unit it is shown in"}, "colors": {"type": "string", "enum": ["rainbow", "viridis", "thermal", "coolwarm", "gray"], "description": "expression: the color table"}, "contours": {"type": "boolean", "description": "expression: its contours too"}, "study": {"type": "string", "description": "expression: the study (the first when not given)"}, "show": {"type": "string", "enum": ["geometry", "mesh"], "description": "The geometry or the mesh in place of a plot"}, "time": {"type": "string", "description": "A study in time: the output time shown (s, or with a unit; empty: the last)"}, "frequency": {"type": "string", "description": "A study in frequency: the frequency shown (Hz, or with a unit; a mode analysis's also as a wavelength, 1550[nm]; empty: the last)"}, "mode": {"type": "integer", "minimum": 1, "description": "A mode analysis: the mode shown, from 1"}, "point": {"type": "integer", "minimum": 0, "description": "A sweep: the point shown, from 1 (0: the last); with no sweep, a Laser L-I's points or a Valence Bands step's values of k"}}}},
+{"name": "fem_evaluate", "description": "Evaluates an expression of a solved multiphysics model: 'at' points ([[x, y], ...] in the geometry's unit), or 'over' domain or boundary ('selection' a rule, all when not given; 'kind' integral - over the area or the length, not the thickness -, average, maximum or minimum), or neither: a global value (es.C11, ec.R, 1/ec.G11, ht.Tmax - several split by ';', each named if wanted: loss_dBcm = emw.loss/100) or a Derived Values node's: its tag (each of its values: lp1) or tag.name (one: lp1.Z0_odd), of its study unless 'study' says. Expressions of the variables fem_describe what=variables lists: V, es.normE, ec.Qrh, T, ht.normq, x, y... 'unit' shows it in another (mV, kV/mm, degC). With 'step' a process flow's step's state, no study needed. Each value as shown and in SI. 'reference' measures them against reference numbers in one step - a number, {name: number}, or a table's file of names and numbers -: each value's reference, the difference and the difference in per cent, and the largest of them. fem_converge checks mesh convergence the same way, over finer meshes.", "inputSchema": {"type": "object", "properties": {"expression": {"type": "string", "description": "What is evaluated (V, es.normE, T, ht.qy, es.C11, ec.P...)"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "study": {"type": "string", "description": "The study's tag; the first when not given"}, "step": {"type": "string", "description": "A process flow's step (its tag or name; a flow: its last): its state in place of a study's - its dopants (pf1.B, pf1.B_a, pf1.net...) and the values derived down its column at 'x': pf1.xj (junction depth), pf1.Rs (sheet resistance), pf1.tox (oxide over the semiconductor), pf1.dose_B (each species' dose kept)"}, "x": {"type": "number", "description": "step: where its column is (the geometry's unit; the window's middle when not given)"}, "at": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "Points [[x, y], ...] in the geometry's unit"}, "over": {"type": "string", "enum": ["domain", "boundary"], "description": "Domains or boundaries: with 'selection' and 'kind'"}, "selection": {"type": "object", "description": "over: which ({\"only\": [\"film\"]}, {\"numbers\": [2]}); all when not given"}, "kind": {"type": "string", "enum": ["integral", "average", "maximum", "minimum"], "description": "over: what of it (integral)"}, "unit": {"type": "string", "description": "The unit it is shown in (SI's when not given)"}, "reference": {"description": "Reference numbers (SI) it is measured against: one number (the one value's), {\"name\": number} by the values' names, or a table's file (its rows a name and a number, apart by a comma, a semicolon, a tab or spaces; a header and comment lines left out) - each value then gets its 'reference', 'difference' and 'difference %', and the answer the largest difference"}, "time": {"type": "string", "description": "A study in time: the output time (s, or with a unit: 0.5, 500[ms]; the last when not given)"}, "frequency": {"type": "string", "description": "A study in frequency: the frequency (Hz, or with a unit: 1e6, 1[MHz]; a mode analysis's also as a wavelength, 1550[nm]; the last when not given)"}, "mode": {"type": "integer", "minimum": 1, "description": "A mode analysis: the mode, from 1 by effective index (a resonator's by frequency; the first when not given); with 'all', that mode alone at each point"}, "state": {"type": "integer", "minimum": 1, "description": "A quantum states study: the state (as 'mode')"}, "point": {"type": "integer", "minimum": 0, "description": "A sweep: its point, from 1 (the last when not given); with no sweep, a Laser L-I's points or a Valence Bands step's values of k. One past the last is refused"}, "all": {"type": "boolean", "description": "At every output time or frequency and every point of the sweep; a global the same at each mode or state of a point once for the point"}}, "required": ["expression"]}},
+{"name": "fem_converge", "description": "Checks a multiphysics study's mesh convergence in one call: it solves at the mesh as it is and at finer ones, and says how far the values watched moved between the last two - whether they have settled. 'values' are the expressions watched, as fem_evaluate takes them (es.C11, emw.neff, ec.R, a Derived Values node's lp1.Z0); 'refine' the factors the largest element is divided by ([2] by default, [2, 4] for two finer meshes); 'tolerance' the relative change that counts as converged (0.01, a per cent). Each mesh's largest element, triangles, unknowns and seconds, every value at it, and between the last two meshes each value's change in absolute terms and per cent with whether it converged. The mesh node is put back as it was, whatever happens - each finer mesh is its element size divided by the factor, the preset's other sizes kept. It solves once per mesh, so 'timeout' is for each.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "study": {"type": "string", "description": "The study's tag; the first when not given"}, "values": {"type": "array", "items": {"type": "string"}, "description": "What is watched (es.C11, emw.neff, ec.R, lp1.Z0), 20 at most"}, "refine": {"type": "array", "items": {"type": "number", "minimum": 1, "maximum": 100}, "description": "The factors the largest element is divided by, 5 at most ([2] when not given)"}, "tolerance": {"type": "number", "description": "The relative change that counts as converged (0.01)"}, "timeout": {"type": "integer", "minimum": 1, "maximum": 7200, "description": "Seconds each solve is waited for (600)"}}, "required": ["values"]}},
+{"name": "fem_plot", "description": "Shows a multiphysics model's results in its Graphics view: 'plot' a plot group (by its tag; a 1D Plot Group's graphs are written as a Qucs dataset beside the model and shown in a data display), or 'expression' - a plot group of it made (a color map, with 'contours' its contours too; 'unit', 'colors' rainbow, viridis, thermal, coolwarm or gray; one step of Undo) - or 'show' geometry or mesh; 'step' a process flow's step's state: a color map of 'expression' (its net doping, pf1.net, by default), or with 'sims' its profile down x - each species on a logarithmic axis, SIMS's form, a 'measured' CSV with it. Returns what is shown and the color map's range; screenshot takes a picture of it. A 1D plot group shown again keeps the diagram that is there - its ranges, colours, markers and paintings -, and an axis label of the user's own words is not written over by the group's ('kept as the user set it' says which).", "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "plot": {"type": "string", "description": "A plot group's tag (fem_describe lists them)"}, "step": {"type": "string", "description": "A process flow's step (its tag or name; a flow: its last): its state plotted, no study needed"}, "sims": {"type": "boolean", "description": "step: its profile down x (a 1D plot group, a log axis) in place of a color map"}, "x": {"type": "number", "description": "step: where its profile runs down (the geometry's unit; the window's middle when not given)"}, "depth": {"type": "number", "description": "sims: how far down from the top (the geometry's unit; 1 µm when not given)"}, "species": {"type": "string", "description": "sims: which, split by ',' (B, P...); all when not given"}, "active": {"type": "boolean", "description": "sims: each species' active part too"}, "measured": {"type": "string", "description": "sims: a measured profile's file (CSV: depth, then a column per species) imported beside the display, its columns traces on the diagram"}, "expression": {"type": "string", "description": "A plot group of this expression made and shown"}, "title": {"type": "string", "description": "expression: the plot group's name (the expression when not given)"}, "unit": {"type": "string", "description": "expression: the unit it is shown in"}, "colors": {"type": "string", "enum": ["rainbow", "viridis", "thermal", "coolwarm", "gray"], "description": "expression: the color table"}, "contours": {"type": "boolean", "description": "expression: its contours too"}, "study": {"type": "string", "description": "expression: the study (the first when not given)"}, "show": {"type": "string", "enum": ["geometry", "mesh"], "description": "The geometry or the mesh in place of a plot"}, "time": {"type": "string", "description": "A study in time: the output time shown (s, or with a unit; empty: the last)"}, "frequency": {"type": "string", "description": "A study in frequency: the frequency shown (Hz, or with a unit; a mode analysis's also as a wavelength, 1550[nm]; empty: the last)"}, "mode": {"type": "integer", "minimum": 1, "description": "A mode analysis: the mode shown, from 1"}, "point": {"type": "integer", "minimum": 0, "description": "A sweep: the point shown, from 1 (0: the last); with no sweep, a Laser L-I's points or a Valence Bands step's values of k"}}}},
 {"name": "fem_export", "description": "Runs an Export node of a multiphysics model (Results > Export: touchstone - a line of its length as an .s2p of S-parameters at each frequency, for an S-parameter file part; spice - a .cir subcircuit of a line, sections of R, L, G, C or an LTRA line, or of terminals' capacitance, conductance or coupled-inductance matrix; qucspart - a Qucs subcircuit .sch of an RLCG part; fieldexport - expressions (\"expressions\": \"emw.normE; semi.n\") on a regular grid (\"where\": grid, \"from\", \"to\" corners in the geometry's unit, \"nx\", \"ny\") or at the mesh's nodes, as \"format\" csv, npy (NumPy: a grid's array [solution,] expression, y, x) or dat (columns, gnuplot), for one solution (\"point\", \"time\", \"frequency\", \"mode\"), each (\"solutions\": all) or each point's chosen mode (chosen) - these of a solved study's; lumericalmode, lumericalcharge, lumericalmqw - a Lumerical script, .lsf, of the model alone, that builds it in MODE (an FDE region over its cross-section, each domain's index at the mode step's wavelength), in CHARGE (its cross-section in the x-z plane, electrical materials by name, doping, contacts on metal strips at their voltages, a sweep a value table) or for mqwindex (the wells' stack, 4x4 k·p) and saves the project): its file written (where its 'file' says, else model_tag beside the model) and its first lines returned. With 'copy', a qucspart's RLCG part goes on the clipboard to paste into a schematic. fem_edit adds export nodes under \"exports\".", "inputSchema": {"type": "object", "properties": {"export": {"type": "string", "description": "The export node's tag (fem_describe lists them)"}, "path": {"type": "string", "description": "The model (.qfem), relative to the open project's folder (else the workspace), or its tab's title; the model in front when not given"}, "copy": {"type": "boolean", "description": "A qucspart: its part copied to the clipboard, not written"}}}}
 ])JSON";
 
@@ -3687,8 +3693,8 @@ QucsControl::QucsControl(QucsApp* app) : QObject(app), a_app(app)
     qApp->installEventFilter(this);
     a_tools = QJsonDocument::fromJson(QByteArray(kTools)).array();
     a_tools.append(QJsonDocument::fromJson(R"JSON({"name": "describe_tool",
- "description": "Returns a tool's full description: what it does and returns, its fields and common mistakes. The tools loaded in every turn have short descriptions; without 'name', it lists every tool's summary.",
- "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "The tool (add_component, get_dataset, ...); without it, every tool's summary"}}}})JSON").object());
+ "description": "Returns a tool's full description: what it does and returns, its fields and common mistakes. The tools loaded in every turn have short descriptions; without 'name', it lists every tool's summary. 'guards' says how a call of it is treated before it is made - the guards the user chose (also in get_state) and, with 'arguments', what they name for those very arguments: let through, asked about each time (and why, as the user is asked), or refused within the call under way.",
+ "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "description": "The tool (add_component, get_dataset, ...); without it, every tool's summary"}, "arguments": {"type": "object", "description": "The arguments a call would be made with: the answer's 'this call' says how it would be treated, without making it"}}}})JSON").object());
     // run_script, where the build has Qt's JavaScript engine.
     if (scriptingBuilt())
         a_tools.append(QJsonDocument::fromJson(R"JSON({"name": "run_script",
@@ -4280,6 +4286,40 @@ void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, st
     misc::ErrorCapture capture;
     // What a tool did beside what was asked, after its result.
     const auto withNotes = [this](QJsonObject result) {
+        // An input read under another name, or that had no effect: in the
+        // answer's own JSON where it is JSON ("renamed", "ignored"), else
+        // a line after it (MCP wishlist N2 - renamed silently before).
+        if (!a_renamed.isEmpty() || !a_ignored.isEmpty()) {
+            const QJsonObject renamed = std::exchange(a_renamed, {}), ignored = std::exchange(a_ignored, {});
+            QJsonArray content = result.value(QStringLiteral("content")).toArray();
+            bool inAnswer = false;
+            if (!result.value(QStringLiteral("isError")).toBool() && !content.isEmpty()) {
+                QJsonObject first = content.first().toObject();
+                const QString text = first.value(QStringLiteral("text")).toString();
+                if (const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8()); doc.isObject()) {
+                    QJsonObject o = doc.object();
+                    if (!renamed.isEmpty()) o.insert(QStringLiteral("renamed"), renamed);
+                    if (!ignored.isEmpty()) o.insert(QStringLiteral("ignored"), ignored);
+                    // (As it was written: indented where it was indented.)
+                    const QJsonDocument::JsonFormat format = text.contains(QLatin1String("\n ")) ? QJsonDocument::Indented
+                                                                                                 : QJsonDocument::Compact;
+                    first.insert(QStringLiteral("text"), QString::fromUtf8(QJsonDocument(o).toJson(format)));
+                    content[0] = first;
+                    result.insert(QStringLiteral("content"), content);
+                    inAnswer = true;
+                }
+            }
+            if (!inAnswer) {
+                QStringList lines;
+                for (auto it = renamed.begin(); it != renamed.end(); ++it)
+                    lines << tr("%1 was read as %2.").arg(it.key(), it.value().toString());
+                for (auto it = ignored.begin(); it != ignored.end(); ++it)
+                    lines << tr("%1 had no effect: %2").arg(it.key(), it.value().toString());
+                content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                           {QStringLiteral("text"), QLatin1Char('\n') + lines.join(QLatin1Char(' '))}});
+                result.insert(QStringLiteral("content"), content);
+            }
+        }
         if (a_callNotes.isEmpty()) return result;
         QJsonArray content = result.value(QStringLiteral("content")).toArray();
         content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
@@ -4755,6 +4795,39 @@ QString QucsControl::wrongTypes(const QString& tool, const QJsonObject& args) co
     return {};
 }
 
+// A singular given where \a tool takes the plural - 'name' for delete's
+// 'names', 'step' for undo's 'steps', 'color' for fem_plot's 'colors' -
+// read as that field, of the one where it is a list. An empty object when
+// there is nothing to read that way (MCP wishlist N11: delete with 'name'
+// was refused, "Meant names?", while the tools that take one take 'name').
+QJsonObject QucsControl::asPlural(const QString& tool, const QJsonObject& args) const
+{
+    const auto known = a_details.constFind(tool);
+    if (known == a_details.constEnd()) return {};
+    const QJsonObject schema = known->value(QLatin1String("inputSchema")).toObject();
+    if (schema.value(QLatin1String("additionalProperties")).toBool()) return {};
+    const QJsonObject fields = schema.value(QLatin1String("properties")).toObject();
+    QJsonObject out = args;
+    bool any = false;
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        if (it.key().isEmpty() || fields.contains(it.key())) continue;
+        for (const QString& plural : {it.key() + QLatin1Char('s'), it.key() + QLatin1String("es")}) {
+            if (args.contains(plural) || !fields.contains(plural)) continue;
+            // The value as that field takes it: wrapped in a list where the
+            // field is one, else as it is (undo's 'steps' is a number,
+            // read_pdf's 'pages' takes [3, 4], "2-5" or 7).
+            const QJsonObject field = fields.value(plural).toObject();
+            const bool list = field.value(QLatin1String("type")).toString() == QLatin1String("array");
+            out.remove(it.key());
+            out.insert(plural, list && !it.value().isArray() ? QJsonValue(QJsonArray{it.value()}) : it.value());
+            renamedForCall(it.key(), plural);
+            any = true;
+            break;
+        }
+    }
+    return any ? out : QJsonObject();
+}
+
 QString QucsControl::unknownArguments(const QString& tool, const QJsonObject& args) const
 {
     const auto known = a_details.constFind(tool);
@@ -4798,6 +4871,9 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
             if (--control->a_callDepth == 0) control->closeFileStep();
         }
     } depth(this, tool);
+    // A singular where the tool takes a list of that name ('name' for
+    // delete's 'names'): read as that list, and said (MCP wishlist N11).
+    if (const QJsonObject plural = asPlural(tool, args); !plural.isEmpty()) return call(tool, plural, done, async);
     // An argument the tool does not take: refused, with those it does - it
     // was left out, and the call done without it (a text box's tip, a
     // misspelt width: the box came out as if neither was given).
@@ -4886,6 +4962,12 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
                 whole.insert(QStringLiteral("annotations"), v.toObject().value(QLatin1String("annotations")));
                 whole.insert(QStringLiteral("summary"), a_summaries.value(name, v.toObject().value(QLatin1String("description")).toString()));
             }
+        // How a call of it would be treated, before it is made: the guards
+        // as they stand, and what they name for these very arguments (MCP
+        // wishlist N3 - planning around the user's cards needs this).
+        whole.insert(QStringLiteral("guards"), guardsState());
+        if (args.contains(QLatin1String("arguments")))
+            whole.insert(QStringLiteral("this call"), callGuarded(name, args.value(QLatin1String("arguments")).toObject()));
         return jsonResult(whole);
     }
     if (tool == QLatin1String("get_state")) return getState(args);
@@ -5015,6 +5097,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     else if (tool == QLatin1String("fem_build")) femBuild(args, done);
     else if (tool == QLatin1String("fem_solve")) femSolve(args, done);
     else if (tool == QLatin1String("fem_stop")) femStop(args, done);
+    else if (tool == QLatin1String("fem_converge")) femConverge(args, done);
     else if (tool == QLatin1String("stop_simulation")) stopSimulation(args, done);
     else if (tool == QLatin1String("wait_for")) waitFor(args, done);
     else if (tool == QLatin1String("send_input")) sendInput(args, done);
@@ -5344,6 +5427,9 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
         }
         if (const QDateTime written = datasetWritten(doc); written.isValid())
             d.insert(QStringLiteral("dataset written"), written.toString(Qt::ISODate));
+        // What the user selected in it, as data (MCP wishlist N12).
+        if (const QJsonObject selected = selectionOf(doc); !selected.isEmpty())
+            d.insert(QStringLiteral("selection"), selected);
         // The project its file is in - another than the open one said so:
         // relative paths, Scratch and Verilog-A are the open project's.
         if (const ProjectFolder* p = doc->getDocName().isEmpty() ? nullptr : projectOf(doc->getDocName())) {
@@ -5432,6 +5518,9 @@ QJsonObject QucsControl::getState(const QJsonObject& args)
     // Every project of the workspace: one is open at a time ('project').
     QList<std::pair<QString, bool>> folders;
     for (const ProjectFolder& p : std::as_const(projectFolders)) folders.append({QFileInfo(p.folder).fileName(), p.linked});
+    // How a call of this conversation is treated before it is made: the
+    // guards the user chose (MCP wishlist N3).
+    state.insert(QStringLiteral("guards"), guardsState());
     state.insert(QStringLiteral("projects"), projectNames(folders, 100));
     // Simulations followed in the background, while they run.
     QJsonArray following;
@@ -9249,6 +9338,34 @@ bool placeGround(Schematic* sch, const QPoint& p, QPoint* where, GroundRoom* roo
 
 } // namespace
 
+// A ground symbol already in the schematic that \a p should be wired to
+// rather than given one of its own: one whose own pin is connected to
+// nothing (placed and left), in a straight line from \a p (the same x or
+// the same y) and within kGroundReach of it. The nearest such. An invalid
+// point when there is none (MCP wishlist N9: a ground placed first was
+// left connected to nothing while a second was put on the pin).
+constexpr int kGroundReach = 200;
+
+QPoint looseGroundNear(Schematic* sch, const QPoint& p)
+{
+    QPoint best;
+    int nearest = kGroundReach + 1;
+    for (Component* c : sch->a_DocComps) {
+        if (c->Model != QLatin1String("GND") || c->Ports.isEmpty() || c->isActive != COMP_IS_ACTIVE) continue;
+        const Port* port = c->Ports.first();
+        const QPoint at(c->cx + port->x, c->cy + port->y);
+        if (at == p) continue;                                    // on the pin: said already
+        if (at.x() != p.x() && at.y() != p.y()) continue;         // not in a straight line
+        const Node* n = port->Connection;
+        if (n == nullptr || n->conn_count() > 1) continue;        // wired to something already
+        const int away = (at - p).manhattanLength();
+        if (away > kGroundReach || away >= nearest) continue;
+        nearest = away;
+        best = at;
+    }
+    return nearest <= kGroundReach ? best : QPoint();
+}
+
 // A pin to ground: a ground symbol of its own (placeGround()) - not a
 // ground elsewhere found by its number among them (GND#2.1).
 QJsonObject QucsControl::groundPin(Schematic* sch, const QJsonValue& pin)
@@ -9262,6 +9379,23 @@ QJsonObject QucsControl::groundPin(Schematic* sch, const QJsonValue& pin)
     if (before.netOf.contains(QStringLiteral("ground")) && before.netOf.value(at) == before.netOf.value(QStringLiteral("ground")))
         return textResult(tr("%1 is on ground already: nothing drawn.").arg(named));
     prepare(sch);
+    // One placed and left unwired, in reach: wired to, rather than a
+    // second one put on the pin (MCP wishlist N9).
+    if (const QPoint loose = looseGroundNear(sch, p); !loose.isNull()) {
+        const QString state = sch->snapshot();
+        const Nets was = netsOf(sch, nullptr, {p});
+        const auto check = [&] { return netChangesBeyond(was, netsOf(sch, nullptr, {p}), {at, QStringLiteral("ground")}); };
+        QString why;
+        if (wireUp(sch, p, loose, check, &why)) {
+            const Nets now = netsOf(sch, nullptr, {p});
+            if (now.netOf.value(at) == now.netOf.value(QStringLiteral("ground"), -2)) {
+                finish(sch, {p, loose});
+                return textResult(tr("%1 is grounded: wired to the ground at %2, %3, which was there with nothing on it.")
+                                      .arg(named).arg(loose.x()).arg(loose.y()));
+            }
+        }
+        sch->restore(state);
+    }
     QPoint gp;
     if (!placeGround(sch, p, &gp))
         return errorResult(tr("%1 is not grounded: there is no room for a ground symbol near it that a wire reaches without "
@@ -10744,22 +10878,191 @@ QJsonObject QucsControl::undoRedo(const QJsonObject& args, bool redo)
     return textResult(text);
 }
 
-QJsonObject qucs_s::control::pngContent(const QImage& image)
+qucs_s::control::PictureAsked qucs_s::control::PictureAsked::of(const QJsonObject& args, QString* error)
 {
-    QByteArray png;
-    QBuffer buffer(&png);
+    PictureAsked asked;
+    if (args.contains(QLatin1String("max_width"))) {
+        const int wanted = args.value(QLatin1String("max_width")).toInt();
+        if (wanted < 100 || wanted > 4000) {
+            if (error) *error = tr("'max_width' is 100 to 4000 pixels (the longer side; 1500 unless given).");
+            return asked;
+        }
+        asked.longest = wanted;
+    }
+    if (args.contains(QLatin1String("scale"))) {
+        const double wanted = args.value(QLatin1String("scale")).toDouble();
+        if (!(wanted >= 0.05 && wanted <= 4)) {
+            if (error) *error = tr("'scale' is 0.05 to 4 times the natural size.");
+            return asked;
+        }
+        asked.scale = wanted;
+        // (A scale asked for is not then cut by the default width: only one
+        // given with it.)
+        if (!args.contains(QLatin1String("max_width"))) asked.longest = 4000;
+    }
+    asked.gray = args.value(QLatin1String("gray")).toBool();
+    const QString format = args.value(QLatin1String("format")).toString().trimmed().toLower();
+    if (!format.isEmpty() && format != QLatin1String("png") && format != QLatin1String("jpeg") && format != QLatin1String("jpg")) {
+        if (error) *error = tr("'format' is png (the default) or jpeg.");
+        return asked;
+    }
+    asked.jpeg = format.startsWith(QLatin1String("jp"));
+    return asked;
+}
+
+QJsonObject qucs_s::control::pngContent(const QImage& image, const PictureAsked& asked)
+{
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
     buffer.open(QIODevice::WriteOnly);
-    image.save(&buffer, "PNG");
+    // (A JPEG of text at 80: a third of the PNG's tokens, still read.)
+    image.save(&buffer, asked.jpeg ? "JPEG" : "PNG", asked.jpeg ? 80 : -1);
     return {{QStringLiteral("type"), QStringLiteral("image")},
-            {QStringLiteral("data"), QString::fromLatin1(png.toBase64())},
-            {QStringLiteral("mimeType"), QStringLiteral("image/png")}};
+            {QStringLiteral("data"), QString::fromLatin1(bytes.toBase64())},
+            {QStringLiteral("mimeType"), asked.jpeg ? QStringLiteral("image/jpeg") : QStringLiteral("image/png")}};
 }
 
 // Not wider than a picture to look at needs to be (a window on a Retina
 // screen is twice its size in pixels).
-QImage qucs_s::control::fitted(const QImage& image)
+QImage qucs_s::control::fitted(const QImage& image, const PictureAsked& asked)
 {
-    return image.width() > 1800 ? image.scaledToWidth(1800, Qt::SmoothTransformation) : image;
+    QImage out = image;
+    if (asked.scale != 1 && !out.isNull())
+        out = out.scaled(std::max(1, qRound(out.width() * asked.scale)), std::max(1, qRound(out.height() * asked.scale)),
+                         Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    // The longer side, not the width alone: a tall page on a Retina screen
+    // was 2782 x 2372 (MCP wishlist N13).
+    if (const int longest = std::max(out.width(), out.height()); longest > asked.longest && longest > 0)
+        out = out.scaled(std::max(1, out.width() * asked.longest / longest), std::max(1, out.height() * asked.longest / longest),
+                         Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    if (asked.gray && !out.isNull()) out = out.convertToFormat(QImage::Format_Grayscale8);
+    return out;
+}
+
+// What a picture of a document's window shows, in the document's own
+// measures: the pages of a PDF in view and each one's part, in points,
+// the slide of a presentation, the lines of a text - with the zoom, so
+// that read_pdf, read_pptx or get_text can follow the same lines (MCP
+// wishlist N14: the answer said only "as its window shows it").
+// What the user has selected in \a doc, as data: its text, where it is,
+// and - of a PDF - its lines' boxes in page points, which read_pdf's
+// 'region' takes. An empty object when nothing is selected, or when the
+// kind of document has no selection (a presentation's text cannot be
+// selected). MCP wishlist N12: reading the words off a picture of the
+// screen was the only way to tell.
+QJsonObject QucsControl::selectionOf(QucsDoc* doc) const
+{
+    const auto shortened = [](const QString& text) {
+        return text.size() <= 4000 ? text : text.left(4000) + tr(" ... (%1 characters in all)").arg(text.size());
+    };
+#ifdef QUCS_HAVE_QTPDF
+    if (auto* pdf = dynamic_cast<PdfDoc*>(doc); pdf != nullptr && pdf->view() != nullptr && pdf->view()->hasSelection()) {
+        QJsonArray boxes;
+        for (const QPolygonF& line : pdf->view()->selectionBounds()) {
+            const QRectF r = line.boundingRect();
+            boxes.append(QJsonArray{qRound(r.left()), qRound(r.top()), qRound(r.right()), qRound(r.bottom())});
+        }
+        const int page = pdf->view()->selectionPage();
+        QJsonObject o{{QStringLiteral("text"), shortened(pdf->view()->selectedText())},
+                      {QStringLiteral("page"), page + 1},
+                      {QStringLiteral("boxes"), boxes}};
+        if (pdf->document() != nullptr && page >= 0) {
+            const QSizeF size = pdf->document()->pagePointSize(page);
+            o.insert(QStringLiteral("page size"), QJsonArray{qRound(size.width()), qRound(size.height())});
+        }
+        o.insert(QStringLiteral("note"), tr("The boxes are points from the page's top left, line by line - read_pdf with 'page' and "
+                                            "'region' reads the same, and screenshot with them draws it."));
+        return o;
+    }
+#endif
+    if (auto* text = dynamic_cast<TextDoc*>(doc); text != nullptr) {
+        const QTextCursor cursor = text->textCursor();
+        if (!cursor.hasSelection()) return {};
+        QTextCursor from = cursor;
+        from.setPosition(cursor.selectionStart());
+        QTextCursor to = cursor;
+        to.setPosition(cursor.selectionEnd());
+        return QJsonObject{{QStringLiteral("text"), shortened(cursor.selectedText().replace(QChar(0x2029), QLatin1Char('\n')))},
+                           {QStringLiteral("from line"), from.blockNumber() + 1},
+                           {QStringLiteral("to line"), to.blockNumber() + 1},
+                           {QStringLiteral("characters"), cursor.selectionEnd() - cursor.selectionStart()},
+                           {QStringLiteral("note"), tr("get_text with 'from' and 'to' reads those lines; edit_text changes them.")}};
+    }
+    return {};
+}
+
+QString QucsControl::shownInView(QucsDoc* doc) const
+{
+    const auto points = [](const QRectF& r) {
+        return tr("%1, %2 - %3, %4 points").arg(r.left(), 0, 'f', 0).arg(r.top(), 0, 'f', 0).arg(r.right(), 0, 'f', 0).arg(r.bottom(), 0, 'f', 0);
+    };
+#ifdef QUCS_HAVE_QTPDF
+    if (auto* pdf = dynamic_cast<PdfDoc*>(doc); pdf != nullptr && pdf->document() != nullptr && pdf->view() != nullptr) {
+        qucs_s::pdf::PageView* view = pdf->view();
+        const QRect seen = view->viewport()->rect();
+        const qreal perPoint = view->pixelsPerPoint();
+        if (!(perPoint > 0)) return {};
+        QStringList pages;
+        // (From the page in sight out either way, while they are in view:
+        // not every page of a long document.)
+        for (int step : {0, 1}) {
+            for (int page = view->currentPage() + (step == 0 ? 0 : -1); page >= 0 && page < pdf->pageCount(); page += step == 0 ? 1 : -1) {
+                const QRect where = view->pageRect(page);
+                const QRect part = where.intersected(seen);
+                if (part.isEmpty()) break;
+                const QSizeF size = pdf->document()->pagePointSize(page);
+                const QRectF of(QPointF((part.left() - where.left()) / perPoint, (part.top() - where.top()) / perPoint),
+                                QSizeF(part.width() / perPoint, part.height() / perPoint));
+                const QString said = of.contains(QRectF(QPointF(0, 0), size).adjusted(0.5, 0.5, -0.5, -0.5))
+                                         ? tr("page %1 whole").arg(page + 1)
+                                         : tr("page %1, %2 of its %3 x %4").arg(page + 1).arg(points(of)).arg(size.width(), 0, 'f', 0).arg(size.height(), 0, 'f', 0);
+                if (step == 0) pages << said;
+                else pages.prepend(said);
+            }
+        }
+        if (pages.isEmpty()) return {};
+        return tr("In view at %1 %: %2. read_pdf with 'page' and 'region' reads the same lines; screenshot with 'page' draws one "
+                  "sharper.")
+            .arg(qRound(view->zoom() * 100)).arg(pages.join(QStringLiteral("; ")));
+    }
+#endif
+    if (auto* deck = dynamic_cast<PptxDoc*>(doc); deck != nullptr && deck->presentation() && deck->view() != nullptr) {
+        qucs_s::pptx::SlideView* view = deck->view();
+        const QRect seen = view->viewport()->rect();
+        const qreal zoom = view->zoom();
+        const QSizeF size = deck->presentation()->slideSize();
+        if (!(zoom > 0)) return {};
+        QStringList slides;
+        for (int step : {0, 1}) {
+            for (int slide = view->currentSlide() + (step == 0 ? 0 : -1); slide >= 0 && slide < deck->slideCount(); slide += step == 0 ? 1 : -1) {
+                const QRect where = view->slideRect(slide);
+                const QRect part = where.intersected(seen);
+                if (part.isEmpty()) break;
+                const QRectF of(QPointF((part.left() - where.left()) / zoom, (part.top() - where.top()) / zoom),
+                                QSizeF(part.width() / zoom, part.height() / zoom));
+                const QString said = of.contains(QRectF(QPointF(0, 0), size).adjusted(0.5, 0.5, -0.5, -0.5))
+                                         ? tr("slide %1 whole").arg(slide + 1)
+                                         : tr("slide %1, %2 of its %3 x %4").arg(slide + 1).arg(points(of)).arg(size.width(), 0, 'f', 0).arg(size.height(), 0, 'f', 0);
+                if (step == 0) slides << said;
+                else slides.prepend(said);
+            }
+        }
+        if (slides.isEmpty()) return {};
+        return tr("In view at %1 %: %2 (of %3). read_pptx reads the same slides; screenshot with 'slide' draws one sharper.")
+            .arg(qRound(zoom * 100)).arg(slides.join(QStringLiteral("; ")))
+            .arg(deck->slideCount());
+    }
+    if (auto* text = dynamic_cast<TextDoc*>(doc); text != nullptr) {
+        const QTextCursor top = text->cursorForPosition(QPoint(0, 0));
+        const QTextCursor bottom = text->cursorForPosition(QPoint(0, text->viewport()->height() - 1));
+        const int first = top.blockNumber() + 1;
+        const int last = (bottom.isNull() || bottom.block().blockNumber() < top.blockNumber() ? text->document()->blockCount() - 1
+                                                                                             : bottom.blockNumber())
+                         + 1;
+        return tr("Lines %1 to %2 of %3 in view (get_text with 'from' and 'to' reads them).")
+            .arg(first).arg(last).arg(text->document()->blockCount());
+    }
+    return {};
 }
 
 QJsonObject QucsControl::screenshot(const QJsonObject& args)
@@ -10769,22 +11072,39 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
     if (area == QLatin1String("visible")) area = QStringLiteral("screen");
     if (area != QLatin1String("paper") && area != QLatin1String("screen") && area != QLatin1String("window"))
         return errorResult(tr("'area' is paper (all), screen (visible) or window."));
+    // Smaller, in grey, a JPEG: as asked for (MCP wishlist N13).
+    QString how;
+    const PictureAsked asked = PictureAsked::of(args, &how);
+    if (!how.isEmpty()) return errorResult(how);
     // The whole window - its panes, tabs, docks - and each dialog open over it.
     if (area == QLatin1String("window")) {
-        QJsonArray content{pngContent(fitted(a_app->grab().toImage()))};
-        QStringList shown{tr("the window, %1 x %2").arg(a_app->width()).arg(a_app->height())};
+        // Each picture with the size it is sent at, where that is not the
+        // size on screen - a window twice its size on a Retina screen, one
+        // made smaller by 'max_width' or 'scale' (MCP wishlist N13).
+        const auto sizes = [](const QWidget* w, const QImage& sent) {
+            return w->width() == sent.width() && w->height() == sent.height()
+                       ? tr("%1 x %2").arg(sent.width()).arg(sent.height())
+                       : tr("%1 x %2 on screen, sent %3 x %4").arg(w->width()).arg(w->height()).arg(sent.width()).arg(sent.height());
+        };
+        const QImage window = fitted(a_app->grab().toImage(), asked);
+        QJsonArray content{pngContent(window, asked)};
+        QStringList shown{tr("the window, %1").arg(sizes(a_app, window))};
         for (QWidget* w : QApplication::topLevelWidgets()) {
             if (w == a_app || !w->isVisible() || w->isMinimized()) continue;
             if (qobject_cast<QDialog*>(w) == nullptr && !w->isModal()) continue;
-            content.append(pngContent(fitted(w->grab().toImage())));
-            shown << tr("the dialog \"%1\"").arg(w->windowTitle().isEmpty() ? QString::fromLatin1(w->metaObject()->className()) : w->windowTitle());
+            const QImage picture = fitted(w->grab().toImage(), asked);
+            content.append(pngContent(picture, asked));
+            shown << tr("the dialog \"%1\", %2").arg(w->windowTitle().isEmpty() ? QString::fromLatin1(w->metaObject()->className()) : w->windowTitle(),
+                                                      sizes(w, picture));
         }
         // (A list open below a field - names offered as typed -: a window of
         // its own, the window's picture without it.)
         if (QAbstractItemView* list = openList()) {
-            content.append(pngContent(fitted(list->grab().toImage())));
+            const QImage picture = fitted(list->grab().toImage(), asked);
+            content.append(pngContent(picture, asked));
             const QString of = listRead(list).value(QStringLiteral("of")).toString();
-            shown << (of.isEmpty() ? tr("the list open below a field") : tr("the list open below %1").arg(of));
+            shown << (of.isEmpty() ? tr("the list open below a field, %1").arg(sizes(list, picture))
+                                   : tr("the list open below %1, %2").arg(of, sizes(list, picture)));
         }
         content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                    {QStringLiteral("text"), tr("Pictures of %1.").arg(shown.join(QStringLiteral(", ")))}});
@@ -10827,11 +11147,15 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
         const QString what = region.isEmpty() ? tr("page %1 of %2").arg(page).arg(count)
                                               : tr("page %1 of %2, the region %3, %4 - %5, %6 points").arg(page).arg(count)
                                                     .arg(region.left(), 0, 'f', 0).arg(region.top(), 0, 'f', 0).arg(region.right(), 0, 'f', 0).arg(region.bottom(), 0, 'f', 0);
+        // (As it is sent: smaller where that was asked for, or where it was
+        // drawn larger than a picture needs to be.)
+        const QImage sent = fitted(image, asked);
         return {{QStringLiteral("content"),
-                 QJsonArray{pngContent(fitted(image)),
+                 QJsonArray{pngContent(sent, asked),
                             QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
-                                        {QStringLiteral("text"), tr("%1, %2 - drawn at %3 dpi, %4 x %5 pixels; its tab left as it is.")
-                                                                     .arg(titleOf(doc), what).arg(qRound(scale * 72)).arg(image.width()).arg(image.height())}}}},
+                                        {QStringLiteral("text"), tr("%1, %2 - drawn at %3 dpi, sent %4 x %5 pixels; its tab left as it is.")
+                                                                     .arg(titleOf(doc), what).arg(qRound(scale * 72 * sent.width() / std::max(1, image.width())))
+                                                                     .arg(sent.width()).arg(sent.height())}}}},
                 {QStringLiteral("isError"), false}};
     }
 #endif
@@ -10866,10 +11190,11 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
         if (page.isNull()) return errorResult(tr("No picture could be made of %1.").arg(titleOf(doc)));
         const double k = double(page.width()) / all.width();
         image = page.copy(QRect(int((part.left() - all.left()) * k), int((part.top() - all.top()) * k), int(part.width() * k), int(part.height() * k)));
+        const QImage sent = fitted(image, asked);
         return {{QStringLiteral("content"),
-                 QJsonArray{pngContent(fitted(image)),
+                 QJsonArray{pngContent(sent, asked),
                             QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
-                                        {QStringLiteral("text"), tr("%1, %2 on paper - %3 x %4 pixels.").arg(titleOf(doc), what).arg(image.width()).arg(image.height())}}}},
+                                        {QStringLiteral("text"), tr("%1, %2 on paper - %3 x %4 pixels.").arg(titleOf(doc), what).arg(sent.width()).arg(sent.height())}}}},
                 {QStringLiteral("isError"), false}};
     }
     if (sch != nullptr && area == QLatin1String("paper")) {
@@ -10888,10 +11213,17 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
     const QString what = sch == nullptr ? tr("as its window shows it")
                        : area == QLatin1String("paper") ? tr("all of it on white paper, as printed and exported")
                                                         : tr("as the canvas shows it now, in the theme's colours, at its zoom");
+    const QImage sent = fitted(image, asked);
+    // What a window's picture shows, in the document's own measures: the
+    // pages or the slide in view, each one's part of it and its zoom, so
+    // that read_pdf (or a sharper picture of the page) can follow the same
+    // lines (MCP wishlist N14 - it said only "as its window shows it").
+    QString inView = shownInView(doc);
+    if (!inView.isEmpty()) inView = QLatin1Char(' ') + inView;
     return {{QStringLiteral("content"),
-             QJsonArray{pngContent(fitted(image)),
+             QJsonArray{pngContent(sent, asked),
                         QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
-                                    {QStringLiteral("text"), tr("%1, %2 - %3 x %4 pixels.").arg(titleOf(doc), what).arg(image.width()).arg(image.height())}}}},
+                                    {QStringLiteral("text"), tr("%1, %2 - %3 x %4 pixels.%5").arg(titleOf(doc), what).arg(sent.width()).arg(sent.height()).arg(inView)}}}},
             {QStringLiteral("isError"), false}};
 }
 

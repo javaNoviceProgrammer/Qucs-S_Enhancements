@@ -498,7 +498,10 @@ public:
   /// showing them is there already. Its answer: an error, or empty. A
   /// display of its own ("replace"): \a removed says its diagrams taken
   /// away, of traces its dataset no longer has.
-  QString showPythonDisplay(const QJsonObject &request, QStringList *removed = nullptr);
+  /// \a removed: the diagrams of the display taken away, said; \a kept:
+  /// what of it was left as the user set it and not written over (an axis
+  /// label of their own words - MCP wishlist N5).
+  QString showPythonDisplay(const QJsonObject &request, QStringList *removed = nullptr, QStringList *kept = nullptr);
   /// The other files a rename of \a doc's name changes, changed (opened,
   /// left unsaved, one edit each); why not, or empty.
   QString applyPythonRename(PythonDoc *doc);

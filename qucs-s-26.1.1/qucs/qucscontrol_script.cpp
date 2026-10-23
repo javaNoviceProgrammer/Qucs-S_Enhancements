@@ -74,7 +74,9 @@ public:
             return fail(QStringLiteral("%1: %2").arg(tool, qucs_s::mcp::maxCharsRefusal(given)));
         // (A use the guards name: not unasked from a script.)
         if (const QString no = a_control->unaskedWithin(tool, arguments); !no.isEmpty()) return fail(no);
+        a_running = a_last = tool;
         QJsonObject result = a_control->callNow(tool, arguments, 10 * 60 * 1000);
+        a_running.clear();
         if (most > 0) result = qucs_s::mcp::trimmedTo(result, most);
         QStringList texts;
         for (const QJsonValue& v : result.value(QLatin1String("content")).toArray())
@@ -100,6 +102,11 @@ public:
 
     int calls() const { return a_calls; }
     QStringList logged() const { return a_log; }
+    /// The tool whose call was under way when the script was stopped
+    /// (empty: none - its own code was running between calls).
+    QString running() const { return a_running; }
+    /// The last tool it called (empty: it called none).
+    QString last() const { return a_last; }
 
 private:
     static constexpr int kMostCalls = 5000;
@@ -111,6 +118,7 @@ private:
     QucsControl* a_control;
     QJSEngine* a_engine;
     int a_calls = 0;
+    QString a_running, a_last;   // the call under way, and the last made (MCP wishlist N10)
     QStringList a_log;
 };
 
@@ -145,15 +153,24 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     std::mutex mutex;
     std::condition_variable over;
     bool finished = false, stopped = false;
-    std::thread watchdog([&] {
-        std::unique_lock<std::mutex> lock(mutex);
-        if (!over.wait_for(lock, std::chrono::seconds(timeout), [&] { return finished; })) {
-            stopped = true;
-            engine.setInterrupted(true);
-        }
-    });
     QElapsedTimer clock;
     clock.start();
+    // The user's time is not the script's: while a call of it waits for an
+    // answer to a card (askUser()), its clock stands still - the script was
+    // "stopped after 60 s" where the user had taken that long to answer
+    // (MCP wishlist N10). Watched in slices for that reason.
+    const qint64 askedBefore = askedUserMs();
+    std::thread watchdog([&] {
+        std::unique_lock<std::mutex> lock(mutex);
+        while (!finished) {
+            if (over.wait_for(lock, std::chrono::milliseconds(200), [&] { return finished; })) return;
+            if (clock.elapsed() - (askedUserMs() - askedBefore) >= qint64(timeout) * 1000) {
+                stopped = true;
+                engine.setInterrupted(true);
+                return;
+            }
+        }
+    });
     QJSValue value = engine.evaluate(script, QStringLiteral("script"));
     // A 'return' outside a function - the result, as a function's body
     // gives it: the script run as one (a syntax error ran nothing yet).
@@ -167,11 +184,35 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     over.notify_all();
     watchdog.join();
 
-    QJsonObject result{{QStringLiteral("calls"), api.calls()}, {QStringLiteral("seconds"), clock.elapsed() / 1000.0}};
+    const qint64 userMs = askedUserMs() - askedBefore;
+    QJsonObject result{{QStringLiteral("calls"), api.calls()}, {QStringLiteral("seconds"), (clock.elapsed() - userMs) / 1000.0}};
+    // The user's own time beside the script's, where a card was answered.
+    if (userMs > 0) {
+        result.insert(QStringLiteral("waited for the user"), userMs / 1000.0);
+        result.insert(QStringLiteral("note"), tr("'seconds' is the script's own time: the %1 s it waited for the user to answer a "
+                                                 "card are not counted against 'timeout'.").arg(userMs / 1000.0, 0, 'f', 1));
+    }
     if (!api.logged().isEmpty()) result.insert(QStringLiteral("log"), QJsonArray::fromStringList(api.logged()));
     if (value.isError() || stopped) {
-        const QString message = stopped ? tr("stopped after %1 s (a longer 'timeout' lets it run longer)").arg(timeout)
-                                        : value.property(QStringLiteral("message")).toString();
+        // What it was doing when it was stopped: the call under way (its
+        // own code, when there is none), and the user's time told apart.
+        QString message;
+        if (stopped) {
+            if (!api.running().isEmpty())
+                message = tr("stopped after %1 s of its own, while its call %2 of %3 was running (a longer 'timeout' lets it run "
+                             "longer; that call's own answer was not waited for)").arg(timeout).arg(api.calls()).arg(api.running());
+            else if (api.calls() > 0)
+                message = tr("stopped after %1 s of its own, between calls - after its call %2, of %3; its own code was running "
+                             "then (a longer 'timeout' lets it run longer)").arg(timeout).arg(api.calls()).arg(api.last());
+            else
+                message = tr("stopped after %1 s of its own: its own code was running, and it had called no tool (a longer "
+                             "'timeout' lets it run longer)").arg(timeout);
+            if (userMs > 0)
+                message += QLatin1Char(' ') + tr("The %1 s it waited for the user to answer a card are not counted in that.")
+                                                  .arg(userMs / 1000.0, 0, 'f', 1);
+        } else {
+            message = value.property(QStringLiteral("message")).toString();
+        }
         result.insert(QStringLiteral("error"), message);
         if (!stopped && value.hasProperty(QStringLiteral("lineNumber"))) result.insert(QStringLiteral("line"), value.property(QStringLiteral("lineNumber")).toInt());
         if (atomic) {

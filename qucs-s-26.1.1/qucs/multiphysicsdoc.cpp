@@ -2382,7 +2382,7 @@ std::optional<double> coordinate(const QJsonValue& v, const Solution& s, QString
 
 } // namespace
 
-QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool open, QStringList* removed)
+QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool open, QStringList* removed, QStringList* kept)
 {
     auto fail = [&](const QString& why) {
         if (error) *error = why;
@@ -2862,7 +2862,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
         QString ylogWhy;
         const bool ylog = rect && qucs_s::fem::flagIn(*g, QStringLiteral("ylog"), parameters()->scope, &ylogWhy);
         if (!ylogWhy.isEmpty()) return fail(ylogWhy);
-        QStringList gone;
+        QStringList gone, theirs;
         const QString shown = a_App->showPythonDisplay(QJsonObject{{QStringLiteral("display"), dpl},
                                                                    {QStringLiteral("dataset"), dat},
                                                                    {QStringLiteral("traces"), QJsonArray::fromStringList(traces)},
@@ -2872,10 +2872,12 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
                                                                    {QStringLiteral("ylabel"), rect && anyUnit ? axisWords.join(QLatin1String(", ")) : QString()},
                                                                    {QStringLiteral("xlabel"), rect ? xWords : QString()},
                                                                    {QStringLiteral("ylog"), ylog}},
-                                                       &gone);
+                                                       &gone, &theirs);
         if (!shown.isEmpty()) return fail(shown);
         if (!gone.isEmpty()) say(tr("%1: its display's diagrams of traces its dataset no longer has removed: %2").arg(g->name(), gone.join(QLatin1String("; "))));
+        if (!theirs.isEmpty()) say(tr("%1: %2").arg(g->name(), theirs.join(QLatin1String("; "))));
         if (removed != nullptr) *removed = gone;
+        if (kept != nullptr) *kept = theirs;
         // Its diagram kept: the display saved as it is now.
         for (QucsDoc* d : a_App->allDocuments())
             if (QFileInfo(d->getDocName()) == QFileInfo(dpl) && d->getDocChanged()) d->save();

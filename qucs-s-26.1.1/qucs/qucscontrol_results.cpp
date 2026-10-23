@@ -296,6 +296,10 @@ QJsonObject axisJson(const Axis& a, bool units)
         o.insert(QStringLiteral("step"), a.step);
     }
     if (units && a.Units > 0 && a.Units < int(std::size(kUnits))) o.insert(QStringLiteral("units"), QString::fromLatin1(kUnits[a.Units]));
+    // Its own notation and decimals, where it writes its numbers in
+    // another than the diagram's (MCP wishlist N4).
+    if (a.notation >= 0 && a.notation < int(std::size(kNotations))) o.insert(QStringLiteral("notation"), QString::fromLatin1(kNotations[a.notation]));
+    if (a.decimals >= -1) o.insert(QStringLiteral("decimals"), a.decimals);
     return o;
 }
 
@@ -313,6 +317,29 @@ bool applyAxis(Axis* a, const QJsonObject& o, const QString& which, QString* err
         a->Label = label;
     }
     if (o.contains(QLatin1String("log"))) a->log = o.value(QLatin1String("log")).toBool();
+    // This axis' numbers in its own notation, not the diagram's: x in SI
+    // prefixes while y is decimal (MCP wishlist N4). null: the diagram's.
+    if (o.contains(QLatin1String("notation"))) {
+        const QJsonValue v = o.value(QLatin1String("notation"));
+        if (v.isNull()) a->notation = -1;
+        else {
+            const int n = indexIn(kNotations, v.toString());
+            if (n < 0) {
+                *error = tr("%1: 'notation' is %2, or null for the diagram's.").arg(which, namesOf(kNotations));
+                return false;
+            }
+            a->notation = n;
+        }
+    }
+    if (o.contains(QLatin1String("decimals"))) {
+        const QJsonValue v = o.value(QLatin1String("decimals"));
+        if (v.isNull()) a->decimals = -2;
+        else if (!v.isDouble() || v.toInt() < -1 || v.toInt() > 15) {
+            *error = tr("%1: 'decimals' is -1 (as many as each number needs) to 15, or null for the diagram's.").arg(which);
+            return false;
+        } else
+            a->decimals = v.toInt();
+    }
     if (o.contains(QLatin1String("units"))) {
         const int u = indexIn(kUnits, o.value(QLatin1String("units")).toString());
         if (u < 0) {
@@ -4485,6 +4512,9 @@ QJsonObject QucsControl::importData(const QJsonObject& args)
         result.insert(QStringLiteral("sheet"), options.sheet.isEmpty() ? sheets.first() : options.sheet);
     }
     if (!data.notes.isEmpty()) result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(data.notes));
+    // The columns whose name in the file is not the one they are read
+    // under ("v-out" as v_out): said, not left silent (MCP wishlist N2).
+    for (auto it = data.renamed.cbegin(); it != data.renamed.cend(); ++it) renamedForCall(it.key(), it.value());
     if (!renamed.isEmpty()) result.insert(QStringLiteral("named"), renamed);
     if (reload) result.insert(QStringLiteral("read again"), true);
     else if (replaced && !sameFile(replaced->origin.source, source))

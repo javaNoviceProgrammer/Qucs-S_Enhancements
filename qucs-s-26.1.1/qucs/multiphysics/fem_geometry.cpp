@@ -1875,15 +1875,22 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
     }
     const int n = count(t, level);
     QStringList unknown;
+    // Which rule of the object was read: one is (the first of them that
+    // fits), and the others were dropped without a word before - {"all":
+    // true, "of": ["x"]} picked everything (MCP wishlist N2).
+    QString taken;
     if (rule.value(QStringLiteral("all")).toBool()) {
+        taken = QStringLiteral("all");
         for (int i = 0; i < n; ++i) out.insert(i);
     } else if (rule.contains(QStringLiteral("numbers"))) {
+        taken = QStringLiteral("numbers");
         for (const QJsonValue& v : rule.value(QStringLiteral("numbers")).toArray()) {
             const int k = v.toInt() - 1;
             if (k >= 0 && k < n) out.insert(k);
             else problems << tr("there is no %1 %2").arg(levelName(level)).arg(v.toInt());
         }
     } else if (rule.contains(QStringLiteral("named"))) {
+        taken = QStringLiteral("named");
         const QString name = rule.value(QStringLiteral("named")).toString();
         const Node* found = nullptr;
         if (const Node* sels = model.component().child(QStringLiteral("selections")))
@@ -1894,6 +1901,7 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
             problems << tr("the selection %1 is of %2s, not %3s").arg(name, found->text(QStringLiteral("level")), levelName(level));
         else out = resolve(t, model, level, found->selection(), problems, depth + 1);
     } else if (rule.contains(QStringLiteral("box"))) {
+        taken = QStringLiteral("box");
         const QJsonArray b = rule.value(QStringLiteral("box")).toArray();
         auto num = [](const QJsonValue& v) { return v.isDouble() ? v.toDouble() : v.toString().toDouble(); };
         const QRectF box = QRectF(QPointF(num(b.at(0)), num(b.at(1))), QPointF(num(b.at(2)), num(b.at(3)))).normalized();
@@ -1903,12 +1911,14 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
             if (insideBox(t, level, i, grown)) out.insert(i);
     } else if (level == Level::Domain && (rule.contains(QStringLiteral("objects")) || rule.contains(QStringLiteral("only")))) {
         const bool only = rule.contains(QStringLiteral("only"));
+        taken = only ? QStringLiteral("only") : QStringLiteral("objects");
         const QSet<int> objs = objectIndices(t, rule.value(only ? QStringLiteral("only") : QStringLiteral("objects")), unknown);
         for (int i = 0; i < n; ++i) {
             const Topology::Domain& d = t.domains[std::size_t(i)];
             if (only ? objs.contains(d.owner) : d.objects.intersects(objs)) out.insert(i);
         }
     } else if (rule.contains(QStringLiteral("of")) && level != Level::Domain) {
+        taken = QStringLiteral("of");
         const QSet<int> objs = objectIndices(t, rule.value(QStringLiteral("of")), unknown);
         // A side, or a list of them (a periodic cell's two walls).
         QStringList sides;
@@ -1952,6 +1962,7 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
             for (int p = 0; p < int(t.points.size()); ++p)
                 if (t.points[std::size_t(p)].objects.intersects(objs)) out.insert(p);
     } else if (level == Level::Boundary && rule.contains(QStringLiteral("between"))) {
+        taken = QStringLiteral("between");
         const QJsonArray pair = rule.value(QStringLiteral("between")).toArray();
         const QSet<int> a = objectIndices(t, pair.at(0), unknown), b = objectIndices(t, pair.at(1), unknown);
         auto owner = [&](int d) { return d >= 0 ? t.domains[std::size_t(d)].owner : -1; };
@@ -1962,6 +1973,7 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
         }
     } else if (level == Level::Boundary && (rule.value(QStringLiteral("exterior")).toBool() || rule.value(QStringLiteral("interior")).toBool())) {
         const bool exterior = rule.value(QStringLiteral("exterior")).toBool();
+        taken = exterior ? QStringLiteral("exterior") : QStringLiteral("interior");
         for (int i = 0; i < n; ++i) {
             const Topology::Boundary& bd = t.boundaries[std::size_t(i)];
             const bool ext = bd.exterior();
@@ -1969,6 +1981,7 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
             if (exterior ? ext : inner) out.insert(i);
         }
     } else if (rule.contains(QStringLiteral("adjacent")) && level != Level::Domain) {
+        taken = QStringLiteral("adjacent");
         const QSet<int> domains = resolve(t, model, Level::Domain, rule.value(QStringLiteral("adjacent")).toObject(), problems, depth + 1);
         QSet<int> boundaries;
         for (int i = 0; i < int(t.boundaries.size()); ++i) {
@@ -2004,6 +2017,29 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
             said << (array.isEmpty() ? name : tr("%1 (array %2 input: its copies %3_1, %3_2... - chosen together by %3)").arg(name, whose, array));
         }
         problems << tr("there is no object %1").arg(said.join(QLatin1String(", ")));
+    }
+    // The rules of the object that the one read left unread: said, where
+    // they were dropped in silence (MCP wishlist N2). 'side' is read with
+    // 'of' alone, 'except' with any of them.
+    if (!taken.isEmpty()) {
+        static const QStringList rules{QStringLiteral("all"), QStringLiteral("numbers"), QStringLiteral("named"),
+                                       QStringLiteral("box"), QStringLiteral("objects"), QStringLiteral("only"),
+                                       QStringLiteral("of"), QStringLiteral("between"), QStringLiteral("exterior"),
+                                       QStringLiteral("interior"), QStringLiteral("adjacent")};
+        QStringList over;
+        for (const QString& key : rules) {
+            if (key == taken || !rule.contains(key)) continue;
+            // (exterior/interior: false is no rule, as the branch reads them.)
+            if ((key == QLatin1String("exterior") || key == QLatin1String("interior") || key == QLatin1String("all"))
+                && !rule.value(key).toBool())
+                continue;
+            over << key;
+        }
+        if (taken != QLatin1String("of") && rule.contains(QStringLiteral("side"))) over << QStringLiteral("side");
+        if (!over.isEmpty())
+            problems << tr("%1 was read, and %2 of the same selection left out: one rule to a selection ('except' takes "
+                           "another, and a list of selections each theirs)")
+                            .arg(taken, over.join(QLatin1String(", ")));
     }
     if (rule.contains(QStringLiteral("except"))) out.subtract(resolve(t, model, level, rule.value(QStringLiteral("except")).toObject(), problems, depth + 1));
     return out;
