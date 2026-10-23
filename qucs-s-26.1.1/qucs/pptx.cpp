@@ -19,6 +19,7 @@
  */
 
 #include "pptx.h"
+#include "svgguard.h"
 #include "zipfile.h"
 
 #include <QAbstractTextDocumentLayout>
@@ -44,6 +45,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <functional>
 #include <map>
 #include <optional>
@@ -93,6 +95,15 @@ struct Node {
         return false;
     }
     double num(QAnyStringView local, double fallback = 0) const { return has(local) ? number(attr(local), fallback) : fallback; }
+    /// An attribute as a whole number, held within \a lo and \a hi before
+    /// it is converted: converting a double past int's range is undefined
+    /// (bug hunt 2026-10-23 B5), and no attribute of a deck needs more.
+    int whole(QAnyStringView local, int fallback = 0, int lo = std::numeric_limits<int>::lowest(),
+              int hi = std::numeric_limits<int>::max()) const
+    {
+        if (!has(local)) return fallback;
+        return int(std::clamp(num(local, fallback), double(lo), double(hi)));
+    }
     bool flag(QAnyStringView local, bool fallback = false) const
     {
         if (!has(local)) return fallback;
@@ -146,7 +157,14 @@ struct Node {
     }
 };
 
-std::unique_ptr<Node> parseXml(const QByteArray& bytes)
+// How deep a part's elements may nest. PowerPoint's own nest a few dozen
+// deep (groups in groups, a table's cells' text); the tree is walked by
+// recursion here (AlternateContent, groups, notes, ~Node), so a part
+// nesting past this is not read (bug hunt 2026-10-23 A2: 50,000 levels in
+// a 157 kB deck overflowed the stack).
+constexpr std::size_t kMaxXmlDepth = 256;
+
+std::unique_ptr<Node> parseXml(const QByteArray& bytes, bool* tooDeep = nullptr)
 {
     QXmlStreamReader xml(bytes);
     xml.setNamespaceProcessing(true);
@@ -156,6 +174,10 @@ std::unique_ptr<Node> parseXml(const QByteArray& bytes)
     while (!xml.atEnd()) {
         xml.readNext();
         if (xml.isStartElement()) {
+            if (stack.size() > kMaxXmlDepth) {
+                if (tooDeep != nullptr) *tooDeep = true;
+                return nullptr;
+            }
             auto n = std::make_unique<Node>();
             n->name = xml.name().toString();
             n->attrs = xml.attributes();
@@ -216,7 +238,9 @@ public:
     {
         auto it = a_xml.find(part);
         if (it == a_xml.end()) {
-            std::unique_ptr<Node> doc = parts.contains(part) ? parseXml(parts.value(part)) : nullptr;
+            bool tooDeep = false;
+            std::unique_ptr<Node> doc = parts.contains(part) ? parseXml(parts.value(part), &tooDeep) : nullptr;
+            if (tooDeep) a_tooDeep << part;
             it = a_xml.emplace(part, std::move(doc)).first;
         }
         const Node* doc = it->second.get();
@@ -260,6 +284,9 @@ public:
         return std::nullopt;
     }
 
+    /// The parts not read for nesting deeper than kMaxXmlDepth.
+    const QStringList& tooDeep() const { return a_tooDeep; }
+
 private:
     static QString resolve(const QString& folder, const QString& target)
     {
@@ -269,6 +296,7 @@ private:
     }
     mutable std::map<QString, std::unique_ptr<Node>> a_xml;
     mutable QHash<QString, QList<Rel>> a_rels;
+    mutable QStringList a_tooDeep;
 };
 
 // ---------------------------------------------------------------------------
@@ -389,6 +417,7 @@ struct Media {
     mutable bool decoded = false;
     mutable QImage image;
     mutable std::shared_ptr<QSvgRenderer> svg;
+    mutable bool tooFar = false;   ///< an SVG whose <use> references ask for too much
 
     void decode() const
     {
@@ -407,9 +436,16 @@ struct Media {
             else if (bytes.startsWith("II*") || bytes.startsWith("MM\x00*")) kind = QStringLiteral("tiff");
             else if (bytes.left(512).contains("<svg")) kind = QStringLiteral("svg");
         }
+        // QSvgRenderer and QImage::fromData both read by what the bytes
+        // are, not by what the name says, and QtSvg expands every <use>
+        // reference as it reads: an SVG asking for too many is not drawn,
+        // whatever it is called.
+        if (qucs_s::svg::expandsTooFar(bytes)) {
+            tooFar = true;
+            return;
+        }
         if (kind == QLatin1String("svg")) {
-            auto r = std::make_shared<QSvgRenderer>(bytes);
-            if (r->isValid()) svg = r;
+            if (auto r = std::make_shared<QSvgRenderer>(bytes); r->isValid()) svg = r;
         } else if (raster.contains(kind)) {
             image = QImage::fromData(bytes);
         }
@@ -529,7 +565,14 @@ struct TextFrame {
         QTextOption option = doc->defaultTextOption();
         option.setWrapMode(wrap && width > 0 ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
         doc->setDefaultTextOption(option);
+        // Nothing laid out until all of it is in: QTextDocument lays the
+        // text out again at every insertion, so a paragraph of thousands of
+        // runs (a listing with its colours) cost the square of them - 5,000
+        // runs took 36 s a slide (bug hunt 2026-10-23 A5). Nothing here
+        // undoes anything either.
+        doc->setUndoRedoEnabled(false);
         QTextCursor c(doc);
+        c.beginEditBlock();
         for (int i = 0; i < paras.size(); ++i) {
             const TextPara& p = paras.at(i);
             if (i == 0) {
@@ -544,6 +587,7 @@ struct TextFrame {
                 else if (!r.text.isEmpty()) c.insertText(r.text, r.format);
             }
         }
+        c.endEditBlock();
         doc->setTextWidth(wrap && width > 0 ? width : -1);
         return doc;
     }
@@ -1002,7 +1046,7 @@ StyleRefs styleRefs(const Node* style, const Ctx& c)
     StyleRefs r;
     if (style == nullptr) return r;
     if (const Node* ln = style->child(u"lnRef")) {
-        const int i = int(ln->num(u"idx"));
+        const int i = ln->whole(u"idx");
         const std::optional<QColor> ph = colorOf(ln, c);
         if (i >= 1 && i <= c.theme->lines.size()) {
             r.line.kind = Stroke::Solid;
@@ -1010,7 +1054,7 @@ StyleRefs styleRefs(const Node* style, const Ctx& c)
         }
     }
     if (const Node* fl = style->child(u"fillRef")) {
-        const int i = int(fl->num(u"idx"));
+        const int i = fl->whole(u"idx");
         const std::optional<QColor> ph = colorOf(fl, c);
         if (i == 0) r.fill.kind = Fill::None;
         else if (i >= 1001 && i - 1001 < c.theme->bgFills.size()) r.fill = fillElement(c.theme->bgFills.at(i - 1001), c, ph);
@@ -1021,7 +1065,7 @@ StyleRefs styleRefs(const Node* style, const Ctx& c)
         r.font = font->attr(u"idx") == QLatin1String("major") ? c.theme->major : c.theme->minor;
     }
     if (const Node* ef = style->child(u"effectRef")) {
-        const int i = int(ef->num(u"idx"));
+        const int i = ef->whole(u"idx");
         if (i >= 1 && i <= c.theme->effects.size()) r.effects = c.theme->effects.at(i - 1)->child(u"effectLst");
         r.effectColor = colorOf(ef, c);
     }
@@ -1606,7 +1650,7 @@ RunSpec readRun(const Node* rPr, const Ctx& c)
     if (rPr->has(u"u")) r.underline = rPr->attr(u"u");
     if (rPr->has(u"strike")) r.strike = rPr->attr(u"strike") != QLatin1String("noStrike");
     if (rPr->has(u"cap")) r.caps = rPr->attr(u"cap");
-    if (rPr->has(u"baseline")) r.baseline = int(rPr->num(u"baseline") / 1000);
+    if (rPr->has(u"baseline")) r.baseline = rPr->whole(u"baseline", 0, -100000, 100000) / 1000;
     if (rPr->has(u"spc")) r.spacing = rPr->num(u"spc") / 100;
     const Fill f = fillOf(rPr, c);
     if (f.kind == Fill::Solid) r.color = f.color;
@@ -1646,7 +1690,7 @@ ParaSpec readPara(const Node* pPr, const Ctx& c)
         } else if (n == QLatin1String("buAutoNum")) {
             p.bulletKind = QStringLiteral("autoNum");
             p.bulletScheme = k->attr(u"type", QStringLiteral("arabicPeriod"));
-            p.bulletStart = int(k->num(u"startAt", 1));
+            p.bulletStart = k->whole(u"startAt", 1, 1, 32767);
         } else if (n == QLatin1String("buBlip")) {
             p.bulletKind = QStringLiteral("char");
             p.bulletChar = QStringLiteral("•");
@@ -1966,7 +2010,7 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
     bool first = true;
     for (const Node* p : txBody->children(u"p")) {
         const Node* pPr = p->child(u"pPr");
-        const int level = std::clamp(pPr != nullptr ? int(pPr->num(u"lvl")) : 0, 0, 8);
+        const int level = pPr != nullptr ? pPr->whole(u"lvl", 0, 0, 8) : 0;
         ParaSpec spec;
         spec.run.size = 18;
         for (int i = 0; i < lists.size(); ++i) {
@@ -2081,6 +2125,11 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
 // ---------------------------------------------------------------------------
 // Charts: their parts read.
 
+// The most points of a series read: a cache saying more (bug hunt
+// 2026-10-23 A4: ptCount="2000000000" asked for a list of two thousand
+// million) is read as this many, and a point's index past it is left.
+constexpr int kMaxPoints = 1000000;
+
 QList<double> numbers(const Node* ref, int* count = nullptr)
 {
     QList<double> out;
@@ -2088,13 +2137,13 @@ QList<double> numbers(const Node* ref, int* count = nullptr)
     const Node* cache = ref->descendant(u"numCache");
     if (cache == nullptr) cache = ref->descendant(u"numLit");
     if (cache == nullptr) return out;
-    const int n = int(cache->child(u"ptCount") != nullptr ? cache->child(u"ptCount")->num(u"val") : 0);
+    const int n = cache->child(u"ptCount") != nullptr ? cache->child(u"ptCount")->whole(u"val", 0, 0, kMaxPoints) : 0;
     QMap<int, double> by;
     int most = -1;
     for (const Node* p : cache->children(u"pt")) {
-        const int i = int(p->num(u"idx"));
+        const int i = p->whole(u"idx");
         const Node* v = p->child(u"v");
-        if (v == nullptr || i < 0 || i > 1000000) continue;
+        if (v == nullptr || i < 0 || i > kMaxPoints) continue;
         bool ok = false;
         const double d = v->text.trimmed().toDouble(&ok);
         if (ok) by.insert(i, d);
@@ -2116,13 +2165,13 @@ QStringList strings(const Node* ref)
     // own.
     if (const Node* multi = cache == nullptr ? ref->descendant(u"multiLvlStrCache") : nullptr) {
         const Node* level = multi->child(u"lvl");
-        const int n = int(multi->child(u"ptCount") != nullptr ? multi->child(u"ptCount")->num(u"val") : 0);
+        const int n = multi->child(u"ptCount") != nullptr ? multi->child(u"ptCount")->whole(u"val", 0, 0, kMaxPoints) : 0;
         QMap<int, QString> by;
         int most = -1;
         if (level != nullptr)
             for (const Node* p : level->children(u"pt")) {
-                const int i = int(p->num(u"idx"));
-                if (i < 0 || i > 1000000) continue;
+                const int i = p->whole(u"idx");
+                if (i < 0 || i > kMaxPoints) continue;
                 by.insert(i, p->child(u"v") != nullptr ? p->child(u"v")->text : QString());
                 most = std::max(most, i);
             }
@@ -2134,12 +2183,12 @@ QStringList strings(const Node* ref)
         for (double d : numbers(ref)) out << (std::isnan(d) ? QString() : QLocale::c().toString(d, 'g', 6));
         return out;
     }
-    const int n = int(cache->child(u"ptCount") != nullptr ? cache->child(u"ptCount")->num(u"val") : 0);
+    const int n = cache->child(u"ptCount") != nullptr ? cache->child(u"ptCount")->whole(u"val", 0, 0, kMaxPoints) : 0;
     QMap<int, QString> by;
     int most = -1;
     for (const Node* p : cache->children(u"pt")) {
-        const int i = int(p->num(u"idx"));
-        if (i < 0 || i > 1000000) continue;
+        const int i = p->whole(u"idx");
+        if (i < 0 || i > kMaxPoints) continue;
         by.insert(i, p->child(u"v") != nullptr ? p->child(u"v")->text : QString());
         most = std::max(most, i);
     }
@@ -2221,9 +2270,9 @@ std::shared_ptr<Chart> readChart(const Node* space, Ctx& c)
             if (const Node* d = k->child(u"barDir")) p.horizontal = d->attr(u"val") == QLatin1String("bar");
             if (const Node* s = k->child(u"scatterStyle")) p.scatterStyle = s->attr(u"val", QStringLiteral("lineMarker"));
             if (const Node* v = k->child(u"varyColors")) p.vary = v->flag(u"val", true);
-            if (const Node* g = k->child(u"gapWidth")) p.gap = int(g->num(u"val", 150));
-            if (const Node* o = k->child(u"overlap")) p.overlap = int(o->num(u"val", 0));
-            if (const Node* h = k->child(u"holeSize")) p.hole = int(h->num(u"val", 50));
+            if (const Node* g = k->child(u"gapWidth")) p.gap = g->whole(u"val", 150, 0, 500);
+            if (const Node* o = k->child(u"overlap")) p.overlap = o->whole(u"val", 0, -100, 100);
+            if (const Node* h = k->child(u"holeSize")) p.hole = h->whole(u"val", 50, 0, 90);
             if (const Node* f = k->child(u"firstSliceAng")) p.firstSlice = f->num(u"val");
             for (const Node* a : k->children(u"axId")) p.axes << a->attr(u"val");
             if (p.grouping == QLatin1String("stacked") || p.grouping == QLatin1String("percentStacked")) p.overlap = 100;
@@ -2244,7 +2293,7 @@ std::shared_ptr<Chart> readChart(const Node* space, Ctx& c)
                 }
                 if (const Node* sm = s->child(u"smooth")) series.smooth = sm->flag(u"val", true);
                 for (const Node* dpt : s->children(u"dPt")) {
-                    const int i = int(dpt->child(u"idx") != nullptr ? dpt->child(u"idx")->num(u"val") : -1);
+                    const int i = dpt->child(u"idx") != nullptr ? dpt->child(u"idx")->whole(u"val", -1) : -1;
                     if (i >= 0)
                         if (const Node* sp = dpt->child(u"spPr")) series.pointFills.insert(i, fillOf(sp, c));
                 }
@@ -2516,9 +2565,14 @@ Element buildPicture(const Node* pic, Layer layer, Ctx& c, bool* skip)
     if (e.media == nullptr || !e.media->drawable()) {
         e.kind = Element::Missing;
         const QString kind = e.media != nullptr ? e.media->kind() : QString();
-        e.missing = kind.isEmpty() ? QObject::tr("a picture not in the file") : QObject::tr("a picture in %1").arg(kind);
-        noteMissing(c, kind.isEmpty() ? QObject::tr("a picture linked from outside the file, or not in it")
-                                      : QObject::tr("pictures in %1, not drawn (a box in their place)").arg(kind));
+        if (e.media != nullptr && e.media->tooFar) {
+            e.missing = QObject::tr("an SVG picture, not drawn");
+            noteMissing(c, QObject::tr("an SVG picture is not drawn: %1 (a box in its place)").arg(qucs_s::svg::tooFarSaid(0)));
+        } else {
+            e.missing = kind.isEmpty() ? QObject::tr("a picture not in the file") : QObject::tr("a picture in %1").arg(kind);
+            noteMissing(c, kind.isEmpty() ? QObject::tr("a picture linked from outside the file, or not in it")
+                                          : QObject::tr("pictures in %1, not drawn (a box in their place)").arg(kind));
+        }
     }
     return e;
 }
@@ -2625,8 +2679,8 @@ Element buildTable(const Node* frame, const Node* tbl, Ctx& c)
             Cell cell;
             cell.row = r;
             cell.col = col++;
-            cell.colSpan = std::max(1, int(tc->num(u"gridSpan", 1)));
-            cell.rowSpan = std::max(1, int(tc->num(u"rowSpan", 1)));
+            cell.colSpan = tc->whole(u"gridSpan", 1, 1, 16384);
+            cell.rowSpan = tc->whole(u"rowSpan", 1, 1, 16384);
             cell.covered = tc->flag(u"hMerge") || tc->flag(u"vMerge");
             // The style's parts that apply, in their order.
             QList<const Part*> parts{&whole};
@@ -2975,19 +3029,36 @@ void drawShadow(QPainter& p, const Element& e, const QRectF& box)
     const QPointF deviceOffset = s.rotWithShape ? linear.map(offset) : offset * scale;
     // The silhouette in the device's pixels, room around it for the blur.
     const qreal blur = s.blur * scale;
-    const QRectF device = world.map(silhouette).boundingRect().adjusted(-blur - 2, -blur - 2, blur + 2, blur + 2);
+    QRectF device = world.map(silhouette).boundingRect().adjusted(-blur - 2, -blur - 2, blur + 2, blur + 2);
+    // Only as much of it as can be seen: the shadow is drawn in the
+    // device's own pixels, so what falls outside the device - or outside
+    // what the painter clips to - need not be blurred at all. A blur's
+    // margin is kept around what is drawn, so each pixel of it still has
+    // its neighbours.
+    QRectF visible(0, 0, p.device()->width(), p.device()->height());
+    if (p.hasClipping())
+        if (const QRectF clip = world.mapRect(p.clipBoundingRect()); clip.isValid()) visible &= clip;
+    if (visible.isValid()) device &= visible.translated(-deviceOffset).adjusted(-blur - 2, -blur - 2, blur + 2, blur + 2);
     const QRect area = device.toAlignedRect();
-    if (area.width() < 1 || area.height() < 1 || qint64(area.width()) * area.height() > 16ll * 1000 * 1000) return;
-    QImage mask(area.size(), QImage::Format_Alpha8);
+    if (area.width() < 1 || area.height() < 1) return;
+    // A mask of more pixels than this is built smaller and drawn scaled up
+    // - a blurred shadow shows nothing of it - rather than not drawn at
+    // all, which is what a shape larger than the view used to get (bug
+    // hunt 2026-10-23 B1: a slide's own shape lost its shadow at an export
+    // of 8 pixels a point, and at 800 % in the tab).
+    constexpr qint64 kMaxMaskPixels = 16ll * 1000 * 1000;
+    const qint64 wanted = qint64(area.width()) * area.height();
+    const qreal shrink = wanted > kMaxMaskPixels ? std::sqrt(double(kMaxMaskPixels) / double(wanted)) : 1.0;
+    QImage mask(QSizeF(area.width() * shrink, area.height() * shrink).toSize().expandedTo(QSize(1, 1)), QImage::Format_Alpha8);
     mask.fill(0);
     {
         QPainter m(&mask);
         m.setRenderHint(QPainter::Antialiasing);
-        m.setTransform(world * QTransform::fromTranslate(-area.left(), -area.top()));
+        m.setTransform(world * QTransform::fromTranslate(-area.left(), -area.top()) * QTransform::fromScale(shrink, shrink));
         m.fillPath(silhouette, Qt::black);
     }
     // Three box blurs, each across and down.
-    const int r = std::max(0, int(std::lround(blur / 2)));
+    const int r = std::max(0, int(std::lround(blur * shrink / 2)));
     if (r > 0) {
         const int w = mask.width(), h = mask.height();
         std::vector<int> line(std::max(w, h));
@@ -3022,7 +3093,9 @@ void drawShadow(QPainter& p, const Element& e, const QRectF& box)
     }
     p.save();
     p.resetTransform();
-    p.drawImage(QPointF(area.topLeft()) + deviceOffset, shadow);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    p.drawImage(QRectF(QPointF(area.topLeft()) + deviceOffset, QSizeF(area.size())), shadow,
+                QRectF(QPointF(0, 0), QSizeF(shadow.size())));
     p.restore();
 }
 
@@ -3785,7 +3858,7 @@ Fill backgroundOf(const Node* root, const Ctx& c)
     if (bg == nullptr) return f;
     if (const Node* pr = bg->child(u"bgPr")) return fillOf(pr, c);
     if (const Node* ref = bg->child(u"bgRef")) {
-        const int i = int(ref->num(u"idx"));
+        const int i = ref->whole(u"idx");
         const std::optional<QColor> ph = colorOf(ref, c);
         const QList<const Node*>& list = i >= 1001 ? c.theme->bgFills : c.theme->fills;
         const int at = i >= 1001 ? i - 1001 : i - 1;
@@ -3867,7 +3940,7 @@ std::shared_ptr<Presentation> Presentation::read(const QByteArray& bytes, QStrin
     if (d.size.width() <= 0 || d.size.height() <= 0) d.size = QSizeF(720, 540);
     if (const Node* core = d.pkg.xml(QStringLiteral("docProps/core.xml")))
         if (const Node* t = core->child(u"title")) d.title = t->text.trimmed();
-    const int firstNumber = int(presentation->num(u"firstSlideNum", 1));
+    const int firstNumber = presentation->whole(u"firstSlideNum", 1, 0, 100000);
     const Node* defaultText = presentation->child(u"defaultTextStyle");
     QHash<QString, std::shared_ptr<Theme>> themes;
     const QList<const Node*> ids = presentation->child(u"sldIdLst") != nullptr ? presentation->child(u"sldIdLst")->children(u"sldId") : QList<const Node*>();
@@ -3932,6 +4005,10 @@ std::shared_ptr<Presentation> Presentation::read(const QByteArray& bytes, QStrin
         slide.info.notes = notesOf(d.pkg, slidePart);
         d.slides << slide;
     }
+    if (!d.pkg.tooDeep().isEmpty())
+        return fail(QObject::tr("%1 nests its elements more than %2 deep (PowerPoint's own nest a few dozen)")
+                        .arg(d.pkg.tooDeep().first())
+                        .arg(kMaxXmlDepth));
     if (d.slides.isEmpty() && !ids.isEmpty()) return fail(QObject::tr("none of its %1 slides could be read").arg(ids.size()));
     return pres;
 }

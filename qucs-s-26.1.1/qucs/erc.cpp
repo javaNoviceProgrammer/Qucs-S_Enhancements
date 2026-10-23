@@ -1599,6 +1599,26 @@ const QRegularExpression& programRun()
     return runs;
 }
 
+// What a line of a .control block can run without naming a command that
+// starts a program (bug hunt 2026-10-23 A7). Read in ngspice 46's own
+// sources, since each is a way round a pattern that reads the command's
+// name:
+//   - a backquote: what stands between them is passed to popen
+//     (parser/backq.c, cp_bquote -> backeval -> popen);
+//   - an alias, which stands for any command, expanded before the command
+//     is looked up (parser/cshpar.c -> cp_doalias);
+//   - a variable where the command's name belongs ("$c true" after "set c
+//     = shell"), substituted first too (control.c, cp_variablesubst). A
+//     line beginning with '$' is no comment in the control language: only
+//     '#' and '*' begin one (parser/lexical.c).
+// None of these appears in any of the examples shipped here, so saying a
+// line of one of these kinds runs a command costs nothing in practice.
+const QRegularExpression& runsByAnotherName()
+{
+    static const QRegularExpression other(QStringLiteral("`|^\\s*alias(\\s|$)|^\\s*\\$"), QRegularExpression::CaseInsensitiveOption);
+    return other;
+}
+
 // ngspice's commands that run what a file holds: its commands (source),
 // or native code (codemodel, osdi - and pre_ before the circuit is read).
 const QRegularExpression& codeLoaded()
@@ -1619,7 +1639,10 @@ QStringList controlCommands(const QString& spice)
         const QString line = raw.trimmed();
         if (line.startsWith(QLatin1String(".control"), Qt::CaseInsensitive)) control = true;
         else if (line.startsWith(QLatin1String(".endc"), Qt::CaseInsensitive)) control = false;
-        else if (control && (programRun().match(line).hasMatch() || codeLoaded().match(line).hasMatch())) lines << line;
+        else if (control
+                 && (programRun().match(line).hasMatch() || codeLoaded().match(line).hasMatch()
+                     || runsByAnotherName().match(line).hasMatch()))
+            lines << line;
     }
     return lines;
 }
@@ -1804,6 +1827,25 @@ QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
     if (!doc->getDocName().isEmpty()) visited.insert(QFileInfo(doc->getDocName()).canonicalFilePath());
     for (const Component* c : doc->a_DocComps) {
         if (!inCircuit(c)) continue;
+        // What is written in its values, wherever the netlist puts it: a
+        // part's SPICE source is lines by design (a model's continuation
+        // lines), and a value the netlist keeps on its own line can still
+        // be written by a path of its own. Every value of the part is read
+        // together, since a block may span several (bug hunt 2026-10-23
+        // A1). The parts below whose own text is read are left to those.
+        static const QStringList readsItsText{QStringLiteral("INCLSCR"), QStringLiteral("CMD"), QStringLiteral(".CUSTOMSIM"),
+                                              QStringLiteral("NutmegEq"), QStringLiteral("SPICEINIT")};
+        if (!readsItsText.contains(c->Model)) {
+            QStringList values;
+            for (const Property* p : c->Props) values << p->Value;
+            const QString text = values.join(QLatin1Char('\n'));
+            if (text.contains(QLatin1String(".control"), Qt::CaseInsensitive))
+                if (const QStringList lines = controlCommands(text); !lines.isEmpty())
+                    list.append({tr("%1's values hold SPICE text that runs a command in a shell, or a file's commands or code, in a "
+                                    ".control block: %2")
+                                     .arg(c->Name, commandShown(lines)),
+                                 c});
+        }
         // SPICE text it brings in - a library's, a SPICE file's (from a
         // colleague, a vendor) - whose .control block starts a program.
         if (c->Model == QLatin1String("Lib") || c->Model == QLatin1String("SpLib") || c->Model == QLatin1String("SpiceInclude")
@@ -1842,7 +1884,7 @@ QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
             QStringList lines, loads;
             for (const Property* p : c->Props)
                 for (const QString& l : p->Value.split(QLatin1Char('\n'))) {
-                    if (runs.match(l).hasMatch()) lines << l.trimmed();
+                    if (runs.match(l).hasMatch() || runsByAnotherName().match(l).hasMatch()) lines << l.trimmed();
                     else if (codeLoaded().match(l).hasMatch()) loads << l.trimmed();
                 }
             if (!lines.isEmpty())
@@ -1862,7 +1904,8 @@ QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
         QStringList lines;
         if (QFile f(init.absoluteFilePath()); f.open(QIODevice::ReadOnly))
             for (const QString& l : QString::fromUtf8(f.readAll()).split(QLatin1Char('\n')))
-                if (runs.match(l).hasMatch() || codeLoaded().match(l).hasMatch()) lines << l.trimmed();
+                if (runs.match(l).hasMatch() || codeLoaded().match(l).hasMatch() || runsByAnotherName().match(l).hasMatch())
+                    lines << l.trimmed();
         if (!lines.isEmpty())
             list.append({tr("ngspice reads %1, in the folder it runs in, which runs a command in a shell, or a file's commands or code: %2")
                              .arg(QDir::toNativeSeparators(init.absoluteFilePath()), commandShown(lines)),

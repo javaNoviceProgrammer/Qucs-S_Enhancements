@@ -44,6 +44,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QPointer>
 #include <QLocale>
 #include <QCheckBox>
 #include <QMenu>
@@ -474,7 +475,7 @@ private:
 };
 
 // The buttons' glyphs, in the colour of the text.
-enum class Glyph { Back, Forward, Up, Home, Places, Tree, List, Icons, Details, Columns, Recent, More, Search };
+enum class Glyph { Back, Forward, Up, Home, Places, Tree, List, Icons, Details, Columns, Recent, More, Search, Refresh };
 
 class GlyphIcon : public DrawnIcon
 {
@@ -556,6 +557,14 @@ protected:
             p.drawEllipse(QRectF(at(0.18, 0.18), QSizeF(s * 0.46, s * 0.46)));
             p.drawLine(at(0.56, 0.56), at(0.82, 0.82));
             break;
+        case Glyph::Refresh: {
+            // Most of a circle, with an arrowhead at its open end.
+            const QRectF circle(at(0.2, 0.2), QSizeF(s * 0.6, s * 0.6));
+            p.drawArc(circle, 60 * 16, 280 * 16);
+            const QPointF tip = at(0.74, 0.3);
+            p.drawPolyline(QPolygonF{tip + QPointF(-s * 0.16, -s * 0.02), tip, tip + QPointF(-s * 0.02, s * 0.16)});
+            break;
+        }
         }
     }
 
@@ -628,6 +637,26 @@ class GitDelegate : public QStyledItemDelegate
 {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+    /// Renaming in place: the name chosen, not its suffix - typing then
+    /// replaces "amp" of "amp.sch" and leaves ".sch", as the Finder and
+    /// the Explorer do. (A name that is all suffix - ".spiceinit" - and a
+    /// folder's name are chosen whole.)
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::setEditorData(editor, index);
+        auto* line = qobject_cast<QLineEdit*>(editor);
+        if (line == nullptr) return;
+        const QString name = line->text();
+        const qsizetype dot = name.lastIndexOf(QLatin1Char('.'));
+        const QString path = index.data(QFileSystemModel::FilePathRole).toString();
+        const bool folder = !path.isEmpty() && QFileInfo(path).isDir();
+        if (dot <= 0 || folder) return;
+        // After the editor is shown, which selects all of it.
+        QPointer<QLineEdit> held(line);
+        QTimer::singleShot(0, line, [held, dot] {
+            if (!held.isNull() && held->selectedText().size() == held->text().size()) held->setSelection(0, int(dot));
+        });
+    }
     void paint(QPainter* p, const QStyleOptionViewItem& option, const QModelIndex& index) const override
     {
         const QString letter = index.column() == 0 ? index.data(GitLetterRole).toString() : QString();
@@ -1372,11 +1401,16 @@ void FileBrowser::buildToolbar()
     a_viewButton->setMenu(a_viewMenu);
     connect(a_viewActions, &QActionGroup::triggered, this, [this](QAction* a) { setView(View(a->data().toInt())); });
 
+    a_refreshButton = toolButton(this, glyphIcon(Glyph::Refresh), tr("Read the folders again (Refresh)"), "fbRefresh");
+    connect(a_refreshButton, &QToolButton::clicked, this, &FileBrowser::refresh);
+
     a_menuButton = toolButton(this, glyphIcon(Glyph::More), tr("Options"), "fbMenuButton");
     a_menuButton->setPopupMode(QToolButton::InstantPopup);
     auto* menu = new QMenu(a_menuButton);
     menu->setObjectName(QStringLiteral("fbOptions"));
     menu->setToolTipsVisible(true);
+    menu->addAction(tr("Refresh"), this, &FileBrowser::refresh)->setObjectName(QStringLiteral("fbRefreshAction"));
+    menu->addSeparator();
     a_hiddenAction = menu->addAction(tr("Show Hidden Files"));
     a_hiddenAction->setCheckable(true);
     connect(a_hiddenAction, &QAction::toggled, this, &FileBrowser::setShowHidden);
@@ -1406,12 +1440,19 @@ void FileBrowser::buildToolbar()
     });
     menu->addAction(tr("New Zip…"), this, [this] { emit newArchiveRequested(a_location); });
     menu->addSeparator();
+    menu->addAction(tr("Import Folder…"), this, &FileBrowser::importFolders)->setObjectName(QStringLiteral("fbImportFolder"));
+    menu->addAction(tr("Link Folder…"), this, &FileBrowser::linkFolders)->setObjectName(QStringLiteral("fbLinkFolder"));
+    a_unlinkAction = menu->addAction(tr("Unlink Folder…"), this, [this] { unlinkFolder(); });
+    a_unlinkAction->setObjectName(QStringLiteral("fbUnlinkFolder"));
+    a_unlinkAction->setToolTip(tr("Takes a link away; what it leads to is not touched"));
+    menu->addSeparator();
     menu->addAction(revealLabel(false), this, [this] { QDesktopServices::openUrl(QUrl::fromLocalFile(a_location)); });
     menu->addAction(tr("Copy the Folder's Path"), this, [this] {
         QApplication::clipboard()->setText(QDir::toNativeSeparators(a_location));
     });
     connect(menu, &QMenu::aboutToShow, this, [this] {
         a_documentAction->setEnabled(a_document && QFileInfo(a_document()).isFile());
+        a_unlinkAction->setEnabled(!linkedFoldersHere().isEmpty());
     });
     a_menuButton->setMenu(menu);
 
@@ -1421,6 +1462,7 @@ void FileBrowser::buildToolbar()
     top->addWidget(a_homeButton);
     top->addWidget(a_placesButton);
     top->addStretch(1);
+    top->addWidget(a_refreshButton);
     top->addWidget(a_viewButton);
     top->addWidget(a_menuButton);
     layout->addLayout(top);
@@ -2071,6 +2113,43 @@ void FileBrowser::setShowHidden(bool on)
     save();
 }
 
+void FileBrowser::refresh()
+{
+    // QFileSystemModel reads a folder once and then follows it by its
+    // watcher: where that missed something (a file written by another
+    // program over a network share, a folder changed while Qucs-S was
+    // asleep, a link's target), the model is given its root again, which
+    // reads every folder anew. The view is put back as it stood: the
+    // folder shown, the tree's open folders, what was chosen, the scroll.
+    const Tab was = currentState();
+    const QString root = a_model->rootPath();
+    a_model->setRootPath(QString());
+    a_model->setRootPath(root.isEmpty() ? a_location : root);
+    refreshKinds();
+    if (a_gitShown && !a_location.isEmpty()) qucs_s::git::Tracker::instance()->refresh(a_location);
+    applyRoot();
+    if (a_view == View::Recent) fillRecent();
+    // Its folders and choice again, once the folders are read (the model
+    // fills them as it goes).
+    a_expandPending.clear();
+    if (a_view == View::Tree) {
+        for (const QString& p : was.expanded) {
+            const QModelIndex index = indexOf(p);
+            if (index.isValid()) a_tree->expand(index);
+            else a_expandPending << p;
+        }
+    }
+    a_selectPending = !was.selected.isEmpty() && !indexOf(was.selected).isValid();
+    selectPath(was.selected);
+    const int scroll = was.scroll;
+    QPointer<QAbstractItemView> view = currentView();
+    QTimer::singleShot(0, this, [view, scroll] {
+        if (!view.isNull()) view->verticalScrollBar()->setValue(scroll);
+    });
+    updateStatus();
+    emit refreshed();
+}
+
 void FileBrowser::refreshKinds()
 {
     // QFileSystemModel keeps each entry's icon and kind: asked again, the
@@ -2271,11 +2350,20 @@ void FileBrowser::rename(const QString& path)
         }
     }
     const QFileInfo info(path);
-    bool ok = false;
-    const QString name = QInputDialog::getText(this, tr("Rename"), tr("The new name of “%1”:").arg(info.fileName()),
-                                               QLineEdit::Normal, info.fileName(), &ok)
-                             .trimmed();
-    if (!ok || name.isEmpty() || name == info.fileName()) return;
+    // As in place: the name chosen, not its suffix.
+    QInputDialog box(this);
+    box.setObjectName(QStringLiteral("fbRename"));
+    box.setWindowTitle(tr("Rename"));
+    box.setLabelText(tr("The new name of “%1”:").arg(info.fileName()));
+    box.setTextValue(info.fileName());
+    const qsizetype dot = info.fileName().lastIndexOf(QLatin1Char('.'));
+    if (dot > 0 && !info.isDir())
+        QTimer::singleShot(0, &box, [&box, dot] {
+            if (auto* line = box.findChild<QLineEdit*>()) line->setSelection(0, int(dot));
+        });
+    if (box.exec() != QDialog::Accepted) return;
+    const QString name = box.textValue().trimmed();
+    if (name.isEmpty() || name == info.fileName()) return;
     const QString why = renameEntry(path, name);
     if (!why.isEmpty()) QMessageBox::warning(this, tr("File Browser"), why);
 }
@@ -2585,6 +2673,106 @@ void FileBrowser::springOpen()
     }
 }
 
+QStringList FileBrowser::chooseFolders(const QString& title, const QString& button)
+{
+    // Qt's own dialog, so that several folders can be chosen: the native
+    // one offers no such thing on every platform.
+    QFileDialog dialog(this, title, a_location);
+    dialog.setObjectName(QStringLiteral("fbChooseFolders"));
+    dialog.setFileMode(QFileDialog::Directory);
+    dialog.setOption(QFileDialog::ShowDirsOnly, true);
+    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog.setLabelText(QFileDialog::Accept, button);
+    for (QListView* v : dialog.findChildren<QListView*>())
+        if (v->objectName() == QLatin1String("listView")) v->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    for (QTreeView* v : dialog.findChildren<QTreeView*>()) v->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    if (dialog.exec() != QDialog::Accepted) return {};
+    QStringList folders;
+    for (const QString& f : dialog.selectedFiles())
+        if (QFileInfo(f).isDir()) folders << QDir::cleanPath(f);
+    return folders;
+}
+
+void FileBrowser::importFolders()
+{
+    const QStringList folders = chooseFolders(tr("Import Folder"), tr("Import"));
+    if (folders.isEmpty()) return;
+    // Copied in, with the questions a drop of them would ask (a name
+    // there already, a folder holding the one copied).
+    const QStringList done = transfer(folders, a_location, Qt::CopyAction);
+    refresh();
+    if (!done.isEmpty()) selectPath(done.last());
+}
+
+void FileBrowser::linkFolders()
+{
+    const QStringList folders = chooseFolders(tr("Link Folder"), tr("Link"));
+    if (folders.isEmpty()) return;
+    QStringList made, failed;
+    for (const QString& folder : folders) {
+        const QFileInfo info(folder);
+        if (samePath(folder, a_location) || holds(folder, a_location)) {
+            failed << tr("“%1” holds the folder shown: a link to it there would lead round into itself").arg(info.fileName());
+            continue;
+        }
+        const QString name = freeNameIn(a_location, info.fileName(), true, false);
+        if (name.isEmpty()) {
+            failed << tr("“%1”: no name is free for it here").arg(info.fileName());
+            continue;
+        }
+        if (QFile::link(folder, name)) made << name;
+        else failed << tr("“%1” could not be linked here").arg(info.fileName());
+    }
+    refresh();
+    if (!made.isEmpty()) selectPath(made.last());
+    if (!failed.isEmpty()) QMessageBox::warning(this, tr("File Browser"), failed.join(QLatin1Char('\n')));
+}
+
+QStringList FileBrowser::linkedFoldersHere() const
+{
+    QStringList links;
+    const QDir dir(a_location);
+    for (const QFileInfo& info : dir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System | QDir::Hidden))
+        if (info.isSymLink() && QFileInfo(info.symLinkTarget()).isDir()) links << QDir::cleanPath(info.absoluteFilePath());
+    links.sort(Qt::CaseInsensitive);
+    return links;
+}
+
+void FileBrowser::unlinkFolder(const QString& given)
+{
+    QString link = given;
+    if (link.isEmpty()) {
+        const QStringList links = linkedFoldersHere();
+        if (links.isEmpty()) {
+            QMessageBox::information(this, tr("File Browser"),
+                                     tr("No folder is linked into “%1”.").arg(QFileInfo(a_location).fileName()));
+            return;
+        }
+        QStringList names;
+        for (const QString& l : links) names << QFileInfo(l).fileName();
+        bool ok = false;
+        const QString chosen = QInputDialog::getItem(this, tr("Unlink Folder"), tr("The linked folder to unlink:"), names, 0, false, &ok);
+        if (!ok || chosen.isEmpty()) return;
+        link = links.at(names.indexOf(chosen));
+    }
+    const QFileInfo info(link);
+    if (!info.isSymLink()) {
+        QMessageBox::warning(this, tr("File Browser"), tr("“%1” is not a linked folder.").arg(info.fileName()));
+        return;
+    }
+    // The link alone: what it leads to is not touched.
+    if (QMessageBox::question(this, tr("File Browser"),
+                              tr("Unlink “%1”?").arg(info.fileName()), QMessageBox::Cancel | QMessageBox::Yes,
+                              QMessageBox::Yes)
+        != QMessageBox::Yes)
+        return;
+    if (!QFile::remove(link)) {
+        QMessageBox::warning(this, tr("File Browser"), tr("“%1” could not be unlinked.").arg(info.fileName()));
+        return;
+    }
+    refresh();
+}
+
 QStringList FileBrowser::transfer(const QStringList& sources, const QString& targetGiven, Qt::DropAction action)
 {
     const QString target = QDir::cleanPath(targetGiven);
@@ -2775,11 +2963,18 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
         });
         menu->addAction(tr("New Zip…"), this, [this] { emit newArchiveRequested(a_location); });
         menu->addSeparator();
+        menu->addAction(tr("Import Folder…"), this, &FileBrowser::importFolders)->setObjectName(QStringLiteral("fbImportFolderHere"));
+        menu->addAction(tr("Link Folder…"), this, &FileBrowser::linkFolders)->setObjectName(QStringLiteral("fbLinkFolderHere"));
+        if (!linkedFoldersHere().isEmpty())
+            menu->addAction(tr("Unlink Folder…"), this, [this] { unlinkFolder(); })->setObjectName(QStringLiteral("fbUnlinkFolderHere"));
+        menu->addSeparator();
         addPaste(a_location, tr("Paste"));
         menu->addSeparator();
         menu->addAction(revealLabel(false), this, [this] { QDesktopServices::openUrl(QUrl::fromLocalFile(a_location)); });
         menu->addAction(tr("Copy Path"), this, [this] { QApplication::clipboard()->setText(QDir::toNativeSeparators(a_location)); });
         addGitMenu(menu, {a_location});
+        menu->addSeparator();
+        menu->addAction(tr("Refresh"), this, &FileBrowser::refresh)->setObjectName(QStringLiteral("fbRefreshHere"));
         return menu;
     }
     if (info.isDir()) {
@@ -2847,6 +3042,14 @@ QMenu* FileBrowser::contextMenuFor(const QString& path)
     menu->addAction(chosen.size() > 1 ? tr("Move %1 Items to Trash…").arg(chosen.size()) : tr("Move to Trash…"), this,
                     [this, chosen] { moveToTrash(chosen); })
         ->setObjectName(QStringLiteral("fbTrash"));
+    // A folder linked here: the link taken away, what it leads to left.
+    if (info.isSymLink() && QFileInfo(info.symLinkTarget()).isDir()) {
+        QAction* unlink = menu->addAction(tr("Unlink Folder…"), this, [this, path] { unlinkFolder(path); });
+        unlink->setObjectName(QStringLiteral("fbUnlinkThis"));
+        unlink->setStatusTip(tr("Takes the link away; %1 is not touched").arg(QDir::toNativeSeparators(info.symLinkTarget())));
+    }
+    menu->addSeparator();
+    menu->addAction(tr("Refresh"), this, &FileBrowser::refresh)->setObjectName(QStringLiteral("fbRefreshEntry"));
     return menu;
 }
 

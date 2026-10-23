@@ -21,6 +21,9 @@
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QMessageBox>
 #include <QToolButton>
 #include <QTreeView>
 #include <QVBoxLayout>
@@ -473,6 +476,18 @@ private slots:
         QVERIFY(folder.contains("New Folder…"));
         QVERIFY(!folder.contains("Open with the System's Application"));
         QVERIFY(texts(fb.contextMenuFor(QString())).contains("New Folder…"));
+        // Refresh, and the folder commands, in the menus: on the folder
+        // shown and on an entry (Unlink only where a link is there).
+        const QStringList shownMenu = texts(fb.contextMenuFor(QString()));
+        for (const char* action : {"Refresh", "Import Folder…", "Link Folder…"})
+            QVERIFY2(shownMenu.contains(action), action);
+        QVERIFY(!shownMenu.contains("Unlink Folder…"));
+        QVERIFY(file.contains("Refresh"));
+        QVERIFY(!file.contains("Unlink Folder…"));
+        QVERIFY(QFile::link(root + "/models", root + "/linked models"));
+        QVERIFY(texts(fb.contextMenuFor(QString())).contains("Unlink Folder…"));
+        QVERIFY(texts(fb.contextMenuFor(root + "/linked models")).contains("Unlink Folder…"));
+        QVERIFY(QFile::remove(root + "/linked models"));
 
         QMenu* menu = fb.contextMenuFor(root + "/amp.sch");
         for (QAction* a : menu->actions())
@@ -731,6 +746,141 @@ private slots:
     // In the application: the left dock's File Browser tab, from the
     // workspace; a schematic it opens is opened as from the Content tab,
     // and then among its recent documents.
+    // Renaming in place chooses the name without its suffix, so typing
+    // replaces "amp" of "amp.sch" and leaves ".sch" (the Finder's way): a
+    // suffix was taken away by accident before. A name that is all suffix,
+    // and a folder's name, are chosen whole.
+    void renamingChoosesTheNameNotTheSuffix()
+    {
+        const QString here = top + "/renaming";
+        QVERIFY(QDir().mkpath(here + "/folder.old"));
+        touch(here + "/amp.sch");
+        touch(here + "/data.tar.gz");
+        touch(here + "/.spiceinit");
+        touch(here + "/plain");
+        FileBrowser fb;
+        fb.resize(500, 600);
+        fb.setView(FileBrowser::View::Details);
+        fb.setShowHidden(true);
+        fb.setLocation(here);
+        fb.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&fb));
+        QVERIFY(settled(fb, "amp.sch").contains("amp.sch"));
+        const auto chosenOf = [&fb](const QString& name) -> QString {
+            fb.rename(name);
+            QLineEdit* editor = nullptr;
+            static_cast<void>(QTest::qWaitFor([&fb, &editor] {
+                editor = fb.findChild<QLineEdit*>(QString(), Qt::FindChildrenRecursively);
+                for (QLineEdit* e : fb.findChildren<QLineEdit*>())
+                    if (e->isVisible() && e->hasFocus()) editor = e;
+                return editor != nullptr && editor->isVisible() && editor->hasFocus();
+            }, 5000));
+            if (editor == nullptr) return QStringLiteral("(no editor)");
+            // (The selection is set once the editor is shown.)
+            static_cast<void>(QTest::qWaitFor([editor] { return editor->selectedText() != editor->text(); }, 1000));
+            const QString chosen = editor->selectedText();
+            QTest::keyClick(editor, Qt::Key_Escape);
+            return chosen;
+        };
+        QCOMPARE(chosenOf(here + "/amp.sch"), QStringLiteral("amp"));
+        QCOMPARE(chosenOf(here + "/data.tar.gz"), QStringLiteral("data.tar"));
+        // All suffix, no name: the whole of it.
+        QCOMPARE(chosenOf(here + "/.spiceinit"), QStringLiteral(".spiceinit"));
+        QCOMPARE(chosenOf(here + "/plain"), QStringLiteral("plain"));
+        // A folder keeps its whole name, dot and all.
+        QCOMPARE(chosenOf(here + "/folder.old"), QStringLiteral("folder.old"));
+    }
+
+    // Refresh reads the folders again, whatever the file system's watcher
+    // said, and puts the view back as it stood.
+    void refreshReadsTheFoldersAgain()
+    {
+        const QString live = top + "/refreshing";
+        QVERIFY(QDir().mkpath(live + "/sub"));
+        touch(live + "/a.txt");
+        FileBrowser fb;
+        fb.resize(400, 600);
+        fb.setView(FileBrowser::View::Details);
+        fb.setLocation(live);
+        QVERIFY(settled(fb, "a.txt").contains("a.txt"));
+        fb.selectPath(live + "/a.txt");
+        // Written while nothing watches: the model is told to read again.
+        touch(live + "/b.txt");
+        QVERIFY(QDir().mkpath(live + "/newfolder"));
+        fb.refresh();
+        QTRY_VERIFY(fb.shownNames().contains("b.txt"));
+        QVERIFY(fb.shownNames().contains("newfolder"));
+        // Where it stood: the folder shown and what was chosen.
+        QCOMPARE(QDir::cleanPath(fb.location()), QDir::cleanPath(live));
+        QTRY_COMPARE(QDir::cleanPath(fb.selectedPath()), QDir::cleanPath(live + "/a.txt"));
+    }
+
+    // A folder linked into the one shown: its entries are shown, it is
+    // listed among the links here, and unlinking takes the link away and
+    // leaves what it led to.
+    void aLinkedFolderIsShownAndUnlinked()
+    {
+        const QString here = top + "/linking";
+        const QString other = dir.path() + "/elsewhere";
+        QVERIFY(QDir().mkpath(here) && QDir().mkpath(other + "/inner"));
+        touch(here + "/own.txt");
+        touch(other + "/shared.txt");
+        touch(other + "/inner/deep.txt");
+        FileBrowser fb;
+        fb.resize(400, 600);
+        fb.setView(FileBrowser::View::Details);
+        fb.setLocation(here);
+        QVERIFY(settled(fb, "own.txt").contains("own.txt"));
+        QVERIFY(fb.linkedFoldersHere().isEmpty());
+        // As Link Folder makes it (its dialog chooses the folder).
+        QVERIFY(QFile::link(other, here + "/elsewhere"));
+        fb.refresh();
+        QTRY_VERIFY(fb.shownNames().contains("elsewhere"));
+        QCOMPARE(fb.linkedFoldersHere().size(), 1);
+        QCOMPARE(QFileInfo(fb.linkedFoldersHere().first()).fileName(), QStringLiteral("elsewhere"));
+        // What it holds is shown through it.
+        fb.setLocation(here + "/elsewhere");
+        QVERIFY(settled(fb, "shared.txt").contains("shared.txt"));
+        QVERIFY(fb.shownNames().contains("inner"));
+        fb.setLocation(here);
+        QVERIFY(settled(fb, "own.txt").contains("own.txt"));
+        // Unlinked: the link goes, what it led to stays.
+        QTimer::singleShot(0, &fb, [] {
+            for (QWidget* w : QApplication::topLevelWidgets())
+                if (auto* box = qobject_cast<QMessageBox*>(w)) box->button(QMessageBox::Yes)->click();
+        });
+        fb.unlinkFolder(here + "/elsewhere");
+        QTRY_VERIFY(!fb.shownNames().contains("elsewhere"));
+        QVERIFY(!QFileInfo::exists(here + "/elsewhere"));
+        QVERIFY(QFileInfo::exists(other + "/shared.txt"));
+        QVERIFY(fb.linkedFoldersHere().isEmpty());
+    }
+
+    // A project's files, as the Content panel and Claude's tools read them,
+    // include those of a folder linked into it - each real folder once, so
+    // a link that leads back does not go round for ever.
+    void aLinkedFoldersFilesBelongToTheProject()
+    {
+        const QString project = top + "/linked_prj";
+        const QString other = dir.path() + "/shared_files";
+        QVERIFY(QDir().mkpath(project) && QDir().mkpath(other + "/sub"));
+        touch(project + "/own.sch");
+        touch(other + "/brought.sch");
+        touch(other + "/sub/deeper.txt");
+        QVERIFY(QFile::link(other, project + "/shared"));
+        QStringList files = misc::projectFiles(QDir(project));
+        QVERIFY2(files.contains("own.sch"), qPrintable(files.join(", ")));
+        QVERIFY2(files.contains("shared/brought.sch"), qPrintable(files.join(", ")));
+        QVERIFY2(files.contains("shared/sub/deeper.txt"), qPrintable(files.join(", ")));
+        // A link that leads back to the project: walked once, and the walk
+        // ends.
+        QVERIFY(QFile::link(project, other + "/back"));
+        bool complete = false;
+        files = misc::projectFiles(QDir(project), QStringList(), &complete);
+        QVERIFY2(complete, "the walk did not end");
+        QVERIFY(files.contains("own.sch"));
+    }
+
     void theApplicationHasIt()
     {
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;

@@ -4829,6 +4829,27 @@ private slots:
         QVERIFY(smaller.size() <= 3932160 && !smaller.isEmpty());
         QCOMPARE(QImage::fromData(smaller).size(), QSize(2000, 1333));
         QVERIFY(qucs_s::claude::imageForClaude(work + "/notes.sch", &type, &why).isEmpty() && why.contains("notes.sch"));
+        // An SVG whose <use> references ask for more than is drawn here is
+        // not sent, and at once: QtSvg would expand every one of them as it
+        // read (bug hunt 2026-10-23 A3).
+        {
+            QByteArray defs = "<rect id='r0' width='1' height='1'/>";
+            for (int i = 1; i <= 15; ++i) {
+                defs += "<g id='r" + QByteArray::number(i) + "'>";
+                for (int k = 0; k < 4; ++k) defs += "<use xlink:href='#r" + QByteArray::number(i - 1) + "'/>";
+                defs += "</g>";
+            }
+            QFile bomb(work + "/bomb.svg");
+            QVERIFY(bomb.open(QIODevice::WriteOnly));
+            bomb.write("<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='100' height='100'>"
+                       "<defs>" + defs + "</defs><use xlink:href='#r15'/></svg>");
+            bomb.close();
+            QElapsedTimer clock;
+            clock.start();
+            QVERIFY(qucs_s::claude::imageForClaude(work + "/bomb.svg", &type, &why).isEmpty());
+            QVERIFY2(why.contains("<use>"), qPrintable(why));
+            QVERIFY2(clock.elapsed() < 10000, qPrintable(QString::number(clock.elapsed())));
+        }
         QCOMPARE(qucs_s::claude::promptContent("words", {}).toString(), QStringLiteral("words"));
 
         ClaudeCodePanel panel;

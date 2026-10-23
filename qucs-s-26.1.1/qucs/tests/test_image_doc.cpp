@@ -610,6 +610,41 @@ private slots:
         QVERIFY(data->data("image/svg+xml").contains("<svg"));
     }
 
+    // An SVG whose <use> references ask for more than is drawn here is not
+    // opened, and says why; QtSvg would expand each of them as it read
+    // (bug hunt 2026-10-23 A3).
+    void anSvgAskingTooMuchIsRefused()
+    {
+        QByteArray defs = "<rect id='r0' width='1' height='1' fill='#ff0000'/>";
+        for (int i = 1; i <= 15; ++i) {
+            defs += "<g id='r" + QByteArray::number(i) + "'>";
+            for (int k = 0; k < 4; ++k) defs += "<use xlink:href='#r" + QByteArray::number(i - 1) + "'/>";
+            defs += "</g>";
+        }
+        const QByteArray bomb = "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='100' height='100'>"
+                                "<defs>" + defs + "</defs><use xlink:href='#r15'/></svg>";
+        // Whatever it is called: the reader decides by what the bytes are.
+        for (const char* name : {"ws/bomb.svg", "ws/bomb.png"}) {
+            const QString path = dir.filePath(QString::fromLatin1(name));
+            QVERIFY(writeBytes(path, bomb));
+            QElapsedTimer clock;
+            clock.start();
+            const int tabs = app->DocumentTab->count();
+            misc::ErrorCapture capture;
+            QVERIFY2(!app->gotoPage(path), name);
+            QCOMPARE(app->DocumentTab->count(), tabs);
+            QVERIFY(!capture.errors().isEmpty());
+            QVERIFY2(capture.errors().first().contains("<use>"), qPrintable(capture.errors().first()));
+            // No thumbnail of it either (the file browser's).
+            QVERIFY(qucs_s::image::thumbnail(path, 64, nullptr).isNull());
+            QVERIFY2(clock.elapsed() < 10000, qPrintable(QString::number(clock.elapsed())));
+        }
+        // The deck's own SVG still opens, and is still drawn.
+        ImageDoc* d = open(svg);
+        QVERIFY(d != nullptr && d->isVector());
+        QCOMPARE(d->imageSize(), QSize(100, 50));
+    }
+
     // Turned a quarter: shown so, copied so; its pixels still the file's.
     void itIsTurned()
     {
