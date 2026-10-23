@@ -4854,7 +4854,7 @@ void QucsApp::slotSimulate(QWidget *w)
       w = DocumentTab->currentWidget();
   // Reached by a call of Claude's that was not asked about what it runs (a
   // schematic's commands, a script): not run (the guards of the Claude
-  // panel's Permissions menu).
+  // panel's Extras menu).
   // (Within the call, in its answer; set off after it returned - keys
   // given later -, told with its answer, no box waiting.)
   if (a_control != nullptr)
