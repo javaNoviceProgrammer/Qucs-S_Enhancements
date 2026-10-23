@@ -1,0 +1,9 @@
+[["open_document", {"path": "viewer_test.pptx"}],
+ ["show_pptx", {"slide": 5, "zoom": 100}],
+ ["show_pptx", {}],
+ ["show_pptx", {"slide": 5}],
+ ["show_pptx", {"zoom": 100}],
+ ["show_pptx", {"slide": 3, "zoom": 250}],
+ ["show_pptx", {"slide": 6, "zoom": "fit width"}],
+ ["show_pptx", {"slide": 2, "region": [0.5, 0.5, 1, 1]}],
+ ["show_pptx", {"slide": 7, "notes": false, "sidebar": false}]]

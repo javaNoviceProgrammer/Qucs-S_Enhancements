@@ -1,0 +1,9 @@
+[["open_document", {"path": "viewer_test.pptx"}],
+ ["show_pptx", {"slide": 3}],
+ ["show_pptx", {"slide": ""}],
+ ["show_pptx", {"slide": "last"}],
+ ["show_pptx", {"slide": "next"}],
+ ["show_pptx", {"slide": "first"}],
+ ["show_pptx", {"slide": "previous"}],
+ ["show_pptx", {"slide": null}],
+ ["show_pptx", {"slide": "  "}]]

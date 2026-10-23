@@ -1,0 +1,5 @@
+[["open_document", {"path": "viewer_test.pptx"}],
+ ["context_menu", {"on": {"slide": 2}, "choose": "Export the Slide as a Picture"}, 30],
+ ["get_ui", {}, 20],
+ ["context_menu", {"on": {"slide": 2}, "choose": "Copy Path"}, 20],
+ ["get_state", {}, 20]]

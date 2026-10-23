@@ -1,0 +1,7 @@
+[["export_image", {"path": "viewer_test.pptx", "slides": "1-3", "save_as": "out/s.png", "scale": 0.5}],
+ ["export_image", {"path": "viewer_test.pptx", "slides": "1-3", "save_as": "out/s.png", "scale": 0.5}],
+ ["export_image", {"path": "viewer_test.pptx", "slides": "2", "save_as": "out/s-1.png", "scale": 0.5}],
+ ["export_image", {"path": "viewer_test.pptx", "slides": "1-3", "save_as": "out/one.pdf"}],
+ ["export_image", {"path": "viewer_test.pptx", "slides": "1-3", "save_as": "out/one.pdf"}],
+ ["export_image", {"path": "viewer_test.pptx", "slides": "1", "save_as": "viewer_test.png", "format": "png"}],
+ ["export_image", {"path": "viewer_test.pptx", "slides": "1", "save_as": "copy.pptx", "format": "png"}]]

@@ -1,0 +1,5 @@
+[["set_settings", {"scope": "simulators", "values": {"Warn of commands a simulation runs besides the simulator": true}}],
+ ["add_component", {"type": "DIODE_SPICE", "x": 100, "y": 200}],
+ ["edit_component", {"name": "D1", "properties": {"D_Line 2": ".control", "D_Line 3": "shell echo marker", "D_Line 4": ".endc"}}],
+ ["get_netlist", {}],
+ ["check_schematic", {}]]

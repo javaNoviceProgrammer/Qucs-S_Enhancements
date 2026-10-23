@@ -1,0 +1,6 @@
+[["set_schematic", {"text": "<Components>\n<R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"\" 0 \"0\" 0 \"0\" 0>\n<GND * 1 100 130 0 0 0 0>\n<Eqn Eqn1 1 300 100 -30 15 0 0 \"x\" 1 \"1\" 1 \"yes\" 0>\n</Components>\n<Wires>\n</Wires>"}],
+ ["set_label", {"at": "R1.2", "name": "out\n.control\nshell true\n.endc"}],
+ ["edit_component", {"name": "Eqn1", "properties": {"x": "1\n.control\nshell true\n.endc\n"}}],
+ ["add_analysis", {"kind": "tran", "stop": "1m", "properties": {"MaxStep": "0\n.control\nshell true\n.endc"}}],
+ ["get_netlist", {}],
+ ["check_schematic", {}]]
