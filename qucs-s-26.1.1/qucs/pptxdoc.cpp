@@ -179,8 +179,37 @@ void SlideView::setPresentation(std::shared_ptr<const Presentation> presentation
 {
     a_presentation = std::move(presentation);
     clearCache();
+    restore(ViewState());
+}
+
+SlideView::ViewState SlideView::state() const
+{
+    ViewState s;
+    s.fit = a_fit;
+    s.zoom = a_zoom;
+    s.slide = a_current;
+    const QRectF r = contentRect(a_current);
+    if (r.height() > 0) s.down = (verticalScrollBar()->value() - r.top()) / r.height();
+    s.across = horizontalScrollBar()->maximum() > 0 ? qreal(horizontalScrollBar()->value()) / horizontalScrollBar()->maximum() : 0;
+    return s;
+}
+
+void SlideView::restore(const ViewState& s)
+{
+    const qreal zoomWas = a_zoom;
+    a_fit = s.fit;
+    if (s.fit == Fit::None) a_zoom = std::clamp(s.zoom, MinZoom, MaxZoom);
     relayout();
-    updateCurrent();
+    const int count = a_presentation != nullptr ? a_presentation->slideCount() : 0;
+    const int slide = std::clamp(s.slide, 0, std::max(0, count - 1));
+    const QRectF r = contentRect(slide);
+    verticalScrollBar()->setValue(int(std::lround(r.top() + s.down * r.height())));
+    horizontalScrollBar()->setValue(int(std::lround(s.across * horizontalScrollBar()->maximum())));
+    if (a_current != slide) {
+        a_current = slide;
+        emit currentSlideChanged(slide);
+    }
+    if (!qFuzzyCompare(a_zoom, zoomWas)) emit zoomChanged(a_zoom);
     viewport()->update();
 }
 
@@ -378,10 +407,10 @@ void SlideView::paintEvent(QPaintEvent*)
 
 void SlideView::resizeEvent(QResizeEvent* event)
 {
+    // The slide in sight kept, where it was in the view, whatever the zoom.
+    const ViewState was = state();
     QAbstractScrollArea::resizeEvent(event);
-    const int keep = a_current;
-    relayout();
-    if (a_fit != Fit::None) goToSlide(keep);
+    restore(was);
 }
 
 void SlideView::scrollContentsBy(int, int)
@@ -465,6 +494,15 @@ int SlideShow::step(int from, int by) const
     return by > 0 ? n : -1;   // past the end, before the start
 }
 
+void SlideShow::showSlide(int index)
+{
+    const bool changed = index != a_current || a_done;
+    a_done = false;
+    a_current = index;
+    update();
+    if (changed) emit slideShown(index);
+}
+
 void SlideShow::next()
 {
     if (a_done) {
@@ -478,8 +516,7 @@ void SlideShow::next()
         update();
         return;
     }
-    a_current = to;
-    update();
+    showSlide(to);
 }
 
 void SlideShow::previous()
@@ -490,18 +527,13 @@ void SlideShow::previous()
         return;
     }
     const int to = step(a_current, -1);
-    if (to >= 0) {
-        a_current = to;
-        update();
-    }
+    if (to >= 0) showSlide(to);
 }
 
 void SlideShow::goTo(int index)
 {
     if (a_presentation == nullptr || index < 0 || index >= a_presentation->slideCount()) return;
-    a_done = false;
-    a_current = index;
-    update();
+    showSlide(index);
 }
 
 void SlideShow::first()
@@ -974,19 +1006,22 @@ bool PptxDoc::reload()
 
 void PptxDoc::showPresentation(std::shared_ptr<Presentation> presentation, bool keepView)
 {
-    const int slide = keepView ? a_view->currentSlide() : 0;
+    // Read again: the view as it was - the fit or the zoom, the slide and
+    // where in it -, else from the first slide, as wide as the view.
+    const SlideView::ViewState was = a_view->state();
     a_presentation = std::move(presentation);
     a_problem.clear();
     a_stack->setCurrentIndex(0);
     a_toolbar->setEnabled(true);
     a_view->setPresentation(a_presentation);
+    if (keepView) a_view->restore(was);
     a_slideCount->setText(tr("of %1").arg(a_presentation->slideCount()));
     fillThumbnails();
-    a_view->goToSlide(slide);
     updateSlideField();
     updateZoomBox();
     updateNotes();
-    if (!a_searchField->text().isEmpty()) find(a_searchField->text());
+    // (The find bar's hits counted again, the view where it was.)
+    if (findShown() && !a_searchField->text().isEmpty()) find(a_searchField->text(), false);
 }
 
 void PptxDoc::showProblem(const QString& text)
@@ -1192,7 +1227,7 @@ void PptxDoc::setSidebarShown(bool shown)
 // ----------------------------------------------------------------------
 // Finding
 
-QList<int> PptxDoc::find(const QString& text)
+QList<int> PptxDoc::find(const QString& text, bool go)
 {
     a_hits.clear();
     a_hit = -1;
@@ -1213,7 +1248,7 @@ QList<int> PptxDoc::find(const QString& text)
             a_hit = i;
             break;
         }
-    a_view->goToSlide(a_hits.at(a_hit));
+    if (go) a_view->goToSlide(a_hits.at(a_hit));
     a_searchLabel->setText(a_hits.size() == 1 ? tr("On slide %1 alone").arg(a_hits.first() + 1)
                                               : tr("Slide %1: %2 of %3 slides with it").arg(a_hits.at(a_hit) + 1).arg(a_hit + 1).arg(a_hits.size()));
     return a_hits;
@@ -1275,7 +1310,10 @@ void PptxDoc::startShow(int from)
     if (a_show) a_show->close();
     auto* show = new SlideShow(a_presentation, from < 0 ? a_view->currentSlide() : from, nullptr);
     a_show = show;
+    // The tab with the show's slide as it plays, and where it ended.
+    connect(show, &SlideShow::slideShown, this, [this](int index) { a_view->goToSlide(index); });
     connect(show, &SlideShow::ended, this, [this](int last) { a_view->goToSlide(last); });
+    a_view->goToSlide(show->current());
     // On the screen the window is on.
     if (QWindow* w = window()->windowHandle(); w != nullptr && w->screen() != nullptr) show->setScreen(w->screen());
     show->showFullScreen();
