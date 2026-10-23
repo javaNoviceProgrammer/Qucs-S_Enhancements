@@ -45,6 +45,7 @@
 #include <QTextBoundaryFinder>
 #include <QFileInfo>
 #include <QDir>
+#include <QSet>
 #include <QCryptographicHash>
 #include <QStandardPaths>
 #include <QWheelEvent>
@@ -545,7 +546,12 @@ bool heavyFolder(const QFileInfo& folder)
 }
 
 // \a budget: the files and folders still to be looked at; false once it is spent.
-bool collectProjectFiles(const QDir& base, const QDir& dir, const QStringList& nameFilters, QStringList& files, int& budget)
+// \a seen: the folders already walked, by their real paths - a folder
+// linked into the project is followed, so what it holds belongs to the
+// project as the Content panel and Claude's tools see it, and a link that
+// leads back to one of them is walked once and no further.
+bool collectProjectFiles(const QDir& base, const QDir& dir, const QStringList& nameFilters, QStringList& files, int& budget,
+                         QSet<QString>& seen)
 {
   if (--budget < 0) return false;
   for (const QFileInfo& fi : dir.entryInfoList(nameFilters, QDir::Files, QDir::Unsorted)) {
@@ -553,10 +559,13 @@ bool collectProjectFiles(const QDir& base, const QDir& dir, const QStringList& n
     if (--budget < 0) return false;
     files.append(base.relativeFilePath(fi.filePath()));
   }
-  for (const QFileInfo& fi : dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Unsorted))
-    if (!fi.fileName().startsWith(QLatin1Char('.')) && !heavyFolder(fi)
-        && !collectProjectFiles(base, QDir(fi.filePath()), nameFilters, files, budget))
-      return false;
+  for (const QFileInfo& fi : dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Unsorted)) {
+    if (fi.fileName().startsWith(QLatin1Char('.')) || heavyFolder(fi)) continue;
+    const QString real = fi.canonicalFilePath();
+    if (real.isEmpty() || seen.contains(real)) continue;   // (gone, or walked already)
+    seen.insert(real);
+    if (!collectProjectFiles(base, QDir(fi.filePath()), nameFilters, files, budget, seen)) return false;
+  }
   return true;
 }
 } // namespace
@@ -566,7 +575,9 @@ QStringList misc::projectFiles(const QDir& root, const QStringList& nameFilters,
   const QDir base(root.absolutePath());
   QStringList files;
   int budget = MaxProjectEntries;
-  const bool all = collectProjectFiles(base, base, nameFilters, files, budget);
+  QSet<QString> seen;
+  if (const QString real = QFileInfo(base.absolutePath()).canonicalFilePath(); !real.isEmpty()) seen.insert(real);
+  const bool all = collectProjectFiles(base, base, nameFilters, files, budget, seen);
   if (complete != nullptr) *complete = all;
 
   // Sorted by directory first, so the root's files come first and the

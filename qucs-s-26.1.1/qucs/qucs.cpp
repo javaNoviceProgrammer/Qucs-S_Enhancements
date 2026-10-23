@@ -40,6 +40,7 @@
 #include <QClipboard>
 #include <QInputDialog>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QFileSystemModel>
 #include <QSortFilterProxyModel>
 #include <QUrl>
@@ -3658,9 +3659,17 @@ bool QucsApp::closeAllFiles(int exceptTab)
   // document's canvas, which would take it along (and editText dangled)
   slotHideEdit();
   view->forgetDocumentElements();
+  // A document that opened a dialog of its own is inside that dialog's
+  // event loop, below this call on the stack, and such a dialog is often a
+  // local object of the call that opened it: freeing the document now frees
+  // what that call owns, and the program is killed for freeing a pointer it
+  // never allocated (bug hunt 2026-10-23 A6). Such a document is freed once
+  // its own call has returned; the others as before.
   for (QucsDoc *doc : docs)
-    if (doc != docToKeep)
-      delete doc;
+    if (doc != docToKeep) {
+      if (doc->inADialog()) documentWidget(doc)->deleteLater();
+      else delete doc;
+    }
 
   ContextMenuTabWidget *stay = docToKeep != nullptr ? paneOf(documentWidget(docToKeep)) : DocumentTab;
   const QList<ContextMenuTabWidget *> all = panes();

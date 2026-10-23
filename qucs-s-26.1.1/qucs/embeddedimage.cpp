@@ -14,6 +14,8 @@
 
 #include "embeddedimage.h"
 
+#include "svgguard.h"
+
 #include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
@@ -163,6 +165,11 @@ bool qucs_s::EmbeddedImage::decode()
 {
   m_sourceSize = QSize();
   if (m_data.isEmpty()) return false;
+
+  // Counted before QtSvg reads it: it expands each <use> reference as it
+  // goes, so a small picture can ask for a tree without end. Whatever the
+  // format says, since QImageReader below decides by content.
+  if (qucs_s::svg::expandsTooFar(m_data)) return false;
 
   if (isVector()) {
     QSvgRenderer renderer(m_data);

@@ -12,6 +12,8 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QElapsedTimer>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -35,6 +37,7 @@
 #include "pptxdoc.h"
 #include "qucs.h"
 #include "qucscontrol.h"
+#include "svgguard.h"
 #include "zipfile.h"
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
@@ -929,6 +932,201 @@ private slots:
     // Outer shadows: the theme's effect style a shape's style names (soft,
     // under it), none where its own effect list is empty, its own (blue, to
     // its right, not blurred).
+    // A paragraph of thousands of runs - a listing with its colours, text
+    // pasted from a page - is laid out once, not again at every run: 5,000
+    // of them took 36 s a slide before (bug hunt 2026-10-23 A5).
+    void manyRunsAreLaidOutOnce()
+    {
+        Deck d;
+        QByteArray runs;
+        for (int i = 0; i < 5000; ++i)
+            runs += "<a:r><a:rPr b=\"" + QByteArray::number(i % 2) + "\"/><a:t>x</a:t></a:r>";
+        Deck::SlideSpec s;
+        s.tree = shape(2, xfrm(20, 20, 900, 500) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>",
+                       "<p:txBody><a:bodyPr wrap=\"square\"/><a:lstStyle/><a:p>" + runs + "</a:p></p:txBody>");
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        QElapsedTimer clock;
+        clock.start();
+        const QImage image = deck->render(0, 1);
+        const qint64 drawn = clock.elapsed();
+        QVERIFY(!image.isNull());
+        // Generous: it was 36,000 ms, and is some 140 ms here.
+        QVERIFY2(drawn < 10000, qPrintable(QString("%1 ms").arg(drawn)));
+        // The text is all there (5,000 x's, in one paragraph).
+        QCOMPARE(deck->slide(0).paragraphs.size(), 1);
+        QCOMPARE(deck->slide(0).paragraphs.first().size(), 5000);
+    }
+
+    // Numbers a deck has no business holding: a chart cache saying it has
+    // two thousand million points, a point's index and a paragraph's level
+    // past what a whole number holds. Each is held within what is read,
+    // and none is converted out of range (bug hunt 2026-10-23 A4 and B5;
+    // under UndefinedBehaviorSanitizer this test is the check).
+    void absurdNumbersAreHeld()
+    {
+        Deck d;
+        d.extra << zip::Entry{QStringLiteral("ppt/charts/chart1.xml"),
+                              "<?xml version=\"1.0\"?><c:chartSpace " + ns() + "><c:chart><c:plotArea>"
+                              "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>"
+                              "<c:gapWidth val=\"99999999999\"/><c:overlap val=\"-1e300\"/>"
+                              "<c:ser><c:idx val=\"99999999999\"/>"
+                              "<c:val><c:numRef><c:numCache><c:ptCount val=\"2000000000\"/>"
+                              "<c:pt idx=\"0\"><c:v>4</c:v></c:pt><c:pt idx=\"99999999999\"><c:v>8</c:v></c:pt>"
+                              "</c:numCache></c:numRef></c:val></c:ser>"
+                              "<c:axId val=\"3\"/><c:axId val=\"4\"/></c:barChart>"
+                              "<c:catAx><c:axId val=\"3\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/>"
+                              "<c:axPos val=\"b\"/><c:crossAx val=\"4\"/></c:catAx>"
+                              "<c:valAx><c:axId val=\"4\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/>"
+                              "<c:axPos val=\"l\"/><c:crossAx val=\"3\"/></c:valAx>"
+                              "</c:plotArea></c:chart></c:chartSpace>"};
+        Deck::SlideSpec s;
+        s.rels = "<Relationship Id=\"rIdC1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart\" "
+                 "Target=\"../charts/chart1.xml\"/>";
+        s.tree = "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"2\" name=\"c\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>"
+                 "<p:xfrm><a:off x=\"" + emu(20) + "\" y=\"" + emu(20) + "\"/><a:ext cx=\"" + emu(400) + "\" cy=\"" + emu(200)
+                 + "\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\">"
+                   "<c:chart r:id=\"rIdC1\"/></a:graphicData></a:graphic></p:graphicFrame>"
+                 // A paragraph's level, a table's spans and a run's baseline too.
+                 + shape(3, xfrm(500, 20, 400, 200) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>",
+                         "<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr lvl=\"99999999999\" marL=\"-99999999999\"/>"
+                         "<a:r><a:rPr baseline=\"99999999999\"/><a:t>Deep</a:t></a:r></a:p></p:txBody>");
+        d.slides << s;
+        QString why;
+        QElapsedTimer clock;
+        clock.start();
+        const auto deck = readDeck(d, &why);
+        QVERIFY2(deck != nullptr, qPrintable(why));
+        QCOMPARE(deck->slideCount(), 1);
+        QVERIFY(!deck->render(0, 1).isNull());
+        // A cache of two thousand million points is read as a million at
+        // most, so it is read at all.
+        QVERIFY2(clock.elapsed() < 30000, qPrintable(QString::number(clock.elapsed())));
+        QVERIFY(deck->slide(0).paragraphs.contains("Deep"));
+    }
+
+    // A deck is read by walking its elements: one nesting them deeper than
+    // any PowerPoint writes is refused, and says so, rather than taking the
+    // reader's stack with it (bug hunt 2026-10-23 A2).
+    void deepNestingIsRefused()
+    {
+        const QByteArray group = "<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"9\" name=\"g\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
+                                 "<p:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"914400\" cy=\"914400\"/>"
+                                 "<a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"914400\" cy=\"914400\"/></a:xfrm></p:grpSpPr>";
+        const QByteArray rect = "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>";
+        // Groups in groups: as deep as a hand-made deck ever is, and far past it.
+        for (const auto [depth, read] : {std::pair{40, true}, std::pair{5000, false}}) {
+            Deck d;
+            Deck::SlideSpec s;
+            for (int i = 0; i < depth; ++i) s.tree += group;
+            s.tree += shape(100, xfrm(10, 10, 50, 50) + rect + solid("00AA00"));
+            for (int i = 0; i < depth; ++i) s.tree += "</p:grpSp>";
+            d.slides << s;
+            QString why;
+            const auto deck = readDeck(d, &why);
+            QCOMPARE(deck != nullptr, read);
+            if (read) QVERIFY(!deck->render(0, 1).isNull());
+            else QVERIFY2(why.contains("nests its elements more than"), qPrintable(why));
+        }
+        // Elements of no kind the reader knows, nested the same way: the
+        // depth alone decides.
+        Deck plain;
+        Deck::SlideSpec deep;
+        for (int i = 0; i < 400; ++i) deep.tree += "<a:x>";
+        for (int i = 0; i < 400; ++i) deep.tree += "</a:x>";
+        plain.slides << deep;
+        QString why;
+        QVERIFY(readDeck(plain, &why) == nullptr);
+        QVERIFY2(why.contains("256"), qPrintable(why));
+    }
+
+    // An SVG picture whose <use> references ask for more than is drawn
+    // here: counted before QtSvg reads it (which expands each reference as
+    // it goes), a box in its place, and said (bug hunt 2026-10-23 A3).
+    void svgAskingTooMuchIsNotDrawn()
+    {
+        // Fifteen levels of four: 1.8 kB that would draw 10^9 nodes.
+        QByteArray defs = "<rect id=\"r0\" width=\"1\" height=\"1\" fill=\"#ff0000\"/>";
+        for (int i = 1; i <= 15; ++i) {
+            defs += "<g id=\"r" + QByteArray::number(i) + "\">";
+            for (int k = 0; k < 4; ++k) defs += "<use xlink:href=\"#r" + QByteArray::number(i - 1) + "\"/>";
+            defs += "</g>";
+        }
+        const QByteArray bomb = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"100\" height=\"100\">"
+                                "<defs>" + defs + "</defs><use xlink:href=\"#r15\"/></svg>";
+        QVERIFY(qucs_s::svg::expandsTooFar(bomb));
+        // One that names the same square a few times is drawn as it is.
+        const QByteArray fine = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"10\" height=\"10\">"
+                                "<defs><rect id=\"r\" width=\"10\" height=\"10\" fill=\"#00ff00\"/></defs>"
+                                "<use xlink:href=\"#r\"/><use xlink:href=\"#r\"/></svg>";
+        QVERIFY(!qucs_s::svg::expandsTooFar(fine));
+        // A reference that leads round to itself, and one nothing defines:
+        // neither counts (QtSvg stops at those too).
+        QVERIFY(!qucs_s::svg::expandsTooFar("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">"
+                                            "<defs><g id=\"a\"><use xlink:href=\"#b\"/></g><g id=\"b\"><use xlink:href=\"#a\"/></g></defs>"
+                                            "<use xlink:href=\"#a\"/><use xlink:href=\"#nothing\"/></svg>"));
+        QVERIFY(!qucs_s::svg::expandsTooFar("<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1\" height=\"1\"/></svg>"));
+        QVERIFY(!qucs_s::svg::expandsTooFar(QByteArray("\x89PNG\r\n\x1a\n", 8)));
+        // The forms QtSvg honours besides <use xlink:href>: SVG 2's plain
+        // href, and a prefixed name (<svg:use> expands as <use> does).
+        QByteArray plain = bomb, prefixed = bomb;
+        plain.replace("xlink:href", "href");
+        prefixed.replace("<use", "<svg:use").replace("<g ", "<svg:g ").replace("</g>", "</svg:g>").replace("<defs>", "<svg:defs>")
+            .replace("</defs>", "</svg:defs>")
+            .replace("<svg ", "<svg xmlns:svg=\"http://www.w3.org/2000/svg\" ");
+        QVERIFY(qucs_s::svg::expandsTooFar(plain));
+        QVERIFY(qucs_s::svg::expandsTooFar(prefixed));
+        // And whatever stands before the root: a comment of its own longer
+        // than any window the bytes might be looked at through.
+        QVERIFY(qucs_s::svg::expandsTooFar("<!-- " + QByteArray(6000, 'x') + " -->\n" + bomb));
+        // Deep enough that the count would run past what a whole number
+        // holds if it did not stop at the limit.
+        QByteArray far = "<rect id=\"d0\" width=\"1\" height=\"1\"/>";
+        for (int i = 1; i <= 40; ++i) {
+            far += "<g id=\"d" + QByteArray::number(i) + "\">";
+            for (int k = 0; k < 4; ++k) far += "<use xlink:href=\"#d" + QByteArray::number(i - 1) + "\"/>";
+            far += "</g>";
+        }
+        QVERIFY(qucs_s::svg::expandsTooFar("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">"
+                                           "<defs>" + far + "</defs><use xlink:href=\"#d40\"/></svg>"));
+        QCOMPARE(qucs_s::svg::nodes("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">"
+                                    "<defs>" + far + "</defs><use xlink:href=\"#d40\"/></svg>"),
+                 qucs_s::svg::kMaxNodes);
+
+        // In a deck: whatever the picture is called, since the reader
+        // decides by what the bytes are.
+        for (const char* name : {"ppt/media/image1.svg", "ppt/media/image1.png"}) {
+            Deck d;
+            d.extra << zip::Entry{QString::fromLatin1(name), bomb};
+            d.extra << zip::Entry{QStringLiteral("ppt/media/image2.svg"), fine};
+            Deck::SlideSpec s;
+            s.rels = "<Relationship Id=\"rIdP1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" "
+                     "Target=\"../media/" + QByteArray(QFileInfo(QString::fromLatin1(name)).fileName().toLatin1()) + "\"/>"
+                     "<Relationship Id=\"rIdP2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" "
+                     "Target=\"../media/image2.svg\"/>";
+            s.tree = "<p:pic><p:nvPicPr><p:cNvPr id=\"2\" name=\"p\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rIdP1\"/>"
+                     "<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>" + xfrm(50, 50, 100, 100)
+                     + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>"
+                       "<p:pic><p:nvPicPr><p:cNvPr id=\"3\" name=\"q\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rIdP2\"/>"
+                       "<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>" + xfrm(300, 50, 100, 100)
+                     + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
+            d.slides << s;
+            QString why;
+            QElapsedTimer clock;
+            clock.start();
+            const auto deck = readDeck(d, &why);
+            QVERIFY2(deck != nullptr, qPrintable(why));
+            const QImage image = deck->render(0, 1);
+            QVERIFY(!image.isNull());
+            QVERIFY2(clock.elapsed() < 10000, qPrintable(QString::number(clock.elapsed())));
+            const QStringList said = deck->slide(0).notShown;
+            QVERIFY2(said.filter("<use>").size() == 1, qPrintable(said.join(" | ") + QLatin1String(" for ") + QLatin1String(name)));
+            // The one that is fine is still drawn, in green.
+            QVERIFY2(near(at(image, {350, 100}), QColor(0, 0xFF, 0), 10), qPrintable(str(at(image, {350, 100}))));
+        }
+    }
+
     void shadowsDrawn()
     {
         Deck d;
@@ -1141,6 +1339,48 @@ private slots:
     // again when its file changes (the slide kept), a problem shown when it
     // cannot be read, gone when it can; saved under another name, a copy;
     // printed, a page a slide; played full screen, hidden slides left out.
+    // The window closed while a tab's own dialog is open: the tab is freed
+    // once its own call has returned, not under the dialog - which is a
+    // local object of that call, and freeing it killed the program (bug
+    // hunt 2026-10-23 A6).
+    void aTabIsNotFreedUnderItsOwnDialog()
+    {
+        QucsApp app(false);
+        MainGuard guard(&app);
+        app.resize(900, 700);
+        app.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&app));
+        Deck d;
+        Deck::SlideSpec s;
+        s.tree = shape(2, QByteArray(), text(para(run(QStringLiteral("One")))), "<p:ph type=\"title\"/>");
+        d.slides << s;
+        const QString file = dir.filePath("workspace/closing.pptx");
+        QDir().mkpath(QFileInfo(file).absolutePath());
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly) && f.write(d.build()) > 0);
+        f.close();
+        QVERIFY(app.gotoPage(file));
+        auto* doc = qobject_cast<PptxDoc*>(app.DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QVERIFY(!doc->inADialog());
+        // Inside the dialog's own loop: the documents are closed, then the
+        // dialog is answered. Nothing is freed under it.
+        bool closed = false;
+        QTimer::singleShot(0, &app, [&app, &closed] {
+            QVERIFY(app.closeAllFiles());
+            closed = true;
+            for (QWidget* w : QApplication::topLevelWidgets())
+                if (auto* dialog = qobject_cast<QFileDialog*>(w)) dialog->reject();
+        });
+        doc->exportSlide();   // opens the dialog, and returns once it is answered
+        QVERIFY(closed);
+        // The tab is gone, and the document is freed as the loop returns to
+        // the top (nothing of it is touched meanwhile).
+        QTRY_COMPARE(app.DocumentTab->count(), 1);   // (an untitled schematic in its place)
+        QApplication::processEvents();
+        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+
     void opensInATab()
     {
         QucsApp app(false);

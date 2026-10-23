@@ -39,6 +39,7 @@
 #include <memory>
 
 #include <QPen>
+#include <QSet>
 #include <QString>
 #include <QMessageBox>
 #include <QPainter>
@@ -1010,13 +1011,55 @@ QString Component::getNetlist() {
     return s;
 }
 
+bool Component::propertyHoldsLines(const QString& name) const {
+    // The parts whose text is SPICE source by design: what is written
+    // there goes into the netlist as written.
+    static const QSet<QString> source{QStringLiteral("INCLSCR"),  QStringLiteral(".CUSTOMSIM"), QStringLiteral(".XYCESCR"),
+                                      QStringLiteral("CMD"),     QStringLiteral("NutmegEq"),   QStringLiteral("SPICEINIT"),
+                                      QStringLiteral("SpiceModel")};
+    if (source.contains(Model)) return true;
+    // A model's continuation lines ("D_Line 2", "Model_Line 3"), each of
+    // which the netlist writes on a line of its own anyway.
+    return name.contains(QLatin1String("_Line "));
+}
+
+namespace {
+// The values of \a comp as one line each while its netlist is written,
+// put back after: see Component::propertyHoldsLines().
+class ValuesOnOneLine
+{
+public:
+    explicit ValuesOnOneLine(Component* comp) : a_comp(comp)
+    {
+        for (Property* p : comp->Props) {
+            if (!p->Value.contains(QLatin1Char('\n')) && !p->Value.contains(QLatin1Char('\r'))) continue;
+            if (comp->propertyHoldsLines(p->Name)) continue;
+            a_held.append({p, p->Value});
+            p->Value.replace(QLatin1Char('\r'), QLatin1Char(' ')).replace(QLatin1Char('\n'), QLatin1Char(' '));
+        }
+    }
+    ~ValuesOnOneLine()
+    {
+        for (const auto& [p, value] : a_held) p->Value = value;
+    }
+    ValuesOnOneLine(const ValuesOnOneLine&) = delete;
+    ValuesOnOneLine& operator=(const ValuesOnOneLine&) = delete;
+
+private:
+    Component* a_comp;
+    QList<std::pair<Property*, QString>> a_held;
+};
+} // namespace
+
 QString Component::getSpiceNetlist(spicecompat::SpiceDialect dialect /* = SPICEDefault */) {
     QString s;
     switch (isActive) {
-        case COMP_IS_ACTIVE:
+        case COMP_IS_ACTIVE: {
+            const ValuesOnOneLine held(this);
             s = dialect == spicecompat::CDL ? cdl_netlist() : spice_netlist(dialect);
             s.replace(" gnd ", " 0 ");
             return s;
+        }
         case COMP_IS_OPEN:
             return QString();
     }

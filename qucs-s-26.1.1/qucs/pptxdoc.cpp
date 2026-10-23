@@ -278,7 +278,11 @@ void SlideView::setZoom(qreal zoom)
     a_zoom = zoom;
     relayout();
     const QRectF after = contentRect(keep);
-    verticalScrollBar()->setValue(int(after.top() + offset * after.height()));
+    // Not above the slide kept: where it stood at the view's very top, its
+    // place within it is a hair negative, and the view would open on the
+    // end of the slide before - which is then the slide shown
+    // (updateCurrent) (bug hunt 2026-10-23 B2).
+    verticalScrollBar()->setValue(int(std::max(after.top() - Gap, after.top() + offset * after.height())));
     if (changed) emit zoomChanged(a_zoom);
     viewport()->update();
 }
@@ -1347,6 +1351,7 @@ void PptxDoc::exportSlide()
     if (a_presentation == nullptr) return;
     const int i = a_view->currentSlide();
     const QString suggested = QFileInfo(a_DocName).absoluteDir().filePath(QStringLiteral("%1-slide%2.png").arg(QFileInfo(a_DocName).completeBaseName()).arg(i + 1));
+    const InADialog inADialog(this);   // (not freed under its own dialog)
     const QString file = QFileDialog::getSaveFileName(this, tr("Export the Slide"), suggested, tr("Pictures (*.png *.jpg *.jpeg *.bmp *.tiff *.webp)"));
     if (file.isEmpty()) return;
     const QImage image = a_presentation->render(i, 1920 / a_presentation->slideSize().width());

@@ -16,6 +16,7 @@
 #include "misc.h"
 #include "qucs.h"
 #include "settings.h"
+#include "svgguard.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -309,6 +310,7 @@ QImage thumbnail(const QString& path, int side, QSize* size)
 {
     if (side <= 0) return {};
     const QString suffix = QFileInfo(path).suffix().toLower();
+    if (qucs_s::svg::fileExpandsTooFar(path)) return {};
     if (suffix == QLatin1String("svg") || suffix == QLatin1String("svgz")) {
         QSvgRenderer svg;
         if (!svg.load(path) || !svg.isValid()) return {};
@@ -1329,6 +1331,13 @@ void ImageDoc::setPixelGrid(bool shown)
 bool ImageDoc::read(const QString& path, Picture* into, QString* why)
 {
     const QString suffix = QFileInfo(path).suffix().toLower();
+    // Counted before QtSvg reads it (it expands every <use> as it goes,
+    // so a small file can ask for a tree without end) - whatever the file
+    // is called, since the reader below decides by content.
+    if (qint64 found = 0; qucs_s::svg::fileExpandsTooFar(path, &found)) {
+        *why = qucs_s::svg::tooFarSaid(found);
+        return false;
+    }
     if (suffix == QLatin1String("svg") || suffix == QLatin1String("svgz")) {
         auto svg = std::make_unique<QSvgRenderer>();
         if (!svg->load(path) || !svg->isValid()) {
