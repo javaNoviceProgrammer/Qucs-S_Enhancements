@@ -147,7 +147,7 @@ QString toolSubject(const QString& tool, const QJsonObject& input, const QString
 QString qucsSystemPrompt();
 
 /// The uses of the host's tools the user chose to be asked about each
-/// time (the Claude panel's Permissions menu), in every conversation whose
+/// time (the Claude panel's Extras menu), in every conversation whose
 /// mode asks at all (not bypassPermissions).
 struct Guards {
     /// A simulation of a schematic that runs commands besides the
