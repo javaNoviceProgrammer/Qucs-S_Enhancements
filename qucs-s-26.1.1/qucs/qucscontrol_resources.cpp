@@ -501,6 +501,12 @@ void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarde
         write(!text("as").isEmpty() ? absolute(text("as")) : doc != nullptr ? doc->getDocName() : QString());
     } else if (tool == QLatin1String("close_document")) {
         if (text("unsaved") == QLatin1String("save") && doc != nullptr && doc->getDocChanged()) write(doc->getDocName());
+    } else if (tool == QLatin1String("export_image") && isSlideExport(a)) {
+        // A presentation's slides: pictures numbered after the name when
+        // there are several.
+        const QStringList files = slideExportFiles(a);
+        if (files.isEmpty() && !saveAs.isEmpty()) write(absolute(saveAs));
+        for (const QString& f : files) write(f);
     } else if (tool == QLatin1String("export_image") || tool == QLatin1String("export_netlist") || tool == QLatin1String("export_data")
                || tool == QLatin1String("get_netlist") || tool == QLatin1String("import_netlist") || tool.startsWith(QLatin1String("synthesize_"))) {
         if (!saveAs.isEmpty()) write(absolute(saveAs));
@@ -639,6 +645,12 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
         return doc == nullptr || doc->getDocChanged();
     }
     if (tool == QLatin1String("copy_document")) return a.value(QLatin1String("replace")).toBool();
+    if (tool == QLatin1String("export_image") && isSlideExport(a)) {
+        // (Each picture of a presentation's slides written over.)
+        for (const QString& f : slideExportFiles(a))
+            if (QFileInfo::exists(f)) return true;
+        return false;
+    }
     if (tool == QLatin1String("export_image") || tool == QLatin1String("export_netlist") || tool == QLatin1String("export_data"))
         return exists(a.value(QLatin1String("save_as")).toString()) || exists(a.value(QLatin1String("file")).toString());
     if (tool == QLatin1String("get_netlist")) return exists(a.value(QLatin1String("save_as")).toString());

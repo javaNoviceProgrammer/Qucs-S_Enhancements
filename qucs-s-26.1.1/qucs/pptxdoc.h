@@ -65,6 +65,9 @@ public:
     int currentSlide() const { return a_current; }
     /// Scrolls to slide \a index, its top at the view's.
     void goToSlide(int index);
+    /// Shows \a region (points of the slide) of slide \a index as large as
+    /// the view takes it, in its middle.
+    void showRegion(int index, const QRectF& region);
     /// Where slide \a index is in the viewport.
     QRect slideRect(int index) const;
     /// The slide at \a pos (viewport), -1 where there is none.
@@ -120,9 +123,14 @@ class SlideShow : public QWidget
 public:
     SlideShow(std::shared_ptr<const Presentation> presentation, int from, QWidget* parent = nullptr);
     int current() const { return a_current; }
+    /// Past the last slide: the end's black, before it closes.
+    bool atEnd() const { return a_done; }
     void next();
     void previous();
     void goTo(int index);
+    /// The first and the last slide shown (Home, End).
+    void first();
+    void last();
 
 signals:
     /// It has ended, at slide \a last.
@@ -184,10 +192,21 @@ public:
     /// with it from the one in sight on shown. The slides with it.
     QList<int> find(const QString& text);
     void findNext(bool backwards = false);
+    /// The find bar shown with \a text in it, found as if typed there (the
+    /// focus left where it is).
+    void setFindText(const QString& text);
+    bool findShown() const;
+    QString findText() const;
+    /// The slides with the find's text (from 0), and which of them is shown.
+    QList<int> hits() const { return a_hits; }
+    int hitShown() const { return a_hit; }
+    /// Slide \a index's \a region (points) as large as the view takes it.
+    void showRegion(int index, const QRectF& region);
 
     /// Plays the slides full screen from \a from (-1: the one in sight).
     void startShow(int from = -1);
-    qucs_s::pptx::SlideShow* slideShow() const { return a_show; }
+    /// The slide show playing (shown; one closed is gone a moment later).
+    qucs_s::pptx::SlideShow* slideShow() const { return a_show && a_show->isVisible() ? a_show.data() : nullptr; }
 
     bool notesShown() const;
     void setNotesShown(bool shown);
@@ -238,6 +257,7 @@ private:
     void updateZoomBox();
     void updateNotes();
     void showMenu(QPoint globalPos, int slide);
+    void fillMenu(QMenu* menu);
 
     std::shared_ptr<qucs_s::pptx::Presentation> a_presentation;
     QString a_problem;
