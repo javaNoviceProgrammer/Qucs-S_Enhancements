@@ -1,0 +1,9 @@
+[["export_image", {"path": "bigshadow.pptx", "slides": "5", "save_as": "out/s1.png", "scale": 1}],
+ ["export_image", {"path": "bigshadow.pptx", "slides": "5", "save_as": "out/s4.png", "scale": 4}],
+ ["export_image", {"path": "bigshadow.pptx", "slides": "5", "save_as": "out/s8.png", "scale": 8}],
+ ["export_image", {"path": "bigshadow.pptx", "slides": "5", "save_as": "out/s.pdf"}],
+ ["open_document", {"path": "bigshadow.pptx"}],
+ ["show_pptx", {"slide": 5, "zoom": 100}],
+ ["screenshot", {}],
+ ["show_pptx", {"slide": 5, "zoom": 800}],
+ ["screenshot", {}]]

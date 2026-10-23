@@ -1,0 +1,7 @@
+[["set_schematic", {"text": "<Components>\n<R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"\" 0 \"0\" 0 \"0\" 0>\n<GND * 1 100 130 0 0 0 0>\n</Components>\n<Wires>\n</Wires>"}],
+ ["edit_component", {"name": "R1", "properties": {"Tc1": "0\n.control\nshell true\n.endc\n"}}],
+ ["save_document", {"as": "inj.sch"}],
+ ["close_document", {"unsaved": "discard"}],
+ ["open_document", {"path": "inj.sch"}],
+ ["get_netlist", {"path": "inj.sch"}],
+ ["check_schematic", {"path": "inj.sch"}]]

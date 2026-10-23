@@ -1,0 +1,10 @@
+[["open_document", {"path": "viewer_test.pptx"}],
+ ["show_pptx", {"play": true}],
+ ["show_pptx", {"slide": "last"}],
+ ["close_document", {"path": "viewer_test.pptx"}],
+ ["get_state", {}],
+ ["open_document", {"path": "viewer_test.pptx"}],
+ ["show_pptx", {"play": "first"}],
+ ["show_pptx", {"play": "first"}],
+ ["show_pptx", {"slide": 5}],
+ ["get_state", {}]]

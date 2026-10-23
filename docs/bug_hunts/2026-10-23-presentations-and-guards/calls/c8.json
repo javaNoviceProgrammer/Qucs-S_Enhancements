@@ -1,0 +1,8 @@
+[["set_schematic", {"text": "<Components>\n<R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"\" 0 \"0\" 0 \"0\" 0>\n<GND * 1 100 130 0 0 0 0>\n</Components>\n<Wires>\n</Wires>"}],
+ ["edit_component", {"name": "R1", "properties": {"R": "1k\n.control\nshell true\n.endc\n"}}],
+ ["get_netlist", {}],
+ ["edit_component", {"name": "R1", "properties": {"R": "1k", "Tc1": "0\n.control\nshell true\n.endc\n"}}],
+ ["get_netlist", {}],
+ ["edit_component", {"name": "R1", "properties": {"Tc1": "0", "Temp": "27\n.control\nshell true\n.endc\n"}}],
+ ["get_netlist", {}],
+ ["check_schematic", {}]]

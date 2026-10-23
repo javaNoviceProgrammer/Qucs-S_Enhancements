@@ -1,0 +1,7 @@
+[["read_pptx", {"path": "same_slide_3000.pptx", "slides": "all", "image": true}, 120],
+ ["open_document", {"path": "same_slide_3000.pptx"}, 120],
+ ["show_pptx", {"find": "Viewer"}, 120],
+ ["show_pptx", {"find_next": "previous"}, 60],
+ ["show_pptx", {"find": "e"}, 120],
+ ["export_image", {"path": "same_slide_3000.pptx", "slides": "all", "save_as": "out/all.pdf", "scale": 0.5}, 300],
+ ["export_image", {"path": "same_slide_3000.pptx", "slides": "all", "save_as": "out/s.png", "scale": 0.1}, 300]]
