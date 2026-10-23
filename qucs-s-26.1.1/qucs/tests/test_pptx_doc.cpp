@@ -12,6 +12,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QElapsedTimer>
+#include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,6 +22,7 @@
 #include <QPainter>
 #include <QPdfWriter>
 #include <QPrinter>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTextBrowser>
@@ -138,6 +140,8 @@ struct Deck {
     QByteArray clrMap = "<p:clrMap bg1=\"lt1\" tx1=\"dk1\" bg2=\"lt2\" tx2=\"dk2\" accent1=\"accent1\" accent2=\"accent2\" accent3=\"accent3\" "
                         "accent4=\"accent4\" accent5=\"accent5\" accent6=\"accent6\" hlink=\"hlink\" folHlink=\"folHlink\"/>";
     QByteArray tableStyles;
+    QByteArray effectStyles = "<a:effectStyle><a:effectLst/></a:effectStyle>";   // the theme's
+    QByteArray minorFont = "Arial";   // the theme's body font
     QString title;
 
     QByteArray build() const
@@ -177,12 +181,12 @@ struct Deck {
             "<a:accent3><a:srgbClr val=\"A5A5A5\"/></a:accent3><a:accent4><a:srgbClr val=\"FFC000\"/></a:accent4>"
             "<a:accent5><a:srgbClr val=\"5B9BD5\"/></a:accent5><a:accent6><a:srgbClr val=\"70AD47\"/></a:accent6>"
             "<a:hlink><a:srgbClr val=\"0563C1\"/></a:hlink><a:folHlink><a:srgbClr val=\"954F72\"/></a:folHlink></a:clrScheme>"
-            "<a:fontScheme name=\"F\"><a:majorFont><a:latin typeface=\"Arial\"/></a:majorFont><a:minorFont><a:latin typeface=\"Arial\"/></a:minorFont></a:fontScheme>"
+            "<a:fontScheme name=\"F\"><a:majorFont><a:latin typeface=\"Arial\"/></a:majorFont><a:minorFont><a:latin typeface=\"" + minorFont + "\"/></a:minorFont></a:fontScheme>"
             "<a:fmtScheme name=\"S\"><a:fillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"><a:tint val=\"50000\"/></a:schemeClr></a:solidFill>"
             "<a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:fillStyleLst>"
             "<a:lnStyleLst><a:ln w=\"12700\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln><a:ln w=\"25400\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln>"
             "<a:ln w=\"38100\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln></a:lnStyleLst>"
-            "<a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>"
+            "<a:effectStyleLst>" + effectStyles + "</a:effectStyleLst>"
             "<a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:bgFillStyleLst>"
             "</a:fmtScheme></a:themeElements></a:theme>");
         add(QStringLiteral("ppt/slideMasters/slideMaster1.xml"),
@@ -860,6 +864,276 @@ private slots:
         QVERIFY(near(at(image, {400, 350}), Qt::white));
     }
 
+    // The cloud as PowerPoint draws it (presetShapeDefinitions.xml's arcs,
+    // their angles true ones on their ellipses): its notches inside its
+    // ellipse white, its bumps outside it filled; a callout's bubbles out
+    // to its point; text in the cloud's own box, an ellipse's, a rounded
+    // rectangle's - not their whole boxes.
+    void cloudsAndTextBoxes()
+    {
+        Deck d;
+        Deck::SlideSpec s;
+        const QByteArray noLine = "<a:ln><a:noFill/></a:ln>";
+        s.tree = shape(2, xfrm(50, 50, 400, 300) + "<a:prstGeom prst=\"cloud\"><a:avLst/></a:prstGeom>" + solid("FF0000") + noLine)
+                 + shape(3, xfrm(520, 40, 200, 150) + "<a:prstGeom prst=\"cloudCallout\"><a:avLst/></a:prstGeom>" + solid("0000FF") + noLine)
+                 // Text, no insets: where each shape's text box starts.
+                 + shape(4, xfrm(520, 300, 200, 100) + "<a:prstGeom prst=\"ellipse\"><a:avLst/></a:prstGeom>",
+                         text(para(run("E", "<a:rPr sz=\"2000\"/>")), "<a:bodyPr lIns=\"0\" tIns=\"0\" rIns=\"0\" bIns=\"0\" anchor=\"t\"/>"))
+                 + shape(5, xfrm(750, 300, 200, 100) + "<a:prstGeom prst=\"cloud\"><a:avLst/></a:prstGeom>",
+                         text(para(run("C", "<a:rPr sz=\"2000\"/>")), "<a:bodyPr lIns=\"0\" tIns=\"0\" rIns=\"0\" bIns=\"0\" anchor=\"t\"/>"));
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QImage image = deck->render(0, 1);
+        // In the ellipse, between two bumps: white; out of it, in a bump: red.
+        QVERIFY2(near(at(image, {50 + 272, 50 + 276}), Qt::white), qPrintable(str(at(image, {50 + 272, 50 + 276}))));
+        QVERIFY2(near(at(image, {50 + 328, 50 + 20}), QColor(255, 0, 0)), qPrintable(str(at(image, {50 + 328, 50 + 20}))));
+        QVERIFY(near(at(image, {250, 200}), QColor(255, 0, 0)));
+        // The callout: its smallest bubble at its point (adj1 -20833, adj2
+        // 62500: below the box, left of its middle).
+        QVERIFY2(near(at(image, {520 + 100 - 0.20833 * 200, 40 + 75 + 0.625 * 150}), QColor(0, 0, 255)),
+                 qPrintable(str(at(image, {520 + 100 - 0.20833 * 200, 40 + 75 + 0.625 * 150}))));
+        QVERIFY(near(at(image, {520 + 100 - 0.20833 * 200 + 20, 40 + 75 + 0.625 * 150}), Qt::white));
+        // Text from the ellipse's box (14.6 % in) and the cloud's (13.8 %).
+        const auto firstInk = [&image](const QRectF& r) {
+            for (int x = int(r.left()); x <= int(r.right()); ++x)
+                for (int y = int(r.top()); y <= int(r.bottom()); ++y)
+                    if (!near(image.pixelColor(x, y), Qt::white, 60)) return x;
+            return -1;
+        };
+        const int ellipseText = firstInk(QRectF(520, 300, 200, 60));
+        const int cloudText = firstInk(QRectF(750, 300, 200, 60));
+        QVERIFY2(ellipseText >= 520 + 0.146 * 200 - 1 && ellipseText < 520 + 0.146 * 200 + 8, qPrintable(QString::number(ellipseText)));
+        QVERIFY2(cloudText >= 750 + 0.138 * 200 - 1 && cloudText < 750 + 0.138 * 200 + 8, qPrintable(QString::number(cloudText)));
+        for (const QString& n : deck->slide(0).notShown) QVERIFY2(!n.contains("cloud"), qPrintable(n));
+        // A custom geometry: a whole circle by one arcTo (its sweep a full
+        // turn), and a square path not filled - stroked alone, its corners
+        // left white.
+        Deck d2;
+        Deck::SlideSpec s2;
+        s2.tree = shape(2, xfrm(100, 100, 200, 200)
+                               + "<a:custGeom><a:pathLst><a:path w=\"100\" h=\"100\"><a:moveTo><a:pt x=\"100\" y=\"50\"/></a:moveTo>"
+                                 "<a:arcTo wR=\"50\" hR=\"50\" stAng=\"0\" swAng=\"21600000\"/><a:close/></a:path>"
+                                 "<a:path w=\"100\" h=\"100\" fill=\"none\"><a:moveTo><a:pt x=\"0\" y=\"0\"/></a:moveTo><a:lnTo><a:pt x=\"100\" y=\"0\"/></a:lnTo>"
+                                 "<a:lnTo><a:pt x=\"100\" y=\"100\"/></a:lnTo><a:lnTo><a:pt x=\"0\" y=\"100\"/></a:lnTo><a:close/></a:path></a:pathLst></a:custGeom>"
+                               + solid("00AA00") + "<a:ln w=\"12700\">" + solid("000000") + "</a:ln>");
+        d2.slides << s2;
+        const auto deck2 = readDeck(d2);
+        QVERIFY(deck2 != nullptr);
+        const QImage custom = deck2->render(0, 1);
+        QVERIFY2(near(at(custom, {200, 200}), QColor(0, 0xAA, 0)), qPrintable(str(at(custom, {200, 200}))));
+        QVERIFY2(near(at(custom, {110, 110}), Qt::white), qPrintable(str(at(custom, {110, 110}))));   // (the square's corner, inside it, outside the circle)
+        QVERIFY(!near(at(custom, {100, 200}), Qt::white, 60));   // (the square's stroke)
+    }
+
+    // Outer shadows: the theme's effect style a shape's style names (soft,
+    // under it), none where its own effect list is empty, its own (blue, to
+    // its right, not blurred).
+    void shadowsDrawn()
+    {
+        Deck d;
+        d.effectStyles = "<a:effectStyle><a:effectLst/></a:effectStyle>"
+                         "<a:effectStyle><a:effectLst><a:outerShdw blurRad=\"40000\" dist=\"23000\" dir=\"5400000\" rotWithShape=\"0\"><a:srgbClr val=\"000000\"><a:alpha val=\"35000\"/></a:srgbClr></a:outerShdw></a:effectLst></a:effectStyle>"
+                         "<a:effectStyle><a:effectLst/></a:effectStyle>";
+        const QByteArray style = "<p:style><a:lnRef idx=\"0\"><a:schemeClr val=\"accent1\"/></a:lnRef><a:fillRef idx=\"1\"><a:schemeClr val=\"accent1\"/></a:fillRef>"
+                                 "<a:effectRef idx=\"2\"><a:schemeClr val=\"accent1\"/></a:effectRef><a:fontRef idx=\"minor\"><a:schemeClr val=\"lt1\"/></a:fontRef></p:style>";
+        const QByteArray rect = "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>";
+        Deck::SlideSpec s;
+        s.tree = shape(2, xfrm(100, 100, 200, 100) + rect, QByteArray(), QByteArray(), style)
+                 + shape(3, xfrm(400, 100, 200, 100) + rect + "<a:effectLst/>", QByteArray(), QByteArray(), style)
+                 + shape(4, xfrm(700, 100, 100, 100) + rect + solid("00AA00")
+                                + "<a:effectLst><a:outerShdw dist=\"127000\" dir=\"0\"><a:srgbClr val=\"0000FF\"/></a:outerShdw></a:effectLst>");
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QImage image = deck->render(0, 2);
+        const QColor under = at(image, {200, 201}, 2), clear = at(image, {200, 212}, 2);
+        QVERIFY2(under.lightness() < 240 && under.lightness() > 120, qPrintable(str(under)));
+        QVERIFY2(near(clear, Qt::white, 3), qPrintable(str(clear)));
+        // Soft: past its edge (the shape's offset by 1.8 points) still a little dark.
+        const QColor fading = at(image, {200, 202.5}, 2);
+        QVERIFY2(fading.lightness() < 252 && fading.lightness() > under.lightness(), qPrintable(str(fading) + " " + str(under)));
+        QVERIFY2(near(at(image, {500, 201}, 2), Qt::white, 3), qPrintable(str(at(image, {500, 201}, 2))));
+        QVERIFY2(near(at(image, {805, 150}, 2), QColor(0, 0, 255), 10), qPrintable(str(at(image, {805, 150}, 2))));
+        QVERIFY(near(at(image, {813, 150}, 2), Qt::white, 3));
+        QVERIFY(near(at(image, {750, 150}, 2), QColor(0, 0xAA, 0), 10));   // (the shape over its shadow)
+    }
+
+    // A font not installed: drawn by a stand-in as wide as the font asked
+    // in each style (Calibri's widths measured on Calibri), its lines as far
+    // apart, and said; one whose widths are not known said so.
+    void fontsStandIn()
+    {
+        const QString sample = QStringLiteral("The quick brown fox jumps over the lazy dog. Measured loss 3.2 dB at 1550 nm; ABCDEFGHIJ 0123456789");
+        Deck d;
+        Deck::SlideSpec s;
+        const QByteArray noInsets = "<a:bodyPr wrap=\"none\" lIns=\"0\" tIns=\"0\" rIns=\"0\" bIns=\"0\" anchor=\"t\"/>";
+        const QByteArray rect = "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>";
+        s.tree = shape(2, xfrm(20, 40, 920, 40) + rect, text(para(run(sample, "<a:rPr sz=\"2000\"><a:latin typeface=\"Calibri\"/></a:rPr>")), noInsets))
+                 + shape(3, xfrm(20, 100, 920, 40) + rect, text(para(run(sample, "<a:rPr sz=\"2000\" i=\"1\"><a:latin typeface=\"Calibri\"/></a:rPr>")), noInsets))
+                 + shape(4, xfrm(20, 160, 300, 200) + rect,
+                         text("<a:p>" + run("Hxg", "<a:rPr sz=\"4000\"><a:latin typeface=\"Calibri\"/></a:rPr>") + "<a:br><a:rPr sz=\"4000\"><a:latin typeface=\"Calibri\"/></a:rPr></a:br>"
+                                  + run("Hxg", "<a:rPr sz=\"4000\"><a:latin typeface=\"Calibri\"/></a:rPr>") + "</a:p>",
+                              noInsets))
+                 + shape(5, xfrm(400, 160, 300, 60) + rect, text(para(run("Unknown", "<a:rPr sz=\"2000\"><a:latin typeface=\"Qucs Missing Font\"/></a:rPr>")), noInsets));
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QImage image = deck->render(0, 1);
+        // Its width: Calibri's, 42.83 ems of 20 points (italic 42.66).
+        const auto inkSpan = [&image](const QRectF& r) {
+            int lo = -1, hi = -1;
+            for (int x = int(r.left()); x <= int(r.right()); ++x)
+                for (int y = int(r.top()); y <= int(r.bottom()); ++y)
+                    if (!near(image.pixelColor(x, y), Qt::white, 60)) {
+                        if (lo < 0) lo = x;
+                        hi = x;
+                        break;
+                    }
+            return hi - lo;
+        };
+        const int regular = inkSpan(QRectF(20, 40, 930, 35)), italic = inkSpan(QRectF(20, 100, 930, 35));
+        QVERIFY2(std::abs(regular - 42.832 * 20) < 0.03 * 42.832 * 20, qPrintable(QString::number(regular)));
+        QVERIFY2(std::abs(italic - 42.659 * 20) < 0.03 * 42.659 * 20, qPrintable(QString::number(italic)));
+        // Its lines 1.221 ems apart (the H's tops).
+        QList<int> tops;
+        bool inked = false;
+        for (int y = 160; y < 300; ++y) {
+            bool any = false;
+            for (int x = 20; x < 40; ++x) any = any || !near(image.pixelColor(x, y), Qt::white, 60);
+            if (any && !inked) tops << y;
+            inked = any;
+        }
+        QVERIFY2(tops.size() >= 2 && std::abs((tops.at(1) - tops.at(0)) - 1.221 * 40) < 0.03 * 1.221 * 40, qPrintable(QString::number(tops.value(1) - tops.value(0))));
+        // Said: the stand-in (as wide), and the one whose widths are not known.
+        const QStringList notes = deck->slide(0).notShown;
+        if (!QFontDatabase::families().contains(QStringLiteral("Calibri")))
+            QVERIFY2(notes.join("|").contains(QRegularExpression("the font Calibri, not installed: drawn as .+, as wide")), qPrintable(notes.join(" | ")));
+        QVERIFY2(notes.join("|").contains("the font Qucs Missing Font, not installed: drawn as") && notes.join("|").contains("(lines may break elsewhere)"),
+                 qPrintable(notes.join(" | ")));
+    }
+
+    // A chart's axes as PowerPoint's own, the review's charts again (titled,
+    // text of 18 points, a frame of 302 by 202 points): steps for the axis's
+    // length - 0 to 4 as 0 to 6 by 2 (the tallest bar two thirds up); a
+    // scatter's 0 to 1.4 across as 0 to 1.5 by 0.5.
+    void chartAxesStepped()
+    {
+        const QByteArray magenta = "<c:majorGridlines><c:spPr><a:ln w=\"12700\"><a:solidFill><a:srgbClr val=\"FF00FF\"/></a:solidFill></a:ln></c:spPr></c:majorGridlines>";
+        const auto nums = [](const QList<double>& v) {
+            QByteArray out = "<c:numRef><c:numCache><c:ptCount val=\"" + QByteArray::number(v.size()) + "\"/>";
+            for (int i = 0; i < v.size(); ++i) out += "<c:pt idx=\"" + QByteArray::number(i) + "\"><c:v>" + QByteArray::number(v.at(i)) + "</c:v></c:pt>";
+            return out + "</c:numCache></c:numRef>";
+        };
+        const QByteArray cats = "<c:cat><c:strRef><c:strCache><c:ptCount val=\"4\"/><c:pt idx=\"0\"><c:v>A</c:v></c:pt><c:pt idx=\"1\"><c:v>B</c:v></c:pt>"
+                                "<c:pt idx=\"2\"><c:v>C</c:v></c:pt><c:pt idx=\"3\"><c:v>D</c:v></c:pt></c:strCache></c:strRef></c:cat>";
+        const QByteArray text18 = "<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz=\"1800\"/></a:pPr><a:endParaRPr lang=\"en-US\"/></a:p></c:txPr>";
+        const QByteArray columns =
+            "<?xml version=\"1.0\"?><c:chartSpace " + ns() + "><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Columns</a:t></a:r></a:p></c:rich></c:tx>"
+            "<c:overlay val=\"0\"/></c:title><c:autoTitleDeleted val=\"0\"/><c:plotArea><c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>"
+            "<c:ser><c:idx val=\"0\"/><c:spPr>" + solid("0000FF") + "</c:spPr>" + cats + "<c:val>" + nums({1, 3, 2, 4}) + "</c:val></c:ser>"
+            "<c:axId val=\"1\"/><c:axId val=\"2\"/></c:barChart>"
+            "<c:catAx><c:axId val=\"1\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/><c:crossAx val=\"2\"/></c:catAx>"
+            "<c:valAx><c:axId val=\"2\"/><c:scaling/><c:delete val=\"0\"/><c:axPos val=\"l\"/>" + magenta + "<c:crossAx val=\"1\"/></c:valAx></c:plotArea>"
+            "<c:legend><c:legendPos val=\"b\"/></c:legend></c:chart>" + text18 + "</c:chartSpace>";
+        const QByteArray scatter =
+            "<?xml version=\"1.0\"?><c:chartSpace " + ns() + "><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Scatter L-I</a:t></a:r></a:p></c:rich></c:tx>"
+            "<c:overlay val=\"0\"/></c:title><c:autoTitleDeleted val=\"0\"/><c:plotArea><c:scatterChart><c:scatterStyle val=\"lineMarker\"/>"
+            "<c:ser><c:idx val=\"0\"/><c:xVal>" + nums({0, 0.05, 0.5, 1, 1.4}) + "</c:xVal><c:yVal>" + nums({0, 0, 0.27, 0.57, 0.8}) + "</c:yVal></c:ser>"
+            "<c:axId val=\"3\"/><c:axId val=\"4\"/></c:scatterChart>"
+            "<c:valAx><c:axId val=\"3\"/><c:scaling/><c:delete val=\"0\"/><c:axPos val=\"b\"/>" + magenta + "<c:crossAx val=\"4\"/></c:valAx>"
+            "<c:valAx><c:axId val=\"4\"/><c:scaling/><c:delete val=\"0\"/><c:axPos val=\"l\"/>" + magenta + "<c:crossAx val=\"3\"/></c:valAx></c:plotArea>"
+            "<c:legend><c:legendPos val=\"r\"/></c:legend></c:chart>" + text18 + "</c:chartSpace>";
+        Deck d;
+        d.minorFont = "Calibri";   // (the review's deck's)
+        d.extra << zip::Entry{QStringLiteral("ppt/charts/chart1.xml"), columns} << zip::Entry{QStringLiteral("ppt/charts/chart2.xml"), scatter};
+        Deck::SlideSpec s;
+        const QRectF boxes[] = {QRectF(20, 20, 302.4, 201.6), QRectF(20, 300, 432, 201.6)};
+        for (int i = 0; i < 2; ++i) {
+            s.tree += "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"" + QByteArray::number(i + 2) + "\" name=\"c\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x=\""
+                      + emu(boxes[i].x()) + "\" y=\"" + emu(boxes[i].y()) + "\"/><a:ext cx=\"" + emu(boxes[i].width()) + "\" cy=\"" + emu(boxes[i].height())
+                      + "\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart r:id=\"rIdC" + QByteArray::number(i + 1)
+                      + "\"/></a:graphicData></a:graphic></p:graphicFrame>";
+            s.rels += "<Relationship Id=\"rIdC" + QByteArray::number(i + 1) + "\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart\" Target=\"../charts/chart"
+                      + QByteArray::number(i + 1) + ".xml\"/>";
+        }
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QImage image = deck->render(0, 2);
+        // The gridlines across a box (rows, or columns), each once.
+        const auto lines = [&image](const QRectF& box, bool rows) {
+            QList<int> found;
+            const QRect r = QRectF(box.x() * 2, box.y() * 2, box.width() * 2, box.height() * 2).toRect();
+            int was = -10;
+            for (int i = rows ? r.top() : r.left(); i <= (rows ? r.bottom() : r.right()); ++i) {
+                int n = 0;
+                for (int j = rows ? r.left() : r.top(); j <= (rows ? r.right() : r.bottom()); ++j)
+                    if (near(rows ? image.pixelColor(j, i) : image.pixelColor(i, j), QColor(255, 0, 255), 40)) ++n;
+                if (n > 40) {
+                    if (i > was + 1) found << i;
+                    was = i;
+                }
+            }
+            return found;
+        };
+        // The column chart: the tallest bar's top two thirds of the way from
+        // its foot to the top gridline (6); 2, 4 and 6 above the foot. (Its
+        // longest run of blue down a column: not the legend's swatch.)
+        const QList<int> rows = lines(boxes[0], true);
+        int foot = -1, top = 100000;
+        const QRect b = QRectF(boxes[0].x() * 2, boxes[0].y() * 2, boxes[0].width() * 2, boxes[0].height() * 2).toRect();
+        for (int x = b.left(); x <= b.right(); ++x) {
+            int start = -1;
+            for (int y = b.top(); y <= b.bottom() + 1; ++y) {
+                const bool blue = y <= b.bottom() && near(image.pixelColor(x, y), QColor(0, 0, 255), 30);
+                if (blue && start < 0) start = y;
+                if (!blue && start >= 0) {
+                    if (y - 1 - start > foot - top) {
+                        top = start;
+                        foot = y - 1;
+                    }
+                    start = -1;
+                }
+            }
+        }
+        QVERIFY2(!rows.isEmpty() && foot > 0, qPrintable(QString::number(rows.size())));
+        int above = 0;
+        for (int y : rows) above += y < foot - 2 ? 1 : 0;
+        QCOMPARE(above, 3);
+        const double reach = double(foot - top) / (foot - rows.first());
+        QVERIFY2(std::abs(reach - 4.0 / 6.0) < 0.04, qPrintable(QString::number(reach)));
+        // The title 1.2 times the labels' text, as PowerPoint's: its capitals
+        // ("Columns") against the top label's digit ("6"), any font.
+        const auto inkHeight = [&image](const QRect& r) {
+            int first = -1, last = -1;
+            for (int y = r.top(); y <= r.bottom(); ++y)
+                for (int x = r.left(); x <= r.right(); ++x) {
+                    const QColor c = image.pixelColor(x, y);
+                    if (c.lightness() < 160 && !near(c, QColor(255, 0, 255), 60) && !near(c, QColor(0, 0, 255), 60)) {
+                        if (first < 0) first = y;
+                        last = y;
+                        break;
+                    }
+                }
+            return first < 0 ? 0 : last - first + 1;
+        };
+        int plotLeft = b.right();
+        for (int x = b.left(); x <= b.right(); ++x)
+            if (near(image.pixelColor(x, rows.first()), QColor(255, 0, 255), 40)) {
+                plotLeft = x;
+                break;
+            }
+        const int title = inkHeight(QRect(QPoint(b.left(), b.top()), QPoint(b.right(), rows.first() - 30)));
+        const int digit = inkHeight(QRect(QPoint(b.left(), rows.first() - 30), QPoint(plotLeft - 2, rows.first() + 30)));
+        QVERIFY2(digit > 0 && double(title) / digit > 1.08 && double(title) / digit < 1.3, qPrintable(QString("%1 / %2").arg(title).arg(digit)));
+        // The scatter: 0 to 1.5 by 0.5 across (four lines, or three where the
+        // axis covers 0), 0 to 1 by 0.5 up.
+        const int across = int(lines(boxes[1], false).size()), up = int(lines(boxes[1], true).size());
+        QVERIFY2(across >= 3 && across <= 4, qPrintable(QString::number(across)));
+        QVERIFY2(up >= 2 && up <= 3, qPrintable(QString::number(up)));
+    }
+
     // The tab: opened by the window as a presentation - its slides, their
     // thumbnails (a hidden one said), the slide field, next and previous;
     // the zoom box and its fits; the notes of the slide in sight and what
@@ -930,12 +1204,35 @@ private slots:
         QCOMPARE(QApplication::clipboard()->image().width(), 1920);
         doc->copySlideText();
         QVERIFY(QApplication::clipboard()->text().contains("Slide title 2") && QApplication::clipboard()->text().contains("Notes:"));
-        // Its file written again: read again, the slide kept.
+        // Its file written again: read again, the slide and the zoom kept.
         QSignalSpy reloaded(doc, &PptxDoc::reloaded);
+        doc->view()->setZoom(2.5);
+        QCOMPARE(doc->currentSlide(), 1);
         QVERIFY(write(file, deckOf(4)));
         QTRY_COMPARE(doc->slideCount(), 4);
         QCOMPARE(doc->currentSlide(), 1);
+        QCOMPARE(doc->view()->zoom(), 2.5);
+        QCOMPARE(doc->view()->fit(), pptx::SlideView::Fit::None);
         QCOMPARE(doc->thumbnails()->count(), 4);
+        // The window resized at that zoom: the slide in sight kept.
+        const QSize wide = doc->view()->viewport()->size();
+        app.resize(900, 650);
+        QTRY_VERIFY(doc->view()->viewport()->width() < wide.width());
+        QCOMPARE(doc->currentSlide(), 1);
+        app.resize(1200, 800);
+        QTRY_COMPARE(doc->view()->viewport()->size(), wide);
+        QCOMPARE(doc->currentSlide(), 1);
+        doc->zoomToSelection();   // (fit width again)
+        // As wide as the view, its middle in sight: a resize keeps that place
+        // in the slide (not its top at the view's top).
+        doc->view()->restore({pptx::SlideView::Fit::Width, 1, 1, 0.5, 0});
+        app.resize(1000, 800);
+        QTRY_VERIFY(doc->view()->viewport()->width() < wide.width());
+        QCOMPARE(doc->view()->state().slide, 1);
+        QVERIFY2(std::abs(doc->view()->state().down - 0.5) < 0.02, qPrintable(QString::number(doc->view()->state().down)));
+        app.resize(1200, 800);
+        QTRY_COMPARE(doc->view()->viewport()->width(), wide.width());   // (no scroll bar across now: taller)
+        doc->goToSlide(1);
         // Not readable: said; readable again: shown.
         QVERIFY(write(file, "not a presentation"));
         QTRY_VERIFY(!doc->problem().isEmpty());
@@ -1228,9 +1525,11 @@ private slots:
         QCOMPARE(o.value("playing").toObject().value("slide").toInt(), 2);
         QCOMPARE(json(call("show_pptx", {{"slide", "next"}})).value("playing").toObject().value("slide").toInt(), 3);
         QCOMPARE(show->current(), 2);
-        QCOMPARE(doc->currentSlide(), 1);   // (the tab's left as it was)
+        QCOMPARE(doc->currentSlide(), 2);   // (the tab follows the show)
         QCOMPARE(json(call("show_pptx", {{"slide", "last"}})).value("playing").toObject().value("slide").toInt(), 4);   // (the fifth hidden)
-        QCOMPARE(json(call("show_pptx", {{"slide", "first"}})).value("playing").toObject().value("slide").toInt(), 1);
+        o = json(call("show_pptx", {{"slide", "first"}}));
+        QCOMPARE(o.value("playing").toObject().value("slide").toInt(), 1);
+        QCOMPARE(o.value("slide shown").toInt(), 1);
         QCOMPARE(json(call("show_pptx", {{"slide", "Discussion"}})).value("playing").toObject().value("slide").toInt(), 4);
         o = json(call("show_pptx", {{"slide", "next"}}));
         QVERIFY(o.value("playing").toObject().contains("at the end"));
@@ -1242,11 +1541,19 @@ private slots:
         QVERIFY(failed(call("show_pptx", {{"play", "later"}})));
         call("show_pptx", {{"play", false}});
         QTRY_VERIFY(show == nullptr);
-        // Read again: what its file holds now.
+        // Read again: what its file holds now - the view kept, a region's
+        // zoom and the slide (in sight still, the red box filling it).
+        call("show_pptx", {{"slide", 2}, {"region", QJsonArray{620, 320, 880, 480}}});
+        const qreal zoomed = doc->view()->zoom();
         QVERIFY(write(file, deckOf(6)));
         o = json(call("show_pptx", {{"reload", true}}));
         QCOMPARE(o.value("slides in all").toInt(), 6);
         QVERIFY(o.value("done").toString().contains("again"));
+        QCOMPARE(o.value("slide shown").toInt(), 2);
+        QCOMPARE(doc->view()->zoom(), zoomed);
+        const QImage kept = doc->view()->viewport()->grab().toImage();
+        QVERIFY2(near(kept.pixelColor(kept.width() / 2, kept.height() / 2), QColor(255, 0, 0), 30), qPrintable(str(kept.pixelColor(kept.width() / 2, kept.height() / 2))));
+        call("show_pptx", {{"zoom", "fit width"}});
         QVERIFY(write(file, deckOf(5)));
         call("show_pptx", {{"reload", true}});
         QCOMPARE(doc->slideCount(), 5);

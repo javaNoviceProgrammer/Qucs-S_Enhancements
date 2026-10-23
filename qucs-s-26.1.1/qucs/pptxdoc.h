@@ -51,6 +51,8 @@ public:
     enum class Fit { None, Width, Slide };
 
     explicit SlideView(QWidget* parent = nullptr);
+    /// \a presentation shown from its first slide, a slide as wide as the
+    /// view (restore() puts a view back).
     void setPresentation(std::shared_ptr<const Presentation> presentation);
     std::shared_ptr<const Presentation> presentation() const { return a_presentation; }
 
@@ -76,6 +78,19 @@ public:
     int slidesDrawn() const { return a_drawn; }
     /// The drawings kept dropped (the file read again).
     void clearCache();
+
+    /// Where the view is: its fit or zoom, the slide in sight, how far down
+    /// it the view's top is (a fraction of it), how far across (of what
+    /// can be scrolled).
+    struct ViewState {
+        Fit fit = Fit::Width;
+        qreal zoom = 1;
+        int slide = 0;
+        qreal down = 0;
+        qreal across = 0;
+    };
+    ViewState state() const;
+    void restore(const ViewState& state);
 
     static constexpr qreal MinZoom = 0.1;
     static constexpr qreal MaxZoom = 8.0;
@@ -133,6 +148,8 @@ public:
     void last();
 
 signals:
+    /// Slide \a index shown (not the end's black).
+    void slideShown(int index);
     /// It has ended, at slide \a last.
     void ended(int last);
 
@@ -145,6 +162,7 @@ protected:
 
 private:
     int step(int from, int by) const;
+    void showSlide(int index);
     std::shared_ptr<const Presentation> a_presentation;
     int a_current = 0;
     QString a_typed;
@@ -189,8 +207,9 @@ public:
     QImage slideImage(int index, qreal scale) const;
 
     /// Searches the slides' text and notes for \a text: the first slide
-    /// with it from the one in sight on shown. The slides with it.
-    QList<int> find(const QString& text);
+    /// with it from the one in sight on shown (unless \a go is false). The
+    /// slides with it.
+    QList<int> find(const QString& text, bool go = true);
     void findNext(bool backwards = false);
     /// The find bar shown with \a text in it, found as if typed there (the
     /// focus left where it is).
