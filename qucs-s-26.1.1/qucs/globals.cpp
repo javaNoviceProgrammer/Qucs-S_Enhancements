@@ -189,6 +189,7 @@ bool loadSettings()
     QucsSettings.DatasetTextLimitMB = std::max(0, _settings::Get().item<int>("DatasetTextLimitMB"));
     QucsSettings.LockToolbars = _settings::Get().item<bool>("LockToolbars");
     QucsSettings.RecentProjects = _settings::Get().item<QString>("RecentProjects").split("*", Qt::SkipEmptyParts);
+    QucsSettings.RecentWorkspaces = _settings::Get().item<QString>("RecentWorkspaces").split("*", Qt::SkipEmptyParts);
     QucsSettings.RecentDocs = _settings::Get().item<QString>("RecentDocs").split("*", Qt::SkipEmptyParts);
     QucsSettings.numRecentDocs = QucsSettings.RecentDocs.count();
     QucsSettings.spiceExtensions = {"*.sp", "*.cir", "*.spc", "*.spi"};

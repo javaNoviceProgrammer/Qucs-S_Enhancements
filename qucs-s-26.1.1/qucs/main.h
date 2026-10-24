@@ -115,6 +115,8 @@ struct tQucsSettings {
   QStringList RecentDocs;
 
   QStringList RecentProjects;
+  /// The workspaces opened before, newest first (the Workspaces panel).
+  QStringList RecentWorkspaces;
   // A project is any folder (in the workspace, or opened as one), not only
   // one named NAME_prj: qucs_s::workspace (workspace.h) says which are.
   bool AnyFolderIsProject = false;

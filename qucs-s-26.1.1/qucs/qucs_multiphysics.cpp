@@ -44,6 +44,7 @@ void QucsApp::initMultiphysics()
   // The sixth tab of the left dock: the tree of the model in front.
   a_multiphysicsPanel = new MultiphysicsPanel;
   TabView->addTab(a_multiphysicsPanel, tr("Multiphysics"));
+  a_sidePages.insert(int(SidePage::Multiphysics), a_multiphysicsPanel);
   TabView->setTabToolTip(TabView->indexOf(a_multiphysicsPanel),
                          tr("a 2D multiphysics model's tree: geometry, materials, physics, mesh, studies, results"));
   connect(a_multiphysicsPanel, &MultiphysicsPanel::newModelRequested, this, [this] { newMultiphysicsModel(); });

@@ -74,7 +74,7 @@ QJsonObject Workspace::toJson() const
                        {QStringLiteral("active pane"), activePane},
                        {QStringLiteral("row sizes"), numbers(rowSizes)},
                        {QStringLiteral("column sizes"), columns},
-                       {QStringLiteral("side tab"), sideTab},
+                       {QStringLiteral("side page"), sidePage},
                        {QStringLiteral("saved"), saved.toString(Qt::ISODate)}};
 }
 
@@ -98,7 +98,14 @@ Workspace Workspace::fromJson(const QJsonObject &o)
     w.activePane = o.value(QLatin1String("active pane")).toInt();
     w.rowSizes = numbersOf(o.value(QLatin1String("row sizes")));
     for (const QJsonValue &row : o.value(QLatin1String("column sizes")).toArray()) w.columnSizes << numbersOf(row);
-    w.sideTab = o.value(QLatin1String("side tab")).toInt(-1);
+    w.sidePage = o.value(QLatin1String("side page")).toString();
+    // Written before the pages had names: the number meant this order.
+    if (w.sidePage.isEmpty() && o.contains(QLatin1String("side tab"))) {
+        static const QStringList was{QStringLiteral("projects"), QStringLiteral("content"), QStringLiteral("components"),
+                                     QStringLiteral("libraries"), QStringLiteral("file browser"),
+                                     QStringLiteral("multiphysics")};
+        w.sidePage = was.value(o.value(QLatin1String("side tab")).toInt(-1));
+    }
     w.saved = QDateTime::fromString(o.value(QLatin1String("saved")).toString(), Qt::ISODate);
     return w;
 }

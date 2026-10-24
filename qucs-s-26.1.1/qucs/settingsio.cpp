@@ -217,6 +217,7 @@ bool isState(const QString& key)
         QStringLiteral("firstRun"),
         QStringLiteral("RecentDocs"),
         QStringLiteral("RecentProjects"),
+        QStringLiteral("RecentWorkspaces"),
         QStringLiteral("ClaudeCode/exportFolder"),   // the folder a conversation went to last
         QStringLiteral("ClaudeCode/models"),         // what the program here offers
         QStringLiteral("ClaudeCode/otherModels"),    // the models chosen by name last

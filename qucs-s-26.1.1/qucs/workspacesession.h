@@ -40,7 +40,9 @@ struct Workspace {
     int activePane = 0;              // (an index of panes)
     QList<int> rowSizes;             // the rows' heights
     QList<QList<int>> columnSizes;   // each row's panes' widths
-    int sideTab = -1;                // the left dock's page: Projects, Content, Components ...
+    /// The left dock's page by name ("content"): a number moved to another
+    /// page when one was added before it (QucsApp::sidePageName).
+    QString sidePage;
     QDateTime saved;
 
     bool isEmpty() const;
