@@ -468,6 +468,49 @@ private slots:
         QVERIFY(std::abs(he21 - 976.657) < 0.005);
     }
 
+    // The azimuthal order m as an expression of the parameters, so that a
+    // study's sweep runs over the orders - one solution per order, each
+    // with its own emr.m. A whispering gallery's or a bend's loss per order
+    // needed a script that edited the model and solved it again, order by
+    // order (the user's bend study, 3). An order that is no whole number is
+    // still refused, now by what the expression comes to.
+    void theOrderIsSwept()
+    {
+        const QString json = QStringLiteral(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "morder", "expression": "%1"}],
+          "components": [{"unit": "mm", "space": "axisymmetric",
+            "geometry": [{"type": "rectangle", "name": "cav", "position": ["0", "0"], "size": ["10", "20"]}],
+            "materials": [{"label": "air", "n": "1", "selection": {"all": true}}],
+            "physics": [{"type": "resonator", "tag": "emr", "m": "%2", "features": [{"type": "wave", "selection": {"all": true}}]}],
+            "mesh": {"size": "normal", "custom": true, "hmax": "%3"}}],
+          "studies": [{"type": "study", "steps": [%4{"type": "eigenfrequency", "count": 2, "around": "15[GHz]"}]}]})json");
+        const QString mesh = slowBuild() ? QStringLiteral("3") : QStringLiteral("2");
+        const Run r = run(modelOf(json.arg(QStringLiteral("0"), QStringLiteral("morder"), mesh,
+                                           QStringLiteral(R"({"type": "sweep", "parameters": [["morder", "0, 1, 2", ""]]}, )"))
+                                      .toUtf8()));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        QCOMPARE(int(r.study.solutions.size()), 3);
+        QStringList said;
+        double before = 0;
+        for (int p = 0; p < 3; ++p) {
+            Solution& s = *r.study.solutions[std::size_t(p)];
+            QCOMPARE(s.sweptValues.value(QStringLiteral("morder")), double(p));
+            QCOMPARE(int(global(s, QStringLiteral("emr.m"))), p);
+            QVERIFY(s.snapshotCount() >= 1);
+            s.select(0);
+            const double f = global(s, QStringLiteral("emr.freq"));
+            said << QStringLiteral("m %1: %2 GHz").arg(p).arg(f / 1e9, 0, 'f', 4);
+            // Each order has its own modes: the cylinder's lowest near
+            // 15 GHz moves with it.
+            QVERIFY2(std::abs(f / before - 1) > 0.01, qPrintable(said.join(QLatin1String(", "))));
+            before = f;
+        }
+        qInfo("swept over the orders: %s", qPrintable(said.join(QLatin1String(", "))));
+        // What it comes to must still be a whole number.
+        const Run half = run(modelOf(json.arg(QStringLiteral("3"), QStringLiteral("morder/2"), mesh, QString()).toUtf8()));
+        QVERIFY2(half.error.contains(QLatin1String("whole number")), qPrintable(half.error));
+    }
+
     // On the axis: order 1's field E_φ = -j E_r there (its two transverse
     // parts one circularly turning field; 3 % off by the mesh at 2 nm from
     // it), E_z nought; the curl's 1/r parts finite. Refused, and said: a 2D (not axisymmetric) component, a

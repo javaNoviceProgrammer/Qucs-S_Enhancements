@@ -880,6 +880,40 @@ QStringList QucsControl::femFilesWritten(const QString& tool, const QJsonObject&
     return files;
 }
 
+namespace {
+
+/// The properties of \a node and its children that their kind has not,
+/// each as "the node has no x (it has ...)". A model given as JSON took
+/// them in silence - a misspelt "pos" was written into the model, warned
+/// about only by a solve, and fem_edit then refused to take out the name
+/// that was there (the user's bend study, 4). A node of a kind Qucs-S does
+/// not know is left alone (Model::fromJson says so itself), and a
+/// material's library keys count as its own.
+QStringList unknownPropertiesOf(const FNode& node)
+{
+    QStringList out;
+    if (const NodeKind* k = node.kind()) {
+        QStringList unknown;
+        for (auto it = node.props.begin(); it != node.props.end(); ++it)
+            if (!k->property(it.key()) && !(node.type == QLatin1String("material") && isMaterialKey(it.key()))) unknown << it.key();
+        if (!unknown.isEmpty()) {
+            QStringList keys;
+            for (const PropertyDef& p : k->properties) keys << p.key;
+            if (node.type == QLatin1String("material"))
+                for (const QString& key : materialKeys())
+                    if (!keys.contains(key)) keys << key;
+            const QStringList near = nearNamesOf(unknown, keys);
+            out << tr("%1 has no %2 (it has %3)%4")
+                       .arg(node.name(), unknown.join(QStringLiteral(", ")), keys.join(QStringLiteral(", ")),
+                            near.isEmpty() ? QString() : tr(" Meant %1?").arg(near.join(tr(" or "))));
+        }
+    }
+    for (const FNode& child : node.children) out << unknownPropertiesOf(child);
+    return out;
+}
+
+} // namespace
+
 QJsonObject QucsControl::femModel(const QJsonObject& args)
 {
     const QString action = args.value(QLatin1String("action")).toString();
@@ -906,6 +940,9 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
             QString why;
             m = Model::fromJson(QJsonDocument(args.value(QLatin1String("model")).toObject()).toJson(), &why);
             if (!m) return errorResult(tr("'model': %1").arg(why));
+            if (const QStringList unknown = unknownPropertiesOf(m->root); !unknown.isEmpty())
+                return errorResult(tr("'model': %1 Nothing was made (fem_describe what=format lists what each kind of node takes).")
+                                       .arg(unknown.join(QStringLiteral("; "))));
         }
         QString file;
         MultiphysicsDoc* open = nullptr;
@@ -1094,6 +1131,9 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
         QString why;
         std::optional<Model> m = Model::fromJson(QJsonDocument(args.value(QLatin1String("model")).toObject()).toJson(), &why);
         if (!m) return errorResult(tr("'model': %1").arg(why));
+        if (const QStringList unknown = unknownPropertiesOf(m->root); !unknown.isEmpty())
+            return errorResult(tr("'model': %1 The model is unchanged (fem_describe what=format lists what each kind of node takes).")
+                                   .arg(unknown.join(QStringLiteral("; "))));
         doc->setModel(*m, tr("Model"));
         const QString built = doc->geometryAfterChange();
         QJsonObject o{{QStringLiteral("set"), tr("the whole model, one step of Undo")},
@@ -1119,13 +1159,25 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     auto apply = [&](FNode& n) -> QString {
         const NodeKind* k = n.kind();
         for (auto it = props.begin(); it != props.end(); ++it) {
+            // A property taken out (null) goes if the node has it, whether
+            // its kind knows the name or not: one written into a model by
+            // an older call - a misspelt "pos" - could not be taken out
+            // again, since the check below refused the very name that was
+            // there (the user's bend study, 4).
+            if (it.value().isNull() && n.props.contains(it.key())) {
+                n.props.remove(it.key());
+                continue;
+            }
             if (k && !k->property(it.key()) && !(n.type == QLatin1String("material") && isMaterialKey(it.key()))) {
                 QStringList keys;
                 for (const PropertyDef& p : k->properties) keys << p.key;
                 if (n.type == QLatin1String("material"))
                     for (const QString& key : materialKeys())
                         if (!keys.contains(key)) keys << key;
-                return tr("%1 has no property %2 (it has %3)").arg(k->title, it.key(), keys.join(QStringLiteral(", ")));
+                const QStringList near = nearNamesOf({it.key()}, keys);
+                return tr("%1 has no property %2 (it has %3)%4")
+                    .arg(k->title, it.key(), keys.join(QStringLiteral(", ")),
+                         near.isEmpty() ? QString() : tr(" Meant %1?").arg(near.join(tr(" or "))));
             }
             if (it.value().isNull()) n.props.remove(it.key());
             else {

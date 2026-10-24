@@ -69,6 +69,24 @@ int placesOf(double step)
     return 15;
 }
 
+// The places a label needs to say where its tick is: the step's, and more
+// where the tick is off the grid the step alone would make - an axis from
+// 2.15 in steps of 0.1 labelled its first tick "2.1", a tenth of a step
+// away from where it was drawn. Enough places that what is written is
+// within a thousandth of a step of the value (invisible on the axis), 15
+// at most; -1 without a step, as before.
+int placesFor(double value, double step)
+{
+    const int least = placesOf(step);
+    if (least < 0)
+        return -1;
+    const double tolerance = std::fabs(step) * 1e-3;
+    for (int d = least; d < 15; ++d)
+        if (std::fabs(QString::number(value, 'f', d).toDouble() - value) <= tolerance)
+            return d;
+    return 15;
+}
+
 // value = mantissa x 10^exponent, the exponent a multiple of \a every (1
 // or 3), 1 <= |mantissa| < 10^every as written with \a decimals places.
 void split(double value, int every, int decimals, QString* mantissa, int* exponent)
@@ -172,7 +190,7 @@ QString format(double value, Notation notation, int decimals, double step)
         split(value, 3, decimals, &mantissa, &exponent);
         return exponent == 0 ? mantissa : mantissa + QLatin1Char('e') + QString::number(exponent);
     case Notation::Decimal:
-        return fixed(value, decimals >= 0 ? decimals : placesOf(step));
+        return fixed(value, decimals >= 0 ? decimals : placesFor(value, step));
     case Notation::Power:
         split(value, 1, decimals, &mantissa, &exponent);
         if (exponent == 0)

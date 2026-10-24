@@ -269,6 +269,34 @@ struct LegendRow {
 
 constexpr qreal legendPad = 4.0, legendSample = 20.0, legendGap = 6.0, legendMargin = 6.0;
 
+/// How long a row's line sample is: a marker sits in the middle of it, so
+/// a legend with markers gets a longer one - the line is seen on both
+/// sides of the marker, not only the ring of paper round it.
+qreal sampleWidth(const QList<LegendRow>& rows)
+{
+    for (const LegendRow& row : rows)
+        if (row.marker != Graph::PointMarker::None) return legendSample + 12.0;
+    return legendSample;
+}
+
+/// \a pattern - which Qt measures in pen widths - scaled so that two of
+/// its dashes and gaps fit in a sample \a sample pixels long: a dashed
+/// trace of thickness 2 (its dash 20 pixels) and a long-dashed one of any
+/// thickness drew a single dash across the whole sample, so the legend
+/// said "solid line" whatever the style was. The proportions are kept, so
+/// dashes, dots and long dashes still look different.
+QList<qreal> fittedPattern(QList<qreal> pattern, qreal width, qreal sample)
+{
+    qreal period = 0;
+    for (const qreal part : pattern) period += part;
+    const qreal drawn = period * std::max(qreal(1.0), width);
+    if (drawn > 0.0 && 2 * drawn > sample) {
+        const qreal factor = sample / (2 * drawn);
+        for (qreal& part : pattern) part *= factor;
+    }
+    return pattern;
+}
+
 /// A row per graph; a graph in auto colors or markers has a row per curve,
 /// with the values of the parameters swept (at most a few dozen, then how
 /// many more there are).
@@ -307,7 +335,7 @@ QRectF Diagram::legendRect(const QFontMetricsF& fm) const {
     qreal textWidth = 0.0;
     for (const LegendRow &row: rows)
         textWidth = std::max(textWidth, fm.horizontalAdvance(row.text));
-    const qreal width = legendPad + legendSample + legendGap + textWidth + legendPad;
+    const qreal width = legendPad + sampleWidth(rows) + legendGap + textWidth + legendPad;
     const qreal height = legendPad + rows.size() * fm.height() + legendPad;
     if (legendPos == LegendOutside) {
         // Right of all it draws there - its frame, the right axis' numbers
@@ -340,7 +368,7 @@ void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
     const QList<Row> rows = legendRows(Graphs);
 
     const QFontMetricsF fm(painter->font());
-    const qreal pad = legendPad, sample = legendSample, gap = legendGap;
+    const qreal pad = legendPad, sample = sampleWidth(rows), gap = legendGap;
     const qreal rowHeight = fm.height();
     const QRectF box = legendRect(fm);
     const qreal x = box.x(), y = box.y(), width = box.width(), height = box.height();
@@ -357,10 +385,20 @@ void Diagram::paintLegend(QPainter *painter, const Colors &colors) {
         const qreal x0 = x + pad, x1 = x0 + sample;
         QPen pen(qucs_s::ink::on(row.color), row.thick);
         pen.setCapStyle(Qt::RoundCap);
-        switch (row.style) {   // the same patterns Graph::drawLines() uses
-        case GRAPHSTYLE_DASH:     pen.setDashPattern({10.0, 6.0}); break;
-        case GRAPHSTYLE_DOT:      pen.setDashPattern({2.0, 4.0});  break;
-        case GRAPHSTYLE_LONGDASH: pen.setDashPattern({24.0, 8.0}); break;
+        // (A dashed sample's caps flat: a round cap grows by half the pen's
+        // width at each end of every dash, which closed the gaps of the
+        // short pattern a sample has room for - a long-dashed trace of
+        // thickness 2 came out solid but for a grey pixel.)
+        const bool dashed = row.style == GRAPHSTYLE_DASH || row.style == GRAPHSTYLE_DOT || row.style == GRAPHSTYLE_LONGDASH;
+        if (dashed) pen.setCapStyle(Qt::FlatCap);
+        // (The same patterns Graph::drawLines() uses, fitted to the sample:
+        // two dashes and two gaps of it fit, so a marker in the middle
+        // cannot hide them all.)
+        const auto fitted = [&pen, sample](QList<qreal> pattern) { return fittedPattern(pattern, pen.widthF(), sample); };
+        switch (row.style) {
+        case GRAPHSTYLE_DASH:     pen.setDashPattern(fitted({10.0, 6.0})); break;
+        case GRAPHSTYLE_DOT:      pen.setDashPattern(fitted({2.0, 4.0}));  break;
+        case GRAPHSTYLE_LONGDASH: pen.setDashPattern(fitted({24.0, 8.0})); break;
         default: break;
         }
         painter->setPen(pen);

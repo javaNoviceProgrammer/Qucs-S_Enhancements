@@ -606,6 +606,44 @@ private slots:
         QVERIFY(std::abs(l.at(0) - expected[0]) < 5e-3 && std::abs(l.at(0) - expected[0]) > std::abs(got[0] - expected[0]));
     }
 
+    // The group index of each mode, c/vg, which the step reports as
+    // emw.ng. A hollow metal guide has ng = 1/neff (β = k0 neff with
+    // neff² = 1 - (fc/f)²), whatever the mode; with a filling whose index
+    // follows the wavelength it is n(n + ω dn/dω)/neff - so the media's own
+    // dispersion counts, which is what made the user work it out by hand
+    // from a sweep of wavelengths (the user's bend study, 2).
+    void theGroupIndex()
+    {
+        const Run r = run(modelOf(rectangular(QStringLiteral("20[GHz]"), 3)));
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        Solution& s = *r.solution;
+        const std::vector<double> neff = indices(s);
+        QCOMPARE(int(neff.size()), 3);
+        for (int k = 0; k < 3; ++k) {
+            s.select(k);
+            const double ng = global(s, QStringLiteral("emw.ng"));
+            QVERIFY2(std::abs(ng * neff[std::size_t(k)] - 1) < 2e-3,
+                     qPrintable(QStringLiteral("mode %1: ng %2, neff %3, their product %4")
+                                    .arg(k + 1).arg(ng).arg(neff[std::size_t(k)]).arg(ng * neff[std::size_t(k)])));
+            // (Above its cutoff a guided mode is slower than light.)
+            QVERIFY2(ng > 1, qPrintable(QString::number(ng)));
+        }
+        // A filling of n = 1.5 + 0.1 λ1/λ0: n at 20 GHz 1.6007, and
+        // ω dn/dω = -λ dn/dλ = +0.1 λ1/λ0 - taken from the index at two
+        // wavelengths a thousandth apart, not from the step's own.
+        const Run dispersive = run(modelOf(rectangular(QStringLiteral("20[GHz]"), 1, QStringLiteral("\"n\": \"1.5 + 0.1*15[mm]/lambda0\""))));
+        QVERIFY2(dispersive.error.isEmpty(), qPrintable(dispersive.error));
+        Solution& d = *dispersive.solution;
+        const double lambda = C0 / 20e9, n = 1.5 + 0.1 * 15e-3 / lambda, dn = 0.1 * 15e-3 / lambda;
+        const double got = global(d, QStringLiteral("emw.ng")), index = global(d, QStringLiteral("emw.neff"));
+        const double expected = n * (n + dn) / index;
+        qInfo("filled: n %.6f, ω dn/dω %.6f, neff %.6f, ng %.6f against %.6f", n, dn, index, got, expected);
+        QVERIFY2(std::abs(got / expected - 1) < 2e-3, qPrintable(QStringLiteral("ng %1 against %2").arg(got).arg(expected)));
+        // Without the media's dispersion it would be 1/neff times n², a
+        // tenth of the index out: the two must not be confused.
+        QVERIFY2(std::abs(got - n * n / index) > 0.05, qPrintable(QStringLiteral("ng %1, without dispersion %2").arg(got).arg(n * n / index)));
+    }
+
     void lossyFilling()
     {
         // Filled with εr = 2.2 (1 - j 0.01): β² = k0² εr - (π/a)², complex

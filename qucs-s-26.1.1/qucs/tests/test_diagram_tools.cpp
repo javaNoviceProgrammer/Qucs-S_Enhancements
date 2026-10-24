@@ -3067,6 +3067,66 @@ private slots:
         closeAll();
     }
 
+    // A data display of its own - a .dpl beside its dataset, with no
+    // schematic: what a multiphysics 1D plot group writes - keeps its plots
+    // through an edit and a save, on the canvas as well as in the data. The
+    // user's bend study (6) saw them go blank until reload_data; this is
+    // the sequence they describe, as a guard - see the round's write-up.
+    void aStandaloneDisplayKeepsItsPlots()
+    {
+        QVERIFY(writeFile(path("bend.dat"),
+                          QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n<indep lambda 3>\n1.5e-06\n1.55e-06\n1.6e-06\n</indep>\n"
+                                         "<dep neff lambda>\n2.15\n2.25\n2.35\n</dep>\n")));
+        QVERIFY(writeFile(path("bend.dpl"),
+                          QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n  <DataSet=bend.dat>\n"
+                                         "  <DataDisplay=bend.dpl>\n  <OpenDisplay=0>\n</Properties>\n<Symbol>\n</Symbol>\n"
+                                         "<Components>\n</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n"
+                                         "<Paintings>\n</Paintings>\n")));
+        QVERIFY(!failed(call("open_document", {{"path", path("bend.dpl")}})));
+        const auto display = [this]() -> Schematic* {
+            for (QucsDoc* doc : app->allDocuments())
+                if (doc->getDocName().endsWith(QLatin1String("bend.dpl"))) return dynamic_cast<Schematic*>(doc);
+            return nullptr;
+        };
+        Schematic* sch = display();
+        QVERIFY(sch != nullptr);
+        QVERIFY(!failed(call("add_diagram", {{"path", path("bend.dpl")}, {"type", "rect"},
+                                             {"traces", QJsonArray{"qucsator/neff"}}, {"x", 100}, {"y", 300}})));
+        // The trace's own colour on the canvas: the curve is drawn.
+        const auto drawn = [](Schematic* on) {
+            QImage image(on->viewport()->size(), QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::white);
+            on->viewport()->render(&image);
+            int blue = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x) {
+                    const QColor c = image.pixelColor(x, y);
+                    if (c.blue() > 150 && c.red() < 100 && c.green() < 100) ++blue;
+                }
+            return blue;
+        };
+        const auto plots = [&drawn](Schematic* on, const char* when) {
+            QVERIFY(!on->a_DocDiags.empty());
+            for (Graph* g : on->a_DocDiags.front()->Graphs) {
+                QVERIFY2(!g->isEmpty(), when);
+                QVERIFY2(std::distance(g->begin(), g->end()) > 0, when);
+            }
+            QVERIFY2(drawn(on) > 20, when);
+        };
+        plots(sch, "after add_diagram");
+        QVERIFY(!failed(call("edit_diagram", {{"path", path("bend.dpl")}, {"diagram", 1},
+                                              {"y_axis", QJsonObject{{"from", 2.1}, {"to", 2.4}}}})));
+        plots(sch, "after edit_diagram");
+        QVERIFY(!failed(call("save_document", {{"path", path("bend.dpl")}})));
+        plots(sch, "after the save");
+        // And as the user finds it again.
+        QVERIFY(!failed(call("close_document", {{"path", path("bend.dpl")}})));
+        QVERIFY(!failed(call("open_document", {{"path", path("bend.dpl")}})));
+        sch = display();
+        QVERIFY(sch != nullptr);
+        plots(sch, "after it is opened again");
+    }
+
     // ==== The bug hunt of 8 October (docs/bug_hunts/2026-10-08-new-diagrams.md):
     // each finding's case, as it was found.
 

@@ -22,12 +22,18 @@ namespace {
 const char* kRectLine =
     "<Rect 0 300 600 300 3 #c0c0c0 1 00 1 1e+6 2e+6 1e+7 1 -0.05 0.2 0.66 1 -0.002 0.01 0.02 315 0 225 1 0 0 \"\" \"\" \"\">";
 
-// A diagram with two graphs (blue solid, red dashed), read from a save line.
-RectDiagram* makeDiagram(const QString& rectLine)
+// The legend's padding, as diagram.cpp has it.
+constexpr qreal legendPadForTest = 4.0;
+
+// A diagram with two graphs (blue solid, red dashed), read from a save
+// line; with \a style and \a thick, one graph of that line style and
+// thickness alone.
+RectDiagram* makeDiagram(const QString& rectLine, int style = -1, int thick = 2)
 {
-    QString body = "<\"ngspice/ac.v(out)\" #0000ff 2 3 0 0 0>\n"
-                   "<\"ngspice/ac.i(pr1)\" #ff0000 2 3 0 1 1>\n"
-                   "</Rect>\n";
+    QString body = style >= 0 ? QStringLiteral("<\"ngspice/ac.v(out)\" #0000ff %1 3 0 %2 0>\n</Rect>\n").arg(thick).arg(style)
+                              : QStringLiteral("<\"ngspice/ac.v(out)\" #0000ff 2 3 0 0 0>\n"
+                                               "<\"ngspice/ac.i(pr1)\" #ff0000 2 3 0 1 1>\n"
+                                               "</Rect>\n");
     QTextStream stream(&body, QIODevice::ReadOnly);
     auto* d = new RectDiagram();
     if (!d->load(rectLine, &stream)) { delete d; return nullptr; }
@@ -216,6 +222,88 @@ private slots:
         QScopedPointer<RectDiagram> again(makeDiagram(line));
         QVERIFY(again);
         QCOMPARE(again->legendPos, int(Diagram::LegendOutside));
+    }
+
+    // The sample says which line style a trace has. Qt measures a dash
+    // pattern in pen widths, so a dashed trace of thickness 2 (its dash 20
+    // pixels) and a long-dashed one of any thickness had a single dash
+    // across the whole 20-pixel sample: the legend said "solid line" for
+    // every style. A trace with point markers was worse, the marker's ring
+    // of paper breaking the sample in the middle - so the sample of a
+    // solid trace looked dashed and of a dashed one solid (the user's bend
+    // study, 8).
+    void theSampleShowsTheLineStyle()
+    {
+        // The ink and the paper along a row's sample: the longest run of
+        // paper in it (0: one unbroken line), and how much ink there is.
+        const auto along = [](RectDiagram* d, int row, int* ink) {
+            const QFontMetricsF fm(QFont("Helvetica", 12));
+            const QRectF box = d->legendRect(fm);
+            const QImage img = render(d, 0);
+            const int mid = int(d->cy + box.y() + legendPadForTest + row * fm.height() + fm.height() / 2.0);
+            const int from = int(d->cx + box.x() + legendPadForTest);
+            const qreal sample = box.width() - 2 * legendPadForTest - 6.0
+                                 - fm.horizontalAdvance(d->Graphs.at(row)->Var);
+            int gap = 0, longest = 0;
+            *ink = 0;
+            for (int x = from + 1; x < from + int(sample); ++x) {
+                const QColor c = img.pixelColor(x, mid);
+                // (The sample's own colour, or the paper of the box.)
+                if (c.red() > 230 && c.green() > 230 && c.blue() > 230) longest = std::max(longest, ++gap);
+                else {
+                    gap = 0;
+                    ++*ink;
+                }
+            }
+            return longest;
+        };
+        // Solid, thick: one unbroken line. Dashed, dotted and long-dashed,
+        // of thickness 1 and 2: broken, each with less ink than the solid
+        // one and the dotted one with the least.
+        int ink = 0, solidInk = 0;
+        for (const int thick : {1, 2}) {
+            QScopedPointer<RectDiagram> solid(makeDiagram(kRectLine, 0, thick));
+            QVERIFY(solid);
+            solid->legendPos = Diagram::LegendTopRight;
+            QCOMPARE(along(solid.data(), 0, &solidInk), 0);
+            QVERIFY(solidInk > 10);
+            for (const int style : {GRAPHSTYLE_DASH, GRAPHSTYLE_DOT, GRAPHSTYLE_LONGDASH}) {
+                QScopedPointer<RectDiagram> d(makeDiagram(kRectLine, style, thick));
+                QVERIFY(d);
+                d->legendPos = Diagram::LegendTopRight;
+                const int gap = along(d.data(), 0, &ink);
+                const QString what = QStringLiteral("style %1, thickness %2: gap %3, ink %4 of %5").arg(style).arg(thick).arg(gap).arg(ink).arg(solidInk);
+                QVERIFY2(gap >= 2, qPrintable(what));
+                QVERIFY2(ink > 0 && ink < solidInk, qPrintable(what));
+            }
+        }
+        // A trace with markers: its line is seen on both sides of the
+        // marker, so a dashed one is still told from a solid one.
+        int withMarker = 0, dashedWithMarker = 0;
+        QScopedPointer<RectDiagram> marked(makeDiagram(kRectLine, 0, 2));
+        QVERIFY(marked);
+        marked->legendPos = Diagram::LegendTopRight;
+        marked->Graphs.at(0)->pointMarker = Graph::PointMarker::Circle;
+        QVERIFY(marked->Graphs.at(0)->drawsPointMarkers());
+        const int plain = along(marked.data(), 0, &withMarker);
+        QScopedPointer<RectDiagram> markedDash(makeDiagram(kRectLine, GRAPHSTYLE_DASH, 2));
+        QVERIFY(markedDash);
+        markedDash->legendPos = Diagram::LegendTopRight;
+        markedDash->Graphs.at(0)->pointMarker = Graph::PointMarker::Circle;
+        const int dashed = along(markedDash.data(), 0, &dashedWithMarker);
+        const QString what = QStringLiteral("with a marker: solid gap %1 ink %2, dashed gap %3 ink %4")
+                                 .arg(plain).arg(withMarker).arg(dashed).arg(dashedWithMarker);
+        QVERIFY2(dashed > plain + 1, qPrintable(what));
+        QVERIFY2(dashedWithMarker < withMarker, qPrintable(what));
+        // Which it has room for because a row with a marker gets a longer
+        // sample: the line is seen on both sides of it.
+        const QFontMetricsF fm(QFont("Helvetica", 12));
+        QScopedPointer<RectDiagram> bare(makeDiagram(kRectLine, 0, 2));
+        QVERIFY(bare);
+        bare->legendPos = Diagram::LegendTopRight;
+        const qreal narrow = bare->legendRect(fm).width();
+        QVERIFY2(marked->legendRect(fm).width() > narrow + 8,
+                 qPrintable(QStringLiteral("%1 against %2").arg(marked->legendRect(fm).width()).arg(narrow)));
     }
 
     // A label longer than the diagram is high is cut in its middle, its ends
