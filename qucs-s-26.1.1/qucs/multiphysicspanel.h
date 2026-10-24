@@ -20,6 +20,7 @@
 #include "multiphysicsdoc.h"
 
 #include <QHash>
+#include <QIcon>
 #include <QPointer>
 #include <QWidget>
 
@@ -67,6 +68,9 @@ public:
     QPushButton* newButton() const { return a_newButton; }
     QListWidget* exampleList() const { return a_examples; }
     QStackedWidget* pages() const { return a_pages; }
+    /// A node's icon, by its kind's glyph name: the one drawer of them,
+    /// which the RF 2.5D panel draws its own tree with too.
+    static QIcon nodeGlyph(const QString& icon);
     /// The user's materials file (user_lib/materials.json).
     static QString userMaterialsFile();
     static QList<qucs_s::fem::MaterialEntry> userMaterials();

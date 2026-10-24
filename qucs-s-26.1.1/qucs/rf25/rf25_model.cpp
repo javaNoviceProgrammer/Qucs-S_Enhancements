@@ -17,9 +17,11 @@
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSet>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace qucs_s::rf25 {
 
@@ -88,6 +90,14 @@ P integer(const QString& key, const QString& label, int value, const QString& ti
     p.kind = P::Integer;
     p.defaultValue = value;
     p.tooltip = tip;
+    return p;
+}
+
+/// \a p shown only where \a condition holds ("snap=true"): the panel asks
+/// fem::propertyVisible() of it.
+P shownIf(P p, const char* condition)
+{
+    p.showIf = QLatin1String(condition);
     return p;
 }
 
@@ -177,8 +187,9 @@ QList<NodeKind> makeKinds()
          {choice(QStringLiteral("kind"), tr("Below the stack"),
                  {QStringLiteral("perfect"), QStringLiteral("impedance"), QStringLiteral("open")},
                  {tr("A perfect plane"), tr("A surface impedance"), tr("Open (no plane)")}, QStringLiteral("perfect")),
-          expr(QStringLiteral("impedance"), tr("Surface impedance"), QStringLiteral("Ohm"), QStringLiteral("0"),
-               tr("Of the plane, per square"))},
+          shownIf(expr(QStringLiteral("impedance"), tr("Surface impedance"), QStringLiteral("Ohm"), QStringLiteral("0"),
+                       tr("Of the plane, per square")),
+                  "kind=impedance")},
          {}, {}, false, true, QStringLiteral("gnd"),
          tr("What closes the stack at the bottom. One at most, and last in the tree (it sits under the substrate).")});
     add({QStringLiteral("rf_cover"), tr("Cover"), QStringLiteral("stack"), QStringLiteral("conductor"), none,
@@ -207,13 +218,16 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("rf_processing"), tr("Processing"), QString(), QStringLiteral("processing"), none,
          {boolean(QStringLiteral("merge"), tr("Merge touching shapes"), true),
           boolean(QStringLiteral("merge_vias"), tr("Merge nearby vias"), true),
-          expr(QStringLiteral("via_distance"), tr("Vias closer than"), QStringLiteral("m"), QStringLiteral("1[um]")),
-          boolean(QStringLiteral("keep_area"), tr("Keep the merged area"), true,
-                  tr("Shrinks the union so that the metal it stands for has the area the vias had")),
+          shownIf(expr(QStringLiteral("via_distance"), tr("Vias closer than"), QStringLiteral("m"), QStringLiteral("1[um]")),
+                  "merge_vias=true"),
+          shownIf(boolean(QStringLiteral("keep_area"), tr("Keep the merged area"), true,
+                          tr("Shrinks the union so that the metal it stands for has the area the vias had")),
+                  "merge_vias=true"),
           boolean(QStringLiteral("drop_slivers"), tr("Drop slivers"), true),
-          expr(QStringLiteral("sliver_width"), tr("Thinner than"), QStringLiteral("m"), QStringLiteral("0.1[um]")),
+          shownIf(expr(QStringLiteral("sliver_width"), tr("Thinner than"), QStringLiteral("m"), QStringLiteral("0.1[um]")),
+                  "drop_slivers=true"),
           boolean(QStringLiteral("snap"), tr("Snap to a grid"), false),
-          expr(QStringLiteral("grid"), tr("Grid"), QStringLiteral("m"), QStringLiteral("5[nm]")),
+          shownIf(expr(QStringLiteral("grid"), tr("Grid"), QStringLiteral("m"), QStringLiteral("5[nm]")), "snap=true"),
           boolean(QStringLiteral("heal"), tr("Heal polygons"), true,
                   tr("Self-intersections, repeated points and zero-width necks")),
           boolean(QStringLiteral("remove_fill"), tr("Remove dummy fill"), false)},
@@ -296,29 +310,6 @@ const QHash<QString, const NodeKind*>& kindIndex()
     return index;
 }
 
-/// A node's property as its kind's default says, when the node has none of
-/// its own (Node::value() reads the multiphysics table, which has not these
-/// kinds).
-QJsonValue valueOf(const Node& node, const QString& key)
-{
-    if (node.props.contains(key)) return node.props.value(key);
-    if (const NodeKind* k = nodeKind(node.type))
-        if (const PropertyDef* p = k->property(key)) return p->defaultValue;
-    return {};
-}
-
-QString textOf(const Node& node, const QString& key)
-{
-    const QJsonValue v = valueOf(node, key);
-    return v.isString() ? v.toString() : v.isDouble() ? QString::number(v.toDouble()) : QString();
-}
-
-bool flagOf(const Node& node, const QString& key)
-{
-    const QJsonValue v = valueOf(node, key);
-    return v.isBool() ? v.toBool() : v.isDouble() ? v.toDouble() != 0 : v.toString().compare(QLatin1String("true"), Qt::CaseInsensitive) == 0;
-}
-
 /// \a text evaluated in \a scope: its value, or nothing and why.
 std::optional<double> numberIn(const QString& text, const fem::Scope& scope, QString* why)
 {
@@ -373,6 +364,12 @@ Node nodeFromJson(const QJsonObject& o)
     return n;
 }
 
+void collectTags(const Node& node, QSet<QString>& tags)
+{
+    if (!node.tag.isEmpty()) tags.insert(node.tag);
+    for (const Node& c : node.children) collectTags(c, tags);
+}
+
 /// A child of \a type, made if it is not there (the fixed parts of the
 /// tree, which a file of an older build may not have).
 Node& child(Node& parent, const QString& type)
@@ -401,6 +398,43 @@ QList<const NodeKind*> nodeKinds()
 const NodeKind* kindOf(const Node& node)
 {
     return nodeKind(node.type);
+}
+
+QJsonValue valueOf(const Node& node, const QString& key)
+{
+    if (node.props.contains(key)) return node.props.value(key);
+    if (const NodeKind* k = nodeKind(node.type))
+        if (const PropertyDef* p = k->property(key)) return p->defaultValue;
+    return {};
+}
+
+QString textOf(const Node& node, const QString& key)
+{
+    const QJsonValue v = valueOf(node, key);
+    if (v.isString()) return v.toString();
+    if (v.isDouble()) return QString::number(v.toDouble());
+    if (v.isBool()) return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+    return {};
+}
+
+bool flagOf(const Node& node, const QString& key)
+{
+    const QJsonValue v = valueOf(node, key);
+    return v.isBool() ? v.toBool() : v.isDouble() ? v.toDouble() != 0 : v.toString().compare(QLatin1String("true"), Qt::CaseInsensitive) == 0;
+}
+
+int integerOf(const Node& node, const QString& key)
+{
+    const QJsonValue v = valueOf(node, key);
+    // (A whole number given as a text - a file written by hand - counts.)
+    return v.isDouble() ? int(std::lround(v.toDouble())) : int(std::lround(v.toString().toDouble()));
+}
+
+QString nameOf(const Node& node)
+{
+    if (!node.label.isEmpty()) return node.label;
+    const NodeKind* k = nodeKind(node.type);
+    return k != nullptr ? k->title : node.type;
 }
 
 QString formatName()
@@ -455,6 +489,7 @@ Model Model::blank()
     stack.children.push_back(substrate);
     stack.children.push_back(oxide);
     stack.children.push_back(metal);
+    m.normalise();
     return m;
 }
 
@@ -507,6 +542,7 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
         child(m.root, QLatin1String(type));
     child(m.layout(), QStringLiteral("rf_layer_map"));
     child(m.layout(), QStringLiteral("rf_processing"));
+    m.normalise();
     return m;
 }
 
@@ -688,8 +724,8 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
 
 QStringList Model::problems() const
 {
-    QStringList said = stack().problems;
     const Stack s = stack();
+    QStringList said = s.problems;
     // The layout: a file, and a map that names layers of the stack.
     if (textOf(layout(), QStringLiteral("file")).trimmed().isEmpty())
         said << tr("The layout names no file: there are no shapes to solve on.");
@@ -721,6 +757,210 @@ QStringList Model::problems() const
     if (ports().children.empty())
         said << tr("The model has no port: there is nothing to drive it with.");
     return said;
+}
+
+// ------------------------------------------------------------------ The tree
+
+void Model::normalise()
+{
+    QSet<QString> tags;
+    collectTags(root, tags);
+    // A part of the tree itself is named by its kind ("rf_stack" is
+    // "stack"): the same tag in every model, so that a tool or a session
+    // can name it. The nodes a user adds are tagged by their prefix.
+    std::function<void(Node&)> walk = [&](Node& n) {
+        const NodeKind* k = nodeKind(n.type);
+        if (n.tag.isEmpty() && k != nullptr && k->fixed) {
+            const QString stem = n.type.startsWith(QLatin1String("rf_")) ? n.type.mid(3) : n.type;
+            QString tag = stem;
+            for (int i = 2; tags.contains(tag); ++i) tag = stem + QString::number(i);
+            n.tag = tag;
+            tags.insert(tag);
+        }
+        for (Node& c : n.children) walk(c);
+    };
+    walk(root);
+    // A tag two nodes share would find the wrong one: the second gets one
+    // of its own (a file written by hand, or copied together).
+    tags.clear();
+    std::function<void(Node&)> unique = [&](Node& n) {
+        if (!n.tag.isEmpty() && tags.contains(n.tag)) {
+            const NodeKind* k = nodeKind(n.type);
+            const QString prefix = k != nullptr && !k->prefix.isEmpty() ? k->prefix : QStringLiteral("n");
+            n.tag = newTag(prefix);
+        }
+        if (!n.tag.isEmpty()) tags.insert(n.tag);
+        for (Node& c : n.children) unique(c);
+    };
+    unique(root);
+}
+
+Node* Model::find(const QString& tag)
+{
+    return root.find(tag);
+}
+
+const Node* Model::find(const QString& tag) const
+{
+    return root.find(tag);
+}
+
+Node* Model::parentOf(const QString& tag, int* index)
+{
+    std::function<Node*(Node&)> walk = [&](Node& parent) -> Node* {
+        for (std::size_t i = 0; i < parent.children.size(); ++i) {
+            if (parent.children[i].tag == tag) {
+                if (index != nullptr) *index = int(i);
+                return &parent;
+            }
+            if (Node* found = walk(parent.children[i])) return found;
+        }
+        return nullptr;
+    };
+    if (tag.isEmpty()) return nullptr;
+    return walk(root);
+}
+
+QString Model::newTag(const QString& prefix) const
+{
+    QSet<QString> tags;
+    collectTags(root, tags);
+    const QString p = prefix.isEmpty() ? QStringLiteral("n") : prefix;
+    for (int i = 1;; ++i) {
+        const QString t = p + QString::number(i);
+        if (!tags.contains(t)) return t;
+    }
+}
+
+Node Model::make(const QString& type) const
+{
+    Node n;
+    n.type = type;
+    const NodeKind* k = nodeKind(type);
+    if (k == nullptr) return n;
+    n.tag = newTag(k->prefix);
+    // A name of its own. A layer is named by the layer map, the vias and
+    // the ports, so one made without a name could be named by nothing: the
+    // metals are M1, M2..., the dielectrics ILD1..., the ports P1....
+    const auto numbered = [this, &type](const QString& stem) {
+        int count = 0;
+        std::function<void(const Node&)> walk = [&](const Node& node) {
+            count += node.type == type ? 1 : 0;
+            for (const Node& c : node.children) walk(c);
+        };
+        walk(root);
+        return stem + QString::number(count + 1);
+    };
+    if (type == QLatin1String("rf_metal")) n.label = numbered(QStringLiteral("M"));
+    else if (type == QLatin1String("rf_dielectric")) n.label = numbered(QStringLiteral("ILD"));
+    else if (type == QLatin1String("rf_via")) n.label = numbered(QStringLiteral("V"));
+    else if (type == QLatin1String("rf_edge_port") || type == QLatin1String("rf_internal_port"))
+        n.label = numbered(QStringLiteral("P"));
+    else if (!k->fixed) n.label = k->title;
+    for (const QString& d : k->defaults) {
+        Node c;
+        c.type = d;
+        n.children.push_back(c);
+    }
+    return n;
+}
+
+Node* Model::add(const QString& parentTag, Node node, int index, QString* error)
+{
+    const auto no = [error](const QString& why) -> Node* {
+        if (error != nullptr) *error = why;
+        return nullptr;
+    };
+    Node* parent = find(parentTag);
+    if (parent == nullptr) return no(tr("There is no node %1.").arg(parentTag));
+    const NodeKind* pk = nodeKind(parent->type);
+    const NodeKind* k = nodeKind(node.type);
+    if (k == nullptr) return no(tr("%1 is not a kind of node.").arg(node.type));
+    if (pk == nullptr || !pk->children.contains(node.type))
+        return no(tr("A %1 may not go under %2.").arg(k->title, nameOf(*parent)));
+    if (k->unique && parent->child(node.type) != nullptr)
+        return no(tr("%1 has a %2 already.").arg(nameOf(*parent), k->title));
+    // Unique tags, the node's and its children's.
+    QSet<QString> tags;
+    collectTags(root, tags);
+    std::function<void(Node&)> retag = [&](Node& n) {
+        const NodeKind* nk = nodeKind(n.type);
+        if (n.tag.isEmpty() || tags.contains(n.tag)) {
+            const QString prefix = nk != nullptr && !nk->prefix.isEmpty() ? nk->prefix : QStringLiteral("n");
+            QString t = n.tag.isEmpty() ? prefix + QLatin1Char('1') : n.tag;
+            for (int i = 1; tags.contains(t); ++i) t = prefix + QString::number(i);
+            n.tag = t;
+        }
+        tags.insert(n.tag);
+        for (Node& c : n.children) retag(c);
+    };
+    retag(node);
+    std::vector<Node>& list = parent->children;
+    int at = index < 0 || index > int(list.size()) ? int(list.size()) : index;
+    if (index < 0 && parent->type == QLatin1String("rf_stack")) {
+        // The order of the tree is the order in z: the substrate lies
+        // under every metal, and the ground and the cover close the stack
+        // at its ends (stackOf() says so of a stack that has them
+        // elsewhere), so a layer added goes where it belongs.
+        if (node.type == QLatin1String("rf_substrate")) {
+            at = 0;
+        } else if (node.type != QLatin1String("rf_cover") && node.type != QLatin1String("rf_ground")) {
+            while (at > 0
+                   && (list[std::size_t(at - 1)].type == QLatin1String("rf_cover")
+                       || list[std::size_t(at - 1)].type == QLatin1String("rf_ground")))
+                --at;
+        }
+    }
+    list.insert(list.begin() + at, std::move(node));
+    return &list[std::size_t(at)];
+}
+
+bool Model::remove(const QString& tag, QString* error)
+{
+    int index = -1;
+    Node* parent = parentOf(tag, &index);
+    if (parent == nullptr) {
+        if (error != nullptr) *error = tr("There is no node %1.").arg(tag);
+        return false;
+    }
+    const NodeKind* k = nodeKind(parent->children[std::size_t(index)].type);
+    if (k != nullptr && k->fixed) {
+        if (error != nullptr) *error = tr("%1 is a part of the tree itself: it is not deleted.").arg(k->title);
+        return false;
+    }
+    parent->children.erase(parent->children.begin() + index);
+    return true;
+}
+
+void Model::renameLayer(const QString& from, const QString& to)
+{
+    if (from.isEmpty() || to.isEmpty() || from == to) return;
+    const auto rename = [&from, &to](Node& node, const QString& key) {
+        if (textOf(node, key).trimmed() == from) node.props.insert(key, to);
+    };
+    for (Node& l : stackNode().children) {
+        rename(l, QStringLiteral("from"));
+        rename(l, QStringLiteral("to"));
+    }
+    for (Node& p : ports().children) {
+        rename(p, QStringLiteral("conductor"));
+        rename(p, QStringLiteral("from"));
+        rename(p, QStringLiteral("to"));
+    }
+    if (Node* map = layout().child(QStringLiteral("rf_layer_map"))) {
+        const QJsonArray rows = map->props.value(QLatin1String("rows")).toArray();
+        QJsonArray out;
+        bool changed = false;
+        for (const QJsonValue& row : rows) {
+            QJsonArray cells = row.toArray();
+            if (cells.size() > 2 && cells.at(2).toString().trimmed() == from) {
+                cells.replace(2, to);
+                changed = true;
+            }
+            out.append(cells);
+        }
+        if (changed) map->props.insert(QStringLiteral("rows"), out);
+    }
 }
 
 } // namespace qucs_s::rf25

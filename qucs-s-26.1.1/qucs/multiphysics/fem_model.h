@@ -144,6 +144,14 @@ struct Node {
     const Node* child(const QString& type) const;
 };
 
+/// Whether property \a p is shown on \a node, by its showIf
+/// ("kind=impedance"; alternatives split by |, conditions that all hold by
+/// &). \a kind is the node's own kind, handed in rather than read from the
+/// node, because a value the node has not set is its kind's default - and
+/// an RF 2.5D node's kinds live in a table of their own (rf25/rf25_model.h),
+/// which Node::kind() does not read.
+bool propertyVisible(const Node& node, const PropertyDef& p, const NodeKind* kind);
+
 /*!
  * A model: a tree rooted in a node of kind "model" - Global Definitions
  * (parameters, functions), a component (definitions, geometry, materials,

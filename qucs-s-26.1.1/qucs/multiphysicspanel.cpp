@@ -211,7 +211,50 @@ QIcon glyph(const QString& icon)
         p.drawRect(QRectF(6, 6.5, 4, 3.5));
         p.setBrush(orange);
         p.drawRect(QRectF(4.5, 2, 7, 2.5));
-    } else if (icon == QLatin1String("exports")) letters(QStringLiteral("⇪"), gray);
+    } else if (icon == QLatin1String("stack")) {
+        // (An RF 2.5D tree's kinds, drawn here too: rf25panel.cpp.) Layers
+        // over one another, the metal among them.
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(brown.red(), brown.green(), brown.blue(), 120));
+        p.drawRect(QRectF(1.5, 10, 13, 4));
+        p.setBrush(QColor(blue.red(), blue.green(), blue.blue(), 90));
+        p.drawRect(QRectF(1.5, 6, 13, 4));
+        p.setBrush(orange);
+        p.drawRect(QRectF(3, 2.5, 10, 3));
+    } else if (icon == QLatin1String("layer")) {
+        p.setPen(QPen(blue, 1));
+        p.setBrush(QColor(blue.red(), blue.green(), blue.blue(), 70));
+        p.drawRect(QRectF(1.5, 6, 13, 5));
+    } else if (icon == QLatin1String("conductor")) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(orange);
+        p.drawRect(QRectF(1.5, 6.5, 13, 4));
+    } else if (icon == QLatin1String("via")) {
+        // A plug between two metals.
+        p.setPen(Qt::NoPen);
+        p.setBrush(orange);
+        p.drawRect(QRectF(1.5, 2, 13, 2.5));
+        p.drawRect(QRectF(1.5, 11.5, 13, 2.5));
+        p.setBrush(gray);
+        p.drawRect(QRectF(6, 4.5, 4, 7));
+    } else if (icon == QLatin1String("layout")) {
+        // Shapes in the plane, as a layout viewer shows them.
+        p.setPen(QPen(green, 1.2));
+        p.setBrush(QColor(green.red(), green.green(), green.blue(), 60));
+        p.drawRect(QRectF(1.5, 2.5, 7, 5));
+        p.drawRect(QRectF(5.5, 8.5, 9, 5));
+    } else if (icon == QLatin1String("map")) letters(QStringLiteral("→"), brown);
+    else if (icon == QLatin1String("processing")) letters(QStringLiteral("⚙"), gray);
+    else if (icon == QLatin1String("ports")) letters(QStringLiteral("P"), blue);
+    else if (icon == QLatin1String("port")) {
+        // A port on the edge of a line.
+        p.setPen(Qt::NoPen);
+        p.setBrush(orange);
+        p.drawRect(QRectF(6, 6.5, 8.5, 3.5));
+        p.setBrush(blue);
+        p.drawRect(QRectF(1.5, 4, 3.5, 8.5));
+    } else if (icon == QLatin1String("export")) letters(QStringLiteral("⇪"), blue);
+    else if (icon == QLatin1String("exports")) letters(QStringLiteral("⇪"), gray);
     else if (icon == QLatin1String("touchstone")) letters(QStringLiteral("S"), blue);
     else if (icon == QLatin1String("spice")) letters(QStringLiteral("cir"), orange);
     else if (icon == QLatin1String("qucspart")) letters(QStringLiteral("Q"), green);
@@ -646,6 +689,11 @@ MultiphysicsPanel::MultiphysicsPanel(QWidget* parent) : QWidget(parent)
     a_pages->addWidget(a_splitter);
     fillStart();
     a_pages->setCurrentWidget(a_start);
+}
+
+QIcon MultiphysicsPanel::nodeGlyph(const QString& icon)
+{
+    return glyph(icon);
 }
 
 QString MultiphysicsPanel::userMaterialsFile()
@@ -1132,34 +1180,9 @@ void MultiphysicsPanel::scheduleSettings()
 
 bool MultiphysicsPanel::visible(const Node& node, const PropertyDef& p) const
 {
-    if (p.showIf.isEmpty()) return true;
-    // Alternatives split by |, each conditions that all hold, split by &.
-    for (const QString& alternative : p.showIf.split(QLatin1Char('|'))) {
-        bool all = true;
-        for (const QString& cond : alternative.split(QLatin1Char('&'))) {
-            const bool negate = cond.contains(QLatin1String("!="));
-            const QStringList kv = cond.split(negate ? QStringLiteral("!=") : QStringLiteral("="));
-            if (kv.size() != 2) continue;
-            const QString key = kv[0].trimmed(), wanted = kv[1].trimmed();
-            // A flag by its value - 1, "True" as true -, and one given as an
-            // expression of the parameters either: what it shows wanted at
-            // some point. (Compared as a text, the exciton model, its size
-            // and pairs were hidden while "excitons": "ex" had them on: the
-            // hunt of 22 October, B8.)
-            const PropertyDef* def = node.kind() ? node.kind()->property(key) : nullptr;
-            if (def && def->kind == PropertyDef::Bool && (wanted == QLatin1String("true") || wanted == QLatin1String("false"))) {
-                const QJsonValue v = node.value(key);
-                if (v.isString() && !qucs_s::fem::flagWord(v.toString())) continue;
-                const bool equal = node.flag(key) == (wanted == QLatin1String("true"));
-                all = all && (negate ? !equal : equal);
-                continue;
-            }
-            const bool equal = node.text(key) == wanted;
-            all = all && (negate ? !equal : equal);
-        }
-        if (all) return true;
-    }
-    return false;
+    // One rule for both model trees (fem_model.cpp): the RF 2.5D panel
+    // asks it of its own kinds.
+    return propertyVisible(node, p, node.kind());
 }
 
 void MultiphysicsPanel::commit(const QString& key, const QJsonValue& value, const QString& what)

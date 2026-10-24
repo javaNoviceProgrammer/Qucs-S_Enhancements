@@ -68,7 +68,9 @@
 #include "zipdoc.h"
 #include "layoutdoc.h"
 #include "multiphysicsdoc.h"
+#include "rf25doc.h"
 #include "multiphysicspanel.h"
+#include "rf25panel.h"
 #include "imagedoc.h"
 #include "pptx.h"
 #include "pptxdoc.h"
@@ -243,6 +245,7 @@ QucsApp::QucsApp(bool netlist2Console) :
   initMenuBar();
   initGitMenu();
   initMultiphysics();
+  initRf25();
   fillSimulatorsComboBox();
   initToolBar();
   initStatusBar();
@@ -2984,6 +2987,13 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
     d = model;
     i = addDocumentTab(model, Info.fileName());
   }
+  else if (isRf25File(Name)) {
+    // An RF 2.5D model: its layout and stack, its tree in the RF 2.5D
+    // panel (rf25doc.h).
+    auto *model = new RF25Doc(this, Name);
+    d = model;
+    i = addDocumentTab(model, Info.fileName());
+  }
   else if (isLayoutFile(Name)) {
     // A GDSII or OASIS layout, read in the background (layoutdoc.h).
     auto *layout = new LayoutDoc(this, Name);
@@ -3064,6 +3074,8 @@ bool QucsApp::gotoPage(const QString& Name, bool reloadPage, bool checkDataNames
   slotChangeView();
   // A multiphysics model: its tree in front.
   if (isMultiphysicsDocument(documentWidget(d))) showMultiphysicsPanel();
+  // An RF 2.5D model: its own.
+  if (isRf25Document(documentWidget(d))) showRf25Panel();
   if (Info.suffix() == "sym") {
     // We dealing with a file containing *only* a symbol definition.
     // Because of that we want to switch straight to symbol editing mode
@@ -3238,6 +3250,9 @@ bool QucsApp::saveAs()
     } else if (isMultiphysicsDocument (w)) {
       Filter = tr("Multiphysics models") + " (*.qfem)";
       selfilter = Filter;
+    } else if (isRf25Document (w)) {
+      Filter = tr("RF 2.5D models") + " (*.qrf25)";
+      selfilter = Filter;
     } else if (isPresentationDocument (w)) {
       // A copy, of its kind.
       const QString own = Info.suffix().toLower();
@@ -3307,6 +3322,9 @@ bool QucsApp::saveAs()
     }
     else if (isMultiphysicsDocument (w)) {
       if (ext.compare("qfem", Qt::CaseInsensitive) != 0) s += ".qfem";
+    }
+    else if (isRf25Document (w)) {
+      if (ext.compare("qrf25", Qt::CaseInsensitive) != 0) s += ".qrf25";
     }
     else if (isPresentationDocument (w)) {
       // A copy of the file: of its kind.
@@ -3786,6 +3804,8 @@ void QucsApp::slotChangeView()
     messageDock->showTextProblems(xml, xml->diagnostics(), tr("XML"), false);
   // The Multiphysics panel: the tree of the model in front, if one is.
   if (a_multiphysicsPanel != nullptr) a_multiphysicsPanel->setDocument(qobject_cast<MultiphysicsDoc *>(w));
+  // The RF 2.5D panel: the same, for a model of its own.
+  if (a_rf25Panel != nullptr) a_rf25Panel->setDocument(qobject_cast<RF25Doc *>(w));
   QucsDoc * Doc = docIn(w);
   if(w==nullptr || Doc==nullptr)return;
   // for text documents
@@ -3806,7 +3826,7 @@ void QucsApp::slotChangeView()
   // width; for spreadsheets: cells; for a picture: Copy as Image copies
   // it, Print Fit prints it as large as the page goes
   else if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-           || isImageDocument (w) || isMultiphysicsDocument (w) || isPresentationDocument (w)) {
+           || isImageDocument (w) || isMultiphysicsDocument (w) || isRf25Document (w) || isPresentationDocument (w)) {
     magAll->setDisabled(false);
     magSel->setDisabled(false);
     if(cursorLeft->isEnabled())
@@ -3863,7 +3883,7 @@ void QucsApp::slotFileSettings ()
 
   QWidget * w = DocumentTab->currentWidget ();
   if (isPdfDocument (w) || isSheetDocument (w) || isArchiveDocument (w) || isLayoutDocument (w)
-      || isImageDocument (w) || isMultiphysicsDocument (w) || isPresentationDocument (w)) return;   // nothing to set
+      || isImageDocument (w) || isMultiphysicsDocument (w) || isRf25Document (w) || isPresentationDocument (w)) return;   // nothing to set
   if (qobject_cast<PythonDoc *> (w)) {
     statusBar()->showMessage(tr("A Python script has no document settings: the Python toolbar chooses the Python it "
                                 "runs with."), 5000);
@@ -4215,6 +4235,8 @@ bool QucsApp::reloadDocument(QucsDoc *doc)
     loaded = zip->load();
   } else if (auto *model = dynamic_cast<MultiphysicsDoc *>(doc)) {
     loaded = model->reload();   // (its view kept; the steps of Undo gone)
+  } else if (auto *rf = dynamic_cast<RF25Doc *>(doc)) {
+    loaded = rf->reload();      // (the node chosen kept; the steps of Undo gone)
   } else if (auto *layout = dynamic_cast<LayoutDoc *>(doc)) {
     loaded = layout->reload();   // (in the background, the cell and view kept)
   } else if (auto *image = dynamic_cast<ImageDoc *>(doc)) {
@@ -4265,7 +4287,7 @@ bool QucsApp::followsItsFile(QucsDoc *doc)
   return doc != nullptr && !doc->getDocName().isEmpty()
          && (dynamic_cast<Schematic *>(doc) != nullptr || dynamic_cast<TextDoc *>(doc) != nullptr
              || dynamic_cast<SheetDoc *>(doc) != nullptr || dynamic_cast<ZipDoc *>(doc) != nullptr
-             || dynamic_cast<MultiphysicsDoc *>(doc) != nullptr);
+             || dynamic_cast<MultiphysicsDoc *>(doc) != nullptr || dynamic_cast<RF25Doc *>(doc) != nullptr);
 }
 
 // \a doc's file, \a info, read again if it changed since the tab read it.
@@ -4931,6 +4953,11 @@ void QucsApp::slotSimulate(QWidget *w)
       model->compute();   // its first study (Multiphysics > Compute)
       return;
   }
+  if (isRf25Document(w)) {
+      statusBar()->showMessage(tr("An RF 2.5D model has no solver in this build: its stack, its layout and its mesh are "
+                                  "what it holds."), 5000);
+      return;
+  }
   if (isImageDocument(w)) {
       statusBar()->showMessage(tr("A picture is not simulated."), 3000);
       return;
@@ -5355,7 +5382,7 @@ void QucsApp::openFileFromProjectView(const QFileInfo &Info, const QString &note
   // imagedoc.h), whatever the text editor of the settings.
   if (isSheetFile(absolutePath) || isMarkdownFile(absolutePath) || isPythonFile(absolutePath) || qucs_s::xml::isXmlFile(absolutePath)
       || isArchiveFile(absolutePath) || isLayoutFile(absolutePath) || isImageFile(absolutePath)
-      || isMultiphysicsFile(absolutePath) || isPresentationFile(absolutePath)) {
+      || isMultiphysicsFile(absolutePath) || isRf25File(absolutePath) || isPresentationFile(absolutePath)) {
     openTextOrSchematicTab(absolutePath);
     return;
   }
@@ -5594,6 +5621,7 @@ void QucsApp::openDroppedFile(const QString &file)
   const bool known = ext == "sch" || ext == "dpl" || ext == "sym" || ext == "dat"
                      || textDocumentSuffixes().contains(ext) || textFileSuffixes().contains(ext)
                      || isImageFile(file)   // (an SVG is text: its picture all the same)
+                     || isMultiphysicsFile(file) || isRf25File(file)   // (JSON, read as a model and not as text)
                      || isPresentationFile(file)
                      || !userProgramFor(ext).isEmpty();
   if (known || !misc::isTextFile(info.absoluteFilePath()))
