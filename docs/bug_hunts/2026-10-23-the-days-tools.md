@@ -693,6 +693,10 @@ The report wants to be a list of pairs, or keyed by the new name.
 
 ## Minor notes
 
+*(Worked through on 24 October: `docs/feature_gaps/2026-10-24-hunt-n-fixes.md`. N1, N2, N3,
+N6, N7, N8, N9, N11 and N13 fixed; N12 was already fixed with A9-A11; N4, N5 and N10 are right as they
+stand, and the report says why.)*
+
 - **N1** "a rule for boundarys is all, numbers, of …": the plural made by adding "s" to "boundary".
 - **N2** `fem_evaluate {"reference": "1e-10"}` is read as a file name - "…/ws/1e-10 could not be read".
   A number sent as text is not converted here, because `reference` has no single JSON type.

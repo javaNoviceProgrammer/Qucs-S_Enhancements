@@ -54,6 +54,12 @@ public:
     bool readTable(const QString& path, QString* error = nullptr);
     static bool isTable(const QString& path);
     QString path() const { return a_path; }
+    /// What was odd about the file, for the caller to be told: a block
+    /// whose count does not match the values under it - <indep frequency 5>
+    /// over two numbers - which was read down to what is there without a
+    /// word (the hunt of 23 October, N13). Empty when it read as its
+    /// headers say.
+    const QStringList& notes() const { return a_notes; }
     const QList<Variable>& variables() const { return a_variables; }
     const Variable* find(const QString& name) const;
     /// The variables \a wanted may mean: itself; the same name in another
@@ -71,6 +77,7 @@ private:
     QString a_path;
     QList<Variable> a_variables;
     QHash<QString, int> a_index;
+    QStringList a_notes;
 };
 
 /// Whether \a text is an expression of variables rather than a variable's

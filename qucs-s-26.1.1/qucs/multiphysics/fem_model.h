@@ -32,6 +32,9 @@ namespace qucs_s::fem {
 /// What a selection picks: domains, boundaries or points.
 enum class Level { None, Domain, Boundary, Point };
 QString levelName(Level level);   // "domain", "boundary", "point"
+/// Their plural, where a message speaks of more than one: an "s" added to
+/// levelName() made "boundarys" (the hunt of 23 October, N1).
+QString levelNames(Level level);   // "domains", "boundaries", "points"
 Level levelOf(const QString& name);
 
 /// One of a node kind's properties: what it is, how it is entered.

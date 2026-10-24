@@ -1448,6 +1448,159 @@ private slots:
 
     // N10. A script stopped says what it was doing, and the time the user
     // took to answer a card is not counted against its own timeout.
+    // N9. A place far out: 2147483647 was cut to the model plane's edge
+    // and 1e300, which no int holds, was read as 0 - both without a word,
+    // and probe's refusal then named 0, 0, a place nobody asked about.
+    void everyPlaceOffTheSchematicIsRefused()
+    {
+        QVERIFY(!failed(must("new_document")));
+        QVERIFY(!failed(must("save_document", {{"as", "places.sch"}})));
+        QVERIFY(!failed(must("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}, {"name", "R1"}})));
+        for (const double far : {2147483647.0, 1e300, -1e300, 8388609.0}) {
+            const QJsonObject moved = call(QStringLiteral("edit_component"), {{"name", "R1"}, {"x", far}});
+            QVERIFY2(failed(moved), qPrintable(QStringLiteral("x %1 was taken: %2").arg(far).arg(text(moved))));
+            QVERIFY2(text(moved).contains(QStringLiteral("off the schematic")), qPrintable(text(moved)));
+        }
+        // It stayed where it was.
+        QCOMPARE(json(must("get_schematic", {{"components", QJsonArray{"R1"}}}))
+                     .value("components").toArray().first().toObject().value("x").toInt(), 100);
+        // The same place in a part's line, in a diagram's, and as a place
+        // to probe: the message names what was asked for.
+        const QJsonObject written = call(QStringLiteral("set_schematic"),
+                                         {{"components", QJsonArray{QJsonObject{{"type", "R"}, {"x", 2147483647}, {"y", 10}}}}});
+        QVERIFY2(failed(written) && text(written).contains(QStringLiteral("2147483647")), qPrintable(text(written)));
+        QCOMPARE(json(must("get_schematic", {{"format", "overview"}})).value("components").toInt(), 1);
+        const QJsonObject drawn = call(QStringLiteral("add_diagram"), {{"type", "rect"}, {"x", 1e300}, {"y", 1e300}});
+        QVERIFY2(failed(drawn) && text(drawn).contains(QStringLiteral("off the schematic")), qPrintable(text(drawn)));
+        const QJsonObject probed = call(QStringLiteral("probe"), {{"what", QJsonArray{1e300, 1e300}}});
+        QVERIFY2(failed(probed), qPrintable(text(probed)));
+        QVERIFY2(!text(probed).contains(QStringLiteral("at 0, 0")), qPrintable(text(probed)));
+        QVERIFY2(text(probed).contains(QStringLiteral("1e+300")), qPrintable(text(probed)));
+        // A place on the plane is still a place: the grid rounds it, and
+        // half a unit is no place at all.
+        QVERIFY(!failed(must("edit_component", {{"name", "R1"}, {"x", 8388600}, {"y", 10}})));
+        QVERIFY(failed(call(QStringLiteral("edit_component"), {{"name", "R1"}, {"x", 10.5}})));
+    }
+
+    // N6, N7, N8: what a call asked for that the answer did not account
+    // for - a timeout as text, a hint wide of the mark, pages that are
+    // not there.
+    void whatACallAskedForIsAccountedFor()
+    {
+        // N6. A timeout given as text is the number the tool reads
+        // (asNumbers converts it), so it is the number waited for too:
+        // QJsonValue::toInt handed the default back for a string, and a
+        // script's call was cut at 610 s while the solve ran on.
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{{"timeout", 7200}}), 7200);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{{"timeout", "7200"}}), 7200);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{{"timeout", " 1800 "}}), 1800);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("simulate"), QJsonObject{{"timeout", "900"}}), 900);
+        // Its default where the text is no number, and its bounds either way.
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{{"timeout", "a while"}}), 600);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{}), 600);
+        QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{{"timeout", "99999"}}), 7200);
+
+        // N7. A field of a letter or two is inside almost any word, so
+        // add_analysis {"type": ...} was answered "Meant y?".
+        const QJsonObject hinted = call(QStringLiteral("add_analysis"), {{"type", "ac"}});
+        QVERIFY2(failed(hinted), qPrintable(text(hinted)));
+        QVERIFY2(!text(hinted).contains(QStringLiteral("Meant")), qPrintable(text(hinted)));
+        // A real near miss is still named.
+        const QJsonObject typo = call(QStringLiteral("add_component"), {{"typ", "R"}, {"x", 0}, {"y", 0}});
+        QVERIFY2(failed(typo) && text(typo).contains(QStringLiteral("Meant type?")), qPrintable(text(typo)));
+
+        // N8. read_pdf took [3, 4], "2-5" and 7 but refused "all", which
+        // read_pptx's 'slides' accepts; a range past the end was cut in
+        // silence while a single page past it is refused.
+        const QString file = path("one.pdf");
+        QVERIFY(writeLinedPdf(file));
+        QVERIFY2(json(must("read_pdf", {{"path", file}, {"pages", "all"}})).value("pages").toArray().size() == 1,
+                 "\"all\" did not read the page");
+        const QJsonObject past = json(must("read_pdf", {{"path", file}, {"pages", "1-99999"}}));
+        QCOMPARE(past.value("pages").toArray().size(), 1);
+        QVERIFY2(past.value("left out").toString().contains(QStringLiteral("has pages 1 to 1")),
+                 qPrintable(past.value("left out").toString()));
+        const QJsonObject some = json(must("read_pdf", {{"path", file}, {"pages", QJsonArray{1, 4, 9}}}));
+        QVERIFY2(some.value("left out").toString().contains(QStringLiteral("4, 9")),
+                 qPrintable(some.value("left out").toString()));
+        // A page that is not there at all, and a word that is no page.
+        QVERIFY(failed(call(QStringLiteral("read_pdf"), {{"path", file}, {"pages", 0}})));
+        const QJsonObject word = call(QStringLiteral("read_pdf"), {{"path", file}, {"pages", "nope"}});
+        QVERIFY2(failed(word) && text(word).contains(QStringLiteral("all")), qPrintable(text(word)));
+        // Read whole, nothing was left out to say.
+        QVERIFY(!json(must("read_pdf", {{"path", file}})).contains("left out"));
+    }
+
+    // N13. A dataset whose block says one count and holds another was read
+    // down to what is there without the mismatch being mentioned.
+    void aDatasetSaysWhenItsCountDoesNotMatch()
+    {
+        QVERIFY(writeFile(path("lie.dat"), QStringLiteral("<Qucs Dataset 27.0.4>\n"
+                                                          "<indep frequency 5>\n  +1.0e+09\n  +2.0e+09\n</indep>\n"
+                                                          "<dep gain frequency>\n  +1.0\n  +2.0\n  +3.0\n</dep>\n")));
+        const QJsonObject said = json(must("get_dataset", {{"path", "lie.dat"}}));
+        const QString note = said.value("file note").toString();
+        QVERIFY2(note.contains(QStringLiteral("frequency")) && note.contains(QStringLiteral("5"))
+                     && note.contains(QStringLiteral("2")),
+                 qPrintable(QStringLiteral("the count that lies is not said: %1").arg(note)));
+        QVERIFY2(note.contains(QStringLiteral("gain")), qPrintable(note));
+        // What is there is still read, as it was.
+        QCOMPARE(said.value("independent variables").toArray().first().toObject().value("points").toInt(), 2);
+        // A file that holds what its headers say says nothing of the kind.
+        QVERIFY(writeFile(path("true.dat"), QStringLiteral("<Qucs Dataset 27.0.4>\n"
+                                                           "<indep frequency 2>\n  +1.0e+09\n  +2.0e+09\n</indep>\n"
+                                                           "<dep gain frequency>\n  +1.0\n  +2.0\n</dep>\n")));
+        QVERIFY2(!json(must("get_dataset", {{"path", "true.dat"}})).contains("file note"),
+                 "a dataset that matches its headers was written up anyway");
+    }
+
+    // N1, N2, N3: what a model's answers say of a level, a reference and a
+    // value JSON has no number for.
+    void theModelAnswersSayWhatEachNumberIs()
+    {
+        // (Its own name: another test of this suite copies coax.qfem into
+        // the same workspace, and QFile::copy will not write over it.)
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/coax.qfem"), path("numbers.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "numbers.qfem"}})));
+        QVERIFY(!failed(must("fem_solve", {{"timeout", 300}}, 330000)));
+
+        // N1. "a rule for boundarys": the plural made by adding an "s".
+        for (const auto& [over, plural] : {std::pair{"boundaries", "boundaries"}, {"points", "points"}, {"domains", "domains"}}) {
+            const QJsonObject r = call(QStringLiteral("fem_evaluate"), {{"expression", "1"},
+                                                                        {"over", QLatin1String(over)},
+                                                                        {"kind", "integral"},
+                                                                        {"selection", QJsonObject{{"nonsense", 1}}}});
+            QVERIFY2(failed(r), qPrintable(text(r)));
+            QVERIFY2(text(r).contains(QStringLiteral("a rule for %1 is").arg(QLatin1String(plural))), qPrintable(text(r)));
+        }
+
+        // N2. A number sent as text was read as a file's name: "1e-10
+        // could not be read".
+        const QJsonObject against = json(must("fem_evaluate", {{"expression", "es.C11"}, {"reference", "1e-10"}}));
+        QCOMPARE(against.value("against the reference").toObject().value("values measured").toInt(), 1);
+        QCOMPARE(against.value("values").toArray().first().toObject().value("reference").toDouble(), 1e-10);
+        // Text that is no number is still a file; one that is no number to
+        // measure against says so rather than looking for a file of it.
+        QVERIFY(failed(call(QStringLiteral("fem_evaluate"), {{"expression", "es.C11"}, {"reference", "nothing.txt"}})));
+        const QJsonObject wild = call(QStringLiteral("fem_evaluate"), {{"expression", "es.C11"}, {"reference", "inf"}});
+        QVERIFY2(failed(wild) && text(wild).contains(QStringLiteral("no number")), qPrintable(text(wild)));
+
+        // N3. "SI": null beside "value": "inf" - a caller reading 'SI' saw
+        // nothing of the value's kind, JSON having no number for either.
+        const QJsonArray at{QJsonArray{0.0005, 0.0}};
+        for (const auto& [expression, kind] : {std::pair{"1e300*1e300", "infinite"}, {"0/0", "not a number"}}) {
+            const QJsonObject one = json(must("fem_evaluate", {{"expression", QLatin1String(expression)}, {"at", at}}))
+                                        .value("values").toArray().first().toObject();
+            QVERIFY2(!one.contains("SI"), qPrintable(QJsonDocument(one).toJson(QJsonDocument::Compact)));
+            QVERIFY2(one.value("SI note").toString().contains(QLatin1String(kind)),
+                     qPrintable(QJsonDocument(one).toJson(QJsonDocument::Compact)));
+        }
+        // A value that is a number still has its 'SI'.
+        const QJsonObject plain = json(must("fem_evaluate", {{"expression", "1+1"}, {"at", at}}))
+                                      .value("values").toArray().first().toObject();
+        QCOMPARE(plain.value("SI").toDouble(), 2.0);
+    }
+
     void aStoppedScriptSaysWhatItWasDoing()
     {
         if (!control->scriptingBuilt()) QSKIP("this build has no JavaScript engine");

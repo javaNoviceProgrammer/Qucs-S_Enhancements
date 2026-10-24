@@ -46,6 +46,17 @@ QString levelName(Level level)
     return {};
 }
 
+QString levelNames(Level level)
+{
+    switch (level) {
+    case Level::Domain: return QStringLiteral("domains");
+    case Level::Boundary: return QStringLiteral("boundaries");
+    case Level::Point: return QStringLiteral("points");
+    case Level::None: break;
+    }
+    return {};
+}
+
 Level levelOf(const QString& name)
 {
     if (name.startsWith(QLatin1String("domain"))) return Level::Domain;

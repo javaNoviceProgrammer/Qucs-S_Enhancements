@@ -908,6 +908,12 @@ private slots:
         QCOMPARE(std::fmod(bode->pane(1).left.low, 45.0), 0.0);
         r = call("add_marker", {{"trace", 1}, {"at", 1000}});
         QVERIFY2(json(r).value("text").toString().contains(QString::fromUtf8("phase: -90.")), qPrintable(json(r).value("text").toString()));
+        // 'at' as a list was answered as though it had not been given at
+        // all ("Say where: 'at', ..."), fem_evaluate's 'at' being a list
+        // of places (the hunt of 23 October, N11).
+        const QJsonObject listed = call("add_marker", {{"trace", 1}, {"at", QJsonArray{1000}}});
+        QVERIFY2(failed(listed), qPrintable(text(listed)));
+        QVERIFY2(text(listed).contains(QStringLiteral("not a list")), qPrintable(text(listed)));
         // The phase drawn in the lower pane: at 1 kHz, near -90 degrees.
         {
             QImage img(bode->x2 + 200, bode->y2 + 100, QImage::Format_RGB32);

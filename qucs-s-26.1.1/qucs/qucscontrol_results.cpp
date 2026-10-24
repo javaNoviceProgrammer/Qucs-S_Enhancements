@@ -1763,6 +1763,11 @@ bool applyDiagram(Diagram* d, const QJsonObject& args, QString* error)
         }
         if (!applyEye(eyeDiagram, args.value(QLatin1String("eye")), error)) return false;
     }
+    for (const QString& why : {offThePlane(args.value(QLatin1String("x")), "x"), offThePlane(args.value(QLatin1String("y")), "y")})
+        if (!why.isEmpty()) {
+            *error = why;
+            return false;
+        }
     if (args.contains(QLatin1String("x"))) d->cx = misc::clampCoordinate(args.value(QLatin1String("x")).toInt());
     if (args.contains(QLatin1String("y"))) d->cy = misc::clampCoordinate(args.value(QLatin1String("y")).toInt());
     if (args.contains(QLatin1String("width"))) d->x2 = std::clamp(args.value(QLatin1String("width")).toInt(), 10, 100000);
@@ -3972,6 +3977,7 @@ QJsonObject QucsControl::getDataset(const QJsonObject& args)
     const QFileInfo info(file);
     QJsonObject result{{QStringLiteral("dataset"), QDir::toNativeSeparators(file)},
                        {QStringLiteral("written"), info.lastModified().toString(Qt::ISODate)}};
+    if (!data.notes().isEmpty()) result.insert(QStringLiteral("file note"), data.notes().join(QStringLiteral(" ")));
     ReadOptions o;
     const qsizetype dot = info.fileName().indexOf(QLatin1String(".dat."));
     if (dot >= 0) o.prefix = info.fileName().mid(dot + 5);
@@ -5292,6 +5298,12 @@ bool markerPlace(Schematic* sch, const Graph* g, const QJsonValue& at, double* x
         }
         *x = at.toDouble();
         return true;
+    }
+    if (at.isArray() || at.isObject()) {
+        // (fem_evaluate's 'at' is a list of places; a marker sits at one x
+        // on its trace: the hunt of 23 October, N11.)
+        *error = tr("'at' is one x value, or peak, min, -3dB, crossing:<y> - not a list.");
+        return false;
     }
     const QString w = at.toString().trimmed().toLower().remove(QLatin1Char(' '));
     if (w.isEmpty()) {

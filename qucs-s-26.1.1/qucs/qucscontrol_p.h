@@ -47,6 +47,11 @@ QJsonArray repeatedProperties(const Component* c);
 /// What a property of \a c saved with its name, not a description, holds
 /// (.NGOPT's Method, Polish, ...); empty when there is nothing to say.
 QString propertyNote(const Component* c, const QString& name);
+/// Empty when \a v is a place on the schematic - a whole number within the
+/// model plane - else why it is not, naming it \a key. (A number no int
+/// could hold was read as 0 and one far out was cut to the plane's edge,
+/// both without a word: the hunt of 23 October, N9.)
+QString offThePlane(const QJsonValue& v, const char* key);
 QJsonObject textResult(const QString& text, bool error = false);
 /// \a value as JSON text: indented, or on one line (\a compact) - numbers
 /// by the hundred read better so, and cost less.
