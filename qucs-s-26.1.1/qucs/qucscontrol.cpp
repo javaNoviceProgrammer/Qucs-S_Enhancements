@@ -4279,11 +4279,24 @@ bool QucsControl::eventFilter(QObject* watched, QEvent* event)
 }
 
 // ----------------------------------------------------------------------
+// A file changed on disk since its tab read it - by a Bash command of
+// Claude's, a script, another program - read again before the call is
+// answered. The watcher does it 400 ms later, which a call made straight
+// after the write outruns: a model written over and read in the same
+// breath gave what was there before (the third re-check of 23 October).
+// Only for a call of its own: one within a batch, a script or a preview
+// would pull the ground from under the call it is part of.
+void QucsControl::readAnyFileChangedOnDisk()
+{
+    if (a_callDepth == 0 && a_alone == 0 && a_spinning == 0) a_app->reloadChangedDocumentsNow();
+}
+
 void QucsControl::callTool(const QString& tool, const QJsonObject& arguments, std::function<void(const QJsonObject&)> done)
 {
     bool async = false;
     // Errors are told to Claude, not shown in message boxes.
     misc::ErrorCapture capture;
+    readAnyFileChangedOnDisk();
     // What a tool did beside what was asked, after its result.
     const auto withNotes = [this](QJsonObject result) {
         // An input read under another name, or that had no effect: in the
@@ -4371,6 +4384,9 @@ void QucsControl::callToolFor(quint64 caller, const QString& tool, const QJsonOb
         return;
     }
     const bool alone = runsAlone(tool, arguments);
+    // Before this call's notes are gathered, so that they carry what the
+    // reload found (a tab whose unsaved changes kept the file out).
+    readAnyFileChangedOnDisk();
     if (alone) ++a_alone;
     const QStringList changes = changesSince(caller) + notesFor(caller);
     a_callers.append(caller);

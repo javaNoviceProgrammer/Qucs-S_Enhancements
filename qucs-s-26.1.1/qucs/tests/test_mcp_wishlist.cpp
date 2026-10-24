@@ -973,6 +973,53 @@ private slots:
                  qPrintable(QJsonDocument(objects).toJson(QJsonDocument::Compact)));
     }
 
+    // The third re-check of 23 October, nit 1: a call made straight after
+    // a write sees the file. The watcher waits 400 ms for a file written
+    // in pieces, which a tool call outruns - so a call of its own reads
+    // again as it begins.
+    void aCallRightAfterAWriteSeesTheFile()
+    {
+        const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+        QVERIFY(QFile::copy(from + QStringLiteral("coax.qfem"), path("race.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "race.qfem"}})));
+        auto* doc = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->model().objectNames().size(), 2);   // shield, core
+        const quint64 was = doc->revision();
+
+        // Written over with no pause at all, and read in the same breath.
+        QVERIFY(QFile::remove(path("race.qfem")));
+        QVERIFY(QFile::copy(from + QStringLiteral("coax_rlgc.qfem"), path("race.qfem")));
+        // Nothing has run the event loop, so the watcher cannot have.
+        QCOMPARE(doc->model().objectNames().size(), 2);
+        const QJsonObject now = json(must("fem_describe", {{"what", "tree"}}));
+        const QJsonArray objects = now.value("geometry").toObject().value("objects").toArray();
+        QVERIFY2(objects.contains(QJsonValue(QStringLiteral("dielectric"))),
+                 qPrintable(QJsonDocument(objects).toJson(QJsonDocument::Compact)));
+        QCOMPARE(doc->model().objectNames().size(), 3);   // outer, dielectric, inner
+        QVERIFY(doc->revision() > was);
+        QVERIFY(!doc->getDocChanged());
+
+        // A tab with unsaved changes keeps them, and the call that found
+        // the file changed says so.
+        QVERIFY(writeFile(path("held.sch"), QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n"
+                                                           "<Symbol>\n</Symbol>\n<Components>\n</Components>\n<Wires>\n</Wires>\n"
+                                                           "<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n")));
+        QVERIFY(!failed(must("open_document", {{"path", "held.sch"}})));
+        auto* sch = dynamic_cast<Schematic*>(app->getDoc());
+        QVERIFY(sch != nullptr);
+        QVERIFY(!failed(must("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(sch->getDocChanged());
+        QVERIFY(writeFile(path("held.sch"), QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n"
+                                                           "<Symbol>\n</Symbol>\n<Components>\n<R R1 1 300 300 ...>\n</Components>\n"
+                                                           "<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n")));
+        // (A conversation of its own, since that is who the notes are for.)
+        const QString told = text(control->callNow(QStringLiteral("get_netlist"), {}, 60000, 7));
+        QVERIFY2(told.contains(QStringLiteral("unsaved changes in Qucs-S")), qPrintable(told.left(800)));
+        QVERIFY(sch->getDocChanged());   // kept, not thrown away
+        QCOMPARE(sch->a_Components->size(), size_t(1));
+    }
+
     // N10. A script stopped says what it was doing, and the time the user
     // took to answer a card is not counted against its own timeout.
     void aStoppedScriptSaysWhatItWasDoing()
