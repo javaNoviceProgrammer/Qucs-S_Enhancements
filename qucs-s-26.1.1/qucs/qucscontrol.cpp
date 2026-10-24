@@ -621,7 +621,7 @@ const char* const kTools = R"JSON([
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The document: its file or its tab's title; the one in front when not given"}, "line": {"type": "integer", "description": "The line, from 1"}, "column": {"type": "integer", "description": "The column, from 1 (1 unless given)"}}, "required": ["line"]}},
 {"name": "read_pdf",
  "description": "Reads the text of a PDF - a datasheet, an application note, a report - page by page, for example to take a model's parameters or a table's values from it. 'path' is relative to the project, otherwise the workspace (the PDF in front if not given); 'pages' is [3, 4], \"2-5\" or 7 (the first 3 by default); 'search' finds a word or value on every page (or those given) and returns the lines around each hit. 'image' draws the pages too, as pictures (a figure, a scanned page). 'region' is [x1, y1, x2, y2] in points from a page's top left (or fractions of it): it keeps the lines whose box meets it - the boxes get_state gives for what the user selected are in those very points, so the selected lines are read by one call - and crops the picture to it. show_pdf shows a page in its tab.",
- "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\" or 7; the first 3 by default (with 'search', all)"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}, "image": {"type": "boolean", "description": "The pages drawn as pictures too (four at most), at a resolution to read them"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of each page, in points from its top left or as fractions of it: the text is kept to the lines whose box meets it (the boxes get_state gives for a selection are in these points), and a picture with 'image' is cropped to it"}}}},
+ "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The PDF, relative to the project (else the workspace); the PDF in front when not given"}, "pages": {"description": "Which pages: [3, 4], \"2-5\", 7 or \"all\"; the first 3 by default (with 'search', all). 200 at a call; what is left out is said"}, "search": {"type": "string", "description": "A word or value to find: the lines around each hit"}, "image": {"type": "boolean", "description": "The pages drawn as pictures too (four at most), at a resolution to read them"}, "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4, "description": "Only [x1, y1, x2, y2] of each page, in points from its top left or as fractions of it: the text is kept to the lines whose box meets it (the boxes get_state gives for a selection are in these points), and a picture with 'image' is cropped to it"}}}},
 {"name": "get_layout",
  "description": "Reads a GDSII or OASIS layout (.gds, .gds2, .gdsii, .gds.gz, .oas, .oasis) - as its tab shows it when it is open, else from its file in the background: the format, the database unit, how many cells, shapes, texts and placements, the top cells with their bounds and size (µm) and how many levels they have, the tree of cells (each cell's cells and how often each is placed; 'depth' levels of it, 3 by default, from 'cell' or from the top cells), the layers (layer/datatype, a name from the file or a KLayout .lyp beside it, shapes and texts on each), cells placed that the file has not, what gdstk warned of, and, when it is open, what its tab shows (cell, region, levels, hidden layers). find_shapes finds its shapes, show_layout shows a part of it.",
  "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "The layout, relative to the project (else the workspace); the layout in front when not given"}, "cell": {"type": "string", "description": "The tree from this cell instead of the top cells"}, "depth": {"type": "integer", "minimum": 0, "maximum": 50, "description": "Levels of the tree listed, 3 by default"}}}},
@@ -1394,6 +1394,17 @@ bool usersOnly(const QWidget* w)
     for (; w != nullptr; w = w->parentWidget())
         if (w->property("qucsUsersOnly").toBool()) return true;
     return false;
+}
+
+QString offThePlane(const QJsonValue& v, const char* key)
+{
+    if (!v.isDouble()) return {};   // (the tool itself says what it takes)
+    const double d = v.toDouble();
+    if (std::isfinite(d) && d == std::floor(d) && std::abs(d) <= double(Schematic::ModelLimit)) return {};
+    return tr("'%1' %2 is off the schematic: a place is a whole number from %3 to %4")
+        .arg(QLatin1String(key), QString::number(d, 'g', 12))
+        .arg(-Schematic::ModelLimit)
+        .arg(Schematic::ModelLimit);
 }
 
 QString absolute(const QString& path)
@@ -3346,6 +3357,13 @@ bool joinPieces(Schematic* sch, const Nets& before, const QString& edited, const
 Component* turnAndMove(Schematic* sch, const QString& name, const QJsonObject& args, QString* why, QStringList* landed)
 {
     Component* c = sch->getComponentByName(name);
+    // Before anything is taken apart: a place off the model plane was cut
+    // to its edge in silence (the hunt of 23 October, N9).
+    for (const QString& off : {offThePlane(args.value(QLatin1String("x")), "x"), offThePlane(args.value(QLatin1String("y")), "y")})
+        if (!off.isEmpty()) {
+            *why = off;
+            return nullptr;
+        }
     const Nets before = netsOf(sch, c);
     // The wires' open ends as they are: those the change leaves (where a
     // pin was, where a wire was taken up) are taken away after.
@@ -4560,16 +4578,29 @@ void QucsControl::noteSeen(quint64 caller)
 int QucsControl::waitsFor(const QString& tool, const QJsonObject& arguments)
 {
     const QJsonValue t = arguments.value(QLatin1String("timeout"));
-    if (tool == QLatin1String("fem_build")) return std::clamp(t.toInt(300), 1, 3600);
-    if (tool == QLatin1String("fem_solve")) return std::clamp(t.toInt(600), 1, 7200);
-    if (tool == QLatin1String("fem_stop")) return std::clamp(t.toInt(30), 1, 600);
+    // A timeout sent as text is the number the tool reads (asNumbers
+    // converts it for the call), so it is the number waited for too:
+    // QJsonValue::toInt gives the default back for a string, and a script's
+    // qucs.call('fem_solve', {timeout: '7200'}) was cut at the default's
+    // 610 s while the solve ran on (the hunt of 23 October, N6).
+    const auto given = [&t](int otherwise) {
+        if (t.isString()) {
+            bool ok = false;
+            const double d = t.toString().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(d)) return int(std::clamp(d, 0.0, double(7 * 86400)));
+        }
+        return t.toInt(otherwise);
+    };
+    if (tool == QLatin1String("fem_build")) return std::clamp(given(300), 1, 3600);
+    if (tool == QLatin1String("fem_solve")) return std::clamp(given(600), 1, 7200);
+    if (tool == QLatin1String("fem_stop")) return std::clamp(given(30), 1, 600);
     // (The others that wait by themselves, by their defaults too - cut at a
     // caller's 30 s, "no answer in time": the hunt of 22 October, N3.)
-    if (tool == QLatin1String("wait_for")) return std::clamp(t.toInt(60), 1, 3600);
-    if (tool == QLatin1String("simulate")) return std::clamp(t.toInt(120), 5, 7 * 86400);
-    if (tool == QLatin1String("git_remote")) return std::clamp(t.toInt(300), 5, 1800);
-    if (tool == QLatin1String("git_clone")) return std::clamp(t.toInt(600), 5, 3600);
-    return t.isDouble() ? std::clamp(t.toInt(), 0, 7 * 86400) : 0;
+    if (tool == QLatin1String("wait_for")) return std::clamp(given(60), 1, 3600);
+    if (tool == QLatin1String("simulate")) return std::clamp(given(120), 5, 7 * 86400);
+    if (tool == QLatin1String("git_remote")) return std::clamp(given(300), 5, 1800);
+    if (tool == QLatin1String("git_clone")) return std::clamp(given(600), 5, 3600);
+    return t.isDouble() || t.isString() ? std::clamp(given(0), 0, 7 * 86400) : 0;
 }
 
 QJsonObject QucsControl::callNow(const QString& tool, const QJsonObject& arguments, int timeoutMs, quint64 caller)
@@ -4643,6 +4674,11 @@ QStringList nearNamesOf(const QStringList& unknown, const QStringList& takes)
     for (const QString& u : unknown)
         for (const QString& t : takes) {
             const QString a = u.toLower(), b = t.toLower();
+            // A name of a letter or two is inside almost anything -
+            // add_analysis {"type": ...} was answered "Meant y?", y being a
+            // field of it - so it counts against a name of about its own
+            // length alone (the hunt of 23 October, N7).
+            if (std::min(a.size(), b.size()) < 3 && std::abs(a.size() - b.size()) > 1) continue;
             int same = 0;
             while (same < std::min(a.size(), b.size()) && a.at(same) == b.at(same)) ++same;
             const bool typo = std::min(a.size(), b.size()) >= 3 && lettersApart(a, b) <= (std::max(a.size(), b.size()) > 5 ? 2 : 1);
@@ -6842,6 +6878,11 @@ QString componentLineOf(Schematic* sch, const QJsonObject& o, QStringList* taken
         *error = tr("a part needs its place: 'x' and 'y'");
         return {};
     }
+    for (const QString& why : {offThePlane(o.value(QLatin1String("x")), "x"), offThePlane(o.value(QLatin1String("y")), "y")})
+        if (!why.isEmpty()) {
+            *error = why;
+            return {};
+        }
     const QPoint at = Schematic::withinModelLimit(QPoint(o.value(QLatin1String("x")).toInt(), o.value(QLatin1String("y")).toInt()));
     c->moveCenter(at.x() - c->cx, at.y() - c->cy);
     // Its name: given, or its type's prefix and the first number free.
@@ -9086,9 +9127,21 @@ bool QucsControl::pointOf(Schematic* sch, const QJsonValue& at, QPoint* point, Q
     if (at.isArray() || at.isObject()) {
         const QJsonArray xy = at.toArray();
         const QJsonObject o = at.toObject();
-        if (at.isArray() && xy.size() >= 2) *point = QPoint(xy.at(0).toInt(), xy.at(1).toInt());
-        else if (at.isObject() && o.contains(QLatin1String("x"))) *point = QPoint(o.value(QLatin1String("x")).toInt(), o.value(QLatin1String("y")).toInt());
-        else {
+        if (at.isArray() && xy.size() >= 2) {
+            for (const QString& why : {offThePlane(xy.at(0), "x"), offThePlane(xy.at(1), "y")})
+                if (!why.isEmpty()) {
+                    *error = why;
+                    return false;
+                }
+            *point = QPoint(xy.at(0).toInt(), xy.at(1).toInt());
+        } else if (at.isObject() && o.contains(QLatin1String("x"))) {
+            for (const QString& why : {offThePlane(o.value(QLatin1String("x")), "x"), offThePlane(o.value(QLatin1String("y")), "y")})
+                if (!why.isEmpty()) {
+                    *error = why;
+                    return false;
+                }
+            *point = QPoint(o.value(QLatin1String("x")).toInt(), o.value(QLatin1String("y")).toInt());
+        } else {
             *error = tr("A place is [x, y].");
             return false;
         }

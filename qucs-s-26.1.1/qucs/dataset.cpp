@@ -161,6 +161,7 @@ bool Dataset::read(const QString& path, QString* error)
     a_path = path;
     a_variables.clear();
     a_index.clear();
+    a_notes.clear();
     const auto fail = [error](const QString& why) {
         if (error != nullptr) *error = why;
         return false;
@@ -208,6 +209,10 @@ bool Dataset::read(const QString& path, QString* error)
 
     int current = -1;   // the variable whose values come
     QSet<int> complexOnes;   // the variables a complex value was read for
+    // How many values each block says it has, beside a_variables (-1: it
+    // says no number, or none to count on); what it holds is compared with
+    // that once the file is read.
+    QList<qsizetype> declared;
     while (p < end) {
         const char* eol = static_cast<const char*>(std::memchr(p, '\n', size_t(end - p)));
         if (eol == nullptr) eol = end;
@@ -231,6 +236,9 @@ bool Dataset::read(const QString& path, QString* error)
             };
             if (words.first() == QLatin1String("indep")) {
                 v.independent = true;
+                bool counted = false;
+                const double said = words.value(2).toDouble(&counted);
+                declared.append(counted && said >= 0 && said < 1e15 ? qsizetype(said) : -1);
                 v.re.reserve(room(words.value(2).toDouble(), 1e7));
             } else if (words.first() == QLatin1String("dep")) {
                 v.dependencies = words.mid(2);
@@ -240,6 +248,7 @@ bool Dataset::read(const QString& path, QString* error)
                     const auto it = a_index.constFind(d);
                     count *= it == a_index.constEnd() ? 0 : double(a_variables.at(*it).re.size());
                 }
+                declared.append(count > 0 && count < 1e15 ? qsizetype(count) : -1);
                 v.re.reserve(room(count, 1e8));
             } else {
                 continue;
@@ -271,6 +280,18 @@ bool Dataset::read(const QString& path, QString* error)
         if (complexOnes.contains(current)) v.im.append(im);
     }
     if (a_variables.isEmpty()) return fail(tr("%1 holds no variables.").arg(path));
+    // Read down to what is there, which is right - nothing is made up (a
+    // short row of a Touchstone file did: A9 of the same hunt) - but a
+    // count that does not match what follows it is said, not passed over
+    // (the hunt of 23 October, N13).
+    for (qsizetype i = 0; i < a_variables.size() && i < declared.size() && a_notes.size() < 8; ++i) {
+        const Variable& v = a_variables.at(i);
+        if (declared.at(i) < 0 || declared.at(i) == v.re.size()) continue;
+        a_notes << (v.independent
+                        ? tr("%1 says %2 values and holds %3.").arg(v.name).arg(declared.at(i)).arg(v.re.size())
+                        : tr("%1 holds %2 values over the %3 of %4.")
+                              .arg(v.name).arg(v.re.size()).arg(declared.at(i)).arg(v.dependencies.join(QStringLiteral(", "))));
+    }
     // Complex in the file, real in fact: read as real, with its sign.
     for (Variable& v : a_variables) {
         if (!v.isComplex()) continue;

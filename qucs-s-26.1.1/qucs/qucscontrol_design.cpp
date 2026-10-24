@@ -1410,15 +1410,37 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
     const int count = pdf.pageCount();
     // The pages: [3, 4], "2-5", 7 - the first 3 unless given (or all, to search).
     QList<int> pages;
+    // What was asked for and left out, said rather than passed over: a page
+    // past the end went without a word where a single one past it is
+    // refused, and 200 is as many as a call reads (the hunt of 23 October,
+    // N8).
+    QStringList leftOut, notThere;
+    bool cut = false;
     const QString search = args.value(QLatin1String("search")).toString().trimmed();
     const QJsonValue p = args.value(QLatin1String("pages"));
-    const auto add = [&pages, count](int page) {
-        if (page >= 1 && page <= count && !pages.contains(page) && pages.size() < 200) pages << page;
+    const auto add = [&](int page) {
+        if (page < 1 || page > count) {
+            if (notThere.size() < 20 && !notThere.contains(QString::number(page))) notThere << QString::number(page);
+            return;
+        }
+        if (pages.contains(page)) return;
+        if (pages.size() >= 200) {
+            cut = true;
+            return;
+        }
+        pages << page;
     };
+    const QString word = p.toString().trimmed().toLower();
     if (p.isDouble()) add(p.toInt());
     else if (p.isArray())
         for (const QJsonValue& v : p.toArray()) add(v.toInt());
-    else if (p.isString()) {
+    else if (p.isString() && (word == QLatin1String("all") || word == QLatin1String("*"))) {
+        // (read_pptx's 'slides' takes "all"; this took every other form of
+        // it and refused that one.)
+        for (int k = 1; k <= count; ++k) add(k);
+    } else if (p.isString()) {
+        if (!word.contains(QRegularExpression(QStringLiteral("[0-9]"))))
+            return errorResult(tr("'pages' is a page number, a list of them, a range (\"2-5\") or \"all\"."));
         for (const QString& part : p.toString().split(QLatin1Char(','), Qt::SkipEmptyParts)) {
             const QStringList ends = part.split(QLatin1Char('-'));
             const int a = ends.value(0).trimmed().toInt(), b = ends.size() > 1 ? ends.at(1).trimmed().toInt() : a;
@@ -1554,7 +1576,7 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
             result.insert(QStringLiteral("region"), args.value(QLatin1String("region")));
             result.insert(QStringLiteral("of the region"), how);
         }
-        if (!skipped.isEmpty()) result.insert(QStringLiteral("left out"), tr("pages %1: too much text at once - ask for them").arg(skipped.join(QStringLiteral(", "))));
+        if (!skipped.isEmpty()) leftOut << tr("pages %1: too much text at once - ask for them").arg(skipped.join(QStringLiteral(", ")));
         bool empty = true;
         for (const QJsonValue& v : std::as_const(read)) empty = empty && v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty();
         // Nothing came back - but a region narrowing it to nothing is not a
@@ -1569,6 +1591,10 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
                           tr("No text of the pages is in the region - the pages themselves may well hold text (read_pdf without "
                              "'region' gives it). A region is in points from the page's top left, or in fractions of it."));
     }
+    if (!notThere.isEmpty())
+        leftOut << tr("pages %1: %2 has pages 1 to %3").arg(notThere.join(QStringLiteral(", ")), QFileInfo(file).fileName()).arg(count);
+    if (cut) leftOut << tr("a call reads 200 pages at most; ask for the rest");
+    if (!leftOut.isEmpty()) result.insert(QStringLiteral("left out"), leftOut.join(QStringLiteral("; ")));
     // The pages drawn too: a figure, a scanned page (four at most).
     if (args.value(QLatin1String("image")).toBool()) {
         QJsonArray content{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},

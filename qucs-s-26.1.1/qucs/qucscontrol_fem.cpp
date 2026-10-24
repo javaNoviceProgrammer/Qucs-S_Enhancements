@@ -1658,6 +1658,23 @@ QJsonObject QucsControl::femSolved(MultiphysicsDoc* doc, const QJsonObject& args
 
 namespace {
 
+// A value and the SI number of it, as an answer carries the two. JSON has
+// no number for inf or nan - QJsonValue writes null, so a caller reading
+// 'SI' saw nothing of the value's kind - so neither is given as a number:
+// the words say what it is (the hunt of 23 October, N3).
+void insertValue(QJsonObject* into, const QString& text, double value)
+{
+    into->insert(QStringLiteral("value"), text);
+    if (std::isfinite(value)) {
+        into->insert(QStringLiteral("SI"), value);
+        return;
+    }
+    into->insert(QStringLiteral("SI note"),
+                 QucsControl::tr("%1: JSON has no number for it, so there is no 'SI'.")
+                     .arg(std::isnan(value) ? QucsControl::tr("not a number")
+                                            : value > 0 ? QucsControl::tr("infinite") : QucsControl::tr("infinite, negative")));
+}
+
 // The reference numbers a call is measured against (MCP wishlist N8:
 // every benchmark needed a script of its own): a number (the one value's),
 // an object of name to number, or a table file - its rows a name and a
@@ -1685,6 +1702,20 @@ bool referenceNumbers(const QJsonValue& given, const QString& beside, QJsonObjec
     if (name.isEmpty()) {
         *error = QucsControl::tr("'reference' is a number (the one value's), {name: number}, or the file of a table of names and "
                                  "numbers.");
+        return false;
+    }
+    // A number sent as text - 'reference': "1e-10" - is the one value's
+    // number, not the name of a file. ('reference' takes a number, an
+    // object or a file, so asNumbers leaves text alone: the hunt of 23
+    // October, N2.)
+    bool number = false;
+    const double one = name.toDouble(&number);
+    if (number && std::isfinite(one)) {
+        into->insert(QString(), one);
+        return true;
+    }
+    if (number) {
+        *error = QucsControl::tr("'reference': %1 is no number to measure against.").arg(name);
         return false;
     }
     const QString file = QFileInfo(name).isAbsolute() ? name : QDir(beside).absoluteFilePath(name);
@@ -1904,9 +1935,9 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                         if (!prefix.isEmpty()) vo.insert(QStringLiteral("solution"), at.label);
                         if (value) {
                             const DisplayUnit du = displayUnitOf(*sol, item.expression, unit, dim);
-                            vo.insert(QStringLiteral("value"), du.name.isEmpty() ? formatQuantity(*value, dim)
-                                                                                : formatNumber((*value - du.offset) / du.scale, 6) + QLatin1Char(' ') + du.name);
-                            vo.insert(QStringLiteral("SI"), *value);
+                            insertValue(&vo, du.name.isEmpty() ? formatQuantity(*value, dim)
+                                                               : formatNumber((*value - du.offset) / du.scale, 6) + QLatin1Char(' ') + du.name,
+                                        *value);
                         } else {
                             vo.insert(QStringLiteral("error"), why);
                             out.errors << why;
@@ -1936,7 +1967,9 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                 const DerivedResult r = evaluateDerived(*sol, node);
                 for (const DerivedValue& v : r.values) {
                     if (over.isEmpty() && at.snapshot >= 0) global.push_back({at.point, v.name, int(out.values.size())});
-                    out.values.append(QJsonObject{{QStringLiteral("name"), prefix + v.name}, {QStringLiteral("value"), v.text}, {QStringLiteral("SI"), v.value}});
+                    QJsonObject one{{QStringLiteral("name"), prefix + v.name}};
+                    insertValue(&one, v.text, v.value);
+                    out.values.append(one);
                 }
                 if (!r.error.isEmpty()) out.errors << prefix + r.error;
                 if (out.note.isEmpty()) out.note = r.note;
@@ -1966,7 +1999,9 @@ QJsonObject QucsControl::femEvaluate(const QJsonObject& args)
                         else if (!warning.isEmpty()) out.errors << prefix + tr("%1.%2: %3").arg(derived->tag, v.name, warning);
                     }
                     const QString name = !only.isEmpty() && item.name != item.expression ? item.name : derived->tag + QLatin1Char('.') + v.name;
-                    out.values.append(QJsonObject{{QStringLiteral("name"), prefix + name}, {QStringLiteral("value"), shown}, {QStringLiteral("SI"), v.value}});
+                    QJsonObject one{{QStringLiteral("name"), prefix + name}};
+                    insertValue(&one, shown, v.value);
+                    out.values.append(one);
                 }
                 if (!r.error.isEmpty()) out.errors << prefix + tr("%1: %2").arg(derived->name(), r.error);
                 else if (!any) out.errors << prefix + tr("%1 has no value %2: it has %3").arg(derived->name(), only, names.join(QStringLiteral(", ")));
@@ -2305,8 +2340,11 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
                     const QJsonObject one = v.toObject();
                     const QString name = got.size() == 1 ? expression
                                                          : expression + QLatin1Char(' ') + one.value(QLatin1String("name")).toString();
-                    values.insert(name, QJsonObject{{QStringLiteral("value"), one.value(QLatin1String("value"))},
-                                                    {QStringLiteral("SI"), one.value(QLatin1String("SI"))}});
+                    QJsonObject kept{{QStringLiteral("value"), one.value(QLatin1String("value"))}};
+                    // (No 'SI' for a value that is inf or nan: left out here
+                    // too, so the step is not read as a 0.)
+                    if (one.contains(QLatin1String("SI"))) kept.insert(QStringLiteral("SI"), one.value(QLatin1String("SI")));
+                    values.insert(name, kept);
                 }
             }
             at.insert(QStringLiteral("values"), values);

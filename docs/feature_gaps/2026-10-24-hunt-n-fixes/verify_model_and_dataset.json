@@ -1,0 +1,10 @@
+[["get_dataset", {"path": "lie.dat"}],
+ ["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_solve", {}, 300],
+ ["fem_evaluate", {"expression": "1", "over": "boundaries", "kind": "integral", "selection": {"nonsense": 1}}],
+ ["fem_evaluate", {"expression": "1", "over": "points", "kind": "integral", "selection": {"nonsense": 1}}],
+ ["fem_evaluate", {"expression": "es.V", "at": [[0.0005, 0]], "reference": "1e-10"}],
+ ["fem_evaluate", {"expression": "es.V", "at": [[0.0005, 0]], "reference": "nothing.txt"}],
+ ["fem_evaluate", {"expression": "es.V", "at": [[0.0005, 0]], "reference": "inf"}],
+ ["fem_evaluate", {"expression": "1e300*1e300", "at": [[0.0005, 0]]}],
+ ["fem_evaluate", {"expression": "0/0", "at": [[0.0005, 0]]}]]
