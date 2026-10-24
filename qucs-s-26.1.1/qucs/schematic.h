@@ -1022,6 +1022,7 @@ private:
   void joinWireEnds();
   QList<QPoint> a_wireEndsJoined;   // wireEndsJoined()
   bool a_loadingWires = false;      // (loadWires() reads a document's: provideNode() says what it joined)
+  bool a_loadingDocument = false;   // (load() is running: another load from inside it is turned down)
   bool loadDiagrams(QTextStream*, std::list<Diagram*>*);
   bool loadPaintings(QTextStream*, std::list<Painting*>*);
   bool loadIntoNothing(QTextStream*);
