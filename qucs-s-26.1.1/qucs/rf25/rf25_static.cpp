@@ -303,11 +303,13 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     for (int i = 0; i < nets.size(); ++i)
         for (int k = 0; k < nets.at(i).cells.size(); ++k) netOf << i;
 
+    QList<double> crowding;
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
-                           QList<QList<double>>* matrix) {
+                           QList<QList<double>>* matrix, QList<double>* crowd = nullptr) {
         const Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre);
         const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
         matrix->clear();
+        if (crowd != nullptr) crowd->clear();
         for (int net = 0; net < nets.size(); ++net) {
             Eigen::VectorXd v = Eigen::VectorXd::Zero(n);
             for (int i = 0; i < n; ++i) v(i) = netOf.at(i) == net ? 1.0 : 0.0;
@@ -320,13 +322,84 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
                 column << sum;
             }
             matrix->append(column);
+            if (crowd != nullptr) {
+                // How the charge crowds on the net held at a volt: what
+                // its resistance per metre needs beyond Rs.
+                double square = 0, total = 0;
+                for (int i = 0; i < n; ++i) {
+                    if (netOf.at(i) != net) continue;
+                    const double area = mesh.cells.at(which.at(i)).area * micrometre * micrometre;
+                    if (area > 0) square += q(i) * q(i) / area;
+                    total += q(i);
+                }
+                crowd->append(total != 0 ? square / (total * total) : 0.0);
+            }
         }
         return p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
     };
 
-    out.conditionHint = solve(fromStack, &out.maxwell);
+    out.conditionHint = solve(fromStack, &out.maxwell, &crowding);
     QList<QList<double>> bareMaxwell;
     solve(fromVacuum, &bareMaxwell);
+    out.crowding = crowding;
+
+    // Each dielectric's share of the field, for the loss it adds. The
+    // energy a layer holds is eps dC/deps, so G = w sum(tand_k eps_k
+    // dC/deps_k) - and dC/deps is taken by solving again with that layer
+    // a little different, which is a solve per lossy layer and none at
+    // all for a stack that says no loss.
+    QList<double> loss;
+    for (int i = 0; i < nets.size(); ++i) loss << 0.0;
+    bool lossy = false;
+    for (const Layer& l : stack.layers)
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand > 0) lossy = true;
+    if (lossy) {
+        for (int k = 0; k < layers0.slabs.size(); ++k) {
+            // The model's own layer behind this slab, for its tan delta.
+            double tand = 0;
+            for (const Layer& l : stack.layers)
+                if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.name == layers0.slabs.at(k).name)
+                    tand = l.tand;
+            if (!(tand > 0)) continue;
+            Layers nudged = layers0;
+            const double was = nudged.slabs[k].epsr;
+            const double step = was * 1e-3;
+            nudged.slabs[k].epsr = was + step;
+            QMap<QString, Green> some;
+            bool built = true;
+            for (const QString& a : std::as_const(layers))
+                for (const QString& b : std::as_const(layers)) {
+                    const QString key = keyOf(a, b);
+                    if (some.contains(key)) continue;
+                    some.insert(key, Green(nudged, height.value(a), height.value(b)));
+                    built = built && some.value(key).ok();
+                }
+            if (!built) continue;
+            const auto fromNudged = [&some, &keyOf](const QString& a, const QString& b) -> const Green& {
+                const auto it = some.constFind(keyOf(a, b));
+                return it != some.constEnd() ? it.value() : some.constBegin().value();
+            };
+            QList<QList<double>> nudgedMaxwell;
+            solve(fromNudged, &nudgedMaxwell);
+            for (int i = 0; i < nets.size(); ++i) {
+                double here = 0, there = 0;
+                for (int j = 0; j < nets.size(); ++j) {
+                    here += out.maxwell.at(i).at(j);
+                    there += nudgedMaxwell.at(i).at(j);
+                }
+                const double dCdEps = (there - here) / step;
+                if (here != 0) loss[i] += tand * was * dCdEps / here;
+            }
+        }
+    }
+    out.lossTangent = loss;
+    // The metal each net is on: its conductivity and thickness, for the
+    // surface resistance at a frequency.
+    for (const Net& net : nets) {
+        const Layer* metal = net.layers.isEmpty() ? nullptr : stack.named(net.layers.first());
+        out.sigma << (metal != nullptr ? metal->sigma : 0.0);
+        out.thickness << (metal != nullptr ? metal->thickness : 0.0);
+    }
 
     // The short-circuit (Maxwell) matrix as the mutual one a circuit uses:
     // the diagonal is what a conductor has to everything else, and an
@@ -361,7 +434,24 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     return out;
 }
 
-LineParameters lineParameters(const Extraction& extraction, int index, double length)
+std::complex<double> surfaceImpedance(double sigma, double t, double frequency)
+{
+    if (!(sigma > 0) || !(t > 0) || !(frequency > 0)) return {0, 0};
+    constexpr double mu0 = 4e-7 * M_PI;
+    const double omega = 2 * M_PI * frequency;
+    const double depth = std::sqrt(2.0 / (omega * mu0 * sigma));
+    const std::complex<double> k{1.0 / depth, 1.0 / depth};   // (1 + j)/delta
+    const std::complex<double> kt = k * t;
+    // coth, written so that a thick metal (where cosh and sinh both run
+    // away) comes out as the 1 it tends to rather than as a ratio of two
+    // infinities.
+    std::complex<double> coth;
+    if (std::abs(kt.real()) > 30) coth = 1.0;
+    else coth = std::cosh(kt) / std::sinh(kt);
+    return k / sigma * coth;
+}
+
+LineParameters lineParameters(const Extraction& extraction, int index, double length, double frequency)
 {
     LineParameters out;
     out.length = length;
@@ -393,6 +483,40 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     out.l = 1.0 / (kLightSpeed * kLightSpeed * out.c0);
     out.nEff = std::sqrt(out.epsilonEff);
     out.velocity = kLightSpeed / out.nEff;
+    if (!(frequency > 0)) return out;
+
+    // The rest of RLGC, which needs a frequency: the metal's loss and the
+    // dielectrics'.
+    out.frequency = frequency;
+    const double omega = 2 * M_PI * frequency;
+    const double sigma = extraction.sigma.value(index), t = extraction.thickness.value(index);
+    const std::complex<double> zs = surfaceImpedance(sigma, t, frequency);
+    out.surfaceResistance = zs.real();
+    if (sigma > 0) {
+        constexpr double mu0 = 4e-7 * M_PI;
+        out.skinDepth = std::sqrt(2.0 / (omega * mu0 * sigma));
+    }
+    // Rs times the length times how the charge crowds: for a line of
+    // width W whose current runs evenly that is Rs/W, and where it
+    // crowds at the edges it is more.
+    out.r = out.surfaceResistance * length * extraction.crowding.value(index);
+    // And the dielectrics', by the share of the field each holds.
+    out.g = omega * out.c * extraction.lossTangent.value(index);
+    if (!(out.r >= 0) || !(out.g >= 0)) {
+        out.problems << tr("Its resistance came out as %1 Ohm/m and its conductance as %2 S/m: neither can be less than "
+                           "nothing.").arg(out.r, 0, 'g', 3).arg(out.g, 0, 'g', 3);
+        return out;
+    }
+    // What a line of that R, L, G and C does: its characteristic
+    // impedance, its propagation and the loss along it.
+    const std::complex<double> series{out.r, omega * out.l};
+    const std::complex<double> shunt{out.g, omega * out.c};
+    if (std::abs(shunt) > 0) out.zc = std::sqrt(series / shunt);
+    out.gamma = std::sqrt(series * shunt);
+    // Nepers to decibels, and the root taken on the side that loses
+    // rather than gains.
+    if (out.gamma.real() < 0) out.gamma = -out.gamma;
+    out.alphaDb = out.gamma.real() * 20.0 / std::log(10.0);
     return out;
 }
 

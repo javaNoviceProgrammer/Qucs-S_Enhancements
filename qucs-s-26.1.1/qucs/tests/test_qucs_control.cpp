@@ -2158,6 +2158,29 @@ private slots:
         // A length that is no length.
         QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/line.qrf25"}, {"length", "nonsense"}}, 60000)));
 
+        // A frequency of its own: with the metal given a conductivity and
+        // the substrate a loss, R and G come with the rest.
+        qucs_s::rf25::Model lossy = m;
+        for (qucs_s::rf25::Node& child : lossy.stackNode().children) {
+            if (child.type == QLatin1String("rf_substrate")) child.props.insert(QStringLiteral("tand"), QStringLiteral("0.002"));
+            if (child.type == QLatin1String("rf_metal")) {
+                child.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7"));
+                child.props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
+            }
+        }
+        QVERIFY(put(ws + "/rf/lossy.qrf25", lossy.toJson()));
+        const QJsonObject atF = json(call("rf25_solve", {{"path", ws + "/rf/lossy.qrf25"}, {"frequency", "10[GHz]"}}, 300000)).toObject();
+        const QJsonObject fline = atF.value("nets").toArray().first().toObject().value("line").toObject();
+        QVERIFY2(std::abs(fline.value("frequency").toDouble() - 1e10) < 1, qPrintable(QString::number(fline.value("frequency").toDouble())));
+        QVERIFY2(fline.value("R").toDouble() > 0, "no resistance at 10 GHz");
+        QVERIFY2(fline.value("G").toDouble() > 0, "no conductance with a lossy substrate");
+        QVERIFY2(fline.value("alpha").toDouble() > 0, "no attenuation");
+        // Copper's skin depth at 10 GHz is 0.66 µm.
+        QVERIFY2(std::abs(fline.value("skin_depth").toDouble() - 6.6e-7) < 2e-8,
+                 qPrintable(QString::number(fline.value("skin_depth").toDouble())));
+        // A frequency that is none.
+        QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/lossy.qrf25"}, {"frequency", "-1"}}, 60000)));
+
         // And what is no RF 2.5D model at all.
         QVERIFY(put(ws + "/rf/plain.sch", QByteArray("<Qucs Schematic 24.1.1>\n")));
         const QJsonObject wrong = call("rf25_solve", {{"path", ws + "/rf/plain.sch"}}, 60000);
