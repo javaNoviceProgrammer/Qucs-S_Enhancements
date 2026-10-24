@@ -1897,9 +1897,12 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
             for (const Node& s : sels->children)
                 if ((s.label == name || s.tag == name) && s.enabled) found = &s;
         if (!found) problems << tr("there is no selection %1").arg(name);
-        else if (levelOf(found->text(QStringLiteral("level"))) != level)
-            problems << tr("the selection %1 is of %2s, not %3s").arg(name, found->text(QStringLiteral("level")), levelName(level));
-        else out = resolve(t, model, level, found->selection(), problems, depth + 1);
+        else if (levelOf(found->text(QStringLiteral("level"))) != level) {
+            const QString its = levelNames(levelOf(found->text(QStringLiteral("level"))));
+            problems << tr("the selection %1 is of %2, not %3")
+                            .arg(name, its.isEmpty() ? found->text(QStringLiteral("level")) : its, levelNames(level));
+        } else
+            out = resolve(t, model, level, found->selection(), problems, depth + 1);
     } else if (rule.contains(QStringLiteral("box"))) {
         taken = QStringLiteral("box");
         const QJsonArray b = rule.value(QStringLiteral("box")).toArray();
@@ -1994,8 +1997,8 @@ QSet<int> resolve(const Topology& t, const Model& model, Level level, const QJso
                 for (int b : t.points[std::size_t(p)].boundaries)
                     if (boundaries.contains(b)) out.insert(p);
     } else if (!rule.isEmpty()) {
-        problems << tr("a rule for %1s is all, numbers, %2box or named")
-                        .arg(levelName(level),
+        problems << tr("a rule for %1 is all, numbers, %2box or named")
+                        .arg(levelNames(level),
                              level == Level::Domain ? QStringLiteral("objects, only, ")
                                                     : QStringLiteral("of (with a side), between, exterior, interior, adjacent, "));
     }
