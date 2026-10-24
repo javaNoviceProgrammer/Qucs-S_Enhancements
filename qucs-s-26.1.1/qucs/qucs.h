@@ -25,6 +25,7 @@
 #include <QFileSystemModel>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
@@ -551,6 +552,15 @@ public:
   static Schematic *schematicIn(QWidget *);
   /// The document a tab holds, whichever kind it is.
   static QucsDoc *docIn(QWidget *);
+  /// Whether the window follows \a doc's file on disk (a PDF follows its
+  /// own, and a document with no file has none).
+  static bool followsItsFile(QucsDoc *doc);
+  /// Every open document whose file changed on disk since it was read,
+  /// read again at once - what the watcher does a moment later. A tool
+  /// call does this as it begins, so that one made straight after a write
+  /// sees the file and not what was there before; a tab with unsaved
+  /// changes keeps them, and the conversation is told.
+  void reloadChangedDocumentsNow();
 
   QString ProjName; // name of the project, that is open
   /// The Scratch folder of the schematic in front - or, with a text
@@ -996,6 +1006,9 @@ private:
   QElapsedTimer a_changedFirst;                 // since the first change it waits for
   void watchDocuments();                        // the watched files: the open documents
   void tellClaudeNotLoaded(const QString &name); // a file changed on disk, not loaded: Claude told
+  /// \a doc read again if its file, \a info, changed since the tab read
+  /// it: what the watcher and a tool call both decide here.
+  void reloadOneIfChanged(QucsDoc *doc, const QFileInfo &info);
   FileBrowser *fileBrowser = nullptr;   // the left dock's File Browser tab
 
   QListView *Projects;
