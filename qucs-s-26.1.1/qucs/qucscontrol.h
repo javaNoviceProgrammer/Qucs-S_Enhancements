@@ -385,6 +385,7 @@ private:
     /// The notes for everyone (noteForConversations()) \a caller has not
     /// been told yet.
     QStringList notesFor(quint64 caller);
+    void readAnyFileChangedOnDisk();
     struct Broadcast {
         qint64 serial;
         QDateTime at;

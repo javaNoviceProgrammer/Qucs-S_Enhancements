@@ -4284,17 +4284,74 @@ QString QucsApp::keptInConflictText(const QString &name)
             "Mine, Take Theirs, or Open Both Versions.").arg(name);
 }
 
+// Whether \a doc is one the window follows on disk: a PDF follows its file
+// itself, and a document with no file has none to follow.
+bool QucsApp::followsItsFile(QucsDoc *doc)
+{
+  return doc != nullptr && !doc->getDocName().isEmpty()
+         && (dynamic_cast<Schematic *>(doc) != nullptr || dynamic_cast<TextDoc *>(doc) != nullptr
+             || dynamic_cast<SheetDoc *>(doc) != nullptr || dynamic_cast<ZipDoc *>(doc) != nullptr
+             || dynamic_cast<MultiphysicsDoc *>(doc) != nullptr);
+}
+
+// \a doc's file, \a info, read again if it changed since the tab read it.
+// The one place that decides it, for the watcher and for a tool call alike.
+void QucsApp::reloadOneIfChanged(QucsDoc *doc, const QFileInfo &info)
+{
+  // Written by Qucs-S itself (saved), or loaded since.
+  if (doc->getLastSaved().isValid() && !doc->changedOnDisk(info.lastModified())) return;
+  const QString name = info.fileName();
+  if (doc->getDocChanged()) {
+    statusBar()->showMessage(tr("%1 was changed by another program; it has unsaved changes here, so it was not loaded again.")
+                                 .arg(name), 8000);
+    tellClaudeNotLoaded(name);   // (a Bash edit of Claude's comes this way)
+    return;
+  }
+  // The edit is the file's, to the tools: whoever wrote it (a command
+  // of Claude's, another program) is not known.
+  const quint64 editor = QucsDoc::editor();
+  QucsDoc::setEditor(QucsDoc::kOnDisk);
+  const Reloaded how = reloadFromDisk(doc);
+  QucsDoc::setEditor(editor);
+  switch (how) {
+  case Reloaded::Yes:
+    statusBar()->showMessage(qucs_s::git::hasConflictMarkers(info.filePath())
+                                 ? tr("%1 was changed by another program and is loaded again - git's conflict marks are in it.").arg(name)
+                                 : tr("%1 was changed by another program and is loaded again.").arg(name),
+                             5000);
+    break;
+  case Reloaded::Failed:
+    statusBar()->showMessage(tr("%1 was changed by another program and could not be read: the tab keeps what it had "
+                                "(a Save asks before writing over the file).").arg(name),
+                             10000);
+    break;
+  case Reloaded::InConflict:
+    statusBar()->showMessage(keptInConflictText(name), 20000);
+    if (auto *control = findChild<QucsControl *>()) control->noteForConversations(keptInConflictText(name));
+    break;
+  case Reloaded::AsBefore:
+    break;
+  }
+}
+
+void QucsApp::reloadChangedDocumentsNow()
+{
+  // (A dialog holds what it edits: the watcher waits for it, and so does
+  // this - it would free what the dialog has in its hands.)
+  if (QApplication::activeModalWidget() != nullptr) return;
+  for (QucsDoc *doc : allDocuments()) {
+    if (!followsItsFile(doc)) continue;
+    const QFileInfo info(doc->getDocName());
+    if (info.exists()) reloadOneIfChanged(doc, info);
+  }
+}
+
 void QucsApp::watchDocuments()
 {
   if (a_docWatcher == nullptr) return;
   QSet<QString> wanted;
   for (QucsDoc *doc : allDocuments())
-    // (A PDF follows its file itself.)
-    if (!doc->getDocName().isEmpty()
-        && (dynamic_cast<Schematic *>(doc) != nullptr || dynamic_cast<TextDoc *>(doc) != nullptr
-            || dynamic_cast<SheetDoc *>(doc) != nullptr || dynamic_cast<ZipDoc *>(doc) != nullptr
-            || dynamic_cast<MultiphysicsDoc *>(doc) != nullptr)
-        && QFileInfo::exists(doc->getDocName()))
+    if (followsItsFile(doc) && QFileInfo::exists(doc->getDocName()))
       wanted.insert(doc->getDocName());
   const QStringList watched = a_docWatcher->files();
   QStringList gone;
@@ -4329,40 +4386,7 @@ void QucsApp::documentsChangedOnDisk()
     for (QucsDoc *doc : allDocuments()) {
       if (doc->getDocName().isEmpty()
           || QFileInfo(doc->getDocName()).canonicalFilePath() != info.canonicalFilePath()) continue;
-      // Written by Qucs-S itself (saved), or loaded since.
-      if (doc->getLastSaved().isValid() && !doc->changedOnDisk(info.lastModified())) break;
-      const QString name = info.fileName();
-      if (doc->getDocChanged()) {
-        statusBar()->showMessage(tr("%1 was changed by another program; it has unsaved changes here, so it was not loaded again.")
-                                     .arg(name), 8000);
-        tellClaudeNotLoaded(name);   // (a Bash edit of Claude's comes this way)
-        break;
-      }
-      // The edit is the file's, to the tools: whoever wrote it (a command
-      // of Claude's, another program) is not known.
-      const quint64 editor = QucsDoc::editor();
-      QucsDoc::setEditor(QucsDoc::kOnDisk);
-      const Reloaded how = reloadFromDisk(doc);
-      QucsDoc::setEditor(editor);
-      switch (how) {
-      case Reloaded::Yes:
-        statusBar()->showMessage(qucs_s::git::hasConflictMarkers(info.filePath())
-                                     ? tr("%1 was changed by another program and is loaded again - git's conflict marks are in it.").arg(name)
-                                     : tr("%1 was changed by another program and is loaded again.").arg(name),
-                                 5000);
-        break;
-      case Reloaded::Failed:
-        statusBar()->showMessage(tr("%1 was changed by another program and could not be read: the tab keeps what it had "
-                                    "(a Save asks before writing over the file).").arg(name),
-                                 10000);
-        break;
-      case Reloaded::InConflict:
-        statusBar()->showMessage(keptInConflictText(name), 20000);
-        if (auto *control = findChild<QucsControl *>()) control->noteForConversations(keptInConflictText(name));
-        break;
-      case Reloaded::AsBefore:
-        break;
-      }
+      reloadOneIfChanged(doc, info);
       break;
     }
   }

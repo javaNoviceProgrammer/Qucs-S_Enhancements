@@ -299,6 +299,25 @@ BREAKS = [
      '  } else if (auto *model = dynamic_cast<MultiphysicsDoc *>(doc)) {\n    loaded = model->reload();',
      '  } else if (auto *model = dynamic_cast<MultiphysicsDoc *>(doc); false) {\n    loaded = model->reload();',
      [W + 'aModelTabFollowsItsFileOnDisk'], {}),
+    # T1-T4 (the third re-check, nit 1): a call reads a file changed on disk
+    # before it answers.
+    ('T1 the file not read at a call', 'qucscontrol.cpp',
+     '    if (a_callDepth == 0 && a_alone == 0 && a_spinning == 0) a_app->reloadChangedDocumentsNow();',
+     '    if (false) a_app->reloadChangedDocumentsNow();',
+     [W + 'aCallRightAfterAWriteSeesTheFile'], {}),
+    ('T2 the reload after this call\'s notes', 'qucscontrol.cpp',
+     '    readAnyFileChangedOnDisk();\n    if (alone) ++a_alone;\n'
+     '    const QStringList changes = changesSince(caller) + notesFor(caller);',
+     '    if (alone) ++a_alone;\n'
+     '    const QStringList changes = changesSince(caller) + notesFor(caller);\n    readAnyFileChangedOnDisk();',
+     [W + 'aCallRightAfterAWriteSeesTheFile'], {}),
+    ('T3 unsaved changes written over', 'qucs.cpp',
+     '  if (doc->getDocChanged()) {\n    statusBar()->showMessage(tr("%1 was changed by another program; it has unsaved changes here, so it was not loaded again.")',
+     '  if (false) {\n    statusBar()->showMessage(tr("%1 was changed by another program; it has unsaved changes here, so it was not loaded again.")',
+     [W + 'aCallRightAfterAWriteSeesTheFile'], {}),
+    ("T4 a model's file not followed", 'qucs.cpp',
+     '             || dynamic_cast<MultiphysicsDoc *>(doc) != nullptr);', '             );',
+     [W + 'aCallRightAfterAWriteSeesTheFile', W + 'aModelTabFollowsItsFileOnDisk'], {}),
 ]
 
 
