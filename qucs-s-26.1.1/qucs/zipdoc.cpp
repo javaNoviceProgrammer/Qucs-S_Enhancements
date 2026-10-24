@@ -308,6 +308,7 @@ bool ZipDoc::setFromArchive(const QByteArray& bytes, QString* error)
 
 bool ZipDoc::load()
 {
+    const QFileInfo asRead(a_DocName);
     QFile file(a_DocName);
     if (!file.open(QIODevice::ReadOnly)) {
         misc::reportError(tr("Cannot read %1:\n%2").arg(QDir::toNativeSeparators(a_DocName), file.errorString()));
@@ -327,7 +328,7 @@ bool ZipDoc::load()
     a_undo->clear();
     a_undo->setClean();
     setDocChanged(false);
-    a_lastSaved = QFileInfo(a_DocName).lastModified();
+    stampedAs(asRead);
     // The folders at the top open.
     for (int row = 0; row < a_model->rowCount(); ++row) a_view->expand(a_model->index(row, 0));
     return true;
@@ -375,7 +376,7 @@ int ZipDoc::save()
     a_undo->setClean();
     setDocChanged(false);
     emit signalFileChanged(false);
-    a_lastSaved = QFileInfo(a_DocName).lastModified();
+    stampedFromFile();
     return 0;
 }
 

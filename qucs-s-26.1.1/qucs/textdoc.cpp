@@ -441,7 +441,8 @@ bool TextDoc::load ()
   // again. (Dated after the reading, that writing was taken for the one
   // read, and lost; dated after the opening, a file renamed over it just
   // then was - the hunt of 21 October, N3.)
-  const QDateTime dated = QFileInfo(a_DocName).lastModified();
+  const QFileInfo asRead(a_DocName);
+  const QDateTime dated = asRead.lastModified();
   QFile file (a_DocName);
   if (!file.open (QIODevice::ReadOnly))
     return false;
@@ -458,9 +459,10 @@ bool TextDoc::load ()
   document()->setModified(false);
   slotSetChanged ();
   file.close ();
-  // (The file's date, not the load's: one dated in the future was newer
-  // than the load for good, and loaded again as changed on disk.)
-  a_lastSaved = lastLoadModTime.isValid() ? lastLoadModTime : QDateTime::currentDateTime ();
+  // (The file's date and size as the bytes read were taken, not the
+  // load's clock: one dated in the future was newer than the load for
+  // good, and loaded again as changed on disk.)
+  stampedAs(asRead);
   loadSettings ();
   a_SimOpenDpl = simulation ? true : false;
   refreshLanguage();
@@ -586,7 +588,7 @@ int TextDoc::save ()
   file.close ();
 
   QFileInfo Info (a_DocName);
-  a_lastSaved = Info.lastModified ();
+  stampedFromFile();
 
   /// clear highlighted lines on save \see MessageDock::slotCursor()
   QList<QTextEdit::ExtraSelection> extraSelections;

@@ -98,6 +98,29 @@ void QucsDoc::edited()
   if (a_recentEdits.size() > 48) a_recentEdits.removeFirst();
 }
 
+void QucsDoc::stampedFromFile()
+{
+  stampedAs(QFileInfo(a_DocName));
+}
+
+void QucsDoc::stampedAs(const QFileInfo& info)
+{
+  a_lastSaved = info.exists() ? info.lastModified() : QDateTime::currentDateTime();
+  a_lastSize = info.exists() ? info.size() : -1;
+}
+
+bool QucsDoc::changedOnDisk(const QDateTime& onDisk) const
+{
+  if (onDisk != a_lastSaved) return true;
+  // The same date to the millisecond, which is what a checkout gives two
+  // files written microseconds apart: the size then says whether this is
+  // still the file whose content is held. (Same date and same size, other
+  // content: told apart only by reading it, which this is not worth.)
+  if (a_lastSize < 0 || a_DocName.isEmpty()) return false;
+  const QFileInfo info(a_DocName);
+  return info.exists() && info.size() != a_lastSize;
+}
+
 void QucsDoc::contentRead()
 {
   // Its first content, as it was opened: no one's edit.
