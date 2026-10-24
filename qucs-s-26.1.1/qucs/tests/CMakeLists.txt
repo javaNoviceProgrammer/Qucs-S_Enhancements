@@ -204,6 +204,7 @@ qucs_add_test(test_spreadsheet)
 qucs_add_test(test_sheet_doc)
 qucs_add_test(test_zip_doc)
 qucs_add_test(test_layout_doc)
+qucs_add_test(test_rf25_model)
 qucs_add_test(test_multiphysics_doc)
 qucs_add_test(test_multiphysics_view)
 # (The window's multiphysics end to end - every physics' examples solved:
