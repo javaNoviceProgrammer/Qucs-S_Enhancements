@@ -38,6 +38,58 @@ QString tr(const char* text)
 /// micrometres, and a nanometre is finer than any layout's database unit.
 constexpr double kScaling = 1000.0;
 
+/// How far apart two polygons are, by their bounding boxes: 0 where the
+/// boxes meet. (A box is enough for the vias of a farm, which are drawn
+/// as rectangles; shapes whose boxes overlap are joined by the union
+/// anyway.)
+double gapBetween(const QRectF& a, const QRectF& b)
+{
+    const double dx = std::max({a.left() - b.right(), b.left() - a.right(), 0.0});
+    const double dy = std::max({a.top() - b.bottom(), b.top() - a.bottom(), 0.0});
+    return std::hypot(dx, dy);
+}
+
+/// The smaller side of a polygon's bounding box - how a sliver is told
+/// from a shape, which is exact for a rectangle and an over-estimate for
+/// anything turned at an angle (said in the write-up).
+double narrowness(const QPolygonF& polygon)
+{
+    const QRectF box = polygon.boundingRect();
+    return std::min(box.width(), box.height());
+}
+
+double numberIn(const Node& node, const QString& key, const fem::Scope& scope, double fallback,
+                QStringList* problems)
+{
+    const QJsonValue v = node.props.contains(key) ? node.props.value(key)
+                       : nodeKind(node.type) != nullptr && nodeKind(node.type)->property(key) != nullptr
+                             ? nodeKind(node.type)->property(key)->defaultValue
+                             : QJsonValue();
+    const QString text = v.isString() ? v.toString() : v.isDouble() ? QString::number(v.toDouble()) : QString();
+    if (text.trimmed().isEmpty()) return fallback;
+    const fem::Expression e = fem::Expression::compile(text, scope);
+    if (!e.isValid() || !e.isConstant()) {
+        if (problems != nullptr)
+            *problems << tr("Processing: %1 is not a number (%2).").arg(key, e.isValid() ? tr("it is not a constant") : e.error());
+        return fallback;
+    }
+    return e.constant();
+}
+
+bool flagIn(const Node& node, const QString& key, bool fallback)
+{
+    const QJsonValue v = node.props.contains(key) ? node.props.value(key)
+                       : nodeKind(node.type) != nullptr && nodeKind(node.type)->property(key) != nullptr
+                             ? nodeKind(node.type)->property(key)->defaultValue
+                             : QJsonValue();
+    if (v.isBool()) return v.toBool();
+    if (v.isDouble()) return v.toDouble() != 0;
+    if (v.isString()) return v.toString().compare(QLatin1String("true"), Qt::CaseInsensitive) == 0 || v.toString() == QLatin1String("1");
+    return fallback;
+}
+
+} // namespace
+
 double areaOf(const QPolygonF& polygon)
 {
     double twice = 0;
@@ -132,56 +184,28 @@ QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance)
     return code == gdstk::ErrorCode::NoError ? moved : shapes;
 }
 
-/// How far apart two polygons are, by their bounding boxes: 0 where the
-/// boxes meet. (A box is enough for clustering vias, which are convex and
-/// small; two shapes whose boxes overlap are joined by the union anyway.)
-double gapBetween(const QRectF& a, const QRectF& b)
+QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within)
 {
-    const double dx = std::max({a.left() - b.right(), b.left() - a.right(), 0.0});
-    const double dy = std::max({a.top() - b.bottom(), b.top() - a.bottom(), 0.0});
-    return std::hypot(dx, dy);
-}
-
-/// The smaller side of a polygon's bounding box - how a sliver is told
-/// from a shape, which is exact for a rectangle and an over-estimate for
-/// anything turned at an angle (said in the write-up).
-double narrowness(const QPolygonF& polygon)
-{
-    const QRectF box = polygon.boundingRect();
-    return std::min(box.width(), box.height());
-}
-
-double numberIn(const Node& node, const QString& key, const fem::Scope& scope, double fallback,
-                QStringList* problems)
-{
-    const QJsonValue v = node.props.contains(key) ? node.props.value(key)
-                       : nodeKind(node.type) != nullptr && nodeKind(node.type)->property(key) != nullptr
-                             ? nodeKind(node.type)->property(key)->defaultValue
-                             : QJsonValue();
-    const QString text = v.isString() ? v.toString() : v.isDouble() ? QString::number(v.toDouble()) : QString();
-    if (text.trimmed().isEmpty()) return fallback;
-    const fem::Expression e = fem::Expression::compile(text, scope);
-    if (!e.isValid() || !e.isConstant()) {
-        if (problems != nullptr)
-            *problems << tr("Processing: %1 is not a number (%2).").arg(key, e.isValid() ? tr("it is not a constant") : e.error());
-        return fallback;
+    if (shapes.isEmpty() || within.size() < 3) return {};
+    std::vector<gdstk::Polygon> owned;
+    owned.reserve(shapes.size());
+    gdstk::Array<gdstk::Polygon*> in{};
+    for (const QPolygonF& s : shapes) {
+        owned.push_back(gdstkOf(s));
+        in.append(&owned.back());
     }
-    return e.constant();
+    gdstk::Polygon box = gdstkOf(within);
+    gdstk::Array<gdstk::Polygon*> out{};
+    const gdstk::ErrorCode code = gdstk::boolean(in, box, gdstk::Operation::And, kScaling, out);
+    QList<QPolygonF> kept;
+    if (code == gdstk::ErrorCode::NoError)
+        for (uint64_t i = 0; i < out.count; ++i) kept << polygonOf(*out[i]);
+    freeAll(out);
+    in.clear();
+    box.clear();
+    for (gdstk::Polygon& p : owned) p.clear();
+    return kept;
 }
-
-bool flagIn(const Node& node, const QString& key, bool fallback)
-{
-    const QJsonValue v = node.props.contains(key) ? node.props.value(key)
-                       : nodeKind(node.type) != nullptr && nodeKind(node.type)->property(key) != nullptr
-                             ? nodeKind(node.type)->property(key)->defaultValue
-                             : QJsonValue();
-    if (v.isBool()) return v.toBool();
-    if (v.isDouble()) return v.toDouble() != 0;
-    if (v.isString()) return v.toString().compare(QLatin1String("true"), Qt::CaseInsensitive) == 0 || v.toString() == QLatin1String("1");
-    return fallback;
-}
-
-} // namespace
 
 double Conductor::area() const
 {
