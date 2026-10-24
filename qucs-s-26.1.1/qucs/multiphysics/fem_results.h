@@ -212,6 +212,18 @@ struct CoupledLines {
 };
 CoupledLines coupledLines(const Solution& solution, const Node& node);
 
+/*!
+ * The modes, their impedances and the characteristic impedance matrix of
+ * \a lines, whose names and R, L, G, C and C0 matrices (per metre) are
+ * already filled, at \a w (rad/s).
+ *
+ * False and why in its error() where they cannot be found. It is public
+ * because a quasi-static extraction of a layout - the RF 2.5D solver's -
+ * fills the same matrices by another route and must get the same modes
+ * from them: there is one mode solver, not two that can drift apart.
+ */
+bool coupledModes(CoupledLines& lines, double w);
+
 /// A study's solutions as results take them: each of its sweep's (one
 /// without a sweep), and of each, each output time (none at rest).
 struct SolutionSet {

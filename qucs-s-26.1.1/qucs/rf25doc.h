@@ -202,6 +202,40 @@ public:
     /// Zero where nothing was solved.
     double solvedLength() const;
     QToolButton* solveButton() const { return a_solveButton; }
+    /// Each net's S-parameters at the top of the study's sweep, and where
+    /// a quasi-static answer stops being the whole story. Empty where
+    /// nothing was solved.
+    QStringList sParameterSummary() const;
+
+    // What is written out of a solve. The engine's own Touchstone writers
+    // do the writing (multiphysics/fem_export.h); what is here is the
+    // reading of the node that asks for it.
+    /// What a Touchstone export is of. An export node is read into one of
+    /// these and a tool may give one outright, so that the two have one
+    /// path to the file between them and cannot drift apart.
+    struct ExportRequest {
+        bool coupled = false;   ///< every net as a 2N-port, rather than one as a two-port
+        QString net;            ///< which net, for a two-port (empty: the first)
+        double length = 0;      ///< m (0: the length that was solved)
+        double impedance = 50;  ///< the ports' reference, Ohm
+    };
+    /// The Touchstone file \a what asks for, as text. Empty and why in
+    /// \a error where it cannot be made.
+    QString exportText(const ExportRequest& what, QString* error = nullptr) const;
+    /// The export node \a tag read into a request. False and why in
+    /// \a error where there is no such node or it says something that is
+    /// no number.
+    bool exportRequest(const QString& tag, ExportRequest* what, QString* error = nullptr) const;
+    /// The Touchstone file the export node \a tag asks for, as text.
+    QString exportText(const QString& tag, QString* error = nullptr) const;
+    /// That text written to the file the node names - or, where it names
+    /// none, to model_<tag>.sNp beside the model. The path written, or
+    /// empty and why in \a error.
+    QString writeExport(const QString& tag, QString* error = nullptr) const;
+    /// Where writeExport() would put it: the node's file, made absolute
+    /// against the model, or the default beside it. Empty where there is
+    /// no such node.
+    QString exportPath(const QString& tag) const;
     /// Whether the processed shapes are drawn over the layout, and whether
     /// the mesh is. Kept for the next model opened.
     bool processedShown() const { return a_showProcessed; }
