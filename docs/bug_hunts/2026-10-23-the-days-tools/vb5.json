@@ -1,0 +1,7 @@
+[["fem_model", {"action": "open", "path": "coax.qfem"}],
+ ["fem_converge", {"refine": [2], "values": ["es.C11"], "timeout": 0}, 120],
+ ["fem_converge", {"refine": [2], "values": ["es.C11"], "timeout": 30}, 120],
+ ["open_document", {"path": "lay.gds"}],
+ ["find_shapes", {"limit": 0}],
+ ["find_shapes", {"limit": -5}],
+ ["find_shapes", {"limit": 3}]]

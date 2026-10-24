@@ -1284,17 +1284,33 @@ QString QucsApp::showPythonDisplay(const QJsonObject &request, QStringList *remo
     };
     QStringList theirs;
     if (own) {
+      bool wrote = false;
       if (same->yAxis.Label != yLabel) {
-        if (ours(same->yAxis.Label, yLabel)) same->yAxis.Label = yLabel;
-        else theirs << tr("the y axis' label “%1”").arg(same->yAxis.Label);
+        if (ours(same->yAxis.Label, yLabel)) {
+          same->yAxis.Label = yLabel;
+          wrote = true;
+        } else {
+          theirs << tr("the y axis' label “%1”").arg(same->yAxis.Label);
+        }
       }
       if (same->xAxis.Label != xLabel) {
-        if (ours(same->xAxis.Label, xLabel)) same->xAxis.Label = xLabel;
-        else theirs << tr("the x axis' label “%1”").arg(same->xAxis.Label);
+        if (ours(same->xAxis.Label, xLabel)) {
+          same->xAxis.Label = xLabel;
+          wrote = true;
+        } else {
+          theirs << tr("the x axis' label “%1”").arg(same->xAxis.Label);
+        }
       }
-      same->updateGraphData();
-      shown->setChanged(true, true);
-      shown->viewport()->update();
+      // Only where a label was actually written. These three moved out of
+      // that condition when N5 was added, so showing a plot group again
+      // marked its display changed and showGraphs() then saved it - the
+      // .dpl was rewritten at every plot though nothing had changed (the
+      // hunt of 23 October, B4).
+      if (wrote) {
+        same->updateGraphData();
+        shown->setChanged(true, true);
+        shown->viewport()->update();
+      }
     }
     if (kept != nullptr) *kept = theirs;
     return {};

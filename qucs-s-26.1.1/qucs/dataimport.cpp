@@ -288,9 +288,21 @@ bool tableOf(const QList<Row>& rows, QChar delimiter, QList<Column>* columns, QS
             width = n;
             most = k;
         }
+    // Where the numbers begin: the first row within one value of the
+    // table's width. Taking the first row of exactly that width sent this
+    // past the rows before it - a file whose rows are not all one width
+    // lost both its header and every data row ahead of the widest one (the
+    // hunt of 23 October, B9). A count on a line of its own ("3" above a
+    // table of three columns) is still not taken for data: it is more than
+    // one value off.
+    // Near enough the table's width to be one of its rows: within one of
+    // it, and never a line of one value where the table is wider - which
+    // is how a count written above the numbers ("3" over three columns)
+    // tells itself apart.
+    const qsizetype least = std::max<qsizetype>(std::min<qsizetype>(2, width), width - 1);
     qsizetype first = -1;
     for (qsizetype i = 0; i < rows.size() && first < 0; ++i)
-        if (rows.at(i).numbers && rows.at(i).values.size() == width) first = i;
+        if (const qsizetype n = rows.at(i).values.size(); rows.at(i).numbers && n >= least && n <= width + 1) first = i;
     // The names: the line before the numbers, when it names as many.
     QStringList names;
     for (qsizetype i = first - 1; i >= 0; --i) {
@@ -323,6 +335,17 @@ bool tableOf(const QList<Row>& rows, QChar delimiter, QList<Column>* columns, QS
     }
     if (skipped == 1) *notes << tr("A line among the numbers that was not numbers was left out.");
     else if (skipped > 1) *notes << tr("%1 lines among the numbers that were not numbers were left out.").arg(skipped);
+    // Rows of another width: said, where the table used to be built from
+    // them without a word (B9). A short row is filled with nothing and a
+    // long one is cut, so a caller can tell why a column has gaps.
+    if (widths.size() > 1) {
+        QStringList others;
+        for (const auto& [n, k] : widths)
+            if (n != width) others << tr("%1 row(s) of %2").arg(k).arg(n);
+        *notes << tr("Its rows are not all the same width: %1 of %2 values, and %3. The table is %2 columns wide - a shorter row "
+                     "is filled with nothing, a longer one is cut - so check what wrote the file.")
+                      .arg(most).arg(width).arg(others.join(tr(", ")));
+    }
     for (qsizetype c = 0; c < width; ++c) {
         cols[c].name = names.value(c).trimmed();
         if (cols[c].name.isEmpty()) cols[c].name = qucs_s::sheet::columnName(int(c));
@@ -841,15 +864,32 @@ void variablesOf(QList<Column> columns, const Options& options, Data* data)
 {
     // Safe names, one to each.
     QSet<QString> used;
+    // What each name of the file became, in order: several columns of one
+    // name all mapped to the same key of 'renamed', so only the last of
+    // them was reported - "a" became "a_3" and nothing was said of "a_2"
+    // (the hunt of 23 October, B10).
+    QMap<QString, QStringList> became;
     for (Column& c : columns) {
         QString name = safeName(c.name);
         const QString base = name;
         for (int n = 2; used.contains(name.toLower()); ++n) name = QStringLiteral("%1_%2").arg(base).arg(n);
         used.insert(name.toLower());
-        // Not the file's name: told, so that a column asked for by the
-        // name it has there is found (MCP wishlist N2).
-        if (name != c.name.trimmed()) data->renamed.insert(c.name.trimmed(), name);
+        became[c.name.trimmed()] << name;
         c.name = name;
+    }
+    for (auto it = became.cbegin(); it != became.cend(); ++it) {
+        const QStringList& names = it.value();
+        // One column of that name, read under another: the map says so, as
+        // it always did.
+        if (names.size() == 1) {
+            if (names.first() != it.key()) data->renamed.insert(it.key(), names.first());
+            continue;
+        }
+        // Several of one name: a map cannot hold them, so they are said
+        // outright - and the map is left alone rather than made to say
+        // something half true.
+        data->notes << tr("%1 columns are called \"%2\" in the file: they are read as %3, in that order.")
+                           .arg(names.size()).arg(it.key().isEmpty() ? tr("(nothing)") : it.key(), names.join(tr(", ")));
     }
     for (const Column& c : std::as_const(columns))
         if (!c.isComplex()) data->columns << c.name;

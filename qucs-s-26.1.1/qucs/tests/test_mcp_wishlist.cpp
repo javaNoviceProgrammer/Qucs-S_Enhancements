@@ -1290,6 +1290,162 @@ private slots:
                  qPrintable(QJsonDocument(objects).toJson(QJsonDocument::Compact)));
     }
 
+    // B6, B7: the two tools that handed their numbers to a program and
+    // gave back whatever came of it.
+    void theNumericToolsRefuseWhatCannotBe()
+    {
+        const auto why = [this](const QString& tool, const QJsonObject& args) {
+            const QJsonObject r = call(tool, args);
+            return failed(r) ? text(r) : QString();
+        };
+        // B6. A substrate of no height, no width, no permittivity or a
+        // negative one: "nan" came back as a result to read.
+        const QJsonObject line{{"type", "microstrip"}, {"do", "analyze"}, {"w", 1e-3}, {"h", 1e-3}, {"er", 4.3}, {"f", 1e9}};
+        QVERIFY2(!failed(must("line_calc", line)), "an ordinary line still computes");
+        for (const auto& [key, bad] : {std::pair{"h", 0.0}, {"w", 0.0}, {"er", 0.0}, {"er", -5.0}, {"f", 0.0}}) {
+            QJsonObject args = line;
+            args[QLatin1String(key)] = bad;
+            const QString said = why(QStringLiteral("line_calc"), args);
+            QVERIFY2(said.contains(QStringLiteral("'%1'").arg(QLatin1String(key))), qPrintable(QStringLiteral("%1=%2: %3")
+                                                                                                  .arg(QLatin1String(key))
+                                                                                                  .arg(bad).arg(said)));
+        }
+        // One whose numbers work out to no number, whatever they are:
+        // caught after the program has run, as the synthesizers do.
+        QJsonObject wild = line;
+        wild["w"] = 1e300;
+        wild["h"] = 1e-300;
+        QVERIFY2(why(QStringLiteral("line_calc"), wild).contains(QStringLiteral("no number")),
+                 qPrintable(why(QStringLiteral("line_calc"), wild)));
+
+        // B7. The conditions of a budget, which were not checked at all.
+        const QJsonArray oneStage{QJsonObject{{"gain", 20}, {"nf", 2}}};
+        QVERIFY2(!failed(must("receiver_budget", {{"stages", oneStage}})), "an ordinary budget still computes");
+        QVERIFY2(why(QStringLiteral("receiver_budget"), {{"stages", oneStage}, {"temperature", -500}})
+                     .contains(QStringLiteral("'temperature'")),
+                 "a temperature below absolute zero is taken");
+        QVERIFY2(why(QStringLiteral("receiver_budget"), {{"stages", oneStage}, {"bandwidth", -1}})
+                     .contains(QStringLiteral("'bandwidth'")),
+                 "a negative bandwidth is taken");
+        QVERIFY2(why(QStringLiteral("receiver_budget"), {{"stages", oneStage}, {"bandwidth", 1e300}})
+                     .contains(QStringLiteral("'bandwidth'")),
+                 "a bandwidth of 1e300 is taken");
+        // A noise figure is what a stage adds: below 0 dB it cannot be, and
+        // one that was gave a budget that read as sound.
+        const QString stage = why(QStringLiteral("receiver_budget"),
+                                  {{"stages", QJsonArray{QJsonObject{{"gain", 20}, {"nf", -5}}}}});
+        QVERIFY2(stage.contains(QStringLiteral("'nf'")) && stage.contains(QStringLiteral("stage 1")), qPrintable(stage));
+    }
+
+    // B1, B2, B3, B5, B8: what the tools said, or did not say, about an
+    // argument they took.
+    void theToolsSayWhatTheyDidWithAnOddArgument()
+    {
+        // B8. An empty action fired the first menu item (File > New),
+        // because most actions have no object name and "" equals theirs.
+        QVERIFY(!failed(must("new_document")));
+        const int before = int(app->allDocuments().size());
+        QVERIFY(failed(call("trigger_action", {{"action", ""}})));
+        QVERIFY(failed(call("trigger_action", {{"action", "   "}})));
+        QCOMPARE(int(app->allDocuments().size()), before);   // nothing was made
+        QVERIFY2(text(call("trigger_action", {{"action", ""}})).contains(QStringLiteral("names none")),
+                 qPrintable(text(call("trigger_action", {{"action", ""}}))));
+        // A name that is simply wrong is still refused as it was.
+        QVERIFY(failed(call("trigger_action", {{"action", "nothing at all"}})));
+
+        // B2. A region that meets no text called the PDF scanned, on a page
+        // whose text the same call returns in full.
+        const QString pdf = path("lined.pdf");
+        QVERIFY(writeLinedPdf(pdf));
+        const QJsonObject whole = json(must("read_pdf", {{"path", pdf}}));
+        QVERIFY(!whole.value("pages").toArray().isEmpty());
+        QVERIFY(whole.value("note").toString().isEmpty());
+        const QJsonObject none = json(must("read_pdf", {{"path", pdf}, {"region", QJsonArray{0.01, 0.005, 0.06, 0.02}}}));
+        QVERIFY2(!none.value("note").toString().contains(QStringLiteral("scanned")), qPrintable(none.value("note").toString()));
+        QVERIFY2(none.value("note").toString().contains(QStringLiteral("in the region")), qPrintable(none.value("note").toString()));
+
+        // B5. A count of nought was clamped in silence.
+        QVERIFY(!failed(must("open_document", {{"path", QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds")}})));
+        QVERIFY2(text(call("find_shapes", {{"limit", 0}})).contains(QStringLiteral("'limit'")),
+                 qPrintable(text(call("find_shapes", {{"limit", 0}}))));
+        QVERIFY(failed(call("find_shapes", {{"limit", -5}})));
+        QVERIFY(!failed(must("find_shapes", {{"limit", 3}})));
+        // The same count in the other two tools that clamped it.
+        QVERIFY2(text(call("tune", {{"max_runs", 0}})).contains(QStringLiteral("'max_runs'")),
+                 qPrintable(text(call("tune", {{"max_runs", 0}}))));
+        QVERIFY2(text(call("tune", {{"knobs", QJsonArray{}}, {"max_runs", 0}})).contains(QStringLiteral("'max_runs'")),
+                 qPrintable(text(call("tune", {{"knobs", QJsonArray{}}, {"max_runs", 0}}))));
+
+        // B1, B3: on a model of its own.
+        const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+        QVERIFY(writeFile(path("odd.qfem"), read(from + QStringLiteral("coax.qfem"))));
+        QVERIFY(!failed(must("fem_model", {{"action", "open"}, {"path", "odd.qfem"}})));
+        // B3. A size that is no number, and one beyond any geometry.
+        QVERIFY2(text(call("fem_edit", {{"action", "add"}, {"parent", "geometry"}, {"type", "rectangle"},
+                                        {"props", QJsonObject{{"size", QJsonArray{"1e308", "1e308"}}}}}))
+                     .contains(QStringLiteral("beyond any geometry")),
+                 "a rectangle of 1e308 is taken without a word");
+        // One that does not read yet is said at the edit, not refused: it
+        // may name a parameter the model has not got.
+        const QJsonObject added = json(must("fem_edit", {{"action", "add"}, {"parent", "geometry"}, {"type", "rectangle"},
+                                                         {"props", QJsonObject{{"size", QJsonArray{"nan", "1"}}}}}));
+        QVERIFY2(QJsonDocument(added).toJson(QJsonDocument::Compact).contains("does not read as an expression"),
+                 qPrintable(QJsonDocument(added).toJson(QJsonDocument::Compact).left(300)));
+        // And an ordinary size is taken with nothing said of it.
+        const QJsonObject fine = json(must("fem_edit", {{"action", "add"}, {"parent", "geometry"}, {"type", "rectangle"},
+                                                        {"props", QJsonObject{{"size", QJsonArray{"1[mm]", "2[mm]"}}}}}));
+        QVERIFY(!fine.contains("check"));
+        // B5, the third of them: fem_converge's own timeout.
+        QVERIFY2(text(call("fem_converge", {{"refine", QJsonArray{2}}, {"timeout", 0}})).contains(QStringLiteral("'timeout'")),
+                 qPrintable(text(call("fem_converge", {{"refine", QJsonArray{2}}, {"timeout", 0}}))));
+
+        // B1. A reference named for something no value answers to was
+        // measured against anyway, and counted as matched.
+        QVERIFY(writeFile(path("ref.qfem"), read(from + QStringLiteral("coax.qfem"))));
+        QVERIFY(!failed(must("fem_model", {{"action", "open"}, {"path", "ref.qfem"}})));
+        QVERIFY(!failed(must("fem_solve", {}, 300000)));
+        const auto against = [this](const QJsonValue& reference) {
+            return json(must("fem_evaluate", {{"expression", "es.C11"}, {"reference", reference}}))
+                .value("against the reference").toObject();
+        };
+        // A number alone is still the one value's, whatever it is named.
+        QCOMPARE(against(QJsonValue(1e-10)).value("values measured").toInt(), 1);
+        QCOMPARE(against(QJsonObject{{"es.C11", 1e-10}}).value("values measured").toInt(), 1);
+        // A name that matches nothing matches nothing, and is said.
+        const QJsonObject astray = against(QJsonObject{{"nothing", 1}});
+        QCOMPARE(astray.value("values measured").toInt(), 0);
+        QVERIFY2(astray.value("none matched").toString().contains(QStringLiteral("nothing")),
+                 qPrintable(astray.value("none matched").toString()));
+        QCOMPARE(against(QJsonObject{{"Es.c11", 1e-10}}).value("values measured").toInt(), 0);
+    }
+
+    // B4: a plot group shown again leaves its display alone.
+    void aPlotGroupShownAgainLeavesItsDisplayAlone()
+    {
+        const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+        QVERIFY(writeFile(path("plots.qfem"), read(from + QStringLiteral("bratu_ode.qfem"))));
+        QVERIFY(!failed(must("fem_model", {{"action", "open"}, {"path", "plots.qfem"}})));
+        QVERIFY(!failed(must("fem_solve", {}, 600000)));
+        const QJsonObject first = json(must("fem_plot", {{"plot", "pg1d1"}}, 120000));
+        const QString display = first.value("display").toString();
+        QVERIFY2(QFileInfo(display).isFile(), qPrintable(display));
+        const QDateTime written = QFileInfo(display).lastModified();
+        const qint64 size = QFileInfo(display).size();
+
+        // Shown again, twice, with nothing changed: the file is not touched.
+        // Its three lines moved out of "a label differs" when N5 was added,
+        // so setChanged() fired every time and showGraphs() saved it (B4).
+        for (int again = 0; again < 2; ++again) {
+            QTest::qWait(1100);   // (a second apart, so a write would show)
+            QVERIFY(!failed(must("fem_plot", {{"plot", "pg1d1"}}, 120000)));
+            QCOMPARE(QFileInfo(display).lastModified(), written);
+            QCOMPARE(QFileInfo(display).size(), size);
+        }
+        // And the display has no unsaved changes of its own to carry.
+        for (QucsDoc* d : app->allDocuments())
+            if (!d->getDocName().isEmpty() && QFileInfo(d->getDocName()) == QFileInfo(display)) QVERIFY(!d->getDocChanged());
+    }
+
     // N10. A script stopped says what it was doing, and the time the user
     // took to answer a card is not counted against its own timeout.
     void aStoppedScriptSaysWhatItWasDoing()

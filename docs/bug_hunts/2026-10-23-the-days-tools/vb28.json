@@ -1,0 +1,7 @@
+[["read_pdf", {"path": "paper.pdf", "pages": 2}],
+ ["read_pdf", {"path": "paper.pdf", "pages": 2, "region": [1, 1, 1.0001, 1.0001]}],
+ ["new_document", {}],
+ ["trigger_action", {"action": ""}],
+ ["trigger_action", {"action": "  "}],
+ ["trigger_action", {"action": "nothing at all"}],
+ ["get_state", {}]]

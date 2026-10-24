@@ -501,8 +501,79 @@ QJsonObject QucsControl::synthesizeMatching(const QJsonObject& args)
     return jsonResult(placed);
 }
 
+namespace {
+
+// A number \a args gives for \a key, where it must be above nought. Only a
+// value given as a number is judged: one written with a unit ("1[mm]") is
+// the program's to read. Empty when there is nothing to say.
+//
+// line_calc and receiver_budget passed every number straight to their
+// programs and handed back whatever came of it - "nan" for a substrate of
+// no height, a budget of nulls for a temperature below absolute zero (the
+// hunt of 23 October, B6 and B7) - where every synthesizer beside them
+// checks its inputs and refuses a design that is no number.
+QString mustBeAbove(const QJsonValue& v, const char* key, double least, const QString& what)
+{
+    if (!v.isDouble()) return {};
+    const double x = v.toDouble();
+    if (std::isfinite(x) && x > least) return {};
+    return QucsControl::tr("'%1' is %2, above %3 - %4 is no line to compute.")
+        .arg(QLatin1String(key), what, QString::number(least), QString::number(x));
+}
+
+// As mustBeAbove(), for a number that must lie between \a least and \a most,
+// both allowed. The upper end matters as much as the lower: a gain of 1e300
+// is as impossible as one of -1e300, and it overflowed the arithmetic into
+// a budget of nulls instead of being turned down (B7).
+QString mustBeWithin(const QJsonValue& v, const char* key, double least, double most, const QString& what)
+{
+    if (!v.isDouble()) return {};
+    const double x = v.toDouble();
+    if (std::isfinite(x) && x >= least && x <= most) return {};
+    return QucsControl::tr("'%1' is %2, between %3 and %4 - %5 cannot be.")
+        .arg(QLatin1String(key), what, QString::number(least), QString::number(most), QString::number(x));
+}
+
+// A value of the answer that is no number: nan and infinity as JSON writes
+// them (null), and as text.
+QString noNumberIn(const QJsonObject& answer)
+{
+    for (auto it = answer.begin(); it != answer.end(); ++it) {
+        if (it.value().isObject()) {
+            if (const QString why = noNumberIn(it.value().toObject()); !why.isEmpty()) return why;
+            continue;
+        }
+        if (it.value().isNull()) return it.key();
+        if (it.value().isString()) {
+            static const QRegularExpression notANumber(QStringLiteral("^[-+]?(nan|inf)"), QRegularExpression::CaseInsensitiveOption);
+            if (notANumber.match(it.value().toString().trimmed()).hasMatch()) return it.key();
+        }
+    }
+    return {};
+}
+
+} // namespace
+
 QJsonObject QucsControl::lineCalc(const QJsonObject& args)
 {
+    // What has no line at nought or less. (A metal thickness, a length, a
+    // gap and a cover height may be nought, and are left alone.)
+    for (const auto& [key, what] : {std::pair{"f", tr("a frequency in Hz")},
+                                    {"er", tr("the substrate's relative permittivity")},
+                                    {"mur", tr("its relative permeability")},
+                                    {"h", tr("the substrate's height")},
+                                    {"w", tr("the line's width")},
+                                    {"a", tr("a waveguide's broad side")},
+                                    {"b", tr("its narrow side")},
+                                    {"din", tr("a coax's inner diameter")},
+                                    {"dout", tr("its outer diameter")},
+                                    {"cond", tr("the metal's conductivity in S/m")},
+                                    {"sigma", tr("the conductivity in S/m")},
+                                    {"z0", tr("an impedance in ohms")},
+                                    {"z0e", tr("the even mode's impedance in ohms")},
+                                    {"z0o", tr("the odd mode's impedance in ohms")}})
+        if (const QString why = mustBeAbove(args.value(QLatin1String(key)), key, 0, what); !why.isEmpty()) return errorResult(tr("No line: %1").arg(why));
+
     QJsonObject spec;
     for (const char* key : {"type", "do", "solve_for", "substrate", "f", "z0", "z0e", "z0o", "angle", "er", "mur", "h", "h_t", "t", "cond",
                             "sigma", "tand", "tanm", "rough", "w", "l", "s", "a", "b", "din", "dout"})
@@ -510,6 +581,11 @@ QJsonObject QucsControl::lineCalc(const QJsonObject& args)
     QString error;
     const QJsonObject r = runToolProgram(QStringLiteral(QUCS_NAME "trans"), spec, &error);
     if (r.isEmpty()) return errorResult(tr("No line: %1").arg(error));
+    // And what came of it, where the numbers did not work out: handed back
+    // as the text "nan" before, for a reader to take for a number.
+    if (const QString key = noNumberIn(r); !key.isEmpty())
+        return errorResult(tr("No line: %1 came out as no number - the values given do not make a line that can be computed.")
+                               .arg(key));
     return jsonResult(r);
 }
 
@@ -529,6 +605,25 @@ QJsonObject stageSpec(const QJsonObject& stage)
 
 QJsonObject QucsControl::receiverBudget(const QJsonObject& args)
 {
+    // Conditions that cannot be. The stages were checked and these were
+    // not: a temperature below absolute zero and a negative bandwidth each
+    // gave a budget whose system numbers were all null (B7).
+    if (const QString why = mustBeAbove(args.value(QLatin1String("temperature")), "temperature", -273.15, tr("a temperature in C")); !why.isEmpty())
+        return errorResult(tr("No budget: %1").arg(why));
+    if (const QString why = mustBeAbove(args.value(QLatin1String("bandwidth")), "bandwidth", 0, tr("a noise bandwidth in Hz")); !why.isEmpty())
+        return errorResult(tr("No budget: %1").arg(why));
+    if (const QString why = mustBeWithin(args.value(QLatin1String("bandwidth")), "bandwidth", 0, 1e18, tr("a noise bandwidth in Hz")); !why.isEmpty())
+        return errorResult(tr("No budget: %1").arg(why));
+    // (Written out one by one, and not as a loop over the keys: CI's check
+    // of tool arguments reads the list of keys a tool takes from the one
+    // "for (const char* key : {...})" of its function, and a second loop
+    // leaves it with none.)
+    if (const QString why = mustBeWithin(args.value(QLatin1String("input_power")), "input_power", -1e6, 1e6, tr("a level in dBm")); !why.isEmpty())
+        return errorResult(tr("No budget: %1").arg(why));
+    if (const QString why = mustBeWithin(args.value(QLatin1String("snr_min")), "snr_min", -1e6, 1e6, tr("a level in dB")); !why.isEmpty())
+        return errorResult(tr("No budget: %1").arg(why));
+    if (const QString why = mustBeWithin(args.value(QLatin1String("peak_to_average")), "peak_to_average", -1e6, 1e6, tr("a level in dB")); !why.isEmpty())
+        return errorResult(tr("No budget: %1").arg(why));
     QJsonObject spec;
     for (const char* key : {"input_power", "bandwidth", "snr_min", "temperature", "peak_to_average"})
         if (args.contains(QLatin1String(key))) spec.insert(QLatin1String(key), args.value(QLatin1String(key)));
@@ -536,7 +631,15 @@ QJsonObject QucsControl::receiverBudget(const QJsonObject& args)
     QString error;
     for (const QJsonValue& v : args.value(QLatin1String("stages")).toArray()) {
         if (!v.isObject()) return errorResult(tr("Stage %1 is no object: {\"name\", \"gain\", \"nf\", ...}.").arg(stages.size() + 1));
-        stages.append(stageSpec(v.toObject()));
+        // A noise figure is the noise a stage adds: it cannot be below
+        // 0 dB, and one that is gave a budget that read as sound (B7).
+        const QJsonObject stage = v.toObject();
+        if (const QString why = mustBeWithin(stage.value(QLatin1String("nf")), "nf", 0, 1e6, tr("a noise figure in dB")); !why.isEmpty())
+            return errorResult(tr("No budget: stage %1's %2").arg(stages.size() + 1).arg(why));
+        for (const char* key : {"gain", "iip3", "oip3", "ip1db", "op1db"})
+            if (const QString why = mustBeWithin(stage.value(QLatin1String(key)), key, -1e6, 1e6, tr("a level in dB")); !why.isEmpty())
+                return errorResult(tr("No budget: stage %1's %2").arg(stages.size() + 1).arg(why));
+        stages.append(stageSpec(stage));
     }
     spec.insert(QStringLiteral("stages"), stages);
     const QJsonObject r = runToolProgram(QStringLiteral("rxcalc"), spec, &error);

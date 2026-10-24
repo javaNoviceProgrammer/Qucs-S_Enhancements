@@ -494,6 +494,16 @@ double QucsControl::measureRun(const QJsonObject& spec, const QJsonObject& simul
 // that makes it worse halved. The values found are set as one step to undo.
 void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
 {
+    // A count of nought is either a refusal or means none, and it used to
+    // mean neither: clamped in silence, so 'max_runs': 0 still ran 4 (the
+    // hunt of 23 October, B5). Asked before anything else, so the answer is
+    // about the argument and not about the schematic.
+    if (args.contains(QLatin1String("max_runs"))
+        && !(args.value(QLatin1String("max_runs")).toInt(0) >= 4 && args.value(QLatin1String("max_runs")).toInt(0) <= 60)) {
+        done(errorResult(tr("'max_runs' is how many simulations at most, 4 to 60 (24 when not given): %1 is none of them.")
+                             .arg(args.value(QLatin1String("max_runs")).toInt(0))));
+        return;
+    }
     QString error;
     Schematic* sch = schematic(args, &error, true);
     if (sch == nullptr) {
@@ -927,6 +937,16 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
 
 void QucsControl::tune(const QJsonObject& args, const Done& done)
 {
+    // A count of nought is either a refusal or means none, and it used to
+    // mean neither: clamped in silence, so 'max_runs': 0 still ran 2 (the
+    // hunt of 23 October, B5). Asked before anything else, so the answer is
+    // about the argument and not about the schematic.
+    if (args.contains(QLatin1String("max_runs"))
+        && !(args.value(QLatin1String("max_runs")).toInt(0) >= 2 && args.value(QLatin1String("max_runs")).toInt(0) <= 40)) {
+        done(errorResult(tr("'max_runs' is how many simulations at most, 2 to 40 (12 when not given): %1 is none of them.")
+                             .arg(args.value(QLatin1String("max_runs")).toInt(0))));
+        return;
+    }
     if (args.contains(QLatin1String("knobs")) || args.contains(QLatin1String("targets"))) {
         tuneKnobs(args, done);
         return;
@@ -1537,7 +1557,17 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
         if (!skipped.isEmpty()) result.insert(QStringLiteral("left out"), tr("pages %1: too much text at once - ask for them").arg(skipped.join(QStringLiteral(", "))));
         bool empty = true;
         for (const QJsonValue& v : std::as_const(read)) empty = empty && v.toObject().value(QStringLiteral("text")).toString().trimmed().isEmpty();
-        if (empty) result.insert(QStringLiteral("note"), tr("The pages have no text (scanned): 'image' draws them."));
+        // Nothing came back - but a region narrowing it to nothing is not a
+        // page without text: the note called a paper scanned whose text the
+        // same call returns in full (the hunt of 23 October, B2). 'of the
+        // region' says what happened there; this note is for a page that
+        // holds no text at all.
+        if (empty && corners.isEmpty())
+            result.insert(QStringLiteral("note"), tr("The pages have no text (scanned): 'image' draws them."));
+        else if (empty)
+            result.insert(QStringLiteral("note"),
+                          tr("No text of the pages is in the region - the pages themselves may well hold text (read_pdf without "
+                             "'region' gives it). A region is in points from the page's top left, or in fractions of it."));
     }
     // The pages drawn too: a figure, a scanned page (four at most).
     if (args.value(QLatin1String("image")).toBool()) {
