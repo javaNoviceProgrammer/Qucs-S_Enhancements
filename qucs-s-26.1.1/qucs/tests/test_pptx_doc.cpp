@@ -262,6 +262,18 @@ QColor at(const QImage& image, QPointF point, qreal scale = 1)
     return image.pixelColor(QPoint(int(point.x() * scale), int(point.y() * scale)));
 }
 
+/// Of what a slide says it does not draw as PowerPoint does, the deck's
+/// own: a font this machine has not got is the machine's, and whether it
+/// is said at all depends on the host (CI's Linux runner has no Arial,
+/// where macOS does, and the note came before the deck's own).
+QStringList ofTheDeck(const QStringList& notShown)
+{
+    QStringList kept;
+    for (const QString& said : notShown)
+        if (!said.contains(QStringLiteral("not installed"))) kept << said;
+    return kept;
+}
+
 bool near(const QColor& a, const QColor& b, int tolerance = 12)
 {
     return std::abs(a.red() - b.red()) <= tolerance && std::abs(a.green() - b.green()) <= tolerance && std::abs(a.blue() - b.blue()) <= tolerance;
@@ -526,14 +538,59 @@ private slots:
         QVERIFY(near(at(image, {220, 100}), QColor(0, 0, 255)));
         QVERIFY2(near(at(image, {320, 100}), QColor(0, 0, 255)), qPrintable(str(at(image, {320, 100}))));
         QVERIFY(near(at(image, {480, 100}), QColor(0, 0, 255)));
-        // The EMF: a light box, not the picture.
-        QVERIFY(at(image, {650, 100}).lightness() > 200 && !near(at(image, {650, 100}), Qt::white, 2));
+        // The EMF: a light box, not the picture. Sampled inside the box and
+        // clear of its caption, which is drawn centred: whether the middle
+        // pixel falls on a glyph or between two is the host's font's to
+        // decide, and CI's Linux runner - which has no Helvetica - read the
+        // middle as dark where this machine reads it as paper.
+        for (const QPointF& inside : {QPointF(565, 62), QPointF(735, 62), QPointF(565, 138), QPointF(735, 138)}) {
+            QVERIFY2(at(image, inside).lightness() > 200, qPrintable(str(at(image, inside))));
+            QVERIFY2(!near(at(image, inside), Qt::white, 2), qPrintable(str(at(image, inside))));
+        }
         QVERIFY2(near(at(image, {100, 300}), QColor(0, 255, 0)), qPrintable(str(at(image, {100, 300}))));
         // In an ellipse: its middle drawn, its box's corner not.
         QVERIFY(near(at(image, {330, 350}), QColor(255, 0, 0)));
         QVERIFY(near(at(image, {305, 255}), Qt::white));
         QCOMPARE(deck->slide(0).pictures, 5);
-        QCOMPARE(deck->slide(0).notShown, QStringList{"pictures in EMF, not drawn (a box in their place)"});
+        // What the slide does not draw as PowerPoint does holds two kinds of
+        // thing: what the deck has and Qucs-S cannot draw, and what this
+        // machine has not got (a font). Only the first is the deck's.
+        QCOMPARE(ofTheDeck(deck->slide(0).notShown), QStringList{"pictures in EMF, not drawn (a box in their place)"});
+    }
+
+    // What a slide does not draw as PowerPoint does is of two kinds: what
+    // the deck holds and Qucs-S cannot draw (an EMF picture), and what this
+    // machine has not got (a font). They go in one list, the font's first
+    // where a title is laid out before a picture - so a reader must look
+    // through the list rather than at its head. CI's Linux runner, which
+    // has no Arial, is where that came from; this deck asks for a font no
+    // machine has, so the two kinds are here whatever the host.
+    void whatTheDeckLacksAndWhatThisMachineLacks()
+    {
+        Deck d;
+        d.minorFont = "Nonesuch Sans";
+        d.extra << zip::Entry{QStringLiteral("ppt/media/image1.emf"), QByteArray(64, '\0')};
+        Deck::SlideSpec s;
+        s.tree = shape(2, xfrm(50, 20, 500, 60) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>", text(para(run("Results"))))
+                 + "<p:pic><p:nvPicPr><p:cNvPr id=\"5\" name=\"p\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rIdP\"/></p:blipFill><p:spPr>"
+                 + xfrm(550, 50, 200, 100) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
+        s.rels = "<Relationship Id=\"rIdP\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/image1.emf\"/>";
+        d.slides << s;
+        const auto deck = readDeck(d);
+        QVERIFY(deck != nullptr);
+        const QImage image = deck->render(0, 1);
+        const QStringList said = deck->slide(0).notShown;
+        // Both are said, and the font's comes first - the title before the
+        // picture - which is why the head of the list proves nothing.
+        QVERIFY2(said.size() == 2, qPrintable(said.join(QStringLiteral(" | "))));
+        QVERIFY2(said.first().contains(QStringLiteral("Nonesuch Sans")) && said.first().contains(QStringLiteral("not installed")),
+                 qPrintable(said.join(QStringLiteral(" | "))));
+        QCOMPARE(ofTheDeck(said), QStringList{"pictures in EMF, not drawn (a box in their place)"});
+        // And the box for it is light whatever font its caption is drawn in.
+        for (const QPointF& inside : {QPointF(565, 62), QPointF(735, 62), QPointF(565, 138), QPointF(735, 138)}) {
+            QVERIFY2(at(image, inside).lightness() > 200, qPrintable(str(at(image, inside))));
+            QVERIFY2(!near(at(image, inside), Qt::white, 2), qPrintable(str(at(image, inside))));
+        }
     }
 
     // Text: the master's body style (28 points, a bullet at marL + indent),
@@ -1692,7 +1749,12 @@ private slots:
         QVERIFY(slides.at(0).toObject().value("text").toString().contains("A first point"));
         QCOMPARE(slides.at(1).toObject().value("notes").toString(), QStringLiteral("The measurement agrees within 3 %."));
         QCOMPARE(slides.at(1).toObject().value("pictures").toInt(), 1);
-        QVERIFY(slides.at(1).toObject().value("not drawn").toArray().first().toString().contains("EMF"));
+        QStringList notDrawn;
+        for (const QJsonValue& v : slides.at(1).toObject().value("not drawn").toArray()) notDrawn << v.toString();
+        // (Not the first of them: a machine without the deck's fonts says so
+        // in the same list, and the title is laid out before the picture.)
+        QCOMPARE(ofTheDeck(notDrawn).size(), 1);
+        QVERIFY2(ofTheDeck(notDrawn).first().contains(QStringLiteral("EMF")), qPrintable(notDrawn.join(QStringLiteral(" | "))));
         QVERIFY(slides.at(2).toObject().value("hidden").toBool());
         QVERIFY(!slides.at(0).toObject().contains("hidden"));
         QVERIFY(app.findDoc(file) == nullptr);   // (read, not opened)
