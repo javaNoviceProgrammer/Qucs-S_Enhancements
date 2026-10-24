@@ -27,6 +27,7 @@
 class QucsApp;
 class QPrinter;
 class QPainter;
+class QFileInfo;
 
 class QucsDoc {
 public:
@@ -121,17 +122,41 @@ public:
   QString getSimTime() const { return a_SimTime; }
   void setSimTime(const QString& value) { a_SimTime = value; }
   QDateTime getLastSaved() const { return a_lastSaved; }
-  void setLastSaved(const QDateTime& value) { a_lastSaved = value; }
-  /// Whether a file dated \a onDisk is not as it was last loaded or saved
-  /// here (getLastSaved() valid): newer than then - or, that date in the
-  /// future (a file unpacked from a time zone ahead, a fast clock), any
-  /// other date. (Newer alone: every later change, dated now, was taken for
-  /// older and never loaded until the clock passed it - the hunt of 21
-  /// October, B5.)
-  bool changedOnDisk(const QDateTime& onDisk) const
+  void setLastSaved(const QDateTime& value)
   {
-    return a_lastSaved > QDateTime::currentDateTime() ? onDisk != a_lastSaved : onDisk > a_lastSaved;
+    a_lastSaved = value;
+    a_lastSize = -1;   // (a date of its own, with no file behind it to measure)
   }
+  /// What its file looks like now - its date and its size - kept as what it
+  /// looked like when this document last read its content from it or wrote
+  /// that content to it. changedOnDisk() asks against these two.
+  ///
+  /// After a write, the file is this document's own work and \a info taken
+  /// now is right. Before a read it is not: \a info must be the look of the
+  /// file **as the bytes about to be read were taken**, because a file
+  /// written again during the read would otherwise be stamped as the one
+  /// held, and never read at all (a Markdown file rewritten while its text
+  /// was being set: test_markdown_doc's aFileWrittenWhileReadIsReadAgain).
+  /// Stamped older than the bytes held, the worst that follows is one more
+  /// read; stamped newer, the change is lost.
+  void stampedFromFile();
+  void stampedAs(const QFileInfo& info);
+  /// Whether a file dated \a onDisk is not the one whose content this
+  /// document holds (getLastSaved() valid). a_lastSaved is the date the
+  /// file itself had when this document last read it or wrote it - never a
+  /// clock reading of its own - so any other date is another file's, and
+  /// where the date is the same the size is asked.
+  ///
+  /// Not "newer than": a file put back from a backup, copied with cp -p,
+  /// checked out at an older revision or unpacked from an archive with its
+  /// dates carries an older date, and the tab kept what it had with nothing
+  /// said. Not the date alone either: a checkout writes a whole tree in one
+  /// moment, and two files of it are the same date to the millisecond Qt
+  /// reads - which is how CI's runners came to replace a model with another
+  /// and see no change at all. (A date in the future - a file unpacked from
+  /// a time zone ahead, a fast clock - was already read as a change, and is
+  /// now the same rule as the rest.)
+  bool changedOnDisk(const QDateTime& onDisk) const;
 
   /// The revision of the content: it counts every edit, undo, redo and
   /// reload, whoever made it - so that a reader can tell the document
@@ -191,6 +216,9 @@ protected:
   QString a_Script;
   QString a_SimTime;     // used for VHDL simulation, but stored in datadisplay
   QDateTime a_lastSaved;
+  /// Its file's size when it was last read or written here; -1 where no
+  /// file was behind the date (a document that has none yet).
+  qint64 a_lastSize = -1;
 
   double a_Scale;
   QucsApp* a_App;

@@ -534,6 +534,7 @@ void MultiphysicsDoc::setName(const QString& name)
 
 bool MultiphysicsDoc::load()
 {
+    const QFileInfo asRead(a_DocName);
     QFile file(a_DocName);
     if (!file.open(QIODevice::ReadOnly)) {
         misc::reportError(tr("Cannot read %1:\n%2").arg(a_DocName, file.errorString()));
@@ -552,7 +553,7 @@ bool MultiphysicsDoc::load()
     applyModel(*m, true);
     a_undo->setClean();
     setDocChanged(false);
-    a_lastSaved = QFileInfo(a_DocName).lastModified();
+    stampedAs(asRead);
     say(tr("Opened %1").arg(QFileInfo(a_DocName).fileName()));
     // (A process flow's geometry in the background: the tab open at once,
     // the structure shown when built.)
@@ -573,6 +574,7 @@ bool MultiphysicsDoc::load()
 
 bool MultiphysicsDoc::reload()
 {
+    const QFileInfo asRead(a_DocName);
     QFile file(a_DocName);
     if (!file.open(QIODevice::ReadOnly)) return false;
     QString why;
@@ -585,7 +587,7 @@ bool MultiphysicsDoc::reload()
     applyModel(*m, true);
     setDocChanged(false);
     emit signalFileChanged(false);
-    a_lastSaved = QFileInfo(a_DocName).lastModified();
+    stampedAs(asRead);
     if (!focus.isEmpty() && a_model.find(focus)) focusNode(focus);
     say(tr("Read again: %1 changed on disk").arg(QFileInfo(a_DocName).fileName()));
     return true;
@@ -608,7 +610,10 @@ int MultiphysicsDoc::save()
     a_undo->setClean();
     setDocChanged(false);
     emit signalFileChanged(false);
-    a_lastSaved = QDateTime::currentDateTime();
+    // The date and size the file itself has, not the clock's reading of
+    // this moment: the two differ by a little, and changedOnDisk() would
+    // then take the file this just wrote for another program's.
+    stampedFromFile();
     return 0;
 }
 

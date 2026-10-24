@@ -357,6 +357,7 @@ bool SheetDoc::load()
 {
     QString why;
     qucs_s::sheet::Workbook book;
+    const QFileInfo asRead(a_DocName);
     if (!qucs_s::sheet::readFile(a_DocName, book, &why)) {
         QMessageBox::critical(this, tr("Open Spreadsheet"), tr("Cannot read %1:\n%2").arg(a_DocName, why));
         return false;
@@ -366,7 +367,7 @@ bool SheetDoc::load()
     a_undo->clear();
     rebuild();
     a_view->setCurrentIndex(a_model->index(0, 0));
-    a_lastSaved = QFileInfo(a_DocName).lastModified();
+    stampedAs(asRead);
     // Its content, the first: an edit after it is one - a sheet's first
     // was its content, lost (the check of 31ba73b).
     contentRead();
@@ -376,6 +377,7 @@ bool SheetDoc::load()
 bool SheetDoc::reload()
 {
     qucs_s::sheet::Workbook book;
+    const QFileInfo asRead(a_DocName);
     if (!qucs_s::sheet::readFile(a_DocName, book)) return false;
     // Where the user was: the sheet by its name (else at its place), the
     // cell, the scroll.
@@ -396,7 +398,7 @@ bool SheetDoc::reload()
     a_view->verticalScrollBar()->setValue(down);
     setDocChanged(false);
     emit signalFileChanged(false);
-    a_lastSaved = QFileInfo(a_DocName).lastModified();
+    stampedAs(asRead);
     return true;
 }
 
@@ -444,7 +446,13 @@ int SheetDoc::save()
     a_undo->setClean();
     setDocChanged(false);
     emit signalFileChanged(false);
-    a_lastSaved = QDateTime::currentDateTime();
+    // The date and size the file itself has now, not the clock's reading of
+    // this moment: the two differ by a little, and changedOnDisk() would
+    // then take the file this just wrote for another program's. (Here
+    // rather than in reread(), which gives up quietly on a file it cannot
+    // read again - and a save that then stamped nothing asked the user to
+    // write over their own save: TestClaudeCode::theApplicationWorksWithTheDock.)
+    stampedFromFile();
     return 0;
 }
 

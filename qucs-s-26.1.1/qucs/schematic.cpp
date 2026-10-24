@@ -2198,7 +2198,7 @@ bool Schematic::load()
     // The file's own date, taken before it is read: a file dated in the
     // future (clock skew, unpacked from an archive) was newer than the
     // moment of its load for good, and loaded again as changed on disk.
-    const QDateTime stamp = QFileInfo(a_DocName).lastModified();
+    const QFileInfo asRead(a_DocName);
     const bool loaded = loadDocument();
     if (!loaded && held) {
         deleteAllElements();
@@ -2215,7 +2215,7 @@ bool Schematic::load()
         if (held) rewind(wasRevision, wasEdits);   // nothing of it changed
         return false;
     }
-    a_lastSaved = stamp.isValid() ? stamp : QDateTime::currentDateTime();
+    stampedAs(asRead);
 
     while (!a_undoAction.isEmpty()) {
         delete a_undoAction.last();
@@ -2266,7 +2266,7 @@ int Schematic::save()
         return -1;
 
     QFileInfo Info(a_DocName);
-    a_lastSaved = Info.lastModified();
+    stampedFromFile();
 
     if (result >= 0) {
         setChanged(false);

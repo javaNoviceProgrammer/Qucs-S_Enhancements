@@ -102,14 +102,22 @@ class TestMcpWishlist : public QObject
         QFile f(file);
         return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
     }
+    /// \a file dated \a when. QFile::copy carries the source's date (it
+    /// clones the file on APFS), so a test that copies one example over
+    /// another is at the mercy of the two files' dates in the checkout -
+    /// equal in a fresh one, which is how CI's macOS runner came to see no
+    /// reload at all. A test that turns on a date says it outright.
+    static bool datedAt(const QString& file, const QDateTime& when)
+    {
+        QFile f(file);
+        return f.open(QIODevice::ReadWrite) && f.setFileTime(when, QFileDevice::FileModificationTime);
+    }
     /// \a file's modification time set a few seconds ahead, so that it is
     /// newer than the document's last save whatever that was set to in
     /// between (a solve and a build both take the file's own date).
     static bool newerThanAnySave(const QString& file)
     {
-        QFile f(file);
-        return f.open(QIODevice::ReadWrite)
-               && f.setFileTime(QDateTime::currentDateTime().addSecs(5), QFileDevice::FileModificationTime);
+        return datedAt(file, QDateTime::currentDateTime().addSecs(5));
     }
     /// An empty folder of its own, outside the workspace.
     QString fresh(const QString& name) const
@@ -986,6 +994,7 @@ private slots:
         // another program would.
         QVERIFY(QFile::remove(path("follows.qfem")));
         QVERIFY(QFile::copy(from + QStringLiteral("coax_rlgc.qfem"), path("follows.qfem")));
+        QVERIFY(newerThanAnySave(path("follows.qfem")));   // (the copy carries coax_rlgc.qfem's own date)
         QTRY_VERIFY_WITH_TIMEOUT(doc->model().objectNames().size() == 3, 15000);   // outer, dielectric, inner
         QVERIFY(doc->revision() > was);
         QVERIFY(!doc->getDocChanged());
@@ -994,6 +1003,89 @@ private slots:
         const QJsonArray objects = now.value("geometry").toObject().value("objects").toArray();
         QVERIFY2(objects.contains(QJsonValue(QStringLiteral("dielectric"))),
                  qPrintable(QJsonDocument(objects).toJson(QJsonDocument::Compact)));
+    }
+
+    // A file replaced by one dated no later than it - a backup put back,
+    // cp -p, an older revision checked out, an archive unpacked with its
+    // dates - was not read again: changedOnDisk() asked whether the file
+    // was *newer*, so the tab kept what it had and said nothing. CI's
+    // macOS runner found this the hard way: a fresh checkout stamps the
+    // example files alike, so the model written over the other was not
+    // newer and the test above never saw its reload.
+    void aModelReplacedByAFileDatedNoLaterIsStillRead()
+    {
+        const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+        QVERIFY(QFile::copy(from + QStringLiteral("coax.qfem"), path("older.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "older.qfem"}})));
+        auto* doc = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->model().objectNames().size(), 2);   // shield, core
+        const QDateTime held = doc->getLastSaved();
+        QVERIFY(held.isValid());
+
+        // The other model over it, dated an hour before the document's own.
+        QVERIFY(QFile::remove(path("older.qfem")));
+        QVERIFY(QFile::copy(from + QStringLiteral("coax_rlgc.qfem"), path("older.qfem")));
+        QVERIFY(datedAt(path("older.qfem"), held.addSecs(-3600)));
+        QVERIFY(QFileInfo(path("older.qfem")).lastModified() < held);
+        QTRY_VERIFY_WITH_TIMEOUT(doc->model().objectNames().size() == 3, 15000);   // outer, dielectric, inner
+        QVERIFY(!doc->getDocChanged());
+        QCOMPARE(doc->getLastSaved(), QFileInfo(path("older.qfem")).lastModified());
+
+        // And back again, dated older still: a document follows its file
+        // in both directions.
+        QVERIFY(QFile::remove(path("older.qfem")));
+        QVERIFY(QFile::copy(from + QStringLiteral("coax.qfem"), path("older.qfem")));
+        QVERIFY(datedAt(path("older.qfem"), held.addSecs(-7200)));
+        QTRY_VERIFY_WITH_TIMEOUT(doc->model().objectNames().size() == 2, 15000);
+
+        // The case that found all this: the same date to the millisecond,
+        // which a checkout gives two files written microseconds apart. The
+        // date says nothing at all then, and the size is what is left to
+        // tell one file from the other.
+        const QDateTime same = doc->getLastSaved();
+        QVERIFY(QFile::remove(path("older.qfem")));
+        QVERIFY(QFile::copy(from + QStringLiteral("coax_rlgc.qfem"), path("older.qfem")));
+        QVERIFY(datedAt(path("older.qfem"), same));
+        QCOMPARE(QFileInfo(path("older.qfem")).lastModified(), same);
+        QVERIFY(QFileInfo(path("older.qfem")).size() != QFileInfo(from + QStringLiteral("coax.qfem")).size());
+        QTRY_VERIFY_WITH_TIMEOUT(doc->model().objectNames().size() == 3, 15000);
+        QVERIFY(!doc->getDocChanged());
+    }
+
+    // A save of Qucs-S's own is not another program's write: the watcher
+    // fires for it like any other, and the document must know its own
+    // hand. (It knows it by the date and size the file itself has after
+    // the write - a clock reading taken at that moment differs from them
+    // by a little, and the file would be read straight back in.)
+    void aSaveIsNotReadBackAsAnotherProgramsWrite()
+    {
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/coax.qfem"), path("mine.qfem")));
+        QVERIFY(!failed(must("open_document", {{"path", "mine.qfem"}})));
+        auto* doc = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QVERIFY(!failed(must("fem_edit", {{"action", "parameters"},
+                                          {"parameters", QJsonArray{QJsonObject{{"name", "a"}, {"expression", "0.5[mm]"}}}}})));
+        QVERIFY(doc->getDocChanged());
+        const quint64 was = doc->revision();
+        QVERIFY(!failed(must("save_document", {})));
+        QVERIFY(!doc->getDocChanged());
+        // The watcher's 400 ms, and time enough for the 1500 ms sweep that
+        // re-adds a watch, to see whether anything reads it again.
+        QTest::qWait(2500);
+        QCOMPARE(doc->revision(), was);
+        QVERIFY(!doc->getDocChanged());
+        QCOMPARE(doc->getLastSaved(), QFileInfo(path("mine.qfem")).lastModified());
+
+        // And the stamp a save leaves is a whole one - its size as well as
+        // its date - so a file put there afterwards at that very date is
+        // still told from it. (A stamp taken from the clock knows no size,
+        // and then only the date is left to go on.)
+        const QDateTime mine = doc->getLastSaved();
+        QVERIFY(QFile::remove(path("mine.qfem")));
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/coax_rlgc.qfem"), path("mine.qfem")));
+        QVERIFY(datedAt(path("mine.qfem"), mine));
+        QTRY_VERIFY_WITH_TIMEOUT(doc->model().objectNames().size() == 3, 15000);   // outer, dielectric, inner
     }
 
     // The third re-check of 23 October, nit 1: a call made straight after
@@ -1587,7 +1679,15 @@ private slots:
 
         // N3. "SI": null beside "value": "inf" - a caller reading 'SI' saw
         // nothing of the value's kind, JSON having no number for either.
-        const QJsonArray at{QJsonArray{0.0005, 0.0}};
+        // (One point, built by append: QJsonArray{QJsonArray{0.0005, 0}} is
+        // [0.0005, 0] to AppleClang 17 - a copy, [dcl.init.list]/3.2 - where
+        // AppleClang 21 nests it, so the call was refused on CI's runner and
+        // taken here. The house idiom, as test_qucs_control and
+        // test_multiphysics_doc already have it.)
+        QJsonArray at;
+        at.append(QJsonArray{0.0005, 0.0});
+        QCOMPARE(at.size(), 1);
+        QVERIFY(at.first().isArray());
         for (const auto& [expression, kind] : {std::pair{"1e300*1e300", "infinite"}, {"0/0", "not a number"}}) {
             const QJsonObject one = json(must("fem_evaluate", {{"expression", QLatin1String(expression)}, {"at", at}}))
                                         .value("values").toArray().first().toObject();
