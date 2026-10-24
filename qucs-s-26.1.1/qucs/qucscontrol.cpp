@@ -575,10 +575,10 @@ const char* const kTools = R"JSON([
    "angle": {"type": "integer", "description": "A text's angle in degrees, -360 to 360"}, "head": {"type": "string", "enum": ["open", "filled"], "description": "An arrow's head: open or filled"}, "file": {"type": "string", "description": "An image's file"}},
    "required": ["painting"]}},
 {"name": "list_documents",
- "description": "Lists the files of the workspace, a project or a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures - newest first, each with its path (relative to the folder listed), kind, size, modification time and whether it is open. A dataset also says which simulator wrote it, which schematic it belongs to, and which traces of open diagrams read it but find nothing there; an open schematic lists the traces whose dataset does not exist at all (ngspice/... reads name.dat.ngspice - the usual Qucsator-versus-ngspice mix-up, or an imported dataset's trace with a prefix: import_data's name.dat is read as name:variable). An imported dataset says which file it came from. Without 'folder' it lists the open project's files, or the workspace's when no project is open - the workspace's projects named either way. 'folder' is a project's name (amp or amp_prj) or a folder (relative to the open project's folder, else the workspace; or absolute - the workspace's path lists the workspace). 'kind' keeps one kind, 'search' the files whose name contains it, and 'sort' is newest (the default) or name. Subfolders are included up to 4 levels deep; at most 300 files, with what was left out.",
+ "description": "Lists the files of the workspace, a project or a folder - schematics, symbols, data displays, datasets, netlists, texts, PDFs, spreadsheets, pictures, layouts, multiphysics and RF 2.5D models, presentations - newest first, each with its path (relative to the folder listed), kind, size, modification time and whether it is open. A dataset also says which simulator wrote it, which schematic it belongs to, and which traces of open diagrams read it but find nothing there; an open schematic lists the traces whose dataset does not exist at all (ngspice/... reads name.dat.ngspice - the usual Qucsator-versus-ngspice mix-up, or an imported dataset's trace with a prefix: import_data's name.dat is read as name:variable). An imported dataset says which file it came from. Without 'folder' it lists the open project's files, or the workspace's when no project is open - the workspace's projects named either way. 'folder' is a project's name (amp or amp_prj) or a folder (relative to the open project's folder, else the workspace; or absolute - the workspace's path lists the workspace). 'kind' keeps one kind, 'search' the files whose name contains it, and 'sort' is newest (the default) or name. Subfolders are included up to 4 levels deep; at most 300 files, with what was left out.",
  "inputSchema": {"type": "object", "properties": {
    "folder": {"type": "string", "description": "A project's name (amp or amp_prj) or a folder, relative to the open project's folder (else the workspace) or absolute; the open project (else the workspace) when not given"},
-   "kind": {"type": "string", "enum": ["schematic", "symbol", "data display", "dataset", "netlist", "text", "pdf", "spreadsheet", "markdown", "picture", "verilog-a"], "description": "Only files of this kind"},
+   "kind": {"type": "string", "enum": ["schematic", "symbol", "data display", "dataset", "netlist", "text", "pdf", "spreadsheet", "markdown", "picture", "verilog-a", "layout", "multiphysics model", "RF 2.5D model", "presentation"], "description": "Only files of this kind"},
    "search": {"type": "string", "description": "Only files whose name contains it"}, "sort": {"type": "string", "enum": ["newest", "name"], "description": "newest first (the default) or by name"}}}},
 {"name": "export_image",
  "description": "Writes a picture of a schematic, symbol or data display (the one in front unless 'path' names another) to a file, like File > Export as image without its dialog - or a presentation's slides ('slides': 7, [3, 4], \"2-5\", \"all\"; the slide shown by default, a PDF's all): a picture each (png, jpeg, bmp, tiff, webp; several numbered after the name: talk-03.png), or one pdf of a slide a page, 'scale' their pixels a point (2 by default, 4 a PDF's), the presentation open or not. 'save_as' is a path, or a name in the project's folder (otherwise the workspace's); an existing file is overwritten, and its suffix gives the format when 'format' is not given. 'format' is png, jpeg, bmp, tiff, webp, svg, pdf, eps or pdf_tex (a PDF with its text in a LaTeX file next to it). 'scale' is a raster image's pixels per schematic unit (1 is 96 dpi; 2 by default). 'colours' is colour (the default), grayscale or monochrome. 'transparent' leaves out the paper where the format allows it. 'diagram' (its number from get_schematic) exports that diagram alone, for example a frequency response for a report, and 'selection' only what is selected. Returns the file, its format and its size in pixels or units.",
@@ -2280,6 +2280,7 @@ QString kindOf(QucsDoc* doc)
     if (QucsApp::isArchiveDocument(QucsApp::documentWidget(doc))) return QStringLiteral("archive");
     if (QucsApp::isLayoutDocument(QucsApp::documentWidget(doc))) return QStringLiteral("layout");
     if (QucsApp::isMultiphysicsDocument(QucsApp::documentWidget(doc))) return QStringLiteral("multiphysics model");
+    if (QucsApp::isRf25Document(QucsApp::documentWidget(doc))) return QStringLiteral("RF 2.5D model");
     if (QucsApp::isImageDocument(QucsApp::documentWidget(doc))) return QStringLiteral("picture");
     if (QucsApp::isPresentationDocument(QucsApp::documentWidget(doc))) return QStringLiteral("presentation");
     const QString suffix = QFileInfo(doc->getDocName()).suffix().toLower();
@@ -11449,6 +11450,7 @@ QString kindOfFile(const QString& name, QString* simulator = nullptr)
         {QStringLiteral("log"), QStringLiteral("text")},       {QStringLiteral("m"), QStringLiteral("text")},
         {QStringLiteral("py"), QStringLiteral("text")},        {QStringLiteral("json"), QStringLiteral("text")},
         {QStringLiteral("qfem"), QStringLiteral("multiphysics model")},
+        {QStringLiteral("qrf25"), QStringLiteral("RF 2.5D model")},
         {QStringLiteral("xml"), QStringLiteral("text")},       {QStringLiteral("yaml"), QStringLiteral("text")},
         {QStringLiteral("yml"), QStringLiteral("text")},       {QStringLiteral("ini"), QStringLiteral("text")},
         {QStringLiteral("sh"), QStringLiteral("text")},        {QStringLiteral("tcl"), QStringLiteral("text")},
@@ -11477,12 +11479,20 @@ QJsonObject QucsControl::listDocuments(const QJsonObject& args)
         else return errorResult(tr("There is no folder or project %1 (list_documents without 'folder' lists the workspace and its projects).").arg(folder));
     }
     root = QDir::cleanPath(root);
+    // Every kind kindOfFile() can answer, and no other: a kind it answers
+    // but this list has not is a filter refused for files the listing
+    // shows, and the two drifted apart once already (the models and the
+    // layouts were listed and could not be asked for).
     static const QStringList kinds{QStringLiteral("schematic"), QStringLiteral("symbol"),   QStringLiteral("data display"),
                                    QStringLiteral("dataset"),   QStringLiteral("netlist"),  QStringLiteral("text"),
                                    QStringLiteral("pdf"),       QStringLiteral("spreadsheet"), QStringLiteral("markdown"),
-                                   QStringLiteral("picture"),   QStringLiteral("verilog-a")};
-    const QString kind = args.value(QLatin1String("kind")).toString().trimmed().toLower();
-    if (!kind.isEmpty() && !kinds.contains(kind)) return errorResult(tr("'kind' is one of: %1.").arg(kinds.join(QStringLiteral(", "))));
+                                   QStringLiteral("picture"),   QStringLiteral("verilog-a"), QStringLiteral("layout"),
+                                   QStringLiteral("multiphysics model"), QStringLiteral("RF 2.5D model"),
+                                   QStringLiteral("presentation")};
+    // (Asked for in any case: one of these kinds has capitals in it.)
+    const QString kind = args.value(QLatin1String("kind")).toString().trimmed();
+    if (!kind.isEmpty() && !kinds.contains(kind, Qt::CaseInsensitive))
+        return errorResult(tr("'kind' is one of: %1.").arg(kinds.join(QStringLiteral(", "))));
     const QString search = args.value(QLatin1String("search")).toString().trimmed();
     const QString sort = args.value(QLatin1String("sort")).toString(QStringLiteral("newest"));
     if (sort != QLatin1String("newest") && sort != QLatin1String("name")) return errorResult(tr("'sort' is newest or name."));
@@ -11513,7 +11523,9 @@ QJsonObject QucsControl::listDocuments(const QJsonObject& args)
             }
             QString simulator;
             const QString k = kindOfFile(fi.fileName(), &simulator);
-            if (k.isEmpty() || (!kind.isEmpty() && k != kind)) continue;
+            // (Whatever case the kind was asked in: the kinds this answers
+            // are its own words, and one of them has capitals in it.)
+            if (k.isEmpty() || (!kind.isEmpty() && k.compare(kind, Qt::CaseInsensitive) != 0)) continue;
             if (!search.isEmpty() && !fi.fileName().contains(search, Qt::CaseInsensitive)) continue;
             entries.append(Entry{fi, k, simulator});
         }

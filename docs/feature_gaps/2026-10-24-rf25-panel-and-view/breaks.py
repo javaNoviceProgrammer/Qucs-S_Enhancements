@@ -132,6 +132,26 @@ BREAKS = [
     "    return fill.darker(220);")],
   [("test_rf25_doc", "theProcessedShapesAndTheMeshAreDrawnOverTheLayout")]),
 
+ # ---- what the tools call a model (qucscontrol.cpp)
+ ("an RF 2.5D model open is called a schematic",
+  [("qucscontrol.cpp",
+    '    if (QucsApp::isRf25Document(QucsApp::documentWidget(doc))) return QStringLiteral("RF 2.5D model");\n', "")],
+  [("test_qucs_control", "theWorkspaceIsListed")]),
+
+ ("a model's file is of no kind the tools know, so the listing leaves it out",
+  [("qucscontrol.cpp", '        {QStringLiteral("qrf25"), QStringLiteral("RF 2.5D model")},\n', "")],
+  [("test_qucs_control", "theWorkspaceIsListed")]),
+
+ ("a kind the listing answers cannot be asked for",
+  [("qucscontrol.cpp", 'QStringLiteral("multiphysics model"), QStringLiteral("RF 2.5D model"),\n                                   QStringLiteral("presentation")',
+    'QStringLiteral("multiphysics model")')],
+  [("test_qucs_control", "theWorkspaceIsListed")]),
+
+ ("a kind with capitals in it is asked for in vain",
+  [("qucscontrol.cpp", '    if (!kind.isEmpty() && !kinds.contains(kind, Qt::CaseInsensitive))',
+    '    if (!kind.isEmpty() && !kinds.contains(kind))')],
+  [("test_qucs_control", "theWorkspaceIsListed")]),
+
  ("the canvas gone dark leaves the outlines of the light one",
   [("rf25doc.cpp", "    connect(a_view, &LayoutView::colorsChanged, this, &RF25Doc::showOverlays);", "")],
   [("test_rf25_doc", "theProcessedShapesAndTheMeshAreDrawnOverTheLayout")]),

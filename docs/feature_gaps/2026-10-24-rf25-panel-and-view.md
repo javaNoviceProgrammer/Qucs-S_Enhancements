@@ -3,9 +3,9 @@
 `2026-10-24-rf25-mesh.md` called itself the last piece of phase A, and it was the last of its machinery;
 this is the round that connects it. That round built the cells and their cost, and
 `2026-10-24-rf25-layout-processing.md` the layer map and the processing steps before them - both of them
-library code with tests behind them and nothing in the window calling either. Neither `processLayout()` nor `meshOf()` was
-reached from the GUI: the panel showed the processing as settings with no report, and the view drew the
-layout file and nothing made of it. This is the wiring, and it is what the proposal asks for in so many
+library code with tests behind them and nothing in the window calling either. Neither `processLayout()` nor
+`meshOf()` was reached from the GUI: the panel showed the processing as settings with no report, and the
+view drew the layout file and nothing made of it. This is the wiring, and it is what the proposal asks for in so many
 words - "the panel should show the unknown count before solving", and, of the mesh, "it is drawn in the
 view", which the Mesh node's own help text has promised since phase A began.
 
@@ -116,7 +116,9 @@ drawn *filled in that very colour*, and a tint of a fill is no line at all. So:
 
 ## Broken on purpose
 
-`docs/feature_gaps/2026-10-24-rf25-panel-and-view/breaks.py` holds twenty-five: the cell the model names
+`docs/feature_gaps/2026-10-24-rf25-panel-and-view/breaks.py` holds twenty-nine. Four are of the file-kind
+fixes below - a model open called a schematic, a model's file of no kind at all, a kind answered but not
+offered as a filter, and a kind with capitals asked for in vain. The other twenty-five: the cell the model names
 ignored, the shapes left out going uncounted, the overlays not drawn, a shape out of sight drawn anyway,
 the budget made no limit, `setOverlays` not repainting, the overlays drawn into the cached picture,
 nothing made after a read, nothing made after an edit, a waiting run never started for a test, the model
@@ -165,6 +167,31 @@ showed the theme change leaving the old colours in place.
 picture gives the same shapes and the same stats; `renders()`, the count of pictures the CPU has drawn, is
 what shows it. The test now holds that count still across two frames in which only overlays change.
 
+## What the smoke test of the DMG turned up
+
+Packaging this round and probing the packaged app through `--mcp-server` showed the work itself in place -
+the two buttons with their state, the report lines, `110 cell(s) on 2 layer(s); 108 unknowns; a dense
+matrix of 0.2 MB` - and, beside it, a defect of phase A's document round (`4de84d4`) that no test had ever
+looked at: **the tools did not know what a `.qrf25` is.**
+
+- `kindOf()`, which names an open document, had no RF 2.5D case, so `open_document` on a model answered
+  "is open, in front (schematic)".
+- `kindOfFile()`, which names a file by its suffix, had no `qrf25`, and `list_documents` *skips what it
+  cannot name* - so a workspace full of RF 2.5D models showed none of them. That is the worse half: not a
+  wrong word, a document Claude cannot see at all.
+- Fixing those turned up a third thing. The kinds a filter may ask for live in two hand-written lists - the
+  tool's JSON schema and a `QStringList` in the handler - and they had drifted: `layout`, `multiphysics
+  model` and `presentation` were already answered by the listing and already refused as filters. Both
+  lists now hold every kind the table can answer, and the handler says why in a comment.
+- And a fourth, which only a kind with capitals could find: the handler lowercased the kind asked for and
+  compared it against its list case-sensitively. Every kind until now was lowercase, so nothing had ever
+  exercised it; `RF 2.5D model` is compared without regard to case, in the membership check and in the
+  filter both.
+
+The test for all four is in `test_qucs_control::theWorkspaceIsListed`, which also stopped indexing the
+listing by position while it was there - it read the dataset as `files[1]` and the schematic as `files[2]`,
+so one file added to that folder moved every assertion. It looks entries up by path now.
+
 ## Not done
 
 - **No mesh is kept with the document.** It is made again from the layout whenever the model changes and
@@ -195,6 +222,8 @@ what shows it. The test now holds that count still across two frames in which on
   round with neither a test nor a look behind it.
 - **The overlays carry no legend.** Each has a name - "M1, processed", "M1, the cells" - which nothing
   shows yet; the layout viewer's own layer list would be the place for it.
-- **There are no `rf25_*` tools.** Claude cannot ask for the unknown count: the panel shows it, the tests
-  read it, and the tools of the RF 2.5D model are still unwritten. That and an example `.qrf25` are what
-  remain of phase A's conveniences before phase B's quasi-static extraction.
+- **There are no `rf25_*` tools.** Claude can see the tab's bar and read its notes through `get_ui` (the
+  document area describes the buttons and the panel generically, which is how the packaged app was
+  checked), and `list_documents` and `open_document` now name a model for what it is - but there is no
+  tool that asks for the unknown count, the processing's report or the stack. That and an example
+  `.qrf25` are what remain of phase A's conveniences before phase B's quasi-static extraction.

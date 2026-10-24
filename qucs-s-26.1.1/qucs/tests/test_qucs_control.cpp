@@ -73,6 +73,7 @@
 #include "dataset.h"
 #include "datasetfile.h"
 #include "qucscontrol.h"
+#include "rf25/rf25_model.h"
 #include "schematic.h"
 #include "simulationconsole.h"
 #include "valuereading.h"
@@ -2121,24 +2122,46 @@ private slots:
         QVERIFY(write(ws + "/amp_prj/data.csv", "a,b\n", 1000));
         QVERIFY(write(ws + "/amp_prj/.hidden.sch", empty, 5));
         QVERIFY(write(ws + "/amp_prj/thing.xyz", "?", 5));
+        // A model of each kind: a file whose kind the tools cannot name is
+        // left out of the listing altogether, so a kind missing from the
+        // table is a document Claude cannot see at all.
+        QVERIFY(write(ws + "/amp_prj/planar.qrf25", qucs_s::rf25::Model::blank().toJson(), 1));
         const auto paths = [](const QJsonObject& listed) {
             QStringList list;
             for (const QJsonValue& v : listed.value("files").toArray()) list << v.toObject().value("path").toString();
             return list;
         };
         QJsonObject listed = json(call("list_documents", {{"folder", "amp"}})).toObject();
-        QCOMPARE(paths(listed), (QStringList{"sub/notes.md", "amp.dat.ngspice", "amp.sch", "amp.dat.xyce", "data.csv"}));
-        const QJsonObject dataset = listed.value("files").toArray().at(1).toObject();
+        QCOMPARE(paths(listed), (QStringList{"planar.qrf25", "sub/notes.md", "amp.dat.ngspice", "amp.sch", "amp.dat.xyce", "data.csv"}));
+        const QJsonObject onlyRf = call("list_documents", {{"folder", "amp"}, {"kind", "RF 2.5D model"}});
+        QVERIFY2(paths(json(onlyRf).toObject()) == QStringList{"planar.qrf25"}, qPrintable(text(onlyRf)));
+        // Asked for in any case: this kind is the first with capitals in
+        // it, and the ones before it were all lowercase by chance.
+        const QJsonObject lower = call("list_documents", {{"folder", "amp"}, {"kind", "rf 2.5d model"}});
+        QVERIFY2(paths(json(lower).toObject()) == QStringList{"planar.qrf25"}, qPrintable(text(lower)));
+        // (By path, not by place in the list: a file added to the folder
+        // above would otherwise move every one of these.)
+        const auto entry = [](const QJsonObject& all, const QString& path) {
+            for (const QJsonValue& v : all.value("files").toArray())
+                if (v.toObject().value("path").toString() == path) return v.toObject();
+            return QJsonObject();
+        };
+        const QJsonObject dataset = entry(listed, QStringLiteral("amp.dat.ngspice"));
         QCOMPARE(dataset.value("kind").toString(), QStringLiteral("dataset"));
         QCOMPARE(dataset.value("simulator").toString(), QStringLiteral("ngspice"));
         QCOMPARE(dataset.value("of").toString(), QStringLiteral("amp.sch"));
         QVERIFY(dataset.value("changed").toString().contains('T'));
-        QCOMPARE(listed.value("files").toArray().at(2).toObject().value("kind").toString(), QStringLiteral("schematic"));
+        QCOMPARE(entry(listed, QStringLiteral("amp.sch")).value("kind").toString(), QStringLiteral("schematic"));
+        QCOMPARE(entry(listed, QStringLiteral("planar.qrf25")).value("kind").toString(), QStringLiteral("RF 2.5D model"));
         QCOMPARE(paths(json(call("list_documents", {{"folder", "amp_prj"}, {"kind", "dataset"}})).toObject()),
                  (QStringList{"amp.dat.ngspice", "amp.dat.xyce"}));
         QCOMPARE(paths(json(call("list_documents", {{"folder", ws + "/amp_prj"}, {"search", "AMP.s"}})).toObject()), (QStringList{"amp.sch"}));
         QCOMPARE(paths(json(call("list_documents", {{"folder", "amp"}, {"sort", "name"}})).toObject()),
-                 (QStringList{"amp.dat.ngspice", "amp.dat.xyce", "amp.sch", "data.csv", "sub/notes.md"}));
+                 (QStringList{"amp.dat.ngspice", "amp.dat.xyce", "amp.sch", "data.csv", "planar.qrf25", "sub/notes.md"}));
+        // And opened, it is said to be what it is, not a schematic.
+        const QString saidOpen = text(call("open_document", {{"path", "amp_prj/planar.qrf25"}}));
+        QVERIFY2(saidOpen.contains(QStringLiteral("RF 2.5D model")), qPrintable(saidOpen));
+        QVERIFY(QucsApp::isRf25Document(QucsApp::documentWidget(app->getDoc())));
         // The workspace: its projects, and the files in them.
         QVERIFY(!failed(call("open_document", {{"path", "amp_prj/amp.sch"}})));
         listed = json(call("list_documents")).toObject();
