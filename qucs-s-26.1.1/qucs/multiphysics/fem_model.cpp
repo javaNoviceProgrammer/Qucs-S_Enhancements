@@ -3712,6 +3712,56 @@ bool Node::flag(const QString& key) const
     return v.toBool();
 }
 
+bool propertyVisible(const Node& node, const PropertyDef& p, const NodeKind* kind)
+{
+    if (p.showIf.isEmpty()) return true;
+    // A value as it stands: the node's own, else its kind's default.
+    const auto valueOf = [&node, kind](const QString& key) {
+        const auto it = node.props.constFind(key);
+        if (it != node.props.constEnd() && !it->isUndefined() && !it->isNull()) return QJsonValue(*it);
+        if (kind != nullptr)
+            if (const PropertyDef* def = kind->property(key)) return def->defaultValue;
+        return QJsonValue();
+    };
+    const auto textOf = [&valueOf](const QString& key) {
+        const QJsonValue v = valueOf(key);
+        if (v.isString()) return v.toString();
+        if (v.isDouble()) return formatNumber(v.toDouble(), 15);
+        if (v.isBool()) return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
+        return QString();
+    };
+    // Alternatives split by |, each conditions that all hold, split by &.
+    for (const QString& alternative : p.showIf.split(QLatin1Char('|'))) {
+        bool all = true;
+        for (const QString& cond : alternative.split(QLatin1Char('&'))) {
+            const bool negate = cond.contains(QLatin1String("!="));
+            const QStringList kv = cond.split(negate ? QStringLiteral("!=") : QStringLiteral("="));
+            if (kv.size() != 2) continue;
+            const QString key = kv[0].trimmed(), wanted = kv[1].trimmed();
+            // A flag by its value - 1, "True" as true -, and one given as an
+            // expression of the parameters either: what it shows wanted at
+            // some point. (Compared as a text, the exciton model, its size
+            // and pairs were hidden while "excitons": "ex" had them on: the
+            // hunt of 22 October, B8.)
+            const PropertyDef* def = kind != nullptr ? kind->property(key) : nullptr;
+            if (def != nullptr && def->kind == PropertyDef::Bool
+                && (wanted == QLatin1String("true") || wanted == QLatin1String("false"))) {
+                const QJsonValue v = valueOf(key);
+                if (v.isString() && !flagWord(v.toString())) continue;
+                const QString t = textOf(key).trimmed();
+                const bool on = t.compare(QLatin1String("true"), Qt::CaseInsensitive) == 0 || t == QLatin1String("1");
+                const bool equal = on == (wanted == QLatin1String("true"));
+                all = all && (negate ? !equal : equal);
+                continue;
+            }
+            const bool equal = textOf(key) == wanted;
+            all = all && (negate ? !equal : equal);
+        }
+        if (all) return true;
+    }
+    return false;
+}
+
 bool flagWord(const QString& text)
 {
     const QString t = text.trimmed();

@@ -86,6 +86,7 @@ QString QucsApp::sidePageName(SidePage page)
   case SidePage::Libraries: return QStringLiteral("libraries");
   case SidePage::FileBrowser: return QStringLiteral("file browser");
   case SidePage::Multiphysics: return QStringLiteral("multiphysics");
+  case SidePage::Rf25: return QStringLiteral("rf 2.5d");
   }
   return {};
 }

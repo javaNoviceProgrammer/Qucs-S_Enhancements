@@ -212,17 +212,18 @@ private slots:
 
     // ---- The panel, the tab
 
-    // The left dock's last tab: with no model in front, it offers a new
+    // A tab of the left dock: with no model in front, it offers a new
     // one, to open one, the examples. (Its place was asserted as a number
-    // until the Workspaces panel went in above Projects and moved it; the
-    // page is named now.)
+    // until the Workspaces panel went in above Projects and moved it, and
+    // as the last tab until the RF 2.5D panel went in after it; the page is
+    // asked for by page now, which is what SidePage is for.)
     void thePanelHasItsOwnDockTab()
     {
         QVERIFY(panel() != nullptr);
         auto* tabs = panel()->parentWidget() ? qobject_cast<QTabWidget*>(panel()->parentWidget()->parentWidget()) : nullptr;
         QVERIFY(tabs != nullptr);
         QCOMPARE(tabs->tabText(tabs->indexOf(panel())), QStringLiteral("Multiphysics"));
-        QCOMPARE(tabs->indexOf(panel()), tabs->count() - 1);
+        QCOMPARE(tabs->indexOf(panel()), app->sidePage(QucsApp::SidePage::Multiphysics));
         QCOMPARE(panel()->pages()->currentIndex(), 0);
         QVERIFY(panel()->exampleList()->count() >= 3);
         app->showMultiphysicsPanel();
