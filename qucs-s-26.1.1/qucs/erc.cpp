@@ -2472,6 +2472,36 @@ QList<Issue> check(Schematic* doc, bool run)
                                     .arg(c->Name, QFileInfo(file).fileName()),
                                 QPoint(c->cx, c->cy), c->Name};
         }
+        // The other parts that are backed by a file: its name given, and
+        // there. A missing file was reported for Sub and SpLib alone, while
+        // these said nothing at all - and for an SPfile it costs the whole
+        // netlist, which came out empty with 0 errors and 0 warnings (the
+        // hunt of 23 October, A12).
+        if (c->Model == QLatin1String("SPfile") || c->Model == QLatin1String("SPICE") || c->Model == QLatin1String("Ifile")
+            || c->Model == QLatin1String("Vfile") || c->Model == QLatin1String("Verilog")) {
+            const auto what = [&c]() -> QString {
+                if (c->Model == QLatin1String("SPfile")) return tr("S parameter file");
+                if (c->Model == QLatin1String("SPICE")) return tr("SPICE netlist");
+                if (c->Model == QLatin1String("Verilog")) return tr("Verilog file");
+                return tr("data file");
+            };
+            const auto costs = [&c]() -> QString {
+                if (c->Model == QLatin1String("SPfile"))
+                    return tr("the netlist comes out empty and the simulation has nothing to run");
+                return tr("the netlist names a file the simulator cannot read");
+            };
+            if (auto* given = c->getProperty("File"); given != nullptr) {
+                const QString named = given->Value.trimmed();
+                if (named.isEmpty())
+                    errors << Issue{Severity::Error, tr("%1: no %2 is given: %3").arg(c->Name, what(), costs()),
+                                    QPoint(c->cx, c->cy), c->Name};
+                else if (!QFileInfo::exists(misc::properAbsFileName(named, doc)))
+                    errors << Issue{Severity::Error,
+                                    tr("%1: its %2 %3 is not found (beside the schematic, in the project or its user_lib): %4")
+                                        .arg(c->Name, what(), named, costs()),
+                                    QPoint(c->cx, c->cy), c->Name};
+            }
+        }
         // A SPICE library part whose library is nowhere (the netlist
         // includes a file the simulator cannot read; with the automatic
         // symbol, a box without pins), or whose library does not define

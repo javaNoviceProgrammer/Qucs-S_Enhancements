@@ -698,6 +698,12 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
     QString parameter = QStringLiteral("S"), format = QStringLiteral("MA");
     double reference = 50;
     bool order2112 = false, optionSeen = false, version2 = false;
+    // Whether the option line said a frequency unit we know: one it names
+    // and we do not used to fall through to the 10^9 below, so every
+    // frequency came out a billion times what the file says (the hunt of 23
+    // October, A11).
+    bool unitSaid = false;
+    QString optionLine;
     QList<double> numbers;
     for (QString line : qucs_s::textcodec::decode(bytes).split(QLatin1Char('\n'))) {
         if (const qsizetype bang = line.indexOf(QLatin1Char('!')); bang >= 0) line.truncate(bang);
@@ -706,13 +712,14 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
         if (line.startsWith(QLatin1Char('#'))) {
             if (optionSeen) continue;   // (only the first counts)
             optionSeen = true;
+            optionLine = line;
             const QStringList words = line.mid(1).simplified().toUpper().split(QLatin1Char(' '), Qt::SkipEmptyParts);
             for (int i = 0; i < words.size(); ++i) {
                 const QString& w = words.at(i);
-                if (w == QLatin1String("HZ")) unit = 1;
-                else if (w == QLatin1String("KHZ")) unit = 1e3;
-                else if (w == QLatin1String("MHZ")) unit = 1e6;
-                else if (w == QLatin1String("GHZ")) unit = 1e9;
+                if (w == QLatin1String("HZ")) { unit = 1; unitSaid = true; }
+                else if (w == QLatin1String("KHZ")) { unit = 1e3; unitSaid = true; }
+                else if (w == QLatin1String("MHZ")) { unit = 1e6; unitSaid = true; }
+                else if (w == QLatin1String("GHZ")) { unit = 1e9; unitSaid = true; }
                 else if (w == QLatin1String("S") || w == QLatin1String("Y") || w == QLatin1String("Z") || w == QLatin1String("H")
                          || w == QLatin1String("G"))
                     parameter = w;
@@ -741,6 +748,11 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
     }
     if (ports < 1) return fail(tr("How many ports the Touchstone file has is not known: its suffix (.s2p) or [Number of Ports] says."));
     if (ports > 99) return fail(tr("A Touchstone file of %1 ports is not read (99 at most).").arg(ports));
+    // A unit the option line names and we cannot read is refused, not
+    // guessed: guessing it cost a factor of 10^9 in silence (A11).
+    if (optionSeen && !unitSaid)
+        return fail(tr("The Touchstone file's option line does not say a frequency unit we read (Hz, kHz, MHz or GHz): \"%1\". "
+                       "Its frequencies cannot be known.").arg(optionLine.simplified()));
     const qsizetype per = 1 + 2 * qsizetype(ports) * ports;
     Variable x;
     x.name = QStringLiteral("frequency");
@@ -752,10 +764,18 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
             v.name = QStringLiteral("%1[%2,%3]").arg(parameter).arg(i + 1).arg(j + 1);
             v.dependencies = {x.name};
         }
+    qsizetype read = 0;
+    bool stopped = false;
     for (qsizetype at = 0; at + per <= numbers.size(); at += per) {
         const double f = numbers.at(at) * unit;
         // A two-port's noise data begins where the frequency starts over.
-        if (ports == 2 && !x.re.isEmpty() && f <= x.re.last()) break;
+        // Which also means a file whose points are not in rising order
+        // stops here - said below, where it used to lose them in silence
+        // (the hunt of 23 October, A10).
+        if (ports == 2 && !x.re.isEmpty() && f <= x.re.last()) {
+            stopped = true;
+            break;
+        }
         x.re << f;
         for (int k = 0; k < ports * ports; ++k) {
             // Row by row (11 12 21 22) - but a two-port's in version 1, or
@@ -776,13 +796,42 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
             v.re << re;
             v.im << im;
         }
+        read = at + per;
     }
     if (x.re.isEmpty()) return fail(tr("The Touchstone file holds no data."));
+    // Every point is 1 + 2n^2 numbers, and rows are joined because one point
+    // of a many-port file is written over several - so what is read must
+    // come out whole. A row that is short or long used to shift everything
+    // after it, and the next row's frequency was read as an S parameter
+    // (S12 = 3e9 at 2 GHz), said nowhere (A9). Numbers left where the two-
+    // port's noise data begins are none of this: they are not read.
+    if (!stopped && read != numbers.size())
+        return fail(tr("The Touchstone file does not hold whole points: %1 numbers for a %2-port file, where each point is %3 "
+                       "(its frequency and %4 pairs), so %5 are left over. A row of it is short or long - the file is damaged "
+                       "or was cut short.")
+                        .arg(numbers.size()).arg(ports).arg(per).arg(ports * ports).arg(numbers.size() - read));
     data->variables << x;
     for (const Variable& v : std::as_const(values)) data->variables << v;
     data->x = x.name;
     data->notes << (ports == 1 ? tr("%1 parameters of one port, its reference %2 Ohm.").arg(parameter).arg(reference)
                                : tr("%1 parameters of %2 ports, their reference %3 Ohm.").arg(parameter).arg(ports).arg(reference));
+    data->notes << tr("%1 point(s), %2 to %3 Hz.").arg(x.re.size()).arg(x.re.first()).arg(x.re.last());
+    // What was left where the frequency stopped rising. A two-port's noise
+    // data is five numbers a row, so a leftover that is a multiple of five
+    // is the ordinary case and says nothing; anything else is points that
+    // were dropped, which used to happen in silence (A10).
+    if (stopped && (numbers.size() - read) % 5 != 0)
+        data->notes << tr("%1 number(s) after the %2 point(s) read were left out: they begin where the frequency stops rising, "
+                          "which is where a two-port file's noise data begins, and that is how they are read. A file whose "
+                          "points are not in rising order - two sweeps joined, a sweep written backwards - loses them this way.")
+                           .arg(numbers.size() - read).arg(x.re.size());
+    if (!optionSeen)
+        data->notes << tr("It has no '#' option line, which Touchstone asks for: the standard's defaults are taken - GHz, %1 "
+                          "parameters, magnitude and angle, reference %2 Ohm. Check them against what wrote the file.")
+                           .arg(parameter).arg(reference);
+    if (reference <= 0)
+        data->notes << tr("Its reference impedance is %1 Ohm, which no conversion from %2 parameters can divide by.")
+                           .arg(reference).arg(parameter);
     return true;
 }
 

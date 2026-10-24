@@ -4816,7 +4816,37 @@ QString QucsControl::wrongTypes(const QString& tool, const QJsonObject& args) co
 // read as that field, of the one where it is a list. An empty object when
 // there is nothing to read that way (MCP wishlist N11: delete with 'name'
 // was refused, "Meant names?", while the tools that take one take 'name').
-QJsonObject QucsControl::asPlural(const QString& tool, const QJsonObject& args) const
+// The plural of \a word, by the three English rules that cover a field
+// name: property -> properties, box -> boxes, name -> names. Empty where
+// \a word is too short to be a singular anyone would send.
+QString QucsControl::pluralOf(const QString& word)
+{
+    if (word.size() < 3) return {};   // 'a' for 'as', 'v' for 'vs', 'f' for 'fs'
+    if (word.endsWith(QLatin1Char('y')) && word.size() > 3) return word.chopped(1) + QLatin1String("ies");
+    for (const QLatin1String end : {QLatin1String("s"), QLatin1String("x"), QLatin1String("z"), QLatin1String("ch"),
+                                    QLatin1String("sh")})
+        if (word.endsWith(end)) return word + QLatin1String("es");
+    return word + QLatin1Char('s');
+}
+
+// Field names that end in "s" and are not plurals of anything: no singular
+// is folded into them. The rule used to strip a trailing "s" from any field,
+// so a one- or two-letter key became a real argument - save_document {"a":
+// "x.sch"} wrote the file, synthesize_filter {"f": 2e9} designed to a stop
+// band never given (the hunt of 23 October, A1).
+static bool isNoPlural(const QString& field)
+{
+    static const QSet<QString> notPlurals{
+        QStringLiteral("as"),      QStringLiteral("save_as"),  QStringLiteral("keep_as"),  QStringLiteral("axis"),
+        QStringLiteral("x_axis"),  QStringLiteral("y_axis"),   QStringLiteral("y2_axis"),  QStringLiteral("analysis"),
+        QStringLiteral("press"),   QStringLiteral("thickness"),QStringLiteral("vs"),       QStringLiteral("fs"),
+        QStringLiteral("species"), QStringLiteral("nichols"),  QStringLiteral("status"),   QStringLiteral("always"),
+        QStringLiteral("bias"),    QStringLiteral("gas"),      QStringLiteral("class"),    QStringLiteral("pass"),
+        QStringLiteral("loss"),    QStringLiteral("cross"),    QStringLiteral("plus"),     QStringLiteral("minus")};
+    return notPlurals.contains(field);
+}
+
+QJsonObject QucsControl::asPlural(const QString& tool, const QJsonObject& args, bool record) const
 {
     const auto known = a_details.constFind(tool);
     if (known == a_details.constEnd()) return {};
@@ -4824,22 +4854,32 @@ QJsonObject QucsControl::asPlural(const QString& tool, const QJsonObject& args) 
     if (schema.value(QLatin1String("additionalProperties")).toBool()) return {};
     const QJsonObject fields = schema.value(QLatin1String("properties")).toObject();
     QJsonObject out = args;
+    QSet<QString> folded;
     bool any = false;
     for (auto it = args.begin(); it != args.end(); ++it) {
         if (it.key().isEmpty() || fields.contains(it.key())) continue;
-        for (const QString& plural : {it.key() + QLatin1Char('s'), it.key() + QLatin1String("es")}) {
-            if (args.contains(plural) || !fields.contains(plural)) continue;
-            // The value as that field takes it: wrapped in a list where the
-            // field is one, else as it is (undo's 'steps' is a number,
-            // read_pdf's 'pages' takes [3, 4], "2-5" or 7).
-            const QJsonObject field = fields.value(plural).toObject();
-            const bool list = field.value(QLatin1String("type")).toString() == QLatin1String("array");
-            out.remove(it.key());
-            out.insert(plural, list && !it.value().isArray() ? QJsonValue(QJsonArray{it.value()}) : it.value());
-            renamedForCall(it.key(), plural);
-            any = true;
-            break;
-        }
+        const QString plural = pluralOf(it.key());
+        if (plural.isEmpty() || args.contains(plural) || !fields.contains(plural) || isNoPlural(plural)) continue;
+        const QJsonObject field = fields.value(plural).toObject();
+        const QJsonValue type = field.value(QLatin1String("type"));
+        // A flag is never a list of one: allow_command would have turned on
+        // running a schematic's commands, and replace_equation a rewrite.
+        if (type.toString() == QLatin1String("boolean")) continue;
+        // Two keys that would fold into one field: refused rather than one
+        // of them silently thrown away (A1's own collision).
+        if (folded.contains(plural)) return {};
+        folded.insert(plural);
+        // The value as that field takes it: wrapped in a list where the
+        // field is one, else as it is (undo's 'steps' is a number,
+        // read_pdf's 'pages' takes [3, 4], "2-5" or 7).
+        bool list = type.toString() == QLatin1String("array");
+        if (type.isArray())
+            for (const QJsonValue& one : type.toArray())
+                if (one.toString() == QLatin1String("array")) list = true;
+        out.remove(it.key());
+        out.insert(plural, list && !it.value().isArray() ? QJsonValue(QJsonArray{it.value()}) : it.value());
+        if (record) renamedForCall(it.key(), plural);
+        any = true;
     }
     return any ? out : QJsonObject();
 }
@@ -4875,6 +4915,33 @@ QJsonObject QucsControl::asNumbers(const QString& tool, const QJsonObject& args,
         any = true;
     }
     return any ? out : QJsonObject();
+}
+
+// \a args as the tool will actually read them: a singular where a list of
+// that name is taken (N11), a number given as text where a number is taken.
+// The guards are given this instead of the arguments as they came - they
+// read 'as', 'save_as' and 'calls' before the rename had happened, so a
+// write spelt with the singular was named nowhere and a batch's inner calls
+// were hidden from all three checks (the hunt of 23 October, A2 and A3).
+// Nothing is said here: the call's own pass through call() says it.
+QJsonObject QucsControl::asTheToolReadsIt(const QString& tool, const QJsonObject& args) const
+{
+    QJsonObject out = args;
+    // (A rename can expose a number to read, so a few passes - each is
+    // idempotent, and the loop stops as soon as one changes nothing.)
+    for (int pass = 0; pass < 4; ++pass) {
+        bool any = false;
+        if (const QJsonObject plural = asPlural(tool, out, false); !plural.isEmpty()) {
+            out = plural;
+            any = true;
+        }
+        if (const QJsonObject numbers = asNumbers(tool, out, nullptr); !numbers.isEmpty()) {
+            out = numbers;
+            any = true;
+        }
+        if (!any) break;
+    }
+    return out;
 }
 
 QString QucsControl::unknownArguments(const QString& tool, const QJsonObject& args) const
@@ -4922,7 +4989,7 @@ QJsonObject QucsControl::call(const QString& tool, const QJsonObject& args, cons
     } depth(this, tool);
     // A singular where the tool takes a list of that name ('name' for
     // delete's 'names'): read as that list, and said (MCP wishlist N11).
-    if (const QJsonObject plural = asPlural(tool, args); !plural.isEmpty()) return call(tool, plural, done, async);
+    if (const QJsonObject plural = asPlural(tool, args, true); !plural.isEmpty()) return call(tool, plural, done, async);
     // A number given as text where a number is taken ("1" for undo's
     // 'steps'): read as that number, and said (the check of 23 October, 5).
     QStringList asText;

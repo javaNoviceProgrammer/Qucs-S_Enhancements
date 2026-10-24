@@ -1,0 +1,10 @@
+[["new_document", {}],
+ ["add_component", {"type": "R", "x": 100, "y": 100}],
+ ["save_document", {"as": "a.sch"}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('trash'+'_file', {path: 'v.sch'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "var t='trash_'+'file'; qucs.call(t, {path: 'v.sch'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('console', {console: 'terminal', input: 'ls'})"}}],
+ ["describe_tool", {"name": "run_script", "arguments": {"script": "qucs.call('get_state', {})"}}],
+ ["describe_tool", {"name": "rename_file", "arguments": {"path": "a.sch", "to": "/Users/meisam/Desktop/moved.sch"}}],
+ ["describe_tool", {"name": "set_settings", "arguments": {"scope": "app", "values": {"Locations/Library search paths": "/Users/meisam/Desktop/libs"}}}],
+ ["describe_tool", {"name": "create_library", "arguments": {"name": "L", "subcircuits": ["a.sch"], "destination": "/Users/meisam/Desktop/libs"}}]]

@@ -19,6 +19,7 @@
 #include "dialogs/simmessage.h"
 #include "extsimkernels/simulationrun.h"
 #include "qucs.h"
+#include "multiphysicsdoc.h"
 #include "simulationconsole.h"
 
 #include <QAction>
@@ -133,6 +134,22 @@ void QucsControl::stopProcess(QObject* process)
 {
     if (auto* run = qobject_cast<SimulationRun*>(process)) run->stop();
     else if (auto* sim = qobject_cast<SimMessage*>(process)) QMetaObject::invokeMethod(sim, "AbortSim", Qt::DirectConnection);
+}
+
+// Whether something is running on \a doc that reading its file again would
+// pull the ground from under: a FEM solve or build, or a simulation of it
+// still going. The reload's own guard counts a batch, a script, a tune and
+// a preview, but a job is none of those - so a model was read again in the
+// middle of a solve and the run ended against the model written over it,
+// blaming a parameter the user's own model has (the hunt of 23 October, A7).
+bool QucsControl::busyWithAJob(QucsDoc* doc) const
+{
+    if (doc == nullptr) return false;
+    if (auto* model = dynamic_cast<MultiphysicsDoc*>(doc)) return model->isBusy();
+    if (doc->getDocName().isEmpty()) return false;
+    for (const SimRun& r : a_simRuns)
+        if (!r.ended.isValid() && !r.schematic.isEmpty() && sameFile(r.schematic, doc->getDocName())) return true;
+    return false;
 }
 
 QJsonObject QucsControl::simulationStatus(const QJsonObject& args)

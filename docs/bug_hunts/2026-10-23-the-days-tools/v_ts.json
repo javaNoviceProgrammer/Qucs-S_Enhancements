@@ -1,0 +1,9 @@
+[["new_document", {}],
+ ["save_document", {"as": "s.sch"}],
+ ["import_data", {"file": "good.s2p", "name": "g"}],
+ ["import_data", {"file": "odd.s2p", "name": "o"}],
+ ["import_data", {"file": "unsorted.s2p", "name": "u"}],
+ ["import_data", {"file": "bad_unit.s2p", "name": "b"}],
+ ["import_data", {"file": "noheader.s2p", "name": "nh"}],
+ ["import_data", {"file": "zref.s2p", "name": "z"}],
+ ["import_data", {"file": "oneport_as_s2p.s2p", "name": "op"}]]
