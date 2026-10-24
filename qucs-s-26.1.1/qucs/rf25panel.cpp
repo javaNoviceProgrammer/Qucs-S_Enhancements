@@ -205,6 +205,9 @@ void RF25Panel::setDocument(RF25Doc* doc)
         updateStatusColumn();
         scheduleSettings();
     });
+    // The shapes and the mesh made again: what the Processing, the Mesh
+    // and the Layout say they did is of that run.
+    a_connections << connect(doc, &RF25Doc::preparedChanged, this, [this] { scheduleSettings(); });
     a_connections << connect(doc, &RF25Doc::focusChanged, this, [this](const QString& tag) {
         if (currentTag() != tag) selectNode(tag);
     });
@@ -652,9 +655,45 @@ void RF25Panel::showSettings()
             }
         }
     v->addLayout(form);
+    // What this node did, where it is one that does something: the
+    // processing's steps under the Processing, the cells and what they
+    // would cost under the Mesh, both made of the layout as read.
+    QStringList did;
+    const std::shared_ptr<const Processed> processed = a_doc->processed();
+    const std::shared_ptr<const Mesh> mesh = a_doc->mesh();
+    QStringList cannot;
+    const bool itsOwn = n->type == QLatin1String("rf_processing") || n->type == QLatin1String("rf_mesh")
+                        || n->type == QLatin1String("rf_layout");
+    if (n->type == QLatin1String("rf_processing")) {
+        if (processed) {
+            did = processed->report.lines;
+            cannot = processed->problems;
+        }
+    } else if (n->type == QLatin1String("rf_mesh")) {
+        if (mesh) {
+            did = mesh->lines;
+            cannot = mesh->problems;
+        }
+    } else if (n->type == QLatin1String("rf_layout")) {
+        if (processed)
+            did << tr("%1 shape(s) sent to a layer of the stack, %2 left out by the map.")
+                       .arg(processed->report.read).arg(processed->report.ignored);
+    }
+    if (a_doc->isPreparing()) {
+        did.clear();
+        cannot.clear();
+        if (itsOwn) did << tr("Being made…");
+    }
+    if (!did.isEmpty()) {
+        auto* report = new QLabel(QStringLiteral("• ") + did.join(QStringLiteral("\n• ")), a_form);
+        report->setObjectName(QStringLiteral("rfNodeReport"));
+        report->setWordWrap(true);
+        report->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        v->addWidget(report);
+    }
     // What is missing, where it is about this node: the stack's problems
     // under the stack, the whole model's under the model.
-    QStringList said;
+    QStringList said = cannot;
     if (n->type == QLatin1String("rf_model")) said = a_doc->problems();
     else if (n->type == QLatin1String("rf_stack")) said = m.stack().problems;
     else if (n->type == QLatin1String("rf_layout") && !a_doc->layoutProblem().isEmpty()) said << a_doc->layoutProblem();

@@ -7,6 +7,7 @@
  */
 #include <QtTest>
 
+#include "layout.h"
 #include "rf25/rf25_layout.h"
 
 namespace rf = qucs_s::rf25;
@@ -341,6 +342,58 @@ private slots:
         m.layout().props.insert(QStringLiteral("cell"), QStringLiteral("no_such_cell"));
         QVERIFY2(says(rf::processLayout(m, QFileInfo(file).absolutePath()).problems, "has no cell"),
                  "a cell that is not there went unsaid");
+    }
+
+    // A layout already in memory processed, which is what a tab has: the
+    // same shapes and the same report as reading the file again gives, and
+    // the file read but once.
+    void aLayoutInMemoryIsProcessedWithoutReadingItAgain()
+    {
+        const QString file = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
+        if (!QFileInfo::exists(file)) QSKIP("the example layout is not in this build");
+        rf::Model m = stacked();
+        m.layout().props.insert(QStringLiteral("file"), file);
+        QJsonArray rows;
+        for (int layer = 0; layer < 64; ++layer)
+            rows.append(QJsonArray{QString::number(layer), QStringLiteral("0"), QStringLiteral("M1")});
+        set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", rows);
+
+        QString why;
+        const std::shared_ptr<qucs_s::layout::Layout> read = qucs_s::layout::read(file, &why);
+        QVERIFY2(read != nullptr, qPrintable(why));
+        const rf::Processed held = rf::processRead(m, *read, QStringLiteral("heater.gds"));
+        const rf::Processed fresh = rf::processLayout(m, QFileInfo(file).absolutePath());
+        QVERIFY(!held.conductors.isEmpty());
+        QCOMPARE(held.conductors.size(), fresh.conductors.size());
+        QCOMPARE(held.report.read, fresh.report.read);
+        QCOMPARE(held.report.ignored, fresh.report.ignored);
+        QCOMPARE(held.report.lines, fresh.report.lines);
+        QCOMPARE(held.problems, fresh.problems);
+        for (int i = 0; i < held.conductors.size(); ++i) {
+            QCOMPARE(held.conductors.at(i).layer, fresh.conductors.at(i).layer);
+            QCOMPARE(held.conductors.at(i).outline, fresh.conductors.at(i).outline);
+        }
+
+        // A map that names one layer of the three: what it let through,
+        // and what it left out, counted - and counted the same either way.
+        QJsonArray one;   // (a braced list of one list is a copy of it to CI's AppleClang)
+        one.append(QJsonArray{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")});
+        QCOMPARE(one.size(), 1);
+        set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", one);
+        const rf::Processed some = rf::processRead(m, *read, QStringLiteral("heater.gds"));
+        QVERIFY2(some.report.ignored > 0, "the shapes the map does not name went uncounted");
+        QCOMPARE(some.report.ignored, rf::processLayout(m, QFileInfo(file).absolutePath()).report.ignored);
+        QVERIFY2(says(some.report.lines, "the map does not name"), qPrintable(some.report.summary()));
+        QVERIFY(!some.conductors.isEmpty());
+        QCOMPARE(some.byLayer().keys(), QStringList({QStringLiteral("M1")}));
+
+        // A cell the file has not is said of the name it was given, not of
+        // a path it never read.
+        m.layout().props.insert(QStringLiteral("cell"), QStringLiteral("no_such_cell"));
+        const rf::Processed wrong = rf::processRead(m, *read, QStringLiteral("heater.gds"));
+        QVERIFY2(says(wrong.problems, "has no cell"), qPrintable(wrong.problems.join(" | ")));
+        QVERIFY2(says(wrong.problems, "heater.gds"), qPrintable(wrong.problems.join(" | ")));
+        QVERIFY(wrong.conductors.isEmpty());
     }
 };
 
