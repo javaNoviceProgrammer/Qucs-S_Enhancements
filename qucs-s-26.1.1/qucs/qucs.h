@@ -121,6 +121,12 @@ public:
   /// folder that is no project), a project, or the project open now.
   enum ProjectState { NoProject = 0, ClosedProject, OpenProject };
   static constexpr int ProjectStateRole = Qt::UserRole + 100;
+  /// What a row of the Projects or Workspaces panel is, in a word: "open"
+  /// (the one open now), "closed", or "missing" (its folder is not there).
+  /// The panels draw it as a dot and as grey text; get_ui reads this, so a
+  /// reader of the window is told what a viewer sees (the check of 24
+  /// October, the first nit).
+  static constexpr int RowStateRole = Qt::UserRole + 101;
   /// The project open now, by its folder (empty: none). A row is it when it
   /// is that folder - or leads to it, as a linked project does.
   void setOpenProject(const QString &path);

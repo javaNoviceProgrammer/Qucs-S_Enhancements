@@ -13069,14 +13069,20 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
             // (Create Library's subcircuits: which go into the library).
             QJsonArray items, checked;
             bool checkable = false;
+            QJsonObject states;
             for (int k = 0; k < lw->count() && k < 200; ++k) {
                 items.append(lw->item(k)->text());
                 const bool box = hasCheckBox(lw->item(k)->flags(), lw->item(k)->data(Qt::CheckStateRole));
                 checkable = checkable || box;
                 checked.append(box ? QJsonValue(lw->item(k)->checkState() == Qt::Checked) : QJsonValue(QJsonValue::Null));
+                // What the row is where a panel draws it rather than says it
+                // (a workspace's dot, its grey where the folder has gone).
+                if (const QString state = lw->item(k)->data(QucsFileSystemModel::RowStateRole).toString(); !state.isEmpty())
+                    states.insert(lw->item(k)->text(), state);
             }
             o.insert(QStringLiteral("items"), items);
             if (checkable) o.insert(QStringLiteral("checked"), checked);
+            if (!states.isEmpty()) o.insert(QStringLiteral("state"), states);
             if (lw->count() > 200) o.insert(QStringLiteral("items not shown"), lw->count() - 200);
         } else if (auto* slider = qobject_cast<QAbstractSlider*>(w)) {
             o.insert(QStringLiteral("kind"), QStringLiteral("slider"));
@@ -13113,6 +13119,8 @@ QJsonObject QucsControl::describeControls(QWidget* dialog, bool ui) const
                     if (const int depth = depthOf(view, index); depth > 0) row.insert(QStringLiteral("depth"), depth);
                     if (view->model()->hasChildren(index)) row.insert(QStringLiteral("open"), static_cast<QTreeView*>(view)->isExpanded(index));
                 }
+                if (const QString state = index.data(QucsFileSystemModel::RowStateRole).toString(); !state.isEmpty())
+                    row.insert(QStringLiteral("state"), state);
                 if (view->selectionModel() != nullptr && view->selectionModel()->isSelected(index)) row.insert(QStringLiteral("selected"), true);
                 rows.append(row);
             }

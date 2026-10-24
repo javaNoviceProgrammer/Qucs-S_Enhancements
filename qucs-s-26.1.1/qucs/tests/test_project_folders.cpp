@@ -8,6 +8,7 @@
 #include <QtTest>
 #include <QAction>
 #include <QCheckBox>
+#include <QIcon>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QListView>
@@ -464,12 +465,19 @@ private slots:
             return rowOf(panel, name).data(QucsFileSystemModel::ProjectStateRole).toInt();
         };
         const auto tip = [&](const char* name) { return rowOf(panel, name).data(Qt::ToolTipRole).toString(); };
+        // The same in a word, for a reader of the window rather than a
+        // viewer of it (get_ui gives it per row: the check of 24 October).
+        const auto said = [&](const char* name) {
+            return rowOf(panel, name).data(QucsFileSystemModel::RowStateRole).toString();
+        };
         for (const char* name : {"amp_prj", "far_prj", "filter_prj"}) {
             QCOMPARE(state(name), int(QucsFileSystemModel::ClosedProject));
             QCOMPARE(dotOf(panel, rowOf(panel, name)), QStringLiteral("grey"));
             QVERIFY2(tip(name).startsWith("A project, not open"), qPrintable(tip(name)));
         }
         QCOMPARE(state("notes"), int(QucsFileSystemModel::NoProject));
+        QVERIFY2(said("notes").isEmpty(), qPrintable(said("notes")));   // (no project, no state)
+        for (const char* name : {"amp_prj", "filter_prj"}) QCOMPARE(said(name), QStringLiteral("closed"));
         QCOMPARE(dotOf(panel, rowOf(panel, "notes")), QStringLiteral("none"));
         QVERIFY(!tip("notes").contains("project"));
         QVERIFY2(tip("far_prj").contains("Linked from"), qPrintable(tip("far_prj")));   // as it was
@@ -496,10 +504,18 @@ private slots:
         QCOMPARE(dotOf(panel, rowOf(panel, "far_prj")), QStringLiteral("green"));
         QVERIFY2(tip("far_prj").startsWith("The project open now\nLinked from"), qPrintable(tip("far_prj")));
         QCOMPARE(state("amp_prj"), int(QucsFileSystemModel::ClosedProject));
+        QCOMPARE(said("far_prj"), QStringLiteral("open"));
         app.slotMenuProjClose();
         app.openProject(workspace + "/far_prj");   // and through the link
         QCOMPARE(state("far_prj"), int(QucsFileSystemModel::OpenProject));
         app.slotMenuProjClose();
+
+        // A link whose project is gone: "missing" in a word, where the row
+        // is only greyed and the tooltip long (the check of 24 October).
+        QVERIFY(QDir(far).removeRecursively());
+        QTRY_COMPARE(said("far_prj"), QStringLiteral("missing"));
+        QVERIFY2(tip("far_prj").contains("not there now"), qPrintable(tip("far_prj")));
+        QCOMPARE(said("filter_prj"), QStringLiteral("closed"));
 
         // ".." in a folder: none.
         QVERIFY(QDir().mkpath(workspace + "/notes/inner_prj"));
@@ -624,6 +640,22 @@ private slots:
                  qPrintable(rowOf(panel, "gone").data(Qt::ToolTipRole).toString()));
         emit panel->itemDoubleClicked(panel->item(rowOf(panel, "gone").row()));
         QCOMPARE(QDir(QucsSettings.qucsWorkspaceDir).canonicalPath(), QDir(second).canonicalPath());
+
+        // Every row carries a folder icon, as a project's row carries the
+        // project's.
+        for (const char* name : {"second", "gone"})
+            QVERIFY2(!rowOf(panel, name).data(Qt::DecorationRole).value<QIcon>().isNull(),
+                     qPrintable(QStringLiteral("%1 has no icon").arg(QLatin1String(name))));
+        QVERIFY(!rowOf(panel, "second").data(Qt::DecorationRole).value<QIcon>()
+                     .pixmap(QSize(16, 16)).isNull());
+
+        // Double-clicking the workspace already open shows what it holds -
+        // its projects - as opening the open project shows its contents.
+        QVERIFY(app.showSidePage(QucsApp::SidePage::Content));
+        emit panel->itemDoubleClicked(panel->item(rowOf(panel, "second").row()));
+        QCOMPARE(app.currentSidePageName(), QStringLiteral("projects"));
+        QCOMPARE(QDir(QucsSettings.qucsWorkspaceDir).canonicalPath(), QDir(second).canonicalPath());
+        QVERIFY(app.showSidePage(QucsApp::SidePage::Workspaces));
 
         // Forgetting one takes the row away and leaves the folder alone;
         // the one open now stays in the list.
