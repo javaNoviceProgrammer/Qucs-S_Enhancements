@@ -2349,6 +2349,78 @@ private slots:
                      2);
         }
 
+        // The loop's inductance, which is a tool of its own because it is
+        // a different quantity by a different method: Ruehli's partial
+        // inductances over the runs of current, not 1/(c0^2 C0).
+        {
+            // This layout's layer 1 is a wire running in y, so its two
+            // ends are its top and bottom; two ports there make a loop.
+            qucs_s::rf25::Model wire = lossy;
+            const auto port = [&wire](double y) {
+                // (make() only numbers the tag, so any model's will do.)
+                qucs_s::rf25::Node p = wire.make(QStringLiteral("rf_edge_port"));
+                p.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                p.props.insert(QStringLiteral("x"), QStringLiteral("0"));
+                p.props.insert(QStringLiteral("y"), QStringLiteral("%1[um]").arg(y));
+                return p;
+            };
+            QVERIFY(wire.add(QStringLiteral("ports"), port(-600)) != nullptr);
+            QVERIFY(wire.add(QStringLiteral("ports"), port(600)) != nullptr);
+            QVERIFY(put(ws + "/rf/wire.qrf25", wire.toJson()));
+            const QJsonObject got = call("rf25_inductance", {{"path", ws + "/rf/wire.qrf25"}}, 300000);
+            QVERIFY2(!failed(got), qPrintable(text(got)));
+            const QJsonObject ind = json(got).toObject();
+            QCOMPARE(ind.value("model").toString(), QStringLiteral("wire.qrf25"));
+            // A 1200 µm wire of copper: a couple of nanohenries, by the
+            // textbook (mu0 l/2pi)(ln(2l/w) + 1/2), and ohms of it.
+            const double l = ind.value("L").toDouble();
+            QVERIFY2(l > 0.5e-9 && l < 10e-9, qPrintable(QStringLiteral("%1 nH").arg(l * 1e9)));
+            QVERIFY2(ind.value("R_dc").toDouble() > 0, "copper with no resistance");
+            QVERIFY2(ind.value("runs of current").toInt() > 0, "no runs of current");
+            QVERIFY2(ind.value("cells").toInt() > 0, "no cells");
+            QVERIFY2(!ind.value("what it did").toArray().isEmpty(), "it said nothing of what it did");
+            // Q at the study's own frequency, and at one of its own, each
+            // being wL/R - the same L and R, since neither moves with it.
+            const double q = ind.value("Q").toDouble();
+            QVERIFY2(q > 0, "no Q");
+            const double at = ind.value("frequency").toDouble();
+            QVERIFY2(std::abs(q - 2 * M_PI * at * l / ind.value("R_dc").toDouble()) < 1e-9 * q, "Q is not wL/R");
+            const QJsonObject lower = json(call("rf25_inductance", {{"path", ws + "/rf/wire.qrf25"},
+                                                                    {"frequency", "1[GHz]"}}, 300000)).toObject();
+            QCOMPARE(lower.value("frequency").toDouble(), 1e9);
+            QVERIFY2(std::abs(lower.value("L").toDouble() - l) < 1e-12 * l, "L moved with a frequency it does not use");
+            QVERIFY2(lower.value("Q").toDouble() < q, "Q at a tenth of the frequency should be the lower");
+            // Asking does not leave a step of Undo behind it.
+            QVERIFY2(!failed(call("rf25_inductance", {{"path", ws + "/rf/wire.qrf25"}, {"frequency", "2[GHz]"}}, 300000)),
+                     "a second ask was refused");
+            // A frequency that is none.
+            QVERIFY(failed(call("rf25_inductance", {{"path", ws + "/rf/wire.qrf25"}, {"frequency", "0"}}, 60000)));
+            // Two ports in the same place: the solve has a loop asked of
+            // it and finds there is none, and the tool passes on what it
+            // said rather than answering a loop of nothing.
+            qucs_s::rf25::Model together = lossy;
+            QVERIFY(together.add(QStringLiteral("ports"), port(-600)) != nullptr);
+            QVERIFY(together.add(QStringLiteral("ports"), port(-600)) != nullptr);
+            QVERIFY(put(ws + "/rf/together.qrf25", together.toJson()));
+            const QJsonObject none = call("rf25_inductance", {{"path", ws + "/rf/together.qrf25"}}, 300000);
+            QVERIFY2(failed(none), qPrintable(text(none)));
+            QVERIFY2(text(none).contains(QStringLiteral("same face")), qPrintable(text(none)));
+            // A model with one port, and one with none, have no loop and
+            // say what is wanted rather than answering.
+            const QJsonObject alone = call("rf25_inductance", {{"path", ws + "/rf/lossy.qrf25"}}, 300000);
+            QVERIFY(failed(alone));
+            QVERIFY2(text(alone).contains(QStringLiteral("two ports")) || text(alone).contains(QStringLiteral("wants two")),
+                     qPrintable(text(alone)));
+            // And rf25_solve's own L is the other quantity, of the
+            // cross-section, which is nothing like the loop's.
+            const QJsonObject line = json(call("rf25_solve", {{"path", ws + "/rf/wire.qrf25"}}, 300000)).toObject()
+                                         .value("nets").toArray().first().toObject().value("line").toObject();
+            QVERIFY2(line.value("L").toDouble() > 0, "no line inductance");
+            QVERIFY2(std::abs(line.value("L").toDouble() - l) > 0.5 * l,
+                     qPrintable(QStringLiteral("a line's %1 nH/m and a loop's %2 nH should not be the same number")
+                                    .arg(line.value("L").toDouble() * 1e9).arg(l * 1e9)));
+        }
+
         // And what is no RF 2.5D model at all.
         QVERIFY(put(ws + "/rf/plain.sch", QByteArray("<Qucs Schematic 24.1.1>\n")));
         const QJsonObject wrong = call("rf25_solve", {{"path", ws + "/rf/plain.sch"}}, 60000);
@@ -2357,6 +2429,9 @@ private slots:
         const QJsonObject wrongToo = call("rf25_export", {{"path", ws + "/rf/plain.sch"}}, 60000);
         QVERIFY(failed(wrongToo));
         QVERIFY2(text(wrongToo).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(wrongToo)));
+        const QJsonObject wrongThree = call("rf25_inductance", {{"path", ws + "/rf/plain.sch"}}, 60000);
+        QVERIFY(failed(wrongThree));
+        QVERIFY2(text(wrongThree).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(wrongThree)));
         app->closeAllFiles();
     }
 

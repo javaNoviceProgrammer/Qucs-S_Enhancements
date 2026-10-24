@@ -13,6 +13,7 @@
 #include "main.h"
 #include "misc.h"
 #include "multiphysics/fem_expr.h"
+#include "rf25/rf25_inductance.h"
 #include "rf25/rf25_sparams.h"
 #include "qucs.h"
 #include "settings.h"
@@ -245,6 +246,14 @@ struct RF25Doc::SolveJob {
     Stack stack;
     double length = 0;
     std::shared_ptr<Extraction> result;
+    // The loop's inductance, where two ports say what the loop is: the
+    // magnetic half of the extraction, solved on the same thread and the
+    // same copies as the charge.
+    bool loop = false;
+    QPointF in, out;
+    double frequency = 0;
+    QString portsSaid;
+    std::shared_ptr<Inductance> inductance;
 };
 
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
@@ -605,6 +614,7 @@ void RF25Doc::showProblems()
         lines << tr("What it solves to:");
         for (const QString& line : a_extraction->lines) lines << QStringLiteral("  • ") + line;
         for (const QString& line : lineSummary()) lines << QStringLiteral("  • ") + line;
+        for (const QString& line : inductanceSummary()) lines << QStringLiteral("  • ") + line;
     }
     QStringList cannot;
     if (a_processed) cannot += a_processed->problems;
@@ -629,6 +639,7 @@ void RF25Doc::showProblems()
     else if (a_mesh && !a_mesh->cells.isEmpty())
         tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(a_mesh->cost.said);
     if (a_solveJob) tail += tr("; solving");
+    else if (a_inductance && a_inductance->ok()) tail += tr("; the loop is %1 nH").arg(a_inductance->l * 1e9, 0, 'g', 4);
     else if (a_extraction && a_extraction->ok() && !a_extraction->names.isEmpty())
         tail += tr("; %1").arg(lineSummary().value(0, tr("solved")));
     a_status->setText(tail);
@@ -871,6 +882,8 @@ void RF25Doc::prepareDone()
     // going on is of them too, and goes with it.
     stopSolving();
     a_extraction.reset();
+    a_inductance.reset();
+    a_portsSaid.clear();
     a_solvedLength = 0;
     a_solveProblem.clear();
     showOverlays();
@@ -977,6 +990,8 @@ void RF25Doc::solve()
     a_solveProblem.clear();
     const auto nothing = [this](const QString& why) {
         a_extraction.reset();
+        a_inductance.reset();
+        a_portsSaid.clear();
         a_solvedLength = 0;
         a_solveProblem = why;
         showProblems();
@@ -996,9 +1011,40 @@ void RF25Doc::solve()
     QRectF bounds;
     for (const Conductor& c : std::as_const(job->conductors)) bounds = bounds.united(c.outline.boundingRect());
     job->length = std::max(bounds.width(), bounds.height()) * 1e-6;
+    // An inductor's L is of a loop, and what the loop is comes from the
+    // ports: the current goes in at one and out at another. Two is what
+    // it takes; with one, or none, there is no loop and the quasi-static
+    // L of a uniform line is all that can be said.
+    QList<QPointF> at;
+    for (const Node& port : a_model.ports().children) {
+        if (!port.enabled) continue;
+        if (port.type != QLatin1String("rf_edge_port") && port.type != QLatin1String("rf_internal_port")) continue;
+        bool ok = true;
+        const double x = numberOf(port, QStringLiteral("x"), a_model, 0, &ok);
+        if (!ok) continue;
+        const double y = numberOf(port, QStringLiteral("y"), a_model, 0, &ok);
+        if (!ok) continue;
+        // (The ports are in metres; the cells are in the layout's own.)
+        at << QPointF(x, y) / 1e-6;
+    }
+    if (at.size() >= 2) {
+        job->loop = true;
+        job->in = at.at(0);
+        job->out = at.at(1);
+        job->frequency = topFrequency(a_model);
+        if (at.size() > 2)
+            job->portsSaid = tr("%1 ports: the loop is taken from the first two.").arg(at.size());
+    } else {
+        job->portsSaid = at.size() == 1 ? tr("One port: a loop's inductance wants two, so that a current has somewhere "
+                                             "to go in and somewhere to come out.")
+                                        : tr("No ports: a loop's inductance wants two of them.");
+    }
     a_solveJob = job;
     QThread* thread = QThread::create([job] {
         job->result = std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack));
+        if (job->loop)
+            job->inductance = std::make_shared<Inductance>(
+                inductanceOf(job->mesh, job->conductors, job->stack, job->in, job->out, 1e-6, job->frequency));
     });
     thread->setStackSize(8u << 20);
     connect(thread, &QThread::finished, this, [this, job] {
@@ -1026,6 +1072,8 @@ void RF25Doc::solveDone()
     a_solveJob.reset();
     if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
     a_extraction = job->result;
+    a_inductance = job->inductance;
+    a_portsSaid = job->portsSaid;
     a_solvedLength = job->length;
     a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; ")) : QString();
     showProblems();
@@ -1253,6 +1301,31 @@ QString RF25Doc::writeExport(const QString& tag, QString* error) const
     file.close();
     if (error != nullptr) error->clear();
     return path;
+}
+
+QStringList RF25Doc::inductanceSummary() const
+{
+    QStringList out;
+    if (!a_extraction || !a_extraction->ok()) return out;
+    if (!a_inductance) {
+        if (!a_portsSaid.isEmpty()) out << a_portsSaid;
+        return out;
+    }
+    if (!a_inductance->ok()) {
+        out << (a_inductance->problems.isEmpty() ? tr("The loop's inductance came to nothing.")
+                                                 : a_inductance->problems.join(QStringLiteral(" ")));
+        return out;
+    }
+    if (!a_portsSaid.isEmpty()) out << a_portsSaid;
+    out << tr("The loop is %1 nH over %2 run(s) of current, and %3 Ohm at direct current.")
+               .arg(a_inductance->l * 1e9, 0, 'g', 4)
+               .arg(a_inductance->branches)
+               .arg(a_inductance->rDc, 0, 'g', 4);
+    if (a_inductance->q > 0)
+        out << tr("Q is %1 at %2 GHz, taking the current as the one at direct current.")
+                   .arg(a_inductance->q, 0, 'g', 3)
+                   .arg(a_inductance->frequency / 1e9, 0, 'g', 3);
+    return out;
 }
 
 QStringList RF25Doc::solvedLines() const

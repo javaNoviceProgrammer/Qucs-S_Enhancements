@@ -443,6 +443,7 @@ private:
     /// rf25_solve: an RF 2.5D model's capacitance, and each net as a line.
     QJsonObject rf25Solve(const QJsonObject& args);
     QJsonObject rf25Export(const QJsonObject& args);
+    QJsonObject rf25Inductance(const QJsonObject& args);
     QJsonObject newDocument(const QJsonObject& args);
     QJsonObject showDocument(const QJsonObject& args);
     /// What a schematic's save did to the project's library folders (QucsApp::syncProjectLibraries()), as a sentence; empty for none.
