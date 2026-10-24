@@ -14,6 +14,8 @@
 #include <QCoreApplication>
 #include <QHash>
 
+#include <functional>
+
 #include <Eigen/Dense>
 
 #include <algorithm>
@@ -62,43 +64,90 @@ double rectanglePotential(const QRectF& rect, const QPointF& point, double z)
     return area > 0 ? integral / area : 0;
 }
 
-QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors)
+/// Where a metal of \a stack sits once the metals are collapsed to
+/// sheets: the top of the dielectrics below it. Negative when the stack
+/// has no such metal.
+double heightOf(const Stack& stack, const QString& metal)
 {
-    // Which conductor each cell was cut from: the one on its layer that
-    // holds its centre. The processing has already joined what touches, so
-    // a conductor is a net.
-    QList<Net> nets;
-    QHash<int, int> ofConductor;   // conductor index to net index
-    for (int i = 0; i < conductors.size(); ++i) {
-        Net n;
-        n.layer = conductors.at(i).layer;
-        n.area = conductors.at(i).area();
-        int sameLayer = 0;
-        for (int j = 0; j < i; ++j)
-            if (conductors.at(j).layer == n.layer) ++sameLayer;
-        n.name = sameLayer == 0 ? n.layer : QStringLiteral("%1 #%2").arg(n.layer).arg(sameLayer + 1);
-        ofConductor.insert(i, nets.size());
-        nets << n;
+    double z = 0;
+    for (const Layer& l : stack.layers) {
+        if (l.name == metal || l.tag == metal) return l.kind == Layer::Metal ? z : -1;
+        if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness;
     }
+    return -1;
+}
+
+QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack)
+{
+    // Each conductor its own net to begin with, then the vias join them.
+    QList<int> parent;
+    for (int i = 0; i < conductors.size(); ++i) parent << i;
+    const std::function<int(int)> rootOf = [&parent, &rootOf](int i) {
+        return parent.at(i) == i ? i : (parent[i] = rootOf(parent.at(i)));
+    };
+    const auto join = [&](int a, int b) {
+        const int ra = rootOf(a), rb = rootOf(b);
+        if (ra != rb) parent[rb] = ra;
+    };
+    // A via joins what it lands on: the conductors of the two metals it
+    // names, where it overlaps them in x and y.
+    for (int v = 0; v < conductors.size(); ++v) {
+        const Layer* via = stack.named(conductors.at(v).layer);
+        if (via == nullptr || via->kind != Layer::Via) continue;
+        const QRectF where = conductors.at(v).outline.boundingRect();
+        for (const QString& end : {via->from, via->to}) {
+            for (int c = 0; c < conductors.size(); ++c) {
+                if (conductors.at(c).layer != end) continue;
+                if (!conductors.at(c).outline.boundingRect().intersects(where)) continue;
+                if (unionOf({conductors.at(c).outline, conductors.at(v).outline}).size() > 1) continue;
+                join(v, c);
+            }
+        }
+    }
+    // The nets, in the order their first conductor appears.
+    QMap<int, int> indexOf;
+    QList<Net> nets;
+    for (int i = 0; i < conductors.size(); ++i) {
+        const int r = rootOf(i);
+        if (!indexOf.contains(r)) {
+            indexOf.insert(r, nets.size());
+            nets << Net();
+        }
+        Net& n = nets[indexOf.value(r)];
+        const Layer* layer = stack.named(conductors.at(i).layer);
+        // A via is a wire between two sheets: it joins them and carries no
+        // charge of its own.
+        if (layer != nullptr && layer->kind == Layer::Via) continue;
+        if (!n.layers.contains(conductors.at(i).layer)) n.layers << conductors.at(i).layer;
+        n.area += conductors.at(i).area();
+    }
+    // Their cells: the conductor a cell was cut from decides its net.
     for (int c = 0; c < mesh.cells.size(); ++c) {
         const MeshCell& cell = mesh.cells.at(c);
+        const Layer* layer = stack.named(cell.layer);
+        if (layer != nullptr && layer->kind == Layer::Via) continue;
         int best = -1;
-        for (int i = 0; i < conductors.size(); ++i) {
+        for (int i = 0; i < conductors.size() && best < 0; ++i) {
             if (conductors.at(i).layer != cell.layer) continue;
-            if (conductors.at(i).outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
-                best = i;
-                break;
-            }
+            if (conductors.at(i).outline.containsPoint(cell.centre, Qt::OddEvenFill)) best = i;
         }
         if (best < 0)
             for (int i = 0; i < conductors.size() && best < 0; ++i)
-                if (conductors.at(i).layer == cell.layer && conductors.at(i).outline.boundingRect().contains(cell.centre)) best = i;
-        if (best >= 0) nets[ofConductor.value(best)].cells << c;
+                if (conductors.at(i).layer == cell.layer && conductors.at(i).outline.boundingRect().contains(cell.centre))
+                    best = i;
+        if (best >= 0) nets[indexOf.value(rootOf(best))].cells << c;
     }
-    // A conductor the mesh gave no cell is no net at all.
+    // Named for what they are made of, and numbered where a layer has
+    // more than one.
     QList<Net> kept;
-    for (const Net& n : std::as_const(nets))
-        if (!n.cells.isEmpty()) kept << n;
+    QHash<QString, int> seen;
+    for (Net& n : nets) {
+        if (n.cells.isEmpty() || n.layers.isEmpty()) continue;
+        const QString of = n.layers.join(QLatin1Char('+'));
+        const int which = ++seen[of];
+        n.name = which == 1 ? of : QStringLiteral("%1 #%2").arg(of).arg(which);
+        kept << n;
+    }
     return kept;
 }
 
@@ -112,37 +161,47 @@ double Extraction::selfCapacitance(int i) const
 
 namespace {
 
-/// The potential coefficients of \a cells in \a green: P(i,j) is the
-/// potential at cell i's centre from a unit charge spread over cell j.
-Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& which, const Green& green, double unit)
+/// How many of a Green's images are integrated over a cell rather than
+/// taken at its centre. A deep stack runs to thousands, and the ones past
+/// the strongest few dozen are so far away that their field hardly
+/// changes across a cell.
+constexpr int kMostNear = 64;
+
+/// The potential coefficients of \a which (indices into \a cells):
+/// P(i, j) is the potential at cell i's centre of a unit charge spread
+/// over cell j. \a greenOf gives the Green's function for a point on one
+/// layer and a charge on another.
+Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& which,
+                             const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit)
 {
     const int n = int(which.size());
     Eigen::MatrixXd p(n, n);
-    const double fourPiEps = 4 * M_PI * green.epsilon();
-    // The images, with the charge itself as the first of them: every term
-    // is a charge a/(4 pi eps sqrt(rho^2 + z^2)), and a rectangle's
-    // integral of each has a closed form.
-    QList<Green::Image> terms{Green::Image{1.0, 0.0}};
-    terms += green.images();
     for (int i = 0; i < n; ++i) {
         const MeshCell& ci = cells.at(which.at(i));
         const QPointF at = ci.centre * unit;
         for (int j = 0; j < n; ++j) {
             const MeshCell& cj = cells.at(which.at(j));
+            const Green& g = greenOf(ci.layer, cj.layer);
             const QRectF box = cj.outline.boundingRect();
             const QRectF rect(box.left() * unit, box.top() * unit, box.width() * unit, box.height() * unit);
-            const double side = std::sqrt(cj.area) * unit;
+            // The wider of the two cells decides, so that a pair is near
+            // or far whichever way round it is asked: the edge refinement
+            // leaves cells of two sizes, and judging by the charged one
+            // alone made the matrix asymmetric where they met.
+            const double side = std::max(std::sqrt(ci.area), std::sqrt(cj.area)) * unit;
             const double distance = std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y());
             if (i == j || distance < kNearWidths * side) {
-                // Near, or the cell itself: every term over the rectangle,
-                // in closed form.
+                // Near, or the cell itself: the terms worth it over the
+                // rectangle in closed form, the rest - far enough that
+                // their field hardly changes over a cell - at its centre.
+                const QList<Green::Image> terms = g.strongestTerms(kMostNear);
                 double sum = 0;
-                for (const Green::Image& t : std::as_const(terms)) sum += t.a * rectanglePotential(rect, at, t.z);
-                p(i, j) = sum / fourPiEps;
+                for (const Green::Image& t : terms) sum += t.a * rectanglePotential(rect, at, t.z);
+                p(i, j) = sum / (4 * M_PI * g.epsilon()) + g.beyondStrongest(distance, int(terms.size()));
             } else {
                 // Far: the charge at the cell's centre, which the Green's
-                // function answers in one call.
-                p(i, j) = green.potential(distance);
+                // function answers from its table in one step.
+                p(i, j) = g.potential(distance);
             }
         }
     }
@@ -158,31 +217,30 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         out.problems << tr("There are no cells to solve on: mesh the layout first.");
         return out;
     }
-    const QList<Net> nets = netsOf(mesh, conductors);
+    const QList<Net> nets = netsOf(mesh, conductors, stack);
     if (nets.isEmpty()) {
-        out.problems << tr("No cell of the mesh belongs to a conductor.");
+        out.problems << tr("No cell of the mesh belongs to a conductor of the stack.");
         return out;
     }
-    // One metal layer: the Green's function has no term yet for a charge
-    // on one layer and a point on another, so a model that needs one is
-    // refused rather than answered wrongly.
+    // Every metal the cells are on, and where each sits once the metals
+    // are collapsed to sheets.
     QStringList layers;
     for (const Net& n : nets)
-        if (!layers.contains(n.layer)) layers << n.layer;
-    if (layers.size() > 1) {
-        out.problems << tr("The cells are on %1 layers (%2). This build solves one metal layer at a time: the potential of a "
-                           "charge on one layer at a point on another is the next round's work.")
-                            .arg(layers.size()).arg(layers.join(QStringLiteral(", ")));
-        return out;
-    }
-    const Layer* metal = stack.named(layers.first());
-    if (metal == nullptr) {
-        out.problems << tr("The stack has no layer %1.").arg(layers.first());
-        return out;
-    }
-    if (metal->kind != Layer::Metal) {
-        out.problems << tr("%1 is not a metal of the stack: only a metal carries the charge this solves for.").arg(metal->name);
-        return out;
+        for (const QString& l : n.layers)
+            if (!layers.contains(l)) layers << l;
+    QMap<QString, double> height;
+    for (const QString& name : std::as_const(layers)) {
+        const Layer* metal = stack.named(name);
+        if (metal == nullptr) {
+            out.problems << tr("The stack has no layer %1.").arg(name);
+            return out;
+        }
+        if (metal->kind != Layer::Metal) {
+            out.problems << tr("%1 is not a metal of the stack: only a metal carries the charge this solves for.")
+                                .arg(metal->name);
+            return out;
+        }
+        height.insert(name, heightOf(stack, name));
     }
 
     const Layers layers0 = layersOf(stack);
@@ -190,39 +248,44 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         out.problems += layers0.problems;
         return out;
     }
-    // Where the charge sits: the metal rests on the dielectric below it,
-    // and the metals take no room in the slabs, so its height is the top
-    // of the dielectrics under it.
-    double z = 0;
-    for (const Layer& l : stack.layers) {
-        if (l.tag == metal->tag) break;
-        if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness;
-    }
-    const Green green(layers0, z);
-    if (!green.ok()) {
-        out.problems += green.problems();
-        return out;
-    }
-    // A stack that reflects nearly everything has an image series that
-    // does not die away, and the expansion is then not the whole Green's
-    // function. Better to say so than to answer with a capacitance that is
-    // quietly short of the truth.
-    constexpr double kMostLost = 1e-3;
-    if (green.truncated() > kMostLost) {
-        out.problems << tr("This stack reflects too strongly for its images to be enumerated: %1 of the reflection was left "
-                           "out, and a capacitance from them would be short of the truth. It is the permittivities' own "
-                           "ratios that do it.").arg(green.truncated(), 0, 'g', 3);
-        return out;
-    }
-    // And the same stack with every dielectric vacuum, for C0.
+    // The same stack with every dielectric vacuum, for C0.
     Layers vacuum = layers0;
-    for (Layers::Slab& s : vacuum.slabs) s.epsr = 1;
+    for (Layers::Slab& slab : vacuum.slabs) slab.epsr = 1;
     vacuum.epsrAbove = vacuum.epsrBelow = 1;
-    const Green bare(vacuum, z);
-    if (!bare.ok()) {
-        out.problems += bare.problems();
-        return out;
-    }
+    // A Green's function for each pair of metals - the potential at a
+    // point on one of a charge on the other - built once and shared by
+    // every pair of cells on them. They are symmetric, so a pair is
+    // wanted one way round only.
+    // One for each unordered pair: the Green's function is symmetric, and
+    // building it once both ways round would give two tables over distance
+    // whose interpolation differs a little - which would make the
+    // capacitance matrix asymmetric for no physical reason.
+    const auto keyOf = [](const QString& a, const QString& b) {
+        return a <= b ? a + QLatin1Char('|') + b : b + QLatin1Char('|') + a;
+    };
+    QMap<QString, Green> greens, bareGreens;
+    for (const QString& a : std::as_const(layers))
+        for (const QString& b : std::as_const(layers)) {
+            const QString key = keyOf(a, b);
+            if (greens.contains(key)) continue;
+            greens.insert(key, Green(layers0, height.value(a), height.value(b)));
+            bareGreens.insert(key, Green(vacuum, height.value(a), height.value(b)));
+            if (!greens.value(key).ok()) {
+                out.problems += greens.value(key).problems();
+                return out;
+            }
+        }
+    // (By reference to the maps themselves: a helper that took one as a
+    // parameter and captured that would hand out a reference to its own
+    // argument, which is gone by the time the matrix is filled.)
+    const auto fromStack = [&greens, &keyOf](const QString& a, const QString& b) -> const Green& {
+        const auto it = greens.constFind(keyOf(a, b));
+        return it != greens.constEnd() ? it.value() : greens.constBegin().value();
+    };
+    const auto fromVacuum = [&bareGreens, &keyOf](const QString& a, const QString& b) -> const Green& {
+        const auto it = bareGreens.constFind(keyOf(a, b));
+        return it != bareGreens.constEnd() ? it.value() : bareGreens.constBegin().value();
+    };
 
     QList<int> which;
     for (const Net& n : nets) which += n.cells;
@@ -240,8 +303,9 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     for (int i = 0; i < nets.size(); ++i)
         for (int k = 0; k < nets.at(i).cells.size(); ++k) netOf << i;
 
-    const auto solve = [&](const Green& g, QList<QList<double>>* matrix) {
-        const Eigen::MatrixXd p = coefficients(mesh.cells, which, g, micrometre);
+    const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
+                           QList<QList<double>>* matrix) {
+        const Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre);
         const Eigen::PartialPivLU<Eigen::MatrixXd> lu(p);
         matrix->clear();
         for (int net = 0; net < nets.size(); ++net) {
@@ -260,9 +324,9 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         return p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
     };
 
-    out.conditionHint = solve(green, &out.maxwell);
+    out.conditionHint = solve(fromStack, &out.maxwell);
     QList<QList<double>> bareMaxwell;
-    solve(bare, &bareMaxwell);
+    solve(fromVacuum, &bareMaxwell);
 
     // The short-circuit (Maxwell) matrix as the mutual one a circuit uses:
     // the diagonal is what a conductor has to everything else, and an
@@ -285,13 +349,13 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     out.c0 = mutualOf(bareMaxwell);
     for (const Net& net : nets) out.names << net.name;
 
-    out.lines << tr("%1 cell(s) on %2 conductor(s) of %3, as %4 unknowns.")
-                     .arg(mesh.cells.size()).arg(nets.size()).arg(metal->name).arg(n);
-    out.lines << tr("The charge sits %1 µm up the stack, in %2.")
-                     .arg(z * 1e6, 0, 'g', 4)
-                     .arg(layers0.slabs.at(std::max(0, layers0.slabAt(z))).name);
-    out.lines << tr("%1 image(s) of the stack; %2 of the reflection was left out of them.")
-                     .arg(green.images().size()).arg(green.truncated(), 0, 'g', 2);
+    out.lines << tr("%1 cell(s) on %2 net(s) over %3, as %4 unknowns.")
+                     .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", "))).arg(n);
+    for (const QString& name : std::as_const(layers))
+        out.lines << tr("%1 sits %2 µm up the stack.").arg(name).arg(height.value(name) * 1e6, 0, 'g', 4);
+    const Green& first = greens[keyOf(layers.first(), layers.first())];
+    out.lines << tr("%1 image(s) of the stack; %2 of the reflection coarsened into one of them, %3 of it left out.")
+                     .arg(first.images().size()).arg(first.coarsened(), 0, 'g', 2).arg(first.truncated(), 0, 'g', 2);
     for (int i = 0; i < out.names.size(); ++i)
         out.lines << tr("%1: %2 F to everything else.").arg(out.names.at(i)).arg(out.selfCapacitance(i), 0, 'g', 4);
     return out;
