@@ -720,6 +720,128 @@ cd forward(cd gamma2)
 
 } // namespace
 
+bool coupledModes(CoupledLines& out, double w)
+{
+    const int n = int(out.names.size());
+    const std::size_t N = std::size_t(n);
+    auto square = [n](const CoupledLines::Matrix& m) {
+        if (int(m.size()) != n) return false;
+        for (const std::vector<double>& row : m)
+            if (int(row.size()) != n) return false;
+        return true;
+    };
+    if (n < 1 || !square(out.R) || !square(out.L) || !square(out.G) || !square(out.C) || !square(out.C0)) {
+        out.error = tr("a line's modes want as many rows and columns of R, L, G, C and C0 as there are conductors");
+        return false;
+    }
+    if (!(w > 0)) {
+        out.error = tr("a line's modes want a frequency");
+        return false;
+    }
+    out.modes.clear();
+    Eigen::MatrixXd C(n, n), C0m(n, n);
+    Eigen::MatrixXcd Z(n, n), Y(n, n);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            C(i, j) = out.C[std::size_t(i)][std::size_t(j)];
+            C0m(i, j) = out.C0[std::size_t(i)][std::size_t(j)];
+        }
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            Z(i, j) = cd(out.R[std::size_t(i)][std::size_t(j)], w * out.L[std::size_t(i)][std::size_t(j)]);
+            Y(i, j) = cd(out.G[std::size_t(i)][std::size_t(j)], w * out.C[std::size_t(i)][std::size_t(j)]);
+        }
+    const double k0 = w / C0;
+    // Quasi-static modes: C v = εeff C0 v.
+    Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> qs(C, C0m);
+    if (qs.info() != Eigen::Success) {
+        out.error = tr("the lines' capacitance matrix in vacuum is not positive definite: are the terminals at voltages, a ground beside them?");
+        return false;
+    }
+    auto finish = [&N, &Y, &k0, &n, &qs](LineMode& m) {
+        m.alphaDb = 20 / std::log(10.0) * m.gamma.real();
+        m.nEff = m.gamma.imag() / k0;
+        // i = Y v / γ; its impedance vᵀv / vᵀi.
+        Eigen::VectorXcd v(n);
+        for (int k = 0; k < n; ++k) v[k] = m.v[std::size_t(k)];
+        const Eigen::VectorXcd iv = Y * v / m.gamma;
+        m.i.assign(N, 0);
+        for (int k = 0; k < n; ++k) m.i[std::size_t(k)] = iv[k];
+        const cd vv = (v.transpose() * v)(0), vi = (v.transpose() * iv)(0);
+        m.Z = vi != cd(0) ? vv / vi : cd(NAN, NAN);
+        // Its quasi-static mode: the one most like it.
+        double best = -1;
+        for (int k = 0; k < n; ++k) {
+            const Eigen::VectorXd q = qs.eigenvectors().col(k);
+            const double like = std::abs(v.dot(q.cast<cd>())) / (v.norm() * q.norm());
+            if (like > best) {
+                best = like;
+                m.epsEffQs = qs.eigenvalues()[k];
+            }
+        }
+    };
+    // A symmetric pair (to 1 %): its even and odd modes, of the matrices
+    // made symmetric.
+    auto near = [](cd a, cd b, cd scale) { return std::abs(a - b) <= 1e-2 * std::abs(scale); };
+    out.symmetricPair = n == 2 && near(Z(0, 0), Z(1, 1), Z(0, 0)) && near(Y(0, 0), Y(1, 1), Y(0, 0)) && near(C(0, 0), C(1, 1), C(0, 0))
+                        && near(C0m(0, 0), C0m(1, 1), C0m(0, 0));
+    if (out.symmetricPair) {
+        // (Made symmetric: its modes, currents and Zc of one pair.)
+        Z(0, 0) = Z(1, 1) = 0.5 * (Z(0, 0) + Z(1, 1));
+        Y(0, 0) = Y(1, 1) = 0.5 * (Y(0, 0) + Y(1, 1));
+        for (int s = 0; s < 2; ++s) {
+            const double sign = s == 0 ? 1.0 : -1.0;
+            const cd z = Z(0, 0) + sign * Z(0, 1);
+            const cd y = Y(0, 0) + sign * Y(0, 1);
+            LineMode m;
+            m.name = s == 0 ? QStringLiteral("even") : QStringLiteral("odd");
+            m.gamma = forward(z * y);
+            m.v = {1.0, sign};
+            finish(m);
+            // (Exactly the pair's: √(z/y), (C ± C12)/(C0 ± C0_12).)
+            m.Z = std::sqrt(z / y);
+            if (m.Z.real() < 0) m.Z = -m.Z;
+            m.epsEffQs = (0.5 * (C(0, 0) + C(1, 1)) + sign * C(0, 1)) / (0.5 * (C0m(0, 0) + C0m(1, 1)) + sign * C0m(0, 1));
+            out.modes.push_back(m);
+        }
+    } else {
+        Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(Z * Y);
+        if (es.info() != Eigen::Success) {
+            out.error = tr("the lines' modes could not be found ((R + jωL)(G + jωC) has no eigenvectors)");
+            return false;
+        }
+        for (int k = 0; k < n; ++k) {
+            LineMode m;
+            m.gamma = forward(es.eigenvalues()[k]);
+            Eigen::VectorXcd v = es.eigenvectors().col(k);
+            int big = 0;
+            for (int j = 1; j < n; ++j)
+                if (std::abs(v[j]) > std::abs(v[big])) big = j;
+            v /= v[big];
+            m.v.assign(N, 0);
+            for (int j = 0; j < n; ++j) m.v[std::size_t(j)] = v[j];
+            finish(m);
+            out.modes.push_back(m);
+        }
+        std::sort(out.modes.begin(), out.modes.end(), [](const LineMode& a, const LineMode& b) { return a.nEff > b.nEff; });
+        for (int k = 0; k < n; ++k) out.modes[std::size_t(k)].name = QString::number(k + 1);
+    }
+    // Zc = Tv γ⁻¹ Tv⁻¹ Z.
+    {
+        Eigen::MatrixXcd Tv(n, n);
+        Eigen::VectorXcd g(n);
+        for (int k = 0; k < n; ++k) {
+            for (int j = 0; j < n; ++j) Tv(j, k) = out.modes[std::size_t(k)].v[std::size_t(j)];
+            g[k] = out.modes[std::size_t(k)].gamma;
+        }
+        const Eigen::MatrixXcd zc = Tv * g.cwiseInverse().asDiagonal() * Tv.inverse() * Z;
+        out.Zc.assign(N, std::vector<cd>(N, 0));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) out.Zc[std::size_t(i)][std::size_t(j)] = zc(i, j);
+    }
+    return true;
+}
+
 CoupledLines coupledLines(const Solution& solution, const Node& node)
 {
     CoupledLines out;
@@ -762,7 +884,6 @@ CoupledLines coupledLines(const Solution& solution, const Node& node)
             C(i, j) = out.C[std::size_t(i)][std::size_t(j)];
             C0m(i, j) = out.C0[std::size_t(i)][std::size_t(j)];
         }
-    Eigen::MatrixXcd Z(n, n), Y(n, n);
     double w = omega;
     if (out.rlgc) {
         if (!(omega > 0)) {
@@ -835,99 +956,7 @@ CoupledLines coupledLines(const Solution& solution, const Node& node)
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) out.L[std::size_t(i)][std::size_t(j)] = 0.5 * (Linv(i, j) + Linv(j, i));
     }
-    for (int i = 0; i < n; ++i)
-        for (int j = 0; j < n; ++j) {
-            Z(i, j) = cd(out.R[std::size_t(i)][std::size_t(j)], w * out.L[std::size_t(i)][std::size_t(j)]);
-            Y(i, j) = cd(out.G[std::size_t(i)][std::size_t(j)], w * out.C[std::size_t(i)][std::size_t(j)]);
-        }
-    const double k0 = w / C0;
-    // Quasi-static modes: C v = εeff C0 v.
-    Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> qs(C, C0m);
-    if (qs.info() != Eigen::Success) {
-        out.error = tr("the lines' capacitance matrix in vacuum is not positive definite: are the terminals at voltages, a ground beside them?");
-        return out;
-    }
-    auto finish = [&N, &Y, &k0, &n, &qs](LineMode& m) {
-        m.alphaDb = 20 / std::log(10.0) * m.gamma.real();
-        m.nEff = m.gamma.imag() / k0;
-        // i = Y v / γ; its impedance vᵀv / vᵀi.
-        Eigen::VectorXcd v(n);
-        for (int k = 0; k < n; ++k) v[k] = m.v[std::size_t(k)];
-        const Eigen::VectorXcd iv = Y * v / m.gamma;
-        m.i.assign(N, 0);
-        for (int k = 0; k < n; ++k) m.i[std::size_t(k)] = iv[k];
-        const cd vv = (v.transpose() * v)(0), vi = (v.transpose() * iv)(0);
-        m.Z = vi != cd(0) ? vv / vi : cd(NAN, NAN);
-        // Its quasi-static mode: the one most like it.
-        double best = -1;
-        for (int k = 0; k < n; ++k) {
-            const Eigen::VectorXd q = qs.eigenvectors().col(k);
-            const double like = std::abs(v.dot(q.cast<cd>())) / (v.norm() * q.norm());
-            if (like > best) {
-                best = like;
-                m.epsEffQs = qs.eigenvalues()[k];
-            }
-        }
-    };
-    // A symmetric pair (to 1 %): its even and odd modes, of the matrices
-    // made symmetric.
-    auto near = [](cd a, cd b, cd scale) { return std::abs(a - b) <= 1e-2 * std::abs(scale); };
-    out.symmetricPair = n == 2 && near(Z(0, 0), Z(1, 1), Z(0, 0)) && near(Y(0, 0), Y(1, 1), Y(0, 0)) && near(C(0, 0), C(1, 1), C(0, 0))
-                        && near(C0m(0, 0), C0m(1, 1), C0m(0, 0));
-    if (out.symmetricPair) {
-        // (Made symmetric: its modes, currents and Zc of one pair.)
-        Z(0, 0) = Z(1, 1) = 0.5 * (Z(0, 0) + Z(1, 1));
-        Y(0, 0) = Y(1, 1) = 0.5 * (Y(0, 0) + Y(1, 1));
-        for (int s = 0; s < 2; ++s) {
-            const double sign = s == 0 ? 1.0 : -1.0;
-            const cd z = Z(0, 0) + sign * Z(0, 1);
-            const cd y = Y(0, 0) + sign * Y(0, 1);
-            LineMode m;
-            m.name = s == 0 ? QStringLiteral("even") : QStringLiteral("odd");
-            m.gamma = forward(z * y);
-            m.v = {1.0, sign};
-            finish(m);
-            // (Exactly the pair's: √(z/y), (C ± C12)/(C0 ± C0_12).)
-            m.Z = std::sqrt(z / y);
-            if (m.Z.real() < 0) m.Z = -m.Z;
-            m.epsEffQs = (0.5 * (C(0, 0) + C(1, 1)) + sign * C(0, 1)) / (0.5 * (C0m(0, 0) + C0m(1, 1)) + sign * C0m(0, 1));
-            out.modes.push_back(m);
-        }
-    } else {
-        Eigen::ComplexEigenSolver<Eigen::MatrixXcd> es(Z * Y);
-        if (es.info() != Eigen::Success) {
-            out.error = tr("the lines' modes could not be found ((R + jωL)(G + jωC) has no eigenvectors)");
-            return out;
-        }
-        for (int k = 0; k < n; ++k) {
-            LineMode m;
-            m.gamma = forward(es.eigenvalues()[k]);
-            Eigen::VectorXcd v = es.eigenvectors().col(k);
-            int big = 0;
-            for (int j = 1; j < n; ++j)
-                if (std::abs(v[j]) > std::abs(v[big])) big = j;
-            v /= v[big];
-            m.v.assign(N, 0);
-            for (int j = 0; j < n; ++j) m.v[std::size_t(j)] = v[j];
-            finish(m);
-            out.modes.push_back(m);
-        }
-        std::sort(out.modes.begin(), out.modes.end(), [](const LineMode& a, const LineMode& b) { return a.nEff > b.nEff; });
-        for (int k = 0; k < n; ++k) out.modes[std::size_t(k)].name = QString::number(k + 1);
-    }
-    // Zc = Tv γ⁻¹ Tv⁻¹ Z.
-    {
-        Eigen::MatrixXcd Tv(n, n);
-        Eigen::VectorXcd g(n);
-        for (int k = 0; k < n; ++k) {
-            for (int j = 0; j < n; ++j) Tv(j, k) = out.modes[std::size_t(k)].v[std::size_t(j)];
-            g[k] = out.modes[std::size_t(k)].gamma;
-        }
-        const Eigen::MatrixXcd zc = Tv * g.cwiseInverse().asDiagonal() * Tv.inverse() * Z;
-        out.Zc.assign(N, std::vector<cd>(N, 0));
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) out.Zc[std::size_t(i)][std::size_t(j)] = zc(i, j);
-    }
+    coupledModes(out, w);
     return out;
 }
 

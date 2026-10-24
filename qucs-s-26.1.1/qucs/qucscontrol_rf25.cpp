@@ -1,7 +1,8 @@
 /*
  * qucscontrol_rf25.cpp - Claude's tools for an RF 2.5D model: rf25_solve,
- *                        the capacitance of its conductors and each net
- *                        as a line
+ *                        the capacitance of its conductors, each net as a
+ *                        line with its RLGC and S-parameters, and
+ *                        rf25_export, which writes a Touchstone of them
  *
  * This file is part of Qucs-S.
  *
@@ -20,16 +21,39 @@
 #include "qucscontrol_p.h"
 
 #include "multiphysics/fem_expr.h"
+#include "main.h"
 #include "qucs.h"
 #include "rf25/rf25_mesh.h"
+#include "rf25/rf25_sparams.h"
 #include "rf25doc.h"
 
 #include <QFileInfo>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonObject>
 
 using namespace qucs_s::rf25;
 using namespace qucs_s::control;
+namespace fem = qucs_s::fem;
+
+namespace {
+
+/// \a text as a number, the model's own parameters in scope, so that
+/// "800[um]" and a parameter's name both work. Nothing where it is no
+/// constant above zero.
+std::optional<double> positiveNumber(const QString& text, const RF25Doc& model)
+{
+    fem::Scope scope(&fem::Scope::builtins());
+    for (const fem::Model::Parameter& param : model.model().parameters()) {
+        const fem::Expression p = fem::Expression::compile(param.expression, scope);
+        if (p.isValid() && p.isConstant()) scope.setConstant(param.name, p.constant(), p.dim());
+    }
+    const fem::Expression given = fem::Expression::compile(text, scope);
+    if (!given.isValid() || !given.isConstant() || !(given.constant() > 0)) return std::nullopt;
+    return given.constant();
+}
+
+} // namespace
 
 QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
 {
@@ -74,32 +98,25 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     // side of what was solved.
     double length = model->solvedLength();
     if (args.contains(QLatin1String("length"))) {
-        const QString text = args.value(QLatin1String("length")).toString().trimmed();
-        // Read as the model's own expressions are, so that "800[um]" and
-        // a parameter's name both work.
-        qucs_s::fem::Scope scope(&qucs_s::fem::Scope::builtins());
-        for (const qucs_s::fem::Model::Parameter& param : model->model().parameters()) {
-            const qucs_s::fem::Expression p = qucs_s::fem::Expression::compile(param.expression, scope);
-            if (p.isValid() && p.isConstant()) scope.setConstant(param.name, p.constant(), p.dim());
-        }
-        const qucs_s::fem::Expression given = qucs_s::fem::Expression::compile(text, scope);
-        if (!given.isValid() || !given.isConstant() || !(given.constant() > 0))
-            return errorResult(given.isValid() ? tr("'length' is a length above zero (\"800[um]\"); %1 is %2.")
-                                                     .arg(text, given.isConstant() ? tr("not above zero") : tr("not a constant"))
-                                               : tr("'length' is a length above zero (\"800[um]\"): %1").arg(given.error()));
-        length = given.constant();
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("length")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'length' is a length above zero (\"800[um]\")."));
+        length = *given;
     }
 
     // The frequency the metal's and the dielectrics' losses are taken at:
     // the one given, else the top of the model's own sweep.
     double frequency = topFrequency(model->model());
     if (args.contains(QLatin1String("frequency"))) {
-        const QString text = args.value(QLatin1String("frequency")).toString().trimmed();
-        qucs_s::fem::Scope scope(&qucs_s::fem::Scope::builtins());
-        const qucs_s::fem::Expression given = qucs_s::fem::Expression::compile(text, scope);
-        if (!given.isValid() || !given.isConstant() || !(given.constant() > 0))
-            return errorResult(tr("'frequency' is a frequency above zero (\"10[GHz]\")."));
-        frequency = given.constant();
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("frequency")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'frequency' is a frequency above zero (\"10[GHz]\")."));
+        frequency = *given;
+    }
+    // The ports the S-parameters are referred to.
+    double zref = 50;
+    if (args.contains(QLatin1String("impedance"))) {
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("impedance")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'impedance' is a reference impedance above zero (\"50\")."));
+        zref = *given;
     }
 
     QJsonObject out;
@@ -136,6 +153,22 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
                 line.insert(QStringLiteral("Zc_im"), lp.zc.imag());
                 line.insert(QStringLiteral("alpha"), lp.alphaDb);
                 line.insert(QStringLiteral("beta"), lp.gamma.imag());
+                // And what that line is as a two-port of this length,
+                // which is what a circuit wants of it.
+                const fem::LineRLGC rlgc = asLine(*e, i, length, frequency);
+                if (rlgc.error.isEmpty() && std::abs(rlgc.Zc) > 0) {
+                    const std::array<std::complex<double>, 4> sp = fem::lineSParameters(rlgc, length, zref);
+                    QJsonObject s;
+                    s.insert(QStringLiteral("reference impedance"), zref);
+                    static const char* const names[] = {"S11", "S21", "S12", "S22"};
+                    for (int k = 0; k < 4; ++k) {
+                        s.insert(QLatin1String(names[k]), sp[std::size_t(k)].real());
+                        s.insert(QLatin1String(names[k]) + QStringLiteral("_im"), sp[std::size_t(k)].imag());
+                        s.insert(QLatin1String(names[k]) + QStringLiteral("_dB"),
+                                 20 * std::log10(std::max(1e-300, std::abs(sp[std::size_t(k)]))));
+                    }
+                    line.insert(QStringLiteral("s parameters"), s);
+                }
             }
             net.insert(QStringLiteral("line"), line);
         } else if (!lp.problems.isEmpty()) {
@@ -144,6 +177,74 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         nets.append(net);
     }
     out.insert(QStringLiteral("nets"), nets);
+    // Several conductors are coupled lines, whose modes are what a
+    // designer of a pair actually asks after.
+    if (e->names.size() > 1 && frequency > 0 && length > 0) {
+        const fem::CoupledLines cl = asCoupledLines(*e, length, frequency);
+        if (cl.error.isEmpty() && !cl.modes.empty()) {
+            QJsonObject coupled;
+            coupled.insert(QStringLiteral("symmetric pair"), cl.symmetricPair);
+            QJsonArray modes;
+            for (const fem::LineMode& m : cl.modes) {
+                QJsonObject one;
+                one.insert(QStringLiteral("name"), m.name);
+                one.insert(QStringLiteral("n_eff"), m.nEff);
+                one.insert(QStringLiteral("Z"), m.Z.real());
+                one.insert(QStringLiteral("Z_im"), m.Z.imag());
+                one.insert(QStringLiteral("alpha"), m.alphaDb);
+                one.insert(QStringLiteral("beta"), m.gamma.imag());
+                modes.append(one);
+            }
+            coupled.insert(QStringLiteral("modes"), modes);
+            // The 2N-port: the near ends first, then the far ends.
+            const std::vector<std::vector<std::complex<double>>> sm = fem::coupledSParameters(cl, length, zref);
+            QJsonArray rows;
+            for (const std::vector<std::complex<double>>& row : sm) {
+                QJsonArray re, im;
+                for (const std::complex<double>& v : row) {
+                    re.append(v.real());
+                    im.append(v.imag());
+                }
+                QJsonObject pair;
+                pair.insert(QStringLiteral("re"), re);
+                pair.insert(QStringLiteral("im"), im);
+                rows.append(pair);
+            }
+            coupled.insert(QStringLiteral("s matrix"), rows);
+            coupled.insert(QStringLiteral("ports"),
+                           tr("1 to %1 are the near ends of %2, in that order; %3 to %4 their far ends")
+                               .arg(e->names.size())
+                               .arg(e->names.join(QStringLiteral(", ")))
+                               .arg(e->names.size() + 1)
+                               .arg(2 * e->names.size()));
+            out.insert(QStringLiteral("coupled lines"), coupled);
+        } else if (!cl.error.isEmpty()) {
+            out.insert(QStringLiteral("coupled lines not given"), cl.error);
+        }
+    }
+    // Where a quasi-static answer stops being the whole story: the one
+    // thing a caller must not be left to guess at.
+    {
+        const LineParameters first = lineParameters(*e, 0, length);
+        const std::shared_ptr<const Mesh> mesh = model->mesh();
+        const QuasiStaticLimit limit =
+            quasiStaticLimit(model->model().stack(), mesh ? *mesh : Mesh(), 1e-6, first.velocity, length);
+        QJsonObject said;
+        said.insert(QStringLiteral("frequency"), limit.frequency);
+        said.insert(QStringLiteral("what sets it"), limit.what);
+        said.insert(QStringLiteral("epsilon_max"), limit.epsilonMax);
+        said.insert(QStringLiteral("first half-wave resonance"), limit.resonance);
+        said.insert(QStringLiteral("why"),
+                    tr("A per-metre RLGC is a property of the cross-section and holds while the cross-section is "
+                       "electrically small; this is a tenth of a wavelength of the dimension named, which is the usual "
+                       "engineering rule. The resonance is not a limit of the model - a line's own S parameters carry "
+                       "it - only where they first turn over."));
+        if (frequency > limit.frequency && limit.frequency > 0)
+            said.insert(QStringLiteral("warning"),
+                        tr("The frequency asked for (%1 GHz) is above it: these numbers are extrapolated, not solved.")
+                            .arg(frequency / 1e9, 0, 'g', 3));
+        out.insert(QStringLiteral("quasi-static limit"), said);
+    }
     out.insert(QStringLiteral("unknowns"), e->unknowns);
     out.insert(QStringLiteral("length"), length);
     QJsonArray said;
@@ -151,9 +252,108 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     for (const QString& line : e->lines) said.append(line);
     out.insert(QStringLiteral("what it did"), said);
     out.insert(QStringLiteral("note"),
-               tr("The electrostatics alone: C and, with every dielectric vacuum, C0, and a uniform line's eps_eff, Z0 "
+               tr("Quasi-static throughout: C and, with every dielectric vacuum, C0, and a uniform line's eps_eff, Z0 "
                   "and L from the two; with a frequency, R from the metal's surface impedance and how the charge "
-                  "crowds, G from the dielectrics' loss tangents, and the Zc, alpha and beta those make. No inductance "
-                  "of a loop and no S-parameters in this build."));
+                  "crowds, G from the dielectrics' loss tangents, and the Zc, alpha, beta and S parameters those "
+                  "make. The S parameters are of a uniform line of this length and are right wherever the "
+                  "cross-section is electrically small - see the quasi-static limit. No inductance of a loop, no "
+                  "ports and no full-wave solve in this build; rf25_export writes a Touchstone of these."));
+    return jsonResult(out);
+}
+
+QJsonObject QucsControl::rf25Export(const QJsonObject& args)
+{
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_export writes the S parameters of one.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+    if (!model->extraction() || !model->extraction()->ok())
+        return errorResult(model->solveProblem().isEmpty()
+                               ? tr("Nothing is solved yet: rf25_solve it first, or press Solve on its tab.")
+                               : model->solveProblem());
+
+    // What to write: the export node named, else what the arguments say.
+    RF25Doc::ExportRequest what;
+    const QString node = args.value(QLatin1String("node")).toString().trimmed();
+    if (!node.isEmpty()) {
+        QString why;
+        if (!model->exportRequest(node, &what, &why)) return errorResult(why);
+    }
+    if (args.contains(QLatin1String("of"))) {
+        const QString of = args.value(QLatin1String("of")).toString().trimmed();
+        if (of != QLatin1String("line") && of != QLatin1String("coupled"))
+            return errorResult(tr("'of' is \"line\" (one net as a two-port) or \"coupled\" (every net as a 2N-port); "
+                                  "%1 is neither.").arg(of));
+        what.coupled = of == QLatin1String("coupled");
+    }
+    if (args.contains(QLatin1String("net"))) what.net = args.value(QLatin1String("net")).toString().trimmed();
+    if (args.contains(QLatin1String("length"))) {
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("length")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'length' is a length above zero (\"800[um]\")."));
+        what.length = *given;
+    }
+    if (args.contains(QLatin1String("impedance"))) {
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("impedance")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'impedance' is a reference impedance above zero (\"50\")."));
+        what.impedance = *given;
+    }
+
+    QString why;
+    const QString text = model->exportText(what, &why);
+    if (!why.isEmpty()) return errorResult(why);
+
+    // Where it goes: the file given, else the node's own, else beside the
+    // model. The same path the tab's Write button uses.
+    QString where = args.value(QLatin1String("file")).toString().trimmed();
+    if (where.isEmpty() && !node.isEmpty()) where = model->exportPath(node);
+    if (where.isEmpty()) {
+        const QString name = model->getDocName();
+        const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
+        const int ports = what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
+        const QString stem = name.isEmpty() ? QStringLiteral("model") : QFileInfo(name).completeBaseName();
+        where = QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1.s%2p").arg(stem).arg(ports)));
+    } else if (QFileInfo(where).isRelative()) {
+        const QString name = model->getDocName();
+        const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
+        where = QDir::cleanPath(dir.absoluteFilePath(where));
+    }
+    QFile file(where);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return errorResult(tr("%1 could not be written: %2.").arg(where, file.errorString()));
+    file.write(text.toUtf8());
+    file.close();
+
+    QJsonObject out;
+    out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
+    out.insert(QStringLiteral("file"), where);
+    const int ports = what.coupled ? 2 * int(model->extraction()->names.size()) : 2;
+    out.insert(QStringLiteral("ports"), ports);
+    out.insert(QStringLiteral("reference impedance"), what.impedance);
+    out.insert(QStringLiteral("length"), what.length > 0 ? what.length : model->solvedLength());
+    out.insert(QStringLiteral("bytes"), text.toUtf8().size());
+    QString sweepProblem;
+    const QList<double> sweep = studySweep(model->model(), &sweepProblem);
+    out.insert(QStringLiteral("frequencies"), int(sweep.size()));
+    if (!sweep.isEmpty()) {
+        out.insert(QStringLiteral("from"), sweep.first());
+        out.insert(QStringLiteral("to"), sweep.last());
+    }
+    out.insert(QStringLiteral("what it wrote"),
+               what.coupled ? tr("Every net as coupled lines: a %1-port, the near ends first, then the far ends.").arg(ports)
+                            : tr("Net %1 as a two-port, port 1 at its start.")
+                                  .arg(what.net.isEmpty() ? model->extraction()->names.value(0) : what.net));
+    out.insert(QStringLiteral("note"),
+               tr("Touchstone 1.1, real and imaginary, one line a frequency. A schematic's S-parameter part reads it "
+                  "at once. The file's own comments carry what the solve was and where the quasi-static answer stops "
+                  "being the whole story."));
     return jsonResult(out);
 }

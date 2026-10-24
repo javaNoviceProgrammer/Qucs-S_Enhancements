@@ -281,16 +281,25 @@ QList<NodeKind> makeKinds()
                  {tr("Linear"), tr("Logarithmic")}, QStringLiteral("linear")),
           boolean(QStringLiteral("adaptive"), tr("Add points where it changes"), false)},
          {}, {}, true, true, QStringLiteral("st"),
-         tr("The frequencies to solve at. Nothing is solved yet in this build: the stack, the layout and the mesh are "
-            "what it reads.")});
+         tr("The frequencies to solve at. The quasi-static solver reads them for a line's R and G and for its "
+            "S-parameters; the full-wave one is not built yet.")});
     add({QStringLiteral("rf_results"), tr("Results"), QString(), QStringLiteral("results"), none, {}, {}, {}, true, true,
-         QString(), tr("The S parameters and what is drawn from them, once there is a solver.")});
+         QString(), tr("What the solve found: each net's capacitance, each as a line with its RLGC and S parameters, "
+                       "and the frequency above which a quasi-static answer is no longer the whole story.")});
     add({QStringLiteral("rf_exports"), tr("Exports"), QString(), QStringLiteral("exports"), none, {},
          {QStringLiteral("rf_touchstone")}, {}, true, true, QString(), tr("What is written out of a solution.")});
     add({QStringLiteral("rf_touchstone"), tr("Touchstone"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File")),
+          choice(QStringLiteral("of"), tr("Of"), {QStringLiteral("line"), QStringLiteral("coupled")},
+                 {tr("One net, as a two-port"), tr("Every net, as coupled lines")}, QStringLiteral("line")),
+          text(QStringLiteral("net"), tr("Net"), QString(),
+               tr("Which conductor, by the name the solve gave it (empty: the first)")),
+          expr(QStringLiteral("length"), tr("Length"), QStringLiteral("m"), QString(),
+               tr("How long a piece of line to write (empty: the length that was solved)")),
           expr(QStringLiteral("impedance"), tr("Reference impedance"), QStringLiteral("Ohm"), QStringLiteral("50"))},
-         {}, {}, false, false, QStringLiteral("ts"), tr("An .sNp file of the S parameters.")});
+         {}, {}, false, false, QStringLiteral("ts"),
+         tr("An .sNp file of the S parameters, at the study's own frequencies. Coupled lines are written as a "
+            "2N-port: the near ends first, then the far ends.")});
     return k;
 }
 

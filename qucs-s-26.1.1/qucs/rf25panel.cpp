@@ -656,6 +656,31 @@ void RF25Panel::showSettings()
             }
         }
     v->addLayout(form);
+    // An export writes: the button that does it, and what it said.
+    if (n->type == QLatin1String("rf_touchstone")) {
+        auto* write = new QPushButton(tr("Write"), a_form);
+        write->setObjectName(QStringLiteral("rfWriteExport"));
+        write->setToolTip(tr("Writes the file at the study's own frequencies. The model must be solved first."));
+        auto* said = new QLabel(a_form);
+        said->setObjectName(QStringLiteral("rfExportSaid"));
+        said->setWordWrap(true);
+        said->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        said->hide();
+        const QString tag = n->tag;
+        connect(write, &QPushButton::clicked, this, [this, tag, said] {
+            if (a_doc == nullptr) return;
+            QString why;
+            const QString path = a_doc->writeExport(tag, &why);
+            if (path.isEmpty()) {
+                said->setText(tr("It could not be written: %1").arg(why));
+            } else {
+                said->setText(tr("Written to %1.").arg(path));
+            }
+            said->show();
+        });
+        v->addWidget(write);
+        v->addWidget(said);
+    }
     // What this node did, where it is one that does something: the
     // processing's steps under the Processing, the cells and what they
     // would cost under the Mesh, both made of the layout as read.
@@ -690,6 +715,7 @@ void RF25Panel::showSettings()
         } else if (a_doc->extraction() && a_doc->extraction()->ok()) {
             did = a_doc->solvedLines();
             did += a_doc->lineSummary();
+            did += a_doc->sParameterSummary();
         } else if (!a_doc->solveProblem().isEmpty()) {
             cannot << a_doc->solveProblem();
         } else {

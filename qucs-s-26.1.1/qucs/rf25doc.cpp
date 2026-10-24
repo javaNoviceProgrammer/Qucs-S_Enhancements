@@ -13,6 +13,7 @@
 #include "main.h"
 #include "misc.h"
 #include "multiphysics/fem_expr.h"
+#include "rf25/rf25_sparams.h"
 #include "qucs.h"
 #include "settings.h"
 
@@ -44,6 +45,7 @@
 #include <cmath>
 
 using namespace qucs_s::rf25;
+namespace fem = qucs_s::fem;
 using qucs_s::layout::LayerStyle;
 using qucs_s::layout::Layout;
 using qucs_s::layout::LayoutView;
@@ -1065,6 +1067,192 @@ QStringList RF25Doc::lineSummary() const
                        .arg(lp.alphaDb, 0, 'g', 3);
     }
     return out;
+}
+
+QStringList RF25Doc::sParameterSummary() const
+{
+    QStringList out;
+    if (!a_extraction || !a_extraction->ok() || !(a_solvedLength > 0)) return out;
+    QString why;
+    const QList<double> sweep = studySweep(a_model, &why);
+    if (sweep.isEmpty()) {
+        if (!why.isEmpty()) out << why;
+        return out;
+    }
+    const double f = sweep.last();
+    for (int i = 0; i < a_extraction->names.size(); ++i) {
+        const fem::LineRLGC line = asLine(*a_extraction, i, a_solvedLength, f);
+        if (!line.error.isEmpty()) continue;
+        // Into ports of its own impedance, which is the match a user is
+        // looking for; 50 Ohm is in the export's own property.
+        const double z = line.Zc.real();
+        if (!(z > 0)) continue;
+        const std::array<std::complex<double>, 4> sp = fem::lineSParameters(line, a_solvedLength, z);
+        const double through = 20 * std::log10(std::max(1e-300, std::abs(sp[1])));
+        out << tr("%1 as a two-port into %2 Ohm at %3 GHz: S11 %4 dB, S21 %5 dB at %6°.")
+                   .arg(a_extraction->names.at(i))
+                   .arg(z, 0, 'g', 4)
+                   .arg(f / 1e9, 0, 'g', 3)
+                   .arg(20 * std::log10(std::max(1e-300, std::abs(sp[0]))), 0, 'f', 1)
+                   .arg(through, 0, 'f', 2)
+                   .arg(std::arg(sp[1]) * 180 / M_PI, 0, 'f', 1);
+    }
+    if (out.isEmpty()) return out;
+    // And where the quasi-static answer stops being the whole story,
+    // which is the one thing a caller must not have to guess at.
+    const LineParameters first = lineParameters(*a_extraction, 0, a_solvedLength);
+    const QuasiStaticLimit limit =
+        quasiStaticLimit(a_model.stack(), a_mesh ? *a_mesh : Mesh(), 1e-6, first.velocity, a_solvedLength);
+    if (limit.frequency > 0) {
+        out << tr("Quasi-static to about %1 GHz (%2, eps_r %3): above that a mode other than quasi-TEM appears and "
+                  "none of this is the whole story.")
+                   .arg(limit.frequency / 1e9, 0, 'g', 3)
+                   .arg(limit.what)
+                   .arg(limit.epsilonMax, 0, 'g', 3);
+        if (f > limit.frequency)
+            out << tr("The study's own %1 GHz is above that: the numbers are extrapolated, not solved.")
+                       .arg(f / 1e9, 0, 'g', 3);
+    }
+    if (limit.resonance > 0)
+        out << tr("This %1 µm of line is a half wave at %2 GHz, which is where its S parameters first turn over.")
+                   .arg(a_solvedLength * 1e6, 0, 'g', 4)
+                   .arg(limit.resonance / 1e9, 0, 'g', 3);
+    return out;
+}
+
+namespace {
+
+/// The Touchstone export of \a model known by \a tag, or null.
+const Node* touchstoneNode(const qucs_s::rf25::Model& model, const QString& tag)
+{
+    const Node* node = model.root.find(tag);
+    if (node == nullptr || node->type != QLatin1String("rf_touchstone")) return nullptr;
+    return node;
+}
+
+} // namespace
+
+QString RF25Doc::exportPath(const QString& tag) const
+{
+    const Node* node = touchstoneNode(a_model, tag);
+    if (node == nullptr) return {};
+    const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
+    const QString named = textOf(*node, QStringLiteral("file")).trimmed();
+    if (!named.isEmpty()) {
+        const QFileInfo info(named);
+        return info.isAbsolute() ? info.absoluteFilePath() : QDir::cleanPath(dir.absoluteFilePath(named));
+    }
+    // Named nothing: beside the model, with as many ports as it writes.
+    const bool coupled = textOf(*node, QStringLiteral("of")) == QLatin1String("coupled");
+    const int nets = a_extraction ? int(a_extraction->names.size()) : 1;
+    const int ports = coupled ? 2 * std::max(1, nets) : 2;
+    const QString stem = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
+    return QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1_%2.s%3p").arg(stem, tag).arg(ports)));
+}
+
+bool RF25Doc::exportRequest(const QString& tag, ExportRequest* what, QString* error) const
+{
+    if (error != nullptr) error->clear();
+    const Node* node = touchstoneNode(a_model, tag);
+    if (node == nullptr) {
+        if (error != nullptr) *error = tr("There is no Touchstone export called %1 in this model.").arg(tag);
+        return false;
+    }
+    ExportRequest out;
+    out.coupled = textOf(*node, QStringLiteral("of")) == QLatin1String("coupled");
+    out.net = textOf(*node, QStringLiteral("net")).trimmed();
+    bool ok = true;
+    out.impedance = numberOf(*node, QStringLiteral("impedance"), a_model, 50.0, &ok);
+    if (!ok) {
+        if (error != nullptr) *error = tr("The export's reference impedance is not a number.");
+        return false;
+    }
+    out.length = numberOf(*node, QStringLiteral("length"), a_model, 0.0, &ok);
+    if (!ok) {
+        if (error != nullptr) *error = tr("The export's length is not a number.");
+        return false;
+    }
+    if (what != nullptr) *what = out;
+    return true;
+}
+
+QString RF25Doc::exportText(const QString& tag, QString* error) const
+{
+    ExportRequest what;
+    if (!exportRequest(tag, &what, error)) return {};
+    return exportText(what, error);
+}
+
+QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
+{
+    const auto refuse = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return QString();
+    };
+    if (error != nullptr) error->clear();
+    if (!a_extraction || !a_extraction->ok())
+        return refuse(a_solveProblem.isEmpty() ? tr("Nothing is solved yet: Solve the model first.") : a_solveProblem);
+    QString why;
+    const QList<double> sweep = studySweep(a_model, &why);
+    if (sweep.isEmpty()) return refuse(why.isEmpty() ? tr("The study asks for no frequencies to write.") : why);
+    if (!(what.impedance > 0))
+        return refuse(tr("A reference impedance of %1 Ohm is none.").arg(what.impedance, 0, 'g', 4));
+    const double length = what.length > 0 ? what.length : a_solvedLength;
+    if (!(length > 0))
+        return refuse(tr("A line's S parameters are of a length of it: the solve found none, so give the export one."));
+
+    QStringList comments;
+    comments << tr("%1, an RF 2.5D model of Qucs-S").arg(QFileInfo(a_DocName).fileName());
+    comments << tr("Quasi-static: C and C0 from a charge solve, L from C0, R from the metal's surface impedance, G "
+                   "from the dielectrics' loss");
+    for (const QString& line : sParameterSummary()) comments << line;
+
+    if (what.coupled) {
+        const fem::CoupledSweep cs = coupledSweep(*a_extraction, length, sweep);
+        if (!cs.error.isEmpty()) return refuse(cs.error);
+        comments << tr("Ports 1 to %1 are the near ends of %2, in that order; %3 to %4 their far ends")
+                        .arg(a_extraction->names.size())
+                        .arg(a_extraction->names.join(QStringLiteral(", ")))
+                        .arg(a_extraction->names.size() + 1)
+                        .arg(2 * a_extraction->names.size());
+        return fem::touchstoneCoupled(cs, length, what.impedance, false, comments);
+    }
+    // One net, as a two-port: the one it names, or the first.
+    int index = 0;
+    if (!what.net.isEmpty()) {
+        index = int(a_extraction->names.indexOf(what.net));
+        if (index < 0)
+            return refuse(tr("There is no net called %1: the solve found %2.")
+                              .arg(what.net, a_extraction->names.join(QStringLiteral(", "))));
+    }
+    const fem::LineSweep ls = lineSweep(*a_extraction, index, length, sweep);
+    if (!ls.error.isEmpty()) return refuse(ls.error);
+    comments << tr("Net %1, port 1 at its start").arg(a_extraction->names.value(index));
+    return fem::touchstone(ls, length, what.impedance, comments);
+}
+
+QString RF25Doc::writeExport(const QString& tag, QString* error) const
+{
+    QString why;
+    const QString text = exportText(tag, &why);
+    if (!why.isEmpty()) {
+        if (error != nullptr) *error = why;
+        return {};
+    }
+    const QString path = exportPath(tag);
+    if (path.isEmpty()) {
+        if (error != nullptr) *error = tr("There is nowhere to write it: give the export a file.");
+        return {};
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (error != nullptr) *error = tr("%1 could not be written: %2.").arg(path, file.errorString());
+        return {};
+    }
+    file.write(text.toUtf8());
+    file.close();
+    if (error != nullptr) error->clear();
+    return path;
 }
 
 QStringList RF25Doc::solvedLines() const

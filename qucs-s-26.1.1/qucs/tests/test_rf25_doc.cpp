@@ -994,6 +994,109 @@ private slots:
         QVERIFY(!doc->problemsText()->toPlainText().contains(QStringLiteral("What it solves to")));
     }
 
+    // What the solve says of the model as a circuit: the S parameters of
+    // each net, where the quasi-static answer gives out, and the
+    // Touchstone the Exports node writes of them.
+    void theSolvedModelIsWrittenAsATouchstone()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("written.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}});
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->editNode(QStringLiteral("m1"),
+                              [](rf::Node& n) {
+                                  n.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7"));
+                                  n.props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
+                              },
+                              QStringLiteral("copper")));
+        QVERIFY(doc->waitForPrepared(60000));
+
+        // Nothing is solved, so there is nothing to write - and it says
+        // so rather than writing an empty file.
+        rf::Node touchstone = doc->model().make(QStringLiteral("rf_touchstone"));
+        const QString tag = touchstone.tag;
+        QVERIFY(!tag.isEmpty());
+        {
+            rf::Model m = doc->model();
+            QVERIFY(m.add(QStringLiteral("exports"), touchstone) != nullptr);
+            QVERIFY(doc->setModel(m, QStringLiteral("an export")));
+        }
+        QString why;
+        QVERIFY2(doc->exportText(tag, &why).isEmpty(), "it wrote something of nothing");
+        QVERIFY2(why.contains(QStringLiteral("Nothing is solved")) || why.contains(QStringLiteral("no mesh")),
+                 qPrintable(why));
+
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::Extraction> e = doc->extraction();
+        QVERIFY2(e != nullptr && e->ok(), qPrintable(doc->solveProblem()));
+
+        // The S parameters of the line, and where the quasi-static answer
+        // stops being the whole story: both in the Results node's report.
+        const QStringList sp = doc->sParameterSummary();
+        QVERIFY2(!sp.isEmpty(), "it said nothing of the S parameters");
+        QVERIFY2(sp.first().contains(QStringLiteral("S11")) && sp.first().contains(QStringLiteral("S21"))
+                     && sp.first().contains(QStringLiteral("dB")),
+                 qPrintable(sp.first()));
+        QVERIFY2(sp.join(QStringLiteral(" | ")).contains(QStringLiteral("Quasi-static to about")),
+                 qPrintable(sp.join(" | ")));
+        QVERIFY2(sp.join(QStringLiteral(" | ")).contains(QStringLiteral("half wave")), qPrintable(sp.join(" | ")));
+        panel()->selectNode(doc->model().root.child(QStringLiteral("rf_results"))->tag);
+        QVERIFY2(reportSays(QStringLiteral("S21")), qPrintable(reportText()));
+        QVERIFY2(reportSays(QStringLiteral("Quasi-static to about")), qPrintable(reportText()));
+
+        // And the file: a Touchstone of the study's own 41 points, written
+        // where the node says - which, naming nothing, is beside the model.
+        const QString written = doc->exportText(tag, &why);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QVERIFY2(written.contains(QStringLiteral("# Hz S RI R 50")), qPrintable(written.left(600)));
+        QVERIFY2(written.contains(QStringLiteral("written.qrf25")), "the file does not say what made it");
+        QVERIFY2(written.contains(QStringLiteral("Quasi-static")), "the file does not say what the solve was");
+        QStringList rows;
+        for (const QString& row : written.split(QLatin1Char('\n')))
+            if (!row.trimmed().isEmpty() && !row.startsWith(QLatin1Char('!')) && !row.startsWith(QLatin1Char('#'))) rows << row;
+        QCOMPARE(rows.size(), 41);
+        for (const QString& row : rows) QCOMPARE(row.split(QLatin1Char(' '), Qt::SkipEmptyParts).size(), 9);
+
+        const QString path = doc->exportPath(tag);
+        QVERIFY2(path.endsWith(QStringLiteral(".s2p")), qPrintable(path));
+        QVERIFY2(path.contains(QStringLiteral("written")), qPrintable(path));
+        QVERIFY(!QFile::exists(path));
+        // The panel's own Write button, which is the only way a user has.
+        panel()->selectNode(tag);
+        auto* write = panel()->settingsArea()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"));
+        QVERIFY2(write != nullptr, "the export node has no Write button");
+        write->click();
+        QCoreApplication::processEvents();
+        auto* said = panel()->settingsArea()->findChild<QLabel*>(QStringLiteral("rfExportSaid"));
+        QVERIFY(said != nullptr);
+        QVERIFY2(said->text().contains(QStringLiteral("Written to")), qPrintable(said->text()));
+        QVERIFY2(QFile::exists(path), qPrintable(path));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString onDisk = QString::fromUtf8(file.readAll());
+        QCOMPARE(onDisk, written);
+
+        // A net that is not there is refused by name, not written as the
+        // first one.
+        {
+            rf::Model m = doc->model();
+            rf::Node* node = m.root.find(tag);
+            QVERIFY(node != nullptr);
+            node->props.insert(QStringLiteral("net"), QStringLiteral("M9"));
+            QVERIFY(doc->setModel(m, QStringLiteral("a net that is none")));
+        }
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY(doc->exportText(tag, &why).isEmpty());
+        QVERIFY2(why.contains(QStringLiteral("no net called M9")), qPrintable(why));
+    }
+
     // What a solve will not do: run with no mesh under it, and run twice
     // at once.
     void aSolveWithNothingToSolveOnIsRefused()

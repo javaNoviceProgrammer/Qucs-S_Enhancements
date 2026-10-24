@@ -339,8 +339,7 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     };
 
     out.conditionHint = solve(fromStack, &out.maxwell, &crowding);
-    QList<QList<double>> bareMaxwell;
-    solve(fromVacuum, &bareMaxwell);
+    solve(fromVacuum, &out.maxwell0);
     out.crowding = crowding;
 
     // Each dielectric's share of the field, for the loss it adds. The
@@ -348,8 +347,8 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
     // dC/deps_k) - and dC/deps is taken by solving again with that layer
     // a little different, which is a solve per lossy layer and none at
     // all for a stack that says no loss.
-    QList<double> loss;
-    for (int i = 0; i < nets.size(); ++i) loss << 0.0;
+    out.dielectricLoss.clear();
+    for (int i = 0; i < nets.size(); ++i) out.dielectricLoss << QList<double>(nets.size(), 0.0);
     bool lossy = false;
     for (const Layer& l : stack.layers)
         if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.tand > 0) lossy = true;
@@ -381,18 +380,27 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
             };
             QList<QList<double>> nudgedMaxwell;
             solve(fromNudged, &nudgedMaxwell);
-            for (int i = 0; i < nets.size(); ++i) {
-                double here = 0, there = 0;
+            // The whole matrix's derivative, not one number of it: a
+            // layer's loss couples two conductors as well as loading one,
+            // and coupled lines need that term.
+            for (int i = 0; i < nets.size(); ++i)
                 for (int j = 0; j < nets.size(); ++j) {
-                    here += out.maxwell.at(i).at(j);
-                    there += nudgedMaxwell.at(i).at(j);
+                    const double dCdEps = (nudgedMaxwell.at(i).at(j) - out.maxwell.at(i).at(j)) / step;
+                    out.dielectricLoss[i][j] += tand * was * dCdEps;
                 }
-                const double dCdEps = (there - here) / step;
-                if (here != 0) loss[i] += tand * was * dCdEps / here;
-            }
         }
     }
-    out.lossTangent = loss;
+    // One net's own loss tangent, for a single line: its row of the loss
+    // matrix over its row of the capacitance, which is what it was before
+    // the matrix was kept.
+    for (int i = 0; i < nets.size(); ++i) {
+        double here = 0, lost = 0;
+        for (int j = 0; j < nets.size(); ++j) {
+            here += out.maxwell.at(i).at(j);
+            lost += out.dielectricLoss.at(i).at(j);
+        }
+        out.lossTangent << (here != 0 ? lost / here : 0.0);
+    }
     // The metal each net is on: its conductivity and thickness, for the
     // surface resistance at a frequency.
     for (const Net& net : nets) {
@@ -419,7 +427,7 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
         return out;
     };
     out.c = mutualOf(out.maxwell);
-    out.c0 = mutualOf(bareMaxwell);
+    out.c0 = mutualOf(out.maxwell0);
     for (const Net& net : nets) out.names << net.name;
 
     out.lines << tr("%1 cell(s) on %2 net(s) over %3, as %4 unknowns.")
