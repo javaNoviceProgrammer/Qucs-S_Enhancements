@@ -23,6 +23,7 @@
 #include "multiphysics/fem_expr.h"
 #include "main.h"
 #include "qucs.h"
+#include "rf25/rf25_inductance.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_sparams.h"
 #include "rf25doc.h"
@@ -258,6 +259,86 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
                   "make. The S parameters are of a uniform line of this length and are right wherever the "
                   "cross-section is electrically small - see the quasi-static limit. No inductance of a loop, no "
                   "ports and no full-wave solve in this build; rf25_export writes a Touchstone of these."));
+    return jsonResult(out);
+}
+
+QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
+{
+    QucsDoc* doc = nullptr;
+    const QString path = args.value(QLatin1String("path")).toString().trimmed();
+    if (path.isEmpty()) {
+        doc = a_app->getDoc();
+    } else {
+        const QJsonObject opened = openDocument(QJsonObject{{QStringLiteral("path"), path}});
+        if (opened.value(QStringLiteral("isError")).toBool()) return opened;
+        doc = a_app->getDoc();
+    }
+    auto* model = dynamic_cast<RF25Doc*>(doc);
+    if (model == nullptr)
+        return errorResult(tr("%1 is no RF 2.5D model (.qrf25): rf25_inductance is of the loop a planar structure's "
+                              "ports make.")
+                               .arg(doc != nullptr ? QFileInfo(doc->getDocName()).fileName() : tr("nothing is open")));
+
+    const int timeout = args.contains(QLatin1String("timeout"))
+                            ? qBound(1, args.value(QLatin1String("timeout")).toInt(300), 3600)
+                            : 300;
+    // A frequency of its own is only for Q, and L and R do not move with
+    // it here, so it is taken afterwards rather than by editing the
+    // model's own study - a tool that is asked a question should not
+    // leave a step of Undo behind it.
+    double asked = 0;
+    if (args.contains(QLatin1String("frequency"))) {
+        const std::optional<double> given = positiveNumber(args.value(QLatin1String("frequency")).toString().trimmed(), *model);
+        if (!given) return errorResult(tr("'frequency' is a frequency above zero (\"10[GHz]\")."));
+        asked = *given;
+    }
+
+    // The shapes, the cells, and then the solve - which finds the charge
+    // and the loop together, on the same copies.
+    if (!model->waitForLayout(timeout * 1000))
+        return errorResult(tr("Its layout is still being read after %1 s.").arg(timeout));
+    if (!model->waitForPrepared(timeout * 1000))
+        return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(timeout));
+    model->solve();
+    if (!model->waitForSolved(timeout * 1000)) {
+        model->stopSolving();
+        return errorResult(tr("It is still solving after %1 s: mesh it more coarsely (the Mesh node's largest cell), or "
+                              "give rf25_inductance a longer 'timeout'.").arg(timeout));
+    }
+    const std::shared_ptr<const Inductance> ind = model->inductance();
+    if (!ind) {
+        const QStringList said = model->inductanceSummary();
+        return errorResult(said.isEmpty() ? tr("There is no loop to find an inductance of: the model wants two ports, "
+                                               "one for the current to go in at and one for it to come out of.")
+                                          : said.join(QStringLiteral(" ")));
+    }
+    if (!ind->ok())
+        return errorResult(ind->problems.isEmpty() ? tr("The loop's inductance came to nothing, and it said no reason.")
+                                                   : ind->problems.join(QStringLiteral(" ")));
+
+    QJsonObject out;
+    out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
+    out.insert(QStringLiteral("L"), ind->l);
+    out.insert(QStringLiteral("R_dc"), ind->rDc);
+    // Q at the frequency asked for, else at the study's own: wL/R, which
+    // needs no second solve since neither L nor R moves with it.
+    const double at = asked > 0 ? asked : ind->frequency;
+    if (at > 0 && ind->rDc > 0) {
+        out.insert(QStringLiteral("Q"), 2 * M_PI * at * ind->l / ind->rDc);
+        out.insert(QStringLiteral("frequency"), at);
+    }
+    out.insert(QStringLiteral("runs of current"), ind->branches);
+    out.insert(QStringLiteral("cells"), ind->nodes);
+    QJsonArray said;
+    for (const QString& line : model->preparedLines()) said.append(line);
+    for (const QString& line : ind->lines) said.append(line);
+    out.insert(QStringLiteral("what it did"), said);
+    out.insert(QStringLiteral("note"),
+               tr("Ruehli's partial inductances over the runs of current the mesh's shared edges give, with the "
+                  "current solved for rather than assumed: of every current that obeys Kirchhoff's law and carries the "
+                  "terminal current, the one that flows is the one of least magnetic energy. That is the current at "
+                  "direct current, so L is the low-frequency value and R_dc is the loop's own resistance, not a line's "
+                  "R per metre. rf25_solve's L is a different quantity: 1/(c0^2 C0), of a uniform cross-section."));
     return jsonResult(out);
 }
 

@@ -17,6 +17,7 @@
 #include "layout.h"
 #include "layoutdoc.h"
 #include "qucsdoc.h"
+#include "rf25/rf25_inductance.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_static.h"
@@ -206,6 +207,13 @@ public:
     /// a quasi-static answer stops being the whole story. Empty where
     /// nothing was solved.
     QStringList sParameterSummary() const;
+    /// The loop's inductance as last solved, or null: nothing solved, the
+    /// model changed since, or it has not the two ports a loop wants.
+    std::shared_ptr<const qucs_s::rf25::Inductance> inductance() const { return a_inductance; }
+    /// The loop's L, its resistance at direct current and its Q, for the
+    /// Results node and the notes; what the ports said where there is no
+    /// loop to find.
+    QStringList inductanceSummary() const;
 
     // What is written out of a solve. The engine's own Touchstone writers
     // do the writing (multiphysics/fem_export.h); what is here is the
@@ -313,6 +321,8 @@ private:
     std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;
     std::shared_ptr<SolveJob> a_solveJob;
     std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;
+    std::shared_ptr<const qucs_s::rf25::Inductance> a_inductance;
+    QString a_portsSaid;
     QString a_solveProblem;
     double a_solvedLength = 0;
     QTimer* a_prepareSoon = nullptr;

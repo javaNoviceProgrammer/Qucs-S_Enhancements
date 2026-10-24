@@ -716,6 +716,7 @@ void RF25Panel::showSettings()
             did = a_doc->solvedLines();
             did += a_doc->lineSummary();
             did += a_doc->sParameterSummary();
+            did += a_doc->inductanceSummary();
         } else if (!a_doc->solveProblem().isEmpty()) {
             cannot << a_doc->solveProblem();
         } else {

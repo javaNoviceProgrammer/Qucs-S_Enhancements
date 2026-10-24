@@ -1097,6 +1097,96 @@ private slots:
         QVERIFY2(why.contains(QStringLiteral("no net called M9")), qPrintable(why));
     }
 
+    // The loop's inductance, which wants two ports to say what the loop
+    // is - and says so where there are not two.
+    void theLoopsInductanceIsSolvedFromItsPorts()
+    {
+        layoutCopy();
+        RF25Doc* doc = open(written(QStringLiteral("loop.qrf25")));
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        mapTo(doc, {{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}});
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
+                              QStringLiteral("largest cell")));
+        QVERIFY(doc->editNode(QStringLiteral("m1"),
+                              [](rf::Node& n) {
+                                  n.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7"));
+                                  n.props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
+                              },
+                              QStringLiteral("copper")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->mesh() != nullptr && !doc->mesh()->cells.isEmpty());
+        // Where the layout is, so the ports can be put on its two ends.
+        QRectF bounds;
+        for (const rf::Conductor& c : doc->processed()->conductors) bounds = bounds.united(c.outline.boundingRect());
+        QVERIFY(bounds.width() > 0);
+        // (This layout's layer 1 is a wire that runs in y - 0.5 µm wide
+        //  and 1200 µm long - so its two ends are its top and bottom.)
+        QVERIFY2(bounds.height() > bounds.width(), "the fixture is a wire running in y");
+
+        // One port is no loop: the model made by written() has one, and
+        // it says what is wanted rather than answering.
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->extraction() != nullptr && doc->extraction()->ok(), qPrintable(doc->solveProblem()));
+        QVERIFY2(doc->inductance() == nullptr, "it found a loop with one port");
+        QVERIFY2(doc->inductanceSummary().join(QLatin1Char(' ')).contains(QStringLiteral("wants two")),
+                 qPrintable(doc->inductanceSummary().join(" | ")));
+
+        // A second port at the other end of the layout, and there is a
+        // loop: the current goes in at one and out at the other.
+        {
+            rf::Model m = doc->model();
+            rf::Node* first = nullptr;
+            for (rf::Node& p : m.ports().children)
+                if (p.type == QLatin1String("rf_edge_port")) first = &p;
+            QVERIFY(first != nullptr);
+            first->props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(bounds.center().x()));
+            first->props.insert(QStringLiteral("y"), QStringLiteral("%1[um]").arg(bounds.top()));
+            rf::Node second = m.make(QStringLiteral("rf_edge_port"));
+            second.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+            second.props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(bounds.center().x()));
+            second.props.insert(QStringLiteral("y"), QStringLiteral("%1[um]").arg(bounds.bottom()));
+            QVERIFY(m.add(QStringLiteral("ports"), second) != nullptr);
+            QVERIFY(doc->setModel(m, QStringLiteral("a second port")));
+        }
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY(doc->waitForSolved(300000));
+        const std::shared_ptr<const rf::Inductance> loop = doc->inductance();
+        QVERIFY2(loop != nullptr, qPrintable(doc->inductanceSummary().join(" | ")));
+        QVERIFY2(loop->ok(), qPrintable(loop->problems.join(" | ")));
+        // A wire of some hundreds of micrometres is some hundreds of
+        // picohenries, and it has a resistance to go with it.
+        QVERIFY2(loop->l > 1e-12 && loop->l < 1e-7, qPrintable(QStringLiteral("%1 nH").arg(loop->l * 1e9)));
+        QVERIFY2(loop->rDc > 0, "copper with no resistance");
+        QVERIFY2(loop->branches > 0 && loop->nodes > 0, "no runs of current");
+        QCOMPARE(loop->current.size(), loop->branches);
+        // Q at the study's own frequency, which a blank model puts at
+        // 40 GHz, and it is wL/R.
+        QVERIFY2(loop->q > 0, "no Q");
+        QVERIFY2(std::abs(loop->q - 2 * M_PI * loop->frequency * loop->l / loop->rDc) < 1e-9 * loop->q, "Q is not wL/R");
+
+        // In the notes, in the status line and under the Results node.
+        const QStringList said = doc->inductanceSummary();
+        QVERIFY2(said.join(QLatin1Char(' ')).contains(QStringLiteral("The loop is")), qPrintable(said.join(" | ")));
+        QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("The loop is")),
+                 qPrintable(doc->problemsText()->toPlainText()));
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("the loop is")), qPrintable(doc->statusLabel()->text()));
+        panel()->selectNode(doc->model().root.child(QStringLiteral("rf_results"))->tag);
+        QVERIFY2(reportSays(QStringLiteral("The loop is")), qPrintable(reportText()));
+
+        // An edit throws it away with the capacitance, for the same
+        // reason: a loop of shapes that have gone is worse than none.
+        QVERIFY(doc->editNode(doc->model().mesh().tag,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("30[um]")); },
+                              QStringLiteral("coarser")));
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY2(doc->inductance() == nullptr, "the loop of the mesh before was kept");
+        QVERIFY(doc->inductanceSummary().isEmpty());
+    }
+
     // What a solve will not do: run with no mesh under it, and run twice
     // at once.
     void aSolveWithNothingToSolveOnIsRefused()
