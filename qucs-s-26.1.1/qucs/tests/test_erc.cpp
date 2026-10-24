@@ -997,6 +997,36 @@ private slots:
     // (Qucs wrote them so), a SPICE library by its path in another
     // installation's library. Each is found, and its part has its pins.
     // A SPICE library part that cannot be loaded is told, and why.
+    // The hunt of 23 October, A12: a part backed by a file whose file is
+    // not there. It was reported for Sub and SpLib alone - an SPfile said
+    // nothing at all, and for that one the whole netlist comes out empty.
+    void everyPartBackedByAFileSaysWhenItIsMissing()
+    {
+        write(dir.filePath("there.s2p"), "# Hz S RI R 50\n1e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n");
+        const QString top = dir.filePath("filebacked.sch");
+        write(top, QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
+                                  "  <SPfile X1 1 100 100 -26 -60 0 0 \"nowhere.s2p\" 1 \"2\" 0 \"polar\" 0 \"linear\" 0 \"open\" 0 \"rectangular\" 0>\n"
+                                  "  <SPfile X2 1 300 100 -26 -60 0 0 \"there.s2p\" 1 \"2\" 0 \"polar\" 0 \"linear\" 0 \"open\" 0 \"rectangular\" 0>\n"
+                                  "  <SPfile X3 1 500 100 -26 -60 0 0 \"\" 1 \"2\" 0 \"polar\" 0 \"linear\" 0 \"open\" 0 \"rectangular\" 0>\n"
+                                  "  <SPICE X4 1 100 300 -26 -60 0 0 \"nowhere.cir\" 1 \"\" 0 \"\" 0 \"\" 0>\n"
+                                  "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n")
+                       .toUtf8());
+        Schematic doc(nullptr, top);
+        QVERIFY(doc.load());
+        const QStringList got = messages(check(&doc));
+        QVERIFY2(got.contains("E X1: its S parameter file nowhere.s2p is not found (beside the schematic, in the project or its "
+                              "user_lib): the netlist comes out empty and the simulation has nothing to run"),
+                 qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains("E X3: no S parameter file is given: the netlist comes out empty and the simulation has nothing "
+                              "to run"),
+                 qPrintable(got.join(" | ")));
+        QVERIFY2(got.contains("E X4: its SPICE netlist nowhere.cir is not found (beside the schematic, in the project or its "
+                              "user_lib): the netlist names a file the simulator cannot read"),
+                 qPrintable(got.join(" | ")));
+        // The one whose file is there says nothing.
+        QVERIFY2(got.filter(QRegularExpression("^E X2:")).isEmpty(), qPrintable(got.join(" | ")));
+    }
+
     void filesNamedAsElsewhereAreFound()
     {
         struct Restore {

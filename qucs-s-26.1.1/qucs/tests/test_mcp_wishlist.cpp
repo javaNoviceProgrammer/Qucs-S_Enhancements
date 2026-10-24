@@ -96,6 +96,29 @@ class TestMcpWishlist : public QObject
         return {};
     }
     QString path(const QString& name) const { return dir.filePath("workspace/" + name); }
+    /// A file's whole text, or empty.
+    static QString read(const QString& file)
+    {
+        QFile f(file);
+        return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+    }
+    /// \a file's modification time set a few seconds ahead, so that it is
+    /// newer than the document's last save whatever that was set to in
+    /// between (a solve and a build both take the file's own date).
+    static bool newerThanAnySave(const QString& file)
+    {
+        QFile f(file);
+        return f.open(QIODevice::ReadWrite)
+               && f.setFileTime(QDateTime::currentDateTime().addSecs(5), QFileDevice::FileModificationTime);
+    }
+    /// An empty folder of its own, outside the workspace.
+    QString fresh(const QString& name) const
+    {
+        const QString made = dir.filePath(name);
+        QDir(made).removeRecursively();
+        QDir().mkpath(made);
+        return made;
+    }
     bool writeFile(const QString& file, const QString& what)
     {
         QDir().mkpath(QFileInfo(file).absolutePath());
@@ -1018,6 +1041,253 @@ private slots:
         QVERIFY2(told.contains(QStringLiteral("unsaved changes in Qucs-S")), qPrintable(told.left(800)));
         QVERIFY(sch->getDocChanged());   // kept, not thrown away
         QCOMPARE(sch->a_Components->size(), size_t(1));
+    }
+
+    // The hunt of 23 October, A5, A6 and F1: a schematic half written on
+    // disk. The tab keeps what it had, the call that met it answers, the
+    // conversation is told why, and nothing crashes.
+    void aHalfWrittenSchematicIsNotTakenForTheDocument()
+    {
+        // As a server runs: no user at the window, so no box may be opened
+        // for anyone to answer.
+        struct Headless {
+            QucsControl* control;
+            ~Headless() { control->setHeadless(false); }
+        } headless{control};
+        control->setHeadless(true);
+        QVERIFY(!failed(must("new_document")));
+        QVERIFY(!failed(must("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(must("add_component", {{"type", "C"}, {"x", 200}, {"y", 100}})));
+        QVERIFY(!failed(must("save_document", {{"as", "half.sch"}})));
+        auto* sch = dynamic_cast<Schematic*>(app->getDoc());
+        QVERIFY(sch != nullptr);
+        const quint64 was = sch->revision();
+
+        // Cut to three quarters, as a crashed writer or an interrupted
+        // checkout leaves it.
+        const QString whole = read(path("half.sch"));
+        QVERIFY(whole.size() > 80);
+        QVERIFY(writeFile(path("half.sch"), whole.left(whole.size() * 3 / 4)));
+
+        // The call that finds it answers - it used to raise a modal box
+        // inside the reload and never return (A6).
+        const QJsonObject now = json(must("get_schematic", {}, 20000));
+        QJsonArray names;
+        for (const QJsonValue& c : now.value("components").toArray()) names.append(c.toObject().value("name"));
+        // Both parts are still there: load() puts back what it held, which
+        // a reload re-entered through that box used to defeat (A5).
+        QCOMPARE(names.size(), 2);
+        QVERIFY2(names.contains(QJsonValue(QStringLiteral("R1"))) && names.contains(QJsonValue(QStringLiteral("C1"))),
+                 qPrintable(QJsonDocument(names).toJson(QJsonDocument::Compact)));
+        // No dialog is waiting for anyone.
+        QCOMPARE(json(must("get_state")).value("dialog open").toString(), QString());
+        // Nothing of the document changed, so its revision did not move.
+        QCOMPARE(sch->revision(), was);
+        // And the conversation is told, with the loader's own reason.
+        const QString told = text(control->callNow(QStringLiteral("get_netlist"), {}, 60000, 31));
+        QVERIFY2(told.contains(QStringLiteral("could not be read")), qPrintable(told.right(400)));
+        QVERIFY2(told.contains(QStringLiteral("keeps what it had")), qPrintable(told.right(400)));
+        // With the loader's own words in it, which is what taking them
+        // under an ErrorCapture is for - raised as a box instead, they
+        // would not be here.
+        QVERIFY2(told.contains(QStringLiteral("component")), qPrintable(told.right(400)));
+    }
+
+    // A1: a singular is folded only into a field that is a plural of it.
+    void onlyARealPluralIsReadFromItsSingular()
+    {
+        QVERIFY(!failed(must("new_document")));
+        QVERIFY(!failed(must("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(must("save_document", {{"as", "fold.sch"}})));
+
+        // The folds that were never plurals: refused as arguments the tool
+        // does not take - not merely refused for some other reason, which
+        // is what the message is checked for. 'a' would have written the
+        // file under that name.
+        const auto refusedAs = [this](const QString& tool, const QJsonObject& args, const QString& key) {
+            const QJsonObject r = call(tool, args);
+            const QString why = text(r);
+            if (!failed(r) || !why.contains(QStringLiteral("takes no ") + key))
+                qWarning("%s %s -> %s", qPrintable(tool), QJsonDocument(args).toJson(QJsonDocument::Compact).constData(),
+                         qPrintable(why.left(200)));
+            return failed(r) && why.contains(QStringLiteral("takes no ") + key);
+        };
+        QVERIFY(refusedAs(QStringLiteral("save_document"), {{"a", "snuck.sch"}}, QStringLiteral("a")));
+        QVERIFY(!QFileInfo::exists(path("snuck.sch")));
+        // A flag is no list of one: this one turns on running a schematic's
+        // commands besides the simulator.
+        QVERIFY(refusedAs(QStringLiteral("simulate"), {{"allow_command", true}}, QStringLiteral("allow_command")));
+        QVERIFY(refusedAs(QStringLiteral("export_image"), {{"save_a", "out/x.png"}}, QStringLiteral("save_a")));
+        QVERIFY(refusedAs(QStringLiteral("fem_describe"), {{"v", "x"}}, QStringLiteral("v")));
+        QVERIFY(refusedAs(QStringLiteral("add_trace"), {{"axi", "left"}}, QStringLiteral("axi")));
+        // Two keys that would fold into one field: refused, where one of
+        // them used to be thrown away without a word.
+        // 'properti' folded into 'properties' through the old "+es" path,
+        // which is gone: it is simply an argument add_component does not
+        // take. ('propertie' still folds, by the plain "+s" rule - a typo
+        // that lands right, and harmless.)
+        QVERIFY(refusedAs(QStringLiteral("add_component"),
+                          {{"type", "R"}, {"x", 400}, {"y", 100}, {"properti", QJsonObject{{"R", "444"}}}},
+                          QStringLiteral("properti")));
+        // Two different keys can still have one plural - 'box' and 'boxe'
+        // both give 'boxes' - which is what the collision guard in
+        // asPlural() is for; no tool of today has such a pair.
+        QCOMPARE(QucsControl::pluralOf(QStringLiteral("box")), QStringLiteral("boxes"));
+        QCOMPARE(QucsControl::pluralOf(QStringLiteral("boxe")), QStringLiteral("boxes"));
+
+        // And the plurals N11 is about still read from their singular.
+        QVERIFY(!failed(must("select", {{"name", "R1"}})));                    // names, a list
+        QVERIFY(!failed(must("undo_history", {{"step", "2"}})));               // steps, and a number as text
+        QVERIFY(!failed(must("batch", {{"call", QJsonObject{{"tool", "get_state"}, {"arguments", QJsonObject{}}}}})));
+        QCOMPARE(QucsControl::pluralOf(QStringLiteral("property")), QStringLiteral("properties"));
+        QCOMPARE(QucsControl::pluralOf(QStringLiteral("box")), QStringLiteral("boxes"));
+        QCOMPARE(QucsControl::pluralOf(QStringLiteral("name")), QStringLiteral("names"));
+        QVERIFY(QucsControl::pluralOf(QStringLiteral("a")).isEmpty());
+    }
+
+    // A2, A3: the guards are given the arguments as the tool will read
+    // them, so a singular cannot hide a file or a whole batch from them.
+    void theGuardsSeeWhatTheToolWillRead()
+    {
+        QVERIFY(!failed(must("new_document")));
+        QVERIFY(!failed(must("save_document", {{"as", "guard.sch"}})));
+        const QString outside = QDir(fresh("outside")).filePath(QStringLiteral("x.sch"));
+        const QString plural = control->askedEachTime(QStringLiteral("save_document"), {{"as", outside}});
+        QVERIFY2(plural.contains(QStringLiteral("Outside the workspace")), qPrintable(plural));
+        // ('a' for 'as' is no longer read at all - A1 - so there is no
+        // write for the guard to name; onlyARealPluralIsReadFromItsSingular
+        // holds it to that. What follows is for the folds that remain.)
+        QVERIFY(control->askedEachTime(QStringLiteral("save_document"), {{"a", outside}}).isEmpty());
+        // The arguments the guards are given are the ones the tool reads.
+        const QJsonObject folded = control->asTheToolReadsIt(QStringLiteral("delete"), {{"name", "R1"}});
+        QCOMPARE(folded.value("names").toArray().size(), 1);
+        QCOMPARE(control->asTheToolReadsIt(QStringLiteral("undo"), {{"step", "2"}}).value("steps").toInt(), 2);
+        // A batch's inner call, named 'call' instead of 'calls': the three
+        // checks all used to see an empty list.
+        const QJsonObject one{{QStringLiteral("tool"), QStringLiteral("console")},
+                              {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("console"), QStringLiteral("terminal")},
+                                                                        {QStringLiteral("input"), QStringLiteral("ls")}}}};
+        QVERIFY(!control->askedEachTime(QStringLiteral("batch"), {{"calls", QJsonArray{one}}}).isEmpty());
+        QVERIFY2(!control->askedEachTime(QStringLiteral("batch"), {{"call", one}}).isEmpty(),
+                 "a console line inside a batch spelt 'call' is not asked about");
+        // A batch whose inner call writes outside the workspace: this one
+        // goes through guarded(), which read 'calls' as it came.
+        const QJsonObject writes{{QStringLiteral("tool"), QStringLiteral("save_document")},
+                                 {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("as"), outside}}}};
+        QVERIFY2(control->askedEachTime(QStringLiteral("batch"), {{"calls", QJsonArray{writes}}}).contains(outside),
+                 qPrintable(control->askedEachTime(QStringLiteral("batch"), {{"calls", QJsonArray{writes}}})));
+        QVERIFY2(control->askedEachTime(QStringLiteral("batch"), {{"call", writes}}).contains(outside),
+                 "a write outside the workspace inside a batch spelt 'call' is not named");
+        const QJsonObject trash{{QStringLiteral("tool"), QStringLiteral("trash_file")},
+                                {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("path"), QStringLiteral("guard.sch")}}}};
+        QVERIFY(control->irreversible(QStringLiteral("batch"), {{"calls", QJsonArray{trash}}}));
+        QVERIFY2(control->irreversible(QStringLiteral("batch"), {{"call", trash}}),
+                 "a trash_file inside a batch spelt 'call' is not treated as final");
+    }
+
+    // A4: a script is asked about when it may do what cannot be undone -
+    // whatever way it names the tool.
+    void aScriptIsAskedAboutWhateverWayItNamesTheTool()
+    {
+        const auto asked = [this](const QString& script) {
+            return control->irreversible(QStringLiteral("run_script"), {{QStringLiteral("script"), script}});
+        };
+        QVERIFY(asked(QStringLiteral("qucs.call('trash_file', {path: 'v.sch'})")));
+        // Built from pieces, or put in a variable: the name cannot be read
+        // from the text, so the worst case is taken.
+        QVERIFY2(asked(QStringLiteral("qucs.call('trash'+'_file', {path: 'v.sch'})")), "a name built up walks past the check");
+        QVERIFY2(asked(QStringLiteral("var t='trash_'+'file'; qucs.call(t, {path: 'v.sch'})")), "a name in a variable does");
+        // Named plainly but never looked for before: a console line runs
+        // with the user's rights, a push publishes.
+        QVERIFY2(asked(QStringLiteral("qucs.call('console', {console: 'terminal', input: 'ls'})")), "a console line is not named");
+        QVERIFY2(asked(QStringLiteral("qucs.call('git_remote', {action: 'push'})")), "a push is not named");
+        // A script that only looks is still let through.
+        QVERIFY(!asked(QStringLiteral("qucs.call('get_state', {})")));
+        QVERIFY(!asked(QStringLiteral("var n = 0; for (var i = 0; i < 3; i++) n += i; n")));
+    }
+
+    // A8, A13: the two ways a file left the workspace unwatched.
+    void everyWayAFileLeavesTheWorkspaceIsNamed()
+    {
+        QVERIFY(!failed(must("new_document")));
+        QVERIFY(!failed(must("add_component", {{"type", "R"}, {"x", 100}, {"y", 100}})));
+        QVERIFY(!failed(must("save_document", {{"as", "mover.sch"}})));
+        const QString outside = fresh("elsewhere");
+        // A rename is the one file mover that took a free path and was
+        // watched nowhere - where a copy to the same place was asked about.
+        const QString moved = control->askedEachTime(QStringLiteral("rename_file"),
+                                                     {{"path", "mover.sch"}, {"to", QDir(outside).filePath(QStringLiteral("moved.sch"))}});
+        QVERIFY2(moved.contains(QStringLiteral("Outside the workspace")), qPrintable(moved));
+        QVERIFY2(moved.contains(QStringLiteral("moved.sch")), qPrintable(moved));
+        // A library's folder, and the setting that may point at it.
+        const QString made = control->askedEachTime(QStringLiteral("create_library"),
+                                                    {{"name", "Escaped"}, {"destination", outside}});
+        QVERIFY2(made.contains(QStringLiteral("Escaped.lib")), qPrintable(made));
+        const QString setting = control->askedEachTime(
+            QStringLiteral("set_settings"),
+            {{"scope", "app"}, {"values", QJsonObject{{QStringLiteral("Locations/Library search paths"), outside}}}});
+        QVERIFY2(setting.contains(QStringLiteral("Outside the workspace")), qPrintable(setting));
+    }
+
+    // A7: a model is not read again while a job of its own is running.
+    // The reload's guard counts a batch, a script, a tune and a preview;
+    // a solve or a build is none of those, so the model was swapped under
+    // the job and the run ended against the new one (the hunt of 23
+    // October).
+    void aModelIsNotReadAgainUnderItsOwnJob()
+    {
+        // coax_rlgc has a parameter 'epsr' that coax has not, so a solve
+        // that ends against the wrong model says so: that is exactly how
+        // the hunt found it.
+        const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
+        QVERIFY(writeFile(path("job.qfem"), read(from + QStringLiteral("coax_rlgc.qfem"))));
+        QVERIFY(!failed(must("fem_model", {{"action", "open"}, {"path", "job.qfem"}})));
+        auto* doc = dynamic_cast<MultiphysicsDoc*>(app->getDoc());
+        QVERIFY(doc != nullptr);
+        QVERIFY(!control->busyWithAJob(doc));
+        // Fine enough that the solve lasts long enough to be met.
+        QVERIFY(!failed(must("fem_edit", {{"action", "set"}, {"tag", "mesh1"}, {"props", QJsonObject{{"hmax", "0.01"}}}})));
+        QVERIFY(!failed(must("fem_model", {{"action", "save"}})));
+        QVERIFY(!doc->getDocChanged());
+
+        auto answered = std::make_shared<QJsonObject>();
+        auto over = std::make_shared<bool>(false);
+        control->callTool(QStringLiteral("fem_solve"), QJsonObject{{QStringLiteral("timeout"), 300}},
+                          [answered, over](const QJsonObject& r) { *answered = r; *over = true; });
+        if (!control->busyWithAJob(doc))
+            QTRY_VERIFY_WITH_TIMEOUT(control->busyWithAJob(doc) || *over, 30000);
+        QVERIFY2(control->busyWithAJob(doc), qPrintable(QStringLiteral("the solve was over before it could be met: ")
+                                                        + QJsonDocument(*answered).toJson(QJsonDocument::Compact)));
+
+        // The other model written over its file while it solves.
+        QCOMPARE(doc->model().objectNames().size(), 3);   // outer, dielectric, inner
+        QVERIFY(writeFile(path("job.qfem"), read(from + QStringLiteral("coax.qfem"))));
+        QVERIFY(newerThanAnySave(path("job.qfem")));
+        QVERIFY(doc->changedOnDisk(QFileInfo(path("job.qfem")).lastModified()));   // there is a reload to refuse
+        app->reloadChangedDocumentsNow();
+        QVERIFY(!doc->getDocChanged());   // nothing unsaved to refuse over
+        // Not read while the job runs: the model is the one being solved.
+        // (MultiphysicsDoc::reload() has no guard of its own - it applies
+        // whatever the file holds - so this is the one that holds.)
+        QCOMPARE(doc->model().objectNames().size(), 3);
+
+        // The solve ends against the model it began with: it used to end
+        // against the one written over it and blame 'epsr' for it.
+        QTRY_VERIFY_WITH_TIMEOUT(*over, 300000);
+        const QString said = text(*answered) + QJsonDocument(*answered).toJson(QJsonDocument::Compact);
+        QVERIFY2(!said.contains(QStringLiteral("epsr")), qPrintable(said.left(500)));
+        QVERIFY2(!said.contains(QStringLiteral("is not a parameter")), qPrintable(said.left(500)));
+        QVERIFY2(!answered->value("isError").toBool(), qPrintable(said.left(500)));
+
+        // And the reload is only put off: with the job over and the file
+        // newer again, the next call reads it. (Written once more because
+        // the end of a solve takes the file's own date for the document's.)
+        QVERIFY(writeFile(path("job.qfem"), read(from + QStringLiteral("coax.qfem"))));
+        QVERIFY(newerThanAnySave(path("job.qfem")));
+        const QJsonObject now = json(must("fem_describe", {{"what", "tree"}}, 60000));
+        const QJsonArray objects = now.value("geometry").toObject().value("objects").toArray();
+        QVERIFY2(objects.contains(QJsonValue(QStringLiteral("core"))),
+                 qPrintable(QJsonDocument(objects).toJson(QJsonDocument::Compact)));
     }
 
     // N10. A script stopped says what it was doing, and the time the user

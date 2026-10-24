@@ -16,6 +16,7 @@
 #include "qucscontrol_p.h"
 
 #include "qucs.h"
+#include <QRegularExpression>
 #include "erc.h"
 #include "main.h"
 #include "misc.h"
@@ -250,7 +251,11 @@ QString QucsControl::resourceVersion(const QString& uri) const
 
 QString QucsControl::askedEachTime(const QString& tool, const QJsonObject& a) const
 {
-    const std::function<QString(const QString&, const QJsonObject&)> always = [&always](const QString& tool, const QJsonObject& a) {
+    const std::function<QString(const QString&, const QJsonObject&)> always = [&always, this](const QString& tool, const QJsonObject& given) {
+        // What the tool will read, here and at each step down a batch: a
+        // singular hid a console line from this check (the hunt of 23
+        // October, A3).
+        const QJsonObject a = asTheToolReadsIt(tool, given);
         // A batch: as the first of its calls that is.
         if (tool == QLatin1String("batch")) {
             for (const QJsonValue& v : a.value(QLatin1String("calls")).toArray())
@@ -346,8 +351,12 @@ void QucsControl::setAsking(quint64 caller, bool asking)
     else a_asking.remove(caller);
 }
 
-QucsControl::Guarded QucsControl::guarded(const QString& tool, const QJsonObject& a) const
+QucsControl::Guarded QucsControl::guarded(const QString& tool, const QJsonObject& given) const
 {
+    // What the tool will read, not what came in: a singular ('a' for 'as',
+    // 'call' for 'calls') used to hide a file or a whole batch from here
+    // (the hunt of 23 October, A2 and A3).
+    const QJsonObject a = asTheToolReadsIt(tool, given);
     Guarded g;
     if (tool == QLatin1String("batch")) {
         for (const QJsonValue& v : a.value(QLatin1String("calls")).toArray())
@@ -548,6 +557,47 @@ void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarde
         }
     } else if (tool == QLatin1String("fem_model") || tool == QLatin1String("fem_export")) {
         for (const QString& file : femFilesWritten(tool, a)) write(file);
+    } else if (tool == QLatin1String("rename_file")) {
+        // 'to' is a new name or a path to move it to: the file leaves where
+        // it was and lands there, and neither end was named (the hunt of 23
+        // October, A8). A rename is the one file mover that took a free path
+        // and was watched nowhere.
+        const QString from = text("path").isEmpty() ? QString() : absolute(text("path"));
+        if (!from.isEmpty()) {
+            write(from);
+            if (const QString to = text("to"); !to.isEmpty())
+                write(QFileInfo(to).isAbsolute() ? QDir::cleanPath(to)
+                                                 : QDir::cleanPath(QFileInfo(from).absoluteDir().filePath(to)));
+        }
+    } else if (tool == QLatin1String("create_library")) {
+        // NAME.lib, in the folder 'destination' names: user_lib, the
+        // project's, or one of the library search paths - which set_settings
+        // can point outside the workspace, so both ends of that route are
+        // named now (the hunt of 23 October, A13).
+        const QString name = text("name");
+        const QString where = text("destination");
+        if (!name.isEmpty() && !where.isEmpty() && where != QLatin1String("user_lib") && where != QLatin1String("project"))
+            write(QDir::cleanPath(QDir(absolute(where)).filePath(name + QStringLiteral(".lib"))));
+    } else if (tool == QLatin1String("set_settings")) {
+        // A setting whose value is a path points Qucs-S at a folder or a
+        // file: the library search paths are where create_library may then
+        // write (A13), and the simulators' paths are what it runs.
+        const QJsonObject values = a.value(QLatin1String("values")).toObject();
+        for (auto it = values.begin(); it != values.end(); ++it) {
+            QStringList given;
+            if (it.value().isArray())
+                for (const QJsonValue& v : it.value().toArray()) given << v.toString();
+            else
+                given << it.value().toString();
+            for (const QString& one : std::as_const(given)) {
+                const QString value = one.trimmed();
+                // (Path-shaped: a name with a separator in it, or from the
+                // root or the home folder. A plain word is no path.)
+                if (value.isEmpty()) continue;
+                if (!value.contains(QLatin1Char('/')) && !value.contains(QLatin1Char('\\'))) continue;
+                write(absolute(value));
+            }
+        }
     }
 }
 
@@ -648,8 +698,50 @@ QString QucsControl::unaskedWrite(const QString& file) const
         .arg(QDir::toNativeSeparators(file));
 }
 
-bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
+// Whether \a script may do something that cannot be undone, or that the user
+// is asked about each time. A script makes its calls at run time, so the
+// names it will use cannot always be read here: the text used to be searched
+// for five words, and 'trash' + '_file' walked straight past it while
+// console, a git push and send_input were never looked for at all (the hunt
+// of 23 October, A4). Every tool irreversible() and askedEachTime() can name
+// is looked for now, and a call whose tool is not a plain literal is taken as
+// the worst case - a script is asked about once, before it runs, so erring
+// this way costs a question and not a surprise.
+bool QucsControl::scriptMayNotBeUndone(const QString& script)
 {
+    static const QStringList named{QStringLiteral("clean_scratch"),  QStringLiteral("trash_file"),
+                                   QStringLiteral("send_input"),     QStringLiteral("console"),
+                                   QStringLiteral("git_discard"),    QStringLiteral("git_commit"),
+                                   QStringLiteral("git_commit_action"), QStringLiteral("git_remote"),
+                                   QStringLiteral("git_branch"),     QStringLiteral("git_stash"),
+                                   QStringLiteral("git_resolve"),    QStringLiteral("close_document"),
+                                   QStringLiteral("copy_document"),  QStringLiteral("export_image"),
+                                   QStringLiteral("export_netlist"), QStringLiteral("export_data"),
+                                   QStringLiteral("fem_model"),      QStringLiteral("fem_export"),
+                                   QStringLiteral("create_subcircuit"), QStringLiteral("import_netlist"),
+                                   QStringLiteral("save_document"),  QStringLiteral("rename_file"),
+                                   QStringLiteral("set_settings"),   QStringLiteral("create_library"),
+                                   QStringLiteral("import_library"), QStringLiteral("new_project")};
+    for (const QString& tool : named)
+        if (script.contains(tool)) return true;
+    // The arguments that make an ordinary tool irreversible, whatever names them.
+    for (const QString& word : {QStringLiteral("replace"), QStringLiteral("discard"), QStringLiteral("save_as"),
+                                QStringLiteral("interrupt"), QStringLiteral("push")})
+        if (script.contains(word)) return true;
+    // A call whose tool is not written out - 'trash' + '_file', a variable,
+    // a name put together - cannot be read from the text: the worst case.
+    static const QRegularExpression aCall(QStringLiteral("\\bcall\\s*\\("));
+    static const QRegularExpression aLiteral(QStringLiteral("^\\s*(['\"])[A-Za-z_][A-Za-z_0-9]*\\1\\s*[,)]"));
+    for (QRegularExpressionMatchIterator it = aCall.globalMatch(script); it.hasNext();) {
+        const QRegularExpressionMatch at = it.next();
+        if (!aLiteral.match(script.mid(at.capturedEnd())).hasMatch()) return true;
+    }
+    return false;
+}
+
+bool QucsControl::irreversible(const QString& tool, const QJsonObject& given) const
+{
+    const QJsonObject a = asTheToolReadsIt(tool, given);   // (as guarded(): A2, A3)
     const auto exists = [this](const QString& path) { return !path.trimmed().isEmpty() && QFileInfo::exists(absolute(path.trimmed())); };
     if (tool == QLatin1String("clean_scratch") || tool == QLatin1String("trash_file")) return true;
     // A batch: when one of its calls is. (Taken as undoable whatever it
@@ -685,13 +777,8 @@ bool QucsControl::irreversible(const QString& tool, const QJsonObject& a) const
     // each time (only reading it is not).
     if (tool == QLatin1String("console"))
         return !a.value(QLatin1String("input")).toString().isEmpty() || a.value(QLatin1String("interrupt")).toBool();
-    // A script that names what cannot be undone.
-    if (tool == QLatin1String("run_script")) {
-        const QString script = a.value(QLatin1String("script")).toString();
-        return script.contains(QLatin1String("clean_scratch")) || script.contains(QLatin1String("trash_file"))
-               || script.contains(QLatin1String("discard"))
-               || script.contains(QLatin1String("replace")) || script.contains(QLatin1String("save_as"));
-    }
+    // A script that may do something that cannot be undone.
+    if (tool == QLatin1String("run_script")) return scriptMayNotBeUndone(a.value(QLatin1String("script")).toString());
     if (tool == QLatin1String("close_document")) {
         if (a.value(QLatin1String("unsaved")).toString() != QLatin1String("discard")) return false;
         QString error;

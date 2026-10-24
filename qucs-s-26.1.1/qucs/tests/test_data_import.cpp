@@ -106,6 +106,14 @@ class TestDataImport : public QObject
         if (!di::read(path, options, &d, &error)) qWarning() << path << error;
         return d;
     }
+    /// As read(), but a refusal is handed back in \a why instead of warned
+    /// about: for the files that are meant to be turned down.
+    static di::Data read(const QString& path, const di::Options& options, QString* why)
+    {
+        di::Data d;
+        di::read(path, options, &d, why);
+        return d;
+    }
 
 private slots:
     void initTestCase() { QVERIFY(dir.isValid()); }
@@ -355,6 +363,67 @@ private slots:
         di::Data cut;
         QString why;
         QVERIFY(!di::read(write("cut.ldf", bytes.left(100)), {}, &cut, &why) && why.contains(QLatin1String("cut short")));
+    }
+
+    // The hunt of 23 October, A9 to A11: a Touchstone file the reader used
+    // to trust. A short row made up values from the next row, rows that do
+    // not rise were dropped in silence, and a unit it could not read was
+    // taken as GHz.
+    void aDamagedTouchstoneFileIsNotGuessedAt()
+    {
+        QString why;
+        // A9. One row of five numbers where nine are wanted: refused, with
+        // the count. It used to read S12 at 2 GHz as the third row's
+        // frequency, 3e9.
+        di::Data d = read(write("short.s2p", "# Hz S RI R 50\n"
+                                             "1e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"
+                                             "2e9 0.1 0.2 0.3 0.4\n"
+                                             "3e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9\n"),
+                          {}, &why);
+        QVERIFY2(why.contains(QStringLiteral("whole points")), qPrintable(why));
+        QVERIFY2(why.contains(QStringLiteral("left over")), qPrintable(why));
+        QVERIFY(d.variables.isEmpty());
+        // A file of one-port rows under a two-port name goes the same way.
+        why.clear();
+        read(write("mislabelled.s2p", "# Hz S RI R 50\n1e9 0.1 0.2\n2e9 0.3 0.4\n3e9 0.5 0.6\n4e9 0.7 0.8\n"), {}, &why);
+        QVERIFY2(why.contains(QStringLiteral("whole points")), qPrintable(why));
+
+        // A10. Points that do not rise: read as far as the first fall, and
+        // said - three rows in, one point out.
+        why.clear();
+        d = read(write("unsorted.s2p", "# Hz S RI R 50\n"
+                                        "3e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"
+                                        "1e9 0.11 0.21 0.31 0.41 0.51 0.61 0.71 0.81\n"
+                                        "2e9 0.12 0.22 0.32 0.42 0.52 0.62 0.72 0.82\n"),
+                 {}, &why);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(find(d, "frequency")->re, (QVector<double>{3e9}));
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("left out")),
+                 qPrintable(d.notes.join(QLatin1Char(' '))));
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("stops rising")),
+                 qPrintable(d.notes.join(QLatin1Char(' '))));
+
+        // A11. A unit the option line names and we cannot read: refused,
+        // where it used to fall through to GHz - 1e9 read as 1e18 Hz.
+        why.clear();
+        read(write("banana.s2p", "# BANANA S RI R 50\n1e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"), {}, &why);
+        QVERIFY2(why.contains(QStringLiteral("frequency unit")), qPrintable(why));
+        // No option line at all: the standard's defaults, and said so.
+        why.clear();
+        d = read(write("bare.s2p", "1 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n2 0.11 0.21 0.31 0.41 0.51 0.61 0.71 0.81\n"), {}, &why);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(find(d, "frequency")->re, (QVector<double>{1e9, 2e9}));   // GHz, the standard's default
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("no '#' option line")),
+                 qPrintable(d.notes.join(QLatin1Char(' '))));
+        // A reference impedance of nought, which no conversion can divide by.
+        d = read(write("zero.s2p", "# Hz S RI R 0\n1e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"));
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("0 Ohm")), qPrintable(d.notes.join(QLatin1Char(' '))));
+        // And a whole file still reads, with its points counted.
+        d = read(write("whole.s2p", "# Hz S RI R 50\n"
+                                     "1e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"
+                                     "2e9 0.11 0.21 0.31 0.41 0.51 0.61 0.71 0.81\n"));
+        QCOMPARE(find(d, "frequency")->re, (QVector<double>{1e9, 2e9}));
+        QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("2 point(s)")), qPrintable(d.notes.join(QLatin1Char(' '))));
     }
 
     void touchstoneIsRead()

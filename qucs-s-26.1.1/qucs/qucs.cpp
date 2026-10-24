@@ -4307,11 +4307,37 @@ void QucsApp::reloadOneIfChanged(QucsDoc *doc, const QFileInfo &info)
     tellClaudeNotLoaded(name);   // (a Bash edit of Claude's comes this way)
     return;
   }
+  // A solve, a build or a simulation of it is running: reading the file
+  // again now would take the model or the schematic out from under the job,
+  // which then finishes against what was written over it (the hunt of 23
+  // October, A7). Left for when the job is over - the timer tries again.
+  if (auto *control = findChild<QucsControl *>(); control != nullptr && control->busyWithAJob(doc)) {
+    statusBar()->showMessage(tr("%1 was changed by another program; it is being computed, so it is loaded again when that ends.")
+                                 .arg(name), 8000);
+    if (a_changedTimer != nullptr) a_changedTimer->start();
+    return;
+  }
   // The edit is the file's, to the tools: whoever wrote it (a command
   // of Claude's, another program) is not known.
   const quint64 editor = QucsDoc::editor();
   QucsDoc::setEditor(QucsDoc::kOnDisk);
-  const Reloaded how = reloadFromDisk(doc);
+  // A file half written, or damaged, makes the loader complain. A box here
+  // runs its own event loop inside the reload, and three things of the hunt
+  // of 23 October followed from that: the window could quit under the frame
+  // that was loading (F1, a heap-use-after-free as it unwound), the watcher
+  // could fire in that loop and load again - which defeats load()'s own
+  // "put back what it held", so the tab came out empty (A5) -, and a tool
+  // call whose own reload raised the box never returned (A6). What the
+  // loader says is taken here instead, and told in the status bar and to
+  // the conversations. (The ZIP branch of reloadDocument() already did
+  // this for a half-written archive.)
+  QString why;
+  Reloaded how = Reloaded::AsBefore;
+  {
+    misc::ErrorCapture quiet;
+    how = reloadFromDisk(doc);
+    why = quiet.errors().join(QStringLiteral("; "));
+  }
   QucsDoc::setEditor(editor);
   switch (how) {
   case Reloaded::Yes:
@@ -4320,11 +4346,27 @@ void QucsApp::reloadOneIfChanged(QucsDoc *doc, const QFileInfo &info)
                                  : tr("%1 was changed by another program and is loaded again.").arg(name),
                              5000);
     break;
-  case Reloaded::Failed:
-    statusBar()->showMessage(tr("%1 was changed by another program and could not be read: the tab keeps what it had "
-                                "(a Save asks before writing over the file).").arg(name),
+  case Reloaded::Failed: {
+    // Said to the conversations too: a tool call used to see nothing of it
+    // (the hunt of 23 October, A5).
+    const QString said = why.isEmpty() ? tr("it is damaged or half written") : why;
+    statusBar()->showMessage(tr("%1 was changed by another program and could not be read (%2): the tab keeps what it had "
+                                "(a Save asks before writing over the file).").arg(name, said),
                              10000);
+    auto *control = findChild<QucsControl *>();
+    if (control != nullptr)
+      control->noteForConversations(tr("%1 was changed on disk but could not be read (%2), so the tab keeps what it had - "
+                                       "which is not what the file holds. A save asks before writing over it.")
+                                        .arg(name, said));
+    // And shown to the user, as it always was - but queued, so the box
+    // opens once this reload has finished rather than running its own
+    // event loop inside the load, which is where F1, A5 and A6 came from.
+    // Not where there is no user at the window: a box in a server is
+    // answered by nobody, and every later call would queue behind it.
+    if (!why.isEmpty() && (control == nullptr || !control->isHeadless()))
+      QTimer::singleShot(0, this, [why] { misc::reportError(why); });
     break;
+  }
   case Reloaded::InConflict:
     statusBar()->showMessage(keptInConflictText(name), 20000);
     if (auto *control = findChild<QucsControl *>()) control->noteForConversations(keptInConflictText(name));

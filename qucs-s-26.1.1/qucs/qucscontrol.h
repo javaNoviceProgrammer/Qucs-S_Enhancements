@@ -120,15 +120,26 @@ public:
     QString resourceVersion(const QString& uri) const override;
     /// Files deleted or written over, unsaved changes discarded.
     bool irreversible(const QString& tool, const QJsonObject& arguments) const override;
+    /// Whether \a script may do something that cannot be undone, or that
+    /// the user is asked about each time: every such tool looked for, and a
+    /// call whose tool is not written out taken as the worst case.
+    static bool scriptMayNotBeUndone(const QString& script);
     QString askedEachTime(const QString& tool, const QJsonObject& arguments) const override;
     /// \a args with a singular read as the field \a tool takes of that
     /// name in the plural ('name' as delete's 'names', of the one; 'step'
     /// as undo's 'steps'); empty when there is none to read so (N11).
-    QJsonObject asPlural(const QString& tool, const QJsonObject& args) const;
+    /// The plural of \a word by the English rules a field name follows, or
+    /// empty where it is too short to be a singular anyone would send.
+    static QString pluralOf(const QString& word);
+    QJsonObject asPlural(const QString& tool, const QJsonObject& args, bool record = true) const;
     /// \a args with a number given as text read as that number, where
     /// \a tool takes a number there (undo's 'steps' as "1"); what was read
     /// so in \a said. Empty when there is none.
     QJsonObject asNumbers(const QString& tool, const QJsonObject& args, QStringList* said = nullptr) const;
+    /// \a args as the tool will read them (asPlural(), asNumbers()), said
+    /// nowhere: what the guards are given, so that a singular or a number
+    /// as text cannot hide a file or a call from them.
+    QJsonObject asTheToolReadsIt(const QString& tool, const QJsonObject& args) const;
     void setGuards(const qucs_s::claude::Guards& guards) override { a_guards = guards; }
     void setAsking(quint64 caller, bool asking) override;
     /// Why \a tool, called within the call under way (a batch's call, a
@@ -187,6 +198,9 @@ public:
     /// Served with no window (qucs-s --mcp-server): no one answers a
     /// message box at all.
     void setHeadless(bool headless) { a_headless = headless; }
+    /// Whether this is a server with no user at the window: a message box
+    /// here would be answered by nobody.
+    bool isHeadless() const { return a_headless; }
     /// How long send_input waits for its window's activation before its
     /// keys (ms, 500): 0 gives them before it comes, as a loaded runner's
     /// does (tests).
@@ -530,6 +544,13 @@ private:
     /// A run's process stopped (its SimulationRun's stop, Qucsator's abort).
     static void stopProcess(QObject* process);
     QJsonObject simulationStatus(const QJsonObject& args);
+
+public:
+    /// Whether a job of \a doc is running - a FEM solve or build, a
+    /// simulation of it - so that its file must not be read again under it.
+    bool busyWithAJob(QucsDoc* doc) const;
+
+private:
     void stopSimulation(const QJsonObject& args, const Done& done);
     /// wait_for: done once the event has happened, or at its timeout.
     void waitFor(const QJsonObject& args, const Done& done);

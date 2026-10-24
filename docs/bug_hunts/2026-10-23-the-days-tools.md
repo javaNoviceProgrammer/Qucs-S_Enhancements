@@ -29,7 +29,7 @@ Findings are documented, not fixed.
 | **A10** | A Touchstone file whose frequencies do not ascend keeps only the rows up to the first break - 1 of 3 - and says nothing | the same reader |
 | **A11** | A Touchstone header's frequency unit that is not one of the known ones is taken as **GHz**: every frequency 10⁹ times too large, said nowhere | the same reader |
 | **A13** | A library is written outside the workspace with no question, in two unguarded steps: `set_settings` adds the folder to the library search paths, `create_library` writes there | `filesOutside` sees neither |
-| **A12** | A missing file goes unreported for four of the six file-backed parts (`SPfile`, `SPICE`, `SPICE_dev`, `XSPICE_A`), where `Sub` and `SpLib` name it; for `SPfile` it empties the whole netlist | `check_schematic` |
+| **A12** | A missing file goes unreported for `SPfile` and `SPICE`, where `Sub` and `SpLib` name it; for `SPfile` it empties the whole netlist | `check_schematic` |
 | **F1** | **Crash** (SIGSEGV) reloading a truncated schematic with that box open | `Schematic::load` → `signalDocumentRebuilt` |
 | **B1** | A `reference` named for something that does not exist is used anyway, and not reported unmatched | `valuesAgainst`, `qucscontrol_fem.cpp` |
 | **B2** | A region that meets no text makes `read_pdf` call the PDF scanned | `readPdf`, `qucscontrol_design.cpp` |
@@ -467,9 +467,8 @@ whose whole job is to find this before a run - and not the part, which keeps its
 simulation from here runs an empty netlist, and whatever the simulator then says will be about the empty
 netlist rather than about the one file that is absent.
 
-**Check Schematic already does this for two of the six file-backed parts.** The "file components"
-category holds `Sub`, `SpLib`, `SPICE`, `SPfile`, `SPICE_dev` and `XSPICE_A`. The same circuit with each
-pointing at a file that is not there (`p87.json`, `p89.json`, `p90.json`):
+**Check Schematic already does this for two of the four parts that take a file.** The same circuit with
+each of them pointing at a file that is not there (`p87.json`, `p89.json`):
 
 | part | its `File` | Check Schematic says | netlist |
 |---|---|---|---|
@@ -477,13 +476,17 @@ pointing at a file that is not there (`p87.json`, `p89.json`, `p90.json`):
 | `SpLib` (SPICE library device) | `missing.lib` | **error** - "X1: its SPICE library missing.lib is not found (beside the schematic, in the project or …)" | – |
 | `SPfile` (S parameter file) | `nothing_here.s2p` | nothing - 0 errors | **empty** |
 | `SPICE` (SPICE netlist) | `missing.cir` | nothing - 0 errors | – |
-| `SPICE_dev` (SPICE generic device) | `missing.cir` | nothing - 0 errors | written (16 lines) |
-| `XSPICE_A` (XSPICE generic device) | `missing.mod` | nothing - 0 errors | written (9 lines) |
 
-Two report it, four do not. The check has the habit, the wording and the search path already; the other
-four are simply not among those it asks. A missing file is the commonest thing that goes wrong with such
-a part - a project moved, a model not checked in, a path typed by hand - and for `SPfile` it costs the
-whole netlist rather than one part.
+Two report it, two do not. The check has the habit, the wording and the search path already; those two
+are simply not among the parts it asks about. A missing file is the commonest thing that goes wrong with
+such a part - a project moved, a model not checked in, a path typed by hand - and for `SPfile` it costs
+the whole netlist rather than one part.
+
+(**Corrected while fixing this**, 23 October: `p90.json` also put `SPICE_dev` and `XSPICE_A` in this
+table, from a probe that gave each a `File`. Neither takes one - they take `NPins`, `Letter`, `Model` and
+`Params` - so those two rows were a false positive of the same kind as `fem_export.copy` in A8's sweep,
+and are gone. `Ifile`, `Vfile` and `Verilog` do take a file and were unchecked too; the fix covers all
+five.)
 
 ## A13. A library written outside the workspace, in two steps the guard does not see
 

@@ -19,6 +19,7 @@
 #include <cmath>
 #include <array>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QString>
 #include <unordered_set>
 
@@ -2164,6 +2165,14 @@ bool Schematic::paste(QTextStream *stream, std::list<Element*> *pe)
 // Loads this Qucs document.
 bool Schematic::load()
 {
+    // Loading again from inside a load - an error's box running its own
+    // event loop, the file watcher firing in it - would clear what the
+    // outer load is keeping to put back, and leave the outer frame holding
+    // lists it no longer owns (the hunt of 23 October, A5 and F1). The
+    // inner one is turned down; the outer finishes and answers for both.
+    if (a_loadingDocument) return false;
+    a_loadingDocument = true;
+    const auto done = qScopeGuard([this] { a_loadingDocument = false; });
     // Read as a schematic, as it is shown after: in the symbol's lists the
     // schematic's nodes (provideNode() adds to a_Nodes) were left pointing
     // at its wires once an undo or the next load freed them.
@@ -2177,6 +2186,12 @@ bool Schematic::load()
     const bool held = !a_DocComps.empty() || !a_DocWires.empty() || !a_DocDiags.empty() || !a_DocPaints.empty()
                       || !a_SymbolPaints.empty();
     const QString before = held ? documentText() : QString();
+    // Where the file does not read, the document ends up holding exactly
+    // what it held, so its revision and edits are put back below: a
+    // conversation was told "changed by its file ... and loaded again" for
+    // a load that failed (the hunt of 23 October, A5).
+    const quint64 wasRevision = revision();
+    const QList<Edit> wasEdits = recentEdits();
     deleteAllElements();
     deleteSymbolPaintings();
 
@@ -2196,8 +2211,10 @@ bool Schematic::load()
     ++a_sceneGeneration;
     contentRead();
     emit signalDocumentRebuilt(this);
-    if (!loaded)
+    if (!loaded) {
+        if (held) rewind(wasRevision, wasEdits);   // nothing of it changed
         return false;
+    }
     a_lastSaved = stamp.isValid() ? stamp : QDateTime::currentDateTime();
 
     while (!a_undoAction.isEmpty()) {
