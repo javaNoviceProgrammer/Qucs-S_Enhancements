@@ -346,6 +346,128 @@ private slots:
         QVERIFY(!rf::lineParameters(kept, 7, 1e-3).ok());
     }
 
+    // The surface impedance of a slab, against the two limits it has in
+    // closed form: a metal many skin depths thick, and one thin beside
+    // one.
+    void theSurfaceImpedanceIsThatOfASlab()
+    {
+        const double sigma = 5.8e7;   // copper
+        constexpr double mu0 = 4e-7 * M_PI;
+        for (double f : {1e6, 1e8, 1e10}) {
+            const double depth = std::sqrt(2.0 / (2 * M_PI * f * mu0 * sigma));
+            // Many skin depths thick: Rs tends to 1/(sigma delta), and
+            // the reactance equals the resistance.
+            const std::complex<double> thick = rf::surfaceImpedance(sigma, 60 * depth, f);
+            QVERIFY2(std::abs(thick.real() - 1.0 / (sigma * depth)) <= 1e-6 / (sigma * depth),
+                     qPrintable(QStringLiteral("f %1: %2 vs %3").arg(f).arg(thick.real()).arg(1.0 / (sigma * depth))));
+            QVERIFY2(std::abs(thick.imag() - thick.real()) <= 1e-6 * thick.real(), "a thick metal's reactance is its resistance");
+            // Thin beside one: it tends to the direct-current 1/(sigma t),
+            // and its reactance falls away.
+            const double t = depth / 100;
+            const std::complex<double> thin = rf::surfaceImpedance(sigma, t, f);
+            QVERIFY2(std::abs(thin.real() - 1.0 / (sigma * t)) <= 1e-3 / (sigma * t),
+                     qPrintable(QStringLiteral("f %1: %2 vs %3").arg(f).arg(thin.real()).arg(1.0 / (sigma * t))));
+            QVERIFY2(thin.imag() < 0.01 * thin.real(), "a thin metal is a resistance");
+            // And between them it rises with frequency.
+            QVERIFY(rf::surfaceImpedance(sigma, 1e-6, f).real() > 0);
+            // Thick enough that cosh and sinh of it would both overflow a
+            // double: the answer is still the 1/(sigma delta) it tends
+            // to, and not the nothing that inf over inf gives.
+            const std::complex<double> huge = rf::surfaceImpedance(sigma, 2000 * depth, f);
+            QVERIFY2(std::isfinite(huge.real()) && std::isfinite(huge.imag()),
+                     qPrintable(QStringLiteral("f %1: %2").arg(f).arg(huge.real())));
+            QVERIFY2(std::abs(huge.real() - 1.0 / (sigma * depth)) <= 1e-9 / (sigma * depth),
+                     qPrintable(QStringLiteral("f %1: %2 vs %3").arg(f).arg(huge.real()).arg(1.0 / (sigma * depth))));
+        }
+        // A metal that says no conductivity or no thickness is perfect.
+        QCOMPARE(rf::surfaceImpedance(0, 1e-6, 1e9), std::complex<double>(0, 0));
+        QCOMPARE(rf::surfaceImpedance(5.8e7, 0, 1e9), std::complex<double>(0, 0));
+        QCOMPARE(rf::surfaceImpedance(5.8e7, 1e-6, 0), std::complex<double>(0, 0));
+    }
+
+    // R and G of a microstrip: the resistance from the surface impedance
+    // and how the charge crowds, the conductance from the substrate's
+    // loss tangent, and what the two make of the line.
+    void aLinesResistanceAndConductanceAreThoseOfItsLosses()
+    {
+        const double w = 200.0, h = 100e-6, epsr = 9.8, tand = 0.002, sigma = 5.8e7, thick = 3e-6;
+        rf::Stack stack = grounded(epsr, h);
+        // Give the substrate its loss and the metal its conductivity.
+        for (rf::Layer& l : stack.layers) {
+            if (l.kind == rf::Layer::Substrate) l.tand = tand;
+            if (l.kind == rf::Layer::Metal) {
+                l.sigma = sigma;
+                l.thickness = thick;
+            }
+        }
+        const QList<rf::Conductor> line{strip(0, 0, w, 600)};
+        const rf::Extraction e = rf::extract(meshed(line, 50), line, stack);
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+        QCOMPARE(e.crowding.size(), 1);
+        QCOMPARE(e.lossTangent.size(), 1);
+        QVERIFY2(e.crowding.first() > 0, "the charge crowds nowhere at all");
+        // Nearly all of this line's field is in the substrate, so its
+        // effective loss tangent is nearly the substrate's own.
+        QVERIFY2(e.lossTangent.first() > 0.5 * tand && e.lossTangent.first() < tand,
+                 qPrintable(QStringLiteral("%1 vs the substrate's %2").arg(e.lossTangent.first()).arg(tand)));
+
+        const double f = 10e9;
+        const rf::LineParameters lp = rf::lineParameters(e, 0, 600e-6, f);
+        QVERIFY2(lp.ok(), qPrintable(lp.problems.join(" | ")));
+        QCOMPARE(lp.frequency, f);
+        // The skin depth of copper at 10 GHz is 0.66 µm, so a 3 µm metal
+        // is thick beside it and Rs is 1/(sigma delta) = 26 mOhm.
+        QVERIFY2(std::abs(lp.skinDepth - 6.6e-7) < 2e-8, qPrintable(QString::number(lp.skinDepth)));
+        QVERIFY2(std::abs(lp.surfaceResistance - 0.0261) < 1e-3, qPrintable(QString::number(lp.surfaceResistance)));
+        // R is more than Rs/W, because the current crowds at the edges,
+        // and not by more than a few times.
+        const double even = lp.surfaceResistance / (w * 1e-6);
+        QVERIFY2(lp.r > even, qPrintable(QStringLiteral("%1 vs Rs/W %2").arg(lp.r).arg(even)));
+        QVERIFY2(lp.r < 4 * even, qPrintable(QStringLiteral("%1 vs Rs/W %2").arg(lp.r).arg(even)));
+        // G is w C tand, with the effective loss tangent.
+        QVERIFY2(std::abs(lp.g - 2 * M_PI * f * lp.c * e.lossTangent.first()) <= 1e-9 * lp.g, "G is w C tand");
+        // The characteristic impedance is near the lossless one, since a
+        // good line loses little a wavelength, and the attenuation is
+        // small and positive.
+        QVERIFY2(std::abs(lp.zc.real() - lp.z0) < 0.05 * lp.z0,
+                 qPrintable(QStringLiteral("%1 vs %2").arg(lp.zc.real()).arg(lp.z0)));
+        QVERIFY(lp.zc.imag() < 0);   // (a lossy line's Zc lags)
+        QVERIFY2(lp.alphaDb > 0 && lp.alphaDb < 500,
+                 qPrintable(QStringLiteral("%1 dB/m").arg(lp.alphaDb)));
+        // In decibels, which is 20/ln(10) of the nepers gamma carries.
+        QVERIFY2(std::abs(lp.alphaDb - lp.gamma.real() * 20.0 / std::log(10.0)) <= 1e-9 * lp.alphaDb,
+                 qPrintable(QStringLiteral("%1 dB/m vs %2 Np/m").arg(lp.alphaDb).arg(lp.gamma.real())));
+        // Beta is near w/v of the lossless line.
+        const double beta = 2 * M_PI * f / lp.velocity;
+        QVERIFY2(std::abs(lp.gamma.imag() - beta) < 0.05 * beta,
+                 qPrintable(QStringLiteral("%1 vs %2").arg(lp.gamma.imag()).arg(beta)));
+
+        // At no frequency there is no R and no G, and the quasi-static
+        // values stand alone.
+        const rf::LineParameters quiet = rf::lineParameters(e, 0, 600e-6);
+        QVERIFY(quiet.ok());
+        QCOMPARE(quiet.r, 0.0);
+        QCOMPARE(quiet.g, 0.0);
+        QCOMPARE(quiet.frequency, 0.0);
+        QCOMPARE(quiet.z0, lp.z0);
+        // And none of what a frequency makes: zero, and not the nothing
+        // that zero over zero gives, nor the infinity that a skin depth
+        // of no frequency is.
+        QCOMPARE(quiet.zc, std::complex<double>(0, 0));
+        QCOMPARE(quiet.gamma, std::complex<double>(0, 0));
+        QCOMPARE(quiet.alphaDb, 0.0);
+        QVERIFY(quiet.skinDepth == 0.0);
+        QVERIFY(quiet.surfaceResistance == 0.0);
+
+        // A metal that says no conductivity loses nothing.
+        rf::Stack perfect = grounded(epsr, h);
+        const rf::Extraction pe = rf::extract(meshed(line, 50), line, perfect);
+        QVERIFY(pe.ok());
+        const rf::LineParameters plp = rf::lineParameters(pe, 0, 600e-6, f);
+        QCOMPARE(plp.r, 0.0);
+        QCOMPARE(plp.g, 0.0);
+    }
+
     // Two lines side by side: the matrix is symmetric, the coupling is a
     // negative off-diagonal term, and it falls as they are moved apart.
     void twoLinesCoupleAndTheCouplingFallsWithTheGap()
