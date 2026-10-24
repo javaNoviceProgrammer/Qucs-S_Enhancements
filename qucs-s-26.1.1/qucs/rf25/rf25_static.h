@@ -30,10 +30,16 @@
  *
  *     eps_eff = C/C0,  Z0 = 1/(c0 sqrt(C C0)),  L = 1/(c0^2 C0)
  *
- * What it does NOT do yet: every charged cell must be on one metal layer,
- * because the Green's function has no cross-layer term yet; R from the
- * surface impedance, the partial inductances that a non-TEM structure
- * needs for L, the ports and the S-parameters are the rest of phase B.
+ * Several metal layers are solved together: the Green's function answers
+ * the potential at a point on one layer of a charge on another, and a via
+ * joins what it lands on into one net. A via carries no charge of its own
+ * here - in the thin-metal approximation it is a wire between two sheets,
+ * and its sidewall's charge is small beside theirs - so its cells are not
+ * unknowns, only the joins they make.
+ *
+ * What it does NOT do yet: R from the surface impedance, the partial
+ * inductances that a non-TEM structure needs for L, the ports and the
+ * S-parameters, which are the rest of phase B.
  */
 #ifndef QUCS_RF25_STATIC_H
 #define QUCS_RF25_STATIC_H
@@ -50,16 +56,23 @@ namespace qucs_s::rf25 {
 
 /// One conductor held at one potential: the cells that make it up.
 struct Net {
-    QString name;         ///< the layer it is on, and which one of it ("M1 #2")
-    QString layer;
+    QString name;         ///< the conductors in it ("M1", "M1 #2", "M1+M2")
+    QStringList layers;   ///< the metals it reaches, in the stack's order
     QList<int> cells;     ///< indices into the mesh
     double area = 0;      ///< µm²
 };
 
-/// The conductors of \a mesh grouped into nets. The processing has already
-/// joined what touches on a layer, so a cell belongs to the conductor it
-/// was cut from, and the conductors of a layer are separate nets.
-QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors);
+/*!
+ * The conductors of \a mesh grouped into nets. The processing has already
+ * joined what touches on a layer, so a cell belongs to the conductor it
+ * was cut from; what remains is the vias, which join a conductor on one
+ * metal to one on another where they overlap in x and y.
+ *
+ * A net is named for the conductors in it ("M1", "M1 #2", "M1+M2" where a
+ * via joins them). A via's own cells are left out: it carries the current
+ * between two sheets, not a charge of its own.
+ */
+QList<Net> netsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack);
 
 /// What the extraction found.
 struct Extraction {
