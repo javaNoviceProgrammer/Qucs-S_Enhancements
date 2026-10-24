@@ -542,8 +542,8 @@ private slots:
         fresh("again");
         const QString project = workspace + "/amp_prj";
         QVERIFY(QDir().mkpath(project));
-        QVERIFY(write(project + "/one.sch", "<Qucs Schematic 27.0.4>\n<Components>\n</Components>\n"));
-        QVERIFY(write(project + "/two.sch", "<Qucs Schematic 27.0.4>\n<Components>\n</Components>\n"));
+        QVERIFY(write(project + "/one.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n</Components>\n"));
+        QVERIFY(write(project + "/two.sch", "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n</Components>\n"));
         QucsApp app(false);
         MainGuard guard(&app);
         QVERIFY(app.switchWorkspace(workspace));
