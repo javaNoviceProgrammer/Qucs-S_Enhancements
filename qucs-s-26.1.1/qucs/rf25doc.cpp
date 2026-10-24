@@ -1042,8 +1042,11 @@ QStringList RF25Doc::lineSummary() const
 {
     QStringList out;
     if (!a_extraction || !a_extraction->ok()) return out;
+    // At the top of the study's own sweep, which is where a line is
+    // worst: the quasi-static values alone where it names none.
+    const double f = topFrequency(a_model);
     for (int i = 0; i < a_extraction->names.size(); ++i) {
-        const LineParameters lp = lineParameters(*a_extraction, i, a_solvedLength);
+        const LineParameters lp = lineParameters(*a_extraction, i, a_solvedLength, f);
         if (!lp.ok()) continue;
         out << tr("%1: %2 pF/m, eps_eff %3, Z0 %4 Ohm over %5 µm")
                    .arg(a_extraction->names.at(i))
@@ -1051,6 +1054,15 @@ QStringList RF25Doc::lineSummary() const
                    .arg(lp.epsilonEff, 0, 'g', 4)
                    .arg(lp.z0, 0, 'g', 4)
                    .arg(a_solvedLength * 1e6, 0, 'g', 4);
+        if (lp.frequency > 0 && (lp.r > 0 || lp.g > 0))
+            out << tr("%1 at %2 GHz: R %3 Ohm/m, L %4 nH/m, G %5 S/m, C %6 pF/m; %7 dB/m")
+                       .arg(a_extraction->names.at(i))
+                       .arg(lp.frequency / 1e9, 0, 'g', 3)
+                       .arg(lp.r, 0, 'g', 4)
+                       .arg(lp.l * 1e9, 0, 'g', 4)
+                       .arg(lp.g, 0, 'g', 4)
+                       .arg(lp.c * 1e12, 0, 'g', 4)
+                       .arg(lp.alphaDb, 0, 'g', 3);
     }
     return out;
 }

@@ -52,6 +52,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <complex>
+
 namespace qucs_s::rf25 {
 
 /// One conductor held at one potential: the cells that make it up.
@@ -82,6 +84,26 @@ struct Extraction {
     QList<QList<double>> maxwell;     ///< as solved: the short-circuit matrix, F
     int unknowns = 0;                 ///< the cells it solved for
     double conditionHint = 0;         ///< the matrix's diagonal spread, for a warning
+    /*!
+     * How the charge crowds on each net, 1/m^2: sum(q^2/A) over its cells
+     * divided by (sum q)^2, with the net at a volt.
+     *
+     * It is what a conductor's resistance per metre needs beyond the
+     * surface resistance. For a line of width W carrying its current
+     * evenly it comes to 1/(W L), so Rs L times it is the Rs/W of the
+     * textbook; where the current crowds at the edges - which it does,
+     * and which is the whole reason to solve rather than divide by a
+     * width - it is larger, and the resistance with it. A transmission
+     * line's current follows its charge, which is why the charge this
+     * solved for can stand for it.
+     */
+    QList<double> crowding;
+    /// Each net's effective loss tangent: the dielectrics' own, weighted
+    /// by how much of the field each holds (eps dC/deps). G = w C tand.
+    QList<double> lossTangent;
+    /// The metal each net is on, for its surface resistance: its
+    /// conductivity (S/m) and thickness (m), or zero where it said none.
+    QList<double> sigma, thickness;
     QStringList problems;
     QStringList lines;                ///< what it did, for the panel
     bool ok() const { return problems.isEmpty() && !c.isEmpty(); }
@@ -106,10 +128,20 @@ struct LineParameters {
     double c = 0;           ///< F/m
     double c0 = 0;          ///< F/m, every dielectric vacuum
     double epsilonEff = 0;  ///< C/C0
-    double z0 = 0;          ///< Ohm
+    double z0 = 0;          ///< Ohm, the lossless quasi-TEM value
     double l = 0;           ///< H/m
     double velocity = 0;    ///< m/s
     double nEff = 0;
+    // At a frequency, the rest of RLGC and what comes of it. Zero where
+    // none was asked for (the quasi-static values above stand alone).
+    double frequency = 0;   ///< Hz
+    double r = 0;           ///< Ohm/m, from the surface impedance
+    double g = 0;           ///< S/m, from the dielectrics' loss tangents
+    double skinDepth = 0;   ///< m, in the metal at that frequency
+    double surfaceResistance = 0;   ///< Ohm a square
+    std::complex<double> zc;        ///< sqrt((R + jwL)/(G + jwC)), Ohm
+    std::complex<double> gamma;     ///< sqrt((R + jwL)(G + jwC)), 1/m
+    double alphaDb = 0;     ///< dB/m
     QStringList problems;
     bool ok() const { return problems.isEmpty(); }
 };
@@ -122,7 +154,20 @@ struct LineParameters {
  * The relations are those of the multiphysics engine's lineparams, so that
  * a structure solved both ways gives the same numbers.
  */
-LineParameters lineParameters(const Extraction& extraction, int index, double length);
+LineParameters lineParameters(const Extraction& extraction, int index, double length, double frequency = 0);
+
+/*!
+ * The surface impedance of a metal of conductivity \a sigma (S/m) and
+ * thickness \a t (m) at \a frequency, Ohm a square.
+ *
+ * (1 + j)/(sigma d) coth((1 + j) t/d) with d the skin depth: a slab, not
+ * a half space, so it is right both where the metal is many skin depths
+ * thick (it tends to 1/(sigma d)) and where it is thin beside one (it
+ * tends to the direct-current 1/(sigma t)). Zero conductivity or
+ * thickness gives nothing, which is how a metal that says neither is
+ * treated - as perfect.
+ */
+std::complex<double> surfaceImpedance(double sigma, double t, double frequency);
 
 /// The potential at \a point of a rectangle \a rect carrying unit total
 /// charge spread evenly over it, times 4 pi eps, with the charge \a z out

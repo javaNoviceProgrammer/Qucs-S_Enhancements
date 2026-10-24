@@ -21,6 +21,7 @@
 
 #include "multiphysics/fem_expr.h"
 #include "qucs.h"
+#include "rf25/rf25_mesh.h"
 #include "rf25doc.h"
 
 #include <QFileInfo>
@@ -89,6 +90,18 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         length = given.constant();
     }
 
+    // The frequency the metal's and the dielectrics' losses are taken at:
+    // the one given, else the top of the model's own sweep.
+    double frequency = topFrequency(model->model());
+    if (args.contains(QLatin1String("frequency"))) {
+        const QString text = args.value(QLatin1String("frequency")).toString().trimmed();
+        qucs_s::fem::Scope scope(&qucs_s::fem::Scope::builtins());
+        const qucs_s::fem::Expression given = qucs_s::fem::Expression::compile(text, scope);
+        if (!given.isValid() || !given.isConstant() || !(given.constant() > 0))
+            return errorResult(tr("'frequency' is a frequency above zero (\"10[GHz]\")."));
+        frequency = given.constant();
+    }
+
     QJsonObject out;
     out.insert(QStringLiteral("model"), QFileInfo(model->getDocName()).fileName());
     QJsonArray nets;
@@ -103,7 +116,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         }
         net.insert(QStringLiteral("c"), row);
         net.insert(QStringLiteral("c0"), bare);
-        const LineParameters lp = lineParameters(*e, i, length);
+        const LineParameters lp = lineParameters(*e, i, length, frequency);
         if (lp.ok()) {
             QJsonObject line;
             line.insert(QStringLiteral("C"), lp.c);
@@ -113,6 +126,17 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
             line.insert(QStringLiteral("L"), lp.l);
             line.insert(QStringLiteral("v"), lp.velocity);
             line.insert(QStringLiteral("n_eff"), lp.nEff);
+            if (lp.frequency > 0) {
+                line.insert(QStringLiteral("frequency"), lp.frequency);
+                line.insert(QStringLiteral("R"), lp.r);
+                line.insert(QStringLiteral("G"), lp.g);
+                line.insert(QStringLiteral("skin_depth"), lp.skinDepth);
+                line.insert(QStringLiteral("surface_resistance"), lp.surfaceResistance);
+                line.insert(QStringLiteral("Zc"), lp.zc.real());
+                line.insert(QStringLiteral("Zc_im"), lp.zc.imag());
+                line.insert(QStringLiteral("alpha"), lp.alphaDb);
+                line.insert(QStringLiteral("beta"), lp.gamma.imag());
+            }
             net.insert(QStringLiteral("line"), line);
         } else if (!lp.problems.isEmpty()) {
             net.insert(QStringLiteral("line not given"), lp.problems.join(QStringLiteral("; ")));
@@ -128,6 +152,8 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     out.insert(QStringLiteral("what it did"), said);
     out.insert(QStringLiteral("note"),
                tr("The electrostatics alone: C and, with every dielectric vacuum, C0, and a uniform line's eps_eff, Z0 "
-                  "and L from the two. No resistance, no inductance of a loop and no S-parameters in this build."));
+                  "and L from the two; with a frequency, R from the metal's surface impedance and how the charge "
+                  "crowds, G from the dielectrics' loss tangents, and the Zc, alpha and beta those make. No inductance "
+                  "of a loop and no S-parameters in this build."));
     return jsonResult(out);
 }

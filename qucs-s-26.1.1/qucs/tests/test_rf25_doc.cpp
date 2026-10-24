@@ -921,6 +921,21 @@ private slots:
         QVERIFY(doc->editNode(doc->model().mesh().tag,
                               [](rf::Node& n) { n.props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]")); },
                               QStringLiteral("largest cell")));
+        // A metal that conducts and a substrate that loses, so that the
+        // solve has R and G to report beside C at the study's frequency.
+        QVERIFY(doc->editNode(QStringLiteral("m1"),
+                              [](rf::Node& n) {
+                                  n.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7"));
+                                  n.props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
+                              },
+                              QStringLiteral("copper")));
+        QString substrate;
+        for (const rf::Node& child : doc->model().stackNode().children)
+            if (child.type == QLatin1String("rf_substrate")) substrate = child.tag;
+        QVERIFY2(!substrate.isEmpty(), "the blank model has a substrate");
+        QVERIFY(doc->editNode(substrate,
+                              [](rf::Node& n) { n.props.insert(QStringLiteral("tand"), QStringLiteral("0.002")); },
+                              QStringLiteral("a lossy substrate")));
         QVERIFY(doc->waitForPrepared(60000));
         QVERIFY(doc->mesh() != nullptr && !doc->mesh()->cells.isEmpty());
 
@@ -950,6 +965,12 @@ private slots:
         QVERIFY2(!said.isEmpty(), "it said nothing of the line");
         QVERIFY2(said.first().contains(QStringLiteral("pF/m")) && said.first().contains(QStringLiteral("Z0")),
                  qPrintable(said.first()));
+        // And R, L, G and C at the top of the study's own sweep, which a
+        // blank model puts at 40 GHz.
+        QVERIFY2(said.size() > 1, qPrintable(said.join(" | ")));
+        QVERIFY2(said.at(1).contains(QStringLiteral("40 GHz")) && said.at(1).contains(QStringLiteral("R "))
+                     && said.at(1).contains(QStringLiteral("nH/m")) && said.at(1).contains(QStringLiteral("dB/m")),
+                 qPrintable(said.at(1)));
         // In the notes, in the status line, and under the Results node.
         QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("What it solves to")),
                  qPrintable(doc->problemsText()->toPlainText()));
