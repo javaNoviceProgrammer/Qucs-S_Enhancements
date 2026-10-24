@@ -234,6 +234,17 @@ struct RF25Doc::PrepareJob {
     std::shared_ptr<Mesh> mesh;
 };
 
+/// A solve on a thread of its own: the shapes and the cells as they
+/// stand, and the stack read out of the model, all copied so that an edit
+/// while it runs changes nothing under it.
+struct RF25Doc::SolveJob {
+    Mesh mesh;
+    QList<Conductor> conductors;
+    Stack stack;
+    double length = 0;
+    std::shared_ptr<Extraction> result;
+};
+
 RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, name)
 {
     setObjectName(QStringLiteral("RF25Doc"));
@@ -332,6 +343,15 @@ void RF25Doc::buildUi()
     a_showMeshButton->setCheckable(true);
     a_showMeshButton->setChecked(a_showMesh);
     connect(a_showMeshButton, &QToolButton::toggled, this, &RF25Doc::setMeshShown);
+    row->addSpacing(10);
+    // The one piece of work this build does on being asked rather than at
+    // every edit: a dense matrix of the unknowns is cubic.
+    a_solveButton = button(tr("Solve"), tr("Find the capacitance of the conductors, and a line's impedance from it"),
+                           "rfSolve");
+    connect(a_solveButton, &QToolButton::clicked, this, [this] {
+        if (isSolving()) stopSolving();
+        else solve();
+    });
     row->addSpacing(10);
     a_layoutLabel = new QLabel(bar);
     a_layoutLabel->setObjectName(QStringLiteral("rfLayoutLabel"));
@@ -576,9 +596,18 @@ void RF25Doc::showProblems()
         lines << tr("What the layout gives the solver:");
         for (const QString& line : did) lines << QStringLiteral("  • ") + line;
     }
+    // The solve: what it found, or that it is running, or why it is not.
+    if (a_solveJob) {
+        lines << tr("Solving…");
+    } else if (a_extraction && a_extraction->ok()) {
+        lines << tr("What it solves to:");
+        for (const QString& line : a_extraction->lines) lines << QStringLiteral("  • ") + line;
+        for (const QString& line : lineSummary()) lines << QStringLiteral("  • ") + line;
+    }
     QStringList cannot;
     if (a_processed) cannot += a_processed->problems;
     if (a_mesh) cannot += a_mesh->problems;
+    if (!a_solveProblem.isEmpty()) cannot << a_solveProblem;
     if (!cannot.isEmpty()) {
         lines << tr("What stands in the way of a solve:");
         for (const QString& line : cannot) lines << QStringLiteral("  • ") + line;
@@ -597,6 +626,9 @@ void RF25Doc::showProblems()
     if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
     else if (a_mesh && !a_mesh->cells.isEmpty())
         tail += tr("; %1 cell(s), %2").arg(a_mesh->cells.size()).arg(a_mesh->cost.said);
+    if (a_solveJob) tail += tr("; solving");
+    else if (a_extraction && a_extraction->ok() && !a_extraction->names.isEmpty())
+        tail += tr("; %1").arg(lineSummary().value(0, tr("solved")));
     a_status->setText(tail);
 }
 
@@ -832,6 +864,13 @@ void RF25Doc::prepareDone()
     a_processed = job->processed;
     a_mesh = job->mesh;
     ++a_preparedRuns;
+    // The shapes or the cells are not the ones that were solved on, so
+    // the capacitance is of something that is no longer there. A solve
+    // going on is of them too, and goes with it.
+    stopSolving();
+    a_extraction.reset();
+    a_solvedLength = 0;
+    a_solveProblem.clear();
     showOverlays();
     showProblems();
     emit preparedChanged();
@@ -926,6 +965,104 @@ void RF25Doc::showOverlays()
         }
     }
     a_view->setOverlays(overlays);
+}
+
+// ------------------------------------------------------ The solve
+
+void RF25Doc::solve()
+{
+    stopSolving();
+    a_solveProblem.clear();
+    const auto nothing = [this](const QString& why) {
+        a_extraction.reset();
+        a_solvedLength = 0;
+        a_solveProblem = why;
+        showProblems();
+        emit solvedChanged();
+    };
+    if (isPreparing()) return nothing(tr("The shapes and the mesh are still being made."));
+    if (!a_mesh || a_mesh->cells.isEmpty())
+        return nothing(tr("There is no mesh to solve on: give the model a layout and a layer map first."));
+    if (!a_processed) return nothing(tr("The layout has not been processed."));
+    auto job = std::make_shared<SolveJob>();
+    job->mesh = *a_mesh;
+    job->conductors = a_processed->conductors;
+    job->stack = a_model.stack();
+    // How long the piece that was solved is: the longer side of what it
+    // covers, which is a straight line's own length and what makes a
+    // capacitance into one per metre.
+    QRectF bounds;
+    for (const Conductor& c : std::as_const(job->conductors)) bounds = bounds.united(c.outline.boundingRect());
+    job->length = std::max(bounds.width(), bounds.height()) * 1e-6;
+    a_solveJob = job;
+    QThread* thread = QThread::create([job] {
+        job->result = std::make_shared<Extraction>(extract(job->mesh, job->conductors, job->stack));
+    });
+    thread->setStackSize(8u << 20);
+    connect(thread, &QThread::finished, this, [this, job] {
+        if (job == a_solveJob) solveDone();
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+    if (a_solveButton != nullptr) a_solveButton->setText(tr("Stop"));
+    showProblems();
+    emit solvedChanged();
+}
+
+void RF25Doc::stopSolving()
+{
+    if (!a_solveJob) return;
+    // Let go: it ends on its own copies, and nothing is waiting for it.
+    a_solveJob.reset();
+    if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
+    emit solvedChanged();
+}
+
+void RF25Doc::solveDone()
+{
+    const std::shared_ptr<SolveJob> job = a_solveJob;
+    a_solveJob.reset();
+    if (a_solveButton != nullptr) a_solveButton->setText(tr("Solve"));
+    a_extraction = job->result;
+    a_solvedLength = job->length;
+    a_solveProblem = job->result && !job->result->ok() ? job->result->problems.join(QStringLiteral("; ")) : QString();
+    showProblems();
+    emit solvedChanged();
+}
+
+bool RF25Doc::waitForSolved(int ms)
+{
+    QElapsedTimer t;
+    t.start();
+    while (a_solveJob && t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !a_solveJob;
+}
+
+QStringList RF25Doc::lineSummary() const
+{
+    QStringList out;
+    if (!a_extraction || !a_extraction->ok()) return out;
+    for (int i = 0; i < a_extraction->names.size(); ++i) {
+        const LineParameters lp = lineParameters(*a_extraction, i, a_solvedLength);
+        if (!lp.ok()) continue;
+        out << tr("%1: %2 pF/m, eps_eff %3, Z0 %4 Ohm over %5 µm")
+                   .arg(a_extraction->names.at(i))
+                   .arg(lp.c * 1e12, 0, 'g', 4)
+                   .arg(lp.epsilonEff, 0, 'g', 4)
+                   .arg(lp.z0, 0, 'g', 4)
+                   .arg(a_solvedLength * 1e6, 0, 'g', 4);
+    }
+    return out;
+}
+
+QStringList RF25Doc::solvedLines() const
+{
+    return a_extraction ? a_extraction->lines : QStringList();
+}
+
+double RF25Doc::solvedLength() const
+{
+    return a_solvedLength;
 }
 
 void RF25Doc::pointerMoved(QPointF point, bool inside)

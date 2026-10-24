@@ -19,6 +19,7 @@
 #include "qucsdoc.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_mesh.h"
+#include "rf25/rf25_static.h"
 #include "rf25/rf25_model.h"
 
 #include <QFrame>
@@ -171,6 +172,36 @@ public:
     /// What the processing and the mesh said they did, in order: for the
     /// panel's Processing and Mesh nodes and the tab's own notes.
     QStringList preparedLines() const;
+
+    // The solve. Unlike the shapes and the mesh, which are made again at
+    // every edit because they cost nothing, this is asked for: a dense
+    // matrix of the unknowns is cubic work, and a user says when.
+    /// The capacitance of the model as last solved, or null (never
+    /// solved, or the model changed since).
+    std::shared_ptr<const qucs_s::rf25::Extraction> extraction() const { return a_extraction; }
+    /// Solves it, in the background, on the shapes and the mesh as they
+    /// stand. A solve going on is let go. Nothing happens where there is
+    /// no mesh to solve on; solveProblem() then says why.
+    void solve();
+    /// Lets a solve going on go: its result is dropped.
+    void stopSolving();
+    bool isSolving() const { return a_solveJob != nullptr; }
+    /// Waits for it, \a ms at most; whether it ended.
+    bool waitForSolved(int ms = 600000);
+    /// Why there is no capacitance: what the extraction refused, or what
+    /// stood in the way of starting it. Empty when there is one.
+    QString solveProblem() const { return a_solveProblem; }
+    /// What the solve said it did, for the Results node and the notes.
+    QStringList solvedLines() const;
+    /// Each net as a line: its capacitance per metre, its effective
+    /// permittivity and its impedance over the length that was solved.
+    /// Empty where nothing was solved.
+    QStringList lineSummary() const;
+    /// The length a line's parameters are taken over, m: the longer side
+    /// of what was solved, which is what a straight line's length is.
+    /// Zero where nothing was solved.
+    double solvedLength() const;
+    QToolButton* solveButton() const { return a_solveButton; }
     /// Whether the processed shapes are drawn over the layout, and whether
     /// the mesh is. Kept for the next model opened.
     bool processedShown() const { return a_showProcessed; }
@@ -212,13 +243,17 @@ signals:
     void stateChanged();
     /// The shapes and the mesh made again, or being made.
     void preparedChanged();
+    /// A solve started, ended, or let go.
+    void solvedChanged();
     void focusChanged(const QString& tag);
 
 private:
     struct Job;
     struct PrepareJob;
+    struct SolveJob;
     void buildUi();
     void prepareDone();
+    void solveDone();
     /// The processed shapes and the mesh over the layout, as the two
     /// buttons have them.
     void showOverlays();
@@ -242,6 +277,10 @@ private:
     int a_preparedRuns = 0;
     std::shared_ptr<const qucs_s::rf25::Processed> a_processed;
     std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;
+    std::shared_ptr<SolveJob> a_solveJob;
+    std::shared_ptr<const qucs_s::rf25::Extraction> a_extraction;
+    QString a_solveProblem;
+    double a_solvedLength = 0;
     QTimer* a_prepareSoon = nullptr;
     bool a_showProcessed = true;
     bool a_showMesh = false;
@@ -250,6 +289,7 @@ private:
     QToolButton* a_reread = nullptr;
     QToolButton* a_showProcessedButton = nullptr;
     QToolButton* a_showMeshButton = nullptr;
+    QToolButton* a_solveButton = nullptr;
     QLabel* a_layoutLabel = nullptr;
     QSplitter* a_splitter = nullptr;
     QSplitter* a_sides = nullptr;
