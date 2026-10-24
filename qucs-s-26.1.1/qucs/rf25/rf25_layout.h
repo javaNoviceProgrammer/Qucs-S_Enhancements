@@ -31,6 +31,10 @@
 #include <QString>
 #include <QStringList>
 
+namespace qucs_s::layout {
+struct Layout;
+}
+
 namespace qucs_s::rf25 {
 
 /// \a polygon's area, positive whichever way it is wound.
@@ -119,10 +123,22 @@ struct LayerMap {
 LayerMap layerMapOf(const Model& model);
 
 /*!
- * The model's layout read from its file and processed. \a folder is where
- * the model is, for a file named relative to it. Null and why in \a error
- * when the file cannot be read; a model that names no file gives an empty
- * result with a problem said, not an error.
+ * \a read - a layout already in memory - processed as \a model says: the
+ * cell the model names, its layer map applied, its processing steps run.
+ * \a called is the file's name, for what the problems say about it.
+ *
+ * This is what a tab uses: its file is read on a thread of its own long
+ * before anything is meshed, and reading a large GDSII again to process it
+ * would hold the window for as long as the first read took.
+ */
+Processed processRead(const Model& model, const layout::Layout& read, const QString& called = {});
+
+/*!
+ * The model's layout read from its file and processed - processRead() with
+ * the read before it. \a folder is where the model is, for a file named
+ * relative to it. Null and why in \a error when the file cannot be read; a
+ * model that names no file gives an empty result with a problem said, not
+ * an error.
  */
 Processed processLayout(const Model& model, const QString& folder, QString* error = nullptr);
 

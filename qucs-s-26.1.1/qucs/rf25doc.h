@@ -17,6 +17,8 @@
 #include "layout.h"
 #include "layoutdoc.h"
 #include "qucsdoc.h"
+#include "rf25/rf25_layout.h"
+#include "rf25/rf25_mesh.h"
 #include "rf25/rf25_model.h"
 
 #include <QFrame>
@@ -29,6 +31,7 @@
 class QLabel;
 class QPlainTextEdit;
 class QSplitter;
+class QTimer;
 class QToolButton;
 class QUndoStack;
 
@@ -79,9 +82,11 @@ private:
  * is changed through setModel() or editNode(): each change a step of Undo.
  * Nothing is solved in this build - phase A of
  * docs/proposals/2026-10-23-rf-2p5d-moment-method.md is the document, the
- * stack and the layout -, so the only work it does in the background is
- * reading the layout file the model names: a large GDSII file never holds
- * the window, and isBusy() is true while it is read.
+ * stack and the layout -, so the work it does in the background is reading
+ * the layout file the model names and then making of it what the solver
+ * would be given: the shapes processed and divided into cells, with the
+ * unknowns counted. A large GDSII file never holds the window, and
+ * isBusy() is true while either runs.
  */
 class RF25Doc : public QFrame, public QucsDoc
 {
@@ -135,10 +140,45 @@ public:
     /// Why there is none: the file is not there, gdstk could not read it,
     /// the read was stopped. Empty when there is one or none is named.
     QString layoutProblem() const { return a_layoutProblem; }
-    /// Its layout being read: nothing else runs in this build.
-    bool isBusy() const { return a_job != nullptr; }
+    /// Its layout being read, or what the solver would be given made of
+    /// it: the two pieces of work this build does.
+    bool isBusy() const { return a_job != nullptr || a_prepareJob != nullptr; }
     /// Waits for that read, \a ms at most; whether it ended.
     bool waitForLayout(int ms = 120000);
+
+    // What the solver would be given: the shapes processed, and the cells
+    // they are divided into. Made in the background from the layout as
+    // read, so that the window is never held by it, and made again
+    // whenever the model or the layout changes.
+    /// The shapes as the processing leaves them, or null (nothing read
+    /// yet, nothing to process).
+    std::shared_ptr<const qucs_s::rf25::Processed> processed() const { return a_processed; }
+    /// Those shapes divided into cells, with the unknowns counted, or null.
+    std::shared_ptr<const qucs_s::rf25::Mesh> mesh() const { return a_mesh; }
+    /// Makes both again, in the background. A run going on is stopped.
+    void prepare();
+    /// Makes both again in a moment, coalescing the edits of a burst (a
+    /// name typed letter by letter is one run, not one a letter).
+    void schedulePrepare();
+    bool isPreparing() const { return a_prepareJob != nullptr; }
+    /// How many runs have ended since this tab opened. For the tests: it
+    /// is how they tell a run that happened from one whose result was
+    /// already there.
+    int preparedRuns() const { return a_preparedRuns; }
+    /// Waits for that work, \a ms at most, a run waiting to start
+    /// included; whether it ended.
+    bool waitForPrepared(int ms = 120000);
+    /// What the processing and the mesh said they did, in order: for the
+    /// panel's Processing and Mesh nodes and the tab's own notes.
+    QStringList preparedLines() const;
+    /// Whether the processed shapes are drawn over the layout, and whether
+    /// the mesh is. Kept for the next model opened.
+    bool processedShown() const { return a_showProcessed; }
+    void setProcessedShown(bool shown);
+    bool meshShown() const { return a_showMesh; }
+    void setMeshShown(bool shown);
+    QToolButton* processedButton() const { return a_showProcessedButton; }
+    QToolButton* meshButton() const { return a_showMeshButton; }
 
     // What is shown.
     qucs_s::layout::LayoutView* view() const { return a_view; }
@@ -157,6 +197,9 @@ public:
     /// up: the layout viewer's own palette, so that a shape and its layer
     /// are the same colour in both tabs.
     static QColor layerColor(int index);
+    /// \a fill as an outline over a shape drawn in \a fill itself:
+    /// darkened on a light canvas, lightened on a dark one.
+    QColor outlineColor(const QColor& fill) const;
 
     /// A new model's content (File > New, the panel's New Model).
     static qucs_s::rf25::Model starterModel();
@@ -167,11 +210,18 @@ signals:
     void modelChanged();
     /// The layout read, or being read; a file saved.
     void stateChanged();
+    /// The shapes and the mesh made again, or being made.
+    void preparedChanged();
     void focusChanged(const QString& tag);
 
 private:
     struct Job;
+    struct PrepareJob;
     void buildUi();
+    void prepareDone();
+    /// The processed shapes and the mesh over the layout, as the two
+    /// buttons have them.
+    void showOverlays();
     /// The model in place: \a read, its file's content (no edit), else an edit.
     void applyModel(const qucs_s::rf25::Model& model, bool read = false);
     void showProblems();
@@ -187,9 +237,19 @@ private:
     std::shared_ptr<const qucs_s::layout::Layout> a_layout;
     QString a_layoutRead;       ///< the file a_layout was read from
     QString a_layoutProblem;
+    std::shared_ptr<PrepareJob> a_prepareJob;
+    bool a_prepareAgain = false;   ///< it changed while that run went on
+    int a_preparedRuns = 0;
+    std::shared_ptr<const qucs_s::rf25::Processed> a_processed;
+    std::shared_ptr<const qucs_s::rf25::Mesh> a_mesh;
+    QTimer* a_prepareSoon = nullptr;
+    bool a_showProcessed = true;
+    bool a_showMesh = false;
 
     QToolButton* a_fit = nullptr;
     QToolButton* a_reread = nullptr;
+    QToolButton* a_showProcessedButton = nullptr;
+    QToolButton* a_showMeshButton = nullptr;
     QLabel* a_layoutLabel = nullptr;
     QSplitter* a_splitter = nullptr;
     QSplitter* a_sides = nullptr;

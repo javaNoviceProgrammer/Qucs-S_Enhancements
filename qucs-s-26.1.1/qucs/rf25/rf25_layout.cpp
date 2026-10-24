@@ -38,17 +38,6 @@ QString tr(const char* text)
 /// micrometres, and a nanometre is finer than any layout's database unit.
 constexpr double kScaling = 1000.0;
 
-/// How far apart two polygons are, by their bounding boxes: 0 where the
-/// boxes meet. (A box is enough for the vias of a farm, which are drawn
-/// as rectangles; shapes whose boxes overlap are joined by the union
-/// anyway.)
-double gapBetween(const QRectF& a, const QRectF& b)
-{
-    const double dx = std::max({a.left() - b.right(), b.left() - a.right(), 0.0});
-    const double dy = std::max({a.top() - b.bottom(), b.top() - a.bottom(), 0.0});
-    return std::hypot(dx, dy);
-}
-
 /// The smaller side of a polygon's bounding box - how a sliver is told
 /// from a shape, which is exact for a rectangle and an over-estimate for
 /// anything turned at an angle (said in the write-up).
@@ -118,7 +107,14 @@ gdstk::Polygon gdstkOf(const QPolygonF& polygon)
     p.point_array.capacity = 0;
     p.point_array.count = 0;
     p.point_array.items = nullptr;
-    for (const QPointF& point : polygon) p.point_array.append(gdstk::Vec2{point.x(), point.y()});
+    // (A Vec2's x and y are in an anonymous struct in a union: assigned,
+    // not braced, which no brace count initializes without a warning.)
+    for (const QPointF& point : polygon) {
+        gdstk::Vec2 v;
+        v.x = point.x();
+        v.y = point.y();
+        p.point_array.append(v);
+    }
     return p;
 }
 
@@ -432,6 +428,50 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
     return out;
 }
 
+Processed processRead(const Model& model, const layout::Layout& read, const QString& called)
+{
+    Processed out;
+    // The cell: the one named, else the one a view would show.
+    const QString wanted = model.layout().props.value(QLatin1String("cell")).toString().trimmed();
+    const int cell = wanted.isEmpty() ? read.mainCell() : read.cellIndex(wanted);
+    if (cell < 0) {
+        out.problems << tr("%1 has no cell %2.").arg(called, wanted);
+        return out;
+    }
+
+    const LayerMap map = layerMapOf(model);
+    // Every shape of the cell and of what it places, by the stack layer
+    // the map sends it to.
+    QMap<QString, QList<QPolygonF>> byLayer;
+    int ignored = 0;
+    layout::Query query;
+    query.cell = cell;
+    query.labels = false;
+    layout::search(read, query, [&](const layout::Found& found) {
+        if (found.isText() || found.shape < 0) return true;
+        const layout::LayerInfo& info = read.layers.at(read.cells.at(found.cell).shapes.at(found.shape).layer);
+        const QString key = QStringLiteral("%1/%2").arg(info.key.layer).arg(info.key.datatype);
+        const QString to = map.toLayer.value(key);
+        if (to.isEmpty()) {
+            ++ignored;
+            return true;
+        }
+        const QPolygonF outline = layout::outlineOf(read, found);
+        if (outline.size() >= 3) byLayer[to] << outline;
+        return true;
+    });
+
+    QStringList said;
+    const Processing how = processingOf(*model.layout().child(QStringLiteral("rf_processing")), model.parameters(), &said);
+    out = processShapes(byLayer, map.fill, how, model.stack(), 1e-6);
+    out.report.ignored = ignored;
+    if (ignored > 0)
+        out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(ignored);
+    out.problems += map.problems;
+    out.problems += said;
+    return out;
+}
+
 Processed processLayout(const Model& model, const QString& folder, QString* error)
 {
     Processed out;
@@ -453,47 +493,7 @@ Processed processLayout(const Model& model, const QString& folder, QString* erro
         out.problems << why;
         return out;
     }
-    // The cell: the one named, else the one a view would show.
-    const QString wanted = model.layout().props.value(QLatin1String("cell")).toString().trimmed();
-    const int cell = wanted.isEmpty() ? read->mainCell() : read->cellIndex(wanted);
-    if (cell < 0) {
-        out.problems << tr("%1 has no cell %2.").arg(QFileInfo(path).fileName(), wanted);
-        return out;
-    }
-
-    const LayerMap map = layerMapOf(model);
-    out.problems += map.problems;
-    // Every shape of the cell and of what it places, by the stack layer
-    // the map sends it to.
-    QMap<QString, QList<QPolygonF>> byLayer;
-    int ignored = 0;
-    layout::Query query;
-    query.cell = cell;
-    query.labels = false;
-    layout::search(*read, query, [&](const layout::Found& found) {
-        if (found.isText() || found.shape < 0) return true;
-        const layout::LayerInfo& info = read->layers.at(read->cells.at(found.cell).shapes.at(found.shape).layer);
-        const QString key = QStringLiteral("%1/%2").arg(info.key.layer).arg(info.key.datatype);
-        const QString to = map.toLayer.value(key);
-        if (to.isEmpty()) {
-            ++ignored;
-            return true;
-        }
-        const QPolygonF outline = layout::outlineOf(*read, found);
-        if (outline.size() >= 3) byLayer[to] << outline;
-        return true;
-    });
-
-    const Stack stack = model.stack();
-    QStringList said;
-    const Processing how = processingOf(*model.layout().child(QStringLiteral("rf_processing")), model.parameters(), &said);
-    out = processShapes(byLayer, map.fill, how, stack, 1e-6);
-    out.report.ignored = ignored;
-    if (ignored > 0)
-        out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(ignored);
-    out.problems += map.problems;
-    out.problems += said;
-    return out;
+    return processRead(model, *read, QFileInfo(path).fileName());
 }
 
 } // namespace qucs_s::rf25
