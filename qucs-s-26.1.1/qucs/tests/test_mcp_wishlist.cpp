@@ -1627,7 +1627,7 @@ private slots:
     // down to what is there without the mismatch being mentioned.
     void aDatasetSaysWhenItsCountDoesNotMatch()
     {
-        QVERIFY(writeFile(path("lie.dat"), QStringLiteral("<Qucs Dataset 27.0.4>\n"
+        QVERIFY(writeFile(path("lie.dat"), QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n"
                                                           "<indep frequency 5>\n  +1.0e+09\n  +2.0e+09\n</indep>\n"
                                                           "<dep gain frequency>\n  +1.0\n  +2.0\n  +3.0\n</dep>\n")));
         const QJsonObject said = json(must("get_dataset", {{"path", "lie.dat"}}));
@@ -1639,7 +1639,7 @@ private slots:
         // What is there is still read, as it was.
         QCOMPARE(said.value("independent variables").toArray().first().toObject().value("points").toInt(), 2);
         // A file that holds what its headers say says nothing of the kind.
-        QVERIFY(writeFile(path("true.dat"), QStringLiteral("<Qucs Dataset 27.0.4>\n"
+        QVERIFY(writeFile(path("true.dat"), QStringLiteral("<Qucs Dataset " PACKAGE_VERSION ">\n"
                                                            "<indep frequency 2>\n  +1.0e+09\n  +2.0e+09\n</indep>\n"
                                                            "<dep gain frequency>\n  +1.0\n  +2.0\n</dep>\n")));
         QVERIFY2(!json(must("get_dataset", {{"path", "true.dat"}})).contains("file note"),
