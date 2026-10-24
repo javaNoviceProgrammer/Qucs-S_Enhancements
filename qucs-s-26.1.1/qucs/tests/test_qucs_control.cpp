@@ -3825,6 +3825,83 @@ private slots:
     }
 
     // Projects made, a schematic copied with its results, scratch cleared.
+    // The check of 24 October: a reader of the window is told what a viewer
+    // sees - which row of the Projects and Workspaces panels is the open one,
+    // and which workspace's folder has gone - and open_project on the project
+    // already open says that nothing was closed, where it answered as for a
+    // fresh open and refused over unsaved changes that no longer apply.
+    void theOpenRowIsSaidAndTheOpenProjectIsNotOpenedAgain()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        // (What an earlier test of this suite left: a document with unsaved
+        // changes stops a project being opened at all.)
+        for (QucsDoc* doc : app->allDocuments()) {
+            if (auto* sch = dynamic_cast<Schematic*>(doc)) sch->setChanged(false);
+            doc->setDocChanged(false);
+        }
+        QVERIFY(app->closeAllFiles());
+        QVERIFY(!failed(call("new_project", {{"name", "shown"}})));
+        QVERIFY(!failed(call("new_project", {{"name", "other"}, {"open", false}})));
+
+        // The Projects panel's rows, as get_ui gives them.
+        const auto projectRows = [this] {
+            QJsonObject by;
+            for (const QJsonValue& c : json(call("get_ui", {{"area", "dock:Projects"}})).toObject()
+                                           .value("controls").toArray())
+                if (c.toObject().value("kind").toString().contains(QStringLiteral("view")))
+                    for (const QJsonValue& r : c.toObject().value("rows").toArray())
+                        by.insert(r.toObject().value("text").toString(), r.toObject().value("state"));
+            return by;
+        };
+        QTRY_COMPARE(projectRows().value("shown_prj").toString(), QStringLiteral("open"));
+        QCOMPARE(projectRows().value("other_prj").toString(), QStringLiteral("closed"));
+        // (A folder that is no project carries no state: asserted on the
+        // panel's own rows in test_project_folders, where one is listed.)
+
+        // The Workspaces panel's, by name: the one open now, and one whose
+        // folder has gone.
+        const QString gone = dir.filePath("said/gone");
+        QVERIFY(QDir().mkpath(gone));
+        QVERIFY(app->switchWorkspace(gone));
+        QVERIFY(app->switchWorkspace(ws));
+        QVERIFY(QDir(gone).removeRecursively());
+        app->refreshWorkspaces();
+        const auto workspaceStates = [this] {
+            for (const QJsonValue& c : json(call("get_ui", {{"area", "dock:Workspaces"}})).toObject()
+                                           .value("controls").toArray())
+                if (c.toObject().value("kind").toString() == QLatin1String("list"))
+                    return c.toObject().value("state").toObject();
+            return QJsonObject();
+        };
+        QCOMPARE(workspaceStates().value(QFileInfo(ws).fileName()).toString(), QStringLiteral("open"));
+        QCOMPARE(workspaceStates().value(QStringLiteral("gone")).toString(), QStringLiteral("missing"));
+
+        // open_project on the one open: nothing closed, and said so - even
+        // with unsaved changes, which close nothing here.
+        QVERIFY(!failed(call("open_project", {{"name", "shown"}})));
+        QVERIFY(!failed(call("new_document")));
+        QVERIFY(!failed(call("add_component", {{"type", "R"}, {"x", 10}, {"y", 10}})));
+        const int tabs = int(app->allDocuments().size());
+        const QJsonObject again = call("open_project", {{"name", "shown"}});
+        QVERIFY2(!failed(again), qPrintable(text(again)));
+        QVERIFY2(text(again).contains(QStringLiteral("open already")) && text(again).contains(QStringLiteral("nothing was closed")),
+                 qPrintable(text(again)));
+        QCOMPARE(int(app->allDocuments().size()), tabs);
+        QCOMPARE(app->currentSidePageName(), QStringLiteral("content"));
+        // Another project is still refused while that document is unsaved.
+        QVERIFY(failed(call("open_project", {{"name", "other"}})));
+
+        // Put back what the tests after this one expect: no project open,
+        // no documents, the workspace as the suite set it.
+        for (QucsDoc* doc : app->allDocuments()) {
+            if (auto* sch = dynamic_cast<Schematic*>(doc)) sch->setChanged(false);
+            doc->setDocChanged(false);
+        }
+        app->slotMenuProjClose();
+        QVERIFY(app->ProjName.isEmpty());
+        QCOMPARE(QDir(QucsSettings.qucsWorkspaceDir).canonicalPath(), QDir(ws).canonicalPath());
+    }
+
     void projectsAndCopiesAreTended()
     {
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));

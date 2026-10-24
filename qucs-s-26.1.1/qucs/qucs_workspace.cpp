@@ -22,6 +22,7 @@
 #include "settings.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QDesktopServices>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -32,8 +33,10 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QIcon>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTabWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -164,6 +167,9 @@ void QucsApp::initWorkspacesPanel()
     const QString dir = workspaceOfRow(item);
     if (dir.isEmpty()) return;
     if (QDir(dir).canonicalPath() == QucsSettings.qucsWorkspaceDir.canonicalPath()) {
+      // Nothing to switch to, so it shows what the workspace holds - its
+      // projects - as opening the project already open shows its contents.
+      showSidePage(SidePage::Projects);
       statusBar()->showMessage(tr("%1 is the workspace already.").arg(QDir::toNativeSeparators(dir)), 5000);
       return;
     }
@@ -261,6 +267,21 @@ void QucsApp::refreshWorkspaces()
     item->setData(QucsFileSystemModel::ProjectStateRole,
                   int(open ? QucsFileSystemModel::OpenProject : QucsFileSystemModel::ClosedProject));
     const bool there = QFileInfo(dir).isDir();
+    item->setData(QucsFileSystemModel::RowStateRole,
+                  !there ? QStringLiteral("missing") : open ? QStringLiteral("open") : QStringLiteral("closed"));
+    // Its icon, as the Projects panel gives a project one: the folder of the
+    // platform's own look - open for the workspace in use, closed for the
+    // others - and greyed where the folder is not there now.
+    const QStyle *look = Workspaces->style() != nullptr ? Workspaces->style() : QApplication::style();
+    const QIcon folder = look->standardIcon(open ? QStyle::SP_DirOpenIcon : QStyle::SP_DirClosedIcon, nullptr, Workspaces);
+    if (there) {
+        item->setIcon(folder);
+    } else {
+        const int side = 16 * int(Workspaces->devicePixelRatioF() > 1.5 ? 2 : 1);
+        QIcon greyed;
+        greyed.addPixmap(folder.pixmap(QSize(side, side), QIcon::Disabled));
+        item->setIcon(greyed);
+    }
     QStringList said{QDir::toNativeSeparators(dir)};
     said << (open ? tr("The workspace open now") : tr("A workspace, not open"));
     if (!there) {

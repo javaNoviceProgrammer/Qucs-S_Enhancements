@@ -6972,7 +6972,7 @@ void QucsFileSystemModel::setOpenProject(const QString &path)
 
 QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
 {
-    if (role == ProjectStateRole || role == Qt::ToolTipRole) {
+    if (role == ProjectStateRole || role == RowStateRole || role == Qt::ToolTipRole) {
         ProjectState state = NoProject;
         const QString path = filePath(index);
         if (isDir(index) && qucs_s::workspace::isProjectFolder(path)) {   // (".." never is)
@@ -6982,6 +6982,10 @@ QVariant QucsFileSystemModel::data( const QModelIndex& index, int role ) const
             state = open ? OpenProject : ClosedProject;
         }
         if (role == ProjectStateRole) return int(state);
+        if (role == RowStateRole)
+            return state == NoProject ? QString()
+                 : qucs_s::workspace::isDanglingLink(path) ? QStringLiteral("missing")
+                 : state == OpenProject ? QStringLiteral("open") : QStringLiteral("closed");
         // What its dot says, and where a linked project is from.
         QStringList lines;
         if (state != NoProject) lines << (state == OpenProject ? tr("The project open now") : tr("A project, not open"));

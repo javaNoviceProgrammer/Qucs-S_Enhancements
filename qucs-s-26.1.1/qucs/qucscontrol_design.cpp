@@ -2793,6 +2793,15 @@ QJsonObject QucsControl::openProject(const QJsonObject& args)
         return errorResult(tr("%1 is not a project: its name does not end in _prj (any folder is one when Settings > Locations "
                               "says so), or it is hidden or the folder of user libraries.")
                                .arg(QDir::toNativeSeparators(path)));
+    // The project open already: nothing is closed and nothing read again,
+    // so neither the unsaved-changes refusal below nor "relative paths are
+    // taken from it now" applies - and the answer said neither (the check of
+    // 24 October, the second nit).
+    if (!a_app->ProjName.isEmpty() && QDir(QucsSettings.QucsWorkDir).canonicalPath() == real) {
+        a_app->openProject(path);   // (shows the Content panel, closes nothing)
+        return textResult(tr("%1 is the project open already: nothing was closed, and the Content panel shows what it holds.")
+                              .arg(QFileInfo(path).fileName()));
+    }
     QStringList unsaved;
     if (anyUnsaved(a_app, &unsaved))
         return errorResult((unsaved.size() == 1 ? tr("Opening a project closes the documents, and %1 has unsaved changes: save or close it first.")
