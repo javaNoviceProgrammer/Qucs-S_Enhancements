@@ -2547,6 +2547,66 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
             vars << p;
         }
     }
+    // The axes must span what is written. A mode analysis finds the modes
+    // it finds: where a sweep's point kept fewer of them - one below
+    // cutoff, one outside the polarization or the loss asked for - the
+    // grid of its axes is short of the values, and five values were
+    // written under a header saying three; which value was which mode then
+    // moved with the run (the user's bend study, 1). Where the axes do not
+    // fit, or the modes are not the same in number at every frequency, the
+    // values go against their own number with the frequency, the mode and
+    // the parameters swept written beside them - so the header says what
+    // is there, in the order it is there.
+    QString uneven;
+    {
+        std::size_t spanned = 1;
+        for (const QString& name : std::as_const(outer))
+            for (const Variable& v : vars)
+                if (v.independent && v.name == name) spanned *= std::size_t(std::max<qsizetype>(v.re.size(), 0));
+        const bool unevenModes = first.modeAnalysis && first.snapshotCount() > 0 && !modesEven;
+        if (!outer.isEmpty() && (spanned != every.size() || unevenModes)) {
+            if (spanned != every.size())
+                uneven = tr("its %1 solutions do not fill the axes %2 (%3 values): each is written against its own number")
+                             .arg(every.size())
+                             .arg(outer.join(QLatin1String(" x ")))
+                             .arg(spanned);
+            else
+                uneven = tr("the modes found are not the same in number at every frequency: each solution is written against its "
+                            "own number");
+            vars.clear();
+            names.clear();
+            outer.clear();
+            kinds.clear();
+            unitsOf = QJsonObject();
+            Variable index;
+            index.name = unique(QStringLiteral("solution"));
+            index.independent = true;
+            for (std::size_t i = 0; i < every.size(); ++i) index.re << double(i + 1);
+            outer << index.name;
+            kinds << Axis::Steps;
+            vars << index;
+            // What each of them is, over that number.
+            const auto column = [&](const QString& name, const QString& unit, const std::function<double(const Instance&)>& value) {
+                Variable v;
+                v.name = unique(name);
+                v.dependencies = outer;
+                for (const Instance& in : every) v.re << value(in);
+                if (!unit.isEmpty() && unit != QLatin1String("1")) unitsOf.insert(v.name, unit);
+                vars << v;
+            };
+            if (first.snapshotCount() > 0)
+                column(first.snapshotName(),
+                       first.frequencyDomain ? QStringLiteral("Hz") : first.biasAxis ? QStringLiteral("V") : QStringLiteral("s"),
+                       [](const Instance& in) { return in.time; });
+            if (first.modeAnalysis)
+                column(first.quantumStates ? QStringLiteral("state") : QStringLiteral("mode"), QString(),
+                       [](const Instance& in) { return double(in.mode); });
+            for (const QString& swept : set->swept)
+                column(swept, dimName(first.parameters().dims.value(swept)), [&set, &swept](const Instance& in) {
+                    return set->solutions[std::size_t(in.point)]->sweptValues.value(swept);
+                });
+        }
+    }
     // The order a global's and a point's are shown in, a data display drawing
     // over the first: the sweep, a mode analysis's frequencies, a frequency
     // step's, the modes last - an index against the bias, a curve per mode;
@@ -2581,6 +2641,7 @@ QString MultiphysicsDoc::showGraphs(const QString& tag, QString* error, bool ope
     const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
                                                      g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")), &asked);
     QStringList problems;
+    if (!uneven.isEmpty()) problems << uneven;
     if (!asked.isEmpty()) problems << tr("%1: its %2").arg(g->name(), asked);
     // Against a global (x): its one axis's values each solution's value of
     // it - a laser's light against its current, not its voltage.
@@ -3060,6 +3121,15 @@ QString MultiphysicsDoc::runExport(const QString& tag, QString* error, const std
     }
     if (beforeWrite)
         if (const QString no = beforeWrite(path); !no.isEmpty()) return fail(no);
+    // Its folder made if it is not there - as the folder of a model that
+    // has no file is: an export whose file was "fields/E.csv" only said
+    // that the file could not be written, and the folder had to be made
+    // outside Qucs-S before the call would go through (the user's bend
+    // study, 5).
+    if (const QString folder = QFileInfo(path).absolutePath(); !folder.isEmpty() && !QFileInfo(folder).isDir())
+        if (!QDir().mkpath(folder))
+            return fail(tr("%1: the folder %2 cannot be made, so %3 is not written")
+                            .arg(n->name(), QDir::toNativeSeparators(folder), QFileInfo(path).fileName()));
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(out.data.isEmpty() ? text.toUtf8() : out.data) < 0 || !file.commit())
         return fail(tr("%1: %2 cannot be written: %3").arg(n->name(), QDir::toNativeSeparators(path), file.errorString()));

@@ -187,6 +187,32 @@ private slots:
             QVERIFY2(text.contains(label), qPrintable(text.join(" | ")));
     }
 
+    // A tick off the grid the step alone would make: the label says where
+    // the tick is, not where the step says it would be. An axis from 2.15
+    // in steps of 0.1 wrote "2.1" under the tick at 2.15 and "2.2" under
+    // the one at 2.25 - the label and the tick a tenth of a step apart, and
+    // two ticks named almost alike (the user's bend study, 7).
+    void aLabelSaysWhereItsTickIs()
+    {
+        QCOMPARE(format(2.15, Notation::Decimal, -1, 0.1), QString("2.15"));
+        QCOMPARE(format(2.25, Notation::Decimal, -1, 0.1), QString("2.25"));
+        // The step's places are enough where the tick is on its grid.
+        QCOMPARE(format(2.2, Notation::Decimal, -1, 0.1), QString("2.2"));
+        QCOMPARE(format(0.5, Notation::Decimal, -1, 0.25), QString("0.50"));
+        // A number no few places can write is written to within a
+        // thousandth of a step, not to fifteen places.
+        QCOMPARE(format(1.0 / 3, Notation::Decimal, -1, 0.1), QString("0.3333"));
+        // The places asked for are still the places written.
+        QCOMPARE(format(2.15, Notation::Decimal, 1, 0.1), QString("2.1"));
+        // And on the axis itself.
+        QScopedPointer<RectDiagram> d(load(rectLine(2.15, 0.1, 2.55, "4")));
+        QVERIFY(d);
+        const QStringList text = labels(d.get());
+        for (const char* label : {"2.15", "2.25", "2.35", "2.45", "2.55"})
+            QVERIFY2(text.contains(label), qPrintable(text.join(" | ")));
+        QVERIFY2(!text.contains(QStringLiteral("2.1")), qPrintable(text.join(" | ")));
+    }
+
     // A diagram loaded without graphs (or with data that has not changed)
     // showed the labels of a new diagram - 0 to 1, engineering - until
     // something laid it out again.

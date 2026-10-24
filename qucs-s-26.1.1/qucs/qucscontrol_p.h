@@ -52,6 +52,10 @@ QString propertyNote(const Component* c, const QString& name);
 /// could hold was read as 0 and one far out was cut to the plane's edge,
 /// both without a word: the hunt of 23 October, N9.)
 QString offThePlane(const QJsonValue& v, const char* key);
+/// The names in \a takes near \a unknown - a letter or two off, the same
+/// beginning, or one inside the other -, for a "Meant %1?" after a name
+/// that is not there.
+QStringList nearNamesOf(const QStringList& unknown, const QStringList& takes);
 QJsonObject textResult(const QString& text, bool error = false);
 /// \a value as JSON text: indented, or on one line (\a compact) - numbers
 /// by the hundred read better so, and cost less.

@@ -1138,6 +1138,13 @@ private:
     // field adds to it, per metre (1/m); whether a medium has a direct gap's.
     double a_absorbedGap = 0, a_absorbedField = 0;
     bool a_electroabsorption = false;
+    // Its group index c/vg (NaN: not worked out - no power along z), and
+    // what each medium's ωε and ωµ change by with ω, by triangle: worked
+    // out once per frequency (every mode of it is selected in turn) and
+    // dropped by each solve, since the media follow a coupled study's
+    // temperature and a sweep's parameters.
+    double a_groupIndex = NaN;
+    std::vector<std::array<cd, 12>> a_dispersion;
     // Conductive sheets, and each boundary's (-1 none); what the mode
     // selected leaves in them, per metre (W/m at 1 W).
     std::vector<Sheet> a_sheets;
@@ -1254,6 +1261,7 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
     a_k0 = omega / C0;
     const double k0 = a_k0;
     for (const QString& w : a_media.outOfRange(omega)) a_s.log << w;
+    a_dispersion.clear();   // (the media at this frequency: taken again by the first mode selected)
     if (!(k0 > 0)) {
         *error = tr("%1: a mode analysis wants a frequency more than 0").arg(a_node->name());
         return -1;
@@ -1578,7 +1586,17 @@ int ModeProblem::solveModes(const SolveOptions& o, int count, double guess, QStr
         for (const Mode& m : a_modes) shares << formatNumber(m.share, 3);
         a_s.log << tr("%1: the modes most in the domains tracked: their shares of |E|² %2").arg(a_node->name(), shares.join(QLatin1String(", ")));
     }
-    std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) { return a.beta.real() > b.beta.real(); });
+    // By their effective index, the highest first; of two of the same index
+    // - a square guide's pair, a bend's degenerate modes - the less lossy
+    // first, then the one more TE. std::sort is no stable sort, so without
+    // the tie-breakers the order of such a pair was the eigensolver's own
+    // and moved from one run to the next, and with it which mode a dataset
+    // called 1 (the user's bend study, 1).
+    std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) {
+        if (a.beta.real() != b.beta.real()) return a.beta.real() > b.beta.real();
+        if (a.beta.imag() != b.beta.imag()) return a.beta.imag() > b.beta.imag();
+        return a.te > b.te;
+    });
     // The one chosen: the first, or the most in the domains tracked; TE (TM)
     // the first - of the highest index - that is TE-like (more of its
     // transverse field along x: its TE fraction over a half), the most TE
@@ -1717,10 +1735,42 @@ void ModeProblem::selectMode(int k)
             e[8 + 2 * k] = v.imag();
         }
     }
+    // What each medium's ω ε and ω µ change by with ω, for the energy the
+    // mode carries (the group index below): ∂(ωε)/∂ω between two
+    // wavelengths a thousandth apart - the evaluator set to each of them,
+    // so that a material's own dispersion (its n of lambda0, a Sellmeier
+    // form or a table) counts as much as ε of ω itself. Each pass goes
+    // over the whole mesh at one wavelength: the media's tables are keyed
+    // by the photon's energy, and taking the two wavelengths triangle by
+    // triangle would build each table again at every one of them.
+    // (Relative, as Media::At gives them; ε0 and µ0 are put back below.)
+    constexpr double apart = 1e-3;
+    if (a_dispersion.size() != std::size_t(std::max(0, nt))) {
+        a_dispersion.assign(std::size_t(std::max(0, nt)), {});
+        PointEvaluator dev(a_s);
+        for (const int side : {-1, 1}) {
+            const double w = omega * (1 + side * apart), k = a_k0 * (1 + side * apart);
+            dev.setFrequency(w / (2 * M_PI));
+            for (int t = 0; t < nt; ++t) {
+                const int d = mesh.domain[std::size_t(t)];
+                if (d < 0 || !f.domains[std::size_t(d)] || a_media.domains[std::size_t(d)].pml) continue;
+                dev.moveTo(t, 1.0 / 3, 1.0 / 3);
+                const Media::At m = a_media.at(dev, d, w, k);
+                if (!m.ok) continue;
+                std::array<cd, 12>& into = a_dispersion[std::size_t(t)];
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) into[std::size_t(3 * i + j)] += double(side) * w * m.epsT[i][j];
+                for (int c = 0; c < 3; ++c) into[std::size_t(9 + c)] += double(side) * w * m.mu[c];
+            }
+        }
+        for (std::array<cd, 12>& one : a_dispersion)
+            for (cd& v : one) v /= 2 * omega * apart;
+    }
     // Its power along z, 1 W: Sz = ½ Re(Ex Hy* - Ey Hx*) over the domains;
     // what it absorbs across the gap, ω ε0 n κ |E|² (the direct gap's, less
-    // its value without a field).
-    double power = 0, largest = 0, gap = 0, field = 0;
+    // its value without a field); and the energy it carries per metre,
+    // ¼∫[E*·∂(ωε)/∂ω·E + H*·∂(ωµ)/∂ω·H].
+    double power = 0, largest = 0, gap = 0, field = 0, energy = 0;
     const TriangleRule& rule = triangleRule(f.space->order() == 1 ? 2 : 4);
     for (int t = 0; t < nt; ++t) {
         const int d = mesh.domain[std::size_t(t)];
@@ -1733,6 +1783,14 @@ void ModeProblem::selectMode(int k)
             if (!mf.defined) continue;
             const double w = q[2] * std::abs(am.det);
             power += w * 0.5 * (mf.E[0] * std::conj(mf.H[1]) - mf.E[1] * std::conj(mf.H[0])).real();
+            {
+                const std::array<cd, 12>& dp = a_dispersion[std::size_t(t)];
+                cd u = 0;
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) u += Eps0 * std::conj(mf.E[i]) * dp[std::size_t(3 * i + j)] * mf.E[j];
+                for (int c = 0; c < 3; ++c) u += Mu0 * std::conj(mf.H[c]) * dp[std::size_t(9 + c)] * mf.H[c];
+                energy += w * 0.25 * u.real();
+            }
             const double e2 = std::norm(mf.E[0]) + std::norm(mf.E[1]) + std::norm(mf.E[2]);
             largest = std::max(largest, std::sqrt(e2));
             if (std::isfinite(e[0])) {
@@ -1741,6 +1799,10 @@ void ModeProblem::selectMode(int k)
             }
         }
     }
+    // c/vg of the energy velocity vg = P/U - the group velocity itself
+    // where the media take nothing from the mode (both of the fields as
+    // they are: the scale below falls out of the ratio).
+    a_groupIndex = power > 1e-300 && energy > 0 ? C0 * energy / power : NaN;
     const double scale = power > 1e-300 ? 1 / std::sqrt(power) : largest > 0 ? 1 / largest : 1.0;
     for (double& v : f.values) v *= scale;
     a_absorbedGap = gap * scale * scale;
@@ -1786,6 +1848,11 @@ void ModeProblem::setGlobals()
     a_s.setGlobal(p + QStringLiteral("alpha"), -beta.imag(), perMetre, tr("attenuation constant α (Np/m)"));
     a_s.setGlobal(p + QStringLiteral("loss"), -beta.imag() * 20 / std::log(10.0), perMetre, tr("loss in dB per metre"), QStringLiteral("dB/m"));
     a_s.setGlobal(p + QStringLiteral("neff_im"), -beta.imag() / a_k0, Dim(), tr("effective index's imaginary part, its loss (β = k0 (neff - j neff_im))"));
+    if (std::isfinite(a_groupIndex))
+        a_s.setGlobal(p + QStringLiteral("ng"), a_groupIndex, Dim(),
+                      tr("group index c/vg = c dβ/dω: of the energy the mode carries over the power along it, with the media's own "
+                         "dispersion (their index at two wavelengths a thousandth apart) - the group velocity itself where they are "
+                         "lossless; a mode mostly in perfectly matched layers, whose energy is not counted, has it too low"));
     a_s.setGlobal(p + QStringLiteral("lambda0"), 2 * M_PI / a_k0, Dim::length(), tr("free-space wavelength"));
     a_s.setGlobal(p + QStringLiteral("mode"), a_selected + 1, Dim(), tr("the mode's number, by effective index"));
     a_s.setGlobal(p + QStringLiteral("TEfraction"), a_modes[std::size_t(a_selected)].te, Dim(),
@@ -2173,7 +2240,12 @@ int ResonatorProblem::solveModes(const SolveOptions& o, int count, double, QStri
     // Those nearest the frequency searched about, then by frequency.
     std::sort(a_modes.begin(), a_modes.end(), [&](const Mode& a, const Mode& b) { return std::abs(a.k - k0) < std::abs(b.k - k0); });
     if (int(a_modes.size()) > wanted) a_modes.resize(std::size_t(wanted));
-    std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) { return a.k.real() < b.k.real(); });
+    // (By frequency, and of two of the same the sharper first: a total
+    // order, so that a degenerate pair keeps its order from run to run.)
+    std::sort(a_modes.begin(), a_modes.end(), [](const Mode& a, const Mode& b) {
+        if (a.k.real() != b.k.real()) return a.k.real() < b.k.real();
+        return std::abs(a.k.imag()) < std::abs(b.k.imag());
+    });
     if (dropped) a_s.log << tr("%1: %2 modes of the absorbing layers left out").arg(a_node->name()).arg(dropped);
     a_s.log << tr("%1: %2 modes of azimuthal order %3 about %4 (%5 products, %6 restarts)")
                    .arg(a_node->name())

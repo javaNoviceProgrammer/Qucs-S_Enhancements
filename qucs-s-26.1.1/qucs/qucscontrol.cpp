@@ -4667,27 +4667,6 @@ int lettersApart(const QString& a, const QString& b)
     return d[a.size()][b.size()];
 }
 
-// The names in \a takes near \a unknown: a letter or two off, the same
-// beginning, or one in the other.
-QStringList nearNamesOf(const QStringList& unknown, const QStringList& takes)
-{
-    QStringList near;
-    for (const QString& u : unknown)
-        for (const QString& t : takes) {
-            const QString a = u.toLower(), b = t.toLower();
-            // A name of a letter or two is inside almost anything -
-            // add_analysis {"type": ...} was answered "Meant y?", y being a
-            // field of it - so it counts against a name of about its own
-            // length alone (the hunt of 23 October, N7).
-            if (std::min(a.size(), b.size()) < 3 && std::abs(a.size() - b.size()) > 1) continue;
-            int same = 0;
-            while (same < std::min(a.size(), b.size()) && a.at(same) == b.at(same)) ++same;
-            const bool typo = std::min(a.size(), b.size()) >= 3 && lettersApart(a, b) <= (std::max(a.size(), b.size()) > 5 ? 2 : 1);
-            if ((typo || a.contains(b) || b.contains(a) || same >= std::min<qsizetype>(4, std::min(a.size(), b.size()))) && !near.contains(t)) near << t;
-        }
-    return near;
-}
-
 // The fields of \a schema an object \a value has not, inside it too - a
 // set_schematic part's "rotaton" - as "where: its keys, and what it
 // takes"; empty when all are known. \a schema's 'properties' name them,
@@ -4834,6 +4813,28 @@ QString wrongTypeIn(const QJsonValue& value, const QJsonObject& schema, const QS
 }
 
 } // namespace
+
+// The names in \a takes near \a unknown: a letter or two off, the same
+// beginning, or one in the other. (In qucs_s::control: the fem tools name
+// a near miss too.)
+QStringList qucs_s::control::nearNamesOf(const QStringList& unknown, const QStringList& takes)
+{
+    QStringList near;
+    for (const QString& u : unknown)
+        for (const QString& t : takes) {
+            const QString a = u.toLower(), b = t.toLower();
+            // A name of a letter or two is inside almost anything -
+            // add_analysis {"type": ...} was answered "Meant y?", y being a
+            // field of it - so it counts against a name of about its own
+            // length alone (the hunt of 23 October, N7).
+            if (std::min(a.size(), b.size()) < 3 && std::abs(a.size() - b.size()) > 1) continue;
+            int same = 0;
+            while (same < std::min(a.size(), b.size()) && a.at(same) == b.at(same)) ++same;
+            const bool typo = std::min(a.size(), b.size()) >= 3 && lettersApart(a, b) <= (std::max(a.size(), b.size()) > 5 ? 2 : 1);
+            if ((typo || a.contains(b) || b.contains(a) || same >= std::min<qsizetype>(4, std::min(a.size(), b.size()))) && !near.contains(t)) near << t;
+        }
+    return near;
+}
 
 QString QucsControl::wrongTypes(const QString& tool, const QJsonObject& args) const
 {

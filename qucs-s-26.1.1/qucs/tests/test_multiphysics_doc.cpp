@@ -2612,6 +2612,152 @@ private slots:
         QVERIFY(panel()->editorFor("mode") != nullptr);
     }
 
+    // A property no kind of node has is refused where it is set - by
+    // fem_model new or set, which took a whole model as JSON and kept
+    // whatever it named -, with the name it was probably meant to be; and
+    // one already in a model (a file of another version, an older call's)
+    // is taken out by fem_edit, which used to refuse the very name that
+    // was there (the user's bend study, 4).
+    void anUnknownPropertyIsRefusedWhereItIsSet()
+    {
+        const QString json = QStringLiteral(R"json({"format": "qucs-s multiphysics 1", "title": "probe",
+          "components": [{"unit": "mm",
+            "geometry": [{"type": "rectangle", "label": "plate", %1"size": ["10", "5"]}],
+            "materials": [{"material": "Air", "selection": {"all": true}}],
+            "physics": [{"type": "electrostatics", "tag": "es"}],
+            "mesh": {"size": "coarse"}}]})json");
+        const auto modelOfJson = [](const QString& text) {
+            return QJsonDocument::fromJson(text.toUtf8()).object();
+        };
+        // New, with "pos" where "position" was meant: refused, nothing made.
+        const QJsonObject r = call("fem_model", {{"action", "new"}, {"model", modelOfJson(json.arg(QStringLiteral(R"("pos": ["0", "0"], )")))}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains(QStringLiteral("has no pos")) && text(r).contains(QStringLiteral("Meant position?")), qPrintable(text(r)));
+        // Without it, the same model is made.
+        QVERIFY2(!failed(call("fem_model", {{"action", "new"}, {"model", modelOfJson(json.arg(QString()))}})), qPrintable(text(r)));
+        // A file that holds one is opened all the same - it may come from
+        // another version - and fem_edit takes it out, one step of Undo.
+        const QString file = path(QStringLiteral("stray_property.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(json.arg(QStringLiteral(R"("pos": ["0", "0"], )")).toUtf8());
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        const QString tag = tagOf(doc->model(), QStringLiteral("rectangle"), QStringLiteral("plate"));
+        QVERIFY(!tag.isEmpty());
+        QVERIFY(doc->model().find(tag)->props.contains(QStringLiteral("pos")));
+        // Set, it is refused with the name it is near.
+        const QJsonObject no = call("fem_edit", {{"action", "set"}, {"tag", tag}, {"props", QJsonObject{{"pos", "1"}}}});
+        QVERIFY(failed(no));
+        QVERIFY2(text(no).contains(QStringLiteral("Meant position?")), qPrintable(text(no)));
+        // Null takes it out.
+        QVERIFY2(!failed(call("fem_edit", {{"action", "set"}, {"tag", tag}, {"props", QJsonObject{{"pos", QJsonValue()}}}})),
+                 qPrintable(text(no)));
+        QVERIFY(!doc->model().find(tag)->props.contains(QStringLiteral("pos")));
+        // And a property the kind has is still set, and still taken out.
+        QVERIFY(!failed(call("fem_edit", {{"action", "set"}, {"tag", tag}, {"props", QJsonObject{{"position", QJsonArray{"1", "2"}}}}})));
+        QVERIFY(doc->model().find(tag)->props.contains(QStringLiteral("position")));
+        QVERIFY(!failed(call("fem_edit", {{"action", "set"}, {"tag", tag}, {"props", QJsonObject{{"position", QJsonValue()}}}})));
+        QVERIFY(!doc->model().find(tag)->props.contains(QStringLiteral("position")));
+    }
+
+    // An export whose file is in a folder that is not there makes the
+    // folder: it said only that the file could not be written, and the
+    // folder had to be made outside Qucs-S first (the user's bend study, 5).
+    void anExportMakesItsFolder()
+    {
+        const QString file = copyOf(QStringLiteral("coax.qfem"));
+        QVERIFY(open(file) != nullptr);
+        QVERIFY2(!failed(call("fem_solve", {{"timeout", 300}})), qPrintable(text(call("fem_describe"))));
+        const QJsonObject added = call("fem_edit", {{"action", "add"}, {"parent", "exports"}, {"type", "fieldexport"},
+                                                    {"props", QJsonObject{{"file", "fields/under/E.csv"}, {"expressions", "es.normE"},
+                                                                          {"nx", 4}, {"ny", 4}}}});
+        QVERIFY2(!failed(added), qPrintable(text(added)));
+        const QString tag = json(added).value(QStringLiteral("added")).toObject().value(QStringLiteral("tag")).toString();
+        QVERIFY(!tag.isEmpty());
+        QVERIFY(!QFileInfo(path(QStringLiteral("fields/under"))).isDir());
+        const QJsonObject run = call("fem_export", {{"export", tag}});
+        QVERIFY2(!failed(run), qPrintable(text(run)));
+        QVERIFY(QFileInfo(path(QStringLiteral("fields/under/E.csv"))).isFile());
+    }
+
+    // A sweep whose points do not all keep the same number of modes: the
+    // dataset's header says what is there. Its axes - a curve per mode over
+    // the width - spanned 3 x 2 values while 5 were written, so the file
+    // declared counts it did not hold and which value was which mode moved
+    // with the run; the user had to export the fields instead (the user's
+    // bend study, 1). Now: one axis of the solutions' own numbers, with the
+    // frequency, the mode and each parameter swept beside them, in the
+    // order they were solved.
+    void aSweepOfUnevenModesSaysWhatIsInIt()
+    {
+        const QString file = path(QStringLiteral("uneven_modes.qfem"));
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        // At 10 GHz (λ 30 mm) TE20 is above cutoff from 30 mm up: the
+        // narrow guide keeps one mode, the others two.
+        f.write(R"json({"format": "qucs-s multiphysics 1",
+          "parameters": [{"name": "a", "expression": "25[mm]"}],
+          "components": [{"unit": "mm",
+            "geometry": [{"type": "rectangle", "label": "guide", "size": ["a/1[mm]", "10.16"]}, {"type": "form union"}],
+            "materials": [{"material": "Air", "selection": {"all": true}}],
+            "physics": [{"type": "modes", "tag": "emw", "order": "1"}],
+            "mesh": {"size": "coarse"}}],
+          "studies": [{"type": "study", "tag": "std1", "label": "Over the width",
+                       "steps": [{"type": "sweep", "parameters": [["a", "25, 35, 45", "mm"]]},
+                                 {"type": "mode", "frequency": "10[GHz]", "modes": 2, "neff": "1", "minneff": "0.1"}]}],
+          "results": {"plots": [{"type": "plotgroup1d", "tag": "pgu", "label": "Index against Width", "study": "std1",
+                                 "plots": [{"type": "globalgraph", "expression": "emw.neff"}]}]}})json");
+        f.close();
+        MultiphysicsDoc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        doc->compute(QStringLiteral("std1"));
+        QVERIFY(doc->waitForJob(jobWait()));
+        QVERIFY2(doc->lastError().isEmpty(), qPrintable(doc->lastError()));
+        // One mode at 25 mm, two at the others.
+        QCOMPARE(int(doc->solutions(QStringLiteral("std1"))->solutions.size()), 3);
+        const std::vector<int> found{doc->solutions(QStringLiteral("std1"))->solutions.at(0)->snapshotCount(),
+                                    doc->solutions(QStringLiteral("std1"))->solutions.at(1)->snapshotCount(),
+                                    doc->solutions(QStringLiteral("std1"))->solutions.at(2)->snapshotCount()};
+        QCOMPARE(found, (std::vector<int>{1, 2, 2}));
+        QString why;
+        const QString display = doc->showGraphs(QStringLiteral("pgu"), &why, false);
+        QVERIFY2(!display.isEmpty(), qPrintable(why));
+        qucs_s::dataset::Dataset data;
+        QVERIFY2(data.read(display.left(display.size() - 4) + QStringLiteral(".dat"), &why), qPrintable(why));
+        // The file holds what its headers declare (the reader's own check).
+        QVERIFY2(data.notes().isEmpty(), qPrintable(data.notes().join(QLatin1String("; "))));
+        const qucs_s::dataset::Variable* index = data.find(QStringLiteral("solution"));
+        const qucs_s::dataset::Variable* mode = data.find(QStringLiteral("mode"));
+        const qucs_s::dataset::Variable* width = data.find(QStringLiteral("a"));
+        const qucs_s::dataset::Variable* frequency = data.find(QStringLiteral("frequency"));
+        const qucs_s::dataset::Variable* neff = data.find(QStringLiteral("emw.neff"));
+        QVERIFY(index && mode && width && frequency && neff);
+        QCOMPARE(index->size(), 5);
+        QVERIFY(index->independent);
+        for (const qucs_s::dataset::Variable* v : {mode, width, frequency, neff}) {
+            QCOMPARE(v->size(), 5);
+            QCOMPARE(v->dependencies, (QStringList{QStringLiteral("solution")}));
+        }
+        // Which solution is which: the order they were solved in.
+        QCOMPARE(mode->re, (QVector<double>{1, 1, 2, 1, 2}));
+        QCOMPARE(width->re, (QVector<double>{25e-3, 35e-3, 35e-3, 45e-3, 45e-3}));
+        for (int i = 0; i < 5; ++i) QVERIFY(std::abs(frequency->re.at(i) - 10e9) < 1);
+        // TE10 at each width, TE20 where it is above cutoff: in that order.
+        constexpr double c0 = 299792458.0;
+        const double te10[3] = {std::sqrt(1 - std::pow(c0 / (2 * 25e-3 * 10e9), 2)), std::sqrt(1 - std::pow(c0 / (2 * 35e-3 * 10e9), 2)),
+                                std::sqrt(1 - std::pow(c0 / (2 * 45e-3 * 10e9), 2))};
+        const double te20[3] = {0, std::sqrt(1 - std::pow(c0 / (35e-3 * 10e9), 2)), std::sqrt(1 - std::pow(c0 / (45e-3 * 10e9), 2))};
+        const std::vector<double> wanted{te10[0], te10[1], te20[1], te10[2], te20[2]};
+        for (int i = 0; i < 5; ++i)
+            QVERIFY2(std::abs(neff->re.at(i) - wanted[std::size_t(i)]) < 5e-3,
+                     qPrintable(QStringLiteral("%1: %2 against %3").arg(i).arg(neff->re.at(i)).arg(wanted[std::size_t(i)])));
+        // And the user is told why it is not a grid.
+        QVERIFY2(doc->messages().join(QLatin1Char('\n')).contains(QLatin1String("do not fill the axes")),
+                 qPrintable(doc->messages().join(QLatin1Char('\n'))));
+    }
+
     // A guide's two modes swept over its width: a global graph over the width,
     // a curve per mode (its values in that order), named as asked or by its
     // label, emw.loss in dB/cm; Plot against the modes; one mode no axis of

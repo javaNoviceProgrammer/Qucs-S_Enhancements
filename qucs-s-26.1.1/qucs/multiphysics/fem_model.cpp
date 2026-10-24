@@ -1490,10 +1490,16 @@ QList<NodeKind> makeKinds()
     waveEquation(QStringLiteral("waves"), tr("Wave Equation, Electric"));
     add({QStringLiteral("resonator"), tr("Electromagnetic Waves, Eigenfrequency"), QStringLiteral("physics"), QStringLiteral("emr"), Level::Domain,
          {selectionProp(),
-          integer(QStringLiteral("m"), tr("Azimuthal order m"), 1,
-                  tr("The fields E(r, z) e^-jmφ: 0 the TE0 and TM0 modes (E round the axis, or in its planes), 1 the HE11 and EH11 "
-                     "(a VCSEL's fundamental), m the modes of m azimuthal periods - each order solved alone, both of a pair its "
-                     "modes")),
+          // (An expression, not a whole number of its own: so that a
+          // study's sweep may run over the orders - a bend's or a
+          // whispering gallery's loss per order took a script of its own
+          // (the user's bend study, 3). Its step checks that it is a whole
+          // number.)
+          expr(QStringLiteral("m"), tr("Azimuthal order m"), QString(), QStringLiteral("1"),
+               tr("The fields E(r, z) e^-jmφ: 0 the TE0 and TM0 modes (E round the axis, or in its planes), 1 the HE11 and EH11 "
+                  "(a VCSEL's fundamental), m the modes of m azimuthal periods - each order solved alone, both of a pair its "
+                  "modes. A whole number, or a parameter of one (\"morder\"), which a sweep may run over: one solution per "
+                  "order, with emr.m beside its frequency and Q")),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")},
                  {tr("Linear (Whitney's edges)"), tr("Quadratic")}, QStringLiteral("2"))},
          {QStringLiteral("resonator/wave"), QStringLiteral("resonator/pml"), QStringLiteral("resonator/pec"), QStringLiteral("resonator/pmc")},
