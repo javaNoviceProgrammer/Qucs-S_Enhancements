@@ -44,6 +44,19 @@ QList<const NodeKind*> nodeKinds();
 /// multiphysics one and is not used here).
 const NodeKind* kindOf(const Node& node);
 
+/// A node's property as it stands, its kind's default where it has none of
+/// its own, and the same read as a text, a flag or a whole number. The
+/// node's own Node::value() and its fellows read the multiphysics table,
+/// which has not these kinds, and answer nothing for every one of their
+/// properties: these are what reads an RF 2.5D node.
+QJsonValue valueOf(const Node& node, const QString& key);
+QString textOf(const Node& node, const QString& key);
+bool flagOf(const Node& node, const QString& key);
+int integerOf(const Node& node, const QString& key);
+/// The label a node is known by, else its kind's title ("Metal") - as
+/// Node::name() does it, from this table.
+QString nameOf(const Node& node);
+
 /// What the file calls itself, and what this build writes.
 QString formatName();
 
@@ -127,6 +140,33 @@ public:
     /// The parameters, in order (the same shape the multiphysics model
     /// uses: name, expression, description).
     QList<fem::Model::Parameter> parameters() const;
+
+    Node* find(const QString& tag);
+    const Node* find(const QString& tag) const;
+    /// The parent of the node \a tag, and its index there.
+    Node* parentOf(const QString& tag, int* index = nullptr);
+    /// A tag no node has yet: \a prefix and a number.
+    QString newTag(const QString& prefix) const;
+    /// A node of kind \a type as one is added: a tag, and the name the
+    /// layer map, the vias and the ports will call it by (M2, ILD2, P1) -
+    /// a layer without one could be named by nothing.
+    Node make(const QString& type) const;
+    /// Adds \a node under \a parentTag (at \a index, -1: where its kind
+    /// belongs - the substrate at the bottom, the ground and the cover at
+    /// the ends); its tag, and its children's, made unique. The node
+    /// added, or null and why when it may not go there.
+    Node* add(const QString& parentTag, Node node, int index = -1, QString* error = nullptr);
+    bool remove(const QString& tag, QString* error = nullptr);
+    /// The tags of the parts of the tree itself ("stack", "layout",
+    /// "layer_map"...), given where a file has them not: every node of the
+    /// tree can be found by tag, which is how the panel, the undo and the
+    /// tools name one. A node with a tag keeps it, and a tag two nodes
+    /// share is made its own.
+    void normalise();
+    /// A layer renamed wherever the model names it: the vias that join it,
+    /// the ports on it, and the rows of the layer map that send shapes to
+    /// it. Nothing happens for an empty name or one that is not a layer's.
+    void renameLayer(const QString& from, const QString& to);
 };
 
 /// \a node read as a stack (its children in order). Numbers are

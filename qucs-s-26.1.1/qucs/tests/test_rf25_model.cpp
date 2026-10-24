@@ -130,6 +130,38 @@ private slots:
         QVERIFY2(why.contains(QLatin1String("not rooted")), qPrintable(why));
     }
 
+    // Every node can be found by tag: the parts of the tree itself are
+    // named by their kind ("stack", "layer_map"), a file written before
+    // they were gets them on read, and a tag two nodes share - a file
+    // written by hand, or two stacks copied together - is made its own,
+    // since find() would otherwise answer with the wrong node.
+    void everyNodeHasATagOfItsOwn()
+    {
+        const rf::Model blank = rf::Model::blank();
+        QCOMPARE(blank.root.tag, QStringLiteral("model"));
+        QCOMPARE(blank.stackNode().tag, QStringLiteral("stack"));
+        QCOMPARE(blank.layout().tag, QStringLiteral("layout"));
+        QCOMPARE(blank.layout().child(QStringLiteral("rf_layer_map"))->tag, QStringLiteral("layer_map"));
+        QVERIFY(blank.find(QStringLiteral("stack")) != nullptr);
+
+        // Two metals of one tag, as a hand-written file may have them.
+        const QByteArray json =
+            "{\"format\": \"qucs-s rf 2.5d 1\", \"tree\": {\"type\": \"rf_model\", \"children\": ["
+            "{\"type\": \"rf_stack\", \"children\": ["
+            "{\"type\": \"rf_metal\", \"tag\": \"m1\", \"label\": \"M1\"},"
+            "{\"type\": \"rf_metal\", \"tag\": \"m1\", \"label\": \"M2\"}]}]}}";
+        QString why;
+        const std::optional<rf::Model> m = rf::Model::fromJson(json, &why);
+        QVERIFY2(m.has_value(), qPrintable(why));
+        QCOMPARE(m->stackNode().children.size(), std::size_t(2));
+        const QString first = m->stackNode().children[0].tag, second = m->stackNode().children[1].tag;
+        QCOMPARE(first, QStringLiteral("m1"));
+        QVERIFY2(second != first, qPrintable(second));
+        QVERIFY(!second.isEmpty());
+        QCOMPARE(m->find(first)->label, QStringLiteral("M1"));
+        QCOMPARE(m->find(second)->label, QStringLiteral("M2"));
+    }
+
     // The stack read out: SI throughout, the layers placed from the bottom
     // up, a via taking no room of its own, and the parameters usable in
     // any of it.

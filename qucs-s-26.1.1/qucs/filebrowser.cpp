@@ -144,6 +144,7 @@ const KindRow kKinds[] = {
      Kind::Image, false},
     {"gds gds2 gdsii oas oasis", QT_TRANSLATE_NOOP("FileBrowser", "Layout (GDSII, OASIS)"), "", 0x2f8f9d, Kind::Layout, true},
     {"qfem", QT_TRANSLATE_NOOP("FileBrowser", "Qucs-S multiphysics model"), "FEM", 0x7b4fbf, Kind::Mesh, true},
+    {"qrf25", QT_TRANSLATE_NOOP("FileBrowser", "Qucs-S RF 2.5D model"), "RF", 0x2f6fbf, Kind::Mesh, true},
     {"zip tar gz tgz bz2 xz 7z rar", QT_TRANSLATE_NOOP("FileBrowser", "Archive"), "", 0x8a6d3b, Kind::Archive, false},
 };
 
