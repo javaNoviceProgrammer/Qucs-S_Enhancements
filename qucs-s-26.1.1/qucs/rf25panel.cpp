@@ -208,6 +208,7 @@ void RF25Panel::setDocument(RF25Doc* doc)
     // The shapes and the mesh made again: what the Processing, the Mesh
     // and the Layout say they did is of that run.
     a_connections << connect(doc, &RF25Doc::preparedChanged, this, [this] { scheduleSettings(); });
+    a_connections << connect(doc, &RF25Doc::solvedChanged, this, [this] { scheduleSettings(); });
     a_connections << connect(doc, &RF25Doc::focusChanged, this, [this](const QString& tag) {
         if (currentTag() != tag) selectNode(tag);
     });
@@ -664,6 +665,9 @@ void RF25Panel::showSettings()
     QStringList cannot;
     const bool itsOwn = n->type == QLatin1String("rf_processing") || n->type == QLatin1String("rf_mesh")
                         || n->type == QLatin1String("rf_layout");
+    // (The Results node is not one of those: what it shows is of the last
+    // solve, which a run of the shapes and the mesh has already thrown
+    // away, so it says so for itself.)
     if (n->type == QLatin1String("rf_processing")) {
         if (processed) {
             did = processed->report.lines;
@@ -678,11 +682,24 @@ void RF25Panel::showSettings()
         if (processed)
             did << tr("%1 shape(s) sent to a layer of the stack, %2 left out by the map.")
                        .arg(processed->report.read).arg(processed->report.ignored);
+    } else if (n->type == QLatin1String("rf_results")) {
+        // What the solve found, where there is one: the capacitance of
+        // each net, and each as a line.
+        if (a_doc->isSolving()) {
+            did << tr("Solving…");
+        } else if (a_doc->extraction() && a_doc->extraction()->ok()) {
+            did = a_doc->solvedLines();
+            did += a_doc->lineSummary();
+        } else if (!a_doc->solveProblem().isEmpty()) {
+            cannot << a_doc->solveProblem();
+        } else {
+            did << tr("Nothing is solved yet: the tab's Solve finds the capacitance of the conductors.");
+        }
     }
-    if (a_doc->isPreparing()) {
+    if (a_doc->isPreparing() && itsOwn) {
         did.clear();
         cannot.clear();
-        if (itsOwn) did << tr("Being made…");
+        did << tr("Being made…");
     }
     if (!did.isEmpty()) {
         auto* report = new QLabel(QStringLiteral("• ") + did.join(QStringLiteral("\n• ")), a_form);

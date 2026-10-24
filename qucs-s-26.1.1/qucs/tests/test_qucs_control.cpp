@@ -2102,6 +2102,70 @@ private slots:
     // times, newest first or by name, a dataset with its simulator and
     // schematic, the open ones, the projects; narrowed by kind and name;
     // hidden files and unknown kinds left out; what is not there refused.
+    // rf25_solve: an RF 2.5D model solved through the tool, which drives
+    // the tab's own solve so that what a tool answers and what the panel
+    // shows are the one run.
+    void anRf25ModelIsSolvedThroughItsTool()
+    {
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        const QString gds = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds");
+        if (!QFileInfo::exists(gds)) QSKIP("the example layout is not in this build");
+        QVERIFY(QDir().mkpath(ws + "/rf"));
+        QFile::remove(ws + "/rf/heater.gds");
+        QVERIFY(QFile::copy(gds, ws + "/rf/heater.gds"));
+        // A stack of a ground plane, a substrate and one metal, with the
+        // layout's layer 1 sent to it and a mesh fine enough to matter.
+        qucs_s::rf25::Model m = qucs_s::rf25::Model::blank();
+        m.layout().props.insert(QStringLiteral("file"), QStringLiteral("heater.gds"));
+        QJsonArray row;
+        row.append(QStringLiteral("1"));
+        row.append(QStringLiteral("0"));
+        row.append(QStringLiteral("M1"));
+        QJsonArray rows;
+        rows.append(row);
+        QCOMPARE(rows.size(), 1);
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+        m.mesh().props.insert(QStringLiteral("maximum"), QStringLiteral("20[um]"));
+        const auto put = [](const QString& where, const QByteArray& what) {
+            QFile f(where);
+            return f.open(QIODevice::WriteOnly) && f.write(what) == what.size();
+        };
+        QVERIFY(put(ws + "/rf/line.qrf25", m.toJson()));
+
+        const QJsonObject solved = call("rf25_solve", {{"path", ws + "/rf/line.qrf25"}}, 300000);
+        QVERIFY2(!failed(solved), qPrintable(text(solved)));
+        const QJsonObject out = json(solved).toObject();
+        QCOMPARE(out.value("model").toString(), QStringLiteral("line.qrf25"));
+        QVERIFY(out.value("unknowns").toInt() > 0);
+        const QJsonArray nets = out.value("nets").toArray();
+        QVERIFY2(!nets.isEmpty(), qPrintable(text(solved)));
+        const QJsonObject first = nets.first().toObject();
+        QCOMPARE(first.value("name").toString(), QStringLiteral("M1"));
+        QVERIFY(first.value("capacitance").toDouble() > 0);
+        const QJsonObject line = first.value("line").toObject();
+        QVERIFY2(line.value("Z0").toDouble() > 0, qPrintable(text(solved)));
+        QVERIFY(line.value("epsilon_eff").toDouble() > 1);
+        QVERIFY(line.value("C").toDouble() > 0 && line.value("C0").toDouble() > 0);
+        QVERIFY2(!out.value("what it did").toArray().isEmpty(), "it said nothing of what it did");
+
+        // A length of its own: the same capacitance over a length the
+        // caller gives, so C per metre scales with it.
+        const QJsonObject longer = json(call("rf25_solve", {{"path", ws + "/rf/line.qrf25"}, {"length", "2400[um]"}}, 300000)).toObject();
+        const double wide = longer.value("nets").toArray().first().toObject().value("line").toObject().value("C").toDouble();
+        const double narrow = line.value("C").toDouble();
+        QVERIFY2(std::abs(wide * 2 - narrow) < 0.02 * narrow,
+                 qPrintable(QStringLiteral("%1 F/m over 2400 µm vs %2 F/m over 1200").arg(wide).arg(narrow)));
+        // A length that is no length.
+        QVERIFY(failed(call("rf25_solve", {{"path", ws + "/rf/line.qrf25"}, {"length", "nonsense"}}, 60000)));
+
+        // And what is no RF 2.5D model at all.
+        QVERIFY(put(ws + "/rf/plain.sch", QByteArray("<Qucs Schematic 24.1.1>\n")));
+        const QJsonObject wrong = call("rf25_solve", {{"path", ws + "/rf/plain.sch"}}, 60000);
+        QVERIFY(failed(wrong));
+        QVERIFY2(text(wrong).contains(QStringLiteral("no RF 2.5D model")), qPrintable(text(wrong)));
+        app->closeAllFiles();
+    }
+
     void theWorkspaceIsListed()
     {
         const QString ws = dir.filePath("workspace");
